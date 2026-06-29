@@ -135,12 +135,31 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/task/write-doc", post(task_write_doc_handler))
         .route("/api/thought/list", get(thought_list_handler))
         .route("/api/thought/create", post(thought_create_handler))
+        .route("/api/space/issue-list", post(space_issue_list_handler))
         .route("/api/space/issue-get", post(space_issue_get_handler))
         .route(
             "/api/space/issue-comment",
             post(space_issue_comment_handler),
         )
         .route("/api/space/issue-status", post(space_issue_status_handler))
+        .route("/api/space/issue-claim", post(space_issue_claim_handler))
+        .route(
+            "/api/space/issue-delivery-ignore",
+            post(space_issue_delivery_ignore_handler),
+        )
+        .route("/api/space/issue-close", post(space_issue_close_handler))
+        .route(
+            "/api/space/issue-complete",
+            post(space_issue_complete_handler),
+        )
+        .route(
+            "/api/space/issue-cancel-claim",
+            post(space_issue_cancel_claim_handler),
+        )
+        .route(
+            "/api/space/claim-local-task",
+            post(space_claim_local_task_handler),
+        )
         .route(
             "/api/space/attachment-download",
             post(space_attachment_download_handler),
@@ -1633,6 +1652,12 @@ async fn space_issue_get_handler(
     space_result(crate::space_cloud::space_cli_issue_get(input).await)
 }
 
+async fn space_issue_list_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliIssueListInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_issue_list(input).await)
+}
+
 async fn space_issue_comment_handler(
     Json(input): Json<crate::space_cloud::SpaceCliIssueCommentInput>,
 ) -> Json<serde_json::Value> {
@@ -1643,6 +1668,42 @@ async fn space_issue_status_handler(
     Json(input): Json<crate::space_cloud::SpaceCliIssueStatusInput>,
 ) -> Json<serde_json::Value> {
     space_result(crate::space_cloud::space_cli_issue_status(input).await)
+}
+
+async fn space_issue_claim_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliIssueClaimInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_issue_claim(input).await)
+}
+
+async fn space_issue_delivery_ignore_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliIssueDeliveryIgnoreInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_issue_delivery_ignore(input).await)
+}
+
+async fn space_issue_close_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliIssueActionInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_issue_close(input).await)
+}
+
+async fn space_issue_complete_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliIssueActionInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_issue_complete(input).await)
+}
+
+async fn space_issue_cancel_claim_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliIssueActionInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_issue_cancel_claim(input).await)
+}
+
+async fn space_claim_local_task_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliClaimLocalTaskInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_claim_local_task(input).await)
 }
 
 async fn space_attachment_download_handler(

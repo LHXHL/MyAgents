@@ -592,6 +592,19 @@ fn handle_api_data_request(
         ("POST", ["api", "issues", issue_id, "status"]) => {
             set_issue_status(&mut state, issue_id, body)
         }
+        ("POST", ["api", "issues", issue_id, "claim"]) => claim_issue(&mut state, issue_id, body),
+        ("POST", ["api", "issues", issue_id, "complete"]) => {
+            set_issue_status_value(&mut state, issue_id, "done")
+        }
+        ("POST", ["api", "issues", issue_id, "cancel-claim"]) => {
+            set_issue_status_value(&mut state, issue_id, "todo")
+        }
+        ("POST", ["api", "issues", issue_id, "close"]) => {
+            set_issue_status_value(&mut state, issue_id, "closed")
+        }
+        ("POST", ["api", "issues", _issue_id, "deliveries", _delivery_id, "ignore"]) => {
+            Ok(json!({ "ignored": true, "handledAt": "2026-06-24T09:48:00.000Z" }))
+        }
         ("POST", ["api", "issues", issue_id, "close-own"]) => {
             set_issue_status_value(&mut state, issue_id, "closed")
         }
@@ -632,6 +645,12 @@ fn handle_api_data_request(
             drop(state);
             let data = mark_dispatch_delivered(dispatch_id, None, None, None)?;
             Ok(data.get("data").cloned().unwrap_or(Value::Null))
+        }
+        ("POST", ["api", "deliveries", _delivery_id, "ignored"]) => {
+            Ok(json!({ "ignored": true, "handledAt": "2026-06-24T09:48:00.000Z" }))
+        }
+        ("POST", ["api", "claims", _claim_id, "local-task"]) => {
+            Ok(json!({ "updated": true, "updatedAt": "2026-06-24T09:49:00.000Z" }))
         }
         _ => Err(format!(
             "Mock Space API route not implemented: {} {}",
@@ -1063,7 +1082,8 @@ fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
         .map(|value| value.trim().to_ascii_lowercase())
         .filter(|value| !value.is_empty());
     let status = query
-        .get("status")
+        .get("state")
+        .or_else(|| query.get("status"))
         .map(|value| value.trim().to_ascii_lowercase())
         .filter(|value| !value.is_empty());
     let cursor = query
@@ -1090,7 +1110,8 @@ fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
                 .unwrap_or("")
                 .to_ascii_lowercase();
             let issue_status = issue
-                .get("status")
+                .get("state")
+                .or_else(|| issue.get("status"))
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_ascii_lowercase();
@@ -1360,11 +1381,11 @@ fn set_issue_status(
 ) -> Result<Value, String> {
     let status = body
         .as_ref()
-        .and_then(|value| value.get("status"))
+        .and_then(|value| value.get("state").or_else(|| value.get("status")))
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "status is required".to_string())?;
+        .ok_or_else(|| "state is required".to_string())?;
     set_issue_status_value(state, issue_id, status)
 }
 
@@ -1378,9 +1399,31 @@ fn set_issue_status_value(
     };
     if let Some(issue) = state.issues[index].as_object_mut() {
         issue.insert("status".to_string(), json!(status));
+        issue.insert("state".to_string(), json!(status));
         issue.insert("updatedAt".to_string(), json!("2026-06-24T09:40:00.000Z"));
     }
-    Ok(json!({ "status": status, "updatedAt": "2026-06-24T09:40:00.000Z" }))
+    Ok(json!({ "state": status, "status": status, "updatedAt": "2026-06-24T09:40:00.000Z" }))
+}
+
+fn claim_issue(
+    state: &mut MockState,
+    issue_id: &str,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    let _ = body;
+    let claim_id = state.next_id("claim");
+    let _ = set_issue_status_value(state, issue_id, "doing")?;
+    Ok(json!({
+        "claim": {
+            "id": claim_id,
+            "issueId": issue_id,
+            "status": "active",
+            "localTaskId": null,
+            "localSessionId": null,
+            "claimedAt": "2026-06-24T09:47:00.000Z",
+            "updatedAt": "2026-06-24T09:47:00.000Z"
+        }
+    }))
 }
 
 fn dispatch_issue(

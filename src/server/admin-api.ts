@@ -2636,8 +2636,8 @@ export async function handleThoughtCreate(payload: {
 // instead of a Claude-Agent-SDK-only MCP protocol. See prd_0.1.67.
 //
 // Authorization model: Sidecar is session-scoped (1 Sidecar = 1 session), so
-// the ambient session context (cron context / im-media context) is already
-// correctly bound to the calling Sidecar — no MYAGENTS_SESSION_ID plumbing.
+// most ambient context is already bound to the calling Sidecar. Commands that
+// need a durable local Task/session link use MYAGENTS_SESSION_ID explicitly.
 // ---------------------------------------------------------------------------
 
 export function handleCronExit(payload: { reason?: string }): AdminResponse {
@@ -2967,12 +2967,40 @@ export async function handleSpaceIssueGet(payload: Record<string, unknown>): Pro
   return spaceManagementResponse('/api/space/issue-get', payload);
 }
 
+export async function handleSpaceIssueList(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-list', payload);
+}
+
 export async function handleSpaceIssueComment(payload: Record<string, unknown>): Promise<AdminResponse> {
   return spaceManagementResponse('/api/space/issue-comment', payload, 'Comment posted to MyAgents Space.');
 }
 
 export async function handleSpaceIssueStatus(payload: Record<string, unknown>): Promise<AdminResponse> {
   return spaceManagementResponse('/api/space/issue-status', payload, 'Issue status updated.');
+}
+
+export async function handleSpaceIssueClaim(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-claim', payload, 'Issue claimed.');
+}
+
+export async function handleSpaceIssueDeliveryIgnore(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-delivery-ignore', payload, 'Issue delivery ignored.');
+}
+
+export async function handleSpaceIssueClose(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-close', payload, 'Issue closed.');
+}
+
+export async function handleSpaceIssueComplete(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-complete', payload, 'Issue completed.');
+}
+
+export async function handleSpaceIssueCancelClaim(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-cancel-claim', payload, 'Issue claim cancelled.');
+}
+
+export async function handleSpaceClaimLocalTask(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/claim-local-task', payload, 'Claim linked to local task.');
 }
 
 export async function handleSpaceAttachmentDownload(payload: Record<string, unknown>): Promise<AdminResponse> {

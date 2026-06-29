@@ -320,6 +320,29 @@ pub struct SpaceCliIssueGetInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SpaceCliIssueListInput {
+    #[serde(default)]
+    pub goal_id: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub include_subtree: Option<bool>,
+    #[serde(default)]
+    pub human_only: Option<bool>,
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SpaceCliIssueCommentInput {
     pub issue_id: String,
     pub body: String,
@@ -333,7 +356,54 @@ pub struct SpaceCliIssueCommentInput {
 #[serde(rename_all = "camelCase")]
 pub struct SpaceCliIssueStatusInput {
     pub issue_id: String,
-    pub status: String,
+    #[serde(alias = "status")]
+    pub state: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceCliIssueClaimInput {
+    pub issue_id: String,
+    #[serde(default)]
+    pub delivery_id: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceCliIssueDeliveryIgnoreInput {
+    #[serde(default)]
+    pub issue_id: Option<String>,
+    pub delivery_id: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceCliIssueActionInput {
+    pub issue_id: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceCliClaimLocalTaskInput {
+    pub claim_id: String,
+    pub local_task_id: String,
+    pub local_session_id: String,
     #[serde(default)]
     pub agent_id: Option<String>,
     #[serde(default)]
@@ -1126,6 +1196,48 @@ pub async fn space_cli_issue_get(input: SpaceCliIssueGetInput) -> Result<Value, 
     authorized_json_data_request(&base_url, &path, &agent.token, reqwest::Method::GET, None).await
 }
 
+pub async fn space_cli_issue_list(input: SpaceCliIssueListInput) -> Result<Value, String> {
+    let agent =
+        resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
+    let base_url = space_base_url()?;
+    let mut params: Vec<(String, String)> = Vec::new();
+    if let Some(goal_id) = input.goal_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        params.push(("goalId".to_string(), goal_id.trim().to_string()));
+    }
+    if let Some(state) = input.state.as_deref().filter(|s| !s.trim().is_empty()) {
+        params.push(("state".to_string(), state.trim().to_string()));
+    }
+    if let Some(include_subtree) = input.include_subtree {
+        params.push(("includeSubtree".to_string(), include_subtree.to_string()));
+    }
+    if let Some(human_only) = input.human_only {
+        params.push(("humanOnly".to_string(), human_only.to_string()));
+    }
+    if let Some(query) = input.query.as_deref().filter(|s| !s.trim().is_empty()) {
+        params.push(("q".to_string(), query.trim().to_string()));
+    }
+    if let Some(cursor) = input.cursor.as_deref().filter(|s| !s.trim().is_empty()) {
+        params.push(("cursor".to_string(), cursor.trim().to_string()));
+    }
+    params.push((
+        "limit".to_string(),
+        input.limit.unwrap_or(30).clamp(1, 100).to_string(),
+    ));
+    let query = params
+        .into_iter()
+        .map(|(key, value)| format!("{}={}", key, url_component(&value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    authorized_json_data_request(
+        &base_url,
+        &format!("/api/spaces/official/issues?{}", query),
+        &agent.token,
+        reqwest::Method::GET,
+        None,
+    )
+    .await
+}
+
 pub async fn space_cli_issue_comment(input: SpaceCliIssueCommentInput) -> Result<Value, String> {
     let agent =
         resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
@@ -1155,7 +1267,99 @@ pub async fn space_cli_issue_status(input: SpaceCliIssueStatusInput) -> Result<V
         ),
         &agent.token,
         reqwest::Method::POST,
-        Some(serde_json::json!({ "status": input.status })),
+        Some(serde_json::json!({ "state": input.state })),
+    )
+    .await
+}
+
+pub async fn space_cli_issue_claim(input: SpaceCliIssueClaimInput) -> Result<Value, String> {
+    let agent =
+        resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
+    let base_url = space_base_url()?;
+    authorized_json_data_request(
+        &base_url,
+        &format!("/api/issues/{}/claim", url_component(input.issue_id.trim())),
+        &agent.token,
+        reqwest::Method::POST,
+        Some(serde_json::json!({ "deliveryId": input.delivery_id })),
+    )
+    .await
+}
+
+pub async fn space_cli_issue_delivery_ignore(
+    input: SpaceCliIssueDeliveryIgnoreInput,
+) -> Result<Value, String> {
+    let agent =
+        resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
+    let base_url = space_base_url()?;
+    let path = if let Some(issue_id) = input.issue_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        format!(
+            "/api/issues/{}/deliveries/{}/ignore",
+            url_component(issue_id.trim()),
+            url_component(input.delivery_id.trim())
+        )
+    } else {
+        format!(
+            "/api/deliveries/{}/ignored",
+            url_component(input.delivery_id.trim())
+        )
+    };
+    authorized_json_data_request(&base_url, &path, &agent.token, reqwest::Method::POST, None).await
+}
+
+pub async fn space_cli_issue_close(input: SpaceCliIssueActionInput) -> Result<Value, String> {
+    space_cli_issue_action(input, "close").await
+}
+
+pub async fn space_cli_issue_complete(input: SpaceCliIssueActionInput) -> Result<Value, String> {
+    space_cli_issue_action(input, "complete").await
+}
+
+pub async fn space_cli_issue_cancel_claim(
+    input: SpaceCliIssueActionInput,
+) -> Result<Value, String> {
+    space_cli_issue_action(input, "cancel-claim").await
+}
+
+async fn space_cli_issue_action(
+    input: SpaceCliIssueActionInput,
+    action: &str,
+) -> Result<Value, String> {
+    let agent =
+        resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
+    let base_url = space_base_url()?;
+    authorized_json_data_request(
+        &base_url,
+        &format!(
+            "/api/issues/{}/{}",
+            url_component(input.issue_id.trim()),
+            action
+        ),
+        &agent.token,
+        reqwest::Method::POST,
+        None,
+    )
+    .await
+}
+
+pub async fn space_cli_claim_local_task(
+    input: SpaceCliClaimLocalTaskInput,
+) -> Result<Value, String> {
+    let agent =
+        resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
+    let base_url = space_base_url()?;
+    authorized_json_data_request(
+        &base_url,
+        &format!(
+            "/api/claims/{}/local-task",
+            url_component(input.claim_id.trim())
+        ),
+        &agent.token,
+        reqwest::Method::POST,
+        Some(serde_json::json!({
+            "localTaskId": input.local_task_id,
+            "localSessionId": input.local_session_id,
+        })),
     )
     .await
 }
@@ -1380,7 +1584,7 @@ fn build_dispatch_task_md(issue_id: &str, issue_title: &str, goal_md: &str) -> S
         "- 使用 `myagents space issue get <issueId> --json` 拉取完整 Issue、评论和附件元信息。".to_string(),
         "- 需要下载附件时，使用 `myagents space attachment download <attachmentId>`，文件会保存到当前 Agent 工作区的 `myagents_files/space/` 下。".to_string(),
         "- 完成阶段性工作后，使用 `myagents space issue comment <issueId> --body-file <path>` 回写结论。".to_string(),
-        "- 如任务已解决，使用 `myagents space issue status <issueId> resolved` 更新状态。".to_string(),
+        "- 如任务已解决，使用 `myagents space issue complete <issueId>` 更新状态。".to_string(),
     ]
     .join("\n")
 }

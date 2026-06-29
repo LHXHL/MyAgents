@@ -205,7 +205,7 @@ Commands:
   task      Manage Task Center tasks (list/get/update-status/run/rerun ...)
   thought   Manage Task Center thoughts (list/create)
   space     MyAgents Cloud Space issue/attachment bridge
-  issue     Read a Space issue (alias of 'space issue get')
+  issue     Legacy read-only alias for Space issue view
   im        IM runtime actions for current chat (send-media)
   session   Session-to-session messaging (send prompts, watch completion/result events)
   widget    Generative UI widget design guidelines (readme)
@@ -273,10 +273,13 @@ Examples:
   myagents task create-attached --name "Space Issue #123" \\
       --workspaceId proj --workspacePath /path/to/proj \\
       --taskMdContent-file task.md --source space-issue --sourceIssueId iss_123
-  myagents space issue get <issueId> --json
-  myagents issue <issueId> --json
+  myagents space issue list --goal <goalId> --state todo --limit 30
+  myagents space issue view <issueId> --comments --json
+  myagents space issue claim <issueId> --deliveryId <deliveryId>
   myagents space issue comment <issueId> --body-file result.md
-  myagents space issue status <issueId> resolved
+  myagents space issue delivery ignore <deliveryId>
+  myagents space issue complete <issueId>
+  myagents space issue close <issueId>
   myagents space attachment download <attachmentId> --output myagents_files/space/file.bin
   myagents thought list
   myagents plugin list
@@ -1880,10 +1883,20 @@ function buildRoute(group: string, action: string, rest: string[]): string {
   }
   if (group === 'space' && action === 'issue') {
     const issueAction = rest[0] || 'get';
-    if (issueAction === 'get') return 'space/issue-get';
+    if (issueAction === 'list') return 'space/issue-list';
+    if (issueAction === 'get' || issueAction === 'view') return 'space/issue-get';
     if (issueAction === 'comments') return 'space/issue-get';
     if (issueAction === 'comment') return 'space/issue-comment';
     if (issueAction === 'status') return 'space/issue-status';
+    if (issueAction === 'claim') return 'space/issue-claim';
+    if (issueAction === 'delivery' && rest[1] === 'ignore') return 'space/issue-delivery-ignore';
+    if (issueAction === 'close') return 'space/issue-close';
+    if (issueAction === 'complete') return 'space/issue-complete';
+    if (issueAction === 'cancel-claim') return 'space/issue-cancel-claim';
+  }
+  if (group === 'space' && action === 'claim') {
+    const claimAction = rest[0] || '';
+    if (claimAction === 'local-task') return 'space/claim-local-task';
   }
   if (group === 'space' && action === 'attachment') {
     const attachmentAction = rest[0] || 'download';
@@ -2032,27 +2045,137 @@ function buildRequestBody(
     if (action === 'issue') {
       const issueAction = rest[0] || 'get';
       const issueId = rest[1] || flags.issueId;
-      if (issueAction === 'get' || issueAction === 'comments') {
+      if (issueAction === 'list') {
         return {
-          issueId,
+          goalId: flags.goalId ?? flags.goal,
+          state: flags.state ?? flags.status,
+          includeSubtree: flags.includeSubtree,
+          humanOnly: flags.humanOnly,
+          query: flags.query ?? flags.q,
+          cursor: flags.cursor,
+          limit: optionalNumberFlag(flags.limit),
           agentId: flags.agentId,
           workspacePath,
-          commentsLimit: optionalNumberFlag(flags.commentsLimit),
+        };
+      }
+      if (issueAction === 'get' || issueAction === 'view' || issueAction === 'comments') {
+        const requiredIssueId = requirePositional(
+          issueId as string | undefined,
+          'issueId',
+          `space issue ${issueAction}`,
+          'issueId',
+        );
+        return {
+          issueId: requiredIssueId,
+          agentId: flags.agentId,
+          workspacePath,
+          commentsLimit: optionalNumberFlag(flags.commentsLimit) ?? (flags.comments ? 20 : undefined),
           commentsCursor: flags.commentsCursor ?? flags.cursor,
         };
       }
       if (issueAction === 'comment') {
+        const requiredIssueId = requirePositional(
+          issueId as string | undefined,
+          'issueId',
+          'space issue comment',
+          'issueId',
+        );
         return {
-          issueId,
+          issueId: requiredIssueId,
           body: resolveSpaceCommentBody(flags, workspacePath),
           agentId: flags.agentId,
           workspacePath,
         };
       }
       if (issueAction === 'status') {
+        const requiredIssueId = requirePositional(
+          issueId as string | undefined,
+          'issueId',
+          'space issue status',
+          'issueId',
+        );
+        const state = rest[2] || flags.state || flags.status;
+        const requiredState = requirePositional(
+          state as string | undefined,
+          'state',
+          'space issue status',
+          'state',
+        );
         return {
-          issueId,
-          status: rest[2] || flags.status,
+          issueId: requiredIssueId,
+          state: requiredState,
+          agentId: flags.agentId,
+          workspacePath,
+        };
+      }
+      if (issueAction === 'claim') {
+        const requiredIssueId = requirePositional(
+          issueId as string | undefined,
+          'issueId',
+          'space issue claim',
+          'issueId',
+        );
+        return {
+          issueId: requiredIssueId,
+          deliveryId: flags.deliveryId,
+          agentId: flags.agentId,
+          workspacePath,
+        };
+      }
+      if (issueAction === 'delivery' && rest[1] === 'ignore') {
+        const deliveryId = rest[2] || flags.deliveryId;
+        const requiredDeliveryId = requirePositional(
+          deliveryId as string | undefined,
+          'deliveryId',
+          'space issue delivery ignore',
+          'deliveryId',
+        );
+        return {
+          issueId: flags.issueId,
+          deliveryId: requiredDeliveryId,
+          agentId: flags.agentId,
+          workspacePath,
+        };
+      }
+      if (issueAction === 'close' || issueAction === 'complete' || issueAction === 'cancel-claim') {
+        const requiredIssueId = requirePositional(
+          issueId as string | undefined,
+          'issueId',
+          `space issue ${issueAction}`,
+          'issueId',
+        );
+        return {
+          issueId: requiredIssueId,
+          agentId: flags.agentId,
+          workspacePath,
+        };
+      }
+    }
+    if (action === 'claim') {
+      const claimAction = rest[0] || '';
+      if (claimAction === 'local-task') {
+        const claimId = requirePositional(
+          (rest[1] || flags.claimId) as string | undefined,
+          'claimId',
+          'space claim local-task',
+          'claimId',
+        );
+        const localTaskId = requirePositional(
+          flags.localTaskId as string | undefined,
+          'localTaskId',
+          'space claim local-task',
+          'localTaskId',
+        );
+        const localSessionId = requirePositional(
+          (flags.localSessionId ?? process.env.MYAGENTS_SESSION_ID) as string | undefined,
+          'localSessionId',
+          'space claim local-task',
+          'localSessionId',
+        );
+        return {
+          claimId,
+          localTaskId,
+          localSessionId,
           agentId: flags.agentId,
           workspacePath,
         };
