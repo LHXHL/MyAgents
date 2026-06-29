@@ -99,6 +99,7 @@ function buildTurnMeta(msg: PendingInboxMessage): InboxTurnMeta | undefined {
 export type InboxInjector = (
   text: string,
   inboxMeta?: InboxTurnMeta,
+  options?: { allowLazySessionMaterialization?: boolean },
 ) => Promise<{ queued: boolean; error?: string }>;
 
 /// Drain handler entry — processes a batch of messages, returns aggregated response.
@@ -119,9 +120,11 @@ export async function handleInboxDrain(
   for (const msg of messages) {
     const prompt = buildSessionEventPrompt(msg);
     const meta = buildTurnMeta(msg);
+    const allowLazySessionMaterialization =
+      msg.kind === 'event' && msg.sessionEvent?.type === 'space.issue_delivery';
 
     try {
-      const result = await injector(prompt, meta);
+      const result = await injector(prompt, meta, { allowLazySessionMaterialization });
       // PRD 0.2.18 cross-review fix (Codex):
       // enqueueUserMessage's `queued` flag is "queued behind other turns" not
       // "accepted vs rejected". On the idle direct-send path it returns

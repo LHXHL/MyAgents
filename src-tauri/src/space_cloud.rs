@@ -8,9 +8,10 @@ use std::time::Duration;
 use reqwest::header::{AUTHORIZATION, CONTENT_DISPOSITION};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::ipc::Response as IpcResponse;
+use tauri::{ipc::Response as IpcResponse, AppHandle};
 use zip::ZipArchive;
 
+use crate::sidecar::ManagedSidecarManager;
 use crate::workspace_files::path_safety::{
     atomic_write_file, resolve_inside_workspace, validate_workspace_root,
 };
@@ -23,7 +24,7 @@ const SPACE_LEGACY_CLIENT_ID_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_CLI
 const SPACE_PUBLIC_CLIENT_ID_HEADER: &str = "X-MyAgents-Space-Client-Id";
 const SESSION_FILE: &str = "session.json";
 const LOCAL_AGENTS_FILE: &str = "registered_agents.json";
-const DISPATCH_LOG_FILE: &str = "dispatch_log.json";
+const DELIVERY_LOG_FILE: &str = "delivery_log.json";
 const SPACE_CONNECTOR_INTERVAL_SECS: u64 = 60;
 pub(crate) const MAX_SKILL_ZIP_BYTES: usize = 50 * 1024 * 1024;
 const MAX_SKILL_ZIP_ENTRIES: usize = 512;
@@ -105,6 +106,8 @@ pub struct LocalRegisteredAgent {
     pub state_filter: Vec<String>,
     #[serde(default)]
     pub goal_md: Option<String>,
+    #[serde(default)]
+    pub delivery_session_id: Option<String>,
     pub token: String,
     pub status: String,
     pub created_at: String,
@@ -128,6 +131,7 @@ pub struct LocalRegisteredAgentPublic {
     pub goal_path_label: Option<String>,
     pub state_filter: Vec<String>,
     pub goal_md: Option<String>,
+    pub delivery_session_id: Option<String>,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
@@ -150,6 +154,7 @@ impl From<LocalRegisteredAgent> for LocalRegisteredAgentPublic {
             goal_path_label: agent.goal_path_label,
             state_filter: agent.state_filter,
             goal_md: agent.goal_md,
+            delivery_session_id: agent.delivery_session_id,
             status: agent.status,
             created_at: agent.created_at,
             updated_at: agent.updated_at,
@@ -230,6 +235,21 @@ pub struct SpaceMarkDispatchDeliveredInput {
     pub dispatch_id: String,
     pub local_task_id: Option<String>,
     pub local_run_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpacePollDeliveriesInput {
+    pub registered_agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceMarkDeliveryDeliveredInput {
+    pub registered_agent_id: String,
+    pub delivery_id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -316,21 +336,20 @@ struct CloudEnvelope<T> {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SpaceDispatchLogFile {
-    items: Vec<SpaceDispatchLogEntry>,
+struct SpaceDeliveryLogFile {
+    items: Vec<SpaceDeliveryLogEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SpaceDispatchLogEntry {
-    dispatch_id: String,
+struct SpaceDeliveryLogEntry {
+    delivery_id: String,
     #[serde(default)]
     base_url: String,
     registered_agent_id: String,
     issue_id: String,
-    local_task_id: String,
-    #[serde(default)]
-    local_run_id: Option<String>,
+    session_id: String,
+    message_id: String,
     #[serde(default)]
     delivered_at: Option<String>,
     created_at: String,
@@ -459,7 +478,7 @@ pub struct SpaceCliAttachmentDownloadInput {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SpaceProcessDispatchResult {
+pub struct SpaceProcessDeliveryResult {
     pub processed: usize,
     pub delivered: usize,
     pub errors: Vec<String>,
@@ -714,6 +733,7 @@ pub async fn cmd_space_register_agent(
             .filter(|items| !items.is_empty())
             .unwrap_or_else(default_agent_state_filter),
         goal_md: input.goal_md,
+        delivery_session_id: Some(uuid::Uuid::new_v4().to_string()),
         token,
         status: required_value_string(&registered, "status")?,
         created_at: required_value_string(&registered, "createdAt")?,
@@ -897,11 +917,72 @@ pub async fn cmd_space_mark_dispatch_delivered(
 }
 
 #[tauri::command]
-pub async fn cmd_space_process_dispatches_once() -> Result<SpaceProcessDispatchResult, String> {
+pub async fn cmd_space_poll_deliveries(input: SpacePollDeliveriesInput) -> Result<Value, String> {
     if crate::space_cloud_mock::is_enabled() {
-        return Ok(crate::space_cloud_mock::process_dispatches_once());
+        return crate::space_cloud_mock::poll_deliveries(&input.registered_agent_id);
     }
-    process_pending_dispatches().await
+    let agent = require_local_agent(&input.registered_agent_id)?;
+    let session = space_base_url()?;
+    authorized_json_request(
+        &session,
+        "/api/registered-agents/me/deliveries?status=pending&limit=20",
+        &agent.token,
+        reqwest::Method::GET,
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn cmd_space_mark_delivery_delivered(
+    input: SpaceMarkDeliveryDeliveredInput,
+) -> Result<Value, String> {
+    if crate::space_cloud_mock::is_enabled() {
+        return crate::space_cloud_mock::mark_delivery_delivered(
+            &input.delivery_id,
+            Some(&input.registered_agent_id),
+            input.session_id,
+        );
+    }
+    let agent = require_local_agent(&input.registered_agent_id)?;
+    let session = space_base_url()?;
+    authorized_json_request(
+        &session,
+        &format!(
+            "/api/deliveries/{}/delivered",
+            url_component(&input.delivery_id)
+        ),
+        &agent.token,
+        reqwest::Method::POST,
+        Some(serde_json::json!({
+            "sessionId": input.session_id,
+        })),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn cmd_space_process_deliveries_once(
+    app_handle: AppHandle,
+    state: tauri::State<'_, ManagedSidecarManager>,
+) -> Result<SpaceProcessDeliveryResult, String> {
+    if crate::space_cloud_mock::is_enabled() {
+        return Ok(crate::space_cloud_mock::process_deliveries_once());
+    }
+    let manager = state.inner().clone();
+    process_pending_deliveries(&app_handle, &manager).await
+}
+
+#[tauri::command]
+pub async fn cmd_space_process_dispatches_once(
+    app_handle: AppHandle,
+    state: tauri::State<'_, ManagedSidecarManager>,
+) -> Result<SpaceProcessDeliveryResult, String> {
+    if crate::space_cloud_mock::is_enabled() {
+        return Ok(crate::space_cloud_mock::process_deliveries_once());
+    }
+    let manager = state.inner().clone();
+    process_pending_deliveries(&app_handle, &manager).await
 }
 
 #[tauri::command]
@@ -1211,20 +1292,20 @@ pub async fn cmd_space_download_skill_zip(
     Ok(IpcResponse::new(bytes))
 }
 
-pub fn start_space_connector() {
+pub fn start_space_connector(app_handle: AppHandle, manager: ManagedSidecarManager) {
     if !space_build_capability().available {
         return;
     }
     if SPACE_CONNECTOR_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
-    tauri::async_runtime::spawn(async {
+    tauri::async_runtime::spawn(async move {
         loop {
             if !team_space_runtime_enabled() {
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 continue;
             }
-            match process_pending_dispatches().await {
+            match process_pending_deliveries(&app_handle, &manager).await {
                 Ok(result) => {
                     if result.processed > 0 || !result.errors.is_empty() {
                         ulog_info!(
@@ -1450,13 +1531,16 @@ pub async fn space_cli_attachment_download(
         .map_err(|e| format!("Failed to serialize attachment result: {}", e))
 }
 
-pub async fn process_pending_dispatches() -> Result<SpaceProcessDispatchResult, String> {
+pub async fn process_pending_deliveries(
+    app_handle: &AppHandle,
+    manager: &ManagedSidecarManager,
+) -> Result<SpaceProcessDeliveryResult, String> {
     if crate::space_cloud_mock::is_enabled() {
-        return Ok(crate::space_cloud_mock::process_dispatches_once());
+        return Ok(crate::space_cloud_mock::process_deliveries_once());
     }
     ensure_space_available()?;
     if !team_space_runtime_enabled() {
-        return Ok(SpaceProcessDispatchResult {
+        return Ok(SpaceProcessDeliveryResult {
             processed: 0,
             delivered: 0,
             errors: Vec::new(),
@@ -1465,9 +1549,10 @@ pub async fn process_pending_dispatches() -> Result<SpaceProcessDispatchResult, 
     let agents = read_current_local_agents()?
         .into_iter()
         .filter(|agent| agent.status == "active")
-        .collect::<Vec<_>>();
+        .map(ensure_agent_delivery_session)
+        .collect::<Result<Vec<_>, _>>()?;
     if agents.is_empty() {
-        return Ok(SpaceProcessDispatchResult {
+        return Ok(SpaceProcessDeliveryResult {
             processed: 0,
             delivered: 0,
             errors: Vec::new(),
@@ -1478,14 +1563,14 @@ pub async fn process_pending_dispatches() -> Result<SpaceProcessDispatchResult, 
     let mut delivered = 0usize;
     let mut errors = Vec::new();
     for agent in agents {
-        match process_agent_dispatches(&base_url, &agent).await {
+        match process_agent_deliveries(app_handle, manager, &base_url, &agent).await {
             Ok((p, d)) => {
                 processed += p;
                 delivered += d;
             }
             Err(error) => {
                 ulog_warn!(
-                    "[space] dispatch processing failed for agent {}: {}",
+                    "[space] delivery processing failed for agent {}: {}",
                     agent.id,
                     error
                 );
@@ -1493,30 +1578,27 @@ pub async fn process_pending_dispatches() -> Result<SpaceProcessDispatchResult, 
             }
         }
     }
-    Ok(SpaceProcessDispatchResult {
+    Ok(SpaceProcessDeliveryResult {
         processed,
         delivered,
         errors,
     })
 }
 
-async fn process_agent_dispatches(
+async fn process_agent_deliveries(
+    app_handle: &AppHandle,
+    manager: &ManagedSidecarManager,
     base_url: &str,
     agent: &LocalRegisteredAgent,
 ) -> Result<(usize, usize), String> {
-    let workspace_id = agent
-        .workspace_id
+    let session_id = agent
+        .delivery_session_id
         .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| {
-            format!(
-                "Registered Agent {} is missing workspaceId; re-register it from Space",
-                agent.id
-            )
-        })?;
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("Registered Agent {} is missing deliverySessionId", agent.id))?;
     let data = authorized_json_data_request(
         base_url,
-        "/api/registered-agents/me/dispatches?status=pending",
+        "/api/registered-agents/me/deliveries?status=pending&limit=20",
         &agent.token,
         reqwest::Method::GET,
         None,
@@ -1530,129 +1612,205 @@ async fn process_agent_dispatches(
     let mut processed = 0usize;
     let mut delivered = 0usize;
     for item in items {
-        let dispatch = item.get("dispatch").cloned().unwrap_or(Value::Null);
+        let delivery = item.get("delivery").cloned().unwrap_or(Value::Null);
         let issue_meta = item.get("issueMeta").cloned().unwrap_or(Value::Null);
-        let dispatch_id = required_value_string(&dispatch, "id")?;
-        let issue_id = required_value_string(&issue_meta, "id")?;
-        let title = required_value_string(&issue_meta, "title")?;
-        let goal = required_value_string(&dispatch, "goalSnapshotMd")?;
-        let log = find_dispatch_log(base_url, &dispatch_id)?;
-        let task_id = if let Some(existing) = log {
-            maybe_run_logged_task(base_url, &existing.local_task_id).await?;
-            existing.local_task_id
-        } else {
-            let task = create_space_task(agent, workspace_id, &issue_id, &title, &goal).await?;
-            upsert_dispatch_log(SpaceDispatchLogEntry {
-                dispatch_id: dispatch_id.clone(),
-                base_url: base_url.to_string(),
-                registered_agent_id: agent.id.clone(),
-                issue_id: issue_id.clone(),
-                local_task_id: task.id.clone(),
-                local_run_id: None,
-                delivered_at: None,
-                created_at: chrono::Utc::now().to_rfc3339(),
-                updated_at: chrono::Utc::now().to_rfc3339(),
-            })?;
-            let (_task, cron_id) = crate::management_api::run_task_by_id(&task.id).await?;
-            update_dispatch_log_run(base_url, &dispatch_id, Some(cron_id))?;
-            task.id
+        let goal_meta = item.get("goalMeta").cloned().unwrap_or(Value::Null);
+        let delivery_id = required_value_string(&delivery, "id")?;
+        let issue_id = optional_value_string(&delivery, "issueId")
+            .or_else(|| optional_value_string(&issue_meta, "id"))
+            .ok_or_else(|| "Space delivery response missing issueId".to_string())?;
+
+        if let Some(existing) = find_delivery_log(base_url, &delivery_id)? {
+            mark_delivery_delivered(base_url, agent, &delivery_id, &existing.session_id).await?;
+            update_delivery_log_delivered(base_url, &delivery_id)?;
+            processed += 1;
+            delivered += 1;
+            continue;
+        }
+
+        let issue_title = optional_value_string(&issue_meta, "title")
+            .unwrap_or_else(|| "Untitled Space Issue".to_string());
+        let issue_state = optional_value_string(&issue_meta, "state")
+            .or_else(|| optional_value_string(&issue_meta, "status"))
+            .unwrap_or_else(|| "todo".to_string());
+        let goal_id = optional_value_string(&goal_meta, "id");
+        let goal_path = optional_value_string(&goal_meta, "path")
+            .or_else(|| optional_value_string(&goal_meta, "goalPathLabel"))
+            .or_else(|| agent.goal_path_label.clone());
+        let update_summary = optional_value_string(&delivery, "updateSummary");
+        let notification_version = delivery
+            .get("notificationVersion")
+            .and_then(Value::as_i64)
+            .unwrap_or(1);
+        let message_id = uuid::Uuid::new_v4().to_string();
+        let prompt = build_delivery_prompt(
+            agent,
+            &delivery_id,
+            &issue_id,
+            &issue_title,
+            &issue_state,
+            goal_path.as_deref(),
+            update_summary.as_deref(),
+            notification_version,
+        );
+        let created_at = chrono::Utc::now().to_rfc3339();
+        let message = crate::inbox::PendingInboxMessage {
+            message_id: message_id.clone(),
+            from_session_id: "myagents-space".to_string(),
+            from_label: "MyAgents Space".to_string(),
+            to_session_id: session_id.to_string(),
+            text: prompt.clone(),
+            reply_back: false,
+            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            kind: crate::inbox::InboxMessageKind::Event,
+            in_reply_to: None,
+            session_event: Some(serde_json::json!({
+                "version": 1,
+                "type": "space.issue_delivery",
+                "eventId": message_id,
+                "sourceSessionId": "myagents-space",
+                "sourceLabel": "MyAgents Space",
+                "targetSessionId": session_id,
+                "createdAt": created_at,
+                "deliveryId": delivery_id,
+                "issueId": issue_id,
+                "issueTitle": issue_title,
+                "issueState": issue_state,
+                "goalId": goal_id,
+                "goalPathLabel": goal_path,
+                "notificationVersion": notification_version,
+                "updateSummary": update_summary,
+                "payload": prompt,
+            })),
         };
-        mark_dispatch_delivered(base_url, agent, &dispatch_id, &task_id, None).await?;
-        update_dispatch_log_delivered(base_url, &dispatch_id)?;
+        let outcome = crate::inbox::deliver::deliver_with_resume(
+            app_handle,
+            manager,
+            message,
+            Some(PathBuf::from(&agent.workspace_path)),
+        )
+        .await;
+        if !matches!(
+            outcome,
+            crate::inbox::deliver::DeliverOutcome::Delivered { .. }
+        ) {
+            return Err(format!(
+                "Delivery {} could not be injected into session {}: {:?}",
+                delivery_id, session_id, outcome
+            ));
+        }
+        let now = chrono::Utc::now().to_rfc3339();
+        upsert_delivery_log(SpaceDeliveryLogEntry {
+            delivery_id: delivery_id.clone(),
+            base_url: base_url.to_string(),
+            registered_agent_id: agent.id.clone(),
+            issue_id: issue_id.clone(),
+            session_id: session_id.to_string(),
+            message_id,
+            delivered_at: None,
+            created_at: now.clone(),
+            updated_at: now,
+        })?;
+        mark_delivery_delivered(base_url, agent, &delivery_id, session_id).await?;
+        update_delivery_log_delivered(base_url, &delivery_id)?;
         processed += 1;
         delivered += 1;
     }
     Ok((processed, delivered))
 }
 
-async fn create_space_task(
-    agent: &LocalRegisteredAgent,
-    workspace_id: &str,
-    issue_id: &str,
-    issue_title: &str,
-    goal_md: &str,
-) -> Result<crate::task::Task, String> {
-    let store =
-        crate::task::get_task_store().ok_or_else(|| "task store not initialized".to_string())?;
-    store
-        .create_direct(crate::task::TaskCreateDirectInput {
-            name: format!("Space: {}", issue_title),
-            executor: crate::task::TaskExecutor::Agent,
-            description: Some(format!("MyAgents Space Issue {}", issue_id)),
-            workspace_id: workspace_id.to_string(),
-            workspace_path: agent.workspace_path.clone(),
-            task_md_content: build_dispatch_task_md(issue_id, issue_title, goal_md),
-            execution_mode: crate::task::TaskExecutionMode::Once,
-            run_mode: None,
-            end_conditions: None,
-            interval_minutes: None,
-            cron_expression: None,
-            cron_timezone: None,
-            dispatch_at: None,
-            model: None,
-            provider_id: None,
-            permission_mode: None,
-            preselected_session_id: None,
-            runtime: None,
-            runtime_config: None,
-            mcp_enabled_servers: None,
-            source_thought_id: None,
-            tags: vec!["space".to_string(), issue_id.to_string()],
-            notification: None,
-        })
-        .await
-}
-
-async fn maybe_run_logged_task(base_url: &str, task_id: &str) -> Result<(), String> {
-    let store =
-        crate::task::get_task_store().ok_or_else(|| "task store not initialized".to_string())?;
-    if let Some(task) = store.get(task_id).await {
-        if task.status == crate::task::TaskStatus::Todo {
-            let (_task, cron_id) = crate::management_api::run_task_by_id(task_id).await?;
-            update_dispatch_log_run_by_task(base_url, task_id, Some(cron_id))?;
-        }
+fn ensure_agent_delivery_session(
+    mut agent: LocalRegisteredAgent,
+) -> Result<LocalRegisteredAgent, String> {
+    if agent
+        .delivery_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return Ok(agent);
     }
-    Ok(())
+    agent.delivery_session_id = Some(uuid::Uuid::new_v4().to_string());
+    agent.updated_at = chrono::Utc::now().to_rfc3339();
+    upsert_local_agent(agent.clone())?;
+    Ok(agent)
 }
 
-async fn mark_dispatch_delivered(
+async fn mark_delivery_delivered(
     base_url: &str,
     agent: &LocalRegisteredAgent,
-    dispatch_id: &str,
-    local_task_id: &str,
-    local_run_id: Option<&str>,
+    delivery_id: &str,
+    session_id: &str,
 ) -> Result<(), String> {
     authorized_json_data_request(
         base_url,
-        &format!("/api/dispatches/{}/delivered", url_component(dispatch_id)),
+        &format!("/api/deliveries/{}/delivered", url_component(delivery_id)),
         &agent.token,
         reqwest::Method::POST,
         Some(serde_json::json!({
-            "localTaskId": local_task_id,
-            "localRunId": local_run_id,
+            "sessionId": session_id,
         })),
     )
     .await
     .map(|_| ())
 }
 
-fn build_dispatch_task_md(issue_id: &str, issue_title: &str, goal_md: &str) -> String {
-    vec![
-        "# Goal".to_string(),
+fn build_delivery_prompt(
+    agent: &LocalRegisteredAgent,
+    delivery_id: &str,
+    issue_id: &str,
+    issue_title: &str,
+    issue_state: &str,
+    goal_path: Option<&str>,
+    update_summary: Option<&str>,
+    notification_version: i64,
+) -> String {
+    let mut lines = vec![
+        "MyAgents Space delivered an Issue notification to this Registered Agent session."
+            .to_string(),
         String::new(),
-        goal_md.trim().to_string(),
-        String::new(),
-        "# MyAgents Space Connector".to_string(),
-        String::new(),
-        format!("你收到了 MyAgents Space Issue：{}", issue_title),
-        String::new(),
+        "Issue".to_string(),
+        format!("- Delivery ID: {}", delivery_id),
         format!("- Issue ID: {}", issue_id),
-        "- 使用 `myagents space issue get <issueId> --json` 拉取完整 Issue、评论和附件元信息。".to_string(),
-        "- 需要下载附件时，使用 `myagents space attachment download <attachmentId>`，文件会保存到当前 Agent 工作区的 `myagents_files/space/` 下。".to_string(),
-        "- 完成阶段性工作后，使用 `myagents space issue comment <issueId> --body-file <path>` 回写结论。".to_string(),
-        "- 如任务已解决，使用 `myagents space issue complete <issueId>` 更新状态。".to_string(),
-    ]
-    .join("\n")
+        format!("- Title: {}", issue_title),
+        format!("- State: {}", issue_state),
+        format!("- Notification version: {}", notification_version),
+    ];
+    if let Some(goal_path) = goal_path.filter(|value| !value.trim().is_empty()) {
+        lines.push(format!("- Goal: {}", goal_path));
+    }
+    if let Some(update_summary) = update_summary.filter(|value| !value.trim().is_empty()) {
+        lines.push(format!("- Update: {}", update_summary));
+    }
+    lines.extend([
+        String::new(),
+        "Required handling model".to_string(),
+        "- This is a notification, not an assigned task. Inspect the issue before deciding whether to act.".to_string(),
+        format!(
+            "- Read full context with `myagents space issue view {} --comments --json`.",
+            issue_id
+        ),
+        format!(
+            "- If this agent should not take it, run `myagents space issue delivery ignore {}`.",
+            delivery_id
+        ),
+        format!(
+            "- To work on it, first run `myagents space issue claim {} --deliveryId {}`.",
+            issue_id, delivery_id
+        ),
+        "- After claiming, create the local task in this same AI session with `myagents task create-attached --sourceIssueId <issueId> --sourceClaimId <claimId> --sourceDeliveryId <deliveryId> --taskMdContent <task-plan>`.".to_string(),
+        "- Then bind the cloud claim to the local task with `myagents space claim local-task --claimId <claimId> --localTaskId <taskId> --localSessionId \"$MYAGENTS_SESSION_ID\"`.".to_string(),
+        "- Keep discussion and progress updates on the Space issue via `myagents space issue comment` and finish with `myagents space issue complete` when done.".to_string(),
+    ]);
+    if let Some(workspace_label) = agent
+        .workspace_label
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- Local workspace: {}", workspace_label));
+    }
+    lines.join("\n")
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
@@ -2002,8 +2160,8 @@ pub fn registered_agents_path() -> Result<PathBuf, String> {
     Ok(space_data_dir()?.join(LOCAL_AGENTS_FILE))
 }
 
-fn dispatch_log_path() -> Result<PathBuf, String> {
-    Ok(space_data_dir()?.join(DISPATCH_LOG_FILE))
+fn delivery_log_path() -> Result<PathBuf, String> {
+    Ok(space_data_dir()?.join(DELIVERY_LOG_FILE))
 }
 
 fn session_path() -> Result<PathBuf, String> {
@@ -2075,6 +2233,7 @@ fn read_current_local_agents() -> Result<Vec<LocalRegisteredAgent>, String> {
                 goal_path_label: agent.goal_path_label.clone(),
                 state_filter: agent.state_filter.clone(),
                 goal_md: agent.goal_md.clone(),
+                delivery_session_id: agent.delivery_session_id.clone(),
                 token: format!("mock-token-{}", agent.id),
                 status: agent.status.clone(),
                 created_at: agent.created_at.clone(),
@@ -2177,32 +2336,32 @@ fn read_local_agents_unlocked(path: &Path) -> Result<LocalRegisteredAgentsFile, 
     }
 }
 
-fn read_dispatch_log() -> Result<SpaceDispatchLogFile, String> {
-    let path = dispatch_log_path()?;
+fn read_delivery_log() -> Result<SpaceDeliveryLogFile, String> {
+    let path = delivery_log_path()?;
     match fs::read_to_string(&path) {
         Ok(content) => serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid Space dispatch log file: {}", e)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SpaceDispatchLogFile::default()),
-        Err(e) => Err(format!("Failed to read Space dispatch log file: {}", e)),
+            .map_err(|e| format!("Invalid Space delivery log file: {}", e)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SpaceDeliveryLogFile::default()),
+        Err(e) => Err(format!("Failed to read Space delivery log file: {}", e)),
     }
 }
 
-fn find_dispatch_log(
+fn find_delivery_log(
     base_url: &str,
-    dispatch_id: &str,
-) -> Result<Option<SpaceDispatchLogEntry>, String> {
-    Ok(read_dispatch_log()?.items.into_iter().find(|entry| {
-        entry.dispatch_id == dispatch_id && space_base_urls_equal(&entry.base_url, base_url)
+    delivery_id: &str,
+) -> Result<Option<SpaceDeliveryLogEntry>, String> {
+    Ok(read_delivery_log()?.items.into_iter().find(|entry| {
+        entry.delivery_id == delivery_id && space_base_urls_equal(&entry.base_url, base_url)
     }))
 }
 
-fn upsert_dispatch_log(entry: SpaceDispatchLogEntry) -> Result<(), String> {
-    let path = dispatch_log_path()?;
+fn upsert_delivery_log(entry: SpaceDeliveryLogEntry) -> Result<(), String> {
+    let path = delivery_log_path()?;
     let lock_path = path.clone();
     with_json_file_lock(&lock_path, move || {
-        let mut file = read_dispatch_log_unlocked(&path)?;
+        let mut file = read_delivery_log_unlocked(&path)?;
         file.items.retain(|existing| {
-            existing.dispatch_id != entry.dispatch_id
+            existing.delivery_id != entry.delivery_id
                 || !space_base_urls_equal(&existing.base_url, &entry.base_url)
         });
         file.items.push(entry);
@@ -2210,69 +2369,29 @@ fn upsert_dispatch_log(entry: SpaceDispatchLogEntry) -> Result<(), String> {
     })
 }
 
-fn update_dispatch_log_run(
-    base_url: &str,
-    dispatch_id: &str,
-    local_run_id: Option<String>,
-) -> Result<(), String> {
-    update_dispatch_log(base_url, dispatch_id, move |entry| {
-        entry.local_run_id = local_run_id.clone();
-    })
-}
-
-fn update_dispatch_log_run_by_task(
-    base_url: &str,
-    task_id: &str,
-    local_run_id: Option<String>,
-) -> Result<(), String> {
-    let path = dispatch_log_path()?;
+fn update_delivery_log_delivered(base_url: &str, delivery_id: &str) -> Result<(), String> {
+    let path = delivery_log_path()?;
     let base_url = base_url.to_string();
-    let task_id = task_id.to_string();
+    let delivery_id = delivery_id.to_string();
     let lock_path = path.clone();
     with_json_file_lock(&lock_path, move || {
-        let mut file = read_dispatch_log_unlocked(&path)?;
+        let mut file = read_delivery_log_unlocked(&path)?;
         if let Some(entry) = file.items.iter_mut().find(|entry| {
-            entry.local_task_id == task_id && space_base_urls_equal(&entry.base_url, &base_url)
+            entry.delivery_id == delivery_id && space_base_urls_equal(&entry.base_url, &base_url)
         }) {
-            entry.local_run_id = local_run_id.clone();
+            entry.delivered_at = Some(chrono::Utc::now().to_rfc3339());
             entry.updated_at = chrono::Utc::now().to_rfc3339();
         }
         write_private_json_unlocked(&path, &file)
     })
 }
 
-fn update_dispatch_log_delivered(base_url: &str, dispatch_id: &str) -> Result<(), String> {
-    update_dispatch_log(base_url, dispatch_id, |entry| {
-        entry.delivered_at = Some(chrono::Utc::now().to_rfc3339());
-    })
-}
-
-fn update_dispatch_log<F>(base_url: &str, dispatch_id: &str, mut update: F) -> Result<(), String>
-where
-    F: FnMut(&mut SpaceDispatchLogEntry) + Send + 'static,
-{
-    let path = dispatch_log_path()?;
-    let base_url = base_url.to_string();
-    let dispatch_id = dispatch_id.to_string();
-    let lock_path = path.clone();
-    with_json_file_lock(&lock_path, move || {
-        let mut file = read_dispatch_log_unlocked(&path)?;
-        if let Some(entry) = file.items.iter_mut().find(|entry| {
-            entry.dispatch_id == dispatch_id && space_base_urls_equal(&entry.base_url, &base_url)
-        }) {
-            update(entry);
-            entry.updated_at = chrono::Utc::now().to_rfc3339();
-        }
-        write_private_json_unlocked(&path, &file)
-    })
-}
-
-fn read_dispatch_log_unlocked(path: &Path) -> Result<SpaceDispatchLogFile, String> {
+fn read_delivery_log_unlocked(path: &Path) -> Result<SpaceDeliveryLogFile, String> {
     match fs::read_to_string(path) {
         Ok(content) => serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid Space dispatch log file: {}", e)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SpaceDispatchLogFile::default()),
-        Err(e) => Err(format!("Failed to read Space dispatch log file: {}", e)),
+            .map_err(|e| format!("Invalid Space delivery log file: {}", e)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SpaceDeliveryLogFile::default()),
+        Err(e) => Err(format!("Failed to read Space delivery log file: {}", e)),
     }
 }
 
@@ -2582,6 +2701,57 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    async fn mock_space_delivery_routes_poll_mark_and_process() {
+        let _mock = crate::space_cloud_mock::enable_for_test();
+
+        let pending = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
+            registered_agent_id: "rag_mock_frontend".to_string(),
+        })
+        .await
+        .expect("mock deliveries should poll");
+        let items = pending
+            .pointer("/data/items")
+            .and_then(Value::as_array)
+            .expect("delivery items");
+        assert!(!items.is_empty());
+        let delivery_id = items[0]
+            .pointer("/delivery/id")
+            .and_then(Value::as_str)
+            .expect("delivery id")
+            .to_string();
+
+        let marked = cmd_space_mark_delivery_delivered(SpaceMarkDeliveryDeliveredInput {
+            registered_agent_id: "rag_mock_frontend".to_string(),
+            delivery_id,
+            session_id: Some("session-space-delivery".to_string()),
+        })
+        .await
+        .expect("mock delivery should mark delivered");
+        assert_eq!(
+            marked.pointer("/data/delivered").and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let empty = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
+            registered_agent_id: "rag_mock_frontend".to_string(),
+        })
+        .await
+        .expect("mock deliveries should poll after mark");
+        assert_eq!(
+            empty
+                .pointer("/data/items")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+
+        crate::space_cloud_mock::reset();
+        let processed = crate::space_cloud_mock::process_deliveries_once();
+        assert!(processed.processed >= 1);
+        assert_eq!(processed.delivered, processed.processed);
+    }
+
+    #[tokio::test]
     async fn mock_space_issue_comment_routes_are_mutable_and_method_guarded() {
         let _mock = crate::space_cloud_mock::enable_for_test();
         let official = cmd_space_api_request(SpaceApiRequestInput {
@@ -2756,11 +2926,6 @@ mod tests {
                 .and_then(Value::as_str),
             Some("pending")
         );
-        let processed = cmd_space_process_dispatches_once()
-            .await
-            .expect("mock process dispatches");
-        assert!(processed.processed >= 1);
-
         let upload_dir = tempfile::tempdir().expect("upload tempdir");
         let upload_source = upload_dir.path().join("trace.log");
         fs::write(&upload_source, "mock trace").expect("write upload source");

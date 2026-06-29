@@ -213,6 +213,7 @@ export interface LocalRegisteredAgent {
   goalPathLabel?: string | null;
   stateFilter: string[];
   goalMd?: string | null;
+  deliverySessionId?: string | null;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -256,6 +257,34 @@ export interface SpaceDispatchItem {
     status: string;
     updatedAt: string;
   };
+}
+
+export interface SpaceDeliveryItem {
+  delivery: {
+    id: string;
+    spaceId: string;
+    issueId: string;
+    registeredAgentId: string;
+    subscriptionId?: string | null;
+    notificationVersion: number;
+    updateSummary?: string | null;
+    status: 'pending' | 'delivered' | 'claimed' | 'ignored' | string;
+    deliveredToSessionId?: string | null;
+    deliveredAt?: string | null;
+    createdAt: string;
+    updatedAt: string;
+  };
+  issueMeta: {
+    id: string;
+    title: string;
+    state: SpaceIssueState | string;
+    updatedAt: string;
+  };
+  goalMeta?: {
+    id: string;
+    path?: string | null;
+    title?: string | null;
+  } | null;
 }
 
 export interface SpaceEvent {
@@ -664,6 +693,24 @@ export function spaceMarkDispatchDelivered(input: {
 
 export function spaceProcessDispatchesOnce() {
   return inv<{ processed: number; delivered: number; errors: string[] }>('cmd_space_process_dispatches_once');
+}
+
+export function spacePollDeliveries(registeredAgentId: string) {
+  return inv<SpaceApiEnvelope<{ items: SpaceDeliveryItem[] }>>('cmd_space_poll_deliveries', {
+    input: { registeredAgentId },
+  });
+}
+
+export function spaceMarkDeliveryDelivered(input: {
+  registeredAgentId: string;
+  deliveryId: string;
+  sessionId?: string;
+}) {
+  return inv<SpaceApiEnvelope<{ delivered: boolean; deliveredAt?: string }>>('cmd_space_mark_delivery_delivered', { input });
+}
+
+export function spaceProcessDeliveriesOnce() {
+  return inv<{ processed: number; delivered: number; errors: string[] }>('cmd_space_process_deliveries_once');
 }
 
 export function findProjectForAgent(projects: Project[], agent: LocalRegisteredAgent): Project | null {

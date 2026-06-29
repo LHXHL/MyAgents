@@ -588,6 +588,9 @@ pub fn run() {
             space_cloud::cmd_space_list_local_agents,
             space_cloud::cmd_space_poll_dispatches,
             space_cloud::cmd_space_mark_dispatch_delivered,
+            space_cloud::cmd_space_poll_deliveries,
+            space_cloud::cmd_space_mark_delivery_delivered,
+            space_cloud::cmd_space_process_deliveries_once,
             space_cloud::cmd_space_process_dispatches_once,
             space_cloud::cmd_space_install_skill,
             space_cloud::cmd_space_upload_skill,
@@ -625,7 +628,8 @@ pub fn run() {
             // calls (extremely early startup) fall back to a synchronous
             // append protected by a mutex.
             logger::init_buffered_writer();
-            space_cloud::start_space_connector();
+            let space_sidecar_state = app.state::<sidecar::ManagedSidecarManager>().inner().clone();
+            space_cloud::start_space_connector(app.handle().clone(), space_sidecar_state);
 
             // Main window: programmatic creation so we can attach
             // `on_navigation` to block external top-frame navigation. The

@@ -323,6 +323,7 @@ export function createExternalSessionEngine(): SessionEngine {
           workspacePath: request.workspacePath,
           scenario: { type: 'desktop' },
           inboxMeta: request.inboxMeta,
+          metadataBirthPending: request.allowLazySessionMaterialization === true,
         },
       );
     },

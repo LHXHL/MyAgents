@@ -9211,14 +9211,15 @@ description: >
           // sidecar's session metadata. process.cwd() is app bundle / `/`, and
           // MYAGENTS_AGENT_DIR env is not reliable for sidecar-to-sidecar inbox.
           const engine = getSessionEngine();
-          const injector: import('./inbox/drain-handler').InboxInjector = async (text, inboxMeta) => {
+          const injector: import('./inbox/drain-handler').InboxInjector = async (text, inboxMeta, options) => {
             const sessionId = getRuntimeSessionIdForRequest();
             const sessionMeta = getSessionMetadata(sessionId);
             return engine.enqueueInboxMessage({
               text,
               sessionId,
-              workspacePath: sessionMeta?.agentDir ?? process.cwd(),
+              workspacePath: sessionMeta?.agentDir ?? currentAgentDir ?? process.cwd(),
               inboxMeta,
+              allowLazySessionMaterialization: options?.allowLazySessionMaterialization,
             });
           };
           const result = await handleInboxDrain(

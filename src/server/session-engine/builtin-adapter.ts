@@ -360,6 +360,8 @@ export function createBuiltinSessionEngine(): SessionEngine {
         { source: 'desktop' },
         undefined,
         request.inboxMeta,
+        undefined,
+        { allowLazySessionMaterialization: request.allowLazySessionMaterialization === true },
       );
     },
 

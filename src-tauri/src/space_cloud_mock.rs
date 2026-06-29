@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use crate::space_cloud::{
     LocalRegisteredAgent, LocalRegisteredAgentPublic, SpaceApiRequestInput,
-    SpaceDownloadAttachmentResult, SpaceProcessDispatchResult, SpaceRegisterAgentInput,
+    SpaceDownloadAttachmentResult, SpaceProcessDeliveryResult, SpaceRegisterAgentInput,
     SpaceSession, SpaceUpdateRegisteredAgentInput, SpaceUploadIssueAttachmentsInput,
     SpaceUploadSkillInput, MAX_ATTACHMENT_UPLOAD_BYTES, MAX_ATTACHMENT_UPLOAD_COUNT,
     MAX_SKILL_ZIP_BYTES,
@@ -38,6 +38,7 @@ struct MockState {
     skills: Vec<MockSkillRecord>,
     agents: Vec<LocalRegisteredAgent>,
     dispatches: Vec<Value>,
+    deliveries: Vec<Value>,
     events: Vec<Value>,
     seq: u64,
 }
@@ -180,6 +181,7 @@ pub fn register_agent(
             .state_filter
             .unwrap_or_else(|| vec!["todo".to_string()]),
         goal_md: input.goal_md,
+        delivery_session_id: Some(uuid::Uuid::new_v4().to_string()),
         token: format!("mock-token-{}", id),
         status: "active".to_string(),
         created_at: "2026-06-24T09:34:00.000Z".to_string(),
@@ -339,23 +341,74 @@ pub fn mark_dispatch_delivered(
     Ok(err_envelope(format!("Dispatch not found: {}", dispatch_id)))
 }
 
-pub fn process_dispatches_once() -> SpaceProcessDispatchResult {
+pub fn poll_deliveries(registered_agent_id: &str) -> Result<Value, String> {
+    let state = state().lock().expect("mock state poisoned");
+    let items = state
+        .deliveries
+        .iter()
+        .filter(|item| {
+            item.pointer("/delivery/registeredAgentId")
+                .and_then(Value::as_str)
+                == Some(registered_agent_id)
+                && item.pointer("/delivery/status").and_then(Value::as_str) == Some("pending")
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    Ok(ok_envelope(json!({ "items": items })))
+}
+
+pub fn mark_delivery_delivered(
+    delivery_id: &str,
+    registered_agent_id: Option<&str>,
+    session_id: Option<String>,
+) -> Result<Value, String> {
+    let mut state = state().lock().expect("mock state poisoned");
+    for item in &mut state.deliveries {
+        if item.pointer("/delivery/id").and_then(Value::as_str) == Some(delivery_id) {
+            if let Some(agent_id) = registered_agent_id {
+                let delivery_agent_id = item
+                    .pointer("/delivery/registeredAgentId")
+                    .and_then(Value::as_str);
+                if delivery_agent_id != Some(agent_id) {
+                    return Ok(err_envelope(format!(
+                        "Delivery {} does not belong to Registered Agent {}",
+                        delivery_id, agent_id
+                    )));
+                }
+            }
+            if let Some(delivery) = item.get_mut("delivery").and_then(Value::as_object_mut) {
+                delivery.insert("status".to_string(), json!("delivered"));
+                delivery.insert("deliveredAt".to_string(), json!("2026-06-24T09:45:00.000Z"));
+                delivery.insert("deliveredToSessionId".to_string(), json!(session_id));
+                delivery.insert("updatedAt".to_string(), json!("2026-06-24T09:45:00.000Z"));
+            }
+            return Ok(ok_envelope(json!({
+                "delivered": true,
+                "deliveredAt": "2026-06-24T09:45:00.000Z"
+            })));
+        }
+    }
+    Ok(err_envelope(format!("Delivery not found: {}", delivery_id)))
+}
+
+pub fn process_deliveries_once() -> SpaceProcessDeliveryResult {
     let mut state = state().lock().expect("mock state poisoned");
     let mut processed = 0usize;
-    for item in &mut state.dispatches {
-        if item
-            .pointer("/dispatch/deliveryStatus")
-            .and_then(Value::as_str)
-            == Some("pending")
-        {
-            if let Some(dispatch) = item.get_mut("dispatch").and_then(Value::as_object_mut) {
-                dispatch.insert("deliveryStatus".to_string(), json!("delivered"));
-                dispatch.insert("updatedAt".to_string(), json!("2026-06-24T09:46:00.000Z"));
+    for item in &mut state.deliveries {
+        if item.pointer("/delivery/status").and_then(Value::as_str) == Some("pending") {
+            if let Some(delivery) = item.get_mut("delivery").and_then(Value::as_object_mut) {
+                delivery.insert("status".to_string(), json!("delivered"));
+                delivery.insert("deliveredAt".to_string(), json!("2026-06-24T09:46:00.000Z"));
+                delivery.insert(
+                    "deliveredToSessionId".to_string(),
+                    json!("mock-delivery-session"),
+                );
+                delivery.insert("updatedAt".to_string(), json!("2026-06-24T09:46:00.000Z"));
             }
             processed += 1;
         }
     }
-    SpaceProcessDispatchResult {
+    SpaceProcessDeliveryResult {
         processed,
         delivered: processed,
         errors: Vec::new(),
@@ -644,6 +697,17 @@ fn handle_api_data_request(
             let items = state.dispatches.clone();
             Ok(json!({ "items": items }))
         }
+        ("GET", ["api", "registered-agents", "me", "deliveries"]) => {
+            let items = state
+                .deliveries
+                .iter()
+                .filter(|item| {
+                    item.pointer("/delivery/status").and_then(Value::as_str) == Some("pending")
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            Ok(json!({ "items": items }))
+        }
         ("GET", ["api", "spaces", "official", "registered-agents"]) => {
             let items = state
                 .agents
@@ -693,6 +757,16 @@ fn handle_api_data_request(
         ("POST", ["api", "dispatches", dispatch_id, "delivered"]) => {
             drop(state);
             let data = mark_dispatch_delivered(dispatch_id, None, None, None)?;
+            Ok(data.get("data").cloned().unwrap_or(Value::Null))
+        }
+        ("POST", ["api", "deliveries", delivery_id, "delivered"]) => {
+            let session_id = body
+                .as_ref()
+                .and_then(|value| value.get("sessionId"))
+                .and_then(Value::as_str)
+                .map(ToString::to_string);
+            drop(state);
+            let data = mark_delivery_delivered(delivery_id, None, session_id)?;
             Ok(data.get("data").cloned().unwrap_or(Value::Null))
         }
         ("POST", ["api", "deliveries", _delivery_id, "ignored"]) => {
@@ -1113,6 +1187,12 @@ fn initial_state() -> MockState {
         &issues[2],
         "pending",
     )];
+    let deliveries = vec![delivery_item(
+        "del_mock_001",
+        &agents[0],
+        &issues[0],
+        "pending",
+    )];
     let events = vec![
         mock_event(
             "evt_mock_001",
@@ -1153,6 +1233,7 @@ fn initial_state() -> MockState {
         skills,
         agents,
         dispatches,
+        deliveries,
         events,
         seq: 100,
     }
@@ -2032,6 +2113,7 @@ fn agent(
         ),
         state_filter: vec!["todo".to_string()],
         goal_md: Some(goal_md.to_string()),
+        delivery_session_id: Some(uuid::Uuid::new_v4().to_string()),
         token: format!("mock-token-{}", id),
         status: status.to_string(),
         created_at: "2026-06-14T08:00:00.000Z".to_string(),
@@ -2077,6 +2159,58 @@ fn dispatch_item(id: &str, agent: &LocalRegisteredAgent, issue: &Value, status: 
             "title": title,
             "status": issue_status,
             "updatedAt": updated_at
+        }
+    })
+}
+
+fn delivery_item(id: &str, agent: &LocalRegisteredAgent, issue: &Value, status: &str) -> Value {
+    let issue_id = issue
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("iss_mock_001");
+    let title = issue
+        .get("title")
+        .and_then(Value::as_str)
+        .unwrap_or("Mock Issue");
+    let issue_state = issue
+        .get("state")
+        .and_then(Value::as_str)
+        .or_else(|| issue.get("status").and_then(Value::as_str))
+        .unwrap_or("todo");
+    let updated_at = issue
+        .get("updatedAt")
+        .and_then(Value::as_str)
+        .unwrap_or("2026-06-24T08:00:00.000Z");
+    let goal_id = issue
+        .get("goalId")
+        .and_then(Value::as_str)
+        .or(agent.goal_id.as_deref())
+        .unwrap_or(MOCK_ROOT_GOAL_ID);
+    json!({
+        "delivery": {
+            "id": id,
+            "spaceId": MOCK_SPACE_ID,
+            "issueId": issue_id,
+            "registeredAgentId": agent.id,
+            "subscriptionId": format!("sub_{}", agent.id),
+            "notificationVersion": issue.get("notificationVersion").and_then(Value::as_i64).unwrap_or(1),
+            "updateSummary": "Issue matched this Registered Agent goal subscription",
+            "status": status,
+            "createdAt": "2026-06-24T08:55:00.000Z",
+            "updatedAt": "2026-06-24T08:55:00.000Z",
+            "deliveredToSessionId": null,
+            "deliveredAt": null
+        },
+        "issueMeta": {
+            "id": issue_id,
+            "title": title,
+            "state": issue_state,
+            "updatedAt": updated_at
+        },
+        "goalMeta": {
+            "id": goal_id,
+            "path": agent.goal_path_label.clone().unwrap_or_else(|| "MyAgents社区".to_string()),
+            "title": agent.goal_path_label.clone().unwrap_or_else(|| "MyAgents社区".to_string())
         }
     })
 }

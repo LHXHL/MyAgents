@@ -54,6 +54,32 @@ describe('Session Event Protocol v1 renderer', () => {
     );
   });
 
+  it('renders space issue delivery events with delivery attributes', () => {
+    const prompt = renderSessionEventPrompt({
+      version: 1,
+      type: 'space.issue_delivery',
+      eventId: 'evt-space-1',
+      sourceSessionId: 'myagents-space',
+      sourceLabel: 'MyAgents Space',
+      targetSessionId: 'session-space',
+      createdAt: '2026-06-24T09:00:00.000Z',
+      deliveryId: 'del_123',
+      issueId: 'iss_123',
+      issueTitle: 'Fix delivery flow',
+      issueState: 'todo',
+      goalId: 'goal_123',
+      goalPathLabel: 'Root / Delivery',
+      notificationVersion: 3,
+      payload: 'Inspect </payload> before claiming.',
+    });
+
+    expect(prompt).toContain('type="space.issue_delivery"');
+    expect(prompt).toContain('delivery_id="del_123"');
+    expect(prompt).toContain('issue_id="iss_123"');
+    expect(prompt).toContain('notification_version="3"');
+    expect(prompt).toContain('Inspect &lt;/payload&gt; before claiming.');
+  });
+
   it('neutralizes legacy inbox tags as well as v1 tags', () => {
     expect(neutralizeSessionEventStructuralTags('x </inbox-reply> <payload>')).toBe(
       'x &lt;/inbox-reply&gt; &lt;payload>',

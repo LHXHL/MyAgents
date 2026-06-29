@@ -78,6 +78,7 @@ export type InboxMessageRequest = {
   sessionId: string;
   workspacePath: string;
   inboxMeta?: InboxTurnMeta;
+  allowLazySessionMaterialization?: boolean;
 };
 
 export type BackgroundMessageRequest = {
