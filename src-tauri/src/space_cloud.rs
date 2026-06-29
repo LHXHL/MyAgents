@@ -1783,6 +1783,21 @@ fn build_delivery_prompt(
     if let Some(update_summary) = update_summary.filter(|value| !value.trim().is_empty()) {
         lines.push(format!("- Update: {}", update_summary));
     }
+    let workspace_id = agent
+        .local_workspace_id
+        .as_deref()
+        .or(agent.workspace_id.as_deref())
+        .unwrap_or("<workspaceId>");
+    let atomic_claim_command = format!(
+        "myagents space issue claim {} --deliveryId {} --create-attached --workspaceId {} --workspacePath {} --sourceSpaceId {} --name {} --taskMdContent {}",
+        shell_quote(issue_id),
+        shell_quote(delivery_id),
+        shell_quote(workspace_id),
+        shell_quote(&agent.workspace_path),
+        shell_quote(&agent.space_id),
+        shell_quote(&format!("Space Issue {}", issue_id)),
+        shell_quote("<task-plan>")
+    );
     lines.extend([
         String::new(),
         "Required handling model".to_string(),
@@ -1795,12 +1810,9 @@ fn build_delivery_prompt(
             "- If this agent should not take it, run `myagents space issue delivery ignore {}`.",
             delivery_id
         ),
-        format!(
-            "- To work on it, first run `myagents space issue claim {} --deliveryId {}`.",
-            issue_id, delivery_id
-        ),
-        "- After claiming, create the local task in this same AI session with `myagents task create-attached --sourceIssueId <issueId> --sourceClaimId <claimId> --sourceDeliveryId <deliveryId> --taskMdContent <task-plan>`.".to_string(),
-        "- Then bind the cloud claim to the local task with `myagents space claim local-task --claimId <claimId> --localTaskId <taskId> --localSessionId \"$MYAGENTS_SESSION_ID\"`.".to_string(),
+        "- To work on it, run the atomic claim + attached-task command from this same AI session:".to_string(),
+        format!("  `{}`", atomic_claim_command),
+        "- That command claims the Issue, creates the attached Task, writes claim.localTaskId/localSessionId, and cancels the claim if local Task creation fails.".to_string(),
         "- Keep discussion and progress updates on the Space issue via `myagents space issue comment` and finish with `myagents space issue complete` when done.".to_string(),
     ]);
     if let Some(workspace_label) = agent
@@ -1811,6 +1823,17 @@ fn build_delivery_prompt(
         lines.push(format!("- Local workspace: {}", workspace_label));
     }
     lines.join("\n")
+}
+
+fn shell_quote(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '='))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn http_client() -> Result<reqwest::Client, String> {

@@ -74,7 +74,8 @@ function parseArgs(args: string[]): { positional: string[]; flags: Record<string
         key === 'clear-provider-override' ||
         key === 'clear-runtime-override' ||
         key === 'purge' ||
-        key === 'stdin'
+        key === 'stdin' ||
+        key === 'create-attached'
       ) {
         flags[camelCase(key)] = true;
         i++;
@@ -276,6 +277,9 @@ Examples:
   myagents space issue list --goal <goalId> --state todo --limit 30
   myagents space issue view <issueId> --comments --json
   myagents space issue claim <issueId> --deliveryId <deliveryId>
+  myagents space issue claim <issueId> --deliveryId <deliveryId> --create-attached \\
+      --workspaceId proj --workspacePath /path/to/proj \\
+      --name "Space Issue #123" --taskMdContent-file task.md
   myagents space issue comment <issueId> --body-file result.md
   myagents space issue delivery ignore <deliveryId>
   myagents space issue complete <issueId>
@@ -634,6 +638,10 @@ function printResult(group: string, action: string, result: Record<string, unkno
     printTaskCreateResult(result.data as Record<string, unknown>);
     return;
   }
+  if (group === 'space' && action === 'issue' && shouldCreateAttachedTaskForClaim(flags)) {
+    printSpaceClaimAttachedResult(result.data as Record<string, unknown>);
+    return;
+  }
 
   // Task run — print the engine/model the task will execute on, plus the
   // task_id echo so the caller has observability on what was dispatched.
@@ -730,6 +738,26 @@ function printTaskCreateResult(data: Record<string, unknown>): void {
     console.log('');
     printTaskDispatchResult('run', runResult);
   }
+}
+
+function printSpaceClaimAttachedResult(data: Record<string, unknown>): void {
+  const claim = objectValue(data.claim) ?? {};
+  const taskData = objectValue(data.taskCreate) ?? {};
+  const task = objectValue(data.task) ?? objectValue(taskData.task) ?? {};
+  const issueId = String(data.issueId ?? claim.issueId ?? '');
+  const claimId = String(claim.id ?? claim.claimId ?? '');
+  const taskId = String(task.id ?? task.taskId ?? '');
+  const sessionId = String(data.localSessionId ?? task.currentSessionId ?? process.env.MYAGENTS_SESSION_ID ?? '');
+
+  console.log('\u2713 Issue claimed and attached task created');
+  if (issueId) console.log(`  issue_id:  ${issueId}`);
+  if (claimId) console.log(`  claim_id:  ${claimId}`);
+  if (taskId) console.log(`  task_id:   ${taskId}`);
+  if (sessionId) console.log(`  session:   ${sessionId}`);
+  if (taskId) console.log(`  inspect:   myagents task get ${taskId}`);
+  if (issueId) console.log(`  comment:   myagents space issue comment ${issueId} --body-file result.md`);
+  if (issueId) console.log(`  complete:  myagents space issue complete ${issueId}`);
+  if (taskId) console.log(`  task done: myagents task update-status ${taskId} done --message "completed Space issue"`);
 }
 
 /**
@@ -1782,7 +1810,16 @@ async function main(): Promise<void> {
       }
     }
 
-    result = await callApi(route, body);
+    if (
+      group === 'space' &&
+      action === 'issue' &&
+      restArgs[0] === 'claim' &&
+      shouldCreateAttachedTaskForClaim(flags)
+    ) {
+      result = await claimSpaceIssueWithAttachedTask(body, flags);
+    } else {
+      result = await callApi(route, body);
+    }
 
     // --run bundled with `task create-from-alignment`: chain immediately
     // into /task/run using the fresh task_id. Saves the caller one round
@@ -1971,6 +2008,247 @@ function resolveSpaceCommentBody(flags: Record<string, unknown>, workspacePath: 
     }
   }
   return '';
+}
+
+function truthyCliFlag(value: unknown): boolean {
+  return value === true || value === 'true' || value === '1' || value === 'yes';
+}
+
+function shouldCreateAttachedTaskForClaim(flags: Record<string, unknown>): boolean {
+  return truthyCliFlag(flags.createAttached);
+}
+
+function requireNonEmptyStringFlag(
+  value: unknown,
+  flagName: string,
+  command: string,
+): string {
+  assertStringFlag(value, flagName);
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  console.error(`Error: ${command} requires --${flagName} <value>.`);
+  process.exit(2);
+}
+
+function optionalNonEmptyStringFlag(value: unknown, flagName: string): string | undefined {
+  assertStringFlag(value, flagName);
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function stringValue(record: Record<string, unknown> | undefined, ...keys: string[]): string | undefined {
+  if (!record) return undefined;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function extractClaimData(data: unknown): Record<string, unknown> {
+  const envelope = objectValue(data) ?? {};
+  const nested = objectValue(envelope.data);
+  return objectValue(envelope.claim) ?? objectValue(nested?.claim) ?? nested ?? envelope;
+}
+
+function extractTaskData(data: unknown): Record<string, unknown> {
+  const envelope = objectValue(data) ?? {};
+  const nested = objectValue(envelope.data);
+  return objectValue(envelope.task) ?? objectValue(nested?.task) ?? nested ?? envelope;
+}
+
+function parseCommaTags(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') {
+    console.error('Error: --tags must be a comma-separated string');
+    process.exit(2);
+  }
+  return value.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function buildAttachedTaskBodyForSpaceClaim(
+  claimBody: Record<string, unknown>,
+  claim: Record<string, unknown>,
+  flags: Record<string, unknown>,
+  currentSessionId: string,
+): Record<string, unknown> {
+  const source = (flags.source as string | undefined) ?? 'space-issue';
+  if (source !== 'space-issue') {
+    console.error(`Error: space issue claim --create-attached currently supports only --source "space-issue" (got "${source}")`);
+    process.exit(2);
+  }
+
+  const issueId = requireNonEmptyStringFlag(
+    claimBody.issueId,
+    'issueId',
+    'space issue claim --create-attached',
+  );
+  const workspaceId = requireNonEmptyStringFlag(
+    flags.workspaceId,
+    'workspaceId',
+    'space issue claim --create-attached',
+  );
+  const workspacePath = optionalNonEmptyStringFlag(flags.workspacePath, 'workspacePath')
+    ?? stringValue(claimBody, 'workspacePath')
+    ?? process.cwd();
+  const taskMdContent = resolveTaskMdContent(flags);
+  if (typeof taskMdContent !== 'string' || !taskMdContent.trim()) {
+    console.error('Error: space issue claim --create-attached requires --taskMdFile, --taskMdContentFile, or --taskMdContent');
+    process.exit(2);
+  }
+
+  const explicitName = optionalNonEmptyStringFlag(flags.name, 'name');
+  const executor = optionalNonEmptyStringFlag(flags.executor, 'executor') ?? 'agent';
+  const description = optionalNonEmptyStringFlag(flags.description, 'description');
+  const sourceSpaceId = optionalNonEmptyStringFlag(flags.sourceSpaceId, 'sourceSpaceId')
+    ?? stringValue(claim, 'spaceId');
+  const deliveryId = stringValue(claimBody, 'deliveryId')
+    ?? optionalNonEmptyStringFlag(flags.sourceDeliveryId, 'sourceDeliveryId');
+
+  return {
+    name: explicitName ?? `Space Issue ${issueId}`,
+    executor,
+    description,
+    workspaceId,
+    workspacePath,
+    taskMdContent,
+    currentSessionId,
+    source,
+    sourceSpaceId,
+    sourceIssueId: issueId,
+    sourceClaimId: stringValue(claim, 'id', 'claimId'),
+    sourceDeliveryId: deliveryId,
+    tags: parseCommaTags(flags.tags),
+    notification: buildNotificationFromFlags(flags),
+  };
+}
+
+function buildClaimCancelBody(claimBody: Record<string, unknown>): Record<string, unknown> {
+  return {
+    issueId: claimBody.issueId,
+    agentId: claimBody.agentId,
+    workspacePath: claimBody.workspacePath,
+  };
+}
+
+async function cancelClaimAfterAttachedFailure(claimBody: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return callApi('space/issue-cancel-claim', buildClaimCancelBody(claimBody));
+}
+
+function rollbackSuffix(rollback: Record<string, unknown>): string {
+  if (rollback.success) return 'The cloud claim was cancelled.';
+  return `Cloud claim cancellation also failed: ${String(rollback.error ?? 'unknown error')}.`;
+}
+
+function failedAttachedClaimResult(
+  message: string,
+  claimResult: Record<string, unknown>,
+  rollback: Record<string, unknown>,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    success: false,
+    error: `${message} ${rollbackSuffix(rollback)}`,
+    data: {
+      claim: claimResult.data,
+      rollback,
+      ...extra,
+    },
+  };
+}
+
+async function claimSpaceIssueWithAttachedTask(
+  claimBody: Record<string, unknown>,
+  flags: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const currentSessionId =
+    typeof flags.currentSessionId === 'string' && flags.currentSessionId.trim()
+      ? flags.currentSessionId.trim()
+      : process.env.MYAGENTS_SESSION_ID;
+  if (!currentSessionId) {
+    console.error('Error: space issue claim --create-attached requires MYAGENTS_SESSION_ID. Run it from inside a MyAgents AI session.');
+    process.exit(2);
+  }
+
+  const taskBody = buildAttachedTaskBodyForSpaceClaim(claimBody, {}, flags, currentSessionId);
+
+  const claimResult = await callApi('space/issue-claim', claimBody);
+  if (!claimResult.success) return claimResult;
+
+  const claim = extractClaimData(claimResult.data);
+  const claimId = stringValue(claim, 'id', 'claimId');
+  if (!claimId) {
+    const rollback = await cancelClaimAfterAttachedFailure(claimBody);
+    return failedAttachedClaimResult(
+      'Issue claim succeeded but the response did not include a claim id.',
+      claimResult,
+      rollback,
+    );
+  }
+
+  if (!taskBody.sourceSpaceId) taskBody.sourceSpaceId = stringValue(claim, 'spaceId');
+  taskBody.sourceClaimId = claimId;
+
+  const taskResult = await callApi('task/create-attached', taskBody);
+  if (!taskResult.success) {
+    const rollback = await cancelClaimAfterAttachedFailure(claimBody);
+    return failedAttachedClaimResult(
+      `Issue claim succeeded but attached task creation failed: ${String(taskResult.error ?? 'unknown error')}.`,
+      claimResult,
+      rollback,
+      { taskCreate: taskResult },
+    );
+  }
+
+  const task = extractTaskData(taskResult.data);
+  const taskId = stringValue(task, 'id', 'taskId');
+  if (!taskId) {
+    const rollback = await cancelClaimAfterAttachedFailure(claimBody);
+    return failedAttachedClaimResult(
+      'Issue claim and attached task creation succeeded, but the task response did not include a task id.',
+      claimResult,
+      rollback,
+      { taskCreate: taskResult.data },
+    );
+  }
+
+  const localTaskResult = await callApi('space/claim-local-task', {
+    claimId,
+    localTaskId: taskId,
+    localSessionId: currentSessionId,
+    agentId: claimBody.agentId,
+    workspacePath: claimBody.workspacePath,
+  });
+  const localTaskData = objectValue(localTaskResult.data);
+  if (!localTaskResult.success || localTaskData?.updated === false) {
+    const rollback = await cancelClaimAfterAttachedFailure(claimBody);
+    const linkError = localTaskResult.success
+      ? 'cloud accepted the request but did not update the active claim'
+      : String(localTaskResult.error ?? 'unknown error');
+    return failedAttachedClaimResult(
+      `Issue claim and attached task creation succeeded, but local-task binding failed: ${linkError}. Local task id: ${taskId}.`,
+      claimResult,
+      rollback,
+      { taskCreate: taskResult.data, localTaskRef: localTaskResult },
+    );
+  }
+
+  return {
+    success: true,
+    data: {
+      issueId: claimBody.issueId,
+      claim,
+      taskCreate: taskResult.data,
+      task,
+      localTaskRef: localTaskResult.data,
+      localSessionId: currentSessionId,
+    },
+    hint: 'Issue claimed and attached task created.',
+  };
 }
 
 function buildRequestBody(

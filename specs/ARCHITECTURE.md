@@ -682,10 +682,10 @@ Cloud Space 把官方/团队空间接入桌面端，目前仍是开发中/半成
 
 **核心边界：**
 
-- Space 不是 AI Runtime / Session Sidecar。云端登录、HTTP 请求、附件/Skill IO、registered-agent dispatch 都由 Rust Tauri command 拥有。
+- Space 不是 AI Runtime / Session Sidecar。云端登录、HTTP 请求、附件/Skill IO、registered-agent IssueDelivery poll/process 都由 Rust Tauri command 拥有。
 - Renderer 只通过 `src/renderer/api/spaceCloud.ts` 调 Tauri invoke，不直连 Space 服务，也不持有 session token。
 - build-time capability 由 `src-tauri/build.rs` 注入 `MYAGENTS_SPACE_*`，`cmd_space_get_capability` 只裁决构建能力；开发中入口还受 `config.teamSpaceEnabled` 默认关闭门控。
-- 本地状态在 `~/.myagents/space/{session.json,registered_agents.json,dispatch_log.json}`，不进入 SessionStore。
+- 本地状态在 `~/.myagents/space/{session.json,registered_agents.json,delivery_log.json}`，不进入 SessionStore。
 
 详见 `tech_docs/space_cloud.md`。
 
@@ -915,7 +915,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 ### 任务中心 / 搜索
 - [任务中心架构](./tech_docs/task_center.md) — 数据模型、状态机、CronTask 反向指针、CLI
-- [Cloud Space 架构](./tech_docs/space_cloud.md) — 开发中的 Space 登录、Issue/Skill、registered agent、dispatch 到本地 Task
+- [Cloud Space 架构](./tech_docs/space_cloud.md) — 开发中的 Space 登录、Issue/Skill、registered agent、IssueDelivery/claim 到 attached-session Task
 - [全文搜索架构](./tech_docs/search_architecture.md) — Tantivy + jieba、session watcher、UTF-16 高亮
 
 ### SDK 集成
