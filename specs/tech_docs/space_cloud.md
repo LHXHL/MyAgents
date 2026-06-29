@@ -32,7 +32,7 @@ Phase 2 为本地验证和自动化测试新增了显式 mock mode：
 | Rust | `src-tauri/src/space_cloud.rs` | Space session、HTTP proxy、registered agents、IssueDelivery poll/process、claim wrapper、Skill zip、附件上传下载 |
 | Renderer API | `src/renderer/api/spaceCloud.ts` | Tauri invoke typed wrapper；不直接 `fetch` Space 服务 |
 | Renderer UI | `src/renderer/pages/Space.tsx` + `src/renderer/pages/space/*` | Space shell 与 Issues / Skills / Agents 三个 workspace，登录轮询、创建/评论/Goal 订阅、Skill 安装、本地缓存 |
-| CLI | `src/cli/myagents.ts` + Management API | Agent 可调用的 Space issue list/view/comment/claim/ignore/complete/cancel、claim local-task 与 attachment download 操作；`space issue claim --create-attached` 负责编排 claim -> attached Task -> local task ref 的原子客户端闭环 |
+| CLI | `src/cli/myagents.ts` + Management API | Agent 可调用的 Space issue list/view/comment/claim/ignore/complete/cancel、claim local-task 与 attachment download 操作；`space issue claim --create-attached` 负责编排 claim -> attached Task -> local task ref，`space issue complete --taskId ... --body-file ...` 负责编排 result comment -> cloud complete -> local task done |
 
 ## 本地状态
 
@@ -60,5 +60,6 @@ Registered Agent 可从 Space 拉取 IssueDelivery，并将其作为轻量通知
 2. `cmd_space_poll_deliveries` / `cmd_space_process_deliveries_once` 拉取待处理 delivery。
 3. Rust 通过 session inbox 注入 `space.issue_delivery` 事件和固定处理指令，写 `delivery_log.json`，再调用 `cmd_space_mark_delivery_delivered` 对云端确认。
 4. AI session 决定处理时调用 `myagents space issue claim <issueId> --deliveryId <deliveryId> --create-attached ...`。CLI 会先 claim，再创建 attached-session Task，再回写 `claim.localTaskId/localSessionId`；若本地 Task 创建或回写失败，CLI 立即调用 `cancel-claim` 让 Issue 回到 `todo`。
+5. AI session 完成执行时优先调用 `myagents space issue complete <issueId> --taskId <taskId> --body-file result.md --message "..."`，由 CLI 顺序完成 result comment、云端 issue/claim complete、本地 Task 状态更新。
 
 该链路保持“云端关注/认领、客户端执行”的边界：云端不直接访问本地文件系统或 Sidecar；本地执行仍走 MyAgents 的 Task/Session 体系。兼容命令 `cmd_space_poll_dispatches` / `cmd_space_process_dispatches_once` 仅作为旧调用方别名保留，语义已映射到 delivery。

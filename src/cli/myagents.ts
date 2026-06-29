@@ -281,6 +281,8 @@ Examples:
       --workspaceId proj --workspacePath /path/to/proj \\
       --name "Space Issue #123" --taskMdContent-file task.md
   myagents space issue comment <issueId> --body-file result.md
+  myagents space issue complete <issueId> --taskId <taskId> --body-file result.md \\
+      --message "completed Space issue"
   myagents space issue delivery ignore <deliveryId>
   myagents space issue complete <issueId>
   myagents space issue close <issueId>
@@ -642,6 +644,10 @@ function printResult(group: string, action: string, result: Record<string, unkno
     printSpaceClaimAttachedResult(result.data as Record<string, unknown>);
     return;
   }
+  if (group === 'space' && action === 'issue' && objectValue(result.data)?.issueComplete !== undefined) {
+    printSpaceIssueCompleteResult(result.data as Record<string, unknown>);
+    return;
+  }
 
   // Task run — print the engine/model the task will execute on, plus the
   // task_id echo so the caller has observability on what was dispatched.
@@ -755,9 +761,30 @@ function printSpaceClaimAttachedResult(data: Record<string, unknown>): void {
   if (taskId) console.log(`  task_id:   ${taskId}`);
   if (sessionId) console.log(`  session:   ${sessionId}`);
   if (taskId) console.log(`  inspect:   myagents task get ${taskId}`);
-  if (issueId) console.log(`  comment:   myagents space issue comment ${issueId} --body-file result.md`);
-  if (issueId) console.log(`  complete:  myagents space issue complete ${issueId}`);
-  if (taskId) console.log(`  task done: myagents task update-status ${taskId} done --message "completed Space issue"`);
+  if (issueId && taskId) {
+    console.log(`  finish:    myagents space issue complete ${issueId} --taskId ${taskId} --body-file result.md --message "completed Space issue"`);
+  } else if (issueId) {
+    console.log(`  complete:  myagents space issue complete ${issueId}`);
+  }
+}
+
+function printSpaceIssueCompleteResult(data: Record<string, unknown>): void {
+  const issueId = String(data.issueId ?? '');
+  const issueComplete = objectValue(data.issueComplete) ?? {};
+  const taskUpdate = objectValue(data.taskUpdate) ?? {};
+  const task = objectValue(taskUpdate.task) ?? taskUpdate;
+  const taskId = String(data.taskId ?? task.id ?? '');
+  const taskStatus = String(data.taskStatus ?? task.status ?? '');
+  const comment = data.comment ? 'yes' : 'no';
+
+  console.log('\u2713 Issue completion recorded');
+  if (issueId) console.log(`  issue_id:  ${issueId}`);
+  if (issueComplete.state || issueComplete.status) {
+    console.log(`  issue:     ${String(issueComplete.state ?? issueComplete.status)}`);
+  }
+  console.log(`  comment:   ${comment}`);
+  if (taskId) console.log(`  task_id:   ${taskId}`);
+  if (taskStatus) console.log(`  task:      ${taskStatus}`);
 }
 
 /**
@@ -1817,6 +1844,13 @@ async function main(): Promise<void> {
       shouldCreateAttachedTaskForClaim(flags)
     ) {
       result = await claimSpaceIssueWithAttachedTask(body, flags);
+    } else if (
+      group === 'space' &&
+      action === 'issue' &&
+      restArgs[0] === 'complete' &&
+      shouldFinalizeSpaceIssue(flags)
+    ) {
+      result = await completeSpaceIssueWithLocalFollowup(body, flags);
     } else {
       result = await callApi(route, body);
     }
@@ -2016,6 +2050,19 @@ function truthyCliFlag(value: unknown): boolean {
 
 function shouldCreateAttachedTaskForClaim(flags: Record<string, unknown>): boolean {
   return truthyCliFlag(flags.createAttached);
+}
+
+function hasSpaceCommentBodyFlags(flags: Record<string, unknown>): boolean {
+  return flags.body !== undefined || flags.bodyFile !== undefined || truthyCliFlag(flags.stdin);
+}
+
+function shouldFinalizeSpaceIssue(flags: Record<string, unknown>): boolean {
+  return (
+    hasSpaceCommentBodyFlags(flags)
+    || flags.taskId !== undefined
+    || flags.localTaskId !== undefined
+    || flags.taskStatus !== undefined
+  );
 }
 
 function requireNonEmptyStringFlag(
@@ -2248,6 +2295,105 @@ async function claimSpaceIssueWithAttachedTask(
       localSessionId: currentSessionId,
     },
     hint: 'Issue claimed and attached task created.',
+  };
+}
+
+function resolveSpaceCompleteTaskId(flags: Record<string, unknown>): string | undefined {
+  if (flags.taskId !== undefined) {
+    return requireNonEmptyStringFlag(flags.taskId, 'taskId', 'space issue complete');
+  }
+  if (flags.localTaskId !== undefined) {
+    return requireNonEmptyStringFlag(flags.localTaskId, 'localTaskId', 'space issue complete');
+  }
+  return undefined;
+}
+
+async function completeSpaceIssueWithLocalFollowup(
+  completeBody: Record<string, unknown>,
+  flags: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const issueId = requireNonEmptyStringFlag(
+    completeBody.issueId,
+    'issueId',
+    'space issue complete',
+  );
+  const workspacePath = stringValue(completeBody, 'workspacePath') ?? process.cwd();
+  const taskId = resolveSpaceCompleteTaskId(flags);
+  if (flags.taskStatus !== undefined && !taskId) {
+    console.error('Error: space issue complete --taskStatus requires --taskId <taskId>.');
+    process.exit(2);
+  }
+  const requestedTaskStatus = optionalNonEmptyStringFlag(flags.taskStatus, 'taskStatus');
+  if (requestedTaskStatus && requestedTaskStatus !== 'done') {
+    console.error('Error: space issue complete can only update the local task to done. For blocked/stopped work, update the task separately and cancel the claim.');
+    process.exit(2);
+  }
+  const taskStatus = taskId ? 'done' : undefined;
+  const message = optionalNonEmptyStringFlag(flags.message, 'message');
+
+  let commentResult: Record<string, unknown> | undefined;
+  if (hasSpaceCommentBodyFlags(flags)) {
+    const body = resolveSpaceCommentBody(flags, workspacePath);
+    if (!body.trim()) {
+      console.error('Error: space issue complete comment body is empty. Use --body, --body-file, or omit comment flags.');
+      process.exit(2);
+    }
+    commentResult = await callApi('space/issue-comment', {
+      issueId,
+      body,
+      agentId: completeBody.agentId,
+      workspacePath,
+    });
+    if (!commentResult.success) return commentResult;
+  }
+
+  const completeResult = await callApi('space/issue-complete', completeBody);
+  if (!completeResult.success) {
+    return {
+      success: false,
+      error: String(completeResult.error ?? 'Issue completion failed'),
+      data: {
+        issueId,
+        comment: commentResult?.data,
+        issueComplete: completeResult,
+      },
+    };
+  }
+
+  let taskResult: Record<string, unknown> | undefined;
+  if (taskId && taskStatus) {
+    taskResult = await callApi('task/update-status', {
+      id: taskId,
+      status: taskStatus,
+      message,
+    });
+    if (!taskResult.success) {
+      return {
+        success: false,
+        error: `Issue completed but local task status update failed: ${String(taskResult.error ?? 'unknown error')}.`,
+        data: {
+          issueId,
+          comment: commentResult?.data,
+          issueComplete: completeResult.data,
+          taskId,
+          taskStatus,
+          taskUpdate: taskResult,
+        },
+      };
+    }
+  }
+
+  return {
+    success: true,
+    data: {
+      issueId,
+      comment: commentResult?.data,
+      issueComplete: completeResult.data,
+      taskId,
+      taskStatus,
+      taskUpdate: taskResult?.data,
+    },
+    hint: taskId ? 'Issue completed and local task status updated.' : 'Issue completed.',
   };
 }
 

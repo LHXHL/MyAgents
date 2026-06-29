@@ -1798,6 +1798,11 @@ fn build_delivery_prompt(
         shell_quote(&format!("Space Issue {}", issue_id)),
         shell_quote("<task-plan>")
     );
+    let finish_command = format!(
+        "myagents space issue complete {} --taskId <taskId> --body-file result.md --message {}",
+        shell_quote(issue_id),
+        shell_quote("completed Space issue")
+    );
     lines.extend([
         String::new(),
         "Required handling model".to_string(),
@@ -1813,7 +1818,11 @@ fn build_delivery_prompt(
         "- To work on it, run the atomic claim + attached-task command from this same AI session:".to_string(),
         format!("  `{}`", atomic_claim_command),
         "- That command claims the Issue, creates the attached Task, writes claim.localTaskId/localSessionId, and cancels the claim if local Task creation fails.".to_string(),
-        "- Keep discussion and progress updates on the Space issue via `myagents space issue comment` and finish with `myagents space issue complete` when done.".to_string(),
+        "- Keep discussion and progress updates on the Space issue via `myagents space issue comment`.".to_string(),
+        format!(
+            "- When done, prefer the finish command `{}` to post the result comment, complete the cloud Issue/claim, and mark the local Task done.",
+            finish_command
+        ),
     ]);
     if let Some(workspace_label) = agent
         .workspace_label
