@@ -8258,7 +8258,9 @@ async function main() {
                 ? snapshotResolvedConfig.permissionMode
                 : (effectiveRuntime === 'builtin'
                   ? (heldImConfig?.permissionMode ?? payload.permissionMode)
-                  : (heldImConfig?.permissionMode ?? getRuntimeConfigPermissionMode(payloadRuntimeConfig, effectiveRuntime))),
+                  : (heldImConfig?.permissionMode
+                    ?? getRuntimeConfigPermissionMode(payloadRuntimeConfig, effectiveRuntime)
+                    ?? getMaxPermissionForRuntime(effectiveRuntime))),
               // Legacy frozen env (kept for back-compat); sidecar prefers
               // `providerId` when both are present.
               providerEnv: effectiveRuntime === 'builtin'
@@ -8407,7 +8409,8 @@ async function main() {
             }
             const resolvedExternalPermissionMode = snapshotResolvedConfig?.permissionMode
               ?? heldImConfig?.permissionMode
-              ?? getRuntimeConfigPermissionMode(runtimeConfig, effectiveRuntime);
+              ?? getRuntimeConfigPermissionMode(runtimeConfig, effectiveRuntime)
+              ?? getMaxPermissionForRuntime(effectiveRuntime);
             const resolvedExternalModel = snapshotResolvedConfig
               ? snapshotResolvedConfig.model
               : (heldImConfig?.model ?? getRuntimeConfigModel(runtimeConfig, effectiveRuntime));
@@ -8449,7 +8452,7 @@ async function main() {
             // ignore the live Agent values that Rust passed in payload.
             // Pure IM-origin sessions never have a snapshot, so this branch
             // is a no-op for them and behavior matches v0.2.13.
-            let resolvedPermissionMode: PermissionMode = (payload.permissionMode as PermissionMode) ?? 'plan';
+            let resolvedPermissionMode: PermissionMode = (payload.permissionMode as PermissionMode) ?? 'fullAgency';
             let resolvedModel: string | undefined = payload.model ?? undefined;
             let resolvedReasoningEffort: string | undefined;
             let resolvedProviderRoute: ProviderRoute | undefined;

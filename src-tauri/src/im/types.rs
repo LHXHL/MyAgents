@@ -992,9 +992,22 @@ pub(crate) fn project_permission_for_provider(
     let trimmed = permission_mode.trim();
     match trimmed {
         "suggest" | "auto-edit" | "full-auto" | "no-restrictions" => trimmed.to_string(),
-        "" | "auto" | "plan" | "fullAgency" | "custom" | "default" | "acceptEdits"
-        | "bypassPermissions" | "autoEdit" | "yolo" => "full-auto".to_string(),
+        "auto" => "auto-edit".to_string(),
+        "plan" => "suggest".to_string(),
+        "fullAgency" => "no-restrictions".to_string(),
+        "" | "custom" | "default" | "acceptEdits" | "bypassPermissions" | "autoEdit" | "yolo" => {
+            "full-auto".to_string()
+        }
         future_mode => future_mode.to_string(),
+    }
+}
+
+pub(crate) fn max_permission_for_runtime(runtime: Option<&str>) -> &'static str {
+    match runtime {
+        Some("claude-code") => "bypassPermissions",
+        Some("codex") => "no-restrictions",
+        Some("gemini") => "yolo",
+        _ => "fullAgency",
     }
 }
 
@@ -1044,6 +1057,34 @@ pub struct ChannelStatus {
 }
 
 impl ChannelConfigRust {
+    pub(crate) fn effective_permission_mode(&self, agent: &AgentConfigRust) -> String {
+        let overrides = self.overrides.as_ref();
+        let provider_id = overrides
+            .and_then(|o| o.provider_id.clone())
+            .or_else(|| self.provider_id.clone())
+            .or_else(|| agent.provider_id.clone());
+        let model = overrides
+            .and_then(|o| o.model.clone())
+            .or_else(|| self.model.clone())
+            .or_else(|| agent.model.clone());
+        let runtime = overrides
+            .and_then(|o| o.runtime.clone())
+            .or_else(|| agent.runtime.clone());
+        let runtime_config = overrides
+            .and_then(|o| o.runtime_config.clone())
+            .or_else(|| agent.runtime_config.clone());
+        let (runtime, _) = project_runtime_for_provider(
+            provider_id.as_deref(),
+            model.as_deref(),
+            runtime,
+            runtime_config,
+        );
+        let raw_permission = overrides
+            .and_then(|o| o.permission_mode.clone())
+            .unwrap_or_else(|| max_permission_for_runtime(runtime.as_deref()).to_string());
+        project_permission_for_provider(provider_id.as_deref(), raw_permission)
+    }
+
     /// Convert to ImConfig for backward compatibility with existing start_im_bot logic.
     pub fn to_im_config(&self, agent: &AgentConfigRust) -> ImConfig {
         let overrides = self.overrides.as_ref();
@@ -1067,12 +1108,7 @@ impl ChannelConfigRust {
             runtime,
             runtime_config,
         );
-        let permission_mode = project_permission_for_provider(
-            provider_id.as_deref(),
-            overrides
-                .and_then(|o| o.permission_mode.clone())
-                .unwrap_or_else(|| agent.permission_mode.clone()),
-        );
+        let permission_mode = self.effective_permission_mode(agent);
 
         ImConfig {
             platform: self.channel_type.clone(),
@@ -1211,6 +1247,61 @@ mod tests {
     }
 
     #[test]
+    fn agent_channel_defaults_to_full_agency_when_channel_has_no_permission_override() {
+        let mut agent = base_agent();
+        agent.permission_mode = "plan".to_string();
+        let channel = base_channel();
+
+        let config = channel.to_im_config(&agent);
+
+        assert_eq!(config.permission_mode, "fullAgency");
+        assert_eq!(channel.effective_permission_mode(&agent), "fullAgency");
+    }
+
+    #[test]
+    fn agent_channel_uses_runtime_max_permission_when_channel_has_no_override() {
+        let mut agent = base_agent();
+        agent.permission_mode = "plan".to_string();
+        agent.runtime = Some("codex".to_string());
+        let channel = base_channel();
+
+        let config = channel.to_im_config(&agent);
+
+        assert_eq!(config.permission_mode, "no-restrictions");
+    }
+
+    #[test]
+    fn agent_channel_respects_explicit_permission_override() {
+        let agent = base_agent();
+        let mut channel = base_channel();
+        channel.overrides = Some(ChannelOverrides {
+            permission_mode: Some("plan".to_string()),
+            ..Default::default()
+        });
+
+        let config = channel.to_im_config(&agent);
+
+        assert_eq!(config.permission_mode, "plan");
+    }
+
+    #[test]
+    fn codex_subscription_channel_maps_myagents_permission_overrides() {
+        let agent = base_agent();
+        let mut channel = base_channel();
+        channel.overrides = Some(ChannelOverrides {
+            provider_id: Some(CODEX_SUBSCRIPTION_PROVIDER_ID.to_string()),
+            model: Some("gpt-5.5-codex".to_string()),
+            permission_mode: Some("plan".to_string()),
+            ..Default::default()
+        });
+
+        let config = channel.to_im_config(&agent);
+
+        assert_eq!(config.runtime.as_deref(), Some("codex"));
+        assert_eq!(config.permission_mode, "suggest");
+    }
+
+    #[test]
     fn channel_override_codex_subscription_projects_to_managed_runtime() {
         let agent = base_agent();
         let mut channel = base_channel();
@@ -1234,7 +1325,7 @@ mod tests {
         );
         assert_eq!(config.model.as_deref(), Some("gpt-5.5-codex"));
         assert_eq!(config.runtime.as_deref(), Some("codex"));
-        assert_eq!(config.permission_mode, "full-auto");
+        assert_eq!(config.permission_mode, "no-restrictions");
         assert_eq!(
             config
                 .runtime_config

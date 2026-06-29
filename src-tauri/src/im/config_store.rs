@@ -1565,6 +1565,7 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
 
                 let has_credentials = im_config_has_start_credentials(&im_config);
                 if has_credentials {
+                    let agent_channel_permission_mode = im_config.permission_mode.clone();
                     let bot_id = channel.id.clone();
                     // Dedup: skip if channel already running (and healthy) in agent state.
                     // If channel exists but is Error/Stopped, remove it to allow restart.
@@ -1629,7 +1630,7 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                                             .and_then(|s| serde_json::from_str(s).ok()),
                                     )),
                                     permission_mode: Arc::new(RwLock::new(
-                                        agent_config.permission_mode.clone(),
+                                        agent_channel_permission_mode.clone(),
                                     )),
                                     mcp_servers_json: Arc::new(RwLock::new(
                                         agent_config.mcp_servers_json.clone(),
@@ -2338,6 +2339,7 @@ pub async fn monitor_agent_channels(
             if !im_config_has_start_credentials(&im_config) {
                 continue;
             }
+            let agent_channel_permission_mode = im_config.permission_mode.clone();
 
             // Remove dead channel — shut down old instance properly first
             let old_instance: Option<ImBotInstance> = {
@@ -2406,7 +2408,7 @@ pub async fn monitor_agent_channels(
                                         .and_then(|s| serde_json::from_str(s).ok()),
                                 )),
                                 permission_mode: Arc::new(RwLock::new(
-                                    agent_cfg.permission_mode.clone(),
+                                    agent_channel_permission_mode.clone(),
                                 )),
                                 mcp_servers_json: Arc::new(RwLock::new(
                                     agent_cfg.mcp_servers_json.clone(),

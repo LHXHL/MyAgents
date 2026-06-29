@@ -8,7 +8,13 @@ import type {
   GroupPermission,
   GroupActivation,
 } from './im';
-import type { RuntimeType, RuntimeConfig } from './runtime';
+import {
+  getMaxPermissionForRuntime,
+  normalizeRuntime,
+  type RuntimeType,
+  type RuntimeConfig,
+} from './runtime';
+import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../config-types';
 import type { OfficialToolId } from '../official-tools';
 
 /**
@@ -134,21 +140,57 @@ export interface AgentConfig {
   setupCompleted?: boolean;
 }
 
+function resolveAgentChannelProviderId(agent: AgentConfig, channel: ChannelConfig): string | undefined {
+  return channel.overrides?.providerId ?? agent.providerId;
+}
+
+/**
+ * Resolve the runtime that an Agent Channel will execute on. Channel overrides
+ * mirror the Rust start path and win over Agent defaults. Runtime-backed
+ * providers are projected here so the renderer/shared view matches Rust
+ * `ChannelConfigRust::to_im_config`.
+ */
+export function resolveAgentChannelRuntime(agent: AgentConfig, channel: ChannelConfig): RuntimeType {
+  const providerId = resolveAgentChannelProviderId(agent, channel);
+  if (providerId === CODEX_SUBSCRIPTION_PROVIDER_ID) return 'codex';
+
+  const runtimeConfig = channel.overrides?.runtimeConfig ?? agent.runtimeConfig;
+  if (runtimeConfig?.source === 'managed-provider') return 'builtin';
+
+  return normalizeRuntime(channel.overrides?.runtime ?? agent.runtime ?? 'builtin');
+}
+
+export function resolveAgentChannelDefaultPermissionMode(agent: AgentConfig, channel: ChannelConfig): string {
+  return getMaxPermissionForRuntime(resolveAgentChannelRuntime(agent, channel));
+}
+
+/**
+ * IM / Agent Channel is an unattended entry point: when the channel itself has
+ * no explicit permission override, default to the selected runtime's maximum
+ * agency rather than inheriting the desktop Agent permission mode.
+ */
+export function resolveAgentChannelPermissionMode(agent: AgentConfig, channel: ChannelConfig): string {
+  const override = channel.overrides?.permissionMode?.trim();
+  if (override) return override;
+  return resolveAgentChannelDefaultPermissionMode(agent, channel);
+}
+
 /**
  * Resolve effective config for a channel by merging Agent defaults with Channel overrides
  */
 export function resolveEffectiveConfig(agent: AgentConfig, channel: ChannelConfig) {
+  const runtime = resolveAgentChannelRuntime(agent, channel);
   return {
     providerId: channel.overrides?.providerId ?? agent.providerId,
     providerEnvJson: channel.overrides?.providerEnvJson ?? agent.providerEnvJson,
     model: channel.overrides?.model ?? agent.model,
-    permissionMode: channel.overrides?.permissionMode ?? agent.permissionMode,
+    permissionMode: resolveAgentChannelPermissionMode(agent, channel),
     mcpEnabledServers: agent.mcpEnabledServers,      // Channel cannot override
     enabledPluginIds: agent.enabledPluginIds,        // Channel cannot override (mirrors MCP)
     toolsDeny: channel.overrides?.toolsDeny ?? [],
     workspacePath: agent.workspacePath,               // Always Agent's
     heartbeat: agent.heartbeat,                       // Always Agent's
-    runtime: agent.runtime ?? 'builtin',
-    runtimeConfig: agent.runtimeConfig,
+    runtime,
+    runtimeConfig: channel.overrides?.runtimeConfig ?? agent.runtimeConfig,
   };
 }

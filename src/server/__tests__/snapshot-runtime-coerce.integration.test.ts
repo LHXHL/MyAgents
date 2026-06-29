@@ -192,6 +192,31 @@ describe('resolveSessionConfig — runtime-aware coercion (issue #224)', () => {
     expect(r.providerId).toBe('codex-sub');
   });
 
+  it('im managed Codex channel uses the effective Channel permission default', () => {
+    const r = resolveSessionConfig(
+      undefined,
+      makeAgent({
+        permissionMode: 'plan',
+        runtime: 'builtin',
+      }),
+      {
+        id: 'channel-1',
+        type: 'feishu',
+        enabled: true,
+        overrides: {
+          providerId: 'codex-sub',
+          model: 'gpt-5.5-codex',
+        },
+      },
+      'im',
+      { managedCodexProviderReady: true },
+    );
+
+    expect(r.runtime).toBe('codex');
+    expect(r.runtimeSource).toBe('managed-provider');
+    expect(r.permissionMode).toBe('no-restrictions');
+  });
+
   it('owned/external: missing snapshot model uses runtime default instead of agent fallback', () => {
     const r = resolveSessionConfig(meta({
       runtime: 'codex',
