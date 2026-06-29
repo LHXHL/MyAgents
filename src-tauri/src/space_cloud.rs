@@ -87,11 +87,24 @@ pub struct LocalRegisteredAgent {
     pub base_url: String,
     pub space_id: String,
     #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub local_workspace_id: Option<String>,
+    #[serde(default)]
+    pub local_agent_id: Option<String>,
+    #[serde(default)]
     pub workspace_id: Option<String>,
     pub display_name: String,
     pub workspace_path: String,
     pub workspace_label: Option<String>,
-    pub goal_md: String,
+    #[serde(default)]
+    pub goal_id: Option<String>,
+    #[serde(default)]
+    pub goal_path_label: Option<String>,
+    #[serde(default = "default_agent_state_filter")]
+    pub state_filter: Vec<String>,
+    #[serde(default)]
+    pub goal_md: Option<String>,
     pub token: String,
     pub status: String,
     pub created_at: String,
@@ -104,11 +117,17 @@ pub struct LocalRegisteredAgentPublic {
     pub id: String,
     pub base_url: String,
     pub space_id: String,
+    pub client_id: Option<String>,
+    pub local_workspace_id: Option<String>,
+    pub local_agent_id: Option<String>,
     pub workspace_id: Option<String>,
     pub display_name: String,
     pub workspace_path: String,
     pub workspace_label: Option<String>,
-    pub goal_md: String,
+    pub goal_id: Option<String>,
+    pub goal_path_label: Option<String>,
+    pub state_filter: Vec<String>,
+    pub goal_md: Option<String>,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
@@ -120,16 +139,26 @@ impl From<LocalRegisteredAgent> for LocalRegisteredAgentPublic {
             id: agent.id,
             base_url: agent.base_url,
             space_id: agent.space_id,
+            client_id: agent.client_id,
+            local_workspace_id: agent.local_workspace_id,
+            local_agent_id: agent.local_agent_id,
             workspace_id: agent.workspace_id,
             display_name: agent.display_name,
             workspace_path: agent.workspace_path,
             workspace_label: agent.workspace_label,
+            goal_id: agent.goal_id,
+            goal_path_label: agent.goal_path_label,
+            state_filter: agent.state_filter,
             goal_md: agent.goal_md,
             status: agent.status,
             created_at: agent.created_at,
             updated_at: agent.updated_at,
         }
     }
+}
+
+fn default_agent_state_filter() -> Vec<String> {
+    vec!["todo".to_string()]
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -161,7 +190,11 @@ pub struct SpaceRegisterAgentInput {
     pub workspace_path: String,
     #[serde(default)]
     pub workspace_label: Option<String>,
-    pub goal_md: String,
+    pub goal_id: String,
+    #[serde(default)]
+    pub state_filter: Option<Vec<String>>,
+    #[serde(default)]
+    pub goal_md: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -610,10 +643,29 @@ pub async fn cmd_space_register_agent(
     let workspace_root = validate_workspace_root(&input.workspace_path)?;
     let workspace_path = workspace_root.to_string_lossy().to_string();
     let session = require_session()?;
+    let capability = ensure_space_available()?;
+    let display_name = input.display_name.trim();
+    if display_name.is_empty() {
+        return Err("displayName is required".to_string());
+    }
+    let goal_id = input.goal_id.trim();
+    if goal_id.is_empty() {
+        return Err("goalId is required".to_string());
+    }
+    let state_filter = normalize_agent_state_filter(input.state_filter);
+    let client_id = capability
+        .public_client_id
+        .clone()
+        .unwrap_or_else(|| "myagents-desktop".to_string());
+    let local_agent_id = stable_local_agent_id(&input.workspace_id);
     let body = serde_json::json!({
-        "displayName": input.display_name,
+        "clientId": client_id,
+        "localWorkspaceId": input.workspace_id,
+        "localAgentId": local_agent_id,
+        "displayName": display_name,
         "workspaceLabel": input.workspace_label,
-        "goalMd": input.goal_md,
+        "goalId": goal_id,
+        "stateFilter": state_filter,
     });
     let path = format!(
         "/api/spaces/{}/registered-agents",
@@ -635,6 +687,7 @@ pub async fn cmd_space_register_agent(
         .get("registeredAgent")
         .cloned()
         .ok_or_else(|| "Space API response missing registeredAgent".to_string())?;
+    let subscription = data.get("subscription").cloned().unwrap_or(Value::Null);
     let token = data
         .get("token")
         .and_then(Value::as_str)
@@ -644,6 +697,10 @@ pub async fn cmd_space_register_agent(
         id: required_value_string(&registered, "id")?,
         base_url: session.base_url.clone(),
         space_id: required_value_string(&registered, "spaceId")?,
+        client_id: optional_value_string(&registered, "clientId").or(Some(client_id)),
+        local_workspace_id: optional_value_string(&registered, "localWorkspaceId")
+            .or(Some(input.workspace_id.clone())),
+        local_agent_id: optional_value_string(&registered, "localAgentId").or(Some(local_agent_id)),
         workspace_id: Some(input.workspace_id),
         display_name: required_value_string(&registered, "displayName")?,
         workspace_path,
@@ -651,7 +708,12 @@ pub async fn cmd_space_register_agent(
             .get("workspaceLabel")
             .and_then(Value::as_str)
             .map(ToString::to_string),
-        goal_md: required_value_string(&registered, "goalMd")?,
+        goal_id: optional_value_string(&subscription, "goalId").or(Some(goal_id.to_string())),
+        goal_path_label: optional_value_string(&subscription, "goalPathLabel"),
+        state_filter: value_string_array(&subscription, "stateFilter")
+            .filter(|items| !items.is_empty())
+            .unwrap_or_else(default_agent_state_filter),
+        goal_md: input.goal_md,
         token,
         status: required_value_string(&registered, "status")?,
         created_at: required_value_string(&registered, "createdAt")?,
@@ -702,8 +764,7 @@ pub async fn cmd_space_update_registered_agent(
         if goal_md.is_empty() {
             return Err("goalMd is required".to_string());
         }
-        body.insert("goalMd".to_string(), Value::String(goal_md.to_string()));
-        agent.goal_md = goal_md.to_string();
+        agent.goal_md = Some(goal_md.to_string());
     }
     if let Some(status) = input.status {
         let status = status.trim();
@@ -715,6 +776,7 @@ pub async fn cmd_space_update_registered_agent(
     }
 
     if body.is_empty() {
+        upsert_local_agent(agent.clone())?;
         return Ok(agent.into());
     }
 
@@ -732,7 +794,11 @@ pub async fn cmd_space_update_registered_agent(
             .get("workspaceLabel")
             .and_then(Value::as_str)
             .map(ToString::to_string);
-        agent.goal_md = required_value_string(registered, "goalMd")?;
+        agent.client_id = optional_value_string(registered, "clientId").or(agent.client_id);
+        agent.local_workspace_id =
+            optional_value_string(registered, "localWorkspaceId").or(agent.local_workspace_id);
+        agent.local_agent_id =
+            optional_value_string(registered, "localAgentId").or(agent.local_agent_id);
         agent.status = required_value_string(registered, "status")?;
         agent.updated_at = required_value_string(registered, "updatedAt")?;
     } else {
@@ -1998,10 +2064,16 @@ fn read_current_local_agents() -> Result<Vec<LocalRegisteredAgent>, String> {
                 id: agent.id.clone(),
                 base_url: agent.base_url.clone(),
                 space_id: agent.space_id.clone(),
+                client_id: agent.client_id.clone(),
+                local_workspace_id: agent.local_workspace_id.clone(),
+                local_agent_id: agent.local_agent_id.clone(),
                 workspace_id: agent.workspace_id.clone(),
                 display_name: agent.display_name.clone(),
                 workspace_path: agent.workspace_path.clone(),
                 workspace_label: agent.workspace_label.clone(),
+                goal_id: agent.goal_id.clone(),
+                goal_path_label: agent.goal_path_label.clone(),
+                state_filter: agent.state_filter.clone(),
                 goal_md: agent.goal_md.clone(),
                 token: format!("mock-token-{}", agent.id),
                 status: agent.status.clone(),
@@ -2281,6 +2353,48 @@ fn required_value_string(value: &Value, key: &str) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(ToString::to_string)
         .ok_or_else(|| format!("Space API response missing {}", key))
+}
+
+fn optional_value_string(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn value_string_array(value: &Value, key: &str) -> Option<Vec<String>> {
+    let array = value.get(key)?.as_array()?;
+    Some(
+        array
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .collect(),
+    )
+}
+
+fn normalize_agent_state_filter(input: Option<Vec<String>>) -> Vec<String> {
+    let mut out = Vec::new();
+    for state in input.unwrap_or_else(default_agent_state_filter) {
+        let state = state.trim();
+        if state.is_empty() || out.iter().any(|existing| existing == state) {
+            continue;
+        }
+        out.push(state.to_string());
+    }
+    if out.is_empty() {
+        default_agent_state_filter()
+    } else {
+        out
+    }
+}
+
+fn stable_local_agent_id(workspace_id: &str) -> String {
+    format!("local-agent-{}", safe_local_name(workspace_id))
 }
 
 fn safe_local_name(value: &str) -> String {
@@ -2708,7 +2822,9 @@ mod tests {
             workspace_id: "project_acceptance".to_string(),
             workspace_path: workspace.to_string_lossy().to_string(),
             workspace_label: Some("Acceptance Workspace".to_string()),
-            goal_md: "Validate Space Phase 2 mock flows.".to_string(),
+            goal_id: "goal_mock_ui".to_string(),
+            state_filter: Some(vec!["todo".to_string()]),
+            goal_md: Some("Validate Space Phase 2 mock flows.".to_string()),
         })
         .await
         .expect("agent registration should succeed");

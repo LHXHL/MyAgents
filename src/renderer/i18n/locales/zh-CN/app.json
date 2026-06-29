@@ -311,8 +311,9 @@
         "createIssue": "Issue 创建",
         "updateIssueStatus": "Issue 状态更新",
         "closeIssue": "Issue 关闭",
-        "dispatchAgent": "Agent 指派",
-        "createTag": "Tag 创建",
+        "claimIssue": "Issue 认领",
+        "completeIssue": "Issue 完成",
+        "cancelClaim": "认领取消",
         "attachment": "附件操作",
         "skill": "Skill 操作",
         "request": "Space 请求"
@@ -354,10 +355,9 @@
       "notSynced": "未同步"
     },
     "filters": {
-      "allTags": "全部标签",
-      "allStatuses": "全部状态",
-      "noTag": "无标签",
-      "newTag": "新 tag"
+      "allGoals": "全部目标",
+      "inbox": "收件箱",
+      "allStatuses": "全部状态"
     },
     "toasts": {
       "loginSuccess": "已登录 MyAgents 社区",
@@ -365,7 +365,6 @@
       "loginSlow": "登录状态同步较慢，正在继续重试",
       "loginTimeout": "登录等待超时，请重新发起 Google 登录",
       "browserLoginOpened": "已打开浏览器登录",
-      "dispatchProcessed": "已处理 {{count}} 个 Space 派发任务",
       "refreshed": "已刷新",
       "logoutSuccess": "已退出 Space",
       "skillUploaded": "已上传 {{name}}",
@@ -384,10 +383,7 @@
       "noAgentWorkspaces": "暂无可用 Agent 工作区",
       "attachmentCommandCopied": "已复制附件下载命令",
       "attachmentPathCopied": "已复制附件本地路径",
-      "assignedToAgent": "已指派给 {{name}}",
-      "assignmentRecorded": "已记录指派：{{name}}",
       "issueCommandCopied": "已复制 issue 口令",
-      "tagCreated": "已创建 tag：{{name}}",
       "issueCreated": "已创建 Issue",
       "issueCreatedWithAttachments": "已创建 Issue 并上传 {{count}} 个附件"
     },
@@ -397,6 +393,7 @@
       "searchIssue": "搜索 Issue",
       "createIssue": "新建 Issue",
       "empty": "暂无匹配 Issue",
+      "humanOnly": "仅人工",
       "comments": "{{count}} 评论"
     },
     "createIssue": {
@@ -408,9 +405,7 @@
       "removeFile": "移除 {{name}}",
       "addAttachment": "添加附件",
       "attachment": "附件",
-      "tagPlaceholder": "tag 名称",
-      "createTag": "创建 tag",
-      "cancelCreateTag": "取消创建 tag",
+      "humanOnly": "仅人工",
       "continuous": "持续创建",
       "pickAttachmentsTitle": "选择 Issue 附件"
     },
@@ -428,10 +423,8 @@
       "copyCliDownloadCommand": "复制 CLI 下载命令",
       "copyAttachmentPath": "复制附件本地路径 {{name}}",
       "copyLocalPath": "复制本地路径",
-      "dispatchToAgent": "派发给 Agent",
+      "claimed": "已认领",
       "issueCommand": "Issue 口令",
-      "assignAgent": "指派 Agent",
-      "emptyRegisteredAgents": "暂无 Registered Agent",
       "copyIssueCommand": "复制 issue 口令",
       "comments": "评论",
       "commentCount": "{{count}} 条",
@@ -466,7 +459,6 @@
     },
     "agents": {
       "hint": "登记本地工作区，订阅并响应云端派发",
-      "sync": "同步",
       "register": "登记",
       "empty": "暂无 Registered Agents",
       "registerAgent": "登记 Agent",
@@ -479,19 +471,20 @@
       "revokeAgent": "撤销 Agent {{name}}",
       "revoke": "撤销",
       "viewSettings": "查看登记设置",
-      "status": "Status",
-      "lastSync": "Last sync",
-      "workspace": "Workspace",
-      "goal": "Goal",
+      "status": "状态",
+      "lastSync": "上次同步",
+      "workspace": "工作区",
+      "goal": "目标",
+      "subscription": "订阅",
+      "subscriptionTodo": "订阅该目标下的 Todo issue。",
       "revokeTitle": "撤销 Registered Agent",
       "revokeMessage": "确定要撤销「{{name}}」吗？撤销后该本地节点的 token 将失效，不能再接收新的派发。",
-      "editTitle": "Edit Agent",
-      "registerTitle": "Register Agent",
+      "editTitle": "编辑 Agent",
+      "registerTitle": "登记 Agent",
       "officialSpace": "Official Space",
-      "name": "Name",
-      "workspaceLabel": "Workspace label",
-      "displayNamePlaceholder": "Agent display name",
-      "goalPlaceholder": "Describe what this registered agent should handle."
+      "name": "名称",
+      "workspaceLabel": "工作区标签",
+      "displayNamePlaceholder": "Agent 展示名"
     }
   },
   "usageStats": {

@@ -32,6 +32,7 @@ export interface SpaceInfo {
   slug: string;
   name: string;
   joinPolicy: string;
+  rootGoalId?: string | null;
 }
 
 export interface SpaceMembership {
@@ -62,12 +63,50 @@ export interface SpaceTag {
   description?: string | null;
 }
 
+export type SpaceIssueState = 'open' | 'todo' | 'doing' | 'done' | 'closed';
+
+export interface SpaceGoal {
+  id: string;
+  spaceId: string;
+  parentGoalId?: string | null;
+  path: string;
+  depth: number;
+  title: string;
+  context: string;
+  archivedAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  goalPathLabel?: string | null;
+}
+
+export interface SpaceGoalSubscription {
+  id: string;
+  spaceId: string;
+  actorType: 'user' | 'registered_agent';
+  actorId: string;
+  goalId: string;
+  includeSubtree: boolean;
+  stateFilter: string[];
+  goalPathLabel?: string | null;
+  createdAt: string;
+}
+
 export interface SpaceIssue {
   id: string;
   spaceId: string;
+  goalId?: string | null;
+  parentIssueId?: string | null;
   title: string;
   body: string;
-  status: string;
+  state: SpaceIssueState | string;
+  humanOnly?: boolean;
+  createdByType?: 'user' | 'registered_agent';
+  createdById?: string;
+  createdByUserId?: string;
+  creator?: { id: string; name?: string | null };
+  notificationVersion?: number;
+  goalPathLabel?: string | null;
+  status?: string;
   author?: { id: string; name?: string | null };
   tags?: SpaceTag[];
   commentCount?: number;
@@ -98,8 +137,30 @@ export interface SpaceDownloadAttachmentResult {
   sizeBytes: number;
 }
 
+export interface SpaceIssueGoalReference {
+  goalId: string;
+  goalPath: string;
+  goalPathLabel?: string | null;
+  goalTitle: string;
+  goalContext: string;
+}
+
+export interface SpaceIssueClaim {
+  id: string;
+  spaceId: string;
+  issueId: string;
+  actorType: 'user' | 'registered_agent';
+  actorId: string;
+  status: 'active' | 'completed' | 'cancelled' | string;
+  localTaskId?: string | null;
+  localSessionId?: string | null;
+  claimedAt: string;
+  updatedAt: string;
+}
+
 export interface SpaceIssueDetail {
   issue: SpaceIssue;
+  goalReference?: SpaceIssueGoalReference | null;
   comments: {
     items: SpaceIssueComment[];
     hasMore: boolean;
@@ -107,6 +168,7 @@ export interface SpaceIssueDetail {
     limit: number;
   };
   attachments: SpaceAttachment[];
+  claim?: SpaceIssueClaim | null;
 }
 
 export interface SpaceSkill {
@@ -140,11 +202,17 @@ export interface LocalRegisteredAgent {
   id: string;
   baseUrl: string;
   spaceId: string;
+  clientId?: string | null;
+  localWorkspaceId?: string | null;
+  localAgentId?: string | null;
   workspaceId?: string | null;
   displayName: string;
   workspacePath: string;
   workspaceLabel?: string | null;
-  goalMd: string;
+  goalId?: string | null;
+  goalPathLabel?: string | null;
+  stateFilter: string[];
+  goalMd?: string | null;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -154,9 +222,13 @@ export interface SpaceRegisteredAgent {
   id: string;
   spaceId: string;
   ownerUserId?: string | null;
+  clientId?: string | null;
+  localWorkspaceId?: string | null;
+  localAgentId?: string | null;
   displayName: string;
   workspaceLabel?: string | null;
-  goalMd: string;
+  subscriptions?: SpaceGoalSubscription[];
+  goalMd?: string | null;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -267,8 +339,9 @@ function operationFromPath(context?: SpaceErrorContext): string {
   if (method === 'POST' && /\/api\/spaces\/[^/]+\/issues$/.test(path)) return spaceText('operations.createIssue');
   if (method === 'POST' && /\/api\/issues\/[^/]+\/status$/.test(path)) return spaceText('operations.updateIssueStatus');
   if (method === 'POST' && /\/api\/issues\/[^/]+\/close-own$/.test(path)) return spaceText('operations.closeIssue');
-  if (method === 'POST' && /\/api\/issues\/[^/]+\/dispatch$/.test(path)) return spaceText('operations.dispatchAgent');
-  if (method === 'POST' && /\/api\/spaces\/[^/]+\/tags$/.test(path)) return spaceText('operations.createTag');
+  if (method === 'POST' && /\/api\/issues\/[^/]+\/claim$/.test(path)) return spaceText('operations.claimIssue');
+  if (method === 'POST' && /\/api\/issues\/[^/]+\/complete$/.test(path)) return spaceText('operations.completeIssue');
+  if (method === 'POST' && /\/api\/issues\/[^/]+\/cancel-claim$/.test(path)) return spaceText('operations.cancelClaim');
   if (path.includes('/attachments')) return spaceText('operations.attachment');
   if (path.includes('/skills')) return spaceText('operations.skill');
   return spaceText('operations.request');
@@ -403,18 +476,28 @@ export function spaceLogout(): Promise<void> {
   return inv('cmd_space_logout');
 }
 
-export function spaceGetOfficial(spaceId = DEFAULT_SPACE_ID): Promise<{ space: SpaceInfo; membership: SpaceMembership; tags: SpaceTag[] }> {
+export function spaceGetOfficial(spaceId = DEFAULT_SPACE_ID): Promise<{ space: SpaceInfo; membership: SpaceMembership; goals: SpaceGoal[]; tags?: SpaceTag[] }> {
   return spaceApi('GET', `/api/spaces/${spacePath(spaceId)}`);
 }
 
 export function spaceListIssues(
-  params: { q?: string; tag?: string; status?: string; cursor?: string; limit?: number },
+  params: {
+    q?: string;
+    state?: string;
+    goalId?: string | null;
+    includeSubtree?: boolean;
+    humanOnly?: boolean | null;
+    cursor?: string;
+    limit?: number;
+  },
   spaceId = DEFAULT_SPACE_ID,
 ) {
   const search = new URLSearchParams();
   if (params.q) search.set('q', params.q);
-  if (params.tag) search.set('tag', params.tag);
-  if (params.status) search.set('status', params.status);
+  if (params.state) search.set('state', params.state);
+  if (params.goalId) search.set('goalId', params.goalId);
+  if (params.includeSubtree !== undefined) search.set('includeSubtree', String(params.includeSubtree));
+  if (params.humanOnly !== undefined && params.humanOnly !== null) search.set('humanOnly', String(params.humanOnly));
   if (params.cursor) search.set('cursor', params.cursor);
   search.set('limit', String(params.limit ?? 30));
   return spaceApi<{ items: SpaceIssue[]; hasMore: boolean; nextCursor?: string | null }>(
@@ -434,12 +517,14 @@ export function spaceListEvents(params: { cursor?: string | null; limit?: number
   );
 }
 
-export function spaceCreateIssue(input: { title: string; body: string; tags: string[] }, spaceId = DEFAULT_SPACE_ID) {
+export function spaceCreateIssue(input: {
+  title: string;
+  body: string;
+  goalId?: string | null;
+  parentIssueId?: string | null;
+  humanOnly?: boolean;
+}, spaceId = DEFAULT_SPACE_ID) {
   return spaceApi<{ issue: SpaceIssue }>('POST', `/api/spaces/${spacePath(spaceId)}/issues`, input);
-}
-
-export function spaceCreateTag(input: { name: string; color?: string | null; description?: string | null }, spaceId = DEFAULT_SPACE_ID) {
-  return spaceApi<{ tag: SpaceTag }>('POST', `/api/spaces/${spacePath(spaceId)}/tags`, input);
 }
 
 export function spaceGetIssue(id: string, commentsCursor?: string | null) {
@@ -452,20 +537,28 @@ export function spaceCommentIssue(id: string, body: string) {
   return spaceApi<{ comment: SpaceIssueComment }>('POST', `/api/issues/${encodeURIComponent(id)}/comments`, { body });
 }
 
-export function spaceSetIssueStatus(id: string, status: string) {
-  return spaceApi<{ status: string; updatedAt: string }>('POST', `/api/issues/${encodeURIComponent(id)}/status`, { status });
+export function spaceSetIssueState(id: string, state: string) {
+  return spaceApi<{ state: string; updatedAt: string }>('POST', `/api/issues/${encodeURIComponent(id)}/status`, { state });
 }
 
 export function spaceCloseOwnIssue(id: string) {
-  return spaceApi<{ status: string; updatedAt: string }>('POST', `/api/issues/${encodeURIComponent(id)}/close-own`, {});
+  return spaceApi<{ state: string; updatedAt: string }>('POST', `/api/issues/${encodeURIComponent(id)}/close-own`, {});
 }
 
-export function spaceDispatchIssue(id: string, registeredAgentId: string) {
-  return spaceApi<{ dispatch: { id: string; issueId: string; registeredAgentId: string; deliveryStatus: string; createdAt: string } }>(
-    'POST',
-    `/api/issues/${encodeURIComponent(id)}/dispatch`,
-    { registeredAgentId },
-  );
+export function spaceCloseIssue(id: string) {
+  return spaceApi<{ state: string; updatedAt: string }>('POST', `/api/issues/${encodeURIComponent(id)}/close`, {});
+}
+
+export function spaceCompleteIssue(id: string) {
+  return spaceApi<{ state: string; updatedAt: string }>('POST', `/api/issues/${encodeURIComponent(id)}/complete`, {});
+}
+
+export function spaceCancelIssueClaim(id: string) {
+  return spaceApi<{ state: string; updatedAt: string }>('POST', `/api/issues/${encodeURIComponent(id)}/cancel-claim`, {});
+}
+
+export function spaceClaimIssue(id: string, deliveryId?: string | null) {
+  return spaceApi<{ claim: SpaceIssueClaim }>('POST', `/api/issues/${encodeURIComponent(id)}/claim`, { deliveryId });
 }
 
 export function spaceListSkills(spaceId = DEFAULT_SPACE_ID) {
@@ -527,7 +620,8 @@ export function spaceRegisterAgent(input: {
   workspaceId: string;
   workspacePath: string;
   workspaceLabel?: string;
-  goalMd: string;
+  goalId: string;
+  stateFilter?: string[];
 }) {
   return inv<LocalRegisteredAgent>('cmd_space_register_agent', { input });
 }
@@ -536,7 +630,6 @@ export function spaceUpdateRegisteredAgent(input: {
   id: string;
   displayName?: string;
   workspaceLabel?: string;
-  goalMd?: string;
   status?: 'active' | 'disabled';
 }) {
   return inv<LocalRegisteredAgent>('cmd_space_update_registered_agent', { input });

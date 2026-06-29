@@ -311,8 +311,9 @@
         "createIssue": "Issue creation",
         "updateIssueStatus": "Issue status update",
         "closeIssue": "Issue close",
-        "dispatchAgent": "Agent assignment",
-        "createTag": "Tag creation",
+        "claimIssue": "Issue claim",
+        "completeIssue": "Issue completion",
+        "cancelClaim": "Claim cancellation",
         "attachment": "Attachment operation",
         "skill": "Skill operation",
         "request": "Space request"
@@ -354,10 +355,9 @@
       "notSynced": "Not synced"
     },
     "filters": {
-      "allTags": "All tags",
-      "allStatuses": "All statuses",
-      "noTag": "No tag",
-      "newTag": "New tag"
+      "allGoals": "All goals",
+      "inbox": "Inbox",
+      "allStatuses": "All statuses"
     },
     "toasts": {
       "loginSuccess": "Signed in to MyAgents Community",
@@ -365,7 +365,6 @@
       "loginSlow": "Login status sync is slow. Retrying...",
       "loginTimeout": "Login timed out. Start Google login again.",
       "browserLoginOpened": "Opened browser login",
-      "dispatchProcessed": "Processed {{count}} Space dispatch task(s)",
       "refreshed": "Refreshed",
       "logoutSuccess": "Signed out of Space",
       "skillUploaded": "Uploaded {{name}}",
@@ -384,10 +383,7 @@
       "noAgentWorkspaces": "No Agent workspaces available",
       "attachmentCommandCopied": "Attachment download command copied",
       "attachmentPathCopied": "Local attachment path copied",
-      "assignedToAgent": "Assigned to {{name}}",
-      "assignmentRecorded": "Assignment recorded: {{name}}",
       "issueCommandCopied": "Issue command copied",
-      "tagCreated": "Created tag: {{name}}",
       "issueCreated": "Issue created",
       "issueCreatedWithAttachments": "Issue created and {{count}} attachment(s) uploaded"
     },
@@ -397,6 +393,7 @@
       "searchIssue": "Search issue",
       "createIssue": "New Issue",
       "empty": "No matching issues",
+      "humanOnly": "Human-only",
       "comments": "{{count}} comments"
     },
     "createIssue": {
@@ -408,9 +405,7 @@
       "removeFile": "Remove {{name}}",
       "addAttachment": "Add attachment",
       "attachment": "Attachment",
-      "tagPlaceholder": "Tag name",
-      "createTag": "Create tag",
-      "cancelCreateTag": "Cancel tag creation",
+      "humanOnly": "Human-only",
       "continuous": "Keep creating",
       "pickAttachmentsTitle": "Choose issue attachments"
     },
@@ -428,10 +423,8 @@
       "copyCliDownloadCommand": "Copy CLI download command",
       "copyAttachmentPath": "Copy local attachment path {{name}}",
       "copyLocalPath": "Copy local path",
-      "dispatchToAgent": "Dispatch to Agent",
+      "claimed": "Claimed",
       "issueCommand": "Issue command",
-      "assignAgent": "Assign Agent",
-      "emptyRegisteredAgents": "No Registered Agents",
       "copyIssueCommand": "Copy issue command",
       "comments": "Comments",
       "commentCount": "{{count}} comments",
@@ -466,7 +459,6 @@
     },
     "agents": {
       "hint": "Register local workspaces to subscribe and respond to cloud dispatches.",
-      "sync": "Sync",
       "register": "Register",
       "empty": "No Registered Agents",
       "registerAgent": "Register Agent",
@@ -483,6 +475,8 @@
       "lastSync": "Last sync",
       "workspace": "Workspace",
       "goal": "Goal",
+      "subscription": "Subscription",
+      "subscriptionTodo": "Subscribes to Todo issues in this goal.",
       "revokeTitle": "Revoke Registered Agent",
       "revokeMessage": "Revoke \"{{name}}\"? The token for this local node will be invalidated and it will no longer receive new dispatches.",
       "editTitle": "Edit Agent",
@@ -490,8 +484,7 @@
       "officialSpace": "Official Space",
       "name": "Name",
       "workspaceLabel": "Workspace label",
-      "displayNamePlaceholder": "Agent display name",
-      "goalPlaceholder": "Describe what this registered agent should handle."
+      "displayNamePlaceholder": "Agent display name"
     }
   },
   "usageStats": {

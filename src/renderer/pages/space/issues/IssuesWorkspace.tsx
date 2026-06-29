@@ -13,12 +13,12 @@ export function IssuesWorkspace({
   issues,
   issuesLoading,
   issueQ,
-  selectedTag,
+  selectedGoalId,
   selectedStatus,
-  tagOptions,
+  goalOptions,
   activeIssueId,
   onQueryChange,
-  onTagChange,
+  onGoalChange,
   onStatusChange,
   onRefresh,
   onCreate,
@@ -28,12 +28,12 @@ export function IssuesWorkspace({
   issues: SpaceIssue[];
   issuesLoading: boolean;
   issueQ: string;
-  selectedTag: string;
+  selectedGoalId: string;
   selectedStatus: string;
-  tagOptions: SelectOption[];
+  goalOptions: SelectOption[];
   activeIssueId: string | null;
   onQueryChange: (value: string) => void;
-  onTagChange: (value: string) => void;
+  onGoalChange: (value: string) => void;
   onStatusChange: (value: string) => void;
   onRefresh: () => Promise<void>;
   onCreate: () => void;
@@ -102,7 +102,7 @@ export function IssuesWorkspace({
               <Search className="h-4 w-4" />
             </button>
             <CustomSelect value={selectedStatus} options={statusFilterOptions} onChange={onStatusChange} size="toolbar" className="w-40 min-w-0 max-xl:w-36" />
-            <CustomSelect value={selectedTag} options={tagOptions} onChange={onTagChange} size="toolbar" className="w-40 min-w-0 max-xl:w-36" />
+            <CustomSelect value={selectedGoalId} options={goalOptions} onChange={onGoalChange} size="toolbar" className="w-56 min-w-0 max-xl:w-44" />
             <button
               type="button"
               onClick={() => void onRefresh()}
@@ -183,8 +183,8 @@ function IssueStreamRow({
 }) {
   const { t } = useTranslation('app');
   const displayTitle = issueDisplayTitle(issue);
-  const visibleTags = issue.tags ?? [];
-  const authorName = issue.author?.name ?? issue.author?.id ?? 'owner';
+  const authorName = issue.creator?.name ?? issue.creator?.id ?? issue.author?.name ?? issue.author?.id ?? 'owner';
+  const goalLabel = issue.goalPathLabel || (issue.goalId ? issue.goalId : t('space.filters.inbox'));
   return (
     <button
       type="button"
@@ -196,7 +196,7 @@ function IssueStreamRow({
     >
       <span className="min-w-0">
         <span className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2">
-          <span className={`rounded-md px-2 py-1 text-xs font-semibold ${statusPillClass(issue.status)}`}>{issueStatusLabel(issue.status)}</span>
+          <span className={`rounded-md px-2 py-1 text-xs font-semibold ${statusPillClass(issue.state)}`}>{issueStatusLabel(issue.state)}</span>
           <span className="truncate text-base font-semibold leading-6 text-[var(--ink)]">{displayTitle}</span>
         </span>
         <span className="mt-2 flex flex-wrap items-center gap-2 text-xs font-semibold text-[var(--ink-subtle)]">
@@ -205,12 +205,13 @@ function IssueStreamRow({
           <span>{formatTime(issue.createdAt)}</span>
           <span className="text-[var(--line-strong)]">·</span>
           <span>{t('space.issues.comments', { count: issue.commentCount ?? 0 })}</span>
-          {visibleTags.length > 0 && <span className="text-[var(--line-strong)]">·</span>}
-          {visibleTags.map((tag) => (
-            <span key={tag.id} className="rounded-md bg-[var(--accent-cool)]/10 px-2 py-0.5 text-xs font-semibold text-[var(--accent-cool)]">
-              # {tag.name}
+          <span className="text-[var(--line-strong)]">·</span>
+          <span className="rounded-md bg-[var(--accent-cool)]/10 px-2 py-0.5 text-xs font-semibold text-[var(--accent-cool)]">{goalLabel}</span>
+          {issue.humanOnly && (
+            <span className="rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">
+              {t('space.issues.humanOnly')}
             </span>
-          ))}
+          )}
         </span>
       </span>
     </button>

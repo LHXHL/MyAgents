@@ -4,22 +4,21 @@ import { findProjectForAgent } from '@/api/spaceCloud';
 
 export const ISSUE_STATUSES = [
   'open',
-  'triaged',
-  'in_progress',
-  'resolved',
+  'todo',
+  'doing',
+  'done',
   'closed',
-  'declined',
-  'duplicate',
-  'archived',
 ] as const;
 
 export type IssueStatus = typeof ISSUE_STATUSES[number];
-const CLOSED_ISSUE_STATUSES = new Set(['resolved', 'closed', 'declined', 'duplicate', 'archived']);
+const CLOSED_ISSUE_STATUSES = new Set(['done', 'closed']);
 
 export interface IssueQueryParams {
   q?: string;
-  tag?: string;
-  status?: string;
+  state?: string;
+  goalId?: string;
+  includeSubtree?: boolean;
+  humanOnly?: boolean | null;
   cursor?: string;
   limit?: number;
 }
@@ -27,15 +26,19 @@ export interface IssueQueryParams {
 export function buildIssueQueryKey(params: IssueQueryParams): string {
   const normalized = {
     q: params.q?.trim() ?? '',
-    tag: params.tag?.trim() ?? '',
-    status: params.status?.trim() ?? '',
+    state: params.state?.trim() ?? '',
+    goalId: params.goalId?.trim() ?? '',
+    includeSubtree: params.includeSubtree ? 'true' : '',
+    humanOnly: params.humanOnly === undefined || params.humanOnly === null ? '' : String(params.humanOnly),
     cursor: params.cursor?.trim() ?? '',
     limit: params.limit ?? 50,
   };
   return new URLSearchParams([
     ['q', normalized.q],
-    ['tag', normalized.tag],
-    ['status', normalized.status],
+    ['state', normalized.state],
+    ['goalId', normalized.goalId],
+    ['includeSubtree', normalized.includeSubtree],
+    ['humanOnly', normalized.humanOnly],
     ['cursor', normalized.cursor],
     ['limit', String(normalized.limit)],
   ]).toString();
@@ -50,8 +53,8 @@ export function isClosedIssue(status: string): boolean {
 }
 
 export function canCloseOwnIssue(session: SpaceSession | null, issue: SpaceIssue | null): boolean {
-  if (!session || !issue || isSpaceAdmin(session) || isClosedIssue(issue.status)) return false;
-  return issue.author?.id === session.user.id;
+  if (!session || !issue || isSpaceAdmin(session) || isClosedIssue(issue.state)) return false;
+  return issue.createdByUserId === session.user.id || issue.creator?.id === session.user.id || issue.author?.id === session.user.id;
 }
 
 export function getIssueStatusOptions(args: {
@@ -60,11 +63,13 @@ export function getIssueStatusOptions(args: {
 }): Array<{ value: string; label: string; kind: 'set-status' | 'close-own' }> {
   if (!args.session || !args.issue) return [];
   if (isSpaceAdmin(args.session)) {
-    return ISSUE_STATUSES.map((status) => ({
-      value: status,
-      label: issueStatusLabel(status),
-      kind: 'set-status',
-    }));
+    return ISSUE_STATUSES
+      .filter((state) => state !== 'doing')
+      .map((state) => ({
+        value: state,
+        label: issueStatusLabel(state),
+        kind: 'set-status',
+      }));
   }
   if (canCloseOwnIssue(args.session, args.issue)) {
     return [{ value: 'closed', label: 'Close issue', kind: 'close-own' }];
@@ -73,6 +78,9 @@ export function getIssueStatusOptions(args: {
 }
 
 export function issueStatusLabel(status: string): string {
+  if (status === 'todo') return 'todo';
+  if (status === 'doing') return 'doing';
+  if (status === 'done') return 'done';
   return status.replaceAll('_', ' ');
 }
 
@@ -80,9 +88,9 @@ function normalizeIssueStatusToken(value: string): string {
   return value.trim().toLowerCase().replace(/\s+/g, '_');
 }
 
-export function issueDisplayTitle(issue: Pick<SpaceIssue, 'status' | 'title'>): string {
+export function issueDisplayTitle(issue: Pick<SpaceIssue, 'state' | 'title'>): string {
   return issue.title.replace(/^\[([^\]]+)\]\s*/, (match, rawStatus: string) => (
-    normalizeIssueStatusToken(rawStatus) === normalizeIssueStatusToken(issue.status) ? '' : match
+    normalizeIssueStatusToken(rawStatus) === normalizeIssueStatusToken(issue.state) ? '' : match
   ));
 }
 
@@ -95,15 +103,15 @@ export function buildIssueCommandPrompt(args: { spaceName: string; issueId: stri
     `Issue ID: ${args.issueId}`,
     '',
     '命令：',
-    `myagents issue ${args.issueId}`,
+    `myagents space issue view ${args.issueId} --comments`,
     '',
     '处理时可按需使用：',
-    `myagents issue ${args.issueId} comment "<和用户确认后的处理记录>"`,
-    `myagents issue ${args.issueId} status in_progress`,
-    `myagents issue ${args.issueId} attachments`,
+    `myagents space issue comment ${args.issueId} --body "<和用户确认后的处理记录>"`,
+    `myagents space issue claim ${args.issueId}`,
+    `myagents space issue complete ${args.issueId}`,
     '',
     '兼容命令：',
-    `myagents space issue get ${args.issueId} --json`,
+    `myagents issue ${args.issueId} --json`,
   ].join('\n');
 }
 

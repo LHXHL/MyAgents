@@ -2,12 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiMocks = vi.hoisted(() => ({
   findProjectForAgent: vi.fn(),
+  spaceCancelIssueClaim: vi.fn(),
+  spaceCloseIssue: vi.fn(),
   spaceCloseOwnIssue: vi.fn(),
   spaceCommentIssue: vi.fn(),
+  spaceCompleteIssue: vi.fn(),
   spaceCreateIssue: vi.fn(),
-  spaceCreateTag: vi.fn(),
   spaceDeleteSkill: vi.fn(),
-  spaceDispatchIssue: vi.fn(),
   spaceDownloadIssueAttachment: vi.fn(),
   spaceGetIssue: vi.fn(),
   spaceGetOfficial: vi.fn(),
@@ -21,10 +22,9 @@ const apiMocks = vi.hoisted(() => ({
   spaceListRegisteredAgents: vi.fn(),
   spaceListSkills: vi.fn(),
   spaceLogout: vi.fn(),
-  spaceProcessDispatchesOnce: vi.fn(),
   spaceRegisterAgent: vi.fn(),
   spaceRevokeRegisteredAgent: vi.fn(),
-  spaceSetIssueStatus: vi.fn(),
+  spaceSetIssueState: vi.fn(),
   spaceUpdateRegisteredAgent: vi.fn(),
   spaceUploadIssueAttachments: vi.fn(),
   spaceUploadSkillZip: vi.fn(),
@@ -33,12 +33,13 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock('@/api/spaceCloud', () => ({
   DEFAULT_SPACE_ID: 'official',
   findProjectForAgent: apiMocks.findProjectForAgent,
+  spaceCancelIssueClaim: apiMocks.spaceCancelIssueClaim,
+  spaceCloseIssue: apiMocks.spaceCloseIssue,
   spaceCloseOwnIssue: apiMocks.spaceCloseOwnIssue,
   spaceCommentIssue: apiMocks.spaceCommentIssue,
+  spaceCompleteIssue: apiMocks.spaceCompleteIssue,
   spaceCreateIssue: apiMocks.spaceCreateIssue,
-  spaceCreateTag: apiMocks.spaceCreateTag,
   spaceDeleteSkill: apiMocks.spaceDeleteSkill,
-  spaceDispatchIssue: apiMocks.spaceDispatchIssue,
   spaceDownloadIssueAttachment: apiMocks.spaceDownloadIssueAttachment,
   spaceGetIssue: apiMocks.spaceGetIssue,
   spaceGetOfficial: apiMocks.spaceGetOfficial,
@@ -52,16 +53,15 @@ vi.mock('@/api/spaceCloud', () => ({
   spaceListRegisteredAgents: apiMocks.spaceListRegisteredAgents,
   spaceListSkills: apiMocks.spaceListSkills,
   spaceLogout: apiMocks.spaceLogout,
-  spaceProcessDispatchesOnce: apiMocks.spaceProcessDispatchesOnce,
   spaceRegisterAgent: apiMocks.spaceRegisterAgent,
   spaceRevokeRegisteredAgent: apiMocks.spaceRevokeRegisteredAgent,
-  spaceSetIssueStatus: apiMocks.spaceSetIssueStatus,
+  spaceSetIssueState: apiMocks.spaceSetIssueState,
   spaceUpdateRegisteredAgent: apiMocks.spaceUpdateRegisteredAgent,
   spaceUploadIssueAttachments: apiMocks.spaceUploadIssueAttachments,
   spaceUploadSkillZip: apiMocks.spaceUploadSkillZip,
 }));
 
-import type { LocalRegisteredAgent, SpaceEvent, SpaceIssue, SpaceIssueComment, SpaceIssueDetail, SpaceSession, SpaceSkill, SpaceTag } from '@/api/spaceCloud';
+import type { LocalRegisteredAgent, SpaceEvent, SpaceIssue, SpaceIssueComment, SpaceIssueDetail, SpaceSession, SpaceSkill } from '@/api/spaceCloud';
 import {
   SPACE_MAX_ISSUE_DETAIL_CACHES,
   SPACE_MAX_SKILL_FILE_CACHES,
@@ -86,9 +86,13 @@ const fakeIssue: SpaceIssue = {
   spaceId: 'space-1',
   title: 'Test',
   body: 'Body',
+  state: 'todo',
+  goalId: 'goal-1',
+  goalPathLabel: 'Runtime',
+  humanOnly: false,
+  creator: { id: 'user-1', name: 'Ethan' },
   status: 'open',
   author: { id: 'user-1', name: 'Ethan' },
-  tags: [],
   commentCount: 0,
   attachmentCount: 0,
   createdAt: '2026-06-24T00:00:00.000Z',
@@ -124,7 +128,9 @@ const fakeAgent: LocalRegisteredAgent = {
   displayName: 'Frontend Agent',
   workspacePath: '/tmp/workspace',
   workspaceLabel: 'Workspace',
-  goalMd: 'Handle frontend issues.',
+  goalId: 'goal-1',
+  goalPathLabel: 'Runtime',
+  stateFilter: ['todo'],
   status: 'active',
   createdAt: '2026-06-24T00:00:00.000Z',
   updatedAt: '2026-06-24T00:00:00.000Z',
@@ -156,7 +162,19 @@ describe('spaceStore snapshot', () => {
 
     expect(first).toBe(second);
 
-    __setSpaceStoreStateForTest({ tags: [{ id: 'tag-1', name: 'bug' }] });
+    __setSpaceStoreStateForTest({
+      goals: [{
+        id: 'goal-1',
+        spaceId: 'space-1',
+        parentGoalId: null,
+        path: 'runtime',
+        depth: 0,
+        title: 'Runtime',
+        context: 'Runtime work',
+        createdAt: '2026-06-24T00:00:00.000Z',
+        updatedAt: '2026-06-24T00:00:00.000Z',
+      }],
+    });
 
     expect(getSnapshot()).not.toBe(first);
   });
@@ -168,7 +186,7 @@ describe('spaceStore boot', () => {
     apiMocks.spaceGetOfficial.mockResolvedValueOnce({
       space: fakeSession.space,
       membership: fakeSession.membership,
-      tags: [],
+      goals: [],
     });
 
     await actions.ensureBootstrapped({ force: true });
@@ -189,7 +207,15 @@ describe('spaceStore issue refresh', () => {
 
     expect(apiMocks.spaceListIssues).toHaveBeenCalledTimes(1);
     expect(apiMocks.spaceListIssues).toHaveBeenCalledWith(
-      { q: 'Test', tag: undefined, status: undefined, cursor: undefined, limit: 50 },
+      {
+        q: 'Test',
+        state: undefined,
+        goalId: undefined,
+        includeSubtree: undefined,
+        humanOnly: undefined,
+        cursor: undefined,
+        limit: 50,
+      },
       'official',
     );
 
@@ -224,78 +250,68 @@ describe('spaceStore issue refresh', () => {
     const newIssue = { ...fakeIssue, id: 'iss_456', title: 'Second' };
     apiMocks.spaceCreateIssue.mockResolvedValueOnce({ issue: newIssue });
 
-    await actions.createIssue({ title: 'Second', body: 'Body', tags: [] });
+    await actions.createIssue({ title: 'Second', body: 'Body' });
 
     expect(getIssueListState({ limit: 50 }).items.map((issue) => issue.id)).toEqual(['iss_456', 'iss_123']);
   });
 
   it('does not inject created issues into cached lists with non-matching filters', async () => {
     __setSpaceStoreStateForTest({ boot: 'ready', session: fakeSession });
-    const bugIssue = { ...fakeIssue, tags: [{ id: 'tag-1', name: 'bug' }] };
-    apiMocks.spaceListIssues.mockResolvedValueOnce({ items: [bugIssue], hasMore: false, nextCursor: null });
-    await actions.refreshIssues({ tag: 'bug', limit: 50 }, { force: true });
+    const runtimeIssue = { ...fakeIssue, goalId: 'goal-runtime', goalPathLabel: 'Runtime' };
+    apiMocks.spaceListIssues.mockResolvedValueOnce({ items: [runtimeIssue], hasMore: false, nextCursor: null });
+    await actions.refreshIssues({ goalId: 'goal-runtime', limit: 50 }, { force: true });
 
-    const featureIssue = {
+    const uiIssue = {
       ...fakeIssue,
       id: 'iss_456',
-      title: 'Feature',
-      tags: [{ id: 'tag-2', name: 'feature' }],
+      title: 'UI',
+      goalId: 'goal-ui',
+      goalPathLabel: 'UI',
     };
-    apiMocks.spaceCreateIssue.mockResolvedValueOnce({ issue: featureIssue });
+    apiMocks.spaceCreateIssue.mockResolvedValueOnce({ issue: uiIssue });
 
-    await actions.createIssue({ title: 'Feature', body: 'Body', tags: ['feature'] });
+    await actions.createIssue({ title: 'UI', body: 'Body', goalId: 'goal-ui' });
 
-    expect(getIssueListState({ tag: 'bug', limit: 50 }).items.map((issue) => issue.id)).toEqual(['iss_123']);
+    expect(getIssueListState({ goalId: 'goal-runtime', limit: 50 }).items.map((issue) => issue.id)).toEqual(['iss_123']);
   });
 
-  it('matches filtered issue lists by tag id and tag name for real API and mock compatibility', async () => {
+  it('matches filtered issue lists by goal id', async () => {
     __setSpaceStoreStateForTest({ boot: 'ready', session: fakeSession });
-    const bugIssue = { ...fakeIssue, tags: [{ id: 'tag-1', name: 'bug' }] };
+    const runtimeIssue = { ...fakeIssue, goalId: 'goal-runtime', goalPathLabel: 'Runtime' };
     apiMocks.spaceListIssues
-      .mockResolvedValueOnce({ items: [bugIssue], hasMore: false, nextCursor: null })
-      .mockResolvedValueOnce({ items: [bugIssue], hasMore: false, nextCursor: null });
-    await actions.refreshIssues({ tag: 'tag-1', limit: 50 }, { force: true });
-    await actions.refreshIssues({ tag: 'bug', limit: 50 }, { force: true });
+      .mockResolvedValueOnce({ items: [runtimeIssue], hasMore: false, nextCursor: null })
+      .mockResolvedValueOnce({ items: [runtimeIssue], hasMore: false, nextCursor: null });
+    await actions.refreshIssues({ goalId: 'goal-runtime', limit: 50 }, { force: true });
+    await actions.refreshIssues({ goalId: 'goal-runtime', includeSubtree: true, limit: 50 }, { force: true });
 
-    const nextIssue = { ...bugIssue, id: 'iss_456', title: 'Patched' };
+    const nextIssue = { ...runtimeIssue, id: 'iss_456', title: 'Patched' };
     apiMocks.spaceCreateIssue.mockResolvedValueOnce({ issue: nextIssue });
 
-    await actions.createIssue({ title: nextIssue.title, body: nextIssue.body, tags: ['tag-1'] });
+    await actions.createIssue({ title: nextIssue.title, body: nextIssue.body, goalId: 'goal-runtime' });
 
-    expect(getIssueListState({ tag: 'tag-1', limit: 50 }).items.map((issue) => issue.id)).toEqual(['iss_456', 'iss_123']);
-    expect(getIssueListState({ tag: 'bug', limit: 50 }).items.map((issue) => issue.id)).toEqual(['iss_456', 'iss_123']);
+    expect(getIssueListState({ goalId: 'goal-runtime', limit: 50 }).items.map((issue) => issue.id)).toEqual(['iss_456', 'iss_123']);
+    expect(getIssueListState({ goalId: 'goal-runtime', includeSubtree: true, limit: 50 }).items.map((issue) => issue.id)).toEqual(['iss_456', 'iss_123']);
   });
 
-  it('adds newly created tags to the shared tag list', async () => {
-    __setSpaceStoreStateForTest({ boot: 'ready', session: fakeSession, tags: [{ id: 'tag-1', name: 'bug' }] });
-    const featureTag: SpaceTag = { id: 'tag-2', name: 'feature', color: null };
-    apiMocks.spaceCreateTag.mockResolvedValueOnce({ tag: featureTag });
-
-    await expect(actions.createTag({ name: 'feature' })).resolves.toEqual(featureTag);
-
-    expect(apiMocks.spaceCreateTag).toHaveBeenCalledWith({ name: 'feature' }, 'official');
-    expect(getSnapshot().tags.map((tag) => tag.name)).toEqual(['bug', 'feature']);
-  });
-
-  it('moves a status-mutated issue between cached filtered lists', async () => {
+  it('moves a state-mutated issue between cached filtered lists', async () => {
     __setSpaceStoreStateForTest({ boot: 'ready', session: fakeSession });
     apiMocks.spaceListIssues
       .mockResolvedValueOnce({ items: [fakeIssue], hasMore: false, nextCursor: null })
       .mockResolvedValueOnce({ items: [], hasMore: false, nextCursor: null });
 
-    await actions.refreshIssues({ status: 'open', limit: 50 }, { force: true });
-    await actions.refreshIssues({ status: 'in_progress', limit: 50 }, { force: true });
+    await actions.refreshIssues({ state: 'todo', limit: 50 }, { force: true });
+    await actions.refreshIssues({ state: 'doing', limit: 50 }, { force: true });
 
-    apiMocks.spaceSetIssueStatus.mockResolvedValueOnce({
-      status: 'in_progress',
+    apiMocks.spaceSetIssueState.mockResolvedValueOnce({
+      state: 'doing',
       updatedAt: '2026-06-24T01:00:00.000Z',
     });
 
-    await actions.setIssueStatus('iss_123', 'in_progress');
+    await actions.setIssueState('iss_123', 'doing');
 
-    expect(getIssueListState({ status: 'open', limit: 50 }).items).toEqual([]);
-    expect(getIssueListState({ status: 'in_progress', limit: 50 }).items.map((issue) => issue.id)).toEqual(['iss_123']);
-    expect(getIssueListState({ status: 'in_progress', limit: 50 }).items[0]?.status).toBe('in_progress');
+    expect(getIssueListState({ state: 'todo', limit: 50 }).items).toEqual([]);
+    expect(getIssueListState({ state: 'doing', limit: 50 }).items.map((issue) => issue.id)).toEqual(['iss_123']);
+    expect(getIssueListState({ state: 'doing', limit: 50 }).items[0]?.state).toBe('doing');
   });
 
   it('patches issue detail comments and list counters after a successful comment', async () => {

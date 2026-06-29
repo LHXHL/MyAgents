@@ -1,11 +1,12 @@
 import {
   DEFAULT_SPACE_ID,
   spaceCloseOwnIssue,
+  spaceCloseIssue,
   spaceCommentIssue,
+  spaceCompleteIssue,
   spaceCreateIssue,
-  spaceCreateTag,
+  spaceCancelIssueClaim,
   spaceDeleteSkill,
-  spaceDispatchIssue,
   spaceDownloadIssueAttachment,
   spaceGetIssue,
   spaceGetOfficial,
@@ -19,10 +20,9 @@ import {
   spaceListRegisteredAgents,
   spaceListSkills,
   spaceLogout,
-  spaceProcessDispatchesOnce,
   spaceRegisterAgent,
   spaceRevokeRegisteredAgent,
-  spaceSetIssueStatus,
+  spaceSetIssueState,
   spaceUpdateRegisteredAgent,
   spaceUploadIssueAttachments,
   spaceUploadSkillZip,
@@ -30,13 +30,13 @@ import {
   type SpaceAttachment,
   type SpaceDownloadAttachmentResult,
   type SpaceEvent,
+  type SpaceGoal,
   type SpaceIssue,
   type SpaceIssueDetail,
   type SpaceRegisteredAgent,
   type SpaceSession,
   type SpaceSkill,
   type SpaceSkillDetail,
-  type SpaceTag,
 } from '@/api/spaceCloud';
 import type { IssueQueryParams } from './spaceHelpers';
 import { buildIssueQueryKey } from './spaceHelpers';
@@ -117,7 +117,7 @@ interface StoreState {
   boot: BootState;
   session: SpaceSession | null;
   spaceId: string | null;
-  tags: SpaceTag[];
+  goals: SpaceGoal[];
   bootError: string | null;
   bootLastFetchedAt: number;
   issuesByKey: Record<string, SpaceIssueListState>;
@@ -150,8 +150,7 @@ export interface SpaceActions {
   refreshLocalAgents: (options?: RefreshOptions) => Promise<void>;
   refreshRegisteredAgents: (options?: RefreshOptions) => Promise<void>;
   syncEvents: (options?: RefreshOptions) => Promise<SpaceEvent[]>;
-  createIssue: (input: { title: string; body: string; tags: string[] }) => Promise<SpaceIssue>;
-  createTag: (input: { name: string; color?: string | null; description?: string | null }) => Promise<SpaceTag>;
+  createIssue: (input: { title: string; body: string; goalId?: string | null; humanOnly?: boolean }) => Promise<SpaceIssue>;
   uploadIssueAttachments: (issueId: string, filePaths: string[]) => Promise<SpaceAttachment[]>;
   downloadIssueAttachment: (input: {
     issueId: string;
@@ -161,20 +160,20 @@ export interface SpaceActions {
     output?: string;
   }) => Promise<SpaceDownloadAttachmentResult>;
   commentIssue: (issueId: string, body: string) => Promise<void>;
-  setIssueStatus: (issueId: string, status: string) => Promise<void>;
+  setIssueState: (issueId: string, state: string) => Promise<void>;
   closeOwnIssue: (issueId: string) => Promise<void>;
-  dispatchIssue: (issueId: string, registeredAgentId: string) => Promise<void>;
-  processDispatchesOnce: () => Promise<{ processed: number; delivered: number; errors: string[] }>;
+  closeIssue: (issueId: string) => Promise<void>;
+  completeIssue: (issueId: string) => Promise<void>;
+  cancelIssueClaim: (issueId: string) => Promise<void>;
   uploadSkillZip: (input: { filePath: string; name?: string; description?: string; skillId?: string }) => Promise<SpaceSkill>;
   uploadSkillRevision: (skillId: string, filePath: string) => Promise<SpaceSkill>;
   deleteSkill: (skillId: string) => Promise<void>;
   installSkill: (input: { skillId: string; skillName: string; target: 'global' | 'project'; workspacePath?: string }) => Promise<{ installedName: string; installedPath: string; target: string; renamed: boolean }>;
-  registerAgent: (input: { displayName: string; workspaceId: string; workspacePath: string; workspaceLabel?: string; goalMd: string }) => Promise<LocalRegisteredAgent>;
+  registerAgent: (input: { displayName: string; workspaceId: string; workspacePath: string; workspaceLabel?: string; goalId: string; stateFilter?: string[] }) => Promise<LocalRegisteredAgent>;
   updateRegisteredAgent: (input: {
     id: string;
     displayName?: string;
     workspaceLabel?: string;
-    goalMd?: string;
     status?: 'active' | 'disabled';
   }) => Promise<LocalRegisteredAgent>;
   revokeRegisteredAgent: (id: string) => Promise<LocalRegisteredAgent>;
@@ -194,7 +193,7 @@ const initialState = (): StoreState => ({
   boot: 'idle',
   session: null,
   spaceId: null,
-  tags: [],
+  goals: [],
   bootError: null,
   bootLastFetchedAt: 0,
   issuesByKey: {},
@@ -330,8 +329,10 @@ function invalidatePendingRequests(): void {
 function normalizeIssueQueryParams(params: IssueQueryParams): IssueQueryParams {
   return {
     q: params.q?.trim() || undefined,
-    tag: params.tag?.trim() || undefined,
-    status: params.status?.trim() || undefined,
+    state: params.state?.trim() || undefined,
+    goalId: params.goalId?.trim() || undefined,
+    includeSubtree: params.includeSubtree,
+    humanOnly: params.humanOnly,
     cursor: params.cursor?.trim() || undefined,
     limit: params.limit ?? 50,
   };
@@ -342,11 +343,15 @@ function issueMatchesListKey(issue: SpaceIssue, key: string): boolean {
   const cursor = params.get('cursor')?.trim();
   if (cursor) return false;
 
-  const status = params.get('status')?.trim();
-  if (status && issue.status !== status) return false;
+  const state = params.get('state')?.trim();
+  if (state && state !== 'all' && !state.split(',').some((item) => item.trim() === issue.state)) return false;
 
-  const tag = params.get('tag')?.trim().toLowerCase();
-  if (tag && !issue.tags?.some((item) => item.id.toLowerCase() === tag || item.name.toLowerCase() === tag)) return false;
+  const goalId = params.get('goalId')?.trim();
+  if (goalId && goalId !== issue.goalId) return false;
+
+  const humanOnly = params.get('humanOnly')?.trim();
+  if (humanOnly === 'true' && !issue.humanOnly) return false;
+  if (humanOnly === 'false' && issue.humanOnly) return false;
 
   const q = params.get('q')?.trim().toLowerCase();
   if (q && !issue.title.toLowerCase().includes(q)) return false;
@@ -425,9 +430,22 @@ function localAgentToRegisteredAgent(agent: LocalRegisteredAgent): SpaceRegister
   return {
     id: agent.id,
     spaceId: agent.spaceId,
+    clientId: agent.clientId,
+    localWorkspaceId: agent.localWorkspaceId,
+    localAgentId: agent.localAgentId,
     displayName: agent.displayName,
     workspaceLabel: agent.workspaceLabel,
-    goalMd: agent.goalMd,
+    subscriptions: agent.goalId ? [{
+      id: `local:${agent.id}:${agent.goalId}`,
+      spaceId: agent.spaceId,
+      actorType: 'registered_agent',
+      actorId: agent.id,
+      goalId: agent.goalId,
+      includeSubtree: true,
+      stateFilter: agent.stateFilter,
+      goalPathLabel: agent.goalPathLabel,
+      createdAt: agent.createdAt,
+    }] : [],
     status: agent.status,
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,
@@ -471,7 +489,7 @@ export const actions: SpaceActions = {
           boot: 'ready',
           session: { ...session, space: official.space, membership: official.membership },
           spaceId: nextSpaceId,
-          tags: official.tags,
+          goals: official.goals ?? [],
           bootError: null,
           bootLastFetchedAt: Date.now(),
         });
@@ -822,13 +840,6 @@ export const actions: SpaceActions = {
     return result.issue;
   }),
 
-  createTag: (input) => withSpaceMutationMetric('tag.create', async () => {
-    const result = await spaceCreateTag(input, activeSpaceId());
-    const tags = [...state.tags.filter((tag) => tag.id !== result.tag.id), result.tag].sort((a, b) => a.name.localeCompare(b.name));
-    setState({ tags });
-    return result.tag;
-  }),
-
   uploadIssueAttachments: (issueId, filePaths) => withSpaceMutationMetric('issue.attachments.upload', async () => {
     const result = await spaceUploadIssueAttachments({ issueId, filePaths });
     patchIssueDetail(issueId, (detail) => ({
@@ -863,25 +874,35 @@ export const actions: SpaceActions = {
     if (currentIssue) patchIssueInLists(currentIssue);
   }),
 
-  setIssueStatus: (issueId, status) => withSpaceMutationMetric('issue.status', async () => {
-    const result = await spaceSetIssueStatus(issueId, status);
+  setIssueState: (issueId, nextState) => withSpaceMutationMetric('issue.state', async () => {
+    const result = await spaceSetIssueState(issueId, nextState);
     const current = state.issueDetails[detailKey(issueId)]?.detail?.issue ?? findIssueInLists(issueId);
-    if (current) patchIssueInLists({ ...current, status: result.status, updatedAt: result.updatedAt });
+    if (current) patchIssueInLists({ ...current, state: result.state, updatedAt: result.updatedAt });
   }),
 
   closeOwnIssue: (issueId) => withSpaceMutationMetric('issue.close_own', async () => {
     const result = await spaceCloseOwnIssue(issueId);
     const current = state.issueDetails[detailKey(issueId)]?.detail?.issue ?? findIssueInLists(issueId);
-    if (current) patchIssueInLists({ ...current, status: result.status, updatedAt: result.updatedAt });
+    if (current) patchIssueInLists({ ...current, state: result.state, updatedAt: result.updatedAt });
   }),
 
-  dispatchIssue: (issueId, registeredAgentId) => withSpaceMutationMetric('issue.dispatch', async () => {
-    await spaceDispatchIssue(issueId, registeredAgentId);
+  closeIssue: (issueId) => withSpaceMutationMetric('issue.close', async () => {
+    const result = await spaceCloseIssue(issueId);
     const current = state.issueDetails[detailKey(issueId)]?.detail?.issue ?? findIssueInLists(issueId);
-    if (current) patchIssueInLists({ ...current, status: 'in_progress' });
+    if (current) patchIssueInLists({ ...current, state: result.state, updatedAt: result.updatedAt });
   }),
 
-  processDispatchesOnce: () => withSpaceMutationMetric('dispatch.process_once', () => spaceProcessDispatchesOnce()),
+  completeIssue: (issueId) => withSpaceMutationMetric('issue.complete', async () => {
+    const result = await spaceCompleteIssue(issueId);
+    const current = state.issueDetails[detailKey(issueId)]?.detail?.issue ?? findIssueInLists(issueId);
+    if (current) patchIssueInLists({ ...current, state: result.state, updatedAt: result.updatedAt });
+  }),
+
+  cancelIssueClaim: (issueId) => withSpaceMutationMetric('issue.cancel_claim', async () => {
+    const result = await spaceCancelIssueClaim(issueId);
+    const current = state.issueDetails[detailKey(issueId)]?.detail?.issue ?? findIssueInLists(issueId);
+    if (current) patchIssueInLists({ ...current, state: result.state, updatedAt: result.updatedAt });
+  }),
 
   uploadSkillZip: (input) => withSpaceMutationMetric('skill.upload', async () => {
     const result = await spaceUploadSkillZip(input);

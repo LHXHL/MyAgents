@@ -19,6 +19,7 @@ use crate::workspace_files::path_safety::{
 
 pub const MOCK_BASE_URL: &str = "https://space.mock.myagents.local";
 const MOCK_SPACE_ID: &str = "space_mock_official";
+const MOCK_ROOT_GOAL_ID: &str = "goal_mock_root";
 
 #[derive(Clone)]
 struct MockSkillRecord {
@@ -30,6 +31,7 @@ struct MockSkillRecord {
 #[derive(Clone)]
 struct MockState {
     tags: Vec<Value>,
+    goals: Vec<Value>,
     issues: Vec<Value>,
     comments: HashMap<String, Vec<Value>>,
     attachments: HashMap<String, Vec<Value>>,
@@ -146,16 +148,21 @@ pub fn register_agent(
     if display_name.is_empty() {
         return Err("displayName is required".to_string());
     }
-    let goal_md = input.goal_md.trim();
-    if goal_md.is_empty() {
-        return Err("goalMd is required".to_string());
+    let goal_id = input.goal_id.trim();
+    if goal_id.is_empty() {
+        return Err("goalId is required".to_string());
     }
     let mut state = state().lock().expect("mock state poisoned");
+    let goal_path_label = goal_label(&state, goal_id);
     let id = state.next_id("rag");
+    let local_agent_id = format!("local-agent-{}", safe_local_name(&input.workspace_id));
     let agent = LocalRegisteredAgent {
         id: id.clone(),
         base_url: MOCK_BASE_URL.to_string(),
         space_id: MOCK_SPACE_ID.to_string(),
+        client_id: Some("mock-public-client".to_string()),
+        local_workspace_id: Some(input.workspace_id.clone()),
+        local_agent_id: Some(local_agent_id),
         workspace_id: Some(input.workspace_id),
         display_name: display_name.to_string(),
         workspace_path: workspace_root.to_string_lossy().to_string(),
@@ -167,7 +174,12 @@ pub fn register_agent(
                 Some(trimmed.to_string())
             }
         }),
-        goal_md: goal_md.to_string(),
+        goal_id: Some(goal_id.to_string()),
+        goal_path_label,
+        state_filter: input
+            .state_filter
+            .unwrap_or_else(|| vec!["todo".to_string()]),
+        goal_md: input.goal_md,
         token: format!("mock-token-{}", id),
         status: "active".to_string(),
         created_at: "2026-06-24T09:34:00.000Z".to_string(),
@@ -206,7 +218,7 @@ pub fn update_agent(
         if goal_md.is_empty() {
             return Err("goalMd is required".to_string());
         }
-        agent.goal_md = goal_md.to_string();
+        agent.goal_md = Some(goal_md.to_string());
     }
     if let Some(status) = input.status {
         let status = status.trim();
@@ -580,7 +592,11 @@ fn handle_api_data_request(
         ("GET", ["api", "spaces", "official"]) => Ok(json!({
             "space": mock_space(),
             "membership": session().membership,
+            "goals": state.goals,
             "tags": state.tags
+        })),
+        ("GET", ["api", "spaces", "official", "goals"]) => Ok(json!({
+            "items": state.goals
         })),
         ("POST", ["api", "spaces", "official", "tags"]) => create_tag(&mut state, body),
         ("GET", ["api", "spaces", "official", "issues"]) => Ok(list_issues(&state, &query)),
@@ -628,6 +644,39 @@ fn handle_api_data_request(
             let items = state.dispatches.clone();
             Ok(json!({ "items": items }))
         }
+        ("GET", ["api", "spaces", "official", "registered-agents"]) => {
+            let items = state
+                .agents
+                .iter()
+                .map(|agent| {
+                    json!({
+                        "id": agent.id,
+                        "spaceId": agent.space_id,
+                        "ownerUserId": "usr_mock_owner",
+                        "clientId": agent.client_id.clone(),
+                        "localWorkspaceId": agent.local_workspace_id.clone(),
+                        "localAgentId": agent.local_agent_id.clone(),
+                        "displayName": agent.display_name,
+                        "workspaceLabel": agent.workspace_label.clone(),
+                        "status": agent.status,
+                        "createdAt": agent.created_at,
+                        "updatedAt": agent.updated_at,
+                        "subscriptions": agent.goal_id.as_ref().map(|goal_id| vec![json!({
+                            "id": format!("sub_{}", agent.id),
+                            "spaceId": agent.space_id,
+                            "actorType": "registered_agent",
+                            "actorId": agent.id,
+                            "goalId": goal_id,
+                            "includeSubtree": true,
+                            "stateFilter": agent.state_filter.clone(),
+                            "goalPathLabel": agent.goal_path_label.clone(),
+                            "createdAt": agent.created_at
+                        })]).unwrap_or_default()
+                    })
+                })
+                .collect::<Vec<_>>();
+            Ok(json!({ "items": items }))
+        }
         ("PATCH", ["api", "registered-agents", agent_id]) => {
             update_agent_api(&mut state, agent_id, body)
         }
@@ -673,6 +722,32 @@ fn initial_state() -> MockState {
         tag("windows", "Windows platform validation"),
         tag("needs-agent", "Ready for a registered agent"),
     ];
+    let goals = vec![
+        goal(
+            MOCK_ROOT_GOAL_ID,
+            None,
+            "MyAgents社区",
+            "Root Goal for mock Space.",
+        ),
+        goal(
+            "goal_mock_runtime",
+            Some(MOCK_ROOT_GOAL_ID),
+            "Runtime Delivery",
+            "Runtime and provider regressions.",
+        ),
+        goal(
+            "goal_mock_ui",
+            Some(MOCK_ROOT_GOAL_ID),
+            "UI Quality",
+            "Interaction and visual polish.",
+        ),
+        goal(
+            "goal_mock_docs",
+            Some(MOCK_ROOT_GOAL_ID),
+            "Docs Alignment",
+            "Architecture and PRD documentation.",
+        ),
+    ];
 
     let issue_specs = vec![
         ("iss_mock_001", "评论发送失败时不要丢失输入内容", "open", vec!["bug", "ux"], "发送评论失败后输入框被错误清空会让处理记录丢失，需要保留草稿并给出清晰错误。"),
@@ -715,10 +790,17 @@ fn initial_state() -> MockState {
         issues.push(json!({
             "id": id,
             "spaceId": MOCK_SPACE_ID,
+            "goalId": seeded_goal_id(idx),
+            "parentIssueId": null,
             "title": title,
             "body": body,
+            "state": legacy_status_to_state(status),
+            "humanOnly": idx % 11 == 0,
             "status": status,
+            "creator": { "id": if idx % 3 == 0 { "usr_ethan" } else { "usr_lin" }, "name": if idx % 3 == 0 { "Ethan" } else { "Lin Qiao" } },
             "author": { "id": if idx % 3 == 0 { "usr_ethan" } else { "usr_lin" }, "name": if idx % 3 == 0 { "Ethan" } else { "Lin Qiao" } },
+            "notificationVersion": 1,
+            "goalPathLabel": seeded_goal_label(idx),
             "tags": issue_tags,
             "commentCount": issue_comments.len(),
             "attachmentCount": issue_attachments.len(),
@@ -810,13 +892,23 @@ fn initial_state() -> MockState {
         issues.push(json!({
             "id": id,
             "spaceId": MOCK_SPACE_ID,
+            "goalId": seeded_goal_id(idx),
+            "parentIssueId": null,
             "title": title,
             "body": body,
+            "state": legacy_status_to_state(status),
+            "humanOnly": offset % 17 == 0,
             "status": status,
+            "creator": {
+                "id": if offset % 2 == 0 { "usr_ethan" } else { "usr_lin" },
+                "name": if offset % 2 == 0 { "Ethan" } else { "Lin Qiao" }
+            },
             "author": {
                 "id": if offset % 2 == 0 { "usr_ethan" } else { "usr_lin" },
                 "name": if offset % 2 == 0 { "Ethan" } else { "Lin Qiao" }
             },
+            "notificationVersion": 1,
+            "goalPathLabel": seeded_goal_label(idx),
             "tags": issue_tags,
             "commentCount": issue_comments.len(),
             "attachmentCount": issue_attachments.len(),
@@ -1054,6 +1146,7 @@ fn initial_state() -> MockState {
 
     MockState {
         tags,
+        goals,
         issues,
         comments,
         attachments,
@@ -1086,6 +1179,13 @@ fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
         .or_else(|| query.get("status"))
         .map(|value| value.trim().to_ascii_lowercase())
         .filter(|value| !value.is_empty());
+    let goal_id = query
+        .get("goalId")
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let human_only = query
+        .get("humanOnly")
+        .map(|value| value.trim().to_ascii_lowercase());
     let cursor = query
         .get("cursor")
         .and_then(|value| value.parse::<usize>().ok())
@@ -1115,6 +1215,11 @@ fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_ascii_lowercase();
+            let issue_goal_id = issue.get("goalId").and_then(Value::as_str).unwrap_or("");
+            let issue_human_only = issue
+                .get("humanOnly")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let tags = issue
                 .get("tags")
                 .and_then(Value::as_array)
@@ -1144,9 +1249,29 @@ fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
                 .unwrap_or(true);
             let matches_status = status
                 .as_ref()
-                .map(|status| &issue_status == status)
+                .map(|status| {
+                    status == "all" || status.split(',').any(|item| item.trim() == issue_status)
+                })
                 .unwrap_or(true);
-            matches_q && matches_tag && matches_status
+            let matches_goal = goal_id
+                .as_ref()
+                .map(|goal_id| {
+                    if goal_id == "inbox" || goal_id == "null" {
+                        issue_goal_id.is_empty()
+                    } else {
+                        issue_goal_id == goal_id
+                    }
+                })
+                .unwrap_or(true);
+            let matches_human_only = human_only
+                .as_ref()
+                .map(|value| match value.as_str() {
+                    "true" => issue_human_only,
+                    "false" => !issue_human_only,
+                    _ => true,
+                })
+                .unwrap_or(true);
+            matches_q && matches_tag && matches_status && matches_goal && matches_human_only
         })
         .cloned()
         .collect::<Vec<_>>();
@@ -1190,14 +1315,28 @@ fn create_issue(state: &mut MockState, body: Option<Value>) -> Result<Value, Str
         .and_then(Value::as_array)
         .map(|items| items.iter().filter_map(Value::as_str).collect::<Vec<_>>())
         .unwrap_or_default();
+    let goal_id = body
+        .get("goalId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(MOCK_ROOT_GOAL_ID);
+    let goal_path_label = goal_label(state, goal_id);
     let id = state.next_id("iss");
     let issue = json!({
         "id": id,
         "spaceId": MOCK_SPACE_ID,
+        "goalId": goal_id,
+        "parentIssueId": body.get("parentIssueId").and_then(Value::as_str),
         "title": title,
         "body": body_text,
+        "state": "open",
+        "humanOnly": body.get("humanOnly").and_then(Value::as_bool).unwrap_or(false),
         "status": "open",
+        "creator": { "id": "usr_mock_owner", "name": "Ethan" },
         "author": { "id": "usr_mock_owner", "name": "Ethan" },
+        "notificationVersion": 1,
+        "goalPathLabel": goal_path_label,
         "tags": tags_for(&state.tags, &tag_identities),
         "commentCount": 0,
         "attachmentCount": 0,
@@ -1323,6 +1462,23 @@ fn issue_detail(
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
     let all_comments = state.comments.get(issue_id).cloned().unwrap_or_default();
+    let goal_reference = issue
+        .get("goalId")
+        .and_then(Value::as_str)
+        .and_then(|goal_id| {
+            state.goals.iter().find_map(|goal| {
+                if goal.get("id").and_then(Value::as_str) != Some(goal_id) {
+                    return None;
+                }
+                Some(json!({
+                    "goalId": goal_id,
+                    "goalPath": goal.get("path").cloned().unwrap_or(Value::Null),
+                    "goalPathLabel": goal.get("goalPathLabel").cloned().unwrap_or(Value::Null),
+                    "goalTitle": goal.get("title").cloned().unwrap_or(Value::Null),
+                    "goalContext": goal.get("context").cloned().unwrap_or(Value::Null),
+                }))
+            })
+        });
     let page = all_comments
         .iter()
         .skip(cursor)
@@ -1332,13 +1488,15 @@ fn issue_detail(
     let next = cursor + page.len();
     Ok(json!({
         "issue": issue,
+        "goalReference": goal_reference,
         "comments": {
             "items": page,
             "hasMore": next < all_comments.len(),
             "nextCursor": if next < all_comments.len() { Some(next.to_string()) } else { None },
             "limit": limit
         },
-        "attachments": state.attachments.get(issue_id).cloned().unwrap_or_default()
+        "attachments": state.attachments.get(issue_id).cloned().unwrap_or_default(),
+        "claim": null
     }))
 }
 
@@ -1539,7 +1697,7 @@ fn update_agent_api(
         if goal_md.is_empty() {
             return Err("goalMd is required".to_string());
         }
-        agent.goal_md = goal_md.to_string();
+        agent.goal_md = Some(goal_md.to_string());
     }
     if let Some(status) = body.get("status").and_then(Value::as_str) {
         if !matches!(status, "active" | "disabled" | "revoked") {
@@ -1576,6 +1734,63 @@ fn tag(name: &str, description: &str) -> Value {
         "color": null,
         "description": description
     })
+}
+
+fn goal(id: &str, parent_goal_id: Option<&str>, title: &str, context: &str) -> Value {
+    let path = match parent_goal_id {
+        Some(parent) => format!("/{}/{}/", parent, id),
+        None => format!("/{}/", id),
+    };
+    json!({
+        "id": id,
+        "spaceId": MOCK_SPACE_ID,
+        "parentGoalId": parent_goal_id,
+        "path": path,
+        "depth": if parent_goal_id.is_some() { 1 } else { 0 },
+        "title": title,
+        "context": context,
+        "archivedAt": null,
+        "createdAt": "2026-06-20T08:00:00.000Z",
+        "updatedAt": "2026-06-24T08:00:00.000Z",
+        "goalPathLabel": if parent_goal_id.is_some() { format!("MyAgents社区 / {}", title) } else { title.to_string() }
+    })
+}
+
+fn seeded_goal_id(index: usize) -> &'static str {
+    match index % 4 {
+        1 => "goal_mock_runtime",
+        2 => "goal_mock_ui",
+        3 => "goal_mock_docs",
+        _ => MOCK_ROOT_GOAL_ID,
+    }
+}
+
+fn seeded_goal_label(index: usize) -> &'static str {
+    match seeded_goal_id(index) {
+        "goal_mock_runtime" => "MyAgents社区 / Runtime Delivery",
+        "goal_mock_ui" => "MyAgents社区 / UI Quality",
+        "goal_mock_docs" => "MyAgents社区 / Docs Alignment",
+        _ => "MyAgents社区",
+    }
+}
+
+fn legacy_status_to_state(status: &str) -> &'static str {
+    match status {
+        "triaged" => "todo",
+        "in_progress" => "doing",
+        "resolved" => "done",
+        "declined" | "duplicate" | "archived" | "closed" => "closed",
+        _ => "open",
+    }
+}
+
+fn goal_label(state: &MockState, goal_id: &str) -> Option<String> {
+    state
+        .goals
+        .iter()
+        .find(|goal| goal.get("id").and_then(Value::as_str) == Some(goal_id))
+        .and_then(|goal| goal.get("goalPathLabel").and_then(Value::as_str))
+        .map(ToString::to_string)
 }
 
 fn tags_for(tags: &[Value], identities: &[&str]) -> Vec<Value> {
@@ -1787,15 +2002,36 @@ fn agent(
     workspace_label: &str,
     goal_md: &str,
 ) -> LocalRegisteredAgent {
+    let goal_id = match id {
+        "rag_mock_runtime" => "goal_mock_runtime",
+        "rag_mock_docs" => "goal_mock_docs",
+        _ => "goal_mock_ui",
+    };
     LocalRegisteredAgent {
         id: id.to_string(),
         base_url: MOCK_BASE_URL.to_string(),
         space_id: MOCK_SPACE_ID.to_string(),
+        client_id: Some("mock-public-client".to_string()),
+        local_workspace_id: Some(format!("project_{}", safe_local_name(workspace_label))),
+        local_agent_id: Some(format!(
+            "local-agent-project_{}",
+            safe_local_name(workspace_label)
+        )),
         workspace_id: Some(format!("project_{}", safe_local_name(workspace_label))),
         display_name: display_name.to_string(),
         workspace_path: workspace_path.to_string(),
         workspace_label: Some(workspace_label.to_string()),
-        goal_md: goal_md.to_string(),
+        goal_id: Some(goal_id.to_string()),
+        goal_path_label: Some(
+            match goal_id {
+                "goal_mock_runtime" => "MyAgents社区 / Runtime Delivery",
+                "goal_mock_docs" => "MyAgents社区 / Docs Alignment",
+                _ => "MyAgents社区 / UI Quality",
+            }
+            .to_string(),
+        ),
+        state_filter: vec!["todo".to_string()],
+        goal_md: Some(goal_md.to_string()),
         token: format!("mock-token-{}", id),
         status: status.to_string(),
         created_at: "2026-06-14T08:00:00.000Z".to_string(),
@@ -1834,7 +2070,7 @@ fn dispatch_item(id: &str, agent: &LocalRegisteredAgent, issue: &Value, status: 
         "registeredAgent": {
             "id": agent.id,
             "displayName": agent.display_name,
-            "goalMd": agent.goal_md
+            "goalMd": agent.goal_md.clone().unwrap_or_default()
         },
         "issueMeta": {
             "id": issue_id,
@@ -1870,7 +2106,8 @@ fn mock_space() -> Value {
         "id": MOCK_SPACE_ID,
         "slug": "official",
         "name": "MyAgents社区",
-        "joinPolicy": "open"
+        "joinPolicy": "open",
+        "rootGoalId": MOCK_ROOT_GOAL_ID
     })
 }
 
