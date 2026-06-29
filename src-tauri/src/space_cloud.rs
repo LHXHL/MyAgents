@@ -1786,21 +1786,22 @@ fn build_delivery_prompt(
     let workspace_id = agent
         .local_workspace_id
         .as_deref()
-        .or(agent.workspace_id.as_deref())
-        .unwrap_or("<workspaceId>");
-    let atomic_claim_command = format!(
-        "myagents space issue claim {} --deliveryId {} --create-attached --workspaceId {} --workspacePath {} --sourceSpaceId {} --name {} --taskMdContent {}",
-        shell_quote(issue_id),
-        shell_quote(delivery_id),
-        shell_quote(workspace_id),
-        shell_quote(&agent.workspace_path),
-        shell_quote(&agent.space_id),
-        shell_quote(&format!("Space Issue {}", issue_id)),
-        shell_quote("<task-plan>")
-    );
+        .or(agent.workspace_id.as_deref());
+    let atomic_claim_command = workspace_id.map(|workspace_id| {
+        format!(
+            "myagents space issue claim {} --deliveryId {} --create-attached --workspaceId {} --workspacePath {} --sourceSpaceId {} --name {} --taskMdContent-file task.md",
+            shell_quote(issue_id),
+            shell_quote(delivery_id),
+            shell_quote(workspace_id),
+            shell_quote(&agent.workspace_path),
+            shell_quote(&agent.space_id),
+            shell_quote(&format!("Space Issue {}", issue_id)),
+        )
+    });
     let finish_command = format!(
-        "myagents space issue complete {} --taskId <taskId> --body-file result.md --message {}",
+        "myagents space issue complete {} --workspacePath {} --taskId <taskId> --body-file result.md --message {}",
         shell_quote(issue_id),
+        shell_quote(&agent.workspace_path),
         shell_quote("completed Space issue")
     );
     lines.extend([
@@ -1815,15 +1816,19 @@ fn build_delivery_prompt(
             "- If this agent should not take it, run `myagents space issue delivery ignore {}`.",
             delivery_id
         ),
-        "- To work on it, run the atomic claim + attached-task command from this same AI session:".to_string(),
-        format!("  `{}`", atomic_claim_command),
-        "- That command claims the Issue, creates the attached Task, writes claim.localTaskId/localSessionId, and cancels the claim if local Task creation fails.".to_string(),
-        "- Keep discussion and progress updates on the Space issue via `myagents space issue comment`.".to_string(),
-        format!(
-            "- When done, prefer the finish command `{}` to post the result comment, complete the cloud Issue/claim, and mark the local Task done.",
-            finish_command
-        ),
     ]);
+    if let Some(command) = atomic_claim_command {
+        lines.push("- To work on it, write a real task plan to `task.md`, then run the atomic claim + attached-task command from this same AI session:".to_string());
+        lines.push(format!("  `{}`", command));
+        lines.push("- That command claims the Issue, creates the attached Task, writes claim.localTaskId/localSessionId, and cancels the claim if local Task creation fails.".to_string());
+    } else {
+        lines.push("- This Registered Agent is missing a local workspace id; do not claim until it is re-registered from the Space Agents UI.".to_string());
+    }
+    lines.push("- Keep discussion and progress updates on the Space issue via `myagents space issue comment`.".to_string());
+    lines.push(format!(
+        "- When done, prefer the finish command `{}` to post the result comment, complete the cloud Issue/claim, and mark the local Task done.",
+        finish_command
+    ));
     if let Some(workspace_label) = agent
         .workspace_label
         .as_deref()

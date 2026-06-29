@@ -77,7 +77,9 @@ function parseArgs(args: string[]): { positional: string[]; flags: Record<string
         key === 'stdin' ||
         key === 'create-attached'
       ) {
-        flags[camelCase(key)] = true;
+        flags[camelCase(key)] = key === 'create-attached'
+          ? parseInlineBooleanFlag(key, inlineValue)
+          : true;
         i++;
         continue;
       }
@@ -152,6 +154,15 @@ function assertStringFlag(value: unknown, flagName: string): asserts value is st
     console.error(`Error: --${flagName} requires a value (e.g. --${flagName} foo or --${flagName}=foo)`);
     process.exit(2);
   }
+}
+
+function parseInlineBooleanFlag(key: string, inlineValue: string | undefined): boolean {
+  if (inlineValue === undefined) return true;
+  const normalized = inlineValue.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  console.error(`Error: --${key} expects a boolean value when using --${key}=...`);
+  process.exit(2);
 }
 
 function camelCase(s: string): string {
@@ -754,6 +765,10 @@ function printSpaceClaimAttachedResult(data: Record<string, unknown>): void {
   const claimId = String(claim.id ?? claim.claimId ?? '');
   const taskId = String(task.id ?? task.taskId ?? '');
   const sessionId = String(data.localSessionId ?? task.currentSessionId ?? process.env.MYAGENTS_SESSION_ID ?? '');
+  const workspacePath = typeof task.workspacePath === 'string' && task.workspacePath.trim()
+    ? task.workspacePath.trim()
+    : '';
+  const workspaceArg = workspacePath ? ` --workspacePath ${shellQuoteArg(workspacePath)}` : '';
 
   console.log('\u2713 Issue claimed and attached task created');
   if (issueId) console.log(`  issue_id:  ${issueId}`);
@@ -762,9 +777,9 @@ function printSpaceClaimAttachedResult(data: Record<string, unknown>): void {
   if (sessionId) console.log(`  session:   ${sessionId}`);
   if (taskId) console.log(`  inspect:   myagents task get ${taskId}`);
   if (issueId && taskId) {
-    console.log(`  finish:    myagents space issue complete ${issueId} --taskId ${taskId} --body-file result.md --message "completed Space issue"`);
+    console.log(`  finish:    myagents space issue complete ${shellQuoteArg(issueId)}${workspaceArg} --taskId ${shellQuoteArg(taskId)} --body-file result.md --message "completed Space issue"`);
   } else if (issueId) {
-    console.log(`  complete:  myagents space issue complete ${issueId}`);
+    console.log(`  complete:  myagents space issue complete ${shellQuoteArg(issueId)}${workspaceArg}`);
   }
 }
 
@@ -2048,6 +2063,11 @@ function truthyCliFlag(value: unknown): boolean {
   return value === true || value === 'true' || value === '1' || value === 'yes';
 }
 
+function shellQuoteArg(value: string): string {
+  if (/^[A-Za-z0-9_./:=@-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
 function shouldCreateAttachedTaskForClaim(flags: Record<string, unknown>): boolean {
   return truthyCliFlag(flags.createAttached);
 }
@@ -2186,6 +2206,17 @@ async function cancelClaimAfterAttachedFailure(claimBody: Record<string, unknown
   return callApi('space/issue-cancel-claim', buildClaimCancelBody(claimBody));
 }
 
+async function stopAttachedTaskAfterClaimFailure(
+  taskId: string,
+  message: string,
+): Promise<Record<string, unknown>> {
+  return callApi('task/update-status', {
+    id: taskId,
+    status: 'stopped',
+    message,
+  });
+}
+
 function rollbackSuffix(rollback: Record<string, unknown>): string {
   if (rollback.success) return 'The cloud claim was cancelled.';
   return `Cloud claim cancellation also failed: ${String(rollback.error ?? 'unknown error')}.`;
@@ -2271,16 +2302,25 @@ async function claimSpaceIssueWithAttachedTask(
     workspacePath: claimBody.workspacePath,
   });
   const localTaskData = objectValue(localTaskResult.data);
-  if (!localTaskResult.success || localTaskData?.updated === false) {
+  const localTaskBound = localTaskData?.updated === true
+    || (
+      stringValue(localTaskData, 'localTaskId') === taskId
+      && stringValue(localTaskData, 'localSessionId') === currentSessionId
+    );
+  if (!localTaskResult.success || !localTaskBound) {
+    const taskRollback = await stopAttachedTaskAfterClaimFailure(
+      taskId,
+      'Space claim local-task binding failed; cloud claim cancelled.',
+    );
     const rollback = await cancelClaimAfterAttachedFailure(claimBody);
     const linkError = localTaskResult.success
-      ? 'cloud accepted the request but did not update the active claim'
+      ? 'cloud response did not confirm the requested local task/session binding'
       : String(localTaskResult.error ?? 'unknown error');
     return failedAttachedClaimResult(
       `Issue claim and attached task creation succeeded, but local-task binding failed: ${linkError}. Local task id: ${taskId}.`,
       claimResult,
       rollback,
-      { taskCreate: taskResult.data, localTaskRef: localTaskResult },
+      { taskCreate: taskResult.data, taskRollback, localTaskRef: localTaskResult },
     );
   }
 
@@ -2371,6 +2411,10 @@ async function completeSpaceIssueWithLocalFollowup(
       return {
         success: false,
         error: `Issue completed but local task status update failed: ${String(taskResult.error ?? 'unknown error')}.`,
+        recoveryHint: {
+          recoveryCommand: `myagents task update-status ${taskId} done --message "completed Space issue"`,
+          message: 'Cloud Issue is already complete; rerun this command to close the local Task.',
+        },
         data: {
           issueId,
           comment: commentResult?.data,
