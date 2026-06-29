@@ -53,7 +53,15 @@ export type TaskExecutor = 'user' | 'agent';
  * How the task was created — governs the initial prompt construction on dispatch
  * (see PRD §9.3.1) and which of the four `.task/` files are expected to exist.
  */
-export type TaskDispatchOrigin = 'direct' | 'ai-aligned';
+export type TaskDispatchOrigin = 'direct' | 'ai-aligned' | 'attached-session';
+
+export interface TaskExternalSource {
+  type: 'space-issue';
+  spaceId?: string;
+  issueId: string;
+  claimId?: string;
+  deliveryId?: string;
+}
 
 /** One append-only entry in `Task.statusHistory`. See PRD §3.2. */
 export interface StatusTransition {
@@ -172,6 +180,8 @@ export interface Task {
   notification?: NotificationConfig;
   /** How the task was created; governs first-message construction. See PRD §9.3.1. */
   dispatchOrigin: TaskDispatchOrigin;
+  /** Optional external coordination record that caused this local Task. */
+  externalSource?: TaskExternalSource;
   /** Set to `true` by `task delete` (soft delete with 30-day retention, §9.5). */
   deleted?: boolean;
   /** Set when `deleted = true`. Used for retention cleanup. */
@@ -263,6 +273,24 @@ export interface TaskCreateFromAlignmentInput {
   /** Per-task MCP enable list override (PRD 0.2.4 §需求 4). */
   mcpEnabledServers?: string[];
   sourceThoughtId?: string;
+  tags?: string[];
+  notification?: NotificationConfig;
+}
+
+/** Payload for `cmd_task_create_attached` / `myagents task create-attached`. */
+export interface TaskCreateAttachedInput {
+  name: string;
+  executor?: TaskExecutor;
+  description?: string;
+  workspaceId: string;
+  workspacePath: string;
+  taskMdContent: string;
+  currentSessionId: string;
+  source: 'space-issue';
+  sourceSpaceId?: string;
+  sourceIssueId: string;
+  sourceClaimId?: string;
+  sourceDeliveryId?: string;
   tags?: string[];
   notification?: NotificationConfig;
 }

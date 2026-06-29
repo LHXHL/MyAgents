@@ -793,6 +793,7 @@ export class GeminiRuntime implements AgentRuntime {
     // Issue #194 — honor agent.runtimeConfig.envPolicy (proxy: myagents/terminal/direct).
     const spawnEnv: Record<string, string | undefined> = { ...augmentedProcessEnv(options.envPolicy) };
     spawnEnv.PWD = options.workspacePath;
+    spawnEnv.MYAGENTS_SESSION_ID = options.sessionId;
     if (promptFile) {
       spawnEnv.GEMINI_SYSTEM_MD = promptFile;
     }

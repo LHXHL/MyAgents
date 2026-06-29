@@ -117,6 +117,10 @@ pub async fn start_management_api() -> Result<u16, String> {
             "/api/task/create-from-alignment",
             post(task_create_from_alignment_handler),
         )
+        .route(
+            "/api/task/create-attached",
+            post(task_create_attached_handler),
+        )
         .route("/api/task/update", post(task_update_handler))
         .route("/api/task/update-status", post(task_update_status_handler))
         .route(
@@ -1395,6 +1399,21 @@ async fn task_create_direct_handler(
             }
             Json(serde_json::json!({ "ok": true, "task": t }))
         }
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
+    }
+}
+
+async fn task_create_attached_handler(
+    Json(input): Json<task::TaskCreateAttachedInput>,
+) -> Json<serde_json::Value> {
+    let Some(task_store) = task::get_task_store() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "task store not initialized"
+        }));
+    };
+    match task_store.create_attached(input).await {
+        Ok(t) => Json(serde_json::json!({ "ok": true, "task": t })),
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
     }
 }

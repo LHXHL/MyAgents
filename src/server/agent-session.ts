@@ -1065,6 +1065,16 @@ const imTextBlockIndices = new Set<number>();
 
 const childToolToParent: Map<string, string> = new Map();
 let sessionId = randomUUID();
+publishCurrentSessionEnv();
+
+function setCurrentSessionId(next: string): void {
+  sessionId = next as typeof sessionId;
+  publishCurrentSessionEnv();
+}
+
+function publishCurrentSessionEnv(): void {
+  process.env.MYAGENTS_SESSION_ID = sessionId;
+}
 // Reset guard: prevents enqueueUserMessage from racing with async resetSession()/switchToSession()
 // Single promise — non-null means a reset is in progress; enqueueUserMessage awaits it.
 let resetPromise: Promise<void> | null = null;
@@ -2775,7 +2785,7 @@ function resetForProviderHistoryBoundary(): void {
   const previousSessionId = sessionId;
   setPendingProviderHistoryBoundaryReset(false);
   sessionRegistered = false;
-  sessionId = randomUUID();
+  setCurrentSessionId(randomUUID());
   hasInitialPrompt = false;
   resetSessionMaterializationState({ allowLazySessionMaterialization: true });
   clearMessages();
@@ -4553,7 +4563,7 @@ export async function materializePendingDesktopSession(
       setQuerySession(null);
     }
 
-    sessionId = prepared.targetSessionId as typeof sessionId;
+    setCurrentSessionId(prepared.targetSessionId);
     hasInitialPrompt = false;
     setLazySessionMaterializationAllowed(false);
     sessionRegistered = prepared.reusingLiveSdkSession;
@@ -5194,6 +5204,7 @@ export function buildClaudeSessionEnv(
   if (sidecarPort > 0) {
     env.MYAGENTS_PORT = String(sidecarPort);
   }
+  env.MYAGENTS_SESSION_ID = sessionId;
 
   // Windows: Set CLAUDE_CODE_GIT_BASH_PATH so SDK finds git-bash directly
   // without relying on which("git") in PATH (which may be stale after NSIS install).
@@ -6726,7 +6737,7 @@ export async function resetSession(): Promise<void> {
   clearMessageState();
 
   // 3. Generate new session ID (don't persist yet - wait for first message)
-  sessionId = randomUUID();
+  setCurrentSessionId(randomUUID());
   hasInitialPrompt = false; // Reset so first message creates a new session in SessionStore
   resetSessionMaterializationState({ allowLazySessionMaterialization: true });
 
@@ -6871,7 +6882,7 @@ export async function initializeAgent(
 
   if (initialSessionId) {
     // Use caller-specified session_id (IM / Tab opening existing session / CronTask)
-    sessionId = initialSessionId as typeof sessionId;
+    setCurrentSessionId(initialSessionId);
 
     // Metadata alone is not enough to resume the Claude Agent SDK. POST /sessions
     // creates MyAgents metadata before the SDK has ever persisted a transcript,
@@ -6909,7 +6920,7 @@ export async function initializeAgent(
     }
   } else {
     // No specified ID → auto-generate (standard Tab new conversation flow)
-    sessionId = randomUUID();
+    setCurrentSessionId(randomUUID());
     sessionRegistered = false; // Fresh session, no SDK data to resume
   }
 
@@ -7131,7 +7142,7 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
   if (lifecycleState.preWarmTimer) { clearTimeout(lifecycleState.preWarmTimer); setPreWarmTimer(null); }
 
   // Preserve target sessionId so new transcriptState.messages are saved to the same session
-  sessionId = targetSessionId as `${string}-${string}-${string}-${string}-${string}`;
+  setCurrentSessionId(targetSessionId);
   resetSessionMaterializationState({ allowLazySessionMaterialization: false });
 
   // Load existing transcriptState.messages from storage into memory
@@ -8939,7 +8950,7 @@ export async function rewindSession(userMessageId: string): Promise<{
       //   (b) sessionRegistered=false：SDK 从未注册过这个 session（首次 pre-warm 失败等）
       pendingResumeSessionAt = undefined;
       sessionRegistered = false;
-      sessionId = randomUUID();
+      setCurrentSessionId(randomUUID());
       hasInitialPrompt = false; // Reset so next message creates metadata for the new session
       resetSessionMaterializationState({ allowLazySessionMaterialization: true });
     }

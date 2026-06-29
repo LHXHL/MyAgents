@@ -6,6 +6,7 @@
  *
  * Environment:
  *   MYAGENTS_PORT — Sidecar port (injected by buildClaudeSessionEnv)
+ *   MYAGENTS_SESSION_ID — current MyAgents session id for attached-session tasks
  *
  * No shebang here. `npm run build:cli` (esbuild) injects `#!/usr/bin/env node`
  * through `--banner:js` so the *built* `myagents.js` artifact is what carries
@@ -269,6 +270,9 @@ Examples:
     # Pass --run to dispatch immediately in the same call.
     # Pass --json for machine-readable output (task_id + docs_path).
     # Same per-task override flags as create-direct apply here.
+  myagents task create-attached --name "Space Issue #123" \\
+      --workspaceId proj --workspacePath /path/to/proj \\
+      --taskMdContent-file task.md --source space-issue --sourceIssueId iss_123
   myagents space issue get <issueId> --json
   myagents issue <issueId> --json
   myagents space issue comment <issueId> --body-file result.md
@@ -621,9 +625,9 @@ function printResult(group: string, action: string, result: Record<string, unkno
   // Task create-* — AI-facing flow: print task_id + docs path + next-step
   // hint + any override echo so the caller doesn't have to guess the id via
   // `ls -lt ~/.myagents/tasks/`. JSON mode above returns the full payload.
-  // Both `create-direct` and `create-from-alignment` go through the same
+  // All create-* forms go through the same enriched server-side response.
   // `enrichTaskCreateResponse` server-side, so one printer covers both.
-  if (group === 'task' && (action === 'create-direct' || action === 'create-from-alignment')) {
+  if (group === 'task' && (action === 'create-direct' || action === 'create-from-alignment' || action === 'create-attached')) {
     printTaskCreateResult(result.data as Record<string, unknown>);
     return;
   }
@@ -643,12 +647,13 @@ function printResult(group: string, action: string, result: Record<string, unkno
 }
 
 /**
- * Format output for `task create-from-alignment` (and eventually `task create-direct`).
+ * Format output for task create-* commands.
  *
  * AI scripts need at minimum the `task_id` of the newly minted task so they
- * can call `task run <id>` next. Also surfaces `docs_path` because the AI
- * often wants to tell the human "I wrote the task docs to X" and having
- * that string in the CLI output saves a re-lookup.
+ * can either dispatch it (`create-direct` / `create-from-alignment`) or keep
+ * working in the current session (`create-attached`). Also surfaces
+ * `docs_path` because the AI often wants to tell the human "I wrote the task
+ * docs to X" and having that string in the CLI output saves a re-lookup.
  *
  * Plaintext shape deliberately mirrors what `--json` produces so readers
  * can mentally switch between the two without re-learning fields:
@@ -657,7 +662,8 @@ function printResult(group: string, action: string, result: Record<string, unkno
  *     task_id:   <uuid>
  *     name:      <string>
  *     docs_path: ~/.myagents/tasks/<uuid>/
- *     next:      myagents task run <uuid>
+ *     next:      myagents task run <uuid>          # non-attached tasks
+ *     complete:  myagents task update-status ...   # attached tasks
  */
 function printTaskCreateResult(data: Record<string, unknown>): void {
   // Handler returns { task, dispatched?, runResult? } — `task` is the full
@@ -706,8 +712,13 @@ function printTaskCreateResult(data: Record<string, unknown>): void {
   }
 
   const nextSteps = data?.nextSteps as Record<string, string> | undefined;
-  const dispatch = nextSteps?.dispatch ?? (id ? `myagents task run ${id}` : '');
+  const isAttached = task?.dispatchOrigin === 'attached-session';
+  const dispatch = nextSteps?.dispatch ?? (!isAttached && id ? `myagents task run ${id}` : '');
   if (dispatch) console.log(`  next:      ${dispatch}`);
+  const inspect = nextSteps?.inspect;
+  if (inspect && isAttached) console.log(`  inspect:   ${inspect}`);
+  const complete = nextSteps?.complete;
+  if (complete) console.log(`  complete:  ${complete}`);
 
   // If --run was bundled with create, the backend also dispatched; echo
   // the dispatch summary inline so the caller sees both in one output.
@@ -2470,6 +2481,49 @@ function buildRequestBody(
         mcpEnabledServers: parseMcpEnabledServersFlag(flags.mcpEnabledServers),
       };
     }
+    if (action === 'create-attached') {
+      assertStringFlag(flags.name, 'name');
+      const currentSessionId =
+        typeof flags.currentSessionId === 'string' && flags.currentSessionId.trim()
+          ? flags.currentSessionId.trim()
+          : process.env.MYAGENTS_SESSION_ID;
+      if (!currentSessionId) {
+        console.error('Error: task create-attached requires MYAGENTS_SESSION_ID. Run it from inside a MyAgents AI session.');
+        process.exit(2);
+      }
+      const source = (flags.source as string | undefined) ?? 'space-issue';
+      if (source !== 'space-issue') {
+        console.error(`Error: task create-attached --source currently supports only "space-issue" (got "${source}")`);
+        process.exit(2);
+      }
+      if (typeof flags.sourceIssueId !== 'string' || !flags.sourceIssueId.trim()) {
+        console.error('Error: task create-attached requires --sourceIssueId <issueId>');
+        process.exit(2);
+      }
+      const taskMdContent = resolveTaskMdContent(flags);
+      if (typeof taskMdContent !== 'string' || !taskMdContent.trim()) {
+        console.error('Error: task create-attached requires --taskMdFile, --taskMdContentFile, or --taskMdContent');
+        process.exit(2);
+      }
+      return {
+        name: rest[0] || flags.name,
+        executor: flags.executor ?? 'agent',
+        description: flags.description,
+        workspaceId: flags.workspaceId,
+        workspacePath: flags.workspacePath,
+        taskMdContent,
+        currentSessionId,
+        source,
+        sourceSpaceId: flags.sourceSpaceId,
+        sourceIssueId: flags.sourceIssueId,
+        sourceClaimId: flags.sourceClaimId,
+        sourceDeliveryId: flags.sourceDeliveryId,
+        tags: typeof flags.tags === 'string'
+          ? (flags.tags as string).split(',').map(s => s.trim()).filter(Boolean)
+          : undefined,
+        notification: buildNotificationFromFlags(flags),
+      };
+    }
     if (action === 'update') {
       // Patch shape mirrors `create-direct`: the same flag set, but every
       // field is optional. Rust `TaskUpdateInput` treats `None` as
@@ -2831,11 +2885,12 @@ function normalizeScheduleFlag(raw: unknown): Record<string, unknown> | undefine
 const TASK_MD_MAX_BYTES = 1024 * 1024;
 
 /**
- * Resolve `task create-direct --taskMdFile` / `--taskMdContent` into a
+ * Resolve `task create-direct --taskMdFile` / `--taskMdContentFile` /
+ * `--taskMdContent` into a
  * single `taskMdContent` string.
  *
  * Precedence (both flags set → `--taskMdFile` wins):
- *   1. `--taskMdFile <path>` — read the file (size + NUL guarded).
+ *   1. `--taskMdFile <path>` or `--taskMdContentFile <path>` — read the file (size + NUL guarded).
  *      Chosen as primary because inline markdown on the shell is hostile to
  *      backticks, quotes, and newlines.
  *   2. `--taskMdContent <string>` — raw inline content (size-guarded).
@@ -2847,10 +2902,10 @@ const TASK_MD_MAX_BYTES = 1024 * 1024;
 function resolveTaskMdContent(
   flags: Record<string, unknown>,
 ): string | undefined {
-  const filePath = flags.taskMdFile;
+  const filePath = flags.taskMdFile ?? flags.taskMdContentFile;
   if (filePath !== undefined && filePath !== '') {
     if (typeof filePath !== 'string') {
-      console.error('Error: --taskMdFile must be a file path string');
+      console.error('Error: --taskMdFile/--taskMdContentFile must be a file path string');
       process.exit(2);
     }
     try {

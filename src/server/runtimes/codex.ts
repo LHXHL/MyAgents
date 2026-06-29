@@ -2205,6 +2205,7 @@ export class CodexRuntime implements AgentRuntime {
     // consults `$PWD` (vs. the kernel-level cwd Rust's spawn passes) sees the
     // workspace, not the sidecar's launch directory. Codex review SM finding.
     codexEnv.PWD = options.workspacePath;
+    codexEnv.MYAGENTS_SESSION_ID = options.sessionId;
     const codexArgs = buildCodexAppServerArgs({
       commandPath: context.commandPath,
       runtimeSource,

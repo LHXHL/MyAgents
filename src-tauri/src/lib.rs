@@ -560,6 +560,7 @@ pub fn run() {
             // Task Center — Task commands (v0.1.69)
             task::cmd_task_create_direct,
             task::cmd_task_create_from_alignment,
+            task::cmd_task_create_attached,
             task::cmd_task_list,
             task::cmd_task_get,
             task::cmd_task_update,

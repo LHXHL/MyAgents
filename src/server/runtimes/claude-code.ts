@@ -451,6 +451,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     // parity (same fix applied to Codex runtime).
     const ccEnv = augmentedProcessEnv(options.envPolicy);
     ccEnv.PWD = options.workspacePath;
+    ccEnv.MYAGENTS_SESSION_ID = options.sessionId;
     const proc = spawn([resolveCommand('claude'), ...args], {
       cwd: options.workspacePath,
       env: ccEnv,
