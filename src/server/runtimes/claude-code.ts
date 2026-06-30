@@ -324,6 +324,9 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 
     // System Prompt injection
     const isImOrChannel = options.scenario.type === 'im' || options.scenario.type === 'agent-channel';
+    const isHeadlessAutomation = isImOrChannel
+      || options.scenario.type === 'cron'
+      || options.scenario.type === 'registeredAgent';
 
     // NOTE: we used to pass `--bare` here for IM/agent-channel sessions,
     // intending to give the bot a clean slate without CC's default preset.
@@ -344,7 +347,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     // leak occasional self-descriptions ("I'm Claude Code, a CLI tool…").
     // Acceptable for now — working > perfectly branded.
     //
-    // Note: `isImOrChannel` is still consulted below for the auto-bypass
+    // Note: `isHeadlessAutomation` is still consulted below for the auto-bypass
     // permission branch, which is a separate concern.
     if (options.systemPromptAppend) {
       // File-based, not inline — see writeSystemPromptFile() rationale above.
@@ -353,8 +356,8 @@ export class ClaudeCodeRuntime implements AgentRuntime {
     }
 
     // Permission mode
-    if ((isImOrChannel || options.scenario.type === 'cron') && !options.permissionMode) {
-      // IM/Cron: no human to approve → bypass
+    if (isHeadlessAutomation && !options.permissionMode) {
+      // Headless automation: no human to approve → bypass
       // MUST pass --allow-dangerously-skip-permissions BEFORE --dangerously-skip-permissions
       args.push('--allow-dangerously-skip-permissions');
       args.push('--permission-mode', 'bypassPermissions');
@@ -406,8 +409,8 @@ export class ClaudeCodeRuntime implements AgentRuntime {
       args.push('--disallowed-tools', ...options.disallowedTools);
     }
 
-    // IM: disable interactive-only tools
-    if (isImOrChannel) {
+    // Headless owners cannot render interactive-only tool UI.
+    if (isHeadlessAutomation) {
       args.push('--disallowed-tools', 'AskUserQuestion');
     }
 

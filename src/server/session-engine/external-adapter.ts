@@ -322,7 +322,7 @@ export function createExternalSessionEngine(): SessionEngine {
         {
           sessionId: request.sessionId,
           workspacePath: request.workspacePath,
-          scenario: { type: 'desktop' },
+          scenario: request.scenario ?? { type: 'desktop' },
           inboxMeta: request.inboxMeta,
           metadataBirthPending: request.allowLazySessionMaterialization === true,
         },

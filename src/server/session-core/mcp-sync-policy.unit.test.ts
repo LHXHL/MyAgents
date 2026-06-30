@@ -26,6 +26,7 @@ describe('mcp-sync-policy', () => {
     expect(getMcpAuthorityForScenario('im')).toBe('self-resolve');
     expect(getMcpAuthorityForScenario('cron')).toBe('self-resolve');
     expect(getMcpAuthorityForScenario('agent-channel')).toBe('self-resolve');
+    expect(getMcpAuthorityForScenario('registeredAgent')).toBe('self-resolve');
   });
 
   it('fingerprints full MCP config independent of ordering', () => {

@@ -17,6 +17,7 @@ import { renderSessionEventPrompt } from './session-event';
 import { buildInReplyToSnippet } from './types';
 import type { PendingInboxMessage, DrainResponse, InboxTurnMeta } from './types';
 import type { SessionEvent } from './session-event';
+import type { InteractionScenario } from '../system-prompt';
 
 function nowIsoFromMessage(msg: PendingInboxMessage): string {
   return new Date(msg.timestampMs || Date.now()).toISOString();
@@ -99,8 +100,19 @@ function buildTurnMeta(msg: PendingInboxMessage): InboxTurnMeta | undefined {
 export type InboxInjector = (
   text: string,
   inboxMeta?: InboxTurnMeta,
-  options?: { allowLazySessionMaterialization?: boolean },
+  options?: { allowLazySessionMaterialization?: boolean; scenario?: InteractionScenario },
 ) => Promise<{ queued: boolean; error?: string }>;
+
+function scenarioForInboxMessage(msg: PendingInboxMessage): InteractionScenario | undefined {
+  if (msg.kind === 'event' && msg.sessionEvent?.type === 'space.issue_delivery') {
+    return {
+      type: 'registeredAgent',
+      platform: 'space',
+      sourceType: 'issue-delivery',
+    };
+  }
+  return undefined;
+}
 
 /// Drain handler entry — processes a batch of messages, returns aggregated response.
 ///
@@ -122,9 +134,10 @@ export async function handleInboxDrain(
     const meta = buildTurnMeta(msg);
     const allowLazySessionMaterialization =
       msg.kind === 'event' && msg.sessionEvent?.type === 'space.issue_delivery';
+    const scenario = scenarioForInboxMessage(msg);
 
     try {
-      const result = await injector(prompt, meta, { allowLazySessionMaterialization });
+      const result = await injector(prompt, meta, { allowLazySessionMaterialization, scenario });
       // PRD 0.2.18 cross-review fix (Codex):
       // enqueueUserMessage's `queued` flag is "queued behind other turns" not
       // "accepted vs rejected". On the idle direct-send path it returns

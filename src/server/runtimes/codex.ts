@@ -2392,8 +2392,12 @@ export class CodexRuntime implements AgentRuntime {
       await configureCodexSkillExtraRoots(codexProc.rpc, options.workspacePath);
 
       // 2. Determine permission mode
-      const isImOrCron = options.scenario.type === 'im' || options.scenario.type === 'agent-channel' || options.scenario.type === 'cron';
-      const defaultPermissionMode = isImOrCron ? 'no-restrictions' : 'full-auto';
+      const isHeadlessAutomation =
+        options.scenario.type === 'im'
+        || options.scenario.type === 'agent-channel'
+        || options.scenario.type === 'cron'
+        || options.scenario.type === 'registeredAgent';
+      const defaultPermissionMode = isHeadlessAutomation ? 'no-restrictions' : 'full-auto';
       const permMode = options.permissionMode || defaultPermissionMode;
       const { approval, sandbox } = mapPermissionMode(permMode);
       codexProc.defaultPermissionMode = defaultPermissionMode;

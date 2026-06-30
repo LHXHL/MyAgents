@@ -118,10 +118,26 @@ describe('createMaterializedSessionMetadata', () => {
     expect(meta.providerExecutionIdentity).toBeUndefined();
   });
 
-  it('classifies IM and agent-channel scenarios as live-follow', () => {
+  it('classifies IM, agent-channel, and registeredAgent scenarios as live-follow', () => {
     expect(isLiveFollowScenario('im')).toBe(true);
     expect(isLiveFollowScenario('agent-channel')).toBe(true);
+    expect(isLiveFollowScenario('registeredAgent')).toBe(true);
     expect(isLiveFollowScenario('desktop')).toBe(false);
     expect(isLiveFollowScenario('cron')).toBe(false);
+  });
+
+  it('materializes registeredAgent sessions as live-follow sessions', () => {
+    const meta = createMaterializedSessionMetadata({
+      agentDir: '/tmp/workspace',
+      sessionId: 'registered-agent-session-id',
+      scenario: 'registeredAgent',
+      agent: makeAgent(),
+    });
+
+    expect(meta.id).toBe('registered-agent-session-id');
+    expect(meta.runtime).toBe('codex');
+    expect(meta.model).toBeUndefined();
+    expect(meta.permissionMode).toBeUndefined();
+    expect(meta.configSnapshotAt).toBeUndefined();
   });
 });

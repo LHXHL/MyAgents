@@ -350,6 +350,8 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     enqueueInboxMessage(request) {
+      const scenario = request.scenario ?? { type: 'desktop' as const };
+      setInteractionScenario(scenario);
       return enqueueUserMessage(
         request.text,
         undefined,

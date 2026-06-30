@@ -4199,7 +4199,7 @@ function createMetadataForSessionId(
   });
   return {
     meta,
-    snapshotKind: agent ? (isLiveFollowScenario(scenario) ? 'im' : 'owned') : `runtime:${meta.runtime ?? 'none'}`,
+    snapshotKind: agent ? (isLiveFollowScenario(scenario) ? 'live-follow' : 'owned') : `runtime:${meta.runtime ?? 'none'}`,
   };
 }
 
@@ -7901,10 +7901,10 @@ export async function enqueueUserMessage(
       //   (a) Desktop first-send with a pending session ID (App.tsx generates a
       //       `pending-<tabId>` placeholder and never calls POST /sessions; the real
       //       session is materialized here). → owned snapshot (self-contained).
-      //   (b) IM Bot / agent-channel first message. → im snapshot (live-follow).
+      //   (b) IM Bot / agent-channel / registeredAgent first message. → live-follow snapshot.
       // Dispatch on `currentScenario.type` set by the caller before enqueue:
       //   - 'desktop' / 'cron' → owned (config frozen into session)
-      //   - 'im' / 'agent-channel' → live-follow (only runtime recorded)
+      //   - 'im' / 'agent-channel' / 'registeredAgent' → live-follow (only runtime recorded)
       // If the agent lookup misses (workspace not registered), snapshot is `{}` and
       // `resolveSessionConfig`'s lazy fallback (meta ?? agent) covers it.
       // Strip the system wrapper before the 40-char cap (cron-title fix) —

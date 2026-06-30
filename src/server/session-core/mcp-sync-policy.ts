@@ -2,7 +2,7 @@ import type { McpServerDefinition } from '../../shared/config-types';
 
 export type McpAuthority = 'tab' | 'self-resolve';
 
-export function getMcpAuthorityForScenario(scenario: 'desktop' | 'cron' | 'im' | 'agent-channel'): McpAuthority {
+export function getMcpAuthorityForScenario(scenario: 'desktop' | 'cron' | 'im' | 'agent-channel' | 'registeredAgent'): McpAuthority {
   return scenario === 'desktop' ? 'tab' : 'self-resolve';
 }
 

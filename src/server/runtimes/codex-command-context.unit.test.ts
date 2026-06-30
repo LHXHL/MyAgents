@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -75,6 +75,9 @@ describe('codex command context', () => {
     expect(context.env.MYAGENTS_PORT).toBe('31415');
     expect(context.env.MYAGENTS_MANAGEMENT_PORT).toBe('27182');
     expect(context.env.MYAGENTS_VERSION).toBe('9.9.9-test');
+    const rules = readFileSync(join(getManagedCodexHome(), 'rules', 'myagents.rules'), 'utf-8');
+    expect(rules).toContain('prefix_rule(pattern=["myagents"], decision="allow")');
+    expect(rules).toContain(JSON.stringify(join(tempHome, '.myagents', 'bin', process.platform === 'win32' ? 'myagents.cmd' : 'myagents')));
   });
 
   it('prefers executableRelativePath from managed installed metadata', () => {

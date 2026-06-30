@@ -568,11 +568,14 @@ function mapPermissionMode(mode: string): string {
   }
 }
 
-/** Default mode by scenario: IM/Cron → YOLO (D6), desktop → Auto Edit (D5). */
+/** Default mode by scenario: headless automation → YOLO (D6), desktop → Auto Edit (D5). */
 function pickDefaultMode(scenarioType: string): string {
-  const isImOrCron =
-    scenarioType === 'im' || scenarioType === 'agent-channel' || scenarioType === 'cron';
-  return isImOrCron ? 'yolo' : 'autoEdit';
+  const isHeadlessAutomation =
+    scenarioType === 'im'
+    || scenarioType === 'agent-channel'
+    || scenarioType === 'cron'
+    || scenarioType === 'registeredAgent';
+  return isHeadlessAutomation ? 'yolo' : 'autoEdit';
 }
 
 /** Drain a `gemini --acp` subprocess's stderr to console.error.

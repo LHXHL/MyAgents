@@ -77,6 +77,7 @@ export type InboxMessageRequest = {
   text: string;
   sessionId: string;
   workspacePath: string;
+  scenario?: InteractionScenario;
   inboxMeta?: InboxTurnMeta;
   allowLazySessionMaterialization?: boolean;
 };

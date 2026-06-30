@@ -9218,6 +9218,7 @@ description: >
               text,
               sessionId,
               workspacePath: sessionMeta?.agentDir ?? currentAgentDir ?? process.cwd(),
+              scenario: options?.scenario,
               inboxMeta,
               allowLazySessionMaterialization: options?.allowLazySessionMaterialization,
             });

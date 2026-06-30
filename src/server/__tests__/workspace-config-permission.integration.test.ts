@@ -153,6 +153,52 @@ describe('resolveWorkspaceConfig permissionMode (#295)', () => {
     expect(resolved.reasoningEffort).toBe('xhigh');
   });
 
+  it('maps runtime-backed Codex provider agent fullAgency to no-restrictions without a runtimeConfig override', async () => {
+    const workspacePath = join(scratch, 'workspace');
+    writeConfig({
+      defaultPermissionMode: 'auto',
+      agents: [{
+        id: 'agent-1',
+        name: 'Managed Codex Agent',
+        enabled: true,
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.5',
+        permissionMode: 'fullAgency',
+      }],
+    });
+    writeProjects([]);
+
+    const { resolveWorkspaceConfig } = await import('../utils/admin-config');
+    const resolved = resolveWorkspaceConfig(workspacePath, null, { includeMcp: false });
+
+    expect(resolved.model).toBe('gpt-5.5');
+    expect(resolved.permissionMode).toBe('no-restrictions');
+  });
+
+  it('lets runtime-backed Codex provider agent permission win over stale runtimeConfig permission', async () => {
+    const workspacePath = join(scratch, 'workspace');
+    writeConfig({
+      defaultPermissionMode: 'auto',
+      agents: [{
+        id: 'agent-1',
+        name: 'Managed Codex Agent',
+        enabled: true,
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.5',
+        permissionMode: 'fullAgency',
+        runtimeConfig: { permissionMode: 'full-auto' },
+      }],
+    });
+    writeProjects([]);
+
+    const { resolveWorkspaceConfig } = await import('../utils/admin-config');
+    const resolved = resolveWorkspaceConfig(workspacePath, null, { includeMcp: false });
+
+    expect(resolved.permissionMode).toBe('no-restrictions');
+  });
+
   it('falls back to auto when no valid builtin permission mode is configured', async () => {
     const workspacePath = join(scratch, 'workspace');
     writeConfig({
