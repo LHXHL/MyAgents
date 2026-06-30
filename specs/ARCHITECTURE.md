@@ -179,6 +179,7 @@ Node.js SSE Server (`src/server/sse.ts`) 管理客户端连接、heartbeat、广
 - **日志降噪** —— 高频流式事件（chunk / delta）跳过 `console.log`
 
 新增 SSE 事件 MUST 在 `SseConnection.ts::JSON_EVENTS` 注册白名单，否则前端静默丢弃。
+会更新 Tab 会话快照的 SSE 事件（如 `chat:system-init`、权限/提问/plan-mode request 与 expired）还 MUST 带 `sessionId`，并在 `TabProvider` 通过 `sessionScopedEventGuards.ts` 按当前 SSE connection/session 过滤；否则历史切换或新会话 birth 时会把旧 sidecar 的弹窗/状态灌进当前 Tab。详见 `tech_docs/session_architecture.md`。
 
 ### HTTP API 调用
 
