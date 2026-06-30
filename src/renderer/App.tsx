@@ -805,6 +805,8 @@ export default function App() {
       toastRef.current?.error(t('appChrome.updateVerifyFailed'));
     } else if (outcome === 'version-mismatch') {
       toastRef.current?.info(t('appChrome.updateExpiredRedownloading'));
+    } else if (outcome === 'blocked') {
+      toastRef.current?.info(t('appChrome.updateInstallBlocked'));
     } else if (outcome === 'error') {
       toastRef.current?.error(t('appChrome.updateInstallFailed'));
     }

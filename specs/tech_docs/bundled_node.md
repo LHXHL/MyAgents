@@ -51,7 +51,7 @@ MyAgents.app/
         ├── nodejs/bin/npm             # bundled npm
         ├── nodejs/bin/npx             # bundled npx
         ├── server-dist.js             # Sidecar 打包产物（esbuild bundle）
-        ├── plugin-bridge-dist.js      # Plugin Bridge 打包产物
+        ├── plugin-bridge-dist.mjs     # Plugin Bridge 打包产物
         ├── plugin-bridge-sdk-shim/    # OpenClaw SDK shim（ESM, v2026.4.24+）
         ├── claude-agent-sdk/          # SDK native binary（独立运行时）
         └── cli/myagents.js            # myagents CLI（esbuild bundle）
@@ -117,7 +117,7 @@ skill 必须用命令级 env（例如 `npm_config_prefix="$MYAGENTS_NPM_GLOBAL_P
 
 1. **TypeScript 类型检查**：`npm run typecheck`
 2. **服务端打包**：esbuild bundle `src/server/index.ts` → `server-dist.js`
-3. **Plugin Bridge 打包**：esbuild bundle `src/server/plugin-bridge/index.ts` → `plugin-bridge-dist.js`
+3. **Plugin Bridge 打包**：esbuild bundle `src/server/plugin-bridge/index.ts` → `plugin-bridge-dist.mjs`
 4. **CLI 打包**：esbuild bundle `src/cli/myagents.ts` → `resources/cli/myagents.js`
 5. **SDK native binary**：按 target triple 拷贝 + codesign
 6. **Tauri 构建**：`npm run tauri:build -- --target <triple>`

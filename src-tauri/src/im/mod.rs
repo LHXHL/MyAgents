@@ -109,6 +109,69 @@ pub(crate) struct GroupStreamContext {
 /// Gives users immediate feedback that the AI is processing their message.
 pub(crate) const THINKING_PLACEHOLDER: &str = "思考中…";
 
+/// Stop every running IM/Agent channel before handing control to the Windows
+/// installer. Unlike the app-exit signal helpers, this removes instances from
+/// managed state and awaits the normal bot shutdown path so OpenClaw bridge
+/// processes, heartbeat tasks, buffers, and Sidecar owners are actually
+/// released before NSIS attempts to overwrite bundled runtimes.
+pub async fn shutdown_all_channels_for_update(
+    im_state: &ManagedImBots,
+    agent_state: &ManagedAgents,
+    sidecar_manager: &ManagedSidecarManager,
+) {
+    let legacy_bots = {
+        let mut guard = im_state.lock().await;
+        std::mem::take(&mut *guard)
+    };
+
+    let agents = {
+        let mut guard = agent_state.lock().await;
+        std::mem::take(&mut *guard)
+    };
+
+    let mut legacy_count = 0usize;
+    for (bot_id, instance) in legacy_bots {
+        legacy_count += 1;
+        if let Err(err) = shutdown_bot_instance(instance, sidecar_manager, &bot_id).await {
+            ulog_warn!(
+                "[im] Update shutdown: bot {} graceful shutdown failed: {}",
+                bot_id,
+                err
+            );
+        }
+    }
+
+    let mut agent_count = 0usize;
+    let mut channel_count = 0usize;
+    for (agent_id, mut agent) in agents {
+        agent_count += 1;
+        if let Some(handle) = agent.heartbeat_handle.take() {
+            handle.abort();
+            let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        }
+        for (channel_id, channel) in agent.channels {
+            channel_count += 1;
+            if let Err(err) =
+                shutdown_bot_instance(channel.bot_instance, sidecar_manager, &channel_id).await
+            {
+                ulog_warn!(
+                    "[im] Update shutdown: channel {} of agent {} graceful shutdown failed: {}",
+                    channel_id,
+                    agent_id,
+                    err
+                );
+            }
+        }
+    }
+
+    ulog_info!(
+        "[im] Update shutdown stopped {} legacy bot(s), {} agent(s), {} agent channel(s)",
+        legacy_count,
+        agent_count,
+        channel_count
+    );
+}
+
 /// Finalize a text block's draft message.
 /// Uses adapter.max_message_length() to determine the platform's limit.
 /// Detects draft mode from the draft_id string (`draft:xxx` prefix) rather than the adapter

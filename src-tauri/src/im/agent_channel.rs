@@ -101,6 +101,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
     config: ImConfig,
     agent_id: Option<String>,
 ) -> Result<(ImBotInstance, ImBotStatus), String> {
+    let _update_spawn_permit = crate::sidecar::begin_update_spawn_permit()?;
     ulog_info!(
         "[im] Starting IM Bot {} (configured workspace: {:?})",
         bot_id,

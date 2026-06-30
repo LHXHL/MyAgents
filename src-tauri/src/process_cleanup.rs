@@ -17,6 +17,7 @@
 //! PowerShell chain. On restarts with live children, ~50–200 ms total.
 
 use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System};
@@ -49,8 +50,21 @@ pub struct CleanupReport {
     pub killed: usize,
     /// Processes still alive after the termination deadline.
     pub residual: usize,
+    /// PIDs still alive after the termination deadline. Includes descendant
+    /// processes that may not match MyAgents command-line/root patterns
+    /// themselves, so update shutdown can keep verifying them explicitly.
+    pub residual_pids: Vec<u32>,
     /// Total wall-clock time spent in this call.
     pub elapsed: Duration,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcessMatch {
+    pub pid: u32,
+    pub name: String,
+    pub reason: String,
+    pub exe: Option<String>,
+    pub cmd: String,
 }
 
 impl CleanupReport {
@@ -77,6 +91,83 @@ fn normalize(s: &str) -> String {
     out
 }
 
+fn normalize_path_boundary(s: &str) -> String {
+    let stripped = s
+        .strip_prefix(r"\\?\")
+        .or_else(|| s.strip_prefix(r"//?/"))
+        .unwrap_or(s);
+    normalize(stripped).trim_end_matches('/').to_string()
+}
+
+fn normalized_roots(roots: &[PathBuf]) -> Vec<String> {
+    roots
+        .iter()
+        .filter_map(|root| {
+            let normalized = normalize_path_boundary(&root.to_string_lossy());
+            if normalized.is_empty() {
+                None
+            } else {
+                Some(normalized)
+            }
+        })
+        .collect()
+}
+
+fn is_under_root(candidate: &str, root: &str) -> bool {
+    candidate == root
+        || candidate
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+fn contains_root_reference(haystack: &str, root: &str) -> bool {
+    let mut offset = 0usize;
+    while let Some(found) = haystack[offset..].find(root) {
+        let start = offset + found;
+        let end = start + root.len();
+        let before_ok = start == 0
+            || haystack[..start].chars().next_back().is_some_and(|c| {
+                c.is_whitespace() || c == '"' || c == '\'' || c == '/' || c == '='
+            });
+        let after_ok = end == haystack.len()
+            || haystack[end..]
+                .chars()
+                .next()
+                .is_some_and(|c| c == '/' || c.is_whitespace() || c == '"' || c == '\'');
+        if before_ok && after_ok {
+            return true;
+        }
+        offset = end;
+    }
+    false
+}
+
+fn process_match_reason(
+    cmd_norm: &str,
+    exe_norm: Option<&str>,
+    patterns: &[String],
+    roots: &[String],
+) -> Option<String> {
+    for pattern in patterns {
+        if cmd_norm.contains(pattern.as_str()) {
+            return Some(format!("cmd contains '{}'", pattern));
+        }
+    }
+
+    for root in roots {
+        if let Some(exe) = exe_norm {
+            if is_under_root(exe, root) {
+                return Some(format!("exe under '{}'", root));
+            }
+        }
+        if contains_root_reference(cmd_norm, root) {
+            return Some(format!("cmd references '{}'", root));
+        }
+    }
+
+    None
+}
+
 /// Enumerate, terminate, and confirm death of all processes whose command
 /// line matches any of `patterns`, plus their descendants by PPID.
 ///
@@ -87,6 +178,20 @@ fn normalize(s: &str) -> String {
 /// Wait budget for confirmed termination: **3 s**. Any process still alive
 /// after that is counted in `residual` and logged by callers.
 pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport {
+    kill_stale_processes_with_roots(patterns, &[])
+}
+
+/// Enumerate, terminate, and confirm death of all processes matching command
+/// line patterns or running from/with argv references to one of `protected_roots`.
+///
+/// The roots path is used by the Windows updater shutdown path: anything still
+/// executing from the current MyAgents install/resource directory can hold
+/// files that NSIS needs to overwrite, even if its argv no longer includes a
+/// legacy marker.
+pub fn kill_stale_processes_with_roots(
+    patterns: &[ProcessPattern],
+    protected_roots: &[PathBuf],
+) -> CleanupReport {
     let started = Instant::now();
     let mut system = System::new();
     // Refresh with CMD info so Process::cmd() is populated.
@@ -97,7 +202,9 @@ pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport {
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always),
+        ProcessRefreshKind::nothing()
+            .with_cmd(sysinfo::UpdateKind::Always)
+            .with_exe(sysinfo::UpdateKind::Always),
     );
 
     let self_pid = Pid::from_u32(std::process::id());
@@ -112,6 +219,7 @@ pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport {
 
     // Pre-normalize patterns once — saves per-process string allocation.
     let norm_patterns: Vec<String> = patterns.iter().map(|p| normalize(p.pattern)).collect();
+    let norm_roots = normalized_roots(protected_roots);
 
     // Find root matches by command-line pattern.
     let mut roots: HashSet<Pid> = HashSet::new();
@@ -125,15 +233,17 @@ pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport {
             .map(|os| os.to_string_lossy().into_owned())
             .collect::<Vec<_>>()
             .join(" ");
-        if cmd_raw.is_empty() {
+        let cmd_norm = normalize(&cmd_raw);
+        let exe_norm = proc
+            .exe()
+            .map(|p| normalize_path_boundary(&p.to_string_lossy()));
+        if cmd_raw.is_empty() && exe_norm.is_none() {
             continue;
         }
-        let cmd_norm = normalize(&cmd_raw);
-        for np in &norm_patterns {
-            if cmd_norm.contains(np.as_str()) {
-                roots.insert(*pid);
-                break;
-            }
+        if process_match_reason(&cmd_norm, exe_norm.as_deref(), &norm_patterns, &norm_roots)
+            .is_some()
+        {
+            roots.insert(*pid);
         }
     }
     let matched_roots = roots.len();
@@ -184,19 +294,20 @@ pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport {
     // None once the kernel releases the handle.
     let deadline = started + Duration::from_secs(3);
     let kill_slice: Vec<Pid> = to_kill.iter().copied().collect();
-    let residual: usize;
+    let residual_pids: Vec<u32>;
     loop {
         system.refresh_processes_specifics(
             ProcessesToUpdate::Some(&kill_slice),
             true,
             ProcessRefreshKind::nothing(),
         );
-        let alive = kill_slice
+        let alive: Vec<Pid> = kill_slice
             .iter()
-            .filter(|pid| system.process(**pid).is_some())
-            .count();
-        if alive == 0 || Instant::now() >= deadline {
-            residual = alive;
+            .copied()
+            .filter(|pid| system.process(*pid).is_some())
+            .collect();
+        if alive.is_empty() || Instant::now() >= deadline {
+            residual_pids = alive.iter().map(|pid| pid.as_u32()).collect();
             break;
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -206,7 +317,8 @@ pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport {
         matched_roots,
         descendants,
         killed,
-        residual,
+        residual: residual_pids.len(),
+        residual_pids,
         elapsed: started.elapsed(),
     }
 }
@@ -216,14 +328,32 @@ pub fn kill_stale_processes(patterns: &[ProcessPattern]) -> CleanupReport {
 /// Used by the update-shutdown path to verify an earlier termination pass
 /// actually completed before handing control off to the NSIS installer.
 pub fn has_matching_processes(patterns: &[ProcessPattern]) -> bool {
+    has_matching_processes_with_roots(patterns, &[])
+}
+
+pub fn has_matching_processes_with_roots(
+    patterns: &[ProcessPattern],
+    protected_roots: &[PathBuf],
+) -> bool {
+    !find_matching_processes_with_roots(patterns, protected_roots).is_empty()
+}
+
+pub fn find_matching_processes_with_roots(
+    patterns: &[ProcessPattern],
+    protected_roots: &[PathBuf],
+) -> Vec<ProcessMatch> {
     let mut system = System::new();
     system.refresh_processes_specifics(
         ProcessesToUpdate::All,
         true,
-        ProcessRefreshKind::nothing().with_cmd(sysinfo::UpdateKind::Always),
+        ProcessRefreshKind::nothing()
+            .with_cmd(sysinfo::UpdateKind::Always)
+            .with_exe(sysinfo::UpdateKind::Always),
     );
     let self_pid = Pid::from_u32(std::process::id());
     let norm_patterns: Vec<String> = patterns.iter().map(|p| normalize(p.pattern)).collect();
+    let norm_roots = normalized_roots(protected_roots);
+    let mut matches = Vec::new();
     for (pid, proc) in system.processes() {
         if *pid == self_pid {
             continue;
@@ -234,18 +364,61 @@ pub fn has_matching_processes(patterns: &[ProcessPattern]) -> bool {
             .map(|os| os.to_string_lossy().into_owned())
             .collect::<Vec<_>>()
             .join(" ");
-        if cmd_raw.is_empty() {
+        let cmd_norm = normalize(&cmd_raw);
+        let exe = proc.exe().map(|p| p.to_string_lossy().into_owned());
+        let exe_norm = exe.as_deref().map(normalize_path_boundary);
+        if cmd_raw.is_empty() && exe_norm.is_none() {
             continue;
         }
-        let cmd_norm = normalize(&cmd_raw);
-        if norm_patterns
-            .iter()
-            .any(|np| cmd_norm.contains(np.as_str()))
+        if let Some(reason) =
+            process_match_reason(&cmd_norm, exe_norm.as_deref(), &norm_patterns, &norm_roots)
         {
-            return true;
+            matches.push(ProcessMatch {
+                pid: pid.as_u32(),
+                name: proc.name().to_string_lossy().into_owned(),
+                reason,
+                exe,
+                cmd: cmd_raw,
+            });
         }
     }
-    false
+    matches
+}
+
+pub fn find_live_processes_by_pid(pids: &[u32]) -> Vec<ProcessMatch> {
+    let sysinfo_pids: Vec<Pid> = pids.iter().copied().map(Pid::from_u32).collect();
+    if sysinfo_pids.is_empty() {
+        return Vec::new();
+    }
+
+    let mut system = System::new();
+    system.refresh_processes_specifics(
+        ProcessesToUpdate::Some(&sysinfo_pids),
+        true,
+        ProcessRefreshKind::nothing()
+            .with_cmd(sysinfo::UpdateKind::Always)
+            .with_exe(sysinfo::UpdateKind::Always),
+    );
+    sysinfo_pids
+        .iter()
+        .filter_map(|pid| {
+            system.process(*pid).map(|proc| {
+                let cmd_raw: String = proc
+                    .cmd()
+                    .iter()
+                    .map(|os| os.to_string_lossy().into_owned())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                ProcessMatch {
+                    pid: pid.as_u32(),
+                    name: proc.name().to_string_lossy().into_owned(),
+                    reason: "residual descendant after kill".to_string(),
+                    exe: proc.exe().map(|p| p.to_string_lossy().into_owned()),
+                    cmd: cmd_raw,
+                }
+            })
+        })
+        .collect()
 }
 
 /// Query whether a specific PID corresponds to a MyAgents process.
@@ -261,7 +434,7 @@ pub fn is_myagents_pid(pid: u32) -> bool {
     system.refresh_processes_specifics(
         ProcessesToUpdate::Some(&only),
         true,
-        ProcessRefreshKind::nothing(),
+        ProcessRefreshKind::nothing().with_exe(sysinfo::UpdateKind::Always),
     );
     let Some(proc) = system.process(Pid::from_u32(pid)) else {
         return false;
@@ -273,4 +446,96 @@ pub fn is_myagents_pid(pid: u32) -> bool {
         .unwrap_or_else(|| proc.name().to_string_lossy().into_owned());
     let lower = haystack.to_ascii_lowercase();
     lower.contains("myagents")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_match_accepts_windows_separator_variants() {
+        let roots = normalized_roots(&[PathBuf::from(
+            r"C:\Users\alice\AppData\Local\MyAgents\resources",
+        )]);
+        assert_eq!(
+            process_match_reason(
+                "c:/users/alice/appdata/local/myagents/resources/nodejs/node.exe server-dist.js",
+                Some("c:/users/alice/appdata/local/myagents/resources/nodejs/node.exe"),
+                &[],
+                &roots,
+            )
+            .as_deref(),
+            Some("exe under 'c:/users/alice/appdata/local/myagents/resources'")
+        );
+    }
+
+    #[test]
+    fn root_match_strips_extended_length_prefix() {
+        let roots = normalized_roots(&[PathBuf::from(
+            r"\\?\C:\Users\alice\AppData\Local\MyAgents\resources",
+        )]);
+        assert!(process_match_reason(
+            "node c:/users/alice/appdata/local/myagents/resources/plugin-bridge-dist.mjs",
+            None,
+            &[],
+            &roots,
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn root_match_does_not_match_prefix_siblings_by_exe() {
+        let roots = normalized_roots(&[PathBuf::from(
+            r"C:\Users\alice\AppData\Local\MyAgents\resources",
+        )]);
+        assert!(process_match_reason(
+            "",
+            Some("c:/users/alice/appdata/local/myagents/resources-old/node.exe"),
+            &[],
+            &roots,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn root_match_does_not_match_prefix_siblings_by_cmd() {
+        let roots = normalized_roots(&[PathBuf::from(
+            r"C:\Users\alice\AppData\Local\MyAgents\resources",
+        )]);
+        assert!(process_match_reason(
+            "node c:/users/alice/appdata/local/myagents/resources-old/server-dist.js",
+            None,
+            &[],
+            &roots,
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn root_match_does_not_require_command_line_when_exe_matches() {
+        let roots = normalized_roots(&[PathBuf::from(
+            r"C:\Users\alice\AppData\Local\MyAgents\resources",
+        )]);
+        assert!(process_match_reason(
+            "",
+            Some("c:/users/alice/appdata/local/myagents/resources/nodejs/node.exe"),
+            &[],
+            &roots,
+        )
+        .is_some());
+    }
+
+    #[test]
+    fn root_match_accepts_file_url_command_arguments() {
+        let roots = normalized_roots(&[PathBuf::from(
+            r"C:\Users\alice\AppData\Local\MyAgents\resources",
+        )]);
+        assert!(process_match_reason(
+            "node --import=file:///c:/users/alice/appdata/local/myagents/resources/tsx-runtime/loader.mjs",
+            None,
+            &[],
+            &roots,
+        )
+        .is_some());
+    }
 }
