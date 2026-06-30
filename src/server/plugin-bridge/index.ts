@@ -28,6 +28,7 @@ import {
   setOpenClawConfigSnapshot,
 } from './openclaw-config';
 import { redactPluginBridgeSecrets } from './secret-redaction';
+import { sanitizeOutboundMediaFilename } from './media-filename';
 import { serve as honoServe } from '@hono/node-server';
 import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
@@ -524,7 +525,7 @@ async function loadPlugin() {
       if (!data) {
         throw new Error('[plugin-bridge] sendMedia: missing base64 data');
       }
-      const safeName = filename.replace(/[^a-zA-Z0-9._-]/g, '_') || 'file';
+      const safeName = sanitizeOutboundMediaFilename(filename);
       const tmpDir = await mkdtemp(pathJoin(tmpdir(), 'plugin-bridge-media-'));
       const tmpPath = pathJoin(tmpDir, safeName);
       await writeFile(tmpPath, Buffer.from(data, 'base64'));
