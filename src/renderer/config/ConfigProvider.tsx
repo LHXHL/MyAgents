@@ -771,6 +771,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     const updateCustomProvider = useCallback(async (provider: Provider) => {
         await saveCustomProviderService(provider);
         await refreshProviders();
+        await rebuildAndPersistAvailableProviders();
     }, [refreshProviders]);
 
     const deleteCustomProvider = useCallback(async (providerId: string) => {

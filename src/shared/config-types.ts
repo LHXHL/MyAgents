@@ -72,6 +72,45 @@ export interface ModelEntity {
   source?: 'preset' | 'discovered' | 'manual';
 }
 
+/**
+ * Merge a persisted preset-provider custom entry into a bundled preset model.
+ *
+ * User-authored entries (`source: manual`, plus legacy entries with no source)
+ * are explicit overrides: if the user typed a bundled model id and filled
+ * context/modalities/name, the UI must show what the runtime will use.
+ *
+ * Discovered entries are API metadata and lower-trust for bundled models, so
+ * they only fill fields the curated preset left empty. This keeps automatic
+ * discovery from poisoning hand-maintained presets while still preserving
+ * useful gaps.
+ */
+export function mergePresetModelWithCustomEntry(
+  preset: ModelEntity,
+  custom: ModelEntity | undefined,
+): ModelEntity {
+  if (!custom) return preset;
+
+  if (custom.source === 'discovered') {
+    return {
+      ...preset,
+      contextLength: preset.contextLength ?? custom.contextLength,
+      maxOutputTokens: preset.maxOutputTokens ?? custom.maxOutputTokens,
+      inputModalities: preset.inputModalities ?? custom.inputModalities,
+      outputModalities: preset.outputModalities ?? custom.outputModalities,
+    };
+  }
+
+  return {
+    ...preset,
+    modelName: custom.modelName ?? preset.modelName,
+    modelSeries: custom.modelSeries ?? preset.modelSeries,
+    contextLength: custom.contextLength ?? preset.contextLength,
+    maxOutputTokens: custom.maxOutputTokens ?? preset.maxOutputTokens,
+    inputModalities: custom.inputModalities ?? preset.inputModalities,
+    outputModalities: custom.outputModalities ?? preset.outputModalities,
+  };
+}
+
 const PROVIDER_MODEL_LIST_SEPARATOR_RE = /[,，]/;
 
 export function splitProviderModelInput(value: string): string[] {

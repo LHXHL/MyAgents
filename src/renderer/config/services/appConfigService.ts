@@ -8,6 +8,7 @@ import {
     type Provider,
     DEFAULT_SYSTEM_PRESET_WORKSPACE_ID,
     getSystemPresetProjectMetadataPatch,
+    mergePresetModelWithCustomEntry,
     normalizeClaudeTranscriptCleanupPeriodDays,
 } from '../types';
 import {
@@ -357,14 +358,7 @@ export function mergePresetCustomModels(
             .filter(m => !removedSet.has(m.model))
             .map(preset => {
                 const extra = customModels?.find(c => c.model === preset.model);
-                if (!extra) return preset;
-                return {
-                    ...preset,
-                    contextLength: preset.contextLength ?? extra.contextLength,
-                    maxOutputTokens: preset.maxOutputTokens ?? extra.maxOutputTokens,
-                    inputModalities: preset.inputModalities ?? extra.inputModalities,
-                    outputModalities: preset.outputModalities ?? extra.outputModalities,
-                };
+                return mergePresetModelWithCustomEntry(preset, extra);
             });
         // 2. 用户添加的新模型（不在预设中的）
         const newModels = customModels?.filter(c => !presetIds.has(c.model)) ?? [];

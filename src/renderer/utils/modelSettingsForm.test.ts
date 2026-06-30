@@ -103,11 +103,12 @@ describe('resolveModalitiesToSave', () => {
 describe('discoveredModelWritePlan — re-adding a removed bundled preset (cross-review 0.2.32, codex)', () => {
   const bundled = new Set(['claude-fable-5', 'claude-haiku-4-5']);
 
-  it('bundled id: un-remove only, never append a duplicate into presetCustomModels', () => {
+  it('bundled id from discovery: un-remove only, never append discovered metadata into presetCustomModels', () => {
     // Regression: handleAddDiscoveredModel used to ALSO append the discovered
-    // entity into presetCustomModels. The renderer merge is preset-wins but the
-    // sidecar registry is first-wins over presetCustomModels — the duplicate
-    // made the UI show bundled values while the sidecar used discovered ones.
+    // entity into presetCustomModels. Discovery metadata is lower-trust than
+    // curated bundled data, so the discovered row should only restore the
+    // bundled preset. Manual typed entries use source: 'manual' and are tested
+    // separately in shared config merge tests.
     expect(discoveredModelWritePlan(bundled, 'claude-fable-5')).toEqual({
       unremove: true,
       appendToCustomModels: false,

@@ -14,6 +14,7 @@ import {
   isManagedCodexRequiredRuntimeInstalled,
   isManagedCodexProviderGateEnabled,
   isManagedCodexSubscriptionAuthValid,
+  mergePresetModelWithCustomEntry,
   normalizeChatQueueResponseMode,
   normalizeClaudeTranscriptCleanupPeriodDays,
   normalizeProviderOrder,
@@ -70,6 +71,77 @@ describe('normalizeProviderOrder', () => {
 
   it('returns empty for no known providers', () => {
     expect(normalizeProviderOrder([], ['a', 'b'])).toEqual([]);
+  });
+});
+
+describe('mergePresetModelWithCustomEntry', () => {
+  const preset = {
+    model: 'claude-fable-5',
+    modelName: 'Claude Fable 5',
+    modelSeries: 'claude',
+    contextLength: 200_000,
+    inputModalities: ['text'],
+    source: 'preset' as const,
+  };
+
+  it('lets manual custom entries override bundled preset fields', () => {
+    expect(mergePresetModelWithCustomEntry(preset, {
+      model: 'claude-fable-5',
+      modelName: 'Fable via proxy',
+      modelSeries: 'claude',
+      contextLength: 1_000_000,
+      inputModalities: ['text', 'image'],
+      source: 'manual',
+    })).toMatchObject({
+      modelName: 'Fable via proxy',
+      contextLength: 1_000_000,
+      inputModalities: ['text', 'image'],
+    });
+  });
+
+  it('treats legacy source-less custom entries as user-authored overrides', () => {
+    expect(mergePresetModelWithCustomEntry(preset, {
+      model: 'claude-fable-5',
+      modelName: 'Legacy override',
+      modelSeries: 'claude',
+      contextLength: 512_000,
+    })).toMatchObject({
+      modelName: 'Legacy override',
+      contextLength: 512_000,
+    });
+  });
+
+  it('uses discovered entries only to fill fields missing from the preset', () => {
+    expect(mergePresetModelWithCustomEntry(preset, {
+      model: 'claude-fable-5',
+      modelName: 'Discovered name',
+      modelSeries: 'claude',
+      contextLength: 1_000_000,
+      inputModalities: ['text', 'image'],
+      source: 'discovered',
+    })).toMatchObject({
+      modelName: 'Claude Fable 5',
+      contextLength: 200_000,
+      inputModalities: ['text'],
+    });
+  });
+
+  it('fills discovered metadata when the bundled preset leaves a field empty', () => {
+    expect(mergePresetModelWithCustomEntry(
+      { ...preset, contextLength: undefined, inputModalities: undefined },
+      {
+        model: 'claude-fable-5',
+        modelName: 'Discovered name',
+        modelSeries: 'claude',
+        contextLength: 1_000_000,
+        inputModalities: ['text', 'image'],
+        source: 'discovered',
+      },
+    )).toMatchObject({
+      modelName: 'Claude Fable 5',
+      contextLength: 1_000_000,
+      inputModalities: ['text', 'image'],
+    });
   });
 });
 
