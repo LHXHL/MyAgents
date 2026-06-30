@@ -33,7 +33,7 @@ import {
   isExternalRuntime,
 } from './factory';
 import { resolveCodexWorkspaceInstructions } from './workspace-instructions';
-import { RUNTIME_DISPLAY_NAMES, type RuntimeType } from '../../shared/types/runtime';
+import { RUNTIME_DISPLAY_NAMES, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
 import { isPendingSessionId } from '../../shared/constants';
 import { resolveChatQueueResponseMode } from '../session-core/turn-queue';
@@ -1508,6 +1508,14 @@ export function getActiveRuntimeSource(): ReturnType<typeof getCurrentRuntimeSou
   return getCurrentRuntimeSource();
 }
 
+function normalizeRuntimeSourceForRuntime(
+  runtime: RuntimeType,
+  runtimeSource: RuntimeSource | undefined,
+): RuntimeSource | undefined {
+  if (runtime === 'builtin') return undefined;
+  return runtimeSource ?? 'system-cli';
+}
+
 /**
  * Wait for external session to become idle.
  * Detects two idle patterns:
@@ -2878,6 +2886,17 @@ export function isExternalSessionActive(): boolean {
 }
 
 /**
+ * True when an external runtime process is still alive, even if no turn is
+ * currently running. Persistent runtimes such as Codex app-server keep an idle
+ * process around after a turn completes; session-boundary operations must stop
+ * that process too, not only `isExternalSessionActive()` running turns.
+ */
+export function hasExternalRuntimeProcess(): boolean {
+  const process = getExternalActiveProcess();
+  return Boolean(process && !process.exited);
+}
+
+/**
  * Truncate `allSessionMessages` at the given user message id and persist the
  * truncation. Returns the popped user message's content + attachments so the
  * caller can re-send.
@@ -2987,7 +3006,7 @@ export async function prewarmExternalSession(options: {
     });
     return { prewarmed: false, reason: `Pre-warm not applicable for runtime=${runtimeType}` };
   }
-  // Already warm (from previous pre-warm or live session) — no-op.
+  // Already running/starting a turn — pre-warm is advisory and must not interrupt it.
   if (isExternalSessionActive() || isExternalLifecycleRunning() || isExternalLifecycleStarting()) {
     emitPerfTrace({
       trace: 'runtime',
@@ -3000,7 +3019,6 @@ export async function prewarmExternalSession(options: {
     });
     return { prewarmed: false, reason: 'Session already active or starting' };
   }
-
   // Cross-runtime guard — refuse to warm a session whose persisted metadata
   // names a different runtime. Frontend Chat.tsx also guards this, but the
   // frontend's sessionRuntime is populated async via loadSession, so the
@@ -3018,6 +3036,42 @@ export async function prewarmExternalSession(options: {
       detail: { reason: 'runtime_mismatch' },
     });
     return { prewarmed: false, reason: `Session runtime mismatch: persisted=${meta.runtime}, current=${runtimeType}` };
+  }
+  if (meta?.runtime) {
+    const persistedRuntimeSource = normalizeRuntimeSourceForRuntime(meta.runtime, meta.runtimeSource);
+    const currentRuntimeSource = normalizeRuntimeSourceForRuntime(runtimeType, getCurrentRuntimeSource());
+    if (persistedRuntimeSource !== currentRuntimeSource) {
+      emitPerfTrace({
+        trace: 'runtime',
+        phase: 'prewarm_skipped',
+        runtime: runtimeType,
+        sessionId: options.sessionId,
+        durationMs: elapsedMs(start),
+        status: 'skipped',
+        detail: { reason: 'runtime_source_mismatch' },
+      });
+      return {
+        prewarmed: false,
+        reason: `Session runtime source mismatch: persisted=${persistedRuntimeSource ?? 'none'}, current=${currentRuntimeSource ?? 'none'}`,
+      };
+    }
+  }
+
+  const activeProcess = getExternalActiveProcess();
+  if (activeProcess && !activeProcess.exited) {
+    if (isExternalSessionStateRestoredFor(options.sessionId)) {
+      emitPerfTrace({
+        trace: 'runtime',
+        phase: 'prewarm_skipped',
+        runtime: runtimeType,
+        sessionId: options.sessionId,
+        durationMs: elapsedMs(start),
+        status: 'skipped',
+        detail: { reason: 'already_warm' },
+      });
+      return { prewarmed: false, reason: 'Session already warm' };
+    }
+    await stopExternalSession();
   }
 
   // Pick resume ID if restoreExternalSessionState populated one — but only if

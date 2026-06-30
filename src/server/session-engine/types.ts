@@ -309,7 +309,7 @@ export interface SessionEngine {
   switchToExistingSession(
     sessionId: string,
     workspacePath: string,
-    getSessionMetadata: (sessionId: string) => { runtime?: RuntimeType } | null | undefined,
+    getSessionMetadata: (sessionId: string) => { runtime?: RuntimeType; runtimeSource?: RuntimeSource } | null | undefined,
   ): Promise<{ success: boolean; sessionId?: string; error?: string; status?: number }>;
   resetForNewDesktopSession(workspacePath: string): Promise<{ success: boolean; sessionId?: string; error?: string }>;
   resetForNewImSession(

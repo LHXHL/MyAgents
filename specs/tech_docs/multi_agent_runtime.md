@@ -511,6 +511,13 @@ key rename，不会调用 Node `/sessions/switch`；因此它只能作为 TabPro
 磁盘历史长度，否则继续 `restoreExternalSessionState(target, ...)`。否则会出现 Rust
 已经指向目标 session，但 Node external transcript 仍属于旧 session 的错位。
 
+所有 session boundary（桌面「新对话」、pending materialization commit、历史切换、
+pre-warm、IM reset、external config boundary）必须按 runtime process 存活性清理，
+而不是只看 active turn。Codex app-server 这类 persistent runtime 在 turn 结束后会进入
+idle，但进程仍持有 stdin/thread owner；在 `restoreExternalSessionState(target, ...)`
+或 `resetSession()` 前如果不先 stop 这个 idle process，就会把旧 runtime 进程挂到新的
+MyAgents session 身份下，造成历史会话和新会话串写。
+
 ### 桌面连续发送响应模式
 
 桌面 Chat 的全局 `chatQueueResponseMode` 同时作用于 builtin 与 external runtime：

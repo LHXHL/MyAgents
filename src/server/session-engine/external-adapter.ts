@@ -28,6 +28,7 @@ import {
   getExternalSessionWorkspacePath,
   getExternalSystemInitPayload,
   getLastExternalAssistantText,
+  hasExternalRuntimeProcess,
   isExternalSessionActive,
   isExternalSessionStateRestoredFor,
   popLastUserMessageForRetry,
@@ -59,6 +60,7 @@ import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox
 import type { SessionMessage } from '../types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
+import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 
 function getRuntimeSessionId(): string {
   return getExternalSessionId() || getCurrentBoundSessionId() || getSessionId();
@@ -78,6 +80,14 @@ function getLatestExternalResult(): string {
       : NO_TEXT_RESPONSE;
   }
   return latestResult.trim() || NO_TEXT_RESPONSE;
+}
+
+function normalizeExternalRuntimeSource(
+  runtime: RuntimeType,
+  runtimeSource: RuntimeSource | undefined,
+): RuntimeSource | undefined {
+  if (runtime === 'builtin') return undefined;
+  return runtimeSource ?? 'system-cli';
 }
 
 function externalLiveMessageToSessionMessage(message: SessionMessage): SessionMessage {
@@ -404,7 +414,7 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async updateOfficialToolIds(_ids) {
-      if (isExternalSessionActive() && getExternalSessionState() !== 'running') {
+      if (hasExternalRuntimeProcess() && getExternalSessionState() !== 'running') {
         await stopExternalSession();
       }
       return { success: true };
@@ -414,7 +424,7 @@ export function createExternalSessionEngine(): SessionEngine {
       const runtimeSessionIdBefore = getExternalSessionId() || undefined;
       if (request.phase === 'commit' || request.phase === undefined) {
         await awaitExternalSessionStarting();
-        if (isExternalSessionActive()) {
+        if (hasExternalRuntimeProcess()) {
           await stopExternalSession();
         }
       }
@@ -529,8 +539,19 @@ export function createExternalSessionEngine(): SessionEngine {
           status: 409,
         };
       }
+      if (meta.runtime) {
+        const activeRuntimeSource = normalizeExternalRuntimeSource(activeRuntime, getActiveRuntimeSource());
+        const persistedRuntimeSource = normalizeExternalRuntimeSource(meta.runtime, meta.runtimeSource);
+        if (persistedRuntimeSource !== activeRuntimeSource) {
+          return {
+            success: false,
+            error: `Session runtime source mismatch: persisted=${persistedRuntimeSource ?? 'none'}, current=${activeRuntimeSource ?? 'none'}`,
+            status: 409,
+          };
+        }
+      }
 
-      if (isExternalSessionActive()) {
+      if (hasExternalRuntimeProcess()) {
         await stopExternalSession();
       }
       restoreExternalSessionState(sessionId, workspacePath, { type: 'desktop' });
@@ -539,7 +560,7 @@ export function createExternalSessionEngine(): SessionEngine {
 
     async resetForNewDesktopSession(workspacePath) {
       await awaitExternalSessionStarting();
-      if (isExternalSessionActive()) {
+      if (hasExternalRuntimeProcess()) {
         await stopExternalSession();
       }
       await resetSession();
@@ -561,7 +582,7 @@ export function createExternalSessionEngine(): SessionEngine {
       if (!freeze.success) {
         return { success: false, error: freeze.error ?? 'Failed to freeze current IM session before reset' };
       }
-      if (isExternalSessionActive()) {
+      if (hasExternalRuntimeProcess()) {
         await stopExternalSession();
       }
       await resetSession();
