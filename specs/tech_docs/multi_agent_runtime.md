@@ -494,6 +494,20 @@ sendExternalMessage(text, images?, permissionMode?, model?, context?)
 | 2 | 进程已退出（CC -p 模式） | `--resume` 恢复 |
 | 3 | 进程存活（Codex 持久模式） | `sendMessage()` 到 stdin |
 
+### 历史 Session 切换
+
+外部 runtime 的历史切换必须把 **Rust Sidecar key** 与 **Node external owner state**
+一起切到目标 session。`cmd_upgrade_session_id(old,new)` 只是 Rust `HashMap`
+key rename，不会调用 Node `/sessions/switch`，因此只允许用于 pending→real 这类
+同一会话 materialization，或 builtin SDK 已明确执行 `switchToSession()` 的路径。
+
+桌面 History 在 Codex / Gemini / Claude Code session 间切换时，即使 runtime/source
+相同，也不得用 `upgradeSessionId` 热换当前 sidecar；应 release 当前 owner 并
+`ensureSessionSidecar(target)`，让目标 sidecar 启动/restore 自己的 `runtimeSessionId`
+和 append-only transcript。`/sessions/switch` 的 external adapter 也不能只凭
+`getCurrentBoundSessionId()===target` no-op；还必须确认 transcript owner 已 seed 到目标
+磁盘历史长度，否则继续 `restoreExternalSessionState(target, ...)`。
+
 ### 桌面连续发送响应模式
 
 桌面 Chat 的全局 `chatQueueResponseMode` 同时作用于 builtin 与 external runtime：

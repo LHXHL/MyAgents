@@ -232,6 +232,7 @@ import {
   getLastExternalAssistantTextFromTranscript,
   getExternalSessionMessageCount,
   getExternalSessionMessagesSnapshot,
+  getExternalTranscriptSessionId,
   getLastPersistedRuntimeUsageTotals,
   persistExternalUserMessageAppend,
   pushExternalSessionMessage,
@@ -1150,7 +1151,7 @@ export function restoreExternalSessionState(
   }
 
   // Load existing messages for correct incremental save (or clear stale in-memory state)
-  setExternalSessionMessages(hasExistingMessages ? data!.messages : []);
+  setExternalSessionMessages(sessionId, hasExistingMessages ? data!.messages : []);
 
   // PRD 0.2.15 Review F2 — repopulate the external-path attachment registry
   // from persisted ContentBlock[] so /api/attachment/tool/... can still resolve
@@ -1435,6 +1436,22 @@ export function getExternalPendingInteractiveRequests(): ExternalPendingInteract
 
 export function getExternalSessionId(): string {
   return getExternalLifecycleSessionId();
+}
+
+export function isExternalSessionStateRestoredFor(sessionId: string): boolean {
+  if (getExternalLifecycleSessionId() !== sessionId) return false;
+  if (getExternalTranscriptSessionId() !== sessionId) return false;
+  const diskMessages = getSessionData(sessionId)?.messages ?? [];
+  const memoryMessages = getExternalSessionMessagesSnapshot();
+  if (memoryMessages.length < diskMessages.length) return false;
+  const diskMatchesMemoryPrefix = diskMessages.every((message, index) => memoryMessages[index]?.id === message.id);
+  if (!diskMatchesMemoryPrefix) return false;
+  if (memoryMessages.length === diskMessages.length) return true;
+
+  // A longer in-memory transcript is valid only while the target session owns an
+  // active/finalizing turn whose tail has not landed in SessionStore yet. Idle
+  // tails are stale cross-session residue and must force restore instead.
+  return getExternalLifecycleState() === 'running' || isExternalTurnFinalizationInFlight();
 }
 
 export function getExternalSessionWorkspacePath(): string {
@@ -1744,7 +1761,7 @@ async function _doStartExternalSession(options: {
   }
   // Only clear message history for new sessions, not resumes
   if (!options.resumeSessionId) {
-    clearExternalSessionMessages();
+    clearExternalSessionMessages(options.sessionId);
   }
 
   // Record user message for SessionStore persistence.

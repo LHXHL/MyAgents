@@ -29,6 +29,7 @@ import {
   getExternalSystemInitPayload,
   getLastExternalAssistantText,
   isExternalSessionActive,
+  isExternalSessionStateRestoredFor,
   popLastUserMessageForRetry,
   prewarmExternalSession,
   respondExternalAskUserQuestion,
@@ -507,11 +508,14 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async switchToExistingSession(sessionId, workspacePath, getSessionMetadata) {
-      if (getCurrentBoundSessionId() === sessionId) {
+      if (getCurrentBoundSessionId() === sessionId && isExternalSessionStateRestoredFor(sessionId)) {
         return { success: true, sessionId };
       }
 
       await awaitExternalSessionStarting();
+      if (getCurrentBoundSessionId() === sessionId && isExternalSessionStateRestoredFor(sessionId)) {
+        return { success: true, sessionId };
+      }
 
       const meta = getSessionMetadata(sessionId);
       if (!meta) {

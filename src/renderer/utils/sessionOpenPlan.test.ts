@@ -1,6 +1,11 @@
 import { describe, expect, test } from 'vitest';
 
-import { normalizeRuntime, planSessionOpen } from './sessionOpenPlan';
+import {
+  canHotSwapSessionSidecar,
+  normalizeRuntime,
+  planSessionOpen,
+  sessionRuntimeIdentityFromMetadataForOpen,
+} from './sessionOpenPlan';
 
 describe('planSessionOpen', () => {
   test('jumps to an already-open session before considering runtime', () => {
@@ -155,5 +160,63 @@ describe('normalizeRuntime', () => {
     expect(normalizeRuntime(undefined)).toBe('builtin');
     expect(normalizeRuntime('unknown')).toBe('builtin');
     expect(normalizeRuntime('gemini')).toBe('gemini');
+  });
+});
+
+describe('canHotSwapSessionSidecar', () => {
+  test('allows Rust session-id hot swap only for builtin-owned sessions', () => {
+    expect(canHotSwapSessionSidecar({
+      currentRuntimeIdentity: { runtime: 'builtin' },
+      targetRuntimeIdentity: { runtime: 'builtin' },
+    })).toBe(true);
+
+    expect(canHotSwapSessionSidecar({
+      currentRuntimeIdentity: { runtime: 'codex', runtimeSource: 'managed-provider' },
+      targetRuntimeIdentity: { runtime: 'codex', runtimeSource: 'managed-provider' },
+    })).toBe(false);
+
+    expect(canHotSwapSessionSidecar({
+      currentRuntimeIdentity: { runtime: 'builtin' },
+      targetRuntimeIdentity: { runtime: 'codex', runtimeSource: 'managed-provider' },
+    })).toBe(false);
+
+    expect(canHotSwapSessionSidecar({
+      currentRuntimeIdentity: { runtime: 'builtin' },
+      targetRuntimeIdentity: { runtime: 'gemini', runtimeSource: 'system-cli' },
+    })).toBe(false);
+
+    expect(canHotSwapSessionSidecar({
+      currentRuntimeIdentity: { runtime: 'builtin' },
+      targetRuntimeIdentity: { runtime: 'builtin', runtimeKnown: false },
+    })).toBe(false);
+  });
+});
+
+describe('sessionRuntimeIdentityFromMetadataForOpen', () => {
+  test('treats Managed Codex provider identity as codex even when runtime is missing', () => {
+    expect(sessionRuntimeIdentityFromMetadataForOpen({
+      providerExecutionIdentity: {
+        kind: 'runtime-backed-provider',
+        providerId: 'codex-sub',
+        runtime: 'codex',
+        runtimeSource: 'managed-provider',
+        model: 'gpt-5.4-codex',
+      },
+    }, 'builtin')).toEqual({
+      runtime: 'codex',
+      runtimeSource: 'managed-provider',
+      runtimeKnown: true,
+    });
+  });
+
+  test('keeps legacy builtin metadata as Agents SDK builtin', () => {
+    expect(sessionRuntimeIdentityFromMetadataForOpen({
+      runtime: 'builtin',
+      runtimeSource: 'managed-provider',
+    }, 'codex')).toEqual({
+      runtime: 'builtin',
+      runtimeSource: undefined,
+      runtimeKnown: true,
+    });
   });
 });

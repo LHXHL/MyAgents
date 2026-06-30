@@ -76,7 +76,7 @@ import { dismissTopmost } from '@/utils/closeLayer';
 import { dispatchAppShortcut } from '@/utils/appShortcuts';
 import { handleSelectAllKeydown } from '@/utils/selectAllRouter';
 import { forceFlushLogs, setLogServerUrl, clearLogServerUrl, setAppActiveTabId } from '@/utils/frontendLogger';
-import { normalizeRuntime, resolveEffectiveRuntime, planSessionOpen } from '@/utils/sessionOpenPlan';
+import { canHotSwapSessionSidecar, normalizeRuntime, resolveEffectiveRuntime, planSessionOpen, sessionRuntimeIdentityFromMetadataForOpen } from '@/utils/sessionOpenPlan';
 import { resolveNotificationClickRoute } from '@/utils/notificationClickRoute';
 import { applyTerminalSessionToTabs } from '@/utils/sessionTermination';
 import { getSessionDisplayText } from '@/utils/sessionDisplay';
@@ -141,6 +141,7 @@ function cloneStringArray(value: string[] | undefined): string[] | undefined {
 interface SessionRuntimeOpenIdentity {
   runtime: RuntimeType;
   runtimeSource?: RuntimeSource;
+  runtimeKnown?: boolean;
 }
 
 function fallbackRuntimeForOpen(
@@ -165,22 +166,16 @@ async function resolveSessionRuntimeIdentityForOpen(
 ): Promise<SessionRuntimeOpenIdentity> {
   const fallback = fallbackRuntimeForOpen(fallbackRuntime, multiAgentRuntime);
   if (!sessionId || isPendingSessionId(sessionId)) {
-    return { runtime: fallback, runtimeSource: normalizeRuntimeSourceForOpen(fallback, undefined) };
+    return { runtime: fallback, runtimeSource: normalizeRuntimeSourceForOpen(fallback, undefined), runtimeKnown: true };
   }
   try {
     const meta = await apiGetJson<{ success: boolean; session?: SessionMetadata }>(`/sessions/${encodeURIComponent(sessionId)}?limit=1`);
-    const runtime = meta.session?.runtime
-      ? normalizeRuntime(meta.session.runtime)
-      : fallback;
-    return {
-      runtime,
-      runtimeSource: normalizeRuntimeSourceForOpen(runtime, meta.session?.runtimeSource),
-    };
+    return sessionRuntimeIdentityFromMetadataForOpen(meta.session, fallback);
   } catch (error) {
     // Non-fatal: sidecar spawn/switch paths remain authoritative. Falling
     // back only affects whether the UI opens a new tab proactively.
     console.warn(`[App] Failed to resolve runtime for session ${sessionId}, using fallback ${fallback}:`, error);
-    return { runtime: fallback, runtimeSource: normalizeRuntimeSourceForOpen(fallback, undefined) };
+    return { runtime: fallback, runtimeSource: normalizeRuntimeSourceForOpen(fallback, undefined), runtimeKnown: false };
   }
 }
 
@@ -2301,6 +2296,12 @@ export default function App() {
       targetActivation: activation,
       currentTabCronRunning: currentTabCronTask?.status === 'running',
     });
+    const canHotSwapCurrentSidecar = canHotSwapSessionSidecar({
+      currentRuntime,
+      targetRuntime,
+      currentRuntimeIdentity: currentTab?.sessionId ? resolvedCurrentRuntimeIdentity : targetRuntimeIdentity,
+      targetRuntimeIdentity,
+    });
 
     if (plan.type === 'jump-to-tab') {
       console.log(`[App] handleSwitchSession Scenario 1: Session ${sessionId} already in tab ${plan.tabId}, jumping to it`);
@@ -2501,6 +2502,20 @@ export default function App() {
             await deactivateSession(oldSessionId);
             const result = await ensureSessionSidecar(sessionId, currentTabForScenario4.agentDir, 'tab', tabId);
             await activateSession(sessionId, tabId, null, result.port, currentTabForScenario4.agentDir, false);
+            joinedExisting = !result.isNew;
+          } else if (!canHotSwapCurrentSidecar) {
+            // Rust `upgradeSessionId` is only an identity rename. It does not
+            // call the Node sidecar's `/sessions/switch`, so external runtimes
+            // would keep the old Codex/Gemini process and transcript owner under
+            // a new Rust key. For external histories, switch to a target-owned
+            // sidecar instead; the sidecar boot/restore path seeds runtimeSessionId
+            // and the append-only transcript from the target session.
+            console.log(`[App] External runtime session switch (${resolvedCurrentRuntime} -> ${targetRuntime}); replacing sidecar instead of upgradeSessionId`);
+            await stopSseProxy(tabId);
+            await releaseSessionSidecar(oldSessionId, 'tab', tabId);
+            await deactivateSession(oldSessionId);
+            const result = await ensureSessionSidecar(sessionId, tabAgentDir, 'tab', tabId);
+            await activateSession(sessionId, tabId, null, result.port, tabAgentDir, false);
             joinedExisting = !result.isNew;
           } else {
             // No existing sidecar for target → hot-swap via upgradeSessionId (efficient, no new process)
