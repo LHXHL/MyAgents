@@ -107,7 +107,7 @@ export function SpaceSidebar({
                   key={item.mode}
                   type="button"
                   onClick={() => onSpaceTabChange(item.mode)}
-                  className={`grid min-h-8 w-full grid-cols-[16px_minmax(0,1fr)] items-center gap-2 rounded-lg px-2.5 text-left text-xs font-semibold transition-colors ${
+                  className={`grid min-h-8 w-full grid-cols-[16px_minmax(0,1fr)] items-center gap-2 rounded-lg px-2.5 text-left text-sm font-semibold transition-colors ${
                     selected
                       ? 'bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]'
                       : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'

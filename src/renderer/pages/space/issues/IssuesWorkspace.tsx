@@ -102,7 +102,7 @@ export function IssuesWorkspace({
               <Search className="h-4 w-4" />
             </button>
             <CustomSelect value={selectedStatus} options={statusFilterOptions} onChange={onStatusChange} size="toolbar" className="w-40 min-w-0 max-xl:w-36" />
-            <CustomSelect value={selectedGoalId} options={goalOptions} onChange={onGoalChange} size="toolbar" className="w-56 min-w-0 max-xl:w-44" />
+            <CustomSelect value={selectedGoalId} options={goalOptions} onChange={onGoalChange} size="toolbar" className="w-[360px] min-w-0 max-xl:w-[320px] max-lg:w-64" />
             <button
               type="button"
               onClick={() => void onRefresh()}
@@ -130,7 +130,7 @@ export function IssuesWorkspace({
             {issues.length === 0 && issuesLoading ? (
               <div className="grid gap-0">
                 {Array.from({ length: 4 }).map((_, index) => (
-                  <div key={index} className="min-h-[78px] border-b border-[var(--line-subtle)] py-4 last:border-b-0">
+                  <div key={index} className="min-h-[72px] border-b border-[var(--line-subtle)] py-3.5 last:border-b-0">
                     <div className="h-4 w-44 rounded-md bg-[var(--paper-inset)]" />
                     <div className="mt-3 h-3 w-72 rounded-md bg-[var(--paper-inset)]" />
                   </div>
@@ -185,22 +185,22 @@ function IssueStreamRow({
   const displayTitle = issueDisplayTitle(issue);
   const authorName = issue.creator?.name ?? issue.creator?.id ?? issue.author?.name ?? issue.author?.id ?? 'owner';
   const handlerName = claimHandlerLabel(issue.claim);
-  const goalLabel = issue.goalPathLabel || (issue.goalId ? issue.goalId : t('space.filters.inbox'));
+  const goalLabel = issue.goalPathLabel || issue.goalId || null;
   return (
     <button
       type="button"
       onClick={onOpen}
       style={{ animationDelay: `${index * 42}ms` }}
-      className={`grid min-h-[78px] w-full border-b border-[var(--line-subtle)] px-1 py-4 text-left transition-colors last:border-b-0 sm:px-3 ${
+      className={`grid min-h-[74px] w-full border-b border-[var(--line-subtle)] px-1 py-3.5 text-left transition-colors last:border-b-0 sm:px-3 ${
         active ? 'bg-[var(--paper-elevated)]/70 shadow-[inset_3px_0_0_var(--accent-warm)]' : 'hover:bg-[var(--paper-elevated)]/60'
       }`}
     >
       <span className="min-w-0">
         <span className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2">
-          <span className={`rounded-md px-2 py-1 text-xs font-semibold ${statusPillClass(issue.state)}`}>{issueStatusLabel(issue.state)}</span>
+          <span className={`inline-flex h-7 items-center rounded-md px-2 text-xs font-semibold ${statusPillClass(issue.state)}`}>{issueStatusLabel(issue.state)}</span>
           <span className="truncate text-base font-semibold leading-6 text-[var(--ink)]">{displayTitle}</span>
         </span>
-        <span className="mt-2 flex flex-wrap items-center gap-2 text-xs font-semibold text-[var(--ink-subtle)]">
+        <span className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs font-semibold text-[var(--ink-subtle)]">
           <span>{authorName}</span>
           <span className="text-[var(--line-strong)]">·</span>
           <span>{formatTime(issue.createdAt)}</span>
@@ -209,13 +209,17 @@ function IssueStreamRow({
           {handlerName && (
             <>
               <span className="text-[var(--line-strong)]">·</span>
-              <span className="rounded-md bg-[var(--warning-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--warning)]">
+              <span className="rounded-md bg-[var(--warning-bg)]/70 px-2 py-0.5 text-xs font-semibold text-[var(--warning)]">
                 {t('space.issues.claimHandler', { name: handlerName })}
               </span>
             </>
           )}
-          <span className="text-[var(--line-strong)]">·</span>
-          <span className="rounded-md bg-[var(--accent-cool)]/10 px-2 py-0.5 text-xs font-semibold text-[var(--accent-cool)]">{goalLabel}</span>
+          {goalLabel && (
+            <>
+              <span className="text-[var(--line-strong)]">·</span>
+              <span className="inline-flex max-w-[46ch] truncate rounded-md border border-[var(--line-subtle)] bg-[var(--paper-inset)]/45 px-2 py-0.5 text-xs font-medium text-[var(--ink-muted)]">{goalLabel}</span>
+            </>
+          )}
           {issue.humanOnly && (
             <span className="rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">
               {t('space.issues.humanOnly')}
