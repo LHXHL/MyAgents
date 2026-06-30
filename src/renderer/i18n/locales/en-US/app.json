@@ -44,6 +44,7 @@
   "appChrome": {
     "updateVerifyFailed": "Could not verify the update because of a network issue. Try again later.",
     "updateExpiredRedownloading": "The downloaded update expired. Downloading the latest version...",
+    "updateInstallBlocked": "Background services are still exiting. The update is saved; try again shortly or after restarting Windows.",
     "updateInstallFailed": "Update installation failed. Try again or check manually in Settings.",
     "backgroundCompletion": "AI will continue in the background",
     "maxTabsReached": "Maximum tab count reached. Close another tab and try again.",
@@ -393,7 +394,8 @@
       "issueCreatedWithAttachments": "Issue created and {{count}} attachment(s) uploaded",
       "goalCreated": "Goal created",
       "goalSaved": "Goal saved",
-      "goalArchived": "Goal archived"
+      "goalArchived": "Goal archived",
+      "goalDeleted": "Goal deleted"
     },
     "issues": {
       "searchPlaceholder": "Search title",
@@ -426,10 +428,20 @@
       "empty": "No goals",
       "root": "Root",
       "viewIssues": "View Issues",
+      "edit": "Edit",
+      "editTitle": "Edit goal",
+      "createTitle": "New child goal",
+      "emptyTitle": "No goal selected",
+      "emptyHint": "Select a goal from the tree to review its context and direct child goals here.",
       "titleLabel": "Title",
       "contextLabel": "Context",
       "titlePlaceholder": "Goal title",
       "contextPlaceholder": "Describe the background, boundary, and acceptance direction for this goal",
+      "children": "Child goals",
+      "childCount": "{{count}}",
+      "noChildren": "No direct child goals",
+      "parentGoal": "Parent goal:",
+      "rootEditHint": "The root goal can be edited, but it cannot be deleted.",
       "newChild": "New child goal",
       "newChildHint": "Create under \"{{parent}}\" to split the attention scope further.",
       "childTitlePlaceholder": "Child goal title",
@@ -437,7 +449,10 @@
       "createChild": "Create child",
       "archive": "Archive",
       "archiveTitle": "Archive goal",
-      "archiveMessage": "Archive \"{{name}}\"? Child goals under it will be hidden from the goal tree and related Issue lists will reload."
+      "archiveMessage": "Archive \"{{name}}\"? Child goals under it will be hidden from the goal tree and related Issue lists will reload.",
+      "delete": "Delete",
+      "deleteTitle": "Delete goal",
+      "deleteMessage": "Delete \"{{name}}\"? Child goals under it will be hidden from the goal tree and related Issue lists will reload."
     },
     "detail": {
       "close": "Close detail",

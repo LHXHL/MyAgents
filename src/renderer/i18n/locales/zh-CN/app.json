@@ -44,6 +44,7 @@
   "appChrome": {
     "updateVerifyFailed": "无法验证更新（网络异常），请稍后重试",
     "updateExpiredRedownloading": "已下载的更新已过期，正在重新下载新版本...",
+    "updateInstallBlocked": "后台服务仍在退出，更新包已保留，请稍后重试或重启电脑后安装",
     "updateInstallFailed": "安装更新失败，请重试或前往设置页手动重新检查",
     "backgroundCompletion": "AI 继续在后台完成任务",
     "maxTabsReached": "已达到最大标签页数量，请关闭其他标签页后重试",
@@ -393,7 +394,8 @@
       "issueCreatedWithAttachments": "已创建 Issue 并上传 {{count}} 个附件",
       "goalCreated": "已创建目标",
       "goalSaved": "已保存目标",
-      "goalArchived": "已归档目标"
+      "goalArchived": "已归档目标",
+      "goalDeleted": "已删除目标"
     },
     "issues": {
       "searchPlaceholder": "搜索标题",
@@ -426,10 +428,20 @@
       "empty": "暂无目标",
       "root": "根目标",
       "viewIssues": "查看 Issues",
+      "edit": "编辑",
+      "editTitle": "编辑目标",
+      "createTitle": "新建子目标",
+      "emptyTitle": "未选择目标",
+      "emptyHint": "从左侧目标树选择一个目标后，在这里查看上下文和下一级子目标。",
       "titleLabel": "标题",
       "contextLabel": "上下文",
       "titlePlaceholder": "目标标题",
       "contextPlaceholder": "写清楚这个目标的背景、边界和验收方向",
+      "children": "子目标列表",
+      "childCount": "{{count}} 个",
+      "noChildren": "暂无下一级子目标",
+      "parentGoal": "父级目标：",
+      "rootEditHint": "根目标只能编辑标题和上下文，不能删除。",
       "newChild": "新建子目标",
       "newChildHint": "创建在「{{parent}}」下面，用来继续拆分关注范围。",
       "childTitlePlaceholder": "子目标标题",
@@ -437,7 +449,10 @@
       "createChild": "创建子目标",
       "archive": "归档",
       "archiveTitle": "归档目标",
-      "archiveMessage": "确定归档「{{name}}」吗？这个目标下的子目标也会从目标树中隐藏，相关 Issue 列表会重新加载。"
+      "archiveMessage": "确定归档「{{name}}」吗？这个目标下的子目标也会从目标树中隐藏，相关 Issue 列表会重新加载。",
+      "delete": "删除",
+      "deleteTitle": "删除目标",
+      "deleteMessage": "确定删除「{{name}}」吗？这个目标下的子目标也会从目标树中隐藏，相关 Issue 列表会重新加载。"
     },
     "detail": {
       "close": "关闭详情",

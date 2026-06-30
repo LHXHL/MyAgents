@@ -98,7 +98,15 @@ function renderGoals(actions: SpaceActions, onOpenIssuesForGoal = vi.fn()) {
 }
 
 describe('GoalsWorkspace', () => {
-  it('updates the selected goal title and context', async () => {
+  it('starts with an empty detail state until a goal is selected', () => {
+    const actions = buildActions();
+    renderGoals(actions);
+
+    expect(screen.getByText('未选择目标')).toBeInTheDocument();
+    expect(screen.queryByText('Root context')).not.toBeInTheDocument();
+  });
+
+  it('updates the selected goal from edit mode', async () => {
     const updateGoal = vi.fn().mockResolvedValue({
       ...childGoal,
       title: 'Runtime Reliability',
@@ -108,6 +116,9 @@ describe('GoalsWorkspace', () => {
     renderGoals(actions);
 
     fireEvent.click(screen.getByRole('button', { name: 'Runtime Delivery' }));
+    expect(screen.getByText('Runtime context')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
     fireEvent.change(screen.getByLabelText('标题'), {
       target: { value: 'Runtime Reliability' },
     });
@@ -125,7 +136,7 @@ describe('GoalsWorkspace', () => {
     });
   });
 
-  it('creates a child goal under the selected goal', async () => {
+  it('opens child goal creation from the selected goal detail', async () => {
     const createGoal = vi.fn().mockResolvedValue({
       ...childGoal,
       id: 'goal-new',
@@ -135,10 +146,14 @@ describe('GoalsWorkspace', () => {
     const actions = buildActions({ createGoal });
     renderGoals(actions);
 
-    fireEvent.change(screen.getByPlaceholderText('子目标标题'), {
+    fireEvent.click(screen.getByRole('button', { name: 'MyAgents社区' }));
+    fireEvent.click(screen.getByRole('button', { name: '新建子目标' }));
+
+    expect(screen.getByText('父级目标：')).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('标题'), {
       target: { value: 'Renderer QA' },
     });
-    fireEvent.change(screen.getByPlaceholderText('子目标上下文'), {
+    fireEvent.change(screen.getByLabelText('上下文'), {
       target: { value: 'Renderer context' },
     });
     fireEvent.click(screen.getByRole('button', { name: '创建子目标' }));
@@ -152,19 +167,44 @@ describe('GoalsWorkspace', () => {
     });
   });
 
-  it('requires confirmation before archiving a non-root goal', async () => {
+  it('lets the create-mode parent breadcrumb navigate back to the parent goal', () => {
+    const actions = buildActions();
+    renderGoals(actions);
+
+    fireEvent.click(screen.getByRole('button', { name: 'MyAgents社区' }));
+    fireEvent.click(screen.getByRole('button', { name: '新建子目标' }));
+
+    const parentButtons = screen.getAllByRole('button', { name: 'MyAgents社区' });
+    fireEvent.click(parentButtons[parentButtons.length - 1]);
+
+    expect(screen.getByRole('heading', { name: 'MyAgents社区' })).toBeInTheDocument();
+    expect(screen.getByText('Root context')).toBeInTheDocument();
+  });
+
+  it('navigates direct child goals from the detail child list', () => {
+    const actions = buildActions();
+    renderGoals(actions);
+
+    fireEvent.click(screen.getByRole('button', { name: 'MyAgents社区' }));
+    fireEvent.click(screen.getByText('Runtime context'));
+
+    expect(screen.getByRole('heading', { name: 'Runtime Delivery' })).toBeInTheDocument();
+  });
+
+  it('requires confirmation before deleting a non-root goal', async () => {
     const archiveGoal = vi.fn().mockResolvedValue(undefined);
     const actions = buildActions({ archiveGoal });
     renderGoals(actions);
 
     fireEvent.click(screen.getByRole('button', { name: 'Runtime Delivery' }));
-    fireEvent.click(screen.getByRole('button', { name: '归档' }));
+    fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+    fireEvent.click(screen.getByRole('button', { name: '删除' }));
 
     expect(archiveGoal).not.toHaveBeenCalled();
-    expect(screen.getByText('归档目标')).toBeInTheDocument();
+    expect(screen.getByText('删除目标')).toBeInTheDocument();
 
-    const archiveButtons = screen.getAllByRole('button', { name: '归档' });
-    fireEvent.click(archiveButtons[archiveButtons.length - 1]);
+    const deleteButtons = screen.getAllByRole('button', { name: '删除' });
+    fireEvent.click(deleteButtons[deleteButtons.length - 1]);
 
     await waitFor(() => {
       expect(archiveGoal).toHaveBeenCalledWith('goal-child');
