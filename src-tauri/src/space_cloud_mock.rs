@@ -35,6 +35,7 @@ struct MockState {
     issues: Vec<Value>,
     comments: HashMap<String, Vec<Value>>,
     attachments: HashMap<String, Vec<Value>>,
+    claims: HashMap<String, Value>,
     skills: Vec<MockSkillRecord>,
     agents: Vec<LocalRegisteredAgent>,
     dispatches: Vec<Value>,
@@ -664,10 +665,14 @@ fn handle_api_data_request(
         }
         ("POST", ["api", "issues", issue_id, "claim"]) => claim_issue(&mut state, issue_id, body),
         ("POST", ["api", "issues", issue_id, "complete"]) => {
-            set_issue_status_value(&mut state, issue_id, "done")
+            let result = set_issue_status_value(&mut state, issue_id, "done")?;
+            state.claims.remove(*issue_id);
+            Ok(result)
         }
         ("POST", ["api", "issues", issue_id, "cancel-claim"]) => {
-            set_issue_status_value(&mut state, issue_id, "todo")
+            let result = set_issue_status_value(&mut state, issue_id, "todo")?;
+            state.claims.remove(*issue_id);
+            Ok(result)
         }
         ("POST", ["api", "issues", issue_id, "close"]) => {
             set_issue_status_value(&mut state, issue_id, "closed")
@@ -1231,6 +1236,7 @@ fn initial_state() -> MockState {
         issues,
         comments,
         attachments,
+        claims: HashMap::new(),
         skills,
         agents,
         dispatches,
@@ -1265,9 +1271,17 @@ fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
         .get("goalId")
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
+    let include_subtree = query
+        .get("includeSubtree")
+        .map(|value| value == "true")
+        .unwrap_or(false);
     let human_only = query
         .get("humanOnly")
         .map(|value| value.trim().to_ascii_lowercase());
+    let include_archived = query
+        .get("includeArchived")
+        .map(|value| value == "true")
+        .unwrap_or(false);
     let cursor = query
         .get("cursor")
         .and_then(|value| value.parse::<usize>().ok())
@@ -1280,6 +1294,7 @@ fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
     let mut items = state
         .issues
         .iter()
+        .filter(|issue| include_archived || !is_archived(issue))
         .filter(|issue| {
             let title = issue
                 .get("title")
@@ -1340,6 +1355,8 @@ fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
                 .map(|goal_id| {
                     if goal_id == "inbox" || goal_id == "null" {
                         issue_goal_id.is_empty()
+                    } else if include_subtree {
+                        goal_is_in_subtree(state, issue_goal_id, goal_id)
                     } else {
                         issue_goal_id == goal_id
                     }
@@ -1403,9 +1420,20 @@ fn create_issue(state: &mut MockState, body: Option<Value>) -> Result<Value, Str
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string);
-    let goal_path_label = goal_id
-        .as_deref()
-        .and_then(|goal_id| goal_label(state, goal_id));
+    let goal_path_label = match goal_id.as_deref() {
+        Some(goal_id) => {
+            let goal = state
+                .goals
+                .iter()
+                .find(|goal| goal.get("id").and_then(Value::as_str) == Some(goal_id))
+                .ok_or_else(|| format!("Goal not found: {}", goal_id))?;
+            if is_archived(goal) {
+                return Err("Goal is archived".to_string());
+            }
+            goal_label(state, goal_id)
+        }
+        None => None,
+    };
     let id = state.next_id("iss");
     let issue = json!({
         "id": id,
@@ -1686,6 +1714,17 @@ fn archive_goal(state: &mut MockState, goal_id: &str) -> Result<Value, String> {
                 .map(ToString::to_string)
         })
         .collect::<HashSet<_>>();
+    let has_active_claim = state.issues.iter().any(|issue| {
+        let issue_id = issue.get("id").and_then(Value::as_str).unwrap_or("");
+        issue
+            .get("goalId")
+            .and_then(Value::as_str)
+            .map(|id| archived_ids.contains(id) && state.claims.contains_key(issue_id))
+            .unwrap_or(false)
+    });
+    if has_active_claim {
+        return Err("Goal has active issue claims".to_string());
+    }
     for item in &mut state.goals {
         if item
             .get("id")
@@ -1709,6 +1748,7 @@ fn archive_goal(state: &mut MockState, goal_id: &str) -> Result<Value, String> {
             if let Some(issue) = issue.as_object_mut() {
                 issue.insert("state".to_string(), json!("closed"));
                 issue.insert("status".to_string(), json!("closed"));
+                issue.insert("archivedAt".to_string(), json!("2026-06-24T09:54:00.000Z"));
                 issue.insert("updatedAt".to_string(), json!("2026-06-24T09:54:00.000Z"));
             }
         }
@@ -1774,7 +1814,7 @@ fn issue_detail(
             "limit": limit
         },
         "attachments": state.attachments.get(issue_id).cloned().unwrap_or_default(),
-        "claim": null
+        "claim": state.claims.get(issue_id).cloned().unwrap_or(Value::Null)
     }))
 }
 
@@ -1847,19 +1887,26 @@ fn claim_issue(
     body: Option<Value>,
 ) -> Result<Value, String> {
     let _ = body;
+    if state.claims.contains_key(issue_id) {
+        return Err("Issue already has an active claim".to_string());
+    }
+    if find_issue_index(&state.issues, issue_id).is_none() {
+        return Err(format!("Issue not found: {}", issue_id));
+    }
     let claim_id = state.next_id("claim");
     let _ = set_issue_status_value(state, issue_id, "doing")?;
-    Ok(json!({
-        "claim": {
+    let claim = json!({
             "id": claim_id,
+            "spaceId": MOCK_SPACE_ID,
             "issueId": issue_id,
             "status": "active",
             "localTaskId": null,
             "localSessionId": null,
             "claimedAt": "2026-06-24T09:47:00.000Z",
             "updatedAt": "2026-06-24T09:47:00.000Z"
-        }
-    }))
+    });
+    state.claims.insert(issue_id.to_string(), claim.clone());
+    Ok(json!({ "claim": claim }))
 }
 
 fn dispatch_issue(
@@ -2064,6 +2111,39 @@ fn legacy_status_to_state(status: &str) -> &'static str {
 
 fn goal_label(state: &MockState, goal_id: &str) -> Option<String> {
     computed_goal_label(state, goal_id)
+}
+
+fn goal_is_in_subtree(state: &MockState, candidate_goal_id: &str, ancestor_goal_id: &str) -> bool {
+    if candidate_goal_id.is_empty() {
+        return false;
+    }
+    if candidate_goal_id == ancestor_goal_id {
+        return true;
+    }
+
+    let mut current_id = candidate_goal_id.to_string();
+    let mut visited = HashSet::new();
+    for _ in 0..64 {
+        if !visited.insert(current_id.clone()) {
+            return false;
+        }
+        let Some(goal) = state
+            .goals
+            .iter()
+            .find(|goal| goal.get("id").and_then(Value::as_str) == Some(current_id.as_str()))
+        else {
+            return false;
+        };
+        let Some(parent_goal_id) = goal.get("parentGoalId").and_then(Value::as_str) else {
+            return false;
+        };
+        if parent_goal_id == ancestor_goal_id {
+            return true;
+        }
+        current_id = parent_goal_id.to_string();
+    }
+
+    false
 }
 
 fn computed_goal_label(state: &MockState, goal_id: &str) -> Option<String> {
@@ -2633,5 +2713,195 @@ mod tests {
             &event,
             Some("2026-06-24T10:00:00.000Z")
         ));
+    }
+
+    #[test]
+    fn goal_mutation_routes_create_update_and_archive_subtrees() {
+        let _mock = enable_for_test();
+        let official = api_data_request("GET", "/api/spaces/official", None)
+            .expect("official space should load");
+        let root_goal_id = official
+            .pointer("/space/rootGoalId")
+            .and_then(Value::as_str)
+            .expect("root goal id");
+
+        let created = api_data_request(
+            "POST",
+            "/api/spaces/official/goals",
+            Some(json!({
+                "parentGoalId": root_goal_id,
+                "title": "Runtime Quality",
+                "context": "Runtime acceptance work"
+            })),
+        )
+        .expect("goal create should succeed");
+        let child_id = created
+            .pointer("/goal/id")
+            .and_then(Value::as_str)
+            .expect("created goal id")
+            .to_string();
+        assert_eq!(
+            created
+                .pointer("/goal/goalPathLabel")
+                .and_then(Value::as_str),
+            Some("MyAgents社区 / Runtime Quality")
+        );
+
+        let updated = api_data_request(
+            "PATCH",
+            &format!("/api/goals/{}", child_id),
+            Some(json!({
+                "title": "Runtime Reliability",
+                "context": "Updated runtime acceptance work"
+            })),
+        )
+        .expect("goal update should succeed");
+        assert_eq!(
+            updated.pointer("/goal/title").and_then(Value::as_str),
+            Some("Runtime Reliability")
+        );
+        assert_eq!(
+            updated
+                .pointer("/goal/goalPathLabel")
+                .and_then(Value::as_str),
+            Some("MyAgents社区 / Runtime Reliability")
+        );
+
+        let linked_issue = api_data_request(
+            "POST",
+            "/api/spaces/official/issues",
+            Some(json!({
+                "goalId": child_id,
+                "title": "Linked issue",
+                "body": "Issue under archived goal"
+            })),
+        )
+        .expect("linked issue should be created");
+        let linked_issue_id = linked_issue
+            .pointer("/issue/id")
+            .and_then(Value::as_str)
+            .expect("linked issue id")
+            .to_string();
+
+        let root_subtree_issues = api_data_request(
+            "GET",
+            &format!(
+                "/api/spaces/official/issues?goalId={}&includeSubtree=true",
+                root_goal_id
+            ),
+            None,
+        )
+        .expect("root subtree issues should list");
+        let empty_subtree_issues = Vec::new();
+        let root_subtree_issue_ids = root_subtree_issues
+            .pointer("/items")
+            .and_then(Value::as_array)
+            .unwrap_or(&empty_subtree_issues)
+            .iter()
+            .filter_map(|issue| issue.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(root_subtree_issue_ids.contains(&linked_issue_id.as_str()));
+
+        api_data_request(
+            "POST",
+            &format!("/api/issues/{}/claim", linked_issue_id),
+            Some(json!({})),
+        )
+        .expect("linked issue should be claimable");
+        let blocked_archive = api_data_request(
+            "POST",
+            &format!("/api/goals/{}/archive", child_id),
+            Some(json!({})),
+        );
+        assert!(blocked_archive.is_err());
+        api_data_request(
+            "POST",
+            &format!("/api/issues/{}/cancel-claim", linked_issue_id),
+            Some(json!({})),
+        )
+        .expect("linked issue claim should be cancellable");
+
+        let archived = api_data_request(
+            "POST",
+            &format!("/api/goals/{}/archive", child_id),
+            Some(json!({})),
+        )
+        .expect("goal archive should succeed");
+        assert_eq!(
+            archived.pointer("/archived").and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let active_goals = api_data_request("GET", "/api/spaces/official/goals", None)
+            .expect("active goals should list");
+        let empty_active_goals = Vec::new();
+        let active_ids = active_goals
+            .pointer("/items")
+            .and_then(Value::as_array)
+            .unwrap_or(&empty_active_goals)
+            .iter()
+            .filter_map(|goal| goal.get("id").and_then(Value::as_str))
+            .collect::<Vec<_>>();
+        assert!(!active_ids.contains(&child_id.as_str()));
+
+        let archived_goals = api_data_request(
+            "GET",
+            "/api/spaces/official/goals?includeArchived=true",
+            None,
+        )
+        .expect("archived goals should list");
+        let archived_child = archived_goals
+            .pointer("/items")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|goal| goal.get("id").and_then(Value::as_str) == Some(child_id.as_str()))
+            })
+            .expect("archived child remains queryable");
+        assert!(archived_child.get("archivedAt").is_some());
+
+        let issues = api_data_request(
+            "GET",
+            &format!("/api/spaces/official/issues?goalId={}", child_id),
+            None,
+        )
+        .expect("archived goal issues should list as empty by default");
+        assert_eq!(
+            issues
+                .pointer("/items")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+
+        let create_under_archived = api_data_request(
+            "POST",
+            "/api/spaces/official/issues",
+            Some(json!({
+                "goalId": child_id,
+                "title": "Should fail",
+                "body": "Archived goal should reject new issues"
+            })),
+        );
+        assert!(create_under_archived.is_err());
+
+        let create_under_missing = api_data_request(
+            "POST",
+            "/api/spaces/official/issues",
+            Some(json!({
+                "goalId": "goal_missing",
+                "title": "Should fail",
+                "body": "Missing goal should reject new issues"
+            })),
+        );
+        assert!(create_under_missing.is_err());
+
+        let root_archive = api_data_request(
+            "POST",
+            &format!("/api/goals/{}/archive", root_goal_id),
+            Some(json!({})),
+        );
+        assert!(root_archive.is_err());
     }
 }

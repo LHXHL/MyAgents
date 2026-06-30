@@ -435,7 +435,9 @@
       "childTitlePlaceholder": "子目标标题",
       "childContextPlaceholder": "子目标上下文",
       "createChild": "创建子目标",
-      "archive": "归档"
+      "archive": "归档",
+      "archiveTitle": "归档目标",
+      "archiveMessage": "确定归档「{{name}}」吗？这个目标下的子目标也会从目标树中隐藏，相关 Issue 列表会重新加载。"
     },
     "detail": {
       "close": "关闭详情",

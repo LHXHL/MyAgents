@@ -413,7 +413,7 @@
       "removeFile": "Remove {{name}}",
       "addAttachment": "Add attachment",
       "attachment": "Attachment",
-      "targetGoal": "Goal",
+      "targetGoal": "Target Goal",
       "humanOnly": "Human-only",
       "continuous": "Keep creating",
       "pickAttachmentsTitle": "Choose issue attachments"
@@ -435,7 +435,9 @@
       "childTitlePlaceholder": "Child goal title",
       "childContextPlaceholder": "Child goal context",
       "createChild": "Create child",
-      "archive": "Archive"
+      "archive": "Archive",
+      "archiveTitle": "Archive goal",
+      "archiveMessage": "Archive \"{{name}}\"? Child goals under it will be hidden from the goal tree and related Issue lists will reload."
     },
     "detail": {
       "close": "Close detail",
