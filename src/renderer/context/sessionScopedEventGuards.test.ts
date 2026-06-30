@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+    decideSystemInitSessionId,
     decidePersistedContextUsageSeed,
     shouldAcceptSessionScopedSseSnapshot,
     shouldPreserveSnapshotOnPendingBirthPropSync,
@@ -7,6 +8,7 @@ import {
 
 const SID_A = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaaaaa';
 const SID_B = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
+const SID_C = 'cccccccc-cccc-4ccc-cccc-cccccccccccc';
 const PENDING_B = 'pending-bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbbbbb';
 
 describe('shouldAcceptSessionScopedSseSnapshot', () => {
@@ -142,6 +144,182 @@ describe('shouldPreserveSnapshotOnPendingBirthPropSync', () => {
                 isNextSessionPending: false,
             }),
         ).toBe(false);
+    });
+});
+
+describe('decideSystemInitSessionId', () => {
+    it('rejects stale system-init payloads during real-to-real history switches', () => {
+        expect(
+            decideSystemInitSessionId({
+                connectedSessionId: SID_B,
+                currentSessionId: SID_B,
+                payloadSessionId: SID_A,
+                isConnectedSessionPending: false,
+                isCurrentSessionPending: false,
+                isNewSession: false,
+                isResetBirthPending: false,
+            }),
+        ).toEqual({
+            accept: false,
+            shouldSyncSessionId: false,
+            isSessionBirth: false,
+            reason: 'stale-session-mismatch',
+        });
+    });
+
+    it('accepts pending-session birth system-init and syncs to the concrete id', () => {
+        expect(
+            decideSystemInitSessionId({
+                connectedSessionId: PENDING_B,
+                currentSessionId: PENDING_B,
+                payloadSessionId: SID_B,
+                isConnectedSessionPending: true,
+                isCurrentSessionPending: true,
+                isNewSession: false,
+                isResetBirthPending: false,
+            }),
+        ).toEqual({
+            accept: true,
+            shouldSyncSessionId: true,
+            isSessionBirth: true,
+            reason: 'birth-session',
+        });
+    });
+
+    it('rejects stale old-session system-init while the tab is on a different pending session', () => {
+        expect(
+            decideSystemInitSessionId({
+                connectedSessionId: SID_A,
+                currentSessionId: PENDING_B,
+                payloadSessionId: SID_A,
+                isConnectedSessionPending: false,
+                isCurrentSessionPending: true,
+                isNewSession: false,
+                isResetBirthPending: false,
+            }),
+        ).toEqual({
+            accept: false,
+            shouldSyncSessionId: false,
+            isSessionBirth: false,
+            reason: 'stale-session-mismatch',
+        });
+    });
+
+    it('allows explicit reset birth to sync from a pending id to the reset id', () => {
+        expect(
+            decideSystemInitSessionId({
+                connectedSessionId: PENDING_B,
+                currentSessionId: PENDING_B,
+                payloadSessionId: SID_B,
+                expectedBirthSessionId: SID_B,
+                isConnectedSessionPending: true,
+                isCurrentSessionPending: true,
+                isNewSession: true,
+                isResetBirthPending: true,
+            }),
+        ).toEqual({
+            accept: true,
+            shouldSyncSessionId: true,
+            isSessionBirth: true,
+            reason: 'birth-session',
+        });
+    });
+
+    it('rejects expected reset birth once the tab has moved to another concrete session', () => {
+        expect(
+            decideSystemInitSessionId({
+                connectedSessionId: SID_C,
+                currentSessionId: SID_C,
+                payloadSessionId: SID_B,
+                expectedBirthSessionId: SID_B,
+                isConnectedSessionPending: false,
+                isCurrentSessionPending: false,
+                isNewSession: true,
+                isResetBirthPending: true,
+            }),
+        ).toEqual({
+            accept: false,
+            shouldSyncSessionId: false,
+            isSessionBirth: false,
+            reason: 'stale-session-mismatch',
+        });
+    });
+
+    it('rejects explicit reset birth when the payload does not match the expected new id', () => {
+        expect(
+            decideSystemInitSessionId({
+                connectedSessionId: SID_A,
+                currentSessionId: SID_A,
+                payloadSessionId: SID_C,
+                expectedBirthSessionId: SID_B,
+                isConnectedSessionPending: false,
+                isCurrentSessionPending: false,
+                isNewSession: true,
+                isResetBirthPending: true,
+            }),
+        ).toEqual({
+            accept: false,
+            shouldSyncSessionId: false,
+            isSessionBirth: false,
+            reason: 'stale-session-mismatch',
+        });
+    });
+
+    it('accepts null-session launch birth only when no old SSE session is attached', () => {
+        expect(
+            decideSystemInitSessionId({
+                connectedSessionId: null,
+                currentSessionId: null,
+                payloadSessionId: SID_B,
+                isConnectedSessionPending: false,
+                isCurrentSessionPending: false,
+                isNewSession: false,
+                isResetBirthPending: false,
+            }),
+        ).toEqual({
+            accept: true,
+            shouldSyncSessionId: true,
+            isSessionBirth: true,
+            reason: 'birth-session',
+        });
+    });
+
+    it('rejects null-session system-init when it came from a still-attached old SSE session', () => {
+        expect(
+            decideSystemInitSessionId({
+                connectedSessionId: SID_A,
+                currentSessionId: null,
+                payloadSessionId: SID_A,
+                isConnectedSessionPending: false,
+                isCurrentSessionPending: false,
+                isNewSession: false,
+                isResetBirthPending: false,
+            }),
+        ).toEqual({
+            accept: false,
+            shouldSyncSessionId: false,
+            isSessionBirth: false,
+            reason: 'stale-session-mismatch',
+        });
+    });
+
+    it('accepts matching concrete session system-init without syncing', () => {
+        expect(
+            decideSystemInitSessionId({
+                connectedSessionId: SID_B,
+                currentSessionId: SID_B,
+                payloadSessionId: SID_B,
+                isConnectedSessionPending: false,
+                isCurrentSessionPending: false,
+                isNewSession: false,
+                isResetBirthPending: false,
+            }),
+        ).toEqual({
+            accept: true,
+            shouldSyncSessionId: false,
+            isSessionBirth: false,
+            reason: 'matching-session',
+        });
     });
 });
 

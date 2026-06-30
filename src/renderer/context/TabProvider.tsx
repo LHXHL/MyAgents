@@ -36,6 +36,7 @@ import { CUSTOM_EVENTS, isPendingSessionId } from '../../shared/constants';
 import { TabContext, TabApiContext, TabActiveContext, type AdoptMigratedSessionOptions, type SessionState, type SystemNotice, type TabContextValue, type TabApiContextValue } from './TabContext';
 import { appendUniqueMessageById, upsertMessageById, updateMessageById, shouldSkipHistoryReplay, shouldClearHistoryOnInit } from './sessionRestoreGuards';
 import {
+    decideSystemInitSessionId,
     decidePersistedContextUsageSeed,
     shouldAcceptSessionScopedSseSnapshot,
     shouldPreserveSnapshotOnPendingBirthPropSync,
@@ -2497,6 +2498,27 @@ export default function TabProvider({
                     runtimeSource?: RuntimeSource;
                 } | null;
                 if (payload?.info) {
+                    const newSessionId = payload.sessionId;
+                    const currentIdForSystemInit = currentSessionIdRef.current;
+                    const connectedIdForSystemInit = connectedSseSessionIdRef.current;
+                    const systemInitSessionDecision = decideSystemInitSessionId({
+                        connectedSessionId: connectedIdForSystemInit,
+                        currentSessionId: currentIdForSystemInit,
+                        payloadSessionId: newSessionId,
+                        expectedBirthSessionId: resetBirthSessionIdRef.current,
+                        isConnectedSessionPending: connectedIdForSystemInit ? isPendingSessionId(connectedIdForSystemInit) : false,
+                        isCurrentSessionPending: currentIdForSystemInit ? isPendingSessionId(currentIdForSystemInit) : false,
+                        isNewSession: isNewSessionRef.current,
+                        isResetBirthPending: resetBirthPendingRef.current,
+                    });
+                    if (!systemInitSessionDecision.accept) {
+                        console.log(
+                            `[TabProvider ${tabId}] Ignoring system_init for stale session ${newSessionId ?? 'none'} ` +
+                            `(current=${currentIdForSystemInit ?? 'none'}, connected=${connectedIdForSystemInit ?? 'none'}, reason=${systemInitSessionDecision.reason})`,
+                        );
+                        break;
+                    }
+
                     setSystemInitInfo(payload.info);
                     // v0.1.69: backend tags every system-init with the runtime that
                     // actually spawned the process (builtin / claude-code / codex /
@@ -2536,8 +2558,7 @@ export default function TabProvider({
                     // Auto-sync sessionId when a new session is created (e.g., first message in empty session)
                     // This ensures currentSessionId stays in sync with the actual session
                     // Use our sessionId (for SessionStore matching) not SDK's session_id
-                    const newSessionId = payload.sessionId;
-                    if (newSessionId && currentSessionIdRef.current !== newSessionId) {
+                    if (newSessionId && systemInitSessionDecision.shouldSyncSessionId) {
                         if (isNewSessionRef.current || resetBirthPendingRef.current) {
                             resetBirthSessionIdRef.current = newSessionId;
                             resetBirthPendingRef.current = false;
@@ -2554,15 +2575,9 @@ export default function TabProvider({
                         //     (handleNewSession created a new sidecar/pending id) →
                         //     pendingSurface set to 'new_chat_button'
                         //
-                        // The detector below catches all three. For the rare case where a
-                        // non-birth id-sync slips through (none known today), the
-                        // pendingSurface registry's consume-once semantics + the
-                        // !currentSessionId/!pending guard limit damage.
-                        const oldId = currentSessionIdRef.current;
-                        const isSessionBirth =
-                            isNewSessionRef.current ||
-                            oldId === null ||
-                            isPendingSessionId(oldId);
+                        // The system-init decision above catches all three and rejects
+                        // non-birth mismatches from stale history-switch/prewarm snapshots.
+                        const isSessionBirth = systemInitSessionDecision.isSessionBirth;
 
                         console.log(`[TabProvider ${tabId}] Auto-syncing sessionId from system_init: ${newSessionId}`);
                         // Update the ref synchronously alongside the state dispatch so that

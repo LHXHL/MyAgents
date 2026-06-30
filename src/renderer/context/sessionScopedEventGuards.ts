@@ -49,6 +49,102 @@ export function shouldAcceptSessionScopedSseSnapshot(p: {
     return true;
 }
 
+export type SystemInitSessionIdDecision = {
+    accept: boolean;
+    shouldSyncSessionId: boolean;
+    isSessionBirth: boolean;
+    reason: 'no-payload-session' | 'matching-session' | 'birth-session' | 'stale-session-mismatch';
+};
+
+/**
+ * `chat:system-init` is both a session-birth signal and a session-scoped
+ * runtime snapshot. It may change the tab's session id only for birth paths
+ * (pending/null/reset → concrete id). Existing history switches already chose a
+ * target session before reconnecting SSE; a mismatched system-init there is a
+ * stale pre-warm/runtime snapshot from the previous session and must not pull
+ * the tab back.
+ */
+export function decideSystemInitSessionId(p: {
+    connectedSessionId: string | null;
+    currentSessionId: string | null;
+    payloadSessionId?: string | null;
+    expectedBirthSessionId?: string | null;
+    isConnectedSessionPending: boolean;
+    isCurrentSessionPending: boolean;
+    isNewSession: boolean;
+    isResetBirthPending: boolean;
+}): SystemInitSessionIdDecision {
+    const payloadSessionId = p.payloadSessionId ?? null;
+    if (!payloadSessionId) {
+        return {
+            accept: true,
+            shouldSyncSessionId: false,
+            isSessionBirth: false,
+            reason: 'no-payload-session',
+        };
+    }
+
+    const isBirthCandidate =
+        p.isNewSession ||
+        p.isResetBirthPending ||
+        p.currentSessionId === null ||
+        p.isCurrentSessionPending;
+
+    if (p.currentSessionId === payloadSessionId) {
+        const accept = shouldAcceptSessionScopedSseSnapshot({
+            connectedSessionId: p.connectedSessionId,
+            currentSessionId: p.currentSessionId,
+            payloadSessionId,
+            isConnectedSessionPending: p.isConnectedSessionPending,
+            isCurrentSessionPending: p.isCurrentSessionPending,
+        });
+        return {
+            accept,
+            shouldSyncSessionId: false,
+            isSessionBirth: false,
+            reason: accept ? 'matching-session' : 'stale-session-mismatch',
+        };
+    }
+
+    if (!isBirthCandidate) {
+        return {
+            accept: false,
+            shouldSyncSessionId: false,
+            isSessionBirth: false,
+            reason: 'stale-session-mismatch',
+        };
+    }
+
+    const matchesExpectedBirth =
+        !p.expectedBirthSessionId ||
+        p.expectedBirthSessionId === payloadSessionId;
+    const birthStillOwnsTab =
+        !p.expectedBirthSessionId ||
+        p.currentSessionId === p.expectedBirthSessionId ||
+        p.currentSessionId === null ||
+        p.isCurrentSessionPending;
+
+    const scopedBirth = matchesExpectedBirth && birthStillOwnsTab && (
+        p.isNewSession ||
+        p.isResetBirthPending ||
+        (p.currentSessionId === null && p.connectedSessionId === null) ||
+        shouldAcceptSessionScopedSseSnapshot({
+            connectedSessionId: p.connectedSessionId,
+            currentSessionId: p.currentSessionId,
+            payloadSessionId,
+            isConnectedSessionPending: p.isConnectedSessionPending,
+            isCurrentSessionPending: p.isCurrentSessionPending,
+        })
+    );
+
+    return {
+        accept: scopedBirth,
+        shouldSyncSessionId: scopedBirth,
+        isSessionBirth: scopedBirth,
+        reason: scopedBirth ? 'birth-session' : 'stale-session-mismatch',
+    };
+}
+
 /**
  * Session-scoped snapshots are normally cleared whenever the session prop
  * changes. Preserve them only when the component has already adopted the
