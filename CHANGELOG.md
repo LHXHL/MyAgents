@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.44] - 2026-07-01
+
+> 本版聚焦 Codex 订阅 Runtime 的会话稳定性、权限审批体验和后台通知一致性：历史会话与新对话不再串写，多个权限请求会按队列逐个处理；IM / Agent Channel 默认使用无人值守权限，并修复中文文件名在渠道发送时乱码的问题。Windows 更新安装也更稳。
+
+### Added
+
+- **Codex 权限审批队列**：Codex 一次性发出多条 Shell / 文件 / 表单审批时，前端会逐个展示并标注进度，避免多个权限请求互相覆盖导致页面像卡住一样等待。
+- **后台完成角标提醒**：后台任务完成后会同步更新 Dock 与 macOS 菜单栏状态项的未读数量，并在用户回到任务中心后清理，和横幅通知保持一致。
+
+### Changed
+
+- **IM / Agent Channel 默认自主执行**：飞书、微信等 Channel 在未显式配置权限覆盖时，会按当前 runtime 使用最大自主权限；桌面 Agent 的默认权限不会静默降低无人值守 Channel。
+- **Windows 更新安装更保守**：Windows 点击安装更新前，会先停 IM、Agent、Terminal、Browser 和 Sidecar，并确认关键进程与文件锁释放后再进入安装器，减少更新时被残留进程卡住的情况。
+
+### Fixed
+
+- **Codex 新对话和历史切换不再串线**：Codex 订阅会话在新建、恢复、历史互切和不同 runtime identity 之间切换时，会正确隔离 sidecar 与 runtime session，避免消息写入旧会话、切换无响应或出现 append-only history 报错。
+- **Codex 权限弹窗不再丢失**：Codex Runtime 的 Shell、文件修改、用户输入和 MCP elicitation 等权限协议都接到统一前端审批通道，并按 session scope 过滤旧事件，减少历史切换后弹错会话或不弹的问题。
+- **Channel 发送中文文件名不再乱码**：OpenClaw / 微信 / 飞书等 Channel 发送文件时保留 UTF-8 展示名，同时清理跨平台非法字符，保证 macOS 与 Windows 都能稳定落盘和上传。
+- **自定义模型添加入口更稳**：从模型选择器添加自定义模型时会先打开正确设置面板，避免入口失效或表单状态错位。
+
+---
+
 ## [0.2.43] - 2026-06-30
 
 > 本版继续收紧 Codex 订阅 Provider 与外部 Runtime 的身份边界：Codex 会话可以读取 MyAgents 用户 Skills，订阅型 Codex 在 Chat、任务、定时任务和 IM / Agent Channel 中更稳定地保持受管身份；同时修复 Windows 上 managed Codex 安装、模型解析和本地插件路径相关问题，并补齐若干菜单与历史操作细节。
