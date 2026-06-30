@@ -75,6 +75,18 @@ describe('ModelManagementPanel custom model add flow', () => {
     expect(onUpdateCustomProvider).not.toHaveBeenCalled();
   });
 
+  it('portals the model settings popover outside the model panel shell', async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.type(
+      screen.getByPlaceholderText('Enter a model ID, press Enter to configure and add'),
+      'gpt-5.5{enter}',
+    );
+
+    expect(screen.getByTestId('model-settings-popover').closest('[data-model-management-panel]')).toBeNull();
+  });
+
   it('does not let a second Enter replace the pending model editor', async () => {
     const user = userEvent.setup();
     renderPanel();

@@ -31,6 +31,7 @@ import {
 import { atomicModifyConfig, rebuildAndPersistAvailableProviders } from '@/config/configService';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { ModalityBadges } from '@/components/ModalityBadges';
+import Popover from '@/components/ui/Popover';
 
 interface ModelManagementPanelProps {
   provider: Provider;
@@ -65,6 +66,8 @@ export default function ModelManagementPanel({
   const [pendingCustomModel, setPendingCustomModel] = useState<ModelEntity | null>(null);
   const isMountedRef = useRef(true);
   const fetchIdRef = useRef(0);
+  const editingAnchorRef = useRef<HTMLDivElement | null>(null);
+  const pendingAnchorRef = useRef<HTMLDivElement | null>(null);
 
   const primaryModel = provider.primaryModel;
 
@@ -382,6 +385,7 @@ export default function ModelManagementPanel({
   return createPortal(
     <OverlayBackdrop onClose={onClose} className="z-[200]">
       <div
+        data-model-management-panel
         className="relative flex h-[85vh] w-[620px] max-w-[90vw] flex-col overflow-hidden rounded-2xl bg-[var(--paper-elevated)] shadow-2xl"
       >
         {/* Header */}
@@ -415,8 +419,10 @@ export default function ModelManagementPanel({
             ) : (
               <div>
                 {provider.models.map(model => (
-                  // relative wrapper anchors the settings popover to its row
-                  <div key={model.model} className="relative">
+                  <div
+                    key={model.model}
+                    ref={editingModelId === model.model ? editingAnchorRef : undefined}
+                  >
                     <ActiveModelRow
                       model={model}
                       isPrimary={model.model === primaryModel}
@@ -429,6 +435,7 @@ export default function ModelManagementPanel({
                     {editingModelId === model.model && (
                       <ModelSettingsEditor
                         model={model}
+                        anchorRef={editingAnchorRef}
                         onCancel={handleCancelEdit}
                         onSave={handleSaveModelSettings}
                       />
@@ -439,7 +446,7 @@ export default function ModelManagementPanel({
             )}
 
             {/* Add custom model input */}
-            <div className="relative mt-3">
+            <div ref={pendingAnchorRef} className="relative mt-3">
               <div className="flex gap-2">
                 <input
                   type="text"
@@ -462,6 +469,7 @@ export default function ModelManagementPanel({
               {pendingCustomModel && (
                 <ModelSettingsEditor
                   model={pendingCustomModel}
+                  anchorRef={pendingAnchorRef}
                   onCancel={handleCancelPendingCustomModel}
                   onSave={handleSavePendingCustomModelSettings}
                 />
@@ -672,24 +680,24 @@ const ActiveModelRow = React.memo(function ActiveModelRow({
 
 // ===== ModelSettingsEditor (#325 — anchored per-model parameter popover) =====
 //
-// A small card anchored under the row's ⚙ button (rendered inside the row's
-// `relative` wrapper) so the model list never shifts. Edits the three fields
-// that actually have consumers (see utils/modelSettingsForm.ts header for the
-// audit; model-level maxOutputTokens is deliberately absent — it has none).
+// A small card anchored under the row/input via the shared Popover primitive,
+// which portals to body so the model panel's overflow-hidden shell and scroll
+// container cannot clip it. Edits the three fields that actually have consumers
+// (see utils/modelSettingsForm.ts header for the audit; model-level
+// maxOutputTokens is deliberately absent — it has none).
 //
-// Dismissal: outside-click + Escape (ContextMenu pattern) and Cmd+W via
+// Dismissal: outside-click + Escape are handled by Popover; Cmd+W goes through
 // useCloseLayer at 210 — above the panel's own 200, so Cmd+W closes the
-// popover before the panel. Mousedown on any row's ⚙ is exempt from
-// outside-close: closing here would race the gear's own click-toggle and
-// reopen immediately. The toggle alone decides (same row → close; another
-// row → editingModelId switches and this instance unmounts).
+// popover before the panel.
 
 const ModelSettingsEditor = function ModelSettingsEditor({
   model,
+  anchorRef,
   onCancel,
   onSave,
 }: {
   model: ModelEntity;
+  anchorRef: React.RefObject<HTMLDivElement | null>;
   onCancel: () => void;
   onSave: (modelId: string, patch: Partial<ModelEntity>) => Promise<void>;
 }) {
@@ -704,31 +712,16 @@ const ModelSettingsEditor = function ModelSettingsEditor({
   const [modalitiesTouched, setModalitiesTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const popoverRef = useRef<HTMLDivElement>(null);
   const mountedRef = useRef(true);
 
   const onCancelRef = useRef(onCancel);
   onCancelRef.current = onCancel;
+  const handlePopoverClose = useCallback(() => {
+    onCancelRef.current();
+  }, []);
   useEffect(() => {
     mountedRef.current = true;
     return () => { mountedRef.current = false; };
-  }, []);
-  useEffect(() => {
-    const handleMouseDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (popoverRef.current?.contains(target)) return;
-      if (target instanceof Element && target.closest('[data-model-gear]')) return;
-      onCancelRef.current();
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onCancelRef.current();
-    };
-    document.addEventListener('mousedown', handleMouseDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', handleMouseDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
   }, []);
   useCloseLayer(() => { onCancelRef.current(); return true; }, 210);
 
@@ -785,15 +778,17 @@ const ModelSettingsEditor = function ModelSettingsEditor({
   const inputErr = 'border-[var(--error)] focus:shadow-[0_0_0_3px_var(--error-subtle)]';
 
   return (
-    <div
-      ref={popoverRef}
-      className="absolute right-0 top-[calc(100%+8px)] z-20 w-[360px] max-w-full origin-top-right animate-[popoverIn_0.22s_cubic-bezier(0.3,1.2,0.4,1)] rounded-[14px] border border-[var(--line-subtle)] bg-[var(--paper-elevated)] p-4 shadow-[var(--shadow-lg)]"
+    <Popover
+      open
+      anchorRef={anchorRef}
+      onClose={handlePopoverClose}
+      placement="bottom-end"
+      offset={8}
+      zIndex={260}
+      unstyled
+      className="w-[360px] max-w-[calc(100vw-32px)] origin-top-right animate-[popoverIn_0.22s_cubic-bezier(0.3,1.2,0.4,1)] rounded-[14px] border border-[var(--line-subtle)] bg-[var(--paper-elevated)] p-4 shadow-[var(--shadow-lg)]"
     >
-      {/* 箭头 — 指向行尾的 ⚙ 区域 */}
-      <div className="absolute -top-[5px] right-14 h-2.5 w-2.5 rotate-45 border-l border-t border-[var(--line-subtle)] bg-[var(--paper-elevated)]" />
-
-      {/* 标题带模型 ID，防止改错对象 */}
-      <div className="mb-3 flex items-baseline gap-2">
+      <div data-testid="model-settings-popover" className="mb-3 flex items-baseline gap-2">
         <span className="flex-shrink-0 text-xs font-semibold text-[var(--ink)]">{t('providers.models.parameterTitle')}</span>
         <code className="truncate font-mono text-xs text-[var(--ink-subtle)]">{model.model}</code>
       </div>
@@ -871,7 +866,7 @@ const ModelSettingsEditor = function ModelSettingsEditor({
           {saving ? t('providers.models.saving') : t('providers.models.save')}
         </button>
       </div>
-    </div>
+    </Popover>
   );
 };
 
