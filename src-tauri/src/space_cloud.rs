@@ -1624,6 +1624,9 @@ pub async fn process_pending_deliveries(
 #[derive(Debug, Clone)]
 struct PendingSpaceDelivery {
     delivery_id: String,
+    delivery_kind: String,
+    claim_id: Option<String>,
+    target_session_id: Option<String>,
     issue_id: String,
     issue_title: String,
     issue_state: String,
@@ -1631,6 +1634,19 @@ struct PendingSpaceDelivery {
     goal_path: Option<String>,
     update_summary: Option<String>,
     notification_version: i64,
+}
+
+impl PendingSpaceDelivery {
+    fn is_claim_followup(&self) -> bool {
+        self.delivery_kind == "claim_followup" || self.claim_id.is_some()
+    }
+
+    fn target_session(&self) -> Option<&str> {
+        self.target_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
 }
 
 async fn process_agent_deliveries(
@@ -1654,7 +1670,8 @@ async fn process_agent_deliveries(
         .unwrap_or_default();
     let mut processed = 0usize;
     let mut delivered = 0usize;
-    let mut pending = Vec::new();
+    let mut targeted_pending = Vec::new();
+    let mut subscription_pending = Vec::new();
     for item in items {
         let delivery = item.get("delivery").cloned().unwrap_or(Value::Null);
         let issue_meta = item.get("issueMeta").cloned().unwrap_or(Value::Null);
@@ -1672,8 +1689,15 @@ async fn process_agent_deliveries(
             continue;
         }
 
-        pending.push(PendingSpaceDelivery {
+        let pending_delivery = PendingSpaceDelivery {
             delivery_id,
+            delivery_kind: optional_value_string(&delivery, "deliveryKind")
+                .or_else(|| optional_value_string(&delivery, "delivery_kind"))
+                .unwrap_or_else(|| "subscription".to_string()),
+            claim_id: optional_value_string(&delivery, "claimId")
+                .or_else(|| optional_value_string(&delivery, "claim_id")),
+            target_session_id: optional_value_string(&delivery, "targetSessionId")
+                .or_else(|| optional_value_string(&delivery, "target_session_id")),
             issue_id,
             issue_title: optional_value_string(&issue_meta, "title")
                 .unwrap_or_else(|| "Untitled Space Issue".to_string()),
@@ -1689,10 +1713,49 @@ async fn process_agent_deliveries(
                 .get("notificationVersion")
                 .and_then(Value::as_i64)
                 .unwrap_or(1),
-        });
+        };
+        if pending_delivery.is_claim_followup() && pending_delivery.target_session().is_none() {
+            return Err(format!(
+                "Space claim follow-up delivery {} is missing targetSessionId",
+                pending_delivery.delivery_id
+            ));
+        }
+        if pending_delivery.target_session().is_some() {
+            targeted_pending.push(pending_delivery);
+        } else {
+            subscription_pending.push(pending_delivery);
+        }
     }
 
-    if pending.is_empty() {
+    if targeted_pending.is_empty() && subscription_pending.is_empty() {
+        return Ok((processed, delivered));
+    }
+
+    for delivery_item in targeted_pending {
+        let session_id = delivery_item
+            .target_session()
+            .ok_or_else(|| {
+                format!(
+                    "Space delivery {} is missing targetSessionId",
+                    delivery_item.delivery_id
+                )
+            })?
+            .to_string();
+        let message_id = deliver_space_deliveries(
+            app_handle,
+            manager,
+            agent,
+            &session_id,
+            std::slice::from_ref(&delivery_item),
+        )
+        .await?;
+        record_delivered_space_delivery(base_url, agent, &delivery_item, &session_id, &message_id)
+            .await?;
+        processed += 1;
+        delivered += 1;
+    }
+
+    if subscription_pending.is_empty() {
         return Ok((processed, delivered));
     }
 
@@ -1706,9 +1769,15 @@ async fn process_agent_deliveries(
                     format!("Registered Agent {} is missing deliverySessionId", agent.id)
                 })?
                 .to_string();
-            let message_id =
-                deliver_space_deliveries(app_handle, manager, agent, &session_id, &pending).await?;
-            for delivery_item in &pending {
+            let message_id = deliver_space_deliveries(
+                app_handle,
+                manager,
+                agent,
+                &session_id,
+                &subscription_pending,
+            )
+            .await?;
+            for delivery_item in &subscription_pending {
                 record_delivered_space_delivery(
                     base_url,
                     agent,
@@ -1722,7 +1791,7 @@ async fn process_agent_deliveries(
             }
         }
         SpaceIssueSubscriptionRunMode::NewSession => {
-            for delivery_item in pending {
+            for delivery_item in subscription_pending {
                 let session_id = ensure_agent_issue_session(agent, &delivery_item.issue_id)?;
                 let message_id = deliver_space_deliveries(
                     app_handle,
@@ -1758,16 +1827,20 @@ async fn deliver_space_deliveries(
     let message_id = uuid::Uuid::new_v4().to_string();
     let prompt = if deliveries.len() == 1 {
         let delivery = &deliveries[0];
-        build_delivery_prompt(
-            agent,
-            &delivery.delivery_id,
-            &delivery.issue_id,
-            &delivery.issue_title,
-            &delivery.issue_state,
-            delivery.goal_path.as_deref(),
-            delivery.update_summary.as_deref(),
-            delivery.notification_version,
-        )
+        if delivery.is_claim_followup() {
+            build_claim_followup_prompt(agent, delivery)
+        } else {
+            build_delivery_prompt(
+                agent,
+                &delivery.delivery_id,
+                &delivery.issue_id,
+                &delivery.issue_title,
+                &delivery.issue_state,
+                delivery.goal_path.as_deref(),
+                delivery.update_summary.as_deref(),
+                delivery.notification_version,
+            )
+        }
     } else {
         build_delivery_batch_prompt(agent, deliveries)
     };
@@ -1794,6 +1867,8 @@ async fn deliver_space_deliveries(
             "targetSessionId": session_id,
             "createdAt": created_at,
             "deliveryId": first.delivery_id,
+            "deliveryKind": first.delivery_kind,
+            "claimId": first.claim_id,
             "issueId": first.issue_id,
             "issueTitle": first.issue_title,
             "issueState": first.issue_state,
@@ -1911,6 +1986,75 @@ async fn mark_delivery_delivered(
     .map(|_| ())
 }
 
+fn build_claim_followup_prompt(
+    agent: &LocalRegisteredAgent,
+    delivery: &PendingSpaceDelivery,
+) -> String {
+    let mut lines = vec![
+        "MyAgents Space delivered a follow-up comment for an Issue handled by this Registered Agent session.".to_string(),
+        String::new(),
+        "Issue".to_string(),
+        format!("- Delivery ID: {}", delivery.delivery_id),
+        format!("- Issue ID: {}", delivery.issue_id),
+        format!("- Title: {}", delivery.issue_title),
+        format!("- State: {}", delivery.issue_state),
+        format!("- Notification version: {}", delivery.notification_version),
+    ];
+    if let Some(claim_id) = delivery
+        .claim_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- Claim ID: {}", claim_id));
+    }
+    if let Some(goal_path) = delivery
+        .goal_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- Goal: {}", goal_path));
+    }
+    if let Some(update_summary) = delivery
+        .update_summary
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- Update: {}", update_summary));
+    }
+    lines.extend([
+        String::new(),
+        "Required handling model".to_string(),
+        "- This Issue is already claimed by this Registered Agent. Do not run the claim command again.".to_string(),
+        "- Continue in this same local session so the Issue context stays connected.".to_string(),
+        format!(
+            "- Read the current Issue context with `myagents space issue view {} --comments --json`.",
+            shell_quote(&delivery.issue_id)
+        ),
+        format!(
+            "- If the update needs a reply, post it with `myagents space issue comment {} --body-file reply.md`.",
+            shell_quote(&delivery.issue_id)
+        ),
+        format!(
+            "- If no action is required, run `myagents space issue delivery ignore {}`.",
+            shell_quote(&delivery.delivery_id)
+        ),
+        format!(
+            "- If additional work changes the final outcome, use `myagents space issue complete {} --workspacePath {} --taskId <taskId> --body-file result.md --message {}` when done.",
+            shell_quote(&delivery.issue_id),
+            shell_quote(&agent.workspace_path),
+            shell_quote("completed Space issue")
+        ),
+    ]);
+    if let Some(workspace_label) = agent
+        .workspace_label
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- Local workspace: {}", workspace_label));
+    }
+    lines.join("\n")
+}
+
 fn build_delivery_prompt(
     agent: &LocalRegisteredAgent,
     delivery_id: &str,
@@ -1981,7 +2125,7 @@ fn build_delivery_prompt(
     }
     lines.push("- Keep discussion and progress updates on the Space issue via `myagents space issue comment`.".to_string());
     lines.push(format!(
-        "- When done, prefer the finish command `{}` to post the result comment, complete the cloud Issue/claim, and mark the local Task done.",
+        "- When done, prefer the finish command `{}` to post the result comment, set the cloud Issue to done, keep the claim handler recorded, and mark the local Task done.",
         finish_command
     ));
     if let Some(workspace_label) = agent
@@ -2335,7 +2479,12 @@ async fn authorized_json_data_request(
     body: Option<Value>,
 ) -> Result<Value, String> {
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::api_data_request(method.as_str(), path, body);
+        return crate::space_cloud_mock::api_data_request_with_token(
+            method.as_str(),
+            path,
+            Some(token),
+            body,
+        );
     }
     let capability = ensure_space_available()?;
     let client = http_client()?;
@@ -3013,6 +3162,9 @@ mod tests {
             &[
                 PendingSpaceDelivery {
                     delivery_id: "delivery_1".to_string(),
+                    delivery_kind: "subscription".to_string(),
+                    claim_id: None,
+                    target_session_id: None,
                     issue_id: "issue_1".to_string(),
                     issue_title: "First".to_string(),
                     issue_state: "todo".to_string(),
@@ -3023,6 +3175,9 @@ mod tests {
                 },
                 PendingSpaceDelivery {
                     delivery_id: "delivery_2".to_string(),
+                    delivery_kind: "subscription".to_string(),
+                    claim_id: None,
+                    target_session_id: None,
                     issue_id: "issue_2".to_string(),
                     issue_title: "Second".to_string(),
                     issue_state: "todo".to_string(),
@@ -3040,6 +3195,55 @@ mod tests {
         assert!(prompt.contains("Issue 2"));
         assert!(prompt.contains("Delivery ID: delivery_2"));
         assert!(prompt.contains("one continuous conversation turn"));
+    }
+
+    #[test]
+    fn build_claim_followup_prompt_keeps_existing_handler_context() {
+        let agent = LocalRegisteredAgent {
+            id: "rag_test".to_string(),
+            base_url: "https://space.myagents.test".to_string(),
+            space_id: "space_test".to_string(),
+            client_id: None,
+            local_workspace_id: Some("workspace_test".to_string()),
+            local_agent_id: None,
+            workspace_id: Some("workspace_test".to_string()),
+            display_name: "Followup Agent".to_string(),
+            workspace_path: "/tmp/myagents-followup".to_string(),
+            workspace_label: Some("Followup Workspace".to_string()),
+            goal_id: Some("goal_test".to_string()),
+            goal_path_label: Some("Root / Followup".to_string()),
+            state_filter: vec!["todo".to_string()],
+            goal_md: None,
+            delivery_session_id: Some("session_shared".to_string()),
+            issue_subscription_run_mode: SpaceIssueSubscriptionRunMode::SingleSession,
+            issue_session_ids: BTreeMap::new(),
+            token: "token".to_string(),
+            status: "active".to_string(),
+            created_at: "2026-06-24T00:00:00.000Z".to_string(),
+            updated_at: "2026-06-24T00:00:00.000Z".to_string(),
+        };
+        let prompt = build_claim_followup_prompt(
+            &agent,
+            &PendingSpaceDelivery {
+                delivery_id: "delivery_followup".to_string(),
+                delivery_kind: "claim_followup".to_string(),
+                claim_id: Some("claim_1".to_string()),
+                target_session_id: Some("session_claim".to_string()),
+                issue_id: "issue_1".to_string(),
+                issue_title: "Follow-up question".to_string(),
+                issue_state: "done".to_string(),
+                goal_id: Some("goal_test".to_string()),
+                goal_path: Some("Root / Followup".to_string()),
+                update_summary: Some("New human comment".to_string()),
+                notification_version: 4,
+            },
+        );
+
+        assert!(prompt.contains("follow-up comment"));
+        assert!(prompt.contains("already claimed"));
+        assert!(prompt.contains("Do not run the claim command again"));
+        assert!(prompt.contains("myagents space issue comment issue_1"));
+        assert!(!prompt.contains("--create-attached"));
     }
 
     #[tokio::test]
@@ -3091,6 +3295,191 @@ mod tests {
         let processed = crate::space_cloud_mock::process_deliveries_once();
         assert!(processed.processed >= 1);
         assert_eq!(processed.delivered, processed.processed);
+    }
+
+    #[tokio::test]
+    async fn mock_space_claim_followup_targets_claim_local_session() {
+        let _mock = crate::space_cloud_mock::enable_for_test();
+
+        let pending = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
+            registered_agent_id: "rag_mock_frontend".to_string(),
+        })
+        .await
+        .expect("mock deliveries should poll");
+        let first = pending
+            .pointer("/data/items/0")
+            .expect("first delivery should exist");
+        let issue_id = first
+            .pointer("/delivery/issueId")
+            .and_then(Value::as_str)
+            .expect("issue id")
+            .to_string();
+        let delivery_id = first
+            .pointer("/delivery/id")
+            .and_then(Value::as_str)
+            .expect("delivery id")
+            .to_string();
+
+        let claim = space_cli_issue_claim(SpaceCliIssueClaimInput {
+            issue_id: issue_id.clone(),
+            delivery_id: Some(delivery_id),
+            agent_id: Some("rag_mock_frontend".to_string()),
+            workspace_path: None,
+        })
+        .await
+        .expect("claim should succeed");
+        let claim_id = claim
+            .pointer("/claim/id")
+            .and_then(Value::as_str)
+            .expect("claim id")
+            .to_string();
+        assert_eq!(
+            claim.pointer("/claim/actorType").and_then(Value::as_str),
+            Some("registered_agent")
+        );
+
+        let linked = space_cli_claim_local_task(SpaceCliClaimLocalTaskInput {
+            claim_id: claim_id.clone(),
+            local_task_id: "task_claim".to_string(),
+            local_session_id: "session_claim".to_string(),
+            agent_id: Some("rag_mock_frontend".to_string()),
+            workspace_path: None,
+        })
+        .await
+        .expect("local task binding should succeed");
+        assert_eq!(
+            linked.get("localSessionId").and_then(Value::as_str),
+            Some("session_claim")
+        );
+
+        space_cli_issue_complete(SpaceCliIssueActionInput {
+            issue_id: issue_id.clone(),
+            agent_id: Some("rag_mock_frontend".to_string()),
+            workspace_path: None,
+        })
+        .await
+        .expect("complete should keep handler");
+        let detail = space_cli_issue_get(SpaceCliIssueGetInput {
+            issue_id: issue_id.clone(),
+            agent_id: Some("rag_mock_frontend".to_string()),
+            workspace_path: None,
+            comments_cursor: None,
+            comments_limit: Some(5),
+        })
+        .await
+        .expect("detail should load");
+        assert_eq!(
+            detail.pointer("/issue/state").and_then(Value::as_str),
+            Some("done")
+        );
+        assert_eq!(
+            detail
+                .pointer("/claim/localSessionId")
+                .and_then(Value::as_str),
+            Some("session_claim")
+        );
+
+        cmd_space_api_request(SpaceApiRequestInput {
+            method: "POST".to_string(),
+            path: format!("/api/issues/{}/comments", issue_id),
+            body: Some(serde_json::json!({ "body": "human follow-up question" })),
+        })
+        .await
+        .expect("human comment should succeed");
+
+        let deliveries = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
+            registered_agent_id: "rag_mock_frontend".to_string(),
+        })
+        .await
+        .expect("deliveries should poll after comment");
+        let followup = deliveries
+            .pointer("/data/items")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.pointer("/delivery/deliveryKind")
+                        .and_then(Value::as_str)
+                        == Some("claim_followup")
+                })
+            })
+            .expect("claim follow-up delivery should exist");
+        assert_eq!(
+            followup
+                .pointer("/delivery/targetSessionId")
+                .and_then(Value::as_str),
+            Some("session_claim")
+        );
+        assert_eq!(
+            followup
+                .pointer("/delivery/claimId")
+                .and_then(Value::as_str),
+            Some(claim_id.as_str())
+        );
+        let followup_delivery_id = followup
+            .pointer("/delivery/id")
+            .and_then(Value::as_str)
+            .expect("follow-up delivery id")
+            .to_string();
+
+        let followup_count_before = deliveries
+            .pointer("/data/items")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| {
+                        item.pointer("/delivery/deliveryKind")
+                            .and_then(Value::as_str)
+                            == Some("claim_followup")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        space_cli_issue_comment(SpaceCliIssueCommentInput {
+            issue_id: issue_id.clone(),
+            body: "agent self update".to_string(),
+            agent_id: Some("rag_mock_frontend".to_string()),
+            workspace_path: None,
+        })
+        .await
+        .expect("agent self comment should succeed");
+        let after_self_comment = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
+            registered_agent_id: "rag_mock_frontend".to_string(),
+        })
+        .await
+        .expect("deliveries should poll after self comment");
+        let followup_count_after = after_self_comment
+            .pointer("/data/items")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| {
+                        item.pointer("/delivery/deliveryKind")
+                            .and_then(Value::as_str)
+                            == Some("claim_followup")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(followup_count_after, followup_count_before);
+
+        let processed = crate::space_cloud_mock::process_deliveries_once();
+        assert!(processed.processed >= 1);
+        let delivered_followup = crate::space_cloud_mock::delivery_by_id(&followup_delivery_id)
+            .expect("processed follow-up delivery");
+        assert_eq!(
+            delivered_followup
+                .pointer("/delivery/status")
+                .and_then(Value::as_str),
+            Some("delivered")
+        );
+        assert_eq!(
+            delivered_followup
+                .pointer("/delivery/deliveredToSessionId")
+                .and_then(Value::as_str),
+            Some("session_claim")
+        );
     }
 
     #[tokio::test]

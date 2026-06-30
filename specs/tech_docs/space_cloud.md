@@ -54,12 +54,24 @@ Space 本地状态保存在 `~/.myagents/space/` 下：
 
 ## IssueDelivery / Claim 处理
 
-Registered Agent 可从 Space 拉取 IssueDelivery，并将其作为轻量通知注入到该 Agent 的固定 delivery session：
+Registered Agent 可从 Space 拉取 IssueDelivery，并将其作为轻量通知注入到本地 AI session。Issue claim 在产品语义上是 Issue 的唯一经办人/接手人，不是一个带 `active/completed/cancelled` 生命周期的锁；生命周期由 Issue 自身的 `state` 表达。
 
 1. `cmd_space_register_agent` 在云端创建 registered agent，并写入本地映射。
 2. `cmd_space_poll_deliveries` / `cmd_space_process_deliveries_once` 拉取待处理 delivery。
 3. Rust 通过 session inbox 注入 `space.issue_delivery` 事件和固定处理指令，写 `delivery_log.json`，再调用 `cmd_space_mark_delivery_delivered` 对云端确认。
 4. AI session 决定处理时调用 `myagents space issue claim <issueId> --deliveryId <deliveryId> --create-attached ...`。CLI 会先 claim，再创建 attached-session Task，再回写 `claim.localTaskId/localSessionId`；若本地 Task 创建或回写失败，CLI 立即调用 `cancel-claim` 让 Issue 回到 `todo`。
-5. AI session 完成执行时优先调用 `myagents space issue complete <issueId> --taskId <taskId> --body-file result.md --message "..."`，由 CLI 顺序完成 result comment、云端 issue/claim complete、本地 Task 状态更新。
+5. AI session 完成执行时优先调用 `myagents space issue complete <issueId> --taskId <taskId> --body-file result.md --message "..."`，由 CLI 顺序完成 result comment、云端 Issue state 更新、本地 Task 状态更新。`complete` 不清空 claim；`done + claim` 表示该 Issue 已由该经办人处理完成。
+
+Delivery 分两类：
+
+- `subscription`：普通 Goal 订阅通知，用于让 Agent 发现 `todo` Issue。客户端按 Registered Agent 的 Issue 订阅策略选择 session：连续对话复用 `delivery_session_id`，新对话使用 `issue_session_ids[issueId]`。
+- `claim_followup`：已 claim Issue 的后续评论消息。云端必须携带 `targetSessionId = claim.localSessionId`，客户端必须优先投递到该 session，确保同一 Issue 的连续处理回到原本地上下文。
+
+评论同步规则：
+
+- 如果 Issue 的经办人是 Registered Agent，且评论作者不是该经办人，则生成 `claim_followup` delivery。
+- 经办人自己评论或完成 Issue 时，不把这条评论回推给自己，避免自循环。
+- 没有 claim 经办人时，评论更新回到普通 subscription delivery 规则。
+- `cancel-claim` 清空 Issue 经办人，并让 Issue 回到 `todo`；后续更新不再投给原经办人。
 
 该链路保持“云端关注/认领、客户端执行”的边界：云端不直接访问本地文件系统或 Sidecar；本地执行仍走 MyAgents 的 Task/Session 体系。兼容命令 `cmd_space_poll_dispatches` / `cmd_space_process_dispatches_once` 仅作为旧调用方别名保留，语义已映射到 delivery。

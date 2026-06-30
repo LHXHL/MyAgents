@@ -44,6 +44,14 @@ struct MockState {
     seq: u64,
 }
 
+#[derive(Clone)]
+struct MockActor {
+    actor_type: String,
+    actor_id: String,
+    actor_name: String,
+    authenticated: bool,
+}
+
 static MOCK_STATE: OnceLock<Mutex<MockState>> = OnceLock::new();
 #[cfg(test)]
 static MOCK_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -117,17 +125,28 @@ pub fn api_request(input: SpaceApiRequestInput) -> Result<Value, String> {
         url.path(),
         url.query_pairs().into_owned().collect(),
         input.body,
+        None,
     )?;
     Ok(ok_envelope(data))
 }
 
 pub fn api_data_request(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
+    api_data_request_with_token(method, path, None, body)
+}
+
+pub fn api_data_request_with_token(
+    method: &str,
+    path: &str,
+    token: Option<&str>,
+    body: Option<Value>,
+) -> Result<Value, String> {
     let url = parse_mock_url(path)?;
     handle_api_data_request(
         &method.to_ascii_uppercase(),
         url.path(),
         url.query_pairs().into_owned().collect(),
         body,
+        token,
     )
 }
 
@@ -294,6 +313,17 @@ pub fn resolve_local_agent_for_cli(
         .ok_or_else(|| format!("No Registered Agent token matches workspace: {}", workspace))
 }
 
+#[cfg(test)]
+pub(crate) fn delivery_by_id(delivery_id: &str) -> Option<Value> {
+    state()
+        .lock()
+        .expect("mock state poisoned")
+        .deliveries
+        .iter()
+        .find(|item| item.pointer("/delivery/id").and_then(Value::as_str) == Some(delivery_id))
+        .cloned()
+}
+
 pub fn poll_dispatches(registered_agent_id: &str) -> Result<Value, String> {
     let state = state().lock().expect("mock state poisoned");
     let items = state
@@ -403,12 +433,16 @@ pub fn process_deliveries_once() -> SpaceProcessDeliveryResult {
     for item in &mut state.deliveries {
         if item.pointer("/delivery/status").and_then(Value::as_str) == Some("pending") {
             if let Some(delivery) = item.get_mut("delivery").and_then(Value::as_object_mut) {
+                let session_id = delivery
+                    .get("targetSessionId")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or("mock-delivery-session")
+                    .to_string();
                 delivery.insert("status".to_string(), json!("delivered"));
                 delivery.insert("deliveredAt".to_string(), json!("2026-06-24T09:46:00.000Z"));
-                delivery.insert(
-                    "deliveredToSessionId".to_string(),
-                    json!("mock-delivery-session"),
-                );
+                delivery.insert("deliveredToSessionId".to_string(), json!(session_id));
                 delivery.insert("updatedAt".to_string(), json!("2026-06-24T09:46:00.000Z"));
             }
             processed += 1;
@@ -644,8 +678,10 @@ fn handle_api_data_request(
     path: &str,
     query: HashMap<String, String>,
     body: Option<Value>,
+    token: Option<&str>,
 ) -> Result<Value, String> {
     let mut state = state().lock().expect("mock state poisoned");
+    let actor = mock_actor_for_token(&state, token);
     let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
     match (method, segments.as_slice()) {
         ("GET", ["api", "spaces", "official"]) => Ok(json!({
@@ -663,16 +699,14 @@ fn handle_api_data_request(
         ("POST", ["api", "spaces", "official", "issues"]) => create_issue(&mut state, body),
         ("GET", ["api", "issues", issue_id]) => issue_detail(&state, issue_id, &query),
         ("POST", ["api", "issues", issue_id, "comments"]) => {
-            comment_issue(&mut state, issue_id, body)
+            comment_issue(&mut state, issue_id, body, &actor)
         }
         ("POST", ["api", "issues", issue_id, "status"]) => {
             set_issue_status(&mut state, issue_id, body)
         }
         ("POST", ["api", "issues", issue_id, "claim"]) => claim_issue(&mut state, issue_id, body),
         ("POST", ["api", "issues", issue_id, "complete"]) => {
-            let result = set_issue_status_value(&mut state, issue_id, "done")?;
-            state.claims.remove(*issue_id);
-            Ok(result)
+            set_issue_status_value(&mut state, issue_id, "done")
         }
         ("POST", ["api", "issues", issue_id, "cancel-claim"]) => {
             let result = set_issue_status_value(&mut state, issue_id, "todo")?;
@@ -783,13 +817,32 @@ fn handle_api_data_request(
         ("POST", ["api", "deliveries", _delivery_id, "ignored"]) => {
             Ok(json!({ "ignored": true, "handledAt": "2026-06-24T09:48:00.000Z" }))
         }
-        ("POST", ["api", "claims", _claim_id, "local-task"]) => {
-            Ok(json!({ "updated": true, "updatedAt": "2026-06-24T09:49:00.000Z" }))
+        ("POST", ["api", "claims", claim_id, "local-task"]) => {
+            claim_local_task(&mut state, claim_id, body)
         }
         _ => Err(format!(
             "Mock Space API route not implemented: {} {}",
             method, path
         )),
+    }
+}
+
+fn mock_actor_for_token(state: &MockState, token: Option<&str>) -> MockActor {
+    if let Some(token) = token.map(str::trim).filter(|value| !value.is_empty()) {
+        if let Some(agent) = state.agents.iter().find(|agent| agent.token == token) {
+            return MockActor {
+                actor_type: "registered_agent".to_string(),
+                actor_id: agent.id.clone(),
+                actor_name: agent.display_name.clone(),
+                authenticated: true,
+            };
+        }
+    }
+    MockActor {
+        actor_type: "user".to_string(),
+        actor_id: "usr_mock_owner".to_string(),
+        actor_name: "Ethan".to_string(),
+        authenticated: false,
     }
 }
 
@@ -1258,6 +1311,19 @@ impl MockState {
     }
 }
 
+fn issue_with_claim(state: &MockState, mut issue: Value) -> Value {
+    let claim = issue
+        .get("id")
+        .and_then(Value::as_str)
+        .and_then(|issue_id| state.claims.get(issue_id))
+        .cloned()
+        .unwrap_or(Value::Null);
+    if let Some(object) = issue.as_object_mut() {
+        object.insert("claim".to_string(), claim);
+    }
+    issue
+}
+
 fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
     let q = query
         .get("q")
@@ -1378,6 +1444,7 @@ fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
             matches_q && matches_tag && matches_status && matches_goal && matches_human_only
         })
         .cloned()
+        .map(|issue| issue_with_claim(state, issue))
         .collect::<Vec<_>>();
     items.sort_by(|a, b| {
         b.get("updatedAt")
@@ -1810,7 +1877,7 @@ fn issue_detail(
         .collect::<Vec<_>>();
     let next = cursor + page.len();
     Ok(json!({
-        "issue": issue,
+        "issue": issue_with_claim(state, issue),
         "goalReference": goal_reference,
         "comments": {
             "items": page,
@@ -1827,6 +1894,7 @@ fn comment_issue(
     state: &mut MockState,
     issue_id: &str,
     body: Option<Value>,
+    request_actor: &MockActor,
 ) -> Result<Value, String> {
     if find_issue_index(&state.issues, issue_id).is_none() {
         return Err(format!("Issue not found: {}", issue_id));
@@ -1840,9 +1908,37 @@ fn comment_issue(
     if text.is_empty() {
         return Err("Comment body is required".to_string());
     }
+    let override_author_type = body
+        .as_ref()
+        .and_then(|value| value.get("authorType"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let override_author_id = body
+        .as_ref()
+        .and_then(|value| value.get("authorId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let (author_type, author_id, author_name) = if request_actor.authenticated
+        || override_author_type.is_none()
+        || override_author_id.is_none()
+    {
+        (
+            request_actor.actor_type.as_str(),
+            request_actor.actor_id.as_str(),
+            request_actor.actor_name.as_str(),
+        )
+    } else {
+        (
+            override_author_type.unwrap_or("user"),
+            override_author_id.unwrap_or("usr_mock_owner"),
+            "Mock API",
+        )
+    };
     let comment = json!({
         "id": state.next_id("cmt"),
-        "author": { "id": "usr_mock_owner", "type": "user" },
+        "author": { "id": author_id, "type": author_type, "name": author_name },
         "body": text,
         "createdAt": "2026-06-24T09:39:00.000Z"
     });
@@ -1851,7 +1947,9 @@ fn comment_issue(
         .entry(issue_id.to_string())
         .or_default()
         .push(comment.clone());
+    increment_issue_notification_version(state, issue_id);
     refresh_issue_counts(state, issue_id);
+    enqueue_claim_followup_delivery(state, issue_id, author_type, author_id)?;
     Ok(json!({ "comment": comment }))
 }
 
@@ -1891,20 +1989,54 @@ fn claim_issue(
     issue_id: &str,
     body: Option<Value>,
 ) -> Result<Value, String> {
-    let _ = body;
     if state.claims.contains_key(issue_id) {
-        return Err("Issue already has an active claim".to_string());
+        return Err("Issue already has a claim handler".to_string());
     }
     if find_issue_index(&state.issues, issue_id).is_none() {
         return Err(format!("Issue not found: {}", issue_id));
     }
+    let delivery_id = body
+        .as_ref()
+        .and_then(|value| value.get("deliveryId"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let agent_id = delivery_id.and_then(|delivery_id| {
+        state.deliveries.iter().find_map(|item| {
+            if item.pointer("/delivery/id").and_then(Value::as_str) == Some(delivery_id) {
+                return item
+                    .pointer("/delivery/registeredAgentId")
+                    .and_then(Value::as_str)
+                    .map(ToString::to_string);
+            }
+            None
+        })
+    });
+    let agent_name = agent_id.as_deref().and_then(|agent_id| {
+        state
+            .agents
+            .iter()
+            .find(|agent| agent.id == agent_id)
+            .map(|agent| agent.display_name.clone())
+    });
+    let (actor_type, actor_id, actor_name) = if let Some(agent_id) = agent_id {
+        (
+            "registered_agent",
+            agent_id,
+            agent_name.unwrap_or_else(|| "Registered Agent".to_string()),
+        )
+    } else {
+        ("user", "usr_mock_owner".to_string(), "Ethan".to_string())
+    };
     let claim_id = state.next_id("claim");
     let _ = set_issue_status_value(state, issue_id, "doing")?;
     let claim = json!({
             "id": claim_id,
             "spaceId": MOCK_SPACE_ID,
             "issueId": issue_id,
-            "status": "active",
+            "actorType": actor_type,
+            "actorId": actor_id,
+            "actorName": actor_name,
             "localTaskId": null,
             "localSessionId": null,
             "claimedAt": "2026-06-24T09:47:00.000Z",
@@ -1912,6 +2044,124 @@ fn claim_issue(
     });
     state.claims.insert(issue_id.to_string(), claim.clone());
     Ok(json!({ "claim": claim }))
+}
+
+fn claim_local_task(
+    state: &mut MockState,
+    claim_id: &str,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    let body = body.unwrap_or(Value::Null);
+    let local_task_id = body
+        .get("localTaskId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "localTaskId is required".to_string())?;
+    let local_session_id = body
+        .get("localSessionId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "localSessionId is required".to_string())?;
+    for claim in state.claims.values_mut() {
+        if claim.get("id").and_then(Value::as_str) != Some(claim_id) {
+            continue;
+        }
+        if let Some(object) = claim.as_object_mut() {
+            object.insert("localTaskId".to_string(), json!(local_task_id));
+            object.insert("localSessionId".to_string(), json!(local_session_id));
+            object.insert("updatedAt".to_string(), json!("2026-06-24T09:49:00.000Z"));
+        }
+        return Ok(json!({
+            "updated": true,
+            "localTaskId": local_task_id,
+            "localSessionId": local_session_id,
+            "updatedAt": "2026-06-24T09:49:00.000Z"
+        }));
+    }
+    Err(format!("Claim not found: {}", claim_id))
+}
+
+fn increment_issue_notification_version(state: &mut MockState, issue_id: &str) {
+    if let Some(index) = find_issue_index(&state.issues, issue_id) {
+        if let Some(issue) = state.issues[index].as_object_mut() {
+            let next = issue
+                .get("notificationVersion")
+                .and_then(Value::as_i64)
+                .unwrap_or(1)
+                + 1;
+            issue.insert("notificationVersion".to_string(), json!(next));
+        }
+    }
+}
+
+fn enqueue_claim_followup_delivery(
+    state: &mut MockState,
+    issue_id: &str,
+    author_type: &str,
+    author_id: &str,
+) -> Result<(), String> {
+    let Some(claim) = state.claims.get(issue_id).cloned() else {
+        return Ok(());
+    };
+    let claim_actor_type = claim.get("actorType").and_then(Value::as_str).unwrap_or("");
+    let claim_actor_id = claim.get("actorId").and_then(Value::as_str).unwrap_or("");
+    if claim_actor_type != "registered_agent" {
+        return Ok(());
+    }
+    if claim_actor_type == author_type && claim_actor_id == author_id {
+        return Ok(());
+    }
+    let Some(target_session_id) = claim
+        .get("localSessionId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+    else {
+        return Ok(());
+    };
+    let Some(agent) = state
+        .agents
+        .iter()
+        .find(|agent| agent.id == claim_actor_id)
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let Some(issue) = state
+        .issues
+        .iter()
+        .find(|issue| issue.get("id").and_then(Value::as_str) == Some(issue_id))
+        .cloned()
+    else {
+        return Ok(());
+    };
+    let delivery_id = state.next_id("del");
+    let mut item = delivery_item(&delivery_id, &agent, &issue, "pending");
+    if let Some(delivery) = item.get_mut("delivery").and_then(Value::as_object_mut) {
+        delivery.insert("deliveryKind".to_string(), json!("claim_followup"));
+        delivery.insert("subscriptionId".to_string(), Value::Null);
+        delivery.insert(
+            "claimId".to_string(),
+            claim.get("id").cloned().unwrap_or(Value::Null),
+        );
+        delivery.insert("targetSessionId".to_string(), json!(target_session_id));
+        delivery.insert(
+            "updateSummary".to_string(),
+            json!("New comment on claimed Issue"),
+        );
+        delivery.insert(
+            "notificationVersion".to_string(),
+            issue
+                .get("notificationVersion")
+                .cloned()
+                .unwrap_or(json!(1)),
+        );
+    }
+    state.deliveries.push(item);
+    Ok(())
 }
 
 fn dispatch_issue(
@@ -2534,11 +2784,14 @@ fn delivery_item(id: &str, agent: &LocalRegisteredAgent, issue: &Value, status: 
         "delivery": {
             "id": id,
             "spaceId": MOCK_SPACE_ID,
+            "deliveryKind": "subscription",
             "issueId": issue_id,
             "registeredAgentId": agent.id,
             "subscriptionId": format!("sub_{}", agent.id),
+            "claimId": null,
             "notificationVersion": issue.get("notificationVersion").and_then(Value::as_i64).unwrap_or(1),
             "updateSummary": "Issue matched this Registered Agent goal subscription",
+            "targetSessionId": null,
             "status": status,
             "createdAt": "2026-06-24T08:55:00.000Z",
             "updatedAt": "2026-06-24T08:55:00.000Z",

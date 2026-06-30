@@ -10,6 +10,8 @@ import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { copyPlainText } from '@/utils/markdownClipboard';
 import {
   buildIssueCommandPrompt,
+  claimHandlerLabel,
+  claimHandlerTypeKey,
   getIssueStatusOptions,
   issueDisplayTitle,
   issueStatusLabel,
@@ -212,6 +214,12 @@ export function IssueDetailDrawer({
     }
   };
   const issueAuthorName = detail?.issue.creator?.name ?? detail?.issue.creator?.id ?? detail?.issue.author?.name ?? detail?.issue.author?.id ?? 'owner';
+  const claim = detail?.claim ?? detail?.issue.claim;
+  const claimHandlerName = claimHandlerLabel(claim);
+  const claimHandlerTypeKeyValue = claimHandlerTypeKey(claim);
+  const claimHandlerType = claimHandlerTypeKeyValue
+    ? t(claimHandlerTypeKeyValue)
+    : t('space.detail.claimHandlerUnknownType');
 
   return (
     <OverlayBackdrop onClose={onClose} className="z-[230] items-stretch justify-end bg-black/20 backdrop-blur-sm">
@@ -284,9 +292,12 @@ export function IssueDetailDrawer({
                       {t('space.issues.humanOnly')}
                     </span>
                   )}
-                  {detail.claim && (
+                  {claimHandlerName && (
                     <span className="rounded-md bg-[var(--warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--warning)]">
-                      {t('space.detail.claimed')}
+                      {t('space.detail.claimHandler', {
+                        name: claimHandlerName,
+                        type: claimHandlerType,
+                      })}
                     </span>
                   )}
                 </div>

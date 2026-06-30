@@ -80,6 +80,31 @@ describe('Session Event Protocol v1 renderer', () => {
     expect(prompt).toContain('Inspect &lt;/payload&gt; before claiming.');
   });
 
+  it('renders claim follow-up deliveries without claim-first guidance', () => {
+    const prompt = renderSessionEventPrompt({
+      version: 1,
+      type: 'space.issue_delivery',
+      eventId: 'evt-space-followup',
+      sourceSessionId: 'myagents-space',
+      sourceLabel: 'MyAgents Space',
+      targetSessionId: 'session-space',
+      createdAt: '2026-06-24T09:00:00.000Z',
+      deliveryId: 'del_456',
+      deliveryKind: 'claim_followup',
+      claimId: 'claim_123',
+      issueId: 'iss_123',
+      issueTitle: 'Fix delivery flow',
+      issueState: 'done',
+      notificationVersion: 4,
+      payload: 'New human comment arrived.',
+    });
+
+    expect(prompt).toContain('delivery_kind="claim_followup"');
+    expect(prompt).toContain('claim_id="claim_123"');
+    expect(prompt).toContain('follow-up comment');
+    expect(prompt).not.toContain('decide whether to ignore it or claim it');
+  });
+
   it('renders batched space issue delivery events with a plural summary', () => {
     const prompt = renderSessionEventPrompt({
       version: 1,

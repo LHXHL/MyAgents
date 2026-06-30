@@ -111,6 +111,7 @@ export interface SpaceIssue {
   tags?: SpaceTag[];
   commentCount?: number;
   attachmentCount?: number;
+  claim?: SpaceIssueClaim | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -151,7 +152,9 @@ export interface SpaceIssueClaim {
   issueId: string;
   actorType: 'user' | 'registered_agent';
   actorId: string;
-  status: 'active' | 'completed' | 'cancelled' | string;
+  actorName?: string | null;
+  actor?: { id: string; name?: string | null; type?: 'user' | 'registered_agent' | string };
+  status?: 'active' | 'completed' | 'cancelled' | string;
   localTaskId?: string | null;
   localSessionId?: string | null;
   claimedAt: string;
@@ -268,9 +271,12 @@ export interface SpaceDeliveryItem {
     spaceId: string;
     issueId: string;
     registeredAgentId: string;
+    deliveryKind?: 'subscription' | 'claim_followup' | string | null;
     subscriptionId?: string | null;
+    claimId?: string | null;
     notificationVersion: number;
     updateSummary?: string | null;
+    targetSessionId?: string | null;
     status: 'pending' | 'delivered' | 'claimed' | 'ignored' | string;
     deliveredToSessionId?: string | null;
     deliveredAt?: string | null;

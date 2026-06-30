@@ -1,4 +1,4 @@
-import type { LocalRegisteredAgent, SpaceIssue, SpaceSession } from '@/api/spaceCloud';
+import type { LocalRegisteredAgent, SpaceIssue, SpaceIssueClaim, SpaceSession } from '@/api/spaceCloud';
 import type { Project } from '@/config/types';
 import { findProjectForAgent } from '@/api/spaceCloud';
 
@@ -92,6 +92,22 @@ export function issueDisplayTitle(issue: Pick<SpaceIssue, 'state' | 'title'>): s
   return issue.title.replace(/^\[([^\]]+)\]\s*/, (match, rawStatus: string) => (
     normalizeIssueStatusToken(rawStatus) === normalizeIssueStatusToken(issue.state) ? '' : match
   ));
+}
+
+export function claimHandlerLabel(claim: SpaceIssueClaim | null | undefined): string | null {
+  if (!claim) return null;
+  return claim.actorName
+    || claim.actor?.name
+    || claim.actor?.id
+    || claim.actorId
+    || null;
+}
+
+export function claimHandlerTypeKey(claim: SpaceIssueClaim | null | undefined): string | null {
+  if (!claim) return null;
+  if (claim.actorType === 'registered_agent') return 'space.detail.claimHandlerTypeRegisteredAgent';
+  if (claim.actorType === 'user') return 'space.detail.claimHandlerTypeUser';
+  return null;
 }
 
 export function buildIssueCommandPrompt(args: { spaceName: string; issueId: string }): string {

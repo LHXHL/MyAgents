@@ -4,7 +4,7 @@ import { Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
 
 import type { SpaceIssue } from '@/api/spaceCloud';
 import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
-import { ISSUE_STATUSES, issueDisplayTitle, issueStatusLabel } from '@/pages/space/spaceHelpers';
+import { claimHandlerLabel, ISSUE_STATUSES, issueDisplayTitle, issueStatusLabel } from '@/pages/space/spaceHelpers';
 import { recordSpaceMetric } from '@/pages/space/spaceMetrics';
 import { formatTime, statusPillClass } from '@/pages/space/spaceUi';
 
@@ -184,6 +184,7 @@ function IssueStreamRow({
   const { t } = useTranslation('app');
   const displayTitle = issueDisplayTitle(issue);
   const authorName = issue.creator?.name ?? issue.creator?.id ?? issue.author?.name ?? issue.author?.id ?? 'owner';
+  const handlerName = claimHandlerLabel(issue.claim);
   const goalLabel = issue.goalPathLabel || (issue.goalId ? issue.goalId : t('space.filters.inbox'));
   return (
     <button
@@ -205,6 +206,14 @@ function IssueStreamRow({
           <span>{formatTime(issue.createdAt)}</span>
           <span className="text-[var(--line-strong)]">·</span>
           <span>{t('space.issues.comments', { count: issue.commentCount ?? 0 })}</span>
+          {handlerName && (
+            <>
+              <span className="text-[var(--line-strong)]">·</span>
+              <span className="rounded-md bg-[var(--warning-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--warning)]">
+                {t('space.issues.claimHandler', { name: handlerName })}
+              </span>
+            </>
+          )}
           <span className="text-[var(--line-strong)]">·</span>
           <span className="rounded-md bg-[var(--accent-cool)]/10 px-2 py-0.5 text-xs font-semibold text-[var(--accent-cool)]">{goalLabel}</span>
           {issue.humanOnly && (

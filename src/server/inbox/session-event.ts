@@ -53,6 +53,8 @@ export interface WatchEvent extends SessionEventBase {
 export interface SpaceIssueDeliveryEvent extends SessionEventBase {
   type: 'space.issue_delivery';
   deliveryId: string;
+  deliveryKind?: 'subscription' | 'claim_followup' | string | null;
+  claimId?: string | null;
   issueId: string;
   issueTitle: string;
   issueState: string;
@@ -143,6 +145,8 @@ function renderOpenTag(event: SessionEvent): string {
     isWatchEvent(event) ? attr('final_state', event.finalState) : null,
     isWatchEvent(event) ? attr('terminal_reason', event.terminalReason) : null,
     isSpaceIssueDeliveryEvent(event) ? attr('delivery_id', event.deliveryId) : null,
+    isSpaceIssueDeliveryEvent(event) ? attr('delivery_kind', event.deliveryKind) : null,
+    isSpaceIssueDeliveryEvent(event) ? attr('claim_id', event.claimId) : null,
     isSpaceIssueDeliveryEvent(event) ? attr('issue_id', event.issueId) : null,
     isSpaceIssueDeliveryEvent(event) ? attr('issue_title', event.issueTitle) : null,
     isSpaceIssueDeliveryEvent(event) ? attr('issue_state', event.issueState) : null,
@@ -177,6 +181,9 @@ function summaryForEvent(event: SessionEvent): string {
     case 'watch.error':
       return 'MyAgents could not confirm normal completion for the watched target session.';
     case 'space.issue_delivery':
+      if (event.deliveryKind === 'claim_followup') {
+        return 'MyAgents Space delivered a follow-up comment for an issue already handled by this registered agent session. Read the issue context and decide whether to reply or take further action.';
+      }
       return event.deliveryCount && event.deliveryCount > 1
         ? 'MyAgents Space delivered issue notifications to this registered agent session. Inspect each issue and decide whether to ignore it or claim it before doing work.'
         : 'MyAgents Space delivered an issue notification to this registered agent session. Inspect the issue and decide whether to ignore it or claim it before doing work.';

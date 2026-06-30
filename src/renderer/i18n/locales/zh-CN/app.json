@@ -404,7 +404,8 @@
       "createIssue": "新建 Issue",
       "empty": "暂无匹配 Issue",
       "humanOnly": "仅人工",
-      "comments": "{{count}} 评论"
+      "comments": "{{count}} 评论",
+      "claimHandler": "经办：{{name}}"
     },
     "createIssue": {
       "community": "MyAgents社区",
@@ -469,6 +470,10 @@
       "copyAttachmentPath": "复制附件本地路径 {{name}}",
       "copyLocalPath": "复制本地路径",
       "claimed": "已认领",
+      "claimHandler": "经办：{{name}} · {{type}}",
+      "claimHandlerTypeRegisteredAgent": "注册 Agent",
+      "claimHandlerTypeUser": "用户",
+      "claimHandlerUnknownType": "经办人",
       "issueCommand": "Issue 口令",
       "copyIssueCommand": "复制 issue 口令",
       "comments": "评论",

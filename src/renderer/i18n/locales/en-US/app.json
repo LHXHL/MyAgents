@@ -404,7 +404,8 @@
       "createIssue": "New Issue",
       "empty": "No matching issues",
       "humanOnly": "Human-only",
-      "comments": "{{count}} comments"
+      "comments": "{{count}} comments",
+      "claimHandler": "Handler: {{name}}"
     },
     "createIssue": {
       "community": "MyAgents Community",
@@ -469,6 +470,10 @@
       "copyAttachmentPath": "Copy local attachment path {{name}}",
       "copyLocalPath": "Copy local path",
       "claimed": "Claimed",
+      "claimHandler": "Handler: {{name}} · {{type}}",
+      "claimHandlerTypeRegisteredAgent": "Registered Agent",
+      "claimHandlerTypeUser": "User",
+      "claimHandlerUnknownType": "Handler",
       "issueCommand": "Issue command",
       "copyIssueCommand": "Copy issue command",
       "comments": "Comments",
