@@ -30,6 +30,7 @@ import { IssuesWorkspace } from '@/pages/space/issues/IssuesWorkspace';
 import { CreateIssueDialog } from '@/pages/space/issues/CreateIssueDialog';
 import { IssueDetailDrawer } from '@/pages/space/issues/IssueDetailDrawer';
 import { AgentsWorkspace, RegisterAgentDialog } from '@/pages/space/agents/AgentsWorkspace';
+import { GoalsWorkspace } from '@/pages/space/goals/GoalsWorkspace';
 import { SkillsWorkspace } from '@/pages/space/skills/SkillsWorkspace';
 import { SpaceLogin, SpaceSidebar, type SpaceViewMode as ViewMode } from '@/pages/space/SpaceChrome';
 import { nowForSpaceMetric, recordSpaceMetric } from '@/pages/space/spaceMetrics';
@@ -106,6 +107,9 @@ export default function Space({ isActive }: { isActive: boolean }) {
         actions.refreshIssues(issueQuery, { maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }).catch((error) => toast.error(spaceErrorMessage(error)));
       }, 220);
       return () => window.clearTimeout(handle);
+    }
+    if (mode === 'goals') {
+      void actions.refreshGoals({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }).catch((error) => toast.error(spaceErrorMessage(error)));
     }
     if (mode === 'skills') {
       void actions.refreshSkills({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }).catch((error) => toast.error(spaceErrorMessage(error)));
@@ -289,6 +293,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
 
   const refreshCurrent = useCallback(async () => {
     if (mode === 'issues') await actions.refreshIssues(issueQuery, { force: true });
+    if (mode === 'goals') await actions.refreshGoals({ force: true });
     if (mode === 'skills') await actions.refreshSkills({ force: true });
     if (mode === 'agents') {
       await Promise.all([
@@ -381,6 +386,19 @@ export default function Space({ isActive }: { isActive: boolean }) {
               onSelectSkill={setSelectedSkillId}
               onRefresh={refreshCurrent}
               onUploaded={(id) => setSelectedSkillId(id)}
+            />
+          )}
+          {mode === 'goals' && (
+            <GoalsWorkspace
+              admin={admin}
+              session={session}
+              goals={goals}
+              actions={actions}
+              onRefresh={() => actions.refreshGoals({ force: true })}
+              onOpenIssuesForGoal={(goalId) => {
+                setSelectedGoalId(goalId);
+                setMode('issues');
+              }}
             />
           )}
           {mode === 'agents' && (

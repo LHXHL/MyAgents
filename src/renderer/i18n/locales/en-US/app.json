@@ -314,6 +314,7 @@
         "claimIssue": "Issue claim",
         "completeIssue": "Issue completion",
         "cancelClaim": "Claim cancellation",
+        "goal": "Goal operation",
         "attachment": "Attachment operation",
         "skill": "Skill operation",
         "request": "Space request"
@@ -338,6 +339,10 @@
     },
     "sidebar": {
       "openJoin": "Open join",
+      "issues": "Issues",
+      "goals": "Goals",
+      "skills": "Skills",
+      "agents": "Agents",
       "signedInWithGoogle": "Signed in with Google",
       "logout": "Sign out"
     },
@@ -385,7 +390,10 @@
       "attachmentPathCopied": "Local attachment path copied",
       "issueCommandCopied": "Issue command copied",
       "issueCreated": "Issue created",
-      "issueCreatedWithAttachments": "Issue created and {{count}} attachment(s) uploaded"
+      "issueCreatedWithAttachments": "Issue created and {{count}} attachment(s) uploaded",
+      "goalCreated": "Goal created",
+      "goalSaved": "Goal saved",
+      "goalArchived": "Goal archived"
     },
     "issues": {
       "searchPlaceholder": "Search title",
@@ -405,9 +413,29 @@
       "removeFile": "Remove {{name}}",
       "addAttachment": "Add attachment",
       "attachment": "Attachment",
+      "targetGoal": "Goal",
       "humanOnly": "Human-only",
       "continuous": "Keep creating",
       "pickAttachmentsTitle": "Choose issue attachments"
+    },
+    "goals": {
+      "title": "Goals",
+      "subtitle": "Maintain the Space goal tree and context",
+      "tree": "Goal tree",
+      "goalCount": "{{count}}",
+      "empty": "No goals",
+      "root": "Root",
+      "viewIssues": "View Issues",
+      "titleLabel": "Title",
+      "contextLabel": "Context",
+      "titlePlaceholder": "Goal title",
+      "contextPlaceholder": "Describe the background, boundary, and acceptance direction for this goal",
+      "newChild": "New child goal",
+      "newChildHint": "Create under \"{{parent}}\" to split the attention scope further.",
+      "childTitlePlaceholder": "Child goal title",
+      "childContextPlaceholder": "Child goal context",
+      "createChild": "Create child",
+      "archive": "Archive"
     },
     "detail": {
       "close": "Close detail",

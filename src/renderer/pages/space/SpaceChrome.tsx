@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, ChevronDown, Loader2, LogIn, LogOut, MessageSquare, Package, User } from 'lucide-react';
+import { Bot, ChevronDown, GitBranch, Loader2, LogIn, LogOut, MessageSquare, Package, User } from 'lucide-react';
 
 import type { SpaceSession } from '@/api/spaceCloud';
 import myagentsWebLogo from '@/assets/brand/myagents-web-logo.png';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { PAPER_GRID_STYLE } from './spaceUi';
 
-export type SpaceViewMode = 'issues' | 'skills' | 'agents';
+export type SpaceViewMode = 'issues' | 'goals' | 'skills' | 'agents';
 
 function roleLabel(role: string): string {
   if (role === 'owner') return 'owner';
@@ -72,9 +72,10 @@ export function SpaceSidebar({
   }, 20);
 
   const communityItems: Array<{ mode: SpaceViewMode; label: string; icon: typeof MessageSquare }> = [
-    { mode: 'issues', label: 'Issues', icon: MessageSquare },
-    { mode: 'skills', label: 'Skills', icon: Package },
-    { mode: 'agents', label: 'Agents', icon: Bot },
+    { mode: 'issues', label: t('space.sidebar.issues'), icon: MessageSquare },
+    { mode: 'goals', label: t('space.sidebar.goals'), icon: GitBranch },
+    { mode: 'skills', label: t('space.sidebar.skills'), icon: Package },
+    { mode: 'agents', label: t('space.sidebar.agents'), icon: Bot },
   ];
 
   return (

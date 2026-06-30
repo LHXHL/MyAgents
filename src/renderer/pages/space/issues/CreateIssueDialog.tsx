@@ -188,6 +188,9 @@ export function CreateIssueDialog({
             </button>
             <span className="inline-flex min-h-10 items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--paper-elevated)]/70 px-3 text-sm font-medium text-[var(--ink-muted)] shadow-sm">
               <Target className="h-4 w-4" />
+              <span className="shrink-0 text-xs font-semibold uppercase text-[var(--ink-muted)]/70">
+                {t('space.createIssue.targetGoal')}
+              </span>
               <CustomSelect value={goalId} options={goalOptions} onChange={setGoalId} compact className="w-56 [&>button]:border-0 [&>button]:bg-transparent [&>button]:p-0 [&>button]:shadow-none" />
             </span>
             <button

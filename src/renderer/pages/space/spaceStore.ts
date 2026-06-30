@@ -1,8 +1,10 @@
 import {
   DEFAULT_SPACE_ID,
+  spaceArchiveGoal,
   spaceCloseOwnIssue,
   spaceCloseIssue,
   spaceCommentIssue,
+  spaceCreateGoal,
   spaceCompleteIssue,
   spaceCreateIssue,
   spaceCancelIssueClaim,
@@ -14,6 +16,7 @@ import {
   spaceGetSkill,
   spaceGetSkillFile,
   spaceInstallSkill,
+  spaceListGoals,
   spaceListIssues,
   spaceListEvents,
   spaceListLocalAgents,
@@ -23,6 +26,7 @@ import {
   spaceRegisterAgent,
   spaceRevokeRegisteredAgent,
   spaceSetIssueState,
+  spaceUpdateGoal,
   spaceUpdateRegisteredAgent,
   spaceUploadIssueAttachments,
   spaceUploadSkillZip,
@@ -143,6 +147,7 @@ interface RefreshOptions {
 export interface SpaceActions {
   ensureBootstrapped: (options?: RefreshOptions) => Promise<void>;
   refreshIssues: (params: IssueQueryParams, options?: RefreshOptions) => Promise<void>;
+  refreshGoals: (options?: RefreshOptions) => Promise<void>;
   refreshIssueDetail: (issueId: string, options?: RefreshOptions) => Promise<void>;
   refreshSkills: (options?: RefreshOptions) => Promise<void>;
   refreshSkillDetail: (skillId: string, options?: RefreshOptions) => Promise<void>;
@@ -150,6 +155,9 @@ export interface SpaceActions {
   refreshLocalAgents: (options?: RefreshOptions) => Promise<void>;
   refreshRegisteredAgents: (options?: RefreshOptions) => Promise<void>;
   syncEvents: (options?: RefreshOptions) => Promise<SpaceEvent[]>;
+  createGoal: (input: { parentGoalId: string; title: string; context: string }) => Promise<SpaceGoal>;
+  updateGoal: (input: { goalId: string; title: string; context: string }) => Promise<SpaceGoal>;
+  archiveGoal: (goalId: string) => Promise<void>;
   createIssue: (input: { title: string; body: string; goalId?: string | null; humanOnly?: boolean }) => Promise<SpaceIssue>;
   uploadIssueAttachments: (issueId: string, filePaths: string[]) => Promise<SpaceAttachment[]>;
   downloadIssueAttachment: (input: {
@@ -569,6 +577,27 @@ export const actions: SpaceActions = {
     });
   },
 
+  refreshGoals: async (options: RefreshOptions = {}) => {
+    if (!ensureReady()) return;
+    if (!options.force && isFresh(state.bootLastFetchedAt, options.maxAgeMs)) return;
+    return runRequest('goals', options.force, async () => {
+      const requestSeq = startRequest('goals');
+      try {
+        const result = await spaceListGoals({}, activeSpaceId());
+        if (!isLatest('goals', requestSeq)) return;
+        setState({
+          goals: result.items,
+          bootLastFetchedAt: Date.now(),
+          bootError: null,
+        });
+      } catch (error) {
+        if (!isLatest('goals', requestSeq)) return;
+        setState({ bootError: errMessage(error) });
+        throw error;
+      }
+    });
+  },
+
   refreshIssueDetail: async (issueId: string, options: RefreshOptions = {}) => {
     if (!ensureReady() || !issueId) return;
     const key = detailKey(issueId);
@@ -838,6 +867,27 @@ export const actions: SpaceActions = {
     const result = await spaceCreateIssue(input, activeSpaceId());
     prependIssueToLists(result.issue);
     return result.issue;
+  }),
+
+  createGoal: (input) => withSpaceMutationMetric('goal.create', async () => {
+    const result = await spaceCreateGoal(input, activeSpaceId());
+    await actions.refreshGoals({ force: true, silent: true });
+    return result.goal;
+  }),
+
+  updateGoal: (input) => withSpaceMutationMetric('goal.update', async () => {
+    const result = await spaceUpdateGoal(input);
+    await actions.refreshGoals({ force: true, silent: true });
+    return result.goal;
+  }),
+
+  archiveGoal: (goalId) => withSpaceMutationMetric('goal.archive', async () => {
+    await spaceArchiveGoal(goalId);
+    await actions.refreshGoals({ force: true, silent: true });
+    setState({
+      issuesByKey: {},
+      issueDetails: {},
+    });
   }),
 
   uploadIssueAttachments: (issueId, filePaths) => withSpaceMutationMetric('issue.attachments.upload', async () => {

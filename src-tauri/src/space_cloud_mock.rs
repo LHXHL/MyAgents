@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Cursor, Write};
 use std::path::PathBuf;
@@ -645,12 +645,13 @@ fn handle_api_data_request(
         ("GET", ["api", "spaces", "official"]) => Ok(json!({
             "space": mock_space(),
             "membership": session().membership,
-            "goals": state.goals,
+            "goals": active_goals(&state),
             "tags": state.tags
         })),
-        ("GET", ["api", "spaces", "official", "goals"]) => Ok(json!({
-            "items": state.goals
-        })),
+        ("GET", ["api", "spaces", "official", "goals"]) => Ok(list_goals(&state, &query)),
+        ("POST", ["api", "spaces", "official", "goals"]) => create_goal(&mut state, body),
+        ("PATCH", ["api", "goals", goal_id]) => update_goal(&mut state, goal_id, body),
+        ("POST", ["api", "goals", goal_id, "archive"]) => archive_goal(&mut state, goal_id),
         ("POST", ["api", "spaces", "official", "tags"]) => create_tag(&mut state, body),
         ("GET", ["api", "spaces", "official", "issues"]) => Ok(list_issues(&state, &query)),
         ("POST", ["api", "spaces", "official", "issues"]) => create_issue(&mut state, body),
@@ -1401,8 +1402,10 @@ fn create_issue(state: &mut MockState, body: Option<Value>) -> Result<Value, Str
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or(MOCK_ROOT_GOAL_ID);
-    let goal_path_label = goal_label(state, goal_id);
+        .map(ToString::to_string);
+    let goal_path_label = goal_id
+        .as_deref()
+        .and_then(|goal_id| goal_label(state, goal_id));
     let id = state.next_id("iss");
     let issue = json!({
         "id": id,
@@ -1520,6 +1523,200 @@ fn create_tag(state: &mut MockState, body: Option<Value>) -> Result<Value, Strin
             .cmp(b.get("name").and_then(Value::as_str).unwrap_or(""))
     });
     Ok(json!({ "tag": tag }))
+}
+
+fn list_goals(state: &MockState, query: &HashMap<String, String>) -> Value {
+    let include_archived = query
+        .get("includeArchived")
+        .map(|value| value == "true")
+        .unwrap_or(false);
+    let mut items = state
+        .goals
+        .iter()
+        .filter(|goal| include_archived || !is_archived(goal))
+        .cloned()
+        .collect::<Vec<_>>();
+    items.sort_by(|a, b| {
+        let depth = a
+            .get("depth")
+            .and_then(Value::as_u64)
+            .cmp(&b.get("depth").and_then(Value::as_u64));
+        if depth != std::cmp::Ordering::Equal {
+            return depth;
+        }
+        a.get("createdAt")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .cmp(b.get("createdAt").and_then(Value::as_str).unwrap_or(""))
+    });
+    json!({ "items": items })
+}
+
+fn active_goals(state: &MockState) -> Vec<Value> {
+    state
+        .goals
+        .iter()
+        .filter(|goal| !is_archived(goal))
+        .cloned()
+        .collect()
+}
+
+fn create_goal(state: &mut MockState, body: Option<Value>) -> Result<Value, String> {
+    let body = body.unwrap_or(Value::Null);
+    let parent_goal_id = body
+        .get("parentGoalId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "parentGoalId is required".to_string())?;
+    let parent = state
+        .goals
+        .iter()
+        .find(|goal| goal.get("id").and_then(Value::as_str) == Some(parent_goal_id))
+        .cloned()
+        .ok_or_else(|| format!("Goal not found: {}", parent_goal_id))?;
+    if is_archived(&parent) {
+        return Err("Goal is archived".to_string());
+    }
+    let title = body
+        .get("title")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "title is required".to_string())?;
+    let context = body
+        .get("context")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "context is required".to_string())?;
+    let id = state.next_id("goal");
+    let parent_path = parent
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or("/")
+        .to_string();
+    let depth = parent.get("depth").and_then(Value::as_u64).unwrap_or(0) + 1;
+    let goal = json!({
+        "id": id,
+        "spaceId": MOCK_SPACE_ID,
+        "parentGoalId": parent_goal_id,
+        "path": format!("{}{}/", parent_path, id),
+        "depth": depth,
+        "title": title,
+        "context": context,
+        "archivedAt": null,
+        "createdAt": "2026-06-24T09:52:00.000Z",
+        "updatedAt": "2026-06-24T09:52:00.000Z",
+        "goalPathLabel": title
+    });
+    state.goals.push(goal);
+    refresh_goal_labels(state);
+    let created = state
+        .goals
+        .iter()
+        .find(|goal| goal.get("id").and_then(Value::as_str) == Some(id.as_str()))
+        .cloned()
+        .unwrap_or(Value::Null);
+    Ok(json!({ "goal": created }))
+}
+
+fn update_goal(state: &mut MockState, goal_id: &str, body: Option<Value>) -> Result<Value, String> {
+    let body = body.unwrap_or(Value::Null);
+    let index = state
+        .goals
+        .iter()
+        .position(|goal| goal.get("id").and_then(Value::as_str) == Some(goal_id))
+        .ok_or_else(|| format!("Goal not found: {}", goal_id))?;
+    if is_archived(&state.goals[index]) {
+        return Err("Goal is archived".to_string());
+    }
+    if let Some(goal) = state.goals[index].as_object_mut() {
+        if let Some(title) = body.get("title").and_then(Value::as_str).map(str::trim) {
+            if title.is_empty() {
+                return Err("title is required".to_string());
+            }
+            goal.insert("title".to_string(), json!(title));
+        }
+        if let Some(context) = body.get("context").and_then(Value::as_str).map(str::trim) {
+            if context.is_empty() {
+                return Err("context is required".to_string());
+            }
+            goal.insert("context".to_string(), json!(context));
+        }
+        goal.insert("updatedAt".to_string(), json!("2026-06-24T09:53:00.000Z"));
+    }
+    refresh_goal_labels(state);
+    let updated = state
+        .goals
+        .iter()
+        .find(|goal| goal.get("id").and_then(Value::as_str) == Some(goal_id))
+        .cloned()
+        .unwrap_or(Value::Null);
+    Ok(json!({ "goal": updated }))
+}
+
+fn archive_goal(state: &mut MockState, goal_id: &str) -> Result<Value, String> {
+    let goal = state
+        .goals
+        .iter()
+        .find(|goal| goal.get("id").and_then(Value::as_str) == Some(goal_id))
+        .cloned()
+        .ok_or_else(|| format!("Goal not found: {}", goal_id))?;
+    if goal.get("parentGoalId").and_then(Value::as_str).is_none() || goal_id == MOCK_ROOT_GOAL_ID {
+        return Err("Root Goal cannot be archived".to_string());
+    }
+    let goal_path = goal
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+    let archived_ids = state
+        .goals
+        .iter()
+        .filter(|item| {
+            item.get("path")
+                .and_then(Value::as_str)
+                .map(|path| path.starts_with(&goal_path))
+                .unwrap_or(false)
+        })
+        .filter_map(|item| {
+            item.get("id")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+        .collect::<HashSet<_>>();
+    for item in &mut state.goals {
+        if item
+            .get("id")
+            .and_then(Value::as_str)
+            .map(|id| archived_ids.contains(id))
+            .unwrap_or(false)
+        {
+            if let Some(goal) = item.as_object_mut() {
+                goal.insert("archivedAt".to_string(), json!("2026-06-24T09:54:00.000Z"));
+                goal.insert("updatedAt".to_string(), json!("2026-06-24T09:54:00.000Z"));
+            }
+        }
+    }
+    for issue in &mut state.issues {
+        if issue
+            .get("goalId")
+            .and_then(Value::as_str)
+            .map(|id| archived_ids.contains(id))
+            .unwrap_or(false)
+        {
+            if let Some(issue) = issue.as_object_mut() {
+                issue.insert("state".to_string(), json!("closed"));
+                issue.insert("status".to_string(), json!("closed"));
+                issue.insert("updatedAt".to_string(), json!("2026-06-24T09:54:00.000Z"));
+            }
+        }
+    }
+    Ok(json!({
+        "archived": true,
+        "archivedAt": "2026-06-24T09:54:00.000Z"
+    }))
 }
 
 fn issue_detail(
@@ -1866,12 +2063,72 @@ fn legacy_status_to_state(status: &str) -> &'static str {
 }
 
 fn goal_label(state: &MockState, goal_id: &str) -> Option<String> {
-    state
+    computed_goal_label(state, goal_id)
+}
+
+fn computed_goal_label(state: &MockState, goal_id: &str) -> Option<String> {
+    let mut titles = Vec::new();
+    let mut current_id = Some(goal_id.to_string());
+    let mut guard = 0usize;
+    while let Some(id) = current_id {
+        guard += 1;
+        if guard > 32 {
+            break;
+        }
+        let goal = state
+            .goals
+            .iter()
+            .find(|goal| goal.get("id").and_then(Value::as_str) == Some(id.as_str()))?;
+        titles.push(goal.get("title").and_then(Value::as_str)?.to_string());
+        current_id = goal
+            .get("parentGoalId")
+            .and_then(Value::as_str)
+            .map(ToString::to_string);
+    }
+    titles.reverse();
+    if titles.is_empty() {
+        None
+    } else {
+        Some(titles.join(" / "))
+    }
+}
+
+fn refresh_goal_labels(state: &mut MockState) {
+    let labels = state
         .goals
         .iter()
-        .find(|goal| goal.get("id").and_then(Value::as_str) == Some(goal_id))
-        .and_then(|goal| goal.get("goalPathLabel").and_then(Value::as_str))
-        .map(ToString::to_string)
+        .filter_map(|goal| {
+            let id = goal.get("id").and_then(Value::as_str)?.to_string();
+            let label = computed_goal_label(state, &id)?;
+            Some((id, label))
+        })
+        .collect::<HashMap<_, _>>();
+    for goal in &mut state.goals {
+        let Some(id) = goal.get("id").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(label) = labels.get(id) else {
+            continue;
+        };
+        if let Some(goal) = goal.as_object_mut() {
+            goal.insert("goalPathLabel".to_string(), json!(label));
+        }
+    }
+    for issue in &mut state.issues {
+        let Some(goal_id) = issue.get("goalId").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(label) = labels.get(goal_id) else {
+            continue;
+        };
+        if let Some(issue) = issue.as_object_mut() {
+            issue.insert("goalPathLabel".to_string(), json!(label));
+        }
+    }
+}
+
+fn is_archived(value: &Value) -> bool {
+    !matches!(value.get("archivedAt"), None | Some(Value::Null))
 }
 
 fn tags_for(tags: &[Value], identities: &[&str]) -> Vec<Value> {

@@ -2,10 +2,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiMocks = vi.hoisted(() => ({
   findProjectForAgent: vi.fn(),
+  spaceArchiveGoal: vi.fn(),
   spaceCancelIssueClaim: vi.fn(),
   spaceCloseIssue: vi.fn(),
   spaceCloseOwnIssue: vi.fn(),
   spaceCommentIssue: vi.fn(),
+  spaceCreateGoal: vi.fn(),
   spaceCompleteIssue: vi.fn(),
   spaceCreateIssue: vi.fn(),
   spaceDeleteSkill: vi.fn(),
@@ -16,6 +18,7 @@ const apiMocks = vi.hoisted(() => ({
   spaceGetSkill: vi.fn(),
   spaceGetSkillFile: vi.fn(),
   spaceInstallSkill: vi.fn(),
+  spaceListGoals: vi.fn(),
   spaceListEvents: vi.fn(),
   spaceListIssues: vi.fn(),
   spaceListLocalAgents: vi.fn(),
@@ -25,6 +28,7 @@ const apiMocks = vi.hoisted(() => ({
   spaceRegisterAgent: vi.fn(),
   spaceRevokeRegisteredAgent: vi.fn(),
   spaceSetIssueState: vi.fn(),
+  spaceUpdateGoal: vi.fn(),
   spaceUpdateRegisteredAgent: vi.fn(),
   spaceUploadIssueAttachments: vi.fn(),
   spaceUploadSkillZip: vi.fn(),
@@ -33,10 +37,12 @@ const apiMocks = vi.hoisted(() => ({
 vi.mock('@/api/spaceCloud', () => ({
   DEFAULT_SPACE_ID: 'official',
   findProjectForAgent: apiMocks.findProjectForAgent,
+  spaceArchiveGoal: apiMocks.spaceArchiveGoal,
   spaceCancelIssueClaim: apiMocks.spaceCancelIssueClaim,
   spaceCloseIssue: apiMocks.spaceCloseIssue,
   spaceCloseOwnIssue: apiMocks.spaceCloseOwnIssue,
   spaceCommentIssue: apiMocks.spaceCommentIssue,
+  spaceCreateGoal: apiMocks.spaceCreateGoal,
   spaceCompleteIssue: apiMocks.spaceCompleteIssue,
   spaceCreateIssue: apiMocks.spaceCreateIssue,
   spaceDeleteSkill: apiMocks.spaceDeleteSkill,
@@ -47,6 +53,7 @@ vi.mock('@/api/spaceCloud', () => ({
   spaceGetSkill: apiMocks.spaceGetSkill,
   spaceGetSkillFile: apiMocks.spaceGetSkillFile,
   spaceInstallSkill: apiMocks.spaceInstallSkill,
+  spaceListGoals: apiMocks.spaceListGoals,
   spaceListEvents: apiMocks.spaceListEvents,
   spaceListIssues: apiMocks.spaceListIssues,
   spaceListLocalAgents: apiMocks.spaceListLocalAgents,
@@ -56,12 +63,13 @@ vi.mock('@/api/spaceCloud', () => ({
   spaceRegisterAgent: apiMocks.spaceRegisterAgent,
   spaceRevokeRegisteredAgent: apiMocks.spaceRevokeRegisteredAgent,
   spaceSetIssueState: apiMocks.spaceSetIssueState,
+  spaceUpdateGoal: apiMocks.spaceUpdateGoal,
   spaceUpdateRegisteredAgent: apiMocks.spaceUpdateRegisteredAgent,
   spaceUploadIssueAttachments: apiMocks.spaceUploadIssueAttachments,
   spaceUploadSkillZip: apiMocks.spaceUploadSkillZip,
 }));
 
-import type { LocalRegisteredAgent, SpaceEvent, SpaceIssue, SpaceIssueComment, SpaceIssueDetail, SpaceSession, SpaceSkill } from '@/api/spaceCloud';
+import type { LocalRegisteredAgent, SpaceEvent, SpaceGoal, SpaceIssue, SpaceIssueComment, SpaceIssueDetail, SpaceSession, SpaceSkill } from '@/api/spaceCloud';
 import {
   SPACE_MAX_ISSUE_DETAIL_CACHES,
   SPACE_MAX_SKILL_FILE_CACHES,
@@ -97,6 +105,19 @@ const fakeIssue: SpaceIssue = {
   attachmentCount: 0,
   createdAt: '2026-06-24T00:00:00.000Z',
   updatedAt: '2026-06-24T00:00:00.000Z',
+};
+
+const fakeGoal: SpaceGoal = {
+  id: 'goal-1',
+  spaceId: 'space-1',
+  parentGoalId: null,
+  path: '/goal-1/',
+  depth: 0,
+  title: 'Runtime',
+  context: 'Runtime work',
+  createdAt: '2026-06-24T00:00:00.000Z',
+  updatedAt: '2026-06-24T00:00:00.000Z',
+  goalPathLabel: 'Runtime',
 };
 
 const fakeDetail: SpaceIssueDetail = {
@@ -388,6 +409,31 @@ describe('spaceStore issue refresh', () => {
       fileName: 'trace.log',
     });
     expect(result.relativePath).toBe('myagents_files/space/issues/iss_123/attachments/att_1/trace.log');
+  });
+});
+
+describe('spaceStore goal mutations', () => {
+  it('refreshes the goal tree after creating a child goal', async () => {
+    __setSpaceStoreStateForTest({ boot: 'ready', session: fakeSession, goals: [fakeGoal] });
+    const child = {
+      ...fakeGoal,
+      id: 'goal-child',
+      parentGoalId: fakeGoal.id,
+      path: '/goal-1/goal-child/',
+      depth: 1,
+      title: 'Renderer',
+      goalPathLabel: 'Runtime / Renderer',
+    };
+    apiMocks.spaceCreateGoal.mockResolvedValueOnce({ goal: child });
+    apiMocks.spaceListGoals.mockResolvedValueOnce({ items: [fakeGoal, child] });
+
+    await actions.createGoal({ parentGoalId: fakeGoal.id, title: child.title, context: child.context });
+
+    expect(apiMocks.spaceCreateGoal).toHaveBeenCalledWith(
+      { parentGoalId: fakeGoal.id, title: child.title, context: child.context },
+      'official',
+    );
+    expect(getSnapshot().goals.map((goal) => goal.id)).toEqual(['goal-1', 'goal-child']);
   });
 });
 

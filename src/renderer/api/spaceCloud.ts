@@ -371,6 +371,7 @@ function operationFromPath(context?: SpaceErrorContext): string {
   if (method === 'POST' && /\/api\/issues\/[^/]+\/claim$/.test(path)) return spaceText('operations.claimIssue');
   if (method === 'POST' && /\/api\/issues\/[^/]+\/complete$/.test(path)) return spaceText('operations.completeIssue');
   if (method === 'POST' && /\/api\/issues\/[^/]+\/cancel-claim$/.test(path)) return spaceText('operations.cancelClaim');
+  if (path.includes('/goals')) return spaceText('operations.goal');
   if (path.includes('/attachments')) return spaceText('operations.attachment');
   if (path.includes('/skills')) return spaceText('operations.skill');
   return spaceText('operations.request');
@@ -507,6 +508,28 @@ export function spaceLogout(): Promise<void> {
 
 export function spaceGetOfficial(spaceId = DEFAULT_SPACE_ID): Promise<{ space: SpaceInfo; membership: SpaceMembership; goals: SpaceGoal[]; tags?: SpaceTag[] }> {
   return spaceApi('GET', `/api/spaces/${spacePath(spaceId)}`);
+}
+
+export function spaceListGoals(input: { includeArchived?: boolean } = {}, spaceId = DEFAULT_SPACE_ID) {
+  const search = new URLSearchParams();
+  if (input.includeArchived) search.set('includeArchived', 'true');
+  const suffix = search.toString() ? `?${search.toString()}` : '';
+  return spaceApi<{ items: SpaceGoal[] }>('GET', `/api/spaces/${spacePath(spaceId)}/goals${suffix}`);
+}
+
+export function spaceCreateGoal(input: { parentGoalId: string; title: string; context: string }, spaceId = DEFAULT_SPACE_ID) {
+  return spaceApi<{ goal: SpaceGoal }>('POST', `/api/spaces/${spacePath(spaceId)}/goals`, input);
+}
+
+export function spaceUpdateGoal(input: { goalId: string; title?: string; context?: string }) {
+  return spaceApi<{ goal: SpaceGoal }>('PATCH', `/api/goals/${encodeURIComponent(input.goalId)}`, {
+    title: input.title,
+    context: input.context,
+  });
+}
+
+export function spaceArchiveGoal(goalId: string) {
+  return spaceApi<{ archived: boolean; archivedAt: string }>('POST', `/api/goals/${encodeURIComponent(goalId)}/archive`, {});
 }
 
 export function spaceListIssues(

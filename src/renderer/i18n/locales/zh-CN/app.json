@@ -314,6 +314,7 @@
         "claimIssue": "Issue 认领",
         "completeIssue": "Issue 完成",
         "cancelClaim": "认领取消",
+        "goal": "目标操作",
         "attachment": "附件操作",
         "skill": "Skill 操作",
         "request": "Space 请求"
@@ -338,6 +339,10 @@
     },
     "sidebar": {
       "openJoin": "开放加入",
+      "issues": "Issues",
+      "goals": "目标",
+      "skills": "Skills",
+      "agents": "Agents",
       "signedInWithGoogle": "已通过 Google 登录",
       "logout": "退出登录"
     },
@@ -385,7 +390,10 @@
       "attachmentPathCopied": "已复制附件本地路径",
       "issueCommandCopied": "已复制 issue 口令",
       "issueCreated": "已创建 Issue",
-      "issueCreatedWithAttachments": "已创建 Issue 并上传 {{count}} 个附件"
+      "issueCreatedWithAttachments": "已创建 Issue 并上传 {{count}} 个附件",
+      "goalCreated": "已创建目标",
+      "goalSaved": "已保存目标",
+      "goalArchived": "已归档目标"
     },
     "issues": {
       "searchPlaceholder": "搜索标题",
@@ -405,9 +413,29 @@
       "removeFile": "移除 {{name}}",
       "addAttachment": "添加附件",
       "attachment": "附件",
+      "targetGoal": "目标",
       "humanOnly": "仅人工",
       "continuous": "持续创建",
       "pickAttachmentsTitle": "选择 Issue 附件"
+    },
+    "goals": {
+      "title": "目标",
+      "subtitle": "维护团队空间的目标树和上下文",
+      "tree": "目标树",
+      "goalCount": "{{count}} 个",
+      "empty": "暂无目标",
+      "root": "根目标",
+      "viewIssues": "查看 Issues",
+      "titleLabel": "标题",
+      "contextLabel": "上下文",
+      "titlePlaceholder": "目标标题",
+      "contextPlaceholder": "写清楚这个目标的背景、边界和验收方向",
+      "newChild": "新建子目标",
+      "newChildHint": "创建在「{{parent}}」下面，用来继续拆分关注范围。",
+      "childTitlePlaceholder": "子目标标题",
+      "childContextPlaceholder": "子目标上下文",
+      "createChild": "创建子目标",
+      "archive": "归档"
     },
     "detail": {
       "close": "关闭详情",
