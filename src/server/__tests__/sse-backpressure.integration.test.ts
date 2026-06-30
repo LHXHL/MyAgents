@@ -235,6 +235,7 @@ describe('SSE event priority registration', () => {
     expect(SSE_EVENT_PRIORITIES['chat:system-init']).toBe('critical');
     expect(SSE_EVENT_PRIORITIES['chat:session-title-changed']).toBe('critical');
     expect(SSE_EVENT_PRIORITIES['permission:request']).toBe('critical');
+    expect(SSE_EVENT_PRIORITIES['permission:expired']).toBe('critical');
   });
 
   it('classifies logs/telemetry as droppable', () => {

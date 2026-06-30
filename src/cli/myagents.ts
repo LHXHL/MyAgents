@@ -6,6 +6,7 @@
  *
  * Environment:
  *   MYAGENTS_PORT — Sidecar port (injected by buildClaudeSessionEnv)
+ *   MYAGENTS_SESSION_ID — current MyAgents session id for attached-session tasks
  *
  * No shebang here. `npm run build:cli` (esbuild) injects `#!/usr/bin/env node`
  * through `--banner:js` so the *built* `myagents.js` artifact is what carries
@@ -73,9 +74,12 @@ function parseArgs(args: string[]): { positional: string[]; flags: Record<string
         key === 'clear-provider-override' ||
         key === 'clear-runtime-override' ||
         key === 'purge' ||
-        key === 'stdin'
+        key === 'stdin' ||
+        key === 'create-attached'
       ) {
-        flags[camelCase(key)] = true;
+        flags[camelCase(key)] = key === 'create-attached'
+          ? parseInlineBooleanFlag(key, inlineValue)
+          : true;
         i++;
         continue;
       }
@@ -152,6 +156,15 @@ function assertStringFlag(value: unknown, flagName: string): asserts value is st
   }
 }
 
+function parseInlineBooleanFlag(key: string, inlineValue: string | undefined): boolean {
+  if (inlineValue === undefined) return true;
+  const normalized = inlineValue.trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  console.error(`Error: --${key} expects a boolean value when using --${key}=...`);
+  process.exit(2);
+}
+
 function camelCase(s: string): string {
   return s.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
 }
@@ -204,7 +217,7 @@ Commands:
   task      Manage Task Center tasks (list/get/update-status/run/rerun ...)
   thought   Manage Task Center thoughts (list/create)
   space     MyAgents Cloud Space issue/attachment bridge
-  issue     Read a Space issue (alias of 'space issue get')
+  issue     Legacy read-only alias for Space issue view
   im        IM runtime actions for current chat (send-media)
   session   Session-to-session messaging (send prompts, watch completion/result events)
   widget    Generative UI widget design guidelines (readme)
@@ -269,10 +282,21 @@ Examples:
     # Pass --run to dispatch immediately in the same call.
     # Pass --json for machine-readable output (task_id + docs_path).
     # Same per-task override flags as create-direct apply here.
-  myagents space issue get <issueId> --json
-  myagents issue <issueId> --json
+  myagents task create-attached --name "Space Issue #123" \\
+      --workspaceId proj --workspacePath /path/to/proj \\
+      --taskMdContent-file task.md --source space-issue --sourceIssueId iss_123
+  myagents space issue list --goal <goalId> --state todo --limit 30
+  myagents space issue view <issueId> --comments --json
+  myagents space issue claim <issueId> --deliveryId <deliveryId>
+  myagents space issue claim <issueId> --deliveryId <deliveryId> --create-attached \\
+      --workspaceId proj --workspacePath /path/to/proj \\
+      --name "Space Issue #123" --taskMdContent-file task.md
   myagents space issue comment <issueId> --body-file result.md
-  myagents space issue status <issueId> resolved
+  myagents space issue complete <issueId> --taskId <taskId> --body-file result.md \\
+      --message "completed Space issue"
+  myagents space issue delivery ignore <deliveryId>
+  myagents space issue complete <issueId>
+  myagents space issue close <issueId>
   myagents space attachment download <attachmentId> --output myagents_files/space/file.bin
   myagents thought list
   myagents plugin list
@@ -621,10 +645,18 @@ function printResult(group: string, action: string, result: Record<string, unkno
   // Task create-* — AI-facing flow: print task_id + docs path + next-step
   // hint + any override echo so the caller doesn't have to guess the id via
   // `ls -lt ~/.myagents/tasks/`. JSON mode above returns the full payload.
-  // Both `create-direct` and `create-from-alignment` go through the same
+  // All create-* forms go through the same enriched server-side response.
   // `enrichTaskCreateResponse` server-side, so one printer covers both.
-  if (group === 'task' && (action === 'create-direct' || action === 'create-from-alignment')) {
+  if (group === 'task' && (action === 'create-direct' || action === 'create-from-alignment' || action === 'create-attached')) {
     printTaskCreateResult(result.data as Record<string, unknown>);
+    return;
+  }
+  if (group === 'space' && action === 'issue' && shouldCreateAttachedTaskForClaim(flags)) {
+    printSpaceClaimAttachedResult(result.data as Record<string, unknown>);
+    return;
+  }
+  if (group === 'space' && action === 'issue' && objectValue(result.data)?.issueComplete !== undefined) {
+    printSpaceIssueCompleteResult(result.data as Record<string, unknown>);
     return;
   }
 
@@ -643,12 +675,13 @@ function printResult(group: string, action: string, result: Record<string, unkno
 }
 
 /**
- * Format output for `task create-from-alignment` (and eventually `task create-direct`).
+ * Format output for task create-* commands.
  *
  * AI scripts need at minimum the `task_id` of the newly minted task so they
- * can call `task run <id>` next. Also surfaces `docs_path` because the AI
- * often wants to tell the human "I wrote the task docs to X" and having
- * that string in the CLI output saves a re-lookup.
+ * can either dispatch it (`create-direct` / `create-from-alignment`) or keep
+ * working in the current session (`create-attached`). Also surfaces
+ * `docs_path` because the AI often wants to tell the human "I wrote the task
+ * docs to X" and having that string in the CLI output saves a re-lookup.
  *
  * Plaintext shape deliberately mirrors what `--json` produces so readers
  * can mentally switch between the two without re-learning fields:
@@ -657,7 +690,8 @@ function printResult(group: string, action: string, result: Record<string, unkno
  *     task_id:   <uuid>
  *     name:      <string>
  *     docs_path: ~/.myagents/tasks/<uuid>/
- *     next:      myagents task run <uuid>
+ *     next:      myagents task run <uuid>          # non-attached tasks
+ *     complete:  myagents task update-status ...   # attached tasks
  */
 function printTaskCreateResult(data: Record<string, unknown>): void {
   // Handler returns { task, dispatched?, runResult? } — `task` is the full
@@ -706,8 +740,13 @@ function printTaskCreateResult(data: Record<string, unknown>): void {
   }
 
   const nextSteps = data?.nextSteps as Record<string, string> | undefined;
-  const dispatch = nextSteps?.dispatch ?? (id ? `myagents task run ${id}` : '');
+  const isAttached = task?.dispatchOrigin === 'attached-session';
+  const dispatch = nextSteps?.dispatch ?? (!isAttached && id ? `myagents task run ${id}` : '');
   if (dispatch) console.log(`  next:      ${dispatch}`);
+  const inspect = nextSteps?.inspect;
+  if (inspect && isAttached) console.log(`  inspect:   ${inspect}`);
+  const complete = nextSteps?.complete;
+  if (complete) console.log(`  complete:  ${complete}`);
 
   // If --run was bundled with create, the backend also dispatched; echo
   // the dispatch summary inline so the caller sees both in one output.
@@ -716,6 +755,51 @@ function printTaskCreateResult(data: Record<string, unknown>): void {
     console.log('');
     printTaskDispatchResult('run', runResult);
   }
+}
+
+function printSpaceClaimAttachedResult(data: Record<string, unknown>): void {
+  const claim = objectValue(data.claim) ?? {};
+  const taskData = objectValue(data.taskCreate) ?? {};
+  const task = objectValue(data.task) ?? objectValue(taskData.task) ?? {};
+  const issueId = String(data.issueId ?? claim.issueId ?? '');
+  const claimId = String(claim.id ?? claim.claimId ?? '');
+  const taskId = String(task.id ?? task.taskId ?? '');
+  const sessionId = String(data.localSessionId ?? task.currentSessionId ?? process.env.MYAGENTS_SESSION_ID ?? '');
+  const workspacePath = typeof task.workspacePath === 'string' && task.workspacePath.trim()
+    ? task.workspacePath.trim()
+    : '';
+  const workspaceArg = workspacePath ? ` --workspacePath ${shellQuoteArg(workspacePath)}` : '';
+
+  console.log('\u2713 Issue claimed and attached task created');
+  if (issueId) console.log(`  issue_id:  ${issueId}`);
+  if (claimId) console.log(`  claim_id:  ${claimId}`);
+  if (taskId) console.log(`  task_id:   ${taskId}`);
+  if (sessionId) console.log(`  session:   ${sessionId}`);
+  if (taskId) console.log(`  inspect:   myagents task get ${taskId}`);
+  if (issueId && taskId) {
+    console.log(`  finish:    myagents space issue complete ${shellQuoteArg(issueId)}${workspaceArg} --taskId ${shellQuoteArg(taskId)} --body-file result.md --message "completed Space issue"`);
+  } else if (issueId) {
+    console.log(`  complete:  myagents space issue complete ${shellQuoteArg(issueId)}${workspaceArg}`);
+  }
+}
+
+function printSpaceIssueCompleteResult(data: Record<string, unknown>): void {
+  const issueId = String(data.issueId ?? '');
+  const issueComplete = objectValue(data.issueComplete) ?? {};
+  const taskUpdate = objectValue(data.taskUpdate) ?? {};
+  const task = objectValue(taskUpdate.task) ?? taskUpdate;
+  const taskId = String(data.taskId ?? task.id ?? '');
+  const taskStatus = String(data.taskStatus ?? task.status ?? '');
+  const comment = data.comment ? 'yes' : 'no';
+
+  console.log('\u2713 Issue completion recorded');
+  if (issueId) console.log(`  issue_id:  ${issueId}`);
+  if (issueComplete.state || issueComplete.status) {
+    console.log(`  issue:     ${String(issueComplete.state ?? issueComplete.status)}`);
+  }
+  console.log(`  comment:   ${comment}`);
+  if (taskId) console.log(`  task_id:   ${taskId}`);
+  if (taskStatus) console.log(`  task:      ${taskStatus}`);
 }
 
 /**
@@ -1768,7 +1852,23 @@ async function main(): Promise<void> {
       }
     }
 
-    result = await callApi(route, body);
+    if (
+      group === 'space' &&
+      action === 'issue' &&
+      restArgs[0] === 'claim' &&
+      shouldCreateAttachedTaskForClaim(flags)
+    ) {
+      result = await claimSpaceIssueWithAttachedTask(body, flags);
+    } else if (
+      group === 'space' &&
+      action === 'issue' &&
+      restArgs[0] === 'complete' &&
+      shouldFinalizeSpaceIssue(flags)
+    ) {
+      result = await completeSpaceIssueWithLocalFollowup(body, flags);
+    } else {
+      result = await callApi(route, body);
+    }
 
     // --run bundled with `task create-from-alignment`: chain immediately
     // into /task/run using the fresh task_id. Saves the caller one round
@@ -1869,10 +1969,20 @@ function buildRoute(group: string, action: string, rest: string[]): string {
   }
   if (group === 'space' && action === 'issue') {
     const issueAction = rest[0] || 'get';
-    if (issueAction === 'get') return 'space/issue-get';
+    if (issueAction === 'list') return 'space/issue-list';
+    if (issueAction === 'get' || issueAction === 'view') return 'space/issue-get';
     if (issueAction === 'comments') return 'space/issue-get';
     if (issueAction === 'comment') return 'space/issue-comment';
     if (issueAction === 'status') return 'space/issue-status';
+    if (issueAction === 'claim') return 'space/issue-claim';
+    if (issueAction === 'delivery' && rest[1] === 'ignore') return 'space/issue-delivery-ignore';
+    if (issueAction === 'close') return 'space/issue-close';
+    if (issueAction === 'complete') return 'space/issue-complete';
+    if (issueAction === 'cancel-claim') return 'space/issue-cancel-claim';
+  }
+  if (group === 'space' && action === 'claim') {
+    const claimAction = rest[0] || '';
+    if (claimAction === 'local-task') return 'space/claim-local-task';
   }
   if (group === 'space' && action === 'attachment') {
     const attachmentAction = rest[0] || 'download';
@@ -1949,6 +2059,388 @@ function resolveSpaceCommentBody(flags: Record<string, unknown>, workspacePath: 
   return '';
 }
 
+function truthyCliFlag(value: unknown): boolean {
+  return value === true || value === 'true' || value === '1' || value === 'yes';
+}
+
+function shellQuoteArg(value: string): string {
+  if (/^[A-Za-z0-9_./:=@-]+$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'"'"'`)}'`;
+}
+
+function shouldCreateAttachedTaskForClaim(flags: Record<string, unknown>): boolean {
+  return truthyCliFlag(flags.createAttached);
+}
+
+function hasSpaceCommentBodyFlags(flags: Record<string, unknown>): boolean {
+  return flags.body !== undefined || flags.bodyFile !== undefined || truthyCliFlag(flags.stdin);
+}
+
+function shouldFinalizeSpaceIssue(flags: Record<string, unknown>): boolean {
+  return (
+    hasSpaceCommentBodyFlags(flags)
+    || flags.taskId !== undefined
+    || flags.localTaskId !== undefined
+    || flags.taskStatus !== undefined
+  );
+}
+
+function requireNonEmptyStringFlag(
+  value: unknown,
+  flagName: string,
+  command: string,
+): string {
+  assertStringFlag(value, flagName);
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  console.error(`Error: ${command} requires --${flagName} <value>.`);
+  process.exit(2);
+}
+
+function optionalNonEmptyStringFlag(value: unknown, flagName: string): string | undefined {
+  assertStringFlag(value, flagName);
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function stringValue(record: Record<string, unknown> | undefined, ...keys: string[]): string | undefined {
+  if (!record) return undefined;
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return undefined;
+}
+
+function extractClaimData(data: unknown): Record<string, unknown> {
+  const envelope = objectValue(data) ?? {};
+  const nested = objectValue(envelope.data);
+  return objectValue(envelope.claim) ?? objectValue(nested?.claim) ?? nested ?? envelope;
+}
+
+function extractTaskData(data: unknown): Record<string, unknown> {
+  const envelope = objectValue(data) ?? {};
+  const nested = objectValue(envelope.data);
+  return objectValue(envelope.task) ?? objectValue(nested?.task) ?? nested ?? envelope;
+}
+
+function parseCommaTags(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string') {
+    console.error('Error: --tags must be a comma-separated string');
+    process.exit(2);
+  }
+  return value.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function buildAttachedTaskBodyForSpaceClaim(
+  claimBody: Record<string, unknown>,
+  claim: Record<string, unknown>,
+  flags: Record<string, unknown>,
+  currentSessionId: string,
+): Record<string, unknown> {
+  const source = (flags.source as string | undefined) ?? 'space-issue';
+  if (source !== 'space-issue') {
+    console.error(`Error: space issue claim --create-attached currently supports only --source "space-issue" (got "${source}")`);
+    process.exit(2);
+  }
+
+  const issueId = requireNonEmptyStringFlag(
+    claimBody.issueId,
+    'issueId',
+    'space issue claim --create-attached',
+  );
+  const workspaceId = requireNonEmptyStringFlag(
+    flags.workspaceId,
+    'workspaceId',
+    'space issue claim --create-attached',
+  );
+  const workspacePath = optionalNonEmptyStringFlag(flags.workspacePath, 'workspacePath')
+    ?? stringValue(claimBody, 'workspacePath')
+    ?? process.cwd();
+  const taskMdContent = resolveTaskMdContent(flags);
+  if (typeof taskMdContent !== 'string' || !taskMdContent.trim()) {
+    console.error('Error: space issue claim --create-attached requires --taskMdFile, --taskMdContentFile, or --taskMdContent');
+    process.exit(2);
+  }
+
+  const explicitName = optionalNonEmptyStringFlag(flags.name, 'name');
+  const executor = optionalNonEmptyStringFlag(flags.executor, 'executor') ?? 'agent';
+  const description = optionalNonEmptyStringFlag(flags.description, 'description');
+  const sourceSpaceId = optionalNonEmptyStringFlag(flags.sourceSpaceId, 'sourceSpaceId')
+    ?? stringValue(claim, 'spaceId');
+  const deliveryId = stringValue(claimBody, 'deliveryId')
+    ?? optionalNonEmptyStringFlag(flags.sourceDeliveryId, 'sourceDeliveryId');
+
+  return {
+    name: explicitName ?? `Space Issue ${issueId}`,
+    executor,
+    description,
+    workspaceId,
+    workspacePath,
+    taskMdContent,
+    currentSessionId,
+    source,
+    sourceSpaceId,
+    sourceIssueId: issueId,
+    sourceClaimId: stringValue(claim, 'id', 'claimId'),
+    sourceDeliveryId: deliveryId,
+    tags: parseCommaTags(flags.tags),
+    notification: buildNotificationFromFlags(flags),
+  };
+}
+
+function buildClaimCancelBody(claimBody: Record<string, unknown>): Record<string, unknown> {
+  return {
+    issueId: claimBody.issueId,
+    agentId: claimBody.agentId,
+    workspacePath: claimBody.workspacePath,
+  };
+}
+
+async function cancelClaimAfterAttachedFailure(claimBody: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return callApi('space/issue-cancel-claim', buildClaimCancelBody(claimBody));
+}
+
+async function stopAttachedTaskAfterClaimFailure(
+  taskId: string,
+  message: string,
+): Promise<Record<string, unknown>> {
+  return callApi('task/update-status', {
+    id: taskId,
+    status: 'stopped',
+    message,
+  });
+}
+
+function rollbackSuffix(rollback: Record<string, unknown>): string {
+  if (rollback.success) return 'The cloud claim was cancelled.';
+  return `Cloud claim cancellation also failed: ${String(rollback.error ?? 'unknown error')}.`;
+}
+
+function failedAttachedClaimResult(
+  message: string,
+  claimResult: Record<string, unknown>,
+  rollback: Record<string, unknown>,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    success: false,
+    error: `${message} ${rollbackSuffix(rollback)}`,
+    data: {
+      claim: claimResult.data,
+      rollback,
+      ...extra,
+    },
+  };
+}
+
+async function claimSpaceIssueWithAttachedTask(
+  claimBody: Record<string, unknown>,
+  flags: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const currentSessionId =
+    typeof flags.currentSessionId === 'string' && flags.currentSessionId.trim()
+      ? flags.currentSessionId.trim()
+      : process.env.MYAGENTS_SESSION_ID;
+  if (!currentSessionId) {
+    console.error('Error: space issue claim --create-attached requires MYAGENTS_SESSION_ID. Run it from inside a MyAgents AI session.');
+    process.exit(2);
+  }
+
+  const taskBody = buildAttachedTaskBodyForSpaceClaim(claimBody, {}, flags, currentSessionId);
+
+  const claimResult = await callApi('space/issue-claim', claimBody);
+  if (!claimResult.success) return claimResult;
+
+  const claim = extractClaimData(claimResult.data);
+  const claimId = stringValue(claim, 'id', 'claimId');
+  if (!claimId) {
+    const rollback = await cancelClaimAfterAttachedFailure(claimBody);
+    return failedAttachedClaimResult(
+      'Issue claim succeeded but the response did not include a claim id.',
+      claimResult,
+      rollback,
+    );
+  }
+
+  if (!taskBody.sourceSpaceId) taskBody.sourceSpaceId = stringValue(claim, 'spaceId');
+  taskBody.sourceClaimId = claimId;
+
+  const taskResult = await callApi('task/create-attached', taskBody);
+  if (!taskResult.success) {
+    const rollback = await cancelClaimAfterAttachedFailure(claimBody);
+    return failedAttachedClaimResult(
+      `Issue claim succeeded but attached task creation failed: ${String(taskResult.error ?? 'unknown error')}.`,
+      claimResult,
+      rollback,
+      { taskCreate: taskResult },
+    );
+  }
+
+  const task = extractTaskData(taskResult.data);
+  const taskId = stringValue(task, 'id', 'taskId');
+  if (!taskId) {
+    const rollback = await cancelClaimAfterAttachedFailure(claimBody);
+    return failedAttachedClaimResult(
+      'Issue claim and attached task creation succeeded, but the task response did not include a task id.',
+      claimResult,
+      rollback,
+      { taskCreate: taskResult.data },
+    );
+  }
+
+  const localTaskResult = await callApi('space/claim-local-task', {
+    claimId,
+    localTaskId: taskId,
+    localSessionId: currentSessionId,
+    agentId: claimBody.agentId,
+    workspacePath: claimBody.workspacePath,
+  });
+  const localTaskData = objectValue(localTaskResult.data);
+  const localTaskBound = localTaskData?.updated === true
+    || (
+      stringValue(localTaskData, 'localTaskId') === taskId
+      && stringValue(localTaskData, 'localSessionId') === currentSessionId
+    );
+  if (!localTaskResult.success || !localTaskBound) {
+    const taskRollback = await stopAttachedTaskAfterClaimFailure(
+      taskId,
+      'Space claim local-task binding failed; cloud claim cancelled.',
+    );
+    const rollback = await cancelClaimAfterAttachedFailure(claimBody);
+    const linkError = localTaskResult.success
+      ? 'cloud response did not confirm the requested local task/session binding'
+      : String(localTaskResult.error ?? 'unknown error');
+    return failedAttachedClaimResult(
+      `Issue claim and attached task creation succeeded, but local-task binding failed: ${linkError}. Local task id: ${taskId}.`,
+      claimResult,
+      rollback,
+      { taskCreate: taskResult.data, taskRollback, localTaskRef: localTaskResult },
+    );
+  }
+
+  return {
+    success: true,
+    data: {
+      issueId: claimBody.issueId,
+      claim,
+      taskCreate: taskResult.data,
+      task,
+      localTaskRef: localTaskResult.data,
+      localSessionId: currentSessionId,
+    },
+    hint: 'Issue claimed and attached task created.',
+  };
+}
+
+function resolveSpaceCompleteTaskId(flags: Record<string, unknown>): string | undefined {
+  if (flags.taskId !== undefined) {
+    return requireNonEmptyStringFlag(flags.taskId, 'taskId', 'space issue complete');
+  }
+  if (flags.localTaskId !== undefined) {
+    return requireNonEmptyStringFlag(flags.localTaskId, 'localTaskId', 'space issue complete');
+  }
+  return undefined;
+}
+
+async function completeSpaceIssueWithLocalFollowup(
+  completeBody: Record<string, unknown>,
+  flags: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const issueId = requireNonEmptyStringFlag(
+    completeBody.issueId,
+    'issueId',
+    'space issue complete',
+  );
+  const workspacePath = stringValue(completeBody, 'workspacePath') ?? process.cwd();
+  const taskId = resolveSpaceCompleteTaskId(flags);
+  if (flags.taskStatus !== undefined && !taskId) {
+    console.error('Error: space issue complete --taskStatus requires --taskId <taskId>.');
+    process.exit(2);
+  }
+  const requestedTaskStatus = optionalNonEmptyStringFlag(flags.taskStatus, 'taskStatus');
+  if (requestedTaskStatus && requestedTaskStatus !== 'done') {
+    console.error('Error: space issue complete can only update the local task to done. For blocked/stopped work, update the task separately and cancel the claim.');
+    process.exit(2);
+  }
+  const taskStatus = taskId ? 'done' : undefined;
+  const message = optionalNonEmptyStringFlag(flags.message, 'message');
+
+  let commentResult: Record<string, unknown> | undefined;
+  if (hasSpaceCommentBodyFlags(flags)) {
+    const body = resolveSpaceCommentBody(flags, workspacePath);
+    if (!body.trim()) {
+      console.error('Error: space issue complete comment body is empty. Use --body, --body-file, or omit comment flags.');
+      process.exit(2);
+    }
+    commentResult = await callApi('space/issue-comment', {
+      issueId,
+      body,
+      agentId: completeBody.agentId,
+      workspacePath,
+    });
+    if (!commentResult.success) return commentResult;
+  }
+
+  const completeResult = await callApi('space/issue-complete', completeBody);
+  if (!completeResult.success) {
+    return {
+      success: false,
+      error: String(completeResult.error ?? 'Issue completion failed'),
+      data: {
+        issueId,
+        comment: commentResult?.data,
+        issueComplete: completeResult,
+      },
+    };
+  }
+
+  let taskResult: Record<string, unknown> | undefined;
+  if (taskId && taskStatus) {
+    taskResult = await callApi('task/update-status', {
+      id: taskId,
+      status: taskStatus,
+      message,
+    });
+    if (!taskResult.success) {
+      return {
+        success: false,
+        error: `Issue completed but local task status update failed: ${String(taskResult.error ?? 'unknown error')}.`,
+        recoveryHint: {
+          recoveryCommand: `myagents task update-status ${taskId} done --message "completed Space issue"`,
+          message: 'Cloud Issue is already complete; rerun this command to close the local Task.',
+        },
+        data: {
+          issueId,
+          comment: commentResult?.data,
+          issueComplete: completeResult.data,
+          taskId,
+          taskStatus,
+          taskUpdate: taskResult,
+        },
+      };
+    }
+  }
+
+  return {
+    success: true,
+    data: {
+      issueId,
+      comment: commentResult?.data,
+      issueComplete: completeResult.data,
+      taskId,
+      taskStatus,
+      taskUpdate: taskResult?.data,
+    },
+    hint: taskId ? 'Issue completed and local task status updated.' : 'Issue completed.',
+  };
+}
+
 function buildRequestBody(
   group: string,
   action: string,
@@ -2021,27 +2513,137 @@ function buildRequestBody(
     if (action === 'issue') {
       const issueAction = rest[0] || 'get';
       const issueId = rest[1] || flags.issueId;
-      if (issueAction === 'get' || issueAction === 'comments') {
+      if (issueAction === 'list') {
         return {
-          issueId,
+          goalId: flags.goalId ?? flags.goal,
+          state: flags.state ?? flags.status,
+          includeSubtree: flags.includeSubtree,
+          humanOnly: flags.humanOnly,
+          query: flags.query ?? flags.q,
+          cursor: flags.cursor,
+          limit: optionalNumberFlag(flags.limit),
           agentId: flags.agentId,
           workspacePath,
-          commentsLimit: optionalNumberFlag(flags.commentsLimit),
+        };
+      }
+      if (issueAction === 'get' || issueAction === 'view' || issueAction === 'comments') {
+        const requiredIssueId = requirePositional(
+          issueId as string | undefined,
+          'issueId',
+          `space issue ${issueAction}`,
+          'issueId',
+        );
+        return {
+          issueId: requiredIssueId,
+          agentId: flags.agentId,
+          workspacePath,
+          commentsLimit: optionalNumberFlag(flags.commentsLimit) ?? (flags.comments ? 20 : undefined),
           commentsCursor: flags.commentsCursor ?? flags.cursor,
         };
       }
       if (issueAction === 'comment') {
+        const requiredIssueId = requirePositional(
+          issueId as string | undefined,
+          'issueId',
+          'space issue comment',
+          'issueId',
+        );
         return {
-          issueId,
+          issueId: requiredIssueId,
           body: resolveSpaceCommentBody(flags, workspacePath),
           agentId: flags.agentId,
           workspacePath,
         };
       }
       if (issueAction === 'status') {
+        const requiredIssueId = requirePositional(
+          issueId as string | undefined,
+          'issueId',
+          'space issue status',
+          'issueId',
+        );
+        const state = rest[2] || flags.state || flags.status;
+        const requiredState = requirePositional(
+          state as string | undefined,
+          'state',
+          'space issue status',
+          'state',
+        );
         return {
-          issueId,
-          status: rest[2] || flags.status,
+          issueId: requiredIssueId,
+          state: requiredState,
+          agentId: flags.agentId,
+          workspacePath,
+        };
+      }
+      if (issueAction === 'claim') {
+        const requiredIssueId = requirePositional(
+          issueId as string | undefined,
+          'issueId',
+          'space issue claim',
+          'issueId',
+        );
+        return {
+          issueId: requiredIssueId,
+          deliveryId: flags.deliveryId,
+          agentId: flags.agentId,
+          workspacePath,
+        };
+      }
+      if (issueAction === 'delivery' && rest[1] === 'ignore') {
+        const deliveryId = rest[2] || flags.deliveryId;
+        const requiredDeliveryId = requirePositional(
+          deliveryId as string | undefined,
+          'deliveryId',
+          'space issue delivery ignore',
+          'deliveryId',
+        );
+        return {
+          issueId: flags.issueId,
+          deliveryId: requiredDeliveryId,
+          agentId: flags.agentId,
+          workspacePath,
+        };
+      }
+      if (issueAction === 'close' || issueAction === 'complete' || issueAction === 'cancel-claim') {
+        const requiredIssueId = requirePositional(
+          issueId as string | undefined,
+          'issueId',
+          `space issue ${issueAction}`,
+          'issueId',
+        );
+        return {
+          issueId: requiredIssueId,
+          agentId: flags.agentId,
+          workspacePath,
+        };
+      }
+    }
+    if (action === 'claim') {
+      const claimAction = rest[0] || '';
+      if (claimAction === 'local-task') {
+        const claimId = requirePositional(
+          (rest[1] || flags.claimId) as string | undefined,
+          'claimId',
+          'space claim local-task',
+          'claimId',
+        );
+        const localTaskId = requirePositional(
+          flags.localTaskId as string | undefined,
+          'localTaskId',
+          'space claim local-task',
+          'localTaskId',
+        );
+        const localSessionId = requirePositional(
+          (flags.localSessionId ?? process.env.MYAGENTS_SESSION_ID) as string | undefined,
+          'localSessionId',
+          'space claim local-task',
+          'localSessionId',
+        );
+        return {
+          claimId,
+          localTaskId,
+          localSessionId,
           agentId: flags.agentId,
           workspacePath,
         };
@@ -2470,6 +3072,60 @@ function buildRequestBody(
         mcpEnabledServers: parseMcpEnabledServersFlag(flags.mcpEnabledServers),
       };
     }
+    if (action === 'create-attached') {
+      assertStringFlag(flags.name, 'name');
+      const currentSessionId =
+        typeof flags.currentSessionId === 'string' && flags.currentSessionId.trim()
+          ? flags.currentSessionId.trim()
+          : process.env.MYAGENTS_SESSION_ID;
+      if (!currentSessionId) {
+        console.error('Error: task create-attached requires MYAGENTS_SESSION_ID. Run it from inside a MyAgents AI session.');
+        process.exit(2);
+      }
+      const source = (flags.source as string | undefined) ?? 'space-issue';
+      if (source !== 'space-issue') {
+        console.error(`Error: task create-attached --source currently supports only "space-issue" (got "${source}")`);
+        process.exit(2);
+      }
+      const workspaceId = requireNonEmptyStringFlag(
+        flags.workspaceId,
+        'workspaceId',
+        'task create-attached',
+      );
+      const workspacePath = requireNonEmptyStringFlag(
+        flags.workspacePath,
+        'workspacePath',
+        'task create-attached',
+      );
+      const sourceIssueId = requireNonEmptyStringFlag(
+        flags.sourceIssueId,
+        'sourceIssueId',
+        'task create-attached',
+      );
+      const taskMdContent = resolveTaskMdContent(flags);
+      if (typeof taskMdContent !== 'string' || !taskMdContent.trim()) {
+        console.error('Error: task create-attached requires --taskMdFile, --taskMdContentFile, or --taskMdContent');
+        process.exit(2);
+      }
+      return {
+        name: rest[0] || flags.name,
+        executor: flags.executor ?? 'agent',
+        description: flags.description,
+        workspaceId,
+        workspacePath,
+        taskMdContent,
+        currentSessionId,
+        source,
+        sourceSpaceId: flags.sourceSpaceId,
+        sourceIssueId,
+        sourceClaimId: flags.sourceClaimId,
+        sourceDeliveryId: flags.sourceDeliveryId,
+        tags: typeof flags.tags === 'string'
+          ? (flags.tags as string).split(',').map(s => s.trim()).filter(Boolean)
+          : undefined,
+        notification: buildNotificationFromFlags(flags),
+      };
+    }
     if (action === 'update') {
       // Patch shape mirrors `create-direct`: the same flag set, but every
       // field is optional. Rust `TaskUpdateInput` treats `None` as
@@ -2831,11 +3487,12 @@ function normalizeScheduleFlag(raw: unknown): Record<string, unknown> | undefine
 const TASK_MD_MAX_BYTES = 1024 * 1024;
 
 /**
- * Resolve `task create-direct --taskMdFile` / `--taskMdContent` into a
+ * Resolve `task create-direct --taskMdFile` / `--taskMdContentFile` /
+ * `--taskMdContent` into a
  * single `taskMdContent` string.
  *
  * Precedence (both flags set → `--taskMdFile` wins):
- *   1. `--taskMdFile <path>` — read the file (size + NUL guarded).
+ *   1. `--taskMdFile <path>` or `--taskMdContentFile <path>` — read the file (size + NUL guarded).
  *      Chosen as primary because inline markdown on the shell is hostile to
  *      backticks, quotes, and newlines.
  *   2. `--taskMdContent <string>` — raw inline content (size-guarded).
@@ -2847,10 +3504,10 @@ const TASK_MD_MAX_BYTES = 1024 * 1024;
 function resolveTaskMdContent(
   flags: Record<string, unknown>,
 ): string | undefined {
-  const filePath = flags.taskMdFile;
+  const filePath = flags.taskMdFile ?? flags.taskMdContentFile;
   if (filePath !== undefined && filePath !== '') {
     if (typeof filePath !== 'string') {
-      console.error('Error: --taskMdFile must be a file path string');
+      console.error('Error: --taskMdFile/--taskMdContentFile must be a file path string');
       process.exit(2);
     }
     try {

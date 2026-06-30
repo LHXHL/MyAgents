@@ -1,5 +1,10 @@
-import { getActiveRuntimeType, respondExternalPermission, type ExternalConfigSource } from '../runtimes/external-session';
-import { getSessionEngine, getSessionEngineKind } from '../session-engine';
+import {
+  getPermissionResponseEngine,
+  getSessionEngine,
+  getSessionEngineKind,
+  getSessionRuntimeType,
+  type SessionEngine,
+} from '../session-engine';
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -13,7 +18,12 @@ export type SessionEngineRuntimeRouteDeps = {
   resolvePrewarmSessionId(requestedSessionId: string | undefined): string;
 };
 
-const RUNTIME_CONFIG_SOURCES = new Set<ExternalConfigSource>([
+type RuntimeConfigSource = Exclude<
+  NonNullable<Parameters<SessionEngine['updateRuntimeConfig']>[1]>['source'],
+  undefined
+>;
+
+const RUNTIME_CONFIG_SOURCES = new Set<RuntimeConfigSource>([
   'runtime-config',
   'message-snapshot',
   'desktop',
@@ -22,9 +32,9 @@ const RUNTIME_CONFIG_SOURCES = new Set<ExternalConfigSource>([
   'adopt-sync',
 ]);
 
-function parseRuntimeConfigSource(value: unknown): ExternalConfigSource {
-  return typeof value === 'string' && RUNTIME_CONFIG_SOURCES.has(value as ExternalConfigSource)
-    ? value as ExternalConfigSource
+function parseRuntimeConfigSource(value: unknown): RuntimeConfigSource {
+  return typeof value === 'string' && RUNTIME_CONFIG_SOURCES.has(value as RuntimeConfigSource)
+    ? value as RuntimeConfigSource
     : 'runtime-config';
 }
 
@@ -43,7 +53,7 @@ export async function handleSessionEngineRuntimeRoute(
       } | null;
       source?: unknown;
     };
-    const activeRuntime = getActiveRuntimeType();
+    const activeRuntime = getSessionRuntimeType();
     if (getSessionEngineKind() === 'builtin') {
       return jsonResponse({ success: false, error: 'Runtime config endpoint is only for external runtimes' }, 400);
     }
@@ -101,8 +111,8 @@ export async function handleSessionEngineRuntimeRoute(
     const reason = body.reason as string | undefined;
     if (!requestId) return jsonResponse({ error: 'Missing requestId' }, 400);
     try {
-      await respondExternalPermission(requestId, decision, reason);
-      return jsonResponse({ success: true });
+      const success = await getPermissionResponseEngine().respondPermission(requestId, decision, reason);
+      return jsonResponse({ success });
     } catch (error) {
       return jsonResponse({ error: error instanceof Error ? error.message : 'Unknown error' }, 500);
     }

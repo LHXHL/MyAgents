@@ -76,7 +76,7 @@ import { dismissTopmost } from '@/utils/closeLayer';
 import { dispatchAppShortcut } from '@/utils/appShortcuts';
 import { handleSelectAllKeydown } from '@/utils/selectAllRouter';
 import { forceFlushLogs, setLogServerUrl, clearLogServerUrl, setAppActiveTabId } from '@/utils/frontendLogger';
-import { normalizeRuntime, resolveEffectiveRuntime, planSessionOpen } from '@/utils/sessionOpenPlan';
+import { canHotSwapSessionSidecar, normalizeRuntime, resolveEffectiveRuntime, planSessionOpen, sessionRuntimeIdentityFromMetadataForOpen } from '@/utils/sessionOpenPlan';
 import { resolveNotificationClickRoute } from '@/utils/notificationClickRoute';
 import { applyTerminalSessionToTabs } from '@/utils/sessionTermination';
 import { getSessionDisplayText } from '@/utils/sessionDisplay';
@@ -141,6 +141,7 @@ function cloneStringArray(value: string[] | undefined): string[] | undefined {
 interface SessionRuntimeOpenIdentity {
   runtime: RuntimeType;
   runtimeSource?: RuntimeSource;
+  runtimeKnown?: boolean;
 }
 
 function fallbackRuntimeForOpen(
@@ -165,22 +166,16 @@ async function resolveSessionRuntimeIdentityForOpen(
 ): Promise<SessionRuntimeOpenIdentity> {
   const fallback = fallbackRuntimeForOpen(fallbackRuntime, multiAgentRuntime);
   if (!sessionId || isPendingSessionId(sessionId)) {
-    return { runtime: fallback, runtimeSource: normalizeRuntimeSourceForOpen(fallback, undefined) };
+    return { runtime: fallback, runtimeSource: normalizeRuntimeSourceForOpen(fallback, undefined), runtimeKnown: true };
   }
   try {
     const meta = await apiGetJson<{ success: boolean; session?: SessionMetadata }>(`/sessions/${encodeURIComponent(sessionId)}?limit=1`);
-    const runtime = meta.session?.runtime
-      ? normalizeRuntime(meta.session.runtime)
-      : fallback;
-    return {
-      runtime,
-      runtimeSource: normalizeRuntimeSourceForOpen(runtime, meta.session?.runtimeSource),
-    };
+    return sessionRuntimeIdentityFromMetadataForOpen(meta.session, fallback);
   } catch (error) {
     // Non-fatal: sidecar spawn/switch paths remain authoritative. Falling
     // back only affects whether the UI opens a new tab proactively.
     console.warn(`[App] Failed to resolve runtime for session ${sessionId}, using fallback ${fallback}:`, error);
-    return { runtime: fallback, runtimeSource: normalizeRuntimeSourceForOpen(fallback, undefined) };
+    return { runtime: fallback, runtimeSource: normalizeRuntimeSourceForOpen(fallback, undefined), runtimeKnown: false };
   }
 }
 
@@ -445,6 +440,7 @@ export default function App() {
   const [restoreCandidate] = useState(() => buildRestoredTabs());
   const [tabs, setTabs] = useState<Tab[]>(() => [createNewTab()]);
   const [activeTabId, setActiveTabIdState] = useState<string | null>(() => tabs[0]?.id ?? null);
+  const [externalNotificationBadgeCount, setExternalNotificationBadgeCount] = useState(0);
 
   // "恢复对话" pill (Issue #309). `restorePillCount > 0` shows it; the resolved
   // candidate is held in a ref (NOT localStorage — the persist effect clears
@@ -726,6 +722,30 @@ export default function App() {
   const configRef = useRef(config);
   configRef.current = config;
 
+  const unreadTabCount = tabs.reduce((count, tab) => count + (tab.hasUnread ? 1 : 0), 0);
+  const notificationBadgeEnabled = config.osNotifications && (config.notificationBadge ?? true);
+  const notificationBadgeCount = notificationBadgeEnabled
+    ? Math.min(unreadTabCount + externalNotificationBadgeCount, 999)
+    : 0;
+
+  useEffect(() => {
+    if (!notificationBadgeEnabled && externalNotificationBadgeCount !== 0) {
+      setExternalNotificationBadgeCount(0);
+    }
+  }, [externalNotificationBadgeCount, notificationBadgeEnabled]);
+
+  useEffect(() => {
+    if (!isTauriEnvironment()) return;
+    void import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke('cmd_set_notification_badge', {
+        count: notificationBadgeCount,
+        enabled: notificationBadgeEnabled,
+      }))
+      .catch((error) => {
+        console.warn('[App] Failed to sync notification badge:', error);
+      });
+  }, [notificationBadgeCount, notificationBadgeEnabled]);
+
   const trackHistorySessionOpen = useCallback((
     sessionId: string,
     agentDir: string,
@@ -805,6 +825,8 @@ export default function App() {
       toastRef.current?.error(t('appChrome.updateVerifyFailed'));
     } else if (outcome === 'version-mismatch') {
       toastRef.current?.info(t('appChrome.updateExpiredRedownloading'));
+    } else if (outcome === 'blocked') {
+      toastRef.current?.info(t('appChrome.updateInstallBlocked'));
     } else if (outcome === 'error') {
       toastRef.current?.error(t('appChrome.updateInstallFailed'));
     }
@@ -1049,6 +1071,13 @@ export default function App() {
         console.log('[App] Cron manager ready (Rust recovery complete)');
       }, listenerAc.signal);
 
+      void listenWithCleanup('notification:badge-increment', () => {
+        if (!mountedRef.current) return;
+        const cfg = configRef.current;
+        if (!cfg.osNotifications || !(cfg.notificationBadge ?? true)) return;
+        setExternalNotificationBadgeCount((count) => Math.min(count + 1, 99));
+      }, listenerAc.signal);
+
       // Listen for Global Sidecar auto-restart by Rust health monitor
       void listenWithCleanup<string>('global-sidecar:restarted', (event) => {
         if (!mountedRef.current) return;
@@ -1209,6 +1238,13 @@ export default function App() {
       return prev; // no-op: avoid unnecessary re-render
     });
   }, []);
+
+  const clearActiveTabUnread = useCallback(() => {
+    const activeTabId = activeTabIdRef.current;
+    if (!activeTabId) return;
+    updateTabUnread(activeTabId, false);
+  }, [updateTabUnread]);
+  const lastUnreadClearedActiveTabIdRef = useRef<string | null>(null);
 
   // Update tab sessionId when backend creates real session (called from TabProvider)
   // This ensures Session singleton constraint works correctly:
@@ -2299,6 +2335,12 @@ export default function App() {
       targetActivation: activation,
       currentTabCronRunning: currentTabCronTask?.status === 'running',
     });
+    const canHotSwapCurrentSidecar = canHotSwapSessionSidecar({
+      currentRuntime,
+      targetRuntime,
+      currentRuntimeIdentity: currentTab?.sessionId ? resolvedCurrentRuntimeIdentity : targetRuntimeIdentity,
+      targetRuntimeIdentity,
+    });
 
     if (plan.type === 'jump-to-tab') {
       console.log(`[App] handleSwitchSession Scenario 1: Session ${sessionId} already in tab ${plan.tabId}, jumping to it`);
@@ -2499,6 +2541,20 @@ export default function App() {
             await deactivateSession(oldSessionId);
             const result = await ensureSessionSidecar(sessionId, currentTabForScenario4.agentDir, 'tab', tabId);
             await activateSession(sessionId, tabId, null, result.port, currentTabForScenario4.agentDir, false);
+            joinedExisting = !result.isNew;
+          } else if (!canHotSwapCurrentSidecar) {
+            // Rust `upgradeSessionId` is only an identity rename. It does not
+            // call the Node sidecar's `/sessions/switch`, so external runtimes
+            // would keep the old Codex/Gemini process and transcript owner under
+            // a new Rust key. For external histories, switch to a target-owned
+            // sidecar instead; the sidecar boot/restore path seeds runtimeSessionId
+            // and the append-only transcript from the target session.
+            console.log(`[App] External runtime session switch (${resolvedCurrentRuntime} -> ${targetRuntime}); replacing sidecar instead of upgradeSessionId`);
+            await stopSseProxy(tabId);
+            await releaseSessionSidecar(oldSessionId, 'tab', tabId);
+            await deactivateSession(oldSessionId);
+            const result = await ensureSessionSidecar(sessionId, tabAgentDir, 'tab', tabId);
+            await activateSession(sessionId, tabId, null, result.port, tabAgentDir, false);
             joinedExisting = !result.isNew;
           } else {
             // No existing sidecar for target → hot-swap via upgradeSessionId (efficient, no new process)
@@ -2833,19 +2889,27 @@ export default function App() {
     }
   }, [activeTabId, tabs, activateRestoredTab]);
 
-  // Clear unread indicator whenever active tab changes (covers all activation paths:
-  // handleSelectTab, keyboard shortcuts, session jumps, cron navigation, etc.)
+  // Clear unread indicator only when the active tab identity changes. Do not key
+  // this effect on `tabs`: a hidden-but-active tab marks itself unread when a
+  // turn completes, and clearing on that same tabs update erases the Dock/tray
+  // badge before the user returns. Window focus still clears through
+  // useTrayEvents.onWindowFocused.
   useEffect(() => {
-    if (activeTabId) {
-      setTabs(prev => {
-        const tab = prev.find(t => t.id === activeTabId);
-        if (tab?.hasUnread) {
-          return prev.map(t => t.id === activeTabId ? { ...t, hasUnread: false } : t);
-        }
-        return prev;
-      });
+    if (!activeTabId) {
+      lastUnreadClearedActiveTabIdRef.current = null;
+      return;
     }
-  }, [activeTabId]);
+    if (lastUnreadClearedActiveTabIdRef.current === activeTabId) return;
+    lastUnreadClearedActiveTabIdRef.current = activeTabId;
+    clearActiveTabUnread();
+  }, [activeTabId, clearActiveTabUnread]);
+
+  const activeTabView = tabs.find((t) => t.id === activeTabId)?.view ?? null;
+  useEffect(() => {
+    if (activeTabView === 'taskcenter') {
+      setExternalNotificationBadgeCount((count) => count === 0 ? count : 0);
+    }
+  }, [activeTabView, externalNotificationBadgeCount]);
 
   // Trackpad two-finger horizontal swipe to switch tabs (follow-along animation)
   useTabSwipeGesture({ contentRef, tabsRef, activeTabIdRef, onSwitchTab: handleSelectTab });
@@ -2956,6 +3020,7 @@ export default function App() {
 
   // Open TaskCenter as a singleton tab (mirrors handleOpenSettings)
   const handleOpenTaskCenter = useCallback(() => {
+    setExternalNotificationBadgeCount(0);
     const currentTabs = tabsRef.current;
     const existing = currentTabs.find((t) => t.view === 'taskcenter');
     if (existing) {
@@ -3607,6 +3672,7 @@ export default function App() {
       // Cmd+W bottom: overlay → split → tab → launcher → STOP.
       closeCurrentTab(); // Last tab auto-creates launcher; launcher is a no-op.
     },
+    onWindowFocused: clearActiveTabUnread,
     onExitRequested: async () => {
       // Check for running cron tasks
       try {
@@ -3650,6 +3716,7 @@ export default function App() {
         if (route.type === 'select-tab') {
           console.log('[App] notification:click → handleSelectTab', route.tabId);
           handleSelectTab(route.tabId);
+          updateTabUnread(route.tabId, false);
           return;
         }
 
@@ -3674,7 +3741,7 @@ export default function App() {
       ac.signal,
     );
     return () => ac.abort();
-  }, [handleSelectTab]);
+  }, [handleSelectTab, updateTabUnread]);
 
   return (
     <LinkContextMenuProvider>

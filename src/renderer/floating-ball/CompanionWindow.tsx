@@ -1288,8 +1288,9 @@ export default function CompanionWindow() {
                     <div className="fbw-forms">
                         {session.permReq && (
                             <PermissionPrompt
+                                key={session.permReq.requestId}
                                 request={session.permReq}
-                                onDecision={(_, decision) => void session.respondPermission(decision)}
+                                onDecision={(requestId, decision) => session.respondPermission(decision, requestId)}
                             />
                         )}
                         {session.askReq && (

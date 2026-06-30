@@ -18,7 +18,10 @@ import { useConfig } from '@/hooks/useConfig';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID, getEffectiveModelAliases, getProviderModels, isProviderEnabled } from '@/config/types';
 import { isProviderAvailable } from '@/config/services/providerService';
 import { patchAgentConfig, invokeStartAgentChannel, stopAndDisableAgentChannel, startAndEnableAgentChannel, channelHasCredentials } from '@/config/services/agentConfigService';
-import { resolveEffectiveConfig } from '../../../../shared/types/agent';
+import {
+    resolveAgentChannelDefaultPermissionMode,
+    resolveEffectiveConfig,
+} from '../../../../shared/types/agent';
 import type { RuntimeConfig } from '../../../../shared/types/runtime';
 import { runtimeConfigForRuntimeBackedProviderDefault, toProviderExecutionIntent } from '../../../../shared/providerExecution';
 import BotTokenInput from '../../ImSettings/components/BotTokenInput';
@@ -453,6 +456,10 @@ export default function ChannelDetailView({
     }, [channel?.overrides?.model, agent.model, selectedProvider?.primaryModel, modelOptions]);
 
     const hasAnyOverride = !!(channel?.overrides && Object.keys(channel.overrides).length > 0);
+    const defaultChannelPermissionMode = useMemo(
+        () => channel ? resolveAgentChannelDefaultPermissionMode(agent, channel) : 'fullAgency',
+        [agent, channel],
+    );
 
     // Derived values that depend on channel (safe with optional chaining before early return)
     const isRunning = botStatus?.status === 'online' || botStatus?.status === 'connecting';
@@ -1277,10 +1284,10 @@ export default function ChannelDetailView({
                                 )}
                             </div>
                             <PermissionModeSelect
-                                value={channel?.overrides?.permissionMode ?? agent.permissionMode}
+                                value={channel?.overrides?.permissionMode ?? defaultChannelPermissionMode}
                                 onChange={async (mode) => {
-                                    // If same as agent default, clear override
-                                    if (mode === agent.permissionMode) {
+                                    // If same as the IM Channel default, clear override.
+                                    if (mode === defaultChannelPermissionMode) {
                                         await patchOverrides({ permissionMode: undefined });
                                     } else {
                                         await patchOverrides({ permissionMode: mode });

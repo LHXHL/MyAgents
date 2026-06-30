@@ -24,6 +24,7 @@ import type { AppConfig, Project } from '@/config/types';
 import { resolveAttachmentUrl } from '@/utils/attachmentUrl';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { parsePartialJson } from '@/utils/parsePartialJson';
+import { enqueuePermissionRequest, peekPermissionRequest, removePermissionRequest } from '@/utils/permissionQueue';
 import { i18n } from '@/i18n';
 import { isSubagentContainerTool } from '@/components/tools/toolBadgeConfig';
 import { workspacePathsEqual } from '../../shared/workspacePath';
@@ -76,6 +77,7 @@ export interface FbActivity {
 
 export interface FbPermReq {
     requestId: string;
+    sessionId?: string | null;
     toolName: string;
     input: string;
 }
@@ -434,7 +436,8 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
     const [messages, setMessages] = useState<FbMsg[]>([]);
     const [liveMessage, setLiveMessage] = useState<FbAssistantMsg | null>(null);
     const [busy, setBusy] = useState(false);
-    const [permReq, setPermReq] = useState<FbPermReq | null>(null);
+    const [permReqs, setPermReqs] = useState<FbPermReq[]>([]);
+    const permReq = peekPermissionRequest(permReqs);
     // 交互表单（D13）：用户提问 / 方案审核。与 permReq 并列驱动「等我」球态。
     const [askReq, setAskReq] = useState<AskUserQuestionRequest | null>(null);
     const [planReq, setPlanReq] = useState<ExitPlanModeRequest | null>(null);
@@ -456,6 +459,10 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
     const sseRef = useRef<SseConnection | null>(null);
     const bootedRef = useRef(false);
     const busyRef = useRef(false);
+    const isCurrentInteractiveEvent = useCallback((eventSessionId?: string | null): boolean => {
+        const current = sessionIdRef.current;
+        return !eventSessionId || !current || eventSessionId === current;
+    }, []);
     const migrationInFlightRef = useRef(false);
     const queuedMigrationEventsRef = useRef<FloatingBallSessionMigratedPayload[]>([]);
     useEffect(() => {
@@ -803,7 +810,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     setBusy(false);
                     // 终态清掉一切 pending 表单（backstop：正常路径下用户回应后已清，
                     // 这里兜住中止 / 异常路径，防陈旧卡片）。
-                    setPermReq(null);
+                    setPermReqs([]);
                     setAskReq(null);
                     setPlanReq(null);
                     if (modeRef.current !== 'pin') {
@@ -820,7 +827,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                                 : fbText('replyFailed');
                     finalizeStream('failed');
                     setBusy(false);
-                    setPermReq(null);
+                    setPermReqs([]);
                     setAskReq(null);
                     setPlanReq(null);
                     setError(msg || fbText('replyFailed'));
@@ -829,7 +836,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 case 'chat:message-stopped': {
                     finalizeStream('stopped');
                     setBusy(false);
-                    setPermReq(null);
+                    setPermReqs([]);
                     setAskReq(null);
                     setPlanReq(null);
                     break;
@@ -845,12 +852,20 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 }
                 case 'permission:request': {
                     const payload = data as FbPermReq | null;
-                    if (payload?.requestId) {
-                        setPermReq({
+                    if (payload?.requestId && isCurrentInteractiveEvent(payload.sessionId)) {
+                        setPermReqs(prev => enqueuePermissionRequest(prev, {
                             requestId: payload.requestId,
+                            sessionId: payload.sessionId,
                             toolName: payload.toolName,
                             input: payload.input || '',
-                        });
+                        }));
+                    }
+                    break;
+                }
+                case 'permission:expired': {
+                    const payload = data as { requestId?: string; sessionId?: string | null } | null;
+                    if (payload?.requestId && isCurrentInteractiveEvent(payload.sessionId)) {
+                        setPermReqs(prev => removePermissionRequest(prev, payload.requestId));
                     }
                     break;
                 }
@@ -884,23 +899,27 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 // external 会话不触发 plan 卡片，分支留着无害、未来 runtime 支持即自动生效。
                 case 'ask-user-question:request': {
                     const payload = data as AskUserQuestionRequest | null;
-                    if (payload?.requestId && Array.isArray(payload.questions)) {
+                    if (payload?.requestId && isCurrentInteractiveEvent(payload.sessionId) && Array.isArray(payload.questions)) {
                         setAskReq(payload);
                     }
                     break;
                 }
                 case 'ask-user-question:expired': {
-                    const rid = (data as { requestId?: string } | null)?.requestId;
+                    const payload = data as { requestId?: string; sessionId?: string | null } | null;
+                    if (!isCurrentInteractiveEvent(payload?.sessionId)) break;
+                    const rid = payload?.requestId;
                     setAskReq((cur) => (cur && (!rid || cur.requestId === rid) ? null : cur));
                     break;
                 }
                 case 'exit-plan-mode:request': {
                     const payload = data as ExitPlanModeRequest | null;
-                    if (payload?.requestId) setPlanReq(payload);
+                    if (payload?.requestId && isCurrentInteractiveEvent(payload.sessionId)) setPlanReq(payload);
                     break;
                 }
                 case 'exit-plan-mode:expired': {
-                    const rid = (data as { requestId?: string } | null)?.requestId;
+                    const payload = data as { requestId?: string; sessionId?: string | null } | null;
+                    if (!isCurrentInteractiveEvent(payload?.sessionId)) break;
+                    const rid = payload?.requestId;
                     setPlanReq((cur) => (cur && (!rid || cur.requestId === rid) ? null : cur));
                     break;
                 }
@@ -911,7 +930,8 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     // （已自行放行）——此时 POST 会命中 "Unknown request"。故仅对非
                     // autoApproved 的真·pending 才回 approved（TabProvider 同款 gate，
                     // cross-review W1）。
-                    const payload = data as { requestId?: string; autoApproved?: boolean } | null;
+                    const payload = data as { requestId?: string; sessionId?: string | null; autoApproved?: boolean } | null;
+                    if (!isCurrentInteractiveEvent(payload?.sessionId)) break;
                     const rid = payload?.requestId;
                     const sid = sessionIdRef.current;
                     if (rid && sid && !payload?.autoApproved) {
@@ -954,6 +974,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             appendThinkingBlock,
             appendToolBlock,
             finalizeStream,
+            isCurrentInteractiveEvent,
             markTextStopped,
             modeRef,
             updateLiveContent,
@@ -1091,7 +1112,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     setWorkspacePath(workspace);
                     setMessages([]);
                     replaceLiveMessage(() => null);
-                    setPermReq(null);
+                    setPermReqs([]);
                     setAskReq(null);
                     setPlanReq(null);
                     setUnread(0);
@@ -1292,7 +1313,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             if (workspace.name) setWorkspaceName(workspace.name);
             setMessages([]);
             replaceLiveMessage(() => null);
-            setPermReq(null);
+            setPermReqs([]);
             setAskReq(null);
             setPlanReq(null);
             setUnread(0);
@@ -1479,9 +1500,11 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
     );
 
     const respondPermission = useCallback(
-        async (decision: 'deny' | 'allow_once' | 'always_allow') => {
+        async (decision: 'deny' | 'allow_once' | 'always_allow', requestIdOverride?: string) => {
             const sid = sessionIdRef.current;
-            const req = permReq;
+            const req = requestIdOverride
+                ? permReqs.find(item => item.requestId === requestIdOverride)
+                : permReq;
             if (!sid || !req) return;
             try {
                 const base = await sessionBaseUrl(sid);
@@ -1495,13 +1518,14 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 // POST 失败或后端回 {success:false}（过期/已轮换）时让 pending 永久挂起
                 // 且无从重试（review W4 + cross-review C3）。
                 await assertRespondSucceeded(resp);
-                setPermReq(null);
+                setPermReqs(prev => removePermissionRequest(prev, req.requestId));
             } catch (err) {
                 console.error('[fb] permission respond failed:', err);
                 setError(fbText('confirmSendFailed'));
+                throw err;
             }
         },
-        [permReq],
+        [permReq, permReqs],
     );
 
     /** 回答 ask-user-question（D13）。answers=null 表示用户取消（SDK deny+interrupt）。
@@ -1585,7 +1609,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
         }
         setReady(false);
         setBusy(false);
-        setPermReq(null);
+        setPermReqs([]);
         setAskReq(null);
         setPlanReq(null);
         console.info('[fb] companion suspended (owner released)');

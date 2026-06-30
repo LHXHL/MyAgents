@@ -35,9 +35,9 @@ export function formatBytes(value?: number | null): string {
 }
 
 export function statusPillClass(status: string): string {
-  if (status === 'in_progress') return 'bg-[var(--warning-bg)] text-[var(--warning)]';
-  if (status === 'triaged') return 'bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]';
-  if (status === 'resolved') return 'bg-[var(--success-bg)] text-[var(--success)]';
+  if (status === 'doing') return 'bg-[var(--warning-bg)] text-[var(--warning)]';
+  if (status === 'todo') return 'bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]';
+  if (status === 'done') return 'bg-[var(--success-bg)] text-[var(--success)]';
   if (isClosedIssue(status)) return 'bg-[var(--paper-inset)] text-[var(--ink-muted)]';
   return 'bg-[var(--success-bg)] text-[var(--success)]';
 }

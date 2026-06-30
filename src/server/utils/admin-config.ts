@@ -23,9 +23,9 @@ import { getHomeDirOrNull } from './platform';
 import { stripBom } from '../../shared/utils';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { promoteAgentMcpJsonToGlobal } from '../../shared/mcpConfig';
-import type { McpServerDefinition, ProviderVerifyStatus } from '../../shared/config-types';
+import type { McpServerDefinition, PermissionMode, ProviderVerifyStatus } from '../../shared/config-types';
 import { applyProviderEnablementAndOrder, CODEX_SUBSCRIPTION_PROVIDER_ID, isProviderEnabled, PRESET_MCP_SERVERS, PRESET_PROVIDERS } from '../../shared/config-types';
-import { isRuntimeBackedProvider } from '../../shared/providerExecution';
+import { isRuntimeBackedProvider, managedCodexProviderPermissionToRuntimePermission } from '../../shared/providerExecution';
 import type { AgentConfig, ChannelConfig } from '../../shared/types/agent';
 import {
   IMAGE_UNDERSTANDING_TOOL_ID,
@@ -73,6 +73,10 @@ function getProjectsPath(): string {
 
 const CONFIG_LOCK_TIMEOUT_MS = 5000;
 const CONFIG_LOCK_STALE_MS = 30000;
+
+function isProductPermissionMode(value: unknown): value is PermissionMode {
+  return value === 'auto' || value === 'plan' || value === 'fullAgency';
+}
 
 export class ConfigBusyError extends Error {
   readonly code = 'CONFIG_BUSY';
@@ -1239,10 +1243,12 @@ export function resolveWorkspaceConfig(
     id => globalOfficialTools.has(id) && configuredOfficialTools.has(id),
   );
 
-  const agentProvider = agent?.providerId
-    ? findEffectiveProvider(agent.providerId as string, config)
+  const agentProviderId = agent?.providerId as string | undefined;
+  const agentProvider = agentProviderId
+    ? findEffectiveProvider(agentProviderId, config)
     : undefined;
-  const agentUsesRuntimeBackedProvider = Boolean(agentProvider && isRuntimeBackedProvider(agentProvider));
+  const agentUsesRuntimeBackedProvider = agentProviderId === CODEX_SUBSCRIPTION_PROVIDER_ID
+    || Boolean(agentProvider && isRuntimeBackedProvider(agentProvider));
   const resolvedRuntime: RuntimeType = agentUsesRuntimeBackedProvider && !sessionMeta?.runtime
     ? 'codex'
     : normalizeRuntime(
@@ -1253,6 +1259,12 @@ export function resolveWorkspaceConfig(
     permissionMode?: string;
     reasoningEffort?: string;
   } | undefined;
+  const agentProductPermissionMode = isProductPermissionMode(agent?.permissionMode)
+    ? agent.permissionMode
+    : undefined;
+  const agentRuntimeBackedProviderPermissionMode = agentUsesRuntimeBackedProvider && agentProductPermissionMode
+    ? managedCodexProviderPermissionToRuntimePermission(agentProductPermissionMode)
+    : undefined;
 
   // --- Resolve Provider ---
   // Priority: session.providerId → agent.providerId → config.defaultProviderId → persisted snapshot
@@ -1367,7 +1379,9 @@ export function resolveWorkspaceConfig(
   } else {
     const rawPermissionMode = snapshotOwnsConfig
       ? sessionMeta?.permissionMode
-      : (sessionMeta?.permissionMode ?? agentRuntimeConfig?.permissionMode);
+      : (sessionMeta?.permissionMode
+        ?? agentRuntimeBackedProviderPermissionMode
+        ?? agentRuntimeConfig?.permissionMode);
     const coercedPermissionMode = coercePermissionModeForRuntime(rawPermissionMode, resolvedRuntime);
     if (typeof rawPermissionMode === 'string'
         && rawPermissionMode.trim().length > 0

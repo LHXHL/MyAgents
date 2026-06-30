@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Cloud, Hash, Loader2, Paperclip, Plus, X } from 'lucide-react';
+import { Cloud, Loader2, Lock, Paperclip, Target, X } from 'lucide-react';
 
-import { spaceErrorMessage, type SpaceTag } from '@/api/spaceCloud';
+import { spaceErrorMessage, type SpaceGoal } from '@/api/spaceCloud';
 import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { useToast } from '@/components/Toast';
@@ -10,22 +10,18 @@ import { useCloseLayer } from '@/hooks/useCloseLayer';
 import type { IssueQueryParams } from '@/pages/space/spaceHelpers';
 import { SPACE_VISIBLE_REFRESH_TTL_MS, type SpaceActions } from '@/pages/space/spaceStore';
 
-const CREATE_TAG_OPTION_VALUE = '__create_tag__';
-
 function basename(path: string): string {
   return path.split(/[\\/]/).pop() || path;
 }
 
 export function CreateIssueDialog({
-  admin,
-  tags,
+  goals,
   actions,
   issueQuery,
   onClose,
   onCreated,
 }: {
-  admin: boolean;
-  tags: SpaceTag[];
+  goals: SpaceGoal[];
   actions: SpaceActions;
   issueQuery: IssueQueryParams;
   onClose: () => void;
@@ -34,14 +30,11 @@ export function CreateIssueDialog({
   const { t } = useTranslation('app');
   const toast = useToast();
   const titleInputRef = useRef<HTMLInputElement | null>(null);
-  const newTagInputRef = useRef<HTMLInputElement | null>(null);
   const submittingRef = useRef(false);
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
-  const [tagId, setTagId] = useState(tags[0]?.id ?? '');
-  const [newTagOpen, setNewTagOpen] = useState(false);
-  const [newTagName, setNewTagName] = useState('');
-  const [creatingTag, setCreatingTag] = useState(false);
+  const [goalId, setGoalId] = useState(issueQuery.goalId ?? '');
+  const [humanOnly, setHumanOnly] = useState(false);
   const [filePaths, setFilePaths] = useState<string[]>([]);
   const [continuous, setContinuous] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -55,38 +48,18 @@ export function CreateIssueDialog({
   }, []);
 
   useEffect(() => {
-    if (!newTagOpen) return;
-    window.setTimeout(() => newTagInputRef.current?.focus(), 0);
-  }, [newTagOpen]);
-
-  useEffect(() => {
-    if (tagId && !tags.some((item) => item.id === tagId)) {
-      setTagId(tags[0]?.id ?? '');
+    if (goalId && !goals.some((item) => item.id === goalId)) {
+      setGoalId('');
     }
-  }, [tagId, tags]);
+  }, [goalId, goals]);
 
-  const tagOptions = useMemo<SelectOption[]>(
+  const goalOptions = useMemo<SelectOption[]>(
     () => [
-      ...(admin
-        ? [{
-            value: CREATE_TAG_OPTION_VALUE,
-            label: t('space.filters.newTag'),
-            icon: <Plus className="h-3.5 w-3.5 text-[var(--accent-warm)]" />,
-          }]
-        : []),
-      { value: '', label: t('space.filters.noTag') },
-      ...tags.map((item) => ({ value: item.id, label: item.name })),
+      { value: '', label: t('space.filters.inbox') },
+      ...goals.map((item) => ({ value: item.id, label: item.goalPathLabel || item.title })),
     ],
-    [admin, tags, t],
+    [goals, t],
   );
-
-  const handleTagChange = (value: string) => {
-    if (value === CREATE_TAG_OPTION_VALUE) {
-      setNewTagOpen(true);
-      return;
-    }
-    setTagId(value);
-  };
 
   const pickFiles = async () => {
     try {
@@ -101,30 +74,18 @@ export function CreateIssueDialog({
     }
   };
 
-  const createTag = async () => {
-    const name = newTagName.trim();
-    if (!admin || !name || creatingTag) return;
-    setCreatingTag(true);
-    try {
-      const created = await actions.createTag({ name });
-      setTagId(created.id);
-      setNewTagName('');
-      setNewTagOpen(false);
-      toast.success(t('space.toasts.tagCreated', { name: created.name }));
-    } catch (error) {
-      toast.error(spaceErrorMessage(error));
-    } finally {
-      setCreatingTag(false);
-    }
-  };
-
   const submit = async () => {
     if (submittingRef.current) return;
     if (!title.trim() || !body.trim()) return;
     submittingRef.current = true;
     setSubmitting(true);
     try {
-      const issue = await actions.createIssue({ title: title.trim(), body: body.trim(), tags: tagId ? [tagId] : [] });
+      const issue = await actions.createIssue({
+        title: title.trim(),
+        body: body.trim(),
+        goalId: goalId || null,
+        humanOnly,
+      });
       if (filePaths.length > 0) {
         await actions.uploadIssueAttachments(issue.id, filePaths);
       }
@@ -138,6 +99,7 @@ export function CreateIssueDialog({
         setTitle('');
         setBody('');
         setFilePaths([]);
+        setHumanOnly(false);
         window.setTimeout(() => titleInputRef.current?.focus(), 0);
         onCreated(true);
       } else {
@@ -225,46 +187,25 @@ export function CreateIssueDialog({
               {t('space.createIssue.attachment')}
             </button>
             <span className="inline-flex min-h-10 items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--paper-elevated)]/70 px-3 text-sm font-medium text-[var(--ink-muted)] shadow-sm">
-              <Hash className="h-4 w-4" />
-              <CustomSelect value={tagId} options={tagOptions} onChange={handleTagChange} compact className="w-36 [&>button]:border-0 [&>button]:bg-transparent [&>button]:p-0 [&>button]:shadow-none" />
-            </span>
-            {admin && newTagOpen && (
-              <span className="inline-flex h-10 items-center gap-1 rounded-full border border-[var(--accent-warm-muted)] bg-[var(--accent-warm-subtle)] px-2 shadow-sm">
-                <input
-                  ref={newTagInputRef}
-                  value={newTagName}
-                  onChange={(event) => setNewTagName(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Enter') {
-                      event.preventDefault();
-                      void createTag();
-                    }
-                  }}
-                  className="h-8 w-28 border-0 bg-transparent px-1 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]"
-                  placeholder={t('space.createIssue.tagPlaceholder')}
-                />
-                <button
-                  type="button"
-                  disabled={creatingTag || !newTagName.trim()}
-                  onClick={() => void createTag()}
-                  className="grid h-7 w-7 place-items-center rounded-full text-[var(--accent-warm)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-wait disabled:opacity-60"
-                  aria-label={t('space.createIssue.createTag')}
-                >
-                  {creatingTag ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setNewTagOpen(false);
-                    setNewTagName('');
-                  }}
-                  className="grid h-7 w-7 place-items-center rounded-full text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                  aria-label={t('space.createIssue.cancelCreateTag')}
-                >
-                  <X className="h-3.5 w-3.5" />
-                </button>
+              <Target className="h-4 w-4" />
+              <span className="shrink-0 text-xs font-semibold uppercase text-[var(--ink-muted)]/70">
+                {t('space.createIssue.targetGoal')}
               </span>
-            )}
+              <CustomSelect value={goalId} options={goalOptions} onChange={setGoalId} compact className="w-56 [&>button]:border-0 [&>button]:bg-transparent [&>button]:p-0 [&>button]:shadow-none" />
+            </span>
+            <button
+              type="button"
+              aria-pressed={humanOnly}
+              onClick={() => setHumanOnly((value) => !value)}
+              className={`inline-flex h-10 items-center gap-2 rounded-full border px-3 text-sm font-semibold shadow-sm transition-colors ${
+                humanOnly
+                  ? 'border-[var(--accent-warm-muted)] bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]'
+                  : 'border-[var(--line)] bg-[var(--paper-elevated)]/70 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]'
+              }`}
+            >
+              <Lock className="h-4 w-4" />
+              {t('space.createIssue.humanOnly')}
+            </button>
           </div>
           <div className="flex items-center gap-3.5 pb-0.5">
             <button

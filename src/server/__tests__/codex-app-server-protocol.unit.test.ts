@@ -66,6 +66,7 @@ describe('Codex app-server protocol helpers', () => {
       'item/tool/call',
       'account/chatgptAuthTokens/refresh',
       'attestation/generate',
+      'currentTime/read',
       'applyPatchApproval',
       'execCommandApproval',
     ]);
@@ -499,6 +500,23 @@ describe('Codex app-server protocol helpers', () => {
       type: 'error',
       code: -32000,
       message: 'Missing required MCP elicitation answers',
+    });
+
+    expect(serializeCodexPermissionResponse({
+      ...elicitation,
+      params: {
+        ...elicitation.params,
+        mode: 'openai/form',
+      },
+    }, 'allow_once', {
+      answers: { branch: 'dev/0.2.44' },
+    })).toEqual({
+      type: 'result',
+      result: {
+        action: 'accept',
+        content: { branch: 'dev/0.2.44', publish: false },
+        _meta: null,
+      },
     });
 
     const permissions: PendingCodexRequest = {

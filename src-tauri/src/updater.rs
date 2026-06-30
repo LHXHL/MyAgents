@@ -888,26 +888,35 @@ pub fn check_pending_update(app: AppHandle) -> Option<String> {
 ///
 /// Resolves the `Update` object (preferring an in-memory cache populated during
 /// background `check()` calls, falling back to a fresh `check()` with retries),
-/// then shuts down all sidecar/SDK/MCP processes (so NSIS can overwrite their
-/// binaries) and finally calls `update.install(bytes)` which spawns the NSIS
-/// installer and calls `exit(0)`.
+/// then enters the update-quiesce gate, shuts down all process-owning surfaces
+/// (IM/Agent channels, terminals, browser webviews, sidecars, SDK/MCP children),
+/// verifies that update-blocking processes/files are gone, and finally calls
+/// `update.install(bytes)` which spawns the NSIS installer and calls `exit(0)`.
 ///
 /// **Why the cache matters:** on a flaky/blocked network the legacy code path
 /// — which always required `updater.check().await` — silently failed because
 /// the JS side only `console.warn`-ed. Worse, the renderer had already called
 /// `cmd_shutdown_for_update` first, so a network failure left the user with
 /// dead sidecars and a "button doesn't do anything" UX. Now we (a) try the
-/// cache first (zero network), (b) retry the network fallback, (c) only kill
-/// sidecars once we're committed to running the installer.
+/// cache first (zero network), (b) retry the network fallback, (c) only tear
+/// down owners once we're committed to running the installer.
 #[tauri::command]
 pub async fn install_pending_update(
     app: AppHandle,
     state: State<'_, ManagedSidecar>,
+    im_state: State<'_, crate::im::ManagedImBots>,
+    agent_state: State<'_, crate::im::ManagedAgents>,
+    terminal_state: State<'_, std::sync::Arc<crate::terminal::TerminalManager>>,
+    browser_state: State<'_, std::sync::Arc<crate::browser::BrowserManager>>,
 ) -> Result<(), String> {
     #[cfg(not(target_os = "windows"))]
     {
         let _ = app;
         let _ = state;
+        let _ = im_state;
+        let _ = agent_state;
+        let _ = terminal_state;
+        let _ = browser_state;
         return Err("install_pending_update is only supported on Windows".to_string());
     }
 
@@ -974,26 +983,27 @@ pub async fn install_pending_update(
             return Err("VERSION_MISMATCH".to_string());
         }
 
-        // Step 4: Now we're committed to installing. Shut down sidecars so NSIS
-        // can overwrite bun.exe / SDK binaries. This was previously done from
+        // Step 4: Now we're committed to installing. Enter update-quiesce and
+        // shut down every owner before NSIS is allowed to overwrite Node.js /
+        // SDK / bridge resources. This was previously done from
         // the renderer BEFORE step 2, which meant a network failure would kill
         // the user's session for nothing. Doing it here keeps the user's state
         // intact on every failure path above.
+        let _update_shutdown_guard = crate::sidecar::begin_update_shutdown()?;
         logger::info(
             &app,
-            "[Updater] Shutting down sidecars before NSIS install...",
+            "[Updater] Quiescing app owners before NSIS install...",
         );
-        if let Err(e) = crate::sidecar::shutdown_for_update(&state) {
-            // Don't bail — NSIS will retry the file overwrite a few times,
-            // and most of the time taskkill /T /F gets there. Log loudly.
-            logger::error(
-                &app,
-                format!(
-                    "[Updater] Sidecar shutdown returned error: {} (continuing with install)",
-                    e
-                ),
-            );
+        crate::im::shutdown_all_channels_for_update(&im_state, &agent_state, &state).await;
+        let terminal_report = crate::terminal::close_all_terminals(terminal_state.inner()).await;
+        if !terminal_report.residual.is_empty() {
+            return Err(format!(
+                "UPDATE_TERMINALS_STILL_RUNNING: {}",
+                terminal_report.residual.join(" | ")
+            ));
         }
+        crate::browser::close_all_browsers(browser_state.inner(), &app).await;
+        crate::sidecar::shutdown_for_update_verified(&app, &state)?;
 
         // Step 5: Install — spawns NSIS installer and calls exit(0).
         // This function will NOT return on success.

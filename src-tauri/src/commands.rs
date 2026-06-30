@@ -12,6 +12,8 @@ use tauri::{AppHandle, Manager, Runtime, State};
 use crate::logger;
 use crate::perf_trace::{elapsed_ms, emit_perf_trace, trace_start, PerfTrace, PerfTraceName};
 use crate::sidecar::{
+    // Update shutdown
+    begin_update_shutdown,
     check_process_alive,
     ensure_sidecar_running,
     // Legacy exports
@@ -19,8 +21,7 @@ use crate::sidecar::{
     get_tab_server_url,
     get_tab_sidecar_status,
     restart_sidecar,
-    // Update shutdown
-    shutdown_for_update,
+    shutdown_for_update_verified,
     start_global_sidecar,
     start_sidecar,
     // New multi-instance exports
@@ -270,11 +271,26 @@ pub async fn cmd_shutdown_for_update(
     app_handle: AppHandle,
     state: State<'_, ManagedSidecar>,
 ) -> Result<(), String> {
-    logger::info(
-        &app_handle,
-        "[sidecar] Shutdown for update requested".to_string(),
-    );
-    shutdown_for_update(&state)
+    #[cfg(target_os = "windows")]
+    {
+        let _ = state;
+        logger::info(
+            &app_handle,
+            "[sidecar] Windows cmd_shutdown_for_update rejected; use install_pending_update"
+                .to_string(),
+        );
+        return Err("USE_INSTALL_PENDING_UPDATE_ON_WINDOWS".to_string());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        logger::info(
+            &app_handle,
+            "[sidecar] Shutdown for update requested".to_string(),
+        );
+        let _guard = begin_update_shutdown()?;
+        shutdown_for_update_verified(&app_handle, &state)
+    }
 }
 
 // ============= Utility Functions =============
@@ -1081,7 +1097,7 @@ pub fn cmd_sync_admin_agent<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool
 
 // ============= CLI Sync =============
 
-const CLI_VERSION: &str = "28";
+const CLI_VERSION: &str = "29";
 
 /// Sync the CLI script from bundled resources to ~/.myagents/bin/.
 /// Version-gated: only runs when CLI_VERSION changes.

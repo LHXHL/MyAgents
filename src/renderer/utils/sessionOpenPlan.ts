@@ -1,4 +1,5 @@
-import { type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
+import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
+import { normalizeRuntime, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
 
 // Single source of truth lives in shared/ (consumed by sidecar too). Re-exported
 // here so existing renderer callers (`@/utils/sessionOpenPlan`) keep working.
@@ -21,6 +22,18 @@ export interface SessionRuntimeIdentity {
    * user-managed/system CLI source; Managed Codex writes `managed-provider`.
    */
   runtimeSource?: RuntimeSource;
+  /**
+   * False means runtime identity came from a fallback after metadata lookup
+   * failed. Such sessions must not use Rust key-rename hot swap; a target-owned
+   * sidecar is safer than assuming builtin.
+   */
+  runtimeKnown?: boolean;
+}
+
+export interface SessionRuntimeMetadataForOpen {
+  runtime?: string | null;
+  runtimeSource?: RuntimeSource | null;
+  providerExecutionIdentity?: RuntimeBackedProviderIdentity | null;
 }
 
 export type SessionOpenPlan =
@@ -55,6 +68,35 @@ function normalizeIdentity(
   if (!runtime) return undefined;
   if (runtime === 'builtin') return { runtime };
   return { runtime, runtimeSource: runtimeSource ?? 'system-cli' };
+}
+
+function normalizeRuntimeSourceForIdentity(
+  runtime: RuntimeType,
+  runtimeSource: RuntimeSource | null | undefined,
+): RuntimeSource | undefined {
+  if (runtime === 'builtin') return undefined;
+  return runtimeSource ?? 'system-cli';
+}
+
+export function sessionRuntimeIdentityFromMetadataForOpen(
+  metadata: SessionRuntimeMetadataForOpen | null | undefined,
+  fallbackRuntime: RuntimeType,
+): SessionRuntimeIdentity {
+  const runtimeBackedIdentity = metadata?.providerExecutionIdentity;
+  if (runtimeBackedIdentity?.kind === 'runtime-backed-provider') {
+    return {
+      runtime: runtimeBackedIdentity.runtime,
+      runtimeSource: runtimeBackedIdentity.runtimeSource,
+      runtimeKnown: true,
+    };
+  }
+
+  const runtime = metadata?.runtime ? normalizeRuntime(metadata.runtime) : fallbackRuntime;
+  return {
+    runtime,
+    runtimeSource: normalizeRuntimeSourceForIdentity(runtime, metadata?.runtimeSource),
+    runtimeKnown: true,
+  };
 }
 
 function resolveIdentity(
@@ -118,4 +160,21 @@ export function planSessionOpen(input: SessionOpenPlanInput): SessionOpenPlan {
   }
 
   return { type: 'switch-current-tab' };
+}
+
+export function canHotSwapSessionSidecar(input: {
+  currentRuntime?: RuntimeType;
+  targetRuntime?: RuntimeType;
+  currentRuntimeIdentity?: SessionRuntimeIdentity;
+  targetRuntimeIdentity?: SessionRuntimeIdentity;
+}): boolean {
+  if (input.currentRuntimeIdentity?.runtimeKnown === false || input.targetRuntimeIdentity?.runtimeKnown === false) {
+    return false;
+  }
+  const currentIdentity = resolveIdentity(input.currentRuntimeIdentity, input.currentRuntime)
+    ?? { runtime: 'builtin' as RuntimeType };
+  const targetIdentity = resolveIdentity(input.targetRuntimeIdentity, input.targetRuntime)
+    ?? { runtime: 'builtin' as RuntimeType };
+
+  return sameIdentity(currentIdentity, targetIdentity);
 }

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::{Cursor, Read};
 use std::path::{Component, Path, PathBuf};
@@ -8,9 +8,10 @@ use std::time::Duration;
 use reqwest::header::{AUTHORIZATION, CONTENT_DISPOSITION};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tauri::ipc::Response as IpcResponse;
+use tauri::{ipc::Response as IpcResponse, AppHandle};
 use zip::ZipArchive;
 
+use crate::sidecar::ManagedSidecarManager;
 use crate::workspace_files::path_safety::{
     atomic_write_file, resolve_inside_workspace, validate_workspace_root,
 };
@@ -23,7 +24,7 @@ const SPACE_LEGACY_CLIENT_ID_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_CLI
 const SPACE_PUBLIC_CLIENT_ID_HEADER: &str = "X-MyAgents-Space-Client-Id";
 const SESSION_FILE: &str = "session.json";
 const LOCAL_AGENTS_FILE: &str = "registered_agents.json";
-const DISPATCH_LOG_FILE: &str = "dispatch_log.json";
+const DELIVERY_LOG_FILE: &str = "delivery_log.json";
 const SPACE_CONNECTOR_INTERVAL_SECS: u64 = 60;
 pub(crate) const MAX_SKILL_ZIP_BYTES: usize = 50 * 1024 * 1024;
 const MAX_SKILL_ZIP_ENTRIES: usize = 512;
@@ -79,6 +80,23 @@ impl From<SpaceSession> for SpaceSessionPublic {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpaceIssueSubscriptionRunMode {
+    SingleSession,
+    NewSession,
+}
+
+impl Default for SpaceIssueSubscriptionRunMode {
+    fn default() -> Self {
+        Self::SingleSession
+    }
+}
+
+fn default_issue_subscription_run_mode() -> SpaceIssueSubscriptionRunMode {
+    SpaceIssueSubscriptionRunMode::SingleSession
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalRegisteredAgent {
@@ -87,11 +105,30 @@ pub struct LocalRegisteredAgent {
     pub base_url: String,
     pub space_id: String,
     #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub local_workspace_id: Option<String>,
+    #[serde(default)]
+    pub local_agent_id: Option<String>,
+    #[serde(default)]
     pub workspace_id: Option<String>,
     pub display_name: String,
     pub workspace_path: String,
     pub workspace_label: Option<String>,
-    pub goal_md: String,
+    #[serde(default)]
+    pub goal_id: Option<String>,
+    #[serde(default)]
+    pub goal_path_label: Option<String>,
+    #[serde(default = "default_agent_state_filter")]
+    pub state_filter: Vec<String>,
+    #[serde(default)]
+    pub goal_md: Option<String>,
+    #[serde(default)]
+    pub delivery_session_id: Option<String>,
+    #[serde(default = "default_issue_subscription_run_mode")]
+    pub issue_subscription_run_mode: SpaceIssueSubscriptionRunMode,
+    #[serde(default)]
+    pub issue_session_ids: BTreeMap<String, String>,
     pub token: String,
     pub status: String,
     pub created_at: String,
@@ -104,11 +141,19 @@ pub struct LocalRegisteredAgentPublic {
     pub id: String,
     pub base_url: String,
     pub space_id: String,
+    pub client_id: Option<String>,
+    pub local_workspace_id: Option<String>,
+    pub local_agent_id: Option<String>,
     pub workspace_id: Option<String>,
     pub display_name: String,
     pub workspace_path: String,
     pub workspace_label: Option<String>,
-    pub goal_md: String,
+    pub goal_id: Option<String>,
+    pub goal_path_label: Option<String>,
+    pub state_filter: Vec<String>,
+    pub goal_md: Option<String>,
+    pub delivery_session_id: Option<String>,
+    pub issue_subscription_run_mode: SpaceIssueSubscriptionRunMode,
     pub status: String,
     pub created_at: String,
     pub updated_at: String,
@@ -120,16 +165,28 @@ impl From<LocalRegisteredAgent> for LocalRegisteredAgentPublic {
             id: agent.id,
             base_url: agent.base_url,
             space_id: agent.space_id,
+            client_id: agent.client_id,
+            local_workspace_id: agent.local_workspace_id,
+            local_agent_id: agent.local_agent_id,
             workspace_id: agent.workspace_id,
             display_name: agent.display_name,
             workspace_path: agent.workspace_path,
             workspace_label: agent.workspace_label,
+            goal_id: agent.goal_id,
+            goal_path_label: agent.goal_path_label,
+            state_filter: agent.state_filter,
             goal_md: agent.goal_md,
+            delivery_session_id: agent.delivery_session_id,
+            issue_subscription_run_mode: agent.issue_subscription_run_mode,
             status: agent.status,
             created_at: agent.created_at,
             updated_at: agent.updated_at,
         }
     }
+}
+
+fn default_agent_state_filter() -> Vec<String> {
+    vec!["todo".to_string()]
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -161,7 +218,13 @@ pub struct SpaceRegisterAgentInput {
     pub workspace_path: String,
     #[serde(default)]
     pub workspace_label: Option<String>,
-    pub goal_md: String,
+    pub goal_id: String,
+    #[serde(default)]
+    pub state_filter: Option<Vec<String>>,
+    #[serde(default)]
+    pub goal_md: Option<String>,
+    #[serde(default)]
+    pub issue_subscription_run_mode: Option<SpaceIssueSubscriptionRunMode>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,6 +239,8 @@ pub struct SpaceUpdateRegisteredAgentInput {
     pub goal_md: Option<String>,
     #[serde(default)]
     pub status: Option<String>,
+    #[serde(default)]
+    pub issue_subscription_run_mode: Option<SpaceIssueSubscriptionRunMode>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -197,6 +262,21 @@ pub struct SpaceMarkDispatchDeliveredInput {
     pub dispatch_id: String,
     pub local_task_id: Option<String>,
     pub local_run_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpacePollDeliveriesInput {
+    pub registered_agent_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceMarkDeliveryDeliveredInput {
+    pub registered_agent_id: String,
+    pub delivery_id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -283,21 +363,20 @@ struct CloudEnvelope<T> {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SpaceDispatchLogFile {
-    items: Vec<SpaceDispatchLogEntry>,
+struct SpaceDeliveryLogFile {
+    items: Vec<SpaceDeliveryLogEntry>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SpaceDispatchLogEntry {
-    dispatch_id: String,
+struct SpaceDeliveryLogEntry {
+    delivery_id: String,
     #[serde(default)]
     base_url: String,
     registered_agent_id: String,
     issue_id: String,
-    local_task_id: String,
-    #[serde(default)]
-    local_run_id: Option<String>,
+    session_id: String,
+    message_id: String,
     #[serde(default)]
     delivered_at: Option<String>,
     created_at: String,
@@ -320,6 +399,29 @@ pub struct SpaceCliIssueGetInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SpaceCliIssueListInput {
+    #[serde(default)]
+    pub goal_id: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
+    #[serde(default)]
+    pub include_subtree: Option<bool>,
+    #[serde(default)]
+    pub human_only: Option<bool>,
+    #[serde(default)]
+    pub query: Option<String>,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SpaceCliIssueCommentInput {
     pub issue_id: String,
     pub body: String,
@@ -333,7 +435,54 @@ pub struct SpaceCliIssueCommentInput {
 #[serde(rename_all = "camelCase")]
 pub struct SpaceCliIssueStatusInput {
     pub issue_id: String,
-    pub status: String,
+    #[serde(alias = "status")]
+    pub state: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceCliIssueClaimInput {
+    pub issue_id: String,
+    #[serde(default)]
+    pub delivery_id: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceCliIssueDeliveryIgnoreInput {
+    #[serde(default)]
+    pub issue_id: Option<String>,
+    pub delivery_id: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceCliIssueActionInput {
+    pub issue_id: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceCliClaimLocalTaskInput {
+    pub claim_id: String,
+    pub local_task_id: String,
+    pub local_session_id: String,
     #[serde(default)]
     pub agent_id: Option<String>,
     #[serde(default)]
@@ -356,7 +505,7 @@ pub struct SpaceCliAttachmentDownloadInput {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SpaceProcessDispatchResult {
+pub struct SpaceProcessDeliveryResult {
     pub processed: usize,
     pub delivered: usize,
     pub errors: Vec<String>,
@@ -540,10 +689,30 @@ pub async fn cmd_space_register_agent(
     let workspace_root = validate_workspace_root(&input.workspace_path)?;
     let workspace_path = workspace_root.to_string_lossy().to_string();
     let session = require_session()?;
+    let capability = ensure_space_available()?;
+    let display_name = input.display_name.trim();
+    if display_name.is_empty() {
+        return Err("displayName is required".to_string());
+    }
+    let goal_id = input.goal_id.trim();
+    if goal_id.is_empty() {
+        return Err("goalId is required".to_string());
+    }
+    let state_filter = normalize_agent_state_filter(input.state_filter);
+    let issue_subscription_run_mode = input.issue_subscription_run_mode.unwrap_or_default();
+    let client_id = capability
+        .public_client_id
+        .clone()
+        .unwrap_or_else(|| "myagents-desktop".to_string());
+    let local_agent_id = stable_local_agent_id(&input.workspace_id);
     let body = serde_json::json!({
-        "displayName": input.display_name,
+        "clientId": client_id,
+        "localWorkspaceId": input.workspace_id,
+        "localAgentId": local_agent_id,
+        "displayName": display_name,
         "workspaceLabel": input.workspace_label,
-        "goalMd": input.goal_md,
+        "goalId": goal_id,
+        "stateFilter": state_filter,
     });
     let path = format!(
         "/api/spaces/{}/registered-agents",
@@ -565,6 +734,7 @@ pub async fn cmd_space_register_agent(
         .get("registeredAgent")
         .cloned()
         .ok_or_else(|| "Space API response missing registeredAgent".to_string())?;
+    let subscription = data.get("subscription").cloned().unwrap_or(Value::Null);
     let token = data
         .get("token")
         .and_then(Value::as_str)
@@ -574,6 +744,10 @@ pub async fn cmd_space_register_agent(
         id: required_value_string(&registered, "id")?,
         base_url: session.base_url.clone(),
         space_id: required_value_string(&registered, "spaceId")?,
+        client_id: optional_value_string(&registered, "clientId").or(Some(client_id)),
+        local_workspace_id: optional_value_string(&registered, "localWorkspaceId")
+            .or(Some(input.workspace_id.clone())),
+        local_agent_id: optional_value_string(&registered, "localAgentId").or(Some(local_agent_id)),
         workspace_id: Some(input.workspace_id),
         display_name: required_value_string(&registered, "displayName")?,
         workspace_path,
@@ -581,7 +755,15 @@ pub async fn cmd_space_register_agent(
             .get("workspaceLabel")
             .and_then(Value::as_str)
             .map(ToString::to_string),
-        goal_md: required_value_string(&registered, "goalMd")?,
+        goal_id: optional_value_string(&subscription, "goalId").or(Some(goal_id.to_string())),
+        goal_path_label: optional_value_string(&subscription, "goalPathLabel"),
+        state_filter: value_string_array(&subscription, "stateFilter")
+            .filter(|items| !items.is_empty())
+            .unwrap_or_else(default_agent_state_filter),
+        goal_md: input.goal_md,
+        delivery_session_id: Some(uuid::Uuid::new_v4().to_string()),
+        issue_subscription_run_mode,
+        issue_session_ids: BTreeMap::new(),
         token,
         status: required_value_string(&registered, "status")?,
         created_at: required_value_string(&registered, "createdAt")?,
@@ -632,8 +814,7 @@ pub async fn cmd_space_update_registered_agent(
         if goal_md.is_empty() {
             return Err("goalMd is required".to_string());
         }
-        body.insert("goalMd".to_string(), Value::String(goal_md.to_string()));
-        agent.goal_md = goal_md.to_string();
+        agent.goal_md = Some(goal_md.to_string());
     }
     if let Some(status) = input.status {
         let status = status.trim();
@@ -643,8 +824,15 @@ pub async fn cmd_space_update_registered_agent(
         body.insert("status".to_string(), Value::String(status.to_string()));
         agent.status = status.to_string();
     }
+    if let Some(issue_subscription_run_mode) = input.issue_subscription_run_mode {
+        if agent.issue_subscription_run_mode != issue_subscription_run_mode {
+            agent.issue_subscription_run_mode = issue_subscription_run_mode;
+            agent.updated_at = chrono::Utc::now().to_rfc3339();
+        }
+    }
 
     if body.is_empty() {
+        upsert_local_agent(agent.clone())?;
         return Ok(agent.into());
     }
 
@@ -662,7 +850,11 @@ pub async fn cmd_space_update_registered_agent(
             .get("workspaceLabel")
             .and_then(Value::as_str)
             .map(ToString::to_string);
-        agent.goal_md = required_value_string(registered, "goalMd")?;
+        agent.client_id = optional_value_string(registered, "clientId").or(agent.client_id);
+        agent.local_workspace_id =
+            optional_value_string(registered, "localWorkspaceId").or(agent.local_workspace_id);
+        agent.local_agent_id =
+            optional_value_string(registered, "localAgentId").or(agent.local_agent_id);
         agent.status = required_value_string(registered, "status")?;
         agent.updated_at = required_value_string(registered, "updatedAt")?;
     } else {
@@ -761,11 +953,72 @@ pub async fn cmd_space_mark_dispatch_delivered(
 }
 
 #[tauri::command]
-pub async fn cmd_space_process_dispatches_once() -> Result<SpaceProcessDispatchResult, String> {
+pub async fn cmd_space_poll_deliveries(input: SpacePollDeliveriesInput) -> Result<Value, String> {
     if crate::space_cloud_mock::is_enabled() {
-        return Ok(crate::space_cloud_mock::process_dispatches_once());
+        return crate::space_cloud_mock::poll_deliveries(&input.registered_agent_id);
     }
-    process_pending_dispatches().await
+    let agent = require_local_agent(&input.registered_agent_id)?;
+    let session = space_base_url()?;
+    authorized_json_request(
+        &session,
+        "/api/registered-agents/me/deliveries?status=pending&limit=20",
+        &agent.token,
+        reqwest::Method::GET,
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn cmd_space_mark_delivery_delivered(
+    input: SpaceMarkDeliveryDeliveredInput,
+) -> Result<Value, String> {
+    if crate::space_cloud_mock::is_enabled() {
+        return crate::space_cloud_mock::mark_delivery_delivered(
+            &input.delivery_id,
+            Some(&input.registered_agent_id),
+            input.session_id,
+        );
+    }
+    let agent = require_local_agent(&input.registered_agent_id)?;
+    let session = space_base_url()?;
+    authorized_json_request(
+        &session,
+        &format!(
+            "/api/deliveries/{}/delivered",
+            url_component(&input.delivery_id)
+        ),
+        &agent.token,
+        reqwest::Method::POST,
+        Some(serde_json::json!({
+            "sessionId": input.session_id,
+        })),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn cmd_space_process_deliveries_once(
+    app_handle: AppHandle,
+    state: tauri::State<'_, ManagedSidecarManager>,
+) -> Result<SpaceProcessDeliveryResult, String> {
+    if crate::space_cloud_mock::is_enabled() {
+        return Ok(crate::space_cloud_mock::process_deliveries_once());
+    }
+    let manager = state.inner().clone();
+    process_pending_deliveries(&app_handle, &manager).await
+}
+
+#[tauri::command]
+pub async fn cmd_space_process_dispatches_once(
+    app_handle: AppHandle,
+    state: tauri::State<'_, ManagedSidecarManager>,
+) -> Result<SpaceProcessDeliveryResult, String> {
+    if crate::space_cloud_mock::is_enabled() {
+        return Ok(crate::space_cloud_mock::process_deliveries_once());
+    }
+    let manager = state.inner().clone();
+    process_pending_deliveries(&app_handle, &manager).await
 }
 
 #[tauri::command]
@@ -1075,20 +1328,20 @@ pub async fn cmd_space_download_skill_zip(
     Ok(IpcResponse::new(bytes))
 }
 
-pub fn start_space_connector() {
+pub fn start_space_connector(app_handle: AppHandle, manager: ManagedSidecarManager) {
     if !space_build_capability().available {
         return;
     }
     if SPACE_CONNECTOR_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
-    tauri::async_runtime::spawn(async {
+    tauri::async_runtime::spawn(async move {
         loop {
             if !team_space_runtime_enabled() {
                 tokio::time::sleep(Duration::from_secs(60)).await;
                 continue;
             }
-            match process_pending_dispatches().await {
+            match process_pending_deliveries(&app_handle, &manager).await {
                 Ok(result) => {
                     if result.processed > 0 || !result.errors.is_empty() {
                         ulog_info!(
@@ -1126,6 +1379,48 @@ pub async fn space_cli_issue_get(input: SpaceCliIssueGetInput) -> Result<Value, 
     authorized_json_data_request(&base_url, &path, &agent.token, reqwest::Method::GET, None).await
 }
 
+pub async fn space_cli_issue_list(input: SpaceCliIssueListInput) -> Result<Value, String> {
+    let agent =
+        resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
+    let base_url = space_base_url()?;
+    let mut params: Vec<(String, String)> = Vec::new();
+    if let Some(goal_id) = input.goal_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        params.push(("goalId".to_string(), goal_id.trim().to_string()));
+    }
+    if let Some(state) = input.state.as_deref().filter(|s| !s.trim().is_empty()) {
+        params.push(("state".to_string(), state.trim().to_string()));
+    }
+    if let Some(include_subtree) = input.include_subtree {
+        params.push(("includeSubtree".to_string(), include_subtree.to_string()));
+    }
+    if let Some(human_only) = input.human_only {
+        params.push(("humanOnly".to_string(), human_only.to_string()));
+    }
+    if let Some(query) = input.query.as_deref().filter(|s| !s.trim().is_empty()) {
+        params.push(("q".to_string(), query.trim().to_string()));
+    }
+    if let Some(cursor) = input.cursor.as_deref().filter(|s| !s.trim().is_empty()) {
+        params.push(("cursor".to_string(), cursor.trim().to_string()));
+    }
+    params.push((
+        "limit".to_string(),
+        input.limit.unwrap_or(30).clamp(1, 100).to_string(),
+    ));
+    let query = params
+        .into_iter()
+        .map(|(key, value)| format!("{}={}", key, url_component(&value)))
+        .collect::<Vec<_>>()
+        .join("&");
+    authorized_json_data_request(
+        &base_url,
+        &format!("/api/spaces/official/issues?{}", query),
+        &agent.token,
+        reqwest::Method::GET,
+        None,
+    )
+    .await
+}
+
 pub async fn space_cli_issue_comment(input: SpaceCliIssueCommentInput) -> Result<Value, String> {
     let agent =
         resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
@@ -1155,7 +1450,99 @@ pub async fn space_cli_issue_status(input: SpaceCliIssueStatusInput) -> Result<V
         ),
         &agent.token,
         reqwest::Method::POST,
-        Some(serde_json::json!({ "status": input.status })),
+        Some(serde_json::json!({ "state": input.state })),
+    )
+    .await
+}
+
+pub async fn space_cli_issue_claim(input: SpaceCliIssueClaimInput) -> Result<Value, String> {
+    let agent =
+        resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
+    let base_url = space_base_url()?;
+    authorized_json_data_request(
+        &base_url,
+        &format!("/api/issues/{}/claim", url_component(input.issue_id.trim())),
+        &agent.token,
+        reqwest::Method::POST,
+        Some(serde_json::json!({ "deliveryId": input.delivery_id })),
+    )
+    .await
+}
+
+pub async fn space_cli_issue_delivery_ignore(
+    input: SpaceCliIssueDeliveryIgnoreInput,
+) -> Result<Value, String> {
+    let agent =
+        resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
+    let base_url = space_base_url()?;
+    let path = if let Some(issue_id) = input.issue_id.as_deref().filter(|s| !s.trim().is_empty()) {
+        format!(
+            "/api/issues/{}/deliveries/{}/ignore",
+            url_component(issue_id.trim()),
+            url_component(input.delivery_id.trim())
+        )
+    } else {
+        format!(
+            "/api/deliveries/{}/ignored",
+            url_component(input.delivery_id.trim())
+        )
+    };
+    authorized_json_data_request(&base_url, &path, &agent.token, reqwest::Method::POST, None).await
+}
+
+pub async fn space_cli_issue_close(input: SpaceCliIssueActionInput) -> Result<Value, String> {
+    space_cli_issue_action(input, "close").await
+}
+
+pub async fn space_cli_issue_complete(input: SpaceCliIssueActionInput) -> Result<Value, String> {
+    space_cli_issue_action(input, "complete").await
+}
+
+pub async fn space_cli_issue_cancel_claim(
+    input: SpaceCliIssueActionInput,
+) -> Result<Value, String> {
+    space_cli_issue_action(input, "cancel-claim").await
+}
+
+async fn space_cli_issue_action(
+    input: SpaceCliIssueActionInput,
+    action: &str,
+) -> Result<Value, String> {
+    let agent =
+        resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
+    let base_url = space_base_url()?;
+    authorized_json_data_request(
+        &base_url,
+        &format!(
+            "/api/issues/{}/{}",
+            url_component(input.issue_id.trim()),
+            action
+        ),
+        &agent.token,
+        reqwest::Method::POST,
+        None,
+    )
+    .await
+}
+
+pub async fn space_cli_claim_local_task(
+    input: SpaceCliClaimLocalTaskInput,
+) -> Result<Value, String> {
+    let agent =
+        resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
+    let base_url = space_base_url()?;
+    authorized_json_data_request(
+        &base_url,
+        &format!(
+            "/api/claims/{}/local-task",
+            url_component(input.claim_id.trim())
+        ),
+        &agent.token,
+        reqwest::Method::POST,
+        Some(serde_json::json!({
+            "localTaskId": input.local_task_id,
+            "localSessionId": input.local_session_id,
+        })),
     )
     .await
 }
@@ -1180,13 +1567,16 @@ pub async fn space_cli_attachment_download(
         .map_err(|e| format!("Failed to serialize attachment result: {}", e))
 }
 
-pub async fn process_pending_dispatches() -> Result<SpaceProcessDispatchResult, String> {
+pub async fn process_pending_deliveries(
+    app_handle: &AppHandle,
+    manager: &ManagedSidecarManager,
+) -> Result<SpaceProcessDeliveryResult, String> {
     if crate::space_cloud_mock::is_enabled() {
-        return Ok(crate::space_cloud_mock::process_dispatches_once());
+        return Ok(crate::space_cloud_mock::process_deliveries_once());
     }
     ensure_space_available()?;
     if !team_space_runtime_enabled() {
-        return Ok(SpaceProcessDispatchResult {
+        return Ok(SpaceProcessDeliveryResult {
             processed: 0,
             delivered: 0,
             errors: Vec::new(),
@@ -1195,9 +1585,10 @@ pub async fn process_pending_dispatches() -> Result<SpaceProcessDispatchResult, 
     let agents = read_current_local_agents()?
         .into_iter()
         .filter(|agent| agent.status == "active")
-        .collect::<Vec<_>>();
+        .map(ensure_agent_delivery_session)
+        .collect::<Result<Vec<_>, _>>()?;
     if agents.is_empty() {
-        return Ok(SpaceProcessDispatchResult {
+        return Ok(SpaceProcessDeliveryResult {
             processed: 0,
             delivered: 0,
             errors: Vec::new(),
@@ -1207,15 +1598,15 @@ pub async fn process_pending_dispatches() -> Result<SpaceProcessDispatchResult, 
     let mut processed = 0usize;
     let mut delivered = 0usize;
     let mut errors = Vec::new();
-    for agent in agents {
-        match process_agent_dispatches(&base_url, &agent).await {
+    for mut agent in agents {
+        match process_agent_deliveries(app_handle, manager, &base_url, &mut agent).await {
             Ok((p, d)) => {
                 processed += p;
                 delivered += d;
             }
             Err(error) => {
                 ulog_warn!(
-                    "[space] dispatch processing failed for agent {}: {}",
+                    "[space] delivery processing failed for agent {}: {}",
                     agent.id,
                     error
                 );
@@ -1223,30 +1614,50 @@ pub async fn process_pending_dispatches() -> Result<SpaceProcessDispatchResult, 
             }
         }
     }
-    Ok(SpaceProcessDispatchResult {
+    Ok(SpaceProcessDeliveryResult {
         processed,
         delivered,
         errors,
     })
 }
 
-async fn process_agent_dispatches(
+#[derive(Debug, Clone)]
+struct PendingSpaceDelivery {
+    delivery_id: String,
+    delivery_kind: String,
+    claim_id: Option<String>,
+    target_session_id: Option<String>,
+    issue_id: String,
+    issue_title: String,
+    issue_state: String,
+    goal_id: Option<String>,
+    goal_path: Option<String>,
+    update_summary: Option<String>,
+    notification_version: i64,
+}
+
+impl PendingSpaceDelivery {
+    fn is_claim_followup(&self) -> bool {
+        self.delivery_kind == "claim_followup" || self.claim_id.is_some()
+    }
+
+    fn target_session(&self) -> Option<&str> {
+        self.target_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+}
+
+async fn process_agent_deliveries(
+    app_handle: &AppHandle,
+    manager: &ManagedSidecarManager,
     base_url: &str,
-    agent: &LocalRegisteredAgent,
+    agent: &mut LocalRegisteredAgent,
 ) -> Result<(usize, usize), String> {
-    let workspace_id = agent
-        .workspace_id
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| {
-            format!(
-                "Registered Agent {} is missing workspaceId; re-register it from Space",
-                agent.id
-            )
-        })?;
     let data = authorized_json_data_request(
         base_url,
-        "/api/registered-agents/me/dispatches?status=pending",
+        "/api/registered-agents/me/deliveries?status=pending&limit=20",
         &agent.token,
         reqwest::Method::GET,
         None,
@@ -1259,130 +1670,572 @@ async fn process_agent_dispatches(
         .unwrap_or_default();
     let mut processed = 0usize;
     let mut delivered = 0usize;
+    let mut targeted_pending = Vec::new();
+    let mut subscription_pending = Vec::new();
     for item in items {
-        let dispatch = item.get("dispatch").cloned().unwrap_or(Value::Null);
+        let delivery = item.get("delivery").cloned().unwrap_or(Value::Null);
         let issue_meta = item.get("issueMeta").cloned().unwrap_or(Value::Null);
-        let dispatch_id = required_value_string(&dispatch, "id")?;
-        let issue_id = required_value_string(&issue_meta, "id")?;
-        let title = required_value_string(&issue_meta, "title")?;
-        let goal = required_value_string(&dispatch, "goalSnapshotMd")?;
-        let log = find_dispatch_log(base_url, &dispatch_id)?;
-        let task_id = if let Some(existing) = log {
-            maybe_run_logged_task(base_url, &existing.local_task_id).await?;
-            existing.local_task_id
-        } else {
-            let task = create_space_task(agent, workspace_id, &issue_id, &title, &goal).await?;
-            upsert_dispatch_log(SpaceDispatchLogEntry {
-                dispatch_id: dispatch_id.clone(),
-                base_url: base_url.to_string(),
-                registered_agent_id: agent.id.clone(),
-                issue_id: issue_id.clone(),
-                local_task_id: task.id.clone(),
-                local_run_id: None,
-                delivered_at: None,
-                created_at: chrono::Utc::now().to_rfc3339(),
-                updated_at: chrono::Utc::now().to_rfc3339(),
-            })?;
-            let (_task, cron_id) = crate::management_api::run_task_by_id(&task.id).await?;
-            update_dispatch_log_run(base_url, &dispatch_id, Some(cron_id))?;
-            task.id
+        let goal_meta = item.get("goalMeta").cloned().unwrap_or(Value::Null);
+        let delivery_id = required_value_string(&delivery, "id")?;
+        let issue_id = optional_value_string(&delivery, "issueId")
+            .or_else(|| optional_value_string(&issue_meta, "id"))
+            .ok_or_else(|| "Space delivery response missing issueId".to_string())?;
+
+        if let Some(existing) = find_delivery_log(base_url, &delivery_id)? {
+            mark_delivery_delivered(base_url, agent, &delivery_id, &existing.session_id).await?;
+            update_delivery_log_delivered(base_url, &delivery_id)?;
+            processed += 1;
+            delivered += 1;
+            continue;
+        }
+
+        let pending_delivery = PendingSpaceDelivery {
+            delivery_id,
+            delivery_kind: optional_value_string(&delivery, "deliveryKind")
+                .or_else(|| optional_value_string(&delivery, "delivery_kind"))
+                .unwrap_or_else(|| "subscription".to_string()),
+            claim_id: optional_value_string(&delivery, "claimId")
+                .or_else(|| optional_value_string(&delivery, "claim_id")),
+            target_session_id: optional_value_string(&delivery, "targetSessionId")
+                .or_else(|| optional_value_string(&delivery, "target_session_id")),
+            issue_id,
+            issue_title: optional_value_string(&issue_meta, "title")
+                .unwrap_or_else(|| "Untitled Space Issue".to_string()),
+            issue_state: optional_value_string(&issue_meta, "state")
+                .or_else(|| optional_value_string(&issue_meta, "status"))
+                .unwrap_or_else(|| "todo".to_string()),
+            goal_id: optional_value_string(&goal_meta, "id"),
+            goal_path: optional_value_string(&goal_meta, "path")
+                .or_else(|| optional_value_string(&goal_meta, "goalPathLabel"))
+                .or_else(|| agent.goal_path_label.clone()),
+            update_summary: optional_value_string(&delivery, "updateSummary"),
+            notification_version: delivery
+                .get("notificationVersion")
+                .and_then(Value::as_i64)
+                .unwrap_or(1),
         };
-        mark_dispatch_delivered(base_url, agent, &dispatch_id, &task_id, None).await?;
-        update_dispatch_log_delivered(base_url, &dispatch_id)?;
+        if pending_delivery.is_claim_followup() && pending_delivery.target_session().is_none() {
+            return Err(format!(
+                "Space claim follow-up delivery {} is missing targetSessionId",
+                pending_delivery.delivery_id
+            ));
+        }
+        if pending_delivery.target_session().is_some() {
+            targeted_pending.push(pending_delivery);
+        } else {
+            subscription_pending.push(pending_delivery);
+        }
+    }
+
+    if targeted_pending.is_empty() && subscription_pending.is_empty() {
+        return Ok((processed, delivered));
+    }
+
+    for delivery_item in targeted_pending {
+        let session_id = delivery_item
+            .target_session()
+            .ok_or_else(|| {
+                format!(
+                    "Space delivery {} is missing targetSessionId",
+                    delivery_item.delivery_id
+                )
+            })?
+            .to_string();
+        let message_id = deliver_space_deliveries(
+            app_handle,
+            manager,
+            agent,
+            &session_id,
+            std::slice::from_ref(&delivery_item),
+        )
+        .await?;
+        record_delivered_space_delivery(base_url, agent, &delivery_item, &session_id, &message_id)
+            .await?;
         processed += 1;
         delivered += 1;
+    }
+
+    if subscription_pending.is_empty() {
+        return Ok((processed, delivered));
+    }
+
+    match agent.issue_subscription_run_mode {
+        SpaceIssueSubscriptionRunMode::SingleSession => {
+            let session_id = agent
+                .delivery_session_id
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    format!("Registered Agent {} is missing deliverySessionId", agent.id)
+                })?
+                .to_string();
+            let message_id = deliver_space_deliveries(
+                app_handle,
+                manager,
+                agent,
+                &session_id,
+                &subscription_pending,
+            )
+            .await?;
+            for delivery_item in &subscription_pending {
+                record_delivered_space_delivery(
+                    base_url,
+                    agent,
+                    delivery_item,
+                    &session_id,
+                    &message_id,
+                )
+                .await?;
+                processed += 1;
+                delivered += 1;
+            }
+        }
+        SpaceIssueSubscriptionRunMode::NewSession => {
+            for delivery_item in subscription_pending {
+                let session_id = ensure_agent_issue_session(agent, &delivery_item.issue_id)?;
+                let message_id = deliver_space_deliveries(
+                    app_handle,
+                    manager,
+                    agent,
+                    &session_id,
+                    std::slice::from_ref(&delivery_item),
+                )
+                .await?;
+                record_delivered_space_delivery(
+                    base_url,
+                    agent,
+                    &delivery_item,
+                    &session_id,
+                    &message_id,
+                )
+                .await?;
+                processed += 1;
+                delivered += 1;
+            }
+        }
     }
     Ok((processed, delivered))
 }
 
-async fn create_space_task(
+async fn deliver_space_deliveries(
+    app_handle: &AppHandle,
+    manager: &ManagedSidecarManager,
     agent: &LocalRegisteredAgent,
-    workspace_id: &str,
-    issue_id: &str,
-    issue_title: &str,
-    goal_md: &str,
-) -> Result<crate::task::Task, String> {
-    let store =
-        crate::task::get_task_store().ok_or_else(|| "task store not initialized".to_string())?;
-    store
-        .create_direct(crate::task::TaskCreateDirectInput {
-            name: format!("Space: {}", issue_title),
-            executor: crate::task::TaskExecutor::Agent,
-            description: Some(format!("MyAgents Space Issue {}", issue_id)),
-            workspace_id: workspace_id.to_string(),
-            workspace_path: agent.workspace_path.clone(),
-            task_md_content: build_dispatch_task_md(issue_id, issue_title, goal_md),
-            execution_mode: crate::task::TaskExecutionMode::Once,
-            run_mode: None,
-            end_conditions: None,
-            interval_minutes: None,
-            cron_expression: None,
-            cron_timezone: None,
-            dispatch_at: None,
-            model: None,
-            provider_id: None,
-            permission_mode: None,
-            preselected_session_id: None,
-            runtime: None,
-            runtime_config: None,
-            mcp_enabled_servers: None,
-            source_thought_id: None,
-            tags: vec!["space".to_string(), issue_id.to_string()],
-            notification: None,
-        })
-        .await
-}
-
-async fn maybe_run_logged_task(base_url: &str, task_id: &str) -> Result<(), String> {
-    let store =
-        crate::task::get_task_store().ok_or_else(|| "task store not initialized".to_string())?;
-    if let Some(task) = store.get(task_id).await {
-        if task.status == crate::task::TaskStatus::Todo {
-            let (_task, cron_id) = crate::management_api::run_task_by_id(task_id).await?;
-            update_dispatch_log_run_by_task(base_url, task_id, Some(cron_id))?;
+    session_id: &str,
+    deliveries: &[PendingSpaceDelivery],
+) -> Result<String, String> {
+    let message_id = uuid::Uuid::new_v4().to_string();
+    let prompt = if deliveries.len() == 1 {
+        let delivery = &deliveries[0];
+        if delivery.is_claim_followup() {
+            build_claim_followup_prompt(agent, delivery)
+        } else {
+            build_delivery_prompt(
+                agent,
+                &delivery.delivery_id,
+                &delivery.issue_id,
+                &delivery.issue_title,
+                &delivery.issue_state,
+                delivery.goal_path.as_deref(),
+                delivery.update_summary.as_deref(),
+                delivery.notification_version,
+            )
         }
+    } else {
+        build_delivery_batch_prompt(agent, deliveries)
+    };
+    let first = deliveries
+        .first()
+        .ok_or_else(|| "Space delivery batch is empty".to_string())?;
+    let created_at = chrono::Utc::now().to_rfc3339();
+    let message = crate::inbox::PendingInboxMessage {
+        message_id: message_id.clone(),
+        from_session_id: "myagents-space".to_string(),
+        from_label: "MyAgents Space".to_string(),
+        to_session_id: session_id.to_string(),
+        text: prompt.clone(),
+        reply_back: false,
+        timestamp_ms: chrono::Utc::now().timestamp_millis(),
+        kind: crate::inbox::InboxMessageKind::Event,
+        in_reply_to: None,
+        session_event: Some(serde_json::json!({
+            "version": 1,
+            "type": "space.issue_delivery",
+            "eventId": message_id,
+            "sourceSessionId": "myagents-space",
+            "sourceLabel": "MyAgents Space",
+            "targetSessionId": session_id,
+            "createdAt": created_at,
+            "deliveryId": first.delivery_id,
+            "deliveryKind": first.delivery_kind,
+            "claimId": first.claim_id,
+            "issueId": first.issue_id,
+            "issueTitle": first.issue_title,
+            "issueState": first.issue_state,
+            "goalId": first.goal_id,
+            "goalPathLabel": first.goal_path,
+            "notificationVersion": first.notification_version,
+            "updateSummary": first.update_summary,
+            "deliveryCount": deliveries.len(),
+            "payload": prompt,
+        })),
+    };
+    let outcome = crate::inbox::deliver::deliver_with_resume(
+        app_handle,
+        manager,
+        message,
+        Some(PathBuf::from(&agent.workspace_path)),
+    )
+    .await;
+    if !matches!(
+        outcome,
+        crate::inbox::deliver::DeliverOutcome::Delivered { .. }
+    ) {
+        let delivery_ids = deliveries
+            .iter()
+            .map(|delivery| delivery.delivery_id.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "Delivery batch [{}] could not be injected into session {}: {:?}",
+            delivery_ids, session_id, outcome
+        ));
     }
-    Ok(())
+    Ok(message_id)
 }
 
-async fn mark_dispatch_delivered(
+async fn record_delivered_space_delivery(
     base_url: &str,
     agent: &LocalRegisteredAgent,
-    dispatch_id: &str,
-    local_task_id: &str,
-    local_run_id: Option<&str>,
+    delivery: &PendingSpaceDelivery,
+    session_id: &str,
+    message_id: &str,
+) -> Result<(), String> {
+    let now = chrono::Utc::now().to_rfc3339();
+    upsert_delivery_log(SpaceDeliveryLogEntry {
+        delivery_id: delivery.delivery_id.clone(),
+        base_url: base_url.to_string(),
+        registered_agent_id: agent.id.clone(),
+        issue_id: delivery.issue_id.clone(),
+        session_id: session_id.to_string(),
+        message_id: message_id.to_string(),
+        delivered_at: None,
+        created_at: now.clone(),
+        updated_at: now,
+    })?;
+    mark_delivery_delivered(base_url, agent, &delivery.delivery_id, session_id).await?;
+    update_delivery_log_delivered(base_url, &delivery.delivery_id)
+}
+
+fn ensure_agent_delivery_session(
+    mut agent: LocalRegisteredAgent,
+) -> Result<LocalRegisteredAgent, String> {
+    if agent
+        .delivery_session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+    {
+        return Ok(agent);
+    }
+    agent.delivery_session_id = Some(uuid::Uuid::new_v4().to_string());
+    agent.updated_at = chrono::Utc::now().to_rfc3339();
+    upsert_local_agent(agent.clone())?;
+    Ok(agent)
+}
+
+fn ensure_agent_issue_session(
+    agent: &mut LocalRegisteredAgent,
+    issue_id: &str,
+) -> Result<String, String> {
+    if let Some(session_id) = agent
+        .issue_session_ids
+        .get(issue_id)
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return Ok(session_id.to_string());
+    }
+    let session_id = uuid::Uuid::new_v4().to_string();
+    agent
+        .issue_session_ids
+        .insert(issue_id.to_string(), session_id.clone());
+    agent.updated_at = chrono::Utc::now().to_rfc3339();
+    upsert_local_agent(agent.clone())?;
+    Ok(session_id)
+}
+
+async fn mark_delivery_delivered(
+    base_url: &str,
+    agent: &LocalRegisteredAgent,
+    delivery_id: &str,
+    session_id: &str,
 ) -> Result<(), String> {
     authorized_json_data_request(
         base_url,
-        &format!("/api/dispatches/{}/delivered", url_component(dispatch_id)),
+        &format!("/api/deliveries/{}/delivered", url_component(delivery_id)),
         &agent.token,
         reqwest::Method::POST,
         Some(serde_json::json!({
-            "localTaskId": local_task_id,
-            "localRunId": local_run_id,
+            "sessionId": session_id,
         })),
     )
     .await
     .map(|_| ())
 }
 
-fn build_dispatch_task_md(issue_id: &str, issue_title: &str, goal_md: &str) -> String {
-    vec![
-        "# Goal".to_string(),
+fn build_claim_followup_prompt(
+    agent: &LocalRegisteredAgent,
+    delivery: &PendingSpaceDelivery,
+) -> String {
+    let mut lines = vec![
+        "MyAgents Space delivered a follow-up comment for an Issue handled by this Registered Agent session.".to_string(),
         String::new(),
-        goal_md.trim().to_string(),
+        "Issue".to_string(),
+        format!("- Delivery ID: {}", delivery.delivery_id),
+        format!("- Issue ID: {}", delivery.issue_id),
+        format!("- Title: {}", delivery.issue_title),
+        format!("- State: {}", delivery.issue_state),
+        format!("- Notification version: {}", delivery.notification_version),
+    ];
+    if let Some(claim_id) = delivery
+        .claim_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- Claim ID: {}", claim_id));
+    }
+    if let Some(goal_path) = delivery
+        .goal_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- Goal: {}", goal_path));
+    }
+    if let Some(update_summary) = delivery
+        .update_summary
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- Update: {}", update_summary));
+    }
+    lines.extend([
         String::new(),
-        "# MyAgents Space Connector".to_string(),
+        "Required handling model".to_string(),
+        "- This Issue is already claimed by this Registered Agent. Do not run the claim command again.".to_string(),
+        "- Continue in this same local session so the Issue context stays connected.".to_string(),
+        format!(
+            "- Read the current Issue context with `myagents space issue view {} --comments --json`.",
+            shell_quote(&delivery.issue_id)
+        ),
+        format!(
+            "- If the update needs a reply, post it with `myagents space issue comment {} --body-file reply.md`.",
+            shell_quote(&delivery.issue_id)
+        ),
+        format!(
+            "- If no action is required, run `myagents space issue delivery ignore {}`.",
+            shell_quote(&delivery.delivery_id)
+        ),
+        format!(
+            "- If additional work changes the final outcome, use `myagents space issue complete {} --workspacePath {} --taskId <taskId> --body-file result.md --message {}` when done.",
+            shell_quote(&delivery.issue_id),
+            shell_quote(&agent.workspace_path),
+            shell_quote("completed Space issue")
+        ),
+    ]);
+    if let Some(workspace_label) = agent
+        .workspace_label
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- Local workspace: {}", workspace_label));
+    }
+    lines.join("\n")
+}
+
+fn build_delivery_prompt(
+    agent: &LocalRegisteredAgent,
+    delivery_id: &str,
+    issue_id: &str,
+    issue_title: &str,
+    issue_state: &str,
+    goal_path: Option<&str>,
+    update_summary: Option<&str>,
+    notification_version: i64,
+) -> String {
+    let mut lines = vec![
+        "MyAgents Space delivered an Issue notification to this Registered Agent session."
+            .to_string(),
         String::new(),
-        format!("你收到了 MyAgents Space Issue：{}", issue_title),
-        String::new(),
+        "Issue".to_string(),
+        format!("- Delivery ID: {}", delivery_id),
         format!("- Issue ID: {}", issue_id),
-        "- 使用 `myagents space issue get <issueId> --json` 拉取完整 Issue、评论和附件元信息。".to_string(),
-        "- 需要下载附件时，使用 `myagents space attachment download <attachmentId>`，文件会保存到当前 Agent 工作区的 `myagents_files/space/` 下。".to_string(),
-        "- 完成阶段性工作后，使用 `myagents space issue comment <issueId> --body-file <path>` 回写结论。".to_string(),
-        "- 如任务已解决，使用 `myagents space issue status <issueId> resolved` 更新状态。".to_string(),
-    ]
-    .join("\n")
+        format!("- Title: {}", issue_title),
+        format!("- State: {}", issue_state),
+        format!("- Notification version: {}", notification_version),
+    ];
+    if let Some(goal_path) = goal_path.filter(|value| !value.trim().is_empty()) {
+        lines.push(format!("- Goal: {}", goal_path));
+    }
+    if let Some(update_summary) = update_summary.filter(|value| !value.trim().is_empty()) {
+        lines.push(format!("- Update: {}", update_summary));
+    }
+    let workspace_id = agent
+        .local_workspace_id
+        .as_deref()
+        .or(agent.workspace_id.as_deref());
+    let atomic_claim_command = workspace_id.map(|workspace_id| {
+        format!(
+            "myagents space issue claim {} --deliveryId {} --create-attached --workspaceId {} --workspacePath {} --sourceSpaceId {} --name {} --taskMdContent-file task.md",
+            shell_quote(issue_id),
+            shell_quote(delivery_id),
+            shell_quote(workspace_id),
+            shell_quote(&agent.workspace_path),
+            shell_quote(&agent.space_id),
+            shell_quote(&format!("Space Issue {}", issue_id)),
+        )
+    });
+    let finish_command = format!(
+        "myagents space issue complete {} --workspacePath {} --taskId <taskId> --body-file result.md --message {}",
+        shell_quote(issue_id),
+        shell_quote(&agent.workspace_path),
+        shell_quote("completed Space issue")
+    );
+    lines.extend([
+        String::new(),
+        "Required handling model".to_string(),
+        "- This is a notification, not an assigned task. Inspect the issue before deciding whether to act.".to_string(),
+        format!(
+            "- Read full context with `myagents space issue view {} --comments --json`.",
+            issue_id
+        ),
+        format!(
+            "- If this agent should not take it, run `myagents space issue delivery ignore {}`.",
+            delivery_id
+        ),
+    ]);
+    if let Some(command) = atomic_claim_command {
+        lines.push("- To work on it, write a real task plan to `task.md`, then run the atomic claim + attached-task command from this same AI session:".to_string());
+        lines.push(format!("  `{}`", command));
+        lines.push("- That command claims the Issue, creates the attached Task, writes claim.localTaskId/localSessionId, and cancels the claim if local Task creation fails.".to_string());
+    } else {
+        lines.push("- This Registered Agent is missing a local workspace id; do not claim until it is re-registered from the Space Agents UI.".to_string());
+    }
+    lines.push("- Keep discussion and progress updates on the Space issue via `myagents space issue comment`.".to_string());
+    lines.push(format!(
+        "- When done, prefer the finish command `{}` to post the result comment, set the cloud Issue to done, keep the claim handler recorded, and mark the local Task done.",
+        finish_command
+    ));
+    if let Some(workspace_label) = agent
+        .workspace_label
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- Local workspace: {}", workspace_label));
+    }
+    lines.join("\n")
+}
+
+fn build_delivery_batch_prompt(
+    agent: &LocalRegisteredAgent,
+    deliveries: &[PendingSpaceDelivery],
+) -> String {
+    let mut lines = vec![
+        format!(
+            "MyAgents Space delivered {} Issue notifications to this Registered Agent session.",
+            deliveries.len()
+        ),
+        String::new(),
+        "Process each issue independently. Inspect before claiming, and ignore anything this agent should not take."
+            .to_string(),
+    ];
+    let workspace_id = agent
+        .local_workspace_id
+        .as_deref()
+        .or(agent.workspace_id.as_deref());
+
+    for (index, delivery) in deliveries.iter().enumerate() {
+        lines.extend([
+            String::new(),
+            format!("Issue {}", index + 1),
+            format!("- Delivery ID: {}", delivery.delivery_id),
+            format!("- Issue ID: {}", delivery.issue_id),
+            format!("- Title: {}", delivery.issue_title),
+            format!("- State: {}", delivery.issue_state),
+            format!("- Notification version: {}", delivery.notification_version),
+        ]);
+        if let Some(goal_path) = delivery
+            .goal_path
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push(format!("- Goal: {}", goal_path));
+        }
+        if let Some(update_summary) = delivery
+            .update_summary
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            lines.push(format!("- Update: {}", update_summary));
+        }
+        lines.push(format!(
+            "- Read full context: `myagents space issue view {} --comments --json`",
+            shell_quote(&delivery.issue_id)
+        ));
+        lines.push(format!(
+            "- Ignore: `myagents space issue delivery ignore {}`",
+            shell_quote(&delivery.delivery_id)
+        ));
+        if let Some(workspace_id) = workspace_id {
+            lines.push(format!(
+                "- Claim with attached Task after writing the issue-specific plan to `task.md`: `myagents space issue claim {} --deliveryId {} --create-attached --workspaceId {} --workspacePath {} --sourceSpaceId {} --name {} --taskMdContent-file task.md`",
+                shell_quote(&delivery.issue_id),
+                shell_quote(&delivery.delivery_id),
+                shell_quote(workspace_id),
+                shell_quote(&agent.workspace_path),
+                shell_quote(&agent.space_id),
+                shell_quote(&format!("Space Issue {}", delivery.issue_id)),
+            ));
+        } else {
+            lines.push("- Cannot claim until this Registered Agent is re-registered with a local workspace id.".to_string());
+        }
+        lines.push(format!(
+            "- Complete after work: `myagents space issue complete {} --workspacePath {} --taskId <taskId> --body-file result.md --message {}`",
+            shell_quote(&delivery.issue_id),
+            shell_quote(&agent.workspace_path),
+            shell_quote("completed Space issue")
+        ));
+    }
+
+    lines.extend([
+        String::new(),
+        "Required handling model".to_string(),
+        "- This is one continuous conversation turn for multiple notifications.".to_string(),
+        "- Do not assume every issue should be claimed; decide issue by issue.".to_string(),
+        "- If claiming multiple issues, prepare and claim them one at a time so each attached Task gets the right task.md.".to_string(),
+        "- Keep discussion and progress updates on each Space issue via `myagents space issue comment`.".to_string(),
+    ]);
+    if let Some(workspace_label) = agent
+        .workspace_label
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        lines.push(format!("- Local workspace: {}", workspace_label));
+    }
+    lines.join("\n")
+}
+
+fn shell_quote(value: &str) -> String {
+    if !value.is_empty()
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | ':' | '='))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
@@ -1626,7 +2479,12 @@ async fn authorized_json_data_request(
     body: Option<Value>,
 ) -> Result<Value, String> {
     if crate::space_cloud_mock::is_enabled() {
-        return crate::space_cloud_mock::api_data_request(method.as_str(), path, body);
+        return crate::space_cloud_mock::api_data_request_with_token(
+            method.as_str(),
+            path,
+            Some(token),
+            body,
+        );
     }
     let capability = ensure_space_available()?;
     let client = http_client()?;
@@ -1732,8 +2590,8 @@ pub fn registered_agents_path() -> Result<PathBuf, String> {
     Ok(space_data_dir()?.join(LOCAL_AGENTS_FILE))
 }
 
-fn dispatch_log_path() -> Result<PathBuf, String> {
-    Ok(space_data_dir()?.join(DISPATCH_LOG_FILE))
+fn delivery_log_path() -> Result<PathBuf, String> {
+    Ok(space_data_dir()?.join(DELIVERY_LOG_FILE))
 }
 
 fn session_path() -> Result<PathBuf, String> {
@@ -1794,11 +2652,20 @@ fn read_current_local_agents() -> Result<Vec<LocalRegisteredAgent>, String> {
                 id: agent.id.clone(),
                 base_url: agent.base_url.clone(),
                 space_id: agent.space_id.clone(),
+                client_id: agent.client_id.clone(),
+                local_workspace_id: agent.local_workspace_id.clone(),
+                local_agent_id: agent.local_agent_id.clone(),
                 workspace_id: agent.workspace_id.clone(),
                 display_name: agent.display_name.clone(),
                 workspace_path: agent.workspace_path.clone(),
                 workspace_label: agent.workspace_label.clone(),
+                goal_id: agent.goal_id.clone(),
+                goal_path_label: agent.goal_path_label.clone(),
+                state_filter: agent.state_filter.clone(),
                 goal_md: agent.goal_md.clone(),
+                delivery_session_id: agent.delivery_session_id.clone(),
+                issue_subscription_run_mode: agent.issue_subscription_run_mode.clone(),
+                issue_session_ids: BTreeMap::new(),
                 token: format!("mock-token-{}", agent.id),
                 status: agent.status.clone(),
                 created_at: agent.created_at.clone(),
@@ -1901,32 +2768,32 @@ fn read_local_agents_unlocked(path: &Path) -> Result<LocalRegisteredAgentsFile, 
     }
 }
 
-fn read_dispatch_log() -> Result<SpaceDispatchLogFile, String> {
-    let path = dispatch_log_path()?;
+fn read_delivery_log() -> Result<SpaceDeliveryLogFile, String> {
+    let path = delivery_log_path()?;
     match fs::read_to_string(&path) {
         Ok(content) => serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid Space dispatch log file: {}", e)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SpaceDispatchLogFile::default()),
-        Err(e) => Err(format!("Failed to read Space dispatch log file: {}", e)),
+            .map_err(|e| format!("Invalid Space delivery log file: {}", e)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SpaceDeliveryLogFile::default()),
+        Err(e) => Err(format!("Failed to read Space delivery log file: {}", e)),
     }
 }
 
-fn find_dispatch_log(
+fn find_delivery_log(
     base_url: &str,
-    dispatch_id: &str,
-) -> Result<Option<SpaceDispatchLogEntry>, String> {
-    Ok(read_dispatch_log()?.items.into_iter().find(|entry| {
-        entry.dispatch_id == dispatch_id && space_base_urls_equal(&entry.base_url, base_url)
+    delivery_id: &str,
+) -> Result<Option<SpaceDeliveryLogEntry>, String> {
+    Ok(read_delivery_log()?.items.into_iter().find(|entry| {
+        entry.delivery_id == delivery_id && space_base_urls_equal(&entry.base_url, base_url)
     }))
 }
 
-fn upsert_dispatch_log(entry: SpaceDispatchLogEntry) -> Result<(), String> {
-    let path = dispatch_log_path()?;
+fn upsert_delivery_log(entry: SpaceDeliveryLogEntry) -> Result<(), String> {
+    let path = delivery_log_path()?;
     let lock_path = path.clone();
     with_json_file_lock(&lock_path, move || {
-        let mut file = read_dispatch_log_unlocked(&path)?;
+        let mut file = read_delivery_log_unlocked(&path)?;
         file.items.retain(|existing| {
-            existing.dispatch_id != entry.dispatch_id
+            existing.delivery_id != entry.delivery_id
                 || !space_base_urls_equal(&existing.base_url, &entry.base_url)
         });
         file.items.push(entry);
@@ -1934,69 +2801,29 @@ fn upsert_dispatch_log(entry: SpaceDispatchLogEntry) -> Result<(), String> {
     })
 }
 
-fn update_dispatch_log_run(
-    base_url: &str,
-    dispatch_id: &str,
-    local_run_id: Option<String>,
-) -> Result<(), String> {
-    update_dispatch_log(base_url, dispatch_id, move |entry| {
-        entry.local_run_id = local_run_id.clone();
-    })
-}
-
-fn update_dispatch_log_run_by_task(
-    base_url: &str,
-    task_id: &str,
-    local_run_id: Option<String>,
-) -> Result<(), String> {
-    let path = dispatch_log_path()?;
+fn update_delivery_log_delivered(base_url: &str, delivery_id: &str) -> Result<(), String> {
+    let path = delivery_log_path()?;
     let base_url = base_url.to_string();
-    let task_id = task_id.to_string();
+    let delivery_id = delivery_id.to_string();
     let lock_path = path.clone();
     with_json_file_lock(&lock_path, move || {
-        let mut file = read_dispatch_log_unlocked(&path)?;
+        let mut file = read_delivery_log_unlocked(&path)?;
         if let Some(entry) = file.items.iter_mut().find(|entry| {
-            entry.local_task_id == task_id && space_base_urls_equal(&entry.base_url, &base_url)
+            entry.delivery_id == delivery_id && space_base_urls_equal(&entry.base_url, &base_url)
         }) {
-            entry.local_run_id = local_run_id.clone();
+            entry.delivered_at = Some(chrono::Utc::now().to_rfc3339());
             entry.updated_at = chrono::Utc::now().to_rfc3339();
         }
         write_private_json_unlocked(&path, &file)
     })
 }
 
-fn update_dispatch_log_delivered(base_url: &str, dispatch_id: &str) -> Result<(), String> {
-    update_dispatch_log(base_url, dispatch_id, |entry| {
-        entry.delivered_at = Some(chrono::Utc::now().to_rfc3339());
-    })
-}
-
-fn update_dispatch_log<F>(base_url: &str, dispatch_id: &str, mut update: F) -> Result<(), String>
-where
-    F: FnMut(&mut SpaceDispatchLogEntry) + Send + 'static,
-{
-    let path = dispatch_log_path()?;
-    let base_url = base_url.to_string();
-    let dispatch_id = dispatch_id.to_string();
-    let lock_path = path.clone();
-    with_json_file_lock(&lock_path, move || {
-        let mut file = read_dispatch_log_unlocked(&path)?;
-        if let Some(entry) = file.items.iter_mut().find(|entry| {
-            entry.dispatch_id == dispatch_id && space_base_urls_equal(&entry.base_url, &base_url)
-        }) {
-            update(entry);
-            entry.updated_at = chrono::Utc::now().to_rfc3339();
-        }
-        write_private_json_unlocked(&path, &file)
-    })
-}
-
-fn read_dispatch_log_unlocked(path: &Path) -> Result<SpaceDispatchLogFile, String> {
+fn read_delivery_log_unlocked(path: &Path) -> Result<SpaceDeliveryLogFile, String> {
     match fs::read_to_string(path) {
         Ok(content) => serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid Space dispatch log file: {}", e)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SpaceDispatchLogFile::default()),
-        Err(e) => Err(format!("Failed to read Space dispatch log file: {}", e)),
+            .map_err(|e| format!("Invalid Space delivery log file: {}", e)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SpaceDeliveryLogFile::default()),
+        Err(e) => Err(format!("Failed to read Space delivery log file: {}", e)),
     }
 }
 
@@ -2077,6 +2904,48 @@ fn required_value_string(value: &Value, key: &str) -> Result<String, String> {
         .and_then(Value::as_str)
         .map(ToString::to_string)
         .ok_or_else(|| format!("Space API response missing {}", key))
+}
+
+fn optional_value_string(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
+}
+
+fn value_string_array(value: &Value, key: &str) -> Option<Vec<String>> {
+    let array = value.get(key)?.as_array()?;
+    Some(
+        array
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+            .collect(),
+    )
+}
+
+fn normalize_agent_state_filter(input: Option<Vec<String>>) -> Vec<String> {
+    let mut out = Vec::new();
+    for state in input.unwrap_or_else(default_agent_state_filter) {
+        let state = state.trim();
+        if state.is_empty() || out.iter().any(|existing| existing == state) {
+            continue;
+        }
+        out.push(state.to_string());
+    }
+    if out.is_empty() {
+        default_agent_state_filter()
+    } else {
+        out
+    }
+}
+
+fn stable_local_agent_id(workspace_id: &str) -> String {
+    format!("local-agent-{}", safe_local_name(workspace_id))
 }
 
 fn safe_local_name(value: &str) -> String {
@@ -2263,6 +3132,356 @@ fn url_component(value: &str) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn build_delivery_batch_prompt_groups_multiple_issues_for_single_session_mode() {
+        let agent = LocalRegisteredAgent {
+            id: "rag_test".to_string(),
+            base_url: "https://space.myagents.test".to_string(),
+            space_id: "space_test".to_string(),
+            client_id: None,
+            local_workspace_id: Some("workspace_test".to_string()),
+            local_agent_id: None,
+            workspace_id: Some("workspace_test".to_string()),
+            display_name: "Batch Agent".to_string(),
+            workspace_path: "/tmp/myagents-batch".to_string(),
+            workspace_label: Some("Batch Workspace".to_string()),
+            goal_id: Some("goal_test".to_string()),
+            goal_path_label: Some("Root / Batch".to_string()),
+            state_filter: vec!["todo".to_string()],
+            goal_md: None,
+            delivery_session_id: Some("session_shared".to_string()),
+            issue_subscription_run_mode: SpaceIssueSubscriptionRunMode::SingleSession,
+            issue_session_ids: BTreeMap::new(),
+            token: "token".to_string(),
+            status: "active".to_string(),
+            created_at: "2026-06-24T00:00:00.000Z".to_string(),
+            updated_at: "2026-06-24T00:00:00.000Z".to_string(),
+        };
+        let prompt = build_delivery_batch_prompt(
+            &agent,
+            &[
+                PendingSpaceDelivery {
+                    delivery_id: "delivery_1".to_string(),
+                    delivery_kind: "subscription".to_string(),
+                    claim_id: None,
+                    target_session_id: None,
+                    issue_id: "issue_1".to_string(),
+                    issue_title: "First".to_string(),
+                    issue_state: "todo".to_string(),
+                    goal_id: Some("goal_test".to_string()),
+                    goal_path: Some("Root / Batch".to_string()),
+                    update_summary: None,
+                    notification_version: 1,
+                },
+                PendingSpaceDelivery {
+                    delivery_id: "delivery_2".to_string(),
+                    delivery_kind: "subscription".to_string(),
+                    claim_id: None,
+                    target_session_id: None,
+                    issue_id: "issue_2".to_string(),
+                    issue_title: "Second".to_string(),
+                    issue_state: "todo".to_string(),
+                    goal_id: Some("goal_test".to_string()),
+                    goal_path: Some("Root / Batch".to_string()),
+                    update_summary: Some("State changed to todo".to_string()),
+                    notification_version: 2,
+                },
+            ],
+        );
+
+        assert!(prompt.contains("delivered 2 Issue notifications"));
+        assert!(prompt.contains("Issue 1"));
+        assert!(prompt.contains("Delivery ID: delivery_1"));
+        assert!(prompt.contains("Issue 2"));
+        assert!(prompt.contains("Delivery ID: delivery_2"));
+        assert!(prompt.contains("one continuous conversation turn"));
+    }
+
+    #[test]
+    fn build_claim_followup_prompt_keeps_existing_handler_context() {
+        let agent = LocalRegisteredAgent {
+            id: "rag_test".to_string(),
+            base_url: "https://space.myagents.test".to_string(),
+            space_id: "space_test".to_string(),
+            client_id: None,
+            local_workspace_id: Some("workspace_test".to_string()),
+            local_agent_id: None,
+            workspace_id: Some("workspace_test".to_string()),
+            display_name: "Followup Agent".to_string(),
+            workspace_path: "/tmp/myagents-followup".to_string(),
+            workspace_label: Some("Followup Workspace".to_string()),
+            goal_id: Some("goal_test".to_string()),
+            goal_path_label: Some("Root / Followup".to_string()),
+            state_filter: vec!["todo".to_string()],
+            goal_md: None,
+            delivery_session_id: Some("session_shared".to_string()),
+            issue_subscription_run_mode: SpaceIssueSubscriptionRunMode::SingleSession,
+            issue_session_ids: BTreeMap::new(),
+            token: "token".to_string(),
+            status: "active".to_string(),
+            created_at: "2026-06-24T00:00:00.000Z".to_string(),
+            updated_at: "2026-06-24T00:00:00.000Z".to_string(),
+        };
+        let prompt = build_claim_followup_prompt(
+            &agent,
+            &PendingSpaceDelivery {
+                delivery_id: "delivery_followup".to_string(),
+                delivery_kind: "claim_followup".to_string(),
+                claim_id: Some("claim_1".to_string()),
+                target_session_id: Some("session_claim".to_string()),
+                issue_id: "issue_1".to_string(),
+                issue_title: "Follow-up question".to_string(),
+                issue_state: "done".to_string(),
+                goal_id: Some("goal_test".to_string()),
+                goal_path: Some("Root / Followup".to_string()),
+                update_summary: Some("New human comment".to_string()),
+                notification_version: 4,
+            },
+        );
+
+        assert!(prompt.contains("follow-up comment"));
+        assert!(prompt.contains("already claimed"));
+        assert!(prompt.contains("Do not run the claim command again"));
+        assert!(prompt.contains("myagents space issue comment issue_1"));
+        assert!(!prompt.contains("--create-attached"));
+    }
+
+    #[tokio::test]
+    async fn mock_space_delivery_routes_poll_mark_and_process() {
+        let _mock = crate::space_cloud_mock::enable_for_test();
+
+        let pending = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
+            registered_agent_id: "rag_mock_frontend".to_string(),
+        })
+        .await
+        .expect("mock deliveries should poll");
+        let items = pending
+            .pointer("/data/items")
+            .and_then(Value::as_array)
+            .expect("delivery items");
+        assert!(!items.is_empty());
+        let delivery_id = items[0]
+            .pointer("/delivery/id")
+            .and_then(Value::as_str)
+            .expect("delivery id")
+            .to_string();
+
+        let marked = cmd_space_mark_delivery_delivered(SpaceMarkDeliveryDeliveredInput {
+            registered_agent_id: "rag_mock_frontend".to_string(),
+            delivery_id,
+            session_id: Some("session-space-delivery".to_string()),
+        })
+        .await
+        .expect("mock delivery should mark delivered");
+        assert_eq!(
+            marked.pointer("/data/delivered").and_then(Value::as_bool),
+            Some(true)
+        );
+
+        let empty = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
+            registered_agent_id: "rag_mock_frontend".to_string(),
+        })
+        .await
+        .expect("mock deliveries should poll after mark");
+        assert_eq!(
+            empty
+                .pointer("/data/items")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+
+        crate::space_cloud_mock::reset();
+        let processed = crate::space_cloud_mock::process_deliveries_once();
+        assert!(processed.processed >= 1);
+        assert_eq!(processed.delivered, processed.processed);
+    }
+
+    #[tokio::test]
+    async fn mock_space_claim_followup_targets_claim_local_session() {
+        let _mock = crate::space_cloud_mock::enable_for_test();
+
+        let pending = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
+            registered_agent_id: "rag_mock_frontend".to_string(),
+        })
+        .await
+        .expect("mock deliveries should poll");
+        let first = pending
+            .pointer("/data/items/0")
+            .expect("first delivery should exist");
+        let issue_id = first
+            .pointer("/delivery/issueId")
+            .and_then(Value::as_str)
+            .expect("issue id")
+            .to_string();
+        let delivery_id = first
+            .pointer("/delivery/id")
+            .and_then(Value::as_str)
+            .expect("delivery id")
+            .to_string();
+
+        let claim = space_cli_issue_claim(SpaceCliIssueClaimInput {
+            issue_id: issue_id.clone(),
+            delivery_id: Some(delivery_id),
+            agent_id: Some("rag_mock_frontend".to_string()),
+            workspace_path: None,
+        })
+        .await
+        .expect("claim should succeed");
+        let claim_id = claim
+            .pointer("/claim/id")
+            .and_then(Value::as_str)
+            .expect("claim id")
+            .to_string();
+        assert_eq!(
+            claim.pointer("/claim/actorType").and_then(Value::as_str),
+            Some("registered_agent")
+        );
+
+        let linked = space_cli_claim_local_task(SpaceCliClaimLocalTaskInput {
+            claim_id: claim_id.clone(),
+            local_task_id: "task_claim".to_string(),
+            local_session_id: "session_claim".to_string(),
+            agent_id: Some("rag_mock_frontend".to_string()),
+            workspace_path: None,
+        })
+        .await
+        .expect("local task binding should succeed");
+        assert_eq!(
+            linked.get("localSessionId").and_then(Value::as_str),
+            Some("session_claim")
+        );
+
+        space_cli_issue_complete(SpaceCliIssueActionInput {
+            issue_id: issue_id.clone(),
+            agent_id: Some("rag_mock_frontend".to_string()),
+            workspace_path: None,
+        })
+        .await
+        .expect("complete should keep handler");
+        let detail = space_cli_issue_get(SpaceCliIssueGetInput {
+            issue_id: issue_id.clone(),
+            agent_id: Some("rag_mock_frontend".to_string()),
+            workspace_path: None,
+            comments_cursor: None,
+            comments_limit: Some(5),
+        })
+        .await
+        .expect("detail should load");
+        assert_eq!(
+            detail.pointer("/issue/state").and_then(Value::as_str),
+            Some("done")
+        );
+        assert_eq!(
+            detail
+                .pointer("/claim/localSessionId")
+                .and_then(Value::as_str),
+            Some("session_claim")
+        );
+
+        cmd_space_api_request(SpaceApiRequestInput {
+            method: "POST".to_string(),
+            path: format!("/api/issues/{}/comments", issue_id),
+            body: Some(serde_json::json!({ "body": "human follow-up question" })),
+        })
+        .await
+        .expect("human comment should succeed");
+
+        let deliveries = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
+            registered_agent_id: "rag_mock_frontend".to_string(),
+        })
+        .await
+        .expect("deliveries should poll after comment");
+        let followup = deliveries
+            .pointer("/data/items")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.pointer("/delivery/deliveryKind")
+                        .and_then(Value::as_str)
+                        == Some("claim_followup")
+                })
+            })
+            .expect("claim follow-up delivery should exist");
+        assert_eq!(
+            followup
+                .pointer("/delivery/targetSessionId")
+                .and_then(Value::as_str),
+            Some("session_claim")
+        );
+        assert_eq!(
+            followup
+                .pointer("/delivery/claimId")
+                .and_then(Value::as_str),
+            Some(claim_id.as_str())
+        );
+        let followup_delivery_id = followup
+            .pointer("/delivery/id")
+            .and_then(Value::as_str)
+            .expect("follow-up delivery id")
+            .to_string();
+
+        let followup_count_before = deliveries
+            .pointer("/data/items")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| {
+                        item.pointer("/delivery/deliveryKind")
+                            .and_then(Value::as_str)
+                            == Some("claim_followup")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        space_cli_issue_comment(SpaceCliIssueCommentInput {
+            issue_id: issue_id.clone(),
+            body: "agent self update".to_string(),
+            agent_id: Some("rag_mock_frontend".to_string()),
+            workspace_path: None,
+        })
+        .await
+        .expect("agent self comment should succeed");
+        let after_self_comment = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
+            registered_agent_id: "rag_mock_frontend".to_string(),
+        })
+        .await
+        .expect("deliveries should poll after self comment");
+        let followup_count_after = after_self_comment
+            .pointer("/data/items")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter(|item| {
+                        item.pointer("/delivery/deliveryKind")
+                            .and_then(Value::as_str)
+                            == Some("claim_followup")
+                    })
+                    .count()
+            })
+            .unwrap_or(0);
+        assert_eq!(followup_count_after, followup_count_before);
+
+        let processed = crate::space_cloud_mock::process_deliveries_once();
+        assert!(processed.processed >= 1);
+        let delivered_followup = crate::space_cloud_mock::delivery_by_id(&followup_delivery_id)
+            .expect("processed follow-up delivery");
+        assert_eq!(
+            delivered_followup
+                .pointer("/delivery/status")
+                .and_then(Value::as_str),
+            Some("delivered")
+        );
+        assert_eq!(
+            delivered_followup
+                .pointer("/delivery/deliveredToSessionId")
+                .and_then(Value::as_str),
+            Some("session_claim")
+        );
+    }
+
     #[tokio::test]
     async fn mock_space_issue_comment_routes_are_mutable_and_method_guarded() {
         let _mock = crate::space_cloud_mock::enable_for_test();
@@ -2438,11 +3657,6 @@ mod tests {
                 .and_then(Value::as_str),
             Some("pending")
         );
-        let processed = cmd_space_process_dispatches_once()
-            .await
-            .expect("mock process dispatches");
-        assert!(processed.processed >= 1);
-
         let upload_dir = tempfile::tempdir().expect("upload tempdir");
         let upload_source = upload_dir.path().join("trace.log");
         fs::write(&upload_source, "mock trace").expect("write upload source");
@@ -2504,11 +3718,18 @@ mod tests {
             workspace_id: "project_acceptance".to_string(),
             workspace_path: workspace.to_string_lossy().to_string(),
             workspace_label: Some("Acceptance Workspace".to_string()),
-            goal_md: "Validate Space Phase 2 mock flows.".to_string(),
+            goal_id: "goal_mock_ui".to_string(),
+            state_filter: Some(vec!["todo".to_string()]),
+            goal_md: Some("Validate Space Phase 2 mock flows.".to_string()),
+            issue_subscription_run_mode: None,
         })
         .await
         .expect("agent registration should succeed");
         assert_eq!(registered.display_name, "Mock Acceptance Agent");
+        assert_eq!(
+            registered.issue_subscription_run_mode,
+            SpaceIssueSubscriptionRunMode::SingleSession
+        );
 
         let updated_agent = cmd_space_update_registered_agent(SpaceUpdateRegisteredAgentInput {
             id: registered.id.clone(),
@@ -2516,11 +3737,16 @@ mod tests {
             workspace_label: None,
             goal_md: None,
             status: Some("disabled".to_string()),
+            issue_subscription_run_mode: Some(SpaceIssueSubscriptionRunMode::NewSession),
         })
         .await
         .expect("agent update should succeed");
         assert_eq!(updated_agent.display_name, "Mock Acceptance Agent 2");
         assert_eq!(updated_agent.status, "disabled");
+        assert_eq!(
+            updated_agent.issue_subscription_run_mode,
+            SpaceIssueSubscriptionRunMode::NewSession
+        );
 
         let revoked_agent =
             cmd_space_revoke_registered_agent(SpaceRegisteredAgentIdInput { id: registered.id })

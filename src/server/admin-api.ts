@@ -1587,6 +1587,7 @@ Commands:
   get <taskId>                    Task metadata + .task/ doc paths
   create-direct <name>            Create a task with inline task.md content
   create-from-alignment <sid>     Materialize a task from an alignment session
+  create-attached                 Create a running task attached to the current AI session
   update <taskId>                 Patch task fields (schedule / notification /
                                   prompt / overrides). Rejected while running.
   update-status <taskId> <status> Transition state (running/verifying/done/blocked/stopped)
@@ -1646,6 +1647,22 @@ Options for 'create-from-alignment' (identical override flags):
   --executionMode --runMode --tags --sourceThoughtId
   --runtime --model --permissionMode --runtimeConfig --mcpEnabledServers
 
+Options for 'create-attached':
+  --name                  Task name (required)
+  --workspaceId           Workspace id (required)
+  --workspacePath         Absolute workspace path (required)
+  --taskMdFile <path>     Read task.md body from a file
+  --taskMdContent-file <path>
+                          Alias accepted by Space Issue workflows
+  --taskMdContent         Inline task.md body
+  --source space-issue    Required source kind (default: space-issue)
+  --sourceIssueId <id>    Space Issue id (required)
+  --sourceClaimId <id>    Space Issue claim id
+  --sourceSpaceId <id>    Space id
+  --sourceDeliveryId <id> Issue delivery id
+  Must run inside a MyAgents AI session; current session id comes from
+  MYAGENTS_SESSION_ID and is not guessed by the CLI.
+
 Options for 'update' <taskId>:
   Accepts every create-direct flag (each optional; missing = leave unchanged).
   Additional flags for clearing overrides:
@@ -1666,7 +1683,7 @@ Options for 'update-status':
 Output:
   - Default (human-readable) mode prints a compact summary + any override echo.
   - --json returns the full structured payload (task id, overrides, overridden[],
-    inheritedFromWorkspace[], nextSteps.{dispatch,inspect}).
+    inheritedFromWorkspace[], nextSteps.{dispatch,inspect,complete}).
 
 Examples:
   myagents task list --workspaceId my-proj
@@ -1681,6 +1698,9 @@ Examples:
       --executionMode recurring --intervalMinutes 180 \\
       --notificationBotChannelId feishu_main
   myagents task create-from-alignment sess_abc --name "Ship feature X" --runtime claude-code
+  myagents task create-attached --name "Space Issue #123" \\
+      --workspaceId my-proj --workspacePath /path/to/my-proj \\
+      --taskMdContent-file task.md --source space-issue --sourceIssueId iss_123
   myagents task run t_abc123
   myagents task update t_abc123 --intervalMinutes 240   # change cadence after the fact
   myagents task update-status t_abc123 done --message "shipped in v0.1.70"
@@ -2305,6 +2325,28 @@ export async function handleTaskCreateFromAlignment(
   return enriched;
 }
 
+export async function handleTaskCreateAttached(
+  payload: Record<string, unknown>,
+): Promise<AdminResponse> {
+  if (typeof payload.currentSessionId !== 'string' || payload.currentSessionId.trim().length === 0) {
+    return {
+      success: false,
+      error: 'currentSessionId is required; run this command from inside a MyAgents AI session',
+    };
+  }
+  const resp = await managementApi('/api/task/create-attached', 'POST', payload);
+  const wrapped = wrapMgmtResponse(resp);
+  const enriched = enrichTaskCreateResponse(wrapped, payload, [], { attached: true });
+  if (enriched.success) {
+    trackServer('task_create', {
+      source: cliSource(),
+      origin: 'space_issue_attached',
+      has_workspace: typeof payload.workspacePath === 'string' && payload.workspacePath.length > 0,
+    });
+  }
+  return enriched;
+}
+
 /**
  * Read the task's `sessionIds.length` from Rust before kicking off a run.
  * Returns `null` if the read fails — analytics call sites then fall back to
@@ -2370,6 +2412,7 @@ function enrichTaskCreateResponse(
   response: AdminResponse,
   payload: Record<string, unknown>,
   requestedOverrides: string[],
+  options: { attached?: boolean } = {},
 ): AdminResponse {
   if (!response.success) return response;
   const existing = (response.data ?? {}) as Record<string, unknown>;
@@ -2416,10 +2459,15 @@ function enrichTaskCreateResponse(
       ['runtime', 'model', 'permissionMode'].filter(f => !fieldsWithValue.includes(f)),
   };
   if (taskId) {
-    enriched.nextSteps = {
-      dispatch: `myagents task run ${taskId}`,
-      inspect: `myagents task get ${taskId}`,
-    };
+    enriched.nextSteps = options.attached
+      ? {
+          inspect: `myagents task get ${taskId}`,
+          complete: `myagents task update-status ${taskId} done --message "<summary>"`,
+        }
+      : {
+          dispatch: `myagents task run ${taskId}`,
+          inspect: `myagents task get ${taskId}`,
+        };
   }
   return { ...response, data: enriched };
 }
@@ -2588,8 +2636,8 @@ export async function handleThoughtCreate(payload: {
 // instead of a Claude-Agent-SDK-only MCP protocol. See prd_0.1.67.
 //
 // Authorization model: Sidecar is session-scoped (1 Sidecar = 1 session), so
-// the ambient session context (cron context / im-media context) is already
-// correctly bound to the calling Sidecar — no MYAGENTS_SESSION_ID plumbing.
+// most ambient context is already bound to the calling Sidecar. Commands that
+// need a durable local Task/session link use MYAGENTS_SESSION_ID explicitly.
 // ---------------------------------------------------------------------------
 
 export function handleCronExit(payload: { reason?: string }): AdminResponse {
@@ -2919,12 +2967,40 @@ export async function handleSpaceIssueGet(payload: Record<string, unknown>): Pro
   return spaceManagementResponse('/api/space/issue-get', payload);
 }
 
+export async function handleSpaceIssueList(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-list', payload);
+}
+
 export async function handleSpaceIssueComment(payload: Record<string, unknown>): Promise<AdminResponse> {
   return spaceManagementResponse('/api/space/issue-comment', payload, 'Comment posted to MyAgents Space.');
 }
 
 export async function handleSpaceIssueStatus(payload: Record<string, unknown>): Promise<AdminResponse> {
   return spaceManagementResponse('/api/space/issue-status', payload, 'Issue status updated.');
+}
+
+export async function handleSpaceIssueClaim(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-claim', payload, 'Issue claimed.');
+}
+
+export async function handleSpaceIssueDeliveryIgnore(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-delivery-ignore', payload, 'Issue delivery ignored.');
+}
+
+export async function handleSpaceIssueClose(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-close', payload, 'Issue closed.');
+}
+
+export async function handleSpaceIssueComplete(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-complete', payload, 'Issue completed.');
+}
+
+export async function handleSpaceIssueCancelClaim(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-cancel-claim', payload, 'Issue claim cancelled.');
+}
+
+export async function handleSpaceClaimLocalTask(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/claim-local-task', payload, 'Claim linked to local task.');
 }
 
 export async function handleSpaceAttachmentDownload(payload: Record<string, unknown>): Promise<AdminResponse> {

@@ -183,6 +183,17 @@ Rust 路由到 AI Sidecar → Claude 处理 → 生成回复
 插件将回复发送到 IM 平台（CardKit / 原生消息）
 ```
 
+#### Outbound 媒体文件名
+
+Rust `BridgeAdapter::send_file/send_photo` 会把 `{ filename, data }` POST 到 Bridge `/send-media`。Bridge 需要把 base64 payload materialize 成临时文件，再把绝对路径作为 `mediaUrl` 传给 OpenClaw plugin 的 `outbound.sendMedia`。
+
+这个临时文件的 basename 对部分插件就是用户最终看到的上传文件名：WeChat / WeCom / Lark 等媒体 loader 会从 `path.basename(mediaUrl)` 推导 `fileName`。因此 Bridge 的文件名清洗边界是：
+
+- 必须保留 UTF-8 / 中文等 Unicode 展示名；
+- 必须移除路径分隔符、控制字符、Windows forbidden characters、Windows device names；
+- 必须把展示名规范化到 NFC，并限制单个 path component 长度，保证 macOS / Windows 都能稳定落盘；
+- 不能用 ASCII-only regex 把非拉丁字符替换为 `_`。
+
 ### Phase 5: 错误恢复
 
 | 场景 | 检测方式 | 恢复策略 |

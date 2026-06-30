@@ -1032,6 +1032,17 @@ interface ChannelConfig {
 }
 ```
 
+### Agent Channel 权限默认值
+
+Agent Channel 是无人值守入口。没有 `ChannelOverrides.permissionMode` 时，Channel 的有效权限默认取当前 runtime 的最大自主权限，而不是继承桌面 Agent 的 `permissionMode`：
+
+- builtin → `fullAgency`
+- Claude Code → `bypassPermissions`
+- Codex → `no-restrictions`
+- Gemini → `yolo`
+
+`AgentConfig.permissionMode` 仍然是桌面/Agent 默认对话权限；它不能静默降低 IM Channel。用户显式配置 Channel permission override 时才按 override 执行。群聊的 `groupToolsDeny` 是独立安全层，默认仍可额外禁止 `Bash` / `Edit` / `Write`。
+
 ### Mino 模板与 Agent 默认能力
 
 Mino 默认工作区的"文件内容模板"和 MyAgents 的"产品级 Agent 默认策略"是两层：

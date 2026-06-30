@@ -48,6 +48,7 @@ const JSON_EVENTS = new Set([
     'chat:status',
     'chat:agent-error',
     'permission:request', // Permission prompt for tool usage
+    'permission:expired', // Permission prompt expired or resolved server-side
     'ask-user-question:request', // AskUserQuestion tool prompt
     'ask-user-question:expired', // PRD #131 — backend timeout / SDK abort: clear stale UI card
     'exit-plan-mode:request',  // ExitPlanMode tool - AI submits plan for review

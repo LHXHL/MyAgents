@@ -205,6 +205,8 @@ pub enum TaskDispatchOrigin {
     Direct,
     #[serde(rename = "ai-aligned")]
     AiAligned,
+    #[serde(rename = "attached-session")]
+    AttachedSession,
 }
 
 /// Backfill payload for `TaskStore::heal_missing_schedule_fields`. The caller
@@ -253,6 +255,30 @@ pub struct NotificationConfig {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_task_executor_agent() -> TaskExecutor {
+    TaskExecutor::Agent
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum TaskExternalSourceType {
+    #[serde(rename = "space-issue")]
+    SpaceIssue,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskExternalSource {
+    #[serde(rename = "type")]
+    pub source_type: TaskExternalSourceType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub space_id: Option<String>,
+    pub issue_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -353,6 +379,8 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notification: Option<NotificationConfig>,
     pub dispatch_origin: TaskDispatchOrigin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_source: Option<TaskExternalSource>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub deleted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -520,6 +548,38 @@ pub struct TaskCreateFromAlignmentInput {
     pub mcp_enabled_servers: Option<Vec<String>>,
     #[serde(default)]
     pub source_thought_id: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub notification: Option<NotificationConfig>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub enum TaskCreateAttachedSource {
+    #[serde(rename = "space-issue")]
+    SpaceIssue,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskCreateAttachedInput {
+    pub name: String,
+    #[serde(default = "default_task_executor_agent")]
+    pub executor: TaskExecutor,
+    #[serde(default)]
+    pub description: Option<String>,
+    pub workspace_id: String,
+    pub workspace_path: String,
+    pub task_md_content: String,
+    pub current_session_id: String,
+    pub source: TaskCreateAttachedSource,
+    #[serde(default)]
+    pub source_space_id: Option<String>,
+    pub source_issue_id: String,
+    #[serde(default)]
+    pub source_claim_id: Option<String>,
+    #[serde(default)]
+    pub source_delivery_id: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -1074,6 +1134,7 @@ impl TaskStore {
             }],
             notification: input.notification,
             dispatch_origin: TaskDispatchOrigin::Direct,
+            external_source: None,
             deleted: false,
             deleted_at: None,
         };
@@ -1211,6 +1272,7 @@ impl TaskStore {
             }],
             notification: input.notification,
             dispatch_origin: TaskDispatchOrigin::Direct,
+            external_source: None,
             deleted: false,
             deleted_at: None,
         };
@@ -1399,6 +1461,7 @@ impl TaskStore {
             }],
             notification: input.notification,
             dispatch_origin: TaskDispatchOrigin::AiAligned,
+            external_source: None,
             deleted: false,
             deleted_at: None,
         };
@@ -1442,6 +1505,150 @@ impl TaskStore {
                 "source": TransitionSource::Cli.as_str(),
                 "message": "created (ai-aligned)",
                 "event": "created",
+            }),
+        );
+        Ok(t)
+    }
+
+    pub async fn create_attached(&self, input: TaskCreateAttachedInput) -> Result<Task, String> {
+        let workspace_path = canonicalize_workspace_path(&input.workspace_path)?;
+        validate_task_name(&input.name)?;
+        validate_safe_id(&input.current_session_id, "currentSessionId")?;
+        let task_md_content = input.task_md_content.trim().to_string();
+        if task_md_content.is_empty() {
+            return Err("taskMdContent is empty".to_string());
+        }
+        let source_issue_id = input.source_issue_id.trim().to_string();
+        if source_issue_id.is_empty() {
+            return Err("sourceIssueId is empty".to_string());
+        }
+
+        let now = now_ms();
+        let id = Uuid::new_v4().to_string();
+        let task_dir = task_docs_dir(&id)?;
+        let external_source = match input.source {
+            TaskCreateAttachedSource::SpaceIssue => TaskExternalSource {
+                source_type: TaskExternalSourceType::SpaceIssue,
+                space_id: input.source_space_id.filter(|s| !s.trim().is_empty()),
+                issue_id: source_issue_id,
+                claim_id: input.source_claim_id.filter(|s| !s.trim().is_empty()),
+                delivery_id: input.source_delivery_id.filter(|s| !s.trim().is_empty()),
+            },
+        };
+
+        let created_transition = StatusTransition {
+            from: None,
+            to: TaskStatus::Todo,
+            at: now,
+            actor: TransitionActor::Agent,
+            message: Some("created (attached-session)".to_string()),
+            source: Some(TransitionSource::Cli),
+        };
+        let attached_transition = StatusTransition {
+            from: Some(TaskStatus::Todo),
+            to: TaskStatus::Running,
+            at: now,
+            actor: TransitionActor::Agent,
+            message: Some("attached to current session".to_string()),
+            source: Some(TransitionSource::Cli),
+        };
+
+        let t = Task {
+            id: id.clone(),
+            name: input.name,
+            executor: input.executor,
+            description: input.description,
+            workspace_id: input.workspace_id,
+            workspace_path: workspace_path.clone(),
+            execution_mode: TaskExecutionMode::Once,
+            cron_task_id: None,
+            run_mode: None,
+            end_conditions: None,
+            interval_minutes: None,
+            cron_expression: None,
+            cron_timezone: None,
+            dispatch_at: None,
+            model: None,
+            provider_id: None,
+            permission_mode: None,
+            preselected_session_id: None,
+            runtime: None,
+            runtime_config: None,
+            mcp_enabled_servers: None,
+            source_thought_id: None,
+            session_ids: vec![input.current_session_id.clone()],
+            status: TaskStatus::Running,
+            tags: input.tags,
+            created_at: now,
+            updated_at: now,
+            last_executed_at: Some(now),
+            status_history: vec![created_transition, attached_transition],
+            notification: input.notification,
+            dispatch_origin: TaskDispatchOrigin::AttachedSession,
+            external_source: Some(external_source),
+            deleted: false,
+            deleted_at: None,
+        };
+
+        let mut inner = self.inner.write().await;
+        fs::create_dir_all(&task_dir)
+            .map_err(|e| format!("Failed to create task doc dir: {}", e))?;
+        let task_md = task_dir.join("task.md");
+        write_atomic_text(&task_md, &task_md_content)
+            .map_err(|e| format!("Failed to write task.md: {}", e))?;
+
+        let mut next = inner.clone();
+        next.insert(id.clone(), t.clone());
+        if let Err(e) = Self::persist_locked(&self.jsonl_path, &next) {
+            if let Err(cleanup_err) = fs::remove_dir_all(&task_dir) {
+                ulog_warn!(
+                    "[task] attached jsonl write failed AND task_dir cleanup failed id={} path={} err={}",
+                    id,
+                    task_dir.display(),
+                    cleanup_err
+                );
+            }
+            return Err(e);
+        }
+        *inner = next;
+        drop(inner);
+
+        ulog_info!(
+            "[task] created attached id={} name={} session={}",
+            id,
+            t.name,
+            input.current_session_id
+        );
+        emit_task_event(
+            "task:status-changed",
+            serde_json::json!({
+                "taskId": t.id,
+                "from": serde_json::Value::Null,
+                "to": TaskStatus::Todo.as_str(),
+                "at": t.created_at,
+                "actor": TransitionActor::Agent.as_str(),
+                "source": TransitionSource::Cli.as_str(),
+                "message": "created (attached-session)",
+                "event": "created",
+            }),
+        );
+        emit_task_event(
+            "task:status-changed",
+            serde_json::json!({
+                "taskId": t.id,
+                "from": TaskStatus::Todo.as_str(),
+                "to": TaskStatus::Running.as_str(),
+                "at": t.created_at,
+                "actor": TransitionActor::Agent.as_str(),
+                "source": TransitionSource::Cli.as_str(),
+                "message": "attached to current session",
+            }),
+        );
+        emit_task_event(
+            "task:session-appended",
+            serde_json::json!({
+                "taskId": t.id,
+                "sessionId": input.current_session_id,
             }),
         );
         Ok(t)
@@ -2693,6 +2900,10 @@ fn compose_dispatch_prompt(task: &Task) -> Result<String, String> {
             // `~/.myagents/tasks/<taskId>/` on its own. We just need to invoke it.
             Ok(format!("/task-implement {}", task.id))
         }
+        TaskDispatchOrigin::AttachedSession => Err(format!(
+            "attached-session task {} is already bound to a live session and cannot be dispatched",
+            task.id
+        )),
         TaskDispatchOrigin::Direct => {
             let dir = task_docs_dir(&task.id)?;
             let task_md = dir.join("task.md");
@@ -2933,6 +3144,14 @@ pub async fn cmd_task_create_from_alignment(
         }
     }
     Ok(created)
+}
+
+#[tauri::command]
+pub async fn cmd_task_create_attached(
+    task_state: tauri::State<'_, ManagedTaskStore>,
+    input: TaskCreateAttachedInput,
+) -> Result<Task, String> {
+    task_state.create_attached(input).await
 }
 
 #[tauri::command]
@@ -3394,6 +3613,57 @@ mod tests {
         assert!(md.exists());
         let body = std::fs::read_to_string(&md).unwrap();
         assert_eq!(body, "跑通 v2.4");
+    }
+
+    #[tokio::test]
+    async fn create_attached_binds_current_session_without_cron() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+
+        let created = store
+            .create_attached(TaskCreateAttachedInput {
+                name: "Space Issue #123".to_string(),
+                executor: TaskExecutor::Agent,
+                description: Some("MyAgents Space Issue iss_123".to_string()),
+                workspace_id: "ws-myagents".to_string(),
+                workspace_path: ws.to_string_lossy().into_owned(),
+                task_md_content: "处理 Space Issue".to_string(),
+                current_session_id: "session-123".to_string(),
+                source: TaskCreateAttachedSource::SpaceIssue,
+                source_space_id: Some("official".to_string()),
+                source_issue_id: "iss_123".to_string(),
+                source_claim_id: Some("claim_123".to_string()),
+                source_delivery_id: Some("delivery_123".to_string()),
+                tags: vec![],
+                notification: None,
+            })
+            .await
+            .unwrap();
+
+        assert_eq!(created.status, TaskStatus::Running);
+        assert_eq!(created.dispatch_origin, TaskDispatchOrigin::AttachedSession);
+        assert_eq!(created.cron_task_id, None);
+        assert_eq!(created.session_ids, vec!["session-123".to_string()]);
+        assert_eq!(created.status_history.len(), 2);
+        assert_eq!(created.status_history[0].from, None);
+        assert_eq!(created.status_history[0].to, TaskStatus::Todo);
+        assert_eq!(created.status_history[1].from, Some(TaskStatus::Todo));
+        assert_eq!(created.status_history[1].to, TaskStatus::Running);
+        assert_eq!(
+            created
+                .external_source
+                .as_ref()
+                .map(|s| s.issue_id.as_str()),
+            Some("iss_123")
+        );
+
+        let md = task_docs_dir(&created.id).unwrap().join("task.md");
+        assert_eq!(std::fs::read_to_string(&md).unwrap(), "处理 Space Issue");
+        let dispatch_err = compose_dispatch_prompt(&created).unwrap_err();
+        assert!(dispatch_err.contains("attached-session"));
     }
 
     #[tokio::test]
@@ -3883,6 +4153,11 @@ mod tests {
         // PRD §3.2 / TS shared types — these wire values must match exactly.
         let d = TaskDispatchOrigin::AiAligned;
         assert_eq!(serde_json::to_string(&d).unwrap(), "\"ai-aligned\"");
+        let attached = TaskDispatchOrigin::AttachedSession;
+        assert_eq!(
+            serde_json::to_string(&attached).unwrap(),
+            "\"attached-session\""
+        );
         let r = TaskRunMode::SingleSession;
         assert_eq!(serde_json::to_string(&r).unwrap(), "\"single-session\"");
     }

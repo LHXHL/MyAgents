@@ -1278,6 +1278,7 @@ pub async fn cmd_start_agent_channel(
     } // agents_guard dropped
 
     let mut im_config = channelConfig.to_im_config(&agentConfig);
+    let agent_channel_permission_mode = im_config.permission_mode.clone();
     // Suppress per-channel heartbeat interval — agent-level heartbeat controls timing
     im_config.heartbeat_config = Some(types::HeartbeatConfig {
         enabled: false,
@@ -1313,7 +1314,7 @@ pub async fn cmd_start_agent_channel(
                     .as_ref()
                     .and_then(|s| serde_json::from_str(s).ok()),
             )),
-            permission_mode: Arc::new(RwLock::new(agentConfig.permission_mode.clone())),
+            permission_mode: Arc::new(RwLock::new(agent_channel_permission_mode.clone())),
             mcp_servers_json: Arc::new(RwLock::new(agentConfig.mcp_servers_json.clone())),
             runtime: Arc::new(RwLock::new(normalize_runtime_type(
                 agentConfig.runtime.as_deref(),
@@ -1977,6 +1978,21 @@ pub async fn cmd_update_agent_config(
             next_provider_id_for_change.as_deref(),
             next_permission_mode_for_change,
         );
+        let should_refresh_channel_permission = patch.permission_mode.is_some()
+            || patch.provider_id.is_some()
+            || patch.model.is_some()
+            || patch.runtime.is_some()
+            || patch.runtime_config.is_some()
+            || patch.channels.is_some();
+        let mut projected_agent_config = agent.config.clone();
+        projected_agent_config.provider_id = next_provider_id_for_change.clone();
+        projected_agent_config.model = next_model_for_change.clone();
+        projected_agent_config.permission_mode = projected_permission_mode_for_change.clone();
+        projected_agent_config.runtime = Some(new_runtime_for_change.clone());
+        projected_agent_config.runtime_config = projected_runtime_config_for_change.clone();
+        if let Some(ref channels) = patch.channels {
+            projected_agent_config.channels = channels.clone();
+        }
         let pre_change_snapshot = if runtime_identity_changed {
             Some(runtime_change::build_snapshot_from_agent_state(agent).await)
         } else {
@@ -2008,11 +2024,17 @@ pub async fn cmd_update_agent_config(
                 *ch_inst.bot_instance.current_provider_env.write().await = parsed.clone();
             }
         }
-        if patch.permission_mode.is_some() || patch.provider_id.is_some() {
+        if should_refresh_channel_permission {
+            agent.config.permission_mode = projected_permission_mode_for_change.clone();
             *agent.permission_mode.write().await = projected_permission_mode_for_change.clone();
-            for (_ch_id, ch_inst) in &agent.channels {
-                *ch_inst.bot_instance.permission_mode.write().await =
-                    projected_permission_mode_for_change.clone();
+            for (ch_id, ch_inst) in &agent.channels {
+                let channel_permission = projected_agent_config
+                    .channels
+                    .iter()
+                    .find(|c| c.id.as_str() == ch_id.as_str())
+                    .map(|c| c.effective_permission_mode(&projected_agent_config))
+                    .unwrap_or_else(|| projected_permission_mode_for_change.clone());
+                *ch_inst.bot_instance.permission_mode.write().await = channel_permission;
             }
         }
         if let Some(ref mcp) = patch.mcp_servers_json {
@@ -2113,6 +2135,7 @@ pub async fn cmd_update_agent_config(
         // Frontend patchChannel() writes the full channels array to disk, then sends
         // the patch here for runtime sync. Match by channel ID to update the running instance.
         if let Some(ref channels) = patch.channels {
+            agent.config.channels = channels.clone();
             for ch_config in channels {
                 if let Some(ch_inst) = agent.channels.get(&ch_config.id) {
                     // groupActivation
@@ -2224,10 +2247,11 @@ pub async fn cmd_update_agent_config(
                             .await;
                     }
                 }
-                if let Some(ref pm) = patch.permission_mode {
+                if should_refresh_channel_permission {
                     if !is_external_runtime_type(&runtime) {
+                        let pm = ch_inst.bot_instance.permission_mode.read().await.clone();
                         for port in &ports {
-                            router.sync_permission_mode(*port, pm).await;
+                            router.sync_permission_mode(*port, &pm).await;
                         }
                     }
                 }

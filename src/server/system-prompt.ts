@@ -20,7 +20,8 @@ export type InteractionScenario =
   | { type: 'desktop'; surface?: 'chat' | 'floating-ball' }
   | { type: 'im'; platform: 'telegram' | 'feishu'; sourceType: 'private' | 'group'; botName?: string }
   | { type: 'agent-channel'; platform: string; sourceType: 'private' | 'group'; botName?: string; agentName?: string }
-  | { type: 'cron'; taskId: string; intervalMinutes: number; aiCanExit: boolean };
+  | { type: 'cron'; taskId: string; intervalMinutes: number; aiCanExit: boolean }
+  | { type: 'registeredAgent'; platform: 'space'; registeredAgentId?: string; sourceType?: 'issue-delivery' };
 
 // ===== Runtime display name =====
 // Maps internal runtime ids to human-readable names injected into the L1 base identity
@@ -68,6 +69,10 @@ const TMPL_HEARTBEAT = `<myagents-heartbeat-instructions>
 You will periodically receive heartbeat messages (a user message wrapped in tags like \`<HEARTBEAT>\\nThis is a heartbeat from the system.\\n……\\n</HEARTBEAT>\`).
 When you receive one, follow its instructions.
 </myagents-heartbeat-instructions>`;
+
+const TMPL_REGISTERED_AGENT = `<myagents-registered-agent-instructions>
+你正作为 MyAgents Registered Agent 在后台处理订阅事件。事件不是普通聊天消息；请先理解事件上下文，再决定 ignore、claim 或继续工作。
+</myagents-registered-agent-instructions>`;
 
 const TMPL_FLOATING_BALL = `<myagents-floating-ball-instructions>
 You are talking with the user through the MyAgents desktop floating window.
@@ -151,7 +156,7 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
       sourceTypeLabel,
     }));
   } else {
-    // desktop and cron both use desktop channel
+    // desktop, cron, and registered-agent events all use desktop-style shell I/O.
     parts.push(TMPL_CHANNEL_DESKTOP);
   }
 
@@ -165,6 +170,10 @@ export function buildSystemPromptAppend(scenario: InteractionScenario, options?:
       intervalText,
       aiCanExit: scenario.aiCanExit ? 'true' : '',  // non-empty = truthy for {{#if}}
     }));
+  }
+
+  if (scenario.type === 'registeredAgent') {
+    parts.push(TMPL_REGISTERED_AGENT);
   }
 
   if (scenario.type === 'im' || scenario.type === 'agent-channel') {

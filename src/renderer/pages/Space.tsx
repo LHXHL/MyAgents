@@ -30,6 +30,7 @@ import { IssuesWorkspace } from '@/pages/space/issues/IssuesWorkspace';
 import { CreateIssueDialog } from '@/pages/space/issues/CreateIssueDialog';
 import { IssueDetailDrawer } from '@/pages/space/issues/IssueDetailDrawer';
 import { AgentsWorkspace, RegisterAgentDialog } from '@/pages/space/agents/AgentsWorkspace';
+import { GoalsWorkspace } from '@/pages/space/goals/GoalsWorkspace';
 import { SkillsWorkspace } from '@/pages/space/skills/SkillsWorkspace';
 import { SpaceLogin, SpaceSidebar, type SpaceViewMode as ViewMode } from '@/pages/space/SpaceChrome';
 import { nowForSpaceMetric, recordSpaceMetric } from '@/pages/space/spaceMetrics';
@@ -58,21 +59,22 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const authPollWarningShownRef = useRef(false);
   const [mode, setMode] = useState<ViewMode>('issues');
   const [issueQ, setIssueQ] = useState('');
-  const [selectedTag, setSelectedTag] = useState('');
-  const [selectedStatus, setSelectedStatus] = useState('open');
+  const [selectedGoalId, setSelectedGoalId] = useState('');
+  const [selectedStatus, setSelectedStatus] = useState('');
   const [issueDetailId, setIssueDetailId] = useState<string | null>(null);
   const [createIssueOpen, setCreateIssueOpen] = useState(false);
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
 
   const session = spaceData.session;
-  const tags = spaceData.tags;
+  const goals = spaceData.goals;
   const issueQuery = useMemo<IssueQueryParams>(() => ({
     q: issueQ,
-    tag: selectedTag,
-    status: selectedStatus,
+    goalId: selectedGoalId,
+    includeSubtree: Boolean(selectedGoalId),
+    state: selectedStatus,
     limit: 50,
-  }), [issueQ, selectedStatus, selectedTag]);
+  }), [issueQ, selectedGoalId, selectedStatus]);
   const issueQueryRef = useRef(issueQuery);
   const issueQueryKey = useMemo(() => buildIssueQueryKey(issueQuery), [issueQuery]);
   const issueList = getIssueListState(issueQuery);
@@ -82,14 +84,16 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const skillsLoading = spaceData.skills.isLoading || (spaceData.boot === 'ready' && spaceData.skills.lastFetchedAt === 0);
   const effectiveSelectedSkillId = selectedSkillId ?? skills[0]?.id ?? null;
   const localAgents = spaceData.localAgents.items;
-  const registeredAgents = spaceData.registeredAgents.items;
   const admin = isSpaceAdmin(session);
   const activeCacheSpaceId = spaceData.spaceId || session?.space?.id || session?.space?.slug || DEFAULT_SPACE_ID;
   const spaceCacheKey = useCallback((id: string) => `${activeCacheSpaceId}\n${id}`, [activeCacheSpaceId]);
 
-  const tagOptions = useMemo<SelectOption[]>(
-    () => [{ value: '', label: t('space.filters.allTags') }, ...tags.map((tag) => ({ value: tag.id, label: tag.name }))],
-    [tags, t],
+  const goalOptions = useMemo<SelectOption[]>(
+    () => [
+      { value: '', label: t('space.filters.allGoals') },
+      ...goals.map((goal) => ({ value: goal.id, label: goal.goalPathLabel || goal.title })),
+    ],
+    [goals, t],
   );
 
   useEffect(() => {
@@ -103,6 +107,9 @@ export default function Space({ isActive }: { isActive: boolean }) {
         actions.refreshIssues(issueQuery, { maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }).catch((error) => toast.error(spaceErrorMessage(error)));
       }, 220);
       return () => window.clearTimeout(handle);
+    }
+    if (mode === 'goals') {
+      void actions.refreshGoals({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }).catch((error) => toast.error(spaceErrorMessage(error)));
     }
     if (mode === 'skills') {
       void actions.refreshSkills({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }).catch((error) => toast.error(spaceErrorMessage(error)));
@@ -135,12 +142,20 @@ export default function Space({ isActive }: { isActive: boolean }) {
       if (resourceType === 'skill' || type.startsWith('skill.')) {
         refreshSkills = true;
       }
-      if (resourceType === 'registered_agent' || resourceType === 'dispatch' || type.startsWith('registered_agent.') || type.startsWith('dispatch.')) {
+      if (
+        resourceType === 'registered_agent'
+        || resourceType === 'delivery'
+        || resourceType === 'subscription'
+        || type.startsWith('registered_agent.')
+        || type.startsWith('delivery.')
+        || type.startsWith('subscription.')
+      ) {
         refreshAgents = true;
-        if (resourceType === 'dispatch') refreshIssueList = true;
+        if (resourceType === 'delivery') refreshIssueList = true;
       }
-      if (resourceType === 'tag' || type.startsWith('tag.')) {
+      if (resourceType === 'goal' || type.startsWith('goal.')) {
         refreshBoot = true;
+        refreshIssueList = true;
       }
     }
 
@@ -255,29 +270,6 @@ export default function Space({ isActive }: { isActive: boolean }) {
     };
   }, [actions, authFlow, t, toast]);
 
-  const runDispatchProcessing = useCallback(async () => {
-    if (!session || localAgents.length === 0) return;
-    const result = await actions.processDispatchesOnce();
-    if (result.processed > 0) toast.success(t('space.toasts.dispatchProcessed', { count: result.processed }));
-    for (const error of result.errors) toast.error(error);
-    if (result.processed > 0 || result.delivered > 0) {
-      await Promise.all([
-        actions.refreshIssues(issueQueryRef.current, { force: true, silent: true }),
-        actions.refreshLocalAgents({ force: true, silent: true }),
-        actions.refreshRegisteredAgents({ force: true, silent: true }),
-      ]);
-    }
-  }, [actions, localAgents.length, session, t, toast]);
-
-  const processDispatches = useCallback(async () => {
-    await runDispatchProcessing();
-  }, [runDispatchProcessing]);
-
-  useEffect(() => {
-    if (!isActive || !session || localAgents.length === 0) return;
-    void runDispatchProcessing().catch((error) => toast.error(spaceErrorMessage(error)));
-  }, [isActive, localAgents.length, runDispatchProcessing, session, toast]);
-
   const startLogin = useCallback(async () => {
     setAuthBusy(true);
     try {
@@ -301,6 +293,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
 
   const refreshCurrent = useCallback(async () => {
     if (mode === 'issues') await actions.refreshIssues(issueQuery, { force: true });
+    if (mode === 'goals') await actions.refreshGoals({ force: true });
     if (mode === 'skills') await actions.refreshSkills({ force: true });
     if (mode === 'agents') {
       await Promise.all([
@@ -369,12 +362,12 @@ export default function Space({ isActive }: { isActive: boolean }) {
               issues={issues}
               issuesLoading={issuesLoading}
               issueQ={issueQ}
-              selectedTag={selectedTag}
+              selectedGoalId={selectedGoalId}
               selectedStatus={selectedStatus}
-              tagOptions={tagOptions}
+              goalOptions={goalOptions}
               activeIssueId={issueDetailId}
               onQueryChange={setIssueQ}
-              onTagChange={setSelectedTag}
+              onGoalChange={setSelectedGoalId}
               onStatusChange={setSelectedStatus}
               onRefresh={refreshCurrent}
               onCreate={() => setCreateIssueOpen(true)}
@@ -395,6 +388,19 @@ export default function Space({ isActive }: { isActive: boolean }) {
               onUploaded={(id) => setSelectedSkillId(id)}
             />
           )}
+          {mode === 'goals' && (
+            <GoalsWorkspace
+              admin={admin}
+              session={session}
+              goals={goals}
+              actions={actions}
+              onRefresh={() => actions.refreshGoals({ force: true })}
+              onOpenIssuesForGoal={(goalId) => {
+                setSelectedGoalId(goalId);
+                setMode('issues');
+              }}
+            />
+          )}
           {mode === 'agents' && (
             <AgentsWorkspace
               admin={admin}
@@ -402,7 +408,6 @@ export default function Space({ isActive }: { isActive: boolean }) {
               projects={projects}
               actions={actions}
               onRefresh={refreshCurrent}
-              onProcessDispatches={processDispatches}
               onRegister={() => setRegisterOpen(true)}
             />
           )}
@@ -413,9 +418,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
         <IssueDetailDrawer
           issueId={issueDetailId}
           session={session}
-          admin={admin}
           projects={projects}
-          registeredAgents={registeredAgents}
           detailState={spaceData.issueDetails[spaceCacheKey(issueDetailId)]}
           actions={actions}
           onClose={() => setIssueDetailId(null)}
@@ -425,8 +428,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
 
       {createIssueOpen && (
         <CreateIssueDialog
-          admin={admin}
-          tags={tags}
+          goals={goals}
           actions={actions}
           issueQuery={issueQuery}
           onClose={() => setCreateIssueOpen(false)}
@@ -440,6 +442,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
       {registerOpen && (
         <RegisterAgentDialog
           projects={projects}
+          goals={goals}
           actions={actions}
           onClose={() => setRegisterOpen(false)}
           onRegistered={() => {

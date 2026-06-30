@@ -87,7 +87,7 @@ export function resolveSessionConfig(
         runtime: 'codex',
         runtimeSource: 'managed-provider',
         model: eff.model,
-        permissionMode: eff.runtimeConfig?.permissionMode,
+        permissionMode: eff.permissionMode,
         mcpEnabledServers: eff.mcpEnabledServers,
         providerId: undefined,
         providerRoute: undefined,

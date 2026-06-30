@@ -4134,8 +4134,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   );
 
   // Stable callbacks for MessageList (extracted from inline arrows to enable memo)
-  const handlePermissionDecision = useCallback((decision: 'deny' | 'allow_once' | 'always_allow') => {
-    void respondPermission(decision);
+  const handlePermissionDecision = useCallback((requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => {
+    return respondPermission(decision, requestId);
   }, [respondPermission]);
 
   const handleAskUserQuestionSubmit = useCallback((_requestId: string, answers: Record<string, string>) => {

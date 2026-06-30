@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, ChevronDown, Copy, Download, FileText, Loader2, MessageSquare, Paperclip, Send, UploadCloud, X } from 'lucide-react';
+import { ChevronDown, Copy, Download, FileText, Loader2, MessageSquare, Paperclip, Send, Target, UploadCloud, X } from 'lucide-react';
 
-import { spaceErrorMessage, type SpaceAttachment, type SpaceRegisteredAgent, type SpaceSession } from '@/api/spaceCloud';
+import { spaceErrorMessage, type SpaceAttachment, type SpaceSession } from '@/api/spaceCloud';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { useToast } from '@/components/Toast';
 import type { Project } from '@/config/types';
@@ -10,6 +10,8 @@ import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { copyPlainText } from '@/utils/markdownClipboard';
 import {
   buildIssueCommandPrompt,
+  claimHandlerLabel,
+  claimHandlerTypeKey,
   getIssueStatusOptions,
   issueDisplayTitle,
   issueStatusLabel,
@@ -25,21 +27,6 @@ function basename(path: string): string {
   return path.split(/[/\\]/).pop() || path;
 }
 
-function initials(value?: string | null): string {
-  const source = value?.trim() || 'MA';
-  const words = source.split(/\s+/).filter(Boolean);
-  if (words.length >= 2) return `${words[0][0] ?? ''}${words[1][0] ?? ''}`.toUpperCase();
-  return source.slice(0, 2).toUpperCase();
-}
-
-function isRegisteredAgentAssignable(agent: SpaceRegisteredAgent): boolean {
-  return agent.status === 'active' || agent.status === 'online';
-}
-
-function formatRegisteredAgentSecondaryLabel(agent: SpaceRegisteredAgent): string {
-  return agent.workspaceLabel || agent.status;
-}
-
 function buildAttachmentDownloadCommand(attachmentId: string): string {
   return `myagents space attachment download ${attachmentId}`;
 }
@@ -47,9 +34,7 @@ function buildAttachmentDownloadCommand(attachmentId: string): string {
 export function IssueDetailDrawer({
   issueId,
   session,
-  admin,
   projects,
-  registeredAgents,
   detailState,
   actions,
   onClose,
@@ -57,9 +42,7 @@ export function IssueDetailDrawer({
 }: {
   issueId: string;
   session: SpaceSession;
-  admin: boolean;
   projects: Project[];
-  registeredAgents: SpaceRegisteredAgent[];
   detailState?: SpaceIssueDetailState;
   actions: SpaceActions;
   onClose: () => void;
@@ -74,11 +57,8 @@ export function IssueDetailDrawer({
   const [downloadedAttachmentPaths, setDownloadedAttachmentPaths] = useState<Record<string, string>>({});
   const [downloadTargetAttachmentId, setDownloadTargetAttachmentId] = useState<string | null>(null);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
-  const [agentMenuOpen, setAgentMenuOpen] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
-  const [dispatchingAgentId, setDispatchingAgentId] = useState<string | null>(null);
   const statusMenuRef = useRef<HTMLSpanElement | null>(null);
-  const agentMenuRef = useRef<HTMLDivElement | null>(null);
   const downloadMenuRef = useRef<HTMLSpanElement | null>(null);
   const detail = detailState?.detail ?? null;
   const loading = detailState?.isLoading ?? true;
@@ -94,10 +74,7 @@ export function IssueDetailDrawer({
 
   useEffect(() => {
     void actions.refreshIssueDetail(issueId, { maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }).catch((error) => toast.error(spaceErrorMessage(error)));
-    if (admin) {
-      void actions.refreshRegisteredAgents({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS, silent: true }).catch((error) => toast.error(spaceErrorMessage(error)));
-    }
-  }, [actions, admin, issueId, toast]);
+  }, [actions, issueId, toast]);
 
   useEffect(() => {
     setDownloadedAttachmentPaths({});
@@ -105,15 +82,12 @@ export function IssueDetailDrawer({
   }, [issueId]);
 
   useEffect(() => {
-    if (!statusMenuOpen && !agentMenuOpen && !downloadTargetAttachmentId) return;
+    if (!statusMenuOpen && !downloadTargetAttachmentId) return;
     const handlePointerDown = (event: MouseEvent) => {
       const target = event.target;
       if (!(target instanceof Node)) return;
       if (statusMenuOpen && statusMenuRef.current && !statusMenuRef.current.contains(target)) {
         setStatusMenuOpen(false);
-      }
-      if (agentMenuOpen && agentMenuRef.current && !agentMenuRef.current.contains(target)) {
-        setAgentMenuOpen(false);
       }
       if (downloadTargetAttachmentId && downloadMenuRef.current && !downloadMenuRef.current.contains(target)) {
         setDownloadTargetAttachmentId(null);
@@ -121,7 +95,7 @@ export function IssueDetailDrawer({
     };
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
-  }, [agentMenuOpen, downloadTargetAttachmentId, statusMenuOpen]);
+  }, [downloadTargetAttachmentId, statusMenuOpen]);
 
   const changeStatus = async (option: { value: string; kind: 'set-status' | 'close-own' }) => {
     if (!detail) return;
@@ -130,7 +104,7 @@ export function IssueDetailDrawer({
       if (option.kind === 'close-own') {
         await actions.closeOwnIssue(issueId);
       } else {
-        await actions.setIssueStatus(issueId, option.value);
+        await actions.setIssueState(issueId, option.value);
       }
       setStatusMenuOpen(false);
       toast.success(t('space.toasts.issueStatusUpdated'));
@@ -231,32 +205,6 @@ export function IssueDetailDrawer({
     }
   };
 
-  const assignAgent = async (agent: SpaceRegisteredAgent) => {
-    if (!isRegisteredAgentAssignable(agent)) return;
-    setDispatchingAgentId(agent.id);
-    try {
-      await actions.dispatchIssue(issueId, agent.id);
-      const result = await actions.processDispatchesOnce();
-      await Promise.all([
-        actions.refreshIssueDetail(issueId, { force: true, silent: true }),
-        actions.refreshRegisteredAgents({ force: true, silent: true }),
-      ]);
-      onChanged();
-      if (result.errors.length > 0) {
-        for (const error of result.errors) toast.error(error);
-      } else if (result.processed > 0) {
-        toast.success(t('space.toasts.assignedToAgent', { name: agent.displayName }));
-      } else {
-        toast.success(t('space.toasts.assignmentRecorded', { name: agent.displayName }));
-      }
-      setAgentMenuOpen(false);
-    } catch (error) {
-      toast.error(spaceErrorMessage(error));
-    } finally {
-      setDispatchingAgentId(null);
-    }
-  };
-
   const copyIssueCommand = async () => {
     try {
       await copyPlainText(buildIssueCommandPrompt({ spaceName: session.space.name, issueId }));
@@ -265,7 +213,13 @@ export function IssueDetailDrawer({
       toast.error(spaceErrorMessage(error));
     }
   };
-  const issueAuthorName = detail?.issue.author?.name ?? detail?.issue.author?.id ?? 'owner';
+  const issueAuthorName = detail?.issue.creator?.name ?? detail?.issue.creator?.id ?? detail?.issue.author?.name ?? detail?.issue.author?.id ?? 'owner';
+  const claim = detail?.claim ?? detail?.issue.claim;
+  const claimHandlerName = claimHandlerLabel(claim);
+  const claimHandlerTypeKeyValue = claimHandlerTypeKey(claim);
+  const claimHandlerType = claimHandlerTypeKeyValue
+    ? t(claimHandlerTypeKeyValue)
+    : t('space.detail.claimHandlerUnknownType');
 
   return (
     <OverlayBackdrop onClose={onClose} className="z-[230] items-stretch justify-end bg-black/20 backdrop-blur-sm">
@@ -296,15 +250,15 @@ export function IssueDetailDrawer({
                         type="button"
                         disabled={statusBusy}
                         onClick={() => setStatusMenuOpen((value) => !value)}
-                        className={`inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold transition-colors ${statusPillClass(detail.issue.status)} disabled:cursor-wait disabled:opacity-70`}
+                        className={`inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold transition-colors ${statusPillClass(detail.issue.state)} disabled:cursor-wait disabled:opacity-70`}
                       >
                         {statusBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                        {issueStatusLabel(detail.issue.status)}
+                        {issueStatusLabel(detail.issue.state)}
                         <ChevronDown className="h-3.5 w-3.5" />
                       </button>
                     ) : (
-                      <span className={`inline-flex min-h-8 items-center rounded-md px-2.5 text-xs font-semibold ${statusPillClass(detail.issue.status)}`}>
-                        {issueStatusLabel(detail.issue.status)}
+                      <span className={`inline-flex min-h-8 items-center rounded-md px-2.5 text-xs font-semibold ${statusPillClass(detail.issue.state)}`}>
+                        {issueStatusLabel(detail.issue.state)}
                       </span>
                     )}
                     {statusMenuOpen && statusOptions.length > 0 && (
@@ -315,7 +269,7 @@ export function IssueDetailDrawer({
                             type="button"
                             onClick={() => void changeStatus(option)}
                             className={`flex h-9 w-full items-center justify-between rounded-lg px-2.5 text-left text-sm font-semibold transition-colors hover:bg-[var(--paper-inset)] ${
-                              detail.issue.status === option.value ? 'text-[var(--accent-warm)]' : 'text-[var(--ink-secondary)]'
+                              detail.issue.state === option.value ? 'text-[var(--accent-warm)]' : 'text-[var(--ink-secondary)]'
                             }`}
                           >
                             {option.label}
@@ -327,11 +281,25 @@ export function IssueDetailDrawer({
                   <span>{issueAuthorName}</span>
                   <span className="text-[var(--line-strong)]">·</span>
                   <span>{formatTime(detail.issue.createdAt)}</span>
-                  {detail.issue.tags?.map((tag) => (
-                    <span key={tag.id} className="rounded-md bg-[var(--accent-cool-subtle)] px-2 py-1 text-xs font-semibold text-[var(--accent-cool)]">
-                      # {tag.name}
+                  {detail.goalReference && (
+                    <span className="inline-flex items-center gap-1 rounded-md bg-[var(--accent-cool-subtle)] px-2 py-1 text-xs font-semibold text-[var(--accent-cool)]">
+                      <Target className="h-3.5 w-3.5" />
+                      {detail.goalReference.goalPathLabel || detail.goalReference.goalTitle}
                     </span>
-                  ))}
+                  )}
+                  {detail.issue.humanOnly && (
+                    <span className="rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs font-semibold text-[var(--ink-muted)]">
+                      {t('space.issues.humanOnly')}
+                    </span>
+                  )}
+                  {claimHandlerName && (
+                    <span className="rounded-md bg-[var(--warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--warning)]">
+                      {t('space.detail.claimHandler', {
+                        name: claimHandlerName,
+                        type: claimHandlerType,
+                      })}
+                    </span>
+                  )}
                 </div>
                 <h2 className="max-w-[68ch] text-2xl font-semibold leading-snug text-[var(--ink)]">{issueDisplayTitle(detail.issue)}</h2>
                 <div className="mt-5 max-w-[66ch] whitespace-pre-wrap text-base leading-7 text-[var(--ink-secondary)]">{detail.issue.body}</div>
@@ -424,61 +392,17 @@ export function IssueDetailDrawer({
 
               <section className="mb-10 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line-subtle)] pt-4">
                 <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--ink-secondary)]">
-                  {admin ? <Send className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                  {admin ? t('space.detail.dispatchToAgent') : t('space.detail.issueCommand')}
+                  <Copy className="h-4 w-4" />
+                  {t('space.detail.issueCommand')}
                 </h3>
-                <div className="flex flex-wrap items-center gap-2">
-                  {admin && (
-                    <div ref={agentMenuRef} className="relative">
-                      <button
-                        type="button"
-                        disabled={registeredAgents.length === 0 || dispatchingAgentId !== null}
-                        onClick={() => setAgentMenuOpen((value) => !value)}
-                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
-                      >
-                        {dispatchingAgentId ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Bot className="h-3.5 w-3.5" />}
-                        {t('space.detail.assignAgent')}
-                        <ChevronDown className="h-3.5 w-3.5" />
-                      </button>
-                      {agentMenuOpen && (
-                        <div className="absolute right-0 top-full z-30 mt-2 max-h-72 w-72 overflow-auto rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-1.5 shadow-lg">
-                          {registeredAgents.length === 0 ? (
-                            <div className="px-3 py-3 text-sm text-[var(--ink-muted)]">{t('space.detail.emptyRegisteredAgents')}</div>
-                          ) : (
-                            registeredAgents.map((agent) => (
-                              <button
-                                key={agent.id}
-                                type="button"
-                                disabled={dispatchingAgentId !== null || !isRegisteredAgentAssignable(agent)}
-                                onClick={() => void assignAgent(agent)}
-                                className="grid min-h-12 w-full grid-cols-[28px_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2.5 text-left transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-not-allowed disabled:opacity-55"
-                              >
-                                <span className="grid h-7 w-7 place-items-center rounded-lg bg-[var(--accent-cool-subtle)] text-xs font-bold text-[var(--accent-cool)]">
-                                  {dispatchingAgentId === agent.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : initials(agent.displayName)}
-                                </span>
-                                <span className="min-w-0">
-                                  <strong className="block truncate text-sm font-semibold text-[var(--ink)]">{agent.displayName}</strong>
-                                  <small className="block truncate text-xs text-[var(--ink-muted)]">{formatRegisteredAgentSecondaryLabel(agent)}</small>
-                                </span>
-                                {!isRegisteredAgentAssignable(agent) && (
-                                  <span className="rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs font-semibold text-[var(--ink-muted)]">{agent.status}</span>
-                                )}
-                              </button>
-                            ))
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => void copyIssueCommand()}
-                    className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-transparent px-2.5 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                  >
-                    <Copy className="h-3.5 w-3.5" />
-                    {t('space.detail.copyIssueCommand')}
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => void copyIssueCommand()}
+                  className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-transparent px-2.5 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  {t('space.detail.copyIssueCommand')}
+                </button>
               </section>
 
               <section>

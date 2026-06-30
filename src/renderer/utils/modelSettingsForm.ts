@@ -66,13 +66,15 @@ export function initialModalitySelection(prev: readonly string[] | undefined): E
  * builtin (preset) provider.
  *
  * Why this gate exists (cross-review 0.2.32, codex): re-adding a previously
- * REMOVED bundled preset must only delete it from `presetRemovedModels` — it
- * must NOT also append a copy into `presetCustomModels`. The two registries
- * disagree on precedence: the renderer merge is preset-wins
- * (mergePresetCustomModels only fills gaps) while the sidecar capability
- * registry ingests presetCustomModels BEFORE bundled presets with first-wins.
- * A duplicate entry therefore makes the UI show the bundled context/modalities
- * while the sidecar silently uses the discovered copy's values.
+ * REMOVED bundled preset from the discovery list must only delete it from
+ * `presetRemovedModels` — it must NOT also append a discovered copy into
+ * `presetCustomModels`. Discovery metadata is lower-trust than the app's
+ * curated preset data and should not override it.
+ *
+ * Manual custom-model entry is a different path: when the user typed the
+ * bundled id and explicitly saved settings, the persisted entry is
+ * `source: 'manual'` and is treated as a user override by both renderer merge
+ * and sidecar capability lookup.
  */
 export function isBundledPresetModelId(
   bundledModelIds: ReadonlySet<string>,
@@ -83,7 +85,7 @@ export function isBundledPresetModelId(
 
 /**
  * Decide what `handleAddDiscoveredModel` should write for a builtin provider.
- *  - bundled id  → un-remove only (the preset resurfaces by itself)
+ *  - bundled id  → un-remove only (the curated preset resurfaces by itself)
  *  - custom id   → un-remove + append to presetCustomModels (today's behavior)
  */
 export function discoveredModelWritePlan(

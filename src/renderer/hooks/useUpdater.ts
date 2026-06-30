@@ -29,7 +29,7 @@ export type CheckUpdateResult = 'up-to-date' | 'downloading' | 'error';
 /** Result of restartAndUpdate, used by caller to show an error toast. 'ok' means
  *  install actually started (process is about to exit) — the renderer just won't
  *  see the resolution because Rust calls exit(0). */
-export type RestartUpdateResult = 'ok' | 'network-error' | 'version-mismatch' | 'error';
+export type RestartUpdateResult = 'ok' | 'network-error' | 'version-mismatch' | 'blocked' | 'error';
 
 interface UseUpdaterResult {
     /** Whether an update has been downloaded and is ready to install */
@@ -219,6 +219,17 @@ export function useUpdater(): UseUpdaterResult {
                     // update-ready state so the user can retry once online.
                     console.warn('[useUpdater] Network required to verify update, will retry when online');
                     return 'network-error';
+                }
+                if (
+                    errStr.includes('UPDATE_PROCESSES_STILL_RUNNING')
+                    || errStr.includes('UPDATE_FILES_STILL_LOCKED')
+                    || errStr.includes('UPDATE_LOCK_PROBE_UNAVAILABLE')
+                    || errStr.includes('UPDATE_TERMINALS_STILL_RUNNING')
+                    || errStr.includes('UPDATE_SHUTDOWN_IN_PROGRESS')
+                    || errStr.includes('UPDATE_SHUTDOWN_ALREADY_IN_PROGRESS')
+                ) {
+                    console.warn('[useUpdater] Update install blocked until background processes exit:', err);
+                    return 'blocked';
                 }
                 console.error('[useUpdater] install_pending_update failed:', err);
                 return 'error';

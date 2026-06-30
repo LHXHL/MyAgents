@@ -7,7 +7,7 @@ use std::fs;
 use tauri::image::Image;
 use tauri::{
     menu::{CheckMenuItem, CheckMenuItemBuilder, MenuBuilder, MenuItem, MenuItemBuilder},
-    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, Runtime, Wry,
 };
 
@@ -32,6 +32,7 @@ const MENU_EXIT: &str = "exit";
 /// Non-generic over Runtime: production uses `Wry` everywhere; pinning the
 /// type here avoids dragging an `R: Runtime` parameter through every consumer.
 pub struct TrayMenuHandles {
+    pub tray: TrayIcon<Wry>,
     pub open: MenuItem<Wry>,
     pub settings: MenuItem<Wry>,
     pub force_wake_lock: CheckMenuItem<Wry>,
@@ -73,15 +74,6 @@ pub fn setup_tray(app: &tauri::App<Wry>) -> Result<(), Box<dyn std::error::Error
         .item(&exit_item)
         .build()?;
 
-    // Store the CheckMenuItem in app state so `wake_lock::apply_force_wake_lock`
-    // can mutate its check state from any thread.
-    app.manage(TrayMenuHandles {
-        open: open_item,
-        settings: settings_item,
-        force_wake_lock: force_wake_lock_item,
-        exit: exit_item,
-    });
-
     // Load tray icon - use template icon on macOS for proper menu bar appearance
     #[cfg(target_os = "macos")]
     let tray_icon = {
@@ -107,7 +99,7 @@ pub fn setup_tray(app: &tauri::App<Wry>) -> Result<(), Box<dyn std::error::Error
     #[cfg(target_os = "macos")]
     let tray_builder = tray_builder.icon_as_template(true);
 
-    let _tray = tray_builder
+    let tray = tray_builder
         .on_menu_event(move |app, event| {
             match event.id().as_ref() {
                 MENU_OPEN => {
@@ -184,6 +176,17 @@ pub fn setup_tray(app: &tauri::App<Wry>) -> Result<(), Box<dyn std::error::Error
             }
         })
         .build(app)?;
+
+    // Store tray/menu handles in app state so runtime mirrors can mutate them
+    // from any thread. Tauri marshals the actual tray updates onto the main
+    // thread internally.
+    app.manage(TrayMenuHandles {
+        tray,
+        open: open_item,
+        settings: settings_item,
+        force_wake_lock: force_wake_lock_item,
+        exit: exit_item,
+    });
 
     ulog_info!("[Tray] System tray initialized successfully");
     Ok(())

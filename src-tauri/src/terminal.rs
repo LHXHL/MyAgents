@@ -46,6 +46,12 @@ pub struct TerminalManager {
     sessions: Mutex<HashMap<String, TerminalSession>>,
 }
 
+#[derive(Debug, Default)]
+pub struct TerminalCleanupReport {
+    pub closed: usize,
+    pub residual: Vec<String>,
+}
+
 impl TerminalManager {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
@@ -65,6 +71,7 @@ pub async fn cmd_terminal_create(
     sidecar_port: Option<u16>,
     terminal_id: Option<String>,
 ) -> Result<String, String> {
+    let _update_spawn_permit = crate::sidecar::begin_update_spawn_permit()?;
     // Use frontend-provided ID if given (allows pre-registering listeners before creation),
     // otherwise generate one server-side.
     let id = terminal_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
@@ -217,30 +224,79 @@ pub async fn cmd_terminal_close(
 ) -> Result<(), String> {
     let mut sessions = state.sessions.lock().await;
     if let Some(session) = sessions.remove(&terminal_id) {
-        cleanup_session(session, &terminal_id);
+        cleanup_session(session, &terminal_id, None);
     }
     Ok(())
 }
 
 /// Close all terminals. Called on app exit alongside `stop_all_sidecars()`.
-pub async fn close_all_terminals(state: &Arc<TerminalManager>) {
-    let mut sessions = state.sessions.lock().await;
-    let ids: Vec<String> = sessions.keys().cloned().collect();
-    for id in &ids {
-        if let Some(session) = sessions.remove(id) {
-            cleanup_session(session, id);
+pub async fn close_all_terminals(state: &Arc<TerminalManager>) -> TerminalCleanupReport {
+    let drained: Vec<(String, TerminalSession)> = {
+        let mut sessions = state.sessions.lock().await;
+        sessions.drain().collect()
+    };
+
+    let mut report = TerminalCleanupReport {
+        closed: drained.len(),
+        residual: Vec::new(),
+    };
+    for (id, session) in drained {
+        if let Some(residual) =
+            cleanup_session(session, &id, Some(std::time::Duration::from_secs(2)))
+        {
+            report.residual.push(residual);
         }
     }
-    if !ids.is_empty() {
-        ulog_info!("[terminal] Closed {} terminal(s) on shutdown", ids.len());
+    if report.closed > 0 {
+        ulog_info!(
+            "[terminal] Closed {} terminal(s) on shutdown (residual={})",
+            report.closed,
+            report.residual.len()
+        );
     }
+    report
 }
 
 /// Clean up a single terminal session: kill child, abort reader task.
-fn cleanup_session(session: TerminalSession, terminal_id: &str) {
+fn cleanup_session(
+    session: TerminalSession,
+    terminal_id: &str,
+    wait_timeout: Option<std::time::Duration>,
+) -> Option<String> {
+    let mut residual = None;
     // Kill the shell process
     if let Ok(mut child) = session.child.lock() {
+        let pid = child.process_id();
         let _ = child.kill();
+        if let Some(timeout) = wait_timeout {
+            let start = std::time::Instant::now();
+            loop {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) if start.elapsed() < timeout => {
+                        std::thread::sleep(std::time::Duration::from_millis(25));
+                    }
+                    Ok(None) => {
+                        residual = Some(match pid {
+                            Some(pid) => format!("terminal={} pid={}", terminal_id, pid),
+                            None => format!("terminal={} pid=<unknown>", terminal_id),
+                        });
+                        break;
+                    }
+                    Err(err) => {
+                        residual = Some(match pid {
+                            Some(pid) => {
+                                format!("terminal={} pid={} wait_error={}", terminal_id, pid, err)
+                            }
+                            None => {
+                                format!("terminal={} pid=<unknown> wait_error={}", terminal_id, err)
+                            }
+                        });
+                        break;
+                    }
+                }
+            }
+        }
     }
     // Note: reader_task is a spawn_blocking task — abort() marks it for cancellation
     // but won't interrupt a blocked read(). The kill() above closes the PTY slave,
@@ -248,6 +304,7 @@ fn cleanup_session(session: TerminalSession, terminal_id: &str) {
     session.reader_task.abort();
     // Writer and master are dropped automatically
     ulog_info!("[terminal] Closed terminal {}", terminal_id);
+    residual
 }
 
 /// Background loop: reads PTY output and emits Tauri events.

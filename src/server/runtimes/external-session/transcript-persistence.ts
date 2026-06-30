@@ -10,14 +10,20 @@ import type { PersistContentBlock } from './types';
 
 let allSessionMessages: SessionMessage[] = [];
 let lastPersistedRuntimeUsageTotals: MessageUsage | null = null;
+let transcriptSessionId = '';
 
 export function resetExternalTranscriptState(): void {
   allSessionMessages = [];
   lastPersistedRuntimeUsageTotals = null;
+  transcriptSessionId = '';
 }
 
 export function getExternalSessionMessagesSnapshot(): SessionMessage[] {
   return [...allSessionMessages];
+}
+
+export function getExternalTranscriptSessionId(): string {
+  return transcriptSessionId;
 }
 
 export function forEachExternalSessionMessage(
@@ -28,11 +34,15 @@ export function forEachExternalSessionMessage(
   }
 }
 
-export function setExternalSessionMessages(messages: SessionMessage[]): void {
+export function setExternalSessionMessages(sessionId: string, messages: SessionMessage[]): void {
+  transcriptSessionId = sessionId;
   allSessionMessages = messages;
 }
 
-export function clearExternalSessionMessages(): void {
+export function clearExternalSessionMessages(sessionId?: string): void {
+  if (sessionId !== undefined) {
+    transcriptSessionId = sessionId;
+  }
   allSessionMessages = [];
 }
 

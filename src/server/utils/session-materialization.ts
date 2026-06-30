@@ -3,10 +3,10 @@ import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 import { createSessionMetadata, type SessionMetadata } from '../types/session';
 import { snapshotForImSession, snapshotForOwnedSession } from './session-snapshot';
 
-export type SessionMaterializationScenario = 'desktop' | 'cron' | 'im' | 'agent-channel';
+export type SessionMaterializationScenario = 'desktop' | 'cron' | 'im' | 'agent-channel' | 'registeredAgent';
 
 export function isLiveFollowScenario(scenario: SessionMaterializationScenario): boolean {
-  return scenario === 'im' || scenario === 'agent-channel';
+  return scenario === 'im' || scenario === 'agent-channel' || scenario === 'registeredAgent';
 }
 
 export function snapshotForMaterializedSession(

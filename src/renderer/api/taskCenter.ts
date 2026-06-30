@@ -9,6 +9,7 @@ import type {
 } from '@/../shared/types/thought';
 import type {
   Task,
+  TaskCreateAttachedInput,
   TaskCreateDirectInput,
   TaskCreateFromAlignmentInput,
   TaskListFilter,
@@ -117,6 +118,10 @@ export function taskCreateFromAlignment(
   input: TaskCreateFromAlignmentInput & { alignmentSessionId: string },
 ): Promise<Task> {
   return inv('cmd_task_create_from_alignment', { input });
+}
+
+export function taskCreateAttached(input: TaskCreateAttachedInput): Promise<Task> {
+  return inv('cmd_task_create_attached', { input });
 }
 
 export function taskList(filter?: TaskListFilter): Promise<Task[]> {

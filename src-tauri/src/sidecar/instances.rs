@@ -10,6 +10,7 @@ pub fn start_tab_sidecar<R: Runtime>(
     tab_id: &str,
     agent_dir: Option<PathBuf>,
 ) -> Result<u16, String> {
+    let _update_spawn_permit = begin_update_spawn_permit()?;
     // Ensure file descriptor limit is high enough for Bun
     ensure_high_file_descriptor_limit();
 
@@ -629,6 +630,12 @@ pub async fn monitor_global_sidecar(
             break;
         }
 
+        if is_update_shutdown_in_progress() {
+            consecutive_health_failures = 0;
+            consecutive_restart_failures = 0;
+            continue;
+        }
+
         // Check process status (cheap, no HTTP)
         let (port, process_alive, created_at) = match check_global_sidecar_status(&manager) {
             Some(status) => status,
@@ -933,6 +940,10 @@ pub async fn monitor_session_sidecars(
         tokio::time::sleep(Duration::from_secs(CHECK_INTERVAL_SECS)).await;
         if shutdown.load(Relaxed) {
             break;
+        }
+        if is_update_shutdown_in_progress() {
+            recovery.clear();
+            continue;
         }
 
         // Phase 1: Scan sidecars for newly dead sessions, merge into recovery queue

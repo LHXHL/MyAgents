@@ -25,6 +25,7 @@ mod macos_traffic_light;
 pub mod managed_codex;
 pub mod management_api;
 pub mod notification;
+pub mod notification_badge;
 pub mod perf_trace;
 pub mod process_cleanup;
 pub mod process_cmd;
@@ -436,6 +437,7 @@ pub fn run() {
             // OS notification + click-to-foreground deep-link (v0.2.14)
             notification::cmd_show_notification,
             notification::cmd_consume_notification_click,
+            notification_badge::cmd_set_notification_badge,
             // IM Bot commands (non-deprecated survivors)
             im::commands::cmd_im_conversations,
             // Group permission commands (v0.1.28)
@@ -560,6 +562,7 @@ pub fn run() {
             // Task Center — Task commands (v0.1.69)
             task::cmd_task_create_direct,
             task::cmd_task_create_from_alignment,
+            task::cmd_task_create_attached,
             task::cmd_task_list,
             task::cmd_task_get,
             task::cmd_task_update,
@@ -587,6 +590,9 @@ pub fn run() {
             space_cloud::cmd_space_list_local_agents,
             space_cloud::cmd_space_poll_dispatches,
             space_cloud::cmd_space_mark_dispatch_delivered,
+            space_cloud::cmd_space_poll_deliveries,
+            space_cloud::cmd_space_mark_delivery_delivered,
+            space_cloud::cmd_space_process_deliveries_once,
             space_cloud::cmd_space_process_dispatches_once,
             space_cloud::cmd_space_install_skill,
             space_cloud::cmd_space_upload_skill,
@@ -624,7 +630,8 @@ pub fn run() {
             // calls (extremely early startup) fall back to a synchronous
             // append protected by a mutex.
             logger::init_buffered_writer();
-            space_cloud::start_space_connector();
+            let space_sidecar_state = app.state::<sidecar::ManagedSidecarManager>().inner().clone();
+            space_cloud::start_space_connector(app.handle().clone(), space_sidecar_state);
 
             // Main window: programmatic creation so we can attach
             // `on_navigation` to block external top-frame navigation. The

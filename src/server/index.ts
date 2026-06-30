@@ -1550,6 +1550,7 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'task/get') return await api.handleTaskGet(payload as Parameters<typeof api.handleTaskGet>[0]);
   if (route === 'task/create-direct') return await api.handleTaskCreateDirect(payload);
   if (route === 'task/create-from-alignment') return await api.handleTaskCreateFromAlignment(payload);
+  if (route === 'task/create-attached') return await api.handleTaskCreateAttached(payload);
   if (route === 'task/run') return await api.handleTaskRun(payload as Parameters<typeof api.handleTaskRun>[0]);
   if (route === 'task/rerun') return await api.handleTaskRerun(payload as Parameters<typeof api.handleTaskRerun>[0]);
   if (route === 'task/update') return await api.handleTaskUpdate(payload);
@@ -1563,9 +1564,16 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'thought/create') return await api.handleThoughtCreate(payload as Parameters<typeof api.handleThoughtCreate>[0]);
 
   // MyAgents Cloud Space — Registered Agent CLI bridge.
+  if (route === 'space/issue-list') return await api.handleSpaceIssueList(payload as Parameters<typeof api.handleSpaceIssueList>[0]);
   if (route === 'space/issue-get') return await api.handleSpaceIssueGet(payload as Parameters<typeof api.handleSpaceIssueGet>[0]);
   if (route === 'space/issue-comment') return await api.handleSpaceIssueComment(payload as Parameters<typeof api.handleSpaceIssueComment>[0]);
   if (route === 'space/issue-status') return await api.handleSpaceIssueStatus(payload as Parameters<typeof api.handleSpaceIssueStatus>[0]);
+  if (route === 'space/issue-claim') return await api.handleSpaceIssueClaim(payload as Parameters<typeof api.handleSpaceIssueClaim>[0]);
+  if (route === 'space/issue-delivery-ignore') return await api.handleSpaceIssueDeliveryIgnore(payload as Parameters<typeof api.handleSpaceIssueDeliveryIgnore>[0]);
+  if (route === 'space/issue-close') return await api.handleSpaceIssueClose(payload as Parameters<typeof api.handleSpaceIssueClose>[0]);
+  if (route === 'space/issue-complete') return await api.handleSpaceIssueComplete(payload as Parameters<typeof api.handleSpaceIssueComplete>[0]);
+  if (route === 'space/issue-cancel-claim') return await api.handleSpaceIssueCancelClaim(payload as Parameters<typeof api.handleSpaceIssueCancelClaim>[0]);
+  if (route === 'space/claim-local-task') return await api.handleSpaceClaimLocalTask(payload as Parameters<typeof api.handleSpaceClaimLocalTask>[0]);
   if (route === 'space/attachment-download') return await api.handleSpaceAttachmentDownload(payload as Parameters<typeof api.handleSpaceAttachmentDownload>[0]);
 
   // Session Inbox (PRD 0.2.18) — `myagents session send`
@@ -8258,7 +8266,9 @@ async function main() {
                 ? snapshotResolvedConfig.permissionMode
                 : (effectiveRuntime === 'builtin'
                   ? (heldImConfig?.permissionMode ?? payload.permissionMode)
-                  : (heldImConfig?.permissionMode ?? getRuntimeConfigPermissionMode(payloadRuntimeConfig, effectiveRuntime))),
+                  : (heldImConfig?.permissionMode
+                    ?? getRuntimeConfigPermissionMode(payloadRuntimeConfig, effectiveRuntime)
+                    ?? getMaxPermissionForRuntime(effectiveRuntime))),
               // Legacy frozen env (kept for back-compat); sidecar prefers
               // `providerId` when both are present.
               providerEnv: effectiveRuntime === 'builtin'
@@ -8407,7 +8417,8 @@ async function main() {
             }
             const resolvedExternalPermissionMode = snapshotResolvedConfig?.permissionMode
               ?? heldImConfig?.permissionMode
-              ?? getRuntimeConfigPermissionMode(runtimeConfig, effectiveRuntime);
+              ?? getRuntimeConfigPermissionMode(runtimeConfig, effectiveRuntime)
+              ?? getMaxPermissionForRuntime(effectiveRuntime);
             const resolvedExternalModel = snapshotResolvedConfig
               ? snapshotResolvedConfig.model
               : (heldImConfig?.model ?? getRuntimeConfigModel(runtimeConfig, effectiveRuntime));
@@ -8449,7 +8460,7 @@ async function main() {
             // ignore the live Agent values that Rust passed in payload.
             // Pure IM-origin sessions never have a snapshot, so this branch
             // is a no-op for them and behavior matches v0.2.13.
-            let resolvedPermissionMode: PermissionMode = (payload.permissionMode as PermissionMode) ?? 'plan';
+            let resolvedPermissionMode: PermissionMode = (payload.permissionMode as PermissionMode) ?? 'fullAgency';
             let resolvedModel: string | undefined = payload.model ?? undefined;
             let resolvedReasoningEffort: string | undefined;
             let resolvedProviderRoute: ProviderRoute | undefined;
@@ -9200,14 +9211,16 @@ description: >
           // sidecar's session metadata. process.cwd() is app bundle / `/`, and
           // MYAGENTS_AGENT_DIR env is not reliable for sidecar-to-sidecar inbox.
           const engine = getSessionEngine();
-          const injector: import('./inbox/drain-handler').InboxInjector = async (text, inboxMeta) => {
+          const injector: import('./inbox/drain-handler').InboxInjector = async (text, inboxMeta, options) => {
             const sessionId = getRuntimeSessionIdForRequest();
             const sessionMeta = getSessionMetadata(sessionId);
             return engine.enqueueInboxMessage({
               text,
               sessionId,
-              workspacePath: sessionMeta?.agentDir ?? process.cwd(),
+              workspacePath: sessionMeta?.agentDir ?? currentAgentDir ?? process.cwd(),
+              scenario: options?.scenario,
               inboxMeta,
+              allowLazySessionMaterialization: options?.allowLazySessionMaterialization,
             });
           };
           const result = await handleInboxDrain(

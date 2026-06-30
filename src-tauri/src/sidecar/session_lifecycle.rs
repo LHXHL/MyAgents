@@ -83,6 +83,7 @@ pub fn ensure_session_sidecar_with_runtime_identity_override<R: Runtime>(
     runtime_override: Option<String>,
     runtime_source_override: Option<String>,
 ) -> Result<EnsureSidecarResult, String> {
+    let _update_spawn_permit = begin_update_spawn_permit()?;
     ensure_session_sidecar_attempt(
         app_handle,
         manager,

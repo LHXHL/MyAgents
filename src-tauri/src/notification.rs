@@ -217,6 +217,16 @@ pub fn show_with_navigation_target<R: Runtime>(
     body: &str,
     navigation: Option<NotificationNavigation>,
 ) {
+    show_with_navigation_target_inner(app, title, body, navigation, true);
+}
+
+fn show_with_navigation_target_inner<R: Runtime>(
+    app: &AppHandle<R>,
+    title: &str,
+    body: &str,
+    navigation: Option<NotificationNavigation>,
+    count_badge: bool,
+) {
     let prefs = read_notification_prefs();
     if !prefs.os_notifications {
         ulog_debug!(
@@ -232,6 +242,10 @@ pub fn show_with_navigation_target<R: Runtime>(
         navigation.as_ref().map(NotificationNavigation::describe),
         silent
     );
+
+    if count_badge && prefs.notification_badge {
+        crate::notification_badge::emit_badge_increment(app);
+    }
 
     #[cfg(target_os = "windows")]
     {
@@ -319,6 +333,9 @@ struct NotificationPrefs {
     /// Sound flag: when true, the platform default chime plays alongside
     /// the toast.
     notification_sound: bool,
+    /// Badge flag: when true, native app icon badges mirror unseen notification
+    /// work. Defaults on so old configs gain the visual fallback.
+    notification_badge: bool,
 }
 
 fn read_notification_prefs() -> NotificationPrefs {
@@ -333,6 +350,7 @@ fn read_notification_prefs() -> NotificationPrefs {
         /// notification fires before they open Settings, surprise.
         cron_notifications: Option<bool>,
         notification_sound: Option<bool>,
+        notification_badge: Option<bool>,
     }
 
     // Use the project-canonical data-dir helper rather than `dirs::home_dir()`
@@ -346,7 +364,11 @@ fn read_notification_prefs() -> NotificationPrefs {
             .as_ref()
             .and_then(|c| c.os_notifications.or(c.cron_notifications))
             .unwrap_or(true),
-        notification_sound: parsed.and_then(|c| c.notification_sound).unwrap_or(true),
+        notification_sound: parsed
+            .as_ref()
+            .and_then(|c| c.notification_sound)
+            .unwrap_or(true),
+        notification_badge: parsed.and_then(|c| c.notification_badge).unwrap_or(true),
     }
 }
 
@@ -628,11 +650,12 @@ pub fn cmd_show_notification<R: Runtime>(
     workspace_path: Option<String>,
 ) {
     let body = body.unwrap_or_default();
-    show_with_navigation_target(
+    show_with_navigation_target_inner(
         &app,
         &title,
         &body,
         NotificationNavigation::new(tab_id, session_id, workspace_path),
+        false,
     );
 }
 

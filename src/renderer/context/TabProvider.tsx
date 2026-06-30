@@ -36,6 +36,7 @@ import { CUSTOM_EVENTS, isPendingSessionId } from '../../shared/constants';
 import { TabContext, TabApiContext, TabActiveContext, type AdoptMigratedSessionOptions, type SessionState, type SystemNotice, type TabContextValue, type TabApiContextValue } from './TabContext';
 import { appendUniqueMessageById, upsertMessageById, updateMessageById, shouldSkipHistoryReplay, shouldClearHistoryOnInit } from './sessionRestoreGuards';
 import {
+    decideSystemInitSessionId,
     decidePersistedContextUsageSeed,
     shouldAcceptSessionScopedSseSnapshot,
     shouldPreserveSnapshotOnPendingBirthPropSync,
@@ -50,6 +51,7 @@ import type { SlashCommand } from '../../shared/slashCommands';
 import type { LogEntry } from '@/types/log';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import { parsePartialJson } from '@/utils/parsePartialJson';
+import { enqueuePermissionRequest, peekPermissionRequest, removePermissionRequest } from '@/utils/permissionQueue';
 import { i18n } from '@/i18n';
 import { subscribeFrontendLogs, setCurrentTabId } from '@/utils/frontendLogger';
 import { getTabServerUrl, proxyFetch, isTauri, getSessionActivation, getSessionPort, ensureSessionSidecar, resetTabServerUrlCache, setActiveCorrelation } from '@/api/tauriClient';
@@ -64,6 +66,7 @@ import {
     notifyPermissionRequest,
     notifyAskUserQuestion,
     notifyPlanModeRequest,
+    shouldNotifyUser,
 } from '@/services/notificationService';
 import { setBackgroundTaskStatus, setBackgroundTaskDescription, getBackgroundTaskDescription, clearAllBackgroundTaskStatuses, registerBackgroundTask } from '@/utils/backgroundTaskStatus';
 
@@ -655,7 +658,8 @@ export default function TabProvider({
     }, []);
     const [lastTerminalReason, setLastTerminalReason] = useState<TerminalReason | null>(null);
     const [isConnected, setIsConnected] = useState(false);
-    const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null);
+    const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
+    const pendingPermission = useMemo(() => peekPermissionRequest(pendingPermissions), [pendingPermissions]);
     const [pendingAskUserQuestion, setPendingAskUserQuestion] = useState<AskUserQuestionRequest | null>(null);
     const [pendingExitPlanMode, setPendingExitPlanMode] = useState<ExitPlanModeRequest | null>(null);
     const [pendingEnterPlanMode, setPendingEnterPlanMode] = useState<EnterPlanModeRequest | null>(null);
@@ -810,7 +814,7 @@ export default function TabProvider({
     // Shared cleanup for all session boundary transitions (reset, load, SSE init).
     // Single source of truth — add new interactive states here to avoid leaking across sessions.
     const clearInteractiveState = useCallback(() => {
-        setPendingPermission(null);
+        setPendingPermissions([]);
         setPendingAskUserQuestion(null);
         setPendingExitPlanMode(null);
         setPendingEnterPlanMode(null);
@@ -1510,6 +1514,19 @@ export default function TabProvider({
             clearRuntimePlanTodos();
         });
     }, [moveStreamingToHistory, clearSessionActive, clearRuntimePlanTodos]);
+
+    const shouldAcceptInteractiveEvent = useCallback((payloadSessionId?: string | null): boolean => {
+        if (!payloadSessionId) return true;
+        const currentId = currentSessionIdRef.current;
+        const connectedId = connectedSseSessionIdRef.current;
+        return shouldAcceptSessionScopedSseSnapshot({
+            connectedSessionId: connectedId,
+            currentSessionId: currentId,
+            payloadSessionId,
+            isConnectedSessionPending: connectedId ? isPendingSessionId(connectedId) : false,
+            isCurrentSessionPending: currentId ? isPendingSessionId(currentId) : false,
+        });
+    }, []);
 
     // Handle SSE events
     const handleSseEvent = useCallback((eventName: string, data: unknown) => {
@@ -2325,8 +2342,10 @@ export default function TabProvider({
                 // Send system notification if user is not focused on the app
                 notifyMessageComplete(tabId);
 
-                // Mark tab as unread if user is viewing a different tab
-                if (!isActiveRef.current) {
+                // Mark tab as unread when the result is not immediately visible:
+                // either the user is on another tab, or the app/window is not
+                // focused even though this tab is logically active.
+                if (!isActiveRef.current || shouldNotifyUser()) {
                     onUnreadChangeRef.current?.(true);
                 }
 
@@ -2492,6 +2511,27 @@ export default function TabProvider({
                     runtimeSource?: RuntimeSource;
                 } | null;
                 if (payload?.info) {
+                    const newSessionId = payload.sessionId;
+                    const currentIdForSystemInit = currentSessionIdRef.current;
+                    const connectedIdForSystemInit = connectedSseSessionIdRef.current;
+                    const systemInitSessionDecision = decideSystemInitSessionId({
+                        connectedSessionId: connectedIdForSystemInit,
+                        currentSessionId: currentIdForSystemInit,
+                        payloadSessionId: newSessionId,
+                        expectedBirthSessionId: resetBirthSessionIdRef.current,
+                        isConnectedSessionPending: connectedIdForSystemInit ? isPendingSessionId(connectedIdForSystemInit) : false,
+                        isCurrentSessionPending: currentIdForSystemInit ? isPendingSessionId(currentIdForSystemInit) : false,
+                        isNewSession: isNewSessionRef.current,
+                        isResetBirthPending: resetBirthPendingRef.current,
+                    });
+                    if (!systemInitSessionDecision.accept) {
+                        console.log(
+                            `[TabProvider ${tabId}] Ignoring system_init for stale session ${newSessionId ?? 'none'} ` +
+                            `(current=${currentIdForSystemInit ?? 'none'}, connected=${connectedIdForSystemInit ?? 'none'}, reason=${systemInitSessionDecision.reason})`,
+                        );
+                        break;
+                    }
+
                     setSystemInitInfo(payload.info);
                     // v0.1.69: backend tags every system-init with the runtime that
                     // actually spawned the process (builtin / claude-code / codex /
@@ -2531,8 +2571,7 @@ export default function TabProvider({
                     // Auto-sync sessionId when a new session is created (e.g., first message in empty session)
                     // This ensures currentSessionId stays in sync with the actual session
                     // Use our sessionId (for SessionStore matching) not SDK's session_id
-                    const newSessionId = payload.sessionId;
-                    if (newSessionId && currentSessionIdRef.current !== newSessionId) {
+                    if (newSessionId && systemInitSessionDecision.shouldSyncSessionId) {
                         if (isNewSessionRef.current || resetBirthPendingRef.current) {
                             resetBirthSessionIdRef.current = newSessionId;
                             resetBirthPendingRef.current = false;
@@ -2549,15 +2588,9 @@ export default function TabProvider({
                         //     (handleNewSession created a new sidecar/pending id) →
                         //     pendingSurface set to 'new_chat_button'
                         //
-                        // The detector below catches all three. For the rare case where a
-                        // non-birth id-sync slips through (none known today), the
-                        // pendingSurface registry's consume-once semantics + the
-                        // !currentSessionId/!pending guard limit damage.
-                        const oldId = currentSessionIdRef.current;
-                        const isSessionBirth =
-                            isNewSessionRef.current ||
-                            oldId === null ||
-                            isPendingSessionId(oldId);
+                        // The system-init decision above catches all three and rejects
+                        // non-birth mismatches from stale history-switch/prewarm snapshots.
+                        const isSessionBirth = systemInitSessionDecision.isSessionBirth;
 
                         console.log(`[TabProvider ${tabId}] Auto-syncing sessionId from system_init: ${newSessionId}`);
                         // Update the ref synchronously alongside the state dispatch so that
@@ -2819,58 +2852,79 @@ export default function TabProvider({
 
             case 'permission:request': {
                 // Agent is requesting permission to use a tool
-                const payload = data as { requestId: string; toolName: string; input: string } | null;
+                const payload = data as { requestId: string; sessionId?: string | null; toolName: string; input: string } | null;
                 console.log(`[TabProvider] permission:request received:`, payload);
-                if (payload?.requestId) {
-                    console.log(`[TabProvider] Setting pendingPermission for: ${payload.toolName}`);
-                    setPendingPermission({
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
+                    console.log(`[TabProvider] Queueing pendingPermission for: ${payload.toolName}`);
+                    setPendingPermissions(prev => enqueuePermissionRequest(prev, {
                         requestId: payload.requestId,
+                        sessionId: payload.sessionId,
                         toolName: payload.toolName,
                         input: payload.input || '',
-                    });
+                    }));
                     // Send system notification if user is not focused on the app
                     notifyPermissionRequest(payload.toolName);
+                    if (!isActiveRef.current || shouldNotifyUser()) {
+                        onUnreadChangeRef.current?.(true);
+                    }
+                }
+                break;
+            }
+
+            case 'permission:expired': {
+                const payload = data as { requestId?: string; sessionId?: string | null; reason?: string } | null;
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
+                    console.log(`[TabProvider] permission:expired received for ${payload.requestId} (${payload.reason ?? 'unknown'})`);
+                    setPendingPermissions(prev => removePermissionRequest(prev, payload.requestId));
                 }
                 break;
             }
 
             case 'ask-user-question:request': {
                 // Agent is asking user structured questions
-                const payload = data as { requestId: string; questions: AskUserQuestion[]; previewFormat?: 'html' | 'markdown' } | null;
+                const payload = data as { requestId: string; sessionId?: string | null; questions: AskUserQuestion[]; previewFormat?: 'html' | 'markdown' } | null;
                 console.log(`[TabProvider] ask-user-question:request received:`, payload);
-                if (payload?.requestId && payload.questions?.length > 0) {
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId) && payload.questions?.length > 0) {
                     console.log(`[TabProvider] Setting pendingAskUserQuestion with ${payload.questions.length} questions`);
                     setPendingAskUserQuestion({
                         requestId: payload.requestId,
+                        sessionId: payload.sessionId,
                         questions: payload.questions,
                         previewFormat: payload.previewFormat,
                     });
                     // Send system notification if user is not focused on the app
                     notifyAskUserQuestion();
+                    if (!isActiveRef.current || shouldNotifyUser()) {
+                        onUnreadChangeRef.current?.(true);
+                    }
                 }
                 break;
             }
 
             case 'exit-plan-mode:request': {
-                const payload = data as { requestId: string; plan?: string; allowedPrompts?: ExitPlanModeAllowedPrompt[] } | null;
-                if (payload?.requestId) {
+                const payload = data as { requestId: string; sessionId?: string | null; plan?: string; allowedPrompts?: ExitPlanModeAllowedPrompt[] } | null;
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
                     setPendingExitPlanMode({
                         requestId: payload.requestId,
+                        sessionId: payload.sessionId,
                         plan: payload.plan,
                         allowedPrompts: payload.allowedPrompts,
                     });
                     notifyPlanModeRequest();
+                    if (!isActiveRef.current || shouldNotifyUser()) {
+                        onUnreadChangeRef.current?.(true);
+                    }
                 }
                 break;
             }
 
             case 'enter-plan-mode:request': {
-                const payload = data as { requestId: string; autoApproved?: boolean } | null;
-                if (payload?.requestId) {
+                const payload = data as { requestId: string; sessionId?: string | null; autoApproved?: boolean } | null;
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
                     // Always auto-approve EnterPlanMode (no user card needed).
                     // For SDK-auto path, backend already proceeded; just update UI state.
                     // For canUseTool path, backend is waiting — notify it to proceed.
-                    setPendingEnterPlanMode({ requestId: payload.requestId, autoApproved: true, resolved: 'approved' });
+                    setPendingEnterPlanMode({ requestId: payload.requestId, sessionId: payload.sessionId, autoApproved: true, resolved: 'approved' });
                     if (!payload.autoApproved) {
                         void postJson('/api/enter-plan-mode/respond', { requestId: payload.requestId, approved: true });
                     }
@@ -2885,8 +2939,8 @@ export default function TabProvider({
             // wedged). We match by requestId so a stale event for a
             // long-replaced request never wipes a fresh modal.
             case 'ask-user-question:expired': {
-                const payload = data as { requestId: string; reason?: string } | null;
-                if (payload?.requestId) {
+                const payload = data as { requestId: string; sessionId?: string | null; reason?: string } | null;
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
                     setPendingAskUserQuestion(prev =>
                         prev?.requestId === payload.requestId ? null : prev,
                     );
@@ -2894,8 +2948,8 @@ export default function TabProvider({
                 break;
             }
             case 'exit-plan-mode:expired': {
-                const payload = data as { requestId: string; reason?: string } | null;
-                if (payload?.requestId) {
+                const payload = data as { requestId: string; sessionId?: string | null; reason?: string } | null;
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
                     setPendingExitPlanMode(prev =>
                         prev?.requestId === payload.requestId ? null : prev,
                     );
@@ -2903,8 +2957,8 @@ export default function TabProvider({
                 break;
             }
             case 'enter-plan-mode:expired': {
-                const payload = data as { requestId: string; reason?: string } | null;
-                if (payload?.requestId) {
+                const payload = data as { requestId: string; sessionId?: string | null; reason?: string } | null;
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
                     setPendingEnterPlanMode(prev =>
                         prev?.requestId === payload.requestId ? null : prev,
                     );
@@ -3195,7 +3249,7 @@ export default function TabProvider({
                 }
             }
         }
-    }, [appendLog, appendUnifiedLog, tabId, moveStreamingToHistory, beginFreshStreamIfNeeded, setStreamingMessage, postJson, clearInteractiveState, flushPendingTextNow, startRevealLoop, flushAllPendingToolDeltas, flushPendingToolInputDelta, flushPendingToolResultDelta, flushPendingSubagentToolInputDelta, flushPendingSubagentToolResultDelta, clearSessionActive, clearRuntimePlanTodos, resetPaginationState, trackTabEvent, trackSessionNewForBirth]);
+    }, [appendLog, appendUnifiedLog, tabId, moveStreamingToHistory, beginFreshStreamIfNeeded, setStreamingMessage, postJson, clearInteractiveState, flushPendingTextNow, startRevealLoop, flushAllPendingToolDeltas, flushPendingToolInputDelta, flushPendingToolResultDelta, flushPendingSubagentToolInputDelta, flushPendingSubagentToolResultDelta, clearSessionActive, clearRuntimePlanTodos, resetPaginationState, trackTabEvent, trackSessionNewForBirth, shouldAcceptInteractiveEvent]);
 
     // Recovery guard — prevents concurrent recovery from both SSE failed + session-sidecar:restarted
     const recoveryInFlightRef = useRef(false);
@@ -4405,11 +4459,14 @@ export default function TabProvider({
     }, [tabId]);
 
     // Respond to permission request
-    const respondPermission = useCallback(async (decision: 'deny' | 'allow_once' | 'always_allow') => {
-        if (!pendingPermission) return;
+    const respondPermission = useCallback(async (decision: 'deny' | 'allow_once' | 'always_allow', requestIdOverride?: string) => {
+        const permission = requestIdOverride
+            ? pendingPermissions.find(item => item.requestId === requestIdOverride)
+            : pendingPermission;
+        if (!permission) return;
 
-        const requestId = pendingPermission.requestId;
-        const toolName = pendingPermission.toolName;
+        const requestId = permission.requestId;
+        const toolName = permission.toolName;
         console.log(`[TabProvider] Permission response: ${decision} for ${toolName}`);
 
         // Track permission decision
@@ -4419,16 +4476,18 @@ export default function TabProvider({
             trackTabEvent('permission_grant', { tool: toolName, type: decision });
         }
 
-        // Clear pending permission immediately for UI responsiveness
-        setPendingPermission(null);
-
         // Send response to backend
         try {
-            await postJson('/api/permission/respond', { requestId, decision });
+            const response = await postJson<{ success?: boolean; error?: string }>('/api/permission/respond', { requestId, decision });
+            if (response.success !== true) {
+                throw new Error(response.error || 'Permission response was not accepted by backend');
+            }
+            setPendingPermissions(prev => removePermissionRequest(prev, requestId));
         } catch (error) {
             console.error('[TabProvider] Failed to send permission response:', error);
+            throw error;
         }
-    }, [pendingPermission, postJson, trackTabEvent]);
+    }, [pendingPermission, pendingPermissions, postJson, trackTabEvent]);
 
     // Respond to AskUserQuestion request
     const respondAskUserQuestion = useCallback(async (answers: Record<string, string> | null) => {

@@ -33,7 +33,7 @@ import {
   isExternalRuntime,
 } from './factory';
 import { resolveCodexWorkspaceInstructions } from './workspace-instructions';
-import { RUNTIME_DISPLAY_NAMES, type RuntimeType } from '../../shared/types/runtime';
+import { RUNTIME_DISPLAY_NAMES, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
 import { isPendingSessionId } from '../../shared/constants';
 import { resolveChatQueueResponseMode } from '../session-core/turn-queue';
@@ -232,6 +232,7 @@ import {
   getLastExternalAssistantTextFromTranscript,
   getExternalSessionMessageCount,
   getExternalSessionMessagesSnapshot,
+  getExternalTranscriptSessionId,
   getLastPersistedRuntimeUsageTotals,
   persistExternalUserMessageAppend,
   pushExternalSessionMessage,
@@ -476,6 +477,30 @@ export function __resetExternalSessionForTests(): void {
  * the channel typed lets us add user-visible messaging later without a
  * second round-trip.
  */
+function broadcastExternalInteractiveExpired(
+  requestId: string,
+  entry: ExternalPendingInteractiveRequest | undefined,
+  reason: 'stop' | 'error' | 'reset' | 'resolved',
+): void {
+  if (!entry) return;
+  const sessionId = entry.data.sessionId || getCurrentBoundSessionId() || undefined;
+  if (entry.type === 'ask-user-question:request') {
+    try {
+      broadcast('ask-user-question:expired', { requestId, ...(sessionId ? { sessionId } : {}), reason });
+    } catch (e) {
+      console.warn(`[external-session] broadcast ask-user-question:expired for ${requestId} failed:`, e);
+    }
+    return;
+  }
+  if (entry.type === 'permission:request') {
+    try {
+      broadcast('permission:expired', { requestId, ...(sessionId ? { sessionId } : {}), reason });
+    } catch (e) {
+      console.warn(`[external-session] broadcast permission:expired for ${requestId} failed:`, e);
+    }
+  }
+}
+
 function drainPendingInteractiveRequestsAsExpired(reason: 'stop' | 'error' | 'reset'): void {
   // `pendingExternalInteractiveRequests` only ever holds
   // `ask-user-question:request` (structured wizard) or `permission:request`
@@ -484,12 +509,7 @@ function drainPendingInteractiveRequestsAsExpired(reason: 'stop' | 'error' | 're
   // channels stay builtin-only. Filtering by entry.type keeps the broadcast
   // honest if a future runtime starts using those interactive types.
   for (const [requestId, entry] of getExternalInteractiveRequestEntries()) {
-    if (entry.type !== 'ask-user-question:request') continue;
-    try {
-      broadcast('ask-user-question:expired', { requestId, reason });
-    } catch (e) {
-      console.warn(`[external-session] broadcast ask-user-question:expired for ${requestId} failed:`, e);
-    }
+    broadcastExternalInteractiveExpired(requestId, entry, reason);
   }
 }
 
@@ -757,7 +777,8 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
   const hasOwnedFreshStartAuthority =
     turnPath === 'fresh-start'
     && scenario.type !== 'im'
-    && scenario.type !== 'agent-channel';
+    && scenario.type !== 'agent-channel'
+    && scenario.type !== 'registeredAgent';
   const hasMaterializationBirth =
     Boolean(pendingBirth)
     || params.metadataBirthPending === true
@@ -1132,7 +1153,7 @@ export function restoreExternalSessionState(
   }
 
   // Load existing messages for correct incremental save (or clear stale in-memory state)
-  setExternalSessionMessages(hasExistingMessages ? data!.messages : []);
+  setExternalSessionMessages(sessionId, hasExistingMessages ? data!.messages : []);
 
   // PRD 0.2.15 Review F2 — repopulate the external-path attachment registry
   // from persisted ContentBlock[] so /api/attachment/tool/... can still resolve
@@ -1419,6 +1440,22 @@ export function getExternalSessionId(): string {
   return getExternalLifecycleSessionId();
 }
 
+export function isExternalSessionStateRestoredFor(sessionId: string): boolean {
+  if (getExternalLifecycleSessionId() !== sessionId) return false;
+  if (getExternalTranscriptSessionId() !== sessionId) return false;
+  const diskMessages = getSessionData(sessionId)?.messages ?? [];
+  const memoryMessages = getExternalSessionMessagesSnapshot();
+  if (memoryMessages.length < diskMessages.length) return false;
+  const diskMatchesMemoryPrefix = diskMessages.every((message, index) => memoryMessages[index]?.id === message.id);
+  if (!diskMatchesMemoryPrefix) return false;
+  if (memoryMessages.length === diskMessages.length) return true;
+
+  // A longer in-memory transcript is valid only while the target session owns an
+  // active/finalizing turn whose tail has not landed in SessionStore yet. Idle
+  // tails are stale cross-session residue and must force restore instead.
+  return getExternalLifecycleState() === 'running' || isExternalTurnFinalizationInFlight();
+}
+
 export function getExternalSessionWorkspacePath(): string {
   return getExternalLifecycleWorkspacePath();
 }
@@ -1470,6 +1507,14 @@ export function getActiveRuntimeType(): RuntimeType {
 
 export function getActiveRuntimeSource(): ReturnType<typeof getCurrentRuntimeSource> {
   return getCurrentRuntimeSource();
+}
+
+function normalizeRuntimeSourceForRuntime(
+  runtime: RuntimeType,
+  runtimeSource: RuntimeSource | undefined,
+): RuntimeSource | undefined {
+  if (runtime === 'builtin') return undefined;
+  return runtimeSource ?? 'system-cli';
 }
 
 /**
@@ -1726,7 +1771,7 @@ async function _doStartExternalSession(options: {
   }
   // Only clear message history for new sessions, not resumes
   if (!options.resumeSessionId) {
-    clearExternalSessionMessages();
+    clearExternalSessionMessages(options.sessionId);
   }
 
   // Record user message for SessionStore persistence.
@@ -2590,19 +2635,26 @@ export async function respondExternalPermission(
   requestId: string,
   decision: 'deny' | 'allow_once' | 'always_allow',
   reason?: string,
-): Promise<void> {
+): Promise<boolean> {
   const active = getExternalActivePair();
   if (!active) {
     console.warn('[external-session] No active process for permission response');
-    return;
+    return false;
+  }
+  const pending = getExternalInteractiveRequest(requestId);
+  if (pending?.type !== 'permission:request') {
+    console.warn(`[external-session] Unknown permission requestId: ${requestId}`);
+    return false;
   }
   // Peek first; consume/delete only after runtime delivery succeeds so a transient
   // stdin/process write failure does not make the approval impossible to retry.
   const suggestions = getExternalPermissionSuggestions(requestId);
   console.log(`[external-session] Permission response: ${decision} for requestId=${requestId}${suggestions?.length ? `, with ${suggestions.length} suggestion(s)` : ''}`);
   await active.runtime.respondPermission(active.process, requestId, decision, reason, suggestions);
+  broadcastExternalInteractiveExpired(requestId, pending, 'resolved');
   consumeExternalPermissionSuggestions(requestId);
   deleteExternalInteractiveRequest(requestId);
+  return true;
 }
 
 /**
@@ -2667,6 +2719,7 @@ export async function respondExternalAskUserQuestion(
     }
     // Delete only after successful delivery — if respondPermission throws
     // (e.g. stdin closed mid-write) the caller can retry.
+    broadcastExternalInteractiveExpired(requestId, getExternalInteractiveRequest(requestId), 'resolved');
     deleteExternalAskUserQuestion(requestId);
     deleteExternalInteractiveRequest(requestId);
     return true;
@@ -2834,6 +2887,17 @@ export function isExternalSessionActive(): boolean {
 }
 
 /**
+ * True when an external runtime process is still alive, even if no turn is
+ * currently running. Persistent runtimes such as Codex app-server keep an idle
+ * process around after a turn completes; session-boundary operations must stop
+ * that process too, not only `isExternalSessionActive()` running turns.
+ */
+export function hasExternalRuntimeProcess(): boolean {
+  const process = getExternalActiveProcess();
+  return Boolean(process && !process.exited);
+}
+
+/**
  * Truncate `allSessionMessages` at the given user message id and persist the
  * truncation. Returns the popped user message's content + attachments so the
  * caller can re-send.
@@ -2943,7 +3007,7 @@ export async function prewarmExternalSession(options: {
     });
     return { prewarmed: false, reason: `Pre-warm not applicable for runtime=${runtimeType}` };
   }
-  // Already warm (from previous pre-warm or live session) — no-op.
+  // Already running/starting a turn — pre-warm is advisory and must not interrupt it.
   if (isExternalSessionActive() || isExternalLifecycleRunning() || isExternalLifecycleStarting()) {
     emitPerfTrace({
       trace: 'runtime',
@@ -2956,7 +3020,6 @@ export async function prewarmExternalSession(options: {
     });
     return { prewarmed: false, reason: 'Session already active or starting' };
   }
-
   // Cross-runtime guard — refuse to warm a session whose persisted metadata
   // names a different runtime. Frontend Chat.tsx also guards this, but the
   // frontend's sessionRuntime is populated async via loadSession, so the
@@ -2974,6 +3037,42 @@ export async function prewarmExternalSession(options: {
       detail: { reason: 'runtime_mismatch' },
     });
     return { prewarmed: false, reason: `Session runtime mismatch: persisted=${meta.runtime}, current=${runtimeType}` };
+  }
+  if (meta?.runtime) {
+    const persistedRuntimeSource = normalizeRuntimeSourceForRuntime(meta.runtime, meta.runtimeSource);
+    const currentRuntimeSource = normalizeRuntimeSourceForRuntime(runtimeType, getCurrentRuntimeSource());
+    if (persistedRuntimeSource !== currentRuntimeSource) {
+      emitPerfTrace({
+        trace: 'runtime',
+        phase: 'prewarm_skipped',
+        runtime: runtimeType,
+        sessionId: options.sessionId,
+        durationMs: elapsedMs(start),
+        status: 'skipped',
+        detail: { reason: 'runtime_source_mismatch' },
+      });
+      return {
+        prewarmed: false,
+        reason: `Session runtime source mismatch: persisted=${persistedRuntimeSource ?? 'none'}, current=${currentRuntimeSource ?? 'none'}`,
+      };
+    }
+  }
+
+  const activeProcess = getExternalActiveProcess();
+  if (activeProcess && !activeProcess.exited) {
+    if (isExternalSessionStateRestoredFor(options.sessionId)) {
+      emitPerfTrace({
+        trace: 'runtime',
+        phase: 'prewarm_skipped',
+        runtime: runtimeType,
+        sessionId: options.sessionId,
+        durationMs: elapsedMs(start),
+        status: 'skipped',
+        detail: { reason: 'already_warm' },
+      });
+      return { prewarmed: false, reason: 'Session already warm' };
+    }
+    await stopExternalSession();
   }
 
   // Pick resume ID if restoreExternalSessionState populated one — but only if
@@ -3583,7 +3682,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       break;
     }
 
-    case 'permission_request':
+    case 'permission_request': {
       if (autoDenyNonInteractiveRequest(event)) break;
       // AskUserQuestion carries a structured payload (questions/options/previews) and
       // needs the dedicated wizard UI, not the generic allow/deny card. Route it through
@@ -3593,15 +3692,17 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         setExternalAskUserQuestion(event.requestId, { input: event.input as Record<string, unknown> });
         const questions = event.input.questions;
         const previewFormat: 'html' | 'markdown' = 'html';
-        setExternalInteractiveRequest(event.requestId, {
-          type: 'ask-user-question:request',
-          data: { requestId: event.requestId, questions, previewFormat },
-        });
-        broadcast('ask-user-question:request', {
+        const requestPayload = {
           requestId: event.requestId,
+          sessionId: getCurrentBoundSessionId() || undefined,
           questions,
           previewFormat,
+        };
+        setExternalInteractiveRequest(event.requestId, {
+          type: 'ask-user-question:request',
+          data: requestPayload,
         });
+        broadcast('ask-user-question:request', requestPayload);
         // IM/agent-channel bots can't render AskUserQuestion; claude-code.ts already
         // puts it in --disallowed-tools for those scenarios, so no imEventBus fan-out here.
         break;
@@ -3609,33 +3710,29 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
 
       // Store suggestions so respondExternalPermission can echo them back for "always_allow"
       setExternalPermissionSuggestions(event.requestId, event.suggestions);
-      setExternalInteractiveRequest(event.requestId, {
-        type: 'permission:request',
-        data: {
-          requestId: event.requestId,
-          toolName: event.toolName,
-          toolUseId: event.toolUseId,
-          input: typeof event.input === 'object' ? JSON.stringify(event.input).slice(0, 500) : String(event.input ?? '').slice(0, 500),
-        },
-      });
-      broadcast('permission:request', {
+      const requestPayload = {
         requestId: event.requestId,
+        sessionId: getCurrentBoundSessionId() || undefined,
         toolName: event.toolName,
         toolUseId: event.toolUseId,
         input: typeof event.input === 'object' ? JSON.stringify(event.input).slice(0, 500) : String(event.input ?? '').slice(0, 500),
+      };
+      setExternalInteractiveRequest(event.requestId, {
+        type: 'permission:request',
+        data: requestPayload,
       });
+      broadcast('permission:request', requestPayload);
       fireExternalImCallback('permission-request', JSON.stringify({
         requestId: event.requestId,
         toolName: event.toolName,
         input: event.input,
       }));
       break;
+    }
 
     case 'interactive_request_resolved': {
       const pending = getExternalInteractiveRequest(event.requestId);
-      if (pending?.type === 'ask-user-question:request') {
-        broadcast('ask-user-question:expired', { requestId: event.requestId, reason: 'resolved' });
-      }
+      broadcastExternalInteractiveExpired(event.requestId, pending, 'resolved');
       deleteExternalAskUserQuestion(event.requestId);
       deleteExternalInteractiveRequest(event.requestId);
       consumeExternalPermissionSuggestions(event.requestId);

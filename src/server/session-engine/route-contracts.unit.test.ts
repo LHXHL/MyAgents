@@ -71,7 +71,7 @@ describe('SESSION_ENGINE_ROUTE_CONTRACTS', () => {
       'pending request ownership',
     );
     expect(findSessionEngineRouteContract('/api/runtime/permission-response', 'POST')?.engineMethod).toBe(
-      'respondExternalPermission',
+      'respondPermission',
     );
   });
 });

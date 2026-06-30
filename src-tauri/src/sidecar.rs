@@ -102,7 +102,10 @@ pub use session_lifecycle::{
     ensure_session_sidecar_with_runtime_override, get_session_generation, get_session_sidecar_port,
     has_session_sidecar, release_session_sidecar, EnsureSidecarResult,
 };
-pub use shutdown::{shutdown_for_update, stop_all_sidecars};
+pub use shutdown::{
+    begin_update_shutdown, begin_update_spawn_permit, is_update_shutdown_in_progress,
+    shutdown_for_update_verified, stop_all_sidecars,
+};
 pub use spawn::find_node_executable_pub;
 pub(crate) use spawn::normalize_external_path;
 use spawn::{

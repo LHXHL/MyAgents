@@ -37,7 +37,7 @@ export function setWindowVisible(visible: boolean): void {
  * Returns true when the user isn't actively looking at the app, so a system
  * notification is worth showing.
  */
-function shouldNotify(): boolean {
+export function shouldNotifyUser(): boolean {
     if (!isWindowVisible) return true;
     if (document.hidden) return true;
     if (!document.hasFocus()) return true;
@@ -46,7 +46,7 @@ function shouldNotify(): boolean {
 
 async function notify(title: string, body?: string, tabId?: string): Promise<void> {
     if (!isTauriEnvironment()) return;
-    if (!shouldNotify()) return;
+    if (!shouldNotifyUser()) return;
 
     const now = Date.now();
     if (now - lastNotifyTime < NOTIFY_THROTTLE_MS) return;

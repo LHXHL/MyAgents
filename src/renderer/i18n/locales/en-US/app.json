@@ -44,6 +44,7 @@
   "appChrome": {
     "updateVerifyFailed": "Could not verify the update because of a network issue. Try again later.",
     "updateExpiredRedownloading": "The downloaded update expired. Downloading the latest version...",
+    "updateInstallBlocked": "Background services are still exiting. The update is saved; try again shortly or after restarting Windows.",
     "updateInstallFailed": "Update installation failed. Try again or check manually in Settings.",
     "backgroundCompletion": "AI will continue in the background",
     "maxTabsReached": "Maximum tab count reached. Close another tab and try again.",
@@ -311,8 +312,10 @@
         "createIssue": "Issue creation",
         "updateIssueStatus": "Issue status update",
         "closeIssue": "Issue close",
-        "dispatchAgent": "Agent assignment",
-        "createTag": "Tag creation",
+        "claimIssue": "Issue claim",
+        "completeIssue": "Issue completion",
+        "cancelClaim": "Claim cancellation",
+        "goal": "Goal operation",
         "attachment": "Attachment operation",
         "skill": "Skill operation",
         "request": "Space request"
@@ -337,6 +340,10 @@
     },
     "sidebar": {
       "openJoin": "Open join",
+      "issues": "Issues",
+      "goals": "Goals",
+      "skills": "Skills",
+      "agents": "Agents",
       "signedInWithGoogle": "Signed in with Google",
       "logout": "Sign out"
     },
@@ -354,10 +361,9 @@
       "notSynced": "Not synced"
     },
     "filters": {
-      "allTags": "All tags",
-      "allStatuses": "All statuses",
-      "noTag": "No tag",
-      "newTag": "New tag"
+      "allGoals": "All goals",
+      "inbox": "Inbox",
+      "allStatuses": "All statuses"
     },
     "toasts": {
       "loginSuccess": "Signed in to MyAgents Community",
@@ -365,7 +371,6 @@
       "loginSlow": "Login status sync is slow. Retrying...",
       "loginTimeout": "Login timed out. Start Google login again.",
       "browserLoginOpened": "Opened browser login",
-      "dispatchProcessed": "Processed {{count}} Space dispatch task(s)",
       "refreshed": "Refreshed",
       "logoutSuccess": "Signed out of Space",
       "skillUploaded": "Uploaded {{name}}",
@@ -384,12 +389,13 @@
       "noAgentWorkspaces": "No Agent workspaces available",
       "attachmentCommandCopied": "Attachment download command copied",
       "attachmentPathCopied": "Local attachment path copied",
-      "assignedToAgent": "Assigned to {{name}}",
-      "assignmentRecorded": "Assignment recorded: {{name}}",
       "issueCommandCopied": "Issue command copied",
-      "tagCreated": "Created tag: {{name}}",
       "issueCreated": "Issue created",
-      "issueCreatedWithAttachments": "Issue created and {{count}} attachment(s) uploaded"
+      "issueCreatedWithAttachments": "Issue created and {{count}} attachment(s) uploaded",
+      "goalCreated": "Goal created",
+      "goalSaved": "Goal saved",
+      "goalArchived": "Goal archived",
+      "goalDeleted": "Goal deleted"
     },
     "issues": {
       "searchPlaceholder": "Search title",
@@ -397,7 +403,9 @@
       "searchIssue": "Search issue",
       "createIssue": "New Issue",
       "empty": "No matching issues",
-      "comments": "{{count}} comments"
+      "humanOnly": "Human-only",
+      "comments": "{{count}} comments",
+      "claimHandler": "Handler: {{name}}"
     },
     "createIssue": {
       "community": "MyAgents Community",
@@ -408,11 +416,44 @@
       "removeFile": "Remove {{name}}",
       "addAttachment": "Add attachment",
       "attachment": "Attachment",
-      "tagPlaceholder": "Tag name",
-      "createTag": "Create tag",
-      "cancelCreateTag": "Cancel tag creation",
+      "targetGoal": "Target Goal",
+      "humanOnly": "Human-only",
       "continuous": "Keep creating",
       "pickAttachmentsTitle": "Choose issue attachments"
+    },
+    "goals": {
+      "title": "Goals",
+      "subtitle": "Maintain the Space goal tree and context",
+      "tree": "Goal tree",
+      "goalCount": "{{count}}",
+      "empty": "No goals",
+      "root": "Root",
+      "viewIssues": "View Issues",
+      "edit": "Edit",
+      "editTitle": "Edit goal",
+      "createTitle": "New child goal",
+      "emptyTitle": "No goal selected",
+      "emptyHint": "Select a goal from the tree to review its context and direct child goals here.",
+      "titleLabel": "Title",
+      "contextLabel": "Context",
+      "titlePlaceholder": "Goal title",
+      "contextPlaceholder": "Describe the background, boundary, and acceptance direction for this goal",
+      "children": "Child goals",
+      "childCount": "{{count}}",
+      "noChildren": "No direct child goals",
+      "parentGoal": "Parent goal:",
+      "rootEditHint": "The root goal can be edited, but it cannot be deleted.",
+      "newChild": "New child goal",
+      "newChildHint": "Create under \"{{parent}}\" to split the attention scope further.",
+      "childTitlePlaceholder": "Child goal title",
+      "childContextPlaceholder": "Child goal context",
+      "createChild": "Create child",
+      "archive": "Archive",
+      "archiveTitle": "Archive goal",
+      "archiveMessage": "Archive \"{{name}}\"? Child goals under it will be hidden from the goal tree and related Issue lists will reload.",
+      "delete": "Delete",
+      "deleteTitle": "Delete goal",
+      "deleteMessage": "Delete \"{{name}}\"? Child goals under it will be hidden from the goal tree and related Issue lists will reload."
     },
     "detail": {
       "close": "Close detail",
@@ -428,10 +469,12 @@
       "copyCliDownloadCommand": "Copy CLI download command",
       "copyAttachmentPath": "Copy local attachment path {{name}}",
       "copyLocalPath": "Copy local path",
-      "dispatchToAgent": "Dispatch to Agent",
+      "claimed": "Claimed",
+      "claimHandler": "Handler: {{name}} · {{type}}",
+      "claimHandlerTypeRegisteredAgent": "Registered Agent",
+      "claimHandlerTypeUser": "User",
+      "claimHandlerUnknownType": "Handler",
       "issueCommand": "Issue command",
-      "assignAgent": "Assign Agent",
-      "emptyRegisteredAgents": "No Registered Agents",
       "copyIssueCommand": "Copy issue command",
       "comments": "Comments",
       "commentCount": "{{count}} comments",
@@ -466,7 +509,6 @@
     },
     "agents": {
       "hint": "Register local workspaces to subscribe and respond to cloud dispatches.",
-      "sync": "Sync",
       "register": "Register",
       "empty": "No Registered Agents",
       "registerAgent": "Register Agent",
@@ -483,6 +525,13 @@
       "lastSync": "Last sync",
       "workspace": "Workspace",
       "goal": "Goal",
+      "subscription": "Subscription",
+      "subscriptionTodo": "Subscribes to Todo issues in this goal.",
+      "issueSubscriptionStrategy": "Issue subscription strategy",
+      "issueSubscriptionSingleSession": "Continuous conversation",
+      "issueSubscriptionNewSession": "New conversation",
+      "issueSubscriptionSingleSessionDescription": "Merge deliveries from the same poll into one Agent conversation.",
+      "issueSubscriptionNewSessionDescription": "Create a separate session per Issue to isolate context and execution history.",
       "revokeTitle": "Revoke Registered Agent",
       "revokeMessage": "Revoke \"{{name}}\"? The token for this local node will be invalidated and it will no longer receive new dispatches.",
       "editTitle": "Edit Agent",
@@ -490,8 +539,7 @@
       "officialSpace": "Official Space",
       "name": "Name",
       "workspaceLabel": "Workspace label",
-      "displayNamePlaceholder": "Agent display name",
-      "goalPlaceholder": "Describe what this registered agent should handle."
+      "displayNamePlaceholder": "Agent display name"
     }
   },
   "usageStats": {

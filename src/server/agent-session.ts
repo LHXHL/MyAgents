@@ -1065,6 +1065,16 @@ const imTextBlockIndices = new Set<number>();
 
 const childToolToParent: Map<string, string> = new Map();
 let sessionId = randomUUID();
+publishCurrentSessionEnv();
+
+function setCurrentSessionId(next: string): void {
+  sessionId = next as typeof sessionId;
+  publishCurrentSessionEnv();
+}
+
+function publishCurrentSessionEnv(): void {
+  process.env.MYAGENTS_SESSION_ID = sessionId;
+}
 // Reset guard: prevents enqueueUserMessage from racing with async resetSession()/switchToSession()
 // Single promise — non-null means a reset is in progress; enqueueUserMessage awaits it.
 let resetPromise: Promise<void> | null = null;
@@ -2775,7 +2785,7 @@ function resetForProviderHistoryBoundary(): void {
   const previousSessionId = sessionId;
   setPendingProviderHistoryBoundaryReset(false);
   sessionRegistered = false;
-  sessionId = randomUUID();
+  setCurrentSessionId(randomUUID());
   hasInitialPrompt = false;
   resetSessionMaterializationState({ allowLazySessionMaterialization: true });
   clearMessages();
@@ -3603,6 +3613,10 @@ function hasPendingInteractiveRequest(): boolean {
     || pendingEnterPlanMode.size > 0;
 }
 
+function interactiveEventScope(): { sessionId: string } {
+  return { sessionId };
+}
+
 /**
  * Validate AskUserQuestion input structure
  */
@@ -3651,6 +3665,7 @@ async function handleAskUserQuestion(
   }
 
   broadcast('ask-user-question:request', {
+    ...interactiveEventScope(),
     requestId,
     questions: questionInput.questions,
     // SDK v0.2.69+: options may contain `preview` field (HTML or Markdown)
@@ -3678,7 +3693,7 @@ async function handleAskUserQuestion(
       const wasPending = pendingAskUserQuestions.has(requestId);
       cleanup();
       if (wasPending) {
-        broadcast('ask-user-question:expired', { requestId, reason: 'aborted' });
+        broadcast('ask-user-question:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' });
       }
       // Reject with AbortError so SDK's own abort handling creates the single tool_result.
       // Previously resolve(null) caused canUseTool to return deny → duplicate tool_result
@@ -3768,7 +3783,7 @@ async function handleExitPlanMode(
     throw new DOMException('Aborted', 'AbortError');
   }
 
-  broadcast('exit-plan-mode:request', { requestId, plan, allowedPrompts });
+  broadcast('exit-plan-mode:request', { ...interactiveEventScope(), requestId, plan, allowedPrompts });
 
   // No wall-clock timeout — see pendingExitPlanMode Map declaration.
   return new Promise((resolve, reject) => {
@@ -3783,7 +3798,7 @@ async function handleExitPlanMode(
       const wasPending = pendingExitPlanMode.has(requestId);
       cleanup();
       if (wasPending) {
-        broadcast('exit-plan-mode:expired', { requestId, reason: 'aborted' });
+        broadcast('exit-plan-mode:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' });
       }
       reject(new DOMException('Aborted', 'AbortError'));
     };
@@ -3845,7 +3860,7 @@ async function handleEnterPlanMode(
     throw new DOMException('Aborted', 'AbortError');
   }
 
-  broadcast('enter-plan-mode:request', { requestId });
+  broadcast('enter-plan-mode:request', { ...interactiveEventScope(), requestId });
 
   // No wall-clock timeout — see pendingEnterPlanMode Map declaration.
   return new Promise((resolve, reject) => {
@@ -3860,7 +3875,7 @@ async function handleEnterPlanMode(
       const wasPending = pendingEnterPlanMode.has(requestId);
       cleanup();
       if (wasPending) {
-        broadcast('enter-plan-mode:expired', { requestId, reason: 'aborted' });
+        broadcast('enter-plan-mode:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' });
       }
       reject(new DOMException('Aborted', 'AbortError'));
     };
@@ -3968,6 +3983,7 @@ async function checkToolPermission(
 
   // Broadcast permission request to frontend
   broadcast('permission:request', {
+    ...interactiveEventScope(),
     requestId,
     toolName,
     input: inputPreview,
@@ -3987,6 +4003,7 @@ async function checkToolPermission(
     const onAbort = () => {
       console.debug(`[permission] ${toolName}: aborted by SDK signal`);
       cleanup();
+      try { broadcast('permission:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' }); } catch { /* swallow — abort cleanup must not throw */ }
       // Reject with AbortError so SDK's own abort handling creates the single tool_result.
       // Previously resolve('deny') caused a duplicate tool_result on abort.
       reject(new DOMException('Aborted', 'AbortError'));
@@ -4015,6 +4032,7 @@ export function handlePermissionResponse(
   }
 
   pendingPermissions.delete(requestId);
+  try { broadcast('permission:expired', { ...interactiveEventScope(), requestId, reason: 'resolved' }); } catch { /* swallow — response path must not fail on SSE */ }
 
   if (decision === 'deny') {
     console.log(`[permission] ${pending.toolName}: user denied`);
@@ -4037,6 +4055,7 @@ export function handlePermissionResponse(
       if (otherPending.toolName === pending.toolName) {
         console.log(`[permission] ${otherPending.toolName}: cascade auto-approved (requestId=${otherId})`);
         pendingPermissions.delete(otherId);
+        try { broadcast('permission:expired', { ...interactiveEventScope(), requestId: otherId, reason: 'resolved' }); } catch { /* swallow — cascade must not fail on SSE */ }
         otherPending.resolve('allow');
       }
     }
@@ -4063,12 +4082,8 @@ export function handlePermissionResponse(
  *      desync (PRD #131).
  *
  * Mirrors `external-session.ts::drainPendingInteractiveRequestsAsExpired`.
- * For Ask/ExitPlan/EnterPlan we broadcast the matching `:expired` event so
- * the frontend modal clears even when the chat:init guard skips the
- * unconditional clear. For permission requests we skip the broadcast —
- * there is no `permission:expired` channel; pendingPermission is cleared
- * via the chat:init / clearInteractiveState path on SSE reconnect, and
- * adding a new SSE event type just for cross-coverage is out of scope.
+ * We broadcast the matching `:expired` event so the frontend modal clears
+ * even when the chat:init guard skips the unconditional clear.
  *
  * `reason` is forwarded into the `:expired` payload so future telemetry /
  * UX messaging can distinguish reset-driven vs crash-driven expiry. The
@@ -4076,8 +4091,9 @@ export function handlePermissionResponse(
  */
 function drainPendingInteractiveRequests(reason: 'reset' | 'session-end'): void {
   // Permission: resolve with 'deny' so any awaiting tool call surfaces as
-  // denied. No `:expired` broadcast (see helper docstring).
-  for (const [, p] of pendingPermissions) {
+  // denied.
+  for (const [requestId, p] of pendingPermissions) {
+    try { broadcast('permission:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try { p.resolve('deny'); } catch { /* swallow — never propagate from cleanup */ }
   }
   pendingPermissions.clear();
@@ -4085,20 +4101,20 @@ function drainPendingInteractiveRequests(reason: 'reset' | 'session-end'): void 
   // Ask-user-question: broadcast :expired then resolve(null). Order matters
   // only for tests — the tool turn is going away regardless.
   for (const [requestId, q] of pendingAskUserQuestions) {
-    try { broadcast('ask-user-question:expired', { requestId, reason }); } catch { /* swallow */ }
+    try { broadcast('ask-user-question:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try { q.resolve(null); } catch { /* swallow */ }
   }
   pendingAskUserQuestions.clear();
 
   // Plan-mode entries resolve with `{approved: false}` (request was not approved).
   for (const [requestId, p] of pendingExitPlanMode) {
-    try { broadcast('exit-plan-mode:expired', { requestId, reason }); } catch { /* swallow */ }
+    try { broadcast('exit-plan-mode:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try { p.resolve({ approved: false }); } catch { /* swallow */ }
   }
   pendingExitPlanMode.clear();
 
   for (const [requestId, p] of pendingEnterPlanMode) {
-    try { broadcast('enter-plan-mode:expired', { requestId, reason }); } catch { /* swallow */ }
+    try { broadcast('enter-plan-mode:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try { p.resolve(false); } catch { /* swallow */ }
   }
   pendingEnterPlanMode.clear();
@@ -4132,6 +4148,7 @@ export function getPendingInteractiveRequests(): Array<{
     result.push({
       type: 'permission:request',
       data: {
+        ...interactiveEventScope(),
         requestId,
         toolName: p.toolName,
         input: typeof p.input === 'object' ? JSON.stringify(p.input).slice(0, 500) : String(p.input).slice(0, 500),
@@ -4141,19 +4158,19 @@ export function getPendingInteractiveRequests(): Array<{
   for (const [requestId, q] of pendingAskUserQuestions) {
     result.push({
       type: 'ask-user-question:request',
-      data: { requestId, questions: q.input.questions, previewFormat: 'html' },
+      data: { ...interactiveEventScope(), requestId, questions: q.input.questions, previewFormat: 'html' },
     });
   }
   for (const [requestId, p] of pendingExitPlanMode) {
     result.push({
       type: 'exit-plan-mode:request',
-      data: { requestId, plan: p.plan, allowedPrompts: p.allowedPrompts },
+      data: { ...interactiveEventScope(), requestId, plan: p.plan, allowedPrompts: p.allowedPrompts },
     });
   }
   for (const [requestId] of pendingEnterPlanMode) {
     result.push({
       type: 'enter-plan-mode:request',
-      data: { requestId },
+      data: { ...interactiveEventScope(), requestId },
     });
   }
   return result;
@@ -4189,7 +4206,7 @@ function createMetadataForSessionId(
   });
   return {
     meta,
-    snapshotKind: agent ? (isLiveFollowScenario(scenario) ? 'im' : 'owned') : `runtime:${meta.runtime ?? 'none'}`,
+    snapshotKind: agent ? (isLiveFollowScenario(scenario) ? 'live-follow' : 'owned') : `runtime:${meta.runtime ?? 'none'}`,
   };
 }
 
@@ -4553,7 +4570,7 @@ export async function materializePendingDesktopSession(
       setQuerySession(null);
     }
 
-    sessionId = prepared.targetSessionId as typeof sessionId;
+    setCurrentSessionId(prepared.targetSessionId);
     hasInitialPrompt = false;
     setLazySessionMaterializationAllowed(false);
     sessionRegistered = prepared.reusingLiveSdkSession;
@@ -5194,6 +5211,7 @@ export function buildClaudeSessionEnv(
   if (sidecarPort > 0) {
     env.MYAGENTS_PORT = String(sidecarPort);
   }
+  env.MYAGENTS_SESSION_ID = sessionId;
 
   // Windows: Set CLAUDE_CODE_GIT_BASH_PATH so SDK finds git-bash directly
   // without relying on which("git") in PATH (which may be stale after NSIS install).
@@ -6726,7 +6744,7 @@ export async function resetSession(): Promise<void> {
   clearMessageState();
 
   // 3. Generate new session ID (don't persist yet - wait for first message)
-  sessionId = randomUUID();
+  setCurrentSessionId(randomUUID());
   hasInitialPrompt = false; // Reset so first message creates a new session in SessionStore
   resetSessionMaterializationState({ allowLazySessionMaterialization: true });
 
@@ -6871,7 +6889,7 @@ export async function initializeAgent(
 
   if (initialSessionId) {
     // Use caller-specified session_id (IM / Tab opening existing session / CronTask)
-    sessionId = initialSessionId as typeof sessionId;
+    setCurrentSessionId(initialSessionId);
 
     // Metadata alone is not enough to resume the Claude Agent SDK. POST /sessions
     // creates MyAgents metadata before the SDK has ever persisted a transcript,
@@ -6909,7 +6927,7 @@ export async function initializeAgent(
     }
   } else {
     // No specified ID → auto-generate (standard Tab new conversation flow)
-    sessionId = randomUUID();
+    setCurrentSessionId(randomUUID());
     sessionRegistered = false; // Fresh session, no SDK data to resume
   }
 
@@ -7131,7 +7149,7 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
   if (lifecycleState.preWarmTimer) { clearTimeout(lifecycleState.preWarmTimer); setPreWarmTimer(null); }
 
   // Preserve target sessionId so new transcriptState.messages are saved to the same session
-  sessionId = targetSessionId as `${string}-${string}-${string}-${string}-${string}`;
+  setCurrentSessionId(targetSessionId);
   resetSessionMaterializationState({ allowLazySessionMaterialization: false });
 
   // Load existing transcriptState.messages from storage into memory
@@ -7890,10 +7908,10 @@ export async function enqueueUserMessage(
       //   (a) Desktop first-send with a pending session ID (App.tsx generates a
       //       `pending-<tabId>` placeholder and never calls POST /sessions; the real
       //       session is materialized here). → owned snapshot (self-contained).
-      //   (b) IM Bot / agent-channel first message. → im snapshot (live-follow).
+      //   (b) IM Bot / agent-channel / registeredAgent first message. → live-follow snapshot.
       // Dispatch on `currentScenario.type` set by the caller before enqueue:
       //   - 'desktop' / 'cron' → owned (config frozen into session)
-      //   - 'im' / 'agent-channel' → live-follow (only runtime recorded)
+      //   - 'im' / 'agent-channel' / 'registeredAgent' → live-follow (only runtime recorded)
       // If the agent lookup misses (workspace not registered), snapshot is `{}` and
       // `resolveSessionConfig`'s lazy fallback (meta ?? agent) covers it.
       // Strip the system wrapper before the 40-char cap (cron-title fix) —
@@ -8939,7 +8957,7 @@ export async function rewindSession(userMessageId: string): Promise<{
       //   (b) sessionRegistered=false：SDK 从未注册过这个 session（首次 pre-warm 失败等）
       pendingResumeSessionAt = undefined;
       sessionRegistered = false;
-      sessionId = randomUUID();
+      setCurrentSessionId(randomUUID());
       hasInitialPrompt = false; // Reset so next message creates metadata for the new session
       resetSessionMaterializationState({ allowLazySessionMaterialization: true });
     }
@@ -10661,7 +10679,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         if (statusResult.permissionMode === 'plan' && configState.currentPermissionMode !== 'plan') {
           const next = applyPermissionModeSelection(configState.currentPermissionMode, configState.prePlanPermissionMode, 'plan');
           setPermissionPlanState(next);
-          broadcast('enter-plan-mode:request', { requestId: `sdk_auto_${Date.now()}`, autoApproved: true });
+          broadcast('enter-plan-mode:request', { ...interactiveEventScope(), requestId: `sdk_auto_${Date.now()}`, autoApproved: true });
           broadcast('chat:permission-mode-changed', { permissionMode: 'plan' });
           console.log(`[agent] SDK auto-entered plan mode, saved configState.prePlanPermissionMode=${configState.prePlanPermissionMode}`);
         } else if (statusResult.permissionMode && statusResult.permissionMode !== 'plan' && configState.prePlanPermissionMode) {

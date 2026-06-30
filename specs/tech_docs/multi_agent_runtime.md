@@ -257,6 +257,23 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 | `turn/completed` | `[turn_complete, agent_plan_update([])]` |
 | `thread/tokenUsage/updated` | `usage` |
 
+### Codex Server Request / 权限协议
+
+`app-server` 还会通过 JSON-RPC Server → Client request 向 MyAgents 要结果。`src/server/runtimes/codex.ts::KNOWN_CODEX_SERVER_REQUEST_METHODS` 是显式 allowlist，升级 Codex CLI 时必须先用 `codex app-server generate-ts --out <dir>` 对照 `v2/ServerRequest.ts`，再决定映射或 fail-closed。当前对接约束：
+
+| Server request | MyAgents 映射 |
+|---|---|
+| `item/commandExecution/requestApproval` | `permission_request`，`toolName:'Shell'`，保留 `command/cwd/reason` |
+| `item/fileChange/requestApproval` | `permission_request`，`toolName:'FileEdit'`，保留 `reason/grantRoot` |
+| `item/permissions/requestApproval` | `permission_request`，返回 Codex permission profile + `turn/session` scope |
+| `execCommandApproval` / `applyPatchApproval` | 旧协议兼容，仍走 `permission_request` |
+| `item/tool/requestUserInput` | 映射到 `AskUserQuestion`，答案按 Codex 原生 question id 回传 |
+| `mcpServer/elicitation/request` (`form` / `openai/form`) | 有 schema fields 时映射到 `AskUserQuestion`；`url` / tool approval / generic elicitation 走 `permission_request` |
+| `currentTime/read` | runtime adapter 直接返回 `{currentTimeAt}`，不进入 UI |
+| `item/tool/call` / token refresh / attestation | MyAgents 不托管，显式 error |
+
+**权限 UI 不允许单槽位。** Codex 可以在同一 turn 一次性发出多个 approval request（例如 4 条 PowerShell 命令），backend 以 `requestId` 同时挂起多条 pending。Renderer 必须把 `permission:request` 当成 FIFO queue keyed by `requestId`；响应成功或后端 stop/error/reset/auto-resolve 时通过 `permission:expired` 精确移除对应项。不能用单个 `pendingPermission` 覆盖新请求，也不能把多条不同请求合并成一次批量批准；`always_allow` 只能通过 runtime 自己的 response protocol 表达。
+
 ### ThreadItem 类型对照（v0.128 schema）
 
 `codex app-server generate-ts --out <dir>` 可以生成当前装机版本的真实 TS schema
@@ -455,7 +472,7 @@ stdout reader 先进入 `await read()`,防止 initialize 响应在 handler 注�
 | `turn-lifecycle.ts` | turn completed/success flags、`TurnFinalizationGate`、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类 |
 | `content-blocks.ts` | streaming text/thinking/tool/subagent content state；tool result/attachment mutation；live snapshot 与 turn snapshot backing state |
 | `transcript-persistence.ts` | in-memory `SessionMessage[]`、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update |
-| `interactive.ts` | permission / AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response delivery 成功后才 consume/delete |
+| `interactive.ts` | permission / AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response delivery 成功后才 consume/delete，并广播 `permission:expired` / `ask-user-question:expired` 清理所有 UI surface |
 
 Facade 仍执行跨 owner 编排：调用 runtime process、广播 SSE、做 analytics/title hook，并按 owner 返回的 plan 串起 persistence / interactive cleanup / queue drain。Queue owner 不调用 runtime；lifecycle owner 不吞 stop cleanup；content raw refs/maps 不回流到 facade，facade 只走命名 API 做 tool/subagent/attachment patch；turn lifecycle owner owns terminal success/failure/prewarm/idle/user-stop classification；transcript owner owns user/assistant append、retry truncate、last assistant read 与 SessionStore write path；interactive owner owns IM event bus / registry cleanup 与 inbox/watch error delivery；persisted JSON shape 不变。`external-session.ts` 仍可保留 watchdog、trace、pending birth、early broadcast 等 orchestration-local state，但这些不是跨模块 owner state。
 
@@ -476,6 +493,30 @@ sendExternalMessage(text, images?, permissionMode?, model?, context?)
 | 1 | 无 runtimeSessionId + 不在运行 | 全新 session |
 | 2 | 进程已退出（CC -p 模式） | `--resume` 恢复 |
 | 3 | 进程存活（Codex 持久模式） | `sendMessage()` 到 stdin |
+
+### 历史 Session 切换
+
+桌面 History 切换遵循完整 runtime identity（`runtime + runtimeSource`）边界：
+
+- 目标 session 已在其它 Tab 打开：不切换当前 sidecar，直接跳到已打开 Tab。
+- 切换前后完整 identity 不同：新开 Tab。`codex/system-cli` 与
+  `codex/managed-provider` 是两种 runtime identity，不可互相复用。
+- 完整 identity 相同且当前 turn idle：允许在当前 Tab 热切换。
+
+热切换必须同时完成两件事：Rust 层的 Sidecar key handover，以及 Node runtime owner
+state 的 session switch。`cmd_upgrade_session_id(old,new)` 只做 Rust `HashMap`
+key rename，不会调用 Node `/sessions/switch`；因此它只能作为 TabProvider
+随后执行 `/sessions/switch` 的代理/owner handover 前半步。external adapter 不能只凭
+`getCurrentBoundSessionId()===target` no-op；还必须确认 transcript owner 已 seed 到目标
+磁盘历史长度，否则继续 `restoreExternalSessionState(target, ...)`。否则会出现 Rust
+已经指向目标 session，但 Node external transcript 仍属于旧 session 的错位。
+
+所有 session boundary（桌面「新对话」、pending materialization commit、历史切换、
+pre-warm、IM reset、external config boundary）必须按 runtime process 存活性清理，
+而不是只看 active turn。Codex app-server 这类 persistent runtime 在 turn 结束后会进入
+idle，但进程仍持有 stdin/thread owner；在 `restoreExternalSessionState(target, ...)`
+或 `resetSession()` 前如果不先 stop 这个 idle process，就会把旧 runtime 进程挂到新的
+MyAgents session 身份下，造成历史会话和新会话串写。
 
 ### 桌面连续发送响应模式
 

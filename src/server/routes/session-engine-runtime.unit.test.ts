@@ -8,18 +8,15 @@ const mocks = vi.hoisted(() => ({
   engine: {
     updateRuntimeConfig: vi.fn(async () => ({ success: true })),
     prewarm: vi.fn(async () => ({ prewarmed: true })),
+    respondPermission: vi.fn(async () => true),
   },
-  respondExternalPermission: vi.fn(async () => undefined),
 }));
 
 vi.mock('../session-engine', () => ({
   getSessionEngine: () => mocks.engine,
   getSessionEngineKind: () => mocks.state.kind,
-}));
-
-vi.mock('../runtimes/external-session', () => ({
-  getActiveRuntimeType: () => mocks.state.runtime,
-  respondExternalPermission: mocks.respondExternalPermission,
+  getSessionRuntimeType: () => mocks.state.runtime,
+  getPermissionResponseEngine: () => mocks.engine,
 }));
 
 import { handleSessionEngineRuntimeRoute } from './session-engine-runtime';
@@ -137,7 +134,7 @@ describe('handleSessionEngineRuntimeRoute', () => {
     });
   });
 
-  it('keeps runtime permission-response routed to external responder for legacy approved payloads', async () => {
+  it('routes runtime permission-response through the active session engine for legacy approved payloads', async () => {
     const response = await handleSessionEngineRuntimeRoute(
       '/api/runtime/permission-response',
       new Request('http://local/api/runtime/permission-response', {
@@ -149,6 +146,6 @@ describe('handleSessionEngineRuntimeRoute', () => {
 
     expect(response?.status).toBe(200);
     expect(await readJson(response!)).toEqual({ success: true });
-    expect(mocks.respondExternalPermission).toHaveBeenCalledWith('perm-1', 'allow_once', 'ok');
+    expect(mocks.engine.respondPermission).toHaveBeenCalledWith('perm-1', 'allow_once', 'ok');
   });
 });

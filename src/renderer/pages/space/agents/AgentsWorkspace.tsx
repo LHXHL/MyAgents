@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Bot, Loader2, Plus, Power, PowerOff, RefreshCw, Settings, Trash2, X } from 'lucide-react';
 
-import type { LocalRegisteredAgent } from '@/api/spaceCloud';
+import type { LocalRegisteredAgent, SpaceGoal, SpaceIssueSubscriptionRunMode } from '@/api/spaceCloud';
 import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
@@ -21,8 +21,21 @@ function initials(value?: string | null): string {
   return source.slice(0, 2).toUpperCase();
 }
 
-function isAgentAssignable(agent: LocalRegisteredAgent): boolean {
-  return agent.status === 'active' || agent.status === 'online';
+const DEFAULT_ISSUE_SUBSCRIPTION_RUN_MODE: SpaceIssueSubscriptionRunMode = 'single_session';
+
+function normalizeIssueSubscriptionRunMode(
+  value?: SpaceIssueSubscriptionRunMode | null,
+): SpaceIssueSubscriptionRunMode {
+  return value === 'new_session' ? 'new_session' : DEFAULT_ISSUE_SUBSCRIPTION_RUN_MODE;
+}
+
+function issueSubscriptionRunModeLabel(
+  t: ReturnType<typeof useTranslation>['t'],
+  mode?: SpaceIssueSubscriptionRunMode | null,
+): string {
+  return normalizeIssueSubscriptionRunMode(mode) === 'new_session'
+    ? t('space.agents.issueSubscriptionNewSession')
+    : t('space.agents.issueSubscriptionSingleSession');
 }
 
 export function AgentsWorkspace({
@@ -31,7 +44,6 @@ export function AgentsWorkspace({
   projects,
   actions,
   onRefresh,
-  onProcessDispatches,
   onRegister,
 }: {
   admin: boolean;
@@ -39,25 +51,13 @@ export function AgentsWorkspace({
   projects: Project[];
   actions: SpaceActions;
   onRefresh: () => Promise<void>;
-  onProcessDispatches: () => Promise<void>;
   onRegister: () => void;
 }) {
   const { t } = useTranslation('app');
   const toast = useToast();
-  const [processing, setProcessing] = useState(false);
   const [busyAgentId, setBusyAgentId] = useState<string | null>(null);
   const [editingAgent, setEditingAgent] = useState<LocalRegisteredAgent | null>(null);
   const [revokeTarget, setRevokeTarget] = useState<LocalRegisteredAgent | null>(null);
-  const hasAssignableAgent = agents.some(isAgentAssignable);
-
-  const process = async () => {
-    setProcessing(true);
-    try {
-      await onProcessDispatches();
-    } finally {
-      setProcessing(false);
-    }
-  };
 
   const toggleAgentStatus = async (agent: LocalRegisteredAgent) => {
     const nextStatus = agent.status === 'disabled' ? 'active' : 'disabled';
@@ -71,6 +71,7 @@ export function AgentsWorkspace({
       setBusyAgentId(null);
     }
   };
+  const stateFilterLabel = (agent: LocalRegisteredAgent) => (agent.stateFilter?.length ? agent.stateFilter : ['todo']).join(', ');
 
   const revokeAgent = async () => {
     if (!revokeTarget) return;
@@ -96,15 +97,6 @@ export function AgentsWorkspace({
             <span className="rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">{agents.length}</span>
             <small className="truncate text-xs font-medium text-[var(--ink-muted)]">{t('space.agents.hint')}</small>
           </div>
-          <button
-            type="button"
-            disabled={processing || !hasAssignableAgent}
-            onClick={() => void process()}
-            className="flex h-9 shrink-0 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
-          >
-            {processing ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            {t('space.agents.sync')}
-          </button>
           <button
             type="button"
             onClick={() => void onRefresh()}
@@ -211,15 +203,17 @@ export function AgentsWorkspace({
                         <Settings className="h-4 w-4" />
                         {t('space.agents.viewSettings')}
                       </summary>
-                      <div className="mt-3 grid grid-cols-3 gap-2">
+                      <div className="mt-3 grid grid-cols-5 gap-2 max-xl:grid-cols-3 max-lg:grid-cols-2">
                         <AgentStat label={t('space.agents.status')} value={agent.status} />
                         <AgentStat label={t('space.agents.lastSync')} value={formatTime(agent.updatedAt) || 'n/a'} />
                         <AgentStat label={t('space.agents.workspace')} value={agent.workspaceLabel || 'local'} />
+                        <AgentStat label={t('space.agents.goal')} value={agent.goalPathLabel || agent.goalId || t('space.filters.inbox')} />
+                        <AgentStat label={t('space.agents.issueSubscriptionStrategy')} value={issueSubscriptionRunModeLabel(t, agent.issueSubscriptionRunMode)} />
                       </div>
                       <div className="mt-3 whitespace-pre-wrap rounded-xl bg-[var(--paper-inset)]/40 p-3 text-sm leading-6 text-[var(--ink-secondary)]">
-                        {t('space.agents.goal')}:
-                        {'\n'}
-                        {agent.goalMd}
+                        {t('space.agents.subscription')}:
+                        {' '}
+                        {stateFilterLabel(agent)}
                       </div>
                     </details>
                   </article>
@@ -268,7 +262,9 @@ function EditAgentDialog({
   const toast = useToast();
   const [displayName, setDisplayName] = useState(agent.displayName);
   const [workspaceLabel, setWorkspaceLabel] = useState(agent.workspaceLabel ?? '');
-  const [goalMd, setGoalMd] = useState(agent.goalMd);
+  const [issueSubscriptionRunMode, setIssueSubscriptionRunMode] = useState<SpaceIssueSubscriptionRunMode>(
+    normalizeIssueSubscriptionRunMode(agent.issueSubscriptionRunMode),
+  );
   const [busy, setBusy] = useState(false);
 
   useCloseLayer(() => {
@@ -277,14 +273,14 @@ function EditAgentDialog({
   }, 220);
 
   const submit = async () => {
-    if (!displayName.trim() || !goalMd.trim()) return;
+    if (!displayName.trim()) return;
     setBusy(true);
     try {
       await actions.updateRegisteredAgent({
         id: agent.id,
         displayName: displayName.trim(),
         workspaceLabel: workspaceLabel.trim(),
-        goalMd: goalMd.trim(),
+        issueSubscriptionRunMode,
       });
       toast.success(t('space.toasts.agentUpdated'));
       onSaved();
@@ -324,14 +320,18 @@ function EditAgentDialog({
               className="h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none transition-colors focus:border-[var(--accent-warm)]"
             />
           </label>
-          <label className="block">
-            <span className="mb-1 block text-sm font-medium text-[var(--ink)]">{t('space.agents.goal')}</span>
-            <textarea
-              value={goalMd}
-              onChange={(event) => setGoalMd(event.target.value)}
-              className="h-44 w-full resize-none rounded-lg border border-[var(--line)] bg-[var(--paper)] p-3 text-sm leading-6 text-[var(--ink)] outline-none transition-colors focus:border-[var(--accent-warm)]"
-            />
-          </label>
+          <div className="rounded-xl bg-[var(--paper-inset)]/45 p-3 text-sm text-[var(--ink-secondary)]">
+            <span className="block text-xs font-semibold text-[var(--ink-muted)]">{t('space.agents.goal')}</span>
+            <strong className="mt-1 block truncate text-base font-semibold text-[var(--ink)]">{agent.goalPathLabel || agent.goalId || t('space.filters.inbox')}</strong>
+            <span className="mt-2 block text-xs text-[var(--ink-muted)]">
+              {t('space.agents.subscription')}: {(agent.stateFilter?.length ? agent.stateFilter : ['todo']).join(', ')}
+            </span>
+          </div>
+          <IssueSubscriptionRunModeControl
+            value={issueSubscriptionRunMode}
+            onChange={setIssueSubscriptionRunMode}
+            disabled={busy}
+          />
         </div>
         <div className="flex justify-end gap-2 border-t border-[var(--line)] px-5 py-4">
           <button type="button" onClick={onClose} disabled={busy} className="h-10 rounded-xl bg-[var(--button-secondary-bg)] px-4 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:opacity-60">
@@ -339,7 +339,7 @@ function EditAgentDialog({
           </button>
           <button
             type="button"
-            disabled={busy || !displayName.trim() || !goalMd.trim()}
+            disabled={busy || !displayName.trim()}
             onClick={() => void submit()}
             className="flex h-10 items-center gap-2 rounded-xl bg-[var(--button-primary-bg)] px-4 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-70"
           >
@@ -361,13 +361,69 @@ function AgentStat({ label, value }: { label: string; value: string }) {
   );
 }
 
+function IssueSubscriptionRunModeControl({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: SpaceIssueSubscriptionRunMode;
+  onChange: (value: SpaceIssueSubscriptionRunMode) => void;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation('app');
+  const normalized = normalizeIssueSubscriptionRunMode(value);
+  const options: Array<{ value: SpaceIssueSubscriptionRunMode; label: string; description: string }> = [
+    {
+      value: 'single_session',
+      label: t('space.agents.issueSubscriptionSingleSession'),
+      description: t('space.agents.issueSubscriptionSingleSessionDescription'),
+    },
+    {
+      value: 'new_session',
+      label: t('space.agents.issueSubscriptionNewSession'),
+      description: t('space.agents.issueSubscriptionNewSessionDescription'),
+    },
+  ];
+  const active = options.find((option) => option.value === normalized) ?? options[0];
+
+  return (
+    <div>
+      <span className="mb-2 block text-sm font-medium text-[var(--ink)]">{t('space.agents.issueSubscriptionStrategy')}</span>
+      <div className="inline-flex rounded-lg border border-[var(--line)] bg-[var(--paper-inset)] p-1">
+        {options.map((option) => {
+          const selected = option.value === normalized;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              disabled={disabled}
+              onClick={() => onChange(option.value)}
+              className={`h-8 rounded-md px-3 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                selected
+                  ? 'bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm'
+                  : 'text-[var(--ink-muted)] hover:bg-[var(--paper)] hover:text-[var(--ink)]'
+              }`}
+              aria-pressed={selected}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+      <p className="mt-2 text-sm text-[var(--ink-muted)]">{active.description}</p>
+    </div>
+  );
+}
+
 export function RegisterAgentDialog({
   projects,
+  goals,
   actions,
   onClose,
   onRegistered,
 }: {
   projects: Project[];
+  goals: SpaceGoal[];
   actions: SpaceActions;
   onClose: () => void;
   onRegistered: () => void;
@@ -376,7 +432,10 @@ export function RegisterAgentDialog({
   const toast = useToast();
   const [displayName, setDisplayName] = useState('');
   const [workspaceId, setWorkspaceId] = useState(projects[0]?.id ?? '');
-  const [goalMd, setGoalMd] = useState('');
+  const [goalId, setGoalId] = useState(goals[0]?.id ?? '');
+  const [issueSubscriptionRunMode, setIssueSubscriptionRunMode] = useState<SpaceIssueSubscriptionRunMode>(
+    DEFAULT_ISSUE_SUBSCRIPTION_RUN_MODE,
+  );
   const [busy, setBusy] = useState(false);
   useCloseLayer(() => {
     onClose();
@@ -387,10 +446,14 @@ export function RegisterAgentDialog({
     () => projects.map((project) => ({ value: project.id, label: project.displayName || project.name })),
     [projects],
   );
+  const goalOptions = useMemo<SelectOption[]>(
+    () => goals.map((goal) => ({ value: goal.id, label: goal.goalPathLabel || goal.title })),
+    [goals],
+  );
 
   const submit = async () => {
     const project = projects.find((item) => item.id === workspaceId);
-    if (!project || !displayName.trim() || !goalMd.trim()) return;
+    if (!project || !displayName.trim() || !goalId) return;
     setBusy(true);
     try {
       await actions.registerAgent({
@@ -398,7 +461,9 @@ export function RegisterAgentDialog({
         workspaceId: project.id,
         workspacePath: project.path,
         workspaceLabel: project.displayName || project.name,
-        goalMd: goalMd.trim(),
+        goalId,
+        stateFilter: ['todo'],
+        issueSubscriptionRunMode,
       });
       toast.success(t('space.toasts.agentCreated'));
       onRegistered();
@@ -437,13 +502,14 @@ export function RegisterAgentDialog({
           </label>
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-[var(--ink)]">{t('space.agents.goal')}</span>
-            <textarea
-              value={goalMd}
-              onChange={(event) => setGoalMd(event.target.value)}
-              className="h-44 w-full resize-none rounded-lg border border-[var(--line)] bg-[var(--paper)] p-3 text-sm leading-6 text-[var(--ink)] outline-none transition-colors focus:border-[var(--accent-warm)]"
-              placeholder={t('space.agents.goalPlaceholder')}
-            />
+            <CustomSelect value={goalId} options={goalOptions} onChange={setGoalId} size="md" />
+            <span className="mt-2 block text-xs text-[var(--ink-muted)]">{t('space.agents.subscriptionTodo')}</span>
           </label>
+          <IssueSubscriptionRunModeControl
+            value={issueSubscriptionRunMode}
+            onChange={setIssueSubscriptionRunMode}
+            disabled={busy}
+          />
         </div>
         <div className="flex justify-end gap-2 border-t border-[var(--line)] px-5 py-4">
           <button
@@ -455,7 +521,7 @@ export function RegisterAgentDialog({
           </button>
           <button
             type="button"
-            disabled={busy || !workspaceId || !displayName.trim() || !goalMd.trim()}
+            disabled={busy || !workspaceId || !displayName.trim() || !goalId}
             onClick={() => void submit()}
             className="flex h-10 items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-4 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
           >

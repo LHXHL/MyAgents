@@ -1172,6 +1172,8 @@ pub async fn spawn_plugin_bridge<R: tauri::Runtime>(
 ) -> Result<BridgeProcess, String> {
     use crate::sidecar::find_node_executable_pub;
 
+    let _update_spawn_permit = crate::sidecar::begin_update_spawn_permit()?;
+
     let node_path = find_node_executable_pub(app_handle)
         .ok_or_else(|| "Node executable not found".to_string())?;
 

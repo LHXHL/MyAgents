@@ -20,7 +20,8 @@
                    成功 → emit updater:ready-to-restart (UI 显示新版本「重启更新」按钮)
                    失败 → emit updater:download-failed (UI 恢复显示前一版本按钮)
                          ↓
-                   用户点击 → cmd_shutdown_for_update → relaunch
+                   用户点击 → macOS/Linux: cmd_shutdown_for_update → relaunch
+                            → Windows: install_pending_update 内部完成 verified-clean handoff → Update::install(bytes)
                    或
                    下次启动 → 自动应用 pending 更新 (Windows 走启动期对话框)
 ```
@@ -31,7 +32,7 @@
 |------|---------|---------|
 | macOS | `download_and_install` 内存中替换 .app 字节 | `relaunch` 直接生效 |
 | Linux | `download_and_install` 在原地覆盖 AppImage | `relaunch` 直接生效 |
-| Windows | `save_pending_update_to_disk` 写入 NSIS installer 字节 | 必须先停 Sidecar 再 `Update::install(bytes)`；启动时若发现 pending 字节会弹对话框引导用户安装；安装阶段上游 updater 会在 `%TEMP%` 留下 `MyAgents-<version>-updater-*` 派生目录，由启动期 GC 清理 |
+| Windows | `save_pending_update_to_disk` 写入 NSIS installer 字节 | `install_pending_update` 在 Rust 侧进入 update-quiesce gate，停 IM/Agent/Terminal/Browser/Sidecar，验证进程与关键文件锁清零后再 `Update::install(bytes)`；启动时若发现 pending 字节会弹对话框引导用户安装；安装阶段上游 updater 会在 `%TEMP%` 留下 `MyAgents-<version>-updater-*` 派生目录，由启动期 GC 清理 |
 
 ## 技术实现
 
@@ -71,7 +72,9 @@ check_update_on_startup()
 listen("updater:download-started") → setPreparing(true)
 listen("updater:download-failed")  → setPreparing(false)
 listen("updater:ready-to-restart") → setUpdateReady(true) + setPreparing(false)
-restartAndUpdate() → cmd_shutdown_for_update → relaunch()  (Windows 还要先 invoke install)
+restartAndUpdate()
+  → macOS/Linux: cmd_shutdown_for_update → relaunch()
+  → Windows: install_pending_update()  // Rust 内部完成 update-quiesce + verified-clean + Update::install(bytes)
 ```
 
 ### 关键不变量
@@ -80,6 +83,7 @@ restartAndUpdate() → cmd_shutdown_for_update → relaunch()  (Windows 还要�
 - **UI 互斥**: `preparing=true` 期间所有「重启更新」入口必须隐藏（顶栏 / Settings / Windows 启动对话框）。下载替换的临界区不允许用户点击。
 - **clear_pending_update_from_disk()** 必须同步 reset `DOWNLOADED_VERSION` 和 `LATEST_UPDATE`，否则 stale latest-wins 决策会用旧缓存填回空磁盘。
 - **Windows updater temp GC**: `%TEMP%/MyAgents-<version>-updater-*` 是 Tauri 上游安装阶段的派生目录，不是 MyAgents 的 pending 更新权威状态。启动期只按"目录名精确匹配 + 普通目录 + 超过 24h"清理这些派生目录；不按当前版本保留，也不读取/修改 `~/.myagents/pending_update.*`。
+- **Windows installer handoff 必须 verified-clean**: 用户点击安装后，Rust 先进入 update-quiesce gate：新的 Sidecar / Plugin Bridge / IM Channel / Terminal / Browser creation 必须先拿 shared permit，installer handoff 拿 exclusive permit 并等待已在途 creation 归零，避免“检查通过后又 spawn”。随后按 owner graceful shutdown IM/Agent/Terminal/Browser；Terminal owner 必须 kill 后 bounded wait，残留 shell PID 走 `UPDATE_TERMINALS_STILL_RUNNING` 阻断。最后用 `process_cleanup` 反复 kill + re-scan `--myagents-sidecar`、SDK/MCP、bundled Node，以及 `exe/cmdline` 指向当前 install/resource root 的进程；kill 后残留 descendant PID 也必须继续显式验证。只有进程扫描清零且关键文件（`nodejs/node.exe`、`claude-agent-sdk/claude.exe`、`server-dist.js`、`plugin-bridge-dist.mjs`、`tsx-runtime` loader）Windows 独占打开 probe 通过，才允许调用 `Update::install(bytes)`；关键 probe path 缺失/不可解析走 `UPDATE_LOCK_PROBE_UNAVAILABLE` fail-closed。残留进程或文件锁必须在 MyAgents UI 内失败并保留 pending 更新包，禁止进入 NSIS 的 Abort/Retry/Ignore 分叉。
 
 ### 更新检查策略
 
@@ -351,6 +355,7 @@ const downloadUrl = isMacARM
 
 ### 点击「重启更新」无效（Windows）
 
-1. 必须先停 Sidecar 才能写 NSIS installer 字节，看 Rust 日志有没有 `cmd_shutdown_for_update` 完成
-2. 网络异常导致 `tauri-plugin-updater::check()` flaky 时 `Update::install(bytes)` 会失败 —— 现在前端会把 outcome 走 toast 反馈给用户（详见 `CustomTitleBar` 的错误处理）
-3. 检查 `~/.myagents/updater_pending/` 是否有 pending 字节文件残留
+1. 看 Rust 日志里 `install_pending_update called`、`Update shutdown gate acquired`、`Shutdown for update complete`、`Update file-lock probe passed` 是否连续出现；Windows 不走 `cmd_shutdown_for_update → relaunch` 路径
+2. 如果返回 `UPDATE_PROCESSES_STILL_RUNNING` / `UPDATE_TERMINALS_STILL_RUNNING` / `UPDATE_FILES_STILL_LOCKED` / `UPDATE_LOCK_PROBE_UNAVAILABLE`，说明 Rust 在进入 NSIS 前主动阻断，pending 更新包会保留，用户稍后重试或重启 Windows 后再安装
+3. 网络异常导致 `tauri-plugin-updater::check()` flaky 时 `Update::install(bytes)` 会失败 —— 现在前端会把 outcome 走 toast 反馈给用户（详见 `CustomTitleBar` 的错误处理）
+4. 检查 `~/.myagents/updater_pending/` 是否有 pending 字节文件残留

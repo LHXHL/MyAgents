@@ -21,6 +21,8 @@ interface TrayEventsOptions {
   /** Callback for Cmd+W close-tab action (after overlay dismissal).
    *  closeCurrentTab() auto-creates launcher on last tab; launcher is a no-op. */
   onCmdWCloseTab?: () => void;
+  /** Callback when the main window regains focus. */
+  onWindowFocused?: () => void;
 }
 
 export function useTrayEvents(options: TrayEventsOptions) {
@@ -35,6 +37,7 @@ export function useTrayEvents(options: TrayEventsOptions) {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
       const window = getCurrentWindow();
       await window.hide();
+      setWindowVisible(false);
       console.log('[useTrayEvents] Window hidden to tray');
     } catch (error) {
       console.error('[useTrayEvents] Failed to hide window:', error);
@@ -95,7 +98,10 @@ export function useTrayEvents(options: TrayEventsOptions) {
           console.debug('[useTrayEvents] Window focus changed:', focused);
           if (focused) {
             setWindowVisible(true);
+            optionsRef.current.onWindowFocused?.();
             void consumePendingNotificationClick();
+          } else {
+            setWindowVisible(false);
           }
         });
         if (ac.signal.aborted) {
