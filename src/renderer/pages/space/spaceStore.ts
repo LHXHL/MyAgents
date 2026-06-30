@@ -37,6 +37,7 @@ import {
   type SpaceGoal,
   type SpaceIssue,
   type SpaceIssueDetail,
+  type SpaceIssueSubscriptionRunMode,
   type SpaceRegisteredAgent,
   type SpaceSession,
   type SpaceSkill,
@@ -204,12 +205,14 @@ export interface SpaceActions {
     workspaceLabel?: string;
     goalId: string;
     stateFilter?: string[];
+    issueSubscriptionRunMode?: SpaceIssueSubscriptionRunMode;
   }) => Promise<LocalRegisteredAgent>;
   updateRegisteredAgent: (input: {
     id: string;
     displayName?: string;
     workspaceLabel?: string;
     status?: 'active' | 'disabled';
+    issueSubscriptionRunMode?: SpaceIssueSubscriptionRunMode;
   }) => Promise<LocalRegisteredAgent>;
   revokeRegisteredAgent: (id: string) => Promise<LocalRegisteredAgent>;
   logout: () => Promise<void>;

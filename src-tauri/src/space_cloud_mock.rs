@@ -183,6 +183,8 @@ pub fn register_agent(
             .unwrap_or_else(|| vec!["todo".to_string()]),
         goal_md: input.goal_md,
         delivery_session_id: Some(uuid::Uuid::new_v4().to_string()),
+        issue_subscription_run_mode: input.issue_subscription_run_mode.unwrap_or_default(),
+        issue_session_ids: Default::default(),
         token: format!("mock-token-{}", id),
         status: "active".to_string(),
         created_at: "2026-06-24T09:34:00.000Z".to_string(),
@@ -229,6 +231,9 @@ pub fn update_agent(
             return Err("Registered Agent status must be active or disabled".to_string());
         }
         agent.status = status.to_string();
+    }
+    if let Some(issue_subscription_run_mode) = input.issue_subscription_run_mode {
+        agent.issue_subscription_run_mode = issue_subscription_run_mode;
     }
     agent.updated_at = "2026-06-24T09:50:00.000Z".to_string();
     Ok(agent.clone().into())
@@ -2451,6 +2456,8 @@ fn agent(
         state_filter: vec!["todo".to_string()],
         goal_md: Some(goal_md.to_string()),
         delivery_session_id: Some(uuid::Uuid::new_v4().to_string()),
+        issue_subscription_run_mode: Default::default(),
+        issue_session_ids: Default::default(),
         token: format!("mock-token-{}", id),
         status: status.to_string(),
         created_at: "2026-06-14T08:00:00.000Z".to_string(),

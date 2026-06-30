@@ -179,6 +179,7 @@ const fakeAgent: LocalRegisteredAgent = {
   goalId: 'goal-1',
   goalPathLabel: 'Runtime',
   stateFilter: ['todo'],
+  issueSubscriptionRunMode: 'single_session',
   status: 'active',
   createdAt: '2026-06-24T00:00:00.000Z',
   updatedAt: '2026-06-24T00:00:00.000Z',

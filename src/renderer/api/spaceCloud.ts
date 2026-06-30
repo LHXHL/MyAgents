@@ -198,6 +198,8 @@ export interface SpaceSkillDetail {
   files: SpaceSkillFile[];
 }
 
+export type SpaceIssueSubscriptionRunMode = 'single_session' | 'new_session';
+
 export interface LocalRegisteredAgent {
   id: string;
   baseUrl: string;
@@ -214,6 +216,7 @@ export interface LocalRegisteredAgent {
   stateFilter: string[];
   goalMd?: string | null;
   deliverySessionId?: string | null;
+  issueSubscriptionRunMode: SpaceIssueSubscriptionRunMode;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -674,6 +677,7 @@ export function spaceRegisterAgent(input: {
   workspaceLabel?: string;
   goalId: string;
   stateFilter?: string[];
+  issueSubscriptionRunMode?: SpaceIssueSubscriptionRunMode;
 }) {
   return inv<LocalRegisteredAgent>('cmd_space_register_agent', { input });
 }
@@ -683,6 +687,7 @@ export function spaceUpdateRegisteredAgent(input: {
   displayName?: string;
   workspaceLabel?: string;
   status?: 'active' | 'disabled';
+  issueSubscriptionRunMode?: SpaceIssueSubscriptionRunMode;
 }) {
   return inv<LocalRegisteredAgent>('cmd_space_update_registered_agent', { input });
 }

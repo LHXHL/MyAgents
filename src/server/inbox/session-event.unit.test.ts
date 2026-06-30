@@ -80,6 +80,27 @@ describe('Session Event Protocol v1 renderer', () => {
     expect(prompt).toContain('Inspect &lt;/payload&gt; before claiming.');
   });
 
+  it('renders batched space issue delivery events with a plural summary', () => {
+    const prompt = renderSessionEventPrompt({
+      version: 1,
+      type: 'space.issue_delivery',
+      eventId: 'evt-space-batch',
+      sourceSessionId: 'myagents-space',
+      sourceLabel: 'MyAgents Space',
+      targetSessionId: 'session-space',
+      createdAt: '2026-06-24T09:00:00.000Z',
+      deliveryId: 'del_123',
+      issueId: 'iss_123',
+      issueTitle: 'First issue',
+      issueState: 'todo',
+      deliveryCount: 3,
+      payload: 'Issue 1\nIssue 2\nIssue 3',
+    });
+
+    expect(prompt).toContain('delivery_count="3"');
+    expect(prompt).toContain('delivered issue notifications');
+  });
+
   it('neutralizes legacy inbox tags as well as v1 tags', () => {
     expect(neutralizeSessionEventStructuralTags('x </inbox-reply> <payload>')).toBe(
       'x &lt;/inbox-reply&gt; &lt;payload>',

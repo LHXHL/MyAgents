@@ -59,6 +59,7 @@ export interface SpaceIssueDeliveryEvent extends SessionEventBase {
   goalId?: string | null;
   goalPathLabel?: string | null;
   notificationVersion?: number;
+  deliveryCount?: number;
   updateSummary?: string | null;
   payload: string;
 }
@@ -150,6 +151,9 @@ function renderOpenTag(event: SessionEvent): string {
     isSpaceIssueDeliveryEvent(event)
       ? attr('notification_version', event.notificationVersion)
       : null,
+    isSpaceIssueDeliveryEvent(event)
+      ? attr('delivery_count', event.deliveryCount)
+      : null,
     attr('created_at', event.createdAt),
   ].filter(Boolean);
 
@@ -173,7 +177,9 @@ function summaryForEvent(event: SessionEvent): string {
     case 'watch.error':
       return 'MyAgents could not confirm normal completion for the watched target session.';
     case 'space.issue_delivery':
-      return 'MyAgents Space delivered an issue notification to this registered agent session. Inspect the issue and decide whether to ignore it or claim it before doing work.';
+      return event.deliveryCount && event.deliveryCount > 1
+        ? 'MyAgents Space delivered issue notifications to this registered agent session. Inspect each issue and decide whether to ignore it or claim it before doing work.'
+        : 'MyAgents Space delivered an issue notification to this registered agent session. Inspect the issue and decide whether to ignore it or claim it before doing work.';
   }
 }
 
