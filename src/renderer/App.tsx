@@ -1244,6 +1244,7 @@ export default function App() {
     if (!activeTabId) return;
     updateTabUnread(activeTabId, false);
   }, [updateTabUnread]);
+  const lastUnreadClearedActiveTabIdRef = useRef<string | null>(null);
 
   // Update tab sessionId when backend creates real session (called from TabProvider)
   // This ensures Session singleton constraint works correctly:
@@ -2888,17 +2889,25 @@ export default function App() {
     }
   }, [activeTabId, tabs, activateRestoredTab]);
 
-  // Clear unread indicator whenever active tab changes (covers all activation paths:
-  // handleSelectTab, keyboard shortcuts, session jumps, cron navigation, etc.)
+  // Clear unread indicator only when the active tab identity changes. Do not key
+  // this effect on `tabs`: a hidden-but-active tab marks itself unread when a
+  // turn completes, and clearing on that same tabs update erases the Dock/tray
+  // badge before the user returns. Window focus still clears through
+  // useTrayEvents.onWindowFocused.
   useEffect(() => {
-    if (!activeTabId) return;
+    if (!activeTabId) {
+      lastUnreadClearedActiveTabIdRef.current = null;
+      return;
+    }
+    if (lastUnreadClearedActiveTabIdRef.current === activeTabId) return;
+    lastUnreadClearedActiveTabIdRef.current = activeTabId;
     clearActiveTabUnread();
 
-    const tab = tabs.find((t) => t.id === activeTabId);
-    if (tab?.view === 'taskcenter' && externalNotificationBadgeCount !== 0) {
-      setExternalNotificationBadgeCount(0);
+    const tab = tabsRef.current.find((t) => t.id === activeTabId);
+    if (tab?.view === 'taskcenter') {
+      setExternalNotificationBadgeCount((count) => count === 0 ? count : 0);
     }
-  }, [activeTabId, clearActiveTabUnread, externalNotificationBadgeCount, tabs]);
+  }, [activeTabId, clearActiveTabUnread]);
 
   // Trackpad two-finger horizontal swipe to switch tabs (follow-along animation)
   useTabSwipeGesture({ contentRef, tabsRef, activeTabIdRef, onSwitchTab: handleSelectTab });

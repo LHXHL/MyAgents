@@ -29,27 +29,19 @@ fn apply_notification_badge<R: Runtime>(app: &AppHandle<R>, count: u32, enabled:
             }
         }
         if let Some(handles) = app.try_state::<crate::tray::TrayMenuHandles>() {
-            if let Err(e) = handles.tray.set_title(None::<&str>) {
-                ulog_warn!(
-                    "[NotificationBadge] Failed to clear macOS tray title: {}",
-                    e
-                );
+            // macOS convention: Dock uses a red badge; menu-bar extras show a
+            // plain count next to the template icon (like WeChat), not a red
+            // badge painted into the status icon itself.
+            if let Err(e) = handles.tray.set_title(label.as_deref()) {
+                ulog_warn!("[NotificationBadge] Failed to set macOS tray title: {}", e);
             }
-            let icon_result = if visible_count == 0 {
-                macos_base_tray_icon().and_then(|icon| {
-                    handles.tray.set_icon(Some(icon))?;
-                    handles.tray.set_icon_as_template(true)
-                })
-            } else {
-                handles.tray.set_icon_as_template(false).and_then(|_| {
-                    handles
-                        .tray
-                        .set_icon(Some(build_macos_tray_badge_icon(visible_count)?))
-                })
-            };
+            let icon_result = macos_base_tray_icon().and_then(|icon| {
+                handles.tray.set_icon(Some(icon))?;
+                handles.tray.set_icon_as_template(true)
+            });
             if let Err(e) = icon_result {
                 ulog_warn!(
-                    "[NotificationBadge] Failed to update macOS tray badge icon: {}",
+                    "[NotificationBadge] Failed to restore macOS tray template icon: {}",
                     e
                 );
             }
@@ -109,59 +101,7 @@ fn macos_base_tray_icon() -> tauri::Result<tauri::image::Image<'static>> {
         .map(|icon| icon.to_owned())
 }
 
-#[cfg(target_os = "macos")]
-fn build_macos_tray_badge_icon(count: u32) -> tauri::Result<tauri::image::Image<'static>> {
-    let base = macos_base_tray_icon()?;
-    let width = base.width();
-    let height = base.height();
-    let mut rgba = base.rgba().to_vec();
-
-    draw_template_icon_for_variable_menu_bar(&mut rgba, width, height);
-    draw_circle(&mut rgba, width, 23.5, 8.5, 8.0);
-    draw_label_centered(&mut rgba, width, &short_badge_text(count), 2, 23.5, 8.5);
-
-    Ok(tauri::image::Image::new_owned(rgba, width, height))
-}
-
-#[cfg(target_os = "macos")]
-fn draw_template_icon_for_variable_menu_bar(rgba: &mut [u8], width: u32, height: u32) {
-    let alpha = rgba
-        .chunks_exact(4)
-        .map(|pixel| pixel[3])
-        .collect::<Vec<_>>();
-
-    for y in 0..height {
-        for x in 0..width {
-            let source_alpha = alpha[(y * width + x) as usize];
-            if source_alpha == 0 {
-                continue;
-            }
-
-            for yy in y.saturating_sub(1)..=(y + 1).min(height - 1) {
-                for xx in x.saturating_sub(1)..=(x + 1).min(width - 1) {
-                    let i = ((yy * width + xx) * 4) as usize;
-                    rgba[i] = 0;
-                    rgba[i + 1] = 0;
-                    rgba[i + 2] = 0;
-                    rgba[i + 3] = rgba[i + 3].max(source_alpha.saturating_div(2));
-                }
-            }
-        }
-    }
-
-    for (idx, source_alpha) in alpha.into_iter().enumerate() {
-        if source_alpha == 0 {
-            continue;
-        }
-        let i = idx * 4;
-        rgba[i] = 255;
-        rgba[i + 1] = 255;
-        rgba[i + 2] = 255;
-        rgba[i + 3] = source_alpha;
-    }
-}
-
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn short_badge_text(count: u32) -> String {
     if count > 9 {
         "9+".to_string()
@@ -170,7 +110,7 @@ fn short_badge_text(count: u32) -> String {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn draw_circle(rgba: &mut [u8], size: u32, center_x: f32, center_y: f32, radius: f32) {
     for y in 0..size {
         for x in 0..size {
@@ -190,7 +130,7 @@ fn draw_circle(rgba: &mut [u8], size: u32, center_x: f32, center_y: f32, radius:
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn draw_label_centered(
     rgba: &mut [u8],
     size: u32,
@@ -229,7 +169,7 @@ fn draw_label_centered(
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn digit_glyph(ch: char) -> [&'static str; 5] {
     match ch {
         '0' => ["111", "101", "101", "101", "111"],
@@ -247,7 +187,7 @@ fn digit_glyph(ch: char) -> [&'static str; 5] {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn fill_rect(rgba: &mut [u8], size: u32, x: u32, y: u32, w: u32, h: u32, color: [u8; 4]) {
     for yy in y..(y + h).min(size) {
         for xx in x..(x + w).min(size) {
@@ -256,7 +196,7 @@ fn fill_rect(rgba: &mut [u8], size: u32, x: u32, y: u32, w: u32, h: u32, color: 
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(target_os = "windows")]
 fn set_pixel(rgba: &mut [u8], size: u32, x: u32, y: u32, color: [u8; 4]) {
     let i = ((y * size + x) * 4) as usize;
     rgba[i..i + 4].copy_from_slice(&color);

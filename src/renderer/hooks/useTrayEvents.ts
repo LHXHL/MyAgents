@@ -37,6 +37,7 @@ export function useTrayEvents(options: TrayEventsOptions) {
       const { getCurrentWindow } = await import('@tauri-apps/api/window');
       const window = getCurrentWindow();
       await window.hide();
+      setWindowVisible(false);
       console.log('[useTrayEvents] Window hidden to tray');
     } catch (error) {
       console.error('[useTrayEvents] Failed to hide window:', error);
@@ -99,6 +100,8 @@ export function useTrayEvents(options: TrayEventsOptions) {
             setWindowVisible(true);
             optionsRef.current.onWindowFocused?.();
             void consumePendingNotificationClick();
+          } else {
+            setWindowVisible(false);
           }
         });
         if (ac.signal.aborted) {
