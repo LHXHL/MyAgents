@@ -1515,6 +1515,19 @@ export default function TabProvider({
         });
     }, [moveStreamingToHistory, clearSessionActive, clearRuntimePlanTodos]);
 
+    const shouldAcceptInteractiveEvent = useCallback((payloadSessionId?: string | null): boolean => {
+        if (!payloadSessionId) return true;
+        const currentId = currentSessionIdRef.current;
+        const connectedId = connectedSseSessionIdRef.current;
+        return shouldAcceptSessionScopedSseSnapshot({
+            connectedSessionId: connectedId,
+            currentSessionId: currentId,
+            payloadSessionId,
+            isConnectedSessionPending: connectedId ? isPendingSessionId(connectedId) : false,
+            isCurrentSessionPending: currentId ? isPendingSessionId(currentId) : false,
+        });
+    }, []);
+
     // Handle SSE events
     const handleSseEvent = useCallback((eventName: string, data: unknown) => {
         switch (eventName) {
@@ -2839,12 +2852,13 @@ export default function TabProvider({
 
             case 'permission:request': {
                 // Agent is requesting permission to use a tool
-                const payload = data as { requestId: string; toolName: string; input: string } | null;
+                const payload = data as { requestId: string; sessionId?: string | null; toolName: string; input: string } | null;
                 console.log(`[TabProvider] permission:request received:`, payload);
-                if (payload?.requestId) {
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
                     console.log(`[TabProvider] Queueing pendingPermission for: ${payload.toolName}`);
                     setPendingPermissions(prev => enqueuePermissionRequest(prev, {
                         requestId: payload.requestId,
+                        sessionId: payload.sessionId,
                         toolName: payload.toolName,
                         input: payload.input || '',
                     }));
@@ -2858,8 +2872,8 @@ export default function TabProvider({
             }
 
             case 'permission:expired': {
-                const payload = data as { requestId?: string; reason?: string } | null;
-                if (payload?.requestId) {
+                const payload = data as { requestId?: string; sessionId?: string | null; reason?: string } | null;
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
                     console.log(`[TabProvider] permission:expired received for ${payload.requestId} (${payload.reason ?? 'unknown'})`);
                     setPendingPermissions(prev => removePermissionRequest(prev, payload.requestId));
                 }
@@ -2868,12 +2882,13 @@ export default function TabProvider({
 
             case 'ask-user-question:request': {
                 // Agent is asking user structured questions
-                const payload = data as { requestId: string; questions: AskUserQuestion[]; previewFormat?: 'html' | 'markdown' } | null;
+                const payload = data as { requestId: string; sessionId?: string | null; questions: AskUserQuestion[]; previewFormat?: 'html' | 'markdown' } | null;
                 console.log(`[TabProvider] ask-user-question:request received:`, payload);
-                if (payload?.requestId && payload.questions?.length > 0) {
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId) && payload.questions?.length > 0) {
                     console.log(`[TabProvider] Setting pendingAskUserQuestion with ${payload.questions.length} questions`);
                     setPendingAskUserQuestion({
                         requestId: payload.requestId,
+                        sessionId: payload.sessionId,
                         questions: payload.questions,
                         previewFormat: payload.previewFormat,
                     });
@@ -2887,10 +2902,11 @@ export default function TabProvider({
             }
 
             case 'exit-plan-mode:request': {
-                const payload = data as { requestId: string; plan?: string; allowedPrompts?: ExitPlanModeAllowedPrompt[] } | null;
-                if (payload?.requestId) {
+                const payload = data as { requestId: string; sessionId?: string | null; plan?: string; allowedPrompts?: ExitPlanModeAllowedPrompt[] } | null;
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
                     setPendingExitPlanMode({
                         requestId: payload.requestId,
+                        sessionId: payload.sessionId,
                         plan: payload.plan,
                         allowedPrompts: payload.allowedPrompts,
                     });
@@ -2903,12 +2919,12 @@ export default function TabProvider({
             }
 
             case 'enter-plan-mode:request': {
-                const payload = data as { requestId: string; autoApproved?: boolean } | null;
-                if (payload?.requestId) {
+                const payload = data as { requestId: string; sessionId?: string | null; autoApproved?: boolean } | null;
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
                     // Always auto-approve EnterPlanMode (no user card needed).
                     // For SDK-auto path, backend already proceeded; just update UI state.
                     // For canUseTool path, backend is waiting — notify it to proceed.
-                    setPendingEnterPlanMode({ requestId: payload.requestId, autoApproved: true, resolved: 'approved' });
+                    setPendingEnterPlanMode({ requestId: payload.requestId, sessionId: payload.sessionId, autoApproved: true, resolved: 'approved' });
                     if (!payload.autoApproved) {
                         void postJson('/api/enter-plan-mode/respond', { requestId: payload.requestId, approved: true });
                     }
@@ -2923,8 +2939,8 @@ export default function TabProvider({
             // wedged). We match by requestId so a stale event for a
             // long-replaced request never wipes a fresh modal.
             case 'ask-user-question:expired': {
-                const payload = data as { requestId: string; reason?: string } | null;
-                if (payload?.requestId) {
+                const payload = data as { requestId: string; sessionId?: string | null; reason?: string } | null;
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
                     setPendingAskUserQuestion(prev =>
                         prev?.requestId === payload.requestId ? null : prev,
                     );
@@ -2932,8 +2948,8 @@ export default function TabProvider({
                 break;
             }
             case 'exit-plan-mode:expired': {
-                const payload = data as { requestId: string; reason?: string } | null;
-                if (payload?.requestId) {
+                const payload = data as { requestId: string; sessionId?: string | null; reason?: string } | null;
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
                     setPendingExitPlanMode(prev =>
                         prev?.requestId === payload.requestId ? null : prev,
                     );
@@ -2941,8 +2957,8 @@ export default function TabProvider({
                 break;
             }
             case 'enter-plan-mode:expired': {
-                const payload = data as { requestId: string; reason?: string } | null;
-                if (payload?.requestId) {
+                const payload = data as { requestId: string; sessionId?: string | null; reason?: string } | null;
+                if (payload?.requestId && shouldAcceptInteractiveEvent(payload.sessionId)) {
                     setPendingEnterPlanMode(prev =>
                         prev?.requestId === payload.requestId ? null : prev,
                     );
@@ -3233,7 +3249,7 @@ export default function TabProvider({
                 }
             }
         }
-    }, [appendLog, appendUnifiedLog, tabId, moveStreamingToHistory, beginFreshStreamIfNeeded, setStreamingMessage, postJson, clearInteractiveState, flushPendingTextNow, startRevealLoop, flushAllPendingToolDeltas, flushPendingToolInputDelta, flushPendingToolResultDelta, flushPendingSubagentToolInputDelta, flushPendingSubagentToolResultDelta, clearSessionActive, clearRuntimePlanTodos, resetPaginationState, trackTabEvent, trackSessionNewForBirth]);
+    }, [appendLog, appendUnifiedLog, tabId, moveStreamingToHistory, beginFreshStreamIfNeeded, setStreamingMessage, postJson, clearInteractiveState, flushPendingTextNow, startRevealLoop, flushAllPendingToolDeltas, flushPendingToolInputDelta, flushPendingToolResultDelta, flushPendingSubagentToolInputDelta, flushPendingSubagentToolResultDelta, clearSessionActive, clearRuntimePlanTodos, resetPaginationState, trackTabEvent, trackSessionNewForBirth, shouldAcceptInteractiveEvent]);
 
     // Recovery guard — prevents concurrent recovery from both SSE failed + session-sidecar:restarted
     const recoveryInFlightRef = useRef(false);

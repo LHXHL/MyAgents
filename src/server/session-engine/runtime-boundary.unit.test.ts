@@ -42,10 +42,6 @@ describe('SessionEngine runtime boundary', () => {
       'didLastTurnSucceed(',
       'getAndClearLastAgentError(',
     ];
-    const externalRuntimeImportAllowed = new Set([
-      'src/server/routes/session-engine-runtime.ts',
-    ]);
-
     const violations = routeFiles.flatMap((file) => {
       const relativePath = relative(repoRoot, file);
       const source = readFileSync(file, 'utf8');
@@ -53,7 +49,6 @@ describe('SessionEngine runtime boundary', () => {
         .filter(pattern => source.includes(pattern))
         .map(pattern => `${relativePath} contains ${pattern}`);
       const externalRuntimeViolations = source.includes('../runtimes/external-session')
-        && !externalRuntimeImportAllowed.has(relativePath)
         ? [`${relativePath} imports external-session internals`]
         : [];
       return [...baseViolations, ...externalRuntimeViolations];

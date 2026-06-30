@@ -3613,6 +3613,10 @@ function hasPendingInteractiveRequest(): boolean {
     || pendingEnterPlanMode.size > 0;
 }
 
+function interactiveEventScope(): { sessionId: string } {
+  return { sessionId };
+}
+
 /**
  * Validate AskUserQuestion input structure
  */
@@ -3661,6 +3665,7 @@ async function handleAskUserQuestion(
   }
 
   broadcast('ask-user-question:request', {
+    ...interactiveEventScope(),
     requestId,
     questions: questionInput.questions,
     // SDK v0.2.69+: options may contain `preview` field (HTML or Markdown)
@@ -3688,7 +3693,7 @@ async function handleAskUserQuestion(
       const wasPending = pendingAskUserQuestions.has(requestId);
       cleanup();
       if (wasPending) {
-        broadcast('ask-user-question:expired', { requestId, reason: 'aborted' });
+        broadcast('ask-user-question:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' });
       }
       // Reject with AbortError so SDK's own abort handling creates the single tool_result.
       // Previously resolve(null) caused canUseTool to return deny → duplicate tool_result
@@ -3778,7 +3783,7 @@ async function handleExitPlanMode(
     throw new DOMException('Aborted', 'AbortError');
   }
 
-  broadcast('exit-plan-mode:request', { requestId, plan, allowedPrompts });
+  broadcast('exit-plan-mode:request', { ...interactiveEventScope(), requestId, plan, allowedPrompts });
 
   // No wall-clock timeout — see pendingExitPlanMode Map declaration.
   return new Promise((resolve, reject) => {
@@ -3793,7 +3798,7 @@ async function handleExitPlanMode(
       const wasPending = pendingExitPlanMode.has(requestId);
       cleanup();
       if (wasPending) {
-        broadcast('exit-plan-mode:expired', { requestId, reason: 'aborted' });
+        broadcast('exit-plan-mode:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' });
       }
       reject(new DOMException('Aborted', 'AbortError'));
     };
@@ -3855,7 +3860,7 @@ async function handleEnterPlanMode(
     throw new DOMException('Aborted', 'AbortError');
   }
 
-  broadcast('enter-plan-mode:request', { requestId });
+  broadcast('enter-plan-mode:request', { ...interactiveEventScope(), requestId });
 
   // No wall-clock timeout — see pendingEnterPlanMode Map declaration.
   return new Promise((resolve, reject) => {
@@ -3870,7 +3875,7 @@ async function handleEnterPlanMode(
       const wasPending = pendingEnterPlanMode.has(requestId);
       cleanup();
       if (wasPending) {
-        broadcast('enter-plan-mode:expired', { requestId, reason: 'aborted' });
+        broadcast('enter-plan-mode:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' });
       }
       reject(new DOMException('Aborted', 'AbortError'));
     };
@@ -3978,6 +3983,7 @@ async function checkToolPermission(
 
   // Broadcast permission request to frontend
   broadcast('permission:request', {
+    ...interactiveEventScope(),
     requestId,
     toolName,
     input: inputPreview,
@@ -3997,7 +4003,7 @@ async function checkToolPermission(
     const onAbort = () => {
       console.debug(`[permission] ${toolName}: aborted by SDK signal`);
       cleanup();
-      try { broadcast('permission:expired', { requestId, reason: 'aborted' }); } catch { /* swallow — abort cleanup must not throw */ }
+      try { broadcast('permission:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' }); } catch { /* swallow — abort cleanup must not throw */ }
       // Reject with AbortError so SDK's own abort handling creates the single tool_result.
       // Previously resolve('deny') caused a duplicate tool_result on abort.
       reject(new DOMException('Aborted', 'AbortError'));
@@ -4026,7 +4032,7 @@ export function handlePermissionResponse(
   }
 
   pendingPermissions.delete(requestId);
-  try { broadcast('permission:expired', { requestId, reason: 'resolved' }); } catch { /* swallow — response path must not fail on SSE */ }
+  try { broadcast('permission:expired', { ...interactiveEventScope(), requestId, reason: 'resolved' }); } catch { /* swallow — response path must not fail on SSE */ }
 
   if (decision === 'deny') {
     console.log(`[permission] ${pending.toolName}: user denied`);
@@ -4049,7 +4055,7 @@ export function handlePermissionResponse(
       if (otherPending.toolName === pending.toolName) {
         console.log(`[permission] ${otherPending.toolName}: cascade auto-approved (requestId=${otherId})`);
         pendingPermissions.delete(otherId);
-        try { broadcast('permission:expired', { requestId: otherId, reason: 'resolved' }); } catch { /* swallow — cascade must not fail on SSE */ }
+        try { broadcast('permission:expired', { ...interactiveEventScope(), requestId: otherId, reason: 'resolved' }); } catch { /* swallow — cascade must not fail on SSE */ }
         otherPending.resolve('allow');
       }
     }
@@ -4087,7 +4093,7 @@ function drainPendingInteractiveRequests(reason: 'reset' | 'session-end'): void 
   // Permission: resolve with 'deny' so any awaiting tool call surfaces as
   // denied.
   for (const [requestId, p] of pendingPermissions) {
-    try { broadcast('permission:expired', { requestId, reason }); } catch { /* swallow */ }
+    try { broadcast('permission:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try { p.resolve('deny'); } catch { /* swallow — never propagate from cleanup */ }
   }
   pendingPermissions.clear();
@@ -4095,20 +4101,20 @@ function drainPendingInteractiveRequests(reason: 'reset' | 'session-end'): void 
   // Ask-user-question: broadcast :expired then resolve(null). Order matters
   // only for tests — the tool turn is going away regardless.
   for (const [requestId, q] of pendingAskUserQuestions) {
-    try { broadcast('ask-user-question:expired', { requestId, reason }); } catch { /* swallow */ }
+    try { broadcast('ask-user-question:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try { q.resolve(null); } catch { /* swallow */ }
   }
   pendingAskUserQuestions.clear();
 
   // Plan-mode entries resolve with `{approved: false}` (request was not approved).
   for (const [requestId, p] of pendingExitPlanMode) {
-    try { broadcast('exit-plan-mode:expired', { requestId, reason }); } catch { /* swallow */ }
+    try { broadcast('exit-plan-mode:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try { p.resolve({ approved: false }); } catch { /* swallow */ }
   }
   pendingExitPlanMode.clear();
 
   for (const [requestId, p] of pendingEnterPlanMode) {
-    try { broadcast('enter-plan-mode:expired', { requestId, reason }); } catch { /* swallow */ }
+    try { broadcast('enter-plan-mode:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try { p.resolve(false); } catch { /* swallow */ }
   }
   pendingEnterPlanMode.clear();
@@ -4142,6 +4148,7 @@ export function getPendingInteractiveRequests(): Array<{
     result.push({
       type: 'permission:request',
       data: {
+        ...interactiveEventScope(),
         requestId,
         toolName: p.toolName,
         input: typeof p.input === 'object' ? JSON.stringify(p.input).slice(0, 500) : String(p.input).slice(0, 500),
@@ -4151,19 +4158,19 @@ export function getPendingInteractiveRequests(): Array<{
   for (const [requestId, q] of pendingAskUserQuestions) {
     result.push({
       type: 'ask-user-question:request',
-      data: { requestId, questions: q.input.questions, previewFormat: 'html' },
+      data: { ...interactiveEventScope(), requestId, questions: q.input.questions, previewFormat: 'html' },
     });
   }
   for (const [requestId, p] of pendingExitPlanMode) {
     result.push({
       type: 'exit-plan-mode:request',
-      data: { requestId, plan: p.plan, allowedPrompts: p.allowedPrompts },
+      data: { ...interactiveEventScope(), requestId, plan: p.plan, allowedPrompts: p.allowedPrompts },
     });
   }
   for (const [requestId] of pendingEnterPlanMode) {
     result.push({
       type: 'enter-plan-mode:request',
-      data: { requestId },
+      data: { ...interactiveEventScope(), requestId },
     });
   }
   return result;
@@ -10672,7 +10679,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         if (statusResult.permissionMode === 'plan' && configState.currentPermissionMode !== 'plan') {
           const next = applyPermissionModeSelection(configState.currentPermissionMode, configState.prePlanPermissionMode, 'plan');
           setPermissionPlanState(next);
-          broadcast('enter-plan-mode:request', { requestId: `sdk_auto_${Date.now()}`, autoApproved: true });
+          broadcast('enter-plan-mode:request', { ...interactiveEventScope(), requestId: `sdk_auto_${Date.now()}`, autoApproved: true });
           broadcast('chat:permission-mode-changed', { permissionMode: 'plan' });
           console.log(`[agent] SDK auto-entered plan mode, saved configState.prePlanPermissionMode=${configState.prePlanPermissionMode}`);
         } else if (statusResult.permissionMode && statusResult.permissionMode !== 'plan' && configState.prePlanPermissionMode) {

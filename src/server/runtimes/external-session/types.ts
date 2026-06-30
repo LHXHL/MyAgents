@@ -58,6 +58,7 @@ export type ExternalPendingInteractiveRequest =
     type: 'permission:request';
     data: {
       requestId: string;
+      sessionId?: string | null;
       toolName: string;
       toolUseId: string;
       input: string;
@@ -67,6 +68,7 @@ export type ExternalPendingInteractiveRequest =
     type: 'ask-user-question:request';
     data: {
       requestId: string;
+      sessionId?: string | null;
       questions: AskUserQuestionInput['questions'];
       previewFormat: 'html' | 'markdown';
     };

@@ -2902,12 +2902,14 @@ export default function App() {
     if (lastUnreadClearedActiveTabIdRef.current === activeTabId) return;
     lastUnreadClearedActiveTabIdRef.current = activeTabId;
     clearActiveTabUnread();
+  }, [activeTabId, clearActiveTabUnread]);
 
-    const tab = tabsRef.current.find((t) => t.id === activeTabId);
-    if (tab?.view === 'taskcenter') {
+  const activeTabView = tabs.find((t) => t.id === activeTabId)?.view ?? null;
+  useEffect(() => {
+    if (activeTabView === 'taskcenter') {
       setExternalNotificationBadgeCount((count) => count === 0 ? count : 0);
     }
-  }, [activeTabId, clearActiveTabUnread]);
+  }, [activeTabView, externalNotificationBadgeCount]);
 
   // Trackpad two-finger horizontal swipe to switch tabs (follow-along animation)
   useTabSwipeGesture({ contentRef, tabsRef, activeTabIdRef, onSwitchTab: handleSelectTab });
@@ -3711,9 +3713,6 @@ export default function App() {
         const route = resolveNotificationClickRoute(event.payload, (tabId) =>
           tabsRef.current.some((t) => t.id === tabId),
         );
-        if (route.type !== 'none') {
-          setExternalNotificationBadgeCount((count) => Math.max(0, count - 1));
-        }
         if (route.type === 'select-tab') {
           console.log('[App] notification:click → handleSelectTab', route.tabId);
           handleSelectTab(route.tabId);

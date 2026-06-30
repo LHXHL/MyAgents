@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 
 export interface PermissionRequest {
     requestId: string;
+    sessionId?: string | null;
     toolName: string;
     input: string;
     queuePosition?: number;

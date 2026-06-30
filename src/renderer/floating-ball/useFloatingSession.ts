@@ -77,6 +77,7 @@ export interface FbActivity {
 
 export interface FbPermReq {
     requestId: string;
+    sessionId?: string | null;
     toolName: string;
     input: string;
 }
@@ -458,6 +459,10 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
     const sseRef = useRef<SseConnection | null>(null);
     const bootedRef = useRef(false);
     const busyRef = useRef(false);
+    const isCurrentInteractiveEvent = useCallback((eventSessionId?: string | null): boolean => {
+        const current = sessionIdRef.current;
+        return !eventSessionId || !current || eventSessionId === current;
+    }, []);
     const migrationInFlightRef = useRef(false);
     const queuedMigrationEventsRef = useRef<FloatingBallSessionMigratedPayload[]>([]);
     useEffect(() => {
@@ -847,9 +852,10 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 }
                 case 'permission:request': {
                     const payload = data as FbPermReq | null;
-                    if (payload?.requestId) {
+                    if (payload?.requestId && isCurrentInteractiveEvent(payload.sessionId)) {
                         setPermReqs(prev => enqueuePermissionRequest(prev, {
                             requestId: payload.requestId,
+                            sessionId: payload.sessionId,
                             toolName: payload.toolName,
                             input: payload.input || '',
                         }));
@@ -857,8 +863,8 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     break;
                 }
                 case 'permission:expired': {
-                    const payload = data as { requestId?: string } | null;
-                    if (payload?.requestId) {
+                    const payload = data as { requestId?: string; sessionId?: string | null } | null;
+                    if (payload?.requestId && isCurrentInteractiveEvent(payload.sessionId)) {
                         setPermReqs(prev => removePermissionRequest(prev, payload.requestId));
                     }
                     break;
@@ -893,23 +899,27 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 // external 会话不触发 plan 卡片，分支留着无害、未来 runtime 支持即自动生效。
                 case 'ask-user-question:request': {
                     const payload = data as AskUserQuestionRequest | null;
-                    if (payload?.requestId && Array.isArray(payload.questions)) {
+                    if (payload?.requestId && isCurrentInteractiveEvent(payload.sessionId) && Array.isArray(payload.questions)) {
                         setAskReq(payload);
                     }
                     break;
                 }
                 case 'ask-user-question:expired': {
-                    const rid = (data as { requestId?: string } | null)?.requestId;
+                    const payload = data as { requestId?: string; sessionId?: string | null } | null;
+                    if (!isCurrentInteractiveEvent(payload?.sessionId)) break;
+                    const rid = payload?.requestId;
                     setAskReq((cur) => (cur && (!rid || cur.requestId === rid) ? null : cur));
                     break;
                 }
                 case 'exit-plan-mode:request': {
                     const payload = data as ExitPlanModeRequest | null;
-                    if (payload?.requestId) setPlanReq(payload);
+                    if (payload?.requestId && isCurrentInteractiveEvent(payload.sessionId)) setPlanReq(payload);
                     break;
                 }
                 case 'exit-plan-mode:expired': {
-                    const rid = (data as { requestId?: string } | null)?.requestId;
+                    const payload = data as { requestId?: string; sessionId?: string | null } | null;
+                    if (!isCurrentInteractiveEvent(payload?.sessionId)) break;
+                    const rid = payload?.requestId;
                     setPlanReq((cur) => (cur && (!rid || cur.requestId === rid) ? null : cur));
                     break;
                 }
@@ -920,7 +930,8 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                     // （已自行放行）——此时 POST 会命中 "Unknown request"。故仅对非
                     // autoApproved 的真·pending 才回 approved（TabProvider 同款 gate，
                     // cross-review W1）。
-                    const payload = data as { requestId?: string; autoApproved?: boolean } | null;
+                    const payload = data as { requestId?: string; sessionId?: string | null; autoApproved?: boolean } | null;
+                    if (!isCurrentInteractiveEvent(payload?.sessionId)) break;
                     const rid = payload?.requestId;
                     const sid = sessionIdRef.current;
                     if (rid && sid && !payload?.autoApproved) {
@@ -963,6 +974,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             appendThinkingBlock,
             appendToolBlock,
             finalizeStream,
+            isCurrentInteractiveEvent,
             markTextStopped,
             modeRef,
             updateLiveContent,

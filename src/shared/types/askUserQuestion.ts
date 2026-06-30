@@ -78,6 +78,8 @@ export function withQuestionTextAnswerKeys(
  */
 export interface AskUserQuestionRequest {
   requestId: string;
+  /** Owning MyAgents session id; absent only for legacy/replayed payloads. */
+  sessionId?: string | null;
   questions: AskUserQuestion[];
   /** Content format for option previews: 'html' or 'markdown' */
   previewFormat?: 'html' | 'markdown';

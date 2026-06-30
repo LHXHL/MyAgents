@@ -3087,10 +3087,21 @@ function buildRequestBody(
         console.error(`Error: task create-attached --source currently supports only "space-issue" (got "${source}")`);
         process.exit(2);
       }
-      if (typeof flags.sourceIssueId !== 'string' || !flags.sourceIssueId.trim()) {
-        console.error('Error: task create-attached requires --sourceIssueId <issueId>');
-        process.exit(2);
-      }
+      const workspaceId = requireNonEmptyStringFlag(
+        flags.workspaceId,
+        'workspaceId',
+        'task create-attached',
+      );
+      const workspacePath = requireNonEmptyStringFlag(
+        flags.workspacePath,
+        'workspacePath',
+        'task create-attached',
+      );
+      const sourceIssueId = requireNonEmptyStringFlag(
+        flags.sourceIssueId,
+        'sourceIssueId',
+        'task create-attached',
+      );
       const taskMdContent = resolveTaskMdContent(flags);
       if (typeof taskMdContent !== 'string' || !taskMdContent.trim()) {
         console.error('Error: task create-attached requires --taskMdFile, --taskMdContentFile, or --taskMdContent');
@@ -3100,13 +3111,13 @@ function buildRequestBody(
         name: rest[0] || flags.name,
         executor: flags.executor ?? 'agent',
         description: flags.description,
-        workspaceId: flags.workspaceId,
-        workspacePath: flags.workspacePath,
+        workspaceId,
+        workspacePath,
         taskMdContent,
         currentSessionId,
         source,
         sourceSpaceId: flags.sourceSpaceId,
-        sourceIssueId: flags.sourceIssueId,
+        sourceIssueId,
         sourceClaimId: flags.sourceClaimId,
         sourceDeliveryId: flags.sourceDeliveryId,
         tags: typeof flags.tags === 'string'

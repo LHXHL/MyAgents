@@ -483,9 +483,10 @@ function broadcastExternalInteractiveExpired(
   reason: 'stop' | 'error' | 'reset' | 'resolved',
 ): void {
   if (!entry) return;
+  const sessionId = entry.data.sessionId || getCurrentBoundSessionId() || undefined;
   if (entry.type === 'ask-user-question:request') {
     try {
-      broadcast('ask-user-question:expired', { requestId, reason });
+      broadcast('ask-user-question:expired', { requestId, ...(sessionId ? { sessionId } : {}), reason });
     } catch (e) {
       console.warn(`[external-session] broadcast ask-user-question:expired for ${requestId} failed:`, e);
     }
@@ -493,7 +494,7 @@ function broadcastExternalInteractiveExpired(
   }
   if (entry.type === 'permission:request') {
     try {
-      broadcast('permission:expired', { requestId, reason });
+      broadcast('permission:expired', { requestId, ...(sessionId ? { sessionId } : {}), reason });
     } catch (e) {
       console.warn(`[external-session] broadcast permission:expired for ${requestId} failed:`, e);
     }
@@ -3681,7 +3682,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       break;
     }
 
-    case 'permission_request':
+    case 'permission_request': {
       if (autoDenyNonInteractiveRequest(event)) break;
       // AskUserQuestion carries a structured payload (questions/options/previews) and
       // needs the dedicated wizard UI, not the generic allow/deny card. Route it through
@@ -3691,15 +3692,17 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         setExternalAskUserQuestion(event.requestId, { input: event.input as Record<string, unknown> });
         const questions = event.input.questions;
         const previewFormat: 'html' | 'markdown' = 'html';
-        setExternalInteractiveRequest(event.requestId, {
-          type: 'ask-user-question:request',
-          data: { requestId: event.requestId, questions, previewFormat },
-        });
-        broadcast('ask-user-question:request', {
+        const requestPayload = {
           requestId: event.requestId,
+          sessionId: getCurrentBoundSessionId() || undefined,
           questions,
           previewFormat,
+        };
+        setExternalInteractiveRequest(event.requestId, {
+          type: 'ask-user-question:request',
+          data: requestPayload,
         });
+        broadcast('ask-user-question:request', requestPayload);
         // IM/agent-channel bots can't render AskUserQuestion; claude-code.ts already
         // puts it in --disallowed-tools for those scenarios, so no imEventBus fan-out here.
         break;
@@ -3707,27 +3710,25 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
 
       // Store suggestions so respondExternalPermission can echo them back for "always_allow"
       setExternalPermissionSuggestions(event.requestId, event.suggestions);
-      setExternalInteractiveRequest(event.requestId, {
-        type: 'permission:request',
-        data: {
-          requestId: event.requestId,
-          toolName: event.toolName,
-          toolUseId: event.toolUseId,
-          input: typeof event.input === 'object' ? JSON.stringify(event.input).slice(0, 500) : String(event.input ?? '').slice(0, 500),
-        },
-      });
-      broadcast('permission:request', {
+      const requestPayload = {
         requestId: event.requestId,
+        sessionId: getCurrentBoundSessionId() || undefined,
         toolName: event.toolName,
         toolUseId: event.toolUseId,
         input: typeof event.input === 'object' ? JSON.stringify(event.input).slice(0, 500) : String(event.input ?? '').slice(0, 500),
+      };
+      setExternalInteractiveRequest(event.requestId, {
+        type: 'permission:request',
+        data: requestPayload,
       });
+      broadcast('permission:request', requestPayload);
       fireExternalImCallback('permission-request', JSON.stringify({
         requestId: event.requestId,
         toolName: event.toolName,
         input: event.input,
       }));
       break;
+    }
 
     case 'interactive_request_resolved': {
       const pending = getExternalInteractiveRequest(event.requestId);

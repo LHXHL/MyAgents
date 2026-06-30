@@ -311,11 +311,11 @@ export const SESSION_ENGINE_ROUTE_CONTRACTS: SessionEngineRouteContract[] = [
   {
     path: '/api/runtime/permission-response',
     method: 'POST',
-    engineMethod: 'respondExternalPermission',
+    engineMethod: 'respondPermission',
     requiredFields: ['requestId'],
     responseKeys: ['success', 'error'],
     failureStatuses: [400, 500],
-    behavior: 'Responds to external runtime permission requests directly, preserving legacy no-op success when no external process is active.',
+    behavior: 'Responds to runtime permission requests through the active permission-response engine, preserving builtin fallback when no external process is active.',
   },
   {
     path: '/api/permission/respond',
