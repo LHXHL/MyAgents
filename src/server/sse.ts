@@ -120,6 +120,7 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   'chat:task-notification': 'critical',
   'chat:task-started': 'critical',
   'permission:request': 'critical',
+  'permission:expired': 'critical',
   'ask-user-question:request': 'critical',
   'ask-user-question:expired': 'critical',
   'exit-plan-mode:request': 'critical',

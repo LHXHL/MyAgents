@@ -50,6 +50,7 @@ import type { SlashCommand } from '../../shared/slashCommands';
 import type { LogEntry } from '@/types/log';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import { parsePartialJson } from '@/utils/parsePartialJson';
+import { enqueuePermissionRequest, peekPermissionRequest, removePermissionRequest } from '@/utils/permissionQueue';
 import { i18n } from '@/i18n';
 import { subscribeFrontendLogs, setCurrentTabId } from '@/utils/frontendLogger';
 import { getTabServerUrl, proxyFetch, isTauri, getSessionActivation, getSessionPort, ensureSessionSidecar, resetTabServerUrlCache, setActiveCorrelation } from '@/api/tauriClient';
@@ -655,7 +656,8 @@ export default function TabProvider({
     }, []);
     const [lastTerminalReason, setLastTerminalReason] = useState<TerminalReason | null>(null);
     const [isConnected, setIsConnected] = useState(false);
-    const [pendingPermission, setPendingPermission] = useState<PermissionRequest | null>(null);
+    const [pendingPermissions, setPendingPermissions] = useState<PermissionRequest[]>([]);
+    const pendingPermission = useMemo(() => peekPermissionRequest(pendingPermissions), [pendingPermissions]);
     const [pendingAskUserQuestion, setPendingAskUserQuestion] = useState<AskUserQuestionRequest | null>(null);
     const [pendingExitPlanMode, setPendingExitPlanMode] = useState<ExitPlanModeRequest | null>(null);
     const [pendingEnterPlanMode, setPendingEnterPlanMode] = useState<EnterPlanModeRequest | null>(null);
@@ -810,7 +812,7 @@ export default function TabProvider({
     // Shared cleanup for all session boundary transitions (reset, load, SSE init).
     // Single source of truth — add new interactive states here to avoid leaking across sessions.
     const clearInteractiveState = useCallback(() => {
-        setPendingPermission(null);
+        setPendingPermissions([]);
         setPendingAskUserQuestion(null);
         setPendingExitPlanMode(null);
         setPendingEnterPlanMode(null);
@@ -2822,14 +2824,23 @@ export default function TabProvider({
                 const payload = data as { requestId: string; toolName: string; input: string } | null;
                 console.log(`[TabProvider] permission:request received:`, payload);
                 if (payload?.requestId) {
-                    console.log(`[TabProvider] Setting pendingPermission for: ${payload.toolName}`);
-                    setPendingPermission({
+                    console.log(`[TabProvider] Queueing pendingPermission for: ${payload.toolName}`);
+                    setPendingPermissions(prev => enqueuePermissionRequest(prev, {
                         requestId: payload.requestId,
                         toolName: payload.toolName,
                         input: payload.input || '',
-                    });
+                    }));
                     // Send system notification if user is not focused on the app
                     notifyPermissionRequest(payload.toolName);
+                }
+                break;
+            }
+
+            case 'permission:expired': {
+                const payload = data as { requestId?: string; reason?: string } | null;
+                if (payload?.requestId) {
+                    console.log(`[TabProvider] permission:expired received for ${payload.requestId} (${payload.reason ?? 'unknown'})`);
+                    setPendingPermissions(prev => removePermissionRequest(prev, payload.requestId));
                 }
                 break;
             }
@@ -4405,11 +4416,14 @@ export default function TabProvider({
     }, [tabId]);
 
     // Respond to permission request
-    const respondPermission = useCallback(async (decision: 'deny' | 'allow_once' | 'always_allow') => {
-        if (!pendingPermission) return;
+    const respondPermission = useCallback(async (decision: 'deny' | 'allow_once' | 'always_allow', requestIdOverride?: string) => {
+        const permission = requestIdOverride
+            ? pendingPermissions.find(item => item.requestId === requestIdOverride)
+            : pendingPermission;
+        if (!permission) return;
 
-        const requestId = pendingPermission.requestId;
-        const toolName = pendingPermission.toolName;
+        const requestId = permission.requestId;
+        const toolName = permission.toolName;
         console.log(`[TabProvider] Permission response: ${decision} for ${toolName}`);
 
         // Track permission decision
@@ -4419,16 +4433,18 @@ export default function TabProvider({
             trackTabEvent('permission_grant', { tool: toolName, type: decision });
         }
 
-        // Clear pending permission immediately for UI responsiveness
-        setPendingPermission(null);
-
         // Send response to backend
         try {
-            await postJson('/api/permission/respond', { requestId, decision });
+            const response = await postJson<{ success?: boolean; error?: string }>('/api/permission/respond', { requestId, decision });
+            if (response.success !== true) {
+                throw new Error(response.error || 'Permission response was not accepted by backend');
+            }
+            setPendingPermissions(prev => removePermissionRequest(prev, requestId));
         } catch (error) {
             console.error('[TabProvider] Failed to send permission response:', error);
+            throw error;
         }
-    }, [pendingPermission, postJson, trackTabEvent]);
+    }, [pendingPermission, pendingPermissions, postJson, trackTabEvent]);
 
     // Respond to AskUserQuestion request
     const respondAskUserQuestion = useCallback(async (answers: Record<string, string> | null) => {

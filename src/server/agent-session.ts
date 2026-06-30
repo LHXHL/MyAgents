@@ -3997,6 +3997,7 @@ async function checkToolPermission(
     const onAbort = () => {
       console.debug(`[permission] ${toolName}: aborted by SDK signal`);
       cleanup();
+      try { broadcast('permission:expired', { requestId, reason: 'aborted' }); } catch { /* swallow — abort cleanup must not throw */ }
       // Reject with AbortError so SDK's own abort handling creates the single tool_result.
       // Previously resolve('deny') caused a duplicate tool_result on abort.
       reject(new DOMException('Aborted', 'AbortError'));
@@ -4025,6 +4026,7 @@ export function handlePermissionResponse(
   }
 
   pendingPermissions.delete(requestId);
+  try { broadcast('permission:expired', { requestId, reason: 'resolved' }); } catch { /* swallow — response path must not fail on SSE */ }
 
   if (decision === 'deny') {
     console.log(`[permission] ${pending.toolName}: user denied`);
@@ -4047,6 +4049,7 @@ export function handlePermissionResponse(
       if (otherPending.toolName === pending.toolName) {
         console.log(`[permission] ${otherPending.toolName}: cascade auto-approved (requestId=${otherId})`);
         pendingPermissions.delete(otherId);
+        try { broadcast('permission:expired', { requestId: otherId, reason: 'resolved' }); } catch { /* swallow — cascade must not fail on SSE */ }
         otherPending.resolve('allow');
       }
     }
@@ -4073,12 +4076,8 @@ export function handlePermissionResponse(
  *      desync (PRD #131).
  *
  * Mirrors `external-session.ts::drainPendingInteractiveRequestsAsExpired`.
- * For Ask/ExitPlan/EnterPlan we broadcast the matching `:expired` event so
- * the frontend modal clears even when the chat:init guard skips the
- * unconditional clear. For permission requests we skip the broadcast —
- * there is no `permission:expired` channel; pendingPermission is cleared
- * via the chat:init / clearInteractiveState path on SSE reconnect, and
- * adding a new SSE event type just for cross-coverage is out of scope.
+ * We broadcast the matching `:expired` event so the frontend modal clears
+ * even when the chat:init guard skips the unconditional clear.
  *
  * `reason` is forwarded into the `:expired` payload so future telemetry /
  * UX messaging can distinguish reset-driven vs crash-driven expiry. The
@@ -4086,8 +4085,9 @@ export function handlePermissionResponse(
  */
 function drainPendingInteractiveRequests(reason: 'reset' | 'session-end'): void {
   // Permission: resolve with 'deny' so any awaiting tool call surfaces as
-  // denied. No `:expired` broadcast (see helper docstring).
-  for (const [, p] of pendingPermissions) {
+  // denied.
+  for (const [requestId, p] of pendingPermissions) {
+    try { broadcast('permission:expired', { requestId, reason }); } catch { /* swallow */ }
     try { p.resolve('deny'); } catch { /* swallow — never propagate from cleanup */ }
   }
   pendingPermissions.clear();

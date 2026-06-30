@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
     updateRuntimeConfig: vi.fn(async () => ({ success: true })),
     prewarm: vi.fn(async () => ({ prewarmed: true })),
   },
-  respondExternalPermission: vi.fn(async () => undefined),
+  respondExternalPermission: vi.fn(async () => true),
 }));
 
 vi.mock('../session-engine', () => ({

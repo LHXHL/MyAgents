@@ -257,6 +257,23 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 | `turn/completed` | `[turn_complete, agent_plan_update([])]` |
 | `thread/tokenUsage/updated` | `usage` |
 
+### Codex Server Request / 权限协议
+
+`app-server` 还会通过 JSON-RPC Server → Client request 向 MyAgents 要结果。`src/server/runtimes/codex.ts::KNOWN_CODEX_SERVER_REQUEST_METHODS` 是显式 allowlist，升级 Codex CLI 时必须先用 `codex app-server generate-ts --out <dir>` 对照 `v2/ServerRequest.ts`，再决定映射或 fail-closed。当前对接约束：
+
+| Server request | MyAgents 映射 |
+|---|---|
+| `item/commandExecution/requestApproval` | `permission_request`，`toolName:'Shell'`，保留 `command/cwd/reason` |
+| `item/fileChange/requestApproval` | `permission_request`，`toolName:'FileEdit'`，保留 `reason/grantRoot` |
+| `item/permissions/requestApproval` | `permission_request`，返回 Codex permission profile + `turn/session` scope |
+| `execCommandApproval` / `applyPatchApproval` | 旧协议兼容，仍走 `permission_request` |
+| `item/tool/requestUserInput` | 映射到 `AskUserQuestion`，答案按 Codex 原生 question id 回传 |
+| `mcpServer/elicitation/request` (`form` / `openai/form`) | 有 schema fields 时映射到 `AskUserQuestion`；`url` / tool approval / generic elicitation 走 `permission_request` |
+| `currentTime/read` | runtime adapter 直接返回 `{currentTimeAt}`，不进入 UI |
+| `item/tool/call` / token refresh / attestation | MyAgents 不托管，显式 error |
+
+**权限 UI 不允许单槽位。** Codex 可以在同一 turn 一次性发出多个 approval request（例如 4 条 PowerShell 命令），backend 以 `requestId` 同时挂起多条 pending。Renderer 必须把 `permission:request` 当成 FIFO queue keyed by `requestId`；响应成功或后端 stop/error/reset/auto-resolve 时通过 `permission:expired` 精确移除对应项。不能用单个 `pendingPermission` 覆盖新请求，也不能把多条不同请求合并成一次批量批准；`always_allow` 只能通过 runtime 自己的 response protocol 表达。
+
 ### ThreadItem 类型对照（v0.128 schema）
 
 `codex app-server generate-ts --out <dir>` 可以生成当前装机版本的真实 TS schema
@@ -455,7 +472,7 @@ stdout reader 先进入 `await read()`,防止 initialize 响应在 handler 注�
 | `turn-lifecycle.ts` | turn completed/success flags、`TurnFinalizationGate`、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类 |
 | `content-blocks.ts` | streaming text/thinking/tool/subagent content state；tool result/attachment mutation；live snapshot 与 turn snapshot backing state |
 | `transcript-persistence.ts` | in-memory `SessionMessage[]`、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update |
-| `interactive.ts` | permission / AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response delivery 成功后才 consume/delete |
+| `interactive.ts` | permission / AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response delivery 成功后才 consume/delete，并广播 `permission:expired` / `ask-user-question:expired` 清理所有 UI surface |
 
 Facade 仍执行跨 owner 编排：调用 runtime process、广播 SSE、做 analytics/title hook，并按 owner 返回的 plan 串起 persistence / interactive cleanup / queue drain。Queue owner 不调用 runtime；lifecycle owner 不吞 stop cleanup；content raw refs/maps 不回流到 facade，facade 只走命名 API 做 tool/subagent/attachment patch；turn lifecycle owner owns terminal success/failure/prewarm/idle/user-stop classification；transcript owner owns user/assistant append、retry truncate、last assistant read 与 SessionStore write path；interactive owner owns IM event bus / registry cleanup 与 inbox/watch error delivery；persisted JSON shape 不变。`external-session.ts` 仍可保留 watchdog、trace、pending birth、early broadcast 等 orchestration-local state，但这些不是跨模块 owner state。
 

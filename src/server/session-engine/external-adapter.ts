@@ -463,8 +463,7 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async respondPermission(requestId, decision, reason) {
-      await respondExternalPermission(requestId, decision, reason);
-      return true;
+      return respondExternalPermission(requestId, decision, reason);
     },
 
     respondAskUserQuestion(requestId, answers) {

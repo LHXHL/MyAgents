@@ -475,6 +475,7 @@
       "cancelQueued": "Cancel queued"
     },
     "permissionPrompt": {
+      "progress": "Permission approval {{index}} / {{total}}",
       "title": "Permission request",
       "subtitle": "AI wants to run the following action",
       "badge": "Authorization required",

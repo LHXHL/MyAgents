@@ -476,6 +476,29 @@ export function __resetExternalSessionForTests(): void {
  * the channel typed lets us add user-visible messaging later without a
  * second round-trip.
  */
+function broadcastExternalInteractiveExpired(
+  requestId: string,
+  entry: ExternalPendingInteractiveRequest | undefined,
+  reason: 'stop' | 'error' | 'reset' | 'resolved',
+): void {
+  if (!entry) return;
+  if (entry.type === 'ask-user-question:request') {
+    try {
+      broadcast('ask-user-question:expired', { requestId, reason });
+    } catch (e) {
+      console.warn(`[external-session] broadcast ask-user-question:expired for ${requestId} failed:`, e);
+    }
+    return;
+  }
+  if (entry.type === 'permission:request') {
+    try {
+      broadcast('permission:expired', { requestId, reason });
+    } catch (e) {
+      console.warn(`[external-session] broadcast permission:expired for ${requestId} failed:`, e);
+    }
+  }
+}
+
 function drainPendingInteractiveRequestsAsExpired(reason: 'stop' | 'error' | 'reset'): void {
   // `pendingExternalInteractiveRequests` only ever holds
   // `ask-user-question:request` (structured wizard) or `permission:request`
@@ -484,12 +507,7 @@ function drainPendingInteractiveRequestsAsExpired(reason: 'stop' | 'error' | 're
   // channels stay builtin-only. Filtering by entry.type keeps the broadcast
   // honest if a future runtime starts using those interactive types.
   for (const [requestId, entry] of getExternalInteractiveRequestEntries()) {
-    if (entry.type !== 'ask-user-question:request') continue;
-    try {
-      broadcast('ask-user-question:expired', { requestId, reason });
-    } catch (e) {
-      console.warn(`[external-session] broadcast ask-user-question:expired for ${requestId} failed:`, e);
-    }
+    broadcastExternalInteractiveExpired(requestId, entry, reason);
   }
 }
 
@@ -2590,19 +2608,26 @@ export async function respondExternalPermission(
   requestId: string,
   decision: 'deny' | 'allow_once' | 'always_allow',
   reason?: string,
-): Promise<void> {
+): Promise<boolean> {
   const active = getExternalActivePair();
   if (!active) {
     console.warn('[external-session] No active process for permission response');
-    return;
+    return false;
+  }
+  const pending = getExternalInteractiveRequest(requestId);
+  if (pending?.type !== 'permission:request') {
+    console.warn(`[external-session] Unknown permission requestId: ${requestId}`);
+    return false;
   }
   // Peek first; consume/delete only after runtime delivery succeeds so a transient
   // stdin/process write failure does not make the approval impossible to retry.
   const suggestions = getExternalPermissionSuggestions(requestId);
   console.log(`[external-session] Permission response: ${decision} for requestId=${requestId}${suggestions?.length ? `, with ${suggestions.length} suggestion(s)` : ''}`);
   await active.runtime.respondPermission(active.process, requestId, decision, reason, suggestions);
+  broadcastExternalInteractiveExpired(requestId, pending, 'resolved');
   consumeExternalPermissionSuggestions(requestId);
   deleteExternalInteractiveRequest(requestId);
+  return true;
 }
 
 /**
@@ -2667,6 +2692,7 @@ export async function respondExternalAskUserQuestion(
     }
     // Delete only after successful delivery — if respondPermission throws
     // (e.g. stdin closed mid-write) the caller can retry.
+    broadcastExternalInteractiveExpired(requestId, getExternalInteractiveRequest(requestId), 'resolved');
     deleteExternalAskUserQuestion(requestId);
     deleteExternalInteractiveRequest(requestId);
     return true;
@@ -3633,9 +3659,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
 
     case 'interactive_request_resolved': {
       const pending = getExternalInteractiveRequest(event.requestId);
-      if (pending?.type === 'ask-user-question:request') {
-        broadcast('ask-user-question:expired', { requestId: event.requestId, reason: 'resolved' });
-      }
+      broadcastExternalInteractiveExpired(event.requestId, pending, 'resolved');
       deleteExternalAskUserQuestion(event.requestId);
       deleteExternalInteractiveRequest(event.requestId);
       consumeExternalPermissionSuggestions(event.requestId);

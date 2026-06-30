@@ -432,6 +432,7 @@ export const KNOWN_CODEX_SERVER_REQUEST_METHODS = Object.freeze([
   'item/tool/call',
   'account/chatgptAuthTokens/refresh',
   'attestation/generate',
+  'currentTime/read',
   'applyPatchApproval',
   'execCommandApproval',
 ] as const);
@@ -753,7 +754,7 @@ function buildMcpElicitationContent(
   params: Record<string, unknown>,
   updatedInput?: Record<string, unknown>,
 ): Record<string, unknown> | null {
-  if (params.mode !== 'form') return null;
+  if (params.mode !== 'form' && params.mode !== 'openai/form') return null;
   const requestedSchema = objectValue(params.requestedSchema);
   const properties = objectValue(requestedSchema.properties);
   const required = new Set(arrayValue(requestedSchema.required).filter((v): v is string => typeof v === 'string'));
@@ -822,7 +823,7 @@ export function serializeCodexPermissionResponse(
         };
       }
       const content = buildMcpElicitationContent(pending.params, updatedInput);
-      if (pending.params.mode === 'form' && content === null) {
+      if ((pending.params.mode === 'form' || pending.params.mode === 'openai/form') && content === null) {
         return {
           type: 'error',
           code: -32000,
@@ -3445,7 +3446,7 @@ export class CodexRuntime implements AgentRuntime {
         track({ kind: 'mcp_elicitation', rpcId, method, params: p });
         const requestedSchema = objectValue(p.requestedSchema);
         const hasFormFields = Object.keys(objectValue(requestedSchema.properties)).length > 0;
-        if (p.mode === 'form' && hasFormFields) {
+        if ((p.mode === 'form' || p.mode === 'openai/form') && hasFormFields) {
           onEvent({
             kind: 'permission_request',
             requestId,
@@ -3510,6 +3511,10 @@ export class CodexRuntime implements AgentRuntime {
 
       case 'attestation/generate':
         codexProc.rpc.respondError(rpcId, -32000, 'MyAgents did not request Codex attestation');
+        break;
+
+      case 'currentTime/read':
+        codexProc.rpc.respond(rpcId, { currentTimeAt: Math.floor(Date.now() / 1000) });
         break;
 
       default: {

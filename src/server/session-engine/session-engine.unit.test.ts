@@ -101,7 +101,7 @@ const mocks = vi.hoisted(() => {
     popLastUserMessageForRetry: vi.fn(async () => ({ success: true, content: 'retry' })),
     prewarmExternalSession: vi.fn(async () => ({ prewarmed: true })),
     respondExternalAskUserQuestion: vi.fn(async () => true),
-    respondExternalPermission: vi.fn(async () => undefined),
+    respondExternalPermission: vi.fn(async () => true),
     restoreExternalSessionState: vi.fn(),
     sendExternalMessage: vi.fn(async () => ({ queued: true })),
     setExternalModel: vi.fn(async () => ({ success: true })),

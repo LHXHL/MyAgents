@@ -51,7 +51,7 @@ interface MessageListProps {
   scrollToBottom: (behavior?: 'smooth' | 'auto') => void;
   handleAtBottomChange: (atBottom: boolean) => void;
   pendingPermission?: PermissionRequest | null;
-  onPermissionDecision?: (decision: 'deny' | 'allow_once' | 'always_allow') => void;
+  onPermissionDecision?: (requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => void | Promise<void>;
   pendingAskUserQuestion?: AskUserQuestionRequest | null;
   onAskUserQuestionSubmit?: (requestId: string, answers: Record<string, string>) => void;
   onAskUserQuestionCancel?: (requestId: string) => void;
@@ -159,7 +159,7 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
   bottomSpacerPx,
 }: {
   pendingPermission?: PermissionRequest | null;
-  onPermissionDecision?: (decision: 'deny' | 'allow_once' | 'always_allow') => void;
+  onPermissionDecision?: (requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => void | Promise<void>;
   pendingAskUserQuestion?: AskUserQuestionRequest | null;
   onAskUserQuestionSubmit?: (requestId: string, answers: Record<string, string>) => void;
   onAskUserQuestionCancel?: (requestId: string) => void;
@@ -174,7 +174,11 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
     <div className="mx-auto max-w-3xl px-3">
       {pendingPermission && onPermissionDecision && (
         <div className="py-2">
-          <PermissionPrompt request={pendingPermission} onDecision={(_id, d) => onPermissionDecision(d)} />
+          <PermissionPrompt
+            key={pendingPermission.requestId}
+            request={pendingPermission}
+            onDecision={onPermissionDecision}
+          />
         </div>
       )}
       {pendingAskUserQuestion && onAskUserQuestionSubmit && onAskUserQuestionCancel && (

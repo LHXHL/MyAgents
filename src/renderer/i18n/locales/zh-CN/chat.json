@@ -475,6 +475,7 @@
       "cancelQueued": "取消排队"
     },
     "permissionPrompt": {
+      "progress": "权限审批 {{index}} / {{total}}",
       "title": "权限请求",
       "subtitle": "AI 请求执行以下操作",
       "badge": "需授权",

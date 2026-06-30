@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ShieldAlert, X, Check, CheckCheck } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
@@ -6,11 +6,13 @@ export interface PermissionRequest {
     requestId: string;
     toolName: string;
     input: string;
+    queuePosition?: number;
+    queueTotal?: number;
 }
 
 interface PermissionPromptProps {
     request: PermissionRequest;
-    onDecision: (requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => void;
+    onDecision: (requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => void | Promise<void>;
 }
 
 /**
@@ -21,12 +23,29 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
     const { t } = useTranslation('chat');
     const [isResponding, setIsResponding] = useState(false);
     const [responded, setResponded] = useState(false);
+    const mountedRef = useRef(true);
 
-    const handleDecision = (decision: 'deny' | 'allow_once' | 'always_allow') => {
+    useEffect(() => {
+        return () => {
+            mountedRef.current = false;
+        };
+    }, []);
+
+    const handleDecision = async (decision: 'deny' | 'allow_once' | 'always_allow') => {
         if (isResponding) return;
+        const requestId = request.requestId;
         setIsResponding(true);
-        onDecision(request.requestId, decision);
-        setResponded(true);
+        try {
+            await onDecision(requestId, decision);
+            if (mountedRef.current) {
+                setResponded(true);
+            }
+        } catch (error) {
+            console.error('[PermissionPrompt] Permission response failed:', error);
+            if (mountedRef.current) {
+                setIsResponding(false);
+            }
+        }
     };
 
     // Format tool name for display
@@ -62,12 +81,30 @@ export function PermissionPrompt({ request, onDecision }: PermissionPromptProps)
     }
 
     const formattedInput = formatInput(request.input);
+    const queuePosition = request.queuePosition ?? 1;
+    const queueTotal = request.queueTotal ?? 1;
+    const showQueueProgress = queueTotal > 1;
+    const progressPercent = Math.min(100, Math.max(0, (queuePosition / queueTotal) * 100));
 
     return (
         <div className="animate-in fade-in slide-in-from-bottom-2 duration-200">
             {/* 反相版（PRD 0.2.34）：中性白卡 + 淡琥珀「命令盒」承载焦点内容，
                 颜色当重点而非整卡底色。权限语义＝warning 琥珀（对齐 DESIGN.md §10.6）。 */}
             <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-4 shadow-sm">
+                {showQueueProgress && (
+                    <div className="mb-3 animate-in fade-in slide-in-from-top-1 duration-200">
+                        <div className="mb-1.5 text-xs font-medium text-[var(--ink-muted)]">
+                            {t('shell.permissionPrompt.progress', { index: queuePosition, total: queueTotal })}
+                        </div>
+                        <div className="h-1 overflow-hidden rounded-full bg-[var(--warning)]/15">
+                            <div
+                                className="h-full rounded-full bg-[var(--warning)] transition-[width] duration-300 ease-out"
+                                style={{ width: `${progressPercent}%` }}
+                            />
+                        </div>
+                    </div>
+                )}
+
                 {/* Header */}
                 <div className="flex items-center gap-2.5">
                     <div className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-[var(--warning)]/15">

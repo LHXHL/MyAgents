@@ -101,8 +101,8 @@ export async function handleSessionEngineRuntimeRoute(
     const reason = body.reason as string | undefined;
     if (!requestId) return jsonResponse({ error: 'Missing requestId' }, 400);
     try {
-      await respondExternalPermission(requestId, decision, reason);
-      return jsonResponse({ success: true });
+      const success = await respondExternalPermission(requestId, decision, reason);
+      return jsonResponse({ success });
     } catch (error) {
       return jsonResponse({ error: error instanceof Error ? error.message : 'Unknown error' }, 500);
     }

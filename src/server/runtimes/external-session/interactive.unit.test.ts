@@ -3,6 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   metadata: undefined as Record<string, unknown> | undefined,
   data: undefined as { messages: unknown[] } | undefined,
+  broadcast: vi.fn(),
+}));
+
+vi.mock('../../sse', () => ({
+  broadcast: mocks.broadcast,
 }));
 
 vi.mock('../../SessionStore', () => ({
@@ -33,6 +38,7 @@ describe('external interactive owner integration', () => {
   beforeEach(() => {
     resetExternalInteractiveState();
     resetExternalLifecycleState();
+    mocks.broadcast.mockClear();
   });
 
   it('does not consume AskUserQuestion pending state when the runtime process is gone', async () => {
@@ -109,5 +115,39 @@ describe('external interactive owner integration', () => {
       undefined,
       ['suggested-rule'],
     );
+    expect(mocks.broadcast).not.toHaveBeenCalledWith('permission:expired', expect.anything());
+  });
+
+  it('broadcasts permission expiry after successful runtime delivery', async () => {
+    const requestId = 'perm-delivery-ok';
+    const respondPermission = vi.fn(async () => undefined);
+    setExternalActiveProcess({
+      pid: 123,
+      exited: false,
+      writeLine: vi.fn(async () => undefined),
+      kill: vi.fn(),
+      waitForExit: vi.fn(async () => 0),
+    } satisfies RuntimeProcess);
+    setExternalActiveRuntime({
+      type: 'codex',
+      respondPermission,
+    } as unknown as AgentRuntime);
+    setExternalInteractiveRequest(requestId, {
+      type: 'permission:request',
+      data: {
+        requestId,
+        toolName: 'Shell',
+        toolUseId: 'tool-2',
+        input: '{}',
+      },
+    });
+
+    await expect(respondExternalPermission(requestId, 'allow_once')).resolves.toBe(true);
+
+    expect(mocks.broadcast).toHaveBeenCalledWith('permission:expired', {
+      requestId,
+      reason: 'resolved',
+    });
+    expect(getExternalInteractiveRequest(requestId)).toBeUndefined();
   });
 });
