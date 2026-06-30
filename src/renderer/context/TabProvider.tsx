@@ -65,6 +65,7 @@ import {
     notifyPermissionRequest,
     notifyAskUserQuestion,
     notifyPlanModeRequest,
+    shouldNotifyUser,
 } from '@/services/notificationService';
 import { setBackgroundTaskStatus, setBackgroundTaskDescription, getBackgroundTaskDescription, clearAllBackgroundTaskStatuses, registerBackgroundTask } from '@/utils/backgroundTaskStatus';
 
@@ -2327,8 +2328,10 @@ export default function TabProvider({
                 // Send system notification if user is not focused on the app
                 notifyMessageComplete(tabId);
 
-                // Mark tab as unread if user is viewing a different tab
-                if (!isActiveRef.current) {
+                // Mark tab as unread when the result is not immediately visible:
+                // either the user is on another tab, or the app/window is not
+                // focused even though this tab is logically active.
+                if (!isActiveRef.current || shouldNotifyUser()) {
                     onUnreadChangeRef.current?.(true);
                 }
 
@@ -2832,6 +2835,9 @@ export default function TabProvider({
                     }));
                     // Send system notification if user is not focused on the app
                     notifyPermissionRequest(payload.toolName);
+                    if (!isActiveRef.current || shouldNotifyUser()) {
+                        onUnreadChangeRef.current?.(true);
+                    }
                 }
                 break;
             }
@@ -2858,6 +2864,9 @@ export default function TabProvider({
                     });
                     // Send system notification if user is not focused on the app
                     notifyAskUserQuestion();
+                    if (!isActiveRef.current || shouldNotifyUser()) {
+                        onUnreadChangeRef.current?.(true);
+                    }
                 }
                 break;
             }
@@ -2871,6 +2880,9 @@ export default function TabProvider({
                         allowedPrompts: payload.allowedPrompts,
                     });
                     notifyPlanModeRequest();
+                    if (!isActiveRef.current || shouldNotifyUser()) {
+                        onUnreadChangeRef.current?.(true);
+                    }
                 }
                 break;
             }

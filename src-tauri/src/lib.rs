@@ -25,6 +25,7 @@ mod macos_traffic_light;
 pub mod managed_codex;
 pub mod management_api;
 pub mod notification;
+pub mod notification_badge;
 pub mod perf_trace;
 pub mod process_cleanup;
 pub mod process_cmd;
@@ -436,6 +437,7 @@ pub fn run() {
             // OS notification + click-to-foreground deep-link (v0.2.14)
             notification::cmd_show_notification,
             notification::cmd_consume_notification_click,
+            notification_badge::cmd_set_notification_badge,
             // IM Bot commands (non-deprecated survivors)
             im::commands::cmd_im_conversations,
             // Group permission commands (v0.1.28)

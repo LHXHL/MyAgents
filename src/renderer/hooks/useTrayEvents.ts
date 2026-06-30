@@ -21,6 +21,8 @@ interface TrayEventsOptions {
   /** Callback for Cmd+W close-tab action (after overlay dismissal).
    *  closeCurrentTab() auto-creates launcher on last tab; launcher is a no-op. */
   onCmdWCloseTab?: () => void;
+  /** Callback when the main window regains focus. */
+  onWindowFocused?: () => void;
 }
 
 export function useTrayEvents(options: TrayEventsOptions) {
@@ -95,6 +97,7 @@ export function useTrayEvents(options: TrayEventsOptions) {
           console.debug('[useTrayEvents] Window focus changed:', focused);
           if (focused) {
             setWindowVisible(true);
+            optionsRef.current.onWindowFocused?.();
             void consumePendingNotificationClick();
           }
         });

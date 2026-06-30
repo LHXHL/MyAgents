@@ -440,6 +440,7 @@ export default function App() {
   const [restoreCandidate] = useState(() => buildRestoredTabs());
   const [tabs, setTabs] = useState<Tab[]>(() => [createNewTab()]);
   const [activeTabId, setActiveTabIdState] = useState<string | null>(() => tabs[0]?.id ?? null);
+  const [externalNotificationBadgeCount, setExternalNotificationBadgeCount] = useState(0);
 
   // "恢复对话" pill (Issue #309). `restorePillCount > 0` shows it; the resolved
   // candidate is held in a ref (NOT localStorage — the persist effect clears
@@ -720,6 +721,30 @@ export default function App() {
   // handleSwitchSession useCallback deps (it's intentionally a stable empty-deps callback).
   const configRef = useRef(config);
   configRef.current = config;
+
+  const unreadTabCount = tabs.reduce((count, tab) => count + (tab.hasUnread ? 1 : 0), 0);
+  const notificationBadgeEnabled = config.osNotifications && (config.notificationBadge ?? true);
+  const notificationBadgeCount = notificationBadgeEnabled
+    ? Math.min(unreadTabCount + externalNotificationBadgeCount, 999)
+    : 0;
+
+  useEffect(() => {
+    if (!notificationBadgeEnabled && externalNotificationBadgeCount !== 0) {
+      setExternalNotificationBadgeCount(0);
+    }
+  }, [externalNotificationBadgeCount, notificationBadgeEnabled]);
+
+  useEffect(() => {
+    if (!isTauriEnvironment()) return;
+    void import('@tauri-apps/api/core')
+      .then(({ invoke }) => invoke('cmd_set_notification_badge', {
+        count: notificationBadgeCount,
+        enabled: notificationBadgeEnabled,
+      }))
+      .catch((error) => {
+        console.warn('[App] Failed to sync notification badge:', error);
+      });
+  }, [notificationBadgeCount, notificationBadgeEnabled]);
 
   const trackHistorySessionOpen = useCallback((
     sessionId: string,
@@ -1046,6 +1071,13 @@ export default function App() {
         console.log('[App] Cron manager ready (Rust recovery complete)');
       }, listenerAc.signal);
 
+      void listenWithCleanup('notification:badge-increment', () => {
+        if (!mountedRef.current) return;
+        const cfg = configRef.current;
+        if (!cfg.osNotifications || !(cfg.notificationBadge ?? true)) return;
+        setExternalNotificationBadgeCount((count) => Math.min(count + 1, 99));
+      }, listenerAc.signal);
+
       // Listen for Global Sidecar auto-restart by Rust health monitor
       void listenWithCleanup<string>('global-sidecar:restarted', (event) => {
         if (!mountedRef.current) return;
@@ -1206,6 +1238,12 @@ export default function App() {
       return prev; // no-op: avoid unnecessary re-render
     });
   }, []);
+
+  const clearActiveTabUnread = useCallback(() => {
+    const activeTabId = activeTabIdRef.current;
+    if (!activeTabId) return;
+    updateTabUnread(activeTabId, false);
+  }, [updateTabUnread]);
 
   // Update tab sessionId when backend creates real session (called from TabProvider)
   // This ensures Session singleton constraint works correctly:
@@ -2853,16 +2891,14 @@ export default function App() {
   // Clear unread indicator whenever active tab changes (covers all activation paths:
   // handleSelectTab, keyboard shortcuts, session jumps, cron navigation, etc.)
   useEffect(() => {
-    if (activeTabId) {
-      setTabs(prev => {
-        const tab = prev.find(t => t.id === activeTabId);
-        if (tab?.hasUnread) {
-          return prev.map(t => t.id === activeTabId ? { ...t, hasUnread: false } : t);
-        }
-        return prev;
-      });
+    if (!activeTabId) return;
+    clearActiveTabUnread();
+
+    const tab = tabs.find((t) => t.id === activeTabId);
+    if (tab?.view === 'taskcenter' && externalNotificationBadgeCount !== 0) {
+      setExternalNotificationBadgeCount(0);
     }
-  }, [activeTabId]);
+  }, [activeTabId, clearActiveTabUnread, externalNotificationBadgeCount, tabs]);
 
   // Trackpad two-finger horizontal swipe to switch tabs (follow-along animation)
   useTabSwipeGesture({ contentRef, tabsRef, activeTabIdRef, onSwitchTab: handleSelectTab });
@@ -2973,6 +3009,7 @@ export default function App() {
 
   // Open TaskCenter as a singleton tab (mirrors handleOpenSettings)
   const handleOpenTaskCenter = useCallback(() => {
+    setExternalNotificationBadgeCount(0);
     const currentTabs = tabsRef.current;
     const existing = currentTabs.find((t) => t.view === 'taskcenter');
     if (existing) {
@@ -3624,6 +3661,7 @@ export default function App() {
       // Cmd+W bottom: overlay → split → tab → launcher → STOP.
       closeCurrentTab(); // Last tab auto-creates launcher; launcher is a no-op.
     },
+    onWindowFocused: clearActiveTabUnread,
     onExitRequested: async () => {
       // Check for running cron tasks
       try {
@@ -3664,9 +3702,13 @@ export default function App() {
         const route = resolveNotificationClickRoute(event.payload, (tabId) =>
           tabsRef.current.some((t) => t.id === tabId),
         );
+        if (route.type !== 'none') {
+          setExternalNotificationBadgeCount((count) => Math.max(0, count - 1));
+        }
         if (route.type === 'select-tab') {
           console.log('[App] notification:click → handleSelectTab', route.tabId);
           handleSelectTab(route.tabId);
+          updateTabUnread(route.tabId, false);
           return;
         }
 
@@ -3691,7 +3733,7 @@ export default function App() {
       ac.signal,
     );
     return () => ac.abort();
-  }, [handleSelectTab]);
+  }, [handleSelectTab, updateTabUnread]);
 
   return (
     <LinkContextMenuProvider>

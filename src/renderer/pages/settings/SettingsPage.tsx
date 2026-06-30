@@ -4184,31 +4184,60 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                      so hide it entirely when osNotifications is off (avoids the
                                      "I toggled this and nothing happens" UX trap). */}
                                 {config.osNotifications && (
-                                    <div className="mt-4 flex items-center justify-between">
-                                        <div className="flex-1 pr-4">
-                                            <p className="text-sm font-medium text-[var(--ink)]">{tSettings('general.notificationSoundTitle')}</p>
-                                            <p className="text-xs text-[var(--ink-muted)]">
-                                                {tSettings('general.notificationSoundDescription')}
-                                            </p>
-                                        </div>
-                                        <button
-                                            onClick={() => {
-                                                updateConfig({ notificationSound: !config.notificationSound });
-                                                toast.success(config.notificationSound ? tSettings('general.notificationSoundDisabled') : tSettings('general.notificationSoundEnabled'));
-                                            }}
-                                            className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
-                                                config.notificationSound
-                                                    ? 'bg-[var(--accent)]'
-                                                    : 'bg-[var(--line-strong)]'
-                                            }`}
-                                        >
-                                            <span
-                                                className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${
-                                                    config.notificationSound ? 'translate-x-5' : 'translate-x-0'
+                                    <>
+                                        <div className="mt-4 flex items-center justify-between">
+                                            <div className="flex-1 pr-4">
+                                                <p className="text-sm font-medium text-[var(--ink)]">{tSettings('general.notificationSoundTitle')}</p>
+                                                <p className="text-xs text-[var(--ink-muted)]">
+                                                    {tSettings('general.notificationSoundDescription')}
+                                                </p>
+                                            </div>
+                                            <button
+                                                onClick={() => {
+                                                    updateConfig({ notificationSound: !config.notificationSound });
+                                                    toast.success(config.notificationSound ? tSettings('general.notificationSoundDisabled') : tSettings('general.notificationSoundEnabled'));
+                                                }}
+                                                className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
+                                                    config.notificationSound
+                                                        ? 'bg-[var(--accent)]'
+                                                        : 'bg-[var(--line-strong)]'
                                                 }`}
-                                            />
-                                        </button>
-                                    </div>
+                                            >
+                                                <span
+                                                    className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${
+                                                        config.notificationSound ? 'translate-x-5' : 'translate-x-0'
+                                                    }`}
+                                                />
+                                            </button>
+                                        </div>
+
+                                        <div className="mt-4 flex items-center justify-between">
+                                            <div className="flex-1 pr-4">
+                                                <p className="text-sm font-medium text-[var(--ink)]">{tSettings('general.notificationBadgeTitle')}</p>
+                                                <p className="text-xs text-[var(--ink-muted)]">
+                                                    {tSettings('general.notificationBadgeDescription')}
+                                                </p>
+                                            </div>
+                                            <button
+                                                onClick={() => {
+                                                    const enabled = config.notificationBadge ?? true;
+                                                    updateConfig({ notificationBadge: !enabled });
+                                                    toast.success(enabled ? tSettings('general.notificationBadgeDisabled') : tSettings('general.notificationBadgeEnabled'));
+                                                }}
+                                                className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
+                                                    (config.notificationBadge ?? true)
+                                                        ? 'bg-[var(--accent)]'
+                                                        : 'bg-[var(--line-strong)]'
+                                                }`}
+                                            >
+                                                <span
+                                                    className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${
+                                                        (config.notificationBadge ?? true) ? 'translate-x-5' : 'translate-x-0'
+                                                    }`}
+                                                />
+                                            </button>
+                                        </div>
+                                    </>
                                 )}
                             </div>
 
