@@ -496,17 +496,20 @@ sendExternalMessage(text, images?, permissionMode?, model?, context?)
 
 ### 历史 Session 切换
 
-外部 runtime 的历史切换必须把 **Rust Sidecar key** 与 **Node external owner state**
-一起切到目标 session。`cmd_upgrade_session_id(old,new)` 只是 Rust `HashMap`
-key rename，不会调用 Node `/sessions/switch`，因此只允许用于 pending→real 这类
-同一会话 materialization，或 builtin SDK 已明确执行 `switchToSession()` 的路径。
+桌面 History 切换遵循完整 runtime identity（`runtime + runtimeSource`）边界：
 
-桌面 History 在 Codex / Gemini / Claude Code session 间切换时，即使 runtime/source
-相同，也不得用 `upgradeSessionId` 热换当前 sidecar；应 release 当前 owner 并
-`ensureSessionSidecar(target)`，让目标 sidecar 启动/restore 自己的 `runtimeSessionId`
-和 append-only transcript。`/sessions/switch` 的 external adapter 也不能只凭
+- 目标 session 已在其它 Tab 打开：不切换当前 sidecar，直接跳到已打开 Tab。
+- 切换前后完整 identity 不同：新开 Tab。`codex/system-cli` 与
+  `codex/managed-provider` 是两种 runtime identity，不可互相复用。
+- 完整 identity 相同且当前 turn idle：允许在当前 Tab 热切换。
+
+热切换必须同时完成两件事：Rust 层的 Sidecar key handover，以及 Node runtime owner
+state 的 session switch。`cmd_upgrade_session_id(old,new)` 只做 Rust `HashMap`
+key rename，不会调用 Node `/sessions/switch`；因此它只能作为 TabProvider
+随后执行 `/sessions/switch` 的代理/owner handover 前半步。external adapter 不能只凭
 `getCurrentBoundSessionId()===target` no-op；还必须确认 transcript owner 已 seed 到目标
-磁盘历史长度，否则继续 `restoreExternalSessionState(target, ...)`。
+磁盘历史长度，否则继续 `restoreExternalSessionState(target, ...)`。否则会出现 Rust
+已经指向目标 session，但 Node external transcript 仍属于旧 session 的错位。
 
 ### 桌面连续发送响应模式
 

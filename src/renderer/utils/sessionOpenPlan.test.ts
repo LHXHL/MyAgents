@@ -164,7 +164,7 @@ describe('normalizeRuntime', () => {
 });
 
 describe('canHotSwapSessionSidecar', () => {
-  test('allows Rust session-id hot swap only for builtin-owned sessions', () => {
+  test('allows Rust session-id handover only within the same runtime identity', () => {
     expect(canHotSwapSessionSidecar({
       currentRuntimeIdentity: { runtime: 'builtin' },
       targetRuntimeIdentity: { runtime: 'builtin' },
@@ -172,6 +172,11 @@ describe('canHotSwapSessionSidecar', () => {
 
     expect(canHotSwapSessionSidecar({
       currentRuntimeIdentity: { runtime: 'codex', runtimeSource: 'managed-provider' },
+      targetRuntimeIdentity: { runtime: 'codex', runtimeSource: 'managed-provider' },
+    })).toBe(true);
+
+    expect(canHotSwapSessionSidecar({
+      currentRuntimeIdentity: { runtime: 'codex', runtimeSource: 'system-cli' },
       targetRuntimeIdentity: { runtime: 'codex', runtimeSource: 'managed-provider' },
     })).toBe(false);
 

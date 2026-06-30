@@ -176,5 +176,5 @@ export function canHotSwapSessionSidecar(input: {
   const targetIdentity = resolveIdentity(input.targetRuntimeIdentity, input.targetRuntime)
     ?? { runtime: 'builtin' as RuntimeType };
 
-  return currentIdentity.runtime === 'builtin' && targetIdentity.runtime === 'builtin';
+  return sameIdentity(currentIdentity, targetIdentity);
 }
