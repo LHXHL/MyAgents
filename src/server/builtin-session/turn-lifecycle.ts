@@ -499,6 +499,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         session_id: deps.getSessionId(),
         platform: scenario.type === 'im' ? scenario.platform : null,
         runtime: 'builtin',
+        runtime_source: null,
         model: finalTurnUsage.model ?? null,
         ...providerAnalytics,
         input_tokens: finalTurnUsage.inputTokens,

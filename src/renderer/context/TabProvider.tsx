@@ -81,6 +81,14 @@ function appText(key: string, options?: Record<string, unknown>): string {
     return String(i18n.t(`app:${key}`, options));
 }
 
+function analyticsRuntimeSource(
+    runtime: RuntimeType,
+    runtimeSource: RuntimeSource | null | undefined,
+): RuntimeSource | null {
+    if (runtime === 'builtin') return null;
+    return runtimeSource ?? 'system-cli';
+}
+
 function imageAttachmentName(img: ImageAttachment): string {
     return img.name || img.file.name;
 }
@@ -525,6 +533,7 @@ export default function TabProvider({
     appConfigRef.current = appConfig;
     const analyticsMetaRef = useRef({
         runtime: 'builtin' as RuntimeType,
+        runtimeSource: null as RuntimeSource | null,
         agentHash: null as string | null,
     });
     // NOTE: the effect that POPULATES analyticsMetaRef lives below, after the
@@ -633,9 +642,12 @@ export default function TabProvider({
         const runtime: RuntimeType = sessionRuntime
             ? normalizeRuntime(sessionRuntime)
             : resolveEffectiveRuntime(agent?.runtime, !!appConfig.multiAgentRuntime);
+        const runtimeSource = sessionRuntime
+            ? analyticsRuntimeSource(runtime, sessionRuntimeSource)
+            : analyticsRuntimeSource(runtime, agent?.runtimeConfig?.source);
         const agentHash = hashAgentNameSync(agent?.name ?? null);
-        analyticsMetaRef.current = { runtime, agentHash };
-    }, [appConfig, agentDir, sessionRuntime]);
+        analyticsMetaRef.current = { runtime, runtimeSource, agentHash };
+    }, [appConfig, agentDir, sessionRuntime, sessionRuntimeSource]);
     const [sessionMeta, setSessionMeta] = useState<SessionMetadata | null>(null);
     const [logs, setLogs] = useState<string[]>([]);
     const [unifiedLogs, setUnifiedLogs] = useState<LogEntry[]>([]);
@@ -1018,15 +1030,21 @@ export default function TabProvider({
         newSessionId: string,
         fallback: PendingSessionBirthContext,
         runtimeOverride?: RuntimeType,
+        runtimeSourceOverride?: RuntimeSource | null,
     ) => {
         const birth = consumePendingSessionBirth(tabId, fallback);
         const meta = analyticsMetaRef.current;
+        const runtime = runtimeOverride ?? meta.runtime;
+        const runtimeSource = runtimeSourceOverride !== undefined
+            ? analyticsRuntimeSource(runtime, runtimeSourceOverride)
+            : meta.runtimeSource;
         track('session_new', {
             session_id: newSessionId,
             tab_id: tabId,
             triggered_by: birth.surface,
             entry_intent: birth.entryIntent,
-            runtime: runtimeOverride ?? meta.runtime,
+            runtime,
+            runtime_source: runtimeSource,
             has_initial_message: birth.hasInitialMessage,
             assistant_entry: birth.assistantEntry,
             agent_hash: meta.agentHash,
@@ -2373,6 +2391,7 @@ export default function TabProvider({
                 // Always track message_complete, use defaults if payload is missing
                 trackTabEvent('message_complete', {
                     runtime: analyticsMetaRef.current.runtime,
+                    runtime_source: analyticsMetaRef.current.runtimeSource,
                     model: completePayload?.model,
                     input_tokens: completePayload?.input_tokens ?? 0,
                     output_tokens: completePayload?.output_tokens ?? 0,
@@ -2625,6 +2644,7 @@ export default function TabProvider({
                                 newSessionId,
                                 fallback,
                                 payload.runtime ? normalizeRuntime(payload.runtime) : undefined,
+                                payload.runtime ? (payload.runtimeSource ?? null) : undefined,
                             );
                         }
                     } else if (
@@ -2641,6 +2661,7 @@ export default function TabProvider({
                             newSessionId,
                             birthContextForSurface('new_chat_button'),
                             payload.runtime ? normalizeRuntime(payload.runtime) : undefined,
+                            payload.runtime ? (payload.runtimeSource ?? null) : undefined,
                         );
                     }
                 }
@@ -3616,6 +3637,7 @@ export default function TabProvider({
             if (response.success) {
                 trackTabEvent('message_send', {
                     runtime: analyticsMetaRef.current.runtime,
+                    runtime_source: analyticsMetaRef.current.runtimeSource,
                     mode: permissionMode ?? 'auto',
                     model: model ?? 'default',
                     skill,

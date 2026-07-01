@@ -175,6 +175,14 @@ function normalizeRuntimeSourceForOpen(
   return runtimeSource ?? 'system-cli';
 }
 
+function analyticsRuntimeSource(
+  runtime: RuntimeType,
+  runtimeSource: RuntimeSource | undefined,
+): RuntimeSource | null {
+  if (runtime === 'builtin') return null;
+  return runtimeSource ?? 'system-cli';
+}
+
 async function resolveSessionRuntimeIdentityForOpen(
   sessionId: string | null | undefined,
   fallbackRuntime: RuntimeType,
@@ -193,14 +201,6 @@ async function resolveSessionRuntimeIdentityForOpen(
     console.warn(`[App] Failed to resolve runtime for session ${sessionId}, using fallback ${fallback}:`, error);
     return { runtime: fallback, runtimeSource: normalizeRuntimeSourceForOpen(fallback, undefined), runtimeKnown: false };
   }
-}
-
-async function resolveSessionRuntimeForOpen(
-  sessionId: string | null | undefined,
-  fallbackRuntime: RuntimeType,
-  multiAgentRuntime: boolean | undefined,
-): Promise<RuntimeType> {
-  return (await resolveSessionRuntimeIdentityForOpen(sessionId, fallbackRuntime, multiAgentRuntime)).runtime;
 }
 
 export interface LaunchProjectAnalyticsContext {
@@ -775,14 +775,15 @@ export default function App() {
   const trackHistorySessionOpen = useCallback((
     sessionId: string,
     agentDir: string,
-    runtime: RuntimeType,
+    runtimeIdentity: Pick<SessionRuntimeOpenIdentity, 'runtime' | 'runtimeSource'>,
     entrySource: HistoryEntrySource,
   ) => {
     const cfg = configRef.current;
     const agent = getAgentByWorkspacePath(cfg, agentDir);
     track('history_open', {
       agent_hash: hashAgentNameSync(agent?.name ?? null),
-      runtime,
+      runtime: runtimeIdentity.runtime,
+      runtime_source: analyticsRuntimeSource(runtimeIdentity.runtime, runtimeIdentity.runtimeSource),
       session_id: sessionId,
       entry_source: entrySource,
     });
@@ -796,14 +797,15 @@ export default function App() {
     void (async () => {
       const cfg = configRef.current;
       const agent = getAgentByWorkspacePath(cfg, agentDir);
-      const runtime = await resolveSessionRuntimeForOpen(
+      const runtimeIdentity = await resolveSessionRuntimeIdentityForOpen(
         sessionId,
         normalizeRuntime(agent?.runtime),
         cfg?.multiAgentRuntime,
       );
       track('history_open', {
         agent_hash: hashAgentNameSync(agent?.name ?? null),
-        runtime,
+        runtime: runtimeIdentity.runtime,
+        runtime_source: analyticsRuntimeSource(runtimeIdentity.runtime, runtimeIdentity.runtimeSource),
         session_id: sessionId,
         entry_source: entrySource,
       });
@@ -1644,7 +1646,7 @@ export default function App() {
         trackHistorySessionOpen(
           sessionId,
           project.path,
-          targetRuntime,
+          targetRuntimeIdentity,
           analyticsContext?.historyEntrySource ?? 'launcher_recent',
         );
         const currentRuntime = activeTab?.sessionId ? resolvedCurrentRuntime : targetRuntime;

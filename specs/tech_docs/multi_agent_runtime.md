@@ -132,6 +132,12 @@ type RuntimeType = 'builtin' | 'claude-code' | 'codex' | 'gemini';
 
 所有 helper 边界都必须保留 source：`snapshotForImSession` / `snapshotForOwnedSession` 的 override 形态是 `runtimeOverride` + `runtimeSourceOverride`，Rust IM router / heartbeat / `/model` wake path 则从 `RuntimeConfig.source` 传入 drift check。只传 `runtime:'codex'` 等价于 system CLI，不代表 Codex 订阅 Provider。
 
+Analytics 同样使用完整 runtime identity：`session_new` / `history_open` /
+`message_send` / `message_complete` / `ai_turn_complete` 都上报
+`runtime_source`。统计 Managed Codex 使用量时按
+`runtime='codex' AND runtime_source='managed-provider'` 查询；用户自行安装
+Codex CLI 则是 `runtime='codex' AND runtime_source='system-cli'`。
+
 ## Claude Code Runtime (`src/server/runtimes/claude-code.ts`)
 
 ### 协议：NDJSON over stdio

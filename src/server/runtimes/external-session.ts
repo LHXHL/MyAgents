@@ -3234,6 +3234,7 @@ async function persistTurnResult(): Promise<void> {
     const usageData = buildPersistedTurnUsage();
     const turnToolCount = getExternalTurnContentSnapshotToolCount(turnContentSnapshot);
     const runtimeType = getCurrentRuntimeType();
+    const runtimeSource = getCurrentRuntimeSource();
     // turnContextUsage was snapshotted at the synchronous function entry (above) to
     // survive a concurrent turn's resetTurnAccumulators() during the await window.
 
@@ -3309,6 +3310,7 @@ async function persistTurnResult(): Promise<void> {
       session_id: lifecycleSessionId || null,
       platform: analyticsScenario.type === 'im' ? analyticsScenario.platform : null,
       runtime: runtimeType,
+      runtime_source: runtimeSource ?? null,
       model: usageData?.model || getExternalRuntimeLiveReportedModel() || getExternalRuntimeDesiredModel() || null,
       provider_name: externalRuntimeProviderName(runtimeType),
       api_protocol: null,

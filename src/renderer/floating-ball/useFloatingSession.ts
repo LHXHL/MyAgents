@@ -1025,6 +1025,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 triggered_by: 'floating_ball',
                 entry_intent: 'new_chat',
                 runtime: analyticsRuntimeRef.current,
+                runtime_source: null,
                 has_initial_message: false,
                 agent_hash: null,
             });
@@ -1477,6 +1478,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 // 打点放在确认入队之后（失败不计），runtime 用 gate-aware 口径。
                 track('message_send', {
                     runtime: analyticsRuntimeRef.current,
+                    runtime_source: null,
                     mode: sendMode,
                     model: '',
                     has_image: Boolean(images),

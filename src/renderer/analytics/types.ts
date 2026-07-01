@@ -3,7 +3,7 @@
  * 埋点统计类型定义
  */
 
-import type { RuntimeType } from '../../shared/types/runtime';
+import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 
 /**
  * 埋点上报的 runtime 字段类型 = SDK runtime + `'unknown'` 兜底。
@@ -13,6 +13,9 @@ import type { RuntimeType } from '../../shared/types/runtime';
  * `normalizeRuntime()` 永远返回 RuntimeType，不会落到 `'unknown'`。
  */
 export type AnalyticsRuntime = RuntimeType | 'unknown';
+
+/** Runtime source analytics dimension. Builtin / unknown runtimes report null. */
+export type AnalyticsRuntimeSource = RuntimeSource | null;
 
 /**
  * 基础事件参数（SDK 自动填充）
@@ -232,6 +235,8 @@ export interface SessionNewParams {
   entry_intent: EntryIntent;
   /** 该 session 跑在哪个 runtime 下 */
   runtime: AnalyticsRuntime;
+  /** 外部 runtime 来源；builtin / unknown 填 null */
+  runtime_source: AnalyticsRuntimeSource;
   /** session 创建时是否真的带了首条消息 */
   has_initial_message: boolean;
   /** 小助理发起位置；仅小助理/诊断类 session_new 使用 */
@@ -274,6 +279,7 @@ export interface HistoryOpenParams {
   session_id: string;
   agent_hash: string | null;
   runtime: AnalyticsRuntime;
+  runtime_source: AnalyticsRuntimeSource;
   /**
    * 细分入口来源。旧版本没有该字段；查询时应把缺省值按 legacy launcher
    * 历史入口处理，不影响历史兼容聚合。
@@ -308,6 +314,7 @@ export interface MessageSendParams {
    *  (`sessionRuntime`) when known, else the agent-config effective runtime
    *  (`resolveEffectiveRuntime`). See analyticsMetaRef in TabProvider. */
   runtime: AnalyticsRuntime;
+  runtime_source: AnalyticsRuntimeSource;
   mode: string;           // 权限模式: auto | confirm | deny
   model: string;          // 当前模型
   skill?: string | null;  // 技能/指令名称
@@ -324,6 +331,7 @@ export interface MessageCompleteParams {
   /** Effective runtime of THIS session (frozen sessionRuntime ?? agent-config) —
    *  see MessageSendParams.runtime. */
   runtime: AnalyticsRuntime;
+  runtime_source: AnalyticsRuntimeSource;
   model?: string;                // 主模型名称
   input_tokens: number;          // 输入 tokens
   output_tokens: number;         // 输出 tokens
