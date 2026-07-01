@@ -14,6 +14,8 @@ import { Popover } from '@/components/ui/Popover';
 export interface SelectOption {
     value: string;
     label: string;
+    /** Optional structured label. `label` remains the accessible/plain-text source. */
+    content?: ReactNode;
     icon?: ReactNode;
     /** Right-aligned suffix content (e.g., status badge) */
     suffix?: ReactNode;
@@ -97,8 +99,10 @@ export default function CustomSelect({
                 {!triggerIcon && selectedOption?.icon && (
                     <span className="shrink-0">{selectedOption.icon}</span>
                 )}
-                <span className={`min-w-0 flex-1 truncate ${selectedOption ? 'text-[var(--ink)]' : 'text-[var(--ink-muted)]'}`}>
-                    {selectedOption?.label ?? resolvedPlaceholder}
+                <span className={`min-w-0 flex-1 ${selectedOption ? 'text-[var(--ink)]' : 'text-[var(--ink-muted)]'}`}>
+                    {selectedOption?.content ?? (
+                        <span className="block truncate">{selectedOption?.label ?? resolvedPlaceholder}</span>
+                    )}
                 </span>
                 <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)] transition-transform ${isOpen ? 'rotate-180' : ''}`} />
             </button>
@@ -147,7 +151,9 @@ export default function CustomSelect({
                                 {option.icon && (
                                     <span className="shrink-0">{option.icon}</span>
                                 )}
-                                <span className="min-w-0 flex-1 truncate">{option.label}</span>
+                                <span className="min-w-0 flex-1">
+                                    {option.content ?? <span className="block truncate">{option.label}</span>}
+                                </span>
                                 {option.suffix && (
                                     <span className="shrink-0">{option.suffix}</span>
                                 )}

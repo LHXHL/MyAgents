@@ -7,6 +7,7 @@ import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { useToast } from '@/components/Toast';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
+import { GoalPathSelectLabel } from '@/pages/space/GoalPathSelectLabel';
 import type { IssueQueryParams } from '@/pages/space/spaceHelpers';
 import { SPACE_VISIBLE_REFRESH_TTL_MS, type SpaceActions } from '@/pages/space/spaceStore';
 
@@ -55,8 +56,19 @@ export function CreateIssueDialog({
 
   const goalOptions = useMemo<SelectOption[]>(
     () => [
-      { value: '', label: t('space.filters.inbox') },
-      ...goals.map((item) => ({ value: item.id, label: item.goalPathLabel || item.title })),
+      {
+        value: '',
+        label: t('space.filters.inbox'),
+        content: <GoalPathSelectLabel label={t('space.filters.inbox')} />,
+      },
+      ...goals.map((item) => {
+        const label = item.goalPathLabel || item.title;
+        return {
+          value: item.id,
+          label,
+          content: <GoalPathSelectLabel label={label} />,
+        };
+      }),
     ],
     [goals, t],
   );

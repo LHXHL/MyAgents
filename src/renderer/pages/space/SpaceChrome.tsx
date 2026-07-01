@@ -9,10 +9,10 @@ import { PAPER_GRID_STYLE } from './spaceUi';
 
 export type SpaceViewMode = 'issues' | 'goals' | 'skills' | 'agents';
 
-function roleLabel(role: string): string {
-  if (role === 'owner') return 'owner';
-  if (role === 'admin') return 'admin';
-  return 'member';
+function joinPolicyLabel(policy: string | null | undefined): string {
+  const normalized = policy?.trim().toLowerCase() ?? '';
+  if (!normalized) return 'unknown';
+  return normalized.replace(/[_-]+/g, ' ');
 }
 
 export function SpaceLogin({
@@ -79,21 +79,15 @@ export function SpaceSidebar({
   ];
 
   return (
-    <aside className="grid w-80 shrink-0 grid-rows-[minmax(0,1fr)_auto] gap-3.5 border-r border-[var(--line)] bg-[var(--paper)]/70 p-3.5">
+    <aside className="grid w-72 shrink-0 grid-rows-[minmax(0,1fr)_auto] gap-3.5 border-r border-[var(--line)] bg-[var(--paper)]/70 p-3.5">
       <div className="min-h-0 overflow-y-auto">
         <details className="group/space mb-2.5 border-b border-[var(--line-subtle)] pb-2.5" open>
           <summary className="grid min-h-10 cursor-pointer list-none grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-2 rounded-xl px-2 py-1.5 text-left transition-colors hover:bg-[var(--paper-elevated)]/70 [&::-webkit-details-marker]:hidden">
             <img src={myagentsWebLogo} alt="" className="h-8 w-8 rounded-lg shadow-sm" />
             <span className="min-w-0">
-              <span className="flex min-w-0 items-center gap-2">
-                <strong className="truncate text-sm font-semibold text-[var(--ink)]">{session.space.name}</strong>
-                <span className="rounded-md bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs font-semibold lowercase text-[var(--ink-muted)]">
-                  {roleLabel(session.membership.role)}
-                </span>
-              </span>
-              <span className="mt-0.5 flex items-center gap-1.5 text-xs font-medium text-[var(--ink-muted)]">
-                <span>Official Space</span>
-                <span>{t('space.sidebar.openJoin')}</span>
+              <strong className="block truncate text-sm font-semibold text-[var(--ink)]">{session.space.name}</strong>
+              <span className="mt-0.5 block truncate text-xs font-medium text-[var(--ink-muted)]">
+                {joinPolicyLabel(session.space.joinPolicy)}
               </span>
             </span>
             <ChevronDown className="h-4 w-4 -rotate-90 text-[var(--ink-muted)] transition-transform group-open/space:rotate-0" />

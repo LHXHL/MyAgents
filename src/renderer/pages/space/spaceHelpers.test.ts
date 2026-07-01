@@ -8,6 +8,7 @@ import {
   formatAgentSecondaryLabel,
   getIssueStatusOptions,
   issueDisplayTitle,
+  issueStatusLabel,
   isClosedIssue,
 } from './spaceHelpers';
 
@@ -71,6 +72,15 @@ describe('space issue helpers', () => {
     expect(issueDisplayTitle(issue({ title: '[todo] Seed issue 1' }))).toBe('Seed issue 1');
     expect(issueDisplayTitle(issue({ title: '[triaged] Seed issue 2' }))).toBe('[triaged] Seed issue 2');
     expect(issueDisplayTitle(issue({ state: 'doing', title: '[doing] Seed issue 3' }))).toBe('Seed issue 3');
+  });
+
+  it('uses translated status labels with raw-token fallback', () => {
+    const t = (key: string, options?: { defaultValue?: string }) => (
+      key === 'space.issueStatuses.todo' ? '待办' : options?.defaultValue ?? key
+    );
+
+    expect(issueStatusLabel('todo', t)).toBe('待办');
+    expect(issueStatusLabel('custom_state', t)).toBe('custom state');
   });
 
   it('formats agent workspace labels through project identity first', () => {
