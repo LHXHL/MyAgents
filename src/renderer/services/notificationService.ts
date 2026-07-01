@@ -105,12 +105,13 @@ export function notifyPlanModeRequest(): void {
  * where the OS auto-activates the app on toast click but no in-process
  * Activated callback fires).
  */
-export async function consumePendingNotificationClick(): Promise<void> {
-    if (!isTauriEnvironment()) return;
+export async function consumePendingNotificationClick(): Promise<boolean> {
+    if (!isTauriEnvironment()) return false;
     try {
-        await invoke('cmd_consume_notification_click');
+        return await invoke<boolean>('cmd_consume_notification_click');
     } catch (error) {
         console.warn('[Notification] cmd_consume_notification_click failed:', error);
+        return false;
     }
 }
 

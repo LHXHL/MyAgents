@@ -98,8 +98,13 @@ export function useTrayEvents(options: TrayEventsOptions) {
           console.debug('[useTrayEvents] Window focus changed:', focused);
           if (focused) {
             setWindowVisible(true);
-            optionsRef.current.onWindowFocused?.();
-            void consumePendingNotificationClick();
+            void (async () => {
+              const consumedNotificationClick = await consumePendingNotificationClick();
+              if (ac.signal.aborted) return;
+              if (!consumedNotificationClick) {
+                optionsRef.current.onWindowFocused?.();
+              }
+            })();
           } else {
             setWindowVisible(false);
           }

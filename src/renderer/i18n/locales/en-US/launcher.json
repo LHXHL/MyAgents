@@ -56,6 +56,7 @@
     "filterFavorites": "Favorites",
     "filterTitle": "Filter chat history",
     "filterAria": "Filter chat history: {{label}}",
+    "unreadNotifications": "{{count}} unread notification(s)",
     "more": "More",
     "favorite": "Favorite chat",
     "unfavorite": "Remove from favorites",

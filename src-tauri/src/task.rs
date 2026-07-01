@@ -2987,7 +2987,20 @@ fn dispatch_notification(task: &Task, t: &StatusTransition) {
     // dropped. Pass `None` here and preserve that no-deep-link semantics
     // exactly.
     if desktop_enabled {
-        crate::notification::show_with_navigation(&handle, &title, &body, None);
+        crate::notification::show_with_navigation_target_and_badge(
+            &handle,
+            &title,
+            &body,
+            None,
+            Some(crate::notification_badge::NotificationBadgeIncrement {
+                id: format!("task:{}:{}:{}", task.id, event_key, t.at),
+                source: "task-center".to_string(),
+                created_at: t.at,
+                target: crate::notification_badge::NotificationBadgeTarget::TaskCenter {
+                    task_id: Some(task.id.clone()),
+                },
+            }),
+        );
     }
 
     if let Some(channel) = bot_channel {
@@ -3001,6 +3014,8 @@ fn dispatch_notification(task: &Task, t: &StatusTransition) {
         let task_id = task.id.clone();
         let title_owned = title.clone();
         let desktop_was_enabled = desktop_enabled;
+        let event_key_owned = event_key.to_string();
+        let transition_at = t.at;
         tauri::async_runtime::spawn(async move {
             // PRD §12.6 — bot push failure falls back to desktop so the user
             // isn't silently left without any notification. Even if the user
@@ -3020,11 +3035,22 @@ fn dispatch_notification(task: &Task, t: &StatusTransition) {
                 } else {
                     format!("(bot 推送失败，降级桌面通知) {}", summary)
                 };
-                crate::notification::show_with_navigation(
+                crate::notification::show_with_navigation_target_and_badge(
                     &handle_cloned,
                     &title_owned,
                     &fallback_body,
                     None,
+                    Some(crate::notification_badge::NotificationBadgeIncrement {
+                        id: format!(
+                            "task:{}:{}:{}:bot-fallback",
+                            task_id, event_key_owned, transition_at
+                        ),
+                        source: "task-center".to_string(),
+                        created_at: chrono::Utc::now().timestamp_millis(),
+                        target: crate::notification_badge::NotificationBadgeTarget::TaskCenter {
+                            task_id: Some(task_id.clone()),
+                        },
+                    }),
                 );
             }
         });

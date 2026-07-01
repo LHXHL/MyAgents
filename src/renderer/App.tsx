@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useRef, memo, lazy, Suspense } from 'react';
+import { useCallback, useEffect, useMemo, useState, useRef, memo, lazy, Suspense } from 'react';
 import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import ChatBootOverlay from '@/components/ChatBootOverlay';
@@ -78,6 +78,17 @@ import { handleSelectAllKeydown } from '@/utils/selectAllRouter';
 import { forceFlushLogs, setLogServerUrl, clearLogServerUrl, setAppActiveTabId } from '@/utils/frontendLogger';
 import { canHotSwapSessionSidecar, normalizeRuntime, resolveEffectiveRuntime, planSessionOpen, sessionRuntimeIdentityFromMetadataForOpen } from '@/utils/sessionOpenPlan';
 import { resolveNotificationClickRoute } from '@/utils/notificationClickRoute';
+import {
+  acknowledgeNotificationBadgeTarget,
+  buildSessionNotificationBadgeCounts,
+  countNotificationBadgeItems,
+  isNotificationBadgeTargetVisible,
+  normalizeNotificationBadgeIncrementPayload,
+  upsertNotificationBadgeItem,
+  type NotificationBadgeIncrementPayload,
+  type NotificationBadgeItem,
+  type NotificationBadgeTarget,
+} from '@/utils/notificationBadgeRegistry';
 import { applyTerminalSessionToTabs } from '@/utils/sessionTermination';
 import { getSessionDisplayText } from '@/utils/sessionDisplay';
 import { listenWithCleanup } from '@/utils/tauriListen';
@@ -117,6 +128,11 @@ function normalizeInitialPermissionMode(value: unknown): InitialMessage['permiss
   return value === 'auto' || value === 'plan' || value === 'fullAgency'
     ? value
     : undefined;
+}
+
+function isRendererForegrounded(): boolean {
+  if (typeof document === 'undefined') return false;
+  return document.visibilityState === 'visible' && document.hasFocus();
 }
 
 function resolveInitialPermissionMode(args: {
@@ -247,6 +263,7 @@ interface TabContentProps {
   updatePreparing: boolean;
   onCheckForUpdate: () => Promise<'up-to-date' | 'downloading' | 'error'>;
   onRestartAndUpdate: () => void;
+  sessionNotificationBadgeCounts?: ReadonlyMap<string, number>;
   // Task Center intent carried by the most recent OPEN_TASK_CENTER event.
   // Only read by the `taskcenter` tab; other tab views ignore it.
   taskCenterPendingIntent: { autofocusSearch?: boolean; nonce: number } | null;
@@ -262,6 +279,7 @@ export const MemoizedTabContent = memo(function TabContent({
   settingsInitialSection, settingsInitialMcpId, settingsInitialOfficialToolId, settingsInitialSelect, onSettingsSectionChange,
   updateReady, updateVersion, updateChecking, updateDownloading, updateInstalling, updatePreparing,
   onCheckForUpdate, onRestartAndUpdate,
+  sessionNotificationBadgeCounts,
   taskCenterPendingIntent,
 }: TabContentProps) {
   const kind = tabContentKind(tab, isDeferredMount);
@@ -283,6 +301,7 @@ export const MemoizedTabContent = memo(function TabContent({
           startError={error}
           isActive={isActive}
           attachmentSessionId={createPendingSessionId(tab.id)}
+          sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
         />
       ) : kind === 'settings' ? (
         <Suspense fallback={PAGE_FALLBACK}>
@@ -344,6 +363,7 @@ export const MemoizedTabContent = memo(function TabContent({
               sessionTitle={tab.title}
               onRenameSession={(newTitle: string) => onRenameSession(tab.id, newTitle)}
               onForkSession={(newSessionId: string, agentDir: string, title: string, initialMessage?: string) => onForkSession(tab.id, newSessionId, agentDir, title, initialMessage)}
+              sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
             />
           </Suspense>
         </TabProvider>
@@ -370,6 +390,7 @@ export const MemoizedTabContent = memo(function TabContent({
     prev.updateDownloading === next.updateDownloading &&
     prev.updateInstalling === next.updateInstalling &&
     prev.updatePreparing === next.updatePreparing &&
+    prev.sessionNotificationBadgeCounts === next.sessionNotificationBadgeCounts &&
     // Reference equality — each OPEN_TASK_CENTER dispatch allocates a
     // fresh intent object (or `null`), so identity comparison is enough.
     // Without this line, a user re-clicking the Launcher's search icon
@@ -440,7 +461,7 @@ export default function App() {
   const [restoreCandidate] = useState(() => buildRestoredTabs());
   const [tabs, setTabs] = useState<Tab[]>(() => [createNewTab()]);
   const [activeTabId, setActiveTabIdState] = useState<string | null>(() => tabs[0]?.id ?? null);
-  const [externalNotificationBadgeCount, setExternalNotificationBadgeCount] = useState(0);
+  const [externalNotificationBadges, setExternalNotificationBadges] = useState<NotificationBadgeItem[]>([]);
 
   // "恢复对话" pill (Issue #309). `restorePillCount > 0` shows it; the resolved
   // candidate is held in a ref (NOT localStorage — the persist effect clears
@@ -723,16 +744,21 @@ export default function App() {
   configRef.current = config;
 
   const unreadTabCount = tabs.reduce((count, tab) => count + (tab.hasUnread ? 1 : 0), 0);
+  const externalNotificationBadgeCount = countNotificationBadgeItems(externalNotificationBadges);
+  const sessionNotificationBadgeCounts = useMemo(
+    () => buildSessionNotificationBadgeCounts(externalNotificationBadges),
+    [externalNotificationBadges],
+  );
   const notificationBadgeEnabled = config.osNotifications && (config.notificationBadge ?? true);
   const notificationBadgeCount = notificationBadgeEnabled
     ? Math.min(unreadTabCount + externalNotificationBadgeCount, 999)
     : 0;
 
   useEffect(() => {
-    if (!notificationBadgeEnabled && externalNotificationBadgeCount !== 0) {
-      setExternalNotificationBadgeCount(0);
+    if (!notificationBadgeEnabled && externalNotificationBadges.length !== 0) {
+      setExternalNotificationBadges([]);
     }
-  }, [externalNotificationBadgeCount, notificationBadgeEnabled]);
+  }, [externalNotificationBadges.length, notificationBadgeEnabled]);
 
   useEffect(() => {
     if (!isTauriEnvironment()) return;
@@ -1071,11 +1097,23 @@ export default function App() {
         console.log('[App] Cron manager ready (Rust recovery complete)');
       }, listenerAc.signal);
 
-      void listenWithCleanup('notification:badge-increment', () => {
+      void listenWithCleanup<NotificationBadgeIncrementPayload>('notification:badge-increment', (event) => {
         if (!mountedRef.current) return;
         const cfg = configRef.current;
         if (!cfg.osNotifications || !(cfg.notificationBadge ?? true)) return;
-        setExternalNotificationBadgeCount((count) => Math.min(count + 1, 99));
+        const createdAt = Date.now();
+        const fallbackId = `legacy:${createdAt}:${Math.random().toString(36).slice(2, 8)}`;
+        const item = normalizeNotificationBadgeIncrementPayload(
+          event.payload,
+          fallbackId,
+          createdAt,
+        );
+        if (!item) return;
+        const activeTab = tabsRef.current.find((tab) => tab.id === activeTabIdRef.current);
+        if (isRendererForegrounded() && isNotificationBadgeTargetVisible(item.target, activeTab)) {
+          return;
+        }
+        setExternalNotificationBadges((items) => upsertNotificationBadgeItem(items, item));
       }, listenerAc.signal);
 
       // Listen for Global Sidecar auto-restart by Rust health monitor
@@ -1245,6 +1283,25 @@ export default function App() {
     updateTabUnread(activeTabId, false);
   }, [updateTabUnread]);
   const lastUnreadClearedActiveTabIdRef = useRef<string | null>(null);
+
+  const acknowledgeNotificationTarget = useCallback((target: NotificationBadgeTarget) => {
+    setExternalNotificationBadges((items) => acknowledgeNotificationBadgeTarget(items, target));
+  }, []);
+
+  const acknowledgeActiveChatSessionNotifications = useCallback(() => {
+    const activeTabId = activeTabIdRef.current;
+    if (!activeTabId) return;
+    const activeTab = tabsRef.current.find((tab) => tab.id === activeTabId);
+    if (activeTab?.view !== 'chat') return;
+    const sessionId = activeTab.sessionId?.trim();
+    if (!sessionId || isPendingSessionId(sessionId)) return;
+    acknowledgeNotificationTarget({ type: 'session', sessionId });
+  }, [acknowledgeNotificationTarget]);
+
+  const handleWindowFocused = useCallback(() => {
+    clearActiveTabUnread();
+    acknowledgeActiveChatSessionNotifications();
+  }, [acknowledgeActiveChatSessionNotifications, clearActiveTabUnread]);
 
   // Update tab sessionId when backend creates real session (called from TabProvider)
   // This ensures Session singleton constraint works correctly:
@@ -2904,12 +2961,19 @@ export default function App() {
     clearActiveTabUnread();
   }, [activeTabId, clearActiveTabUnread]);
 
-  const activeTabView = tabs.find((t) => t.id === activeTabId)?.view ?? null;
+  const activeTab = tabs.find((t) => t.id === activeTabId);
+  const activeTabView = activeTab?.view ?? null;
+  const activeChatSessionId = activeTab?.view === 'chat' ? activeTab.sessionId ?? null : null;
+  useEffect(() => {
+    if (!activeChatSessionId || isPendingSessionId(activeChatSessionId)) return;
+    acknowledgeNotificationTarget({ type: 'session', sessionId: activeChatSessionId });
+  }, [acknowledgeNotificationTarget, activeChatSessionId]);
+
   useEffect(() => {
     if (activeTabView === 'taskcenter') {
-      setExternalNotificationBadgeCount((count) => count === 0 ? count : 0);
+      acknowledgeNotificationTarget({ type: 'task-center' });
     }
-  }, [activeTabView, externalNotificationBadgeCount]);
+  }, [acknowledgeNotificationTarget, activeTabView]);
 
   // Trackpad two-finger horizontal swipe to switch tabs (follow-along animation)
   useTabSwipeGesture({ contentRef, tabsRef, activeTabIdRef, onSwitchTab: handleSelectTab });
@@ -3020,11 +3084,11 @@ export default function App() {
 
   // Open TaskCenter as a singleton tab (mirrors handleOpenSettings)
   const handleOpenTaskCenter = useCallback(() => {
-    setExternalNotificationBadgeCount(0);
     const currentTabs = tabsRef.current;
     const existing = currentTabs.find((t) => t.view === 'taskcenter');
     if (existing) {
       setActiveTabId(existing.id);
+      acknowledgeNotificationTarget({ type: 'task-center' });
       return;
     }
     if (currentTabs.length >= MAX_TABS) {
@@ -3040,7 +3104,8 @@ export default function App() {
       sidecarConfigDisposition: 'push',
     };
     openNewTabDeferred(newTab);
-  }, [openNewTabDeferred, setActiveTabId, t]);
+    acknowledgeNotificationTarget({ type: 'task-center' });
+  }, [acknowledgeNotificationTarget, openNewTabDeferred, setActiveTabId, t]);
 
   // Intent carried across `OPEN_TASK_CENTER` — the event dispatcher
   // (Launcher "我的任务" tab's search icon) wants more than just "open
@@ -3672,7 +3737,7 @@ export default function App() {
       // Cmd+W bottom: overlay → split → tab → launcher → STOP.
       closeCurrentTab(); // Last tab auto-creates launcher; launcher is a no-op.
     },
-    onWindowFocused: clearActiveTabUnread,
+    onWindowFocused: handleWindowFocused,
     onExitRequested: async () => {
       // Check for running cron tasks
       try {
@@ -3710,11 +3775,16 @@ export default function App() {
     void listenWithCleanup<{ tabId?: string; sessionId?: string; workspacePath?: string }>(
       'notification:click',
       (event) => {
-        const route = resolveNotificationClickRoute(event.payload, (tabId) =>
-          tabsRef.current.some((t) => t.id === tabId),
-        );
+        const route = resolveNotificationClickRoute(event.payload, (tabId, sessionId) => {
+          const tab = tabsRef.current.find((t) => t.id === tabId);
+          if (!tab) return false;
+          return !sessionId || tab.sessionId === sessionId;
+        });
         if (route.type === 'select-tab') {
           console.log('[App] notification:click → handleSelectTab', route.tabId);
+          if (route.sessionId) {
+            acknowledgeNotificationTarget({ type: 'session', sessionId: route.sessionId });
+          }
           handleSelectTab(route.tabId);
           updateTabUnread(route.tabId, false);
           return;
@@ -3741,7 +3811,7 @@ export default function App() {
       ac.signal,
     );
     return () => ac.abort();
-  }, [handleSelectTab, updateTabUnread]);
+  }, [acknowledgeNotificationTarget, handleSelectTab, updateTabUnread]);
 
   return (
     <LinkContextMenuProvider>
@@ -3807,6 +3877,7 @@ export default function App() {
             updatePreparing={updatePreparing}
             onCheckForUpdate={checkForUpdate}
             onRestartAndUpdate={handleRestartAndUpdate}
+            sessionNotificationBadgeCounts={tab.id === activeTabId ? sessionNotificationBadgeCounts : undefined}
             taskCenterPendingIntent={taskCenterPendingIntent}
           />
         ))}

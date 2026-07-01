@@ -393,6 +393,7 @@ interface ChatProps {
   /** Runtime-only request from App/floating-ball to open a file preview once. */
   pendingFilePreview?: FilePreviewIntent;
   onFilePreviewIntentConsumed?: (intentId: string) => void;
+  sessionNotificationBadgeCounts?: ReadonlyMap<string, number>;
 }
 
 /** Preset for the `/loop` slash command: opens the cron modal in infinite-loop
@@ -408,7 +409,7 @@ const LOOP_SLASH_PRESET: CronInitialConfig = {
   executionTarget: 'current_session',
 };
 
-export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed }: ChatProps) {
+export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
   // Get state from TabContext (required - Chat must be inside TabProvider)
   const {
     tabId,
@@ -4656,6 +4657,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
               isOpen={showHistory}
               onClose={() => setShowHistory(false)}
               triggerRef={historyBtnRef}
+              sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
             />
             {/* Dev-only buttons - controlled by config.showDevTools */}
             {config.showDevTools && (

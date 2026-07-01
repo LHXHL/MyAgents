@@ -19,6 +19,7 @@ import { useTranslation } from 'react-i18next';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import SessionStatsModal from '@/components/SessionStatsModal';
 import SessionTagBadge from '@/components/SessionTagBadge';
+import UnreadNotificationIndicator from '@/components/UnreadNotificationIndicator';
 import { useToast } from '@/components/Toast';
 import { MenuItem } from '@/components/ui/MenuItem';
 import { Popover } from '@/components/ui/Popover';
@@ -54,6 +55,7 @@ interface LauncherRightRailProps {
     launchingProjectId: string | null;
     showDevTools?: boolean | undefined;
     taskCenterData: TaskCenterData;
+    sessionNotificationBadgeCounts?: ReadonlyMap<string, number>;
     onLaunch: (project: Project) => void;
     onOpenTask: (session: SessionMetadata, project: Project) => void;
     onOpenOverlay: (mode?: 'default' | 'search') => void;
@@ -77,6 +79,7 @@ export default memo(function LauncherRightRail({
     launchingProjectId,
     showDevTools,
     taskCenterData,
+    sessionNotificationBadgeCounts,
     onLaunch,
     onOpenTask,
     onOpenOverlay,
@@ -418,6 +421,7 @@ export default memo(function LauncherRightRail({
                                                 session={session}
                                                 project={project}
                                                 tags={sessionTagsMap.get(session.id) ?? EMPTY_SESSION_TAGS}
+                                                unreadNotificationCount={sessionNotificationBadgeCounts?.get(session.id) ?? 0}
                                                 isCronProtected={cronProtectedSessionIds.has(session.id)}
                                                 onOpen={onOpenTask}
                                                 onToggleFavorite={handleToggleFavoriteSession}
@@ -547,6 +551,7 @@ interface LauncherHistoryRowProps {
     session: SessionMetadata;
     project: Project;
     tags: SessionTag[];
+    unreadNotificationCount: number;
     isCronProtected: boolean;
     onOpen: (session: SessionMetadata, project: Project) => void;
     onToggleFavorite: (session: SessionMetadata) => void;
@@ -560,6 +565,7 @@ const LauncherHistoryRow = memo(function LauncherHistoryRow({
     session,
     project,
     tags,
+    unreadNotificationCount,
     isCronProtected,
     onOpen,
     onToggleFavorite,
@@ -634,6 +640,10 @@ const LauncherHistoryRow = memo(function LauncherHistoryRow({
             {tags.map((tag, index) => (
                 <SessionTagBadge key={index} tag={tag} />
             ))}
+            <UnreadNotificationIndicator
+                count={unreadNotificationCount}
+                label={t('rightRail.unreadNotifications', { count: unreadNotificationCount })}
+            />
             <span className="launcher-history-row-title-fade min-w-0 flex-1 truncate text-sm text-[var(--ink-secondary)] transition-colors group-hover:text-[var(--ink)]">
                 {displayText}
                 {msgCount && (

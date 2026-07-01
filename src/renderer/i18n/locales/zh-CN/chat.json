@@ -419,6 +419,7 @@
       "empty": "暂无历史记录",
       "current": "当前",
       "messageCount": "{{count}} 条消息",
+      "unreadNotifications": "{{count}} 条未读通知",
       "openInNewTab": "在新 tab 打开",
       "more": "更多",
       "moreActions": "更多操作",

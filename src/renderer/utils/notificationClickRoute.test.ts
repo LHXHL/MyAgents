@@ -7,9 +7,22 @@ describe("resolveNotificationClickRoute", () => {
     expect(
       resolveNotificationClickRoute(
         { tabId: "tab-a", sessionId: "session-a", workspacePath: "/workspace" },
-        (tabId) => tabId === "tab-a",
+        (tabId, sessionId) => tabId === "tab-a" && sessionId === "session-a",
       ),
-    ).toEqual({ type: "select-tab", tabId: "tab-a" });
+    ).toEqual({ type: "select-tab", tabId: "tab-a", sessionId: "session-a" });
+  });
+
+  test("opens the session when a live tab no longer owns the notification session", () => {
+    expect(
+      resolveNotificationClickRoute(
+        { tabId: "tab-a", sessionId: "session-a", workspacePath: "/workspace" },
+        (tabId, sessionId) => tabId === "tab-a" && sessionId === "session-b",
+      ),
+    ).toEqual({
+      type: "open-session",
+      sessionId: "session-a",
+      workspacePath: "/workspace",
+    });
   });
 
   test("opens the session when the notification has no live tab target", () => {

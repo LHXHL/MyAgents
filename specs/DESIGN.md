@@ -1278,6 +1278,7 @@ Header:
   - Hover 背景: var(--hover-bg)
   - 单行展示，标题与工作区信息均 truncate
   - `select-none`，避免右键时浏览器先选中行内文字
+  - 若该 session 有未读系统通知，在标签与标题之间显示弱未读标记：1 条为 6px 暖色点，多条为小号暖色数字胶囊；不改变排序
 
 时间:
   - 字号: 12px (text-xs)

@@ -419,6 +419,7 @@
       "empty": "No history yet",
       "current": "Current",
       "messageCount": "{{count}} message(s)",
+      "unreadNotifications": "{{count}} unread notification(s)",
       "openInNewTab": "Open in new tab",
       "more": "More",
       "moreActions": "More actions",

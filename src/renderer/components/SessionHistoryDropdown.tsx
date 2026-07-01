@@ -26,6 +26,7 @@ import Tip from './Tip';
 import { useToast } from './Toast';
 import { MenuItem } from './ui/MenuItem';
 import { Popover } from './ui/Popover';
+import UnreadNotificationIndicator from './UnreadNotificationIndicator';
 
 interface SessionHistoryDropdownProps {
     agentDir: string;
@@ -47,11 +48,13 @@ interface SessionHistoryDropdownProps {
     onClose: () => void;
     /** Trigger button ref — anchors the dropdown via the Popover primitive. */
     triggerRef: React.RefObject<HTMLElement | null>;
+    sessionNotificationBadgeCounts?: ReadonlyMap<string, number>;
 }
 
 // Track fetch state: null = not fetched, empty array = fetched but empty
 type FetchState = SessionMetadata[] | null;
 type CronTaskFetchState = CronTask[] | null;
+const EMPTY_SESSION_NOTIFICATION_BADGE_COUNTS = new Map<string, number>();
 
 export default function SessionHistoryDropdown({
     agentDir,
@@ -62,6 +65,7 @@ export default function SessionHistoryDropdown({
     isOpen,
     onClose,
     triggerRef,
+    sessionNotificationBadgeCounts = EMPTY_SESSION_NOTIFICATION_BADGE_COUNTS,
 }: SessionHistoryDropdownProps) {
     const { t } = useTranslation('chat');
     const toast = useToast();
@@ -453,6 +457,7 @@ export default function SessionHistoryDropdown({
                             const displayText = getSessionDisplayText(session);
                             const hasStats = stats && (stats.messageCount > 0 || stats.totalInputTokens > 0);
                             const totalTokens = (stats?.totalInputTokens ?? 0) + (stats?.totalOutputTokens ?? 0);
+                            const unreadNotificationCount = sessionNotificationBadgeCounts.get(session.id) ?? 0;
 
                             // Keep this row's toolbar revealed + highlighted while its
                             // "更多" menu is open, even after the pointer leaves the row.
@@ -488,6 +493,10 @@ export default function SessionHistoryDropdown({
                                                 {tags.map((tag, i) => (
                                                     <SessionTagBadge key={i} tag={tag} />
                                                 ))}
+                                                <UnreadNotificationIndicator
+                                                    count={unreadNotificationCount}
+                                                    label={t('shell.history.unreadNotifications', { count: unreadNotificationCount })}
+                                                />
                                                 <span className={`truncate text-sm ${isCurrent ? 'font-medium text-[var(--accent)]' : 'text-[var(--ink)]'}`}>
                                                     {displayText}
                                                 </span>
