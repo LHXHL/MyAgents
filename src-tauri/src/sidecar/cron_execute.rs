@@ -6,6 +6,9 @@ use super::*;
 pub struct CronExecutePayload {
     pub task_id: String,
     pub prompt: String,
+    /// Task Center Task id when this CronTask is the execution provider for a Task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_center_task_id: Option<String>,
     /// Session ID for activation tracking (prevents Sidecar from being killed during cron execution)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
@@ -416,6 +419,7 @@ pub async fn cmd_execute_cron_task(
     let payload = CronExecutePayload {
         task_id: taskId.clone(),
         prompt,
+        task_center_task_id: None,
         session_id: sessionId,
         is_first_execution: isFirstExecution,
         ai_can_exit: aiCanExit,

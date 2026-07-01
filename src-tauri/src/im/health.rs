@@ -673,6 +673,7 @@ mod tests {
             last_sender_name: None,
             message_count: 0,
             metadata_birth_pending: false,
+            metadata_indexed: true,
             last_active: Instant::now(),
         }
     }

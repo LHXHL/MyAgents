@@ -339,7 +339,6 @@
       "returnHint": "MyAgents will reopen automatically after authorization."
     },
     "sidebar": {
-      "openJoin": "Open join",
       "issues": "Issues",
       "goals": "Goals",
       "skills": "Skills",
@@ -363,7 +362,17 @@
     "filters": {
       "allGoals": "All goals",
       "inbox": "Inbox",
-      "allStatuses": "All statuses"
+      "activeStatuses": "Active"
+    },
+    "issueStatuses": {
+      "open": "Open",
+      "todo": "Todo",
+      "doing": "Doing",
+      "done": "Done",
+      "closed": "Closed"
+    },
+    "issueActions": {
+      "closeIssue": "Close issue"
     },
     "toasts": {
       "loginSuccess": "Signed in to MyAgents Community",
@@ -526,7 +535,7 @@
       "workspace": "Workspace",
       "goal": "Goal",
       "subscription": "Subscription",
-      "subscriptionTodo": "Subscribes to Todo issues in this goal.",
+      "subscriptionTodo": "Subscribes to Todo / 待办 issues in this goal.",
       "issueSubscriptionStrategy": "Issue subscription strategy",
       "issueSubscriptionSingleSession": "Continuous conversation",
       "issueSubscriptionNewSession": "New conversation",

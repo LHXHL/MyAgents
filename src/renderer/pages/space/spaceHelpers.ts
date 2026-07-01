@@ -11,7 +11,17 @@ export const ISSUE_STATUSES = [
 ] as const;
 
 export type IssueStatus = typeof ISSUE_STATUSES[number];
+export const ACTIVE_ISSUE_STATE_FILTER = 'open,todo,doing';
 const CLOSED_ISSUE_STATUSES = new Set(['done', 'closed']);
+const ISSUE_STATUS_LABEL_FALLBACKS: Record<IssueStatus, string> = {
+  open: 'open',
+  todo: 'todo',
+  doing: 'doing',
+  done: 'done',
+  closed: 'closed',
+};
+
+type IssueStatusTranslator = (key: string, options?: { defaultValue?: string }) => string;
 
 export interface IssueQueryParams {
   q?: string;
@@ -60,6 +70,7 @@ export function canCloseOwnIssue(session: SpaceSession | null, issue: SpaceIssue
 export function getIssueStatusOptions(args: {
   session: SpaceSession | null;
   issue: SpaceIssue | null;
+  t?: IssueStatusTranslator;
 }): Array<{ value: string; label: string; kind: 'set-status' | 'close-own' }> {
   if (!args.session || !args.issue) return [];
   if (isSpaceAdmin(args.session)) {
@@ -67,21 +78,26 @@ export function getIssueStatusOptions(args: {
       .filter((state) => state !== 'doing')
       .map((state) => ({
         value: state,
-        label: issueStatusLabel(state),
+        label: issueStatusLabel(state, args.t),
         kind: 'set-status',
       }));
   }
   if (canCloseOwnIssue(args.session, args.issue)) {
-    return [{ value: 'closed', label: 'Close issue', kind: 'close-own' }];
+    return [{
+      value: 'closed',
+      label: args.t?.('space.issueActions.closeIssue', { defaultValue: 'Close issue' }) ?? 'Close issue',
+      kind: 'close-own',
+    }];
   }
   return [];
 }
 
-export function issueStatusLabel(status: string): string {
-  if (status === 'todo') return 'todo';
-  if (status === 'doing') return 'doing';
-  if (status === 'done') return 'done';
-  return status.replaceAll('_', ' ');
+export function issueStatusLabel(status: string, t?: IssueStatusTranslator): string {
+  const normalized = normalizeIssueStatusToken(status);
+  const knownStatus = ISSUE_STATUSES.find((item) => item === normalized);
+  const fallback = knownStatus ? ISSUE_STATUS_LABEL_FALLBACKS[knownStatus] : status.replaceAll('_', ' ');
+  if (!knownStatus || !t) return fallback;
+  return t(`space.issueStatuses.${knownStatus}`, { defaultValue: fallback });
 }
 
 function normalizeIssueStatusToken(value: string): string {

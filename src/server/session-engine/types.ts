@@ -12,6 +12,7 @@ import type { InboxTurnMeta } from '../inbox/types';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { OfficialToolId } from '../../shared/official-tools';
+import type { SessionOrigin } from '../../shared/session-origin';
 
 export type SessionEngineKind = 'builtin' | 'external';
 
@@ -32,6 +33,8 @@ export type DesktopMessageRequest = {
   workspacePath: string;
   scenario: Extract<InteractionScenario, { type: 'desktop' }>;
   analyticsSource?: TurnAnalyticsSource;
+  analyticsOrigin?: SessionOrigin;
+  birthOrigin?: SessionOrigin;
 };
 
 export type DesktopAdmissionResult = {
@@ -59,6 +62,7 @@ export type ImMessageRequest = {
   runtimeConfig?: RuntimeConfig | null;
   metadataBirthPending?: boolean;
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
+  analyticsOrigin?: SessionOrigin;
 };
 
 export type ImAdmissionResult = {
@@ -80,6 +84,7 @@ export type InboxMessageRequest = {
   scenario?: InteractionScenario;
   inboxMeta?: InboxTurnMeta;
   allowLazySessionMaterialization?: boolean;
+  analyticsOrigin?: SessionOrigin;
 };
 
 export type BackgroundMessageRequest = {
@@ -94,6 +99,7 @@ export type BackgroundMessageRequest = {
   providerEnv?: ProviderEnv | 'subscription';
   reasoningEffort?: string;
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
+  analyticsOrigin?: SessionOrigin;
 };
 
 export type InjectedTurnRequest = {
@@ -108,6 +114,7 @@ export type InjectedTurnRequest = {
   providerRoute?: ProviderRoute;
   runtimeConfig?: RuntimeConfig | null;
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
+  analyticsOrigin?: SessionOrigin;
   timeoutMs: number;
   pollMs?: number;
 };
@@ -273,8 +280,12 @@ export interface SessionEngine {
     phase?: 'prepare' | 'commit' | 'rollback';
     preparedSessionId?: string;
     snapshotPatch?: SessionEngineSnapshotMaterializePatch;
+    origin?: SessionOrigin;
   }): Promise<SessionEngineMaterializePendingResult>;
-  freezeCurrentSessionForImDetach(options?: { metadataBirthPending?: boolean }): Promise<{
+  freezeCurrentSessionForImDetach(options?: {
+    metadataBirthPending?: boolean;
+    metadataIndexed?: boolean;
+  }): Promise<{
     success: boolean;
     sessionId?: string;
     metadata?: unknown;
@@ -314,6 +325,6 @@ export interface SessionEngine {
   resetForNewDesktopSession(workspacePath: string): Promise<{ success: boolean; sessionId?: string; error?: string }>;
   resetForNewImSession(
     workspacePath: string,
-    options?: { metadataBirthPending?: boolean },
+    options?: { metadataBirthPending?: boolean; metadataIndexed?: boolean },
   ): Promise<{ success: boolean; sessionId?: string; error?: string }>;
 }

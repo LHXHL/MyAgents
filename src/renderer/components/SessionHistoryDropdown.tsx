@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { BarChart2, Clock, Download, Loader2, MoreHorizontal, SquareArrowOutUpRight, Star, Trash2 } from 'lucide-react';
+import { BarChart2, Clock, Download, Eye, EyeOff, Loader2, MoreHorizontal, SquareArrowOutUpRight, Star, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { deleteSession, getSessions, updateSession, type SessionMetadata } from '@/api/sessionClient';
@@ -18,6 +18,7 @@ import { loadAppConfig } from '@/config/configService';
 import { getSessionDisplayText } from '@/utils/sessionDisplay';
 import type { SessionTag } from '@/hooks/useTaskCenterData';
 import { currentSupportedLocale } from '@/i18n/format';
+import { isAutomationHistoryOrigin } from '../../shared/session-origin';
 
 import ConfirmDialog from './ConfirmDialog';
 import SessionStatsModal from './SessionStatsModal';
@@ -26,6 +27,7 @@ import Tip from './Tip';
 import { useToast } from './Toast';
 import { MenuItem } from './ui/MenuItem';
 import { Popover } from './ui/Popover';
+import UnreadNotificationIndicator from './UnreadNotificationIndicator';
 
 interface SessionHistoryDropdownProps {
     agentDir: string;
@@ -47,11 +49,14 @@ interface SessionHistoryDropdownProps {
     onClose: () => void;
     /** Trigger button ref — anchors the dropdown via the Popover primitive. */
     triggerRef: React.RefObject<HTMLElement | null>;
+    sessionNotificationBadgeCounts?: ReadonlyMap<string, number>;
 }
 
 // Track fetch state: null = not fetched, empty array = fetched but empty
 type FetchState = SessionMetadata[] | null;
 type CronTaskFetchState = CronTask[] | null;
+const EMPTY_SESSION_NOTIFICATION_BADGE_COUNTS = new Map<string, number>();
+const SHOW_AUTOMATION_HISTORY_STORAGE_KEY = 'myagents.chat.showAutomationHistorySessions';
 
 export default function SessionHistoryDropdown({
     agentDir,
@@ -62,6 +67,7 @@ export default function SessionHistoryDropdown({
     isOpen,
     onClose,
     triggerRef,
+    sessionNotificationBadgeCounts = EMPTY_SESSION_NOTIFICATION_BADGE_COUNTS,
 }: SessionHistoryDropdownProps) {
     const { t } = useTranslation('chat');
     const toast = useToast();
@@ -69,6 +75,10 @@ export default function SessionHistoryDropdown({
     const [sessions, setSessions] = useState<FetchState>(null);
     const [cronTasks, setCronTasks] = useState<CronTaskFetchState>(null);
     const [statsSession, setStatsSession] = useState<{ id: string; title: string } | null>(null);
+    const [showAutomationSessions, setShowAutomationSessions] = useState(() => {
+        if (typeof window === 'undefined') return false;
+        return window.localStorage.getItem(SHOW_AUTOMATION_HISTORY_STORAGE_KEY) === 'true';
+    });
     // Track pending delete to show confirmation UI
     // Pending delete carries the session title so the confirm dialog can show
     // a recognizable label even after the row scrolls out / the user blurs.
@@ -129,13 +139,25 @@ export default function SessionHistoryDropdown({
     // Sorted sessions: tagged first, then by lastActiveAt descending within each group
     const sortedSessions = useMemo(() => {
         if (!sessions) return [];
-        return [...sessions].sort((a, b) => {
+        return sessions.filter((session) => (
+            showAutomationSessions || !isAutomationHistoryOrigin(session.origin, {
+                cronTaskId: session.cronTaskId,
+                source: session.source,
+            })
+        )).sort((a, b) => {
             const aHasTag = sessionTagsMap.has(a.id);
             const bHasTag = sessionTagsMap.has(b.id);
             if (aHasTag !== bHasTag) return aHasTag ? -1 : 1;
             return new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime();
         });
-    }, [sessions, sessionTagsMap]);
+    }, [sessions, sessionTagsMap, showAutomationSessions]);
+
+    useEffect(() => {
+        window.localStorage.setItem(
+            SHOW_AUTOMATION_HISTORY_STORAGE_KEY,
+            showAutomationSessions ? 'true' : 'false',
+        );
+    }, [showAutomationSessions]);
 
     // Keep refs updated via effect (not during render)
     useEffect(() => {
@@ -425,7 +447,28 @@ export default function SessionHistoryDropdown({
             >
                 {/* Header */}
                 <div className="border-b border-[var(--line)] px-4 py-2">
-                    <h3 className="text-sm font-semibold text-[var(--ink)]">{t('shell.history.title')}</h3>
+                    <div className="flex items-center justify-between gap-3">
+                        <h3 className="text-sm font-semibold text-[var(--ink)]">{t('shell.history.title')}</h3>
+                        <Tip
+                            label={showAutomationSessions
+                                ? t('shell.history.hideAutomation')
+                                : t('shell.history.showAutomation')}
+                            position="bottom"
+                        >
+                            <button
+                                type="button"
+                                onClick={() => setShowAutomationSessions(value => !value)}
+                                className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                                aria-label={showAutomationSessions
+                                    ? t('shell.history.hideAutomation')
+                                    : t('shell.history.showAutomation')}
+                            >
+                                {showAutomationSessions
+                                    ? <Eye className="h-3.5 w-3.5" />
+                                    : <EyeOff className="h-3.5 w-3.5" />}
+                            </button>
+                        </Tip>
+                    </div>
                 </div>
 
                 {/* Delete error toast */}
@@ -441,7 +484,7 @@ export default function SessionHistoryDropdown({
                         <div className="px-4 py-8 text-center text-sm text-[var(--ink-muted)]">
                             {t('shell.history.loading')}
                         </div>
-                    ) : sessions.length === 0 ? (
+                    ) : sortedSessions.length === 0 ? (
                         <div className="px-4 py-8 text-center text-sm text-[var(--ink-muted)]">
                             {t('shell.history.empty')}
                         </div>
@@ -453,6 +496,7 @@ export default function SessionHistoryDropdown({
                             const displayText = getSessionDisplayText(session);
                             const hasStats = stats && (stats.messageCount > 0 || stats.totalInputTokens > 0);
                             const totalTokens = (stats?.totalInputTokens ?? 0) + (stats?.totalOutputTokens ?? 0);
+                            const unreadNotificationCount = sessionNotificationBadgeCounts.get(session.id) ?? 0;
 
                             // Keep this row's toolbar revealed + highlighted while its
                             // "更多" menu is open, even after the pointer leaves the row.
@@ -488,6 +532,10 @@ export default function SessionHistoryDropdown({
                                                 {tags.map((tag, i) => (
                                                     <SessionTagBadge key={i} tag={tag} />
                                                 ))}
+                                                <UnreadNotificationIndicator
+                                                    count={unreadNotificationCount}
+                                                    label={t('shell.history.unreadNotifications', { count: unreadNotificationCount })}
+                                                />
                                                 <span className={`truncate text-sm ${isCurrent ? 'font-medium text-[var(--accent)]' : 'text-[var(--ink)]'}`}>
                                                     {displayText}
                                                 </span>

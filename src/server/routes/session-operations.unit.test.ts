@@ -201,4 +201,22 @@ describe('handleSessionOperationRoute', () => {
       metadataBirthPending: true,
     });
   });
+
+  it('passes explicit unindexed state when resetting IM sessions', async () => {
+    const response = await handleSessionOperationRoute(
+      '/api/im/session/new',
+      new Request('http://local/api/im/session/new', {
+        method: 'POST',
+        body: JSON.stringify({ metadataBirthPending: false, metadataIndexed: false }),
+      }),
+      { workspacePath: '/workspace' },
+    );
+
+    expect(response?.status).toBe(200);
+    expect(await readJson(response as Response)).toEqual({ sessionId: 'im-new' });
+    expect(mocks.engine.resetForNewImSession).toHaveBeenCalledWith('/workspace', {
+      metadataBirthPending: false,
+      metadataIndexed: false,
+    });
+  });
 });

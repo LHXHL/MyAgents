@@ -729,7 +729,7 @@ export interface AppConfig {
   // cron-related; the toggle was decorative until 0.2.14 wired it up.
   osNotifications: boolean;
   notificationSound: boolean; // 通知提醒声音（OS 通知是否播放声音）
-  /** 通知数字提示：在 Dock / taskbar / tray app icon 上展示未读数字。缺省视同 true。 */
+  /** 通知数字提示：在 Dock / taskbar / tray app icon 上展示未读数字。缺省视同 false。 */
   notificationBadge?: boolean;
   // API Keys for providers (stored separately for security)
   providerApiKeys?: Record<string, string>;
@@ -1747,7 +1747,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   autoStart: false,       // 默认不开启开机启动
   osNotifications: true,  // 默认开启系统通知
   notificationSound: true, // 默认开启通知声音
-  notificationBadge: true, // 默认开启通知数字提示
+  notificationBadge: false, // 默认关闭通知数字提示（待验证稳定后再恢复默认开启）
   globalSummonShortcut: {
     enabled: true,
     accelerator: 'CmdOrCtrl+Shift+M',

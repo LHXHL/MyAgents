@@ -17,6 +17,7 @@ import { createSseConnection, type SseConnection } from '@/api/SseConnection';
 import { ensureSessionSidecar, getSessionPort, proxyFetch, releaseSessionSidecar, startBackgroundCompletion } from '@/api/tauriClient';
 import { createSession } from '@/api/sessionClient';
 import { initAnalytics, setAnalyticsContext, track } from '@/analytics';
+import { originAnalyticsFields } from '../../shared/session-origin';
 import { loadAppConfig, atomicModifyConfig } from '@/config/services/appConfigService';
 import { getAllMcpServersFromConfig } from '@/config/services/mcpService';
 import { loadProjects } from '@/config/services/projectService';
@@ -1001,7 +1002,8 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
         // 之后跟随 session 活状态（用户在展开 Tab 改 → 写回快照；AI 进/出 plan →
         // chat:permission-mode-changed）。created.permissionMode 即服务端种好的值。
         try {
-            const created = await createSession(workspace, undefined, { seedMaxPermission: true });
+            const origin = { kind: 'desktop' as const, surface: 'floating_ball' as const };
+            const created = await createSession(workspace, undefined, { seedMaxPermission: true, origin });
             const sid = created.id;
             console.info(
                 `[fb-session] mint created session=${sid} runtime=${created.runtime ?? 'unknown'} permission=${created.permissionMode ?? 'default'} elapsed=${elapsedMs(startedAt)}`,
@@ -1023,8 +1025,10 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
             track('session_new', {
                 session_id: sid,
                 triggered_by: 'floating_ball',
+                ...originAnalyticsFields(origin),
                 entry_intent: 'new_chat',
                 runtime: analyticsRuntimeRef.current,
+                runtime_source: null,
                 has_initial_message: false,
                 agent_hash: null,
             });
@@ -1477,6 +1481,7 @@ export function useFloatingSession(modeRef: React.MutableRefObject<'hidden' | 'p
                 // 打点放在确认入队之后（失败不计），runtime 用 gate-aware 口径。
                 track('message_send', {
                     runtime: analyticsRuntimeRef.current,
+                    runtime_source: null,
                     mode: sendMode,
                     model: '',
                     has_image: Boolean(images),

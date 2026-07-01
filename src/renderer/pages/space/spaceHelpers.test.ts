@@ -3,11 +3,13 @@ import { describe, expect, it } from 'vitest';
 import type { LocalRegisteredAgent, SpaceIssue, SpaceSession } from '@/api/spaceCloud';
 import type { Project } from '@/config/types';
 import {
+  ACTIVE_ISSUE_STATE_FILTER,
   buildIssueCommandPrompt,
   buildIssueQueryKey,
   formatAgentSecondaryLabel,
   getIssueStatusOptions,
   issueDisplayTitle,
+  issueStatusLabel,
   isClosedIssue,
 } from './spaceHelpers';
 
@@ -41,6 +43,12 @@ describe('space issue helpers', () => {
     );
   });
 
+  it('keeps the active issue filter aligned with non-terminal states', () => {
+    expect(ACTIVE_ISSUE_STATE_FILTER.split(',')).toEqual(['open', 'todo', 'doing']);
+    expect(ACTIVE_ISSUE_STATE_FILTER.split(',')).not.toContain('done');
+    expect(ACTIVE_ISSUE_STATE_FILTER.split(',')).not.toContain('closed');
+  });
+
   it('builds the issue command prompt around the short CLI alias', () => {
     const prompt = buildIssueCommandPrompt({ spaceName: 'MyAgents社区', issueId: 'iss_123' });
 
@@ -71,6 +79,15 @@ describe('space issue helpers', () => {
     expect(issueDisplayTitle(issue({ title: '[todo] Seed issue 1' }))).toBe('Seed issue 1');
     expect(issueDisplayTitle(issue({ title: '[triaged] Seed issue 2' }))).toBe('[triaged] Seed issue 2');
     expect(issueDisplayTitle(issue({ state: 'doing', title: '[doing] Seed issue 3' }))).toBe('Seed issue 3');
+  });
+
+  it('uses translated status labels with raw-token fallback', () => {
+    const t = (key: string, options?: { defaultValue?: string }) => (
+      key === 'space.issueStatuses.todo' ? '待办' : options?.defaultValue ?? key
+    );
+
+    expect(issueStatusLabel('todo', t)).toBe('待办');
+    expect(issueStatusLabel('custom_state', t)).toBe('custom state');
   });
 
   it('formats agent workspace labels through project identity first', () => {

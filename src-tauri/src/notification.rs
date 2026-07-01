@@ -58,6 +58,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 #[cfg(not(target_os = "windows"))]
 use tauri_plugin_notification::NotificationExt;
 
+use crate::notification_badge::NotificationBadgeIncrement;
 #[cfg(target_os = "windows")]
 use crate::ulog_error;
 use crate::utils::bom::strip_bom;
@@ -217,7 +218,17 @@ pub fn show_with_navigation_target<R: Runtime>(
     body: &str,
     navigation: Option<NotificationNavigation>,
 ) {
-    show_with_navigation_target_inner(app, title, body, navigation, true);
+    show_with_navigation_target_inner(app, title, body, navigation, None);
+}
+
+pub fn show_with_navigation_target_and_badge<R: Runtime>(
+    app: &AppHandle<R>,
+    title: &str,
+    body: &str,
+    navigation: Option<NotificationNavigation>,
+    badge_increment: Option<NotificationBadgeIncrement>,
+) {
+    show_with_navigation_target_inner(app, title, body, navigation, badge_increment);
 }
 
 fn show_with_navigation_target_inner<R: Runtime>(
@@ -225,7 +236,7 @@ fn show_with_navigation_target_inner<R: Runtime>(
     title: &str,
     body: &str,
     navigation: Option<NotificationNavigation>,
-    count_badge: bool,
+    badge_increment: Option<NotificationBadgeIncrement>,
 ) {
     let prefs = read_notification_prefs();
     if !prefs.os_notifications {
@@ -236,15 +247,17 @@ fn show_with_navigation_target_inner<R: Runtime>(
         return;
     }
     let silent = !prefs.notification_sound;
-    ulog_debug!(
+    ulog_info!(
         "[Notification] Showing toast title='{}' navigation={:?} silent={}",
         title,
         navigation.as_ref().map(NotificationNavigation::describe),
         silent
     );
 
-    if count_badge && prefs.notification_badge {
-        crate::notification_badge::emit_badge_increment(app);
+    if prefs.notification_badge {
+        if let Some(increment) = badge_increment {
+            crate::notification_badge::emit_badge_increment(app, increment);
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -334,7 +347,7 @@ struct NotificationPrefs {
     /// the toast.
     notification_sound: bool,
     /// Badge flag: when true, native app icon badges mirror unseen notification
-    /// work. Defaults on so old configs gain the visual fallback.
+    /// work. Defaults off while the feature is still being validated.
     notification_badge: bool,
 }
 
@@ -368,7 +381,7 @@ fn read_notification_prefs() -> NotificationPrefs {
             .as_ref()
             .and_then(|c| c.notification_sound)
             .unwrap_or(true),
-        notification_badge: parsed.and_then(|c| c.notification_badge).unwrap_or(true),
+        notification_badge: parsed.and_then(|c| c.notification_badge).unwrap_or(false),
     }
 }
 
@@ -513,21 +526,25 @@ fn handle_toast_click<R: Runtime>(app: &AppHandle<R>, navigation: Option<Notific
 /// hooked through Tauri (not currently exposed); on Linux, dbus action
 /// callbacks. Both are out of scope for this fix and tracked separately.
 #[cfg(not(target_os = "windows"))]
-pub fn on_window_activated_externally<R: Runtime>(app: &AppHandle<R>) {
+pub fn on_window_activated_externally<R: Runtime>(app: &AppHandle<R>) -> bool {
     if let Some(navigation) = take_pending_click() {
         ulog_info!(
             "[Notification] External activation consumed pending click {}",
             navigation.describe()
         );
         emit_click(app, Some(navigation));
+        return true;
     }
+    false
 }
 
 /// Windows variant: no global latch, so external activation has nothing to
 /// consume. Defined as a no-op so the call site in `lib.rs::single_instance`
 /// stays platform-agnostic.
 #[cfg(target_os = "windows")]
-pub fn on_window_activated_externally<R: Runtime>(_app: &AppHandle<R>) {}
+pub fn on_window_activated_externally<R: Runtime>(_app: &AppHandle<R>) -> bool {
+    false
+}
 
 fn emit_click<R: Runtime>(app: &AppHandle<R>, navigation: Option<NotificationNavigation>) {
     let Some(navigation) = navigation else {
@@ -547,6 +564,7 @@ fn emit_click<R: Runtime>(app: &AppHandle<R>, navigation: Option<NotificationNav
 
 #[cfg(not(target_os = "windows"))]
 fn queue_pending_click(navigation: NotificationNavigation) {
+    let described = navigation.describe();
     let mut guard = match PENDING_CLICK.lock() {
         Ok(g) => g,
         Err(poisoned) => {
@@ -595,6 +613,7 @@ fn queue_pending_click(navigation: NotificationNavigation) {
         }
         PendingState::Ambiguous { queued_at } => PendingState::Ambiguous { queued_at },
     };
+    ulog_info!("[Notification] Pending click queued {}", described);
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -650,12 +669,19 @@ pub fn cmd_show_notification<R: Runtime>(
     workspace_path: Option<String>,
 ) {
     let body = body.unwrap_or_default();
+    ulog_info!(
+        "[Notification] cmd_show_notification title='{}' tab_id={:?} session_id={:?} workspace_path={:?}",
+        title,
+        tab_id,
+        session_id,
+        workspace_path
+    );
     show_with_navigation_target_inner(
         &app,
         &title,
         &body,
         NotificationNavigation::new(tab_id, session_id, workspace_path),
-        false,
+        None,
     );
 }
 
@@ -664,8 +690,13 @@ pub fn cmd_show_notification<R: Runtime>(
 /// synchronously, and consulting the (non-existent) global latch would
 /// cause a double-emit (#review-finding-1).
 #[tauri::command]
-pub fn cmd_consume_notification_click<R: Runtime>(app: AppHandle<R>) {
-    on_window_activated_externally(&app);
+pub fn cmd_consume_notification_click<R: Runtime>(app: AppHandle<R>) -> bool {
+    let consumed = on_window_activated_externally(&app);
+    ulog_info!(
+        "[Notification] cmd_consume_notification_click consumed={}",
+        consumed
+    );
+    consumed
 }
 
 // ============ Tests ============

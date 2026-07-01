@@ -16,6 +16,7 @@ import type { ReactNode } from 'react';
 import {
     track,
     consumePendingSessionBirth,
+    peekPendingSessionBirth,
     setPendingSessionBirth,
     hashAgentNameSync,
     birthContextForSurface,
@@ -26,7 +27,9 @@ import { getAgentByWorkspacePath } from '@/config/services/agentConfigService';
 import { notifyConfigChanged } from '@/config/services/appConfigService';
 import { normalizeRuntime, resolveEffectiveRuntime } from '@/utils/sessionOpenPlan';
 import type { RuntimeDiagnostics, RuntimeSource, RuntimeType } from '@/../shared/types/runtime';
+import { updateSession } from '@/api/sessionClient';
 import type { SessionMetadata } from '@/api/sessionClient';
+import { originAnalyticsFields, originFromDesktopSurface } from '../../shared/session-origin';
 import { createSseConnection, type SseConnection } from '@/api/SseConnection';
 import type { ImageAttachment } from '@/components/SimpleChatInput';
 import type { PermissionRequest } from '@/components/PermissionPrompt';
@@ -79,6 +82,14 @@ const TOOL_RESULT_TAIL_KEEP = 1024;
 
 function appText(key: string, options?: Record<string, unknown>): string {
     return String(i18n.t(`app:${key}`, options));
+}
+
+function analyticsRuntimeSource(
+    runtime: RuntimeType,
+    runtimeSource: RuntimeSource | null | undefined,
+): RuntimeSource | null {
+    if (runtime === 'builtin') return null;
+    return runtimeSource ?? 'system-cli';
 }
 
 function imageAttachmentName(img: ImageAttachment): string {
@@ -525,6 +536,7 @@ export default function TabProvider({
     appConfigRef.current = appConfig;
     const analyticsMetaRef = useRef({
         runtime: 'builtin' as RuntimeType,
+        runtimeSource: null as RuntimeSource | null,
         agentHash: null as string | null,
     });
     // NOTE: the effect that POPULATES analyticsMetaRef lives below, after the
@@ -633,9 +645,12 @@ export default function TabProvider({
         const runtime: RuntimeType = sessionRuntime
             ? normalizeRuntime(sessionRuntime)
             : resolveEffectiveRuntime(agent?.runtime, !!appConfig.multiAgentRuntime);
+        const runtimeSource = sessionRuntime
+            ? analyticsRuntimeSource(runtime, sessionRuntimeSource)
+            : analyticsRuntimeSource(runtime, agent?.runtimeConfig?.source);
         const agentHash = hashAgentNameSync(agent?.name ?? null);
-        analyticsMetaRef.current = { runtime, agentHash };
-    }, [appConfig, agentDir, sessionRuntime]);
+        analyticsMetaRef.current = { runtime, runtimeSource, agentHash };
+    }, [appConfig, agentDir, sessionRuntime, sessionRuntimeSource]);
     const [sessionMeta, setSessionMeta] = useState<SessionMetadata | null>(null);
     const [logs, setLogs] = useState<string[]>([]);
     const [unifiedLogs, setUnifiedLogs] = useState<LogEntry[]>([]);
@@ -1018,18 +1033,30 @@ export default function TabProvider({
         newSessionId: string,
         fallback: PendingSessionBirthContext,
         runtimeOverride?: RuntimeType,
+        runtimeSourceOverride?: RuntimeSource | null,
     ) => {
         const birth = consumePendingSessionBirth(tabId, fallback);
         const meta = analyticsMetaRef.current;
+        const runtime = runtimeOverride ?? meta.runtime;
+        const runtimeSource = runtimeSourceOverride !== undefined
+            ? analyticsRuntimeSource(runtime, runtimeSourceOverride)
+            : meta.runtimeSource;
+        const origin = originFromDesktopSurface(birth.surface);
+        const originFields = originAnalyticsFields(origin);
         track('session_new', {
             session_id: newSessionId,
             tab_id: tabId,
             triggered_by: birth.surface,
+            ...originFields,
             entry_intent: birth.entryIntent,
-            runtime: runtimeOverride ?? meta.runtime,
+            runtime,
+            runtime_source: runtimeSource,
             has_initial_message: birth.hasInitialMessage,
             assistant_entry: birth.assistantEntry,
             agent_hash: meta.agentHash,
+        });
+        void updateSession(newSessionId, { origin }).catch((error) => {
+            console.warn(`[TabProvider] Failed to persist origin for session ${newSessionId}:`, error);
         });
     }, [tabId]);
 
@@ -2373,6 +2400,7 @@ export default function TabProvider({
                 // Always track message_complete, use defaults if payload is missing
                 trackTabEvent('message_complete', {
                     runtime: analyticsMetaRef.current.runtime,
+                    runtime_source: analyticsMetaRef.current.runtimeSource,
                     model: completePayload?.model,
                     input_tokens: completePayload?.input_tokens ?? 0,
                     output_tokens: completePayload?.output_tokens ?? 0,
@@ -2625,6 +2653,7 @@ export default function TabProvider({
                                 newSessionId,
                                 fallback,
                                 payload.runtime ? normalizeRuntime(payload.runtime) : undefined,
+                                payload.runtime ? (payload.runtimeSource ?? null) : undefined,
                             );
                         }
                     } else if (
@@ -2641,6 +2670,7 @@ export default function TabProvider({
                             newSessionId,
                             birthContextForSurface('new_chat_button'),
                             payload.runtime ? normalizeRuntime(payload.runtime) : undefined,
+                            payload.runtime ? (payload.runtimeSource ?? null) : undefined,
                         );
                     }
                 }
@@ -3541,6 +3571,16 @@ export default function TabProvider({
         const skillMatch = trimmed.match(/^\/([a-zA-Z][a-zA-Z0-9_-]*)/);
         const skill = skillMatch ? skillMatch[1] : null;
         const hasImages = !!(images && images.length > 0);
+        const sessionIdForSend = currentSessionIdRef.current ?? sessionId;
+        const isSessionBirthSend = !sessionIdForSend || isPendingSessionId(sessionIdForSend) || isNewSessionRef.current;
+        const birthOrigin = isSessionBirthSend
+            ? originFromDesktopSurface(peekPendingSessionBirth(
+                tabId,
+                isNewSessionRef.current
+                    ? birthContextForSurface('new_chat_button')
+                    : birthContextForSurface('launcher_input'),
+            ).surface)
+            : undefined;
 
         // Reset new session flag BEFORE sending - allow message replay to show user's message
         isNewSessionRef.current = false;
@@ -3592,7 +3632,7 @@ export default function TabProvider({
         const sendPayload = {
             text: trimmed,
             images: imageData,
-            sessionId: currentSessionIdRef.current ?? sessionId,
+            sessionId: sessionIdForSend,
             permissionMode: permissionMode ?? 'auto',
             // #264 — echo the global background-agent permission policy so the
             // builtin PermissionRequest hook applies it to run_in_background sub-agents.
@@ -3602,6 +3642,7 @@ export default function TabProvider({
             model,
             reasoningEffort,
             providerRoute,
+            ...(birthOrigin ? { birthOrigin } : {}),
             ...(providerRoute ? {} : { providerEnv: providerEnv ?? 'subscription' }),
         };
 
@@ -3616,6 +3657,7 @@ export default function TabProvider({
             if (response.success) {
                 trackTabEvent('message_send', {
                     runtime: analyticsMetaRef.current.runtime,
+                    runtime_source: analyticsMetaRef.current.runtimeSource,
                     mode: permissionMode ?? 'auto',
                     model: model ?? 'default',
                     skill,

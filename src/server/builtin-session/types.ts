@@ -7,6 +7,7 @@ import type { ToolDisplayPayload } from '../../shared/toolDisplay/filePatch';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
 import type { ToolInput } from '../../renderer/types/chat';
 import type { SystemInitInfo } from '../../shared/types/system';
+import type { SessionOrigin } from '../../shared/session-origin';
 import type { InboxTurnMeta } from '../inbox/types';
 import type { ImagePayload } from '../runtimes/types';
 import type { MessageUsage, SessionSource, TurnAnalyticsSource } from '../types/session';
@@ -138,6 +139,7 @@ export type MessageQueueItem = {
   attachments?: MessageWire['attachments'];
   requestId?: string;
   analyticsSource?: TurnAnalyticsSource;
+  analyticsOrigin?: SessionOrigin;
   providerAnalytics?: TurnProviderAnalytics;
   inboxMeta?: InboxTurnMeta;
   injectedTurnId?: string;
@@ -152,6 +154,7 @@ export type TurnBoundaryQueueItem = {
   requestId?: string;
   source?: SessionSource;
   analyticsSource?: TurnAnalyticsSource;
+  analyticsOrigin?: SessionOrigin;
   mirrorImages?: MirrorImage[];
 };
 
@@ -167,6 +170,7 @@ export type InFlightMetadata = {
   requestId?: string;
   source?: SessionSource;
   analyticsSource?: TurnAnalyticsSource;
+  analyticsOrigin?: SessionOrigin;
   mirrorImages?: MirrorImage[];
 };
 

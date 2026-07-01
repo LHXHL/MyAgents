@@ -285,7 +285,11 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         undefined,
         request.analyticsSource,
-        { fromDesktopChatSend: true },
+        request.analyticsOrigin,
+        {
+          fromDesktopChatSend: true,
+          sessionBirthOrigin: request.birthOrigin,
+        },
       );
       if (result.error) {
         return { success: false, error: result.error, status: 429 };
@@ -316,6 +320,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         request.requestId,
         undefined,
         undefined,
+        request.analyticsOrigin,
         { allowLazySessionMaterialization: request.metadataBirthPending === true },
       );
       if (result.error) {
@@ -342,6 +347,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
         routed.providerEnv,
         request.reasoningEffort,
         request.metadata,
+        undefined,
+        undefined,
+        undefined,
+        request.analyticsOrigin,
       );
       if (result.error) {
         return { success: false, error: result.error, status: 503 };
@@ -363,6 +372,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         request.inboxMeta,
         undefined,
+        request.analyticsOrigin,
         { allowLazySessionMaterialization: request.allowLazySessionMaterialization === true },
       );
     },
@@ -386,6 +396,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         undefined,
         undefined,
+        request.analyticsOrigin,
         { injectedTurnId },
       );
       if (enqueueResult.error) {
@@ -449,12 +460,13 @@ export function createBuiltinSessionEngine(): SessionEngine {
         phase: request.phase,
         preparedSessionId: request.preparedSessionId,
         snapshotPatch: request.snapshotPatch,
+        origin: request.origin,
       });
     },
 
     freezeCurrentSessionForImDetach(options) {
       return freezeCurrentSessionMetadataForImDetach(undefined, {
-        allowMissingMetadata: options?.metadataBirthPending === true,
+        allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
       });
     },
 
@@ -531,7 +543,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
 
     async resetForNewImSession(_workspacePath, options) {
       const freeze = await freezeCurrentSessionMetadataForImDetach(undefined, {
-        allowMissingMetadata: options?.metadataBirthPending === true,
+        allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
       });
       if (!freeze.success) {
         return { success: false, error: freeze.error ?? 'Failed to freeze current IM session before reset' };

@@ -339,9 +339,8 @@
       "returnHint": "授权完成后会自动回到 MyAgents。"
     },
     "sidebar": {
-      "openJoin": "开放加入",
       "issues": "Issues",
-      "goals": "目标",
+      "goals": "Goals",
       "skills": "Skills",
       "agents": "Agents",
       "signedInWithGoogle": "已通过 Google 登录",
@@ -363,7 +362,17 @@
     "filters": {
       "allGoals": "全部目标",
       "inbox": "收件箱",
-      "allStatuses": "全部状态"
+      "activeStatuses": "未完成"
+    },
+    "issueStatuses": {
+      "open": "讨论",
+      "todo": "待办",
+      "doing": "处理中",
+      "done": "已完成",
+      "closed": "已关闭"
+    },
+    "issueActions": {
+      "closeIssue": "关闭 Issue"
     },
     "toasts": {
       "loginSuccess": "已登录 MyAgents 社区",
@@ -526,7 +535,7 @@
       "workspace": "工作区",
       "goal": "目标",
       "subscription": "订阅",
-      "subscriptionTodo": "订阅该目标下的 Todo issue。",
+      "subscriptionTodo": "订阅该目标下的 待办 / todo Issue。",
       "issueSubscriptionStrategy": "Issue 订阅策略",
       "issueSubscriptionSingleSession": "连续对话",
       "issueSubscriptionNewSession": "新开对话",

@@ -73,9 +73,10 @@ interface LauncherProps {
     startError?: string | null;
     isActive?: boolean;
     attachmentSessionId?: string | null;
+    sessionNotificationBadgeCounts?: ReadonlyMap<string, number>;
 }
 
-export default function Launcher({ onLaunchProject, isStarting, startError: _startError, isActive, attachmentSessionId }: LauncherProps) {
+export default function Launcher({ onLaunchProject, isStarting, startError: _startError, isActive, attachmentSessionId, sessionNotificationBadgeCounts }: LauncherProps) {
     const { t } = useTranslation('launcher');
     const toast = useToast();
     const toastRef = useRef(toast);
@@ -1142,6 +1143,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                     launchingProjectId={launchingProjectId}
                     showDevTools={config.showDevTools}
                     taskCenterData={taskCenterData}
+                    sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
                     onLaunch={handleLaunch}
                     onOpenTask={handleOpenTask}
                     onOpenOverlay={handleOpenOverlay}

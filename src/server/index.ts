@@ -607,6 +607,8 @@ import {
 } from '../shared/runtimeBirthFields';
 import type { RuntimeConfig, RuntimeSource, RuntimeType } from '../shared/types/runtime';
 import type { RuntimeBackedProviderIdentity } from '../shared/providerExecution';
+import { normalizeSessionOrigin, originFromTurnAttribution } from '../shared/session-origin';
+import type { SessionOrigin } from '../shared/session-origin';
 import type { InteractionScenario } from './system-prompt';
 // PRD 0.2.18 Session Inbox — sanitize helper for cron envelope wrapping
 import { neutralizeInboxStructuralTags, sanitizeInboxLabel } from './inbox/sanitize-label';
@@ -666,6 +668,8 @@ type SendMessagePayload = {
   providerRoute?: ProviderRoute;
   /** Per-turn analytics attribution; floating_ball also selects the desktop floating surface. */
   analyticsSource?: TurnAnalyticsSource;
+  /** Stable session birth origin, present only when this desktop send creates/materializes a session. */
+  birthOrigin?: unknown;
   // 'subscription' = explicit switch to Anthropic subscription (from desktop)
   // undefined/missing = "keep current provider" (safe default for IM/Cron callers)
   // object = use this specific third-party provider
@@ -865,6 +869,8 @@ function resolveCronProviderRouting(
 type CronExecutePayload = {
   taskId: string;
   prompt: string;
+  /** Task Center Task id when this cron is the provider backing a Task. */
+  taskCenterTaskId?: string;
   /** Session ID for single_session mode (reuse existing session) */
   sessionId?: string;
   isFirstExecution?: boolean;
@@ -2347,6 +2353,17 @@ async function main() {
         const analyticsSource: TurnAnalyticsSource | undefined =
           payload?.analyticsSource === 'floating_ball' ? 'floating_ball' : undefined;
         const interactionScenario = desktopScenarioForAnalyticsSource(analyticsSource);
+        const birthOrigin = payload.birthOrigin === undefined
+          ? undefined
+          : normalizeSessionOrigin(payload.birthOrigin);
+        if (payload.birthOrigin !== undefined && !birthOrigin) {
+          return jsonResponse({ success: false, error: 'Invalid session birth origin.' }, 400);
+        }
+        const analyticsOrigin = birthOrigin ?? originFromTurnAttribution({
+          source: analyticsSource ?? 'desktop',
+          scenarioType: interactionScenario.type,
+          desktopSurface: interactionScenario.surface,
+        });
 
         // Allow sending with just images or just text
         if (!text && images.length === 0) {
@@ -2377,6 +2394,8 @@ async function main() {
             workspacePath: agentDir,
             scenario: interactionScenario,
             analyticsSource,
+            analyticsOrigin,
+            birthOrigin,
           });
           if (result.error) {
             return jsonResponse({ success: false, error: result.error }, result.status ?? 500);
@@ -2643,6 +2662,10 @@ async function main() {
         }
 
         const { taskId, prompt, aiCanExit, model, providerEnv, intervalMinutes, executionNumber } = payload;
+        const cronTurnOrigin: SessionOrigin = {
+          kind: 'automation',
+          surface: payload.taskCenterTaskId ? 'task_run' : 'cron',
+        };
 
         if (!taskId || !prompt) {
           return jsonResponse({ success: false, error: 'taskId and prompt are required.' }, 400);
@@ -2650,6 +2673,13 @@ async function main() {
 
         // Get current session ID for context isolation
         const currentSessionId = getSessionId();
+        if (currentSessionId) {
+          const existing = getSessionMetadata(currentSessionId);
+          await updateSessionMetadata(currentSessionId, {
+            ...(existing?.origin ? {} : { origin: cronTurnOrigin }),
+            cronTaskId: taskId,
+          });
+        }
 
         // Set cron task context so the exit_cron_task tool knows which task is running
         // Pass sessionId for proper isolation between concurrent tasks
@@ -2886,6 +2916,7 @@ async function main() {
             reasoningEffort: engine.kind === 'external'
               ? getRuntimeConfigReasoningEffort(effectiveRuntimeConfig ?? null, cronRuntimeType)
               : undefined,
+            analyticsOrigin: cronTurnOrigin,
           });
           if (!result.success) {
             resetInteractionScenario();
@@ -2921,6 +2952,10 @@ async function main() {
         }
 
         const { taskId, prompt, sessionId, aiCanExit, model, providerEnv, runMode, intervalMinutes, executionNumber } = payload;
+        const cronTurnOrigin: SessionOrigin = {
+          kind: 'automation',
+          surface: payload.taskCenterTaskId ? 'task_run' : 'cron',
+        };
 
         if (!taskId || !prompt) {
           return jsonResponse({ success: false, error: 'taskId and prompt are required.' }, 400);
@@ -2959,6 +2994,8 @@ async function main() {
                 managedCodexProviderReady: managedCodexReady,
               })
             : { runtime: overrideRuntime };
+          cronSnapshot.origin = cronTurnOrigin;
+          cronSnapshot.cronTaskId = taskId;
           const overrideRuntimeType = VALID_RUNTIMES.includes(overrideRuntime as RuntimeType)
             ? overrideRuntime as RuntimeType
             : 'builtin';
@@ -3077,6 +3114,11 @@ async function main() {
               console.log(`[cron] execute-sync taskId=${taskId} single_session mode: switched to session ${sessionId}`);
             }
           }
+          const existing = getSessionMetadata(sessionId);
+          await updateSessionMetadata(sessionId, {
+            ...(existing?.origin ? {} : { origin: cronTurnOrigin }),
+            cronTaskId: taskId,
+          });
         } else {
           console.log(`[cron] execute-sync taskId=${taskId} no sessionId provided, using current session`);
         }
@@ -3434,6 +3476,7 @@ async function main() {
             providerRoute: engine.kind === 'builtin' ? effectiveProviderRoute : undefined,
             providerEnv: engine.kind === 'builtin' ? effectiveProviderEnv : undefined,
             runtimeConfig: effectiveRuntimeConfig ?? null,
+            analyticsOrigin: cronTurnOrigin,
             timeoutMs: 3600000,
             pollMs: 1000,
           });
@@ -3665,6 +3708,7 @@ async function main() {
           mcpEnabledServers?: string[];
           enabledPluginIds?: string[];
           enabledOfficialToolIds?: import('../shared/official-tools').OfficialToolId[];
+          origin?: unknown;
         };
         let payload: CreateSessionPayload;
         try {
@@ -3688,6 +3732,12 @@ async function main() {
           payload.runtimeSource === 'managed-provider' || payload.runtimeSource === 'system-cli'
             ? payload.runtimeSource
             : undefined;
+        const payloadOrigin = payload.origin === undefined
+          ? undefined
+          : normalizeSessionOrigin(payload.origin);
+        if (payload.origin !== undefined && !payloadOrigin) {
+          return jsonResponse({ success: false, error: 'Invalid session origin.' }, 400);
+        }
         const managedCodexReady = isManagedCodexProviderReady(loadConfig());
         if (
           runtimeSourceValue === 'managed-provider'
@@ -3718,6 +3768,7 @@ async function main() {
               managedCodexProviderReady: managedCodexReady,
             })
           : (runtimeValue ? { runtime: runtimeValue } : {});
+        baseSnapshot.origin = payloadOrigin ?? { kind: 'desktop', surface: 'unknown' };
         // PRD 0.2.34 §14 D14/D15 — 桌面渠道（悬浮球）创建 owned session 时把权限
         // 种成该 runtime 的「最宽松」档（发完就走渠道默认无脑执行）。原子地在快照
         // 构造期种入（复用既有 getMaxPermissionForRuntime），而非"创建后再 PATCH"
@@ -3921,6 +3972,7 @@ async function main() {
           providerRoute?: ProviderRoute | null;
           providerExecutionIdentity?: RuntimeBackedProviderIdentity | null;
           providerEnvJson?: string | null;
+          origin?: SessionOrigin | null;
         }
 
         let payload: PatchPayload;
@@ -3977,6 +4029,17 @@ async function main() {
             // Convert false → undefined so the on-disk shape stays minimal
             // (the JSON serializer drops undefined keys).
             updates.favorite = payload.favorite === true ? true : undefined;
+          }
+          if (payload.origin !== undefined) {
+            if (payload.origin === null) {
+              updates.origin = undefined;
+            } else {
+              const nextOrigin = normalizeSessionOrigin(payload.origin);
+              if (!nextOrigin) {
+                return jsonResponse({ success: false, error: 'Invalid session origin.' }, 400);
+              }
+              updates.origin = nextOrigin;
+            }
           }
 
           // Snapshot fields: null → clear (undefined in stored JSON); value → set.
@@ -7936,9 +7999,13 @@ async function main() {
       if (pathname === '/api/session/freeze-current' && request.method === 'POST') {
         try {
           const raw = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-          const result = await getSessionEngine().freezeCurrentSessionForImDetach({
+          const freezeOptions: { metadataBirthPending: boolean; metadataIndexed?: boolean } = {
             metadataBirthPending: raw.metadataBirthPending === true,
-          });
+          };
+          if (typeof raw.metadataIndexed === 'boolean') {
+            freezeOptions.metadataIndexed = raw.metadataIndexed;
+          }
+          const result = await getSessionEngine().freezeCurrentSessionForImDetach(freezeOptions);
           if (!result.success) {
             return jsonResponse(
               { success: false, error: result.error ?? 'Failed to freeze current session' },
@@ -8334,6 +8401,7 @@ async function main() {
             sourceType: imSourceType,
             botName: payload.botName,
           };
+          const imTurnOrigin: SessionOrigin = { kind: 'agent-channel', surface: 'channel_message' };
           setInteractionScenario(imScenario);
 
           // Build final message with group context (identical to /api/im/chat)
@@ -8443,6 +8511,7 @@ async function main() {
               runtimeConfig,
               metadataBirthPending: payload.metadataBirthPending === true,
               metadata,
+              analyticsOrigin: imTurnOrigin,
             });
             if (!result.success) {
               imRequestRegistry.unregister(payload.requestId);
@@ -8532,6 +8601,7 @@ async function main() {
               reasoningEffort: resolvedReasoningEffort,
               metadataBirthPending: payload.metadataBirthPending === true,
               metadata,
+              analyticsOrigin: imTurnOrigin,
             });
             if (!result.success) {
               imRequestRegistry.unregister(payload.requestId);
@@ -8957,6 +9027,7 @@ description: >
               source: payload.source as SessionSource,
               sourceId: payload.sourceId,
             },
+            analyticsOrigin: { kind: 'agent-channel', surface: 'channel_heartbeat' },
             timeoutMs: 300000,
             pollMs: 500,
           });
@@ -9089,6 +9160,7 @@ description: >
               : 'fullAgency',
             model: engine.kind === 'builtin' ? getSessionModel() ?? undefined : undefined,
             providerEnv: engine.kind === 'builtin' ? getSessionProviderEnv() : undefined,
+            analyticsOrigin: { kind: 'automation', surface: 'memory_update' },
             timeoutMs: MEMORY_UPDATE_TIMEOUT_MS,
             pollMs: 1000,
           });
@@ -9214,6 +9286,9 @@ description: >
           const injector: import('./inbox/drain-handler').InboxInjector = async (text, inboxMeta, options) => {
             const sessionId = getRuntimeSessionIdForRequest();
             const sessionMeta = getSessionMetadata(sessionId);
+            const inboxOrigin: SessionOrigin = options?.scenario?.type === 'registeredAgent'
+              ? { kind: 'registered-agent', surface: 'space_issue_delivery' }
+              : { kind: 'session-inbox', surface: 'session_send' };
             return engine.enqueueInboxMessage({
               text,
               sessionId,
@@ -9221,6 +9296,7 @@ description: >
               scenario: options?.scenario,
               inboxMeta,
               allowLazySessionMaterialization: options?.allowLazySessionMaterialization,
+              analyticsOrigin: inboxOrigin,
             });
           };
           const result = await handleInboxDrain(

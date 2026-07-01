@@ -80,7 +80,10 @@ describe('analytics tracker active context', () => {
       session_id: 'session-target',
       agent_hash: 'agent-hash',
       runtime: 'codex',
+      runtime_source: 'system-cli',
       entry_source: 'chat_dropdown',
+      origin_kind: 'desktop',
+      origin_surface: 'new_chat_button',
     });
 
     expect(mocks.enqueue).toHaveBeenCalledWith(expect.objectContaining({

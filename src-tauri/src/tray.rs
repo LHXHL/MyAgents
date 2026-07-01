@@ -12,10 +12,7 @@ use tauri::{
 };
 
 use crate::utils::bom::strip_bom;
-use crate::{ulog_debug, ulog_error, ulog_info};
-// `ulog_warn` is only used inside the macOS template-icon load fallback.
-#[cfg(target_os = "macos")]
-use crate::ulog_warn;
+use crate::{ulog_debug, ulog_error, ulog_info, ulog_warn};
 
 /// Menu item IDs for tray right-click menu
 const MENU_OPEN: &str = "open";
@@ -32,6 +29,9 @@ const MENU_EXIT: &str = "exit";
 /// Non-generic over Runtime: production uses `Wry` everywhere; pinning the
 /// type here avoids dragging an `R: Runtime` parameter through every consumer.
 pub struct TrayMenuHandles {
+    // Keep the tray icon handle alive for the lifetime of the app; macOS also
+    // reads it to update the menu-bar badge/title.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub tray: TrayIcon<Wry>,
     pub open: MenuItem<Wry>,
     pub settings: MenuItem<Wry>,
@@ -231,9 +231,26 @@ pub fn apply_tray_locale<R: Runtime>(
 /// rather than re-deriving show + unminimize + set_focus.
 pub fn show_main_window<R: Runtime>(app: &tauri::AppHandle<R>) {
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
+        let before_visible = window.is_visible().unwrap_or(false);
+        let before_focused = window.is_focused().unwrap_or(false);
+        ulog_info!(
+            "[Tray] show_main_window begin visible={} focused={}",
+            before_visible,
+            before_focused
+        );
+        let show_result = window.show();
+        let unminimize_result = window.unminimize();
+        let focus_result = window.set_focus();
+        ulog_info!(
+            "[Tray] show_main_window end show_ok={} unminimize_ok={} focus_ok={} visible={} focused={}",
+            show_result.is_ok(),
+            unminimize_result.is_ok(),
+            focus_result.is_ok(),
+            window.is_visible().unwrap_or(false),
+            window.is_focused().unwrap_or(false)
+        );
+    } else {
+        ulog_warn!("[Tray] show_main_window requested but main window is missing");
     }
 }
 

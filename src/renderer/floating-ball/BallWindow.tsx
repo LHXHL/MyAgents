@@ -36,6 +36,8 @@ interface FbCtx {
     selection?: string | null;
 }
 
+type CompanionMode = 'hidden' | 'peek' | 'pin';
+
 const DRAG_THRESHOLD = 4;
 
 export default function BallWindow() {
@@ -56,7 +58,8 @@ export default function BallWindow() {
 
     // Companion mode mirror (companion relays its mode changes) so a click on
     // the ball can toggle: hidden/peek → summon, pinned → close.
-    const companionModeRef = useRef<'hidden' | 'peek' | 'pin'>('hidden');
+    const companionModeRef = useRef<CompanionMode>('hidden');
+    const getCompanionMode = useCallback((): CompanionMode => companionModeRef.current, []);
     // Boot-race guard (review W1): Tauri events have no replay — a summon
     // fired before the companion registered its listeners would vanish. Track
     // readiness via the fb:companion-ready handshake and queue pending events
@@ -79,6 +82,8 @@ export default function BallWindow() {
     const hoverPeekEnabledRef = useRef(true);
     const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const hoverIntentRef = useRef(createFloatingBallHoverIntentState());
+    const pinInFlightRef = useRef(false);
+    const summonGenerationRef = useRef(0);
 
     // 原生坐标拖拽（修副屏跳屏）：renderer 只负责 pointer 生命周期和
     // threshold/动画；窗口落点由 Rust 用 NSEvent.mouseLocation + 当前窗口
@@ -124,6 +129,7 @@ export default function BallWindow() {
             'fb:companion-mode',
             (e) => {
                 companionModeRef.current = e.payload?.mode ?? 'hidden';
+                pinInFlightRef.current = false;
             },
             ac.signal,
         );
@@ -217,29 +223,41 @@ export default function BallWindow() {
     // DOM mouseenter（app 激活态）与原生 NSTrackingArea（非激活态，经
     // fb:native-hover）两路信号汇入同一对 handler，用 ref 暴露给监听 effect。
     const handleMouseEnter = useCallback(() => {
+        const companionMode = companionModeRef.current;
+        const pinInFlight = pinInFlightRef.current;
         const shouldStartPeek = enterFloatingBallHover(
             hoverIntentRef.current,
             {
                 hoverEnabled: hoverPeekEnabledRef.current,
                 dragging: dragRef.current.active,
-                companionPinned: companionModeRef.current === 'pin',
+                companionPinned: companionMode === 'pin' || pinInFlight,
             },
         );
-        if (!shouldStartPeek) return;
+        if (!shouldStartPeek) {
+            return;
+        }
         // Small intent delay so a fly-by cursor doesn't flash the panel.
         // 60ms：加上轮询间隔 60ms，hover→出窗最坏 ~120ms + IPC，体感即时。
         hoverTimerRef.current = setTimeout(() => {
             hoverTimerRef.current = null;
             void (async () => {
                 try {
+                    if (
+                        pinInFlightRef.current ||
+                        getCompanionMode() === 'pin' ||
+                        !hoverIntentRef.current.inside ||
+                        dragRef.current.active
+                    ) {
+                        return;
+                    }
                     await invoke('cmd_fb_show_companion', { mode: 'peek' });
                     if (!hoverIntentRef.current.inside || dragRef.current.active) {
-                        if (companionModeRef.current !== 'pin') {
+                        if (getCompanionMode() !== 'pin') {
                             void invoke('cmd_fb_hide_companion').catch(() => undefined);
                         }
                         return;
                     }
-                    if (companionModeRef.current === 'pin') return;
+                    if (getCompanionMode() === 'pin') return;
                     relayToCompanion('fb:ball-enter', {});
                 } catch (err) {
                     hoverIntentRef.current.inside = false;
@@ -247,7 +265,7 @@ export default function BallWindow() {
                 }
             })();
         }, 60);
-    }, [relayToCompanion]);
+    }, [getCompanionMode, relayToCompanion]);
     const handleMouseLeave = useCallback(() => {
         if (!leaveFloatingBallHover(hoverIntentRef.current)) return;
         if (hoverTimerRef.current) {
@@ -262,7 +280,7 @@ export default function BallWindow() {
     // useCallback（稳定身份），effect 只跑一次。
     useEffect(() => {
         const ac = new AbortController();
-        void listenWithCleanup<{ inside?: boolean }>(
+        void listenWithCleanup<{ inside?: boolean; appActive?: boolean; rawInside?: boolean }>(
             'fb:native-hover',
             (e) => {
                 if (e.payload?.inside) handleMouseEnter();
@@ -279,16 +297,22 @@ export default function BallWindow() {
     // activation happens, frontmost-window and selection probes would target us
     // instead of the user's app. D3 red line stays intact: hover never captures.
     const summon = useCallback(async () => {
-        if (companionModeRef.current === 'pin') {
-            // Toggle: ball click while pinned closes the companion.
-            if (hoverTimerRef.current) {
-                clearTimeout(hoverTimerRef.current);
-                hoverTimerRef.current = null;
-            }
-            suppressHoverPeekUntilBallLeave(hoverIntentRef.current);
+        if (hoverTimerRef.current) {
+            clearTimeout(hoverTimerRef.current);
+            hoverTimerRef.current = null;
+        }
+        suppressHoverPeekUntilBallLeave(hoverIntentRef.current);
+        if (companionModeRef.current === 'pin' || pinInFlightRef.current) {
+            // Toggle: ball click while pinned or pinning closes the companion.
+            summonGenerationRef.current += 1;
+            pinInFlightRef.current = false;
             relayToCompanion('fb:close-request', {});
             return;
         }
+        const generation = summonGenerationRef.current + 1;
+        summonGenerationRef.current = generation;
+        pinInFlightRef.current = true;
+        const isCurrentSummon = () => summonGenerationRef.current === generation && pinInFlightRef.current;
         pulseSummon();
         let ctx: FbCtx | null = null;
         try {
@@ -296,6 +320,7 @@ export default function BallWindow() {
         } catch (err) {
             console.warn('[fb-ball] capture_context failed:', err);
         }
+        if (!isCurrentSummon()) return;
         // Reserve the companion's pin path before native show can focus it
         // while it still thinks it is in peek mode.
         relayToCompanion('fb:summon-pending', {});
@@ -304,8 +329,16 @@ export default function BallWindow() {
         try {
             await invoke('cmd_fb_show_companion', { mode: 'pin' });
         } catch (err) {
-            relayToCompanion('fb:summon-cancel', {});
+            if (isCurrentSummon()) {
+                relayToCompanion('fb:summon-cancel', {});
+                pinInFlightRef.current = false;
+            }
             console.error('[fb-ball] show pin failed:', err);
+            return;
+        }
+        if (!isCurrentSummon()) {
+            relayToCompanion('fb:summon-cancel', {});
+            void invoke('cmd_fb_hide_companion').catch(() => undefined);
             return;
         }
         relayToCompanion('fb:summon', { ctx });

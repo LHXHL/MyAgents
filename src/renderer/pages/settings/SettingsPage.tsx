@@ -4220,19 +4220,19 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                             </div>
                                             <button
                                                 onClick={() => {
-                                                    const enabled = config.notificationBadge ?? true;
+                                                    const enabled = config.notificationBadge ?? false;
                                                     updateConfig({ notificationBadge: !enabled });
                                                     toast.success(enabled ? tSettings('general.notificationBadgeDisabled') : tSettings('general.notificationBadgeEnabled'));
                                                 }}
                                                 className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
-                                                    (config.notificationBadge ?? true)
+                                                    (config.notificationBadge ?? false)
                                                         ? 'bg-[var(--accent)]'
                                                         : 'bg-[var(--line-strong)]'
                                                 }`}
                                             >
                                                 <span
                                                     className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${
-                                                        (config.notificationBadge ?? true) ? 'translate-x-5' : 'translate-x-0'
+                                                        (config.notificationBadge ?? false) ? 'translate-x-5' : 'translate-x-0'
                                                     }`}
                                                 />
                                             </button>

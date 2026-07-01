@@ -1,3 +1,4 @@
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
@@ -6,13 +7,37 @@ use crate::ulog_warn;
 
 const MAX_VISIBLE_BADGE_COUNT: u32 = 99;
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NotificationBadgeIncrement {
+    pub id: String,
+    pub source: String,
+    pub created_at: i64,
+    pub target: NotificationBadgeTarget,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "type")]
+pub enum NotificationBadgeTarget {
+    #[serde(rename = "session")]
+    Session {
+        session_id: String,
+        workspace_path: String,
+    },
+    #[serde(rename = "task-center")]
+    TaskCenter {
+        #[serde(skip_serializing_if = "Option::is_none")]
+        task_id: Option<String>,
+    },
+}
+
 #[tauri::command]
 pub fn cmd_set_notification_badge<R: Runtime>(app: AppHandle<R>, count: u32, enabled: bool) {
     apply_notification_badge(&app, count, enabled);
 }
 
-pub fn emit_badge_increment<R: Runtime>(app: &AppHandle<R>) {
-    if let Err(e) = app.emit("notification:badge-increment", serde_json::json!({})) {
+pub fn emit_badge_increment<R: Runtime>(app: &AppHandle<R>, increment: NotificationBadgeIncrement) {
+    if let Err(e) = app.emit("notification:badge-increment", increment) {
         ulog_warn!("[NotificationBadge] Failed to emit badge increment: {}", e);
     }
 }

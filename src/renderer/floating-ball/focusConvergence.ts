@@ -8,6 +8,7 @@ interface FocusConvergenceOptions<T extends HTMLElement> {
     shouldContinue(): boolean;
     isFocused?: (target: T) => boolean;
     maxAttempts?: number;
+    minAttempts?: number;
     requestAnimationFrame?: typeof window.requestAnimationFrame;
     cancelAnimationFrame?: typeof window.cancelAnimationFrame;
 }
@@ -33,6 +34,7 @@ export function createFocusConvergence<T extends HTMLElement>({
     shouldContinue,
     isFocused = defaultIsFocused,
     maxAttempts = DEFAULT_MAX_ATTEMPTS,
+    minAttempts = 1,
     requestAnimationFrame = window.requestAnimationFrame.bind(window),
     cancelAnimationFrame = window.cancelAnimationFrame.bind(window),
 }: FocusConvergenceOptions<T>): FocusConvergenceController {
@@ -66,7 +68,7 @@ export function createFocusConvergence<T extends HTMLElement>({
 
                 focusWithoutScroll(target);
                 attempts += 1;
-                if (isFocused(target) || attempts >= maxAttempts) return;
+                if ((attempts >= minAttempts && isFocused(target)) || attempts >= maxAttempts) return;
 
                 schedule(step);
             };

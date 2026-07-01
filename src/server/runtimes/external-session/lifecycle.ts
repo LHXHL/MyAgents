@@ -2,6 +2,7 @@ import type { InteractionScenario } from '../../system-prompt';
 import type { TurnAnalyticsSource } from '../../types/session';
 import type { RuntimeType } from '../../../shared/types/runtime';
 import type { SystemInitInfo } from '../../../shared/types/system';
+import type { SessionOrigin } from '../../../shared/session-origin';
 import type { AgentRuntime, RuntimeProcess } from '../types';
 import type { ExternalSessionState, ExternalSystemInitPayload } from './types';
 
@@ -16,6 +17,7 @@ let lastSessionId = '';
 let lastWorkspacePath = '';
 let lastScenario: InteractionScenario = { type: 'desktop' };
 let lastAnalyticsSource: TurnAnalyticsSource = 'desktop';
+let lastAnalyticsOrigin: SessionOrigin | null = null;
 let lastRuntimeSessionId = '';
 
 let externalSessionState: ExternalSessionState = 'idle';
@@ -31,6 +33,7 @@ export function resetExternalLifecycleState(): void {
   userRequestedExternalStop = false;
   lastRuntimeSessionId = '';
   lastAnalyticsSource = 'desktop';
+  lastAnalyticsOrigin = null;
   externalSystemInitPayload = null;
   externalSessionState = 'idle';
   isPrewarmingSession = false;
@@ -109,11 +112,13 @@ export function bindExternalSessionContext(input: {
   workspacePath: string;
   scenario: InteractionScenario;
   analyticsSource?: TurnAnalyticsSource;
+  analyticsOrigin?: SessionOrigin | null;
 }): void {
   lastSessionId = input.sessionId;
   lastWorkspacePath = input.workspacePath;
   lastScenario = input.scenario;
   lastAnalyticsSource = input.analyticsSource ?? input.scenario.type;
+  lastAnalyticsOrigin = input.analyticsOrigin ?? null;
 }
 
 export function getExternalLifecycleSessionId(): string {
@@ -134,6 +139,14 @@ export function getExternalLifecycleAnalyticsSource(): TurnAnalyticsSource {
 
 export function setExternalLifecycleAnalyticsSource(source: TurnAnalyticsSource): void {
   lastAnalyticsSource = source;
+}
+
+export function getExternalLifecycleAnalyticsOrigin(): SessionOrigin | null {
+  return lastAnalyticsOrigin;
+}
+
+export function setExternalLifecycleAnalyticsOrigin(origin: SessionOrigin | null): void {
+  lastAnalyticsOrigin = origin;
 }
 
 export function setExternalRuntimeSessionId(id: string): void {

@@ -17,6 +17,7 @@ import { type SelectOption } from '@/components/CustomSelect';
 import { useToast } from '@/components/Toast';
 import { useConfig } from '@/hooks/useConfig';
 import {
+  ACTIVE_ISSUE_STATE_FILTER,
   buildIssueQueryKey,
   isSpaceAdmin,
   type IssueQueryParams,
@@ -31,6 +32,7 @@ import { CreateIssueDialog } from '@/pages/space/issues/CreateIssueDialog';
 import { IssueDetailDrawer } from '@/pages/space/issues/IssueDetailDrawer';
 import { AgentsWorkspace, RegisterAgentDialog } from '@/pages/space/agents/AgentsWorkspace';
 import { GoalsWorkspace } from '@/pages/space/goals/GoalsWorkspace';
+import { GoalPathSelectLabel } from '@/pages/space/GoalPathSelectLabel';
 import { SkillsWorkspace } from '@/pages/space/skills/SkillsWorkspace';
 import { SpaceLogin, SpaceSidebar, type SpaceViewMode as ViewMode } from '@/pages/space/SpaceChrome';
 import { nowForSpaceMetric, recordSpaceMetric } from '@/pages/space/spaceMetrics';
@@ -60,7 +62,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const [mode, setMode] = useState<ViewMode>('issues');
   const [issueQ, setIssueQ] = useState('');
   const [selectedGoalId, setSelectedGoalId] = useState('');
-  const [selectedStatus, setSelectedStatus] = useState('');
+  const [selectedStatus, setSelectedStatus] = useState(ACTIVE_ISSUE_STATE_FILTER);
   const [issueDetailId, setIssueDetailId] = useState<string | null>(null);
   const [createIssueOpen, setCreateIssueOpen] = useState(false);
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
@@ -90,8 +92,19 @@ export default function Space({ isActive }: { isActive: boolean }) {
 
   const goalOptions = useMemo<SelectOption[]>(
     () => [
-      { value: '', label: t('space.filters.allGoals') },
-      ...goals.map((goal) => ({ value: goal.id, label: goal.goalPathLabel || goal.title })),
+      {
+        value: '',
+        label: t('space.filters.allGoals'),
+        content: <GoalPathSelectLabel label={t('space.filters.allGoals')} />,
+      },
+      ...goals.map((goal) => {
+        const label = goal.goalPathLabel || goal.title;
+        return {
+          value: goal.id,
+          label,
+          content: <GoalPathSelectLabel label={label} />,
+        };
+      }),
     ],
     [goals, t],
   );

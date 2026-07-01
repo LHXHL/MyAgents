@@ -217,6 +217,7 @@ export interface ImActiveSession {
   workspacePath: string;
   messageCount: number;
   metadataBirthPending?: boolean;
+  metadataIndexed?: boolean;
   lastActive: string;         // ISO timestamp
 }
 

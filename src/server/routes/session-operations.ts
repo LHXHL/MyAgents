@@ -96,9 +96,13 @@ export async function handleSessionOperationRoute(
   if (pathname === '/api/im/session/new' && request.method === 'POST') {
     try {
       const body = await parseJsonObject(request);
-      const result = await getSessionEngine().resetForNewImSession(deps.workspacePath, {
+      const resetOptions: { metadataBirthPending: boolean; metadataIndexed?: boolean } = {
         metadataBirthPending: body.metadataBirthPending === true,
-      });
+      };
+      if (typeof body.metadataIndexed === 'boolean') {
+        resetOptions.metadataIndexed = body.metadataIndexed;
+      }
+      const result = await getSessionEngine().resetForNewImSession(deps.workspacePath, resetOptions);
       if (!result.success) {
         return jsonResponse(result, 500);
       }

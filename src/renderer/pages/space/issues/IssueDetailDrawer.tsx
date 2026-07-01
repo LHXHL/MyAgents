@@ -63,8 +63,8 @@ export function IssueDetailDrawer({
   const detail = detailState?.detail ?? null;
   const loading = detailState?.isLoading ?? true;
   const statusOptions = useMemo(
-    () => getIssueStatusOptions({ session, issue: detail?.issue ?? null }),
-    [detail?.issue, session],
+    () => getIssueStatusOptions({ session, issue: detail?.issue ?? null, t }),
+    [detail?.issue, session, t],
   );
 
   useCloseLayer(() => {
@@ -250,15 +250,15 @@ export function IssueDetailDrawer({
                         type="button"
                         disabled={statusBusy}
                         onClick={() => setStatusMenuOpen((value) => !value)}
-                        className={`inline-flex min-h-8 items-center gap-1.5 rounded-md px-2.5 text-xs font-semibold transition-colors ${statusPillClass(detail.issue.state)} disabled:cursor-wait disabled:opacity-70`}
+                        className={`inline-flex min-h-8 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-xs font-semibold transition-colors ${statusPillClass(detail.issue.state)} disabled:cursor-wait disabled:opacity-70`}
                       >
                         {statusBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                        {issueStatusLabel(detail.issue.state)}
+                        {issueStatusLabel(detail.issue.state, t)}
                         <ChevronDown className="h-3.5 w-3.5" />
                       </button>
                     ) : (
-                      <span className={`inline-flex min-h-8 items-center rounded-md px-2.5 text-xs font-semibold ${statusPillClass(detail.issue.state)}`}>
-                        {issueStatusLabel(detail.issue.state)}
+                      <span className={`inline-flex min-h-8 items-center whitespace-nowrap rounded-md px-2.5 text-xs font-semibold ${statusPillClass(detail.issue.state)}`}>
+                        {issueStatusLabel(detail.issue.state, t)}
                       </span>
                     )}
                     {statusMenuOpen && statusOptions.length > 0 && (

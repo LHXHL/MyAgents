@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.45] - 2026-07-02
+
+> 本版聚焦会话来源归因、后台通知和 IM / Agent Channel 稳定性：历史列表默认收起自动化会话，后台完成提醒会落到正确会话；微信等 Channel 的 `/new`、`/restart` 与恢复会话不再因 metadata 丢失失败。macOS 悬浮球的输入聚焦和外部点击关闭也更符合系统交互预期。
+
+### Added
+
+- **会话来源归因**：新会话、历史打开和 AI 回合完成事件会记录稳定的 `origin` 与 `runtime_source`，区分桌面、悬浮球、定时任务、Task run、IM / Agent Channel 和 managed Codex 等来源，便于后续历史过滤与使用量统计。
+- **会话级未读提醒**：后台任务或会话完成后，历史列表和 Launcher 右栏会在对应会话上显示弱未读标记，Dock / 菜单栏角标与横幅通知保持同一目标会话。
+
+### Changed
+
+- **历史列表默认更清爽**：定时任务和 Task run 产生的自动化会话默认从普通历史列表中收起，并提供显示自动化会话的入口，减少周期任务刷屏。
+- **Runtime 统计按身份区分**：Codex 订阅 Provider 和用户自行安装的 Codex CLI 不再只按 `runtime=codex` 混在一起统计，managed Provider 会保留自己的 runtime source。
+
+### Fixed
+
+- **微信 / Agent Channel 恢复会话更稳**：恢复已有渠道会话、执行 `/new` 或 `/restart` 时，会补齐并保留会话 metadata，不再出现 “session not found in sessions.json” 或 “session metadata disappeared before first user turn”。
+- **后台通知不再串会话**：后台 completion、定时任务和任务中心通知会清理和点击到正确 session，减少旧会话角标残留或点击通知打开错误会话的问题。
+- **macOS 悬浮球输入与关闭行为修复**：点击悬浮球展开实心窗口后会直接聚焦输入框；首次外部点击只关闭悬浮窗，不会同时激活或点击底层应用；点击输入框不再被误判为外部点击导致窗口关闭。
+
+---
+
 ## [0.2.44] - 2026-07-01
 
 > 本版聚焦 Codex 订阅 Runtime 的会话稳定性、权限审批体验和后台通知一致性：历史会话与新对话不再串写，多个权限请求会按队列逐个处理；IM / Agent Channel 默认使用无人值守权限，并修复中文文件名在渠道发送时乱码的问题。Windows 更新安装也更稳。

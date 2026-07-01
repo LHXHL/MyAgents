@@ -1,7 +1,7 @@
 // Floating ball desktop companion (PRD 0.2.35/0.2.34 desktop pet).
 //
-// Two OS windows, implemented as platform-native floating tool windows. Peek
-// mode must not activate the app, so the user's frontmost app keeps focus:
+// Platform-native floating tool windows. Peek mode must not activate the app,
+// so the user's frontmost app keeps focus:
 //
 //   fb-ball       92×92 transparent panel, can_become_key_window = false.
 //                 Pure visual + mouse target. Hover/click logic lives in the
@@ -9,6 +9,9 @@
 //   fb-companion  chat panel. Peek is visual-only; pin activates/focuses the
 //                 companion long enough for keyboard input and restores the
 //                 previous foreground window when hidden where the OS allows.
+//   fb-shield     macOS-only transparent panel shown below ball/companion while
+//                 pinned. It owns first outside-click consumption so dismissing
+//                 the companion does not also activate/click the app underneath.
 //
 // Context probes (frontmost app / selection where supported / screenshot) are
 // Tauri commands (D9: OS-level work goes through Rust invoke, never sidecar
@@ -115,7 +118,10 @@ mod imp {
     use serde::Serialize;
     use std::cell::RefCell;
     use std::path::PathBuf;
-    use std::sync::Mutex;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Mutex,
+    };
     use tauri::{
         AppHandle, Emitter, LogicalPosition, LogicalSize, Manager, WebviewUrl, WebviewWindowBuilder,
     };
@@ -124,6 +130,7 @@ mod imp {
     };
 
     pub const BALL_LABEL: &str = "fb-ball";
+    pub const SHIELD_LABEL: &str = "fb-shield";
     pub const COMPANION_LABEL: &str = "fb-companion";
 
     const BALL_WIN: f64 = 92.0;
@@ -142,6 +149,18 @@ mod imp {
     tauri_panel! {
         // The ball never takes keyboard focus — pure visual + mouse target.
         panel!(FbBallPanel {
+            config: {
+                can_become_key_window: false,
+                can_become_main_window: false,
+                is_floating_panel: true
+            }
+        })
+
+        // Invisible click shield shown only while the companion is pinned.
+        // It sits below the ball/companion but above normal app windows, so
+        // the first outside click dismisses us instead of reaching the app
+        // underneath.
+        panel!(FbShieldPanel {
             config: {
                 can_become_key_window: false,
                 can_become_main_window: false,
@@ -169,23 +188,38 @@ mod imp {
         let ws = tauri_nspanel::objc2_app_kit::NSWorkspace::sharedWorkspace();
         let previous = ws.frontmostApplication();
         let current = tauri_nspanel::objc2_app_kit::NSRunningApplication::currentApplication();
+        let previous_present = previous.is_some();
+        let current_active = current.isActive();
         PIN_FOREGROUND_APP.with(|slot| {
             if slot.borrow().is_some() {
                 return;
             }
-            *slot.borrow_mut() = if current.isActive() {
+            *slot.borrow_mut() = if current_active {
                 None
             } else {
                 previous.filter(|app| !app.isTerminated())
             };
         });
+        ulog_info!(
+            "[fb] remember_pin_foreground_app previous_present={} current_active={}",
+            previous_present,
+            current_active
+        );
     }
 
     fn activate_current_app_for_text_input() {
         let Some(mtm) = tauri_nspanel::objc2::MainThreadMarker::new() else {
             return;
         };
+        ulog_info!(
+            "[fb] activate_current_app_for_text_input before app_active={}",
+            current_app_active()
+        );
         tauri_nspanel::objc2_app_kit::NSApplication::sharedApplication(mtm).activate();
+        ulog_info!(
+            "[fb] activate_current_app_for_text_input after app_active={}",
+            current_app_active()
+        );
     }
 
     fn companion_is_key_window(app: &AppHandle) -> bool {
@@ -209,21 +243,30 @@ mod imp {
     fn restore_pin_foreground_app(restore_allowed: bool) {
         let previous = PIN_FOREGROUND_APP.with(|slot| slot.borrow_mut().take());
         if !restore_allowed {
+            ulog_info!(
+                "[fb] restore_pin_foreground_app skipped restore_allowed=false had_previous={}",
+                previous.is_some()
+            );
             return;
         }
         let Some(previous) = previous else {
+            ulog_info!("[fb] restore_pin_foreground_app skipped no_previous");
             return;
         };
         if previous.isTerminated() {
+            ulog_info!("[fb] restore_pin_foreground_app skipped previous_terminated=true");
             return;
         }
         let Some(mtm) = tauri_nspanel::objc2::MainThreadMarker::new() else {
+            ulog_info!("[fb] restore_pin_foreground_app skipped no_main_thread_marker");
             return;
         };
         let current = tauri_nspanel::objc2_app_kit::NSRunningApplication::currentApplication();
         if !current.isActive() {
+            ulog_info!("[fb] restore_pin_foreground_app skipped current_active=false");
             return;
         }
+        ulog_info!("[fb] restore_pin_foreground_app yielding activation to previous app");
         tauri_nspanel::objc2_app_kit::NSApplication::sharedApplication(mtm)
             .yieldActivationToApplication(&previous);
         let _ = previous.activateFromApplication_options(
@@ -248,6 +291,7 @@ mod imp {
     // Monitoring), and an 8Hz main-thread peek is unmeasurable CPU-wise.
     static HOVER_POLLER_RUNNING: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
+    static COMPANION_PINNED: AtomicBool = AtomicBool::new(false);
 
     #[derive(Debug, Clone, Copy)]
     struct NativeDragSession {
@@ -274,6 +318,57 @@ mod imp {
         let size = size.to_logical::<f64>(scale);
         let (mx, my) = mouse_top_left;
         mx >= pos.x && mx <= pos.x + size.width && my >= pos.y && my <= pos.y + size.height
+    }
+
+    #[derive(Debug, Clone)]
+    struct HoverProbe {
+        mouse: Option<(f64, f64)>,
+        ball_in: Option<bool>,
+        comp_in: Option<bool>,
+        ball_raw_in: Option<bool>,
+        comp_raw_in: Option<bool>,
+        ball_frame: String,
+        comp_frame: String,
+        main_frame: String,
+        app_active: bool,
+    }
+
+    fn fmt_mouse(mouse: Option<(f64, f64)>) -> String {
+        match mouse {
+            Some((x, y)) => format!("({x:.1},{y:.1})"),
+            None => "unavailable".to_string(),
+        }
+    }
+
+    fn current_app_active() -> bool {
+        tauri_nspanel::objc2_app_kit::NSRunningApplication::currentApplication().isActive()
+    }
+
+    fn window_debug_frame(win: Option<&tauri::WebviewWindow>) -> String {
+        let Some(win) = win else {
+            return "missing".to_string();
+        };
+        let visible = win.is_visible().unwrap_or(false);
+        let focused = win.is_focused().unwrap_or(false);
+        let frame = match (win.scale_factor(), win.outer_position(), win.outer_size()) {
+            (Ok(scale), Ok(pos), Ok(size)) => {
+                let pos = pos.to_logical::<f64>(scale);
+                let size = size.to_logical::<f64>(scale);
+                format!(
+                    "pos=({:.1},{:.1}) size=({:.1},{:.1}) scale={:.2}",
+                    pos.x, pos.y, size.width, size.height, scale
+                )
+            }
+            _ => "frame=unavailable".to_string(),
+        };
+        format!("visible={visible} focused={focused} {frame}")
+    }
+
+    fn window_debug_frame_by_label(app: &AppHandle, label: &str) -> String {
+        match app.get_webview_window(label) {
+            Some(win) => window_debug_frame(Some(&win)),
+            None => window_debug_frame(None),
+        }
     }
 
     /// Current mouse position in Tauri's coordinate space (top-left origin,
@@ -404,6 +499,8 @@ mod imp {
         tauri::async_runtime::spawn(async move {
             let mut ball_inside = false;
             let mut comp_inside = false;
+            let mut ball_raw_inside = false;
+            let mut comp_raw_inside = false;
             loop {
                 if !HOVER_POLLER_RUNNING.load(Ordering::SeqCst) {
                     break;
@@ -413,7 +510,7 @@ mod imp {
                 // 仍不可测量。
                 tokio::time::sleep(std::time::Duration::from_millis(60)).await;
                 let app2 = app.clone();
-                let (tx, rx) = std::sync::mpsc::channel::<(Option<bool>, Option<bool>)>();
+                let (tx, rx) = std::sync::mpsc::channel::<HoverProbe>();
                 let dispatched = app
                     .run_on_main_thread(move || {
                         let mouse = mouse_location_top_left();
@@ -423,40 +520,117 @@ mod imp {
                         let comp = app2
                             .get_webview_window(COMPANION_LABEL)
                             .filter(|w| w.is_visible().unwrap_or(false));
-                        let ball_in = match (&mouse, &ball) {
+                        let app_active = current_app_active();
+                        let ball_raw_in = match (&mouse, &ball) {
                             (Some(m), Some(w)) => Some(mouse_in_window(w, *m)),
-                            _ => ball.map(|_| false),
+                            _ => ball.as_ref().map(|_| false),
                         };
-                        let comp_in = match (&mouse, &comp) {
+                        let comp_raw_in = match (&mouse, &comp) {
                             (Some(m), Some(w)) => Some(mouse_in_window(w, *m)),
-                            _ => comp.map(|_| false),
+                            _ => comp.as_ref().map(|_| false),
                         };
-                        let _ = tx.send((ball_in, comp_in));
+                        // Peek is intentionally nonactivating: MyAgents is
+                        // normally inactive while the user works in another
+                        // app. Therefore app_active is diagnostic context, not
+                        // a hover gate; the geometry hit-test remains the
+                        // source of truth.
+                        let ball_in = ball_raw_in;
+                        let comp_in = comp_raw_in;
+                        let probe = HoverProbe {
+                            mouse,
+                            ball_in,
+                            comp_in,
+                            ball_raw_in,
+                            comp_raw_in,
+                            ball_frame: window_debug_frame(ball.as_ref()),
+                            comp_frame: window_debug_frame(comp.as_ref()),
+                            main_frame: window_debug_frame_by_label(&app2, "main"),
+                            app_active,
+                        };
+                        let _ = tx.send(probe);
                     })
                     .is_ok();
                 if !dispatched {
                     break;
                 }
-                let Ok((ball_in, comp_in)) = rx.recv() else {
+                let Ok(probe) = rx.recv() else {
                     break;
                 };
-                if let Some(inside) = ball_in {
-                    if inside != ball_inside {
-                        ball_inside = inside;
-                        let _ = app.emit_to(
-                            BALL_LABEL,
-                            "fb:native-hover",
-                            serde_json::json!({ "inside": inside }),
+                if let Some(raw_inside) = probe.ball_raw_in {
+                    if raw_inside != ball_raw_inside {
+                        ball_raw_inside = raw_inside;
+                        ulog_info!(
+                            "[fb] native-hover-raw target=ball raw_inside={} effective_inside={:?} mouse={} app_active={} ball=[{}] companion=[{}] main=[{}]",
+                            raw_inside,
+                            probe.ball_in,
+                            fmt_mouse(probe.mouse),
+                            probe.app_active,
+                            probe.ball_frame,
+                            probe.comp_frame,
+                            probe.main_frame
                         );
                     }
                 }
-                if let Some(inside) = comp_in {
+                if let Some(raw_inside) = probe.comp_raw_in {
+                    if raw_inside != comp_raw_inside {
+                        comp_raw_inside = raw_inside;
+                        ulog_info!(
+                            "[fb] native-hover-raw target=companion raw_inside={} effective_inside={:?} mouse={} app_active={} ball=[{}] companion=[{}] main=[{}]",
+                            raw_inside,
+                            probe.comp_in,
+                            fmt_mouse(probe.mouse),
+                            probe.app_active,
+                            probe.ball_frame,
+                            probe.comp_frame,
+                            probe.main_frame
+                        );
+                    }
+                }
+                if let Some(inside) = probe.ball_in {
+                    if inside != ball_inside {
+                        ball_inside = inside;
+                        ulog_info!(
+                            "[fb] native-hover target=ball inside={} raw_inside={:?} mouse={} app_active={} ball=[{}] companion=[{}] main=[{}]",
+                            inside,
+                            probe.ball_raw_in,
+                            fmt_mouse(probe.mouse),
+                            probe.app_active,
+                            probe.ball_frame,
+                            probe.comp_frame,
+                            probe.main_frame
+                        );
+                        let _ = app.emit_to(
+                            BALL_LABEL,
+                            "fb:native-hover",
+                            serde_json::json!({
+                                "inside": inside,
+                                "appActive": probe.app_active,
+                                "rawInside": probe.ball_raw_in,
+                            }),
+                        );
+                    }
+                }
+                if let Some(inside) = probe.comp_in {
                     if inside != comp_inside {
                         comp_inside = inside;
+                        ulog_info!(
+                            "[fb] native-hover target=companion inside={} raw_inside={:?} mouse={} app_active={} ball=[{}] companion=[{}] main=[{}]",
+                            inside,
+                            probe.comp_raw_in,
+                            fmt_mouse(probe.mouse),
+                            probe.app_active,
+                            probe.ball_frame,
+                            probe.comp_frame,
+                            probe.main_frame
+                        );
                         let _ = app.emit_to(
                             COMPANION_LABEL,
                             "fb:native-hover",
-                            serde_json::json!({ "inside": inside }),
+                            serde_json::json!({
+                                "inside": inside,
+                                "appActive": probe.app_active,
+                                "rawInside": probe.comp_raw_in,
+                            }),
                         );
                     }
                 }
@@ -545,6 +719,51 @@ mod imp {
         Some(monitor_work_area(&monitor))
     }
 
+    fn virtual_screen_rect(app: &AppHandle) -> Option<(f64, f64, f64, f64)> {
+        let monitors = app.available_monitors().ok()?;
+        let mut min_x = f64::INFINITY;
+        let mut min_y = f64::INFINITY;
+        let mut max_x = f64::NEG_INFINITY;
+        let mut max_y = f64::NEG_INFINITY;
+        for monitor in monitors {
+            let scale = monitor.scale_factor();
+            let pos = monitor.position().to_logical::<f64>(scale);
+            let size = monitor.size().to_logical::<f64>(scale);
+            min_x = min_x.min(pos.x);
+            min_y = min_y.min(pos.y);
+            max_x = max_x.max(pos.x + size.width);
+            max_y = max_y.max(pos.y + size.height);
+        }
+        if !min_x.is_finite() || !min_y.is_finite() || !max_x.is_finite() || !max_y.is_finite() {
+            return None;
+        }
+        Some((min_x, min_y, max_x - min_x, max_y - min_y))
+    }
+
+    fn position_click_shield(app: &AppHandle, shield: &tauri::WebviewWindow) {
+        let (x, y, w, h) = virtual_screen_rect(app).unwrap_or((0.0, 0.0, 1440.0, 900.0));
+        let _ = shield.set_position(LogicalPosition::new(x, y));
+        let _ = shield.set_size(LogicalSize::new(w.max(1.0), h.max(1.0)));
+    }
+
+    fn show_click_shield(app: &AppHandle) {
+        let Some(shield) = app.get_webview_window(SHIELD_LABEL) else {
+            return;
+        };
+        position_click_shield(app, &shield);
+        if let Ok(panel) = app.get_webview_panel(SHIELD_LABEL) {
+            panel.set_alpha_value(1.0);
+            panel.order_front_regardless();
+            panel.show();
+        }
+    }
+
+    fn hide_click_shield(app: &AppHandle) {
+        if let Ok(panel) = app.get_webview_panel(SHIELD_LABEL) {
+            panel.hide();
+        }
+    }
+
     fn ball_xy_for_placement(app: &AppHandle, p: &FbPlacement) -> (f64, f64) {
         // 优先按持久化的显示器名恢复（boot 时球还停在出生位置，球心定位
         // 不可信）；找不到该屏（外接屏已拔）再回退球心所在屏/主屏。
@@ -601,6 +820,7 @@ mod imp {
                 CollectionBehavior::new()
                     .full_screen_auxiliary()
                     .can_join_all_spaces()
+                    .stationary()
                     .ignores_cycle()
                     .into(),
             );
@@ -612,6 +832,38 @@ mod imp {
             let placement = load_placement();
             let (x, y) = ball_xy_for_placement(app, &placement);
             let _ = win.set_position(LogicalPosition::new(x, y));
+        }
+
+        if app.get_webview_window(SHIELD_LABEL).is_none() {
+            let win = WebviewWindowBuilder::new(app, SHIELD_LABEL, WebviewUrl::default())
+                .title("MyAgents Floating Shield")
+                .inner_size(1.0, 1.0)
+                .resizable(false)
+                .decorations(false)
+                .transparent(true)
+                .shadow(false)
+                .visible(false)
+                .skip_taskbar(true)
+                .accept_first_mouse(true)
+                .build()
+                .map_err(|e| format!("[fb] create shield window: {e}"))?;
+
+            position_click_shield(app, &win);
+            let panel = win
+                .to_panel::<FbShieldPanel>()
+                .map_err(|e| format!("[fb] shield to_panel: {e}"))?;
+            panel.set_level(PanelLevel::Floating.value().saturating_sub(1));
+            panel.set_style_mask(StyleMask::empty().nonactivating_panel().into());
+            panel.set_collection_behavior(
+                CollectionBehavior::new()
+                    .full_screen_auxiliary()
+                    .can_join_all_spaces()
+                    .stationary()
+                    .ignores_cycle()
+                    .into(),
+            );
+            panel.set_hides_on_deactivate(false);
+            panel.set_released_when_closed(false);
         }
 
         if app.get_webview_window(COMPANION_LABEL).is_none() {
@@ -652,6 +904,7 @@ mod imp {
                 CollectionBehavior::new()
                     .full_screen_auxiliary()
                     .can_join_all_spaces()
+                    .stationary()
                     .ignores_cycle()
                     .into(),
             );
@@ -665,10 +918,24 @@ mod imp {
     pub fn enable(app: &AppHandle) -> Result<(), String> {
         use tauri::Emitter;
         ensure_windows(app)?;
+        ulog_info!(
+            "[fb] enable begin mouse={} app_active={} main=[{}] ball=[{}] companion=[{}]",
+            fmt_mouse(mouse_location_top_left()),
+            current_app_active(),
+            window_debug_frame_by_label(app, "main"),
+            window_debug_frame_by_label(app, BALL_LABEL),
+            window_debug_frame_by_label(app, COMPANION_LABEL)
+        );
         if let Ok(panel) = app.get_webview_panel(BALL_LABEL) {
             panel.order_front_regardless();
             panel.show();
         }
+        ulog_info!(
+            "[fb] enable after ball show app_active={} main=[{}] ball=[{}]",
+            current_app_active(),
+            window_debug_frame_by_label(app, "main"),
+            window_debug_frame_by_label(app, BALL_LABEL)
+        );
         // Re-enable after a disable: tell the companion to re-acquire its
         // sidecar owner + SSE. On the very first enable the companion webview
         // may not have listeners yet — harmless, its boot path covers that.
@@ -684,8 +951,17 @@ mod imp {
 
     pub fn disable(app: &AppHandle) {
         use tauri::Emitter;
+        ulog_info!(
+            "[fb] disable begin app_active={} main=[{}] ball=[{}] companion=[{}]",
+            current_app_active(),
+            window_debug_frame_by_label(app, "main"),
+            window_debug_frame_by_label(app, BALL_LABEL),
+            window_debug_frame_by_label(app, COMPANION_LABEL)
+        );
         // 作废 in-flight 渐变 task（否则它会在已隐藏的窗口上继续步进 alpha）。
         let _ = next_companion_gen();
+        COMPANION_PINNED.store(false, Ordering::SeqCst);
+        hide_click_shield(app);
         if let Ok(panel) = app.get_webview_panel(COMPANION_LABEL) {
             let should_restore = companion_is_key_window(app);
             panel.hide();
@@ -838,10 +1114,19 @@ mod imp {
                 let app2 = app.clone();
                 let _ = app.run_on_main_thread(move || {
                     let should_restore = companion_is_key_window(&app2);
+                    ulog_info!(
+                        "[fb] hide_companion fade-out complete gen={} should_restore={} app_active={} main=[{}] companion=[{}]",
+                        generation,
+                        should_restore,
+                        current_app_active(),
+                        window_debug_frame_by_label(&app2, "main"),
+                        window_debug_frame_by_label(&app2, COMPANION_LABEL)
+                    );
                     if let Ok(panel) = app2.get_webview_panel(COMPANION_LABEL) {
                         panel.hide();
                         panel.set_alpha_value(1.0); // 复位（下次 show 会先归零）
                     }
+                    hide_click_shield(&app2);
                     restore_pin_foreground_app(should_restore);
                 });
             }
@@ -852,9 +1137,28 @@ mod imp {
     /// mode = "peek" (no keyboard focus) | "pin" (becomes key window).
     pub fn show_companion(app: &AppHandle, mode: &str) -> Result<(), String> {
         ensure_windows(app)?;
+        ulog_info!(
+            "[fb] show_companion begin mode={} mouse={} app_active={} main=[{}] ball=[{}] companion=[{}]",
+            mode,
+            fmt_mouse(mouse_location_top_left()),
+            current_app_active(),
+            window_debug_frame_by_label(app, "main"),
+            window_debug_frame_by_label(app, BALL_LABEL),
+            window_debug_frame_by_label(app, COMPANION_LABEL)
+        );
         let companion = app
             .get_webview_window(COMPANION_LABEL)
             .ok_or("[fb] companion window missing")?;
+        let pin_mode = mode == "pin";
+        if !pin_mode && (COMPANION_PINNED.load(Ordering::SeqCst) || companion_is_key_window(app)) {
+            ulog_info!(
+                "[fb] show_companion ignored stale peek while pinned app_active={} key={} companion=[{}]",
+                current_app_active(),
+                companion_is_key_window(app),
+                window_debug_frame_by_label(app, COMPANION_LABEL)
+            );
+            return Ok(());
+        }
         position_companion_near_ball(app, &companion);
 
         let panel = app
@@ -869,16 +1173,44 @@ mod imp {
             panel.set_alpha_value(0.0);
             set_tracked_alpha(0.0);
         }
-        panel.order_front_regardless();
-        panel.show();
-        if mode == "pin" {
+        ulog_info!(
+            "[fb] show_companion native-show begin mode={} was_visible={} gen={} app_active={} companion=[{}]",
+            mode,
+            was_visible,
+            generation,
+            current_app_active(),
+            window_debug_frame_by_label(app, COMPANION_LABEL)
+        );
+        if pin_mode {
+            COMPANION_PINNED.store(true, Ordering::SeqCst);
+            show_click_shield(app);
+            ulog_info!(
+                "[fb] show_companion pin-focus begin app_active={} key={} main=[{}] companion=[{}]",
+                current_app_active(),
+                companion_is_key_window(app),
+                window_debug_frame_by_label(app, "main"),
+                window_debug_frame_by_label(app, COMPANION_LABEL)
+            );
             remember_pin_foreground_app();
             activate_current_app_for_text_input();
-            panel.make_key_window();
+            panel.show_and_make_key();
+        } else {
+            COMPANION_PINNED.store(false, Ordering::SeqCst);
+            hide_click_shield(app);
+            panel.order_front_regardless();
+            panel.show();
         }
+        ulog_info!(
+            "[fb] show_companion after-show mode={} app_active={} key={} companion=[{}] main=[{}]",
+            mode,
+            current_app_active(),
+            companion_is_key_window(app),
+            window_debug_frame_by_label(app, COMPANION_LABEL),
+            window_debug_frame_by_label(app, "main")
+        );
         // Peek: visible but never key — D1. 半透明完全由 DOM 暖纸表达。
         // 已可见时（含淡出半程被重新唤起）从 tracked alpha 续渐到 1，无跳变。
-        let dur = if mode == "pin" {
+        let dur = if pin_mode {
             FADE_IN_PIN_MS
         } else {
             FADE_IN_PEEK_MS
@@ -893,11 +1225,28 @@ mod imp {
             .get_webview_panel(COMPANION_LABEL)
             .map_err(|_| "[fb] companion panel missing".to_string())?;
         let generation = next_companion_gen();
+        ulog_info!(
+            "[fb] pin_companion begin gen={} mouse={} app_active={} key={} main=[{}] companion=[{}]",
+            generation,
+            fmt_mouse(mouse_location_top_left()),
+            current_app_active(),
+            companion_is_key_window(app),
+            window_debug_frame_by_label(app, "main"),
+            window_debug_frame_by_label(app, COMPANION_LABEL)
+        );
+        COMPANION_PINNED.store(true, Ordering::SeqCst);
+        show_click_shield(app);
         remember_pin_foreground_app();
         activate_current_app_for_text_input();
-        panel.order_front_regardless();
-        panel.show();
-        panel.make_key_window();
+        panel.show_and_make_key();
+        ulog_info!(
+            "[fb] pin_companion end gen={} app_active={} key={} main=[{}] companion=[{}]",
+            generation,
+            current_app_active(),
+            companion_is_key_window(app),
+            window_debug_frame_by_label(app, "main"),
+            window_debug_frame_by_label(app, COMPANION_LABEL)
+        );
         // peek→pin 时窗口已在 alpha 1（渐变是 no-op）；这里只救"淡出半程
         // 被点住"的边角——从 tracked alpha 续渐回 1。
         fade_companion_to(app, generation, 1.0, FADE_IN_PIN_MS, false);
@@ -905,16 +1254,27 @@ mod imp {
     }
 
     pub fn hide_companion(app: &AppHandle) {
+        COMPANION_PINNED.store(false, Ordering::SeqCst);
         let Some(win) = app.get_webview_window(COMPANION_LABEL) else {
+            hide_click_shield(app);
             restore_pin_foreground_app(false);
             return;
         };
         if !win.is_visible().unwrap_or(false) {
+            hide_click_shield(app);
             restore_pin_foreground_app(false);
             return;
         }
         let generation = next_companion_gen();
-        crate::ulog_debug!("[fb] companion fade-out start (gen {generation})");
+        ulog_info!(
+            "[fb] hide_companion fade-out start gen={} mouse={} app_active={} key={} main=[{}] companion=[{}]",
+            generation,
+            fmt_mouse(mouse_location_top_left()),
+            current_app_active(),
+            companion_is_key_window(app),
+            window_debug_frame_by_label(app, "main"),
+            window_debug_frame_by_label(app, COMPANION_LABEL)
+        );
         // 渐隐到 0 后由 fade task 收尾 orderOut（hide_when_done）。
         // hide()/orderOut is sufficient for pure nonactivating panels. Pin now
         // activates MyAgents so IME/text services attach to WKWebView, so the
@@ -1193,6 +1553,25 @@ mod imp {
             app_name: info.app_name,
             window_title: info.window_title,
         })
+    }
+
+    fn emit_force_hidden(app: &AppHandle, reason: &str) {
+        let _ = app.emit_to(
+            COMPANION_LABEL,
+            "fb:force-hidden",
+            serde_json::json!({ "reason": reason }),
+        );
+        let _ = app.emit_to(
+            BALL_LABEL,
+            "fb:companion-mode",
+            serde_json::json!({ "mode": "hidden" }),
+        );
+    }
+
+    pub fn dismiss_from_shield(app: &AppHandle) {
+        ulog_info!("[fb] shield dismiss begin");
+        emit_force_hidden(app, "shield-click");
+        hide_companion(app);
     }
 
     /// Cross-window event relay: ball ⇄ companion talk through Rust because
@@ -1976,6 +2355,20 @@ mod imp {
         }
     }
 
+    pub fn dismiss_from_shield(app: &AppHandle) {
+        hide_companion(app);
+        let _ = app.emit_to(
+            BALL_LABEL,
+            "fb:companion-mode",
+            serde_json::json!({ "mode": "hidden" }),
+        );
+        let _ = app.emit_to(
+            COMPANION_LABEL,
+            "fb:force-hidden",
+            serde_json::json!({ "reason": "shield-click" }),
+        );
+    }
+
     pub fn move_ball_to(app: &AppHandle, x: f64, y: f64) -> Result<(), String> {
         let ball = app
             .get_webview_window(BALL_LABEL)
@@ -2436,11 +2829,13 @@ mod commands {
 
     #[tauri::command]
     pub async fn cmd_fb_enable(app: AppHandle) -> Result<(), String> {
+        crate::ulog_info!("[fb] cmd_fb_enable requested");
         run_native_window_op(app, "enable", imp::enable)
     }
 
     #[tauri::command]
     pub async fn cmd_fb_disable(app: AppHandle) -> Result<(), String> {
+        crate::ulog_info!("[fb] cmd_fb_disable requested");
         run_native_window_op(app, "disable", |app| {
             imp::disable(app);
             Ok(())
@@ -2454,6 +2849,7 @@ mod commands {
 
     #[tauri::command]
     pub async fn cmd_fb_show_companion(app: AppHandle, mode: String) -> Result<(), String> {
+        crate::ulog_info!("[fb] cmd_fb_show_companion requested mode={}", mode);
         run_native_window_op(app, "show companion", move |app| {
             imp::show_companion(app, &mode)
         })
@@ -2465,13 +2861,24 @@ mod commands {
     /// directly.
     #[tauri::command]
     pub async fn cmd_fb_pin_companion(app: AppHandle) -> Result<(), String> {
+        crate::ulog_info!("[fb] cmd_fb_pin_companion requested");
         run_native_window_op(app, "pin", imp::pin_companion)
     }
 
     #[tauri::command]
     pub async fn cmd_fb_hide_companion(app: AppHandle) -> Result<(), String> {
+        crate::ulog_info!("[fb] cmd_fb_hide_companion requested");
         run_native_window_op(app, "hide companion", |app| {
             imp::hide_companion(app);
+            Ok(())
+        })
+    }
+
+    #[tauri::command]
+    pub async fn cmd_fb_shield_dismiss(app: AppHandle) -> Result<(), String> {
+        crate::ulog_info!("[fb] cmd_fb_shield_dismiss requested");
+        run_native_window_op(app, "shield dismiss", |app| {
+            imp::dismiss_from_shield(app);
             Ok(())
         })
     }
@@ -2607,6 +3014,13 @@ mod commands {
             imp::suppress_pin_foreground_restore();
             Ok(())
         })?;
+        crate::ulog_info!(
+            "[fb] cmd_fb_open_main_with_session requested session_id={} workspace_path={} preview_path={:?} preview_line={:?}",
+            session_id,
+            workspace_path,
+            preview_path,
+            preview_line
+        );
         crate::tray::show_main_window(&app);
         let preview = preview_path.map(|path| {
             serde_json::json!({
@@ -2635,6 +3049,7 @@ mod commands {
             imp::suppress_pin_foreground_restore();
             Ok(())
         })?;
+        crate::ulog_info!("[fb] cmd_fb_open_desktop_pet_settings requested");
         crate::tray::show_main_window(&app);
         app.emit_to(
             "main",
@@ -2682,6 +3097,11 @@ mod commands {
 
     #[tauri::command]
     pub async fn cmd_fb_hide_companion(_app: AppHandle) -> Result<(), String> {
+        Ok(())
+    }
+
+    #[tauri::command]
+    pub async fn cmd_fb_shield_dismiss(_app: AppHandle) -> Result<(), String> {
         Ok(())
     }
 

@@ -41,8 +41,8 @@ describe('SpaceChrome i18n', () => {
       />,
     );
 
-    expect(screen.getAllByText('Official Space').length).toBeGreaterThan(0);
-    expect(screen.getByText('Open join')).toBeInTheDocument();
+    expect(screen.getByText('Official Space')).toBeInTheDocument();
+    expect(screen.getByText('open')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /user@example.com/i }));
     expect(screen.getAllByText((_, node) => node?.textContent?.includes('Signed in with Google') ?? false).length).toBeGreaterThan(0);

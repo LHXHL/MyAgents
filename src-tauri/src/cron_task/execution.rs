@@ -345,6 +345,7 @@ pub(super) async fn execute_task_directly(
     let payload = CronExecutePayload {
         task_id: task.id.clone(),
         prompt: prompt_to_send,
+        task_center_task_id: task.task_id.clone(),
         session_id: Some(effective_session_id.clone()),
         is_first_execution: Some(is_first_execution),
         ai_can_exit: Some(task.end_conditions.ai_can_exit),
@@ -602,14 +603,34 @@ fn send_task_notification(
         .unwrap_or_else(|| effective_session_id.to_string());
     let navigation = crate::notification::NotificationNavigation::for_session(
         task.tab_id.clone(),
-        session_id,
+        session_id.clone(),
         task.workspace_path.clone(),
     );
+    let badge_increment = crate::notification_badge::NotificationBadgeIncrement {
+        id: format!(
+            "cron:{}:{}:{}",
+            task.id,
+            task.execution_count + 1,
+            session_id
+        ),
+        source: "cron".to_string(),
+        created_at: chrono::Utc::now().timestamp_millis(),
+        target: crate::notification_badge::NotificationBadgeTarget::Session {
+            session_id,
+            workspace_path: task.workspace_path.clone(),
+        },
+    };
 
     // Send the OS notification through the unified notification module so the
     // click handler is wired structurally (Windows toast Activated, macOS /
     // Linux fallback). Cron completion must deep-link by session, not only by
     // tab: scheduled/background tasks frequently have no live Tab, and
     // new_session mode rotates a fresh session id per execution.
-    crate::notification::show_with_navigation_target(handle, &title, &body, navigation);
+    crate::notification::show_with_navigation_target_and_badge(
+        handle,
+        &title,
+        &body,
+        navigation,
+        Some(badge_increment),
+    );
 }

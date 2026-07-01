@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
 
 import type { SpaceIssue } from '@/api/spaceCloud';
 import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
-import { claimHandlerLabel, ISSUE_STATUSES, issueDisplayTitle, issueStatusLabel } from '@/pages/space/spaceHelpers';
+import { ACTIVE_ISSUE_STATE_FILTER, claimHandlerLabel, ISSUE_STATUSES, issueDisplayTitle, issueStatusLabel } from '@/pages/space/spaceHelpers';
 import { recordSpaceMetric } from '@/pages/space/spaceMetrics';
 import { formatTime, statusPillClass } from '@/pages/space/spaceUi';
 
@@ -43,10 +43,13 @@ export function IssuesWorkspace({
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const searchActive = searchOpen || issueQ.trim().length > 0;
-  const statusFilterOptions: SelectOption[] = [
-    { value: '', label: t('space.filters.allStatuses') },
-    ...ISSUE_STATUSES.map((status) => ({ value: status, label: issueStatusLabel(status) })),
-  ];
+  const statusFilterOptions = useMemo<SelectOption[]>(
+    () => [
+      { value: ACTIVE_ISSUE_STATE_FILTER, label: t('space.filters.activeStatuses') },
+      ...ISSUE_STATUSES.map((status) => ({ value: status, label: issueStatusLabel(status, t) })),
+    ],
+    [t],
+  );
 
   useEffect(() => {
     recordSpaceMetric('space_issue_list_render_count', { count: issues.length });
@@ -197,7 +200,9 @@ function IssueStreamRow({
     >
       <span className="min-w-0">
         <span className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2">
-          <span className={`inline-flex h-7 items-center rounded-md px-2 text-xs font-semibold ${statusPillClass(issue.state)}`}>{issueStatusLabel(issue.state)}</span>
+          <span className={`inline-flex h-7 items-center whitespace-nowrap rounded-md px-2 text-xs font-semibold ${statusPillClass(issue.state)}`}>
+            {issueStatusLabel(issue.state, t)}
+          </span>
           <span className="truncate text-base font-semibold leading-6 text-[var(--ink)]">{displayTitle}</span>
         </span>
         <span className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs font-semibold text-[var(--ink-subtle)]">

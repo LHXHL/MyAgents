@@ -241,6 +241,8 @@ export function createExternalSessionEngine(): SessionEngine {
           workspacePath: request.workspacePath,
           scenario: request.scenario,
           analyticsSource: request.analyticsSource,
+          analyticsOrigin: request.analyticsOrigin,
+          birthOrigin: request.birthOrigin,
           permissionMode: request.permissionMode,
           model: request.model,
           reasoningEffort: request.reasoningEffort,
@@ -282,6 +284,7 @@ export function createExternalSessionEngine(): SessionEngine {
           reasoningEffort: request.reasoningEffort,
           requestId: request.requestId,
           metadataBirthPending: request.metadataBirthPending === true,
+          analyticsOrigin: request.analyticsOrigin,
         },
       );
       if (!result.queued) {
@@ -311,6 +314,7 @@ export function createExternalSessionEngine(): SessionEngine {
           permissionMode: request.permissionMode,
           model: request.model,
           reasoningEffort: request.reasoningEffort,
+          analyticsOrigin: request.analyticsOrigin,
         },
       );
       if (!result.queued) {
@@ -335,6 +339,7 @@ export function createExternalSessionEngine(): SessionEngine {
           scenario: request.scenario ?? { type: 'desktop' },
           inboxMeta: request.inboxMeta,
           metadataBirthPending: request.allowLazySessionMaterialization === true,
+          analyticsOrigin: request.analyticsOrigin,
         },
       );
     },
@@ -352,6 +357,7 @@ export function createExternalSessionEngine(): SessionEngine {
           permissionMode: request.permissionMode,
           model: request.model,
           reasoningEffort: request.reasoningEffort,
+          analyticsOrigin: request.analyticsOrigin,
         },
       );
       if (!result.queued) {
@@ -432,6 +438,7 @@ export function createExternalSessionEngine(): SessionEngine {
         phase: request.phase,
         preparedSessionId: request.preparedSessionId,
         snapshotPatch: request.snapshotPatch,
+        origin: request.origin,
       });
       if ((request.phase === 'commit' || request.phase === undefined) && result.success && result.sessionId) {
         if (runtimeSessionIdBefore && runtimeSessionIdBefore !== result.sessionId) {
@@ -449,7 +456,7 @@ export function createExternalSessionEngine(): SessionEngine {
       return freezeCurrentSessionMetadataForImDetach(
         buildExternalFreezeSnapshotPatch(),
         {
-          allowMissingMetadata: options?.metadataBirthPending === true,
+          allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
         },
       );
     },
@@ -576,7 +583,7 @@ export function createExternalSessionEngine(): SessionEngine {
       const freeze = await freezeCurrentSessionMetadataForImDetach(
         buildExternalFreezeSnapshotPatch(),
         {
-          allowMissingMetadata: options?.metadataBirthPending === true,
+          allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
         },
       );
       if (!freeze.success) {

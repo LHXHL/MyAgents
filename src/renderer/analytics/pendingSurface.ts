@@ -61,6 +61,17 @@ export function setPendingSessionBirth(tabId: string, context: PendingSessionBir
 }
 
 /**
+ * Read the next birth context without consuming it. Use this only when a
+ * request must carry the birth fact before `session_new` has the real id.
+ */
+export function peekPendingSessionBirth(
+  tabId: string,
+  fallback: PendingSessionBirthContext,
+): PendingSessionBirthContext {
+  return pendingByTab.get(tabId) ?? fallback;
+}
+
+/**
  * Consumer 在 track session_new 之前消费出生上下文。如未 set 则返回 fallback。
  * 消费即清空，避免 stale 值流到下一个 session_new。
  */

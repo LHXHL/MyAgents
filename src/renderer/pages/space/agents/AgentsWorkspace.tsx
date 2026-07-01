@@ -10,7 +10,8 @@ import { useToast } from '@/components/Toast';
 import type { Project } from '@/config/types';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { spaceErrorMessage } from '@/api/spaceCloud';
-import { formatAgentSecondaryLabel } from '@/pages/space/spaceHelpers';
+import { formatAgentSecondaryLabel, issueStatusLabel } from '@/pages/space/spaceHelpers';
+import { GoalPathSelectLabel } from '@/pages/space/GoalPathSelectLabel';
 import type { SpaceActions } from '@/pages/space/spaceStore';
 import { formatTime } from '@/pages/space/spaceUi';
 
@@ -36,6 +37,10 @@ function issueSubscriptionRunModeLabel(
   return normalizeIssueSubscriptionRunMode(mode) === 'new_session'
     ? t('space.agents.issueSubscriptionNewSession')
     : t('space.agents.issueSubscriptionSingleSession');
+}
+
+function issueStateFilterLabel(t: ReturnType<typeof useTranslation>['t'], states?: string[] | null): string {
+  return (states?.length ? states : ['todo']).map((state) => issueStatusLabel(state, t)).join(', ');
 }
 
 export function AgentsWorkspace({
@@ -71,8 +76,6 @@ export function AgentsWorkspace({
       setBusyAgentId(null);
     }
   };
-  const stateFilterLabel = (agent: LocalRegisteredAgent) => (agent.stateFilter?.length ? agent.stateFilter : ['todo']).join(', ');
-
   const revokeAgent = async () => {
     if (!revokeTarget) return;
     setBusyAgentId(revokeTarget.id);
@@ -213,7 +216,7 @@ export function AgentsWorkspace({
                       <div className="mt-3 whitespace-pre-wrap rounded-xl bg-[var(--paper-inset)]/40 p-3 text-sm leading-6 text-[var(--ink-secondary)]">
                         {t('space.agents.subscription')}:
                         {' '}
-                        {stateFilterLabel(agent)}
+                        {issueStateFilterLabel(t, agent.stateFilter)}
                       </div>
                     </details>
                   </article>
@@ -324,7 +327,7 @@ function EditAgentDialog({
             <span className="block text-xs font-semibold text-[var(--ink-muted)]">{t('space.agents.goal')}</span>
             <strong className="mt-1 block truncate text-base font-semibold text-[var(--ink)]">{agent.goalPathLabel || agent.goalId || t('space.filters.inbox')}</strong>
             <span className="mt-2 block text-xs text-[var(--ink-muted)]">
-              {t('space.agents.subscription')}: {(agent.stateFilter?.length ? agent.stateFilter : ['todo']).join(', ')}
+              {t('space.agents.subscription')}: {issueStateFilterLabel(t, agent.stateFilter)}
             </span>
           </div>
           <IssueSubscriptionRunModeControl
@@ -447,7 +450,14 @@ export function RegisterAgentDialog({
     [projects],
   );
   const goalOptions = useMemo<SelectOption[]>(
-    () => goals.map((goal) => ({ value: goal.id, label: goal.goalPathLabel || goal.title })),
+    () => goals.map((goal) => {
+      const label = goal.goalPathLabel || goal.title;
+      return {
+        value: goal.id,
+        label,
+        content: <GoalPathSelectLabel label={label} />,
+      };
+    }),
     [goals],
   );
 

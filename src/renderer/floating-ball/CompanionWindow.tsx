@@ -83,6 +83,10 @@ const HIDE_GRACE_MS = 280;
 const MAX_IMAGES = 5;
 const MAX_IMAGE_SIZE = USER_IMAGE_ATTACHMENT_MAX_BYTES;
 
+function isMacRendererPlatform(): boolean {
+    return typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac');
+}
+
 function loadWinH(): number {
     const saved = parseInt(localStorage.getItem(WIN_H_KEY) ?? '', 10);
     return Number.isFinite(saved) && saved >= 360 ? Math.min(saved, 1200) : 660;
@@ -293,11 +297,16 @@ export default function CompanionWindow() {
     const visibilityGenerationRef = useRef(0);
     const pinRequestSeqRef = useRef(0);
     const pinInFlightRef = useRef(false);
+    const textFocusRepairInFlightRef = useRef(false);
+    const pinFocusTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+    const nativeFocusLostTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const ballSummonPendingRef = useRef(false);
     const inputFocusConvergence = useMemo(
         () => createFocusConvergence({
             getTarget: () => inputRef.current,
             shouldContinue: () => modeRef.current === 'pin',
+            maxAttempts: 60,
+            minAttempts: 8,
         }),
         [],
     );
@@ -361,6 +370,18 @@ export default function CompanionWindow() {
             : t('floatingBall.watchingApp', { appName: whoContext.appName });
     }, [t, whoContext]);
 
+    const clearPinnedInputFocusRetries = useCallback(() => {
+        for (const timer of pinFocusTimersRef.current) clearTimeout(timer);
+        pinFocusTimersRef.current = [];
+    }, []);
+
+    const clearNativeFocusLostTimer = useCallback(() => {
+        if (nativeFocusLostTimerRef.current) {
+            clearTimeout(nativeFocusLostTimerRef.current);
+            nativeFocusLostTimerRef.current = null;
+        }
+    }, []);
+
     // ── mode → 通知球（球用它决定点击语义）＋ pin 时清未读 ──
     const applyMode = useCallback(
         (next: FbMode) => {
@@ -369,7 +390,11 @@ export default function CompanionWindow() {
                 pinInFlightRef.current = false;
                 ballSummonPendingRef.current = false;
             }
-            if (next !== 'pin') inputFocusConvergence.cancel();
+            if (next !== 'pin') {
+                inputFocusConvergence.cancel();
+                clearPinnedInputFocusRetries();
+                clearNativeFocusLostTimer();
+            }
             setMode(next);
             modeRef.current = next;
             void invoke('cmd_fb_relay', {
@@ -379,7 +404,7 @@ export default function CompanionWindow() {
             }).catch(() => undefined);
             if (next === 'pin') markRead();
         },
-        [inputFocusConvergence, markRead],
+        [clearNativeFocusLostTimer, clearPinnedInputFocusRetries, inputFocusConvergence, markRead],
     );
 
     const beginPinRequest = useCallback(() => ({
@@ -402,9 +427,10 @@ export default function CompanionWindow() {
             clearTimeout(hideTimerRef.current);
             hideTimerRef.current = null;
         }
+        clearNativeFocusLostTimer();
         applyMode('hidden');
         void invoke('cmd_fb_hide_companion');
-    }, [applyMode]);
+    }, [applyMode, clearNativeFocusLostTimer]);
 
     const scheduleHideIfPeek = useCallback(() => {
         if (modeRef.current !== 'peek') return;
@@ -450,6 +476,51 @@ export default function CompanionWindow() {
     const focusInputWhenPinned = useCallback(() => {
         inputFocusConvergence.request();
     }, [inputFocusConvergence]);
+
+    const schedulePinnedInputFocus = useCallback(
+        (_source: string) => {
+            clearPinnedInputFocusRetries();
+            const requestFocus = () => {
+                if (modeRef.current !== 'pin') return;
+                focusInputWhenPinned();
+            };
+            requestFocus();
+            pinFocusTimersRef.current = [0, 80, 220, 500].map((delay) => (
+                setTimeout(requestFocus, delay)
+            ));
+        },
+        [clearPinnedInputFocusRetries, focusInputWhenPinned],
+    );
+
+    const repairMacNativeTextInputFocus = useCallback((source: string) => {
+        if (!isMacRendererPlatform()) return;
+        if (modeRef.current !== 'pin') return;
+        if (textFocusRepairInFlightRef.current) return;
+        textFocusRepairInFlightRef.current = true;
+        void invoke('cmd_fb_pin_companion')
+            .then(() => {
+                schedulePinnedInputFocus(`${source}:native-success`);
+            })
+            .catch((err) => {
+                console.warn('[fb-companion] native text focus repair failed:', err);
+            })
+            .finally(() => {
+                textFocusRepairInFlightRef.current = false;
+            });
+    }, [schedulePinnedInputFocus]);
+
+    useEffect(() => {
+        if (mode !== 'pin') {
+            clearPinnedInputFocusRetries();
+            return;
+        }
+        // pin 态的产品语义是“实心即能输入”。这一步故意挂在 mode
+        // commit 后，而不是只挂在 click handler：peek 态的 first click
+        // 负责升格，真正的 caret/IME attachment 属于 pin 这个状态结果。
+        schedulePinnedInputFocus('mode-pin-commit');
+        repairMacNativeTextInputFocus('mode-pin-commit');
+        return clearPinnedInputFocusRetries;
+    }, [clearPinnedInputFocusRetries, mode, repairMacNativeTextInputFocus, schedulePinnedInputFocus]);
 
     useEffect(() => () => inputFocusConvergence.cancel(), [inputFocusConvergence]);
 
@@ -556,7 +627,7 @@ export default function CompanionWindow() {
         // 原生 hover 信号（修 hover 失灵）：app 非激活时 WKWebView 收不到
         // mouseMoved，DOM mouseenter/leave 不可靠——NSTrackingArea 的进出
         // 事件经 Rust 转发到这里，驱动 peek 的 grace 计时。
-        void listenWithCleanup<{ inside?: boolean }>(
+        void listenWithCleanup<{ inside?: boolean; appActive?: boolean; rawInside?: boolean }>(
             'fb:native-hover',
             (e) => {
                 if (e.payload?.inside) {
@@ -569,22 +640,37 @@ export default function CompanionWindow() {
             },
             ac.signal,
         );
+        void listenWithCleanup<{ focused?: boolean; visible?: boolean }>(
+            'fb:native-focus',
+            (e) => {
+                const focused = e.payload?.focused === true;
+                if (focused && modeRef.current === 'pin') {
+                    clearNativeFocusLostTimer();
+                    schedulePinnedInputFocus('native-focus');
+                    return;
+                }
+                if (!focused && modeRef.current === 'pin') {
+                    clearNativeFocusLostTimer();
+                    nativeFocusLostTimerRef.current = setTimeout(() => {
+                        nativeFocusLostTimerRef.current = null;
+                        if (modeRef.current !== 'pin') return;
+                        if (document.hasFocus()) {
+                            schedulePinnedInputFocus('native-focus-recovered');
+                            return;
+                        }
+                        hideSelf();
+                    }, 140);
+                }
+            },
+            ac.signal,
+        );
         // 握手（review W1）：监听就绪后告知球——球在此之前的 summon 会暂存并重放，
         // 否则 enable 后立即点击的 fb:summon 会落在监听注册前被静默丢弃。
         void invoke('cmd_fb_relay', { target: 'ball', event: 'fb:companion-ready', payload: {} }).catch(
             () => undefined,
         );
         return () => ac.abort();
-    }, [applyMode, applySummonCtx, scheduleHideIfPeek, summonPinned, hideSelf, suspend, resume]);
-
-    // ── 窗口失焦（pin 态用户点了别处）→ 收起。Esc 由 composer keydown owner 处理 ──
-    useEffect(() => {
-        const onBlur = () => {
-            if (modeRef.current === 'pin') hideSelf();
-        };
-        window.addEventListener('blur', onBlur);
-        return () => window.removeEventListener('blur', onBlur);
-    }, [hideSelf]);
+    }, [applyMode, applySummonCtx, clearNativeFocusLostTimer, scheduleHideIfPeek, schedulePinnedInputFocus, summonPinned, hideSelf, suspend, resume]);
 
     // ── peek → pin 升格（窗内有效行为 = 激活 + 执行该行为，0612 用户裁决） ──
     // 点击带处境抓取（点击 = "我要说话"）；滚轮只升格不抓处境（滚轮 = "我要

@@ -55,6 +55,26 @@
 - `fork`
 - `unknown`
 
+### Runtime Identity
+
+Events that describe session or turn execution carry:
+
+- `runtime`: execution runtime (`builtin`, `claude-code`, `codex`, `gemini`, or
+  `unknown` on renderer fallback paths).
+- `runtime_source`: runtime owner source. `builtin` / `unknown` report `null`;
+  external runtime turns report `system-cli` for user-installed CLIs or
+  `managed-provider` for product-managed runtime-backed Providers such as
+  `codex-sub`.
+
+`source` and `runtime_source` are intentionally different dimensions:
+`source` answers which product channel triggered the event (`desktop`, `cron`,
+`im`, ...); `runtime_source` answers who owns the external runtime binary/auth.
+
+The stable runtime-source-bearing events are `session_new`, `history_open`,
+`message_send`, `message_complete`, and `ai_turn_complete`. Older client
+versions may omit `runtime_source`; treat missing as unknown rather than
+inferring it from `runtime='codex'`.
+
 ## Event Names
 
 Application lifecycle:
@@ -164,8 +184,8 @@ Server-side AI turn:
 - `ai_turn_complete`
 
 `ai_turn_complete` is the canonical per-turn usage event emitted from the
-Sidecar. In addition to source/session/runtime/model/token/duration fields, it
-reports the provider attribution for builtin turns:
+Sidecar. In addition to source/session/runtime/runtime_source/model/token/
+duration fields, it reports the provider attribution for builtin turns:
 
 - `provider_name`: provider display name. Builtin subscription turns report
   `Anthropic (订阅)`; external runtime turns report the current

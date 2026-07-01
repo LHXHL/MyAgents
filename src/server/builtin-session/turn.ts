@@ -5,6 +5,7 @@ import type {
   BuiltinTurnUsage,
   TurnProviderAnalytics,
 } from './types';
+import type { SessionOrigin } from '../../shared/session-origin';
 
 type ImEmitter = (type: ImEventType, data?: unknown) => void;
 
@@ -27,6 +28,7 @@ let currentTurnHasOutput = false;
 let currentTurnHadAssistantMessageError = false;
 let currentTurnLastAssistantMessageError: string | null = null;
 let currentTurnAnalyticsSource: import('../types/session').TurnAnalyticsSource | null = null;
+let currentTurnAnalyticsOrigin: SessionOrigin | null = null;
 let currentTurnProviderAnalytics: TurnProviderAnalytics | null = null;
 let currentTurnCompactResult: 'success' | 'failed' | null = null;
 let currentTurnSawCompactBoundary = false;
@@ -96,6 +98,12 @@ export const turnState = {
   },
   set currentTurnAnalyticsSource(source: import('../types/session').TurnAnalyticsSource | null) {
     currentTurnAnalyticsSource = source;
+  },
+  get currentTurnAnalyticsOrigin(): SessionOrigin | null {
+    return currentTurnAnalyticsOrigin;
+  },
+  set currentTurnAnalyticsOrigin(origin: SessionOrigin | null) {
+    currentTurnAnalyticsOrigin = origin;
   },
   get currentTurnProviderAnalytics(): TurnProviderAnalytics | null {
     return currentTurnProviderAnalytics;
@@ -180,6 +188,7 @@ export function resetTurnUsage(): void {
   currentTurnHadAssistantMessageError = false;
   currentTurnLastAssistantMessageError = null;
   currentTurnAnalyticsSource = null;
+  currentTurnAnalyticsOrigin = null;
   currentTurnProviderAnalytics = null;
   currentTurnCompactResult = null;
   currentTurnSawCompactBoundary = false;
@@ -271,6 +280,14 @@ export function getCurrentTurnAnalyticsSource(): import('../types/session').Turn
 
 export function setCurrentTurnAnalyticsSource(source: import('../types/session').TurnAnalyticsSource | null): void {
   currentTurnAnalyticsSource = source;
+}
+
+export function getCurrentTurnAnalyticsOrigin(): SessionOrigin | null {
+  return currentTurnAnalyticsOrigin;
+}
+
+export function setCurrentTurnAnalyticsOrigin(origin: SessionOrigin | null): void {
+  currentTurnAnalyticsOrigin = origin;
 }
 
 export function getCurrentTurnProviderAnalytics(): TurnProviderAnalytics | null {
@@ -491,6 +508,7 @@ export function snapshotTurn() {
     currentTurnHadAssistantMessageError,
     currentTurnLastAssistantMessageError,
     currentTurnAnalyticsSource,
+    currentTurnAnalyticsOrigin,
     currentTurnProviderAnalytics,
     currentTurnCompactResult,
     currentTurnSawCompactBoundary,
@@ -518,6 +536,7 @@ export function resetTurnForTest(): void {
   currentTurnHadAssistantMessageError = false;
   currentTurnLastAssistantMessageError = null;
   currentTurnAnalyticsSource = null;
+  currentTurnAnalyticsOrigin = null;
   currentTurnProviderAnalytics = null;
   currentTurnCompactResult = null;
   currentTurnSawCompactBoundary = false;

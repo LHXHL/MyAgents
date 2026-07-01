@@ -254,6 +254,7 @@ pub fn run() {
             // Another instance was launched — bring the existing window to the
             // foreground. Reuses the same routine as tray click and toast click
             // so all three "raise window" entry points stay in lockstep.
+            ulog_info!("[App] single-instance activation, showing main window");
             tray::show_main_window(app);
             // Notify the front-end that the user just re-activated the app via
             // an external trigger (taskbar icon, dock click on Linux, etc.).
@@ -417,6 +418,7 @@ pub fn run() {
             floating_ball::cmd_fb_show_companion,
             floating_ball::cmd_fb_pin_companion,
             floating_ball::cmd_fb_hide_companion,
+            floating_ball::cmd_fb_shield_dismiss,
             floating_ball::cmd_fb_drag_ball_start,
             floating_ball::cmd_fb_drag_ball_move,
             floating_ball::cmd_fb_drag_ball_end,
@@ -1148,6 +1150,27 @@ pub fn run() {
                     // Prevent default close behavior - let frontend decide
                     api.prevent_close();
                 }
+                tauri::WindowEvent::Focused(focused) => {
+                    let label = window.label();
+                    if label == "main" || label.starts_with("fb-") {
+                        let visible = window.is_visible().unwrap_or(false);
+                        ulog_info!(
+                            "[App] WindowEvent::Focused label={} focused={} visible={}",
+                            label,
+                            focused,
+                            visible
+                        );
+                        if label == "fb-companion" {
+                            let _ = window.emit(
+                                "fb:native-focus",
+                                serde_json::json!({
+                                    "focused": focused,
+                                    "visible": visible,
+                                }),
+                            );
+                        }
+                    }
+                }
                 // Clean up when window is actually destroyed
                 tauri::WindowEvent::Destroyed => {
                     use std::sync::atomic::Ordering::Relaxed;
@@ -1209,12 +1232,7 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             tauri::RunEvent::Reopen { .. } => {
                 ulog_info!("[App] Dock icon clicked (Reopen), showing main window");
-                use tauri::Manager;
-                if let Some(window) = _app_handle.get_webview_window("main") {
-                    let _ = window.show();
-                    let _ = window.unminimize();
-                    let _ = window.set_focus();
-                }
+                tray::show_main_window(_app_handle);
             }
             _ => {}
         }
