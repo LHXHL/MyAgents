@@ -22,6 +22,15 @@ html.fb-transparent #root {
   z-index: auto;
 }
 
+.fbw-shield {
+  position: fixed;
+  inset: 0;
+  background: transparent;
+  cursor: default;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 /* ════════ Ball（92×92 透明窗，球 48px 居中） ════════ */
 .fbw-ball-stage {
   position: fixed;

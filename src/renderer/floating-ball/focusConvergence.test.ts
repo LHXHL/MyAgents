@@ -67,6 +67,28 @@ describe('createFocusConvergence', () => {
         expect(frames.queue).toHaveLength(0);
     });
 
+    it('can require several focus passes even when DOM already reports focused', () => {
+        const frames = createFrameQueue();
+        const target = { focus: vi.fn() } as unknown as HTMLElement;
+        const controller = createFocusConvergence({
+            getTarget: () => target,
+            shouldContinue: () => true,
+            isFocused: () => true,
+            maxAttempts: 8,
+            minAttempts: 3,
+            requestAnimationFrame: frames.requestAnimationFrame,
+            cancelAnimationFrame: frames.cancelAnimationFrame,
+        });
+
+        controller.request();
+        frames.flushOne();
+        frames.flushOne();
+        frames.flushOne();
+
+        expect(target.focus).toHaveBeenCalledTimes(3);
+        expect(frames.queue).toHaveLength(0);
+    });
+
     it('cancels a pending convergence request', () => {
         const frames = createFrameQueue();
         const target = { focus: vi.fn() } as unknown as HTMLElement;

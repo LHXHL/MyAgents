@@ -124,6 +124,17 @@ if (tauriWindowLabel === 'fb-ball') {
       </FloatingI18nBootstrap>
     </AppErrorBoundary>
   );
+} else if (tauriWindowLabel === 'fb-shield') {
+  setRendererLogLabel('fb-shield');
+  const ShieldWindow = React.lazy(() => import('./floating-ball/ShieldWindow'));
+  document.documentElement.classList.add('fb-transparent');
+  root.render(
+    <AppErrorBoundary>
+      <React.Suspense fallback={null}>
+        <ShieldWindow />
+      </React.Suspense>
+    </AppErrorBoundary>
+  );
 } else {
   const App = React.lazy(() => import('./App'));
   // Note: React.StrictMode removed to prevent double-rendering of SSE effects in development

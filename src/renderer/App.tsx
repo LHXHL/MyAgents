@@ -754,7 +754,7 @@ export default function App() {
     () => buildSessionNotificationBadgeCounts(externalNotificationBadges),
     [externalNotificationBadges],
   );
-  const notificationBadgeEnabled = config.osNotifications && (config.notificationBadge ?? true);
+  const notificationBadgeEnabled = config.osNotifications && (config.notificationBadge ?? false);
   const notificationBadgeCount = notificationBadgeEnabled
     ? Math.min(unreadTabCount + externalNotificationBadgeCount, 999)
     : 0;
@@ -1126,7 +1126,7 @@ export default function App() {
       void listenWithCleanup<NotificationBadgeIncrementPayload>('notification:badge-increment', (event) => {
         if (!mountedRef.current) return;
         const cfg = configRef.current;
-        if (!cfg.osNotifications || !(cfg.notificationBadge ?? true)) return;
+        if (!cfg.osNotifications || !(cfg.notificationBadge ?? false)) return;
         const createdAt = Date.now();
         const fallbackId = `legacy:${createdAt}:${Math.random().toString(36).slice(2, 8)}`;
         const item = normalizeNotificationBadgeIncrementPayload(

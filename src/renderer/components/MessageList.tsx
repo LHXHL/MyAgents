@@ -622,12 +622,17 @@ const MessageList = memo(function MessageList({
         thinking blocks; too low (200) causes Virtuoso to over-render initially,
         too high leaves holes at the bottom. 480 stays close to long-content
         reality but does produce sizeable post-mount corrections on short user
-        bubbles (~80–150px). The previous wrapper used `overflow-hidden`, which
-        amplified those corrections into hard clips — short bubbles vanished
+        bubbles (~80-150px). The previous wrapper used `overflow-hidden`, which
+        amplified those corrections into hard clips: short bubbles vanished
         while neighbours merged. The wrapper is now `flow-root` (above), so any
         residual correction shows up as a small scroll bounce rather than a
-        disappearing message. If the bounce becomes noticeable, lowering this
-        estimate is the next lever to pull.
+        disappearing message.
+
+        The extra top viewport and item-count overscan bias reverse scrolling
+        toward pre-measuring tall Markdown/code rows before they enter view.
+        `skipAnimationFrameInResizeObserver` reduces the one-frame measurement
+        delay that can otherwise show up as flicker in WebKit; `overflowAnchor`
+        leaves scroll anchoring to Virtuoso instead of the browser.
       */}
       <Virtuoso
         ref={virtuosoRef}
@@ -640,9 +645,11 @@ const MessageList = memo(function MessageList({
         atBottomStateChange={guardedAtBottomChange}
         atBottomThreshold={50}
         defaultItemHeight={480}
-        increaseViewportBy={{ top: 800, bottom: 400 }}
+        increaseViewportBy={{ top: 1600, bottom: 800 }}
+        minOverscanItemCount={{ top: 3, bottom: 1 }}
+        skipAnimationFrameInResizeObserver
         className="h-full"
-        style={{ overscrollBehavior: 'none', scrollbarGutter: 'stable' }}
+        style={{ overscrollBehavior: 'none', scrollbarGutter: 'stable', overflowAnchor: 'none' }}
         components={components}
         itemContent={renderItem}
       />

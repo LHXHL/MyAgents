@@ -247,7 +247,7 @@ fn show_with_navigation_target_inner<R: Runtime>(
         return;
     }
     let silent = !prefs.notification_sound;
-    ulog_debug!(
+    ulog_info!(
         "[Notification] Showing toast title='{}' navigation={:?} silent={}",
         title,
         navigation.as_ref().map(NotificationNavigation::describe),
@@ -347,7 +347,7 @@ struct NotificationPrefs {
     /// the toast.
     notification_sound: bool,
     /// Badge flag: when true, native app icon badges mirror unseen notification
-    /// work. Defaults on so old configs gain the visual fallback.
+    /// work. Defaults off while the feature is still being validated.
     notification_badge: bool,
 }
 
@@ -381,7 +381,7 @@ fn read_notification_prefs() -> NotificationPrefs {
             .as_ref()
             .and_then(|c| c.notification_sound)
             .unwrap_or(true),
-        notification_badge: parsed.and_then(|c| c.notification_badge).unwrap_or(true),
+        notification_badge: parsed.and_then(|c| c.notification_badge).unwrap_or(false),
     }
 }
 
@@ -564,6 +564,7 @@ fn emit_click<R: Runtime>(app: &AppHandle<R>, navigation: Option<NotificationNav
 
 #[cfg(not(target_os = "windows"))]
 fn queue_pending_click(navigation: NotificationNavigation) {
+    let described = navigation.describe();
     let mut guard = match PENDING_CLICK.lock() {
         Ok(g) => g,
         Err(poisoned) => {
@@ -612,6 +613,7 @@ fn queue_pending_click(navigation: NotificationNavigation) {
         }
         PendingState::Ambiguous { queued_at } => PendingState::Ambiguous { queued_at },
     };
+    ulog_info!("[Notification] Pending click queued {}", described);
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -667,6 +669,13 @@ pub fn cmd_show_notification<R: Runtime>(
     workspace_path: Option<String>,
 ) {
     let body = body.unwrap_or_default();
+    ulog_info!(
+        "[Notification] cmd_show_notification title='{}' tab_id={:?} session_id={:?} workspace_path={:?}",
+        title,
+        tab_id,
+        session_id,
+        workspace_path
+    );
     show_with_navigation_target_inner(
         &app,
         &title,
@@ -682,7 +691,12 @@ pub fn cmd_show_notification<R: Runtime>(
 /// cause a double-emit (#review-finding-1).
 #[tauri::command]
 pub fn cmd_consume_notification_click<R: Runtime>(app: AppHandle<R>) -> bool {
-    on_window_activated_externally(&app)
+    let consumed = on_window_activated_externally(&app);
+    ulog_info!(
+        "[Notification] cmd_consume_notification_click consumed={}",
+        consumed
+    );
+    consumed
 }
 
 // ============ Tests ============
