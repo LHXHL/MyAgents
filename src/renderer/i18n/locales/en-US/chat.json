@@ -420,6 +420,8 @@
       "current": "Current",
       "messageCount": "{{count}} message(s)",
       "unreadNotifications": "{{count}} unread notification(s)",
+      "showAutomation": "Show scheduled task chats",
+      "hideAutomation": "Hide scheduled task chats",
       "openInNewTab": "Open in new tab",
       "more": "More",
       "moreActions": "More actions",

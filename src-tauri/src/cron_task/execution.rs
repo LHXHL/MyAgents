@@ -345,6 +345,7 @@ pub(super) async fn execute_task_directly(
     let payload = CronExecutePayload {
         task_id: task.id.clone(),
         prompt: prompt_to_send,
+        task_center_task_id: task.task_id.clone(),
         session_id: Some(effective_session_id.clone()),
         is_first_execution: Some(is_first_execution),
         ai_can_exit: Some(task.end_conditions.ai_can_exit),

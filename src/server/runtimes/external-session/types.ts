@@ -8,6 +8,7 @@ import type { ExternalRuntimeConfigPatch, ExternalRuntimeConfigSnapshot } from '
 import type { MessageUsage, TurnAnalyticsSource } from '../../types/session';
 import type { SystemInitInfo } from '../../../shared/types/system';
 import type { ToolDisplayPayload } from '../../../shared/toolDisplay/filePatch';
+import type { SessionOrigin } from '../../../shared/session-origin';
 
 export interface PersistContentBlock {
   type: 'text' | 'tool_use' | 'thinking';
@@ -143,6 +144,7 @@ export interface ExternalSendContext {
   scenario: InteractionScenario;
   /** Per-turn analytics attribution. Does not alter prompt assembly or session materialization. */
   analyticsSource?: TurnAnalyticsSource;
+  analyticsOrigin?: SessionOrigin;
   permissionMode?: string;
   model?: string;
   /** Raw effort setting from caller. PRESENT = authoritative; absent = unmanaged desktop state. */
@@ -172,4 +174,5 @@ export interface ExternalTurnPersistenceSnapshot {
   usage: ExternalTurnUsage | null;
   startedAt: number;
   analyticsSource: TurnAnalyticsSource;
+  analyticsOrigin?: SessionOrigin | null;
 }

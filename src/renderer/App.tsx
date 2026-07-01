@@ -106,6 +106,11 @@ import {
   toProviderExecutionIntent,
   type RuntimeBackedProviderIdentity,
 } from '../shared/providerExecution';
+import {
+  originAnalyticsFields,
+  originFromDesktopSurface,
+  originFromSessionMetadataLike,
+} from '../shared/session-origin';
 import { buildRuntimeBackedInitialSessionBirth } from '@/utils/providerSwitchSessionBirth';
 
 // ============================================================
@@ -772,22 +777,39 @@ export default function App() {
       });
   }, [notificationBadgeCount, notificationBadgeEnabled]);
 
+  const resolveSessionOriginFieldsForAnalytics = useCallback(async (sessionId: string, agentDir: string) => {
+    try {
+      const sessions = await getSessions(agentDir);
+      const target = sessions.find((session) => session.id === sessionId);
+      return originAnalyticsFields(originFromSessionMetadataLike(target));
+    } catch (error) {
+      console.warn(`[App] Failed to resolve session origin for ${sessionId}:`, error);
+      return originAnalyticsFields(null);
+    }
+  }, []);
+
   const trackHistorySessionOpen = useCallback((
     sessionId: string,
     agentDir: string,
     runtimeIdentity: Pick<SessionRuntimeOpenIdentity, 'runtime' | 'runtimeSource'>,
     entrySource: HistoryEntrySource,
   ) => {
-    const cfg = configRef.current;
-    const agent = getAgentByWorkspacePath(cfg, agentDir);
-    track('history_open', {
-      agent_hash: hashAgentNameSync(agent?.name ?? null),
-      runtime: runtimeIdentity.runtime,
-      runtime_source: analyticsRuntimeSource(runtimeIdentity.runtime, runtimeIdentity.runtimeSource),
-      session_id: sessionId,
-      entry_source: entrySource,
+    void (async () => {
+      const cfg = configRef.current;
+      const agent = getAgentByWorkspacePath(cfg, agentDir);
+      const originFields = await resolveSessionOriginFieldsForAnalytics(sessionId, agentDir);
+      track('history_open', {
+        agent_hash: hashAgentNameSync(agent?.name ?? null),
+        runtime: runtimeIdentity.runtime,
+        runtime_source: analyticsRuntimeSource(runtimeIdentity.runtime, runtimeIdentity.runtimeSource),
+        session_id: sessionId,
+        entry_source: entrySource,
+        ...originFields,
+      });
+    })().catch((error) => {
+      console.warn(`[App] Failed to track history_open for session ${sessionId}:`, error);
     });
-  }, []);
+  }, [resolveSessionOriginFieldsForAnalytics]);
 
   const trackHistorySessionOpenAsync = useCallback((
     sessionId: string,
@@ -802,17 +824,19 @@ export default function App() {
         normalizeRuntime(agent?.runtime),
         cfg?.multiAgentRuntime,
       );
+      const originFields = await resolveSessionOriginFieldsForAnalytics(sessionId, agentDir);
       track('history_open', {
         agent_hash: hashAgentNameSync(agent?.name ?? null),
         runtime: runtimeIdentity.runtime,
         runtime_source: analyticsRuntimeSource(runtimeIdentity.runtime, runtimeIdentity.runtimeSource),
         session_id: sessionId,
         entry_source: entrySource,
+        ...originFields,
       });
     })().catch((error) => {
       console.warn(`[App] Failed to track history_open for session ${sessionId}:`, error);
     });
-  }, []);
+  }, [resolveSessionOriginFieldsForAnalytics]);
 
   // Toast (ref-stabilized per CLAUDE.md rules)
   const toast = useToast();
@@ -1894,7 +1918,10 @@ export default function App() {
           console.log(
             `[App] Runtime-backed provider launch birth: provider=${identity.providerId} runtime=${birth.runtime} source=${birth.opts.runtimeSource ?? 'none'} model=${identity.model}`,
           );
-          const prepared = await createSession(project.path, birth.runtime, birth.opts);
+          const prepared = await createSession(project.path, birth.runtime, {
+            ...birth.opts,
+            origin: originFromDesktopSurface(pendingSurfaceForLaunch?.surface),
+          });
           effectiveSessionId = prepared.id;
         } catch (err) {
           console.error('[App] Failed to create runtime-backed provider session:', err);

@@ -5,6 +5,8 @@ import {
     Check,
     ChevronDown,
     ChevronUp,
+    Eye,
+    EyeOff,
     FolderPlus,
     LayoutTemplate,
     Loader2,
@@ -19,6 +21,7 @@ import { useTranslation } from 'react-i18next';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import SessionStatsModal from '@/components/SessionStatsModal';
 import SessionTagBadge from '@/components/SessionTagBadge';
+import Tip from '@/components/Tip';
 import UnreadNotificationIndicator from '@/components/UnreadNotificationIndicator';
 import { useToast } from '@/components/Toast';
 import { MenuItem } from '@/components/ui/MenuItem';
@@ -28,6 +31,7 @@ import type { Project } from '@/config/types';
 import type { AgentStatusData } from '@/hooks/useAgentStatuses';
 import type { SessionTag, TaskCenterData } from '@/hooks/useTaskCenterData';
 import { normalizeWorkspacePathIdentity } from '@/../shared/workspacePath';
+import { isAutomationHistoryOrigin } from '@/../shared/session-origin';
 import type { AgentConfig } from '../../../shared/types/agent';
 import { isSupportedLocale } from '../../../shared/i18n';
 import { formatMessageCount, formatTime, getFolderName, getSessionDisplayText } from '@/utils/taskCenterUtils';
@@ -40,6 +44,7 @@ const COLLAPSED_WORKSPACE_COUNT = 6;
 const HISTORY_PAGE_SIZE = 30;
 const WORKSPACE_ROW_MAX_HEIGHT = 94;
 const EMPTY_SESSION_TAGS: SessionTag[] = [];
+const SHOW_AUTOMATION_HISTORY_STORAGE_KEY = 'myagents.launcher.showAutomationHistorySessions';
 
 type HistoryFilterValue = 'all' | 'favorites' | string;
 
@@ -99,6 +104,10 @@ export default memo(function LauncherRightRail({
 
     const [workspacesExpanded, setWorkspacesExpanded] = useState(false);
     const [historyFilter, setHistoryFilter] = useState<HistoryFilterValue>('all');
+    const [showAutomationSessions, setShowAutomationSessions] = useState(() => {
+        if (typeof window === 'undefined') return false;
+        return window.localStorage.getItem(SHOW_AUTOMATION_HISTORY_STORAGE_KEY) === 'true';
+    });
     const [historyPage, setHistoryPage] = useState<{ scopeKey: string; count: number }>({
         scopeKey: 'all',
         count: HISTORY_PAGE_SIZE,
@@ -145,15 +154,28 @@ export default memo(function LauncherRightRail({
 
     const filteredSessions = useMemo(() => {
         return sessions.filter((session) => {
+            if (!showAutomationSessions && isAutomationHistoryOrigin(session.origin, {
+                cronTaskId: session.cronTaskId,
+                source: session.source,
+            })) {
+                return false;
+            }
             const key = normalizeWorkspacePathIdentity(session.agentDir);
             if (!projectByPathKey.has(key)) return false;
             if (effectiveHistoryFilter === FAVORITE_HISTORY_FILTER) return !!session.favorite;
             if (effectiveHistoryFilter !== 'all' && key !== effectiveHistoryFilter) return false;
             return true;
         });
-    }, [sessions, projectByPathKey, effectiveHistoryFilter]);
+    }, [sessions, projectByPathKey, effectiveHistoryFilter, showAutomationSessions]);
 
-    const historyScopeKey = effectiveHistoryFilter;
+    useEffect(() => {
+        window.localStorage.setItem(
+            SHOW_AUTOMATION_HISTORY_STORAGE_KEY,
+            showAutomationSessions ? 'true' : 'false',
+        );
+    }, [showAutomationSessions]);
+
+    const historyScopeKey = `${effectiveHistoryFilter}:${showAutomationSessions ? 'automation-visible' : 'automation-hidden'}`;
     const visibleHistoryCount = historyPage.scopeKey === historyScopeKey
         ? historyPage.count
         : HISTORY_PAGE_SIZE;
@@ -370,6 +392,29 @@ export default memo(function LauncherRightRail({
                                         value={effectiveHistoryFilter}
                                         onChange={setHistoryFilter}
                                     />
+                                    <Tip
+                                        label={showAutomationSessions
+                                            ? t('rightRail.hideAutomationHistory')
+                                            : t('rightRail.showAutomationHistory')}
+                                        position="bottom"
+                                    >
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowAutomationSessions(value => !value)}
+                                            className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] ${
+                                                showAutomationSessions
+                                                    ? 'text-[var(--ink-muted)]'
+                                                    : 'text-[var(--ink-muted)]/75'
+                                            }`}
+                                            aria-label={showAutomationSessions
+                                                ? t('rightRail.hideAutomationHistory')
+                                                : t('rightRail.showAutomationHistory')}
+                                        >
+                                            {showAutomationSessions
+                                                ? <Eye className="h-3.5 w-3.5" />
+                                                : <EyeOff className="h-3.5 w-3.5" />}
+                                        </button>
+                                    </Tip>
                                 </div>
                                 <button
                                     type="button"

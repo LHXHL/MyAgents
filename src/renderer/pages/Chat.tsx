@@ -92,6 +92,7 @@ import {
   type RuntimeBackedProviderIdentity,
   type ProviderExecutionIntent,
 } from '../../shared/providerExecution';
+import type { SessionOrigin } from '../../shared/session-origin';
 import type { CapabilityInitialSelect } from '../../shared/skillsTypes';
 import {
   buildRuntimeChangePatch,
@@ -132,6 +133,8 @@ import { coerceRuntimeBirthPermissionMode } from '../../shared/runtimeBirthField
 // CronTaskConfig type is used via useCronTask hook
 
 import { getRichDocKind, isPreviewable, type RichDocKind } from '../../shared/fileTypes';
+
+const DESKTOP_SESSION_FORK_ORIGIN: SessionOrigin = { kind: 'desktop', surface: 'session_fork' };
 
 type SplitPreviewFile = {
   name: string;
@@ -3734,7 +3737,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     let session: { id: string } | undefined;
     try {
       const { createSession } = await import('@/api/sessionClient');
-      session = await createSession(agentDir, runtime);
+      session = await createSession(agentDir, runtime, { origin: DESKTOP_SESSION_FORK_ORIGIN });
     } catch (err) {
       console.error('[chat] Failed to create session for runtime fork:', err);
       toastRef.current.error(t('shell.toasts.runtimeSwitchCreateFailed'));
@@ -3842,7 +3845,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       const session = await createSession(
         agentDir,
         birth.runtime,
-        birth.opts,
+        { ...birth.opts, origin: DESKTOP_SESSION_FORK_ORIGIN },
       );
       const opened = await onForkSession(
         session.id,
@@ -3904,7 +3907,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       const { createSession } = await import('@/api/sessionClient');
       // Pass currentRuntime so the new session has matching runtime metadata,
       // preventing infinite cross-runtime detection loop.
-      const session = await createSession(agentDir, currentRuntime);
+      const session = await createSession(agentDir, currentRuntime, { origin: DESKTOP_SESSION_FORK_ORIGIN });
       setPendingCrossRuntimeMessage(null);  // Clear only after success
       // Open new tab with the pending message as initialMessage
       if (pending.images.length > 0) {

@@ -15,6 +15,7 @@ import {
   getCurrentTurnText,
   getCurrentTurnInboxMeta,
   getCurrentTurnAnalyticsSource,
+  getCurrentTurnAnalyticsOrigin,
   getCurrentTurnCompactResult,
   getCurrentTurnProviderAnalytics,
   getCurrentTurnStartTime,
@@ -33,6 +34,7 @@ import {
   setCurrentTurnInboxMeta,
   clearCurrentTurnTextBlocks,
 } from './turn';
+import { originAnalyticsFields, originFromTurnAttribution } from '../../shared/session-origin';
 import {
   getInFlightMetadata,
   getInFlightQueueId,
@@ -494,8 +496,15 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
 
       const scenario = deps.getCurrentScenario();
       const turnAnalyticsSource = getCurrentTurnAnalyticsSource() ?? scenario.type;
+      const turnOrigin = getCurrentTurnAnalyticsOrigin()
+        ?? originFromTurnAttribution({
+          source: turnAnalyticsSource,
+          scenarioType: scenario.type,
+          desktopSurface: scenario.type === 'desktop' ? scenario.surface : undefined,
+        });
       track('ai_turn_complete', {
         source: turnAnalyticsSource,
+        ...originAnalyticsFields(turnOrigin),
         session_id: deps.getSessionId(),
         platform: scenario.type === 'im' ? scenario.platform : null,
         runtime: 'builtin',

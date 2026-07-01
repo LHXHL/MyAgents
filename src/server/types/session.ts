@@ -4,6 +4,7 @@ import type { ContextUsage } from '../../shared/types/context-usage';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
+import type { SessionOrigin } from '../../shared/session-origin';
 
 /**
  * Session statistics for tracking usage
@@ -33,8 +34,10 @@ export interface SessionMetadata {
     stats?: SessionStats;
     /** Associated cron task ID (if this session is used by a scheduled task) */
     cronTaskId?: string;
-    /** Session origin — undefined or 'desktop' for Desktop, '{platform}_{type}' for IM/channels */
+    /** Legacy channel/source metadata; use `origin` for product/statistics origin. */
     source?: SessionSource;
+    /** Stable product/statistics origin. This is the session birth fact; legacy `source` is channel metadata. */
+    origin?: SessionOrigin;
     /** User-pinned to the 收藏 filter view in TaskCenterOverlay /
      *  SessionHistoryDropdown. Only `true` is persisted; absent/false has
      *  identical semantics, so the on-disk size cost is zero for the common

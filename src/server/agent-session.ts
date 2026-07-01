@@ -81,6 +81,7 @@ import type { OfficialToolId } from '../shared/official-tools';
 import { deleteSession, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData } from './SessionStore';
 import { firePostTurnTitleHook } from './turn-hooks';
 import { createSessionMetadata, type SessionMetadata, type SessionMessage, type MessageAttachment, type SessionSource, type TurnAnalyticsSource } from './types/session';
+import type { SessionOrigin } from '../shared/session-origin';
 import { extractAssistantTextFromStoredContent } from './inbox/latest-result';
 import {
   createMaterializedSessionMetadata,
@@ -225,6 +226,7 @@ import {
   setAssistantMessagePresent,
   setBrowserToolUsed,
   setCurrentPlanFileMinMtimeMs,
+  setCurrentTurnAnalyticsOrigin,
   setCurrentTurnAnalyticsSource,
   setCurrentTurnCompactResult,
   setCurrentTurnInboxMeta,
@@ -1464,6 +1466,7 @@ function promoteNextFromPending(): void {
     attachments: pending.userMessage.attachments,
     requestId: pending.sourceItem.requestId,
     analyticsSource: pending.sourceItem.analyticsSource,
+    analyticsOrigin: pending.sourceItem.analyticsOrigin,
   });
   console.log(`[agent] Promoting next pending mid-turn message: queueId=${pending.queueId} (pending remaining=${getPendingMidTurnQueue().length})`);
   // Re-emit queue:added with isInFlight=true. Frontend's queue:added handler
@@ -7583,6 +7586,7 @@ export async function enqueueUserMessage(
   // bound per-turn at generator yield, read at result handler for reply pushback.
   inboxMeta?: import('./inbox/types').InboxTurnMeta,
   analyticsSource?: TurnAnalyticsSource,
+  analyticsOrigin?: SessionOrigin,
   options?: { fromDesktopChatSend?: boolean; injectedTurnId?: string; allowLazySessionMaterialization?: boolean },
 ): Promise<EnqueueResult> {
   // 等待进行中的 resetSession/switchToSession 完成，防止消息投递到已死的 generator
@@ -8197,6 +8201,7 @@ export async function enqueueUserMessage(
       attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
       requestId,
       analyticsSource: analyticsSource ?? currentScenario.type,
+      analyticsOrigin,
       providerAnalytics: turnProviderAnalytics,
       inboxMeta,
       injectedTurnId: options?.injectedTurnId,
@@ -8227,6 +8232,7 @@ export async function enqueueUserMessage(
       readyTurnItem.attachments = savedAttachments.length > 0 ? savedAttachments : undefined;
       readyTurnItem.source = effectiveQueueSource === 'desktop' ? 'desktop' : metadata?.source;
       readyTurnItem.analyticsSource = analyticsSource ?? currentScenario.type;
+      readyTurnItem.analyticsOrigin = analyticsOrigin;
       readyTurnItem.mirrorImages = toMirrorImages(resolvedImages);
       if (!turnItem) {
         pushTurnBoundary(readyTurnItem);
@@ -8247,6 +8253,7 @@ export async function enqueueUserMessage(
         requestId,
         source: metadata?.source,
         analyticsSource: analyticsSource ?? currentScenario.type,
+        analyticsOrigin,
         mirrorImages: toMirrorImages(resolvedImages),
       });
       wakeGenerator(queueItem);
@@ -8334,6 +8341,7 @@ export async function enqueueUserMessage(
     attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
     requestId,
     analyticsSource: analyticsSource ?? currentScenario.type,
+    analyticsOrigin,
     providerAnalytics: turnProviderAnalytics,
     inboxMeta,
     injectedTurnId: options?.injectedTurnId,
@@ -9175,6 +9183,7 @@ export async function forkSession(assistantMessageId: string): Promise<{
         newSession.unifiedSession = true;
         newSession.title = `🌿 ${sourceTitle}`;
         newSession.titleSource = 'auto';
+        newSession.origin = { kind: 'desktop', surface: 'session_fork' };
         try {
           await saveSessionMetadata(newSession);
           await saveForkTranscript(newSession.id, eager.remapped);
@@ -9200,6 +9209,7 @@ export async function forkSession(assistantMessageId: string): Promise<{
     const newSession = createSessionMetadata(currentAgentDir, inheritedSnapshot);
     newSession.title = `🌿 ${sourceTitle}`;
     newSession.titleSource = 'auto';
+    newSession.origin = { kind: 'desktop', surface: 'session_fork' };
     newSession.forkFrom = {
       sourceSessionId,
       messageUuid: targetMsg.sdkUuid,
@@ -12060,6 +12070,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         attachments: item.attachments,
         requestId: item.requestId,
         analyticsSource: item.analyticsSource,
+        analyticsOrigin: item.analyticsOrigin,
       });
       // Re-emit queue:added with isInFlight=true so the frontend pill's
       // UI marks it as handed to SDK; cancellation now goes through
@@ -12074,6 +12085,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     }
     beginBuiltinTurnTrace(traceSource, traceTurnId, item.requestId);
     setCurrentTurnAnalyticsSource(item.analyticsSource ?? currentScenario.type);
+    setCurrentTurnAnalyticsOrigin(item.analyticsOrigin ?? null);
     setCurrentTurnProviderAnalytics(item.providerAnalytics ?? buildTurnProviderAnalytics(configState.currentProviderEnv));
     setAssistantMessagePresent(false);
     setCurrentTurnInjectedTurnId(item.injectedTurnId);

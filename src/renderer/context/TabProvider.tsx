@@ -26,7 +26,9 @@ import { getAgentByWorkspacePath } from '@/config/services/agentConfigService';
 import { notifyConfigChanged } from '@/config/services/appConfigService';
 import { normalizeRuntime, resolveEffectiveRuntime } from '@/utils/sessionOpenPlan';
 import type { RuntimeDiagnostics, RuntimeSource, RuntimeType } from '@/../shared/types/runtime';
+import { updateSession } from '@/api/sessionClient';
 import type { SessionMetadata } from '@/api/sessionClient';
+import { originAnalyticsFields, originFromDesktopSurface } from '../../shared/session-origin';
 import { createSseConnection, type SseConnection } from '@/api/SseConnection';
 import type { ImageAttachment } from '@/components/SimpleChatInput';
 import type { PermissionRequest } from '@/components/PermissionPrompt';
@@ -1038,16 +1040,22 @@ export default function TabProvider({
         const runtimeSource = runtimeSourceOverride !== undefined
             ? analyticsRuntimeSource(runtime, runtimeSourceOverride)
             : meta.runtimeSource;
+        const origin = originFromDesktopSurface(birth.surface);
+        const originFields = originAnalyticsFields(origin);
         track('session_new', {
             session_id: newSessionId,
             tab_id: tabId,
             triggered_by: birth.surface,
+            ...originFields,
             entry_intent: birth.entryIntent,
             runtime,
             runtime_source: runtimeSource,
             has_initial_message: birth.hasInitialMessage,
             assistant_entry: birth.assistantEntry,
             agent_hash: meta.agentHash,
+        });
+        void updateSession(newSessionId, { origin }).catch((error) => {
+            console.warn(`[TabProvider] Failed to persist origin for session ${newSessionId}:`, error);
         });
     }, [tabId]);
 

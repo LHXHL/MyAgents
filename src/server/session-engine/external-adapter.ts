@@ -241,6 +241,7 @@ export function createExternalSessionEngine(): SessionEngine {
           workspacePath: request.workspacePath,
           scenario: request.scenario,
           analyticsSource: request.analyticsSource,
+          analyticsOrigin: request.analyticsOrigin,
           permissionMode: request.permissionMode,
           model: request.model,
           reasoningEffort: request.reasoningEffort,
@@ -282,6 +283,7 @@ export function createExternalSessionEngine(): SessionEngine {
           reasoningEffort: request.reasoningEffort,
           requestId: request.requestId,
           metadataBirthPending: request.metadataBirthPending === true,
+          analyticsOrigin: request.analyticsOrigin,
         },
       );
       if (!result.queued) {
@@ -311,6 +313,7 @@ export function createExternalSessionEngine(): SessionEngine {
           permissionMode: request.permissionMode,
           model: request.model,
           reasoningEffort: request.reasoningEffort,
+          analyticsOrigin: request.analyticsOrigin,
         },
       );
       if (!result.queued) {
@@ -335,6 +338,7 @@ export function createExternalSessionEngine(): SessionEngine {
           scenario: request.scenario ?? { type: 'desktop' },
           inboxMeta: request.inboxMeta,
           metadataBirthPending: request.allowLazySessionMaterialization === true,
+          analyticsOrigin: request.analyticsOrigin,
         },
       );
     },
@@ -352,6 +356,7 @@ export function createExternalSessionEngine(): SessionEngine {
           permissionMode: request.permissionMode,
           model: request.model,
           reasoningEffort: request.reasoningEffort,
+          analyticsOrigin: request.analyticsOrigin,
         },
       );
       if (!result.queued) {

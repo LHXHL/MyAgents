@@ -285,6 +285,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         undefined,
         request.analyticsSource,
+        request.analyticsOrigin,
         { fromDesktopChatSend: true },
       );
       if (result.error) {
@@ -316,6 +317,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         request.requestId,
         undefined,
         undefined,
+        request.analyticsOrigin,
         { allowLazySessionMaterialization: request.metadataBirthPending === true },
       );
       if (result.error) {
@@ -342,6 +344,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
         routed.providerEnv,
         request.reasoningEffort,
         request.metadata,
+        undefined,
+        undefined,
+        undefined,
+        request.analyticsOrigin,
       );
       if (result.error) {
         return { success: false, error: result.error, status: 503 };
@@ -363,6 +369,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         request.inboxMeta,
         undefined,
+        request.analyticsOrigin,
         { allowLazySessionMaterialization: request.allowLazySessionMaterialization === true },
       );
     },
@@ -386,6 +393,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         undefined,
         undefined,
+        request.analyticsOrigin,
         { injectedTurnId },
       );
       if (enqueueResult.error) {

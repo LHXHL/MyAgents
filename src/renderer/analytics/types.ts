@@ -4,6 +4,7 @@
  */
 
 import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
+import type { OriginKind, OriginSurface } from '../../shared/session-origin';
 
 /**
  * 埋点上报的 runtime 字段类型 = SDK runtime + `'unknown'` 兜底。
@@ -231,6 +232,9 @@ export interface SessionNewParams {
   tab_id?: string;
   /** UI 入口面 —— surface 维度由 caller 在 session 创建前显式打 */
   triggered_by: Surface;
+  /** Stable session birth origin, preferred by new reports over triggered_by. */
+  origin_kind: OriginKind;
+  origin_surface: OriginSurface;
   /** 入口语义 —— 不要从 triggered_by 推断 */
   entry_intent: EntryIntent;
   /** 该 session 跑在哪个 runtime 下 */
@@ -280,6 +284,9 @@ export interface HistoryOpenParams {
   agent_hash: string | null;
   runtime: AnalyticsRuntime;
   runtime_source: AnalyticsRuntimeSource;
+  /** Birth origin of the opened target session. */
+  origin_kind: OriginKind;
+  origin_surface: OriginSurface;
   /**
    * 细分入口来源。旧版本没有该字段；查询时应把缺省值按 legacy launcher
    * 历史入口处理，不影响历史兼容聚合。

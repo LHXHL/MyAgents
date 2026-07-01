@@ -143,6 +143,7 @@ import {
   getExternalActivePair,
   getExternalActiveProcess,
   getExternalActiveRuntime,
+  getExternalLifecycleAnalyticsOrigin,
   getExternalLifecycleAnalyticsSource,
   getExternalLifecycleScenario,
   getExternalLifecycleSessionId,
@@ -158,6 +159,7 @@ import {
   resetExternalLifecycleState,
   setExternalActiveProcess,
   setExternalActiveRuntime,
+  setExternalLifecycleAnalyticsOrigin,
   setExternalLifecycleAnalyticsSource,
   setExternalLifecycleRunning,
   setExternalLifecycleState,
@@ -166,6 +168,8 @@ import {
   setExternalSystemInitPayload,
   updateExternalLifecycleStartingSessionId,
 } from './external-session/lifecycle';
+import { originAnalyticsFields, originFromTurnAttribution } from '../../shared/session-origin';
+import type { SessionOrigin } from '../../shared/session-origin';
 import {
   clearExternalTurnStartTime,
   didExternalLastTurnSucceed,
@@ -330,6 +334,7 @@ let externalTurnSeq = 0;
 let currentTurnTraceId = '';
 let currentTurnTraceSessionId = '';
 let currentTurnAnalyticsSource: TurnAnalyticsSource | null = null;
+let currentTurnAnalyticsOrigin: SessionOrigin | null = null;
 let currentTurnTraceRequestId: string | undefined;
 let currentTurnTraceRuntime = '';
 let currentTurnTraceStartMs = 0;
@@ -443,6 +448,7 @@ function resetModuleState(): void {
   resetExternalTranscriptState();
   resetExternalContentState();
   currentTurnAnalyticsSource = null;
+  currentTurnAnalyticsOrigin = null;
   clearExternalPermissionSuggestions();
   drainPendingInteractiveRequestsAsExpired('reset');
   clearExternalAskUserQuestions();
@@ -1598,6 +1604,7 @@ export async function startExternalSession(options: {
   reasoningEffort?: string;
   scenario: InteractionScenario;
   analyticsSource?: TurnAnalyticsSource;
+  analyticsOrigin?: SessionOrigin;
   resumeSessionId?: string;
   /** Issue #194 — per-agent env policy (proxy: myagents/terminal/direct). */
   envPolicy?: import('../../shared/types/runtime').RuntimeEnvPolicy;
@@ -1638,6 +1645,7 @@ async function _doStartExternalSession(options: {
   reasoningEffort?: string;
   scenario: InteractionScenario;
   analyticsSource?: TurnAnalyticsSource;
+  analyticsOrigin?: SessionOrigin;
   resumeSessionId?: string;
   envPolicy?: import('../../shared/types/runtime').RuntimeEnvPolicy;
   metadataBirthPending?: boolean;
@@ -1828,8 +1836,10 @@ async function _doStartExternalSession(options: {
     workspacePath: options.workspacePath,
     scenario: options.scenario,
     analyticsSource: options.analyticsSource ?? options.scenario.type,
+    analyticsOrigin: options.analyticsOrigin ?? null,
   });
   currentTurnAnalyticsSource = options.initialMessage ? getExternalLifecycleAnalyticsSource() : null;
+  currentTurnAnalyticsOrigin = options.initialMessage ? getExternalLifecycleAnalyticsOrigin() : null;
 
   // Set isRunning BEFORE spawning — prevents waitForExternalSessionIdle from
   // seeing the pre-start state and returning true prematurely. Reset in catch.
@@ -1981,6 +1991,13 @@ export async function sendExternalMessage(
   }
   const hasImages = resolvedImages && resolvedImages.length > 0;
   const turnAnalyticsSource = context?.analyticsSource ?? context?.scenario.type ?? getExternalLifecycleAnalyticsSource();
+  const turnAnalyticsOrigin = context?.analyticsOrigin
+    ?? originFromTurnAttribution({
+      source: turnAnalyticsSource,
+      scenarioType: context?.scenario.type ?? getExternalLifecycleScenario().type,
+      desktopSurface: context?.scenario.type === 'desktop' ? context.scenario.surface : undefined,
+      inboxMeta: context?.inboxMeta,
+    });
   const userAttachments = preBroadcasted?.attachments
     ?? sessionMessageAttachmentsFromImages(context?.sessionId, images);
 
@@ -2120,6 +2137,7 @@ export async function sendExternalMessage(
         reasoningEffort: resolveTurnReasoningEffort(context),
         scenario: context.scenario,
         analyticsSource: turnAnalyticsSource,
+        analyticsOrigin: turnAnalyticsOrigin,
         metadataBirthPending: context.metadataBirthPending,
         recordConfigState: !hasQueuedExternalConfigOperation(),
       });
@@ -2159,6 +2177,7 @@ export async function sendExternalMessage(
         reasoningEffort: resolveTurnReasoningEffort(context), // #324
         scenario: nextScenario,
         analyticsSource: turnAnalyticsSource,
+        analyticsOrigin: turnAnalyticsOrigin,
         resumeSessionId: resumeId, // CC: --resume <myagents-session-id>; Codex: --resume <threadId>
         metadataBirthPending: context?.metadataBirthPending,
         recordConfigState: !hasQueuedExternalConfigOperation(),
@@ -2206,7 +2225,9 @@ export async function sendExternalMessage(
     setExternalLastTurnSucceeded(false);  // Reset for this turn (prevents stale text on failure)
     resetTurnAccumulators();
     currentTurnAnalyticsSource = turnAnalyticsSource;
+    currentTurnAnalyticsOrigin = turnAnalyticsOrigin;
     setExternalLifecycleAnalyticsSource(turnAnalyticsSource);
+    setExternalLifecycleAnalyticsOrigin(turnAnalyticsOrigin);
     seedTurnWatchdogEstimate();
     resetWatchdog();  // Start watchdog for this turn (Case 3 bypasses startExternalSession)
     markExternalTurnStarted();
@@ -3196,6 +3217,17 @@ async function persistTurnResult(): Promise<void> {
   // the field (never write undefined, which would erase the prior persisted value).
   const turnContextUsage = getExternalCurrentTurnContextUsage();
   const turnAnalyticsSource = currentTurnAnalyticsSource ?? getExternalLifecycleAnalyticsSource();
+  const lifecycleScenarioForOrigin = getExternalLifecycleScenario();
+  const turnAnalyticsOrigin = currentTurnAnalyticsOrigin
+    ?? getExternalLifecycleAnalyticsOrigin()
+    ?? originFromTurnAttribution({
+      source: turnAnalyticsSource,
+      scenarioType: lifecycleScenarioForOrigin.type,
+      desktopSurface: lifecycleScenarioForOrigin.type === 'desktop'
+        ? lifecycleScenarioForOrigin.surface
+        : undefined,
+      inboxMeta: turnInboxMeta,
+    });
   const persistTraceStarted = nowMs();
   let persistFailed = false;
   let persistFailureReason: string | undefined;
@@ -3307,6 +3339,7 @@ async function persistTurnResult(): Promise<void> {
     const analyticsScenario = getExternalLifecycleScenario();
     trackServer('ai_turn_complete', {
       source: turnAnalyticsSource,
+      ...originAnalyticsFields(turnAnalyticsOrigin),
       session_id: lifecycleSessionId || null,
       platform: analyticsScenario.type === 'im' ? analyticsScenario.platform : null,
       runtime: runtimeType,

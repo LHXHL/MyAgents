@@ -13,6 +13,7 @@ import type { ProviderRoute } from '../../shared/providerRoute';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { RuntimeSource } from '../../shared/types/runtime';
 import type { OfficialToolId } from '../../shared/official-tools';
+import type { SessionOrigin } from '../../shared/session-origin';
 
 export interface SessionStats {
     messageCount: number;
@@ -50,12 +51,12 @@ export interface SessionMetadata {
     /** Associated cron task ID (if this session is used by a scheduled task) */
     cronTaskId?: string;
     /**
-     * Session origin — `'desktop'` for desktop, `'{platform}_private'` / `'{platform}_group'`
-     * for IM channels. Platform segment is open-ended because OpenClaw plugins register
-     * dynamic platform names at runtime (e.g. `'weixin_private'`, `'qq_group'`). Treat as
-     * an opaque string; use `isImSource()` for categorization.
+     * Legacy channel/source metadata. Kept for compatibility with old sessions
+     * and IM channel identifiers; use `origin` for product/statistics origin.
      */
     source?: string;
+    /** Stable product/statistics origin. This is the session birth fact; legacy `source` is channel metadata. */
+    origin?: SessionOrigin;
     /** User-pinned to the 收藏 filter view. Only `true` is persisted; absent
      *  has identical meaning to false. */
     favorite?: boolean;
@@ -174,6 +175,7 @@ export async function createSession(
         mcpEnabledServers?: string[];
         enabledPluginIds?: string[];
         enabledOfficialToolIds?: OfficialToolId[];
+        origin?: SessionOrigin;
     },
 ): Promise<SessionMetadata> {
     const result = await apiPostJson<{ success: boolean; session: SessionMetadata }>(
@@ -190,6 +192,7 @@ export async function createSession(
             ...(opts?.mcpEnabledServers !== undefined ? { mcpEnabledServers: opts.mcpEnabledServers } : {}),
             ...(opts?.enabledPluginIds !== undefined ? { enabledPluginIds: opts.enabledPluginIds } : {}),
             ...(opts?.enabledOfficialToolIds !== undefined ? { enabledOfficialToolIds: opts.enabledOfficialToolIds } : {}),
+            ...(opts?.origin !== undefined ? { origin: opts.origin } : {}),
             // PRD 0.2.34 §14 D14：桌面渠道创建时由服务端原子地种「最宽松权限 per
             // runtime」（getMaxPermissionForRuntime），避免创建后再 PATCH 的吞错窗口。
             ...(opts?.seedMaxPermission ? { seedMaxPermission: true } : {}),
@@ -264,6 +267,7 @@ export async function updateSession(
         providerRoute?: ProviderRoute | null;
         providerExecutionIdentity?: RuntimeBackedProviderIdentity | null;
         providerEnvJson?: string | null;
+        origin?: SessionOrigin | null;
     }
 ): Promise<SessionMetadata | null> {
     // #305: throw on HTTP / JSON failure instead of returning null.
