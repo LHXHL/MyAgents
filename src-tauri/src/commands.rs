@@ -11,9 +11,9 @@ use tauri::{AppHandle, Manager, Runtime, State};
 
 use crate::logger;
 use crate::perf_trace::{elapsed_ms, emit_perf_trace, trace_start, PerfTrace, PerfTraceName};
+#[cfg(not(target_os = "windows"))]
+use crate::sidecar::{begin_update_shutdown, shutdown_for_update_verified};
 use crate::sidecar::{
-    // Update shutdown
-    begin_update_shutdown,
     check_process_alive,
     ensure_sidecar_running,
     // Legacy exports
@@ -21,7 +21,6 @@ use crate::sidecar::{
     get_tab_server_url,
     get_tab_sidecar_status,
     restart_sidecar,
-    shutdown_for_update_verified,
     start_global_sidecar,
     start_sidecar,
     // New multi-instance exports

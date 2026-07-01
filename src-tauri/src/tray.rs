@@ -32,6 +32,9 @@ const MENU_EXIT: &str = "exit";
 /// Non-generic over Runtime: production uses `Wry` everywhere; pinning the
 /// type here avoids dragging an `R: Runtime` parameter through every consumer.
 pub struct TrayMenuHandles {
+    // Keep the tray icon handle alive for the lifetime of the app; macOS also
+    // reads it to update the menu-bar badge/title.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     pub tray: TrayIcon<Wry>,
     pub open: MenuItem<Wry>,
     pub settings: MenuItem<Wry>,
