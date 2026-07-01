@@ -299,6 +299,7 @@ export default function CompanionWindow() {
     const pinInFlightRef = useRef(false);
     const textFocusRepairInFlightRef = useRef(false);
     const pinFocusTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+    const nativeFocusLostTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const ballSummonPendingRef = useRef(false);
     const inputFocusConvergence = useMemo(
         () => createFocusConvergence({
@@ -374,6 +375,13 @@ export default function CompanionWindow() {
         pinFocusTimersRef.current = [];
     }, []);
 
+    const clearNativeFocusLostTimer = useCallback(() => {
+        if (nativeFocusLostTimerRef.current) {
+            clearTimeout(nativeFocusLostTimerRef.current);
+            nativeFocusLostTimerRef.current = null;
+        }
+    }, []);
+
     // ── mode → 通知球（球用它决定点击语义）＋ pin 时清未读 ──
     const applyMode = useCallback(
         (next: FbMode) => {
@@ -385,6 +393,7 @@ export default function CompanionWindow() {
             if (next !== 'pin') {
                 inputFocusConvergence.cancel();
                 clearPinnedInputFocusRetries();
+                clearNativeFocusLostTimer();
             }
             setMode(next);
             modeRef.current = next;
@@ -395,7 +404,7 @@ export default function CompanionWindow() {
             }).catch(() => undefined);
             if (next === 'pin') markRead();
         },
-        [clearPinnedInputFocusRetries, inputFocusConvergence, markRead],
+        [clearNativeFocusLostTimer, clearPinnedInputFocusRetries, inputFocusConvergence, markRead],
     );
 
     const beginPinRequest = useCallback(() => ({
@@ -418,9 +427,10 @@ export default function CompanionWindow() {
             clearTimeout(hideTimerRef.current);
             hideTimerRef.current = null;
         }
+        clearNativeFocusLostTimer();
         applyMode('hidden');
         void invoke('cmd_fb_hide_companion');
-    }, [applyMode]);
+    }, [applyMode, clearNativeFocusLostTimer]);
 
     const scheduleHideIfPeek = useCallback(() => {
         if (modeRef.current !== 'peek') return;
@@ -635,11 +645,21 @@ export default function CompanionWindow() {
             (e) => {
                 const focused = e.payload?.focused === true;
                 if (focused && modeRef.current === 'pin') {
+                    clearNativeFocusLostTimer();
                     schedulePinnedInputFocus('native-focus');
                     return;
                 }
                 if (!focused && modeRef.current === 'pin') {
-                    hideSelf();
+                    clearNativeFocusLostTimer();
+                    nativeFocusLostTimerRef.current = setTimeout(() => {
+                        nativeFocusLostTimerRef.current = null;
+                        if (modeRef.current !== 'pin') return;
+                        if (document.hasFocus()) {
+                            schedulePinnedInputFocus('native-focus-recovered');
+                            return;
+                        }
+                        hideSelf();
+                    }, 140);
                 }
             },
             ac.signal,
@@ -650,16 +670,7 @@ export default function CompanionWindow() {
             () => undefined,
         );
         return () => ac.abort();
-    }, [applyMode, applySummonCtx, scheduleHideIfPeek, schedulePinnedInputFocus, summonPinned, hideSelf, suspend, resume]);
-
-    // ── 窗口失焦（pin 态用户点了别处）→ 收起。Esc 由 composer keydown owner 处理 ──
-    useEffect(() => {
-        const onBlur = () => {
-            if (modeRef.current === 'pin') hideSelf();
-        };
-        window.addEventListener('blur', onBlur);
-        return () => window.removeEventListener('blur', onBlur);
-    }, [hideSelf]);
+    }, [applyMode, applySummonCtx, clearNativeFocusLostTimer, scheduleHideIfPeek, schedulePinnedInputFocus, summonPinned, hideSelf, suspend, resume]);
 
     // ── peek → pin 升格（窗内有效行为 = 激活 + 执行该行为，0612 用户裁决） ──
     // 点击带处境抓取（点击 = "我要说话"）；滚轮只升格不抓处境（滚轮 = "我要
@@ -1448,7 +1459,6 @@ export default function CompanionWindow() {
                             if (!composerKeydown.isComposing()) resizeInput(e.target);
                         }}
                         onKeyDown={composerKeydown.onKeyDown}
-                        onMouseDown={() => repairMacNativeTextInputFocus('textarea-mousedown')}
                         onPaste={onInputPaste}
                         onCompositionStart={composerKeydown.onCompositionStart}
                         onCompositionEnd={composerKeydown.onCompositionEnd}
