@@ -4,7 +4,7 @@ import { Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
 
 import type { SpaceIssue } from '@/api/spaceCloud';
 import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
-import { claimHandlerLabel, ISSUE_STATUSES, issueDisplayTitle, issueStatusLabel } from '@/pages/space/spaceHelpers';
+import { ACTIVE_ISSUE_STATE_FILTER, claimHandlerLabel, ISSUE_STATUSES, issueDisplayTitle, issueStatusLabel } from '@/pages/space/spaceHelpers';
 import { recordSpaceMetric } from '@/pages/space/spaceMetrics';
 import { formatTime, statusPillClass } from '@/pages/space/spaceUi';
 
@@ -45,7 +45,7 @@ export function IssuesWorkspace({
   const searchActive = searchOpen || issueQ.trim().length > 0;
   const statusFilterOptions = useMemo<SelectOption[]>(
     () => [
-      { value: '', label: t('space.filters.activeStatuses') },
+      { value: ACTIVE_ISSUE_STATE_FILTER, label: t('space.filters.activeStatuses') },
       ...ISSUE_STATUSES.map((status) => ({ value: status, label: issueStatusLabel(status, t) })),
     ],
     [t],

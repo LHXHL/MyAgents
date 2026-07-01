@@ -1,7 +1,7 @@
 // Floating ball desktop companion (PRD 0.2.35/0.2.34 desktop pet).
 //
-// Two OS windows, implemented as platform-native floating tool windows. Peek
-// mode must not activate the app, so the user's frontmost app keeps focus:
+// Platform-native floating tool windows. Peek mode must not activate the app,
+// so the user's frontmost app keeps focus:
 //
 //   fb-ball       92×92 transparent panel, can_become_key_window = false.
 //                 Pure visual + mouse target. Hover/click logic lives in the
@@ -9,6 +9,9 @@
 //   fb-companion  chat panel. Peek is visual-only; pin activates/focuses the
 //                 companion long enough for keyboard input and restores the
 //                 previous foreground window when hidden where the OS allows.
+//   fb-shield     macOS-only transparent panel shown below ball/companion while
+//                 pinned. It owns first outside-click consumption so dismissing
+//                 the companion does not also activate/click the app underneath.
 //
 // Context probes (frontmost app / selection where supported / screenshot) are
 // Tauri commands (D9: OS-level work goes through Rust invoke, never sidecar

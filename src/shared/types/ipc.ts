@@ -1,5 +1,7 @@
 // Shared IPC response types used by both main and renderer processes
 
+import type { SessionOrigin } from '../session-origin';
+
 export interface WorkspaceDirResponse {
   workspaceDir: string;
 }
@@ -28,6 +30,8 @@ export interface SendMessagePayload {
   reasoningEffort?: string;
   /** Per-turn analytics attribution. */
   analyticsSource?: 'floating_ball';
+  /** Stable session birth origin, present only when this send materializes a new session. */
+  birthOrigin?: SessionOrigin;
   /** Permission mode to use for this message */
   permissionMode?: 'auto' | 'plan' | 'fullAgency' | 'custom';
   /** Background-agent permission policy (#264); echoed from global AppConfig. */

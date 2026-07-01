@@ -16,6 +16,7 @@ import type { ReactNode } from 'react';
 import {
     track,
     consumePendingSessionBirth,
+    peekPendingSessionBirth,
     setPendingSessionBirth,
     hashAgentNameSync,
     birthContextForSurface,
@@ -3570,6 +3571,16 @@ export default function TabProvider({
         const skillMatch = trimmed.match(/^\/([a-zA-Z][a-zA-Z0-9_-]*)/);
         const skill = skillMatch ? skillMatch[1] : null;
         const hasImages = !!(images && images.length > 0);
+        const sessionIdForSend = currentSessionIdRef.current ?? sessionId;
+        const isSessionBirthSend = !sessionIdForSend || isPendingSessionId(sessionIdForSend) || isNewSessionRef.current;
+        const birthOrigin = isSessionBirthSend
+            ? originFromDesktopSurface(peekPendingSessionBirth(
+                tabId,
+                isNewSessionRef.current
+                    ? birthContextForSurface('new_chat_button')
+                    : birthContextForSurface('launcher_input'),
+            ).surface)
+            : undefined;
 
         // Reset new session flag BEFORE sending - allow message replay to show user's message
         isNewSessionRef.current = false;
@@ -3621,7 +3632,7 @@ export default function TabProvider({
         const sendPayload = {
             text: trimmed,
             images: imageData,
-            sessionId: currentSessionIdRef.current ?? sessionId,
+            sessionId: sessionIdForSend,
             permissionMode: permissionMode ?? 'auto',
             // #264 — echo the global background-agent permission policy so the
             // builtin PermissionRequest hook applies it to run_in_background sub-agents.
@@ -3631,6 +3642,7 @@ export default function TabProvider({
             model,
             reasoningEffort,
             providerRoute,
+            ...(birthOrigin ? { birthOrigin } : {}),
             ...(providerRoute ? {} : { providerEnv: providerEnv ?? 'subscription' }),
         };
 

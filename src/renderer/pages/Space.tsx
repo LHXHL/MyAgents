@@ -17,6 +17,7 @@ import { type SelectOption } from '@/components/CustomSelect';
 import { useToast } from '@/components/Toast';
 import { useConfig } from '@/hooks/useConfig';
 import {
+  ACTIVE_ISSUE_STATE_FILTER,
   buildIssueQueryKey,
   isSpaceAdmin,
   type IssueQueryParams,
@@ -61,7 +62,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const [mode, setMode] = useState<ViewMode>('issues');
   const [issueQ, setIssueQ] = useState('');
   const [selectedGoalId, setSelectedGoalId] = useState('');
-  const [selectedStatus, setSelectedStatus] = useState('');
+  const [selectedStatus, setSelectedStatus] = useState(ACTIVE_ISSUE_STATE_FILTER);
   const [issueDetailId, setIssueDetailId] = useState<string | null>(null);
   const [createIssueOpen, setCreateIssueOpen] = useState(false);
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);

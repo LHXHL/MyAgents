@@ -34,6 +34,7 @@ export type DesktopMessageRequest = {
   scenario: Extract<InteractionScenario, { type: 'desktop' }>;
   analyticsSource?: TurnAnalyticsSource;
   analyticsOrigin?: SessionOrigin;
+  birthOrigin?: SessionOrigin;
 };
 
 export type DesktopAdmissionResult = {
@@ -279,6 +280,7 @@ export interface SessionEngine {
     phase?: 'prepare' | 'commit' | 'rollback';
     preparedSessionId?: string;
     snapshotPatch?: SessionEngineSnapshotMaterializePatch;
+    origin?: SessionOrigin;
   }): Promise<SessionEngineMaterializePendingResult>;
   freezeCurrentSessionForImDetach(options?: {
     metadataBirthPending?: boolean;

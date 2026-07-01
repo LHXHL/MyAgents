@@ -145,6 +145,8 @@ export interface ExternalSendContext {
   /** Per-turn analytics attribution. Does not alter prompt assembly or session materialization. */
   analyticsSource?: TurnAnalyticsSource;
   analyticsOrigin?: SessionOrigin;
+  /** Stable session birth origin, used only when this send materializes metadata. */
+  birthOrigin?: SessionOrigin;
   permissionMode?: string;
   model?: string;
   /** Raw effort setting from caller. PRESENT = authoritative; absent = unmanaged desktop state. */

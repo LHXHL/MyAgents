@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { LocalRegisteredAgent, SpaceIssue, SpaceSession } from '@/api/spaceCloud';
 import type { Project } from '@/config/types';
 import {
+  ACTIVE_ISSUE_STATE_FILTER,
   buildIssueCommandPrompt,
   buildIssueQueryKey,
   formatAgentSecondaryLabel,
@@ -40,6 +41,12 @@ describe('space issue helpers', () => {
     expect(buildIssueQueryKey({ q: '  crash ', goalId: ' goal_runtime ', state: ' todo ', includeSubtree: true, limit: 50 })).toBe(
       'q=crash&state=todo&goalId=goal_runtime&includeSubtree=true&humanOnly=&cursor=&limit=50',
     );
+  });
+
+  it('keeps the active issue filter aligned with non-terminal states', () => {
+    expect(ACTIVE_ISSUE_STATE_FILTER.split(',')).toEqual(['open', 'todo', 'doing']);
+    expect(ACTIVE_ISSUE_STATE_FILTER.split(',')).not.toContain('done');
+    expect(ACTIVE_ISSUE_STATE_FILTER.split(',')).not.toContain('closed');
   });
 
   it('builds the issue command prompt around the short CLI alias', () => {

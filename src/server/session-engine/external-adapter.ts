@@ -242,6 +242,7 @@ export function createExternalSessionEngine(): SessionEngine {
           scenario: request.scenario,
           analyticsSource: request.analyticsSource,
           analyticsOrigin: request.analyticsOrigin,
+          birthOrigin: request.birthOrigin,
           permissionMode: request.permissionMode,
           model: request.model,
           reasoningEffort: request.reasoningEffort,
@@ -437,6 +438,7 @@ export function createExternalSessionEngine(): SessionEngine {
         phase: request.phase,
         preparedSessionId: request.preparedSessionId,
         snapshotPatch: request.snapshotPatch,
+        origin: request.origin,
       });
       if ((request.phase === 'commit' || request.phase === undefined) && result.success && result.sessionId) {
         if (runtimeSessionIdBefore && runtimeSessionIdBefore !== result.sessionId) {

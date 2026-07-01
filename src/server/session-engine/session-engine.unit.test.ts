@@ -275,6 +275,8 @@ describe('session-engine selector and adapters', () => {
       workspacePath: '/workspace',
       scenario: desktopScenario,
       analyticsSource: 'floating_ball',
+      analyticsOrigin: { kind: 'desktop', surface: 'floating_ball' },
+      birthOrigin: { kind: 'desktop', surface: 'launcher_input' },
     });
 
     expect(result).toMatchObject({
@@ -296,7 +298,11 @@ describe('session-engine selector and adapters', () => {
       undefined,
       undefined,
       'floating_ball',
-      { fromDesktopChatSend: true },
+      { kind: 'desktop', surface: 'floating_ball' },
+      {
+        fromDesktopChatSend: true,
+        sessionBirthOrigin: { kind: 'desktop', surface: 'launcher_input' },
+      },
     );
   });
 
@@ -445,6 +451,8 @@ describe('session-engine selector and adapters', () => {
         workspacePath: '/workspace',
         scenario: desktopScenario,
         analyticsSource: undefined,
+        analyticsOrigin: undefined,
+        birthOrigin: undefined,
         permissionMode: 'auto',
         model: 'gpt-5',
         reasoningEffort: undefined,
@@ -551,7 +559,7 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.consumeInjectedTurnOutcome).toHaveBeenCalledTimes(1);
     const injectedTurnId = mocks.consumeInjectedTurnOutcome.mock.calls[0][0];
     expect(typeof injectedTurnId).toBe('string');
-    expect(mocks.enqueueUserMessage.mock.calls[0][10]).toEqual({ injectedTurnId });
+    expect(mocks.enqueueUserMessage.mock.calls[0][11]).toEqual({ injectedTurnId });
   });
 
   it('propagates turn-local injected errors without reading stale assistant text', async () => {

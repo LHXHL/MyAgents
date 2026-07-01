@@ -83,6 +83,7 @@ export default function BallWindow() {
     const hoverTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const hoverIntentRef = useRef(createFloatingBallHoverIntentState());
     const pinInFlightRef = useRef(false);
+    const summonGenerationRef = useRef(0);
 
     // 原生坐标拖拽（修副屏跳屏）：renderer 只负责 pointer 生命周期和
     // threshold/动画；窗口落点由 Rust 用 NSEvent.mouseLocation + 当前窗口
@@ -303,11 +304,15 @@ export default function BallWindow() {
         suppressHoverPeekUntilBallLeave(hoverIntentRef.current);
         if (companionModeRef.current === 'pin' || pinInFlightRef.current) {
             // Toggle: ball click while pinned or pinning closes the companion.
+            summonGenerationRef.current += 1;
             pinInFlightRef.current = false;
             relayToCompanion('fb:close-request', {});
             return;
         }
+        const generation = summonGenerationRef.current + 1;
+        summonGenerationRef.current = generation;
         pinInFlightRef.current = true;
+        const isCurrentSummon = () => summonGenerationRef.current === generation && pinInFlightRef.current;
         pulseSummon();
         let ctx: FbCtx | null = null;
         try {
@@ -315,6 +320,7 @@ export default function BallWindow() {
         } catch (err) {
             console.warn('[fb-ball] capture_context failed:', err);
         }
+        if (!isCurrentSummon()) return;
         // Reserve the companion's pin path before native show can focus it
         // while it still thinks it is in peek mode.
         relayToCompanion('fb:summon-pending', {});
@@ -323,9 +329,16 @@ export default function BallWindow() {
         try {
             await invoke('cmd_fb_show_companion', { mode: 'pin' });
         } catch (err) {
-            relayToCompanion('fb:summon-cancel', {});
-            pinInFlightRef.current = false;
+            if (isCurrentSummon()) {
+                relayToCompanion('fb:summon-cancel', {});
+                pinInFlightRef.current = false;
+            }
             console.error('[fb-ball] show pin failed:', err);
+            return;
+        }
+        if (!isCurrentSummon()) {
+            relayToCompanion('fb:summon-cancel', {});
+            void invoke('cmd_fb_hide_companion').catch(() => undefined);
             return;
         }
         relayToCompanion('fb:summon', { ctx });

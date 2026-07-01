@@ -286,7 +286,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         request.analyticsSource,
         request.analyticsOrigin,
-        { fromDesktopChatSend: true },
+        {
+          fromDesktopChatSend: true,
+          sessionBirthOrigin: request.birthOrigin,
+        },
       );
       if (result.error) {
         return { success: false, error: result.error, status: 429 };
@@ -457,6 +460,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         phase: request.phase,
         preparedSessionId: request.preparedSessionId,
         snapshotPatch: request.snapshotPatch,
+        origin: request.origin,
       });
     },
 

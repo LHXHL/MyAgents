@@ -5,6 +5,7 @@ import {
   clearPendingSessionBirth,
   consumePendingSessionBirth,
   consumePendingSurface,
+  peekPendingSessionBirth,
   setPendingSessionBirth,
   setPendingSurface,
 } from './pendingSurface';
@@ -64,6 +65,17 @@ describe('pending session birth context', () => {
     });
     expect(consumePendingSessionBirth(TAB_A, fallback)).toBe(fallback);
     expect(consumePendingSessionBirth(TAB_B, fallback).surface).toBe('history_click');
+  });
+
+  it('peeks without consuming the pending birth context', () => {
+    const fallback = birthContextForSurface('new_chat_button');
+    const context = birthContextForSurface('launcher_input');
+    setPendingSessionBirth(TAB_A, context);
+
+    expect(peekPendingSessionBirth(TAB_A, fallback)).toBe(context);
+    expect(peekPendingSessionBirth(TAB_A, fallback)).toBe(context);
+    expect(consumePendingSessionBirth(TAB_A, fallback)).toBe(context);
+    expect(peekPendingSessionBirth(TAB_A, fallback)).toBe(fallback);
   });
 
   it('keeps the legacy surface wrapper compatible while new callers use full context', () => {

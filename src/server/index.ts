@@ -668,6 +668,8 @@ type SendMessagePayload = {
   providerRoute?: ProviderRoute;
   /** Per-turn analytics attribution; floating_ball also selects the desktop floating surface. */
   analyticsSource?: TurnAnalyticsSource;
+  /** Stable session birth origin, present only when this desktop send creates/materializes a session. */
+  birthOrigin?: unknown;
   // 'subscription' = explicit switch to Anthropic subscription (from desktop)
   // undefined/missing = "keep current provider" (safe default for IM/Cron callers)
   // object = use this specific third-party provider
@@ -2351,7 +2353,13 @@ async function main() {
         const analyticsSource: TurnAnalyticsSource | undefined =
           payload?.analyticsSource === 'floating_ball' ? 'floating_ball' : undefined;
         const interactionScenario = desktopScenarioForAnalyticsSource(analyticsSource);
-        const analyticsOrigin = originFromTurnAttribution({
+        const birthOrigin = payload.birthOrigin === undefined
+          ? undefined
+          : normalizeSessionOrigin(payload.birthOrigin);
+        if (payload.birthOrigin !== undefined && !birthOrigin) {
+          return jsonResponse({ success: false, error: 'Invalid session birth origin.' }, 400);
+        }
+        const analyticsOrigin = birthOrigin ?? originFromTurnAttribution({
           source: analyticsSource ?? 'desktop',
           scenarioType: interactionScenario.type,
           desktopSurface: interactionScenario.surface,
@@ -2387,6 +2395,7 @@ async function main() {
             scenario: interactionScenario,
             analyticsSource,
             analyticsOrigin,
+            birthOrigin,
           });
           if (result.error) {
             return jsonResponse({ success: false, error: result.error }, result.status ?? 500);
@@ -2665,8 +2674,9 @@ async function main() {
         // Get current session ID for context isolation
         const currentSessionId = getSessionId();
         if (currentSessionId) {
+          const existing = getSessionMetadata(currentSessionId);
           await updateSessionMetadata(currentSessionId, {
-            origin: cronTurnOrigin,
+            ...(existing?.origin ? {} : { origin: cronTurnOrigin }),
             cronTaskId: taskId,
           });
         }
@@ -3104,8 +3114,9 @@ async function main() {
               console.log(`[cron] execute-sync taskId=${taskId} single_session mode: switched to session ${sessionId}`);
             }
           }
+          const existing = getSessionMetadata(sessionId);
           await updateSessionMetadata(sessionId, {
-            origin: cronTurnOrigin,
+            ...(existing?.origin ? {} : { origin: cronTurnOrigin }),
             cronTaskId: taskId,
           });
         } else {

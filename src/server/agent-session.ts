@@ -81,6 +81,7 @@ import type { OfficialToolId } from '../shared/official-tools';
 import { deleteSession, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData } from './SessionStore';
 import { firePostTurnTitleHook } from './turn-hooks';
 import { createSessionMetadata, type SessionMetadata, type SessionMessage, type MessageAttachment, type SessionSource, type TurnAnalyticsSource } from './types/session';
+import { originFromMaterializationScenario } from '../shared/session-origin';
 import type { SessionOrigin } from '../shared/session-origin';
 import { extractAssistantTextFromStoredContent } from './inbox/latest-result';
 import {
@@ -4195,6 +4196,7 @@ function createMetadataForSessionId(
   targetSessionId: string,
   title: string,
   scenario: SessionMaterializationScenario,
+  origin?: SessionOrigin,
 ) {
   const agent = findAgentByWorkspacePath(agentDir) as AgentConfig | undefined;
   const meta = createMaterializedSessionMetadata({
@@ -4206,6 +4208,7 @@ function createMetadataForSessionId(
     managedCodexProviderReady: isManagedCodexProviderReady(loadAdminConfig()),
     fallbackRuntime: getCurrentRuntimeType(),
     title,
+    origin,
   });
   return {
     meta,
@@ -4238,7 +4241,7 @@ type DesktopSnapshotPatch = Pick<
 >;
 type OwnedFreezeSnapshotPatch = Partial<Pick<
   SessionMetadata,
-  'runtime' | 'runtimeSource' | 'providerExecutionIdentity' | keyof DesktopSnapshotPatch
+  'runtime' | 'runtimeSource' | 'providerExecutionIdentity' | 'origin' | keyof DesktopSnapshotPatch
 >>;
 
 function applyDesktopSnapshotPatch(
@@ -4397,11 +4400,24 @@ export async function freezeCurrentSessionMetadataForImDetach(
 
   const existing = getSessionMetadata(targetSessionId);
   if (existing?.configSnapshotAt) {
+    if (!existing.origin) {
+      const updated = await updateSessionMetadata(targetSessionId, {
+        origin: originFromMaterializationScenario('agent-channel'),
+      });
+      if (!updated) {
+        return { success: false, sessionId: targetSessionId, error: 'Failed to update session origin.' };
+      }
+      setLazySessionMaterializationAllowed(false);
+      return { success: true, sessionId: targetSessionId, metadata: updated };
+    }
     setLazySessionMaterializationAllowed(false);
     return { success: true, sessionId: targetSessionId, metadata: existing };
   }
 
   const patch = buildOwnedFreezeSnapshotPatch(overrides);
+  if (!existing?.origin) {
+    patch.origin = originFromMaterializationScenario('agent-channel');
+  }
   if (existing) {
     const updated = await updateSessionMetadata(targetSessionId, patch);
     if (!updated) {
@@ -4442,6 +4458,7 @@ export async function materializePendingDesktopSession(
     phase?: 'prepare' | 'commit' | 'rollback';
     preparedSessionId?: string;
     snapshotPatch?: Partial<{ [K in keyof DesktopSnapshotPatch]: DesktopSnapshotPatch[K] | null }>;
+    origin?: SessionOrigin;
   } = {},
 ): Promise<{ success: boolean; sessionId?: string; metadata?: SessionMetadata; error?: string; status?: number }> {
   const phase = request.phase ?? 'commit';
@@ -4631,10 +4648,14 @@ export async function materializePendingDesktopSession(
         };
       }
       const snapshotPatch = buildDesktopSnapshotMetadataPatch(request.snapshotPatch);
-      if (snapshotPatch) {
+      const preparedPatch = {
+        ...(snapshotPatch ?? {}),
+        ...(request.origin ? { origin: request.origin } : {}),
+      };
+      if (Object.keys(preparedPatch).length > 0) {
         const updated = await updateSessionMetadata(
           pendingMaterialization.targetSessionId,
-          snapshotPatch,
+          preparedPatch,
           (current) => preparedMaterializationOwnsMetadata(pendingMaterialization, current),
         );
         if (!updated) {
@@ -4700,6 +4721,7 @@ export async function materializePendingDesktopSession(
     targetSessionId,
     'New Chat',
     'desktop',
+    request.origin,
   );
   applyDesktopSnapshotPatch(meta, request.snapshotPatch);
   meta.materializationState = 'prepared';
@@ -7587,7 +7609,12 @@ export async function enqueueUserMessage(
   inboxMeta?: import('./inbox/types').InboxTurnMeta,
   analyticsSource?: TurnAnalyticsSource,
   analyticsOrigin?: SessionOrigin,
-  options?: { fromDesktopChatSend?: boolean; injectedTurnId?: string; allowLazySessionMaterialization?: boolean },
+  options?: {
+    fromDesktopChatSend?: boolean;
+    injectedTurnId?: string;
+    allowLazySessionMaterialization?: boolean;
+    sessionBirthOrigin?: SessionOrigin;
+  },
 ): Promise<EnqueueResult> {
   // 等待进行中的 resetSession/switchToSession 完成，防止消息投递到已死的 generator
   // 这些函数是异步的（await lifecycleState.termination 需要数秒），
@@ -7899,8 +7926,15 @@ export async function enqueueUserMessage(
       // to '' but is not an image message — only reserve '图片消息' for genuinely
       // text-less (image-only) input; otherwise 'New Chat'.
       const title = deriveSessionTitle(trimmed, 40) || (trimmed ? 'New Chat' : '图片消息');
+      const existingPatch: Partial<SessionMetadata> = {};
       if (existingMeta.title === 'New Chat') {
-        await updateSessionMetadata(sessionId, { title });
+        existingPatch.title = title;
+      }
+      if (!existingMeta.origin && options?.sessionBirthOrigin) {
+        existingPatch.origin = options.sessionBirthOrigin;
+      }
+      if (Object.keys(existingPatch).length > 0) {
+        await updateSessionMetadata(sessionId, existingPatch);
       }
       console.log(`[agent] session ${sessionId} already exists in SessionStore, preserving stats`);
     } else {
@@ -7926,6 +7960,7 @@ export async function enqueueUserMessage(
         sessionId,
         title,
         currentScenario.type,
+        options?.sessionBirthOrigin,
       );
       if (!isLiveFollowScenario(currentScenario.type)) {
         Object.assign(sessionMeta, buildOwnedFreezeSnapshotPatch());

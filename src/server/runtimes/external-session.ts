@@ -723,6 +723,7 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
   scenario: InteractionScenario;
   turnPath: ExternalMetadataTurnPath;
   metadataBirthPending?: boolean;
+  birthOrigin?: SessionOrigin;
   userMsg: SessionMessage;
   failureContext: string;
 }): Promise<void> {
@@ -735,6 +736,7 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
       scenario: params.scenario,
       turnPath: params.turnPath,
       metadataBirthPending: params.metadataBirthPending,
+      birthOrigin: params.birthOrigin,
     });
     await persistExternalUserMessageAppend(params.sessionId, params.failureContext);
   } catch (err) {
@@ -757,6 +759,7 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
   scenario: InteractionScenario;
   turnPath: ExternalMetadataTurnPath;
   metadataBirthPending?: boolean;
+  birthOrigin?: SessionOrigin;
 }): Promise<void> {
   const { sessionId, workspacePath, messageText, origin, scenario, turnPath } = params;
   if (!sessionId) {
@@ -816,6 +819,7 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
     managedCodexProviderReady: isManagedCodexProviderReady(loadAdminConfig()),
     fallbackRuntime: getCurrentRuntimeType(),
     title,
+    origin: params.birthOrigin,
   });
   if (pendingBirth?.runtimeSessionId) {
     meta.runtimeSessionId = pendingBirth.runtimeSessionId;
@@ -1605,6 +1609,7 @@ export async function startExternalSession(options: {
   scenario: InteractionScenario;
   analyticsSource?: TurnAnalyticsSource;
   analyticsOrigin?: SessionOrigin;
+  birthOrigin?: SessionOrigin;
   resumeSessionId?: string;
   /** Issue #194 — per-agent env policy (proxy: myagents/terminal/direct). */
   envPolicy?: import('../../shared/types/runtime').RuntimeEnvPolicy;
@@ -1646,6 +1651,7 @@ async function _doStartExternalSession(options: {
   scenario: InteractionScenario;
   analyticsSource?: TurnAnalyticsSource;
   analyticsOrigin?: SessionOrigin;
+  birthOrigin?: SessionOrigin;
   resumeSessionId?: string;
   envPolicy?: import('../../shared/types/runtime').RuntimeEnvPolicy;
   metadataBirthPending?: boolean;
@@ -1816,6 +1822,7 @@ async function _doStartExternalSession(options: {
       scenario: options.scenario,
       turnPath: options.resumeSessionId ? 'resume-start' : 'fresh-start',
       metadataBirthPending: options.metadataBirthPending,
+      birthOrigin: options.birthOrigin,
       userMsg,
       failureContext: '[external-session] Failed to persist initial user message',
     });
@@ -2138,6 +2145,7 @@ export async function sendExternalMessage(
         scenario: context.scenario,
         analyticsSource: turnAnalyticsSource,
         analyticsOrigin: turnAnalyticsOrigin,
+        birthOrigin: context.birthOrigin,
         metadataBirthPending: context.metadataBirthPending,
         recordConfigState: !hasQueuedExternalConfigOperation(),
       });
@@ -2178,6 +2186,7 @@ export async function sendExternalMessage(
         scenario: nextScenario,
         analyticsSource: turnAnalyticsSource,
         analyticsOrigin: turnAnalyticsOrigin,
+        birthOrigin: context?.birthOrigin,
         resumeSessionId: resumeId, // CC: --resume <myagents-session-id>; Codex: --resume <threadId>
         metadataBirthPending: context?.metadataBirthPending,
         recordConfigState: !hasQueuedExternalConfigOperation(),
@@ -2250,6 +2259,7 @@ export async function sendExternalMessage(
       scenario: getExternalLifecycleScenario(),
       turnPath: 'active-process',
       metadataBirthPending: context?.metadataBirthPending,
+      birthOrigin: context?.birthOrigin,
       userMsg,
       failureContext: '[external-session] Failed to persist active-process user message',
     });

@@ -1,6 +1,7 @@
 import type { AgentConfig } from '../../shared/types/agent';
 import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 import { originFromMaterializationScenario } from '../../shared/session-origin';
+import type { SessionOrigin } from '../../shared/session-origin';
 import { createSessionMetadata, type SessionMetadata } from '../types/session';
 import { snapshotForImSession, snapshotForOwnedSession } from './session-snapshot';
 
@@ -30,6 +31,7 @@ export function createMaterializedSessionMetadata(params: {
   managedCodexProviderReady?: boolean;
   fallbackRuntime?: RuntimeType;
   title?: string;
+  origin?: SessionOrigin;
 }): SessionMetadata {
   const snapshot = params.agent
     ? snapshotForMaterializedSession(params.agent, params.scenario, {
@@ -48,6 +50,6 @@ export function createMaterializedSessionMetadata(params: {
   }
   meta.id = params.sessionId;
   meta.title = params.title ?? 'New Chat';
-  meta.origin = originFromMaterializationScenario(params.scenario);
+  meta.origin = params.origin ?? originFromMaterializationScenario(params.scenario);
   return meta;
 }

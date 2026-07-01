@@ -40,6 +40,7 @@ describe('createMaterializedSessionMetadata', () => {
     expect(meta.model).toBeUndefined();
     expect(meta.permissionMode).toBeUndefined();
     expect(meta.configSnapshotAt).toBeUndefined();
+    expect(meta.origin).toEqual({ kind: 'agent-channel', surface: 'channel_message' });
   });
 
   it('keeps desktop materialization owned and self-contained', () => {
@@ -94,6 +95,18 @@ describe('createMaterializedSessionMetadata', () => {
     expect(meta.id).toBe('external-reset-session-id');
     expect(meta.runtime).toBe('codex');
     expect(meta.model).toBeUndefined();
+  });
+
+  it('persists an explicit birth origin when the caller owns the surface fact', () => {
+    const meta = createMaterializedSessionMetadata({
+      agentDir: '/tmp/workspace',
+      sessionId: 'launcher-session-id',
+      scenario: 'desktop',
+      agent: makeAgent(),
+      origin: { kind: 'desktop', surface: 'launcher_input' },
+    });
+
+    expect(meta.origin).toEqual({ kind: 'desktop', surface: 'launcher_input' });
   });
 
   it('materializes live-follow managed Codex as provider-backed runtime identity', () => {
