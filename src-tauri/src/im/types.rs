@@ -385,6 +385,8 @@ pub struct ImActiveSession {
     pub metadata_birth_pending: bool,
     /// True after the sidecar has confirmed/created a SessionStore metadata row.
     /// Missing metadata remains fatal only for these indexed peer sessions.
+    /// Legacy persisted states that lack this field are reconciled against
+    /// `sessions.json` when the router restores them.
     #[serde(default)]
     pub metadata_indexed: bool,
     pub last_active: String,
@@ -452,7 +454,8 @@ pub struct PeerSession {
     pub message_count: u32,
     pub metadata_birth_pending: bool,
     /// Router-side evidence that `session_id` has been materialized into
-    /// `sessions.json`; legacy/router-only peer sessions default false.
+    /// `sessions.json`; legacy/router-only peer sessions default false and
+    /// are reconciled against the SessionStore index on restore.
     pub metadata_indexed: bool,
     pub last_active: Instant,
 }

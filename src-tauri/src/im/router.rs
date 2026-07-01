@@ -44,6 +44,17 @@ fn short_id(s: &str) -> String {
     s.chars().take(8).collect()
 }
 
+fn reconcile_restored_metadata_indexed_with_lookup<F>(
+    restored_metadata_indexed: bool,
+    session_id: &str,
+    metadata_exists: F,
+) -> bool
+where
+    F: FnOnce(&str) -> bool,
+{
+    restored_metadata_indexed || metadata_exists(session_id)
+}
+
 /// Result of Phase 1 of ensure_sidecar: either the sidecar is healthy, or we need to create one.
 pub enum EnsureSidecarPrep {
     /// Existing sidecar is healthy — return immediately with port.
@@ -1004,6 +1015,18 @@ impl SessionRouter {
     /// Workspace is always set to the current `default_workspace` (from settings),
     /// NOT the persisted value. This ensures workspace changes take effect on restart.
     pub fn restore_sessions(&mut self, sessions: &[super::types::ImActiveSession]) {
+        self.restore_sessions_with_metadata_lookup(sessions, |sid| {
+            resolve_session_runtime_identity_full(sid).is_some()
+        });
+    }
+
+    fn restore_sessions_with_metadata_lookup<F>(
+        &mut self,
+        sessions: &[super::types::ImActiveSession],
+        metadata_exists: F,
+    ) where
+        F: Fn(&str) -> bool,
+    {
         for s in sessions {
             // TD-2: Migrate session key format if router has agent_id but key uses legacy "im:" prefix.
             // Old keys: im:{platform}:{type}:{id} → new: agent:{agentId}:{platform}:{type}:{id}
@@ -1025,6 +1048,12 @@ impl SessionRouter {
                 s.session_key.clone()
             };
             let (source_type, source_id) = parse_session_key(&session_key);
+            let metadata_indexed = reconcile_restored_metadata_indexed_with_lookup(
+                s.metadata_indexed,
+                &s.session_id,
+                &metadata_exists,
+            );
+            let metadata_birth_pending = s.metadata_birth_pending && !metadata_indexed;
             self.peer_sessions.insert(
                 session_key.clone(),
                 PeerSession {
@@ -1037,8 +1066,8 @@ impl SessionRouter {
                     source_display_name: s.source_display_name.clone(),
                     last_sender_name: s.last_sender_name.clone(),
                     message_count: s.message_count,
-                    metadata_birth_pending: s.metadata_birth_pending,
-                    metadata_indexed: s.metadata_indexed,
+                    metadata_birth_pending,
+                    metadata_indexed,
                     last_active: Instant::now(),
                 },
             );
@@ -1382,7 +1411,8 @@ mod tests {
 
     use super::{
         parse_session_key, persisted_session_runtime_differs,
-        persisted_session_runtime_identity_differs, EnsureSidecarInfo, SessionRouter,
+        persisted_session_runtime_identity_differs,
+        reconcile_restored_metadata_indexed_with_lookup, EnsureSidecarInfo, SessionRouter,
     };
     use crate::im::types::{ImActiveSession, PeerSession};
     use crate::sidecar::SidecarManager;
@@ -1523,6 +1553,7 @@ mod tests {
             SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".to_string());
         let mut pending = peer(session_key, "birth-pending-session");
         pending.metadata_birth_pending = true;
+        pending.metadata_indexed = false;
         router.upsert_peer_session(pending);
 
         let active = router.active_sessions();
@@ -1531,7 +1562,7 @@ mod tests {
 
         let mut restored =
             SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".to_string());
-        restored.restore_sessions(&active);
+        restored.restore_sessions_with_metadata_lookup(&active, |_| false);
 
         assert!(restored.metadata_birth_pending(session_key));
     }
@@ -1560,7 +1591,7 @@ mod tests {
 
         let mut restored =
             SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".to_string());
-        restored.restore_sessions(&[restored_active]);
+        restored.restore_sessions_with_metadata_lookup(&[restored_active], |_| false);
 
         assert!(!restored.metadata_birth_pending(session_key));
         assert!(
@@ -1569,6 +1600,69 @@ mod tests {
                 .expect("peer session exists")
                 .metadata_indexed
         );
+    }
+
+    #[test]
+    fn restored_metadata_indexed_reconciles_legacy_state_with_session_index() {
+        assert!(reconcile_restored_metadata_indexed_with_lookup(
+            true,
+            "deleted-after-indexed",
+            |_| false,
+        ));
+        assert!(reconcile_restored_metadata_indexed_with_lookup(
+            false,
+            "legacy-present",
+            |sid| sid == "legacy-present",
+        ));
+        assert!(!reconcile_restored_metadata_indexed_with_lookup(
+            false,
+            "legacy-unindexed",
+            |_| false,
+        ));
+    }
+
+    #[test]
+    fn restore_sessions_promotes_legacy_indexed_peer_sessions() {
+        let session_key = "agent:a:feishu:private:user";
+        let mut router =
+            SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".to_string());
+        router.upsert_peer_session(peer(session_key, "legacy-present"));
+
+        let mut active = router.active_sessions();
+        active[0].metadata_indexed = false;
+
+        let mut restored =
+            SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".to_string());
+        restored.restore_sessions_with_metadata_lookup(&active, |sid| sid == "legacy-present");
+
+        assert!(
+            restored
+                .peer_session_snapshot(session_key)
+                .expect("peer session exists")
+                .metadata_indexed
+        );
+    }
+
+    #[test]
+    fn restore_sessions_clears_birth_pending_when_metadata_exists() {
+        let session_key = "agent:a:feishu:private:user";
+        let mut router =
+            SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".to_string());
+        let mut pending = peer(session_key, "legacy-present");
+        pending.metadata_birth_pending = true;
+        pending.metadata_indexed = false;
+        router.upsert_peer_session(pending);
+
+        let active = router.active_sessions();
+        let mut restored =
+            SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".to_string());
+        restored.restore_sessions_with_metadata_lookup(&active, |sid| sid == "legacy-present");
+
+        let restored_peer = restored
+            .peer_session_snapshot(session_key)
+            .expect("peer session exists");
+        assert!(!restored_peer.metadata_birth_pending);
+        assert!(restored_peer.metadata_indexed);
     }
 
     #[test]
