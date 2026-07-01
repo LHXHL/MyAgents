@@ -454,7 +454,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
 
     freezeCurrentSessionForImDetach(options) {
       return freezeCurrentSessionMetadataForImDetach(undefined, {
-        allowMissingMetadata: options?.metadataBirthPending === true,
+        allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
       });
     },
 
@@ -531,7 +531,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
 
     async resetForNewImSession(_workspacePath, options) {
       const freeze = await freezeCurrentSessionMetadataForImDetach(undefined, {
-        allowMissingMetadata: options?.metadataBirthPending === true,
+        allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
       });
       if (!freeze.success) {
         return { success: false, error: freeze.error ?? 'Failed to freeze current IM session before reset' };

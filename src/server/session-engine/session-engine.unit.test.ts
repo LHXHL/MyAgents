@@ -933,6 +933,18 @@ describe('session-engine selector and adapters', () => {
     );
   });
 
+  it('allows freezing explicit unindexed IM sessions with missing metadata', async () => {
+    const result = await getSessionEngine().freezeCurrentSessionForImDetach({
+      metadataBirthPending: false,
+      metadataIndexed: false,
+    });
+
+    expect(result).toEqual({ success: true, sessionId: 'old-im-session' });
+    expect(mocks.freezeCurrentSessionMetadataForImDetach).toHaveBeenCalledWith(undefined, {
+      allowMissingMetadata: true,
+    });
+  });
+
   it('routes permission responses by external liveness compatibility', () => {
     mocks.state.useExternal = true;
 

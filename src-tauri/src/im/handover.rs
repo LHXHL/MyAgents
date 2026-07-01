@@ -59,7 +59,13 @@ fn target_consumer_needs_cancel(
 
 #[cfg(test)]
 mod tests {
-    use super::target_consumer_needs_cancel;
+    use std::sync::{Arc, Mutex};
+
+    use axum::{routing::post, Json, Router};
+    use serde_json::Value;
+    use tokio::sync::oneshot;
+
+    use super::{freeze_current_via_sidecar, target_consumer_needs_cancel};
 
     #[test]
     fn target_consumer_cancel_is_required_when_handover_replaces_session() {
@@ -90,6 +96,47 @@ mod tests {
             31415,
         ));
     }
+
+    #[tokio::test]
+    async fn freeze_current_via_sidecar_sends_metadata_indexed_flag() {
+        let (tx, rx) = oneshot::channel::<Value>();
+        let tx = Arc::new(Mutex::new(Some(tx)));
+        let app = Router::new().route(
+            "/api/session/freeze-current",
+            post({
+                let tx = tx.clone();
+                move |Json(payload): Json<Value>| {
+                    let tx = tx.clone();
+                    async move {
+                        if let Some(tx) = tx.lock().expect("capture mutex").take() {
+                            let _ = tx.send(payload);
+                        }
+                        Json(serde_json::json!({ "success": true }))
+                    }
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test server");
+        let port = listener
+            .local_addr()
+            .expect("test server local addr")
+            .port();
+        let server = tauri::async_runtime::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        freeze_current_via_sidecar(port, false, false)
+            .await
+            .expect("freeze-current succeeds");
+
+        let payload = rx.await.expect("captured freeze-current payload");
+        assert_eq!(payload["metadataBirthPending"].as_bool(), Some(false));
+        assert_eq!(payload["metadataIndexed"].as_bool(), Some(false));
+
+        server.abort();
+    }
 }
 
 /// UTF-8-safe shortener for log lines and notification text. The bare
@@ -101,13 +148,18 @@ fn short_id(s: &str) -> String {
     s.chars().take(8).collect()
 }
 
-async fn freeze_current_via_sidecar(port: u16, metadata_birth_pending: bool) -> Result<(), String> {
+async fn freeze_current_via_sidecar(
+    port: u16,
+    metadata_birth_pending: bool,
+    metadata_indexed: bool,
+) -> Result<(), String> {
     let client = crate::local_http::json_client(Duration::from_secs(30));
     let url = format!("http://127.0.0.1:{}/api/session/freeze-current", port);
     let resp = client
         .post(&url)
         .json(&json!({
             "metadataBirthPending": metadata_birth_pending,
+            "metadataIndexed": metadata_indexed,
         }))
         .send()
         .await
@@ -496,15 +548,19 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
     if let Some(prior) = prior_before_handover.as_ref() {
         if prior.session_id != sessionId {
             let freeze_result = if prior.sidecar_port != 0 {
-                freeze_current_via_sidecar(prior.sidecar_port, prior.metadata_birth_pending)
-                    .await
-                    .map(|_| {
-                        ulog_info!(
-                            "[handover] step4b froze prior session {} via sidecar port {}",
-                            short_id(&prior.session_id),
-                            prior.sidecar_port
-                        );
-                    })
+                freeze_current_via_sidecar(
+                    prior.sidecar_port,
+                    prior.metadata_birth_pending,
+                    prior.metadata_indexed,
+                )
+                .await
+                .map(|_| {
+                    ulog_info!(
+                        "[handover] step4b froze prior session {} via sidecar port {}",
+                        short_id(&prior.session_id),
+                        prior.sidecar_port
+                    );
+                })
             } else {
                 runtime_change::freeze_via_file_lock_status(&prior.session_id, &fallback_snapshot)
                     .await
@@ -512,6 +568,7 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
                         runtime_change::resolve_peer_file_lock_freeze_outcome(
                             outcome,
                             prior.metadata_birth_pending,
+                            prior.metadata_indexed,
                             &prior.session_id,
                         )
                     })
@@ -525,6 +582,12 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
                         runtime_change::PeerFileLockFreezeDisposition::MissingBirthPending => {
                             ulog_info!(
                                 "[handover] step4b skipped freeze for birth-pending prior session {} missing from SessionStore",
+                                short_id(&prior.session_id)
+                            );
+                        }
+                        runtime_change::PeerFileLockFreezeDisposition::MissingUnindexedPeerSession => {
+                            ulog_info!(
+                                "[handover] step4b skipped freeze for unindexed prior peer session {} missing from SessionStore",
                                 short_id(&prior.session_id)
                             );
                         }
@@ -588,6 +651,7 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
             last_sender_name,
             message_count: 0,
             metadata_birth_pending: false,
+            metadata_indexed: true,
             last_active: Instant::now(),
         });
 

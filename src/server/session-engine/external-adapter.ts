@@ -449,7 +449,7 @@ export function createExternalSessionEngine(): SessionEngine {
       return freezeCurrentSessionMetadataForImDetach(
         buildExternalFreezeSnapshotPatch(),
         {
-          allowMissingMetadata: options?.metadataBirthPending === true,
+          allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
         },
       );
     },
@@ -576,7 +576,7 @@ export function createExternalSessionEngine(): SessionEngine {
       const freeze = await freezeCurrentSessionMetadataForImDetach(
         buildExternalFreezeSnapshotPatch(),
         {
-          allowMissingMetadata: options?.metadataBirthPending === true,
+          allowMissingMetadata: options?.metadataBirthPending === true || options?.metadataIndexed === false,
         },
       );
       if (!freeze.success) {

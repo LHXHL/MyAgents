@@ -327,17 +327,22 @@ pub(crate) enum FileLockFreezeOutcome {
 pub(crate) enum PeerFileLockFreezeDisposition {
     Frozen,
     MissingBirthPending,
+    MissingUnindexedPeerSession,
 }
 
 pub(crate) fn resolve_peer_file_lock_freeze_outcome(
     outcome: FileLockFreezeOutcome,
     metadata_birth_pending: bool,
+    metadata_indexed: bool,
     session_id: &str,
 ) -> Result<PeerFileLockFreezeDisposition, String> {
     match outcome {
         FileLockFreezeOutcome::Frozen => Ok(PeerFileLockFreezeDisposition::Frozen),
         FileLockFreezeOutcome::Missing if metadata_birth_pending => {
             Ok(PeerFileLockFreezeDisposition::MissingBirthPending)
+        }
+        FileLockFreezeOutcome::Missing if !metadata_indexed => {
+            Ok(PeerFileLockFreezeDisposition::MissingUnindexedPeerSession)
         }
         FileLockFreezeOutcome::Missing => {
             Err(format!("session {} not found in sessions.json", session_id))
@@ -542,7 +547,7 @@ pub async fn freeze_and_rotate_for_runtime_change(
     let mut total_bindings = 0usize;
     let mut frozen_via_sidecar = 0usize;
     let mut frozen_via_fallback = 0usize;
-    let mut skipped_missing_pending = 0usize;
+    let mut skipped_missing_unindexed = 0usize;
     let mut rotated = 0usize;
     let mut notified = 0usize;
     let mut notification_targets = 0usize;
@@ -602,6 +607,7 @@ pub async fn freeze_and_rotate_for_runtime_change(
                                     resolve_peer_file_lock_freeze_outcome(
                                         outcome,
                                         prior.metadata_birth_pending,
+                                        prior.metadata_indexed,
                                         &old_session_id,
                                     )
                                 }) {
@@ -613,9 +619,16 @@ pub async fn freeze_and_rotate_for_runtime_change(
                                         );
                                     }
                                     Ok(PeerFileLockFreezeDisposition::MissingBirthPending) => {
-                                        skipped_missing_pending += 1;
+                                        skipped_missing_unindexed += 1;
                                         ulog_info!(
                                             "[runtime-change] skipped freeze for birth-pending session {} missing from SessionStore (sidecar fallback)",
+                                            short_id(&old_session_id)
+                                        );
+                                    }
+                                    Ok(PeerFileLockFreezeDisposition::MissingUnindexedPeerSession) => {
+                                        skipped_missing_unindexed += 1;
+                                        ulog_info!(
+                                            "[runtime-change] skipped freeze for unindexed peer session {} missing from SessionStore (sidecar fallback)",
                                             short_id(&old_session_id)
                                         );
                                     }
@@ -636,6 +649,7 @@ pub async fn freeze_and_rotate_for_runtime_change(
                             resolve_peer_file_lock_freeze_outcome(
                                 outcome,
                                 prior.metadata_birth_pending,
+                                prior.metadata_indexed,
                                 &old_session_id,
                             )
                         }) {
@@ -647,9 +661,16 @@ pub async fn freeze_and_rotate_for_runtime_change(
                             );
                         }
                         Ok(PeerFileLockFreezeDisposition::MissingBirthPending) => {
-                            skipped_missing_pending += 1;
+                            skipped_missing_unindexed += 1;
                             ulog_info!(
                                 "[runtime-change] skipped freeze for birth-pending session {} missing from SessionStore (no HTTP path available)",
+                                short_id(&old_session_id)
+                            );
+                        }
+                        Ok(PeerFileLockFreezeDisposition::MissingUnindexedPeerSession) => {
+                            skipped_missing_unindexed += 1;
+                            ulog_info!(
+                                "[runtime-change] skipped freeze for unindexed peer session {} missing from SessionStore (no HTTP path available)",
                                 short_id(&old_session_id)
                             );
                         }
@@ -675,6 +696,7 @@ pub async fn freeze_and_rotate_for_runtime_change(
                 new_peer.sidecar_port = 0; // next IM message spawns a fresh sidecar with NEW runtime
                 new_peer.message_count = 0;
                 new_peer.metadata_birth_pending = true;
+                new_peer.metadata_indexed = false;
                 new_peer.last_active = Instant::now();
                 router.upsert_peer_session(new_peer);
                 rotated += 1;
@@ -781,14 +803,14 @@ pub async fn freeze_and_rotate_for_runtime_change(
 
     if total_bindings > 0 {
         ulog_info!(
-            "[runtime-change] agent={} {} → {}: bindings={} frozen(sidecar={}, fallback={}) skipped_missing_pending={} rotated={} notification_targets={} notified={} deduped_notifications={}",
+            "[runtime-change] agent={} {} → {}: bindings={} frozen(sidecar={}, fallback={}) skipped_missing_unindexed={} rotated={} notification_targets={} notified={} deduped_notifications={}",
             agent.agent_id,
             old_runtime,
             new_runtime,
             total_bindings,
             frozen_via_sidecar,
             frozen_via_fallback,
-            skipped_missing_pending,
+            skipped_missing_unindexed,
             rotated,
             notification_targets,
             notified,
@@ -876,11 +898,12 @@ mod tests {
     }
 
     #[test]
-    fn missing_file_lock_freeze_is_skipped_only_for_birth_pending_peer_sessions() {
+    fn missing_file_lock_freeze_is_skipped_for_unindexed_peer_sessions() {
         assert_eq!(
             resolve_peer_file_lock_freeze_outcome(
                 FileLockFreezeOutcome::Frozen,
                 false,
+                true,
                 "persisted-session",
             )
             .unwrap(),
@@ -890,15 +913,27 @@ mod tests {
             resolve_peer_file_lock_freeze_outcome(
                 FileLockFreezeOutcome::Missing,
                 true,
+                false,
                 "birth-pending-session",
             )
             .unwrap(),
             PeerFileLockFreezeDisposition::MissingBirthPending
         );
+        assert_eq!(
+            resolve_peer_file_lock_freeze_outcome(
+                FileLockFreezeOutcome::Missing,
+                false,
+                false,
+                "legacy-unindexed-peer-session",
+            )
+            .unwrap(),
+            PeerFileLockFreezeDisposition::MissingUnindexedPeerSession
+        );
 
         let err = resolve_peer_file_lock_freeze_outcome(
             FileLockFreezeOutcome::Missing,
             false,
+            true,
             "persisted-session",
         )
         .unwrap_err();

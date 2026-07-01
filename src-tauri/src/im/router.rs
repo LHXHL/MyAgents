@@ -61,6 +61,7 @@ pub struct EnsureSidecarInfo {
     pub workspace: PathBuf,
     pub prev_count: u32,
     pub metadata_birth_pending: bool,
+    pub metadata_indexed: bool,
     pub runtime_override: Option<String>,
     pub runtime_source_override: Option<String>,
 }
@@ -340,6 +341,7 @@ impl SessionRouter {
         let metadata_birth_pending = peer_session
             .map(|ps| ps.metadata_birth_pending)
             .unwrap_or(true);
+        let metadata_indexed = peer_session.map(|ps| ps.metadata_indexed).unwrap_or(false);
 
         let workspace = self
             .peer_sessions
@@ -359,6 +361,7 @@ impl SessionRouter {
             workspace,
             prev_count,
             metadata_birth_pending,
+            metadata_indexed,
             runtime_override: None,
             runtime_source_override: None,
         })
@@ -437,6 +440,7 @@ impl SessionRouter {
                 last_sender_name: None,
                 message_count: info.prev_count,
                 metadata_birth_pending: info.metadata_birth_pending,
+                metadata_indexed: info.metadata_indexed,
                 last_active: Instant::now(),
             },
         );
@@ -454,6 +458,7 @@ impl SessionRouter {
         if let Some(ps) = self.peer_sessions.get_mut(session_key) {
             ps.message_count += 1;
             ps.metadata_birth_pending = false;
+            ps.metadata_indexed = true;
             ps.last_active = Instant::now();
         }
     }
@@ -478,6 +483,7 @@ impl SessionRouter {
             }
             ps.session_id = new_session_id.to_string();
             ps.metadata_birth_pending = false;
+            ps.metadata_indexed = true;
             ulog_info!(
                 "[im-router] Upgraded peer session_id: {} -> {} (session_key={})",
                 old_id,
@@ -646,6 +652,7 @@ impl SessionRouter {
             ps.sidecar_port = 0;
             ps.message_count = 0;
             ps.metadata_birth_pending = true;
+            ps.metadata_indexed = false;
             ps.last_active = Instant::now();
         }
 
@@ -682,6 +689,7 @@ impl SessionRouter {
             if ps.sidecar_port == 0 {
                 if let Some(snapshot) = fallback_snapshot {
                     let metadata_birth_pending = ps.metadata_birth_pending;
+                    let metadata_indexed = ps.metadata_indexed;
                     match super::runtime_change::freeze_via_file_lock_status(
                         &old_session_id,
                         snapshot,
@@ -691,6 +699,7 @@ impl SessionRouter {
                         super::runtime_change::resolve_peer_file_lock_freeze_outcome(
                             outcome,
                             metadata_birth_pending,
+                            metadata_indexed,
                             &old_session_id,
                         )
                     }) {
@@ -703,6 +712,12 @@ impl SessionRouter {
                         Ok(super::runtime_change::PeerFileLockFreezeDisposition::MissingBirthPending) => {
                             ulog_info!(
                                 "[im-router] skipped freeze for birth-pending idle session {} before /new binding reset",
+                                short_id(&old_session_id)
+                            );
+                        }
+                        Ok(super::runtime_change::PeerFileLockFreezeDisposition::MissingUnindexedPeerSession) => {
+                            ulog_info!(
+                                "[im-router] skipped freeze for unindexed idle peer session {} before /new binding reset",
                                 short_id(&old_session_id)
                             );
                         }
@@ -724,6 +739,7 @@ impl SessionRouter {
                     ps.session_id = new_session_id.clone();
                     ps.message_count = 0;
                     ps.metadata_birth_pending = true;
+                    ps.metadata_indexed = false;
                     ps.last_active = Instant::now();
                 }
                 return Ok(new_session_id);
@@ -735,6 +751,7 @@ impl SessionRouter {
                 .post(&url)
                 .json(&json!({
                     "metadataBirthPending": ps.metadata_birth_pending,
+                    "metadataIndexed": ps.metadata_indexed,
                 }))
                 .send()
                 .await
@@ -756,6 +773,7 @@ impl SessionRouter {
                     ps.session_id = new_session_id.clone();
                     ps.message_count = 0;
                     ps.metadata_birth_pending = false;
+                    ps.metadata_indexed = true;
                     ps.last_active = Instant::now();
                 }
 
@@ -869,6 +887,7 @@ impl SessionRouter {
     pub fn mark_metadata_birth_consumed(&mut self, session_key: &str) {
         if let Some(ps) = self.peer_sessions.get_mut(session_key) {
             ps.metadata_birth_pending = false;
+            ps.metadata_indexed = true;
         }
     }
 
@@ -962,6 +981,7 @@ impl SessionRouter {
                 workspace_path: ps.workspace_path.display().to_string(),
                 message_count: ps.message_count,
                 metadata_birth_pending: ps.metadata_birth_pending,
+                metadata_indexed: ps.metadata_indexed,
                 last_active: chrono::Duration::from_std(
                     now_instant.saturating_duration_since(ps.last_active),
                 )
@@ -1018,6 +1038,7 @@ impl SessionRouter {
                     last_sender_name: s.last_sender_name.clone(),
                     message_count: s.message_count,
                     metadata_birth_pending: s.metadata_birth_pending,
+                    metadata_indexed: s.metadata_indexed,
                     last_active: Instant::now(),
                 },
             );
@@ -1379,6 +1400,7 @@ mod tests {
             last_sender_name: None,
             message_count: 0,
             metadata_birth_pending: false,
+            metadata_indexed: true,
             last_active: Instant::now(),
         }
     }
@@ -1470,15 +1492,28 @@ mod tests {
             workspace: PathBuf::from("/tmp/workspace"),
             prev_count: 0,
             metadata_birth_pending: true,
+            metadata_indexed: false,
             runtime_override: None,
             runtime_source_override: None,
         };
 
         router.commit_ensure_sidecar(session_key, &info, 1234);
         assert!(router.metadata_birth_pending(session_key));
+        assert!(
+            !router
+                .peer_session_snapshot(session_key)
+                .expect("peer session exists")
+                .metadata_indexed
+        );
 
         router.mark_metadata_birth_consumed(session_key);
         assert!(!router.metadata_birth_pending(session_key));
+        assert!(
+            router
+                .peer_session_snapshot(session_key)
+                .expect("peer session exists")
+                .metadata_indexed
+        );
     }
 
     #[test]
@@ -1514,15 +1549,26 @@ mod tests {
             .as_object_mut()
             .expect("active session serializes as an object")
             .remove("metadataBirthPending");
+        legacy_value
+            .as_object_mut()
+            .expect("active session serializes as an object")
+            .remove("metadataIndexed");
 
         let restored_active: ImActiveSession = serde_json::from_value(legacy_value).unwrap();
         assert!(!restored_active.metadata_birth_pending);
+        assert!(!restored_active.metadata_indexed);
 
         let mut restored =
             SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".to_string());
         restored.restore_sessions(&[restored_active]);
 
         assert!(!restored.metadata_birth_pending(session_key));
+        assert!(
+            !restored
+                .peer_session_snapshot(session_key)
+                .expect("peer session exists")
+                .metadata_indexed
+        );
     }
 
     #[test]
@@ -1551,5 +1597,6 @@ mod tests {
         assert_eq!(ps.sidecar_port, 0);
         assert_eq!(ps.message_count, 0);
         assert!(ps.metadata_birth_pending);
+        assert!(!ps.metadata_indexed);
     }
 }

@@ -7936,9 +7936,13 @@ async function main() {
       if (pathname === '/api/session/freeze-current' && request.method === 'POST') {
         try {
           const raw = (await request.json().catch(() => ({}))) as Record<string, unknown>;
-          const result = await getSessionEngine().freezeCurrentSessionForImDetach({
+          const freezeOptions: { metadataBirthPending: boolean; metadataIndexed?: boolean } = {
             metadataBirthPending: raw.metadataBirthPending === true,
-          });
+          };
+          if (typeof raw.metadataIndexed === 'boolean') {
+            freezeOptions.metadataIndexed = raw.metadataIndexed;
+          }
+          const result = await getSessionEngine().freezeCurrentSessionForImDetach(freezeOptions);
           if (!result.success) {
             return jsonResponse(
               { success: false, error: result.error ?? 'Failed to freeze current session' },
