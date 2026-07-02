@@ -1,6 +1,6 @@
 
 import { AlertCircle, Brain, ChevronDown, Image as ImageIcon, Loader2, XCircle, StopCircle, Copy, Check, Download } from 'lucide-react';
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { track } from '@/analytics';
@@ -74,7 +74,7 @@ const ProcessRow = memo(function ProcessRow({
     const isBlockActive = isThinkingActive || isToolActive || isTaskRunning;
     const wasToolActiveRef = useRef(false);
 
-    useEffect(() => {
+    useLayoutEffect(() => {
         const isAnyToolActive = isTool && (isToolActive || isTaskRunning);
         if (wasToolActiveRef.current && !isAnyToolActive) {
             notifyRowLayoutChanged('tool-complete');

@@ -399,64 +399,25 @@ const MessageList = memo(function MessageList({
   // streaming item grows taller. `followOutput` only fires on item-COUNT change,
   // so the last item growing (text / thinking streaming in) needs an explicit nudge.
   //
-  // This MUST route through Virtuoso's own `autoscrollToBottom()` — never write
-  // `el.scrollTop` on the scroller directly. Driving the scroller externally races
-  // Virtuoso's internal height/anchor tracking and its `followOutput`, corrupting
-  // the range/measurement cache so it paints PHANTOM REPEATED ROWS (same failure
-  // mode documented in the "No custom Scroller/List components" note above). A
-  // prior rAF loop that eased `scrollTop` every frame did exactly this; combined
-  // with a mid-turn-open turn that left `streamingMessage` stuck non-null (idle
-  // clears isLoading but NOT streamingMessage — see TabProvider chat:status), the
-  // loop kept mutating scroll after the backend went idle and multiplied empty
-  // "思考了 1s" rows on screen. autoscrollToBottom() stays inside Virtuoso's model,
-  // so a stuck streaming message is at worst a no-op nudge, never corruption.
+  // This must stay inside Virtuoso's own scroll model — never write `el.scrollTop`
+  // directly. The important detail is timing: `autoscrollToBottom()` is designed
+  // for late size changes such as image loads; in react-virtuoso 4.18.3 it waits
+  // for an atBottomState update and clears the observer after 100ms. Used for
+  // per-token text streaming from a passive effect + rAF, it lets the browser
+  // paint one frame where the growing row/footer push the status down, then snaps
+  // back on Virtuoso's delayed correction. A layout-effect `scrollToIndex` lands
+  // the LAST/end alignment before paint while still going through Virtuoso.
   //
   // Gated on `isLoading` (actual streaming), not merely `!!streamingMessage`: a
   // stale streaming message from the loadSession-REST / live-SSE mid-turn race
   // must NOT keep auto-scroll alive once the turn has completed.
-  //
-  // Throttled to ~20fps (leading + trailing edge). Without throttling
-  // autoscrollToBottom() fires on every SSE chunk (~60fps) and, combined with
-  // Virtuoso's ResizeObserver correction loop, causes visible footer jitter.
-  const scrollRafRef = useRef(0);
-  const lastScrollTimeRef = useRef(0);
-  const trailingScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!streamingMessage || !isLoading || !followEnabledRef.current) return;
-    // Skip while hidden — autoscrollToBottom() against a content-visibility:
-    // hidden scroller can compute against stale geometry. The re-pin layout
-    // effect above restores position on re-activation.
+    // Skip while hidden — scrolling against a content-visibility:hidden scroller
+    // can compute against stale geometry. The re-pin layout effect above restores
+    // position on re-activation.
     if (!isActive) return;
-
-    const THROTTLE_MS = 48; // ~20fps
-    const now = performance.now();
-    const elapsed = now - lastScrollTimeRef.current;
-
-    // Cancel any pending leading-edge RAF
-    cancelAnimationFrame(scrollRafRef.current);
-
-    if (elapsed >= THROTTLE_MS) {
-      // Leading edge: enough time passed, scroll now
-      lastScrollTimeRef.current = now;
-      if (trailingScrollRef.current) { clearTimeout(trailingScrollRef.current); trailingScrollRef.current = null; }
-      scrollRafRef.current = requestAnimationFrame(() => {
-        virtuosoRef.current?.autoscrollToBottom();
-      });
-    } else if (!trailingScrollRef.current) {
-      // Trailing edge: schedule scroll after remaining throttle window
-      trailingScrollRef.current = setTimeout(() => {
-        trailingScrollRef.current = null;
-        lastScrollTimeRef.current = performance.now();
-        scrollRafRef.current = requestAnimationFrame(() => {
-          virtuosoRef.current?.autoscrollToBottom();
-        });
-      }, THROTTLE_MS - elapsed);
-    }
-
-    return () => {
-      cancelAnimationFrame(scrollRafRef.current);
-      if (trailingScrollRef.current) { clearTimeout(trailingScrollRef.current); trailingScrollRef.current = null; }
-    };
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
   }, [streamingMessage, isLoading, isActive, followEnabledRef, virtuosoRef]);
 
   // ── Terminal pin — pin to bottom once when a turn ends ──
@@ -466,7 +427,7 @@ const MessageList = memo(function MessageList({
   // revealed line(s) can land just below the fold. If we were still following (true/'force'),
   // re-pin once. Routes through scrollToBottom so the hook's grace/degrade state stays consistent.
   const prevIsLoadingRef = useRef(isLoading);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const was = prevIsLoadingRef.current;
     prevIsLoadingRef.current = isLoading;
     if (was && !isLoading && isActive && followEnabledRef.current) {

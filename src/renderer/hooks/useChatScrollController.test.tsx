@@ -131,6 +131,39 @@ describe('useChatScrollController', () => {
     expect(controls.scrollToIndex).not.toHaveBeenCalled();
   });
 
+  it.each(['attachment-settle', 'widget-resize'] as const)(
+    'pins bottom on late %s layout growth when follow is still enabled',
+    (reason) => {
+      controls.followEnabledRef.current = true;
+      const { result } = renderHook(() => useChatScrollController({
+        messages: [msg('m1')],
+        isActive: true,
+      }));
+
+      act(() => {
+        result.current.onRowLayoutChanged('m1', reason);
+      });
+
+      expect(controls.scrollToBottom).toHaveBeenCalledWith('auto');
+      expect(controls.scrollBy).not.toHaveBeenCalled();
+      expect(controls.scrollToIndex).not.toHaveBeenCalled();
+    },
+  );
+
+  it('does not bottom-pin late layout growth after follow is disabled', () => {
+    controls.followEnabledRef.current = false;
+    const { result } = renderHook(() => useChatScrollController({
+      messages: [msg('m1')],
+      isActive: true,
+    }));
+
+    act(() => {
+      result.current.onRowLayoutChanged('m1', 'attachment-settle');
+    });
+
+    expect(controls.scrollToBottom).not.toHaveBeenCalled();
+  });
+
   it('captures and restores an anchor with one offset correction', () => {
     const scroller = document.createElement('div');
     const row = document.createElement('div');

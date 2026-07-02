@@ -44,6 +44,10 @@ export interface UseChatScrollControllerOptions {
 const MESSAGE_SCOPE_SELECTOR = '[data-chat-search-scope][data-message-id]';
 const DEFAULT_JUMP_PAUSE_MS = 2000;
 
+function shouldPinBottomAfterNextCommit(reason: RowLayoutChangeReason): boolean {
+  return reason === 'attachment-settle' || reason === 'widget-resize';
+}
+
 function escapeCssIdentifier(value: string): string {
   if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
     return CSS.escape(value);
@@ -108,6 +112,8 @@ export function useChatScrollController({
   rootRefRef.current = rootRef;
   const pendingAnchorRef = useRef<{ anchor: ScrollAnchorSnapshot; options?: RestoreAnchorOptions } | null>(null);
   const [anchorRestoreTick, setAnchorRestoreTick] = useState(0);
+  const pendingBottomPinRef = useRef(false);
+  const [bottomPinTick, setBottomPinTick] = useState(0);
 
   const messageIndexById = useMemo(() => {
     const map = new Map<string, number>();
@@ -178,6 +184,18 @@ export function useChatScrollController({
     restoreAnchor(pending.anchor, pending.options);
   }, [anchorRestoreTick, restoreAnchor]);
 
+  const pinBottomAfterNextCommit = useCallback(() => {
+    pendingBottomPinRef.current = true;
+    setBottomPinTick(tick => tick + 1);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!pendingBottomPinRef.current) return;
+    pendingBottomPinRef.current = false;
+    if (!isActiveRef.current || !followEnabledRef.current) return;
+    scrollToBottom('auto');
+  }, [bottomPinTick, followEnabledRef, scrollToBottom]);
+
   const scrollToMessage = useCallback((messageId: string, options: ScrollToMessageOptions = {}) => {
     const index = messageIndexByIdRef.current.get(messageId);
     if (index === undefined) return;
@@ -213,11 +231,15 @@ export function useChatScrollController({
       scrollToBottom('auto');
       return;
     }
+    if (shouldPinBottomAfterNextCommit(reason) && followEnabledRef.current) {
+      pinBottomAfterNextCommit();
+      return;
+    }
     if (!messageIndexByIdRef.current.has(messageId)) return;
     const anchor = captureAnchor(reason);
     if (!anchor) return;
     restoreAnchorAfterNextCommit(anchor, { behavior: 'auto' });
-  }, [captureAnchor, followEnabledRef, restoreAnchorAfterNextCommit, scrollToBottom]);
+  }, [captureAnchor, followEnabledRef, pinBottomAfterNextCommit, restoreAnchorAfterNextCommit, scrollToBottom]);
 
   return {
     virtuosoRef,

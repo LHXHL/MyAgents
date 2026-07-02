@@ -250,7 +250,8 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(lastData().heightEstimates).toEqual([120, 480]);
   });
 
-  it('keeps active streaming pinned through Virtuoso autoscroll while following', () => {
+  it('keeps active streaming pinned before paint through Virtuoso LAST/end alignment while following', () => {
+    const scrollToIndex = vi.fn();
     const autoscrollToBottom = vi.fn();
     renderList({
       historyMessages: [msg('h1', 'hello', 'user')],
@@ -259,11 +260,12 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
       isActive: true,
       ...createFollowProps(),
       virtuosoRef: {
-        current: { autoscrollToBottom },
+        current: { scrollToIndex, autoscrollToBottom },
       } as unknown as React.RefObject<VirtuosoHandle | null>,
     });
 
-    expect(autoscrollToBottom).toHaveBeenCalledTimes(1);
+    expect(scrollToIndex).toHaveBeenCalledWith({ index: 'LAST', align: 'end', behavior: 'auto' });
+    expect(autoscrollToBottom).not.toHaveBeenCalled();
   });
 
   it('pins to bottom once when a turn completes while follow is enabled', () => {
