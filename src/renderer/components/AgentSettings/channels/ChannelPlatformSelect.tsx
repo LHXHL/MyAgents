@@ -9,6 +9,7 @@ import { useToast } from '@/components/Toast';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import type { ChannelType } from '../../../../shared/types/agent';
 import type { InstalledPlugin } from '../../../../shared/types/im';
+import { upsertInstalledPlugin } from '../../ImSettings/pluginInstallState';
 import { PROMOTED_PLUGINS } from '../../ImSettings/promotedPlugins';
 import telegramIcon from '../../ImSettings/assets/telegram.png';
 import dingtalkIcon from '../../ImSettings/assets/dingtalk.svg';
@@ -40,7 +41,7 @@ export default function ChannelPlatformSelect({ onSelect }: ChannelPlatformSelec
   const [installedPlugins, setInstalledPlugins] = useState<InstalledPlugin[]>([]);
   const [loading, setLoading] = useState(true);
   const [pendingUninstall, setPendingUninstall] = useState<InstalledPlugin | null>(null);
-  const [autoInstalling, setAutoInstalling] = useState<string | null>(null);
+  const [autoInstallingSet, setAutoInstallingSet] = useState<Set<string>>(new Set());
   const [installNpmSpec, setInstallNpmSpec] = useState('');
   const [showInstallInput, setShowInstallInput] = useState(false);
   const [installing, setInstalling] = useState(false);
@@ -86,22 +87,25 @@ export default function ChannelPlatformSelect({ onSelect }: ChannelPlatformSelec
       onSelect(`openclaw:${existing.pluginId}` as ChannelType);
       return;
     }
+    if (autoInstallingSet.has(promoted.pluginId)) return;
     if (!isTauriEnvironment()) return;
-    setAutoInstalling(promoted.pluginId);
+    setAutoInstallingSet(prev => new Set(prev).add(promoted.pluginId));
     toastRef.current.info(t('agentSettings.channels.firstInstall'));
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const result = await invoke<InstalledPlugin>('cmd_install_openclaw_plugin', { npmSpec: promoted.npmSpec });
       if (!isMountedRef.current) return;
-      setInstalledPlugins(prev => [...prev, result]);
+      setInstalledPlugins(prev => upsertInstalledPlugin(prev, result));
       onSelect(`openclaw:${result.pluginId}` as ChannelType);
     } catch (err) {
       if (!isMountedRef.current) return;
       toastRef.current.error(t('agentSettings.channels.installFailed', { message: String(err) }));
     } finally {
-      if (isMountedRef.current) setAutoInstalling(null);
+      if (isMountedRef.current) {
+        setAutoInstallingSet(prev => { const next = new Set(prev); next.delete(promoted.pluginId); return next; });
+      }
     }
-  }, [installedPlugins, onSelect, t]);
+  }, [autoInstallingSet, installedPlugins, onSelect, t]);
 
   const handleInstallPlugin = useCallback(async () => {
     if (!installNpmSpec.trim() || !isTauriEnvironment()) return;
@@ -109,7 +113,7 @@ export default function ChannelPlatformSelect({ onSelect }: ChannelPlatformSelec
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const result = await invoke<InstalledPlugin>('cmd_install_openclaw_plugin', { npmSpec: installNpmSpec.trim() });
-      setInstalledPlugins(prev => [...prev, result]);
+      setInstalledPlugins(prev => upsertInstalledPlugin(prev, result));
       toastRef.current.success(t('agentSettings.channels.installed', { name: result.manifest?.name || result.pluginId }));
       setShowInstallInput(false);
       setInstallNpmSpec('');
@@ -178,7 +182,7 @@ export default function ChannelPlatformSelect({ onSelect }: ChannelPlatformSelec
 
         {/* Promoted plugins */}
         {PROMOTED_PLUGINS.map(pp => {
-          const isInstalling = autoInstalling === pp.pluginId;
+          const isInstalling = autoInstallingSet.has(pp.pluginId);
           return (
             <button
               key={`promoted-${pp.pluginId}`}

@@ -13,6 +13,7 @@ import { isTauriEnvironment } from '@/utils/browserMock';
 import { useToast } from '@/components/Toast';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import type { InstalledPlugin } from '../../../shared/types/im';
+import { upsertInstalledPlugin } from './pluginInstallState';
 import { PROMOTED_PLUGINS } from './promotedPlugins';
 import telegramIcon from './assets/telegram.png';
 // feishuIcon import removed — old built-in Feishu hidden from this page (replaced by OpenClaw plugin)
@@ -66,7 +67,7 @@ export default function BotPlatformRegistry() {
   const [installedPlugins, setInstalledPlugins] = useState<InstalledPlugin[]>([]);
   const [loading, setLoading] = useState(true);
   const [pendingUninstall, setPendingUninstall] = useState<InstalledPlugin | null>(null);
-  const [autoInstalling, setAutoInstalling] = useState<string | null>(null);
+  const [autoInstallingSet, setAutoInstallingSet] = useState<Set<string>>(new Set());
   const [installNpmSpec, setInstallNpmSpec] = useState('');
   const [showInstallInput, setShowInstallInput] = useState(false);
   const [installing, setInstalling] = useState(false);
@@ -114,22 +115,25 @@ export default function BotPlatformRegistry() {
       toastRef.current.info(t('agentSettings.botRegistry.alreadyInstalled', { name: promoted.name }));
       return;
     }
+    if (autoInstallingSet.has(promoted.pluginId)) return;
     if (!isTauriEnvironment()) return;
-    setAutoInstalling(promoted.pluginId);
+    setAutoInstallingSet(prev => new Set(prev).add(promoted.pluginId));
     toastRef.current.info(t('agentSettings.botRegistry.installingPlugin'));
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const result = await invoke<InstalledPlugin>('cmd_install_openclaw_plugin', { npmSpec: promoted.npmSpec });
       if (!isMountedRef.current) return;
-      setInstalledPlugins(prev => [...prev, result]);
+      setInstalledPlugins(prev => upsertInstalledPlugin(prev, result));
       toastRef.current.success(t('agentSettings.botRegistry.promotedInstalled', { name: promoted.name }));
     } catch (err) {
       if (!isMountedRef.current) return;
       toastRef.current.error(t('agentSettings.botRegistry.installFailed', { message: String(err) }));
     } finally {
-      if (isMountedRef.current) setAutoInstalling(null);
+      if (isMountedRef.current) {
+        setAutoInstallingSet(prev => { const next = new Set(prev); next.delete(promoted.pluginId); return next; });
+      }
     }
-  }, [installedPlugins, t]);
+  }, [autoInstallingSet, installedPlugins, t]);
 
   const handleInstallPlugin = useCallback(async () => {
     if (!installNpmSpec.trim() || !isTauriEnvironment()) return;
@@ -138,7 +142,7 @@ export default function BotPlatformRegistry() {
       const { invoke } = await import('@tauri-apps/api/core');
       const result = await invoke<InstalledPlugin>('cmd_install_openclaw_plugin', { npmSpec: installNpmSpec.trim() });
       if (!isMountedRef.current) return;
-      setInstalledPlugins(prev => [...prev, result]);
+      setInstalledPlugins(prev => upsertInstalledPlugin(prev, result));
       toastRef.current.success(t('agentSettings.botRegistry.installed', { name: result.manifest?.name || result.pluginId }));
       setShowInstallInput(false);
       setInstallNpmSpec('');
@@ -157,7 +161,11 @@ export default function BotPlatformRegistry() {
       const { invoke } = await import('@tauri-apps/api/core');
       const result = await invoke<InstalledPlugin>('cmd_install_openclaw_plugin', { npmSpec });
       if (!isMountedRef.current) return;
-      setInstalledPlugins(prev => prev.map(p => p.pluginId === pluginId ? result : p));
+      setInstalledPlugins(prev => {
+        const hasExisting = prev.some(p => p.pluginId === pluginId);
+        if (!hasExisting) return upsertInstalledPlugin(prev, result);
+        return prev.map(p => p.pluginId === pluginId ? result : p);
+      });
 
       // Restart running channels that use this plugin
       const restart = await invoke<{ restarted: number; failed: number }>('cmd_restart_channels_using_plugin', { pluginId });
@@ -276,8 +284,9 @@ export default function BotPlatformRegistry() {
           {PROMOTED_PLUGINS.map(pp => {
             const installedPlugin = installedPlugins.find(p => p.pluginId === pp.pluginId);
             const isInstalled = !!installedPlugin;
-            const isInstalling = autoInstalling === pp.pluginId;
+            const isInstalling = autoInstallingSet.has(pp.pluginId);
             const isUpdating = updatingSet.has(pp.pluginId);
+            const isBusy = isInstalling || isUpdating;
             return (
               <div
                 key={`promoted-${pp.pluginId}`}
@@ -314,12 +323,12 @@ export default function BotPlatformRegistry() {
                 ) : (
                   <button
                     onClick={() => handlePromotedInstall(pp)}
-                    disabled={isInstalling || loading}
+                    disabled={isBusy || loading}
                     className="flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium text-[var(--accent)] transition-colors hover:bg-[var(--accent-warm-subtle)] disabled:opacity-50"
                     style={{ backgroundColor: 'color-mix(in srgb, var(--accent) 8%, transparent)' }}
                   >
-                    {isInstalling && <Loader2 className="h-3 w-3 animate-spin" />}
-                    {isInstalling ? t('agentSettings.botRegistry.installing') : t('agentSettings.botRegistry.clickInstall')}
+                    {isBusy && <Loader2 className="h-3 w-3 animate-spin" />}
+                    {isBusy ? t('agentSettings.botRegistry.installing') : t('agentSettings.botRegistry.clickInstall')}
                   </button>
                 )}
               </div>
