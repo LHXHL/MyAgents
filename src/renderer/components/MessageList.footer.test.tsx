@@ -1,22 +1,17 @@
-import { act, render } from '@testing-library/react';
+import { render } from '@testing-library/react';
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Message as MessageType } from '@/types/chat';
-import type { FollowState } from '@/hooks/useVirtuosoScroll';
 
 type VirtuosoMockProps = {
   components?: {
     Footer?: React.ComponentType<{ context?: unknown }>;
   };
-  atBottomStateChange?: (atBottom: boolean) => void;
 };
-
-let lastVirtuosoProps: VirtuosoMockProps | null = null;
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: (props: VirtuosoMockProps) => {
-    lastVirtuosoProps = props;
     const Footer = props.components?.Footer;
     return (
       <div data-testid="virtuoso">
@@ -38,10 +33,6 @@ function msg(id: string, content: string, role: 'user' | 'assistant' = 'assistan
 }
 
 function createBaseProps(overrides: Partial<React.ComponentProps<typeof MessageList>> = {}) {
-  const followEnabledRef: React.MutableRefObject<FollowState> = { current: true };
-  const setFollowState = vi.fn((next: FollowState) => {
-    followEnabledRef.current = next;
-  });
   return {
     historyMessages: [msg('h1', 'hello', 'user')],
     streamingMessage: null,
@@ -50,9 +41,7 @@ function createBaseProps(overrides: Partial<React.ComponentProps<typeof MessageL
     isActive: true,
     firstItemIndex: 1_000_000,
     virtuosoRef: { current: null },
-    followEnabledRef,
-    followState: followEnabledRef.current,
-    setFollowState,
+    followEnabledRef: { current: true } as React.MutableRefObject<boolean | 'force'>,
     scrollToBottom: vi.fn(),
     handleAtBottomChange: vi.fn(),
     ...overrides,
@@ -64,106 +53,37 @@ function renderList(overrides: Partial<React.ComponentProps<typeof MessageList>>
   return render(<MessageList {...props} />);
 }
 
-function renderStatefulList({
-  initialFollowState = true,
-  handleAtBottomChange,
-  ...overrides
-}: Partial<React.ComponentProps<typeof MessageList>> & {
-  initialFollowState?: FollowState;
-  handleAtBottomChange?: (
-    atBottom: boolean,
-    followRef: React.MutableRefObject<FollowState>,
-    setFollowState: (next: FollowState) => void,
-  ) => void;
-} = {}) {
-  const handleSpy = vi.fn();
-  const baseProps = createBaseProps(overrides);
-  function Wrapper() {
-    const [followState, setFollowStateValue] = React.useState<FollowState>(initialFollowState);
-    const followRef = React.useRef<FollowState>(initialFollowState);
-    const setFollowState = React.useCallback((next: FollowState) => {
-      followRef.current = next;
-      setFollowStateValue(next);
-    }, []);
-    const onAtBottomChange = React.useCallback((atBottom: boolean) => {
-      handleSpy(atBottom);
-      if (handleAtBottomChange) {
-        handleAtBottomChange(atBottom, followRef, setFollowState);
-        return;
-      }
-      if (atBottom) {
-        setFollowState(true);
-      } else if (followRef.current === true) {
-        setFollowState(false);
-      }
-    }, [setFollowState]);
-
-    return (
-      <MessageList
-        {...baseProps}
-        followEnabledRef={followRef}
-        followState={followState}
-        setFollowState={setFollowState}
-        handleAtBottomChange={onAtBottomChange}
-      />
-    );
-  }
-
-  return { handleSpy, ...render(<Wrapper />) };
-}
-
 describe('MessageList footer status positioning', () => {
-  it('paints loading status outside the Virtuoso footer flow and reserves its footer space', () => {
+  it('keeps loading status in the Virtuoso footer flow above the measured spacer', () => {
     renderList({
       isLoading: true,
       bottomSpacerPx: 152.2,
     });
 
-    const overlay = document.querySelector<HTMLElement>('[data-chat-status-overlay]');
-    expect(overlay).toBeInTheDocument();
-    expect(overlay).toHaveClass('absolute');
-    expect(overlay).toHaveStyle({ bottom: '193px' });
+    expect(document.querySelector('[data-chat-status-overlay]')).not.toBeInTheDocument();
+    expect(document.querySelector('[data-chat-footer-status-placeholder]')).not.toBeInTheDocument();
 
     const row = document.querySelector<HTMLElement>('[data-chat-status-row]');
     expect(row).toBeInTheDocument();
+    if (!row) throw new Error('expected status row');
     expect(row).toHaveStyle({ height: '30px' });
+    expect(row).not.toHaveClass('absolute');
+    expect(row).not.toHaveClass('sticky');
 
-    const placeholder = document.querySelector<HTMLElement>('[data-chat-footer-status-placeholder]');
-    expect(placeholder).toBeInTheDocument();
-    expect(placeholder).toHaveStyle({ height: '30px' });
+    const spacer = document.querySelector<HTMLElement>('[data-chat-footer-spacer]');
+    expect(spacer).toBeInTheDocument();
+    if (!spacer) throw new Error('expected footer spacer');
+    expect(spacer).toHaveStyle({ height: '193px' });
+    expect(row.compareDocumentPosition(spacer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('hides the viewport overlay after the user scrolls away from bottom', () => {
-    const { handleSpy } = renderStatefulList({
-      isLoading: true,
+  it('uses the same footer slot for idle system notices', () => {
+    renderList({
+      systemNotice: { kind: 'compact', level: 'success', message: 'Saved' },
     });
 
-    expect(document.querySelector('[data-chat-status-overlay]')).toBeInTheDocument();
-
-    act(() => {
-      lastVirtuosoProps?.atBottomStateChange?.(false);
-    });
-
-    expect(handleSpy).toHaveBeenCalledWith(false);
-    expect(document.querySelector('[data-chat-status-overlay]')).not.toBeInTheDocument();
-    expect(document.querySelector('[data-chat-footer-status-placeholder]')).toBeInTheDocument();
-  });
-
-  it('keeps the overlay visible while Virtuoso is programmatically chasing bottom', () => {
-    const { handleSpy } = renderStatefulList({
-      isLoading: true,
-      initialFollowState: 'force',
-      handleAtBottomChange: () => {
-        // Real scroll owner keeps 'force' on atBottom=false while programmatic
-        // scroll-to-bottom is still chasing.
-      },
-    });
-
-    act(() => {
-      lastVirtuosoProps?.atBottomStateChange?.(false);
-    });
-
-    expect(handleSpy).toHaveBeenCalledWith(false);
-    expect(document.querySelector('[data-chat-status-overlay]')).toBeInTheDocument();
+    expect(document.querySelector('[data-chat-status-row]')).not.toBeInTheDocument();
+    expect(document.querySelector('[data-chat-footer-spacer]')).toBeInTheDocument();
+    expect(document.body).toHaveTextContent('Saved');
   });
 });

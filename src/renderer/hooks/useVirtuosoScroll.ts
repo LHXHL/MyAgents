@@ -28,17 +28,13 @@
  *  pauseAutoScroll(d)                   → false  (temporary; restores prior value after d)
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import type { VirtuosoHandle } from 'react-virtuoso';
-
-export type FollowState = boolean | 'force';
 
 export interface VirtuosoScrollControls {
     virtuosoRef: React.RefObject<VirtuosoHandle | null>;
     scrollerRef: React.MutableRefObject<HTMLElement | null>;
-    followEnabledRef: React.MutableRefObject<FollowState>;
-    followState: FollowState;
-    setFollowState: (next: FollowState) => void;
+    followEnabledRef: React.MutableRefObject<boolean | 'force'>;
     scrollToBottom: (behavior?: 'smooth' | 'auto') => void;
     pauseAutoScroll: (duration?: number) => void;
     handleAtBottomChange: (atBottom: boolean) => void;
@@ -62,11 +58,10 @@ const FORCE_AUTO_DEGRADE_MS = 1500;
 export function useVirtuosoScroll(): VirtuosoScrollControls {
     const virtuosoRef = useRef<VirtuosoHandle>(null);
     const scrollerRef = useRef<HTMLElement | null>(null);
-    const followEnabledRef = useRef<FollowState>(true);
-    const [followState, setFollowStateValue] = useState<FollowState>(true);
+    const followEnabledRef = useRef<boolean | 'force'>(true);
     const pauseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     // Track what followEnabled was before pause, so we can restore correctly
-    const prePauseFollowRef = useRef<FollowState>(true);
+    const prePauseFollowRef = useRef<boolean | 'force'>(true);
     // `handleAtBottomChange(true)` must not re-enable follow while a pause is active —
     // otherwise rewind/search/retry silently lose their follow suppression when Virtuoso
     // re-fires atBottom for unrelated reasons (measurement shifts during streaming).
@@ -83,11 +78,6 @@ export function useVirtuosoScroll(): VirtuosoScrollControls {
         }
     }, []);
 
-    const setFollowState = useCallback((next: FollowState) => {
-        followEnabledRef.current = next;
-        setFollowStateValue(prev => (prev === next ? prev : next));
-    }, []);
-
     // behavior='smooth' (default) for user-triggered bottom jumps; 'auto' for session-switch
     // pins where an instant, pre-paint jump is required (no visible scroll animation).
     //
@@ -100,17 +90,17 @@ export function useVirtuosoScroll(): VirtuosoScrollControls {
     // own internal followOutput path: it uses `{ align: 'end', index: 'LAST' }` — see the
     // bundled source's `function f(y) { _(i, { align: 'end', behavior: y, index: 'LAST' }) }`.
     const scrollToBottom = useCallback((behavior: 'smooth' | 'auto' = 'smooth') => {
-        setFollowState('force');
+        followEnabledRef.current = 'force';
         graceUntilRef.current = Date.now() + PROGRAMMATIC_SCROLL_GRACE_MS;
         virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior });
         clearForceDegradeTimer();
         forceDegradeTimerRef.current = setTimeout(() => {
             forceDegradeTimerRef.current = null;
             if (followEnabledRef.current === 'force') {
-                setFollowState(true);
+                followEnabledRef.current = true;
             }
         }, FORCE_AUTO_DEGRADE_MS);
-    }, [clearForceDegradeTimer, setFollowState]);
+    }, [clearForceDegradeTimer]);
 
     const pauseAutoScroll = useCallback((duration = 500) => {
         // Save current state so we restore to the right value, not unconditionally true.
@@ -120,17 +110,17 @@ export function useVirtuosoScroll(): VirtuosoScrollControls {
         // later restores stale 'force' with no safety net, trapping the user).
         const prior = followEnabledRef.current;
         prePauseFollowRef.current = prior === 'force' ? true : prior;
-        setFollowState(false);
+        followEnabledRef.current = false;
         pauseActiveRef.current = true;
         // Clear any in-flight force-degrade timer — we've exited force intentionally.
         clearForceDegradeTimer();
         if (pauseTimerRef.current) clearTimeout(pauseTimerRef.current);
         pauseTimerRef.current = setTimeout(() => {
-            setFollowState(prePauseFollowRef.current);
+            followEnabledRef.current = prePauseFollowRef.current;
             pauseActiveRef.current = false;
             pauseTimerRef.current = null;
         }, duration);
-    }, [clearForceDegradeTimer, setFollowState]);
+    }, [clearForceDegradeTimer]);
 
     const handleAtBottomChange = useCallback((atBottom: boolean) => {
         if (atBottom) {
@@ -141,7 +131,7 @@ export function useVirtuosoScroll(): VirtuosoScrollControls {
             //   - force → true: programmatic scroll-to-bottom succeeded.
             //   - false → true: user manually scrolled back to bottom.
             if (followEnabledRef.current !== true) {
-                setFollowState(true);
+                followEnabledRef.current = true;
                 clearForceDegradeTimer();
             }
             return;
@@ -151,9 +141,9 @@ export function useVirtuosoScroll(): VirtuosoScrollControls {
         // initiated exit of force is handled by the user-intent listeners in
         // attachScroller below.
         if (followEnabledRef.current === true) {
-            setFollowState(false);
+            followEnabledRef.current = false;
         }
-    }, [clearForceDegradeTimer, setFollowState]);
+    }, [clearForceDegradeTimer]);
 
     // Direction-aware user-intent detection. Only UPWARD scroll intent breaks follow —
     // downward wheel while already at bottom is a no-op that mustn't silently disable
@@ -161,9 +151,9 @@ export function useVirtuosoScroll(): VirtuosoScrollControls {
     const breakForceIfUserIntent = useCallback(() => {
         if (Date.now() < graceUntilRef.current) return;
         if (followEnabledRef.current === false) return;
-        setFollowState(false);
+        followEnabledRef.current = false;
         clearForceDegradeTimer();
-    }, [clearForceDegradeTimer, setFollowState]);
+    }, [clearForceDegradeTimer]);
 
     const onWheel = useCallback((e: WheelEvent) => {
         // Only upward wheel indicates user wants to see earlier content. Downward wheel
@@ -242,8 +232,6 @@ export function useVirtuosoScroll(): VirtuosoScrollControls {
         virtuosoRef,
         scrollerRef,
         followEnabledRef,
-        followState,
-        setFollowState,
         scrollToBottom,
         pauseAutoScroll,
         handleAtBottomChange,

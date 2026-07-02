@@ -2976,8 +2976,6 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     virtuosoRef,
     scrollerRef,
     followEnabledRef,
-    followState,
-    setFollowState,
     scrollToBottom,
     pauseAutoScroll,
     handleAtBottomChange,
@@ -4851,8 +4849,6 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
               virtuosoRef={virtuosoRef}
               onScrollerRef={attachScroller}
               followEnabledRef={followEnabledRef}
-              followState={followState}
-              setFollowState={setFollowState}
               scrollToBottom={scrollToBottom}
               handleAtBottomChange={handleAtBottomChange}
               onRowLayoutChanged={onRowLayoutChanged}

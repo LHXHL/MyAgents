@@ -16,7 +16,6 @@ import { ChatRowLayoutProvider, type RowLayoutChangeReason } from '@/context/Cha
 import type { RowLayoutContract } from '@/utils/chatRowLayout';
 import { useChatScrollDebugProbe } from '@/hooks/useChatScrollDebugProbe';
 import { resolveChatBottomSpacerPx } from '@/utils/chatBottomSpacer';
-import type { FollowState } from '@/hooks/useVirtuosoScroll';
 
 function formatElapsedTime(totalSeconds: number, t: TFunction<'chat'>): string {
   const hours = Math.floor(totalSeconds / 3600);
@@ -52,9 +51,7 @@ interface MessageListProps {
   onLoadOlder?: () => void;
   virtuosoRef: React.RefObject<VirtuosoHandle | null>;
   onScrollerRef?: (el: HTMLElement | Window | null) => void;
-  followEnabledRef: React.MutableRefObject<FollowState>;
-  followState: FollowState;
-  setFollowState: (next: FollowState) => void;
+  followEnabledRef: React.MutableRefObject<boolean | 'force'>;
   /** Drives the session-switch scroll pin — goes through the hook so grace/degrade state stays consistent. */
   scrollToBottom: (behavior?: 'smooth' | 'auto') => void;
   handleAtBottomChange: (atBottom: boolean) => void;
@@ -172,7 +169,7 @@ function hasExitPlanModeTool(message: MessageType): boolean {
 const VirtuosoFooter = memo(function VirtuosoFooter({
   pendingPermission, onPermissionDecision,
   pendingAskUserQuestion, onAskUserQuestionSubmit, onAskUserQuestionCancel,
-  showStatus,
+  showStatus, statusMessage,
   systemNotice, onDismissSystemNotice,
   bottomSpacerPx,
 }: {
@@ -182,6 +179,7 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
   onAskUserQuestionSubmit?: (requestId: string, answers: Record<string, string>) => void;
   onAskUserQuestionCancel?: (requestId: string) => void;
   showStatus: boolean;
+  statusMessage: string;
   systemNotice?: SystemNotice | null;
   onDismissSystemNotice?: () => void;
   bottomSpacerPx?: number;
@@ -203,43 +201,15 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
           <AskUserQuestionPrompt request={pendingAskUserQuestion} onSubmit={onAskUserQuestionSubmit} onCancel={onAskUserQuestionCancel} />
         </div>
       )}
-      {showStatus && (
-        <div
-          data-chat-footer-status-placeholder=""
-          style={{ height: STATUS_ROW_HEIGHT_PX }}
-          aria-hidden="true"
-        />
-      )}
+      {showStatus && <StatusTimer message={statusMessage} />}
       {!showStatus && systemNotice && (
         <SystemNoticeRow notice={systemNotice} onDismiss={onDismissSystemNotice} />
       )}
-      {/* Footer spacer follows the measured floating input stack. Active status
-          is painted by MessageList's overlay; this fixed placeholder reserves
-          its line height in the scroll content so the final text is not covered. */}
-      <div style={{ height: spacerHeight }} aria-hidden="true" />
-    </div>
-  );
-});
-
-const StatusOverlay = memo(function StatusOverlay({
-  showStatus,
-  statusMessage,
-  bottomSpacerPx,
-}: {
-  showStatus: boolean;
-  statusMessage: string;
-  bottomSpacerPx?: number;
-}) {
-  if (!showStatus) return null;
-  return (
-    <div
-      data-chat-status-overlay=""
-      className="pointer-events-none absolute inset-x-0 z-10"
-      style={{ bottom: resolveChatBottomSpacerPx(bottomSpacerPx) }}
-    >
-      <div className="mx-auto max-w-3xl px-3">
-        <StatusTimer message={statusMessage} />
-      </div>
+      {/* Footer spacer follows the measured floating input stack. The extra
+          clearance in resolveChatBottomSpacerPx keeps both the status row and
+          streaming tail comfortably above the composer without moving either
+          out of Virtuoso's scroll geometry. */}
+      <div data-chat-footer-spacer="" style={{ height: spacerHeight }} aria-hidden="true" />
     </div>
   );
 });
@@ -263,8 +233,6 @@ const MessageList = memo(function MessageList({
   virtuosoRef,
   onScrollerRef,
   followEnabledRef,
-  followState,
-  setFollowState,
   scrollToBottom,
   handleAtBottomChange,
   onRowLayoutChanged,
@@ -329,7 +297,6 @@ const MessageList = memo(function MessageList({
     : sessionState === 'starting'
       ? t('shell.messageList.starting')
       : streamingStatusMessage;
-  const effectiveFollowState = followState;
 
   // Fade-in
   const wasSessionLoadingRef = useRef(false);
@@ -408,7 +375,7 @@ const MessageList = memo(function MessageList({
     // explicitly: a stale atBottom(true) callback during the hidden window could
     // have flipped the live ref to `true`, which would silently re-engage follow
     // mode against the user's actual intent (they had scrolled up before leaving).
-    setFollowState(snap);
+    followEnabledRef.current = snap;
     // User had scrolled up before switching away — respect that, leave scroll alone.
     if (snap === false) return;
     // User was at bottom before switching away. Re-pin to actual scroll bottom.
@@ -416,7 +383,7 @@ const MessageList = memo(function MessageList({
     if (allMessages.length > 0) {
       scrollToBottom('auto');
     }
-  }, [isActive, allMessages.length, scrollToBottom, setFollowState, sessionId, followEnabledRef]);
+  }, [isActive, allMessages.length, scrollToBottom, sessionId, followEnabledRef]);
 
   // Gate Virtuoso's atBottomStateChange while the tab is hidden.
   // content-visibility: hidden lets WebKit deliver ResizeObserver callbacks
@@ -613,13 +580,14 @@ const MessageList = memo(function MessageList({
           onAskUserQuestionSubmit={onAskUserQuestionSubmit}
           onAskUserQuestionCancel={onAskUserQuestionCancel}
           showStatus={showStatus}
+          statusMessage={statusMessage}
           systemNotice={systemNotice}
           onDismissSystemNotice={onDismissSystemNotice}
           bottomSpacerPx={bottomSpacerPx}
         />
       );
     };
-  }, [pendingPermission, onPermissionDecision, pendingAskUserQuestion, onAskUserQuestionSubmit, onAskUserQuestionCancel, showStatus, systemNotice, onDismissSystemNotice, bottomSpacerPx]);
+  }, [pendingPermission, onPermissionDecision, pendingAskUserQuestion, onAskUserQuestionSubmit, onAskUserQuestionCancel, showStatus, statusMessage, systemNotice, onDismissSystemNotice, bottomSpacerPx]);
 
   // ── Stable components object ──
   const components = useMemo(() => ({ Footer: FooterComponent }), [FooterComponent]);
@@ -682,12 +650,6 @@ const MessageList = memo(function MessageList({
           </div>
         </div>
       )}
-      <StatusOverlay
-        showStatus={showStatus && effectiveFollowState !== false}
-        statusMessage={statusMessage}
-        bottomSpacerPx={bottomSpacerPx}
-      />
-
       {/*
         Virtuoso stays mounted across session switches. Previously `key={sessionId}`
         forced a full remount, which dropped every cached item height, rebuilt
