@@ -4,11 +4,11 @@ import { resolveChatBottomSpacerPx } from './chatBottomSpacer';
 
 describe('resolveChatBottomSpacerPx', () => {
   it('uses a compact fallback when no overlay measurement is available', () => {
-    expect(resolveChatBottomSpacerPx(null)).toBe(184);
+    expect(resolveChatBottomSpacerPx(null)).toBe(216);
   });
 
   it('tracks the measured floating input stack instead of a fixed half-screen spacer', () => {
-    expect(resolveChatBottomSpacerPx(152.2)).toBe(161);
+    expect(resolveChatBottomSpacerPx(152.2)).toBe(193);
   });
 
   it('clamps expanded overlay panels to a bounded spacer', () => {

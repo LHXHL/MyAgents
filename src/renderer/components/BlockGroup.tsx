@@ -3,6 +3,7 @@ import { MoreHorizontal } from 'lucide-react';
 import { memo, useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ContentBlock } from '@/types/chat';
+import { useNotifyRowLayoutChanged } from '@/context/ChatRowLayoutContext';
 import ProcessRow from './ProcessRow';
 
 interface BlockGroupProps {
@@ -23,11 +24,15 @@ const BlockGroup = memo(function BlockGroup({
 }: BlockGroupProps) {
   const { t } = useTranslation('app');
   const [isUnfolded, setIsUnfolded] = useState(false);
+  const notifyRowLayoutChanged = useNotifyRowLayoutChanged();
 
   // When the user expands any row, pin the group open (same effect as clicking
   // 「展开全部」) so the auto-fold never unmounts the row they just opened and
   // silently drops its expanded state. Stable identity keeps ProcessRow's memo.
-  const handleChildExpand = useCallback(() => setIsUnfolded(true), []);
+  const handleChildExpand = useCallback(() => {
+    notifyRowLayoutChanged('block-group-expand');
+    setIsUnfolded(true);
+  }, [notifyRowLayoutChanged]);
 
   if (blocks.length === 0) return null;
 
@@ -86,7 +91,10 @@ const BlockGroup = memo(function BlockGroup({
             <div className="overflow-hidden">
               <button
                 type="button"
-                onClick={() => setIsUnfolded(true)}
+                onClick={() => {
+                  notifyRowLayoutChanged('block-group-expand');
+                  setIsUnfolded(true);
+                }}
                 className="group/fold flex w-full items-center gap-3 border-b border-[var(--line-subtle)] px-4 py-2 text-left transition-colors cursor-pointer hover:bg-[var(--hover-bg)]"
               >
                 <div className="size-1.5 shrink-0" />

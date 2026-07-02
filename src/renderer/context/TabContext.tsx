@@ -53,6 +53,10 @@ export interface SystemNotice {
     message: string;
 }
 
+export interface LoadOlderMessagesOptions {
+    beforePrepend?: (freshCount: number) => void;
+}
+
 /**
  * Tab state - all the state that belongs to a single Tab
  */
@@ -190,7 +194,7 @@ export interface TabContextValue extends TabState {
     stopResponse: () => Promise<boolean>;
     loadSession: (sessionId: string, options?: { skipLoadingReset?: boolean }) => Promise<boolean>;
     /** Prepend the next page of older messages. Safe to call repeatedly — guarded internally. */
-    loadOlderMessages: () => Promise<void>;
+    loadOlderMessages: (options?: LoadOlderMessagesOptions) => Promise<void>;
     resetSession: () => Promise<boolean>;
     /**
      * Soft session swap for the IM-handover "新对话保留绑定" flow.

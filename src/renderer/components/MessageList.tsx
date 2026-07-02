@@ -12,6 +12,9 @@ import { ExitPlanModePrompt } from '@/components/ExitPlanModePrompt';
 import type { ExitPlanModeRequest } from '../../shared/types/planMode';
 import type { Message as MessageType } from '@/types/chat';
 import type { SessionState, SystemNotice } from '@/context/TabContext';
+import { ChatRowLayoutProvider, type RowLayoutChangeReason } from '@/context/ChatRowLayoutContext';
+import type { RowLayoutContract } from '@/utils/chatRowLayout';
+import { useChatScrollDebugProbe } from '@/hooks/useChatScrollDebugProbe';
 import { resolveChatBottomSpacerPx } from '@/utils/chatBottomSpacer';
 
 function formatElapsedTime(totalSeconds: number, t: TFunction<'chat'>): string {
@@ -42,6 +45,8 @@ interface MessageListProps {
   // Pagination: Virtuoso maintains the visible scroll position across
   // prepended items by the absolute index of data[0]. Default 0 = no pagination.
   firstItemIndex?: number;
+  heightEstimateSeed?: number[];
+  layoutByMessageId?: ReadonlyMap<string, RowLayoutContract>;
   /** Fires when Virtuoso reaches the top — time to load an older page. */
   onLoadOlder?: () => void;
   virtuosoRef: React.RefObject<VirtuosoHandle | null>;
@@ -50,6 +55,7 @@ interface MessageListProps {
   /** Drives the session-switch scroll pin — goes through the hook so grace/degrade state stays consistent. */
   scrollToBottom: (behavior?: 'smooth' | 'auto') => void;
   handleAtBottomChange: (atBottom: boolean) => void;
+  onRowLayoutChanged?: (messageId: string, reason: RowLayoutChangeReason) => void;
   pendingPermission?: PermissionRequest | null;
   onPermissionDecision?: (requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => void | Promise<void>;
   pendingAskUserQuestion?: AskUserQuestionRequest | null;
@@ -76,6 +82,7 @@ interface MessageListProps {
 }
 
 const STREAMING_MESSAGE_COUNT = 20;
+const noopRowLayoutChanged = (_messageId: string, _reason: RowLayoutChangeReason) => {};
 
 /** Resolve dynamic system status keys (e.g., api_retry:2:5 → human-readable) */
 function resolveSystemStatus(status: string, t: TFunction<'chat'>): string {
@@ -212,12 +219,15 @@ const MessageList = memo(function MessageList({
   sessionId,
   isActive = true,
   firstItemIndex,
+  heightEstimateSeed,
+  layoutByMessageId,
   onLoadOlder,
   virtuosoRef,
   onScrollerRef,
   followEnabledRef,
   scrollToBottom,
   handleAtBottomChange,
+  onRowLayoutChanged,
   pendingPermission,
   onPermissionDecision,
   pendingAskUserQuestion,
@@ -241,6 +251,7 @@ const MessageList = memo(function MessageList({
     streamingMessage ? [...historyMessages, streamingMessage] : historyMessages,
     [historyMessages, streamingMessage]
   );
+  const liveHeightEstimateSeed = heightEstimateSeed?.length === allMessages.length ? heightEstimateSeed : undefined;
 
   const streamingStatusMessage = useMemo(
     () => getRandomStreamingMessage(t),
@@ -470,6 +481,10 @@ const MessageList = memo(function MessageList({
   onRetryRef.current = onRetry;
   const onForkRef = useRef(onFork);
   onForkRef.current = onFork;
+  const layoutByMessageIdRef = useRef(layoutByMessageId);
+  layoutByMessageIdRef.current = layoutByMessageId;
+  const onRowLayoutChangedRef = useRef(onRowLayoutChanged ?? noopRowLayoutChanged);
+  onRowLayoutChangedRef.current = onRowLayoutChanged ?? noopRowLayoutChanged;
   // followOutput / startReached capture `isActive` DIRECTLY (not via a ref). Under
   // React 19's child-before-parent layout-effect ordering, a ref updated in our parent
   // layout effect could still read a stale value when Virtuoso's child effects fire
@@ -498,6 +513,13 @@ const MessageList = memo(function MessageList({
     onLoadOlder?.();
   }, [onLoadOlder, isActive]);
 
+  const [debugScroller, setDebugScroller] = useState<HTMLElement | null>(null);
+  const handleScrollerRef = useCallback((el: HTMLElement | Window | null) => {
+    const next = el instanceof HTMLElement ? el : null;
+    setDebugScroller(prev => (prev === next ? prev : next));
+    onScrollerRef?.(el);
+  }, [onScrollerRef]);
+
   // ── Stable itemContent — reads ALL dynamic values from refs, never recreated ──
   // eslint-disable-next-line react/display-name
   const renderItem = useMemo(() => (index: number, message: MessageType) => {
@@ -518,14 +540,20 @@ const MessageList = memo(function MessageList({
         data-chat-search-scope=""
         data-message-id={message.id}
       >
-        <Message
-          message={message}
-          isLoading={isStreamingMsg && isLoadingRef.current}
-          onRewind={onRewindRef.current}
-          onRetry={onRetryRef.current}
-          onFork={onForkRef.current}
-          exitPlanModeSlot={message.id === exitPlanModeAnchorIdRef.current ? exitPlanModeSlotRef.current : undefined}
-        />
+        <ChatRowLayoutProvider
+          messageId={message.id}
+          onRowLayoutChanged={onRowLayoutChangedRef.current}
+        >
+          <Message
+            message={message}
+            isLoading={isStreamingMsg && isLoadingRef.current}
+            onRewind={onRewindRef.current}
+            onRetry={onRetryRef.current}
+            onFork={onForkRef.current}
+            exitPlanModeSlot={message.id === exitPlanModeAnchorIdRef.current ? exitPlanModeSlotRef.current : undefined}
+            initialUserCollapsed={layoutByMessageIdRef.current?.get(message.id)?.likelyUserCollapsed === true}
+          />
+        </ChatRowLayoutProvider>
       </div>
     );
   }, []);
@@ -579,17 +607,25 @@ const MessageList = memo(function MessageList({
   // snapshot under React 19 concurrency, which a later hidden render could then hand
   // to Virtuoso — exactly the post-hide measurement we're preventing. A committed
   // layout effect guarantees the snapshot is always a real, measured-while-visible state.
-  const frozenDataRef = useRef<{ data: MessageType[]; firstItemIndex: number | undefined }>({
+  const frozenDataRef = useRef<{ data: MessageType[]; firstItemIndex: number | undefined; heightEstimateSeed?: number[] }>({
     data: allMessages,
     firstItemIndex,
+    heightEstimateSeed: liveHeightEstimateSeed,
   });
   useLayoutEffect(() => {
     if (isActive) {
-      frozenDataRef.current = { data: allMessages, firstItemIndex };
+      frozenDataRef.current = { data: allMessages, firstItemIndex, heightEstimateSeed: liveHeightEstimateSeed };
     }
-  }, [isActive, allMessages, firstItemIndex]);
+  }, [isActive, allMessages, firstItemIndex, liveHeightEstimateSeed]);
   const virtuosoData = isActive ? allMessages : frozenDataRef.current.data;
   const virtuosoFirstItemIndex = isActive ? firstItemIndex : frozenDataRef.current.firstItemIndex;
+  const virtuosoHeightEstimateSeed = isActive ? liveHeightEstimateSeed : frozenDataRef.current.heightEstimateSeed;
+  const debugProbe = useChatScrollDebugProbe({
+    sessionId,
+    scroller: debugScroller,
+    data: virtuosoData,
+    heightEstimateSeed: virtuosoHeightEstimateSeed,
+  });
 
   return (
     <div
@@ -636,13 +672,16 @@ const MessageList = memo(function MessageList({
       */}
       <Virtuoso
         ref={virtuosoRef}
-        scrollerRef={onScrollerRef}
+        scrollerRef={handleScrollerRef}
         data={virtuosoData}
         computeItemKey={computeItemKey}
         firstItemIndex={virtuosoFirstItemIndex}
+        heightEstimates={virtuosoHeightEstimateSeed}
         startReached={onLoadOlder ? guardedLoadOlder : undefined}
         followOutput={handleFollowOutput}
         atBottomStateChange={guardedAtBottomChange}
+        rangeChanged={debugProbe?.handleRangeChanged}
+        itemsRendered={debugProbe?.handleItemsRendered}
         atBottomThreshold={50}
         defaultItemHeight={480}
         increaseViewportBy={{ top: 1600, bottom: 800 }}

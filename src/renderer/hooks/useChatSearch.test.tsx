@@ -1,6 +1,5 @@
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { VirtuosoHandle } from 'react-virtuoso';
 
 import { useChatSearch } from './useChatSearch';
 import type { Message } from '@/types/chat';
@@ -84,8 +83,8 @@ describe('useChatSearch', () => {
     });
   });
 
-  it('scrolls virtualized matches by data index, not firstItemIndex offset', () => {
-    const scrollToIndex = vi.fn();
+  it('routes virtualized matches through the chat scroll controller', () => {
+    const scrollToMessage = vi.fn();
     const scroller = document.createElement('div');
     const messages: Message[] = [
       { id: 'm1', role: 'user', content: 'first needle', timestamp: new Date(0) },
@@ -94,14 +93,9 @@ describe('useChatSearch', () => {
 
     const { result } = renderHook(() => useChatSearch({
       active: true,
-      firstItemIndex: 1_000_000,
       messages,
       scrollerRef: { current: scroller },
-      virtuosoRef: {
-        current: {
-          scrollToIndex,
-        } as unknown as VirtuosoHandle,
-      },
+      scrollToMessage,
     }));
 
     act(() => {
@@ -117,15 +111,15 @@ describe('useChatSearch', () => {
       result.current.next();
     });
 
-    expect(scrollToIndex).toHaveBeenCalledWith({
-      index: 1,
+    expect(scrollToMessage).toHaveBeenCalledWith('m2', {
       behavior: 'auto',
       align: 'center',
+      pauseMs: 2000,
     });
   });
 
   it('keeps retrying until a virtualized target message mounts', () => {
-    const scrollToIndex = vi.fn();
+    const scrollToMessage = vi.fn();
     const scrollBy = vi.fn();
     const scroller = document.createElement('div');
     Object.defineProperty(scroller, 'scrollBy', {
@@ -150,11 +144,7 @@ describe('useChatSearch', () => {
       active: true,
       messages,
       scrollerRef: { current: scroller },
-      virtuosoRef: {
-        current: {
-          scrollToIndex,
-        } as unknown as VirtuosoHandle,
-      },
+      scrollToMessage,
     }));
 
     act(() => {
@@ -182,10 +172,10 @@ describe('useChatSearch', () => {
       vi.advanceTimersByTime(80);
     });
 
-    expect(scrollToIndex).toHaveBeenCalledWith({
-      index: 1,
+    expect(scrollToMessage).toHaveBeenCalledWith('m2', {
       behavior: 'auto',
       align: 'center',
+      pauseMs: 2000,
     });
     expect(scrollBy).toHaveBeenCalled();
     expect(scope.classList.contains('chat-search-msg-pulse')).toBe(true);

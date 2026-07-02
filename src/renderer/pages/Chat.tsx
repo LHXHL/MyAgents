@@ -32,7 +32,8 @@ import WorkspaceConfigPanel, { type Tab as WorkspaceTab } from '@/components/Wor
 import CronTaskSettingsModal from '@/components/cron/CronTaskSettingsModal';
 import { transitionChannelBoundSession } from '@/pages/chatChannelSession';
 import { useTabState, useTabActive } from '@/context/TabContext';
-import { useVirtuosoScroll } from '@/hooks/useVirtuosoScroll';
+import { useChatScrollController } from '@/hooks/useChatScrollController';
+import { useChatScrollModel } from '@/hooks/useChatScrollModel';
 import { useAgentStatuses } from '@/hooks/useAgentStatuses';
 import { useSessionSurfaces, type ChannelSurface } from '@/hooks/useSessionSurfaces';
 import { resolveFloatingBallBoundSession } from '@/hooks/taskCenterStore';
@@ -1172,9 +1173,6 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // Ref for chat content area (for Tauri drop zone)
   const chatContentRef = useRef<HTMLDivElement>(null);
   const [inputOverlayHeight, setInputOverlayHeight] = useState(176);
-  const handleInputOverlayHeightChange = useCallback((height: number) => {
-    setInputOverlayHeight(prev => Math.abs(prev - height) < 1 ? prev : Math.ceil(height));
-  }, []);
 
   // Ref for directory panel container (for Tauri drop zone)
   const directoryPanelContainerRef = useRef<HTMLDivElement>(null);
@@ -2963,25 +2961,60 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     // eslint-disable-next-line react-hooks/exhaustive-deps -- one-time adoption when disposition becomes 'adopt'
   }, [isAdopt]);
 
-  const { virtuosoRef, scrollerRef, followEnabledRef, scrollToBottom, pauseAutoScroll, handleAtBottomChange, attachScroller } = useVirtuosoScroll();
+  const chatScrollModel = useChatScrollModel({
+    historyMessages,
+    streamingMessage,
+    firstItemIndex,
+    sessionId,
+  });
+  const chatScrollController = useChatScrollController({
+    messages: chatScrollModel.data,
+    isActive,
+    rootRef: chatContentRef,
+  });
+  const {
+    virtuosoRef,
+    scrollerRef,
+    followEnabledRef,
+    scrollToBottom,
+    pauseAutoScroll,
+    handleAtBottomChange,
+    attachScroller,
+    scrollToMessage,
+    scrollToTool,
+    captureAnchor,
+    restoreAnchorAfterNextCommit,
+    onRowLayoutChanged,
+  } = chatScrollController;
+  const handleInputOverlayHeightChange = useCallback((height: number) => {
+    setInputOverlayHeight(prev => Math.abs(prev - height) < 1 ? prev : Math.ceil(height));
+    if (isActive && followEnabledRef.current) {
+      requestAnimationFrame(() => scrollToBottom('auto'));
+    }
+  }, [isActive, followEnabledRef, scrollToBottom]);
 
   // ── In-page text finder (Cmd/Ctrl+F) ──
   // Scope: the full message array — virtualized rows are counted from
-  // messages[] and reached via virtuoso.scrollToIndex on navigation.
+  // messages[] and reached via ChatScrollController on navigation.
   // Full cross-session search still lives in the global search engine.
   const [chatSearchOpen, setChatSearchOpen] = useState(false);
-  const chatSearchMessages = useMemo(
-    () => (streamingMessage ? [...historyMessages, streamingMessage] : historyMessages),
-    [historyMessages, streamingMessage],
-  );
   const chatSearch = useChatSearch({
     scrollerRef: scrollerRef as React.RefObject<HTMLElement | null>,
-    virtuosoRef,
-    messages: chatSearchMessages,
-    firstItemIndex,
-    pauseAutoScroll,
+    messages: chatScrollModel.data,
+    scrollToMessage,
     active: chatSearchOpen,
   });
+
+  const handleLoadOlderMessages = useCallback(() => {
+    void loadOlderMessages({
+      beforePrepend: () => {
+        const anchor = captureAnchor('prepend-older');
+        if (anchor) {
+          restoreAnchorAfterNextCommit(anchor, { behavior: 'auto' });
+        }
+      },
+    });
+  }, [captureAnchor, loadOlderMessages, restoreAnchorAfterNextCommit]);
   const chatSearchSetQueryRef = useRef(chatSearch.setQuery);
   chatSearchSetQueryRef.current = chatSearch.setQuery;
   const closeChatSearch = useCallback(() => {
@@ -4035,45 +4068,18 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     chatInputRef.current?.appendReferenceToken(`@${posix}#${range}`);
   }, []);
 
-  // Navigate to a specific query message (used by QueryNavigator with virtuoso)
-  // Uses messagesRef to avoid invalidating the callback on every streaming token update
+  // Navigate to a specific query message (used by QueryNavigator).
+  // ChatScrollController owns virtualized message navigation.
   const handleNavigateToQuery = useCallback((messageId: string) => {
-    const index = messagesRef.current.findIndex(m => m.id === messageId);
-    if (index >= 0) {
-      pauseAutoScroll(2000);
-      virtuosoRef.current?.scrollToIndex({ index, behavior: 'smooth', align: 'start' });
-    }
-  }, [pauseAutoScroll, virtuosoRef]);
+    scrollToMessage(messageId, { behavior: 'smooth', align: 'start', pauseMs: 2000 });
+  }, [scrollToMessage]);
 
   // PRD 0.2.17 Agent Status Panel — 点击 SubAgent 行跳转到对话流中对应 TaskTool。
-  // 先用 Virtuoso 把承载该 tool 的 message 滚进视口（解决虚拟化卸载场景），下一帧
-  // 等 DOM 挂载后再通过 querySelector 找到 data-tool-id 元素 scrollIntoView + 高亮。
-  // 双阶段是因为 Virtuoso scrollToIndex 只能定位到 message 粒度，更精细的 tool 卡片
-  // 位置还得靠 DOM 测量。
+  // ChatScrollController owns host-message resolution and the two-stage
+  // virtual-row mount + precise DOM scroll.
   const handleJumpToTool = useCallback((toolId: string) => {
-    const msgs = messagesRef.current;
-    const index = msgs.findIndex(m =>
-      Array.isArray(m.content)
-      && m.content.some(b => b.type === 'tool_use' && b.tool?.id === toolId),
-    );
-    if (index < 0) return;
-    pauseAutoScroll(2000);
-    virtuosoRef.current?.scrollToIndex({ index, behavior: 'smooth', align: 'center' });
-    // Virtuoso 滚动是异步的，给两帧时间让 row 挂载（折叠态也已挂载，单帧通常够；
-    // 虚拟化卸载场景要等 row 真正 mount + 子树渲染完）
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const root = chatContentRef.current;
-        if (!root) return;
-        // Tauri WebView 是 WebKit；CSS.escape 自 2014 普适支持，不需要 fallback
-        const el = root.querySelector<HTMLElement>(`[data-tool-id="${CSS.escape(toolId)}"]`);
-        if (!el) return;
-        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        el.classList.add('agent-status-flash');
-        window.setTimeout(() => el.classList.remove('agent-status-flash'), 1500);
-      });
-    });
-  }, [pauseAutoScroll, virtuosoRef]);
+    scrollToTool(toolId);
+  }, [scrollToTool]);
 
   // PRD 0.2.17 / v0.2.19 — AgentStatusPanel 通过 slot 注入 SimpleChatInput，
   // 与 QueuedMessagesPanel 同居一个 flex 行（避免两者撞 z-20 / 同 Y 重叠）。
@@ -4835,8 +4841,10 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             <MessageList
               historyMessages={historyMessages}
               streamingMessage={streamingMessage}
-              firstItemIndex={firstItemIndex}
-              onLoadOlder={loadOlderMessages}
+              firstItemIndex={chatScrollModel.firstItemIndex}
+              heightEstimateSeed={chatScrollModel.heightEstimateSeed}
+              layoutByMessageId={chatScrollModel.layoutByMessageId}
+              onLoadOlder={handleLoadOlderMessages}
               isLoading={isLoading}
               isSessionLoading={isSessionLoading}
               sessionId={sessionId}
@@ -4846,6 +4854,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
               followEnabledRef={followEnabledRef}
               scrollToBottom={scrollToBottom}
               handleAtBottomChange={handleAtBottomChange}
+              onRowLayoutChanged={onRowLayoutChanged}
               pendingPermission={pendingPermission}
               onPermissionDecision={handlePermissionDecision}
               pendingAskUserQuestion={pendingAskUserQuestion}
@@ -4901,7 +4910,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
               TodoWrite / Task 工具时返回 null）。外部 Runtime 下 slot 直接传
               undefined，避免它们若未来 emit 出 `tool.name === 'Task'` 的归一化
               事件意外触发面板（PRD D15）。onJumpToTool 由 Chat 实现是因为
-              Virtuoso scrollToIndex 需要 messages 索引 + ref。 */}
+              具体滚动由 ChatScrollController 统一处理。 */}
           <SimpleChatInput
             ref={chatInputRef}
             onSend={handleSendMessage}

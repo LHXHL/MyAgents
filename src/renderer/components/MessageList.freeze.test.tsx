@@ -19,11 +19,11 @@ import type { VirtuosoHandle } from 'react-virtuoso';
 import type { Message as MessageType } from '@/types/chat';
 
 // ── Capture the props handed to Virtuoso on every render ──
-type Recorded = { data: MessageType[]; firstItemIndex: number | undefined };
+type Recorded = { data: MessageType[]; firstItemIndex: number | undefined; heightEstimates: number[] | undefined };
 const recorded: Recorded[] = [];
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: (props: { data: MessageType[]; firstItemIndex?: number }) => {
-    recorded.push({ data: props.data, firstItemIndex: props.firstItemIndex });
+  Virtuoso: (props: { data: MessageType[]; firstItemIndex?: number; heightEstimates?: number[] }) => {
+    recorded.push({ data: props.data, firstItemIndex: props.firstItemIndex, heightEstimates: props.heightEstimates });
     return <div data-testid="virtuoso" data-count={props.data.length} />;
   },
 }));
@@ -209,6 +209,33 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
       />,
     );
     expect(lastData().firstItemIndex).toBe(1_000_000);
+  });
+
+  it('freezes heightEstimateSeed while inactive', () => {
+    const history = [msg('h1', 'a', 'user'), msg('h2', 'b')];
+    const { rerender } = renderList({
+      historyMessages: history,
+      isActive: true,
+      heightEstimateSeed: [120, 480],
+    });
+    expect(lastData().heightEstimates).toEqual([120, 480]);
+
+    rerender(
+      <MessageList
+        historyMessages={history}
+        streamingMessage={msg('stream', 'hidden growth')}
+        isLoading isActive={false}
+        firstItemIndex={1_000_000}
+        heightEstimateSeed={[120, 480, 900]}
+        sessionId="s1"
+        virtuosoRef={{ current: null }}
+        followEnabledRef={{ current: true }}
+        scrollToBottom={vi.fn()}
+        handleAtBottomChange={vi.fn()}
+      />,
+    );
+
+    expect(lastData().heightEstimates).toEqual([120, 480]);
   });
 
   it('keeps active streaming pinned through Virtuoso autoscroll while following', () => {

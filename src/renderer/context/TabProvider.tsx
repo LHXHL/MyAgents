@@ -36,7 +36,7 @@ import type { PermissionRequest } from '@/components/PermissionPrompt';
 import type { AskUserQuestionRequest, AskUserQuestion } from '../../shared/types/askUserQuestion';
 import type { ExitPlanModeRequest, EnterPlanModeRequest, ExitPlanModeAllowedPrompt } from '../../shared/types/planMode';
 import { CUSTOM_EVENTS, isPendingSessionId } from '../../shared/constants';
-import { TabContext, TabApiContext, TabActiveContext, type AdoptMigratedSessionOptions, type SessionState, type SystemNotice, type TabContextValue, type TabApiContextValue } from './TabContext';
+import { TabContext, TabApiContext, TabActiveContext, type AdoptMigratedSessionOptions, type LoadOlderMessagesOptions, type SessionState, type SystemNotice, type TabContextValue, type TabApiContextValue } from './TabContext';
 import { appendUniqueMessageById, upsertMessageById, updateMessageById, shouldSkipHistoryReplay, shouldClearHistoryOnInit } from './sessionRestoreGuards';
 import {
     decideSystemInitSessionId,
@@ -4096,7 +4096,7 @@ export default function TabProvider({
     // startReached fires. Safe to call repeatedly — the loadingOlderRef guard
     // coalesces concurrent triggers, and hasMoreBefore short-circuits once
     // the earliest message on disk is loaded.
-    const loadOlderMessages = useCallback(async (): Promise<void> => {
+    const loadOlderMessages = useCallback(async (options?: LoadOlderMessagesOptions): Promise<void> => {
         if (loadingOlderRef.current || !hasMoreBeforeRef.current) return;
         const sid = currentSessionIdRef.current;
         if (!sid) return;
@@ -4156,6 +4156,16 @@ export default function TabProvider({
                 hasMoreBeforeRef.current = false;
                 return;
             }
+
+            const knownBeforeCommit = new Set(historyMessagesRef.current.map(m => m.id));
+            const freshBeforeCommit = older.filter(m => !knownBeforeCommit.has(m.id));
+            if (freshBeforeCommit.length === 0) {
+                const nextHasMore = resp.session.hasMoreBefore ?? false;
+                setHasMoreBefore(nextHasMore);
+                hasMoreBeforeRef.current = nextHasMore;
+                return;
+            }
+            options?.beforePrepend?.(freshBeforeCommit.length);
 
             // Prepend in a single React commit. Decrementing firstItemIndex by
             // the prepend count is Virtuoso's contract for keeping the visible

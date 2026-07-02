@@ -11,6 +11,7 @@ import WidgetRenderer from '@/components/tools/WidgetRenderer';
 import { parseWidgetTags, hasWidgetTags } from '@/components/tools/widgetTagParser';
 import Tip from '@/components/Tip';
 import ToolAttachmentGallery from '@/components/tools/ToolAttachmentGallery';
+import { useNotifyRowLayoutChanged } from '@/context/ChatRowLayoutContext';
 import { buildReplyMarkdown, downloadMarkdown, localDateStr } from '@/utils/markdownExport';
 import { formatDuration, formatTokens } from '@/utils/formatTokens';
 import { groupContentBlocksForDisplay } from '@/utils/contentBlockDisplay';
@@ -27,6 +28,7 @@ interface MessageProps {
   onFork?: (assistantMessageId: string) => void;
   /** Slot rendered after the BlockGroup containing ExitPlanMode tool */
   exitPlanModeSlot?: ReactNode;
+  initialUserCollapsed?: boolean;
 }
 
 /**
@@ -78,6 +80,8 @@ function areMessagesEqual(prev: MessageProps, next: MessageProps): boolean {
   // state changes (~30px × N ≈ 1500+px layout-recalc in long sessions).
   // exitPlanModeSlot — useMemo in MessageList keeps reference stable during streaming
   if (prev.exitPlanModeSlot !== next.exitPlanModeSlot) return false;
+  // initialUserCollapsed is consumed only by the initial state of a user row.
+  // Once mounted, DOM measurement and explicit user expansion own the state.
   // onRewind/onRetry 不比较 — 通过 Chat.tsx useCallback([]) + ref 保证稳定
 
   const prevMsg = prev.message;
@@ -297,15 +301,16 @@ function renderWidgetSegments(text: string, isLoading: boolean): ReactNode {
  * Message component with memo optimization.
  * History messages won't re-render when streaming message updates.
  */
-const Message = memo(function Message({ message, isLoading = false, onRewind, onRetry, onFork, exitPlanModeSlot }: MessageProps) {
+const Message = memo(function Message({ message, isLoading = false, onRewind, onRetry, onFork, exitPlanModeSlot, initialUserCollapsed = false }: MessageProps) {
   const { t } = useTranslation('app');
   const { openPreview } = useImagePreview();
+  const notifyRowLayoutChanged = useNotifyRowLayoutChanged();
   const [copied, setCopied] = useState(false);
   const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   // User message collapse: default collapsed, expand on click (no re-collapse)
   const [userExpanded, setUserExpanded] = useState(false);
   const userContentRef = useRef<HTMLDivElement>(null);
-  const [userOverflows, setUserOverflows] = useState(false);
+  const [userOverflows, setUserOverflows] = useState(() => initialUserCollapsed);
 
   // Delay AssistantActions rendering on the STREAMING message only.
   // Uses isLoading (not isStreaming) so that HISTORY messages (isLoading=false always)
@@ -332,15 +337,16 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
   // Measure content height after DOM commit to determine if collapse is needed.
   // Uses rAF to avoid synchronous setState in effect body (react-hooks/set-state-in-effect).
   useEffect(() => {
-    if (message.role !== 'user' || userExpanded) return;
+    if (message.role !== 'user' || userExpanded || userOverflows) return;
     const rafId = requestAnimationFrame(() => {
       const el = userContentRef.current;
       if (el && el.scrollHeight > USER_COLLAPSE_HEIGHT) {
+        notifyRowLayoutChanged('user-message-collapse-measured');
         setUserOverflows(true);
       }
     });
     return () => cancelAnimationFrame(rafId);
-  }, [message.role, userExpanded, USER_COLLAPSE_HEIGHT]);
+  }, [message.role, userExpanded, userOverflows, USER_COLLAPSE_HEIGHT, notifyRowLayoutChanged]);
 
   if (message.role === 'user') {
     const rawUserContent = typeof message.content === 'string' ? message.content : '';
@@ -471,7 +477,10 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
                   <div className="pointer-events-none h-14 bg-gradient-to-t from-[var(--message-user-bg)] to-[var(--message-user-bg-a0)]" />
                   <button
                     type="button"
-                    onClick={() => setUserExpanded(true)}
+                    onClick={() => {
+                      notifyRowLayoutChanged('user-message-expand');
+                      setUserExpanded(true);
+                    }}
                     className="flex w-full items-center justify-center gap-1 rounded-b-2xl bg-[var(--message-user-bg)] py-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)]"
                   >
                     <ChevronDown className="size-3.5" />
