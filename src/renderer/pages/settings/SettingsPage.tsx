@@ -4357,7 +4357,12 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                         <div className="min-w-0 flex-1">
                                             <p className="text-sm font-medium text-[var(--ink)]">{tSettings('general.proxyScopeTitle')}</p>
-                                            <p className="mt-1 text-xs text-[var(--ink-muted)]">{proxyScopeSummary}</p>
+                                            <p
+                                                className="mt-1 truncate text-xs text-[var(--ink-muted)]"
+                                                title={proxyScopeSummary}
+                                            >
+                                                {proxyScopeSummary}
+                                            </p>
                                         </div>
                                         <div className="flex shrink-0 items-center gap-2">
                                             <div className="inline-flex overflow-hidden rounded-lg border border-[var(--line)]">
