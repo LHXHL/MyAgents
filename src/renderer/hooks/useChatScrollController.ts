@@ -24,6 +24,8 @@ export interface ChatScrollController {
   virtuosoRef: ReturnType<typeof useVirtuosoScroll>['virtuosoRef'];
   scrollerRef: ReturnType<typeof useVirtuosoScroll>['scrollerRef'];
   followEnabledRef: ReturnType<typeof useVirtuosoScroll>['followEnabledRef'];
+  followState: ReturnType<typeof useVirtuosoScroll>['followState'];
+  setFollowState: ReturnType<typeof useVirtuosoScroll>['setFollowState'];
   attachScroller: ReturnType<typeof useVirtuosoScroll>['attachScroller'];
   scrollToBottom: ReturnType<typeof useVirtuosoScroll>['scrollToBottom'];
   pauseAutoScroll: ReturnType<typeof useVirtuosoScroll>['pauseAutoScroll'];
@@ -91,6 +93,8 @@ export function useChatScrollController({
     virtuosoRef,
     scrollerRef,
     followEnabledRef,
+    followState,
+    setFollowState,
     attachScroller,
     scrollToBottom,
     pauseAutoScroll,
@@ -223,6 +227,8 @@ export function useChatScrollController({
     virtuosoRef,
     scrollerRef,
     followEnabledRef,
+    followState,
+    setFollowState,
     attachScroller,
     scrollToBottom,
     pauseAutoScroll,
