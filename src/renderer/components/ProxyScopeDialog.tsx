@@ -37,6 +37,7 @@ export default function ProxyScopeDialog({
     });
   });
   const selectedSet = useMemo(() => new Set(selectedIds), [selectedIds]);
+  const allSelected = providerIds.length > 0 && selectedIds.length === providerIds.length;
 
   const toggle = (providerId: string) => {
     setSelectedIds(prev => (
@@ -74,10 +75,10 @@ export default function ProxyScopeDialog({
           <div className="flex items-center gap-2">
             <button
               type="button"
-              onClick={() => setSelectedIds(providerIds)}
+              onClick={() => setSelectedIds(allSelected ? [] : providerIds)}
               className="rounded-md border border-[var(--line)] px-3 py-1.5 text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
             >
-              {t('general.proxyScopeDialogSelectAll')}
+              {t(allSelected ? 'general.proxyScopeDialogDeselectAll' : 'general.proxyScopeDialogSelectAll')}
             </button>
           </div>
         </div>

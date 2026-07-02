@@ -89,6 +89,7 @@
     "proxyScopeDialogDescription": "Provider-owned network traffic follows this selection. App updates and requests without a provider owner are unchanged.",
     "proxyScopeDialogSelected": "{{count}} selected",
     "proxyScopeDialogSelectAll": "Select all",
+    "proxyScopeDialogDeselectAll": "Deselect all",
     "proxyScopeDialogCancel": "Cancel",
     "proxyScopeDialogSave": "Save",
     "proxyScopeDialogSubscription": "Subscription",

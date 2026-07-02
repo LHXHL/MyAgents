@@ -89,6 +89,7 @@
     "proxyScopeDialogDescription": "供应商自己的联网行为会按这里的选择走代理；应用更新和无供应商归属的请求不受影响。",
     "proxyScopeDialogSelected": "已选择 {{count}} 个",
     "proxyScopeDialogSelectAll": "全选",
+    "proxyScopeDialogDeselectAll": "取消全选",
     "proxyScopeDialogCancel": "取消",
     "proxyScopeDialogSave": "保存",
     "proxyScopeDialogSubscription": "订阅",
