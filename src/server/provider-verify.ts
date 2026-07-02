@@ -12,7 +12,9 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { resolveClaudeCodeCli, buildClaudeSessionEnv, startOneShotBridge, getSidecarPort, type ProviderEnv } from './agent-session';
 import { applyContextWindowSuffix } from './utils/model-capabilities';
 import { ensureDirSync } from './utils/fs-utils';
-import { getLastBridgeError, getProxyForUrl } from './openai-bridge';
+import { getLastBridgeError } from './openai-bridge';
+import { getProxyForProviderUrl } from './proxy-state';
+import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import {
   probeOpenAiProviderViaBridge,
   probeAnthropicProviderDirect,
@@ -337,6 +339,7 @@ async function verifyViaSdk(
  * Uses the same SDK path as normal chat requests, ensuring verification = real usage.
  */
 export async function verifyProviderViaSdk(
+  providerId: string,
   baseUrl: string,
   apiKey: string,
   authType: string,
@@ -354,6 +357,7 @@ export async function verifyProviderViaSdk(
   // mid-call. Released in finally so the registry stays clean even on
   // throw / timeout.
   const providerEnv: import('./agent-session').ProviderEnv = {
+    providerId,
     baseUrl,
     apiKey,
     authType: authType as 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key',
@@ -404,6 +408,7 @@ export async function verifyProviderViaSdk(
     // computed for the model being verified, not the Tab's active session model.
     const env = buildClaudeSessionEnv(providerEnv, model, {
       bridgeToken: bridge?.token,
+      providerId,
     });
     return await verifyViaSdk(env, {
       model,
@@ -429,7 +434,7 @@ export async function verifyProviderViaSdk(
       // authoritative pre-probe.
       diagnostic: apiProtocol === 'openai'
         ? undefined
-        : (signal) => probeAnthropicProviderDirect({ providerEnv, model, getProxyForUrl, signal }),
+        : (signal) => probeAnthropicProviderDirect({ providerEnv, model, getProxyForProviderUrl, signal }),
     });
   } finally {
     bridge?.release();
@@ -450,7 +455,10 @@ export async function fetchSdkSupportedModels(): Promise<Array<{ value: string; 
   const cwd = join(homedir(), '.myagents', 'projects');
   ensureDirSync(cwd);
 
-  const env = buildClaudeSessionEnv();
+  const officialSubscriptionProvider: ProviderEnv = { providerId: SUBSCRIPTION_PROVIDER_ID };
+  const env = buildClaudeSessionEnv(officialSubscriptionProvider, undefined, {
+    providerId: SUBSCRIPTION_PROVIDER_ID,
+  });
 
   const testQuery = query({
     prompt: '1+1=',
@@ -588,8 +596,10 @@ export async function verifySubscription(): Promise<{ success: boolean; error?: 
   // never `'user'`). The earlier-claimed need for `'user' to read OAuth
   // credentials` was incorrect — settingSources only governs settings.json
   // and managed-settings, not credentials files.
-  const officialSubscriptionProvider: ProviderEnv = {};
-  const env = buildClaudeSessionEnv(officialSubscriptionProvider);
+  const officialSubscriptionProvider: ProviderEnv = { providerId: SUBSCRIPTION_PROVIDER_ID };
+  const env = buildClaudeSessionEnv(officialSubscriptionProvider, undefined, {
+    providerId: SUBSCRIPTION_PROVIDER_ID,
+  });
   return verifyViaSdk(env, {
     sessionId: randomUUID(),
     logPrefix: 'subscription/verify',

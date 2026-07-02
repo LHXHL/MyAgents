@@ -4,6 +4,7 @@ import { join } from 'path';
 import { query, type Query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { buildClaudeSessionEnv, resolveClaudeCodeCli, type ProviderEnv } from './agent-session';
 import { ensureDirSync } from './utils/fs-utils';
+import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 
 export type SubscriptionLoginStatus = 'idle' | 'starting' | 'waiting' | 'succeeded' | 'cancelled' | 'error';
 
@@ -211,7 +212,7 @@ export async function startSubscriptionLogin(): Promise<SubscriptionLoginState> 
     const cliPath = resolveClaudeCodeCli();
     const cwd = join(homedir(), '.myagents', 'projects');
     ensureDirSync(cwd);
-    const officialSubscriptionProvider: ProviderEnv = {};
+    const officialSubscriptionProvider: ProviderEnv = { providerId: SUBSCRIPTION_PROVIDER_ID };
     const authQuery = query({
       prompt: parkedPrompt(),
       options: {
@@ -222,7 +223,9 @@ export async function startSubscriptionLogin(): Promise<SubscriptionLoginState> 
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         pathToClaudeCodeExecutable: cliPath,
-        env: buildClaudeSessionEnv(officialSubscriptionProvider),
+        env: buildClaudeSessionEnv(officialSubscriptionProvider, undefined, {
+          providerId: SUBSCRIPTION_PROVIDER_ID,
+        }),
         systemPrompt: { type: 'preset' as const, preset: 'claude_code' as const },
         includePartialMessages: false,
         persistSession: false,

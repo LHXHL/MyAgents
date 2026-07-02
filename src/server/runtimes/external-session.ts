@@ -340,6 +340,8 @@ let currentTurnTraceRuntime = '';
 let currentTurnTraceStartMs = 0;
 let firstDeltaTraceEmitted = false;
 const activeToolTraceStarts = new Map<string, number>();
+let pendingManagedProviderProxyRestart = false;
+let pendingManagedProviderProxyRestartOriginalKey: string | null = null;
 
 // Set by sendExternalMessage when it pre-broadcasts the user message for instant display.
 // Consumed by _doStartExternalSession / Case 3 to reuse the message (skip duplicate broadcast).
@@ -1517,6 +1519,40 @@ export function getActiveRuntimeType(): RuntimeType {
 
 export function getActiveRuntimeSource(): ReturnType<typeof getCurrentRuntimeSource> {
   return getCurrentRuntimeSource();
+}
+
+function isExternalTurnInFlight(): boolean {
+  return getExternalTurnStartTime() > 0 && !isExternalTurnCompleted();
+}
+
+export async function handleManagedProviderProxyConfigChange(
+  oldKey: string,
+  newKey: string,
+): Promise<{ success: boolean; skipped?: string }> {
+  if (oldKey === newKey) {
+    return { success: true, skipped: 'unchanged' };
+  }
+  if (getCurrentRuntimeType() !== 'codex' || getCurrentRuntimeSource() !== 'managed-provider') {
+    return { success: true, skipped: 'not-managed-provider' };
+  }
+  if (isExternalTurnInFlight()) {
+    if (!pendingManagedProviderProxyRestart) {
+      pendingManagedProviderProxyRestartOriginalKey = oldKey;
+    }
+    if (newKey === pendingManagedProviderProxyRestartOriginalKey) {
+      pendingManagedProviderProxyRestart = false;
+      pendingManagedProviderProxyRestartOriginalKey = null;
+      console.log('[external-session] Managed Codex proxy changed back to in-flight value; deferred runtime restart cancelled');
+      return { success: true, skipped: 'unchanged-after-defer' };
+    }
+    pendingManagedProviderProxyRestart = true;
+    console.log('[external-session] Managed Codex proxy changed; deferring runtime restart until current turn completes');
+    return { success: true };
+  }
+  if (hasExternalRuntimeProcess()) {
+    await stopExternalSession({ reason: 'config-restart', preserveQueue: true });
+  }
+  return { success: true };
 }
 
 function normalizeRuntimeSourceForRuntime(
@@ -2779,13 +2815,21 @@ export async function cancelExternalImRequest(
   return { aborted: false, mode: 'unknown' };
 }
 
+type ExternalStopReason = 'user' | 'config-restart';
+
 /**
- * Stop the active external session
+ * Stop the active external session.
  */
-export async function stopExternalSession(): Promise<boolean> {
+export async function stopExternalSession(options?: {
+  reason?: ExternalStopReason;
+  preserveQueue?: boolean;
+}): Promise<boolean> {
   clearWatchdog();
   const active = getExternalActivePair();
   if (!active) return false;
+  const reason = options?.reason ?? 'user';
+  const isConfigRestart = reason === 'config-restart';
+  const preserveQueue = options?.preserveQueue === true;
   const stopStarted = nowMs();
   const runtimeType = active.runtime.type;
   const pid = active.process.pid;
@@ -2880,31 +2924,35 @@ export async function stopExternalSession(): Promise<boolean> {
     clearExternalAskUserQuestions();  // Stale AskUserQuestion requestIds would misroute to new session
     clearExternalInteractiveRequests();
     setExternalSystemInitPayload(null);
-    // Pattern B: notify IM bus subscribers (prevents orphaned SSE streams on user-stop) + clear active ID.
-    // Pattern C: also unregister from request registry.
-    fireExternalImCallback('error', 'Session stopped');
-    finalizeExternalActiveRequest('failed');
-    // PRD 0.2.18 — clear inbox meta on hard stop (user clicked stop / runtime
-    // killed mid-turn). Push session_aborted reply so caller doesn't hang.
-    deliverExternalWatchError({
-      sessionId: getExternalLifecycleSessionId(),
-      text: currentExternalTurnTextSnapshot(),
-      errorCode: 'session_aborted',
-      errorMessage: 'external runtime session was stopped before turn completed',
-    });
-    clearExternalInboxMetaOnRejection({
-      sessionId: getExternalLifecycleSessionId(),
-      errorCode: 'session_aborted',
-      errorMessage: 'external runtime session was stopped before turn completed',
-    });
+    if (!isConfigRestart) {
+      // Pattern B: notify IM bus subscribers (prevents orphaned SSE streams on user-stop) + clear active ID.
+      // Pattern C: also unregister from request registry.
+      fireExternalImCallback('error', 'Session stopped');
+      finalizeExternalActiveRequest('failed');
+      // PRD 0.2.18 — clear inbox meta on hard stop (user clicked stop / runtime
+      // killed mid-turn). Push session_aborted reply so caller doesn't hang.
+      deliverExternalWatchError({
+        sessionId: getExternalLifecycleSessionId(),
+        text: currentExternalTurnTextSnapshot(),
+        errorCode: 'session_aborted',
+        errorMessage: 'external runtime session was stopped before turn completed',
+      });
+      clearExternalInboxMetaOnRejection({
+        sessionId: getExternalLifecycleSessionId(),
+        errorCode: 'session_aborted',
+        errorMessage: 'external runtime session was stopped before turn completed',
+      });
+    }
     // Drop queued desktop messages on a hard stop (user clicked Stop) — otherwise the pills
     // orphan and, with state now 'idle' + queueLength>0, the next send queues behind stale
     // items that nothing will ever drain (no turn is running) → the session wedges.
-    clearExternalQueueWithCancellation();
+    if (!preserveQueue) {
+      clearExternalQueueWithCancellation();
+    }
     setExternalSessionState('idle');
     emitExternalTurnTrace('final', {
-      status: 'error',
-      detail: { source: 'stop_external_session' },
+      status: isConfigRestart ? 'ok' : 'error',
+      detail: { source: 'stop_external_session', reason },
     });
     clearExternalTurnTrace();
   }
@@ -3431,6 +3479,12 @@ async function persistTurnResult(): Promise<void> {
     }
     // Pattern B/C: turn complete — clear active trace ID + unregister from registry.
     finalizeExternalActiveRequest(didExternalLastTurnSucceed() ? 'completed' : 'failed');
+    if (pendingManagedProviderProxyRestart) {
+      pendingManagedProviderProxyRestart = false;
+      pendingManagedProviderProxyRestartOriginalKey = null;
+      console.log('[external-session] Applying deferred Managed Codex proxy restart after turn completion');
+      await stopExternalSession({ reason: 'config-restart', preserveQueue: true });
+    }
     // Mid-turn queue drain: a turn just ended (completed OR interrupted via force) → surface +
     // send the next queued desktop message. Deferred to the next macrotask so queue:started
     // never races chat:message-complete / chat:status idle on the SSE wire.

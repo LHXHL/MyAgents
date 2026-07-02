@@ -1,4 +1,4 @@
-import type { BackgroundAgentPermissionMode } from '../../shared/config-types';
+import type { BackgroundAgentPermissionMode, ProxySettings } from '../../shared/config-types';
 import type { RuntimeConfig, RuntimeSource } from '../../shared/types/runtime';
 import type { RuntimeType } from '../../shared/types/runtime';
 import type { McpServerDefinition } from '../../shared/config-types';
@@ -275,6 +275,7 @@ export interface SessionEngine {
   updatePermissionMode(mode: string): Promise<{ success: boolean; error?: string }>;
   updateReasoningEffort(effort: string): Promise<{ success: boolean; error?: string }>;
   updateOfficialToolIds(ids: OfficialToolId[] | null): Promise<{ success: boolean; error?: string; skipped?: string }>;
+  updateProxyConfig(proxySettings: ProxySettings | null): Promise<{ success: boolean; error?: string; skipped?: string }>;
   materializePendingDesktopSession(request: {
     workspacePath: string;
     phase?: 'prepare' | 'commit' | 'rollback';

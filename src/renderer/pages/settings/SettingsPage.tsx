@@ -18,6 +18,7 @@ import GlobalPluginsPanel from '@/components/GlobalPluginsPanel';
 import CronTaskDebugPanel from '@/components/dev/CronTaskDebugPanel';
 import { BotPlatformRegistry } from '@/components/ImSettings';
 import { WorkspaceSelectDialog } from '@/components/AgentSettings';
+import ProxyScopeDialog from '@/components/ProxyScopeDialog';
 import WorkspaceConfigPanel from '@/components/WorkspaceConfigPanel';
 import ModelManagementPanel from '@/components/ModelManagementPanel';
 import UsageStatsPanel from '@/components/UsageStatsPanel';
@@ -44,6 +45,7 @@ import {
     getManagedCodexProviderReadiness,
     isManagedCodexProviderGateEnabled,
     type ChatQueueResponseMode,
+    type ProxyProtocol,
 } from '@/config/types';
 import {
     getAllMcpServers,
@@ -89,6 +91,7 @@ import {
 } from '../../../shared/official-tools';
 import { isRuntimeBackedProvider } from '../../../shared/providerExecution';
 import { workspacePathsEqual } from '../../../shared/workspacePath';
+import { normalizeProxyScope } from '../../../shared/proxyScope';
 import type { UiLanguage } from '../../../shared/i18n';
 import ProviderEnableOrderDialog from '@/components/ProviderEnableOrderDialog';
 import FloatingBallPetSettings from '@/components/FloatingBallPetSettings';
@@ -414,6 +417,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         () => String(config.proxySettings?.port || PROXY_DEFAULTS.port)
     );
     const [proxyProbeState, setProxyProbeState] = useState<ProxyProbeState>({ status: 'idle' });
+    const [showProxyScopeDialog, setShowProxyScopeDialog] = useState(false);
     const proxyProbeGenerationRef = useRef(0);
     // Re-sync drafts when the committed proxy values change from elsewhere
     // (initial load, commit normalisation, external edit). No-op while the user
@@ -978,6 +982,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         if (runtimeDialog.show) { setRuntimeDialog(prev => ({ ...prev, show: false })); return true; }
         if (editingProvider) { setEditingProvider(null); return true; }
         if (showProviderOrderDialog) { setShowProviderOrderDialog(false); return true; }
+        if (showProxyScopeDialog) { setShowProxyScopeDialog(false); return true; }
         if (showCustomForm) { setShowCustomForm(false); return true; }
         if (showMcpForm) { setShowMcpForm(false); setEditingMcpId(null); return true; }
         if (visionToolSettingsOpen) { setVisionToolSettingsOpen(false); return true; }
@@ -2209,6 +2214,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         try {
             const networkResult = await invoke<NetworkProbeResult>('cmd_probe_provider_network', {
                 url: provider.config.baseUrl,
+                providerId: provider.id,
             });
 
             // Stale check: if a newer verify was triggered while we were waiting, discard this result
@@ -2237,6 +2243,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             }
 
             const result = await apiPostJson<{ success: boolean; error?: string; detail?: string }>('/api/provider/verify', {
+                providerId: provider.id,
                 baseUrl: provider.config.baseUrl,
                 apiKey,
                 model: provider.primaryModel,
@@ -2564,6 +2571,68 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         () => providers.filter(provider => provider.enabled !== false),
         [providers],
     );
+    const proxyScopeProviderIds = useMemo(
+        () => allProviders.map(provider => provider.id),
+        [allProviders],
+    );
+    const proxyScope = useMemo(
+        () => normalizeProxyScope(config.proxySettings?.scope, proxyScopeProviderIds),
+        [config.proxySettings?.scope, proxyScopeProviderIds],
+    );
+    const proxyScopeSelectedProviders = useMemo(
+        () => proxyScope.mode === 'custom'
+            ? allProviders.filter(provider => proxyScope.providerIds?.includes(provider.id))
+            : allProviders,
+        [allProviders, proxyScope],
+    );
+    const proxyScopeSummary = useMemo(() => {
+        if (!config.proxySettings?.enabled) return tSettings('general.proxyScopeDisabledHint');
+        if (proxyScope.mode === 'all') return tSettings('general.proxyScopeAllSummary');
+        const names = proxyScopeSelectedProviders.slice(0, 3).map(provider => provider.name).join(', ');
+        return tSettings('general.proxyScopeCustomSummary', {
+            names,
+            count: proxyScopeSelectedProviders.length,
+        });
+    }, [
+        config.proxySettings?.enabled,
+        proxyScope.mode,
+        proxyScopeSelectedProviders,
+        tSettings,
+    ]);
+    const proxyScopeDialogInitialIds = useMemo(
+        () => proxyScope.mode === 'custom'
+            ? proxyScope.providerIds ?? []
+            : proxyScopeProviderIds,
+        [proxyScope, proxyScopeProviderIds],
+    );
+    const saveProxyScope = useCallback((providerIds: string[]) => {
+        const allowed = new Set(proxyScopeProviderIds);
+        const cleaned = Array.from(new Set(providerIds.map(id => id.trim()).filter(id => id && allowed.has(id))));
+        if (cleaned.length === 0 || cleaned.length === proxyScopeProviderIds.length) {
+            patchProxySettings({ scope: { mode: 'all' } });
+        } else {
+            patchProxySettings({ scope: { mode: 'custom', providerIds: cleaned } });
+        }
+        setShowProxyScopeDialog(false);
+    }, [patchProxySettings, proxyScopeProviderIds]);
+
+    useEffect(() => {
+        const rawScope = config.proxySettings?.scope;
+        if (!rawScope || rawScope.mode !== 'custom' || proxyScopeProviderIds.length === 0) return;
+
+        const normalized = normalizeProxyScope(rawScope, proxyScopeProviderIds);
+        const rawIds = Array.isArray(rawScope.providerIds)
+            ? rawScope.providerIds.map(id => id.trim()).filter(Boolean)
+            : [];
+        const normalizedIds = normalized.mode === 'custom' ? normalized.providerIds ?? [] : [];
+        const changed = normalized.mode !== rawScope.mode
+            || rawIds.length !== normalizedIds.length
+            || rawIds.some((id, index) => id !== normalizedIds[index]);
+
+        if (changed) {
+            void patchProxySettings({ scope: normalized });
+        }
+    }, [config.proxySettings?.scope, patchProxySettings, proxyScopeProviderIds]);
 
     const openProviderOrderDialog = useCallback(() => {
         setProviderOrderDraft(allProviders.map(provider => provider.id));
@@ -4284,6 +4353,52 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                     </button>
                                 </div>
 
+                                <div className="mt-4 border-t border-[var(--line)] pt-4">
+                                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                        <div className="min-w-0 flex-1">
+                                            <p className="text-sm font-medium text-[var(--ink)]">{tSettings('general.proxyScopeTitle')}</p>
+                                            <p className="mt-1 text-xs text-[var(--ink-muted)]">{proxyScopeSummary}</p>
+                                        </div>
+                                        <div className="flex shrink-0 items-center gap-2">
+                                            <div className="inline-flex overflow-hidden rounded-lg border border-[var(--line)]">
+                                                <button
+                                                    type="button"
+                                                    disabled={!config.proxySettings?.enabled}
+                                                    onClick={() => patchProxySettings({ scope: { mode: 'all' } })}
+                                                    className={`px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                                        proxyScope.mode === 'all'
+                                                            ? 'bg-[var(--accent)] text-[var(--button-primary-text)]'
+                                                            : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
+                                                    }`}
+                                                >
+                                                    {tSettings('general.proxyScopeAll')}
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    disabled={!config.proxySettings?.enabled || proxyScopeProviderIds.length === 0}
+                                                    onClick={() => setShowProxyScopeDialog(true)}
+                                                    className={`border-l border-[var(--line)] px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
+                                                        proxyScope.mode === 'custom'
+                                                            ? 'bg-[var(--accent)] text-[var(--button-primary-text)]'
+                                                            : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
+                                                    }`}
+                                                >
+                                                    {tSettings('general.proxyScopeCustom')}
+                                                </button>
+                                            </div>
+                                            <button
+                                                type="button"
+                                                disabled={!config.proxySettings?.enabled || proxyScopeProviderIds.length === 0}
+                                                onClick={() => setShowProxyScopeDialog(true)}
+                                                className="rounded-lg border border-[var(--line)] p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
+                                                aria-label={tSettings('general.proxyScopeDialogTitle')}
+                                            >
+                                                <SlidersHorizontal size={16} />
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 {/* Proxy settings form (shown when enabled) */}
                                 {config.proxySettings?.enabled && (
                                     <div className="mt-4 space-y-3 border-t border-[var(--line)] pt-4">
@@ -4294,10 +4409,11 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 value={config.proxySettings?.protocol || PROXY_DEFAULTS.protocol}
                                                 options={[
                                                     { value: 'http', label: 'HTTP' },
+                                                    { value: 'https', label: 'HTTPS' },
                                                     { value: 'socks5', label: 'SOCKS5' },
                                                 ]}
                                                 onChange={(val) => {
-                                                    patchProxySettings({ protocol: val as 'http' | 'socks5' });
+                                                    patchProxySettings({ protocol: val as ProxyProtocol });
                                                 }}
                                                 className="flex-1"
                                             />
@@ -6734,6 +6850,15 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             {renderManagedCodexDetailsDialog()}
             {renderManagedCodexLoginDialog()}
             {renderSubscriptionLoginDialog()}
+
+            {showProxyScopeDialog && (
+                <ProxyScopeDialog
+                    providers={allProviders}
+                    initialProviderIds={proxyScopeDialogInitialIds}
+                    onClose={() => setShowProxyScopeDialog(false)}
+                    onSave={saveProxyScope}
+                />
+            )}
 
             {/* Provider Enablement / Ordering Modal */}
             {showProviderOrderDialog && (

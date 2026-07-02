@@ -44,6 +44,7 @@ export async function fetchProviderModels(
 
   const body = await invoke<unknown>('cmd_fetch_provider_models', {
     url: isAnthropicApi ? `${url}?limit=100` : url,
+    providerId: provider.id,
     authHeaderName: isAnthropicApi ? 'x-api-key' : 'Authorization',
     authHeaderValue: isAnthropicApi ? apiKey : `Bearer ${apiKey}`,
     extraHeaders: isAnthropicApi ? { 'anthropic-version': '2023-06-01' } : null,

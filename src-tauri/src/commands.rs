@@ -2235,7 +2235,10 @@ async fn send_probe_request(
 /// used by external Rust HTTP requests. Any HTTP status means the network path
 /// reached the provider; API-key validity is verified by the SDK in the next step.
 #[tauri::command]
-pub async fn cmd_probe_provider_network(url: String) -> Result<NetworkProbeResult, String> {
+pub async fn cmd_probe_provider_network(
+    url: String,
+    provider_id: String,
+) -> Result<NetworkProbeResult, String> {
     let parsed = match reqwest::Url::parse(&url) {
         Ok(parsed) if parsed.scheme() == "http" || parsed.scheme() == "https" => parsed,
         Ok(_) => {
@@ -2263,7 +2266,11 @@ pub async fn cmd_probe_provider_network(url: String) -> Result<NetworkProbeResul
     };
 
     let target_url = parsed.to_string();
-    ulog_info!("[network-probe] Probing provider URL {}", target_url);
+    ulog_info!(
+        "[network-probe] Probing provider URL {} provider={}",
+        target_url,
+        provider_id
+    );
 
     let client = if is_loopback_http_url(&parsed) {
         match crate::local_http::builder()
@@ -2289,7 +2296,7 @@ pub async fn cmd_probe_provider_network(url: String) -> Result<NetworkProbeResul
         let builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(8))
             .redirect(reqwest::redirect::Policy::limited(5));
-        match crate::proxy_config::build_client_with_proxy(builder) {
+        match crate::proxy_config::build_client_with_proxy_for_provider(builder, &provider_id) {
             Ok(client) => client,
             Err(error) => {
                 return Ok(network_probe_result(
@@ -2452,18 +2459,23 @@ pub async fn cmd_probe_proxy(
 #[tauri::command]
 pub async fn cmd_fetch_provider_models(
     url: String,
+    provider_id: String,
     auth_header_name: String,
     auth_header_value: String,
     extra_headers: Option<HashMap<String, String>>,
 ) -> Result<serde_json::Value, String> {
-    ulog_info!("[model-discovery] Fetching models from {}", url);
+    ulog_info!(
+        "[model-discovery] Fetching models from {} provider={}",
+        url,
+        provider_id
+    );
 
-    // Determine if URL points to localhost — if so, use local_http (no proxy) to avoid
-    // the system-proxy-intercepts-localhost bug. Otherwise, use proxy_config for external APIs.
-    let is_localhost = url.starts_with("http://127.0.0.1")
-        || url.starts_with("http://localhost")
-        || url.starts_with("https://127.0.0.1")
-        || url.starts_with("https://localhost");
+    // Determine if URL points to localhost — if so, use local_http (no proxy)
+    // to avoid the system-proxy-intercepts-localhost bug. Otherwise, use the
+    // provider-aware proxy client for external APIs.
+    let parsed_url =
+        reqwest::Url::parse(&url).map_err(|e| format!("Invalid model list URL: {}", e))?;
+    let is_localhost = is_loopback_http_url(&parsed_url);
 
     let client = if is_localhost {
         crate::local_http::json_client(std::time::Duration::from_secs(15))
@@ -2471,7 +2483,7 @@ pub async fn cmd_fetch_provider_models(
         // External host branch — system proxy wanted.
         #[allow(clippy::disallowed_methods)]
         let builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15));
-        crate::proxy_config::build_client_with_proxy(builder)?
+        crate::proxy_config::build_client_with_proxy_for_provider(builder, &provider_id)?
     };
 
     let mut request = client

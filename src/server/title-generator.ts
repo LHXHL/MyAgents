@@ -19,6 +19,7 @@ import { join } from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { resolveClaudeCodeCli, buildClaudeSessionEnv, startOneShotBridge, type ProviderEnv } from './agent-session';
 import { applyContextWindowSuffix } from './utils/model-capabilities';
+import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { isLikelyErrorTitle } from '../shared/titleFilters';
 import { capTitleAtBoundary } from '../shared/sessionTitle';
 import { ClaudeCodeRuntime } from './runtimes/claude-code';
@@ -181,7 +182,10 @@ async function generateTitleInner(
 
     // Pass `model` as the override so CLAUDE_CODE_AUTO_COMPACT_WINDOW is
     // computed for the title-gen model, not the active Tab session's model.
-    const env = buildClaudeSessionEnv(providerEnv, model, { bridgeToken });
+    const env = buildClaudeSessionEnv(providerEnv, model, {
+      bridgeToken,
+      providerId: providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
+    });
     const prompt = buildUserPrompt(rounds);
 
     async function* titlePrompt() {

@@ -56,6 +56,7 @@ import { isTauriEnvironment } from '@/utils/browserMock';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { normalizeUiLanguage, type SupportedLocale, type UiLanguage } from '../../shared/i18n';
+import { removeProviderFromProxySettingsScope } from '../../shared/proxyScope';
 
 /**
  * Normalize agents loaded from disk: ensure every agent has a `channels` array.
@@ -794,10 +795,12 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         await atomicModifyConfig(c => {
             const providerOrder = c.providerOrder?.filter(id => id !== providerId);
             const disabledProviderIds = c.disabledProviderIds?.filter(id => id !== providerId);
+            const proxySettings = removeProviderFromProxySettingsScope(c.proxySettings, providerId);
             return {
                 ...c,
                 providerOrder: providerOrder && providerOrder.length > 0 ? providerOrder : undefined,
                 disabledProviderIds: disabledProviderIds && disabledProviderIds.length > 0 ? disabledProviderIds : undefined,
+                ...(proxySettings ? { proxySettings } : {}),
             };
         });
         await rebuildAndPersistAvailableProviders();

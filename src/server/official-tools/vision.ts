@@ -420,6 +420,7 @@ async function runVisionQuery(args: {
 
 async function runVisionQueryInner(args: {
   workspacePath: string;
+  providerId: string;
   providerEnv?: ProviderEnv;
   model: string;
   images: ResolvedImagePayload[];
@@ -431,6 +432,7 @@ async function runVisionQueryInner(args: {
   const abortController = new AbortController();
   const env = buildClaudeSessionEnv(args.providerEnv, args.model, {
     bridgeToken: args.bridgeToken,
+    providerId: args.providerId,
   });
   const cliPath = resolveClaudeCodeCli();
   const contentBlocks: Array<

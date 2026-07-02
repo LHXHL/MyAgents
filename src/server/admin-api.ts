@@ -14,10 +14,11 @@ import { execFile } from 'node:child_process';
 import { lstatSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { cp as fsCp } from 'node:fs/promises';
 import { promisify } from 'node:util';
-import { splitProviderModelInput, type McpServerDefinition } from '../shared/config-types';
+import { splitProviderModelInput, type McpServerDefinition, type ProxySettings } from '../shared/config-types';
 import { deriveCliToolKind, type CliToolRegistryEntry } from '../shared/types/cliTools';
 import { workspacePathsEqual } from '../shared/workspacePath';
 import { IMAGE_UNDERSTANDING_TOOL_ID } from '../shared/official-tools';
+import { removeProviderFromProxySettingsScope } from '../shared/proxyScope';
 import { removeCustomMcpServerCascade, McpRemovalError } from './services/mcp-removal';
 import { SDK_RESERVED_MCP_NAMES } from './agent-session';
 import {
@@ -922,6 +923,7 @@ export async function handleModelVerify(payload: { id: string; model?: string })
   try {
     const { verifyProviderViaSdk } = await import('./provider-verify');
     const result = await verifyProviderViaSdk(
+      id,
       baseUrl, apiKey, authType, verifyModel,
       apiProtocol,
       provider.maxOutputTokens ? Number(provider.maxOutputTokens) : undefined,
@@ -1068,6 +1070,10 @@ export async function handleModelRemove(payload: { id: string }): Promise<AdminR
     // state doesn't grow unbounded across delete-and-re-add cycles.
     const providerOrder = c.providerOrder?.filter(pid => pid !== id);
     const disabledProviderIds = c.disabledProviderIds?.filter(pid => pid !== id);
+    const currentProxySettings = c.proxySettings && typeof c.proxySettings === 'object' && !Array.isArray(c.proxySettings)
+      ? c.proxySettings as ProxySettings
+      : undefined;
+    const proxySettings = removeProviderFromProxySettingsScope(currentProxySettings, id);
     return {
       ...c,
       providerApiKeys: apiKeys,
@@ -1075,6 +1081,7 @@ export async function handleModelRemove(payload: { id: string }): Promise<AdminR
       defaultProviderId: defaultId,
       providerOrder: providerOrder && providerOrder.length > 0 ? providerOrder : undefined,
       disabledProviderIds: disabledProviderIds && disabledProviderIds.length > 0 ? disabledProviderIds : undefined,
+      ...(proxySettings ? { proxySettings } : {}),
     };
   });
 

@@ -625,10 +625,10 @@ fn validate_manifest_for_platform(
 
 #[allow(clippy::disallowed_methods)]
 fn external_http_client(timeout: Duration) -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
+    let builder = reqwest::blocking::Client::builder()
         .timeout(timeout)
-        .connect_timeout(Duration::from_secs(30))
-        .build()
+        .connect_timeout(Duration::from_secs(30));
+    crate::proxy_config::build_blocking_client_with_proxy_for_provider(builder, CODEX_PROVIDER_ID)
         .map_err(|e| format!("[managed-codex] Failed to build HTTP client: {}", e))
 }
 
@@ -1821,7 +1821,7 @@ fn managed_codex_command(args: &[&str]) -> Result<std::process::Command, String>
         cmd.env(key, value);
     }
     cmd.args(args);
-    crate::proxy_config::apply_to_subprocess(&mut cmd);
+    crate::proxy_config::apply_to_subprocess_for_provider(&mut cmd, CODEX_PROVIDER_ID);
     Ok(cmd)
 }
 

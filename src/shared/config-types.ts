@@ -579,7 +579,7 @@ export function isVerifyExpired(verifiedAt: string): boolean {
 /**
  * Network proxy protocol type
  */
-export type ProxyProtocol = 'http' | 'socks5';
+export type ProxyProtocol = 'http' | 'https' | 'socks5';
 
 /**
  * Network proxy default values
@@ -602,11 +602,19 @@ export function isValidProxyHost(host: string): boolean {
 /**
  * Network proxy settings (General settings)
  */
+export type ProxyScopeMode = 'all' | 'custom';
+
+export interface ProxyScopeSettings {
+  mode: ProxyScopeMode;
+  providerIds?: string[];
+}
+
 export interface ProxySettings {
   enabled: boolean;
   protocol: ProxyProtocol;
   host: string;
   port: number;
+  scope?: ProxyScopeSettings;
 }
 
 /**

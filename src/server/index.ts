@@ -511,7 +511,6 @@ import {
   getSessionModel,
   getSessionProviderEnv,
   syncProjectUserConfig,
-  setProxyConfig,
   initSocksBridgeFromEnv,
   getHistoricalSessionMessages,
   ensureSdkMcpInSync,
@@ -1967,6 +1966,7 @@ async function main() {
                 }
               : undefined;
             return {
+              providerId: cfg.providerId,
               baseUrl: cfg.baseUrl,
               apiKey: cfg.apiKey,
               model: cfg.model,
@@ -4508,6 +4508,7 @@ async function main() {
       if (pathname === '/api/provider/verify' && request.method === 'POST') {
         try {
           const payload = await request.json() as {
+            providerId?: string;
             baseUrl?: string;
             apiKey?: string;
             model?: string;
@@ -4518,13 +4519,14 @@ async function main() {
             upstreamFormat?: string;
           };
 
-          const { baseUrl, apiKey, model, authType, apiProtocol, maxOutputTokens, maxOutputTokensParamName, upstreamFormat } = payload;
+          const { providerId, baseUrl, apiKey, model, authType, apiProtocol, maxOutputTokens, maxOutputTokensParamName, upstreamFormat } = payload;
 
-          if (!baseUrl || !apiKey) {
-            return jsonResponse({ success: false, error: 'baseUrl and apiKey are required.' }, 400);
+          if (!providerId || !baseUrl || !apiKey) {
+            return jsonResponse({ success: false, error: 'providerId, baseUrl and apiKey are required.' }, 400);
           }
 
           console.log(`[api/provider/verify] =========================`);
+          console.log(`[api/provider/verify] providerId: ${providerId}`);
           console.log(`[api/provider/verify] baseUrl: ${baseUrl}`);
           console.log(`[api/provider/verify] apiKey: ${apiKey.slice(0, 10)}...`);
           console.log(`[api/provider/verify] model: ${model ?? 'default'}`);
@@ -4536,6 +4538,7 @@ async function main() {
           // For OpenAI protocol: SDK → CLI → bridge loopback → upstream (end-to-end)
           // For Anthropic protocol: SDK → CLI → upstream (same as before)
           const result = await verifyProviderViaSdk(
+            providerId,
             baseUrl, apiKey, authType ?? 'both', model || undefined,
             apiProtocol === 'openai' ? 'openai' : undefined,
             maxOutputTokens,
@@ -4763,8 +4766,8 @@ async function main() {
       if (pathname === '/api/proxy/set' && request.method === 'POST') {
         try {
           const payload = await request.json();
-          setProxyConfig(payload);
-          return jsonResponse({ success: true });
+          const result = await getSessionEngine().updateProxyConfig(payload);
+          return jsonResponse(result);
         } catch (error) {
           console.error('[api/proxy/set] Error:', error);
           return jsonResponse(

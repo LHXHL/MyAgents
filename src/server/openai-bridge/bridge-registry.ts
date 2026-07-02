@@ -52,6 +52,8 @@ type ModelAliases = {
 };
 
 export interface UpstreamBridgeConfig {
+  /** Provider owner for provider-scoped proxy policy. */
+  providerId: string;
   baseUrl: string;
   apiKey: string;
   /** Active model for this bridge. May change over time for session bridges. */

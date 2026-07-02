@@ -4,17 +4,22 @@ use super::*;
 
 /// Build the proxy payload from disk config for broadcasting to Sidecars.
 fn build_proxy_payload() -> serde_json::Value {
-    match proxy_config::read_proxy_settings() {
-        Some(s) => match proxy_config::get_proxy_url(&s) {
-            Ok(_) => serde_json::json!({
-                "enabled": true,
+    match proxy_config::read_raw_proxy_settings() {
+        Some(s) => {
+            let scope = proxy_config::normalized_proxy_scope(&s);
+            let enabled = s.enabled && proxy_config::get_proxy_url(&s).is_ok();
+            serde_json::json!({
+                "enabled": enabled,
                 "protocol": s.protocol.unwrap_or_else(|| "http".into()),
                 "host": s.host.unwrap_or_else(|| "127.0.0.1".into()),
                 "port": s.port.unwrap_or(7890),
-            }),
-            Err(_) => serde_json::json!({ "enabled": false }),
-        },
-        None => serde_json::json!({ "enabled": false }),
+                "scope": scope,
+            })
+        }
+        None => serde_json::json!({
+            "enabled": false,
+            "scope": { "mode": "all" },
+        }),
     }
 }
 

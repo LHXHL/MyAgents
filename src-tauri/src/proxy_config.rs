@@ -15,7 +15,7 @@
 //! Configuration is read from `~/.myagents/config.json` and can be enabled/disabled
 //! via Settings > General > Network Proxy.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::process::Command;
 
@@ -62,6 +62,21 @@ pub struct ProxySettings {
     pub host: Option<String>,
     /// Proxy port (1-65535)
     pub port: Option<u16>,
+    /// Optional provider scope. Missing scope means legacy "all providers".
+    pub scope: Option<ProxyScopeSettings>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+#[serde(tag = "mode")]
+pub enum ProxyScopeSettings {
+    #[serde(rename = "all")]
+    All,
+    #[serde(rename = "custom")]
+    Custom {
+        #[serde(default, rename = "providerIds")]
+        provider_ids: Vec<String>,
+    },
 }
 
 /// Partial app config for reading proxy settings
@@ -71,10 +86,7 @@ struct PartialAppConfig {
     proxy_settings: Option<ProxySettings>,
 }
 
-/// Read proxy settings from ~/.myagents/config.json
-/// Returns Some(ProxySettings) if proxy is enabled, None otherwise
-/// Logs errors for invalid configuration to help users debug
-pub fn read_proxy_settings() -> Option<ProxySettings> {
+fn read_proxy_settings_from_disk() -> Option<ProxySettings> {
     let home = dirs::home_dir()?;
     let config_path = home.join(".myagents").join("config.json");
 
@@ -114,7 +126,21 @@ pub fn read_proxy_settings() -> Option<ProxySettings> {
         }
     };
 
-    config.proxy_settings.filter(|p| p.enabled)
+    config.proxy_settings
+}
+
+/// Read raw proxy settings from ~/.myagents/config.json.
+/// Returns settings even when `enabled=false` so callers that propagate config
+/// to sidecars can preserve scope and the disabled state.
+pub fn read_raw_proxy_settings() -> Option<ProxySettings> {
+    read_proxy_settings_from_disk()
+}
+
+/// Read proxy settings from ~/.myagents/config.json
+/// Returns Some(ProxySettings) if proxy is enabled, None otherwise
+/// Logs errors for invalid configuration to help users debug
+pub fn read_proxy_settings() -> Option<ProxySettings> {
+    read_proxy_settings_from_disk().filter(|p| p.enabled)
 }
 
 /// Get proxy URL string from settings with validation
@@ -144,6 +170,53 @@ pub fn get_proxy_url(settings: &ProxySettings) -> Result<String, String> {
     let host = settings.host.as_deref().unwrap_or(DEFAULT_PROXY_HOST);
 
     Ok(format!("{}://{}:{}", protocol, host, port))
+}
+
+pub fn normalized_proxy_scope(settings: &ProxySettings) -> ProxyScopeSettings {
+    match &settings.scope {
+        Some(ProxyScopeSettings::Custom { provider_ids }) => {
+            let mut seen = std::collections::HashSet::new();
+            let mut cleaned = Vec::new();
+            for raw in provider_ids {
+                let id = raw.trim();
+                if id.is_empty() || !seen.insert(id.to_string()) {
+                    continue;
+                }
+                cleaned.push(id.to_string());
+            }
+            if cleaned.is_empty() {
+                ulog_warn!(
+                    "[proxy_config] Empty custom proxy scope found; falling back to all providers"
+                );
+                ProxyScopeSettings::All
+            } else {
+                ProxyScopeSettings::Custom {
+                    provider_ids: cleaned,
+                }
+            }
+        }
+        _ => ProxyScopeSettings::All,
+    }
+}
+
+pub fn proxy_enabled_for_provider(settings: &ProxySettings, provider_id: &str) -> bool {
+    if !settings.enabled {
+        return false;
+    }
+    let provider_id = provider_id.trim();
+    if provider_id.is_empty() {
+        return false;
+    }
+    match normalized_proxy_scope(settings) {
+        ProxyScopeSettings::All => true,
+        ProxyScopeSettings::Custom { provider_ids } => {
+            provider_ids.iter().any(|id| id == provider_id)
+        }
+    }
+}
+
+pub fn read_proxy_settings_for_provider(provider_id: &str) -> Option<ProxySettings> {
+    read_proxy_settings().filter(|settings| proxy_enabled_for_provider(settings, provider_id))
 }
 
 /// Apply MyAgents proxy policy to a child process `Command`.
@@ -217,6 +290,62 @@ pub fn apply_to_subprocess(cmd: &mut Command) -> bool {
     }
 }
 
+/// Provider-aware variant for provider-owned subprocesses. It injects the
+/// MyAgents proxy only when the selected provider is in scope; otherwise it
+/// leaves inherited system proxy behavior intact and only protects localhost.
+pub fn apply_to_subprocess_for_provider(cmd: &mut Command, provider_id: &str) -> bool {
+    if let Some(proxy_settings) = read_proxy_settings_for_provider(provider_id) {
+        match get_proxy_url(&proxy_settings) {
+            Ok(proxy_url) => {
+                ulog_info!(
+                    "[proxy_config] Injecting proxy for provider subprocess provider={}: {}",
+                    provider_id,
+                    proxy_url
+                );
+                cmd.env("HTTP_PROXY", &proxy_url);
+                cmd.env("HTTPS_PROXY", &proxy_url);
+                cmd.env("http_proxy", &proxy_url);
+                cmd.env("https_proxy", &proxy_url);
+                cmd.env("NO_PROXY", LOCALHOST_NO_PROXY);
+                cmd.env("no_proxy", LOCALHOST_NO_PROXY);
+                cmd.env_remove("ALL_PROXY");
+                cmd.env_remove("all_proxy");
+                cmd.env("MYAGENTS_PROXY_INJECTED", "1");
+                true
+            }
+            Err(e) => {
+                ulog_error!(
+                    "[proxy_config] Invalid proxy configuration for provider {}: {}. \
+                     Provider subprocess will start without MyAgents proxy.",
+                    provider_id,
+                    e
+                );
+                for var in &[
+                    "HTTP_PROXY",
+                    "HTTPS_PROXY",
+                    "http_proxy",
+                    "https_proxy",
+                    "ALL_PROXY",
+                    "all_proxy",
+                    "NO_PROXY",
+                    "no_proxy",
+                ] {
+                    cmd.env_remove(var);
+                }
+                false
+            }
+        }
+    } else {
+        ulog_debug!(
+            "[proxy_config] No MyAgents proxy configured for provider {}, inheriting system network behavior",
+            provider_id
+        );
+        cmd.env("NO_PROXY", LOCALHOST_NO_PROXY);
+        cmd.env("no_proxy", LOCALHOST_NO_PROXY);
+        false
+    }
+}
+
 /// Build a reqwest client with user's proxy configuration
 /// - If proxy is enabled in config, use it for external requests (localhost excluded via NO_PROXY)
 /// - If no proxy configured, inherit system network behavior (reqwest default proxy detection)
@@ -254,6 +383,64 @@ pub fn build_client_with_proxy(builder: reqwest::ClientBuilder) -> Result<reqwes
         .map_err(|e| format!("[proxy_config] Failed to build HTTP client: {}", e))
 }
 
+pub fn build_client_with_proxy_for_provider(
+    builder: reqwest::ClientBuilder,
+    provider_id: &str,
+) -> Result<reqwest::Client, String> {
+    let final_builder = if let Some(proxy_settings) = read_proxy_settings_for_provider(provider_id)
+    {
+        let proxy_url = get_proxy_url(&proxy_settings)?;
+        ulog_info!(
+            "[proxy_config] Using proxy for provider requests provider={}: {}",
+            provider_id,
+            proxy_url
+        );
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|e| format!("[proxy_config] Failed to create proxy: {}", e))?
+            .no_proxy(reqwest::NoProxy::from_string(LOCALHOST_NO_PROXY));
+        builder.proxy(proxy)
+    } else {
+        ulog_info!(
+            "[proxy_config] No MyAgents proxy configured for provider {}, inheriting system network behavior",
+            provider_id
+        );
+        builder
+    };
+
+    final_builder
+        .build()
+        .map_err(|e| format!("[proxy_config] Failed to build HTTP client: {}", e))
+}
+
+pub fn build_blocking_client_with_proxy_for_provider(
+    builder: reqwest::blocking::ClientBuilder,
+    provider_id: &str,
+) -> Result<reqwest::blocking::Client, String> {
+    let final_builder = if let Some(proxy_settings) = read_proxy_settings_for_provider(provider_id)
+    {
+        let proxy_url = get_proxy_url(&proxy_settings)?;
+        ulog_info!(
+            "[proxy_config] Using proxy for blocking provider requests provider={}: {}",
+            provider_id,
+            proxy_url
+        );
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|e| format!("[proxy_config] Failed to create proxy: {}", e))?
+            .no_proxy(reqwest::NoProxy::from_string(LOCALHOST_NO_PROXY));
+        builder.proxy(proxy)
+    } else {
+        ulog_info!(
+            "[proxy_config] No MyAgents proxy configured for blocking provider {}, inheriting system network behavior",
+            provider_id
+        );
+        builder
+    };
+
+    final_builder
+        .build()
+        .map_err(|e| format!("[proxy_config] Failed to build blocking HTTP client: {}", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +452,7 @@ mod tests {
             protocol: None,
             host: None,
             port: None,
+            scope: None,
         };
 
         let result = get_proxy_url(&settings);
@@ -279,6 +467,7 @@ mod tests {
             protocol: Some("socks5".to_string()),
             host: Some("192.168.1.1".to_string()),
             port: Some(1080),
+            scope: None,
         };
 
         let result = get_proxy_url(&settings);
@@ -293,6 +482,7 @@ mod tests {
             protocol: Some("ftp".to_string()),
             host: None,
             port: None,
+            scope: None,
         };
 
         let result = get_proxy_url(&settings);
@@ -307,6 +497,7 @@ mod tests {
             protocol: None,
             host: None,
             port: Some(0),
+            scope: None,
         };
 
         let result = get_proxy_url(&settings);
@@ -321,10 +512,71 @@ mod tests {
             protocol: Some("https".to_string()),
             host: Some("proxy.example.com".to_string()),
             port: Some(443),
+            scope: None,
         };
 
         let result = get_proxy_url(&settings);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "https://proxy.example.com:443");
+    }
+
+    #[test]
+    fn test_provider_scope_defaults_to_all() {
+        let settings = ProxySettings {
+            enabled: true,
+            protocol: None,
+            host: None,
+            port: None,
+            scope: None,
+        };
+
+        assert!(proxy_enabled_for_provider(&settings, "deepseek"));
+    }
+
+    #[test]
+    fn test_provider_scope_custom_filters_by_provider() {
+        let settings = ProxySettings {
+            enabled: true,
+            protocol: None,
+            host: None,
+            port: None,
+            scope: Some(ProxyScopeSettings::Custom {
+                provider_ids: vec!["codex-sub".to_string(), "deepseek".to_string()],
+            }),
+        };
+
+        assert!(proxy_enabled_for_provider(&settings, "codex-sub"));
+        assert!(!proxy_enabled_for_provider(&settings, "anthropic-sub"));
+    }
+
+    #[test]
+    fn test_provider_scope_deserializes_camel_case_provider_ids() {
+        let settings: ProxySettings = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "scope": { "mode": "custom", "providerIds": ["codex-sub"] }
+        }))
+        .unwrap();
+
+        assert!(proxy_enabled_for_provider(&settings, "codex-sub"));
+        assert!(!proxy_enabled_for_provider(&settings, "deepseek"));
+        assert_eq!(
+            serde_json::to_value(settings.scope.unwrap()).unwrap(),
+            serde_json::json!({ "mode": "custom", "providerIds": ["codex-sub"] })
+        );
+    }
+
+    #[test]
+    fn test_empty_custom_provider_scope_falls_back_to_all() {
+        let settings = ProxySettings {
+            enabled: true,
+            protocol: None,
+            host: None,
+            port: None,
+            scope: Some(ProxyScopeSettings::Custom {
+                provider_ids: vec![],
+            }),
+        };
+
+        assert!(proxy_enabled_for_provider(&settings, "deepseek"));
     }
 }
