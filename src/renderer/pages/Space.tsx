@@ -84,7 +84,6 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const issuesLoading = issueList.isLoading || (spaceData.boot === 'ready' && issueList.lastFetchedAt === 0);
   const skills = spaceData.skills.items;
   const skillsLoading = spaceData.skills.isLoading || (spaceData.boot === 'ready' && spaceData.skills.lastFetchedAt === 0);
-  const effectiveSelectedSkillId = selectedSkillId ?? skills[0]?.id ?? null;
   const localAgents = spaceData.localAgents.items;
   const admin = isSpaceAdmin(session);
   const activeCacheSpaceId = spaceData.spaceId || session?.space?.id || session?.space?.slug || DEFAULT_SPACE_ID;
@@ -180,8 +179,8 @@ export default function Space({ isActive }: { isActive: boolean }) {
     }
     if (refreshSkills) {
       jobs.push(actions.refreshSkills({ force: true, silent: true }));
-      if (effectiveSelectedSkillId) {
-        jobs.push(actions.refreshSkillDetail(effectiveSelectedSkillId, { force: true, silent: true }));
+      if (selectedSkillId) {
+        jobs.push(actions.refreshSkillDetail(selectedSkillId, { force: true, silent: true }));
       }
     }
     if (refreshAgents) {
@@ -204,7 +203,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
       });
       throw error;
     }
-  }, [actions, effectiveSelectedSkillId, issueDetailId]);
+  }, [actions, issueDetailId, selectedSkillId]);
 
   useEffect(() => {
     if (!isActive || spaceData.boot !== 'ready') return;
@@ -392,10 +391,10 @@ export default function Space({ isActive }: { isActive: boolean }) {
               admin={admin}
               skills={skills}
               loading={skillsLoading}
-              selectedSkillId={effectiveSelectedSkillId}
+              selectedSkillId={selectedSkillId}
               projects={projects}
               actions={actions}
-              skillDetailState={effectiveSelectedSkillId ? spaceData.skillDetails[spaceCacheKey(effectiveSelectedSkillId)] : undefined}
+              skillDetailState={selectedSkillId ? spaceData.skillDetails[spaceCacheKey(selectedSkillId)] : undefined}
               onSelectSkill={setSelectedSkillId}
               onRefresh={refreshCurrent}
               onUploaded={(id) => setSelectedSkillId(id)}

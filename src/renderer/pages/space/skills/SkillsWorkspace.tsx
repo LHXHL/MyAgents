@@ -1,22 +1,24 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Download, FileText, Loader2, Package, RefreshCw, Trash2, UploadCloud } from 'lucide-react';
+import { ArrowLeft, ChevronDown, Download, FileText, Folder, Loader2, MoreHorizontal, Package, RefreshCw, Trash2, UploadCloud, X } from 'lucide-react';
 
-import { spaceErrorMessage, type SpaceSkill } from '@/api/spaceCloud';
-import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
+import { spaceErrorMessage, type SpaceSkill, type SpaceSkillFile } from '@/api/spaceCloud';
 import ConfirmDialog from '@/components/ConfirmDialog';
+import Markdown from '@/components/Markdown';
+import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { useToast } from '@/components/Toast';
 import type { Project } from '@/config/types';
+import { useCloseLayer } from '@/hooks/useCloseLayer';
 import {
   getSkillFileState,
   SPACE_VISIBLE_REFRESH_TTL_MS,
   type SpaceActions,
   type SpaceSkillDetailState,
 } from '@/pages/space/spaceStore';
-import { formatDate } from '@/pages/space/spaceUi';
+import { formatBytes, formatDate } from '@/pages/space/spaceUi';
 
-type SkillScreen = 'list' | 'detail';
-type SkillDetailMode = 'overview' | 'files';
+type SkillDetailMode = 'entry' | 'files';
+const EMPTY_SKILL_FILES: SpaceSkillFile[] = [];
 
 export function SkillsWorkspace({
   admin,
@@ -37,14 +39,13 @@ export function SkillsWorkspace({
   projects: Project[];
   actions: SpaceActions;
   skillDetailState?: SpaceSkillDetailState;
-  onSelectSkill: (id: string) => void;
+  onSelectSkill: (id: string | null) => void;
   onRefresh: () => Promise<void>;
   onUploaded: (id: string) => void;
 }) {
   const { t } = useTranslation('app');
   const toast = useToast();
-  const [screen, setScreen] = useState<SkillScreen>('list');
-  const [detailMode, setDetailMode] = useState<SkillDetailMode>('overview');
+  const [detailMode, setDetailMode] = useState<SkillDetailMode>('entry');
   const [uploading, setUploading] = useState(false);
   const selected = skills.find((skill) => skill.id === selectedSkillId) ?? null;
 
@@ -63,8 +64,7 @@ export function SkillsWorkspace({
       toast.success(t('space.toasts.skillUploaded', { name: result.name }));
       await actions.refreshSkills({ force: true, silent: true });
       onUploaded(result.id);
-      setScreen('detail');
-      setDetailMode('overview');
+      setDetailMode('entry');
     } catch (error) {
       toast.error(spaceErrorMessage(error));
     } finally {
@@ -74,8 +74,7 @@ export function SkillsWorkspace({
 
   const openSkill = (id: string) => {
     onSelectSkill(id);
-    setScreen('detail');
-    setDetailMode('overview');
+    setDetailMode('entry');
   };
 
   return (
@@ -109,67 +108,56 @@ export function SkillsWorkspace({
         </button>
       </section>
 
-      {screen === 'list' || !selected ? (
-        <main className="min-h-0 overflow-y-auto px-6 pb-8 pt-3">
-          <section className="mx-auto max-w-[1280px]" aria-label="Skill list">
-            <div className="border-y border-[var(--line-subtle)]">
-              {skills.length === 0 && loading ? (
-                <div className="grid gap-0">
-                  {Array.from({ length: 4 }).map((_, index) => (
-                    <div key={index} className="min-h-[78px] border-b border-[var(--line-subtle)] py-4 last:border-b-0">
-                      <div className="h-4 w-56 rounded-md bg-[var(--paper-inset)]" />
-                      <div className="mt-3 h-3 w-80 rounded-md bg-[var(--paper-inset)]" />
-                    </div>
-                  ))}
-                </div>
-              ) : skills.length === 0 ? (
-                <div className="grid min-h-44 place-items-center border-x border-dashed border-[var(--line-subtle)] text-sm text-[var(--ink-muted)]">
-                  <div className="text-center">
-                    <p>{t('space.skills.empty')}</p>
-                    {admin && (
-                      <button
-                        type="button"
-                        disabled={uploading}
-                        onClick={() => void uploadSkill()}
-                        className="mt-3 inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
-                      >
-                        {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-                        {t('space.skills.uploadSkill')}
-                      </button>
-                    )}
+      <main className="min-h-0 overflow-y-auto px-6 pb-10 pt-5">
+        <section className="mx-auto max-w-4xl" aria-label="Skill list">
+          {skills.length === 0 && loading ? (
+            <div className="grid grid-cols-2 gap-3 max-lg:grid-cols-1">
+              {Array.from({ length: 6 }).map((_, index) => (
+                <div key={index} className="rounded-xl bg-[var(--paper-elevated)] px-3.5 py-3">
+                  <div className="flex items-center gap-2">
+                    <div className="h-4 w-32 rounded-md bg-[var(--paper-inset)]" />
+                    <div className="h-5 w-12 rounded-md bg-[var(--paper-inset)]" />
                   </div>
+                  <div className="mt-3 h-3 w-full rounded-md bg-[var(--paper-inset)]" />
+                  <div className="mt-2 h-3 w-2/3 rounded-md bg-[var(--paper-inset)]" />
+                  <div className="mt-3 h-3 w-56 rounded-md bg-[var(--paper-inset)]/70" />
                 </div>
-              ) : (
-                skills.map((skill, index) => (
-                  <button
-                    key={skill.id}
-                    type="button"
-                    onClick={() => openSkill(skill.id)}
-                    style={{ animationDelay: `${index * 42}ms` }}
-                    className={`grid min-h-[78px] w-full grid-cols-[minmax(0,1fr)_auto] items-start gap-4 border-b border-[var(--line-subtle)] px-1 py-4 text-left transition-colors last:border-b-0 sm:px-3 ${
-                      selectedSkillId === skill.id ? 'bg-[var(--paper-elevated)]/70 shadow-[inset_3px_0_0_var(--accent-warm)]' : 'hover:bg-[var(--paper-elevated)]/60'
-                    }`}
-                  >
-                    <span className="min-w-0">
-                      <span className="flex min-w-0 flex-wrap items-center gap-2">
-                        <span className="truncate text-base font-semibold leading-6 text-[var(--ink)]">{skill.name}</span>
-                        <span className="rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs font-semibold text-[var(--ink-muted)]">rev {skill.latestRevision}</span>
-                        <span className="rounded-md bg-[var(--accent-cool-subtle)] px-2 py-1 text-xs font-semibold text-[var(--accent-cool)]"># official</span>
-                      </span>
-                      <span className="mt-2 flex flex-wrap items-center gap-2 text-xs font-semibold text-[var(--ink-subtle)]">
-                        <span>official</span>
-                        <span className="before:mr-2 before:text-[var(--line-strong)] before:content-['·']">{formatDate(skill.updatedAt)}</span>
-                        <span className="before:mr-2 before:text-[var(--line-strong)] before:content-['·']">{t('space.skills.viewDetails')}</span>
-                      </span>
-                    </span>
-                    <span className="hidden pt-1 text-xs font-semibold text-[var(--ink-subtle)] sm:block">{formatDate(skill.updatedAt)}</span>
-                  </button>
-                ))
-              )}
+              ))}
             </div>
-          </section>
-        </main>
-      ) : (
+          ) : skills.length === 0 ? (
+            <div className="grid min-h-52 place-items-center rounded-xl border border-dashed border-[var(--line-subtle)] bg-[var(--paper-elevated)]/55 text-sm text-[var(--ink-muted)]">
+              <div className="text-center">
+                <Package className="mx-auto mb-3 h-9 w-9 text-[var(--ink-subtle)]" />
+                <p>{t('space.skills.empty')}</p>
+                {admin && (
+                  <button
+                    type="button"
+                    disabled={uploading}
+                    onClick={() => void uploadSkill()}
+                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
+                  >
+                    {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+                    {t('space.skills.uploadSkill')}
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-3 max-lg:grid-cols-1">
+              {skills.map((skill) => (
+                <SpaceSkillCard
+                  key={skill.id}
+                  skill={skill}
+                  onOpen={() => openSkill(skill.id)}
+                  t={t}
+                />
+              ))}
+            </div>
+          )}
+        </section>
+      </main>
+
+      {selected && (
         <SkillDetailWorkspace
           skill={selected}
           mode={detailMode}
@@ -178,11 +166,109 @@ export function SkillsWorkspace({
           actions={actions}
           detailState={skillDetailState}
           onModeChange={setDetailMode}
-          onBack={() => setScreen('list')}
-          onDeleted={() => setScreen('list')}
+          onBack={() => onSelectSkill(null)}
+          onDeleted={() => onSelectSkill(null)}
           t={t}
         />
       )}
+    </div>
+  );
+}
+
+function SpaceSkillCard({
+  skill,
+  onOpen,
+  t,
+}: {
+  skill: SpaceSkill;
+  onOpen: () => void;
+  t: ReturnType<typeof useTranslation>['t'];
+}) {
+  const author = skill.slug || 'official';
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className="group flex w-full flex-col gap-1.5 rounded-xl bg-[var(--paper-elevated)] px-3.5 py-3 text-left transition-shadow hover:shadow-sm"
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink)]">{skill.name}</span>
+      </span>
+      <span className="line-clamp-2 min-h-[2.6em] text-sm leading-relaxed text-[var(--ink-muted)]">
+        {skill.description || t('space.common.noDescription')}
+      </span>
+      <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium text-[var(--ink-subtle)]">
+        <span className="min-w-0 truncate">
+          <span className="text-[var(--ink-subtle)]">{t('space.skills.author')}</span>
+          <span className="ml-1 font-semibold text-[var(--ink-muted)]">{author}</span>
+        </span>
+        <span className="text-[var(--line-strong)]">·</span>
+        <span>
+          <span className="text-[var(--ink-subtle)]">{t('space.skills.uploadedAt')}</span>
+          <span className="ml-1 font-semibold text-[var(--ink-muted)]">{formatDate(skill.createdAt)}</span>
+        </span>
+        <span className="text-[var(--line-strong)]">·</span>
+        <span className="inline-flex max-w-full rounded-md bg-[var(--accent-cool-subtle)] px-1.5 py-0.5 text-xs font-semibold text-[var(--accent-cool)]">
+          <span className="truncate"># {t('space.skills.officialTag')}</span>
+        </span>
+      </span>
+    </button>
+  );
+}
+
+function isRootFile(file: SpaceSkillFile, name: string): boolean {
+  return !file.isDir && file.parentPath === '' && file.name.toLowerCase() === name.toLowerCase();
+}
+
+function findEntryFile(files: SpaceSkillFile[]): SpaceSkillFile | null {
+  return files.find((file) => isRootFile(file, 'SKILL.md')) ?? files.find((file) => isRootFile(file, 'README.md')) ?? null;
+}
+
+function fileDepth(file: SpaceSkillFile): number {
+  return Math.max(0, file.path.split('/').length - 1);
+}
+
+function sortSkillFiles(files: SpaceSkillFile[]): SpaceSkillFile[] {
+  return [...files].sort((left, right) => {
+    if (left.parentPath === right.parentPath && left.isDir !== right.isDir) {
+      return left.isDir ? -1 : 1;
+    }
+    return left.path.localeCompare(right.path);
+  });
+}
+
+function isPreviewableFile(file: SpaceSkillFile): boolean {
+  if (file.isDir) return false;
+  const name = file.name.toLowerCase();
+  const mimeType = file.mimeType?.toLowerCase() ?? '';
+  return (
+    mimeType.startsWith('text/')
+    || name.endsWith('.md')
+    || name.endsWith('.mdx')
+    || name.endsWith('.json')
+    || name.endsWith('.yaml')
+    || name.endsWith('.yml')
+    || name.endsWith('.toml')
+    || name.endsWith('.js')
+    || name.endsWith('.ts')
+    || name.endsWith('.tsx')
+    || name.endsWith('.py')
+    || name.endsWith('.sh')
+    || name.endsWith('.txt')
+  );
+}
+
+function stripFrontmatter(markdown: string): string {
+  return markdown.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '');
+}
+
+function SkillMarkdownDocument({ text }: { text: string }) {
+  return (
+    <div
+      className="ai-message-content text-[var(--ink-secondary)] [&>h1:first-child]:mt-0 [&>h1]:mb-3 [&>h1]:text-xl [&>h2]:mb-2 [&>h2]:mt-4 [&>h2]:text-lg [&>h3]:mb-2 [&>h3]:mt-4 [&>h3]:text-base [&>ol]:my-2.5 [&>ol]:space-y-1.5 [&>p]:my-3 [&>ul]:my-2.5 [&>ul]:space-y-1.5"
+      style={{ fontSize: 'var(--text-sm)', lineHeight: 1.65 }}
+    >
+      <Markdown raw>{stripFrontmatter(text)}</Markdown>
     </div>
   );
 }
@@ -211,52 +297,77 @@ function SkillDetailWorkspace({
   t: ReturnType<typeof useTranslation>['t'];
 }) {
   const toast = useToast();
-  const [selectedPath, setSelectedPath] = useState('');
-  const [projectPath, setProjectPath] = useState(projects[0]?.path ?? '');
+  const [previewPath, setPreviewPath] = useState('');
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [adminMenuOpen, setAdminMenuOpen] = useState(false);
   const [installingTarget, setInstallingTarget] = useState<'global' | 'project' | null>(null);
   const [revisionUploading, setRevisionUploading] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const workspaceMenuRef = useRef<HTMLSpanElement | null>(null);
+  const adminMenuRef = useRef<HTMLSpanElement | null>(null);
   const detail = detailState?.detail ?? null;
   const detailLoading = detailState?.isLoading ?? true;
-  const fileState = selectedPath ? getSkillFileState(skill.id, selectedPath) : null;
+  const files = detail?.files ?? EMPTY_SKILL_FILES;
+  const entryFile = useMemo(() => findEntryFile(files), [files]);
+  const sortedFiles = useMemo(() => sortSkillFiles(files), [files]);
+  const activeMode: SkillDetailMode = entryFile ? mode : 'files';
+  const previewFile = activeMode === 'files' && previewPath
+    ? files.find((file) => file.path === previewPath && !file.isDir) ?? null
+    : null;
+  const activeFile = activeMode === 'entry' ? entryFile : previewFile;
+  const activePath = activeFile?.path ?? '';
+  const fileState = activePath ? getSkillFileState(skill.id, activePath) : null;
   const fileLoading = fileState?.isLoading ?? false;
   const fileText = fileState?.text ?? '';
 
-  const projectOptions = useMemo<SelectOption[]>(
+  const projectOptions = useMemo(
     () => projects.map((project) => ({ value: project.path, label: project.displayName || project.name })),
     [projects],
   );
   const hasProjects = projectOptions.length > 0;
 
   useEffect(() => {
-    setSelectedPath('');
+    setPreviewPath('');
+    setWorkspaceMenuOpen(false);
+    setAdminMenuOpen(false);
     void actions.refreshSkillDetail(skill.id, { maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }).catch((error) => toast.error(spaceErrorMessage(error)));
   }, [actions, skill.id, toast]);
 
   useEffect(() => {
-    if (projectOptions.length === 0) {
-      setProjectPath('');
-      return;
-    }
-    if (!projectOptions.some((option) => option.value === projectPath)) {
-      setProjectPath(projectOptions[0].value);
-    }
-  }, [projectOptions, projectPath]);
+    if (!detail || entryFile || mode !== 'entry') return;
+    onModeChange('files');
+  }, [detail, entryFile, mode, onModeChange]);
 
   useEffect(() => {
-    if (!detail || selectedPath) return;
-    const firstReadable = detail.files.find((file) => !file.isDir && file.name.toLowerCase() === 'skill.md') ?? detail.files.find((file) => !file.isDir);
-    setSelectedPath(firstReadable?.path ?? '');
-  }, [detail, selectedPath]);
+    if (!activePath) return;
+    void actions.refreshSkillFile(skill.id, activePath, { maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }).catch((error) => toast.error(spaceErrorMessage(error)));
+  }, [actions, activePath, skill.id, toast]);
 
   useEffect(() => {
-    if (!selectedPath || mode !== 'files') return;
-    void actions.refreshSkillFile(skill.id, selectedPath, { maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }).catch((error) => toast.error(spaceErrorMessage(error)));
-  }, [actions, mode, selectedPath, skill.id, toast]);
+    if (!workspaceMenuOpen && !adminMenuOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (workspaceMenuOpen && workspaceMenuRef.current && !workspaceMenuRef.current.contains(target)) {
+        setWorkspaceMenuOpen(false);
+      }
+      if (adminMenuOpen && adminMenuRef.current && !adminMenuRef.current.contains(target)) {
+        setAdminMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    return () => document.removeEventListener('mousedown', handlePointerDown);
+  }, [adminMenuOpen, workspaceMenuOpen]);
 
-  const install = async (target: 'global' | 'project') => {
-    const workspacePath = target === 'project' ? projectPath || projects[0]?.path : undefined;
+  const changeMode = (nextMode: SkillDetailMode) => {
+    setPreviewPath('');
+    setWorkspaceMenuOpen(false);
+    setAdminMenuOpen(false);
+    onModeChange(nextMode);
+  };
+
+  const install = async (target: 'global' | 'project', workspacePath?: string) => {
     if (target === 'project' && !workspacePath) {
       toast.error(t('space.toasts.selectWorkspace'));
       return;
@@ -278,6 +389,7 @@ function SkillDetailWorkspace({
   };
 
   const uploadRevision = async () => {
+    setAdminMenuOpen(false);
     try {
       const { open } = await import('@tauri-apps/plugin-dialog');
       const selectedPath = await open({
@@ -302,6 +414,7 @@ function SkillDetailWorkspace({
   };
 
   const deleteSkill = async () => {
+    setAdminMenuOpen(false);
     setDeleting(true);
     try {
       await actions.deleteSkill(skill.id);
@@ -316,163 +429,285 @@ function SkillDetailWorkspace({
     }
   };
 
+  useCloseLayer(() => {
+    onBack();
+    return true;
+  }, 230);
+
+  const renderFilePreview = () => {
+    if (!previewFile) return null;
+    return (
+      <section className="overflow-hidden rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)]">
+        <header className="grid min-h-14 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 border-b border-[var(--line-subtle)] px-3.5">
+          <button
+            type="button"
+            onClick={() => setPreviewPath('')}
+            className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)]"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            {t('space.skills.backToFiles')}
+          </button>
+          <div className="min-w-0 text-center">
+            <div className="truncate text-sm font-semibold text-[var(--ink)]">{previewFile.path}</div>
+            <div className="text-xs font-medium text-[var(--ink-subtle)]">{formatBytes(previewFile.sizeBytes)}</div>
+          </div>
+          <FileText className="h-4 w-4 text-[var(--ink-subtle)]" />
+        </header>
+        <div className="min-h-[460px] bg-[var(--paper-elevated)]">
+          {fileLoading ? (
+            <div className="flex min-h-[360px] items-center justify-center text-sm text-[var(--ink-muted)]">
+              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+              {t('space.skills.loadingFile')}
+            </div>
+          ) : fileState?.error ? (
+            <div className="flex min-h-[360px] items-center justify-center px-8 text-sm text-[var(--ink-muted)]">{fileState.error}</div>
+          ) : (
+            <pre className="max-h-[64vh] min-h-[460px] overflow-auto whitespace-pre p-5 font-mono text-sm leading-6 text-[var(--ink-secondary)]">{fileText}</pre>
+          )}
+        </div>
+      </section>
+    );
+  };
+
+  const renderFilesList = () => (
+    <section className="rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)] px-4 py-4">
+      <header className="flex items-center justify-between gap-3">
+        <h3 className="text-base font-semibold text-[var(--ink)]">{t('space.skills.packageContents')}</h3>
+        <span className="text-sm font-medium text-[var(--ink-muted)]">{t('space.skills.totalFiles', { count: files.length })}</span>
+      </header>
+      <div className="mt-3 overflow-hidden rounded-xl border border-[var(--line-subtle)] bg-[var(--paper)]/45 p-1.5">
+        {sortedFiles.map((file) => {
+          const isEntry = entryFile?.path === file.path;
+          const previewable = isPreviewableFile(file);
+          const content = (
+            <>
+              <span className="flex min-w-0 flex-1 items-center gap-2.5" style={{ paddingLeft: `${fileDepth(file) * 1.25}rem` }}>
+                {file.isDir ? (
+                  <Folder className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />
+                ) : (
+                  <FileText className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />
+                )}
+                <span className={`min-w-0 truncate ${file.isDir ? 'font-semibold text-[var(--ink-secondary)]' : 'font-medium text-[var(--ink-muted)]'}`}>{file.name}</span>
+                {isEntry && (
+                  <span className="shrink-0 rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">
+                    {t('space.skills.mainFile')}
+                  </span>
+                )}
+              </span>
+              <span className="shrink-0 text-sm font-medium text-[var(--ink-muted)]">
+                {file.isDir ? '' : formatBytes(file.sizeBytes)}
+              </span>
+            </>
+          );
+          if (!previewable) {
+            return (
+              <div
+                key={file.id}
+                className="flex min-h-10 items-center gap-3 rounded-lg px-2.5 text-left text-sm opacity-80"
+              >
+                {content}
+              </div>
+            );
+          }
+          return (
+            <button
+              key={file.id}
+              type="button"
+              onClick={() => setPreviewPath(file.path)}
+              className="flex min-h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left text-sm transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--accent-warm)]"
+            >
+              {content}
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+
+  const renderEntryDocument = () => {
+    if (!entryFile) return null;
+    return (
+      <article className="rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)] px-6 py-5 shadow-sm shadow-[var(--line-subtle)] max-sm:px-5">
+        {fileLoading ? (
+          <div className="flex min-h-56 items-center justify-center text-sm text-[var(--ink-muted)]">
+            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+            {t('space.skills.loadingFile')}
+          </div>
+        ) : fileState?.error ? (
+          <div className="flex min-h-56 items-center justify-center text-sm text-[var(--ink-muted)]">{fileState.error}</div>
+        ) : (
+          <SkillMarkdownDocument text={fileText} />
+        )}
+      </article>
+    );
+  };
+
   return (
     <>
-    <main className="min-h-0 overflow-hidden p-[18px_20px_24px]">
-      <div className="grid h-full min-h-0 grid-rows-[42px_minmax(0,1fr)]">
-        <nav className="flex items-center gap-2 text-sm font-semibold text-[var(--ink-muted)]" aria-label="Skill breadcrumb">
-          <button type="button" onClick={onBack} className="rounded-md px-2 py-1 font-semibold transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--accent-warm)]">
-            Skills
+    <OverlayBackdrop onClose={onBack} className="z-[230] items-stretch justify-end bg-black/20 backdrop-blur-sm">
+      <aside className="relative h-full w-[min(78vw,1180px)] border-l border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl">
+        <header className="absolute right-4 top-4 z-10 flex justify-end">
+          <button
+            type="button"
+            onClick={onBack}
+            className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            aria-label={t('space.detail.close')}
+          >
+            <X className="h-4 w-4" />
           </button>
-          <span>›</span>
-          <strong className="truncate font-semibold text-[var(--ink)]">{skill.name}</strong>
-        </nav>
+        </header>
 
-        <section className="grid min-h-0 grid-rows-[86px_minmax(0,1fr)] overflow-hidden border-y border-[var(--line-subtle)] bg-[var(--paper-elevated)]/30">
-        <div className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-4 border-b border-[var(--line)] px-5">
-          <div className="min-w-0">
-            <h2 className="truncate text-lg font-semibold leading-tight text-[var(--ink)]">{skill.name}</h2>
-            <p className="truncate text-sm text-[var(--ink-muted)]">{skill.description || t('space.common.noDescription')}</p>
-            <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-              <span className="rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs font-semibold text-[var(--ink-muted)]">rev {skill.latestRevision}</span>
-              <span className="rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs font-semibold text-[var(--ink-muted)]">official</span>
-              <span className="rounded-md bg-[var(--accent-cool-subtle)] px-2 py-1 text-xs font-semibold text-[var(--accent-cool)]"># Skill</span>
-            </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2">
-            <div className="inline-flex h-9 items-center gap-1 rounded-xl bg-[var(--paper-inset)]/50 p-1">
-              <button
-                type="button"
-                onClick={() => onModeChange('overview')}
-                className={`h-7 rounded-lg px-2.5 text-sm font-semibold transition-colors ${mode === 'overview' ? 'bg-[var(--paper-elevated)] text-[var(--accent-warm)] shadow-sm' : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'}`}
-              >
-                {t('space.skills.overview')}
-              </button>
-              <button
-                type="button"
-                onClick={() => onModeChange('files')}
-                className={`h-7 rounded-lg px-2.5 text-sm font-semibold transition-colors ${mode === 'files' ? 'bg-[var(--paper-elevated)] text-[var(--accent-warm)] shadow-sm' : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'}`}
-              >
-                {t('space.skills.files')}
-              </button>
-            </div>
-            {admin && (
+        <section className="h-full min-h-0 overflow-y-auto px-12 py-11 max-lg:px-8 max-sm:px-5">
+          <div className="mx-auto max-w-[900px] pb-8">
+            <section className="border-b border-[var(--line-subtle)] pb-5">
+              <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-[var(--ink-subtle)]">
+                <span>{skill.slug || 'official'}</span>
+                <span className="text-[var(--line-strong)]">·</span>
+                <span>{formatDate(skill.createdAt)}</span>
+                <span className="inline-flex rounded-md bg-[var(--accent-cool-subtle)] px-2 py-1 text-xs font-semibold text-[var(--accent-cool)]"># {t('space.skills.officialTag')}</span>
+                <span className="min-w-0 flex-1" />
+                {admin && (
+                  <span ref={adminMenuRef} className="relative">
+                    <button
+                      type="button"
+                      disabled={revisionUploading || deleting}
+                      onClick={() => setAdminMenuOpen((open) => !open)}
+                      className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-70"
+                      aria-label={t('space.skills.moreActions')}
+                      title={t('space.skills.moreActions')}
+                    >
+                      <MoreHorizontal className="h-4 w-4" />
+                    </button>
+                    {adminMenuOpen && (
+                      <span className="absolute right-0 top-9 z-20 w-44 overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-1 shadow-lg">
+                        <button
+                          type="button"
+                          disabled={revisionUploading || deleting}
+                          onClick={() => void uploadRevision()}
+                          className="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--hover-bg)] disabled:cursor-wait disabled:opacity-60"
+                        >
+                          {revisionUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+                          {t('space.skills.updateRevision')}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={revisionUploading || deleting}
+                          onClick={() => {
+                            setAdminMenuOpen(false);
+                            setDeleteConfirmOpen(true);
+                          }}
+                          className="flex h-9 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm font-semibold text-[var(--error)] transition-colors hover:bg-[var(--error-bg)] disabled:cursor-wait disabled:opacity-60"
+                        >
+                          {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                          {t('space.skills.delete')}
+                        </button>
+                      </span>
+                    )}
+                  </span>
+                )}
+              </div>
+              <div className="mt-3 min-w-0">
+                <h2 className="max-w-[68ch] text-xl font-semibold leading-snug text-[var(--ink)]">{skill.name}</h2>
+                <p className="mt-2 max-w-[72ch] whitespace-pre-wrap text-sm leading-6 text-[var(--ink-secondary)]">{skill.description || t('space.common.noDescription')}</p>
+              </div>
+            </section>
+
+            <section className="mt-5 border-b border-[var(--line-subtle)] pb-5">
+              <div className="mb-3 flex items-center justify-between gap-4">
+                <h3 className="text-base font-semibold text-[var(--ink)]">{t('space.skills.install')}</h3>
+                <span className="text-xs font-medium text-[var(--ink-subtle)]">{t('space.skills.installScopeHint')}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-2.5">
+                <button
+                  type="button"
+                  disabled={installingTarget !== null}
+                  onClick={() => void install('global')}
+                  className="inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3.5 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
+                >
+                  {installingTarget === 'global' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                  {t('space.skills.installGlobal')}
+                </button>
+                <span ref={workspaceMenuRef} className="relative">
+                  <button
+                    type="button"
+                    disabled={installingTarget !== null || !hasProjects}
+                    title={hasProjects ? t('space.skills.installWorkspaceTitle') : t('space.skills.noInstallProjectsTitle')}
+                    onClick={() => setWorkspaceMenuOpen((open) => !open)}
+                    className="inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-primary-bg)] px-3.5 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    {installingTarget === 'project' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                    {t('space.skills.installWorkspace')}
+                    <ChevronDown className="h-4 w-4" />
+                  </button>
+                  {workspaceMenuOpen && (
+                    <span className="absolute right-0 top-12 z-20 max-h-72 w-64 overflow-y-auto rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-1 shadow-lg">
+                      {projectOptions.map((project) => (
+                        <button
+                          key={project.value}
+                          type="button"
+                          onClick={() => {
+                            setWorkspaceMenuOpen(false);
+                            void install('project', project.value);
+                          }}
+                          className="flex min-h-10 w-full flex-col rounded-lg px-3 py-2 text-left transition-colors hover:bg-[var(--hover-bg)]"
+                        >
+                          <span className="max-w-full truncate text-sm font-semibold text-[var(--ink)]">{project.label}</span>
+                          <span className="max-w-full truncate text-xs font-medium text-[var(--ink-subtle)]">{project.value}</span>
+                        </button>
+                      ))}
+                    </span>
+                  )}
+                </span>
+                {!hasProjects && <span className="text-sm font-medium text-[var(--ink-muted)]">{t('space.skills.noProjects')}</span>}
+              </div>
+            </section>
+
+            {!detail && detailLoading ? (
+              <div className="flex min-h-80 items-center justify-center text-sm text-[var(--ink-muted)]">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                {t('space.skills.loadingSkill')}
+              </div>
+            ) : !detail ? (
+              <div className="flex min-h-80 items-center justify-center text-sm text-[var(--ink-muted)]">
+                {detailState?.error ?? t('space.skills.notFound')}
+              </div>
+            ) : (
               <>
-                <button
-                  type="button"
-                  disabled={revisionUploading || deleting}
-                  onClick={() => void uploadRevision()}
-                  className="flex h-9 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
-                >
-                  {revisionUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-                  {t('space.skills.updateRevision')}
-                </button>
-                <button
-                  type="button"
-                  disabled={revisionUploading || deleting}
-                  onClick={() => setDeleteConfirmOpen(true)}
-                  className="flex h-9 items-center gap-2 rounded-xl px-3 text-sm font-semibold text-[var(--error)] transition-colors hover:bg-[var(--error-bg)] disabled:cursor-wait disabled:opacity-70"
-                >
-                  {deleting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                  {t('space.skills.delete')}
-                </button>
+                <nav className="mt-6 flex items-center gap-6 border-b border-[var(--line)]" aria-label="Skill detail">
+                  {entryFile && (
+                    <button
+                      type="button"
+                      onClick={() => changeMode('entry')}
+                      className={`border-b-2 px-0 pb-2.5 text-sm font-semibold transition-colors ${
+                        activeMode === 'entry'
+                          ? 'border-[var(--ink)] text-[var(--ink)]'
+                          : 'border-transparent text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                      }`}
+                    >
+                      {entryFile.name}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => changeMode('files')}
+                    className={`border-b-2 px-0 pb-2.5 text-sm font-semibold transition-colors ${
+                      activeMode === 'files'
+                        ? 'border-[var(--ink)] text-[var(--ink)]'
+                        : 'border-transparent text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                    }`}
+                  >
+                    {t('space.skills.files')}
+                  </button>
+                </nav>
+                <div className="mt-5">
+                  {activeMode === 'entry' ? renderEntryDocument() : previewFile ? renderFilePreview() : renderFilesList()}
+                </div>
               </>
             )}
-            <button
-              type="button"
-              disabled={installingTarget !== null}
-              onClick={() => void install('global')}
-              className="flex h-9 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
-            >
-              {installingTarget === 'global' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-              {t('space.skills.installGlobal')}
-            </button>
-            {hasProjects ? (
-              <CustomSelect value={projectPath} options={projectOptions} onChange={setProjectPath} className="w-48" />
-            ) : (
-              <span className="inline-flex h-9 items-center rounded-xl bg-[var(--paper-inset)]/60 px-3 text-sm font-semibold text-[var(--ink-muted)]">
-                {t('space.skills.noProjects')}
-              </span>
-            )}
-            <button
-              type="button"
-              disabled={installingTarget !== null || !hasProjects}
-              title={hasProjects ? t('space.skills.installProjectTitle') : t('space.skills.noInstallProjectsTitle')}
-              onClick={() => void install('project')}
-              className="flex h-9 items-center gap-2 rounded-xl bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              {installingTarget === 'project' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
-              {t('space.skills.installProject')}
-            </button>
           </div>
-        </div>
-
-        {!detail && detailLoading ? (
-          <div className="flex h-full items-center justify-center text-sm text-[var(--ink-muted)]">
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            {t('space.skills.loadingSkill')}
-          </div>
-        ) : !detail ? (
-          <div className="flex h-full items-center justify-center text-sm text-[var(--ink-muted)]">
-            {detailState?.error ?? t('space.skills.notFound')}
-          </div>
-        ) : mode === 'overview' ? (
-          <div className="grid min-h-0 grid-cols-[minmax(0,1fr)_320px] overflow-auto max-lg:grid-cols-1">
-            <section className="min-w-0 border-r border-[var(--line-subtle)] p-5 max-lg:border-r-0 max-lg:border-b">
-              <h3 className="mb-3 text-base font-semibold text-[var(--ink)]">Overview</h3>
-              <p className="whitespace-pre-wrap text-sm leading-6 text-[var(--ink-secondary)]">{detail.skill.description || t('space.common.noDescription')}</p>
-            </section>
-            <aside className="p-5">
-              <h3 className="mb-3 text-sm font-semibold text-[var(--ink)]">{t('space.skills.installImpact')}</h3>
-              <div className="space-y-2 text-sm text-[var(--ink-secondary)]">
-                <div className="flex justify-between gap-3 border-b border-[var(--line-subtle)] pb-2">
-                  <span className="text-[var(--ink-muted)]">Files</span>
-                  <span>{detail.files.filter((file) => !file.isDir).length}</span>
-                </div>
-                <div className="flex justify-between gap-3 border-b border-[var(--line-subtle)] pb-2">
-                  <span className="text-[var(--ink-muted)]">Updated</span>
-                  <span>{formatDate(detail.skill.updatedAt)}</span>
-                </div>
-              </div>
-            </aside>
-          </div>
-        ) : (
-          <div className="grid min-h-0 grid-cols-[270px_minmax(0,1fr)]">
-            <aside className="min-h-0 overflow-auto border-r border-[var(--line)] bg-[var(--paper-inset)]/30 p-3">
-              <div className="space-y-1">
-                {detail.files.map((file) => (
-                  <button
-                    key={file.id}
-                    type="button"
-                    disabled={file.isDir}
-                    onClick={() => setSelectedPath(file.path)}
-                    className={`flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-sm transition-colors ${
-                      selectedPath === file.path
-                        ? 'bg-[var(--hover-bg)] text-[var(--accent-warm)]'
-                        : 'text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)] hover:text-[var(--accent-warm)]'
-                    } ${file.isDir ? 'font-semibold opacity-80' : ''}`}
-                  >
-                    {file.isDir ? <Package className="h-4 w-4 shrink-0" /> : <FileText className="h-4 w-4 shrink-0" />}
-                    <span className="min-w-0 truncate">{file.path}</span>
-                  </button>
-                ))}
-              </div>
-            </aside>
-            <section className="min-w-0 bg-[var(--paper-inset)]/50">
-              {fileLoading ? (
-                <div className="flex h-full items-center justify-center text-sm text-[var(--ink-muted)]">
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  {t('space.skills.loadingFile')}
-                </div>
-              ) : (
-                <pre className="h-full overflow-auto whitespace-pre-wrap p-5 font-mono text-sm leading-7 text-[var(--ink-secondary)]">{fileState?.error ?? (fileText || t('space.common.selectFile'))}</pre>
-              )}
-            </section>
-          </div>
-        )}
         </section>
-      </div>
-    </main>
+      </aside>
+    </OverlayBackdrop>
     {deleteConfirmOpen && (
       <ConfirmDialog
         title={t('space.skills.deleteTitle')}

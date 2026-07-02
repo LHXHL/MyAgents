@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ChevronDown, Copy, Download, FileText, Loader2, MessageSquare, Paperclip, Send, Target, UploadCloud, X } from 'lucide-react';
 
 import { spaceErrorMessage, type SpaceAttachment, type SpaceSession } from '@/api/spaceCloud';
+import Markdown from '@/components/Markdown';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { useToast } from '@/components/Toast';
 import type { Project } from '@/config/types';
@@ -29,6 +30,14 @@ function basename(path: string): string {
 
 function buildAttachmentDownloadCommand(attachmentId: string): string {
   return `myagents space attachment download ${attachmentId}`;
+}
+
+function IssueMarkdown({ children }: { children: string }) {
+  return (
+    <div className="ai-message-content max-w-[66ch] text-[var(--ink-secondary)]">
+      <Markdown raw preserveNewlines>{children}</Markdown>
+    </div>
+  );
 }
 
 export function IssueDetailDrawer({
@@ -301,11 +310,24 @@ export function IssueDetailDrawer({
                     </span>
                   )}
                 </div>
-                <h2 className="max-w-[68ch] text-2xl font-semibold leading-snug text-[var(--ink)]">{issueDisplayTitle(detail.issue)}</h2>
-                <div className="mt-5 max-w-[66ch] whitespace-pre-wrap text-base leading-7 text-[var(--ink-secondary)]">{detail.issue.body}</div>
+                <div className="mt-4 grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4 max-sm:grid-cols-1">
+                  <h2 className="max-w-[68ch] text-2xl font-semibold leading-snug text-[var(--ink)]">{issueDisplayTitle(detail.issue)}</h2>
+                  <button
+                    type="button"
+                    onClick={() => void copyIssueCommand()}
+                    className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-transparent px-2.5 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] max-sm:justify-self-start"
+                    title={t('space.detail.copyIssueCommand')}
+                  >
+                    <Copy className="h-3.5 w-3.5" />
+                    {t('space.detail.copyIssueCommand')}
+                  </button>
+                </div>
+                <div className="mt-5">
+                  <IssueMarkdown>{detail.issue.body}</IssueMarkdown>
+                </div>
 
                 <section className="mt-7">
-                  <div className="mb-2 flex items-center justify-between gap-3">
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
                     <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--ink-secondary)]">
                       <Paperclip className="h-4 w-4" />
                       <span>{t('space.detail.attachments')}</span>
@@ -390,21 +412,6 @@ export function IssueDetailDrawer({
                 </section>
               </article>
 
-              <section className="mb-10 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line-subtle)] pt-4">
-                <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--ink-secondary)]">
-                  <Copy className="h-4 w-4" />
-                  {t('space.detail.issueCommand')}
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => void copyIssueCommand()}
-                  className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-transparent px-2.5 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                >
-                  <Copy className="h-3.5 w-3.5" />
-                  {t('space.detail.copyIssueCommand')}
-                </button>
-              </section>
-
               <section>
                 <h3 className="mb-5 flex items-center justify-between gap-3 text-lg font-semibold text-[var(--ink)]">
                   <span className="inline-flex items-center gap-2">
@@ -425,7 +432,7 @@ export function IssueDetailDrawer({
                           <strong className="text-[var(--ink)]">{item.author.type}</strong>
                           <span>{formatTime(item.createdAt)}</span>
                         </div>
-                        <div className="max-w-[66ch] whitespace-pre-wrap text-base leading-7 text-[var(--ink-secondary)]">{item.body}</div>
+                        <IssueMarkdown>{item.body}</IssueMarkdown>
                       </article>
                     ))
                   )}
