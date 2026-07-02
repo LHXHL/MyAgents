@@ -1173,6 +1173,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // Ref for chat content area (for Tauri drop zone)
   const chatContentRef = useRef<HTMLDivElement>(null);
   const [inputOverlayHeight, setInputOverlayHeight] = useState(176);
+  const inputOverlayHeightRef = useRef(176);
+  const inputOverlayAutoscrollRafRef = useRef(0);
 
   // Ref for directory panel container (for Tauri drop zone)
   const directoryPanelContainerRef = useRef<HTMLDivElement>(null);
@@ -2987,11 +2989,27 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     onRowLayoutChanged,
   } = chatScrollController;
   const handleInputOverlayHeightChange = useCallback((height: number) => {
-    setInputOverlayHeight(prev => Math.abs(prev - height) < 1 ? prev : Math.ceil(height));
-    if (isActive && followEnabledRef.current) {
-      requestAnimationFrame(() => scrollToBottom('auto'));
-    }
-  }, [isActive, followEnabledRef, scrollToBottom]);
+    const nextHeight = Math.ceil(height);
+    if (!Number.isFinite(nextHeight) || nextHeight <= 0) return;
+    if (Math.abs(inputOverlayHeightRef.current - nextHeight) < 1) return;
+
+    inputOverlayHeightRef.current = nextHeight;
+    setInputOverlayHeight(nextHeight);
+
+    if (!isActive || !followEnabledRef.current) return;
+    cancelAnimationFrame(inputOverlayAutoscrollRafRef.current);
+    inputOverlayAutoscrollRafRef.current = requestAnimationFrame(() => {
+      inputOverlayAutoscrollRafRef.current = 0;
+      if (followEnabledRef.current) {
+        virtuosoRef.current?.autoscrollToBottom();
+      }
+    });
+  }, [isActive, followEnabledRef, virtuosoRef]);
+  useEffect(() => {
+    return () => {
+      cancelAnimationFrame(inputOverlayAutoscrollRafRef.current);
+    };
+  }, []);
 
   // ── In-page text finder (Cmd/Ctrl+F) ──
   // Scope: the full message array — virtualized rows are counted from
