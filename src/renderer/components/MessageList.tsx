@@ -177,6 +177,11 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
   bottomSpacerPx?: number;
 }) {
   const spacerHeight = resolveChatBottomSpacerPx(bottomSpacerPx);
+  const statusSlot = showStatus
+    ? <StatusTimer message={statusMessage} />
+    : systemNotice
+      ? <SystemNoticeRow notice={systemNotice} onDismiss={onDismissSystemNotice} />
+      : null;
   return (
     <div className="mx-auto max-w-3xl px-3">
       {pendingPermission && onPermissionDecision && (
@@ -193,14 +198,18 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
           <AskUserQuestionPrompt request={pendingAskUserQuestion} onSubmit={onAskUserQuestionSubmit} onCancel={onAskUserQuestionCancel} />
         </div>
       )}
-      {showStatus && <StatusTimer message={statusMessage} />}
-      {!showStatus && systemNotice && (
-        <SystemNoticeRow notice={systemNotice} onDismiss={onDismissSystemNotice} />
+      {statusSlot && (
+        <div
+          data-chat-footer-status-anchor=""
+          className="sticky z-10"
+          style={{ bottom: spacerHeight }}
+        >
+          {statusSlot}
+        </div>
       )}
-      {/* Footer spacer follows the measured floating input stack. A fixed large
-          value makes the scrollbar expose a half-screen blank tail on short
-          chats; the measured value still keeps the final message clear of the
-          overlay and grows when AgentStatusPanel expands. */}
+      {/* Footer spacer follows the measured floating input stack. The status row
+          sticks to the spacer boundary so streaming row growth can no longer
+          push the loading indicator up/down while Virtuoso catches up. */}
       <div style={{ height: spacerHeight }} aria-hidden="true" />
     </div>
   );

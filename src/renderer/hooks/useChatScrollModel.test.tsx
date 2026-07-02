@@ -53,4 +53,27 @@ describe('useChatScrollModel', () => {
     expect(result.current.heightEstimateSeed).toBe(firstSeed);
     expect(result.current.layoutByMessageId).toBe(firstLayout);
   });
+
+  it('keeps estimate seed stable while the same streaming message crosses layout buckets', () => {
+    const history = [message('m1', 'short reply')];
+    const { result, rerender } = renderHook(
+      ({ streamingMessage }) => useChatScrollModel({
+        historyMessages: history,
+        streamingMessage,
+        firstItemIndex: 100,
+        sessionId: 'sid',
+      }),
+      { initialProps: { streamingMessage: message('stream', 'starting') } },
+    );
+    const firstSeed = result.current.heightEstimateSeed;
+    const firstStreamEstimate = firstSeed[1];
+
+    rerender({
+      streamingMessage: message('stream', 'streaming '.repeat(240)),
+    });
+
+    expect(result.current.data[1]?.content).toBe('streaming '.repeat(240));
+    expect(result.current.heightEstimateSeed).toBe(firstSeed);
+    expect(result.current.heightEstimateSeed[1]).toBe(firstStreamEstimate);
+  });
 });

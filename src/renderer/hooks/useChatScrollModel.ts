@@ -1,8 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type { Message as MessageType } from '@/types/chat';
 import {
-  buildHeightEstimateSeed,
   buildMessageLayoutFingerprint,
   estimateMessageRowHeight,
   type RowLayoutContract,
@@ -20,6 +19,13 @@ export interface UseChatScrollModelOptions {
   streamingMessage: MessageType | null;
   firstItemIndex?: number;
   sessionId?: string | null;
+}
+
+interface HeightEstimateSeedCache {
+  sessionId?: string | null;
+  orderedIdsKey: string;
+  estimatesById: ReadonlyMap<string, number>;
+  seed: number[];
 }
 
 function getViewportHeight(): number {
@@ -50,6 +56,11 @@ export function useChatScrollModel({
     [historyMessages, streamingMessage],
   );
 
+  const orderedIdsKey = useMemo(
+    () => data.map(message => message.id).join('\u001f'),
+    [data],
+  );
+
   const layoutFingerprint = useMemo(
     () => [
       sessionId ?? '',
@@ -58,7 +69,7 @@ export function useChatScrollModel({
     [data, sessionId, viewportHeight],
   );
 
-  const { layoutByMessageId, heightEstimateSeed } = useMemo(() => {
+  const { layoutByMessageId } = useMemo(() => {
     const nextLayout = new Map<string, RowLayoutContract>();
 
     for (const message of data) {
@@ -66,22 +77,53 @@ export function useChatScrollModel({
       nextLayout.set(message.id, contract);
     }
 
-    const nextEstimates = buildHeightEstimateSeed(data, nextLayout);
-
     return {
       layoutByMessageId: nextLayout,
-      heightEstimateSeed: nextEstimates,
     };
     // `layoutFingerprint` is the semantic dependency: token-level streaming
     // changes that stay inside the same line/code/attachment bucket keep the
-    // previous estimates while `data` below remains live for rendering/search.
+    // previous live layout while `data` below remains live for rendering/search.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [layoutFingerprint]);
+
+  const heightEstimateSeedCacheRef = useRef<HeightEstimateSeedCache>({
+    sessionId,
+    orderedIdsKey: '',
+    estimatesById: new Map(),
+    seed: [],
+  });
+
+  const heightEstimateSeedCache = useMemo<HeightEstimateSeedCache>(() => {
+    const previous = heightEstimateSeedCacheRef.current;
+    if (previous.sessionId === sessionId && previous.orderedIdsKey === orderedIdsKey) {
+      return previous;
+    }
+
+    const canReusePrevious = previous.sessionId === sessionId;
+    const nextEstimatesById = new Map<string, number>();
+    const nextSeed = data.map((message) => {
+      const cached = canReusePrevious ? previous.estimatesById.get(message.id) : undefined;
+      const estimate = cached ?? estimateMessageRowHeight(message, viewportHeight).estimatedHeight;
+      nextEstimatesById.set(message.id, estimate);
+      return estimate;
+    });
+
+    return {
+      sessionId,
+      orderedIdsKey,
+      estimatesById: nextEstimatesById,
+      seed: nextSeed,
+    };
+  }, [data, orderedIdsKey, sessionId, viewportHeight]);
+
+  useLayoutEffect(() => {
+    heightEstimateSeedCacheRef.current = heightEstimateSeedCache;
+  }, [heightEstimateSeedCache]);
 
   return {
     data,
     firstItemIndex,
-    heightEstimateSeed,
+    heightEstimateSeed: heightEstimateSeedCache.seed,
     layoutByMessageId,
   };
 }
