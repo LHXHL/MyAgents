@@ -63,7 +63,7 @@ myagents session send <sid> -p "..."
 
 ### 产品定位
 
-MyAgents 是开源桌面端 AI Agent 产品，仓库是 `https://github.com/hAcKlyc/MyAgents`，许可证 Apache-2.0。它不是一个单纯 chat UI，而是一套本地 Agent 平台：Chat、IM Agent、任务中心、定时任务、插件、MCP、Skills、用户注册 CLI 工具、富媒体产物和本地运行状态都在同一个用户数据目录里协作。
+MyAgents 是开源桌面端 AI Agent 产品，仓库是 `https://github.com/hAcKlyc/MyAgents`，许可证 Apache-2.0。它不是一个单纯 chat UI，而是一套本地 Agent 平台：Chat、IM Agent、任务中心、定时任务、插件、MCP、Skills、订阅/三方 Provider、用户注册 CLI 工具、富媒体产物和本地运行状态都在同一个用户数据目录里协作。
 
 ### 进程与通信
 
@@ -100,7 +100,11 @@ Claude Agent SDK native binary 是独立进程，内部运行时由 SDK 团队�
 - OpenAI Codex CLI（app-server / JSON-RPC）
 - Google Gemini CLI（ACP）
 
-功能门控是「设置 -> 关于&反馈 -> 实验室 -> 更多 Agent Runtime」，配置字段是 `multiAgentRuntime`，默认关闭。关闭时 Agent 实际跑 builtin，即使某些配置里写了外部 runtime。
+外部 Runtime 有两个来源，诊断时必须区分：
+- `system-cli`：用户自己安装和登录的 Claude Code / Codex / Gemini CLI。受「设置 -> 关于&反馈 -> 实验室 -> 更多 Agent Runtime」门控，配置字段是 `multiAgentRuntime`，默认关闭。关闭时 system-cli Runtime 配置不会生效，Agent 实际跑 builtin。
+- `managed-provider`：由 MyAgents Provider 管理的 runtime-backed provider，目前典型是 `codex-sub`（Codex 订阅）。它不受 `multiAgentRuntime` 门控，而由自己的 Provider readiness gate 控制：managed Codex runtime 已安装到要求版本、ChatGPT/Codex 订阅登录有效、Provider 未禁用。
+
+同一个 `runtime=codex` 不能只看 runtime 字面量。`codex/system-cli` 和 `codex/managed-provider` 是两种会话身份，日志和 bug report 必须保留 `runtimeSource`。只看到 `codex` 不等于知道它是用户 CLI 还是 Codex 订阅 Provider。
 
 外部 Runtime 的 model、permissionMode、proxy/env、MCP/apps 都不能靠猜。使用：
 
@@ -110,11 +114,14 @@ myagents runtime describe <runtime>
 myagents runtime diagnose codex --workspacePath <path> --json
 ```
 
-`runtime diagnose codex` 会让 Codex 自己返回 auth、features、MCP server status、apps 和 effective env。用户说“终端能用，MyAgents 里不行”时，这是核心证据。
+`runtime diagnose codex` 会让 system-cli Codex 自己返回 auth、features、MCP server status、apps 和 effective env。用户说“终端能用，MyAgents 里不行”时，这是核心证据。若问题是 `codex-sub` / Codex 订阅 Provider，优先查 Provider/managed Codex 状态与日志（关键词 `[managed-codex]`、`codex-sub`、`runtimeSource=managed-provider`），不要误判成用户系统 Codex CLI 未登录。
 
 ### Provider 与模型
 
-Provider 验证可能被 30 秒 timeout 掩盖真实 401。用户看到“验证超时”时，必须继续查日志里的 `auth error` / `401` / `provider/verify`，不要只看最终 UI 错误。
+Provider 分三类看：
+- API Key Provider：三方 OpenAI/Anthropic 兼容接口，验证可能被 30 秒 timeout 掩盖真实 401。用户看到“验证超时”时，必须继续查日志里的 `auth error` / `401` / `provider/verify`，不要只看最终 UI 错误。
+- Anthropic 订阅 Provider（如 `anthropic-sub`）：不是 API key 路径。不要要求用户提供密钥；重点看订阅登录/verify 状态、账号权益、1M context entitlement 相关错误。
+- Runtime-backed Provider（如 `codex-sub`）：Provider 选择会生成 `runtime=codex` + `runtimeSource=managed-provider` 的会话，不能和 system-cli Codex 混用。重点查 `[managed-codex]`、`codex-sub`、`subscription`、`runtimeSource=managed-provider`。
 
 模型、Provider、上下文窗口、别名和认证方式都可能随版本变化。不要凭静态表猜，优先用 `myagents model list`、`myagents model verify`、配置和日志取证。
 
@@ -149,13 +156,15 @@ Rust `CronTaskManager` 统一管理定时任务。cron 可以来自 UI、CLI、A
 
 ### Tool Attachment 与富媒体
 
-图片、音频、PDF 等工具产物不应该靠某个工具卡的专用 UI 单点渲染。MyAgents 使用统一 `ToolAttachment[]` 管线，产物通常落在：
+图片、音频、PDF 等工具产物不应该靠某个工具卡的专用 UI 单点渲染。MyAgents 使用统一 `ToolAttachment[]` 管线。产物可能来自三类路径：
 
 ```text
 ~/.myagents/generated/tool-attachments/<sessionId>/<toolUseId>/
+<workspace>/myagents_files/<tool>/
+外部 runtime 原始 savedPath（例如 Codex 写在自己的目录下，由 Sidecar registry 引用）
 ```
 
-用户说“图片生成了但不显示”“音频卡没出来”“Codex image_generation 没图”“IM 没发媒体”时，要按 attachment 管线查：tool result 是否有 attachments、是否有 placeholder update、attachment endpoint/protocol 是否可读、前端 gallery 是否报错。
+用户说“图片生成了但不显示”“音频卡没出来”“Codex image_generation 没图”“IM 没发媒体”时，要按 attachment 管线查：tool result 是否有 attachments、是否有 placeholder update、落盘/registry 是否成功、attachment endpoint/protocol 是否可读、前端 gallery 是否报错。不要只查某个 MCP 工具名前缀。
 
 ### 日志
 
@@ -172,7 +181,19 @@ Rust `CronTaskManager` 统一管理定时任务。cron 可以来自 UI、CLI、A
 
 启动自检行带 `[boot]`，适合快速看版本、OS、provider、MCP/Agent/Channel/Cron 数、proxy、workspace、session、model、node 等。
 
-优先使用 `rg` 查日志；没有 `rg` 再用 `grep`。
+统一日志使用本地时间 `YYYY-MM-DD HH:MM:SS.mmm`。优先使用 `rg` 查日志；没有 `rg` 再用 `grep`。不要全日志漫游：先按用户描述的时间窗口、`sessionId`、`workspacePath`、runtime/provider 关键词收窄，再建时间线。
+
+稳定关键词索引：
+- 启动/环境：`[boot]`、`provider=`、`mcp=`、`agents=`、`channels=`、`cron=`、`proxy=`、`workspace=`、`session=`
+- 会话/Sidecar：`[sidecar]`、`[agent]`、`pre-warm`、`system_init`、`message-replay`、`cold-history`、`terminal_reason`、`No conversation found`、`num_turns`
+- 外部 Runtime：`external-session`、`runtime_diagnostics`、`RuntimeDiagnostics`、`envPolicy`、`runtimeSource`
+- 订阅/Managed Codex：`[managed-codex]`、`codex-sub`、`anthropic-sub`、`subscription`、`runtimeSource=managed-provider`
+- Provider/MCP：`provider/verify`、`subscription/verify`、`auth error`、`401`、`403`、`[mcp]`、`oauth`、`tool_use`、`tool_result`
+- 附件/媒体：`tool-attachment`、`ToolAttachment`、`chat:tool-attachment-update`、`ToolAttachmentGallery`、`savedPath`
+- 工作区文件：`cmd_workspace`、`workspace_files`、`DirectoryPanel`、`SimpleChatInput`、`FilePreviewModal`、`workspace:files-changed`
+- 前端崩溃：`[AppErrorBoundary]`、`[REACT] [ERROR]`、`Cannot read properties`、`Minified React error`
+- IM/Channel/Bridge：`[telegram]`、`[dingtalk]`、`[im]`、`[bridge]`、`OpenClaw`、`qr-login`
+- 定时/任务：`CronTask`、`cron_runs`、`Task .* execution failed`、`nextRun`
 
 ## 标准诊断基线
 

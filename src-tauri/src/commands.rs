@@ -1004,7 +1004,7 @@ pub fn cmd_copy_folder_to_templates(
 
 // ============= Admin Agent Sync =============
 
-const ADMIN_AGENT_VERSION: &str = "21";
+const ADMIN_AGENT_VERSION: &str = "22";
 
 /// Helper-bundled paths (relative to `~/.myagents/`) that previous versions
 /// shipped but that have since been retired.
@@ -1026,7 +1026,13 @@ const RETIRED_ADMIN_PATHS: &[&str] = &[
 /// Merge bundled admin agent files into ~/.myagents/
 /// Version-gated: only runs when ADMIN_AGENT_VERSION changes.
 #[tauri::command]
-pub fn cmd_sync_admin_agent<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String> {
+pub async fn cmd_sync_admin_agent<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || sync_admin_agent_blocking(app_handle))
+        .await
+        .map_err(|e| format!("admin-agent sync task failed: {}", e))?
+}
+
+fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String> {
     let home = dirs::home_dir().ok_or("Home dir not found")?;
     let dest = home.join(".myagents");
 

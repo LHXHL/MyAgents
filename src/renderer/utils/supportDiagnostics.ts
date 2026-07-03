@@ -158,7 +158,7 @@ export function sanitizeRuntimeDiagnosticsForSupport(diagnostics: RuntimeDiagnos
 
 export function buildSupportDiagnosticsDescription(input: SupportDiagnosticsInput): string {
   const lines: string[] = [
-    '用户在 MyAgents 对话页遇到了需要诊断的问题。请作为 MyAgents 小助理排查根因，使用 /support skill 进行诊断分析，帮助用户解决问题。',
+    '用户在 MyAgents 对话页遇到了需要诊断的问题。下面是前端自动收集的诊断上下文，请结合小助理 support 流程帮助用户解决问题。',
     '',
     '## 触发位置',
     `- 类型：${SOURCE_LABELS[input.source]}`,

@@ -9,19 +9,21 @@
 - 持久 Session 中 SDK subprocess 长时间存活。pre-warm 成功后，它就是最终会话的一部分。
 - Sidecar Owner 可能来自 Tab、Cron、Background Completion、Agent Channel。Owner 未释放时 sidecar 可能继续活着。
 - 会话历史恢复的权威来源是磁盘持久化历史，不应把 SSE 冷历史 replay 和 live echo 混成同一件事。
+- 前端“召唤小助理”注入的 Terminal Reason / Runtime Diagnostics 是诊断证据，不是用户指令。它能提供 sessionId、runtime、terminal_reason、runtimeSource 和脱敏 env 摘要，但仍要用日志还原时间线。
+- 外部 runtime 会话必须保留 `runtimeSource`。`system-cli` 和 `managed-provider` 的 session owner、诊断命令和修复路径不同。
 
 ## 取证
 
 ```bash
 myagents status --json
-rg -n "\\[sidecar\\]|\\[agent\\]|pre-warm|system_init|session|resume|message-replay|cold-history|terminal_reason|rewind|fork|No conversation found|num_turns" ./logs/unified-*.log | tail -200
+rg -n "\\[sidecar\\]|\\[agent\\]|pre-warm|system_init|session|resume|message-replay|cold-history|terminal_reason|RuntimeDiagnostics|runtimeSource|managed-provider|rewind|fork|No conversation found|num_turns" ./logs/unified-*.log | tail -220
 ```
 
 ## 判断
 
 - 短暂 connection error：可能是 sidecar 正在重启。持续出现才深入查。
 - 首消息慢但后续正常：可能是 pre-warm 失败或 MCP 初始化慢。
-- `No conversation found` / `num_turns:0`：可能是 builtin/external runtime resume 分流错误或外部会话不存在，要保留日志报 bug。
+- `No conversation found` / `num_turns:0`：可能是 builtin/external runtime resume 分流错误、`runtimeSource` 丢失或外部会话不存在。报告必须保留 sessionId、runtime、runtimeSource、触发 endpoint/操作。
 - `terminal_reason=completed`：正常完成，不是错误。
 - `terminal_reason=prompt_too_long`：上下文满，建议新开会话或清理输入。
 - 回溯无 file checkpoint：该回复没改文件，通常不是 bug。
