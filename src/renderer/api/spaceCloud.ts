@@ -207,6 +207,7 @@ export interface LocalRegisteredAgent {
   id: string;
   baseUrl: string;
   spaceId: string;
+  isLocal?: boolean;
   clientId?: string | null;
   deviceName?: string | null;
   localWorkspaceId?: string | null;

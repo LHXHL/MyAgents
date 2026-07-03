@@ -69,6 +69,7 @@ function registeredAgentToListItem(
     id: agent.id,
     baseUrl: localAgent?.baseUrl ?? fallbackBaseUrl,
     spaceId: agent.spaceId || localAgent?.spaceId || fallbackSpaceId,
+    isLocal: Boolean(localAgent),
     clientId: agent.clientId ?? localAgent?.clientId,
     deviceName: agent.deviceName ?? localAgent?.deviceName,
     localWorkspaceId: agent.localWorkspaceId ?? localAgent?.localWorkspaceId,
@@ -134,7 +135,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
       registeredAgentToListItem(agent, localById.get(agent.id), session?.baseUrl ?? '', activeCacheSpaceId),
     );
     const cloudIds = new Set(cloudItems.map((agent) => agent.id));
-    const localOnlyItems = localAgents.filter((agent) => !cloudIds.has(agent.id));
+    const localOnlyItems = localAgents.filter((agent) => !cloudIds.has(agent.id)).map((agent) => ({ ...agent, isLocal: true }));
     return [...cloudItems, ...localOnlyItems];
   }, [activeCacheSpaceId, localAgents, registeredAgents, session?.baseUrl]);
 
