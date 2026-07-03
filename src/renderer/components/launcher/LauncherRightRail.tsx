@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
     AlertCircle,
+    Archive,
     BarChart2,
     Check,
     ChevronDown,
@@ -28,6 +29,7 @@ import { MenuItem } from '@/components/ui/MenuItem';
 import { Popover } from '@/components/ui/Popover';
 import type { SessionMetadata } from '@/api/sessionClient';
 import type { Project } from '@/config/types';
+import { isProjectArchived } from '@/config/types';
 import type { AgentStatusData } from '@/hooks/useAgentStatuses';
 import type { SessionTag, TaskCenterData } from '@/hooks/useTaskCenterData';
 import { normalizeWorkspacePathIdentity } from '@/../shared/workspacePath';
@@ -65,6 +67,8 @@ interface LauncherRightRailProps {
     onOpenTask: (session: SessionMetadata, project: Project) => void;
     onOpenOverlay: (mode?: 'default' | 'search') => void;
     onRemoveProject: (project: Project) => void;
+    onArchiveProject: (project: Project) => void;
+    onUnarchiveProject: (project: Project) => void;
     onAgentSettings: (project: Project) => void;
     onOpenProjectFolder: (project: Project) => void;
     onToggleProjectPin: (project: Project) => void;
@@ -75,6 +79,38 @@ interface LauncherRightRailProps {
 
 const getProjectDisplayName = (project: Project): string =>
     project.displayName || getFolderName(project.path);
+
+function ArchiveToggleCard({
+    expanded,
+    count,
+    onClick,
+}: {
+    expanded: boolean;
+    count: number;
+    onClick: () => void;
+}) {
+    const { t } = useTranslation('launcher');
+
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            className="group flex min-h-16 w-full items-center gap-3 rounded-xl bg-[var(--paper-elevated)] px-4 py-3 text-left transition-shadow duration-150 ease-out hover:shadow-sm"
+        >
+            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-[var(--paper-inset)] text-[var(--ink-muted)]">
+                <Archive className="h-4 w-4" />
+            </div>
+            <div className="min-w-0 flex-1">
+                <h3 className="truncate text-sm font-medium text-[var(--ink)]">
+                    {expanded ? t('workspaceCard.hideArchived') : t('workspaceCard.showArchived')}
+                </h3>
+                <p className="mt-0.5 truncate text-xs text-[var(--ink-muted)]">
+                    {t('workspaceCard.archivedCount', { count })}
+                </p>
+            </div>
+        </button>
+    );
+}
 
 export default memo(function LauncherRightRail({
     projects,
@@ -89,6 +125,8 @@ export default memo(function LauncherRightRail({
     onOpenTask,
     onOpenOverlay,
     onRemoveProject,
+    onArchiveProject,
+    onUnarchiveProject,
     onAgentSettings,
     onOpenProjectFolder,
     onToggleProjectPin,
@@ -112,18 +150,35 @@ export default memo(function LauncherRightRail({
         scopeKey: 'all',
         count: HISTORY_PAGE_SIZE,
     });
+    const [archivedWorkspacesExpandedFor, setArchivedWorkspacesExpandedFor] = useState<string | null>(null);
     const [openHistoryMenuSessionId, setOpenHistoryMenuSessionId] = useState<string | null>(null);
     const [pendingDeleteSession, setPendingDeleteSession] = useState<{ id: string; title: string } | null>(null);
     const [statsSession, setStatsSession] = useState<{ id: string; title: string } | null>(null);
 
     const sortedProjects = useMemo(() => sortLauncherProjects(projects), [projects]);
+    const activeProjects = useMemo(
+        () => sortedProjects.filter(project => !isProjectArchived(project)),
+        [sortedProjects],
+    );
+    const archivedProjects = useMemo(
+        () => sortedProjects
+            .filter(isProjectArchived)
+            .sort((a, b) => (Date.parse(b.archivedAt ?? '') || 0) - (Date.parse(a.archivedAt ?? '') || 0)),
+        [sortedProjects],
+    );
+    const archivedProjectIdentity = useMemo(
+        () => archivedProjects.map(project => project.id).join('\0'),
+        [archivedProjects],
+    );
+    const archivedWorkspacesExpanded =
+        archivedProjectIdentity.length > 0 && archivedWorkspacesExpandedFor === archivedProjectIdentity;
     const projectByPathKey = useMemo(() => {
         const map = new Map<string, Project>();
-        for (const project of projects) {
+        for (const project of activeProjects) {
             map.set(normalizeWorkspacePathIdentity(project.path), project);
         }
         return map;
-    }, [projects]);
+    }, [activeProjects]);
 
     const effectiveHistoryFilter =
         historyFilter === 'all' ||
@@ -135,6 +190,7 @@ export default memo(function LauncherRightRail({
     const handleToggleWorkspaces = useCallback(() => {
         if (workspacesExpanded) {
             setWorkspacesExpanded(false);
+            setArchivedWorkspacesExpandedFor(null);
             scrollRootRef.current?.scrollTo({ top: 0, behavior: 'auto' });
             return;
         }
@@ -142,13 +198,14 @@ export default memo(function LauncherRightRail({
     }, [workspacesExpanded]);
 
     const renderedWorkspaceProjects = workspacesExpanded
-        ? sortedProjects
-        : sortedProjects.slice(0, COLLAPSED_WORKSPACE_COUNT);
-    const hiddenWorkspaceCount = Math.max(0, sortedProjects.length - COLLAPSED_WORKSPACE_COUNT);
+        ? activeProjects
+        : activeProjects.slice(0, COLLAPSED_WORKSPACE_COUNT);
+    const hiddenWorkspaceCount = Math.max(0, activeProjects.length - COLLAPSED_WORKSPACE_COUNT);
+    const visibleWorkspaceCardCount = renderedWorkspaceProjects.length
+        + (archivedProjects.length > 0 ? 1 : 0)
+        + (archivedWorkspacesExpanded ? archivedProjects.length : 0);
     const workspaceRowCount = Math.max(1, Math.ceil(
-        (workspacesExpanded
-            ? sortedProjects.length
-            : Math.min(sortedProjects.length, COLLAPSED_WORKSPACE_COUNT)) / 2,
+        visibleWorkspaceCardCount / 2,
     ));
     const workspaceMaxHeight = `${workspaceRowCount * WORKSPACE_ROW_MAX_HEIGHT}px`;
 
@@ -342,6 +399,39 @@ export default memo(function LauncherRightRail({
                                                     agentStatus={agentData?.status}
                                                     onLaunch={onLaunch}
                                                     onRemove={onRemoveProject}
+                                                    onArchive={onArchiveProject}
+                                                    onUnarchive={onUnarchiveProject}
+                                                    onAgentSettings={onAgentSettings}
+                                                    onOpenFolder={onOpenProjectFolder}
+                                                    onTogglePin={onToggleProjectPin}
+                                                    isLoading={launchingProjectId === project.id && isStarting}
+                                                />
+                                            );
+                                        })}
+                                        {archivedProjects.length > 0 && (
+                                            <ArchiveToggleCard
+                                                expanded={archivedWorkspacesExpanded}
+                                                count={archivedProjects.length}
+                                                onClick={() => {
+                                                    setArchivedWorkspacesExpandedFor(current =>
+                                                        current === archivedProjectIdentity ? null : archivedProjectIdentity,
+                                                    );
+                                                }}
+                                            />
+                                        )}
+                                        {archivedWorkspacesExpanded && archivedProjects.map((project) => {
+                                            const agentData = agentLookup.get(normalizeWorkspacePathIdentity(project.path));
+                                            return (
+                                                <WorkspaceCard
+                                                    key={project.id}
+                                                    project={project}
+                                                    archived
+                                                    agent={agentData?.agent}
+                                                    agentStatus={agentData?.status}
+                                                    onLaunch={onLaunch}
+                                                    onRemove={onRemoveProject}
+                                                    onArchive={onArchiveProject}
+                                                    onUnarchive={onUnarchiveProject}
                                                     onAgentSettings={onAgentSettings}
                                                     onOpenFolder={onOpenProjectFolder}
                                                     onTogglePin={onToggleProjectPin}
@@ -388,7 +478,7 @@ export default memo(function LauncherRightRail({
                                         {t('rightRail.historyTitle')}
                                     </h2>
                                     <HistoryFilter
-                                        projects={sortedProjects}
+                                        projects={activeProjects}
                                         value={effectiveHistoryFilter}
                                         onChange={setHistoryFilter}
                                     />

@@ -1,9 +1,10 @@
 // Agent config service — CRUD helpers, migration from ImBotConfigs
 import type { AppConfig, McpServerDefinition, Project, WorkspaceTemplate, WorkspaceTemplateAgentDefaults } from '../types';
-import { getEffectiveModelAliases, PRESET_TEMPLATES } from '../types';
+import { getEffectiveModelAliases, isProjectArchived, PRESET_TEMPLATES } from '../types';
 import type { AgentConfig, ChannelConfig, ChannelOverrides } from '../../../shared/types/agent';
 import type { ImBotConfig } from '../../../shared/types/im';
 import { atomicModifyConfig, loadAppConfig } from './appConfigService';
+import { loadProjects } from './projectService';
 import { getAllMcpServersFromConfig } from './mcpService';
 import { normalizeWorkspacePathIdentity, workspacePathsEqual } from '../../../shared/workspacePath';
 
@@ -36,6 +37,28 @@ export function getAgentByWorkspacePath(config: AppConfig, workspacePath: string
   // Canonical identity (#320): Agent.workspacePath and the queried path can
   // diverge in separator/case form across stores — match the same way Rust does.
   return config.agents?.find(a => workspacePathsEqual(a.workspacePath, workspacePath));
+}
+
+async function findArchivedProjectForAgent(
+  agent: Pick<AgentConfig, 'id' | 'workspacePath'>,
+): Promise<Project | undefined> {
+  const projects = await loadProjects();
+  return projects.find(project =>
+    isProjectArchived(project)
+    && (
+      project.agentId === agent.id
+      || workspacePathsEqual(project.path, agent.workspacePath)
+    ),
+  );
+}
+
+export async function assertAgentWorkspaceNotArchived(
+  agent: Pick<AgentConfig, 'id' | 'workspacePath'>,
+): Promise<void> {
+  const archivedProject = await findArchivedProjectForAgent(agent);
+  if (!archivedProject) return;
+  const name = archivedProject.displayName || archivedProject.name || archivedProject.path;
+  throw new Error(`Agent workspace "${name}" is archived. Unarchive it before enabling proactive Agent channels.`);
 }
 
 // ============= Agent Creation Helpers =============
@@ -393,6 +416,14 @@ export async function patchAgentConfig(
   agentId: string,
   patch: Partial<Omit<AgentConfig, 'id'>>,
 ): Promise<AgentConfig | undefined> {
+  if (patch.enabled === true) {
+    const currentConfig = await loadAppConfig();
+    const currentAgent = getAgentById(currentConfig, agentId);
+    if (currentAgent) {
+      await assertAgentWorkspaceNotArchived(currentAgent);
+    }
+  }
+
   let updated: AgentConfig | undefined;
 
   // If mcpEnabledServers changed, resolve mcpServersJson inside the config
@@ -483,6 +514,50 @@ export async function patchAgentConfig(
   }
 
   return updated;
+}
+
+export async function disableAgentAndStopChannels(agent: AgentConfig): Promise<number> {
+  let stoppedCount = 0;
+  const { isTauriEnvironment } = await import('@/utils/browserMock');
+  if (isTauriEnvironment()) {
+    const { invoke } = await import('@tauri-apps/api/core');
+    for (const ch of (agent.channels ?? [])) {
+      try {
+        await invoke('cmd_stop_agent_channel', { agentId: agent.id, channelId: ch.id });
+        stoppedCount++;
+      } catch {
+        // Channel may already be stopped; persisting enabled=false below is the durable intent.
+      }
+    }
+  }
+  await patchAgentConfig(agent.id, { enabled: false });
+  return stoppedCount;
+}
+
+export async function enableAgentAndStartChannels(
+  agentId: string,
+  patch: Partial<Omit<AgentConfig, 'id'>> = {},
+): Promise<number> {
+  await patchAgentConfig(agentId, { ...patch, enabled: true });
+
+  const { isTauriEnvironment } = await import('@/utils/browserMock');
+  if (!isTauriEnvironment()) return 0;
+
+  const latestConfig = await loadAppConfig();
+  const latestAgent = getAgentById(latestConfig, agentId);
+  if (!latestAgent) return 0;
+
+  const startable = (latestAgent.channels ?? []).filter(ch => ch.enabled && ch.setupCompleted);
+  let startedCount = 0;
+  for (const ch of startable) {
+    try {
+      await invokeStartAgentChannel(latestAgent, ch);
+      startedCount++;
+    } catch (e) {
+      console.warn(`[agentConfigService] Auto-start channel ${ch.id} failed:`, e);
+    }
+  }
+  return startedCount;
 }
 
 /**
@@ -593,6 +668,8 @@ export async function invokeStartAgentChannel(
   agent: AgentConfig,
   channel: ChannelConfig,
 ): Promise<void> {
+  await assertAgentWorkspaceNotArchived(agent);
+
   const { isTauriEnvironment } = await import('@/utils/browserMock');
   if (!isTauriEnvironment()) return;
 
@@ -744,6 +821,12 @@ export async function startAndEnableAgentChannel(
   agentId: string,
   channelId: string,
 ): Promise<void> {
+  const currentConfig = await loadAppConfig();
+  const currentAgent = getAgentById(currentConfig, agentId);
+  if (currentAgent) {
+    await assertAgentWorkspaceNotArchived(currentAgent);
+  }
+
   const { atomicModifyConfig } = await import('@/config/services/appConfigService');
   const updatedConfig = await atomicModifyConfig(config => {
     const agents = [...(config.agents ?? [])];

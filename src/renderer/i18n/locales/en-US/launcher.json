@@ -17,6 +17,10 @@
     "createCronFailed": "Failed to create scheduled task: {{message}}",
     "addProjectFailed": "Failed to add project: {{message}}",
     "pinFailed": "Failed to save pinned state. Please try again.",
+    "workspaceArchived": "Workspace archived.",
+    "workspaceUnarchived": "Workspace unarchived.",
+    "archiveFailed": "Archive failed. Please try again.",
+    "unarchiveFailed": "Unarchive failed. Please try again.",
     "openFolderFailed": "Failed to open containing folder.",
     "noProvider": "No available provider. Configure one in Settings first."
   },
@@ -70,6 +74,12 @@
     "more": "More",
     "pin": "Pin",
     "unpin": "Unpin",
+    "archive": "Archive",
+    "unarchive": "Unarchive",
+    "showArchived": "Show archived Agent workspaces",
+    "hideArchived": "Hide archived Agent workspaces",
+    "archivedCount": "{{count}} archived",
+    "archivedBadge": "Archived",
     "agentSettings": "Agent settings",
     "openFolder": "Open containing folder",
     "remove": "Remove"

@@ -17,6 +17,10 @@
     "createCronFailed": "创建定时任务失败：{{message}}",
     "addProjectFailed": "添加项目失败: {{message}}",
     "pinFailed": "置顶状态保存失败，请重试",
+    "workspaceArchived": "已归档工作区",
+    "workspaceUnarchived": "已取消归档",
+    "archiveFailed": "归档失败，请重试",
+    "unarchiveFailed": "取消归档失败，请重试",
     "openFolderFailed": "打开所在文件夹失败",
     "noProvider": "没有可用的 Provider，请先在设置中配置"
   },
@@ -70,6 +74,12 @@
     "more": "更多",
     "pin": "置顶",
     "unpin": "取消置顶",
+    "archive": "归档",
+    "unarchive": "取消归档",
+    "showArchived": "展示归档 Agent 工作区",
+    "hideArchived": "收起归档 Agent 工作区",
+    "archivedCount": "{{count}} 个已归档",
+    "archivedBadge": "已归档",
     "agentSettings": "Agent 设置",
     "openFolder": "打开所在文件夹",
     "remove": "移除"

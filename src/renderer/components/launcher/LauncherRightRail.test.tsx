@@ -94,6 +94,8 @@ function renderRail(options: {
                 onOpenTask={onOpenTask}
                 onOpenOverlay={vi.fn()}
                 onRemoveProject={vi.fn()}
+                onArchiveProject={vi.fn()}
+                onUnarchiveProject={vi.fn()}
                 onAgentSettings={vi.fn()}
                 onOpenProjectFolder={vi.fn()}
                 onToggleProjectPin={vi.fn()}
@@ -134,11 +136,34 @@ describe('LauncherRightRail', () => {
         expect(screen.getByText('Project 8')).toBeInTheDocument();
 
         scrollRoot.scrollTop = 420;
-        fireEvent.click(screen.getByRole('button', { name: /收起/ }));
+        fireEvent.click(screen.getByRole('button', { name: /^收起$/ }));
 
         expect(screen.getByRole('button', { name: /展开更多 2 个/ })).toBeInTheDocument();
         expect(screen.queryByText('Project 8')).not.toBeInTheDocument();
         expect(scrollRoot.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: 'auto' });
+    });
+
+    it('collapses archived workspaces when the workspace list collapses', () => {
+        const projects = [
+            project(1),
+            project(2),
+            project(3),
+            project(4),
+            project(5),
+            project(6),
+            project(7),
+            { ...project(8), archivedAt: '2026-07-03T00:00:00.000Z' },
+        ];
+        renderRail({ projects });
+
+        fireEvent.click(screen.getByRole('button', { name: /展示归档 Agent 工作区/ }));
+        expect(screen.getByText('Project 8')).toBeInTheDocument();
+
+        fireEvent.click(screen.getByRole('button', { name: /展开更多 1 个/ }));
+        fireEvent.click(screen.getByRole('button', { name: /^收起$/ }));
+
+        expect(screen.getByRole('button', { name: /展示归档 Agent 工作区/ })).toBeInTheDocument();
+        expect(screen.queryByText('Project 8')).not.toBeInTheDocument();
     });
 
     it('renders right rail chrome in English when the UI language is English', async () => {

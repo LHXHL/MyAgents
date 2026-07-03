@@ -165,6 +165,10 @@ export interface ProjectSlim {
   id: string;
   name: string;
   path: string;
+  agentId?: string;
+  archivedAt?: string;
+  archivedAgentEnabledBeforeArchive?: boolean;
+  pinnedAt?: string;
   mcpEnabledServers?: string[];
   enabledOfficialToolIds?: OfficialToolId[];
   model?: string;

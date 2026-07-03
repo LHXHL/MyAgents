@@ -4,6 +4,7 @@ import type { HeartbeatConfig, MemoryAutoUpdateConfig } from './types/im';
 import type { RuntimeModelInfo, RuntimeSource, RuntimeType } from './types/runtime';
 import type { UiLanguage } from './i18n';
 import type { OfficialToolId, OfficialToolSettings } from './official-tools';
+import type { SubscriptionVerifyFailureKind } from './subscription';
 
 /**
  * Permission mode for agent behavior
@@ -402,6 +403,10 @@ export interface Project {
   hidden?: boolean;
   /** ISO timestamp for soft deletion. Diagnostic/future restore metadata only. */
   hiddenAt?: string;
+  /** ISO timestamp for user-facing archive. Archived workspaces stay restorable. */
+  archivedAt?: string;
+  /** Whether proactive Agent mode was enabled when the workspace was archived. */
+  archivedAgentEnabledBeforeArchive?: boolean;
 }
 
 export type ProjectPatch = Partial<Omit<Project, 'id'>>;
@@ -446,6 +451,18 @@ export function isProjectVisibleToUser(
   project: Pick<Project, 'internal' | 'hidden'> | null | undefined,
 ): boolean {
   return !!project && project.internal !== true && project.hidden !== true;
+}
+
+export function isProjectArchived(
+  project: Pick<Project, 'archivedAt'> | null | undefined,
+): boolean {
+  return typeof project?.archivedAt === 'string' && project.archivedAt.length > 0;
+}
+
+export function isProjectActiveForUser(
+  project: Pick<Project, 'internal' | 'hidden' | 'archivedAt'> | null | undefined,
+): boolean {
+  return isProjectVisibleToUser(project) && !isProjectArchived(project);
 }
 
 export function getSystemPresetProjectMetadata(
@@ -522,6 +539,8 @@ export interface ProviderVerifyStatus {
   status: 'valid' | 'invalid';
   verifiedAt: string; // ISO timestamp
   accountEmail?: string; // For subscription: detect account change
+  invalidReason?: SubscriptionVerifyFailureKind | 'provider_verify_failed' | 'network_error';
+  error?: string;
 }
 
 /** Verification expiry in days */

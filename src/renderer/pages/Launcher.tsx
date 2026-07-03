@@ -27,7 +27,7 @@ import { BrandSection, LauncherRightRail, TemplateLibraryDialog, WorkspaceEditDi
 const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPanel'));
 import { useConfig } from '@/hooks/useConfig';
 import { useTaskCenterData } from '@/hooks/useTaskCenterData';
-import { CODEX_SUBSCRIPTION_PROVIDER_ID, type Project, type PermissionMode, type McpServerDefinition, type WorkspaceTemplate, isProviderEnabled, isProjectVisibleToUser, isSystemPresetProject } from '@/config/types';
+import { CODEX_SUBSCRIPTION_PROVIDER_ID, type Project, type PermissionMode, type McpServerDefinition, type WorkspaceTemplate, isProviderEnabled, isProjectActiveForUser, isProjectArchived, isProjectVisibleToUser, isSystemPresetProject } from '@/config/types';
 import { CUSTOM_EVENTS } from '../../shared/constants';
 import { normalizeWorkspacePathIdentity, workspacePathsEqual } from '../../shared/workspacePath';
 import {
@@ -37,7 +37,8 @@ import {
     resolveProvider,
     pairBuiltinSelection,
 } from '@/config/configService';
-import { patchAgentConfig, getAgentById } from '@/config/services/agentConfigService';
+import { patchAgentConfig, getAgentById, disableAgentAndStopChannels, enableAgentAndStartChannels } from '@/config/services/agentConfigService';
+import { archiveProject, unarchiveProject } from '@/config/services/projectService';
 import { persistInputOptionChange } from '@/api/persistInputOption';
 import { createCronTask, startCronTask, startCronScheduler } from '@/api/cronTaskClient';
 import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetections, RuntimeConfig } from '../../shared/types/runtime';
@@ -95,14 +96,18 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         providerVerifyStatus,
         refreshProviderData,
         updateConfig,
+        refreshConfig,
     } = useConfig();
 
     useEffect(() => {
         toastRef.current = toast;
     }, [toast]);
 
-    // Filter out internal projects (e.g. ~/.myagents diagnostic workspace)
-    const visibleProjects = useMemo(() => projects.filter(isProjectVisibleToUser), [projects]);
+    // Filter out internal projects (e.g. ~/.myagents diagnostic workspace).
+    // Archived projects stay user-visible for the right rail restore affordance,
+    // but they are excluded from launch selectors and default workspace choice.
+    const userVisibleProjects = useMemo(() => projects.filter(isProjectVisibleToUser), [projects]);
+    const visibleProjects = useMemo(() => userVisibleProjects.filter(isProjectActiveForUser), [userVisibleProjects]);
 
     // Poll agent statuses only when any project has proactive mode
     const hasAnyAgent = useMemo(() => visibleProjects.some(p => p.isAgent), [visibleProjects]);
@@ -948,6 +953,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     }, []);
 
     const handleToggleProjectPin = useCallback(async (project: Project) => {
+        if (isProjectArchived(project)) return;
         if (pinToggleInFlightRef.current.has(project.id)) return;
         pinToggleInFlightRef.current.add(project.id);
         try {
@@ -962,6 +968,57 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
             pinToggleInFlightRef.current.delete(project.id);
         }
     }, [patchProject, projects, t]);
+
+    const archiveToggleInFlightRef = useRef(new Set<string>());
+
+    const handleArchiveProject = useCallback(async (project: Project) => {
+        if (archiveToggleInFlightRef.current.has(project.id)) return;
+        archiveToggleInFlightRef.current.add(project.id);
+        try {
+            const currentProject = projects.find(candidate => candidate.id === project.id) ?? project;
+            const agent = currentProject.agentId ? getAgentById(config, currentProject.agentId) : undefined;
+            const wasProactive = agent?.enabled === true;
+            const archivedProject = await archiveProject(currentProject.id, { agentEnabledBeforeArchive: wasProactive });
+            if (!archivedProject) throw new Error(`Project ${currentProject.id} not found`);
+            if (agent && wasProactive) await disableAgentAndStopChannels(agent);
+            await refreshConfig();
+            toastRef.current.success(t('toasts.workspaceArchived'));
+        } catch (err) {
+            console.error('[Launcher] failed to archive workspace:', err);
+            toastRef.current.warning(t('toasts.archiveFailed'));
+        } finally {
+            archiveToggleInFlightRef.current.delete(project.id);
+        }
+    }, [config, projects, refreshConfig, t]);
+
+    const handleUnarchiveProject = useCallback(async (project: Project) => {
+        if (archiveToggleInFlightRef.current.has(project.id)) return;
+        archiveToggleInFlightRef.current.add(project.id);
+        try {
+            const currentProject = projects.find(candidate => candidate.id === project.id) ?? project;
+            const shouldRestoreAgent = currentProject.archivedAgentEnabledBeforeArchive === true;
+            const unarchivedProject = await unarchiveProject(currentProject.id);
+            if (!unarchivedProject) throw new Error(`Project ${currentProject.id} not found`);
+            if (shouldRestoreAgent && currentProject.agentId) {
+                try {
+                    await enableAgentAndStartChannels(currentProject.agentId);
+                } catch (err) {
+                    await archiveProject(currentProject.id, {
+                        archivedAtIso: currentProject.archivedAt,
+                        agentEnabledBeforeArchive: true,
+                    });
+                    throw err;
+                }
+            }
+            await refreshConfig();
+            toastRef.current.success(t('toasts.workspaceUnarchived'));
+        } catch (err) {
+            console.error('[Launcher] failed to unarchive workspace:', err);
+            toastRef.current.warning(t('toasts.unarchiveFailed'));
+        } finally {
+            archiveToggleInFlightRef.current.delete(project.id);
+        }
+    }, [projects, refreshConfig, t]);
 
     const confirmRemoveProject = async () => {
         if (projectToRemove) {
@@ -1136,7 +1193,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                 </section>
 
                 <LauncherRightRail
-                    projects={visibleProjects}
+                    projects={userVisibleProjects}
                     agentLookup={agentLookup}
                     isProjectsLoading={isLoading}
                     isStarting={isStarting}
@@ -1148,6 +1205,8 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                     onOpenTask={handleOpenTask}
                     onOpenOverlay={handleOpenOverlay}
                     onRemoveProject={handleRemoveProject}
+                    onArchiveProject={handleArchiveProject}
+                    onUnarchiveProject={handleUnarchiveProject}
                     onAgentSettings={handleAgentSettings}
                     onOpenProjectFolder={handleOpenProjectFolder}
                     onToggleProjectPin={handleToggleProjectPin}

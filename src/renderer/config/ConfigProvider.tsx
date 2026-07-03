@@ -478,12 +478,16 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     ) => {
         try {
             const previousUiLanguage = normalizeUiLanguage(configRef.current.uiLanguage);
-            const latest = await loadAppConfig();
+            const [latest, latestProjects] = await Promise.all([
+                loadAppConfig(),
+                loadProjects(),
+            ]);
             normalizeAgents(latest);
             const nextUiLanguage = normalizeUiLanguage(latest.uiLanguage);
             if (isMountedRef.current) {
                 configRef.current = latest;
                 setConfig(latest);
+                setProjects(latestProjects);
             }
             if (options.syncNativeUiLanguage && previousUiLanguage !== nextUiLanguage) {
                 await syncNativeUiLanguageFromConfig();

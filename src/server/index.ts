@@ -1468,10 +1468,12 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'model/verify') return await api.handleModelVerify(payload as Parameters<typeof api.handleModelVerify>[0]);
 
   // Agent commands
-  if (route === 'agent/list') return api.handleAgentList();
+  if (route === 'agent/list') return api.handleAgentList(payload as Parameters<typeof api.handleAgentList>[0]);
   if (route === 'agent/show') return api.handleAgentShow(payload as Parameters<typeof api.handleAgentShow>[0]);
   if (route === 'agent/enable') return api.handleAgentEnable(payload as Parameters<typeof api.handleAgentEnable>[0]);
   if (route === 'agent/disable') return api.handleAgentDisable(payload as Parameters<typeof api.handleAgentDisable>[0]);
+  if (route === 'agent/archive') return api.handleAgentArchive(payload as Parameters<typeof api.handleAgentArchive>[0]);
+  if (route === 'agent/unarchive') return api.handleAgentUnarchive(payload as Parameters<typeof api.handleAgentUnarchive>[0]);
   if (route === 'agent/set') return api.handleAgentSet(payload as Parameters<typeof api.handleAgentSet>[0]);
   if (route === 'agent/channel/list') return api.handleAgentChannelList(payload as Parameters<typeof api.handleAgentChannelList>[0]);
   if (route === 'agent/channel/add') return api.handleAgentChannelAdd(payload as Parameters<typeof api.handleAgentChannelAdd>[0]);

@@ -6,7 +6,7 @@
  */
 
 import { memo, useCallback, useRef, useState } from 'react';
-import { FolderOpen, Loader2, Trash2, Settings2, HeartPulse, MoreHorizontal, Pin, PinOff } from 'lucide-react';
+import { Archive, FolderOpen, Loader2, RotateCcw, Trash2, Settings2, HeartPulse, MoreHorizontal, Pin, PinOff } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { MenuItem } from '@/components/ui/MenuItem';
@@ -43,10 +43,13 @@ interface WorkspaceCardProps {
     agentStatus?: AgentStatusData;
     onLaunch: (project: Project) => void;
     onRemove: (project: Project) => void;
+    onArchive: (project: Project) => void;
+    onUnarchive: (project: Project) => void;
     onAgentSettings: (project: Project) => void;
     onOpenFolder: (project: Project) => void;
     onTogglePin: (project: Project) => void;
     isLoading?: boolean;
+    archived?: boolean;
 }
 
 export default memo(function WorkspaceCard({
@@ -55,10 +58,13 @@ export default memo(function WorkspaceCard({
     agentStatus,
     onLaunch,
     onRemove,
+    onArchive,
+    onUnarchive,
     onAgentSettings,
     onOpenFolder,
     onTogglePin,
     isLoading,
+    archived = false,
 }: WorkspaceCardProps) {
     const { t } = useTranslation('launcher');
     // Context menu state
@@ -90,7 +96,7 @@ export default memo(function WorkspaceCard({
     const closeContextMenu = useCallback(() => setContextMenu(null), []);
 
     const displayName = project.displayName || getFolderName(project.path);
-    const state = deriveState(project, agent, agentStatus);
+    const state = archived ? 'basic' : deriveState(project, agent, agentStatus);
     const isProactive = state !== 'basic';
     const isPinned = Boolean(project.pinnedAt);
     const channelTags = isProactive && state !== 'pending'
@@ -114,7 +120,7 @@ export default memo(function WorkspaceCard({
                 disabled={isLoading}
                 className={`group relative flex w-full items-center gap-3 overflow-hidden rounded-xl bg-[var(--paper-elevated)] px-4 py-3 text-left transition-shadow duration-150 ease-out hover:z-20 hover:shadow-sm focus-visible:z-20 active:scale-[0.98] ${
                     isLoading ? 'pointer-events-none opacity-60' : 'cursor-pointer'
-                }`}
+                } ${archived ? 'opacity-75' : ''}`}
             >
                 {/* Icon */}
                 <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg">
@@ -129,6 +135,11 @@ export default memo(function WorkspaceCard({
                 <div className="min-w-0 flex-1">
                     <h3 className="flex min-w-0 items-center gap-1.5 overflow-hidden whitespace-nowrap text-sm font-medium text-[var(--ink)]">
                         <span className="min-w-0 shrink truncate">{displayName}</span>
+                        {archived && (
+                            <span className="shrink-0 rounded-[3px] bg-[var(--paper-inset)] px-1.5 py-[1px] text-xs font-medium text-[var(--ink-muted)]">
+                                {t('workspaceCard.archivedBadge')}
+                            </span>
+                        )}
                         {isProactive && <HeartPulse className="h-3 w-3 shrink-0 text-[var(--heartbeat)]" />}
                         {channelTags.length > 0 && (
                             <span className="workspace-card-channel-tags-fade inline-flex min-w-0 flex-1 overflow-hidden whitespace-nowrap">
@@ -202,22 +213,35 @@ export default memo(function WorkspaceCard({
                         offset={2}
                         className="w-36 py-1"
                     >
-                        <MenuItem
-                            icon={isPinned
-                                ? <PinOff className="h-3.5 w-3.5" />
-                                : <Pin className="h-3.5 w-3.5" />}
-                            label={isPinned ? t('workspaceCard.unpin') : t('workspaceCard.pin')}
-                            onClick={() => {
-                                closeContextMenu();
-                                onTogglePin(project);
-                            }}
-                        />
+                        {!archived && (
+                            <MenuItem
+                                icon={isPinned
+                                    ? <PinOff className="h-3.5 w-3.5" />
+                                    : <Pin className="h-3.5 w-3.5" />}
+                                label={isPinned ? t('workspaceCard.unpin') : t('workspaceCard.pin')}
+                                onClick={() => {
+                                    closeContextMenu();
+                                    onTogglePin(project);
+                                }}
+                            />
+                        )}
                         <MenuItem
                             icon={<Settings2 className="h-3.5 w-3.5" />}
                             label={t('workspaceCard.agentSettings')}
                             onClick={() => {
                                 closeContextMenu();
                                 onAgentSettings(project);
+                            }}
+                        />
+                        <MenuItem
+                            icon={archived
+                                ? <RotateCcw className="h-3.5 w-3.5" />
+                                : <Archive className="h-3.5 w-3.5" />}
+                            label={archived ? t('workspaceCard.unarchive') : t('workspaceCard.archive')}
+                            onClick={() => {
+                                closeContextMenu();
+                                if (archived) onUnarchive(project);
+                                else onArchive(project);
                             }}
                         />
                         <MenuItem

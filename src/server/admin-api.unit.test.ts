@@ -383,3 +383,139 @@ describe('admin-api MCP remove/disable legacy HTTP servers', () => {
     expect(config.mcpEnabledServers).toEqual([]);
   });
 });
+
+describe('admin-api Agent workspace archive', () => {
+  it('archives a linked agent workspace and pauses proactive agent state', async () => {
+    const { handleAgentArchive, handleAgentList } = await import('./admin-api');
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-1',
+        name: 'Workspace',
+        enabled: true,
+        workspacePath: '/tmp/workspace',
+        channels: [{ id: 'channel-1', type: 'telegram', enabled: true }],
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-1',
+      name: 'Workspace',
+      path: '/tmp/workspace',
+      agentId: 'agent-1',
+      pinnedAt: '2026-07-01T00:00:00.000Z',
+    }]);
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, stoppedChannels: 1 });
+
+    const result = await handleAgentArchive({ id: 'agent-1' });
+
+    expect(result.success).toBe(true);
+    const config = readConfig();
+    expect((config.agents as Array<Record<string, unknown>>)[0].enabled).toBe(false);
+    const projects = readJson(join(scratch, '.myagents', 'projects.json'));
+    expect(projects[0].archivedAt).toEqual(expect.any(String));
+    expect(projects[0].archivedAgentEnabledBeforeArchive).toBe(true);
+    expect(projects[0]).not.toHaveProperty('pinnedAt');
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/agent/stop-channels',
+      'POST',
+      { agentId: 'agent-1' },
+    );
+
+    const archivedList = handleAgentList({ lifecycle: 'archived' });
+    expect((archivedList.data as Array<Record<string, unknown>>)[0]).toMatchObject({
+      id: 'agent-1',
+      archived: true,
+      projectId: 'project-1',
+    });
+  });
+
+  it('keeps restore intent when archive is called repeatedly', async () => {
+    const { handleAgentArchive, handleAgentUnarchive } = await import('./admin-api');
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-1',
+        name: 'Workspace',
+        enabled: true,
+        workspacePath: '/tmp/workspace',
+        channels: [],
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-1',
+      name: 'Workspace',
+      path: '/tmp/workspace',
+      agentId: 'agent-1',
+    }]);
+
+    expect((await handleAgentArchive({ id: 'agent-1' })).success).toBe(true);
+    expect((await handleAgentArchive({ id: 'agent-1' })).success).toBe(true);
+    let projects = readJson(join(scratch, '.myagents', 'projects.json'));
+    expect(projects[0].archivedAgentEnabledBeforeArchive).toBe(true);
+
+    expect((await handleAgentUnarchive({ id: 'agent-1' })).success).toBe(true);
+    const config = readConfig();
+    expect((config.agents as Array<Record<string, unknown>>)[0].enabled).toBe(true);
+    projects = readJson(join(scratch, '.myagents', 'projects.json'));
+    expect(projects[0]).not.toHaveProperty('archivedAt');
+  });
+
+  it('rejects plain enable for archived agent workspaces', async () => {
+    const { handleAgentEnable } = await import('./admin-api');
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-1',
+        name: 'Workspace',
+        enabled: false,
+        workspacePath: '/tmp/workspace',
+        channels: [],
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-1',
+      name: 'Workspace',
+      path: '/tmp/workspace',
+      agentId: 'agent-1',
+      archivedAt: '2026-07-03T00:00:00.000Z',
+      archivedAgentEnabledBeforeArchive: true,
+    }]);
+
+    const result = await handleAgentEnable({ id: 'agent-1' });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('archived workspace');
+    expect(result.recoveryHint).toMatchObject({
+      recoveryCommand: 'myagents agent unarchive agent-1',
+    });
+    const config = readConfig();
+    expect((config.agents as Array<Record<string, unknown>>)[0].enabled).toBe(false);
+  });
+
+  it('unarchives a workspace and restores proactive state only when recorded', async () => {
+    const { handleAgentUnarchive } = await import('./admin-api');
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-1',
+        name: 'Workspace',
+        enabled: false,
+        workspacePath: '/tmp/workspace',
+        channels: [],
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-1',
+      name: 'Workspace',
+      path: '/tmp/workspace',
+      agentId: 'agent-1',
+      archivedAt: '2026-07-03T00:00:00.000Z',
+      archivedAgentEnabledBeforeArchive: true,
+    }]);
+
+    const result = await handleAgentUnarchive({ id: 'agent-1' });
+
+    expect(result.success).toBe(true);
+    const config = readConfig();
+    expect((config.agents as Array<Record<string, unknown>>)[0].enabled).toBe(true);
+    const projects = readJson(join(scratch, '.myagents', 'projects.json'));
+    expect(projects[0]).not.toHaveProperty('archivedAt');
+    expect(projects[0]).not.toHaveProperty('archivedAgentEnabledBeforeArchive');
+  });
+});

@@ -51,6 +51,7 @@ import {
   type AdminAppConfig,
   type AgentConfigSlim,
   type ChannelConfigSlim,
+  type ProjectSlim,
 } from './utils/admin-config';
 import { cancellableFetch } from './utils/cancellation';
 import { ensureShellPath } from './utils/shell';
@@ -1093,32 +1094,256 @@ export async function handleModelRemove(payload: { id: string }): Promise<AdminR
 // Agent Handlers
 // ---------------------------------------------------------------------------
 
-export function handleAgentList(): AdminResponse {
+function findProjectForAgent(
+  projects: ProjectSlim[],
+  agent: AgentConfigSlim,
+): { index: number; project: ProjectSlim } | null {
+  const index = projects.findIndex(project => (
+    project.agentId === agent.id ||
+    (!!project.path && !!agent.workspacePath && workspacePathsEqual(project.path, agent.workspacePath))
+  ));
+  return index >= 0 ? { index, project: projects[index] } : null;
+}
+
+function isProjectArchivedSlim(project: { archivedAt?: unknown } | null | undefined): boolean {
+  return typeof project?.archivedAt === 'string' && project.archivedAt.length > 0;
+}
+
+function normalizeAgentLifecycleFilter(value: unknown): 'all' | 'active' | 'archived' {
+  if (value === 'active' || value === 'archived') return value;
+  return 'all';
+}
+
+function getArchivedProjectForAgent(agent: AgentConfigSlim): ProjectSlim | undefined {
+  const project = findProjectForAgent(loadProjects(), agent)?.project;
+  return isProjectArchivedSlim(project) ? project : undefined;
+}
+
+export function handleAgentList(payload: { lifecycle?: string } = {}): AdminResponse {
   const config = loadConfig();
-  const agents = (config.agents ?? []).map(a => ({
-    id: a.id,
-    name: a.name,
-    enabled: a.enabled,
-    workspacePath: a.workspacePath,
-    channelCount: (a.channels ?? []).length,
-    channels: (a.channels ?? []).map(ch => ({
-      id: ch.id,
-      type: ch.type,
-      name: ch.name,
-      enabled: ch.enabled,
-    })),
-  }));
+  const projects = loadProjects();
+  const lifecycle = normalizeAgentLifecycleFilter(payload.lifecycle);
+  const agents = (config.agents ?? [])
+    .map(a => {
+      const projectEntry = findProjectForAgent(projects, a);
+      const project = projectEntry?.project;
+      const archived = isProjectArchivedSlim(project);
+      return {
+        id: a.id,
+        name: a.name,
+        enabled: a.enabled,
+        archived,
+        archivedAt: archived ? project?.archivedAt : undefined,
+        workspacePath: a.workspacePath,
+        projectId: project?.id,
+        channelCount: (a.channels ?? []).length,
+        channels: (a.channels ?? []).map(ch => ({
+          id: ch.id,
+          type: ch.type,
+          name: ch.name,
+          enabled: ch.enabled,
+        })),
+      };
+    })
+    .filter(agent => {
+      if (lifecycle === 'active') return !agent.archived;
+      if (lifecycle === 'archived') return agent.archived;
+      return true;
+    });
   return { success: true, data: agents };
 }
 
 export async function handleAgentEnable(payload: { id: string }): Promise<AdminResponse> {
   const { id } = payload;
+  const config = loadConfig();
+  const agent = (config.agents ?? []).find(a => a.id === id);
+  if (agent && getArchivedProjectForAgent(agent)) {
+    return {
+      success: false,
+      error: `Agent '${id}' belongs to an archived workspace.`,
+      recoveryHint: {
+        recoveryCommand: `myagents agent unarchive ${id}`,
+        message: 'Unarchive the Agent workspace before enabling proactive channels.',
+      },
+    };
+  }
   return modifyAgent(id, agent => ({ ...agent, enabled: true }), 'enable');
 }
 
 export async function handleAgentDisable(payload: { id: string }): Promise<AdminResponse> {
   const { id } = payload;
   return modifyAgent(id, agent => ({ ...agent, enabled: false }), 'disable');
+}
+
+export async function handleAgentArchive(payload: { id?: string }): Promise<AdminResponse> {
+  const id = payload.id;
+  if (!id) return { success: false, error: 'Missing required field: id' };
+
+  const config = loadConfig();
+  const agent = (config.agents ?? []).find(a => a.id === id);
+  if (!agent) {
+    return {
+      success: false,
+      error: `Agent '${id}' not found.`,
+      recoveryHint: {
+        recoveryCommand: 'myagents agent list',
+        message: 'See valid agent ids.',
+      },
+    };
+  }
+
+  let archivedAt = '';
+  let projectId = '';
+  let agentEnabledBeforeArchive = false;
+  let alreadyArchived = false;
+  const wasEnabled = agent.enabled === true;
+  await atomicModifyProjects(projects => {
+    const entry = findProjectForAgent(projects, agent);
+    if (!entry) return projects;
+    const next = [...projects];
+    projectId = entry.project.id;
+    alreadyArchived = isProjectArchivedSlim(entry.project);
+    archivedAt = alreadyArchived
+      ? String(entry.project.archivedAt)
+      : new Date().toISOString();
+    agentEnabledBeforeArchive = alreadyArchived
+      ? entry.project.archivedAgentEnabledBeforeArchive === true
+      : wasEnabled;
+    next[entry.index] = {
+      ...entry.project,
+      archivedAt,
+      archivedAgentEnabledBeforeArchive: agentEnabledBeforeArchive,
+      pinnedAt: undefined,
+    };
+    return next;
+  });
+
+  if (!projectId) {
+    return {
+      success: false,
+      error: `Agent '${id}' has no linked workspace project.`,
+      recoveryHint: {
+        recoveryCommand: 'myagents agent list',
+        message: 'Archive works on Agent workspaces registered in projects.json.',
+      },
+    };
+  }
+
+  if (wasEnabled) {
+    await modifyAgent(id, current => ({ ...current, enabled: false }), 'archive');
+  }
+
+  const stopResult = wasEnabled
+    ? await managementApi('/api/agent/stop-channels', 'POST', { agentId: id })
+    : { ok: true, stoppedChannels: 0 };
+  if (!wasEnabled) {
+    broadcast('config:changed', { section: 'project', action: 'archive', id });
+  }
+
+  const stopOk = stopResult.ok !== false;
+  return {
+    success: true,
+    data: {
+      id,
+      projectId,
+      archivedAt,
+      agentEnabledBeforeArchive,
+      alreadyArchived,
+      stoppedChannels: stopOk ? (stopResult.stoppedChannels ?? 0) : 0,
+      stopWarning: stopOk ? undefined : String(stopResult.error ?? 'Failed to stop running channels'),
+    },
+    hint: stopOk
+      ? 'Agent workspace archived.'
+      : `Agent workspace archived, but running channels may stop after restart: ${String(stopResult.error ?? 'unknown error')}`,
+  };
+}
+
+export async function handleAgentUnarchive(payload: { id?: string }): Promise<AdminResponse> {
+  const id = payload.id;
+  if (!id) return { success: false, error: 'Missing required field: id' };
+
+  const config = loadConfig();
+  const agent = (config.agents ?? []).find(a => a.id === id);
+  if (!agent) {
+    return {
+      success: false,
+      error: `Agent '${id}' not found.`,
+      recoveryHint: {
+        recoveryCommand: 'myagents agent list --archived',
+        message: 'See archived agent ids.',
+      },
+    };
+  }
+
+  const projectEntry = findProjectForAgent(loadProjects(), agent);
+  const projectId = projectEntry?.project.id ?? '';
+  const alreadyActive = !!projectEntry && !isProjectArchivedSlim(projectEntry.project);
+  const shouldRestoreAgent = projectEntry?.project.archivedAgentEnabledBeforeArchive === true;
+
+  if (!projectId) {
+    return {
+      success: false,
+      error: `Agent '${id}' has no linked workspace project.`,
+      recoveryHint: {
+        recoveryCommand: 'myagents agent list --archived',
+        message: 'Unarchive works on Agent workspaces registered in projects.json.',
+      },
+    };
+  }
+
+  if (alreadyActive) {
+    return {
+      success: true,
+      data: {
+        id,
+        projectId,
+        restoredAgentEnabled: false,
+        alreadyActive: true,
+      },
+      hint: 'Agent workspace is already active.',
+    };
+  }
+
+  let restoredAgentConfig = false;
+  if (shouldRestoreAgent) {
+    const restoreResult = await modifyAgent(id, current => ({ ...current, enabled: true }), 'unarchive');
+    if (!restoreResult.success) return restoreResult;
+    restoredAgentConfig = true;
+  }
+
+  try {
+    await atomicModifyProjects(projects => {
+      const entry = findProjectForAgent(projects, agent);
+      if (!entry || !isProjectArchivedSlim(entry.project)) return projects;
+      const next = [...projects];
+      const {
+        archivedAt: _archivedAt,
+        archivedAgentEnabledBeforeArchive: _archivedAgentEnabledBeforeArchive,
+        ...rest
+      } = entry.project;
+      next[entry.index] = rest;
+      return next;
+    });
+  } catch (err) {
+    if (restoredAgentConfig) {
+      await modifyAgent(id, current => ({ ...current, enabled: false }), 'unarchive-rollback');
+    }
+    throw err;
+  }
+
+  broadcast('config:changed', { section: 'project', action: 'unarchive', id });
+
+  return {
+    success: true,
+    data: {
+      id,
+      projectId,
+      restoredAgentEnabled: shouldRestoreAgent,
+    },
+    hint: shouldRestoreAgent
+      ? 'Agent workspace unarchived. Enabled channels will restart automatically shortly.'
+      : 'Agent workspace unarchived.',
+  };
 }
 
 export async function handleAgentSet(payload: { id: string; key: string; value: unknown }): Promise<AdminResponse> {
@@ -1130,6 +1355,20 @@ export async function handleAgentSet(payload: { id: string; key: string; value: 
   const protectedFields = ['id', 'channels'];
   if (protectedFields.includes(key)) {
     return { success: false, error: `Cannot directly set field '${key}'. Use specific commands instead.` };
+  }
+
+  if (key === 'enabled' && value === true) {
+    const agent = (loadConfig().agents ?? []).find(a => a.id === id);
+    if (agent && getArchivedProjectForAgent(agent)) {
+      return {
+        success: false,
+        error: `Agent '${id}' belongs to an archived workspace.`,
+        recoveryHint: {
+          recoveryCommand: `myagents agent unarchive ${id}`,
+          message: 'Unarchive the Agent workspace before setting enabled=true.',
+        },
+      };
+    }
   }
 
   // `runtime` field has a cross-runtime scrub policy (see
@@ -1796,10 +2035,12 @@ Commands:
   agent: `myagents agent — Manage agents & channels
 
 Commands:
-  list                            List all agents
+  list [--active|--archived]      List all agents
   show <id>                       Show an agent's effective runtime/model/permissionMode defaults
   enable <id>                     Enable an agent
   disable <id>                    Disable an agent
+  archive <id>                    Archive an Agent workspace and pause proactive channels
+  unarchive <id>                  Restore an archived Agent workspace
   set <id> <key> <value>          Set agent config field
   runtime-status                  Runtime drift status across agents
   channel list <agent-id>         List channels

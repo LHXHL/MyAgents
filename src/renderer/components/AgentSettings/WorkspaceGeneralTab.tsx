@@ -6,8 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { useConfig } from '@/hooks/useConfig';
 import { useToast } from '@/components/Toast';
 import { useAgentStatuses } from '@/hooks/useAgentStatuses';
-import { isTauriEnvironment } from '@/utils/browserMock';
-import { getAgentById, addAgentConfig, patchAgentConfig, invokeStartAgentChannel } from '@/config/services/agentConfigService';
+import { getAgentById, addAgentConfig, disableAgentAndStopChannels, enableAgentAndStartChannels } from '@/config/services/agentConfigService';
 import type { AgentConfig } from '../../../shared/types/agent';
 import { workspacePathsEqual } from '../../../shared/workspacePath';
 import { DEFAULT_HEARTBEAT_CONFIG } from '../../../shared/types/im';
@@ -52,8 +51,7 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
     try {
       if (agent && !agent.enabled) {
         // Upgrade existing basicAgent to proactive mode
-        await patchAgentConfig(agent.id, {
-          enabled: true,
+        await enableAgentAndStartChannels(agent.id, {
           heartbeat: agent.heartbeat ?? {
             ...DEFAULT_HEARTBEAT_CONFIG,
             enabled: true,
@@ -88,17 +86,7 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
         toastRef.current.success(t('agentSettings.general.enabled'));
       } else if (agent.enabled) {
         // Disable — stop all running channels first
-        let stoppedCount = 0;
-        if (isTauriEnvironment()) {
-          const { invoke } = await import('@tauri-apps/api/core');
-          for (const ch of (agent.channels ?? [])) {
-            try {
-              await invoke('cmd_stop_agent_channel', { agentId: agent.id, channelId: ch.id });
-              stoppedCount++;
-            } catch { /* channel may not be running */ }
-          }
-        }
-        await patchAgentConfig(agent.id, { enabled: false });
+        const stoppedCount = await disableAgentAndStopChannels(agent);
         toastRef.current.success(
           stoppedCount > 0
             ? t('agentSettings.general.disabledWithChannels', { count: stoppedCount })
@@ -106,35 +94,16 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
         );
       } else {
         // Re-enable — auto-restart channels that have credentials (setupCompleted)
-        await patchAgentConfig(agent.id, { enabled: true });
-        await refreshConfig(); // Refresh first so invokeStartAgentChannel reads latest config
-        // Re-read the latest agent config after refresh
-        const latestAgent = getAgentById(await (async () => {
-          const { loadAppConfig } = await import('@/config/services/appConfigService');
-          return loadAppConfig();
-        })(), agent.id);
-        if (latestAgent && isTauriEnvironment()) {
-          const startable = (latestAgent.channels ?? []).filter(ch => ch.enabled && ch.setupCompleted);
-          let startedCount = 0;
-          for (const ch of startable) {
-            try {
-              await invokeStartAgentChannel(latestAgent, ch);
-              startedCount++;
-            } catch (e) {
-              console.warn(`[WorkspaceGeneralTab] Auto-start channel ${ch.id} failed:`, e);
-            }
-          }
-          toastRef.current.success(
-            startedCount > 0
-              ? t('agentSettings.general.enabledWithChannels', { count: startedCount })
-              : t('agentSettings.general.enabled'),
-          );
-        } else {
-          toastRef.current.success(t('agentSettings.general.enabled'));
-        }
+        const startedCount = await enableAgentAndStartChannels(agent.id);
+        toastRef.current.success(
+          startedCount > 0
+            ? t('agentSettings.general.enabledWithChannels', { count: startedCount })
+            : t('agentSettings.general.enabled'),
+        );
         if (isMountedRef.current) await refreshStatuses();
         if (isMountedRef.current) setToggling(false);
-        return; // refreshConfig already called above
+        await refreshConfig();
+        return;
       }
       await refreshConfig();
       if (isMountedRef.current) await refreshStatuses();

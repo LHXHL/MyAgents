@@ -109,6 +109,10 @@ pub async fn start_management_api() -> Result<u16, String> {
             "/api/agent/runtime-status",
             get(agent_runtime_status_handler),
         )
+        .route(
+            "/api/agent/stop-channels",
+            post(agent_stop_channels_handler),
+        )
         // Task Center (v0.1.69) — HTTP surface for the `myagents task` CLI.
         .route("/api/task/list", get(task_list_handler))
         .route("/api/task/get", get(task_get_handler))
@@ -1124,6 +1128,42 @@ async fn agent_runtime_status_handler() -> Json<serde_json::Value> {
     }
 
     Json(serde_json::json!({ "ok": true, "agents": result }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentStopChannelsRequest {
+    agent_id: String,
+}
+
+async fn agent_stop_channels_handler(
+    Json(req): Json<AgentStopChannelsRequest>,
+) -> Json<serde_json::Value> {
+    let Some(agents) = get_agents() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "Agent state unavailable"
+        }));
+    };
+    let Some(sidecar_manager) = get_sidecar_state() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "Sidecar manager unavailable"
+        }));
+    };
+
+    let stopped = im::stop_agent_channels_for_archive(agents, sidecar_manager, &req.agent_id).await;
+    ulog_info!(
+        "[management] stopped {} channel(s) for archived agent {}",
+        stopped,
+        req.agent_id
+    );
+
+    Json(serde_json::json!({
+        "ok": true,
+        "agentId": req.agent_id,
+        "stoppedChannels": stopped
+    }))
 }
 
 // ===== Bridge Message handler (OpenClaw Channel Plugin → Rust) =====

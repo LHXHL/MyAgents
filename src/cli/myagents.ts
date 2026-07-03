@@ -75,6 +75,8 @@ function parseArgs(args: string[]): { positional: string[]; flags: Record<string
         key === 'clear-runtime-override' ||
         key === 'purge' ||
         key === 'stdin' ||
+        key === 'active' ||
+        key === 'archived' ||
         key === 'create-attached'
       ) {
         flags[camelCase(key)] = key === 'create-attached'
@@ -257,7 +259,10 @@ Examples:
   myagents runtime describe codex             # models + permission modes
   myagents runtime diagnose codex             # auth / features / MCP / apps / env snapshot (issue #194)
   myagents diagnose runtime codex             # alias for runtime diagnose
+  myagents agent list --archived              # archived Agent workspaces
   myagents agent show <agent-id>              # effective defaults for a workspace
+  myagents agent archive <agent-id>
+  myagents agent unarchive <agent-id>
   myagents task list
   myagents task get <taskId>            # returns metadata + docs paths
                                         # (task.md / verify.md / progress.md /
@@ -1266,10 +1271,10 @@ function printAgentList(agents: Array<Record<string, unknown>>): void {
     return;
   }
   const pad = (s: string, n: number) => s.padEnd(n);
-  console.log(pad('ID', 38) + pad('Status', 10) + pad('Channels', 10) + 'Name');
+  console.log(pad('ID', 38) + pad('Status', 11) + pad('Channels', 10) + 'Name');
   for (const a of agents) {
-    const status = a.enabled ? 'enabled' : 'disabled';
-    console.log(pad(String(a.id).slice(0, 36), 38) + pad(status, 10) + pad(String(a.channelCount), 10) + String(a.name));
+    const status = a.archived ? 'archived' : (a.enabled ? 'enabled' : 'disabled');
+    console.log(pad(String(a.id).slice(0, 36), 38) + pad(status, 11) + pad(String(a.channelCount), 10) + String(a.name));
   }
 }
 
@@ -2783,7 +2788,15 @@ function buildRequestBody(
 
   // Agent commands
   if (group === 'agent') {
-    if (action === 'enable' || action === 'disable') return { id: rest[0] || flags.id };
+    if (action === 'list') {
+      if (flags.archived && flags.active) {
+        throw new Error('agent list accepts only one lifecycle filter: use --active or --archived, not both.');
+      }
+      return {
+        lifecycle: flags.archived ? 'archived' : flags.active ? 'active' : 'all',
+      };
+    }
+    if (action === 'enable' || action === 'disable' || action === 'archive' || action === 'unarchive') return { id: rest[0] || flags.id };
     if (action === 'show') return { id: requirePositional(rest[0] ?? (flags.id as string | undefined), 'agent-id', 'agent show', 'id') };
     if (action === 'set') return { id: rest[0], key: rest[1], value: tryParseJson(rest[2]) };
     if (action === 'channel') {

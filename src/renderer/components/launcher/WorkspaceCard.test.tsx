@@ -38,6 +38,8 @@ function renderCard(props: Partial<ComponentProps<typeof WorkspaceCard>> = {}) {
             agent={agent()}
             onLaunch={vi.fn()}
             onRemove={vi.fn()}
+            onArchive={vi.fn()}
+            onUnarchive={vi.fn()}
             onAgentSettings={vi.fn()}
             onOpenFolder={vi.fn()}
             onTogglePin={vi.fn()}
@@ -167,5 +169,38 @@ describe('WorkspaceCard', () => {
         fireEvent.click(screen.getByRole('button', { name: '取消置顶' }));
 
         expect(onTogglePin).toHaveBeenCalledWith(pinnedProject);
+    });
+
+    it('switches archive and unarchive actions based on archived state', () => {
+        const onArchive = vi.fn();
+        const onUnarchive = vi.fn();
+
+        const { rerender } = renderCard({ onArchive, onUnarchive });
+        fireEvent.click(screen.getByLabelText('更多'));
+        fireEvent.click(screen.getByRole('button', { name: '归档' }));
+
+        expect(onArchive).toHaveBeenCalledWith(project);
+
+        const archivedProject = { ...project, archivedAt: '2026-07-03T00:00:00.000Z' };
+        rerender(
+            <WorkspaceCard
+                project={archivedProject}
+                archived
+                agent={agent()}
+                onLaunch={vi.fn()}
+                onRemove={vi.fn()}
+                onArchive={onArchive}
+                onUnarchive={onUnarchive}
+                onAgentSettings={vi.fn()}
+                onOpenFolder={vi.fn()}
+                onTogglePin={vi.fn()}
+            />,
+        );
+        fireEvent.click(screen.getByLabelText('更多'));
+
+        expect(screen.queryByRole('button', { name: '置顶' })).not.toBeInTheDocument();
+        fireEvent.click(screen.getByRole('button', { name: '取消归档' }));
+
+        expect(onUnarchive).toHaveBeenCalledWith(archivedProject);
     });
 });
