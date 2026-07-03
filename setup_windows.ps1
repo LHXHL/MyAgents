@@ -530,6 +530,14 @@ try {
         exit 1
     }
     Write-Host "OK - 依赖安装完成" -ForegroundColor Green
+    Write-Host "  校验 Claude Agent SDK native package..." -ForegroundColor Cyan
+    & "$ProjectDir\scripts\ensure_claude_sdk_package.ps1" -Arch x64
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) {
+        Write-Host "Claude Agent SDK native package 校验失败" -ForegroundColor Red
+        Write-Host "`n按回车键退出..." -ForegroundColor Yellow
+        Read-Host
+        exit 1
+    }
 
     Write-Host "`nStep 7/9: 下载 Rust 依赖" -ForegroundColor Blue
     Write-Host "  正在下载 Rust 依赖包，请稍候..." -ForegroundColor Cyan

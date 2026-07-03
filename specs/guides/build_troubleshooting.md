@@ -167,18 +167,24 @@ otool -l node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude | grep 
 
 **修复**：
 
-当前 `setup.sh` 和 `build_dev.sh` 都会调用：
+当前 macOS `setup.sh` 和 `build_dev.sh` 都会调用：
 
 ```bash
 ./scripts/ensure_claude_sdk_package.sh
 ```
 
-它会校验：
+Windows `setup_windows.ps1` 和 `build_windows.ps1` 会调用：
+
+```powershell
+.\scripts\ensure_claude_sdk_package.ps1 -Arch x64
+```
+
+这些脚本会校验：
 
 - platform package 的 `package.json` 名称 / 版本与 `package.json` pin 一致
 - Mach-O 架构匹配 host / target
-- `otool -l` 不含 `past end of file`
-- upstream code signature 可通过 `codesign --verify --strict`
+- macOS：`otool -l` 不含 `past end of file`，upstream code signature 可通过 `codesign --verify --strict`
+- Windows：PE section 不指向文件末尾之后，Authenticode signature 为 `Valid`
 
 发现损坏会用临时目录重新安装目标 platform package，再复制回
 `node_modules/@anthropic-ai/`，避免继续把半截二进制打进 dev app。
