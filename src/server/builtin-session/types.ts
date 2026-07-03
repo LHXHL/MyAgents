@@ -143,6 +143,10 @@ export type MessageQueueItem = {
   providerAnalytics?: TurnProviderAnalytics;
   inboxMeta?: InboxTurnMeta;
   injectedTurnId?: string;
+  transientProviderRetry?: {
+    rootQueueId: string;
+    attempt: number;
+  };
 };
 
 export type TurnBoundaryQueueItem = {

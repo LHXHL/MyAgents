@@ -3,6 +3,7 @@ import type {
   BuiltinInjectedTurnOutcome,
   BuiltinTurnStartContext,
   BuiltinTurnUsage,
+  MessageQueueItem,
   TurnProviderAnalytics,
 } from './types';
 import type { SessionOrigin } from '../../shared/session-origin';
@@ -43,6 +44,7 @@ let currentTurnImTerminalEmitted = false;
 const injectedTurnOutcomes = new Map<string, BuiltinInjectedTurnOutcome>();
 const discardedInjectedTurnIds = new Set<string>();
 let currentTurnInjectedTurnId: string | undefined = undefined;
+let currentTurnSourceItem: MessageQueueItem | null = null;
 
 export const turnState = {
   get currentTurnUsage(): BuiltinTurnUsage {
@@ -169,6 +171,12 @@ export const turnState = {
   set currentTurnInjectedTurnId(value: string | undefined) {
     currentTurnInjectedTurnId = value;
   },
+  get currentTurnSourceItem(): MessageQueueItem | null {
+    return currentTurnSourceItem;
+  },
+  set currentTurnSourceItem(value: MessageQueueItem | null) {
+    currentTurnSourceItem = value;
+  },
 };
 
 export function beginTurn(context: BuiltinTurnStartContext): void {
@@ -197,6 +205,7 @@ export function resetTurnUsage(): void {
   currentTurnImTerminalEmitted = false;
   currentTurnTextBlocks.length = 0;
   currentTurnInjectedTurnId = undefined;
+  currentTurnSourceItem = null;
 }
 
 export function getCurrentTurnUsage(): BuiltinTurnUsage {
@@ -486,6 +495,14 @@ export function setCurrentTurnInjectedTurnId(injectedTurnId: string | undefined)
   currentTurnInjectedTurnId = injectedTurnId;
 }
 
+export function getCurrentTurnSourceItem(): MessageQueueItem | null {
+  return currentTurnSourceItem;
+}
+
+export function setCurrentTurnSourceItem(item: MessageQueueItem | null): void {
+  currentTurnSourceItem = item;
+}
+
 export function terminalCleanup(): {
   inboxMeta?: import('../inbox/types').InboxTurnMeta;
   replyText: string;
@@ -523,6 +540,7 @@ export function snapshotTurn() {
     injectedTurnOutcomes: new Map(injectedTurnOutcomes),
     discardedInjectedTurnIds: new Set(discardedInjectedTurnIds),
     currentTurnInjectedTurnId,
+    currentTurnSourceItem,
   };
 }
 
@@ -548,5 +566,6 @@ export function resetTurnForTest(): void {
   currentTurnTextBlocks.length = 0;
   pendingRequestIds.length = 0;
   currentTurnImTerminalEmitted = false;
+  currentTurnSourceItem = null;
   clearInjectedTurnOutcomes();
 }

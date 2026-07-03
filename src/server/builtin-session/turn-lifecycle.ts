@@ -9,6 +9,11 @@ import {
   isRecoveredAssistantMessageError,
   isSuccessfulCompactControlTurn,
 } from '../utils/sdk-turn-outcome';
+import {
+  decideTransientProviderTextRetry,
+  type TransientProviderTextError,
+  type TransientProviderTextRetryDecision,
+} from '../session-core/turn-result-policy';
 import { decideInFlightActionOnResult } from '../utils/inflight-terminal';
 import type { InFlightMetadata, ProviderEnv, TurnProviderAnalytics } from './types';
 import {
@@ -115,6 +120,12 @@ export type BuiltinTurnLifecycleDeps = {
   elapsedMs: (start: number) => number;
   broadcast: (event: string, data: unknown) => void;
   broadcastBuiltinContextUsage: () => Promise<void>;
+  getCurrentTransientProviderRetryAttempt: () => number;
+  scheduleTransientProviderRetry: (
+    decision: Extract<TransientProviderTextRetryDecision, { retry: true }>,
+  ) => boolean;
+  retractTransientProviderTextOutput: (resultText: string) => void;
+  clearApiRetryStatus: () => void;
   trackServer?: typeof defaultTrackServer;
   firePostTurnTitleHook: (
     sessionId: string,
@@ -325,6 +336,54 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     const isAbortResult =
       isAbortedTerminalReason(resultMessage.terminal_reason) || deps.getIsInterruptingResponse();
     let terminalRecoveryReason: 'image' | 'stale' | undefined;
+
+    const transientRetryDecision = decideTransientProviderTextRetry({
+      resultText,
+      isError: resultMessage.is_error,
+      isAbortResult,
+      apiErrorStatus: 'api_error_status' in resultMessage ? resultMessage.api_error_status ?? null : null,
+      currentAttempt: deps.getCurrentTransientProviderRetryAttempt(),
+    });
+    let terminalTransientProviderError: TransientProviderTextError | null = null;
+    let terminalTransientProviderRetryExhausted = false;
+    let terminalTransientProviderMaxRetries = transientRetryDecision.maxRetries;
+    if (transientRetryDecision.retry) {
+      deps.retractTransientProviderTextOutput(resultText);
+      if (deps.scheduleTransientProviderRetry(transientRetryDecision)) {
+        console.warn(
+          `[agent][transient-provider-text] ${transientRetryDecision.error.kind}; ` +
+          `auto-retry ${transientRetryDecision.attempt}/${transientRetryDecision.maxRetries} ` +
+          `in ${transientRetryDecision.delayMs}ms`,
+        );
+        return;
+      }
+      console.warn('[agent][transient-provider-text] retry requested but no safe current turn source was available');
+      terminalTransientProviderError = transientRetryDecision.error;
+    }
+    if (!transientRetryDecision.retry) {
+      deps.clearApiRetryStatus();
+      terminalTransientProviderError = transientRetryDecision.error;
+      terminalTransientProviderRetryExhausted = transientRetryDecision.exhausted;
+      terminalTransientProviderMaxRetries = transientRetryDecision.maxRetries;
+    }
+
+    if (terminalTransientProviderError) {
+      deps.retractTransientProviderTextOutput(resultText);
+      const retrySuffix = terminalTransientProviderRetryExhausted
+        ? `已自动重试 ${terminalTransientProviderMaxRetries} 次仍失败。`
+        : '当前会话无法安全自动重试。';
+      const finalError =
+        `${terminalTransientProviderError.userMessage}${retrySuffix}` +
+        '请稍后再试、减少并发，或切换 Provider。' +
+        `\n\n原始错误：${terminalTransientProviderError.rawText}`;
+      deps.setLastAgentError(finalError);
+      deps.broadcast('chat:agent-error', { message: finalError });
+      deps.broadcast('chat:message-error', finalError);
+      failTurn(finalError);
+      deps.handleTerminalRecovery(undefined);
+      deps.applyDeferredRestartIfNeeded();
+      return;
+    }
 
     if (resultMessage.is_error) {
       const rawError = resultText || resultMessage.errors?.join('; ') || getLastAssistantMessageError() || '';

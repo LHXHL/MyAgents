@@ -25,6 +25,7 @@ import {
 } from './utils/inflight-terminal';
 import { shouldBlockToolInPlanMode, planModeDenyMessage, isPlanModeInEffect, PLAN_MODE_READONLY_TOOLS, PLAN_MODE_HOST_INTERACTION_TOOLS, applyPermissionModeSelection, computePlanExitState, computeRestoredPlanState } from './utils/plan-mode-gate';
 import { planRetraction } from './utils/message-retraction';
+import type { TransientProviderTextRetryDecision } from './session-core/turn-result-policy';
 import { diagnoseSdkSubprocessFailure } from './utils/sdk-subprocess-diagnostics';
 import { InactivityWatchdog } from './utils/inactivity-watchdog';
 import {
@@ -218,8 +219,10 @@ import {
 import {
   appendCurrentTurnTextBlock,
   clearInjectedTurnOutcomes,
+  clearCurrentTurnTextBlocks,
   clearPendingRequests as turnClearPendingRequests,
   consumeInjectedTurnOutcome as turnConsumeInjectedTurnOutcome,
+  getCurrentTurnSourceItem,
   getCurrentTurnInboxMeta,
   discardInjectedTurnOutcomeWithOptions as turnDiscardInjectedTurnOutcome,
   getPendingRequestIds,
@@ -240,6 +243,7 @@ import {
   setCurrentTurnInjectedTurnId,
   setCurrentTurnImTerminalEmitted,
   setCurrentTurnProviderAnalytics,
+  setCurrentTurnSourceItem,
   setCurrentTurnStartTime,
   setLatestMainAssistantUsage,
   setSawCompactBoundary,
@@ -967,6 +971,109 @@ function toMirrorImages(images: ResolvedImagePayload[] | undefined): MirrorImage
   return out.length > 0 ? out : undefined;
 }
 let isApiRetrying = false;  // Track api_retry state to clear when streaming resumes
+let transientProviderRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+type TransientProviderTextRetry =
+  Extract<TransientProviderTextRetryDecision, { retry: true }>;
+
+function clearApiRetryStatus(): void {
+  if (!isApiRetrying) return;
+  isApiRetrying = false;
+  broadcast('chat:api-retry', null);
+}
+
+function clearTransientProviderRetryTimer(reason: string): void {
+  if (!transientProviderRetryTimer) return;
+  clearTimeout(transientProviderRetryTimer);
+  transientProviderRetryTimer = null;
+  clearApiRetryStatus();
+  console.log(`[agent][transient-provider-text] cleared pending retry timer (${reason})`);
+}
+
+function normalizeAssistantRetryText(text: string): string {
+  return text.trim().replace(/\s+/g, ' ');
+}
+
+function assistantTextForTransientRetryRetraction(message: MessageWire): string | null {
+  if (typeof message.content === 'string') return message.content;
+  const parts: string[] = [];
+  for (const block of message.content) {
+    if (block.type !== 'text') return null;
+    parts.push(block.text ?? '');
+  }
+  return parts.join('');
+}
+
+function retractTransientProviderTextOutput(resultText: string): void {
+  const expected = normalizeAssistantRetryText(resultText);
+  if (!expected) return;
+  const tail = transcriptState.messages[transcriptState.messages.length - 1];
+  if (!tail || tail.role !== 'assistant') {
+    clearCurrentTurnTextBlocks();
+    return;
+  }
+  const tailText = assistantTextForTransientRetryRetraction(tail);
+  if (!tailText || normalizeAssistantRetryText(tailText) !== expected) {
+    clearCurrentTurnTextBlocks();
+    return;
+  }
+
+  const { removedBelowCursor } = applyTranscriptRetractionToPersistence(new Set([tail.id]));
+  isStreamingMessage = false;
+  clearCurrentTurnTextBlocks();
+  broadcast('chat:messages-retracted', {
+    messageIds: [tail.id],
+    retractedStreamingTail: true,
+  });
+  if (removedBelowCursor > 0) {
+    void persistMessagesToStorage();
+  }
+  console.log(`[agent][transient-provider-text] retracted assistant error bubble ${tail.id}`);
+}
+
+function scheduleTransientProviderRetry(decision: TransientProviderTextRetry): boolean {
+  const source = getCurrentTurnSourceItem();
+  if (!source || source.wasQueued) {
+    return false;
+  }
+
+  clearTransientProviderRetryTimer('reschedule');
+  isApiRetrying = true;
+  setSessionState('running');
+  isStreamingMessage = true;
+
+  const retryItem: MessageQueueItem = {
+    ...source,
+    id: randomUUID(),
+    wasQueued: false,
+    resolve: () => {},
+    requestId: undefined,
+    transientProviderRetry: {
+      rootQueueId: source.transientProviderRetry?.rootQueueId ?? source.id,
+      attempt: decision.attempt,
+    },
+  };
+  const scheduledSessionId = sessionId;
+  transientProviderRetryTimer = setTimeout(() => {
+    transientProviderRetryTimer = null;
+    if (sessionId !== scheduledSessionId || lifecycleState.abortRequested) {
+      clearApiRetryStatus();
+      console.log('[agent][transient-provider-text] skipped retry after session changed or aborted');
+      return;
+    }
+    console.log(
+      `[agent][transient-provider-text] retrying hidden user turn ` +
+      `${decision.attempt}/${decision.maxRetries} root=${retryItem.transientProviderRetry?.rootQueueId}`,
+    );
+    wakeGenerator(retryItem);
+  }, decision.delayMs);
+  broadcast('chat:api-retry', {
+    attempt: decision.attempt,
+    maxRetries: decision.maxRetries,
+    delayMs: decision.delayMs,
+  });
+  return true;
+}
 // Pattern 3 §3.2.4 — incremental persistence cursor.
 // `persistMessagesToStorage` previously remapped the entire `transcriptState.messages` array
 // every turn (O(history) per turn, where history grows monotonically).
@@ -1630,6 +1737,7 @@ function maybeSurfaceInFlightAtAssistantTurnStart(reason: string): void {
 
 /** 中止持久 session：唤醒所有被阻塞的 Promise */
 function abortPersistentSession(): void {
+  clearTransientProviderRetryTimer('abort');
   // Log warning if browser was used but storage state wasn't saved
   // (The system prompt instructs the AI to save, but this is the fallback detection)
   if (turnState.sessionBrowserToolUsed && !turnState.sessionStorageStateSaved) {
@@ -6053,6 +6161,11 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   elapsedMs,
   broadcast,
   broadcastBuiltinContextUsage,
+  getCurrentTransientProviderRetryAttempt: () =>
+    getCurrentTurnSourceItem()?.transientProviderRetry?.attempt ?? 0,
+  scheduleTransientProviderRetry,
+  retractTransientProviderTextOutput,
+  clearApiRetryStatus,
   trackServer,
   firePostTurnTitleHook,
   appendTextChunk,
@@ -7546,9 +7659,11 @@ export async function enqueueUserMessage(
     loadAdminConfig().chatQueueResponseMode,
     options?.fromDesktopChatSend,
   );
+  const providerRetryPending = transientProviderRetryTimer !== null;
   const initialAdmissionBusy = isTurnInFlight()
     || lifecycleState.abortRequested
     || isInterruptingResponse
+    || providerRetryPending
     || hasQueuedOrInFlightWork()
     || queueState.promotedItemInFlight;
   if (queueResponseMode === 'turn' && !initialAdmissionBusy) {
@@ -7624,6 +7739,7 @@ export async function enqueueUserMessage(
   const isSessionBusy = isTurnInFlight()
     || lifecycleState.abortRequested
     || isInterruptingResponse
+    || providerRetryPending
     || hasQueuedOrInFlightWork(queueId)
     || queueState.promotedItemInFlight;
   emitPerfTrace({
@@ -8114,13 +8230,13 @@ export async function enqueueUserMessage(
     if (!reservedTurnBoundaryItem && queuedWorkCount() >= MAX_QUEUE_SIZE) {
       return { queued: false, error: `Queue full (max ${MAX_QUEUE_SIZE})` };
     }
-    const admissionAction = reservedAdmissionAction ?? decideQueueAdmission({
+    const admissionAction = reservedAdmissionAction ?? (providerRetryPending ? 'turn-boundary' : decideQueueAdmission({
         mode: queueResponseMode,
         busy: true,
         hasInFlight: getInFlightQueueId() !== null,
         hasScopedTurnBoundaryQueued: options?.fromDesktopChatSend === true
           && (getTurnBoundaryQueue().length > 0 || getTurnAdmissionTicket() !== null),
-      });
+      }));
     const queueDeliveryMode: QueueDeliveryMode = admissionAction === 'turn-boundary' ? 'turn' : 'realtime';
     const queueItem: MessageQueueItem = {
       id: queueId,
@@ -8395,6 +8511,13 @@ export async function waitForSessionIdle(
 }
 
 export async function interruptCurrentResponse(reason: CancelReason = 'user'): Promise<boolean> {
+  if (transientProviderRetryTimer) {
+    clearTransientProviderRetryTimer(`interrupt:${reason}`);
+    broadcast('chat:message-stopped', null);
+    handleMessageStopped();
+    return true;
+  }
+
   if (!isTurnInFlight()) {
     // (issue #174) Stop pressed during 'starting': the SDK subprocess is
     // alive but system_init hasn't arrived (the for-await loop sees no
@@ -11725,6 +11848,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const wasPreWarming = lifecycleState.preWarming;
     setPreWarmInProgress(false);
     setSessionProcessing(false);
+    clearTransientProviderRetryTimer('session-finally');
 
     // Resolve any pending post-interrupt wait (session ended, turn is implicitly done)
     if (postInterruptTurnEndResolve) {
@@ -12021,6 +12145,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     setCurrentTurnProviderAnalytics(item.providerAnalytics ?? buildTurnProviderAnalytics(configState.currentProviderEnv));
     setAssistantMessagePresent(false);
     setCurrentTurnInjectedTurnId(item.injectedTurnId);
+    setCurrentTurnSourceItem(item);
 
     isStreamingMessage = true;
     // Pattern B+G: push this user message's requestId onto the FIFO queue.

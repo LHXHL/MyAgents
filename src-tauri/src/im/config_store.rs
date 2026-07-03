@@ -53,7 +53,10 @@ fn read_archived_agent_workspaces_from_disk() -> ArchivedAgentWorkspaces {
     let projects = match serde_json::from_str::<Vec<PartialProjectEntry>>(strip_bom(&content)) {
         Ok(p) => p,
         Err(e) => {
-            ulog_warn!("[agent] projects.json parse failed while checking archives: {}", e);
+            ulog_warn!(
+                "[agent] projects.json parse failed while checking archives: {}",
+                e
+            );
             return ArchivedAgentWorkspaces::default();
         }
     };
@@ -67,7 +70,9 @@ fn read_archived_agent_workspaces_from_disk() -> ArchivedAgentWorkspaces {
             archived.agent_ids.insert(agent_id);
         }
         if let Some(path) = project.path.filter(|p| !p.is_empty()) {
-            archived.paths.insert(crate::cron_task::normalize_path(&path));
+            archived
+                .paths
+                .insert(crate::cron_task::normalize_path(&path));
         }
     }
     archived
@@ -592,7 +597,9 @@ mod agent_monitor_tests {
             std::collections::HashSet::from([("agent-1".to_string(), "weixin".to_string())]);
 
         let archived = ArchivedAgentWorkspaces::default();
-        assert!(find_missing_startable_agent_channels(&agents, &running, &[], &archived).is_empty());
+        assert!(
+            find_missing_startable_agent_channels(&agents, &running, &[], &archived).is_empty()
+        );
 
         let disabled_agents = agent_config_with_weixin_channel(false);
         assert!(find_missing_startable_agent_channels(
