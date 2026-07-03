@@ -38,7 +38,7 @@ Phase 2 为本地验证和自动化测试新增了显式 mock mode：
 
 Space 不创建第二套“云端 device id”。本地端点身份的唯一值是既有 `~/.myagents/device_id`：
 
-- Rust owner：`src-tauri/src/device_identity.rs`，负责读取/创建 `device_id`，并提供设备名、platform、OS version、app version。
+- Rust owner：`src-tauri/src/device_identity.rs`，负责读取/创建 `device_id`，并提供设备名、platform、OS version、app version。首次创建必须通过 `~/.myagents/device_id.lock` 串行化，避免 Analytics 与 Space 并发启动时生成不同 ID。
 - Renderer owner：`src/renderer/identity/deviceIdentity.ts`，只做 typed invoke/cache；Analytics 和 Space 共同消费这一层。
 - Analytics 事件中的 `device_id` 口径不变，仍是同一个 `~/.myagents/device_id`。
 
@@ -72,6 +72,12 @@ Space 本地状态保存在 `~/.myagents/space/` 下：
 - `delivery_log.json` — 已投递 IssueDelivery 到本地 session 的映射，用于幂等与 delivered 标记。
 
 这些文件属于桌面客户端状态，不进入 SessionStore，也不由 Sidecar 管理。
+
+Legacy 兼容规则：
+
+- 旧 `registered_agents.json` 缺 `deviceId` 时，Rust 只在该记录已经有 `ownerUserId === current Space session user id` 的情况下补为当前 `~/.myagents/device_id`，并顺带补设备名、platform、OS version、app version。
+- 缺 `ownerUserId` 或 owner 不等于当前登录用户的旧记录不会被当前设备认领，避免同一电脑切换 user 后把旧 token / 工作区误归到新 user。
+- 云端旧 Registered Agent 缺 `deviceId` 时也不按 hostname / `clientId` 猜测本机；没有本地 owner+device 证据的记录按 unknown/remote 展示，不能修改本地工作区绑定。
 
 ## 网络与安全
 

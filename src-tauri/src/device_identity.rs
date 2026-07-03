@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
@@ -14,30 +14,50 @@ pub struct DeviceIdentity {
 }
 
 pub fn get_or_create_device_id() -> Result<String, String> {
-    let device_id_file = device_id_path()?;
+    get_or_create_device_id_at(device_id_path()?)
+}
 
-    if device_id_file.exists() {
-        match fs::read_to_string(&device_id_file) {
-            Ok(id) => {
-                let id = id.trim().to_string();
-                if !id.is_empty() {
-                    return Ok(id);
-                }
+fn get_or_create_device_id_at(device_id_file: PathBuf) -> Result<String, String> {
+    if let Some(id) = read_existing_device_id(&device_id_file) {
+        return Ok(id);
+    }
+
+    let lock_path = device_id_file.with_file_name("device_id.lock");
+    crate::utils::file_lock::with_file_lock_blocking(
+        &lock_path,
+        crate::utils::file_lock::FileLockOptions::default(),
+        || {
+            if let Some(id) = read_existing_device_id(&device_id_file) {
+                return Ok(id);
             }
-            Err(_) => {
-                // Regenerate below. This matches the legacy command behavior.
+
+            let new_id = uuid::Uuid::new_v4().to_string();
+            if let Some(parent) = device_id_file.parent() {
+                fs::create_dir_all(parent).map_err(crate::utils::file_lock::FileLockError::Io)?;
+            }
+            fs::write(&device_id_file, &new_id)
+                .map_err(crate::utils::file_lock::FileLockError::Io)?;
+            Ok(new_id)
+        },
+    )
+    .map_err(String::from)
+}
+
+fn read_existing_device_id(path: &Path) -> Option<String> {
+    match fs::read_to_string(path) {
+        Ok(id) => {
+            let id = id.trim().to_string();
+            if id.is_empty() {
+                None
+            } else {
+                Some(id)
             }
         }
+        Err(_) => {
+            // Regenerate below. This matches the legacy command behavior.
+            None
+        }
     }
-
-    let new_id = uuid::Uuid::new_v4().to_string();
-    if let Some(parent) = device_id_file.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("Failed to create ~/.myagents directory: {}", e))?;
-    }
-    fs::write(&device_id_file, &new_id)
-        .map_err(|e| format!("Failed to write device_id file: {}", e))?;
-    Ok(new_id)
 }
 
 pub fn current_device_identity() -> Result<DeviceIdentity, String> {
@@ -102,4 +122,41 @@ fn os_version() -> Option<String> {
         .or_else(sysinfo::System::os_version)
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    use super::*;
+
+    #[test]
+    fn concurrent_first_creation_returns_one_stable_device_id() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("device_id");
+        let barrier = Arc::new(Barrier::new(12));
+        let handles = (0..12)
+            .map(|_| {
+                let barrier = Arc::clone(&barrier);
+                let path = path.clone();
+                thread::spawn(move || {
+                    barrier.wait();
+                    get_or_create_device_id_at(path).expect("device id")
+                })
+            })
+            .collect::<Vec<_>>();
+
+        let ids = handles
+            .into_iter()
+            .map(|handle| handle.join().expect("thread"))
+            .collect::<Vec<_>>();
+        assert!(ids.iter().all(|id| id == &ids[0]));
+        assert_eq!(
+            fs::read_to_string(dir.path().join("device_id"))
+                .expect("written device_id")
+                .trim(),
+            ids[0]
+        );
+    }
 }

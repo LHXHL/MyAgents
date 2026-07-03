@@ -116,6 +116,19 @@ function mergeAgentDevice(
   };
 }
 
+function localAgentMatchesCurrentIdentity(
+  localAgent: LocalRegisteredAgent | undefined,
+  currentUserId: string | null,
+  currentLocalDeviceId: string | null,
+): boolean {
+  if (!localAgent || !currentUserId || !currentLocalDeviceId) return false;
+  const ownerUserId = normalizedIdentityValue(localAgent.ownerUserId);
+  const deviceId = normalizedIdentityValue(
+    localAgent.deviceId ?? localAgent.device?.deviceId,
+  );
+  return ownerUserId === currentUserId && deviceId === currentLocalDeviceId;
+}
+
 function registeredAgentToListItem(
   agent: SpaceRegisteredAgent,
   localAgent: LocalRegisteredAgent | undefined,
@@ -125,12 +138,22 @@ function registeredAgentToListItem(
   currentLocalDeviceId: string | null,
 ): LocalRegisteredAgent {
   const subscription = agent.subscriptions?.[0] ?? null;
-  const ownerUserId = normalizedIdentityValue(
-    agent.ownerUserId ?? localAgent?.ownerUserId,
+  const cloudOwnerUserId = normalizedIdentityValue(agent.ownerUserId);
+  const canUseLocalFallback = Boolean(
+    cloudOwnerUserId &&
+      currentUserId &&
+      cloudOwnerUserId === currentUserId &&
+      localAgentMatchesCurrentIdentity(
+        localAgent,
+        currentUserId,
+        currentLocalDeviceId,
+      ),
   );
-  const device = mergeAgentDevice(agent, localAgent);
+  const localFallback = canUseLocalFallback ? localAgent : undefined;
+  const ownerUserId = cloudOwnerUserId;
+  const device = mergeAgentDevice(agent, localFallback);
   const deviceId = normalizedIdentityValue(
-    device?.deviceId ?? agent.deviceId ?? localAgent?.deviceId,
+    device?.deviceId ?? agent.deviceId ?? localFallback?.deviceId,
   );
   const isLocal = Boolean(
     currentUserId &&
@@ -140,34 +163,34 @@ function registeredAgentToListItem(
   );
   return {
     id: agent.id,
-    baseUrl: localAgent?.baseUrl ?? fallbackBaseUrl,
-    spaceId: agent.spaceId || localAgent?.spaceId || fallbackSpaceId,
+    baseUrl: localFallback?.baseUrl ?? fallbackBaseUrl,
+    spaceId: agent.spaceId || localFallback?.spaceId || fallbackSpaceId,
     isLocal,
     ownerUserId,
     deviceId,
     device,
-    clientId: agent.clientId ?? localAgent?.clientId,
+    clientId: agent.clientId ?? localFallback?.clientId,
     deviceName:
-      device?.deviceName ?? agent.deviceName ?? localAgent?.deviceName,
-    localWorkspaceId: agent.localWorkspaceId ?? localAgent?.localWorkspaceId,
-    localAgentId: agent.localAgentId ?? localAgent?.localAgentId,
-    workspaceId: localAgent?.workspaceId ?? agent.localWorkspaceId,
-    displayName: agent.displayName || localAgent?.displayName || agent.id,
-    workspacePath: agent.workspacePath ?? localAgent?.workspacePath ?? "",
-    workspaceLabel: agent.workspaceLabel ?? localAgent?.workspaceLabel,
-    goalId: subscription?.goalId ?? localAgent?.goalId,
-    goalPathLabel: subscription?.goalPathLabel ?? localAgent?.goalPathLabel,
+      device?.deviceName ?? agent.deviceName ?? localFallback?.deviceName,
+    localWorkspaceId: agent.localWorkspaceId ?? localFallback?.localWorkspaceId,
+    localAgentId: agent.localAgentId ?? localFallback?.localAgentId,
+    workspaceId: localFallback?.workspaceId ?? agent.localWorkspaceId,
+    displayName: agent.displayName || localFallback?.displayName || agent.id,
+    workspacePath: agent.workspacePath ?? localFallback?.workspacePath ?? "",
+    workspaceLabel: agent.workspaceLabel ?? localFallback?.workspaceLabel,
+    goalId: subscription?.goalId ?? localFallback?.goalId,
+    goalPathLabel: subscription?.goalPathLabel ?? localFallback?.goalPathLabel,
     stateFilter: subscription?.stateFilter?.length
       ? subscription.stateFilter
-      : (localAgent?.stateFilter ?? ["todo"]),
-    goalMd: agent.goalMd ?? localAgent?.goalMd,
-    deliverySessionId: localAgent?.deliverySessionId,
+      : (localFallback?.stateFilter ?? ["todo"]),
+    goalMd: agent.goalMd ?? localFallback?.goalMd,
+    deliverySessionId: localFallback?.deliverySessionId,
     issueSubscriptionRunMode: agentIssueSubscriptionRunMode(
-      agent.issueSubscriptionRunMode ?? localAgent?.issueSubscriptionRunMode,
+      agent.issueSubscriptionRunMode ?? localFallback?.issueSubscriptionRunMode,
     ),
-    status: agent.status || localAgent?.status || "active",
-    createdAt: agent.createdAt || localAgent?.createdAt || "",
-    updatedAt: agent.updatedAt || localAgent?.updatedAt || "",
+    status: agent.status || localFallback?.status || "active",
+    createdAt: agent.createdAt || localFallback?.createdAt || "",
+    updatedAt: agent.updatedAt || localFallback?.updatedAt || "",
   };
 }
 
@@ -249,6 +272,18 @@ export default function Space({ isActive }: { isActive: boolean }) {
     const cloudIds = new Set(cloudItems.map((agent) => agent.id));
     const localOnlyItems = localAgents
       .filter((agent) => !cloudIds.has(agent.id))
+      .filter((agent) => {
+        const ownerUserId = normalizedIdentityValue(agent.ownerUserId);
+        const deviceId = normalizedIdentityValue(
+          agent.deviceId ?? agent.device?.deviceId,
+        );
+        return Boolean(
+          currentUserId &&
+            localDeviceId &&
+            ownerUserId === currentUserId &&
+            deviceId === localDeviceId,
+        );
+      })
       .map((agent) => {
         const ownerUserId = normalizedIdentityValue(agent.ownerUserId);
         const deviceId = normalizedIdentityValue(

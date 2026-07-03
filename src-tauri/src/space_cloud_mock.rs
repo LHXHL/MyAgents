@@ -9,9 +9,8 @@ use serde_json::{json, Value};
 use crate::space_cloud::{
     LocalRegisteredAgent, LocalRegisteredAgentPublic, SpaceApiRequestInput,
     SpaceDownloadAttachmentResult, SpaceIssueSubscriptionRunMode, SpaceProcessDeliveryResult,
-    SpaceRegisterAgentInput, SpaceSession, SpaceUpdateRegisteredAgentInput,
-    SpaceUploadIssueAttachmentsInput, SpaceUploadSkillInput, MAX_ATTACHMENT_UPLOAD_BYTES,
-    MAX_ATTACHMENT_UPLOAD_COUNT, MAX_SKILL_ZIP_BYTES,
+    SpaceRegisterAgentInput, SpaceSession, SpaceUploadIssueAttachmentsInput, SpaceUploadSkillInput,
+    MAX_ATTACHMENT_UPLOAD_BYTES, MAX_ATTACHMENT_UPLOAD_COUNT, MAX_SKILL_ZIP_BYTES,
 };
 use crate::workspace_files::path_safety::{
     atomic_write_file, resolve_inside_workspace, validate_workspace_root,
@@ -132,6 +131,7 @@ pub fn api_request(input: SpaceApiRequestInput) -> Result<Value, String> {
     Ok(ok_envelope(data))
 }
 
+#[cfg(test)]
 pub fn api_data_request(method: &str, path: &str, body: Option<Value>) -> Result<Value, String> {
     api_data_request_with_token(method, path, None, body)
 }
@@ -222,82 +222,6 @@ pub fn register_agent(
     Ok(agent.into())
 }
 
-pub fn update_agent(
-    input: SpaceUpdateRegisteredAgentInput,
-) -> Result<LocalRegisteredAgentPublic, String> {
-    let mut state = state().lock().expect("mock state poisoned");
-    let next_goal = match input.goal_id {
-        Some(goal_id) => {
-            let goal_id = goal_id.trim();
-            if goal_id.is_empty() {
-                return Err("goalId is required".to_string());
-            }
-            Some((goal_id.to_string(), goal_label(&state, goal_id)))
-        }
-        None => None,
-    };
-    let agent = state
-        .agents
-        .iter_mut()
-        .find(|agent| agent.id == input.id)
-        .ok_or_else(|| format!("Registered Agent not found locally: {}", input.id))?;
-    if let Some(display_name) = input.display_name {
-        let display_name = display_name.trim();
-        if display_name.is_empty() {
-            return Err("displayName is required".to_string());
-        }
-        agent.display_name = display_name.to_string();
-    }
-    if let Some(workspace_id) = input.workspace_id {
-        let workspace_id = workspace_id.trim();
-        if workspace_id.is_empty() {
-            return Err("workspaceId is required".to_string());
-        }
-        let local_agent_id = format!("local-agent-{}", safe_local_name(workspace_id));
-        agent.local_workspace_id = Some(workspace_id.to_string());
-        agent.workspace_id = Some(workspace_id.to_string());
-        agent.local_agent_id = Some(local_agent_id);
-    }
-    if let Some(workspace_path) = input.workspace_path {
-        let workspace_root = validate_workspace_root(&workspace_path)?;
-        agent.workspace_path = workspace_root.to_string_lossy().to_string();
-    }
-    if let Some(workspace_label) = input.workspace_label {
-        let workspace_label = workspace_label.trim();
-        agent.workspace_label = if workspace_label.is_empty() {
-            None
-        } else {
-            Some(workspace_label.to_string())
-        };
-    }
-    if let Some((goal_id, goal_path_label)) = next_goal {
-        agent.goal_id = Some(goal_id);
-        agent.goal_path_label = goal_path_label;
-    }
-    if let Some(state_filter) = input.state_filter {
-        agent.state_filter = normalize_mock_agent_state_filter(state_filter);
-    }
-    if let Some(goal_md) = input.goal_md {
-        let goal_md = goal_md.trim();
-        if goal_md.is_empty() {
-            return Err("goalMd is required".to_string());
-        }
-        agent.goal_md = Some(goal_md.to_string());
-    }
-    if let Some(status) = input.status {
-        let status = status.trim();
-        if !matches!(status, "active" | "disabled") {
-            return Err("Registered Agent status must be active or disabled".to_string());
-        }
-        agent.status = status.to_string();
-    }
-    if let Some(issue_subscription_run_mode) = input.issue_subscription_run_mode {
-        agent.issue_subscription_run_mode = issue_subscription_run_mode;
-    }
-    agent.updated_at = "2026-06-24T09:50:00.000Z".to_string();
-    Ok(agent.clone().into())
-}
-
 fn normalize_mock_agent_state_filter(input: Vec<String>) -> Vec<String> {
     let mut out = Vec::new();
     for state in input {
@@ -326,49 +250,6 @@ pub fn revoke_agent(id: &str) -> Result<LocalRegisteredAgentPublic, String> {
     Ok(agent.clone().into())
 }
 
-pub fn require_local_agent(id: &str) -> Result<LocalRegisteredAgent, String> {
-    state()
-        .lock()
-        .expect("mock state poisoned")
-        .agents
-        .iter()
-        .find(|agent| agent.id == id)
-        .cloned()
-        .ok_or_else(|| format!("Registered Agent not found locally: {}", id))
-}
-
-pub fn resolve_local_agent_for_cli(
-    agent_id: Option<&str>,
-    workspace_path: Option<&str>,
-) -> Result<LocalRegisteredAgent, String> {
-    let agents = state()
-        .lock()
-        .expect("mock state poisoned")
-        .agents
-        .iter()
-        .filter(|agent| agent.status == "active" || agent.status == "online")
-        .cloned()
-        .collect::<Vec<_>>();
-    if agents.is_empty() {
-        return Err("No mock Registered Agent token found.".to_string());
-    }
-    if let Some(id) = agent_id.filter(|s| !s.trim().is_empty()) {
-        return agents
-            .into_iter()
-            .find(|agent| agent.id == id)
-            .ok_or_else(|| format!("Registered Agent not found locally: {}", id));
-    }
-    let workspace = workspace_path
-        .filter(|s| !s.trim().is_empty())
-        .ok_or_else(|| "workspacePath is required when --agent-id is not provided".to_string())?;
-    agents
-        .into_iter()
-        .find(|agent| {
-            normalize_path_for_match(&agent.workspace_path) == normalize_path_for_match(workspace)
-        })
-        .ok_or_else(|| format!("No Registered Agent token matches workspace: {}", workspace))
-}
-
 #[cfg(test)]
 pub(crate) fn delivery_by_id(delivery_id: &str) -> Option<Value> {
     state()
@@ -378,25 +259,6 @@ pub(crate) fn delivery_by_id(delivery_id: &str) -> Option<Value> {
         .iter()
         .find(|item| item.pointer("/delivery/id").and_then(Value::as_str) == Some(delivery_id))
         .cloned()
-}
-
-pub fn poll_dispatches(registered_agent_id: &str) -> Result<Value, String> {
-    let state = state().lock().expect("mock state poisoned");
-    let items = state
-        .dispatches
-        .iter()
-        .filter(|item| {
-            item.pointer("/dispatch/registeredAgentId")
-                .and_then(Value::as_str)
-                == Some(registered_agent_id)
-                && item
-                    .pointer("/dispatch/deliveryStatus")
-                    .and_then(Value::as_str)
-                    == Some("pending")
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    Ok(ok_envelope(json!({ "items": items })))
 }
 
 pub fn mark_dispatch_delivered(
@@ -433,22 +295,6 @@ pub fn mark_dispatch_delivered(
     Ok(err_envelope(format!("Dispatch not found: {}", dispatch_id)))
 }
 
-pub fn poll_deliveries(registered_agent_id: &str) -> Result<Value, String> {
-    let state = state().lock().expect("mock state poisoned");
-    let items = state
-        .deliveries
-        .iter()
-        .filter(|item| {
-            item.pointer("/delivery/registeredAgentId")
-                .and_then(Value::as_str)
-                == Some(registered_agent_id)
-                && item.pointer("/delivery/status").and_then(Value::as_str) == Some("pending")
-        })
-        .cloned()
-        .collect::<Vec<_>>();
-    Ok(ok_envelope(json!({ "items": items })))
-}
-
 pub fn mark_delivery_delivered(
     delivery_id: &str,
     registered_agent_id: Option<&str>,
@@ -481,6 +327,45 @@ pub fn mark_delivery_delivered(
         }
     }
     Ok(err_envelope(format!("Delivery not found: {}", delivery_id)))
+}
+
+fn ignore_delivery(
+    state: &mut MockState,
+    issue_id: Option<&str>,
+    delivery_id: &str,
+    request_actor: &MockActor,
+) -> Result<Value, String> {
+    let agent_id = require_registered_agent_actor(request_actor)?;
+    for item in &mut state.deliveries {
+        if item.pointer("/delivery/id").and_then(Value::as_str) != Some(delivery_id) {
+            continue;
+        }
+        if let Some(issue_id) = issue_id {
+            let delivery_issue_id = item.pointer("/delivery/issueId").and_then(Value::as_str);
+            if delivery_issue_id != Some(issue_id) {
+                return Err(format!(
+                    "Delivery {} does not belong to issue {}",
+                    delivery_id, issue_id
+                ));
+            }
+        }
+        let delivery_agent_id = item
+            .pointer("/delivery/registeredAgentId")
+            .and_then(Value::as_str);
+        if delivery_agent_id != Some(agent_id.as_str()) {
+            return Err(format!(
+                "Delivery {} does not belong to Registered Agent {}",
+                delivery_id, agent_id
+            ));
+        }
+        if let Some(delivery) = item.get_mut("delivery").and_then(Value::as_object_mut) {
+            delivery.insert("status".to_string(), json!("ignored"));
+            delivery.insert("handledAt".to_string(), json!("2026-06-24T09:48:00.000Z"));
+            delivery.insert("updatedAt".to_string(), json!("2026-06-24T09:48:00.000Z"));
+        }
+        return Ok(json!({ "ignored": true, "handledAt": "2026-06-24T09:48:00.000Z" }));
+    }
+    Err(format!("Delivery not found: {}", delivery_id))
 }
 
 pub fn process_deliveries_once() -> SpaceProcessDeliveryResult {
@@ -761,7 +646,9 @@ fn handle_api_data_request(
         ("POST", ["api", "issues", issue_id, "status"]) => {
             set_issue_status(&mut state, issue_id, body)
         }
-        ("POST", ["api", "issues", issue_id, "claim"]) => claim_issue(&mut state, issue_id, body),
+        ("POST", ["api", "issues", issue_id, "claim"]) => {
+            claim_issue(&mut state, issue_id, body, &actor)
+        }
         ("POST", ["api", "issues", issue_id, "complete"]) => {
             set_issue_status_value(&mut state, issue_id, "done")
         }
@@ -773,8 +660,8 @@ fn handle_api_data_request(
         ("POST", ["api", "issues", issue_id, "close"]) => {
             set_issue_status_value(&mut state, issue_id, "closed")
         }
-        ("POST", ["api", "issues", _issue_id, "deliveries", _delivery_id, "ignore"]) => {
-            Ok(json!({ "ignored": true, "handledAt": "2026-06-24T09:48:00.000Z" }))
+        ("POST", ["api", "issues", issue_id, "deliveries", delivery_id, "ignore"]) => {
+            ignore_delivery(&mut state, Some(issue_id), delivery_id, &actor)
         }
         ("POST", ["api", "issues", issue_id, "close-own"]) => {
             set_issue_status_value(&mut state, issue_id, "closed")
@@ -796,31 +683,30 @@ fn handle_api_data_request(
         ),
         ("DELETE", ["api", "skills", skill_id]) => delete_skill(&mut state, skill_id),
         ("GET", ["api", "registered-agents", "me", "dispatches"]) => {
+            let agent_id = require_registered_agent_actor(&actor)?;
             let items = state
                 .dispatches
                 .iter()
                 .filter(|item| {
-                    actor.actor_type != "registered_agent"
-                        || item
-                            .pointer("/dispatch/registeredAgentId")
-                            .and_then(Value::as_str)
-                            == Some(actor.actor_id.as_str())
+                    item.pointer("/dispatch/registeredAgentId")
+                        .and_then(Value::as_str)
+                        == Some(agent_id.as_str())
                 })
                 .cloned()
                 .collect::<Vec<_>>();
             Ok(json!({ "items": items }))
         }
         ("GET", ["api", "registered-agents", "me", "deliveries"]) => {
+            let agent_id = require_registered_agent_actor(&actor)?;
             let items = state
                 .deliveries
                 .iter()
                 .filter(|item| {
                     item.pointer("/delivery/status").and_then(Value::as_str) == Some("pending")
-                        && (actor.actor_type != "registered_agent"
-                            || item
-                                .pointer("/delivery/registeredAgentId")
-                                .and_then(Value::as_str)
-                                == Some(actor.actor_id.as_str()))
+                        && item
+                            .pointer("/delivery/registeredAgentId")
+                            .and_then(Value::as_str)
+                            == Some(agent_id.as_str())
                 })
                 .cloned()
                 .collect::<Vec<_>>();
@@ -881,25 +767,27 @@ fn handle_api_data_request(
             Ok(json!({ "revoked": true }))
         }
         ("POST", ["api", "dispatches", dispatch_id, "delivered"]) => {
+            let agent_id = require_registered_agent_actor(&actor)?;
             drop(state);
-            let data = mark_dispatch_delivered(dispatch_id, None, None, None)?;
+            let data = mark_dispatch_delivered(dispatch_id, Some(&agent_id), None, None)?;
             Ok(data.get("data").cloned().unwrap_or(Value::Null))
         }
         ("POST", ["api", "deliveries", delivery_id, "delivered"]) => {
+            let agent_id = require_registered_agent_actor(&actor)?;
             let session_id = body
                 .as_ref()
                 .and_then(|value| value.get("sessionId"))
                 .and_then(Value::as_str)
                 .map(ToString::to_string);
             drop(state);
-            let data = mark_delivery_delivered(delivery_id, None, session_id)?;
+            let data = mark_delivery_delivered(delivery_id, Some(&agent_id), session_id)?;
             Ok(data.get("data").cloned().unwrap_or(Value::Null))
         }
-        ("POST", ["api", "deliveries", _delivery_id, "ignored"]) => {
-            Ok(json!({ "ignored": true, "handledAt": "2026-06-24T09:48:00.000Z" }))
+        ("POST", ["api", "deliveries", delivery_id, "ignored"]) => {
+            ignore_delivery(&mut state, None, delivery_id, &actor)
         }
         ("POST", ["api", "claims", claim_id, "local-task"]) => {
-            claim_local_task(&mut state, claim_id, body)
+            claim_local_task(&mut state, claim_id, body, &actor)
         }
         _ => Err(format!(
             "Mock Space API route not implemented: {} {}",
@@ -910,7 +798,11 @@ fn handle_api_data_request(
 
 fn mock_actor_for_token(state: &MockState, token: Option<&str>) -> MockActor {
     if let Some(token) = token.map(str::trim).filter(|value| !value.is_empty()) {
-        if let Some(agent) = state.agents.iter().find(|agent| agent.token == token) {
+        if let Some(agent) = state
+            .agents
+            .iter()
+            .find(|agent| agent.token == token && agent.status == "active")
+        {
             return MockActor {
                 actor_type: "registered_agent".to_string(),
                 actor_id: agent.id.clone(),
@@ -925,6 +817,13 @@ fn mock_actor_for_token(state: &MockState, token: Option<&str>) -> MockActor {
         actor_name: "Ethan".to_string(),
         authenticated: false,
     }
+}
+
+fn require_registered_agent_actor(actor: &MockActor) -> Result<String, String> {
+    if actor.authenticated && actor.actor_type == "registered_agent" {
+        return Ok(actor.actor_id.clone());
+    }
+    Err("Registered Agent token required".to_string())
 }
 
 fn state() -> &'static Mutex<MockState> {
@@ -2103,6 +2002,7 @@ fn claim_issue(
     state: &mut MockState,
     issue_id: &str,
     body: Option<Value>,
+    request_actor: &MockActor,
 ) -> Result<Value, String> {
     if state.claims.contains_key(issue_id) {
         return Err("Issue already has a claim handler".to_string());
@@ -2116,33 +2016,44 @@ fn claim_issue(
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let agent_id = delivery_id.and_then(|delivery_id| {
-        state.deliveries.iter().find_map(|item| {
-            if item.pointer("/delivery/id").and_then(Value::as_str) == Some(delivery_id) {
-                return item
+
+    let (actor_type, actor_id, actor_name) =
+        if request_actor.authenticated && request_actor.actor_type == "registered_agent" {
+            if let Some(delivery_id) = delivery_id {
+                let delivery = state
+                    .deliveries
+                    .iter()
+                    .find(|item| {
+                        item.pointer("/delivery/id").and_then(Value::as_str) == Some(delivery_id)
+                    })
+                    .ok_or_else(|| format!("Delivery not found: {}", delivery_id))?;
+                let delivery_issue_id = delivery
+                    .pointer("/delivery/issueId")
+                    .and_then(Value::as_str);
+                if delivery_issue_id != Some(issue_id) {
+                    return Err(format!(
+                        "Delivery {} does not belong to issue {}",
+                        delivery_id, issue_id
+                    ));
+                }
+                let delivery_agent_id = delivery
                     .pointer("/delivery/registeredAgentId")
-                    .and_then(Value::as_str)
-                    .map(ToString::to_string);
+                    .and_then(Value::as_str);
+                if delivery_agent_id != Some(request_actor.actor_id.as_str()) {
+                    return Err(format!(
+                        "Delivery {} does not belong to Registered Agent {}",
+                        delivery_id, request_actor.actor_id
+                    ));
+                }
             }
-            None
-        })
-    });
-    let agent_name = agent_id.as_deref().and_then(|agent_id| {
-        state
-            .agents
-            .iter()
-            .find(|agent| agent.id == agent_id)
-            .map(|agent| agent.display_name.clone())
-    });
-    let (actor_type, actor_id, actor_name) = if let Some(agent_id) = agent_id {
-        (
-            "registered_agent",
-            agent_id,
-            agent_name.unwrap_or_else(|| "Registered Agent".to_string()),
-        )
-    } else {
-        ("user", "usr_mock_owner".to_string(), "Ethan".to_string())
-    };
+            (
+                "registered_agent",
+                request_actor.actor_id.clone(),
+                request_actor.actor_name.clone(),
+            )
+        } else {
+            ("user", "usr_mock_owner".to_string(), "Ethan".to_string())
+        };
     let claim_id = state.next_id("claim");
     let _ = set_issue_status_value(state, issue_id, "doing")?;
     let claim = json!({
@@ -2165,6 +2076,7 @@ fn claim_local_task(
     state: &mut MockState,
     claim_id: &str,
     body: Option<Value>,
+    request_actor: &MockActor,
 ) -> Result<Value, String> {
     let body = body.unwrap_or(Value::Null);
     let local_task_id = body
@@ -2182,6 +2094,18 @@ fn claim_local_task(
     for claim in state.claims.values_mut() {
         if claim.get("id").and_then(Value::as_str) != Some(claim_id) {
             continue;
+        }
+        if request_actor.authenticated && request_actor.actor_type == "registered_agent" {
+            let claim_actor_type = claim.get("actorType").and_then(Value::as_str);
+            let claim_actor_id = claim.get("actorId").and_then(Value::as_str);
+            if claim_actor_type != Some("registered_agent")
+                || claim_actor_id != Some(request_actor.actor_id.as_str())
+            {
+                return Err(format!(
+                    "Claim {} does not belong to Registered Agent {}",
+                    claim_id, request_actor.actor_id
+                ));
+            }
         }
         if let Some(object) = claim.as_object_mut() {
             object.insert("localTaskId".to_string(), json!(local_task_id));
@@ -2395,12 +2319,52 @@ fn update_agent_api(
         .iter_mut()
         .find(|agent| agent.id == agent_id)
         .ok_or_else(|| format!("Registered Agent not found locally: {}", agent_id))?;
+    let changes_local_binding = body.get("localWorkspaceId").is_some()
+        || body.get("localAgentId").is_some()
+        || body.get("workspacePath").is_some()
+        || body.get("workspaceLabel").is_some();
+    if changes_local_binding {
+        let body_device_id = body
+            .get("deviceId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let agent_device_id = agent
+            .device_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if body_device_id.is_none() || body_device_id != agent_device_id {
+            return Err(
+                "workspace binding can only be changed from the registered device".to_string(),
+            );
+        }
+    }
     if let Some(display_name) = body.get("displayName").and_then(Value::as_str) {
         let display_name = display_name.trim();
         if display_name.is_empty() {
             return Err("displayName is required".to_string());
         }
         agent.display_name = display_name.to_string();
+    }
+    if let Some(local_workspace_id) = body.get("localWorkspaceId").and_then(Value::as_str) {
+        let local_workspace_id = local_workspace_id.trim();
+        if local_workspace_id.is_empty() {
+            return Err("localWorkspaceId is required".to_string());
+        }
+        agent.local_workspace_id = Some(local_workspace_id.to_string());
+        agent.workspace_id = Some(local_workspace_id.to_string());
+    }
+    if let Some(local_agent_id) = body.get("localAgentId").and_then(Value::as_str) {
+        let local_agent_id = local_agent_id.trim();
+        if local_agent_id.is_empty() {
+            return Err("localAgentId is required".to_string());
+        }
+        agent.local_agent_id = Some(local_agent_id.to_string());
+    }
+    if let Some(workspace_path) = body.get("workspacePath").and_then(Value::as_str) {
+        let workspace_root = validate_workspace_root(workspace_path)?;
+        agent.workspace_path = workspace_root.to_string_lossy().to_string();
     }
     if body.get("workspaceLabel").is_some() {
         agent.workspace_label = body
@@ -3132,12 +3096,6 @@ fn parse_mock_url(path: &str) -> Result<reqwest::Url, String> {
     }
     reqwest::Url::parse(&format!("{}{}", MOCK_BASE_URL, path))
         .map_err(|e| format!("Invalid mock Space API path: {}", e))
-}
-
-fn normalize_path_for_match(path: &str) -> String {
-    path.replace('\\', "/")
-        .trim_end_matches('/')
-        .to_ascii_lowercase()
 }
 
 fn mime_for_name(name: &str) -> &'static str {
