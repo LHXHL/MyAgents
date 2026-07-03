@@ -10,7 +10,7 @@ import { useToast } from '@/components/Toast';
 import type { Project } from '@/config/types';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { getSkillFileState, SPACE_VISIBLE_REFRESH_TTL_MS, type SpaceActions, type SpaceSkillDetailState } from '@/pages/space/spaceStore';
-import { formatBytes, formatDate } from '@/pages/space/spaceUi';
+import { SPACE_LIST_FRAME_CLASS, SPACE_TWO_COLUMN_GRID_CLASS, formatBytes, formatDate } from '@/pages/space/spaceUi';
 
 type SkillDetailMode = 'entry' | 'files';
 const EMPTY_SKILL_FILES: SpaceSkillFile[] = [];
@@ -70,9 +70,9 @@ export function SkillsWorkspace({ admin, skills, loading, selectedSkillId, proje
       </section>
 
       <main className="min-h-0 overflow-y-auto px-6 pb-10 pt-5">
-        <section className="mx-auto max-w-4xl" aria-label="Skill list">
+        <section className={SPACE_LIST_FRAME_CLASS} aria-label="Skill list">
           {skills.length === 0 && loading ? (
-            <div className="grid grid-cols-2 gap-3 max-lg:grid-cols-1">
+            <div className={SPACE_TWO_COLUMN_GRID_CLASS}>
               {Array.from({ length: 6 }).map((_, index) => (
                 <div key={index} className="rounded-xl bg-[var(--paper-elevated)] px-3.5 py-3">
                   <div className="flex items-center gap-2">
@@ -99,7 +99,7 @@ export function SkillsWorkspace({ admin, skills, loading, selectedSkillId, proje
               </div>
             </div>
           ) : (
-            <div className="grid grid-cols-2 gap-3 max-lg:grid-cols-1">
+            <div className={SPACE_TWO_COLUMN_GRID_CLASS}>
               {skills.map((skill) => (
                 <SpaceSkillCard key={skill.id} skill={skill} onOpen={() => openSkill(skill.id)} t={t} />
               ))}

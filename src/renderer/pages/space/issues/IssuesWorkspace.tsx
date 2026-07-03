@@ -6,7 +6,7 @@ import type { SpaceIssue } from '@/api/spaceCloud';
 import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
 import { ACTIVE_ISSUE_STATE_FILTER, claimHandlerLabel, ISSUE_STATUSES, issueDisplayTitle, issueStatusLabel } from '@/pages/space/spaceHelpers';
 import { recordSpaceMetric } from '@/pages/space/spaceMetrics';
-import { formatTime, statusPillClass } from '@/pages/space/spaceUi';
+import { SPACE_LIST_FRAME_CLASS, formatTime, statusPillClass } from '@/pages/space/spaceUi';
 
 export function IssuesWorkspace({
   admin,
@@ -128,7 +128,7 @@ export function IssuesWorkspace({
       </section>
 
       <main className="min-h-0 overflow-y-auto px-6 pb-8 pt-3">
-        <section className="mx-auto max-w-[1280px]" aria-label="Issue list">
+        <section className={SPACE_LIST_FRAME_CLASS} aria-label="Issue list">
           <div className="border-y border-[var(--line-subtle)]">
             {issues.length === 0 && issuesLoading ? (
               <div className="grid gap-0">

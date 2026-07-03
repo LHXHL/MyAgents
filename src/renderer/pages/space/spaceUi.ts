@@ -14,6 +14,9 @@ export const SPACE_BACKGROUND_STYLE: CSSProperties = {
     'linear-gradient(180deg, var(--paper-elevated), var(--paper) 48%, color-mix(in srgb, var(--paper) 86%, var(--paper-inset)) 100%), var(--paper)',
 };
 
+export const SPACE_LIST_FRAME_CLASS = 'mx-auto max-w-4xl';
+export const SPACE_TWO_COLUMN_GRID_CLASS = 'grid grid-cols-2 gap-3 max-lg:grid-cols-1';
+
 export function formatTime(value?: string | null): string {
   if (!value) return '';
   const date = new Date(value);

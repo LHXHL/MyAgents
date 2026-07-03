@@ -13,7 +13,7 @@ import { spaceErrorMessage } from '@/api/spaceCloud';
 import { issueStatusLabel } from '@/pages/space/spaceHelpers';
 import { GoalPathSelectLabel } from '@/pages/space/GoalPathSelectLabel';
 import type { SpaceActions } from '@/pages/space/spaceStore';
-import { formatTime } from '@/pages/space/spaceUi';
+import { SPACE_LIST_FRAME_CLASS, SPACE_TWO_COLUMN_GRID_CLASS, formatTime } from '@/pages/space/spaceUi';
 import { shortenPathForDisplay } from '@/utils/pathDetection';
 import { workspacePathsEqual } from '../../../../shared/workspacePath';
 
@@ -126,7 +126,7 @@ export function AgentsWorkspace({ admin, agents, goals, projects, actions, onRef
         </section>
         <main className="min-h-0 overflow-y-auto px-6 pb-8 pt-3">
           {agents.length === 0 ? (
-            <div className="grid h-40 place-items-center rounded-[20px] border border-dashed border-[var(--line)] bg-[var(--paper-elevated)]/40 text-sm text-[var(--ink-muted)]">
+            <div className={`${SPACE_LIST_FRAME_CLASS} grid h-40 place-items-center rounded-[20px] border border-dashed border-[var(--line)] bg-[var(--paper-elevated)]/40 text-sm text-[var(--ink-muted)]`}>
               <div className="text-center">
                 <Bot className="mx-auto mb-3 h-8 w-8 text-[var(--ink-muted)]" />
                 <p>{t('space.agents.empty')}</p>
@@ -139,7 +139,7 @@ export function AgentsWorkspace({ admin, agents, goals, projects, actions, onRef
               </div>
             </div>
           ) : (
-            <div className="mx-auto grid max-w-[1180px] grid-cols-2 gap-3 max-xl:grid-cols-1">
+            <div className={`${SPACE_LIST_FRAME_CLASS} ${SPACE_TWO_COLUMN_GRID_CLASS}`}>
               {agents.map((agent) => (
                 <AgentCard key={agent.id} agent={agent} admin={admin} busy={busyAgentId === agent.id} t={t} onOpen={() => setSelectedAgentId(agent.id)} onEdit={() => setEditingAgent(agent)} onToggle={() => void toggleAgentStatus(agent)} onRevoke={() => setRevokeTarget(agent)} />
               ))}
