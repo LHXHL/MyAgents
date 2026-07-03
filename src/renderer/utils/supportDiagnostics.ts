@@ -158,7 +158,7 @@ export function sanitizeRuntimeDiagnosticsForSupport(diagnostics: RuntimeDiagnos
 
 export function buildSupportDiagnosticsDescription(input: SupportDiagnosticsInput): string {
   const lines: string[] = [
-    '我在 MyAgents 对话页遇到了需要诊断的问题。请作为 MyAgents 小助理排查根因，并给出用户可以执行的恢复步骤；如果判断是产品 bug，请指出可能的代码路径。',
+    '用户在 MyAgents 对话页遇到了需要诊断的问题。请作为 MyAgents 小助理排查根因，使用 /support skill 进行诊断分析，帮助用户解决问题。',
     '',
     '## 触发位置',
     `- 类型：${SOURCE_LABELS[input.source]}`,
@@ -193,11 +193,6 @@ export function buildSupportDiagnosticsDescription(input: SupportDiagnosticsInpu
     lines.push(escapeMarkdownFence(JSON.stringify(sanitizeRuntimeDiagnosticsForSupport(input.runtimeDiagnostics), null, 2)));
     lines.push('```');
   }
-
-  lines.push(
-    '',
-    '请优先检查：Provider / Runtime 认证与配置、当前 session 状态、最近一轮错误、相关日志线索。不要假设这是用户输入问题；先判断是否是 MyAgents 产品或 runtime 集成问题。',
-  );
 
   return lines.join('\n');
 }
