@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowLeft, Globe, History, Loader2, Plus, PanelRightOpen, RotateCcw, TerminalSquare, X } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, Bot, Globe, History, Loader2, Plus, PanelRightOpen, RotateCcw, TerminalSquare, X } from 'lucide-react';
 import { forwardRef, lazy, Suspense, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -59,6 +59,7 @@ import { isTauriEnvironment } from '@/utils/browserMock';
 import { isDebugMode } from '@/utils/debug';
 import { getChannelTypeLabel } from '@/utils/taskCenterUtils';
 import { appendCronPromptToDraft } from '@/utils/cronComposerRecovery';
+import { launchSupportDiagnostics } from '@/utils/supportDiagnostics';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID, type PermissionMode, type McpServerDefinition, type Provider, getEffectiveModelAliases } from '@/config/types';
 import { syncMcpServerNames } from '@/components/tools/toolBadgeConfig';
 import {
@@ -105,7 +106,7 @@ import {
   GEMINI_PERMISSION_MODES,
   getDefaultRuntimePermissionMode,
 } from '../../shared/types/runtime';
-import type { RuntimeType, RuntimeDetections, RuntimeConfig } from '../../shared/types/runtime';
+import type { RuntimeType, RuntimeDetections, RuntimeConfig, RuntimeDiagnostics } from '../../shared/types/runtime';
 import type { FilePreviewIntent, InitialMessage, SidecarConfigDisposition } from '@/types/tab';
 import type { FilePreviewFocusTarget } from '@/types/filePreview';
 import { shouldAutoSendInitialMessage } from '@/utils/initialMessageAutoSend';
@@ -1219,6 +1220,34 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // spawned with its frozen runtime and the backend routes by sessionId.
   const currentRuntime: RuntimeType = (sessionRuntime as RuntimeType | null) ?? agentRuntime;
   const isExternalRuntime = currentRuntime !== 'builtin';
+  const handleDiagnoseAgentError = useCallback((message: string) => {
+    launchSupportDiagnostics({
+      source: 'agent_error',
+      message,
+      terminalReason: lastTerminalReason,
+      sessionId: sessionIdRef.current,
+      workspacePath: agentDir,
+      runtime: currentRuntime,
+    });
+  }, [agentDir, currentRuntime, lastTerminalReason]);
+  const handleDiagnoseTerminalReason = useCallback((reason: string) => {
+    launchSupportDiagnostics({
+      source: 'terminal_reason',
+      terminalReason: reason,
+      sessionId: sessionIdRef.current,
+      workspacePath: agentDir,
+      runtime: currentRuntime,
+    });
+  }, [agentDir, currentRuntime]);
+  const handleDiagnoseRuntimeDiagnostics = useCallback((diagnostics: RuntimeDiagnostics) => {
+    launchSupportDiagnostics({
+      source: 'runtime_diagnostics',
+      runtimeDiagnostics: diagnostics,
+      sessionId: sessionIdRef.current,
+      workspacePath: agentDir,
+      runtime: currentRuntime,
+    });
+  }, [agentDir, currentRuntime]);
   const inputChromeRuntime = projectInputChromeRuntime({
     currentRuntime,
     managedProviderRuntimeActive,
@@ -4729,12 +4758,16 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             reason={agentError ? null : lastTerminalReason}
             onDismiss={() => setLastTerminalReason(null)}
             onNewSession={handleNewSession}
+            onDiagnose={handleDiagnoseTerminalReason}
           />
 
           {/* Issue #194 — external-runtime self-diagnostic banner. Only renders
               when the runtime reports something actionable (auth/app/MCP
               failures). Healthy runtimes don't draw attention here. */}
-          <RuntimeDiagnosticsBanner diagnostics={runtimeDiagnostics} />
+          <RuntimeDiagnosticsBanner
+            diagnostics={runtimeDiagnostics}
+            onDiagnose={handleDiagnoseRuntimeDiagnostics}
+          />
 
           {agentError && (() => {
             // Find the last real user message — drives both the oversized-image
@@ -4769,6 +4802,15 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
                   )}
                 </div>
                 <div className="flex flex-shrink-0 items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => handleDiagnoseAgentError(agentError)}
+                    className="rounded p-0.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--accent)]"
+                    title={t('shell.diagnostics.askHelper')}
+                    aria-label={t('shell.diagnostics.askHelper')}
+                  >
+                    <Bot className="h-3.5 w-3.5" />
+                  </button>
                   {canRetry && (
                     <button
                       type="button"

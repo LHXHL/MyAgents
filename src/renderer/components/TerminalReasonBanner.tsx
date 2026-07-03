@@ -11,17 +11,22 @@
  * - severity=error 用 error 色调，notice 用 warning 色调，info 用 muted 色调
  */
 
-import { AlertCircle, AlertTriangle, Info, X } from 'lucide-react';
+import { AlertCircle, AlertTriangle, Bot, Info, X } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
-import { describeTerminalReason, type TerminalReasonSeverity } from '../../shared/terminalReason';
+import {
+  describeTerminalReason,
+  shouldOfferTerminalReasonDiagnostics,
+  type TerminalReasonSeverity,
+} from '../../shared/terminalReason';
 
 interface TerminalReasonBannerProps {
   reason: string | null;
   onDismiss: () => void;
   /** max_turns → 引导用户新开会话。prop 缺失时按钮不渲染。 */
   onNewSession?: () => void;
+  onDiagnose?: (reason: string) => void;
 }
 
 const SEVERITY_STYLES: Record<TerminalReasonSeverity, {
@@ -50,6 +55,7 @@ export default function TerminalReasonBanner({
   reason,
   onDismiss,
   onNewSession,
+  onDiagnose,
 }: TerminalReasonBannerProps) {
   const { t } = useTranslation('chat');
   // Guard rapid double-clicks on the "新开会话" button — handleNewSession is async
@@ -78,6 +84,11 @@ export default function TerminalReasonBanner({
   // Per-reason shortcut button. Drives the PRD §5.1.2 action:
   // - max_turns → 新开会话继续
   const showNewSession = reason === 'max_turns' && !!onNewSession;
+  const diagnoseReason = typeof reason === 'string'
+    && shouldOfferTerminalReasonDiagnostics(reason)
+    && !!onDiagnose
+    ? reason
+    : null;
 
   return (
     <div className={`relative z-10 flex-shrink-0 border-b border-[var(--line)] ${style.bg} px-4 py-2 text-xs text-[var(--ink)]`}>
@@ -88,6 +99,17 @@ export default function TerminalReasonBanner({
           <span className="ml-2 text-[var(--ink-muted)]">{detail}</span>
         </div>
         <div className="flex flex-shrink-0 items-center gap-1.5">
+          {diagnoseReason && onDiagnose && (
+            <button
+              type="button"
+              onClick={() => onDiagnose(diagnoseReason)}
+              className="rounded p-0.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--accent)]"
+              title={t('shell.diagnostics.askHelper')}
+              aria-label={t('shell.diagnostics.askHelper')}
+            >
+              <Bot className="h-3.5 w-3.5" />
+            </button>
+          )}
           {showNewSession && (
             <button
               type="button"

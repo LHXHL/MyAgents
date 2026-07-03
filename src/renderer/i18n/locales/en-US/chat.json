@@ -753,6 +753,9 @@
       "rewindAction": "Rewind to before this turn",
       "resend": "Resend"
     },
+    "diagnostics": {
+      "askHelper": "Ask helper to diagnose"
+    },
     "selection": {
       "quote": "Quote",
       "elaborate": "Elaborate",

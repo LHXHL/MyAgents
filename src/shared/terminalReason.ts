@@ -134,6 +134,23 @@ export function shouldSurfaceTerminalReason(reason: unknown): boolean {
 }
 
 /**
+ * 是否应该在 terminal_reason banner 上提供"小助理诊断"。
+ *
+ * 只把真正需要排查的 terminal state 交给 support flow：
+ * - error 级别：用户需要处理，通常涉及 Provider / Hook / 图像 / 上下文边界
+ * - 未知枚举：SDK 升级后前端还没认识，值得诊断
+ *
+ * notice/info（max_turns / background_requested / rapid_refill_breaker 等）
+ * 是正常边界或自恢复状态，不默认打扰用户。
+ */
+export function shouldOfferTerminalReasonDiagnostics(reason: unknown): boolean {
+  const info = describeTerminalReason(reason);
+  if (!info) return false;
+  if (info.severity === 'error') return true;
+  return typeof reason === 'string' && !Object.prototype.hasOwnProperty.call(MAP, reason);
+}
+
+/**
  * 该 result 是否是"用户/系统主动中止"（`aborted_streaming` / `aborted_tools` /
  * 未来任意 `aborted_*`）。
  *

@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { i18n } from '@/i18n';
 import type { RuntimeDiagnostics } from '../../shared/types/runtime';
@@ -14,6 +14,25 @@ function expectTextContaining(...parts: string[]) {
     }).length,
   ).toBeGreaterThan(0);
 }
+
+const blockingDiagnostics: RuntimeDiagnostics = {
+  runtime: 'codex',
+  runtimeSource: 'system-cli',
+  timestamp: '2026-07-03T00:00:00.000Z',
+  status: {
+    auth: 'ok',
+    apps: 'ok',
+    mcpServers: 'ok',
+    features: 'ok',
+  },
+  auth: {
+    authMethod: null,
+    requiresLogin: true,
+  },
+  effectiveEnv: {
+    cwd: '/Users/example/project',
+  },
+};
 
 describe('RuntimeDiagnosticsBanner i18n', () => {
   it('localizes diagnostic chrome while preserving raw runtime payloads', async () => {
@@ -85,5 +104,43 @@ describe('RuntimeDiagnosticsBanner i18n', () => {
     expectTextContaining('用户MCP', 'state=failed');
     expectTextContaining('cwd: /tmp/用户工作区');
     expectTextContaining('Diagnostic snapshot: 2026-06-28T00:00:00.000Z. CLI sync info:');
+  });
+});
+
+describe('RuntimeDiagnosticsBanner diagnostics action', () => {
+  beforeEach(async () => {
+    await i18n.changeLanguage('en-US');
+  });
+
+  it('calls onDiagnose for blocking diagnostics', () => {
+    const onDiagnose = vi.fn();
+    render(
+      <RuntimeDiagnosticsBanner
+        diagnostics={blockingDiagnostics}
+        onDiagnose={onDiagnose}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Ask helper to diagnose/ }));
+
+    expect(onDiagnose).toHaveBeenCalledTimes(1);
+    expect(onDiagnose).toHaveBeenCalledWith(blockingDiagnostics);
+  });
+
+  it('does not render diagnostics action for non-blocking diagnostics', () => {
+    render(
+      <RuntimeDiagnosticsBanner
+        diagnostics={{
+          ...blockingDiagnostics,
+          auth: {
+            authMethod: null,
+            requiresLogin: false,
+          },
+        }}
+        onDiagnose={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: /Ask helper to diagnose/ })).not.toBeInTheDocument();
   });
 });

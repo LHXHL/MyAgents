@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   describeTerminalReason,
   isAbortedTerminalReason,
+  shouldOfferTerminalReasonDiagnostics,
   shouldRecordTurnForTitle,
   shouldTitleCompletedTurn,
   shouldSurfaceTerminalReason,
@@ -64,6 +65,30 @@ describe('shouldSurfaceTerminalReason', () => {
     expect(shouldSurfaceTerminalReason(undefined)).toBe(false);
     expect(shouldSurfaceTerminalReason('prompt_too_long')).toBe(true);
     expect(shouldSurfaceTerminalReason('some_future_reason')).toBe(true);
+  });
+});
+
+describe('shouldOfferTerminalReasonDiagnostics', () => {
+  it('offers helper diagnostics for terminal error reasons', () => {
+    expect(shouldOfferTerminalReasonDiagnostics('prompt_too_long')).toBe(true);
+    expect(shouldOfferTerminalReasonDiagnostics('blocking_limit')).toBe(true);
+    expect(shouldOfferTerminalReasonDiagnostics('stop_hook_prevented')).toBe(true);
+    expect(shouldOfferTerminalReasonDiagnostics('hook_stopped')).toBe(true);
+    expect(shouldOfferTerminalReasonDiagnostics('image_error')).toBe(true);
+    expect(shouldOfferTerminalReasonDiagnostics('model_error')).toBe(true);
+  });
+
+  it('does not offer diagnostics for normal or self-recovering reasons', () => {
+    expect(shouldOfferTerminalReasonDiagnostics('completed')).toBe(false);
+    expect(shouldOfferTerminalReasonDiagnostics('aborted_streaming')).toBe(false);
+    expect(shouldOfferTerminalReasonDiagnostics('max_turns')).toBe(false);
+    expect(shouldOfferTerminalReasonDiagnostics('rapid_refill_breaker')).toBe(false);
+    expect(shouldOfferTerminalReasonDiagnostics('tool_deferred')).toBe(false);
+    expect(shouldOfferTerminalReasonDiagnostics('background_requested')).toBe(false);
+  });
+
+  it('offers diagnostics for unknown future reasons', () => {
+    expect(shouldOfferTerminalReasonDiagnostics('some_future_reason')).toBe(true);
   });
 });
 

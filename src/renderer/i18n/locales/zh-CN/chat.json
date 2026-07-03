@@ -753,6 +753,9 @@
       "rewindAction": "点击时间回溯到之前",
       "resend": "重新发送"
     },
+    "diagnostics": {
+      "askHelper": "小助理诊断"
+    },
     "selection": {
       "quote": "引用",
       "elaborate": "深入讲讲",
