@@ -110,6 +110,7 @@ function renderRail(options: {
 
 describe('LauncherRightRail', () => {
     beforeEach(() => {
+        window.localStorage.removeItem('myagents.launcher.showAutomationHistorySessions');
         Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
             configurable: true,
             value: vi.fn(function scrollTo(this: HTMLElement, options: ScrollToOptions) {
@@ -193,6 +194,15 @@ describe('LauncherRightRail', () => {
 
         expect(screen.getByText('Project 6')).toBeInTheDocument();
         expect(screen.queryByRole('button', { name: /展开更多/ })).not.toBeInTheDocument();
+    });
+
+    it('labels the automation history toggle by current state', () => {
+        renderRail({ sessions: [] });
+
+        const hiddenStateButton = screen.getByRole('button', { name: '定时任务对话已隐藏' });
+        fireEvent.click(hiddenStateButton);
+
+        expect(screen.getByRole('button', { name: '定时任务对话已显示' })).toBeInTheDocument();
     });
 
     it('keeps the sticky history header inside the content column', () => {

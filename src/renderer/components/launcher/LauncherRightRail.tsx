@@ -484,8 +484,8 @@ export default memo(function LauncherRightRail({
                                     />
                                     <Tip
                                         label={showAutomationSessions
-                                            ? t('rightRail.hideAutomationHistory')
-                                            : t('rightRail.showAutomationHistory')}
+                                            ? t('rightRail.automationHistoryVisible')
+                                            : t('rightRail.automationHistoryHidden')}
                                         position="bottom"
                                     >
                                         <button
@@ -497,8 +497,8 @@ export default memo(function LauncherRightRail({
                                                     : 'text-[var(--ink-muted)]/75'
                                             }`}
                                             aria-label={showAutomationSessions
-                                                ? t('rightRail.hideAutomationHistory')
-                                                : t('rightRail.showAutomationHistory')}
+                                                ? t('rightRail.automationHistoryVisible')
+                                                : t('rightRail.automationHistoryHidden')}
                                         >
                                             {showAutomationSessions
                                                 ? <Eye className="h-3.5 w-3.5" />

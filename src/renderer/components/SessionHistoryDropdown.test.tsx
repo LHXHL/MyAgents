@@ -80,6 +80,7 @@ function renderDropdown(
 describe('SessionHistoryDropdown row actions', () => {
     beforeEach(() => {
         vi.clearAllMocks();
+        window.localStorage.removeItem('myagents.chat.showAutomationHistorySessions');
         mocks.getSessions.mockResolvedValue([SESSION]);
         mocks.getWorkspaceCronTasks.mockResolvedValue([]);
         mocks.getBackgroundSessions.mockResolvedValue([]);
@@ -93,6 +94,26 @@ describe('SessionHistoryDropdown row actions', () => {
             return Promise.resolve(() => {});
         });
         mocks.listeners.clear();
+    });
+
+    it('keeps the list body height stable while history is loading', () => {
+        mocks.getSessions.mockReturnValue(new Promise(() => {}));
+
+        renderDropdown(vi.fn());
+
+        const loadingState = screen.getByText('加载中...');
+        expect(loadingState).toHaveClass('h-full');
+        expect(loadingState.parentElement).toHaveClass('h-80');
+    });
+
+    it('labels the automation visibility button by current state', async () => {
+        renderDropdown(vi.fn());
+        await screen.findByText('My session');
+
+        const hiddenStateButton = screen.getByRole('button', { name: '定时任务对话已隐藏' });
+        fireEvent.click(hiddenStateButton);
+
+        expect(screen.getByRole('button', { name: '定时任务对话已显示' })).toBeInTheDocument();
     });
 
     it('surfaces only 在新 tab 打开 + 更多 on the row; the rest live behind 更多', async () => {
