@@ -1000,8 +1000,8 @@ export function handleModelAdd(payload: {
   if (p.aliases && typeof p.aliases === 'object') {
     modelAliases = p.aliases as Record<string, string>;
   } else if (modelIds.length > 0) {
-    // Default: map sonnet/opus/haiku to first model
-    modelAliases = { sonnet: modelIds[0], opus: modelIds[0], haiku: modelIds[0] };
+    // Default: map fable/sonnet/opus/haiku to first model
+    modelAliases = { fable: modelIds[0], sonnet: modelIds[0], opus: modelIds[0], haiku: modelIds[0] };
   }
 
   const providerObj = {

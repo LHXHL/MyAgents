@@ -50,7 +50,7 @@ export interface SendMessagePayload {
     maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
     /** Upstream API format for OpenAI bridge (only used when apiProtocol === 'openai') */
     upstreamFormat?: 'chat_completions' | 'responses';
-    modelAliases?: { sonnet?: string; opus?: string; haiku?: string };
+    modelAliases?: { fable?: string; sonnet?: string; opus?: string; haiku?: string };
   };
 }
 

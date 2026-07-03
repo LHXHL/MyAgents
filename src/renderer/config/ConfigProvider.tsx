@@ -860,6 +860,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     const saveProviderModelAliases = useCallback(async (providerId: string, aliases: ModelAliases) => {
         // Strip empty strings — prevent sending model: "" upstream
         const cleaned: ModelAliases = {};
+        if (aliases.fable) cleaned.fable = aliases.fable;
         if (aliases.sonnet) cleaned.sonnet = aliases.sonnet;
         if (aliases.opus) cleaned.opus = aliases.opus;
         if (aliases.haiku) cleaned.haiku = aliases.haiku;

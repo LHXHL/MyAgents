@@ -683,7 +683,7 @@ type SendMessagePayload = {
     maxOutputTokens?: number;
     maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
     upstreamFormat?: 'chat_completions' | 'responses';
-    modelAliases?: { sonnet?: string; opus?: string; haiku?: string };
+    modelAliases?: { fable?: string; sonnet?: string; opus?: string; haiku?: string };
   } | 'subscription';
 };
 
@@ -889,7 +889,7 @@ type CronExecutePayload = {
     maxOutputTokens?: number;
     maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
     upstreamFormat?: 'chat_completions' | 'responses';
-    modelAliases?: { sonnet?: string; opus?: string; haiku?: string };
+    modelAliases?: { fable?: string; sonnet?: string; opus?: string; haiku?: string };
   };
   /**
    * PRD 0.2.9: per-task provider id. When set, sidecar live-resolves the

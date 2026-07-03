@@ -18,7 +18,7 @@ export interface SubscriptionLoginState {
 }
 
 type ClaudeAuthStartResult = {
-  // Verified against @anthropic-ai/claude-agent-sdk 0.3.195 runtime:
+  // Verified against @anthropic-ai/claude-agent-sdk 0.3.199 runtime:
   // Query.claudeAuthenticate(true) resolves to `{ manualUrl, automaticUrl }`.
   // The installed sdk.d.ts currently omits this control-plane method.
   manualUrl?: unknown;

@@ -24,7 +24,7 @@ import { stripBom } from '../../shared/utils';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { promoteAgentMcpJsonToGlobal } from '../../shared/mcpConfig';
 import type { McpServerDefinition, PermissionMode, ProviderVerifyStatus } from '../../shared/config-types';
-import { applyProviderEnablementAndOrder, CODEX_SUBSCRIPTION_PROVIDER_ID, isProviderEnabled, PRESET_MCP_SERVERS, PRESET_PROVIDERS } from '../../shared/config-types';
+import { applyProviderEnablementAndOrder, CODEX_SUBSCRIPTION_PROVIDER_ID, completeModelAliases, isProviderEnabled, PRESET_MCP_SERVERS, PRESET_PROVIDERS } from '../../shared/config-types';
 import { isRuntimeBackedProvider, managedCodexProviderPermissionToRuntimePermission } from '../../shared/providerExecution';
 import type { AgentConfig, ChannelConfig } from '../../shared/types/agent';
 import {
@@ -749,7 +749,7 @@ export interface ResolvedProviderEnv {
   maxOutputTokens?: number;
   maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
   upstreamFormat?: 'chat_completions' | 'responses';
-  modelAliases?: { sonnet?: string; opus?: string; haiku?: string };
+  modelAliases?: { fable?: string; sonnet?: string; opus?: string; haiku?: string };
 }
 
 /**
@@ -800,21 +800,16 @@ export function resolveProviderEnv(
   const mergedAliases = presetAliases || userOverrides
     ? { ...presetAliases, ...userOverrides }
     : undefined;
-  if (mergedAliases && (mergedAliases.sonnet || mergedAliases.opus || mergedAliases.haiku)) {
-    result.modelAliases = {
-      sonnet: mergedAliases.sonnet,
-      opus: mergedAliases.opus,
-      haiku: mergedAliases.haiku,
-    };
+  const completedAliases = completeModelAliases(mergedAliases);
+  if (completedAliases) {
+    result.modelAliases = completedAliases;
   } else {
     // Fallback: no aliases configured — use provider's primaryModel or first model
     // so sub-agents don't send raw claude-* model names to third-party APIs.
     const primaryModel = (provider as Record<string, unknown>).primaryModel as string | undefined;
     const models = (provider as Record<string, unknown>).models as Array<{ model: string }> | undefined;
     const fallback = primaryModel || models?.[0]?.model;
-    if (fallback) {
-      result.modelAliases = { sonnet: fallback, opus: fallback, haiku: fallback };
-    }
+    result.modelAliases = completeModelAliases(undefined, fallback);
   }
 
   return result;

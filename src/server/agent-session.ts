@@ -641,7 +641,7 @@ async function awaitSessionTermination(timeoutMs = 10_000, label = ''): Promise<
 
 let isInterruptingResponse = false;
 let isStreamingMessage = false;
-// Every `system` subtype defined in SDK 0.3.195 (sdk.d.ts) — handled here or
+// Every `system` subtype defined in SDK 0.3.199 (sdk.d.ts) — handled here or
 // deliberately untouched. A subtype outside this set means a NEWER SDK started
 // emitting a message kind we have never seen; the loop logs it once per
 // process instead of letting it vanish silently. Update this set when bumping
@@ -658,11 +658,12 @@ const KNOWN_SYSTEM_SUBTYPES = new Set([
 ]);
 const warnedUnknownSystemSubtypes = new Set<string>();
 // Top-level half of the same sentinel: every `type` value an SDKMessage union
-// member carries in 0.3.195. Verified 1:1 against sdk.d.ts at upgrade time
+// member carries in 0.3.199. Verified 1:1 against sdk.d.ts at upgrade time
 // (the system-typed members are covered by KNOWN_SYSTEM_SUBTYPES above).
 const KNOWN_MESSAGE_TYPES = new Set([
   'assistant', 'user', 'result', 'system', 'stream_event', 'rate_limit_event',
   'auth_status', 'tool_progress', 'tool_use_summary', 'prompt_suggestion',
+  'conversation_reset',
 ]);
 const warnedUnknownMessageTypes = new Set<string>();
 // Post-interrupt turn-completion signal: resolves when for-await loop receives a `result` message.
@@ -4741,13 +4742,12 @@ export function resolveClaudeCodeCli(): string {
   // 2. Development / fallback: locate per-platform optional package in node_modules
   try {
     const platformPkg = `@anthropic-ai/claude-agent-sdk-${triple}`;
-    const manifestPath = requireModule.resolve(`${platformPkg}/package.json`);
-    const candidate = join(dirname(manifestPath), `claude${ext}`);
+    const candidate = requireModule.resolve(`${platformPkg}/claude${ext}`);
     if (existsSync(candidate)) {
       console.log(`[sdk] Claude native binary resolved via node_modules in ${Date.now() - t0}ms: ${candidate}`);
       return candidate;
     }
-    throw new Error(`Binary missing at ${candidate} (package dir exists but claude executable is absent)`);
+    throw new Error(`Binary missing at ${candidate} (package resolved but claude executable is absent)`);
   } catch (error) {
     console.error(
       `[sdk] Claude native binary resolve FAILED in ${Date.now() - t0}ms. ` +
@@ -5179,7 +5179,7 @@ export function buildClaudeSessionEnv(
   applyProviderProxyPolicyToEnv(env, effectiveProviderId);
 
   // ── Model alias mapping for sub-agents (applies to ALL protocol paths) ──
-  // SDK sub-agents use aliases like "sonnet"/"opus"/"haiku" which resolve to claude-* model IDs.
+  // SDK sub-agents use aliases like "fable"/"sonnet"/"opus"/"haiku" which resolve to claude-* model IDs.
   // For third-party providers, set ANTHROPIC_DEFAULT_*_MODEL so the SDK resolves aliases
   // to provider-specific model IDs (e.g., "sonnet" → "deepseek-chat" instead of "claude-sonnet-4-6").
   // Hoisted above the OpenAI early return so both protocol paths benefit.
@@ -5192,9 +5192,14 @@ export function buildClaudeSessionEnv(
     // SDK /model picker (modelOptions.ts:85) and would surface the suffix to
     // users. SDK strips [1m] before the wire (normalizeModelStringForAPI),
     // so the upstream API never sees it.
+    const fableWrapped = applyContextWindowSuffix(aliases.fable);
     const sonnetWrapped = applyContextWindowSuffix(aliases.sonnet);
     const opusWrapped = applyContextWindowSuffix(aliases.opus);
     const haikuWrapped = applyContextWindowSuffix(aliases.haiku);
+    if (aliases.fable) {
+      env.ANTHROPIC_DEFAULT_FABLE_MODEL = fableWrapped!;
+      env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME = aliases.fable;
+    }
     if (aliases.sonnet) {
       env.ANTHROPIC_DEFAULT_SONNET_MODEL = sonnetWrapped!;
       env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME = aliases.sonnet;
@@ -5207,7 +5212,7 @@ export function buildClaudeSessionEnv(
       env.ANTHROPIC_DEFAULT_HAIKU_MODEL = haikuWrapped!;
       env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME = aliases.haiku;
     }
-    console.log(`[env] Model aliases set: sonnet=${sonnetWrapped ?? '(none)'}, opus=${opusWrapped ?? '(none)'}, haiku=${haikuWrapped ?? '(none)'}`);
+    console.log(`[env] Model aliases set: fable=${fableWrapped ?? '(none)'}, sonnet=${sonnetWrapped ?? '(none)'}, opus=${opusWrapped ?? '(none)'}, haiku=${haikuWrapped ?? '(none)'}`);
   }
 
   // ── Auto-compact effective window ──
@@ -9513,7 +9518,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // Model name check (sonnet/opus) is URL-agnostic — Claude models through any proxy get thinking.
     const modelLower = (configState.currentModel ?? '').toLowerCase();
     const isClaudeModel = modelLower.includes('sonnet-4') || modelLower.includes('sonnet-5')
-      || modelLower.includes('opus-4') || modelLower.includes('opus-5');
+      || modelLower.includes('opus-4') || modelLower.includes('opus-5')
+      || modelLower.includes('fable-5') || modelLower.includes('mythos-5');
     const isOfficialAnthropicApi = !configState.currentProviderEnv?.baseUrl || (() => {
       try { return new URL(configState.currentProviderEnv.baseUrl!).host === 'api.anthropic.com'; }
       catch { return false; }
@@ -10823,7 +10829,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         }
 
         // Sentinel for system message kinds added by FUTURE SDK versions.
-        // The set below enumerates every system subtype in SDK 0.3.195
+        // The set below enumerates every system subtype in SDK 0.3.199
         // (handled or deliberately untouched) — a subtype outside it means the
         // SDK started emitting something we have never seen. Without this log
         // line, new message kinds vanish silently (the pre-0.3.173 default,
@@ -11521,7 +11527,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         builtinTurnLifecycle.handleSdkResult(sdkMessage as BuiltinSdkResultMessage);
       } else if (!KNOWN_MESSAGE_TYPES.has(sdkMessage.type) && !warnedUnknownMessageTypes.has(sdkMessage.type)) {
         // Top-level half of the unknown-message sentinel (the system-subtype
-        // half lives in the system block above): a type outside the 0.3.195
+        // half lives in the system block above): a type outside the 0.3.199
         // union means a NEWER SDK started emitting a message kind this loop
         // has never seen — log once instead of letting it vanish silently.
         warnedUnknownMessageTypes.add(sdkMessage.type);

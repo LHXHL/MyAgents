@@ -40,7 +40,7 @@ export interface CronTaskState {
     permissionMode?: string;
     /** PRD 0.2.9 — DEPRECATED legacy frozen env. Kept for back-compat
      *  with paths that haven't been collapsed to providerId yet. */
-    providerEnv?: { providerId?: string; providerName?: string; baseUrl?: string; apiKey?: string; authType?: 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key'; apiProtocol?: 'anthropic' | 'openai'; maxOutputTokens?: number; maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens'; upstreamFormat?: 'chat_completions' | 'responses'; modelAliases?: { sonnet?: string; opus?: string; haiku?: string } };
+    providerEnv?: { providerId?: string; providerName?: string; baseUrl?: string; apiKey?: string; authType?: 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key'; apiProtocol?: 'anthropic' | 'openai'; maxOutputTokens?: number; maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens'; upstreamFormat?: 'chat_completions' | 'responses'; modelAliases?: { fable?: string; sonnet?: string; opus?: string; haiku?: string } };
     /** PRD 0.2.9 — Per-cron provider id; sidecar live-resolves env at every tick. */
     providerId?: string;
     /** PRD #119 / 0.2.9: explicit routing intent — see `CronProviderIntent`.

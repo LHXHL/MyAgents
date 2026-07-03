@@ -2466,7 +2466,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             customModels: [],  // TODO: Load from persisted custom models if any
             removedModels: [], // 标记要删除的已保存模型
             newModelInput: '',
-            editModelAliases: effectiveAliases ? { ...effectiveAliases } : { sonnet: '', opus: '', haiku: '' },
+            editModelAliases: effectiveAliases ? { ...effectiveAliases } : { fable: '', sonnet: '', opus: '', haiku: '' },
             showAdvanced: false,
             // 为自定义供应商初始化编辑字段
             ...(provider.isBuiltin ? {} : {
@@ -7392,6 +7392,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                             ...editingProvider.customModels.map(m => ({ value: m, label: m })),
                                         ];
                                         const ALIAS_LABELS: Record<string, string> = {
+                                            fable: tSettings('providers.custom.aliasFable'),
                                             opus: tSettings('providers.custom.aliasOpus'),
                                             sonnet: tSettings('providers.custom.aliasSonnet'),
                                             haiku: tSettings('providers.custom.aliasHaiku'),
@@ -7403,7 +7404,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                     {tSettings('providers.custom.aliasDescription')}
                                                 </p>
                                                 <div className="space-y-2.5">
-                                                    {(['opus', 'sonnet', 'haiku'] as const).map((alias) => (
+                                                    {(['fable', 'opus', 'sonnet', 'haiku'] as const).map((alias) => (
                                                         <div key={alias} className="flex items-center gap-2.5">
                                                             <span className="w-[90px] shrink-0 text-xs text-[var(--ink-muted)]">{ALIAS_LABELS[alias]}</span>
                                                             <CustomSelect

@@ -8,6 +8,7 @@ describe('resolveSessionModelAliases', () => {
       { sonnet: 'MiniMax-M2.7', opus: 'MiniMax-M2.7', haiku: 'MiniMax-M2.7' },
       'MiniMax-M2.5',
     )).toEqual({
+      fable: 'MiniMax-M2.5',
       sonnet: 'MiniMax-M2.5',
       opus: 'MiniMax-M2.5',
       haiku: 'MiniMax-M2.5',
@@ -16,6 +17,7 @@ describe('resolveSessionModelAliases', () => {
 
   it('preserves intentionally split alias routing', () => {
     const aliases = {
+      fable: 'deepseek-v4-pro',
       sonnet: 'deepseek-v4-pro',
       opus: 'deepseek-v4-pro',
       haiku: 'deepseek-v4-flash',
@@ -24,10 +26,25 @@ describe('resolveSessionModelAliases', () => {
     expect(resolveSessionModelAliases(aliases, 'deepseek-v4-pro')).toEqual(aliases);
   });
 
-  it('does not rewrite incomplete alias tables', () => {
+  it('only backfills fable for incomplete alias tables', () => {
     const aliases = { sonnet: 'provider-sonnet' };
 
-    expect(resolveSessionModelAliases(aliases, 'active-model')).toEqual(aliases);
+    expect(resolveSessionModelAliases(aliases, 'active-model')).toEqual({
+      fable: 'provider-sonnet',
+      sonnet: 'provider-sonnet',
+    });
+  });
+
+  it('adds fable from opus for legacy alias tables', () => {
+    expect(resolveSessionModelAliases(
+      { sonnet: 'provider-main', opus: 'provider-best', haiku: 'provider-fast' },
+      'provider-main',
+    )).toEqual({
+      fable: 'provider-best',
+      sonnet: 'provider-main',
+      opus: 'provider-best',
+      haiku: 'provider-fast',
+    });
   });
 });
 
@@ -42,7 +59,7 @@ describe('modelAliasEnvChangesForModel', () => {
 
   it('ignores selected-model changes for split alias routing', () => {
     expect(modelAliasEnvChangesForModel(
-      { sonnet: 'deepseek-v4-pro', opus: 'deepseek-v4-pro', haiku: 'deepseek-v4-flash' },
+      { fable: 'deepseek-v4-pro', sonnet: 'deepseek-v4-pro', opus: 'deepseek-v4-pro', haiku: 'deepseek-v4-flash' },
       'deepseek-v4-pro',
       'deepseek-v4-lite',
     )).toBe(false);

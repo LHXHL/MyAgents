@@ -46,6 +46,7 @@
  * the route handler, while agent-session is heavyweight).
  */
 type ModelAliases = {
+  fable?: string;
   sonnet?: string;
   opus?: string;
   haiku?: string;

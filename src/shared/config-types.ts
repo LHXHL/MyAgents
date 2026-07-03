@@ -131,14 +131,31 @@ export type ModelId = string;
 
 /**
  * Model alias mapping for non-Anthropic providers.
- * Maps SDK model aliases (sonnet/opus/haiku) to provider-specific model IDs.
- * When Claude Agent SDK sub-agents use hardcoded model aliases like "haiku",
+ * Maps SDK model aliases (fable/opus/sonnet/haiku) to provider-specific model IDs.
+ * When Claude Agent SDK sub-agents use hardcoded model aliases like "fable",
  * the bridge translates them to the actual provider model via this mapping.
  */
 export interface ModelAliases {
+  fable?: string;  // e.g., 'deepseek-reasoner'
   sonnet?: string;  // e.g., 'deepseek-chat'
   opus?: string;    // e.g., 'deepseek-reasoner'
   haiku?: string;   // e.g., 'deepseek-chat'
+}
+
+export function completeModelAliases(
+  aliases: ModelAliases | undefined,
+  fallbackModel?: string,
+): ModelAliases | undefined {
+  const fable = aliases?.fable ?? aliases?.opus ?? aliases?.sonnet ?? aliases?.haiku ?? fallbackModel;
+  const opus = aliases?.opus ?? aliases?.fable ?? aliases?.sonnet ?? aliases?.haiku ?? fallbackModel;
+  const sonnet = aliases?.sonnet ?? aliases?.opus ?? aliases?.fable ?? aliases?.haiku ?? fallbackModel;
+  const haiku = aliases?.haiku ?? aliases?.sonnet ?? aliases?.opus ?? aliases?.fable ?? fallbackModel;
+  const completed: ModelAliases = {};
+  if (fable) completed.fable = fable;
+  if (opus) completed.opus = opus;
+  if (sonnet) completed.sonnet = sonnet;
+  if (haiku) completed.haiku = haiku;
+  return Object.keys(completed).length > 0 ? completed : undefined;
 }
 
 export interface ProviderOrderSettings {
@@ -896,10 +913,15 @@ export interface ProjectSettings {
 
 // Preset providers with ModelEntity structure
 /** Anthropic 官方预设模型（订阅和 API 共用）
- *  contextLength / maxOutputTokens：来源 LiteLLM model_prices_and_context_window.json (2026-04)
- *  inputModalities：来源 OpenRouter `architecture.input_modalities` (2026-04 验证)
- *  Sonnet/Opus 4.x 系列支持 1M 上下文（带 [1m] suffix / context-1m beta header 时启用） */
+ *  contextLength / maxOutputTokens：来源 Anthropic Models overview (2026-07-03)
+ *  inputModalities：Anthropic current Claude models all support text+image input.
+ *  contextLength > 200K 由 applyContextWindowSuffix 自动加 [1m] 走 SDK 1M 上下文路径。 */
 const ANTHROPIC_MODELS: ModelEntity[] = [
+  { model: 'claude-fable-5', modelName: 'Claude Fable 5', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
+  { model: 'claude-opus-4-8', modelName: 'Claude Opus 4.8', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
+  { model: 'claude-sonnet-5', modelName: 'Claude Sonnet 5', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
+  { model: 'claude-haiku-4-5', modelName: 'Claude Haiku 4.5', modelSeries: 'claude', contextLength: 200_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
+  // Legacy 4.x options kept selectable for users/accounts that have not moved yet.
   // contextLength: Anthropic Sonnet 4.6 / Opus 4.6 wire-default is 200K. The 1M
   // tier requires the `context-1m-2025-08-07` beta header AND either Tier-4 API
   // spend or a paid "extra usage" toggle on subscription plans. Defaulting to 1M
@@ -909,17 +931,16 @@ const ANTHROPIC_MODELS: ModelEntity[] = [
   // on every turn (reproduced 2026-05-07 / #392). Opus 4.7+ stays at 1M because
   // Anthropic enables those newer Opus variants on the 1M path by default.
   { model: 'claude-sonnet-4-6', modelName: 'Claude Sonnet 4.6', modelSeries: 'claude', contextLength: 200_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
-  { model: 'claude-opus-4-8', modelName: 'Claude Opus 4.8', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
   { model: 'claude-opus-4-7', modelName: 'Claude Opus 4.7', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
   { model: 'claude-opus-4-6', modelName: 'Claude Opus 4.6', modelSeries: 'claude', contextLength: 200_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
-  { model: 'claude-haiku-4-5', modelName: 'Claude Haiku 4.5', modelSeries: 'claude', contextLength: 200_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
 ];
 
-/** Anthropic 官方默认别名（对齐 SDK 0.3.158 内置默认：opus48/sonnet46/haiku45）。
+/** Anthropic 官方默认别名（对齐 SDK 0.3.199 当前模型族：fable5/opus48/sonnet5/haiku45）。
  *  显式 pin 可避免未来 SDK 默认变动时用户体验突变。 */
 const ANTHROPIC_ALIASES = {
-  sonnet: 'claude-sonnet-4-6',
+  fable: 'claude-fable-5',
   opus: 'claude-opus-4-8',
+  sonnet: 'claude-sonnet-5',
   haiku: 'claude-haiku-4-5',
 } as const;
 
@@ -1127,7 +1148,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'Anthropic',
     cloudProvider: '官方',
     type: 'subscription',
-    primaryModel: 'claude-sonnet-4-6',
+    primaryModel: 'claude-sonnet-5',
     isBuiltin: true,
     config: {},
     modelAliases: { ...ANTHROPIC_ALIASES },
@@ -1139,7 +1160,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'Anthropic',
     cloudProvider: '官方',
     type: 'api',
-    primaryModel: 'claude-sonnet-4-6',
+    primaryModel: 'claude-sonnet-5',
     isBuiltin: true,
     authType: 'both',
     config: {
@@ -1742,17 +1763,15 @@ export function getEffectiveModelAliases(
   const overrides = userOverrides?.[provider.id];
   if (overrides) {
     // User has explicit overrides — merge with defaults (overrides win, including empty strings)
-    return { ...defaults, ...overrides };
+    return completeModelAliases({ ...defaults, ...overrides });
   }
   // No user overrides — return preset defaults if any
-  if (defaults.sonnet || defaults.opus || defaults.haiku) return defaults;
+  const completedDefaults = completeModelAliases(defaults);
+  if (completedDefaults) return completedDefaults;
   // Fallback: no preset aliases and no user overrides — use provider's first model or primaryModel
-  // so sub-agents (model: "sonnet"/"opus"/"haiku") don't send raw claude-* to the third-party API.
+  // so sub-agents (model: "fable"/"sonnet"/"opus"/"haiku") don't send raw claude-* to the third-party API.
   const fallbackModel = provider.primaryModel || provider.models?.[0]?.model;
-  if (fallbackModel) {
-    return { sonnet: fallbackModel, opus: fallbackModel, haiku: fallbackModel };
-  }
-  return undefined;
+  return completeModelAliases(undefined, fallbackModel);
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
