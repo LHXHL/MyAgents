@@ -157,7 +157,12 @@ export interface ConfigActionsValue {
     saveApiKey: (providerId: string, apiKey: string) => Promise<void>;
     deleteApiKey: (providerId: string) => Promise<void>;
     // Verify status
-    saveProviderVerifyStatus: (providerId: string, status: 'valid' | 'invalid', accountEmail?: string) => Promise<void>;
+    saveProviderVerifyStatus: (
+        providerId: string,
+        status: 'valid' | 'invalid',
+        accountEmail?: string,
+        metadata?: Pick<ProviderVerifyStatus, 'invalidReason' | 'error'>,
+    ) => Promise<void>;
 }
 
 export interface AddProjectOptions {
@@ -748,15 +753,18 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     const saveProviderVerifyStatus = useCallback(async (
         providerId: string,
         status: 'valid' | 'invalid',
-        accountEmail?: string
+        accountEmail?: string,
+        metadata?: Pick<ProviderVerifyStatus, 'invalidReason' | 'error'>,
     ) => {
-        await saveProviderVerifyStatusService(providerId, status, accountEmail);
+        await saveProviderVerifyStatusService(providerId, status, accountEmail, metadata);
         setProviderVerifyStatus((prev) => ({
             ...prev,
             [providerId]: {
                 status,
                 verifiedAt: new Date().toISOString(),
                 accountEmail,
+                ...(metadata?.invalidReason ? { invalidReason: metadata.invalidReason } : {}),
+                ...(metadata?.error ? { error: metadata.error } : {}),
             },
         }));
         // Rebuild availableProvidersJson so IM /provider command sees the updated status.

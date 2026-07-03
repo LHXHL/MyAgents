@@ -16,6 +16,12 @@ import { getLastBridgeError } from './openai-bridge';
 import { getProxyForProviderUrl } from './proxy-state';
 import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import {
+  classifySubscriptionVerifyFailureKind,
+  type SubscriptionStatus,
+  type SubscriptionVerifyFailureKind,
+  type SubscriptionVerifyResult,
+} from '../shared/subscription';
+import {
   probeOpenAiProviderViaBridge,
   probeAnthropicProviderDirect,
   classifyOpenAiProbeStatus,
@@ -26,36 +32,24 @@ import {
   type VerifyError,
   type ProbeOutcome,
 } from './provider-probe';
-// Subscription types (keep in sync with src/renderer/types/subscription.ts)
-export interface SubscriptionInfo {
-  accountUuid?: string;
-  email?: string;
-  displayName?: string;
-  organizationName?: string;
-}
-
-export interface SubscriptionStatus {
-  available: boolean;
-  path?: string;
-  info?: SubscriptionInfo;
-}
 
 // Error message parser for subscription verification.
 // `parseProviderError` + `VerifyError` now live in the pure `provider-probe`
 // module so the 402/balance bucketing is unit-tested without importing the SDK.
-function parseSubscriptionError(errorText: string, originalText?: string): VerifyError {
+function parseSubscriptionError(errorText: string, originalText?: string): VerifyError & { failureKind: SubscriptionVerifyFailureKind } {
   const raw = (originalText ?? errorText).slice(0, 300) || undefined;
+  const failureKind = classifySubscriptionVerifyFailureKind(originalText ?? errorText);
   const lower = errorText.toLowerCase();
-  if (lower.includes('authentication') || lower.includes('login') || lower.includes('/login')) {
-    return { error: '登录已过期，请重新登录 (claude auth login)', detail: raw };
-  } else if (lower.includes('forbidden') || lower.includes('403')) {
-    return { error: '登录已过期，请重新登录 (claude auth login)', detail: raw };
+  if (failureKind === 'auth_required') {
+    return { error: '登录已过期，请重新登录 (claude auth login)', detail: raw, failureKind };
+  } else if (failureKind === 'entitlement_required') {
+    return { error: '账号权限不足，请确认 Claude 订阅状态后重试', detail: raw, failureKind };
   } else if (lower.includes('rate limit') || lower.includes('429')) {
-    return { error: '请求频率限制，请稍后再试', detail: raw };
+    return { error: '请求频率限制，请稍后再试', detail: raw, failureKind };
   } else if (lower.includes('network') || lower.includes('connect')) {
-    return { error: '网络连接失败', detail: raw };
+    return { error: '网络连接失败', detail: raw, failureKind };
   }
-  return { error: errorText.slice(0, 100) || '验证失败', detail: raw };
+  return { error: errorText.slice(0, 100) || '验证失败', detail: raw, failureKind };
 }
 
 /**
@@ -68,7 +62,7 @@ async function verifyViaSdk(
     model?: string;
     sessionId: string;
     logPrefix: string;
-    parseError: (text: string, originalText?: string) => VerifyError;
+    parseError: (text: string, originalText?: string) => VerifyError & { failureKind?: SubscriptionVerifyFailureKind };
     settingSources: ('user' | 'project')[];
     /**
      * Real upstream baseUrl this verify targets (user-config baseUrl, NOT the
@@ -95,7 +89,7 @@ async function verifyViaSdk(
      */
     diagnostic?: (signal: AbortSignal) => Promise<ProbeOutcome | undefined>;
   },
-): Promise<{ success: boolean; error?: string; detail?: string }> {
+): Promise<{ success: boolean; error?: string; detail?: string; failureKind?: SubscriptionVerifyFailureKind }> {
   const TIMEOUT_MS = 30000;
   const startTime = Date.now();
   const stderrMessages: string[] = [];
@@ -165,7 +159,7 @@ async function verifyViaSdk(
   // Collect the first real API error seen during the verify window.
   // If the SDK retries internally (e.g. 429) and our timeout fires first,
   // we use this instead of the generic "验证超时" message.
-  let firstAuthError: VerifyError | undefined;
+  let firstAuthError: (VerifyError & { failureKind?: SubscriptionVerifyFailureKind }) | undefined;
   const { logPrefix, parseError } = opts;
 
   try {
@@ -574,7 +568,7 @@ export function checkAnthropicSubscription(): SubscriptionStatus {
  * Verify Anthropic subscription by sending a test request via SDK.
  * Uses the same SDK path as normal chat requests.
  */
-export async function verifySubscription(): Promise<{ success: boolean; error?: string; detail?: string }> {
+export async function verifySubscription(): Promise<SubscriptionVerifyResult> {
   console.log('[subscription/verify] Starting SDK verification...');
   // PRD #124: subscription path doesn't need a bridge — SDK talks to
   // api.anthropic.com directly. `buildClaudeSessionEnv()` is now pure

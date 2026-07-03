@@ -63,7 +63,7 @@ async function streamUploadToFile(file: File, destination: string): Promise<void
   }
 }
 import { basename, dirname, isAbsolute, join, relative, resolve, extname, sep } from 'path';
-import { tmpdir, homedir } from 'os';
+import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
 import { addMessageUsageToByModel, type UsageByModel } from './utils/usage-stats';
@@ -91,6 +91,7 @@ import {
   getPluginDetail,
   PluginStoreError,
 } from './plugins/store';
+import { handleQrCodeAssetRoute } from './routes/qr-code-asset';
 
 /**
  * Lazy bridge to agent-session.schedulePluginDeferredRestart — the latter
@@ -4635,125 +4636,8 @@ async function main() {
       }
 
 
-      // GET /api/assets/qr-code - Fetch QR code image with local caching
-      // Downloads from CDN on first launch and caches locally for subsequent requests
-      // Cache refreshes every hour to get updated QR codes from cloud
-      if (pathname === '/api/assets/qr-code' && request.method === 'GET') {
-        try {
-          const QR_CODE_URL = 'https://download.myagents.io/assets/feedback_qr_code.png';
-
-          // Use tmpdir for cache (simple and safe approach)
-          const CACHE_DIR = join(tmpdir(), 'myagents-cache');
-          const CACHE_FILE = join(CACHE_DIR, 'feedback_qr_code.png');
-          const LOCK_FILE = `${CACHE_FILE}.lock`;
-          const CACHE_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour (faster updates)
-
-          const startTime = Date.now();
-          let needsDownload = true;
-
-          // Check if cached file exists and is fresh
-          if (existsSync(CACHE_FILE)) {
-            const stats = statSync(CACHE_FILE);
-            const age = Date.now() - stats.mtimeMs;
-            if (age < CACHE_MAX_AGE_MS) {
-              needsDownload = false;
-              console.log(`[api/assets/qr-code] Cache hit (age: ${Math.round(age / 1000 / 60)}min)`);
-            } else {
-              console.log(`[api/assets/qr-code] Cache expired (age: ${Math.round(age / 1000 / 60)}min), re-downloading`);
-            }
-          } else {
-            console.log('[api/assets/qr-code] Cache miss, downloading');
-          }
-
-          // Download if needed (with file lock to prevent concurrent writes)
-          if (needsDownload) {
-            // Check if another process is already downloading
-            if (existsSync(LOCK_FILE)) {
-              const lockStats = statSync(LOCK_FILE);
-              const lockAge = Date.now() - lockStats.mtimeMs;
-              if (lockAge < 30000) { // Lock valid for 30s
-                console.log('[api/assets/qr-code] Download in progress, waiting...');
-                // Wait and use existing cache if available
-                if (existsSync(CACHE_FILE)) {
-                  const imageBuffer = readFileSync(CACHE_FILE);
-                  const base64 = imageBuffer.toString('base64');
-                  return jsonResponse({
-                    success: true,
-                    dataUrl: `data:image/png;base64,${base64}`
-                  });
-                }
-              } else {
-                // Stale lock, remove it
-                rmSync(LOCK_FILE, { force: true });
-              }
-            }
-
-            // Acquire lock
-            if (!existsSync(CACHE_DIR)) {
-              ensureDirSync(CACHE_DIR);
-            }
-            writeFileSync(LOCK_FILE, String(Date.now()));
-
-            try {
-              const downloadStartTime = Date.now();
-              const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
-
-              const response = await fetch(QR_CODE_URL, { signal: controller.signal });
-              clearTimeout(timeoutId);
-
-              if (!response.ok) {
-                // If download fails but cache exists, use stale cache
-                if (existsSync(CACHE_FILE)) {
-                  console.warn(`[api/assets/qr-code] Download failed (HTTP ${response.status}), using stale cache`);
-                } else {
-                  throw new Error(`下载失败: HTTP ${response.status}`);
-                }
-              } else {
-                // Save to cache using atomic write pattern
-                const arrayBuffer = await response.arrayBuffer();
-                const buffer = Buffer.from(arrayBuffer);
-                const downloadTime = Date.now() - downloadStartTime;
-
-                // Write to temp file first
-                const tmpFile = `${CACHE_FILE}.${Date.now()}.tmp`;
-                writeFileSync(tmpFile, buffer);
-
-                // Atomic rename (POSIX guarantee)
-                renameSync(tmpFile, CACHE_FILE);
-                console.log(`[api/assets/qr-code] Downloaded and cached (${Math.round(buffer.length / 1024)}KB in ${downloadTime}ms)`);
-              }
-            } finally {
-              // Release lock
-              rmSync(LOCK_FILE, { force: true });
-            }
-          }
-
-          // Read from cache and return as base64
-          if (!existsSync(CACHE_FILE)) {
-            return jsonResponse({ success: false, error: 'QR code not available' }, 503);
-          }
-
-          const imageBuffer = readFileSync(CACHE_FILE);
-          const base64 = imageBuffer.toString('base64');
-          const mimeType = 'image/png';
-          const totalTime = Date.now() - startTime;
-
-          console.log(`[api/assets/qr-code] Request completed in ${totalTime}ms`);
-
-          return jsonResponse({
-            success: true,
-            dataUrl: `data:${mimeType};base64,${base64}`
-          });
-        } catch (error) {
-          console.error('[api/assets/qr-code] Error:', error);
-          const isTimeout = error instanceof Error && error.name === 'AbortError';
-          return jsonResponse(
-            { success: false, error: isTimeout ? '网络请求超时' : (error instanceof Error ? error.message : '加载失败') },
-            isTimeout ? 504 : 503
-          );
-        }
-      }
+      const qrCodeAssetResponse = await handleQrCodeAssetRoute(pathname, request);
+      if (qrCodeAssetResponse) return qrCodeAssetResponse;
 
       // ============= END PROVIDER VERIFICATION API =============
 

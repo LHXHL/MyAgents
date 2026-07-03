@@ -81,6 +81,11 @@ import SettingsHelperInbox from '@/components/SettingsHelperInbox';
 import ShortcutRecorder from '@/components/ShortcutRecorder';
 import { VISIBLE_APP_SHORTCUTS } from '@/utils/appShortcuts';
 import { shouldDebounceAutoVerify } from '@/utils/apiKeyAutoVerify';
+import {
+    shouldSkipSubscriptionAutoVerify,
+    shouldUseCachedValidSubscriptionVerify,
+} from '@/utils/subscriptionVerifyPolicy';
+import type { SubscriptionVerifyResult } from '@/types/subscription';
 import { DEFAULT_SUMMON_ACCELERATOR } from '../../../shared/config-types';
 import {
     IMAGE_UNDERSTANDING_TOOL_ID,
@@ -92,6 +97,7 @@ import {
 import { isRuntimeBackedProvider } from '../../../shared/providerExecution';
 import { workspacePathsEqual } from '../../../shared/workspacePath';
 import { normalizeProxyScope } from '../../../shared/proxyScope';
+import { isUserActionRequiredSubscriptionFailure } from '../../../shared/subscription';
 import type { UiLanguage } from '../../../shared/i18n';
 import ProviderEnableOrderDialog from '@/components/ProviderEnableOrderDialog';
 import FloatingBallPetSettings from '@/components/FloatingBallPetSettings';
@@ -1961,32 +1967,38 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             const currentEmail = status.info?.email;
             const cached = providerVerifyStatusRef.current[SUBSCRIPTION_PROVIDER_ID];
 
-            // Only use cache for successful verifications (valid status)
-            // Failed verifications are always retried
-            if (!forceVerify && cached && cached.status === 'valid') {
-                const isExpired = isVerifyExpired(cached.verifiedAt);
-                const isSameAccount = cached.accountEmail === currentEmail;
-
-                if (!isExpired && isSameAccount) {
-                    // Use cached successful result
-                    console.log('[Settings] Using cached subscription verification (valid)');
-                    if (isMounted) {
-                        setSubscriptionStatus((prev: SubscriptionStatus | null) => prev ? {
-                            ...prev,
-                            verifyStatus: 'valid',
-                        } : prev);
-                    }
-                    return;
+            if (!forceVerify && shouldUseCachedValidSubscriptionVerify(status, cached)) {
+                console.log('[Settings] Using cached subscription verification (valid)');
+                if (isMounted) {
+                    setSubscriptionStatus((prev: SubscriptionStatus | null) => prev ? {
+                        ...prev,
+                        verifyStatus: 'valid',
+                        verifyError: undefined,
+                    } : prev);
                 }
+                return;
+            }
 
-                // Log reason for re-verification
-                if (isExpired) {
+            if (!forceVerify && shouldSkipSubscriptionAutoVerify(status, cached)) {
+                console.log('[Settings] Using cached subscription verification (user action required)');
+                if (isMounted) {
+                    setSubscriptionStatus((prev: SubscriptionStatus | null) => prev ? {
+                        ...prev,
+                        verifyStatus: 'invalid',
+                        verifyError: cached?.error ?? tSettingsRef.current('providers.verify.failed'),
+                    } : prev);
+                }
+                return;
+            }
+
+            if (!forceVerify && cached?.verifiedAt) {
+                if (isVerifyExpired(cached.verifiedAt)) {
                     console.log('[Settings] Subscription verification expired, re-verifying...');
-                } else if (!isSameAccount) {
+                } else if (cached.accountEmail !== currentEmail) {
                     console.log('[Settings] Subscription account changed, re-verifying...');
+                } else if (cached.status === 'invalid') {
+                    console.log('[Settings] Previous transient subscription verification failed, retrying...');
                 }
-            } else if (cached && cached.status === 'invalid') {
-                console.log('[Settings] Previous verification failed, retrying...');
             }
 
             // Set loading state
@@ -1995,14 +2007,17 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             }
 
             try {
-                const result = await apiPostJson<{ success: boolean; error?: string; detail?: string }>('/api/subscription/verify', {});
+                const result = await apiPostJson<SubscriptionVerifyResult>('/api/subscription/verify', {});
                 const newStatus = result.success ? 'valid' : 'invalid';
 
                 if (result.success) {
-                    // Only cache successful verifications
                     await saveProviderVerifyStatusRef.current(SUBSCRIPTION_PROVIDER_ID, 'valid', currentEmail);
+                } else if (isUserActionRequiredSubscriptionFailure(result.failureKind)) {
+                    await saveProviderVerifyStatusRef.current(SUBSCRIPTION_PROVIDER_ID, 'invalid', currentEmail, {
+                        invalidReason: result.failureKind,
+                        error: result.error,
+                    });
                 }
-                // Don't cache failures - they will be retried next time
 
                 if (isMounted) {
                     // Include detail for diagnosis if available and different from error
@@ -2017,7 +2032,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                 }
             } catch (err) {
                 console.error('[Settings] Subscription verify failed:', err);
-                // Don't cache failures - they will be retried next time
+                // Transport exceptions are transient; only structured user-action failures are cached.
 
                 if (isMounted) {
                     setSubscriptionStatus((prev: SubscriptionStatus | null) => prev ? {
@@ -2074,15 +2089,19 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
 
         try {
             console.log('[Settings] Force re-verifying subscription...');
-            const result = await apiPostJson<{ success: boolean; error?: string }>('/api/subscription/verify', {});
+            const result = await apiPostJson<SubscriptionVerifyResult>('/api/subscription/verify', {});
             const newStatus = result.success ? 'valid' : 'invalid';
 
             if (result.success) {
-                // Only cache successful verifications
                 await saveProviderVerifyStatus(SUBSCRIPTION_PROVIDER_ID, 'valid', currentEmail);
                 toast.success(tSettings('providers.verify.success'));
             } else {
-                // Don't cache failures - they will be retried next time
+                if (isUserActionRequiredSubscriptionFailure(result.failureKind)) {
+                    await saveProviderVerifyStatus(SUBSCRIPTION_PROVIDER_ID, 'invalid', currentEmail, {
+                        invalidReason: result.failureKind,
+                        error: result.error,
+                    });
+                }
                 toast.error(result.error || tSettings('providers.verify.failed'));
             }
 
@@ -2093,7 +2112,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             } : prev);
         } catch (err) {
             console.error('[Settings] Subscription re-verify failed:', err);
-            // Don't cache failures - they will be retried next time
+            // Transport exceptions are transient; only structured user-action failures are cached.
 
             setSubscriptionStatus(prev => prev ? {
                 ...prev,
@@ -2117,10 +2136,15 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             const currentEmail = status.info?.email;
             setSubscriptionVerifying(true);
             setSubscriptionStatus(prev => prev ? { ...prev, verifyStatus: 'loading', verifyError: undefined } : prev);
-            const result = await apiPostJson<{ success: boolean; error?: string; detail?: string }>('/api/subscription/verify', {});
+            const result = await apiPostJson<SubscriptionVerifyResult>('/api/subscription/verify', {});
             const nextStatus = result.success ? 'valid' : 'invalid';
             if (result.success) {
                 await saveProviderVerifyStatus(SUBSCRIPTION_PROVIDER_ID, 'valid', currentEmail);
+            } else if (isUserActionRequiredSubscriptionFailure(result.failureKind)) {
+                await saveProviderVerifyStatus(SUBSCRIPTION_PROVIDER_ID, 'invalid', currentEmail, {
+                    invalidReason: result.failureKind,
+                    error: result.error,
+                });
             }
             const errorMsg = result.error && result.detail && result.detail !== result.error
                 ? `${result.error} (${result.detail.slice(0, 100)})`

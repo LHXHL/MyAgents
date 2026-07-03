@@ -8,10 +8,10 @@ use serde_json::{json, Value};
 
 use crate::space_cloud::{
     LocalRegisteredAgent, LocalRegisteredAgentPublic, SpaceApiRequestInput,
-    SpaceDownloadAttachmentResult, SpaceProcessDeliveryResult, SpaceRegisterAgentInput,
-    SpaceSession, SpaceUpdateRegisteredAgentInput, SpaceUploadIssueAttachmentsInput,
-    SpaceUploadSkillInput, MAX_ATTACHMENT_UPLOAD_BYTES, MAX_ATTACHMENT_UPLOAD_COUNT,
-    MAX_SKILL_ZIP_BYTES,
+    SpaceDownloadAttachmentResult, SpaceIssueSubscriptionRunMode, SpaceProcessDeliveryResult,
+    SpaceRegisterAgentInput, SpaceSession, SpaceUpdateRegisteredAgentInput,
+    SpaceUploadIssueAttachmentsInput, SpaceUploadSkillInput, MAX_ATTACHMENT_UPLOAD_BYTES,
+    MAX_ATTACHMENT_UPLOAD_COUNT, MAX_SKILL_ZIP_BYTES,
 };
 use crate::workspace_files::path_safety::{
     atomic_write_file, resolve_inside_workspace, validate_workspace_root,
@@ -217,6 +217,16 @@ pub fn update_agent(
     input: SpaceUpdateRegisteredAgentInput,
 ) -> Result<LocalRegisteredAgentPublic, String> {
     let mut state = state().lock().expect("mock state poisoned");
+    let next_goal = match input.goal_id {
+        Some(goal_id) => {
+            let goal_id = goal_id.trim();
+            if goal_id.is_empty() {
+                return Err("goalId is required".to_string());
+            }
+            Some((goal_id.to_string(), goal_label(&state, goal_id)))
+        }
+        None => None,
+    };
     let agent = state
         .agents
         .iter_mut()
@@ -229,6 +239,20 @@ pub fn update_agent(
         }
         agent.display_name = display_name.to_string();
     }
+    if let Some(workspace_id) = input.workspace_id {
+        let workspace_id = workspace_id.trim();
+        if workspace_id.is_empty() {
+            return Err("workspaceId is required".to_string());
+        }
+        let local_agent_id = format!("local-agent-{}", safe_local_name(workspace_id));
+        agent.local_workspace_id = Some(workspace_id.to_string());
+        agent.workspace_id = Some(workspace_id.to_string());
+        agent.local_agent_id = Some(local_agent_id);
+    }
+    if let Some(workspace_path) = input.workspace_path {
+        let workspace_root = validate_workspace_root(&workspace_path)?;
+        agent.workspace_path = workspace_root.to_string_lossy().to_string();
+    }
     if let Some(workspace_label) = input.workspace_label {
         let workspace_label = workspace_label.trim();
         agent.workspace_label = if workspace_label.is_empty() {
@@ -236,6 +260,13 @@ pub fn update_agent(
         } else {
             Some(workspace_label.to_string())
         };
+    }
+    if let Some((goal_id, goal_path_label)) = next_goal {
+        agent.goal_id = Some(goal_id);
+        agent.goal_path_label = goal_path_label;
+    }
+    if let Some(state_filter) = input.state_filter {
+        agent.state_filter = normalize_mock_agent_state_filter(state_filter);
     }
     if let Some(goal_md) = input.goal_md {
         let goal_md = goal_md.trim();
@@ -256,6 +287,22 @@ pub fn update_agent(
     }
     agent.updated_at = "2026-06-24T09:50:00.000Z".to_string();
     Ok(agent.clone().into())
+}
+
+fn normalize_mock_agent_state_filter(input: Vec<String>) -> Vec<String> {
+    let mut out = Vec::new();
+    for state in input {
+        let state = state.trim();
+        if state.is_empty() || out.iter().any(|existing| existing == state) {
+            continue;
+        }
+        out.push(state.to_string());
+    }
+    if out.is_empty() {
+        vec!["todo".to_string()]
+    } else {
+        out
+    }
 }
 
 pub fn revoke_agent(id: &str) -> Result<LocalRegisteredAgentPublic, String> {
@@ -758,15 +805,20 @@ fn handle_api_data_request(
                 .agents
                 .iter()
                 .map(|agent| {
+                    let public: LocalRegisteredAgentPublic = agent.clone().into();
                     json!({
                         "id": agent.id,
                         "spaceId": agent.space_id,
                         "ownerUserId": "usr_mock_owner",
                         "clientId": agent.client_id.clone(),
+                        "deviceName": public.device_name,
                         "localWorkspaceId": agent.local_workspace_id.clone(),
                         "localAgentId": agent.local_agent_id.clone(),
                         "displayName": agent.display_name,
+                        "workspacePath": agent.workspace_path,
                         "workspaceLabel": agent.workspace_label.clone(),
+                        "goalMd": agent.goal_md.clone(),
+                        "issueSubscriptionRunMode": agent.issue_subscription_run_mode,
                         "status": agent.status,
                         "createdAt": agent.created_at,
                         "updatedAt": agent.updated_at,
@@ -2252,6 +2304,29 @@ fn update_agent_api(
     body: Option<Value>,
 ) -> Result<Value, String> {
     let body = body.unwrap_or(Value::Null);
+    let next_goal = if body.get("goalId").is_some() {
+        let goal_id = body
+            .get("goalId")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "goalId is required".to_string())?;
+        Some((goal_id.to_string(), goal_label(state, goal_id)))
+    } else {
+        None
+    };
+    let next_state_filter = body
+        .get("stateFilter")
+        .and_then(Value::as_array)
+        .map(|items| {
+            normalize_mock_agent_state_filter(
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect(),
+            )
+        });
     let agent = state
         .agents
         .iter_mut()
@@ -2279,14 +2354,64 @@ fn update_agent_api(
         }
         agent.goal_md = Some(goal_md.to_string());
     }
+    if let Some((goal_id, goal_path_label)) = next_goal {
+        agent.goal_id = Some(goal_id);
+        agent.goal_path_label = goal_path_label;
+    }
+    if let Some(state_filter) = next_state_filter {
+        agent.state_filter = state_filter;
+    }
     if let Some(status) = body.get("status").and_then(Value::as_str) {
         if !matches!(status, "active" | "disabled" | "revoked") {
             return Err("Registered Agent status is invalid".to_string());
         }
         agent.status = status.to_string();
     }
+    if let Some(issue_subscription_run_mode) = body
+        .get("issueSubscriptionRunMode")
+        .cloned()
+        .and_then(|value| serde_json::from_value::<SpaceIssueSubscriptionRunMode>(value).ok())
+    {
+        agent.issue_subscription_run_mode = issue_subscription_run_mode;
+    }
     agent.updated_at = "2026-06-24T09:50:00.000Z".to_string();
-    Ok(json!({ "updated": true }))
+    let public: LocalRegisteredAgentPublic = agent.clone().into();
+    let subscription = agent
+        .goal_id
+        .as_ref()
+        .map(|goal_id| {
+            json!({
+                "id": format!("sub_{}", agent.id.clone()),
+                "spaceId": agent.space_id.clone(),
+                "actorType": "registered_agent",
+                "actorId": agent.id.clone(),
+                "goalId": goal_id,
+                "includeSubtree": true,
+                "stateFilter": agent.state_filter.clone(),
+                "goalPathLabel": agent.goal_path_label.clone(),
+                "createdAt": agent.created_at.clone()
+            })
+        })
+        .unwrap_or(Value::Null);
+    Ok(json!({
+        "registeredAgent": {
+            "id": agent.id.clone(),
+            "spaceId": agent.space_id.clone(),
+            "clientId": agent.client_id.clone(),
+            "deviceName": public.device_name,
+            "localWorkspaceId": agent.local_workspace_id.clone(),
+            "localAgentId": agent.local_agent_id.clone(),
+            "displayName": agent.display_name.clone(),
+            "workspacePath": agent.workspace_path.clone(),
+            "workspaceLabel": agent.workspace_label.clone(),
+            "goalMd": agent.goal_md.clone(),
+            "issueSubscriptionRunMode": agent.issue_subscription_run_mode,
+            "status": agent.status.clone(),
+            "createdAt": agent.created_at.clone(),
+            "updatedAt": agent.updated_at.clone()
+        },
+        "subscription": subscription
+    }))
 }
 
 fn refresh_issue_counts(state: &mut MockState, issue_id: &str) {

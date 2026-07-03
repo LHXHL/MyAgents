@@ -68,7 +68,9 @@ describe('IssueDetailDrawer', () => {
     );
 
     const issueTitle = screen.getByRole('heading', { name: 'Markdown issue' });
-    expect(within(issueTitle.parentElement!).getByRole('button', { name: '复制 issue 口令' })).toBeInTheDocument();
+    const copyIssueButton = screen.getByRole('button', { name: '复制 issue 口令' });
+    expect(within(issueTitle.parentElement!).queryByRole('button', { name: '复制 issue 口令' })).not.toBeInTheDocument();
+    expect(within(copyIssueButton.parentElement!).getByText('Ethan')).toBeInTheDocument();
     expect(screen.queryByText('Issue 口令')).not.toBeInTheDocument();
 
     const attachmentsHeading = screen.getByRole('heading', { name: /附件/ });

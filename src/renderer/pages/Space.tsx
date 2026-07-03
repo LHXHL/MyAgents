@@ -11,7 +11,10 @@ import {
   spaceAuthPoll,
   spaceAuthStart,
   spaceErrorMessage,
+  type LocalRegisteredAgent,
+  type SpaceIssueSubscriptionRunMode,
   type SpaceEvent,
+  type SpaceRegisteredAgent,
 } from '@/api/spaceCloud';
 import { type SelectOption } from '@/components/CustomSelect';
 import { useToast } from '@/components/Toast';
@@ -49,6 +52,42 @@ function wait(ms: number): Promise<void> {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 
+function agentIssueSubscriptionRunMode(
+  value?: SpaceIssueSubscriptionRunMode | null,
+): SpaceIssueSubscriptionRunMode {
+  return value === 'new_session' ? 'new_session' : 'single_session';
+}
+
+function registeredAgentToListItem(
+  agent: SpaceRegisteredAgent,
+  localAgent: LocalRegisteredAgent | undefined,
+  fallbackBaseUrl: string,
+  fallbackSpaceId: string,
+): LocalRegisteredAgent {
+  const subscription = agent.subscriptions?.[0] ?? null;
+  return {
+    id: agent.id,
+    baseUrl: localAgent?.baseUrl ?? fallbackBaseUrl,
+    spaceId: agent.spaceId || localAgent?.spaceId || fallbackSpaceId,
+    clientId: agent.clientId ?? localAgent?.clientId,
+    deviceName: agent.deviceName ?? localAgent?.deviceName,
+    localWorkspaceId: agent.localWorkspaceId ?? localAgent?.localWorkspaceId,
+    localAgentId: agent.localAgentId ?? localAgent?.localAgentId,
+    workspaceId: localAgent?.workspaceId ?? agent.localWorkspaceId,
+    displayName: agent.displayName || localAgent?.displayName || agent.id,
+    workspacePath: agent.workspacePath ?? localAgent?.workspacePath ?? '',
+    workspaceLabel: agent.workspaceLabel ?? localAgent?.workspaceLabel,
+    goalId: subscription?.goalId ?? localAgent?.goalId,
+    goalPathLabel: subscription?.goalPathLabel ?? localAgent?.goalPathLabel,
+    stateFilter: subscription?.stateFilter?.length ? subscription.stateFilter : (localAgent?.stateFilter ?? ['todo']),
+    goalMd: agent.goalMd ?? localAgent?.goalMd,
+    deliverySessionId: localAgent?.deliverySessionId,
+    issueSubscriptionRunMode: agentIssueSubscriptionRunMode(agent.issueSubscriptionRunMode ?? localAgent?.issueSubscriptionRunMode),
+    status: agent.status || localAgent?.status || 'active',
+    createdAt: agent.createdAt || localAgent?.createdAt || '',
+    updatedAt: agent.updatedAt || localAgent?.updatedAt || '',
+  };
+}
 
 export default function Space({ isActive }: { isActive: boolean }) {
   const { t } = useTranslation('app');
@@ -85,9 +124,19 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const skills = spaceData.skills.items;
   const skillsLoading = spaceData.skills.isLoading || (spaceData.boot === 'ready' && spaceData.skills.lastFetchedAt === 0);
   const localAgents = spaceData.localAgents.items;
+  const registeredAgents = spaceData.registeredAgents.items;
   const admin = isSpaceAdmin(session);
   const activeCacheSpaceId = spaceData.spaceId || session?.space?.id || session?.space?.slug || DEFAULT_SPACE_ID;
   const spaceCacheKey = useCallback((id: string) => `${activeCacheSpaceId}\n${id}`, [activeCacheSpaceId]);
+  const agents = useMemo<LocalRegisteredAgent[]>(() => {
+    const localById = new Map(localAgents.map((agent) => [agent.id, agent]));
+    const cloudItems = registeredAgents.map((agent) =>
+      registeredAgentToListItem(agent, localById.get(agent.id), session?.baseUrl ?? '', activeCacheSpaceId),
+    );
+    const cloudIds = new Set(cloudItems.map((agent) => agent.id));
+    const localOnlyItems = localAgents.filter((agent) => !cloudIds.has(agent.id));
+    return [...cloudItems, ...localOnlyItems];
+  }, [activeCacheSpaceId, localAgents, registeredAgents, session?.baseUrl]);
 
   const goalOptions = useMemo<SelectOption[]>(
     () => [
@@ -416,7 +465,8 @@ export default function Space({ isActive }: { isActive: boolean }) {
           {mode === 'agents' && (
             <AgentsWorkspace
               admin={admin}
-              agents={localAgents}
+              agents={agents}
+              goals={goals}
               projects={projects}
               actions={actions}
               onRefresh={refreshCurrent}

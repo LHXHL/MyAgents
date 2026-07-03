@@ -179,7 +179,8 @@ export async function deleteApiKey(providerId: string): Promise<void> {
 export async function saveProviderVerifyStatus(
     providerId: string,
     status: 'valid' | 'invalid',
-    accountEmail?: string
+    accountEmail?: string,
+    metadata?: Pick<ProviderVerifyStatus, 'invalidReason' | 'error'>,
 ): Promise<void> {
     await atomicModifyConfig(c => ({
         ...c,
@@ -189,6 +190,8 @@ export async function saveProviderVerifyStatus(
                 status,
                 verifiedAt: new Date().toISOString(),
                 accountEmail,
+                ...(metadata?.invalidReason ? { invalidReason: metadata.invalidReason } : {}),
+                ...(metadata?.error ? { error: metadata.error } : {}),
             },
         },
     }));

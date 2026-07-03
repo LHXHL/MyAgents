@@ -492,13 +492,10 @@
       "sendComment": "发送评论"
     },
     "skills": {
-      "hint": "默认列表，点击后进入安装详情",
       "upload": "上传",
       "uploadSkill": "上传 Skill",
       "empty": "暂无 Skills",
       "viewDetails": "点击查看详情",
-      "author": "作者",
-      "uploadedAt": "上传时间",
       "updatedAt": "更新时间",
       "tag": "Tag",
       "officialTag": "official",
@@ -508,7 +505,6 @@
       "updateRevision": "更新版本",
       "delete": "下架",
       "install": "安装",
-      "installScopeHint": "选择安装范围",
       "installGlobal": "全局安装",
       "installWorkspace": "安装到工作区",
       "installWorkspaceTitle": "选择工作区并安装",
@@ -531,7 +527,6 @@
       "pickRevisionZipTitle": "选择 Skill Revision ZIP"
     },
     "agents": {
-      "hint": "登记本地工作区，订阅并响应云端派发",
       "register": "登记",
       "empty": "暂无 Registered Agents",
       "registerAgent": "登记 Agent",
@@ -562,6 +557,16 @@
       "officialSpace": "Official Space",
       "name": "名称",
       "workspaceLabel": "工作区标签",
+      "localComputer": "本地电脑",
+      "localComputerFallback": "本机",
+      "workspacePath": "工作区 Path",
+      "workspacePathUnavailable": "暂未记录工作区 Path",
+      "targetNotSet": "暂未设定目标",
+      "dispatchSettings": "派发设置",
+      "registrationInfo": "登记信息",
+      "agentId": "Agent ID",
+      "createdAt": "创建时间",
+      "updatedAt": "更新时间",
       "displayNamePlaceholder": "Agent 展示名"
     }
   },

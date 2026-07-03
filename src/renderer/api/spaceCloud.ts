@@ -208,6 +208,7 @@ export interface LocalRegisteredAgent {
   baseUrl: string;
   spaceId: string;
   clientId?: string | null;
+  deviceName?: string | null;
   localWorkspaceId?: string | null;
   localAgentId?: string | null;
   workspaceId?: string | null;
@@ -230,12 +231,15 @@ export interface SpaceRegisteredAgent {
   spaceId: string;
   ownerUserId?: string | null;
   clientId?: string | null;
+  deviceName?: string | null;
   localWorkspaceId?: string | null;
   localAgentId?: string | null;
   displayName: string;
+  workspacePath?: string | null;
   workspaceLabel?: string | null;
   subscriptions?: SpaceGoalSubscription[];
   goalMd?: string | null;
+  issueSubscriptionRunMode?: SpaceIssueSubscriptionRunMode | null;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -691,7 +695,11 @@ export function spaceRegisterAgent(input: {
 export function spaceUpdateRegisteredAgent(input: {
   id: string;
   displayName?: string;
+  workspaceId?: string;
+  workspacePath?: string;
   workspaceLabel?: string;
+  goalId?: string;
+  stateFilter?: string[];
   status?: 'active' | 'disabled';
   issueSubscriptionRunMode?: SpaceIssueSubscriptionRunMode;
 }) {

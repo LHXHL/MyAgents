@@ -492,13 +492,10 @@
       "sendComment": "Send comment"
     },
     "skills": {
-      "hint": "Default list. Click a row to view install details.",
       "upload": "Upload",
       "uploadSkill": "Upload Skill",
       "empty": "No Skills",
       "viewDetails": "Click to view details",
-      "author": "Author",
-      "uploadedAt": "Uploaded",
       "updatedAt": "Updated",
       "tag": "Tag",
       "officialTag": "official",
@@ -508,7 +505,6 @@
       "updateRevision": "Update revision",
       "delete": "Unpublish",
       "install": "Install",
-      "installScopeHint": "Choose where this Skill should be available.",
       "installGlobal": "Install globally",
       "installWorkspace": "Install to workspace",
       "installWorkspaceTitle": "Choose a workspace and install",
@@ -531,7 +527,6 @@
       "pickRevisionZipTitle": "Choose Skill Revision ZIP"
     },
     "agents": {
-      "hint": "Register local workspaces to subscribe and respond to cloud dispatches.",
       "register": "Register",
       "empty": "No Registered Agents",
       "registerAgent": "Register Agent",
@@ -562,6 +557,16 @@
       "officialSpace": "Official Space",
       "name": "Name",
       "workspaceLabel": "Workspace label",
+      "localComputer": "Local computer",
+      "localComputerFallback": "This device",
+      "workspacePath": "Workspace path",
+      "workspacePathUnavailable": "Workspace path not recorded",
+      "targetNotSet": "No target set",
+      "dispatchSettings": "Dispatch settings",
+      "registrationInfo": "Registration info",
+      "agentId": "Agent ID",
+      "createdAt": "Created",
+      "updatedAt": "Updated",
       "displayNamePlaceholder": "Agent display name"
     }
   },

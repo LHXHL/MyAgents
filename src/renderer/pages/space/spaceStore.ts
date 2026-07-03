@@ -210,7 +210,11 @@ export interface SpaceActions {
   updateRegisteredAgent: (input: {
     id: string;
     displayName?: string;
+    workspaceId?: string;
+    workspacePath?: string;
     workspaceLabel?: string;
+    goalId?: string;
+    stateFilter?: string[];
     status?: 'active' | 'disabled';
     issueSubscriptionRunMode?: SpaceIssueSubscriptionRunMode;
   }) => Promise<LocalRegisteredAgent>;
@@ -495,9 +499,11 @@ function localAgentToRegisteredAgent(agent: LocalRegisteredAgent): SpaceRegister
     id: agent.id,
     spaceId: agent.spaceId,
     clientId: agent.clientId,
+    deviceName: agent.deviceName,
     localWorkspaceId: agent.localWorkspaceId,
     localAgentId: agent.localAgentId,
     displayName: agent.displayName,
+    workspacePath: agent.workspacePath,
     workspaceLabel: agent.workspaceLabel,
     subscriptions: agent.goalId
       ? [
@@ -514,6 +520,8 @@ function localAgentToRegisteredAgent(agent: LocalRegisteredAgent): SpaceRegister
           },
         ]
       : [],
+    goalMd: agent.goalMd,
+    issueSubscriptionRunMode: agent.issueSubscriptionRunMode,
     status: agent.status,
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,

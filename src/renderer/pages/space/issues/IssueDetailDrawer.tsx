@@ -252,75 +252,77 @@ export function IssueDetailDrawer({
           <section className="h-full min-h-0 overflow-y-auto px-[56px] py-[58px] max-lg:px-8 max-sm:px-5">
             <div className="mx-auto max-w-[840px] pb-10">
               <article className="pb-7">
-                <div className="mb-4 flex flex-wrap items-center gap-2 text-xs font-semibold text-[var(--ink-subtle)]">
-                  <span ref={statusMenuRef} className="relative">
-                    {statusOptions.length > 0 ? (
-                      <button
-                        type="button"
-                        disabled={statusBusy}
-                        onClick={() => setStatusMenuOpen((value) => !value)}
-                        className={`inline-flex min-h-8 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-xs font-semibold transition-colors ${statusPillClass(detail.issue.state)} disabled:cursor-wait disabled:opacity-70`}
-                      >
-                        {statusBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                        {issueStatusLabel(detail.issue.state, t)}
-                        <ChevronDown className="h-3.5 w-3.5" />
-                      </button>
-                    ) : (
-                      <span className={`inline-flex min-h-8 items-center whitespace-nowrap rounded-md px-2.5 text-xs font-semibold ${statusPillClass(detail.issue.state)}`}>
-                        {issueStatusLabel(detail.issue.state, t)}
+                <div className="mb-4 flex items-start justify-between gap-4">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs font-semibold text-[var(--ink-subtle)]">
+                    <span ref={statusMenuRef} className="relative">
+                      {statusOptions.length > 0 ? (
+                        <button
+                          type="button"
+                          disabled={statusBusy}
+                          onClick={() => setStatusMenuOpen((value) => !value)}
+                          className={`inline-flex min-h-8 items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 text-xs font-semibold transition-colors ${statusPillClass(detail.issue.state)} disabled:cursor-wait disabled:opacity-70`}
+                        >
+                          {statusBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+                          {issueStatusLabel(detail.issue.state, t)}
+                          <ChevronDown className="h-3.5 w-3.5" />
+                        </button>
+                      ) : (
+                        <span className={`inline-flex min-h-8 items-center whitespace-nowrap rounded-md px-2.5 text-xs font-semibold ${statusPillClass(detail.issue.state)}`}>
+                          {issueStatusLabel(detail.issue.state, t)}
+                        </span>
+                      )}
+                      {statusMenuOpen && statusOptions.length > 0 && (
+                        <div className="absolute left-0 top-full z-30 mt-2 w-48 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-1.5 shadow-lg">
+                          {statusOptions.map((option) => (
+                            <button
+                              key={`${option.kind}:${option.value}`}
+                              type="button"
+                              onClick={() => void changeStatus(option)}
+                              className={`flex h-9 w-full items-center justify-between rounded-lg px-2.5 text-left text-sm font-semibold transition-colors hover:bg-[var(--paper-inset)] ${
+                                detail.issue.state === option.value ? 'text-[var(--accent-warm)]' : 'text-[var(--ink-secondary)]'
+                              }`}
+                            >
+                              {option.label}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </span>
+                    <span>{issueAuthorName}</span>
+                    <span className="text-[var(--line-strong)]">·</span>
+                    <span>{formatTime(detail.issue.createdAt)}</span>
+                    {detail.goalReference && (
+                      <span className="inline-flex items-center gap-1 rounded-md bg-[var(--accent-cool-subtle)] px-2 py-1 text-xs font-semibold text-[var(--accent-cool)]">
+                        <Target className="h-3.5 w-3.5" />
+                        {detail.goalReference.goalPathLabel || detail.goalReference.goalTitle}
                       </span>
                     )}
-                    {statusMenuOpen && statusOptions.length > 0 && (
-                      <div className="absolute left-0 top-full z-30 mt-2 w-48 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-1.5 shadow-lg">
-                        {statusOptions.map((option) => (
-                          <button
-                            key={`${option.kind}:${option.value}`}
-                            type="button"
-                            onClick={() => void changeStatus(option)}
-                            className={`flex h-9 w-full items-center justify-between rounded-lg px-2.5 text-left text-sm font-semibold transition-colors hover:bg-[var(--paper-inset)] ${
-                              detail.issue.state === option.value ? 'text-[var(--accent-warm)]' : 'text-[var(--ink-secondary)]'
-                            }`}
-                          >
-                            {option.label}
-                          </button>
-                        ))}
-                      </div>
+                    {detail.issue.humanOnly && (
+                      <span className="rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs font-semibold text-[var(--ink-muted)]">
+                        {t('space.issues.humanOnly')}
+                      </span>
                     )}
-                  </span>
-                  <span>{issueAuthorName}</span>
-                  <span className="text-[var(--line-strong)]">·</span>
-                  <span>{formatTime(detail.issue.createdAt)}</span>
-                  {detail.goalReference && (
-                    <span className="inline-flex items-center gap-1 rounded-md bg-[var(--accent-cool-subtle)] px-2 py-1 text-xs font-semibold text-[var(--accent-cool)]">
-                      <Target className="h-3.5 w-3.5" />
-                      {detail.goalReference.goalPathLabel || detail.goalReference.goalTitle}
-                    </span>
-                  )}
-                  {detail.issue.humanOnly && (
-                    <span className="rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs font-semibold text-[var(--ink-muted)]">
-                      {t('space.issues.humanOnly')}
-                    </span>
-                  )}
-                  {claimHandlerName && (
-                    <span className="rounded-md bg-[var(--warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--warning)]">
-                      {t('space.detail.claimHandler', {
-                        name: claimHandlerName,
-                        type: claimHandlerType,
-                      })}
-                    </span>
-                  )}
-                </div>
-                <div className="mt-4 grid grid-cols-[minmax(0,1fr)_auto] items-start gap-4 max-sm:grid-cols-1">
-                  <h2 className="max-w-[68ch] text-2xl font-semibold leading-snug text-[var(--ink)]">{issueDisplayTitle(detail.issue)}</h2>
+                    {claimHandlerName && (
+                      <span className="rounded-md bg-[var(--warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--warning)]">
+                        {t('space.detail.claimHandler', {
+                          name: claimHandlerName,
+                          type: claimHandlerType,
+                        })}
+                      </span>
+                    )}
+                  </div>
                   <button
                     type="button"
                     onClick={() => void copyIssueCommand()}
-                    className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-transparent px-2.5 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] max-sm:justify-self-start"
+                    className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-transparent px-2.5 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                     title={t('space.detail.copyIssueCommand')}
                   >
                     <Copy className="h-3.5 w-3.5" />
                     {t('space.detail.copyIssueCommand')}
                   </button>
+                </div>
+                <div className="mt-4">
+                  <h2 className="max-w-[68ch] text-2xl font-semibold leading-snug text-[var(--ink)]">{issueDisplayTitle(detail.issue)}</h2>
                 </div>
                 <div className="mt-5">
                   <IssueMarkdown>{detail.issue.body}</IssueMarkdown>
