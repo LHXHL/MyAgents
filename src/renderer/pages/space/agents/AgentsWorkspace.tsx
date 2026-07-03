@@ -13,7 +13,7 @@ import { spaceErrorMessage } from '@/api/spaceCloud';
 import { issueStatusLabel } from '@/pages/space/spaceHelpers';
 import { GoalPathSelectLabel } from '@/pages/space/GoalPathSelectLabel';
 import type { SpaceActions } from '@/pages/space/spaceStore';
-import { SPACE_LIST_FRAME_CLASS, SPACE_TWO_COLUMN_GRID_CLASS, formatTime } from '@/pages/space/spaceUi';
+import { SPACE_LIST_FRAME_CLASS, SPACE_PRIMARY_TOOL_BUTTON_CLASS, SPACE_REFRESH_TOOL_BUTTON_CLASS, SPACE_TWO_COLUMN_GRID_CLASS, formatTime } from '@/pages/space/spaceUi';
 import { shortenPathForDisplay } from '@/utils/pathDetection';
 import { workspacePathsEqual } from '../../../../shared/workspacePath';
 
@@ -109,20 +109,22 @@ export function AgentsWorkspace({ admin, agents, goals, projects, actions, onRef
     <>
       <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]">
         <section className="flex min-h-12 items-center gap-2.5 border-b border-[var(--line)] bg-[var(--paper-elevated)]/60 px-5 py-1.5 backdrop-blur-md">
-          <div className="mr-auto flex min-w-0 items-center gap-2 text-sm font-semibold text-[var(--ink-secondary)]">
+          <div className="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold text-[var(--ink-secondary)]">
             <Bot className="h-4 w-4 shrink-0" />
             <span>Agents</span>
             <span className="rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">{agents.length}</span>
           </div>
-          <button type="button" onClick={() => void onRefresh()} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-transparent text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]" aria-label={t('space.common.refresh')} title={t('space.common.refresh')}>
-            <RefreshCw className="h-4 w-4" />
-          </button>
-          {admin && (
-            <button type="button" onClick={onRegister} className="flex h-9 shrink-0 items-center gap-2 rounded-xl bg-[var(--button-primary-bg)] px-4 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]">
-              <Plus className="h-4 w-4" />
-              {t('space.agents.register')}
+          <div className="flex shrink-0 items-center gap-2.5">
+            {admin && (
+              <button type="button" onClick={onRegister} className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}>
+                <Plus className="h-4 w-4" />
+                {t('space.agents.register')}
+              </button>
+            )}
+            <button type="button" onClick={() => void onRefresh()} className={SPACE_REFRESH_TOOL_BUTTON_CLASS} aria-label={t('space.common.refresh')} title={t('space.common.refresh')}>
+              <RefreshCw className="h-4 w-4" />
             </button>
-          )}
+          </div>
         </section>
         <main className="min-h-0 overflow-y-auto px-6 pb-8 pt-3">
           {agents.length === 0 ? (

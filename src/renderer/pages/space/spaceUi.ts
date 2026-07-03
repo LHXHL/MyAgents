@@ -16,6 +16,10 @@ export const SPACE_BACKGROUND_STYLE: CSSProperties = {
 
 export const SPACE_LIST_FRAME_CLASS = 'mx-auto max-w-4xl';
 export const SPACE_TWO_COLUMN_GRID_CLASS = 'grid grid-cols-2 gap-3 max-lg:grid-cols-1';
+export const SPACE_PRIMARY_TOOL_BUTTON_CLASS =
+  'flex h-9 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-[var(--button-primary-bg)] px-4 text-sm font-semibold text-[var(--button-primary-text)] shadow-sm transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70';
+export const SPACE_REFRESH_TOOL_BUTTON_CLASS =
+  'grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-transparent text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-70';
 
 export function formatTime(value?: string | null): string {
   if (!value) return '';

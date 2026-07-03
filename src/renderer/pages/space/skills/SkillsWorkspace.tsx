@@ -10,7 +10,7 @@ import { useToast } from '@/components/Toast';
 import type { Project } from '@/config/types';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { getSkillFileState, SPACE_VISIBLE_REFRESH_TTL_MS, type SpaceActions, type SpaceSkillDetailState } from '@/pages/space/spaceStore';
-import { SPACE_LIST_FRAME_CLASS, SPACE_TWO_COLUMN_GRID_CLASS, formatBytes, formatDate } from '@/pages/space/spaceUi';
+import { SPACE_LIST_FRAME_CLASS, SPACE_PRIMARY_TOOL_BUTTON_CLASS, SPACE_REFRESH_TOOL_BUTTON_CLASS, SPACE_TWO_COLUMN_GRID_CLASS, formatBytes, formatDate } from '@/pages/space/spaceUi';
 
 type SkillDetailMode = 'entry' | 'files';
 const EMPTY_SKILL_FILES: SpaceSkillFile[] = [];
@@ -53,20 +53,22 @@ export function SkillsWorkspace({ admin, skills, loading, selectedSkillId, proje
   return (
     <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]">
       <section className="flex min-h-12 items-center gap-2.5 border-b border-[var(--line)] bg-[var(--paper-elevated)]/60 px-5 py-1.5 backdrop-blur-md">
-        <div className="mr-auto flex min-w-0 items-center gap-2 text-sm font-semibold text-[var(--ink-secondary)]">
+        <div className="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold text-[var(--ink-secondary)]">
           <Package className="h-4 w-4 shrink-0" />
           <span>Skills</span>
           <span className="rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">{skills.length}</span>
         </div>
-        {admin && (
-          <button type="button" disabled={uploading} onClick={() => void uploadSkill()} className="flex h-9 shrink-0 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-wait disabled:opacity-70">
-            {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-            {t('space.skills.upload')}
+        <div className="flex shrink-0 items-center gap-2.5">
+          {admin && (
+            <button type="button" disabled={uploading} onClick={() => void uploadSkill()} className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}>
+              {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
+              {t('space.skills.upload')}
+            </button>
+          )}
+          <button type="button" onClick={() => void onRefresh()} className={SPACE_REFRESH_TOOL_BUTTON_CLASS} aria-label={t('space.common.refresh')} title={t('space.common.refresh')}>
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
           </button>
-        )}
-        <button type="button" onClick={() => void onRefresh()} className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-transparent text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]" aria-label={t('space.common.refresh')} title={t('space.common.refresh')}>
-          {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-        </button>
+        </div>
       </section>
 
       <main className="min-h-0 overflow-y-auto px-6 pb-10 pt-5">
