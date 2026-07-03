@@ -1,18 +1,18 @@
-import type { Project } from '@/config/types';
-import { i18n } from '@/i18n';
-import { workspacePathsEqual } from '@/../shared/workspacePath';
+import type { Project } from "@/config/types";
+import { i18n } from "@/i18n";
+import { workspacePathsEqual } from "@/../shared/workspacePath";
 
-export const DEFAULT_SPACE_ID = 'official';
+export const DEFAULT_SPACE_ID = "official";
 
 function isTauri(): boolean {
-  return typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
 
 async function inv<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   if (!isTauri()) {
     throw new Error(`MyAgents Space requires Tauri runtime: ${cmd}`);
   }
-  const { invoke } = await import('@tauri-apps/api/core');
+  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<T>(cmd, args);
 }
 
@@ -37,7 +37,7 @@ export interface SpaceInfo {
 
 export interface SpaceMembership {
   id: string;
-  role: 'owner' | 'admin' | 'member';
+  role: "owner" | "admin" | "member";
 }
 
 export interface SpaceSession {
@@ -63,7 +63,7 @@ export interface SpaceTag {
   description?: string | null;
 }
 
-export type SpaceIssueState = 'open' | 'todo' | 'doing' | 'done' | 'closed';
+export type SpaceIssueState = "open" | "todo" | "doing" | "done" | "closed";
 
 export interface SpaceGoal {
   id: string;
@@ -82,7 +82,7 @@ export interface SpaceGoal {
 export interface SpaceGoalSubscription {
   id: string;
   spaceId: string;
-  actorType: 'user' | 'registered_agent';
+  actorType: "user" | "registered_agent";
   actorId: string;
   goalId: string;
   includeSubtree: boolean;
@@ -100,7 +100,7 @@ export interface SpaceIssue {
   body: string;
   state: SpaceIssueState | string;
   humanOnly?: boolean;
-  createdByType?: 'user' | 'registered_agent';
+  createdByType?: "user" | "registered_agent";
   createdById?: string;
   createdByUserId?: string;
   creator?: { id: string; name?: string | null };
@@ -118,7 +118,7 @@ export interface SpaceIssue {
 
 export interface SpaceIssueComment {
   id: string;
-  author: { id: string; type: 'user' | 'registered_agent' | 'system' };
+  author: { id: string; type: "user" | "registered_agent" | "system" };
   body: string;
   createdAt: string;
 }
@@ -150,11 +150,15 @@ export interface SpaceIssueClaim {
   id: string;
   spaceId: string;
   issueId: string;
-  actorType: 'user' | 'registered_agent';
+  actorType: "user" | "registered_agent";
   actorId: string;
   actorName?: string | null;
-  actor?: { id: string; name?: string | null; type?: 'user' | 'registered_agent' | string };
-  status?: 'active' | 'completed' | 'cancelled' | string;
+  actor?: {
+    id: string;
+    name?: string | null;
+    type?: "user" | "registered_agent" | string;
+  };
+  status?: "active" | "completed" | "cancelled" | string;
   localTaskId?: string | null;
   localSessionId?: string | null;
   claimedAt: string;
@@ -201,13 +205,26 @@ export interface SpaceSkillDetail {
   files: SpaceSkillFile[];
 }
 
-export type SpaceIssueSubscriptionRunMode = 'single_session' | 'new_session';
+export type SpaceIssueSubscriptionRunMode = "single_session" | "new_session";
+
+export interface SpaceUserDeviceSummary {
+  deviceId: string;
+  deviceName?: string | null;
+  platform?: string | null;
+  osVersion?: string | null;
+  appVersion?: string | null;
+  status?: string | null;
+  lastSeenAt?: string | null;
+}
 
 export interface LocalRegisteredAgent {
   id: string;
   baseUrl: string;
   spaceId: string;
   isLocal?: boolean;
+  ownerUserId?: string | null;
+  deviceId?: string | null;
+  device?: SpaceUserDeviceSummary | null;
   clientId?: string | null;
   deviceName?: string | null;
   localWorkspaceId?: string | null;
@@ -231,6 +248,8 @@ export interface SpaceRegisteredAgent {
   id: string;
   spaceId: string;
   ownerUserId?: string | null;
+  deviceId?: string | null;
+  device?: SpaceUserDeviceSummary | null;
   clientId?: string | null;
   deviceName?: string | null;
   localWorkspaceId?: string | null;
@@ -276,13 +295,13 @@ export interface SpaceDeliveryItem {
     spaceId: string;
     issueId: string;
     registeredAgentId: string;
-    deliveryKind?: 'subscription' | 'claim_followup' | string | null;
+    deliveryKind?: "subscription" | "claim_followup" | string | null;
     subscriptionId?: string | null;
     claimId?: string | null;
     notificationVersion: number;
     updateSummary?: string | null;
     targetSessionId?: string | null;
-    status: 'pending' | 'delivered' | 'claimed' | 'ignored' | string;
+    status: "pending" | "delivered" | "claimed" | "ignored" | string;
     deliveredToSessionId?: string | null;
     deliveredAt?: string | null;
     createdAt: string;
@@ -343,16 +362,24 @@ interface SpaceUserFacingError extends Error {
 
 function spaceUserFacingError(message: string): SpaceUserFacingError {
   const error = new Error(message) as SpaceUserFacingError;
-  Object.defineProperty(error, '__spaceUserFacingError', { value: true });
+  Object.defineProperty(error, "__spaceUserFacingError", { value: true });
   return error;
 }
 
 function isSpaceUserFacingError(error: unknown): error is SpaceUserFacingError {
-  return error instanceof Error && (error as Partial<SpaceUserFacingError>).__spaceUserFacingError === true;
+  return (
+    error instanceof Error &&
+    (error as Partial<SpaceUserFacingError>).__spaceUserFacingError === true
+  );
 }
 
 function rawErrorMessage(error: unknown): string {
-  if (error && typeof error === 'object' && 'error' in error && typeof error.error === 'string') {
+  if (
+    error &&
+    typeof error === "object" &&
+    "error" in error &&
+    typeof error.error === "string"
+  ) {
     return error.error;
   }
   if (error instanceof Error) return error.message;
@@ -361,12 +388,12 @@ function rawErrorMessage(error: unknown): string {
 
 function sanitizeSpaceError(message: string): string {
   return message
-    .replace(/\s*\(https?:\/\/[^)]+\)/g, '')
-    .replace(/https?:\/\/\S+/g, '[URL]')
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
-    .replace(/\/Users\/[^\s)]+/g, '[path]')
-    .replace(/\/var\/folders\/[^\s)]+/g, '[path]')
-    .replace(/[A-Z]:\\Users\\[^\s)]+/g, '[path]')
+    .replace(/\s*\(https?:\/\/[^)]+\)/g, "")
+    .replace(/https?:\/\/\S+/g, "[URL]")
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer [redacted]")
+    .replace(/\/Users\/[^\s)]+/g, "[path]")
+    .replace(/\/var\/folders\/[^\s)]+/g, "[path]")
+    .replace(/[A-Z]:\\Users\\[^\s)]+/g, "[path]")
     .trim();
 }
 
@@ -376,22 +403,34 @@ function spaceText(key: string, options?: Record<string, unknown>): string {
 
 function operationFromPath(context?: SpaceErrorContext): string {
   if (context?.operation) return context.operation;
-  const path = context?.path ?? '';
-  const method = (context?.method ?? '').toUpperCase();
-  if (method === 'POST' && /\/api\/issues\/[^/]+\/comments$/.test(path)) return spaceText('operations.comment');
-  if (method === 'POST' && /\/api\/spaces\/[^/]+\/issues$/.test(path)) return spaceText('operations.createIssue');
-  if (method === 'POST' && /\/api\/issues\/[^/]+\/status$/.test(path)) return spaceText('operations.updateIssueStatus');
-  if (method === 'POST' && /\/api\/issues\/[^/]+\/close-own$/.test(path)) return spaceText('operations.closeIssue');
-  if (method === 'POST' && /\/api\/issues\/[^/]+\/claim$/.test(path)) return spaceText('operations.claimIssue');
-  if (method === 'POST' && /\/api\/issues\/[^/]+\/complete$/.test(path)) return spaceText('operations.completeIssue');
-  if (method === 'POST' && /\/api\/issues\/[^/]+\/cancel-claim$/.test(path)) return spaceText('operations.cancelClaim');
-  if (path.includes('/goals')) return spaceText('operations.goal');
-  if (path.includes('/attachments')) return spaceText('operations.attachment');
-  if (path.includes('/skills')) return spaceText('operations.skill');
-  return spaceText('operations.request');
+  const path = context?.path ?? "";
+  const method = (context?.method ?? "").toUpperCase();
+  if (method === "POST" && /\/api\/issues\/[^/]+\/comments$/.test(path))
+    return spaceText("operations.comment");
+  if (method === "POST" && /\/api\/spaces\/[^/]+\/issues$/.test(path))
+    return spaceText("operations.createIssue");
+  if (method === "PATCH" && /\/api\/issues\/[^/]+$/.test(path))
+    return spaceText("operations.updateIssue");
+  if (method === "POST" && /\/api\/issues\/[^/]+\/status$/.test(path))
+    return spaceText("operations.updateIssueStatus");
+  if (method === "POST" && /\/api\/issues\/[^/]+\/close-own$/.test(path))
+    return spaceText("operations.closeIssue");
+  if (method === "POST" && /\/api\/issues\/[^/]+\/claim$/.test(path))
+    return spaceText("operations.claimIssue");
+  if (method === "POST" && /\/api\/issues\/[^/]+\/complete$/.test(path))
+    return spaceText("operations.completeIssue");
+  if (method === "POST" && /\/api\/issues\/[^/]+\/cancel-claim$/.test(path))
+    return spaceText("operations.cancelClaim");
+  if (path.includes("/goals")) return spaceText("operations.goal");
+  if (path.includes("/attachments")) return spaceText("operations.attachment");
+  if (path.includes("/skills")) return spaceText("operations.skill");
+  return spaceText("operations.request");
 }
 
-export function normalizeSpaceError(error: unknown, context?: SpaceErrorContext): NormalizedSpaceError {
+export function normalizeSpaceError(
+  error: unknown,
+  context?: SpaceErrorContext,
+): NormalizedSpaceError {
   if (isSpaceUserFacingError(error)) {
     return {
       userMessage: error.message,
@@ -402,81 +441,108 @@ export function normalizeSpaceError(error: unknown, context?: SpaceErrorContext)
   const sanitized = sanitizeSpaceError(raw);
   const operation = operationFromPath(context);
   const lower = raw.toLowerCase();
-  const envelope = error && typeof error === 'object' ? (error as Partial<SpaceApiEnvelope<unknown>>) : null;
-  const code = typeof envelope?.code === 'string' ? envelope.code : '';
-  const requestId = typeof envelope?.requestId === 'string' ? envelope.requestId : '';
-  const recoveryMessage = typeof envelope?.recoveryHint?.message === 'string' ? envelope.recoveryHint.message.trim() : '';
-  const debugSuffix = [code, requestId].filter(Boolean).join(' ');
+  const envelope =
+    error && typeof error === "object"
+      ? (error as Partial<SpaceApiEnvelope<unknown>>)
+      : null;
+  const code = typeof envelope?.code === "string" ? envelope.code : "";
+  const requestId =
+    typeof envelope?.requestId === "string" ? envelope.requestId : "";
+  const recoveryMessage =
+    typeof envelope?.recoveryHint?.message === "string"
+      ? envelope.recoveryHint.message.trim()
+      : "";
+  const debugSuffix = [code, requestId].filter(Boolean).join(" ");
 
-  if (code === 'NOT_AUTHENTICATED' || code === 'SESSION_EXPIRED') {
+  if (code === "NOT_AUTHENTICATED" || code === "SESSION_EXPIRED") {
     return {
-      userMessage: spaceText('templates.relogin', { operation }),
-      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(' · '),
+      userMessage: spaceText("templates.relogin", { operation }),
+      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(" · "),
     };
   }
 
-  if (code === 'FORBIDDEN' || code.includes('PERMISSION') || lower.includes('permission required')) {
+  if (
+    code === "FORBIDDEN" ||
+    code.includes("PERMISSION") ||
+    lower.includes("permission required")
+  ) {
     return {
-      userMessage: spaceText('templates.permissionDenied', { operation }),
-      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(' · '),
+      userMessage: spaceText("templates.permissionDenied", { operation }),
+      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(" · "),
     };
   }
 
-  if (code === 'INTERNAL_ERROR') {
+  if (code === "INTERNAL_ERROR") {
     return {
-      userMessage: spaceText('templates.serviceUnavailable', { operation }),
-      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(' · '),
+      userMessage: spaceText("templates.serviceUnavailable", { operation }),
+      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(" · "),
     };
   }
 
   if (recoveryMessage) {
     return {
-      userMessage: spaceText('templates.withDetail', { operation, detail: recoveryMessage }),
-      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(' · '),
+      userMessage: spaceText("templates.withDetail", {
+        operation,
+        detail: recoveryMessage,
+      }),
+      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(" · "),
     };
   }
 
   if (
-    lower.includes('error sending request')
-    || lower.includes('space api request failed')
-    || lower.includes('load failed')
-    || lower.includes('network')
-    || lower.includes('timed out')
+    lower.includes("error sending request") ||
+    lower.includes("space api request failed") ||
+    lower.includes("load failed") ||
+    lower.includes("network") ||
+    lower.includes("timed out")
   ) {
     return {
-      userMessage: spaceText('templates.network', { operation }),
-      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(' · '),
+      userMessage: spaceText("templates.network", { operation }),
+      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(" · "),
     };
   }
 
-  if (lower.includes('invalid space api response') || lower.includes('response missing data')) {
+  if (
+    lower.includes("invalid space api response") ||
+    lower.includes("response missing data")
+  ) {
     return {
-      userMessage: spaceText('templates.invalidResponse', { operation }),
-      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(' · '),
+      userMessage: spaceText("templates.invalidResponse", { operation }),
+      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(" · "),
     };
   }
 
   if (sanitized) {
     return {
-      userMessage: spaceText('templates.withDetail', { operation, detail: sanitized }),
-      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(' · '),
+      userMessage: spaceText("templates.withDetail", {
+        operation,
+        detail: sanitized,
+      }),
+      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(" · "),
     };
   }
 
   return {
-    userMessage: spaceText('templates.failed', { operation }),
-    debugMessage: [debugSuffix, raw].filter(Boolean).join(' · '),
+    userMessage: spaceText("templates.failed", { operation }),
+    debugMessage: [debugSuffix, raw].filter(Boolean).join(" · "),
   };
 }
 
-export function spaceErrorMessage(error: unknown, context?: SpaceErrorContext): string {
+export function spaceErrorMessage(
+  error: unknown,
+  context?: SpaceErrorContext,
+): string {
   return normalizeSpaceError(error, context).userMessage;
 }
 
-async function spaceApi<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function spaceApi<T>(
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<T> {
   let result: SpaceApiEnvelope<T>;
   try {
-    result = await inv<SpaceApiEnvelope<T>>('cmd_space_api_request', {
+    result = await inv<SpaceApiEnvelope<T>>("cmd_space_api_request", {
       input: {
         method,
         path,
@@ -485,65 +551,114 @@ async function spaceApi<T>(method: string, path: string, body?: unknown): Promis
     });
   } catch (error) {
     const normalized = normalizeSpaceError(error, { method, path });
-    console.warn('[Space] API transport failed', { method, path, error: normalized.debugMessage });
+    console.warn("[Space] API transport failed", {
+      method,
+      path,
+      error: normalized.debugMessage,
+    });
     throw spaceUserFacingError(normalized.userMessage);
   }
   if (!result.success) {
-    const normalized = normalizeSpaceError(result.error ? result : `Space API failed: ${method} ${path}`, { method, path });
-    console.warn('[Space] API business error', { method, path, error: normalized.debugMessage });
+    const normalized = normalizeSpaceError(
+      result.error ? result : `Space API failed: ${method} ${path}`,
+      { method, path },
+    );
+    console.warn("[Space] API business error", {
+      method,
+      path,
+      error: normalized.debugMessage,
+    });
     throw spaceUserFacingError(normalized.userMessage);
   }
   return result.data as T;
 }
 
 export function spaceGetSession(): Promise<SpaceSession | null> {
-  return inv('cmd_space_get_session');
+  return inv("cmd_space_get_session");
 }
 
 export function spaceGetCapability(): Promise<SpaceBuildCapability> {
-  return inv('cmd_space_get_capability');
+  return inv("cmd_space_get_capability");
 }
 
-export function spaceAuthStart(): Promise<{ loginToken: string; authorizationUrl: string; expiresInSeconds: number }> {
-  return inv('cmd_space_auth_start');
+export function spaceAuthStart(): Promise<{
+  loginToken: string;
+  authorizationUrl: string;
+  expiresInSeconds: number;
+}> {
+  return inv("cmd_space_auth_start");
 }
 
-export function spaceAuthPoll(loginToken: string): Promise<Record<string, unknown>> {
-  return inv('cmd_space_auth_poll', { input: { loginToken } });
+export function spaceAuthPoll(
+  loginToken: string,
+): Promise<Record<string, unknown>> {
+  return inv("cmd_space_auth_poll", { input: { loginToken } });
 }
 
 export function spaceAuthAck(loginToken: string): Promise<void> {
-  return inv('cmd_space_auth_ack', { input: { loginToken } });
+  return inv("cmd_space_auth_ack", { input: { loginToken } });
 }
 
 export function spaceLogout(): Promise<void> {
-  return inv('cmd_space_logout');
+  return inv("cmd_space_logout");
 }
 
-export function spaceGetOfficial(spaceId = DEFAULT_SPACE_ID): Promise<{ space: SpaceInfo; membership: SpaceMembership; goals: SpaceGoal[]; tags?: SpaceTag[] }> {
-  return spaceApi('GET', `/api/spaces/${spacePath(spaceId)}`);
+export function spaceGetOfficial(
+  spaceId = DEFAULT_SPACE_ID,
+): Promise<{
+  space: SpaceInfo;
+  membership: SpaceMembership;
+  goals: SpaceGoal[];
+  tags?: SpaceTag[];
+}> {
+  return spaceApi("GET", `/api/spaces/${spacePath(spaceId)}`);
 }
 
-export function spaceListGoals(input: { includeArchived?: boolean } = {}, spaceId = DEFAULT_SPACE_ID) {
+export function spaceListGoals(
+  input: { includeArchived?: boolean } = {},
+  spaceId = DEFAULT_SPACE_ID,
+) {
   const search = new URLSearchParams();
-  if (input.includeArchived) search.set('includeArchived', 'true');
-  const suffix = search.toString() ? `?${search.toString()}` : '';
-  return spaceApi<{ items: SpaceGoal[] }>('GET', `/api/spaces/${spacePath(spaceId)}/goals${suffix}`);
+  if (input.includeArchived) search.set("includeArchived", "true");
+  const suffix = search.toString() ? `?${search.toString()}` : "";
+  return spaceApi<{ items: SpaceGoal[] }>(
+    "GET",
+    `/api/spaces/${spacePath(spaceId)}/goals${suffix}`,
+  );
 }
 
-export function spaceCreateGoal(input: { parentGoalId: string; title: string; context: string }, spaceId = DEFAULT_SPACE_ID) {
-  return spaceApi<{ goal: SpaceGoal }>('POST', `/api/spaces/${spacePath(spaceId)}/goals`, input);
+export function spaceCreateGoal(
+  input: { parentGoalId: string; title: string; context: string },
+  spaceId = DEFAULT_SPACE_ID,
+) {
+  return spaceApi<{ goal: SpaceGoal }>(
+    "POST",
+    `/api/spaces/${spacePath(spaceId)}/goals`,
+    input,
+  );
 }
 
-export function spaceUpdateGoal(input: { goalId: string; title?: string; context?: string }) {
-  return spaceApi<{ goal: SpaceGoal }>('PATCH', `/api/goals/${encodeURIComponent(input.goalId)}`, {
-    title: input.title,
-    context: input.context,
-  });
+export function spaceUpdateGoal(input: {
+  goalId: string;
+  title?: string;
+  context?: string;
+}) {
+  return spaceApi<{ goal: SpaceGoal }>(
+    "PATCH",
+    `/api/goals/${encodeURIComponent(input.goalId)}`,
+    {
+      title: input.title,
+      context: input.context,
+    },
+  );
 }
 
 export function spaceArchiveGoal(goalId: string) {
-  return spaceApi<{ archived: boolean; archivedAt: string }>('POST', `/api/goals/${encodeURIComponent(goalId)}/archive`, {});
+  return spaceApi<{ archived: boolean; archivedAt: string }>(
+    "POST",
+    `/api/goals/${encodeURIComponent(goalId)}/archive`,
+    {},
+  );
 }
 
 export function spaceListIssues(
@@ -559,86 +674,157 @@ export function spaceListIssues(
   spaceId = DEFAULT_SPACE_ID,
 ) {
   const search = new URLSearchParams();
-  if (params.q) search.set('q', params.q);
-  if (params.state) search.set('state', params.state);
-  if (params.goalId) search.set('goalId', params.goalId);
-  if (params.includeSubtree !== undefined) search.set('includeSubtree', String(params.includeSubtree));
-  if (params.humanOnly !== undefined && params.humanOnly !== null) search.set('humanOnly', String(params.humanOnly));
-  if (params.cursor) search.set('cursor', params.cursor);
-  search.set('limit', String(params.limit ?? 30));
-  return spaceApi<{ items: SpaceIssue[]; hasMore: boolean; nextCursor?: string | null }>(
-    'GET',
-    `/api/spaces/${spacePath(spaceId)}/issues?${search.toString()}`,
-  );
+  if (params.q) search.set("q", params.q);
+  if (params.state) search.set("state", params.state);
+  if (params.goalId) search.set("goalId", params.goalId);
+  if (params.includeSubtree !== undefined)
+    search.set("includeSubtree", String(params.includeSubtree));
+  if (params.humanOnly !== undefined && params.humanOnly !== null)
+    search.set("humanOnly", String(params.humanOnly));
+  if (params.cursor) search.set("cursor", params.cursor);
+  search.set("limit", String(params.limit ?? 30));
+  return spaceApi<{
+    items: SpaceIssue[];
+    hasMore: boolean;
+    nextCursor?: string | null;
+  }>("GET", `/api/spaces/${spacePath(spaceId)}/issues?${search.toString()}`);
 }
 
-export function spaceListEvents(params: { cursor?: string | null; limit?: number; tail?: boolean }, spaceId = DEFAULT_SPACE_ID) {
+export function spaceListEvents(
+  params: { cursor?: string | null; limit?: number; tail?: boolean },
+  spaceId = DEFAULT_SPACE_ID,
+) {
   const search = new URLSearchParams();
-  if (params.cursor) search.set('cursor', params.cursor);
-  if (params.tail) search.set('tail', '1');
-  search.set('limit', String(params.limit ?? 50));
-  return spaceApi<{ items: SpaceEvent[]; hasMore: boolean; nextCursor?: string | null }>(
-    'GET',
-    `/api/spaces/${spacePath(spaceId)}/events?${search.toString()}`,
+  if (params.cursor) search.set("cursor", params.cursor);
+  if (params.tail) search.set("tail", "1");
+  search.set("limit", String(params.limit ?? 50));
+  return spaceApi<{
+    items: SpaceEvent[];
+    hasMore: boolean;
+    nextCursor?: string | null;
+  }>("GET", `/api/spaces/${spacePath(spaceId)}/events?${search.toString()}`);
+}
+
+export function spaceCreateIssue(
+  input: {
+    title: string;
+    body: string;
+    goalId?: string | null;
+    parentIssueId?: string | null;
+    humanOnly?: boolean;
+  },
+  spaceId = DEFAULT_SPACE_ID,
+) {
+  return spaceApi<{ issue: SpaceIssue }>(
+    "POST",
+    `/api/spaces/${spacePath(spaceId)}/issues`,
+    input,
   );
 }
 
-export function spaceCreateIssue(input: {
-  title: string;
-  body: string;
-  goalId?: string | null;
-  parentIssueId?: string | null;
-  humanOnly?: boolean;
-}, spaceId = DEFAULT_SPACE_ID) {
-  return spaceApi<{ issue: SpaceIssue }>('POST', `/api/spaces/${spacePath(spaceId)}/issues`, input);
+export function spaceUpdateIssue(input: {
+  issueId: string;
+  title?: string;
+  body?: string;
+}) {
+  return spaceApi<{ issue: SpaceIssue }>(
+    "PATCH",
+    `/api/issues/${encodeURIComponent(input.issueId)}`,
+    {
+      title: input.title,
+      body: input.body,
+    },
+  );
 }
 
 export function spaceGetIssue(id: string, commentsCursor?: string | null) {
-  const search = new URLSearchParams({ commentsLimit: '5' });
-  if (commentsCursor) search.set('commentsCursor', commentsCursor);
-  return spaceApi<SpaceIssueDetail>('GET', `/api/issues/${encodeURIComponent(id)}?${search.toString()}`);
+  const search = new URLSearchParams({ commentsLimit: "5" });
+  if (commentsCursor) search.set("commentsCursor", commentsCursor);
+  return spaceApi<SpaceIssueDetail>(
+    "GET",
+    `/api/issues/${encodeURIComponent(id)}?${search.toString()}`,
+  );
 }
 
 export function spaceCommentIssue(id: string, body: string) {
-  return spaceApi<{ comment: SpaceIssueComment }>('POST', `/api/issues/${encodeURIComponent(id)}/comments`, { body });
+  return spaceApi<{ comment: SpaceIssueComment }>(
+    "POST",
+    `/api/issues/${encodeURIComponent(id)}/comments`,
+    { body },
+  );
 }
 
 export function spaceSetIssueState(id: string, state: string) {
-  return spaceApi<{ state: string; updatedAt: string }>('POST', `/api/issues/${encodeURIComponent(id)}/status`, { state });
+  return spaceApi<{ state: string; updatedAt: string }>(
+    "POST",
+    `/api/issues/${encodeURIComponent(id)}/status`,
+    { state },
+  );
 }
 
 export function spaceCloseOwnIssue(id: string) {
-  return spaceApi<{ state: string; updatedAt: string }>('POST', `/api/issues/${encodeURIComponent(id)}/close-own`, {});
+  return spaceApi<{ state: string; updatedAt: string }>(
+    "POST",
+    `/api/issues/${encodeURIComponent(id)}/close-own`,
+    {},
+  );
 }
 
 export function spaceCloseIssue(id: string) {
-  return spaceApi<{ state: string; updatedAt: string }>('POST', `/api/issues/${encodeURIComponent(id)}/close`, {});
+  return spaceApi<{ state: string; updatedAt: string }>(
+    "POST",
+    `/api/issues/${encodeURIComponent(id)}/close`,
+    {},
+  );
 }
 
 export function spaceCompleteIssue(id: string) {
-  return spaceApi<{ state: string; updatedAt: string }>('POST', `/api/issues/${encodeURIComponent(id)}/complete`, {});
+  return spaceApi<{ state: string; updatedAt: string }>(
+    "POST",
+    `/api/issues/${encodeURIComponent(id)}/complete`,
+    {},
+  );
 }
 
 export function spaceCancelIssueClaim(id: string) {
-  return spaceApi<{ state: string; updatedAt: string }>('POST', `/api/issues/${encodeURIComponent(id)}/cancel-claim`, {});
+  return spaceApi<{ state: string; updatedAt: string }>(
+    "POST",
+    `/api/issues/${encodeURIComponent(id)}/cancel-claim`,
+    {},
+  );
 }
 
 export function spaceClaimIssue(id: string, deliveryId?: string | null) {
-  return spaceApi<{ claim: SpaceIssueClaim }>('POST', `/api/issues/${encodeURIComponent(id)}/claim`, { deliveryId });
+  return spaceApi<{ claim: SpaceIssueClaim }>(
+    "POST",
+    `/api/issues/${encodeURIComponent(id)}/claim`,
+    { deliveryId },
+  );
 }
 
 export function spaceListSkills(spaceId = DEFAULT_SPACE_ID) {
-  return spaceApi<{ items: SpaceSkill[] }>('GET', `/api/spaces/${spacePath(spaceId)}/skills`);
+  return spaceApi<{ items: SpaceSkill[] }>(
+    "GET",
+    `/api/spaces/${spacePath(spaceId)}/skills`,
+  );
 }
 
 export function spaceGetSkill(id: string) {
-  return spaceApi<SpaceSkillDetail>('GET', `/api/skills/${encodeURIComponent(id)}`);
+  return spaceApi<SpaceSkillDetail>(
+    "GET",
+    `/api/skills/${encodeURIComponent(id)}`,
+  );
 }
 
 export function spaceGetSkillFile(id: string, path: string) {
   const search = new URLSearchParams({ path });
-  return spaceApi<{ text?: string; binary?: boolean; mimeType?: string; sizeBytes?: number }>(
-    'GET',
+  return spaceApi<{
+    text?: string;
+    binary?: boolean;
+    mimeType?: string;
+    sizeBytes?: number;
+  }>(
+    "GET",
     `/api/skills/${encodeURIComponent(id)}/file-content?${search.toString()}`,
   );
 }
@@ -646,10 +832,15 @@ export function spaceGetSkillFile(id: string, path: string) {
 export function spaceInstallSkill(input: {
   skillId: string;
   skillName: string;
-  target: 'global' | 'project';
+  target: "global" | "project";
   workspacePath?: string;
 }) {
-  return inv<{ installedName: string; installedPath: string; target: string; renamed: boolean }>('cmd_space_install_skill', {
+  return inv<{
+    installedName: string;
+    installedPath: string;
+    target: string;
+    renamed: boolean;
+  }>("cmd_space_install_skill", {
     input,
   });
 }
@@ -660,15 +851,24 @@ export function spaceUploadSkillZip(input: {
   description?: string;
   skillId?: string;
 }) {
-  return inv<{ skill: SpaceSkill }>('cmd_space_upload_skill', { input });
+  return inv<{ skill: SpaceSkill }>("cmd_space_upload_skill", { input });
 }
 
 export function spaceDeleteSkill(skillId: string) {
-  return spaceApi<{ deleted: boolean }>('DELETE', `/api/skills/${encodeURIComponent(skillId)}`);
+  return spaceApi<{ deleted: boolean }>(
+    "DELETE",
+    `/api/skills/${encodeURIComponent(skillId)}`,
+  );
 }
 
-export function spaceUploadIssueAttachments(input: { issueId: string; filePaths: string[] }) {
-  return inv<{ attachments: SpaceAttachment[] }>('cmd_space_upload_issue_attachments', { input });
+export function spaceUploadIssueAttachments(input: {
+  issueId: string;
+  filePaths: string[];
+}) {
+  return inv<{ attachments: SpaceAttachment[] }>(
+    "cmd_space_upload_issue_attachments",
+    { input },
+  );
 }
 
 export function spaceDownloadIssueAttachment(input: {
@@ -678,7 +878,9 @@ export function spaceDownloadIssueAttachment(input: {
   fileName?: string;
   output?: string;
 }) {
-  return inv<SpaceDownloadAttachmentResult>('cmd_space_download_attachment', { input });
+  return inv<SpaceDownloadAttachmentResult>("cmd_space_download_attachment", {
+    input,
+  });
 }
 
 export function spaceRegisterAgent(input: {
@@ -690,7 +892,7 @@ export function spaceRegisterAgent(input: {
   stateFilter?: string[];
   issueSubscriptionRunMode?: SpaceIssueSubscriptionRunMode;
 }) {
-  return inv<LocalRegisteredAgent>('cmd_space_register_agent', { input });
+  return inv<LocalRegisteredAgent>("cmd_space_register_agent", { input });
 }
 
 export function spaceUpdateRegisteredAgent(input: {
@@ -701,28 +903,38 @@ export function spaceUpdateRegisteredAgent(input: {
   workspaceLabel?: string;
   goalId?: string;
   stateFilter?: string[];
-  status?: 'active' | 'disabled';
+  status?: "active" | "disabled";
   issueSubscriptionRunMode?: SpaceIssueSubscriptionRunMode;
 }) {
-  return inv<LocalRegisteredAgent>('cmd_space_update_registered_agent', { input });
+  return inv<LocalRegisteredAgent>("cmd_space_update_registered_agent", {
+    input,
+  });
 }
 
 export function spaceRevokeRegisteredAgent(id: string) {
-  return inv<LocalRegisteredAgent>('cmd_space_revoke_registered_agent', { input: { id } });
+  return inv<LocalRegisteredAgent>("cmd_space_revoke_registered_agent", {
+    input: { id },
+  });
 }
 
 export function spaceListRegisteredAgents(spaceId = DEFAULT_SPACE_ID) {
-  return spaceApi<{ items: SpaceRegisteredAgent[] }>('GET', `/api/spaces/${spacePath(spaceId)}/registered-agents`);
+  return spaceApi<{ items: SpaceRegisteredAgent[] }>(
+    "GET",
+    `/api/spaces/${spacePath(spaceId)}/registered-agents`,
+  );
 }
 
 export function spaceListLocalAgents() {
-  return inv<LocalRegisteredAgent[]>('cmd_space_list_local_agents');
+  return inv<LocalRegisteredAgent[]>("cmd_space_list_local_agents");
 }
 
 export function spacePollDispatches(registeredAgentId: string) {
-  return inv<SpaceApiEnvelope<{ items: SpaceDispatchItem[] }>>('cmd_space_poll_dispatches', {
-    input: { registeredAgentId },
-  });
+  return inv<SpaceApiEnvelope<{ items: SpaceDispatchItem[] }>>(
+    "cmd_space_poll_dispatches",
+    {
+      input: { registeredAgentId },
+    },
+  );
 }
 
 export function spaceMarkDispatchDelivered(input: {
@@ -731,17 +943,25 @@ export function spaceMarkDispatchDelivered(input: {
   localTaskId?: string;
   localRunId?: string;
 }) {
-  return inv<SpaceApiEnvelope<{ delivered: boolean; deliveredAt?: string }>>('cmd_space_mark_dispatch_delivered', { input });
+  return inv<SpaceApiEnvelope<{ delivered: boolean; deliveredAt?: string }>>(
+    "cmd_space_mark_dispatch_delivered",
+    { input },
+  );
 }
 
 export function spaceProcessDispatchesOnce() {
-  return inv<{ processed: number; delivered: number; errors: string[] }>('cmd_space_process_dispatches_once');
+  return inv<{ processed: number; delivered: number; errors: string[] }>(
+    "cmd_space_process_dispatches_once",
+  );
 }
 
 export function spacePollDeliveries(registeredAgentId: string) {
-  return inv<SpaceApiEnvelope<{ items: SpaceDeliveryItem[] }>>('cmd_space_poll_deliveries', {
-    input: { registeredAgentId },
-  });
+  return inv<SpaceApiEnvelope<{ items: SpaceDeliveryItem[] }>>(
+    "cmd_space_poll_deliveries",
+    {
+      input: { registeredAgentId },
+    },
+  );
 }
 
 export function spaceMarkDeliveryDelivered(input: {
@@ -749,17 +969,29 @@ export function spaceMarkDeliveryDelivered(input: {
   deliveryId: string;
   sessionId?: string;
 }) {
-  return inv<SpaceApiEnvelope<{ delivered: boolean; deliveredAt?: string }>>('cmd_space_mark_delivery_delivered', { input });
+  return inv<SpaceApiEnvelope<{ delivered: boolean; deliveredAt?: string }>>(
+    "cmd_space_mark_delivery_delivered",
+    { input },
+  );
 }
 
 export function spaceProcessDeliveriesOnce() {
-  return inv<{ processed: number; delivered: number; errors: string[] }>('cmd_space_process_deliveries_once');
+  return inv<{ processed: number; delivered: number; errors: string[] }>(
+    "cmd_space_process_deliveries_once",
+  );
 }
 
-export function findProjectForAgent(projects: Project[], agent: LocalRegisteredAgent): Project | null {
+export function findProjectForAgent(
+  projects: Project[],
+  agent: LocalRegisteredAgent,
+): Project | null {
   if (agent.workspaceId) {
     const byId = projects.find((project) => project.id === agent.workspaceId);
     if (byId) return byId;
   }
-  return projects.find((project) => workspacePathsEqual(project.path, agent.workspacePath)) ?? null;
+  return (
+    projects.find((project) =>
+      workspacePathsEqual(project.path, agent.workspacePath),
+    ) ?? null
+  );
 }

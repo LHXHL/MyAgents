@@ -8,6 +8,7 @@ pub mod cli;
 mod commands;
 pub mod config_io;
 pub mod cron_task;
+pub mod device_identity;
 pub mod floating_ball;
 pub mod floating_ball_pets;
 mod global_shortcut;
@@ -329,6 +330,7 @@ pub fn run() {
             // Platform & device info
             commands::cmd_get_platform,
             commands::cmd_get_device_id,
+            commands::cmd_get_device_identity,
             i18n::cmd_get_ui_language_state,
             i18n::cmd_sync_ui_language_from_config,
             i18n::cmd_set_ui_language,

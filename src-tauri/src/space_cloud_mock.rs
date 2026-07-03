@@ -20,6 +20,8 @@ use crate::workspace_files::path_safety::{
 pub const MOCK_BASE_URL: &str = "https://space.mock.myagents.local";
 const MOCK_SPACE_ID: &str = "space_mock_official";
 const MOCK_ROOT_GOAL_ID: &str = "goal_mock_root";
+const MOCK_OWNER_USER_ID: &str = "usr_mock_owner";
+const MOCK_REMOTE_DEVICE_ID: &str = "mock-remote-device-windows";
 
 #[derive(Clone)]
 struct MockSkillRecord {
@@ -99,7 +101,7 @@ pub fn session() -> SpaceSession {
         session_token: "mock-session-token".to_string(),
         expires_at: None,
         user: json!({
-            "id": "usr_mock_owner",
+            "id": MOCK_OWNER_USER_ID,
             "email": "myagents.io@gmail.com",
             "name": "Ethan"
         }),
@@ -181,7 +183,14 @@ pub fn register_agent(
         id: id.clone(),
         base_url: MOCK_BASE_URL.to_string(),
         space_id: MOCK_SPACE_ID.to_string(),
+        owner_user_id: Some(MOCK_OWNER_USER_ID.to_string()),
+        device_id: Some(mock_local_device_id()),
         client_id: Some("mock-public-client".to_string()),
+        device_name: mock_local_device_name(),
+        device_platform: Some(crate::device_identity::platform_identifier()),
+        device_os_version: mock_local_device_os_version(),
+        device_app_version: Some(env!("CARGO_PKG_VERSION").to_string()),
+        device_last_seen_at: Some("2026-06-24T09:34:00.000Z".to_string()),
         local_workspace_id: Some(input.workspace_id.clone()),
         local_agent_id: Some(local_agent_id),
         workspace_id: Some(input.workspace_id),
@@ -745,6 +754,7 @@ fn handle_api_data_request(
         ("GET", ["api", "spaces", "official", "issues"]) => Ok(list_issues(&state, &query)),
         ("POST", ["api", "spaces", "official", "issues"]) => create_issue(&mut state, body),
         ("GET", ["api", "issues", issue_id]) => issue_detail(&state, issue_id, &query),
+        ("PATCH", ["api", "issues", issue_id]) => update_issue(&mut state, issue_id, body),
         ("POST", ["api", "issues", issue_id, "comments"]) => {
             comment_issue(&mut state, issue_id, body, &actor)
         }
@@ -786,7 +796,18 @@ fn handle_api_data_request(
         ),
         ("DELETE", ["api", "skills", skill_id]) => delete_skill(&mut state, skill_id),
         ("GET", ["api", "registered-agents", "me", "dispatches"]) => {
-            let items = state.dispatches.clone();
+            let items = state
+                .dispatches
+                .iter()
+                .filter(|item| {
+                    actor.actor_type != "registered_agent"
+                        || item
+                            .pointer("/dispatch/registeredAgentId")
+                            .and_then(Value::as_str)
+                            == Some(actor.actor_id.as_str())
+                })
+                .cloned()
+                .collect::<Vec<_>>();
             Ok(json!({ "items": items }))
         }
         ("GET", ["api", "registered-agents", "me", "deliveries"]) => {
@@ -795,11 +816,17 @@ fn handle_api_data_request(
                 .iter()
                 .filter(|item| {
                     item.pointer("/delivery/status").and_then(Value::as_str) == Some("pending")
+                        && (actor.actor_type != "registered_agent"
+                            || item
+                                .pointer("/delivery/registeredAgentId")
+                                .and_then(Value::as_str)
+                                == Some(actor.actor_id.as_str()))
                 })
                 .cloned()
                 .collect::<Vec<_>>();
             Ok(json!({ "items": items }))
         }
+        ("POST", ["api", "devices", "upsert"]) => upsert_device(body),
         ("GET", ["api", "spaces", "official", "registered-agents"]) => {
             let items = state
                 .agents
@@ -809,7 +836,9 @@ fn handle_api_data_request(
                     json!({
                         "id": agent.id,
                         "spaceId": agent.space_id,
-                        "ownerUserId": "usr_mock_owner",
+                        "ownerUserId": agent.owner_user_id.clone().unwrap_or_else(|| MOCK_OWNER_USER_ID.to_string()),
+                        "deviceId": agent.device_id.clone(),
+                        "device": public.device,
                         "clientId": agent.client_id.clone(),
                         "deviceName": public.device_name,
                         "localWorkspaceId": agent.local_workspace_id.clone(),
@@ -892,7 +921,7 @@ fn mock_actor_for_token(state: &MockState, token: Option<&str>) -> MockActor {
     }
     MockActor {
         actor_type: "user".to_string(),
-        actor_id: "usr_mock_owner".to_string(),
+        actor_id: MOCK_OWNER_USER_ID.to_string(),
         actor_name: "Ethan".to_string(),
         authenticated: false,
     }
@@ -1942,6 +1971,40 @@ fn issue_detail(
     }))
 }
 
+fn update_issue(
+    state: &mut MockState,
+    issue_id: &str,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    let body = body.unwrap_or(Value::Null);
+    let Some(index) = find_issue_index(&state.issues, issue_id) else {
+        return Err(format!("Issue not found: {}", issue_id));
+    };
+    if let Some(issue) = state.issues[index].as_object_mut() {
+        if let Some(title) = body.get("title").and_then(Value::as_str).map(str::trim) {
+            if title.is_empty() {
+                return Err("title is required".to_string());
+            }
+            issue.insert("title".to_string(), json!(title));
+        }
+        if let Some(issue_body) = body.get("body").and_then(Value::as_str).map(str::trim) {
+            if issue_body.is_empty() {
+                return Err("body is required".to_string());
+            }
+            issue.insert("body".to_string(), json!(issue_body));
+        }
+        issue.insert("updatedAt".to_string(), json!("2026-06-24T09:55:00.000Z"));
+    }
+    increment_issue_notification_version(state, issue_id);
+    let updated = state
+        .issues
+        .iter()
+        .find(|issue| issue.get("id").and_then(Value::as_str) == Some(issue_id))
+        .cloned()
+        .unwrap_or(Value::Null);
+    Ok(json!({ "issue": issue_with_claim(state, updated) }))
+}
+
 fn comment_issue(
     state: &mut MockState,
     issue_id: &str,
@@ -2397,6 +2460,9 @@ fn update_agent_api(
         "registeredAgent": {
             "id": agent.id.clone(),
             "spaceId": agent.space_id.clone(),
+            "ownerUserId": agent.owner_user_id.clone().unwrap_or_else(|| MOCK_OWNER_USER_ID.to_string()),
+            "deviceId": agent.device_id.clone(),
+            "device": public.device,
             "clientId": agent.client_id.clone(),
             "deviceName": public.device_name,
             "localWorkspaceId": agent.local_workspace_id.clone(),
@@ -2805,11 +2871,56 @@ fn agent(
         "rag_mock_docs" => "goal_mock_docs",
         _ => "goal_mock_ui",
     };
+    let is_remote_device =
+        matches!(id, "rag_mock_windows") || id.ends_with("_07") || id.ends_with("_13");
+    let is_legacy_device = matches!(id, "rag_mock_runtime");
+    let (
+        device_id,
+        device_name,
+        device_platform,
+        device_os_version,
+        device_app_version,
+        device_last_seen_at,
+    ) = if is_legacy_device {
+        (
+            None,
+            Some("Legacy Agent Device".to_string()),
+            None,
+            None,
+            None,
+            None,
+        )
+    } else if is_remote_device {
+        (
+            Some(MOCK_REMOTE_DEVICE_ID.to_string()),
+            Some("Windows QA VM".to_string()),
+            Some("windows-x86_64".to_string()),
+            Some("Windows 11 Pro 24H2".to_string()),
+            Some(env!("CARGO_PKG_VERSION").to_string()),
+            Some("2026-06-23T22:10:00.000Z".to_string()),
+        )
+    } else {
+        (
+            Some(mock_local_device_id()),
+            mock_local_device_name(),
+            Some(crate::device_identity::platform_identifier()),
+            mock_local_device_os_version(),
+            Some(env!("CARGO_PKG_VERSION").to_string()),
+            Some("2026-06-24T08:45:00.000Z".to_string()),
+        )
+    };
     LocalRegisteredAgent {
         id: id.to_string(),
         base_url: MOCK_BASE_URL.to_string(),
         space_id: MOCK_SPACE_ID.to_string(),
+        owner_user_id: Some(MOCK_OWNER_USER_ID.to_string()),
+        device_id,
         client_id: Some("mock-public-client".to_string()),
+        device_name,
+        device_platform,
+        device_os_version,
+        device_app_version,
+        device_last_seen_at,
         local_workspace_id: Some(format!("project_{}", safe_local_name(workspace_label))),
         local_agent_id: Some(format!(
             "local-agent-project_{}",
@@ -2838,6 +2949,41 @@ fn agent(
         created_at: "2026-06-14T08:00:00.000Z".to_string(),
         updated_at: "2026-06-24T08:45:00.000Z".to_string(),
     }
+}
+
+fn upsert_device(body: Option<Value>) -> Result<Value, String> {
+    let body = body.unwrap_or(Value::Null);
+    let device_id = body
+        .get("deviceId")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("mock-local-device");
+    Ok(json!({
+        "device": {
+            "userId": MOCK_OWNER_USER_ID,
+            "deviceId": device_id,
+            "deviceName": body.get("deviceName").cloned().unwrap_or(Value::Null),
+            "platform": body.get("platform").cloned().unwrap_or(Value::Null),
+            "osVersion": body.get("osVersion").cloned().unwrap_or(Value::Null),
+            "appVersion": body.get("appVersion").cloned().unwrap_or(Value::Null),
+            "status": "active",
+            "lastSeenAt": "2026-06-24T09:52:00.000Z"
+        }
+    }))
+}
+
+fn mock_local_device_id() -> String {
+    crate::device_identity::get_or_create_device_id()
+        .unwrap_or_else(|_| "mock-local-device".to_string())
+}
+
+fn mock_local_device_name() -> Option<String> {
+    crate::device_identity::local_device_name().or_else(|| Some("Mock Local Mac".to_string()))
+}
+
+fn mock_local_device_os_version() -> Option<String> {
+    Some("mockOS 1.0".to_string())
 }
 
 fn dispatch_item(id: &str, agent: &LocalRegisteredAgent, issue: &Value, status: &str) -> Value {

@@ -1,4 +1,5 @@
 import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { SpaceIssueDetail, SpaceSession } from '@/api/spaceCloud';
@@ -49,6 +50,7 @@ const detail: SpaceIssueDetail = {
 function actions(): SpaceActions {
   return {
     refreshIssueDetail: vi.fn().mockResolvedValue(undefined),
+    updateIssue: vi.fn().mockResolvedValue({ ...detail.issue, title: 'Updated title', body: 'Updated body' }),
     uploadIssueAttachments: vi.fn().mockResolvedValue([]),
   } as unknown as SpaceActions;
 }
@@ -68,9 +70,9 @@ describe('IssueDetailDrawer', () => {
     );
 
     const issueTitle = screen.getByRole('heading', { name: 'Markdown issue' });
-    const copyIssueButton = screen.getByRole('button', { name: '复制 issue 口令' });
     expect(within(issueTitle.parentElement!).queryByRole('button', { name: '复制 issue 口令' })).not.toBeInTheDocument();
-    expect(within(copyIssueButton.parentElement!).getByText('Ethan')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '复制 issue 口令' })).toBeInTheDocument();
+    expect(screen.getByText('Ethan')).toBeInTheDocument();
     expect(screen.queryByText('Issue 口令')).not.toBeInTheDocument();
 
     const attachmentsHeading = screen.getByRole('heading', { name: /附件/ });
@@ -80,5 +82,34 @@ describe('IssueDetailDrawer', () => {
     expect(screen.getByRole('heading', { name: 'Comment heading' })).toBeInTheDocument();
     expect(screen.getByText('inline code')).toBeInTheDocument();
     expect(container.querySelectorAll('.ai-message-content')).toHaveLength(2);
+  });
+
+  it('saves edited issue title and body', async () => {
+    const user = userEvent.setup();
+    const mockActions = actions();
+    render(
+      <IssueDetailDrawer
+        issueId="iss-1"
+        session={session}
+        projects={[]}
+        detailState={{ detail, isLoading: false, lastFetchedAt: Date.now(), error: null }}
+        actions={mockActions}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: '编辑' }));
+    await user.clear(screen.getByLabelText('Issue 标题'));
+    await user.type(screen.getByLabelText('Issue 标题'), 'Renamed issue');
+    await user.clear(screen.getByLabelText('Issue 正文'));
+    await user.type(screen.getByLabelText('Issue 正文'), 'Edited body');
+    await user.click(screen.getByRole('button', { name: '保存' }));
+
+    expect(mockActions.updateIssue).toHaveBeenCalledWith({
+      issueId: 'iss-1',
+      title: 'Renamed issue',
+      body: 'Edited body',
+    });
   });
 });

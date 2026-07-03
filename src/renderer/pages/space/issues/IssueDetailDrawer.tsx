@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Copy, Download, FileText, Loader2, MessageSquare, Paperclip, Send, Target, UploadCloud, X } from 'lucide-react';
+import { ChevronDown, Copy, Download, FileText, Loader2, MessageSquare, Paperclip, Pencil, Save, Send, Target, UploadCloud, X } from 'lucide-react';
 
 import { spaceErrorMessage, type SpaceAttachment, type SpaceSession } from '@/api/spaceCloud';
 import Markdown from '@/components/Markdown';
@@ -61,12 +61,17 @@ export function IssueDetailDrawer({
   const toast = useToast();
   const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
+  const [editingIssue, setEditingIssue] = useState(false);
+  const [draftTitle, setDraftTitle] = useState('');
+  const [draftBody, setDraftBody] = useState('');
+  const [savingIssue, setSavingIssue] = useState(false);
   const [attachmentUploading, setAttachmentUploading] = useState(false);
   const [downloadingAttachmentId, setDownloadingAttachmentId] = useState<string | null>(null);
   const [downloadedAttachmentPaths, setDownloadedAttachmentPaths] = useState<Record<string, string>>({});
   const [downloadTargetAttachmentId, setDownloadTargetAttachmentId] = useState<string | null>(null);
   const [statusMenuOpen, setStatusMenuOpen] = useState(false);
   const [statusBusy, setStatusBusy] = useState(false);
+  const editTitleRef = useRef<HTMLInputElement | null>(null);
   const statusMenuRef = useRef<HTMLSpanElement | null>(null);
   const downloadMenuRef = useRef<HTMLSpanElement | null>(null);
   const detail = detailState?.detail ?? null;
@@ -75,6 +80,9 @@ export function IssueDetailDrawer({
     () => getIssueStatusOptions({ session, issue: detail?.issue ?? null, t }),
     [detail?.issue, session, t],
   );
+  const detailIssueId = detail?.issue.id;
+  const detailIssueTitle = detail?.issue.title;
+  const detailIssueBody = detail?.issue.body;
 
   useCloseLayer(() => {
     onClose();
@@ -88,7 +96,16 @@ export function IssueDetailDrawer({
   useEffect(() => {
     setDownloadedAttachmentPaths({});
     setDownloadTargetAttachmentId(null);
+    setEditingIssue(false);
+    setDraftTitle('');
+    setDraftBody('');
   }, [issueId]);
+
+  useEffect(() => {
+    if (!detailIssueId || editingIssue) return;
+    setDraftTitle(detailIssueTitle ?? '');
+    setDraftBody(detailIssueBody ?? '');
+  }, [detailIssueBody, detailIssueId, detailIssueTitle, editingIssue]);
 
   useEffect(() => {
     if (!statusMenuOpen && !downloadTargetAttachmentId) return;
@@ -222,6 +239,46 @@ export function IssueDetailDrawer({
       toast.error(spaceErrorMessage(error));
     }
   };
+
+  const startIssueEdit = () => {
+    if (!detail) return;
+    setDraftTitle(detail.issue.title);
+    setDraftBody(detail.issue.body);
+    setEditingIssue(true);
+    window.setTimeout(() => editTitleRef.current?.focus(), 0);
+  };
+
+  const cancelIssueEdit = () => {
+    if (detail) {
+      setDraftTitle(detail.issue.title);
+      setDraftBody(detail.issue.body);
+    }
+    setEditingIssue(false);
+  };
+
+  const saveIssueEdit = async () => {
+    if (!detail) return;
+    const title = draftTitle.trim();
+    const body = draftBody.trim();
+    if (!title || !body || savingIssue) return;
+    const unchanged = title === detail.issue.title.trim() && body === detail.issue.body.trim();
+    if (unchanged) {
+      setEditingIssue(false);
+      return;
+    }
+    setSavingIssue(true);
+    try {
+      await actions.updateIssue({ issueId, title, body });
+      setEditingIssue(false);
+      toast.success(t('space.toasts.issueSaved'));
+      onChanged();
+    } catch (error) {
+      toast.error(spaceErrorMessage(error));
+    } finally {
+      setSavingIssue(false);
+    }
+  };
+
   const issueAuthorName = detail?.issue.creator?.name ?? detail?.issue.creator?.id ?? detail?.issue.author?.name ?? detail?.issue.author?.id ?? 'owner';
   const claim = detail?.claim ?? detail?.issue.claim;
   const claimHandlerName = claimHandlerLabel(claim);
@@ -229,6 +286,10 @@ export function IssueDetailDrawer({
   const claimHandlerType = claimHandlerTypeKeyValue
     ? t(claimHandlerTypeKeyValue)
     : t('space.detail.claimHandlerUnknownType');
+  const issueEditUnchanged = detail
+    ? draftTitle.trim() === detail.issue.title.trim() && draftBody.trim() === detail.issue.body.trim()
+    : true;
+  const canSaveIssueEdit = Boolean(draftTitle.trim() && draftBody.trim()) && !issueEditUnchanged && !savingIssue;
 
   return (
     <OverlayBackdrop onClose={onClose} className="z-[230] items-stretch justify-end bg-black/20 backdrop-blur-sm">
@@ -311,22 +372,82 @@ export function IssueDetailDrawer({
                       </span>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => void copyIssueCommand()}
-                    className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-transparent px-2.5 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                    title={t('space.detail.copyIssueCommand')}
-                  >
-                    <Copy className="h-3.5 w-3.5" />
-                    {t('space.detail.copyIssueCommand')}
-                  </button>
+                  <div className="flex shrink-0 items-center gap-1.5">
+                    {!editingIssue && (
+                      <button
+                        type="button"
+                        onClick={startIssueEdit}
+                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-transparent px-2.5 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                        title={t('space.detail.editIssue')}
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        {t('space.detail.editIssue')}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => void copyIssueCommand()}
+                      className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-transparent px-2.5 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                      title={t('space.detail.copyIssueCommand')}
+                    >
+                      <Copy className="h-3.5 w-3.5" />
+                      {t('space.detail.copyIssueCommand')}
+                    </button>
+                  </div>
                 </div>
-                <div className="mt-4">
-                  <h2 className="max-w-[68ch] text-2xl font-semibold leading-snug text-[var(--ink)]">{issueDisplayTitle(detail.issue)}</h2>
-                </div>
-                <div className="mt-5">
-                  <IssueMarkdown>{detail.issue.body}</IssueMarkdown>
-                </div>
+                {editingIssue ? (
+                  <div className="mt-4 rounded-2xl border border-[var(--line)] bg-[var(--paper)]/70 p-4 shadow-sm">
+                    <input
+                      ref={editTitleRef}
+                      value={draftTitle}
+                      onChange={(event) => setDraftTitle(event.target.value)}
+                      className="w-full border-0 bg-transparent text-2xl font-semibold leading-snug text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]"
+                      placeholder={t('space.detail.titlePlaceholder')}
+                      aria-label={t('space.detail.titleLabel')}
+                    />
+                    <textarea
+                      value={draftBody}
+                      onChange={(event) => setDraftBody(event.target.value)}
+                      onKeyDown={(event) => {
+                        if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') {
+                          event.preventDefault();
+                          void saveIssueEdit();
+                        }
+                      }}
+                      className="mt-4 min-h-[220px] w-full resize-y border-0 bg-transparent p-0 text-base leading-7 text-[var(--ink-secondary)] outline-none placeholder:text-[var(--ink-muted)]"
+                      placeholder={t('space.detail.bodyPlaceholder')}
+                      aria-label={t('space.detail.bodyLabel')}
+                    />
+                    <div className="mt-3 flex justify-end gap-2">
+                      <button
+                        type="button"
+                        disabled={savingIssue}
+                        onClick={cancelIssueEdit}
+                        className="inline-flex h-9 items-center rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-70"
+                      >
+                        {t('space.common.cancel')}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={!canSaveIssueEdit}
+                        onClick={() => void saveIssueEdit()}
+                        className="inline-flex h-9 items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
+                      >
+                        {savingIssue ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Save className="h-3.5 w-3.5" />}
+                        {t('space.common.save')}
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="mt-4">
+                      <h2 className="max-w-[68ch] text-2xl font-semibold leading-snug text-[var(--ink)]">{issueDisplayTitle(detail.issue)}</h2>
+                    </div>
+                    <div className="mt-5">
+                      <IssueMarkdown>{detail.issue.body}</IssueMarkdown>
+                    </div>
+                  </>
+                )}
 
                 <section className="mt-7">
                   <div className="mb-2 flex flex-wrap items-center gap-2">

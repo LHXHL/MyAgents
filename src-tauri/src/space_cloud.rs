@@ -11,6 +11,7 @@ use serde_json::Value;
 use tauri::{ipc::Response as IpcResponse, AppHandle};
 use zip::ZipArchive;
 
+use crate::device_identity::{current_device_identity, DeviceIdentity};
 use crate::sidecar::ManagedSidecarManager;
 use crate::workspace_files::path_safety::{
     atomic_write_file, resolve_inside_workspace, validate_workspace_root,
@@ -105,7 +106,21 @@ pub struct LocalRegisteredAgent {
     pub base_url: String,
     pub space_id: String,
     #[serde(default)]
+    pub owner_user_id: Option<String>,
+    #[serde(default)]
+    pub device_id: Option<String>,
+    #[serde(default)]
     pub client_id: Option<String>,
+    #[serde(default)]
+    pub device_name: Option<String>,
+    #[serde(default)]
+    pub device_platform: Option<String>,
+    #[serde(default)]
+    pub device_os_version: Option<String>,
+    #[serde(default)]
+    pub device_app_version: Option<String>,
+    #[serde(default)]
+    pub device_last_seen_at: Option<String>,
     #[serde(default)]
     pub local_workspace_id: Option<String>,
     #[serde(default)]
@@ -135,14 +150,36 @@ pub struct LocalRegisteredAgent {
     pub updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceUserDeviceSummary {
+    pub device_id: String,
+    #[serde(default)]
+    pub device_name: Option<String>,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub os_version: Option<String>,
+    #[serde(default)]
+    pub app_version: Option<String>,
+    #[serde(default)]
+    pub status: Option<String>,
+    #[serde(default)]
+    pub last_seen_at: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalRegisteredAgentPublic {
     pub id: String,
     pub base_url: String,
     pub space_id: String,
+    pub owner_user_id: Option<String>,
+    pub device_id: Option<String>,
     pub client_id: Option<String>,
     pub device_name: Option<String>,
+    pub device: Option<SpaceUserDeviceSummary>,
+    pub is_local: Option<bool>,
     pub local_workspace_id: Option<String>,
     pub local_agent_id: Option<String>,
     pub workspace_id: Option<String>,
@@ -162,12 +199,19 @@ pub struct LocalRegisteredAgentPublic {
 
 impl From<LocalRegisteredAgent> for LocalRegisteredAgentPublic {
     fn from(agent: LocalRegisteredAgent) -> Self {
+        let device = agent_device_summary(&agent);
         Self {
             id: agent.id,
             base_url: agent.base_url,
             space_id: agent.space_id,
+            owner_user_id: agent.owner_user_id,
+            device_id: agent.device_id,
             client_id: agent.client_id,
-            device_name: local_device_name(),
+            device_name: agent
+                .device_name
+                .or_else(|| device.as_ref().and_then(|item| item.device_name.clone())),
+            device,
+            is_local: None,
             local_workspace_id: agent.local_workspace_id,
             local_agent_id: agent.local_agent_id,
             workspace_id: agent.workspace_id,
@@ -185,18 +229,6 @@ impl From<LocalRegisteredAgent> for LocalRegisteredAgentPublic {
             updated_at: agent.updated_at,
         }
     }
-}
-
-fn normalize_device_name(value: Option<String>) -> Option<String> {
-    value
-        .map(|name| name.trim().trim_end_matches('.').to_string())
-        .filter(|name| !name.is_empty())
-}
-
-fn local_device_name() -> Option<String> {
-    normalize_device_name(sysinfo::System::host_name())
-        .or_else(|| normalize_device_name(std::env::var("COMPUTERNAME").ok()))
-        .or_else(|| normalize_device_name(std::env::var("HOSTNAME").ok()))
 }
 
 fn value_issue_subscription_run_mode(
@@ -237,12 +269,65 @@ fn apply_subscription_to_local_agent(
     }
 }
 
+fn agent_device_summary(agent: &LocalRegisteredAgent) -> Option<SpaceUserDeviceSummary> {
+    let device_id = agent.device_id.as_deref()?.trim();
+    if device_id.is_empty() {
+        return None;
+    }
+    Some(SpaceUserDeviceSummary {
+        device_id: device_id.to_string(),
+        device_name: agent.device_name.clone(),
+        platform: agent.device_platform.clone(),
+        os_version: agent.device_os_version.clone(),
+        app_version: agent.device_app_version.clone(),
+        status: None,
+        last_seen_at: agent.device_last_seen_at.clone(),
+    })
+}
+
+fn device_summary_from_cloud(
+    registered: &Value,
+    fallback: Option<&LocalRegisteredAgent>,
+    local_identity: Option<&DeviceIdentity>,
+) -> Option<SpaceUserDeviceSummary> {
+    let device_value = registered.get("device").filter(|value| value.is_object());
+    let device_id = optional_value_string(registered, "deviceId")
+        .or_else(|| device_value.and_then(|value| optional_value_string(value, "deviceId")))
+        .or_else(|| fallback.and_then(|agent| agent.device_id.clone()))
+        .or_else(|| local_identity.map(|identity| identity.device_id.clone()))?;
+    let device_name = optional_value_string(registered, "deviceName")
+        .or_else(|| device_value.and_then(|value| optional_value_string(value, "deviceName")))
+        .or_else(|| fallback.and_then(|agent| agent.device_name.clone()))
+        .or_else(|| local_identity.and_then(|identity| identity.device_name.clone()));
+    Some(SpaceUserDeviceSummary {
+        device_id,
+        device_name,
+        platform: device_value
+            .and_then(|value| optional_value_string(value, "platform"))
+            .or_else(|| fallback.and_then(|agent| agent.device_platform.clone()))
+            .or_else(|| local_identity.map(|identity| identity.platform.clone())),
+        os_version: device_value
+            .and_then(|value| optional_value_string(value, "osVersion"))
+            .or_else(|| fallback.and_then(|agent| agent.device_os_version.clone()))
+            .or_else(|| local_identity.and_then(|identity| identity.os_version.clone())),
+        app_version: device_value
+            .and_then(|value| optional_value_string(value, "appVersion"))
+            .or_else(|| fallback.and_then(|agent| agent.device_app_version.clone()))
+            .or_else(|| local_identity.map(|identity| identity.app_version.clone())),
+        status: device_value.and_then(|value| optional_value_string(value, "status")),
+        last_seen_at: device_value
+            .and_then(|value| optional_value_string(value, "lastSeenAt"))
+            .or_else(|| fallback.and_then(|agent| agent.device_last_seen_at.clone())),
+    })
+}
+
 fn local_registered_agent_public_from_cloud(
     session: &SpaceSession,
     registered: &Value,
     subscription: Option<&Value>,
     fallback: Option<&LocalRegisteredAgent>,
 ) -> Result<LocalRegisteredAgentPublic, String> {
+    let device = device_summary_from_cloud(registered, fallback, None);
     let state_filter = subscription
         .and_then(|value| value_string_array(value, "stateFilter"))
         .filter(|items| !items.is_empty())
@@ -253,10 +338,16 @@ fn local_registered_agent_public_from_cloud(
         base_url: session.base_url.clone(),
         space_id: required_value_string(registered, "spaceId")
             .or_else(|_| required_value_string(&session.space, "id"))?,
+        owner_user_id: optional_value_string(registered, "ownerUserId")
+            .or_else(|| fallback.and_then(|agent| agent.owner_user_id.clone()))
+            .or_else(|| session_user_id(session)),
+        device_id: device.as_ref().map(|device| device.device_id.clone()),
         client_id: optional_value_string(registered, "clientId")
             .or_else(|| fallback.and_then(|agent| agent.client_id.clone())),
         device_name: optional_value_string(registered, "deviceName")
-            .or_else(|| fallback.and_then(|_| local_device_name())),
+            .or_else(|| device.as_ref().and_then(|item| item.device_name.clone())),
+        device,
+        is_local: None,
         local_workspace_id: optional_value_string(registered, "localWorkspaceId")
             .or_else(|| fallback.and_then(|agent| agent.local_workspace_id.clone())),
         local_agent_id: optional_value_string(registered, "localAgentId")
@@ -641,7 +732,12 @@ pub async fn cmd_space_get_session() -> Result<Option<SpaceSessionPublic>, Strin
         return Ok(Some(crate::space_cloud_mock::session().into()));
     }
     ensure_space_available()?;
-    Ok(read_current_session()?.map(Into::into))
+    let Some(session) = read_current_session()? else {
+        return Ok(None);
+    };
+    let identity = current_device_identity()?;
+    try_upsert_space_user_device(&session, &identity).await;
+    Ok(Some(session.into()))
 }
 
 #[tauri::command]
@@ -697,6 +793,8 @@ pub async fn cmd_space_auth_poll(input: SpaceAuthPollInput) -> Result<Value, Str
             updated_at: chrono::Utc::now().to_rfc3339(),
         };
         write_private_json(&session_path()?, &session)?;
+        let identity = current_device_identity()?;
+        try_upsert_space_user_device(&session, &identity).await;
         if let Some(map) = data.as_object_mut() {
             map.remove("sessionToken");
         }
@@ -809,6 +907,8 @@ pub async fn cmd_space_register_agent(
     let workspace_path = workspace_root.to_string_lossy().to_string();
     let session = require_session()?;
     let capability = ensure_space_available()?;
+    let identity = current_device_identity()?;
+    try_upsert_space_user_device(&session, &identity).await;
     let display_name = input.display_name.trim();
     if display_name.is_empty() {
         return Err("displayName is required".to_string());
@@ -827,7 +927,11 @@ pub async fn cmd_space_register_agent(
     let local_agent_id = stable_local_agent_id(&input.workspace_id);
     let body = serde_json::json!({
         "clientId": client_id,
-        "deviceName": local_device_name(),
+        "deviceId": identity.device_id,
+        "deviceName": identity.device_name,
+        "platform": identity.platform,
+        "osVersion": identity.os_version,
+        "appVersion": identity.app_version,
         "localWorkspaceId": input.workspace_id,
         "localAgentId": local_agent_id,
         "displayName": display_name,
@@ -859,6 +963,7 @@ pub async fn cmd_space_register_agent(
         .cloned()
         .ok_or_else(|| "Space API response missing registeredAgent".to_string())?;
     let subscription = data.get("subscription").cloned().unwrap_or(Value::Null);
+    let device = device_summary_from_cloud(&registered, None, Some(&identity));
     let token = data
         .get("token")
         .and_then(Value::as_str)
@@ -868,7 +973,30 @@ pub async fn cmd_space_register_agent(
         id: required_value_string(&registered, "id")?,
         base_url: session.base_url.clone(),
         space_id: required_value_string(&registered, "spaceId")?,
+        owner_user_id: optional_value_string(&registered, "ownerUserId")
+            .or_else(|| session_user_id(&session)),
+        device_id: device
+            .as_ref()
+            .map(|item| item.device_id.clone())
+            .or(Some(identity.device_id.clone())),
         client_id: optional_value_string(&registered, "clientId").or(Some(client_id)),
+        device_name: device
+            .as_ref()
+            .and_then(|item| item.device_name.clone())
+            .or_else(|| identity.device_name.clone()),
+        device_platform: device
+            .as_ref()
+            .and_then(|item| item.platform.clone())
+            .or(Some(identity.platform.clone())),
+        device_os_version: device
+            .as_ref()
+            .and_then(|item| item.os_version.clone())
+            .or_else(|| identity.os_version.clone()),
+        device_app_version: device
+            .as_ref()
+            .and_then(|item| item.app_version.clone())
+            .or(Some(identity.app_version.clone())),
+        device_last_seen_at: device.as_ref().and_then(|item| item.last_seen_at.clone()),
         local_workspace_id: optional_value_string(&registered, "localWorkspaceId")
             .or(Some(input.workspace_id.clone())),
         local_agent_id: optional_value_string(&registered, "localAgentId").or(Some(local_agent_id)),
@@ -906,10 +1034,36 @@ pub async fn cmd_space_update_registered_agent(
     }
     ensure_space_available()?;
     let session = require_session()?;
+    let identity = current_device_identity()?;
+    try_upsert_space_user_device(&session, &identity).await;
     let mut agent = read_current_local_agents()?
         .into_iter()
         .find(|agent| agent.id == input.id);
+    let can_update_local_binding = agent
+        .as_ref()
+        .map(|agent| local_agent_matches_current_identity(agent, &session, &identity.device_id))
+        .unwrap_or(false);
     let mut body = serde_json::Map::new();
+    if can_update_local_binding {
+        body.insert(
+            "deviceId".to_string(),
+            Value::String(identity.device_id.clone()),
+        );
+        if let Some(device_name) = identity.device_name.clone() {
+            body.insert("deviceName".to_string(), Value::String(device_name));
+        }
+        body.insert(
+            "platform".to_string(),
+            Value::String(identity.platform.clone()),
+        );
+        if let Some(os_version) = identity.os_version.clone() {
+            body.insert("osVersion".to_string(), Value::String(os_version));
+        }
+        body.insert(
+            "appVersion".to_string(),
+            Value::String(identity.app_version.clone()),
+        );
+    }
 
     if let Some(display_name) = input.display_name {
         let display_name = display_name.trim();
@@ -925,6 +1079,11 @@ pub async fn cmd_space_update_registered_agent(
         }
     }
     if let Some(workspace_id) = input.workspace_id {
+        if !can_update_local_binding {
+            return Err(
+                "workspace binding can only be changed from the registered device".to_string(),
+            );
+        }
         let workspace_id = workspace_id.trim();
         if workspace_id.is_empty() {
             return Err("workspaceId is required".to_string());
@@ -934,7 +1093,10 @@ pub async fn cmd_space_update_registered_agent(
             "localWorkspaceId".to_string(),
             Value::String(workspace_id.to_string()),
         );
-        body.insert("localAgentId".to_string(), Value::String(local_agent_id.clone()));
+        body.insert(
+            "localAgentId".to_string(),
+            Value::String(local_agent_id.clone()),
+        );
         if let Some(agent) = agent.as_mut() {
             agent.local_workspace_id = Some(workspace_id.to_string());
             agent.workspace_id = Some(workspace_id.to_string());
@@ -942,14 +1104,27 @@ pub async fn cmd_space_update_registered_agent(
         }
     }
     if let Some(workspace_path) = input.workspace_path {
+        if !can_update_local_binding {
+            return Err(
+                "workspace binding can only be changed from the registered device".to_string(),
+            );
+        }
         let workspace_root = validate_workspace_root(&workspace_path)?;
         let workspace_path = workspace_root.to_string_lossy().to_string();
-        body.insert("workspacePath".to_string(), Value::String(workspace_path.clone()));
+        body.insert(
+            "workspacePath".to_string(),
+            Value::String(workspace_path.clone()),
+        );
         if let Some(agent) = agent.as_mut() {
             agent.workspace_path = workspace_path;
         }
     }
     if let Some(workspace_label) = input.workspace_label {
+        if !can_update_local_binding {
+            return Err(
+                "workspace binding can only be changed from the registered device".to_string(),
+            );
+        }
         let workspace_label = workspace_label.trim();
         if workspace_label.is_empty() {
             body.insert("workspaceLabel".to_string(), Value::Null);
@@ -1024,18 +1199,6 @@ pub async fn cmd_space_update_registered_agent(
         }
     }
 
-    if !body.is_empty() {
-        if let Some(local_agent) = agent.as_ref() {
-            if let Some(device_name) = local_device_name() {
-                body.insert("deviceName".to_string(), Value::String(device_name));
-            }
-            body.insert(
-                "workspacePath".to_string(),
-                Value::String(local_agent.workspace_path.clone()),
-            );
-        }
-    }
-
     if body.is_empty() {
         let Some(agent) = agent else {
             return Err("No Registered Agent changes provided".to_string());
@@ -1055,6 +1218,19 @@ pub async fn cmd_space_update_registered_agent(
     if let Some(registered) = data.get("registeredAgent") {
         if let Some(agent) = agent.as_mut() {
             agent.display_name = required_value_string(registered, "displayName")?;
+            agent.owner_user_id = optional_value_string(registered, "ownerUserId")
+                .or_else(|| agent.owner_user_id.clone())
+                .or_else(|| session_user_id(&session));
+            if let Some(device) =
+                device_summary_from_cloud(registered, Some(agent), Some(&identity))
+            {
+                agent.device_id = Some(device.device_id);
+                agent.device_name = device.device_name;
+                agent.device_platform = device.platform;
+                agent.device_os_version = device.os_version;
+                agent.device_app_version = device.app_version;
+                agent.device_last_seen_at = device.last_seen_at;
+            }
             agent.workspace_label = registered
                 .get("workspaceLabel")
                 .and_then(Value::as_str)
@@ -1065,7 +1241,10 @@ pub async fn cmd_space_update_registered_agent(
                 .or_else(|| agent.local_workspace_id.clone());
             agent.local_agent_id = optional_value_string(registered, "localAgentId")
                 .or_else(|| agent.local_agent_id.clone());
-            agent.workspace_id = agent.local_workspace_id.clone().or_else(|| agent.workspace_id.clone());
+            agent.workspace_id = agent
+                .local_workspace_id
+                .clone()
+                .or_else(|| agent.workspace_id.clone());
             if let Some(workspace_path) = optional_value_string(registered, "workspacePath") {
                 agent.workspace_path = workspace_path;
             }
@@ -1823,9 +2002,8 @@ pub async fn process_pending_deliveries(
             errors: Vec::new(),
         });
     }
-    let agents = read_current_local_agents()?
+    let agents = read_current_runnable_local_agents()?
         .into_iter()
-        .filter(|agent| agent.status == "active")
         .map(ensure_agent_delivery_session)
         .collect::<Result<Vec<_>, _>>()?;
     if agents.is_empty() {
@@ -2712,6 +2890,38 @@ async fn authorized_json_request(
         .map_err(|e| format!("Invalid Space API response: {}", e))
 }
 
+async fn upsert_space_user_device(
+    session: &SpaceSession,
+    identity: &DeviceIdentity,
+) -> Result<(), String> {
+    let body = serde_json::json!({
+        "deviceId": identity.device_id,
+        "deviceName": identity.device_name,
+        "platform": identity.platform,
+        "osVersion": identity.os_version,
+        "appVersion": identity.app_version,
+    });
+    authorized_json_data_request(
+        &session.base_url,
+        "/api/devices/upsert",
+        &session.session_token,
+        reqwest::Method::POST,
+        Some(body),
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn try_upsert_space_user_device(session: &SpaceSession, identity: &DeviceIdentity) {
+    if let Err(error) = upsert_space_user_device(session, identity).await {
+        ulog_warn!(
+            "[space] failed to upsert user device {}: {}",
+            identity.device_id,
+            error
+        );
+    }
+}
+
 async fn authorized_json_data_request(
     base_url: &str,
     path: &str,
@@ -2893,7 +3103,26 @@ fn read_current_local_agents() -> Result<Vec<LocalRegisteredAgent>, String> {
                 id: agent.id.clone(),
                 base_url: agent.base_url.clone(),
                 space_id: agent.space_id.clone(),
+                owner_user_id: agent.owner_user_id.clone(),
+                device_id: agent.device_id.clone(),
                 client_id: agent.client_id.clone(),
+                device_name: agent.device_name.clone(),
+                device_platform: agent
+                    .device
+                    .as_ref()
+                    .and_then(|device| device.platform.clone()),
+                device_os_version: agent
+                    .device
+                    .as_ref()
+                    .and_then(|device| device.os_version.clone()),
+                device_app_version: agent
+                    .device
+                    .as_ref()
+                    .and_then(|device| device.app_version.clone()),
+                device_last_seen_at: agent
+                    .device
+                    .as_ref()
+                    .and_then(|device| device.last_seen_at.clone()),
                 local_workspace_id: agent.local_workspace_id.clone(),
                 local_agent_id: agent.local_agent_id.clone(),
                 workspace_id: agent.workspace_id.clone(),
@@ -2940,7 +3169,7 @@ fn require_local_agent(id: &str) -> Result<LocalRegisteredAgent, String> {
         return crate::space_cloud_mock::require_local_agent(id);
     }
     ensure_space_available()?;
-    read_current_local_agents()?
+    read_current_runnable_local_agents()?
         .into_iter()
         .find(|agent| agent.id == id)
         .ok_or_else(|| format!("Registered Agent not found locally: {}", id))
@@ -2954,10 +3183,7 @@ fn resolve_local_agent_for_cli(
         return crate::space_cloud_mock::resolve_local_agent_for_cli(agent_id, workspace_path);
     }
     ensure_space_available()?;
-    let agents = read_current_local_agents()?
-        .into_iter()
-        .filter(|agent| agent.status == "active")
-        .collect::<Vec<_>>();
+    let agents = read_current_runnable_local_agents()?;
     if agents.is_empty() {
         return Err("No local Registered Agent token found. Register this workspace from the MyAgents Space page first.".to_string());
     }
@@ -2996,6 +3222,44 @@ fn resolve_local_agent_for_cli(
         "No Registered Agent token matches workspace: {}",
         workspace
     ))
+}
+
+fn read_current_runnable_local_agents() -> Result<Vec<LocalRegisteredAgent>, String> {
+    let Some(session) = read_current_session()? else {
+        return Ok(Vec::new());
+    };
+    let local_device_id = crate::device_identity::get_or_create_device_id()?;
+    Ok(read_current_local_agents()?
+        .into_iter()
+        .filter(|agent| agent.status == "active")
+        .filter(|agent| local_agent_matches_current_identity(agent, &session, &local_device_id))
+        .collect())
+}
+
+fn local_agent_matches_current_identity(
+    agent: &LocalRegisteredAgent,
+    session: &SpaceSession,
+    local_device_id: &str,
+) -> bool {
+    let Some(current_user_id) = session_user_id(session) else {
+        return false;
+    };
+    agent
+        .owner_user_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        == Some(current_user_id.as_str())
+        && agent
+            .device_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            == Some(local_device_id)
+}
+
+fn session_user_id(session: &SpaceSession) -> Option<String> {
+    optional_value_string(&session.user, "id")
 }
 
 fn read_local_agents_unlocked(path: &Path) -> Result<LocalRegisteredAgentsFile, String> {
@@ -3379,7 +3643,14 @@ mod tests {
             id: "rag_test".to_string(),
             base_url: "https://space.myagents.test".to_string(),
             space_id: "space_test".to_string(),
+            owner_user_id: Some("usr_test".to_string()),
+            device_id: Some("device_test".to_string()),
             client_id: None,
+            device_name: Some("Test Device".to_string()),
+            device_platform: Some("test-platform".to_string()),
+            device_os_version: Some("test-os".to_string()),
+            device_app_version: Some("0.0.0-test".to_string()),
+            device_last_seen_at: Some("2026-06-24T00:00:00.000Z".to_string()),
             local_workspace_id: Some("workspace_test".to_string()),
             local_agent_id: None,
             workspace_id: Some("workspace_test".to_string()),
@@ -3444,7 +3715,14 @@ mod tests {
             id: "rag_test".to_string(),
             base_url: "https://space.myagents.test".to_string(),
             space_id: "space_test".to_string(),
+            owner_user_id: Some("usr_test".to_string()),
+            device_id: Some("device_test".to_string()),
             client_id: None,
+            device_name: Some("Test Device".to_string()),
+            device_platform: Some("test-platform".to_string()),
+            device_os_version: Some("test-os".to_string()),
+            device_app_version: Some("0.0.0-test".to_string()),
+            device_last_seen_at: Some("2026-06-24T00:00:00.000Z".to_string()),
             local_workspace_id: Some("workspace_test".to_string()),
             local_agent_id: None,
             workspace_id: Some("workspace_test".to_string()),
