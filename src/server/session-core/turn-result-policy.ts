@@ -72,14 +72,6 @@ export function classifyTransientProviderTextError(text: string): TransientProvi
     'try again later',
     'retry later',
   ]);
-  const mentionsLimitOrCapacity = hasAny(normalized, [
-    'limit',
-    'busy',
-    'capacity',
-    'concurrency',
-    'overload',
-    'overloaded',
-  ]);
 
   if (
     normalized.includes('concurrency limit exceeded') &&
@@ -132,14 +124,6 @@ export function classifyTransientProviderTextError(text: string): TransientProvi
     };
   }
 
-  if (mentionsRetryLater && mentionsLimitOrCapacity) {
-    return {
-      kind: normalized.includes('rate') ? 'rate_limit' : 'temporarily_overloaded',
-      rawText,
-      userMessage: '上游模型服务返回临时限制错误，请稍后重试。',
-    };
-  }
-
   return null;
 }
 
@@ -148,6 +132,7 @@ export function decideTransientProviderTextRetry(params: {
   isError: boolean;
   isAbortResult?: boolean;
   apiErrorStatus?: number | null;
+  toolUseCount?: number;
   currentAttempt: number;
   retryDelaysMs?: readonly number[];
 }): TransientProviderTextRetryDecision {
@@ -160,6 +145,10 @@ export function decideTransientProviderTextRetry(params: {
   const error = classifyTransientProviderTextError(params.resultText);
   if (!error) {
     return { retry: false, error: null, exhausted: false, maxRetries };
+  }
+
+  if ((params.toolUseCount ?? 0) > 0) {
+    return { retry: false, error, exhausted: false, maxRetries };
   }
 
   if (params.currentAttempt >= maxRetries) {

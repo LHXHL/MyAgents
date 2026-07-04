@@ -88,6 +88,9 @@ describe('turn-result-policy', () => {
     expect(classifyTransientProviderTextError(
       'The phrase "rate limit exceeded" means the provider is throttling requests.',
     )).toBeNull();
+    expect(classifyTransientProviderTextError(
+      'If capacity is busy, tell the caller to retry later after the current deployment.',
+    )).toBeNull();
   });
 
   it('schedules bounded retries only for success-shaped transient provider text errors', () => {
@@ -156,6 +159,26 @@ describe('turn-result-policy', () => {
     })).toEqual({
       retry: false,
       error: null,
+      exhausted: false,
+      maxRetries: 3,
+    });
+  });
+
+  it('does not replay turns that already used tools', () => {
+    expect(decideTransientProviderTextRetry({
+      resultText: '[Error]: Concurrency limit exceeded for account, please retry later',
+      isError: false,
+      apiErrorStatus: null,
+      toolUseCount: 1,
+      currentAttempt: 0,
+      retryDelaysMs: [15, 30, 60],
+    })).toEqual({
+      retry: false,
+      error: {
+        kind: 'concurrency_limit',
+        rawText: '[Error]: Concurrency limit exceeded for account, please retry later',
+        userMessage: '上游模型服务达到账号并发限制，请稍后重试。',
+      },
       exhausted: false,
       maxRetries: 3,
     });

@@ -6,6 +6,7 @@ import {
   resetTurnForTest,
   setCurrentTurnCompactResult,
   setCurrentTurnStartTime,
+  setCurrentTurnToolCount,
   setSawCompactBoundary,
 } from './turn';
 import {
@@ -265,6 +266,26 @@ describe('turn-lifecycle owner', () => {
     expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
     expect(broadcasts.map(item => item.event)).not.toContain('chat:message-error');
     expect(deps.persistTranscript).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-retry transient provider text after tool side effects', () => {
+    const { deps, broadcasts } = makeDeps({
+      scheduleTransientProviderRetry: vi.fn(() => true),
+    });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    setCurrentTurnToolCount(1);
+
+    lifecycle.handleSdkResult(makeResult({
+      result: '[Error]: Concurrency limit exceeded for account, please retry later',
+    }));
+
+    expect(deps.scheduleTransientProviderRetry).not.toHaveBeenCalled();
+    expect(deps.retractTransientProviderTextOutput).toHaveBeenCalledWith(
+      '[Error]: Concurrency limit exceeded for account, please retry later',
+    );
+    expect(broadcasts.map(item => item.event)).toContain('chat:message-error');
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
+    expect(deps.setLastAgentError).toHaveBeenCalledWith(expect.stringContaining('无法安全自动重试'));
   });
 
   it('surfaces a clear terminal error after transient provider text retries are exhausted', () => {

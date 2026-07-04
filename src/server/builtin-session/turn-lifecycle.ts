@@ -342,6 +342,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       isError: resultMessage.is_error,
       isAbortResult,
       apiErrorStatus: 'api_error_status' in resultMessage ? resultMessage.api_error_status ?? null : null,
+      toolUseCount: getCurrentTurnToolCount(),
       currentAttempt: deps.getCurrentTransientProviderRetryAttempt(),
     });
     let terminalTransientProviderError: TransientProviderTextError | null = null;
