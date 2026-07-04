@@ -30,7 +30,7 @@ Node.js v24 官方二进制通过 `scripts/download_nodejs.sh` / `.ps1` 从 node
 
 ### Claude Agent SDK native binary（独立进程，非我们的 Node）
 
-SDK 自 0.2.113+ 以 `bun build --compile` 的 native binary 形式分发（SDK team 内嵌 Bun runtime，约 213 MB）。我们**不感知、不共享** SDK 子进程的运行时，只通过 stdio NDJSON 通信。
+SDK 自 0.2.113+ 以 `bun build --compile` 的 native binary 形式分发（SDK team 内嵌 Bun runtime，约 213 MB）。我们不共享 SDK 子进程的 Bun runtime 或 MyAgents Node 进程内状态，只通过 stdio NDJSON 通信。例外是 Claude Code 自己的外部状态：builtin `anthropic-sub` 会按 native 默认规则读取本机官方 OAuth credential store（macOS Keychain / `~/.claude/.credentials.json`），MyAgents 不通过 `CLAUDE_CONFIG_DIR` 改写这套位置，也不接管 OAuth token 生命周期。
 
 | 文件 | 平台 | 来源 |
 |---|---|---|

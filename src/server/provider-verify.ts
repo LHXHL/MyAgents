@@ -5,7 +5,7 @@
 
 import { randomUUID } from 'crypto';
 import { homedir } from 'os';
-import { join } from 'path';
+import { basename, join } from 'path';
 import { existsSync, readFileSync } from 'fs';
 import { execFileSync, execSync } from 'child_process';
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -32,6 +32,40 @@ import {
   type VerifyError,
   type ProbeOutcome,
 } from './provider-probe';
+
+const CLAUDE_CODE_KEYCHAIN_SERVICE = 'Claude Code-credentials';
+
+function claudeCredentialsFilePath(): string {
+  return join(homedir(), '.claude', '.credentials.json');
+}
+
+function keychainAccount(): string | null {
+  return process.env.USER || process.env.LOGNAME || basename(homedir()) || null;
+}
+
+function hasClaudeCodeOAuthCredentialsStored(): boolean {
+  if (existsSync(claudeCredentialsFilePath())) return true;
+  if (process.platform !== 'darwin') return false;
+
+  const account = keychainAccount();
+  if (!account) return false;
+
+  try {
+    execFileSync('/usr/bin/security', [
+      'find-generic-password',
+      '-s',
+      CLAUDE_CODE_KEYCHAIN_SERVICE,
+      '-a',
+      account,
+    ], {
+      stdio: ['ignore', 'ignore', 'ignore'],
+      timeout: 1500,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 // Error message parser for subscription verification.
 // `parseProviderError` + `VerifyError` now live in the pure `provider-probe`
@@ -460,12 +494,10 @@ export async function fetchSdkSupportedModels(): Promise<Array<{ value: string; 
       maxTurns: 0,
       sessionId: randomUUID(),
       cwd,
-      // Issue #199: see verifySubscription() for the full rationale on why we
-      // explicitly omit 'user' here. Short version: settingSources governs
-      // settings.json / managed-settings only — OAuth credentials are read by
-      // the SDK independently (from Keychain / .credentials.json), so 'user'
-      // adds no auth value and instead exposes us to stale `apiKeyHelper` from
-      // prior third-party CLI tooling.
+      // Issue #199/#429: settingSources governs settings.json /
+      // managed-settings only. Claude Code's native OAuth store is independent
+      // of settingSources, so loading 'user' adds no auth value and instead
+      // exposes us to stale apiKeyHelper from prior third-party CLI tooling.
       settingSources: [],
       permissionMode: 'bypassPermissions',
       allowDangerouslySkipPermissions: true,
@@ -489,36 +521,6 @@ export async function fetchSdkSupportedModels(): Promise<Array<{ value: string; 
   } finally {
     try { testQuery.return(undefined as never); } catch { /* cleanup */ }
   }
-}
-
-/**
- * Issue #203: `claude auth login` only writes the OAuth token to its primary store
- * (macOS Keychain or `~/.claude/.credentials.json`). The `oauthAccount` metadata
- * inside `~/.claude.json` is only populated after the CLI's REPL fetches account
- * info from the API — users who only ran `claude auth login` (without ever
- * launching `claude` interactively) end up authenticated yet showing as "not
- * logged in" here. So we probe the token store directly as a fallback, and treat
- * `oauthAccount` as enrichment-only.
- */
-function hasOAuthTokenStored(): boolean {
-  if (existsSync(join(homedir(), '.claude', '.credentials.json'))) {
-    return true;
-  }
-  if (process.platform === 'darwin') {
-    try {
-      const account = process.env.USER || process.env.LOGNAME || '';
-      if (!account) return false;
-      execFileSync(
-        '/usr/bin/security',
-        ['find-generic-password', '-s', 'Claude Code-credentials', '-a', account],
-        { stdio: ['ignore', 'ignore', 'ignore'], timeout: 1500 },
-      );
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  return false;
 }
 
 /**
@@ -554,7 +556,7 @@ export function checkAnthropicSubscription(): SubscriptionStatus {
     }
   }
 
-  if (hasOAuthTokenStored()) {
+  if (hasClaudeCodeOAuthCredentialsStored()) {
     return {
       available: true,
       info: {},
@@ -582,14 +584,11 @@ export async function verifySubscription(): Promise<SubscriptionVerifyResult> {
   // at their old third-party key — loading it makes the verify subprocess
   // send `x-api-key: <third-party-key>` to api.anthropic.com → 403.
   //
-  // OAuth credentials live in macOS Keychain (or `.credentials.json`),
-  // neither of which is gated by settingSources, so dropping 'user' here
-  // doesn't break auth lookup — the SDK reads Keychain unconditionally once
-  // the API-key path is out of the way. This brings verify in line with the
-  // chat session (which already uses `['project']` via `buildSettingSources()`,
-  // never `'user'`). The earlier-claimed need for `'user' to read OAuth
-  // credentials` was incorrect — settingSources only governs settings.json
-  // and managed-settings, not credentials files.
+  // OAuth credentials live in macOS Keychain (or `.credentials.json`), neither
+  // of which is gated by settingSources. MyAgents deliberately does not host
+  // the OAuth lifecycle here: buildClaudeSessionEnv() skips
+  // CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST for anthropic-sub, so the native
+  // Claude Code runtime consumes the same local login state as `claude` CLI.
   const officialSubscriptionProvider: ProviderEnv = { providerId: SUBSCRIPTION_PROVIDER_ID };
   const env = buildClaudeSessionEnv(officialSubscriptionProvider, undefined, {
     providerId: SUBSCRIPTION_PROVIDER_ID,

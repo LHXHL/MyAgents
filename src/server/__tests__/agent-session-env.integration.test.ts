@@ -3,6 +3,7 @@ import { tmpdir } from 'os';
 import { delimiter, resolve } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import { applyWindowsUtf8SubprocessEnv, buildClaudeSessionEnv } from '../agent-session';
 
 describe('buildClaudeSessionEnv npm prefix isolation', () => {
@@ -178,6 +179,38 @@ describe('session model alias resolution', () => {
     expect(env.ANTHROPIC_DEFAULT_SONNET_MODEL).toBe('provider-pro');
     expect(env.ANTHROPIC_DEFAULT_OPUS_MODEL).toBe('provider-pro');
     expect(env.ANTHROPIC_DEFAULT_HAIKU_MODEL).toBe('provider-flash');
+  });
+});
+
+describe('Claude Code provider-managed host env', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it('does not mark Anthropic subscription auth as host-managed', () => {
+    vi.stubEnv('CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST', '1');
+
+    const env = buildClaudeSessionEnv(
+      {},
+      'claude-opus-4-8',
+      { providerId: SUBSCRIPTION_PROVIDER_ID },
+    );
+
+    expect(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBeUndefined();
+  });
+
+  it('keeps host-managed provider env stripping for third-party providers', () => {
+    const env = buildClaudeSessionEnv(
+      {
+        providerId: 'deepseek',
+        baseUrl: 'https://api.deepseek.example/anthropic',
+        apiKey: 'test-key',
+      },
+      'deepseek-chat',
+      { providerId: 'deepseek' },
+    );
+
+    expect(env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBe('1');
   });
 });
 

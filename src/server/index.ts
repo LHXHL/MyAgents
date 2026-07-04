@@ -560,7 +560,7 @@ import { broadcast, createSseClient, getClients } from './sse';
 import { imEventBus } from './utils/im-event-bus';
 import { imRequestRegistry } from './utils/im-request-registry';
 import { checkAnthropicSubscription, verifyProviderViaSdk, verifySubscription } from './provider-verify';
-import { cancelSubscriptionLogin, getSubscriptionLoginState, startSubscriptionLogin } from './subscription-auth';
+import { cancelSubscriptionLogin, getSubscriptionLoginState, startSubscriptionLogin, submitSubscriptionLoginCode } from './subscription-auth';
 // openai-bridge is lazy-loaded via ensureBridgeHandler() below — only users on
 // OpenAI-protocol providers (DeepSeek/Moonshot/etc.) ever hit /v1/messages, so
 // most sessions never need to pay the 2.6k-line module's init cost.
@@ -4615,6 +4615,26 @@ async function main() {
           console.error('[api/subscription/login/status] Error:', error);
           return jsonResponse(
             { status: 'error', error: error instanceof Error ? error.message : 'Status check failed' },
+            500
+          );
+        }
+      }
+
+      // POST /api/subscription/login/submit - Complete Anthropic Claude OAuth login with a pasted code/callback URL
+      if (pathname === '/api/subscription/login/submit' && request.method === 'POST') {
+        try {
+          const payload = await request.json().catch(() => ({})) as { code?: unknown; codeOrUrl?: unknown };
+          const codeOrUrl = typeof payload.codeOrUrl === 'string'
+            ? payload.codeOrUrl
+            : typeof payload.code === 'string'
+              ? payload.code
+              : '';
+          const state = await submitSubscriptionLoginCode(codeOrUrl);
+          return jsonResponse(state);
+        } catch (error) {
+          console.error('[api/subscription/login/submit] Error:', error);
+          return jsonResponse(
+            { status: 'error', error: error instanceof Error ? error.message : 'Submit failed' },
             500
           );
         }

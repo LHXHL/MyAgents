@@ -645,7 +645,7 @@ async function awaitSessionTermination(timeoutMs = 10_000, label = ''): Promise<
 
 let isInterruptingResponse = false;
 let isStreamingMessage = false;
-// Every `system` subtype defined in SDK 0.3.199 (sdk.d.ts) — handled here or
+// Every `system` subtype defined in SDK 0.3.201 (sdk.d.ts) — handled here or
 // deliberately untouched. A subtype outside this set means a NEWER SDK started
 // emitting a message kind we have never seen; the loop logs it once per
 // process instead of letting it vanish silently. Update this set when bumping
@@ -662,7 +662,7 @@ const KNOWN_SYSTEM_SUBTYPES = new Set([
 ]);
 const warnedUnknownSystemSubtypes = new Set<string>();
 // Top-level half of the same sentinel: every `type` value an SDKMessage union
-// member carries in 0.3.199. Verified 1:1 against sdk.d.ts at upgrade time
+// member carries in 0.3.201. Verified 1:1 against sdk.d.ts at upgrade time
 // (the system-typed members are covered by KNOWN_SYSTEM_SUBTYPES above).
 const KNOWN_MESSAGE_TYPES = new Set([
   'assistant', 'user', 'result', 'system', 'stream_event', 'rate_limit_event',
@@ -5192,13 +5192,24 @@ export function buildClaudeSessionEnv(
   // Currently used for diagnostic logging only (parallel data collection).
   // Future: may replace self-built sessionState tracking for more accurate turn boundary detection.
   env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS = '1';
-  // Declare MyAgents as the inference-routing host. Tells CC's `managedEnv` layer
-  // (see claude-code/src/utils/managedEnv.ts withoutHostManagedProviderVars) to
-  // strip the 26 provider-routing vars (ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY /
+
+  // Resolve provider identity before setting provider-management env vars:
+  // Claude Code 2.1.x treats CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST as
+  // "host owns auth", which blocks fallback to the local Claude Code
+  // subscription store. Anthropic-sub must leave this unset so CC owns OAuth.
+  const effectiveProviderEnv = providerEnv ?? configState.currentProviderEnv;
+  const effectiveProviderId = opts?.providerId
+    ?? effectiveProviderEnv?.providerId
+    ?? (providerEnv === undefined
+      ? getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID
+      : (!effectiveProviderEnv?.baseUrl && !effectiveProviderEnv?.apiKey ? SUBSCRIPTION_PROVIDER_ID : ''));
+
+  // Declare MyAgents as the inference-routing host for non-subscription
+  // providers. This tells CC's `managedEnv` layer (see claude-code
+  // src/utils/managedEnv.ts withoutHostManagedProviderVars) to strip the
+  // provider-routing vars (ANTHROPIC_BASE_URL / ANTHROPIC_API_KEY /
   // ANTHROPIC_AUTH_TOKEN / ANTHROPIC_DEFAULT_*_MODEL / CLAUDE_CODE_USE_BEDROCK
-  // etc.) out of ALL settings-sourced env — both ~/.claude.json.env and
-  // ~/.claude/settings.json.env — before they're `Object.assign`'d into the
-  // subprocess's process.env during applyConfigEnvironmentVariables().
+  // etc.) out of settings-sourced env before they're applied.
   //
   // Effect: external tools like cc-switch / Claude Code Router that write those
   // vars into user settings cannot silently redirect MyAgents requests to a
@@ -5206,10 +5217,14 @@ export function buildClaudeSessionEnv(
   // settings.json from the merged-settings path, but getGlobalConfig().env
   // (~/.claude.json) is merged unconditionally — this flag closes that hole.
   //
-  // Does NOT affect: Keychain OAuth lookup (subscription auth), env vars we pass
-  // directly via options.env, parent-shell env vars inherited from our process.
-  // Only settings-file-sourced provider vars are stripped.
-  env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = '1';
+  // Anthropic subscription experiment: omit the flag so native Claude Code owns
+  // its normal OAuth discovery/refresh path and can reuse `claude` CLI login.
+  if (effectiveProviderId === SUBSCRIPTION_PROVIDER_ID) {
+    delete env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST;
+    console.log('[env] CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST skipped for Anthropic subscription');
+  } else {
+    env.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST = '1';
+  }
   // DO NOT set CLAUDE_CONFIG_DIR here — it would change the Keychain service name
   // and break Anthropic subscription OAuth. User-level skills are synced as symlinks
   // into project .claude/skills/ by syncProjectUserConfig() instead.
@@ -5274,13 +5289,6 @@ export function buildClaudeSessionEnv(
     home,
   });
 
-  // Use provided providerEnv or fall back to configState.currentProviderEnv
-  const effectiveProviderEnv = providerEnv ?? configState.currentProviderEnv;
-  const effectiveProviderId = opts?.providerId
-    ?? effectiveProviderEnv?.providerId
-    ?? (providerEnv === undefined
-      ? getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID
-      : (!effectiveProviderEnv?.baseUrl && !effectiveProviderEnv?.apiKey ? SUBSCRIPTION_PROVIDER_ID : ''));
   if (!effectiveProviderId) {
     console.warn('[env] Provider-owned SDK env missing providerId; MyAgents proxy will not be injected for this subprocess');
   }
@@ -10952,7 +10960,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         }
 
         // Sentinel for system message kinds added by FUTURE SDK versions.
-        // The set below enumerates every system subtype in SDK 0.3.199
+        // The set below enumerates every system subtype in SDK 0.3.201
         // (handled or deliberately untouched) — a subtype outside it means the
         // SDK started emitting something we have never seen. Without this log
         // line, new message kinds vanish silently (the pre-0.3.173 default,
@@ -11650,7 +11658,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         builtinTurnLifecycle.handleSdkResult(sdkMessage as BuiltinSdkResultMessage);
       } else if (!KNOWN_MESSAGE_TYPES.has(sdkMessage.type) && !warnedUnknownMessageTypes.has(sdkMessage.type)) {
         // Top-level half of the unknown-message sentinel (the system-subtype
-        // half lives in the system block above): a type outside the 0.3.199
+        // half lives in the system block above): a type outside the 0.3.201
         // union means a NEWER SDK started emitting a message kind this loop
         // has never seen — log once instead of letting it vanish silently.
         warnedUnknownMessageTypes.add(sdkMessage.type);

@@ -4,6 +4,7 @@ import { join } from 'path';
 import { query, type Query, type SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { buildClaudeSessionEnv, resolveClaudeCodeCli, type ProviderEnv } from './agent-session';
 import { ensureDirSync } from './utils/fs-utils';
+import { parseClaudeOAuthCallbackInput } from './subscription-auth-parser';
 import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 
 export type SubscriptionLoginStatus = 'idle' | 'starting' | 'waiting' | 'succeeded' | 'cancelled' | 'error';
@@ -18,7 +19,7 @@ export interface SubscriptionLoginState {
 }
 
 type ClaudeAuthStartResult = {
-  // Verified against @anthropic-ai/claude-agent-sdk 0.3.199 runtime:
+  // Verified against @anthropic-ai/claude-agent-sdk 0.3.201 runtime:
   // Query.claudeAuthenticate(true) resolves to `{ manualUrl, automaticUrl }`.
   // The installed sdk.d.ts currently omits this control-plane method.
   manualUrl?: unknown;
@@ -27,6 +28,7 @@ type ClaudeAuthStartResult = {
 
 type ClaudeAuthQuery = Query & {
   claudeAuthenticate?: (loginWithClaudeAi: boolean) => Promise<ClaudeAuthStartResult>;
+  claudeOAuthCallback?: (authorizationCode: string, state: string) => Promise<unknown>;
   claudeOAuthWaitForCompletion?: () => Promise<unknown>;
   close?: () => void;
 };
@@ -66,10 +68,17 @@ function isActiveStatus(status: SubscriptionLoginStatus): boolean {
   return status === 'starting' || status === 'waiting';
 }
 
-function isHttpsUrl(value: unknown): value is string {
+function isAllowedClaudeLoginUrl(value: unknown): value is string {
   if (typeof value !== 'string') return false;
   try {
-    return new URL(value).protocol === 'https:';
+    const url = new URL(value);
+    if (url.protocol === 'https:') return true;
+    if (url.protocol !== 'http:') return false;
+    const hostname = url.hostname.toLowerCase();
+    return hostname === 'localhost'
+      || hostname === '127.0.0.1'
+      || hostname === '::1'
+      || hostname === '[::1]';
   } catch {
     return false;
   }
@@ -80,9 +89,9 @@ function pickLoginUrl(result: ClaudeAuthStartResult): {
   automaticUrl: string | null;
   loginUrl: string | null;
 } {
-  const manualUrl = isHttpsUrl(result.manualUrl) ? result.manualUrl : null;
-  const automaticUrl = isHttpsUrl(result.automaticUrl) ? result.automaticUrl : null;
-  const loginUrl = manualUrl ?? automaticUrl;
+  const manualUrl = isAllowedClaudeLoginUrl(result.manualUrl) ? result.manualUrl : null;
+  const automaticUrl = isAllowedClaudeLoginUrl(result.automaticUrl) ? result.automaticUrl : null;
+  const loginUrl = automaticUrl ?? manualUrl;
   return { manualUrl, automaticUrl, loginUrl };
 }
 
@@ -113,6 +122,17 @@ function finishAttemptWithError(attempt: ActiveLoginAttempt, message: string): v
     ...currentState,
     status: 'error',
     error: message,
+  });
+  cleanupAttempt(attempt);
+  activeAttempt = null;
+}
+
+function finishAttemptSucceeded(attempt: ActiveLoginAttempt): void {
+  if (activeAttempt !== attempt) return;
+  setState({
+    ...currentState,
+    status: 'succeeded',
+    error: null,
   });
   cleanupAttempt(attempt);
   activeAttempt = null;
@@ -152,13 +172,7 @@ async function waitForLoginCompletion(attempt: ActiveLoginAttempt): Promise<void
       'Claude 登录超时，请重新发起登录。',
     );
 
-    if (activeAttempt === attempt) {
-      setState({
-        ...currentState,
-        status: 'succeeded',
-        error: null,
-      });
-    }
+    finishAttemptSucceeded(attempt);
   } catch (error) {
     if (activeAttempt === attempt) {
       setState({
@@ -274,6 +288,64 @@ export async function startSubscriptionLogin(): Promise<SubscriptionLoginState> 
       manualUrl: null,
       automaticUrl: null,
       startedAt,
+      error: errorMessage(error),
+    });
+  }
+}
+
+export async function submitSubscriptionLoginCode(input: string): Promise<SubscriptionLoginState> {
+  const attempt = activeAttempt;
+  if (!attempt || !isActiveStatus(currentState.status)) {
+    return setState({
+      ...currentState,
+      status: 'error',
+      error: '没有正在进行的 Claude 登录，请重新发起登录。',
+    });
+  }
+
+  if (!attempt.query.claudeOAuthCallback) {
+    return setState({
+      ...currentState,
+      status: 'error',
+      error: '当前 AgentSDK 不支持提交 Claude OAuth 授权码。',
+    });
+  }
+
+  let callbackInput: { authorizationCode: string; state: string };
+  try {
+    callbackInput = parseClaudeOAuthCallbackInput(
+      input,
+      currentState.automaticUrl ?? currentState.loginUrl ?? currentState.manualUrl,
+    );
+  } catch (error) {
+    return setState({
+      ...currentState,
+      error: errorMessage(error),
+    });
+  }
+
+  try {
+    await withTimeout(
+      attempt.query.claudeOAuthCallback(callbackInput.authorizationCode, callbackInput.state),
+      30000,
+      '提交 Claude 登录授权码超时，请重新发起登录。',
+    );
+    if (activeAttempt === attempt && isActiveStatus(currentState.status)) {
+      setState({
+        ...currentState,
+        status: 'waiting',
+        error: null,
+      });
+    }
+    return getSubscriptionLoginState();
+  } catch (error) {
+    if (activeAttempt === attempt) {
+      cleanupAttempt(attempt);
+      activeAttempt = null;
+    }
+    return setState({
+      ...currentState,
+      status: 'error',
       error: errorMessage(error),
     });
   }
