@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   classifySubscriptionVerifyFailureKind,
+  formatSubscriptionVerifyError,
   isUserActionRequiredSubscriptionFailure,
 } from './subscription';
 
@@ -20,5 +21,19 @@ describe('subscription verify failure classification', () => {
     expect(isUserActionRequiredSubscriptionFailure(classifySubscriptionVerifyFailureKind('429 rate limit'))).toBe(false);
     expect(isUserActionRequiredSubscriptionFailure(classifySubscriptionVerifyFailureKind('network timeout'))).toBe(false);
     expect(isUserActionRequiredSubscriptionFailure('auth_required')).toBe(true);
+  });
+
+  it('formats the real verification detail when it is available', () => {
+    expect(formatSubscriptionVerifyError({
+      error: '登录已过期，请重新登录',
+      detail: 'Not logged in · Please run /login',
+    }, '验证失败')).toBe('登录已过期，请重新登录: Not logged in · Please run /login');
+  });
+
+  it('does not duplicate identical verification error text', () => {
+    expect(formatSubscriptionVerifyError({
+      error: 'Not logged in',
+      detail: 'Not logged in',
+    })).toBe('Not logged in');
   });
 });
