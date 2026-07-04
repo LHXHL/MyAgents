@@ -2,10 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ProviderVerifyStatus } from '@/config/types';
 import type { SubscriptionStatus } from '@/types/subscription';
-import {
-  shouldSkipSubscriptionAutoVerify,
-  shouldUseCachedValidSubscriptionVerify,
-} from './subscriptionVerifyPolicy';
+import { shouldUseCachedValidSubscriptionVerify } from './subscriptionVerifyPolicy';
 
 const fixedNow = new Date('2026-07-03T00:00:00.000Z');
 const recent = '2026-07-02T00:00:00.000Z';
@@ -32,38 +29,31 @@ describe('subscription verify policy', () => {
     expect(shouldUseCachedValidSubscriptionVerify(status, cached)).toBe(true);
   });
 
-  it('skips auto verify for fresh auth-required invalid status', () => {
-    const cached: ProviderVerifyStatus = {
-      status: 'invalid',
-      verifiedAt: recent,
-      accountEmail: 'user@example.com',
-      invalidReason: 'auth_required',
-    };
-
-    expect(shouldSkipSubscriptionAutoVerify(status, cached)).toBe(true);
-  });
-
-  it('does not skip transient or expired invalid status', () => {
-    expect(shouldSkipSubscriptionAutoVerify(status, {
+  it('does not reuse invalid subscription statuses', () => {
+    expect(shouldUseCachedValidSubscriptionVerify(status, {
       status: 'invalid',
       verifiedAt: recent,
       accountEmail: 'user@example.com',
       invalidReason: 'network',
     })).toBe(false);
-    expect(shouldSkipSubscriptionAutoVerify(status, {
+    expect(shouldUseCachedValidSubscriptionVerify(status, {
       status: 'invalid',
-      verifiedAt: expired,
+      verifiedAt: recent,
       accountEmail: 'user@example.com',
       invalidReason: 'auth_required',
     })).toBe(false);
   });
 
-  it('does not reuse cached status when the account changed', () => {
-    expect(shouldSkipSubscriptionAutoVerify(status, {
-      status: 'invalid',
+  it('does not reuse cached status when it expired or the account changed', () => {
+    expect(shouldUseCachedValidSubscriptionVerify(status, {
+      status: 'valid',
+      verifiedAt: expired,
+      accountEmail: 'user@example.com',
+    })).toBe(false);
+    expect(shouldUseCachedValidSubscriptionVerify(status, {
+      status: 'valid',
       verifiedAt: recent,
       accountEmail: 'other@example.com',
-      invalidReason: 'auth_required',
     })).toBe(false);
   });
 });

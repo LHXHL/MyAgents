@@ -25,6 +25,18 @@ export interface SubscriptionVerifyResult {
   failureKind?: SubscriptionVerifyFailureKind;
 }
 
+export function formatSubscriptionVerifyError(
+  result: Pick<SubscriptionVerifyResult, 'error' | 'detail'>,
+  fallback = 'Verification failed',
+): string {
+  const message = result.error?.trim() || fallback;
+  const detail = result.detail?.trim();
+  if (detail && detail !== message) {
+    return `${message}: ${detail}`;
+  }
+  return message;
+}
+
 export function classifySubscriptionVerifyFailureKind(errorText: string): SubscriptionVerifyFailureKind {
   const lower = errorText.toLowerCase();
   if (
