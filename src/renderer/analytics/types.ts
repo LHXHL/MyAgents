@@ -113,6 +113,8 @@ export type AssistantEntry =
   | 'settings'
   | 'tab_top'
   | 'agent_error'
+  | 'terminal_reason'
+  | 'runtime_diagnostics'
   | 'support_diagnostics'
   | 'other';
 

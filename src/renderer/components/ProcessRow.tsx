@@ -1,12 +1,13 @@
 
 import { AlertCircle, Brain, ChevronDown, Image as ImageIcon, Loader2, XCircle, StopCircle, Copy, Check, Download } from 'lucide-react';
-import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { track } from '@/analytics';
 import Markdown from '@/components/Markdown';
 import Tip from '@/components/Tip';
 import { useToastOptional } from '@/components/Toast';
+import { useNotifyRowLayoutChanged } from '@/context/ChatRowLayoutContext';
 import { buildThinkingMarkdown, downloadMarkdown, localDateStr } from '@/utils/markdownExport';
 import {
     formatDuration,
@@ -53,6 +54,7 @@ const ProcessRow = memo(function ProcessRow({
     const exportingRef = useRef(false);
     const toast = useToastOptional();
     const { t } = useTranslation('chat');
+    const notifyRowLayoutChanged = useNotifyRowLayoutChanged();
 
     useEffect(() => () => { if (copyTimerRef.current) clearTimeout(copyTimerRef.current); }, []);
 
@@ -70,6 +72,15 @@ const ProcessRow = memo(function ProcessRow({
     const isTaskRunning = isTaskTool && isSubagentContainerRunning(block.tool);
 
     const isBlockActive = isThinkingActive || isToolActive || isTaskRunning;
+    const wasToolActiveRef = useRef(false);
+
+    useLayoutEffect(() => {
+        const isAnyToolActive = isTool && (isToolActive || isTaskRunning);
+        if (wasToolActiveRef.current && !isAnyToolActive) {
+            notifyRowLayoutChanged('tool-complete');
+        }
+        wasToolActiveRef.current = isAnyToolActive;
+    }, [isTool, isToolActive, isTaskRunning, notifyRowLayoutChanged]);
 
     // Thinking timer - update elapsed time every second while thinking is active
     useEffect(() => {
@@ -182,6 +193,7 @@ const ProcessRow = memo(function ProcessRow({
     const handleToggle = () => {
         if (!hasContent) return;
         const willExpand = userToggled !== true; // null / false → this click opens it
+        notifyRowLayoutChanged(willExpand ? 'process-row-expand' : 'process-row-collapse');
         setUserToggled(prev => prev === null ? true : !prev);
         // Signal the parent group on EXPAND so it can pin its layout (stop the
         // auto-fold that would unmount this row and drop the just-opened state).

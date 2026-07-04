@@ -320,33 +320,7 @@ fn is_port_available(port: u16) -> bool {
 /// Returns: darwin-aarch64, darwin-x86_64, windows-x86_64, linux-x86_64, etc.
 #[tauri::command]
 pub fn cmd_get_platform() -> String {
-    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-    return "darwin-aarch64".to_string();
-
-    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-    return "darwin-x86_64".to_string();
-
-    #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-    return "windows-x86_64".to_string();
-
-    #[cfg(all(target_os = "windows", target_arch = "aarch64"))]
-    return "windows-aarch64".to_string();
-
-    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-    return "linux-x86_64".to_string();
-
-    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-    return "linux-aarch64".to_string();
-
-    #[cfg(not(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "macos", target_arch = "x86_64"),
-        all(target_os = "windows", target_arch = "x86_64"),
-        all(target_os = "windows", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64"),
-        all(target_os = "linux", target_arch = "aarch64"),
-    )))]
-    return "unknown".to_string();
+    crate::device_identity::platform_identifier()
 }
 
 /// Command: Get or create device ID
@@ -354,45 +328,13 @@ pub fn cmd_get_platform() -> String {
 /// Only regenerates if the file is deleted by user
 #[tauri::command]
 pub fn cmd_get_device_id() -> Result<String, String> {
-    use std::fs;
-    use uuid::Uuid;
+    crate::device_identity::get_or_create_device_id()
+}
 
-    // Get home directory
-    let home_dir = dirs::home_dir().ok_or_else(|| "Failed to get home directory".to_string())?;
-
-    // ~/.myagents/ directory
-    let myagents_dir = home_dir.join(".myagents");
-    let device_id_file = myagents_dir.join("device_id");
-
-    // Try to read existing device_id
-    if device_id_file.exists() {
-        match fs::read_to_string(&device_id_file) {
-            Ok(id) => {
-                let id = id.trim().to_string();
-                if !id.is_empty() {
-                    return Ok(id);
-                }
-            }
-            Err(_) => {
-                // File exists but can't read, will regenerate
-            }
-        }
-    }
-
-    // Generate new UUID
-    let new_id = Uuid::new_v4().to_string();
-
-    // Ensure directory exists
-    if !myagents_dir.exists() {
-        fs::create_dir_all(&myagents_dir)
-            .map_err(|e| format!("Failed to create ~/.myagents directory: {}", e))?;
-    }
-
-    // Write device_id to file
-    fs::write(&device_id_file, &new_id)
-        .map_err(|e| format!("Failed to write device_id file: {}", e))?;
-
-    Ok(new_id)
+/// Command: Get the full local device identity used by analytics and Space.
+#[tauri::command]
+pub fn cmd_get_device_identity() -> Result<crate::device_identity::DeviceIdentity, String> {
+    crate::device_identity::current_device_identity()
 }
 
 // ============= Bundled Workspace Commands =============
@@ -1004,7 +946,7 @@ pub fn cmd_copy_folder_to_templates(
 
 // ============= Admin Agent Sync =============
 
-const ADMIN_AGENT_VERSION: &str = "21";
+const ADMIN_AGENT_VERSION: &str = "22";
 
 /// Helper-bundled paths (relative to `~/.myagents/`) that previous versions
 /// shipped but that have since been retired.
@@ -1026,7 +968,13 @@ const RETIRED_ADMIN_PATHS: &[&str] = &[
 /// Merge bundled admin agent files into ~/.myagents/
 /// Version-gated: only runs when ADMIN_AGENT_VERSION changes.
 #[tauri::command]
-pub fn cmd_sync_admin_agent<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String> {
+pub async fn cmd_sync_admin_agent<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || sync_admin_agent_blocking(app_handle))
+        .await
+        .map_err(|e| format!("admin-agent sync task failed: {}", e))?
+}
+
+fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String> {
     let home = dirs::home_dir().ok_or("Home dir not found")?;
     let dest = home.join(".myagents");
 
@@ -1096,7 +1044,7 @@ pub fn cmd_sync_admin_agent<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool
 
 // ============= CLI Sync =============
 
-const CLI_VERSION: &str = "29";
+const CLI_VERSION: &str = "30";
 
 /// Sync the CLI script from bundled resources to ~/.myagents/bin/.
 /// Version-gated: only runs when CLI_VERSION changes.
@@ -1258,7 +1206,7 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "25";
+const SYSTEM_SKILLS_VERSION: &str = "26";
 
 /// Skills that ship with the app and MUST stay at the bundled version —
 /// the app's flows depend on them, users are not meant to customise.
@@ -2235,7 +2183,10 @@ async fn send_probe_request(
 /// used by external Rust HTTP requests. Any HTTP status means the network path
 /// reached the provider; API-key validity is verified by the SDK in the next step.
 #[tauri::command]
-pub async fn cmd_probe_provider_network(url: String) -> Result<NetworkProbeResult, String> {
+pub async fn cmd_probe_provider_network(
+    url: String,
+    provider_id: String,
+) -> Result<NetworkProbeResult, String> {
     let parsed = match reqwest::Url::parse(&url) {
         Ok(parsed) if parsed.scheme() == "http" || parsed.scheme() == "https" => parsed,
         Ok(_) => {
@@ -2263,7 +2214,11 @@ pub async fn cmd_probe_provider_network(url: String) -> Result<NetworkProbeResul
     };
 
     let target_url = parsed.to_string();
-    ulog_info!("[network-probe] Probing provider URL {}", target_url);
+    ulog_info!(
+        "[network-probe] Probing provider URL {} provider={}",
+        target_url,
+        provider_id
+    );
 
     let client = if is_loopback_http_url(&parsed) {
         match crate::local_http::builder()
@@ -2289,7 +2244,7 @@ pub async fn cmd_probe_provider_network(url: String) -> Result<NetworkProbeResul
         let builder = reqwest::Client::builder()
             .timeout(Duration::from_secs(8))
             .redirect(reqwest::redirect::Policy::limited(5));
-        match crate::proxy_config::build_client_with_proxy(builder) {
+        match crate::proxy_config::build_client_with_proxy_for_provider(builder, &provider_id) {
             Ok(client) => client,
             Err(error) => {
                 return Ok(network_probe_result(
@@ -2452,18 +2407,23 @@ pub async fn cmd_probe_proxy(
 #[tauri::command]
 pub async fn cmd_fetch_provider_models(
     url: String,
+    provider_id: String,
     auth_header_name: String,
     auth_header_value: String,
     extra_headers: Option<HashMap<String, String>>,
 ) -> Result<serde_json::Value, String> {
-    ulog_info!("[model-discovery] Fetching models from {}", url);
+    ulog_info!(
+        "[model-discovery] Fetching models from {} provider={}",
+        url,
+        provider_id
+    );
 
-    // Determine if URL points to localhost — if so, use local_http (no proxy) to avoid
-    // the system-proxy-intercepts-localhost bug. Otherwise, use proxy_config for external APIs.
-    let is_localhost = url.starts_with("http://127.0.0.1")
-        || url.starts_with("http://localhost")
-        || url.starts_with("https://127.0.0.1")
-        || url.starts_with("https://localhost");
+    // Determine if URL points to localhost — if so, use local_http (no proxy)
+    // to avoid the system-proxy-intercepts-localhost bug. Otherwise, use the
+    // provider-aware proxy client for external APIs.
+    let parsed_url =
+        reqwest::Url::parse(&url).map_err(|e| format!("Invalid model list URL: {}", e))?;
+    let is_localhost = is_loopback_http_url(&parsed_url);
 
     let client = if is_localhost {
         crate::local_http::json_client(std::time::Duration::from_secs(15))
@@ -2471,7 +2431,7 @@ pub async fn cmd_fetch_provider_models(
         // External host branch — system proxy wanted.
         #[allow(clippy::disallowed_methods)]
         let builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(15));
-        crate::proxy_config::build_client_with_proxy(builder)?
+        crate::proxy_config::build_client_with_proxy_for_provider(builder, &provider_id)?
     };
 
     let mut request = client

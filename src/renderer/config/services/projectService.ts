@@ -2,7 +2,7 @@
 import { join, basename } from '@tauri-apps/api/path';
 
 import type { Project } from '../types';
-import { isSystemPresetProject } from '../types';
+import { isProjectArchived, isSystemPresetProject } from '../types';
 import { workspacePathsEqual } from '../../../shared/workspacePath';
 import {
     isBrowserDevMode,
@@ -155,6 +155,49 @@ export function applyProjectPatch(project: Project, updates: Partial<Omit<Projec
     return next;
 }
 
+export function applyProjectArchiveIntent(
+    projects: Project[],
+    projectId: string,
+    options: {
+        archivedAtIso?: string;
+        agentEnabledBeforeArchive?: boolean;
+    } = {},
+): { project: Project; projects: Project[] } | null {
+    const index = projects.findIndex((p) => p.id === projectId);
+    if (index < 0) return null;
+
+    const project = projects[index];
+    const existingArchived = isProjectArchived(project);
+    const archivedProject = applyProjectPatch(project, {
+        archivedAt: existingArchived
+            ? project.archivedAt
+            : options.archivedAtIso ?? new Date().toISOString(),
+        archivedAgentEnabledBeforeArchive: existingArchived
+            ? project.archivedAgentEnabledBeforeArchive ?? options.agentEnabledBeforeArchive ?? false
+            : options.agentEnabledBeforeArchive ?? false,
+        pinnedAt: undefined,
+    });
+    const nextProjects = [...projects];
+    nextProjects[index] = archivedProject;
+    return { project: archivedProject, projects: nextProjects };
+}
+
+export function applyProjectUnarchiveIntent(
+    projects: Project[],
+    projectId: string,
+): { project: Project; projects: Project[] } | null {
+    const index = projects.findIndex((p) => p.id === projectId);
+    if (index < 0) return null;
+
+    const project = applyProjectPatch(projects[index], {
+        archivedAt: undefined,
+        archivedAgentEnabledBeforeArchive: undefined,
+    });
+    const nextProjects = [...projects];
+    nextProjects[index] = project;
+    return { project, projects: nextProjects };
+}
+
 export async function patchProject(projectId: string, updates: Partial<Omit<Project, 'id'>>): Promise<Project | null> {
     return withProjectsLock(async () => {
         const projects = await loadProjects();
@@ -165,6 +208,32 @@ export async function patchProject(projectId: string, updates: Partial<Omit<Proj
             return projects[index];
         }
         return null;
+    });
+}
+
+export async function archiveProject(
+    projectId: string,
+    options: { archivedAtIso?: string; agentEnabledBeforeArchive?: boolean } = {},
+): Promise<Project | null> {
+    return withProjectsLock(async () => {
+        const projects = await loadProjects();
+        const result = applyProjectArchiveIntent(projects, projectId, {
+            archivedAtIso: options.archivedAtIso,
+            agentEnabledBeforeArchive: options.agentEnabledBeforeArchive,
+        });
+        if (!result) return null;
+        await saveProjects(result.projects);
+        return result.project;
+    });
+}
+
+export async function unarchiveProject(projectId: string): Promise<Project | null> {
+    return withProjectsLock(async () => {
+        const projects = await loadProjects();
+        const result = applyProjectUnarchiveIntent(projects, projectId);
+        if (!result) return null;
+        await saveProjects(result.projects);
+        return result.project;
     });
 }
 

@@ -12,6 +12,7 @@
 import { useRef, useEffect, useCallback, useState, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { openExternal } from '@/utils/openExternal';
+import { useNotifyRowLayoutChanged } from '@/context/ChatRowLayoutContext';
 import { buildWidgetCssVars } from './widgetCssVars';
 import { buildSandboxHtml } from './widgetSandboxHtml';
 import { detectWidgetLibraries, loadLibrarySources, inlineWidgetLibraries } from './widgetLibraries';
@@ -79,6 +80,8 @@ export default function WidgetRenderer({ widgetCode, isStreaming, title }: Widge
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hasFinalized = useRef(false);
   const widgetErrorReports = useRef(0);
+  const notifyRowLayoutChanged = useNotifyRowLayoutChanged();
+  const lastNotifiedHeight = useRef<number | null>(null);
 
   // Initialize height from cache or default
   const cacheKey = getCacheKey(widgetCode);
@@ -172,6 +175,10 @@ export default function WidgetRenderer({ widgetCode, isStreaming, title }: Widge
 
         case 'widget:resize': {
           const h = Math.max(MIN_HEIGHT, Math.min(4000, Number(e.data.height) || MIN_HEIGHT));
+          if (lastNotifiedHeight.current === null || Math.abs(h - lastNotifiedHeight.current) >= 24) {
+            notifyRowLayoutChanged('widget-resize');
+            lastNotifiedHeight.current = h;
+          }
           setHeight(h);
           setCacheHeight(cacheKey, h);
           if (e.data.first) setFirstResize(false);
@@ -205,7 +212,7 @@ export default function WidgetRenderer({ widgetCode, isStreaming, title }: Widge
 
     window.addEventListener('message', onMessage);
     return () => window.removeEventListener('message', onMessage);
-  }, [widgetCode, isStreaming, sendToIframe, sendFinalize, cacheKey, title, scriptErrorPrefix]);
+  }, [widgetCode, isStreaming, sendToIframe, sendFinalize, cacheKey, title, scriptErrorPrefix, notifyRowLayoutChanged]);
 
   useEffect(() => {
     if (!iframeReady.current) return;

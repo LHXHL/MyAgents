@@ -63,7 +63,7 @@ async function streamUploadToFile(file: File, destination: string): Promise<void
   }
 }
 import { basename, dirname, isAbsolute, join, relative, resolve, extname, sep } from 'path';
-import { tmpdir, homedir } from 'os';
+import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
 import { addMessageUsageToByModel, type UsageByModel } from './utils/usage-stats';
@@ -91,6 +91,7 @@ import {
   getPluginDetail,
   PluginStoreError,
 } from './plugins/store';
+import { handleQrCodeAssetRoute } from './routes/qr-code-asset';
 
 /**
  * Lazy bridge to agent-session.schedulePluginDeferredRestart — the latter
@@ -511,7 +512,6 @@ import {
   getSessionModel,
   getSessionProviderEnv,
   syncProjectUserConfig,
-  setProxyConfig,
   initSocksBridgeFromEnv,
   getHistoricalSessionMessages,
   ensureSdkMcpInSync,
@@ -683,7 +683,7 @@ type SendMessagePayload = {
     maxOutputTokens?: number;
     maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
     upstreamFormat?: 'chat_completions' | 'responses';
-    modelAliases?: { sonnet?: string; opus?: string; haiku?: string };
+    modelAliases?: { fable?: string; sonnet?: string; opus?: string; haiku?: string };
   } | 'subscription';
 };
 
@@ -889,7 +889,7 @@ type CronExecutePayload = {
     maxOutputTokens?: number;
     maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
     upstreamFormat?: 'chat_completions' | 'responses';
-    modelAliases?: { sonnet?: string; opus?: string; haiku?: string };
+    modelAliases?: { fable?: string; sonnet?: string; opus?: string; haiku?: string };
   };
   /**
    * PRD 0.2.9: per-task provider id. When set, sidecar live-resolves the
@@ -1469,10 +1469,12 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'model/verify') return await api.handleModelVerify(payload as Parameters<typeof api.handleModelVerify>[0]);
 
   // Agent commands
-  if (route === 'agent/list') return api.handleAgentList();
+  if (route === 'agent/list') return api.handleAgentList(payload as Parameters<typeof api.handleAgentList>[0]);
   if (route === 'agent/show') return api.handleAgentShow(payload as Parameters<typeof api.handleAgentShow>[0]);
   if (route === 'agent/enable') return api.handleAgentEnable(payload as Parameters<typeof api.handleAgentEnable>[0]);
   if (route === 'agent/disable') return api.handleAgentDisable(payload as Parameters<typeof api.handleAgentDisable>[0]);
+  if (route === 'agent/archive') return api.handleAgentArchive(payload as Parameters<typeof api.handleAgentArchive>[0]);
+  if (route === 'agent/unarchive') return api.handleAgentUnarchive(payload as Parameters<typeof api.handleAgentUnarchive>[0]);
   if (route === 'agent/set') return api.handleAgentSet(payload as Parameters<typeof api.handleAgentSet>[0]);
   if (route === 'agent/channel/list') return api.handleAgentChannelList(payload as Parameters<typeof api.handleAgentChannelList>[0]);
   if (route === 'agent/channel/add') return api.handleAgentChannelAdd(payload as Parameters<typeof api.handleAgentChannelAdd>[0]);
@@ -1967,6 +1969,7 @@ async function main() {
                 }
               : undefined;
             return {
+              providerId: cfg.providerId,
               baseUrl: cfg.baseUrl,
               apiKey: cfg.apiKey,
               model: cfg.model,
@@ -4508,6 +4511,7 @@ async function main() {
       if (pathname === '/api/provider/verify' && request.method === 'POST') {
         try {
           const payload = await request.json() as {
+            providerId?: string;
             baseUrl?: string;
             apiKey?: string;
             model?: string;
@@ -4518,13 +4522,14 @@ async function main() {
             upstreamFormat?: string;
           };
 
-          const { baseUrl, apiKey, model, authType, apiProtocol, maxOutputTokens, maxOutputTokensParamName, upstreamFormat } = payload;
+          const { providerId, baseUrl, apiKey, model, authType, apiProtocol, maxOutputTokens, maxOutputTokensParamName, upstreamFormat } = payload;
 
-          if (!baseUrl || !apiKey) {
-            return jsonResponse({ success: false, error: 'baseUrl and apiKey are required.' }, 400);
+          if (!providerId || !baseUrl || !apiKey) {
+            return jsonResponse({ success: false, error: 'providerId, baseUrl and apiKey are required.' }, 400);
           }
 
           console.log(`[api/provider/verify] =========================`);
+          console.log(`[api/provider/verify] providerId: ${providerId}`);
           console.log(`[api/provider/verify] baseUrl: ${baseUrl}`);
           console.log(`[api/provider/verify] apiKey: ${apiKey.slice(0, 10)}...`);
           console.log(`[api/provider/verify] model: ${model ?? 'default'}`);
@@ -4536,6 +4541,7 @@ async function main() {
           // For OpenAI protocol: SDK → CLI → bridge loopback → upstream (end-to-end)
           // For Anthropic protocol: SDK → CLI → upstream (same as before)
           const result = await verifyProviderViaSdk(
+            providerId,
             baseUrl, apiKey, authType ?? 'both', model || undefined,
             apiProtocol === 'openai' ? 'openai' : undefined,
             maxOutputTokens,
@@ -4630,125 +4636,8 @@ async function main() {
       }
 
 
-      // GET /api/assets/qr-code - Fetch QR code image with local caching
-      // Downloads from CDN on first launch and caches locally for subsequent requests
-      // Cache refreshes every hour to get updated QR codes from cloud
-      if (pathname === '/api/assets/qr-code' && request.method === 'GET') {
-        try {
-          const QR_CODE_URL = 'https://download.myagents.io/assets/feedback_qr_code.png';
-
-          // Use tmpdir for cache (simple and safe approach)
-          const CACHE_DIR = join(tmpdir(), 'myagents-cache');
-          const CACHE_FILE = join(CACHE_DIR, 'feedback_qr_code.png');
-          const LOCK_FILE = `${CACHE_FILE}.lock`;
-          const CACHE_MAX_AGE_MS = 60 * 60 * 1000; // 1 hour (faster updates)
-
-          const startTime = Date.now();
-          let needsDownload = true;
-
-          // Check if cached file exists and is fresh
-          if (existsSync(CACHE_FILE)) {
-            const stats = statSync(CACHE_FILE);
-            const age = Date.now() - stats.mtimeMs;
-            if (age < CACHE_MAX_AGE_MS) {
-              needsDownload = false;
-              console.log(`[api/assets/qr-code] Cache hit (age: ${Math.round(age / 1000 / 60)}min)`);
-            } else {
-              console.log(`[api/assets/qr-code] Cache expired (age: ${Math.round(age / 1000 / 60)}min), re-downloading`);
-            }
-          } else {
-            console.log('[api/assets/qr-code] Cache miss, downloading');
-          }
-
-          // Download if needed (with file lock to prevent concurrent writes)
-          if (needsDownload) {
-            // Check if another process is already downloading
-            if (existsSync(LOCK_FILE)) {
-              const lockStats = statSync(LOCK_FILE);
-              const lockAge = Date.now() - lockStats.mtimeMs;
-              if (lockAge < 30000) { // Lock valid for 30s
-                console.log('[api/assets/qr-code] Download in progress, waiting...');
-                // Wait and use existing cache if available
-                if (existsSync(CACHE_FILE)) {
-                  const imageBuffer = readFileSync(CACHE_FILE);
-                  const base64 = imageBuffer.toString('base64');
-                  return jsonResponse({
-                    success: true,
-                    dataUrl: `data:image/png;base64,${base64}`
-                  });
-                }
-              } else {
-                // Stale lock, remove it
-                rmSync(LOCK_FILE, { force: true });
-              }
-            }
-
-            // Acquire lock
-            if (!existsSync(CACHE_DIR)) {
-              ensureDirSync(CACHE_DIR);
-            }
-            writeFileSync(LOCK_FILE, String(Date.now()));
-
-            try {
-              const downloadStartTime = Date.now();
-              const controller = new AbortController();
-              const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
-
-              const response = await fetch(QR_CODE_URL, { signal: controller.signal });
-              clearTimeout(timeoutId);
-
-              if (!response.ok) {
-                // If download fails but cache exists, use stale cache
-                if (existsSync(CACHE_FILE)) {
-                  console.warn(`[api/assets/qr-code] Download failed (HTTP ${response.status}), using stale cache`);
-                } else {
-                  throw new Error(`下载失败: HTTP ${response.status}`);
-                }
-              } else {
-                // Save to cache using atomic write pattern
-                const arrayBuffer = await response.arrayBuffer();
-                const buffer = Buffer.from(arrayBuffer);
-                const downloadTime = Date.now() - downloadStartTime;
-
-                // Write to temp file first
-                const tmpFile = `${CACHE_FILE}.${Date.now()}.tmp`;
-                writeFileSync(tmpFile, buffer);
-
-                // Atomic rename (POSIX guarantee)
-                renameSync(tmpFile, CACHE_FILE);
-                console.log(`[api/assets/qr-code] Downloaded and cached (${Math.round(buffer.length / 1024)}KB in ${downloadTime}ms)`);
-              }
-            } finally {
-              // Release lock
-              rmSync(LOCK_FILE, { force: true });
-            }
-          }
-
-          // Read from cache and return as base64
-          if (!existsSync(CACHE_FILE)) {
-            return jsonResponse({ success: false, error: 'QR code not available' }, 503);
-          }
-
-          const imageBuffer = readFileSync(CACHE_FILE);
-          const base64 = imageBuffer.toString('base64');
-          const mimeType = 'image/png';
-          const totalTime = Date.now() - startTime;
-
-          console.log(`[api/assets/qr-code] Request completed in ${totalTime}ms`);
-
-          return jsonResponse({
-            success: true,
-            dataUrl: `data:${mimeType};base64,${base64}`
-          });
-        } catch (error) {
-          console.error('[api/assets/qr-code] Error:', error);
-          const isTimeout = error instanceof Error && error.name === 'AbortError';
-          return jsonResponse(
-            { success: false, error: isTimeout ? '网络请求超时' : (error instanceof Error ? error.message : '加载失败') },
-            isTimeout ? 504 : 503
-          );
-        }
-      }
+      const qrCodeAssetResponse = await handleQrCodeAssetRoute(pathname, request);
+      if (qrCodeAssetResponse) return qrCodeAssetResponse;
 
       // ============= END PROVIDER VERIFICATION API =============
 
@@ -4763,8 +4652,8 @@ async function main() {
       if (pathname === '/api/proxy/set' && request.method === 'POST') {
         try {
           const payload = await request.json();
-          setProxyConfig(payload);
-          return jsonResponse({ success: true });
+          const result = await getSessionEngine().updateProxyConfig(payload);
+          return jsonResponse(result);
         } catch (error) {
           console.error('[api/proxy/set] Error:', error);
           return jsonResponse(

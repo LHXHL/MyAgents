@@ -30,7 +30,7 @@ export type ProviderEnv = {
   maxOutputTokens?: number;
   maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
   upstreamFormat?: 'chat_completions' | 'responses';
-  /** Model alias mapping: SDK sub-agents use "sonnet"/"opus"/"haiku" -> actual provider model IDs */
+  /** Model alias mapping: SDK sub-agents use "fable"/"sonnet"/"opus"/"haiku" -> actual provider model IDs */
   modelAliases?: ModelAliases;
 };
 
@@ -143,6 +143,10 @@ export type MessageQueueItem = {
   providerAnalytics?: TurnProviderAnalytics;
   inboxMeta?: InboxTurnMeta;
   injectedTurnId?: string;
+  transientProviderRetry?: {
+    rootQueueId: string;
+    attempt: number;
+  };
 };
 
 export type TurnBoundaryQueueItem = {

@@ -31,7 +31,7 @@ export function migrateFloatingBallSessionConfig(
 }
 
 function shouldNotifyCompanion(config: AppConfig): boolean {
-    return config.floatingBallDevGate === true && config.floatingBallEnabled === true;
+    return config.floatingBallDevGate !== false && config.floatingBallEnabled === true;
 }
 
 export async function migrateFloatingBallSessionBinding(

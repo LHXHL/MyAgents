@@ -4,7 +4,7 @@
 
 import { createRequire } from 'module';
 import { existsSync } from 'fs';
-import { dirname, join } from 'path';
+import { join } from 'path';
 import {
   query,
   type SDKMessage,
@@ -64,8 +64,7 @@ export function resolveClaudeCodeCli(): string {
 
   const platformPkg = `@anthropic-ai/claude-agent-sdk-${triple}`;
   try {
-    const manifestPath = requireModule.resolve(`${platformPkg}/package.json`);
-    const candidate = join(dirname(manifestPath), `claude${ext}`);
+    const candidate = requireModule.resolve(`${platformPkg}/claude${ext}`);
     if (existsSync(candidate)) return candidate;
     throw new Error(`Binary missing at ${candidate}`);
   } catch (error) {

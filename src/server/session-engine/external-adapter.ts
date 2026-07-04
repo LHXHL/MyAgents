@@ -28,6 +28,7 @@ import {
   getExternalSessionWorkspacePath,
   getExternalSystemInitPayload,
   getLastExternalAssistantText,
+  handleExternalProxyConfigChange,
   hasExternalRuntimeProcess,
   isExternalSessionActive,
   isExternalSessionStateRestoredFor,
@@ -59,6 +60,11 @@ import { getSessionData, updateSessionMetadata } from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
 import type { SessionMessage } from '../types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
+import {
+  getProcessProxyEnvKey,
+  getProviderProxyScopeKey,
+  setProcessProxyConfig,
+} from '../proxy-state';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
 
@@ -424,6 +430,20 @@ export function createExternalSessionEngine(): SessionEngine {
         await stopExternalSession();
       }
       return { success: true };
+    },
+
+    async updateProxyConfig(proxySettings) {
+      const oldManagedProviderKey = getProviderProxyScopeKey(CODEX_SUBSCRIPTION_PROVIDER_ID);
+      const oldProcessEnvKey = getProcessProxyEnvKey();
+      await setProcessProxyConfig(proxySettings);
+      const newManagedProviderKey = getProviderProxyScopeKey(CODEX_SUBSCRIPTION_PROVIDER_ID);
+      const newProcessEnvKey = getProcessProxyEnvKey();
+      return handleExternalProxyConfigChange({
+        oldManagedProviderKey,
+        newManagedProviderKey,
+        oldProcessEnvKey,
+        newProcessEnvKey,
+      });
     },
 
     async materializePendingDesktopSession(request) {

@@ -56,6 +56,7 @@ import { isTauriEnvironment } from '@/utils/browserMock';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { normalizeUiLanguage, type SupportedLocale, type UiLanguage } from '../../shared/i18n';
+import { removeProviderFromProxySettingsScope } from '../../shared/proxyScope';
 
 /**
  * Normalize agents loaded from disk: ensure every agent has a `channels` array.
@@ -156,7 +157,12 @@ export interface ConfigActionsValue {
     saveApiKey: (providerId: string, apiKey: string) => Promise<void>;
     deleteApiKey: (providerId: string) => Promise<void>;
     // Verify status
-    saveProviderVerifyStatus: (providerId: string, status: 'valid' | 'invalid', accountEmail?: string) => Promise<void>;
+    saveProviderVerifyStatus: (
+        providerId: string,
+        status: 'valid' | 'invalid',
+        accountEmail?: string,
+        metadata?: Pick<ProviderVerifyStatus, 'invalidReason' | 'error'>,
+    ) => Promise<void>;
 }
 
 export interface AddProjectOptions {
@@ -477,12 +483,16 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     ) => {
         try {
             const previousUiLanguage = normalizeUiLanguage(configRef.current.uiLanguage);
-            const latest = await loadAppConfig();
+            const [latest, latestProjects] = await Promise.all([
+                loadAppConfig(),
+                loadProjects(),
+            ]);
             normalizeAgents(latest);
             const nextUiLanguage = normalizeUiLanguage(latest.uiLanguage);
             if (isMountedRef.current) {
                 configRef.current = latest;
                 setConfig(latest);
+                setProjects(latestProjects);
             }
             if (options.syncNativeUiLanguage && previousUiLanguage !== nextUiLanguage) {
                 await syncNativeUiLanguageFromConfig();
@@ -743,15 +753,18 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     const saveProviderVerifyStatus = useCallback(async (
         providerId: string,
         status: 'valid' | 'invalid',
-        accountEmail?: string
+        accountEmail?: string,
+        metadata?: Pick<ProviderVerifyStatus, 'invalidReason' | 'error'>,
     ) => {
-        await saveProviderVerifyStatusService(providerId, status, accountEmail);
+        await saveProviderVerifyStatusService(providerId, status, accountEmail, metadata);
         setProviderVerifyStatus((prev) => ({
             ...prev,
             [providerId]: {
                 status,
                 verifiedAt: new Date().toISOString(),
                 accountEmail,
+                ...(metadata?.invalidReason ? { invalidReason: metadata.invalidReason } : {}),
+                ...(metadata?.error ? { error: metadata.error } : {}),
             },
         }));
         // Rebuild availableProvidersJson so IM /provider command sees the updated status.
@@ -794,10 +807,12 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         await atomicModifyConfig(c => {
             const providerOrder = c.providerOrder?.filter(id => id !== providerId);
             const disabledProviderIds = c.disabledProviderIds?.filter(id => id !== providerId);
+            const proxySettings = removeProviderFromProxySettingsScope(c.proxySettings, providerId);
             return {
                 ...c,
                 providerOrder: providerOrder && providerOrder.length > 0 ? providerOrder : undefined,
                 disabledProviderIds: disabledProviderIds && disabledProviderIds.length > 0 ? disabledProviderIds : undefined,
+                ...(proxySettings ? { proxySettings } : {}),
             };
         });
         await rebuildAndPersistAvailableProviders();
@@ -845,6 +860,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     const saveProviderModelAliases = useCallback(async (providerId: string, aliases: ModelAliases) => {
         // Strip empty strings — prevent sending model: "" upstream
         const cleaned: ModelAliases = {};
+        if (aliases.fable) cleaned.fable = aliases.fable;
         if (aliases.sonnet) cleaned.sonnet = aliases.sonnet;
         if (aliases.opus) cleaned.opus = aliases.opus;
         if (aliases.haiku) cleaned.haiku = aliases.haiku;

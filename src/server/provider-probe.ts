@@ -294,7 +294,7 @@ export async function probeOpenAiProviderViaBridge(args: {
 
 /**
  * Anthropic Layer-1 probe — DIAGNOSTIC ONLY. Hits the provider's `/v1/messages`
- * directly (proxy-aware via the bridge's `getProxyForUrl`). Its result NEVER
+ * directly (proxy-aware via provider-owned proxy policy). Its result NEVER
  * flips the verdict and NEVER short-circuits — it only enriches `detail`. The
  * Node `undici` stack can diverge from the SDK native binary on proxy/TLS, so
  * the caller MUST label this as a diagnostic with possible proxy differences.
@@ -302,12 +302,13 @@ export async function probeOpenAiProviderViaBridge(args: {
 export async function probeAnthropicProviderDirect(args: {
   providerEnv: ProviderEnv;
   model: string | undefined;
-  getProxyForUrl: (url: string) => string | undefined;
+  getProxyForProviderUrl: (providerId: string, url: string) => string | undefined;
   signal?: AbortSignal;
 }): Promise<ProbeOutcome> {
-  const { providerEnv, model, getProxyForUrl, signal } = args;
+  const { providerEnv, model, getProxyForProviderUrl, signal } = args;
   const baseUrl = providerEnv.baseUrl;
   if (!baseUrl) return { connectError: 'no baseUrl' };
+  if (!providerEnv.providerId) return { connectError: 'missing providerId' };
   const url = joinAnthropicMessagesUrl(baseUrl);
   // One-shot ProxyAgent — closed in finally so repeated failing verifies under a
   // proxy don't leak dispatcher connection pools (the bridge caches its agents
@@ -317,7 +318,7 @@ export async function probeAnthropicProviderDirect(args: {
     return await withAbortSignal(
       signal,
       async (probeSignal): Promise<ProbeOutcome> => {
-        const proxyUrl = getProxyForUrl(url);
+        const proxyUrl = getProxyForProviderUrl(providerEnv.providerId!, url);
         const init: Parameters<typeof undiciFetch>[1] & { dispatcher?: Dispatcher } = {
           method: 'POST',
           headers: anthropicAuthHeaders(providerEnv.authType, providerEnv.apiKey ?? ''),

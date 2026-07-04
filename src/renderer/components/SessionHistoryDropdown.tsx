@@ -451,8 +451,8 @@ export default function SessionHistoryDropdown({
                         <h3 className="text-sm font-semibold text-[var(--ink)]">{t('shell.history.title')}</h3>
                         <Tip
                             label={showAutomationSessions
-                                ? t('shell.history.hideAutomation')
-                                : t('shell.history.showAutomation')}
+                                ? t('shell.history.automationVisible')
+                                : t('shell.history.automationHidden')}
                             position="bottom"
                         >
                             <button
@@ -460,8 +460,8 @@ export default function SessionHistoryDropdown({
                                 onClick={() => setShowAutomationSessions(value => !value)}
                                 className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                                 aria-label={showAutomationSessions
-                                    ? t('shell.history.hideAutomation')
-                                    : t('shell.history.showAutomation')}
+                                    ? t('shell.history.automationVisible')
+                                    : t('shell.history.automationHidden')}
                             >
                                 {showAutomationSessions
                                     ? <Eye className="h-3.5 w-3.5" />
@@ -479,13 +479,13 @@ export default function SessionHistoryDropdown({
                 )}
 
                 {/* Session list */}
-                <div className="max-h-80 overflow-y-auto">
+                <div className="h-80 overflow-y-auto">
                     {isLoading ? (
-                        <div className="px-4 py-8 text-center text-sm text-[var(--ink-muted)]">
+                        <div className="flex h-full items-center justify-center px-4 text-center text-sm text-[var(--ink-muted)]">
                             {t('shell.history.loading')}
                         </div>
                     ) : sortedSessions.length === 0 ? (
-                        <div className="px-4 py-8 text-center text-sm text-[var(--ink-muted)]">
+                        <div className="flex h-full items-center justify-center px-4 text-center text-sm text-[var(--ink-muted)]">
                             {t('shell.history.empty')}
                         </div>
                     ) : (

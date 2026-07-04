@@ -151,9 +151,13 @@ myagents model verify <id> [--model <某个具体模型>]      # 实际发一条
 
 ```bash
 myagents agent list                                     # 列出所有 Agent
+myagents agent list --active                            # 只列出未归档 Agent 工作区
+myagents agent list --archived                          # 只列出已归档 Agent 工作区
 myagents agent show <id>                                # 看某 Agent 的 effective 默认（runtime/model/permissionMode）
 myagents agent enable <id>                              # 启用
 myagents agent disable <id>                             # 禁用
+myagents agent archive <id>                             # 归档 Agent 工作区，并暂停 proactive Channel
+myagents agent unarchive <id>                           # 取消归档；若归档前是 proactive，会恢复启用
 myagents agent set <id> <key> <jsonValue>               # 改单个字段（key/value 形式，value 必须是合法 JSON）
                                                         # 受保护字段：id / channels（这俩用专用命令）
 myagents agent channel list <agentId>                   # 列出某 Agent 的所有 Channel
@@ -167,6 +171,7 @@ myagents agent runtime-status                           # 看所有 Agent 的实
 - "我那个 Agent 现在啥配置" → `agent show <id>`，按 runtime 正确解析过 effective 值
 - "把 Agent X 的 model 改成 Y" → `agent set X model '"Y"'`（注意 JSON 字符串要双层引号）
 - "把 permissionMode 改成 plan" → `agent set X permissionMode '"plan"'`
+- "项目结束了，先收起来" → `agent archive <id>`；需要恢复时用 `agent unarchive <id>`
 - "飞书 Bot 在线吗" → `agent runtime-status`（这个看运行时；`agent list` 看的是配置）
 - 配 Channel 详见下方 §配置 Agent Channel 流程
 

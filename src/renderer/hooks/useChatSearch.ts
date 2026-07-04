@@ -4,7 +4,7 @@
  * Counts matches against the full message array (so virtualized / off-screen
  * messages are included), then paints CSS Custom Highlight ranges on whatever
  * is currently rendered. Navigation (Next/Prev) jumps to the target message
- * via Virtuoso.scrollToIndex when off-screen, then re-paints once the message
+ * via ChatScrollController when off-screen, then re-paints once the message
  * mounts. A card-pulse animation fires on every navigation so the user knows
  * where they landed even if the precise word highlight isn't paintable (rich
  * content where extracted source text and rendered DOM text diverge — e.g.
@@ -17,9 +17,9 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { VirtuosoHandle } from 'react-virtuoso';
 
 import type { Message } from '@/types/chat';
+import type { ScrollToMessageOptions } from '@/hooks/useChatScrollController';
 
 // ── CSS Custom Highlight API types (not yet in lib.dom for all TS versions) ──
 //
@@ -50,7 +50,7 @@ const SCOPE_ATTR = 'data-chat-search-scope';
 const MESSAGE_ID_ATTR = 'data-message-id';
 const PULSE_CLASS = 'chat-search-msg-pulse';
 const DEBOUNCE_MS = 150;
-// Bounded retry window after virtuoso.scrollToIndex. Complex Markdown/tool
+// Bounded retry window after controller-owned virtualized navigation. Complex Markdown/tool
 // rows can take more than a couple of animation frames to mount and paint; a
 // short time budget keeps navigation reliable without creating an unbounded
 // polling loop.
@@ -296,17 +296,10 @@ function resolveFlatIndex(
 
 export interface UseChatSearchOptions {
   scrollerRef: React.RefObject<HTMLElement | null>;
-  virtuosoRef: React.RefObject<VirtuosoHandle | null>;
   /** Full message list (history + streaming combined) — drives the count. */
-  messages: Message[];
-  /**
-   * Kept only as a pagination dependency marker. Virtuoso applies
-   * `firstItemIndex` to rendered item keys/content, but its imperative
-   * `scrollToIndex` API still consumes the 0-based data-array index.
-   */
-  firstItemIndex?: number;
-  /** Temporarily disable bottom auto-follow while search navigation scrolls. */
-  pauseAutoScroll?: (duration?: number) => void;
+  messages: readonly Message[];
+  /** Controller-owned message navigation. */
+  scrollToMessage: (messageId: string, options?: ScrollToMessageOptions) => void;
   /** When true, the hook is active: scan + paint highlights. */
   active: boolean;
 }
@@ -325,9 +318,8 @@ export interface ChatSearchController {
 
 export function useChatSearch({
   scrollerRef,
-  virtuosoRef,
   messages,
-  pauseAutoScroll,
+  scrollToMessage,
   active,
 }: UseChatSearchOptions): ChatSearchController {
   const [query, setQueryState] = useState('');
@@ -347,9 +339,9 @@ export function useChatSearch({
   // Same justification as queryRef above.
   // eslint-disable-next-line react-hooks/refs
   messagesRef.current = messages;
-  const pauseAutoScrollRef = useRef(pauseAutoScroll);
+  const scrollToMessageRef = useRef(scrollToMessage);
   // eslint-disable-next-line react-hooks/refs
-  pauseAutoScrollRef.current = pauseAutoScroll;
+  scrollToMessageRef.current = scrollToMessage;
   const summariesRef = useRef<MessageMatchSummary[]>([]);
   const focusRequestIdRef = useRef(0);
   // Timestamp of the user's most recent next/prev click. `reconcile()` runs on
@@ -613,7 +605,6 @@ export function useChatSearch({
     }
     const scroller = scrollerRef.current;
     if (!scroller) return;
-    pauseAutoScrollRef.current?.(2000);
 
     const tryPaintAndScroll = (): boolean => {
       const scope = findMessageScope(scroller, pos.messageId);
@@ -637,24 +628,19 @@ export function useChatSearch({
 
     if (tryPaintAndScroll()) return;
 
-    // Off-screen: ask Virtuoso to mount the row, then retry. react-virtuoso's
-    // scrollToIndex consumes the 0-based data-array index even when
-    // firstItemIndex is set for inverse pagination.
-    const handle = virtuosoRef.current;
-    if (handle) {
-      handle.scrollToIndex({
-        index: pos.messageIndex,
-        behavior: 'auto',
-        align: 'center',
-      });
-    }
+    // Off-screen: ask the scroll controller to mount the row, then retry.
+    scrollToMessageRef.current(pos.messageId, {
+      behavior: 'auto',
+      align: 'center',
+      pauseMs: 2000,
+    });
     const startedAt = Date.now();
     const retry = () => {
       if (focusRequestIdRef.current !== focusRequestId) return;
       if (tryPaintAndScroll()) return;
       if (Date.now() - startedAt >= PAINT_RETRY_TIMEOUT_MS) {
         // Give up the precise paint; the pulse + scroll already landed the
-        // user in the right neighbourhood when scrollToIndex eventually
+        // user in the right neighbourhood when controller navigation eventually
         // commits, and the MutationObserver-driven reconcile will pick up
         // the row's Ranges on the next paint cycle.
         return;
@@ -662,7 +648,7 @@ export function useChatSearch({
       requestAnimationFrame(retry);
     };
     requestAnimationFrame(retry);
-  }, [scrollerRef, virtuosoRef, paintAllAndCurrent]);
+  }, [scrollerRef, paintAllAndCurrent]);
 
   const next = useCallback(() => {
     const total = summariesRef.current.reduce((acc, s) => acc + s.count, 0);

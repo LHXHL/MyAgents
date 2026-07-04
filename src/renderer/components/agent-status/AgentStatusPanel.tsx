@@ -24,7 +24,7 @@ const FADE_OUT_DELAY_MS = 1500;
 interface AgentStatusPanelProps {
   /** Chat 内容区的 ref，限定 querySelector 作用域（防多 Tab 同 Session DOM 冲突） */
   containerRef: React.RefObject<HTMLElement | null>;
-  /** Chat 提供：Virtuoso scrollToIndex + 二阶段 highlight。SubagentRow 透传调用。 */
+  /** Chat 提供：ChatScrollController message jump + 二阶段 highlight。SubagentRow 透传调用。 */
   onJumpToTool: (toolId: string) => void;
 }
 

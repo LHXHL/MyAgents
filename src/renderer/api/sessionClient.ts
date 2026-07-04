@@ -147,15 +147,31 @@ export interface SessionDetailedStats {
     }>;
 }
 
+function sortSessionsByLastActive(data: SessionMetadata[]): SessionMetadata[] {
+    return [...data].sort((a, b) => new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime());
+}
+
 /**
  * Get all sessions, optionally filtered by agentDir
  */
 export async function getSessions(agentDir?: string): Promise<SessionMetadata[]> {
+    if (isTauri()) {
+        try {
+            const { invoke } = await import('@tauri-apps/api/core');
+            const sessions = await invoke<SessionMetadata[]>('cmd_list_session_metadata', {
+                agentDir: agentDir ?? null,
+            });
+            return sortSessionsByLastActive(sessions);
+        } catch (error) {
+            console.warn('[sessionClient] cmd_list_session_metadata failed, falling back to /sessions:', error);
+        }
+    }
+
     const endpoint = agentDir
         ? `/sessions?agentDir=${encodeURIComponent(agentDir)}`
         : '/sessions';
     const result = await apiGetJson<{ success: boolean; sessions: SessionMetadata[] }>(endpoint);
-    return result.sessions ?? [];
+    return sortSessionsByLastActive(result.sessions ?? []);
 }
 
 /**

@@ -46,12 +46,15 @@
  * the route handler, while agent-session is heavyweight).
  */
 type ModelAliases = {
+  fable?: string;
   sonnet?: string;
   opus?: string;
   haiku?: string;
 };
 
 export interface UpstreamBridgeConfig {
+  /** Provider owner for provider-scoped proxy policy. */
+  providerId: string;
   baseUrl: string;
   apiKey: string;
   /** Active model for this bridge. May change over time for session bridges. */

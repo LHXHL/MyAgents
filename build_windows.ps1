@@ -585,6 +585,8 @@ try {
     # Windows 默认构建 x64；arm64 需另行处理（本脚本目前仅 x64）
     Write-Host "  拷贝 Claude native binary (win32-x64)..." -ForegroundColor Cyan
     $sdkTriple = "win32-x64"
+    & "$ProjectDir\scripts\ensure_claude_sdk_package.ps1" -Arch x64
+    if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne $null) { throw "Claude SDK win32-x64 校验失败" }
     $claudeSrc = Join-Path $ProjectDir "node_modules\@anthropic-ai\claude-agent-sdk-${sdkTriple}\claude.exe"
     $sdkDest = Join-Path $ProjectDir "src-tauri\resources\claude-agent-sdk"
 

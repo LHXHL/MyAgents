@@ -50,7 +50,7 @@ export function SettingsSidebar({
 
       <nav className="settings-nav space-y-1">
         {NAV_ITEMS.map((item) => {
-          if (item.section === 'desktop-pet' && !floatingBallDevGate) return null;
+          if (item.section === 'desktop-pet' && floatingBallDevGate === false) return null;
           const activeSections = item.activeSections ?? [item.section];
           const isActive = activeSections.includes(activeSection);
           return (

@@ -12,6 +12,9 @@ import { ExitPlanModePrompt } from '@/components/ExitPlanModePrompt';
 import type { ExitPlanModeRequest } from '../../shared/types/planMode';
 import type { Message as MessageType } from '@/types/chat';
 import type { SessionState, SystemNotice } from '@/context/TabContext';
+import { ChatRowLayoutProvider, type RowLayoutChangeReason } from '@/context/ChatRowLayoutContext';
+import type { RowLayoutContract } from '@/utils/chatRowLayout';
+import { useChatScrollDebugProbe } from '@/hooks/useChatScrollDebugProbe';
 import { resolveChatBottomSpacerPx } from '@/utils/chatBottomSpacer';
 
 function formatElapsedTime(totalSeconds: number, t: TFunction<'chat'>): string {
@@ -42,6 +45,8 @@ interface MessageListProps {
   // Pagination: Virtuoso maintains the visible scroll position across
   // prepended items by the absolute index of data[0]. Default 0 = no pagination.
   firstItemIndex?: number;
+  heightEstimateSeed?: number[];
+  layoutByMessageId?: ReadonlyMap<string, RowLayoutContract>;
   /** Fires when Virtuoso reaches the top — time to load an older page. */
   onLoadOlder?: () => void;
   virtuosoRef: React.RefObject<VirtuosoHandle | null>;
@@ -50,6 +55,7 @@ interface MessageListProps {
   /** Drives the session-switch scroll pin — goes through the hook so grace/degrade state stays consistent. */
   scrollToBottom: (behavior?: 'smooth' | 'auto') => void;
   handleAtBottomChange: (atBottom: boolean) => void;
+  onRowLayoutChanged?: (messageId: string, reason: RowLayoutChangeReason) => void;
   pendingPermission?: PermissionRequest | null;
   onPermissionDecision?: (requestId: string, decision: 'deny' | 'allow_once' | 'always_allow') => void | Promise<void>;
   pendingAskUserQuestion?: AskUserQuestionRequest | null;
@@ -76,6 +82,8 @@ interface MessageListProps {
 }
 
 const STREAMING_MESSAGE_COUNT = 20;
+const noopRowLayoutChanged = (_messageId: string, _reason: RowLayoutChangeReason) => {};
+const STATUS_ROW_HEIGHT_PX = 30;
 
 /** Resolve dynamic system status keys (e.g., api_retry:2:5 → human-readable) */
 function resolveSystemStatus(status: string, t: TFunction<'chat'>): string {
@@ -105,10 +113,17 @@ const StatusTimer = memo(function StatusTimer({ message }: { message: string }) 
     const id = setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startTimeRef.current) / 1000)), 1000);
     return () => clearInterval(id);
   }, []);
+  const elapsedText = elapsedSeconds > 0 ? formatElapsedTime(elapsedSeconds, t) : null;
+  const displayText = elapsedText ? `${message} (${elapsedText})` : message;
   return (
-    <div className="flex items-center gap-2 px-3 py-1.5 text-xs text-[var(--ink-muted)]">
-      <Loader2 className="h-3 w-3 animate-spin" />
-      <span>{message}{elapsedSeconds > 0 && ` (${formatElapsedTime(elapsedSeconds, t)})`}</span>
+    <div
+      data-chat-status-row=""
+      className="flex items-center gap-2 overflow-hidden px-3 py-1.5 text-xs text-[var(--ink-muted)]"
+      style={{ height: STATUS_ROW_HEIGHT_PX }}
+      title={displayText}
+    >
+      <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+      <span className="min-w-0 truncate">{displayText}</span>
     </div>
   );
 });
@@ -190,11 +205,11 @@ const VirtuosoFooter = memo(function VirtuosoFooter({
       {!showStatus && systemNotice && (
         <SystemNoticeRow notice={systemNotice} onDismiss={onDismissSystemNotice} />
       )}
-      {/* Footer spacer follows the measured floating input stack. A fixed large
-          value makes the scrollbar expose a half-screen blank tail on short
-          chats; the measured value still keeps the final message clear of the
-          overlay and grows when AgentStatusPanel expands. */}
-      <div style={{ height: spacerHeight }} aria-hidden="true" />
+      {/* Footer spacer follows the measured floating input stack. The extra
+          clearance in resolveChatBottomSpacerPx keeps both the status row and
+          streaming tail comfortably above the composer without moving either
+          out of Virtuoso's scroll geometry. */}
+      <div data-chat-footer-spacer="" style={{ height: spacerHeight }} aria-hidden="true" />
     </div>
   );
 });
@@ -212,12 +227,15 @@ const MessageList = memo(function MessageList({
   sessionId,
   isActive = true,
   firstItemIndex,
+  heightEstimateSeed,
+  layoutByMessageId,
   onLoadOlder,
   virtuosoRef,
   onScrollerRef,
   followEnabledRef,
   scrollToBottom,
   handleAtBottomChange,
+  onRowLayoutChanged,
   pendingPermission,
   onPermissionDecision,
   pendingAskUserQuestion,
@@ -241,6 +259,7 @@ const MessageList = memo(function MessageList({
     streamingMessage ? [...historyMessages, streamingMessage] : historyMessages,
     [historyMessages, streamingMessage]
   );
+  const liveHeightEstimateSeed = heightEstimateSeed?.length === allMessages.length ? heightEstimateSeed : undefined;
 
   const streamingStatusMessage = useMemo(
     () => getRandomStreamingMessage(t),
@@ -364,7 +383,7 @@ const MessageList = memo(function MessageList({
     if (allMessages.length > 0) {
       scrollToBottom('auto');
     }
-  }, [isActive, allMessages.length, scrollToBottom, followEnabledRef, sessionId]);
+  }, [isActive, allMessages.length, scrollToBottom, sessionId, followEnabledRef]);
 
   // Gate Virtuoso's atBottomStateChange while the tab is hidden.
   // content-visibility: hidden lets WebKit deliver ResizeObserver callbacks
@@ -380,64 +399,25 @@ const MessageList = memo(function MessageList({
   // streaming item grows taller. `followOutput` only fires on item-COUNT change,
   // so the last item growing (text / thinking streaming in) needs an explicit nudge.
   //
-  // This MUST route through Virtuoso's own `autoscrollToBottom()` — never write
-  // `el.scrollTop` on the scroller directly. Driving the scroller externally races
-  // Virtuoso's internal height/anchor tracking and its `followOutput`, corrupting
-  // the range/measurement cache so it paints PHANTOM REPEATED ROWS (same failure
-  // mode documented in the "No custom Scroller/List components" note above). A
-  // prior rAF loop that eased `scrollTop` every frame did exactly this; combined
-  // with a mid-turn-open turn that left `streamingMessage` stuck non-null (idle
-  // clears isLoading but NOT streamingMessage — see TabProvider chat:status), the
-  // loop kept mutating scroll after the backend went idle and multiplied empty
-  // "思考了 1s" rows on screen. autoscrollToBottom() stays inside Virtuoso's model,
-  // so a stuck streaming message is at worst a no-op nudge, never corruption.
+  // This must stay inside Virtuoso's own scroll model — never write `el.scrollTop`
+  // directly. The important detail is timing: `autoscrollToBottom()` is designed
+  // for late size changes such as image loads; in react-virtuoso 4.18.3 it waits
+  // for an atBottomState update and clears the observer after 100ms. Used for
+  // per-token text streaming from a passive effect + rAF, it lets the browser
+  // paint one frame where the growing row/footer push the status down, then snaps
+  // back on Virtuoso's delayed correction. A layout-effect `scrollToIndex` lands
+  // the LAST/end alignment before paint while still going through Virtuoso.
   //
   // Gated on `isLoading` (actual streaming), not merely `!!streamingMessage`: a
   // stale streaming message from the loadSession-REST / live-SSE mid-turn race
   // must NOT keep auto-scroll alive once the turn has completed.
-  //
-  // Throttled to ~20fps (leading + trailing edge). Without throttling
-  // autoscrollToBottom() fires on every SSE chunk (~60fps) and, combined with
-  // Virtuoso's ResizeObserver correction loop, causes visible footer jitter.
-  const scrollRafRef = useRef(0);
-  const lastScrollTimeRef = useRef(0);
-  const trailingScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!streamingMessage || !isLoading || !followEnabledRef.current) return;
-    // Skip while hidden — autoscrollToBottom() against a content-visibility:
-    // hidden scroller can compute against stale geometry. The re-pin layout
-    // effect above restores position on re-activation.
+    // Skip while hidden — scrolling against a content-visibility:hidden scroller
+    // can compute against stale geometry. The re-pin layout effect above restores
+    // position on re-activation.
     if (!isActive) return;
-
-    const THROTTLE_MS = 48; // ~20fps
-    const now = performance.now();
-    const elapsed = now - lastScrollTimeRef.current;
-
-    // Cancel any pending leading-edge RAF
-    cancelAnimationFrame(scrollRafRef.current);
-
-    if (elapsed >= THROTTLE_MS) {
-      // Leading edge: enough time passed, scroll now
-      lastScrollTimeRef.current = now;
-      if (trailingScrollRef.current) { clearTimeout(trailingScrollRef.current); trailingScrollRef.current = null; }
-      scrollRafRef.current = requestAnimationFrame(() => {
-        virtuosoRef.current?.autoscrollToBottom();
-      });
-    } else if (!trailingScrollRef.current) {
-      // Trailing edge: schedule scroll after remaining throttle window
-      trailingScrollRef.current = setTimeout(() => {
-        trailingScrollRef.current = null;
-        lastScrollTimeRef.current = performance.now();
-        scrollRafRef.current = requestAnimationFrame(() => {
-          virtuosoRef.current?.autoscrollToBottom();
-        });
-      }, THROTTLE_MS - elapsed);
-    }
-
-    return () => {
-      cancelAnimationFrame(scrollRafRef.current);
-      if (trailingScrollRef.current) { clearTimeout(trailingScrollRef.current); trailingScrollRef.current = null; }
-    };
+    virtuosoRef.current?.scrollToIndex({ index: 'LAST', align: 'end', behavior: 'auto' });
   }, [streamingMessage, isLoading, isActive, followEnabledRef, virtuosoRef]);
 
   // ── Terminal pin — pin to bottom once when a turn ends ──
@@ -447,7 +427,7 @@ const MessageList = memo(function MessageList({
   // revealed line(s) can land just below the fold. If we were still following (true/'force'),
   // re-pin once. Routes through scrollToBottom so the hook's grace/degrade state stays consistent.
   const prevIsLoadingRef = useRef(isLoading);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const was = prevIsLoadingRef.current;
     prevIsLoadingRef.current = isLoading;
     if (was && !isLoading && isActive && followEnabledRef.current) {
@@ -470,6 +450,10 @@ const MessageList = memo(function MessageList({
   onRetryRef.current = onRetry;
   const onForkRef = useRef(onFork);
   onForkRef.current = onFork;
+  const layoutByMessageIdRef = useRef(layoutByMessageId);
+  layoutByMessageIdRef.current = layoutByMessageId;
+  const onRowLayoutChangedRef = useRef(onRowLayoutChanged ?? noopRowLayoutChanged);
+  onRowLayoutChangedRef.current = onRowLayoutChanged ?? noopRowLayoutChanged;
   // followOutput / startReached capture `isActive` DIRECTLY (not via a ref). Under
   // React 19's child-before-parent layout-effect ordering, a ref updated in our parent
   // layout effect could still read a stale value when Virtuoso's child effects fire
@@ -498,6 +482,13 @@ const MessageList = memo(function MessageList({
     onLoadOlder?.();
   }, [onLoadOlder, isActive]);
 
+  const [debugScroller, setDebugScroller] = useState<HTMLElement | null>(null);
+  const handleScrollerRef = useCallback((el: HTMLElement | Window | null) => {
+    const next = el instanceof HTMLElement ? el : null;
+    setDebugScroller(prev => (prev === next ? prev : next));
+    onScrollerRef?.(el);
+  }, [onScrollerRef]);
+
   // ── Stable itemContent — reads ALL dynamic values from refs, never recreated ──
   // eslint-disable-next-line react/display-name
   const renderItem = useMemo(() => (index: number, message: MessageType) => {
@@ -518,14 +509,20 @@ const MessageList = memo(function MessageList({
         data-chat-search-scope=""
         data-message-id={message.id}
       >
-        <Message
-          message={message}
-          isLoading={isStreamingMsg && isLoadingRef.current}
-          onRewind={onRewindRef.current}
-          onRetry={onRetryRef.current}
-          onFork={onForkRef.current}
-          exitPlanModeSlot={message.id === exitPlanModeAnchorIdRef.current ? exitPlanModeSlotRef.current : undefined}
-        />
+        <ChatRowLayoutProvider
+          messageId={message.id}
+          onRowLayoutChanged={onRowLayoutChangedRef.current}
+        >
+          <Message
+            message={message}
+            isLoading={isStreamingMsg && isLoadingRef.current}
+            onRewind={onRewindRef.current}
+            onRetry={onRetryRef.current}
+            onFork={onForkRef.current}
+            exitPlanModeSlot={message.id === exitPlanModeAnchorIdRef.current ? exitPlanModeSlotRef.current : undefined}
+            initialUserCollapsed={layoutByMessageIdRef.current?.get(message.id)?.likelyUserCollapsed === true}
+          />
+        </ChatRowLayoutProvider>
       </div>
     );
   }, []);
@@ -579,17 +576,25 @@ const MessageList = memo(function MessageList({
   // snapshot under React 19 concurrency, which a later hidden render could then hand
   // to Virtuoso — exactly the post-hide measurement we're preventing. A committed
   // layout effect guarantees the snapshot is always a real, measured-while-visible state.
-  const frozenDataRef = useRef<{ data: MessageType[]; firstItemIndex: number | undefined }>({
+  const frozenDataRef = useRef<{ data: MessageType[]; firstItemIndex: number | undefined; heightEstimateSeed?: number[] }>({
     data: allMessages,
     firstItemIndex,
+    heightEstimateSeed: liveHeightEstimateSeed,
   });
   useLayoutEffect(() => {
     if (isActive) {
-      frozenDataRef.current = { data: allMessages, firstItemIndex };
+      frozenDataRef.current = { data: allMessages, firstItemIndex, heightEstimateSeed: liveHeightEstimateSeed };
     }
-  }, [isActive, allMessages, firstItemIndex]);
+  }, [isActive, allMessages, firstItemIndex, liveHeightEstimateSeed]);
   const virtuosoData = isActive ? allMessages : frozenDataRef.current.data;
   const virtuosoFirstItemIndex = isActive ? firstItemIndex : frozenDataRef.current.firstItemIndex;
+  const virtuosoHeightEstimateSeed = isActive ? liveHeightEstimateSeed : frozenDataRef.current.heightEstimateSeed;
+  const debugProbe = useChatScrollDebugProbe({
+    sessionId,
+    scroller: debugScroller,
+    data: virtuosoData,
+    heightEstimateSeed: virtuosoHeightEstimateSeed,
+  });
 
   return (
     <div
@@ -606,7 +611,6 @@ const MessageList = memo(function MessageList({
           </div>
         </div>
       )}
-
       {/*
         Virtuoso stays mounted across session switches. Previously `key={sessionId}`
         forced a full remount, which dropped every cached item height, rebuilt
@@ -636,13 +640,16 @@ const MessageList = memo(function MessageList({
       */}
       <Virtuoso
         ref={virtuosoRef}
-        scrollerRef={onScrollerRef}
+        scrollerRef={handleScrollerRef}
         data={virtuosoData}
         computeItemKey={computeItemKey}
         firstItemIndex={virtuosoFirstItemIndex}
+        heightEstimates={virtuosoHeightEstimateSeed}
         startReached={onLoadOlder ? guardedLoadOlder : undefined}
         followOutput={handleFollowOutput}
         atBottomStateChange={guardedAtBottomChange}
+        rangeChanged={debugProbe?.handleRangeChanged}
+        itemsRendered={debugProbe?.handleItemsRendered}
         atBottomThreshold={50}
         defaultItemHeight={480}
         increaseViewportBy={{ top: 1600, bottom: 800 }}

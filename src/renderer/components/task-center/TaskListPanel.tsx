@@ -28,7 +28,7 @@ import { useToast } from '@/components/Toast';
 import { useConfig } from '@/hooks/useConfig';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
-import { isProjectVisibleToUser } from '@/config/types';
+import { isProjectActiveForUser } from '@/config/types';
 import type { Task, TaskStatus } from '@/../shared/types/task';
 import { normalizeWorkspacePathIdentity, workspacePathsEqual } from '@/../shared/workspacePath';
 import { canAutoUpgrade, isBenignAlreadyLinked, upgradeLegacyCron, type LegacyCronRaw } from './legacyUpgrade';
@@ -426,7 +426,7 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
     const coveredIds = new Set<string>();
     const knownProjectIds = new Set(projects.map((p) => normalizeWorkspacePathIdentity(p.path)));
     for (const p of projects) {
-      if (!isProjectVisibleToUser(p)) continue;
+      if (!isProjectActiveForUser(p)) continue;
       const id = normalizeWorkspacePathIdentity(p.path);
       if (!taskPathIds.has(id)) continue;
       coveredIds.add(id);

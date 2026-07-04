@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  classifyTransientProviderTextError,
   decideBuiltinInjectedTurnResult,
   decideExternalInjectedTurnResult,
+  decideTransientProviderTextRetry,
 } from './turn-result-policy';
 
 describe('turn-result-policy', () => {
@@ -67,6 +69,118 @@ describe('turn-result-policy', () => {
       success: false,
       error: 'Execution timed out',
       status: 408,
+    });
+  });
+
+  it('classifies short provider text concurrency errors returned as assistant content', () => {
+    expect(classifyTransientProviderTextError(
+      '[Error]: Concurrency limit exceeded for account, please retry later',
+    )).toMatchObject({
+      kind: 'concurrency_limit',
+      userMessage: '上游模型服务达到账号并发限制，请稍后重试。',
+    });
+  });
+
+  it('does not classify ordinary assistant prose that happens to mention rate limits', () => {
+    expect(classifyTransientProviderTextError(
+      'You can reduce rate limit pressure by batching requests and adding a queue.',
+    )).toBeNull();
+    expect(classifyTransientProviderTextError(
+      'The phrase "rate limit exceeded" means the provider is throttling requests.',
+    )).toBeNull();
+    expect(classifyTransientProviderTextError(
+      'If capacity is busy, tell the caller to retry later after the current deployment.',
+    )).toBeNull();
+  });
+
+  it('schedules bounded retries only for success-shaped transient provider text errors', () => {
+    expect(decideTransientProviderTextRetry({
+      resultText: '[Error]: Concurrency limit exceeded for account, please retry later',
+      isError: false,
+      apiErrorStatus: null,
+      currentAttempt: 0,
+      retryDelaysMs: [15, 30, 60],
+    })).toEqual({
+      retry: true,
+      error: {
+        kind: 'concurrency_limit',
+        rawText: '[Error]: Concurrency limit exceeded for account, please retry later',
+        userMessage: '上游模型服务达到账号并发限制，请稍后重试。',
+      },
+      attempt: 1,
+      maxRetries: 3,
+      delayMs: 15,
+    });
+
+    expect(decideTransientProviderTextRetry({
+      resultText: '[Error]: Concurrency limit exceeded for account, please retry later',
+      isError: false,
+      apiErrorStatus: null,
+      currentAttempt: 3,
+      retryDelaysMs: [15, 30, 60],
+    })).toMatchObject({
+      retry: false,
+      exhausted: true,
+      maxRetries: 3,
+    });
+  });
+
+  it('leaves standard SDK error and HTTP status paths to existing handling', () => {
+    expect(decideTransientProviderTextRetry({
+      resultText: '[Error]: Concurrency limit exceeded for account, please retry later',
+      isError: true,
+      apiErrorStatus: null,
+      currentAttempt: 0,
+    })).toEqual({
+      retry: false,
+      error: null,
+      exhausted: false,
+      maxRetries: 3,
+    });
+
+    expect(decideTransientProviderTextRetry({
+      resultText: '[Error]: rate_limit_exceeded',
+      isError: false,
+      apiErrorStatus: 429,
+      currentAttempt: 0,
+    })).toEqual({
+      retry: false,
+      error: null,
+      exhausted: false,
+      maxRetries: 3,
+    });
+
+    expect(decideTransientProviderTextRetry({
+      resultText: '[Error]: Concurrency limit exceeded for account, please retry later',
+      isError: false,
+      isAbortResult: true,
+      apiErrorStatus: null,
+      currentAttempt: 0,
+    })).toEqual({
+      retry: false,
+      error: null,
+      exhausted: false,
+      maxRetries: 3,
+    });
+  });
+
+  it('does not replay turns that already used tools', () => {
+    expect(decideTransientProviderTextRetry({
+      resultText: '[Error]: Concurrency limit exceeded for account, please retry later',
+      isError: false,
+      apiErrorStatus: null,
+      toolUseCount: 1,
+      currentAttempt: 0,
+      retryDelaysMs: [15, 30, 60],
+    })).toEqual({
+      retry: false,
+      error: {
+        kind: 'concurrency_limit',
+        rawText: '[Error]: Concurrency limit exceeded for account, please retry later',
+        userMessage: '上游模型服务达到账号并发限制，请稍后重试。',
+      },
+      exhausted: false,
+      maxRetries: 3,
     });
   });
 });

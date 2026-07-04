@@ -4,6 +4,7 @@ import type { HeartbeatConfig, MemoryAutoUpdateConfig } from './types/im';
 import type { RuntimeModelInfo, RuntimeSource, RuntimeType } from './types/runtime';
 import type { UiLanguage } from './i18n';
 import type { OfficialToolId, OfficialToolSettings } from './official-tools';
+import type { SubscriptionVerifyFailureKind } from './subscription';
 
 /**
  * Permission mode for agent behavior
@@ -130,14 +131,31 @@ export type ModelId = string;
 
 /**
  * Model alias mapping for non-Anthropic providers.
- * Maps SDK model aliases (sonnet/opus/haiku) to provider-specific model IDs.
- * When Claude Agent SDK sub-agents use hardcoded model aliases like "haiku",
+ * Maps SDK model aliases (fable/opus/sonnet/haiku) to provider-specific model IDs.
+ * When Claude Agent SDK sub-agents use hardcoded model aliases like "fable",
  * the bridge translates them to the actual provider model via this mapping.
  */
 export interface ModelAliases {
+  fable?: string;  // e.g., 'deepseek-reasoner'
   sonnet?: string;  // e.g., 'deepseek-chat'
   opus?: string;    // e.g., 'deepseek-reasoner'
   haiku?: string;   // e.g., 'deepseek-chat'
+}
+
+export function completeModelAliases(
+  aliases: ModelAliases | undefined,
+  fallbackModel?: string,
+): ModelAliases | undefined {
+  const fable = aliases?.fable ?? aliases?.opus ?? aliases?.sonnet ?? aliases?.haiku ?? fallbackModel;
+  const opus = aliases?.opus ?? aliases?.fable ?? aliases?.sonnet ?? aliases?.haiku ?? fallbackModel;
+  const sonnet = aliases?.sonnet ?? aliases?.opus ?? aliases?.fable ?? aliases?.haiku ?? fallbackModel;
+  const haiku = aliases?.haiku ?? aliases?.sonnet ?? aliases?.opus ?? aliases?.fable ?? fallbackModel;
+  const completed: ModelAliases = {};
+  if (fable) completed.fable = fable;
+  if (opus) completed.opus = opus;
+  if (sonnet) completed.sonnet = sonnet;
+  if (haiku) completed.haiku = haiku;
+  return Object.keys(completed).length > 0 ? completed : undefined;
 }
 
 export interface ProviderOrderSettings {
@@ -402,6 +420,10 @@ export interface Project {
   hidden?: boolean;
   /** ISO timestamp for soft deletion. Diagnostic/future restore metadata only. */
   hiddenAt?: string;
+  /** ISO timestamp for user-facing archive. Archived workspaces stay restorable. */
+  archivedAt?: string;
+  /** Whether proactive Agent mode was enabled when the workspace was archived. */
+  archivedAgentEnabledBeforeArchive?: boolean;
 }
 
 export type ProjectPatch = Partial<Omit<Project, 'id'>>;
@@ -446,6 +468,18 @@ export function isProjectVisibleToUser(
   project: Pick<Project, 'internal' | 'hidden'> | null | undefined,
 ): boolean {
   return !!project && project.internal !== true && project.hidden !== true;
+}
+
+export function isProjectArchived(
+  project: Pick<Project, 'archivedAt'> | null | undefined,
+): boolean {
+  return typeof project?.archivedAt === 'string' && project.archivedAt.length > 0;
+}
+
+export function isProjectActiveForUser(
+  project: Pick<Project, 'internal' | 'hidden' | 'archivedAt'> | null | undefined,
+): boolean {
+  return isProjectVisibleToUser(project) && !isProjectArchived(project);
 }
 
 export function getSystemPresetProjectMetadata(
@@ -522,6 +556,8 @@ export interface ProviderVerifyStatus {
   status: 'valid' | 'invalid';
   verifiedAt: string; // ISO timestamp
   accountEmail?: string; // For subscription: detect account change
+  invalidReason?: SubscriptionVerifyFailureKind | 'provider_verify_failed' | 'network_error';
+  error?: string;
 }
 
 /** Verification expiry in days */
@@ -579,7 +615,7 @@ export function isVerifyExpired(verifiedAt: string): boolean {
 /**
  * Network proxy protocol type
  */
-export type ProxyProtocol = 'http' | 'socks5';
+export type ProxyProtocol = 'http' | 'https' | 'socks5';
 
 /**
  * Network proxy default values
@@ -602,11 +638,19 @@ export function isValidProxyHost(host: string): boolean {
 /**
  * Network proxy settings (General settings)
  */
+export type ProxyScopeMode = 'all' | 'custom';
+
+export interface ProxyScopeSettings {
+  mode: ProxyScopeMode;
+  providerIds?: string[];
+}
+
 export interface ProxySettings {
   enabled: boolean;
   protocol: ProxyProtocol;
   host: string;
   port: number;
+  scope?: ProxyScopeSettings;
 }
 
 /**
@@ -675,13 +719,12 @@ export interface AppConfig {
    *  只控制工具箱里的 CLI 工具注册/管理/AI 自动发现；不影响 myagents CLI
    *  本身以及 cron / task / widget / thought 等已发布 CLI 能力。 */
   cliToolRegistryEnabled?: boolean;
-  /** 开发者总门控：桌面悬浮球（PRD 0.2.35，先开发不发布）。默认关。
-   *  关闭时设置页入口与悬浮球本体均不存在（D10）。 */
+  /** 隐藏开发者开关：桌面宠物功能门控。默认开；普通用户不可见。 */
   floatingBallDevGate?: boolean;
   /** 开发者总门控：团队 Space（MyAgents Space / Cloud Space）。默认关。
    *  功能未完成前隐藏标题栏入口与已恢复的团队 tab。 */
   teamSpaceEnabled?: boolean;
-  /** 悬浮球本体显隐开关（总门控开启后才有意义）。 */
+  /** 悬浮球本体显隐开关；由桌面宠物设置页顶部开关控制。默认关。 */
   floatingBallEnabled?: boolean;
   /** 悬浮球本体外观。缺省视同 'pet'（PRD 0.2.34 floating_ball_pet_mode Phase 1）。 */
   floatingBallAppearance?: 'pet' | 'orb';
@@ -869,10 +912,15 @@ export interface ProjectSettings {
 
 // Preset providers with ModelEntity structure
 /** Anthropic 官方预设模型（订阅和 API 共用）
- *  contextLength / maxOutputTokens：来源 LiteLLM model_prices_and_context_window.json (2026-04)
- *  inputModalities：来源 OpenRouter `architecture.input_modalities` (2026-04 验证)
- *  Sonnet/Opus 4.x 系列支持 1M 上下文（带 [1m] suffix / context-1m beta header 时启用） */
+ *  contextLength / maxOutputTokens：来源 Anthropic Models overview (2026-07-03)
+ *  inputModalities：Anthropic current Claude models all support text+image input.
+ *  contextLength > 200K 由 applyContextWindowSuffix 自动加 [1m] 走 SDK 1M 上下文路径。 */
 const ANTHROPIC_MODELS: ModelEntity[] = [
+  { model: 'claude-fable-5', modelName: 'Claude Fable 5', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
+  { model: 'claude-opus-4-8', modelName: 'Claude Opus 4.8', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
+  { model: 'claude-sonnet-5', modelName: 'Claude Sonnet 5', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
+  { model: 'claude-haiku-4-5', modelName: 'Claude Haiku 4.5', modelSeries: 'claude', contextLength: 200_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
+  // Legacy 4.x options kept selectable for users/accounts that have not moved yet.
   // contextLength: Anthropic Sonnet 4.6 / Opus 4.6 wire-default is 200K. The 1M
   // tier requires the `context-1m-2025-08-07` beta header AND either Tier-4 API
   // spend or a paid "extra usage" toggle on subscription plans. Defaulting to 1M
@@ -882,17 +930,16 @@ const ANTHROPIC_MODELS: ModelEntity[] = [
   // on every turn (reproduced 2026-05-07 / #392). Opus 4.7+ stays at 1M because
   // Anthropic enables those newer Opus variants on the 1M path by default.
   { model: 'claude-sonnet-4-6', modelName: 'Claude Sonnet 4.6', modelSeries: 'claude', contextLength: 200_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
-  { model: 'claude-opus-4-8', modelName: 'Claude Opus 4.8', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
   { model: 'claude-opus-4-7', modelName: 'Claude Opus 4.7', modelSeries: 'claude', contextLength: 1_000_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
   { model: 'claude-opus-4-6', modelName: 'Claude Opus 4.6', modelSeries: 'claude', contextLength: 200_000, maxOutputTokens: 128_000, inputModalities: ['text', 'image'] },
-  { model: 'claude-haiku-4-5', modelName: 'Claude Haiku 4.5', modelSeries: 'claude', contextLength: 200_000, maxOutputTokens: 64_000, inputModalities: ['text', 'image'] },
 ];
 
-/** Anthropic 官方默认别名（对齐 SDK 0.3.158 内置默认：opus48/sonnet46/haiku45）。
+/** Anthropic 官方默认别名（对齐 SDK 0.3.199 当前模型族：fable5/opus48/sonnet5/haiku45）。
  *  显式 pin 可避免未来 SDK 默认变动时用户体验突变。 */
 const ANTHROPIC_ALIASES = {
-  sonnet: 'claude-sonnet-4-6',
+  fable: 'claude-fable-5',
   opus: 'claude-opus-4-8',
+  sonnet: 'claude-sonnet-5',
   haiku: 'claude-haiku-4-5',
 } as const;
 
@@ -1100,7 +1147,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'Anthropic',
     cloudProvider: '官方',
     type: 'subscription',
-    primaryModel: 'claude-sonnet-4-6',
+    primaryModel: 'claude-sonnet-5',
     isBuiltin: true,
     config: {},
     modelAliases: { ...ANTHROPIC_ALIASES },
@@ -1112,7 +1159,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'Anthropic',
     cloudProvider: '官方',
     type: 'api',
-    primaryModel: 'claude-sonnet-4-6',
+    primaryModel: 'claude-sonnet-5',
     isBuiltin: true,
     authType: 'both',
     config: {
@@ -1715,17 +1762,15 @@ export function getEffectiveModelAliases(
   const overrides = userOverrides?.[provider.id];
   if (overrides) {
     // User has explicit overrides — merge with defaults (overrides win, including empty strings)
-    return { ...defaults, ...overrides };
+    return completeModelAliases({ ...defaults, ...overrides });
   }
   // No user overrides — return preset defaults if any
-  if (defaults.sonnet || defaults.opus || defaults.haiku) return defaults;
+  const completedDefaults = completeModelAliases(defaults);
+  if (completedDefaults) return completedDefaults;
   // Fallback: no preset aliases and no user overrides — use provider's first model or primaryModel
-  // so sub-agents (model: "sonnet"/"opus"/"haiku") don't send raw claude-* to the third-party API.
+  // so sub-agents (model: "fable"/"sonnet"/"opus"/"haiku") don't send raw claude-* to the third-party API.
   const fallbackModel = provider.primaryModel || provider.models?.[0]?.model;
-  if (fallbackModel) {
-    return { sonnet: fallbackModel, opus: fallbackModel, haiku: fallbackModel };
-  }
-  return undefined;
+  return completeModelAliases(undefined, fallbackModel);
 }
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -1741,6 +1786,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   cliToolRegistryEnabled: false, // 默认关闭用户注册 CLI 工具注册表（实验室）
   teamSpaceEnabled: false, // 默认隐藏未发布的团队 Space 入口
   managedCodexProviderDevGate: true, // 默认开放 Codex 订阅 Provider；只有显式 true 才启用
+  floatingBallDevGate: true,
+  floatingBallEnabled: false,
   floatingBallHoverPeekEnabled: true,
   liteLLMModelDataRefresh: true, // 默认开启 LiteLLM 模型数据兜底刷新（开发者可关）
   claudeTranscriptCleanupPeriodDays: DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS,

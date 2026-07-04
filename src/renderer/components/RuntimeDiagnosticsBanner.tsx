@@ -29,7 +29,7 @@
  *    title to expand/collapse.
  */
 
-import { AlertTriangle, ChevronDown, ChevronRight, X } from 'lucide-react';
+import { AlertTriangle, Bot, ChevronDown, ChevronRight, X } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -40,6 +40,7 @@ import type {
 
 interface RuntimeDiagnosticsBannerProps {
   diagnostics: RuntimeDiagnostics | null;
+  onDiagnose?: (diagnostics: RuntimeDiagnostics) => void;
 }
 
 /** Tight definition: things the user CANNOT proceed without fixing. */
@@ -134,6 +135,7 @@ function renderStatusLabel(s: RuntimeDiagnosticsCallStatus | undefined, t: ChatT
 
 export default function RuntimeDiagnosticsBanner({
   diagnostics,
+  onDiagnose,
 }: RuntimeDiagnosticsBannerProps) {
   const { t } = useTranslation('chat');
   const [expanded, setExpanded] = useState(false);
@@ -287,6 +289,17 @@ export default function RuntimeDiagnosticsBanner({
             </div>
           )}
         </div>
+        {onDiagnose && (
+          <button
+            type="button"
+            onClick={() => onDiagnose(diagnostics)}
+            className="rounded p-0.5 text-[var(--ink-subtle)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--accent)]"
+            title={t('shell.diagnostics.askHelper')}
+            aria-label={t('shell.diagnostics.askHelper')}
+          >
+            <Bot className="h-3.5 w-3.5" />
+          </button>
+        )}
         {/* Close button — always rendered in v2. v1 made it conditional on a
             callback prop that was usually omitted, leaving users no way out. */}
         <button

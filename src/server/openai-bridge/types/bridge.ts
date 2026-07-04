@@ -28,6 +28,8 @@ export interface BridgeConfig {
 }
 
 export interface UpstreamConfig {
+  /** Provider owner for provider-scoped proxy policy. */
+  providerId: string;
   /** OpenAI-compatible endpoint base URL, e.g. "https://api.openai.com/v1" */
   baseUrl: string;
   /** Override API Key (optional, defaults to x-api-key from request header) */

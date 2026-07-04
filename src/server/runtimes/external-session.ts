@@ -33,7 +33,7 @@ import {
   isExternalRuntime,
 } from './factory';
 import { resolveCodexWorkspaceInstructions } from './workspace-instructions';
-import { RUNTIME_DISPLAY_NAMES, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
+import { RUNTIME_DISPLAY_NAMES, type RuntimeEnvPolicy, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
 import { isPendingSessionId } from '../../shared/constants';
 import { resolveChatQueueResponseMode } from '../session-core/turn-queue';
@@ -340,6 +340,9 @@ let currentTurnTraceRuntime = '';
 let currentTurnTraceStartMs = 0;
 let firstDeltaTraceEmitted = false;
 const activeToolTraceStarts = new Map<string, number>();
+let activeExternalEnvPolicy: RuntimeEnvPolicy | undefined;
+let pendingExternalProxyRestart = false;
+let pendingExternalProxyRestartOriginalKey: string | null = null;
 
 // Set by sendExternalMessage when it pre-broadcasts the user message for instant display.
 // Consumed by _doStartExternalSession / Case 3 to reuse the message (skip duplicate broadcast).
@@ -447,6 +450,9 @@ function resetModuleState(): void {
   resetExternalRuntimeConfigState();
   resetExternalTranscriptState();
   resetExternalContentState();
+  activeExternalEnvPolicy = undefined;
+  pendingExternalProxyRestart = false;
+  pendingExternalProxyRestartOriginalKey = null;
   currentTurnAnalyticsSource = null;
   currentTurnAnalyticsOrigin = null;
   clearExternalPermissionSuggestions();
@@ -1519,6 +1525,56 @@ export function getActiveRuntimeSource(): ReturnType<typeof getCurrentRuntimeSou
   return getCurrentRuntimeSource();
 }
 
+function isExternalTurnInFlight(): boolean {
+  return getExternalTurnStartTime() > 0 && !isExternalTurnCompleted();
+}
+
+export async function handleExternalProxyConfigChange(input: {
+  oldManagedProviderKey: string;
+  newManagedProviderKey: string;
+  oldProcessEnvKey: string;
+  newProcessEnvKey: string;
+}): Promise<{ success: boolean; skipped?: string }> {
+  const runtimeSource = getCurrentRuntimeSource();
+  const runtimeType = getCurrentRuntimeType();
+  const usesManagedProviderProxy =
+    runtimeType === 'codex' && runtimeSource === 'managed-provider';
+  const usesProcessProxyEnv =
+    runtimeSource !== 'managed-provider' &&
+    (activeExternalEnvPolicy?.proxy ?? 'myagents') === 'myagents';
+  const oldKey = usesManagedProviderProxy
+    ? input.oldManagedProviderKey
+    : input.oldProcessEnvKey;
+  const newKey = usesManagedProviderProxy
+    ? input.newManagedProviderKey
+    : input.newProcessEnvKey;
+
+  if (!usesManagedProviderProxy && !usesProcessProxyEnv) {
+    return { success: true, skipped: 'proxy-not-owned-by-myagents' };
+  }
+  if (oldKey === newKey) {
+    return { success: true, skipped: 'unchanged' };
+  }
+  if (isExternalTurnInFlight()) {
+    if (!pendingExternalProxyRestart) {
+      pendingExternalProxyRestartOriginalKey = oldKey;
+    }
+    if (newKey === pendingExternalProxyRestartOriginalKey) {
+      pendingExternalProxyRestart = false;
+      pendingExternalProxyRestartOriginalKey = null;
+      console.log('[external-session] External runtime proxy changed back to in-flight value; deferred runtime restart cancelled');
+      return { success: true, skipped: 'unchanged-after-defer' };
+    }
+    pendingExternalProxyRestart = true;
+    console.log('[external-session] External runtime proxy changed; deferring runtime restart until current turn completes');
+    return { success: true };
+  }
+  if (hasExternalRuntimeProcess()) {
+    await stopExternalSession({ reason: 'config-restart', preserveQueue: true });
+  }
+  return { success: true };
+}
+
 function normalizeRuntimeSourceForRuntime(
   runtime: RuntimeType,
   runtimeSource: RuntimeSource | undefined,
@@ -1668,6 +1724,7 @@ async function _doStartExternalSession(options: {
   // access to the agent config, so doing it here avoids N copies of the lookup.
   const resolvedEnvPolicy = options.envPolicy
     ?? await resolveAgentEnvPolicy(options.workspacePath);
+  activeExternalEnvPolicy = resolvedEnvPolicy;
 
   // Build system prompt using MyAgents' three-layer architecture.
   // Pass the current runtime so L1 identity text reports the correct CLI
@@ -1916,6 +1973,7 @@ async function _doStartExternalSession(options: {
     console.log(`[external-session] ${runtimeType} process started, pid=${process.pid}`);
   } catch (err) {
     clearExternalActiveRuntimeProcess();
+    activeExternalEnvPolicy = undefined;
     clearWatchdog();
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[external-session] Failed to start ${runtimeType}:`, message);
@@ -2779,13 +2837,21 @@ export async function cancelExternalImRequest(
   return { aborted: false, mode: 'unknown' };
 }
 
+type ExternalStopReason = 'user' | 'config-restart';
+
 /**
- * Stop the active external session
+ * Stop the active external session.
  */
-export async function stopExternalSession(): Promise<boolean> {
+export async function stopExternalSession(options?: {
+  reason?: ExternalStopReason;
+  preserveQueue?: boolean;
+}): Promise<boolean> {
   clearWatchdog();
   const active = getExternalActivePair();
   if (!active) return false;
+  const reason = options?.reason ?? 'user';
+  const isConfigRestart = reason === 'config-restart';
+  const preserveQueue = options?.preserveQueue === true;
   const stopStarted = nowMs();
   const runtimeType = active.runtime.type;
   const pid = active.process.pid;
@@ -2869,6 +2935,7 @@ export async function stopExternalSession(): Promise<boolean> {
     return true;
   } finally {
     clearExternalActiveRuntimeProcess();
+    activeExternalEnvPolicy = undefined;
     // Any pre-warm that raced with a stop is no longer relevant. Keeping the
     // flag around would leak 'prewarm' into a subsequent session's session_init
     // broadcast. _doStartExternalSession resets this per-call too, but some
@@ -2880,31 +2947,35 @@ export async function stopExternalSession(): Promise<boolean> {
     clearExternalAskUserQuestions();  // Stale AskUserQuestion requestIds would misroute to new session
     clearExternalInteractiveRequests();
     setExternalSystemInitPayload(null);
-    // Pattern B: notify IM bus subscribers (prevents orphaned SSE streams on user-stop) + clear active ID.
-    // Pattern C: also unregister from request registry.
-    fireExternalImCallback('error', 'Session stopped');
-    finalizeExternalActiveRequest('failed');
-    // PRD 0.2.18 — clear inbox meta on hard stop (user clicked stop / runtime
-    // killed mid-turn). Push session_aborted reply so caller doesn't hang.
-    deliverExternalWatchError({
-      sessionId: getExternalLifecycleSessionId(),
-      text: currentExternalTurnTextSnapshot(),
-      errorCode: 'session_aborted',
-      errorMessage: 'external runtime session was stopped before turn completed',
-    });
-    clearExternalInboxMetaOnRejection({
-      sessionId: getExternalLifecycleSessionId(),
-      errorCode: 'session_aborted',
-      errorMessage: 'external runtime session was stopped before turn completed',
-    });
+    if (!isConfigRestart) {
+      // Pattern B: notify IM bus subscribers (prevents orphaned SSE streams on user-stop) + clear active ID.
+      // Pattern C: also unregister from request registry.
+      fireExternalImCallback('error', 'Session stopped');
+      finalizeExternalActiveRequest('failed');
+      // PRD 0.2.18 — clear inbox meta on hard stop (user clicked stop / runtime
+      // killed mid-turn). Push session_aborted reply so caller doesn't hang.
+      deliverExternalWatchError({
+        sessionId: getExternalLifecycleSessionId(),
+        text: currentExternalTurnTextSnapshot(),
+        errorCode: 'session_aborted',
+        errorMessage: 'external runtime session was stopped before turn completed',
+      });
+      clearExternalInboxMetaOnRejection({
+        sessionId: getExternalLifecycleSessionId(),
+        errorCode: 'session_aborted',
+        errorMessage: 'external runtime session was stopped before turn completed',
+      });
+    }
     // Drop queued desktop messages on a hard stop (user clicked Stop) — otherwise the pills
     // orphan and, with state now 'idle' + queueLength>0, the next send queues behind stale
     // items that nothing will ever drain (no turn is running) → the session wedges.
-    clearExternalQueueWithCancellation();
+    if (!preserveQueue) {
+      clearExternalQueueWithCancellation();
+    }
     setExternalSessionState('idle');
     emitExternalTurnTrace('final', {
-      status: 'error',
-      detail: { source: 'stop_external_session' },
+      status: isConfigRestart ? 'ok' : 'error',
+      detail: { source: 'stop_external_session', reason },
     });
     clearExternalTurnTrace();
   }
@@ -3431,6 +3502,12 @@ async function persistTurnResult(): Promise<void> {
     }
     // Pattern B/C: turn complete — clear active trace ID + unregister from registry.
     finalizeExternalActiveRequest(didExternalLastTurnSucceed() ? 'completed' : 'failed');
+    if (pendingExternalProxyRestart) {
+      pendingExternalProxyRestart = false;
+      pendingExternalProxyRestartOriginalKey = null;
+      console.log('[external-session] Applying deferred external runtime proxy restart after turn completion');
+      await stopExternalSession({ reason: 'config-restart', preserveQueue: true });
+    }
     // Mid-turn queue drain: a turn just ended (completed OR interrupted via force) → surface +
     // send the next queued desktop message. Deferred to the next macrotask so queue:started
     // never races chat:message-complete / chat:status idle on the SSE wire.

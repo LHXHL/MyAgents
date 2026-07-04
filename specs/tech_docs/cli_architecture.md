@@ -88,7 +88,7 @@ myagents <group> <action> [args] [flags]
 Groups:
   mcp       管理 MCP 工具服务器（list/add/remove/enable/disable/env/test/oauth）
   model     管理模型供应商（list/add/remove/set-key/set-default/verify）
-  agent     管理 Agent 与 Channel（list/show/enable/disable/set/channel/runtime-status）
+  agent     管理 Agent 与 Channel（list/show/enable/disable/archive/unarchive/set/channel/runtime-status）
   runtime   查看 Agent Runtime 装机情况、model/permissionMode 清单，跑 runtime 自诊断
   skill     管理 Skills（list/info/add/remove/enable/disable/sync）
   tool      用户注册 CLI 工具注册表（实验室开关开启后可用）
@@ -151,6 +151,7 @@ AI 在调用写操作前通常需要先「问清楚选项」。以下三条命�
 myagents runtime list                             # 看哪些 runtime 装了、未装的给出安装提示
 myagents runtime describe <runtime>               # 看某 runtime 的 model + permissionMode 枚举
 myagents agent show <agent-id>                    # 看某 Agent 的 effective 默认（按 runtime 正确解析）
+myagents agent list --active|--archived           # 按工作区归档状态筛选 Agent
 ```
 
 这三条命令的存在让 `task create-direct --runtime X --model Y --permissionMode Z` 的值空间对 AI 完全自解释 —— `--help` 里只列 flag，值通过 `runtime describe` 查，避免 `--help` 文案与实际可用值漂移。
@@ -265,7 +266,7 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 |---------|------|
 | `/api/admin/mcp/*` | MCP 服务器 CRUD、启用/禁用、环境变量管理、连通性测试、OAuth 流程 |
 | `/api/admin/model/*` | Provider CRUD、API Key 设置、模型验证、默认供应商切换 |
-| `/api/admin/agent/*` | Agent 启用/禁用/属性设置/**show**、Channel CRUD、runtime 状态查询 |
+| `/api/admin/agent/*` | Agent 启用/禁用/归档/取消归档/属性设置/**show**、Channel CRUD、runtime 状态查询 |
 | `/api/admin/runtime/*` | 跨 runtime 发现：`list` / `describe` |
 | `/api/admin/cron/*` | 定时任务 CRUD、启停、执行历史、状态查询 |
 | `/api/admin/task/*` | 任务中心：list/get/create-direct/create-from-alignment/run/rerun/update-status/append-session/archive/delete/read-doc/write-doc |

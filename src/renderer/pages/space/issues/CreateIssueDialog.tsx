@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Cloud, Loader2, Lock, Paperclip, Target, X } from 'lucide-react';
+import { Cloud, Loader2, Paperclip, Target, X } from 'lucide-react';
 
 import { spaceErrorMessage, type SpaceGoal } from '@/api/spaceCloud';
 import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
@@ -35,7 +35,6 @@ export function CreateIssueDialog({
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [goalId, setGoalId] = useState(issueQuery.goalId ?? '');
-  const [humanOnly, setHumanOnly] = useState(false);
   const [filePaths, setFilePaths] = useState<string[]>([]);
   const [continuous, setContinuous] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -58,8 +57,8 @@ export function CreateIssueDialog({
     () => [
       {
         value: '',
-        label: t('space.filters.inbox'),
-        content: <GoalPathSelectLabel label={t('space.filters.inbox')} />,
+        label: t('space.createIssue.unselectedGoal'),
+        content: <GoalPathSelectLabel label={t('space.createIssue.unselectedGoal')} />,
       },
       ...goals.map((item) => {
         const label = item.goalPathLabel || item.title;
@@ -96,7 +95,6 @@ export function CreateIssueDialog({
         title: title.trim(),
         body: body.trim(),
         goalId: goalId || null,
-        humanOnly,
       });
       if (filePaths.length > 0) {
         await actions.uploadIssueAttachments(issue.id, filePaths);
@@ -111,7 +109,6 @@ export function CreateIssueDialog({
         setTitle('');
         setBody('');
         setFilePaths([]);
-        setHumanOnly(false);
         window.setTimeout(() => titleInputRef.current?.focus(), 0);
         onCreated(true);
       } else {
@@ -205,19 +202,6 @@ export function CreateIssueDialog({
               </span>
               <CustomSelect value={goalId} options={goalOptions} onChange={setGoalId} compact className="w-56 [&>button]:border-0 [&>button]:bg-transparent [&>button]:p-0 [&>button]:shadow-none" />
             </span>
-            <button
-              type="button"
-              aria-pressed={humanOnly}
-              onClick={() => setHumanOnly((value) => !value)}
-              className={`inline-flex h-10 items-center gap-2 rounded-full border px-3 text-sm font-semibold shadow-sm transition-colors ${
-                humanOnly
-                  ? 'border-[var(--accent-warm-muted)] bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]'
-                  : 'border-[var(--line)] bg-[var(--paper-elevated)]/70 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]'
-              }`}
-            >
-              <Lock className="h-4 w-4" />
-              {t('space.createIssue.humanOnly')}
-            </button>
           </div>
           <div className="flex items-center gap-3.5 pb-0.5">
             <button

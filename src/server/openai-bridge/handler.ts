@@ -21,6 +21,10 @@ import { ResponsesStreamTranslator } from './translate/stream-responses';
 import { translateError } from './translate/errors';
 import { SSEParser } from './utils/sse-parser';
 import { formatSSE } from './utils/sse-writer';
+import {
+  getProxyForProviderUrl,
+  getProxyForUrl as resolveGlobalProxyForUrl,
+} from '../proxy-state';
 
 const DEFAULT_TIMEOUT = 300_000; // 5 minutes
 const THOUGHT_SIG_CACHE_MAX = 500; // Max cached thought_signatures to prevent unbounded growth
@@ -69,28 +73,9 @@ export function getLastBridgeError(): { message: string; timestamp: number; upst
   return lastBridgeError;
 }
 
-/** Detect proxy URL from environment (respects no_proxy for the target URL) */
+/** Detect global proxy URL from environment (respects no_proxy for the target URL). */
 export function getProxyForUrl(url: string): string | undefined {
-  const proxy = process.env.https_proxy || process.env.HTTPS_PROXY
-    || process.env.http_proxy || process.env.HTTP_PROXY
-    || process.env.ALL_PROXY || process.env.all_proxy;
-  if (!proxy) return undefined;
-
-  // Check no_proxy
-  const noProxy = process.env.no_proxy || process.env.NO_PROXY || '';
-  if (noProxy === '*') return undefined;
-  if (noProxy) {
-    try {
-      const host = new URL(url).hostname.toLowerCase();
-      const excluded = noProxy.split(',').some(p => {
-        const pattern = p.trim().toLowerCase();
-        return host === pattern || host.endsWith(`.${pattern}`);
-      });
-      if (excluded) return undefined;
-    } catch { /* invalid URL, skip no_proxy check */ }
-  }
-
-  return proxy;
+  return resolveGlobalProxyForUrl(url);
 }
 
 /**
@@ -103,8 +88,8 @@ export function getProxyForUrl(url: string): string | undefined {
  *
  * Note: SOCKS5 is handled upstream by `setProxyConfig()` (agent-session.ts) —
  * it spins up a local HTTP-to-SOCKS5 bridge and sets `HTTP_PROXY` to the
- * bridge's HTTP URL, so by the time we read `getProxyForUrl()` here the URL
- * is always plain http://.
+ * bridge's HTTP URL, so by the time we resolve provider-owned proxy here the
+ * URL is always plain http://.
  */
 const proxyDispatchers = new Map<string, Dispatcher>();
 
@@ -286,8 +271,9 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
 
     let upstreamResp: Response;
     try {
-      // Detect proxy for upstream URL (reads from sidecar's process.env, respects no_proxy)
-      const proxyUrl = getProxyForUrl(upstreamUrl);
+      // Detect proxy for this provider owner. The bridge token resolved the
+      // providerId; URL/baseUrl alone is not an owner boundary.
+      const proxyUrl = getProxyForProviderUrl(upstream.providerId, upstreamUrl);
       const fetchInit: RequestInit & { dispatcher?: Dispatcher } = {
         method: 'POST',
         headers: {

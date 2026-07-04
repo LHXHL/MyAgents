@@ -11,6 +11,7 @@ import {
   issueDisplayTitle,
   issueStatusLabel,
   isClosedIssue,
+  localAgentMatchesCurrentSpaceIdentity,
 } from './spaceHelpers';
 
 const session = (role: SpaceSession['membership']['role'], userId = 'user-1'): SpaceSession => ({
@@ -113,5 +114,28 @@ describe('space issue helpers', () => {
 
     expect(formatAgentSecondaryLabel(agent, projects)).toBe('Workspace A');
     expect(isClosedIssue('closed')).toBe(true);
+  });
+
+  it('requires local registered agents to match the current space identity', () => {
+    const agent = {
+      id: 'agent-1',
+      baseUrl: 'https://space.myagents.test',
+      spaceId: 'space-1',
+      ownerUserId: 'user-1',
+      deviceId: 'device-1',
+      workspaceId: 'project-1',
+      displayName: 'Builder',
+      workspacePath: '/workspace/a',
+      goalId: 'goal_runtime',
+      goalPathLabel: 'Runtime',
+      stateFilter: ['todo'],
+      issueSubscriptionRunMode: 'single_session',
+      status: 'active',
+      createdAt: '2026-06-24T00:00:00.000Z',
+      updatedAt: '2026-06-24T00:00:00.000Z',
+    } satisfies LocalRegisteredAgent;
+
+    expect(localAgentMatchesCurrentSpaceIdentity(agent, 'space-1', 'user-1', 'device-1')).toBe(true);
+    expect(localAgentMatchesCurrentSpaceIdentity(agent, 'space-2', 'user-1', 'device-1')).toBe(false);
   });
 });

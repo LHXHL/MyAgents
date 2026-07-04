@@ -21,7 +21,15 @@ describe('useSettingsNavigation', () => {
     expect(onSectionChange).toHaveBeenCalledTimes(1);
   });
 
-  it('falls back from desktop-pet when the feature gate is off', async () => {
+  it('opens desktop-pet when the feature gate is omitted because the tab defaults on', async () => {
+    const onSectionChange = vi.fn();
+    render(<Probe initialSection="desktop-pet" onSectionChange={onSectionChange} />);
+
+    await waitFor(() => expect(screen.getByTestId('section')).toHaveTextContent('desktop-pet'));
+    expect(onSectionChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('falls back from desktop-pet when the feature gate is explicitly off', async () => {
     const onSectionChange = vi.fn();
     render(<Probe initialSection="desktop-pet" floatingBallDevGate={false} onSectionChange={onSectionChange} />);
 

@@ -420,8 +420,8 @@
       "current": "Current",
       "messageCount": "{{count}} message(s)",
       "unreadNotifications": "{{count}} unread notification(s)",
-      "showAutomation": "Show scheduled task chats",
-      "hideAutomation": "Hide scheduled task chats",
+      "automationVisible": "Scheduled task chats visible",
+      "automationHidden": "Scheduled task chats hidden",
       "openInNewTab": "Open in new tab",
       "more": "More",
       "moreActions": "More actions",
@@ -752,6 +752,9 @@
       "imageTooLargePrefix": "The tool screenshot exceeds the model limit. ",
       "rewindAction": "Rewind to before this turn",
       "resend": "Resend"
+    },
+    "diagnostics": {
+      "askHelper": "Ask helper to diagnose"
     },
     "selection": {
       "quote": "Quote",

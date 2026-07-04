@@ -1,19 +1,11 @@
-/**
- * Shared subscription types for frontend and backend
- */
+export type {
+  SubscriptionInfo,
+  SubscriptionStatus,
+  SubscriptionVerifyFailureKind,
+  SubscriptionVerifyResult,
+} from '../../shared/subscription';
 
-export interface SubscriptionInfo {
-  accountUuid?: string;
-  email?: string;
-  displayName?: string;
-  organizationName?: string;
-}
-
-export interface SubscriptionStatus {
-  available: boolean;
-  path?: string;
-  info?: SubscriptionInfo;
-}
+import type { SubscriptionStatus } from '../../shared/subscription';
 
 // Extended status for frontend with verification state
 export interface SubscriptionStatusWithVerify extends SubscriptionStatus {

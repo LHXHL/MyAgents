@@ -8,7 +8,7 @@
 |------|------|
 | 桌面框架 | Tauri v2 (Rust) |
 | 前端 | React 19 + TypeScript + Vite + TailwindCSS |
-| 后端 | Node.js v24 + Claude Agent SDK 0.3.195（多实例 Sidecar） |
+| 后端 | Node.js v24 + Claude Agent SDK 0.3.199（多实例 Sidecar） |
 | 通信 | Rust HTTP/SSE Proxy (reqwest via `local_http` 模块) |
 | 运行时 | 单一 Node.js v24（Sidecar / Plugin Bridge / MCP Server / CLI），内置于应用包 |
 
@@ -110,7 +110,7 @@
 **禁止凭假设编写 SDK 交互代码。** 涉及 SDK 的任何开发（`query()` 参数、`SDKMessage` 类型处理、环境变量、Hook 注册、MCP 集成等），MUST 先查阅官方文档确认实际行为：
 
 - **SDK 文档**：https://platform.claude.com/docs/zh-CN/agent-sdk/overview
-- **SDK 类型定义**：`node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`（当前版本 0.3.195）
+- **SDK 类型定义**：`node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`（当前版本 0.3.199）
 - **SDK 工具类型**：`node_modules/@anthropic-ai/claude-agent-sdk/sdk-tools.d.ts`
 
 典型错误：臆测 `seedReadState` 调用时机导致"先读后改"语义被绕过、臆测环境变量名导致模型别名不生效。这类问题的根因都是没有查文档就动手写代码。
@@ -189,7 +189,7 @@ Rust `CronTaskManager` 统一管理所有定时任务（Chat 定时 / 独立创�
 | 裸 `std::process::Command::new()` | Windows GUI 弹黑色控制台窗口 | `crate::process_cmd::new()` | clippy |
 | 裸 `tokio::spawn` / `tokio::task::spawn` | macOS startup-abort（panic 跨 FFI 不能 unwind） | `tauri::async_runtime::spawn` | clippy |
 | 同步 `#[tauri::command] pub fn` 里做会阻塞 >1 帧的工作（等 sidecar 就绪 / 轮询 / 网络 / 大量文件 copy / kill+wait） | **同步 Tauri 命令跑在主线程 = macOS 上 WKWebView 的 UI 线程 → 命令执行期间整个 WebView 冻结、画不出任何东西**（React 提交了 DOM 也绘制不出）。#0.2.31 实战：`cmd_ensure_session_sidecar` 同步等 sidecar 冷启动 ~800ms → 点工作区卡后整个 UI 卡死 ~800ms 才翻页；所有前端补丁（flushSync / deferred-mount）都没用，因为冻结在 Rust 主线程。**排查信号**：点击后页面不变但 React 已 commit → 用 double-rAF `chat_painted` 量*真实绘制*（不是 commit），若绘制时刻 ≈ 某同步命令返回时刻，即是它 | 改 `pub async fn` + 把阻塞部分丢进 `tauri::async_runtime::spawn_blocking`（先把 `State` 里的 Arc clone 出来，**别跨 `.await` 持 State guard**）。快速查表 / getter 类同步命令不受影响，无需改 | — (静态判不出某命令是否阻塞，靠 review；改阻塞命令时必查) |
-| 子进程 spawn 不调 `apply_to_subprocess` | Node fetch 读继承的 HTTP_PROXY → localhost 通信被代理 → 502 | `crate::proxy_config::apply_to_subprocess(&mut cmd)` | — (语义检查难自动化) |
+| 子进程 spawn 不调 `apply_to_subprocess`；或 provider-owned 子进程不用 provider-aware proxy helper | Node fetch 读继承的 HTTP_PROXY → localhost 通信被代理 → 502；provider custom scope 被绕过，未选 provider 可能错误使用 MyAgents proxy 或丢失原始系统 proxy baseline | 无 provider owner 的子进程用 `crate::proxy_config::apply_to_subprocess(&mut cmd)`；provider-owned 子进程用 `apply_to_subprocess_for_provider(&mut cmd, provider_id)`；Node provider-owned 请求用 `applyProviderProxyPolicyToEnv(env, providerId)` / `getProxyForProviderUrl(providerId, url)`。Rust 注入 MyAgents proxy 时必须带 `MYAGENTS_PROXY_INHERITED_ENV_JSON`，供 excluded provider 恢复注入前 env | — (语义检查难自动化) |
 | Chat 新增"mount 期把配置推给 sidecar"的 effect 不门控 `sidecarConfigDisposition`；或 instant-flip 到 chat 时用 pre-ensure 检查（`getSessionPort`）预测 push-vs-adopt | config-stomp TOCTOU（#300/#301）：并发 Rust creator（cron / IM / 崩溃重启）在"检查"与"ensure"之间起 sidecar → ensure 接管活 sidecar 而 Chat 仍推配置 → 冲掉 + MCP 指纹 abort + 30s 重启循环。即时进入（flip 先于 ensure）放大了这条 | 唯一裁决者 = `ensureSessionSidecar` 后的 `result.isNew`（Rust 锁内）；flip 前不确定就置 `'pending'`（Chat 既不推也不采纳）；配置推 effect 门控 `disposition==='push'` 且依赖布尔 `configPending`（pending→push 重跑、adopt→push 不重放），采纳 effect 依赖 `isAdopt`；用户主动改走 defer-while-pending；catch 把 pending tab 重置为终态 `push`。详见 `tech_docs/session_architecture.md`「Sidecar 配置归置」 | — (effect 门控漏项 AST 抓不出，靠 review) |
 | 裸 `which::which()` 查系统工具 | Finder 启动时 PATH 缺失 | `crate::system_binary::find()` | clippy |
 | Tauri `resource_dir()` / `current_exe()` 路径直接喂 Node / npm / URL / 子进程 | Windows `\\?\` 长路径前缀让 `fileURLToPath` / spawn 报 `ERR_INVALID_FILE_URL_PATH` 或静默挂 | `crate::sidecar::normalize_external_path(p)`，在路径"出 Rust 边界"前剥前缀 | — (路径来源动态) |

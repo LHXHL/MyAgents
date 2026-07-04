@@ -66,6 +66,7 @@ export interface TaskCenterData {
     sessionTagsMap: Map<string, SessionTag[]>;
     cronBotInfoMap: Map<string, { name: string; platform: string }>;
     isLoading: boolean;
+    isSessionsLoading: boolean;
     error: string | null;
     refresh: (scope?: TaskCenterRefreshScope, options?: TaskCenterRefreshOptions) => void;
     actions: TaskCenterActions;
@@ -115,7 +116,7 @@ export function resolveFloatingBallBoundSession(
         floatingBallSessionId?: string;
     } | null,
 ): string | null {
-    if (!cfg?.floatingBallDevGate || !cfg.floatingBallEnabled) return null;
+    if (!cfg || cfg.floatingBallDevGate === false || cfg.floatingBallEnabled !== true) return null;
     return cfg.floatingBallSessionId ?? null;
 }
 
@@ -188,6 +189,7 @@ interface StoreState {
     /** 悬浮球渠道当前绑定的 session（gate-aware，见 resolveFloatingBallBoundSession）。 */
     floatingBallSessionId: string | null;
     isLoading: boolean;
+    isSessionsLoading: boolean;
     error: string | null;
 }
 
@@ -200,6 +202,7 @@ let state: StoreState = {
     agents: [],
     floatingBallSessionId: null,
     isLoading: true,
+    isSessionsLoading: true,
     error: null,
 };
 
@@ -286,6 +289,7 @@ function buildSnapshot(): TaskCenterData {
         sessionTagsMap: mapsCache.sessionTagsMap,
         cronBotInfoMap: mapsCache.cronBotInfoMap,
         isLoading: state.isLoading,
+        isSessionsLoading: state.isSessionsLoading,
         error: state.error,
         refresh,
         actions,
@@ -341,7 +345,13 @@ async function runFavoriteMutation(sessionId: string, previous: boolean, mutatio
 async function fetchData(retryCount = 0, silent = false): Promise<void> {
     const requestSeq = startRequest('all');
     const gen = lifecycleGen;
-    if (retryCount === 0 && !silent) setState({ isLoading: true, error: null });
+    if (retryCount === 0 && !silent) {
+        setState({
+            isLoading: true,
+            isSessionsLoading: state.sessions.length === 0,
+            error: null,
+        });
+    }
 
     try {
         // getSessions is the CRITICAL slice: NOT caught, so a sessions failure
@@ -349,6 +359,19 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
         // not become a silent empty state). The other sources are best-effort:
         // a PARTIAL failure preserves the prior slice (`ok.*` false → skipped).
         const ok = { cron: true, tasks: true, bg: true, agents: true, status: true };
+        const sessionsPromise = getSessions().then((sessionsData) => {
+            if (gen !== lifecycleGen) return sessionsData;
+            if (!isLatest('all', requestSeq) || !isLatest('sessions', requestSeq)) return sessionsData;
+            if (deletedSessionIds.size > 0) {
+                const liveIds = new Set(sessionsData.map((s) => s.id));
+                for (const id of [...deletedSessionIds]) if (!liveIds.has(id)) deletedSessionIds.delete(id);
+            }
+            setState({
+                sessions: sortSessionsByLastActive(filterTombstoned(sessionsData, deletedSessionIds)),
+                isSessionsLoading: false,
+            });
+            return sessionsData;
+        });
         const agentStatusPromise = isTauriEnvironment()
             ? import('@tauri-apps/api/core')
                 .then(({ invoke }) => invoke<AgentStatusMap>('cmd_all_agents_status'))
@@ -356,7 +379,7 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
             : Promise.resolve({} as AgentStatusMap);
 
         const [sessionsData, cronData, newTasks, bgSessions, agentStatusResult, appConfig] = await Promise.all([
-            getSessions(),
+            sessionsPromise,
             getAllCronTasks().catch(() => { ok.cron = false; return state.cronTasks; }),
             fetchTaskList().catch(() => { ok.tasks = false; return state.tasks; }),
             getBackgroundSessions().catch(() => { ok.bg = false; return state.backgroundSessionIds; }),
@@ -379,6 +402,7 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
         // this full request) — otherwise an older full fetch would clobber it.
         const patch: Partial<StoreState> = {};
         if (isLatest('sessions', requestSeq)) patch.sessions = sortSessionsByLastActive(filterTombstoned(sessionsData, deletedSessionIds));
+        if (isLatest('sessions', requestSeq)) patch.isSessionsLoading = false;
         if (ok.cron && isLatest('cronTasks', requestSeq)) patch.cronTasks = cronData;
         if (ok.tasks && isLatest('tasks', requestSeq)) patch.tasks = newTasks;
         if (ok.bg && isLatest('backgroundSessions', requestSeq)) patch.backgroundSessionIds = bgSessions;
@@ -398,9 +422,13 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
         if (!silent && retryCount < MAX_AUTO_RETRIES) {
             retryTimer = setTimeout(() => { void fetchData(retryCount + 1, silent); }, RETRY_DELAY_MS);
         } else if (!silent) {
-            setState({ isLoading: false, error: taskText('tasks.loadFailedRetry') });
+            setState({
+                isLoading: false,
+                isSessionsLoading: false,
+                error: taskText('tasks.loadFailedRetry'),
+            });
         } else {
-            setState({ isLoading: false });
+            setState({ isLoading: false, isSessionsLoading: false });
         }
     }
 }
@@ -571,7 +599,7 @@ export function getSnapshot(): TaskCenterData {
 
 /** Test-only: reset all module state between cases. */
 export function __resetTaskCenterStoreForTest(): void {
-    state = { sessions: [], cronTasks: [], tasks: [], backgroundSessionIds: [], agentStatuses: {}, agents: [], floatingBallSessionId: null, isLoading: true, error: null };
+    state = { sessions: [], cronTasks: [], tasks: [], backgroundSessionIds: [], agentStatuses: {}, agents: [], floatingBallSessionId: null, isLoading: true, isSessionsLoading: true, error: null };
     listeners.clear();
     deletedSessionIds.clear();
     favoriteMutations.clear();

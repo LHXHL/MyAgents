@@ -14,12 +14,14 @@
 - 配置字段：`multiAgentRuntime`
 - 默认关闭
 - 关闭时：Agent 实际跑 builtin；外部 runtime 的 UI/选择和配置可能不可见或不生效
+- 只管 `runtimeSource=system-cli` 的外部 Runtime。`codex-sub` 这类 `runtimeSource=managed-provider` 的订阅 Provider 不按这个实验门控判断，而按 Provider readiness 判断。
 
 诊断：
 
 ```bash
 myagents runtime list --json
 myagents agent show <agent-id> --json
+rg -n "multiAgentRuntime|runtimeSource|managed-provider|codex-sub" ./logs/unified-*.log | tail -120
 ```
 
 ### CLI 工具注册表

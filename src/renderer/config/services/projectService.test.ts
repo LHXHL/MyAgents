@@ -4,9 +4,10 @@ import type { Project } from '../types';
 import {
   getSystemPresetProjectMetadataPatch,
   isProjectVisibleToUser,
+  isProjectActiveForUser,
   isSystemPresetProject,
 } from '../types';
-import { applyProjectPatch, applyProjectRemovalIntent } from './projectService';
+import { applyProjectArchiveIntent, applyProjectPatch, applyProjectRemovalIntent, applyProjectUnarchiveIntent } from './projectService';
 
 function project(overrides: Partial<Project> = {}): Project {
   return {
@@ -36,6 +37,8 @@ describe('system preset workspace helpers', () => {
     expect(isProjectVisibleToUser(project())).toBe(true);
     expect(isProjectVisibleToUser(project({ internal: true }))).toBe(false);
     expect(isProjectVisibleToUser(project({ hidden: true }))).toBe(false);
+    expect(isProjectActiveForUser(project())).toBe(true);
+    expect(isProjectActiveForUser(project({ archivedAt: '2026-07-03T00:00:00.000Z' }))).toBe(false);
   });
 
   it('repairs only missing system preset metadata without overwriting user-facing customizations', () => {
@@ -100,5 +103,57 @@ describe('applyProjectPatch', () => {
     );
 
     expect(patched).not.toHaveProperty('pinnedAt');
+  });
+});
+
+describe('project archive intents', () => {
+  it('archives a project, remembers proactive state, and clears pinnedAt', () => {
+    const result = applyProjectArchiveIntent(
+      [project({ pinnedAt: '2026-06-19T10:00:00.000Z' })],
+      'project-1',
+      {
+        archivedAtIso: '2026-07-03T00:00:00.000Z',
+        agentEnabledBeforeArchive: true,
+      },
+    );
+
+    expect(result?.project).toMatchObject({
+      id: 'project-1',
+      archivedAt: '2026-07-03T00:00:00.000Z',
+      archivedAgentEnabledBeforeArchive: true,
+    });
+    expect(result?.project).not.toHaveProperty('pinnedAt');
+  });
+
+  it('keeps original restore metadata when archiving an already archived project', () => {
+    const result = applyProjectArchiveIntent(
+      [project({
+        archivedAt: '2026-07-02T00:00:00.000Z',
+        archivedAgentEnabledBeforeArchive: true,
+      })],
+      'project-1',
+      {
+        archivedAtIso: '2026-07-03T00:00:00.000Z',
+        agentEnabledBeforeArchive: false,
+      },
+    );
+
+    expect(result?.project).toMatchObject({
+      archivedAt: '2026-07-02T00:00:00.000Z',
+      archivedAgentEnabledBeforeArchive: true,
+    });
+  });
+
+  it('unarchives a project and clears archive metadata', () => {
+    const result = applyProjectUnarchiveIntent(
+      [project({
+        archivedAt: '2026-07-03T00:00:00.000Z',
+        archivedAgentEnabledBeforeArchive: true,
+      })],
+      'project-1',
+    );
+
+    expect(result?.project).not.toHaveProperty('archivedAt');
+    expect(result?.project).not.toHaveProperty('archivedAgentEnabledBeforeArchive');
   });
 });

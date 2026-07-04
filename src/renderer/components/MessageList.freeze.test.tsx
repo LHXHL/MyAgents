@@ -19,11 +19,11 @@ import type { VirtuosoHandle } from 'react-virtuoso';
 import type { Message as MessageType } from '@/types/chat';
 
 // ── Capture the props handed to Virtuoso on every render ──
-type Recorded = { data: MessageType[]; firstItemIndex: number | undefined };
+type Recorded = { data: MessageType[]; firstItemIndex: number | undefined; heightEstimates: number[] | undefined };
 const recorded: Recorded[] = [];
 vi.mock('react-virtuoso', () => ({
-  Virtuoso: (props: { data: MessageType[]; firstItemIndex?: number }) => {
-    recorded.push({ data: props.data, firstItemIndex: props.firstItemIndex });
+  Virtuoso: (props: { data: MessageType[]; firstItemIndex?: number; heightEstimates?: number[] }) => {
+    recorded.push({ data: props.data, firstItemIndex: props.firstItemIndex, heightEstimates: props.heightEstimates });
     return <div data-testid="virtuoso" data-count={props.data.length} />;
   },
 }));
@@ -40,6 +40,13 @@ function msg(id: string, content: string, role: 'user' | 'assistant' = 'assistan
   return { id, role, content, timestamp: new Date() } as MessageType;
 }
 
+function createFollowProps(initial: boolean | 'force' = true) {
+  const followEnabledRef: React.MutableRefObject<boolean | 'force'> = { current: initial };
+  return {
+    followEnabledRef,
+  };
+}
+
 function renderList(overrides: Partial<React.ComponentProps<typeof MessageList>>) {
   const props: React.ComponentProps<typeof MessageList> = {
     historyMessages: [],
@@ -49,7 +56,7 @@ function renderList(overrides: Partial<React.ComponentProps<typeof MessageList>>
     isActive: true,
     firstItemIndex: 1_000_000,
     virtuosoRef: { current: null },
-    followEnabledRef: { current: true },
+    ...createFollowProps(),
     scrollToBottom: vi.fn(),
     handleAtBottomChange: vi.fn(),
     ...overrides,
@@ -101,7 +108,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
         firstItemIndex={1_000_000}
         sessionId="s1"
         virtuosoRef={{ current: null }}
-        followEnabledRef={{ current: true }}
+        {...createFollowProps()}
         scrollToBottom={vi.fn()}
         handleAtBottomChange={vi.fn()}
       />,
@@ -118,7 +125,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
         firstItemIndex={1_000_000}
         sessionId="s1"
         virtuosoRef={{ current: null }}
-        followEnabledRef={{ current: true }}
+        {...createFollowProps()}
         scrollToBottom={vi.fn()}
         handleAtBottomChange={vi.fn()}
       />,
@@ -134,7 +141,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
         firstItemIndex={1_000_000}
         sessionId="s1"
         virtuosoRef={{ current: null }}
-        followEnabledRef={{ current: true }}
+        {...createFollowProps()}
         scrollToBottom={vi.fn()}
         handleAtBottomChange={vi.fn()}
       />,
@@ -147,14 +154,19 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     // the tab's session is switched to s2 while hidden, then user returns. The old
     // s1 "don't follow" intent must NOT disable follow for the fresh s2 — otherwise
     // s2 loads at bottom but never auto-scrolls new streaming.
-    const followRef: { current: boolean | 'force' } = { current: true };
+    const followRef: React.MutableRefObject<boolean | 'force'> = { current: true };
+    const followProps = () => ({
+      followEnabledRef: followRef,
+    });
     // Realistic scrollToBottom: mirrors the hook by flipping the ref to 'force'.
-    const scrollToBottom = vi.fn(() => { followRef.current = 'force'; });
+    const scrollToBottom = vi.fn(() => {
+      followRef.current = 'force';
+    });
 
     const s1 = [msg('a1', 'x', 'user'), msg('a2', 'y')];
     const { rerender } = renderList({
       sessionId: 's1', historyMessages: s1, isActive: true,
-      followEnabledRef: followRef, scrollToBottom,
+      ...followProps(), scrollToBottom,
     });
 
     // User scrolls up in s1 → follow disabled.
@@ -165,7 +177,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
       <MessageList
         sessionId="s1" historyMessages={s1} streamingMessage={null}
         isLoading={false} isActive={false} firstItemIndex={1_000_000}
-        virtuosoRef={{ current: null }} followEnabledRef={followRef}
+        virtuosoRef={{ current: null }} {...followProps()}
         scrollToBottom={scrollToBottom} handleAtBottomChange={vi.fn()}
       />,
     );
@@ -176,7 +188,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
       <MessageList
         sessionId="s2" historyMessages={s2} streamingMessage={null}
         isLoading={false} isActive firstItemIndex={1_000_000}
-        virtuosoRef={{ current: null }} followEnabledRef={followRef}
+        virtuosoRef={{ current: null }} {...followProps()}
         scrollToBottom={scrollToBottom} handleAtBottomChange={vi.fn()}
       />,
     );
@@ -203,7 +215,7 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
         firstItemIndex={999_995}
         sessionId="s1"
         virtuosoRef={{ current: null }}
-        followEnabledRef={{ current: true }}
+        {...createFollowProps()}
         scrollToBottom={vi.fn()}
         handleAtBottomChange={vi.fn()}
       />,
@@ -211,24 +223,53 @@ describe('MessageList — freeze data while inactive (Virtuoso cache-poisoning r
     expect(lastData().firstItemIndex).toBe(1_000_000);
   });
 
-  it('keeps active streaming pinned through Virtuoso autoscroll while following', () => {
+  it('freezes heightEstimateSeed while inactive', () => {
+    const history = [msg('h1', 'a', 'user'), msg('h2', 'b')];
+    const { rerender } = renderList({
+      historyMessages: history,
+      isActive: true,
+      heightEstimateSeed: [120, 480],
+    });
+    expect(lastData().heightEstimates).toEqual([120, 480]);
+
+    rerender(
+      <MessageList
+        historyMessages={history}
+        streamingMessage={msg('stream', 'hidden growth')}
+        isLoading isActive={false}
+        firstItemIndex={1_000_000}
+        heightEstimateSeed={[120, 480, 900]}
+        sessionId="s1"
+        virtuosoRef={{ current: null }}
+        {...createFollowProps()}
+        scrollToBottom={vi.fn()}
+        handleAtBottomChange={vi.fn()}
+      />,
+    );
+
+    expect(lastData().heightEstimates).toEqual([120, 480]);
+  });
+
+  it('keeps active streaming pinned before paint through Virtuoso LAST/end alignment while following', () => {
+    const scrollToIndex = vi.fn();
     const autoscrollToBottom = vi.fn();
     renderList({
       historyMessages: [msg('h1', 'hello', 'user')],
       streamingMessage: msg('stream', 'partial'),
       isLoading: true,
       isActive: true,
-      followEnabledRef: { current: true },
+      ...createFollowProps(),
       virtuosoRef: {
-        current: { autoscrollToBottom },
+        current: { scrollToIndex, autoscrollToBottom },
       } as unknown as React.RefObject<VirtuosoHandle | null>,
     });
 
-    expect(autoscrollToBottom).toHaveBeenCalledTimes(1);
+    expect(scrollToIndex).toHaveBeenCalledWith({ index: 'LAST', align: 'end', behavior: 'auto' });
+    expect(autoscrollToBottom).not.toHaveBeenCalled();
   });
 
   it('pins to bottom once when a turn completes while follow is enabled', () => {
-    const followRef: { current: boolean | 'force' } = { current: true };
+    const followRef: React.MutableRefObject<boolean | 'force'> = { current: true };
     const scrollToBottom = vi.fn();
     const history = [msg('h1', 'hello', 'user')];
     const baseProps = {

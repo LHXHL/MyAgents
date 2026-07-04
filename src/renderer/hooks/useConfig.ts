@@ -51,7 +51,12 @@ export interface UseConfigResult {
 
     // Provider verify status (persisted)
     providerVerifyStatus: Record<string, ProviderVerifyStatus>;
-    saveProviderVerifyStatus: (providerId: string, status: 'valid' | 'invalid', accountEmail?: string) => Promise<void>;
+    saveProviderVerifyStatus: (
+        providerId: string,
+        status: 'valid' | 'invalid',
+        accountEmail?: string,
+        metadata?: Pick<ProviderVerifyStatus, 'invalidReason' | 'error'>,
+    ) => Promise<void>;
 
     // Config updates
     updateConfig: (updates: Partial<AppConfig>) => Promise<void>;

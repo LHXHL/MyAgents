@@ -10,6 +10,7 @@ import {
   PRESET_PROVIDERS,
   SUBSCRIPTION_PROVIDER_ID,
   applyManagedCodexProviderReadiness,
+  getEffectiveModelAliases,
   getManagedCodexProviderReadiness,
   isManagedCodexRequiredRuntimeInstalled,
   isManagedCodexProviderGateEnabled,
@@ -209,7 +210,54 @@ describe('Zhipu preset models', () => {
   });
 });
 
+describe('Anthropic preset models', () => {
+  it('ships the current Agent SDK model family and pins current default aliases', () => {
+    const provider = PRESET_PROVIDERS.find(p => p.id === SUBSCRIPTION_PROVIDER_ID);
+    expect(provider?.primaryModel).toBe('claude-sonnet-5');
+    expect(provider?.modelAliases).toEqual({
+      fable: 'claude-fable-5',
+      opus: 'claude-opus-4-8',
+      sonnet: 'claude-sonnet-5',
+      haiku: 'claude-haiku-4-5',
+    });
+
+    const models = new Map(provider?.models.map(model => [model.model, model]));
+    expect(models.get('claude-fable-5')).toMatchObject({
+      contextLength: 1_000_000,
+      maxOutputTokens: 128_000,
+      inputModalities: ['text', 'image'],
+    });
+    expect(models.get('claude-sonnet-5')).toMatchObject({
+      contextLength: 1_000_000,
+      maxOutputTokens: 128_000,
+      inputModalities: ['text', 'image'],
+    });
+    expect(models.get('claude-haiku-4-5')).toMatchObject({
+      contextLength: 200_000,
+      maxOutputTokens: 64_000,
+    });
+  });
+});
+
+describe('model aliases', () => {
+  it('backfills fable from opus for third-party preset aliases', () => {
+    const provider = PRESET_PROVIDERS.find(p => p.id === 'zhipu');
+    expect(provider).toBeTruthy();
+    expect(getEffectiveModelAliases(provider!)).toEqual({
+      fable: 'glm-5.2',
+      opus: 'glm-5.2',
+      sonnet: 'glm-5.1',
+      haiku: 'glm-5.1',
+    });
+  });
+});
+
 describe('desktop pet defaults', () => {
+  it('shows the desktop pet tab by default but keeps the floating ball off', () => {
+    expect(DEFAULT_CONFIG.floatingBallDevGate).toBe(true);
+    expect(DEFAULT_CONFIG.floatingBallEnabled).toBe(false);
+  });
+
   it('keeps hover peek enabled for existing desktop pet behavior', () => {
     expect(DEFAULT_CONFIG.floatingBallHoverPeekEnabled).toBe(true);
   });

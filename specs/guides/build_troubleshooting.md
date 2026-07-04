@@ -4,11 +4,12 @@
 
 1. [Windows 构建脚本常见问题](#windows-构建脚本常见问题)
 2. [macOS Claude SDK native binary 签名失败](#macos-claude-sdk-native-binary-签名失败)
-3. [macOS esbuild native binary 架构不匹配](#macos-esbuild-native-binary-架构不匹配)
-4. [CSP 配置错误](#csp-配置错误)
-5. [Rust toolchain / rustfmt 漂移](#rust-toolchain--rustfmt-漂移)
-6. [Resources 缓存问题](#resources-缓存问题)
-7. [代理配置问题](#代理配置问题)
+3. [macOS dev 构建后 SDK spawn -88 / app 体积异常变小](#macos-dev-构建后-sdk-spawn--88--app-体积异常变小)
+4. [macOS esbuild native binary 架构不匹配](#macos-esbuild-native-binary-架构不匹配)
+5. [CSP 配置错误](#csp-配置错误)
+6. [Rust toolchain / rustfmt 漂移](#rust-toolchain--rustfmt-漂移)
+7. [Resources 缓存问题](#resources-缓存问题)
+8. [代理配置问题](#代理配置问题)
 
 ---
 
@@ -134,6 +135,59 @@ npm install --force --no-save --no-audit --no-fund --ignore-scripts \
 ```
 
 版本号必须与项目 `package.json` 中的 optional dependency 保持一致。
+
+---
+
+## macOS dev 构建后 SDK spawn -88 / app 体积异常变小
+
+**症状**：
+
+```text
+[sdk] Claude native binary resolved via node_modules ...
+[agent] session error: spawn Unknown system error -88
+```
+
+同时 `./build_dev.sh` 产出的 `.app` 明显变小。例如 Claude SDK 正常
+darwin-arm64 解包后二进制约 221 MB，但坏状态下可能只有 50 多 MB。
+
+**根本原因**：
+
+`@anthropic-ai/claude-agent-sdk-darwin-*` 是 npm optional dependency。
+如果 `npm install` / 升级过程被中断，npm 可能留下半截目录：`claude`
+文件存在，但 `package.json` 缺失，Mach-O load command 指向文件末尾之后。
+
+典型验证：
+
+```bash
+otool -l node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/claude | grep "past end of file"
+```
+
+这种文件会被 macOS 直接拒绝执行，Node 侧表现为 opaque 的
+`spawn Unknown system error -88`。
+
+**修复**：
+
+当前 macOS `setup.sh` 和 `build_dev.sh` 都会调用：
+
+```bash
+./scripts/ensure_claude_sdk_package.sh
+```
+
+Windows `setup_windows.ps1` 和 `build_windows.ps1` 会调用：
+
+```powershell
+.\scripts\ensure_claude_sdk_package.ps1 -Arch x64
+```
+
+这些脚本会校验：
+
+- platform package 的 `package.json` 名称 / 版本与 `package.json` pin 一致
+- Mach-O 架构匹配 host / target
+- macOS：`otool -l` 不含 `past end of file`，upstream code signature 可通过 `codesign --verify --strict`
+- Windows：PE section 不指向文件末尾之后，Authenticode signature 为 `Valid`
+
+发现损坏会用临时目录重新安装目标 platform package，再复制回
+`node_modules/@anthropic-ai/`，避免继续把半截二进制打进 dev app。
 
 ---
 

@@ -6,6 +6,7 @@ import {
   resetTurnForTest,
   setCurrentTurnCompactResult,
   setCurrentTurnStartTime,
+  setCurrentTurnToolCount,
   setSawCompactBoundary,
 } from './turn';
 import {
@@ -93,6 +94,10 @@ function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
     elapsedMs: () => 1,
     broadcast: (event, data) => broadcasts.push({ event, data }),
     broadcastBuiltinContextUsage: vi.fn(async () => undefined),
+    getCurrentTransientProviderRetryAttempt: () => 0,
+    scheduleTransientProviderRetry: vi.fn(() => false),
+    retractTransientProviderTextOutput: vi.fn(),
+    clearApiRetryStatus: vi.fn(),
     trackServer: vi.fn(),
     firePostTurnTitleHook: vi.fn(),
     appendTextChunk: vi.fn(() => true),
@@ -236,6 +241,72 @@ describe('turn-lifecycle owner', () => {
     expect(broadcasts.map(item => item.event)).toContain('chat:message-complete');
     expect(broadcasts.map(item => item.event)).not.toContain('chat:message-error');
     expect(deps.failCurrentImRequest).not.toHaveBeenCalled();
+  });
+
+  it('auto-retries success-shaped transient provider text instead of completing the turn', () => {
+    const { deps, broadcasts } = makeDeps({
+      scheduleTransientProviderRetry: vi.fn(() => true),
+    });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+
+    lifecycle.handleSdkResult(makeResult({
+      result: '[Error]: Concurrency limit exceeded for account, please retry later',
+    }));
+
+    expect(deps.retractTransientProviderTextOutput).toHaveBeenCalledWith(
+      '[Error]: Concurrency limit exceeded for account, please retry later',
+    );
+    expect(deps.scheduleTransientProviderRetry).toHaveBeenCalledWith(expect.objectContaining({
+      retry: true,
+      attempt: 1,
+      maxRetries: 3,
+      delayMs: 15_000,
+      error: expect.objectContaining({ kind: 'concurrency_limit' }),
+    }));
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-error');
+    expect(deps.persistTranscript).not.toHaveBeenCalled();
+  });
+
+  it('does not auto-retry transient provider text after tool side effects', () => {
+    const { deps, broadcasts } = makeDeps({
+      scheduleTransientProviderRetry: vi.fn(() => true),
+    });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    setCurrentTurnToolCount(1);
+
+    lifecycle.handleSdkResult(makeResult({
+      result: '[Error]: Concurrency limit exceeded for account, please retry later',
+    }));
+
+    expect(deps.scheduleTransientProviderRetry).not.toHaveBeenCalled();
+    expect(deps.retractTransientProviderTextOutput).toHaveBeenCalledWith(
+      '[Error]: Concurrency limit exceeded for account, please retry later',
+    );
+    expect(broadcasts.map(item => item.event)).toContain('chat:message-error');
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
+    expect(deps.setLastAgentError).toHaveBeenCalledWith(expect.stringContaining('无法安全自动重试'));
+  });
+
+  it('surfaces a clear terminal error after transient provider text retries are exhausted', () => {
+    const { deps, broadcasts } = makeDeps({
+      getCurrentTransientProviderRetryAttempt: () => 3,
+    });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+
+    lifecycle.handleSdkResult(makeResult({
+      result: '[Error]: Concurrency limit exceeded for account, please retry later',
+    }));
+
+    expect(deps.retractTransientProviderTextOutput).toHaveBeenCalled();
+    expect(deps.scheduleTransientProviderRetry).not.toHaveBeenCalled();
+    expect(broadcasts.map(item => item.event)).toContain('chat:message-error');
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
+    expect(deps.setLastAgentError).toHaveBeenCalledWith(expect.stringContaining('已自动重试 3 次仍失败'));
+    expect(transcriptState.messages.at(-1)).toMatchObject({
+      role: 'assistant',
+      content: expect.stringContaining('Error: 上游模型服务达到账号并发限制'),
+    });
   });
 
   it('finalizes stopped turns with queue cleanup, IM completion, and persistence', () => {

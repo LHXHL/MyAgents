@@ -18,6 +18,7 @@ import { Copy, Download, FileText } from 'lucide-react';
 
 import ContextMenu, { type ContextMenuItem } from '@/components/ContextMenu';
 import { useToastOptional } from '@/components/Toast';
+import { useNotifyRowLayoutChanged } from '@/context/ChatRowLayoutContext';
 import { useTabStateOptional } from '@/context/TabContext';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { useAttachmentUrl } from '@/utils/toolAttachment';
@@ -38,6 +39,8 @@ export default function ToolImageAttachment({ attachment }: Props) {
   const mediaRef = useRef<HTMLButtonElement>(null);
   const [captionWidth, setCaptionWidth] = useState<number | null>(null);
   const localPath = attachment.sourcePath ?? attachment.savedPath ?? null;
+  const notifyRowLayoutChanged = useNotifyRowLayoutChanged();
+  const notifiedSettledRef = useRef(false);
 
   const updateCaptionWidth = useCallback(() => {
     const media = mediaRef.current;
@@ -46,6 +49,14 @@ export default function ToolImageAttachment({ attachment }: Props) {
     if (nextWidth <= 0) return;
     setCaptionWidth((prev) => (prev === nextWidth ? prev : nextWidth));
   }, []);
+
+  const handleImageLoad = useCallback(() => {
+    updateCaptionWidth();
+    if (!notifiedSettledRef.current) {
+      notifiedSettledRef.current = true;
+      notifyRowLayoutChanged('attachment-settle');
+    }
+  }, [notifyRowLayoutChanged, updateCaptionWidth]);
 
   useLayoutEffect(() => {
     if (urlState.state !== 'ready') {
@@ -214,7 +225,7 @@ export default function ToolImageAttachment({ attachment }: Props) {
             src={urlState.url}
             alt={attachment.caption || t('shell.toolChrome.common.generatedImageAlt')}
             loading="lazy"
-            onLoad={updateCaptionWidth}
+            onLoad={handleImageLoad}
             className="block h-auto max-h-80 max-w-full object-contain"
           />
         </button>

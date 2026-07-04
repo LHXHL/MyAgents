@@ -1002,6 +1002,8 @@ IM Bot 升级为 Agent 实体，Channel 为可插拔连接。新旧 Tauri Comman
 
 > 旧命令 `cmd_start_im_bot` 等已标 `@deprecated`，内部转发到新 Agent API。
 
+归档 Agent 工作区时，`Project.archivedAt` 是权威状态。Rust IM runtime 在 `cmd_start_agent_channel`、开机 `schedule_agent_auto_start()`、以及 `monitor_agent_channels()` 的缺失/异常频道重启路径都会读取 `projects.json`，跳过 archived workspace。CLI/Admin API 的 `agent archive` 还会通过 Management API `/api/agent/stop-channels` 立即停止已运行的 Channel；这只是运行时副作用，不能替代 `Project.archivedAt`。
+
 ### InteractionScenario 扩展
 
 系统提示词支持四种场景：

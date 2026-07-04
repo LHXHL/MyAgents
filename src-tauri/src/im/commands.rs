@@ -1222,6 +1222,13 @@ pub async fn cmd_start_agent_channel(
     agentConfig: AgentConfigRust,
     channelConfig: ChannelConfigRust,
 ) -> Result<ChannelStatus, String> {
+    if is_agent_workspace_archived(&agentConfig) {
+        return Err(format!(
+            "Agent workspace '{}' is archived. Unarchive it before starting channels.",
+            agentConfig.name
+        ));
+    }
+
     // Dedup: check if channel is already running in agent state.
     // If channel exists but is in Error/Stopped state, remove it to allow restart.
     {

@@ -3,10 +3,12 @@ import { homedir, tmpdir } from 'os';
 import { join } from 'path';
 
 import {
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
   MANAGED_CODEX_REQUIRED_RUNTIME,
 } from '../../shared/config-types';
 import type { RuntimeEnvPolicy, RuntimeSource } from '../../shared/types/runtime';
 import { ensureDirSync } from '../utils/fs-utils';
+import { applyProviderProxyPolicyToEnv } from '../proxy-state';
 import { augmentedProcessEnv, resolveCommand } from './env-utils';
 
 export interface CodexCommandContext {
@@ -276,6 +278,7 @@ function buildManagedCodexEnv(
   for (const key of Object.keys(env)) {
     if (looksLikeAuthEnvName(key)) delete env[key];
   }
+  applyProviderProxyPolicyToEnv(env, CODEX_SUBSCRIPTION_PROVIDER_ID);
 
   const managedHome = getManagedCodexHome();
   ensureDirSync(managedHome);

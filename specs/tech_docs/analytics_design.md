@@ -12,6 +12,19 @@
 
 ## Shared Dimensions
 
+### Device Identity
+
+`device_id` is the stable desktop endpoint id stored at `~/.myagents/device_id`.
+The value predates Cloud Space and must remain stable across the Space device
+identity work. The implementation owner is the shared device identity layer
+(`src-tauri/src/device_identity.rs` + `src/renderer/identity/deviceIdentity.ts`);
+analytics must consume that layer instead of creating its own id.
+
+Cloud Space uses the same value as `deviceId` when upserting
+`user_devices(userId, deviceId)` and registering Registered Agents. This is a
+shared identity source, not a new analytics dimension and not a server-issued
+replacement id.
+
 ### Source
 
 `source` identifies the process/channel that triggered an event:

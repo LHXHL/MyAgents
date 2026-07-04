@@ -5,18 +5,19 @@
 ## Ground truth
 
 - MyAgents 有自己的代理设置，Rust 启动子进程时会注入 proxy env，并保护 localhost/127.0.0.1 不走代理。
-- 外部 Runtime 有 `envPolicy.proxy`：`myagents` 使用 MyAgents 设置的代理，`terminal` 尝试复现用户交互式 shell 的 proxy env。
+- `runtimeSource=system-cli` 的外部 Runtime 有 `envPolicy.proxy`：`myagents` 使用 MyAgents 设置的代理，`terminal` 尝试复现用户交互式 shell 的 proxy env。
 - builtin Provider 路径和 external Runtime envPolicy 不是同一套机制。
+- `runtimeSource=managed-provider` 的 `codex-sub` 走 Provider 管理的 runtime 链路，要同时看 Provider 状态和 `[managed-codex]` 日志，不要只按用户系统 Codex CLI 的环境判断。
 - 插件 npm 安装、远程 MCP、Provider verify、Codex app-server 诊断是不同链路，要按现象分开查。
 
 ## 取证
 
 ```bash
 myagents status --json
-rg -n "proxy|NO_PROXY|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|502|npm install|registry|provider/verify|runtime_diagnostics|effectiveEnv" ./logs/unified-*.log | tail -180
+rg -n "proxy|NO_PROXY|HTTP_PROXY|HTTPS_PROXY|ALL_PROXY|ECONNREFUSED|ECONNRESET|ENOTFOUND|ETIMEDOUT|502|npm install|registry|provider/verify|runtime_diagnostics|effectiveEnv|runtimeSource|managed-codex|codex-sub" ./logs/unified-*.log | tail -180
 ```
 
-Codex env 差异：
+system-cli Codex env 差异：
 
 ```bash
 myagents runtime diagnose codex --workspacePath <absolute-workspace-path> --json

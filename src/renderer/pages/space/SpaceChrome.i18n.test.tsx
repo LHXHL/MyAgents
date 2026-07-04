@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SpaceSession } from '@/api/spaceCloud';
@@ -11,7 +11,12 @@ vi.mock('@/hooks/useCloseLayer', () => ({
 
 const session: SpaceSession = {
   user: { id: 'u-1', email: 'user@example.com', name: 'User' },
-  space: { id: 'space-1', slug: 'official', name: 'Official Space', joinPolicy: 'open' },
+  space: {
+    id: 'space-1',
+    slug: 'official',
+    name: 'Official Space',
+    joinPolicy: 'open',
+  },
   membership: { id: 'membership-1', role: 'member' },
   baseUrl: 'https://space.myagents.test',
   updatedAt: '2026-06-28T00:00:00.000Z',
@@ -32,14 +37,7 @@ describe('SpaceChrome i18n', () => {
   });
 
   it('renders sidebar account menu in English without translating data', () => {
-    render(
-      <SpaceSidebar
-        session={session}
-        mode="issues"
-        onSpaceTabChange={vi.fn()}
-        onLogout={vi.fn()}
-      />,
-    );
+    render(<SpaceSidebar session={session} mode="issues" onSpaceTabChange={vi.fn()} onLogout={vi.fn()} />);
 
     expect(screen.getByText('Official Space')).toBeInTheDocument();
     expect(screen.getByText('open')).toBeInTheDocument();
@@ -49,5 +47,18 @@ describe('SpaceChrome i18n', () => {
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
     expect(screen.queryByText('开放加入')).not.toBeInTheDocument();
     expect(screen.queryByText('退出登录')).not.toBeInTheDocument();
+  });
+
+  it('closes the sidebar account menu when clicking outside', async () => {
+    render(<SpaceSidebar session={session} mode="issues" onSpaceTabChange={vi.fn()} onLogout={vi.fn()} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /user@example.com/i }));
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
+
+    fireEvent.mouseDown(document.body);
+
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Sign out' })).not.toBeInTheDocument();
+    });
   });
 });

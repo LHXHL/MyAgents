@@ -26,6 +26,73 @@ struct PartialBotEntry {
     config: ImConfig,
 }
 
+#[derive(Default)]
+struct ArchivedAgentWorkspaces {
+    agent_ids: std::collections::HashSet<String>,
+    paths: std::collections::HashSet<String>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PartialProjectEntry {
+    agent_id: Option<String>,
+    path: Option<String>,
+    archived_at: Option<String>,
+}
+
+fn read_archived_agent_workspaces_from_disk() -> ArchivedAgentWorkspaces {
+    let home = match dirs::home_dir() {
+        Some(h) => h,
+        None => return ArchivedAgentWorkspaces::default(),
+    };
+    let path = home.join(".myagents").join("projects.json");
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return ArchivedAgentWorkspaces::default(),
+    };
+    let projects = match serde_json::from_str::<Vec<PartialProjectEntry>>(strip_bom(&content)) {
+        Ok(p) => p,
+        Err(e) => {
+            ulog_warn!(
+                "[agent] projects.json parse failed while checking archives: {}",
+                e
+            );
+            return ArchivedAgentWorkspaces::default();
+        }
+    };
+
+    let mut archived = ArchivedAgentWorkspaces::default();
+    for project in projects {
+        if project.archived_at.as_deref().unwrap_or("").is_empty() {
+            continue;
+        }
+        if let Some(agent_id) = project.agent_id.filter(|id| !id.is_empty()) {
+            archived.agent_ids.insert(agent_id);
+        }
+        if let Some(path) = project.path.filter(|p| !p.is_empty()) {
+            archived
+                .paths
+                .insert(crate::cron_task::normalize_path(&path));
+        }
+    }
+    archived
+}
+
+fn is_agent_workspace_archived_with(
+    agent_cfg: &types::AgentConfigRust,
+    archived: &ArchivedAgentWorkspaces,
+) -> bool {
+    archived.agent_ids.contains(&agent_cfg.id)
+        || archived
+            .paths
+            .contains(&crate::cron_task::normalize_path(&agent_cfg.workspace_path))
+}
+
+pub(crate) fn is_agent_workspace_archived(agent_cfg: &types::AgentConfigRust) -> bool {
+    let archived = read_archived_agent_workspaces_from_disk();
+    is_agent_workspace_archived_with(agent_cfg, &archived)
+}
+
 fn has_non_empty(value: Option<&String>) -> bool {
     value.map(|s| !s.is_empty()).unwrap_or(false)
 }
@@ -75,10 +142,11 @@ fn find_missing_startable_agent_channels(
     agent_configs: &[types::AgentConfigRust],
     running_channel_keys: &std::collections::HashSet<(String, String)>,
     recovering_channels: &[(String, String)],
+    archived_workspaces: &ArchivedAgentWorkspaces,
 ) -> Vec<(String, String)> {
     let mut missing = Vec::new();
     for agent_cfg in agent_configs {
-        if !agent_cfg.enabled {
+        if !agent_cfg.enabled || is_agent_workspace_archived_with(agent_cfg, archived_workspaces) {
             continue;
         }
         for channel_cfg in &agent_cfg.channels {
@@ -516,7 +584,8 @@ mod agent_monitor_tests {
         let agents = agent_config_with_weixin_channel(true);
         let running = std::collections::HashSet::new();
 
-        let missing = find_missing_startable_agent_channels(&agents, &running, &[]);
+        let archived = ArchivedAgentWorkspaces::default();
+        let missing = find_missing_startable_agent_channels(&agents, &running, &[], &archived);
 
         assert_eq!(missing, vec![("agent-1".to_string(), "weixin".to_string())]);
     }
@@ -527,13 +596,17 @@ mod agent_monitor_tests {
         let running =
             std::collections::HashSet::from([("agent-1".to_string(), "weixin".to_string())]);
 
-        assert!(find_missing_startable_agent_channels(&agents, &running, &[]).is_empty());
+        let archived = ArchivedAgentWorkspaces::default();
+        assert!(
+            find_missing_startable_agent_channels(&agents, &running, &[], &archived).is_empty()
+        );
 
         let disabled_agents = agent_config_with_weixin_channel(false);
         assert!(find_missing_startable_agent_channels(
             &disabled_agents,
             &std::collections::HashSet::new(),
             &[],
+            &archived,
         )
         .is_empty());
     }
@@ -1541,8 +1614,17 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
         let agent_state = app_handle.state::<ManagedAgents>();
         let sidecar_manager = app_handle.state::<ManagedSidecarManager>();
 
+        let archived_workspaces = read_archived_agent_workspaces_from_disk();
+
         for agent_config in agents {
             if !agent_config.enabled {
+                continue;
+            }
+            if is_agent_workspace_archived_with(&agent_config, &archived_workspaces) {
+                ulog_info!(
+                    "[agent] Skipping auto-start for archived agent workspace {}",
+                    agent_config.id
+                );
                 continue;
             }
 
@@ -2269,10 +2351,12 @@ pub async fn monitor_agent_channels(
 
         // Phase 2: Read configs from disk for restart and missing-channel reconcile.
         let agent_configs = read_agent_configs_from_disk();
+        let archived_workspaces = read_archived_agent_workspaces_from_disk();
         dead_channels.extend(find_missing_startable_agent_channels(
             &agent_configs,
             &running_channel_keys,
             &dead_channels,
+            &archived_workspaces,
         ));
 
         // Merge orphaned channels (failed restart last cycle, no longer in agent_state)
@@ -2321,6 +2405,9 @@ pub async fn monitor_agent_channels(
                 None => continue,
             };
             if !agent_cfg.enabled {
+                continue;
+            }
+            if is_agent_workspace_archived_with(agent_cfg, &archived_workspaces) {
                 continue;
             }
             let channel_cfg = match agent_cfg.channels.iter().find(|c| c.id == *channel_id) {

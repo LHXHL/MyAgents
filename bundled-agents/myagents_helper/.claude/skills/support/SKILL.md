@@ -47,6 +47,7 @@ grep '\[boot\]' ./logs/unified-*.log | tail -5
 | Telegram/钉钉/飞书/微信/QQ Agent 不在线、社区插件装不上或登录后不生效 | `references/agent-channel-plugin.md` |
 | 定时任务没执行、任务中心卡住、想法/任务状态异常、需要跨 session 反馈 | `references/automation.md` |
 | 图片/音频/PDF 等工具产物生成了但不显示、Codex image_generation 没图、IM 媒体没发出 | `references/attachments.md` |
+| 工作区文件树/搜索/预览、@ 文件或图片、拖拽/粘贴附件、新建/重命名/删除/移动文件不正常 | `references/workspace-files.md` |
 | AI 不回复、sidecar 重启、pre-warm、历史恢复、回溯/分叉异常 | `references/session-sidecar.md` |
 | 网络/代理、Provider 可达性、npm 拉包、终端和 MyAgents env 差异 | `references/proxy-env.md` |
 | 白屏、整页“界面渲染出错”、点击某处 UI 崩溃 | `references/frontend-render.md` |
@@ -66,7 +67,7 @@ grep '\[boot\]' ./logs/unified-*.log | tail -5
 - 脱敏读取相关配置
 
 active probe 会实际连接外部服务、启动进程、消耗请求或弹浏览器，应先说明目的：
-- `myagents model verify <provider>`
+- `myagents model verify <provider>`（API Key Provider 的现场验证；订阅 Provider 先看 provider 状态和日志，不能把“无 API Key”误判成失败）
 - `myagents mcp test <id>`
 - `myagents mcp oauth start <id>`
 - `myagents runtime diagnose codex --workspacePath <path> --json`
@@ -85,10 +86,12 @@ active probe 会实际连接外部服务、启动进程、消耗请求或弹浏�
   -> 返回 UI、IM、cron run 或 session history
 ```
 
-优先查最近时间窗口，不要全日志漫游。常用模式：
+优先查最近时间窗口，不要全日志漫游。先用用户提供的时间、`sessionId`、`workspacePath`、runtime/provider 收窄。前端“召唤小助理”注入的 Terminal Reason / Runtime Diagnostics 是第一份证据，但仍要用日志补全发生前后的时间线。
+
+常用模式：
 
 ```bash
-rg -n "ERROR|WARN|auth error|401|provider/verify|terminal_reason|AppErrorBoundary|external-session|runtime_diagnostics|CronTask|bridge|tool-attachment|attachment" ./logs/unified-*.log | tail -120
+rg -n "ERROR|WARN|auth error|401|403|provider/verify|subscription/verify|terminal_reason|AppErrorBoundary|external-session|runtime_diagnostics|RuntimeDiagnostics|runtimeSource|managed-codex|codex-sub|anthropic-sub|subscription|CronTask|bridge|tool-attachment|ToolAttachment|cmd_workspace|workspace_files|DirectoryPanel|SimpleChatInput|attachment" ./logs/unified-*.log | tail -160
 ```
 
 ### 桌面宠物 / 悬浮窗

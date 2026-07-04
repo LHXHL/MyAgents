@@ -169,10 +169,13 @@ echo -e "${YELLOW}⚠ 已禁用 Apple 公证 (开发版，保留签名)${NC}"
 # 0.2.113+ 取代原 cli.js 分发模式
 HOST_ARCH=$(uname -m)
 if [[ "$HOST_ARCH" == "arm64" ]]; then
+    SDK_ARCH="arm64"
     SDK_TRIPLE="darwin-arm64"
 else
+    SDK_ARCH="x64"
     SDK_TRIPLE="darwin-x64"
 fi
+"${PROJECT_DIR}/scripts/ensure_claude_sdk_package.sh" "$SDK_ARCH"
 CLAUDE_SRC="${PROJECT_DIR}/node_modules/@anthropic-ai/claude-agent-sdk-${SDK_TRIPLE}/claude"
 CLAUDE_DEST="${PROJECT_DIR}/src-tauri/resources/claude-agent-sdk/claude"
 if [ ! -f "$CLAUDE_SRC" ]; then
@@ -185,11 +188,12 @@ rm -f "$CLAUDE_DEST"
 cp "$CLAUDE_SRC" "$CLAUDE_DEST"
 chmod +x "$CLAUDE_DEST"
 xattr -d com.apple.quarantine "$CLAUDE_DEST" 2>/dev/null || true
-# Debug 构建下，如设置了签名身份则签名；否则 ad-hoc
+# Debug 构建不需要发布签名；ensure_claude_sdk_package.sh 已验证 npm 包自带
+# 的 Anthropic 签名和 Mach-O 完整性。如设置了签名身份，则为本地 app 资源重签。
 if [ -n "$APPLE_SIGNING_IDENTITY" ]; then
     codesign --force --options runtime --timestamp \
         --entitlements "${PROJECT_DIR}/src-tauri/Entitlements.plist" \
-        --sign "$APPLE_SIGNING_IDENTITY" "$CLAUDE_DEST" 2>/dev/null || true
+        --sign "$APPLE_SIGNING_IDENTITY" "$CLAUDE_DEST"
 fi
 echo -e "  ${GREEN}✓ claude (${SDK_TRIPLE}) 已就绪${NC}"
 

@@ -4,6 +4,7 @@ import {
     CODEX_SUBSCRIPTION_PROVIDER_ID,
     DEFAULT_CONFIG,
     MANAGED_CODEX_PROVIDER,
+    SUBSCRIPTION_PROVIDER_ID,
     applyProviderEnablementAndOrder,
     type Provider,
 } from '../types';
@@ -113,6 +114,28 @@ describe('provider availability with enablement', () => {
             {},
             {},
         )).toBe(false);
+    });
+
+    it('treats auth-required subscription verify status as unavailable', () => {
+        const provider: Provider = {
+            id: SUBSCRIPTION_PROVIDER_ID,
+            name: 'Anthropic (订阅)',
+            vendor: 'Anthropic',
+            cloudProvider: '官方',
+            type: 'subscription',
+            primaryModel: 'claude-sonnet-4-6',
+            isBuiltin: true,
+            config: {},
+            models: [{ model: 'claude-sonnet-4-6', modelName: 'Claude Sonnet 4.6', modelSeries: 'claude' }],
+        };
+
+        expect(isProviderAvailable(provider, {}, {
+            [SUBSCRIPTION_PROVIDER_ID]: {
+                status: 'invalid',
+                verifiedAt: '2026-07-02T00:00:00.000Z',
+                invalidReason: 'auth_required',
+            },
+        })).toBe(false);
     });
 
     it('does not fallback from an unavailable runtime-backed provider to an API provider', () => {

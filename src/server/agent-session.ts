@@ -25,6 +25,7 @@ import {
 } from './utils/inflight-terminal';
 import { shouldBlockToolInPlanMode, planModeDenyMessage, isPlanModeInEffect, PLAN_MODE_READONLY_TOOLS, PLAN_MODE_HOST_INTERACTION_TOOLS, applyPermissionModeSelection, computePlanExitState, computeRestoredPlanState } from './utils/plan-mode-gate';
 import { planRetraction } from './utils/message-retraction';
+import type { TransientProviderTextRetryDecision } from './session-core/turn-result-policy';
 import { diagnoseSdkSubprocessFailure } from './utils/sdk-subprocess-diagnostics';
 import { InactivityWatchdog } from './utils/inactivity-watchdog';
 import {
@@ -49,7 +50,13 @@ import { getBuiltinMcpInstance } from './tools/builtin-mcp-registry';
 // Side-effect import — registers META (ids + lazy factories) at cold start.
 // Cheap: just function-ref storage, no SDK/zod eval, no tool module loaded.
 import './tools/builtin-mcp-meta';
-import { startSocksBridge, stopSocksBridge, isSocksBridgeRunning } from './utils/socks-bridge';
+import {
+  applyProviderProxyPolicyToEnv,
+  getProviderProxyScopeKey,
+  initSocksBridgeFromCurrentEnv,
+  PROXY_NO_PROXY_VAL,
+  setProcessProxyConfig,
+} from './proxy-state';
 // Phase E (PRD 0.2.7): the sidecar file watcher (`file-watcher.ts` →
 // SSE `workspace:files-changed`) is removed. The renderer subscribes to
 // the Rust workspace_files watcher (Tauri event
@@ -135,7 +142,7 @@ import type { ToolAttachment } from '../shared/types/tool-attachment';
 import { imEventBus, type ImEventType } from './utils/im-event-bus';
 import { imRequestRegistry } from './utils/im-request-registry';
 import { mirrorIfChannelBound, type MirrorImage } from './utils/im-mirror';
-import { normalizeClaudeTranscriptCleanupPeriodDays, SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
+import { normalizeClaudeTranscriptCleanupPeriodDays, SUBSCRIPTION_PROVIDER_ID, type ProxySettings } from '../shared/config-types';
 import { createConcreteProviderRoute, isConcreteProviderRoute } from '../shared/providerRoute';
 import type {
   ContentBlock,
@@ -212,8 +219,10 @@ import {
 import {
   appendCurrentTurnTextBlock,
   clearInjectedTurnOutcomes,
+  clearCurrentTurnTextBlocks,
   clearPendingRequests as turnClearPendingRequests,
   consumeInjectedTurnOutcome as turnConsumeInjectedTurnOutcome,
+  getCurrentTurnSourceItem,
   getCurrentTurnInboxMeta,
   discardInjectedTurnOutcomeWithOptions as turnDiscardInjectedTurnOutcome,
   getPendingRequestIds,
@@ -234,6 +243,7 @@ import {
   setCurrentTurnInjectedTurnId,
   setCurrentTurnImTerminalEmitted,
   setCurrentTurnProviderAnalytics,
+  setCurrentTurnSourceItem,
   setCurrentTurnStartTime,
   setLatestMainAssistantUsage,
   setSawCompactBoundary,
@@ -355,9 +365,6 @@ const isDebugMode = process.env.DEBUG === '1' || process.env.NODE_ENV === 'devel
  */
 const SUPPRESS_PER_TOKEN_LOG_BROADCAST = true;
 
-// Shared NO_PROXY value — comprehensive list of localhost addresses to bypass proxy
-const PROXY_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]';
-
 /**
  * Claude Agent SDK reserved MCP server names — using these causes the SDK to
  * crash with exit code 1: "Invalid MCP configuration: X is a reserved MCP name."
@@ -385,24 +392,6 @@ export const SDK_RESERVED_MCP_NAMES = ['claude-in-chrome', 'computer-use'];
 export const MYAGENTS_CONTEXT_INJECTED_MCP_IDS = [
   'im-bridge-tools',
 ] as const;
-
-// ===== Inherited Proxy Env Snapshot =====
-// Capture system proxy state at sidecar startup (before any setProxyConfig call).
-// When Rust spawns this sidecar WITHOUT explicit proxy config, the process inherits
-// system proxy env vars (e.g., from Clash TUN/global proxy). We snapshot them so
-// setProxyConfig(disabled) can restore the inherited state instead of force-clearing.
-const PROXY_VARS_LIST = ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
-                         'ALL_PROXY', 'all_proxy', 'NO_PROXY', 'no_proxy'] as const;
-const proxyWasInjectedByRust = process.env.MYAGENTS_PROXY_INJECTED === '1';
-delete process.env.MYAGENTS_PROXY_INJECTED; // Don't leak to SDK subprocess
-
-// Only capture system state when NOT explicitly injected by Rust
-const inheritedProxySnapshot: Record<string, string | undefined> = {};
-if (!proxyWasInjectedByRust) {
-  for (const v of PROXY_VARS_LIST) {
-    inheritedProxySnapshot[v] = process.env[v];
-  }
-}
 
 // ===== OAuth Token Change Listener =====
 // Register once at module load. Token changes trigger session restart
@@ -656,7 +645,7 @@ async function awaitSessionTermination(timeoutMs = 10_000, label = ''): Promise<
 
 let isInterruptingResponse = false;
 let isStreamingMessage = false;
-// Every `system` subtype defined in SDK 0.3.195 (sdk.d.ts) — handled here or
+// Every `system` subtype defined in SDK 0.3.199 (sdk.d.ts) — handled here or
 // deliberately untouched. A subtype outside this set means a NEWER SDK started
 // emitting a message kind we have never seen; the loop logs it once per
 // process instead of letting it vanish silently. Update this set when bumping
@@ -673,11 +662,12 @@ const KNOWN_SYSTEM_SUBTYPES = new Set([
 ]);
 const warnedUnknownSystemSubtypes = new Set<string>();
 // Top-level half of the same sentinel: every `type` value an SDKMessage union
-// member carries in 0.3.195. Verified 1:1 against sdk.d.ts at upgrade time
+// member carries in 0.3.199. Verified 1:1 against sdk.d.ts at upgrade time
 // (the system-typed members are covered by KNOWN_SYSTEM_SUBTYPES above).
 const KNOWN_MESSAGE_TYPES = new Set([
   'assistant', 'user', 'result', 'system', 'stream_event', 'rate_limit_event',
   'auth_status', 'tool_progress', 'tool_use_summary', 'prompt_suggestion',
+  'conversation_reset',
 ]);
 const warnedUnknownMessageTypes = new Set<string>();
 // Post-interrupt turn-completion signal: resolves when for-await loop receives a `result` message.
@@ -981,6 +971,109 @@ function toMirrorImages(images: ResolvedImagePayload[] | undefined): MirrorImage
   return out.length > 0 ? out : undefined;
 }
 let isApiRetrying = false;  // Track api_retry state to clear when streaming resumes
+let transientProviderRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
+type TransientProviderTextRetry =
+  Extract<TransientProviderTextRetryDecision, { retry: true }>;
+
+function clearApiRetryStatus(): void {
+  if (!isApiRetrying) return;
+  isApiRetrying = false;
+  broadcast('chat:api-retry', null);
+}
+
+function clearTransientProviderRetryTimer(reason: string): void {
+  if (!transientProviderRetryTimer) return;
+  clearTimeout(transientProviderRetryTimer);
+  transientProviderRetryTimer = null;
+  clearApiRetryStatus();
+  console.log(`[agent][transient-provider-text] cleared pending retry timer (${reason})`);
+}
+
+function normalizeAssistantRetryText(text: string): string {
+  return text.trim().replace(/\s+/g, ' ');
+}
+
+function assistantTextForTransientRetryRetraction(message: MessageWire): string | null {
+  if (typeof message.content === 'string') return message.content;
+  const parts: string[] = [];
+  for (const block of message.content) {
+    if (block.type !== 'text') return null;
+    parts.push(block.text ?? '');
+  }
+  return parts.join('');
+}
+
+function retractTransientProviderTextOutput(resultText: string): void {
+  const expected = normalizeAssistantRetryText(resultText);
+  if (!expected) return;
+  const tail = transcriptState.messages[transcriptState.messages.length - 1];
+  if (!tail || tail.role !== 'assistant') {
+    clearCurrentTurnTextBlocks();
+    return;
+  }
+  const tailText = assistantTextForTransientRetryRetraction(tail);
+  if (!tailText || normalizeAssistantRetryText(tailText) !== expected) {
+    clearCurrentTurnTextBlocks();
+    return;
+  }
+
+  const { removedBelowCursor } = applyTranscriptRetractionToPersistence(new Set([tail.id]));
+  isStreamingMessage = false;
+  clearCurrentTurnTextBlocks();
+  broadcast('chat:messages-retracted', {
+    messageIds: [tail.id],
+    retractedStreamingTail: true,
+  });
+  if (removedBelowCursor > 0) {
+    void persistMessagesToStorage();
+  }
+  console.log(`[agent][transient-provider-text] retracted assistant error bubble ${tail.id}`);
+}
+
+function scheduleTransientProviderRetry(decision: TransientProviderTextRetry): boolean {
+  const source = getCurrentTurnSourceItem();
+  if (!source || source.wasQueued) {
+    return false;
+  }
+
+  clearTransientProviderRetryTimer('reschedule');
+  isApiRetrying = true;
+  setSessionState('running');
+  isStreamingMessage = true;
+
+  const retryItem: MessageQueueItem = {
+    ...source,
+    id: randomUUID(),
+    wasQueued: false,
+    resolve: () => {},
+    requestId: undefined,
+    transientProviderRetry: {
+      rootQueueId: source.transientProviderRetry?.rootQueueId ?? source.id,
+      attempt: decision.attempt,
+    },
+  };
+  const scheduledSessionId = sessionId;
+  transientProviderRetryTimer = setTimeout(() => {
+    transientProviderRetryTimer = null;
+    if (sessionId !== scheduledSessionId || lifecycleState.abortRequested) {
+      clearApiRetryStatus();
+      console.log('[agent][transient-provider-text] skipped retry after session changed or aborted');
+      return;
+    }
+    console.log(
+      `[agent][transient-provider-text] retrying hidden user turn ` +
+      `${decision.attempt}/${decision.maxRetries} root=${retryItem.transientProviderRetry?.rootQueueId}`,
+    );
+    wakeGenerator(retryItem);
+  }, decision.delayMs);
+  broadcast('chat:api-retry', {
+    attempt: decision.attempt,
+    maxRetries: decision.maxRetries,
+    delayMs: decision.delayMs,
+  });
+  return true;
+}
 // Pattern 3 §3.2.4 — incremental persistence cursor.
 // `persistMessagesToStorage` previously remapped the entire `transcriptState.messages` array
 // every turn (O(history) per turn, where history grows monotonically).
@@ -1182,6 +1275,7 @@ function resolveActiveSessionUpstreamConfig(): UpstreamBridgeConfig {
   // handler will fail the upstream call with a clear error.
   const aliases = resolveSessionModelAliases(configState.currentProviderEnv?.modelAliases, configState.currentModel);
   return {
+    providerId: configState.currentProviderEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
     baseUrl: configState.currentProviderEnv?.baseUrl ?? '',
     apiKey: configState.currentProviderEnv?.apiKey ?? '',
     // When aliases exist, don't set model as blanket override — sub-agents
@@ -1278,6 +1372,7 @@ export function startOneShotBridge(
   const token = randomUUID();
   const aliases = resolveSessionModelAliases(providerEnv.modelAliases, modelOverride);
   const snapshot: UpstreamBridgeConfig = {
+    providerId: providerEnv.providerId ?? '',
     baseUrl: providerEnv.baseUrl ?? '',
     apiKey: providerEnv.apiKey ?? '',
     model: aliases ? undefined : (modelOverride || undefined),
@@ -1642,6 +1737,7 @@ function maybeSurfaceInFlightAtAssistantTurnStart(reason: string): void {
 
 /** 中止持久 session：唤醒所有被阻塞的 Promise */
 function abortPersistentSession(): void {
+  clearTransientProviderRetryTimer('abort');
   // Log warning if browser was used but storage state wasn't saved
   // (The system prompt instructs the AI to save, but this is the fallback detection)
   if (turnState.sessionBrowserToolUsed && !turnState.sessionStorageStateSaved) {
@@ -2124,112 +2220,22 @@ export function getSessionEnabledOfficialToolIds(): readonly OfficialToolId[] | 
 }
 
 /**
- * Hot-reload proxy configuration into the current process environment.
- * Mutates process.env so that subsequent SDK subprocess spawns inherit the new proxy.
- * Triggers session restart (abort + resume + pre-warm) identical to MCP config changes,
- * but only when the effective proxy URL actually changed.
- *
- * SOCKS5 handling: Node.js `fetch()` (undici) doesn't support `socks5://` in HTTP_PROXY env vars.
- * When SOCKS5 is configured, we start a local HTTP-to-SOCKS5 bridge and set HTTP_PROXY to
- * the bridge's HTTP URL. The bridge transparently tunnels traffic through SOCKS5.
+ * Hot-reload proxy configuration into the current process environment and
+ * restart the builtin SDK only when the current provider's effective MyAgents
+ * proxy state changed. Scope-only edits can matter even when the proxy URL is
+ * unchanged; unrelated provider scope edits should not churn this session.
  */
-let proxyConfigGeneration = 0; // Guards against stale async SOCKS5 callbacks
-
-export function setProxyConfig(proxySettings: {
-  enabled: boolean;
-  protocol?: string;
-  host?: string;
-  port?: number;
-} | null): void {
-  const PROXY_VARS = [...PROXY_VARS_LIST];
-
-  // Bump generation to invalidate in-flight SOCKS5 bridge callbacks
-  const generation = ++proxyConfigGeneration;
-
-  // Compute the new effective proxy URL for change detection
-  const oldProxyUrl = process.env.HTTP_PROXY || '';
-  const rawProxyUrl = proxySettings?.enabled
-    ? `${proxySettings.protocol || 'http'}://${proxySettings.host || '127.0.0.1'}:${proxySettings.port || 7890}`
-    : '';
-  const isSocks5 = proxySettings?.protocol === 'socks5';
-
-  if (proxySettings?.enabled) {
-    if (isSocks5) {
-      // SOCKS5: start bridge asynchronously, set env vars after bridge is ready
-      const host = proxySettings.host || '127.0.0.1';
-      const port = proxySettings.port || 7890;
-      startSocksBridge(host, port).then((bridgePort) => {
-        // Discard if a newer config change has occurred while bridge was starting
-        if (generation !== proxyConfigGeneration) {
-          console.log('[agent] SOCKS5 bridge callback discarded (superseded by newer config)');
-          return;
-        }
-        const bridgeUrl = `http://127.0.0.1:${bridgePort}`;
-        if (oldProxyUrl === bridgeUrl) {
-          console.log('[agent] SOCKS5 bridge URL unchanged, skipping restart');
-          return;
-        }
-        applyProxyEnvVars(bridgeUrl, PROXY_NO_PROXY_VAL);
-        console.log(`[agent] SOCKS5 proxy hot-reloaded: ${rawProxyUrl} → bridge ${bridgeUrl}`);
-        triggerProxyRestart();
-      }).catch((err) => {
-        if (generation !== proxyConfigGeneration) return;
-        console.error(`[agent] Failed to start SOCKS5 bridge: ${err.message}. Falling back to direct socks5:// URL.`);
-        applyProxyEnvVars(rawProxyUrl, PROXY_NO_PROXY_VAL);
-        triggerProxyRestart();
-      });
-      // Return early — env vars will be set when bridge is ready
-      return;
-    }
-
-    // HTTP/HTTPS: stop bridge if running, set env vars directly
-    if (isSocksBridgeRunning()) {
-      stopSocksBridge().catch(() => { /* ignore */ });
-    }
-    applyProxyEnvVars(rawProxyUrl, PROXY_NO_PROXY_VAL);
-    console.log(`[agent] Proxy hot-reloaded: ${rawProxyUrl}`);
-  } else {
-    // Disabled: stop bridge, restore inherited system proxy state
-    if (isSocksBridgeRunning()) {
-      stopSocksBridge().catch(() => { /* ignore */ });
-    }
-    if (proxyWasInjectedByRust) {
-      // Sidecar started with explicit proxy — can't restore unknown system state, just clear
-      for (const v of PROXY_VARS) delete process.env[v];
-      console.log('[agent] Proxy cleared (was explicitly injected, falling back to direct)');
-    } else {
-      // Sidecar started with inherited system env — restore snapshot
-      for (const v of PROXY_VARS) {
-        if (inheritedProxySnapshot[v] !== undefined) {
-          process.env[v] = inheritedProxySnapshot[v]!;
-        } else {
-          delete process.env[v];
-        }
-      }
-      const restoredProxy = inheritedProxySnapshot.HTTP_PROXY || inheritedProxySnapshot.http_proxy || '';
-      console.log(`[agent] Proxy disabled, restored inherited system state${restoredProxy ? ` (${restoredProxy})` : ' (no system proxy)'}`);
-    }
-  }
-
-  const newProxyUrl = process.env.HTTP_PROXY || '';
-  if (oldProxyUrl === newProxyUrl) {
-    if (isDebugMode) console.log('[agent] Proxy config unchanged, skipping session restart');
+export async function setProxyConfig(proxySettings: ProxySettings | null): Promise<void> {
+  const providerId = getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID;
+  const oldKey = getProviderProxyScopeKey(providerId);
+  await setProcessProxyConfig(proxySettings);
+  const newKey = getProviderProxyScopeKey(providerId);
+  if (oldKey === newKey) {
+    if (isDebugMode) console.log(`[agent] Proxy config unchanged for provider=${providerId}, skipping session restart`);
     return;
   }
-
+  console.log(`[agent] Proxy effective state changed for provider=${providerId}: ${oldKey} -> ${newKey}`);
   triggerProxyRestart();
-}
-
-/** Apply proxy env vars to process.env */
-function applyProxyEnvVars(proxyUrl: string, noProxyVal: string): void {
-  process.env.HTTP_PROXY = proxyUrl;
-  process.env.HTTPS_PROXY = proxyUrl;
-  process.env.http_proxy = proxyUrl;
-  process.env.https_proxy = proxyUrl;
-  process.env.NO_PROXY = noProxyVal;
-  process.env.no_proxy = noProxyVal;
-  delete process.env.ALL_PROXY;
-  delete process.env.all_proxy;
 }
 
 /** Restart session after proxy change.
@@ -2258,22 +2264,7 @@ function triggerProxyRestart(): void {
  * Rust may have set HTTP_PROXY=socks5://... — detect and bridge it before first pre-warm.
  */
 export async function initSocksBridgeFromEnv(): Promise<void> {
-  const proxyUrl = process.env.HTTP_PROXY || process.env.HTTPS_PROXY || '';
-  if (!proxyUrl.startsWith('socks5://')) return;
-
-  try {
-    const url = new URL(proxyUrl);
-    const host = url.hostname || '127.0.0.1';
-    const port = parseInt(url.port) || 1080;
-
-    const bridgePort = await startSocksBridge(host, port);
-    const bridgeUrl = `http://127.0.0.1:${bridgePort}`;
-    applyProxyEnvVars(bridgeUrl, PROXY_NO_PROXY_VAL);
-    console.log(`[agent] SOCKS5 bridge initialized at startup: ${proxyUrl} → ${bridgeUrl}`);
-  } catch (err) {
-    console.error(`[agent] Failed to initialize SOCKS5 bridge from env: ${err instanceof Error ? err.message : err}`);
-    // Leave the original socks5:// URL in place — it will fail but at least error transcriptState.messages are clear
-  }
+  await initSocksBridgeFromCurrentEnv();
 }
 
 /**
@@ -4859,13 +4850,12 @@ export function resolveClaudeCodeCli(): string {
   // 2. Development / fallback: locate per-platform optional package in node_modules
   try {
     const platformPkg = `@anthropic-ai/claude-agent-sdk-${triple}`;
-    const manifestPath = requireModule.resolve(`${platformPkg}/package.json`);
-    const candidate = join(dirname(manifestPath), `claude${ext}`);
+    const candidate = requireModule.resolve(`${platformPkg}/claude${ext}`);
     if (existsSync(candidate)) {
       console.log(`[sdk] Claude native binary resolved via node_modules in ${Date.now() - t0}ms: ${candidate}`);
       return candidate;
     }
-    throw new Error(`Binary missing at ${candidate} (package dir exists but claude executable is absent)`);
+    throw new Error(`Binary missing at ${candidate} (package resolved but claude executable is absent)`);
   } catch (error) {
     console.error(
       `[sdk] Claude native binary resolve FAILED in ${Date.now() - t0}ms. ` +
@@ -5041,7 +5031,7 @@ export function applyWindowsUtf8SubprocessEnv(
 export function buildClaudeSessionEnv(
   providerEnv?: ProviderEnv,
   modelOverride?: string,
-  opts?: { bridgeToken?: string },
+  opts?: { bridgeToken?: string; providerId?: string },
 ): NodeJS.ProcessEnv {
   // Ensure essential paths are always present, even when launched from Finder
   // (Finder launches via launchd which doesn't inherit shell environment variables)
@@ -5286,9 +5276,18 @@ export function buildClaudeSessionEnv(
 
   // Use provided providerEnv or fall back to configState.currentProviderEnv
   const effectiveProviderEnv = providerEnv ?? configState.currentProviderEnv;
+  const effectiveProviderId = opts?.providerId
+    ?? effectiveProviderEnv?.providerId
+    ?? (providerEnv === undefined
+      ? getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID
+      : (!effectiveProviderEnv?.baseUrl && !effectiveProviderEnv?.apiKey ? SUBSCRIPTION_PROVIDER_ID : ''));
+  if (!effectiveProviderId) {
+    console.warn('[env] Provider-owned SDK env missing providerId; MyAgents proxy will not be injected for this subprocess');
+  }
+  applyProviderProxyPolicyToEnv(env, effectiveProviderId);
 
   // ── Model alias mapping for sub-agents (applies to ALL protocol paths) ──
-  // SDK sub-agents use aliases like "sonnet"/"opus"/"haiku" which resolve to claude-* model IDs.
+  // SDK sub-agents use aliases like "fable"/"sonnet"/"opus"/"haiku" which resolve to claude-* model IDs.
   // For third-party providers, set ANTHROPIC_DEFAULT_*_MODEL so the SDK resolves aliases
   // to provider-specific model IDs (e.g., "sonnet" → "deepseek-chat" instead of "claude-sonnet-4-6").
   // Hoisted above the OpenAI early return so both protocol paths benefit.
@@ -5301,9 +5300,14 @@ export function buildClaudeSessionEnv(
     // SDK /model picker (modelOptions.ts:85) and would surface the suffix to
     // users. SDK strips [1m] before the wire (normalizeModelStringForAPI),
     // so the upstream API never sees it.
+    const fableWrapped = applyContextWindowSuffix(aliases.fable);
     const sonnetWrapped = applyContextWindowSuffix(aliases.sonnet);
     const opusWrapped = applyContextWindowSuffix(aliases.opus);
     const haikuWrapped = applyContextWindowSuffix(aliases.haiku);
+    if (aliases.fable) {
+      env.ANTHROPIC_DEFAULT_FABLE_MODEL = fableWrapped!;
+      env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME = aliases.fable;
+    }
     if (aliases.sonnet) {
       env.ANTHROPIC_DEFAULT_SONNET_MODEL = sonnetWrapped!;
       env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME = aliases.sonnet;
@@ -5316,7 +5320,7 @@ export function buildClaudeSessionEnv(
       env.ANTHROPIC_DEFAULT_HAIKU_MODEL = haikuWrapped!;
       env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME = aliases.haiku;
     }
-    console.log(`[env] Model aliases set: sonnet=${sonnetWrapped ?? '(none)'}, opus=${opusWrapped ?? '(none)'}, haiku=${haikuWrapped ?? '(none)'}`);
+    console.log(`[env] Model aliases set: fable=${fableWrapped ?? '(none)'}, sonnet=${sonnetWrapped ?? '(none)'}, opus=${opusWrapped ?? '(none)'}, haiku=${haikuWrapped ?? '(none)'}`);
   }
 
   // ── Auto-compact effective window ──
@@ -6157,6 +6161,11 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   elapsedMs,
   broadcast,
   broadcastBuiltinContextUsage,
+  getCurrentTransientProviderRetryAttempt: () =>
+    getCurrentTurnSourceItem()?.transientProviderRetry?.attempt ?? 0,
+  scheduleTransientProviderRetry,
+  retractTransientProviderTextOutput,
+  clearApiRetryStatus,
   trackServer,
   firePostTurnTitleHook,
   appendTextChunk,
@@ -7650,9 +7659,11 @@ export async function enqueueUserMessage(
     loadAdminConfig().chatQueueResponseMode,
     options?.fromDesktopChatSend,
   );
+  const providerRetryPending = transientProviderRetryTimer !== null;
   const initialAdmissionBusy = isTurnInFlight()
     || lifecycleState.abortRequested
     || isInterruptingResponse
+    || providerRetryPending
     || hasQueuedOrInFlightWork()
     || queueState.promotedItemInFlight;
   if (queueResponseMode === 'turn' && !initialAdmissionBusy) {
@@ -7728,6 +7739,7 @@ export async function enqueueUserMessage(
   const isSessionBusy = isTurnInFlight()
     || lifecycleState.abortRequested
     || isInterruptingResponse
+    || providerRetryPending
     || hasQueuedOrInFlightWork(queueId)
     || queueState.promotedItemInFlight;
   emitPerfTrace({
@@ -8218,13 +8230,13 @@ export async function enqueueUserMessage(
     if (!reservedTurnBoundaryItem && queuedWorkCount() >= MAX_QUEUE_SIZE) {
       return { queued: false, error: `Queue full (max ${MAX_QUEUE_SIZE})` };
     }
-    const admissionAction = reservedAdmissionAction ?? decideQueueAdmission({
+    const admissionAction = reservedAdmissionAction ?? (providerRetryPending ? 'turn-boundary' : decideQueueAdmission({
         mode: queueResponseMode,
         busy: true,
         hasInFlight: getInFlightQueueId() !== null,
         hasScopedTurnBoundaryQueued: options?.fromDesktopChatSend === true
           && (getTurnBoundaryQueue().length > 0 || getTurnAdmissionTicket() !== null),
-      });
+      }));
     const queueDeliveryMode: QueueDeliveryMode = admissionAction === 'turn-boundary' ? 'turn' : 'realtime';
     const queueItem: MessageQueueItem = {
       id: queueId,
@@ -8499,6 +8511,13 @@ export async function waitForSessionIdle(
 }
 
 export async function interruptCurrentResponse(reason: CancelReason = 'user'): Promise<boolean> {
+  if (transientProviderRetryTimer) {
+    clearTransientProviderRetryTimer(`interrupt:${reason}`);
+    broadcast('chat:message-stopped', null);
+    handleMessageStopped();
+    return true;
+  }
+
   if (!isTurnInFlight()) {
     // (issue #174) Stop pressed during 'starting': the SDK subprocess is
     // alive but system_init hasn't arrived (the for-await loop sees no
@@ -9622,7 +9641,8 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // Model name check (sonnet/opus) is URL-agnostic — Claude models through any proxy get thinking.
     const modelLower = (configState.currentModel ?? '').toLowerCase();
     const isClaudeModel = modelLower.includes('sonnet-4') || modelLower.includes('sonnet-5')
-      || modelLower.includes('opus-4') || modelLower.includes('opus-5');
+      || modelLower.includes('opus-4') || modelLower.includes('opus-5')
+      || modelLower.includes('fable-5') || modelLower.includes('mythos-5');
     const isOfficialAnthropicApi = !configState.currentProviderEnv?.baseUrl || (() => {
       try { return new URL(configState.currentProviderEnv.baseUrl!).host === 'api.anthropic.com'; }
       catch { return false; }
@@ -10932,7 +10952,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         }
 
         // Sentinel for system message kinds added by FUTURE SDK versions.
-        // The set below enumerates every system subtype in SDK 0.3.195
+        // The set below enumerates every system subtype in SDK 0.3.199
         // (handled or deliberately untouched) — a subtype outside it means the
         // SDK started emitting something we have never seen. Without this log
         // line, new message kinds vanish silently (the pre-0.3.173 default,
@@ -11630,7 +11650,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         builtinTurnLifecycle.handleSdkResult(sdkMessage as BuiltinSdkResultMessage);
       } else if (!KNOWN_MESSAGE_TYPES.has(sdkMessage.type) && !warnedUnknownMessageTypes.has(sdkMessage.type)) {
         // Top-level half of the unknown-message sentinel (the system-subtype
-        // half lives in the system block above): a type outside the 0.3.195
+        // half lives in the system block above): a type outside the 0.3.199
         // union means a NEWER SDK started emitting a message kind this loop
         // has never seen — log once instead of letting it vanish silently.
         warnedUnknownMessageTypes.add(sdkMessage.type);
@@ -11828,6 +11848,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const wasPreWarming = lifecycleState.preWarming;
     setPreWarmInProgress(false);
     setSessionProcessing(false);
+    clearTransientProviderRetryTimer('session-finally');
 
     // Resolve any pending post-interrupt wait (session ended, turn is implicitly done)
     if (postInterruptTurnEndResolve) {
@@ -12124,6 +12145,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     setCurrentTurnProviderAnalytics(item.providerAnalytics ?? buildTurnProviderAnalytics(configState.currentProviderEnv));
     setAssistantMessagePresent(false);
     setCurrentTurnInjectedTurnId(item.injectedTurnId);
+    setCurrentTurnSourceItem(item);
 
     isStreamingMessage = true;
     // Pattern B+G: push this user message's requestId onto the FIFO queue.

@@ -13,7 +13,6 @@ function SidebarProbe() {
       activeSection={section}
       setActiveSection={setSection}
       showDevTools
-      floatingBallDevGate
       onShowLogs={() => {}}
     />
   );
@@ -30,6 +29,7 @@ describe('SettingsSidebar i18n', () => {
     expect(screen.getByRole('heading', { name: 'Settings' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'General' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Model Providers' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Desktop Pet' })).toBeInTheDocument();
     expect(screen.getByTitle('View Rust logs')).toBeInTheDocument();
   });
 });

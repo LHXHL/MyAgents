@@ -17,6 +17,7 @@ export function useSettingsNavigation({
   onSectionChange,
 }: UseSettingsNavigationParams) {
   const onSectionChangeRef = useRef(onSectionChange);
+  const floatingBallDisabled = floatingBallDevGate === false;
 
   useEffect(() => {
     onSectionChangeRef.current = onSectionChange;
@@ -24,7 +25,7 @@ export function useSettingsNavigation({
 
   const getInitialSection = (): SettingsSection => {
     if (initialSection && VALID_SECTIONS.includes(initialSection as SettingsSection)) {
-      if (initialSection === 'desktop-pet' && !floatingBallDevGate) {
+      if (initialSection === 'desktop-pet' && floatingBallDisabled) {
         return 'about';
       }
       return initialSection as SettingsSection;
@@ -43,7 +44,7 @@ export function useSettingsNavigation({
   useEffect(() => {
     if (initialSection && VALID_SECTIONS.includes(initialSection as SettingsSection)) {
       const timer = window.setTimeout(() => {
-        if (initialSection === 'desktop-pet' && !floatingBallDevGate) {
+        if (initialSection === 'desktop-pet' && floatingBallDisabled) {
           setActiveSection('about');
           notifySectionChange();
           return;
@@ -56,10 +57,10 @@ export function useSettingsNavigation({
         window.clearTimeout(timer);
       };
     }
-  }, [floatingBallDevGate, initialSection, notifySectionChange]);
+  }, [floatingBallDisabled, initialSection, notifySectionChange]);
 
   useEffect(() => {
-    if (activeSection === 'desktop-pet' && !floatingBallDevGate) {
+    if (activeSection === 'desktop-pet' && floatingBallDisabled) {
       const timer = window.setTimeout(() => {
         setActiveSection('about');
       }, 0);
@@ -68,7 +69,7 @@ export function useSettingsNavigation({
         window.clearTimeout(timer);
       };
     }
-  }, [activeSection, floatingBallDevGate]);
+  }, [activeSection, floatingBallDisabled]);
 
   const navigateToProxySettings = useCallback(() => {
     setActiveSection('general');

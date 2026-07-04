@@ -57,6 +57,7 @@ pub use commands::{
     cmd_update_agent_config, cmd_update_im_bot_config,
 };
 use commands::{persist_bot_config_patch, read_available_providers_from_disk};
+pub(crate) use config_store::is_agent_workspace_archived;
 use config_store::{
     missing_configured_channel_status, persist_agent_config_patch, read_agent_configs_from_disk,
     read_im_configs_from_disk, resolve_target_channel, should_report_missing_configured_channel,
@@ -230,6 +231,46 @@ pub(crate) async fn finalize_block<A: adapter::ImStreamAdapter>(
             }
         }
     }
+}
+
+/// Stop all running channels and heartbeat runner for one Agent runtime.
+/// Used by CLI/Admin archive so the durable `enabled=false` intent takes
+/// effect immediately instead of waiting for app restart.
+pub async fn stop_agent_channels_for_archive(
+    agent_state: &ManagedAgents,
+    sidecar_manager: &ManagedSidecarManager,
+    agent_id: &str,
+) -> usize {
+    let maybe_agent = {
+        let mut guard = agent_state.lock().await;
+        guard.remove(agent_id)
+    };
+
+    let Some(mut agent) = maybe_agent else {
+        return 0;
+    };
+
+    if let Some(handle) = agent.heartbeat_handle.take() {
+        handle.abort();
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+    }
+
+    let mut stopped = 0usize;
+    for (channel_id, channel) in agent.channels {
+        if let Err(err) =
+            shutdown_bot_instance(channel.bot_instance, sidecar_manager, &channel_id).await
+        {
+            ulog_warn!(
+                "[im] Archive shutdown: channel {} of agent {} graceful shutdown failed: {}",
+                channel_id,
+                agent_id,
+                err
+            );
+        }
+        stopped += 1;
+    }
+
+    stopped
 }
 
 /// Format draft display text (truncate if needed for platform limit).

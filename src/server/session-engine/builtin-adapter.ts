@@ -41,6 +41,7 @@ import {
   setSessionPermissionMode,
   setSessionEnabledOfficialToolIds,
   setSessionProviderEnv,
+  setProxyConfig,
   setSessionReasoningEffort,
   stripPlaywrightResults,
   switchToSession,
@@ -452,6 +453,11 @@ export function createBuiltinSessionEngine(): SessionEngine {
 
     async updateOfficialToolIds(ids) {
       setSessionEnabledOfficialToolIds(ids);
+      return { success: true };
+    },
+
+    async updateProxyConfig(proxySettings) {
+      await setProxyConfig(proxySettings);
       return { success: true };
     },
 

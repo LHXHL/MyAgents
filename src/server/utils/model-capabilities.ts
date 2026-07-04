@@ -540,7 +540,7 @@ const CONTEXT_WINDOW_UNLOCK_THRESHOLD = 200_000;
  *   - `query({ model })` SDK option
  *   - `query({ agents: { ...{ model } } })` sub-agent definitions
  *   - `querySession.setModel()` runtime model switch
- *   - `ANTHROPIC_DEFAULT_{SONNET,OPUS,HAIKU}_MODEL` env (alias resolution)
+ *   - `ANTHROPIC_DEFAULT_{FABLE,SONNET,OPUS,HAIKU}_MODEL` env (alias resolution)
  *
  * It MUST NOT flow into:
  *   - bridge `modelOverride` (forwarded verbatim to upstream OpenAI-compat API)

@@ -737,6 +737,65 @@ describe('spaceStore registered agent actions', () => {
     expect(getSnapshot().localAgents.items).toEqual([updatedAgent]);
   });
 
+  it('patches registered agent workspace identity after update', async () => {
+    const updatedAgent = {
+      ...fakeAgent,
+      localWorkspaceId: 'project-2',
+      workspaceId: 'project-2',
+      workspacePath: '/tmp/other-workspace',
+      workspaceLabel: 'Other Workspace',
+      updatedAt: '2026-06-24T04:10:00.000Z',
+    } satisfies LocalRegisteredAgent;
+    __setSpaceStoreStateForTest({
+      localAgents: {
+        items: [fakeAgent],
+        lastFetchedAt: Date.now(),
+        isLoading: false,
+        error: null,
+      },
+      registeredAgents: {
+        items: [{
+          id: fakeAgent.id,
+          spaceId: fakeAgent.spaceId,
+          displayName: fakeAgent.displayName,
+          workspacePath: fakeAgent.workspacePath,
+          workspaceLabel: fakeAgent.workspaceLabel,
+          status: fakeAgent.status,
+          createdAt: fakeAgent.createdAt,
+          updatedAt: fakeAgent.updatedAt,
+        }],
+        lastFetchedAt: Date.now(),
+        isLoading: false,
+        error: null,
+      },
+    });
+    apiMocks.spaceUpdateRegisteredAgent.mockResolvedValueOnce(updatedAgent);
+
+    await actions.updateRegisteredAgent({
+      id: 'rag_123',
+      workspaceId: 'project-2',
+      workspacePath: '/tmp/other-workspace',
+      workspaceLabel: 'Other Workspace',
+    });
+
+    expect(apiMocks.spaceUpdateRegisteredAgent).toHaveBeenCalledWith({
+      id: 'rag_123',
+      workspaceId: 'project-2',
+      workspacePath: '/tmp/other-workspace',
+      workspaceLabel: 'Other Workspace',
+    });
+    expect(getSnapshot().localAgents.items[0]).toMatchObject({
+      localWorkspaceId: 'project-2',
+      workspacePath: '/tmp/other-workspace',
+      workspaceLabel: 'Other Workspace',
+    });
+    expect(getSnapshot().registeredAgents.items[0]).toMatchObject({
+      localWorkspaceId: 'project-2',
+      workspacePath: '/tmp/other-workspace',
+      workspaceLabel: 'Other Workspace',
+    });
+  });
+
   it('marks a registered agent as revoked in the local list', async () => {
     const revokedAgent = {
       ...fakeAgent,

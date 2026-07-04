@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useFileAction } from '@/context/FileActionContext';
+import { useNotifyRowLayoutChanged } from '@/context/ChatRowLayoutContext';
 import type { ToolUseSimple } from '@/types/chat';
 import { resolveFileActionTarget } from '@/utils/workspaceFileLinks';
 
@@ -252,6 +253,7 @@ export function ExpandableContainer({
   const ref = useRef<HTMLDivElement>(null);
   const [isExpanded, setIsExpanded] = useState(false);
   const [needsExpand, setNeedsExpand] = useState(false);
+  const notifyRowLayoutChanged = useNotifyRowLayoutChanged();
 
   useEffect(() => {
     const el = ref.current;
@@ -282,7 +284,10 @@ export function ExpandableContainer({
         <div className={`absolute bottom-0 left-0 right-0 flex justify-center bg-gradient-to-t ${EXPAND_FADE_CLASSES[fade]} pb-2 pt-8`}>
           <button
             type="button"
-            onClick={() => setIsExpanded(true)}
+            onClick={() => {
+              notifyRowLayoutChanged('expandable-container-expand');
+              setIsExpanded(true);
+            }}
             className="rounded-full border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-1 text-xs text-[var(--ink-muted)] shadow-sm hover:text-[var(--ink-secondary)] transition-colors"
           >
             {t('shell.toolChrome.common.expandAll')}

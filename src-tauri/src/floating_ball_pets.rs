@@ -365,13 +365,16 @@ fn read_pet_entry(root: &Path, source: &str) -> Result<FbPetEntry, String> {
     validate_spritesheet_dimensions(&spritesheet_path)?;
     let spritesheet_canon = canonicalize_checked(&spritesheet_path)?;
     ensure_child_of(&spritesheet_canon, &root_canon, "spritesheet")?;
+    let spritesheet_file_path = crate::sidecar::normalize_external_path(spritesheet_canon)
+        .to_string_lossy()
+        .to_string();
     Ok(FbPetEntry {
         id: manifest.id,
         display_name: manifest.display_name,
         description: manifest.description,
         author: manifest.author,
         license: manifest.license,
-        spritesheet_file_path: spritesheet_canon.to_string_lossy().to_string(),
+        spritesheet_file_path,
         spritesheet_path: manifest.spritesheet_path,
         source: source.to_string(),
         atlas: manifest.atlas,

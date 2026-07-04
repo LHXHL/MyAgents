@@ -6,7 +6,7 @@ import type { SpaceIssue } from '@/api/spaceCloud';
 import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
 import { ACTIVE_ISSUE_STATE_FILTER, claimHandlerLabel, ISSUE_STATUSES, issueDisplayTitle, issueStatusLabel } from '@/pages/space/spaceHelpers';
 import { recordSpaceMetric } from '@/pages/space/spaceMetrics';
-import { formatTime, statusPillClass } from '@/pages/space/spaceUi';
+import { SPACE_LIST_FRAME_CLASS, SPACE_PRIMARY_TOOL_BUTTON_CLASS, SPACE_REFRESH_TOOL_BUTTON_CLASS, formatTime, statusPillClass } from '@/pages/space/spaceUi';
 
 export function IssuesWorkspace({
   admin,
@@ -106,29 +106,27 @@ export function IssuesWorkspace({
             </button>
             <CustomSelect value={selectedStatus} options={statusFilterOptions} onChange={onStatusChange} size="toolbar" className="w-40 min-w-0 max-xl:w-36" />
             <CustomSelect value={selectedGoalId} options={goalOptions} onChange={onGoalChange} size="toolbar" className="w-[360px] min-w-0 max-xl:w-[320px] max-lg:w-64" />
-            <button
-              type="button"
-              onClick={() => void onRefresh()}
-              className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-transparent text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-              aria-label={t('space.common.refresh')}
-              title={t('space.common.refresh')}
-            >
-              {issuesLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
-            </button>
           </>
         )}
-        <button
-          type="button"
-          onClick={onCreate}
-          className="ml-auto flex h-9 shrink-0 items-center justify-center gap-2 whitespace-nowrap rounded-xl bg-[var(--button-primary-bg)] px-4 text-sm font-semibold text-[var(--button-primary-text)] shadow-sm transition-colors hover:bg-[var(--button-primary-bg-hover)]"
-        >
-          <Plus className="h-4 w-4" />
-          {t('space.common.create')}
-        </button>
+        <div className="ml-auto flex shrink-0 items-center gap-2.5">
+          <button type="button" onClick={onCreate} className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}>
+            <Plus className="h-4 w-4" />
+            {t('space.common.create')}
+          </button>
+          <button
+            type="button"
+            onClick={() => void onRefresh()}
+            className={SPACE_REFRESH_TOOL_BUTTON_CLASS}
+            aria-label={t('space.common.refresh')}
+            title={t('space.common.refresh')}
+          >
+            {issuesLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+          </button>
+        </div>
       </section>
 
       <main className="min-h-0 overflow-y-auto px-6 pb-8 pt-3">
-        <section className="mx-auto max-w-[1280px]" aria-label="Issue list">
+        <section className={SPACE_LIST_FRAME_CLASS} aria-label="Issue list">
           <div className="border-y border-[var(--line-subtle)]">
             {issues.length === 0 && issuesLoading ? (
               <div className="grid gap-0">

@@ -20,7 +20,7 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 |------|------|
 | 前端 | React 19 + TypeScript + Vite + TailwindCSS |
 | 桌面框架 | Tauri v2 (Rust) |
-| 后端 | Node.js v24 + Claude Agent SDK 0.3.195（多实例 Sidecar 进程） |
+| 后端 | Node.js v24 + Claude Agent SDK 0.3.199（多实例 Sidecar 进程） |
 | 通信 | Rust HTTP/SSE Proxy (reqwest via `local_http` 模块) |
 | 拖拽 | @dnd-kit/sortable |
 
@@ -382,7 +382,7 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
   → translateResponse → Anthropic 格式 → SDK
 ```
 
-**模型别名映射：** 子 Agent 指定 `model: "sonnet"` 时，SDK 通过 `ANTHROPIC_DEFAULT_SONNET_MODEL` 解析为供应商模型。三个别名变量：`ANTHROPIC_DEFAULT_{SONNET,OPUS,HAIKU}_MODEL`。
+**模型别名映射：** 子 Agent 指定 `model: "sonnet"` / `"fable"` 时，SDK 通过 `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_FABLE_MODEL` 解析为供应商模型。四个别名变量：`ANTHROPIC_DEFAULT_{FABLE,SONNET,OPUS,HAIKU}_MODEL`。
 
 **Provider Self-Resolve：** IM/Cron Session 的 Provider 和 Model 从磁盘自 resolve，不依赖前端 `/api/provider/set`。owned builtin session 的 canonical 身份是 `providerRoute`（providerId + model），请求时再从当前配置 materialize `ProviderEnv`；旧数据解析链兼容 `providerRoute → legacy providerId/model → providerEnvJson fallback → agent/default`，不得把 apiKey/baseUrl 作为新 snapshot 身份写回。
 
@@ -687,6 +687,10 @@ Cloud Space 把官方/团队空间接入桌面端，目前仍是开发中/半成
 - Renderer 只通过 `src/renderer/api/spaceCloud.ts` 调 Tauri invoke，不直连 Space 服务，也不持有 session token。
 - build-time capability 由 `src-tauri/build.rs` 注入 `MYAGENTS_SPACE_*`，`cmd_space_get_capability` 只裁决构建能力；开发中入口还受 `config.teamSpaceEnabled` 默认关闭门控。
 - 本地状态在 `~/.myagents/space/{session.json,registered_agents.json,delivery_log.json}`，不进入 SessionStore。
+- 本地端点身份统一由 `~/.myagents/device_id` 表达，Rust owner 是 `src-tauri/src/device_identity.rs`。Analytics 的 `device_id` 与 Space 的 `deviceId` 消费同一个值，不再派生第二套云端 device id。
+- 云端概念是 `user_devices(userId, deviceId)`，用于记录某个登录用户在某个本地端点上的设备名、平台、系统版本、客户端版本与 last seen。客户端登录/授权后会尝试 upsert；registered-agent 注册/编辑 payload 也携带这些字段供服务端落表。
+- Registered Agent 是执行实体，归属于 `(ownerUserId, deviceId)`，并关联该设备上的本地 Agent 工作区。只有 `ownerUserId === current session user` 且 `deviceId === current local device_id` 的 Agent 才是当前设备可编辑/可执行的 local Agent。
+- Registered Agent 执行端点使用 token-only capability：本地轮询时只带 registered-agent token，服务端由 token 映射到 user / space / device / agent 权限边界；MyAgents Desktop 只从“当前 Space user + 当前 device”的本地 token 集合中选择 token。
 
 详见 `tech_docs/space_cloud.md`。
 

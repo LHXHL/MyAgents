@@ -228,5 +228,13 @@ export function useVirtuosoScroll(): VirtuosoScrollControls {
         };
     }, [onWheel, onTouchStart, onTouchMove, onKeyDown, clearForceDegradeTimer]);
 
-    return { virtuosoRef, scrollerRef, followEnabledRef, scrollToBottom, pauseAutoScroll, handleAtBottomChange, attachScroller };
+    return {
+        virtuosoRef,
+        scrollerRef,
+        followEnabledRef,
+        scrollToBottom,
+        pauseAutoScroll,
+        handleAtBottomChange,
+        attachScroller,
+    };
 }

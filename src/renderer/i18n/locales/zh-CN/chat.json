@@ -420,8 +420,8 @@
       "current": "当前",
       "messageCount": "{{count}} 条消息",
       "unreadNotifications": "{{count}} 条未读通知",
-      "showAutomation": "展示定时任务对话",
-      "hideAutomation": "隐藏定时任务对话",
+      "automationVisible": "定时任务对话已显示",
+      "automationHidden": "定时任务对话已隐藏",
       "openInNewTab": "在新 tab 打开",
       "more": "更多",
       "moreActions": "更多操作",
@@ -752,6 +752,9 @@
       "imageTooLargePrefix": "工具截图超过模型处理限制，",
       "rewindAction": "点击时间回溯到之前",
       "resend": "重新发送"
+    },
+    "diagnostics": {
+      "askHelper": "小助理诊断"
     },
     "selection": {
       "quote": "引用",

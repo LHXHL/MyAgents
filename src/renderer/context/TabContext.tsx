@@ -29,7 +29,7 @@ import type { ContextUsage } from '../../shared/types/context-usage';
 import type { SlashCommand } from '../../shared/slashCommands';
 import type { ProviderRoute } from '../../shared/providerRoute';
 
-type ChatProviderEnv = { providerId?: string; providerName?: string; baseUrl?: string; apiKey?: string; authType?: 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key'; apiProtocol?: 'anthropic' | 'openai'; maxOutputTokens?: number; maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens'; upstreamFormat?: 'chat_completions' | 'responses'; modelAliases?: { sonnet?: string; opus?: string; haiku?: string } };
+type ChatProviderEnv = { providerId?: string; providerName?: string; baseUrl?: string; apiKey?: string; authType?: 'auth_token' | 'api_key' | 'both' | 'auth_token_clear_api_key'; apiProtocol?: 'anthropic' | 'openai'; maxOutputTokens?: number; maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens'; upstreamFormat?: 'chat_completions' | 'responses'; modelAliases?: { fable?: string; sonnet?: string; opus?: string; haiku?: string } };
 
 export interface AdoptMigratedSessionOptions {
     /**
@@ -51,6 +51,10 @@ export interface SystemNotice {
     kind: 'compact';
     level: 'success' | 'error';
     message: string;
+}
+
+export interface LoadOlderMessagesOptions {
+    beforePrepend?: (freshCount: number) => void;
 }
 
 /**
@@ -190,7 +194,7 @@ export interface TabContextValue extends TabState {
     stopResponse: () => Promise<boolean>;
     loadSession: (sessionId: string, options?: { skipLoadingReset?: boolean }) => Promise<boolean>;
     /** Prepend the next page of older messages. Safe to call repeatedly — guarded internally. */
-    loadOlderMessages: () => Promise<void>;
+    loadOlderMessages: (options?: LoadOlderMessagesOptions) => Promise<void>;
     resetSession: () => Promise<boolean>;
     /**
      * Soft session swap for the IM-handover "新对话保留绑定" flow.

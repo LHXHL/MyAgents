@@ -76,7 +76,6 @@ describe('floating ball session binding migration', () => {
 
     it('persists the migration and notifies the active companion window', async () => {
         mocks.setConfig(baseConfig({
-            floatingBallDevGate: true,
             floatingBallEnabled: true,
             floatingBallSessionId: 'old',
             floatingBallSessionWorkspace: '/workspace/mino',
@@ -93,6 +92,26 @@ describe('floating ball session binding migration', () => {
                 oldSessionId: 'old',
                 newSessionId: 'new',
                 workspacePath: '/workspace/mino',
+            },
+        });
+    });
+
+    it('treats an omitted desktop pet gate as enabled for existing active companions', async () => {
+        mocks.setConfig(baseConfig({
+            floatingBallEnabled: true,
+            floatingBallSessionId: 'old',
+        }));
+
+        const result = await migrateFloatingBallSessionBinding('old', 'new');
+
+        expect(result).toEqual({ migrated: true, notified: true });
+        expect(mocks.invoke).toHaveBeenCalledWith('cmd_fb_relay', {
+            target: 'companion',
+            event: 'fb:session-migrated',
+            payload: {
+                oldSessionId: 'old',
+                newSessionId: 'new',
+                workspacePath: undefined,
             },
         });
     });

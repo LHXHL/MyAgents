@@ -452,7 +452,11 @@ fn inject_terminal_env(cmd: &mut CommandBuilder, app: &AppHandle, sidecar_port: 
                 cmd.env("HTTPS_PROXY", &proxy_url);
                 cmd.env("http_proxy", &proxy_url);
                 cmd.env("https_proxy", &proxy_url);
-                cmd.env("MYAGENTS_PROXY_INJECTED", "1");
+                cmd.env(crate::proxy_config::PROXY_INJECTED_MARKER_ENV, "1");
+                cmd.env(
+                    crate::proxy_config::PROXY_INHERITED_ENV_JSON,
+                    crate::proxy_config::inherited_proxy_env_json(),
+                );
             }
             Err(e) => {
                 ulog_error!(

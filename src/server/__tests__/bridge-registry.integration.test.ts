@@ -33,6 +33,7 @@ afterEach(() => {
 });
 
 const baseConfig = {
+  providerId: 'provider-base',
   baseUrl: 'https://api.example.com',
   apiKey: 'sk-secret-1234',
   model: 'test-model',
@@ -71,6 +72,7 @@ describe('bridge-registry — multi-tenant isolation (#124 core)', () => {
     registerBridge('tok-chat', () => ({
       ...baseConfig,
       baseUrl: 'https://chat-provider.com',
+      providerId: 'chat-provider',
       apiKey: 'sk-chat',
       model: 'chat-model',
     }), 'session:chat');
@@ -78,6 +80,7 @@ describe('bridge-registry — multi-tenant isolation (#124 core)', () => {
     registerBridge('tok-verify', () => ({
       ...baseConfig,
       baseUrl: 'https://verify-provider.com',
+      providerId: 'verify-provider',
       apiKey: 'sk-verify',
       model: 'verify-model',
     }), 'verify:moonshot');
@@ -87,8 +90,10 @@ describe('bridge-registry — multi-tenant isolation (#124 core)', () => {
 
     // The whole point: each token resolves to ITS config, not the other's.
     expect(chat.baseUrl).toBe('https://chat-provider.com');
+    expect(chat.providerId).toBe('chat-provider');
     expect(chat.apiKey).toBe('sk-chat');
     expect(verify.baseUrl).toBe('https://verify-provider.com');
+    expect(verify.providerId).toBe('verify-provider');
     expect(verify.apiKey).toBe('sk-verify');
 
     // Unregister one — the other survives untouched.
@@ -104,6 +109,7 @@ describe('bridge-registry — multi-tenant isolation (#124 core)', () => {
       registerBridge(`tok-${i}`, () => ({
         ...baseConfig,
         baseUrl: `https://provider-${i}.com`,
+        providerId: `provider-${i}`,
         apiKey: `sk-${i}`,
         model: `model-${i}`,
       }), `verify:${i}`);
@@ -113,6 +119,7 @@ describe('bridge-registry — multi-tenant isolation (#124 core)', () => {
     for (let i = 0; i < N; i++) {
       const cfg = lookupBridge(`tok-${i}`)!;
       expect(cfg.baseUrl).toBe(`https://provider-${i}.com`);
+      expect(cfg.providerId).toBe(`provider-${i}`);
       expect(cfg.apiKey).toBe(`sk-${i}`);
       expect(cfg.model).toBe(`model-${i}`);
     }

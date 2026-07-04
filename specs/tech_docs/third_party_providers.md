@@ -367,4 +367,4 @@ function checkDecorativeToolText(text: string): { filtered: boolean; reason?: st
 
 ### modelAliases 默认值
 
-自定义供应商如果没有主动设置 modelAliases，`getEffectiveModelAliases()` 和 `resolveProviderEnv()` 会用 `primaryModel` 或第一个可用模型作为 sonnet/opus/haiku 的 fallback，防止子 Agent 发送 raw `claude-*` 到三方 API。
+自定义供应商如果没有主动设置 modelAliases，`getEffectiveModelAliases()` 和 `resolveProviderEnv()` 会用 `primaryModel` 或第一个可用模型作为 fable/sonnet/opus/haiku 的 fallback，防止子 Agent 发送 raw `claude-*` 到三方 API。

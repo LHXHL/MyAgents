@@ -3,7 +3,7 @@
 // 展开态的 SUBAGENTS 区：列出活跃 subagent，sync + background 混排，background 加
 // [bg] 徽标区分（PRD D10）。点击行 → 对话流滚动到对应 TaskTool 卡片并高亮（PRD D11）。
 //
-// 跳转交由 Chat 通过 onJumpToTool 注入：Virtuoso scrollToIndex（解决虚拟化卸载）+
+// 跳转交由 Chat 通过 onJumpToTool 注入：ChatScrollController message jump（解决虚拟化卸载）+
 // 二阶段 querySelector 高亮，scope 在 chat container ref（解决多 Tab 同 Session DOM
 // 冲突）。见 Chat.tsx::handleJumpToTool（cross-review C1/C2 修复）。
 

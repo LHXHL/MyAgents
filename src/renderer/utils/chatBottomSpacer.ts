@@ -1,5 +1,8 @@
 const FALLBACK_OVERLAY_HEIGHT_PX = 176;
-const EXTRA_CLEARANCE_PX = 8;
+// Keep the streaming tail / final message comfortably above the floating
+// composer. Two body lines is enough to read the boundary without creating a
+// half-screen blank tail on short chats.
+const EXTRA_CLEARANCE_PX = 40;
 const MIN_SPACER_PX = 128;
 const MAX_SPACER_PX = 420;
 
