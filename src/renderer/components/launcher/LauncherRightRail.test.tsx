@@ -61,6 +61,7 @@ function taskCenterData(
         sessionTagsMap: new Map(),
         cronBotInfoMap: new Map(),
         isLoading: false,
+        isSessionsLoading: false,
         error: null,
         refresh: vi.fn(),
         actions: {

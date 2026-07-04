@@ -138,7 +138,15 @@ export default memo(function LauncherRightRail({
     const toast = useToast();
     const scrollRootRef = useRef<HTMLDivElement | null>(null);
     const loadMoreRef = useRef<HTMLDivElement | null>(null);
-    const { sessions, cronTasks, sessionTagsMap, isLoading: isHistoryLoading, error, refresh, actions } = taskCenterData;
+    const {
+        sessions,
+        cronTasks,
+        sessionTagsMap,
+        isSessionsLoading: isHistoryLoading,
+        error,
+        refresh,
+        actions,
+    } = taskCenterData;
 
     const [workspacesExpanded, setWorkspacesExpanded] = useState(false);
     const [historyFilter, setHistoryFilter] = useState<HistoryFilterValue>('all');

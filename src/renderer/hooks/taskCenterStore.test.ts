@@ -6,10 +6,38 @@ const sessionClientMocks = vi.hoisted(() => ({
     updateSession: vi.fn(),
 }));
 
+const cronTaskMocks = vi.hoisted(() => ({
+    getAllCronTasks: vi.fn(),
+    getBackgroundSessions: vi.fn(),
+}));
+
+const taskCenterMocks = vi.hoisted(() => ({
+    taskCenterAvailable: vi.fn(),
+    taskList: vi.fn(),
+}));
+
+const configMocks = vi.hoisted(() => ({
+    loadAppConfig: vi.fn(),
+}));
+
 vi.mock('@/api/sessionClient', () => ({
     deleteSession: sessionClientMocks.deleteSession,
     getSessions: sessionClientMocks.getSessions,
     updateSession: sessionClientMocks.updateSession,
+}));
+
+vi.mock('@/api/cronTaskClient', () => ({
+    getAllCronTasks: cronTaskMocks.getAllCronTasks,
+    getBackgroundSessions: cronTaskMocks.getBackgroundSessions,
+}));
+
+vi.mock('@/api/taskCenter', () => ({
+    taskCenterAvailable: taskCenterMocks.taskCenterAvailable,
+    taskList: taskCenterMocks.taskList,
+}));
+
+vi.mock('@/config/configService', () => ({
+    loadAppConfig: configMocks.loadAppConfig,
 }));
 
 import {
@@ -20,6 +48,7 @@ import {
     computeSessionTagsMap,
     resolveFloatingBallBoundSession,
     getSnapshot,
+    subscribe,
     __resetTaskCenterStoreForTest,
     __setTaskCenterSessionsForTest,
 } from './taskCenterStore';
@@ -57,6 +86,11 @@ beforeEach(() => {
     vi.clearAllMocks();
     sessionClientMocks.deleteSession.mockResolvedValue(true);
     sessionClientMocks.getSessions.mockResolvedValue([]);
+    cronTaskMocks.getAllCronTasks.mockResolvedValue([]);
+    cronTaskMocks.getBackgroundSessions.mockResolvedValue([]);
+    taskCenterMocks.taskCenterAvailable.mockReturnValue(false);
+    taskCenterMocks.taskList.mockResolvedValue([]);
+    configMocks.loadAppConfig.mockResolvedValue({ agents: [] });
 });
 
 describe('filterTombstoned', () => {
@@ -171,8 +205,34 @@ describe('store snapshot', () => {
         const b = getSnapshot();
         expect(a).toBe(b);
         expect(a.isLoading).toBe(true);
+        expect(a.isSessionsLoading).toBe(true);
         expect(a.sessions).toEqual([]);
         expect(a.sessionTagsMap.size).toBe(0);
+    });
+
+    it('publishes sessions before slower non-history slices finish', async () => {
+        const cronFetch = deferred<CronTask[]>();
+        sessionClientMocks.getSessions.mockResolvedValueOnce([
+            sess('fresh', '2026-07-04T00:00:00.000Z'),
+        ]);
+        cronTaskMocks.getAllCronTasks.mockReturnValueOnce(cronFetch.promise);
+
+        const unsubscribe = subscribe(() => undefined);
+        try {
+            await vi.waitFor(() => {
+                expect(getSnapshot().sessions.map((s) => s.id)).toEqual(['fresh']);
+            });
+
+            expect(getSnapshot().isSessionsLoading).toBe(false);
+            expect(getSnapshot().isLoading).toBe(true);
+
+            cronFetch.resolve([]);
+            await vi.waitFor(() => {
+                expect(getSnapshot().isLoading).toBe(false);
+            });
+        } finally {
+            unsubscribe();
+        }
     });
 });
 
