@@ -294,7 +294,7 @@ export function IssueDetailDrawer({
 
   return (
     <OverlayBackdrop onClose={onClose} className="z-[230] items-stretch justify-end bg-black/20 backdrop-blur-sm">
-      <aside className="relative h-full w-[min(75vw,1120px)] border-l border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl">
+      <aside className="relative h-full w-[82vw] max-w-7xl border-l border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl max-lg:w-[92vw] max-sm:w-full">
         <header className="absolute right-4 top-4 z-10 flex justify-end">
           <button type="button" onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]" aria-label={t('space.detail.close')}>
             <X className="h-4 w-4" />
