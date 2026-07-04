@@ -16,8 +16,8 @@
 //! via Settings > General > Network Proxy.
 
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::process::Command;
+use std::{env, fs};
 
 use crate::utils::bom::strip_bom;
 use crate::{ulog_debug, ulog_error, ulog_info, ulog_warn};
@@ -37,6 +37,20 @@ const DEFAULT_PROXY_PORT: u16 = 7890;
 /// can't be called directly).
 pub const LOCALHOST_NO_PROXY: &str =
     "localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]";
+
+pub const PROXY_INJECTED_MARKER_ENV: &str = "MYAGENTS_PROXY_INJECTED";
+pub const PROXY_INHERITED_ENV_JSON: &str = "MYAGENTS_PROXY_INHERITED_ENV_JSON";
+
+const PROXY_ENV_KEYS: &[&str] = &[
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "ALL_PROXY",
+    "all_proxy",
+    "NO_PROXY",
+    "no_proxy",
+];
 
 /// Proxy settings from `~/.myagents/config.json`
 ///
@@ -219,6 +233,24 @@ pub fn read_proxy_settings_for_provider(provider_id: &str) -> Option<ProxySettin
     read_proxy_settings().filter(|settings| proxy_enabled_for_provider(settings, provider_id))
 }
 
+/// Snapshot proxy env vars before MyAgents overwrites them for a child process.
+/// Node sidecar uses this to restore the real inherited baseline for providers
+/// excluded by a custom proxy scope.
+pub fn inherited_proxy_env_json() -> String {
+    let mut snapshot = serde_json::Map::new();
+    for key in PROXY_ENV_KEYS {
+        if let Ok(value) = env::var(key) {
+            snapshot.insert((*key).to_string(), serde_json::Value::String(value));
+        }
+    }
+    serde_json::to_string(&snapshot).unwrap_or_else(|_| "{}".to_string())
+}
+
+fn mark_proxy_injected(cmd: &mut Command) {
+    cmd.env(PROXY_INJECTED_MARKER_ENV, "1");
+    cmd.env(PROXY_INHERITED_ENV_JSON, inherited_proxy_env_json());
+}
+
 /// Apply MyAgents proxy policy to a child process `Command`.
 ///
 /// This is the **only** approved way to configure proxy env vars for subprocesses.
@@ -253,8 +285,9 @@ pub fn apply_to_subprocess(cmd: &mut Command) -> bool {
                 // the wrong upstream. Strip both casings.
                 cmd.env_remove("ALL_PROXY");
                 cmd.env_remove("all_proxy");
-                // Flag so TypeScript can distinguish explicit injection from inherited system env
-                cmd.env("MYAGENTS_PROXY_INJECTED", "1");
+                // Flag + pre-injection baseline so TypeScript can distinguish
+                // explicit MyAgents proxy injection from inherited system env.
+                mark_proxy_injected(cmd);
                 true
             }
             Err(e) => {
@@ -264,16 +297,7 @@ pub fn apply_to_subprocess(cmd: &mut Command) -> bool {
                      Subprocess will start without proxy.",
                     e
                 );
-                for var in &[
-                    "HTTP_PROXY",
-                    "HTTPS_PROXY",
-                    "http_proxy",
-                    "https_proxy",
-                    "ALL_PROXY",
-                    "all_proxy",
-                    "NO_PROXY",
-                    "no_proxy",
-                ] {
+                for &var in PROXY_ENV_KEYS {
                     cmd.env_remove(var);
                 }
                 false
@@ -310,7 +334,7 @@ pub fn apply_to_subprocess_for_provider(cmd: &mut Command, provider_id: &str) ->
                 cmd.env("no_proxy", LOCALHOST_NO_PROXY);
                 cmd.env_remove("ALL_PROXY");
                 cmd.env_remove("all_proxy");
-                cmd.env("MYAGENTS_PROXY_INJECTED", "1");
+                mark_proxy_injected(cmd);
                 true
             }
             Err(e) => {
@@ -320,16 +344,7 @@ pub fn apply_to_subprocess_for_provider(cmd: &mut Command, provider_id: &str) ->
                     provider_id,
                     e
                 );
-                for var in &[
-                    "HTTP_PROXY",
-                    "HTTPS_PROXY",
-                    "http_proxy",
-                    "https_proxy",
-                    "ALL_PROXY",
-                    "all_proxy",
-                    "NO_PROXY",
-                    "no_proxy",
-                ] {
+                for &var in PROXY_ENV_KEYS {
                     cmd.env_remove(var);
                 }
                 false

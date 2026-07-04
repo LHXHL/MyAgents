@@ -24,17 +24,49 @@ const PROXY_VARS_LIST = [
 ] as const;
 
 const proxyWasInjectedByRust = process.env.MYAGENTS_PROXY_INJECTED === '1';
+const proxyInheritedEnvJson = process.env.MYAGENTS_PROXY_INHERITED_ENV_JSON;
 delete process.env.MYAGENTS_PROXY_INJECTED;
+delete process.env.MYAGENTS_PROXY_INHERITED_ENV_JSON;
 
-const inheritedProxySnapshot: Record<string, string | undefined> = {};
-if (!proxyWasInjectedByRust) {
-  for (const key of PROXY_VARS_LIST) {
-    inheritedProxySnapshot[key] = process.env[key];
-  }
-}
+const inheritedProxySnapshot: Record<string, string | undefined> = readInheritedProxySnapshot();
 
 let currentProxySettings: ProxySettings | null = readInitialProxySettings();
 let proxyConfigGeneration = 0;
+let proxyConfigTransition: Promise<void> = Promise.resolve();
+
+function readInheritedProxySnapshot(): Record<string, string | undefined> {
+  if (proxyWasInjectedByRust && proxyInheritedEnvJson) {
+    try {
+      const parsed = JSON.parse(proxyInheritedEnvJson) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const snapshot: Record<string, string | undefined> = {};
+        const source = parsed as Record<string, unknown>;
+        for (const key of PROXY_VARS_LIST) {
+          const value = source[key];
+          if (typeof value === 'string') snapshot[key] = value;
+        }
+        return snapshot;
+      }
+    } catch (err) {
+      console.warn('[proxy-state] Failed to parse inherited proxy env snapshot:', err);
+    }
+  }
+
+  const snapshot: Record<string, string | undefined> = {};
+  if (!proxyWasInjectedByRust) {
+    for (const key of PROXY_VARS_LIST) {
+      snapshot[key] = process.env[key];
+    }
+  }
+  return snapshot;
+}
+
+function proxySnapshotForLog(snapshot: Record<string, string | undefined>): string {
+  for (const key of PROXY_VARS_LIST) {
+    if (snapshot[key]) return snapshot[key] ?? '';
+  }
+  return '';
+}
 
 function readInitialProxySettings(): ProxySettings | null {
   try {
@@ -75,10 +107,6 @@ function applyProxyEnvVars(proxyUrl: string, noProxyVal: string): void {
 }
 
 function restoreInheritedProxyEnvToProcess(): void {
-  if (proxyWasInjectedByRust) {
-    for (const key of PROXY_VARS_LIST) delete process.env[key];
-    return;
-  }
   for (const key of PROXY_VARS_LIST) {
     const value = inheritedProxySnapshot[key];
     if (value !== undefined) process.env[key] = value;
@@ -96,6 +124,7 @@ function copyProxyEnvVars(
     else delete target[key];
   }
   delete target.MYAGENTS_PROXY_INJECTED;
+  delete target.MYAGENTS_PROXY_INHERITED_ENV_JSON;
   if (!target.NO_PROXY && !target.no_proxy) {
     target.NO_PROXY = PROXY_NO_PROXY_VAL;
     target.no_proxy = PROXY_NO_PROXY_VAL;
@@ -159,12 +188,25 @@ export async function setProcessProxyConfig(rawSettings: unknown): Promise<void>
   currentProxySettings = proxySettings;
   const generation = ++proxyConfigGeneration;
 
+  const transition = proxyConfigTransition
+    .catch(() => undefined)
+    .then(() => applyProcessProxyConfig(proxySettings, generation));
+  proxyConfigTransition = transition.catch(() => undefined);
+  return transition;
+}
+
+async function applyProcessProxyConfig(
+  proxySettings: ProxySettings | null,
+  generation: number,
+): Promise<void> {
+  if (generation !== proxyConfigGeneration) return;
+
   if (!proxySettings?.enabled) {
     if (isSocksBridgeRunning()) {
       await stopSocksBridge().catch(() => { /* ignore */ });
     }
     restoreInheritedProxyEnvToProcess();
-    const restoredProxy = process.env.HTTP_PROXY || process.env.http_proxy || '';
+    const restoredProxy = proxySnapshotForLog(inheritedProxySnapshot);
     console.log(`[proxy-state] Proxy disabled, restored inherited state${restoredProxy ? ` (${restoredProxy})` : ''}`);
     return;
   }
@@ -175,6 +217,7 @@ export async function setProcessProxyConfig(rawSettings: unknown): Promise<void>
       const bridgePort = await startSocksBridge(proxySettings.host || '127.0.0.1', proxySettings.port || 7890);
       if (generation !== proxyConfigGeneration) {
         console.log('[proxy-state] SOCKS5 bridge callback discarded (superseded)');
+        await stopSocksBridge().catch(() => { /* ignore stale bridge */ });
         return;
       }
       const bridgeUrl = `http://127.0.0.1:${bridgePort}`;
@@ -182,7 +225,10 @@ export async function setProcessProxyConfig(rawSettings: unknown): Promise<void>
       console.log(`[proxy-state] SOCKS5 proxy applied: ${proxyUrl} -> bridge ${bridgeUrl}`);
       return;
     } catch (err) {
-      if (generation !== proxyConfigGeneration) return;
+      if (generation !== proxyConfigGeneration) {
+        await stopSocksBridge().catch(() => { /* ignore stale bridge */ });
+        return;
+      }
       console.error(`[proxy-state] Failed to start SOCKS5 bridge: ${err instanceof Error ? err.message : String(err)}. Falling back to raw URL.`);
       applyProxyEnvVars(proxyUrl, PROXY_NO_PROXY_VAL);
       return;

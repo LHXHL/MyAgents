@@ -16,7 +16,11 @@ MyAgents 支持统一的代理配置，用于访问外部服务（Anthropic API�
     "enabled": true,
     "protocol": "http",
     "host": "127.0.0.1",
-    "port": 7890
+    "port": 7890,
+    "scope": {
+      "mode": "custom",
+      "providerIds": ["deepseek", "openrouter"]
+    }
   }
 }
 ```
@@ -29,6 +33,9 @@ MyAgents 支持统一的代理配置，用于访问外部服务（Anthropic API�
 | `protocol` | string | ❌ | "http" | 代理协议：`http` 或 `socks5` |
 | `host` | string | ❌ | "127.0.0.1" | 代理服务器地址 |
 | `port` | number | ❌ | 7890 | 代理服务器端口 _// 默认值: proxy_config.rs:7_ |
+| `scope` | object | ❌ | `{ "mode": "all" }` | Provider 适用范围：`all` 或 `custom + providerIds` |
+
+`scope.mode = "custom"` 只控制 **MyAgents 是否主动给该 provider 注入应用代理**。未选中的 provider 不是“强制直连”：Rust 会把注入前的 proxy env 作为 `MYAGENTS_PROXY_INHERITED_ENV_JSON` 传给 Node，Node 端 excluded provider 会恢复这个 baseline，因此系统代理 / TUN / 终端继承环境仍可自然生效。
 
 ---
 
@@ -39,19 +46,25 @@ MyAgents 支持统一的代理配置，用于访问外部服务（Anthropic API�
 1. **Claude Agent SDK (Node.js Sidecar)**
    - 访问 Anthropic API (`api.anthropic.com`)
    - 通过环境变量 `HTTP_PROXY` / `HTTPS_PROXY` 注入
-   - **实现**: `src-tauri/src/proxy_config.rs::apply_to_subprocess`，由 `src-tauri/src/sidecar/instances.rs` / `session_lifecycle.rs`、`src-tauri/src/im/bridge.rs` 等 spawn owner 调用
+   - **实现**: `src-tauri/src/proxy_config.rs::apply_to_subprocess`，由 `src-tauri/src/sidecar/instances.rs` / `session_lifecycle.rs`、`src-tauri/src/im/bridge.rs` 等 spawn owner 调用。Rust 注入应用代理前会写入 `MYAGENTS_PROXY_INHERITED_ENV_JSON`，供 Sidecar provider scope 恢复继承 baseline。
 
-2. **Rust Updater**
+2. **Provider-owned 请求 / 子进程**
+   - Builtin SDK / OpenAI Bridge / provider probe / Managed Codex 等具备 provider owner 的路径按 `proxySettings.scope` 决策。
+   - **Rust 实现**: `build_client_with_proxy_for_provider` / `build_blocking_client_with_proxy_for_provider` / `apply_to_subprocess_for_provider`
+   - **Node 实现**: `src/server/proxy-state.ts::applyProviderProxyPolicyToEnv` / `getProxyForProviderUrl`
+   - 未选 provider：不注入 MyAgents proxy，恢复 Rust 注入前的 proxy env baseline，并保留 localhost `NO_PROXY` 保护。
+
+3. **Rust Updater**
    - 检查更新 (`download.myagents.io/update/*.json`)
    - 下载更新包 (`download.myagents.io/releases/`)
    - **实现**: `src-tauri/src/updater.rs` + `proxy_config.rs`
 
-3. **LiteLLM 模型数据缓存**
+4. **LiteLLM 模型数据缓存**
    - 拉取模型上下文窗口数据 (`raw.githubusercontent.com/BerriAI/litellm/.../model_prices_and_context_window.json`)
    - 启动条件检查 + 24h interval，ETag/If-None-Match 增量
    - **实现**: `src-tauri/src/litellm_cache.rs`（`build_client_with_proxy`）
 
-4. **其他外部资源**
+5. **其他外部资源**
    - 下载二维码等 CDN 资源
 
 ### ❌ 不使用代理的场景
@@ -118,6 +131,14 @@ pub fn build_client_with_proxy(builder: ClientBuilder) -> Client {
         builder
     }
 }
+
+pub fn build_client_with_proxy_for_provider(
+    builder: ClientBuilder,
+    provider_id: &str,
+) -> Client {
+    // 仅当 provider_id 命中 proxySettings.scope 时注入 MyAgents proxy；
+    // 否则继承系统网络行为。
+}
 ```
 
 #### 2. 子进程代理注入 (`proxy_config::apply_to_subprocess`)
@@ -139,6 +160,7 @@ if let Some(proxy_settings) = read_proxy_settings() {
     cmd.env_remove("all_proxy");
 
     cmd.env("MYAGENTS_PROXY_INJECTED", "1"); // TypeScript 端区分显式注入 vs 系统继承
+    cmd.env("MYAGENTS_PROXY_INHERITED_ENV_JSON", "..."); // 注入前 proxy env baseline
 } else {
     // 继承系统网络行为，但始终注入 NO_PROXY 保护 Node.js 的 localhost fetch 调用。
     // 注意：未配 MyAgents proxy 时 **不** 剥离继承的 `ALL_PROXY`——
@@ -147,6 +169,15 @@ if let Some(proxy_settings) = read_proxy_settings() {
     cmd.env("NO_PROXY", "localhost,...");
     cmd.env("no_proxy", "localhost,...");
 }
+```
+
+Provider-owned 子进程必须使用 `apply_to_subprocess_for_provider(&mut cmd, provider_id)`。它只在 provider 命中 scope 时注入 MyAgents proxy；未命中时继承系统网络行为并只补 localhost `NO_PROXY`。
+
+Node Sidecar 内的 provider-owned 请求不得直接读 `process.env.HTTP_PROXY`：
+
+```ts
+applyProviderProxyPolicyToEnv(env, providerId);     // SDK / runtime subprocess env
+getProxyForProviderUrl(providerId, upstreamUrl);   // fetch / undici ProxyAgent
 ```
 
 #### 2.1 外部 Runtime 的 `envPolicy` override（PRD 0.2.16）
