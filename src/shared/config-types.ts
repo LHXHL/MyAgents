@@ -719,13 +719,12 @@ export interface AppConfig {
    *  只控制工具箱里的 CLI 工具注册/管理/AI 自动发现；不影响 myagents CLI
    *  本身以及 cron / task / widget / thought 等已发布 CLI 能力。 */
   cliToolRegistryEnabled?: boolean;
-  /** 开发者总门控：桌面悬浮球（PRD 0.2.35，先开发不发布）。默认关。
-   *  关闭时设置页入口与悬浮球本体均不存在（D10）。 */
+  /** 隐藏开发者开关：桌面宠物功能门控。默认开；普通用户不可见。 */
   floatingBallDevGate?: boolean;
   /** 开发者总门控：团队 Space（MyAgents Space / Cloud Space）。默认关。
    *  功能未完成前隐藏标题栏入口与已恢复的团队 tab。 */
   teamSpaceEnabled?: boolean;
-  /** 悬浮球本体显隐开关（总门控开启后才有意义）。 */
+  /** 悬浮球本体显隐开关；由桌面宠物设置页顶部开关控制。默认关。 */
   floatingBallEnabled?: boolean;
   /** 悬浮球本体外观。缺省视同 'pet'（PRD 0.2.34 floating_ball_pet_mode Phase 1）。 */
   floatingBallAppearance?: 'pet' | 'orb';
@@ -1787,6 +1786,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   cliToolRegistryEnabled: false, // 默认关闭用户注册 CLI 工具注册表（实验室）
   teamSpaceEnabled: false, // 默认隐藏未发布的团队 Space 入口
   managedCodexProviderDevGate: true, // 默认开放 Codex 订阅 Provider；只有显式 true 才启用
+  floatingBallDevGate: true,
+  floatingBallEnabled: false,
   floatingBallHoverPeekEnabled: true,
   liteLLMModelDataRefresh: true, // 默认开启 LiteLLM 模型数据兜底刷新（开发者可关）
   claudeTranscriptCleanupPeriodDays: DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS,

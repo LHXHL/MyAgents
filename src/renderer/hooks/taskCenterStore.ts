@@ -115,7 +115,7 @@ export function resolveFloatingBallBoundSession(
         floatingBallSessionId?: string;
     } | null,
 ): string | null {
-    if (!cfg?.floatingBallDevGate || !cfg.floatingBallEnabled) return null;
+    if (!cfg || cfg.floatingBallDevGate === false || cfg.floatingBallEnabled !== true) return null;
     return cfg.floatingBallSessionId ?? null;
 }
 

@@ -293,15 +293,18 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
 
     const toggleFloatingBallGate = useCallback(async () => {
         if (floatingBallGateBusy) return;
-        const next = !config.floatingBallDevGate;
+        const next = config.floatingBallDevGate === false;
         setFloatingBallGateBusy(true);
         try {
-            await setNativeFloatingBallEnabled(next);
-            await updateConfig({
-                floatingBallDevGate: next,
-                // 总门控开 → 球默认随之启用；关 → 球一并收走
-                floatingBallEnabled: next,
-            });
+            if (!next) {
+                await setNativeFloatingBallEnabled(false);
+            }
+            await updateConfig(next
+                ? { floatingBallDevGate: true }
+                : {
+                    floatingBallDevGate: false,
+                    floatingBallEnabled: false,
+                });
             track('floating_ball_toggle', { gate: true, enabled: next });
             toast.success(next ? tSettings('about.desktopPetEnabled') : tSettings('about.desktopPetDisabled'));
         } catch (err) {
@@ -3721,7 +3724,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                     </div>
                 )}
 
-                {activeSection === 'desktop-pet' && config.floatingBallDevGate && (
+                {activeSection === 'desktop-pet' && config.floatingBallDevGate !== false && (
                     <FloatingBallPetSettings />
                 )}
 
@@ -4725,27 +4728,6 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                     </button>
                                 </div>
 
-                                {/* Floating Ball Dev Gate (PRD 0.2.35 — 先开发不发布，D10) */}
-                                <div className="mt-4 flex items-center justify-between border-t border-[var(--line)] pt-4">
-                                    <div className="flex-1 pr-4">
-                                        <p className="text-sm font-medium text-[var(--ink)]">{tSettings('about.desktopPetTitle')}</p>
-                                        <p className="text-xs text-[var(--ink-muted)]">
-                                            {tSettings('about.desktopPetDescription')}
-                                        </p>
-                                    </div>
-                                    <button
-                                        onClick={() => void toggleFloatingBallGate()}
-                                        disabled={floatingBallGateBusy}
-                                        aria-pressed={!!config.floatingBallDevGate}
-                                        className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors disabled:cursor-wait disabled:opacity-70 ${config.floatingBallDevGate ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
-                                            }`}
-                                    >
-                                        <span
-                                            className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${config.floatingBallDevGate ? 'translate-x-5' : 'translate-x-0'
-                                                }`}
-                                        />
-                                    </button>
-                                </div>
                             </div>
 
                             {/* AI Feedback */}
@@ -4850,6 +4832,30 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 >
                                                     <span
                                                         className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${config.showDevTools ? 'translate-x-5' : 'translate-x-0'
+                                                            }`}
+                                                    />
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* Desktop Pet Gate */}
+                                        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+                                            <div className="flex items-center justify-between">
+                                                <div className="flex-1 pr-4">
+                                                    <h3 className="text-sm font-medium text-[var(--ink)]">{tSettings('about.desktopPetTitle')}</h3>
+                                                    <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                                                        {tSettings('about.desktopPetDescription')}
+                                                    </p>
+                                                </div>
+                                                <button
+                                                    onClick={() => void toggleFloatingBallGate()}
+                                                    disabled={floatingBallGateBusy}
+                                                    aria-pressed={config.floatingBallDevGate !== false}
+                                                    className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors disabled:cursor-wait disabled:opacity-70 ${config.floatingBallDevGate !== false ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
+                                                        }`}
+                                                >
+                                                    <span
+                                                        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${config.floatingBallDevGate !== false ? 'translate-x-5' : 'translate-x-0'
                                                             }`}
                                                     />
                                                 </button>

@@ -253,6 +253,11 @@ describe('model aliases', () => {
 });
 
 describe('desktop pet defaults', () => {
+  it('shows the desktop pet tab by default but keeps the floating ball off', () => {
+    expect(DEFAULT_CONFIG.floatingBallDevGate).toBe(true);
+    expect(DEFAULT_CONFIG.floatingBallEnabled).toBe(false);
+  });
+
   it('keeps hover peek enabled for existing desktop pet behavior', () => {
     expect(DEFAULT_CONFIG.floatingBallHoverPeekEnabled).toBe(true);
   });

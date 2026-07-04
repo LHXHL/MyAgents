@@ -79,10 +79,19 @@ impl Default for FbPlacement {
 /// Mirror of the renderer's gate fields in `~/.myagents/config.json`.
 /// Read directly from disk (same pattern as `global_shortcut::load_config`)
 /// so startup doesn't depend on the frontend being mounted.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct FbConfig {
     pub dev_gate: bool,
     pub enabled: bool,
+}
+
+impl Default for FbConfig {
+    fn default() -> Self {
+        Self {
+            dev_gate: true,
+            enabled: false,
+        }
+    }
 }
 
 pub fn load_fb_config() -> FbConfig {
@@ -100,7 +109,7 @@ pub fn load_fb_config() -> FbConfig {
         dev_gate: cfg
             .get("floatingBallDevGate")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false),
+            .unwrap_or(true),
         enabled: cfg
             .get("floatingBallEnabled")
             .and_then(|v| v.as_bool())
@@ -3220,7 +3229,7 @@ mod commands {
 
 pub use commands::*;
 
-/// Startup hook: if the developer gate + ball are both enabled in config,
+/// Startup hook: if the hidden developer gate + ball are both enabled in config,
 /// bring the ball up without waiting for the frontend.
 pub fn setup_on_startup(app: &tauri::AppHandle) {
     let cfg = load_fb_config();

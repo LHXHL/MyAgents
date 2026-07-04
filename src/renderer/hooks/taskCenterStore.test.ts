@@ -127,7 +127,13 @@ describe('computeSessionTagsMap', () => {
 });
 
 describe('resolveFloatingBallBoundSession', () => {
-    it('双门控（devGate + enabled）都开才视为渠道在线、返回绑定 sid', () => {
+    it('enabled 开且 devGate 未显式关闭时视为渠道在线、返回绑定 sid', () => {
+        expect(
+            resolveFloatingBallBoundSession({
+                floatingBallEnabled: true,
+                floatingBallSessionId: 'sid-1',
+            }),
+        ).toBe('sid-1');
         expect(
             resolveFloatingBallBoundSession({
                 floatingBallDevGate: true,
@@ -136,7 +142,7 @@ describe('resolveFloatingBallBoundSession', () => {
             }),
         ).toBe('sid-1');
     });
-    it('任一门控关闭 / 无绑定 / 无配置 → null（IM channel offline 同语义，不打标）', () => {
+    it('gate 显式关闭 / 本体未启用 / 无绑定 / 无配置 → null（IM channel offline 同语义，不打标）', () => {
         expect(
             resolveFloatingBallBoundSession({
                 floatingBallDevGate: false,
