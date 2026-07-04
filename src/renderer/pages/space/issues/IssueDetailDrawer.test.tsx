@@ -24,6 +24,7 @@ const session: SpaceSession = {
 const detail: SpaceIssueDetail = {
   issue: {
     id: 'iss-1',
+    number: 113,
     spaceId: 'space-1',
     title: 'Markdown issue',
     body: 'Issue body with **bold issue text**.\n\n- task one',
@@ -75,6 +76,9 @@ describe('IssueDetailDrawer', () => {
     expect(screen.queryByRole('button', { name: '复制 issue 口令' })).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: '更多操作' }));
     expect(await screen.findByRole('button', { name: '复制 issue 口令' })).toBeInTheDocument();
+    const metaRow = screen.getByText('#113').parentElement!;
+    const metaText = metaRow.textContent ?? '';
+    expect(metaText.indexOf('#113')).toBeLessThan(metaText.indexOf('Ethan'));
     expect(screen.getByText('Ethan').tagName).toBe('SPAN');
     expect(screen.getByText('user').tagName).toBe('SPAN');
     expect(screen.getByRole('button', { name: '编辑' })).toBeInTheDocument();

@@ -375,6 +375,12 @@ export function IssueDetailDrawer({
                         </div>
                       )}
                     </span>
+                    {displayNumber && (
+                      <>
+                        <span className="text-[var(--ink-muted)]">{displayNumber}</span>
+                        <span className="text-[var(--line-strong)]">·</span>
+                      </>
+                    )}
                     <span className="text-[var(--ink)]">{issueAuthorName}</span>
                     <span className="text-[var(--line-strong)]">·</span>
                     <span>{formatTime(detail.issue.createdAt)}</span>
@@ -473,10 +479,7 @@ export function IssueDetailDrawer({
                 ) : (
                   <>
                     <div className="mt-4">
-                      <h2 className="max-w-[68ch] text-2xl font-semibold leading-snug text-[var(--ink)]">
-                        {displayNumber && <span className="mr-2 text-[var(--ink-muted)]">{displayNumber}</span>}
-                        {issueDisplayTitle(detail.issue)}
-                      </h2>
+                      <h2 className="max-w-[68ch] text-2xl font-semibold leading-snug text-[var(--ink)]">{issueDisplayTitle(detail.issue)}</h2>
                     </div>
                     <div className="mt-5">
                       <IssueMarkdown>{detail.issue.body}</IssueMarkdown>

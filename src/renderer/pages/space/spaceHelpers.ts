@@ -82,7 +82,10 @@ function normalizeIssueNumber(value: unknown): number | null {
 export function issueDisplayNumber(
   issue: Pick<SpaceIssue, 'id'> & Partial<Pick<SpaceIssue, 'number' | 'issueNumber'>>,
 ): string | null {
-  const number = normalizeIssueNumber(issue.number) ?? normalizeIssueNumber(issue.issueNumber);
+  const number =
+    normalizeIssueNumber(issue.number)
+    ?? normalizeIssueNumber(issue.issueNumber)
+    ?? normalizeIssueNumber(issue.id.match(/(?:^|[_#-])(\d+)$/)?.[1]);
   return number ? `#${number}` : null;
 }
 
