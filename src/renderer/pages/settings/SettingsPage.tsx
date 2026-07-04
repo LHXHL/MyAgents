@@ -702,9 +702,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     const [subscriptionLoginState, setSubscriptionLoginState] = useState<SubscriptionLoginAttemptState>(EMPTY_SUBSCRIPTION_LOGIN_STATE);
     const [subscriptionLoginBusy, setSubscriptionLoginBusy] = useState(false);
     const subscriptionLoginSuccessHandledRef = useRef(false);
-    const subscriptionLoginSuccessInFlightRef = useRef(false);
-    const subscriptionFallbackProbeInFlightRef = useRef(false);
-    const subscriptionFallbackProbeLastAtRef = useRef(0);
+    const refreshSubscriptionStatusAfterLoginRef = useRef<(() => Promise<SubscriptionRefreshResult>) | null>(null);
     const cancelSubscriptionLoginAttempt = useCallback(async (startedAt?: string | null) => {
         try {
             const state = normalizeSubscriptionLoginState(
@@ -716,9 +714,13 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         }
     }, []);
     const closeSubscriptionLoginDialog = useCallback(() => {
+        const shouldVerifyAfterClose = subscriptionLoginState.status === 'succeeded'
+            || subscriptionLoginSuccessHandledRef.current;
         setSubscriptionLoginDialogOpen(false);
         if (isSubscriptionLoginActiveStatus(subscriptionLoginState.status)) {
             void cancelSubscriptionLoginAttempt(subscriptionLoginState.startedAt ?? null);
+        } else if (shouldVerifyAfterClose) {
+            void refreshSubscriptionStatusAfterLoginRef.current?.();
         }
     }, [cancelSubscriptionLoginAttempt, subscriptionLoginState.startedAt, subscriptionLoginState.status]);
 
@@ -2147,74 +2149,18 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             setSubscriptionVerifying(false);
         }
     }, [saveProviderVerifyStatus, tSettings]);
+    refreshSubscriptionStatusAfterLoginRef.current = refreshSubscriptionStatusAfterLogin;
 
     const handleSubscriptionLoginSucceeded = useCallback(async () => {
-        if (subscriptionLoginSuccessHandledRef.current || subscriptionLoginSuccessInFlightRef.current) return;
-        subscriptionLoginSuccessInFlightRef.current = true;
-        try {
-            const refreshResult = await refreshSubscriptionStatusAfterLogin();
-            if (!refreshResult.success) {
-                setSubscriptionLoginState(prev => ({
-                    ...prev,
-                    status: 'error',
-                    error: refreshResult.error,
-                }));
-                toast.error(tSettings('providers.codexToast.claudeLoginFailed', { message: refreshResult.error }));
-                return;
-            }
-            subscriptionLoginSuccessHandledRef.current = true;
-            setSubscriptionLoginState(prev => ({
-                ...prev,
-                status: 'succeeded',
-                error: null,
-            }));
-            toast.success(tSettings('providers.codexToast.claudeLoginSucceeded'));
-        } finally {
-            subscriptionLoginSuccessInFlightRef.current = false;
-        }
-    }, [refreshSubscriptionStatusAfterLogin, tSettings, toast]);
-
-    const probeSubscriptionFallbackLogin = useCallback(async () => {
-        if (subscriptionLoginSuccessHandledRef.current || subscriptionFallbackProbeInFlightRef.current) {
-            return;
-        }
-        const now = Date.now();
-        if (now - subscriptionFallbackProbeLastAtRef.current < 10000) {
-            return;
-        }
-        subscriptionFallbackProbeLastAtRef.current = now;
-        subscriptionFallbackProbeInFlightRef.current = true;
-        try {
-            const status = await apiGetJson<SubscriptionStatus>('/api/subscription/status');
-            if (!status.available) {
-                return;
-            }
-
-            const currentEmail = status.info?.email;
-            setSubscriptionStatus({ ...status, verifyStatus: 'loading', verifyError: undefined });
-            const result = await apiPostJson<SubscriptionVerifyResult>('/api/subscription/verify', {});
-            if (!result.success) {
-                const errorMsg = formatSubscriptionVerifyError(result, tSettings('providers.verify.failed'));
-                setSubscriptionStatus({ ...status, verifyStatus: 'invalid', verifyError: errorMsg });
-                setSubscriptionLoginState(prev => isSubscriptionLoginActiveStatus(prev.status)
-                    ? { ...prev, status: 'error', error: errorMsg }
-                    : prev);
-                return;
-            }
-
-            await saveProviderVerifyStatus(SUBSCRIPTION_PROVIDER_ID, 'valid', currentEmail);
-            subscriptionLoginSuccessHandledRef.current = true;
-            setSubscriptionStatus({ ...status, verifyStatus: 'valid', verifyError: undefined });
-            setSubscriptionLoginState(prev => isSubscriptionLoginActiveStatus(prev.status)
-                ? { ...prev, status: 'succeeded', error: null }
-                : prev);
-            toast.success(tSettings('providers.codexToast.claudeLoginSucceeded'));
-        } catch (error) {
-            console.warn('[Settings] Subscription fallback login probe failed:', error);
-        } finally {
-            subscriptionFallbackProbeInFlightRef.current = false;
-        }
-    }, [saveProviderVerifyStatus, tSettings, toast]);
+        if (subscriptionLoginSuccessHandledRef.current) return;
+        subscriptionLoginSuccessHandledRef.current = true;
+        setSubscriptionLoginState(prev => ({
+            ...prev,
+            status: 'succeeded',
+            error: null,
+        }));
+        toast.success(tSettings('providers.codexToast.claudeLoginSucceeded'));
+    }, [tSettings, toast]);
 
     // Verify API key for a provider
     const verifyProvider = useCallback(async (provider: Provider, apiKey: string) => {
@@ -2813,9 +2759,6 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     const startSubscriptionLogin = useCallback(async () => {
         if (subscriptionLoginBusy) return;
         subscriptionLoginSuccessHandledRef.current = false;
-        subscriptionLoginSuccessInFlightRef.current = false;
-        subscriptionFallbackProbeInFlightRef.current = false;
-        subscriptionFallbackProbeLastAtRef.current = 0;
         setSubscriptionLoginDialogOpen(true);
         setSubscriptionLoginBusy(true);
         setSubscriptionLoginState({
@@ -2859,13 +2802,11 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             setSubscriptionLoginState(state);
             if (state.status === 'succeeded') {
                 await handleSubscriptionLoginSucceeded();
-            } else if (isSubscriptionLoginActiveStatus(state.status)) {
-                void probeSubscriptionFallbackLogin();
             }
         } catch (error) {
             console.warn('[Settings] Subscription login status failed:', error);
         }
-    }, [handleSubscriptionLoginSucceeded, probeSubscriptionFallbackLogin]);
+    }, [handleSubscriptionLoginSucceeded]);
 
     useEffect(() => {
         if (!subscriptionLoginDialogOpen) return;
