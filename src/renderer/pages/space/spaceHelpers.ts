@@ -62,6 +62,30 @@ export function isClosedIssue(status: string): boolean {
   return CLOSED_ISSUE_STATUSES.has(status);
 }
 
+export function isRegisteredAgentVisibleInList(
+  agent: Pick<LocalRegisteredAgent, 'status'>,
+): boolean {
+  return agent.status.trim().toLowerCase() !== 'revoked';
+}
+
+function normalizeIssueNumber(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isInteger(value) && value > 0) {
+    return value;
+  }
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) {
+    const parsed = Number(value);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  }
+  return null;
+}
+
+export function issueDisplayNumber(
+  issue: Pick<SpaceIssue, 'id'> & Partial<Pick<SpaceIssue, 'number' | 'issueNumber'>>,
+): string | null {
+  const number = normalizeIssueNumber(issue.number) ?? normalizeIssueNumber(issue.issueNumber);
+  return number ? `#${number}` : null;
+}
+
 export function canCloseOwnIssue(session: SpaceSession | null, issue: SpaceIssue | null): boolean {
   if (!session || !issue || isSpaceAdmin(session) || isClosedIssue(issue.state)) return false;
   return issue.createdByUserId === session.user.id || issue.creator?.id === session.user.id || issue.author?.id === session.user.id;

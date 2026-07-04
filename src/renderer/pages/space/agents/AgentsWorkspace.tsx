@@ -112,6 +112,20 @@ function agentTargetLabel(
   return target || t("space.agents.targetNotSet");
 }
 
+function agentCardTimeLabel(
+  agent: LocalRegisteredAgent,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  const lastActive = formatTime(agent.device?.lastSeenAt ?? "");
+  if (lastActive) {
+    return t("space.agents.lastActiveAt", { time: lastActive });
+  }
+  const lastSync = formatTime(agent.updatedAt);
+  return t("space.agents.lastSyncAt", {
+    time: lastSync || t("space.common.notSynced"),
+  });
+}
+
 function shortDeviceId(value?: string | null): string {
   const trimmed = value?.trim() ?? "";
   if (!trimmed) return "";
@@ -632,12 +646,9 @@ function AgentCard({
       tabIndex={0}
       onClick={onOpen}
       onKeyDown={handleKeyDown}
-      className="group min-h-[236px] rounded-xl bg-[var(--paper-elevated)] px-4 py-4 text-left shadow-sm shadow-[var(--line-subtle)] outline-none transition hover:-translate-y-px hover:shadow-md focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)]/30"
+      className="group cursor-pointer rounded-xl bg-[var(--paper-elevated)] px-3.5 py-3 text-left outline-none transition-shadow hover:shadow-sm focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)]/30"
     >
-      <div className="grid grid-cols-[40px_minmax(0,1fr)_auto] items-start gap-3">
-        <span className="grid h-10 w-10 place-items-center rounded-xl bg-[var(--accent-cool-subtle)] text-xs font-bold text-[var(--accent-cool)]">
-          {initials(agent.displayName)}
-        </span>
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2.5">
         <div className="min-w-0">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <h3 className="min-w-0 truncate text-base font-semibold text-[var(--ink)]">
@@ -650,7 +661,7 @@ function AgentCard({
             </span>
           </div>
           <p className="mt-1 truncate text-xs font-medium text-[var(--ink-muted)]">
-            {formatTime(agent.updatedAt) || t("space.common.notSynced")}
+            {agentCardTimeLabel(agent, t)}
           </p>
         </div>
         {admin && (
@@ -666,7 +677,7 @@ function AgentCard({
         )}
       </div>
 
-      <div className="mt-4 grid gap-2.5">
+      <div className="mt-3 grid gap-2">
         <AgentCardField
           icon={Computer}
           label={t("space.agents.localComputer")}
@@ -781,14 +792,14 @@ function AgentCardField({
   muted?: boolean;
 }) {
   return (
-    <div className="grid grid-cols-[16px_112px_minmax(0,1fr)] items-center gap-2 rounded-lg bg-[var(--paper)]/55 px-2.5 py-2">
-      <Icon className="h-4 w-4 text-[var(--ink-subtle)]" />
-      <span className="truncate text-xs font-semibold text-[var(--ink-subtle)]">
+    <div className="grid grid-cols-[14px_92px_minmax(0,1fr)] items-center gap-2 rounded-lg bg-[var(--paper)]/35 px-2 py-1.5">
+      <Icon className="h-3.5 w-3.5 text-[var(--ink-subtle)]" />
+      <span className="truncate text-xs font-normal text-[var(--ink-subtle)]">
         {label}
       </span>
       <span
         title={title ?? value}
-        className={`truncate text-sm font-semibold ${mono ? "font-mono" : ""} ${muted ? "text-[var(--ink-subtle)]" : "text-[var(--ink-secondary)]"}`}
+        className={`truncate text-sm font-normal ${mono ? "font-mono" : ""} ${muted ? "text-[var(--ink-subtle)]" : "text-[var(--ink-muted)]"}`}
       >
         {value}
       </span>

@@ -56,7 +56,8 @@ function actions(): SpaceActions {
 }
 
 describe('IssueDetailDrawer', () => {
-  it('places issue actions in the header and renders issue text as Markdown', () => {
+  it('places issue actions in the header menu and renders issue text as Markdown', async () => {
+    const user = userEvent.setup();
     const { container } = render(
       <IssueDetailDrawer
         issueId="iss-1"
@@ -71,8 +72,12 @@ describe('IssueDetailDrawer', () => {
 
     const issueTitle = screen.getByRole('heading', { name: 'Markdown issue' });
     expect(within(issueTitle.parentElement!).queryByRole('button', { name: '复制 issue 口令' })).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: '复制 issue 口令' })).toBeInTheDocument();
-    expect(screen.getByText('Ethan')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '复制 issue 口令' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: '更多操作' }));
+    expect(await screen.findByRole('button', { name: '复制 issue 口令' })).toBeInTheDocument();
+    expect(screen.getByText('Ethan').tagName).toBe('SPAN');
+    expect(screen.getByText('user').tagName).toBe('SPAN');
+    expect(screen.getByRole('button', { name: '编辑' })).toBeInTheDocument();
     expect(screen.queryByText('Issue 口令')).not.toBeInTheDocument();
 
     const attachmentsHeading = screen.getByRole('heading', { name: /附件/ });
@@ -99,7 +104,8 @@ describe('IssueDetailDrawer', () => {
       />,
     );
 
-    await user.click(screen.getByRole('button', { name: '编辑' }));
+    await user.click(screen.getByRole('button', { name: '更多操作' }));
+    await user.click(await screen.findByRole('button', { name: '编辑' }));
     await user.clear(screen.getByLabelText('Issue 标题'));
     await user.type(screen.getByLabelText('Issue 标题'), 'Renamed issue');
     await user.clear(screen.getByLabelText('Issue 正文'));
@@ -111,5 +117,30 @@ describe('IssueDetailDrawer', () => {
       title: 'Renamed issue',
       body: 'Edited body',
     });
+  });
+
+  it('navigates to adjacent issues from header arrow buttons', async () => {
+    const user = userEvent.setup();
+    const onNavigateIssue = vi.fn();
+    render(
+      <IssueDetailDrawer
+        issueId="iss-1"
+        session={session}
+        projects={[]}
+        detailState={{ detail, isLoading: false, lastFetchedAt: Date.now(), error: null }}
+        actions={actions()}
+        onClose={vi.fn()}
+        onNavigateIssue={onNavigateIssue}
+        previousIssueId="iss-0"
+        nextIssueId="iss-2"
+        onChanged={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: '上一条 Issue' }));
+    await user.click(screen.getByRole('button', { name: '下一条 Issue' }));
+
+    expect(onNavigateIssue).toHaveBeenNthCalledWith(1, 'iss-0');
+    expect(onNavigateIssue).toHaveBeenNthCalledWith(2, 'iss-2');
   });
 });

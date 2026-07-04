@@ -93,6 +93,8 @@ export interface SpaceGoalSubscription {
 
 export interface SpaceIssue {
   id: string;
+  number?: number | null;
+  issueNumber?: number | null;
   spaceId: string;
   goalId?: string | null;
   parentIssueId?: string | null;

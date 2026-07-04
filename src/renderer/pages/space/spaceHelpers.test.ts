@@ -8,9 +8,11 @@ import {
   buildIssueQueryKey,
   formatAgentSecondaryLabel,
   getIssueStatusOptions,
+  issueDisplayNumber,
   issueDisplayTitle,
   issueStatusLabel,
   isClosedIssue,
+  isRegisteredAgentVisibleInList,
   localAgentMatchesCurrentSpaceIdentity,
 } from './spaceHelpers';
 
@@ -82,6 +84,13 @@ describe('space issue helpers', () => {
     expect(issueDisplayTitle(issue({ state: 'doing', title: '[doing] Seed issue 3' }))).toBe('Seed issue 3');
   });
 
+  it('formats issue numbers from explicit API fields only', () => {
+    expect(issueDisplayNumber(issue({ number: 42 }))).toBe('#42');
+    expect(issueDisplayNumber(issue({ issueNumber: 7 }))).toBe('#7');
+    expect(issueDisplayNumber(issue({ title: 'Seed issue 99' }))).toBeNull();
+    expect(issueDisplayNumber(issue({ number: 0 }))).toBeNull();
+  });
+
   it('uses translated status labels with raw-token fallback', () => {
     const t = (key: string, options?: { defaultValue?: string }) => (
       key === 'space.issueStatuses.todo' ? '待办' : options?.defaultValue ?? key
@@ -114,6 +123,13 @@ describe('space issue helpers', () => {
 
     expect(formatAgentSecondaryLabel(agent, projects)).toBe('Workspace A');
     expect(isClosedIssue('closed')).toBe(true);
+  });
+
+  it('hides revoked registered agents from the Agents list', () => {
+    expect(isRegisteredAgentVisibleInList({ status: 'active' })).toBe(true);
+    expect(isRegisteredAgentVisibleInList({ status: 'disabled' })).toBe(true);
+    expect(isRegisteredAgentVisibleInList({ status: ' revoked ' })).toBe(false);
+    expect(isRegisteredAgentVisibleInList({ status: 'REVOKED' })).toBe(false);
   });
 
   it('requires local registered agents to match the current space identity', () => {
