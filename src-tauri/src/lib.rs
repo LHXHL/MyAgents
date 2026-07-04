@@ -32,6 +32,7 @@ pub mod process_cleanup;
 pub mod process_cmd;
 mod proxy_config;
 pub mod search;
+pub mod session_metadata;
 mod sidecar;
 pub mod space_cloud;
 mod space_cloud_mock;
@@ -368,6 +369,7 @@ pub fn run() {
             cron_task::commands::cmd_get_cron_task,
             cron_task::commands::cmd_get_cron_tasks,
             cron_task::commands::cmd_get_workspace_cron_tasks,
+            session_metadata::cmd_list_session_metadata,
             cron_task::commands::cmd_get_session_cron_task,
             cron_task::commands::cmd_get_tab_cron_task,
             cron_task::commands::cmd_record_cron_execution,
