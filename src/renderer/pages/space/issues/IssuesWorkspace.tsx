@@ -4,7 +4,7 @@ import { Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
 
 import type { SpaceIssue } from '@/api/spaceCloud';
 import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
-import { ACTIVE_ISSUE_STATE_FILTER, claimHandlerLabel, ISSUE_STATUSES, issueDisplayTitle, issueStatusLabel } from '@/pages/space/spaceHelpers';
+import { ACTIVE_ISSUE_STATE_FILTER, claimHandlerLabel, ISSUE_STATUSES, issueDisplayNumber, issueDisplayTitle, issueStatusLabel } from '@/pages/space/spaceHelpers';
 import { recordSpaceMetric } from '@/pages/space/spaceMetrics';
 import { SPACE_LIST_FRAME_CLASS, SPACE_PRIMARY_TOOL_BUTTON_CLASS, SPACE_REFRESH_TOOL_BUTTON_CLASS, formatTime, statusPillClass } from '@/pages/space/spaceUi';
 
@@ -184,6 +184,7 @@ function IssueStreamRow({
 }) {
   const { t } = useTranslation('app');
   const displayTitle = issueDisplayTitle(issue);
+  const displayNumber = issueDisplayNumber(issue);
   const authorName = issue.creator?.name ?? issue.creator?.id ?? issue.author?.name ?? issue.author?.id ?? 'owner';
   const handlerName = claimHandlerLabel(issue.claim);
   const goalLabel = issue.goalPathLabel || issue.goalId || null;
@@ -203,7 +204,13 @@ function IssueStreamRow({
           </span>
           <span className="truncate text-base font-semibold leading-6 text-[var(--ink)]">{displayTitle}</span>
         </span>
-        <span className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs font-semibold text-[var(--ink-subtle)]">
+        <span className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs font-normal text-[var(--ink-subtle)]">
+          {displayNumber && (
+            <>
+              <span className="text-[var(--ink-muted)]">{displayNumber}</span>
+              <span className="text-[var(--line-strong)]">·</span>
+            </>
+          )}
           <span>{authorName}</span>
           <span className="text-[var(--line-strong)]">·</span>
           <span>{formatTime(issue.createdAt)}</span>

@@ -93,6 +93,8 @@ export interface SpaceGoalSubscription {
 
 export interface SpaceIssue {
   id: string;
+  number?: number | null;
+  issueNumber?: number | null;
   spaceId: string;
   goalId?: string | null;
   parentIssueId?: string | null;
@@ -283,6 +285,8 @@ export interface SpaceDispatchItem {
   };
   issueMeta: {
     id: string;
+    number?: number | null;
+    issueNumber?: number | null;
     title: string;
     status: string;
     updatedAt: string;
@@ -309,6 +313,8 @@ export interface SpaceDeliveryItem {
   };
   issueMeta: {
     id: string;
+    number?: number | null;
+    issueNumber?: number | null;
     title: string;
     state: SpaceIssueState | string;
     updatedAt: string;

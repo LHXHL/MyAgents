@@ -21,6 +21,7 @@ import { getDeviceId, preloadDeviceId } from "@/identity/deviceIdentity";
 import {
   ACTIVE_ISSUE_STATE_FILTER,
   buildIssueQueryKey,
+  isRegisteredAgentVisibleInList,
   isSpaceAdmin,
   localAgentMatchesCurrentSpaceIdentity,
   type IssueQueryParams,
@@ -227,6 +228,19 @@ export default function Space({ isActive }: { isActive: boolean }) {
   );
   const issueList = getIssueListState(issueQuery);
   const issues = issueList.items;
+  const issueDetailNavigation = useMemo(() => {
+    if (!issueDetailId) {
+      return { previousIssueId: null, nextIssueId: null };
+    }
+    const currentIndex = issues.findIndex((issue) => issue.id === issueDetailId);
+    if (currentIndex < 0) {
+      return { previousIssueId: null, nextIssueId: null };
+    }
+    return {
+      previousIssueId: currentIndex > 0 ? issues[currentIndex - 1].id : null,
+      nextIssueId: currentIndex < issues.length - 1 ? issues[currentIndex + 1].id : null,
+    };
+  }, [issueDetailId, issues]);
   const issuesLoading =
     issueList.isLoading ||
     (spaceData.boot === "ready" && issueList.lastFetchedAt === 0);
@@ -279,7 +293,9 @@ export default function Space({ isActive }: { isActive: boolean }) {
           isLocal: true,
         };
       });
-    return [...cloudItems, ...localOnlyItems];
+    return [...cloudItems, ...localOnlyItems].filter(
+      isRegisteredAgentVisibleInList,
+    );
   }, [
     activeCacheSpaceId,
     currentIdentitySpaceId,
@@ -719,6 +735,9 @@ export default function Space({ isActive }: { isActive: boolean }) {
           detailState={spaceData.issueDetails[spaceCacheKey(issueDetailId)]}
           actions={actions}
           onClose={() => setIssueDetailId(null)}
+          onNavigateIssue={setIssueDetailId}
+          previousIssueId={issueDetailNavigation.previousIssueId}
+          nextIssueId={issueDetailNavigation.nextIssueId}
           onChanged={() =>
             void actions.refreshIssues(issueQuery, {
               force: true,

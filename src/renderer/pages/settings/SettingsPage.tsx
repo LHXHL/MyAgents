@@ -701,6 +701,8 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     const [subscriptionLoginDialogOpen, setSubscriptionLoginDialogOpen] = useState(false);
     const [subscriptionLoginState, setSubscriptionLoginState] = useState<SubscriptionLoginAttemptState>(EMPTY_SUBSCRIPTION_LOGIN_STATE);
     const [subscriptionLoginBusy, setSubscriptionLoginBusy] = useState(false);
+    const [subscriptionLoginCode, setSubscriptionLoginCode] = useState('');
+    const [subscriptionLoginSubmitting, setSubscriptionLoginSubmitting] = useState(false);
     const subscriptionLoginSuccessHandledRef = useRef(false);
     const refreshSubscriptionStatusAfterLoginRef = useRef<(() => Promise<SubscriptionRefreshResult>) | null>(null);
     const cancelSubscriptionLoginAttempt = useCallback(async (startedAt?: string | null) => {
@@ -717,6 +719,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         const shouldVerifyAfterClose = subscriptionLoginState.status === 'succeeded'
             || subscriptionLoginSuccessHandledRef.current;
         setSubscriptionLoginDialogOpen(false);
+        setSubscriptionLoginCode('');
         if (isSubscriptionLoginActiveStatus(subscriptionLoginState.status)) {
             void cancelSubscriptionLoginAttempt(subscriptionLoginState.startedAt ?? null);
         } else if (shouldVerifyAfterClose) {
@@ -2760,6 +2763,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         if (subscriptionLoginBusy) return;
         subscriptionLoginSuccessHandledRef.current = false;
         setSubscriptionLoginDialogOpen(true);
+        setSubscriptionLoginCode('');
         setSubscriptionLoginBusy(true);
         setSubscriptionLoginState({
             ...EMPTY_SUBSCRIPTION_LOGIN_STATE,
@@ -2794,6 +2798,39 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         }
     }, [handleSubscriptionLoginSucceeded, subscriptionLoginBusy, tSettings, toast]);
 
+    const submitSubscriptionLoginCode = useCallback(async () => {
+        const code = subscriptionLoginCode.trim();
+        if (!code || subscriptionLoginSubmitting) return;
+        setSubscriptionLoginSubmitting(true);
+        try {
+            const state = normalizeSubscriptionLoginState(
+                await apiPostJson('/api/subscription/login/submit', { codeOrUrl: code }),
+            );
+            setSubscriptionLoginState(state);
+            if (!state.error) {
+                setSubscriptionLoginCode('');
+            }
+            if (state.status === 'succeeded') {
+                await handleSubscriptionLoginSucceeded();
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            setSubscriptionLoginState(prev => ({
+                ...prev,
+                error: message,
+            }));
+            toast.error(tSettings('providers.codexToast.claudeLoginFailed', { message }));
+        } finally {
+            setSubscriptionLoginSubmitting(false);
+        }
+    }, [
+        handleSubscriptionLoginSucceeded,
+        subscriptionLoginCode,
+        subscriptionLoginSubmitting,
+        tSettings,
+        toast,
+    ]);
+
     const refreshSubscriptionLoginState = useCallback(async () => {
         try {
             const state = normalizeSubscriptionLoginState(
@@ -2822,9 +2859,9 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     ]);
 
     const copySubscriptionLoginUrl = useCallback(async () => {
-        const url = subscriptionLoginState.manualUrl
+        const url = subscriptionLoginState.automaticUrl
             ?? subscriptionLoginState.loginUrl
-            ?? subscriptionLoginState.automaticUrl;
+            ?? subscriptionLoginState.manualUrl;
         if (!url) return;
         try {
             await navigator.clipboard.writeText(url);
@@ -3402,7 +3439,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         if (!subscriptionLoginDialogOpen) return null;
         const state = subscriptionLoginState;
         const isActiveLogin = state.status === 'starting' || state.status === 'waiting';
-        const displayUrl = state.manualUrl ?? state.loginUrl ?? state.automaticUrl;
+        const displayUrl = state.automaticUrl ?? state.loginUrl ?? state.manualUrl;
         const statusLabel = state.status === 'succeeded'
             ? tSettings('providers.loginDialog.statusDone')
             : state.status === 'cancelled'
@@ -3470,6 +3507,53 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                 </button>
                             </div>
                         </section>
+
+                        {isActiveLogin && (
+                            <section className="border-t border-[var(--line-subtle)] pt-5">
+                                <div className="flex items-center gap-2">
+                                    <KeyRound className="h-4 w-4 text-[var(--ink-muted)]" />
+                                    <p className="text-sm font-medium text-[var(--ink)]">
+                                        {tSettings('providers.loginDialog.manualCodeTitle')}
+                                    </p>
+                                </div>
+                                <p className="mt-2 text-sm leading-relaxed text-[var(--ink-muted)]">
+                                    {tSettings('providers.loginDialog.manualCodeDescription')}
+                                </p>
+                                <form
+                                    className="mt-3 flex min-w-0 flex-col gap-2 sm:flex-row"
+                                    onSubmit={(event) => {
+                                        event.preventDefault();
+                                        void submitSubscriptionLoginCode();
+                                    }}
+                                >
+                                    <input
+                                        value={subscriptionLoginCode}
+                                        onChange={(event) => setSubscriptionLoginCode(event.target.value)}
+                                        placeholder={tSettings('providers.loginDialog.manualCodePlaceholder')}
+                                        className="min-w-0 flex-1 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 font-mono text-sm text-[var(--ink)] outline-none transition-colors placeholder:text-[var(--ink-faint)] focus:border-[var(--accent)]"
+                                    />
+                                    <button
+                                        type="submit"
+                                        disabled={!subscriptionLoginCode.trim() || subscriptionLoginSubmitting}
+                                        className="flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-4 py-2 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                                    >
+                                        {subscriptionLoginSubmitting ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                            <KeyRound className="h-3.5 w-3.5" />
+                                        )}
+                                        {subscriptionLoginSubmitting
+                                            ? tSettings('providers.loginDialog.submittingCode')
+                                            : tSettings('providers.loginDialog.submitCode')}
+                                    </button>
+                                </form>
+                                {state.error && (
+                                    <p className="mt-2 break-words rounded-lg bg-[var(--error-bg)] px-3 py-2 text-sm text-[var(--error)]">
+                                        {state.error}
+                                    </p>
+                                )}
+                            </section>
+                        )}
 
                         <section className="border-t border-[var(--line-subtle)] pt-5">
                             <p className="text-sm font-medium text-[var(--ink)]">{tSettings('providers.loginDialog.remoteTitle')}</p>

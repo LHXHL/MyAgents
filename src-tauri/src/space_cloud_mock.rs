@@ -907,6 +907,7 @@ fn initial_state() -> MockState {
         let issue_attachments = seeded_attachments(id, idx);
         issues.push(json!({
             "id": id,
+            "number": idx + 1,
             "spaceId": MOCK_SPACE_ID,
             "goalId": seeded_goal_id(idx),
             "parentIssueId": null,
@@ -1009,6 +1010,7 @@ fn initial_state() -> MockState {
         };
         issues.push(json!({
             "id": id,
+            "number": idx + 1,
             "spaceId": MOCK_SPACE_ID,
             "goalId": seeded_goal_id(idx),
             "parentIssueId": null,
@@ -1487,8 +1489,10 @@ fn create_issue(state: &mut MockState, body: Option<Value>) -> Result<Value, Str
         None => None,
     };
     let id = state.next_id("iss");
+    let number = next_issue_number(state);
     let issue = json!({
         "id": id,
+        "number": number,
         "spaceId": MOCK_SPACE_ID,
         "goalId": goal_id,
         "parentIssueId": body.get("parentIssueId").and_then(Value::as_str),
@@ -2462,6 +2466,16 @@ fn find_issue_index(issues: &[Value], issue_id: &str) -> Option<usize> {
         .position(|issue| issue.get("id").and_then(Value::as_str) == Some(issue_id))
 }
 
+fn next_issue_number(state: &MockState) -> u64 {
+    state
+        .issues
+        .iter()
+        .filter_map(|issue| issue.get("number").and_then(Value::as_u64))
+        .max()
+        .unwrap_or(0)
+        + 1
+}
+
 fn tag(name: &str, description: &str) -> Value {
     json!({
         "id": format!("tag_{}", name.replace('-', "_")),
@@ -2985,6 +2999,7 @@ fn dispatch_item(id: &str, agent: &LocalRegisteredAgent, issue: &Value, status: 
         },
         "issueMeta": {
             "id": issue_id,
+            "number": issue.get("number").and_then(Value::as_u64),
             "title": title,
             "status": issue_status,
             "updatedAt": updated_at
@@ -3035,6 +3050,7 @@ fn delivery_item(id: &str, agent: &LocalRegisteredAgent, issue: &Value, status: 
         },
         "issueMeta": {
             "id": issue_id,
+            "number": issue.get("number").and_then(Value::as_u64),
             "title": title,
             "state": issue_state,
             "updatedAt": updated_at

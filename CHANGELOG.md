@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.48] - 2026-07-05
+
+> 本版修复 Anthropic 订阅登录在新版 Claude SDK 下无法真正复用本机 OAuth 的问题：MyAgents 会把订阅账号交回 Claude Code 原生凭据系统管理，同时避免第三方 API Provider 环境污染订阅校验。
+
+### Fixed
+
+- **Anthropic 订阅登录恢复可用**：完成官方登录后，MyAgents 会复用本机 Claude Code/桌面端的订阅凭据，不再因为额外接管 OAuth token 或错误注入 provider env 导致验证失败。
+- **订阅验证不再串到第三方 Provider**：在当前会话使用第三方 API Provider 时，设置页的 Anthropic 订阅验证会显式切到官方订阅身份，避免误带 `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY`。
+- **登录失败时可手动继续**：当浏览器回跳未能自动完成时，设置页支持粘贴官方登录输出的授权码继续验证，减少卡在登录流程中的情况。
+
+---
+
 ## [0.2.47] - 2026-07-04
 
 > 本版修复 Claude 订阅登录后的状态校验问题：登录窗口完成 OAuth 后，设置页会继续用真实 Claude SDK 请求确认订阅是否可用；如果仍然过期或不可用，会直接展示底层真实错误，避免误显示“登录成功”。

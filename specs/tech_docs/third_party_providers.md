@@ -42,6 +42,17 @@ if (currentProviderEnv?.baseUrl) {
 }
 ```
 
+### 2.1 Anthropic 订阅的 OAuth owner 是 Claude Code native
+
+`anthropic-sub` 不由 MyAgents 读取、刷新或写回 OAuth token。Claude Code native 自己读取本机官方 credential store（macOS Keychain `Claude Code-credentials`，Linux/Windows `~/.claude/.credentials.json`），这正是独立 `claude` CLI 登录后 MyAgents 应能直接复用的能力。
+
+`buildClaudeSessionEnv()` 必须按 provider 分流：
+
+- `providerId === 'anthropic-sub'`：删除/不设置 `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`，让 native Claude Code 自主管理 OAuth。
+- 其它 API provider：继续设置 `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1`，阻止 `~/.claude.json` / settings-sourced provider env（cc-switch、Claude Code Router 等）静默劫持 MyAgents 的 provider 路由。
+
+不要给订阅 query 传 `getOAuthToken`，也不要新增 MyAgents 私有的 subscription token adapter；否则会和本机 Claude Code CLI/桌面端抢 OAuth refresh / Keychain 生命周期。
+
 ### 3. API Key 存储与读取
 
 - **存储位置**: `apiKeys[provider.id]`（通过 useConfig 获取）
@@ -110,6 +121,8 @@ interface Provider {
 │ agent-session.ts                                             │
 │  - 存储运行时 currentProviderEnv（非持久身份）              │
 │  - buildClaudeSessionEnv() 设置环境变量                      │
+│  - anthropic-sub 跳过 CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST   │
+│  - 非订阅 provider 保持 host-managed env sealing             │
 │  - SDK query() 使用这些环境变量                             │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -143,6 +156,14 @@ interface Provider {
 [env] ANTHROPIC_BASE_URL set to: https://open.bigmodel.cn/api/anthropic
 [env] ANTHROPIC_AUTH_TOKEN and ANTHROPIC_API_KEY set from provider config
 [agent] starting query with model: glm-4.7
+```
+
+订阅路径应看到：
+
+```
+[env] CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST skipped for Anthropic subscription
+[env] ANTHROPIC_BASE_URL cleared (using Anthropic default)
+[env] ANTHROPIC_AUTH_TOKEN cleared (using default auth)
 ```
 
 如果看到 `apiKeySource: "none"`，说明 API Key 未正确传递。
@@ -237,7 +258,7 @@ Anthropic 官方 API 会在 thinking block 中嵌入签名，resume session 时�
 
 ### 原则
 
-- 会话配置切换里，`providerEnv = undefined`：表示使用 SDK 默认认证（Anthropic 订阅）
+- 会话配置状态里，`currentProviderEnv = undefined`：表示 builtin Anthropic 订阅（官方默认 endpoint + Claude Code native OAuth store）
 - `providerEnv = { baseUrl, apiKey }`：使用第三方 API
 
 前端构建 `providerEnv` 时，**订阅模式不发送 providerEnv**：
@@ -257,14 +278,18 @@ const switchingToSubscription = !providerEnv && currentProviderEnv;
 
 ### One-shot SDK 子进程
 
-`verifySubscription()`、Anthropic 辅助登录这类 one-shot 调用不属于“切换当前会话 provider”。它们调用 `buildClaudeSessionEnv()` 时不能传 `undefined`，因为该函数会把 `undefined` 解释为“沿用当前 active session 的 `configState.currentProviderEnv`”，在用户当前会话选中第三方 API provider 时会错误继承 `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY`。
+`verifySubscription()`、Anthropic 辅助登录、标题生成、官方 vision 这类 one-shot 调用不属于“切换当前会话 provider”。它们调用 `buildClaudeSessionEnv()` 时不能靠裸 `undefined` 表达订阅身份，因为该函数会把 `providerEnv === undefined` 解释为“沿用当前 active session 的 `configState.currentProviderEnv`”。如果用户当前会话选中第三方 API provider，裸 `undefined` 可能错误继承 `ANTHROPIC_BASE_URL` / `ANTHROPIC_API_KEY`，或丢失 subscription provider identity。
 
-one-shot 订阅路径必须显式传空的官方 provider env：
+one-shot 订阅路径必须显式传官方订阅 provider identity：
 
 ```typescript
-const officialSubscriptionProvider: ProviderEnv = {};
-const env = buildClaudeSessionEnv(officialSubscriptionProvider);
+const officialSubscriptionProvider: ProviderEnv = { providerId: SUBSCRIPTION_PROVIDER_ID };
+const env = buildClaudeSessionEnv(officialSubscriptionProvider, undefined, {
+  providerId: SUBSCRIPTION_PROVIDER_ID,
+});
 ```
+
+这既能清理第三方 provider env，又能触发 `anthropic-sub` 的 native OAuth owner 分支（跳过 `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`）。
 
 ---
 

@@ -20,13 +20,13 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 |------|------|
 | 前端 | React 19 + TypeScript + Vite + TailwindCSS |
 | 桌面框架 | Tauri v2 (Rust) |
-| 后端 | Node.js v24 + Claude Agent SDK 0.3.199（多实例 Sidecar 进程） |
+| 后端 | Node.js v24 + Claude Agent SDK 0.3.201（多实例 Sidecar 进程） |
 | 通信 | Rust HTTP/SSE Proxy (reqwest via `local_http` 模块) |
 | 拖拽 | @dnd-kit/sortable |
 
 > **单一 runtime 原则**：所有 MyAgents 自己的代码（Sidecar / Bridge / CLI）跑在内置 Node.js v24 上。
 > SDK native binary 子进程内部静态链接的 Bun 是 SDK 团队的实现细节，通过 stdio NDJSON 与我们通信，
-> 我们不感知、不共享状态。详见 `tech_docs/bundled_node.md`。
+> 不共享 MyAgents Node 进程内状态；但 builtin Anthropic 订阅会按 Claude Code native 默认规则读取本机官方 OAuth credential store。详见 `tech_docs/bundled_node.md`。
 
 ## 全景架构图
 
@@ -819,7 +819,7 @@ Cloud Space 把官方/团队空间接入桌面端，目前仍是开发中/半成
 
 ### SDK Native Binary（SDK 团队的实现细节）
 
-`src-tauri/resources/claude-agent-sdk/claude[.exe]` —— SDK 0.2.113+ 用 `bun build --compile` 产物分发，内嵌 SDK team pin 的 Bun。独立进程，stdio NDJSON 与我们通信，**不感知、不共享状态**。
+`src-tauri/resources/claude-agent-sdk/claude[.exe]` —— SDK 0.2.113+ 用 `bun build --compile` 产物分发，内嵌 SDK team pin 的 Bun。独立进程，stdio NDJSON 与我们通信，**不共享 MyAgents Node 进程内状态**；但在 builtin `anthropic-sub` 路径下，它仍按 Claude Code native 默认规则读取本机官方 OAuth credential store（macOS Keychain / `~/.claude/.credentials.json`）。MyAgents 不设置 `CLAUDE_CONFIG_DIR`，也不接管这套 OAuth 生命周期。
 
 `src/server/agent-session.ts::resolveClaudeCodeCli()` 按 platform triple 定位。
 

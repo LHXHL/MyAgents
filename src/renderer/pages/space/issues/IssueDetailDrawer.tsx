@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Copy, Download, FileText, Loader2, MessageSquare, Paperclip, Pencil, Save, Send, Target, UploadCloud, X } from 'lucide-react';
+import { ChevronDown, ChevronLeft, ChevronRight, Copy, Download, FileText, Loader2, MessageSquare, Paperclip, Pencil, Save, Send, Target, UploadCloud, X } from 'lucide-react';
 
 import { spaceErrorMessage, type SpaceAttachment, type SpaceSession } from '@/api/spaceCloud';
 import Markdown from '@/components/Markdown';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { useToast } from '@/components/Toast';
+import DropdownMenu, { type DropdownMenuSection } from '@/components/ui/DropdownMenu';
 import type { Project } from '@/config/types';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { copyPlainText } from '@/utils/markdownClipboard';
@@ -14,6 +15,7 @@ import {
   claimHandlerLabel,
   claimHandlerTypeKey,
   getIssueStatusOptions,
+  issueDisplayNumber,
   issueDisplayTitle,
   issueStatusLabel,
 } from '@/pages/space/spaceHelpers';
@@ -47,6 +49,9 @@ export function IssueDetailDrawer({
   detailState,
   actions,
   onClose,
+  onNavigateIssue,
+  previousIssueId,
+  nextIssueId,
   onChanged,
 }: {
   issueId: string;
@@ -55,6 +60,9 @@ export function IssueDetailDrawer({
   detailState?: SpaceIssueDetailState;
   actions: SpaceActions;
   onClose: () => void;
+  onNavigateIssue?: (issueId: string) => void;
+  previousIssueId?: string | null;
+  nextIssueId?: string | null;
   onChanged: () => void;
 }) {
   const { t } = useTranslation('app');
@@ -291,6 +299,23 @@ export function IssueDetailDrawer({
     : true;
   const canSaveIssueEdit = Boolean(draftTitle.trim() && draftBody.trim()) && !issueEditUnchanged && !savingIssue;
   const commentCount = detail?.issue.commentCount ?? detail?.comments.items.length ?? 0;
+  const displayNumber = detail ? issueDisplayNumber(detail.issue) : null;
+  const issueActionSections: DropdownMenuSection[] = [
+    {
+      items: [
+        ...(!editingIssue ? [{
+          icon: <Pencil className="h-3.5 w-3.5" />,
+          label: t('space.detail.editIssue'),
+          onClick: startIssueEdit,
+        }] : []),
+        {
+          icon: <Copy className="h-3.5 w-3.5" />,
+          label: t('space.detail.copyIssueCommand'),
+          onClick: () => void copyIssueCommand(),
+        },
+      ],
+    },
+  ];
 
   return (
     <OverlayBackdrop onClose={onClose} className="z-[230] items-stretch justify-end bg-black/20 backdrop-blur-sm">
@@ -315,7 +340,7 @@ export function IssueDetailDrawer({
             <div className="mx-auto max-w-[840px] pb-10">
               <article className="pb-7">
                 <div className="mb-4 flex items-start justify-between gap-4">
-                  <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs font-semibold text-[var(--ink-subtle)]">
+                  <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs font-normal text-[var(--ink-subtle)]">
                     <span ref={statusMenuRef} className="relative">
                       {statusOptions.length > 0 ? (
                         <button
@@ -350,7 +375,13 @@ export function IssueDetailDrawer({
                         </div>
                       )}
                     </span>
-                    <span>{issueAuthorName}</span>
+                    {displayNumber && (
+                      <>
+                        <span className="text-[var(--ink-muted)]">{displayNumber}</span>
+                        <span className="text-[var(--line-strong)]">·</span>
+                      </>
+                    )}
+                    <span className="text-[var(--ink)]">{issueAuthorName}</span>
                     <span className="text-[var(--line-strong)]">·</span>
                     <span>{formatTime(detail.issue.createdAt)}</span>
                     {detail.goalReference && (
@@ -374,26 +405,32 @@ export function IssueDetailDrawer({
                     )}
                   </div>
                   <div className="flex shrink-0 items-center gap-1.5">
-                    {!editingIssue && (
-                      <button
-                        type="button"
-                        onClick={startIssueEdit}
-                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-transparent px-2.5 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                        title={t('space.detail.editIssue')}
-                      >
-                        <Pencil className="h-3.5 w-3.5" />
-                        {t('space.detail.editIssue')}
-                      </button>
-                    )}
                     <button
                       type="button"
-                      onClick={() => void copyIssueCommand()}
-                      className="inline-flex h-8 items-center justify-center gap-1.5 rounded-lg bg-transparent px-2.5 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                      title={t('space.detail.copyIssueCommand')}
+                      disabled={!previousIssueId || !onNavigateIssue}
+                      onClick={() => previousIssueId && onNavigateIssue?.(previousIssueId)}
+                      className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label={t('space.detail.previousIssue')}
+                      title={t('space.detail.previousIssue')}
                     >
-                      <Copy className="h-3.5 w-3.5" />
-                      {t('space.detail.copyIssueCommand')}
+                      <ChevronLeft className="h-4 w-4" />
                     </button>
+                    <button
+                      type="button"
+                      disabled={!nextIssueId || !onNavigateIssue}
+                      onClick={() => nextIssueId && onNavigateIssue?.(nextIssueId)}
+                      className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40"
+                      aria-label={t('space.detail.nextIssue')}
+                      title={t('space.detail.nextIssue')}
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+                    <DropdownMenu
+                      sections={issueActionSections}
+                      size="md"
+                      minWidth={172}
+                      zIndex={231}
+                    />
                   </div>
                 </div>
                 {editingIssue ? (
@@ -550,8 +587,8 @@ export function IssueDetailDrawer({
                   ) : (
                     detail.comments.items.map((item) => (
                       <article key={item.id} className="py-5 first:pt-0">
-                        <div className="mb-2 flex items-baseline gap-2 text-sm font-semibold text-[var(--ink-subtle)]">
-                          <strong className="text-[var(--ink)]">{item.author.type}</strong>
+                        <div className="mb-2 flex items-baseline gap-2 text-sm font-normal text-[var(--ink-subtle)]">
+                          <span className="text-[var(--ink)]">{item.author.type}</span>
                           <span>{formatTime(item.createdAt)}</span>
                         </div>
                         <IssueMarkdown>{item.body}</IssueMarkdown>

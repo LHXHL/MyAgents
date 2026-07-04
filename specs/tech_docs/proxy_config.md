@@ -50,6 +50,7 @@ MyAgents 支持统一的代理配置，用于访问外部服务（Anthropic API�
 
 2. **Provider-owned 请求 / 子进程**
    - Builtin SDK / OpenAI Bridge / provider probe / Managed Codex 等具备 provider owner 的路径按 `proxySettings.scope` 决策。
+   - Builtin Anthropic subscription 的 provider owner 是 `anthropic-sub`：MyAgents 只按 scope 注入/恢复代理 env，不接管 Claude Code native 的 OAuth credential 读取/刷新。
    - **Rust 实现**: `build_client_with_proxy_for_provider` / `build_blocking_client_with_proxy_for_provider` / `apply_to_subprocess_for_provider`
    - **Node 实现**: `src/server/proxy-state.ts::applyProviderProxyPolicyToEnv` / `getProxyForProviderUrl`
    - 未选 provider：不注入 MyAgents proxy，恢复 Rust 注入前的 proxy env baseline，并保留 localhost `NO_PROXY` 保护。
