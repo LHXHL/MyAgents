@@ -67,6 +67,35 @@ export function canCloseOwnIssue(session: SpaceSession | null, issue: SpaceIssue
   return issue.createdByUserId === session.user.id || issue.creator?.id === session.user.id || issue.author?.id === session.user.id;
 }
 
+function normalizedIdentityValue(value?: string | null): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+export function localAgentMatchesCurrentSpaceIdentity(
+  localAgent: LocalRegisteredAgent | undefined,
+  currentSpaceId: string | null | undefined,
+  currentUserId: string | null | undefined,
+  currentLocalDeviceId: string | null | undefined,
+): boolean {
+  if (!localAgent || !currentSpaceId || !currentUserId || !currentLocalDeviceId) {
+    return false;
+  }
+  const spaceId = normalizedIdentityValue(localAgent.spaceId);
+  const targetSpaceId = normalizedIdentityValue(currentSpaceId);
+  const ownerUserId = normalizedIdentityValue(localAgent.ownerUserId);
+  const targetUserId = normalizedIdentityValue(currentUserId);
+  const deviceId = normalizedIdentityValue(
+    localAgent.deviceId ?? localAgent.device?.deviceId,
+  );
+  const targetDeviceId = normalizedIdentityValue(currentLocalDeviceId);
+  return (
+    spaceId === targetSpaceId &&
+    ownerUserId === targetUserId &&
+    deviceId === targetDeviceId
+  );
+}
+
 export function getIssueStatusOptions(args: {
   session: SpaceSession | null;
   issue: SpaceIssue | null;

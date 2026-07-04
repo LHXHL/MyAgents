@@ -3234,12 +3234,16 @@ fn local_agent_matches_current_identity(
     let Some(current_user_id) = session_user_id(session) else {
         return false;
     };
-    agent
-        .owner_user_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        == Some(current_user_id.as_str())
+    let Some(current_space_id) = session_space_id(session) else {
+        return false;
+    };
+    agent.space_id.trim() == current_space_id
+        && agent
+            .owner_user_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            == Some(current_user_id.as_str())
         && agent
             .device_id
             .as_deref()
@@ -3329,6 +3333,11 @@ fn normalize_legacy_local_agent_identity(
 
 fn session_user_id(session: &SpaceSession) -> Option<String> {
     optional_value_string(&session.user, "id")
+}
+
+fn session_space_id(session: &SpaceSession) -> Option<String> {
+    optional_value_string(&session.space, "id")
+        .or_else(|| optional_value_string(&session.space, "slug"))
 }
 
 fn read_local_agents_unlocked(path: &Path) -> Result<LocalRegisteredAgentsFile, String> {
@@ -3779,6 +3788,25 @@ mod tests {
         assert_eq!(agent.device_os_version.as_deref(), Some("macOS Test"));
         assert_eq!(agent.device_app_version.as_deref(), Some("0.2.46-test"));
         assert!(local_agent_matches_current_identity(
+            &agent,
+            &session,
+            "device_current"
+        ));
+    }
+
+    #[test]
+    fn local_agent_identity_requires_current_space() {
+        let session = test_space_session("usr_current");
+        let mut agent = test_registered_agent(Some("usr_current"), Some("device_current"));
+
+        assert!(local_agent_matches_current_identity(
+            &agent,
+            &session,
+            "device_current"
+        ));
+
+        agent.space_id = "space_other".to_string();
+        assert!(!local_agent_matches_current_identity(
             &agent,
             &session,
             "device_current"

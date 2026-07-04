@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -85,6 +85,29 @@ describe('handleQrCodeAssetRoute', () => {
     expect(body.dataUrl).toMatch(/^data:image\/jpeg;base64,/);
   });
 
+  (process.platform === 'win32' ? it.skip : it)('does not read a symlinked cache file', async () => {
+    const cacheDir = createTempCacheDir();
+    const secretFile = join(createTempCacheDir(), 'secret.txt');
+    writeFileSync(secretFile, 'not an image secret');
+    symlinkSync(secretFile, join(cacheDir, 'feedback_qr_code.png'));
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('fetch failed');
+    });
+
+    const response = await handleQrCodeAssetRoute(
+      '/api/assets/qr-code',
+      createQrRequest(),
+      { cacheDir, fetchImpl, logger },
+    );
+    const body = await readJson(response as Response);
+
+    expect(response?.status).toBe(200);
+    expect(body).toEqual({
+      success: false,
+      error: 'QR code not available',
+    });
+  });
+
   it('stores downloaded image and reports the MIME type from bytes', async () => {
     const fetchImpl = vi.fn(async () => new Response(pngBytes));
 
@@ -98,5 +121,25 @@ describe('handleQrCodeAssetRoute', () => {
     expect(response?.status).toBe(200);
     expect(body.success).toBe(true);
     expect(body.dataUrl).toMatch(/^data:image\/png;base64,/);
+  });
+
+  it('serializes concurrent downloads through the shared cache lock', async () => {
+    const cacheDir = createTempCacheDir();
+    const fetchImpl = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return new Response(pngBytes);
+    });
+
+    const [first, second] = await Promise.all([
+      handleQrCodeAssetRoute('/api/assets/qr-code', createQrRequest(), { cacheDir, fetchImpl, logger }),
+      handleQrCodeAssetRoute('/api/assets/qr-code', createQrRequest(), { cacheDir, fetchImpl, logger }),
+    ]);
+
+    const firstBody = await readJson(first as Response);
+    const secondBody = await readJson(second as Response);
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(firstBody.dataUrl).toMatch(/^data:image\/png;base64,/);
+    expect(secondBody.dataUrl).toMatch(/^data:image\/png;base64,/);
   });
 });

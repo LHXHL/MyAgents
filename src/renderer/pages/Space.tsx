@@ -22,6 +22,7 @@ import {
   ACTIVE_ISSUE_STATE_FILTER,
   buildIssueQueryKey,
   isSpaceAdmin,
+  localAgentMatchesCurrentSpaceIdentity,
   type IssueQueryParams,
 } from "@/pages/space/spaceHelpers";
 import {
@@ -116,24 +117,12 @@ function mergeAgentDevice(
   };
 }
 
-function localAgentMatchesCurrentIdentity(
-  localAgent: LocalRegisteredAgent | undefined,
-  currentUserId: string | null,
-  currentLocalDeviceId: string | null,
-): boolean {
-  if (!localAgent || !currentUserId || !currentLocalDeviceId) return false;
-  const ownerUserId = normalizedIdentityValue(localAgent.ownerUserId);
-  const deviceId = normalizedIdentityValue(
-    localAgent.deviceId ?? localAgent.device?.deviceId,
-  );
-  return ownerUserId === currentUserId && deviceId === currentLocalDeviceId;
-}
-
 function registeredAgentToListItem(
   agent: SpaceRegisteredAgent,
   localAgent: LocalRegisteredAgent | undefined,
   fallbackBaseUrl: string,
   fallbackSpaceId: string,
+  currentSpaceId: string,
   currentUserId: string | null,
   currentLocalDeviceId: string | null,
 ): LocalRegisteredAgent {
@@ -143,8 +132,9 @@ function registeredAgentToListItem(
     cloudOwnerUserId &&
       currentUserId &&
       cloudOwnerUserId === currentUserId &&
-      localAgentMatchesCurrentIdentity(
+      localAgentMatchesCurrentSpaceIdentity(
         localAgent,
+        currentSpaceId,
         currentUserId,
         currentLocalDeviceId,
       ),
@@ -253,6 +243,8 @@ export default function Space({ isActive }: { isActive: boolean }) {
     session?.space?.id ||
     session?.space?.slug ||
     DEFAULT_SPACE_ID;
+  const currentIdentitySpaceId =
+    session?.space?.id || activeCacheSpaceId;
   const spaceCacheKey = useCallback(
     (id: string) => `${activeCacheSpaceId}\n${id}`,
     [activeCacheSpaceId],
@@ -265,6 +257,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
         localById.get(agent.id),
         session?.baseUrl ?? "",
         activeCacheSpaceId,
+        currentIdentitySpaceId,
         currentUserId,
         localDeviceId,
       ),
@@ -273,35 +266,23 @@ export default function Space({ isActive }: { isActive: boolean }) {
     const localOnlyItems = localAgents
       .filter((agent) => !cloudIds.has(agent.id))
       .filter((agent) => {
-        const ownerUserId = normalizedIdentityValue(agent.ownerUserId);
-        const deviceId = normalizedIdentityValue(
-          agent.deviceId ?? agent.device?.deviceId,
-        );
-        return Boolean(
-          currentUserId &&
-            localDeviceId &&
-            ownerUserId === currentUserId &&
-            deviceId === localDeviceId,
+        return localAgentMatchesCurrentSpaceIdentity(
+          agent,
+          currentIdentitySpaceId,
+          currentUserId,
+          localDeviceId,
         );
       })
       .map((agent) => {
-        const ownerUserId = normalizedIdentityValue(agent.ownerUserId);
-        const deviceId = normalizedIdentityValue(
-          agent.deviceId ?? agent.device?.deviceId,
-        );
         return {
           ...agent,
-          isLocal: Boolean(
-            currentUserId &&
-              localDeviceId &&
-              ownerUserId === currentUserId &&
-              deviceId === localDeviceId,
-          ),
+          isLocal: true,
         };
       });
     return [...cloudItems, ...localOnlyItems];
   }, [
     activeCacheSpaceId,
+    currentIdentitySpaceId,
     currentUserId,
     localAgents,
     localDeviceId,

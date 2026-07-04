@@ -8,7 +8,7 @@
 |------|------|
 | 桌面框架 | Tauri v2 (Rust) |
 | 前端 | React 19 + TypeScript + Vite + TailwindCSS |
-| 后端 | Node.js v24 + Claude Agent SDK 0.3.195（多实例 Sidecar） |
+| 后端 | Node.js v24 + Claude Agent SDK 0.3.199（多实例 Sidecar） |
 | 通信 | Rust HTTP/SSE Proxy (reqwest via `local_http` 模块) |
 | 运行时 | 单一 Node.js v24（Sidecar / Plugin Bridge / MCP Server / CLI），内置于应用包 |
 
@@ -110,7 +110,7 @@
 **禁止凭假设编写 SDK 交互代码。** 涉及 SDK 的任何开发（`query()` 参数、`SDKMessage` 类型处理、环境变量、Hook 注册、MCP 集成等），MUST 先查阅官方文档确认实际行为：
 
 - **SDK 文档**：https://platform.claude.com/docs/zh-CN/agent-sdk/overview
-- **SDK 类型定义**：`node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`（当前版本 0.3.195）
+- **SDK 类型定义**：`node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`（当前版本 0.3.199）
 - **SDK 工具类型**：`node_modules/@anthropic-ai/claude-agent-sdk/sdk-tools.d.ts`
 
 典型错误：臆测 `seedReadState` 调用时机导致"先读后改"语义被绕过、臆测环境变量名导致模型别名不生效。这类问题的根因都是没有查文档就动手写代码。

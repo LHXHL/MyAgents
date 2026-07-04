@@ -33,7 +33,7 @@ import {
   isExternalRuntime,
 } from './factory';
 import { resolveCodexWorkspaceInstructions } from './workspace-instructions';
-import { RUNTIME_DISPLAY_NAMES, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
+import { RUNTIME_DISPLAY_NAMES, type RuntimeEnvPolicy, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
 import { isPendingSessionId } from '../../shared/constants';
 import { resolveChatQueueResponseMode } from '../session-core/turn-queue';
@@ -340,8 +340,9 @@ let currentTurnTraceRuntime = '';
 let currentTurnTraceStartMs = 0;
 let firstDeltaTraceEmitted = false;
 const activeToolTraceStarts = new Map<string, number>();
-let pendingManagedProviderProxyRestart = false;
-let pendingManagedProviderProxyRestartOriginalKey: string | null = null;
+let activeExternalEnvPolicy: RuntimeEnvPolicy | undefined;
+let pendingExternalProxyRestart = false;
+let pendingExternalProxyRestartOriginalKey: string | null = null;
 
 // Set by sendExternalMessage when it pre-broadcasts the user message for instant display.
 // Consumed by _doStartExternalSession / Case 3 to reuse the message (skip duplicate broadcast).
@@ -449,6 +450,9 @@ function resetModuleState(): void {
   resetExternalRuntimeConfigState();
   resetExternalTranscriptState();
   resetExternalContentState();
+  activeExternalEnvPolicy = undefined;
+  pendingExternalProxyRestart = false;
+  pendingExternalProxyRestartOriginalKey = null;
   currentTurnAnalyticsSource = null;
   currentTurnAnalyticsOrigin = null;
   clearExternalPermissionSuggestions();
@@ -1525,28 +1529,44 @@ function isExternalTurnInFlight(): boolean {
   return getExternalTurnStartTime() > 0 && !isExternalTurnCompleted();
 }
 
-export async function handleManagedProviderProxyConfigChange(
-  oldKey: string,
-  newKey: string,
-): Promise<{ success: boolean; skipped?: string }> {
+export async function handleExternalProxyConfigChange(input: {
+  oldManagedProviderKey: string;
+  newManagedProviderKey: string;
+  oldProcessEnvKey: string;
+  newProcessEnvKey: string;
+}): Promise<{ success: boolean; skipped?: string }> {
+  const runtimeSource = getCurrentRuntimeSource();
+  const runtimeType = getCurrentRuntimeType();
+  const usesManagedProviderProxy =
+    runtimeType === 'codex' && runtimeSource === 'managed-provider';
+  const usesProcessProxyEnv =
+    runtimeSource !== 'managed-provider' &&
+    (activeExternalEnvPolicy?.proxy ?? 'myagents') === 'myagents';
+  const oldKey = usesManagedProviderProxy
+    ? input.oldManagedProviderKey
+    : input.oldProcessEnvKey;
+  const newKey = usesManagedProviderProxy
+    ? input.newManagedProviderKey
+    : input.newProcessEnvKey;
+
+  if (!usesManagedProviderProxy && !usesProcessProxyEnv) {
+    return { success: true, skipped: 'proxy-not-owned-by-myagents' };
+  }
   if (oldKey === newKey) {
     return { success: true, skipped: 'unchanged' };
   }
-  if (getCurrentRuntimeType() !== 'codex' || getCurrentRuntimeSource() !== 'managed-provider') {
-    return { success: true, skipped: 'not-managed-provider' };
-  }
   if (isExternalTurnInFlight()) {
-    if (!pendingManagedProviderProxyRestart) {
-      pendingManagedProviderProxyRestartOriginalKey = oldKey;
+    if (!pendingExternalProxyRestart) {
+      pendingExternalProxyRestartOriginalKey = oldKey;
     }
-    if (newKey === pendingManagedProviderProxyRestartOriginalKey) {
-      pendingManagedProviderProxyRestart = false;
-      pendingManagedProviderProxyRestartOriginalKey = null;
-      console.log('[external-session] Managed Codex proxy changed back to in-flight value; deferred runtime restart cancelled');
+    if (newKey === pendingExternalProxyRestartOriginalKey) {
+      pendingExternalProxyRestart = false;
+      pendingExternalProxyRestartOriginalKey = null;
+      console.log('[external-session] External runtime proxy changed back to in-flight value; deferred runtime restart cancelled');
       return { success: true, skipped: 'unchanged-after-defer' };
     }
-    pendingManagedProviderProxyRestart = true;
-    console.log('[external-session] Managed Codex proxy changed; deferring runtime restart until current turn completes');
+    pendingExternalProxyRestart = true;
+    console.log('[external-session] External runtime proxy changed; deferring runtime restart until current turn completes');
     return { success: true };
   }
   if (hasExternalRuntimeProcess()) {
@@ -1704,6 +1724,7 @@ async function _doStartExternalSession(options: {
   // access to the agent config, so doing it here avoids N copies of the lookup.
   const resolvedEnvPolicy = options.envPolicy
     ?? await resolveAgentEnvPolicy(options.workspacePath);
+  activeExternalEnvPolicy = resolvedEnvPolicy;
 
   // Build system prompt using MyAgents' three-layer architecture.
   // Pass the current runtime so L1 identity text reports the correct CLI
@@ -1952,6 +1973,7 @@ async function _doStartExternalSession(options: {
     console.log(`[external-session] ${runtimeType} process started, pid=${process.pid}`);
   } catch (err) {
     clearExternalActiveRuntimeProcess();
+    activeExternalEnvPolicy = undefined;
     clearWatchdog();
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[external-session] Failed to start ${runtimeType}:`, message);
@@ -2913,6 +2935,7 @@ export async function stopExternalSession(options?: {
     return true;
   } finally {
     clearExternalActiveRuntimeProcess();
+    activeExternalEnvPolicy = undefined;
     // Any pre-warm that raced with a stop is no longer relevant. Keeping the
     // flag around would leak 'prewarm' into a subsequent session's session_init
     // broadcast. _doStartExternalSession resets this per-call too, but some
@@ -3479,10 +3502,10 @@ async function persistTurnResult(): Promise<void> {
     }
     // Pattern B/C: turn complete — clear active trace ID + unregister from registry.
     finalizeExternalActiveRequest(didExternalLastTurnSucceed() ? 'completed' : 'failed');
-    if (pendingManagedProviderProxyRestart) {
-      pendingManagedProviderProxyRestart = false;
-      pendingManagedProviderProxyRestartOriginalKey = null;
-      console.log('[external-session] Applying deferred Managed Codex proxy restart after turn completion');
+    if (pendingExternalProxyRestart) {
+      pendingExternalProxyRestart = false;
+      pendingExternalProxyRestartOriginalKey = null;
+      console.log('[external-session] Applying deferred external runtime proxy restart after turn completion');
       await stopExternalSession({ reason: 'config-restart', preserveQueue: true });
     }
     // Mid-turn queue drain: a turn just ended (completed OR interrupted via force) → surface +

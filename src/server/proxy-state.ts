@@ -148,6 +148,12 @@ export function getProviderProxyScopeKey(providerId: string): string {
   return effectiveProxyScopeKey(currentProxySettings, providerId);
 }
 
+export function getProcessProxyEnvKey(): string {
+  return PROXY_VARS_LIST
+    .map((key) => `${key}=${process.env[key] ?? ''}`)
+    .join('\n');
+}
+
 export async function setProcessProxyConfig(rawSettings: unknown): Promise<void> {
   const proxySettings = coerceProxySettings(rawSettings);
   currentProxySettings = proxySettings;

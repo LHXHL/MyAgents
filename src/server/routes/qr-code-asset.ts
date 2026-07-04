@@ -1,14 +1,29 @@
-import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { randomUUID } from 'crypto';
+import {
+  chmodSync,
+  closeSync,
+  constants,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
+import { homedir } from 'os';
 import { join } from 'path';
 
 import { cancellableFetch } from '../utils/cancellation';
+import { FileBusyError, withFileLock } from '../utils/file-lock';
 import { ensureDirSync } from '../utils/fs-utils';
 
 const QR_CODE_URL = 'https://download.myagents.io/assets/feedback_qr_code.png';
 const CACHE_MAX_AGE_MS = 60 * 60 * 1000;
 const LOCK_MAX_AGE_MS = 30_000;
 const DOWNLOAD_TIMEOUT_MS = 10_000;
+const LOCK_TIMEOUT_MS = DOWNLOAD_TIMEOUT_MS + 5_000;
 
 type FetchLike = typeof cancellableFetch;
 
@@ -54,15 +69,59 @@ function imageMimeFromBytes(buffer: Buffer): string {
   return 'application/octet-stream';
 }
 
-function readCacheDataUrl(cacheFile: string): string | null {
+function defaultCacheDir(): string {
+  return join(homedir(), '.myagents', 'cache', 'assets');
+}
+
+function ensurePrivateCacheDir(cacheDir: string): void {
+  ensureDirSync(cacheDir);
+  const metadata = lstatSync(cacheDir);
+  if (!metadata.isDirectory()) {
+    throw new Error('QR cache path is not a directory');
+  }
   try {
-    if (!existsSync(cacheFile)) return null;
-    const imageBuffer = readFileSync(cacheFile);
-    if (imageBuffer.length === 0) return null;
-    return `data:${imageMimeFromBytes(imageBuffer)};base64,${imageBuffer.toString('base64')}`;
+    chmodSync(cacheDir, 0o700);
+  } catch {
+    /* best-effort on platforms/filesystems that ignore POSIX mode bits */
+  }
+}
+
+function readRegularFileNoFollow(filePath: string): Buffer | null {
+  let fd: number | null = null;
+  try {
+    const metadata = lstatSync(filePath);
+    if (!metadata.isFile()) return null;
+    fd = openSync(filePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const opened = fstatSync(fd);
+    if (!opened.isFile()) return null;
+    return readFileSync(fd);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+}
+
+function cacheAgeMs(cacheFile: string, now: () => number): number | null {
+  try {
+    const metadata = lstatSync(cacheFile);
+    if (!metadata.isFile()) return null;
+    return now() - metadata.mtimeMs;
   } catch {
     return null;
   }
+}
+
+function readCacheDataUrl(cacheFile: string): string | null {
+  const imageBuffer = readRegularFileNoFollow(cacheFile);
+  if (!imageBuffer || imageBuffer.length === 0) return null;
+  return `data:${imageMimeFromBytes(imageBuffer)};base64,${imageBuffer.toString('base64')}`;
 }
 
 function unavailableResponse(error: string): Response {
@@ -76,9 +135,9 @@ export async function handleQrCodeAssetRoute(
 ): Promise<Response | null> {
   if (pathname !== '/api/assets/qr-code' || request.method !== 'GET') return null;
 
-  const cacheDir = options.cacheDir ?? join(tmpdir(), 'myagents-cache');
+  const cacheDir = options.cacheDir ?? defaultCacheDir();
   const cacheFile = join(cacheDir, 'feedback_qr_code.png');
-  const lockFile = `${cacheFile}.lock`;
+  const lockPath = `${cacheFile}.download.lock`;
   const cacheMaxAgeMs = options.cacheMaxAgeMs ?? CACHE_MAX_AGE_MS;
   const now = options.now ?? Date.now;
   const logger = options.logger ?? console;
@@ -87,8 +146,9 @@ export async function handleQrCodeAssetRoute(
 
   try {
     let needsDownload = true;
-    if (existsSync(cacheFile)) {
-      const age = now() - statSync(cacheFile).mtimeMs;
+    const existingAge = cacheAgeMs(cacheFile, now);
+    if (existingAge !== null) {
+      const age = existingAge;
       if (age < cacheMaxAgeMs) {
         needsDownload = false;
         logger.log(`[api/assets/qr-code] Cache hit (age: ${Math.round(age / 1000 / 60)}min)`);
@@ -100,34 +160,41 @@ export async function handleQrCodeAssetRoute(
     }
 
     if (needsDownload) {
-      ensureDirSync(cacheDir);
-      if (existsSync(lockFile)) {
-        const lockAge = now() - statSync(lockFile).mtimeMs;
-        if (lockAge < LOCK_MAX_AGE_MS) {
-          logger.log('[api/assets/qr-code] Download in progress, serving available cache');
-          const dataUrl = readCacheDataUrl(cacheFile);
-          return dataUrl ? jsonResponse({ success: true, dataUrl }) : unavailableResponse('QR code download in progress');
-        }
-        rmSync(lockFile, { force: true });
-      }
-
-      writeFileSync(lockFile, String(now()));
       try {
-        const downloadStartTime = now();
-        const response = await fetchImpl(QR_CODE_URL, undefined, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
-        if (!response.ok) {
-          logger.warn(`[api/assets/qr-code] Download failed (HTTP ${response.status}), using cache if available`);
-        } else {
-          const buffer = Buffer.from(await response.arrayBuffer());
-          const tmpFile = `${cacheFile}.${now()}.tmp`;
-          writeFileSync(tmpFile, buffer);
-          renameSync(tmpFile, cacheFile);
-          logger.log(`[api/assets/qr-code] Downloaded and cached (${Math.round(buffer.length / 1024)}KB in ${Math.round(now() - downloadStartTime)}ms)`);
-        }
+        ensurePrivateCacheDir(cacheDir);
+        await withFileLock(
+          { lockPath, timeoutMs: LOCK_TIMEOUT_MS, staleMs: LOCK_MAX_AGE_MS },
+          async () => {
+            const lockedAge = cacheAgeMs(cacheFile, now);
+            if (lockedAge !== null && lockedAge < cacheMaxAgeMs) {
+              logger.log(`[api/assets/qr-code] Cache refreshed by another process (age: ${Math.round(lockedAge / 1000 / 60)}min)`);
+              return;
+            }
+
+            const downloadStartTime = now();
+            const response = await fetchImpl(QR_CODE_URL, undefined, { timeoutMs: DOWNLOAD_TIMEOUT_MS });
+            if (!response.ok) {
+              logger.warn(`[api/assets/qr-code] Download failed (HTTP ${response.status}), using cache if available`);
+              return;
+            }
+
+            const buffer = Buffer.from(await response.arrayBuffer());
+            const tmpFile = `${cacheFile}.${process.pid}.${randomUUID()}.tmp`;
+            try {
+              writeFileSync(tmpFile, buffer, { flag: 'wx' });
+              renameSync(tmpFile, cacheFile);
+            } finally {
+              if (existsSync(tmpFile)) rmSync(tmpFile, { force: true });
+            }
+            logger.log(`[api/assets/qr-code] Downloaded and cached (${Math.round(buffer.length / 1024)}KB in ${Math.round(now() - downloadStartTime)}ms)`);
+          },
+        );
       } catch (error) {
-        logger.warn(`[api/assets/qr-code] Download failed (${errorMessage(error)}), using cache if available`);
-      } finally {
-        rmSync(lockFile, { force: true });
+        if (error instanceof FileBusyError) {
+          logger.warn('[api/assets/qr-code] Download lock busy, using cache if available');
+        } else {
+          logger.warn(`[api/assets/qr-code] Download failed (${errorMessage(error)}), using cache if available`);
+        }
       }
     }
 
