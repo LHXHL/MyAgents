@@ -2999,6 +2999,7 @@ fn dispatch_item(id: &str, agent: &LocalRegisteredAgent, issue: &Value, status: 
         },
         "issueMeta": {
             "id": issue_id,
+            "number": issue.get("number").and_then(Value::as_u64),
             "title": title,
             "status": issue_status,
             "updatedAt": updated_at
@@ -3049,6 +3050,7 @@ fn delivery_item(id: &str, agent: &LocalRegisteredAgent, issue: &Value, status: 
         },
         "issueMeta": {
             "id": issue_id,
+            "number": issue.get("number").and_then(Value::as_u64),
             "title": title,
             "state": issue_state,
             "updatedAt": updated_at

@@ -2027,6 +2027,7 @@ struct PendingSpaceDelivery {
     claim_id: Option<String>,
     target_session_id: Option<String>,
     issue_id: String,
+    issue_number: Option<i64>,
     issue_title: String,
     issue_state: String,
     goal_id: Option<String>,
@@ -2098,6 +2099,8 @@ async fn process_agent_deliveries(
             target_session_id: optional_value_string(&delivery, "targetSessionId")
                 .or_else(|| optional_value_string(&delivery, "target_session_id")),
             issue_id,
+            issue_number: optional_value_i64(&issue_meta, "number")
+                .or_else(|| optional_value_i64(&issue_meta, "issueNumber")),
             issue_title: optional_value_string(&issue_meta, "title")
                 .unwrap_or_else(|| "Untitled Space Issue".to_string()),
             issue_state: optional_value_string(&issue_meta, "state")
@@ -2233,6 +2236,7 @@ async fn deliver_space_deliveries(
                 agent,
                 &delivery.delivery_id,
                 &delivery.issue_id,
+                delivery.issue_number,
                 &delivery.issue_title,
                 &delivery.issue_state,
                 delivery.goal_path.as_deref(),
@@ -2269,6 +2273,7 @@ async fn deliver_space_deliveries(
             "deliveryKind": first.delivery_kind,
             "claimId": first.claim_id,
             "issueId": first.issue_id,
+            "issueNumber": first.issue_number,
             "issueTitle": first.issue_title,
             "issueState": first.issue_state,
             "goalId": first.goal_id,
@@ -2395,6 +2400,7 @@ fn build_claim_followup_prompt(
         "Issue".to_string(),
         format!("- Delivery ID: {}", delivery.delivery_id),
         format!("- Issue ID: {}", delivery.issue_id),
+        issue_number_prompt_line(delivery.issue_number),
         format!("- Title: {}", delivery.issue_title),
         format!("- State: {}", delivery.issue_state),
         format!("- Notification version: {}", delivery.notification_version),
@@ -2454,10 +2460,29 @@ fn build_claim_followup_prompt(
     lines.join("\n")
 }
 
+fn issue_number_label(issue_number: Option<i64>) -> Option<String> {
+    issue_number
+        .filter(|number| *number > 0)
+        .map(|number| format!("#{}", number))
+}
+
+fn issue_number_prompt_line(issue_number: Option<i64>) -> String {
+    issue_number_label(issue_number)
+        .map(|label| format!("- Issue #: {}", label))
+        .unwrap_or_else(|| "- Issue #: unavailable".to_string())
+}
+
+fn space_issue_task_name(issue_number: Option<i64>, fallback_issue_id: &str) -> String {
+    issue_number_label(issue_number)
+        .map(|label| format!("Space Issue {}", label))
+        .unwrap_or_else(|| format!("Space Issue {}", fallback_issue_id))
+}
+
 fn build_delivery_prompt(
     agent: &LocalRegisteredAgent,
     delivery_id: &str,
     issue_id: &str,
+    issue_number: Option<i64>,
     issue_title: &str,
     issue_state: &str,
     goal_path: Option<&str>,
@@ -2471,6 +2496,7 @@ fn build_delivery_prompt(
         "Issue".to_string(),
         format!("- Delivery ID: {}", delivery_id),
         format!("- Issue ID: {}", issue_id),
+        issue_number_prompt_line(issue_number),
         format!("- Title: {}", issue_title),
         format!("- State: {}", issue_state),
         format!("- Notification version: {}", notification_version),
@@ -2493,7 +2519,7 @@ fn build_delivery_prompt(
             shell_quote(workspace_id),
             shell_quote(&agent.workspace_path),
             shell_quote(&agent.space_id),
-            shell_quote(&format!("Space Issue {}", issue_id)),
+            shell_quote(&space_issue_task_name(issue_number, issue_id)),
         )
     });
     let finish_command = format!(
@@ -2561,6 +2587,7 @@ fn build_delivery_batch_prompt(
             format!("Issue {}", index + 1),
             format!("- Delivery ID: {}", delivery.delivery_id),
             format!("- Issue ID: {}", delivery.issue_id),
+            issue_number_prompt_line(delivery.issue_number),
             format!("- Title: {}", delivery.issue_title),
             format!("- State: {}", delivery.issue_state),
             format!("- Notification version: {}", delivery.notification_version),
@@ -2595,7 +2622,7 @@ fn build_delivery_batch_prompt(
                 shell_quote(workspace_id),
                 shell_quote(&agent.workspace_path),
                 shell_quote(&agent.space_id),
-                shell_quote(&format!("Space Issue {}", delivery.issue_id)),
+                shell_quote(&space_issue_task_name(delivery.issue_number, &delivery.issue_id)),
             ));
         } else {
             lines.push("- Cannot claim until this Registered Agent is re-registered with a local workspace id.".to_string());
@@ -3498,6 +3525,14 @@ fn optional_value_string(value: &Value, key: &str) -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn optional_value_i64(value: &Value, key: &str) -> Option<i64> {
+    let raw = value.get(key)?;
+    if let Some(number) = raw.as_i64() {
+        return Some(number);
+    }
+    raw.as_str()?.trim().parse::<i64>().ok()
+}
+
 fn value_string_array(value: &Value, key: &str) -> Option<Vec<String>> {
     let array = value.get(key)?.as_array()?;
     Some(
@@ -3908,6 +3943,7 @@ mod tests {
                     claim_id: None,
                     target_session_id: None,
                     issue_id: "issue_1".to_string(),
+                    issue_number: Some(113),
                     issue_title: "First".to_string(),
                     issue_state: "todo".to_string(),
                     goal_id: Some("goal_test".to_string()),
@@ -3921,6 +3957,7 @@ mod tests {
                     claim_id: None,
                     target_session_id: None,
                     issue_id: "issue_2".to_string(),
+                    issue_number: Some(114),
                     issue_title: "Second".to_string(),
                     issue_state: "todo".to_string(),
                     goal_id: Some("goal_test".to_string()),
@@ -3934,8 +3971,11 @@ mod tests {
         assert!(prompt.contains("delivered 2 Issue notifications"));
         assert!(prompt.contains("Issue 1"));
         assert!(prompt.contains("Delivery ID: delivery_1"));
+        assert!(prompt.contains("Issue #: #113"));
+        assert!(prompt.contains("--name 'Space Issue #113'"));
         assert!(prompt.contains("Issue 2"));
         assert!(prompt.contains("Delivery ID: delivery_2"));
+        assert!(prompt.contains("Issue #: #114"));
         assert!(prompt.contains("one continuous conversation turn"));
     }
 
@@ -3979,6 +4019,7 @@ mod tests {
                 claim_id: Some("claim_1".to_string()),
                 target_session_id: Some("session_claim".to_string()),
                 issue_id: "issue_1".to_string(),
+                issue_number: Some(115),
                 issue_title: "Follow-up question".to_string(),
                 issue_state: "done".to_string(),
                 goal_id: Some("goal_test".to_string()),
@@ -3990,6 +4031,7 @@ mod tests {
 
         assert!(prompt.contains("follow-up comment"));
         assert!(prompt.contains("already claimed"));
+        assert!(prompt.contains("Issue #: #115"));
         assert!(prompt.contains("Do not run the claim command again"));
         assert!(prompt.contains("myagents space issue comment issue_1"));
         assert!(!prompt.contains("--create-attached"));
@@ -4009,6 +4051,10 @@ mod tests {
             .and_then(Value::as_array)
             .expect("delivery items");
         assert!(!items.is_empty());
+        assert!(items[0]
+            .pointer("/issueMeta/number")
+            .and_then(Value::as_u64)
+            .is_some());
         let delivery_id = items[0]
             .pointer("/delivery/id")
             .and_then(Value::as_str)
@@ -4070,6 +4116,11 @@ mod tests {
             .and_then(Value::as_array)
             .expect("delivery items");
         assert!(!items.is_empty());
+        assert!(items.iter().all(|item| {
+            item.pointer("/issueMeta/number")
+                .and_then(Value::as_u64)
+                .is_some()
+        }));
         assert!(items.iter().all(|item| {
             item.pointer("/delivery/registeredAgentId")
                 .and_then(Value::as_str)

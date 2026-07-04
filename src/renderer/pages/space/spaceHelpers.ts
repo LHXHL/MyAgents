@@ -84,8 +84,7 @@ export function issueDisplayNumber(
 ): string | null {
   const number =
     normalizeIssueNumber(issue.number)
-    ?? normalizeIssueNumber(issue.issueNumber)
-    ?? normalizeIssueNumber(issue.id.match(/(?:^|[_#-])(\d+)$/)?.[1]);
+    ?? normalizeIssueNumber(issue.issueNumber);
   return number ? `#${number}` : null;
 }
 

@@ -285,6 +285,8 @@ export interface SpaceDispatchItem {
   };
   issueMeta: {
     id: string;
+    number?: number | null;
+    issueNumber?: number | null;
     title: string;
     status: string;
     updatedAt: string;
@@ -311,6 +313,8 @@ export interface SpaceDeliveryItem {
   };
   issueMeta: {
     id: string;
+    number?: number | null;
+    issueNumber?: number | null;
     title: string;
     state: SpaceIssueState | string;
     updatedAt: string;

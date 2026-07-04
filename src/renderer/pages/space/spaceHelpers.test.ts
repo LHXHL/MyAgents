@@ -84,11 +84,11 @@ describe('space issue helpers', () => {
     expect(issueDisplayTitle(issue({ state: 'doing', title: '[doing] Seed issue 3' }))).toBe('Seed issue 3');
   });
 
-  it('formats issue numbers from explicit API fields and stable id suffixes', () => {
+  it('formats issue numbers from explicit API fields only', () => {
     expect(issueDisplayNumber(issue({ number: 42 }))).toBe('#42');
     expect(issueDisplayNumber(issue({ issueNumber: 7 }))).toBe('#7');
-    expect(issueDisplayNumber(issue({ id: 'issue_113' }))).toBe('#113');
-    expect(issueDisplayNumber(issue({ id: 'iss-mock-114' }))).toBe('#114');
+    expect(issueDisplayNumber(issue({ id: 'issue_113' }))).toBeNull();
+    expect(issueDisplayNumber(issue({ id: 'iss-mock-114' }))).toBeNull();
     expect(issueDisplayNumber(issue({ id: 'uuid-like-id', title: 'Seed issue 99' }))).toBeNull();
     expect(issueDisplayNumber(issue({ id: 'uuid-like-id', number: 0 }))).toBeNull();
   });
