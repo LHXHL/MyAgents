@@ -111,6 +111,12 @@ Delivery 分两类：
 
 该链路保持“云端关注/认领、客户端执行”的边界：云端不直接访问本地文件系统或 Sidecar；本地执行仍走 MyAgents 的 Task/Session 体系。兼容命令 `cmd_space_poll_dispatches` / `cmd_space_process_dispatches_once` 仅作为旧调用方别名保留，语义已映射到 delivery。
 
+## Issue 编号模型
+
+Space Issue 的用户可见编号由云端拥有，不从 opaque `issue.id` 推导。`issues.number` 是同一 `space_id` 内唯一、正整数、自增的稳定编号；迁移会回填历史数据，并用 `(space_id, number)` 唯一索引和 insert/update trigger 防止缺失或非正数写入。
+
+所有 issue list/detail、IssueDelivery 和 mock 数据都必须携带该编号。Renderer 展示 `#<number>` 时只消费 API 返回的 `number` / 兼容字段 `issueNumber`；Rust delivery 注入和 attached task 命名也使用该编号，缺失时只能降级为内部 `issueId`，不能自行解析 id 后缀。
+
 ## Agents UI 约束
 
 - Agents 列表是双列卡片；单个 Agent 也保持半宽，布局宽度边界与 Skills 列表一致。
