@@ -34,7 +34,7 @@ function buildAttachmentDownloadCommand(attachmentId: string): string {
 
 function IssueMarkdown({ children }: { children: string }) {
   return (
-    <div className="ai-message-content max-w-[66ch] text-[var(--ink-secondary)]">
+    <div className="ai-message-content text-[var(--ink-secondary)]">
       <Markdown raw preserveNewlines>{children}</Markdown>
     </div>
   );
@@ -290,6 +290,7 @@ export function IssueDetailDrawer({
     ? draftTitle.trim() === detail.issue.title.trim() && draftBody.trim() === detail.issue.body.trim()
     : true;
   const canSaveIssueEdit = Boolean(draftTitle.trim() && draftBody.trim()) && !issueEditUnchanged && !savingIssue;
+  const commentCount = detail?.issue.commentCount ?? detail?.comments.items.length ?? 0;
 
   return (
     <OverlayBackdrop onClose={onClose} className="z-[230] items-stretch justify-end bg-black/20 backdrop-blur-sm">
@@ -536,12 +537,10 @@ export function IssueDetailDrawer({
               </article>
 
               <section>
-                <h3 className="mb-5 flex items-center justify-between gap-3 text-lg font-semibold text-[var(--ink)]">
-                  <span className="inline-flex items-center gap-2">
-                    <MessageSquare className="h-4 w-4" />
-                    {t('space.detail.comments')}
-                  </span>
-                  <small className="text-xs font-semibold text-[var(--ink-subtle)]">{t('space.detail.commentCount', { count: detail.comments.items.length })}</small>
+                <h3 className="mb-5 flex items-center gap-2 text-lg font-semibold text-[var(--ink)]">
+                  <MessageSquare className="h-4 w-4" />
+                  <span>{t('space.detail.comments')}</span>
+                  <small className="text-xs font-semibold text-[var(--ink-subtle)]">{t('space.detail.commentCount', { count: commentCount })}</small>
                 </h3>
                 <div className="divide-y divide-[var(--line-subtle)]">
                   {detail.comments.items.length === 0 ? (

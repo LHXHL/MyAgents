@@ -73,7 +73,7 @@ export function SpaceSidebar({ session, mode, onSpaceTabChange, onLogout }: { se
   ];
 
   return (
-    <aside className="grid w-72 shrink-0 grid-rows-[minmax(0,1fr)_auto] gap-3.5 border-r border-[var(--line)] bg-[var(--paper)]/70 p-3.5">
+    <aside className="grid w-64 shrink-0 grid-rows-[minmax(0,1fr)_auto] gap-3.5 border-r border-[var(--line)] bg-[var(--paper)]/70 p-3.5">
       <div className="min-h-0 overflow-y-auto">
         <details className="group/space mb-2.5 border-b border-[var(--line-subtle)] pb-2.5" open>
           <summary className="grid min-h-10 cursor-pointer list-none grid-cols-[32px_minmax(0,1fr)_auto] items-center gap-2 rounded-xl px-2 py-1.5 text-left transition-colors hover:bg-[var(--paper-elevated)]/70 [&::-webkit-details-marker]:hidden">
