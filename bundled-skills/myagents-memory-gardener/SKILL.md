@@ -1,12 +1,8 @@
 ---
 name: myagents-memory-gardener
 description: >
-  72 小时节奏的长期记忆园丁：体检并修剪项目工作区的自动装载记忆层
-  (.claude/rules/03-USER.md 或 USER.md、04-MEMORY.md 或 MEMORY.md)，
-  把细节下放到 memory/topics/，把信念级问题排队给 myagents-memory-molt。
-  当 MyAgents Evo 定时任务触发记忆整编，或用户要求整理记忆、记忆体检、
-  memory GC、记忆园丁时使用。不负责单次 session 的 UPDATE_MEMORY 增量捕获，
-  也不直接改 SOUL 层的底层原则。
+  MyAgents 记忆系统 Skill ，用于整理和浓缩项目长期记忆，移除过期或重复内容，
+  保留仍然重要的事实、偏好、约定和决策。
 ---
 
 # MyAgents Memory Gardener

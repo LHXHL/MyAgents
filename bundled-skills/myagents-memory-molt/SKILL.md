@@ -1,10 +1,8 @@
 ---
 name: myagents-memory-molt
 description: >
-  14 天节奏的长期记忆深反：跨越 SOUL / USER / MEMORY / topic / 日志做模式挖掘、
-  信念审计、外部事实核验和底层原则更新。由 MyAgents Evo 定时任务触发，
-  或用户要求做一次 molt、脱胎换骨、长期记忆进化、深度记忆反思时使用。
-  不适用日常 UPDATE_MEMORY 增量沉淀或普通记忆整理。
+  MyAgents 记忆系统 Skill ，用于基于长期记忆对 Agent 的底层工作原则做阶段性复盘和进化，
+  让行为保持连续但能随项目经验成长。
 ---
 
 # MyAgents Memory Molt
