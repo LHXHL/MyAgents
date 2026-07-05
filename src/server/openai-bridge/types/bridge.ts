@@ -54,7 +54,7 @@ export interface UpstreamConfig {
    *  translators inject `reasoning_effort` (chat_completions) /
    *  `reasoning.effort` (responses); absent = omitted entirely. */
   reasoningEffort?: string;
-  /** Responses prompt-cache affinity. Active session bridges set this; one-shot
+  /** OpenAI prompt-cache affinity. Active session bridges set this; one-shot
    *  bridges leave it off. `disablePromptCacheKey` is a per-token compatibility
    *  downgrade hook owned by bridge-registry. */
   cacheAffinity?: {

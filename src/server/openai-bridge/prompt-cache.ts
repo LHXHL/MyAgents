@@ -5,10 +5,9 @@ export interface PromptCacheKeyInput {
   providerId: string;
   model: string | undefined;
   sessionId: string | undefined;
-  upstreamFormat: 'responses';
+  upstreamFormat: 'chat_completions' | 'responses';
 }
 
-const KEY_PREFIX = 'myagents:responses:';
 const HASH_LENGTH = 32;
 const LOG_HASH_LENGTH = 12;
 
@@ -31,7 +30,7 @@ export function buildPromptCacheKey(input: PromptCacheKeyInput): string | undefi
     sessionId,
   ].join('\0');
   const digest = createHash('sha256').update(material).digest('hex').slice(0, HASH_LENGTH);
-  return `${KEY_PREFIX}${digest}`;
+  return `myagents:${input.upstreamFormat}:${digest}`;
 }
 
 export function hashForLog(value: string): string {

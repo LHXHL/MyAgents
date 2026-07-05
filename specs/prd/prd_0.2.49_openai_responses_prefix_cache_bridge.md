@@ -3,13 +3,13 @@ type: prd
 status: implemented
 created: 2026-07-05
 updated: 2026-07-05
-scope: "修复 OpenAI Bridge 在 Responses API 上没有传递缓存路由信息导致 Codex GPT 中转站前缀缓存命中率低的问题：P0 为 Responses upstream 自动注入稳定且不泄露隐私的 prompt_cache_key，并保留 usage.cached_tokens 统计；P1 只在 provider 明确支持时探索 previous_response_id / conversation state。本期不改 external Codex Runtime，不把所有 Responses 中转站强制切到 store:true。"
+scope: "修复 OpenAI Bridge 没有传递缓存路由信息导致 OpenAI 协议中转站前缀缓存命中率低的问题：P0 为 Responses 与 Chat Completions upstream 自动注入稳定且不泄露隐私的 prompt_cache_key，并保留 usage.cached_tokens 统计；P1 只在 provider 明确支持时探索 previous_response_id / conversation state。本期不改 external Codex Runtime，不把中转站强制切到 store:true 或 prompt_cache_retention。"
 issue: "用户反馈：fox 这类 Codex GPT Responses 中转站在 MyAgents OpenAI 协议接入时缓存命中率很低；同一中转站在 Codex 软件直连时缓存命中率很高。用户怀疑 MyAgents OpenAI bridge 面向 API 侧丢信息。"
 research: "本 PRD 内含 2026-07-05 本地代码调查、官方 OpenAI 文档核对、fox 中转站真实请求 smoke test；没有单独 research 文件。"
-review: "complete：targeted unit/integration/typecheck/lint/build 通过；三视角 cross-review 已完成并修复错误脱敏、降级匹配过宽与 prompt_cache_retention 类型问题；fox smoke 显示第二次成功请求 cache_read_input_tokens=16128。"
+review: "Responses P0：targeted unit/integration/typecheck/lint/build 通过，三视角 cross-review 已完成并修复错误脱敏、降级匹配过宽与 prompt_cache_retention 类型问题，fox smoke 第二次 cache_read_input_tokens=16128。Chat Completions 追加：targeted unit/integration/typecheck/lint/build 通过，siliconflow smoke 200 且未触发降级；当前子代理工具未获显式授权，未跑三路 cross-review，降级 codex exec 只读审查未产出必须修复项后因官方检索卡住中止。"
 ---
 
-# 0.2.49 OpenAI Responses 前缀缓存 Bridge PRD
+# 0.2.49 OpenAI 前缀缓存 Bridge PRD
 
 ## 执行须知（给空 session 的你）
 
@@ -209,7 +209,7 @@ Settings 里维持当前“OpenAI 协议 + Responses API”的配置方式。高
 错误提示也不要说“前缀缓存坏了”。如果上游不支持该字段，bridge 应降级并在统一日志里记录：
 
 ```
-[bridge] responses prompt_cache_key unsupported for provider=<id> endpoint=<hash>; disabled for this bridge
+[bridge] <responses|chat_completions> prompt_cache_key unsupported for provider=<id> endpoint=<hash>; disabled for this bridge
 ```
 
 日志不能包含：
@@ -232,14 +232,14 @@ export function buildPromptCacheKey(input: {
   providerId: string;
   model: string | undefined;
   sessionId: string | undefined;
-  upstreamFormat: 'responses';
+  upstreamFormat: 'responses' | 'chat_completions';
 }): string
 ```
 
 建议输出：
 
 ```text
-myagents:responses:<sha256(providerId + model + sessionId).slice(0, 32)>
+myagents:<upstreamFormat>:<sha256(providerId + model + sessionId).slice(0, 32)>
 ```
 
 理由：
@@ -265,7 +265,7 @@ cacheAffinity?: {
 `resolveActiveSessionUpstreamConfig()` 设置：
 
 - `sessionId`
-- `promptCacheKeyMode: 'session'` when `upstreamFormat === 'responses'`
+- `promptCacheKeyMode: 'session'` when `apiProtocol === 'openai'`
 
 `startOneShotBridge()` 默认 `promptCacheKeyMode:'off'`。verify、model list、title generator 等 one-shot 不需要缓存 affinity，且不应该污染用户会话的 cache routing。
 
@@ -275,13 +275,13 @@ cacheAffinity?: {
 
 ```ts
 prompt_cache_key?: string;
-prompt_cache_retention?: '24h' | 'in-memory';
+prompt_cache_retention?: '24h' | 'in_memory';
 previous_response_id?: string;
 store?: boolean;
 conversation?: string;
 ```
 
-P0 只使用 `prompt_cache_key`。其它字段先加类型可以降低后续改动成本，但 translator 不应在 P0 自动填它们。
+P0 只使用 `prompt_cache_key`。其它字段先加类型可以降低后续改动成本，但 translator 不应在 P0 自动填它们。Chat Completions 的 `OpenAIRequest` 同样只注入 `prompt_cache_key`，不默认注入 `prompt_cache_retention`。
 
 ### 注入位置
 
@@ -364,6 +364,17 @@ fox 当前 `store:true` 502，因此它必须保持 P0 的 stateless full replay
 7. fox smoke：同一长前缀请求，同一 session cache key 重复后，cached_tokens 显著高于无 key 或第一轮。
 8. 日志审计：不输出 API key、prompt_cache_key 原文、session id 原文、请求 body。
 
+### 追加验收：Chat Completions
+
+2026-07-05 追加需求：用户确认本机也存在 Chat Completions 协议供应商，希望 Chat Completions 与 Responses 走同一套 cache affinity。
+
+新增验收标准：
+
+1. Chat Completions translator 在传入 `promptCacheKey` 时输出 `prompt_cache_key`，不传时 body 与旧行为一致。
+2. Chat Completions active session 请求带 `myagents:chat_completions:<hash>`，且与同一 session 的 Responses key 命名空间隔离。
+3. Chat Completions one-shot bridge 默认不带 `prompt_cache_key`。
+4. Chat Completions 上游 unknown/unsupported `prompt_cache_key` 时，bridge retry 一次去掉该字段，并在当前 bridge token 禁用后续注入。
+
 ## 开放问题
 
 1. direct Codex 软件具体是否发送 `prompt_cache_key`、`session_id` 或其它私有 cache routing 字段，本次没有抓包验证。当前结论来自官方文档、Codex app-server schema、MyAgents 代码对比和 fox smoke test。
@@ -390,8 +401,8 @@ fox 当前 `store:true` 502，因此它必须保持 P0 的 stateless full replay
 
 ### 开发契约（动第一行代码前写完）
 
-- 必赢场景：builtin OpenAI-protocol + `upstreamFormat:'responses'` 的活跃会话请求会自动带同一 session 稳定、匿名的 `prompt_cache_key`；同一 bridge token 的后续请求 key 保持不变；one-shot bridge 默认不带；遇到上游明确 unknown/unsupported 参数错误时自动去掉 key 重试一次并在该 bridge 上禁用后续注入；usage 里的 `cached_tokens` 仍按现有路径统计。
-- 复用的既有抽象：`openai-bridge/translate/request-responses.ts::translateRequestToResponses` 作为 Responses request body owner；`openai-bridge/bridge-registry.ts::UpstreamBridgeConfig` 作为 per-subprocess resolver 配置；`agent-session.ts::resolveActiveSessionUpstreamConfig` / `startOneShotBridge` 作为 active session vs one-shot 边界；`openai-bridge/handler.ts` 作为 upstream fetch / retry owner；现有 `usage-streaming.unit.test.ts` 保留 cached_tokens 回归。
+- 必赢场景：builtin OpenAI-protocol + `upstreamFormat:'responses'` 或 Chat Completions 的活跃会话请求会自动带同一 session 稳定、匿名、按协议命名空间隔离的 `prompt_cache_key`；同一 bridge token 的后续请求 key 保持不变；one-shot bridge 默认不带；遇到上游明确 unknown/unsupported 参数错误时自动去掉 key 重试一次并在该 bridge 上禁用后续注入；usage 里的 `cached_tokens` 仍按现有路径统计。
+- 复用的既有抽象：`openai-bridge/translate/request-responses.ts::translateRequestToResponses` / `openai-bridge/translate/request.ts::translateRequest` 作为 request body owner；`openai-bridge/bridge-registry.ts::UpstreamBridgeConfig` 作为 per-subprocess resolver 配置；`agent-session.ts::resolveActiveSessionUpstreamConfig` / `startOneShotBridge` 作为 active session vs one-shot 边界；`openai-bridge/handler.ts` 作为 upstream fetch / retry owner；现有 usage translator 保留 cached_tokens 回归。
 - 反向边界：不默认发送 `store:true`、`previous_response_id`、`conversation`、`prompt_cache_retention`；不改 external Codex Runtime；不改 Settings UI；不把 fox key、raw sessionId、workspace path、prompt 内容写进日志或 cache key。
 - 新概念清单：`prompt_cache_key` 生成 helper（必要：把 cache affinity 生成集中到 pure owner，避免 handler ad hoc 拼 key）；per-bridge capability disable 状态（必要：unknown parameter 只降级当前 bridge token，避免 provider 不兼容时每轮重复失败）。
 - 触及的红线：第三方供应商 / OpenAI Bridge 必须复用现有 bridge registry 与 translator owner；配置身份继续走 ProviderRoute/ProviderEnv，不把 apiKey/baseUrl 写进 session snapshot；日志不得泄露密钥或请求体；不新增 route 层 runtime 分流。
@@ -405,6 +416,9 @@ fox 当前 `store:true` 502，因此它必须保持 P0 的 stateless full replay
 - [x] A5 运行静态检查、针对性测试与 fox smoke test。
 - [x] A6 cross-review，修复有效问题。
 - [x] A7 更新 PRD frontmatter 与台账，提交 git commit。
+- [x] A8 追加实现 Chat Completions `prompt_cache_key` 注入、协议命名空间隔离与同 token 降级复用。
+- [x] A9 补 Chat Completions 单测 / fake upstream 集成测试 / 本机 Chat Completions smoke。
+- [x] A10 重新运行静态检查、针对性测试；追加 commit hash 待提交后回填。
 
 ### 待用户决策
 
@@ -417,5 +431,9 @@ fox 当前 `store:true` 502，因此它必须保持 P0 的 stateless full replay
 - 2026-07-05：新增 helper、translator、fake upstream、registry 回归测试；同步版本号到 0.2.49（package / lockfile / Tauri / Cargo）。
 - 2026-07-05：自验证通过：`npm run test:unit -- src/server/openai-bridge/translate/usage-streaming.unit.test.ts src/server/openai-bridge/translate/request-reasoning-effort.unit.test.ts src/server/openai-bridge/translate/request-model-suffix.unit.test.ts src/server/openai-bridge/prompt-cache.unit.test.ts src/server/openai-bridge/translate/request-prompt-cache.unit.test.ts`；`npm run test:integration -- src/server/openai-bridge/handler-prompt-cache.integration.test.ts src/server/__tests__/bridge-registry.integration.test.ts`；`npm run test:classification`；`npm run typecheck`；`npm run lint`；`npm run build:server`。
 - 2026-07-05：真实 fox smoke 通过：同一 prefix / 同一匿名 cache key 的两次成功请求中，第二次 `cache_read_input_tokens=16128`（第一轮 0），确认 bridge 注入 key 对 fox 有效；脚本只输出 providerId/model/host/status/usage 摘要，不输出 key、API key 或请求体。
-- 2026-07-05：三视角 cross-review 完成；采纳并修复有效问题：上游错误体统一脱敏后再日志/返回 SDK，避免 provider echo 泄露 raw cache key / prompt；unknown 参数降级匹配收紧，不再因普通 invalid echo 错误禁用 cache key；`prompt_cache_retention` future type 按 Responses API reference 改为 `in-memory`；补充第三方供应商技术文档。
+- 2026-07-05：三视角 cross-review 完成；采纳并修复有效问题：上游错误体统一脱敏后再日志/返回 SDK，避免 provider echo 泄露 raw cache key / prompt；unknown 参数降级匹配收紧，不再因普通 invalid echo 错误禁用 cache key；`prompt_cache_retention` future type 按 API reference 改为 `in_memory`；补充第三方供应商技术文档。
 - 2026-07-05：提交完成：`fix(openai-bridge): add responses prompt cache affinity`。
+- 2026-07-05：追加 Chat Completions 支持：active OpenAI bridge sessions 统一注入 protocol-scoped `myagents:chat_completions:<hash>`；one-shot 仍不带；unknown/unsupported 参数沿用当前 bridge token 的一次 retry + 后续禁用机制；错误脱敏扩展到 Chat key 命名空间。
+- 2026-07-05：追加验证通过：`npm run test:unit -- src/server/openai-bridge/prompt-cache.unit.test.ts src/server/openai-bridge/translate/request-prompt-cache.unit.test.ts src/server/openai-bridge/translate/usage-streaming.unit.test.ts src/server/openai-bridge/translate/request-reasoning-effort.unit.test.ts src/server/openai-bridge/translate/request-model-suffix.unit.test.ts`；`npm run test:integration -- src/server/openai-bridge/handler-prompt-cache.integration.test.ts src/server/__tests__/bridge-registry.integration.test.ts`；`npm run typecheck`；`npm run lint`（depcruise 仅既有 `chatSuggestions.ts` orphan warning，无 error）；`npm run build:server`；`git diff --check`。
+- 2026-07-05：真实 siliconflow Chat Completions smoke 通过：短请求 status=200，`prompt_cache_key` 未触发兼容性降级；短 prompt 不以 cached_tokens 命中数作为验收依据。当前子代理工具要求用户显式授权才可 spawn，未执行三路 cross-review；降级 `codex exec -s read-only` 审查读到 owner/测试/隐私路径且未产出必须修复项，但在官方检索阶段卡住后中止。
+- 2026-07-05：追加提交待回填：`fix(openai-bridge): add chat completions prompt cache affinity`。

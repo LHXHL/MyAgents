@@ -13,6 +13,8 @@ export interface OpenAIRequest {
   tools?: OpenAIToolDefinition[];
   tool_choice?: OpenAIToolChoice;
   parallel_tool_calls?: boolean;
+  prompt_cache_key?: string;
+  prompt_cache_retention?: 'in_memory' | '24h';
   // #324: plain string — provider vocabularies diverge (OpenAI adds
   // none/minimal/xhigh, Volcano Ark adds max, DeepSeek maps silently);
   // values pass through verbatim, acceptance is the upstream's contract.

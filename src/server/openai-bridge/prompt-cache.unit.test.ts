@@ -22,6 +22,14 @@ describe('buildPromptCacheKey', () => {
     expect(first).not.toContain(baseInput.model);
   });
 
+  it('separates Chat Completions and Responses cache namespaces', () => {
+    const responsesKey = buildPromptCacheKey(baseInput);
+    const chatKey = buildPromptCacheKey({ ...baseInput, upstreamFormat: 'chat_completions' });
+
+    expect(chatKey).toMatch(/^myagents:chat_completions:[a-f0-9]{32}$/);
+    expect(chatKey).not.toBe(responsesKey);
+  });
+
   it('separates provider, model, and session affinity', () => {
     const original = buildPromptCacheKey(baseInput);
 

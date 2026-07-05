@@ -103,9 +103,10 @@ function getDispatcherForProxy(proxyUrl: string): Dispatcher {
   return agent;
 }
 
-function resolveResponsesPromptCacheKey(
+function resolvePromptCacheKey(
   upstream: UpstreamConfig,
   fallbackModel: string,
+  upstreamFormat: 'chat_completions' | 'responses',
 ): string | undefined {
   const affinity = upstream.cacheAffinity;
   if (!affinity || affinity.promptCacheKeyMode !== 'session') return undefined;
@@ -115,7 +116,7 @@ function resolveResponsesPromptCacheKey(
     providerId: upstream.providerId,
     model: upstream.model ?? fallbackModel,
     sessionId: affinity.sessionId,
-    upstreamFormat: 'responses',
+    upstreamFormat,
   });
 }
 
@@ -174,8 +175,8 @@ function stringifyWithoutPromptCacheKey(req: OpenAIRequest | ResponsesRequest): 
   return JSON.stringify(rest);
 }
 
-const PROMPT_CACHE_KEY_VALUE_RE = /myagents:responses:[a-f0-9]{32}/g;
-const PROMPT_CACHE_KEY_VALUE_TEST_RE = /myagents:responses:[a-f0-9]{32}/;
+const PROMPT_CACHE_KEY_VALUE_RE = /myagents:(?:chat_completions|responses):[a-f0-9]{32}/g;
+const PROMPT_CACHE_KEY_VALUE_TEST_RE = /myagents:(?:chat_completions|responses):[a-f0-9]{32}/;
 const ERROR_REQUEST_ECHO_KEYS = new Set([
   'content',
   'input',
@@ -329,18 +330,23 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
     // lets concurrent SDK subprocesses with different sub-agent rules
     // coexist without cross-pollination.
     const effectiveModelMapping = upstream.modelMapping ?? config.modelMapping;
-    const responsesPromptCacheKey = isResponses
-      ? resolveResponsesPromptCacheKey(upstream, anthropicReq.model)
-      : undefined;
+    const upstreamFormat = isResponses ? 'responses' : 'chat_completions';
+    const promptCacheKey = resolvePromptCacheKey(upstream, anthropicReq.model, upstreamFormat);
     const translatedReq = isResponses
       ? translateRequestToResponses(anthropicReq, {
           modelOverride: upstream.model,
           modelMapping: effectiveModelMapping,
           imageSaver,
           reasoningEffort: upstream.reasoningEffort,
-          promptCacheKey: responsesPromptCacheKey,
+          promptCacheKey,
         })
-      : translateRequest(anthropicReq, { modelMapping: effectiveModelMapping, modelOverride: upstream.model, imageSaver, reasoningEffort: upstream.reasoningEffort });
+      : translateRequest(anthropicReq, {
+          modelMapping: effectiveModelMapping,
+          modelOverride: upstream.model,
+          imageSaver,
+          reasoningEffort: upstream.reasoningEffort,
+          promptCacheKey,
+        });
 
     // 4a. Normalize thought_signatures on tool_calls (Gemini thinking models).
     // Gemini requires thought_signature on tool_calls in conversation history.
@@ -510,14 +516,13 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
       cleanupAttempt({ upstreamResp, controller, headersTimer, onDownstreamAbort });
 
       const canRetryWithoutPromptCacheKey =
-        isResponses
-        && Boolean((translatedReq as { prompt_cache_key?: string }).prompt_cache_key)
+        Boolean((translatedReq as { prompt_cache_key?: string }).prompt_cache_key)
         && Boolean(upstream.cacheAffinity?.disablePromptCacheKey)
         && isUnsupportedPromptCacheKeyError(upstreamResp.status, errBody);
 
       if (canRetryWithoutPromptCacheKey) {
         upstream.cacheAffinity?.disablePromptCacheKey?.();
-        log(`[bridge] responses prompt_cache_key unsupported for provider=${upstream.providerId} endpoint=${hashForLog(upstreamUrl)}; disabled for this bridge`);
+        log(`[bridge] ${upstreamFormat} prompt_cache_key unsupported for provider=${upstream.providerId} endpoint=${hashForLog(upstreamUrl)}; disabled for this bridge`);
 
         attemptResult = await fetchUpstreamAttempt(stringifyWithoutPromptCacheKey(translatedReq));
         if (!attemptResult.ok) return attemptResult.response;

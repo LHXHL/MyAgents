@@ -10,7 +10,7 @@ export interface ResponsesRequest {
   tool_choice?: ResponsesToolChoice;
   max_output_tokens?: number;
   prompt_cache_key?: string;
-  prompt_cache_retention?: '24h' | 'in-memory';
+  prompt_cache_retention?: '24h' | 'in_memory';
   previous_response_id?: string;
   store?: boolean;
   conversation?: string;

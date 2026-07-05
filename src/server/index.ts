@@ -1945,8 +1945,8 @@ async function main() {
     bridgeHandlerPromise = (async () => {
       const [{ createBridgeHandler }, {
         lookupBridge,
-        disableResponsesPromptCacheKey,
-        isResponsesPromptCacheKeyDisabled,
+        disablePromptCacheKey,
+        isPromptCacheKeyDisabled,
       }] = await Promise.all([
         import('./openai-bridge'),
         import('./openai-bridge/bridge-registry'),
@@ -1992,8 +1992,8 @@ async function main() {
               cacheAffinity: cfg.cacheAffinity
                 ? {
                     ...cfg.cacheAffinity,
-                    promptCacheKeyDisabled: isResponsesPromptCacheKeyDisabled(token),
-                    disablePromptCacheKey: () => disableResponsesPromptCacheKey(token),
+                    promptCacheKeyDisabled: isPromptCacheKeyDisabled(token),
+                    disablePromptCacheKey: () => disablePromptCacheKey(token),
                   }
                 : undefined,
             };

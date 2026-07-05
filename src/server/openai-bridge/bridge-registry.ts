@@ -75,7 +75,7 @@ export interface UpstreamBridgeConfig {
    *  default → the translators omit reasoning fields entirely, preserving
    *  the historical wire shape). May change over time for session bridges. */
   reasoningEffort?: string;
-  /** Responses API cache-affinity identity. Active sessions set this; one-shot
+  /** OpenAI prompt-cache affinity identity. Active sessions set this; one-shot
    *  bridges intentionally leave it off so verify/title/vision do not pollute
    *  conversation cache routing. */
   cacheAffinity?: BridgeCacheAffinity;
@@ -88,8 +88,8 @@ interface Entry {
   registeredAt: number;
   /** Free-form description for diagnostics (e.g., 'verify:moonshot', 'session:abc-123'). */
   description: string;
-  /** Sticky per-token compatibility downgrade for Responses prompt_cache_key. */
-  responsesPromptCacheKeyDisabled: boolean;
+  /** Sticky per-token compatibility downgrade for prompt_cache_key. */
+  promptCacheKeyDisabled: boolean;
 }
 
 const registry = new Map<string, Entry>();
@@ -116,7 +116,7 @@ export function registerBridge(
     resolve,
     registeredAt: Date.now(),
     description,
-    responsesPromptCacheKeyDisabled: existing?.responsesPromptCacheKeyDisabled ?? false,
+    promptCacheKeyDisabled: existing?.promptCacheKeyDisabled ?? false,
   });
 }
 
@@ -145,13 +145,13 @@ export function lookupBridge(token: string): UpstreamBridgeConfig | undefined {
   return entry.resolve();
 }
 
-export function disableResponsesPromptCacheKey(token: string): void {
+export function disablePromptCacheKey(token: string): void {
   const entry = registry.get(token);
-  if (entry) entry.responsesPromptCacheKeyDisabled = true;
+  if (entry) entry.promptCacheKeyDisabled = true;
 }
 
-export function isResponsesPromptCacheKeyDisabled(token: string): boolean {
-  return registry.get(token)?.responsesPromptCacheKeyDisabled ?? false;
+export function isPromptCacheKeyDisabled(token: string): boolean {
+  return registry.get(token)?.promptCacheKeyDisabled ?? false;
 }
 
 /**

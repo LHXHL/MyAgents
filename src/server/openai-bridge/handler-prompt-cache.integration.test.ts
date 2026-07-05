@@ -42,6 +42,24 @@ const okResponsesBody = {
   },
 };
 
+const okChatBody = {
+  id: 'chatcmpl_test',
+  object: 'chat.completion',
+  created: 0,
+  model: 'chat-model',
+  choices: [{
+    index: 0,
+    message: { role: 'assistant', content: 'ok' },
+    finish_reason: 'stop',
+  }],
+  usage: {
+    prompt_tokens: 12,
+    completion_tokens: 1,
+    total_tokens: 13,
+    prompt_tokens_details: { cached_tokens: 7 },
+  },
+};
+
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -257,5 +275,99 @@ describe('OpenAI bridge Responses prompt_cache_key', () => {
     expect(res.status).toBe(500);
     expect(disabled).toBe(false);
     expect(fake.seen).toHaveLength(1);
+  });
+});
+
+describe('OpenAI bridge Chat Completions prompt_cache_key', () => {
+  let fake: FakeUpstream | undefined;
+
+  afterEach(async () => {
+    await fake?.close();
+    fake = undefined;
+  });
+
+  it('injects the same anonymous prompt_cache_key for repeated active-session requests', async () => {
+    fake = await startFakeUpstream(() => ({ status: 200, body: okChatBody }));
+    const upstream: UpstreamConfig = {
+      providerId: 'siliconflow',
+      baseUrl: fake.baseUrl,
+      apiKey: 'sk-test',
+      model: 'chat-model',
+      upstreamFormat: 'chat_completions',
+      cacheAffinity: { sessionId: 'raw-session-id', promptCacheKeyMode: 'session' },
+    };
+
+    const firstResponse = await callBridge(upstream);
+    const firstBody = await firstResponse.json() as { usage?: { cache_read_input_tokens?: number } };
+    expect(firstResponse.status).toBe(200);
+    expect(firstBody.usage?.cache_read_input_tokens).toBe(7);
+    await expect(callBridge(upstream).then((res) => res.status)).resolves.toBe(200);
+
+    expect(fake.seen).toHaveLength(2);
+    expect(fake.seen[0].path).toBe('/chat/completions');
+    const firstKey = fake.seen[0].body.prompt_cache_key;
+    const secondKey = fake.seen[1].body.prompt_cache_key;
+    expect(firstKey).toEqual(expect.stringMatching(/^myagents:chat_completions:[a-f0-9]{32}$/));
+    expect(secondKey).toBe(firstKey);
+    expect(JSON.stringify(fake.seen[0].body)).not.toContain('raw-session-id');
+  });
+
+  it('omits prompt_cache_key when the bridge has no active-session cache affinity', async () => {
+    fake = await startFakeUpstream(() => ({ status: 200, body: okChatBody }));
+    const upstream: UpstreamConfig = {
+      providerId: 'siliconflow',
+      baseUrl: fake.baseUrl,
+      apiKey: 'sk-test',
+      model: 'chat-model',
+      upstreamFormat: 'chat_completions',
+    };
+
+    await expect(callBridge(upstream).then((res) => res.status)).resolves.toBe(200);
+
+    expect(fake.seen).toHaveLength(1);
+    expect('prompt_cache_key' in fake.seen[0].body).toBe(false);
+  });
+
+  it('retries once without prompt_cache_key and disables later injection for the same bridge', async () => {
+    fake = await startFakeUpstream((body, seen) => {
+      if (seen.length === 1 && body.prompt_cache_key) {
+        return {
+          status: 400,
+          body: { error: { message: 'Unknown parameter: prompt_cache_key' } },
+        };
+      }
+      return { status: 200, body: okChatBody };
+    });
+
+    let disabled = false;
+    const logs: string[] = [];
+    const upstream = (): UpstreamConfig => ({
+      providerId: 'strict-chat-provider',
+      baseUrl: fake!.baseUrl,
+      apiKey: 'sk-test',
+      model: 'chat-model',
+      upstreamFormat: 'chat_completions',
+      cacheAffinity: {
+        sessionId: 'raw-session-id',
+        promptCacheKeyMode: 'session',
+        promptCacheKeyDisabled: disabled,
+        disablePromptCacheKey: () => { disabled = true; },
+      },
+    });
+
+    await expect(callBridge(upstream(), (msg) => logs.push(msg)).then((res) => res.status)).resolves.toBe(200);
+    await expect(callBridge(upstream()).then((res) => res.status)).resolves.toBe(200);
+
+    expect(disabled).toBe(true);
+    expect(fake.seen).toHaveLength(3);
+    expect(fake.seen[0].body.prompt_cache_key).toEqual(expect.stringMatching(/^myagents:chat_completions:[a-f0-9]{32}$/));
+    expect('prompt_cache_key' in fake.seen[1].body).toBe(false);
+    expect('prompt_cache_key' in fake.seen[2].body).toBe(false);
+    const joinedLogs = logs.join('\n');
+    expect(joinedLogs).toContain('chat_completions prompt_cache_key unsupported');
+    expect(joinedLogs).not.toContain(String(fake.seen[0].body.prompt_cache_key));
+    expect(joinedLogs).not.toContain('raw-session-id');
+    expect(joinedLogs).not.toContain('sk-test');
+    expect(joinedLogs).not.toContain(JSON.stringify(fake.seen[0].body));
   });
 });
