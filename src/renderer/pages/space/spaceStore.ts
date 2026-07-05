@@ -16,6 +16,7 @@ import {
   spaceGetSkill,
   spaceGetSkillFile,
   spaceInstallSkill,
+  spaceListSkillRevisions,
   spaceListGoals,
   spaceListIssues,
   spaceListEvents,
@@ -25,6 +26,7 @@ import {
   spaceLogout,
   spaceRegisterAgent,
   spaceRevokeRegisteredAgent,
+  spaceRollbackSkill,
   spaceSetIssueState,
   spaceUpdateProfile,
   spaceUpdateGoal,
@@ -44,6 +46,7 @@ import {
   type SpaceSession,
   type SpaceSkill,
   type SpaceSkillDetail,
+  type SpaceSkillRevisionHistory,
   type SpaceUserSummary,
 } from "@/api/spaceCloud";
 import type { IssueQueryParams } from "./spaceHelpers";
@@ -102,6 +105,13 @@ export interface SpaceSkillFileState {
   error: string | null;
 }
 
+export interface SpaceSkillRevisionState {
+  history: SpaceSkillRevisionHistory | null;
+  lastFetchedAt: number;
+  isLoading: boolean;
+  error: string | null;
+}
+
 interface SpaceAgentsState {
   items: LocalRegisteredAgent[];
   lastFetchedAt: number;
@@ -137,6 +147,7 @@ interface StoreState {
   skills: SpaceSkillsState;
   skillDetails: Record<string, SpaceSkillDetailState>;
   skillFiles: Record<string, SpaceSkillFileState>;
+  skillRevisions: Record<string, SpaceSkillRevisionState>;
   localAgents: SpaceAgentsState;
   registeredAgents: SpaceRegisteredAgentsState;
   events: SpaceEventsState;
@@ -171,6 +182,10 @@ export interface SpaceActions {
   refreshSkillFile: (
     skillId: string,
     path: string,
+    options?: RefreshOptions,
+  ) => Promise<void>;
+  refreshSkillRevisions: (
+    skillId: string,
     options?: RefreshOptions,
   ) => Promise<void>;
   refreshLocalAgents: (options?: RefreshOptions) => Promise<void>;
@@ -230,6 +245,7 @@ export interface SpaceActions {
     skillId: string,
     filePath: string,
   ) => Promise<SpaceSkill>;
+  rollbackSkill: (skillId: string, revision: number) => Promise<SpaceSkill>;
   deleteSkill: (skillId: string) => Promise<void>;
   installSkill: (input: {
     skillId: string;
@@ -292,6 +308,7 @@ const initialState = (): StoreState => ({
   },
   skillDetails: {},
   skillFiles: {},
+  skillRevisions: {},
   localAgents: {
     items: [],
     lastFetchedAt: 0,
@@ -729,6 +746,23 @@ function patchProfileInCaches(session: SpaceSession) {
           : detailState,
       ]),
     ),
+    skillRevisions: Object.fromEntries(
+      Object.entries(state.skillRevisions).map(([key, revisionState]) => [
+        key,
+        revisionState.history
+          ? {
+              ...revisionState,
+              history: {
+                ...revisionState.history,
+                items: revisionState.history.items.map((revision) => ({
+                  ...revision,
+                  uploader: patchUserSummary(revision.uploader, user),
+                })),
+              },
+            }
+          : revisionState,
+      ]),
+    ),
   });
 }
 
@@ -1127,6 +1161,60 @@ export const actions: SpaceActions = {
     });
   },
 
+  refreshSkillRevisions: async (skillId: string, options: RefreshOptions = {}) => {
+    if (!ensureReady() || !skillId) return;
+    const key = detailKey(skillId);
+    const current = state.skillRevisions[key] ?? {
+      history: null,
+      lastFetchedAt: 0,
+      isLoading: false,
+      error: null,
+    };
+    if (!options.force && isFresh(current.lastFetchedAt, options.maxAgeMs))
+      return;
+    const requestKey = `skill-revisions:${key}`;
+    return runRequest(requestKey, options.force, async () => {
+      const requestSeq = startRequest(requestKey);
+      setState({
+        skillRevisions: {
+          ...state.skillRevisions,
+          [key]: {
+            ...current,
+            isLoading: true,
+            error: options.silent ? current.error : null,
+          },
+        },
+      });
+      try {
+        const history = await spaceListSkillRevisions(skillId);
+        if (!isLatest(requestKey, requestSeq)) return;
+        setState({
+          skillRevisions: trimCacheRecord(
+            {
+              ...state.skillRevisions,
+              [key]: {
+                history,
+                lastFetchedAt: Date.now(),
+                isLoading: false,
+                error: null,
+              },
+            },
+            SPACE_MAX_SKILL_DETAIL_CACHES,
+          ),
+        });
+      } catch (error) {
+        if (!isLatest(requestKey, requestSeq)) return;
+        setState({
+          skillRevisions: {
+            ...state.skillRevisions,
+            [key]: { ...current, isLoading: false, error: errMessage(error) },
+          },
+        });
+        throw error;
+      }
+    });
+  },
+
   refreshLocalAgents: async (options: RefreshOptions = {}) => {
     if (!ensureReady()) return;
     if (
@@ -1490,6 +1578,41 @@ export const actions: SpaceActions = {
             ([key]) => !unscopedKey(key).startsWith(`${result.skill.id}\n`),
           ),
         ),
+        skillRevisions: Object.fromEntries(
+          Object.entries(state.skillRevisions).filter(
+            ([key]) => unscopedKey(key) !== result.skill.id,
+          ),
+        ),
+      });
+      return result.skill;
+    }),
+
+  rollbackSkill: (skillId, revision) =>
+    withSpaceMutationMetric("skill.revision.rollback", async () => {
+      const result = await spaceRollbackSkill(skillId, revision);
+      setState({
+        skills: {
+          ...state.skills,
+          items: [
+            result.skill,
+            ...state.skills.items.filter((skill) => skill.id !== result.skill.id),
+          ],
+        },
+        skillDetails: Object.fromEntries(
+          Object.entries(state.skillDetails).filter(
+            ([key]) => unscopedKey(key) !== result.skill.id,
+          ),
+        ),
+        skillFiles: Object.fromEntries(
+          Object.entries(state.skillFiles).filter(
+            ([key]) => !unscopedKey(key).startsWith(`${result.skill.id}\n`),
+          ),
+        ),
+        skillRevisions: Object.fromEntries(
+          Object.entries(state.skillRevisions).filter(
+            ([key]) => unscopedKey(key) !== result.skill.id,
+          ),
+        ),
       });
       return result.skill;
     }),
@@ -1510,6 +1633,11 @@ export const actions: SpaceActions = {
         skillFiles: Object.fromEntries(
           Object.entries(state.skillFiles).filter(
             ([key]) => !unscopedKey(key).startsWith(`${skillId}\n`),
+          ),
+        ),
+        skillRevisions: Object.fromEntries(
+          Object.entries(state.skillRevisions).filter(
+            ([key]) => unscopedKey(key) !== skillId,
           ),
         ),
       });
@@ -1631,6 +1759,12 @@ export function getSkillFileState(
   path: string,
 ): SpaceSkillFileState | null {
   return state.skillFiles[skillFileKey(skillId, path)] ?? null;
+}
+
+export function getSkillRevisionState(
+  skillId: string,
+): SpaceSkillRevisionState | null {
+  return state.skillRevisions[detailKey(skillId)] ?? null;
 }
 
 export function __resetSpaceStoreForTest(): void {

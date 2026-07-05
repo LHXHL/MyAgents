@@ -93,6 +93,62 @@ import {
 } from './plugins/store';
 import { handleQrCodeAssetRoute } from './routes/qr-code-asset';
 
+type SpaceSkillExportPackage = {
+  tempId: string;
+  filePath: string;
+  suggestedFolderName: string;
+  name: string;
+  description: string;
+  hasDangerousTools: boolean;
+  rootPath: string;
+  fileCount: number;
+  packageSizeBytes: number;
+};
+
+async function writeSpaceSkillExportPackages(
+  tree: Awaited<ReturnType<typeof fetchSkillZip>>,
+  candidates: SkillCandidate[],
+): Promise<SpaceSkillExportPackage[]> {
+  const { default: AdmZip } = await import('adm-zip');
+  const exportId = randomUUID();
+  const exportDir = join(homedir(), '.myagents', 'tmp', 'skill-url-export', exportId);
+  ensureDirSync(exportDir);
+
+  const usedFileNames = new Map<string, number>();
+  const packages: SpaceSkillExportPackage[] = [];
+
+  for (const [index, cand] of candidates.entries()) {
+    const files = buildInstallPayload(tree, [cand]).get(cand.suggestedFolderName);
+    if (!files || files.size === 0) continue;
+
+    const baseName = sanitizeFolderName(cand.suggestedFolderName);
+    const count = usedFileNames.get(baseName) ?? 0;
+    usedFileNames.set(baseName, count + 1);
+    const fileStem = count === 0 ? baseName : `${baseName}-${count + 1}`;
+    const filePath = join(exportDir, `${fileStem}.zip`);
+
+    const zip = new AdmZip();
+    for (const [relativePath, buf] of [...files.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+      zip.addFile(relativePath.replace(/\\/g, '/'), Buffer.from(buf));
+    }
+    zip.writeZip(filePath);
+
+    packages.push({
+      tempId: `${exportId}-${index}`,
+      filePath,
+      suggestedFolderName: baseName,
+      name: cand.name,
+      description: cand.description,
+      hasDangerousTools: cand.hasDangerousTools,
+      rootPath: cand.rootPath,
+      fileCount: files.size,
+      packageSizeBytes: statSync(filePath).size,
+    });
+  }
+
+  return packages;
+}
+
 /**
  * Lazy bridge to agent-session.schedulePluginDeferredRestart — the latter
  * lives in a module index.ts cannot statically import (circular dep with
@@ -6620,6 +6676,155 @@ async function main() {
           return jsonResponse(
             { success: false, error: error instanceof Error ? error.message : 'Failed to import skill folder' },
             500
+          );
+        }
+      }
+
+      // POST /api/skill/export-from-url - Resolve a GitHub/raw/npx skill source
+      // and stage one or more canonical zip packages for Space publishing.
+      //
+      // This deliberately does not write to ~/.myagents/skills or a workspace.
+      // The renderer still hands the staged zip path to the Rust Space command,
+      // so Space auth and cloud mutations remain owned by Tauri.
+      if (pathname === '/api/skill/export-from-url' && request.method === 'POST') {
+        try {
+          const payload = await request.json() as {
+            url: string;
+            confirmedSelection?: {
+              pluginName?: string;
+              folderNames?: string[];
+            };
+          };
+
+          if (!payload.url || typeof payload.url !== 'string') {
+            return jsonResponse({ success: false, error: 'url 参数必填' }, 400);
+          }
+
+          let resolved;
+          try {
+            resolved = resolveSkillUrl(payload.url);
+          } catch (err) {
+            return jsonResponse(
+              { success: false, error: err instanceof Error ? err.message : '链接解析失败' },
+              400,
+            );
+          }
+
+          let tree;
+          try {
+            tree = await fetchSkillZip(resolved);
+          } catch (err) {
+            const statusCode = err instanceof TarballFetchError ? err.statusCode : 500;
+            return jsonResponse(
+              { success: false, error: err instanceof Error ? err.message : '下载失败' },
+              statusCode,
+            );
+          }
+
+          const analysis = analyseTree(tree, resolved);
+          if (analysis.mode === 'empty') {
+            return jsonResponse({ success: false, error: analysis.reason }, 422);
+          }
+
+          if (payload.confirmedSelection) {
+            let chosen: SkillCandidate[];
+            if (analysis.mode === 'marketplace') {
+              const plugin = analysis.plugins.find(p => p.name === payload.confirmedSelection!.pluginName);
+              if (!plugin) {
+                return jsonResponse({ success: false, error: '指定的插件不存在' }, 400);
+              }
+              const wanted = new Set(
+                (payload.confirmedSelection.folderNames ?? []).map(n => sanitizeFolderName(n)),
+              );
+              chosen = wanted.size > 0
+                ? plugin.skills.filter(s => wanted.has(sanitizeFolderName(s.suggestedFolderName)))
+                : plugin.skills;
+            } else if (analysis.mode === 'multi') {
+              const wanted = new Set(
+                (payload.confirmedSelection.folderNames ?? []).map(n => sanitizeFolderName(n)),
+              );
+              chosen = analysis.candidates.filter(s => wanted.has(sanitizeFolderName(s.suggestedFolderName)));
+            } else {
+              chosen = [analysis.skill];
+            }
+
+            if (chosen.length === 0) {
+              return jsonResponse({ success: false, error: '未选择任何 skill' }, 400);
+            }
+
+            const packages = await writeSpaceSkillExportPackages(tree, chosen);
+            if (packages.length === 0) {
+              return jsonResponse({ success: false, error: '未找到可发布的文件' }, 500);
+            }
+
+            return jsonResponse({
+              success: true,
+              mode: 'exported',
+              packages,
+              sourceUrl: tree.sourceUrl,
+              effectiveRef: tree.effectiveRef,
+            });
+          }
+
+          if (analysis.mode === 'marketplace') {
+            return jsonResponse({
+              success: true,
+              mode: 'marketplace',
+              preview: {
+                marketplaceName: analysis.marketplaceName,
+                marketplaceDescription: analysis.marketplaceDescription,
+                plugins: analysis.plugins.map(p => ({
+                  name: p.name,
+                  description: p.description,
+                  skills: p.skills.map(s => ({
+                    suggestedFolderName: sanitizeFolderName(s.suggestedFolderName),
+                    name: s.name,
+                    description: s.description,
+                    hasDangerousTools: s.hasDangerousTools,
+                    rootPath: s.rootPath,
+                  })),
+                })),
+              },
+              sourceUrl: tree.sourceUrl,
+              effectiveRef: tree.effectiveRef,
+            });
+          }
+
+          if (analysis.mode === 'multi') {
+            return jsonResponse({
+              success: true,
+              mode: 'multi',
+              preview: {
+                candidates: analysis.candidates.map(s => ({
+                  suggestedFolderName: sanitizeFolderName(s.suggestedFolderName),
+                  name: s.name,
+                  description: s.description,
+                  hasDangerousTools: s.hasDangerousTools,
+                  rootPath: s.rootPath,
+                })),
+              },
+              sourceUrl: tree.sourceUrl,
+              effectiveRef: tree.effectiveRef,
+            });
+          }
+
+          const packages = await writeSpaceSkillExportPackages(tree, [analysis.skill]);
+          if (packages.length === 0) {
+            return jsonResponse({ success: false, error: '未找到可发布的文件' }, 500);
+          }
+
+          return jsonResponse({
+            success: true,
+            mode: 'exported',
+            packages,
+            sourceUrl: tree.sourceUrl,
+            effectiveRef: tree.effectiveRef,
+          });
+        } catch (error) {
+          console.error('[api/skill/export-from-url] Error:', error);
+          return jsonResponse(
+            { success: false, error: error instanceof Error ? error.message : 'Export failed' },
+            500,
           );
         }
       }

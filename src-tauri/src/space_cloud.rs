@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -8,11 +8,14 @@ use std::time::Duration;
 use reqwest::header::{AUTHORIZATION, CONTENT_DISPOSITION};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use tauri::{ipc::Response as IpcResponse, AppHandle};
-use zip::ZipArchive;
+use zip::{write::SimpleFileOptions, ZipArchive, ZipWriter};
 
 use crate::device_identity::{current_device_identity, DeviceIdentity};
-use crate::sidecar::ManagedSidecarManager;
+use crate::sidecar::{
+    get_tab_server_url, start_global_sidecar, ManagedSidecarManager, GLOBAL_SIDECAR_ID,
+};
 use crate::workspace_files::path_safety::{
     atomic_write_file, resolve_inside_workspace, validate_workspace_root,
 };
@@ -510,6 +513,67 @@ pub struct SpaceUploadSkillInput {
     pub description: Option<String>,
     #[serde(default)]
     pub skill_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceListLocalSkillsInput {
+    #[serde(default)]
+    pub projects: Vec<SpaceLocalSkillProjectInput>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceLocalSkillProjectInput {
+    pub workspace_path: String,
+    #[serde(default)]
+    pub workspace_label: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceLocalSkillSummary {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub folder_name: String,
+    pub path: String,
+    pub skill_md_path: String,
+    pub scope: String,
+    pub workspace_path: Option<String>,
+    pub workspace_label: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceInspectSkillSourceInput {
+    pub file_path: String,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceExportSkillFromUrlInput {
+    pub url: String,
+    #[serde(default)]
+    pub confirmed_selection: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceCleanupSkillExportPackagesInput {
+    #[serde(default)]
+    pub file_paths: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceSkillSourceInspection {
+    pub name: String,
+    pub description: Option<String>,
+    pub file_count: usize,
+    pub package_size_bytes: usize,
+    pub package_hash: String,
+    pub source_path: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1535,42 +1599,102 @@ pub async fn cmd_space_install_skill(
 }
 
 #[tauri::command]
+pub async fn cmd_space_list_local_skills(
+    input: SpaceListLocalSkillsInput,
+) -> Result<Vec<SpaceLocalSkillSummary>, String> {
+    let mut items = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        scan_local_skill_dir(
+            &home.join(".myagents").join("skills"),
+            "global",
+            None,
+            None,
+            &mut items,
+        )?;
+    }
+    for project in input.projects {
+        let workspace = match validate_workspace_root(project.workspace_path.trim()) {
+            Ok(workspace) => workspace,
+            Err(_) => continue,
+        };
+        let root = resolve_inside_workspace(&workspace, ".claude/skills")?;
+        scan_local_skill_dir(
+            &root,
+            "project",
+            Some(workspace.to_string_lossy().to_string()),
+            project.workspace_label,
+            &mut items,
+        )?;
+    }
+    Ok(items)
+}
+
+#[tauri::command]
+pub async fn cmd_space_inspect_skill_source(
+    input: SpaceInspectSkillSourceInput,
+) -> Result<SpaceSkillSourceInspection, String> {
+    let package = build_skill_upload_package(input.file_path.trim())?;
+    inspect_skill_package(&package.bytes, input.file_path.trim())
+}
+
+#[tauri::command]
+pub async fn cmd_space_export_skill_from_url(
+    app_handle: AppHandle,
+    state: tauri::State<'_, ManagedSidecarManager>,
+    input: SpaceExportSkillFromUrlInput,
+) -> Result<Value, String> {
+    if input.url.trim().is_empty() {
+        return Err("url is required".to_string());
+    }
+    let manager = state.inner().clone();
+    let server_url = tauri::async_runtime::spawn_blocking(move || {
+        start_global_sidecar(&app_handle, &manager)?;
+        get_tab_server_url(&manager, GLOBAL_SIDECAR_ID)
+    })
+    .await
+    .map_err(|e| format!("start global sidecar task failed: {e:?}"))??;
+    let client = crate::local_http::json_client(Duration::from_secs(90));
+    let response = client
+        .post(format!("{}/api/skill/export-from-url", server_url))
+        .json(&input)
+        .send()
+        .await
+        .map_err(|e| format!("Skill URL export request failed: {}", e))?;
+    let status = response.status();
+    let value = response
+        .json::<Value>()
+        .await
+        .map_err(|e| format!("Invalid Skill URL export response: {}", e))?;
+    if !status.is_success() || value.get("success").and_then(Value::as_bool) == Some(false) {
+        return Err(value
+            .get("error")
+            .and_then(Value::as_str)
+            .unwrap_or("Skill URL export failed")
+            .to_string());
+    }
+    Ok(value)
+}
+
+#[tauri::command]
+pub async fn cmd_space_cleanup_skill_export_packages(
+    input: SpaceCleanupSkillExportPackagesInput,
+) -> Result<(), String> {
+    for path in input.file_paths {
+        cleanup_skill_export_path(&path)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn cmd_space_upload_skill(input: SpaceUploadSkillInput) -> Result<Value, String> {
     if crate::space_cloud_mock::is_enabled() {
         return crate::space_cloud_mock::upload_skill(input);
     }
     let session = require_session()?;
-    let file_path = PathBuf::from(input.file_path.trim());
-    if !file_path.is_absolute() {
-        return Err("Skill zip path must be absolute".to_string());
-    }
-    if file_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| !ext.eq_ignore_ascii_case("zip"))
-        .unwrap_or(true)
-    {
-        return Err("Skill upload requires a .zip file".to_string());
-    }
-    let metadata = fs::symlink_metadata(&file_path)
-        .map_err(|e| format!("Failed to inspect skill zip: {}", e))?;
-    if metadata.file_type().is_symlink() {
-        return Err("Skill zip path must not be a symlink".to_string());
-    }
-    if !metadata.is_file() {
-        return Err("Skill zip path must be a file".to_string());
-    }
-    if metadata.len() > MAX_SKILL_ZIP_BYTES as u64 {
-        return Err(format!("Skill zip exceeds {} bytes", MAX_SKILL_ZIP_BYTES));
-    }
-    let bytes = fs::read(&file_path).map_err(|e| format!("Failed to read skill zip: {}", e))?;
-    let filename = file_path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .map(safe_local_filename)
-        .unwrap_or_else(|| "skill.zip".to_string());
-    let file_part = reqwest::multipart::Part::bytes(bytes)
-        .file_name(filename)
+    let source_path = input.file_path.trim().to_string();
+    let package = build_skill_upload_package(input.file_path.trim())?;
+    let file_part = reqwest::multipart::Part::bytes(package.bytes)
+        .file_name(package.filename)
         .mime_str("application/zip")
         .map_err(|e| format!("Failed to build skill upload part: {}", e))?;
     let mut form = reqwest::multipart::Form::new().part("file", file_part);
@@ -1589,7 +1713,13 @@ pub async fn cmd_space_upload_skill(input: SpaceUploadSkillInput) -> Result<Valu
     } else {
         format!("/api/spaces/{}/skills", session_space_segment(&session))
     };
-    authorized_multipart_data_request(&session.base_url, &path, &session.session_token, form).await
+    let result =
+        authorized_multipart_data_request(&session.base_url, &path, &session.session_token, form)
+            .await;
+    if result.is_ok() {
+        cleanup_skill_export_path(&source_path)?;
+    }
+    result
 }
 
 #[tauri::command]
@@ -3826,6 +3956,543 @@ fn safe_local_filename(value: &str) -> String {
         }
     }
     out.trim().trim_matches('.').to_string()
+}
+
+fn safe_skill_archive_name(value: &str) -> String {
+    let name = safe_local_filename(value);
+    if name.is_empty() {
+        "skill.zip".to_string()
+    } else if name.ends_with(".zip") {
+        name
+    } else {
+        let stem = name
+            .strip_suffix(".skill")
+            .or_else(|| name.strip_suffix(".md"))
+            .unwrap_or(&name);
+        format!("{}.zip", stem)
+    }
+}
+
+#[derive(Debug)]
+struct ParsedSkillFrontmatter {
+    name: Option<String>,
+    description: Option<String>,
+}
+
+fn parse_skill_frontmatter(content: &str) -> ParsedSkillFrontmatter {
+    let normalized = content.strip_prefix('\u{feff}').unwrap_or(content);
+    let mut lines = normalized.lines();
+    if lines.next() != Some("---") {
+        return ParsedSkillFrontmatter {
+            name: None,
+            description: None,
+        };
+    }
+    let mut body = String::new();
+    for line in lines {
+        if line.trim() == "---" {
+            let value = serde_yaml::from_str::<serde_yaml::Value>(&body).ok();
+            let mapping = value.and_then(|value| match value {
+                serde_yaml::Value::Mapping(mapping) => Some(mapping),
+                _ => None,
+            });
+            let get_string = |key: &str| -> Option<String> {
+                mapping
+                    .as_ref()
+                    .and_then(|map| map.get(&serde_yaml::Value::String(key.to_string())))
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(ToString::to_string)
+            };
+            return ParsedSkillFrontmatter {
+                name: get_string("name"),
+                description: get_string("description"),
+            };
+        }
+        body.push_str(line);
+        body.push('\n');
+    }
+    ParsedSkillFrontmatter {
+        name: None,
+        description: None,
+    }
+}
+
+fn heading_title(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("# ")
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+    })
+}
+
+fn zip_entry_is_symlink(mode: Option<u32>) -> bool {
+    mode.is_some_and(|mode| (mode & 0o170000) == 0o120000)
+}
+
+struct SkillUploadPackage {
+    bytes: Vec<u8>,
+    filename: String,
+}
+
+fn skill_url_export_root() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join(".myagents").join("tmp").join("skill-url-export"))
+}
+
+fn cleanup_skill_export_path(raw_path: &str) -> Result<(), String> {
+    let Some(root) = skill_url_export_root() else {
+        return Ok(());
+    };
+    let path = PathBuf::from(raw_path.trim());
+    if !path.is_absolute() || !path.starts_with(&root) {
+        return Ok(());
+    }
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("Failed to inspect staged Skill package: {}", e)),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Ok(());
+    }
+    fs::remove_file(&path).map_err(|e| format!("Failed to remove staged Skill package: {}", e))?;
+    let mut cursor = path.parent().map(Path::to_path_buf);
+    while let Some(dir) = cursor {
+        if dir == root {
+            break;
+        }
+        if fs::remove_dir(&dir).is_err() {
+            break;
+        }
+        cursor = dir.parent().map(Path::to_path_buf);
+    }
+    Ok(())
+}
+
+fn read_local_file_no_follow(path: &Path, max_bytes: u64, label: &str) -> Result<Vec<u8>, String> {
+    let validated_metadata =
+        fs::symlink_metadata(path).map_err(|e| format!("Failed to inspect {}: {}", label, e))?;
+    if validated_metadata.file_type().is_symlink() {
+        return Err(format!("{} path must not be a symlink", label));
+    }
+    if !validated_metadata.is_file() {
+        return Err(format!("{} path must be a file", label));
+    }
+    if validated_metadata.len() > max_bytes {
+        return Err(format!("{} exceeds {} bytes", label, max_bytes));
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(path)
+        .map_err(|e| format!("Failed to open {}: {}", label, e))?;
+    let opened_metadata = file
+        .metadata()
+        .map_err(|e| format!("Failed to inspect opened {}: {}", label, e))?;
+    if !opened_metadata.is_file() {
+        return Err(format!("{} path must be a file", label));
+    }
+    if opened_metadata.len() > max_bytes {
+        return Err(format!("{} exceeds {} bytes", label, max_bytes));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if validated_metadata.dev() != opened_metadata.dev()
+            || validated_metadata.ino() != opened_metadata.ino()
+        {
+            return Err(format!("{} changed while reading", label));
+        }
+    }
+    let after_metadata =
+        fs::symlink_metadata(path).map_err(|e| format!("Failed to re-inspect {}: {}", label, e))?;
+    if after_metadata.file_type().is_symlink() || !after_metadata.is_file() {
+        return Err(format!("{} changed while reading", label));
+    }
+    let mut bytes = Vec::with_capacity(opened_metadata.len() as usize);
+    file.take(max_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Failed to read {}: {}", label, e))?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!("{} exceeds {} bytes", label, max_bytes));
+    }
+    Ok(bytes)
+}
+
+fn build_skill_upload_package(raw_path: &str) -> Result<SkillUploadPackage, String> {
+    let file_path = PathBuf::from(raw_path);
+    if !file_path.is_absolute() {
+        return Err("Skill source path must be absolute".to_string());
+    }
+    let metadata = fs::symlink_metadata(&file_path)
+        .map_err(|e| format!("Failed to inspect skill source: {}", e))?;
+    if metadata.file_type().is_symlink() {
+        return Err("Skill source path must not be a symlink".to_string());
+    }
+    if metadata.is_dir() {
+        return build_skill_package_from_dir(&file_path);
+    }
+    if !metadata.is_file() {
+        return Err("Skill source path must be a file or directory".to_string());
+    }
+    let ext = file_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    match ext.as_str() {
+        "zip" | "skill" => {
+            if metadata.len() > MAX_SKILL_ZIP_BYTES as u64 {
+                return Err(format!("Skill zip exceeds {} bytes", MAX_SKILL_ZIP_BYTES));
+            }
+            let bytes =
+                fs::read(&file_path).map_err(|e| format!("Failed to read skill package: {}", e))?;
+            validate_skill_zip_bytes(&bytes)?;
+            let filename = file_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(safe_skill_archive_name)
+                .unwrap_or_else(|| "skill.zip".to_string());
+            Ok(SkillUploadPackage { bytes, filename })
+        }
+        "md" => build_skill_package_from_md_file(&file_path),
+        _ => Err("Skill upload requires a .zip, .skill, .md file, or a Skill folder".to_string()),
+    }
+}
+
+fn build_skill_package_from_md_file(path: &Path) -> Result<SkillUploadPackage, String> {
+    let text = String::from_utf8(read_local_file_no_follow(
+        path,
+        MAX_SKILL_FILE_BYTES,
+        "Skill markdown",
+    )?)
+    .map_err(|_| "Skill markdown must be valid UTF-8".to_string())?;
+    let parsed = parse_skill_frontmatter(&text);
+    let name = parsed
+        .name
+        .as_deref()
+        .ok_or_else(|| "不是有效 Skill".to_string())?;
+    let mut bytes = Cursor::new(Vec::new());
+    {
+        let mut zip = ZipWriter::new(&mut bytes);
+        zip.start_file("SKILL.md", SimpleFileOptions::default())
+            .map_err(|e| format!("Failed to create skill package: {}", e))?;
+        zip.write_all(text.as_bytes())
+            .map_err(|e| format!("Failed to write skill package: {}", e))?;
+        zip.finish()
+            .map_err(|e| format!("Failed to finish skill package: {}", e))?;
+    }
+    validate_skill_zip_bytes(bytes.get_ref())?;
+    Ok(SkillUploadPackage {
+        bytes: bytes.into_inner(),
+        filename: safe_skill_archive_name(name),
+    })
+}
+
+fn build_skill_package_from_dir(root: &Path) -> Result<SkillUploadPackage, String> {
+    let skill_md = root.join("SKILL.md");
+    let skill_md_meta = fs::symlink_metadata(&skill_md)
+        .map_err(|_| "Skill folder must contain SKILL.md".to_string())?;
+    if skill_md_meta.file_type().is_symlink() {
+        return Err("Skill folder SKILL.md must not be a symlink".to_string());
+    }
+    if !skill_md_meta.is_file() {
+        return Err("Skill folder must contain a file named SKILL.md".to_string());
+    }
+
+    let mut files = Vec::<(PathBuf, Vec<u8>)>::new();
+    collect_skill_dir_files(root, root, &mut files)?;
+    let mut bytes = Cursor::new(Vec::new());
+    {
+        let mut zip = ZipWriter::new(&mut bytes);
+        let options = SimpleFileOptions::default();
+        for (relative, data) in files {
+            let name = relative
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            zip.start_file(name, options)
+                .map_err(|e| format!("Failed to create skill package: {}", e))?;
+            zip.write_all(&data)
+                .map_err(|e| format!("Failed to write skill package: {}", e))?;
+        }
+        zip.finish()
+            .map_err(|e| format!("Failed to finish skill package: {}", e))?;
+    }
+    validate_skill_zip_bytes(bytes.get_ref())?;
+    let folder_name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("skill");
+    Ok(SkillUploadPackage {
+        bytes: bytes.into_inner(),
+        filename: safe_skill_archive_name(folder_name),
+    })
+}
+
+fn collect_skill_dir_files(
+    root: &Path,
+    dir: &Path,
+    out: &mut Vec<(PathBuf, Vec<u8>)>,
+) -> Result<(), String> {
+    if out.len() > MAX_SKILL_ZIP_ENTRIES {
+        return Err(format!(
+            "Skill folder has too many entries (max {})",
+            MAX_SKILL_ZIP_ENTRIES
+        ));
+    }
+    let entries = fs::read_dir(dir).map_err(|e| format!("Failed to read Skill folder: {}", e))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("Failed to read Skill folder entry: {}", e))?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.starts_with('.') || name_str == "__MACOSX" {
+            continue;
+        }
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|e| format!("Failed to inspect Skill folder entry: {}", e))?;
+        if metadata.file_type().is_symlink() {
+            return Err(format!(
+                "Skill contains a symlink and cannot be published: {}",
+                path.display()
+            ));
+        }
+        if metadata.is_dir() {
+            collect_skill_dir_files(root, &path, out)?;
+            continue;
+        }
+        if !metadata.is_file() {
+            continue;
+        }
+        if metadata.len() > MAX_SKILL_FILE_BYTES {
+            return Err(format!(
+                "Skill file exceeds {} bytes: {}",
+                MAX_SKILL_FILE_BYTES,
+                path.display()
+            ));
+        }
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|_| "Skill file path escaped source folder".to_string())?
+            .to_path_buf();
+        safe_zip_relative_path(&relative.to_string_lossy())?;
+        let data = read_local_file_no_follow(&path, MAX_SKILL_FILE_BYTES, "Skill file")?;
+        out.push((relative, data));
+        let total = out.iter().try_fold(0u64, |sum, (_, data)| {
+            sum.checked_add(data.len() as u64)
+                .ok_or_else(|| "Skill package size overflow".to_string())
+        })?;
+        if total > MAX_SKILL_TOTAL_BYTES {
+            return Err(format!(
+                "Skill package exceeds {} bytes",
+                MAX_SKILL_TOTAL_BYTES
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_skill_zip_bytes(bytes: &[u8]) -> Result<(), String> {
+    if bytes.len() > MAX_SKILL_ZIP_BYTES {
+        return Err(format!("Skill zip exceeds {} bytes", MAX_SKILL_ZIP_BYTES));
+    }
+    let root_prefix = find_skill_root_prefix(bytes)?;
+    let mut archive =
+        ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("Invalid skill zip: {}", e))?;
+    if archive.len() > MAX_SKILL_ZIP_ENTRIES {
+        return Err(format!(
+            "Skill zip has too many entries (max {})",
+            MAX_SKILL_ZIP_ENTRIES
+        ));
+    }
+    let mut seen = HashSet::new();
+    let mut total_size = 0u64;
+    let mut has_skill_md = false;
+    for i in 0..archive.len() {
+        let entry = archive
+            .by_index(i)
+            .map_err(|e| format!("Invalid zip entry: {}", e))?;
+        if zip_entry_is_symlink(entry.unix_mode()) {
+            return Err(format!(
+                "Skill zip entry must not be a symlink: {}",
+                entry.name()
+            ));
+        }
+        if entry.is_dir() {
+            continue;
+        }
+        if entry.size() > MAX_SKILL_FILE_BYTES {
+            return Err(format!(
+                "Skill zip entry exceeds {} bytes: {}",
+                MAX_SKILL_FILE_BYTES,
+                entry.name()
+            ));
+        }
+        total_size = total_size
+            .checked_add(entry.size())
+            .ok_or_else(|| "Skill zip total size overflow".to_string())?;
+        if total_size > MAX_SKILL_TOTAL_BYTES {
+            return Err(format!(
+                "Skill zip expands beyond {} bytes",
+                MAX_SKILL_TOTAL_BYTES
+            ));
+        }
+        let entry_name = entry.name().replace('\\', "/");
+        if !entry_name.starts_with(&root_prefix) {
+            continue;
+        }
+        let relative = &entry_name[root_prefix.len()..];
+        if relative.is_empty() {
+            continue;
+        }
+        let safe = safe_zip_relative_path(relative)?;
+        if safe == Path::new("SKILL.md") {
+            has_skill_md = true;
+        }
+        if !seen.insert(safe.clone()) {
+            return Err(format!("Duplicate skill zip entry: {}", safe.display()));
+        }
+    }
+    if !has_skill_md {
+        return Err("Skill zip must contain SKILL.md".to_string());
+    }
+    Ok(())
+}
+
+fn inspect_skill_package(
+    bytes: &[u8],
+    source_path: &str,
+) -> Result<SpaceSkillSourceInspection, String> {
+    validate_skill_zip_bytes(bytes)?;
+    let root_prefix = find_skill_root_prefix(bytes)?;
+    let mut archive =
+        ZipArchive::new(Cursor::new(bytes)).map_err(|e| format!("Invalid skill zip: {}", e))?;
+    let mut file_count = 0usize;
+    let mut skill_md_text = String::new();
+    for i in 0..archive.len() {
+        let mut entry = archive
+            .by_index(i)
+            .map_err(|e| format!("Invalid zip entry: {}", e))?;
+        if zip_entry_is_symlink(entry.unix_mode()) {
+            return Err(format!(
+                "Skill zip entry must not be a symlink: {}",
+                entry.name()
+            ));
+        }
+        if entry.is_dir() {
+            continue;
+        }
+        let entry_name = entry.name().replace('\\', "/");
+        if !entry_name.starts_with(&root_prefix) {
+            continue;
+        }
+        let relative = &entry_name[root_prefix.len()..];
+        if relative.is_empty() {
+            continue;
+        }
+        file_count += 1;
+        if relative.eq_ignore_ascii_case("SKILL.md") {
+            entry
+                .read_to_string(&mut skill_md_text)
+                .map_err(|e| format!("Failed to read SKILL.md from package: {}", e))?;
+        }
+    }
+    let parsed = parse_skill_frontmatter(&skill_md_text);
+    let name = parsed
+        .name
+        .or_else(|| heading_title(&skill_md_text))
+        .ok_or_else(|| "不是有效 Skill".to_string())?;
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    let package_hash = format!("{:x}", hasher.finalize());
+    Ok(SpaceSkillSourceInspection {
+        name,
+        description: parsed.description,
+        file_count,
+        package_size_bytes: bytes.len(),
+        package_hash,
+        source_path: source_path.to_string(),
+    })
+}
+
+fn scan_local_skill_dir(
+    root: &Path,
+    scope: &str,
+    workspace_path: Option<String>,
+    workspace_label: Option<String>,
+    out: &mut Vec<SpaceLocalSkillSummary>,
+) -> Result<(), String> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("Failed to read local Skills: {}", e)),
+    };
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => continue,
+        };
+        let path = entry.path();
+        let folder_name = entry.file_name().to_string_lossy().to_string();
+        if folder_name.starts_with('.') {
+            continue;
+        }
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_dir() {
+            continue;
+        }
+        let skill_md = path.join("SKILL.md");
+        let skill_md_meta = match fs::symlink_metadata(&skill_md) {
+            Ok(metadata) => metadata,
+            Err(_) => continue,
+        };
+        if skill_md_meta.file_type().is_symlink() || !skill_md_meta.is_file() {
+            continue;
+        }
+        if skill_md_meta.len() > MAX_SKILL_FILE_BYTES {
+            continue;
+        }
+        let content = read_local_file_no_follow(&skill_md, MAX_SKILL_FILE_BYTES, "Skill markdown")
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok())
+            .unwrap_or_default();
+        let parsed = parse_skill_frontmatter(&content);
+        let name = parsed
+            .name
+            .or_else(|| heading_title(&content))
+            .unwrap_or_else(|| folder_name.clone());
+        out.push(SpaceLocalSkillSummary {
+            id: format!("{}:{}", scope, path.to_string_lossy()),
+            name,
+            description: parsed.description,
+            folder_name,
+            path: path.to_string_lossy().to_string(),
+            skill_md_path: skill_md.to_string_lossy().to_string(),
+            scope: scope.to_string(),
+            workspace_path: workspace_path.clone(),
+            workspace_label: workspace_label.clone(),
+        });
+    }
+    out.sort_by(|a, b| {
+        a.scope
+            .cmp(&b.scope)
+            .then_with(|| a.workspace_label.cmp(&b.workspace_label))
+            .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    Ok(())
 }
 
 fn choose_available_dir(root: &Path, base_name: &str) -> Result<(PathBuf, String, bool), String> {

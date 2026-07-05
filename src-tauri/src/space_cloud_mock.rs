@@ -26,6 +26,8 @@ const MOCK_REMOTE_DEVICE_ID: &str = "mock-remote-device-windows";
 #[derive(Clone)]
 struct MockSkillRecord {
     skill: Value,
+    revisions: Vec<Value>,
+    current_revision: u64,
     files: Vec<Value>,
     file_content: HashMap<String, Value>,
 }
@@ -578,25 +580,17 @@ fn patch_mock_user_summaries(state: &mut MockState, user_id: &str, name: &str, a
 pub fn upload_skill(input: SpaceUploadSkillInput) -> Result<Value, String> {
     let file_path = PathBuf::from(input.file_path.trim());
     if !file_path.is_absolute() {
-        return Err("Skill zip path must be absolute".to_string());
-    }
-    if file_path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| !ext.eq_ignore_ascii_case("zip"))
-        .unwrap_or(true)
-    {
-        return Err("Skill upload requires a .zip file".to_string());
+        return Err("Skill source path must be absolute".to_string());
     }
     let metadata = fs::symlink_metadata(&file_path)
-        .map_err(|e| format!("Failed to inspect skill zip: {}", e))?;
+        .map_err(|e| format!("Failed to inspect skill source: {}", e))?;
     if metadata.file_type().is_symlink() {
-        return Err("Skill zip path must not be a symlink".to_string());
+        return Err("Skill source path must not be a symlink".to_string());
     }
-    if !metadata.is_file() {
-        return Err("Skill zip path must be a file".to_string());
+    if !metadata.is_file() && !metadata.is_dir() {
+        return Err("Skill source path must be a file or directory".to_string());
     }
-    if metadata.len() > MAX_SKILL_ZIP_BYTES as u64 {
+    if metadata.is_file() && metadata.len() > MAX_SKILL_ZIP_BYTES as u64 {
         return Err(format!("Skill zip exceeds {} bytes", MAX_SKILL_ZIP_BYTES));
     }
     let mut state = state().lock().expect("mock state poisoned");
@@ -610,18 +604,61 @@ pub fn upload_skill(input: SpaceUploadSkillInput) -> Result<Value, String> {
                 .unwrap_or("uploaded-skill")
                 .replace('-', " ")
         });
-    let id = input.skill_id.unwrap_or_else(|| state.next_id("skl"));
     let uploader = json!({
         "id": state.user.get("id").and_then(Value::as_str).unwrap_or(MOCK_OWNER_USER_ID),
         "name": state.user.get("name").and_then(Value::as_str).unwrap_or("Ethan"),
         "avatarUrl": state.user.get("avatarUrl").cloned().unwrap_or(Value::Null)
     });
+    if let Some(skill_id) = input.skill_id {
+        let record = state
+            .skills
+            .iter_mut()
+            .find(|record| {
+                record.skill.get("id").and_then(Value::as_str) == Some(skill_id.as_str())
+            })
+            .ok_or_else(|| format!("Skill not found: {}", skill_id))?;
+        let latest = record
+            .skill
+            .get("latestRevision")
+            .and_then(Value::as_u64)
+            .unwrap_or(record.current_revision)
+            + 1;
+        record.current_revision = latest;
+        if let Some(object) = record.skill.as_object_mut() {
+            object.insert("latestRevision".to_string(), json!(latest));
+            object.insert("currentRevision".to_string(), json!(latest));
+            object.insert("uploader".to_string(), uploader.clone());
+            object.insert("updatedAt".to_string(), "2026-06-24T10:15:00.000Z".into());
+        }
+        record.revisions.insert(
+            0,
+            json!({
+                "id": format!("sklr_{}_{}", skill_id, latest),
+                "skillId": skill_id,
+                "revision": latest,
+                "version": format!("v{}", latest),
+                "packageHash": format!("mockhash{}{:02}", safe_local_name(&name), latest),
+                "isCurrent": true,
+                "uploader": uploader,
+                "createdAt": "2026-06-24T10:15:00.000Z"
+            }),
+        );
+        for revision in &mut record.revisions {
+            let is_current = revision.get("revision").and_then(Value::as_u64) == Some(latest);
+            if let Some(object) = revision.as_object_mut() {
+                object.insert("isCurrent".to_string(), json!(is_current));
+            }
+        }
+        return Ok(json!({ "skill": record.skill.clone() }));
+    }
+    let id = state.next_id("skl");
     let skill = json!({
         "id": id,
         "name": title_case(&name),
         "slug": safe_local_name(&name),
         "description": input.description.unwrap_or_else(|| "Uploaded mock Skill package for UI verification.".to_string()),
         "latestRevision": 1,
+        "currentRevision": 1,
         "uploader": uploader,
         "createdAt": "2026-06-24T09:37:00.000Z",
         "updatedAt": "2026-06-24T09:37:00.000Z"
@@ -796,11 +833,15 @@ fn handle_api_data_request(
             Ok(list_events(&state, &query))
         }
         ("GET", ["api", "skills", skill_id]) => skill_detail(&state, skill_id),
+        ("GET", ["api", "skills", skill_id, "revisions"]) => skill_revisions(&state, skill_id),
         ("GET", ["api", "skills", skill_id, "file-content"]) => skill_file(
             &state,
             skill_id,
             query.get("path").map(String::as_str).unwrap_or(""),
         ),
+        ("POST", ["api", "skills", skill_id, "rollback"]) => {
+            rollback_skill(&mut state, skill_id, body)
+        }
         ("DELETE", ["api", "skills", skill_id]) => delete_skill(&mut state, skill_id),
         ("GET", ["api", "registered-agents", "me", "dispatches"]) => {
             let agent_id = require_registered_agent_actor(&actor)?;
@@ -2418,8 +2459,24 @@ fn skill_detail(state: &MockState, skill_id: &str) -> Result<Value, String> {
         .ok_or_else(|| format!("Skill not found: {}", skill_id))?;
     Ok(json!({
         "skill": record.skill,
-        "revision": { "revision": record.skill.get("latestRevision").cloned().unwrap_or(json!(1)) },
+        "revision": { "revision": record.current_revision },
         "files": record.files
+    }))
+}
+
+fn skill_revisions(state: &MockState, skill_id: &str) -> Result<Value, String> {
+    let record = state
+        .skills
+        .iter()
+        .find(|record| record.skill.get("id").and_then(Value::as_str) == Some(skill_id))
+        .ok_or_else(|| format!("Skill not found: {}", skill_id))?;
+    Ok(json!({
+        "skill": {
+            "id": skill_id,
+            "currentRevision": record.current_revision,
+            "latestRevision": record.skill.get("latestRevision").cloned().unwrap_or(json!(record.current_revision))
+        },
+        "items": record.revisions
     }))
 }
 
@@ -2445,6 +2502,51 @@ fn delete_skill(state: &mut MockState, skill_id: &str) -> Result<Value, String> 
         return Err(format!("Skill not found: {}", skill_id));
     }
     Ok(json!({ "deleted": true }))
+}
+
+fn rollback_skill(
+    state: &mut MockState,
+    skill_id: &str,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    let revision = body
+        .as_ref()
+        .and_then(|value| value.get("revision"))
+        .and_then(Value::as_u64)
+        .ok_or_else(|| "revision is required".to_string())?;
+    let record = state
+        .skills
+        .iter_mut()
+        .find(|record| record.skill.get("id").and_then(Value::as_str) == Some(skill_id))
+        .ok_or_else(|| format!("Skill not found: {}", skill_id))?;
+    if !record
+        .revisions
+        .iter()
+        .any(|item| item.get("revision").and_then(Value::as_u64) == Some(revision))
+    {
+        return Err(format!("Skill revision not found: {}", revision));
+    }
+    record.current_revision = revision;
+    if let Some(object) = record.skill.as_object_mut() {
+        object.insert("currentRevision".to_string(), json!(revision));
+        object.insert("updatedAt".to_string(), "2026-06-24T10:30:00.000Z".into());
+        if let Some(current) = record
+            .revisions
+            .iter()
+            .find(|item| item.get("revision").and_then(Value::as_u64) == Some(revision))
+            .and_then(|item| item.get("uploader"))
+            .cloned()
+        {
+            object.insert("uploader".to_string(), current);
+        }
+    }
+    for item in &mut record.revisions {
+        let is_current = item.get("revision").and_then(Value::as_u64) == Some(revision);
+        if let Some(object) = item.as_object_mut() {
+            object.insert("isCurrent".to_string(), json!(is_current));
+        }
+    }
+    Ok(json!({ "skill": record.skill.clone() }))
 }
 
 fn update_agent_api(
@@ -2894,6 +2996,7 @@ fn skill(id: &str, name: &str, slug: &str, description: &str, revision: u32) -> 
         "slug": slug,
         "description": description,
         "latestRevision": revision,
+        "currentRevision": revision,
         "uploader": {
             "id": MOCK_OWNER_USER_ID,
             "name": "Ethan",
@@ -2981,8 +3084,37 @@ fn skill_record(skill: Value, overview: &str, readme: &str) -> MockSkillRecord {
             "sizeBytes": 48200
         }),
     );
+    let latest_revision = skill
+        .get("latestRevision")
+        .and_then(Value::as_u64)
+        .unwrap_or(1);
+    let current_revision = skill
+        .get("currentRevision")
+        .and_then(Value::as_u64)
+        .unwrap_or(latest_revision);
+    let revisions = (1..=latest_revision)
+        .rev()
+        .map(|revision| {
+            json!({
+                "id": format!("sklr_{}_{}", id, revision),
+                "skillId": id,
+                "revision": revision,
+                "version": format!("v{}", revision),
+                "packageHash": format!("mockhash{}{:02}", safe_local_name(id), revision),
+                "isCurrent": revision == current_revision,
+                "uploader": {
+                    "id": MOCK_OWNER_USER_ID,
+                    "name": "Ethan",
+                    "avatarUrl": "https://space.mock.myagents.local/mock-avatar/ethan.png"
+                },
+                "createdAt": format!("2026-06-{:02}T11:00:00.000Z", 10 + (revision % 12))
+            })
+        })
+        .collect::<Vec<_>>();
     MockSkillRecord {
         skill,
+        revisions,
+        current_revision,
         files,
         file_content,
     }

@@ -18,6 +18,7 @@ const apiMocks = vi.hoisted(() => ({
   spaceGetSkill: vi.fn(),
   spaceGetSkillFile: vi.fn(),
   spaceInstallSkill: vi.fn(),
+  spaceListSkillRevisions: vi.fn(),
   spaceListGoals: vi.fn(),
   spaceListEvents: vi.fn(),
   spaceListIssues: vi.fn(),
@@ -27,6 +28,7 @@ const apiMocks = vi.hoisted(() => ({
   spaceLogout: vi.fn(),
   spaceRegisterAgent: vi.fn(),
   spaceRevokeRegisteredAgent: vi.fn(),
+  spaceRollbackSkill: vi.fn(),
   spaceSetIssueState: vi.fn(),
   spaceUpdateGoal: vi.fn(),
   spaceUpdateProfile: vi.fn(),
@@ -54,6 +56,7 @@ vi.mock('@/api/spaceCloud', () => ({
   spaceGetSkill: apiMocks.spaceGetSkill,
   spaceGetSkillFile: apiMocks.spaceGetSkillFile,
   spaceInstallSkill: apiMocks.spaceInstallSkill,
+  spaceListSkillRevisions: apiMocks.spaceListSkillRevisions,
   spaceListGoals: apiMocks.spaceListGoals,
   spaceListEvents: apiMocks.spaceListEvents,
   spaceListIssues: apiMocks.spaceListIssues,
@@ -63,6 +66,7 @@ vi.mock('@/api/spaceCloud', () => ({
   spaceLogout: apiMocks.spaceLogout,
   spaceRegisterAgent: apiMocks.spaceRegisterAgent,
   spaceRevokeRegisteredAgent: apiMocks.spaceRevokeRegisteredAgent,
+  spaceRollbackSkill: apiMocks.spaceRollbackSkill,
   spaceSetIssueState: apiMocks.spaceSetIssueState,
   spaceUpdateGoal: apiMocks.spaceUpdateGoal,
   spaceUpdateProfile: apiMocks.spaceUpdateProfile,
@@ -165,6 +169,7 @@ const fakeSkill: SpaceSkill = {
   name: 'PRD Writer',
   slug: 'prd-writer',
   description: 'Write product specs',
+  currentRevision: 1,
   latestRevision: 1,
   createdAt: '2026-06-24T00:00:00.000Z',
   updatedAt: '2026-06-24T00:00:00.000Z',
@@ -845,6 +850,7 @@ describe('spaceStore skill actions', () => {
   it('uploads a skill revision and invalidates cached detail/files', async () => {
     const updatedSkill = {
       ...fakeSkill,
+      currentRevision: 2,
       latestRevision: 2,
       updatedAt: '2026-06-24T03:00:00.000Z',
     };

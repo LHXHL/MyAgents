@@ -196,6 +196,7 @@ export interface SpaceSkill {
   name: string;
   slug: string;
   description?: string | null;
+  currentRevision: number;
   latestRevision: number;
   uploader?: SpaceUserSummary | null;
   createdAt: string;
@@ -217,6 +218,89 @@ export interface SpaceSkillDetail {
   skill: SpaceSkill;
   revision?: Record<string, unknown> | null;
   files: SpaceSkillFile[];
+}
+
+export interface SpaceSkillRevision {
+  id: string;
+  skillId?: string;
+  revision: number;
+  version?: string;
+  packageHash?: string | null;
+  packageStorageKey?: string | null;
+  isCurrent: boolean;
+  uploader?: SpaceUserSummary | null;
+  createdAt: string;
+}
+
+export interface SpaceSkillRevisionHistory {
+  skill: {
+    id: string;
+    currentRevision: number;
+    latestRevision: number;
+  };
+  items: SpaceSkillRevision[];
+}
+
+export interface SpaceLocalSkill {
+  id: string;
+  name: string;
+  description?: string | null;
+  folderName: string;
+  path: string;
+  skillMdPath: string;
+  scope: "global" | "project" | string;
+  workspacePath?: string | null;
+  workspaceLabel?: string | null;
+}
+
+export interface SpaceSkillSourceInspection {
+  name: string;
+  description?: string | null;
+  fileCount: number;
+  packageSizeBytes: number;
+  packageHash: string;
+  sourcePath: string;
+}
+
+export interface SpaceSkillUrlCandidate {
+  suggestedFolderName: string;
+  name: string;
+  description: string;
+  hasDangerousTools: boolean;
+  rootPath: string;
+}
+
+export type SpaceSkillUrlPreview =
+  | {
+      mode: "multi";
+      candidates: SpaceSkillUrlCandidate[];
+    }
+  | {
+      mode: "marketplace";
+      marketplaceName: string;
+      marketplaceDescription?: string;
+      plugins: Array<{
+        name: string;
+        description: string;
+        skills: SpaceSkillUrlCandidate[];
+      }>;
+    };
+
+export interface SpaceSkillUrlPackage extends SpaceSkillUrlCandidate {
+  tempId: string;
+  filePath: string;
+  fileCount: number;
+  packageSizeBytes: number;
+}
+
+export interface SpaceSkillUrlExportResponse {
+  success: boolean;
+  mode?: "exported" | "multi" | "marketplace";
+  packages?: SpaceSkillUrlPackage[];
+  preview?: SpaceSkillUrlPreview;
+  error?: string;
+  sourceUrl?: string;
+  effectiveRef?: string;
 }
 
 export type SpaceIssueSubscriptionRunMode = "single_session" | "new_session";
@@ -853,6 +937,56 @@ export function spaceGetSkillFile(id: string, path: string) {
     "GET",
     `/api/skills/${encodeURIComponent(id)}/file-content?${search.toString()}`,
   );
+}
+
+export function spaceListSkillRevisions(id: string) {
+  return spaceApi<SpaceSkillRevisionHistory>(
+    "GET",
+    `/api/skills/${encodeURIComponent(id)}/revisions`,
+  );
+}
+
+export function spaceRollbackSkill(id: string, revision: number) {
+  return spaceApi<{ skill: SpaceSkill }>(
+    "POST",
+    `/api/skills/${encodeURIComponent(id)}/rollback`,
+    { revision },
+  );
+}
+
+export function spaceListLocalSkills(projects: Project[]) {
+  return inv<SpaceLocalSkill[]>("cmd_space_list_local_skills", {
+    input: {
+      projects: projects.map((project) => ({
+        workspacePath: project.path,
+        workspaceLabel: project.displayName || project.name,
+      })),
+    },
+  });
+}
+
+export function spaceInspectSkillSource(filePath: string) {
+  return inv<SpaceSkillSourceInspection>("cmd_space_inspect_skill_source", {
+    input: { filePath },
+  });
+}
+
+export function spaceExportSkillFromUrl(input: {
+  url: string;
+  confirmedSelection?: {
+    pluginName?: string;
+    folderNames?: string[];
+  };
+}) {
+  return inv<SpaceSkillUrlExportResponse>("cmd_space_export_skill_from_url", {
+    input,
+  });
+}
+
+export function spaceCleanupSkillExportPackages(filePaths: string[]) {
+  return inv<void>("cmd_space_cleanup_skill_export_packages", {
+    input: { filePaths },
+  });
 }
 
 export function spaceInstallSkill(input: {
