@@ -216,7 +216,8 @@
     "systemTags": {
       "heartbeat": "Heartbeat",
       "cronTask": "Scheduled task",
-      "floatingContext": "Floating context"
+      "floatingContext": "Floating context",
+      "spaceIssue": "Space issue"
     },
     "taskStatus": {
       "completed": "completed",

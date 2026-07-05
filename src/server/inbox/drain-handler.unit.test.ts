@@ -15,7 +15,7 @@ describe('handleInboxDrain scenario routing', () => {
       fromSessionId: 'myagents-space',
       fromLabel: 'MyAgents Space',
       toSessionId: 'session-space',
-      text: 'Space issue delivery',
+      text: '<system-reminder>\n<myagents-space-issue>\nSpace issue delivery\n</myagents-space-issue>\n</system-reminder>\nVisible Space issue',
       replyBack: false,
       kind: 'event',
       sessionEvent: {
@@ -31,7 +31,6 @@ describe('handleInboxDrain scenario routing', () => {
         issueTitle: 'Issue',
         issueState: 'todo',
         notificationVersion: 1,
-        payload: 'Inspect issue.',
       },
     };
 
@@ -39,6 +38,9 @@ describe('handleInboxDrain scenario routing', () => {
 
     expect(result.accepted).toBe(true);
     expect(seen).toHaveLength(1);
+    expect(seen[0][0]).toBe(message.text);
+    expect(seen[0][0]).toContain('<system-reminder>');
+    expect(seen[0][0]).not.toContain('<myagents-session-event');
     expect(seen[0][2]).toMatchObject({
       allowLazySessionMaterialization: true,
       scenario: {

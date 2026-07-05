@@ -216,7 +216,8 @@
     "systemTags": {
       "heartbeat": "心跳感知",
       "cronTask": "定时任务",
-      "floatingContext": "悬浮上下文"
+      "floatingContext": "悬浮上下文",
+      "spaceIssue": "Space issue"
     },
     "taskStatus": {
       "completed": "已完成",

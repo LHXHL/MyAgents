@@ -18,7 +18,7 @@ import { groupContentBlocksForDisplay } from '@/utils/contentBlockDisplay';
 import { useImagePreview } from '@/context/ImagePreviewContext';
 import type { ContentBlock, Message as MessageType } from '@/types/chat';
 import { SOURCE_LABELS, type MessageSource } from '../../shared/types/im';
-import { FLOATING_BALL_CONTEXT_TAG, parseLeadingSystemReminder } from '../../shared/systemReminder';
+import { FLOATING_BALL_CONTEXT_TAG, SPACE_ISSUE_CONTEXT_TAG, parseLeadingSystemReminder } from '../../shared/systemReminder';
 
 interface MessageProps {
   message: MessageType;
@@ -268,6 +268,7 @@ function systemTagLabel(kind: string, t: (key: string) => string): string | null
   if (kind === 'HEARTBEAT') return t('message.systemTags.heartbeat');
   if (kind === 'CRON_TASK') return t('message.systemTags.cronTask');
   if (kind === FLOATING_BALL_CONTEXT_TAG) return t('message.systemTags.floatingContext');
+  if (kind === SPACE_ISSUE_CONTEXT_TAG) return t('message.systemTags.spaceIssue');
   return null;
 }
 
@@ -359,7 +360,12 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
 
     // Strip system injection tags that wrap delivered content. These HTML-like tags trigger
     // Markdown's HTML block mode, breaking \n rendering and Markdown syntax.
-    const displaySource = reminder.hasReminder && (reminder.visibleText || reminder.kind === FLOATING_BALL_CONTEXT_TAG)
+    const displaySource = reminder.hasReminder
+      && (
+        reminder.visibleText
+        || reminder.kind === FLOATING_BALL_CONTEXT_TAG
+        || reminder.kind === SPACE_ISSUE_CONTEXT_TAG
+      )
       ? reminder.visibleText
       : rawUserContent;
     const userContent = displaySource
@@ -368,6 +374,7 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
       .replace(/<\/?MEMORY_UPDATE>/g, '')
       .replace(/<\/?CRON_TASK>/g, '')
       .replace(/<\/?FLOATING_BALL_CONTEXT>/g, '')
+      .replace(/<\/?myagents-space-issue>/g, '')
       .trim();
     const hasAttachments = Boolean(message.attachments?.length);
     const attachmentItems =

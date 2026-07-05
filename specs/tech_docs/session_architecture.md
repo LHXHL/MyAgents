@@ -123,6 +123,13 @@ querySession = query({
 delivery 成功后，目标 sidecar 才 ack 并清理 pending watch；Management API 暂时不可用
 时保留待重试，避免完成事件丢失。
 
+Space Registered Agent 的 `space.issue_delivery` 复用 inbox 的 `sessionEvent`
+metadata 来选择 registered-agent scenario 和 lazy session materialization，但最终
+prompt 不走通用 `<myagents-session-event>` 外包。Rust Space owner 会直接渲染
+`<system-reminder><myagents-space-issue><myagents-space-event ...>` user message，
+让前端隐藏内部处理指令并显示 `Space issue` badge。这个特例只适用于 Space Issue
+delivery，不改变 `myagents session send/watch` 的通用事件协议。
+
 ### Desktop 连续 Query 队列模式（0.2.37）
 
 内置 AgentSDK 的桌面 `/chat/send` 支持两种连续发送策略，由

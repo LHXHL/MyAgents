@@ -3,7 +3,9 @@
 // 由 Rust 端 `cmd_inbox_deliver` 在 push pending_inbox_messages 后调用,把同样
 // 的 message payload 直接 POST 过来。Drain handler 取出 messages → 包裹
 // MyAgents Session Event Protocol v1 prompt → 调用 enqueueUserMessage /
-// sendExternalMessage 注入。
+// sendExternalMessage 注入。Space issue delivery is the exception: Rust
+// already renders the final <system-reminder> prompt so the UI can hide the
+// operational payload and show a Space issue badge.
 //
 // 关键设计:
 //   - Request 类型携带 replyBack 标记;target turn-end 时根据这个标记决定是否
@@ -53,6 +55,9 @@ function legacySendResultEvent(msg: PendingInboxMessage): SessionEvent {
 }
 
 function buildSessionEventPrompt(msg: PendingInboxMessage): string {
+  if (msg.kind === 'event' && msg.sessionEvent?.type === 'space.issue_delivery') {
+    return msg.text;
+  }
   if (msg.sessionEvent) {
     return renderSessionEventPrompt(msg.sessionEvent);
   }

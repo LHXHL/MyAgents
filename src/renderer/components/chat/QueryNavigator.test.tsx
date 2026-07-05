@@ -2,7 +2,7 @@ import { render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import QueryNavigator from './QueryNavigator';
 import type { Message } from '../../types/chat';
-import { buildFloatingBallContextReminder } from '../../../shared/systemReminder';
+import { SPACE_ISSUE_CONTEXT_TAG, buildFloatingBallContextReminder } from '../../../shared/systemReminder';
 
 class IntersectionObserverMock {
   observe() {}
@@ -127,5 +127,36 @@ describe('QueryNavigator', () => {
     expect(container).toHaveTextContent('Third question');
     expect(container).not.toHaveTextContent('FLOATING_BALL_CONTEXT');
     expect(container).not.toHaveTextContent('selected text');
+  });
+
+  it('uses the visible Space issue status after a hidden delivery reminder', () => {
+    const scrollContainerRef = { current: document.createElement('div') };
+    const visible = 'MyAgents Space 已投递一个 Issue 通知，Registered Agent 开始处理。';
+    const mixed = [
+      '<system-reminder>',
+      `<${SPACE_ISSUE_CONTEXT_TAG}>`,
+      '<issue-instruction>hidden issue instructions</issue-instruction>',
+      `</${SPACE_ISSUE_CONTEXT_TAG}>`,
+      '</system-reminder>',
+      visible,
+    ].join('\n');
+
+    const { container } = render(
+      <QueryNavigator
+        historyMessages={[
+          userMessage('u1', 'First question'),
+          userMessage('u2', mixed),
+          userMessage('u3', 'Third question'),
+        ]}
+        streamingMessage={null}
+        scrollContainerRef={scrollContainerRef}
+        pauseAutoScroll={vi.fn()}
+      />,
+    );
+
+    expect(container).toHaveTextContent('First question');
+    expect(container).toHaveTextContent(visible);
+    expect(container).toHaveTextContent('Third question');
+    expect(container).not.toHaveTextContent('hidden issue instructions');
   });
 });
