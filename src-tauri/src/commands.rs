@@ -1206,7 +1206,7 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "26";
+const SYSTEM_SKILLS_VERSION: &str = "27";
 
 /// Skills that ship with the app and MUST stay at the bundled version —
 /// the app's flows depend on them, users are not meant to customise.
@@ -1241,6 +1241,11 @@ const SYSTEM_SKILLS: &[&str] = &[
     // contract must track the registry's server-side validation (800-char
     // description cap, reserved names) in lockstep.
     "tool-creator",
+    // v27: MyAgents Evo long-term memory maintenance skills. These are
+    // managed task targets, so their bundled contract must stay in lockstep
+    // with the Agent Settings Evo scheduler and rule-substrate templates.
+    "myagents-memory-gardener",
+    "myagents-memory-molt",
 ];
 
 /// Skills unavailable on certain platforms due to upstream bugs.

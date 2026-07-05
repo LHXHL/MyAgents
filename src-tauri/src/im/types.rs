@@ -708,6 +708,53 @@ impl Default for MemoryAutoUpdateConfig {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MemoryEvolutionJobStatus {
+    Completed,
+    Skipped,
+    Error,
+    Timeout,
+}
+
+/// Long-term memory evolution configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEvolutionConfig {
+    #[serde(default = "default_memory_evolution_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub last_gardener_at: Option<String>,
+    #[serde(default)]
+    pub last_gardener_status: Option<MemoryEvolutionJobStatus>,
+    #[serde(default)]
+    pub last_gardener_message: Option<String>,
+    #[serde(default)]
+    pub last_molt_at: Option<String>,
+    #[serde(default)]
+    pub last_molt_status: Option<MemoryEvolutionJobStatus>,
+    #[serde(default)]
+    pub last_molt_message: Option<String>,
+}
+
+fn default_memory_evolution_enabled() -> bool {
+    true
+}
+
+impl Default for MemoryEvolutionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            last_gardener_at: None,
+            last_gardener_status: None,
+            last_gardener_message: None,
+            last_molt_at: None,
+            last_molt_status: None,
+            last_molt_message: None,
+        }
+    }
+}
+
 /// A cron task completion event awaiting IM delivery (Rust-side truth source).
 ///
 /// Lives in `ImBotInstance.pending_cron_events` from the moment
@@ -937,6 +984,10 @@ pub struct AgentConfigRust {
     // Memory auto-update (v0.1.43)
     #[serde(default)]
     pub memory_auto_update: Option<MemoryAutoUpdateConfig>,
+
+    // Long-term memory evolution (v0.2.49)
+    #[serde(default)]
+    pub memory_evolution: Option<MemoryEvolutionConfig>,
 
     // Channels
     #[serde(default)]
@@ -1210,6 +1261,7 @@ pub struct AgentConfigPatch {
     pub runtime_config: Option<Option<serde_json::Value>>,
     pub heartbeat_config_json: Option<String>,
     pub memory_auto_update_config_json: Option<String>,
+    pub memory_evolution_config_json: Option<String>,
     pub channels: Option<Vec<ChannelConfigRust>>,
     pub setup_completed: Option<bool>,
 }
@@ -1233,6 +1285,7 @@ mod tests {
             mcp_servers_json: None,
             heartbeat: None,
             memory_auto_update: None,
+            memory_evolution: None,
             channels: vec![],
             last_active_channel: None,
             runtime: Some("builtin".to_string()),

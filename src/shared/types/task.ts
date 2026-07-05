@@ -49,6 +49,9 @@ export type TaskRunMode = 'single-session' | 'new-session';
 /** Who is responsible for carrying out the task. */
 export type TaskExecutor = 'user' | 'agent';
 
+/** Product-owned managed task kinds. Ordinary user tasks leave this unset. */
+export type ManagedTaskKind = 'memory_gardener' | 'memory_molt';
+
 /**
  * How the task was created — governs the initial prompt construction on dispatch
  * (see PRD §9.3.1) and which of the four `.task/` files are expected to exist.
@@ -108,6 +111,12 @@ export interface RuntimeConfigSnapshot {
   [key: string]: unknown;
 }
 
+export interface RecurringWindow {
+  timezone: string;
+  start: string;
+  end: string;
+}
+
 /** A Task — workspace-scoped execution unit. */
 export interface Task {
   id: string;
@@ -124,6 +133,8 @@ export interface Task {
   executionMode: TaskExecutionMode;
   /** Points into CronTaskManager when executionMode is scheduled/recurring/loop. */
   cronTaskId?: string;
+  /** Product-owned managed task marker; ordinary user tasks leave this unset. */
+  managedKind?: ManagedTaskKind;
   runMode?: TaskRunMode;
   endConditions?: EndConditions;
   /** Recurring-mode fixed interval (minutes). Simple mode; mutually exclusive with `cronExpression`. */
@@ -132,6 +143,10 @@ export interface Task {
   cronExpression?: string;
   /** IANA timezone id for `cronExpression` (e.g. `Asia/Shanghai`). */
   cronTimezone?: string;
+  /** Optional first fire timestamp for recurring tasks (RFC3339). */
+  startAt?: string;
+  /** Internal catch-up window for anchored recurring tasks. */
+  recurringWindow?: RecurringWindow;
   /** Dedicated "when to fire" timestamp (ms) for `scheduled` mode. Decouples from `endConditions.deadline`. */
   dispatchAt?: number;
   /** Per-task model override. When absent, the Agent's default model is used.
@@ -229,6 +244,10 @@ export interface TaskCreateDirectInput {
   cronExpression?: string;
   /** IANA timezone id for `cronExpression`. */
   cronTimezone?: string;
+  /** Optional first fire timestamp for recurring tasks (RFC3339). */
+  startAt?: string;
+  /** Internal catch-up window for anchored recurring tasks. */
+  recurringWindow?: RecurringWindow;
   /** Fire time for `scheduled` mode (ms epoch). */
   dispatchAt?: number;
   /** Per-task model override. */
@@ -243,6 +262,8 @@ export interface TaskCreateDirectInput {
   runtimeConfig?: RuntimeConfigSnapshot;
   /** Per-task MCP enable list override (PRD 0.2.4 §需求 4). */
   mcpEnabledServers?: string[];
+  /** Product-owned managed task marker; ordinary user tasks leave this unset. */
+  managedKind?: ManagedTaskKind;
   sourceThoughtId?: string;
   tags?: string[];
   notification?: NotificationConfig;
@@ -309,6 +330,10 @@ export interface TaskUpdateInput {
   /** Advanced-mode cron expression. Empty string clears (switches back to simple mode). */
   cronExpression?: string;
   cronTimezone?: string;
+  /** Internal recurring anchor. Used by system-managed tasks to avoid immediate catch-up. */
+  startAt?: string;
+  /** Internal catch-up window for anchored recurring tasks. */
+  recurringWindow?: RecurringWindow;
   /** Dedicated dispatch time for `scheduled` mode (ms epoch). */
   dispatchAt?: number;
   /** Per-task model override. Empty string clears. */
@@ -396,4 +421,6 @@ export interface TaskListFilter {
   tag?: string;
   /** If `true`, include soft-deleted rows (default `false`). */
   includeDeleted?: boolean;
+  /** Internal only. If `true`, include system-managed hidden tasks. */
+  includeManaged?: boolean;
 }

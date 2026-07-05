@@ -403,6 +403,7 @@ impl CronTaskManager {
                 }
             } else if let Some(CronSchedule::Every {
                 start_at: Some(ref sa),
+                catch_up_window,
                 ..
             }) = schedule
             {
@@ -421,8 +422,20 @@ impl CronTaskManager {
                                 );
                                 Some(target_utc)
                             } else {
-                                ulog_info!("[CronTask] Task {} start time {} already passed, executing in 2 seconds", task_id_owned, sa);
-                                Some(now + chrono::Duration::seconds(2))
+                                let next = resolve_missed_interval_target(
+                                    target_utc,
+                                    interval_secs,
+                                    now,
+                                    catch_up_window.as_ref(),
+                                    2,
+                                );
+                                ulog_info!(
+                                    "[CronTask] Task {} start time {} already passed; next anchored execution at {}",
+                                    task_id_owned,
+                                    sa,
+                                    next
+                                );
+                                Some(next)
                             }
                         }
                         Err(_) => {
@@ -436,6 +449,18 @@ impl CronTaskManager {
                     }
                 } else if let Some(last_exec) = last_executed {
                     let next_exec = last_exec + chrono::Duration::seconds(interval_secs);
+                    let now = Utc::now();
+                    let next_exec = if next_exec > now {
+                        next_exec
+                    } else {
+                        resolve_missed_interval_target(
+                            next_exec,
+                            interval_secs,
+                            now,
+                            catch_up_window.as_ref(),
+                            5,
+                        )
+                    };
                     Some(next_exec)
                 } else {
                     Some(Utc::now() + chrono::Duration::seconds(2))
@@ -1481,6 +1506,7 @@ impl CronTaskManager {
             runtime: config.runtime,
             runtime_config: config.runtime_config,
             mcp_enabled_servers: config.mcp_enabled_servers,
+            managed_kind: config.managed_kind,
             last_error: None,
             last_run_ok: None,
             last_run_duration_ms: None,

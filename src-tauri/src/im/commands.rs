@@ -1329,6 +1329,7 @@ pub async fn cmd_start_agent_channel(
             runtime_config: Arc::new(RwLock::new(agentConfig.runtime_config.clone())),
             memory_update_config: None,
             memory_update_running: None,
+            memory_evolution_config: None,
         });
 
     // Set agent_link so the processing loop can update lastActiveChannel
@@ -2128,13 +2129,24 @@ pub async fn cmd_update_agent_config(
         }
         // Hot-reload memory auto-update config (v0.1.43)
         if let Some(ref mau_json) = patch.memory_auto_update_config_json {
+            agent.config.memory_auto_update = if mau_json.is_empty() || mau_json == "null" {
+                None
+            } else {
+                serde_json::from_str(mau_json).ok()
+            };
             if let Some(ref mau_arc) = agent.memory_update_config {
-                let parsed: Option<types::MemoryAutoUpdateConfig> = if mau_json.is_empty() {
-                    None
-                } else {
-                    serde_json::from_str(mau_json).ok()
-                };
-                *mau_arc.write().await = parsed;
+                *mau_arc.write().await = agent.config.memory_auto_update.clone();
+            }
+        }
+        // Hot-reload long-term memory evolution config (v0.2.49)
+        if let Some(ref evo_json) = patch.memory_evolution_config_json {
+            agent.config.memory_evolution = if evo_json.is_empty() || evo_json == "null" {
+                None
+            } else {
+                serde_json::from_str(evo_json).ok()
+            };
+            if let Some(ref evo_arc) = agent.memory_evolution_config {
+                *evo_arc.write().await = agent.config.memory_evolution.clone();
             }
         }
 

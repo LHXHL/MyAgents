@@ -753,6 +753,11 @@
       "sessionsUpdated_one": "{{count}} session updated",
       "sessionsUpdated_other": "{{count}} sessions updated"
     },
+    "memoryEvolution": {
+      "title": "Memory Evolution",
+      "description": "Automatically learn from memory, prune stale context, and compact long-term notes through periodic background sessions.",
+      "taskError": "Failed to configure memory evolution tasks"
+    },
     "heartbeat": {
       "title": "Heartbeat",
       "descriptionPrefix": "Heartbeat lets the Agent wake on an interval and check",

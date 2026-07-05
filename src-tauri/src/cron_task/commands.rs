@@ -76,14 +76,24 @@ pub async fn cmd_get_cron_task(task_id: String) -> Result<CronTask, String> {
 #[tauri::command]
 pub async fn cmd_get_cron_tasks() -> Result<Vec<CronTask>, String> {
     let manager = get_cron_task_manager();
-    Ok(manager.get_all_tasks().await)
+    Ok(manager
+        .get_all_tasks()
+        .await
+        .into_iter()
+        .filter(|task| task.managed_kind.is_none())
+        .collect())
 }
 
 /// Get cron tasks for a workspace
 #[tauri::command]
 pub async fn cmd_get_workspace_cron_tasks(workspace_path: String) -> Result<Vec<CronTask>, String> {
     let manager = get_cron_task_manager();
-    Ok(manager.get_tasks_for_workspace(&workspace_path).await)
+    Ok(manager
+        .get_tasks_for_workspace(&workspace_path)
+        .await
+        .into_iter()
+        .filter(|task| task.managed_kind.is_none())
+        .collect())
 }
 
 /// Get active cron task for a session (running only)

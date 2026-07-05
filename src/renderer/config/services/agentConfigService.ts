@@ -83,6 +83,11 @@ function cloneMemoryAutoUpdateConfig(defaults: WorkspaceTemplateAgentDefaults['m
   return { ...defaults };
 }
 
+function cloneMemoryEvolutionConfig(defaults: WorkspaceTemplateAgentDefaults['memoryEvolution']) {
+  if (!defaults) return undefined;
+  return { ...defaults };
+}
+
 export function resolveAgentDefaultsForProject(
   project: Project,
   templates: readonly WorkspaceTemplate[] = PRESET_TEMPLATES,
@@ -109,6 +114,7 @@ export function buildAgentForProject(
     mcpEnabledServers: project.mcpEnabledServers,
     heartbeat: cloneHeartbeatConfig(agentDefaults?.heartbeat),
     memoryAutoUpdate: cloneMemoryAutoUpdateConfig(agentDefaults?.memoryAutoUpdate),
+    memoryEvolution: cloneMemoryEvolutionConfig(agentDefaults?.memoryEvolution),
   };
 }
 
@@ -609,6 +615,10 @@ async function syncAgentRuntime(
     runtimePatch.memoryAutoUpdateConfigJson = patch.memoryAutoUpdate ? JSON.stringify(patch.memoryAutoUpdate) : null;
     hasRuntimeChanges = true;
   }
+  if ('memoryEvolution' in patch) {
+    runtimePatch.memoryEvolutionConfigJson = patch.memoryEvolution ? JSON.stringify(patch.memoryEvolution) : null;
+    hasRuntimeChanges = true;
+  }
 
   // mcpEnabledServers changed → use pre-resolved JSON (already persisted to disk atomically)
   if ('mcpEnabledServers' in patch) {
@@ -642,6 +652,30 @@ export async function addAgentConfig(agent: AgentConfig): Promise<void> {
       ...config,
       agents,
     };
+  });
+}
+
+export async function configureMemoryEvolutionTasksForAgent(
+  agent: AgentConfig,
+  workspaceId: string,
+  enabled: boolean,
+): Promise<void> {
+  const { isTauriEnvironment } = await import('@/utils/browserMock');
+  if (!isTauriEnvironment()) return;
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cmd_configure_memory_evolution_tasks', {
+    request: {
+      agentId: agent.id,
+      workspaceId,
+      workspacePath: agent.workspacePath,
+      runtime: agent.runtime,
+      runtimeConfig: agent.runtimeConfig,
+      mcpEnabledServers: agent.mcpEnabledServers,
+      memoryAutoUpdate: agent.memoryAutoUpdate,
+      heartbeat: agent.heartbeat,
+      enabled,
+    },
   });
 }
 
@@ -704,6 +738,7 @@ export async function invokeStartAgentChannel(
       mcpServersJson,
       heartbeat: agent.heartbeat,
       memoryAutoUpdate: agent.memoryAutoUpdate,
+      memoryEvolution: agent.memoryEvolution,
       channels: [],
       lastActiveChannel: agent.lastActiveChannel,
     },

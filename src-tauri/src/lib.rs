@@ -25,6 +25,7 @@ mod macos_arrow_filter;
 mod macos_traffic_light;
 pub mod managed_codex;
 pub mod management_api;
+pub mod memory_evolution;
 pub mod notification;
 pub mod notification_badge;
 pub mod perf_trace;
@@ -361,6 +362,7 @@ pub fn run() {
             commands::cmd_sync_cli,
             // System skills sync (task-alignment / task-implement etc.)
             commands::cmd_sync_system_skills,
+            memory_evolution::cmd_configure_memory_evolution_tasks,
             // Cron task commands
             cron_task::commands::cmd_create_cron_task,
             cron_task::commands::cmd_start_cron_task,
@@ -521,6 +523,7 @@ pub fn run() {
             workspace_files::transfer::cmd_workspace_copy_paths,
             workspace_files::transfer::cmd_workspace_copy_internal,
             workspace_files::gitignore::cmd_workspace_add_gitignore,
+            workspace_files::memory_rules::cmd_ensure_memory_rule_substrate,
             workspace_files::search::cmd_workspace_search_files_fuzzy,
             workspace_files::delete::cmd_workspace_delete,
             workspace_files::slash::cmd_list_slash_commands,

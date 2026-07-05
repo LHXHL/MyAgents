@@ -5,6 +5,7 @@ import type {
   ImPlatform,
   HeartbeatConfig,
   MemoryAutoUpdateConfig,
+  MemoryEvolutionConfig,
   GroupPermission,
   GroupActivation,
 } from './im';
@@ -125,6 +126,9 @@ export interface AgentConfig {
 
   // Memory Auto-Update (v0.1.43)
   memoryAutoUpdate?: MemoryAutoUpdateConfig;
+
+  // Long-term Memory Evolution (v0.2.49)
+  memoryEvolution?: MemoryEvolutionConfig;
 
   // Channels
   channels: ChannelConfig[];

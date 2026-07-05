@@ -871,6 +871,9 @@ pub struct AgentInstance {
     pub memory_update_config:
         Option<Arc<tokio::sync::RwLock<Option<types::MemoryAutoUpdateConfig>>>>,
     pub memory_update_running: Option<Arc<std::sync::atomic::AtomicBool>>,
+    // Long-term memory evolution (v0.2.49)
+    pub memory_evolution_config:
+        Option<Arc<tokio::sync::RwLock<Option<types::MemoryEvolutionConfig>>>>,
 }
 
 /// Managed state for the Agent subsystem (agent_id → instance)

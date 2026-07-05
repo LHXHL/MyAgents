@@ -1,5 +1,6 @@
 // Types for scheduled (cron) tasks
 import type { RuntimeConfig, RuntimeType } from '../../shared/types/runtime';
+import type { ManagedTaskKind } from '../../shared/types/task';
 
 /**
  * Run mode for cron tasks
@@ -56,7 +57,12 @@ export interface CronDelivery {
  */
 export type CronSchedule =
   | { kind: 'at'; at: string }
-  | { kind: 'every'; minutes: number; startAt?: string }
+  | {
+      kind: 'every';
+      minutes: number;
+      startAt?: string;
+      catchUpWindow?: { timezone: string; start: string; end: string };
+    }
   | { kind: 'cron'; expr: string; tz?: string }
   | { kind: 'loop' };
 
@@ -102,6 +108,8 @@ export interface CronTask {
   schedule?: CronSchedule;
   /** Human-readable name for the task */
   name?: string;
+  /** Product-owned managed task marker; ordinary user cron tasks leave this unset. */
+  managedKind?: ManagedTaskKind;
   /** Computed next execution time (enriched by Rust) */
   nextExecutionAt?: string;
   /** Internal SDK session ID where conversation data is stored.
@@ -157,6 +165,8 @@ export interface CronTaskConfig {
   schedule?: CronSchedule;
   /** Human-readable name */
   name?: string;
+  /** Product-owned managed task marker; ordinary user cron tasks leave this unset. */
+  managedKind?: ManagedTaskKind;
   /** Where to deliver execution results (IM channel) */
   delivery?: CronDelivery;
   /**

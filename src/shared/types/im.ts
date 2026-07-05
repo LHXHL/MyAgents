@@ -213,6 +213,34 @@ export const DEFAULT_MEMORY_AUTO_UPDATE_CONFIG: MemoryAutoUpdateConfig = {
   updateWindowTimezone: undefined,
 };
 
+export type MemoryEvolutionJobStatus = 'completed' | 'skipped' | 'error' | 'timeout';
+
+/**
+ * Long-term memory evolution configuration.
+ * The public UI only exposes the top-level switch; cadence and job shape are
+ * product-owned managed tasks.
+ */
+export interface MemoryEvolutionConfig {
+  /** Enable/disable long-term memory evolution (default: true for Mino templates) */
+  enabled: boolean;
+  /** ISO timestamp of last memory gardener run */
+  lastGardenerAt?: string;
+  /** Last memory gardener run status */
+  lastGardenerStatus?: MemoryEvolutionJobStatus;
+  /** Optional short diagnostic from the last memory gardener run */
+  lastGardenerMessage?: string;
+  /** ISO timestamp of last molt run */
+  lastMoltAt?: string;
+  /** Last molt run status */
+  lastMoltStatus?: MemoryEvolutionJobStatus;
+  /** Optional short diagnostic from the last molt run */
+  lastMoltMessage?: string;
+}
+
+export const DEFAULT_MEMORY_EVOLUTION_CONFIG: MemoryEvolutionConfig = {
+  enabled: true,
+};
+
 /**
  * Active IM session info (for status display)
  */

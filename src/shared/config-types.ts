@@ -1,6 +1,6 @@
 // Provider and permission configuration types
 
-import type { HeartbeatConfig, MemoryAutoUpdateConfig } from './types/im';
+import type { HeartbeatConfig, MemoryAutoUpdateConfig, MemoryEvolutionConfig } from './types/im';
 import type { RuntimeModelInfo, RuntimeSource, RuntimeType } from './types/runtime';
 import type { UiLanguage } from './i18n';
 import type { OfficialToolId, OfficialToolSettings } from './official-tools';
@@ -439,6 +439,8 @@ export interface WorkspaceTemplateAgentDefaults {
   heartbeat?: HeartbeatConfig;
   /** Agent-level memory maintenance defaults. */
   memoryAutoUpdate?: MemoryAutoUpdateConfig;
+  /** Agent-level long-term memory evolution defaults. */
+  memoryEvolution?: MemoryEvolutionConfig;
 }
 
 /**
@@ -544,6 +546,9 @@ export const PRESET_TEMPLATES: WorkspaceTemplate[] = [
         updateWindowStart: '21:00',
         updateWindowEnd: '09:00',
         updateWindowTimezone: undefined,
+      },
+      memoryEvolution: {
+        enabled: true,
       },
     },
   },

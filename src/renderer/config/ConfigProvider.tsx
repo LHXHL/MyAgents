@@ -23,6 +23,7 @@ import {
     withManagedCodexProviderCatalog,
 } from './types';
 import type { RuntimeModelInfo } from '../../shared/types/runtime';
+import type { AgentConfig } from '../../shared/types/agent';
 import { apiGetJson } from '@/api/apiFetch';
 import {
     loadAppConfig,
@@ -51,7 +52,14 @@ import {
     removeOrHideProject as removeOrHideProjectService,
     touchProject as touchProjectService,
 } from './services/projectService';
-import { migrateImBotConfigsToAgents, persistAgents, ensureAllProjectsHaveAgent, addAgentConfig, buildAgentForProject } from './services/agentConfigService';
+import {
+    addAgentConfig,
+    buildAgentForProject,
+    configureMemoryEvolutionTasksForAgent,
+    ensureAllProjectsHaveAgent,
+    migrateImBotConfigsToAgents,
+    persistAgents,
+} from './services/agentConfigService';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { workspacePathsEqual } from '../../shared/workspacePath';
@@ -103,6 +111,34 @@ function migrateToolGroups(config: AppConfig): boolean {
         console.log('[ConfigProvider] Migrated legacy openclawEnabledToolGroups → all groups enabled');
     }
     return changed;
+}
+
+async function reconcileMemoryEvolutionTasks(
+    agents: readonly AgentConfig[] | undefined,
+    projects: readonly Project[],
+): Promise<void> {
+    if (!isTauriEnvironment()) return;
+    if (!agents?.length) return;
+
+    for (const agent of agents) {
+        if (!agent.memoryEvolution) continue;
+        const project = projects.find(p =>
+            p.agentId === agent.id || workspacePathsEqual(p.path, agent.workspacePath),
+        );
+        if (!project) continue;
+        try {
+            await configureMemoryEvolutionTasksForAgent(
+                agent,
+                project.id,
+                agent.memoryEvolution.enabled,
+            );
+        } catch (err) {
+            console.warn(
+                `[ConfigProvider] Memory evolution task reconcile failed for agent ${agent.id}:`,
+                err,
+            );
+        }
+    }
 }
 
 function shouldAutoUpdateManagedCodexRuntime(config: AppConfig): boolean {
@@ -396,6 +432,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             setRawProviders(loadedProviders);
             setApiKeys(loadedApiKeys);
             setProviderVerifyStatus(loadedVerifyStatus);
+            void reconcileMemoryEvolutionTasks(loadedConfig.agents, loadedProjects);
         } catch (err) {
             console.error('Failed to load config:', err);
             if (isMountedRef.current) {
@@ -674,6 +711,16 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                 ...(basicAgent.enabled ? { isAgent: true } : {}),
             });
             project = updated ?? { ...project, agentId: basicAgent.id, ...(basicAgent.enabled ? { isAgent: true } : {}) };
+            if (basicAgent.memoryEvolution?.enabled) {
+                try {
+                    await configureMemoryEvolutionTasksForAgent(basicAgent, project.id, true);
+                } catch (err) {
+                    console.warn(
+                        `[ConfigProvider] Memory evolution task provisioning failed for agent ${basicAgent.id}:`,
+                        err,
+                    );
+                }
+            }
             // Update config state so agent is immediately available
             setConfig(prev => ({ ...prev, agents: [...(prev.agents ?? []), basicAgent] }));
         }

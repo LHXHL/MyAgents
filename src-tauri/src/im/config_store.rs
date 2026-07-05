@@ -1725,6 +1725,7 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                                     )),
                                     memory_update_config: None,
                                     memory_update_running: None,
+                                    memory_evolution_config: None,
                                 });
                             // Set agent_link so the processing loop can update lastActiveChannel
                             let link = AgentChannelLink {
@@ -1764,6 +1765,7 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                 // Memory auto-update arcs (v0.1.43)
                 let mau_config_arc = Arc::new(RwLock::new(agent_config.memory_auto_update.clone()));
                 let mau_running_arc = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let evo_config_arc = Arc::new(RwLock::new(agent_config.memory_evolution.clone()));
                 let mau_config_for_loop = Arc::clone(&mau_config_arc);
                 let mau_running_for_loop = Arc::clone(&mau_running_arc);
                 let mau_workspace = agent_config.workspace_path.clone();
@@ -2008,6 +2010,7 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                     agent_instance.heartbeat_config = Some(hb_config_arc);
                     agent_instance.memory_update_config = Some(mau_config_arc);
                     agent_instance.memory_update_running = Some(mau_running_arc);
+                    agent_instance.memory_evolution_config = Some(evo_config_arc);
                     ulog_info!(
                         "[agent] Agent-level heartbeat started for {}",
                         agent_config.id
@@ -2046,6 +2049,7 @@ async fn ensure_agent_level_runners_started<R: Runtime>(
 
     let mau_config_arc = Arc::new(RwLock::new(agent_config.memory_auto_update.clone()));
     let mau_running_arc = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let evo_config_arc = Arc::new(RwLock::new(agent_config.memory_evolution.clone()));
     let mau_config_for_loop = Arc::clone(&mau_config_arc);
     let mau_running_for_loop = Arc::clone(&mau_running_arc);
     let mau_workspace = agent_config.workspace_path.clone();
@@ -2261,6 +2265,7 @@ async fn ensure_agent_level_runners_started<R: Runtime>(
             agent_instance.heartbeat_config = Some(hb_config_arc);
             agent_instance.memory_update_config = Some(mau_config_arc);
             agent_instance.memory_update_running = Some(mau_running_arc);
+            agent_instance.memory_evolution_config = Some(evo_config_arc);
             ulog_info!(
                 "[agent] Agent-level heartbeat started for {}",
                 agent_config.id
@@ -2508,6 +2513,7 @@ pub async fn monitor_agent_channels(
                                 )),
                                 memory_update_config: None,
                                 memory_update_running: None,
+                                memory_evolution_config: None,
                             });
                     let link = AgentChannelLink {
                         channel_id: channel_id.clone(),

@@ -179,6 +179,17 @@ pub(super) async fn execute_task_directly(
 
     ulog_info!("[CronTask] Got SidecarManager state for task {}", task.id);
 
+    if matches!(
+        task.managed_kind.as_deref(),
+        Some(crate::task::MANAGED_KIND_MEMORY_GARDENER)
+            | Some(crate::task::MANAGED_KIND_MEMORY_MOLT)
+    ) {
+        crate::workspace_files::memory_rules::ensure_memory_rule_substrate_for_workspace(
+            &task.workspace_path,
+        )
+        .map_err(|e| format!("ensure memory rule substrate: {}", e))?;
+    }
+
     // Convert run_mode enum to string for payload
     let run_mode_str = match task.run_mode {
         RunMode::SingleSession => "single_session",

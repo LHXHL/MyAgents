@@ -230,6 +230,7 @@ struct CreateCronResponse {
 struct ListCronQuery {
     source_bot_id: Option<String>,
     workspace_path: Option<String>,
+    include_managed: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -281,6 +282,10 @@ struct CronTaskSummary {
     /// `executing_tasks`; not persisted. Default false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     currently_executing: bool,
+    /// Internal system-managed task marker. Ordinary UI lists use this to hide
+    /// Evo maintenance tasks while keeping session history/audit rows intact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    managed_kind: Option<String>,
 }
 
 impl From<CronTask> for CronTaskSummary {
@@ -311,6 +316,7 @@ impl From<CronTask> for CronTaskSummary {
             // for ids in the executing snapshot. Single-task projections
             // (e.g. /api/cron/run) don't need this.
             currently_executing: false,
+            managed_kind: t.managed_kind,
         }
     }
 }
@@ -444,6 +450,7 @@ async fn create_cron_handler(Json(req): Json<CreateCronRequest>) -> Json<serde_j
         // Direct cron creation (legacy IM Bot path) doesn't carry a Task
         // parent — MCP override stays None (= follow workspace).
         mcp_enabled_servers: None,
+        managed_kind: None,
         source_bot_id: req.source_bot_id,
         delivery: req.delivery,
         schedule: req.schedule,
@@ -492,13 +499,16 @@ async fn create_cron_handler(Json(req): Json<CreateCronRequest>) -> Json<serde_j
 async fn list_cron_handler(Query(query): Query<ListCronQuery>) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
 
-    let tasks = if let Some(bot_id) = &query.source_bot_id {
+    let mut tasks = if let Some(bot_id) = &query.source_bot_id {
         manager.get_tasks_for_bot(bot_id).await
     } else if let Some(workspace) = &query.workspace_path {
         manager.get_tasks_for_workspace(workspace).await
     } else {
         manager.get_all_tasks().await
     };
+    if !query.include_managed.unwrap_or(false) {
+        tasks.retain(|t| t.managed_kind.is_none());
+    }
 
     // PRD 0.2.5 R9 — single snapshot of "currently executing" set, applied
     // to all summaries. Avoids N separate lock acquisitions; correct for
@@ -1360,6 +1370,7 @@ struct TaskListQuery {
     status: Option<String>,
     tag: Option<String>,
     include_deleted: Option<bool>,
+    include_managed: Option<bool>,
 }
 
 async fn task_list_handler(Query(q): Query<TaskListQuery>) -> Json<serde_json::Value> {
@@ -1374,6 +1385,7 @@ async fn task_list_handler(Query(q): Query<TaskListQuery>) -> Json<serde_json::V
         status: q.status.and_then(|s| parse_status_filter(&s)),
         tag: q.tag,
         include_deleted: q.include_deleted,
+        include_managed: q.include_managed,
     };
     let tasks = store.list(filter).await;
     Json(serde_json::json!({ "ok": true, "tasks": tasks }))
@@ -2162,6 +2174,7 @@ async fn ensure_cron_for_task(ta: &task::Task) -> Result<String, String> {
         // carries the override to /cron/execute-sync, which applies it via
         // setMcpServers before delivering the prompt.
         mcp_enabled_servers: ta.mcp_enabled_servers.clone(),
+        managed_kind: ta.managed_kind.clone(),
         source_bot_id: None,
         delivery,
         schedule: Some(schedule),
@@ -2236,7 +2249,12 @@ pub(crate) fn schedule_from_task(ta: &task::Task) -> Option<cron_task::CronSched
             } else {
                 cron_task::CronSchedule::Every {
                     minutes: ta.interval_minutes.unwrap_or(60).max(5),
-                    start_at: None,
+                    start_at: ta
+                        .start_at
+                        .as_ref()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                    catch_up_window: ta.recurring_window.clone(),
                 }
             },
         ),
@@ -2280,12 +2298,14 @@ fn schedules_equivalent(a: &Option<cron_task::CronSchedule>, b: &cron_task::Cron
             Every {
                 minutes: m1,
                 start_at: s1,
+                catch_up_window: w1,
             },
             Every {
                 minutes: m2,
                 start_at: s2,
+                catch_up_window: w2,
             },
-        ) => m1 == m2 && s1 == s2,
+        ) => m1 == m2 && s1 == s2 && w1 == w2,
         (Cron { expr: e1, tz: t1 }, Cron { expr: e2, tz: t2 }) => e1 == e2 && t1 == t2,
         (Loop, Loop) => true,
         _ => false,
@@ -2610,6 +2630,39 @@ async fn session_watch_handler(
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn schedule_from_task_preserves_recurring_start_at() {
+        let task: task::Task = serde_json::from_value(serde_json::json!({
+            "id": "task-start-at",
+            "name": "Memory Gardener",
+            "executor": "agent",
+            "workspaceId": "ws",
+            "workspacePath": "/tmp/ws",
+            "executionMode": "recurring",
+            "intervalMinutes": 4320,
+            "startAt": "2026-07-08T00:00:00Z",
+            "sessionIds": [],
+            "status": "todo",
+            "tags": [],
+            "createdAt": 1,
+            "updatedAt": 1,
+            "statusHistory": [],
+            "dispatchOrigin": "direct"
+        }))
+        .expect("task json");
+
+        let schedule = schedule_from_task(&task).expect("schedule");
+
+        assert_eq!(
+            schedule,
+            cron_task::CronSchedule::Every {
+                minutes: 4320,
+                start_at: Some("2026-07-08T00:00:00Z".to_string()),
+                catch_up_window: None,
+            }
+        );
+    }
 
     #[tokio::test]
     async fn space_issue_comment_handler_wraps_mock_comment_result() {

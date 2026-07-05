@@ -11,9 +11,9 @@ description: >
 
 1. **读近期日志** — 今天 + 上次维护以来的所有 `memory/YYYY-MM-DD.md`
 2. **更新 topic 文件** — 最近工作过的项目，把新经验、状态变更、决策同步到 `memory/topics/<name>.md`
-3. **更新核心记忆** — 提炼跨项目的新教训到 `04-MEMORY.md`；更新 Ongoing Context；清理过时信息
+3. **更新核心记忆** — 提炼跨项目的新教训到 `{{MEMORY_RULE_PATH}}`；更新 Ongoing Context；清理过时信息
 4. **整理工作区** — 把散落的临时文件归档整理
-5. **Commit + push** — 如果工作区是 git 仓库，仅 git add 你本次更新的记忆相关文件，提交并推送。不要动工作区里其他未暂存的变更
+5. **Commit（不 push）** — 如果工作区是 git 仓库，仅 git add 你本次更新的记忆相关文件并提交，不要 push。不要动工作区里其他未暂存的变更
 
 ## 原则
 

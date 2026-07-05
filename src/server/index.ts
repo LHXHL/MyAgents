@@ -1105,6 +1105,11 @@ const SYSTEM_SKILLS: readonly string[] = [
   // rules / description cap / readme template) must track registry
   // validation in lockstep.
   'tool-creator',
+  // v27: Evo managed tasks target these long-term memory skills by name.
+  // Force-sync so the task prompt, scripts, and substrate assumptions remain
+  // consistent with the Agent Settings scheduler.
+  'myagents-memory-gardener',
+  'myagents-memory-molt',
 ];
 
 /**

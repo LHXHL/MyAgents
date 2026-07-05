@@ -20,9 +20,6 @@ use crate::{ulog_debug, ulog_error, ulog_info, ulog_warn};
 
 use super::types::MemoryAutoUpdateConfig;
 
-const DEFAULT_UPDATE_MEMORY_CONTENT: &str =
-    include_str!("../../../src/shared/default-update-memory.md");
-
 /// Lightweight session metadata from sessions.json (only fields we need)
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -137,8 +134,19 @@ pub async fn check_and_spawn<R: Runtime>(
         return;
     }
 
-    // Gate 6: UPDATE_MEMORY.md exists and has content. If the file is missing,
-    // initialize it at use time so default-enabled agents can actually run.
+    // Gate 6: Ensure memory rule substrate + UPDATE_MEMORY.md at use time so
+    // default-enabled agents can actually run without a manual file click.
+    let rule_substrate =
+        match crate::workspace_files::memory_rules::ensure_memory_rule_substrate_for_workspace(
+            workspace_path,
+        ) {
+            Ok(result) => result,
+            Err(e) => {
+                ulog_warn!("[memory-update] Failed to prepare memory rules: {}", e);
+                is_running.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
     let update_md_path = match resolve_update_memory_path(workspace_path) {
         Ok(path) => path,
         Err(e) => {
@@ -150,7 +158,7 @@ pub async fn check_and_spawn<R: Runtime>(
             return;
         }
     };
-    match ensure_update_memory_file(&update_md_path) {
+    match ensure_update_memory_file(&update_md_path, &rule_substrate.memory.relative_path) {
         Ok(UpdateMemoryFileState::Ready) => {}
         Ok(UpdateMemoryFileState::Empty) => {
             ulog_debug!("[memory-update] Skipped: UPDATE_MEMORY.md body is empty");
@@ -569,7 +577,10 @@ fn resolve_update_memory_path(workspace_path: &str) -> Result<PathBuf, String> {
     )
 }
 
-fn ensure_update_memory_file(path: &Path) -> Result<UpdateMemoryFileState, String> {
+fn ensure_update_memory_file(
+    path: &Path,
+    memory_rule_relative_path: &str,
+) -> Result<UpdateMemoryFileState, String> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
@@ -595,13 +606,17 @@ fn ensure_update_memory_file(path: &Path) -> Result<UpdateMemoryFileState, Strin
             {
                 Ok(file) => file,
                 Err(open_err) if open_err.kind() == ErrorKind::AlreadyExists => {
-                    return ensure_update_memory_file(path);
+                    return ensure_update_memory_file(path, memory_rule_relative_path);
                 }
                 Err(open_err) => {
                     return Err(format!("create failed: {}", open_err));
                 }
             };
-            file.write_all(DEFAULT_UPDATE_MEMORY_CONTENT.as_bytes())
+            let content =
+                crate::workspace_files::memory_rules::render_default_update_memory_content(
+                    memory_rule_relative_path,
+                );
+            file.write_all(content.as_bytes())
                 .map_err(|write_err| format!("write failed: {}", write_err))?;
             ulog_info!(
                 "[memory-update] Created default UPDATE_MEMORY.md at {}",
@@ -846,11 +861,17 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("UPDATE_MEMORY.md");
 
-        let state = ensure_update_memory_file(&path).expect("ensure file");
+        let state =
+            ensure_update_memory_file(&path, ".claude/rules/04-MEMORY.md").expect("ensure file");
 
         assert!(matches!(state, UpdateMemoryFileState::Ready));
         let content = std::fs::read_to_string(&path).expect("read created file");
-        assert_eq!(content, DEFAULT_UPDATE_MEMORY_CONTENT);
+        assert_eq!(
+            content,
+            crate::workspace_files::memory_rules::render_default_update_memory_content(
+                ".claude/rules/04-MEMORY.md"
+            )
+        );
         assert!(!strip_yaml_frontmatter(&content).trim().is_empty());
     }
 
@@ -861,7 +882,8 @@ mod tests {
         let original = "# Custom memory maintenance\n\nDo the local thing.\n";
         std::fs::write(&path, original).expect("write existing file");
 
-        let state = ensure_update_memory_file(&path).expect("ensure file");
+        let state =
+            ensure_update_memory_file(&path, ".claude/rules/04-MEMORY.md").expect("ensure file");
 
         assert!(matches!(state, UpdateMemoryFileState::Ready));
         let content = std::fs::read_to_string(&path).expect("read existing file");
@@ -875,7 +897,8 @@ mod tests {
         std::fs::write(&path, "---\ndescription: placeholder\n---\n\n   \n")
             .expect("write empty file");
 
-        let state = ensure_update_memory_file(&path).expect("ensure file");
+        let state =
+            ensure_update_memory_file(&path, ".claude/rules/04-MEMORY.md").expect("ensure file");
 
         assert!(matches!(state, UpdateMemoryFileState::Empty));
     }
