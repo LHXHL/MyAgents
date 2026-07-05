@@ -254,7 +254,9 @@ pub(super) async fn ensure_sidecar_port_for_command<R: Runtime>(
 
     let prep = {
         let mut router_guard = router.lock().await;
-        router_guard.prepare_ensure_sidecar(session_key).await
+        router_guard
+            .prepare_ensure_sidecar(session_key, manager)
+            .await
     };
 
     match prep {

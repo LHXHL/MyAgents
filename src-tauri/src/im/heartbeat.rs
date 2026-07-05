@@ -439,7 +439,9 @@ impl HeartbeatRunner {
         // Phase 1: Check health / extract info (brief lock)
         let prep = {
             let mut router_guard = router.lock().await;
-            router_guard.prepare_ensure_sidecar(&session_key).await
+            router_guard
+                .prepare_ensure_sidecar(&session_key, sidecar_manager)
+                .await
         };
 
         let (port, is_new_sidecar) = match prep {
