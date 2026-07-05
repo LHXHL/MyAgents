@@ -404,7 +404,8 @@
       "readFileFailed": "读取文件失败",
       "operationFailed": "操作失败",
       "emptyContent": "（无内容）",
-      "noDescription": "暂无描述"
+      "noDescription": "暂无描述",
+      "moreSettings": "更多设置"
     },
     "capabilities": {
       "scopeUser": "全局",

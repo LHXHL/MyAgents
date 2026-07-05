@@ -1060,5 +1060,6 @@ Mino 默认工作区的"文件内容模板"和 MyAgents 的"产品级 Agent 默�
 - 新建 project / 启动补齐历史 project 的 Agent 配置必须走 `buildAgentForProject()`，避免 Launcher、ConfigProvider、migration 路径分叉。
 - `ensureAllProjectsHaveAgent()` 只负责保证每个 project 有一个基础 Agent；对 builtin Mino project 会应用 `agentDefaults`，并把 `project.isAgent` 标为 true。
 - `agentDefaults.enabled = true` 只表示这个 workspace 的 Agent 能力默认打开；它不自动创建 Channel，也不绕过运行时门槛。
+- `memoryAutoUpdate.enabled = true` 不要求 Mino 文件模板预置 `UPDATE_MEMORY.md`。自动更新真正执行时由 Rust `memory_update.rs` 在工作区根目录 ensure 该文件：已存在则读取用户内容；缺失则从 `src/shared/default-update-memory.md` 初始化默认指令。
 - Rust 启动 Channel / heartbeat 仍以 `agent.enabled && channel.enabled && credentials` 为准。没有 channel 或 credential 时不会产生外部 IM 连接。
 - 后续如果要让用户模板也配置默认能力，需要新增用户可见的模板编辑能力和持久化 schema；不能把产品 builtin 默认值隐式套到 user template。

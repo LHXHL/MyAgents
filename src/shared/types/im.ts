@@ -161,13 +161,19 @@ export interface ActiveHoursConfig {
   timezone: string;
 }
 
+export const DEFAULT_HEARTBEAT_ACTIVE_HOURS: ActiveHoursConfig = {
+  start: '09:00',
+  end: '21:00',
+  timezone: 'Asia/Shanghai',
+};
+
 /**
  * Default heartbeat configuration
  */
 export const DEFAULT_HEARTBEAT_CONFIG: HeartbeatConfig = {
   enabled: true,
-  intervalMinutes: 30,
-  activeHours: undefined,
+  intervalMinutes: 240,
+  activeHours: { ...DEFAULT_HEARTBEAT_ACTIVE_HOURS },
   ackMaxChars: 300,
 };
 
@@ -177,15 +183,15 @@ export const DEFAULT_HEARTBEAT_CONFIG: HeartbeatConfig = {
  * System reads the file body (stripping YAML frontmatter) as the prompt.
  */
 export interface MemoryAutoUpdateConfig {
-  /** Enable/disable auto memory update (default: false) */
+  /** Enable/disable auto memory update (default: true) */
   enabled: boolean;
   /** Minimum interval between update batches in hours (default: 24) */
   intervalHours: 24 | 48 | 72;
-  /** Minimum new user queries in a session since last update to qualify (default: 5) */
+  /** Minimum new user queries in a session since last update to qualify (default: 3) */
   queryThreshold: number;
-  /** Update window start time in HH:MM format (default: "00:00") */
+  /** Update window start time in HH:MM format (default: "21:00") */
   updateWindowStart: string;
-  /** Update window end time in HH:MM format (default: "06:00") */
+  /** Update window end time in HH:MM format (default: "09:00") */
   updateWindowEnd: string;
   /** IANA timezone for update window (defaults to heartbeat timezone or "Asia/Shanghai") */
   updateWindowTimezone?: string;
@@ -199,11 +205,11 @@ export interface MemoryAutoUpdateConfig {
  * Default memory auto-update configuration
  */
 export const DEFAULT_MEMORY_AUTO_UPDATE_CONFIG: MemoryAutoUpdateConfig = {
-  enabled: false,
+  enabled: true,
   intervalHours: 24,
-  queryThreshold: 5,
-  updateWindowStart: '00:00',
-  updateWindowEnd: '06:00',
+  queryThreshold: 3,
+  updateWindowStart: '21:00',
+  updateWindowEnd: '09:00',
   updateWindowTimezone: undefined,
 };
 

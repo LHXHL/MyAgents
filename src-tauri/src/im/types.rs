@@ -598,14 +598,14 @@ pub struct HeartbeatConfig {
     /// Enable/disable heartbeat (default: true)
     #[serde(default = "default_hb_enabled")]
     pub enabled: bool,
-    /// Interval in minutes between checks (default: 30, min: 5)
+    /// Interval in minutes between checks (default: 240, min: 5)
     #[serde(default = "default_hb_interval")]
     pub interval_minutes: u32,
     /// Active hours window
-    #[serde(default)]
+    #[serde(default = "default_hb_active_hours")]
     pub active_hours: Option<ActiveHours>,
     /// Max chars for HEARTBEAT_OK detection (default: 300)
-    #[serde(default)]
+    #[serde(default = "default_hb_ack_max_chars")]
     pub ack_max_chars: Option<u32>,
 }
 
@@ -614,22 +614,34 @@ fn default_hb_enabled() -> bool {
 }
 
 fn default_hb_interval() -> u32 {
-    30
+    240
+}
+
+fn default_hb_active_hours() -> Option<ActiveHours> {
+    Some(ActiveHours {
+        start: "09:00".to_string(),
+        end: "21:00".to_string(),
+        timezone: "Asia/Shanghai".to_string(),
+    })
+}
+
+fn default_hb_ack_max_chars() -> Option<u32> {
+    Some(300)
 }
 
 impl Default for HeartbeatConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            interval_minutes: 30,
-            active_hours: None,
-            ack_max_chars: None,
+            interval_minutes: 240,
+            active_hours: default_hb_active_hours(),
+            ack_max_chars: Some(300),
         }
     }
 }
 
 /// Active hours window for heartbeat scheduling
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveHours {
     /// Start time in HH:MM format (inclusive)
@@ -647,7 +659,7 @@ pub struct ActiveHours {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryAutoUpdateConfig {
-    #[serde(default)]
+    #[serde(default = "default_mau_enabled")]
     pub enabled: bool,
     #[serde(default = "default_mau_interval")]
     pub interval_hours: u32,
@@ -668,24 +680,27 @@ pub struct MemoryAutoUpdateConfig {
 fn default_mau_interval() -> u32 {
     24
 }
+fn default_mau_enabled() -> bool {
+    true
+}
 fn default_mau_threshold() -> u32 {
-    5
+    3
 }
 fn default_mau_window_start() -> String {
-    "00:00".to_string()
+    "21:00".to_string()
 }
 fn default_mau_window_end() -> String {
-    "06:00".to_string()
+    "09:00".to_string()
 }
 
 impl Default for MemoryAutoUpdateConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             interval_hours: 24,
-            query_threshold: 5,
-            update_window_start: "00:00".to_string(),
-            update_window_end: "06:00".to_string(),
+            query_threshold: 3,
+            update_window_start: "21:00".to_string(),
+            update_window_end: "09:00".to_string(),
             update_window_timezone: None,
             last_batch_at: None,
             last_batch_session_count: None,
@@ -1266,6 +1281,30 @@ mod tests {
 
         assert_eq!(config.permission_mode, "fullAgency");
         assert_eq!(channel.effective_permission_mode(&agent), "fullAgency");
+    }
+
+    #[test]
+    fn heartbeat_and_memory_defaults_match_product_defaults() {
+        let heartbeat = HeartbeatConfig::default();
+        assert!(heartbeat.enabled);
+        assert_eq!(heartbeat.interval_minutes, 240);
+        assert_eq!(heartbeat.ack_max_chars, Some(300));
+        assert_eq!(
+            heartbeat.active_hours,
+            Some(ActiveHours {
+                start: "09:00".to_string(),
+                end: "21:00".to_string(),
+                timezone: "Asia/Shanghai".to_string(),
+            })
+        );
+
+        let memory = MemoryAutoUpdateConfig::default();
+        assert!(memory.enabled);
+        assert_eq!(memory.interval_hours, 24);
+        assert_eq!(memory.query_threshold, 3);
+        assert_eq!(memory.update_window_start, "21:00");
+        assert_eq!(memory.update_window_end, "09:00");
+        assert_eq!(memory.update_window_timezone, None);
     }
 
     #[test]

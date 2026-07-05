@@ -404,7 +404,8 @@
       "readFileFailed": "Failed to read file",
       "operationFailed": "Operation failed",
       "emptyContent": "(No content)",
-      "noDescription": "No description"
+      "noDescription": "No description",
+      "moreSettings": "More settings"
     },
     "capabilities": {
       "scopeUser": "Global",

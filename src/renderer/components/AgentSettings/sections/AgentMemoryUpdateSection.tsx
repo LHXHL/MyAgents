@@ -1,9 +1,11 @@
 // Agent memory auto-update section (v0.1.43)
 import { useState, useCallback, useRef, useEffect, Suspense, lazy } from 'react';
 import { useTranslation } from 'react-i18next';
+import { ChevronDown } from 'lucide-react';
 import type { AgentConfig } from '../../../../shared/types/agent';
 import type { MemoryAutoUpdateConfig } from '../../../../shared/types/im';
 import { DEFAULT_MEMORY_AUTO_UPDATE_CONFIG } from '../../../../shared/types/im';
+import DEFAULT_UPDATE_MEMORY_CONTENT from '../../../../shared/default-update-memory.md?raw';
 import { patchAgentConfig } from '@/config/services/agentConfigService';
 import { useToast } from '@/components/Toast';
 
@@ -16,34 +18,6 @@ interface AgentMemoryUpdateSectionProps {
 
 const INTERVAL_OPTIONS = [24, 48, 72] as const;
 
-const DEFAULT_UPDATE_MEMORY_CONTENT = `---
-description: >
-  记忆维护指令 — MyAgents 在夜间将会使用该指令自动注入到活跃 session 执行。
-  此指令基于预设 Agent 模板 - Mino 的记忆结构设计。
-  如果你的 Agent 的记忆机制不同，请自由修改为合适的指令。
----
-
-整理你的记忆。不用赶时间，做仔细。
-
-## 要做什么
-
-1. **读近期日志** — 今天 + 上次维护以来的所有 \`memory/YYYY-MM-DD.md\`
-2. **更新 topic 文件** — 最近工作过的项目，把新经验、状态变更、决策同步到 \`memory/topics/<name>.md\`
-3. **更新核心记忆** — 提炼跨项目的新教训到 \`04-MEMORY.md\`；更新 Ongoing Context；清理过时信息
-4. **整理工作区** — 把散落的临时文件归档整理
-5. **Commit + push** — 如果工作区是 git 仓库，仅 git add 你本次更新的记忆相关文件，提交并推送。不要动工作区里其他未暂存的变更
-
-## 原则
-
-- 信息只存一处 — topic file 里写详细了，核心记忆只放指针
-- 每条记忆带时间戳 \`(YYYY-MM-DD)\`
-- 删比留更重要 — 过时信息是噪音
-- topic file 不存在但该有？创建它
-- 做完后在今天的日志里记一笔
-
-记住：工作区是你的家，记忆是你持续进化的方式。
-`;
-
 export default function AgentMemoryUpdateSection({ agent, onAgentChanged }: AgentMemoryUpdateSectionProps) {
   const { t } = useTranslation('settings');
   const config = agent.memoryAutoUpdate;
@@ -53,6 +27,7 @@ export default function AgentMemoryUpdateSection({ agent, onAgentChanged }: Agen
   useEffect(() => { toastRef.current = toast; }, [toast]);
 
   const [previewFile, setPreviewFile] = useState<{ name: string; content: string; size: number; path: string } | null>(null);
+  const [moreSettingsOpen, setMoreSettingsOpen] = useState(false);
 
   const updateConfig = useCallback(async (patch: Partial<MemoryAutoUpdateConfig>) => {
     const current = agent.memoryAutoUpdate ?? { ...DEFAULT_MEMORY_AUTO_UPDATE_CONFIG, enabled: false };
@@ -112,9 +87,9 @@ export default function AgentMemoryUpdateSection({ agent, onAgentChanged }: Agen
 
   const enabled = config?.enabled ?? false;
   const intervalHours = config?.intervalHours ?? 24;
-  const queryThreshold = config?.queryThreshold ?? 5;
-  const windowStart = config?.updateWindowStart ?? '00:00';
-  const windowEnd = config?.updateWindowEnd ?? '06:00';
+  const queryThreshold = config?.queryThreshold ?? DEFAULT_MEMORY_AUTO_UPDATE_CONFIG.queryThreshold;
+  const windowStart = config?.updateWindowStart ?? DEFAULT_MEMORY_AUTO_UPDATE_CONFIG.updateWindowStart;
+  const windowEnd = config?.updateWindowEnd ?? DEFAULT_MEMORY_AUTO_UPDATE_CONFIG.updateWindowEnd;
 
   // Last batch info
   const lastBatchAt = config?.lastBatchAt;
@@ -169,77 +144,91 @@ export default function AgentMemoryUpdateSection({ agent, onAgentChanged }: Agen
         </div>
 
         {enabled && (
-          <div className="space-y-4 pl-0">
-            {/* Interval */}
-            <div>
-              <label className="block text-sm font-medium text-[var(--ink)] mb-2">{t('agentSettings.memory.interval')}</label>
-              <div className="flex gap-2">
-                {INTERVAL_OPTIONS.map(hours => (
-                  <button
-                    key={hours}
-                    type="button"
-                    onClick={() => updateConfig({ intervalHours: hours })}
-                    className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                      intervalHours === hours
-                        ? 'bg-[var(--accent)] text-white'
-                        : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:bg-[var(--paper-hover)]'
-                    }`}
-                  >
-                    {t('agentSettings.memory.intervalHours', { count: hours })}
-                  </button>
-                ))}
-              </div>
-            </div>
+          <div>
+            <button
+              type="button"
+              aria-expanded={moreSettingsOpen}
+              onClick={() => setMoreSettingsOpen(open => !open)}
+              className="flex items-center gap-2 text-sm font-medium text-[var(--ink)] transition-colors hover:text-[var(--accent)]"
+            >
+              <ChevronDown className={`h-4 w-4 transition-transform ${moreSettingsOpen ? '' : '-rotate-90'}`} />
+              {t('agentSettings.common.moreSettings')}
+            </button>
 
-            {/* Update Window */}
-            <div>
-              <label className="block text-sm font-medium text-[var(--ink)] mb-2">{t('agentSettings.memory.window')}</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="time"
-                  value={windowStart}
-                  onChange={e => updateConfig({ updateWindowStart: e.target.value })}
-                  className="rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 text-xs text-[var(--ink)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
-                />
-                <span className="text-xs text-[var(--ink-muted)]">—</span>
-                <input
-                  type="time"
-                  value={windowEnd}
-                  onChange={e => updateConfig({ updateWindowEnd: e.target.value })}
-                  className="rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 text-xs text-[var(--ink)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
-                />
-                <span className="rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 text-xs text-[var(--ink)]">
-                  {config?.updateWindowTimezone || agent.heartbeat?.activeHours?.timezone || 'Asia/Shanghai'}
-                </span>
-              </div>
-            </div>
+            {moreSettingsOpen && (
+              <div className="mt-4 space-y-4 pl-0">
+                {/* Interval */}
+                <div>
+                  <label className="block text-sm font-medium text-[var(--ink)] mb-2">{t('agentSettings.memory.interval')}</label>
+                  <div className="flex gap-2">
+                    {INTERVAL_OPTIONS.map(hours => (
+                      <button
+                        key={hours}
+                        type="button"
+                        onClick={() => updateConfig({ intervalHours: hours })}
+                        className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                          intervalHours === hours
+                            ? 'bg-[var(--accent)] text-white'
+                            : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:bg-[var(--paper-hover)]'
+                        }`}
+                      >
+                        {t('agentSettings.memory.intervalHours', { count: hours })}
+                      </button>
+                    ))}
+                  </div>
+                </div>
 
-            {/* Threshold */}
-            <div>
-              <label className="block text-sm font-medium text-[var(--ink)] mb-2">{t('agentSettings.memory.threshold')}</label>
-              <div className="flex items-center gap-2">
-                <span className="text-xs text-[var(--ink-muted)]">{t('agentSettings.memory.thresholdPrefix')}</span>
-                <input
-                  type="number"
-                  min={3}
-                  max={50}
-                  value={queryThreshold}
-                  onChange={e => {
-                    const v = parseInt(e.target.value, 10);
-                    if (v >= 3 && v <= 50) updateConfig({ queryThreshold: v });
-                  }}
-                  className="w-14 rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs text-[var(--ink)] text-center border border-[var(--line)]"
-                />
-                <span className="text-xs text-[var(--ink-muted)]">{t('agentSettings.memory.thresholdSuffix')}</span>
-              </div>
-            </div>
+                {/* Update Window */}
+                <div>
+                  <label className="block text-sm font-medium text-[var(--ink)] mb-2">{t('agentSettings.memory.window')}</label>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="time"
+                      value={windowStart}
+                      onChange={e => updateConfig({ updateWindowStart: e.target.value })}
+                      className="rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 text-xs text-[var(--ink)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
+                    />
+                    <span className="text-xs text-[var(--ink-muted)]">—</span>
+                    <input
+                      type="time"
+                      value={windowEnd}
+                      onChange={e => updateConfig({ updateWindowEnd: e.target.value })}
+                      className="rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 text-xs text-[var(--ink)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
+                    />
+                    <span className="rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 text-xs text-[var(--ink)]">
+                      {config?.updateWindowTimezone || agent.heartbeat?.activeHours?.timezone || 'Asia/Shanghai'}
+                    </span>
+                  </div>
+                </div>
 
-            {/* Last batch info */}
-            {lastBatchLabel && (
-              <div className="border-t border-dashed border-[var(--line)] pt-3">
-                <span className="text-xs text-[var(--ink-muted)]">
-                  {t('agentSettings.memory.lastUpdated', { time: lastBatchLabel })}
-                </span>
+                {/* Threshold */}
+                <div>
+                  <label className="block text-sm font-medium text-[var(--ink)] mb-2">{t('agentSettings.memory.threshold')}</label>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-[var(--ink-muted)]">{t('agentSettings.memory.thresholdPrefix')}</span>
+                    <input
+                      type="number"
+                      min={3}
+                      max={50}
+                      value={queryThreshold}
+                      onChange={e => {
+                        const v = parseInt(e.target.value, 10);
+                        if (v >= 3 && v <= 50) updateConfig({ queryThreshold: v });
+                      }}
+                      className="w-14 rounded-md bg-[var(--paper-inset)] px-2 py-1 text-xs text-[var(--ink)] text-center border border-[var(--line)]"
+                    />
+                    <span className="text-xs text-[var(--ink-muted)]">{t('agentSettings.memory.thresholdSuffix')}</span>
+                  </div>
+                </div>
+
+                {/* Last batch info */}
+                {lastBatchLabel && (
+                  <div className="border-t border-dashed border-[var(--line)] pt-3">
+                    <span className="text-xs text-[var(--ink-muted)]">
+                      {t('agentSettings.memory.lastUpdated', { time: lastBatchLabel })}
+                    </span>
+                  </div>
+                )}
               </div>
             )}
           </div>

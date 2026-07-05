@@ -20,6 +20,10 @@ import { describe, expect, it, vi } from 'vitest';
 import HeartbeatConfigCard from './HeartbeatConfigCard';
 import { DEFAULT_HEARTBEAT_CONFIG } from '../../../../shared/types/im';
 
+async function expandMoreSettings() {
+    await userEvent.click(screen.getByRole('button', { name: '更多设置' }));
+}
+
 describe('HeartbeatConfigCard — custom interval input (#310)', () => {
     it('keeps every keystroke of "10" visible while typing from the default preset state', async () => {
         const onChange = vi.fn();
@@ -29,6 +33,7 @@ describe('HeartbeatConfigCard — custom interval input (#310)', () => {
                 onChange={onChange}
             />,
         );
+        await expandMoreSettings();
         const input = screen.getByPlaceholderText('自定义') as HTMLInputElement;
 
         await userEvent.click(input);
@@ -55,6 +60,7 @@ describe('HeartbeatConfigCard — custom interval input (#310)', () => {
                 onChange={onChange}
             />,
         );
+        await expandMoreSettings();
         const input = screen.getByPlaceholderText('自定义') as HTMLInputElement;
 
         await userEvent.click(input);
@@ -85,6 +91,7 @@ describe('HeartbeatConfigCard — custom interval input (#310)', () => {
                 onChange={onChange}
             />,
         );
+        await expandMoreSettings();
 
         // 1. Click a preset chip with the custom input still unfocused.
         await userEvent.click(screen.getByRole('button', { name: '15 分钟' }));
@@ -119,6 +126,7 @@ describe('HeartbeatConfigCard — custom interval input (#310)', () => {
                 onChange={onChange}
             />,
         );
+        await expandMoreSettings();
         const input = screen.getByPlaceholderText('自定义') as HTMLInputElement;
         await userEvent.click(input);
         await userEvent.type(input, '45');
@@ -140,6 +148,7 @@ describe('HeartbeatConfigCard — custom interval input (#310)', () => {
                 onChange={onChange}
             />,
         );
+        await expandMoreSettings();
         const input = screen.getByPlaceholderText('自定义') as HTMLInputElement;
         await userEvent.click(input);
         await userEvent.type(input, '12');
