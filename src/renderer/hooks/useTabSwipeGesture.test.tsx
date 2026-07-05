@@ -117,8 +117,11 @@ function setHorizontalScrollMetrics(
 }
 
 function dispatchWheel(
-  el: HTMLElement,
-  init: WheelEventInit & { phase?: number; momentumPhase?: number },
+  target: EventTarget,
+  init: WheelEventInit & {
+    phase?: number;
+    momentumPhase?: number;
+  },
 ): WheelEvent {
   const event = new WheelEvent('wheel', {
     bubbles: true,
@@ -131,7 +134,7 @@ function dispatchWheel(
   if (init.momentumPhase !== undefined) {
     Object.defineProperty(event, 'momentumPhase', { configurable: true, value: init.momentumPhase });
   }
-  el.dispatchEvent(event);
+  target.dispatchEvent(event);
   return event;
 }
 
@@ -498,31 +501,163 @@ describe('useTabSwipeGesture Phase 0 trace', () => {
     }
   });
 
-  it('keeps nested horizontal scrollers native until they hit the edge', () => {
+  it('keeps nested horizontal scrollers native even at their edge', () => {
+    vi.useFakeTimers();
+    try {
+      render(
+        <Harness>
+          <div data-testid="inner-scroll" className="overflow-x-auto" />
+        </Harness>,
+      );
+      const content = screen.getByTestId('tab-content');
+      const inner = screen.getByTestId('inner-scroll');
+      setContainerWidth(content, 1000);
+      setHorizontalScrollMetrics(inner, { clientWidth: 100, scrollWidth: 300, scrollLeft: 20 });
+
+      const nativeScroll = dispatchWheel(inner, { deltaX: 80, deltaY: 0 });
+
+      expect(nativeScroll.defaultPrevented).toBe(false);
+      expect(phases()).not.toContain('tab_swipe_begin');
+
+      vi.advanceTimersByTime(151);
+      setHorizontalScrollMetrics(inner, { clientWidth: 100, scrollWidth: 300, scrollLeft: 200 });
+
+      const edgeScroll = dispatchWheel(inner, { deltaX: 80, deltaY: 0 });
+
+      expect(edgeScroll.defaultPrevented).toBe(false);
+      expect(phases()).not.toContain('tab_swipe_direction_relock');
+      expect(phases()).not.toContain('tab_swipe_begin');
+      expect(phases()).not.toContain('tab_swipe_update');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('recognizes overflow shorthand horizontal scrollers as inner gesture owners', () => {
     render(
       <Harness>
-        <div data-testid="inner-scroll" style={{ overflowX: 'auto' }} />
+        <div data-testid="inner-scroll" style={{ overflow: 'auto' }} />
       </Harness>,
     );
     const content = screen.getByTestId('tab-content');
     const inner = screen.getByTestId('inner-scroll');
     setContainerWidth(content, 1000);
-    setHorizontalScrollMetrics(inner, { clientWidth: 100, scrollWidth: 300, scrollLeft: 20 });
+    setHorizontalScrollMetrics(inner, { clientWidth: 120, scrollWidth: 360, scrollLeft: 0 });
 
-    const nativeScroll = dispatchWheel(inner, { deltaX: 80, deltaY: 0 });
+    const nativeScroll = dispatchWheel(inner, { deltaX: 96, deltaY: 0 });
 
     expect(nativeScroll.defaultPrevented).toBe(false);
     expect(phases()).not.toContain('tab_swipe_begin');
+  });
 
-    setHorizontalScrollMetrics(inner, { clientWidth: 100, scrollWidth: 300, scrollLeft: 200 });
+  it('does not treat broad vertical-only scrollers as horizontal gesture owners', () => {
+    render(
+      <Harness>
+        <div data-testid="vertical-root" style={{ overflowY: 'auto' }}>
+          <div data-testid="ordinary-child" />
+        </div>
+      </Harness>,
+    );
+    const content = screen.getByTestId('tab-content');
+    const verticalRoot = screen.getByTestId('vertical-root');
+    const ordinaryChild = screen.getByTestId('ordinary-child');
+    setContainerWidth(content, 1000);
+    setHorizontalScrollMetrics(verticalRoot, { clientWidth: 120, scrollWidth: 360, scrollLeft: 0 });
 
-    const edgeHandoff = dispatchWheel(inner, { deltaX: 80, deltaY: 0 });
+    const tabSwipe = dispatchWheel(ordinaryChild, { deltaX: 96, deltaY: 0 });
 
-    expect(edgeHandoff.defaultPrevented).toBe(true);
+    expect(tabSwipe.defaultPrevented).toBe(true);
+    expect(phases()).toContain('tab_swipe_begin');
+  });
+
+  it('does not treat hidden or clipped overflow as a horizontal gesture owner', () => {
+    function renderOverflowCase(overflowX: 'hidden' | 'clip') {
+      render(
+        <Harness>
+          <div data-testid="overflow-target" style={{ overflowX }} />
+        </Harness>,
+      );
+      const content = screen.getByTestId('tab-content');
+      const target = screen.getByTestId('overflow-target');
+      setContainerWidth(content, 1000);
+      setHorizontalScrollMetrics(target, { clientWidth: 120, scrollWidth: 360, scrollLeft: 0 });
+      return target;
+    }
+
+    const hidden = renderOverflowCase('hidden');
+    const hiddenSwipe = dispatchWheel(hidden, { deltaX: 96, deltaY: 0 });
+
+    expect(hiddenSwipe.defaultPrevented).toBe(true);
+    expect(phases()).toContain('tab_swipe_begin');
+
+    cleanup();
+    vi.mocked(console.debug).mockClear();
+
+    const clipped = renderOverflowCase('clip');
+    const clippedSwipe = dispatchWheel(clipped, { deltaX: 96, deltaY: 0 });
+
+    expect(clippedSwipe.defaultPrevented).toBe(true);
+    expect(phases()).toContain('tab_swipe_begin');
+  });
+
+  it('keeps text-node targets inside a horizontal scroller native', () => {
+    render(
+      <Harness>
+        <div data-testid="inner-scroll" className="overflow-x-auto">wide text</div>
+      </Harness>,
+    );
+    const content = screen.getByTestId('tab-content');
+    const inner = screen.getByTestId('inner-scroll');
+    setContainerWidth(content, 1000);
+    setHorizontalScrollMetrics(inner, { clientWidth: 120, scrollWidth: 360, scrollLeft: 0 });
+
+    const textNode = inner.firstChild;
+    expect(textNode).not.toBeNull();
+
+    const nativeScroll = dispatchWheel(textNode!, { deltaX: 96, deltaY: 0 });
+
+    expect(nativeScroll.defaultPrevented).toBe(false);
+    expect(phases()).not.toContain('tab_swipe_begin');
+  });
+
+  it('does not claim a horizontal wheel that an earlier native listener already prevented', () => {
+    render(
+      <Harness>
+        <div data-testid="native-owner" />
+      </Harness>,
+    );
+    const content = screen.getByTestId('tab-content');
+    const nativeOwner = screen.getByTestId('native-owner');
+    setContainerWidth(content, 1000);
+    nativeOwner.addEventListener('wheel', (event) => event.preventDefault());
+
+    const claimedByChild = dispatchWheel(nativeOwner, { deltaX: 96, deltaY: 0 });
+
+    expect(claimedByChild.defaultPrevented).toBe(true);
+    expect(phases()).not.toContain('tab_swipe_begin');
+  });
+
+  it('can relock from an inner horizontal owner to tab swipe when the next target leaves that owner', () => {
+    render(
+      <Harness>
+        <div data-testid="inner-scroll" className="overflow-x-auto" />
+        <div data-testid="ordinary-sibling" />
+      </Harness>,
+    );
+    const content = screen.getByTestId('tab-content');
+    const inner = screen.getByTestId('inner-scroll');
+    const sibling = screen.getByTestId('ordinary-sibling');
+    setContainerWidth(content, 1000);
+    setHorizontalScrollMetrics(inner, { clientWidth: 120, scrollWidth: 360, scrollLeft: 0 });
+
+    const nativeScroll = dispatchWheel(inner, { deltaX: 96, deltaY: 0 });
+    const relockedSwipe = dispatchWheel(sibling, { deltaX: 96, deltaY: 0 });
+
+    expect(nativeScroll.defaultPrevented).toBe(false);
+    expect(relockedSwipe.defaultPrevented).toBe(true);
     expect(phases()).toEqual(expect.arrayContaining([
       'tab_swipe_direction_relock',
       'tab_swipe_begin',
-      'tab_swipe_update',
     ]));
   });
 
