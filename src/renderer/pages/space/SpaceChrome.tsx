@@ -5,7 +5,7 @@ import { Bot, ChevronDown, GitBranch, Loader2, LogIn, LogOut, MessageSquare, Pac
 import type { SpaceSession } from '@/api/spaceCloud';
 import myagentsWebLogo from '@/assets/brand/myagents-web-logo.png';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
-import { SpaceAvatar, SpaceIdentityLine, spaceDisplayName } from './SpaceAvatar';
+import { SpaceAvatar, spaceDisplayName } from './SpaceAvatar';
 import { PAPER_GRID_STYLE } from './spaceUi';
 
 export type SpaceViewMode = 'issues' | 'goals' | 'skills' | 'agents';
@@ -109,14 +109,18 @@ export function SpaceSidebar({ session, mode, onSpaceTabChange, onLogout, onOpen
         </button>
         <div aria-hidden={!accountMenuOpen} className={`absolute bottom-full left-0 right-0 z-20 mb-2 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)]/95 p-2 shadow-md backdrop-blur-md transition-all ${accountMenuOpen ? 'pointer-events-auto translate-y-0 opacity-100' : 'pointer-events-none translate-y-[-4px] opacity-0'}`}>
           <div className="mb-1 border-b border-dashed border-[var(--line-subtle)] px-2 py-2.5">
-            <SpaceIdentityLine
-              name={displayName}
-              email={session.user.email}
-              avatarUrl={session.user.avatarUrl}
-              avatarSize={32}
-              nameClassName="text-sm font-semibold text-[var(--ink)]"
-            />
-            <p className="mt-1 truncate pl-10 text-xs font-medium text-[var(--ink-muted)]">{session.user.email}</p>
+            <div className="flex min-w-0 items-center gap-2.5">
+              <SpaceAvatar
+                name={displayName}
+                email={session.user.email}
+                avatarUrl={session.user.avatarUrl}
+                size={36}
+              />
+              <span className="min-w-0 flex-1">
+                <strong className="block truncate text-sm font-semibold leading-tight text-[var(--ink)]">{displayName}</strong>
+                <span className="mt-0.5 block truncate text-xs font-medium leading-tight text-[var(--ink-muted)]">{session.user.email}</span>
+              </span>
+            </div>
           </div>
           <button
             type="button"

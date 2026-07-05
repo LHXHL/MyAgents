@@ -44,6 +44,7 @@ import {
   type SpaceSession,
   type SpaceSkill,
   type SpaceSkillDetail,
+  type SpaceUserSummary,
 } from "@/api/spaceCloud";
 import type { IssueQueryParams } from "./spaceHelpers";
 import { buildIssueQueryKey } from "./spaceHelpers";
@@ -614,21 +615,76 @@ function patchUserSummary<
   T extends { id?: string; name?: string | null; avatarUrl?: string | null } | null | undefined,
 >(summary: T, user: SpaceSession["user"]): T {
   if (!summary || summary.id !== user.id) return summary;
+  const next = { ...summary };
+  if (Object.prototype.hasOwnProperty.call(user, "name")) {
+    next.name = user.name ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(user, "avatarUrl")) {
+    next.avatarUrl = user.avatarUrl ?? null;
+  }
   return {
-    ...summary,
-    name: user.name ?? summary.name ?? null,
-    avatarUrl: user.avatarUrl ?? summary.avatarUrl ?? null,
+    ...next,
   } as T;
+}
+
+function currentUserSummary(user: SpaceSession["user"]): SpaceUserSummary {
+  const summary: SpaceUserSummary = { id: user.id };
+  if (Object.prototype.hasOwnProperty.call(user, "name")) {
+    summary.name = user.name ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(user, "avatarUrl")) {
+    summary.avatarUrl = user.avatarUrl ?? null;
+  }
+  return summary;
 }
 
 function patchIssueAuthorSummaries(
   issue: SpaceIssue,
   user: SpaceSession["user"],
 ): SpaceIssue {
+  const currentUser = currentUserSummary(user);
   return {
     ...issue,
-    creator: patchUserSummary(issue.creator, user),
+    creator: issue.creator
+      ? patchUserSummary(issue.creator, user)
+      : issue.createdByUserId === user.id
+        ? currentUser
+        : issue.creator,
     author: patchUserSummary(issue.author, user),
+  };
+}
+
+function patchIssueDetailAuthorSummaries(
+  detail: SpaceIssueDetail,
+  user: SpaceSession["user"],
+): SpaceIssueDetail {
+  return {
+    ...detail,
+    issue: patchIssueAuthorSummaries(detail.issue, user),
+    comments: {
+      ...detail.comments,
+      items: detail.comments.items.map((comment) => ({
+        ...comment,
+        author: patchUserSummary(comment.author, user),
+      })),
+    },
+  };
+}
+
+function patchSkillUploader(skill: SpaceSkill, user: SpaceSession["user"]): SpaceSkill {
+  return {
+    ...skill,
+    uploader: patchUserSummary(skill.uploader, user),
+  };
+}
+
+function patchSkillDetailUploader(
+  detail: SpaceSkillDetail,
+  user: SpaceSession["user"],
+): SpaceSkillDetail {
+  return {
+    ...detail,
+    skill: patchSkillUploader(detail.skill, user),
   };
 }
 
@@ -653,27 +709,14 @@ function patchProfileInCaches(session: SpaceSession) {
         detailState.detail
           ? {
               ...detailState,
-              detail: {
-                ...detailState.detail,
-                issue: patchIssueAuthorSummaries(detailState.detail.issue, user),
-                comments: {
-                  ...detailState.detail.comments,
-                  items: detailState.detail.comments.items.map((comment) => ({
-                    ...comment,
-                    author: patchUserSummary(comment.author, user),
-                  })),
-                },
-              },
+              detail: patchIssueDetailAuthorSummaries(detailState.detail, user),
             }
           : detailState,
       ]),
     ),
     skills: {
       ...state.skills,
-      items: state.skills.items.map((skill) => ({
-        ...skill,
-        uploader: patchUserSummary(skill.uploader, user),
-      })),
+      items: state.skills.items.map((skill) => patchSkillUploader(skill, user)),
     },
     skillDetails: Object.fromEntries(
       Object.entries(state.skillDetails).map(([key, detailState]) => [
@@ -681,16 +724,7 @@ function patchProfileInCaches(session: SpaceSession) {
         detailState.detail
           ? {
               ...detailState,
-              detail: {
-                ...detailState.detail,
-                skill: {
-                  ...detailState.detail.skill,
-                  uploader: patchUserSummary(
-                    detailState.detail.skill.uploader,
-                    user,
-                  ),
-                },
-              },
+              detail: patchSkillDetailUploader(detailState.detail, user),
             }
           : detailState,
       ]),
@@ -807,12 +841,16 @@ export const actions: SpaceActions = {
       try {
         const result = await spaceListIssues(normalizedParams, activeSpaceId());
         if (!isLatest(requestKey, requestSeq)) return;
+        const user = state.session?.user ?? null;
+        const items = user
+          ? result.items.map((issue) => patchIssueAuthorSummaries(issue, user))
+          : result.items;
         setState({
           issuesByKey: trimCacheRecord(
             {
               ...state.issuesByKey,
               [key]: {
-                items: result.items,
+                items,
                 hasMore: result.hasMore,
                 nextCursor: result.nextCursor,
                 lastFetchedAt: Date.now(),
@@ -887,6 +925,10 @@ export const actions: SpaceActions = {
         const startedAt = nowForSpaceMetric();
         const detail = await spaceGetIssue(issueId);
         if (!isLatest(requestKey, requestSeq)) return;
+        const user = state.session?.user ?? null;
+        const nextDetail = user
+          ? patchIssueDetailAuthorSummaries(detail, user)
+          : detail;
         recordSpaceMetric("space_issue_detail_open", {
           durationMs: Math.round(nowForSpaceMetric() - startedAt),
           ok: true,
@@ -896,7 +938,7 @@ export const actions: SpaceActions = {
             {
               ...state.issueDetails,
               [key]: {
-                detail,
+                detail: nextDetail,
                 lastFetchedAt: Date.now(),
                 isLoading: false,
                 error: null,
@@ -905,7 +947,7 @@ export const actions: SpaceActions = {
             SPACE_MAX_ISSUE_DETAIL_CACHES,
           ),
         });
-        patchIssueInLists(detail.issue);
+        patchIssueInLists(nextDetail.issue);
       } catch (error) {
         if (!isLatest(requestKey, requestSeq)) return;
         recordSpaceMetric("space_issue_detail_open", {
@@ -940,9 +982,13 @@ export const actions: SpaceActions = {
       try {
         const result = await spaceListSkills(activeSpaceId());
         if (!isLatest("skills", requestSeq)) return;
+        const user = state.session?.user ?? null;
+        const items = user
+          ? result.items.map((skill) => patchSkillUploader(skill, user))
+          : result.items;
         setState({
           skills: {
-            items: result.items,
+            items,
             lastFetchedAt: Date.now(),
             isLoading: false,
             error: null,
@@ -989,12 +1035,14 @@ export const actions: SpaceActions = {
       try {
         const detail = await spaceGetSkill(skillId);
         if (!isLatest(requestKey, requestSeq)) return;
+        const user = state.session?.user ?? null;
+        const nextDetail = user ? patchSkillDetailUploader(detail, user) : detail;
         setState({
           skillDetails: trimCacheRecord(
             {
               ...state.skillDetails,
               [key]: {
-                detail,
+                detail: nextDetail,
                 lastFetchedAt: Date.now(),
                 isLoading: false,
                 error: null,
@@ -1235,15 +1283,23 @@ export const actions: SpaceActions = {
   createIssue: (input) =>
     withSpaceMutationMetric("issue.create", async () => {
       const result = await spaceCreateIssue(input, activeSpaceId());
-      prependIssueToLists(result.issue);
-      return result.issue;
+      const user = state.session?.user ?? null;
+      const issue = user
+        ? patchIssueAuthorSummaries(result.issue, user)
+        : result.issue;
+      prependIssueToLists(issue);
+      return issue;
     }),
 
   updateIssue: (input) =>
     withSpaceMutationMetric("issue.update", async () => {
       const result = await spaceUpdateIssue(input);
-      patchIssueInLists(result.issue);
-      return result.issue;
+      const user = state.session?.user ?? null;
+      const issue = user
+        ? patchIssueAuthorSummaries(result.issue, user)
+        : result.issue;
+      patchIssueInLists(issue);
+      return issue;
     }),
 
   createGoal: (input) =>
@@ -1294,11 +1350,18 @@ export const actions: SpaceActions = {
   commentIssue: (issueId, body) =>
     withSpaceMutationMetric("issue.comment", async () => {
       const result = await spaceCommentIssue(issueId, body);
+      const user = state.session?.user ?? null;
+      const comment = user
+        ? {
+            ...result.comment,
+            author: patchUserSummary(result.comment.author, user),
+          }
+        : result.comment;
       patchIssueDetail(issueId, (detail) => ({
         ...detail,
         comments: {
           ...detail.comments,
-          items: [...detail.comments.items, result.comment],
+          items: [...detail.comments.items, comment],
         },
         issue: {
           ...detail.issue,

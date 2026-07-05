@@ -303,6 +303,106 @@ describe('spaceStore issue refresh', () => {
     expect(state.error).toBe('network down');
   });
 
+  it('patches current user avatars from the active session after refreshing Space data', async () => {
+    const sessionWithAvatar: SpaceSession = {
+      ...fakeSession,
+      user: {
+        ...fakeSession.user,
+        name: 'I Ethan',
+        avatarUrl: 'https://r2-public.myagents.test/avatar.png',
+      },
+    };
+    const staleCurrentUser = { id: 'user-1', name: 'Old User', avatarUrl: null };
+    const issueWithStaleAuthor: SpaceIssue = {
+      ...fakeIssue,
+      creator: staleCurrentUser,
+      author: staleCurrentUser,
+    };
+    const detailWithComment: SpaceIssueDetail = {
+      ...fakeDetail,
+      issue: issueWithStaleAuthor,
+      comments: {
+        ...fakeDetail.comments,
+        items: [
+          {
+            id: 'comment-1',
+            author: { id: 'user-1', type: 'user', name: 'Old User', avatarUrl: null },
+            body: 'same user comment',
+            createdAt: '2026-06-24T01:00:00.000Z',
+          },
+        ],
+      },
+    };
+    const skillWithStaleUploader: SpaceSkill = {
+      ...fakeSkill,
+      uploader: staleCurrentUser,
+    };
+    __setSpaceStoreStateForTest({ boot: 'ready', session: sessionWithAvatar });
+    apiMocks.spaceListIssues.mockResolvedValueOnce({
+      items: [issueWithStaleAuthor],
+      hasMore: false,
+      nextCursor: null,
+    });
+    apiMocks.spaceGetIssue.mockResolvedValueOnce(detailWithComment);
+    apiMocks.spaceListSkills.mockResolvedValueOnce({
+      items: [skillWithStaleUploader],
+    });
+    apiMocks.spaceGetSkill.mockResolvedValueOnce({
+      skill: skillWithStaleUploader,
+      revision: { revision: 1 },
+      files: [],
+    });
+    apiMocks.spaceCreateIssue.mockResolvedValueOnce({
+      issue: { ...issueWithStaleAuthor, id: 'iss_created', title: 'Created' },
+    });
+    apiMocks.spaceCommentIssue.mockResolvedValueOnce({
+      comment: {
+        id: 'comment-2',
+        author: { id: 'user-1', type: 'user', name: 'Old User', avatarUrl: null },
+        body: 'new comment',
+        createdAt: '2026-06-24T02:00:00.000Z',
+      },
+    });
+
+    await actions.refreshIssues({ limit: 50 }, { force: true });
+    await actions.refreshIssueDetail('iss_123', { force: true });
+    await actions.refreshSkills({ force: true });
+    await actions.refreshSkillDetail('skl_123', { force: true });
+    const createdIssue = await actions.createIssue({ title: 'Created', body: 'Body' });
+    await actions.commentIssue('iss_123', 'new comment');
+
+    const snapshot = getSnapshot();
+    const refreshedIssue = getIssueListState({ limit: 50 }).items.find((issue) => issue.id === 'iss_123');
+    expect(refreshedIssue?.creator).toMatchObject({
+      name: 'I Ethan',
+      avatarUrl: sessionWithAvatar.user.avatarUrl,
+    });
+    expect(refreshedIssue?.author).toMatchObject({
+      name: 'I Ethan',
+      avatarUrl: sessionWithAvatar.user.avatarUrl,
+    });
+    expect(createdIssue.creator).toMatchObject({
+      name: 'I Ethan',
+      avatarUrl: sessionWithAvatar.user.avatarUrl,
+    });
+    expect(snapshot.issueDetails[scoped('iss_123')]?.detail?.comments.items[0]?.author).toMatchObject({
+      name: 'I Ethan',
+      avatarUrl: sessionWithAvatar.user.avatarUrl,
+    });
+    expect(snapshot.issueDetails[scoped('iss_123')]?.detail?.comments.items[1]?.author).toMatchObject({
+      name: 'I Ethan',
+      avatarUrl: sessionWithAvatar.user.avatarUrl,
+    });
+    expect(snapshot.skills.items[0]?.uploader).toMatchObject({
+      name: 'I Ethan',
+      avatarUrl: sessionWithAvatar.user.avatarUrl,
+    });
+    expect(snapshot.skillDetails[scoped('skl_123')]?.detail?.skill.uploader).toMatchObject({
+      name: 'I Ethan',
+      avatarUrl: sessionWithAvatar.user.avatarUrl,
+    });
+  });
+
   it('prepends a newly created issue into already loaded lists', async () => {
     __setSpaceStoreStateForTest({ boot: 'ready', session: fakeSession });
     apiMocks.spaceListIssues.mockResolvedValueOnce({

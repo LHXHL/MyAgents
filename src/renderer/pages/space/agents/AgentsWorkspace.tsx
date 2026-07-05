@@ -43,14 +43,6 @@ import {
 import { shortenPathForDisplay } from "@/utils/pathDetection";
 import { workspacePathsEqual } from "../../../../shared/workspacePath";
 
-function initials(value?: string | null): string {
-  const source = value?.trim() || "MA";
-  const words = source.split(/\s+/).filter(Boolean);
-  if (words.length >= 2)
-    return `${words[0][0] ?? ""}${words[1][0] ?? ""}`.toUpperCase();
-  return source.slice(0, 2).toUpperCase();
-}
-
 const DEFAULT_ISSUE_SUBSCRIPTION_RUN_MODE: SpaceIssueSubscriptionRunMode =
   "single_session";
 const DEFAULT_AGENT_STATE_FILTER = ["todo"];
@@ -838,10 +830,7 @@ function AgentDetailOverlay({
     >
       <aside className="h-full w-[min(72vw,900px)] overflow-y-auto border-l border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl max-lg:w-[min(92vw,820px)]">
         <header className="sticky top-0 z-10 border-b border-[var(--line-subtle)] bg-[var(--paper-elevated)]/95 px-7 py-5 backdrop-blur-md">
-          <div className="grid grid-cols-[48px_minmax(0,1fr)_auto] items-start gap-3">
-            <span className="grid h-12 w-12 place-items-center rounded-xl bg-[var(--accent-cool-subtle)] text-sm font-bold text-[var(--accent-cool)]">
-              {initials(agent.displayName)}
-            </span>
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
             <div className="min-w-0">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <h2 className="truncate text-xl font-semibold leading-tight text-[var(--ink)]">

@@ -215,7 +215,7 @@ function IssueStreamRow({
           <SpaceIdentityLine
             name={author?.name ?? author?.id ?? 'owner'}
             avatarUrl={author?.avatarUrl}
-            avatarSize={18}
+            avatarSize={20}
             nameClassName="font-medium text-[var(--ink-subtle)]"
           />
           <span className="text-[var(--line-strong)]">·</span>
