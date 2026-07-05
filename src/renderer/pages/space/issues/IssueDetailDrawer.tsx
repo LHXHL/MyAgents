@@ -10,6 +10,7 @@ import DropdownMenu, { type DropdownMenuSection } from '@/components/ui/Dropdown
 import type { Project } from '@/config/types';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { copyPlainText } from '@/utils/markdownClipboard';
+import { SpaceIdentityLine } from '@/pages/space/SpaceAvatar';
 import {
   buildIssueCommandPrompt,
   claimHandlerLabel,
@@ -287,7 +288,7 @@ export function IssueDetailDrawer({
     }
   };
 
-  const issueAuthorName = detail?.issue.creator?.name ?? detail?.issue.creator?.id ?? detail?.issue.author?.name ?? detail?.issue.author?.id ?? 'owner';
+  const issueAuthor = detail?.issue.creator ?? detail?.issue.author ?? null;
   const claim = detail?.claim ?? detail?.issue.claim;
   const claimHandlerName = claimHandlerLabel(claim);
   const claimHandlerTypeKeyValue = claimHandlerTypeKey(claim);
@@ -381,7 +382,12 @@ export function IssueDetailDrawer({
                         <span className="text-[var(--line-strong)]">·</span>
                       </>
                     )}
-                    <span className="text-[var(--ink)]">{issueAuthorName}</span>
+                    <SpaceIdentityLine
+                      name={issueAuthor?.name ?? issueAuthor?.id ?? 'owner'}
+                      avatarUrl={issueAuthor?.avatarUrl}
+                      avatarSize={20}
+                      nameClassName="font-medium text-[var(--ink)]"
+                    />
                     <span className="text-[var(--line-strong)]">·</span>
                     <span>{formatTime(detail.issue.createdAt)}</span>
                     {detail.goalReference && (
@@ -587,8 +593,14 @@ export function IssueDetailDrawer({
                   ) : (
                     detail.comments.items.map((item) => (
                       <article key={item.id} className="py-5 first:pt-0">
-                        <div className="mb-2 flex items-baseline gap-2 text-sm font-normal text-[var(--ink-subtle)]">
-                          <span className="text-[var(--ink)]">{item.author.type}</span>
+                        <div className="mb-2 flex items-center gap-2 text-sm font-normal text-[var(--ink-subtle)]">
+                          <SpaceIdentityLine
+                            name={item.author.name ?? item.author.id ?? item.author.type}
+                            avatarUrl={item.author.avatarUrl}
+                            type={item.author.type}
+                            avatarSize={22}
+                            nameClassName="font-medium text-[var(--ink)]"
+                          />
                           <span>{formatTime(item.createdAt)}</span>
                         </div>
                         <IssueMarkdown>{item.body}</IssueMarkdown>

@@ -46,6 +46,7 @@ import {
   SpaceSidebar,
   type SpaceViewMode as ViewMode,
 } from "@/pages/space/SpaceChrome";
+import SpaceProfileSettingsDialog from "@/pages/space/SpaceProfileSettingsDialog";
 import {
   nowForSpaceMetric,
   recordSpaceMetric,
@@ -207,6 +208,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const [createIssueOpen, setCreateIssueOpen] = useState(false);
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
+  const [profileSettingsOpen, setProfileSettingsOpen] = useState(false);
   const [localDeviceId, setLocalDeviceId] = useState<string | null>(null);
 
   const session = spaceData.session;
@@ -662,6 +664,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
           mode={mode}
           onSpaceTabChange={selectSpaceTab}
           onLogout={logout}
+          onOpenProfileSettings={() => setProfileSettingsOpen(true)}
         />
         <section className="flex min-w-0 flex-1 flex-col">
           {mode === "issues" && (
@@ -776,6 +779,14 @@ export default function Space({ isActive }: { isActive: boolean }) {
               actions.refreshRegisteredAgents({ force: true, silent: true }),
             ]);
           }}
+        />
+      )}
+
+      {profileSettingsOpen && (
+        <SpaceProfileSettingsDialog
+          session={session}
+          actions={actions}
+          onClose={() => setProfileSettingsOpen(false)}
         />
       )}
     </div>

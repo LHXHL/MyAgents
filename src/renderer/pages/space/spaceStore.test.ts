@@ -29,6 +29,7 @@ const apiMocks = vi.hoisted(() => ({
   spaceRevokeRegisteredAgent: vi.fn(),
   spaceSetIssueState: vi.fn(),
   spaceUpdateGoal: vi.fn(),
+  spaceUpdateProfile: vi.fn(),
   spaceUpdateRegisteredAgent: vi.fn(),
   spaceUploadIssueAttachments: vi.fn(),
   spaceUploadSkillZip: vi.fn(),
@@ -64,6 +65,7 @@ vi.mock('@/api/spaceCloud', () => ({
   spaceRevokeRegisteredAgent: apiMocks.spaceRevokeRegisteredAgent,
   spaceSetIssueState: apiMocks.spaceSetIssueState,
   spaceUpdateGoal: apiMocks.spaceUpdateGoal,
+  spaceUpdateProfile: apiMocks.spaceUpdateProfile,
   spaceUpdateRegisteredAgent: apiMocks.spaceUpdateRegisteredAgent,
   spaceUploadIssueAttachments: apiMocks.spaceUploadIssueAttachments,
   spaceUploadSkillZip: apiMocks.spaceUploadSkillZip,
@@ -637,6 +639,105 @@ describe('spaceStore goal mutations', () => {
     expect(apiMocks.spaceArchiveGoal).toHaveBeenCalledWith(fakeGoal.id);
     expect(getSnapshot().goals).toEqual([]);
     expect(getIssueListState({ limit: 50 }).items).toEqual([]);
+  });
+});
+
+describe('spaceStore profile actions', () => {
+  it('updates session and patches current user author summaries in cached Space data', async () => {
+    const updatedSession: SpaceSession = {
+      ...fakeSession,
+      user: {
+        ...fakeSession.user,
+        name: 'Updated User',
+        avatarUrl: 'https://r2-public.myagents.test/avatar.png',
+      },
+      updatedAt: '2026-07-05T00:00:00.000Z',
+    };
+    const issueWithAuthor = {
+      ...fakeIssue,
+      creator: { id: 'user-1', name: 'Old User', avatarUrl: null },
+      author: { id: 'user-1', name: 'Old User', avatarUrl: null },
+    };
+    const detailWithComment: SpaceIssueDetail = {
+      ...fakeDetail,
+      issue: issueWithAuthor,
+      comments: {
+        ...fakeDetail.comments,
+        items: [
+          {
+            id: 'comment-1',
+            author: { id: 'user-1', type: 'user', name: 'Old User', avatarUrl: null },
+            body: 'Profile-linked comment.',
+            createdAt: '2026-06-24T01:00:00.000Z',
+          },
+        ],
+      },
+    };
+    const skillWithUploader: SpaceSkill = {
+      ...fakeSkill,
+      uploader: { id: 'user-1', name: 'Old User', avatarUrl: null },
+    };
+    __setSpaceStoreStateForTest({
+      session: fakeSession,
+      issuesByKey: {
+        current: {
+          items: [issueWithAuthor],
+          hasMore: false,
+          nextCursor: null,
+          lastFetchedAt: Date.now(),
+          isLoading: false,
+          error: null,
+        },
+      },
+      issueDetails: {
+        iss_123: {
+          detail: detailWithComment,
+          lastFetchedAt: Date.now(),
+          isLoading: false,
+          error: null,
+        },
+      },
+      skills: {
+        items: [skillWithUploader],
+        lastFetchedAt: Date.now(),
+        isLoading: false,
+        error: null,
+      },
+      skillDetails: {
+        skl_123: {
+          detail: { skill: skillWithUploader, revision: { revision: 1 }, files: [] },
+          lastFetchedAt: Date.now(),
+          isLoading: false,
+          error: null,
+        },
+      },
+    });
+    apiMocks.spaceUpdateProfile.mockResolvedValueOnce(updatedSession);
+
+    await actions.updateProfile({ name: 'Updated User', avatarFilePath: '/tmp/avatar.png' });
+
+    expect(apiMocks.spaceUpdateProfile).toHaveBeenCalledWith({
+      name: 'Updated User',
+      avatarFilePath: '/tmp/avatar.png',
+    });
+    const snapshot = getSnapshot();
+    expect(snapshot.session?.user).toMatchObject(updatedSession.user);
+    expect(snapshot.issuesByKey.current.items[0].creator).toMatchObject({
+      name: 'Updated User',
+      avatarUrl: updatedSession.user.avatarUrl,
+    });
+    expect(snapshot.issueDetails.iss_123.detail?.comments.items[0].author).toMatchObject({
+      name: 'Updated User',
+      avatarUrl: updatedSession.user.avatarUrl,
+    });
+    expect(snapshot.skills.items[0].uploader).toMatchObject({
+      name: 'Updated User',
+      avatarUrl: updatedSession.user.avatarUrl,
+    });
+    expect(snapshot.skillDetails.skl_123.detail?.skill.uploader).toMatchObject({
+      name: 'Updated User',
+      avatarUrl: updatedSession.user.avatarUrl,
+    });
   });
 });
 

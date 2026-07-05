@@ -37,7 +37,7 @@ const detail: SpaceIssueDetail = {
     items: [
       {
         id: 'comment-1',
-        author: { id: 'u-2', type: 'user' },
+        author: { id: 'u-2', type: 'user', name: 'Commenter', avatarUrl: 'https://r2-public.myagents.test/commenter.png' },
         body: '## Comment heading\n\nComment with `inline code`.',
         createdAt: '2026-06-30T11:30:00.000Z',
       },
@@ -80,7 +80,7 @@ describe('IssueDetailDrawer', () => {
     const metaText = metaRow.textContent ?? '';
     expect(metaText.indexOf('#113')).toBeLessThan(metaText.indexOf('Ethan'));
     expect(screen.getByText('Ethan').tagName).toBe('SPAN');
-    expect(screen.getByText('user').tagName).toBe('SPAN');
+    expect(screen.getByText('Commenter').tagName).toBe('SPAN');
     expect(screen.getByRole('button', { name: '编辑' })).toBeInTheDocument();
     expect(screen.queryByText('Issue 口令')).not.toBeInTheDocument();
 

@@ -345,7 +345,23 @@
       "skills": "Skills",
       "agents": "Agents",
       "signedInWithGoogle": "Signed in with Google",
+      "settings": "Settings",
       "logout": "Sign out"
+    },
+    "profile": {
+      "title": "Account settings",
+      "nickname": "Nickname",
+      "email": "Email",
+      "changeAvatar": "Change avatar",
+      "avatarHint": "PNG, JPG, or WebP, up to 5 MB",
+      "pickAvatarTitle": "Choose avatar image",
+      "imageFilter": "Image",
+      "avatarPreviewFailed": "Avatar preview failed",
+      "avatarUploadFailed": "Avatar upload failed",
+      "nicknameRequired": "Nickname is required",
+      "profileUpdated": "Profile updated",
+      "save": "Save",
+      "saving": "Saving"
     },
     "common": {
       "refresh": "Refresh",
@@ -533,6 +549,7 @@
       "packageContents": "Files",
       "totalFiles": "{{count}} files",
       "mainFile": "main",
+      "unknownUploader": "Unknown uploader",
       "deleteTitle": "Unpublish Skill",
       "deleteMessage": "Unpublish \"{{name}}\"? It will no longer appear in lists, while historical revisions and audit records are kept.",
       "pickZipTitle": "Choose Skill ZIP",

@@ -345,7 +345,23 @@
       "skills": "Skills",
       "agents": "Agents",
       "signedInWithGoogle": "已通过 Google 登录",
+      "settings": "设置",
       "logout": "退出登录"
+    },
+    "profile": {
+      "title": "账户设置",
+      "nickname": "昵称",
+      "email": "Email",
+      "changeAvatar": "更换头像",
+      "avatarHint": "支持 PNG、JPG、WebP，最大 5MB",
+      "pickAvatarTitle": "选择头像图片",
+      "imageFilter": "图片",
+      "avatarPreviewFailed": "头像预览失败",
+      "avatarUploadFailed": "头像上传失败",
+      "nicknameRequired": "昵称不能为空",
+      "profileUpdated": "资料已更新",
+      "save": "保存",
+      "saving": "保存中"
     },
     "common": {
       "refresh": "刷新",
@@ -533,6 +549,7 @@
       "packageContents": "文件",
       "totalFiles": "{{count}} 个文件",
       "mainFile": "main",
+      "unknownUploader": "未知上传人",
       "deleteTitle": "下架 Skill",
       "deleteMessage": "确定要下架「{{name}}」吗？下架后列表中不再展示，历史 revision 和审计记录会保留。",
       "pickZipTitle": "选择 Skill ZIP",

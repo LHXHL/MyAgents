@@ -26,6 +26,7 @@ import {
   spaceRegisterAgent,
   spaceRevokeRegisteredAgent,
   spaceSetIssueState,
+  spaceUpdateProfile,
   spaceUpdateGoal,
   spaceUpdateIssue,
   spaceUpdateRegisteredAgent,
@@ -213,6 +214,11 @@ export interface SpaceActions {
   closeIssue: (issueId: string) => Promise<void>;
   completeIssue: (issueId: string) => Promise<void>;
   cancelIssueClaim: (issueId: string) => Promise<void>;
+  updateProfile: (input: {
+    name: string;
+    avatarFilePath?: string | null;
+    nameChanged?: boolean;
+  }) => Promise<void>;
   uploadSkillZip: (input: {
     filePath: string;
     name?: string;
@@ -602,6 +608,94 @@ function localAgentToRegisteredAgent(
     createdAt: agent.createdAt,
     updatedAt: agent.updatedAt,
   };
+}
+
+function patchUserSummary<
+  T extends { id?: string; name?: string | null; avatarUrl?: string | null } | null | undefined,
+>(summary: T, user: SpaceSession["user"]): T {
+  if (!summary || summary.id !== user.id) return summary;
+  return {
+    ...summary,
+    name: user.name ?? summary.name ?? null,
+    avatarUrl: user.avatarUrl ?? summary.avatarUrl ?? null,
+  } as T;
+}
+
+function patchIssueAuthorSummaries(
+  issue: SpaceIssue,
+  user: SpaceSession["user"],
+): SpaceIssue {
+  return {
+    ...issue,
+    creator: patchUserSummary(issue.creator, user),
+    author: patchUserSummary(issue.author, user),
+  };
+}
+
+function patchProfileInCaches(session: SpaceSession) {
+  const user = session.user;
+  setState({
+    session,
+    issuesByKey: Object.fromEntries(
+      Object.entries(state.issuesByKey).map(([key, list]) => [
+        key,
+        {
+          ...list,
+          items: list.items.map((issue) =>
+            patchIssueAuthorSummaries(issue, user),
+          ),
+        },
+      ]),
+    ),
+    issueDetails: Object.fromEntries(
+      Object.entries(state.issueDetails).map(([key, detailState]) => [
+        key,
+        detailState.detail
+          ? {
+              ...detailState,
+              detail: {
+                ...detailState.detail,
+                issue: patchIssueAuthorSummaries(detailState.detail.issue, user),
+                comments: {
+                  ...detailState.detail.comments,
+                  items: detailState.detail.comments.items.map((comment) => ({
+                    ...comment,
+                    author: patchUserSummary(comment.author, user),
+                  })),
+                },
+              },
+            }
+          : detailState,
+      ]),
+    ),
+    skills: {
+      ...state.skills,
+      items: state.skills.items.map((skill) => ({
+        ...skill,
+        uploader: patchUserSummary(skill.uploader, user),
+      })),
+    },
+    skillDetails: Object.fromEntries(
+      Object.entries(state.skillDetails).map(([key, detailState]) => [
+        key,
+        detailState.detail
+          ? {
+              ...detailState,
+              detail: {
+                ...detailState.detail,
+                skill: {
+                  ...detailState.detail.skill,
+                  uploader: patchUserSummary(
+                    detailState.detail.skill.uploader,
+                    user,
+                  ),
+                },
+              },
+            }
+          : detailState,
+      ]),
+    ),
+  });
 }
 
 export const actions: SpaceActions = {
@@ -1285,6 +1379,12 @@ export const actions: SpaceActions = {
           state: result.state,
           updatedAt: result.updatedAt,
         });
+    }),
+
+  updateProfile: (input) =>
+    withSpaceMutationMetric("profile.update", async () => {
+      const session = await spaceUpdateProfile(input);
+      patchProfileInCaches(session);
     }),
 
   uploadSkillZip: (input) =>

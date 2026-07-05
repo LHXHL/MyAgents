@@ -9,6 +9,7 @@ import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { useToast } from '@/components/Toast';
 import type { Project } from '@/config/types';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
+import { SpaceIdentityLine } from '@/pages/space/SpaceAvatar';
 import { getSkillFileState, SPACE_VISIBLE_REFRESH_TTL_MS, type SpaceActions, type SpaceSkillDetailState } from '@/pages/space/spaceStore';
 import { SPACE_LIST_FRAME_CLASS, SPACE_PRIMARY_TOOL_BUTTON_CLASS, SPACE_REFRESH_TOOL_BUTTON_CLASS, SPACE_TWO_COLUMN_GRID_CLASS, formatBytes, formatDate } from '@/pages/space/spaceUi';
 
@@ -116,7 +117,7 @@ export function SkillsWorkspace({ admin, skills, loading, selectedSkillId, proje
 }
 
 function SpaceSkillCard({ skill, onOpen, t }: { skill: SpaceSkill; onOpen: () => void; t: ReturnType<typeof useTranslation>['t'] }) {
-  const author = skill.slug || 'official';
+  const uploader = skill.uploader;
   return (
     <button type="button" onClick={onOpen} className="group flex w-full flex-col gap-1.5 rounded-xl bg-[var(--paper-elevated)] px-3.5 py-3 text-left transition-shadow hover:shadow-sm">
       <span className="flex min-w-0 items-center gap-2">
@@ -124,9 +125,12 @@ function SpaceSkillCard({ skill, onOpen, t }: { skill: SpaceSkill; onOpen: () =>
       </span>
       <span className="line-clamp-2 min-h-[2.6em] text-sm leading-relaxed text-[var(--ink-muted)]">{skill.description || t('space.common.noDescription')}</span>
       <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium text-[var(--ink-subtle)]">
-        <span className="min-w-0 truncate">
-          <span className="font-semibold text-[var(--ink-muted)]">{author}</span>
-        </span>
+        <SpaceIdentityLine
+          name={uploader?.name ?? uploader?.id ?? t('space.skills.unknownUploader')}
+          avatarUrl={uploader?.avatarUrl}
+          avatarSize={18}
+          nameClassName="font-semibold text-[var(--ink-muted)]"
+        />
         <span className="text-[var(--line-strong)]">·</span>
         <span>
           <span className="font-semibold text-[var(--ink-muted)]">{formatDate(skill.createdAt)}</span>
@@ -426,7 +430,12 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
             <div className="mx-auto max-w-[900px] pb-8">
               <section className="border-b border-[var(--line-subtle)] pb-5">
                 <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-[var(--ink-subtle)]">
-                  <span>{skill.slug || 'official'}</span>
+                  <SpaceIdentityLine
+                    name={skill.uploader?.name ?? skill.uploader?.id ?? t('space.skills.unknownUploader')}
+                    avatarUrl={skill.uploader?.avatarUrl}
+                    avatarSize={20}
+                    nameClassName="font-semibold text-[var(--ink-subtle)]"
+                  />
                   <span className="text-[var(--line-strong)]">·</span>
                   <span>{formatDate(skill.createdAt)}</span>
                   <span className="inline-flex rounded-md bg-[var(--accent-cool-subtle)] px-2 py-1 text-xs font-semibold text-[var(--accent-cool)]"># {t('space.skills.officialTag')}</span>

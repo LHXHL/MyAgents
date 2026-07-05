@@ -34,6 +34,7 @@ const MAX_SKILL_TOTAL_BYTES: u64 = 50 * 1024 * 1024;
 const MAX_ATTACHMENT_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
 pub(crate) const MAX_ATTACHMENT_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;
 pub(crate) const MAX_ATTACHMENT_UPLOAD_COUNT: usize = 5;
+const MAX_PROFILE_AVATAR_BYTES: u64 = 5 * 1024 * 1024;
 static SPACE_CONNECTOR_STARTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -519,6 +520,16 @@ pub struct SpaceUploadIssueAttachmentsInput {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceUpdateProfileInput {
+    pub name: String,
+    #[serde(default)]
+    pub avatar_file_path: Option<String>,
+    #[serde(default)]
+    pub name_changed: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SpaceSkillInstallTarget {
     Global,
@@ -737,7 +748,19 @@ pub async fn cmd_space_get_session() -> Result<Option<SpaceSessionPublic>, Strin
     };
     let identity = current_device_identity()?;
     try_upsert_space_user_device(&session, &identity).await;
-    Ok(Some(session.into()))
+    match refresh_session_from_cloud(&session).await {
+        Ok(refreshed) => {
+            write_private_json(&session_path()?, &refreshed)?;
+            Ok(Some(refreshed.into()))
+        }
+        Err(error) => {
+            ulog_warn!(
+                "[space] failed to refresh /api/me session snapshot: {}",
+                error
+            );
+            Ok(Some(session.into()))
+        }
+    }
 }
 
 #[tauri::command]
@@ -855,6 +878,28 @@ pub async fn cmd_space_logout() -> Result<(), String> {
         Err(e) => return Err(format!("Failed to remove Space session: {}", e)),
     }
     Ok(())
+}
+
+#[tauri::command]
+pub async fn cmd_space_update_profile(
+    input: SpaceUpdateProfileInput,
+) -> Result<SpaceSessionPublic, String> {
+    if crate::space_cloud_mock::is_enabled() {
+        return crate::space_cloud_mock::update_profile(input);
+    }
+    ensure_space_available()?;
+    let session = require_session()?;
+    let form = profile_form(input)?;
+    let data = authorized_multipart_data_request(
+        &session.base_url,
+        "/api/me/profile",
+        &session.session_token,
+        form,
+    )
+    .await?;
+    let refreshed = session_from_me_data(&session, &data);
+    write_private_json(&session_path()?, &refreshed)?;
+    Ok(refreshed.into())
 }
 
 #[tauri::command]
@@ -2825,6 +2870,165 @@ fn session_space_segment(session: &SpaceSession) -> String {
         .filter(|value| !value.trim().is_empty())
         .map(url_component)
         .unwrap_or_else(|| "official".to_string())
+}
+
+fn session_from_me_data(session: &SpaceSession, data: &Value) -> SpaceSession {
+    SpaceSession {
+        base_url: session.base_url.clone(),
+        session_token: session.session_token.clone(),
+        expires_at: session.expires_at.clone(),
+        user: data
+            .get("user")
+            .cloned()
+            .unwrap_or_else(|| session.user.clone()),
+        space: data
+            .get("space")
+            .cloned()
+            .unwrap_or_else(|| session.space.clone()),
+        membership: data
+            .get("membership")
+            .cloned()
+            .unwrap_or_else(|| session.membership.clone()),
+        updated_at: chrono::Utc::now().to_rfc3339(),
+    }
+}
+
+async fn refresh_session_from_cloud(session: &SpaceSession) -> Result<SpaceSession, String> {
+    let data = authorized_json_data_request(
+        &session.base_url,
+        "/api/me",
+        &session.session_token,
+        reqwest::Method::GET,
+        None,
+    )
+    .await?;
+    Ok(session_from_me_data(session, &data))
+}
+
+fn profile_avatar_mime_and_filename(file_path: &Path) -> Result<(&'static str, String), String> {
+    let ext = file_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .ok_or_else(|| "Avatar image must be png, jpg, jpeg, or webp".to_string())?;
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => return Err("Avatar image must be png, jpg, jpeg, or webp".to_string()),
+    };
+    let filename = file_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(safe_local_filename)
+        .unwrap_or_else(|| format!("avatar.{}", ext));
+    Ok((mime, filename))
+}
+
+fn profile_form(input: SpaceUpdateProfileInput) -> Result<reqwest::multipart::Form, String> {
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err("Profile name is required".to_string());
+    }
+    if name.chars().count() > 40 {
+        return Err("Profile name must be at most 40 characters".to_string());
+    }
+    let mut form = reqwest::multipart::Form::new()
+        .text("name", name.to_string())
+        .text(
+            "nameChanged",
+            input.name_changed.unwrap_or(true).to_string(),
+        );
+    let Some(path) = input
+        .avatar_file_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(form);
+    };
+    let file_path = PathBuf::from(path);
+    if !file_path.is_absolute() {
+        return Err("Avatar image path must be absolute".to_string());
+    }
+    let metadata = fs::symlink_metadata(&file_path)
+        .map_err(|e| format!("Failed to inspect avatar image: {}", e))?;
+    if metadata.file_type().is_symlink() {
+        return Err("Avatar image path must not be a symlink".to_string());
+    }
+    if !metadata.is_file() {
+        return Err("Avatar image path must be a file".to_string());
+    }
+    if metadata.len() > MAX_PROFILE_AVATAR_BYTES {
+        return Err(format!(
+            "Avatar image exceeds {} bytes",
+            MAX_PROFILE_AVATAR_BYTES
+        ));
+    }
+    let (mime, filename) = profile_avatar_mime_and_filename(&file_path)?;
+    let bytes = read_profile_avatar_bytes(&file_path, &metadata)?;
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(filename)
+        .mime_str(mime)
+        .map_err(|e| format!("Failed to build avatar upload part: {}", e))?;
+    form = form.part("avatar", part);
+    Ok(form)
+}
+
+fn read_profile_avatar_bytes(
+    file_path: &Path,
+    _validated_metadata: &fs::Metadata,
+) -> Result<Vec<u8>, String> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(file_path)
+        .map_err(|e| format!("Failed to open avatar image: {}", e))?;
+    let opened_metadata = file
+        .metadata()
+        .map_err(|e| format!("Failed to inspect opened avatar image: {}", e))?;
+    if !opened_metadata.is_file() {
+        return Err("Avatar image path must be a file".to_string());
+    }
+    if opened_metadata.len() > MAX_PROFILE_AVATAR_BYTES {
+        return Err(format!(
+            "Avatar image exceeds {} bytes",
+            MAX_PROFILE_AVATAR_BYTES
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if _validated_metadata.dev() != opened_metadata.dev()
+            || _validated_metadata.ino() != opened_metadata.ino()
+        {
+            return Err("Avatar image changed while reading".to_string());
+        }
+    }
+    let after_metadata = fs::symlink_metadata(file_path)
+        .map_err(|e| format!("Failed to re-inspect avatar image: {}", e))?;
+    if after_metadata.file_type().is_symlink() {
+        return Err("Avatar image path must not be a symlink".to_string());
+    }
+    if !after_metadata.is_file() {
+        return Err("Avatar image path must be a file".to_string());
+    }
+    let mut bytes = Vec::with_capacity(opened_metadata.len() as usize);
+    file.take(MAX_PROFILE_AVATAR_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Failed to read avatar image: {}", e))?;
+    if bytes.len() as u64 > MAX_PROFILE_AVATAR_BYTES {
+        return Err(format!(
+            "Avatar image exceeds {} bytes",
+            MAX_PROFILE_AVATAR_BYTES
+        ));
+    }
+    Ok(bytes)
 }
 
 async fn parse_cloud_data<T: for<'de> Deserialize<'de>>(

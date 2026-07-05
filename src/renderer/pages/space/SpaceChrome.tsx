@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Bot, ChevronDown, GitBranch, Loader2, LogIn, LogOut, MessageSquare, Package, User } from 'lucide-react';
+import { Bot, ChevronDown, GitBranch, Loader2, LogIn, LogOut, MessageSquare, Package, Settings } from 'lucide-react';
 
 import type { SpaceSession } from '@/api/spaceCloud';
 import myagentsWebLogo from '@/assets/brand/myagents-web-logo.png';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
+import { SpaceAvatar, SpaceIdentityLine, spaceDisplayName } from './SpaceAvatar';
 import { PAPER_GRID_STYLE } from './spaceUi';
 
 export type SpaceViewMode = 'issues' | 'goals' | 'skills' | 'agents';
@@ -39,10 +40,11 @@ export function SpaceLogin({ authBusy, authFlow, onLogin }: { authBusy: boolean;
   );
 }
 
-export function SpaceSidebar({ session, mode, onSpaceTabChange, onLogout }: { session: SpaceSession; mode: SpaceViewMode; onSpaceTabChange: (mode: SpaceViewMode) => void; onLogout: () => void }) {
+export function SpaceSidebar({ session, mode, onSpaceTabChange, onLogout, onOpenProfileSettings }: { session: SpaceSession; mode: SpaceViewMode; onSpaceTabChange: (mode: SpaceViewMode) => void; onLogout: () => void; onOpenProfileSettings: () => void }) {
   const { t } = useTranslation('app');
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
+  const displayName = spaceDisplayName(session.user);
   useCloseLayer(() => {
     if (!accountMenuOpen) return false;
     setAccountMenuOpen(false);
@@ -100,17 +102,33 @@ export function SpaceSidebar({ session, mode, onSpaceTabChange, onLogout }: { se
       </div>
 
       <div ref={accountMenuRef} className="relative border-t border-[var(--line-subtle)] pt-3">
-        <button type="button" onClick={() => setAccountMenuOpen((value) => !value)} aria-expanded={accountMenuOpen} className="flex h-9 w-full items-center gap-2 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)]/60 px-3 text-left text-xs font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-elevated)] hover:text-[var(--ink)]">
-          <User className="h-3.5 w-3.5 shrink-0" />
-          <span className="min-w-0 flex-1 truncate">{session.user.email}</span>
+        <button type="button" onClick={() => setAccountMenuOpen((value) => !value)} aria-expanded={accountMenuOpen} className="flex h-9 w-full items-center gap-2 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)]/60 px-2.5 text-left text-xs font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-elevated)] hover:text-[var(--ink)]">
+          <SpaceAvatar name={displayName} email={session.user.email} avatarUrl={session.user.avatarUrl} size={22} />
+          <span className="min-w-0 flex-1 truncate">{displayName}</span>
           <ChevronDown className="h-3.5 w-3.5 shrink-0" />
         </button>
         <div aria-hidden={!accountMenuOpen} className={`absolute bottom-full left-0 right-0 z-20 mb-2 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)]/95 p-2 shadow-md backdrop-blur-md transition-all ${accountMenuOpen ? 'pointer-events-auto translate-y-0 opacity-100' : 'pointer-events-none translate-y-[-4px] opacity-0'}`}>
-          <div className="mb-1 border-b border-[var(--line-subtle)] px-2 py-2 text-xs leading-5 text-[var(--ink-muted)]">
-            {t('space.sidebar.signedInWithGoogle')}
-            <br />
-            {session.user.email}
+          <div className="mb-1 border-b border-dashed border-[var(--line-subtle)] px-2 py-2.5">
+            <SpaceIdentityLine
+              name={displayName}
+              email={session.user.email}
+              avatarUrl={session.user.avatarUrl}
+              avatarSize={32}
+              nameClassName="text-sm font-semibold text-[var(--ink)]"
+            />
+            <p className="mt-1 truncate pl-10 text-xs font-medium text-[var(--ink-muted)]">{session.user.email}</p>
           </div>
+          <button
+            type="button"
+            onClick={() => {
+              setAccountMenuOpen(false);
+              onOpenProfileSettings();
+            }}
+            className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-xs font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+          >
+            <Settings className="h-3.5 w-3.5" />
+            {t('space.sidebar.settings')}
+          </button>
           <button
             type="button"
             onClick={() => {

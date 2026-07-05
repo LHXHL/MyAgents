@@ -27,6 +27,12 @@ export interface SpaceUser {
   avatarUrl?: string | null;
 }
 
+export interface SpaceUserSummary {
+  id: string;
+  name?: string | null;
+  avatarUrl?: string | null;
+}
+
 export interface SpaceInfo {
   id: string;
   slug: string;
@@ -105,11 +111,11 @@ export interface SpaceIssue {
   createdByType?: "user" | "registered_agent";
   createdById?: string;
   createdByUserId?: string;
-  creator?: { id: string; name?: string | null };
+  creator?: SpaceUserSummary;
   notificationVersion?: number;
   goalPathLabel?: string | null;
   status?: string;
-  author?: { id: string; name?: string | null };
+  author?: SpaceUserSummary;
   tags?: SpaceTag[];
   commentCount?: number;
   attachmentCount?: number;
@@ -120,7 +126,12 @@ export interface SpaceIssue {
 
 export interface SpaceIssueComment {
   id: string;
-  author: { id: string; type: "user" | "registered_agent" | "system" };
+  author: {
+    id: string;
+    type: "user" | "registered_agent" | "system";
+    name?: string | null;
+    avatarUrl?: string | null;
+  };
   body: string;
   createdAt: string;
 }
@@ -186,6 +197,7 @@ export interface SpaceSkill {
   slug: string;
   description?: string | null;
   latestRevision: number;
+  uploader?: SpaceUserSummary | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -607,6 +619,14 @@ export function spaceAuthAck(loginToken: string): Promise<void> {
 
 export function spaceLogout(): Promise<void> {
   return inv("cmd_space_logout");
+}
+
+export function spaceUpdateProfile(input: {
+  name: string;
+  avatarFilePath?: string | null;
+  nameChanged?: boolean;
+}): Promise<SpaceSession> {
+  return inv("cmd_space_update_profile", { input });
 }
 
 export function spaceGetOfficial(

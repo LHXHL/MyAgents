@@ -9,8 +9,9 @@ use serde_json::{json, Value};
 use crate::space_cloud::{
     LocalRegisteredAgent, LocalRegisteredAgentPublic, SpaceApiRequestInput,
     SpaceDownloadAttachmentResult, SpaceIssueSubscriptionRunMode, SpaceProcessDeliveryResult,
-    SpaceRegisterAgentInput, SpaceSession, SpaceUploadIssueAttachmentsInput, SpaceUploadSkillInput,
-    MAX_ATTACHMENT_UPLOAD_BYTES, MAX_ATTACHMENT_UPLOAD_COUNT, MAX_SKILL_ZIP_BYTES,
+    SpaceRegisterAgentInput, SpaceSession, SpaceSessionPublic, SpaceUpdateProfileInput,
+    SpaceUploadIssueAttachmentsInput, SpaceUploadSkillInput, MAX_ATTACHMENT_UPLOAD_BYTES,
+    MAX_ATTACHMENT_UPLOAD_COUNT, MAX_SKILL_ZIP_BYTES,
 };
 use crate::workspace_files::path_safety::{
     atomic_write_file, resolve_inside_workspace, validate_workspace_root,
@@ -31,6 +32,7 @@ struct MockSkillRecord {
 
 #[derive(Clone)]
 struct MockState {
+    user: Value,
     tags: Vec<Value>,
     goals: Vec<Value>,
     issues: Vec<Value>,
@@ -95,20 +97,14 @@ pub fn is_enabled() -> bool {
 }
 
 pub fn session() -> SpaceSession {
+    let user = state().lock().expect("mock state poisoned").user.clone();
     SpaceSession {
         base_url: MOCK_BASE_URL.to_string(),
         session_token: "mock-session-token".to_string(),
         expires_at: None,
-        user: json!({
-            "id": MOCK_OWNER_USER_ID,
-            "email": "myagents.io@gmail.com",
-            "name": "Ethan"
-        }),
+        user,
         space: mock_space(),
-        membership: json!({
-            "id": "mship_mock_owner",
-            "role": std::env::var("MYAGENTS_SPACE_MOCK_ROLE").unwrap_or_else(|_| "owner".to_string())
-        }),
+        membership: mock_membership(),
         updated_at: "2026-06-24T09:00:00.000Z".to_string(),
     }
 }
@@ -465,6 +461,120 @@ pub fn upload_issue_attachments(input: SpaceUploadIssueAttachmentsInput) -> Resu
     Ok(json!({ "attachments": new_attachments }))
 }
 
+pub fn update_profile(input: SpaceUpdateProfileInput) -> Result<SpaceSessionPublic, String> {
+    let name = input.name.trim();
+    if name.is_empty() {
+        return Err("Profile name is required".to_string());
+    }
+    if name.chars().count() > 40 {
+        return Err("Profile name must be at most 40 characters".to_string());
+    }
+    let mut state = state().lock().expect("mock state poisoned");
+    let avatar_url = if let Some(path) = input
+        .avatar_file_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let file_path = PathBuf::from(path);
+        if !file_path.is_absolute() {
+            return Err("Avatar image path must be absolute".to_string());
+        }
+        let ext = file_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .ok_or_else(|| "Avatar image must be png, jpg, jpeg, or webp".to_string())?;
+        if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+            return Err("Avatar image must be png, jpg, jpeg, or webp".to_string());
+        }
+        let metadata = fs::symlink_metadata(&file_path)
+            .map_err(|e| format!("Failed to inspect avatar image: {}", e))?;
+        if metadata.file_type().is_symlink() {
+            return Err("Avatar image path must not be a symlink".to_string());
+        }
+        if !metadata.is_file() {
+            return Err("Avatar image path must be a file".to_string());
+        }
+        if metadata.len() > 5 * 1024 * 1024 {
+            return Err("Avatar image exceeds 5242880 bytes".to_string());
+        }
+        Some(format!(
+            "{}/mock-avatar/uploaded-{}.{}",
+            MOCK_BASE_URL,
+            state.seq + 1,
+            if ext == "jpeg" { "jpg" } else { ext.as_str() }
+        ))
+    } else {
+        None
+    };
+    state.seq += 1;
+    if let Some(user) = state.user.as_object_mut() {
+        user.insert("name".to_string(), json!(name));
+        if let Some(url) = avatar_url.as_deref() {
+            user.insert("avatarUrl".to_string(), json!(url));
+        }
+    }
+    let user_id = state
+        .user
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or(MOCK_OWNER_USER_ID)
+        .to_string();
+    let user_name = state
+        .user
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or(name)
+        .to_string();
+    let user_avatar = state.user.get("avatarUrl").cloned().unwrap_or(Value::Null);
+    patch_mock_user_summaries(&mut state, &user_id, &user_name, &user_avatar);
+    Ok(SpaceSession {
+        base_url: MOCK_BASE_URL.to_string(),
+        session_token: "mock-session-token".to_string(),
+        expires_at: None,
+        user: state.user.clone(),
+        space: mock_space(),
+        membership: mock_membership(),
+        updated_at: chrono::Utc::now().to_rfc3339(),
+    }
+    .into())
+}
+
+fn patch_actor_summary(value: &mut Value, user_id: &str, name: &str, avatar_url: &Value) {
+    let Some(object) = value.as_object_mut() else {
+        return;
+    };
+    if object.get("id").and_then(Value::as_str) != Some(user_id) {
+        return;
+    }
+    object.insert("name".to_string(), json!(name));
+    object.insert("avatarUrl".to_string(), avatar_url.clone());
+}
+
+fn patch_mock_user_summaries(state: &mut MockState, user_id: &str, name: &str, avatar_url: &Value) {
+    for issue in &mut state.issues {
+        if let Some(creator) = issue.get_mut("creator") {
+            patch_actor_summary(creator, user_id, name, avatar_url);
+        }
+        if let Some(author) = issue.get_mut("author") {
+            patch_actor_summary(author, user_id, name, avatar_url);
+        }
+    }
+    for comments in state.comments.values_mut() {
+        for comment in comments {
+            if let Some(author) = comment.get_mut("author") {
+                patch_actor_summary(author, user_id, name, avatar_url);
+            }
+        }
+    }
+    for record in &mut state.skills {
+        if let Some(uploader) = record.skill.get_mut("uploader") {
+            patch_actor_summary(uploader, user_id, name, avatar_url);
+        }
+    }
+}
+
 pub fn upload_skill(input: SpaceUploadSkillInput) -> Result<Value, String> {
     let file_path = PathBuf::from(input.file_path.trim());
     if !file_path.is_absolute() {
@@ -501,12 +611,18 @@ pub fn upload_skill(input: SpaceUploadSkillInput) -> Result<Value, String> {
                 .replace('-', " ")
         });
     let id = input.skill_id.unwrap_or_else(|| state.next_id("skl"));
+    let uploader = json!({
+        "id": state.user.get("id").and_then(Value::as_str).unwrap_or(MOCK_OWNER_USER_ID),
+        "name": state.user.get("name").and_then(Value::as_str).unwrap_or("Ethan"),
+        "avatarUrl": state.user.get("avatarUrl").cloned().unwrap_or(Value::Null)
+    });
     let skill = json!({
         "id": id,
         "name": title_case(&name),
         "slug": safe_local_name(&name),
         "description": input.description.unwrap_or_else(|| "Uploaded mock Skill package for UI verification.".to_string()),
         "latestRevision": 1,
+        "uploader": uploader,
         "createdAt": "2026-06-24T09:37:00.000Z",
         "updatedAt": "2026-06-24T09:37:00.000Z"
     });
@@ -627,10 +743,14 @@ fn handle_api_data_request(
     match (method, segments.as_slice()) {
         ("GET", ["api", "spaces", "official"]) => Ok(json!({
             "space": mock_space(),
-            "membership": session().membership,
+            "membership": mock_membership(),
             "goals": active_goals(&state),
             "tags": state.tags
         })),
+        ("GET", ["api", "me"]) => Ok(mock_me(&state)),
+        ("POST", ["api", "me", "profile"]) => {
+            Err("Mock profile updates must use cmd_space_update_profile".to_string())
+        }
         ("GET", ["api", "spaces", "official", "goals"]) => Ok(list_goals(&state, &query)),
         ("POST", ["api", "spaces", "official", "goals"]) => create_goal(&mut state, body),
         ("PATCH", ["api", "goals", goal_id]) => update_goal(&mut state, goal_id, body),
@@ -814,7 +934,12 @@ fn mock_actor_for_token(state: &MockState, token: Option<&str>) -> MockActor {
     MockActor {
         actor_type: "user".to_string(),
         actor_id: MOCK_OWNER_USER_ID.to_string(),
-        actor_name: "Ethan".to_string(),
+        actor_name: state
+            .user
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("Ethan")
+            .to_string(),
         authenticated: false,
     }
 }
@@ -831,6 +956,12 @@ fn state() -> &'static Mutex<MockState> {
 }
 
 fn initial_state() -> MockState {
+    let user = json!({
+        "id": MOCK_OWNER_USER_ID,
+        "email": "myagents.io@gmail.com",
+        "name": "Ethan",
+        "avatarUrl": "https://space.mock.myagents.local/mock-avatar/ethan.png"
+    });
     let tags = vec![
         tag("bug", "Bug reports and regressions"),
         tag("feature", "Feature requests"),
@@ -916,8 +1047,16 @@ fn initial_state() -> MockState {
             "state": legacy_status_to_state(status),
             "humanOnly": idx % 11 == 0,
             "status": status,
-            "creator": { "id": if idx % 3 == 0 { "usr_ethan" } else { "usr_lin" }, "name": if idx % 3 == 0 { "Ethan" } else { "Lin Qiao" } },
-            "author": { "id": if idx % 3 == 0 { "usr_ethan" } else { "usr_lin" }, "name": if idx % 3 == 0 { "Ethan" } else { "Lin Qiao" } },
+            "creator": {
+                "id": if idx % 3 == 0 { MOCK_OWNER_USER_ID } else { "usr_lin" },
+                "name": if idx % 3 == 0 { "Ethan" } else { "Lin Qiao" },
+                "avatarUrl": if idx % 3 == 0 { "https://space.mock.myagents.local/mock-avatar/ethan.png" } else { "https://space.mock.myagents.local/mock-avatar/lin.png" }
+            },
+            "author": {
+                "id": if idx % 3 == 0 { MOCK_OWNER_USER_ID } else { "usr_lin" },
+                "name": if idx % 3 == 0 { "Ethan" } else { "Lin Qiao" },
+                "avatarUrl": if idx % 3 == 0 { "https://space.mock.myagents.local/mock-avatar/ethan.png" } else { "https://space.mock.myagents.local/mock-avatar/lin.png" }
+            },
             "notificationVersion": 1,
             "goalPathLabel": seeded_goal_label(idx),
             "tags": issue_tags,
@@ -1020,12 +1159,14 @@ fn initial_state() -> MockState {
             "humanOnly": offset % 17 == 0,
             "status": status,
             "creator": {
-                "id": if offset % 2 == 0 { "usr_ethan" } else { "usr_lin" },
-                "name": if offset % 2 == 0 { "Ethan" } else { "Lin Qiao" }
+                "id": if offset % 2 == 0 { MOCK_OWNER_USER_ID } else { "usr_lin" },
+                "name": if offset % 2 == 0 { "Ethan" } else { "Lin Qiao" },
+                "avatarUrl": if offset % 2 == 0 { "https://space.mock.myagents.local/mock-avatar/ethan.png" } else { "https://space.mock.myagents.local/mock-avatar/lin.png" }
             },
             "author": {
-                "id": if offset % 2 == 0 { "usr_ethan" } else { "usr_lin" },
-                "name": if offset % 2 == 0 { "Ethan" } else { "Lin Qiao" }
+                "id": if offset % 2 == 0 { MOCK_OWNER_USER_ID } else { "usr_lin" },
+                "name": if offset % 2 == 0 { "Ethan" } else { "Lin Qiao" },
+                "avatarUrl": if offset % 2 == 0 { "https://space.mock.myagents.local/mock-avatar/ethan.png" } else { "https://space.mock.myagents.local/mock-avatar/lin.png" }
             },
             "notificationVersion": 1,
             "goalPathLabel": seeded_goal_label(idx),
@@ -1271,6 +1412,7 @@ fn initial_state() -> MockState {
     ];
 
     MockState {
+        user,
         tags,
         goals,
         issues,
@@ -1490,6 +1632,17 @@ fn create_issue(state: &mut MockState, body: Option<Value>) -> Result<Value, Str
     };
     let id = state.next_id("iss");
     let number = next_issue_number(state);
+    let user_id = state
+        .user
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or(MOCK_OWNER_USER_ID);
+    let user_name = state
+        .user
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("Ethan");
+    let user_avatar = state.user.get("avatarUrl").cloned().unwrap_or(Value::Null);
     let issue = json!({
         "id": id,
         "number": number,
@@ -1501,8 +1654,8 @@ fn create_issue(state: &mut MockState, body: Option<Value>) -> Result<Value, Str
         "state": "open",
         "humanOnly": body.get("humanOnly").and_then(Value::as_bool).unwrap_or(false),
         "status": "open",
-        "creator": { "id": "usr_mock_owner", "name": "Ethan" },
-        "author": { "id": "usr_mock_owner", "name": "Ethan" },
+        "creator": { "id": user_id, "name": user_name, "avatarUrl": user_avatar.clone() },
+        "author": { "id": user_id, "name": user_name, "avatarUrl": user_avatar },
         "notificationVersion": 1,
         "goalPathLabel": goal_path_label,
         "tags": tags_for(&state.tags, &tag_identities),
@@ -1954,9 +2107,14 @@ fn comment_issue(
             "Mock API",
         )
     };
+    let author_avatar = if author_type == "user" && author_id == MOCK_OWNER_USER_ID {
+        state.user.get("avatarUrl").cloned().unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
     let comment = json!({
         "id": state.next_id("cmt"),
-        "author": { "id": author_id, "type": author_type, "name": author_name },
+        "author": { "id": author_id, "type": author_type, "name": author_name, "avatarUrl": author_avatar },
         "body": text,
         "createdAt": "2026-06-24T09:39:00.000Z"
     });
@@ -2665,13 +2823,23 @@ fn seeded_comments(issue_id: &str, idx: usize) -> Vec<Value> {
     let mut comments = vec![
         json!({
             "id": format!("cmt_{}_001", issue_id),
-            "author": { "id": "usr_maya", "type": "user" },
+            "author": {
+                "id": "usr_maya",
+                "type": "user",
+                "name": "Maya Chen",
+                "avatarUrl": "https://space.mock.myagents.local/mock-avatar/maya.png"
+            },
             "body": "我复现了一次，先记录环境和当前判断，后面再让 Agent 接手验证。",
             "createdAt": "2026-06-23T10:08:00.000Z"
         }),
         json!({
             "id": format!("cmt_{}_002", issue_id),
-            "author": { "id": "rag_mock_frontend", "type": "registered_agent" },
+            "author": {
+                "id": "rag_mock_frontend",
+                "type": "registered_agent",
+                "name": "Frontend Review Agent",
+                "avatarUrl": null
+            },
             "body": "已读取 issue 上下文。建议先确认预期交互，再做最小复现和回归测试。",
             "createdAt": "2026-06-23T11:18:00.000Z"
         }),
@@ -2726,6 +2894,11 @@ fn skill(id: &str, name: &str, slug: &str, description: &str, revision: u32) -> 
         "slug": slug,
         "description": description,
         "latestRevision": revision,
+        "uploader": {
+            "id": MOCK_OWNER_USER_ID,
+            "name": "Ethan",
+            "avatarUrl": "https://space.mock.myagents.local/mock-avatar/ethan.png"
+        },
         "createdAt": "2026-06-10T08:00:00.000Z",
         "updatedAt": format!("2026-06-{:02}T12:00:00.000Z", 12 + (revision % 10))
     })
@@ -3090,6 +3263,21 @@ fn mock_space() -> Value {
         "name": "MyAgents社区",
         "joinPolicy": "open",
         "rootGoalId": MOCK_ROOT_GOAL_ID
+    })
+}
+
+fn mock_membership() -> Value {
+    json!({
+        "id": "mship_mock_owner",
+        "role": std::env::var("MYAGENTS_SPACE_MOCK_ROLE").unwrap_or_else(|_| "owner".to_string())
+    })
+}
+
+fn mock_me(state: &MockState) -> Value {
+    json!({
+        "user": state.user.clone(),
+        "space": mock_space(),
+        "membership": mock_membership()
     })
 }
 
