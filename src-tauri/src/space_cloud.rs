@@ -669,6 +669,12 @@ struct CloudEnvelope<T> {
     request_id: Option<String>,
     #[serde(default, rename = "recoveryHint")]
     recovery_hint: Option<Value>,
+    #[serde(default)]
+    quota: Option<String>,
+    #[serde(default)]
+    usage: Option<Value>,
+    #[serde(default)]
+    limit: Option<Value>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1133,7 +1139,7 @@ pub async fn cmd_space_register_agent(
         "/api/spaces/{}/registered-agents",
         session_space_segment(&session)
     );
-    let response = authorized_json_request(
+    let data = authorized_json_data_request(
         &session.base_url,
         &path,
         &session.session_token,
@@ -1141,10 +1147,6 @@ pub async fn cmd_space_register_agent(
         Some(body),
     )
     .await?;
-    let data = response
-        .get("data")
-        .cloned()
-        .ok_or_else(|| "Space API response missing data".to_string())?;
     let registered = data
         .get("registeredAgent")
         .cloned()
@@ -3353,6 +3355,19 @@ async fn parse_cloud_data<T: for<'de> Deserialize<'de>>(
                 message = format!("{} · {}", message, text);
             }
         }
+        if let Some(quota) = envelope.quota.as_deref().filter(|value| !value.trim().is_empty()) {
+            let usage = envelope
+                .usage
+                .as_ref()
+                .map(Value::to_string)
+                .unwrap_or_else(|| "?".to_string());
+            let limit = envelope
+                .limit
+                .as_ref()
+                .map(Value::to_string)
+                .unwrap_or_else(|| "?".to_string());
+            message = format!("{} · quota={} usage={} limit={}", message, quota, usage, limit);
+        }
         return Err(message);
     }
     envelope
@@ -4820,6 +4835,23 @@ mod tests {
             os_version: Some("macOS Test".to_string()),
             app_version: "0.2.46-test".to_string(),
         }
+    }
+
+    #[test]
+    fn legacy_space_session_json_defaults_multi_space_fields() {
+        let session: SpaceSession = serde_json::from_value(serde_json::json!({
+            "baseUrl": "https://space.myagents.test",
+            "sessionToken": "session-token",
+            "expiresAt": null,
+            "user": { "id": "usr_legacy" },
+            "space": { "id": "official", "slug": "official" },
+            "membership": { "role": "member" },
+            "updatedAt": "2026-07-06T00:00:00.000Z"
+        }))
+        .expect("legacy session should deserialize without new fields");
+
+        assert!(session.spaces.is_empty());
+        assert!(session.last_active_space_id.is_none());
     }
 
     fn test_registered_agent(

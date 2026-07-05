@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import { ArrowLeft, Bot, Check, Copy, Loader2, MoreHorizontal, RefreshCw, Settings, Shield, Trash2, UserPlus, Users } from "lucide-react";
 
 import {
@@ -48,12 +49,26 @@ function quotaText(used?: number, max?: number): string {
   return `${used} / ${max}`;
 }
 
-function menuItems(pendingCount: number) {
+function roleLabel(role: string, t: ReturnType<typeof useTranslation>["t"]): string {
+  if (role === "owner") return t("space.settings.roleOwner");
+  if (role === "admin") return t("space.settings.roleAdmin");
+  return t("space.settings.roleMember");
+}
+
+function menuItems(pendingCount: number, t: ReturnType<typeof useTranslation>["t"]) {
   return [
-    { id: "overview" as const, label: "Overview", icon: Settings, hint: "Space 基本信息与配额" },
-    { id: "members" as const, label: "Members", icon: Users, hint: pendingCount > 0 ? `${pendingCount} 人申请加入` : "成员、邀请与申请" },
-    { id: "agents" as const, label: "Agents", icon: Bot, hint: "登记 Agent 与订阅目标" },
-    { id: "roles" as const, label: "Roles & Permissions", icon: Shield, hint: "owner、admin、member 权限说明" },
+    { id: "overview" as const, label: t("space.settings.overview"), icon: Settings, hint: t("space.settings.overviewHint") },
+    {
+      id: "members" as const,
+      label: t("space.settings.members"),
+      icon: Users,
+      hint:
+        pendingCount > 0
+          ? t("space.settings.pendingJoinCount", { count: pendingCount })
+          : t("space.settings.membersHint"),
+    },
+    { id: "agents" as const, label: t("space.settings.agents"), icon: Bot, hint: t("space.settings.agentsHint") },
+    { id: "roles" as const, label: t("space.settings.roles"), icon: Shield, hint: t("space.settings.rolesHint") },
   ];
 }
 
@@ -74,6 +89,7 @@ export function SpaceSettingsWorkspace({
   onRefresh: () => Promise<void>;
   onRegister: () => void;
 }) {
+  const { t } = useTranslation("app");
   const toast = useToast();
   const fileService = useWorkspaceFileService(null);
   const [section, setSection] = useState<SettingsSection | null>(null);
@@ -90,6 +106,16 @@ export function SpaceSettingsWorkspace({
   const pendingCount = session.spaces?.find((space) => space.id === session.space.id)?.pendingJoinRequestCount ?? 0;
   const overviewUsage = membersState?.usage;
   const overviewLimits = membersState?.limits ?? session.spaces?.find((space) => space.id === session.space.id)?.limits;
+  const memberQuotaReached = Boolean(
+    overviewUsage &&
+      overviewLimits &&
+      overviewUsage.memberSeats >= overviewLimits.joinedMembersMax,
+  );
+  const agentQuotaReached = Boolean(
+    overviewUsage &&
+      overviewLimits &&
+      overviewUsage.registeredAgents >= overviewLimits.registeredAgentsMax,
+  );
 
   useEffect(() => {
     setName(session.space.name);
@@ -99,7 +125,7 @@ export function SpaceSettingsWorkspace({
   }, [session.space.id, session.space.name, session.space.avatarUrl]);
 
   useEffect(() => {
-    if (section !== "members" && section !== "overview") return;
+    if (section !== "members" && section !== "overview" && section !== "agents") return;
     let cancelled = false;
     setMembersLoading(true);
     spaceGetMembers(session.space.slug || session.space.id)
@@ -118,13 +144,13 @@ export function SpaceSettingsWorkspace({
   }, [section, session.space.id, session.space.slug, toast]);
 
   const activeTitle = useMemo(() => {
-    if (!section) return "Settings";
-    return menuItems(pendingCount).find((item) => item.id === section)?.label ?? "Settings";
-  }, [pendingCount, section]);
+    if (!section) return t("space.sidebar.settings");
+    return menuItems(pendingCount, t).find((item) => item.id === section)?.label ?? t("space.sidebar.settings");
+  }, [pendingCount, section, t]);
 
   const copySlug = async () => {
     await navigator.clipboard.writeText(session.space.slug || session.space.id);
-    toast.success("已复制 Space slug");
+    toast.success(t("space.toasts.spaceSlugCopied"));
   };
 
   const pickAvatar = async () => {
@@ -147,7 +173,7 @@ export function SpaceSettingsWorkspace({
         name: name.trim(),
         avatarFilePath,
       });
-      toast.success("Space 已更新");
+      toast.success(t("space.toasts.spaceUpdated"));
       await actions.ensureBootstrapped({ force: true });
       setEditingOverview(false);
     } catch (error) {
@@ -201,7 +227,7 @@ export function SpaceSettingsWorkspace({
             </button>
           ) : null}
           <div className="min-w-0">
-            <div className="text-xs font-medium text-[var(--ink-muted)]">{section ? "Settings >" : session.space.name}</div>
+            <div className="text-xs font-medium text-[var(--ink-muted)]">{section ? `${t("space.sidebar.settings")} >` : session.space.name}</div>
             <h2 className="truncate text-lg font-semibold text-[var(--ink)]">{activeTitle}</h2>
           </div>
         </div>
@@ -223,6 +249,8 @@ export function SpaceSettingsWorkspace({
         actions={actions}
         onRefresh={onRefresh}
         onRegister={onRegister}
+        registerDisabled={agentQuotaReached}
+        registerDisabledHint={agentQuotaReached ? t("space.settings.agentQuotaReached") : undefined}
       />,
     );
   }
@@ -230,10 +258,10 @@ export function SpaceSettingsWorkspace({
   if (section === "roles") {
     return renderShell(
       <div className="max-w-3xl space-y-4 text-sm leading-relaxed text-[var(--ink-secondary)]">
-        <h3 className="text-base font-semibold text-[var(--ink)]">Roles & Permissions</h3>
-        <p><strong className="text-[var(--ink)]">Owner</strong> 可以管理 Space 信息、成员、申请、邀请、Skills、Goals、Issues 与 Registered Agents。Owner 身份不能被 admin 修改或移除。</p>
-        <p><strong className="text-[var(--ink)]">Admin</strong> 可以进入 Settings，管理成员、申请、邀请、Skills、Goals、Issues 与 Registered Agents，但不能改变 owner。</p>
-        <p><strong className="text-[var(--ink)]">Member</strong> 可以浏览和参与当前 Space 的协作内容，但看不到 Settings 入口，也不能管理成员或登记 Agent。</p>
+        <h3 className="text-base font-semibold text-[var(--ink)]">{t("space.settings.roles")}</h3>
+        <p><strong className="text-[var(--ink)]">{t("space.settings.roleOwner")}</strong> {t("space.settings.ownerDescription")}</p>
+        <p><strong className="text-[var(--ink)]">{t("space.settings.roleAdmin")}</strong> {t("space.settings.adminDescription")}</p>
+        <p><strong className="text-[var(--ink)]">{t("space.settings.roleMember")}</strong> {t("space.settings.memberDescription")}</p>
       </div>,
     );
   }
@@ -243,19 +271,24 @@ export function SpaceSettingsWorkspace({
       <div className="space-y-5">
         <div className="flex flex-wrap items-end gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-3">
           <label className="min-w-0 flex-1 text-xs font-semibold text-[var(--ink-muted)]">
-            Email
+            {t("space.settings.email")}
             <input value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]" />
           </label>
-          <CustomSelect value={inviteRole} onChange={(value) => setInviteRole(value === "admin" ? "admin" : "member")} size="toolbar" className="w-32" options={[{ value: "member", label: "成员" }, { value: "admin", label: "管理员" }]} />
-          <button type="button" onClick={invite} disabled={busyKey === "invite"} className="flex h-9 items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] disabled:opacity-60">
+          <CustomSelect value={inviteRole} onChange={(value) => setInviteRole(value === "admin" ? "admin" : "member")} size="toolbar" className="w-32" options={[{ value: "member", label: t("space.settings.roleMember") }, { value: "admin", label: t("space.settings.roleAdmin") }]} />
+          <button type="button" onClick={invite} disabled={busyKey === "invite" || memberQuotaReached} title={memberQuotaReached ? t("space.settings.memberQuotaReached") : undefined} className="flex h-9 items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] disabled:cursor-not-allowed disabled:opacity-60">
             {busyKey === "invite" ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
-            添加
+            {t("space.settings.addMember")}
           </button>
         </div>
-        {membersLoading ? <div className="text-sm text-[var(--ink-muted)]">Loading...</div> : null}
+        {memberQuotaReached ? (
+          <div className="rounded-lg border border-[var(--line)] bg-[var(--warning-bg)] px-3 py-2 text-xs font-medium text-[var(--warning)]">
+            {t("space.settings.memberQuotaReached")}
+          </div>
+        ) : null}
+        {membersLoading ? <div className="text-sm text-[var(--ink-muted)]">{t("space.settings.loadingMembers")}</div> : null}
         {membersState?.joinRequests.length ? (
           <div className="space-y-2">
-            <h3 className="text-sm font-semibold text-[var(--ink)]">申请加入</h3>
+            <h3 className="text-sm font-semibold text-[var(--ink)]">{t("space.settings.joinRequests")}</h3>
             {membersState.joinRequests.map((request) => (
               <div key={request.id} className="flex items-center gap-3 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2">
                 <SpaceAvatar name={request.user.name} email={request.user.email} avatarUrl={request.user.avatarUrl} size={28} />
@@ -263,7 +296,7 @@ export function SpaceSettingsWorkspace({
                   <div className="truncate text-sm font-semibold text-[var(--ink)]">{request.user.name || request.user.email}</div>
                   <div className="truncate text-xs text-[var(--ink-muted)]">{request.user.email}</div>
                 </div>
-                <button type="button" onClick={() => runMemberAction(`approve:${request.id}`, () => spaceApproveJoinRequest({ spaceId: session.space.slug || session.space.id, requestId: request.id }))} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--success)] hover:bg-[var(--hover-bg)]">
+                <button type="button" disabled={memberQuotaReached} title={memberQuotaReached ? t("space.settings.memberQuotaReached") : undefined} onClick={() => runMemberAction(`approve:${request.id}`, () => spaceApproveJoinRequest({ spaceId: session.space.slug || session.space.id, requestId: request.id }))} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--success)] hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-40">
                   <Check className="h-4 w-4" />
                 </button>
                 <button type="button" onClick={() => runMemberAction(`reject:${request.id}`, () => spaceRejectJoinRequest({ spaceId: session.space.slug || session.space.id, requestId: request.id }))} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--error)] hover:bg-[var(--hover-bg)]">
@@ -273,8 +306,22 @@ export function SpaceSettingsWorkspace({
             ))}
           </div>
         ) : null}
+        {membersState?.invitations.length ? (
+          <div className="space-y-2">
+            <h3 className="text-sm font-semibold text-[var(--ink)]">{t("space.settings.pendingInvitations")}</h3>
+            {membersState.invitations.map((invitation) => (
+              <div key={invitation.id} className="flex items-center gap-3 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2">
+                <SpaceAvatar name={invitation.email} email={invitation.email} size={28} />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-semibold text-[var(--ink)]">{invitation.email}</div>
+                  <div className="truncate text-xs text-[var(--ink-muted)]">{roleLabel(invitation.role, t)} · {invitation.status}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : null}
         <div className="space-y-2">
-          <h3 className="text-sm font-semibold text-[var(--ink)]">成员</h3>
+          <h3 className="text-sm font-semibold text-[var(--ink)]">{t("space.settings.members")}</h3>
           {membersState?.members.map((member: SpaceMember) => (
             <div key={member.id} className="group flex items-center gap-3 border-b border-[var(--line-subtle)] px-1 py-3">
               <SpaceAvatar name={member.user.name} email={member.user.email} avatarUrl={member.user.avatarUrl} size={30} />
@@ -282,19 +329,19 @@ export function SpaceSettingsWorkspace({
                 <div className="truncate text-sm font-semibold text-[var(--ink)]">{member.user.name || member.user.email}</div>
                 <div className="truncate text-xs text-[var(--ink-muted)]">{member.user.email}</div>
               </div>
-              <span className="rounded-full bg-[var(--paper-inset)] px-2 py-1 text-xs font-semibold text-[var(--ink-muted)]">{member.role}</span>
+              <span className="rounded-full bg-[var(--paper-inset)] px-2 py-1 text-xs font-semibold text-[var(--ink-muted)]">{roleLabel(member.role, t)}</span>
               {member.role !== "owner" ? (
                 <div className="relative">
-                  <button type="button" onClick={() => setMenuMemberId(menuMemberId === member.id ? null : member.id)} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] opacity-100 hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]">
+                  <button type="button" onClick={() => setMenuMemberId(menuMemberId === member.id ? null : member.id)} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] opacity-0 transition-opacity hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] group-hover:opacity-100">
                     <MoreHorizontal className="h-4 w-4" />
                   </button>
                   {menuMemberId === member.id ? (
                     <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-1 shadow-md">
                       <button type="button" onClick={() => runMemberAction(`role:${member.id}`, () => spaceUpdateMemberRole({ spaceId: session.space.slug || session.space.id, memberId: member.id, role: member.role === "admin" ? "member" : "admin" }))} className="w-full rounded-md px-2 py-1.5 text-left text-xs text-[var(--ink)] hover:bg-[var(--hover-bg)]">
-                        调整身份
+                        {member.role === "admin" ? t("space.settings.changeToMember") : t("space.settings.changeToAdmin")}
                       </button>
                       <button type="button" onClick={() => runMemberAction(`remove:${member.id}`, () => spaceRemoveMember({ spaceId: session.space.slug || session.space.id, memberId: member.id }))} className="w-full rounded-md px-2 py-1.5 text-left text-xs text-[var(--error)] hover:bg-[var(--hover-bg)]">
-                        移除
+                        {t("space.settings.removeMember")}
                       </button>
                     </div>
                   ) : null}
@@ -330,29 +377,32 @@ export function SpaceSettingsWorkspace({
               </div>
             </div>
             <button type="button" onClick={() => setEditingOverview((value) => !value)} className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]">
-              编辑
+              {editingOverview ? t("space.common.cancel") : t("space.settings.editOverview")}
             </button>
           </div>
           {editingOverview ? (
             <div className="mt-4 flex items-center gap-2">
               <button type="button" onClick={pickAvatar} className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]">
-                选择头像
+                {t("space.spaceActions.chooseAvatar")}
               </button>
               <button type="button" onClick={saveOverview} disabled={busyKey === "overview" || !name.trim()} className="flex items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-semibold text-[var(--button-primary-text)] disabled:opacity-60">
                 {busyKey === "overview" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                保存
+                {t("space.common.save")}
               </button>
             </div>
           ) : null}
         </div>
         <div className="grid gap-3 md:grid-cols-2">
           <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4 text-sm text-[var(--ink-secondary)]">
-            <div className="mb-2 font-semibold text-[var(--ink)]">Free quota</div>
-            <div>Members: {quotaText(overviewUsage?.memberSeats, overviewLimits?.joinedMembersMax)}</div>
-            <div>Open issues: {quotaText(overviewUsage?.openIssues, overviewLimits?.openIssuesMax)}</div>
-            <div>Skills: {quotaText(overviewUsage?.hostedSkills, overviewLimits?.hostedSkillsMax)}</div>
-            <div>Agents: {quotaText(overviewUsage?.registeredAgents, overviewLimits?.registeredAgentsMax)}</div>
-            <div>Storage: {formatBytes(overviewUsage?.storageBytes ?? 0)} / {formatBytes(overviewLimits?.storageBytesMax ?? 1024 * 1024 * 1024)}</div>
+            <div className="mb-2 font-semibold text-[var(--ink)]">{t("space.settings.freeQuota")}</div>
+            <div>{t("space.settings.plan")}: {session.space.planTier ?? "free"}</div>
+            <div>{t("space.settings.currentRole")}: {roleLabel(session.membership.role, t)}</div>
+            <div>{t("space.settings.joinPolicy")}: {session.space.joinPolicy}</div>
+            <div>{t("space.settings.quotaMembers")}: {quotaText(overviewUsage?.memberSeats, overviewLimits?.joinedMembersMax)}</div>
+            <div>{t("space.settings.quotaOpenIssues")}: {quotaText(overviewUsage?.openIssues, overviewLimits?.openIssuesMax)}</div>
+            <div>{t("space.settings.quotaSkills")}: {quotaText(overviewUsage?.hostedSkills, overviewLimits?.hostedSkillsMax)}</div>
+            <div>{t("space.settings.quotaAgents")}: {quotaText(overviewUsage?.registeredAgents, overviewLimits?.registeredAgentsMax)}</div>
+            <div>{t("space.settings.quotaStorage")}: {formatBytes(overviewUsage?.storageBytes ?? 0)} / {formatBytes(overviewLimits?.storageBytesMax ?? 1024 * 1024 * 1024)}</div>
           </div>
         </div>
       </div>,
@@ -361,7 +411,7 @@ export function SpaceSettingsWorkspace({
 
   return renderShell(
     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-      {menuItems(pendingCount).map((item) => {
+      {menuItems(pendingCount, t).map((item) => {
         const Icon = item.icon;
         return (
           <button key={item.id} type="button" onClick={() => setSection(item.id)} className="min-h-28 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4 text-left transition-colors hover:border-[var(--accent-warm)] hover:bg-[var(--paper)]">

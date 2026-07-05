@@ -190,6 +190,8 @@ export function AgentsWorkspace({
   actions,
   onRefresh,
   onRegister,
+  registerDisabled = false,
+  registerDisabledHint,
 }: {
   admin: boolean;
   agents: LocalRegisteredAgent[];
@@ -198,6 +200,8 @@ export function AgentsWorkspace({
   actions: SpaceActions;
   onRefresh: () => Promise<void>;
   onRegister: () => void;
+  registerDisabled?: boolean;
+  registerDisabledHint?: string;
 }) {
   const { t } = useTranslation("app");
   const toast = useToast();
@@ -258,6 +262,8 @@ export function AgentsWorkspace({
               <button
                 type="button"
                 onClick={onRegister}
+                disabled={registerDisabled}
+                title={registerDisabledHint}
                 className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}
               >
                 <Plus className="h-4 w-4" />
@@ -287,7 +293,9 @@ export function AgentsWorkspace({
                   <button
                     type="button"
                     onClick={onRegister}
-                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]"
+                    disabled={registerDisabled}
+                    title={registerDisabledHint}
+                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60"
                   >
                     <Plus className="h-4 w-4" />
                     {t("space.agents.registerAgent")}

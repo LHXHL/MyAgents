@@ -10,6 +10,7 @@ import {
   spaceCreateSpace,
   spaceErrorMessage,
   spaceJoinSpace,
+  spaceUpdateSpace,
   type LocalRegisteredAgent,
   type SpaceIssueSubscriptionRunMode,
   type SpaceEvent,
@@ -21,6 +22,7 @@ import OverlayBackdrop from "@/components/OverlayBackdrop";
 import { useToast } from "@/components/Toast";
 import { useConfig } from "@/hooks/useConfig";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
+import { useWorkspaceFileService } from "@/hooks/useWorkspaceFileService";
 import { getDeviceId, preloadDeviceId } from "@/identity/deviceIdentity";
 import {
   ACTIVE_ISSUE_STATE_FILTER,
@@ -50,6 +52,7 @@ import {
   SpaceSidebar,
   type SpaceViewMode as ViewMode,
 } from "@/pages/space/SpaceChrome";
+import { SpaceAvatar } from "@/pages/space/SpaceAvatar";
 import SpaceProfileSettingsDialog from "@/pages/space/SpaceProfileSettingsDialog";
 import {
   nowForSpaceMetric,
@@ -63,6 +66,38 @@ import {
 const AUTH_POLL_DELAY_MS = 2000;
 const SPACE_EVENTS_SYNC_INTERVAL_MS = 15_000;
 
+type SpaceQuickActionSubmitInput =
+  | { mode: "join"; slug: string }
+  | {
+      mode: "create";
+      name: string;
+      slug: string;
+      avatarFilePath?: string | null;
+    };
+
+function spaceSlugCandidate(value: string): string {
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || "space"
+  );
+}
+
+async function readPickedImagePreview(
+  fileService: ReturnType<typeof useWorkspaceFileService>,
+  path: string,
+): Promise<string> {
+  const result = await fileService.readPathsAsBase64({ paths: [path] });
+  const file = result.files[0];
+  if (!file || file.error) {
+    throw new Error(file?.error || "Avatar preview failed");
+  }
+  return `data:${file.mimeType};base64,${file.data}`;
+}
+
 function SpaceQuickActionDialog({
   mode,
   busy,
@@ -72,20 +107,59 @@ function SpaceQuickActionDialog({
   mode: "join" | "create";
   busy: boolean;
   onClose: () => void;
-  onSubmit: (value: string) => void | Promise<void>;
+  onSubmit: (input: SpaceQuickActionSubmitInput) => void | Promise<void>;
 }) {
-  const [value, setValue] = useState("");
+  const { t } = useTranslation("app");
+  const toast = useToast();
+  const fileService = useWorkspaceFileService(null);
+  const [joinSlug, setJoinSlug] = useState("");
+  const [name, setName] = useState("");
+  const [createSlug, setCreateSlug] = useState("");
+  const [slugEdited, setSlugEdited] = useState(false);
+  const [avatarFilePath, setAvatarFilePath] = useState<string | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   useCloseLayer(() => {
     if (busy) return false;
     onClose();
     return true;
   }, 220);
-  const title = mode === "join" ? "加入 Space" : "创建 Space";
-  const label = mode === "join" ? "Space slug" : "Space 名称";
-  const trimmed = value.trim();
+  const title =
+    mode === "join" ? t("space.spaceActions.joinTitle") : t("space.spaceActions.createTitle");
+  const canSubmit =
+    mode === "join" ? Boolean(joinSlug.trim()) : Boolean(name.trim() && createSlug.trim());
+  const submit = () => {
+    if (!canSubmit || busy) return;
+    if (mode === "join") {
+      void onSubmit({ mode: "join", slug: joinSlug.trim() });
+      return;
+    }
+    void onSubmit({
+      mode: "create",
+      name: name.trim(),
+      slug: createSlug.trim(),
+      avatarFilePath,
+    });
+  };
+  const pickAvatar = async () => {
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        filters: [
+          { name: t("space.profile.imageFilter"), extensions: ["png", "jpg", "jpeg", "webp"] },
+        ],
+      });
+      if (!selected || Array.isArray(selected)) return;
+      setAvatarFilePath(selected);
+      setAvatarPreview(await readPickedImagePreview(fileService, selected));
+    } catch (error) {
+      toast.error(spaceErrorMessage(error));
+    }
+  };
   return (
     <OverlayBackdrop onClose={busy ? undefined : onClose} className="z-[220] items-center justify-center px-4 py-8">
-      <section className="w-full max-w-sm rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl">
+      <section className="w-full max-w-md rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl">
         <header className="flex min-h-12 items-center justify-between border-b border-[var(--line-subtle)] px-4">
           <h2 className="text-lg font-semibold text-[var(--ink)]">{title}</h2>
           <button type="button" disabled={busy} onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-50">
@@ -93,20 +167,60 @@ function SpaceQuickActionDialog({
           </button>
         </header>
         <div className="space-y-3 p-4">
-          <label className="block text-xs font-semibold text-[var(--ink-muted)]">
-            {label}
-            <input
-              value={value}
-              autoFocus
-              onChange={(event) => setValue(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && trimmed && !busy)
-                  void onSubmit(trimmed);
-              }}
-              className="mt-1 h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]"
-            />
-          </label>
-          <button type="button" disabled={!trimmed || busy} onClick={() => void onSubmit(trimmed)} className="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] disabled:cursor-not-allowed disabled:opacity-60">
+          {mode === "join" ? (
+            <label className="block text-xs font-semibold text-[var(--ink-muted)]">
+              {t("space.spaceActions.slug")}
+              <input
+                value={joinSlug}
+                autoFocus
+                onChange={(event) => setJoinSlug(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") submit();
+                }}
+                className="mt-1 h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]"
+              />
+            </label>
+          ) : (
+            <>
+              <div className="flex items-center gap-3">
+                <SpaceAvatar name={name} avatarUrl={avatarPreview} size={44} />
+                <button type="button" onClick={pickAvatar} disabled={busy} className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-60">
+                  {t("space.spaceActions.chooseAvatar")}
+                </button>
+              </div>
+              <label className="block text-xs font-semibold text-[var(--ink-muted)]">
+                {t("space.spaceActions.name")}
+                <input
+                  value={name}
+                  autoFocus
+                  onChange={(event) => {
+                    const nextName = event.target.value;
+                    setName(nextName);
+                    if (!slugEdited) setCreateSlug(spaceSlugCandidate(nextName));
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") submit();
+                  }}
+                  className="mt-1 h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]"
+                />
+              </label>
+              <label className="block text-xs font-semibold text-[var(--ink-muted)]">
+                {t("space.spaceActions.slug")}
+                <input
+                  value={createSlug}
+                  onChange={(event) => {
+                    setSlugEdited(true);
+                    setCreateSlug(spaceSlugCandidate(event.target.value));
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") submit();
+                  }}
+                  className="mt-1 h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]"
+                />
+              </label>
+            </>
+          )}
+          <button type="button" disabled={!canSubmit || busy} onClick={submit} className="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] disabled:cursor-not-allowed disabled:opacity-60">
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             {title}
           </button>
@@ -480,6 +594,18 @@ export default function Space({ isActive }: { isActive: boolean }) {
           refreshBoot = true;
           refreshIssueList = true;
         }
+        if (
+          resourceType === "space" ||
+          resourceType === "membership" ||
+          resourceType === "join_request" ||
+          resourceType === "invitation" ||
+          type.startsWith("space.") ||
+          type.startsWith("membership.") ||
+          type.startsWith("join_request.") ||
+          type.startsWith("invitation.")
+        ) {
+          refreshBoot = true;
+        }
       }
 
       const jobs: Array<Promise<void>> = [];
@@ -678,23 +804,37 @@ export default function Space({ isActive }: { isActive: boolean }) {
     setSpaceDialogMode("create");
   }, []);
 
-  const submitSpaceDialog = useCallback(async (value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed || !spaceDialogMode) return;
+  const submitSpaceDialog = useCallback(async (input: SpaceQuickActionSubmitInput) => {
+    if (!spaceDialogMode || input.mode !== spaceDialogMode) return;
     setSpaceDialogBusy(true);
     try {
-      if (spaceDialogMode === "join") {
-        const result = await spaceJoinSpace({ slug: trimmed });
+      if (input.mode === "join") {
+        const result = await spaceJoinSpace({ slug: input.slug });
         toast.success(
-          result.status === "pending" ? "已提交加入申请" : "已加入 Space",
+          result.status === "pending"
+            ? t("space.toasts.spaceJoinRequested")
+            : t("space.toasts.spaceJoined"),
         );
         await actions.ensureBootstrapped({ force: true });
         if (result.status === "joined") {
           await actions.switchSpace(result.space.id || result.space.slug);
         }
       } else {
-        const result = await spaceCreateSpace({ name: trimmed });
-        toast.success("Space 已创建");
+        const result = await spaceCreateSpace({
+          name: input.name,
+          slug: input.slug,
+        });
+        if (input.avatarFilePath) {
+          try {
+            await spaceUpdateSpace({
+              spaceId: result.space.id || result.space.slug,
+              avatarFilePath: input.avatarFilePath,
+            });
+          } catch (error) {
+            toast.warning(spaceErrorMessage(error));
+          }
+        }
+        toast.success(t("space.toasts.spaceCreated"));
         await actions.ensureBootstrapped({ force: true });
         await actions.switchSpace(result.space.id || result.space.slug);
       }
@@ -704,7 +844,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
     } finally {
       setSpaceDialogBusy(false);
     }
-  }, [actions, spaceDialogMode, toast]);
+  }, [actions, spaceDialogMode, t, toast]);
 
   const logout = useCallback(async () => {
     try {

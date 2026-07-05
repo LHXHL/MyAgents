@@ -120,6 +120,7 @@ export interface SpaceInvitation {
 
 export interface SpaceMembersPayload {
   members: SpaceMember[];
+  items?: SpaceMember[];
   joinRequests: SpaceJoinRequest[];
   invitations: SpaceInvitation[];
   usage: SpaceUsage;
@@ -515,6 +516,9 @@ export interface SpaceApiEnvelope<T> {
     message: string;
     recoveryCommand?: string;
   };
+  quota?: string;
+  limit?: number;
+  usage?: number;
   hint?: string;
 }
 
@@ -594,6 +598,10 @@ function operationFromPath(context?: SpaceErrorContext): string {
     return spaceText("operations.completeIssue");
   if (method === "POST" && /\/api\/issues\/[^/]+\/cancel-claim$/.test(path))
     return spaceText("operations.cancelClaim");
+  if (method === "POST" && path === "/api/spaces")
+    return spaceText("operations.createSpace");
+  if (method === "POST" && path === "/api/spaces/join")
+    return spaceText("operations.joinSpace");
   if (path.includes("/goals")) return spaceText("operations.goal");
   if (path.includes("/attachments")) return spaceText("operations.attachment");
   if (path.includes("/skills")) return spaceText("operations.skill");
@@ -621,11 +629,52 @@ export function normalizeSpaceError(
   const code = typeof envelope?.code === "string" ? envelope.code : "";
   const requestId =
     typeof envelope?.requestId === "string" ? envelope.requestId : "";
+  const quota =
+    typeof envelope?.quota === "string"
+      ? envelope.quota
+      : raw.match(/\bquota=([A-Za-z0-9_]+)/)?.[1] ?? "";
+  const rawLimit = Number(raw.match(/\blimit=(\d+)/)?.[1] ?? Number.NaN);
+  const rawUsage = Number(raw.match(/\busage=(\d+)/)?.[1] ?? Number.NaN);
+  const quotaLimit =
+    typeof envelope?.limit === "number"
+      ? envelope.limit
+      : Number.isFinite(rawLimit)
+        ? rawLimit
+        : null;
+  const quotaUsage =
+    typeof envelope?.usage === "number"
+      ? envelope.usage
+      : Number.isFinite(rawUsage)
+        ? rawUsage
+        : null;
   const recoveryMessage =
     typeof envelope?.recoveryHint?.message === "string"
       ? envelope.recoveryHint.message.trim()
       : "";
   const debugSuffix = [code, requestId].filter(Boolean).join(" ");
+
+  if (code === "SPACE_QUOTA_EXCEEDED" || raw.includes("SPACE_QUOTA_EXCEEDED")) {
+    const quotaLabel = quota ? spaceText(`quotas.${quota}`) : spaceText("quotas.default");
+    return {
+      userMessage:
+        quotaLimit !== null && quotaUsage !== null
+          ? spaceText("templates.quotaExceededWithUsage", {
+              operation,
+              quota: quotaLabel,
+              usage: quotaUsage,
+              limit: quotaLimit,
+            })
+          : spaceText("templates.quotaExceeded", { operation, quota: quotaLabel }),
+      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(" · "),
+    };
+  }
+
+  if (code === "SPACE_SLUG_CONFLICT") {
+    return {
+      userMessage: spaceText("templates.slugConflict", { operation }),
+      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(" · "),
+    };
+  }
 
   if (code === "NOT_AUTHENTICATED" || code === "SESSION_EXPIRED") {
     return {
@@ -805,7 +854,7 @@ export function spaceListSpaces(): Promise<{
   return spaceApi("GET", "/api/spaces");
 }
 
-export function spaceCreateSpace(input: { name: string }) {
+export function spaceCreateSpace(input: { name: string; slug?: string }) {
   return spaceApi<{
     space: SpaceInfo;
     membership: SpaceMembership;
