@@ -418,7 +418,7 @@ fox 当前 `store:true` 502，因此它必须保持 P0 的 stateless full replay
 - [x] A7 更新 PRD frontmatter 与台账，提交 git commit。
 - [x] A8 追加实现 Chat Completions `prompt_cache_key` 注入、协议命名空间隔离与同 token 降级复用。
 - [x] A9 补 Chat Completions 单测 / fake upstream 集成测试 / 本机 Chat Completions smoke。
-- [x] A10 重新运行静态检查、针对性测试；追加 commit hash 待提交后回填。
+- [x] A10 重新运行静态检查、针对性测试并提交追加 commit。
 
 ### 待用户决策
 
@@ -436,4 +436,4 @@ fox 当前 `store:true` 502，因此它必须保持 P0 的 stateless full replay
 - 2026-07-05：追加 Chat Completions 支持：active OpenAI bridge sessions 统一注入 protocol-scoped `myagents:chat_completions:<hash>`；one-shot 仍不带；unknown/unsupported 参数沿用当前 bridge token 的一次 retry + 后续禁用机制；错误脱敏扩展到 Chat key 命名空间。
 - 2026-07-05：追加验证通过：`npm run test:unit -- src/server/openai-bridge/prompt-cache.unit.test.ts src/server/openai-bridge/translate/request-prompt-cache.unit.test.ts src/server/openai-bridge/translate/usage-streaming.unit.test.ts src/server/openai-bridge/translate/request-reasoning-effort.unit.test.ts src/server/openai-bridge/translate/request-model-suffix.unit.test.ts`；`npm run test:integration -- src/server/openai-bridge/handler-prompt-cache.integration.test.ts src/server/__tests__/bridge-registry.integration.test.ts`；`npm run typecheck`；`npm run lint`（depcruise 仅既有 `chatSuggestions.ts` orphan warning，无 error）；`npm run build:server`；`git diff --check`。
 - 2026-07-05：真实 siliconflow Chat Completions smoke 通过：短请求 status=200，`prompt_cache_key` 未触发兼容性降级；短 prompt 不以 cached_tokens 命中数作为验收依据。当前子代理工具要求用户显式授权才可 spawn，未执行三路 cross-review；降级 `codex exec -s read-only` 审查读到 owner/测试/隐私路径且未产出必须修复项，但在官方检索阶段卡住后中止。
-- 2026-07-05：追加提交待回填：`fix(openai-bridge): add chat completions prompt cache affinity`。
+- 2026-07-05：追加提交完成：`639eb736 fix(openai-bridge): add chat completions prompt cache affinity`。
