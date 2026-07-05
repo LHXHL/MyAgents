@@ -10,7 +10,7 @@ use crate::space_cloud::{
     LocalRegisteredAgent, LocalRegisteredAgentPublic, SpaceApiRequestInput,
     SpaceDownloadAttachmentResult, SpaceIssueSubscriptionRunMode, SpaceProcessDeliveryResult,
     SpaceRegisterAgentInput, SpaceSession, SpaceSessionPublic, SpaceUpdateProfileInput,
-    SpaceUploadIssueAttachmentsInput, SpaceUploadSkillInput, MAX_ATTACHMENT_UPLOAD_BYTES,
+    SpaceUpdateSpaceInput, SpaceUploadIssueAttachmentsInput, SpaceUploadSkillInput, MAX_ATTACHMENT_UPLOAD_BYTES,
     MAX_ATTACHMENT_UPLOAD_COUNT, MAX_SKILL_ZIP_BYTES,
 };
 use crate::workspace_files::path_safety::{
@@ -107,6 +107,8 @@ pub fn session() -> SpaceSession {
         user,
         space: mock_space(),
         membership: mock_membership(),
+        spaces: vec![mock_space_list_item()],
+        last_active_space_id: Some(MOCK_SPACE_ID.to_string()),
         updated_at: "2026-06-24T09:00:00.000Z".to_string(),
     }
 }
@@ -538,9 +540,46 @@ pub fn update_profile(input: SpaceUpdateProfileInput) -> Result<SpaceSessionPubl
         user: state.user.clone(),
         space: mock_space(),
         membership: mock_membership(),
+        spaces: vec![mock_space_list_item()],
+        last_active_space_id: Some(MOCK_SPACE_ID.to_string()),
         updated_at: chrono::Utc::now().to_rfc3339(),
     }
     .into())
+}
+
+pub fn update_space(input: SpaceUpdateSpaceInput) -> Result<SpaceSessionPublic, String> {
+    if input.space_id.trim().is_empty() {
+        return Err("Space id is required".to_string());
+    }
+    if let Some(name) = input.name.as_deref() {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err("Space name is required".to_string());
+        }
+        if trimmed.chars().count() > 80 {
+            return Err("Space name must be at most 80 characters".to_string());
+        }
+    }
+    if let Some(path) = input
+        .avatar_file_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        let file_path = PathBuf::from(path);
+        if !file_path.is_absolute() {
+            return Err("Avatar image path must be absolute".to_string());
+        }
+        let ext = file_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .ok_or_else(|| "Avatar image must be png, jpg, jpeg, or webp".to_string())?;
+        if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+            return Err("Avatar image must be png, jpg, jpeg, or webp".to_string());
+        }
+    }
+    Ok(session().into())
 }
 
 fn patch_actor_summary(value: &mut Value, user_id: &str, name: &str, avatar_url: &Value) {
@@ -778,16 +817,42 @@ fn handle_api_data_request(
     let actor = mock_actor_for_token(&state, token);
     let segments = path.trim_matches('/').split('/').collect::<Vec<_>>();
     match (method, segments.as_slice()) {
+        ("GET", ["api", "spaces"]) => Ok(mock_me(&state)),
         ("GET", ["api", "spaces", "official"]) => Ok(json!({
             "space": mock_space(),
             "membership": mock_membership(),
             "goals": active_goals(&state),
-            "tags": state.tags
+            "tags": state.tags,
+            "usage": mock_usage(&state),
+            "limits": mock_limits()
+        })),
+        ("PATCH", ["api", "spaces", "official"]) | ("PATCH", ["api", "spaces", MOCK_SPACE_ID]) => Ok(json!({
+            "space": mock_space(),
+            "usage": mock_usage(&state),
+            "limits": mock_limits()
         })),
         ("GET", ["api", "me"]) => Ok(mock_me(&state)),
         ("POST", ["api", "me", "profile"]) => {
             Err("Mock profile updates must use cmd_space_update_profile".to_string())
         }
+        ("GET", ["api", "spaces", "official", "usage"]) | ("GET", ["api", "spaces", MOCK_SPACE_ID, "usage"]) => Ok(json!({
+            "usage": mock_usage(&state),
+            "limits": mock_limits()
+        })),
+        ("GET", ["api", "spaces", "official", "members"]) | ("GET", ["api", "spaces", MOCK_SPACE_ID, "members"]) => Ok(json!({
+            "members": [{
+                "id": "mship_mock_owner",
+                "spaceId": MOCK_SPACE_ID,
+                "userId": MOCK_OWNER_USER_ID,
+                "role": "owner",
+                "createdAt": "2026-06-24T09:00:00.000Z",
+                "user": state.user.clone()
+            }],
+            "joinRequests": [],
+            "invitations": [],
+            "usage": mock_usage(&state),
+            "limits": mock_limits()
+        })),
         ("GET", ["api", "spaces", "official", "goals"]) => Ok(list_goals(&state, &query)),
         ("POST", ["api", "spaces", "official", "goals"]) => create_goal(&mut state, body),
         ("PATCH", ["api", "goals", goal_id]) => update_goal(&mut state, goal_id, body),
@@ -3393,8 +3458,53 @@ fn mock_space() -> Value {
         "id": MOCK_SPACE_ID,
         "slug": "official",
         "name": "MyAgents社区",
-        "joinPolicy": "open",
-        "rootGoalId": MOCK_ROOT_GOAL_ID
+        "joinPolicy": "open_join",
+        "rootGoalId": MOCK_ROOT_GOAL_ID,
+        "spaceKind": "official",
+        "planTier": "free",
+        "avatarUrl": null,
+        "avatarSizeBytes": 0
+    })
+}
+
+fn mock_limits() -> Value {
+    json!({
+        "ownedSpacesMax": 1,
+        "joinedMembersMax": 3,
+        "openIssuesMax": 100,
+        "hostedSkillsMax": 50,
+        "registeredAgentsMax": 6,
+        "storageBytesMax": 1024_u64 * 1024 * 1024
+    })
+}
+
+fn mock_usage(state: &MockState) -> Value {
+    json!({
+        "memberSeats": 0,
+        "openIssues": state.issues.iter().filter(|issue| {
+            matches!(issue.get("state").and_then(Value::as_str), Some("open" | "todo" | "doing"))
+        }).count(),
+        "hostedSkills": state.skills.len(),
+        "registeredAgents": state.agents.iter().filter(|agent| agent.status != "revoked").count(),
+        "storageBytes": 0
+    })
+}
+
+fn mock_space_list_item() -> Value {
+    json!({
+        "id": MOCK_SPACE_ID,
+        "slug": "official",
+        "name": "MyAgents社区",
+        "joinPolicy": "open_join",
+        "rootGoalId": MOCK_ROOT_GOAL_ID,
+        "spaceKind": "official",
+        "planTier": "free",
+        "avatarUrl": null,
+        "avatarSizeBytes": 0,
+        "membership": mock_membership(),
+        "canManage": true,
+        "pendingJoinRequestCount": 0,
+        "limits": mock_limits()
     })
 }
 
@@ -3409,7 +3519,8 @@ fn mock_me(state: &MockState) -> Value {
     json!({
         "user": state.user.clone(),
         "space": mock_space(),
-        "membership": mock_membership()
+        "membership": mock_membership(),
+        "spaces": [mock_space_list_item()]
     })
 }
 

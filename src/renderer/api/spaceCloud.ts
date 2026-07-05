@@ -39,11 +39,44 @@ export interface SpaceInfo {
   name: string;
   joinPolicy: string;
   rootGoalId?: string | null;
+  createdByUserId?: string | null;
+  billingOwnerUserId?: string | null;
+  planTier?: string | null;
+  spaceKind?: "official" | "user" | string | null;
+  avatarUrl?: string | null;
+  avatarSizeBytes?: number | null;
 }
 
 export interface SpaceMembership {
   id: string;
+  spaceId?: string;
+  userId?: string;
   role: "owner" | "admin" | "member";
+  createdAt?: string;
+}
+
+export interface SpacePlanLimits {
+  ownedSpacesMax: number;
+  joinedMembersMax: number;
+  openIssuesMax: number;
+  hostedSkillsMax: number;
+  registeredAgentsMax: number;
+  storageBytesMax: number;
+}
+
+export interface SpaceUsage {
+  memberSeats: number;
+  openIssues: number;
+  hostedSkills: number;
+  registeredAgents: number;
+  storageBytes: number;
+}
+
+export interface SpaceListItem extends SpaceInfo {
+  membership: SpaceMembership;
+  canManage?: boolean;
+  pendingJoinRequestCount?: number;
+  limits?: SpacePlanLimits;
 }
 
 export interface SpaceSession {
@@ -52,7 +85,45 @@ export interface SpaceSession {
   user: SpaceUser;
   space: SpaceInfo;
   membership: SpaceMembership;
+  spaces?: SpaceListItem[];
+  lastActiveSpaceId?: string | null;
   updatedAt: string;
+}
+
+export interface SpaceMember {
+  id: string;
+  spaceId: string;
+  userId: string;
+  role: "owner" | "admin" | "member";
+  createdAt: string;
+  user: SpaceUser;
+}
+
+export interface SpaceJoinRequest {
+  id: string;
+  spaceId: string;
+  userId: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  user: SpaceUser;
+}
+
+export interface SpaceInvitation {
+  id: string;
+  email: string;
+  role: "admin" | "member" | string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SpaceMembersPayload {
+  members: SpaceMember[];
+  joinRequests: SpaceJoinRequest[];
+  invitations: SpaceInvitation[];
+  usage: SpaceUsage;
+  limits: SpacePlanLimits;
 }
 
 export interface SpaceBuildCapability {
@@ -679,6 +750,10 @@ export function spaceGetSession(): Promise<SpaceSession | null> {
   return inv("cmd_space_get_session");
 }
 
+export function spaceSetActiveSpace(spaceId: string): Promise<SpaceSession | null> {
+  return inv("cmd_space_set_active_space", { input: { spaceId } });
+}
+
 export function spaceGetCapability(): Promise<SpaceBuildCapability> {
   return inv("cmd_space_get_capability");
 }
@@ -713,6 +788,40 @@ export function spaceUpdateProfile(input: {
   return inv("cmd_space_update_profile", { input });
 }
 
+export function spaceUpdateSpace(input: {
+  spaceId: string;
+  name?: string;
+  avatarFilePath?: string | null;
+}): Promise<SpaceSession> {
+  return inv("cmd_space_update_space", { input });
+}
+
+export function spaceListSpaces(): Promise<{
+  user: SpaceUser;
+  space: SpaceInfo;
+  membership: SpaceMembership;
+  spaces: SpaceListItem[];
+}> {
+  return spaceApi("GET", "/api/spaces");
+}
+
+export function spaceCreateSpace(input: { name: string }) {
+  return spaceApi<{
+    space: SpaceInfo;
+    membership: SpaceMembership;
+    limits: SpacePlanLimits;
+  }>("POST", "/api/spaces", input);
+}
+
+export function spaceJoinSpace(input: { slug: string }) {
+  return spaceApi<{
+    status: "joined" | "pending" | string;
+    space: SpaceInfo;
+    membership?: SpaceMembership;
+    joinRequest?: SpaceJoinRequest;
+  }>("POST", "/api/spaces/join", input);
+}
+
 export function spaceGetOfficial(
   spaceId = DEFAULT_SPACE_ID,
 ): Promise<{
@@ -720,8 +829,75 @@ export function spaceGetOfficial(
   membership: SpaceMembership;
   goals: SpaceGoal[];
   tags?: SpaceTag[];
+  usage?: SpaceUsage | null;
+  limits?: SpacePlanLimits;
 }> {
   return spaceApi("GET", `/api/spaces/${spacePath(spaceId)}`);
+}
+
+export function spaceGetSpaceUsage(spaceId = DEFAULT_SPACE_ID) {
+  return spaceApi<{ usage: SpaceUsage; limits: SpacePlanLimits }>(
+    "GET",
+    `/api/spaces/${spacePath(spaceId)}/usage`,
+  );
+}
+
+export function spaceGetMembers(spaceId = DEFAULT_SPACE_ID) {
+  return spaceApi<SpaceMembersPayload>(
+    "GET",
+    `/api/spaces/${spacePath(spaceId)}/members`,
+  );
+}
+
+export function spaceUpdateMemberRole(input: {
+  spaceId: string;
+  memberId: string;
+  role: "admin" | "member";
+}) {
+  return spaceApi<{ membership: SpaceMembership }>(
+    "PATCH",
+    `/api/spaces/${spacePath(input.spaceId)}/members/${encodeURIComponent(input.memberId)}`,
+    { role: input.role },
+  );
+}
+
+export function spaceRemoveMember(input: { spaceId: string; memberId: string }) {
+  return spaceApi<{ removed: boolean; revokedRegisteredAgentIds?: string[] }>(
+    "DELETE",
+    `/api/spaces/${spacePath(input.spaceId)}/members/${encodeURIComponent(input.memberId)}`,
+  );
+}
+
+export function spaceApproveJoinRequest(input: { spaceId: string; requestId: string }) {
+  return spaceApi<{ approved: boolean; membership: SpaceMembership }>(
+    "POST",
+    `/api/spaces/${spacePath(input.spaceId)}/join-requests/${encodeURIComponent(input.requestId)}/approve`,
+    {},
+  );
+}
+
+export function spaceRejectJoinRequest(input: { spaceId: string; requestId: string }) {
+  return spaceApi<{ rejected: boolean }>(
+    "POST",
+    `/api/spaces/${spacePath(input.spaceId)}/join-requests/${encodeURIComponent(input.requestId)}/reject`,
+    {},
+  );
+}
+
+export function spaceInviteMember(input: {
+  spaceId: string;
+  email: string;
+  role?: "admin" | "member";
+}) {
+  return spaceApi<{
+    status: "joined" | "invited" | string;
+    membership?: SpaceMembership;
+    invitation?: SpaceInvitation;
+  }>(
+    "POST",
+    `/api/spaces/${spacePath(input.spaceId)}/invitations`,
+    { email: input.email, role: input.role ?? "member" },
+  );
 }
 
 export function spaceListGoals(

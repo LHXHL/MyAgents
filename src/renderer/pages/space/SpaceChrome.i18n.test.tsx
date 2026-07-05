@@ -27,6 +27,15 @@ describe('SpaceChrome i18n', () => {
     await i18n.changeLanguage('en-US');
   });
 
+  const sidebarProps = {
+    onSpaceTabChange: vi.fn(),
+    onSpaceSwitch: vi.fn(),
+    onJoinSpace: vi.fn(),
+    onCreateSpace: vi.fn(),
+    onLogout: vi.fn(),
+    onOpenProfileSettings: vi.fn(),
+  };
+
   it('renders login chrome in English', () => {
     render(<SpaceLogin authBusy={false} authFlow={null} onLogin={vi.fn()} />);
 
@@ -37,9 +46,9 @@ describe('SpaceChrome i18n', () => {
   });
 
   it('renders sidebar account menu in English without translating data', () => {
-    render(<SpaceSidebar session={session} mode="issues" onSpaceTabChange={vi.fn()} onLogout={vi.fn()} onOpenProfileSettings={vi.fn()} />);
+    render(<SpaceSidebar session={session} mode="issues" {...sidebarProps} />);
 
-    expect(screen.getByText('Official Space')).toBeInTheDocument();
+    expect(screen.getAllByText('Official Space').length).toBeGreaterThan(0);
     expect(screen.getByText('open')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /user/i }));
@@ -51,7 +60,7 @@ describe('SpaceChrome i18n', () => {
   });
 
   it('closes the sidebar account menu when clicking outside', async () => {
-    render(<SpaceSidebar session={session} mode="issues" onSpaceTabChange={vi.fn()} onLogout={vi.fn()} onOpenProfileSettings={vi.fn()} />);
+    render(<SpaceSidebar session={session} mode="issues" {...sidebarProps} />);
 
     fireEvent.click(screen.getByRole('button', { name: /user/i }));
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();

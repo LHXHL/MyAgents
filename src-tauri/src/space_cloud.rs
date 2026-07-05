@@ -38,6 +38,7 @@ const MAX_ATTACHMENT_DOWNLOAD_BYTES: usize = 50 * 1024 * 1024;
 pub(crate) const MAX_ATTACHMENT_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;
 pub(crate) const MAX_ATTACHMENT_UPLOAD_COUNT: usize = 5;
 const MAX_PROFILE_AVATAR_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_SPACE_AVATAR_BYTES: u64 = MAX_PROFILE_AVATAR_BYTES;
 static SPACE_CONNECTOR_STARTED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,6 +50,10 @@ pub struct SpaceSession {
     pub user: Value,
     pub space: Value,
     pub membership: Value,
+    #[serde(default)]
+    pub spaces: Vec<Value>,
+    #[serde(default)]
+    pub last_active_space_id: Option<String>,
     pub updated_at: String,
 }
 
@@ -60,6 +65,8 @@ pub struct SpaceSessionPublic {
     pub user: Value,
     pub space: Value,
     pub membership: Value,
+    pub spaces: Vec<Value>,
+    pub last_active_space_id: Option<String>,
     pub updated_at: String,
 }
 
@@ -80,6 +87,8 @@ impl From<SpaceSession> for SpaceSessionPublic {
             user: session.user,
             space: session.space,
             membership: session.membership,
+            spaces: session.spaces,
+            last_active_space_id: session.last_active_space_id,
             updated_at: session.updated_at,
         }
     }
@@ -418,6 +427,12 @@ pub struct SpaceApiRequestInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SpaceSetActiveSpaceInput {
+    pub space_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SpaceRegisterAgentInput {
     pub display_name: String,
     pub workspace_id: String,
@@ -591,6 +606,16 @@ pub struct SpaceUpdateProfileInput {
     pub avatar_file_path: Option<String>,
     #[serde(default)]
     pub name_changed: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceUpdateSpaceInput {
+    pub space_id: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub avatar_file_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -828,6 +853,27 @@ pub async fn cmd_space_get_session() -> Result<Option<SpaceSessionPublic>, Strin
 }
 
 #[tauri::command]
+pub async fn cmd_space_set_active_space(
+    input: SpaceSetActiveSpaceInput,
+) -> Result<Option<SpaceSessionPublic>, String> {
+    if crate::space_cloud_mock::is_enabled() {
+        let mut session = crate::space_cloud_mock::session();
+        let trimmed = input.space_id.trim();
+        session.last_active_space_id = (!trimmed.is_empty()).then(|| trimmed.to_string());
+        return Ok(Some(session.into()));
+    }
+    ensure_space_available()?;
+    let Some(mut session) = read_current_session()? else {
+        return Ok(None);
+    };
+    let trimmed = input.space_id.trim();
+    session.last_active_space_id = (!trimmed.is_empty()).then(|| trimmed.to_string());
+    session.updated_at = chrono::Utc::now().to_rfc3339();
+    write_private_json(&session_path()?, &session)?;
+    Ok(Some(session.into()))
+}
+
+#[tauri::command]
 pub async fn cmd_space_auth_start() -> Result<Value, String> {
     let capability = ensure_space_available()?;
     let base_url = capability_base_url(&capability)?;
@@ -877,6 +923,12 @@ pub async fn cmd_space_auth_poll(input: SpaceAuthPollInput) -> Result<Value, Str
             user: data.get("user").cloned().unwrap_or(Value::Null),
             space: data.get("space").cloned().unwrap_or(Value::Null),
             membership: data.get("membership").cloned().unwrap_or(Value::Null),
+            spaces: data
+                .get("spaces")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            last_active_space_id: None,
             updated_at: chrono::Utc::now().to_rfc3339(),
         };
         write_private_json(&session_path()?, &session)?;
@@ -962,6 +1014,32 @@ pub async fn cmd_space_update_profile(
     )
     .await?;
     let refreshed = session_from_me_data(&session, &data);
+    write_private_json(&session_path()?, &refreshed)?;
+    Ok(refreshed.into())
+}
+
+#[tauri::command]
+pub async fn cmd_space_update_space(input: SpaceUpdateSpaceInput) -> Result<SpaceSessionPublic, String> {
+    if crate::space_cloud_mock::is_enabled() {
+        return crate::space_cloud_mock::update_space(input);
+    }
+    ensure_space_available()?;
+    let session = require_session()?;
+    let space_id = input.space_id.trim().to_string();
+    if space_id.is_empty() {
+        return Err("Space id is required".to_string());
+    }
+    let form = space_form(input)?;
+    let path = format!("/api/spaces/{}", url_component(&space_id));
+    authorized_multipart_method_data_request(
+        reqwest::Method::PATCH,
+        &session.base_url,
+        &path,
+        &session.session_token,
+        form,
+    )
+    .await?;
+    let refreshed = refresh_session_from_cloud(&session).await?;
     write_private_json(&session_path()?, &refreshed)?;
     Ok(refreshed.into())
 }
@@ -3018,10 +3096,15 @@ fn api_url(base_url: &str, path: &str) -> Result<String, String> {
 
 fn session_space_segment(session: &SpaceSession) -> String {
     session
-        .space
-        .get("slug")
-        .and_then(Value::as_str)
-        .or_else(|| session.space.get("id").and_then(Value::as_str))
+        .last_active_space_id
+        .as_deref()
+        .or_else(|| {
+            session
+                .space
+                .get("slug")
+                .and_then(Value::as_str)
+                .or_else(|| session.space.get("id").and_then(Value::as_str))
+        })
         .filter(|value| !value.trim().is_empty())
         .map(url_component)
         .unwrap_or_else(|| "official".to_string())
@@ -3044,6 +3127,12 @@ fn session_from_me_data(session: &SpaceSession, data: &Value) -> SpaceSession {
             .get("membership")
             .cloned()
             .unwrap_or_else(|| session.membership.clone()),
+        spaces: data
+            .get("spaces")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_else(|| session.spaces.clone()),
+        last_active_space_id: session.last_active_space_id.clone(),
         updated_at: chrono::Utc::now().to_rfc3339(),
     }
 }
@@ -3128,6 +3217,53 @@ fn profile_form(input: SpaceUpdateProfileInput) -> Result<reqwest::multipart::Fo
         .map_err(|e| format!("Failed to build avatar upload part: {}", e))?;
     form = form.part("avatar", part);
     Ok(form)
+}
+
+fn space_form(input: SpaceUpdateSpaceInput) -> Result<reqwest::multipart::Form, String> {
+    let mut form = reqwest::multipart::Form::new();
+    if let Some(name) = input.name.as_deref() {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err("Space name is required".to_string());
+        }
+        if trimmed.chars().count() > 80 {
+            return Err("Space name must be at most 80 characters".to_string());
+        }
+        form = form.text("name", trimmed.to_string());
+    }
+    let Some(path) = input
+        .avatar_file_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(form);
+    };
+    let file_path = PathBuf::from(path);
+    if !file_path.is_absolute() {
+        return Err("Avatar image path must be absolute".to_string());
+    }
+    let metadata = fs::symlink_metadata(&file_path)
+        .map_err(|e| format!("Failed to inspect avatar image: {}", e))?;
+    if metadata.file_type().is_symlink() {
+        return Err("Avatar image path must not be a symlink".to_string());
+    }
+    if !metadata.is_file() {
+        return Err("Avatar image path must be a file".to_string());
+    }
+    if metadata.len() > MAX_SPACE_AVATAR_BYTES {
+        return Err(format!(
+            "Avatar image exceeds {} bytes",
+            MAX_SPACE_AVATAR_BYTES
+        ));
+    }
+    let (mime, filename) = profile_avatar_mime_and_filename(&file_path)?;
+    let bytes = read_profile_avatar_bytes(&file_path, &metadata)?;
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(filename)
+        .mime_str(mime)
+        .map_err(|e| format!("Failed to build avatar upload part: {}", e))?;
+    Ok(form.part("avatar", part))
 }
 
 fn read_profile_avatar_bytes(
@@ -3332,6 +3468,17 @@ async fn authorized_multipart_data_request(
     token: &str,
     form: reqwest::multipart::Form,
 ) -> Result<Value, String> {
+    authorized_multipart_method_data_request(reqwest::Method::POST, base_url, path, token, form)
+        .await
+}
+
+async fn authorized_multipart_method_data_request(
+    method: reqwest::Method,
+    base_url: &str,
+    path: &str,
+    token: &str,
+    form: reqwest::multipart::Form,
+) -> Result<Value, String> {
     if crate::space_cloud_mock::is_enabled() {
         return Err(
             "Mock Space does not accept raw multipart requests; use typed mock upload commands"
@@ -3341,7 +3488,7 @@ async fn authorized_multipart_data_request(
     let capability = ensure_space_available()?;
     let response = with_public_client_id_header(
         http_client()?
-            .post(api_url(base_url, path)?)
+            .request(method, api_url(base_url, path)?)
             .header(AUTHORIZATION, format!("Bearer {}", token))
             .multipart(form),
         &capability,
@@ -3722,7 +3869,12 @@ fn session_user_id(session: &SpaceSession) -> Option<String> {
 }
 
 fn session_space_id(session: &SpaceSession) -> Option<String> {
-    optional_value_string(&session.space, "id")
+    session
+        .last_active_space_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(ToString::to_string)
+        .or_else(|| optional_value_string(&session.space, "id"))
         .or_else(|| optional_value_string(&session.space, "slug"))
 }
 
@@ -4654,6 +4806,8 @@ mod tests {
             user: serde_json::json!({ "id": user_id }),
             space: serde_json::json!({ "id": "space_test" }),
             membership: serde_json::json!({ "role": "admin" }),
+            spaces: Vec::new(),
+            last_active_space_id: None,
             updated_at: "2026-07-03T00:00:00.000Z".to_string(),
         }
     }
@@ -5616,6 +5770,8 @@ mod tests {
                 "slug": "official",
             }),
             membership: Value::Null,
+            spaces: Vec::new(),
+            last_active_space_id: None,
             updated_at: "2026-06-24T00:00:00.000Z".to_string(),
         };
 

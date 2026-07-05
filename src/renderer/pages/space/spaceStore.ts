@@ -27,6 +27,7 @@ import {
   spaceRegisterAgent,
   spaceRevokeRegisteredAgent,
   spaceRollbackSkill,
+  spaceSetActiveSpace,
   spaceSetIssueState,
   spaceUpdateProfile,
   spaceUpdateGoal,
@@ -165,6 +166,7 @@ interface RefreshOptions {
 
 export interface SpaceActions {
   ensureBootstrapped: (options?: RefreshOptions) => Promise<void>;
+  switchSpace: (spaceId: string) => Promise<void>;
   refreshIssues: (
     params: IssueQueryParams,
     options?: RefreshOptions,
@@ -792,9 +794,13 @@ export const actions: SpaceActions = {
           });
           return;
         }
-        const official = await spaceGetOfficial(
-          spaceRouteSegment(session.space),
-        );
+        const preferredSpaceId =
+          session.lastActiveSpaceId ||
+          spaceRouteSegment(session.space);
+        const official = await spaceGetOfficial(preferredSpaceId).catch((error) => {
+          if (preferredSpaceId === DEFAULT_SPACE_ID) throw error;
+          return spaceGetOfficial(DEFAULT_SPACE_ID);
+        });
         if (!isLatest("boot", requestSeq)) return;
         const nextSpaceId = spaceRouteSegment(official.space || session.space);
         const spaceChanged = Boolean(
@@ -847,6 +853,17 @@ export const actions: SpaceActions = {
       }
     })();
     return bootPromise;
+  },
+
+  switchSpace: async (spaceId: string) => {
+    const trimmed = spaceId.trim();
+    if (!trimmed || trimmed === activeSpaceId()) return;
+    await spaceSetActiveSpace(trimmed);
+    invalidatePendingRequests();
+    const previousBoot = state.boot;
+    state = { ...initialState(), boot: previousBoot };
+    emit();
+    await actions.ensureBootstrapped({ force: true });
   },
 
   refreshIssues: async (

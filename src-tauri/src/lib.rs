@@ -588,11 +588,13 @@ pub fn run() {
             // MyAgents Cloud Space
             space_cloud::cmd_space_get_capability,
             space_cloud::cmd_space_get_session,
+            space_cloud::cmd_space_set_active_space,
             space_cloud::cmd_space_auth_start,
             space_cloud::cmd_space_auth_poll,
             space_cloud::cmd_space_auth_ack,
             space_cloud::cmd_space_logout,
             space_cloud::cmd_space_update_profile,
+            space_cloud::cmd_space_update_space,
             space_cloud::cmd_space_api_request,
             space_cloud::cmd_space_register_agent,
             space_cloud::cmd_space_update_registered_agent,
