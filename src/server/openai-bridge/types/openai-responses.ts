@@ -9,6 +9,11 @@ export interface ResponsesRequest {
   tools?: ResponsesTool[];
   tool_choice?: ResponsesToolChoice;
   max_output_tokens?: number;
+  prompt_cache_key?: string;
+  prompt_cache_retention?: '24h' | 'in-memory';
+  previous_response_id?: string;
+  store?: boolean;
+  conversation?: string;
   temperature?: number;
   top_p?: number;
   stream?: boolean;

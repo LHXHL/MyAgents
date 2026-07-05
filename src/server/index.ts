@@ -1938,7 +1938,11 @@ async function main() {
   const ensureBridgeHandler = (): Promise<BridgeHandler> => {
     if (bridgeHandlerPromise) return bridgeHandlerPromise;
     bridgeHandlerPromise = (async () => {
-      const [{ createBridgeHandler }, { lookupBridge }] = await Promise.all([
+      const [{ createBridgeHandler }, {
+        lookupBridge,
+        disableResponsesPromptCacheKey,
+        isResponsesPromptCacheKeyDisabled,
+      }] = await Promise.all([
         import('./openai-bridge'),
         import('./openai-bridge/bridge-registry'),
       ]);
@@ -1980,6 +1984,13 @@ async function main() {
               // #324 — per-token live value (session bridges resolve it from
               // currentReasoningEffort on every request).
               reasoningEffort: cfg.reasoningEffort,
+              cacheAffinity: cfg.cacheAffinity
+                ? {
+                    ...cfg.cacheAffinity,
+                    promptCacheKeyDisabled: isResponsesPromptCacheKeyDisabled(token),
+                    disablePromptCacheKey: () => disableResponsesPromptCacheKey(token),
+                  }
+                : undefined,
             };
           },
           logger: (msg) => console.log(msg),

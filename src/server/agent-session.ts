@@ -1289,6 +1289,9 @@ function resolveActiveSessionUpstreamConfig(): UpstreamBridgeConfig {
     // #324 — read live so a mid-session effort change applies to the very
     // next upstream request without any subprocess restart.
     reasoningEffort: configState.currentReasoningEffort,
+    cacheAffinity: configState.currentProviderEnv?.upstreamFormat === 'responses'
+      ? { sessionId, promptCacheKeyMode: 'session' }
+      : undefined,
   };
 }
 

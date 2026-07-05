@@ -52,6 +52,13 @@ type ModelAliases = {
   haiku?: string;
 };
 
+export type PromptCacheKeyMode = 'off' | 'session';
+
+export interface BridgeCacheAffinity {
+  sessionId?: string;
+  promptCacheKeyMode?: PromptCacheKeyMode;
+}
+
 export interface UpstreamBridgeConfig {
   /** Provider owner for provider-scoped proxy policy. */
   providerId: string;
@@ -68,6 +75,10 @@ export interface UpstreamBridgeConfig {
    *  default → the translators omit reasoning fields entirely, preserving
    *  the historical wire shape). May change over time for session bridges. */
   reasoningEffort?: string;
+  /** Responses API cache-affinity identity. Active sessions set this; one-shot
+   *  bridges intentionally leave it off so verify/title/vision do not pollute
+   *  conversation cache routing. */
+  cacheAffinity?: BridgeCacheAffinity;
 }
 
 interface Entry {
@@ -77,6 +88,8 @@ interface Entry {
   registeredAt: number;
   /** Free-form description for diagnostics (e.g., 'verify:moonshot', 'session:abc-123'). */
   description: string;
+  /** Sticky per-token compatibility downgrade for Responses prompt_cache_key. */
+  responsesPromptCacheKeyDisabled: boolean;
 }
 
 const registry = new Map<string, Entry>();
@@ -98,10 +111,12 @@ export function registerBridge(
   resolve: () => UpstreamBridgeConfig,
   description: string,
 ): void {
+  const existing = registry.get(token);
   registry.set(token, {
     resolve,
     registeredAt: Date.now(),
     description,
+    responsesPromptCacheKeyDisabled: existing?.responsesPromptCacheKeyDisabled ?? false,
   });
 }
 
@@ -128,6 +143,15 @@ export function lookupBridge(token: string): UpstreamBridgeConfig | undefined {
   const entry = registry.get(token);
   if (!entry) return undefined;
   return entry.resolve();
+}
+
+export function disableResponsesPromptCacheKey(token: string): void {
+  const entry = registry.get(token);
+  if (entry) entry.responsesPromptCacheKeyDisabled = true;
+}
+
+export function isResponsesPromptCacheKeyDisabled(token: string): boolean {
+  return registry.get(token)?.responsesPromptCacheKeyDisabled ?? false;
 }
 
 /**
