@@ -10,6 +10,7 @@ import { useEffect, useMemo, useState } from 'react';
 
 import type { AgentInput, AgentStatusTodoSnapshot, Message, ToolUseSimple } from '@/types/chat';
 import {
+  isBackgroundSubagentTool,
   isSubagentContainerRunning,
   isSubagentContainerTool,
 } from '@/components/tools/subagentActivity';
@@ -17,37 +18,14 @@ import { getEffectiveTodoWriteTodos } from '@/utils/todoWriteState';
 import { accumulateTaskTodos, isTaskTodoTool, type TaskToolCall } from '@/utils/taskTodoState';
 import {
   BACKGROUND_TASK_STATUS_EVENT,
+  collectCompletedBackgroundToolIdsFromHistory,
   getBackgroundTaskStatus,
+  hydrateBackgroundTaskStatusesFromHistory,
   isBackgroundTaskRegistered,
   isTerminalStatus,
 } from '@/utils/backgroundTaskStatus';
 
 import type { AgentStatusState, SubagentStatus, TodoItem } from './types';
-
-// 从历史 task-notification 消息抽出已完成的 BG toolUseId 集合。
-// TabProvider 在 chat:task-notification 事件里 setHistoryMessages 注入一条
-// id=`task-notification-{taskId}`, content=`<task-notification>{JSON}</task-notification>`
-// 的 user message。JSON 包含 { taskId, toolUseId, status, summary, description }。
-// 这条消息是持久化的（落 session.jsonl），比 renderer 进程级 backgroundTaskStatus
-// 模块更可靠——Cmd+R 重载 / LRU 驱逐都不丢。是 B1 ship-blocker 的兜底防线。
-function collectCompletedBgToolIdsFromHistory(messages: Message[]): Set<string> {
-  const set = new Set<string>();
-  for (const msg of messages) {
-    if (!msg.id.startsWith('task-notification-')) continue;
-    if (typeof msg.content !== 'string') continue;
-    const match = msg.content.match(/<task-notification>([\s\S]+?)<\/task-notification>/);
-    if (!match) continue;
-    try {
-      const parsed = JSON.parse(match[1]) as { toolUseId?: string; status?: string };
-      if (parsed.toolUseId && parsed.status) {
-        set.add(parsed.toolUseId);
-      }
-    } catch {
-      // 损坏的 notification 跳过，不影响其他判定
-    }
-  }
-  return set;
-}
 
 /**
  * 从 messages 派生当前面板状态。
@@ -59,7 +37,8 @@ function collectCompletedBgToolIdsFromHistory(messages: Message[]): Set<string> 
  *   parsedInput.todos（fallback），忽略仍在 streaming、parsedInput 尚未成形的 TodoWrite
  *   （这样新 TodoWrite 在 streaming 期间显示旧状态，stop 后切换为新状态）。
  * - subagents（sync）：所有 isLoading 且未拿到 result 的 Task tool_use 块。
- * - subagents（background）：所有 run_in_background=true 的 Task tool_use 块，
+ * - subagents（background）：所有 SDK 默认后台的 Task/Agent tool_use 块
+ *   （run_in_background 省略或 true；显式 false 才同步），
  *   其 backgroundTaskStatus 状态未到 terminal 的视为仍在运行。
  */
 export function useAgentStatusState(
@@ -74,6 +53,10 @@ export function useAgentStatusState(
     return () => window.removeEventListener(BACKGROUND_TASK_STATUS_EVENT, handler);
   }, []);
 
+  useEffect(() => {
+    hydrateBackgroundTaskStatusesFromHistory(messages);
+  }, [messages]);
+
   return useMemo<AgentStatusState>(() => {
     let todos: TodoItem[] = [];
     const subagents: SubagentStatus[] = [];
@@ -83,7 +66,7 @@ export function useAgentStatusState(
     const taskCalls: TaskToolCall[] = [];
 
     // B1 兜底：历史里所有 task-notification 消息里的 toolUseId 都视为已完成。
-    const completedBgFromHistory = collectCompletedBgToolIdsFromHistory(messages);
+    const completedBgFromHistory = collectCompletedBackgroundToolIdsFromHistory(messages);
 
     // 单次正序遍历：collect 所有候选 + 同步活跃 subagents + 后台 subagent 候选。
     // todos 取最后一个有效 TodoWrite。
@@ -117,7 +100,7 @@ export function useAgentStatusState(
 
         if (isSubagentContainerTool(tool.name)) {
           const input = tool.parsedInput as AgentInput | undefined;
-          const isBackground = tool.name !== 'CollabAgent' && input?.run_in_background === true;
+          const isBackground = isBackgroundSubagentTool(tool);
 
           if (isBackground) {
             // 后台任务过滤条件，三道防线（任一命中 → 视为已完成 → 跳过）：

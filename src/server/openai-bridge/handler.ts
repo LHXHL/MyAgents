@@ -10,7 +10,7 @@ import { fetch, ProxyAgent, type Dispatcher } from 'undici';
 import type { BridgeConfig, UpstreamConfig } from './types/bridge';
 import type { AnthropicRequest } from './types/anthropic';
 import type { OpenAIRequest, OpenAIResponse, OpenAIStreamChunk } from './types/openai';
-import type { ResponsesResponse, ResponsesStreamEvent } from './types/openai-responses';
+import type { ResponsesRequest, ResponsesResponse, ResponsesStreamEvent } from './types/openai-responses';
 import { translateRequest } from './translate/request';
 import { translateResponse } from './translate/response';
 import { translateRequestToResponses } from './translate/request-responses';
@@ -21,6 +21,7 @@ import { ResponsesStreamTranslator } from './translate/stream-responses';
 import { translateError } from './translate/errors';
 import { SSEParser } from './utils/sse-parser';
 import { formatSSE } from './utils/sse-writer';
+import { buildPromptCacheKey, hashForLog } from './prompt-cache';
 import {
   getProxyForProviderUrl,
   getProxyForUrl as resolveGlobalProxyForUrl,
@@ -102,6 +103,166 @@ function getDispatcherForProxy(proxyUrl: string): Dispatcher {
   return agent;
 }
 
+function resolvePromptCacheKey(
+  upstream: UpstreamConfig,
+  fallbackModel: string,
+  upstreamFormat: 'chat_completions' | 'responses',
+): string | undefined {
+  const affinity = upstream.cacheAffinity;
+  if (!affinity || affinity.promptCacheKeyMode !== 'session') return undefined;
+  if (affinity.promptCacheKeyDisabled) return undefined;
+  return buildPromptCacheKey({
+    appNamespace: 'myagents',
+    providerId: upstream.providerId,
+    model: upstream.model ?? fallbackModel,
+    sessionId: affinity.sessionId,
+    upstreamFormat,
+  });
+}
+
+function isUnsupportedPromptCacheKeyError(status: number, body: string): boolean {
+  if (status !== 400 && status !== 422) return false;
+  const structured = extractUpstreamErrorFields(body);
+  const descriptor = [
+    structured?.message,
+    structured?.code,
+    structured?.type,
+  ].filter(Boolean).join(' ');
+
+  if (structured?.param === 'prompt_cache_key') {
+    return isUnsupportedPromptCacheKeyDescriptor(descriptor);
+  }
+
+  return isUnsupportedPromptCacheKeyDescriptor(body)
+    && /\bprompt_cache_key\b/i.test(body);
+}
+
+function isUnsupportedPromptCacheKeyDescriptor(value: string): boolean {
+  return /\b(?:unknown|unsupported|unrecognized|unexpected)\b.*\b(?:parameter|field|argument|property)?\b.*\bprompt_cache_key\b/i.test(value)
+    || /\bprompt_cache_key\b.*\b(?:unknown|unsupported|unrecognized|unexpected|not supported)\b/i.test(value)
+    || /\b(?:additional|extra)\b.*\b(?:parameter|field|argument|property)\b.*\bprompt_cache_key\b/i.test(value);
+}
+
+function extractUpstreamErrorFields(body: string): { message?: string; param?: string; code?: string; type?: string } | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return undefined;
+  }
+  const root = isRecord(parsed) && isRecord(parsed.error) ? parsed.error : parsed;
+  if (!isRecord(root)) return undefined;
+  return {
+    message: typeof root.message === 'string' ? root.message : undefined,
+    param: typeof root.param === 'string'
+      ? root.param
+      : typeof root.parameter === 'string'
+        ? root.parameter
+        : undefined,
+    code: typeof root.code === 'string' ? root.code : undefined,
+    type: typeof root.type === 'string' ? root.type : undefined,
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function stringifyWithoutPromptCacheKey(req: OpenAIRequest | ResponsesRequest): string {
+  if (!('prompt_cache_key' in req)) return JSON.stringify(req);
+  const rest = { ...req };
+  delete (rest as { prompt_cache_key?: string }).prompt_cache_key;
+  return JSON.stringify(rest);
+}
+
+const PROMPT_CACHE_KEY_VALUE_RE = /myagents:(?:chat_completions|responses):[a-f0-9]{32}/g;
+const PROMPT_CACHE_KEY_VALUE_TEST_RE = /myagents:(?:chat_completions|responses):[a-f0-9]{32}/;
+const ERROR_REQUEST_ECHO_KEYS = new Set([
+  'content',
+  'input',
+  'instructions',
+  'messages',
+  'prompt',
+  'system',
+]);
+const ERROR_SECRET_KEY_RE = /(?:api[_-]?key|authorization|bearer|secret|token)/i;
+
+function sanitizeUpstreamErrorBody(body: string): string {
+  const redactedBody = redactPromptCacheKeyValues(body);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(redactedBody);
+  } catch {
+    if (looksLikeEchoedRequestText(redactedBody)) {
+      return '[redacted upstream error body containing echoed request]';
+    }
+    return redactedBody;
+  }
+
+  const redactingRequestEcho = containsPromptCacheKeyReference(parsed);
+  return JSON.stringify(sanitizeErrorValue(parsed, redactingRequestEcho));
+}
+
+function redactPromptCacheKeyValues(value: string): string {
+  return value.replace(PROMPT_CACHE_KEY_VALUE_RE, '[redacted-prompt-cache-key]');
+}
+
+function containsPromptCacheKeyReference(value: unknown): boolean {
+  if (typeof value === 'string') {
+    return /\bprompt_cache_key\b/.test(value) || PROMPT_CACHE_KEY_VALUE_TEST_RE.test(value);
+  }
+  if (Array.isArray(value)) {
+    return value.some(containsPromptCacheKeyReference);
+  }
+  if (isRecord(value)) {
+    return Object.entries(value).some(([key, nested]) => (
+      key === 'prompt_cache_key' || containsPromptCacheKeyReference(nested)
+    ));
+  }
+  return false;
+}
+
+function sanitizeErrorValue(value: unknown, redactingRequestEcho: boolean): unknown {
+  if (typeof value === 'string') {
+    const redacted = redactPromptCacheKeyValues(value);
+    if (redactingRequestEcho && looksLikeEchoedRequestText(redacted)) {
+      return '[redacted upstream error text containing echoed request]';
+    }
+    return redacted;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeErrorValue(item, redactingRequestEcho));
+  }
+  if (isRecord(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value)) {
+      const normalizedKey = key.toLowerCase();
+      if (normalizedKey === 'prompt_cache_key') {
+        out[key] = '[redacted-prompt-cache-key]';
+      } else if (ERROR_SECRET_KEY_RE.test(normalizedKey)) {
+        out[key] = '[redacted-secret]';
+      } else if (redactingRequestEcho && ERROR_REQUEST_ECHO_KEYS.has(normalizedKey)) {
+        out[key] = `[redacted-${normalizedKey}]`;
+      } else {
+        out[key] = sanitizeErrorValue(nested, redactingRequestEcho);
+      }
+    }
+    return out;
+  }
+  return value;
+}
+
+function looksLikeEchoedRequestText(value: string): boolean {
+  const lower = value.toLowerCase();
+  return lower.includes('prompt_cache_key')
+    && (
+      lower.includes('"input"')
+      || lower.includes('"messages"')
+      || lower.includes('"instructions"')
+      || lower.includes('"content"')
+    );
+}
+
 export interface BridgeHandler {
   /** Handle an incoming Anthropic-format request */
   (request: Request): Promise<Response>;
@@ -169,9 +330,23 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
     // lets concurrent SDK subprocesses with different sub-agent rules
     // coexist without cross-pollination.
     const effectiveModelMapping = upstream.modelMapping ?? config.modelMapping;
+    const upstreamFormat = isResponses ? 'responses' : 'chat_completions';
+    const promptCacheKey = resolvePromptCacheKey(upstream, anthropicReq.model, upstreamFormat);
     const translatedReq = isResponses
-      ? translateRequestToResponses(anthropicReq, { modelOverride: upstream.model, modelMapping: effectiveModelMapping, imageSaver, reasoningEffort: upstream.reasoningEffort })
-      : translateRequest(anthropicReq, { modelMapping: effectiveModelMapping, modelOverride: upstream.model, imageSaver, reasoningEffort: upstream.reasoningEffort });
+      ? translateRequestToResponses(anthropicReq, {
+          modelOverride: upstream.model,
+          modelMapping: effectiveModelMapping,
+          imageSaver,
+          reasoningEffort: upstream.reasoningEffort,
+          promptCacheKey,
+        })
+      : translateRequest(anthropicReq, {
+          modelMapping: effectiveModelMapping,
+          modelOverride: upstream.model,
+          imageSaver,
+          reasoningEffort: upstream.reasoningEffort,
+          promptCacheKey,
+        });
 
     // 4a. Normalize thought_signatures on tool_calls (Gemini thinking models).
     // Gemini requires thought_signature on tool_calls in conversation history.
@@ -241,96 +416,135 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
       ? `${baseUrl}/responses`
       : `${baseUrl}/chat/completions`;
 
-    // Pattern 1: the AbortController's lifetime now spans the entire stream,
-    // not just the headers-arrival phase. The previous code cleared the
-    // timeout (which also released our handle on the controller for any
-    // post-headers cancellation) right after `await fetch`, so neither a
-    // downstream cancel nor an idle timeout could reach the upstream socket
-    // mid-stream — we just kept reading until the body ended naturally.
-    const controller = new AbortController();
-    const headersTimer = setTimeout(
-      () => controller.abort(new Error(`Upstream headers timeout after ${timeout}ms`)),
-      timeout,
-    );
-
-    // Forward downstream request abort (renderer cancelled, /v1/messages
-    // request signal aborted) to the upstream fetch. The Hono handler's
-    // `request.signal` is the parent.
-    const onDownstreamAbort = (): void => {
-      try {
-        controller.abort(new Error('Downstream request aborted'));
-      } catch { /* ignore */ }
+    type UpstreamAttempt = {
+      upstreamResp: Response;
+      controller: AbortController;
+      headersTimer: ReturnType<typeof setTimeout>;
+      onDownstreamAbort: () => void;
     };
-    if (request.signal) {
-      if (request.signal.aborted) {
-        onDownstreamAbort();
-      } else {
-        request.signal.addEventListener('abort', onDownstreamAbort, { once: true });
-      }
-    }
+    type UpstreamAttemptResult =
+      | { ok: true; attempt: UpstreamAttempt }
+      | { ok: false; response: Response };
 
-    let upstreamResp: Response;
-    try {
-      // Detect proxy for this provider owner. The bridge token resolved the
-      // providerId; URL/baseUrl alone is not an owner boundary.
-      const proxyUrl = getProxyForProviderUrl(upstream.providerId, upstreamUrl);
-      const fetchInit: RequestInit & { dispatcher?: Dispatcher } = {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${effectiveApiKey}`,
-        },
-        body: JSON.stringify(translatedReq),
-        signal: controller.signal,
-      };
-      if (proxyUrl) {
-        fetchInit.dispatcher = getDispatcherForProxy(proxyUrl);
-      }
-      // Cast to global Response — undici.Response is structurally identical at
-      // runtime; the type drift is only in @types/node vs undici/types Headers
-      // iterators. Downstream handlers (handleStreamResponse etc.) treat the
-      // body as a ReadableStream<Uint8Array>, which works for both shapes.
-      upstreamResp = await fetch(upstreamUrl, fetchInit as Parameters<typeof fetch>[1]) as unknown as Response;
-    } catch (err) {
-      clearTimeout(headersTimer);
+    const cleanupAttempt = (attempt: UpstreamAttempt): void => {
+      clearTimeout(attempt.headersTimer);
       if (request.signal) {
-        request.signal.removeEventListener('abort', onDownstreamAbort);
+        request.signal.removeEventListener('abort', attempt.onDownstreamAbort);
       }
-      const isTimeout = err instanceof Error && err.name === 'AbortError';
-      // undici surfaces the real reason on `err.cause` (TypeError: fetch failed
-      // is the wrapper). Inline the cause so logs aren't useless.
-      const causeRaw = err instanceof Error ? (err as Error & { cause?: unknown }).cause : undefined;
-      const causeMsg = causeRaw instanceof Error ? causeRaw.message : (causeRaw ? String(causeRaw) : '');
-      const baseMsg = err instanceof Error ? err.message : String(err);
-      const errMsg = causeMsg ? `${baseMsg} (cause: ${causeMsg})` : baseMsg;
-      log(`[bridge] Upstream ${isTimeout ? 'timeout' : 'error'}: ${errMsg}`);
-      // Record for verify-timeout diagnostics (see getLastBridgeError docstring).
-      // Only the connect-layer catch path — HTTP error responses (!upstreamResp.ok)
-      // are already surfaced through the SDK's assistant.error path to verify.
-      lastBridgeError = { message: errMsg, timestamp: Date.now(), upstreamUrl };
-      return jsonError(
-        isTimeout ? 408 : 502,
-        'api_error',
-        isTimeout ? 'Upstream request timed out' : `Upstream connection error: ${errMsg}`,
+    };
+
+    const fetchUpstreamAttempt = async (requestBody: string): Promise<UpstreamAttemptResult> => {
+      // Pattern 1: the AbortController's lifetime spans the entire stream, not
+      // just headers arrival. On retry, each attempt owns its own controller and
+      // downstream-abort listener so cleanup stays exact.
+      const controller = new AbortController();
+      const headersTimer = setTimeout(
+        () => controller.abort(new Error(`Upstream headers timeout after ${timeout}ms`)),
+        timeout,
       );
-    }
+
+      const onDownstreamAbort = (): void => {
+        try {
+          controller.abort(new Error('Downstream request aborted'));
+        } catch { /* ignore */ }
+      };
+      if (request.signal) {
+        if (request.signal.aborted) {
+          onDownstreamAbort();
+        } else {
+          request.signal.addEventListener('abort', onDownstreamAbort, { once: true });
+        }
+      }
+
+      try {
+        // Detect proxy for this provider owner. The bridge token resolved the
+        // providerId; URL/baseUrl alone is not an owner boundary.
+        const proxyUrl = getProxyForProviderUrl(upstream.providerId, upstreamUrl);
+        const fetchInit: RequestInit & { dispatcher?: Dispatcher } = {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${effectiveApiKey}`,
+          },
+          body: requestBody,
+          signal: controller.signal,
+        };
+        if (proxyUrl) {
+          fetchInit.dispatcher = getDispatcherForProxy(proxyUrl);
+        }
+        // Cast to global Response — undici.Response is structurally identical at
+        // runtime; the type drift is only in @types/node vs undici/types Headers
+        // iterators. Downstream handlers (handleStreamResponse etc.) treat the
+        // body as a ReadableStream<Uint8Array>, which works for both shapes.
+        const upstreamResp = await fetch(upstreamUrl, fetchInit as Parameters<typeof fetch>[1]) as unknown as Response;
+        return { ok: true, attempt: { upstreamResp, controller, headersTimer, onDownstreamAbort } };
+      } catch (err) {
+        clearTimeout(headersTimer);
+        if (request.signal) {
+          request.signal.removeEventListener('abort', onDownstreamAbort);
+        }
+        const isTimeout = err instanceof Error && err.name === 'AbortError';
+        // undici surfaces the real reason on `err.cause` (TypeError: fetch failed
+        // is the wrapper). Inline the cause so logs aren't useless.
+        const causeRaw = err instanceof Error ? (err as Error & { cause?: unknown }).cause : undefined;
+        const causeMsg = causeRaw instanceof Error ? causeRaw.message : (causeRaw ? String(causeRaw) : '');
+        const baseMsg = err instanceof Error ? err.message : String(err);
+        const errMsg = causeMsg ? `${baseMsg} (cause: ${causeMsg})` : baseMsg;
+        log(`[bridge] Upstream ${isTimeout ? 'timeout' : 'error'}: ${errMsg}`);
+        // Record for verify-timeout diagnostics (see getLastBridgeError docstring).
+        // Only the connect-layer catch path — HTTP error responses (!upstreamResp.ok)
+        // are already surfaced through the SDK's assistant.error path to verify.
+        lastBridgeError = { message: errMsg, timestamp: Date.now(), upstreamUrl };
+        return {
+          ok: false,
+          response: jsonError(
+            isTimeout ? 408 : 502,
+            'api_error',
+            isTimeout ? 'Upstream request timed out' : `Upstream connection error: ${errMsg}`,
+          ),
+        };
+      }
+    };
+
+    let attemptResult = await fetchUpstreamAttempt(JSON.stringify(translatedReq));
+    if (!attemptResult.ok) return attemptResult.response;
+    let { upstreamResp, controller, headersTimer, onDownstreamAbort } = attemptResult.attempt;
 
     // 6. Handle upstream errors
     if (!upstreamResp.ok) {
-      clearTimeout(headersTimer);
-      if (request.signal) {
-        request.signal.removeEventListener('abort', onDownstreamAbort);
+      let errBody = await upstreamResp.text();
+      cleanupAttempt({ upstreamResp, controller, headersTimer, onDownstreamAbort });
+
+      const canRetryWithoutPromptCacheKey =
+        Boolean((translatedReq as { prompt_cache_key?: string }).prompt_cache_key)
+        && Boolean(upstream.cacheAffinity?.disablePromptCacheKey)
+        && isUnsupportedPromptCacheKeyError(upstreamResp.status, errBody);
+
+      if (canRetryWithoutPromptCacheKey) {
+        upstream.cacheAffinity?.disablePromptCacheKey?.();
+        log(`[bridge] ${upstreamFormat} prompt_cache_key unsupported for provider=${upstream.providerId} endpoint=${hashForLog(upstreamUrl)}; disabled for this bridge`);
+
+        attemptResult = await fetchUpstreamAttempt(stringifyWithoutPromptCacheKey(translatedReq));
+        if (!attemptResult.ok) return attemptResult.response;
+        ({ upstreamResp, controller, headersTimer, onDownstreamAbort } = attemptResult.attempt);
+        if (!upstreamResp.ok) {
+          errBody = await upstreamResp.text();
+          cleanupAttempt({ upstreamResp, controller, headersTimer, onDownstreamAbort });
+        }
       }
-      const errBody = await upstreamResp.text();
-      log(`[bridge] Upstream error ${upstreamResp.status}: ${errBody.slice(0, 300)}`);
-      const { status, body } = translateError(upstreamResp.status, errBody);
-      if (status !== upstreamResp.status) {
-        log(`[bridge] Remapped ${upstreamResp.status} → ${status} (${body.error.type})`);
+
+      if (!upstreamResp.ok) {
+        const safeErrBody = sanitizeUpstreamErrorBody(errBody);
+        log(`[bridge] Upstream error ${upstreamResp.status}: ${safeErrBody.slice(0, 300)}`);
+        const { status, body } = translateError(upstreamResp.status, safeErrBody);
+        if (status !== upstreamResp.status) {
+          log(`[bridge] Remapped ${upstreamResp.status} → ${status} (${body.error.type})`);
+        }
+        return new Response(JSON.stringify(body), {
+          status,
+          headers: { 'Content-Type': 'application/json' },
+        });
       }
-      return new Response(JSON.stringify(body), {
-        status,
-        headers: { 'Content-Type': 'application/json' },
-      });
     }
 
     // Headers arrived → cancel the headers timeout (we now switch to per-read

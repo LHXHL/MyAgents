@@ -495,7 +495,8 @@ async fn update_bot_config_internal<R: Runtime>(
                         *config_arc.write().await = hb;
                         // Wake heartbeat runner to pick up new interval immediately
                         if let Some(ref tx) = inst.heartbeat_wake_tx {
-                            let _ = tx.try_send(types::WakeReason::Interval);
+                            let _ =
+                                tx.try_send(types::HeartbeatWake::new(types::WakeReason::Interval));
                         }
                     }
                 }
@@ -1171,6 +1172,13 @@ pub async fn cmd_restart_channels_using_plugin(
                             .map(|a| Arc::clone(&a.last_active_channel))
                             .unwrap_or_else(|| Arc::new(RwLock::new(None)))
                     },
+                    last_active_private_target: {
+                        let agents = agentState.lock().await;
+                        agents
+                            .get(&agent_id)
+                            .map(|a| Arc::clone(&a.last_active_private_target))
+                            .unwrap_or_else(|| Arc::new(RwLock::new(None)))
+                    },
                     runtime_config: {
                         let agents = agentState.lock().await;
                         agents
@@ -1311,6 +1319,9 @@ pub async fn cmd_start_agent_channel(
             config: agentConfig.clone(),
             channels: HashMap::new(),
             last_active_channel: Arc::new(RwLock::new(agentConfig.last_active_channel.clone())),
+            last_active_private_target: Arc::new(RwLock::new(
+                agentConfig.last_active_private_target.clone(),
+            )),
             heartbeat_handle: None,
             heartbeat_wake_tx: None,
             heartbeat_config: None,
@@ -1329,6 +1340,7 @@ pub async fn cmd_start_agent_channel(
             runtime_config: Arc::new(RwLock::new(agentConfig.runtime_config.clone())),
             memory_update_config: None,
             memory_update_running: None,
+            memory_evolution_config: None,
         });
 
     // Set agent_link so the processing loop can update lastActiveChannel
@@ -1336,6 +1348,7 @@ pub async fn cmd_start_agent_channel(
         channel_id: channelId.clone(),
         agent_id: agentId.clone(),
         last_active_channel: Arc::clone(&agent_instance.last_active_channel),
+        last_active_private_target: Arc::clone(&agent_instance.last_active_private_target),
         runtime_config: Arc::clone(&agent_instance.runtime_config),
     };
     *bot_instance.agent_link.write().await = Some(link);
@@ -1415,84 +1428,10 @@ pub async fn cmd_start_agent_channel(
                     }
                 }
 
-                // Clone refs from agent state, then drop the lock before async work
-                let channel_snapshot = {
-                    let agents_guard = agent_state_for_hb.lock().await;
-                    let agent = match agents_guard.get(&agent_id_hb) {
-                        Some(a) => a,
-                        None => break,
-                    };
-                    let refs: Vec<_> = agent
-                        .channels
-                        .iter()
-                        .map(|(ch_id, ch_inst)| {
-                            (
-                                ch_id.clone(),
-                                Arc::clone(&ch_inst.bot_instance.health),
-                                Arc::clone(&ch_inst.bot_instance.router),
-                                ch_inst.bot_instance.heartbeat_wake_tx.clone(),
-                                ch_inst.bot_instance.started_at,
-                                ch_inst.bot_instance.config.platform.clone(),
-                                ch_inst.bot_instance.config.name.clone(),
-                                ch_inst.bot_instance.bind_code.clone(),
-                            )
-                        })
-                        .collect();
-                    refs
-                }; // agents_guard dropped here
-
-                // Build channel statuses without holding the Mutex
-                let mut statuses_map = HashMap::new();
-                let mut wake_txs: HashMap<String, mpsc::Sender<types::WakeReason>> = HashMap::new();
-                for (ch_id, health, router, wake_tx, started_at, platform, name, bind_code) in
-                    &channel_snapshot
+                if !route_agent_heartbeat_once(&agent_state_for_hb, &agent_id_hb, reason.clone())
+                    .await
                 {
-                    let health_state = health.get_state().await;
-                    let active_sessions = router.lock().await.active_sessions();
-                    statuses_map.insert(
-                        ch_id.clone(),
-                        ChannelStatus {
-                            channel_id: ch_id.clone(),
-                            channel_type: platform.clone(),
-                            name: name.clone(),
-                            status: health_state.status,
-                            bot_username: health_state.bot_username,
-                            uptime_seconds: started_at.elapsed().as_secs(),
-                            last_message_at: health_state.last_message_at,
-                            active_sessions,
-                            error_message: health_state.error_message,
-                            restart_count: health_state.restart_count,
-                            buffered_messages: health_state.buffered_messages,
-                            bind_url: None,
-                            bind_code: Some(bind_code.clone()),
-                        },
-                    );
-                    if let Some(tx) = wake_tx {
-                        wake_txs.insert(ch_id.clone(), tx.clone());
-                    }
-                }
-
-                // Re-acquire lock briefly to resolve target channel
-                let target_ch_id = {
-                    let agents_guard = agent_state_for_hb.lock().await;
-                    match agents_guard.get(&agent_id_hb) {
-                        Some(agent) => resolve_target_channel(agent, &statuses_map),
-                        None => None,
-                    }
-                };
-                let target_ch_id = match target_ch_id {
-                    Some(id) => id,
-                    None => continue,
-                };
-
-                // Delegate to the target channel's per-bot heartbeat wake_tx (no lock held)
-                let delegated_reason = if reason.is_high_priority() {
-                    reason
-                } else {
-                    types::WakeReason::Manual
-                };
-                if let Some(wake_tx) = wake_txs.get(&target_ch_id) {
-                    let _ = wake_tx.send(delegated_reason).await;
+                    break;
                 }
 
                 if is_high_priority {
@@ -2128,13 +2067,24 @@ pub async fn cmd_update_agent_config(
         }
         // Hot-reload memory auto-update config (v0.1.43)
         if let Some(ref mau_json) = patch.memory_auto_update_config_json {
+            agent.config.memory_auto_update = if mau_json.is_empty() || mau_json == "null" {
+                None
+            } else {
+                serde_json::from_str(mau_json).ok()
+            };
             if let Some(ref mau_arc) = agent.memory_update_config {
-                let parsed: Option<types::MemoryAutoUpdateConfig> = if mau_json.is_empty() {
-                    None
-                } else {
-                    serde_json::from_str(mau_json).ok()
-                };
-                *mau_arc.write().await = parsed;
+                *mau_arc.write().await = agent.config.memory_auto_update.clone();
+            }
+        }
+        // Hot-reload long-term memory evolution config (v0.2.49)
+        if let Some(ref evo_json) = patch.memory_evolution_config_json {
+            agent.config.memory_evolution = if evo_json.is_empty() || evo_json == "null" {
+                None
+            } else {
+                serde_json::from_str(evo_json).ok()
+            };
+            if let Some(ref evo_arc) = agent.memory_evolution_config {
+                *evo_arc.write().await = agent.config.memory_evolution.clone();
             }
         }
 

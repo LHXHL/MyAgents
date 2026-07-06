@@ -39,8 +39,8 @@ interface SessionMetadata {
     providerRoute?: ProviderRoute; // canonical builtin provider/model identity
     providerEnvJson?: string;      // read-only legacy fallback; new route snapshots do not persist env
     configSnapshotAt?: string;  // 存在即 owned snapshot；读侧不得用 Agent 补 owned 缺字段
-    materializationState?: 'prepared'; // pending->real 两阶段 materialize 隐藏行
-    materializationSourceSessionId?: string; // prepared 来源 pending id
+    materializationState?: 'prepared'; // pending->real 两阶段 materialize、runtime-backed 首 query 前草稿隐藏行
+    materializationSourceSessionId?: string; // prepared 来源 pending/desktop draft id
 }
 
 interface SessionStats {
@@ -122,6 +122,15 @@ querySession = query({
 时调用 `deliverSessionWatchEvents()` 生成最终事件。只有 watcher sidecar 确认 inbox
 delivery 成功后，目标 sidecar 才 ack 并清理 pending watch；Management API 暂时不可用
 时保留待重试，避免完成事件丢失。
+
+Space Registered Agent 的 `space.issue_delivery` 复用 inbox 的 `sessionEvent`
+metadata 来选择 registered-agent scenario 和 lazy session materialization，但最终
+prompt 不走通用 `<myagents-session-event>` 外包。Rust Space owner 会直接渲染
+`<system-reminder><myagents-space-issue><myagents-space-event ...>` user message，
+让前端隐藏内部处理指令并显示 `Space issue` badge。这个特例只适用于 Space Issue
+delivery，不改变 `myagents session send/watch` 的通用事件协议。`system-reminder`
+的通用隐藏 payload / badge / visible tail 规则见
+`system_reminder_protocol.md`。
 
 ### Desktop 连续 Query 队列模式（0.2.37）
 

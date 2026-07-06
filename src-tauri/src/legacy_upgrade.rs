@@ -226,6 +226,8 @@ pub async fn upgrade_legacy_cron(
         interval_minutes,
         cron_expression,
         cron_timezone,
+        start_at: None,
+        recurring_window: None,
         dispatch_at,
         model: cron.model.clone(),
         // PRD 0.2.9 — Legacy crons store credential snapshots in
@@ -242,6 +244,7 @@ pub async fn upgrade_legacy_cron(
         // Legacy crons predate the per-task MCP override (PRD 0.2.4 §需求 4)
         // — `None` means "follow Agent workspace MCP enable list".
         mcp_enabled_servers: None,
+        managed_kind: None,
         // Legacy crons have no source Thought and we don't mint one —
         // synthetic thoughts pollute the user's thought stream without
         // carrying any of the "captured a raw idea" meaning the field

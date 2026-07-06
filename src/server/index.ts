@@ -93,6 +93,62 @@ import {
 } from './plugins/store';
 import { handleQrCodeAssetRoute } from './routes/qr-code-asset';
 
+type SpaceSkillExportPackage = {
+  tempId: string;
+  filePath: string;
+  suggestedFolderName: string;
+  name: string;
+  description: string;
+  hasDangerousTools: boolean;
+  rootPath: string;
+  fileCount: number;
+  packageSizeBytes: number;
+};
+
+async function writeSpaceSkillExportPackages(
+  tree: Awaited<ReturnType<typeof fetchSkillZip>>,
+  candidates: SkillCandidate[],
+): Promise<SpaceSkillExportPackage[]> {
+  const { default: AdmZip } = await import('adm-zip');
+  const exportId = randomUUID();
+  const exportDir = join(homedir(), '.myagents', 'tmp', 'skill-url-export', exportId);
+  ensureDirSync(exportDir);
+
+  const usedFileNames = new Map<string, number>();
+  const packages: SpaceSkillExportPackage[] = [];
+
+  for (const [index, cand] of candidates.entries()) {
+    const files = buildInstallPayload(tree, [cand]).get(cand.suggestedFolderName);
+    if (!files || files.size === 0) continue;
+
+    const baseName = sanitizeFolderName(cand.suggestedFolderName);
+    const count = usedFileNames.get(baseName) ?? 0;
+    usedFileNames.set(baseName, count + 1);
+    const fileStem = count === 0 ? baseName : `${baseName}-${count + 1}`;
+    const filePath = join(exportDir, `${fileStem}.zip`);
+
+    const zip = new AdmZip();
+    for (const [relativePath, buf] of [...files.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+      zip.addFile(relativePath.replace(/\\/g, '/'), Buffer.from(buf));
+    }
+    zip.writeZip(filePath);
+
+    packages.push({
+      tempId: `${exportId}-${index}`,
+      filePath,
+      suggestedFolderName: baseName,
+      name: cand.name,
+      description: cand.description,
+      hasDangerousTools: cand.hasDangerousTools,
+      rootPath: cand.rootPath,
+      fileCount: files.size,
+      packageSizeBytes: statSync(filePath).size,
+    });
+  }
+
+  return packages;
+}
+
 /**
  * Lazy bridge to agent-session.schedulePluginDeferredRestart — the latter
  * lives in a module index.ts cannot statically import (circular dep with
@@ -132,6 +188,7 @@ let _adminApi: Promise<AdminApiModule> | null = null;
 const getAdminApi = (): Promise<AdminApiModule> => (_adminApi ??= import('./admin-api'));
 import { setImMediaContext } from './tools/im-media-tool';
 import { setImBridgeToolsContext } from './tools/im-bridge-tools';
+import { normalizeHostInteractionCapability } from './host-interaction';
 import { getBuiltinMcpInstance } from './tools/builtin-mcp-registry';
 // NOTE: builtin MCP META is auto-registered when agent-session.ts side-effect-imports
 // './tools/builtin-mcp-meta'. No duplicate import needed here.
@@ -527,6 +584,7 @@ import {
   getSessionData,
   getSessionMetadata,
   getSessionsByAgentDir,
+  isHistoryVisibleSession,
   updateSessionMetadata,
   getAttachmentPath,
 } from './SessionStore';
@@ -610,8 +668,7 @@ import type { RuntimeBackedProviderIdentity } from '../shared/providerExecution'
 import { normalizeSessionOrigin, originFromTurnAttribution } from '../shared/session-origin';
 import type { SessionOrigin } from '../shared/session-origin';
 import type { InteractionScenario } from './system-prompt';
-// PRD 0.2.18 Session Inbox — sanitize helper for cron envelope wrapping
-import { neutralizeInboxStructuralTags, sanitizeInboxLabel } from './inbox/sanitize-label';
+import { buildCronEventRelayMessage, neutralizeSystemReminderStructuralTags } from './utils/cron-event-relay';
 
 type PermissionMode = 'auto' | 'plan' | 'fullAgency' | 'custom';
 
@@ -1105,6 +1162,14 @@ const SYSTEM_SKILLS: readonly string[] = [
   // rules / description cap / readme template) must track registry
   // validation in lockstep.
   'tool-creator',
+  // v27: Evo managed tasks target these long-term memory skills by name.
+  // Force-sync so the task prompt, scripts, and substrate assumptions remain
+  // consistent with the Agent Settings scheduler.
+  'myagents-memory-gardener',
+  'myagents-memory-molt',
+  // v29: prompt-writer promoted from utility → system skill so content
+  // improvements reach existing installs (seed-once never updates).
+  'prompt-writer',
 ];
 
 /**
@@ -1754,81 +1819,6 @@ export function drainSystemEvents(): Array<{ event: string; content: string; tim
   return systemEventQueue.splice(0);
 }
 
-/** Build a dedicated prompt for cron completion events (replaces standard heartbeat prompt) */
-function buildCronEventPrompt(
-  cronEvents: Array<{
-    event: string;
-    content: string;
-    timestamp: number;
-    taskId?: string;
-    // PRD 0.2.18 Phase 3 — inbox envelope bridge: when present, wrap content
-    // with `<inbox-message from="..." reply_back="false">` so the IM Bot AI
-    // sees the same envelope context as `myagents session send` messages.
-    fromSessionId?: string;
-    fromLabel?: string;
-  }>
-): string {
-  const now = new Date().toLocaleString('en-US', {
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
-  });
-
-  // Lazy-load sanitize helper — used only when from_label is present.
-  const wrapInboxIfNeeded = (
-    e: { content: string; fromSessionId?: string; fromLabel?: string; taskId?: string },
-  ): string => {
-    if (!e.fromSessionId || !e.fromLabel) return e.content;
-    const label = sanitizeInboxLabel(e.fromLabel);
-    // Cross-review CC HIGH #5 + Architecture M1: use the single-source-of-truth
-    // helper instead of an inline copy. Inline regex was missing whitespace-
-    // tolerant close tags and fullwidth-bracket smuggling (cross-review Codex
-    // Critical #2) — defense in the shared helper covers both.
-    const safeBody = neutralizeInboxStructuralTags(e.content);
-    return `<inbox-message from="${label}" reply_back="false">\n${safeBody}\n</inbox-message>`;
-  };
-
-  if (cronEvents.length === 1) {
-    const e = cronEvents[0];
-    const wrappedContent = wrapInboxIfNeeded(e);
-    return (
-      'A scheduled task has been triggered and completed. ' +
-      'Please relay these results to the user in a helpful and friendly way.\n' +
-      `Task id: ${e.taskId || 'unknown'}\n` +
-      (e.fromSessionId ? `Source session id: ${e.fromSessionId} (use \`myagents session send ${e.fromSessionId} -p "..."\` to follow up)\n` : '') +
-      `Current time: ${now}\n` +
-      'The task results are:\n' +
-      '```markdown\n' +
-      wrappedContent + '\n' +
-      '```'
-    );
-  }
-
-  // Multiple tasks
-  let prompt =
-    'Scheduled tasks have been triggered and completed. ' +
-    'Please relay these results to the user in a helpful and friendly way.\n' +
-    `Current time: ${now}\n`;
-
-  // PRD 0.2.18 cross-review fix (CC): align with single-event branch by also
-  // emitting follow-up hint when fromSessionId is present, so the IM Bot AI
-  // knows it can `myagents session send <sid>` to ask follow-ups on any of
-  // the bundled cron deliveries.
-  for (const e of cronEvents) {
-    const wrappedContent = wrapInboxIfNeeded(e);
-    prompt +=
-      `\nTask id: ${e.taskId || 'unknown'}\n` +
-      (e.fromSessionId
-        ? `Source session id: ${e.fromSessionId} (use \`myagents session send ${e.fromSessionId} -p "..."\` to follow up)\n`
-        : '') +
-      'The task results are:\n' +
-      '```markdown\n' +
-      wrappedContent + '\n' +
-      '```\n';
-  }
-  return prompt;
-}
-
 /**
  * Write a startup beacon directly to unified log file (bypasses initLogger).
  * This is critical for diagnosing Windows startup hangs where initLogger
@@ -1938,7 +1928,11 @@ async function main() {
   const ensureBridgeHandler = (): Promise<BridgeHandler> => {
     if (bridgeHandlerPromise) return bridgeHandlerPromise;
     bridgeHandlerPromise = (async () => {
-      const [{ createBridgeHandler }, { lookupBridge }] = await Promise.all([
+      const [{ createBridgeHandler }, {
+        lookupBridge,
+        disablePromptCacheKey,
+        isPromptCacheKeyDisabled,
+      }] = await Promise.all([
         import('./openai-bridge'),
         import('./openai-bridge/bridge-registry'),
       ]);
@@ -1980,6 +1974,13 @@ async function main() {
               // #324 — per-token live value (session bridges resolve it from
               // currentReasoningEffort on every request).
               reasoningEffort: cfg.reasoningEffort,
+              cacheAffinity: cfg.cacheAffinity
+                ? {
+                    ...cfg.cacheAffinity,
+                    promptCacheKeyDisabled: isPromptCacheKeyDisabled(token),
+                    disablePromptCacheKey: () => disablePromptCacheKey(token),
+                  }
+                : undefined,
             };
           },
           logger: (msg) => console.log(msg),
@@ -2689,7 +2690,7 @@ async function main() {
         setCronTaskContext(taskId, aiCanExit ?? false, currentSessionId);
 
         // Set interaction scenario for cron task (L1 + L2-desktop + L3-cron)
-        setInteractionScenario({
+        await setInteractionScenario({
           type: 'cron',
           taskId,
           intervalMinutes: intervalMinutes ?? 15,
@@ -3356,7 +3357,7 @@ async function main() {
         // Set System Prompt append for cron task context
         // Set interaction scenario for cron task (L1 + L2-desktop + L3-cron)
         try {
-          setInteractionScenario({
+          await setInteractionScenario({
             type: 'cron',
             taskId,
             intervalMinutes: intervalMinutes ?? 15,
@@ -3683,7 +3684,7 @@ async function main() {
           // Zero-trust: strip providerEnvJson before handing to clients.
           // Matches PATCH response behavior (see PATCH /sessions/:id).
           const safeSessions = sessions
-            .filter((session) => session.materializationState !== 'prepared')
+            .filter(isHistoryVisibleSession)
             .map(normalizeSessionListPreview)
             .map(redactSessionMetadata);
           return jsonResponse({ success: true, sessions: safeSessions });
@@ -3712,6 +3713,8 @@ async function main() {
           enabledPluginIds?: string[];
           enabledOfficialToolIds?: import('../shared/official-tools').OfficialToolId[];
           origin?: unknown;
+          prepareForFirstUserMessage?: boolean;
+          materializationSourceSessionId?: string;
         };
         let payload: CreateSessionPayload;
         try {
@@ -3741,10 +3744,16 @@ async function main() {
         if (payload.origin !== undefined && !payloadOrigin) {
           return jsonResponse({ success: false, error: 'Invalid session origin.' }, 400);
         }
+        const payloadProviderExecutionIdentity = payload.providerExecutionIdentity === undefined
+          ? undefined
+          : runtimeBackedProviderIdentityFromSnapshot(payload.providerExecutionIdentity);
+        if (payload.providerExecutionIdentity !== undefined && !payloadProviderExecutionIdentity) {
+          return jsonResponse({ success: false, error: 'Invalid providerExecutionIdentity.' }, 400);
+        }
         const managedCodexReady = isManagedCodexProviderReady(loadConfig());
         if (
           runtimeSourceValue === 'managed-provider'
-          || payload.providerExecutionIdentity?.runtimeSource === 'managed-provider'
+          || payloadProviderExecutionIdentity?.runtimeSource === 'managed-provider'
           || payload.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
         ) {
           if (!managedCodexReady) {
@@ -3753,7 +3762,7 @@ async function main() {
               error: managedCodexNotReadyMessage('session creation'),
             }, 400);
           }
-          if (runtimeSourceValue === 'managed-provider' && !payload.providerExecutionIdentity) {
+          if (runtimeSourceValue === 'managed-provider' && !payloadProviderExecutionIdentity) {
             return jsonResponse({
               success: false,
               error: 'Managed Codex session creation requires providerExecutionIdentity.',
@@ -3785,10 +3794,10 @@ async function main() {
         if (runtimeSourceValue && (baseSnapshot.runtime ?? runtimeValue) !== 'builtin') {
           baseSnapshot.runtimeSource = runtimeSourceValue;
         }
-        if (payload.providerExecutionIdentity) {
-          baseSnapshot.providerExecutionIdentity = payload.providerExecutionIdentity;
-          baseSnapshot.providerId = payload.providerExecutionIdentity.providerId;
-          baseSnapshot.model = payload.providerExecutionIdentity.model;
+        if (payloadProviderExecutionIdentity) {
+          baseSnapshot.providerExecutionIdentity = payloadProviderExecutionIdentity;
+          baseSnapshot.providerId = payloadProviderExecutionIdentity.providerId;
+          baseSnapshot.model = payloadProviderExecutionIdentity.model;
           baseSnapshot.providerRoute = undefined;
           baseSnapshot.providerEnvJson = undefined;
         } else {
@@ -3828,6 +3837,25 @@ async function main() {
         if (payload.mcpEnabledServers !== undefined) baseSnapshot.mcpEnabledServers = payload.mcpEnabledServers;
         if (payload.enabledPluginIds !== undefined) baseSnapshot.enabledPluginIds = payload.enabledPluginIds;
         if (payload.enabledOfficialToolIds !== undefined) baseSnapshot.enabledOfficialToolIds = payload.enabledOfficialToolIds;
+        if (payload.prepareForFirstUserMessage === true) {
+          if (baseSnapshot.origin?.kind !== 'desktop') {
+            return jsonResponse({
+              success: false,
+              error: 'Prepared session birth is only supported for desktop sessions.',
+            }, 400);
+          }
+          if (!baseSnapshot.providerExecutionIdentity) {
+            return jsonResponse({
+              success: false,
+              error: 'Prepared session birth requires providerExecutionIdentity.',
+            }, 400);
+          }
+          baseSnapshot.materializationState = 'prepared';
+          baseSnapshot.materializationSourceSessionId = typeof payload.materializationSourceSessionId === 'string'
+            && payload.materializationSourceSessionId.trim()
+            ? payload.materializationSourceSessionId.trim()
+            : undefined;
+        }
         const session = await createSession(agentDirValue, baseSnapshot);
         return jsonResponse({ success: true, session });
       }
@@ -6608,6 +6636,155 @@ async function main() {
         }
       }
 
+      // POST /api/skill/export-from-url - Resolve a GitHub/raw/npx skill source
+      // and stage one or more canonical zip packages for Space publishing.
+      //
+      // This deliberately does not write to ~/.myagents/skills or a workspace.
+      // The renderer still hands the staged zip path to the Rust Space command,
+      // so Space auth and cloud mutations remain owned by Tauri.
+      if (pathname === '/api/skill/export-from-url' && request.method === 'POST') {
+        try {
+          const payload = await request.json() as {
+            url: string;
+            confirmedSelection?: {
+              pluginName?: string;
+              folderNames?: string[];
+            };
+          };
+
+          if (!payload.url || typeof payload.url !== 'string') {
+            return jsonResponse({ success: false, error: 'url 参数必填' }, 400);
+          }
+
+          let resolved;
+          try {
+            resolved = resolveSkillUrl(payload.url);
+          } catch (err) {
+            return jsonResponse(
+              { success: false, error: err instanceof Error ? err.message : '链接解析失败' },
+              400,
+            );
+          }
+
+          let tree;
+          try {
+            tree = await fetchSkillZip(resolved);
+          } catch (err) {
+            const statusCode = err instanceof TarballFetchError ? err.statusCode : 500;
+            return jsonResponse(
+              { success: false, error: err instanceof Error ? err.message : '下载失败' },
+              statusCode,
+            );
+          }
+
+          const analysis = analyseTree(tree, resolved);
+          if (analysis.mode === 'empty') {
+            return jsonResponse({ success: false, error: analysis.reason }, 422);
+          }
+
+          if (payload.confirmedSelection) {
+            let chosen: SkillCandidate[];
+            if (analysis.mode === 'marketplace') {
+              const plugin = analysis.plugins.find(p => p.name === payload.confirmedSelection!.pluginName);
+              if (!plugin) {
+                return jsonResponse({ success: false, error: '指定的插件不存在' }, 400);
+              }
+              const wanted = new Set(
+                (payload.confirmedSelection.folderNames ?? []).map(n => sanitizeFolderName(n)),
+              );
+              chosen = wanted.size > 0
+                ? plugin.skills.filter(s => wanted.has(sanitizeFolderName(s.suggestedFolderName)))
+                : plugin.skills;
+            } else if (analysis.mode === 'multi') {
+              const wanted = new Set(
+                (payload.confirmedSelection.folderNames ?? []).map(n => sanitizeFolderName(n)),
+              );
+              chosen = analysis.candidates.filter(s => wanted.has(sanitizeFolderName(s.suggestedFolderName)));
+            } else {
+              chosen = [analysis.skill];
+            }
+
+            if (chosen.length === 0) {
+              return jsonResponse({ success: false, error: '未选择任何 skill' }, 400);
+            }
+
+            const packages = await writeSpaceSkillExportPackages(tree, chosen);
+            if (packages.length === 0) {
+              return jsonResponse({ success: false, error: '未找到可发布的文件' }, 500);
+            }
+
+            return jsonResponse({
+              success: true,
+              mode: 'exported',
+              packages,
+              sourceUrl: tree.sourceUrl,
+              effectiveRef: tree.effectiveRef,
+            });
+          }
+
+          if (analysis.mode === 'marketplace') {
+            return jsonResponse({
+              success: true,
+              mode: 'marketplace',
+              preview: {
+                marketplaceName: analysis.marketplaceName,
+                marketplaceDescription: analysis.marketplaceDescription,
+                plugins: analysis.plugins.map(p => ({
+                  name: p.name,
+                  description: p.description,
+                  skills: p.skills.map(s => ({
+                    suggestedFolderName: sanitizeFolderName(s.suggestedFolderName),
+                    name: s.name,
+                    description: s.description,
+                    hasDangerousTools: s.hasDangerousTools,
+                    rootPath: s.rootPath,
+                  })),
+                })),
+              },
+              sourceUrl: tree.sourceUrl,
+              effectiveRef: tree.effectiveRef,
+            });
+          }
+
+          if (analysis.mode === 'multi') {
+            return jsonResponse({
+              success: true,
+              mode: 'multi',
+              preview: {
+                candidates: analysis.candidates.map(s => ({
+                  suggestedFolderName: sanitizeFolderName(s.suggestedFolderName),
+                  name: s.name,
+                  description: s.description,
+                  hasDangerousTools: s.hasDangerousTools,
+                  rootPath: s.rootPath,
+                })),
+              },
+              sourceUrl: tree.sourceUrl,
+              effectiveRef: tree.effectiveRef,
+            });
+          }
+
+          const packages = await writeSpaceSkillExportPackages(tree, [analysis.skill]);
+          if (packages.length === 0) {
+            return jsonResponse({ success: false, error: '未找到可发布的文件' }, 500);
+          }
+
+          return jsonResponse({
+            success: true,
+            mode: 'exported',
+            packages,
+            sourceUrl: tree.sourceUrl,
+            effectiveRef: tree.effectiveRef,
+          });
+        } catch (error) {
+          console.error('[api/skill/export-from-url] Error:', error);
+          return jsonResponse(
+            { success: false, error: error instanceof Error ? error.message : 'Export failed' },
+            500,
+          );
+        }
+      }
+
       // POST /api/skill/install-from-url - Install skill(s) from a GitHub repo / raw zip URL
       // Two-step flow: first call analyses and may return a preview for the user to confirm;
       // second call (with confirmedSelection) re-fetches and writes the chosen skills.
@@ -8165,6 +8342,7 @@ async function main() {
             bridgeEnabledToolGroups?: string[];
             senderId?: string;
             senderIsOwner?: boolean;
+            hostInteraction?: unknown;
           };
 
           if (!payload.requestId) {
@@ -8276,6 +8454,7 @@ async function main() {
                 chatId: payload.sourceId,
                 isOwner: payload.senderIsOwner ?? false,
                 sourceType: bridgeSourceType,
+                hostInteraction: normalizeHostInteractionCapability(payload.hostInteraction),
               });
             }
 
@@ -8304,14 +8483,16 @@ async function main() {
 
           // Set IM interaction scenario (after MCP sync, see note above)
           const [imPlatform, imSourceType] = payload.source.split('_') as ['telegram' | 'feishu', 'private' | 'group'];
+          const hostInteraction = normalizeHostInteractionCapability(payload.hostInteraction);
           const imScenario: Extract<InteractionScenario, { type: 'im' }> = {
             type: 'im',
             platform: imPlatform,
             sourceType: imSourceType,
             botName: payload.botName,
+            hostInteraction,
           };
           const imTurnOrigin: SessionOrigin = { kind: 'agent-channel', surface: 'channel_message' };
-          setInteractionScenario(imScenario);
+          await setInteractionScenario(imScenario);
 
           // Build final message with group context (identical to /api/im/chat)
           let finalMessage = payload.message || '';
@@ -8413,6 +8594,7 @@ async function main() {
                 platform: imPlatform,
                 sourceType: imSourceType,
                 botName: payload.botName,
+                hostInteraction,
               },
               permissionMode: resolvedExternalPermissionMode,
               model: resolvedExternalModel,
@@ -8732,6 +8914,7 @@ async function main() {
             isHighPriority?: boolean;
             runtime?: RuntimeType;
             runtimeConfig?: RuntimeConfig;
+            hostInteraction?: unknown;
             // v0.2.4: Rust-side authoritative cron events. When non-empty, this
             // payload is the truth source and REPLACES any cron events in the
             // sidecar's in-memory `systemEventQueue` (Rust survives sidecar
@@ -8743,7 +8926,7 @@ async function main() {
               content: string;
               timestamp: number;
               // PRD 0.2.18 Phase 3 — inbox envelope bridge fields (optional).
-              // When present, buildCronEventPrompt wraps the cron content with
+              // When present, buildCronEventRelayMessage wraps the cron content with
               // an `<inbox-message from="..." reply_back="false">` prefix so
               // the IM Bot AI can `myagents session send <fromSessionId>` to
               // follow up. Cron uses reply_back=false because the cron task
@@ -8880,10 +9063,14 @@ description: >
           }
 
           let enrichedPrompt: string;
+          let alreadyWrappedSystemReminder = false;
 
           if (effectiveCronEvents.length > 0) {
-            // Cron event prompt: completely replaces standard heartbeat prompt
-            enrichedPrompt = buildCronEventPrompt(effectiveCronEvents);
+            // Cron event prompt: completely replaces standard heartbeat prompt.
+            // It already contains the hidden <system-reminder><HEARTBEAT> payload
+            // plus a user-visible tail for the chat bubble.
+            enrichedPrompt = buildCronEventRelayMessage(effectiveCronEvents);
+            alreadyWrappedSystemReminder = true;
             // Push back non-cron events so they aren't lost — next heartbeat cycle will pick them up
             for (const e of otherEvents) {
               pushSystemEvent(e);
@@ -8893,16 +9080,22 @@ description: >
             enrichedPrompt = payload.prompt;
             if (otherEvents.length > 0) {
               const eventLines = otherEvents.map(
-                e => `[System Event: ${e.event}] ${e.content}`
+                e => `[System Event: ${neutralizeSystemReminderStructuralTags(e.event)}] ${neutralizeSystemReminderStructuralTags(e.content)}`
               ).join('\n');
               enrichedPrompt += `\n\n${eventLines}`;
             }
           }
 
-          // Wrap the entire heartbeat message in <system-reminder><HEARTBEAT> tags
-          enrichedPrompt = `<system-reminder>\n<HEARTBEAT>\n${enrichedPrompt}\n</HEARTBEAT>\n</system-reminder>`;
+          // Wrap ordinary heartbeat messages in <system-reminder><HEARTBEAT> tags.
+          // Cron relay messages already carry that envelope and keep the visible
+          // bubble text outside it.
+          if (!alreadyWrappedSystemReminder) {
+            enrichedPrompt = `<system-reminder>\n<HEARTBEAT>\n${enrichedPrompt}\n</HEARTBEAT>\n</system-reminder>`;
+          }
 
-          // Inject heartbeat prompt as user message (wrapped in <system-reminder><HEARTBEAT> tags)
+          // Inject heartbeat prompt as user message. Ordinary heartbeat turns are
+          // pure <system-reminder><HEARTBEAT> payloads; cron relay turns append a
+          // short visible system notice after that hidden envelope.
           // System prompt is already permanently injected at IM session creation (/api/im/chat)
           // Heartbeat is unattended — bypass all permissions so tool use doesn't block.
           // Pass current model + providerEnv for consistency (undefined is also safe —
@@ -8920,6 +9113,7 @@ description: >
               type: 'agent-channel',
               platform: payload.source?.split('_')[0] ?? 'unknown',
               sourceType: payload.source?.includes('group') ? 'group' : 'private',
+              hostInteraction: normalizeHostInteractionCapability(payload.hostInteraction),
             },
             permissionMode: engine.kind === 'external'
               ? getRuntimeConfigPermissionMode(runtimeConfig, activeRuntime)

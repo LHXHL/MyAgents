@@ -79,8 +79,100 @@ pub async fn deliver_task_notification_to_bot_checked(
     // envelope + `Source session id:` follow-up line (which would be wrong
     // here anyway: a `myagents session send` against the Task Center task id
     // wouldn't deliver to any session).
-    deliver_cron_result_to_bot(handle, &delivery, task_id, summary, None).await;
-    true
+    deliver_cron_result_to_bot(handle, &delivery, task_id, summary, None).await
+}
+
+async fn resolve_cron_task_workspace(task_id: &str) -> Option<String> {
+    let manager = get_cron_task_manager();
+    let tasks = manager.tasks.read().await;
+    tasks.get(task_id).map(|task| task.workspace_path.clone())
+}
+
+async fn find_agent_id_for_delivery(
+    agent_state: &crate::im::ManagedAgents,
+    delivery_bot_id: &str,
+    task_workspace: Option<&str>,
+) -> Option<String> {
+    let normalized_task_workspace = task_workspace.map(crate::cron_task::normalize_path);
+    let agents_guard = agent_state.lock().await;
+    let mut first_channel_match = None;
+
+    for (agent_id, agent) in agents_guard.iter() {
+        if !agent.channels.contains_key(delivery_bot_id) {
+            continue;
+        }
+        if first_channel_match.is_none() {
+            first_channel_match = Some(agent_id.clone());
+        }
+        if let Some(task_workspace) = normalized_task_workspace.as_ref() {
+            if crate::cron_task::normalize_path(&agent.config.workspace_path) == *task_workspace {
+                return Some(agent_id.clone());
+            }
+        }
+    }
+
+    first_channel_match
+}
+
+async fn append_pending_cron_event(
+    pending_cron_events: &Arc<tokio::sync::Mutex<Vec<crate::im::types::PendingCronEvent>>>,
+    bot_id: &str,
+    target_session_key: Option<String>,
+    task_id: &str,
+    summary: &str,
+    cron_from_session_id: Option<String>,
+    cron_from_label: Option<String>,
+) {
+    // Cap to keep memory bounded if the bot is offline for an extended period.
+    const MAX_PENDING_CRON_EVENTS: usize = 50;
+    let mut pending = pending_cron_events.lock().await;
+    while pending.len() >= MAX_PENDING_CRON_EVENTS {
+        let evicted = pending.remove(0);
+        ulog_warn!(
+            "[CronTask] pending_cron_events at cap ({}) for bot {} — evicting oldest task_id={}",
+            MAX_PENDING_CRON_EVENTS,
+            bot_id,
+            evicted.task_id
+        );
+    }
+    pending.push(crate::im::types::PendingCronEvent {
+        target_session_key,
+        event: "cron_complete".to_string(),
+        task_id: task_id.to_string(),
+        content: summary.to_string(),
+        timestamp: chrono::Utc::now().timestamp_millis().max(0) as u64,
+        from_session_id: cron_from_session_id,
+        from_label: cron_from_label,
+    });
+    ulog_info!(
+        "[CronTask] Appended cron event to bot {} pending (now {} pending)",
+        bot_id,
+        pending.len()
+    );
+}
+
+async fn wake_heartbeat_for_cron(
+    wake_tx: Option<&tokio::sync::mpsc::Sender<crate::im::types::HeartbeatWake>>,
+    bot_id: &str,
+    wake: crate::im::types::HeartbeatWake,
+) {
+    if let Some(wake_tx) = wake_tx {
+        if let Err(e) = wake_tx.send(wake).await {
+            ulog_warn!(
+                "[CronTask] Failed to wake heartbeat for bot {}: {}",
+                bot_id,
+                e
+            );
+        } else {
+            ulog_info!("[CronTask] Heartbeat wake sent for bot {}", bot_id);
+        }
+    } else {
+        ulog_warn!(
+            "[CronTask] Bot {} has no heartbeat_wake_tx — cron event will sit in \
+             pending until next interval tick (up to heartbeat interval)",
+            bot_id
+        );
+    }
 }
 
 /// Deliver cron task completion result to IM Bot.
@@ -114,7 +206,7 @@ pub(super) async fn deliver_cron_result_to_bot(
     // (e.g. Task Center notification — no associated cron session); we
     // then fall back to the legacy un-decorated prompt.
     run_session_id: Option<&str>,
-) {
+) -> bool {
     // PRD 0.2.18 Phase 3 — derive cron task session metadata (cron task name +
     // session id) for inbox-style envelope wrapping. Cron task fires *into* an
     // IM Bot session; the IM Bot AI sees the cron result as an `<inbox-message
@@ -138,111 +230,101 @@ pub(super) async fn deliver_cron_result_to_bot(
         delivery.platform
     );
 
-    // Look up the bot's pending vec + wake channel. We try the Agent state
-    // first (v0.1.41 channels), then fall back to legacy ManagedImBots. Both
-    // ultimately point at the same per-channel ImBotInstance Arc fields.
+    let reason = crate::im::types::WakeReason::CronComplete {
+        task_id: task_id.to_string(),
+        summary: summary.to_string(),
+    };
+
+    let task_workspace = resolve_cron_task_workspace(task_id).await;
+    if let Some(agent_state) = handle.try_state::<crate::im::ManagedAgents>() {
+        if let Some(agent_id) =
+            find_agent_id_for_delivery(&agent_state, &delivery.bot_id, task_workspace.as_deref())
+                .await
+        {
+            let route = match crate::im::resolve_agent_heartbeat_route(&agent_state, &agent_id)
+                .await
+            {
+                crate::im::AgentHeartbeatRouteResolution::Target(route) => route,
+                crate::im::AgentHeartbeatRouteResolution::NoPrivateTarget => {
+                    ulog_warn!(
+                        "[CronTask] Agent {} has no private heartbeat target; task {} result stays in execution history",
+                        agent_id,
+                        task_id
+                    );
+                    return false;
+                }
+                crate::im::AgentHeartbeatRouteResolution::AgentMissing => {
+                    ulog_warn!(
+                        "[CronTask] Agent {} disappeared before cron delivery for task {}",
+                        agent_id,
+                        task_id
+                    );
+                    return false;
+                }
+            };
+
+            append_pending_cron_event(
+                &route.pending_cron_events,
+                &route.target.channel_id,
+                Some(route.target.session_key.clone()),
+                task_id,
+                summary,
+                cron_from_session_id,
+                cron_from_label,
+            )
+            .await;
+            let wake =
+                crate::im::types::HeartbeatWake::targeted(reason, route.target.session_key.clone());
+            wake_heartbeat_for_cron(route.wake_tx.as_ref(), &route.target.channel_id, wake).await;
+            return true;
+        }
+    }
+
     let im_state: tauri::State<'_, crate::im::ManagedImBots> = match handle.try_state() {
         Some(s) => s,
         None => {
             ulog_warn!("[CronTask] Cannot deliver result: IM state not available");
-            return;
+            return false;
         }
     };
 
     let (pending_cron_events, wake_tx) = {
-        let agent_refs = if let Some(agent_state) = handle.try_state::<crate::im::ManagedAgents>() {
-            let agents_guard = agent_state.lock().await;
-            let mut found = None;
-            for (_agent_id, agent) in agents_guard.iter() {
-                if let Some(ch) = agent.channels.get(&delivery.bot_id) {
-                    found = Some((
-                        std::sync::Arc::clone(&ch.bot_instance.pending_cron_events),
-                        ch.bot_instance.heartbeat_wake_tx.clone(),
-                    ));
-                    break;
-                }
+        let im_guard = im_state.lock().await;
+        let instance = match im_guard.get(&delivery.bot_id) {
+            Some(i) => i,
+            None => {
+                ulog_warn!(
+                    "[CronTask] Cannot deliver result: Bot {} not found or not running. \
+                     Task result stored in execution history only. \
+                     User needs to start the channel in Agent settings.",
+                    delivery.bot_id
+                );
+                return false;
             }
-            found
-        } else {
-            None
         };
+        (
+            std::sync::Arc::clone(&instance.pending_cron_events),
+            instance.heartbeat_wake_tx.clone(),
+        )
+    };
 
-        if let Some(refs) = agent_refs {
-            refs
-        } else {
-            let im_guard = im_state.lock().await;
-            let instance = match im_guard.get(&delivery.bot_id) {
-                Some(i) => i,
-                None => {
-                    ulog_warn!(
-                        "[CronTask] Cannot deliver result: Bot {} not found or not running. \
-                         Task result stored in execution history only. \
-                         User needs to start the channel in Agent settings.",
-                        delivery.bot_id
-                    );
-                    return;
-                }
-            };
-            (
-                std::sync::Arc::clone(&instance.pending_cron_events),
-                instance.heartbeat_wake_tx.clone(),
-            )
-        }
-    }; // guards dropped here
-
-    // 1. Append to pending. Cap to keep memory bounded if the bot is offline
-    // for an extended period — daily reports are 1/day so 50 covers ~7 weeks
-    // before the oldest gets evicted (FIFO). Eviction logs a warning so the
-    // operator notices delivery is silently dropping.
-    const MAX_PENDING_CRON_EVENTS: usize = 50;
-    {
-        let mut pending = pending_cron_events.lock().await;
-        while pending.len() >= MAX_PENDING_CRON_EVENTS {
-            let evicted = pending.remove(0);
-            ulog_warn!(
-                "[CronTask] pending_cron_events at cap ({}) for bot {} — evicting oldest task_id={}",
-                MAX_PENDING_CRON_EVENTS, delivery.bot_id, evicted.task_id
-            );
-        }
-        pending.push(crate::im::types::PendingCronEvent {
-            event: "cron_complete".to_string(),
-            task_id: task_id.to_string(),
-            content: summary.to_string(),
-            // Local-side timestamp; only used internally as a dedup-clear
-            // disambiguator, never displayed to the user.
-            timestamp: chrono::Utc::now().timestamp_millis().max(0) as u64,
-            // PRD 0.2.18 Phase 3 — inbox envelope bridge (may be None when
-            // cron task lookup fails; sidecar falls back to legacy prompt).
-            from_session_id: cron_from_session_id.clone(),
-            from_label: cron_from_label.clone(),
-        });
-        ulog_info!(
-            "[CronTask] Appended cron event to bot {} pending (now {} pending)",
-            delivery.bot_id,
-            pending.len()
-        );
-    }
-
-    // 2. Wake the heartbeat runner. The wake reason still carries (task_id,
-    // summary) for log readability; the heartbeat runner reads pending from
-    // the Arc directly, not from the wake reason.
-    if let Some(ref wake_tx) = wake_tx {
-        let reason = crate::im::types::WakeReason::CronComplete {
-            task_id: task_id.to_string(),
-            summary: summary.to_string(),
-        };
-        if let Err(e) = wake_tx.send(reason).await {
-            ulog_warn!("[CronTask] Failed to wake heartbeat: {}", e);
-        } else {
-            ulog_info!("[CronTask] Heartbeat wake sent for bot {}", delivery.bot_id);
-        }
-    } else {
-        ulog_warn!(
-            "[CronTask] Bot {} has no heartbeat_wake_tx — cron event will sit in \
-             pending until next interval tick (up to heartbeat interval)",
-            delivery.bot_id
-        );
-    }
+    append_pending_cron_event(
+        &pending_cron_events,
+        &delivery.bot_id,
+        None,
+        task_id,
+        summary,
+        cron_from_session_id,
+        cron_from_label,
+    )
+    .await;
+    wake_heartbeat_for_cron(
+        wake_tx.as_ref(),
+        &delivery.bot_id,
+        crate::im::types::HeartbeatWake::new(reason),
+    )
+    .await;
+    true
 }
 
 /// PRD 0.2.18 Phase 3 — look up the user-visible label for the

@@ -61,14 +61,14 @@ pub use run_records::{
 };
 use run_records::{run_record_path, TERMINAL_STOP_SENTINEL};
 pub use schedule::enrich_for_summary;
-use schedule::{enrich_task, sleep_until_wallclock};
+use schedule::{enrich_task, resolve_missed_interval_target, sleep_until_wallclock};
 use store::{atomic_save_task_snapshot, atomic_save_tasks};
 #[cfg(test)]
 use types::default_permission_mode;
 use types::CronTaskStore;
 pub use types::{
-    CronDelivery, CronSchedule, CronTask, CronTaskConfig, EndConditions, ProviderIntent, RunMode,
-    TaskProviderEnv, TaskStatus,
+    CronDelivery, CronSchedule, CronTask, CronTaskConfig, EndConditions, ProviderIntent,
+    RecurringWindow, RunMode, TaskProviderEnv, TaskStatus,
 };
 pub(crate) use validation::normalize_path;
 pub use validation::validate_cron_expression;
@@ -104,6 +104,7 @@ mod cron_dialect_tests {
             runtime: None,
             runtime_config: None,
             mcp_enabled_servers: None,
+            managed_kind: None,
             last_error: None,
             last_run_ok: None,
             last_run_duration_ms: None,

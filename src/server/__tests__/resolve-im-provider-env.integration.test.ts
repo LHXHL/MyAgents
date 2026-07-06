@@ -77,8 +77,10 @@ describe('resolveImProviderEnv (#237)', () => {
     expect(env).toBeDefined();
     expect(env!.baseUrl).toBe('https://api.deepseek.com/anthropic');
     expect(env!.apiKey).toBe('sk-test-deepseek');
-    // DeepSeek preset aliases from src/shared/config-types.ts
+    // DeepSeek preset aliases from src/shared/config-types.ts, completed for
+    // SDK sub-agent aliases by completeModelAliases().
     expect(env!.modelAliases).toEqual({
+      fable: 'deepseek-v4-pro',
       sonnet: 'deepseek-v4-pro',
       opus: 'deepseek-v4-pro',
       haiku: 'deepseek-v4-flash',

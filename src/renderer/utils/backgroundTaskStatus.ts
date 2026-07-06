@@ -1,3 +1,5 @@
+import type { Message } from '@/types/chat';
+
 /**
  * Module-level store for background task (SDK sub-agent) completion statuses.
  *
@@ -64,11 +66,19 @@ const EVENT_NAME = 'background-task-status';
 
 // ─── Registration (task started) ───
 
+function linkTaskToolUse(taskId: string, toolUseId: string): void {
+    const previousToolUseId = taskIdToToolUseId.get(taskId);
+    if (previousToolUseId && previousToolUseId !== toolUseId) {
+        toolUseIdToTaskId.delete(previousToolUseId);
+    }
+    toolUseIdToTaskId.set(toolUseId, taskId);
+    taskIdToToolUseId.set(taskId, toolUseId);
+}
+
 /** Register the toolUseId↔taskId mapping (called when chat:task-started arrives).
  *  Also reconciles any orphan terminal status stored for this taskId. */
 export function registerBackgroundTask(taskId: string, toolUseId: string): void {
-    toolUseIdToTaskId.set(toolUseId, taskId);
-    taskIdToToolUseId.set(taskId, toolUseId);
+    linkTaskToolUse(taskId, toolUseId);
 
     // Reconcile: if a terminal notification arrived earlier with no toolUseId,
     // promote it to a proper status now and dispatch once so listeners catch up.
@@ -102,6 +112,9 @@ export function getBackgroundTaskDescription(key: string): string | undefined {
  */
 export function setBackgroundTaskStatus(taskId: string, status: string, directToolUseId?: string): void {
     const toolUseId = directToolUseId ?? taskIdToToolUseId.get(taskId);
+    if (toolUseId) {
+        linkTaskToolUse(taskId, toolUseId);
+    }
 
     if (!toolUseId && isTerminalStatus(status)) {
         // No association available — park in orphan pool so a late TaskTool can reconcile.
@@ -171,6 +184,65 @@ export function getBackgroundTaskStatus(key: string): string | undefined {
     // Try as toolUseId first (new path), then as taskId (old path / direct)
     const taskId = toolUseIdToTaskId.get(key) ?? key;
     return statuses.get(taskId);
+}
+
+export interface BackgroundTaskNotificationRecord {
+    taskId: string;
+    toolUseId?: string;
+    status: string;
+    summary?: string;
+    description?: string;
+}
+
+export function parseBackgroundTaskNotificationContent(content: string): BackgroundTaskNotificationRecord | null {
+    const match = content.match(/<task-notification>([\s\S]*?)<\/task-notification>/);
+    if (!match) return null;
+    try {
+        const parsed = JSON.parse(match[1]) as Record<string, unknown>;
+        if (typeof parsed.taskId !== 'string' || typeof parsed.status !== 'string') return null;
+        return {
+            taskId: parsed.taskId,
+            toolUseId: typeof parsed.toolUseId === 'string' ? parsed.toolUseId : undefined,
+            status: parsed.status,
+            summary: typeof parsed.summary === 'string' ? parsed.summary : undefined,
+            description: typeof parsed.description === 'string' ? parsed.description : undefined,
+        };
+    } catch {
+        return null;
+    }
+}
+
+export function parseBackgroundTaskNotificationMessage(message: Message): BackgroundTaskNotificationRecord | null {
+    if (!message.id.startsWith('task-notification-')) return null;
+    if (typeof message.content !== 'string') return null;
+    return parseBackgroundTaskNotificationContent(message.content);
+}
+
+export function collectCompletedBackgroundToolIdsFromHistory(messages: Message[]): Set<string> {
+    const set = new Set<string>();
+    for (const message of messages) {
+        const record = parseBackgroundTaskNotificationMessage(message);
+        if (record?.toolUseId && isTerminalStatus(record.status)) {
+            set.add(record.toolUseId);
+        }
+    }
+    return set;
+}
+
+/**
+ * Rehydrate the process-local status store from persisted hidden notification
+ * records. This keeps all UI surfaces on the same background task state after
+ * Cmd+R, session restore, or lazy-loading older pages.
+ */
+export function hydrateBackgroundTaskStatusesFromHistory(messages: Message[]): void {
+    for (const message of messages) {
+        const record = parseBackgroundTaskNotificationMessage(message);
+        if (!record) continue;
+        if (record.description) {
+            setBackgroundTaskDescription(record.taskId, record.description);
+        }
+        setBackgroundTaskStatus(record.taskId, record.status, record.toolUseId);
+    }
 }
 
 /**

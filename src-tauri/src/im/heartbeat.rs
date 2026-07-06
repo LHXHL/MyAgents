@@ -17,7 +17,10 @@ use crate::{ulog_debug, ulog_info, ulog_warn};
 use super::adapter::push_text_preferring_stream;
 use super::health::{self, HealthManager};
 use super::router::{EnsureSidecarPrep, SessionRouter};
-use super::types::{ActiveHours, HeartbeatConfig, PendingCronEvent, WakeReason};
+use super::types::{
+    ActiveHours, HeartbeatConfig, HeartbeatWake, HostInteractionCapability, PendingCronEvent,
+    WakeReason,
+};
 use super::{AnyAdapter, PeerLocks};
 
 /// Response from sidecar /api/im/heartbeat endpoint
@@ -27,6 +30,32 @@ struct HeartbeatResponse {
     text: Option<String>,
     #[allow(dead_code)]
     reason: Option<String>,
+}
+
+fn cron_event_matches_session(event: &PendingCronEvent, session_key: &str) -> bool {
+    event
+        .target_session_key
+        .as_deref()
+        .map_or(true, |target| target == session_key)
+}
+
+fn snapshot_pending_cron_event_for_session(
+    pending: &[PendingCronEvent],
+    session_key: &str,
+) -> Vec<PendingCronEvent> {
+    pending
+        .iter()
+        .find(|event| cron_event_matches_session(event, session_key))
+        .cloned()
+        .map(|event| vec![event])
+        .unwrap_or_default()
+}
+
+fn count_pending_cron_events_for_session(pending: &[PendingCronEvent], session_key: &str) -> usize {
+    pending
+        .iter()
+        .filter(|event| cron_event_matches_session(event, session_key))
+        .count()
 }
 
 /// Heartbeat prompt sent to sidecar
@@ -40,6 +69,7 @@ struct HeartbeatRequest {
     is_high_priority: bool,
     runtime: String,
     runtime_config: Option<serde_json::Value>,
+    host_interaction: HostInteractionCapability,
     /// Pending cron events held by Rust as the authoritative payload (v0.2.4).
     /// When non-empty, the sidecar handler MUST use these instead of (or in
     /// addition to) the in-memory `systemEventQueue` — sidecar-side queue is
@@ -64,6 +94,7 @@ pub struct HeartbeatRunner {
     mcp_servers_json: Arc<RwLock<Option<String>>>,
     runtime: Arc<RwLock<String>>,
     runtime_config: Arc<RwLock<Option<serde_json::Value>>>,
+    host_interaction: HostInteractionCapability,
     // Memory auto-update (v0.1.43)
     memory_update_config: Arc<RwLock<Option<super::types::MemoryAutoUpdateConfig>>>,
     memory_update_running: Arc<AtomicBool>,
@@ -81,7 +112,7 @@ pub struct HeartbeatRunner {
     /// heartbeat interval. `try_send` with the existing 64-slot buffer is
     /// fine — pending is durable, so missing a wake just means waiting one
     /// interval tick instead of immediate processing.
-    self_wake_tx: mpsc::Sender<WakeReason>,
+    self_wake_tx: mpsc::Sender<HeartbeatWake>,
 }
 
 impl HeartbeatRunner {
@@ -95,9 +126,10 @@ impl HeartbeatRunner {
         mcp_servers_json: Arc<RwLock<Option<String>>>,
         runtime: Arc<RwLock<String>>,
         runtime_config: Arc<RwLock<Option<serde_json::Value>>>,
+        host_interaction: HostInteractionCapability,
         memory_update_config: Option<super::types::MemoryAutoUpdateConfig>,
         pending_cron_events: Arc<Mutex<Vec<PendingCronEvent>>>,
-        self_wake_tx: mpsc::Sender<WakeReason>,
+        self_wake_tx: mpsc::Sender<HeartbeatWake>,
     ) -> (
         Self,
         Arc<RwLock<HeartbeatConfig>>,
@@ -119,6 +151,7 @@ impl HeartbeatRunner {
             mcp_servers_json,
             runtime,
             runtime_config,
+            host_interaction,
             memory_update_config: Arc::clone(&mau_config),
             memory_update_running: Arc::clone(&mau_running),
             pending_cron_events,
@@ -131,7 +164,7 @@ impl HeartbeatRunner {
     pub(crate) async fn run_loop<R: Runtime>(
         self,
         mut shutdown_rx: watch::Receiver<bool>,
-        mut wake_rx: mpsc::Receiver<WakeReason>,
+        mut wake_rx: mpsc::Receiver<HeartbeatWake>,
         router: Arc<Mutex<SessionRouter>>,
         sidecar_manager: ManagedSidecarManager,
         adapter: Arc<AnyAdapter>,
@@ -248,7 +281,7 @@ impl HeartbeatRunner {
                 }
                 _ = interval.tick() => {
                     let ok = self.run_once(
-                        WakeReason::Interval,
+                        HeartbeatWake::new(WakeReason::Interval),
                         &router,
                         &sidecar_manager,
                         &adapter,
@@ -268,13 +301,18 @@ impl HeartbeatRunner {
                         reasons.push(r);
                     }
 
-                    // Use highest-priority reason
-                    let best_reason = reasons.into_iter()
-                        .max_by_key(|r| if r.is_high_priority() { 1 } else { 0 })
-                        .unwrap_or(WakeReason::Interval);
+                    // Use highest-priority wake; for equal priority preserve explicit routing metadata.
+                    let best_wake = reasons.into_iter()
+                        .max_by_key(|w| {
+                            (
+                                u8::from(w.is_high_priority()),
+                                u8::from(w.target_session_key.is_some()),
+                            )
+                        })
+                        .unwrap_or_else(|| HeartbeatWake::new(WakeReason::Interval));
 
                     let ok = self.run_once(
-                        best_reason,
+                        best_wake,
                         &router,
                         &sidecar_manager,
                         &adapter,
@@ -306,7 +344,7 @@ impl HeartbeatRunner {
     /// double "(No response)" messages.
     async fn run_once<R: Runtime>(
         &self,
-        reason: WakeReason,
+        wake: HeartbeatWake,
         router: &Arc<Mutex<SessionRouter>>,
         sidecar_manager: &ManagedSidecarManager,
         adapter: &Arc<AnyAdapter>,
@@ -317,6 +355,8 @@ impl HeartbeatRunner {
         workspace_path: &str,
     ) -> bool {
         let config = self.config.read().await.clone();
+        let reason = wake.reason.clone();
+        let target_session_key = wake.target_session_key.clone();
         let is_high_priority = reason.is_high_priority();
 
         // Gate 1: Enabled check (high-priority wakes bypass — agent-level heartbeat
@@ -365,21 +405,40 @@ impl HeartbeatRunner {
             *executing = true;
         }
 
-        // Find any peer session (even if sidecar was idle-collected).
-        // Unlike the old find_any_active_session which gave up when port=0,
-        // we pick any session and let ensure_sidecar handle the wake-up.
+        // Resolve the peer session (even if sidecar was idle-collected).
+        // Agent-level heartbeat supplies an explicit private target; that path
+        // must not fallback to another historical peer if the target vanished.
+        // Legacy per-bot wakes with no explicit target keep the old latest-private
+        // behavior.
         let (session_key, source, source_id) = {
             let router_guard = router.lock().await;
-            match router_guard.find_any_peer_session() {
-                Some(info) => info,
-                None => {
-                    // No peer sessions at all — no one has ever talked to this bot
-                    ulog_debug!(
-                        "[heartbeat] No peer sessions for {}, skipping",
-                        self.bot_label
-                    );
-                    *self.executing.lock().await = false;
-                    return true; // No peers is not a failure
+            if let Some(ref target_key) = target_session_key {
+                match router_guard.get_private_peer_session_target(target_key) {
+                    Some(target) => (target.session_key, target.source, target.source_id),
+                    None => {
+                        ulog_warn!(
+                            "[heartbeat] Explicit private target missing for {} agent={} session_key={} reason={}, skipping",
+                            self.bot_label,
+                            agent_id,
+                            target_key,
+                            reason_label(&reason),
+                        );
+                        *self.executing.lock().await = false;
+                        return true;
+                    }
+                }
+            } else {
+                match router_guard.latest_private_peer_session_target() {
+                    Some(target) => (target.session_key, target.source, target.source_id),
+                    None => {
+                        // No private peer sessions at all — no one has ever talked to this bot
+                        ulog_debug!(
+                            "[heartbeat] No private peer sessions for {}, skipping",
+                            self.bot_label
+                        );
+                        *self.executing.lock().await = false;
+                        return true; // No peers is not a failure
+                    }
                 }
             }
         };
@@ -439,7 +498,9 @@ impl HeartbeatRunner {
         // Phase 1: Check health / extract info (brief lock)
         let prep = {
             let mut router_guard = router.lock().await;
-            router_guard.prepare_ensure_sidecar(&session_key).await
+            router_guard
+                .prepare_ensure_sidecar(&session_key, sidecar_manager)
+                .await
         };
 
         let (port, is_new_sidecar) = match prep {
@@ -559,17 +620,17 @@ impl HeartbeatRunner {
         // immediately; n events drain in n heartbeat cycles, not n intervals.
         let pending_snapshot: Vec<PendingCronEvent> = {
             let pending = self.pending_cron_events.lock().await;
-            pending
-                .first()
-                .cloned()
-                .map(|e| vec![e])
-                .unwrap_or_default()
+            snapshot_pending_cron_event_for_session(&pending, &session_key)
         };
         if !pending_snapshot.is_empty() {
-            let total_pending = self.pending_cron_events.lock().await.len();
+            let total_pending = {
+                let pending = self.pending_cron_events.lock().await;
+                count_pending_cron_events_for_session(&pending, &session_key)
+            };
             ulog_info!(
-                "[heartbeat] Shipping cron event task_id={} to sidecar (1 of {} pending)",
+                "[heartbeat] Shipping cron event task_id={} to sidecar for session {} (1 of {} pending for this session)",
                 pending_snapshot[0].task_id,
+                session_key,
                 total_pending
             );
         }
@@ -583,6 +644,7 @@ impl HeartbeatRunner {
             is_high_priority,
             runtime: current_runtime.clone(),
             runtime_config: self.runtime_config.read().await.clone(),
+            host_interaction: self.host_interaction.clone(),
             pending_cron_events: pending_snapshot.clone(),
         };
 
@@ -711,9 +773,11 @@ impl HeartbeatRunner {
                             let mut pending = self.pending_cron_events.lock().await;
                             let before = pending.len();
                             pending.retain(|p| {
-                                !pending_snapshot
-                                    .iter()
-                                    .any(|s| s.task_id == p.task_id && s.timestamp == p.timestamp)
+                                !pending_snapshot.iter().any(|s| {
+                                    s.task_id == p.task_id
+                                        && s.timestamp == p.timestamp
+                                        && s.target_session_key == p.target_session_key
+                                })
                             });
                             let cleared = before - pending.len();
                             if cleared > 0 {
@@ -761,9 +825,14 @@ impl HeartbeatRunner {
         // trigger; the actual payload lives in `self.pending_cron_events`,
         // which is the single source of truth that run_once snapshots.
         if cron_event_acked_this_cycle {
-            let still_pending = self.pending_cron_events.lock().await.len();
+            let still_pending = {
+                let pending = self.pending_cron_events.lock().await;
+                count_pending_cron_events_for_session(&pending, &session_key)
+            };
             if still_pending > 0 {
-                match self.self_wake_tx.try_send(WakeReason::Manual) {
+                let cascade_wake =
+                    HeartbeatWake::new(WakeReason::Manual).with_target(Some(session_key.clone()));
+                match self.self_wake_tx.try_send(cascade_wake) {
                     Ok(_) => ulog_info!(
                         "[heartbeat] Cascade-wake scheduled — {} cron event(s) still pending",
                         still_pending
@@ -852,5 +921,63 @@ fn reason_label(reason: &WakeReason) -> &str {
         WakeReason::Interval => "interval",
         WakeReason::CronComplete { .. } => "cron_complete",
         WakeReason::Manual => "manual",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cron_event(task_id: &str, target_session_key: Option<&str>) -> PendingCronEvent {
+        PendingCronEvent {
+            target_session_key: target_session_key.map(|s| s.to_string()),
+            event: "cron_complete".to_string(),
+            task_id: task_id.to_string(),
+            content: format!("content {task_id}"),
+            timestamp: 1,
+            from_session_id: None,
+            from_label: None,
+        }
+    }
+
+    #[test]
+    fn snapshot_pending_cron_event_respects_target_session_key() {
+        let pending = vec![
+            cron_event("task-a", Some("im:feishu:private:a")),
+            cron_event("task-b", Some("im:feishu:private:b")),
+        ];
+
+        let snapshot = snapshot_pending_cron_event_for_session(&pending, "im:feishu:private:b");
+
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].task_id, "task-b");
+    }
+
+    #[test]
+    fn snapshot_pending_cron_event_keeps_legacy_unbound_events_eligible() {
+        let pending = vec![cron_event("legacy", None)];
+
+        let snapshot = snapshot_pending_cron_event_for_session(&pending, "im:feishu:private:any");
+
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].task_id, "legacy");
+    }
+
+    #[test]
+    fn session_count_excludes_other_private_peers() {
+        let pending = vec![
+            cron_event("task-a", Some("im:feishu:private:a")),
+            cron_event("task-b", Some("im:feishu:private:b")),
+            cron_event("legacy", None),
+        ];
+
+        assert_eq!(
+            count_pending_cron_events_for_session(&pending, "im:feishu:private:a"),
+            2,
+        );
+        assert_eq!(
+            count_pending_cron_events_for_session(&pending, "im:feishu:private:b"),
+            2,
+        );
     }
 }

@@ -12,6 +12,7 @@ import AgentChannelsSection from './sections/AgentChannelsSection';
 import AgentToolsSection from './sections/AgentToolsSection';
 import AgentHeartbeatSection from './sections/AgentHeartbeatSection';
 import AgentMemoryUpdateSection from './sections/AgentMemoryUpdateSection';
+import AgentMemoryEvolutionSection from './sections/AgentMemoryEvolutionSection';
 import AgentTasksSection from './sections/AgentTasksSection';
 import WorkspaceIcon from '../launcher/WorkspaceIcon';
 import { DEFAULT_WORKSPACE_ICON } from '@/assets/workspace-icons';
@@ -90,6 +91,15 @@ export default function AgentSettingsPanel({ agentId }: AgentSettingsPanelProps)
       {/* Memory Auto-Update (v0.1.43) */}
       <div className="border-b border-[var(--line)] pb-6 pt-6">
         <AgentMemoryUpdateSection agent={agent} onAgentChanged={handleAgentChanged} />
+      </div>
+
+      {/* Long-Term Memory Evolution */}
+      <div className="border-b border-[var(--line)] pb-6 pt-6">
+        <AgentMemoryEvolutionSection
+          agent={agent}
+          workspaceId={proj?.id ?? agent.id}
+          onAgentChanged={handleAgentChanged}
+        />
       </div>
 
       {/* Tasks (read-only) */}

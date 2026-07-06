@@ -44,15 +44,29 @@ fn short_id(s: &str) -> String {
     s.chars().take(8).collect()
 }
 
-fn reconcile_restored_metadata_indexed_with_lookup<F>(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PeerMetadataDisposition {
+    Indexed,
+    BirthPending,
+    RotateStale,
+}
+
+fn reconcile_peer_metadata_with_lookup<F>(
+    restored_metadata_birth_pending: bool,
     restored_metadata_indexed: bool,
     session_id: &str,
     metadata_exists: F,
-) -> bool
+) -> PeerMetadataDisposition
 where
     F: FnOnce(&str) -> bool,
 {
-    restored_metadata_indexed || metadata_exists(session_id)
+    if metadata_exists(session_id) {
+        return PeerMetadataDisposition::Indexed;
+    }
+    if restored_metadata_birth_pending && !restored_metadata_indexed {
+        return PeerMetadataDisposition::BirthPending;
+    }
+    PeerMetadataDisposition::RotateStale
 }
 
 /// Result of Phase 1 of ensure_sidecar: either the sidecar is healthy, or we need to create one.
@@ -122,6 +136,15 @@ pub struct SessionRouter {
     http_client: Client,
     /// Agent ID (if this router belongs to an Agent channel). None for legacy IM bots.
     agent_id: Option<String>,
+}
+
+/// Private peer target selected for heartbeat/cron delivery.
+#[derive(Debug, Clone)]
+pub struct HeartbeatPeerTarget {
+    pub session_key: String,
+    pub source: String,
+    pub source_id: String,
+    pub last_active: Instant,
 }
 
 /// Create an HTTP client configured for local Sidecar communication.
@@ -296,7 +319,7 @@ impl SessionRouter {
         runtime_source_override: Option<&str>,
     ) -> Result<(u16, bool), String> {
         // Phase 1: Check existing healthy sidecar (brief)
-        let prep = self.prepare_ensure_sidecar(session_key).await;
+        let prep = self.prepare_ensure_sidecar(session_key, manager).await;
         if let EnsureSidecarPrep::Healthy(port) = prep {
             return Ok((port, false));
         }
@@ -326,7 +349,13 @@ impl SessionRouter {
     /// If unhealthy, zeros `sidecar_port` to prevent idle-collector from killing
     /// the sidecar that Phase 2 will create (TOCTOU guard).
     /// Holds the lock briefly (health check ~4.5s worst case).
-    pub async fn prepare_ensure_sidecar(&mut self, session_key: &str) -> EnsureSidecarPrep {
+    pub async fn prepare_ensure_sidecar(
+        &mut self,
+        session_key: &str,
+        manager: &ManagedSidecarManager,
+    ) -> EnsureSidecarPrep {
+        self.reconcile_peer_session_metadata_before_use(session_key, manager);
+
         // Check existing peer session
         if let Some(ps) = self.peer_sessions.get(session_key) {
             if ps.sidecar_port > 0 {
@@ -376,6 +405,65 @@ impl SessionRouter {
             runtime_override: None,
             runtime_source_override: None,
         })
+    }
+
+    fn reconcile_peer_session_metadata_before_use(
+        &mut self,
+        session_key: &str,
+        manager: &ManagedSidecarManager,
+    ) {
+        let Some(snapshot) = self.peer_sessions.get(session_key) else {
+            return;
+        };
+
+        let disposition = reconcile_peer_metadata_with_lookup(
+            snapshot.metadata_birth_pending,
+            snapshot.metadata_indexed,
+            &snapshot.session_id,
+            |sid| resolve_session_runtime_identity_full(sid).is_some(),
+        );
+
+        match disposition {
+            PeerMetadataDisposition::Indexed => {
+                if let Some(ps) = self.peer_sessions.get_mut(session_key) {
+                    ps.metadata_birth_pending = false;
+                    ps.metadata_indexed = true;
+                }
+            }
+            PeerMetadataDisposition::BirthPending => {
+                if let Some(ps) = self.peer_sessions.get_mut(session_key) {
+                    ps.metadata_birth_pending = true;
+                    ps.metadata_indexed = false;
+                }
+            }
+            PeerMetadataDisposition::RotateStale => {
+                let old_session_id = snapshot.session_id.clone();
+                let new_session_id = uuid::Uuid::new_v4().to_string();
+                let owner = SidecarOwner::Agent(session_key.to_string());
+                if let Err(e) = release_session_sidecar(manager, &old_session_id, &owner) {
+                    ulog_warn!(
+                        "[im-router] Failed to release stale unindexed peer session {} for {}: {}",
+                        short_id(&old_session_id),
+                        session_key,
+                        e
+                    );
+                }
+                if let Some(ps) = self.peer_sessions.get_mut(session_key) {
+                    ps.session_id = new_session_id.clone();
+                    ps.sidecar_port = 0;
+                    ps.message_count = 0;
+                    ps.metadata_birth_pending = true;
+                    ps.metadata_indexed = false;
+                    ps.last_active = Instant::now();
+                }
+                ulog_info!(
+                    "[im-router] Rotated stale unindexed peer session before use: {} -> {} (session_key={})",
+                    short_id(&old_session_id),
+                    short_id(&new_session_id),
+                    session_key
+                );
+            }
+        }
     }
 
     /// Phase 2: Create the sidecar (blocking, up to 5 minutes). Does NOT hold the router lock.
@@ -692,6 +780,8 @@ impl SessionRouter {
         manager: &ManagedSidecarManager,
         fallback_snapshot: Option<&OwnedSessionSnapshot>,
     ) -> Result<String, String> {
+        self.reconcile_peer_session_metadata_before_use(session_key, manager);
+
         if let Some(ps) = self.peer_sessions.get(session_key) {
             let old_session_id = ps.session_id.clone();
 
@@ -863,17 +953,54 @@ impl SessionRouter {
     /// Used by heartbeat/cron to find a session to wake up even if sidecar was idle-collected.
     /// Picks the most recently active session for deterministic behavior.
     pub fn find_any_peer_session(&self) -> Option<(String, String, String)> {
+        self.latest_private_peer_session_target()
+            .map(|target| (target.session_key, target.source, target.source_id))
+    }
+
+    /// Return a private peer target by exact session key.
+    /// Explicit Agent-level heartbeat targets use this and never fallback to
+    /// another peer if it returns None.
+    pub fn get_private_peer_session_target(
+        &self,
+        session_key: &str,
+    ) -> Option<HeartbeatPeerTarget> {
+        self.peer_sessions
+            .get(session_key)
+            .filter(|ps| ps.source_type == ImSourceType::Private)
+            .map(peer_to_heartbeat_target)
+    }
+
+    /// Return the latest private peer target, ignoring sidecar liveness.
+    /// Used only by legacy per-bot wakes that have no explicit Agent target.
+    pub fn latest_private_peer_session_target(&self) -> Option<HeartbeatPeerTarget> {
         self.peer_sessions
             .values()
-            .filter(|ps| ps.source_type == ImSourceType::Private) // Skip groups for heartbeat
+            .filter(|ps| ps.source_type == ImSourceType::Private)
             .max_by_key(|ps| ps.last_active)
-            .map(|ps| {
-                (
-                    ps.session_key.clone(),
-                    session_key_to_source_str(&ps.session_key),
-                    ps.source_id.clone(),
-                )
-            })
+            .map(peer_to_heartbeat_target)
+    }
+
+    pub fn active_private_peer_session_port(&self, session_key: &str) -> Option<u16> {
+        self.peer_sessions
+            .get(session_key)
+            .filter(|ps| ps.source_type == ImSourceType::Private)
+            .filter(|ps| ps.sidecar_port > 0)
+            .map(|ps| ps.sidecar_port)
+    }
+
+    pub fn latest_active_private_peer_session_port(&self) -> Option<u16> {
+        self.peer_sessions
+            .values()
+            .filter(|ps| ps.source_type == ImSourceType::Private)
+            .filter(|ps| ps.sidecar_port > 0)
+            .max_by_key(|ps| ps.last_active)
+            .map(|ps| ps.sidecar_port)
+    }
+
+    pub fn peer_source_type(&self, session_key: &str) -> Option<ImSourceType> {
+        self.peer_sessions
+            .get(session_key)
+            .map(|ps| ps.source_type.clone())
     }
 
     /// Touch session activity timestamp to prevent idle collection.
@@ -1048,24 +1175,43 @@ impl SessionRouter {
                 s.session_key.clone()
             };
             let (source_type, source_id) = parse_session_key(&session_key);
-            let metadata_indexed = reconcile_restored_metadata_indexed_with_lookup(
+            let disposition = reconcile_peer_metadata_with_lookup(
+                s.metadata_birth_pending,
                 s.metadata_indexed,
                 &s.session_id,
                 &metadata_exists,
             );
-            let metadata_birth_pending = s.metadata_birth_pending && !metadata_indexed;
+            let (session_id, message_count, metadata_birth_pending, metadata_indexed) =
+                match disposition {
+                    PeerMetadataDisposition::Indexed => {
+                        (s.session_id.clone(), s.message_count, false, true)
+                    }
+                    PeerMetadataDisposition::BirthPending => {
+                        (s.session_id.clone(), s.message_count, true, false)
+                    }
+                    PeerMetadataDisposition::RotateStale => {
+                        let new_session_id = uuid::Uuid::new_v4().to_string();
+                        ulog_info!(
+                            "[im-router] Rotated stale restored peer session: {} -> {} (session_key={})",
+                            short_id(&s.session_id),
+                            short_id(&new_session_id),
+                            session_key
+                        );
+                        (new_session_id, 0, true, false)
+                    }
+                };
             self.peer_sessions.insert(
                 session_key.clone(),
                 PeerSession {
                     session_key: session_key.clone(),
-                    session_id: s.session_id.clone(), // Restore original session_id for resume
+                    session_id,
                     sidecar_port: 0, // Sidecar not running yet; ensure_sidecar will start it
                     workspace_path: self.default_workspace.clone(),
                     source_type,
                     source_id,
                     source_display_name: s.source_display_name.clone(),
                     last_sender_name: s.last_sender_name.clone(),
-                    message_count: s.message_count,
+                    message_count,
                     metadata_birth_pending,
                     metadata_indexed,
                     last_active: Instant::now(),
@@ -1362,6 +1508,15 @@ fn session_key_to_source_str(session_key: &str) -> String {
     }
 }
 
+fn peer_to_heartbeat_target(ps: &PeerSession) -> HeartbeatPeerTarget {
+    HeartbeatPeerTarget {
+        session_key: ps.session_key.clone(),
+        source: session_key_to_source_str(&ps.session_key),
+        source_id: ps.source_id.clone(),
+        last_active: ps.last_active,
+    }
+}
+
 /// Parse session key into (source_type, source_id)
 /// Supports both legacy and new format:
 ///   Legacy: im:{platform}:{private|group}:{id}
@@ -1411,8 +1566,8 @@ mod tests {
 
     use super::{
         parse_session_key, persisted_session_runtime_differs,
-        persisted_session_runtime_identity_differs,
-        reconcile_restored_metadata_indexed_with_lookup, EnsureSidecarInfo, SessionRouter,
+        persisted_session_runtime_identity_differs, reconcile_peer_metadata_with_lookup,
+        EnsureSidecarInfo, PeerMetadataDisposition, SessionRouter,
     };
     use crate::im::types::{ImActiveSession, PeerSession};
     use crate::sidecar::SidecarManager;
@@ -1433,6 +1588,43 @@ mod tests {
             metadata_indexed: true,
             last_active: Instant::now(),
         }
+    }
+
+    #[test]
+    fn heartbeat_private_target_helper_rejects_group_session() {
+        let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+        router.upsert_peer_session(peer("agent:a:openclaw:weixin:group:g1", "g1"));
+        router.upsert_peer_session(peer("agent:a:openclaw:weixin:private:u1", "p1"));
+
+        assert!(router
+            .get_private_peer_session_target("agent:a:openclaw:weixin:group:g1")
+            .is_none());
+        assert_eq!(
+            router
+                .get_private_peer_session_target("agent:a:openclaw:weixin:private:u1")
+                .map(|target| target.session_key),
+            Some("agent:a:openclaw:weixin:private:u1".to_string())
+        );
+    }
+
+    #[test]
+    fn latest_private_heartbeat_target_ignores_newer_group() {
+        let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+        let mut old_private = peer("agent:a:openclaw:weixin:private:old", "p-old");
+        old_private.last_active = Instant::now() - std::time::Duration::from_secs(60);
+        let mut current_private = peer("agent:a:openclaw:weixin:private:current", "p-current");
+        current_private.last_active = Instant::now() - std::time::Duration::from_secs(10);
+        let newer_group = peer("agent:a:openclaw:weixin:group:g1", "g1");
+        router.upsert_peer_session(old_private);
+        router.upsert_peer_session(current_private);
+        router.upsert_peer_session(newer_group);
+
+        assert_eq!(
+            router
+                .latest_private_peer_session_target()
+                .map(|target| target.session_key),
+            Some("agent:a:openclaw:weixin:private:current".to_string())
+        );
     }
 
     #[test]
@@ -1568,7 +1760,7 @@ mod tests {
     }
 
     #[test]
-    fn active_session_legacy_json_defaults_metadata_birth_pending_false() {
+    fn active_session_legacy_json_defaults_rotate_when_metadata_missing() {
         let session_key = "agent:a:feishu:private:user";
         let mut router =
             SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".to_string());
@@ -1593,32 +1785,84 @@ mod tests {
             SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".to_string());
         restored.restore_sessions_with_metadata_lookup(&[restored_active], |_| false);
 
-        assert!(!restored.metadata_birth_pending(session_key));
-        assert!(
-            !restored
-                .peer_session_snapshot(session_key)
-                .expect("peer session exists")
-                .metadata_indexed
+        let restored_peer = restored
+            .peer_session_snapshot(session_key)
+            .expect("peer session exists");
+        assert_ne!(restored_peer.session_id, "legacy-session");
+        assert_eq!(restored_peer.message_count, 0);
+        assert!(restored_peer.metadata_birth_pending);
+        assert!(!restored_peer.metadata_indexed);
+    }
+
+    #[test]
+    fn restored_peer_metadata_reconciles_with_session_index() {
+        assert_eq!(
+            reconcile_peer_metadata_with_lookup(false, true, "indexed-present", |sid| sid
+                == "indexed-present",),
+            PeerMetadataDisposition::Indexed,
+        );
+        assert_eq!(
+            reconcile_peer_metadata_with_lookup(false, true, "deleted-after-indexed", |_| false,),
+            PeerMetadataDisposition::RotateStale,
+        );
+        assert_eq!(
+            reconcile_peer_metadata_with_lookup(false, false, "legacy-present", |sid| sid
+                == "legacy-present",),
+            PeerMetadataDisposition::Indexed,
+        );
+        assert_eq!(
+            reconcile_peer_metadata_with_lookup(true, false, "birth-pending", |_| false,),
+            PeerMetadataDisposition::BirthPending,
+        );
+        assert_eq!(
+            reconcile_peer_metadata_with_lookup(false, false, "legacy-unindexed", |_| false,),
+            PeerMetadataDisposition::RotateStale,
         );
     }
 
     #[test]
-    fn restored_metadata_indexed_reconciles_legacy_state_with_session_index() {
-        assert!(reconcile_restored_metadata_indexed_with_lookup(
-            true,
-            "deleted-after-indexed",
-            |_| false,
-        ));
-        assert!(reconcile_restored_metadata_indexed_with_lookup(
-            false,
-            "legacy-present",
-            |sid| sid == "legacy-present",
-        ));
-        assert!(!reconcile_restored_metadata_indexed_with_lookup(
-            false,
-            "legacy-unindexed",
-            |_| false,
-        ));
+    fn restore_sessions_rotates_stale_indexed_peer_session() {
+        let session_key = "agent:a:feishu:private:user";
+        let mut router =
+            SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".to_string());
+        router.upsert_peer_session(peer(session_key, "deleted-after-indexed"));
+
+        let active = router.active_sessions();
+        let mut restored =
+            SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".to_string());
+        restored.restore_sessions_with_metadata_lookup(&active, |_| false);
+
+        let restored_peer = restored
+            .peer_session_snapshot(session_key)
+            .expect("peer session exists");
+        assert_ne!(restored_peer.session_id, "deleted-after-indexed");
+        assert_eq!(restored_peer.message_count, 0);
+        assert!(restored_peer.metadata_birth_pending);
+        assert!(!restored_peer.metadata_indexed);
+    }
+
+    #[test]
+    fn reset_path_rotates_stale_indexed_peer_before_freeze() {
+        let session_key = "agent:a:feishu:private:user";
+        let mut router =
+            SessionRouter::new_for_agent(PathBuf::from("/tmp/workspace"), "a".to_string());
+        let mut stale = peer(session_key, "deleted-before-new-command");
+        stale.message_count = 3;
+        stale.metadata_birth_pending = false;
+        stale.metadata_indexed = true;
+        router.upsert_peer_session(stale);
+        let manager = Arc::new(Mutex::new(SidecarManager::new()));
+
+        router.reconcile_peer_session_metadata_before_use(session_key, &manager);
+
+        let reconciled = router
+            .peer_session_snapshot(session_key)
+            .expect("peer session remains bound after stale rotation");
+        assert_ne!(reconciled.session_id, "deleted-before-new-command");
+        assert_eq!(reconciled.sidecar_port, 0);
+        assert_eq!(reconciled.message_count, 0);
+        assert!(reconciled.metadata_birth_pending);
+        assert!(!reconciled.metadata_indexed);
     }
 
     #[test]

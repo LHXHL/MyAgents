@@ -230,6 +230,7 @@ struct CreateCronResponse {
 struct ListCronQuery {
     source_bot_id: Option<String>,
     workspace_path: Option<String>,
+    include_managed: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -281,6 +282,10 @@ struct CronTaskSummary {
     /// `executing_tasks`; not persisted. Default false.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     currently_executing: bool,
+    /// Internal system-managed task marker. Ordinary UI lists use this to hide
+    /// Evo maintenance tasks while keeping session history/audit rows intact.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    managed_kind: Option<String>,
 }
 
 impl From<CronTask> for CronTaskSummary {
@@ -311,6 +316,7 @@ impl From<CronTask> for CronTaskSummary {
             // for ids in the executing snapshot. Single-task projections
             // (e.g. /api/cron/run) don't need this.
             currently_executing: false,
+            managed_kind: t.managed_kind,
         }
     }
 }
@@ -444,6 +450,7 @@ async fn create_cron_handler(Json(req): Json<CreateCronRequest>) -> Json<serde_j
         // Direct cron creation (legacy IM Bot path) doesn't carry a Task
         // parent — MCP override stays None (= follow workspace).
         mcp_enabled_servers: None,
+        managed_kind: None,
         source_bot_id: req.source_bot_id,
         delivery: req.delivery,
         schedule: req.schedule,
@@ -492,13 +499,16 @@ async fn create_cron_handler(Json(req): Json<CreateCronRequest>) -> Json<serde_j
 async fn list_cron_handler(Query(query): Query<ListCronQuery>) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
 
-    let tasks = if let Some(bot_id) = &query.source_bot_id {
+    let mut tasks = if let Some(bot_id) = &query.source_bot_id {
         manager.get_tasks_for_bot(bot_id).await
     } else if let Some(workspace) = &query.workspace_path {
         manager.get_tasks_for_workspace(workspace).await
     } else {
         manager.get_all_tasks().await
     };
+    if !query.include_managed.unwrap_or(false) {
+        tasks.retain(|t| t.managed_kind.is_none());
+    }
 
     // PRD 0.2.5 R9 — single snapshot of "currently executing" set, applied
     // to all summaries. Avoids N separate lock acquisitions; correct for
@@ -688,24 +698,26 @@ struct WakeRequest {
     text: Option<String>,
 }
 
+struct BotRefs {
+    router: std::sync::Arc<tokio::sync::Mutex<im::router::SessionRouter>>,
+    wake_tx: Option<tokio::sync::mpsc::Sender<im::types::HeartbeatWake>>,
+    agent_id: Option<String>,
+}
+
 /// Look up a bot instance by ID — checks ManagedAgents first (primary path), then
 /// falls back to ManagedImBots (legacy compatibility, usually empty after migration).
-/// Returns (router Arc, heartbeat wake_tx) with locks already dropped.
-async fn find_bot_refs(
-    bot_id: &str,
-) -> Option<(
-    std::sync::Arc<tokio::sync::Mutex<im::router::SessionRouter>>,
-    Option<tokio::sync::mpsc::Sender<im::types::WakeReason>>,
-)> {
+/// Returns refs with locks already dropped.
+async fn find_bot_refs(bot_id: &str) -> Option<BotRefs> {
     // Check agent channels first (primary path after v0.1.41 migration)
     if let Some(agents) = get_agents() {
         let agents_guard = agents.lock().await;
-        for agent in agents_guard.values() {
+        for (agent_id, agent) in agents_guard.iter() {
             if let Some(ch_inst) = agent.channels.get(bot_id) {
-                return Some((
-                    std::sync::Arc::clone(&ch_inst.bot_instance.router),
-                    ch_inst.bot_instance.heartbeat_wake_tx.clone(),
-                ));
+                return Some(BotRefs {
+                    router: std::sync::Arc::clone(&ch_inst.bot_instance.router),
+                    wake_tx: ch_inst.bot_instance.heartbeat_wake_tx.clone(),
+                    agent_id: Some(agent_id.clone()),
+                });
             }
         }
     }
@@ -713,13 +725,41 @@ async fn find_bot_refs(
     if let Some(bots) = get_im_bots() {
         let bots_guard = bots.lock().await;
         if let Some(instance) = bots_guard.get(bot_id) {
-            return Some((
-                std::sync::Arc::clone(&instance.router),
-                instance.heartbeat_wake_tx.clone(),
-            ));
+            return Some(BotRefs {
+                router: std::sync::Arc::clone(&instance.router),
+                wake_tx: instance.heartbeat_wake_tx.clone(),
+                agent_id: None,
+            });
         }
     }
     None
+}
+
+async fn post_manual_wake_text(
+    router: &std::sync::Arc<tokio::sync::Mutex<im::router::SessionRouter>>,
+    target_session_key: Option<&str>,
+    text: &str,
+) {
+    let port = {
+        let router_guard = router.lock().await;
+        match target_session_key {
+            Some(session_key) => router_guard.active_private_peer_session_port(session_key),
+            None => router_guard.latest_active_private_peer_session_port(),
+        }
+    };
+
+    if let Some(port) = port {
+        let client = crate::local_http::builder().build().unwrap_or_default();
+        let body = serde_json::json!({
+            "event": "manual_wake",
+            "content": text,
+        });
+        let _ = client
+            .post(format!("http://127.0.0.1:{}/api/im/system-event", port))
+            .json(&body)
+            .send()
+            .await;
+    }
 }
 
 /// Look up a bot's adapter by ID — checks ManagedAgents first, then legacy ManagedImBots.
@@ -829,42 +869,81 @@ async fn list_im_channels_handler() -> Json<serde_json::Value> {
 }
 
 async fn wake_bot_handler(Json(payload): Json<WakeRequest>) -> Json<serde_json::Value> {
-    let (router, wake_tx) = match find_bot_refs(&payload.bot_id).await {
+    let refs = match find_bot_refs(&payload.bot_id).await {
         Some(refs) => refs,
         None => return Json(serde_json::json!({ "ok": false, "error": "Bot not found" })),
     };
 
-    // Step 1: If text provided, try to POST system event to Bot Sidecar
-    if let Some(ref text) = payload.text {
-        let port = {
-            let router_guard = router.lock().await;
-            router_guard.find_any_active_session().map(|(p, _, _)| p)
+    if let Some(agent_id) = refs.agent_id {
+        let agents = match get_agents() {
+            Some(agents) => agents,
+            None => {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": "Agent state not available"
+                }))
+            }
+        };
+        let route = match im::resolve_agent_heartbeat_route(agents, &agent_id).await {
+            im::AgentHeartbeatRouteResolution::Target(route) => route,
+            im::AgentHeartbeatRouteResolution::NoPrivateTarget => {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": "No private heartbeat target for this Agent"
+                }))
+            }
+            im::AgentHeartbeatRouteResolution::AgentMissing => {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": "Agent not found"
+                }))
+            }
         };
 
-        if let Some(port) = port {
-            let client = crate::local_http::builder().build().unwrap_or_default();
-            let body = serde_json::json!({
-                "event": "manual_wake",
-                "content": text,
-            });
-            let _ = client
-                .post(format!("http://127.0.0.1:{}/api/im/system-event", port))
-                .json(&body)
-                .send()
-                .await;
+        if let Some(ref text) = payload.text {
+            post_manual_wake_text(&route.router, Some(&route.target.session_key), text).await;
         }
-    }
 
-    // Step 2: Send WakeReason::Manual to heartbeat runner
-    if let Some(ref wake_tx) = wake_tx {
-        match wake_tx.send(im::types::WakeReason::Manual).await {
-            Ok(_) => Json(serde_json::json!({ "ok": true })),
-            Err(e) => {
-                Json(serde_json::json!({ "ok": false, "error": format!("Wake failed: {}", e) }))
+        if let Some(wake_tx) = route.wake_tx {
+            let wake = im::types::HeartbeatWake::targeted(
+                im::types::WakeReason::Manual,
+                route.target.session_key,
+            );
+            match wake_tx.send(wake).await {
+                Ok(_) => Json(serde_json::json!({ "ok": true })),
+                Err(e) => Json(serde_json::json!({
+                    "ok": false,
+                    "error": format!("Wake failed: {}", e)
+                })),
             }
+        } else {
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "Heartbeat not configured for this Agent"
+            }))
         }
     } else {
-        Json(serde_json::json!({ "ok": false, "error": "Heartbeat not configured for this bot" }))
+        if let Some(ref text) = payload.text {
+            post_manual_wake_text(&refs.router, None, text).await;
+        }
+
+        if let Some(ref wake_tx) = refs.wake_tx {
+            match wake_tx
+                .send(im::types::HeartbeatWake::new(im::types::WakeReason::Manual))
+                .await
+            {
+                Ok(_) => Json(serde_json::json!({ "ok": true })),
+                Err(e) => Json(serde_json::json!({
+                    "ok": false,
+                    "error": format!("Wake failed: {}", e)
+                })),
+            }
+        } else {
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "Heartbeat not configured for this bot"
+            }))
+        }
     }
 }
 
@@ -1360,6 +1439,7 @@ struct TaskListQuery {
     status: Option<String>,
     tag: Option<String>,
     include_deleted: Option<bool>,
+    include_managed: Option<bool>,
 }
 
 async fn task_list_handler(Query(q): Query<TaskListQuery>) -> Json<serde_json::Value> {
@@ -1374,6 +1454,7 @@ async fn task_list_handler(Query(q): Query<TaskListQuery>) -> Json<serde_json::V
         status: q.status.and_then(|s| parse_status_filter(&s)),
         tag: q.tag,
         include_deleted: q.include_deleted,
+        include_managed: q.include_managed,
     };
     let tasks = store.list(filter).await;
     Json(serde_json::json!({ "ok": true, "tasks": tasks }))
@@ -2162,6 +2243,7 @@ async fn ensure_cron_for_task(ta: &task::Task) -> Result<String, String> {
         // carries the override to /cron/execute-sync, which applies it via
         // setMcpServers before delivering the prompt.
         mcp_enabled_servers: ta.mcp_enabled_servers.clone(),
+        managed_kind: ta.managed_kind.clone(),
         source_bot_id: None,
         delivery,
         schedule: Some(schedule),
@@ -2236,7 +2318,12 @@ pub(crate) fn schedule_from_task(ta: &task::Task) -> Option<cron_task::CronSched
             } else {
                 cron_task::CronSchedule::Every {
                     minutes: ta.interval_minutes.unwrap_or(60).max(5),
-                    start_at: None,
+                    start_at: ta
+                        .start_at
+                        .as_ref()
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty()),
+                    catch_up_window: ta.recurring_window.clone(),
                 }
             },
         ),
@@ -2280,12 +2367,14 @@ fn schedules_equivalent(a: &Option<cron_task::CronSchedule>, b: &cron_task::Cron
             Every {
                 minutes: m1,
                 start_at: s1,
+                catch_up_window: w1,
             },
             Every {
                 minutes: m2,
                 start_at: s2,
+                catch_up_window: w2,
             },
-        ) => m1 == m2 && s1 == s2,
+        ) => m1 == m2 && s1 == s2 && w1 == w2,
         (Cron { expr: e1, tz: t1 }, Cron { expr: e2, tz: t2 }) => e1 == e2 && t1 == t2,
         (Loop, Loop) => true,
         _ => false,
@@ -2610,6 +2699,39 @@ async fn session_watch_handler(
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn schedule_from_task_preserves_recurring_start_at() {
+        let task: task::Task = serde_json::from_value(serde_json::json!({
+            "id": "task-start-at",
+            "name": "Memory Gardener",
+            "executor": "agent",
+            "workspaceId": "ws",
+            "workspacePath": "/tmp/ws",
+            "executionMode": "recurring",
+            "intervalMinutes": 4320,
+            "startAt": "2026-07-08T00:00:00Z",
+            "sessionIds": [],
+            "status": "todo",
+            "tags": [],
+            "createdAt": 1,
+            "updatedAt": 1,
+            "statusHistory": [],
+            "dispatchOrigin": "direct"
+        }))
+        .expect("task json");
+
+        let schedule = schedule_from_task(&task).expect("schedule");
+
+        assert_eq!(
+            schedule,
+            cron_task::CronSchedule::Every {
+                minutes: 4320,
+                start_at: Some("2026-07-08T00:00:00Z".to_string()),
+                catch_up_window: None,
+            }
+        );
+    }
 
     #[tokio::test]
     async fn space_issue_comment_handler_wraps_mock_comment_result() {

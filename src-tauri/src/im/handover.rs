@@ -28,7 +28,7 @@ use tauri::{AppHandle, Emitter, Manager, Runtime};
 use super::health::{self, HealthManager};
 use super::router::{parse_session_key, SessionRouter};
 use super::runtime_change;
-use super::types::{LastActiveChannel, PeerSession};
+use super::types::{ImSourceType, LastActiveChannel, LastActivePrivateTarget, PeerSession};
 use super::{ImConsumers, ManagedAgents};
 use crate::sidecar::{
     ensure_session_sidecar, release_session_sidecar, ManagedSidecarManager, SidecarOwner,
@@ -363,6 +363,7 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
         target_health,
         agent_workspace,
         last_active_channel,
+        last_active_private_target,
         fallback_snapshot,
         channel_runtimes,
     ) = {
@@ -408,6 +409,7 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
             channel.bot_instance.health.clone(),
             agent.config.workspace_path.clone(),
             agent.last_active_channel.clone(),
+            agent.last_active_private_target.clone(),
             fallback_snapshot,
             channel_runtimes,
         )
@@ -776,6 +778,18 @@ pub async fn cmd_handover_session_to_channel<R: Runtime>(
             session_key: target_session_key.clone(),
             last_active_at: now_str,
         });
+        let target_is_private = router_arc
+            .lock()
+            .await
+            .peer_source_type(&target_session_key)
+            == Some(ImSourceType::Private);
+        if target_is_private {
+            *last_active_private_target.write().await = Some(LastActivePrivateTarget {
+                channel_id: channelId.clone(),
+                session_key: target_session_key.clone(),
+                last_active_at: chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+            });
+        }
     }
     ulog_info!(
         "[handover] step5c lastActiveChannel updated: agent={} channel={} session_key={}",

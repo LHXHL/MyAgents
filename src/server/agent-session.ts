@@ -85,7 +85,7 @@ import {
 import type { SystemInitInfo } from '../shared/types/system';
 import type { SlashCommand as UiSlashCommand } from '../shared/slashCommands';
 import type { OfficialToolId } from '../shared/official-tools';
-import { deleteSession, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData } from './SessionStore';
+import { commitPreparedSessionForFirstUserTurn, deleteSession, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData } from './SessionStore';
 import { firePostTurnTitleHook } from './turn-hooks';
 import { createSessionMetadata, type SessionMetadata, type SessionMessage, type MessageAttachment, type SessionSource, type TurnAnalyticsSource } from './types/session';
 import { originFromMaterializationScenario } from '../shared/session-origin';
@@ -523,6 +523,16 @@ function mapToSdkPermissionMode(mode: PermissionMode): 'acceptEdits' | 'plan' | 
   }
 }
 
+function mapToEffectiveSdkPermissionMode(
+  mode: PermissionMode,
+  scenario: InteractionScenario,
+): 'acceptEdits' | 'plan' | 'bypassPermissions' | 'default' {
+  if (shouldUseNonBypassForNativeAskUserQuestion(mode, scenario)) {
+    return 'acceptEdits';
+  }
+  return mapToSdkPermissionMode(mode);
+}
+
 const requireModule = createRequire(import.meta.url);
 
 /**
@@ -861,9 +871,10 @@ async function surfaceInFlightQueueItem(
   }
 
   if (options.awaitPersist) {
-    await persistMessagesToStorage();
+    await persistMessagesToStorageAndCommitPreparedFirstUserTurn(userMessage.content as string);
   } else if (options.schedulePersist) {
-    void persistMessagesToStorage().catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
+    void persistMessagesToStorageAndCommitPreparedFirstUserTurn(userMessage.content as string)
+      .catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
   }
 
   // PRD 0.2.14 — desktop → IM mirror (queued replay / confirmed boundary path).
@@ -1289,6 +1300,9 @@ function resolveActiveSessionUpstreamConfig(): UpstreamBridgeConfig {
     // #324 — read live so a mid-session effort change applies to the very
     // next upstream request without any subprocess restart.
     reasoningEffort: configState.currentReasoningEffort,
+    cacheAffinity: configState.currentProviderEnv?.apiProtocol === 'openai'
+      ? { sessionId, promptCacheKeyMode: 'session' }
+      : undefined,
   };
 }
 
@@ -1629,7 +1643,8 @@ function startNextTurnQueuedItem(
     metadata: item.source ? { source: item.source } : undefined,
   };
   appendMessage(userMessage);
-  void persistMessagesToStorage().catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
+  void persistMessagesToStorageAndCommitPreparedFirstUserTurn(item.messageText)
+    .catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
 
   if (item.source === 'desktop') {
     fireDesktopUserMirror(item.messageText, item.mirrorImages);
@@ -1811,6 +1826,14 @@ function abortPersistentSession(): void {
 
 // ===== Interaction Scenario (unified system prompt) =====
 import { buildSystemPromptAppend, type InteractionScenario } from './system-prompt';
+import {
+  channelInteractionDenyReason,
+  getChannelInteractionDisallowedTools,
+  shouldDisallowAskUserQuestion,
+  shouldHardDenyChannelInteractionTool,
+  shouldUseNonBypassForNativeAskUserQuestion,
+  supportsAskUserQuestionNativeCard,
+} from './host-interaction';
 
 let currentScenario: InteractionScenario = { type: 'desktop' };
 
@@ -1818,8 +1841,13 @@ let currentScenario: InteractionScenario = { type: 'desktop' };
  * Set the interaction scenario for the current session.
  * This determines the system prompt layers (identity + channel + scenario instructions).
  */
-export function setInteractionScenario(scenario: InteractionScenario): void {
+export async function setInteractionScenario(scenario: InteractionScenario): Promise<void> {
   currentScenario = scenario;
+  if (shouldUseNonBypassForNativeAskUserQuestion(configState.currentPermissionMode, scenario)) {
+    await lifecycleState.query?.setPermissionMode('acceptEdits').catch(err => {
+      console.warn('[agent] failed to switch native-card channel session out of bypassPermissions:', err);
+    });
+  }
   if (isDebugMode) {
     console.log(`[agent] Interaction scenario: ${scenario.type}`);
   }
@@ -2518,7 +2546,7 @@ export function setSessionPermissionMode(mode: PermissionMode): void {
   // triggers applySessionConfig(). Critical for plan mode: user switches to plan in UI
   // but SDK keeps auto → canUseTool may be skipped → tools execute unchecked.
   if (lifecycleState.query) {
-    const sdkMode = mapToSdkPermissionMode(configState.currentPermissionMode);
+    const sdkMode = mapToEffectiveSdkPermissionMode(configState.currentPermissionMode, currentScenario);
     lifecycleState.query.setPermissionMode(sdkMode).catch(err => {
       console.error('[agent] failed to apply permission mode to running session:', err);
       // Rollback: restore old mode + capture and notify frontend to undo
@@ -3628,8 +3656,10 @@ function isValidAskUserQuestionInput(input: unknown): input is AskUserQuestionIn
       typeof question.question === 'string' &&
       typeof question.header === 'string' &&
       Array.isArray(question.options) &&
-      question.options.length >= 2 &&
-      typeof question.multiSelect === 'boolean'
+      typeof question.multiSelect === 'boolean' &&
+      (question.id === undefined || typeof question.id === 'string') &&
+      (question.required === undefined || typeof question.required === 'boolean') &&
+      (question.isSecret === undefined || typeof question.isSecret === 'boolean')
     );
   });
 }
@@ -3659,14 +3689,18 @@ async function handleAskUserQuestion(
     throw new DOMException('Aborted', 'AbortError');
   }
 
-  broadcast('ask-user-question:request', {
+  const requestPayload = {
     ...interactiveEventScope(),
     requestId,
     questions: questionInput.questions,
     // SDK v0.2.69+: options may contain `preview` field (HTML or Markdown)
     // Our toolConfig sets previewFormat: 'html', so previews are HTML fragments
     previewFormat: 'html',
-  });
+  };
+  broadcast('ask-user-question:request', requestPayload);
+  if (supportsAskUserQuestionNativeCard(currentScenario)) {
+    emitImEvent('ask-user-question-request', JSON.stringify(requestPayload));
+  }
 
   // Wait for user response or abort. No wall-clock timeout — see the
   // pendingAskUserQuestions Map declaration for why.
@@ -3689,6 +3723,9 @@ async function handleAskUserQuestion(
       cleanup();
       if (wasPending) {
         broadcast('ask-user-question:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' });
+        if (supportsAskUserQuestionNativeCard(currentScenario)) {
+          emitImEvent('ask-user-question-expired', JSON.stringify({ requestId, reason: 'aborted' }));
+        }
       }
       // Reject with AbortError so SDK's own abort handling creates the single tool_result.
       // Previously resolve(null) caused canUseTool to return deny → duplicate tool_result
@@ -3710,7 +3747,7 @@ export function handleAskUserQuestionResponse(
   requestId: string,
   answers: Record<string, string> | null
 ): boolean {
-  console.debug(`[AskUserQuestion] handleResponse: requestId=${requestId}, answers=${JSON.stringify(answers)}`);
+  console.debug(`[AskUserQuestion] handleResponse: requestId=${requestId}, answerKeys=${answers ? Object.keys(answers).join(',') : '(cancelled)'}`);
 
   const pending = pendingAskUserQuestions.get(requestId);
   if (!pending) {
@@ -4097,6 +4134,11 @@ function drainPendingInteractiveRequests(reason: 'reset' | 'session-end'): void 
   // only for tests — the tool turn is going away regardless.
   for (const [requestId, q] of pendingAskUserQuestions) {
     try { broadcast('ask-user-question:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
+    try {
+      if (supportsAskUserQuestionNativeCard(currentScenario)) {
+        emitImEvent('ask-user-question-expired', JSON.stringify({ requestId, reason }));
+      }
+    } catch { /* swallow */ }
     try { q.resolve(null); } catch { /* swallow */ }
   }
   pendingAskUserQuestions.clear();
@@ -4179,6 +4221,36 @@ async function persistMessagesToStorage(targetMessageCount = transcriptState.mes
   });
 }
 
+async function commitPreparedSessionAfterUserMessagePersist(
+  messageText: string,
+  origin?: SessionOrigin,
+): Promise<void> {
+  const meta = getSessionMetadata(sessionId);
+  if (meta?.materializationState !== 'prepared') return;
+  const title = deriveSessionTitle(messageText, 40) || (messageText ? 'New Chat' : '图片消息');
+  const updated = await commitPreparedSessionForFirstUserTurn(sessionId, {
+    messageText,
+    title,
+    origin,
+  });
+  if (!updated) {
+    console.warn(`[agent] prepared metadata commit skipped for ${sessionId}: metadata disappeared after user message persist`);
+  }
+}
+
+async function persistMessagesToStorageAndCommitPreparedFirstUserTurn(
+  messageText: string,
+  origin?: SessionOrigin,
+  targetMessageCount = transcriptState.messages.length,
+): Promise<void> {
+  await persistMessagesToStorage(targetMessageCount);
+  try {
+    await commitPreparedSessionAfterUserMessagePersist(messageText, origin);
+  } catch (error) {
+    console.warn('[agent] prepared metadata commit after user message persist failed:', error);
+  }
+}
+
 export function getSessionId(): string {
   return sessionId;
 }
@@ -4207,8 +4279,82 @@ function createMetadataForSessionId(
   };
 }
 
+function isUuidSessionId(value: string | null | undefined): value is string {
+  return typeof value === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+export async function ensureSessionMetadataForSdkSystemInit(nextSystemInit: SystemInitInfo): Promise<string> {
+  const sdkSessionId = nextSystemInit.session_id;
+  const previousSessionId = sessionId;
+  const targetSessionId = isUuidSessionId(sdkSessionId) ? sdkSessionId : previousSessionId;
+  const previousMeta = getSessionMetadata(previousSessionId);
+  const targetMeta = getSessionMetadata(targetSessionId);
+
+  if (targetMeta) {
+    const updated = await updateSessionMetadata(targetSessionId, {
+      sdkSessionId: sdkSessionId ?? targetSessionId,
+      unifiedSession: sdkSessionId ? sdkSessionId === targetSessionId : targetMeta.unifiedSession,
+    });
+    if (!updated) {
+      throw new Error(`[agent] failed to update session metadata for SDK system_init session ${targetSessionId}`);
+    }
+  } else {
+    const mayMaterializeBirth =
+      isLazySessionMaterializationAllowed()
+      || isPendingSessionId(previousSessionId);
+    if (!mayMaterializeBirth) {
+      throw new Error(`[agent] refusing SDK system_init for unindexed existing session ${targetSessionId}; session metadata must exist before messages`);
+    }
+
+    const metadata = previousMeta
+      ? {
+          ...previousMeta,
+          id: targetSessionId,
+          sdkSessionId: sdkSessionId ?? targetSessionId,
+          unifiedSession: sdkSessionId ? sdkSessionId === targetSessionId : previousMeta.unifiedSession,
+        }
+      : createMetadataForSessionId(
+          targetSessionId,
+          'New Chat',
+          currentScenario.type,
+        ).meta;
+    if (!previousMeta && !isLiveFollowScenario(currentScenario.type)) {
+      Object.assign(metadata, buildOwnedFreezeSnapshotPatch());
+    }
+    metadata.sdkSessionId = sdkSessionId ?? targetSessionId;
+    metadata.unifiedSession = sdkSessionId ? sdkSessionId === targetSessionId : metadata.unifiedSession;
+
+    await saveSessionMetadata(metadata);
+    if (!getSessionMetadata(targetSessionId)) {
+      throw new Error(`[agent] failed to materialize session metadata for SDK system_init session ${targetSessionId}`);
+    }
+    console.log(`[agent] session ${targetSessionId} persisted to SessionStore (sdk system_init birth, from=${previousSessionId}, scenario=${currentScenario.type})`);
+  }
+
+  if (targetSessionId !== previousSessionId) {
+    setCurrentSessionId(targetSessionId);
+    initLogger(targetSessionId);
+    resetTranscriptPersistenceForSession(previousSessionId);
+    if (previousMeta && isPendingSessionId(previousSessionId)) {
+      const deleted = await deleteSession(
+        previousSessionId,
+        (current) => current.id === previousSessionId && getSessionMetadata(targetSessionId) !== null,
+      );
+      if (!deleted) {
+        console.warn(`[agent] sdk system_init metadata migration could not delete pending source ${previousSessionId}; target ${targetSessionId} is already indexed`);
+      }
+    }
+    console.log(`[agent] SDK system_init migrated session identity ${previousSessionId} -> ${targetSessionId}`);
+  }
+
+  setLazySessionMaterializationAllowed(false);
+  return targetSessionId;
+}
+
 async function materializeInitialPromptSessionMetadata(initialPromptText: string): Promise<void> {
-  if (getSessionMetadata(sessionId)) {
+  const existing = getSessionMetadata(sessionId);
+  if (existing) {
     setLazySessionMaterializationAllowed(false);
     return;
   }
@@ -7297,7 +7443,7 @@ async function applySessionConfig(newModel?: string, newPermissionMode?: Permiss
 
   // Apply permission mode change if different
   if (newPermissionMode && newPermissionMode !== configState.currentPermissionMode) {
-    const sdkMode = mapToSdkPermissionMode(newPermissionMode);
+    const sdkMode = mapToEffectiveSdkPermissionMode(newPermissionMode, currentScenario);
     try {
       await lifecycleState.query.setPermissionMode(sdkMode);
       // Route through the shared transition so a config-driven switch keeps the
@@ -7946,15 +8092,12 @@ export async function enqueueUserMessage(
       // to '' but is not an image message — only reserve '图片消息' for genuinely
       // text-less (image-only) input; otherwise 'New Chat'.
       const title = deriveSessionTitle(trimmed, 40) || (trimmed ? 'New Chat' : '图片消息');
-      const existingPatch: Partial<SessionMetadata> = {};
-      if (existingMeta.title === 'New Chat') {
-        existingPatch.title = title;
-      }
-      if (!existingMeta.origin && options?.sessionBirthOrigin) {
-        existingPatch.origin = options.sessionBirthOrigin;
-      }
-      if (Object.keys(existingPatch).length > 0) {
-        await updateSessionMetadata(sessionId, existingPatch);
+      if (existingMeta.materializationState !== 'prepared') {
+        await commitPreparedSessionForFirstUserTurn(sessionId, {
+          messageText: trimmed,
+          title,
+          origin: options?.sessionBirthOrigin,
+        });
       }
       console.log(`[agent] session ${sessionId} already exists in SessionStore, preserving stats`);
     } else {
@@ -8008,6 +8151,7 @@ export async function enqueueUserMessage(
     setPreWarmInProgress(false);
     // Pre-warm 已收到 system_init → SDK 已注册此 session，后续必须用 resume
     if (lifecycleState.systemInitInfo) {
+      await ensureSessionMetadataForSdkSystemInit(lifecycleState.systemInitInfo);
       sessionRegistered = true;
     }
     console.log(`[agent] pre-warm → active, first user message, sessionRegistered=${sessionRegistered}`);
@@ -8373,7 +8517,7 @@ export async function enqueueUserMessage(
   broadcast('chat:message-replay', { message: userMessage });
 
   // Persist transcriptState.messages to disk after adding user message
-  await persistMessagesToStorage();
+  await persistMessagesToStorageAndCommitPreparedFirstUserTurn(trimmed, options?.sessionBirthOrigin);
 
   // PRD 0.2.14 — desktop → IM mirror (direct-send path, single push site).
   // Q1·C: mirror the full user text + PNG/JPG attachments. Rust silently
@@ -9445,7 +9589,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   const startedBackgroundTasks = new Map<string, { toolUseId?: string; description?: string }>();
 
   try {
-    const sdkPermissionMode = mapToSdkPermissionMode(configState.currentPermissionMode);
+    const sdkPermissionMode = mapToEffectiveSdkPermissionMode(
+      configState.currentPermissionMode,
+      currentScenario,
+    );
 
     // Resolve SDK-compatible session ID for resume/create.
     // SDK requires valid UUID format for --resume (and --session-id).
@@ -9635,11 +9782,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       });
     }
 
-    // Build disallowed tools list: group deny + IM-incompatible UI tools
+    // Build disallowed tools list: group deny + channel-incompatible UI tools
     const disallowedToolsList = [...currentGroupToolsDeny];
-    if (currentScenario.type === 'im') {
-      disallowedToolsList.push('AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode');
-    }
+    disallowedToolsList.push(...getChannelInteractionDisallowedTools(currentScenario));
 
     // SDK 0.2.84 bug: NA() returns "firstParty" for ANY non-bedrock/vertex/foundry provider,
     // causing xd7() to enable thinking for all non-claude-3 models on third-party APIs.
@@ -10028,6 +10173,14 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // PermissionResult.deny.interrupt) and is exactly the right semantic
         // for control-transfer tools like AskUserQuestion / ExitPlanMode.
         if (toolName === 'AskUserQuestion') {
+          if (shouldDisallowAskUserQuestion(currentScenario)) {
+            console.warn(`[canUseTool] AskUserQuestion denied: current ${currentScenario.type} host does not support native-card interaction`);
+            return {
+              behavior: 'deny' as const,
+              message: channelInteractionDenyReason(currentScenario),
+              interrupt: true,
+            };
+          }
           console.log('[canUseTool] AskUserQuestion detected, prompting user');
           const answers = await handleAskUserQuestion(input, options.signal);
           if (answers === null) {
@@ -10166,6 +10319,19 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           hooks: [
             async (input: HookInput): Promise<HookJSONOutput> => {
               const pre = input as PreToolUseHookInput;
+              if (shouldHardDenyChannelInteractionTool(pre.tool_name, currentScenario)) {
+                const reason = pre.tool_name === 'AskUserQuestion'
+                  ? channelInteractionDenyReason(currentScenario)
+                  : '当前渠道不支持该交互式工具，请改用普通文本完成这一步。';
+                console.warn(`[permission] channel hard gate denied: ${pre.tool_name} scenario=${currentScenario.type}`);
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse' as const,
+                    permissionDecision: 'deny' as const,
+                    permissionDecisionReason: reason,
+                  },
+                };
+              }
               // Fail-closed effective mode: 'plan' if either source says plan
               // (see isPlanModeInEffect for the two desync windows this closes).
               const effectiveMode = isPlanModeInEffect(configState.currentPermissionMode, pre.permission_mode) ? 'plan' : configState.currentPermissionMode;
@@ -10676,6 +10842,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           systemInitReceived = true;
           clearTimeout(startupTimeoutId);
         }
+        const canonicalSessionId = !lifecycleState.preWarming
+          ? await ensureSessionMetadataForSdkSystemInit(nextSystemInit)
+          : sessionId;
         setSystemInitInfo(nextSystemInit);
         // Buffer system_init during pre-warm; replay when first user message arrives
         if (!lifecycleState.preWarming) {
@@ -10686,7 +10855,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           if (sessionState === 'starting') {
             setSessionState('running');
           }
-          broadcast('chat:system-init', { info: lifecycleState.systemInitInfo, sessionId, runtime: 'builtin' });
+          broadcast('chat:system-init', { info: lifecycleState.systemInitInfo, sessionId: canonicalSessionId, runtime: 'builtin' });
         } else {
           // Pre-warm 不设 sessionRegistered — 这是核心设计约束
           // Pre-warm 的 system_init 只意味着 subprocess 准备好了，
@@ -10710,15 +10879,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
         // Save SDK session_id and verify unified session status
         if (nextSystemInit.session_id) {
-          const isUnified = nextSystemInit.session_id === sessionId;
-          await updateSessionMetadata(sessionId, {
-            sdkSessionId: nextSystemInit.session_id,
-            unifiedSession: isUnified,
-          });
+          const isUnified = nextSystemInit.session_id === canonicalSessionId;
           if (isUnified) {
             console.log(`[agent] SDK session_id confirmed unified: ${nextSystemInit.session_id}`);
           } else {
-            console.log(`[agent] SDK session_id saved (pre-unified): ${nextSystemInit.session_id} (our: ${sessionId})`);
+            console.log(`[agent] SDK session_id saved (pre-unified): ${nextSystemInit.session_id} (our: ${canonicalSessionId})`);
           }
         }
 

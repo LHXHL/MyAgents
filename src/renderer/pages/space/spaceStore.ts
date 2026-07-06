@@ -16,6 +16,7 @@ import {
   spaceGetSkill,
   spaceGetSkillFile,
   spaceInstallSkill,
+  spaceListSkillRevisions,
   spaceListGoals,
   spaceListIssues,
   spaceListEvents,
@@ -25,7 +26,10 @@ import {
   spaceLogout,
   spaceRegisterAgent,
   spaceRevokeRegisteredAgent,
+  spaceRollbackSkill,
+  spaceSetActiveSpace,
   spaceSetIssueState,
+  spaceUpdateProfile,
   spaceUpdateGoal,
   spaceUpdateIssue,
   spaceUpdateRegisteredAgent,
@@ -43,6 +47,8 @@ import {
   type SpaceSession,
   type SpaceSkill,
   type SpaceSkillDetail,
+  type SpaceSkillRevisionHistory,
+  type SpaceUserSummary,
 } from "@/api/spaceCloud";
 import type { IssueQueryParams } from "./spaceHelpers";
 import { buildIssueQueryKey } from "./spaceHelpers";
@@ -100,6 +106,13 @@ export interface SpaceSkillFileState {
   error: string | null;
 }
 
+export interface SpaceSkillRevisionState {
+  history: SpaceSkillRevisionHistory | null;
+  lastFetchedAt: number;
+  isLoading: boolean;
+  error: string | null;
+}
+
 interface SpaceAgentsState {
   items: LocalRegisteredAgent[];
   lastFetchedAt: number;
@@ -135,6 +148,7 @@ interface StoreState {
   skills: SpaceSkillsState;
   skillDetails: Record<string, SpaceSkillDetailState>;
   skillFiles: Record<string, SpaceSkillFileState>;
+  skillRevisions: Record<string, SpaceSkillRevisionState>;
   localAgents: SpaceAgentsState;
   registeredAgents: SpaceRegisteredAgentsState;
   events: SpaceEventsState;
@@ -152,6 +166,7 @@ interface RefreshOptions {
 
 export interface SpaceActions {
   ensureBootstrapped: (options?: RefreshOptions) => Promise<void>;
+  switchSpace: (spaceId: string) => Promise<void>;
   refreshIssues: (
     params: IssueQueryParams,
     options?: RefreshOptions,
@@ -169,6 +184,10 @@ export interface SpaceActions {
   refreshSkillFile: (
     skillId: string,
     path: string,
+    options?: RefreshOptions,
+  ) => Promise<void>;
+  refreshSkillRevisions: (
+    skillId: string,
     options?: RefreshOptions,
   ) => Promise<void>;
   refreshLocalAgents: (options?: RefreshOptions) => Promise<void>;
@@ -213,6 +232,11 @@ export interface SpaceActions {
   closeIssue: (issueId: string) => Promise<void>;
   completeIssue: (issueId: string) => Promise<void>;
   cancelIssueClaim: (issueId: string) => Promise<void>;
+  updateProfile: (input: {
+    name: string;
+    avatarFilePath?: string | null;
+    nameChanged?: boolean;
+  }) => Promise<void>;
   uploadSkillZip: (input: {
     filePath: string;
     name?: string;
@@ -223,6 +247,7 @@ export interface SpaceActions {
     skillId: string,
     filePath: string,
   ) => Promise<SpaceSkill>;
+  rollbackSkill: (skillId: string, revision: number) => Promise<SpaceSkill>;
   deleteSkill: (skillId: string) => Promise<void>;
   installSkill: (input: {
     skillId: string;
@@ -285,6 +310,7 @@ const initialState = (): StoreState => ({
   },
   skillDetails: {},
   skillFiles: {},
+  skillRevisions: {},
   localAgents: {
     items: [],
     lastFetchedAt: 0,
@@ -604,6 +630,144 @@ function localAgentToRegisteredAgent(
   };
 }
 
+function patchUserSummary<
+  T extends { id?: string; name?: string | null; avatarUrl?: string | null } | null | undefined,
+>(summary: T, user: SpaceSession["user"]): T {
+  if (!summary || summary.id !== user.id) return summary;
+  const next = { ...summary };
+  if (Object.prototype.hasOwnProperty.call(user, "name")) {
+    next.name = user.name ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(user, "avatarUrl")) {
+    next.avatarUrl = user.avatarUrl ?? null;
+  }
+  return {
+    ...next,
+  } as T;
+}
+
+function currentUserSummary(user: SpaceSession["user"]): SpaceUserSummary {
+  const summary: SpaceUserSummary = { id: user.id };
+  if (Object.prototype.hasOwnProperty.call(user, "name")) {
+    summary.name = user.name ?? null;
+  }
+  if (Object.prototype.hasOwnProperty.call(user, "avatarUrl")) {
+    summary.avatarUrl = user.avatarUrl ?? null;
+  }
+  return summary;
+}
+
+function patchIssueAuthorSummaries(
+  issue: SpaceIssue,
+  user: SpaceSession["user"],
+): SpaceIssue {
+  const currentUser = currentUserSummary(user);
+  return {
+    ...issue,
+    creator: issue.creator
+      ? patchUserSummary(issue.creator, user)
+      : issue.createdByUserId === user.id
+        ? currentUser
+        : issue.creator,
+    author: patchUserSummary(issue.author, user),
+  };
+}
+
+function patchIssueDetailAuthorSummaries(
+  detail: SpaceIssueDetail,
+  user: SpaceSession["user"],
+): SpaceIssueDetail {
+  return {
+    ...detail,
+    issue: patchIssueAuthorSummaries(detail.issue, user),
+    comments: {
+      ...detail.comments,
+      items: detail.comments.items.map((comment) => ({
+        ...comment,
+        author: patchUserSummary(comment.author, user),
+      })),
+    },
+  };
+}
+
+function patchSkillUploader(skill: SpaceSkill, user: SpaceSession["user"]): SpaceSkill {
+  return {
+    ...skill,
+    uploader: patchUserSummary(skill.uploader, user),
+  };
+}
+
+function patchSkillDetailUploader(
+  detail: SpaceSkillDetail,
+  user: SpaceSession["user"],
+): SpaceSkillDetail {
+  return {
+    ...detail,
+    skill: patchSkillUploader(detail.skill, user),
+  };
+}
+
+function patchProfileInCaches(session: SpaceSession) {
+  const user = session.user;
+  setState({
+    session,
+    issuesByKey: Object.fromEntries(
+      Object.entries(state.issuesByKey).map(([key, list]) => [
+        key,
+        {
+          ...list,
+          items: list.items.map((issue) =>
+            patchIssueAuthorSummaries(issue, user),
+          ),
+        },
+      ]),
+    ),
+    issueDetails: Object.fromEntries(
+      Object.entries(state.issueDetails).map(([key, detailState]) => [
+        key,
+        detailState.detail
+          ? {
+              ...detailState,
+              detail: patchIssueDetailAuthorSummaries(detailState.detail, user),
+            }
+          : detailState,
+      ]),
+    ),
+    skills: {
+      ...state.skills,
+      items: state.skills.items.map((skill) => patchSkillUploader(skill, user)),
+    },
+    skillDetails: Object.fromEntries(
+      Object.entries(state.skillDetails).map(([key, detailState]) => [
+        key,
+        detailState.detail
+          ? {
+              ...detailState,
+              detail: patchSkillDetailUploader(detailState.detail, user),
+            }
+          : detailState,
+      ]),
+    ),
+    skillRevisions: Object.fromEntries(
+      Object.entries(state.skillRevisions).map(([key, revisionState]) => [
+        key,
+        revisionState.history
+          ? {
+              ...revisionState,
+              history: {
+                ...revisionState.history,
+                items: revisionState.history.items.map((revision) => ({
+                  ...revision,
+                  uploader: patchUserSummary(revision.uploader, user),
+                })),
+              },
+            }
+          : revisionState,
+      ]),
+    ),
+  });
+}
+
 export const actions: SpaceActions = {
   ensureBootstrapped: async (options: RefreshOptions = {}) => {
     if (
@@ -630,9 +794,13 @@ export const actions: SpaceActions = {
           });
           return;
         }
-        const official = await spaceGetOfficial(
-          spaceRouteSegment(session.space),
-        );
+        const preferredSpaceId =
+          session.lastActiveSpaceId ||
+          spaceRouteSegment(session.space);
+        const official = await spaceGetOfficial(preferredSpaceId).catch((error) => {
+          if (preferredSpaceId === DEFAULT_SPACE_ID) throw error;
+          return spaceGetOfficial(DEFAULT_SPACE_ID);
+        });
         if (!isLatest("boot", requestSeq)) return;
         const nextSpaceId = spaceRouteSegment(official.space || session.space);
         const spaceChanged = Boolean(
@@ -687,6 +855,17 @@ export const actions: SpaceActions = {
     return bootPromise;
   },
 
+  switchSpace: async (spaceId: string) => {
+    const trimmed = spaceId.trim();
+    if (!trimmed || trimmed === activeSpaceId()) return;
+    await spaceSetActiveSpace(trimmed);
+    invalidatePendingRequests();
+    const previousBoot = state.boot;
+    state = { ...initialState(), boot: previousBoot };
+    emit();
+    await actions.ensureBootstrapped({ force: true });
+  },
+
   refreshIssues: async (
     params: IssueQueryParams,
     options: RefreshOptions = {},
@@ -713,12 +892,16 @@ export const actions: SpaceActions = {
       try {
         const result = await spaceListIssues(normalizedParams, activeSpaceId());
         if (!isLatest(requestKey, requestSeq)) return;
+        const user = state.session?.user ?? null;
+        const items = user
+          ? result.items.map((issue) => patchIssueAuthorSummaries(issue, user))
+          : result.items;
         setState({
           issuesByKey: trimCacheRecord(
             {
               ...state.issuesByKey,
               [key]: {
-                items: result.items,
+                items,
                 hasMore: result.hasMore,
                 nextCursor: result.nextCursor,
                 lastFetchedAt: Date.now(),
@@ -793,6 +976,10 @@ export const actions: SpaceActions = {
         const startedAt = nowForSpaceMetric();
         const detail = await spaceGetIssue(issueId);
         if (!isLatest(requestKey, requestSeq)) return;
+        const user = state.session?.user ?? null;
+        const nextDetail = user
+          ? patchIssueDetailAuthorSummaries(detail, user)
+          : detail;
         recordSpaceMetric("space_issue_detail_open", {
           durationMs: Math.round(nowForSpaceMetric() - startedAt),
           ok: true,
@@ -802,7 +989,7 @@ export const actions: SpaceActions = {
             {
               ...state.issueDetails,
               [key]: {
-                detail,
+                detail: nextDetail,
                 lastFetchedAt: Date.now(),
                 isLoading: false,
                 error: null,
@@ -811,7 +998,7 @@ export const actions: SpaceActions = {
             SPACE_MAX_ISSUE_DETAIL_CACHES,
           ),
         });
-        patchIssueInLists(detail.issue);
+        patchIssueInLists(nextDetail.issue);
       } catch (error) {
         if (!isLatest(requestKey, requestSeq)) return;
         recordSpaceMetric("space_issue_detail_open", {
@@ -846,9 +1033,13 @@ export const actions: SpaceActions = {
       try {
         const result = await spaceListSkills(activeSpaceId());
         if (!isLatest("skills", requestSeq)) return;
+        const user = state.session?.user ?? null;
+        const items = user
+          ? result.items.map((skill) => patchSkillUploader(skill, user))
+          : result.items;
         setState({
           skills: {
-            items: result.items,
+            items,
             lastFetchedAt: Date.now(),
             isLoading: false,
             error: null,
@@ -895,12 +1086,14 @@ export const actions: SpaceActions = {
       try {
         const detail = await spaceGetSkill(skillId);
         if (!isLatest(requestKey, requestSeq)) return;
+        const user = state.session?.user ?? null;
+        const nextDetail = user ? patchSkillDetailUploader(detail, user) : detail;
         setState({
           skillDetails: trimCacheRecord(
             {
               ...state.skillDetails,
               [key]: {
-                detail,
+                detail: nextDetail,
                 lastFetchedAt: Date.now(),
                 isLoading: false,
                 error: null,
@@ -977,6 +1170,60 @@ export const actions: SpaceActions = {
         setState({
           skillFiles: {
             ...state.skillFiles,
+            [key]: { ...current, isLoading: false, error: errMessage(error) },
+          },
+        });
+        throw error;
+      }
+    });
+  },
+
+  refreshSkillRevisions: async (skillId: string, options: RefreshOptions = {}) => {
+    if (!ensureReady() || !skillId) return;
+    const key = detailKey(skillId);
+    const current = state.skillRevisions[key] ?? {
+      history: null,
+      lastFetchedAt: 0,
+      isLoading: false,
+      error: null,
+    };
+    if (!options.force && isFresh(current.lastFetchedAt, options.maxAgeMs))
+      return;
+    const requestKey = `skill-revisions:${key}`;
+    return runRequest(requestKey, options.force, async () => {
+      const requestSeq = startRequest(requestKey);
+      setState({
+        skillRevisions: {
+          ...state.skillRevisions,
+          [key]: {
+            ...current,
+            isLoading: true,
+            error: options.silent ? current.error : null,
+          },
+        },
+      });
+      try {
+        const history = await spaceListSkillRevisions(skillId);
+        if (!isLatest(requestKey, requestSeq)) return;
+        setState({
+          skillRevisions: trimCacheRecord(
+            {
+              ...state.skillRevisions,
+              [key]: {
+                history,
+                lastFetchedAt: Date.now(),
+                isLoading: false,
+                error: null,
+              },
+            },
+            SPACE_MAX_SKILL_DETAIL_CACHES,
+          ),
+        });
+      } catch (error) {
+        if (!isLatest(requestKey, requestSeq)) return;
+        setState({
+          skillRevisions: {
+            ...state.skillRevisions,
             [key]: { ...current, isLoading: false, error: errMessage(error) },
           },
         });
@@ -1141,15 +1388,23 @@ export const actions: SpaceActions = {
   createIssue: (input) =>
     withSpaceMutationMetric("issue.create", async () => {
       const result = await spaceCreateIssue(input, activeSpaceId());
-      prependIssueToLists(result.issue);
-      return result.issue;
+      const user = state.session?.user ?? null;
+      const issue = user
+        ? patchIssueAuthorSummaries(result.issue, user)
+        : result.issue;
+      prependIssueToLists(issue);
+      return issue;
     }),
 
   updateIssue: (input) =>
     withSpaceMutationMetric("issue.update", async () => {
       const result = await spaceUpdateIssue(input);
-      patchIssueInLists(result.issue);
-      return result.issue;
+      const user = state.session?.user ?? null;
+      const issue = user
+        ? patchIssueAuthorSummaries(result.issue, user)
+        : result.issue;
+      patchIssueInLists(issue);
+      return issue;
     }),
 
   createGoal: (input) =>
@@ -1200,11 +1455,18 @@ export const actions: SpaceActions = {
   commentIssue: (issueId, body) =>
     withSpaceMutationMetric("issue.comment", async () => {
       const result = await spaceCommentIssue(issueId, body);
+      const user = state.session?.user ?? null;
+      const comment = user
+        ? {
+            ...result.comment,
+            author: patchUserSummary(result.comment.author, user),
+          }
+        : result.comment;
       patchIssueDetail(issueId, (detail) => ({
         ...detail,
         comments: {
           ...detail.comments,
-          items: [...detail.comments.items, result.comment],
+          items: [...detail.comments.items, comment],
         },
         issue: {
           ...detail.issue,
@@ -1287,6 +1549,12 @@ export const actions: SpaceActions = {
         });
     }),
 
+  updateProfile: (input) =>
+    withSpaceMutationMetric("profile.update", async () => {
+      const session = await spaceUpdateProfile(input);
+      patchProfileInCaches(session);
+    }),
+
   uploadSkillZip: (input) =>
     withSpaceMutationMetric("skill.upload", async () => {
       const result = await spaceUploadSkillZip(input);
@@ -1327,6 +1595,41 @@ export const actions: SpaceActions = {
             ([key]) => !unscopedKey(key).startsWith(`${result.skill.id}\n`),
           ),
         ),
+        skillRevisions: Object.fromEntries(
+          Object.entries(state.skillRevisions).filter(
+            ([key]) => unscopedKey(key) !== result.skill.id,
+          ),
+        ),
+      });
+      return result.skill;
+    }),
+
+  rollbackSkill: (skillId, revision) =>
+    withSpaceMutationMetric("skill.revision.rollback", async () => {
+      const result = await spaceRollbackSkill(skillId, revision);
+      setState({
+        skills: {
+          ...state.skills,
+          items: [
+            result.skill,
+            ...state.skills.items.filter((skill) => skill.id !== result.skill.id),
+          ],
+        },
+        skillDetails: Object.fromEntries(
+          Object.entries(state.skillDetails).filter(
+            ([key]) => unscopedKey(key) !== result.skill.id,
+          ),
+        ),
+        skillFiles: Object.fromEntries(
+          Object.entries(state.skillFiles).filter(
+            ([key]) => !unscopedKey(key).startsWith(`${result.skill.id}\n`),
+          ),
+        ),
+        skillRevisions: Object.fromEntries(
+          Object.entries(state.skillRevisions).filter(
+            ([key]) => unscopedKey(key) !== result.skill.id,
+          ),
+        ),
       });
       return result.skill;
     }),
@@ -1347,6 +1650,11 @@ export const actions: SpaceActions = {
         skillFiles: Object.fromEntries(
           Object.entries(state.skillFiles).filter(
             ([key]) => !unscopedKey(key).startsWith(`${skillId}\n`),
+          ),
+        ),
+        skillRevisions: Object.fromEntries(
+          Object.entries(state.skillRevisions).filter(
+            ([key]) => unscopedKey(key) !== skillId,
           ),
         ),
       });
@@ -1468,6 +1776,12 @@ export function getSkillFileState(
   path: string,
 ): SpaceSkillFileState | null {
   return state.skillFiles[skillFileKey(skillId, path)] ?? null;
+}
+
+export function getSkillRevisionState(
+  skillId: string,
+): SpaceSkillRevisionState | null {
+  return state.skillRevisions[detailKey(skillId)] ?? null;
 }
 
 export function __resetSpaceStoreForTest(): void {

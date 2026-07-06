@@ -133,7 +133,7 @@ export default function AgentTasksSection({ agent }: AgentTasksSectionProps) {
   // Only show active (running) tasks, sorted by date descending (newest first)
   const activeTasks = useMemo(() =>
     tasks
-      .filter(t => t.status === 'running')
+      .filter(t => t.status === 'running' && !t.managedKind)
       .sort((a, b) => {
         const dateA = new Date(a.updatedAt ?? a.createdAt).getTime();
         const dateB = new Date(b.updatedAt ?? b.createdAt).getTime();

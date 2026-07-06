@@ -27,6 +27,15 @@ describe('SpaceChrome i18n', () => {
     await i18n.changeLanguage('en-US');
   });
 
+  const sidebarProps = {
+    onSpaceTabChange: vi.fn(),
+    onSpaceSwitch: vi.fn(),
+    onJoinSpace: vi.fn(),
+    onCreateSpace: vi.fn(),
+    onLogout: vi.fn(),
+    onOpenProfileSettings: vi.fn(),
+  };
+
   it('renders login chrome in English', () => {
     render(<SpaceLogin authBusy={false} authFlow={null} onLogin={vi.fn()} />);
 
@@ -37,22 +46,47 @@ describe('SpaceChrome i18n', () => {
   });
 
   it('renders sidebar account menu in English without translating data', () => {
-    render(<SpaceSidebar session={session} mode="issues" onSpaceTabChange={vi.fn()} onLogout={vi.fn()} />);
+    render(<SpaceSidebar session={session} mode="issues" {...sidebarProps} />);
 
-    expect(screen.getByText('Official Space')).toBeInTheDocument();
+    expect(screen.getAllByText('Official Space').length).toBeGreaterThan(0);
     expect(screen.getByText('open')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Join Space' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Create Space' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /user@example.com/i }));
-    expect(screen.getAllByText((_, node) => node?.textContent?.includes('Signed in with Google') ?? false).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole('button', { name: /user/i }));
+    expect(screen.getAllByText('user@example.com').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
     expect(screen.queryByText('开放加入')).not.toBeInTheDocument();
     expect(screen.queryByText('退出登录')).not.toBeInTheDocument();
   });
 
-  it('closes the sidebar account menu when clicking outside', async () => {
-    render(<SpaceSidebar session={session} mode="issues" onSpaceTabChange={vi.fn()} onLogout={vi.fn()} />);
+  it('shows Space Settings only for admins and surfaces pending join requests', () => {
+    const adminSession: SpaceSession = {
+      ...session,
+      membership: { ...session.membership, role: 'admin' },
+      spaces: [
+        {
+          ...session.space,
+          membership: { ...session.membership, role: 'admin' },
+          canManage: true,
+          pendingJoinRequestCount: 2,
+        },
+      ],
+    };
+    render(<SpaceSidebar session={adminSession} mode="settings" {...sidebarProps} />);
 
-    fireEvent.click(screen.getByRole('button', { name: /user@example.com/i }));
+    expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Agents' })).not.toBeInTheDocument();
+    expect(screen.getByText('2')).toBeInTheDocument();
+  });
+
+  it('closes the sidebar account menu when clicking outside', async () => {
+    render(<SpaceSidebar session={session} mode="issues" {...sidebarProps} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /user/i }));
     expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument();
 
     fireEvent.mouseDown(document.body);

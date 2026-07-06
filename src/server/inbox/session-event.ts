@@ -63,10 +63,10 @@ export interface SpaceIssueDeliveryEvent extends SessionEventBase {
   notificationVersion?: number;
   deliveryCount?: number;
   updateSummary?: string | null;
-  payload: string;
 }
 
 export type SessionEvent = SendRequestEvent | SendResultEvent | WatchEvent | SpaceIssueDeliveryEvent;
+type RenderableSessionEvent = Exclude<SessionEvent, SpaceIssueDeliveryEvent>;
 
 const HTML_ESCAPE_MAP: Record<string, string> = {
   '<': '&lt;',
@@ -114,17 +114,19 @@ function attr(name: string, value: string | number | undefined | null): string |
   return `${name}="${sanitizeSessionEventAttribute(String(value))}"`;
 }
 
-function isWatchEvent(event: SessionEvent): event is WatchEvent {
+function assertRenderableSessionEvent(event: SessionEvent): asserts event is RenderableSessionEvent {
+  if (event.type === 'space.issue_delivery') {
+    throw new Error('space.issue_delivery prompts are rendered by Rust and must bypass renderSessionEventPrompt');
+  }
+}
+
+function isWatchEvent(event: RenderableSessionEvent): event is WatchEvent {
   return event.type === 'watch.already_idle'
     || event.type === 'watch.completed'
     || event.type === 'watch.error';
 }
 
-function isSpaceIssueDeliveryEvent(event: SessionEvent): event is SpaceIssueDeliveryEvent {
-  return event.type === 'space.issue_delivery';
-}
-
-function renderOpenTag(event: SessionEvent): string {
+function renderOpenTag(event: RenderableSessionEvent): string {
   const attrs = [
     attr('version', event.version),
     attr('type', event.type),
@@ -144,27 +146,13 @@ function renderOpenTag(event: SessionEvent): string {
       : null,
     isWatchEvent(event) ? attr('final_state', event.finalState) : null,
     isWatchEvent(event) ? attr('terminal_reason', event.terminalReason) : null,
-    isSpaceIssueDeliveryEvent(event) ? attr('delivery_id', event.deliveryId) : null,
-    isSpaceIssueDeliveryEvent(event) ? attr('delivery_kind', event.deliveryKind) : null,
-    isSpaceIssueDeliveryEvent(event) ? attr('claim_id', event.claimId) : null,
-    isSpaceIssueDeliveryEvent(event) ? attr('issue_id', event.issueId) : null,
-    isSpaceIssueDeliveryEvent(event) ? attr('issue_title', event.issueTitle) : null,
-    isSpaceIssueDeliveryEvent(event) ? attr('issue_state', event.issueState) : null,
-    isSpaceIssueDeliveryEvent(event) ? attr('goal_id', event.goalId) : null,
-    isSpaceIssueDeliveryEvent(event) ? attr('goal_path_label', event.goalPathLabel) : null,
-    isSpaceIssueDeliveryEvent(event)
-      ? attr('notification_version', event.notificationVersion)
-      : null,
-    isSpaceIssueDeliveryEvent(event)
-      ? attr('delivery_count', event.deliveryCount)
-      : null,
     attr('created_at', event.createdAt),
   ].filter(Boolean);
 
   return `<myagents-session-event\n  ${attrs.join('\n  ')}>`;
 }
 
-function summaryForEvent(event: SessionEvent): string {
+function summaryForEvent(event: RenderableSessionEvent): string {
   switch (event.type) {
     case 'send.request':
       return event.sourceNotification === 'none'
@@ -180,28 +168,19 @@ function summaryForEvent(event: SessionEvent): string {
       return 'The watched target session has finished the turn that was active when this watch was registered.';
     case 'watch.error':
       return 'MyAgents could not confirm normal completion for the watched target session.';
-    case 'space.issue_delivery':
-      if (event.deliveryKind === 'claim_followup') {
-        return 'MyAgents Space delivered a follow-up comment for an issue already handled by this registered agent session. Read the issue context and decide whether to reply or take further action.';
-      }
-      return event.deliveryCount && event.deliveryCount > 1
-        ? 'MyAgents Space delivered issue notifications to this registered agent session. Inspect each issue and decide whether to ignore it or claim it before doing work.'
-        : 'MyAgents Space delivered an issue notification to this registered agent session. Inspect the issue and decide whether to ignore it or claim it before doing work.';
   }
 }
 
-function payloadForEvent(event: SessionEvent): string {
+function payloadForEvent(event: RenderableSessionEvent): string {
   if (isWatchEvent(event)) {
     const result = neutralizeSessionEventStructuralTags(event.latestResult || '(no text response)');
     return `<latest-result>\n${result}\n</latest-result>`;
-  }
-  if (isSpaceIssueDeliveryEvent(event)) {
-    return neutralizeSessionEventStructuralTags(event.payload || '(no delivery payload)');
   }
   return neutralizeSessionEventStructuralTags(event.payload || '(no text response)');
 }
 
 export function renderSessionEventPrompt(event: SessionEvent): string {
+  assertRenderableSessionEvent(event);
   return [
     renderOpenTag(event),
     '<event-summary>',

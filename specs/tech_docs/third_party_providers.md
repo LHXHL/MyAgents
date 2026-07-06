@@ -134,6 +134,16 @@ interface Provider {
 - `providerEnvJson` 只读兼容旧数据：没有 `providerRoute` 的历史 session 才允许 fallback 读取。新写入路径必须写 `providerRoute`，并省略/清空 `providerEnvJson`。
 - `model + configSnapshotAt` 旧 session 缺 provider 时，只在“声明该 model 且本地有凭据/账号证据”的 provider 中修复。API provider 看非空 API key；Anthropic subscription 看 valid 状态、`accountEmail` 或 `verifiedAt` 任一存在。多个候选或没有候选时，不猜默认 provider，要求用户在模型选择器重新选择。
 
+### OpenAI Bridge prompt cache affinity
+
+OpenAI-protocol providers use the bridge as the only request-shape owner for both egress formats: `upstreamFormat:'responses'` and Chat Completions (`upstreamFormat:'chat_completions'` / default). Active builtin sessions attach anonymous cache affinity via `agent-session.ts::resolveActiveSessionUpstreamConfig()`:
+
+- active session：`cacheAffinity: { sessionId, promptCacheKeyMode:'session' }`，由 `openai-bridge/prompt-cache.ts` hash 成 protocol-scoped `prompt_cache_key`（`myagents:responses:<hash>` / `myagents:chat_completions:<hash>`），不包含 raw `sessionId`、workspace path、apiKey、baseUrl、prompt 内容。
+- one-shot bridge（provider verify / title / supported-model probing / vision 等）：不设置 `cacheAffinity`，避免短生命周期调用污染 chat session cache routing。
+- 不支持 `prompt_cache_key` 的上游：`openai-bridge/handler.ts` 只在 400/422 且错误明确表示 unknown / unsupported / unrecognized / unexpected `prompt_cache_key` 参数时，去掉该字段重试一次，并在当前 bridge token 的 registry entry 上禁用后续注入；不写入 provider 全局配置。
+- 默认不发送 `store:true`、`previous_response_id`、`conversation`、`prompt_cache_retention`。这些属于 provider capability / 数据保留语义，不是缓存命中率修复的默认路径。
+- 错误日志和 SDK/UI 透出的 upstream error body 必须先脱敏：不得输出 `myagents:responses:<hash>` / `myagents:chat_completions:<hash>`、apiKey、raw session id 或被上游回显的 request body / prompt。
+
 ### Runtime-backed Provider（Managed Codex）
 
 `codex-sub` 是 Provider 列表中的订阅型入口，但它不 materialize 为 Claude Agent SDK 的 `ProviderEnv`。它的 `Provider.execution.kind === 'runtime-backed'`，选择后会生成 `RuntimeBackedProviderIdentity { providerId:'codex-sub', runtime:'codex', runtimeSource:'managed-provider', model }`，由 Sidecar 以 Codex Runtime 执行。

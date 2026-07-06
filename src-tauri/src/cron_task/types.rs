@@ -122,6 +122,19 @@ pub struct CronDelivery {
     pub platform: String,
 }
 
+/// Optional catch-up window for interval schedules.
+///
+/// When an anchored recurring task misses its planned fire time, the scheduler
+/// uses this window to run in the next permitted wall-clock window instead of
+/// either firing immediately outside the window or skipping a full interval.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecurringWindow {
+    pub timezone: String,
+    pub start: String,
+    pub end: String,
+}
+
 /// Flexible schedule types for cron tasks (v0.1.21)
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
@@ -133,6 +146,8 @@ pub enum CronSchedule {
         minutes: u32,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         start_at: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        catch_up_window: Option<RecurringWindow>,
     },
     /// Cron expression with optional timezone
     Cron { expr: String, tz: Option<String> },
@@ -218,6 +233,9 @@ pub struct CronTask {
     /// explicitly no MCP; `Some([...])` = enable only these server ids.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_enabled_servers: Option<Vec<String>>,
+    /// Internal system-managed task marker mirrored from Task Center.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_kind: Option<String>,
     /// Last error message (if any)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<String>,
@@ -309,6 +327,9 @@ pub struct CronTaskConfig {
     /// override; `None` = follow workspace MCP, `Some([])` = explicitly no MCP.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_enabled_servers: Option<Vec<String>>,
+    /// Internal system-managed task marker mirrored from Task Center.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_kind: Option<String>,
     // ===== IM Bot cron fields (v0.1.21) =====
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_bot_id: Option<String>,

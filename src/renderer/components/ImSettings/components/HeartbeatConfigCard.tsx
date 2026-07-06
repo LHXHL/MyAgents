@@ -3,7 +3,7 @@ import type { ChangeEvent, KeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown } from 'lucide-react';
 import type { HeartbeatConfig, ActiveHoursConfig } from '../../../../shared/types/im';
-import { DEFAULT_HEARTBEAT_CONFIG } from '../../../../shared/types/im';
+import { DEFAULT_HEARTBEAT_ACTIVE_HOURS, DEFAULT_HEARTBEAT_CONFIG } from '../../../../shared/types/im';
 import { retainFocusOnMouseDown } from '@/utils/focusRetention';
 import {
     HEARTBEAT_INTERVAL_MAX,
@@ -55,6 +55,7 @@ export default function HeartbeatConfigCard({
     );
 
     const [tzOpen, setTzOpen] = useState(false);
+    const [moreSettingsOpen, setMoreSettingsOpen] = useState(false);
 
     const update = useCallback(
         (patch: Partial<HeartbeatConfig>) => {
@@ -69,7 +70,7 @@ export default function HeartbeatConfigCard({
             onChange({
                 ...DEFAULT_HEARTBEAT_CONFIG,
                 enabled: true,
-                activeHours: { start: '08:00', end: '22:00', timezone: 'Asia/Shanghai' },
+                activeHours: { ...DEFAULT_HEARTBEAT_ACTIVE_HOURS },
             });
         } else {
             update({ enabled: !config.enabled });
@@ -81,11 +82,7 @@ export default function HeartbeatConfigCard({
             update({ activeHours: undefined });
         } else {
             update({
-                activeHours: {
-                    start: '08:00',
-                    end: '22:00',
-                    timezone: 'Asia/Shanghai',
-                },
+                activeHours: { ...DEFAULT_HEARTBEAT_ACTIVE_HOURS },
             });
         }
     }, [config.activeHours, update]);
@@ -240,140 +237,154 @@ export default function HeartbeatConfigCard({
             </div>
 
             {config.enabled && (
-                <div className="space-y-4">
-                    {/* Interval */}
-                    <div>
-                        <p className="mb-2 text-sm font-medium text-[var(--ink)]">{t('agentSettings.heartbeat.interval')}</p>
-                        <div className="flex flex-wrap gap-2">
-                            {INTERVAL_PRESETS.map(preset => (
-                                <button
-                                    key={preset.value}
-                                    type="button"
-                                    // Retain focus on the custom <input> when a
-                                    // preset is left-clicked: preventing the
-                                    // mousedown's default focus transfer means
-                                    // the input never blurs mid-click, so its
-                                    // blur-commit can't race the preset write
-                                    // (no draft is committed then immediately
-                                    // overwritten). retainFocusOnMouseDown is
-                                    // left-button only, so the typed draft is
-                                    // never silently lost: a left-button
-                                    // drag-off keeps focus (draft survives,
-                                    // commits on the eventual blur); a
-                                    // right-click is not prevented, so the input
-                                    // blurs and commits the draft normally. See
-                                    // issue #310.
-                                    onMouseDown={retainFocusOnMouseDown}
-                                    onClick={() => selectPreset(preset.value)}
-                                    className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
-                                        config.intervalMinutes === preset.value
-                                            ? 'bg-[var(--accent)] text-white'
-                                            : 'bg-[var(--paper-inset)] text-[var(--ink-secondary)] hover:bg-[var(--ink-faint)]'
-                                    }`}
-                                >
-                                    {formatPreset(preset.value)}
-                                </button>
-                            ))}
-                            {/* Custom interval input */}
-                            <div className="flex items-center gap-1">
-                                <input
-                                    type="number"
-                                    min={HEARTBEAT_INTERVAL_MIN}
-                                    max={HEARTBEAT_INTERVAL_MAX}
-                                    value={customInputValue}
-                                    placeholder={t('agentSettings.heartbeat.custom')}
-                                    onFocus={handleCustomFocus}
-                                    onChange={handleCustomChange}
-                                    onBlur={handleCustomBlur}
-                                    onKeyDown={handleCustomKeyDown}
-                                    className={`w-20 rounded-lg border px-2 py-1.5 text-xs ${
-                                        isCustomInterval
-                                            ? 'border-[var(--accent)] bg-[var(--accent)]/10'
-                                            : 'border-[var(--line)] bg-[var(--paper)]'
-                                    } text-[var(--ink)] placeholder:text-[var(--ink-faint)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]`}
-                                />
-                                <span className="text-xs text-[var(--ink-muted)]">{t('agentSettings.heartbeat.minutes')}</span>
-                            </div>
-                        </div>
-                    </div>
+                <div>
+                    <button
+                        type="button"
+                        aria-expanded={moreSettingsOpen}
+                        onClick={() => setMoreSettingsOpen(open => !open)}
+                        className="flex items-center gap-2 text-sm font-medium text-[var(--ink)] transition-colors hover:text-[var(--accent)]"
+                    >
+                        <ChevronDown className={`h-4 w-4 transition-transform ${moreSettingsOpen ? '' : '-rotate-90'}`} />
+                        {t('agentSettings.common.moreSettings')}
+                    </button>
 
-                    {/* Active hours */}
-                    <div>
-                        <div className="mb-2 flex items-center justify-between">
+                    {moreSettingsOpen && (
+                        <div className="mt-4 space-y-4">
+                            {/* Interval */}
                             <div>
-                                <p className="text-sm font-medium text-[var(--ink)]">{t('agentSettings.heartbeat.activeHours')}</p>
-                                <p className="text-xs text-[var(--ink-muted)]">
-                                    {t('agentSettings.heartbeat.activeHoursDescription')}
-                                </p>
-                            </div>
-                            <button
-                                type="button"
-                                onClick={toggleActiveHours}
-                                className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
-                                    config.activeHours ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
-                                }`}
-                            >
-                                <span
-                                    className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${
-                                        config.activeHours ? 'translate-x-5' : 'translate-x-0'
-                                    }`}
-                                />
-                            </button>
-                        </div>
-
-                        {config.activeHours && (
-                            <div className="mt-2 flex flex-wrap items-center gap-2">
-                                <input
-                                    type="time"
-                                    value={config.activeHours.start}
-                                    onChange={e => updateActiveHours({ start: e.target.value })}
-                                    className="rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 text-xs text-[var(--ink)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
-                                />
-                                <span className="text-xs text-[var(--ink-muted)]">{t('agentSettings.heartbeat.to')}</span>
-                                <input
-                                    type="time"
-                                    value={config.activeHours.end}
-                                    onChange={e => updateActiveHours({ end: e.target.value })}
-                                    className="rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 text-xs text-[var(--ink)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
-                                />
-                                {/* Custom timezone dropdown */}
-                                <div className="relative">
-                                    <button
-                                        type="button"
-                                        onClick={() => setTzOpen(!tzOpen)}
-                                        className="flex items-center gap-1 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 text-xs text-[var(--ink)] hover:border-[var(--line-strong)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
-                                    >
-                                        <span>{selectedTz?.label || config.activeHours.timezone}</span>
-                                        <ChevronDown className="h-3 w-3 text-[var(--ink-subtle)]" />
-                                    </button>
-                                    {tzOpen && (
-                                        <>
-                                            <div className="fixed inset-0 z-40" onMouseDown={(e) => { if (e.target === e.currentTarget) setTzOpen(false); }} />
-                                            <div className="absolute left-0 top-8 z-50 w-56 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-1 shadow-lg">
-                                                {COMMON_TIMEZONES.map(tz => (
-                                                    <button
-                                                        key={tz.value}
-                                                        type="button"
-                                                        onClick={() => {
-                                                            updateActiveHours({ timezone: tz.value });
-                                                            setTzOpen(false);
-                                                        }}
-                                                        className={`flex w-full items-center rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
-                                                            config.activeHours?.timezone === tz.value
-                                                                ? 'bg-[var(--accent-warm-muted)] text-[var(--accent)]'
-                                                                : 'text-[var(--ink)] hover:bg-[var(--hover-bg)]'
-                                                        }`}
-                                                    >
-                                                        {tz.label}
-                                                    </button>
-                                                ))}
-                                            </div>
-                                        </>
-                                    )}
+                                <p className="mb-2 text-sm font-medium text-[var(--ink)]">{t('agentSettings.heartbeat.interval')}</p>
+                                <div className="flex flex-wrap gap-2">
+                                    {INTERVAL_PRESETS.map(preset => (
+                                        <button
+                                            key={preset.value}
+                                            type="button"
+                                            // Retain focus on the custom <input> when a
+                                            // preset is left-clicked: preventing the
+                                            // mousedown's default focus transfer means
+                                            // the input never blurs mid-click, so its
+                                            // blur-commit can't race the preset write
+                                            // (no draft is committed then immediately
+                                            // overwritten). retainFocusOnMouseDown is
+                                            // left-button only, so the typed draft is
+                                            // never silently lost: a left-button
+                                            // drag-off keeps focus (draft survives,
+                                            // commits on the eventual blur); a
+                                            // right-click is not prevented, so the input
+                                            // blurs and commits the draft normally. See
+                                            // issue #310.
+                                            onMouseDown={retainFocusOnMouseDown}
+                                            onClick={() => selectPreset(preset.value)}
+                                            className={`rounded-lg px-3 py-1.5 text-xs font-medium transition-colors ${
+                                                config.intervalMinutes === preset.value
+                                                    ? 'bg-[var(--accent)] text-white'
+                                                    : 'bg-[var(--paper-inset)] text-[var(--ink-secondary)] hover:bg-[var(--ink-faint)]'
+                                            }`}
+                                        >
+                                            {formatPreset(preset.value)}
+                                        </button>
+                                    ))}
+                                    {/* Custom interval input */}
+                                    <div className="flex items-center gap-1">
+                                        <input
+                                            type="number"
+                                            min={HEARTBEAT_INTERVAL_MIN}
+                                            max={HEARTBEAT_INTERVAL_MAX}
+                                            value={customInputValue}
+                                            placeholder={t('agentSettings.heartbeat.custom')}
+                                            onFocus={handleCustomFocus}
+                                            onChange={handleCustomChange}
+                                            onBlur={handleCustomBlur}
+                                            onKeyDown={handleCustomKeyDown}
+                                            className={`w-20 rounded-lg border px-2 py-1.5 text-xs ${
+                                                isCustomInterval
+                                                    ? 'border-[var(--accent)] bg-[var(--accent)]/10'
+                                                    : 'border-[var(--line)] bg-[var(--paper)]'
+                                            } text-[var(--ink)] placeholder:text-[var(--ink-faint)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]`}
+                                        />
+                                        <span className="text-xs text-[var(--ink-muted)]">{t('agentSettings.heartbeat.minutes')}</span>
+                                    </div>
                                 </div>
                             </div>
-                        )}
-                    </div>
+
+                            {/* Active hours */}
+                            <div>
+                                <div className="mb-2 flex items-center justify-between">
+                                    <div>
+                                        <p className="text-sm font-medium text-[var(--ink)]">{t('agentSettings.heartbeat.activeHours')}</p>
+                                        <p className="text-xs text-[var(--ink-muted)]">
+                                            {t('agentSettings.heartbeat.activeHoursDescription')}
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={toggleActiveHours}
+                                        className={`relative h-6 w-11 shrink-0 cursor-pointer rounded-full transition-colors ${
+                                            config.activeHours ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
+                                        }`}
+                                    >
+                                        <span
+                                            className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${
+                                                config.activeHours ? 'translate-x-5' : 'translate-x-0'
+                                            }`}
+                                        />
+                                    </button>
+                                </div>
+
+                                {config.activeHours && (
+                                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                                        <input
+                                            type="time"
+                                            value={config.activeHours.start}
+                                            onChange={e => updateActiveHours({ start: e.target.value })}
+                                            className="rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 text-xs text-[var(--ink)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
+                                        />
+                                        <span className="text-xs text-[var(--ink-muted)]">{t('agentSettings.heartbeat.to')}</span>
+                                        <input
+                                            type="time"
+                                            value={config.activeHours.end}
+                                            onChange={e => updateActiveHours({ end: e.target.value })}
+                                            className="rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 text-xs text-[var(--ink)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
+                                        />
+                                        {/* Custom timezone dropdown */}
+                                        <div className="relative">
+                                            <button
+                                                type="button"
+                                                onClick={() => setTzOpen(!tzOpen)}
+                                                className="flex items-center gap-1 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-2 py-1.5 text-xs text-[var(--ink)] hover:border-[var(--line-strong)] focus:border-[var(--accent)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)]"
+                                            >
+                                                <span>{selectedTz?.label || config.activeHours.timezone}</span>
+                                                <ChevronDown className="h-3 w-3 text-[var(--ink-subtle)]" />
+                                            </button>
+                                            {tzOpen && (
+                                                <>
+                                                    <div className="fixed inset-0 z-40" onMouseDown={(e) => { if (e.target === e.currentTarget) setTzOpen(false); }} />
+                                                    <div className="absolute left-0 top-8 z-50 w-56 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-1 shadow-lg">
+                                                        {COMMON_TIMEZONES.map(tz => (
+                                                            <button
+                                                                key={tz.value}
+                                                                type="button"
+                                                                onClick={() => {
+                                                                    updateActiveHours({ timezone: tz.value });
+                                                                    setTzOpen(false);
+                                                                }}
+                                                                className={`flex w-full items-center rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors ${
+                                                                    config.activeHours?.timezone === tz.value
+                                                                        ? 'bg-[var(--accent-warm-muted)] text-[var(--accent)]'
+                                                                        : 'text-[var(--ink)] hover:bg-[var(--hover-bg)]'
+                                                                }`}
+                                                            >
+                                                                {tz.label}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                </>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
         </div>

@@ -404,7 +404,8 @@
       "readFileFailed": "读取文件失败",
       "operationFailed": "操作失败",
       "emptyContent": "（无内容）",
-      "noDescription": "暂无描述"
+      "noDescription": "暂无描述",
+      "moreSettings": "更多设置"
     },
     "capabilities": {
       "scopeUser": "全局",
@@ -751,6 +752,11 @@
       "daysAgo": "{{count}} 天前",
       "sessionsUpdated_one": "{{count}} 个 session 已更新",
       "sessionsUpdated_other": "{{count}} 个 session 已更新"
+    },
+    "memoryEvolution": {
+      "title": "长期记忆进化 Evo",
+      "description": "基于记忆自动学习、修剪与浓缩更新；会按周期派生后台 session 执行维护。",
+      "taskError": "长期记忆进化任务配置失败"
     },
     "heartbeat": {
       "title": "心跳感知 Heartbeat",

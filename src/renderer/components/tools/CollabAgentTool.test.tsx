@@ -28,6 +28,22 @@ function collabTool(overrides: Partial<ToolUseSimple>): ToolUseSimple {
   };
 }
 
+function taskTool(overrides: Partial<ToolUseSimple>): ToolUseSimple {
+  return {
+    id: 'task-card-1',
+    name: 'Task',
+    input: {},
+    parsedInput: {
+      description: 'Audit background tasks',
+      prompt: 'Audit the background task lifecycle',
+      subagent_type: 'Explore',
+    } as unknown as ToolUseSimple['parsedInput'],
+    streamIndex: 0,
+    isLoading: false,
+    ...overrides,
+  };
+}
+
 describe('isSubagentContainerTool', () => {
   it('treats builtin Task/Agent and Codex CollabAgent as sub-agent containers', () => {
     expect(isSubagentContainerTool('Task')).toBe(true);
@@ -97,6 +113,12 @@ describe('CollabAgent labels', () => {
 });
 
 describe('TaskTool renders a CollabAgent card with a nested trace', () => {
+  it('renders omitted run_in_background Task input as a background task', () => {
+    render(<TaskTool tool={taskTool({ result: undefined })} />);
+
+    expect(screen.getByText('后台运行中')).toBeInTheDocument();
+  });
+
   it('exposes a reachable trace toggle that reveals the sub-agent tool calls', () => {
     const { container } = render(<TaskTool tool={collabTool({
       result: 'Tool: spawnAgent\nPrompt: henan worker', // non-JSON collab summary

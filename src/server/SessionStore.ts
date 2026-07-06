@@ -20,6 +20,7 @@ import { join } from 'path';
 
 import type { SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
 import { createSessionMetadata, generateSessionTitle } from './types/session';
+import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { stripBom } from '../shared/utils';
 import { workspacePathsEqual } from '../shared/workspacePath';
 import { ensureDirSync } from './utils/fs-utils';
@@ -428,6 +429,96 @@ function readMessagesFromJsonl(filePath: string): SessionMessage[] {
         console.error('[SessionStore] Failed to read JSONL file:', error);
         return [];
     }
+}
+
+function readMessagesFromLegacyJson(filePath: string): SessionMessage[] {
+    if (!existsSync(filePath)) {
+        return [];
+    }
+
+    const content = readFileSync(filePath, 'utf-8');
+    const data = JSON.parse(content) as { messages?: unknown };
+    return Array.isArray(data.messages)
+        ? data.messages.filter((msg): msg is SessionMessage => Boolean(msg && typeof msg === 'object' && typeof (msg as { role?: unknown }).role === 'string'))
+        : [];
+}
+
+export function sessionHasUserMessages(sessionId: string): boolean {
+    const jsonlPath = getSessionFilePath(sessionId);
+    if (existsSync(jsonlPath)) {
+        const content = readFileSync(jsonlPath, 'utf-8');
+        const lines = content.split('\n').filter(line => line.trim());
+        for (const line of lines) {
+            const msg = JSON.parse(line) as { role?: unknown };
+            if (msg.role === 'user') {
+                return true;
+            }
+        }
+    }
+
+    const legacyPath = getLegacySessionFilePath(sessionId);
+    return readMessagesFromLegacyJson(legacyPath).some(msg => msg.role === 'user');
+}
+
+function hasPositiveNumber(value: unknown): boolean {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0;
+}
+
+function statsShowActivity(stats: SessionMetadata['stats'] | undefined): boolean {
+    return hasPositiveNumber(stats?.messageCount)
+        || hasPositiveNumber(stats?.totalInputTokens)
+        || hasPositiveNumber(stats?.totalOutputTokens)
+        || hasPositiveNumber(stats?.totalCacheReadTokens)
+        || hasPositiveNumber(stats?.totalCacheCreationTokens);
+}
+
+function isManagedCodexRuntimeBackedBirth(session: SessionMetadata): boolean {
+    const identity = session.providerExecutionIdentity;
+    return Boolean(
+        identity?.kind === 'runtime-backed-provider'
+        && identity.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
+        && identity.runtime === 'codex'
+        && identity.runtimeSource === 'managed-provider'
+    ) || (
+        session.runtime === 'codex'
+        && session.runtimeSource === 'managed-provider'
+        && session.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
+    );
+}
+
+function isDesktopOrUnknownOrigin(session: SessionMetadata): boolean {
+    const kind = session.origin?.kind;
+    if (kind && kind !== 'desktop' && kind !== 'unknown') {
+        return false;
+    }
+    if (session.source && session.source !== 'desktop') {
+        return false;
+    }
+    return true;
+}
+
+export function isLegacyPreQueryManagedCodexDraft(session: SessionMetadata): boolean {
+    if (session.materializationState === 'prepared') return false;
+    if (!isManagedCodexRuntimeBackedBirth(session)) return false;
+    if (!isDesktopOrUnknownOrigin(session)) return false;
+    if (session.favorite === true) return false;
+    if (session.cronTaskId) return false;
+    if (session.title !== 'New Chat') return false;
+    if (session.titleSource === 'user') return false;
+    if (session.lastMessagePreview) return false;
+    if (session.lastContextUsage) return false;
+    if (session.runtimeUsageTotals) return false;
+    if (statsShowActivity(session.stats)) return false;
+    try {
+        return !sessionHasUserMessages(session.id);
+    } catch {
+        return false;
+    }
+}
+
+export function isHistoryVisibleSession(session: SessionMetadata): boolean {
+    return session.materializationState !== 'prepared'
+        && !isLegacyPreQueryManagedCodexDraft(session);
 }
 
 /**
@@ -969,6 +1060,58 @@ export async function updateSessionMetadata(
             console.error('[SessionStore] updateSessionMetadata write failed:', error);
         }
     });
+    return result;
+}
+
+export async function commitPreparedSessionForFirstUserTurn(
+    sessionId: string,
+    params: {
+        messageText?: string;
+        title?: string;
+        runtimeSessionId?: string;
+        origin?: SessionMetadata['origin'];
+    },
+): Promise<SessionMetadata | null> {
+    ensureStorageDir();
+    const title = params.title ?? generateSessionTitle(params.messageText ?? '');
+    let result: SessionMetadata | null = null;
+
+    await withSessionsLock(async () => {
+        const all = readSessionsIndexForWrite();
+        const idx = all.findIndex(s => s.id === sessionId);
+        if (idx < 0) return;
+
+        const current = all[idx];
+        const patch: Partial<SessionMetadata> = {};
+        const canSetDefaultTitle = current.title === 'New Chat' && current.titleSource !== 'user';
+
+        if (canSetDefaultTitle && title && title !== current.title) {
+            patch.title = title;
+            patch.titleSource = 'default';
+        }
+        if (!current.origin && params.origin) {
+            patch.origin = params.origin;
+        }
+        if (params.runtimeSessionId && current.runtimeSessionId !== params.runtimeSessionId) {
+            patch.runtimeSessionId = params.runtimeSessionId;
+        }
+        if (current.materializationState === 'prepared') {
+            patch.materializationState = undefined;
+            patch.materializationSourceSessionId = undefined;
+            patch.lastActiveAt = new Date().toISOString();
+        }
+
+        if (Object.keys(patch).length === 0) {
+            result = current;
+            return;
+        }
+
+        const updated: SessionMetadata = { ...current, ...patch };
+        all[idx] = updated;
+        atomicWriteSessionsFile(JSON.stringify(all, null, 2));
+        result = updated;
+    });
+
     return result;
 }
 

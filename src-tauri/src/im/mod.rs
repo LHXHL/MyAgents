@@ -60,9 +60,11 @@ use commands::{persist_bot_config_patch, read_available_providers_from_disk};
 pub(crate) use config_store::is_agent_workspace_archived;
 use config_store::{
     missing_configured_channel_status, persist_agent_config_patch, read_agent_configs_from_disk,
-    read_im_configs_from_disk, resolve_target_channel, should_report_missing_configured_channel,
+    read_im_configs_from_disk, route_agent_heartbeat_once,
+    should_report_missing_configured_channel,
 };
 pub use config_store::{monitor_agent_channels, schedule_agent_auto_start, schedule_auto_start};
+pub(crate) use config_store::{resolve_agent_heartbeat_route, AgentHeartbeatRouteResolution};
 use dingtalk::DingtalkAdapter;
 use enqueue::{drop_im_consumer, enqueue_to_sidecar, ensure_im_consumer};
 use feishu::FeishuAdapter;
@@ -72,6 +74,7 @@ use router::{create_sidecar_stream_client, RouteError, SessionRouter, GLOBAL_CON
 pub use state::{
     create_agent_state, create_im_bot_state, signal_all_agents_shutdown, signal_all_bots_shutdown,
     AgentInstance, ApprovalCallback, ChannelInstance, ImBotInstance, ManagedAgents, ManagedImBots,
+    QuestionCallback,
 };
 use state::{
     ensure_sidecar_port_for_command, fallback_runtime_models, is_external_runtime_type,
@@ -81,14 +84,15 @@ use state::{
 };
 pub(crate) use state::{
     AgentChannelLink, AnyAdapter, ImConsumerHandle, ImConsumers, PeerLocks, PendingApproval,
-    PendingApprovals, SharedAgentLink,
+    PendingApprovals, PendingQuestion, PendingQuestions, SharedAgentLink,
 };
 use telegram::TelegramAdapter;
 use types::{
-    AgentConfigPatch, AgentConfigRust, AgentStatus, BotConfigPatch, ChannelConfigRust,
-    ChannelStatus, GroupActivation, GroupEvent, GroupPermission, GroupPermissionStatus,
-    ImAttachmentType, ImBotStatus, ImConfig, ImConversation, ImMessage, ImPlatform, ImSourceType,
-    ImStatus, LastActiveChannel,
+    AgentConfigPatch, AgentConfigRust, AgentStatus, AskUserQuestionItem, AskUserQuestionPayload,
+    BotConfigPatch, ChannelConfigRust, ChannelStatus, GroupActivation, GroupEvent, GroupPermission,
+    GroupPermissionStatus, HostInteractionCapability, ImAttachmentType, ImBotStatus, ImConfig,
+    ImConversation, ImMessage, ImPlatform, ImSourceType, ImStatus, LastActiveChannel,
+    LastActivePrivateTarget,
 };
 
 // ===== SSE Stream → IM Draft (legacy /api/im/chat path — deleted in C-7) ====

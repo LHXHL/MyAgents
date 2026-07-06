@@ -1,6 +1,7 @@
 export const SYSTEM_REMINDER_OPEN = '<system-reminder>';
 export const SYSTEM_REMINDER_CLOSE = '</system-reminder>';
 export const FLOATING_BALL_CONTEXT_TAG = 'FLOATING_BALL_CONTEXT';
+export const SPACE_ISSUE_CONTEXT_TAG = 'myagents-space-issue';
 
 export interface ParsedLeadingSystemReminder {
   hasReminder: boolean;
@@ -85,7 +86,12 @@ export function parseLeadingSystemReminder(raw: string | null | undefined): Pars
 export function stripLeadingSystemReminder(raw: string | null | undefined): string {
   const parsed = parseLeadingSystemReminder(raw);
   if (!parsed.hasReminder) return raw ?? '';
-  if (!parsed.visibleText && parsed.kind === FLOATING_BALL_CONTEXT_TAG) return '';
+  if (
+    !parsed.visibleText
+    && (parsed.kind === FLOATING_BALL_CONTEXT_TAG || parsed.kind === SPACE_ISSUE_CONTEXT_TAG)
+  ) {
+    return '';
+  }
   return parsed.visibleText || parsed.body;
 }
 

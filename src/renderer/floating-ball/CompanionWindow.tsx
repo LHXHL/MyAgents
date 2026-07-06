@@ -32,7 +32,7 @@ import { ALLOWED_IMAGE_MIME_TYPES, USER_IMAGE_ATTACHMENT_MAX_BYTES, isChatImageF
 import { resolveAttachmentUrl } from '@/utils/attachmentUrl';
 import { renameIfBareClipboardImage } from '@/utils/clipboardImage';
 import { formatDuration, getToolBadgeConfig, getToolLabel, getToolMainLabel, getToolSummaryNode, isSubagentContainerTool } from '@/components/tools/toolBadgeConfig';
-import { isSubagentContainerRunning } from '@/components/tools/subagentActivity';
+import { isBackgroundSubagentTool, isSubagentContainerRunning } from '@/components/tools/subagentActivity';
 import { groupContentBlocksForDisplay } from '@/utils/contentBlockDisplay';
 import type { ContentBlock } from '@/types/chat';
 import { isNearBottom } from './convoAutoFollow';
@@ -166,7 +166,7 @@ function ActivityRow({ block, isStreaming, tick }: { block: ContentBlock; isStre
             <span className="dot" />
             <span className="icon">{icon}</span>
             <span className="label">{mainLabel}</span>
-            {isTaskTool && (tool?.parsedInput as unknown as Record<string, unknown> | undefined)?.run_in_background === true && (
+            {isTaskTool && isBackgroundSubagentTool(tool) && (
                 <span className="badge">{t('floatingBall.activity.background')}</span>
             )}
             {taskDuration && <span className="detail">{taskDuration}</span>}

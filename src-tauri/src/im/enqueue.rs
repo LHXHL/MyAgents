@@ -38,6 +38,7 @@ pub(super) async fn ensure_im_consumer<A>(
     initial_replay_request_id: String,
     adapter: Arc<A>,
     pending_approvals: PendingApprovals,
+    pending_questions: PendingQuestions,
     stream_client: Client,
     on_terminal: Arc<dyn Fn(String, reply_router::TerminalOutcome) + Send + Sync>,
 ) -> Option<reply_router::SharedReplyRouter>
@@ -99,7 +100,7 @@ where
     }
 
     let cancel: event_consumer::CancelFlag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let reply_router = reply_router::shared_router(pending_approvals);
+    let reply_router = reply_router::shared_router(pending_approvals, pending_questions);
     let join = event_consumer::spawn_consumer(
         stream_client,
         sidecar_port,
@@ -185,6 +186,7 @@ pub(super) async fn enqueue_to_sidecar(
         "requestId": msg.request_id,
         "metadataBirthPending": metadata_birth_pending,
         "configHeldByTab": config_held_by_tab,
+        "hostInteraction": HostInteractionCapability::for_platform(&msg.platform),
     });
     if !is_external_runtime_type(runtime) {
         if let Some(env) = provider_env {
@@ -275,4 +277,28 @@ pub(super) async fn enqueue_to_sidecar(
         .await
         .map_err(|e| RouteError::Unavailable(format!("enqueue parse: {}", e)))?;
     Ok(resp_body["sessionId"].as_str().map(String::from))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ask_cap(platform: ImPlatform) -> String {
+        HostInteractionCapability::for_platform(&platform).ask_user_question
+    }
+
+    #[test]
+    fn host_interaction_marks_native_and_openclaw_feishu_as_native_card() {
+        assert_eq!(ask_cap(ImPlatform::Feishu), "native-card");
+        assert_eq!(
+            ask_cap(ImPlatform::OpenClaw("feishu".to_string())),
+            "native-card"
+        );
+        assert_eq!(
+            ask_cap(ImPlatform::OpenClaw("lark".to_string())),
+            "native-card"
+        );
+        assert_eq!(ask_cap(ImPlatform::OpenClaw("qqbot".to_string())), "none");
+        assert_eq!(ask_cap(ImPlatform::Telegram), "none");
+    }
 }

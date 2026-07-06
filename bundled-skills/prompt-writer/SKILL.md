@@ -2,7 +2,7 @@
 name: prompt-writer
 description: Methodology for writing or improving prompts and system prompts that drive any LLM. Use when authoring or revising a prompt for a model task — grouping, classification, extraction, generation, copywriting, labeling, agent instructions, prompt templates, skill instructions — to decide how much to constrain the model based on the task type (open-ended vs single-correct-answer) and write the most fitting instructions. Triggers: "write a prompt", "help me write or improve a prompt", "how should I change this prompt", "this prompt isn't working", "write instructions for the model", "prompt-writer". Not for: answering the user's question directly, or writing articles and documents meant for human readers (those are not prompts that drive a model).
 author: MyAgents
-version: 20260610
+version: 20260707
 ---
 
 # Prompt Writer
@@ -21,6 +21,8 @@ Get this wrong and everything downstream is wrong. Write an open-field task with
 | Examples | Grouping, generation, copywriting, subjective rating | Schemas, data formats, migrations, API calls |
 | How | Goal + role + canonical examples | Exact steps + strict template |
 | Trade-off | Trust the model's judgment, fewer rules | Constrain with rules, leave no room to improvise |
+
+Most real prompts mix both modes. An agent prompt leaves the approach open but locks the tool-call format; a generation task gives free rein on content but demands strict JSON out. Zone the prompt instead of picking one mode for the whole thing: narrow-bridge treatment for formats, schemas, and tool calls; open-field treatment for content and judgment. And calibrate to the model that will run the prompt — the weaker the model, the more everything shifts toward the narrow bridge.
 
 ## Find the right altitude
 
@@ -48,6 +50,10 @@ Give exact steps and a strict template — "always use this exact structure" —
 ## Review before you ship
 
 Switch to an auditing frame and go line by line. Is it an open field or a narrow bridge, and does the specificity match? Is this the smallest set of high-signal tokens, or did I write things the model already knows? Can any rule be replaced by an example? Then approach it scientifically and test on diverse inputs, including one that flatters the prompt and one that exposes it — testing a single good case is not testing.
+
+## When a prompt isn't working
+
+Get failing examples in hand before touching anything — a fix without a failure to test against is a guess. Then read the failure against the freedom axis, because most bad outputs are one of three misfits. Output collapsed to the generic average: an open-field task strangled by narrow-bridge rules — delete rules and show a strong example instead. Model improvising where it must not: an open-field prompt on a narrow-bridge task — tighten the template and build in verification. Right direction but mediocre: the model lacks context you have, or a single example is over-anchoring it — add the missing why, or diversify the examples. Re-test on the inputs that failed, plus one that used to work.
 
 ## Worked example: rules vs examples on the same task
 

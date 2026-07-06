@@ -7,6 +7,92 @@ fn filter_legacy_provider_command_providers(
     providers
 }
 
+fn question_answer_key(question: &AskUserQuestionItem, idx: usize) -> String {
+    question.id.clone().unwrap_or_else(|| idx.to_string())
+}
+
+fn normalize_question_answer(
+    question: &AskUserQuestionItem,
+    raw: &str,
+) -> Result<Option<String>, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return if question.required {
+            Err("必填问题不能为空".to_string())
+        } else {
+            Ok(None)
+        };
+    }
+    if question.options.is_empty() {
+        return Ok(Some(raw.to_string()));
+    }
+
+    let parse_one = |part: &str| -> Option<String> {
+        let p = part.trim();
+        if p.is_empty() {
+            return None;
+        }
+        if let Ok(index) = p.parse::<usize>() {
+            if index > 0 && index <= question.options.len() {
+                return Some(question.options[index - 1].label.clone());
+            }
+        }
+        question
+            .options
+            .iter()
+            .find(|opt| opt.label == p)
+            .map(|opt| opt.label.clone())
+    };
+
+    if question.multi_select {
+        let mut labels = Vec::new();
+        for part in trimmed.split([',', '，']) {
+            match parse_one(part) {
+                Some(label) => labels.push(label),
+                None => return Err("多选答案请使用选项编号或完整选项名，并用逗号分隔".to_string()),
+            }
+        }
+        if labels.is_empty() && question.required {
+            return Err("必填问题不能为空".to_string());
+        }
+        return Ok(Some(labels.join(",")));
+    }
+
+    parse_one(trimmed)
+        .map(Some)
+        .ok_or_else(|| "答案请使用选项编号或完整选项名".to_string())
+}
+
+fn parse_question_text_answers(
+    questions: &[AskUserQuestionItem],
+    _source_type: &ImSourceType,
+    text: &str,
+) -> Result<Option<HashMap<String, String>>, String> {
+    if text.trim().eq_ignore_ascii_case("cancel") || matches!(text.trim(), "取消" | "退出") {
+        return Ok(None);
+    }
+    if questions.iter().any(|q| q.is_secret) {
+        return Ok(None);
+    }
+
+    let mut answers = HashMap::new();
+    if questions.len() == 1 {
+        if let Some(answer) = normalize_question_answer(&questions[0], text)? {
+            answers.insert(question_answer_key(&questions[0], 0), answer);
+        }
+        return Ok(Some(answers));
+    }
+
+    let lines = text.lines().collect::<Vec<_>>();
+    for (idx, question) in questions.iter().enumerate() {
+        let raw = lines.get(idx).copied().unwrap_or("");
+        if let Some(answer) = normalize_question_answer(question, raw)? {
+            answers.insert(question_answer_key(question, idx), answer);
+        }
+    }
+    Ok(Some(answers))
+}
+
 /// Shutdown a single bot instance (extracted from stop_im_bot for reuse by agent commands).
 /// Does NOT lock any global state — caller is responsible for removing the instance first.
 pub(super) async fn shutdown_bot_instance(
@@ -32,6 +118,7 @@ pub(super) async fn shutdown_bot_instance(
 
     // Wait for auxiliary tasks
     let _ = tokio::time::timeout(std::time::Duration::from_secs(2), instance.approval_handle).await;
+    let _ = tokio::time::timeout(std::time::Duration::from_secs(2), instance.question_handle).await;
     if let Some(hb) = instance.heartbeat_handle {
         // abort() the heartbeat task to ensure prompt shutdown.
         // Heartbeat may be blocked in create_sidecar_blocking (Phase 2, up to 5 min)
@@ -174,6 +261,8 @@ pub(super) async fn create_bot_instance<R: Runtime>(
     // Create approval channel for permission request callbacks
     let (approval_tx, mut approval_rx) = mpsc::channel::<ApprovalCallback>(32);
     let pending_approvals: PendingApprovals = Arc::new(Mutex::new(HashMap::new()));
+    let (question_tx, mut question_rx) = mpsc::channel::<QuestionCallback>(32);
+    let pending_questions: PendingQuestions = Arc::new(Mutex::new(HashMap::new()));
 
     // Create group event channel for bot added/removed from groups
     let (group_event_tx, mut group_event_rx) = mpsc::channel::<GroupEvent>(32);
@@ -214,6 +303,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                 msg_tx.clone(),
                 Arc::clone(&allowed_users),
                 approval_tx.clone(),
+                question_tx.clone(),
                 dedup_path,
                 group_event_tx.clone(),
             ))))
@@ -476,6 +566,123 @@ pub(super) async fn create_bot_instance<R: Runtime>(
         ulog_info!("[im] Approval handler exited");
     });
 
+    let pending_questions_for_handler = Arc::clone(&pending_questions);
+    let adapter_for_question = Arc::clone(&adapter);
+    let question_client = crate::local_http::json_client(std::time::Duration::from_secs(30));
+    let mut question_shutdown_rx = shutdown_rx.clone();
+    let question_handle = tauri::async_runtime::spawn(async move {
+        loop {
+            let cb = tokio::select! {
+                msg = question_rx.recv() => match msg {
+                    Some(cb) => cb,
+                    None => break,
+                },
+                _ = question_shutdown_rx.changed() => {
+                    if *question_shutdown_rx.borrow() { break; }
+                    continue;
+                }
+            };
+
+            let pending = {
+                let guard = pending_questions_for_handler.lock().await;
+                let Some(p) = guard.get(&cb.request_id) else {
+                    ulog_warn!(
+                        "[im] AskUserQuestion callback for unknown request_id: {}",
+                        &cb.request_id[..cb.request_id.len().min(16)]
+                    );
+                    continue;
+                };
+                if matches!(p.source_type, ImSourceType::Group)
+                    && p.requester_user_id
+                        .as_deref()
+                        .is_some_and(|id| id != cb.user_id)
+                {
+                    ulog_warn!(
+                        "[im] Ignoring AskUserQuestion callback from non-requester rid={}",
+                        &cb.request_id[..cb.request_id.len().min(16)]
+                    );
+                    continue;
+                }
+                p.clone()
+            };
+
+            let p = pending;
+            let url = format!(
+                "http://127.0.0.1:{}/api/ask-user-question/respond",
+                p.sidecar_port
+            );
+            let result = question_client
+                .post(&url)
+                .json(&json!({
+                    "requestId": cb.request_id,
+                    "answers": cb.answers,
+                }))
+                .send()
+                .await;
+            let forwarded = match result {
+                Ok(resp) => {
+                    let status = resp.status();
+                    match resp.json::<serde_json::Value>().await {
+                        Ok(body)
+                            if status.is_success()
+                                && body.get("success").and_then(serde_json::Value::as_bool)
+                                    == Some(true) =>
+                        {
+                            ulog_info!(
+                                "[im] AskUserQuestion response forwarded: rid={}",
+                                &cb.request_id[..cb.request_id.len().min(16)]
+                            );
+                            true
+                        }
+                        Ok(body) => {
+                            ulog_error!(
+                                "[im] AskUserQuestion response forward failed: HTTP {} body={}",
+                                status,
+                                body
+                            );
+                            false
+                        }
+                        Err(e) => {
+                            ulog_error!(
+                                "[im] AskUserQuestion response forward returned invalid JSON: {}",
+                                e
+                            );
+                            false
+                        }
+                    }
+                }
+                Err(e) => {
+                    ulog_error!("[im] AskUserQuestion response forward error: {}", e);
+                    false
+                }
+            };
+            if forwarded {
+                {
+                    let mut guard = pending_questions_for_handler.lock().await;
+                    guard.remove(&cb.request_id);
+                }
+                if !p.card_message_id.is_empty() {
+                    let status_text = if cb.answers.is_some() {
+                        "submitted"
+                    } else {
+                        "cancelled"
+                    };
+                    let _ = adapter_for_question
+                        .update_question_status(&p.chat_id, &p.card_message_id, status_text)
+                        .await;
+                }
+            } else {
+                let _ = crate::im::adapter::ImAdapter::send_message(
+                    adapter_for_question.as_ref(),
+                    &p.chat_id,
+                    "提交失败，请稍后重试，或再次点击卡片/重新回复答案。",
+                )
+                .await;
+            }
+        }
+        ulog_info!("[im] AskUserQuestion handler exited");
+    });
+
     // Per-peer locks: shared between the processing loop and heartbeat runner.
     // Pattern C (IM Pipeline v2): scope was reduced to ms-level — covers only
     // the enqueue phase (drift check + ensure_sidecar + POST /api/im/enqueue).
@@ -531,7 +738,9 @@ pub(super) async fn create_bot_instance<R: Runtime>(
     let runtime_config_for_loop = Arc::clone(&runtime_config);
     let mcp_servers_json_for_loop = Arc::clone(&mcp_servers_json);
     let pending_approvals_for_loop = Arc::clone(&pending_approvals);
+    let pending_questions_for_loop = Arc::clone(&pending_questions);
     let approval_tx_for_loop = approval_tx.clone();
+    let question_tx_for_loop = question_tx.clone();
     let group_permissions_for_loop = Arc::clone(&group_permissions);
     let group_activation_for_loop = Arc::clone(&group_activation);
     let group_tools_deny_for_loop = Arc::clone(&group_tools_deny);
@@ -1633,6 +1842,62 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                         // No pending approval — fall through to regular message handling
                     }
 
+                    // ── Text-based AskUserQuestion answers (fallback for free text / multi question) ──
+                    let pending_question = {
+                        let guard = pending_questions_for_loop.lock().await;
+                        let mut matches = guard
+                            .iter()
+                            .filter(|(_, p)| {
+                                p.chat_id == chat_id
+                                    && !(matches!(p.source_type, ImSourceType::Group)
+                                        && p.requester_user_id
+                                            .as_deref()
+                                            .is_some_and(|id| id != msg.sender_id))
+                            })
+                            .collect::<Vec<_>>();
+                        matches.sort_by_key(|(_, p)| p.created_at);
+                        if matches.len() > 1 {
+                            ulog_warn!(
+                                "[im] Multiple pending AskUserQuestion prompts in chat {}; routing text fallback to newest",
+                                chat_id
+                            );
+                        }
+                        matches.last().map(|(rid, p)| {
+                            (rid.to_string(), p.questions.clone(), p.source_type.clone())
+                        })
+                    };
+                    if let Some((request_id, questions, pending_source_type)) = pending_question {
+                        match parse_question_text_answers(&questions, &pending_source_type, &text) {
+                            Ok(answers) => {
+                                if questions.iter().any(|q| q.is_secret) {
+                                    let _ = adapter_for_reply
+                                        .send_message(
+                                            &chat_id,
+                                            "本次提问包含敏感输入，IM 渠道暂不支持安全收集，已取消。请在桌面端继续。",
+                                        )
+                                        .await;
+                                }
+                                let _ = question_tx_for_loop
+                                    .send(QuestionCallback {
+                                        request_id,
+                                        answers,
+                                        user_id: msg.sender_id.clone(),
+                                    })
+                                    .await;
+                                continue;
+                            }
+                            Err(e) => {
+                                let _ = adapter_for_reply
+                                    .send_message(
+                                        &chat_id,
+                                        &format!("答案格式不正确：{}\n请重新回复，或回复「取消」结束本次提问。", e),
+                                    )
+                                    .await;
+                                continue;
+                            }
+                        }
+                    }
+
                     // ── Access control ──────────
                     // All platforms (including Bridge/OpenClaw) go through the Rust
                     // whitelist. Bridge plugins use dmPolicy=open at the plugin level;
@@ -1783,6 +2048,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                     let task_sem = Arc::clone(&global_semaphore);
                     let task_locks = Arc::clone(&peer_locks_for_loop);
                     let task_pending_approvals = Arc::clone(&pending_approvals_for_loop);
+                    let task_pending_questions = Arc::clone(&pending_questions_for_loop);
                     let task_bot_id = bot_id_for_loop.clone();
                     let task_bot_name = bot_name_for_loop.clone();
                     let task_group_history = Arc::clone(&group_history_for_loop);
@@ -1973,6 +2239,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                             let health = Arc::clone(&task_health);
                             let agent_link = Arc::clone(&task_agent_link);
                             let session_key_cap = session_key.clone();
+                            let source_type_cap = msg.source_type.clone();
                             Arc::new(move |req_id: String, outcome: reply_router::TerminalOutcome| {
                                 let router = Arc::clone(&router);
                                 let manager = Arc::clone(&manager);
@@ -1980,6 +2247,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                                 let health = Arc::clone(&health);
                                 let agent_link = Arc::clone(&agent_link);
                                 let session_key = session_key_cap.clone();
+                                let source_type = source_type_cap.clone();
                                 tauri::async_runtime::spawn(async move {
                                     {
                                         let mut router_g = router.lock().await;
@@ -2010,9 +2278,22 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                                             let new_lac = LastActiveChannel {
                                                 channel_id: link.channel_id.clone(),
                                                 session_key: session_key.clone(),
-                                                last_active_at: now_str,
+                                                last_active_at: now_str.clone(),
                                             };
                                             *link.last_active_channel.write().await = Some(new_lac);
+                                            if source_type == ImSourceType::Private {
+                                                let new_private_target = LastActivePrivateTarget {
+                                                    channel_id: link.channel_id.clone(),
+                                                    session_key: session_key.clone(),
+                                                    last_active_at: now_str.clone(),
+                                                };
+                                                *link.last_active_private_target.write().await =
+                                                    Some(new_private_target);
+                                                ulog_debug!(
+                                                    "[agent] Updated lastActivePrivateTarget: agent={}, channel={}, session={} requestId={}",
+                                                    link.agent_id, link.channel_id, session_key, req_id,
+                                                );
+                                            }
                                             ulog_debug!(
                                                 "[agent] Updated lastActiveChannel: agent={}, channel={}, session={} requestId={}",
                                                 link.agent_id, link.channel_id, session_key, req_id,
@@ -2032,6 +2313,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                             request_id.clone(),
                             Arc::clone(&task_adapter),
                             Arc::clone(&task_pending_approvals),
+                            Arc::clone(&task_pending_questions),
                             task_stream_client.clone(),
                             on_terminal,
                         )
@@ -2090,6 +2372,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                                     buf_chat_id.clone(),
                                     buf_message_id.clone(),
                                     buf_msg.source_type.clone(),
+                                    Some(buf_msg.sender_id.clone()),
                                     None,
                                 );
 
@@ -2212,11 +2495,12 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                             let mut router_guard = reply_router_arc.lock().await;
                             router_guard.register(
                                 request_id.clone(),
-                                chat_id.clone(),
-                                message_id.clone(),
-                                msg.source_type.clone(),
-                                group_ctx.as_ref(),
-                            );
+                            chat_id.clone(),
+                            message_id.clone(),
+                            msg.source_type.clone(),
+                            Some(msg.sender_id.clone()),
+                            group_ctx.as_ref(),
+                        );
                         }
 
                         // 7. POST /api/im/enqueue — sync ACK, ms-level. peer_lock drops at end
@@ -2565,7 +2849,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
         // Build the wake channel BEFORE the runner so we can hand the runner a
         // clone of the sender (used for self-cascade when more cron events
         // remain after a single-event run_once cycle).
-        let (wake_tx, wake_rx) = mpsc::channel::<types::WakeReason>(64);
+        let (wake_tx, wake_rx) = mpsc::channel::<types::HeartbeatWake>(64);
         let (runner, config_arc, _mau_config_arc, _mau_running_arc) =
             heartbeat::HeartbeatRunner::new(
                 hb_config,
@@ -2575,6 +2859,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                 Arc::clone(&mcp_servers_json),
                 Arc::clone(&runtime),
                 Arc::clone(&runtime_config),
+                types::HostInteractionCapability::for_platform(&config.platform),
                 None, // Memory auto-update: not used for per-channel heartbeat (Agent-level only)
                 Arc::clone(&pending_cron_events),
                 wake_tx.clone(),
@@ -2624,6 +2909,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
         process_handle,
         poll_handle,
         approval_handle,
+        question_handle,
         health_handle,
         bind_code,
         config,
@@ -2785,4 +3071,101 @@ pub async fn get_all_bots_status(im_state: &ManagedImBots) -> HashMap<String, Im
     }
 
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::im::types::AskUserQuestionOption;
+
+    fn question(
+        id: &str,
+        options: Vec<&str>,
+        multi_select: bool,
+        required: bool,
+        is_secret: bool,
+    ) -> AskUserQuestionItem {
+        AskUserQuestionItem {
+            id: Some(id.to_string()),
+            header: id.to_string(),
+            question: format!("Question {id}"),
+            options: options
+                .into_iter()
+                .map(|label| AskUserQuestionOption {
+                    label: label.to_string(),
+                    description: String::new(),
+                    preview: None,
+                })
+                .collect(),
+            multi_select,
+            required,
+            is_secret,
+        }
+    }
+
+    #[test]
+    fn question_text_keeps_free_text_commas() {
+        let questions = vec![question("notes", vec![], false, true, false)];
+        let answers = parse_question_text_answers(
+            &questions,
+            &ImSourceType::Private,
+            "custom text, with comma",
+        )
+        .expect("valid")
+        .expect("not cancelled");
+
+        assert_eq!(
+            answers.get("notes").map(String::as_str),
+            Some("custom text, with comma"),
+        );
+    }
+
+    #[test]
+    fn question_text_joins_multi_select_labels_with_commas() {
+        let questions = vec![question(
+            "choices",
+            vec!["Alpha", "Beta", "Gamma"],
+            true,
+            true,
+            false,
+        )];
+        let answers = parse_question_text_answers(&questions, &ImSourceType::Private, "1, Gamma")
+            .expect("valid")
+            .expect("not cancelled");
+
+        assert_eq!(
+            answers.get("choices").map(String::as_str),
+            Some("Alpha,Gamma")
+        );
+    }
+
+    #[test]
+    fn optional_question_can_be_skipped() {
+        let questions = vec![
+            question("required", vec![], false, true, false),
+            question("optional", vec![], false, false, false),
+        ];
+        let answers = parse_question_text_answers(&questions, &ImSourceType::Private, "hello\n")
+            .expect("valid")
+            .expect("not cancelled");
+
+        assert_eq!(answers.get("required").map(String::as_str), Some("hello"));
+        assert!(!answers.contains_key("optional"));
+    }
+
+    #[test]
+    fn secret_question_cancels_without_answers_in_any_im_chat() {
+        let questions = vec![question("token", vec![], false, true, true)];
+        let answers =
+            parse_question_text_answers(&questions, &ImSourceType::Group, "secret, value")
+                .expect("group secret is handled as cancel");
+
+        assert!(answers.is_none());
+
+        let answers =
+            parse_question_text_answers(&questions, &ImSourceType::Private, "secret, value")
+                .expect("private secret is handled as cancel");
+
+        assert!(answers.is_none());
+    }
 }

@@ -18,6 +18,7 @@ const apiMocks = vi.hoisted(() => ({
   spaceGetSkill: vi.fn(),
   spaceGetSkillFile: vi.fn(),
   spaceInstallSkill: vi.fn(),
+  spaceListSkillRevisions: vi.fn(),
   spaceListGoals: vi.fn(),
   spaceListEvents: vi.fn(),
   spaceListIssues: vi.fn(),
@@ -27,8 +28,10 @@ const apiMocks = vi.hoisted(() => ({
   spaceLogout: vi.fn(),
   spaceRegisterAgent: vi.fn(),
   spaceRevokeRegisteredAgent: vi.fn(),
+  spaceRollbackSkill: vi.fn(),
   spaceSetIssueState: vi.fn(),
   spaceUpdateGoal: vi.fn(),
+  spaceUpdateProfile: vi.fn(),
   spaceUpdateRegisteredAgent: vi.fn(),
   spaceUploadIssueAttachments: vi.fn(),
   spaceUploadSkillZip: vi.fn(),
@@ -53,6 +56,7 @@ vi.mock('@/api/spaceCloud', () => ({
   spaceGetSkill: apiMocks.spaceGetSkill,
   spaceGetSkillFile: apiMocks.spaceGetSkillFile,
   spaceInstallSkill: apiMocks.spaceInstallSkill,
+  spaceListSkillRevisions: apiMocks.spaceListSkillRevisions,
   spaceListGoals: apiMocks.spaceListGoals,
   spaceListEvents: apiMocks.spaceListEvents,
   spaceListIssues: apiMocks.spaceListIssues,
@@ -62,8 +66,10 @@ vi.mock('@/api/spaceCloud', () => ({
   spaceLogout: apiMocks.spaceLogout,
   spaceRegisterAgent: apiMocks.spaceRegisterAgent,
   spaceRevokeRegisteredAgent: apiMocks.spaceRevokeRegisteredAgent,
+  spaceRollbackSkill: apiMocks.spaceRollbackSkill,
   spaceSetIssueState: apiMocks.spaceSetIssueState,
   spaceUpdateGoal: apiMocks.spaceUpdateGoal,
+  spaceUpdateProfile: apiMocks.spaceUpdateProfile,
   spaceUpdateRegisteredAgent: apiMocks.spaceUpdateRegisteredAgent,
   spaceUploadIssueAttachments: apiMocks.spaceUploadIssueAttachments,
   spaceUploadSkillZip: apiMocks.spaceUploadSkillZip,
@@ -163,6 +169,7 @@ const fakeSkill: SpaceSkill = {
   name: 'PRD Writer',
   slug: 'prd-writer',
   description: 'Write product specs',
+  currentRevision: 1,
   latestRevision: 1,
   createdAt: '2026-06-24T00:00:00.000Z',
   updatedAt: '2026-06-24T00:00:00.000Z',
@@ -299,6 +306,106 @@ describe('spaceStore issue refresh', () => {
     expect(state.items).toEqual([fakeIssue]);
     expect(state.isLoading).toBe(false);
     expect(state.error).toBe('network down');
+  });
+
+  it('patches current user avatars from the active session after refreshing Space data', async () => {
+    const sessionWithAvatar: SpaceSession = {
+      ...fakeSession,
+      user: {
+        ...fakeSession.user,
+        name: 'I Ethan',
+        avatarUrl: 'https://r2-public.myagents.test/avatar.png',
+      },
+    };
+    const staleCurrentUser = { id: 'user-1', name: 'Old User', avatarUrl: null };
+    const issueWithStaleAuthor: SpaceIssue = {
+      ...fakeIssue,
+      creator: staleCurrentUser,
+      author: staleCurrentUser,
+    };
+    const detailWithComment: SpaceIssueDetail = {
+      ...fakeDetail,
+      issue: issueWithStaleAuthor,
+      comments: {
+        ...fakeDetail.comments,
+        items: [
+          {
+            id: 'comment-1',
+            author: { id: 'user-1', type: 'user', name: 'Old User', avatarUrl: null },
+            body: 'same user comment',
+            createdAt: '2026-06-24T01:00:00.000Z',
+          },
+        ],
+      },
+    };
+    const skillWithStaleUploader: SpaceSkill = {
+      ...fakeSkill,
+      uploader: staleCurrentUser,
+    };
+    __setSpaceStoreStateForTest({ boot: 'ready', session: sessionWithAvatar });
+    apiMocks.spaceListIssues.mockResolvedValueOnce({
+      items: [issueWithStaleAuthor],
+      hasMore: false,
+      nextCursor: null,
+    });
+    apiMocks.spaceGetIssue.mockResolvedValueOnce(detailWithComment);
+    apiMocks.spaceListSkills.mockResolvedValueOnce({
+      items: [skillWithStaleUploader],
+    });
+    apiMocks.spaceGetSkill.mockResolvedValueOnce({
+      skill: skillWithStaleUploader,
+      revision: { revision: 1 },
+      files: [],
+    });
+    apiMocks.spaceCreateIssue.mockResolvedValueOnce({
+      issue: { ...issueWithStaleAuthor, id: 'iss_created', title: 'Created' },
+    });
+    apiMocks.spaceCommentIssue.mockResolvedValueOnce({
+      comment: {
+        id: 'comment-2',
+        author: { id: 'user-1', type: 'user', name: 'Old User', avatarUrl: null },
+        body: 'new comment',
+        createdAt: '2026-06-24T02:00:00.000Z',
+      },
+    });
+
+    await actions.refreshIssues({ limit: 50 }, { force: true });
+    await actions.refreshIssueDetail('iss_123', { force: true });
+    await actions.refreshSkills({ force: true });
+    await actions.refreshSkillDetail('skl_123', { force: true });
+    const createdIssue = await actions.createIssue({ title: 'Created', body: 'Body' });
+    await actions.commentIssue('iss_123', 'new comment');
+
+    const snapshot = getSnapshot();
+    const refreshedIssue = getIssueListState({ limit: 50 }).items.find((issue) => issue.id === 'iss_123');
+    expect(refreshedIssue?.creator).toMatchObject({
+      name: 'I Ethan',
+      avatarUrl: sessionWithAvatar.user.avatarUrl,
+    });
+    expect(refreshedIssue?.author).toMatchObject({
+      name: 'I Ethan',
+      avatarUrl: sessionWithAvatar.user.avatarUrl,
+    });
+    expect(createdIssue.creator).toMatchObject({
+      name: 'I Ethan',
+      avatarUrl: sessionWithAvatar.user.avatarUrl,
+    });
+    expect(snapshot.issueDetails[scoped('iss_123')]?.detail?.comments.items[0]?.author).toMatchObject({
+      name: 'I Ethan',
+      avatarUrl: sessionWithAvatar.user.avatarUrl,
+    });
+    expect(snapshot.issueDetails[scoped('iss_123')]?.detail?.comments.items[1]?.author).toMatchObject({
+      name: 'I Ethan',
+      avatarUrl: sessionWithAvatar.user.avatarUrl,
+    });
+    expect(snapshot.skills.items[0]?.uploader).toMatchObject({
+      name: 'I Ethan',
+      avatarUrl: sessionWithAvatar.user.avatarUrl,
+    });
+    expect(snapshot.skillDetails[scoped('skl_123')]?.detail?.skill.uploader).toMatchObject({
+      name: 'I Ethan',
+      avatarUrl: sessionWithAvatar.user.avatarUrl,
+    });
   });
 
   it('prepends a newly created issue into already loaded lists', async () => {
@@ -640,10 +747,110 @@ describe('spaceStore goal mutations', () => {
   });
 });
 
+describe('spaceStore profile actions', () => {
+  it('updates session and patches current user author summaries in cached Space data', async () => {
+    const updatedSession: SpaceSession = {
+      ...fakeSession,
+      user: {
+        ...fakeSession.user,
+        name: 'Updated User',
+        avatarUrl: 'https://r2-public.myagents.test/avatar.png',
+      },
+      updatedAt: '2026-07-05T00:00:00.000Z',
+    };
+    const issueWithAuthor = {
+      ...fakeIssue,
+      creator: { id: 'user-1', name: 'Old User', avatarUrl: null },
+      author: { id: 'user-1', name: 'Old User', avatarUrl: null },
+    };
+    const detailWithComment: SpaceIssueDetail = {
+      ...fakeDetail,
+      issue: issueWithAuthor,
+      comments: {
+        ...fakeDetail.comments,
+        items: [
+          {
+            id: 'comment-1',
+            author: { id: 'user-1', type: 'user', name: 'Old User', avatarUrl: null },
+            body: 'Profile-linked comment.',
+            createdAt: '2026-06-24T01:00:00.000Z',
+          },
+        ],
+      },
+    };
+    const skillWithUploader: SpaceSkill = {
+      ...fakeSkill,
+      uploader: { id: 'user-1', name: 'Old User', avatarUrl: null },
+    };
+    __setSpaceStoreStateForTest({
+      session: fakeSession,
+      issuesByKey: {
+        current: {
+          items: [issueWithAuthor],
+          hasMore: false,
+          nextCursor: null,
+          lastFetchedAt: Date.now(),
+          isLoading: false,
+          error: null,
+        },
+      },
+      issueDetails: {
+        iss_123: {
+          detail: detailWithComment,
+          lastFetchedAt: Date.now(),
+          isLoading: false,
+          error: null,
+        },
+      },
+      skills: {
+        items: [skillWithUploader],
+        lastFetchedAt: Date.now(),
+        isLoading: false,
+        error: null,
+      },
+      skillDetails: {
+        skl_123: {
+          detail: { skill: skillWithUploader, revision: { revision: 1 }, files: [] },
+          lastFetchedAt: Date.now(),
+          isLoading: false,
+          error: null,
+        },
+      },
+    });
+    apiMocks.spaceUpdateProfile.mockResolvedValueOnce(updatedSession);
+
+    await actions.updateProfile({ name: 'Updated User', avatarFilePath: '/tmp/avatar.png' });
+
+    expect(apiMocks.spaceUpdateProfile).toHaveBeenCalledWith({
+      name: 'Updated User',
+      avatarFilePath: '/tmp/avatar.png',
+    });
+    const snapshot = getSnapshot();
+    expect(snapshot.session?.user).toMatchObject(updatedSession.user);
+    expect(snapshot.issuesByKey.current.items[0].creator).toMatchObject({
+      name: 'Updated User',
+      avatarUrl: updatedSession.user.avatarUrl,
+    });
+    expect(snapshot.issueDetails.iss_123.detail?.comments.items[0].author).toMatchObject({
+      name: 'Updated User',
+      avatarUrl: updatedSession.user.avatarUrl,
+    });
+    expect(snapshot.skills.items[0].uploader).toMatchObject({
+      name: 'Updated User',
+      avatarUrl: updatedSession.user.avatarUrl,
+    });
+    expect(snapshot.skillDetails.skl_123.detail?.skill.uploader).toMatchObject({
+      name: 'Updated User',
+      avatarUrl: updatedSession.user.avatarUrl,
+    });
+  });
+});
+
 describe('spaceStore skill actions', () => {
   it('uploads a skill revision and invalidates cached detail/files', async () => {
     const updatedSkill = {
       ...fakeSkill,
+      currentRevision: 2,
       latestRevision: 2,
       updatedAt: '2026-06-24T03:00:00.000Z',
     };

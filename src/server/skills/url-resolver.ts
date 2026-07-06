@@ -59,13 +59,16 @@ export function resolveSkillUrl(rawInput: string): ResolvedSkillSource {
   }
 
   // Explicit raw zip/tar.gz passthrough
-  if (/^https?:\/\//i.test(cleaned.positional) && /\.(zip|tar\.gz|tgz)(\?.*)?$/i.test(cleaned.positional)) {
+  if (/^https:\/\//i.test(cleaned.positional) && /\.(zip|tar\.gz|tgz)(\?.*)?$/i.test(cleaned.positional)) {
     return {
       kind: 'raw-zip',
       displayName: cleaned.positional,
       rawZipUrl: cleaned.positional,
       skillName: cleaned.skillName,
     };
+  }
+  if (/^http:\/\//i.test(cleaned.positional) && /\.(zip|tar\.gz|tgz)(\?.*)?$/i.test(cleaned.positional)) {
+    throw new SkillUrlError('直连压缩包必须使用 HTTPS 链接');
   }
 
   // Full GitHub URL (with optional tree/<ref>/<path>)

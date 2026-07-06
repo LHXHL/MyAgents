@@ -179,6 +179,8 @@ Turn 2: claude -p --resume abc     → 恢复上下文 → 执行 → 退出
 | `plan` | `plan` |
 | `fullAgency` | `bypassPermissions` |
 
+**IM native-card 例外**：当 `InteractionScenario` 是 IM / Agent Channel 且 `hostInteraction.askUserQuestion === 'native-card'` 时，`fullAgency` 不能直接传给 Claude Code 的 `bypassPermissions`。`AskUserQuestion` 通过 CC `control_request/can_use_tool` + `--permission-prompt-tool stdio` 回到 MyAgents；bypass 会跳过这条交互通道。`external-session.ts` 在 runtime 边界把启动态权限降为 `auto/acceptEdits`，同时对非 `AskUserQuestion` 的 permission request 做 fullAgency fast-path 自动允许，保持“普通工具自治、结构化提问可交互”的语义。
+
 ### SessionStart Hook
 
 生成临时 hook 配置文件，注入 forwarder 脚本。CC 启动后通过 hook POST `session_id` 到 Sidecar HTTP 端点 `/hook/session-start`，确保 session ID 可靠追踪。
@@ -277,6 +279,8 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 | `mcpServer/elicitation/request` (`form` / `openai/form`) | 有 schema fields 时映射到 `AskUserQuestion`；`url` / tool approval / generic elicitation 走 `permission_request` |
 | `currentTime/read` | runtime adapter 直接返回 `{currentTimeAt}`，不进入 UI |
 | `item/tool/call` / token refresh / attestation | MyAgents 不托管，显式 error |
+
+IM / Agent Channel 默认不支持桌面结构化提问：若 `hostInteraction.askUserQuestion === 'none'`，Codex `item/tool/requestUserInput` 立即按协议返回空 answers，`mcpServer/elicitation/request` form 立即返回 `action:'cancel'`，并且不登记 `pendingRequests`。`runtimeSource:'managed-provider'` 与 `runtimeSource:'system-cli'` 共享同一个 Codex adapter，因此必须保持一致。
 
 **权限 UI 不允许单槽位。** Codex 可以在同一 turn 一次性发出多个 approval request（例如 4 条 PowerShell 命令），backend 以 `requestId` 同时挂起多条 pending。Renderer 必须把 `permission:request` 当成 FIFO queue keyed by `requestId`；响应成功或后端 stop/error/reset/auto-resolve 时通过 `permission:expired` 精确移除对应项。不能用单个 `pendingPermission` 覆盖新请求，也不能把多条不同请求合并成一次批量批准；`always_allow` 只能通过 runtime 自己的 response protocol 表达。
 

@@ -10,6 +10,12 @@ import { killWithEscalation } from './utils/kill-with-escalation';
 import { InactivityWatchdog } from '../utils/inactivity-watchdog';
 import { buildSystemPromptAppend } from '../system-prompt';
 import type { InteractionScenario } from '../system-prompt';
+import {
+  getChannelInteractionDisallowedTools,
+  shouldDisallowAskUserQuestion,
+  shouldUseNonBypassForNativeAskUserQuestion,
+  supportsAskUserQuestionNativeCard,
+} from '../host-interaction';
 import type {
   ExternalRuntimeConfigPatch,
   ExternalRuntimeConfigSnapshot,
@@ -38,6 +44,7 @@ import { deriveSessionTitle } from '../../shared/sessionTitle';
 import { isPendingSessionId } from '../../shared/constants';
 import { resolveChatQueueResponseMode } from '../session-core/turn-queue';
 import {
+  commitPreparedSessionForFirstUserTurn,
   saveSessionMetadata,
   updateSessionMetadata,
   getSessionMetadata,
@@ -502,6 +509,9 @@ function broadcastExternalInteractiveExpired(
     } catch (e) {
       console.warn(`[external-session] broadcast ask-user-question:expired for ${requestId} failed:`, e);
     }
+    if (supportsAskUserQuestionNativeCard(getExternalLifecycleScenario())) {
+      fireExternalImCallback('ask-user-question-expired', JSON.stringify({ requestId, reason }));
+    }
     return;
   }
   if (entry.type === 'permission:request') {
@@ -733,8 +743,9 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
   userMsg: SessionMessage;
   failureContext: string;
 }): Promise<void> {
+  let metadataResult: { preparedExisting: boolean; runtimeSessionId?: string };
   try {
-    await ensureExternalSessionMetadataForRealUserTurn({
+    metadataResult = await ensureExternalSessionMetadataForRealUserTurn({
       sessionId: params.sessionId,
       workspacePath: params.workspacePath,
       messageText: params.messageText,
@@ -748,6 +759,21 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
   } catch (err) {
     rollbackPreDispatchUserTurn(params.userMsg, err instanceof Error ? err.message : String(err));
     throw err;
+  }
+
+  if (metadataResult.preparedExisting) {
+    try {
+      const updated = await commitPreparedSessionForFirstUserTurn(params.sessionId, {
+        messageText: params.messageText,
+        runtimeSessionId: metadataResult.runtimeSessionId,
+        origin: params.birthOrigin,
+      });
+      if (!updated) {
+        console.warn(`[external-session] prepared metadata commit skipped for ${params.sessionId}: metadata disappeared after user message persist`);
+      }
+    } catch (err) {
+      console.warn('[external-session] prepared metadata commit after user message persist failed:', err);
+    }
   }
 }
 
@@ -766,7 +792,7 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
   turnPath: ExternalMetadataTurnPath;
   metadataBirthPending?: boolean;
   birthOrigin?: SessionOrigin;
-}): Promise<void> {
+}): Promise<{ preparedExisting: boolean; runtimeSessionId?: string }> {
   const { sessionId, workspacePath, messageText, origin, scenario, turnPath } = params;
   if (!sessionId) {
     throw new Error(`[external-session] Cannot persist ${origin}: missing sessionId`);
@@ -775,9 +801,13 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
   const pendingBirth = pendingBirthForSession(sessionId);
   const existing = getSessionMetadata(sessionId);
   if (existing) {
-    if (pendingBirth?.runtimeSessionId && existing.runtimeSessionId !== pendingBirth.runtimeSessionId) {
+    const runtimeSessionId = pendingBirth?.runtimeSessionId;
+    if (existing.materializationState === 'prepared') {
+      clearPendingExternalSessionBirth(sessionId);
+      return { preparedExisting: true, runtimeSessionId };
+    } else if (runtimeSessionId && existing.runtimeSessionId !== runtimeSessionId) {
       try {
-        const updated = await updateSessionMetadata(sessionId, { runtimeSessionId: pendingBirth.runtimeSessionId });
+        const updated = await updateSessionMetadata(sessionId, { runtimeSessionId });
         if (!updated) {
           console.warn(`[external-session] runtimeSessionId patch skipped for ${sessionId}: metadata disappeared during ${origin}`);
         }
@@ -786,7 +816,7 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
       }
     }
     clearPendingExternalSessionBirth(sessionId);
-    return;
+    return { preparedExisting: false };
   }
 
   const hasOwnedFreshStartAuthority =
@@ -837,6 +867,7 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
   }
   clearPendingExternalSessionBirth(sessionId);
   console.log(`[external-session] session ${sessionId} persisted to SessionStore (${origin})`);
+  return { preparedExisting: false };
 }
 
 function flushPendingThinking(forceComplete: boolean): void {
@@ -865,6 +896,53 @@ function flushAllPending(): void {
 // reset-on-activity setTimeout, which fired on resume because its deadline
 // elapsed in wall-clock during sleep — a turn the runtime never actually hung.)
 const WATCHDOG_INTERVAL_MS = 30 * 1000;
+const MANAGED_CODEX_STRUCTURED_USER_INPUT_DISABLED_PROMPT = `<myagents-managed-codex-interaction-limits>
+This session is running on Managed Codex. The structured user-input tools are intentionally disabled here.
+
+Do not call request_user_input, AskUserQuestion, or MCP elicitation/form tools to ask the IM user a question.
+If you need clarification or a choice from the user, ask it as normal chat text and wait for the user's next message.
+</myagents-managed-codex-interaction-limits>`;
+
+function isManagedCodexStructuredUserInputDisabled(
+  runtimeType: RuntimeType,
+  runtimeSource: RuntimeSource | undefined,
+): boolean {
+  return runtimeType === 'codex' && runtimeSource === 'managed-provider';
+}
+
+function isChannelScenario(scenario: InteractionScenario): boolean {
+  return scenario.type === 'im' || scenario.type === 'agent-channel';
+}
+
+function getRuntimeAwareChannelInteractionDisallowedTools(
+  runtimeType: RuntimeType,
+  runtimeSource: RuntimeSource | undefined,
+  scenario: InteractionScenario,
+): string[] {
+  const tools = getChannelInteractionDisallowedTools(scenario);
+  if (
+    isChannelScenario(scenario)
+    && isManagedCodexStructuredUserInputDisabled(runtimeType, runtimeSource)
+    && !tools.includes('AskUserQuestion')
+  ) {
+    return ['AskUserQuestion', ...tools];
+  }
+  return tools;
+}
+
+function appendManagedCodexInteractionLimitPrompt(
+  prompt: string,
+  runtimeType: RuntimeType,
+  runtimeSource: RuntimeSource | undefined,
+  scenario: InteractionScenario,
+): string {
+  if (!isChannelScenario(scenario)) return prompt;
+  if (!isManagedCodexStructuredUserInputDisabled(runtimeType, runtimeSource)) return prompt;
+  return prompt
+    ? `${prompt}\n\n${MANAGED_CODEX_STRUCTURED_USER_INPUT_DISABLED_PROMPT}`
+    : MANAGED_CODEX_STRUCTURED_USER_INPUT_DISABLED_PROMPT;
+}
+
 const externalWatchdog = new InactivityWatchdog({
   timeoutMs: EXTERNAL_WATCHDOG_DEFAULT_TIMEOUT_MS,
   intervalMs: WATCHDOG_INTERVAL_MS,
@@ -1763,9 +1841,15 @@ async function _doStartExternalSession(options: {
   if (workspaceInstructions) {
     console.log(`[external-session] Injecting workspace instructions for ${runtimeType} (${workspaceInstructions.length} bytes)`);
   }
-  const systemPromptAppend = workspaceInstructions
+  let systemPromptAppend = workspaceInstructions
     ? baseSystemPrompt + '\n\n' + workspaceInstructions
     : baseSystemPrompt;
+  systemPromptAppend = appendManagedCodexInteractionLimitPrompt(
+    systemPromptAppend,
+    runtimeType,
+    runtimeSource,
+    options.scenario,
+  );
 
   // External runtimes don't go through the SDK's session creation flow, so the
   // "pending-{tabId}" placeholder that the frontend assigns never gets upgraded
@@ -1797,6 +1881,12 @@ async function _doStartExternalSession(options: {
     options.resumeSessionId ? 'resume-start-options' : 'start-options',
     options.sessionId,
   );
+  const runtimePermissionMode = shouldUseNonBypassForNativeAskUserQuestion(
+    startPermissionMode,
+    options.scenario,
+  )
+    ? 'auto'
+    : startPermissionMode;
 
   const managedCodexMcpServers = runtimeType === 'codex' && runtimeSource === 'managed-provider'
     ? resolveWorkspaceConfig(options.workspacePath, existingMetadataAtStart, { includeMcp: true }).mcpServers
@@ -1816,7 +1906,7 @@ async function _doStartExternalSession(options: {
     clearPendingExternalSessionBirth(options.sessionId);
   }
 
-  console.log(`[external-session] Starting ${runtimeType} session for ${options.sessionId}, model=${startModel || '(default)'}, permissionMode=${startPermissionMode || '(default)'}, scenario=${options.scenario.type}, resume=${options.resumeSessionId || 'none'}`);
+  console.log(`[external-session] Starting ${runtimeType} session for ${options.sessionId}, model=${startModel || '(default)'}, permissionMode=${startPermissionMode || '(default)'}${runtimePermissionMode !== startPermissionMode ? ` -> runtime:${runtimePermissionMode}` : ''}, scenario=${options.scenario.type}, resume=${options.resumeSessionId || 'none'}`);
   // Detect pre-warm: prewarmExternalSession calls us with initialMessage=undefined.
   // Stamp this onto the session_init broadcast so the frontend doesn't enter the
   // "loading" state for a process that hasn't started processing any turn yet.
@@ -1908,6 +1998,11 @@ async function _doStartExternalSession(options: {
   // Set isRunning BEFORE spawning — prevents waitForExternalSessionIdle from
   // seeing the pre-start state and returning true prematurely. Reset in catch.
   setExternalLifecycleRunning(true);
+  const disallowedTools = getRuntimeAwareChannelInteractionDisallowedTools(
+    runtimeType,
+    runtimeSource,
+    options.scenario,
+  );
 
   const startOnce = (resumeId: string | undefined): Promise<RuntimeProcess> =>
     runtime.startSession(
@@ -1918,10 +2013,11 @@ async function _doStartExternalSession(options: {
         initialImages: options.initialImages,
         systemPromptAppend,
         model: startModel,
-        permissionMode: startPermissionMode,
+        permissionMode: runtimePermissionMode,
         reasoningEffort: startReasoningEffort,
         scenario: options.scenario,
         resumeSessionId: resumeId,
+        disallowedTools,
         envPolicy: resolvedEnvPolicy,
         runtimeSource,
         mcpServers: managedCodexMcpServers,
@@ -3580,7 +3676,14 @@ function applyExternalToolResult(event: Extract<UnifiedEvent, { kind: 'tool_resu
 function autoDenyNonInteractiveRequest(event: Extract<UnifiedEvent, { kind: 'permission_request' }>): boolean {
   const scenario = getExternalLifecycleScenario();
   if (scenario.type === 'desktop') return false;
-  const reason = `External runtime interactive request "${event.toolName}" was denied because ${scenario.type} sessions cannot render approval UI.`;
+  if (event.toolName !== 'AskUserQuestion') return false;
+  const runtimeType = getExternalActiveRuntime()?.type ?? getCurrentRuntimeType();
+  const runtimeSource = runtimeType === 'codex' ? getCurrentRuntimeSource() : undefined;
+  const managedCodexDisabled = isManagedCodexStructuredUserInputDisabled(runtimeType, runtimeSource);
+  if (!managedCodexDisabled && !shouldDisallowAskUserQuestion(scenario)) return false;
+  const reason = managedCodexDisabled
+    ? `External runtime AskUserQuestion request was denied because Managed Codex structured user input is disabled.`
+    : `External runtime AskUserQuestion request was denied because this ${scenario.type} host does not support native-card interaction.`;
   console.warn(`[external-session] ${reason} requestId=${event.requestId}`);
   fireExternalImCallback('error', reason);
   const active = getExternalActivePair();
@@ -3588,6 +3691,20 @@ function autoDenyNonInteractiveRequest(event: Extract<UnifiedEvent, { kind: 'per
     void active.runtime.respondPermission(active.process, event.requestId, 'deny', reason, undefined, undefined, true)
       .catch((err) => console.error(`[external-session] auto-deny failed for requestId=${event.requestId}:`, err));
   }
+  return true;
+}
+
+function autoAllowFullAgencyNativeCardRequest(event: Extract<UnifiedEvent, { kind: 'permission_request' }>): boolean {
+  if (event.toolName === 'AskUserQuestion') return false;
+  const scenario = getExternalLifecycleScenario();
+  if (!shouldUseNonBypassForNativeAskUserQuestion(getExternalRuntimeDesiredPermissionMode(), scenario)) {
+    return false;
+  }
+  const active = getExternalActivePair();
+  if (!active) return false;
+  console.log(`[external-session] native-card fullAgency fast-path: auto-approved ${event.toolName} requestId=${event.requestId}`);
+  void active.runtime.respondPermission(active.process, event.requestId, 'allow_once')
+    .catch((err) => console.error(`[external-session] fullAgency auto-allow failed for requestId=${event.requestId}:`, err));
   return true;
 }
 
@@ -3806,6 +3923,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
 
     case 'permission_request': {
       if (autoDenyNonInteractiveRequest(event)) break;
+      if (autoAllowFullAgencyNativeCardRequest(event)) break;
       // AskUserQuestion carries a structured payload (questions/options/previews) and
       // needs the dedicated wizard UI, not the generic allow/deny card. Route it through
       // the ask-user-question:request channel so the frontend mounts AskUserQuestionPrompt
@@ -3825,8 +3943,9 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
           data: requestPayload,
         });
         broadcast('ask-user-question:request', requestPayload);
-        // IM/agent-channel bots can't render AskUserQuestion; claude-code.ts already
-        // puts it in --disallowed-tools for those scenarios, so no imEventBus fan-out here.
+        if (supportsAskUserQuestionNativeCard(getExternalLifecycleScenario())) {
+          fireExternalImCallback('ask-user-question-request', JSON.stringify(requestPayload));
+        }
         break;
       }
 

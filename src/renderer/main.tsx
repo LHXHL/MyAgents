@@ -11,6 +11,7 @@ import { I18nLanguageSync } from './i18n/I18nLanguageSync';
 import { initFrontendLogger, setLogServerUrl, setRendererLogLabel } from './utils/frontendLogger';
 import { installMacFunctionKeyGuard } from './utils/macFunctionKeyGuard';
 import { installOverlayScrollbarActivity, isWindowsRendererPlatform } from './utils/overlayScrollbarActivity';
+import { installTextCorrectionPolicy } from './utils/textCorrectionPolicy';
 
 import './i18n';
 import './index.css';
@@ -22,6 +23,7 @@ initFrontendLogger();
 // see utils/macFunctionKeyGuard.ts. Must run before React mounts so the
 // document-level capture handler is attached when the first input fires.
 installMacFunctionKeyGuard();
+installTextCorrectionPolicy();
 
 function installPlatformClass(): void {
   const platform = navigator.platform || '';

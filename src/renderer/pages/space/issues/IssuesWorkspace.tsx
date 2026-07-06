@@ -4,6 +4,7 @@ import { Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
 
 import type { SpaceIssue } from '@/api/spaceCloud';
 import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
+import { SpaceIdentityLine } from '@/pages/space/SpaceAvatar';
 import { ACTIVE_ISSUE_STATE_FILTER, claimHandlerLabel, ISSUE_STATUSES, issueDisplayNumber, issueDisplayTitle, issueStatusLabel } from '@/pages/space/spaceHelpers';
 import { recordSpaceMetric } from '@/pages/space/spaceMetrics';
 import { SPACE_LIST_FRAME_CLASS, SPACE_PRIMARY_TOOL_BUTTON_CLASS, SPACE_REFRESH_TOOL_BUTTON_CLASS, formatTime, statusPillClass } from '@/pages/space/spaceUi';
@@ -131,9 +132,9 @@ export function IssuesWorkspace({
             {issues.length === 0 && issuesLoading ? (
               <div className="grid gap-0">
                 {Array.from({ length: 4 }).map((_, index) => (
-                  <div key={index} className="min-h-[72px] border-b border-[var(--line-subtle)] py-3.5 last:border-b-0">
-                    <div className="h-4 w-44 rounded-md bg-[var(--paper-inset)]" />
-                    <div className="mt-3 h-3 w-72 rounded-md bg-[var(--paper-inset)]" />
+                  <div key={index} className="min-h-[68px] border-b border-[var(--line-subtle)] py-3 last:border-b-0">
+                    <div className="h-3.5 w-44 rounded-md bg-[var(--paper-inset)]" />
+                    <div className="mt-2 h-3 w-72 rounded-md bg-[var(--paper-inset)]" />
                   </div>
                 ))}
               </div>
@@ -185,7 +186,7 @@ function IssueStreamRow({
   const { t } = useTranslation('app');
   const displayTitle = issueDisplayTitle(issue);
   const displayNumber = issueDisplayNumber(issue);
-  const authorName = issue.creator?.name ?? issue.creator?.id ?? issue.author?.name ?? issue.author?.id ?? 'owner';
+  const author = issue.creator ?? issue.author ?? null;
   const handlerName = claimHandlerLabel(issue.claim);
   const goalLabel = issue.goalPathLabel || issue.goalId || null;
   return (
@@ -193,25 +194,30 @@ function IssueStreamRow({
       type="button"
       onClick={onOpen}
       style={{ animationDelay: `${index * 42}ms` }}
-      className={`grid min-h-[74px] w-full border-b border-[var(--line-subtle)] px-1 py-3.5 text-left transition-colors last:border-b-0 sm:px-3 ${
-        active ? 'bg-[var(--paper-elevated)]/70 shadow-[inset_3px_0_0_var(--accent-warm)]' : 'hover:bg-[var(--paper-elevated)]/60'
+      className={`grid min-h-[68px] w-full border-b border-[var(--line-subtle)] px-1 py-3 text-left transition-colors last:border-b-0 sm:px-3 ${
+        active ? 'bg-[var(--paper-elevated)]/70 shadow-[inset_3px_0_0_var(--accent-warm)]' : 'hover:bg-[var(--hover-bg)]'
       }`}
     >
       <span className="min-w-0">
         <span className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2">
-          <span className={`inline-flex h-7 items-center whitespace-nowrap rounded-md px-2 text-xs font-semibold ${statusPillClass(issue.state)}`}>
+          <span className={`inline-flex h-6 items-center whitespace-nowrap rounded-md px-2 text-xs font-semibold ${statusPillClass(issue.state)}`}>
             {issueStatusLabel(issue.state, t)}
           </span>
-          <span className="truncate text-base font-semibold leading-6 text-[var(--ink)]">{displayTitle}</span>
+          <span className="truncate text-sm font-semibold leading-5 text-[var(--ink)]">{displayTitle}</span>
         </span>
-        <span className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs font-normal text-[var(--ink-subtle)]">
+        <span className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs font-normal leading-5 text-[var(--ink-subtle)]">
           {displayNumber && (
             <>
               <span className="text-[var(--ink-muted)]">{displayNumber}</span>
               <span className="text-[var(--line-strong)]">·</span>
             </>
           )}
-          <span>{authorName}</span>
+          <SpaceIdentityLine
+            name={author?.name ?? author?.id ?? 'owner'}
+            avatarUrl={author?.avatarUrl}
+            avatarSize={20}
+            nameClassName="font-medium text-[var(--ink-subtle)]"
+          />
           <span className="text-[var(--line-strong)]">·</span>
           <span>{formatTime(issue.createdAt)}</span>
           <span className="text-[var(--line-strong)]">·</span>

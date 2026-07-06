@@ -1,9 +1,14 @@
-import { describe, expect, it } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { afterEach, describe, expect, it } from 'vitest';
+import { renderHook, waitFor } from '@testing-library/react';
 
 import type { ContentBlock, Message, ToolUseSimple } from '@/types/chat';
+import { clearAllBackgroundTaskStatuses, getBackgroundTaskStatus, registerBackgroundTask } from '@/utils/backgroundTaskStatus';
 
 import { useAgentStatusState } from './useAgentStatusState';
+
+afterEach(() => {
+  clearAllBackgroundTaskStatuses();
+});
 
 function toolMsg(id: string, tool: Partial<ToolUseSimple> & { name: string }): Message {
   const block: ContentBlock = {
@@ -103,6 +108,105 @@ describe('useAgentStatusState — Codex CollabAgent activity', () => {
       mode: 'sync',
       startedAt: 123,
       toolCount: 84,
+    });
+  });
+});
+
+describe('useAgentStatusState — builtin background subagents', () => {
+  it('hydrates persisted task notifications into the shared background status store', async () => {
+    const messages: Message[] = [
+      {
+        id: 'task-notification-bg-task-1',
+        role: 'user',
+        content: '<task-notification>{"taskId":"bg-task-1","toolUseId":"Task-m1","status":"completed","description":"Audit repo"}</task-notification>',
+        timestamp: new Date(0),
+      },
+      toolMsg('m1', {
+        name: 'Task',
+        parsedInput: {
+          description: 'Audit repo',
+          prompt: 'Audit the repo',
+        },
+        isLoading: false,
+      }),
+    ];
+
+    renderHook(() => useAgentStatusState(messages));
+
+    await waitFor(() => {
+      expect(getBackgroundTaskStatus('Task-m1')).toBe('completed');
+    });
+  });
+
+  it('treats omitted run_in_background as background for SDK Task tools', () => {
+    registerBackgroundTask('bg-task-1', 'Task-m1');
+
+    const messages: Message[] = [
+      toolMsg('m1', {
+        name: 'Task',
+        parsedInput: {
+          description: 'Audit background tasks',
+          prompt: 'Audit the background task lifecycle',
+          subagent_type: 'Explore',
+        },
+        isLoading: false,
+      }),
+    ];
+
+    const { result } = renderHook(() => useAgentStatusState(messages));
+
+    expect(result.current.summary.subagentRunning).toBe(1);
+    expect(result.current.subagents[0]).toMatchObject({
+      id: 'Task-m1',
+      agentType: 'Explore',
+      description: 'Audit background tasks',
+      mode: 'background',
+    });
+  });
+
+  it('does not treat explicit run_in_background false as background', () => {
+    registerBackgroundTask('bg-task-1', 'Task-m1');
+
+    const messages: Message[] = [
+      toolMsg('m1', {
+        name: 'Task',
+        parsedInput: {
+          description: 'Foreground audit',
+          prompt: 'Run synchronously',
+          run_in_background: false,
+        },
+        isLoading: false,
+      }),
+    ];
+
+    const { result } = renderHook(() => useAgentStatusState(messages));
+
+    expect(result.current.summary.subagentRunning).toBe(0);
+  });
+
+  it('keeps explicit foreground SDK Task tools in the sync subagent list while running', () => {
+    const messages: Message[] = [
+      toolMsg('m1', {
+        name: 'Task',
+        parsedInput: {
+          description: 'Foreground audit',
+          prompt: 'Run synchronously',
+          run_in_background: false,
+          subagent_type: 'Explore',
+        },
+        isLoading: true,
+        result: undefined,
+      }),
+    ];
+
+    const { result } = renderHook(() => useAgentStatusState(messages));
+
+    expect(result.current.summary.subagentRunning).toBe(1);
+    expect(result.current.subagents[0]).toMatchObject({
+      id: 'Task-m1',
+      agentType: 'Explore',
+      description: 'Foreground audit',
+      mode: 'sync',
     });
   });
 });

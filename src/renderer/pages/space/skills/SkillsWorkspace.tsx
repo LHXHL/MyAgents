@@ -1,49 +1,40 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, ChevronDown, Download, FileText, Folder, Loader2, MoreHorizontal, Package, RefreshCw, Trash2, UploadCloud, X } from 'lucide-react';
+import { ArrowLeft, ChevronDown, Download, FileText, Folder, Link, Loader2, MoreHorizontal, Package, RefreshCw, RotateCcw, Search, Trash2, UploadCloud, X } from 'lucide-react';
 
-import { spaceErrorMessage, type SpaceSkill, type SpaceSkillFile } from '@/api/spaceCloud';
+import { spaceCleanupSkillExportPackages, spaceErrorMessage, spaceExportSkillFromUrl, spaceInspectSkillSource, spaceListLocalSkills, type SpaceLocalSkill, type SpaceSkill, type SpaceSkillFile, type SpaceSkillSourceInspection, type SpaceSkillUrlCandidate, type SpaceSkillUrlExportResponse, type SpaceSkillUrlPackage, type SpaceSkillUrlPreview } from '@/api/spaceCloud';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import Markdown from '@/components/Markdown';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { useToast } from '@/components/Toast';
 import type { Project } from '@/config/types';
 import { useCloseLayer } from '@/hooks/useCloseLayer';
-import { getSkillFileState, SPACE_VISIBLE_REFRESH_TTL_MS, type SpaceActions, type SpaceSkillDetailState } from '@/pages/space/spaceStore';
+import { useTauriFileDrop } from '@/hooks/useTauriFileDrop';
+import { SpaceIdentityLine } from '@/pages/space/SpaceAvatar';
+import { getSkillFileState, getSkillRevisionState, SPACE_VISIBLE_REFRESH_TTL_MS, type SpaceActions, type SpaceSkillDetailState } from '@/pages/space/spaceStore';
 import { SPACE_LIST_FRAME_CLASS, SPACE_PRIMARY_TOOL_BUTTON_CLASS, SPACE_REFRESH_TOOL_BUTTON_CLASS, SPACE_TWO_COLUMN_GRID_CLASS, formatBytes, formatDate } from '@/pages/space/spaceUi';
 
-type SkillDetailMode = 'entry' | 'files';
+type SkillDetailMode = 'entry' | 'files' | 'history';
 const EMPTY_SKILL_FILES: SpaceSkillFile[] = [];
 
-export function SkillsWorkspace({ admin, skills, loading, selectedSkillId, projects, actions, skillDetailState, onSelectSkill, onRefresh, onUploaded }: { admin: boolean; skills: SpaceSkill[]; loading: boolean; selectedSkillId: string | null; projects: Project[]; actions: SpaceActions; skillDetailState?: SpaceSkillDetailState; onSelectSkill: (id: string | null) => void; onRefresh: () => Promise<void>; onUploaded: (id: string) => void }) {
-  const { t } = useTranslation('app');
-  const toast = useToast();
-  const [detailMode, setDetailMode] = useState<SkillDetailMode>('entry');
-  const [uploading, setUploading] = useState(false);
-  const selected = skills.find((skill) => skill.id === selectedSkillId) ?? null;
+function skillSlug(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'item';
+}
 
-  const uploadSkill = async () => {
-    try {
-      const { open } = await import('@tauri-apps/plugin-dialog');
-      const selectedPath = await open({
-        multiple: false,
-        directory: false,
-        title: t('space.skills.pickZipTitle'),
-        filters: [{ name: 'Skill ZIP', extensions: ['zip'] }],
-      });
-      if (!selectedPath || Array.isArray(selectedPath)) return;
-      setUploading(true);
-      const result = await actions.uploadSkillZip({ filePath: selectedPath });
-      toast.success(t('space.toasts.skillUploaded', { name: result.name }));
-      await actions.refreshSkills({ force: true, silent: true });
-      onUploaded(result.id);
-      setDetailMode('entry');
-    } catch (error) {
-      toast.error(spaceErrorMessage(error));
-    } finally {
-      setUploading(false);
-    }
-  };
+function shortHash(value?: string | null): string {
+  return value ? value.slice(0, 10) : '';
+}
+
+export function SkillsWorkspace({ admin, skills, loading, selectedSkillId, projects, actions, skillDetailState, isActive, onSelectSkill, onRefresh, onUploaded }: { admin: boolean; skills: SpaceSkill[]; loading: boolean; selectedSkillId: string | null; projects: Project[]; actions: SpaceActions; skillDetailState?: SpaceSkillDetailState; isActive: boolean; onSelectSkill: (id: string | null) => void; onRefresh: () => Promise<void>; onUploaded: (id: string) => void }) {
+  const { t } = useTranslation('app');
+  const [detailMode, setDetailMode] = useState<SkillDetailMode>('entry');
+  const [publishOpen, setPublishOpen] = useState(false);
+  const selected = skills.find((skill) => skill.id === selectedSkillId) ?? null;
 
   const openSkill = (id: string) => {
     onSelectSkill(id);
@@ -60,9 +51,9 @@ export function SkillsWorkspace({ admin, skills, loading, selectedSkillId, proje
         </div>
         <div className="flex shrink-0 items-center gap-2.5">
           {admin && (
-            <button type="button" disabled={uploading} onClick={() => void uploadSkill()} className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}>
-              {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-              {t('space.skills.upload')}
+            <button type="button" onClick={() => setPublishOpen(true)} className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}>
+              <UploadCloud className="h-4 w-4" />
+              {t('space.skills.publish')}
             </button>
           )}
           <button type="button" onClick={() => void onRefresh()} className={SPACE_REFRESH_TOOL_BUTTON_CLASS} aria-label={t('space.common.refresh')} title={t('space.common.refresh')}>
@@ -93,9 +84,9 @@ export function SkillsWorkspace({ admin, skills, loading, selectedSkillId, proje
                 <Package className="mx-auto mb-3 h-9 w-9 text-[var(--ink-subtle)]" />
                 <p>{t('space.skills.empty')}</p>
                 {admin && (
-                  <button type="button" disabled={uploading} onClick={() => void uploadSkill()} className="mt-3 inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-wait disabled:opacity-70">
-                    {uploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <UploadCloud className="h-4 w-4" />}
-                    {t('space.skills.uploadSkill')}
+                  <button type="button" onClick={() => setPublishOpen(true)} className="mt-3 inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]">
+                    <UploadCloud className="h-4 w-4" />
+                    {t('space.skills.publishSkill')}
                   </button>
                 )}
               </div>
@@ -111,12 +102,18 @@ export function SkillsWorkspace({ admin, skills, loading, selectedSkillId, proje
       </main>
 
       {selected && <SkillDetailWorkspace skill={selected} mode={detailMode} admin={admin} projects={projects} actions={actions} detailState={skillDetailState} onModeChange={setDetailMode} onBack={() => onSelectSkill(null)} onDeleted={() => onSelectSkill(null)} t={t} />}
+      {publishOpen && <PublishSkillDialog skills={skills} projects={projects} actions={actions} isActive={isActive} onClose={() => setPublishOpen(false)} onPublished={(skill) => {
+        setPublishOpen(false);
+        void actions.refreshSkills({ force: true, silent: true });
+        onUploaded(skill.id);
+        setDetailMode('entry');
+      }} t={t} />}
     </div>
   );
 }
 
 function SpaceSkillCard({ skill, onOpen, t }: { skill: SpaceSkill; onOpen: () => void; t: ReturnType<typeof useTranslation>['t'] }) {
-  const author = skill.slug || 'official';
+  const uploader = skill.uploader;
   return (
     <button type="button" onClick={onOpen} className="group flex w-full flex-col gap-1.5 rounded-xl bg-[var(--paper-elevated)] px-3.5 py-3 text-left transition-shadow hover:shadow-sm">
       <span className="flex min-w-0 items-center gap-2">
@@ -124,9 +121,12 @@ function SpaceSkillCard({ skill, onOpen, t }: { skill: SpaceSkill; onOpen: () =>
       </span>
       <span className="line-clamp-2 min-h-[2.6em] text-sm leading-relaxed text-[var(--ink-muted)]">{skill.description || t('space.common.noDescription')}</span>
       <span className="mt-1 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium text-[var(--ink-subtle)]">
-        <span className="min-w-0 truncate">
-          <span className="font-semibold text-[var(--ink-muted)]">{author}</span>
-        </span>
+        <SpaceIdentityLine
+          name={uploader?.name ?? uploader?.id ?? t('space.skills.unknownUploader')}
+          avatarUrl={uploader?.avatarUrl}
+          avatarSize={18}
+          nameClassName="font-semibold text-[var(--ink-muted)]"
+        />
         <span className="text-[var(--line-strong)]">·</span>
         <span>
           <span className="font-semibold text-[var(--ink-muted)]">{formatDate(skill.createdAt)}</span>
@@ -136,6 +136,493 @@ function SpaceSkillCard({ skill, onOpen, t }: { skill: SpaceSkill; onOpen: () =>
           <span className="truncate"># {t('space.skills.officialTag')}</span>
         </span>
       </span>
+    </button>
+  );
+}
+
+type PublishSourceMode = 'local' | 'file' | 'url';
+const SKILL_PUBLISH_FILE_DROP_ZONE_ID = 'space-skill-publish-file';
+
+function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPublished, t }: { skills: SpaceSkill[]; projects: Project[]; actions: SpaceActions; isActive: boolean; onClose: () => void; onPublished: (skill: SpaceSkill) => void; t: ReturnType<typeof useTranslation>['t'] }) {
+  const toast = useToast();
+  const [mode, setMode] = useState<PublishSourceMode>('local');
+  const [localSkills, setLocalSkills] = useState<SpaceLocalSkill[]>([]);
+  const [localQuery, setLocalQuery] = useState('');
+  const [loadingLocal, setLoadingLocal] = useState(false);
+  const [sourcePath, setSourcePath] = useState('');
+  const [sourceLabel, setSourceLabel] = useState('');
+  const [sourceScopeLabel, setSourceScopeLabel] = useState('');
+  const [sourceHasDangerousTools, setSourceHasDangerousTools] = useState(false);
+  const [inspection, setInspection] = useState<SpaceSkillSourceInspection | null>(null);
+  const [publishAction, setPublishAction] = useState<'create' | 'update'>('create');
+  const [newName, setNewName] = useState('');
+  const [publishing, setPublishing] = useState(false);
+  const [urlValue, setUrlValue] = useState('');
+  const [urlLoading, setUrlLoading] = useState(false);
+  const [urlError, setUrlError] = useState<string | null>(null);
+  const [urlPreview, setUrlPreview] = useState<SpaceSkillUrlPreview | null>(null);
+  const [urlPackages, setUrlPackages] = useState<SpaceSkillUrlPackage[]>([]);
+  const inspectSeqRef = useRef(0);
+  const fileDropRef = useRef<HTMLDivElement | null>(null);
+  const { isDragging, activeZoneId, registerZone, unregisterZone } = useTauriFileDrop({ enabled: isActive && mode === 'file' });
+  const fileDropActive = isDragging && activeZoneId === SKILL_PUBLISH_FILE_DROP_ZONE_ID;
+  const urlPackagesRef = useRef<SpaceSkillUrlPackage[]>([]);
+
+  useEffect(() => {
+    urlPackagesRef.current = urlPackages;
+  }, [urlPackages]);
+
+  const cleanupUrlPackages = useCallback((packages = urlPackagesRef.current) => {
+    const paths = packages.map((item) => item.filePath);
+    if (paths.length > 0) {
+      void spaceCleanupSkillExportPackages(paths).catch(() => undefined);
+    }
+  }, []);
+
+  const closeAndCleanup = useCallback(() => {
+    cleanupUrlPackages();
+    onClose();
+  }, [cleanupUrlPackages, onClose]);
+
+  useCloseLayer(() => {
+    closeAndCleanup();
+    return true;
+  }, 240);
+
+  useEffect(() => () => cleanupUrlPackages(), [cleanupUrlPackages]);
+
+  useEffect(() => {
+    let alive = true;
+    setLoadingLocal(true);
+    spaceListLocalSkills(projects)
+      .then((items) => {
+        if (!alive) return;
+        setLocalSkills(items);
+      })
+      .catch((error) => toast.error(spaceErrorMessage(error)))
+      .finally(() => {
+        if (alive) setLoadingLocal(false);
+      });
+    return () => {
+      alive = false;
+    };
+  }, [projects, toast]);
+
+  const conflict = useMemo(() => {
+    if (!inspection) return null;
+    const slug = skillSlug(publishAction === 'create' && newName.trim() ? newName : inspection.name);
+    return skills.find((skill) => skill.slug === slug) ?? null;
+  }, [inspection, newName, publishAction, skills]);
+
+  const filteredLocalSkills = useMemo(() => {
+    const query = localQuery.trim().toLowerCase();
+    if (!query) return localSkills;
+    return localSkills.filter((skill) => skill.name.toLowerCase().includes(query));
+  }, [localQuery, localSkills]);
+
+  const inspectPath = useCallback(async (path: string, label: string, scopeLabel: string, hasDangerousTools = false) => {
+    const seq = ++inspectSeqRef.current;
+    setSourcePath('');
+    setSourceLabel(label);
+    setSourceScopeLabel(scopeLabel);
+    setSourceHasDangerousTools(false);
+    setInspection(null);
+    setNewName('');
+    try {
+      const result = await spaceInspectSkillSource(path);
+      if (seq !== inspectSeqRef.current) return;
+      setSourcePath(path);
+      setSourceLabel(label);
+      setSourceScopeLabel(scopeLabel);
+      setSourceHasDangerousTools(hasDangerousTools);
+      setInspection(result);
+      setNewName(result.name);
+      const nextConflict = skills.find((skill) => skill.slug === skillSlug(result.name)) ?? null;
+      setPublishAction(nextConflict ? 'update' : 'create');
+    } catch (error) {
+      if (seq !== inspectSeqRef.current) return;
+      setSourcePath('');
+      setSourceHasDangerousTools(false);
+      setInspection(null);
+      setNewName('');
+      toast.error(spaceErrorMessage(error));
+    }
+  }, [skills, toast]);
+
+  useEffect(() => {
+    if (mode !== 'file') return;
+    registerZone(SKILL_PUBLISH_FILE_DROP_ZONE_ID, fileDropRef.current, (paths) => {
+      const selectedPath = paths[0];
+      if (!selectedPath) return;
+      if (paths.length > 1) {
+        toast.error(t('space.skills.singleSourceOnly'));
+      }
+      void inspectPath(selectedPath, selectedPath.split(/[\\/]/).pop() || selectedPath, t('space.skills.sourceFileOrFolder'));
+    });
+    return () => unregisterZone(SKILL_PUBLISH_FILE_DROP_ZONE_ID);
+  }, [inspectPath, mode, registerZone, t, toast, unregisterZone]);
+
+  const inspectUrlPackage = async (item: SpaceSkillUrlPackage) => {
+    await inspectPath(item.filePath, item.rootPath || item.suggestedFolderName, t('space.skills.sourceUrl'), item.hasDangerousTools);
+  };
+
+  const applyUrlResponse = async (result: SpaceSkillUrlExportResponse) => {
+    if (!result.success) {
+      setUrlError(result.error || t('space.skills.urlImportFailed'));
+      return;
+    }
+    setUrlError(null);
+    if (result.mode === 'exported' && result.packages?.length) {
+      setUrlPreview(null);
+      cleanupUrlPackages();
+      setUrlPackages(result.packages);
+      if (result.packages.length === 1) {
+        await inspectUrlPackage(result.packages[0]);
+      }
+      return;
+    }
+    if (result.preview) {
+      setUrlPreview(result.preview);
+      cleanupUrlPackages();
+      setUrlPackages([]);
+      return;
+    }
+    setUrlError(t('space.skills.urlImportFailed'));
+  };
+
+  const probeUrl = async () => {
+    if (!urlValue.trim() || urlLoading) return;
+    setUrlLoading(true);
+    setUrlError(null);
+    setUrlPreview(null);
+    cleanupUrlPackages();
+    setUrlPackages([]);
+    setInspection(null);
+    setSourcePath('');
+    try {
+      const result = await spaceExportSkillFromUrl({ url: urlValue.trim() });
+      await applyUrlResponse(result);
+    } catch (error) {
+      setUrlError(spaceErrorMessage(error));
+    } finally {
+      setUrlLoading(false);
+    }
+  };
+
+  const exportUrlCandidate = async (selection: { pluginName?: string; folderNames: string[] }) => {
+    if (!urlValue.trim() || urlLoading) return;
+    setUrlLoading(true);
+    setUrlError(null);
+    try {
+      const result = await spaceExportSkillFromUrl({
+        url: urlValue.trim(),
+        confirmedSelection: selection,
+      });
+      await applyUrlResponse(result);
+    } catch (error) {
+      setUrlError(spaceErrorMessage(error));
+    } finally {
+      setUrlLoading(false);
+    }
+  };
+
+  const chooseFile = async () => {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selectedPath = await open({
+        multiple: false,
+        directory: false,
+        title: t('space.skills.pickPublishFileTitle'),
+        filters: [{ name: 'Skill', extensions: ['zip', 'skill', 'md'] }],
+      });
+      if (!selectedPath || Array.isArray(selectedPath)) return;
+      setMode('file');
+      await inspectPath(selectedPath, selectedPath.split(/[\\/]/).pop() || selectedPath, t('space.skills.sourceFile'));
+    } catch (error) {
+      toast.error(spaceErrorMessage(error));
+    }
+  };
+
+  const chooseFolder = async () => {
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selectedPath = await open({
+        multiple: false,
+        directory: true,
+        title: t('space.skills.pickPublishFolderTitle'),
+      });
+      if (!selectedPath || Array.isArray(selectedPath)) return;
+      setMode('file');
+      await inspectPath(selectedPath, selectedPath.split(/[\\/]/).pop() || selectedPath, t('space.skills.sourceFolder'));
+    } catch (error) {
+      toast.error(spaceErrorMessage(error));
+    }
+  };
+
+  const publish = async () => {
+    if (!inspection || !sourcePath) return;
+    if (publishAction === 'create' && conflict) {
+      toast.error(t('space.toasts.skillNameConflict'));
+      return;
+    }
+    setPublishing(true);
+    try {
+      const targetName = publishAction === 'create' ? newName.trim() || inspection.name : undefined;
+      const result =
+        publishAction === 'update' && conflict
+          ? await actions.uploadSkillRevision(conflict.id, sourcePath)
+          : await actions.uploadSkillZip({
+              filePath: sourcePath,
+              name: targetName,
+              description: inspection.description ?? undefined,
+            });
+      cleanupUrlPackages();
+      setUrlPackages([]);
+      toast.success(t('space.toasts.skillPublished', { name: result.name }));
+      onPublished(result);
+    } catch (error) {
+      const message = spaceErrorMessage(error);
+      if (String(error).includes('SKILL_SLUG_CONFLICT')) {
+        await actions.refreshSkills({ force: true, silent: true }).catch(() => undefined);
+        setPublishAction('update');
+        toast.error(t('space.skills.concurrentConflictResolved'));
+        return;
+      }
+      toast.error(message);
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  return (
+    <OverlayBackdrop onClose={closeAndCleanup} className="z-[240] items-center justify-center bg-black/25 backdrop-blur-sm">
+      <section className="relative flex h-[min(88vh,780px)] max-h-[calc(100vh-40px)] w-[min(92vw,960px)] flex-col overflow-hidden rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl">
+        <header className="flex min-h-14 items-center gap-3 border-b border-[var(--line)] px-5">
+          <h2 className="min-w-0 flex-1 truncate text-lg font-semibold text-[var(--ink)]">{t('space.skills.publishTitle')}</h2>
+          <button type="button" onClick={closeAndCleanup} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]" aria-label={t('space.detail.close')}>
+            <X className="h-4 w-4" />
+          </button>
+        </header>
+
+        <div className="grid min-h-0 flex-1 grid-cols-[240px_minmax(0,1fr)] max-md:grid-cols-1">
+          <aside className="border-r border-[var(--line)] bg-[var(--paper)]/55 p-3 max-md:border-b max-md:border-r-0">
+            <div className="grid gap-1">
+              {([
+                ['local', Search, t('space.skills.publishFromLocal')],
+                ['file', UploadCloud, t('space.skills.publishFromFile')],
+                ['url', Link, t('space.skills.publishFromUrl')],
+              ] as const).map(([value, Icon, label]) => (
+                <button key={value} type="button" onClick={() => setMode(value)} className={`flex h-10 items-center gap-2 rounded-lg px-3 text-left text-sm font-semibold transition-colors ${mode === value ? 'bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm' : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'}`}>
+                  <Icon className="h-4 w-4" />
+                  {label}
+                </button>
+              ))}
+            </div>
+          </aside>
+
+          <main className="min-h-0 overflow-y-auto p-5">
+            {mode === 'local' && (
+              <section className="grid min-h-0 gap-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <h3 className="text-base font-semibold text-[var(--ink)]">{t('space.skills.localSkills')}</h3>
+                  <div className="flex min-w-56 items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5">
+                    <Search className="h-4 w-4 shrink-0 text-[var(--ink-subtle)]" />
+                    <input
+                      value={localQuery}
+                      onChange={(event) => setLocalQuery(event.target.value)}
+                      placeholder={t('space.skills.localSearchPlaceholder')}
+                      className="h-9 min-w-0 flex-1 bg-transparent text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-subtle)]"
+                    />
+                    {loadingLocal && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[var(--ink-muted)]" />}
+                  </div>
+                </div>
+                <div className="grid max-h-[460px] gap-2 overflow-y-auto pr-1">
+                  {filteredLocalSkills.map((skill) => (
+                    <button key={skill.id} type="button" onClick={() => void inspectPath(skill.path, skill.name, skill.scope === 'project' ? (skill.workspaceLabel || t('space.skills.sourceProject')) : t('space.skills.sourceGlobal'))} className={`rounded-lg border px-3 py-2 text-left transition-colors ${sourcePath === skill.path ? 'border-[var(--accent-warm)] bg-[var(--accent-warm-subtle)]' : 'border-[var(--line-subtle)] bg-[var(--paper-elevated)] hover:border-[var(--line)]'}`}>
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink)]">{skill.name}</span>
+                        <span className="shrink-0 rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">{skill.scope === 'project' ? (skill.workspaceLabel || t('space.skills.sourceProject')) : t('space.skills.sourceGlobal')}</span>
+                      </div>
+                      <p className="mt-1 truncate text-xs font-medium text-[var(--ink-subtle)]">{skill.path}</p>
+                    </button>
+                  ))}
+                  {!loadingLocal && localSkills.length === 0 && <div className="rounded-lg border border-dashed border-[var(--line-subtle)] px-4 py-8 text-center text-sm text-[var(--ink-muted)]">{t('space.skills.noLocalSkills')}</div>}
+                  {!loadingLocal && localSkills.length > 0 && filteredLocalSkills.length === 0 && <div className="rounded-lg border border-dashed border-[var(--line-subtle)] px-4 py-8 text-center text-sm text-[var(--ink-muted)]">{t('space.skills.noMatchingLocalSkills')}</div>}
+                </div>
+              </section>
+            )}
+
+            {mode === 'file' && (
+              <section
+                ref={fileDropRef}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => event.preventDefault()}
+                className={`grid min-h-64 place-items-center rounded-lg border border-dashed px-4 py-10 text-center transition-colors ${fileDropActive ? 'border-[var(--accent-warm)] bg-[var(--accent-warm-subtle)]' : 'border-[var(--line-subtle)] bg-[var(--paper)]/45'}`}
+              >
+                <div className="max-w-md">
+                  <UploadCloud className="mx-auto mb-3 h-8 w-8 text-[var(--ink-subtle)]" />
+                  <h3 className="text-base font-semibold text-[var(--ink)]">{t('space.skills.dropSkillSource')}</h3>
+                  <p className="mt-1 text-sm text-[var(--ink-muted)]">{t('space.skills.dropSkillSourceHint')}</p>
+                  <div className="mt-4 flex flex-wrap justify-center gap-2">
+                    <button type="button" onClick={() => void chooseFile()} className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]">
+                      <UploadCloud className="h-4 w-4" />
+                      {t('space.skills.chooseSkillFile')}
+                    </button>
+                    <button type="button" onClick={() => void chooseFolder()} className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]">
+                      <Folder className="h-4 w-4" />
+                      {t('space.skills.chooseSkillFolder')}
+                    </button>
+                  </div>
+                  <p className="mt-3 text-xs font-medium text-[var(--ink-subtle)]">{t('space.skills.supportedSourceFormats')}</p>
+                </div>
+              </section>
+            )}
+
+            {mode === 'url' && (
+              <section className="grid gap-3">
+                <div className="rounded-lg border border-[var(--line-subtle)] bg-[var(--paper)]/45 p-3">
+                  <textarea
+                    value={urlValue}
+                    onChange={(event) => setUrlValue(event.target.value)}
+                    rows={4}
+                    placeholder={t('space.skills.urlInputPlaceholder')}
+                    className="w-full resize-none rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2 font-mono text-sm text-[var(--ink)] outline-none transition-colors placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent-warm)]"
+                  />
+                  <div className="mt-2 flex justify-end">
+                    <button type="button" disabled={!urlValue.trim() || urlLoading} onClick={() => void probeUrl()} className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60">
+                      {urlLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+                      {t('space.skills.analyzeUrl')}
+                    </button>
+                  </div>
+                </div>
+                {urlError && <div className="rounded-lg border border-[var(--error)]/30 bg-[var(--error-bg)] px-3 py-2 text-sm text-[var(--error)]">{urlError}</div>}
+                {urlPreview?.mode === 'multi' && (
+                  <div className="grid max-h-64 gap-2 overflow-y-auto pr-1">
+                    <p className="text-sm font-semibold text-[var(--ink-secondary)]">{t('space.skills.urlCandidates')}</p>
+                    {urlPreview.candidates.map((candidate) => (
+                      <UrlCandidateButton
+                        key={`${candidate.suggestedFolderName}:${candidate.rootPath}`}
+                        candidate={candidate}
+                        disabled={urlLoading}
+                        onSelect={() => void exportUrlCandidate({ folderNames: [candidate.suggestedFolderName] })}
+                        t={t}
+                      />
+                    ))}
+                  </div>
+                )}
+                {urlPreview?.mode === 'marketplace' && (
+                  <div className="grid max-h-72 gap-3 overflow-y-auto pr-1">
+                    <div>
+                      <p className="text-sm font-semibold text-[var(--ink-secondary)]">{urlPreview.marketplaceName}</p>
+                      {urlPreview.marketplaceDescription && <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{urlPreview.marketplaceDescription}</p>}
+                    </div>
+                    {urlPreview.plugins.map((plugin) => (
+                      <div key={plugin.name} className="rounded-lg border border-[var(--line-subtle)] bg-[var(--paper-elevated)] p-3">
+                        <div className="mb-2">
+                          <p className="text-sm font-semibold text-[var(--ink)]">{plugin.name}</p>
+                          {plugin.description && <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{plugin.description}</p>}
+                        </div>
+                        <div className="grid gap-2">
+                          {plugin.skills.map((candidate) => (
+                            <UrlCandidateButton
+                              key={`${plugin.name}:${candidate.suggestedFolderName}:${candidate.rootPath}`}
+                              candidate={candidate}
+                              disabled={urlLoading}
+                              onSelect={() => void exportUrlCandidate({ pluginName: plugin.name, folderNames: [candidate.suggestedFolderName] })}
+                              t={t}
+                            />
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {urlPackages.length > 1 && (
+                  <div className="grid gap-2">
+                    <p className="text-sm font-semibold text-[var(--ink-secondary)]">{t('space.skills.preparedUrlPackages')}</p>
+                    {urlPackages.map((item) => (
+                      <button key={item.tempId} type="button" onClick={() => void inspectUrlPackage(item)} className={`rounded-lg border px-3 py-2 text-left transition-colors ${sourcePath === item.filePath ? 'border-[var(--accent-warm)] bg-[var(--accent-warm-subtle)]' : 'border-[var(--line-subtle)] bg-[var(--paper-elevated)] hover:border-[var(--line)]'}`}>
+                        <span className="block truncate text-sm font-semibold text-[var(--ink)]">{item.name}</span>
+                        <span className="mt-1 block truncate text-xs font-medium text-[var(--ink-subtle)]">{item.rootPath || item.suggestedFolderName}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </section>
+            )}
+
+            {inspection && (
+              <section className="mt-5 rounded-lg border border-[var(--line-subtle)] bg-[var(--paper-elevated)] p-4">
+                <div className="flex flex-wrap items-start gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <h3 className="min-w-0 truncate text-base font-semibold text-[var(--ink)]">{inspection.name}</h3>
+                      <span className="rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">{sourceScopeLabel}</span>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-sm text-[var(--ink-muted)]">{inspection.description || t('space.common.noDescription')}</p>
+                    {sourceHasDangerousTools && (
+                      <p className="mt-2 inline-flex rounded-md bg-[var(--warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--warning)]">{t('space.skills.dangerousTools')}</p>
+                    )}
+                  </div>
+                  <div className="text-right text-xs font-semibold text-[var(--ink-subtle)]">
+                    <div>{formatBytes(inspection.packageSizeBytes)}</div>
+                    <div>{shortHash(inspection.packageHash)}</div>
+                  </div>
+                </div>
+                <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-medium text-[var(--ink-muted)] max-sm:grid-cols-1">
+                  <span>{t('space.skills.filesCount', { count: inspection.fileCount })}</span>
+                  <span className="truncate">{sourceLabel}</span>
+                </div>
+
+                <div className="mt-4 grid gap-2">
+                  {conflict && (
+                    <div className="rounded-lg border border-[var(--accent-warm)] bg-[var(--accent-warm-subtle)] px-3 py-2 text-sm text-[var(--ink-secondary)]">
+                      {t('space.skills.conflictWith', { name: conflict.name })}
+                    </div>
+                  )}
+                  <label className="flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border border-[var(--line-subtle)] px-3 text-sm font-semibold text-[var(--ink-secondary)]">
+                    <input type="radio" checked={publishAction === 'create'} onChange={() => setPublishAction('create')} />
+                    {t('space.skills.publishAsNew')}
+                  </label>
+                  {publishAction === 'create' && (
+                    <input value={newName} onChange={(event) => setNewName(event.target.value)} className="h-10 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]" />
+                  )}
+                  {conflict && (
+                    <label className="flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border border-[var(--line-subtle)] px-3 text-sm font-semibold text-[var(--ink-secondary)]">
+                      <input type="radio" checked={publishAction === 'update'} onChange={() => setPublishAction('update')} />
+                      {t('space.skills.publishAsUpdate', { version: conflict.latestRevision + 1 })}
+                    </label>
+                  )}
+                </div>
+              </section>
+            )}
+          </main>
+        </div>
+
+        <footer className="flex min-h-14 justify-end gap-2 border-t border-[var(--line)] px-5 py-2.5">
+          <button type="button" onClick={closeAndCleanup} className="h-9 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)]">{t('space.common.cancel')}</button>
+          <button type="button" disabled={!inspection || publishing || (publishAction === 'create' && Boolean(conflict))} onClick={() => void publish()} className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60">
+            {publishing && <Loader2 className="h-4 w-4 animate-spin" />}
+            {t('space.skills.publish')}
+          </button>
+        </footer>
+      </section>
+    </OverlayBackdrop>
+  );
+}
+
+function UrlCandidateButton({ candidate, disabled, onSelect, t }: { candidate: SpaceSkillUrlCandidate; disabled: boolean; onSelect: () => void; t: ReturnType<typeof useTranslation>['t'] }) {
+  return (
+    <button type="button" disabled={disabled} onClick={onSelect} className="rounded-lg border border-[var(--line-subtle)] bg-[var(--paper-elevated)] px-3 py-2 text-left transition-colors hover:border-[var(--line)] disabled:cursor-not-allowed disabled:opacity-60">
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink)]">{candidate.name}</span>
+        {candidate.hasDangerousTools && <span className="shrink-0 rounded-md bg-[var(--warning-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--warning)]">{t('space.skills.dangerousTools')}</span>}
+      </div>
+      {candidate.description && <p className="mt-1 line-clamp-2 text-xs text-[var(--ink-muted)]">{candidate.description}</p>}
+      <div className="mt-1 flex min-w-0 items-center justify-between gap-2 text-xs font-medium text-[var(--ink-subtle)]">
+        <span className="truncate">{candidate.rootPath || candidate.suggestedFolderName}</span>
+        <span className="shrink-0 text-[var(--accent-warm)]">{t('space.skills.selectCandidate')}</span>
+      </div>
     </button>
   );
 }
@@ -188,6 +675,8 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
   const [installingTarget, setInstallingTarget] = useState<'global' | 'project' | null>(null);
   const [revisionUploading, setRevisionUploading] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [rollbackTarget, setRollbackTarget] = useState<number | null>(null);
+  const [rollingBack, setRollingBack] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const workspaceMenuRef = useRef<HTMLSpanElement | null>(null);
   const adminMenuRef = useRef<HTMLSpanElement | null>(null);
@@ -196,13 +685,15 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
   const files = detail?.files ?? EMPTY_SKILL_FILES;
   const entryFile = useMemo(() => findEntryFile(files), [files]);
   const sortedFiles = useMemo(() => sortSkillFiles(files), [files]);
-  const activeMode: SkillDetailMode = entryFile ? mode : 'files';
+  const activeMode: SkillDetailMode = mode === 'history' ? 'history' : entryFile ? mode : 'files';
   const previewFile = activeMode === 'files' && previewPath ? (files.find((file) => file.path === previewPath && !file.isDir) ?? null) : null;
   const activeFile = activeMode === 'entry' ? entryFile : previewFile;
   const activePath = activeFile?.path ?? '';
   const fileState = activePath ? getSkillFileState(skill.id, activePath) : null;
   const fileLoading = fileState?.isLoading ?? false;
   const fileText = fileState?.text ?? '';
+  const revisionState = getSkillRevisionState(skill.id);
+  const history = revisionState?.history ?? null;
 
   const projectOptions = useMemo(
     () =>
@@ -234,6 +725,13 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
       })
       .catch((error) => toast.error(spaceErrorMessage(error)));
   }, [actions, activePath, skill.id, toast]);
+
+  useEffect(() => {
+    if (activeMode !== 'history') return;
+    void actions
+      .refreshSkillRevisions(skill.id, { maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS })
+      .catch((error) => toast.error(spaceErrorMessage(error)));
+  }, [actions, activeMode, skill.id, toast]);
 
   useEffect(() => {
     if (!workspaceMenuOpen && !adminMenuOpen) return;
@@ -287,7 +785,7 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
         multiple: false,
         directory: false,
         title: t('space.skills.pickRevisionZipTitle'),
-        filters: [{ name: 'Skill ZIP', extensions: ['zip'] }],
+        filters: [{ name: 'Skill', extensions: ['zip', 'skill', 'md'] }],
       });
       if (!selectedPath || Array.isArray(selectedPath)) return;
       setRevisionUploading(true);
@@ -297,7 +795,13 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
           revision: result.latestRevision,
         }),
       );
-      await Promise.all([actions.refreshSkills({ force: true, silent: true }), actions.refreshSkillDetail(skill.id, { force: true, silent: true })]);
+      await Promise.all([
+        actions.refreshSkills({ force: true, silent: true }),
+        actions.refreshSkillDetail(skill.id, { force: true, silent: true }),
+        activeMode === 'history'
+          ? actions.refreshSkillRevisions(skill.id, { force: true, silent: true })
+          : Promise.resolve(),
+      ]);
     } catch (error) {
       toast.error(spaceErrorMessage(error));
     } finally {
@@ -318,6 +822,25 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
       toast.error(spaceErrorMessage(error));
     } finally {
       setDeleting(false);
+    }
+  };
+
+  const rollback = async () => {
+    if (!rollbackTarget) return;
+    setRollingBack(true);
+    try {
+      const result = await actions.rollbackSkill(skill.id, rollbackTarget);
+      toast.success(t('space.toasts.skillRolledBack', { revision: result.currentRevision }));
+      setRollbackTarget(null);
+      await Promise.all([
+        actions.refreshSkills({ force: true, silent: true }),
+        actions.refreshSkillDetail(skill.id, { force: true, silent: true }),
+        actions.refreshSkillRevisions(skill.id, { force: true, silent: true }),
+      ]);
+    } catch (error) {
+      toast.error(spaceErrorMessage(error));
+    } finally {
+      setRollingBack(false);
     }
   };
 
@@ -412,6 +935,54 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
     );
   };
 
+  const renderHistory = () => (
+    <section className="rounded-lg border border-[var(--line-subtle)] bg-[var(--paper-elevated)] p-4">
+      {revisionState?.isLoading && !history ? (
+        <div className="flex min-h-40 items-center justify-center text-sm text-[var(--ink-muted)]">
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+          {t('space.skills.loadingHistory')}
+        </div>
+      ) : revisionState?.error ? (
+        <div className="flex min-h-40 items-center justify-center text-sm text-[var(--ink-muted)]">{revisionState.error}</div>
+      ) : (
+        <div className="grid gap-2">
+          {(history?.items ?? []).map((revision) => (
+            <div key={revision.id} className="grid min-h-14 grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 rounded-lg border border-[var(--line-subtle)] bg-[var(--paper)]/45 px-3 py-2">
+              <span className="rounded-md bg-[var(--paper-inset)] px-2 py-1 text-sm font-semibold text-[var(--ink)]">v{revision.revision}</span>
+              <div className="min-w-0">
+                <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs font-semibold text-[var(--ink-subtle)]">
+                  <SpaceIdentityLine
+                    name={revision.uploader?.name ?? revision.uploader?.id ?? t('space.skills.unknownUploader')}
+                    avatarUrl={revision.uploader?.avatarUrl}
+                    avatarSize={18}
+                    nameClassName="font-semibold text-[var(--ink-muted)]"
+                  />
+                  <span className="text-[var(--line-strong)]">·</span>
+                  <span>{formatDate(revision.createdAt)}</span>
+                  {revision.packageHash && (
+                    <>
+                      <span className="text-[var(--line-strong)]">·</span>
+                      <span>{shortHash(revision.packageHash)}</span>
+                    </>
+                  )}
+                </div>
+              </div>
+              {revision.isCurrent ? (
+                <span className="rounded-md bg-[var(--accent-cool-subtle)] px-2 py-1 text-xs font-semibold text-[var(--accent-cool)]">{t('space.skills.currentVersion')}</span>
+              ) : admin ? (
+                <button type="button" onClick={() => setRollbackTarget(revision.revision)} className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 text-xs font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)]">
+                  <RotateCcw className="h-3.5 w-3.5" />
+                  {t('space.skills.rollback')}
+                </button>
+              ) : null}
+            </div>
+          ))}
+          {history && history.items.length === 0 && <div className="py-10 text-center text-sm text-[var(--ink-muted)]">{t('space.skills.noHistory')}</div>}
+        </div>
+      )}
+    </section>
+  );
+
   return (
     <>
       <OverlayBackdrop onClose={onBack} className="z-[230] items-stretch justify-end bg-black/20 backdrop-blur-sm">
@@ -426,7 +997,12 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
             <div className="mx-auto max-w-[900px] pb-8">
               <section className="border-b border-[var(--line-subtle)] pb-5">
                 <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-[var(--ink-subtle)]">
-                  <span>{skill.slug || 'official'}</span>
+                  <SpaceIdentityLine
+                    name={skill.uploader?.name ?? skill.uploader?.id ?? t('space.skills.unknownUploader')}
+                    avatarUrl={skill.uploader?.avatarUrl}
+                    avatarSize={20}
+                    nameClassName="font-semibold text-[var(--ink-subtle)]"
+                  />
                   <span className="text-[var(--line-strong)]">·</span>
                   <span>{formatDate(skill.createdAt)}</span>
                   <span className="inline-flex rounded-md bg-[var(--accent-cool-subtle)] px-2 py-1 text-xs font-semibold text-[var(--accent-cool)]"># {t('space.skills.officialTag')}</span>
@@ -462,6 +1038,10 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
                 <div className="mt-3 min-w-0">
                   <h2 className="max-w-[68ch] text-xl font-semibold leading-snug text-[var(--ink)]">{skill.name}</h2>
                   <p className="mt-2 max-w-[72ch] whitespace-pre-wrap text-sm leading-6 text-[var(--ink-secondary)]">{skill.description || t('space.common.noDescription')}</p>
+                  <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold text-[var(--ink-muted)]">
+                    <span className="rounded-md bg-[var(--paper-inset)] px-2 py-1">v{skill.currentRevision}</span>
+                    {skill.currentRevision !== skill.latestRevision && <span className="rounded-md bg-[var(--accent-warm-subtle)] px-2 py-1 text-[var(--accent-warm)]">{t('space.skills.latestVersion', { revision: skill.latestRevision })}</span>}
+                  </div>
                 </div>
               </section>
 
@@ -521,8 +1101,11 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
                     <button type="button" onClick={() => changeMode('files')} className={`border-b-2 px-0 pb-2.5 text-sm font-semibold transition-colors ${activeMode === 'files' ? 'border-[var(--ink)] text-[var(--ink)]' : 'border-transparent text-[var(--ink-muted)] hover:text-[var(--ink)]'}`}>
                       {t('space.skills.files')}
                     </button>
+                    <button type="button" onClick={() => changeMode('history')} className={`border-b-2 px-0 pb-2.5 text-sm font-semibold transition-colors ${activeMode === 'history' ? 'border-[var(--ink)] text-[var(--ink)]' : 'border-transparent text-[var(--ink-muted)] hover:text-[var(--ink)]'}`}>
+                      {t('space.skills.history')}
+                    </button>
                   </nav>
-                  <div className="mt-5">{activeMode === 'entry' ? renderEntryDocument() : previewFile ? renderFilePreview() : renderFilesList()}</div>
+                  <div className="mt-5">{activeMode === 'history' ? renderHistory() : activeMode === 'entry' ? renderEntryDocument() : previewFile ? renderFilePreview() : renderFilesList()}</div>
                 </>
               )}
             </div>
@@ -530,6 +1113,7 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
         </aside>
       </OverlayBackdrop>
       {deleteConfirmOpen && <ConfirmDialog title={t('space.skills.deleteTitle')} message={t('space.skills.deleteMessage', { name: skill.name })} confirmText={t('space.skills.delete')} cancelText={t('space.common.cancel')} confirmVariant="danger" loading={deleting} onConfirm={() => void deleteSkill()} onCancel={() => setDeleteConfirmOpen(false)} />}
+      {rollbackTarget !== null && <ConfirmDialog title={t('space.skills.rollbackTitle')} message={t('space.skills.rollbackMessage', { current: skill.currentRevision, target: rollbackTarget })} confirmText={t('space.skills.rollback')} cancelText={t('space.common.cancel')} loading={rollingBack} onConfirm={() => void rollback()} onCancel={() => setRollbackTarget(null)} />}
     </>
   );
 }

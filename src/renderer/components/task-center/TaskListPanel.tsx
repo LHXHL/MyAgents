@@ -168,7 +168,7 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
       const mergedNative = upgradedTasks.length
         ? [...upgradedTasks, ...nativeList]
         : nativeList;
-      setTasks(mergedNative);
+      setTasks(mergedNative.filter((task) => !task.managedKind));
       setLegacy(remainingLegacy);
       if (upgradedTasks.length > 0) {
         toastRef.current.success(
@@ -742,7 +742,7 @@ async function fetchLegacyCronTasks(unnamedLegacyTaskLabel: string): Promise<Leg
       'cmd_get_cron_tasks',
     )) as Array<Record<string, unknown>>;
     return all
-      .filter((t) => !t.taskId && !t.task_id)
+      .filter((t) => !t.taskId && !t.task_id && !getRawManagedKind(t))
       .map<LegacyCronRow>((t) => {
         const status = (t.status as string | undefined) === 'running' ? 'running' : 'stopped';
         const updatedAt =
@@ -772,6 +772,11 @@ async function fetchLegacyCronTasks(unnamedLegacyTaskLabel: string): Promise<Leg
     console.warn('[TaskListPanel] fetchLegacyCronTasks failed', err);
     return [];
   }
+}
+
+function getRawManagedKind(row: Record<string, unknown>): string {
+  const value = row.managedKind ?? row.managed_kind;
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 /**

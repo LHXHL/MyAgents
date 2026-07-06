@@ -27,17 +27,56 @@ export interface SpaceUser {
   avatarUrl?: string | null;
 }
 
+export interface SpaceUserSummary {
+  id: string;
+  name?: string | null;
+  avatarUrl?: string | null;
+}
+
 export interface SpaceInfo {
   id: string;
   slug: string;
   name: string;
   joinPolicy: string;
   rootGoalId?: string | null;
+  createdByUserId?: string | null;
+  billingOwnerUserId?: string | null;
+  planTier?: string | null;
+  spaceKind?: "official" | "user" | string | null;
+  avatarUrl?: string | null;
+  avatarSizeBytes?: number | null;
 }
 
 export interface SpaceMembership {
   id: string;
+  spaceId?: string;
+  userId?: string;
   role: "owner" | "admin" | "member";
+  createdAt?: string;
+}
+
+export interface SpacePlanLimits {
+  ownedSpacesMax: number;
+  joinedMembersMax: number;
+  openIssuesMax: number;
+  hostedSkillsMax: number;
+  registeredAgentsMax: number;
+  storageBytesMax: number;
+}
+
+export interface SpaceUsage {
+  memberSeats: number;
+  openIssues: number;
+  hostedSkills: number;
+  registeredAgents: number;
+  storageBytes: number;
+}
+
+export interface SpaceListItem extends SpaceInfo {
+  membership: SpaceMembership;
+  canManage?: boolean;
+  pendingJoinRequestCount?: number;
+  limits?: SpacePlanLimits;
 }
 
 export interface SpaceSession {
@@ -46,7 +85,46 @@ export interface SpaceSession {
   user: SpaceUser;
   space: SpaceInfo;
   membership: SpaceMembership;
+  spaces?: SpaceListItem[];
+  lastActiveSpaceId?: string | null;
   updatedAt: string;
+}
+
+export interface SpaceMember {
+  id: string;
+  spaceId: string;
+  userId: string;
+  role: "owner" | "admin" | "member";
+  createdAt: string;
+  user: SpaceUser;
+}
+
+export interface SpaceJoinRequest {
+  id: string;
+  spaceId: string;
+  userId: string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+  user: SpaceUser;
+}
+
+export interface SpaceInvitation {
+  id: string;
+  email: string;
+  role: "admin" | "member" | string;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SpaceMembersPayload {
+  members: SpaceMember[];
+  items?: SpaceMember[];
+  joinRequests: SpaceJoinRequest[];
+  invitations: SpaceInvitation[];
+  usage: SpaceUsage;
+  limits: SpacePlanLimits;
 }
 
 export interface SpaceBuildCapability {
@@ -105,11 +183,11 @@ export interface SpaceIssue {
   createdByType?: "user" | "registered_agent";
   createdById?: string;
   createdByUserId?: string;
-  creator?: { id: string; name?: string | null };
+  creator?: SpaceUserSummary;
   notificationVersion?: number;
   goalPathLabel?: string | null;
   status?: string;
-  author?: { id: string; name?: string | null };
+  author?: SpaceUserSummary;
   tags?: SpaceTag[];
   commentCount?: number;
   attachmentCount?: number;
@@ -120,7 +198,12 @@ export interface SpaceIssue {
 
 export interface SpaceIssueComment {
   id: string;
-  author: { id: string; type: "user" | "registered_agent" | "system" };
+  author: {
+    id: string;
+    type: "user" | "registered_agent" | "system";
+    name?: string | null;
+    avatarUrl?: string | null;
+  };
   body: string;
   createdAt: string;
 }
@@ -185,7 +268,9 @@ export interface SpaceSkill {
   name: string;
   slug: string;
   description?: string | null;
+  currentRevision: number;
   latestRevision: number;
+  uploader?: SpaceUserSummary | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -205,6 +290,89 @@ export interface SpaceSkillDetail {
   skill: SpaceSkill;
   revision?: Record<string, unknown> | null;
   files: SpaceSkillFile[];
+}
+
+export interface SpaceSkillRevision {
+  id: string;
+  skillId?: string;
+  revision: number;
+  version?: string;
+  packageHash?: string | null;
+  packageStorageKey?: string | null;
+  isCurrent: boolean;
+  uploader?: SpaceUserSummary | null;
+  createdAt: string;
+}
+
+export interface SpaceSkillRevisionHistory {
+  skill: {
+    id: string;
+    currentRevision: number;
+    latestRevision: number;
+  };
+  items: SpaceSkillRevision[];
+}
+
+export interface SpaceLocalSkill {
+  id: string;
+  name: string;
+  description?: string | null;
+  folderName: string;
+  path: string;
+  skillMdPath: string;
+  scope: "global" | "project" | string;
+  workspacePath?: string | null;
+  workspaceLabel?: string | null;
+}
+
+export interface SpaceSkillSourceInspection {
+  name: string;
+  description?: string | null;
+  fileCount: number;
+  packageSizeBytes: number;
+  packageHash: string;
+  sourcePath: string;
+}
+
+export interface SpaceSkillUrlCandidate {
+  suggestedFolderName: string;
+  name: string;
+  description: string;
+  hasDangerousTools: boolean;
+  rootPath: string;
+}
+
+export type SpaceSkillUrlPreview =
+  | {
+      mode: "multi";
+      candidates: SpaceSkillUrlCandidate[];
+    }
+  | {
+      mode: "marketplace";
+      marketplaceName: string;
+      marketplaceDescription?: string;
+      plugins: Array<{
+        name: string;
+        description: string;
+        skills: SpaceSkillUrlCandidate[];
+      }>;
+    };
+
+export interface SpaceSkillUrlPackage extends SpaceSkillUrlCandidate {
+  tempId: string;
+  filePath: string;
+  fileCount: number;
+  packageSizeBytes: number;
+}
+
+export interface SpaceSkillUrlExportResponse {
+  success: boolean;
+  mode?: "exported" | "multi" | "marketplace";
+  packages?: SpaceSkillUrlPackage[];
+  preview?: SpaceSkillUrlPreview;
+  error?: string;
+  sourceUrl?: string;
+  effectiveRef?: string;
 }
 
 export type SpaceIssueSubscriptionRunMode = "single_session" | "new_session";
@@ -348,6 +516,9 @@ export interface SpaceApiEnvelope<T> {
     message: string;
     recoveryCommand?: string;
   };
+  quota?: string;
+  limit?: number;
+  usage?: number;
   hint?: string;
 }
 
@@ -364,11 +535,18 @@ export interface NormalizedSpaceError {
 
 interface SpaceUserFacingError extends Error {
   readonly __spaceUserFacingError: true;
+  readonly spaceCode?: string;
 }
 
-function spaceUserFacingError(message: string): SpaceUserFacingError {
+function spaceUserFacingError(
+  message: string,
+  details?: { code?: string },
+): SpaceUserFacingError {
   const error = new Error(message) as SpaceUserFacingError;
   Object.defineProperty(error, "__spaceUserFacingError", { value: true });
+  if (details?.code) {
+    Object.defineProperty(error, "spaceCode", { value: details.code });
+  }
   return error;
 }
 
@@ -427,6 +605,10 @@ function operationFromPath(context?: SpaceErrorContext): string {
     return spaceText("operations.completeIssue");
   if (method === "POST" && /\/api\/issues\/[^/]+\/cancel-claim$/.test(path))
     return spaceText("operations.cancelClaim");
+  if (method === "POST" && path === "/api/spaces")
+    return spaceText("operations.createSpace");
+  if (method === "POST" && path === "/api/spaces/join")
+    return spaceText("operations.joinSpace");
   if (path.includes("/goals")) return spaceText("operations.goal");
   if (path.includes("/attachments")) return spaceText("operations.attachment");
   if (path.includes("/skills")) return spaceText("operations.skill");
@@ -454,11 +636,52 @@ export function normalizeSpaceError(
   const code = typeof envelope?.code === "string" ? envelope.code : "";
   const requestId =
     typeof envelope?.requestId === "string" ? envelope.requestId : "";
+  const quota =
+    typeof envelope?.quota === "string"
+      ? envelope.quota
+      : raw.match(/\bquota=([A-Za-z0-9_]+)/)?.[1] ?? "";
+  const rawLimit = Number(raw.match(/\blimit=(\d+)/)?.[1] ?? Number.NaN);
+  const rawUsage = Number(raw.match(/\busage=(\d+)/)?.[1] ?? Number.NaN);
+  const quotaLimit =
+    typeof envelope?.limit === "number"
+      ? envelope.limit
+      : Number.isFinite(rawLimit)
+        ? rawLimit
+        : null;
+  const quotaUsage =
+    typeof envelope?.usage === "number"
+      ? envelope.usage
+      : Number.isFinite(rawUsage)
+        ? rawUsage
+        : null;
   const recoveryMessage =
     typeof envelope?.recoveryHint?.message === "string"
       ? envelope.recoveryHint.message.trim()
       : "";
   const debugSuffix = [code, requestId].filter(Boolean).join(" ");
+
+  if (code === "SPACE_QUOTA_EXCEEDED" || raw.includes("SPACE_QUOTA_EXCEEDED")) {
+    const quotaLabel = quota ? spaceText(`quotas.${quota}`) : spaceText("quotas.default");
+    return {
+      userMessage:
+        quotaLimit !== null && quotaUsage !== null
+          ? spaceText("templates.quotaExceededWithUsage", {
+              operation,
+              quota: quotaLabel,
+              usage: quotaUsage,
+              limit: quotaLimit,
+            })
+          : spaceText("templates.quotaExceeded", { operation, quota: quotaLabel }),
+      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(" · "),
+    };
+  }
+
+  if (code === "SPACE_SLUG_CONFLICT") {
+    return {
+      userMessage: spaceText("templates.slugConflict", { operation }),
+      debugMessage: [debugSuffix, sanitized].filter(Boolean).join(" · "),
+    };
+  }
 
   if (code === "NOT_AUTHENTICATED" || code === "SESSION_EXPIRED") {
     return {
@@ -541,6 +764,20 @@ export function spaceErrorMessage(
   return normalizeSpaceError(error, context).userMessage;
 }
 
+export function spaceErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const maybeError = error as Partial<SpaceApiEnvelope<unknown>> & {
+    spaceCode?: unknown;
+  };
+  if (typeof maybeError.spaceCode === "string") return maybeError.spaceCode;
+  if (typeof maybeError.code === "string") return maybeError.code;
+  return null;
+}
+
+export function isSpaceErrorCode(error: unknown, code: string): boolean {
+  return spaceErrorCode(error) === code;
+}
+
 async function spaceApi<T>(
   method: string,
   path: string,
@@ -574,13 +811,17 @@ async function spaceApi<T>(
       path,
       error: normalized.debugMessage,
     });
-    throw spaceUserFacingError(normalized.userMessage);
+    throw spaceUserFacingError(normalized.userMessage, { code: result.code });
   }
   return result.data as T;
 }
 
 export function spaceGetSession(): Promise<SpaceSession | null> {
   return inv("cmd_space_get_session");
+}
+
+export function spaceSetActiveSpace(spaceId: string): Promise<SpaceSession | null> {
+  return inv("cmd_space_set_active_space", { input: { spaceId } });
 }
 
 export function spaceGetCapability(): Promise<SpaceBuildCapability> {
@@ -609,6 +850,48 @@ export function spaceLogout(): Promise<void> {
   return inv("cmd_space_logout");
 }
 
+export function spaceUpdateProfile(input: {
+  name: string;
+  avatarFilePath?: string | null;
+  nameChanged?: boolean;
+}): Promise<SpaceSession> {
+  return inv("cmd_space_update_profile", { input });
+}
+
+export function spaceUpdateSpace(input: {
+  spaceId: string;
+  name?: string;
+  avatarFilePath?: string | null;
+}): Promise<SpaceSession> {
+  return inv("cmd_space_update_space", { input });
+}
+
+export function spaceListSpaces(): Promise<{
+  user: SpaceUser;
+  space: SpaceInfo;
+  membership: SpaceMembership;
+  spaces: SpaceListItem[];
+}> {
+  return spaceApi("GET", "/api/spaces");
+}
+
+export function spaceCreateSpace(input: { name: string; slug?: string }) {
+  return spaceApi<{
+    space: SpaceInfo;
+    membership: SpaceMembership;
+    limits: SpacePlanLimits;
+  }>("POST", "/api/spaces", input);
+}
+
+export function spaceJoinSpace(input: { slug: string }) {
+  return spaceApi<{
+    status: "joined" | "pending" | string;
+    space: SpaceInfo;
+    membership?: SpaceMembership;
+    joinRequest?: SpaceJoinRequest;
+  }>("POST", "/api/spaces/join", input);
+}
+
 export function spaceGetOfficial(
   spaceId = DEFAULT_SPACE_ID,
 ): Promise<{
@@ -616,8 +899,75 @@ export function spaceGetOfficial(
   membership: SpaceMembership;
   goals: SpaceGoal[];
   tags?: SpaceTag[];
+  usage?: SpaceUsage | null;
+  limits?: SpacePlanLimits;
 }> {
   return spaceApi("GET", `/api/spaces/${spacePath(spaceId)}`);
+}
+
+export function spaceGetSpaceUsage(spaceId = DEFAULT_SPACE_ID) {
+  return spaceApi<{ usage: SpaceUsage; limits: SpacePlanLimits }>(
+    "GET",
+    `/api/spaces/${spacePath(spaceId)}/usage`,
+  );
+}
+
+export function spaceGetMembers(spaceId = DEFAULT_SPACE_ID) {
+  return spaceApi<SpaceMembersPayload>(
+    "GET",
+    `/api/spaces/${spacePath(spaceId)}/members`,
+  );
+}
+
+export function spaceUpdateMemberRole(input: {
+  spaceId: string;
+  memberId: string;
+  role: "admin" | "member";
+}) {
+  return spaceApi<{ membership: SpaceMembership }>(
+    "PATCH",
+    `/api/spaces/${spacePath(input.spaceId)}/members/${encodeURIComponent(input.memberId)}`,
+    { role: input.role },
+  );
+}
+
+export function spaceRemoveMember(input: { spaceId: string; memberId: string }) {
+  return spaceApi<{ removed: boolean; revokedRegisteredAgentIds?: string[] }>(
+    "DELETE",
+    `/api/spaces/${spacePath(input.spaceId)}/members/${encodeURIComponent(input.memberId)}`,
+  );
+}
+
+export function spaceApproveJoinRequest(input: { spaceId: string; requestId: string }) {
+  return spaceApi<{ approved: boolean; membership: SpaceMembership }>(
+    "POST",
+    `/api/spaces/${spacePath(input.spaceId)}/join-requests/${encodeURIComponent(input.requestId)}/approve`,
+    {},
+  );
+}
+
+export function spaceRejectJoinRequest(input: { spaceId: string; requestId: string }) {
+  return spaceApi<{ rejected: boolean }>(
+    "POST",
+    `/api/spaces/${spacePath(input.spaceId)}/join-requests/${encodeURIComponent(input.requestId)}/reject`,
+    {},
+  );
+}
+
+export function spaceInviteMember(input: {
+  spaceId: string;
+  email: string;
+  role?: "admin" | "member";
+}) {
+  return spaceApi<{
+    status: "joined" | "invited" | string;
+    membership?: SpaceMembership;
+    invitation?: SpaceInvitation;
+  }>(
+    "POST",
+    `/api/spaces/${spacePath(input.spaceId)}/invitations`,
+    { email: input.email, role: input.role ?? "member" },
+  );
 }
 
 export function spaceListGoals(
@@ -833,6 +1183,56 @@ export function spaceGetSkillFile(id: string, path: string) {
     "GET",
     `/api/skills/${encodeURIComponent(id)}/file-content?${search.toString()}`,
   );
+}
+
+export function spaceListSkillRevisions(id: string) {
+  return spaceApi<SpaceSkillRevisionHistory>(
+    "GET",
+    `/api/skills/${encodeURIComponent(id)}/revisions`,
+  );
+}
+
+export function spaceRollbackSkill(id: string, revision: number) {
+  return spaceApi<{ skill: SpaceSkill }>(
+    "POST",
+    `/api/skills/${encodeURIComponent(id)}/rollback`,
+    { revision },
+  );
+}
+
+export function spaceListLocalSkills(projects: Project[]) {
+  return inv<SpaceLocalSkill[]>("cmd_space_list_local_skills", {
+    input: {
+      projects: projects.map((project) => ({
+        workspacePath: project.path,
+        workspaceLabel: project.displayName || project.name,
+      })),
+    },
+  });
+}
+
+export function spaceInspectSkillSource(filePath: string) {
+  return inv<SpaceSkillSourceInspection>("cmd_space_inspect_skill_source", {
+    input: { filePath },
+  });
+}
+
+export function spaceExportSkillFromUrl(input: {
+  url: string;
+  confirmedSelection?: {
+    pluginName?: string;
+    folderNames?: string[];
+  };
+}) {
+  return inv<SpaceSkillUrlExportResponse>("cmd_space_export_skill_from_url", {
+    input,
+  });
+}
+
+export function spaceCleanupSkillExportPackages(filePaths: string[]) {
+  return inv<void>("cmd_space_cleanup_skill_export_packages", {
+    input: { filePaths },
+  });
 }
 
 export function spaceInstallSkill(input: {

@@ -336,6 +336,8 @@ Project (工作区)
 
 **模板默认能力**：工作区文件模板内容与产品级 Agent 默认策略分离。Mino 文件模板来自打包资源/外部模板仓库；MyAgents 在 `WorkspaceTemplate.agentDefaults` 声明产品默认能力。新建 Mino project 会记录 `templateId=mino` / `templateSource=builtin`，随后 `buildAgentForProject()` 生成默认开启的 Agent（heartbeat + memory update），但不自动创建 channel；Rust 仍只在 `agent.enabled && channel.enabled && credentials` 成立时启动 channel/Agent heartbeat。
 
+Memory auto-update 的默认指令文件不属于 Mino 文件模板的硬依赖：`src-tauri/src/im/memory_update.rs` 在执行自动更新流程时会确保工作区根目录 `UPDATE_MEMORY.md` 存在，缺失则从 `src/shared/default-update-memory.md` 初始化；已有文件始终是用户内容权威。
+
 **适配器：**
 
 | 适配器 | 协议 | 说明 |
@@ -554,7 +556,7 @@ tarball-fetcher.ts   — codeload.github.com 下载 zip → 内存解包 + 安�
 installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 ```
 
-**安全限额：** tarball ≤ 50MB、单文件 ≤ 5MB、文件总数 ≤ 2000、超时 60s、Zip-Slip 防御。
+**安全限额：** tarball ≤ 50MB、单文件 ≤ 5MB、文件总数 ≤ 2000、超时 60s、Zip-Slip 防御。直连压缩包必须使用 HTTPS；下载前后每个 redirect hop 都拒绝 loopback/RFC1918/link-local/IPv6 ULA，并把 fetch 钉死到已校验 DNS 结果，防 SSRF / DNS rebinding。
 
 **MVP 明确不支持：** GitLab、私有仓库、git SSH URL、搜索集成、市场订阅持久化、`skill update`、跨 IDE symlink 同步、npm spec 形态。
 
@@ -907,6 +909,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 ### 通信与会话
 - [Session 架构](./tech_docs/session_architecture.md) — ID 格式、JSONL 存储、SDK 双重存储、状态同步
+- [System Reminder 隐藏消息协议](./tech_docs/system_reminder_protocol.md) — 注入 user message 的 hidden payload、badge tag、visible tail 前端展示规则
 - [代理配置](./tech_docs/proxy_config.md) — 系统代理 + SOCKS5 桥接
 - [统一日志](./tech_docs/unified_logging.md) — 日志格式、来源、排查指南
 - [三方供应商](./tech_docs/third_party_providers.md) — 环境变量、认证模式、Bridge 原理

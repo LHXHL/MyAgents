@@ -19,6 +19,9 @@ use super::searcher::{SessionSearchHit, SessionSearchResult};
 use super::tokenizer;
 use super::util::{byte_to_utf16, ceil_char_boundary, floor_char_boundary};
 
+const SYSTEM_REMINDER_OPEN: &str = "<system-reminder>";
+const SYSTEM_REMINDER_CLOSE: &str = "</system-reminder>";
+
 /// Manages the Tantivy index for session history search.
 ///
 /// **Concurrency model:** the reader path (`search`, `doc_count`) is lock-free
@@ -31,6 +34,7 @@ pub struct SessionIndex {
     reader: IndexReader,
     writer: StdMutex<IndexWriter>,
     fields: SessionFields,
+    data_dir: Option<PathBuf>,
     /// Pattern 3 §3.2.4 / D.4 — directory holding the Tantivy index plus
     /// per-session `<sessionId>.offset` sidecar files used for incremental
     /// indexing (see `reindex_session_incremental`).
@@ -126,6 +130,7 @@ impl SessionIndex {
             reader,
             writer: StdMutex::new(writer),
             fields,
+            data_dir: infer_data_dir_from_session_index_dir(&index_dir),
             index_dir,
         })
     }
@@ -186,11 +191,19 @@ impl SessionIndex {
             .map_err(|e| format!("writer mutex poisoned: {}", e))?;
 
         let mut count = 0;
+        let mut changed = false;
         for session in &sessions {
             let session_id = match session.get("id").and_then(|v| v.as_str()) {
                 Some(id) => id,
                 None => continue,
             };
+
+            if !crate::session_visibility::is_history_visible_session(session, &sessions_dir) {
+                writer.delete_term(Term::from_field_text(self.fields.session_id, session_id));
+                self.drop_session_offset(session_id);
+                changed = true;
+                continue;
+            }
 
             // Skip already indexed sessions
             if indexed_ids.contains(session_id) {
@@ -204,6 +217,7 @@ impl SessionIndex {
                 continue;
             }
             count += 1;
+            changed = true;
             // Pattern 3 §D.4 — record the byte offset reached so subsequent
             // watcher-triggered reindex calls can take the incremental path.
             let jsonl_path = sessions_dir.join(format!("{}.jsonl", session_id));
@@ -212,7 +226,7 @@ impl SessionIndex {
             }
         }
 
-        if count > 0 {
+        if changed {
             writer
                 .commit()
                 .map_err(|e| format!("Failed to commit session index: {}", e))?;
@@ -263,8 +277,8 @@ impl SessionIndex {
 
         // Fall back to full rebuild (corrupt offset, rewind, first index).
         self.drop_session_offset(session_id);
-        self.full_reindex_session(session_id, sessions_dir)?;
-        if current_size > 0 {
+        let indexed = self.full_reindex_session(session_id, sessions_dir)?;
+        if indexed && current_size > 0 {
             self.write_session_offset(session_id, current_size);
         }
         Ok(())
@@ -272,7 +286,7 @@ impl SessionIndex {
 
     /// Full delete-and-rebuild path. Reserved for first index, rewind, and
     /// recovery from a corrupted offset sidecar.
-    fn full_reindex_session(&self, session_id: &str, sessions_dir: &Path) -> Result<(), String> {
+    fn full_reindex_session(&self, session_id: &str, sessions_dir: &Path) -> Result<bool, String> {
         let trace_started = trace_start();
         let mut writer = self
             .writer
@@ -286,6 +300,7 @@ impl SessionIndex {
         // Read session metadata from sessions.json to get title etc.
         let data_dir = sessions_dir.parent().unwrap_or(Path::new("."));
         let sessions_file = data_dir.join("sessions.json");
+        let mut indexed = false;
         if let Ok(content) = fs::read_to_string(&sessions_file) {
             if let Ok(sessions) =
                 serde_json::from_str::<Vec<serde_json::Value>>(strip_bom(&content))
@@ -294,7 +309,10 @@ impl SessionIndex {
                     .iter()
                     .find(|s| s.get("id").and_then(|v| v.as_str()) == Some(session_id))
                 {
-                    index_single_session(&mut writer, &self.fields, meta, sessions_dir)?;
+                    if crate::session_visibility::is_history_visible_session(meta, sessions_dir) {
+                        index_single_session(&mut writer, &self.fields, meta, sessions_dir)?;
+                        indexed = true;
+                    }
                 }
             }
         }
@@ -312,7 +330,7 @@ impl SessionIndex {
                 .session_id(Some(session_id))
                 .status("ok"),
         );
-        Ok(())
+        Ok(indexed)
     }
 
     /// Append-only path: read JSONL bytes in `[from, to)` and add a doc per
@@ -341,8 +359,9 @@ impl SessionIndex {
             Err(_) => {
                 // Multi-byte split right at `from` — fall back to full rebuild.
                 self.drop_session_offset(session_id);
-                self.full_reindex_session(session_id, sessions_dir)?;
-                self.write_session_offset(session_id, to);
+                if self.full_reindex_session(session_id, sessions_dir)? {
+                    self.write_session_offset(session_id, to);
+                }
                 emit_perf_trace(
                     PerfTrace::new(PerfTraceName::StorageIo, "search_reindex_incremental")
                         .duration_ms(elapsed_ms(trace_started))
@@ -369,6 +388,10 @@ impl SessionIndex {
             Some(m) => m.clone(),
             None => return Ok(()), // session not in metadata yet — skip
         };
+        if !crate::session_visibility::is_history_visible_session(&meta, sessions_dir) {
+            self.delete_session(session_id)?;
+            return Ok(());
+        }
         let title = meta
             .get("title")
             .and_then(|v| v.as_str())
@@ -394,8 +417,9 @@ impl SessionIndex {
             .is_some_and(|indexed_title| indexed_title != title)
         {
             self.drop_session_offset(session_id);
-            self.full_reindex_session(session_id, sessions_dir)?;
-            self.write_session_offset(session_id, to);
+            if self.full_reindex_session(session_id, sessions_dir)? {
+                self.write_session_offset(session_id, to);
+            }
             emit_perf_trace(
                 PerfTrace::new(PerfTraceName::StorageIo, "search_reindex_incremental")
                     .duration_ms(elapsed_ms(trace_started))
@@ -532,6 +556,9 @@ impl SessionIndex {
             Some(m) => m.clone(),
             None => return Ok(()),
         };
+        if !crate::session_visibility::is_history_visible_session(&meta, sessions_dir) {
+            return self.delete_session(session_id);
+        }
 
         let f = &self.fields;
         let title = meta
@@ -635,6 +662,11 @@ impl SessionIndex {
                 .map_err(|e| format!("Doc retrieval error: {}", e))?;
 
             let session_id = get_text_field(&doc, f.session_id);
+            if self.data_dir.as_deref().is_some_and(|data_dir| {
+                !is_session_currently_history_visible(data_dir, &session_id)
+            }) {
+                continue;
+            }
             if !seen_sessions.insert(session_id.clone()) {
                 continue;
             }
@@ -735,6 +767,31 @@ impl SessionIndex {
     }
 }
 
+fn infer_data_dir_from_session_index_dir(index_dir: &Path) -> Option<PathBuf> {
+    let search_index_dir = index_dir.parent()?;
+    if search_index_dir.file_name()? != "search_index" {
+        return None;
+    }
+    search_index_dir.parent().map(Path::to_path_buf)
+}
+
+fn is_session_currently_history_visible(data_dir: &Path, session_id: &str) -> bool {
+    let sessions_file = data_dir.join("sessions.json");
+    let sessions_dir = data_dir.join("sessions");
+    let Ok(content) = fs::read_to_string(sessions_file) else {
+        return false;
+    };
+    let Ok(sessions) = serde_json::from_str::<Vec<serde_json::Value>>(strip_bom(&content)) else {
+        return false;
+    };
+    sessions
+        .iter()
+        .find(|session| session.get("id").and_then(|v| v.as_str()) == Some(session_id))
+        .is_some_and(|session| {
+            crate::session_visibility::is_history_visible_session(session, &sessions_dir)
+        })
+}
+
 /// Read exactly the JSONL byte range needed for an incremental index pass.
 /// This keeps append-only reindexing O(delta) instead of reading the full
 /// session transcript on every watcher tick.
@@ -769,6 +826,10 @@ fn index_single_session(
         .get("id")
         .and_then(|v| v.as_str())
         .ok_or("Missing session id")?;
+    if !crate::session_visibility::is_history_visible_session(session_meta, sessions_dir) {
+        writer.delete_term(Term::from_field_text(f.session_id, session_id));
+        return Ok(());
+    }
     let title = session_meta
         .get("title")
         .and_then(|v| v.as_str())
@@ -872,8 +933,9 @@ fn extract_text_content(msg: &serde_json::Value) -> String {
                 .collect::<Vec<_>>()
                 .join(" ");
         }
-        // Plain user message string.
-        return s.to_string();
+        // Plain user message string. Hidden system-reminder payload is model
+        // context, not user-visible/searchable history.
+        return strip_leading_system_reminder_for_search(s);
     }
 
     // Legacy / raw array content.
@@ -887,6 +949,20 @@ fn extract_text_content(msg: &serde_json::Value) -> String {
     }
 
     String::new()
+}
+
+fn strip_leading_system_reminder_for_search(raw: &str) -> String {
+    let text = raw.trim_start();
+    if !text.starts_with(SYSTEM_REMINDER_OPEN) {
+        return raw.to_string();
+    }
+
+    let Some(close_idx) = text.find(SYSTEM_REMINDER_CLOSE) else {
+        return String::new();
+    };
+    text[close_idx + SYSTEM_REMINDER_CLOSE.len()..]
+        .trim()
+        .to_string()
 }
 
 /// Get a text field value from a Tantivy document.
@@ -1102,6 +1178,10 @@ mod tests {
         fs::write(data_dir.join("sessions.json"), sessions.to_string()).unwrap();
     }
 
+    fn write_session_metadata_value(data_dir: &Path, session: serde_json::Value) {
+        fs::write(data_dir.join("sessions.json"), json!([session]).to_string()).unwrap();
+    }
+
     fn write_session_metadata(data_dir: &Path, session_id: &str) {
         write_session_metadata_with_title(data_dir, session_id, "Search Tail Read Contract");
     }
@@ -1116,6 +1196,54 @@ mod tests {
                 "content": content
             })
         )
+    }
+
+    #[test]
+    fn extract_text_indexes_only_visible_system_reminder_tail() {
+        let content = [
+            "<system-reminder>",
+            "<myagents-space-issue>",
+            "<issue-instruction>hidden issue action</issue-instruction>",
+            "<issue>secret facts</issue>",
+            "</myagents-space-issue>",
+            "</system-reminder>",
+            "Space issue delivered",
+        ]
+        .join("\n");
+        let msg = json!({
+            "role": "user",
+            "content": content
+        });
+
+        assert_eq!(extract_text_content(&msg), "Space issue delivered");
+    }
+
+    #[test]
+    fn extract_text_drops_pure_system_reminder_payload() {
+        let content = [
+            "<system-reminder>",
+            "<HEARTBEAT>",
+            "<task-result>hidden cron output</task-result>",
+            "</HEARTBEAT>",
+            "</system-reminder>",
+        ]
+        .join("\n");
+        let msg = json!({
+            "role": "user",
+            "content": content
+        });
+
+        assert_eq!(extract_text_content(&msg), "");
+    }
+
+    #[test]
+    fn extract_text_keeps_plain_user_message() {
+        let msg = json!({
+            "role": "user",
+            "content": "Find the release notes"
+        });
+
+        assert_eq!(extract_text_content(&msg), "Find the release notes");
     }
 
     #[test]
@@ -1276,5 +1404,153 @@ mod tests {
         let result = index.search("boundaryunique", 10).unwrap();
         assert_eq!(result.total_count, 1);
         assert_eq!(result.hits[0].session_id, session_id);
+    }
+
+    #[test]
+    fn prepared_session_is_hidden_until_committed() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join("data");
+        let sessions_dir = data_dir.join("sessions");
+        fs::create_dir_all(&sessions_dir).unwrap();
+        let session_id = "prepared-search-session";
+
+        write_session_metadata_value(
+            &data_dir,
+            json!({
+                "id": session_id,
+                "title": "preparedunique",
+                "agentDir": "/tmp/myagents-test-agent",
+                "lastActiveAt": "2026-06-06T00:00:00.000Z",
+                "source": "desktop",
+                "materializationState": "prepared",
+                "stats": { "messageCount": 1 }
+            }),
+        );
+        fs::write(
+            sessions_dir.join(format!("{}.jsonl", session_id)),
+            message_line("m1", "preparedbodyunique searchable text"),
+        )
+        .unwrap();
+
+        let index = SessionIndex::new(data_dir.join("search_index").join("sessions")).unwrap();
+        index.reindex_session(session_id, &sessions_dir).unwrap();
+
+        assert_eq!(index.search("preparedunique", 10).unwrap().total_count, 0);
+        assert_eq!(
+            index.search("preparedbodyunique", 10).unwrap().total_count,
+            0
+        );
+        assert_eq!(index.read_session_offset(session_id), 0);
+
+        write_session_metadata_value(
+            &data_dir,
+            json!({
+                "id": session_id,
+                "title": "committedunique",
+                "agentDir": "/tmp/myagents-test-agent",
+                "lastActiveAt": "2026-06-06T00:00:00.000Z",
+                "source": "desktop",
+                "stats": { "messageCount": 1 }
+            }),
+        );
+        index.reindex_session(session_id, &sessions_dir).unwrap();
+
+        assert_eq!(index.search("committedunique", 10).unwrap().total_count, 1);
+        assert_eq!(
+            index.search("preparedbodyunique", 10).unwrap().total_count,
+            1
+        );
+    }
+
+    #[test]
+    fn search_filters_stale_hidden_docs_before_cleanup_runs() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join("data");
+        let sessions_dir = data_dir.join("sessions");
+        fs::create_dir_all(&sessions_dir).unwrap();
+        let session_id = "stale-hidden-query-session";
+
+        write_session_metadata_with_title(&data_dir, session_id, "stalequeryunique");
+        fs::write(
+            sessions_dir.join(format!("{}.jsonl", session_id)),
+            message_line("m1", "stalequerybodyunique searchable text"),
+        )
+        .unwrap();
+
+        let index = SessionIndex::new(data_dir.join("search_index").join("sessions")).unwrap();
+        index.reindex_session(session_id, &sessions_dir).unwrap();
+        assert_eq!(index.search("stalequeryunique", 10).unwrap().total_count, 1);
+
+        write_session_metadata_value(
+            &data_dir,
+            json!({
+                "id": session_id,
+                "title": "stalequeryunique",
+                "agentDir": "/tmp/myagents-test-agent",
+                "lastActiveAt": "2026-06-06T00:00:00.000Z",
+                "source": "desktop",
+                "materializationState": "prepared",
+                "stats": { "messageCount": 1 }
+            }),
+        );
+
+        assert_eq!(index.search("stalequeryunique", 10).unwrap().total_count, 0);
+        assert_eq!(
+            index
+                .search("stalequerybodyunique", 10)
+                .unwrap()
+                .total_count,
+            0
+        );
+    }
+
+    #[test]
+    fn legacy_managed_codex_empty_draft_deletes_stale_index_docs() {
+        let temp = tempfile::tempdir().unwrap();
+        let data_dir = temp.path().join("data");
+        let sessions_dir = data_dir.join("sessions");
+        fs::create_dir_all(&sessions_dir).unwrap();
+        let session_id = "legacy-managed-codex-draft";
+
+        write_session_metadata_with_title(&data_dir, session_id, "staledraftunique");
+        let jsonl_path = sessions_dir.join(format!("{}.jsonl", session_id));
+        fs::write(
+            &jsonl_path,
+            message_line("m1", "stalecontentunique searchable text"),
+        )
+        .unwrap();
+
+        let index = SessionIndex::new(data_dir.join("search_index").join("sessions")).unwrap();
+        index.reindex_session(session_id, &sessions_dir).unwrap();
+        assert_eq!(index.search("staledraftunique", 10).unwrap().total_count, 1);
+        assert_eq!(
+            index.search("stalecontentunique", 10).unwrap().total_count,
+            1
+        );
+
+        fs::remove_file(&jsonl_path).unwrap();
+        write_session_metadata_value(
+            &data_dir,
+            json!({
+                "id": session_id,
+                "title": "New Chat",
+                "agentDir": "/tmp/myagents-test-agent",
+                "lastActiveAt": "2026-06-06T00:00:00.000Z",
+                "source": "desktop",
+                "runtime": "codex",
+                "runtimeSource": "managed-provider",
+                "providerId": "codex-sub",
+                "origin": { "kind": "desktop", "surface": "agent_card" },
+                "stats": { "messageCount": 0 }
+            }),
+        );
+
+        index.index_all_sessions(&data_dir).unwrap();
+
+        assert_eq!(index.search("staledraftunique", 10).unwrap().total_count, 0);
+        assert_eq!(
+            index.search("stalecontentunique", 10).unwrap().total_count,
+            0
+        );
     }
 }

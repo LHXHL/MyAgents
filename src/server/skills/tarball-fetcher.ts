@@ -13,7 +13,12 @@
  * `/api/skill/upload`.
  */
 
+import { lookup } from 'node:dns/promises';
+import { isIP, type LookupFunction } from 'node:net';
+
 import AdmZip from 'adm-zip';
+import { Agent, fetch as undiciFetch, type RequestInit as UndiciRequestInit } from 'undici';
+
 import { buildGithubZipCandidates, SkillUrlError, type ResolvedSkillSource } from './url-resolver';
 
 // ---------------------------------------------------------------------------
@@ -88,59 +93,120 @@ export async function fetchSkillZip(src: ResolvedSkillSource): Promise<Extracted
 // ---------------------------------------------------------------------------
 
 /**
- * Reject URLs whose host is a literal loopback / RFC1918 / link-local address.
- *
- * This is the classic blind-SSRF shape: user pastes a URL → our server follows
- * it → lands on an internal service. We can't stop DNS rebinding attacks here
- * without resolving ourselves, but we CAN stop the obvious cases.
+ * Reject URLs whose host is loopback / RFC1918 / link-local, either as a
+ * literal or via DNS resolution.
  *
  * The GitHub path goes through codeload.github.com which is public-only, but
  * the raw-zip passthrough accepts arbitrary user URLs, and redirects during
  * fetch can land anywhere. We validate both the initial URL and every redirect
  * hop.
  */
-function assertPublicUrl(url: string): void {
+export function isBlockedSkillPackageHost(host: string): boolean {
+  const normalized = host.replace(/^\[|\]$/g, '').toLowerCase();
+  if (
+    normalized === 'localhost' ||
+    normalized === '0.0.0.0' ||
+    normalized === '::' ||
+    normalized === '::0' ||
+    normalized === '::1' ||
+    normalized === '0:0:0:0:0:0:0:0' ||
+    normalized === '0:0:0:0:0:0:0:1' ||
+    normalized === 'ip6-loopback' ||
+    normalized === 'ip6-localhost'
+  ) {
+    return true;
+  }
+
+  const ipv4Match = normalized.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4Match) {
+    const octets = ipv4Match.slice(1).map(Number);
+    if (octets.some((n) => n > 255)) return true;
+    const [a, b] = octets;
+    return (
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      a === 127 ||
+      (a === 169 && b === 254) ||
+      a === 0
+    );
+  }
+
+  if (isIP(normalized) === 6) {
+    return (
+      normalized.startsWith('fc') ||
+      normalized.startsWith('fd') ||
+      normalized.startsWith('fe80:') ||
+      normalized.startsWith('::ffff:')
+    );
+  }
+
+  return false;
+}
+
+export function isSkillPackageUrlLexicallySafe(parsed: URL): { ok: true } | { ok: false; reason: string } {
+  if (parsed.protocol !== 'https:') {
+    return { ok: false, reason: `不支持的协议：${parsed.protocol}，请使用 HTTPS 链接` };
+  }
+  if (isBlockedSkillPackageHost(parsed.hostname)) {
+    return { ok: false, reason: `拒绝连接到私有网络地址：${parsed.hostname}` };
+  }
+  return { ok: true };
+}
+
+async function buildSsrfGuardedDispatcher(parsed: URL): Promise<Agent | undefined> {
+  const host = parsed.hostname.replace(/^\[|\]$/g, '');
+  if (isIP(host) !== 0) return undefined;
+
+  let addresses: { address: string; family: number }[];
+  try {
+    addresses = await lookup(host, { all: true });
+  } catch {
+    throw new TarballFetchError(`DNS 解析失败：${host}`, 400);
+  }
+  if (addresses.length === 0) {
+    throw new TarballFetchError(`DNS 未返回可用地址：${host}`, 400);
+  }
+
+  for (const { address } of addresses) {
+    if (isBlockedSkillPackageHost(address)) {
+      throw new TarballFetchError(`拒绝连接到解析为私有网络的主机：${host}`, 400);
+    }
+  }
+
+  const pinned = addresses.map((a) => ({ address: a.address, family: a.family }));
+  const pinnedLookup: LookupFunction = (_hostname, options, cb) => {
+    if (options?.all) {
+      cb(null, pinned);
+      return;
+    }
+    const first = pinned[0];
+    cb(null, first.address, first.family);
+  };
+  return new Agent({
+    connect: {
+      lookup: pinnedLookup,
+    },
+  });
+}
+
+async function closeDispatcher(dispatcher: Agent | undefined): Promise<void> {
+  if (!dispatcher) return;
+  await dispatcher.close().catch(() => undefined);
+}
+
+async function assertPublicUrl(url: string): Promise<Agent | undefined> {
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
     throw new TarballFetchError(`非法 URL：${url}`, 400);
   }
-  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
-    throw new TarballFetchError(`不支持的协议：${parsed.protocol}`, 400);
+  const lexical = isSkillPackageUrlLexicallySafe(parsed);
+  if (!lexical.ok) {
+    throw new TarballFetchError(lexical.reason, 400);
   }
-
-  const host = parsed.hostname.toLowerCase();
-
-  // String-match obvious localhost aliases first (catches `localhost`, `::1`, etc.)
-  const LOOPBACK_HOSTS = new Set([
-    'localhost', '0.0.0.0', '127.0.0.1', '::1', '[::1]', '[::]',
-    'ip6-loopback', 'ip6-localhost',
-  ]);
-  if (LOOPBACK_HOSTS.has(host)) {
-    throw new TarballFetchError(`拒绝连接到本地回环地址：${host}`, 400);
-  }
-
-  // IPv4 literal (with dotted notation) — check RFC1918 and link-local
-  const ipv4Match = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4Match) {
-    const [a, b] = [Number(ipv4Match[1]), Number(ipv4Match[2])];
-    if (
-      a === 10 ||                                    // 10.0.0.0/8
-      (a === 172 && b >= 16 && b <= 31) ||           // 172.16.0.0/12
-      (a === 192 && b === 168) ||                    // 192.168.0.0/16
-      a === 127 ||                                   // 127.0.0.0/8
-      (a === 169 && b === 254) ||                    // 169.254.0.0/16 link-local
-      a === 0                                        // 0.0.0.0/8
-    ) {
-      throw new TarballFetchError(`拒绝连接到私有网络地址：${host}`, 400);
-    }
-  }
-
-  // IPv6 literal — reject unique local (fc00::/7) and link-local (fe80::/10)
-  if (host.startsWith('[fc') || host.startsWith('[fd') || host.startsWith('[fe80:')) {
-    throw new TarballFetchError(`拒绝连接到私有 IPv6 地址：${host}`, 400);
-  }
+  return buildSsrfGuardedDispatcher(parsed);
 }
 
 // ---------------------------------------------------------------------------
@@ -155,6 +221,7 @@ async function downloadZip(
 ): Promise<{ buffer: Buffer; effectiveRef?: string }> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  let terminalDispatcher: Agent | undefined;
 
   try {
     // Manual redirect loop: every hop is validated against the SSRF guard,
@@ -164,17 +231,25 @@ async function downloadZip(
     let currentUrl = url;
     let resp: Response;
     for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-      assertPublicUrl(currentUrl);
-      resp = await fetch(currentUrl, {
-        signal: controller.signal,
-        redirect: 'manual',
-        headers: {
-          'User-Agent': 'MyAgents-Skill-Installer/1.0',
-          'Accept': 'application/zip, application/octet-stream',
-        },
-      });
+      let hopDispatcher: Agent | undefined;
+      try {
+        hopDispatcher = await assertPublicUrl(currentUrl);
+        resp = await undiciFetch(currentUrl, {
+          signal: controller.signal,
+          redirect: 'manual',
+          headers: {
+            'User-Agent': 'MyAgents-Skill-Installer/1.0',
+            'Accept': 'application/zip, application/octet-stream',
+          },
+          ...(hopDispatcher ? { dispatcher: hopDispatcher } : {}),
+        } as UndiciRequestInit) as unknown as Response;
+      } catch (err) {
+        await closeDispatcher(hopDispatcher);
+        throw err;
+      }
       if (resp.status >= 300 && resp.status < 400) {
         const location = resp.headers.get('location');
+        await closeDispatcher(hopDispatcher);
         if (!location) {
           throw new TarballFetchError(`重定向缺少 Location 头：HTTP ${resp.status}`, 502);
         }
@@ -185,6 +260,7 @@ async function downloadZip(
         currentUrl = new URL(location, currentUrl).href;
         continue;
       }
+      terminalDispatcher = hopDispatcher;
       break;
     }
     // At this point resp is the terminal response (`break` above)
@@ -232,6 +308,7 @@ async function downloadZip(
     }
     throw new TarballFetchError(`下载失败：${(err as Error).message}`, 500);
   } finally {
+    await closeDispatcher(terminalDispatcher);
     clearTimeout(timeoutId);
   }
 }

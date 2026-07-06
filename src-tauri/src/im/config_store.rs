@@ -626,6 +626,146 @@ mod agent_monitor_tests {
         );
     }
 
+    fn hb_peer(session_key: &str, age_millis: u64) -> crate::im::router::HeartbeatPeerTarget {
+        crate::im::router::HeartbeatPeerTarget {
+            session_key: session_key.to_string(),
+            source: "test_private".to_string(),
+            source_id: session_key.to_string(),
+            last_active: std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_millis(age_millis))
+                .unwrap(),
+        }
+    }
+
+    fn hb_candidate(
+        channel_id: &str,
+        explicit_private_target: Option<crate::im::router::HeartbeatPeerTarget>,
+        last_active_private_target: Option<crate::im::router::HeartbeatPeerTarget>,
+        latest_private_target: Option<crate::im::router::HeartbeatPeerTarget>,
+    ) -> HeartbeatTargetCandidate {
+        HeartbeatTargetCandidate {
+            channel_id: channel_id.to_string(),
+            status: types::ImStatus::Online,
+            explicit_private_target,
+            last_active_private_target,
+            latest_private_target,
+        }
+    }
+
+    #[test]
+    fn heartbeat_target_uses_explicit_private_target_over_other_latest_private() {
+        let private_target = types::LastActivePrivateTarget {
+            channel_id: "weixin".to_string(),
+            session_key: "current-private".to_string(),
+            last_active_at: "2026-07-06T10:00:00".to_string(),
+        };
+        let candidates = vec![
+            hb_candidate(
+                "weixin",
+                Some(hb_peer("current-private", 10_000)),
+                None,
+                Some(hb_peer("current-private", 10_000)),
+            ),
+            hb_candidate("feishu", None, None, Some(hb_peer("old-private", 0))),
+        ];
+
+        let target =
+            resolve_heartbeat_target_from_candidates(Some(&private_target), None, &candidates)
+                .unwrap();
+
+        assert_eq!(target.channel_id, "weixin");
+        assert_eq!(target.session_key, "current-private");
+    }
+
+    #[test]
+    fn heartbeat_target_skips_when_explicit_private_target_is_stale() {
+        let private_target = types::LastActivePrivateTarget {
+            channel_id: "weixin".to_string(),
+            session_key: "stale-private".to_string(),
+            last_active_at: "2026-07-06T10:00:00".to_string(),
+        };
+        let candidates = vec![hb_candidate(
+            "weixin",
+            None,
+            None,
+            Some(hb_peer("old-private", 0)),
+        )];
+
+        assert!(
+            resolve_heartbeat_target_from_candidates(Some(&private_target), None, &candidates)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn heartbeat_target_does_not_fallback_when_last_active_channel_is_group() {
+        let lac = LastActiveChannel {
+            channel_id: "weixin".to_string(),
+            session_key: "group-session".to_string(),
+            last_active_at: "2026-07-06T10:00:00".to_string(),
+        };
+        let candidates = vec![hb_candidate(
+            "weixin",
+            None,
+            None,
+            Some(hb_peer("old-private", 0)),
+        )];
+
+        assert!(resolve_heartbeat_target_from_candidates(None, Some(&lac), &candidates).is_none());
+    }
+
+    #[test]
+    fn heartbeat_target_migrates_private_last_active_channel() {
+        let lac = LastActiveChannel {
+            channel_id: "weixin".to_string(),
+            session_key: "current-private".to_string(),
+            last_active_at: "2026-07-06T10:00:00".to_string(),
+        };
+        let candidates = vec![hb_candidate(
+            "weixin",
+            None,
+            Some(hb_peer("current-private", 100)),
+            Some(hb_peer("old-private", 0)),
+        )];
+
+        let target =
+            resolve_heartbeat_target_from_candidates(None, Some(&lac), &candidates).unwrap();
+
+        assert_eq!(target.channel_id, "weixin");
+        assert_eq!(target.session_key, "current-private");
+    }
+
+    #[test]
+    fn heartbeat_target_bootstraps_latest_private_without_history() {
+        let candidates = vec![
+            hb_candidate("weixin", None, None, Some(hb_peer("weixin-private", 50))),
+            hb_candidate("feishu", None, None, Some(hb_peer("feishu-private", 0))),
+        ];
+
+        let target = resolve_heartbeat_target_from_candidates(None, None, &candidates).unwrap();
+
+        assert_eq!(target.channel_id, "feishu");
+        assert_eq!(target.session_key, "feishu-private");
+    }
+
+    #[test]
+    fn heartbeat_target_does_not_fallback_when_last_active_channel_is_stopped() {
+        let lac = LastActiveChannel {
+            channel_id: "weixin".to_string(),
+            session_key: "group-session".to_string(),
+            last_active_at: "2026-07-06T10:00:00".to_string(),
+        };
+        let mut candidates = vec![hb_candidate(
+            "weixin",
+            None,
+            None,
+            Some(hb_peer("old-private", 0)),
+        )];
+        candidates[0].status = types::ImStatus::Stopped;
+
+        assert!(resolve_heartbeat_target_from_candidates(None, Some(&lac), &candidates).is_none());
+    }
+
     #[test]
     fn missing_configured_channel_is_only_reported_when_startable() {
         let mut agents = agent_config_with_weixin_channel(true);
@@ -1552,48 +1692,246 @@ pub(super) fn persist_agent_config_patch(
     Ok(())
 }
 
-/// Resolve which channel to use for proactive messages (heartbeat/cron).
-/// Fallback chain:
-/// 1. lastActiveChannel if that channel is enabled + connected (Online status)
-/// 2. Any other channel with active sessions and Online status
-/// 3. First enabled channel with Online status (no history needed)
-/// 4. None — no available channel
-pub(super) fn resolve_target_channel(
-    agent: &AgentInstance,
-    agent_statuses: &HashMap<String, ChannelStatus>,
-) -> Option<String> {
-    // Helper: check if a channel is online
-    let is_online = |ch_id: &str| -> bool {
-        agent_statuses
-            .get(ch_id)
-            .map_or(false, |s| s.status == ImStatus::Online)
+#[derive(Debug, Clone)]
+pub(super) struct HeartbeatTargetCandidate {
+    channel_id: String,
+    status: ImStatus,
+    explicit_private_target: Option<crate::im::router::HeartbeatPeerTarget>,
+    last_active_private_target: Option<crate::im::router::HeartbeatPeerTarget>,
+    latest_private_target: Option<crate::im::router::HeartbeatPeerTarget>,
+}
+
+fn is_online_candidate(candidate: &HeartbeatTargetCandidate) -> bool {
+    candidate.status == ImStatus::Online
+}
+
+pub(super) fn resolve_heartbeat_target_from_candidates(
+    private_target: Option<&types::LastActivePrivateTarget>,
+    last_active_channel: Option<&LastActiveChannel>,
+    candidates: &[HeartbeatTargetCandidate],
+) -> Option<types::HeartbeatTarget> {
+    if let Some(target) = private_target {
+        return candidates
+            .iter()
+            .find(|candidate| candidate.channel_id == target.channel_id)
+            .filter(|candidate| is_online_candidate(candidate))
+            .and_then(|candidate| candidate.explicit_private_target.as_ref())
+            .map(|peer| types::HeartbeatTarget {
+                channel_id: target.channel_id.clone(),
+                session_key: peer.session_key.clone(),
+            });
+    }
+
+    if let Some(lac) = last_active_channel {
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.channel_id == lac.channel_id)
+            .filter(|candidate| is_online_candidate(candidate))?;
+        if let Some(peer) = candidate.last_active_private_target.as_ref() {
+            return Some(types::HeartbeatTarget {
+                channel_id: lac.channel_id.clone(),
+                session_key: peer.session_key.clone(),
+            });
+        }
+        return None;
+    }
+
+    candidates
+        .iter()
+        .filter(|candidate| is_online_candidate(candidate))
+        .filter_map(|candidate| {
+            candidate
+                .latest_private_target
+                .as_ref()
+                .map(|peer| (candidate, peer))
+        })
+        .max_by_key(|(_, peer)| peer.last_active)
+        .map(|(candidate, peer)| types::HeartbeatTarget {
+            channel_id: candidate.channel_id.clone(),
+            session_key: peer.session_key.clone(),
+        })
+}
+
+pub(crate) struct AgentHeartbeatRoute {
+    pub target: types::HeartbeatTarget,
+    pub wake_tx: Option<mpsc::Sender<types::HeartbeatWake>>,
+    pub pending_cron_events: Arc<Mutex<Vec<types::PendingCronEvent>>>,
+    pub router: Arc<Mutex<SessionRouter>>,
+}
+
+pub(crate) enum AgentHeartbeatRouteResolution {
+    AgentMissing,
+    NoPrivateTarget,
+    Target(AgentHeartbeatRoute),
+}
+
+pub(crate) async fn resolve_agent_heartbeat_route(
+    agent_state: &ManagedAgents,
+    agent_id: &str,
+) -> AgentHeartbeatRouteResolution {
+    let (channel_refs, private_target_arc, last_active_channel_arc) = {
+        let agents_guard = agent_state.lock().await;
+        let agent = match agents_guard.get(agent_id) {
+            Some(agent) => agent,
+            None => {
+                ulog_debug!("[agent-heartbeat] Agent {} not found, stopping", agent_id);
+                return AgentHeartbeatRouteResolution::AgentMissing;
+            }
+        };
+        let refs: Vec<_> = agent
+            .channels
+            .iter()
+            .map(|(ch_id, ch_inst)| {
+                (
+                    ch_id.clone(),
+                    Arc::clone(&ch_inst.bot_instance.health),
+                    Arc::clone(&ch_inst.bot_instance.router),
+                    ch_inst.bot_instance.heartbeat_wake_tx.clone(),
+                    Arc::clone(&ch_inst.bot_instance.pending_cron_events),
+                )
+            })
+            .collect();
+        (
+            refs,
+            Arc::clone(&agent.last_active_private_target),
+            Arc::clone(&agent.last_active_channel),
+        )
     };
 
-    // 1. Try lastActiveChannel
-    if let Ok(guard) = agent.last_active_channel.try_read() {
-        if let Some(ref lac) = *guard {
-            if is_online(&lac.channel_id) {
-                return Some(lac.channel_id.clone());
-            }
+    let private_target_snapshot = private_target_arc.read().await.clone();
+    let last_active_channel_snapshot = last_active_channel_arc.read().await.clone();
+
+    let mut candidates = Vec::with_capacity(channel_refs.len());
+    let mut routes: HashMap<
+        String,
+        (
+            Option<mpsc::Sender<types::HeartbeatWake>>,
+            Arc<Mutex<Vec<types::PendingCronEvent>>>,
+            Arc<Mutex<SessionRouter>>,
+        ),
+    > = HashMap::new();
+    for (ch_id, health, router, wake_tx, pending_cron_events) in &channel_refs {
+        let health_state = health.get_state().await;
+        let (explicit_private_target, last_active_private_target, latest_private_target) = {
+            let router_guard = router.lock().await;
+            let explicit_private_target = private_target_snapshot
+                .as_ref()
+                .filter(|target| target.channel_id == *ch_id)
+                .and_then(|target| {
+                    router_guard.get_private_peer_session_target(&target.session_key)
+                });
+            let last_active_private_target = last_active_channel_snapshot
+                .as_ref()
+                .filter(|lac| lac.channel_id == *ch_id)
+                .and_then(|lac| router_guard.get_private_peer_session_target(&lac.session_key));
+            let latest_private_target = router_guard.latest_private_peer_session_target();
+            (
+                explicit_private_target,
+                last_active_private_target,
+                latest_private_target,
+            )
+        };
+
+        candidates.push(HeartbeatTargetCandidate {
+            channel_id: ch_id.clone(),
+            status: health_state.status,
+            explicit_private_target,
+            last_active_private_target,
+            latest_private_target,
+        });
+        routes.insert(
+            ch_id.clone(),
+            (
+                wake_tx.clone(),
+                Arc::clone(pending_cron_events),
+                Arc::clone(router),
+            ),
+        );
+    }
+
+    let target = match resolve_heartbeat_target_from_candidates(
+        private_target_snapshot.as_ref(),
+        last_active_channel_snapshot.as_ref(),
+        &candidates,
+    ) {
+        Some(target) => target,
+        None => {
+            ulog_debug!(
+                "[agent-heartbeat] No private heartbeat target for agent {}",
+                agent_id
+            );
+            return AgentHeartbeatRouteResolution::NoPrivateTarget;
+        }
+    };
+
+    if private_target_snapshot.is_none() {
+        let seeded = types::LastActivePrivateTarget {
+            channel_id: target.channel_id.clone(),
+            session_key: target.session_key.clone(),
+            last_active_at: chrono::Local::now().format("%Y-%m-%dT%H:%M:%S").to_string(),
+        };
+        *private_target_arc.write().await = Some(seeded.clone());
+        let mut agents_guard = agent_state.lock().await;
+        if let Some(agent) = agents_guard.get_mut(agent_id) {
+            agent.config.last_active_private_target = Some(seeded);
         }
     }
 
-    // 2. Find any channel with active sessions and Online status
-    for (ch_id, status) in agent_statuses {
-        if status.status == ImStatus::Online && !status.active_sessions.is_empty() {
-            return Some(ch_id.clone());
+    match routes.remove(&target.channel_id) {
+        Some((wake_tx, pending_cron_events, router)) => {
+            AgentHeartbeatRouteResolution::Target(AgentHeartbeatRoute {
+                target,
+                wake_tx,
+                pending_cron_events,
+                router,
+            })
         }
+        None => AgentHeartbeatRouteResolution::NoPrivateTarget,
     }
+}
 
-    // 3. First enabled channel with Online status (even without sessions)
-    for (ch_id, status) in agent_statuses {
-        if status.status == ImStatus::Online {
-            return Some(ch_id.clone());
+pub(super) async fn route_agent_heartbeat_once(
+    agent_state: &ManagedAgents,
+    agent_id: &str,
+    reason: types::WakeReason,
+) -> bool {
+    let route = match resolve_agent_heartbeat_route(agent_state, agent_id).await {
+        AgentHeartbeatRouteResolution::AgentMissing => return false,
+        AgentHeartbeatRouteResolution::NoPrivateTarget => return true,
+        AgentHeartbeatRouteResolution::Target(route) => route,
+    };
+
+    let delegated_reason = if reason.is_high_priority() {
+        reason
+    } else {
+        types::WakeReason::Manual
+    };
+    if let Some(wake_tx) = route.wake_tx {
+        let wake =
+            types::HeartbeatWake::targeted(delegated_reason, route.target.session_key.clone());
+        if let Err(e) = wake_tx.send(wake).await {
+            ulog_warn!(
+                "[agent-heartbeat] Failed to route heartbeat to channel {} for agent {}: {}",
+                route.target.channel_id,
+                agent_id,
+                e
+            );
+            return true;
         }
+        ulog_debug!(
+            "[agent-heartbeat] Routed heartbeat to channel {} session {} for agent {}",
+            route.target.channel_id,
+            route.target.session_key,
+            agent_id
+        );
+        true
+    } else {
+        ulog_debug!(
+            "[agent-heartbeat] Channel {} has no heartbeat runner, skipping",
+            route.target.channel_id
+        );
+        true
     }
-
-    // 4. No available channel
-    None
 }
 
 /// Build channel statuses from a running AgentInstance (async helper for heartbeat).
@@ -1631,6 +1969,8 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
             // Shared last_active_channel Arc for this agent (all channels share it)
             let shared_lac: Arc<RwLock<Option<LastActiveChannel>>> =
                 Arc::new(RwLock::new(agent_config.last_active_channel.clone()));
+            let shared_private_target: Arc<RwLock<Option<types::LastActivePrivateTarget>>> =
+                Arc::new(RwLock::new(agent_config.last_active_private_target.clone()));
 
             let mut started_channel_ids: Vec<String> = Vec::new();
 
@@ -1699,6 +2039,7 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                                     config: agent_config.clone(),
                                     channels: HashMap::new(),
                                     last_active_channel: Arc::clone(&shared_lac),
+                                    last_active_private_target: Arc::clone(&shared_private_target),
                                     heartbeat_handle: None,
                                     heartbeat_wake_tx: None,
                                     heartbeat_config: None,
@@ -1725,12 +2066,14 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                                     )),
                                     memory_update_config: None,
                                     memory_update_running: None,
+                                    memory_evolution_config: None,
                                 });
                             // Set agent_link so the processing loop can update lastActiveChannel
                             let link = AgentChannelLink {
                                 channel_id: channel.id.clone(),
                                 agent_id: agent_config.id.clone(),
                                 last_active_channel: Arc::clone(&shared_lac),
+                                last_active_private_target: Arc::clone(&shared_private_target),
                                 runtime_config: Arc::clone(&agent_instance.runtime_config),
                             };
                             *bot_instance.agent_link.write().await = Some(link);
@@ -1764,6 +2107,7 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                 // Memory auto-update arcs (v0.1.43)
                 let mau_config_arc = Arc::new(RwLock::new(agent_config.memory_auto_update.clone()));
                 let mau_running_arc = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let evo_config_arc = Arc::new(RwLock::new(agent_config.memory_evolution.clone()));
                 let mau_config_for_loop = Arc::clone(&mau_config_arc);
                 let mau_running_for_loop = Arc::clone(&mau_running_arc);
                 let mau_workspace = agent_config.workspace_path.clone();
@@ -1877,118 +2221,14 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                             }
                         }
 
-                        // Clone refs from agent state, then drop the lock before async work
-                        let channel_snapshot = {
-                            let agents_guard = agent_state_for_hb.lock().await;
-                            let agent = match agents_guard.get(&agent_id) {
-                                Some(a) => a,
-                                None => {
-                                    ulog_debug!(
-                                        "[agent-heartbeat] Agent {} not found, stopping",
-                                        agent_id
-                                    );
-                                    break;
-                                }
-                            };
-                            // Clone channel refs for status collection + wake_tx for delegation
-                            let refs: Vec<_> = agent
-                                .channels
-                                .iter()
-                                .map(|(ch_id, ch_inst)| {
-                                    (
-                                        ch_id.clone(),
-                                        Arc::clone(&ch_inst.bot_instance.health),
-                                        Arc::clone(&ch_inst.bot_instance.router),
-                                        ch_inst.bot_instance.heartbeat_wake_tx.clone(),
-                                        ch_inst.bot_instance.started_at,
-                                        ch_inst.bot_instance.config.platform.clone(),
-                                        ch_inst.bot_instance.config.name.clone(),
-                                        ch_inst.bot_instance.bind_code.clone(),
-                                    )
-                                })
-                                .collect();
-                            let lac = Arc::clone(&agent.last_active_channel);
-                            (refs, lac)
-                        }; // agents_guard dropped here
-
-                        // Build channel statuses without holding the Mutex
-                        let (ch_refs, _lac) = channel_snapshot;
-                        let mut statuses_map = HashMap::new();
-                        let mut wake_txs: HashMap<String, mpsc::Sender<types::WakeReason>> =
-                            HashMap::new();
-                        for (
-                            ch_id,
-                            health,
-                            router,
-                            wake_tx,
-                            started_at,
-                            platform,
-                            name,
-                            bind_code,
-                        ) in &ch_refs
+                        if !route_agent_heartbeat_once(
+                            &agent_state_for_hb,
+                            &agent_id,
+                            reason.clone(),
+                        )
+                        .await
                         {
-                            let health_state = health.get_state().await;
-                            let active_sessions = router.lock().await.active_sessions();
-                            statuses_map.insert(
-                                ch_id.clone(),
-                                ChannelStatus {
-                                    channel_id: ch_id.clone(),
-                                    channel_type: platform.clone(),
-                                    name: name.clone(),
-                                    status: health_state.status,
-                                    bot_username: health_state.bot_username,
-                                    uptime_seconds: started_at.elapsed().as_secs(),
-                                    last_message_at: health_state.last_message_at,
-                                    active_sessions,
-                                    error_message: health_state.error_message,
-                                    restart_count: health_state.restart_count,
-                                    buffered_messages: health_state.buffered_messages,
-                                    bind_url: None,
-                                    bind_code: Some(bind_code.clone()),
-                                },
-                            );
-                            if let Some(tx) = wake_tx {
-                                wake_txs.insert(ch_id.clone(), tx.clone());
-                            }
-                        }
-
-                        // Re-acquire lock briefly to resolve target channel
-                        let target_ch_id = {
-                            let agents_guard = agent_state_for_hb.lock().await;
-                            match agents_guard.get(&agent_id) {
-                                Some(agent) => resolve_target_channel(agent, &statuses_map),
-                                None => None,
-                            }
-                        };
-                        let target_ch_id = match target_ch_id {
-                            Some(id) => id,
-                            None => {
-                                ulog_debug!(
-                                    "[agent-heartbeat] No available channel for agent {}",
-                                    agent_id
-                                );
-                                continue;
-                            }
-                        };
-
-                        // Delegate to the target channel's per-bot heartbeat wake_tx (no lock held)
-                        let delegated_reason = if reason.is_high_priority() {
-                            reason
-                        } else {
-                            types::WakeReason::Manual
-                        };
-                        if let Some(wake_tx) = wake_txs.get(&target_ch_id) {
-                            let _ = wake_tx.send(delegated_reason).await;
-                            ulog_debug!(
-                                "[agent-heartbeat] Routed heartbeat to channel {} for agent {}",
-                                target_ch_id,
-                                agent_id
-                            );
-                        } else {
-                            ulog_debug!(
-                                "[agent-heartbeat] Channel {} has no heartbeat runner, skipping",
-                                target_ch_id
-                            );
+                            break;
                         }
 
                         // Reset interval after wake
@@ -2008,6 +2248,7 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                     agent_instance.heartbeat_config = Some(hb_config_arc);
                     agent_instance.memory_update_config = Some(mau_config_arc);
                     agent_instance.memory_update_running = Some(mau_running_arc);
+                    agent_instance.memory_evolution_config = Some(evo_config_arc);
                     ulog_info!(
                         "[agent] Agent-level heartbeat started for {}",
                         agent_config.id
@@ -2046,6 +2287,7 @@ async fn ensure_agent_level_runners_started<R: Runtime>(
 
     let mau_config_arc = Arc::new(RwLock::new(agent_config.memory_auto_update.clone()));
     let mau_running_arc = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let evo_config_arc = Arc::new(RwLock::new(agent_config.memory_evolution.clone()));
     let mau_config_for_loop = Arc::clone(&mau_config_arc);
     let mau_running_for_loop = Arc::clone(&mau_running_arc);
     let mau_workspace = agent_config.workspace_path.clone();
@@ -2150,99 +2392,8 @@ async fn ensure_agent_level_runners_started<R: Runtime>(
                 }
             }
 
-            let channel_snapshot = {
-                let agents_guard = agent_state_for_hb.lock().await;
-                let agent = match agents_guard.get(&agent_id) {
-                    Some(a) => a,
-                    None => {
-                        ulog_debug!("[agent-heartbeat] Agent {} not found, stopping", agent_id);
-                        break;
-                    }
-                };
-                let refs: Vec<_> = agent
-                    .channels
-                    .iter()
-                    .map(|(ch_id, ch_inst)| {
-                        (
-                            ch_id.clone(),
-                            Arc::clone(&ch_inst.bot_instance.health),
-                            Arc::clone(&ch_inst.bot_instance.router),
-                            ch_inst.bot_instance.heartbeat_wake_tx.clone(),
-                            ch_inst.bot_instance.started_at,
-                            ch_inst.bot_instance.config.platform.clone(),
-                            ch_inst.bot_instance.config.name.clone(),
-                            ch_inst.bot_instance.bind_code.clone(),
-                        )
-                    })
-                    .collect();
-                refs
-            };
-
-            let mut statuses_map = HashMap::new();
-            let mut wake_txs: HashMap<String, mpsc::Sender<types::WakeReason>> = HashMap::new();
-            for (ch_id, health, router, wake_tx, started_at, platform, name, bind_code) in
-                &channel_snapshot
-            {
-                let health_state = health.get_state().await;
-                let active_sessions = router.lock().await.active_sessions();
-                statuses_map.insert(
-                    ch_id.clone(),
-                    ChannelStatus {
-                        channel_id: ch_id.clone(),
-                        channel_type: platform.clone(),
-                        name: name.clone(),
-                        status: health_state.status,
-                        bot_username: health_state.bot_username,
-                        uptime_seconds: started_at.elapsed().as_secs(),
-                        last_message_at: health_state.last_message_at,
-                        active_sessions,
-                        error_message: health_state.error_message,
-                        restart_count: health_state.restart_count,
-                        buffered_messages: health_state.buffered_messages,
-                        bind_url: None,
-                        bind_code: Some(bind_code.clone()),
-                    },
-                );
-                if let Some(tx) = wake_tx {
-                    wake_txs.insert(ch_id.clone(), tx.clone());
-                }
-            }
-
-            let target_ch_id = {
-                let agents_guard = agent_state_for_hb.lock().await;
-                match agents_guard.get(&agent_id) {
-                    Some(agent) => resolve_target_channel(agent, &statuses_map),
-                    None => None,
-                }
-            };
-            let target_ch_id = match target_ch_id {
-                Some(id) => id,
-                None => {
-                    ulog_debug!(
-                        "[agent-heartbeat] No available channel for agent {}",
-                        agent_id
-                    );
-                    continue;
-                }
-            };
-
-            let delegated_reason = if reason.is_high_priority() {
-                reason
-            } else {
-                types::WakeReason::Manual
-            };
-            if let Some(wake_tx) = wake_txs.get(&target_ch_id) {
-                let _ = wake_tx.send(delegated_reason).await;
-                ulog_debug!(
-                    "[agent-heartbeat] Routed heartbeat to channel {} for agent {}",
-                    target_ch_id,
-                    agent_id
-                );
-            } else {
-                ulog_debug!(
-                    "[agent-heartbeat] Channel {} has no heartbeat runner, skipping",
-                    target_ch_id
-                );
+            if !route_agent_heartbeat_once(&agent_state_for_hb, &agent_id, reason.clone()).await {
+                break;
             }
 
             if is_high_priority {
@@ -2261,6 +2412,7 @@ async fn ensure_agent_level_runners_started<R: Runtime>(
             agent_instance.heartbeat_config = Some(hb_config_arc);
             agent_instance.memory_update_config = Some(mau_config_arc);
             agent_instance.memory_update_running = Some(mau_running_arc);
+            agent_instance.memory_evolution_config = Some(evo_config_arc);
             ulog_info!(
                 "[agent] Agent-level heartbeat started for {}",
                 agent_config.id
@@ -2484,6 +2636,9 @@ pub async fn monitor_agent_channels(
                                 last_active_channel: Arc::new(RwLock::new(
                                     agent_cfg.last_active_channel.clone(),
                                 )),
+                                last_active_private_target: Arc::new(RwLock::new(
+                                    agent_cfg.last_active_private_target.clone(),
+                                )),
                                 heartbeat_handle: None,
                                 heartbeat_wake_tx: None,
                                 heartbeat_config: None,
@@ -2508,11 +2663,13 @@ pub async fn monitor_agent_channels(
                                 )),
                                 memory_update_config: None,
                                 memory_update_running: None,
+                                memory_evolution_config: None,
                             });
                     let link = AgentChannelLink {
                         channel_id: channel_id.clone(),
                         agent_id: agent_id.clone(),
                         last_active_channel: Arc::clone(&agent.last_active_channel),
+                        last_active_private_target: Arc::clone(&agent.last_active_private_target),
                         runtime_config: Arc::clone(&agent.runtime_config),
                     };
                     *bot_instance.agent_link.write().await = Some(link);

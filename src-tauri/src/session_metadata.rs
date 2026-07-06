@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde_json::Value;
 
 fn sessions_path() -> Result<std::path::PathBuf, String> {
@@ -39,6 +41,7 @@ fn read_session_metadata(agent_dir: Option<String>) -> Result<Vec<Value>, String
     };
     let sessions: Vec<Value> = serde_json::from_str(crate::utils::bom::strip_bom(&content))
         .map_err(|e| format!("解析 sessions.json 失败：{} ({})", path.display(), e))?;
+    let sessions_dir = path.parent().unwrap_or(Path::new(".")).join("sessions");
     let agent_dir_identity = agent_dir
         .as_deref()
         .map(crate::cron_task::normalize_path)
@@ -54,6 +57,9 @@ fn read_session_metadata(agent_dir: Option<String>) -> Result<Vec<Value>, String
             if current.as_deref() != Some(expected) {
                 continue;
             }
+        }
+        if !crate::session_visibility::is_history_visible_session(&session, &sessions_dir) {
+            continue;
         }
         if let Some(redacted) = redact_session_metadata(session) {
             out.push(redacted);

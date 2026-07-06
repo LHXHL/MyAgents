@@ -8,6 +8,14 @@ pub struct ApprovalCallback {
     pub user_id: String,
 }
 
+/// AskUserQuestion callback from IM platform card button or text fallback.
+pub struct QuestionCallback {
+    pub request_id: String,
+    pub answers: Option<HashMap<String, String>>,
+    #[allow(dead_code)]
+    pub user_id: String,
+}
+
 /// Pending approval waiting for user response
 pub(crate) struct PendingApproval {
     pub(crate) sidecar_port: u16,
@@ -17,6 +25,20 @@ pub(crate) struct PendingApproval {
 }
 
 pub(crate) type PendingApprovals = Arc<Mutex<HashMap<String, PendingApproval>>>;
+
+/// Pending structured question waiting for user response.
+#[derive(Clone)]
+pub(crate) struct PendingQuestion {
+    pub(crate) sidecar_port: u16,
+    pub(crate) chat_id: String,
+    pub(crate) card_message_id: String,
+    pub(crate) requester_user_id: Option<String>,
+    pub(crate) source_type: ImSourceType,
+    pub(crate) questions: Vec<AskUserQuestionItem>,
+    pub(crate) created_at: Instant,
+}
+
+pub(crate) type PendingQuestions = Arc<Mutex<HashMap<String, PendingQuestion>>>;
 
 /// Per-peer locks: serializes the *enqueue* phase (drift check + ensure_sidecar
 /// + POST /api/im/enqueue) per peer_session. Pattern C dropped the lock to
@@ -254,7 +276,9 @@ pub(super) async fn ensure_sidecar_port_for_command<R: Runtime>(
 
     let prep = {
         let mut router_guard = router.lock().await;
-        router_guard.prepare_ensure_sidecar(session_key).await
+        router_guard
+            .prepare_ensure_sidecar(session_key, manager)
+            .await
     };
 
     match prep {
@@ -588,6 +612,80 @@ impl adapter::ImStreamAdapter for AnyAdapter {
             }
         }
     }
+    async fn send_question_card(
+        &self,
+        chat_id: &str,
+        payload: &AskUserQuestionPayload,
+        source_type: &ImSourceType,
+    ) -> adapter::AdapterResult<Option<String>> {
+        match self {
+            Self::Telegram(a) => {
+                adapter::ImStreamAdapter::send_question_card(
+                    a.as_ref(),
+                    chat_id,
+                    payload,
+                    source_type,
+                )
+                .await
+            }
+            Self::Feishu(a) => a.send_question_card(chat_id, payload, source_type).await,
+            Self::Dingtalk(a) => {
+                adapter::ImStreamAdapter::send_question_card(
+                    a.as_ref(),
+                    chat_id,
+                    payload,
+                    source_type,
+                )
+                .await
+            }
+            Self::Bridge(a) => {
+                adapter::ImStreamAdapter::send_question_card(
+                    a.as_ref(),
+                    chat_id,
+                    payload,
+                    source_type,
+                )
+                .await
+            }
+        }
+    }
+    async fn update_question_status(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+        status: &str,
+    ) -> adapter::AdapterResult<()> {
+        match self {
+            Self::Telegram(a) => {
+                adapter::ImStreamAdapter::update_question_status(
+                    a.as_ref(),
+                    chat_id,
+                    message_id,
+                    status,
+                )
+                .await
+            }
+            Self::Feishu(a) => a.update_question_status(message_id, status).await,
+            Self::Dingtalk(a) => {
+                adapter::ImStreamAdapter::update_question_status(
+                    a.as_ref(),
+                    chat_id,
+                    message_id,
+                    status,
+                )
+                .await
+            }
+            Self::Bridge(a) => {
+                adapter::ImStreamAdapter::update_question_status(
+                    a.as_ref(),
+                    chat_id,
+                    message_id,
+                    status,
+                )
+                .await
+            }
+        }
+    }
     async fn send_photo(
         &self,
         chat_id: &str,
@@ -773,6 +871,8 @@ pub struct ImBotInstance {
     pub(super) poll_handle: tauri::async_runtime::JoinHandle<()>,
     /// JoinHandle for the approval callback handler
     pub(super) approval_handle: tauri::async_runtime::JoinHandle<()>,
+    /// JoinHandle for the AskUserQuestion callback handler
+    pub(super) question_handle: tauri::async_runtime::JoinHandle<()>,
     /// JoinHandle for the health persist loop
     pub(super) health_handle: tauri::async_runtime::JoinHandle<()>,
     /// Random bind code for QR code binding flow
@@ -783,7 +883,7 @@ pub struct ImBotInstance {
     /// Heartbeat runner background task handle
     pub(super) heartbeat_handle: Option<tauri::async_runtime::JoinHandle<()>>,
     /// Channel to send wake signals to heartbeat runner
-    pub heartbeat_wake_tx: Option<mpsc::Sender<types::WakeReason>>,
+    pub heartbeat_wake_tx: Option<mpsc::Sender<types::HeartbeatWake>>,
     /// Shared heartbeat config (for hot updates)
     pub(super) heartbeat_config: Option<Arc<tokio::sync::RwLock<types::HeartbeatConfig>>>,
     /// Pending cron-completion events waiting to be relayed to IM (v0.2.4).
@@ -825,7 +925,7 @@ pub struct ImBotInstance {
 
 // ===== Agent Architecture (v0.1.41) =====
 
-use types::{AgentConfigRust, LastActiveChannel};
+use types::{AgentConfigRust, LastActiveChannel, LastActivePrivateTarget};
 
 /// Info linking an ImBotInstance back to its parent Agent (set after moving into AgentInstance).
 /// The processing loop holds a clone of this Arc; writing to it after spawn is visible to the task.
@@ -835,6 +935,8 @@ pub(crate) struct AgentChannelLink {
     pub agent_id: String,
     /// Shared with `AgentInstance.last_active_channel` — the processing loop writes here.
     pub last_active_channel: Arc<RwLock<Option<LastActiveChannel>>>,
+    /// Shared with `AgentInstance.last_active_private_target` — private-only HB target.
+    pub last_active_private_target: Arc<RwLock<Option<LastActivePrivateTarget>>>,
     /// Shared with `AgentInstance.runtime_config` so IM commands update the agent-level runtime profile.
     pub runtime_config: Arc<RwLock<Option<serde_json::Value>>>,
 }
@@ -856,6 +958,7 @@ pub struct AgentInstance {
     pub config: AgentConfigRust,
     pub channels: HashMap<String, ChannelInstance>,
     pub last_active_channel: Arc<tokio::sync::RwLock<Option<LastActiveChannel>>>,
+    pub last_active_private_target: Arc<tokio::sync::RwLock<Option<LastActivePrivateTarget>>>,
     // Agent-level heartbeat (shared across channels)
     pub heartbeat_handle: Option<tauri::async_runtime::JoinHandle<()>>,
     pub heartbeat_wake_tx: Option<mpsc::Sender<types::WakeReason>>,
@@ -871,6 +974,9 @@ pub struct AgentInstance {
     pub memory_update_config:
         Option<Arc<tokio::sync::RwLock<Option<types::MemoryAutoUpdateConfig>>>>,
     pub memory_update_running: Option<Arc<std::sync::atomic::AtomicBool>>,
+    // Long-term memory evolution (v0.2.49)
+    pub memory_evolution_config:
+        Option<Arc<tokio::sync::RwLock<Option<types::MemoryEvolutionConfig>>>>,
 }
 
 /// Managed state for the Agent subsystem (agent_id → instance)
@@ -896,6 +1002,7 @@ pub fn signal_all_agents_shutdown(agent_state: &ManagedAgents) {
                 ch.bot_instance.poll_handle.abort();
                 ch.bot_instance.process_handle.abort();
                 ch.bot_instance.approval_handle.abort();
+                ch.bot_instance.question_handle.abort();
                 ch.bot_instance.health_handle.abort();
                 if let Some(ref h) = ch.bot_instance.heartbeat_handle {
                     h.abort();
@@ -925,6 +1032,7 @@ pub fn signal_all_bots_shutdown(im_state: &ManagedImBots) {
             instance.poll_handle.abort();
             instance.process_handle.abort();
             instance.approval_handle.abort();
+            instance.question_handle.abort();
             instance.health_handle.abort();
             if let Some(ref h) = instance.heartbeat_handle {
                 h.abort();

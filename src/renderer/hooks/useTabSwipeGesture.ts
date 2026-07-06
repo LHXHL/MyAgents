@@ -2,6 +2,10 @@ import { useEffect, useRef, type RefObject } from 'react';
 import { flushSync } from 'react-dom';
 import type { Tab } from '@/types/tab';
 import { formatPerfLine, type PerfTraceDetail } from '../../shared/perfTrace';
+import {
+  horizontalGestureOwnerTag,
+  resolveHorizontalGestureOwnership,
+} from './tabSwipeGestureOwnership';
 
 interface UseTabSwipeGestureOptions {
   contentRef: RefObject<HTMLDivElement | null>;
@@ -174,38 +178,6 @@ function isSmallPostCommitTail(deltaX: number, deltaY: number, expectedDeltaSign
     && ay <= POST_COMMIT_TAIL_MAX_DELTA
     && ax >= ay
     && (expectedDeltaSign === 0 || Math.sign(deltaX) === expectedDeltaSign);
-}
-
-/**
- * Check if the wheel event target is inside a horizontally scrollable element
- * that can still scroll in the given direction. If so, the inner element should
- * handle the scroll and tab swipe should NOT intercept.
- *
- * @param target  The event target element
- * @param container  The tab content container (stop walking at this boundary)
- * @param deltaX  The wheel deltaX (positive = scroll right, negative = scroll left)
- * @returns true if an inner element should handle the horizontal scroll
- */
-function hasInnerHorizontalScroll(target: EventTarget | null, container: HTMLElement, deltaX: number): boolean {
-  // Narrow to HTMLElement — target may be a Text node, SVGElement, etc.
-  let el: HTMLElement | null =
-    target instanceof HTMLElement ? target
-    : (target instanceof Node ? target.parentElement : null);
-  while (el && el !== container) {
-    // Check if element has horizontal overflow (auto or scroll)
-    if (el.scrollWidth > el.clientWidth) {
-      const style = getComputedStyle(el);
-      const overflowX = style.overflowX;
-      if (overflowX === 'auto' || overflowX === 'scroll') {
-        // deltaX > 0 means scrolling right (content moves left)
-        if (deltaX > 0 && el.scrollLeft + el.clientWidth < el.scrollWidth - 1) return true;
-        // deltaX < 0 means scrolling left (content moves right)
-        if (deltaX < 0 && el.scrollLeft > 1) return true;
-      }
-    }
-    el = el.parentElement;
-  }
-  return false;
 }
 
 export function useTabSwipeGesture({
@@ -738,9 +710,10 @@ export function useTabSwipeGesture({
         const ay = Math.abs(deltaY);
         if (ax < DIR_LOCK_MIN && ay < DIR_LOCK_MIN) return;
         if (ax > ay * DIR_LOCK_RATIO) {
-          // Horizontal gesture — but check if an inner element should handle it
-          const innerScroll = hasInnerHorizontalScroll(e.target, cont, deltaX);
-          if (innerScroll) {
+          // Horizontal gesture — but nested horizontal interaction islands own
+          // the gesture before the app-level tab switcher does.
+          const ownership = resolveHorizontalGestureOwnership(e, cont);
+          if (ownership.owner === 'inner-horizontal') {
             state.direction = 'inner-scroll';
           } else {
             state.direction = 'horizontal';
@@ -751,7 +724,9 @@ export function useTabSwipeGesture({
             absX: roundPx(ax),
             absY: roundPx(ay),
             ratio: ay > 0 ? roundPct(ax / ay) : 99,
-            innerScroll,
+            innerScroll: ownership.owner === 'inner-horizontal',
+            ownerReason: ownership.reason,
+            ownerElement: horizontalGestureOwnerTag(ownership.element),
             target: targetKind(e.target),
           });
         } else {
@@ -774,13 +749,15 @@ export function useTabSwipeGesture({
         const previousDirection = state.direction;
         const horizontalDominant = isHorizontalDominant(deltaX, deltaY);
         if (previousDirection === 'inner-scroll' && horizontalDominant) {
-          const innerScroll = hasInnerHorizontalScroll(e.target, cont, deltaX);
-          if (innerScroll) {
+          const ownership = resolveHorizontalGestureOwnership(e, cont);
+          if (ownership.owner === 'inner-horizontal') {
             scheduleDirectionReset();
             traceTabSwipe('direction_defer', {
               gestureId: state.traceGestureId,
               direction: directionValue(state.direction),
               resetMs: DIR_RESET_TIMEOUT,
+              ownerReason: ownership.reason,
+              ownerElement: horizontalGestureOwnerTag(ownership.element),
             });
             return;
           }
@@ -795,7 +772,9 @@ export function useTabSwipeGesture({
             to: directionValue(state.direction),
             absX: roundPx(Math.abs(deltaX)),
             absY: roundPx(Math.abs(deltaY)),
-            innerScroll,
+            innerScroll: false,
+            ownerReason: ownership.reason,
+            ownerElement: horizontalGestureOwnerTag(ownership.element),
             target: targetKind(e.target),
           });
         } else {

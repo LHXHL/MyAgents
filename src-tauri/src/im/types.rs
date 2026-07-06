@@ -120,6 +120,81 @@ pub enum ImSourceType {
     Group,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostInteractionCapability {
+    pub ask_user_question: String,
+}
+
+impl HostInteractionCapability {
+    pub fn none() -> Self {
+        Self {
+            ask_user_question: "none".to_string(),
+        }
+    }
+
+    pub fn native_card() -> Self {
+        Self {
+            ask_user_question: "native-card".to_string(),
+        }
+    }
+
+    pub fn for_platform(platform: &ImPlatform) -> Self {
+        match platform {
+            ImPlatform::Feishu => Self::native_card(),
+            ImPlatform::OpenClaw(id)
+                if id.eq_ignore_ascii_case("feishu") || id.eq_ignore_ascii_case("lark") =>
+            {
+                Self::native_card()
+            }
+            _ => Self::none(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserQuestionOption {
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserQuestionItem {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub question: String,
+    pub header: String,
+    #[serde(default)]
+    pub options: Vec<AskUserQuestionOption>,
+    #[serde(default)]
+    pub multi_select: bool,
+    #[serde(default = "default_question_required")]
+    pub required: bool,
+    #[serde(default)]
+    pub is_secret: bool,
+}
+
+fn default_question_required() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserQuestionPayload {
+    #[serde(rename = "requestId")]
+    pub request_id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    pub questions: Vec<AskUserQuestionItem>,
+    #[serde(default)]
+    pub preview_format: Option<String>,
+}
+
 /// Group permission status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -384,9 +459,10 @@ pub struct ImActiveSession {
     #[serde(default)]
     pub metadata_birth_pending: bool,
     /// True after the sidecar has confirmed/created a SessionStore metadata row.
-    /// Missing metadata remains fatal only for these indexed peer sessions.
-    /// Legacy persisted states that lack this field are reconciled against
-    /// `sessions.json` when the router restores them.
+    /// The router reconciles this cached flag against `sessions.json` on restore
+    /// and before sidecar wakeup. If an indexed binding no longer exists in the
+    /// authoritative index, the peer rotates to a fresh birth-pending session
+    /// instead of resurrecting the stale id.
     #[serde(default)]
     pub metadata_indexed: bool,
     pub last_active: String,
@@ -454,8 +530,8 @@ pub struct PeerSession {
     pub message_count: u32,
     pub metadata_birth_pending: bool,
     /// Router-side evidence that `session_id` has been materialized into
-    /// `sessions.json`; legacy/router-only peer sessions default false and
-    /// are reconciled against the SessionStore index on restore.
+    /// `sessions.json`. This is a cache, not authority: restore and sidecar
+    /// wakeup reconcile it against the SessionStore index before reusing an id.
     pub metadata_indexed: bool,
     pub last_active: Instant,
 }
@@ -598,14 +674,14 @@ pub struct HeartbeatConfig {
     /// Enable/disable heartbeat (default: true)
     #[serde(default = "default_hb_enabled")]
     pub enabled: bool,
-    /// Interval in minutes between checks (default: 30, min: 5)
+    /// Interval in minutes between checks (default: 240, min: 5)
     #[serde(default = "default_hb_interval")]
     pub interval_minutes: u32,
     /// Active hours window
-    #[serde(default)]
+    #[serde(default = "default_hb_active_hours")]
     pub active_hours: Option<ActiveHours>,
     /// Max chars for HEARTBEAT_OK detection (default: 300)
-    #[serde(default)]
+    #[serde(default = "default_hb_ack_max_chars")]
     pub ack_max_chars: Option<u32>,
 }
 
@@ -614,22 +690,34 @@ fn default_hb_enabled() -> bool {
 }
 
 fn default_hb_interval() -> u32 {
-    30
+    240
+}
+
+fn default_hb_active_hours() -> Option<ActiveHours> {
+    Some(ActiveHours {
+        start: "09:00".to_string(),
+        end: "21:00".to_string(),
+        timezone: "Asia/Shanghai".to_string(),
+    })
+}
+
+fn default_hb_ack_max_chars() -> Option<u32> {
+    Some(300)
 }
 
 impl Default for HeartbeatConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            interval_minutes: 30,
-            active_hours: None,
-            ack_max_chars: None,
+            interval_minutes: 240,
+            active_hours: default_hb_active_hours(),
+            ack_max_chars: Some(300),
         }
     }
 }
 
 /// Active hours window for heartbeat scheduling
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ActiveHours {
     /// Start time in HH:MM format (inclusive)
@@ -647,7 +735,7 @@ pub struct ActiveHours {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryAutoUpdateConfig {
-    #[serde(default)]
+    #[serde(default = "default_mau_enabled")]
     pub enabled: bool,
     #[serde(default = "default_mau_interval")]
     pub interval_hours: u32,
@@ -668,27 +756,77 @@ pub struct MemoryAutoUpdateConfig {
 fn default_mau_interval() -> u32 {
     24
 }
+fn default_mau_enabled() -> bool {
+    true
+}
 fn default_mau_threshold() -> u32 {
-    5
+    3
 }
 fn default_mau_window_start() -> String {
-    "00:00".to_string()
+    "21:00".to_string()
 }
 fn default_mau_window_end() -> String {
-    "06:00".to_string()
+    "09:00".to_string()
 }
 
 impl Default for MemoryAutoUpdateConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            enabled: true,
             interval_hours: 24,
-            query_threshold: 5,
-            update_window_start: "00:00".to_string(),
-            update_window_end: "06:00".to_string(),
+            query_threshold: 3,
+            update_window_start: "21:00".to_string(),
+            update_window_end: "09:00".to_string(),
             update_window_timezone: None,
             last_batch_at: None,
             last_batch_session_count: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MemoryEvolutionJobStatus {
+    Completed,
+    Skipped,
+    Error,
+    Timeout,
+}
+
+/// Long-term memory evolution configuration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryEvolutionConfig {
+    #[serde(default = "default_memory_evolution_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub last_gardener_at: Option<String>,
+    #[serde(default)]
+    pub last_gardener_status: Option<MemoryEvolutionJobStatus>,
+    #[serde(default)]
+    pub last_gardener_message: Option<String>,
+    #[serde(default)]
+    pub last_molt_at: Option<String>,
+    #[serde(default)]
+    pub last_molt_status: Option<MemoryEvolutionJobStatus>,
+    #[serde(default)]
+    pub last_molt_message: Option<String>,
+}
+
+fn default_memory_evolution_enabled() -> bool {
+    true
+}
+
+impl Default for MemoryEvolutionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            last_gardener_at: None,
+            last_gardener_status: None,
+            last_gardener_message: None,
+            last_molt_at: None,
+            last_molt_status: None,
+            last_molt_message: None,
         }
     }
 }
@@ -707,6 +845,13 @@ impl Default for MemoryAutoUpdateConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingCronEvent {
+    /// Private peer session this event is allowed to wake/deliver into. Agent
+    /// channels with multiple private peers share one channel-level pending vec;
+    /// binding each event to the selected peer prevents cron result A from being
+    /// shipped during peer B's targeted wake. Legacy per-bot events leave this
+    /// unset and keep the historical latest-private behavior.
+    #[serde(default)]
+    pub target_session_key: Option<String>,
     /// Always `"cron_complete"`. Kept as a tagged-union discriminator so the
     /// sidecar handler can stay symmetric with the legacy `systemEventQueue`
     /// path (which carries other event kinds for non-cron callers).
@@ -751,6 +896,42 @@ impl WakeReason {
     /// High-priority wakes skip active hours and empty-prompt checks
     pub fn is_high_priority(&self) -> bool {
         !matches!(self, WakeReason::Interval)
+    }
+}
+
+/// Wake envelope for a per-bot heartbeat runner.
+///
+/// `WakeReason` keeps priority/business semantics. `target_session_key` is
+/// routing metadata supplied by the Agent-level arbiter when it has already
+/// selected the exact private peer session to wake.
+#[derive(Debug, Clone)]
+pub struct HeartbeatWake {
+    pub reason: WakeReason,
+    pub target_session_key: Option<String>,
+}
+
+impl HeartbeatWake {
+    pub fn new(reason: WakeReason) -> Self {
+        Self {
+            reason,
+            target_session_key: None,
+        }
+    }
+
+    pub fn targeted(reason: WakeReason, target_session_key: String) -> Self {
+        Self {
+            reason,
+            target_session_key: Some(target_session_key),
+        }
+    }
+
+    pub fn with_target(mut self, target_session_key: Option<String>) -> Self {
+        self.target_session_key = target_session_key;
+        self
+    }
+
+    pub fn is_high_priority(&self) -> bool {
+        self.reason.is_high_priority()
     }
 }
 
@@ -888,6 +1069,25 @@ pub struct LastActiveChannel {
     pub last_active_at: String,
 }
 
+/// Private-only heartbeat/cron target tracking.
+///
+/// `LastActiveChannel` remains the generic "last IM entry" and may point at a
+/// group. Heartbeat delivery is private-only, so it needs its own authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LastActivePrivateTarget {
+    pub channel_id: String,
+    pub session_key: String,
+    pub last_active_at: String,
+}
+
+/// Complete Agent-level heartbeat delivery target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeartbeatTarget {
+    pub channel_id: String,
+    pub session_key: String,
+}
+
 /// Agent configuration (read from config.json agents[])
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -923,6 +1123,10 @@ pub struct AgentConfigRust {
     #[serde(default)]
     pub memory_auto_update: Option<MemoryAutoUpdateConfig>,
 
+    // Long-term memory evolution (v0.2.49)
+    #[serde(default)]
+    pub memory_evolution: Option<MemoryEvolutionConfig>,
+
     // Channels
     #[serde(default)]
     pub channels: Vec<ChannelConfigRust>,
@@ -930,6 +1134,8 @@ pub struct AgentConfigRust {
     // Active message routing
     #[serde(default)]
     pub last_active_channel: Option<LastActiveChannel>,
+    #[serde(default)]
+    pub last_active_private_target: Option<LastActivePrivateTarget>,
 
     // Agent Runtime (v0.1.59 / v0.1.66) — 'builtin' | 'claude-code' | 'codex' | 'gemini'
     #[serde(default)]
@@ -1195,6 +1401,7 @@ pub struct AgentConfigPatch {
     pub runtime_config: Option<Option<serde_json::Value>>,
     pub heartbeat_config_json: Option<String>,
     pub memory_auto_update_config_json: Option<String>,
+    pub memory_evolution_config_json: Option<String>,
     pub channels: Option<Vec<ChannelConfigRust>>,
     pub setup_completed: Option<bool>,
 }
@@ -1218,8 +1425,10 @@ mod tests {
             mcp_servers_json: None,
             heartbeat: None,
             memory_auto_update: None,
+            memory_evolution: None,
             channels: vec![],
             last_active_channel: None,
+            last_active_private_target: None,
             runtime: Some("builtin".to_string()),
             runtime_config: None,
             setup_completed: Some(true),
@@ -1266,6 +1475,30 @@ mod tests {
 
         assert_eq!(config.permission_mode, "fullAgency");
         assert_eq!(channel.effective_permission_mode(&agent), "fullAgency");
+    }
+
+    #[test]
+    fn heartbeat_and_memory_defaults_match_product_defaults() {
+        let heartbeat = HeartbeatConfig::default();
+        assert!(heartbeat.enabled);
+        assert_eq!(heartbeat.interval_minutes, 240);
+        assert_eq!(heartbeat.ack_max_chars, Some(300));
+        assert_eq!(
+            heartbeat.active_hours,
+            Some(ActiveHours {
+                start: "09:00".to_string(),
+                end: "21:00".to_string(),
+                timezone: "Asia/Shanghai".to_string(),
+            })
+        );
+
+        let memory = MemoryAutoUpdateConfig::default();
+        assert!(memory.enabled);
+        assert_eq!(memory.interval_hours, 24);
+        assert_eq!(memory.query_threshold, 3);
+        assert_eq!(memory.update_window_start, "21:00");
+        assert_eq!(memory.update_window_end, "09:00");
+        assert_eq!(memory.update_window_timezone, None);
     }
 
     #[test]

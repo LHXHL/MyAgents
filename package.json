@@ -2,7 +2,7 @@
   "name": "myagents",
   "description": "MyAgents - Desktop Claude Code for everyone. AI-powered productivity, not just for developers.",
   "type": "module",
-  "version": "0.2.48",
+  "version": "0.2.49",
   "license": "Apache-2.0",
   "packageManager": "npm@11.13.0",
   "engines": {
@@ -93,6 +93,7 @@
     "mermaid": "^11.12.2",
     "monaco-editor": "^0.55.1",
     "pdfjs-dist": "^5.7.284",
+    "pinyin-pro": "^3.28.1",
     "qrcode": "^1.5.4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

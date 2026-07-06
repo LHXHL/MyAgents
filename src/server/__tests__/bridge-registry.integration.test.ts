@@ -25,6 +25,8 @@ import {
   unregisterBridge,
   lookupBridge,
   listBridges,
+  disablePromptCacheKey,
+  isPromptCacheKeyDisabled,
   _clearRegistryForTests,
 } from '../openai-bridge/bridge-registry';
 
@@ -177,6 +179,23 @@ describe('bridge-registry — diagnostics', () => {
     for (const entry of list) {
       expect(entry.ageMs).toBeGreaterThanOrEqual(0);
     }
+  });
+});
+
+describe('bridge-registry — prompt_cache_key downgrade state', () => {
+  it('keeps the unsupported-field downgrade on same-token re-register and clears it on unregister', () => {
+    registerBridge('tok-cache', () => ({ ...baseConfig }), 'session:cache');
+    expect(isPromptCacheKeyDisabled('tok-cache')).toBe(false);
+
+    disablePromptCacheKey('tok-cache');
+    expect(isPromptCacheKeyDisabled('tok-cache')).toBe(true);
+
+    registerBridge('tok-cache', () => ({ ...baseConfig, model: 'new-model' }), 'session:cache-restart');
+    expect(lookupBridge('tok-cache')!.model).toBe('new-model');
+    expect(isPromptCacheKeyDisabled('tok-cache')).toBe(true);
+
+    unregisterBridge('tok-cache');
+    expect(isPromptCacheKeyDisabled('tok-cache')).toBe(false);
   });
 });
 

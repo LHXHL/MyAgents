@@ -9,11 +9,12 @@ import { useAgentStatuses } from '@/hooks/useAgentStatuses';
 import { getAgentById, addAgentConfig, disableAgentAndStopChannels, enableAgentAndStartChannels } from '@/config/services/agentConfigService';
 import type { AgentConfig } from '../../../shared/types/agent';
 import { workspacePathsEqual } from '../../../shared/workspacePath';
-import { DEFAULT_HEARTBEAT_CONFIG } from '../../../shared/types/im';
+import { DEFAULT_HEARTBEAT_CONFIG, DEFAULT_MEMORY_AUTO_UPDATE_CONFIG } from '../../../shared/types/im';
 import WorkspaceBasicsSection from './WorkspaceBasicsSection';
 import AgentChannelsSection from './sections/AgentChannelsSection';
 import AgentHeartbeatSection from './sections/AgentHeartbeatSection';
 import AgentMemoryUpdateSection from './sections/AgentMemoryUpdateSection';
+import AgentMemoryEvolutionSection from './sections/AgentMemoryEvolutionSection';
 import AgentTasksSection from './sections/AgentTasksSection';
 import { Settings2, HeartPulse } from 'lucide-react';
 
@@ -55,8 +56,8 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
           heartbeat: agent.heartbeat ?? {
             ...DEFAULT_HEARTBEAT_CONFIG,
             enabled: true,
-            activeHours: { start: '08:00', end: '22:00', timezone: 'Asia/Shanghai' },
           },
+          memoryAutoUpdate: agent.memoryAutoUpdate ?? { ...DEFAULT_MEMORY_AUTO_UPDATE_CONFIG },
         });
         if (!project.isAgent) {
           await patchProject(project.id, { isAgent: true });
@@ -78,8 +79,8 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
           heartbeat: {
             ...DEFAULT_HEARTBEAT_CONFIG,
             enabled: true,
-            activeHours: { start: '08:00', end: '22:00', timezone: 'Asia/Shanghai' },
           },
+          memoryAutoUpdate: { ...DEFAULT_MEMORY_AUTO_UPDATE_CONFIG },
         };
         await addAgentConfig(newAgent);
         await patchProject(project.id, { isAgent: true, agentId: newAgent.id });
@@ -181,6 +182,14 @@ export default function WorkspaceGeneralTab({ agentDir }: WorkspaceGeneralTabPro
 
               <div className="mt-6 border-t border-[var(--line)] pt-5">
                 <AgentMemoryUpdateSection agent={agent} onAgentChanged={handleAgentChanged} />
+              </div>
+
+              <div className="mt-6 border-t border-[var(--line)] pt-5">
+                <AgentMemoryEvolutionSection
+                  agent={agent}
+                  workspaceId={project.id}
+                  onAgentChanged={handleAgentChanged}
+                />
               </div>
 
               <div className="mt-6 border-t border-[var(--line)] pt-5">

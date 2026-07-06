@@ -87,13 +87,27 @@ Legacy 兼容规则：
 - Skill zip 安装有总大小、单文件大小、entry 数限制，并防 Zip-Slip；安装目标只允许 global 或当前 project。
 - 附件上传有单次数量和大小限制，读取前校验路径与文件大小。
 
+## 用户 Profile / 头像
+
+登录用户资料是云端 `users` 的 account-level 数据；本地 `~/.myagents/space/session.json` 只缓存 redacted 摘要。桌面端更新昵称/头像必须走 `cmd_space_update_profile`，由 Rust 读取本地图片、做 symlink/大小/扩展名校验并 multipart 调用 Cloud Worker `/api/me/profile`。Renderer 只能通过 `src/renderer/api/spaceCloud.ts` wrapper 和 `spaceStore` 更新本地 UI 缓存，不能直接 fetch Worker 或持有 session token。
+
+Cloud Worker 用 `users.name_source` / `avatar_source` 区分 Google 默认资料与用户自定义资料：
+
+- `name_source='google'` 时，Google 重登可以刷新 `users.name`；`name_source='user'` 时不得覆盖。
+- `avatar_source='google'` 时，Google 重登可以刷新 `users.avatar_url`；`avatar_source='r2'` 时不得覆盖。
+- 头像上传写入 `ASSETS` R2 bucket 的 `avatars/users/<userId>/<sha256>.<ext>`，并把 `users.avatar_url` 写成公开 R2 URL。
+
+头像 URL 明确不走 Worker 附件下载 route。部署侧必须给 `myagents-space-assets` / `ASSETS` bucket 启用 public `r2.dev` URL 或绑定自定义域名，并在 `MyAgents_space` Worker 环境配置 `R2_PUBLIC_BASE_URL`。缺少该配置时头像上传应 fail closed；不要回退到 Worker 代理图片流量。
+
+当前 production 配置使用 `R2_PUBLIC_BASE_URL=https://files.myagents.io`。2026-07-06 已通过 `wrangler r2 bucket domain list myagents-space-assets` 确认 `files.myagents.io` 绑定到 bucket，且用临时对象 `__healthchecks/files-domain-check.txt` 实测公开 HTTPS 直链返回 200；测试对象随后已删除。
+
 ## IssueDelivery / Claim 处理
 
 Registered Agent 可从 Space 拉取 IssueDelivery，并将其作为轻量通知注入到本地 AI session。Issue claim 在产品语义上是 Issue 的唯一经办人/接手人，不是一个带 `active/completed/cancelled` 生命周期的锁；生命周期由 Issue 自身的 `state` 表达。
 
 1. `cmd_space_register_agent` 在云端创建 registered agent，并写入本地映射。
 2. `cmd_space_poll_deliveries` / `cmd_space_process_deliveries_once` 拉取待处理 delivery。
-3. Rust 通过 session inbox 注入 `space.issue_delivery` 事件和固定处理指令，写 `delivery_log.json`，再调用 `cmd_space_mark_delivery_delivered` 对云端确认。
+3. Rust 通过 session inbox 注入 `space.issue_delivery` metadata 和固定处理指令，写 `delivery_log.json`，再调用 `cmd_space_mark_delivery_delivered` 对云端确认。最终进入 AI session 的 user message 由 Rust 渲染为 `<system-reminder><myagents-space-issue><myagents-space-event ...>` 结构：`system-reminder` 隐藏内部 payload，`myagents-space-issue` 供前端展示 `Space issue` badge，`myagents-space-event` 内部拆成 `<issue-instruction>` / `<runtime-context>` / 一个或多个 `<issue>`。`<issue-instruction>` 是简版 skill，统一要求 Agent 使用 `myagents space issue` CLI；`<issue>` 只放事实数据，不重复 action 命令。`system-reminder` 的通用展示协议见 `system_reminder_protocol.md`。
 4. AI session 决定处理时调用 `myagents space issue claim <issueId> --deliveryId <deliveryId> --create-attached ...`。CLI 会先 claim，再创建 attached-session Task，再回写 `claim.localTaskId/localSessionId`；若本地 Task 创建或回写失败，CLI 立即调用 `cancel-claim` 让 Issue 回到 `todo`。
 5. AI session 完成执行时优先调用 `myagents space issue complete <issueId> --taskId <taskId> --body-file result.md --message "..."`，由 CLI 顺序完成 result comment、云端 Issue state 更新、本地 Task 状态更新。`complete` 不清空 claim；`done + claim` 表示该 Issue 已由该经办人处理完成。
 

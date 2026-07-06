@@ -2,6 +2,7 @@
 // Periodically triggers UPDATE_MEMORY.md in qualifying sessions to maintain long-term memory.
 // Runs as an independent tokio task, spawned from HeartbeatRunner's run_once().
 
+use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -59,6 +60,11 @@ enum SessionUpdateOutcome {
     Updated,
     Deferred,
     Failed(String),
+}
+
+enum UpdateMemoryFileState {
+    Ready,
+    Empty,
 }
 
 /// Check conditions and spawn a batch memory update task if all gates pass.
@@ -128,24 +134,39 @@ pub async fn check_and_spawn<R: Runtime>(
         return;
     }
 
-    // Gate 6: UPDATE_MEMORY.md exists and has content
-    let update_md_path = Path::new(workspace_path).join("UPDATE_MEMORY.md");
-    if !update_md_path.exists() {
-        ulog_debug!("[memory-update] Skipped: UPDATE_MEMORY.md not found");
-        is_running.store(false, Ordering::SeqCst);
-        return;
-    }
-    match std::fs::read_to_string(&update_md_path) {
-        Ok(content) => {
-            let body = strip_yaml_frontmatter(&content);
-            if body.trim().is_empty() {
-                ulog_debug!("[memory-update] Skipped: UPDATE_MEMORY.md body is empty");
+    // Gate 6: Ensure memory rule substrate + UPDATE_MEMORY.md at use time so
+    // default-enabled agents can actually run without a manual file click.
+    let rule_substrate =
+        match crate::workspace_files::memory_rules::ensure_memory_rule_substrate_for_workspace(
+            workspace_path,
+        ) {
+            Ok(result) => result,
+            Err(e) => {
+                ulog_warn!("[memory-update] Failed to prepare memory rules: {}", e);
                 is_running.store(false, Ordering::SeqCst);
                 return;
             }
+        };
+    let update_md_path = match resolve_update_memory_path(workspace_path) {
+        Ok(path) => path,
+        Err(e) => {
+            ulog_warn!(
+                "[memory-update] Invalid workspace for UPDATE_MEMORY.md: {}",
+                e
+            );
+            is_running.store(false, Ordering::SeqCst);
+            return;
+        }
+    };
+    match ensure_update_memory_file(&update_md_path, &rule_substrate.memory.relative_path) {
+        Ok(UpdateMemoryFileState::Ready) => {}
+        Ok(UpdateMemoryFileState::Empty) => {
+            ulog_debug!("[memory-update] Skipped: UPDATE_MEMORY.md body is empty");
+            is_running.store(false, Ordering::SeqCst);
+            return;
         }
         Err(e) => {
-            ulog_warn!("[memory-update] Failed to read UPDATE_MEMORY.md: {}", e);
+            ulog_warn!("[memory-update] Failed to prepare UPDATE_MEMORY.md: {}", e);
             is_running.store(false, Ordering::SeqCst);
             return;
         }
@@ -547,6 +568,66 @@ fn read_session_last_active_map() -> std::collections::HashMap<String, DateTime<
     map
 }
 
+fn resolve_update_memory_path(workspace_path: &str) -> Result<PathBuf, String> {
+    let workspace_root =
+        crate::workspace_files::path_safety::validate_workspace_root(workspace_path)?;
+    crate::workspace_files::path_safety::resolve_inside_workspace(
+        &workspace_root,
+        "UPDATE_MEMORY.md",
+    )
+}
+
+fn ensure_update_memory_file(
+    path: &Path,
+    memory_rule_relative_path: &str,
+) -> Result<UpdateMemoryFileState, String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err("UPDATE_MEMORY.md is a symlink; refusing to read it".to_string());
+            }
+            if metadata.is_dir() {
+                return Err("UPDATE_MEMORY.md is a directory".to_string());
+            }
+
+            let content =
+                std::fs::read_to_string(path).map_err(|e| format!("read failed: {}", e))?;
+            let body = strip_yaml_frontmatter(&content);
+            if body.trim().is_empty() {
+                return Ok(UpdateMemoryFileState::Empty);
+            }
+            Ok(UpdateMemoryFileState::Ready)
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            let mut file = match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+            {
+                Ok(file) => file,
+                Err(open_err) if open_err.kind() == ErrorKind::AlreadyExists => {
+                    return ensure_update_memory_file(path, memory_rule_relative_path);
+                }
+                Err(open_err) => {
+                    return Err(format!("create failed: {}", open_err));
+                }
+            };
+            let content =
+                crate::workspace_files::memory_rules::render_default_update_memory_content(
+                    memory_rule_relative_path,
+                );
+            file.write_all(content.as_bytes())
+                .map_err(|write_err| format!("write failed: {}", write_err))?;
+            ulog_info!(
+                "[memory-update] Created default UPDATE_MEMORY.md at {}",
+                path.display()
+            );
+            Ok(UpdateMemoryFileState::Ready)
+        }
+        Err(e) => Err(format!("metadata failed: {}", e)),
+    }
+}
+
 /// Collect session IDs that qualify for memory update
 fn collect_qualifying_sessions(
     workspace_path: &str,
@@ -769,4 +850,56 @@ async fn update_config_field<R: Runtime>(
 
     // Notify frontend
     let _ = app_handle.emit("agent:config-changed", serde_json::json!({}));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_update_memory_file_creates_default_when_missing() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("UPDATE_MEMORY.md");
+
+        let state =
+            ensure_update_memory_file(&path, ".claude/rules/04-MEMORY.md").expect("ensure file");
+
+        assert!(matches!(state, UpdateMemoryFileState::Ready));
+        let content = std::fs::read_to_string(&path).expect("read created file");
+        assert_eq!(
+            content,
+            crate::workspace_files::memory_rules::render_default_update_memory_content(
+                ".claude/rules/04-MEMORY.md"
+            )
+        );
+        assert!(!strip_yaml_frontmatter(&content).trim().is_empty());
+    }
+
+    #[test]
+    fn ensure_update_memory_file_preserves_existing_file() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("UPDATE_MEMORY.md");
+        let original = "# Custom memory maintenance\n\nDo the local thing.\n";
+        std::fs::write(&path, original).expect("write existing file");
+
+        let state =
+            ensure_update_memory_file(&path, ".claude/rules/04-MEMORY.md").expect("ensure file");
+
+        assert!(matches!(state, UpdateMemoryFileState::Ready));
+        let content = std::fs::read_to_string(&path).expect("read existing file");
+        assert_eq!(content, original);
+    }
+
+    #[test]
+    fn ensure_update_memory_file_reports_empty_body_after_frontmatter() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("UPDATE_MEMORY.md");
+        std::fs::write(&path, "---\ndescription: placeholder\n---\n\n   \n")
+            .expect("write empty file");
+
+        let state =
+            ensure_update_memory_file(&path, ".claude/rules/04-MEMORY.md").expect("ensure file");
+
+        assert!(matches!(state, UpdateMemoryFileState::Empty));
+    }
 }

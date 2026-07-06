@@ -31,6 +31,7 @@ pub mod download;
 pub mod files_b64;
 pub mod git_branch;
 pub mod gitignore;
+pub mod memory_rules;
 pub mod path_safety;
 pub mod platform_blocks;
 pub mod read_preview;

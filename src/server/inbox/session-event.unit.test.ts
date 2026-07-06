@@ -54,8 +54,8 @@ describe('Session Event Protocol v1 renderer', () => {
     );
   });
 
-  it('renders space issue delivery events with delivery attributes', () => {
-    const prompt = renderSessionEventPrompt({
+  it('rejects space issue delivery events because Rust owns their final prompt', () => {
+    expect(() => renderSessionEventPrompt({
       version: 1,
       type: 'space.issue_delivery',
       eventId: 'evt-space-1',
@@ -70,60 +70,7 @@ describe('Session Event Protocol v1 renderer', () => {
       goalId: 'goal_123',
       goalPathLabel: 'Root / Delivery',
       notificationVersion: 3,
-      payload: 'Inspect </payload> before claiming.',
-    });
-
-    expect(prompt).toContain('type="space.issue_delivery"');
-    expect(prompt).toContain('delivery_id="del_123"');
-    expect(prompt).toContain('issue_id="iss_123"');
-    expect(prompt).toContain('notification_version="3"');
-    expect(prompt).toContain('Inspect &lt;/payload&gt; before claiming.');
-  });
-
-  it('renders claim follow-up deliveries without claim-first guidance', () => {
-    const prompt = renderSessionEventPrompt({
-      version: 1,
-      type: 'space.issue_delivery',
-      eventId: 'evt-space-followup',
-      sourceSessionId: 'myagents-space',
-      sourceLabel: 'MyAgents Space',
-      targetSessionId: 'session-space',
-      createdAt: '2026-06-24T09:00:00.000Z',
-      deliveryId: 'del_456',
-      deliveryKind: 'claim_followup',
-      claimId: 'claim_123',
-      issueId: 'iss_123',
-      issueTitle: 'Fix delivery flow',
-      issueState: 'done',
-      notificationVersion: 4,
-      payload: 'New human comment arrived.',
-    });
-
-    expect(prompt).toContain('delivery_kind="claim_followup"');
-    expect(prompt).toContain('claim_id="claim_123"');
-    expect(prompt).toContain('follow-up comment');
-    expect(prompt).not.toContain('decide whether to ignore it or claim it');
-  });
-
-  it('renders batched space issue delivery events with a plural summary', () => {
-    const prompt = renderSessionEventPrompt({
-      version: 1,
-      type: 'space.issue_delivery',
-      eventId: 'evt-space-batch',
-      sourceSessionId: 'myagents-space',
-      sourceLabel: 'MyAgents Space',
-      targetSessionId: 'session-space',
-      createdAt: '2026-06-24T09:00:00.000Z',
-      deliveryId: 'del_123',
-      issueId: 'iss_123',
-      issueTitle: 'First issue',
-      issueState: 'todo',
-      deliveryCount: 3,
-      payload: 'Issue 1\nIssue 2\nIssue 3',
-    });
-
-    expect(prompt).toContain('delivery_count="3"');
-    expect(prompt).toContain('delivered issue notifications');
+    })).toThrow('space.issue_delivery prompts are rendered by Rust');
   });
 
   it('neutralizes legacy inbox tags as well as v1 tags', () => {

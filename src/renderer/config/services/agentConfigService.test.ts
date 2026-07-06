@@ -53,14 +53,14 @@ describe('agentConfigService template Agent defaults', () => {
           enabled: true,
           intervalMinutes: 240,
           ackMaxChars: 300,
-          activeHours: { start: '08:00', end: '22:00', timezone: 'Asia/Shanghai' },
+          activeHours: { start: '09:00', end: '21:00', timezone: 'Asia/Shanghai' },
         },
         memoryAutoUpdate: {
           enabled: true,
           intervalHours: 24,
-          queryThreshold: 5,
-          updateWindowStart: '00:00',
-          updateWindowEnd: '06:00',
+          queryThreshold: 3,
+          updateWindowStart: '21:00',
+          updateWindowEnd: '09:00',
         },
       },
     }];
@@ -83,8 +83,8 @@ describe('agentConfigService template Agent defaults', () => {
     expect(agent.heartbeat).toEqual(templates[0].agentDefaults!.heartbeat);
     expect(agent.memoryAutoUpdate).toEqual(templates[0].agentDefaults!.memoryAutoUpdate);
 
-    agent.heartbeat!.activeHours!.start = '09:00';
-    expect(templates[0].agentDefaults!.heartbeat!.activeHours!.start).toBe('08:00');
+    agent.heartbeat!.activeHours!.start = '10:00';
+    expect(templates[0].agentDefaults!.heartbeat!.activeHours!.start).toBe('09:00');
   });
 
   it('does not apply builtin defaults to user templates with matching IDs', () => {
@@ -135,8 +135,8 @@ describe('agentConfigService template Agent defaults', () => {
       channels: [],
     });
     expect(cfg.agents![0].heartbeat?.activeHours).toEqual({
-      start: '08:00',
-      end: '22:00',
+      start: '09:00',
+      end: '21:00',
       timezone: 'Asia/Shanghai',
     });
   });

@@ -9,6 +9,20 @@ export function isSubagentContainerTool(name: string): boolean {
   return name === 'Task' || name === 'Agent' || name === 'CollabAgent';
 }
 
+/**
+ * Builtin SDK Task/Agent tools are background by default as of current Agent SDK:
+ * omitted `run_in_background` means background; only explicit false means sync.
+ * Codex `CollabAgent` is a MyAgents-normalized external runtime card and keeps
+ * its own lifecycle semantics, so it is intentionally excluded here.
+ */
+export function isBackgroundSubagentTool(
+  tool: Pick<ToolUseSimple, 'name' | 'parsedInput'> | null | undefined,
+): boolean {
+  if (!tool || (tool.name !== 'Task' && tool.name !== 'Agent')) return false;
+  const input = tool.parsedInput as { run_in_background?: unknown } | undefined;
+  return input?.run_in_background !== false;
+}
+
 export function isSubagentCallRunning(call: Pick<SubagentToolCall, 'isLoading'>): boolean {
   return call.isLoading === true;
 }

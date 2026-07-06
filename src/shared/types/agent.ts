@@ -5,6 +5,7 @@ import type {
   ImPlatform,
   HeartbeatConfig,
   MemoryAutoUpdateConfig,
+  MemoryEvolutionConfig,
   GroupPermission,
   GroupActivation,
 } from './im';
@@ -26,6 +27,16 @@ export type ChannelType = ImPlatform;
  * Last active channel tracking for heartbeat/cron routing
  */
 export interface LastActiveChannel {
+  channelId: string;
+  sessionKey: string;
+  lastActiveAt: string; // ISO timestamp
+}
+
+/**
+ * Private-only heartbeat/cron target tracking.
+ * LastActiveChannel may point at a group; heartbeat delivery never should.
+ */
+export interface LastActivePrivateTarget {
   channelId: string;
   sessionKey: string;
   lastActiveAt: string; // ISO timestamp
@@ -126,11 +137,15 @@ export interface AgentConfig {
   // Memory Auto-Update (v0.1.43)
   memoryAutoUpdate?: MemoryAutoUpdateConfig;
 
+  // Long-term Memory Evolution (v0.2.49)
+  memoryEvolution?: MemoryEvolutionConfig;
+
   // Channels
   channels: ChannelConfig[];
 
   // Active message routing
   lastActiveChannel?: LastActiveChannel;
+  lastActivePrivateTarget?: LastActivePrivateTarget;
 
   // Agent Runtime (v0.1.59)
   runtime?: RuntimeType;           // 'builtin' | 'claude-code' | 'codex', defaults to 'builtin'

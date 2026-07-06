@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   FLOATING_BALL_CONTEXT_TAG,
+  SPACE_ISSUE_CONTEXT_TAG,
   buildFloatingBallContextReminder,
   parseLeadingSystemReminder,
   stripLeadingSystemReminder,
@@ -55,8 +56,41 @@ describe('systemReminder', () => {
     expect(stripLeadingSystemReminder(raw)).toBe('Goal: polish the wiki');
   });
 
+  it('parses Space issue reminders with the badge tag and visible status text', () => {
+    const raw = [
+      '<system-reminder>',
+      `<${SPACE_ISSUE_CONTEXT_TAG}>`,
+      '<myagents-space-event version="1" type="issue-delivery">',
+      '<issue-instruction>hidden instructions</issue-instruction>',
+      '</myagents-space-event>',
+      `</${SPACE_ISSUE_CONTEXT_TAG}>`,
+      '</system-reminder>',
+      'MyAgents Space 已投递一个 Issue 通知，Registered Agent 开始处理。',
+    ].join('\n');
+
+    const parsed = parseLeadingSystemReminder(raw);
+    expect(parsed.kind).toBe(SPACE_ISSUE_CONTEXT_TAG);
+    expect(parsed.body).toContain('<issue-instruction>hidden instructions</issue-instruction>');
+    expect(parsed.visibleText).toBe('MyAgents Space 已投递一个 Issue 通知，Registered Agent 开始处理。');
+    expect(stripLeadingSystemReminder(raw)).toBe('MyAgents Space 已投递一个 Issue 通知，Registered Agent 开始处理。');
+  });
+
   it('treats a pure floating-ball context reminder as non-visible text', () => {
     const raw = buildFloatingBallContextReminder({ screenshotAttached: true });
+    expect(stripLeadingSystemReminder(raw)).toBe('');
+  });
+
+  it('treats a pure Space issue reminder as non-visible text', () => {
+    const raw = [
+      '<system-reminder>',
+      `<${SPACE_ISSUE_CONTEXT_TAG}>`,
+      '<myagents-space-event version="1" type="issue-delivery">',
+      '<issue-instruction>hidden instructions</issue-instruction>',
+      '</myagents-space-event>',
+      `</${SPACE_ISSUE_CONTEXT_TAG}>`,
+      '</system-reminder>',
+    ].join('\n');
+
     expect(stripLeadingSystemReminder(raw)).toBe('');
   });
 

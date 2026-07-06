@@ -25,7 +25,9 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use uuid::Uuid;
 
-use crate::cron_task::{EndConditions as CronEndConditions, RunMode as CronRunMode};
+use crate::cron_task::{
+    EndConditions as CronEndConditions, RecurringWindow, RunMode as CronRunMode,
+};
 use crate::{ulog_debug, ulog_info, ulog_warn};
 use tauri::Emitter;
 
@@ -261,6 +263,23 @@ fn default_task_executor_agent() -> TaskExecutor {
     TaskExecutor::Agent
 }
 
+pub const MANAGED_KIND_MEMORY_GARDENER: &str = "memory_gardener";
+pub const MANAGED_KIND_MEMORY_MOLT: &str = "memory_molt";
+
+fn normalize_managed_kind(kind: Option<String>) -> Result<Option<String>, String> {
+    let Some(raw) = kind else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    match trimmed {
+        MANAGED_KIND_MEMORY_GARDENER | MANAGED_KIND_MEMORY_MOLT => Ok(Some(trimmed.to_string())),
+        _ => Err(format!("unsupported managedKind: {}", trimmed)),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum TaskExternalSourceType {
     #[serde(rename = "space-issue")]
@@ -315,6 +334,15 @@ pub struct Task {
     /// IANA timezone id for `cron_expression` (e.g. `Asia/Shanghai`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cron_timezone: Option<String>,
+    /// Optional first-fire timestamp for recurring tasks. Stored as RFC3339
+    /// and projected into CronSchedule::Every.start_at; used by managed tasks
+    /// that should arm the scheduler without firing immediately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_at: Option<String>,
+    /// Optional wall-clock window used to catch up missed anchored recurring
+    /// runs without waiting for another full interval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recurring_window: Option<RecurringWindow>,
     /// Dedicated "when to fire" timestamp for `Scheduled` mode
     /// (ms since epoch). Decouples from `end_conditions.deadline`,
     /// which semantically means "when to stop running".
@@ -363,6 +391,10 @@ pub struct Task {
     /// `Some(vec![])` means "explicitly run with no MCP servers".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mcp_enabled_servers: Option<Vec<String>>,
+    /// Internal system-managed task marker. Hidden from ordinary Task Center
+    /// lists, but kept in task history/session records for auditability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_kind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_thought_id: Option<String>,
     #[serde(default)]
@@ -475,6 +507,10 @@ pub struct TaskCreateDirectInput {
     #[serde(default)]
     pub cron_timezone: Option<String>,
     #[serde(default)]
+    pub start_at: Option<String>,
+    #[serde(default)]
+    pub recurring_window: Option<RecurringWindow>,
+    #[serde(default)]
     pub dispatch_at: Option<i64>,
     // ── Execution overrides ──────────────────────────────────────────────
     #[serde(default)]
@@ -494,6 +530,9 @@ pub struct TaskCreateDirectInput {
     /// Per-task MCP enable list override (PRD 0.2.4 §需求 4).
     #[serde(default)]
     pub mcp_enabled_servers: Option<Vec<String>>,
+    /// Internal system-managed task marker. Only a small allow-list is accepted.
+    #[serde(default)]
+    pub managed_kind: Option<String>,
     #[serde(default)]
     pub source_thought_id: Option<String>,
     #[serde(default)]
@@ -624,6 +663,10 @@ pub struct TaskUpdateInput {
     #[serde(default)]
     pub cron_timezone: Option<String>,
     #[serde(default)]
+    pub start_at: Option<String>,
+    #[serde(default)]
+    pub recurring_window: Option<RecurringWindow>,
+    #[serde(default)]
     pub dispatch_at: Option<i64>,
     // ── Execution overrides ──────────────────────────────────────────────
     #[serde(default)]
@@ -741,6 +784,8 @@ pub struct TaskListFilter {
     pub tag: Option<String>,
     #[serde(default)]
     pub include_deleted: Option<bool>,
+    #[serde(default)]
+    pub include_managed: Option<bool>,
 }
 
 // ================ Errors ================
@@ -1080,6 +1125,7 @@ impl TaskStore {
         pin_runtime_for_provider_id(&input.provider_id, &mut input.runtime);
         // PRD 0.2.9 — Provider routing invariants (pairing + runtime-exclusion).
         validate_task_provider_routing(&input.provider_id, &input.model, &input.runtime)?;
+        let managed_kind = normalize_managed_kind(input.managed_kind)?;
         // Cron expression validation at the boundary — same contract as
         // `update()`; ensures the scheduler never gets handed a malformed
         // expression that would make it die silently at first fire.
@@ -1109,6 +1155,8 @@ impl TaskStore {
             interval_minutes: input.interval_minutes,
             cron_expression: input.cron_expression,
             cron_timezone: input.cron_timezone,
+            start_at: input.start_at,
+            recurring_window: input.recurring_window,
             dispatch_at: input.dispatch_at,
             model: input.model,
             provider_id: input.provider_id,
@@ -1117,6 +1165,7 @@ impl TaskStore {
             runtime: input.runtime,
             runtime_config: input.runtime_config,
             mcp_enabled_servers: normalize_mcp_override(input.mcp_enabled_servers),
+            managed_kind,
             source_thought_id: input.source_thought_id,
             session_ids: Vec::new(),
             status: TaskStatus::Todo,
@@ -1216,6 +1265,7 @@ impl TaskStore {
         // PRD 0.2.9 — Same pin+validate sequence as create_direct.
         pin_runtime_for_provider_id(&input.provider_id, &mut input.runtime);
         validate_task_provider_routing(&input.provider_id, &input.model, &input.runtime)?;
+        let managed_kind = normalize_managed_kind(input.managed_kind)?;
         if !matches!(
             initial_status,
             TaskStatus::Todo | TaskStatus::Running | TaskStatus::Done | TaskStatus::Stopped
@@ -1247,6 +1297,8 @@ impl TaskStore {
             interval_minutes: input.interval_minutes,
             cron_expression: input.cron_expression,
             cron_timezone: input.cron_timezone,
+            start_at: input.start_at,
+            recurring_window: input.recurring_window,
             dispatch_at: input.dispatch_at,
             model: input.model,
             provider_id: input.provider_id,
@@ -1255,6 +1307,7 @@ impl TaskStore {
             runtime: input.runtime,
             runtime_config: input.runtime_config,
             mcp_enabled_servers: normalize_mcp_override(input.mcp_enabled_servers),
+            managed_kind,
             source_thought_id: input.source_thought_id,
             session_ids: Vec::new(),
             status: initial_status,
@@ -1430,6 +1483,8 @@ impl TaskStore {
             interval_minutes: None,
             cron_expression: None,
             cron_timezone: None,
+            start_at: None,
+            recurring_window: None,
             dispatch_at: None,
             // Per-task overrides — surface the CLI-provided values so the
             // execution path in Bun (`/cron/execute-sync` via T15 snapshot
@@ -1444,6 +1499,7 @@ impl TaskStore {
             runtime: input.runtime,
             runtime_config: input.runtime_config,
             mcp_enabled_servers: normalize_mcp_override(input.mcp_enabled_servers),
+            managed_kind: None,
             source_thought_id,
             session_ids: Vec::new(),
             status: TaskStatus::Todo,
@@ -1567,6 +1623,8 @@ impl TaskStore {
             interval_minutes: None,
             cron_expression: None,
             cron_timezone: None,
+            start_at: None,
+            recurring_window: None,
             dispatch_at: None,
             model: None,
             provider_id: None,
@@ -1575,6 +1633,7 @@ impl TaskStore {
             runtime: None,
             runtime_config: None,
             mcp_enabled_servers: None,
+            managed_kind: None,
             source_thought_id: None,
             session_ids: vec![input.current_session_id.clone()],
             status: TaskStatus::Running,
@@ -1701,6 +1760,9 @@ impl TaskStore {
         let inner = self.inner.read().await;
         let mut out: Vec<Task> = inner.values().cloned().collect();
 
+        if !filter.include_managed.unwrap_or(false) {
+            out.retain(|t| t.managed_kind.is_none());
+        }
         if !filter.include_deleted.unwrap_or(false) {
             out.retain(|t| !t.deleted);
         }
@@ -1804,6 +1866,12 @@ impl TaskStore {
         if let Some(v) = input.cron_timezone {
             updated.cron_timezone = if v.trim().is_empty() { None } else { Some(v) };
         }
+        if let Some(v) = input.start_at {
+            updated.start_at = if v.trim().is_empty() { None } else { Some(v) };
+        }
+        if let Some(v) = input.recurring_window {
+            updated.recurring_window = Some(v);
+        }
         if let Some(v) = input.dispatch_at {
             updated.dispatch_at = Some(v);
         }
@@ -1878,6 +1946,8 @@ impl TaskStore {
                 updated.interval_minutes = None;
                 updated.cron_expression = None;
                 updated.cron_timezone = None;
+                updated.start_at = None;
+                updated.recurring_window = None;
                 updated.dispatch_at = None;
             }
             TaskExecutionMode::Scheduled => {
@@ -1891,13 +1961,21 @@ impl TaskStore {
                 updated.interval_minutes = None;
                 updated.cron_expression = None;
                 updated.cron_timezone = None;
+                updated.start_at = None;
+                updated.recurring_window = None;
                 if let Some(ref mut ec) = updated.end_conditions {
                     ec.deadline = None;
                 }
             }
-            TaskExecutionMode::Recurring | TaskExecutionMode::Loop => {
+            TaskExecutionMode::Recurring => {
                 // dispatch_at belongs to Scheduled only.
                 updated.dispatch_at = None;
+            }
+            TaskExecutionMode::Loop => {
+                // dispatch_at and anchored windows belong to time-based modes.
+                updated.dispatch_at = None;
+                updated.start_at = None;
+                updated.recurring_window = None;
             }
         }
 
@@ -1943,6 +2021,8 @@ impl TaskStore {
             || existing.interval_minutes != updated.interval_minutes
             || existing.cron_expression != updated.cron_expression
             || existing.cron_timezone != updated.cron_timezone
+            || existing.start_at != updated.start_at
+            || existing.recurring_window != updated.recurring_window
             || existing.dispatch_at != updated.dispatch_at;
         let exec_overrides_changed = existing.model != updated.model
             || existing.provider_id != updated.provider_id
@@ -3565,6 +3645,8 @@ mod tests {
             interval_minutes: None,
             cron_expression: None,
             cron_timezone: None,
+            start_at: None,
+            recurring_window: None,
             dispatch_at: None,
             model: None,
             provider_id: None,
@@ -3573,6 +3655,7 @@ mod tests {
             runtime: None,
             runtime_config: None,
             mcp_enabled_servers: None,
+            managed_kind: None,
             source_thought_id: Some("thought-1".to_string()),
             tags: vec!["MyAgents".to_string()],
             notification: None,
@@ -3901,6 +3984,8 @@ mod tests {
                 interval_minutes: None,
                 cron_expression: None,
                 cron_timezone: None,
+                start_at: None,
+                recurring_window: None,
                 dispatch_at: None,
                 model: None,
                 provider_id: None,
@@ -4014,6 +4099,8 @@ mod tests {
                 interval_minutes: None,
                 cron_expression: None,
                 cron_timezone: None,
+                start_at: None,
+                recurring_window: None,
                 dispatch_at: None,
                 model: None,
                 provider_id: None,
