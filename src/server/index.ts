@@ -1167,6 +1167,9 @@ const SYSTEM_SKILLS: readonly string[] = [
   // consistent with the Agent Settings scheduler.
   'myagents-memory-gardener',
   'myagents-memory-molt',
+  // v29: prompt-writer promoted from utility → system skill so content
+  // improvements reach existing installs (seed-once never updates).
+  'prompt-writer',
 ];
 
 /**
