@@ -618,6 +618,13 @@ function splitAnswerString(value: unknown): string[] {
   return value.split(',').map(s => s.trim()).filter(Boolean);
 }
 
+function shouldDenyCodexStructuredUserInput(proc: {
+  runtimeSource?: RuntimeSource;
+  scenario: InteractionScenario;
+}): boolean {
+  return proc.runtimeSource === 'managed-provider' || shouldDisallowAskUserQuestion(proc.scenario);
+}
+
 function answerList(value: unknown, opts: { splitComma: boolean }): string[] {
   if (Array.isArray(value)) return value.map(String).map(s => s.trim()).filter(Boolean);
   if (typeof value !== 'string') return [];
@@ -1428,6 +1435,7 @@ class CodexProcess implements RuntimeProcess {
 
   workspacePath = '';
   scenario: InteractionScenario = { type: 'desktop' };
+  runtimeSource: RuntimeSource = 'system-cli';
   model = '';
   approvalPolicy: CodexApprovalPolicy = 'on-request';
   sandbox: CodexSandboxMode = 'workspace-write';
@@ -2243,6 +2251,7 @@ export class CodexRuntime implements AgentRuntime {
     codexProc.sessionId = options.sessionId;
     codexProc.workspacePath = options.workspacePath;
     codexProc.scenario = options.scenario;
+    codexProc.runtimeSource = runtimeSource;
 
     // Dedup guard: prevent double session_complete from notification + process exit
     let sessionCompleteEmitted = false;
@@ -3439,7 +3448,7 @@ export class CodexRuntime implements AgentRuntime {
       }
 
       case 'item/tool/requestUserInput': {
-        if (shouldDisallowAskUserQuestion(codexProc.scenario)) {
+        if (shouldDenyCodexStructuredUserInput(codexProc)) {
           const action = serializeCodexPermissionResponse(
             { kind: 'tool_user_input', rpcId, method, params: p },
             'deny',
@@ -3464,7 +3473,7 @@ export class CodexRuntime implements AgentRuntime {
         const requestedSchema = objectValue(p.requestedSchema);
         const hasFormFields = Object.keys(objectValue(requestedSchema.properties)).length > 0;
         if ((p.mode === 'form' || p.mode === 'openai/form') && hasFormFields) {
-          if (shouldDisallowAskUserQuestion(codexProc.scenario)) {
+          if (shouldDenyCodexStructuredUserInput(codexProc)) {
             const action = serializeCodexPermissionResponse(
               { kind: 'mcp_elicitation', rpcId, method, params: p },
               'deny',

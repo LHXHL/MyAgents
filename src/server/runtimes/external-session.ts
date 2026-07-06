@@ -896,6 +896,53 @@ function flushAllPending(): void {
 // reset-on-activity setTimeout, which fired on resume because its deadline
 // elapsed in wall-clock during sleep — a turn the runtime never actually hung.)
 const WATCHDOG_INTERVAL_MS = 30 * 1000;
+const MANAGED_CODEX_STRUCTURED_USER_INPUT_DISABLED_PROMPT = `<myagents-managed-codex-interaction-limits>
+This session is running on Managed Codex. The structured user-input tools are intentionally disabled here.
+
+Do not call request_user_input, AskUserQuestion, or MCP elicitation/form tools to ask the IM user a question.
+If you need clarification or a choice from the user, ask it as normal chat text and wait for the user's next message.
+</myagents-managed-codex-interaction-limits>`;
+
+function isManagedCodexStructuredUserInputDisabled(
+  runtimeType: RuntimeType,
+  runtimeSource: RuntimeSource | undefined,
+): boolean {
+  return runtimeType === 'codex' && runtimeSource === 'managed-provider';
+}
+
+function isChannelScenario(scenario: InteractionScenario): boolean {
+  return scenario.type === 'im' || scenario.type === 'agent-channel';
+}
+
+function getRuntimeAwareChannelInteractionDisallowedTools(
+  runtimeType: RuntimeType,
+  runtimeSource: RuntimeSource | undefined,
+  scenario: InteractionScenario,
+): string[] {
+  const tools = getChannelInteractionDisallowedTools(scenario);
+  if (
+    isChannelScenario(scenario)
+    && isManagedCodexStructuredUserInputDisabled(runtimeType, runtimeSource)
+    && !tools.includes('AskUserQuestion')
+  ) {
+    return ['AskUserQuestion', ...tools];
+  }
+  return tools;
+}
+
+function appendManagedCodexInteractionLimitPrompt(
+  prompt: string,
+  runtimeType: RuntimeType,
+  runtimeSource: RuntimeSource | undefined,
+  scenario: InteractionScenario,
+): string {
+  if (!isChannelScenario(scenario)) return prompt;
+  if (!isManagedCodexStructuredUserInputDisabled(runtimeType, runtimeSource)) return prompt;
+  return prompt
+    ? `${prompt}\n\n${MANAGED_CODEX_STRUCTURED_USER_INPUT_DISABLED_PROMPT}`
+    : MANAGED_CODEX_STRUCTURED_USER_INPUT_DISABLED_PROMPT;
+}
+
 const externalWatchdog = new InactivityWatchdog({
   timeoutMs: EXTERNAL_WATCHDOG_DEFAULT_TIMEOUT_MS,
   intervalMs: WATCHDOG_INTERVAL_MS,
@@ -1794,9 +1841,15 @@ async function _doStartExternalSession(options: {
   if (workspaceInstructions) {
     console.log(`[external-session] Injecting workspace instructions for ${runtimeType} (${workspaceInstructions.length} bytes)`);
   }
-  const systemPromptAppend = workspaceInstructions
+  let systemPromptAppend = workspaceInstructions
     ? baseSystemPrompt + '\n\n' + workspaceInstructions
     : baseSystemPrompt;
+  systemPromptAppend = appendManagedCodexInteractionLimitPrompt(
+    systemPromptAppend,
+    runtimeType,
+    runtimeSource,
+    options.scenario,
+  );
 
   // External runtimes don't go through the SDK's session creation flow, so the
   // "pending-{tabId}" placeholder that the frontend assigns never gets upgraded
@@ -1945,7 +1998,11 @@ async function _doStartExternalSession(options: {
   // Set isRunning BEFORE spawning — prevents waitForExternalSessionIdle from
   // seeing the pre-start state and returning true prematurely. Reset in catch.
   setExternalLifecycleRunning(true);
-  const disallowedTools = getChannelInteractionDisallowedTools(options.scenario);
+  const disallowedTools = getRuntimeAwareChannelInteractionDisallowedTools(
+    runtimeType,
+    runtimeSource,
+    options.scenario,
+  );
 
   const startOnce = (resumeId: string | undefined): Promise<RuntimeProcess> =>
     runtime.startSession(
@@ -3620,8 +3677,13 @@ function autoDenyNonInteractiveRequest(event: Extract<UnifiedEvent, { kind: 'per
   const scenario = getExternalLifecycleScenario();
   if (scenario.type === 'desktop') return false;
   if (event.toolName !== 'AskUserQuestion') return false;
-  if (!shouldDisallowAskUserQuestion(scenario)) return false;
-  const reason = `External runtime AskUserQuestion request was denied because this ${scenario.type} host does not support native-card interaction.`;
+  const runtimeType = getExternalActiveRuntime()?.type ?? getCurrentRuntimeType();
+  const runtimeSource = runtimeType === 'codex' ? getCurrentRuntimeSource() : undefined;
+  const managedCodexDisabled = isManagedCodexStructuredUserInputDisabled(runtimeType, runtimeSource);
+  if (!managedCodexDisabled && !shouldDisallowAskUserQuestion(scenario)) return false;
+  const reason = managedCodexDisabled
+    ? `External runtime AskUserQuestion request was denied because Managed Codex structured user input is disabled.`
+    : `External runtime AskUserQuestion request was denied because this ${scenario.type} host does not support native-card interaction.`;
   console.warn(`[external-session] ${reason} requestId=${event.requestId}`);
   fireExternalImCallback('error', reason);
   const active = getExternalActivePair();

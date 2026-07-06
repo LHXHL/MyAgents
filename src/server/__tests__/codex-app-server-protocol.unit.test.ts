@@ -96,6 +96,33 @@ describe('Codex app-server protocol helpers', () => {
     expect(env.FS_TOKEN).toBeUndefined();
   });
 
+  it('does not enable Codex default-mode request_user_input at app-server startup', () => {
+    const env: Record<string, string | undefined> = {};
+    expect(buildCodexAppServerArgs({
+      commandPath: '/usr/local/bin/codex',
+      runtimeSource: 'managed-provider',
+      codexEnv: env,
+    })).toEqual([
+      '/usr/local/bin/codex',
+      '-c',
+      'project_doc_fallback_filenames=["CLAUDE.md"]',
+      '-c',
+      'cli_auth_credentials_store="file"',
+      'app-server',
+    ]);
+
+    expect(buildCodexAppServerArgs({
+      commandPath: '/usr/local/bin/codex',
+      runtimeSource: 'system-cli',
+      codexEnv: env,
+    })).toEqual([
+      '/usr/local/bin/codex',
+      '-c',
+      'project_doc_fallback_filenames=["CLAUDE.md"]',
+      'app-server',
+    ]);
+  });
+
   it('injects managed Codex MCP servers through app-server config args without argv secrets', () => {
     const env: Record<string, string | undefined> = { HTTPS_PROXY: 'http://127.0.0.1:7890' };
     const args = buildCodexAppServerArgs({
@@ -495,6 +522,46 @@ describe('Codex app-server protocol helpers', () => {
       type: 'result',
       result: { action: 'cancel', content: null, _meta: null },
     });
+  });
+
+  it('does not track managed Codex request_user_input as pending even on native-card channels', () => {
+    const runtime = new CodexRuntime();
+    const pendingRequests = new Map<string, PendingCodexRequest>();
+    const respond = vi.fn();
+    const respondError = vi.fn();
+    const codexProc = {
+      pendingRequests,
+      scenario: {
+        type: 'agent-channel',
+        platform: 'feishu',
+        sourceType: 'private',
+        hostInteraction: { askUserQuestion: 'native-card' },
+      },
+      runtimeSource: 'managed-provider',
+      rpc: { respond, respondError },
+    };
+    const onEvent = vi.fn();
+
+    (runtime as unknown as {
+      handleServerRequest(
+        proc: typeof codexProc,
+        rpcId: number,
+        method: string,
+        params: unknown,
+        onEvent: (event: unknown) => void,
+      ): void;
+    }).handleServerRequest(
+      codexProc,
+      24,
+      'item/tool/requestUserInput',
+      { questions: [{ id: 'choice', question: 'Pick', options: ['A', 'B'] }] },
+      onEvent,
+    );
+
+    expect(pendingRequests.size).toBe(0);
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(24, { answers: {} });
+    expect(respondError).not.toHaveBeenCalled();
   });
 
   it('does not track unsupported channel MCP form elicitation as pending', () => {

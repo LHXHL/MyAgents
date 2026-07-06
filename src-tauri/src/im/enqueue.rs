@@ -138,6 +138,18 @@ pub(super) async fn drop_im_consumer(consumers: &ImConsumers, session_key: &str)
     }
 }
 
+fn host_interaction_for_platform(platform: &ImPlatform) -> HostInteractionCapability {
+    match platform {
+        ImPlatform::Feishu => HostInteractionCapability::native_card(),
+        ImPlatform::OpenClaw(id)
+            if id.eq_ignore_ascii_case("feishu") || id.eq_ignore_ascii_case("lark") =>
+        {
+            HostInteractionCapability::native_card()
+        }
+        _ => HostInteractionCapability::none(),
+    }
+}
+
 /// POST /api/im/enqueue — synchronous enqueue, returns immediately.
 /// Replaces `stream_to_im` for the new IM Pipeline v2 protocol. peer_lock
 /// (held by the caller) wraps only this call (~ms), enabling concurrent
@@ -186,10 +198,7 @@ pub(super) async fn enqueue_to_sidecar(
         "requestId": msg.request_id,
         "metadataBirthPending": metadata_birth_pending,
         "configHeldByTab": config_held_by_tab,
-        "hostInteraction": match &msg.platform {
-            ImPlatform::Feishu => HostInteractionCapability::native_card(),
-            _ => HostInteractionCapability::none(),
-        },
+        "hostInteraction": host_interaction_for_platform(&msg.platform),
     });
     if !is_external_runtime_type(runtime) {
         if let Some(env) = provider_env {
@@ -280,4 +289,28 @@ pub(super) async fn enqueue_to_sidecar(
         .await
         .map_err(|e| RouteError::Unavailable(format!("enqueue parse: {}", e)))?;
     Ok(resp_body["sessionId"].as_str().map(String::from))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ask_cap(platform: ImPlatform) -> String {
+        host_interaction_for_platform(&platform).ask_user_question
+    }
+
+    #[test]
+    fn host_interaction_marks_native_and_openclaw_feishu_as_native_card() {
+        assert_eq!(ask_cap(ImPlatform::Feishu), "native-card");
+        assert_eq!(
+            ask_cap(ImPlatform::OpenClaw("feishu".to_string())),
+            "native-card"
+        );
+        assert_eq!(
+            ask_cap(ImPlatform::OpenClaw("lark".to_string())),
+            "native-card"
+        );
+        assert_eq!(ask_cap(ImPlatform::OpenClaw("qqbot".to_string())), "none");
+        assert_eq!(ask_cap(ImPlatform::Telegram), "none");
+    }
 }
