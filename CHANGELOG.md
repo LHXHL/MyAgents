@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.49] - 2026-07-07
+
+> 本版扩展 Agent 长期记忆、Team Space 协作和 IM 渠道交互：Agent 可定期整理/进化长期记忆；Space 增加个人资料、成员设置、Skill 发布历史和 Issue 投送体验；飞书等渠道可以用原生卡片向用户追问。OpenAI 兼容桥、会话草稿可见性、后台子 Agent 状态和 Skill 安装安全性也做了稳定性修复。
+
+### Added
+
+- **Agent 长期记忆进化**：Agent 设置中新增长期记忆进化能力，可定期整理用户记忆、规则和自我改进素材，让长期运行的 Agent 更容易保持连续性。
+- **Team Space 协作能力补齐**：Space 增加个人资料头像、成员与配额设置、Skill 发布历史、文件夹来源发布，以及更结构化的 Issue 投送提示。
+- **IM 渠道追问卡片**：飞书渠道支持 `AskUserQuestion` 原生交互卡片，AI 在需要用户确认或补充信息时可以在聊天里直接发起问题。
+- **Prompt Writer 作为系统 Skill 更新**：内置 prompt-writer 会随应用更新同步，已有安装也能获得新的提示词写作方法论内容。
+
+### Changed
+
+- **OpenAI 兼容桥 prompt cache 更稳定**：Responses 和 Chat Completions 路径都会保留 prompt cache 亲和信息，减少兼容 Provider 下长上下文重复请求的成本。
+- **自动化会话更少干扰历史**：预查询 runtime 草稿和纯隐藏 system reminder 不再污染普通会话历史、搜索和用户气泡展示。
+- **后台子 Agent 状态更可见**：默认后台执行的子 Agent / 任务状态会更稳定地出现在任务中心和消息流中，减少“后台在跑但界面没反馈”的情况。
+
+### Fixed
+
+- **Agent Channel heartbeat / cron 投送不再串私聊**：heartbeat、手动唤醒和定时任务结果会绑定到当前有效私聊目标，不会误投到其它私聊或群聊。
+- **IM 追问能力按渠道正确降级**：不支持原生卡片的渠道会禁用桌面-only 追问能力，避免 AI 发出用户无法响应的交互。
+- **Space Skill 发布更安全可靠**：直连压缩包下载改为 HTTPS-only，并拦截私网/回环地址和 DNS rebinding；URL 发布产生的临时包也会及时清理。
+- **Space 与设置页细节修复**：修复 Space slug 冲突提示、头像渲染、成员表单、设置页布局和配额错误处理等问题。
+- **桌面输入体验修复**：关闭 macOS 系统文本纠错弹窗干扰，并修复嵌套横向滚动区域与 Tab 滑动手势的冲突。
+
+---
+
 ## [0.2.48] - 2026-07-05
 
 > 本版修复 Anthropic 订阅登录在新版 Claude SDK 下无法真正复用本机 OAuth 的问题：MyAgents 会把订阅账号交回 Claude Code 原生凭据系统管理，同时避免第三方 API Provider 环境污染订阅校验。
