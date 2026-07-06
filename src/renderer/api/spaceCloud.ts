@@ -535,11 +535,18 @@ export interface NormalizedSpaceError {
 
 interface SpaceUserFacingError extends Error {
   readonly __spaceUserFacingError: true;
+  readonly spaceCode?: string;
 }
 
-function spaceUserFacingError(message: string): SpaceUserFacingError {
+function spaceUserFacingError(
+  message: string,
+  details?: { code?: string },
+): SpaceUserFacingError {
   const error = new Error(message) as SpaceUserFacingError;
   Object.defineProperty(error, "__spaceUserFacingError", { value: true });
+  if (details?.code) {
+    Object.defineProperty(error, "spaceCode", { value: details.code });
+  }
   return error;
 }
 
@@ -757,6 +764,20 @@ export function spaceErrorMessage(
   return normalizeSpaceError(error, context).userMessage;
 }
 
+export function spaceErrorCode(error: unknown): string | null {
+  if (!error || typeof error !== "object") return null;
+  const maybeError = error as Partial<SpaceApiEnvelope<unknown>> & {
+    spaceCode?: unknown;
+  };
+  if (typeof maybeError.spaceCode === "string") return maybeError.spaceCode;
+  if (typeof maybeError.code === "string") return maybeError.code;
+  return null;
+}
+
+export function isSpaceErrorCode(error: unknown, code: string): boolean {
+  return spaceErrorCode(error) === code;
+}
+
 async function spaceApi<T>(
   method: string,
   path: string,
@@ -790,7 +811,7 @@ async function spaceApi<T>(
       path,
       error: normalized.debugMessage,
     });
-    throw spaceUserFacingError(normalized.userMessage);
+    throw spaceUserFacingError(normalized.userMessage, { code: result.code });
   }
   return result.data as T;
 }

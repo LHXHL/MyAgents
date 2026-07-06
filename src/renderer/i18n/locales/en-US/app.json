@@ -363,6 +363,7 @@
       "createTitle": "Create Space",
       "name": "Space name",
       "slug": "Space slug",
+      "slugConflict": "This Space slug is already taken. Choose another one.",
       "chooseAvatar": "Choose avatar"
     },
     "profile": {

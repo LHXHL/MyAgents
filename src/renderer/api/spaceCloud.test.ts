@@ -86,6 +86,26 @@ describe('spaceCloud API errors', () => {
     expect(normalized.debugMessage).toContain('req_123');
   });
 
+  it('preserves Space business error codes for field-level handling', async () => {
+    const { spaceCreateSpace, spaceErrorCode, spaceErrorMessage } = await loadSpaceCloud();
+    mocks.invoke.mockResolvedValueOnce({
+      success: false,
+      error: 'Space slug already exists',
+      code: 'SPACE_SLUG_CONFLICT',
+      requestId: 'req_slug',
+    });
+
+    let thrown: unknown;
+    try {
+      await spaceCreateSpace({ name: 'Duplicate Lab', slug: 'duplicate-lab' });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(spaceErrorCode(thrown)).toBe('SPACE_SLUG_CONFLICT');
+    expect(spaceErrorMessage(thrown)).toBe('Space 创建失败：这个 Space slug 已被占用，请换一个');
+  });
+
   it('returns Space data from successful envelopes', async () => {
     const { spaceCommentIssue } = await loadSpaceCloud();
     const comment = {

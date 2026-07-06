@@ -363,6 +363,7 @@
       "createTitle": "创建 Space",
       "name": "Space 名称",
       "slug": "Space slug",
+      "slugConflict": "这个 Space slug 已被占用，请换一个",
       "chooseAvatar": "选择头像"
     },
     "profile": {

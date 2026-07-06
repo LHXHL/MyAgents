@@ -9,6 +9,7 @@ import {
   spaceAuthStart,
   spaceCreateSpace,
   spaceErrorMessage,
+  isSpaceErrorCode,
   spaceJoinSpace,
   spaceUpdateSpace,
   type LocalRegisteredAgent,
@@ -76,6 +77,11 @@ type SpaceQuickActionSubmitInput =
       avatarFilePath?: string | null;
     };
 
+type SpaceQuickActionError = {
+  field: "slug";
+  message: string;
+};
+
 async function readPickedImagePreview(
   fileService: ReturnType<typeof useWorkspaceFileService>,
   path: string,
@@ -91,12 +97,16 @@ async function readPickedImagePreview(
 function SpaceQuickActionDialog({
   mode,
   busy,
+  error,
   onClose,
+  onClearError,
   onSubmit,
 }: {
   mode: "join" | "create";
   busy: boolean;
+  error?: SpaceQuickActionError | null;
   onClose: () => void;
+  onClearError: () => void;
   onSubmit: (input: SpaceQuickActionSubmitInput) => void | Promise<void>;
 }) {
   const { t } = useTranslation("app");
@@ -115,6 +125,7 @@ function SpaceQuickActionDialog({
   }, 220);
   const title =
     mode === "join" ? t("space.spaceActions.joinTitle") : t("space.spaceActions.createTitle");
+  const slugError = mode === "create" && error?.field === "slug" ? error.message : null;
   const canSubmit =
     mode === "join" ? Boolean(joinSlug.trim()) : Boolean(name.trim() && createSlug.trim());
   const submit = () => {
@@ -163,7 +174,10 @@ function SpaceQuickActionDialog({
               <input
                 value={joinSlug}
                 autoFocus
-                onChange={(event) => setJoinSlug(event.target.value)}
+                onChange={(event) => {
+                  onClearError();
+                  setJoinSlug(event.target.value);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") submit();
                 }}
@@ -185,6 +199,7 @@ function SpaceQuickActionDialog({
                   autoFocus
                   onChange={(event) => {
                     const nextName = event.target.value;
+                    onClearError();
                     setName(nextName);
                     if (!slugEdited) setCreateSlug(spaceSlugCandidate(nextName));
                   }}
@@ -199,14 +214,21 @@ function SpaceQuickActionDialog({
                 <input
                   value={createSlug}
                   onChange={(event) => {
+                    onClearError();
                     setSlugEdited(true);
                     setCreateSlug(spaceSlugCandidate(event.target.value));
                   }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") submit();
                   }}
-                  className="mt-1 h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]"
+                  aria-invalid={slugError ? true : undefined}
+                  className={`mt-1 h-10 w-full rounded-lg border bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)] ${slugError ? "border-[var(--error)]" : "border-[var(--line)]"}`}
                 />
+                {slugError ? (
+                  <span className="mt-1 block text-xs font-medium text-[var(--error)]" role="alert">
+                    {slugError}
+                  </span>
+                ) : null}
               </label>
             </>
           )}
@@ -372,6 +394,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const [profileSettingsOpen, setProfileSettingsOpen] = useState(false);
   const [spaceDialogMode, setSpaceDialogMode] = useState<"join" | "create" | null>(null);
   const [spaceDialogBusy, setSpaceDialogBusy] = useState(false);
+  const [spaceDialogError, setSpaceDialogError] = useState<SpaceQuickActionError | null>(null);
   const [localDeviceId, setLocalDeviceId] = useState<string | null>(null);
 
   const session = spaceData.session;
@@ -787,16 +810,19 @@ export default function Space({ isActive }: { isActive: boolean }) {
   }, [actions, toast]);
 
   const joinSpace = useCallback(() => {
+    setSpaceDialogError(null);
     setSpaceDialogMode("join");
   }, []);
 
   const createSpace = useCallback(() => {
+    setSpaceDialogError(null);
     setSpaceDialogMode("create");
   }, []);
 
   const submitSpaceDialog = useCallback(async (input: SpaceQuickActionSubmitInput) => {
     if (!spaceDialogMode || input.mode !== spaceDialogMode) return;
     setSpaceDialogBusy(true);
+    setSpaceDialogError(null);
     try {
       if (input.mode === "join") {
         const result = await spaceJoinSpace({ slug: input.slug });
@@ -830,11 +856,23 @@ export default function Space({ isActive }: { isActive: boolean }) {
       }
       setSpaceDialogMode(null);
     } catch (error) {
-      toast.error(spaceErrorMessage(error));
+      if (input.mode === "create" && isSpaceErrorCode(error, "SPACE_SLUG_CONFLICT")) {
+        setSpaceDialogError({
+          field: "slug",
+          message: t("space.spaceActions.slugConflict"),
+        });
+      } else {
+        toast.error(spaceErrorMessage(error));
+      }
     } finally {
       setSpaceDialogBusy(false);
     }
   }, [actions, spaceDialogMode, t, toast]);
+
+  const closeSpaceDialog = useCallback(() => {
+    setSpaceDialogError(null);
+    setSpaceDialogMode(null);
+  }, []);
 
   const logout = useCallback(async () => {
     try {
@@ -1038,7 +1076,9 @@ export default function Space({ isActive }: { isActive: boolean }) {
         <SpaceQuickActionDialog
           mode={spaceDialogMode}
           busy={spaceDialogBusy}
-          onClose={() => setSpaceDialogMode(null)}
+          error={spaceDialogError}
+          onClose={closeSpaceDialog}
+          onClearError={() => setSpaceDialogError(null)}
           onSubmit={submitSpaceDialog}
         />
       )}
