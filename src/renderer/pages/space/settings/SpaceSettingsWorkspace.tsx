@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, Bot, Check, ChevronRight, Copy, Loader2, MoreHorizontal, RefreshCw, Settings, Shield, Trash2, UserPlus, Users } from "lucide-react";
+import { ArrowLeft, Bot, Camera, Check, ChevronRight, Copy, Loader2, MoreHorizontal, RefreshCw, Save, Shield, Trash2, UserPlus, Users, X } from "lucide-react";
 
 import {
   spaceApproveJoinRequest,
@@ -18,15 +18,17 @@ import {
   type SpaceSession,
 } from "@/api/spaceCloud";
 import CustomSelect from "@/components/CustomSelect";
+import OverlayBackdrop from "@/components/OverlayBackdrop";
 import { useToast } from "@/components/Toast";
 import type { Project } from "@/config/types";
+import { useCloseLayer } from "@/hooks/useCloseLayer";
 import { useWorkspaceFileService } from "@/hooks/useWorkspaceFileService";
 import { AgentsWorkspace } from "@/pages/space/agents/AgentsWorkspace";
 import { SpaceAvatar } from "@/pages/space/SpaceAvatar";
 import type { SpaceActions } from "@/pages/space/spaceStore";
 import { SPACE_LIST_FRAME_CLASS } from "@/pages/space/spaceUi";
 
-type SettingsSection = "overview" | "members" | "agents" | "roles";
+type SettingsSection = "members" | "agents" | "roles";
 const SPACE_SETTINGS_ROOT_FRAME_CLASS = "mx-auto max-w-xl";
 
 async function readAvatarPreview(
@@ -51,14 +53,18 @@ function quotaText(used?: number, max?: number): string {
   return `${used} / ${max}`;
 }
 
-function quotaPercent(used?: number, max?: number): number {
-  if (typeof used !== "number" || typeof max !== "number" || max <= 0) return 0;
-  return Math.min(100, Math.max(0, (used / max) * 100));
-}
-
 function metricValue(value: string | number | null | undefined): string {
   if (value === null || typeof value === "undefined" || value === "") return "-";
   return String(value);
+}
+
+function basename(path: string): string {
+  return path.split(/[/\\]/).pop() || path;
+}
+
+function planDisplay(plan?: string | null): string {
+  const normalized = plan || "free";
+  return `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)}`;
 }
 
 function SummaryMetric({ label, value }: { label: string; value: string | number | null | undefined }) {
@@ -70,30 +76,11 @@ function SummaryMetric({ label, value }: { label: string; value: string | number
   );
 }
 
-function QuotaLine({
-  label,
-  used,
-  max,
-  value,
-}: {
-  label: string;
-  used?: number;
-  max?: number;
-  value?: string;
-}) {
-  const percent = quotaPercent(used, max);
+function ResourceMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="space-y-1.5">
-      <div className="flex items-center justify-between gap-3 text-xs font-medium">
-        <span className="truncate text-[var(--ink-muted)]">{label}</span>
-        <span className="shrink-0 text-[var(--ink-secondary)]">{value ?? quotaText(used, max)}</span>
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-[var(--paper-inset)]">
-        <div
-          className="h-full rounded-full bg-[var(--accent-warm)] transition-[width]"
-          style={{ width: `${percent}%` }}
-        />
-      </div>
+    <div className="min-w-0 rounded-xl bg-[var(--paper-elevated)]/55 px-3 py-2.5">
+      <div className="truncate text-xs font-medium text-[var(--ink-muted)]">{label}</div>
+      <div className="mt-0.5 truncate text-sm font-semibold text-[var(--ink-secondary)]">{value}</div>
     </div>
   );
 }
@@ -106,7 +93,6 @@ function roleLabel(role: string, t: ReturnType<typeof useTranslation>["t"]): str
 
 function menuItems(pendingCount: number, t: ReturnType<typeof useTranslation>["t"]) {
   return [
-    { id: "overview" as const, label: t("space.settings.overview"), icon: Settings, hint: t("space.settings.overviewHint") },
     {
       id: "members" as const,
       label: t("space.settings.members"),
@@ -151,6 +137,7 @@ export function SpaceSettingsWorkspace({
   const [avatarFilePath, setAvatarFilePath] = useState<string | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [editingOverview, setEditingOverview] = useState(false);
+  const [pickingAvatar, setPickingAvatar] = useState(false);
   const [inviteEmail, setInviteEmail] = useState("");
   const [inviteRole, setInviteRole] = useState<"member" | "admin">("member");
   const [menuMemberId, setMenuMemberId] = useState<string | null>(null);
@@ -173,10 +160,11 @@ export function SpaceSettingsWorkspace({
     setAvatarFilePath(null);
     setAvatarPreview(null);
     setEditingOverview(false);
+    setPickingAvatar(false);
   }, [session.space.id, session.space.name, session.space.avatarUrl]);
 
   useEffect(() => {
-    if (section !== null && section !== "members" && section !== "overview" && section !== "agents") return;
+    if (section !== null && section !== "members" && section !== "agents") return;
     let cancelled = false;
     setMembersLoading(true);
     spaceGetMembers(session.space.slug || session.space.id)
@@ -204,16 +192,40 @@ export function SpaceSettingsWorkspace({
     toast.success(t("space.toasts.spaceSlugCopied"));
   };
 
+  const closeOverviewEditor = () => {
+    if (busyKey === "overview" || pickingAvatar) return;
+    setEditingOverview(false);
+    setName(session.space.name);
+    setAvatarFilePath(null);
+    setAvatarPreview(null);
+  };
+
+  useCloseLayer(() => {
+    if (!editingOverview) return false;
+    if (busyKey === "overview" || pickingAvatar) return false;
+    closeOverviewEditor();
+    return true;
+  }, 220);
+
   const pickAvatar = async () => {
-    const { open } = await import("@tauri-apps/plugin-dialog");
-    const selected = await open({
-      multiple: false,
-      directory: false,
-      filters: [{ name: "Image", extensions: ["png", "jpg", "jpeg", "webp"] }],
-    });
-    if (!selected || Array.isArray(selected)) return;
-    setAvatarFilePath(selected);
-    setAvatarPreview(await readAvatarPreview(fileService, selected));
+    if (busyKey === "overview" || pickingAvatar) return;
+    setPickingAvatar(true);
+    try {
+      const { open } = await import("@tauri-apps/plugin-dialog");
+      const selected = await open({
+        multiple: false,
+        directory: false,
+        title: t("space.profile.pickAvatarTitle"),
+        filters: [{ name: t("space.profile.imageFilter"), extensions: ["png", "jpg", "jpeg", "webp"] }],
+      });
+      if (!selected || Array.isArray(selected)) return;
+      setAvatarFilePath(selected);
+      setAvatarPreview(await readAvatarPreview(fileService, selected));
+    } catch (error) {
+      toast.error(spaceErrorMessage(error));
+    } finally {
+      setPickingAvatar(false);
+    }
   };
 
   const saveOverview = async () => {
@@ -227,6 +239,8 @@ export function SpaceSettingsWorkspace({
       toast.success(t("space.toasts.spaceUpdated"));
       await actions.ensureBootstrapped({ force: true });
       setEditingOverview(false);
+      setAvatarFilePath(null);
+      setAvatarPreview(null);
     } catch (error) {
       toast.error(spaceErrorMessage(error));
     } finally {
@@ -271,7 +285,7 @@ export function SpaceSettingsWorkspace({
   const renderShell = (children: ReactNode) => (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--paper)]/40">
       <header className="border-b border-[var(--line-subtle)] bg-[var(--paper-elevated)]/35 px-6 py-2 backdrop-blur-md">
-        <div className={`${SPACE_LIST_FRAME_CLASS} flex min-h-10 items-center justify-between gap-3`}>
+        <div className="flex min-h-10 w-full items-center justify-between gap-3">
           <div className="flex min-w-0 items-center gap-2">
             <button
               type="button"
@@ -427,149 +441,157 @@ export function SpaceSettingsWorkspace({
     );
   }
 
-  if (section === "overview") {
-    const preview = avatarPreview ?? session.space.avatarUrl ?? null;
-    const storageUsed = overviewUsage?.storageBytes ?? 0;
-    const storageMax = overviewLimits?.storageBytesMax ?? 1024 * 1024 * 1024;
-    return renderShell(
-      <div className={`${SPACE_LIST_FRAME_CLASS} space-y-4`}>
-        <section className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-elevated)]/80 shadow-sm">
-          <div className="border-b border-[var(--line-subtle)] bg-[var(--paper)]/35 px-5 py-5">
-            <div className="flex flex-wrap items-start gap-4">
-              <SpaceAvatar name={session.space.name} avatarUrl={preview} size={64} />
-              <div className="min-w-0 flex-1">
-                {editingOverview ? (
-                  <label className="block text-xs font-semibold text-[var(--ink-muted)]">
-                    {t("space.spaceActions.name")}
-                    <input
-                      value={name}
-                      onChange={(event) => setName(event.target.value)}
-                      className="mt-1 h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm font-semibold text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]"
-                    />
-                  </label>
-                ) : (
-                  <h3 className="truncate text-2xl font-semibold text-[var(--ink)]">{session.space.name}</h3>
-                )}
-                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-medium text-[var(--ink-muted)]">
-                  <span className="rounded-full bg-[var(--paper-inset)] px-2 py-1">{session.space.slug}</span>
-                  <button type="button" onClick={copySlug} className="grid h-7 w-7 place-items-center rounded-lg transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]" aria-label={t("space.toasts.spaceSlugCopied")} title={t("space.toasts.spaceSlugCopied")}>
-                    <Copy className="h-3.5 w-3.5" />
+  const rootPreview = session.space.avatarUrl ?? null;
+  const editPreview = avatarPreview ?? session.space.avatarUrl ?? null;
+  const storageUsed = overviewUsage?.storageBytes ?? 0;
+  const storageMax = overviewLimits?.storageBytesMax ?? 1024 * 1024 * 1024;
+  const plan = planDisplay(session.space.planTier);
+  const rootMenuItems = menuItems(pendingCount, t);
+
+  return renderShell(
+    <>
+      {editingOverview ? (
+        <OverlayBackdrop
+          onClose={busyKey === "overview" || pickingAvatar ? undefined : closeOverviewEditor}
+          className="z-[220] items-center justify-center px-4 py-8"
+        >
+          <section className="w-full max-w-md overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl">
+            <header className="flex min-h-14 items-center justify-between gap-3 border-b border-[var(--line-subtle)] px-5">
+              <h2 className="text-lg font-semibold text-[var(--ink)]">{t("space.settings.editOverviewTitle")}</h2>
+              <button
+                type="button"
+                disabled={busyKey === "overview" || pickingAvatar}
+                onClick={closeOverviewEditor}
+                className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-60"
+                aria-label={t("space.detail.close")}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </header>
+            <div className="grid gap-5 px-5 py-5">
+              <div className="flex items-center gap-4">
+                <button
+                  type="button"
+                  disabled={busyKey === "overview" || pickingAvatar}
+                  onClick={() => void pickAvatar()}
+                  className="group relative grid h-16 w-16 shrink-0 place-items-center rounded-full text-[var(--ink-muted)] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)] disabled:cursor-wait disabled:opacity-70"
+                  aria-label={t("space.spaceActions.chooseAvatar")}
+                  title={t("space.spaceActions.chooseAvatar")}
+                >
+                  <SpaceAvatar name={name.trim() || session.space.name} avatarUrl={editPreview} size={64} />
+                  <span className="absolute inset-0 grid place-items-center rounded-full bg-[var(--ink)]/45 text-[var(--paper)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                    {pickingAvatar ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+                  </span>
+                </button>
+                <div className="min-w-0">
+                  <button
+                    type="button"
+                    disabled={busyKey === "overview" || pickingAvatar}
+                    onClick={() => void pickAvatar()}
+                    className="inline-flex h-9 items-center gap-2 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-wait disabled:opacity-70"
+                  >
+                    {pickingAvatar ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
+                    {t("space.spaceActions.chooseAvatar")}
                   </button>
-                  <span>{session.space.spaceKind ?? "user"}</span>
-                  <span>{session.space.joinPolicy}</span>
+                  <p className="mt-2 truncate text-xs text-[var(--ink-muted)]">
+                    {avatarFilePath ? basename(avatarFilePath) : t("space.profile.avatarHint")}
+                  </p>
                 </div>
               </div>
-              <button type="button" onClick={() => setEditingOverview((value) => !value)} className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]">
-                {editingOverview ? t("space.common.cancel") : t("space.settings.editOverview")}
-              </button>
+
+              <label className="grid gap-2">
+                <span className="text-sm font-medium text-[var(--ink)]">{t("space.spaceActions.name")}</span>
+                <input
+                  value={name}
+                  disabled={busyKey === "overview"}
+                  onChange={(event) => setName(event.target.value)}
+                  className="h-10 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none transition-colors placeholder:text-[var(--ink-muted)] focus:border-[var(--accent-warm)] disabled:cursor-wait disabled:opacity-70"
+                />
+              </label>
             </div>
-          </div>
-          {editingOverview ? (
-            <div className="flex flex-wrap items-center gap-2 border-b border-[var(--line-subtle)] px-5 py-4">
-              <button type="button" onClick={pickAvatar} className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]">
-                {t("space.spaceActions.chooseAvatar")}
+            <footer className="flex justify-end gap-2 border-t border-[var(--line-subtle)] px-5 py-3">
+              <button
+                type="button"
+                disabled={busyKey === "overview" || pickingAvatar}
+                onClick={closeOverviewEditor}
+                className="inline-flex h-9 items-center rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] px-3 text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-wait disabled:opacity-70"
+              >
+                {t("space.common.cancel")}
               </button>
-              <button type="button" onClick={saveOverview} disabled={busyKey === "overview" || !name.trim()} className="flex items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-semibold text-[var(--button-primary-text)] disabled:opacity-60">
-                {busyKey === "overview" ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+              <button
+                type="button"
+                disabled={busyKey === "overview" || pickingAvatar || !name.trim()}
+                onClick={() => void saveOverview()}
+                className="inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {busyKey === "overview" ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
                 {t("space.common.save")}
               </button>
+            </footer>
+          </section>
+        </OverlayBackdrop>
+      ) : null}
+
+      <div className={`${SPACE_SETTINGS_ROOT_FRAME_CLASS} space-y-4`}>
+        <section className="overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)]">
+          <div className="px-5 py-5">
+            <div className="flex flex-wrap items-start gap-4">
+              <SpaceAvatar name={session.space.name} avatarUrl={rootPreview} size={68} />
+              <div className="min-w-0 flex-1">
+                <h2 className="truncate text-2xl font-semibold text-[var(--ink)]">{session.space.name}</h2>
+                <div className="mt-1 flex min-w-0 items-center gap-2 text-xs font-medium text-[var(--ink-muted)]">
+                  <span className="min-w-0 truncate">{session.space.slug}</span>
+                  <button type="button" onClick={copySlug} className="grid h-7 w-7 shrink-0 place-items-center rounded-lg transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]" aria-label={t("space.toasts.spaceSlugCopied")} title={t("space.toasts.spaceSlugCopied")}>
+                    <Copy className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+              <button type="button" onClick={() => setEditingOverview(true)} className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)]/75 px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]">
+                {t("space.settings.editOverview")}
+              </button>
             </div>
-          ) : null}
-          <div className="grid gap-3 px-5 py-4 md:grid-cols-3">
-            <SummaryMetric label={t("space.settings.plan")} value={session.space.planTier ?? "free"} />
-            <SummaryMetric label={t("space.settings.currentRole")} value={roleLabel(session.membership.role, t)} />
-            <SummaryMetric label={t("space.settings.joinPolicy")} value={session.space.joinPolicy} />
+            <div className="mt-5 grid grid-cols-2 gap-3">
+              <SummaryMetric label={t("space.settings.currentRole")} value={roleLabel(session.membership.role, t)} />
+              <SummaryMetric label={t("space.settings.plan")} value={plan} />
+            </div>
           </div>
-          <div className="grid gap-4 px-5 pb-5 md:grid-cols-2">
-            <QuotaLine label={t("space.settings.quotaMembers")} used={overviewUsage?.memberSeats} max={overviewLimits?.joinedMembersMax} />
-            <QuotaLine label={t("space.settings.quotaOpenIssues")} used={overviewUsage?.openIssues} max={overviewLimits?.openIssuesMax} />
-            <QuotaLine label={t("space.settings.quotaSkills")} used={overviewUsage?.hostedSkills} max={overviewLimits?.hostedSkillsMax} />
-            <QuotaLine label={t("space.settings.quotaAgents")} used={overviewUsage?.registeredAgents} max={overviewLimits?.registeredAgentsMax} />
-            <div className="md:col-span-2">
-              <QuotaLine
-                label={t("space.settings.quotaStorage")}
-                used={storageUsed}
-                max={storageMax}
-                value={`${formatBytes(storageUsed)} / ${formatBytes(storageMax)}`}
-              />
+          <div className="border-t border-[var(--line-subtle)] px-5 py-4">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]">
+              {t("space.settings.resourcesTitle", { plan })}
+            </h3>
+            <div className="mt-3 grid grid-cols-2 gap-2.5">
+              <ResourceMetric label={t("space.settings.quotaMembers")} value={quotaText(overviewUsage?.memberSeats, overviewLimits?.joinedMembersMax)} />
+              <ResourceMetric label={t("space.settings.quotaOpenIssues")} value={quotaText(overviewUsage?.openIssues, overviewLimits?.openIssuesMax)} />
+              <ResourceMetric label={t("space.settings.quotaSkills")} value={quotaText(overviewUsage?.hostedSkills, overviewLimits?.hostedSkillsMax)} />
+              <ResourceMetric label={t("space.settings.quotaAgents")} value={quotaText(overviewUsage?.registeredAgents, overviewLimits?.registeredAgentsMax)} />
+              <ResourceMetric label={t("space.settings.quotaStorage")} value={`${formatBytes(storageUsed)} / ${formatBytes(storageMax)}`} />
             </div>
           </div>
         </section>
-      </div>,
-    );
-  }
 
-  const rootPreview = session.space.avatarUrl ?? null;
-  const storageUsed = overviewUsage?.storageBytes ?? 0;
-  const storageMax = overviewLimits?.storageBytesMax ?? 1024 * 1024 * 1024;
-  const rootMenuItems = menuItems(pendingCount, t).filter((item) => item.id !== "overview");
-
-  return renderShell(
-    <div className={`${SPACE_SETTINGS_ROOT_FRAME_CLASS} space-y-4`}>
-      <section className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-elevated)]/85 shadow-sm">
-        <div className="bg-[linear-gradient(135deg,var(--paper-elevated),var(--paper)_62%,var(--paper-inset))] px-5 py-5">
-          <div className="flex flex-wrap items-start gap-4">
-            <SpaceAvatar name={session.space.name} avatarUrl={rootPreview} size={68} />
-            <div className="min-w-0 flex-1">
-              <div className="text-xs font-semibold uppercase tracking-wider text-[var(--accent-warm)]">{t("space.settings.overview")}</div>
-              <h2 className="mt-1 truncate text-2xl font-semibold text-[var(--ink)]">{session.space.name}</h2>
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-medium text-[var(--ink-muted)]">
-                <span className="rounded-full bg-[var(--paper-elevated)]/80 px-2 py-1">{session.space.slug}</span>
-                <button type="button" onClick={copySlug} className="grid h-7 w-7 place-items-center rounded-lg transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]" aria-label={t("space.toasts.spaceSlugCopied")} title={t("space.toasts.spaceSlugCopied")}>
-                  <Copy className="h-3.5 w-3.5" />
-                </button>
-                <span>{session.space.spaceKind ?? "user"}</span>
-                <span>{session.space.joinPolicy}</span>
-              </div>
-            </div>
-            <button type="button" onClick={() => setSection("overview")} className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)]/75 px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]">
-              {t("space.settings.editOverview")}
-            </button>
-          </div>
-          <div className="mt-5 grid gap-3">
-            <SummaryMetric label={t("space.settings.plan")} value={session.space.planTier ?? "free"} />
-            <SummaryMetric label={t("space.settings.currentRole")} value={roleLabel(session.membership.role, t)} />
-            <SummaryMetric label={t("space.settings.joinPolicy")} value={session.space.joinPolicy} />
-          </div>
+        <div className="space-y-2">
+          {rootMenuItems.map((item) => {
+            const Icon = item.icon;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => setSection(item.id)}
+                className="group flex w-full items-center gap-3 rounded-xl border border-transparent bg-[var(--paper-elevated)]/60 px-4 py-3.5 text-left transition-colors hover:border-[var(--line)] hover:bg-[var(--paper-elevated)]"
+              >
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]">
+                  <Icon className="h-4 w-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-semibold text-[var(--ink)]">{item.label}</span>
+                  <span className="mt-0.5 block truncate text-xs text-[var(--ink-muted)]">{item.hint}</span>
+                </span>
+                <ChevronRight className="h-4 w-4 shrink-0 text-[var(--ink-subtle)] transition-transform group-hover:translate-x-0.5" />
+              </button>
+            );
+          })}
         </div>
-        <div className="grid gap-4 border-t border-[var(--line-subtle)] px-5 py-4">
-          <QuotaLine label={t("space.settings.quotaMembers")} used={overviewUsage?.memberSeats} max={overviewLimits?.joinedMembersMax} />
-          <QuotaLine label={t("space.settings.quotaOpenIssues")} used={overviewUsage?.openIssues} max={overviewLimits?.openIssuesMax} />
-          <QuotaLine label={t("space.settings.quotaSkills")} used={overviewUsage?.hostedSkills} max={overviewLimits?.hostedSkillsMax} />
-          <QuotaLine label={t("space.settings.quotaAgents")} used={overviewUsage?.registeredAgents} max={overviewLimits?.registeredAgentsMax} />
-          <div>
-            <QuotaLine
-              label={t("space.settings.quotaStorage")}
-              used={storageUsed}
-              max={storageMax}
-              value={`${formatBytes(storageUsed)} / ${formatBytes(storageMax)}`}
-            />
-          </div>
-        </div>
-      </section>
-
-      <div className="space-y-2">
-        {rootMenuItems.map((item) => {
-          const Icon = item.icon;
-          return (
-            <button
-              key={item.id}
-              type="button"
-              onClick={() => setSection(item.id)}
-              className="group flex w-full items-center gap-3 rounded-xl border border-transparent bg-[var(--paper-elevated)]/60 px-4 py-3.5 text-left transition-colors hover:border-[var(--line)] hover:bg-[var(--paper-elevated)]"
-            >
-              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]">
-                <Icon className="h-4 w-4" />
-              </span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-semibold text-[var(--ink)]">{item.label}</span>
-                <span className="mt-0.5 block truncate text-xs text-[var(--ink-muted)]">{item.hint}</span>
-              </span>
-              <ChevronRight className="h-4 w-4 shrink-0 text-[var(--ink-subtle)] transition-transform group-hover:translate-x-0.5" />
-            </button>
-          );
-        })}
       </div>
-    </div>,
+    </>,
   );
 }
