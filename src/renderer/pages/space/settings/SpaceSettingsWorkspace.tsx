@@ -27,6 +27,7 @@ import type { SpaceActions } from "@/pages/space/spaceStore";
 import { SPACE_LIST_FRAME_CLASS } from "@/pages/space/spaceUi";
 
 type SettingsSection = "overview" | "members" | "agents" | "roles";
+const SPACE_SETTINGS_ROOT_FRAME_CLASS = "mx-auto max-w-xl";
 
 async function readAvatarPreview(
   fileService: ReturnType<typeof useWorkspaceFileService>,
@@ -504,7 +505,7 @@ export function SpaceSettingsWorkspace({
   const rootMenuItems = menuItems(pendingCount, t).filter((item) => item.id !== "overview");
 
   return renderShell(
-    <div className={`${SPACE_LIST_FRAME_CLASS} space-y-4`}>
+    <div className={`${SPACE_SETTINGS_ROOT_FRAME_CLASS} space-y-4`}>
       <section className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-elevated)]/85 shadow-sm">
         <div className="bg-[linear-gradient(135deg,var(--paper-elevated),var(--paper)_62%,var(--paper-inset))] px-5 py-5">
           <div className="flex flex-wrap items-start gap-4">
@@ -525,18 +526,18 @@ export function SpaceSettingsWorkspace({
               {t("space.settings.editOverview")}
             </button>
           </div>
-          <div className="mt-5 grid gap-3 md:grid-cols-3">
+          <div className="mt-5 grid gap-3">
             <SummaryMetric label={t("space.settings.plan")} value={session.space.planTier ?? "free"} />
             <SummaryMetric label={t("space.settings.currentRole")} value={roleLabel(session.membership.role, t)} />
             <SummaryMetric label={t("space.settings.joinPolicy")} value={session.space.joinPolicy} />
           </div>
         </div>
-        <div className="grid gap-4 border-t border-[var(--line-subtle)] px-5 py-4 md:grid-cols-2">
+        <div className="grid gap-4 border-t border-[var(--line-subtle)] px-5 py-4">
           <QuotaLine label={t("space.settings.quotaMembers")} used={overviewUsage?.memberSeats} max={overviewLimits?.joinedMembersMax} />
           <QuotaLine label={t("space.settings.quotaOpenIssues")} used={overviewUsage?.openIssues} max={overviewLimits?.openIssuesMax} />
           <QuotaLine label={t("space.settings.quotaSkills")} used={overviewUsage?.hostedSkills} max={overviewLimits?.hostedSkillsMax} />
           <QuotaLine label={t("space.settings.quotaAgents")} used={overviewUsage?.registeredAgents} max={overviewLimits?.registeredAgentsMax} />
-          <div className="md:col-span-2">
+          <div>
             <QuotaLine
               label={t("space.settings.quotaStorage")}
               used={storageUsed}
