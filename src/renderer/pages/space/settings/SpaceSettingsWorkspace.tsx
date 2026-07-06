@@ -17,6 +17,7 @@ import {
   type SpaceMembersPayload,
   type SpaceSession,
 } from "@/api/spaceCloud";
+import myagentsWebLogo from "@/assets/brand/myagents-web-logo.png";
 import CustomSelect from "@/components/CustomSelect";
 import OverlayBackdrop from "@/components/OverlayBackdrop";
 import { useToast } from "@/components/Toast";
@@ -67,9 +68,15 @@ function planDisplay(plan?: string | null): string {
   return `${normalized.charAt(0).toUpperCase()}${normalized.slice(1)}`;
 }
 
+function spaceAvatarUrl(space: SpaceSession["space"]): string | null {
+  if (space.avatarUrl) return space.avatarUrl;
+  if (space.spaceKind === "official" || space.slug === "official") return myagentsWebLogo;
+  return null;
+}
+
 function SummaryMetric({ label, value }: { label: string; value: string | number | null | undefined }) {
   return (
-    <div className="min-w-0 rounded-xl bg-[var(--paper-elevated)]/70 px-3 py-2">
+    <div className="min-w-0 rounded-xl bg-[var(--paper-elevated)]/70 px-3 py-1.5">
       <div className="truncate text-xs font-medium text-[var(--ink-muted)]">{label}</div>
       <div className="mt-0.5 truncate text-sm font-semibold text-[var(--ink)]">{metricValue(value)}</div>
     </div>
@@ -78,7 +85,7 @@ function SummaryMetric({ label, value }: { label: string; value: string | number
 
 function ResourceMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0 rounded-xl bg-[var(--paper-elevated)]/55 px-3 py-2.5">
+    <div className="min-w-0 rounded-xl bg-[var(--paper-elevated)]/55 px-3 py-2">
       <div className="truncate text-xs font-medium text-[var(--ink-muted)]">{label}</div>
       <div className="mt-0.5 truncate text-sm font-semibold text-[var(--ink-secondary)]">{value}</div>
     </div>
@@ -296,7 +303,17 @@ export function SpaceSettingsWorkspace({
               <ArrowLeft className="h-4 w-4" />
             </button>
             <div className="flex min-w-0 items-center gap-1.5 text-sm font-semibold text-[var(--ink)]">
-              <span className={section ? "text-[var(--ink-muted)]" : "text-[var(--ink)]"}>{t("space.sidebar.settings")}</span>
+              {section ? (
+                <button
+                  type="button"
+                  onClick={() => setSection(null)}
+                  className="rounded-md text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)]"
+                >
+                  {t("space.sidebar.settings")}
+                </button>
+              ) : (
+                <span className="text-[var(--ink)]">{t("space.sidebar.settings")}</span>
+              )}
               {section ? (
                 <>
                   <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
@@ -358,11 +375,29 @@ export function SpaceSettingsWorkspace({
       <div className={`${SPACE_LIST_FRAME_CLASS} space-y-5`}>
         <div className="flex flex-wrap items-end gap-2 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)]/70 p-3.5">
           <label className="min-w-0 flex-1 text-xs font-semibold text-[var(--ink-muted)]">
-            {t("space.settings.email")}
-            <input value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]" />
+            {t("space.settings.inviteEmailLabel")}
+            <input
+              value={inviteEmail}
+              onChange={(event) => setInviteEmail(event.target.value)}
+              placeholder={t("space.settings.inviteEmailPlaceholder")}
+              className="mt-1 h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent-warm)]"
+            />
           </label>
-          <CustomSelect value={inviteRole} onChange={(value) => setInviteRole(value === "admin" ? "admin" : "member")} size="toolbar" className="w-32" options={[{ value: "member", label: t("space.settings.roleMember") }, { value: "admin", label: t("space.settings.roleAdmin") }]} />
-          <button type="button" onClick={invite} disabled={busyKey === "invite" || memberQuotaReached} title={memberQuotaReached ? t("space.settings.memberQuotaReached") : undefined} className="flex h-9 items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] disabled:cursor-not-allowed disabled:opacity-60">
+          <div className="w-36">
+            <div className="mb-1 text-xs font-semibold text-[var(--ink-muted)]">{t("space.settings.inviteRoleLabel")}</div>
+            <CustomSelect
+              value={inviteRole}
+              onChange={(value) => setInviteRole(value === "admin" ? "admin" : "member")}
+              size="md"
+              className="w-full"
+              options={[
+                { value: "role-heading", label: t("space.settings.inviteRoleLabel"), isSeparator: true },
+                { value: "member", label: t("space.settings.roleMemberInvite") },
+                { value: "admin", label: t("space.settings.roleAdminInvite") },
+              ]}
+            />
+          </div>
+          <button type="button" onClick={invite} disabled={busyKey === "invite" || memberQuotaReached || !inviteEmail.trim()} title={memberQuotaReached ? t("space.settings.memberQuotaReached") : undefined} className="flex h-10 items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] disabled:cursor-not-allowed disabled:opacity-60">
             {busyKey === "invite" ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
             {t("space.settings.addMember")}
           </button>
@@ -372,7 +407,6 @@ export function SpaceSettingsWorkspace({
             {t("space.settings.memberQuotaReached")}
           </div>
         ) : null}
-        {membersLoading ? <div className="text-sm text-[var(--ink-muted)]">{t("space.settings.loadingMembers")}</div> : null}
         {membersState?.joinRequests.length ? (
           <div className="space-y-2">
             <h3 className="text-sm font-semibold text-[var(--ink)]">{t("space.settings.joinRequests")}</h3>
@@ -409,6 +443,7 @@ export function SpaceSettingsWorkspace({
         ) : null}
         <div className="space-y-2">
           <h3 className="text-sm font-semibold text-[var(--ink)]">{t("space.settings.members")}</h3>
+          {membersLoading ? <div className="min-h-8 rounded-lg text-sm text-[var(--ink-muted)]">{t("space.settings.loadingMembers")}</div> : null}
           {membersState?.members.map((member: SpaceMember) => (
             <div key={member.id} className="group flex items-center gap-3 border-b border-[var(--line-subtle)] px-1 py-3">
               <SpaceAvatar name={member.user.name} email={member.user.email} avatarUrl={member.user.avatarUrl} size={30} />
@@ -441,8 +476,8 @@ export function SpaceSettingsWorkspace({
     );
   }
 
-  const rootPreview = session.space.avatarUrl ?? null;
-  const editPreview = avatarPreview ?? session.space.avatarUrl ?? null;
+  const rootPreview = spaceAvatarUrl(session.space);
+  const editPreview = avatarPreview ?? spaceAvatarUrl(session.space);
   const storageUsed = overviewUsage?.storageBytes ?? 0;
   const storageMax = overviewLimits?.storageBytesMax ?? 1024 * 1024 * 1024;
   const plan = planDisplay(session.space.planTier);
@@ -478,7 +513,7 @@ export function SpaceSettingsWorkspace({
                   aria-label={t("space.spaceActions.chooseAvatar")}
                   title={t("space.spaceActions.chooseAvatar")}
                 >
-                  <SpaceAvatar name={name.trim() || session.space.name} avatarUrl={editPreview} size={64} />
+                  <SpaceAvatar name={name.trim() || session.space.name} avatarUrl={editPreview} size={52} />
                   <span className="absolute inset-0 grid place-items-center rounded-full bg-[var(--ink)]/45 text-[var(--paper)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
                     {pickingAvatar ? <Loader2 className="h-4 w-4 animate-spin" /> : <Camera className="h-4 w-4" />}
                   </span>
@@ -534,12 +569,12 @@ export function SpaceSettingsWorkspace({
 
       <div className={`${SPACE_SETTINGS_ROOT_FRAME_CLASS} space-y-4`}>
         <section className="overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)]">
-          <div className="px-5 py-5">
-            <div className="flex flex-wrap items-start gap-4">
-              <SpaceAvatar name={session.space.name} avatarUrl={rootPreview} size={68} />
+          <div className="px-5 py-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <SpaceAvatar name={session.space.name} avatarUrl={rootPreview} size={52} />
               <div className="min-w-0 flex-1">
-                <h2 className="truncate text-2xl font-semibold text-[var(--ink)]">{session.space.name}</h2>
-                <div className="mt-1 flex min-w-0 items-center gap-2 text-xs font-medium text-[var(--ink-muted)]">
+                <h2 className="truncate text-xl font-semibold text-[var(--ink)]">{session.space.name}</h2>
+                <div className="mt-0.5 flex min-w-0 items-center gap-2 text-sm font-medium text-[var(--ink-muted)]">
                   <span className="min-w-0 truncate">{session.space.slug}</span>
                   <button type="button" onClick={copySlug} className="grid h-7 w-7 shrink-0 place-items-center rounded-lg transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]" aria-label={t("space.toasts.spaceSlugCopied")} title={t("space.toasts.spaceSlugCopied")}>
                     <Copy className="h-3.5 w-3.5" />
@@ -550,16 +585,16 @@ export function SpaceSettingsWorkspace({
                 {t("space.settings.editOverview")}
               </button>
             </div>
-            <div className="mt-5 grid grid-cols-2 gap-3">
+            <div className="mt-4 grid grid-cols-2 gap-3">
               <SummaryMetric label={t("space.settings.currentRole")} value={roleLabel(session.membership.role, t)} />
               <SummaryMetric label={t("space.settings.plan")} value={plan} />
             </div>
           </div>
-          <div className="border-t border-[var(--line-subtle)] px-5 py-4">
+          <div className="border-t border-[var(--line-subtle)] px-5 py-3.5">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]">
               {t("space.settings.resourcesTitle", { plan })}
             </h3>
-            <div className="mt-3 grid grid-cols-2 gap-2.5">
+            <div className="mt-2.5 grid grid-cols-2 gap-2">
               <ResourceMetric label={t("space.settings.quotaMembers")} value={quotaText(overviewUsage?.memberSeats, overviewLimits?.joinedMembersMax)} />
               <ResourceMetric label={t("space.settings.quotaOpenIssues")} value={quotaText(overviewUsage?.openIssues, overviewLimits?.openIssuesMax)} />
               <ResourceMetric label={t("space.settings.quotaSkills")} value={quotaText(overviewUsage?.hostedSkills, overviewLimits?.hostedSkillsMax)} />
