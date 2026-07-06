@@ -16,6 +16,7 @@ import { ChatRowLayoutProvider, type RowLayoutChangeReason } from '@/context/Cha
 import type { RowLayoutContract } from '@/utils/chatRowLayout';
 import { useChatScrollDebugProbe } from '@/hooks/useChatScrollDebugProbe';
 import { resolveChatBottomSpacerPx } from '@/utils/chatBottomSpacer';
+import { parseBackgroundTaskNotificationMessage } from '@/utils/backgroundTaskStatus';
 
 function formatElapsedTime(totalSeconds: number, t: TFunction<'chat'>): string {
   const hours = Math.floor(totalSeconds / 3600);
@@ -492,6 +493,9 @@ const MessageList = memo(function MessageList({
   // ── Stable itemContent — reads ALL dynamic values from refs, never recreated ──
   // eslint-disable-next-line react/display-name
   const renderItem = useMemo(() => (index: number, message: MessageType) => {
+    if (parseBackgroundTaskNotificationMessage(message)) {
+      return null;
+    }
     const sm = streamingMessageRef.current;
     const isStreamingMsg = !!sm && message === sm;
     // `flow-root` (not `overflow-hidden`) establishes a BFC so child Markdown

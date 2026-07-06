@@ -219,13 +219,6 @@
       "floatingContext": "悬浮上下文",
       "spaceIssue": "Space issue"
     },
-    "taskStatus": {
-      "completed": "已完成",
-      "error": "出错",
-      "failed": "失败",
-      "stopped": "已停止"
-    },
-    "backgroundTask": "后台任务",
     "systemInfo": "系统信息",
     "expand": "展开"
   },

@@ -17,7 +17,7 @@ import {
     getToolSummaryNode,
     isSubagentContainerTool
 } from '@/components/tools/toolBadgeConfig';
-import { isSubagentContainerRunning } from '@/components/tools/subagentActivity';
+import { isBackgroundSubagentTool, isSubagentContainerRunning } from '@/components/tools/subagentActivity';
 import ToolUse from '@/components/ToolUse';
 import ToolAttachmentGallery from '@/components/tools/ToolAttachmentGallery';
 import type { ContentBlock } from '@/types/chat';
@@ -333,7 +333,7 @@ const ProcessRow = memo(function ProcessRow({
                         {mainLabel}
                     </span>
                     {/* Background task badge */}
-                    {isTaskTool && (block.tool?.parsedInput as unknown as Record<string, unknown>)?.run_in_background === true && (
+                    {isTaskTool && isBackgroundSubagentTool(block.tool) && (
                         <span className="rounded-full bg-[var(--accent)]/10 px-1.5 py-0.5 text-xs font-medium text-[var(--accent)]">
                             {t('shell.toolChrome.common.background')}
                         </span>

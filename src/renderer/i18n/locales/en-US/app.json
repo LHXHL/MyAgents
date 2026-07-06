@@ -219,13 +219,6 @@
       "floatingContext": "Floating context",
       "spaceIssue": "Space issue"
     },
-    "taskStatus": {
-      "completed": "completed",
-      "error": "errored",
-      "failed": "failed",
-      "stopped": "stopped"
-    },
-    "backgroundTask": "Background task",
     "systemInfo": "System info",
     "expand": "Expand"
   },

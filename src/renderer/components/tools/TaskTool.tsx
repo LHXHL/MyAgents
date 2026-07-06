@@ -3,7 +3,7 @@ import type { AgentInput, BackgroundTaskStats, SubagentToolCall, ToolUseSimple, 
 
 import Markdown from '@/components/Markdown';
 import { formatDuration } from '@/components/tools/toolBadgeConfig';
-import { isSubagentCallRunning, isSubagentContainerRunning } from '@/components/tools/subagentActivity';
+import { isBackgroundSubagentTool, isSubagentCallRunning, isSubagentContainerRunning } from '@/components/tools/subagentActivity';
 import ToolAttachmentGallery from '@/components/tools/ToolAttachmentGallery';
 import { ExpandableResult } from '@/components/tools/utils';
 import { useTabApiOptional } from '@/context/TabContext';
@@ -500,8 +500,9 @@ export default function TaskTool({ tool }: TaskToolProps) {
   const [traceExpanded, setTraceExpanded] = useState(false);
   const statsBarRef = useRef<HTMLDivElement>(null);
 
-  // Background task detection
-  const isBackgroundTask = !!(input?.run_in_background);
+  // SDK Task/Agent defaults to background; only explicit run_in_background=false
+  // means a foreground synchronous sub-agent.
+  const isBackgroundTask = isBackgroundSubagentTool(tool);
   // Stable fallback start time for background tasks (lazy initializer avoids Date.now() on re-render)
   const [bgFallbackStartTime] = useState(() => Date.now());
 
