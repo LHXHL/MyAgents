@@ -16,7 +16,7 @@ import {
   resetSessionMaterializationState,
   setPendingDesktopMaterialization,
 } from '../builtin-session/materialization';
-import { initializeAgent, materializePendingDesktopSession } from '../agent-session';
+import { ensureSessionMetadataForSdkSystemInit, getSessionId, initializeAgent, materializePendingDesktopSession } from '../agent-session';
 import type { SessionMetadata } from '../types/session';
 
 const mockedDeleteSession = vi.mocked(deleteSession);
@@ -217,6 +217,65 @@ describe('materializePendingDesktopSession rollback guard', () => {
       materializationState: 'prepared',
     });
     expect(result.metadata?.materializationSourceSessionId).toBeTruthy();
+  });
+
+  it('migrates pending builtin SDK system_init metadata to the concrete SDK session id', async () => {
+    const savedMetadata = new Map<string, SessionMetadata>();
+    const pendingMeta: SessionMetadata = {
+      id: 'pending-tab-1',
+      agentDir: '/tmp/workspace',
+      title: 'New Chat',
+      createdAt: '2026-06-23T00:00:00.000Z',
+      lastActiveAt: '2026-06-23T00:00:00.000Z',
+      materializationState: 'prepared',
+      materializationSourceSessionId: 'pending-tab-1',
+    };
+    savedMetadata.set(pendingMeta.id, pendingMeta);
+    mockedSaveSessionMetadata.mockImplementation(async (meta) => {
+      savedMetadata.set(meta.id, meta);
+    });
+    mockedGetSessionMetadata.mockImplementation((id) => {
+      return savedMetadata.get(id) ?? null;
+    });
+    mockedDeleteSession.mockImplementation(async (id) => {
+      return savedMetadata.delete(id);
+    });
+
+    await initializeAgent('/tmp/workspace', null, 'pending-tab-1', { preWarmDisabled: true });
+
+    const concreteSessionId = '11111111-2222-4333-8444-555555555555';
+    const canonicalSessionId = await ensureSessionMetadataForSdkSystemInit({
+      session_id: concreteSessionId,
+      tools: [],
+      mcp_servers: [],
+      timestamp: '2026-06-23T00:00:00.000Z',
+    });
+
+    expect(canonicalSessionId).toBe(concreteSessionId);
+    expect(getSessionId()).toBe(concreteSessionId);
+    expect(savedMetadata.get(concreteSessionId)).toMatchObject({
+      id: concreteSessionId,
+      sdkSessionId: concreteSessionId,
+      unifiedSession: true,
+      materializationState: undefined,
+      materializationSourceSessionId: undefined,
+    });
+    expect(savedMetadata.has('pending-tab-1')).toBe(false);
+  });
+
+  it('refuses SDK system_init for an unindexed concrete existing session', async () => {
+    mockedGetSessionMetadata.mockReturnValue(null);
+
+    const concreteSessionId = '22222222-3333-4444-8555-666666666666';
+    await initializeAgent('/tmp/workspace', null, concreteSessionId, { preWarmDisabled: true });
+
+    await expect(ensureSessionMetadataForSdkSystemInit({
+      session_id: concreteSessionId,
+      tools: [],
+      mcp_servers: [],
+      timestamp: '2026-06-23T00:00:00.000Z',
+    })).rejects.toThrow('refusing SDK system_init for unindexed existing session');
+    expect(mockedSaveSessionMetadata).not.toHaveBeenCalled();
   });
 
   it('commits a prepared row even when the active session id is already the prepared id', async () => {

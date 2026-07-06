@@ -4210,6 +4210,83 @@ function createMetadataForSessionId(
   };
 }
 
+function isUuidSessionId(value: string | null | undefined): value is string {
+  return typeof value === 'string'
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+export async function ensureSessionMetadataForSdkSystemInit(nextSystemInit: SystemInitInfo): Promise<string> {
+  const sdkSessionId = nextSystemInit.session_id;
+  const previousSessionId = sessionId;
+  const targetSessionId = isUuidSessionId(sdkSessionId) ? sdkSessionId : previousSessionId;
+  const previousMeta = getSessionMetadata(previousSessionId);
+  const targetMeta = getSessionMetadata(targetSessionId);
+
+  if (targetMeta) {
+    const updated = await updateSessionMetadata(targetSessionId, {
+      sdkSessionId: sdkSessionId ?? targetSessionId,
+      unifiedSession: sdkSessionId ? sdkSessionId === targetSessionId : targetMeta.unifiedSession,
+      materializationState: undefined,
+      materializationSourceSessionId: undefined,
+    });
+    if (!updated) {
+      throw new Error(`[agent] failed to update session metadata for SDK system_init session ${targetSessionId}`);
+    }
+  } else {
+    const mayMaterializeBirth =
+      isLazySessionMaterializationAllowed()
+      || isPendingSessionId(previousSessionId);
+    if (!mayMaterializeBirth) {
+      throw new Error(`[agent] refusing SDK system_init for unindexed existing session ${targetSessionId}; session metadata must exist before messages`);
+    }
+
+    const metadata = previousMeta
+      ? {
+          ...previousMeta,
+          id: targetSessionId,
+          sdkSessionId: sdkSessionId ?? targetSessionId,
+          unifiedSession: sdkSessionId ? sdkSessionId === targetSessionId : previousMeta.unifiedSession,
+          materializationState: undefined,
+          materializationSourceSessionId: undefined,
+        }
+      : createMetadataForSessionId(
+          targetSessionId,
+          'New Chat',
+          currentScenario.type,
+        ).meta;
+    if (!previousMeta && !isLiveFollowScenario(currentScenario.type)) {
+      Object.assign(metadata, buildOwnedFreezeSnapshotPatch());
+    }
+    metadata.sdkSessionId = sdkSessionId ?? targetSessionId;
+    metadata.unifiedSession = sdkSessionId ? sdkSessionId === targetSessionId : metadata.unifiedSession;
+
+    await saveSessionMetadata(metadata);
+    if (!getSessionMetadata(targetSessionId)) {
+      throw new Error(`[agent] failed to materialize session metadata for SDK system_init session ${targetSessionId}`);
+    }
+    console.log(`[agent] session ${targetSessionId} persisted to SessionStore (sdk system_init birth, from=${previousSessionId}, scenario=${currentScenario.type})`);
+  }
+
+  if (targetSessionId !== previousSessionId) {
+    setCurrentSessionId(targetSessionId);
+    initLogger(targetSessionId);
+    resetTranscriptPersistenceForSession(previousSessionId);
+    if (previousMeta && isPendingSessionId(previousSessionId)) {
+      const deleted = await deleteSession(
+        previousSessionId,
+        (current) => current.id === previousSessionId && getSessionMetadata(targetSessionId) !== null,
+      );
+      if (!deleted) {
+        console.warn(`[agent] sdk system_init metadata migration could not delete pending source ${previousSessionId}; target ${targetSessionId} is already indexed`);
+      }
+    }
+    console.log(`[agent] SDK system_init migrated session identity ${previousSessionId} -> ${targetSessionId}`);
+  }
+
+  setLazySessionMaterializationAllowed(false);
+  return targetSessionId;
+}
+
 async function materializeInitialPromptSessionMetadata(initialPromptText: string): Promise<void> {
   if (getSessionMetadata(sessionId)) {
     setLazySessionMaterializationAllowed(false);
@@ -8011,6 +8088,7 @@ export async function enqueueUserMessage(
     setPreWarmInProgress(false);
     // Pre-warm 已收到 system_init → SDK 已注册此 session，后续必须用 resume
     if (lifecycleState.systemInitInfo) {
+      await ensureSessionMetadataForSdkSystemInit(lifecycleState.systemInitInfo);
       sessionRegistered = true;
     }
     console.log(`[agent] pre-warm → active, first user message, sessionRegistered=${sessionRegistered}`);
@@ -10679,6 +10757,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           systemInitReceived = true;
           clearTimeout(startupTimeoutId);
         }
+        const canonicalSessionId = !lifecycleState.preWarming
+          ? await ensureSessionMetadataForSdkSystemInit(nextSystemInit)
+          : sessionId;
         setSystemInitInfo(nextSystemInit);
         // Buffer system_init during pre-warm; replay when first user message arrives
         if (!lifecycleState.preWarming) {
@@ -10689,7 +10770,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           if (sessionState === 'starting') {
             setSessionState('running');
           }
-          broadcast('chat:system-init', { info: lifecycleState.systemInitInfo, sessionId, runtime: 'builtin' });
+          broadcast('chat:system-init', { info: lifecycleState.systemInitInfo, sessionId: canonicalSessionId, runtime: 'builtin' });
         } else {
           // Pre-warm 不设 sessionRegistered — 这是核心设计约束
           // Pre-warm 的 system_init 只意味着 subprocess 准备好了，
@@ -10713,15 +10794,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
 
         // Save SDK session_id and verify unified session status
         if (nextSystemInit.session_id) {
-          const isUnified = nextSystemInit.session_id === sessionId;
-          await updateSessionMetadata(sessionId, {
-            sdkSessionId: nextSystemInit.session_id,
-            unifiedSession: isUnified,
-          });
+          const isUnified = nextSystemInit.session_id === canonicalSessionId;
           if (isUnified) {
             console.log(`[agent] SDK session_id confirmed unified: ${nextSystemInit.session_id}`);
           } else {
-            console.log(`[agent] SDK session_id saved (pre-unified): ${nextSystemInit.session_id} (our: ${sessionId})`);
+            console.log(`[agent] SDK session_id saved (pre-unified): ${nextSystemInit.session_id} (our: ${canonicalSessionId})`);
           }
         }
 
