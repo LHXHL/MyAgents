@@ -1025,7 +1025,9 @@ pub async fn cmd_space_update_profile(
 }
 
 #[tauri::command]
-pub async fn cmd_space_update_space(input: SpaceUpdateSpaceInput) -> Result<SpaceSessionPublic, String> {
+pub async fn cmd_space_update_space(
+    input: SpaceUpdateSpaceInput,
+) -> Result<SpaceSessionPublic, String> {
     if crate::space_cloud_mock::is_enabled() {
         return crate::space_cloud_mock::update_space(input);
     }
@@ -3355,7 +3357,11 @@ async fn parse_cloud_data<T: for<'de> Deserialize<'de>>(
                 message = format!("{} · {}", message, text);
             }
         }
-        if let Some(quota) = envelope.quota.as_deref().filter(|value| !value.trim().is_empty()) {
+        if let Some(quota) = envelope
+            .quota
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
             let usage = envelope
                 .usage
                 .as_ref()
@@ -3366,7 +3372,10 @@ async fn parse_cloud_data<T: for<'de> Deserialize<'de>>(
                 .as_ref()
                 .map(Value::to_string)
                 .unwrap_or_else(|| "?".to_string());
-            message = format!("{} · quota={} usage={} limit={}", message, quota, usage, limit);
+            message = format!(
+                "{} · quota={} usage={} limit={}",
+                message, quota, usage, limit
+            );
         }
         return Err(message);
     }

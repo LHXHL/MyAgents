@@ -10,8 +10,8 @@ use crate::space_cloud::{
     LocalRegisteredAgent, LocalRegisteredAgentPublic, SpaceApiRequestInput,
     SpaceDownloadAttachmentResult, SpaceIssueSubscriptionRunMode, SpaceProcessDeliveryResult,
     SpaceRegisterAgentInput, SpaceSession, SpaceSessionPublic, SpaceUpdateProfileInput,
-    SpaceUpdateSpaceInput, SpaceUploadIssueAttachmentsInput, SpaceUploadSkillInput, MAX_ATTACHMENT_UPLOAD_BYTES,
-    MAX_ATTACHMENT_UPLOAD_COUNT, MAX_SKILL_ZIP_BYTES,
+    SpaceUpdateSpaceInput, SpaceUploadIssueAttachmentsInput, SpaceUploadSkillInput,
+    MAX_ATTACHMENT_UPLOAD_BYTES, MAX_ATTACHMENT_UPLOAD_COUNT, MAX_SKILL_ZIP_BYTES,
 };
 use crate::workspace_files::path_safety::{
     atomic_write_file, resolve_inside_workspace, validate_workspace_root,
@@ -826,20 +826,24 @@ fn handle_api_data_request(
             "usage": mock_usage(&state),
             "limits": mock_limits()
         })),
-        ("PATCH", ["api", "spaces", "official"]) | ("PATCH", ["api", "spaces", MOCK_SPACE_ID]) => Ok(json!({
-            "space": mock_space(),
-            "usage": mock_usage(&state),
-            "limits": mock_limits()
-        })),
+        ("PATCH", ["api", "spaces", "official"]) | ("PATCH", ["api", "spaces", MOCK_SPACE_ID]) => {
+            Ok(json!({
+                "space": mock_space(),
+                "usage": mock_usage(&state),
+                "limits": mock_limits()
+            }))
+        }
         ("GET", ["api", "me"]) => Ok(mock_me(&state)),
         ("POST", ["api", "me", "profile"]) => {
             Err("Mock profile updates must use cmd_space_update_profile".to_string())
         }
-        ("GET", ["api", "spaces", "official", "usage"]) | ("GET", ["api", "spaces", MOCK_SPACE_ID, "usage"]) => Ok(json!({
+        ("GET", ["api", "spaces", "official", "usage"])
+        | ("GET", ["api", "spaces", MOCK_SPACE_ID, "usage"]) => Ok(json!({
             "usage": mock_usage(&state),
             "limits": mock_limits()
         })),
-        ("GET", ["api", "spaces", "official", "members"]) | ("GET", ["api", "spaces", MOCK_SPACE_ID, "members"]) => Ok(json!({
+        ("GET", ["api", "spaces", "official", "members"])
+        | ("GET", ["api", "spaces", MOCK_SPACE_ID, "members"]) => Ok(json!({
             "members": [{
                 "id": "mship_mock_owner",
                 "spaceId": MOCK_SPACE_ID,
