@@ -62,6 +62,7 @@ import {
   PAPER_GRID_STYLE,
   SPACE_BACKGROUND_STYLE,
 } from "@/pages/space/spaceUi";
+import { spaceSlugCandidate } from "@/pages/space/spaceSlug";
 
 const AUTH_POLL_DELAY_MS = 2000;
 const SPACE_EVENTS_SYNC_INTERVAL_MS = 15_000;
@@ -74,17 +75,6 @@ type SpaceQuickActionSubmitInput =
       slug: string;
       avatarFilePath?: string | null;
     };
-
-function spaceSlugCandidate(value: string): string {
-  return (
-    value
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 48) || "space"
-  );
-}
 
 async function readPickedImagePreview(
   fileService: ReturnType<typeof useWorkspaceFileService>,
