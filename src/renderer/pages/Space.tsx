@@ -950,6 +950,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
                   ? spaceData.skillDetails[spaceCacheKey(selectedSkillId)]
                   : undefined
               }
+              isActive={isActive}
               onSelectSkill={setSelectedSkillId}
               onRefresh={refreshCurrent}
               onUploaded={(id) => setSelectedSkillId(id)}
