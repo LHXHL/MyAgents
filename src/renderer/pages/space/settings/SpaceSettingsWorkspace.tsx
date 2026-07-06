@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, Bot, Check, Copy, Loader2, MoreHorizontal, RefreshCw, Settings, Shield, Trash2, UserPlus, Users } from "lucide-react";
+import { ArrowLeft, Bot, Check, ChevronRight, Copy, Loader2, MoreHorizontal, RefreshCw, Settings, Shield, Trash2, UserPlus, Users } from "lucide-react";
 
 import {
   spaceApproveJoinRequest,
@@ -24,6 +24,7 @@ import { useWorkspaceFileService } from "@/hooks/useWorkspaceFileService";
 import { AgentsWorkspace } from "@/pages/space/agents/AgentsWorkspace";
 import { SpaceAvatar } from "@/pages/space/SpaceAvatar";
 import type { SpaceActions } from "@/pages/space/spaceStore";
+import { SPACE_LIST_FRAME_CLASS } from "@/pages/space/spaceUi";
 
 type SettingsSection = "overview" | "members" | "agents" | "roles";
 
@@ -47,6 +48,53 @@ function formatBytes(value: number): string {
 function quotaText(used?: number, max?: number): string {
   if (typeof used !== "number" || typeof max !== "number") return "-";
   return `${used} / ${max}`;
+}
+
+function quotaPercent(used?: number, max?: number): number {
+  if (typeof used !== "number" || typeof max !== "number" || max <= 0) return 0;
+  return Math.min(100, Math.max(0, (used / max) * 100));
+}
+
+function metricValue(value: string | number | null | undefined): string {
+  if (value === null || typeof value === "undefined" || value === "") return "-";
+  return String(value);
+}
+
+function SummaryMetric({ label, value }: { label: string; value: string | number | null | undefined }) {
+  return (
+    <div className="min-w-0 rounded-xl bg-[var(--paper-elevated)]/70 px-3 py-2">
+      <div className="truncate text-xs font-medium text-[var(--ink-muted)]">{label}</div>
+      <div className="mt-0.5 truncate text-sm font-semibold text-[var(--ink)]">{metricValue(value)}</div>
+    </div>
+  );
+}
+
+function QuotaLine({
+  label,
+  used,
+  max,
+  value,
+}: {
+  label: string;
+  used?: number;
+  max?: number;
+  value?: string;
+}) {
+  const percent = quotaPercent(used, max);
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-3 text-xs font-medium">
+        <span className="truncate text-[var(--ink-muted)]">{label}</span>
+        <span className="shrink-0 text-[var(--ink-secondary)]">{value ?? quotaText(used, max)}</span>
+      </div>
+      <div className="h-1.5 overflow-hidden rounded-full bg-[var(--paper-inset)]">
+        <div
+          className="h-full rounded-full bg-[var(--accent-warm)] transition-[width]"
+          style={{ width: `${percent}%` }}
+        />
+      </div>
+    </div>
+  );
 }
 
 function roleLabel(role: string, t: ReturnType<typeof useTranslation>["t"]): string {
@@ -80,6 +128,7 @@ export function SpaceSettingsWorkspace({
   actions,
   onRefresh,
   onRegister,
+  onExit,
 }: {
   session: SpaceSession;
   agents: LocalRegisteredAgent[];
@@ -88,6 +137,7 @@ export function SpaceSettingsWorkspace({
   actions: SpaceActions;
   onRefresh: () => Promise<void>;
   onRegister: () => void;
+  onExit: () => void;
 }) {
   const { t } = useTranslation("app");
   const toast = useToast();
@@ -125,7 +175,7 @@ export function SpaceSettingsWorkspace({
   }, [session.space.id, session.space.name, session.space.avatarUrl]);
 
   useEffect(() => {
-    if (section !== "members" && section !== "overview" && section !== "agents") return;
+    if (section !== null && section !== "members" && section !== "overview" && section !== "agents") return;
     let cancelled = false;
     setMembersLoading(true);
     spaceGetMembers(session.space.slug || session.space.id)
@@ -219,23 +269,39 @@ export function SpaceSettingsWorkspace({
 
   const renderShell = (children: ReactNode) => (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--paper)]/40">
-      <header className="flex min-h-14 items-center justify-between border-b border-[var(--line-subtle)] px-5">
-        <div className="flex min-w-0 items-center gap-2">
-          {section ? (
-            <button type="button" onClick={() => setSection(null)} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]">
+      <header className="border-b border-[var(--line-subtle)] bg-[var(--paper-elevated)]/35 px-6 py-2 backdrop-blur-md">
+        <div className={`${SPACE_LIST_FRAME_CLASS} flex min-h-10 items-center justify-between gap-3`}>
+          <div className="flex min-w-0 items-center gap-2">
+            <button
+              type="button"
+              onClick={section ? () => setSection(null) : onExit}
+              aria-label={section ? t("space.sidebar.settings") : t("space.sidebar.issues")}
+              className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+            >
               <ArrowLeft className="h-4 w-4" />
             </button>
-          ) : null}
-          <div className="min-w-0">
-            <div className="text-xs font-medium text-[var(--ink-muted)]">{section ? `${t("space.sidebar.settings")} >` : session.space.name}</div>
-            <h2 className="truncate text-lg font-semibold text-[var(--ink)]">{activeTitle}</h2>
+            <div className="flex min-w-0 items-center gap-1.5 text-sm font-semibold text-[var(--ink)]">
+              <span className={section ? "text-[var(--ink-muted)]" : "text-[var(--ink)]"}>{t("space.sidebar.settings")}</span>
+              {section ? (
+                <>
+                  <ChevronRight className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />
+                  <span className="truncate">{activeTitle}</span>
+                </>
+              ) : null}
+            </div>
           </div>
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+            aria-label={t("space.common.refresh")}
+            title={t("space.common.refresh")}
+          >
+            <RefreshCw className="h-4 w-4" />
+          </button>
         </div>
-        <button type="button" onClick={onRefresh} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]">
-          <RefreshCw className="h-4 w-4" />
-        </button>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
+      <main className="min-h-0 flex-1 overflow-y-auto px-6 pb-10 pt-5">{children}</main>
     </div>
   );
 
@@ -257,19 +323,25 @@ export function SpaceSettingsWorkspace({
 
   if (section === "roles") {
     return renderShell(
-      <div className="max-w-3xl space-y-4 text-sm leading-relaxed text-[var(--ink-secondary)]">
-        <h3 className="text-base font-semibold text-[var(--ink)]">{t("space.settings.roles")}</h3>
-        <p><strong className="text-[var(--ink)]">{t("space.settings.roleOwner")}</strong> {t("space.settings.ownerDescription")}</p>
-        <p><strong className="text-[var(--ink)]">{t("space.settings.roleAdmin")}</strong> {t("space.settings.adminDescription")}</p>
-        <p><strong className="text-[var(--ink)]">{t("space.settings.roleMember")}</strong> {t("space.settings.memberDescription")}</p>
+      <div className={`${SPACE_LIST_FRAME_CLASS} space-y-3`}>
+        {[
+          [t("space.settings.roleOwner"), t("space.settings.ownerDescription")],
+          [t("space.settings.roleAdmin"), t("space.settings.adminDescription")],
+          [t("space.settings.roleMember"), t("space.settings.memberDescription")],
+        ].map(([role, description]) => (
+          <section key={role} className="rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)]/70 px-4 py-3.5">
+            <h3 className="text-sm font-semibold text-[var(--ink)]">{role}</h3>
+            <p className="mt-1 text-sm leading-relaxed text-[var(--ink-muted)]">{description}</p>
+          </section>
+        ))}
       </div>,
     );
   }
 
   if (section === "members") {
     return renderShell(
-      <div className="space-y-5">
-        <div className="flex flex-wrap items-end gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-3">
+      <div className={`${SPACE_LIST_FRAME_CLASS} space-y-5`}>
+        <div className="flex flex-wrap items-end gap-2 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)]/70 p-3.5">
           <label className="min-w-0 flex-1 text-xs font-semibold text-[var(--ink-muted)]">
             {t("space.settings.email")}
             <input value={inviteEmail} onChange={(event) => setInviteEmail(event.target.value)} className="mt-1 h-9 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]" />
@@ -281,7 +353,7 @@ export function SpaceSettingsWorkspace({
           </button>
         </div>
         {memberQuotaReached ? (
-          <div className="rounded-lg border border-[var(--line)] bg-[var(--warning-bg)] px-3 py-2 text-xs font-medium text-[var(--warning)]">
+          <div className="rounded-xl border border-[var(--line)] bg-[var(--warning-bg)] px-3 py-2 text-xs font-medium text-[var(--warning)]">
             {t("space.settings.memberQuotaReached")}
           </div>
         ) : null}
@@ -356,32 +428,43 @@ export function SpaceSettingsWorkspace({
 
   if (section === "overview") {
     const preview = avatarPreview ?? session.space.avatarUrl ?? null;
+    const storageUsed = overviewUsage?.storageBytes ?? 0;
+    const storageMax = overviewLimits?.storageBytesMax ?? 1024 * 1024 * 1024;
     return renderShell(
-      <div className="max-w-3xl space-y-4">
-        <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4">
-          <div className="flex items-start gap-4">
-            <SpaceAvatar name={session.space.name} avatarUrl={preview} size={54} />
-            <div className="min-w-0 flex-1">
-              {editingOverview ? (
-                <input value={name} onChange={(event) => setName(event.target.value)} className="h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm font-semibold text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]" />
-              ) : (
-                <h3 className="truncate text-lg font-semibold text-[var(--ink)]">{session.space.name}</h3>
-              )}
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[var(--ink-muted)]">
-                <span>{session.space.slug}</span>
-                <button type="button" onClick={copySlug} className="grid h-7 w-7 place-items-center rounded-lg hover:bg-[var(--hover-bg)]">
-                  <Copy className="h-3.5 w-3.5" />
-                </button>
-                <span>{session.space.spaceKind ?? "user"}</span>
-                <span>{session.space.joinPolicy}</span>
+      <div className={`${SPACE_LIST_FRAME_CLASS} space-y-4`}>
+        <section className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-elevated)]/80 shadow-sm">
+          <div className="border-b border-[var(--line-subtle)] bg-[var(--paper)]/35 px-5 py-5">
+            <div className="flex flex-wrap items-start gap-4">
+              <SpaceAvatar name={session.space.name} avatarUrl={preview} size={64} />
+              <div className="min-w-0 flex-1">
+                {editingOverview ? (
+                  <label className="block text-xs font-semibold text-[var(--ink-muted)]">
+                    {t("space.spaceActions.name")}
+                    <input
+                      value={name}
+                      onChange={(event) => setName(event.target.value)}
+                      className="mt-1 h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm font-semibold text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]"
+                    />
+                  </label>
+                ) : (
+                  <h3 className="truncate text-2xl font-semibold text-[var(--ink)]">{session.space.name}</h3>
+                )}
+                <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-medium text-[var(--ink-muted)]">
+                  <span className="rounded-full bg-[var(--paper-inset)] px-2 py-1">{session.space.slug}</span>
+                  <button type="button" onClick={copySlug} className="grid h-7 w-7 place-items-center rounded-lg transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]" aria-label={t("space.toasts.spaceSlugCopied")} title={t("space.toasts.spaceSlugCopied")}>
+                    <Copy className="h-3.5 w-3.5" />
+                  </button>
+                  <span>{session.space.spaceKind ?? "user"}</span>
+                  <span>{session.space.joinPolicy}</span>
+                </div>
               </div>
+              <button type="button" onClick={() => setEditingOverview((value) => !value)} className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]">
+                {editingOverview ? t("space.common.cancel") : t("space.settings.editOverview")}
+              </button>
             </div>
-            <button type="button" onClick={() => setEditingOverview((value) => !value)} className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]">
-              {editingOverview ? t("space.common.cancel") : t("space.settings.editOverview")}
-            </button>
           </div>
           {editingOverview ? (
-            <div className="mt-4 flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 border-b border-[var(--line-subtle)] px-5 py-4">
               <button type="button" onClick={pickAvatar} className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]">
                 {t("space.spaceActions.chooseAvatar")}
               </button>
@@ -391,36 +474,101 @@ export function SpaceSettingsWorkspace({
               </button>
             </div>
           ) : null}
-        </div>
-        <div className="grid gap-3 md:grid-cols-2">
-          <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4 text-sm text-[var(--ink-secondary)]">
-            <div className="mb-2 font-semibold text-[var(--ink)]">{t("space.settings.freeQuota")}</div>
-            <div>{t("space.settings.plan")}: {session.space.planTier ?? "free"}</div>
-            <div>{t("space.settings.currentRole")}: {roleLabel(session.membership.role, t)}</div>
-            <div>{t("space.settings.joinPolicy")}: {session.space.joinPolicy}</div>
-            <div>{t("space.settings.quotaMembers")}: {quotaText(overviewUsage?.memberSeats, overviewLimits?.joinedMembersMax)}</div>
-            <div>{t("space.settings.quotaOpenIssues")}: {quotaText(overviewUsage?.openIssues, overviewLimits?.openIssuesMax)}</div>
-            <div>{t("space.settings.quotaSkills")}: {quotaText(overviewUsage?.hostedSkills, overviewLimits?.hostedSkillsMax)}</div>
-            <div>{t("space.settings.quotaAgents")}: {quotaText(overviewUsage?.registeredAgents, overviewLimits?.registeredAgentsMax)}</div>
-            <div>{t("space.settings.quotaStorage")}: {formatBytes(overviewUsage?.storageBytes ?? 0)} / {formatBytes(overviewLimits?.storageBytesMax ?? 1024 * 1024 * 1024)}</div>
+          <div className="grid gap-3 px-5 py-4 md:grid-cols-3">
+            <SummaryMetric label={t("space.settings.plan")} value={session.space.planTier ?? "free"} />
+            <SummaryMetric label={t("space.settings.currentRole")} value={roleLabel(session.membership.role, t)} />
+            <SummaryMetric label={t("space.settings.joinPolicy")} value={session.space.joinPolicy} />
           </div>
-        </div>
+          <div className="grid gap-4 px-5 pb-5 md:grid-cols-2">
+            <QuotaLine label={t("space.settings.quotaMembers")} used={overviewUsage?.memberSeats} max={overviewLimits?.joinedMembersMax} />
+            <QuotaLine label={t("space.settings.quotaOpenIssues")} used={overviewUsage?.openIssues} max={overviewLimits?.openIssuesMax} />
+            <QuotaLine label={t("space.settings.quotaSkills")} used={overviewUsage?.hostedSkills} max={overviewLimits?.hostedSkillsMax} />
+            <QuotaLine label={t("space.settings.quotaAgents")} used={overviewUsage?.registeredAgents} max={overviewLimits?.registeredAgentsMax} />
+            <div className="md:col-span-2">
+              <QuotaLine
+                label={t("space.settings.quotaStorage")}
+                used={storageUsed}
+                max={storageMax}
+                value={`${formatBytes(storageUsed)} / ${formatBytes(storageMax)}`}
+              />
+            </div>
+          </div>
+        </section>
       </div>,
     );
   }
 
+  const rootPreview = session.space.avatarUrl ?? null;
+  const storageUsed = overviewUsage?.storageBytes ?? 0;
+  const storageMax = overviewLimits?.storageBytesMax ?? 1024 * 1024 * 1024;
+  const rootMenuItems = menuItems(pendingCount, t).filter((item) => item.id !== "overview");
+
   return renderShell(
-    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-      {menuItems(pendingCount, t).map((item) => {
-        const Icon = item.icon;
-        return (
-          <button key={item.id} type="button" onClick={() => setSection(item.id)} className="min-h-28 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-4 text-left transition-colors hover:border-[var(--accent-warm)] hover:bg-[var(--paper)]">
-            <Icon className="mb-3 h-5 w-5 text-[var(--accent-warm)]" />
-            <div className="text-sm font-semibold text-[var(--ink)]">{item.label}</div>
-            <div className="mt-1 text-xs leading-relaxed text-[var(--ink-muted)]">{item.hint}</div>
-          </button>
-        );
-      })}
+    <div className={`${SPACE_LIST_FRAME_CLASS} space-y-4`}>
+      <section className="overflow-hidden rounded-2xl border border-[var(--line)] bg-[var(--paper-elevated)]/85 shadow-sm">
+        <div className="bg-[linear-gradient(135deg,var(--paper-elevated),var(--paper)_62%,var(--paper-inset))] px-5 py-5">
+          <div className="flex flex-wrap items-start gap-4">
+            <SpaceAvatar name={session.space.name} avatarUrl={rootPreview} size={68} />
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-semibold uppercase tracking-wider text-[var(--accent-warm)]">{t("space.settings.overview")}</div>
+              <h2 className="mt-1 truncate text-2xl font-semibold text-[var(--ink)]">{session.space.name}</h2>
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-xs font-medium text-[var(--ink-muted)]">
+                <span className="rounded-full bg-[var(--paper-elevated)]/80 px-2 py-1">{session.space.slug}</span>
+                <button type="button" onClick={copySlug} className="grid h-7 w-7 place-items-center rounded-lg transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]" aria-label={t("space.toasts.spaceSlugCopied")} title={t("space.toasts.spaceSlugCopied")}>
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+                <span>{session.space.spaceKind ?? "user"}</span>
+                <span>{session.space.joinPolicy}</span>
+              </div>
+            </div>
+            <button type="button" onClick={() => setSection("overview")} className="rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)]/75 px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]">
+              {t("space.settings.editOverview")}
+            </button>
+          </div>
+          <div className="mt-5 grid gap-3 md:grid-cols-3">
+            <SummaryMetric label={t("space.settings.plan")} value={session.space.planTier ?? "free"} />
+            <SummaryMetric label={t("space.settings.currentRole")} value={roleLabel(session.membership.role, t)} />
+            <SummaryMetric label={t("space.settings.joinPolicy")} value={session.space.joinPolicy} />
+          </div>
+        </div>
+        <div className="grid gap-4 border-t border-[var(--line-subtle)] px-5 py-4 md:grid-cols-2">
+          <QuotaLine label={t("space.settings.quotaMembers")} used={overviewUsage?.memberSeats} max={overviewLimits?.joinedMembersMax} />
+          <QuotaLine label={t("space.settings.quotaOpenIssues")} used={overviewUsage?.openIssues} max={overviewLimits?.openIssuesMax} />
+          <QuotaLine label={t("space.settings.quotaSkills")} used={overviewUsage?.hostedSkills} max={overviewLimits?.hostedSkillsMax} />
+          <QuotaLine label={t("space.settings.quotaAgents")} used={overviewUsage?.registeredAgents} max={overviewLimits?.registeredAgentsMax} />
+          <div className="md:col-span-2">
+            <QuotaLine
+              label={t("space.settings.quotaStorage")}
+              used={storageUsed}
+              max={storageMax}
+              value={`${formatBytes(storageUsed)} / ${formatBytes(storageMax)}`}
+            />
+          </div>
+        </div>
+      </section>
+
+      <div className="space-y-2">
+        {rootMenuItems.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              onClick={() => setSection(item.id)}
+              className="group flex w-full items-center gap-3 rounded-xl border border-transparent bg-[var(--paper-elevated)]/60 px-4 py-3.5 text-left transition-colors hover:border-[var(--line)] hover:bg-[var(--paper-elevated)]"
+            >
+              <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]">
+                <Icon className="h-4 w-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-semibold text-[var(--ink)]">{item.label}</span>
+                <span className="mt-0.5 block truncate text-xs text-[var(--ink-muted)]">{item.hint}</span>
+              </span>
+              <ChevronRight className="h-4 w-4 shrink-0 text-[var(--ink-subtle)] transition-transform group-hover:translate-x-0.5" />
+            </button>
+          );
+        })}
+      </div>
     </div>,
   );
 }

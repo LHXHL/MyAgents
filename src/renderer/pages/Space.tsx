@@ -977,6 +977,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
               actions={actions}
               onRefresh={refreshCurrent}
               onRegister={() => setRegisterOpen(true)}
+              onExit={() => setMode("issues")}
             />
           )}
         </section>

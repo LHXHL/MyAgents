@@ -68,6 +68,15 @@ export function SpaceSidebar({
     ? session.spaces
     : [{ ...session.space, membership: session.membership, canManage: canManageSpace, pendingJoinRequestCount: 0 }];
   const activeSpaceId = session.space.id || session.space.slug;
+  const activeSpace = spaces.find((space) => {
+    const spaceId = space.id || space.slug;
+    return spaceId === activeSpaceId || space.slug === session.space.slug;
+  });
+  const switchableSpaces = spaces.filter((space) => {
+    const spaceId = space.id || space.slug;
+    return spaceId !== activeSpaceId && space.slug !== session.space.slug;
+  });
+  const pendingJoinRequestCount = activeSpace?.pendingJoinRequestCount ?? 0;
   useCloseLayer(() => {
     if (!accountMenuOpen) return false;
     setAccountMenuOpen(false);
@@ -90,11 +99,12 @@ export function SpaceSidebar({
     mode: SpaceViewMode;
     label: string;
     icon: typeof MessageSquare;
+    badge?: number;
   }> = [
     { mode: 'issues', label: t('space.sidebar.issues'), icon: MessageSquare },
     { mode: 'goals', label: t('space.sidebar.goals'), icon: GitBranch },
     { mode: 'skills', label: t('space.sidebar.skills'), icon: Package },
-    ...(canManageSpace ? [{ mode: 'settings' as const, label: t('space.sidebar.settings'), icon: Settings }] : []),
+    ...(canManageSpace ? [{ mode: 'settings' as const, label: t('space.sidebar.settings'), icon: Settings, badge: pendingJoinRequestCount }] : []),
   ];
 
   return (
@@ -123,27 +133,29 @@ export function SpaceSidebar({
             </span>
             <ChevronDown className="h-4 w-4 -rotate-90 text-[var(--ink-muted)] transition-transform group-open/space:rotate-0" />
           </summary>
-          <div className="grid gap-1 pt-1 pl-5">
-            {spaces.map((space) => {
+          {switchableSpaces.length > 0 ? (
+            <div className="grid gap-1 pt-1 pl-5">
+              {switchableSpaces.map((space) => {
               const spaceId = space.id || space.slug;
-              const selected = spaceId === activeSpaceId || space.slug === session.space.slug;
               return (
-                <button key={spaceId} type="button" onClick={() => onSpaceSwitch(spaceId)} className={`grid min-h-8 w-full grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2.5 text-left text-sm font-semibold transition-colors ${selected ? 'bg-[var(--paper-elevated)] text-[var(--ink)]' : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'}`}>
+                <button key={spaceId} type="button" onClick={() => onSpaceSwitch(spaceId)} className="grid min-h-8 w-full grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-2 rounded-lg px-2.5 text-left text-sm font-semibold text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]">
                   <SpaceAvatar name={space.name} avatarUrl={space.avatarUrl} size={18} />
                   <span className="truncate">{space.name}</span>
                   {space.pendingJoinRequestCount ? <span className="rounded-full bg-[var(--accent-warm-subtle)] px-1.5 text-xs text-[var(--accent-warm)]">{space.pendingJoinRequestCount}</span> : null}
                 </button>
               );
-            })}
-          </div>
+              })}
+            </div>
+          ) : null}
           <nav className="mt-2 grid gap-1 pt-2 pl-5 border-t border-[var(--line-subtle)]" aria-label={session.space.name}>
             {communityItems.map((item) => {
               const Icon = item.icon;
               const selected = mode === item.mode;
               return (
-                <button key={item.mode} type="button" onClick={() => onSpaceTabChange(item.mode)} className={`grid min-h-8 w-full grid-cols-[16px_minmax(0,1fr)] items-center gap-2 rounded-lg px-2.5 text-left text-sm font-semibold transition-colors ${selected ? 'bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]' : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'}`}>
+                <button key={item.mode} type="button" aria-label={item.label} onClick={() => onSpaceTabChange(item.mode)} className={`flex min-h-8 w-full items-center gap-2 rounded-lg px-2.5 text-left text-sm font-semibold transition-colors ${selected ? 'bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]' : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'}`}>
                   <Icon className="h-3.5 w-3.5 shrink-0" />
-                  <span className="truncate">{item.label}</span>
+                  <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                  {'badge' in item && item.badge ? <span className="rounded-full bg-[var(--accent-warm-subtle)] px-1.5 text-xs text-[var(--accent-warm)]">{item.badge}</span> : null}
                 </button>
               );
             })}
