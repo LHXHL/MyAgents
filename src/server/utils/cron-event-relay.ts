@@ -45,7 +45,7 @@ function escapeTagText(value: string): string {
     .replace(/>/g, '&gt;');
 }
 
-function neutralizeRelayStructuralTags(body: string): string {
+export function neutralizeSystemReminderStructuralTags(body: string): string {
   let safe = neutralizeInboxStructuralTags(body);
   for (const tag of CRON_RELAY_STRUCTURAL_TAGS) {
     safe = safe
@@ -62,7 +62,7 @@ function neutralizeRelayStructuralTags(body: string): string {
 }
 
 function wrapInboxIfNeeded(e: CronRelayEvent): string {
-  const safeBody = neutralizeRelayStructuralTags(e.content);
+  const safeBody = neutralizeSystemReminderStructuralTags(e.content);
   if (!e.fromSessionId || !e.fromLabel) return safeBody;
   const label = sanitizeInboxLabel(e.fromLabel);
   return `<inbox-message from="${label}" reply_back="false">\n${safeBody}\n</inbox-message>`;
@@ -110,4 +110,3 @@ export function buildCronEventRelayMessage(
     VISIBLE_CRON_RELAY_NOTICE,
   ].join('\n');
 }
-

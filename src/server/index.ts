@@ -668,7 +668,7 @@ import type { RuntimeBackedProviderIdentity } from '../shared/providerExecution'
 import { normalizeSessionOrigin, originFromTurnAttribution } from '../shared/session-origin';
 import type { SessionOrigin } from '../shared/session-origin';
 import type { InteractionScenario } from './system-prompt';
-import { buildCronEventRelayMessage } from './utils/cron-event-relay';
+import { buildCronEventRelayMessage, neutralizeSystemReminderStructuralTags } from './utils/cron-event-relay';
 
 type PermissionMode = 'auto' | 'plan' | 'fullAgency' | 'custom';
 
@@ -9077,7 +9077,7 @@ description: >
             enrichedPrompt = payload.prompt;
             if (otherEvents.length > 0) {
               const eventLines = otherEvents.map(
-                e => `[System Event: ${e.event}] ${e.content}`
+                e => `[System Event: ${neutralizeSystemReminderStructuralTags(e.event)}] ${neutralizeSystemReminderStructuralTags(e.content)}`
               ).join('\n');
               enrichedPrompt += `\n\n${eventLines}`;
             }

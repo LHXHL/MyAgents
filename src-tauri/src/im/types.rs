@@ -138,6 +138,18 @@ impl HostInteractionCapability {
             ask_user_question: "native-card".to_string(),
         }
     }
+
+    pub fn for_platform(platform: &ImPlatform) -> Self {
+        match platform {
+            ImPlatform::Feishu => Self::native_card(),
+            ImPlatform::OpenClaw(id)
+                if id.eq_ignore_ascii_case("feishu") || id.eq_ignore_ascii_case("lark") =>
+            {
+                Self::native_card()
+            }
+            _ => Self::none(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -833,6 +845,13 @@ impl Default for MemoryEvolutionConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PendingCronEvent {
+    /// Private peer session this event is allowed to wake/deliver into. Agent
+    /// channels with multiple private peers share one channel-level pending vec;
+    /// binding each event to the selected peer prevents cron result A from being
+    /// shipped during peer B's targeted wake. Legacy per-bot events leave this
+    /// unset and keep the historical latest-private behavior.
+    #[serde(default)]
+    pub target_session_key: Option<String>,
     /// Always `"cron_complete"`. Kept as a tagged-union discriminator so the
     /// sidecar handler can stay symmetric with the legacy `systemEventQueue`
     /// path (which carries other event kinds for non-cron callers).

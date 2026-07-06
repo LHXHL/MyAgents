@@ -117,6 +117,7 @@ async fn find_agent_id_for_delivery(
 async fn append_pending_cron_event(
     pending_cron_events: &Arc<tokio::sync::Mutex<Vec<crate::im::types::PendingCronEvent>>>,
     bot_id: &str,
+    target_session_key: Option<String>,
     task_id: &str,
     summary: &str,
     cron_from_session_id: Option<String>,
@@ -135,6 +136,7 @@ async fn append_pending_cron_event(
         );
     }
     pending.push(crate::im::types::PendingCronEvent {
+        target_session_key,
         event: "cron_complete".to_string(),
         task_id: task_id.to_string(),
         content: summary.to_string(),
@@ -264,6 +266,7 @@ pub(super) async fn deliver_cron_result_to_bot(
             append_pending_cron_event(
                 &route.pending_cron_events,
                 &route.target.channel_id,
+                Some(route.target.session_key.clone()),
                 task_id,
                 summary,
                 cron_from_session_id,
@@ -308,6 +311,7 @@ pub(super) async fn deliver_cron_result_to_bot(
     append_pending_cron_event(
         &pending_cron_events,
         &delivery.bot_id,
+        None,
         task_id,
         summary,
         cron_from_session_id,

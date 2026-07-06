@@ -75,7 +75,14 @@ export default function AgentMemoryEvolutionSection({
       if (!ok) return;
     }
     await updateConfig({ enabled: nextEnabled });
-    await configureManagedTasks(nextEnabled);
+    const tasksOk = await configureManagedTasks(nextEnabled);
+    if (!tasksOk) {
+      try {
+        await updateConfig({ enabled });
+      } catch (e) {
+        console.warn('[AgentMemoryEvolutionSection] Rollback memory evolution config failed:', e);
+      }
+    }
   }, [configureManagedTasks, enabled, ensureRuleSubstrate, updateConfig]);
 
   return (

@@ -2859,6 +2859,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                 Arc::clone(&mcp_servers_json),
                 Arc::clone(&runtime),
                 Arc::clone(&runtime_config),
+                types::HostInteractionCapability::for_platform(&config.platform),
                 None, // Memory auto-update: not used for per-channel heartbeat (Agent-level only)
                 Arc::clone(&pending_cron_events),
                 wake_tx.clone(),

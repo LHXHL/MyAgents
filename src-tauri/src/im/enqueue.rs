@@ -138,18 +138,6 @@ pub(super) async fn drop_im_consumer(consumers: &ImConsumers, session_key: &str)
     }
 }
 
-fn host_interaction_for_platform(platform: &ImPlatform) -> HostInteractionCapability {
-    match platform {
-        ImPlatform::Feishu => HostInteractionCapability::native_card(),
-        ImPlatform::OpenClaw(id)
-            if id.eq_ignore_ascii_case("feishu") || id.eq_ignore_ascii_case("lark") =>
-        {
-            HostInteractionCapability::native_card()
-        }
-        _ => HostInteractionCapability::none(),
-    }
-}
-
 /// POST /api/im/enqueue — synchronous enqueue, returns immediately.
 /// Replaces `stream_to_im` for the new IM Pipeline v2 protocol. peer_lock
 /// (held by the caller) wraps only this call (~ms), enabling concurrent
@@ -198,7 +186,7 @@ pub(super) async fn enqueue_to_sidecar(
         "requestId": msg.request_id,
         "metadataBirthPending": metadata_birth_pending,
         "configHeldByTab": config_held_by_tab,
-        "hostInteraction": host_interaction_for_platform(&msg.platform),
+        "hostInteraction": HostInteractionCapability::for_platform(&msg.platform),
     });
     if !is_external_runtime_type(runtime) {
         if let Some(env) = provider_env {
@@ -296,7 +284,7 @@ mod tests {
     use super::*;
 
     fn ask_cap(platform: ImPlatform) -> String {
-        host_interaction_for_platform(&platform).ask_user_question
+        HostInteractionCapability::for_platform(&platform).ask_user_question
     }
 
     #[test]

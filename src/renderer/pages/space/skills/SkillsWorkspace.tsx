@@ -166,19 +166,30 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
   const fileDropRef = useRef<HTMLDivElement | null>(null);
   const { isDragging, activeZoneId, registerZone, unregisterZone } = useTauriFileDrop({ enabled: isActive && mode === 'file' });
   const fileDropActive = isDragging && activeZoneId === SKILL_PUBLISH_FILE_DROP_ZONE_ID;
+  const urlPackagesRef = useRef<SpaceSkillUrlPackage[]>([]);
 
-  const closeAndCleanup = () => {
-    const paths = urlPackages.map((item) => item.filePath);
+  useEffect(() => {
+    urlPackagesRef.current = urlPackages;
+  }, [urlPackages]);
+
+  const cleanupUrlPackages = useCallback((packages = urlPackagesRef.current) => {
+    const paths = packages.map((item) => item.filePath);
     if (paths.length > 0) {
       void spaceCleanupSkillExportPackages(paths).catch(() => undefined);
     }
+  }, []);
+
+  const closeAndCleanup = useCallback(() => {
+    cleanupUrlPackages();
     onClose();
-  };
+  }, [cleanupUrlPackages, onClose]);
 
   useCloseLayer(() => {
     closeAndCleanup();
     return true;
   }, 240);
+
+  useEffect(() => () => cleanupUrlPackages(), [cleanupUrlPackages]);
 
   useEffect(() => {
     let alive = true;
@@ -263,6 +274,7 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
     setUrlError(null);
     if (result.mode === 'exported' && result.packages?.length) {
       setUrlPreview(null);
+      cleanupUrlPackages();
       setUrlPackages(result.packages);
       if (result.packages.length === 1) {
         await inspectUrlPackage(result.packages[0]);
@@ -271,6 +283,7 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
     }
     if (result.preview) {
       setUrlPreview(result.preview);
+      cleanupUrlPackages();
       setUrlPackages([]);
       return;
     }
@@ -282,6 +295,7 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
     setUrlLoading(true);
     setUrlError(null);
     setUrlPreview(null);
+    cleanupUrlPackages();
     setUrlPackages([]);
     setInspection(null);
     setSourcePath('');
@@ -362,9 +376,8 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
               name: targetName,
               description: inspection.description ?? undefined,
             });
-      if (urlPackages.some((item) => item.filePath === sourcePath)) {
-        setUrlPackages((items) => items.filter((item) => item.filePath !== sourcePath));
-      }
+      cleanupUrlPackages();
+      setUrlPackages([]);
       toast.success(t('space.toasts.skillPublished', { name: result.name }));
       onPublished(result);
     } catch (error) {

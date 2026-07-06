@@ -19,6 +19,9 @@ use super::searcher::{SessionSearchHit, SessionSearchResult};
 use super::tokenizer;
 use super::util::{byte_to_utf16, ceil_char_boundary, floor_char_boundary};
 
+const SYSTEM_REMINDER_OPEN: &str = "<system-reminder>";
+const SYSTEM_REMINDER_CLOSE: &str = "</system-reminder>";
+
 /// Manages the Tantivy index for session history search.
 ///
 /// **Concurrency model:** the reader path (`search`, `doc_count`) is lock-free
@@ -930,8 +933,9 @@ fn extract_text_content(msg: &serde_json::Value) -> String {
                 .collect::<Vec<_>>()
                 .join(" ");
         }
-        // Plain user message string.
-        return s.to_string();
+        // Plain user message string. Hidden system-reminder payload is model
+        // context, not user-visible/searchable history.
+        return strip_leading_system_reminder_for_search(s);
     }
 
     // Legacy / raw array content.
@@ -945,6 +949,20 @@ fn extract_text_content(msg: &serde_json::Value) -> String {
     }
 
     String::new()
+}
+
+fn strip_leading_system_reminder_for_search(raw: &str) -> String {
+    let text = raw.trim_start();
+    if !text.starts_with(SYSTEM_REMINDER_OPEN) {
+        return raw.to_string();
+    }
+
+    let Some(close_idx) = text.find(SYSTEM_REMINDER_CLOSE) else {
+        return String::new();
+    };
+    text[close_idx + SYSTEM_REMINDER_CLOSE.len()..]
+        .trim()
+        .to_string()
 }
 
 /// Get a text field value from a Tantivy document.
@@ -1178,6 +1196,54 @@ mod tests {
                 "content": content
             })
         )
+    }
+
+    #[test]
+    fn extract_text_indexes_only_visible_system_reminder_tail() {
+        let content = [
+            "<system-reminder>",
+            "<myagents-space-issue>",
+            "<issue-instruction>hidden issue action</issue-instruction>",
+            "<issue>secret facts</issue>",
+            "</myagents-space-issue>",
+            "</system-reminder>",
+            "Space issue delivered",
+        ]
+        .join("\n");
+        let msg = json!({
+            "role": "user",
+            "content": content
+        });
+
+        assert_eq!(extract_text_content(&msg), "Space issue delivered");
+    }
+
+    #[test]
+    fn extract_text_drops_pure_system_reminder_payload() {
+        let content = [
+            "<system-reminder>",
+            "<HEARTBEAT>",
+            "<task-result>hidden cron output</task-result>",
+            "</HEARTBEAT>",
+            "</system-reminder>",
+        ]
+        .join("\n");
+        let msg = json!({
+            "role": "user",
+            "content": content
+        });
+
+        assert_eq!(extract_text_content(&msg), "");
+    }
+
+    #[test]
+    fn extract_text_keeps_plain_user_message() {
+        let msg = json!({
+            "role": "user",
+            "content": "Find the release notes"
+        });
+
+        assert_eq!(extract_text_content(&msg), "Find the release notes");
     }
 
     #[test]
