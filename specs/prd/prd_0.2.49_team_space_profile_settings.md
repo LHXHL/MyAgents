@@ -6,7 +6,7 @@ updated: 2026-07-05
 scope: "Team Space 登录用户资料设置：补齐昵称、头像、只读 Email、左下角账户菜单与设置 overlay；Google 登录头像作为默认头像，用户本地上传后写入公开 R2 直链；Issue / 评论 / Skill 上传人展示小圆形头像。不做头像移除、成员资料页、多 Space 资料体系或 Registered Agent 头像设置。"
 issue: "产品需求：Team Space 登录用户基础身份设置"
 research: ""
-review: "cross-review-code 已完成：三路 reviewer 发现并已修复 avatar-only 错标 name_source、头像预览绕过 workspace file service、Rust 头像读取 TOCTOU、R2 cleanup 无日志/并发残留风险；R2_PUBLIC_BASE_URL 仍是生产部署前置，2026-07-05 wrangler 确认 myagents-space-assets 尚无 custom domain 且 r2.dev disabled。"
+review: "cross-review-code 已完成：三路 reviewer 发现并已修复 avatar-only 错标 name_source、头像预览绕过 workspace file service、Rust 头像读取 TOCTOU、R2 cleanup 无日志/并发残留风险；2026-07-06 已确认 myagents-space-assets 绑定 files.myagents.io，R2_PUBLIC_BASE_URL 配置为 https://files.myagents.io，并用临时对象完成公开直链实测。"
 ---
 
 # Team Space 登录用户资料设置 PRD
@@ -584,7 +584,7 @@ Cloud Worker：
 
 ### 待用户决策
 
-无。唯一部署前置是 `MyAgents_space` staging/production 需要配置公开 R2 头像域名和 `R2_PUBLIC_BASE_URL`；实现会在缺失时 fail closed。
+无。`MyAgents_space` production 已配置公开 R2 域名 `files.myagents.io`，Worker `R2_PUBLIC_BASE_URL` 已更新为 `https://files.myagents.io`；实现仍会在缺失时 fail closed。
 
 ### 进展日志
 
@@ -595,3 +595,4 @@ Cloud Worker：
 - 2026-07-05：cross-review-code 三路审查完成并修复：`nameChanged` 防止头像-only 保存锁死 Google 昵称、Rust no-follow + bounded read 降低本地头像 TOCTOU 风险、R2 旧对象/并发 orphan cleanup 加最终 key 对比与 warning、i18n hardcode 清理、Space Cloud 文档补 profile/R2 部署约束。
 - 2026-07-05：验证通过：MyAgents `npm run typecheck`、`npm run lint -- --max-warnings=0`（仅既有 depcruise orphan warning）、`npm run build:web`、`npm run test:classification && npm run test:unit && npm run test:dom`；MyAgents Rust `cargo test space_cloud`；MyAgents_space `npm run typecheck && npm test`。
 - 2026-07-05：部署检查：`npx wrangler r2 bucket domain list myagents-space-assets` 显示 no custom domains；`npx wrangler r2 bucket dev-url get myagents-space-assets` 显示 public r2.dev disabled。生产/灰度上传头像前必须先启用公开 R2 域名并配置 `R2_PUBLIC_BASE_URL`。
+- 2026-07-06：R2 公开域名更新完成：`files.myagents.io` 已绑定 `myagents-space-assets`。已上传临时对象 `__healthchecks/files-domain-check.txt` 并通过 `https://files.myagents.io/__healthchecks/files-domain-check.txt` 实测 200，随后删除临时对象并确认 404。Worker 配置更新为 `R2_PUBLIC_BASE_URL=https://files.myagents.io`。

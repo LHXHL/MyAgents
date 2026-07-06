@@ -97,7 +97,9 @@ Cloud Worker 用 `users.name_source` / `avatar_source` 区分 Google 默认资�
 - `avatar_source='google'` 时，Google 重登可以刷新 `users.avatar_url`；`avatar_source='r2'` 时不得覆盖。
 - 头像上传写入 `ASSETS` R2 bucket 的 `avatars/users/<userId>/<sha256>.<ext>`，并把 `users.avatar_url` 写成公开 R2 URL。
 
-头像 URL 明确不走 Worker 附件下载 route。部署侧必须先给 `myagents-space-assets` / `ASSETS` bucket 启用 public `r2.dev` URL 或绑定自定义域名，并在 `MyAgents_space` Worker 环境配置 `R2_PUBLIC_BASE_URL=https://<public-r2-domain>`。缺少该配置时头像上传应 fail closed；不要回退到 Worker 代理图片流量。2026-07-05 通过 `wrangler r2 bucket domain list myagents-space-assets` 与 `wrangler r2 bucket dev-url get myagents-space-assets` 确认当前 bucket 尚未配置 custom domain，public r2.dev 也处于 disabled 状态。
+头像 URL 明确不走 Worker 附件下载 route。部署侧必须给 `myagents-space-assets` / `ASSETS` bucket 启用 public `r2.dev` URL 或绑定自定义域名，并在 `MyAgents_space` Worker 环境配置 `R2_PUBLIC_BASE_URL`。缺少该配置时头像上传应 fail closed；不要回退到 Worker 代理图片流量。
+
+当前 production 配置使用 `R2_PUBLIC_BASE_URL=https://files.myagents.io`。2026-07-06 已通过 `wrangler r2 bucket domain list myagents-space-assets` 确认 `files.myagents.io` 绑定到 bucket，且用临时对象 `__healthchecks/files-domain-check.txt` 实测公开 HTTPS 直链返回 200；测试对象随后已删除。
 
 ## IssueDelivery / Claim 处理
 
