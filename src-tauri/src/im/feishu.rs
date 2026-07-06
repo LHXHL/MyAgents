@@ -19,10 +19,11 @@ use prost::Message as ProstMessage;
 use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
 
 use super::types::{
-    GroupEvent, ImAttachment, ImAttachmentType, ImConfig, ImMessage, ImPlatform, ImSourceType,
+    AskUserQuestionItem, AskUserQuestionPayload, GroupEvent, ImAttachment, ImAttachmentType,
+    ImConfig, ImMessage, ImPlatform, ImSourceType,
 };
 use super::util::{mime_to_ext, sanitize_filename};
-use super::ApprovalCallback;
+use super::{ApprovalCallback, QuestionCallback};
 use crate::{proxy_config, ulog_debug, ulog_error, ulog_info, ulog_warn};
 
 // ── Feishu WebSocket Protobuf Frame ──────────────────────────
@@ -592,6 +593,8 @@ pub struct FeishuAdapter {
     dedup_last_persist_ms: AtomicU64,
     /// Channel for forwarding approval callbacks from card button clicks
     approval_tx: mpsc::Sender<ApprovalCallback>,
+    /// Channel for forwarding AskUserQuestion callbacks from card buttons
+    question_tx: mpsc::Sender<QuestionCallback>,
     /// Channel for group lifecycle events (bot added/removed from groups)
     group_event_tx: mpsc::Sender<GroupEvent>,
     /// Bot's own open_id (for @mention and reply-to-bot detection)
@@ -610,6 +613,7 @@ impl FeishuAdapter {
         msg_tx: mpsc::Sender<ImMessage>,
         allowed_users: Arc<RwLock<Vec<String>>>,
         approval_tx: mpsc::Sender<ApprovalCallback>,
+        question_tx: mpsc::Sender<QuestionCallback>,
         dedup_path: Option<PathBuf>,
         group_event_tx: mpsc::Sender<GroupEvent>,
     ) -> Self {
@@ -652,6 +656,7 @@ impl FeishuAdapter {
             dedup_persist_path: dedup_path,
             dedup_last_persist_ms: AtomicU64::new(0),
             approval_tx,
+            question_tx,
             group_event_tx,
             bot_open_id: Arc::new(RwLock::new(None)),
             user_name_cache: Arc::new(Mutex::new(HashMap::new())),
@@ -1951,6 +1956,187 @@ impl FeishuAdapter {
         Ok(())
     }
 
+    fn question_answer_key(question: &AskUserQuestionItem, idx: usize) -> String {
+        question.id.clone().unwrap_or_else(|| idx.to_string())
+    }
+
+    fn format_question_content(
+        payload: &AskUserQuestionPayload,
+        source_type: &ImSourceType,
+    ) -> String {
+        let mut lines = vec!["请回答下面的问题。".to_string()];
+        if payload.questions.iter().any(|q| q.is_secret) {
+            let scope = if matches!(source_type, ImSourceType::Group) {
+                "群聊"
+            } else {
+                "IM"
+            };
+            lines.push(format!(
+                "其中包含敏感输入，{} 不支持安全收集。请取消后在桌面端继续。",
+                scope
+            ));
+            return lines.join("\n");
+        }
+        for (idx, q) in payload.questions.iter().enumerate() {
+            lines.push(format!(
+                "\n**{}. {}**\n{}{}",
+                idx + 1,
+                q.header,
+                q.question,
+                if q.required { "" } else { "\n（可跳过）" },
+            ));
+            if q.options.is_empty() {
+                lines.push("请直接回复文本。".to_string());
+            } else {
+                let option_lines = q
+                    .options
+                    .iter()
+                    .enumerate()
+                    .map(|(opt_idx, opt)| {
+                        if opt.description.is_empty() {
+                            format!("{}. {}", opt_idx + 1, opt.label)
+                        } else {
+                            format!("{}. {} — {}", opt_idx + 1, opt.label, opt.description)
+                        }
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                lines.push(option_lines);
+                if q.multi_select {
+                    lines.push("多选请回复编号或选项名，用逗号分隔。".to_string());
+                } else {
+                    lines.push("请回复编号或选项名。".to_string());
+                }
+            }
+        }
+        if payload.questions.len() > 1 {
+            lines.push("\n多题请按顺序逐行回复；可选题留空表示跳过。".to_string());
+        }
+        lines.push("回复「取消」可取消本次提问。".to_string());
+        lines.join("\n")
+    }
+
+    /// Send a native AskUserQuestion card for Feishu.
+    pub async fn send_question_card(
+        &self,
+        chat_id: &str,
+        payload: &AskUserQuestionPayload,
+        source_type: &ImSourceType,
+    ) -> Result<Option<String>, String> {
+        let url = format!("{}/im/v1/messages?receive_id_type=chat_id", FEISHU_API_BASE);
+        let mut elements = vec![json!({
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": Self::format_question_content(payload, source_type),
+            }
+        })];
+
+        if payload.questions.len() == 1
+            && !payload.questions[0].multi_select
+            && !payload.questions[0].options.is_empty()
+            && !(matches!(source_type, ImSourceType::Group) && payload.questions[0].is_secret)
+        {
+            let q = &payload.questions[0];
+            let key = Self::question_answer_key(q, 0);
+            let mut actions = q
+                .options
+                .iter()
+                .take(8)
+                .map(|opt| {
+                    let mut answers = serde_json::Map::new();
+                    answers.insert(key.clone(), Value::String(opt.label.clone()));
+                    json!({
+                        "tag": "button",
+                        "text": { "tag": "plain_text", "content": opt.label },
+                        "type": "primary",
+                        "value": {
+                            "kind": "ask_user_question",
+                            "rid": payload.request_id,
+                            "action": "answer",
+                            "answers": Value::Object(answers),
+                        }
+                    })
+                })
+                .collect::<Vec<_>>();
+            actions.push(json!({
+                "tag": "button",
+                "text": { "tag": "plain_text", "content": "取消" },
+                "type": "default",
+                "value": {
+                    "kind": "ask_user_question",
+                    "rid": payload.request_id,
+                    "action": "cancel",
+                }
+            }));
+            elements.push(json!({ "tag": "action", "actions": actions }));
+        }
+
+        let card = json!({
+            "config": { "wide_screen_mode": true },
+            "header": {
+                "title": { "tag": "plain_text", "content": "请选择或填写" },
+                "template": "blue"
+            },
+            "elements": elements,
+        });
+        let body = json!({
+            "receive_id": chat_id,
+            "msg_type": "interactive",
+            "content": serde_json::to_string(&card).unwrap_or_default(),
+        });
+
+        match self.api_call("POST", &url, Some(&body)).await {
+            Ok(resp) => {
+                let msg_id = resp["data"]["message_id"].as_str().map(String::from);
+                ulog_info!("[feishu] AskUserQuestion card sent: msg_id={:?}", msg_id);
+                Ok(msg_id)
+            }
+            Err(e) => {
+                ulog_warn!(
+                    "[feishu] AskUserQuestion card failed: {}, falling back to text",
+                    e
+                );
+                self.send_text_message(
+                    chat_id,
+                    &format!(
+                        "请选择或填写\n\n{}",
+                        Self::format_question_content(payload, source_type)
+                    ),
+                )
+                .await
+            }
+        }
+    }
+
+    pub async fn update_question_status(
+        &self,
+        message_id: &str,
+        status: &str,
+    ) -> Result<(), String> {
+        let url = format!("{}/im/v1/messages/{}", FEISHU_API_BASE, message_id);
+        let (template, label) = match status {
+            "submitted" => ("green", "已提交"),
+            "cancelled" => ("grey", "已取消"),
+            "expired" => ("grey", "已失效"),
+            _ => ("grey", "已处理"),
+        };
+        let card = json!({
+            "config": { "wide_screen_mode": true },
+            "header": {
+                "title": { "tag": "plain_text", "content": format!("提问{}", label) },
+                "template": template,
+            },
+            "elements": [{
+                "tag": "div",
+                "text": { "tag": "lark_md", "content": format!("本次提问{}", label) },
+            }],
+        });
+        let body = json!({ "content": serde_json::to_string(&card).unwrap_or_default() });
+        self.api_call("PATCH", &url, Some(&body)).await?;
+        Ok(())
+    }
+
     /// Parse group lifecycle events: bot added/removed from group chats.
     async fn parse_group_event(&self, event: &Value) -> Option<GroupEvent> {
         let event_type = event["header"]["event_type"].as_str()?;
@@ -2082,6 +2268,43 @@ impl FeishuAdapter {
         })
     }
 
+    fn parse_question_card_action(&self, event: &Value) -> Option<QuestionCallback> {
+        let event_type = event["header"]["event_type"].as_str()?;
+        if event_type != "card.action.trigger" {
+            return None;
+        }
+
+        let action = &event["event"]["action"];
+        let value = &action["value"];
+        if value["kind"].as_str() != Some("ask_user_question") {
+            return None;
+        }
+        let request_id = value["rid"].as_str()?.to_string();
+        let user_id = event["event"]["operator"]["open_id"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        let answers = if value["action"].as_str() == Some("cancel") {
+            None
+        } else {
+            let mut map = HashMap::new();
+            if let Some(obj) = value["answers"].as_object() {
+                for (key, val) in obj {
+                    if let Some(s) = val.as_str() {
+                        map.insert(key.clone(), s.to_string());
+                    }
+                }
+            }
+            Some(map)
+        };
+
+        Some(QuestionCallback {
+            request_id,
+            answers,
+            user_id,
+        })
+    }
+
     /// Handle event payload extracted from a protobuf data frame.
     /// The payload is a JSON string containing the Feishu event data.
     async fn handle_event_payload(&self, payload_str: &str) {
@@ -2137,7 +2360,17 @@ impl FeishuAdapter {
             return;
         }
 
-        // Handle card.action.trigger (approval button clicks)
+        // Handle card.action.trigger (AskUserQuestion / approval button clicks)
+        if let Some(cb) = self.parse_question_card_action(&event) {
+            ulog_info!(
+                "[feishu] AskUserQuestion card action: rid={}",
+                &cb.request_id[..cb.request_id.len().min(16)]
+            );
+            if self.question_tx.send(cb).await.is_err() {
+                ulog_error!("[feishu] question callback channel closed");
+            }
+            return;
+        }
         if let Some(cb) = self.parse_card_action(&event) {
             ulog_info!(
                 "[feishu] Card action: decision={}, rid={}",
@@ -2378,6 +2611,24 @@ impl super::adapter::ImStreamAdapter for FeishuAdapter {
         status: &str,
     ) -> super::adapter::AdapterResult<()> {
         self.update_approval_status(message_id, status).await
+    }
+
+    async fn send_question_card(
+        &self,
+        chat_id: &str,
+        payload: &AskUserQuestionPayload,
+        source_type: &ImSourceType,
+    ) -> super::adapter::AdapterResult<Option<String>> {
+        self.send_question_card(chat_id, payload, source_type).await
+    }
+
+    async fn update_question_status(
+        &self,
+        _chat_id: &str,
+        message_id: &str,
+        status: &str,
+    ) -> super::adapter::AdapterResult<()> {
+        self.update_question_status(message_id, status).await
     }
 
     async fn send_photo(

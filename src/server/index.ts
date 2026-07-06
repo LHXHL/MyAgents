@@ -188,6 +188,7 @@ let _adminApi: Promise<AdminApiModule> | null = null;
 const getAdminApi = (): Promise<AdminApiModule> => (_adminApi ??= import('./admin-api'));
 import { setImMediaContext } from './tools/im-media-tool';
 import { setImBridgeToolsContext } from './tools/im-bridge-tools';
+import { normalizeHostInteractionCapability } from './host-interaction';
 import { getBuiltinMcpInstance } from './tools/builtin-mcp-registry';
 // NOTE: builtin MCP META is auto-registered when agent-session.ts side-effect-imports
 // './tools/builtin-mcp-meta'. No duplicate import needed here.
@@ -2762,7 +2763,7 @@ async function main() {
         setCronTaskContext(taskId, aiCanExit ?? false, currentSessionId);
 
         // Set interaction scenario for cron task (L1 + L2-desktop + L3-cron)
-        setInteractionScenario({
+        await setInteractionScenario({
           type: 'cron',
           taskId,
           intervalMinutes: intervalMinutes ?? 15,
@@ -3429,7 +3430,7 @@ async function main() {
         // Set System Prompt append for cron task context
         // Set interaction scenario for cron task (L1 + L2-desktop + L3-cron)
         try {
-          setInteractionScenario({
+          await setInteractionScenario({
             type: 'cron',
             taskId,
             intervalMinutes: intervalMinutes ?? 15,
@@ -8414,6 +8415,7 @@ async function main() {
             bridgeEnabledToolGroups?: string[];
             senderId?: string;
             senderIsOwner?: boolean;
+            hostInteraction?: unknown;
           };
 
           if (!payload.requestId) {
@@ -8525,6 +8527,7 @@ async function main() {
                 chatId: payload.sourceId,
                 isOwner: payload.senderIsOwner ?? false,
                 sourceType: bridgeSourceType,
+                hostInteraction: normalizeHostInteractionCapability(payload.hostInteraction),
               });
             }
 
@@ -8553,14 +8556,16 @@ async function main() {
 
           // Set IM interaction scenario (after MCP sync, see note above)
           const [imPlatform, imSourceType] = payload.source.split('_') as ['telegram' | 'feishu', 'private' | 'group'];
+          const hostInteraction = normalizeHostInteractionCapability(payload.hostInteraction);
           const imScenario: Extract<InteractionScenario, { type: 'im' }> = {
             type: 'im',
             platform: imPlatform,
             sourceType: imSourceType,
             botName: payload.botName,
+            hostInteraction,
           };
           const imTurnOrigin: SessionOrigin = { kind: 'agent-channel', surface: 'channel_message' };
-          setInteractionScenario(imScenario);
+          await setInteractionScenario(imScenario);
 
           // Build final message with group context (identical to /api/im/chat)
           let finalMessage = payload.message || '';
@@ -8662,6 +8667,7 @@ async function main() {
                 platform: imPlatform,
                 sourceType: imSourceType,
                 botName: payload.botName,
+                hostInteraction,
               },
               permissionMode: resolvedExternalPermissionMode,
               model: resolvedExternalModel,
@@ -8981,6 +8987,7 @@ async function main() {
             isHighPriority?: boolean;
             runtime?: RuntimeType;
             runtimeConfig?: RuntimeConfig;
+            hostInteraction?: unknown;
             // v0.2.4: Rust-side authoritative cron events. When non-empty, this
             // payload is the truth source and REPLACES any cron events in the
             // sidecar's in-memory `systemEventQueue` (Rust survives sidecar
@@ -9169,6 +9176,7 @@ description: >
               type: 'agent-channel',
               platform: payload.source?.split('_')[0] ?? 'unknown',
               sourceType: payload.source?.includes('group') ? 'group' : 'private',
+              hostInteraction: normalizeHostInteractionCapability(payload.hostInteraction),
             },
             permissionMode: engine.kind === 'external'
               ? getRuntimeConfigPermissionMode(runtimeConfig, activeRuntime)

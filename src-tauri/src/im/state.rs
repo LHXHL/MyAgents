@@ -8,6 +8,14 @@ pub struct ApprovalCallback {
     pub user_id: String,
 }
 
+/// AskUserQuestion callback from IM platform card button or text fallback.
+pub struct QuestionCallback {
+    pub request_id: String,
+    pub answers: Option<HashMap<String, String>>,
+    #[allow(dead_code)]
+    pub user_id: String,
+}
+
 /// Pending approval waiting for user response
 pub(crate) struct PendingApproval {
     pub(crate) sidecar_port: u16,
@@ -17,6 +25,20 @@ pub(crate) struct PendingApproval {
 }
 
 pub(crate) type PendingApprovals = Arc<Mutex<HashMap<String, PendingApproval>>>;
+
+/// Pending structured question waiting for user response.
+#[derive(Clone)]
+pub(crate) struct PendingQuestion {
+    pub(crate) sidecar_port: u16,
+    pub(crate) chat_id: String,
+    pub(crate) card_message_id: String,
+    pub(crate) requester_user_id: Option<String>,
+    pub(crate) source_type: ImSourceType,
+    pub(crate) questions: Vec<AskUserQuestionItem>,
+    pub(crate) created_at: Instant,
+}
+
+pub(crate) type PendingQuestions = Arc<Mutex<HashMap<String, PendingQuestion>>>;
 
 /// Per-peer locks: serializes the *enqueue* phase (drift check + ensure_sidecar
 /// + POST /api/im/enqueue) per peer_session. Pattern C dropped the lock to
@@ -590,6 +612,80 @@ impl adapter::ImStreamAdapter for AnyAdapter {
             }
         }
     }
+    async fn send_question_card(
+        &self,
+        chat_id: &str,
+        payload: &AskUserQuestionPayload,
+        source_type: &ImSourceType,
+    ) -> adapter::AdapterResult<Option<String>> {
+        match self {
+            Self::Telegram(a) => {
+                adapter::ImStreamAdapter::send_question_card(
+                    a.as_ref(),
+                    chat_id,
+                    payload,
+                    source_type,
+                )
+                .await
+            }
+            Self::Feishu(a) => a.send_question_card(chat_id, payload, source_type).await,
+            Self::Dingtalk(a) => {
+                adapter::ImStreamAdapter::send_question_card(
+                    a.as_ref(),
+                    chat_id,
+                    payload,
+                    source_type,
+                )
+                .await
+            }
+            Self::Bridge(a) => {
+                adapter::ImStreamAdapter::send_question_card(
+                    a.as_ref(),
+                    chat_id,
+                    payload,
+                    source_type,
+                )
+                .await
+            }
+        }
+    }
+    async fn update_question_status(
+        &self,
+        chat_id: &str,
+        message_id: &str,
+        status: &str,
+    ) -> adapter::AdapterResult<()> {
+        match self {
+            Self::Telegram(a) => {
+                adapter::ImStreamAdapter::update_question_status(
+                    a.as_ref(),
+                    chat_id,
+                    message_id,
+                    status,
+                )
+                .await
+            }
+            Self::Feishu(a) => a.update_question_status(message_id, status).await,
+            Self::Dingtalk(a) => {
+                adapter::ImStreamAdapter::update_question_status(
+                    a.as_ref(),
+                    chat_id,
+                    message_id,
+                    status,
+                )
+                .await
+            }
+            Self::Bridge(a) => {
+                adapter::ImStreamAdapter::update_question_status(
+                    a.as_ref(),
+                    chat_id,
+                    message_id,
+                    status,
+                )
+                .await
+            }
+        }
+    }
     async fn send_photo(
         &self,
         chat_id: &str,
@@ -775,6 +871,8 @@ pub struct ImBotInstance {
     pub(super) poll_handle: tauri::async_runtime::JoinHandle<()>,
     /// JoinHandle for the approval callback handler
     pub(super) approval_handle: tauri::async_runtime::JoinHandle<()>,
+    /// JoinHandle for the AskUserQuestion callback handler
+    pub(super) question_handle: tauri::async_runtime::JoinHandle<()>,
     /// JoinHandle for the health persist loop
     pub(super) health_handle: tauri::async_runtime::JoinHandle<()>,
     /// Random bind code for QR code binding flow
@@ -901,6 +999,7 @@ pub fn signal_all_agents_shutdown(agent_state: &ManagedAgents) {
                 ch.bot_instance.poll_handle.abort();
                 ch.bot_instance.process_handle.abort();
                 ch.bot_instance.approval_handle.abort();
+                ch.bot_instance.question_handle.abort();
                 ch.bot_instance.health_handle.abort();
                 if let Some(ref h) = ch.bot_instance.heartbeat_handle {
                     h.abort();
@@ -930,6 +1029,7 @@ pub fn signal_all_bots_shutdown(im_state: &ManagedImBots) {
             instance.poll_handle.abort();
             instance.process_handle.abort();
             instance.approval_handle.abort();
+            instance.question_handle.abort();
             instance.health_handle.abort();
             if let Some(ref h) = instance.heartbeat_handle {
                 h.abort();

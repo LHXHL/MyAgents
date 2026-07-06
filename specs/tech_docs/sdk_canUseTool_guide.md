@@ -51,6 +51,8 @@ MyAgents 为了 fullAgency 热切换永远传 `allowDangerouslySkipPermissions:t
 
 SDK 权限相关的拦截需求，先问"这条路径 canUseTool 到底会不会被调"——不确定就用 hook（`PreToolUse` / `PermissionRequest`），hook 在原生解析器之前执行且 deny 无条件生效。两个既有 hook 文件就是样板。
 
+IM / Agent Channel 的 `AskUserQuestion` 还多一层 host 能力判断：默认 channel host 不支持桌面结构化提问，builtin SDK 必须在 `PreToolUse` 硬闸里 fail-closed 拦 `AskUserQuestion` / `EnterPlanMode` / `ExitPlanMode`，不能只靠启动期 `disallowedTools`（pre-warm 可能以 desktop scenario 启动）或 `canUseTool`（`bypassPermissions` 会跳过）。飞书这类 `hostInteraction.askUserQuestion === 'native-card'` 的 channel 反过来必须确保 session 处于非 bypass permission mode，让 `AskUserQuestion` 能回到 MyAgents 交互链路。
+
 ## ⚠️ 必须包含 updatedInput
 
 当 `canUseTool` 返回 `allow` 时，**必须**包含 `updatedInput` 字段：

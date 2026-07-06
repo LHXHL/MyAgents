@@ -523,6 +523,16 @@ function mapToSdkPermissionMode(mode: PermissionMode): 'acceptEdits' | 'plan' | 
   }
 }
 
+function mapToEffectiveSdkPermissionMode(
+  mode: PermissionMode,
+  scenario: InteractionScenario,
+): 'acceptEdits' | 'plan' | 'bypassPermissions' | 'default' {
+  if (shouldUseNonBypassForNativeAskUserQuestion(mode, scenario)) {
+    return 'acceptEdits';
+  }
+  return mapToSdkPermissionMode(mode);
+}
+
 const requireModule = createRequire(import.meta.url);
 
 /**
@@ -1816,6 +1826,14 @@ function abortPersistentSession(): void {
 
 // ===== Interaction Scenario (unified system prompt) =====
 import { buildSystemPromptAppend, type InteractionScenario } from './system-prompt';
+import {
+  channelInteractionDenyReason,
+  getChannelInteractionDisallowedTools,
+  shouldDisallowAskUserQuestion,
+  shouldHardDenyChannelInteractionTool,
+  shouldUseNonBypassForNativeAskUserQuestion,
+  supportsAskUserQuestionNativeCard,
+} from './host-interaction';
 
 let currentScenario: InteractionScenario = { type: 'desktop' };
 
@@ -1823,8 +1841,13 @@ let currentScenario: InteractionScenario = { type: 'desktop' };
  * Set the interaction scenario for the current session.
  * This determines the system prompt layers (identity + channel + scenario instructions).
  */
-export function setInteractionScenario(scenario: InteractionScenario): void {
+export async function setInteractionScenario(scenario: InteractionScenario): Promise<void> {
   currentScenario = scenario;
+  if (shouldUseNonBypassForNativeAskUserQuestion(configState.currentPermissionMode, scenario)) {
+    await lifecycleState.query?.setPermissionMode('acceptEdits').catch(err => {
+      console.warn('[agent] failed to switch native-card channel session out of bypassPermissions:', err);
+    });
+  }
   if (isDebugMode) {
     console.log(`[agent] Interaction scenario: ${scenario.type}`);
   }
@@ -2523,7 +2546,7 @@ export function setSessionPermissionMode(mode: PermissionMode): void {
   // triggers applySessionConfig(). Critical for plan mode: user switches to plan in UI
   // but SDK keeps auto → canUseTool may be skipped → tools execute unchecked.
   if (lifecycleState.query) {
-    const sdkMode = mapToSdkPermissionMode(configState.currentPermissionMode);
+    const sdkMode = mapToEffectiveSdkPermissionMode(configState.currentPermissionMode, currentScenario);
     lifecycleState.query.setPermissionMode(sdkMode).catch(err => {
       console.error('[agent] failed to apply permission mode to running session:', err);
       // Rollback: restore old mode + capture and notify frontend to undo
@@ -3633,8 +3656,10 @@ function isValidAskUserQuestionInput(input: unknown): input is AskUserQuestionIn
       typeof question.question === 'string' &&
       typeof question.header === 'string' &&
       Array.isArray(question.options) &&
-      question.options.length >= 2 &&
-      typeof question.multiSelect === 'boolean'
+      typeof question.multiSelect === 'boolean' &&
+      (question.id === undefined || typeof question.id === 'string') &&
+      (question.required === undefined || typeof question.required === 'boolean') &&
+      (question.isSecret === undefined || typeof question.isSecret === 'boolean')
     );
   });
 }
@@ -3664,14 +3689,18 @@ async function handleAskUserQuestion(
     throw new DOMException('Aborted', 'AbortError');
   }
 
-  broadcast('ask-user-question:request', {
+  const requestPayload = {
     ...interactiveEventScope(),
     requestId,
     questions: questionInput.questions,
     // SDK v0.2.69+: options may contain `preview` field (HTML or Markdown)
     // Our toolConfig sets previewFormat: 'html', so previews are HTML fragments
     previewFormat: 'html',
-  });
+  };
+  broadcast('ask-user-question:request', requestPayload);
+  if (supportsAskUserQuestionNativeCard(currentScenario)) {
+    emitImEvent('ask-user-question-request', JSON.stringify(requestPayload));
+  }
 
   // Wait for user response or abort. No wall-clock timeout — see the
   // pendingAskUserQuestions Map declaration for why.
@@ -3694,6 +3723,9 @@ async function handleAskUserQuestion(
       cleanup();
       if (wasPending) {
         broadcast('ask-user-question:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' });
+        if (supportsAskUserQuestionNativeCard(currentScenario)) {
+          emitImEvent('ask-user-question-expired', JSON.stringify({ requestId, reason: 'aborted' }));
+        }
       }
       // Reject with AbortError so SDK's own abort handling creates the single tool_result.
       // Previously resolve(null) caused canUseTool to return deny → duplicate tool_result
@@ -3715,7 +3747,7 @@ export function handleAskUserQuestionResponse(
   requestId: string,
   answers: Record<string, string> | null
 ): boolean {
-  console.debug(`[AskUserQuestion] handleResponse: requestId=${requestId}, answers=${JSON.stringify(answers)}`);
+  console.debug(`[AskUserQuestion] handleResponse: requestId=${requestId}, answerKeys=${answers ? Object.keys(answers).join(',') : '(cancelled)'}`);
 
   const pending = pendingAskUserQuestions.get(requestId);
   if (!pending) {
@@ -4102,6 +4134,11 @@ function drainPendingInteractiveRequests(reason: 'reset' | 'session-end'): void 
   // only for tests — the tool turn is going away regardless.
   for (const [requestId, q] of pendingAskUserQuestions) {
     try { broadcast('ask-user-question:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
+    try {
+      if (supportsAskUserQuestionNativeCard(currentScenario)) {
+        emitImEvent('ask-user-question-expired', JSON.stringify({ requestId, reason }));
+      }
+    } catch { /* swallow */ }
     try { q.resolve(null); } catch { /* swallow */ }
   }
   pendingAskUserQuestions.clear();
@@ -7406,7 +7443,7 @@ async function applySessionConfig(newModel?: string, newPermissionMode?: Permiss
 
   // Apply permission mode change if different
   if (newPermissionMode && newPermissionMode !== configState.currentPermissionMode) {
-    const sdkMode = mapToSdkPermissionMode(newPermissionMode);
+    const sdkMode = mapToEffectiveSdkPermissionMode(newPermissionMode, currentScenario);
     try {
       await lifecycleState.query.setPermissionMode(sdkMode);
       // Route through the shared transition so a config-driven switch keeps the
@@ -9552,7 +9589,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   const startedBackgroundTasks = new Map<string, { toolUseId?: string; description?: string }>();
 
   try {
-    const sdkPermissionMode = mapToSdkPermissionMode(configState.currentPermissionMode);
+    const sdkPermissionMode = mapToEffectiveSdkPermissionMode(
+      configState.currentPermissionMode,
+      currentScenario,
+    );
 
     // Resolve SDK-compatible session ID for resume/create.
     // SDK requires valid UUID format for --resume (and --session-id).
@@ -9742,11 +9782,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       });
     }
 
-    // Build disallowed tools list: group deny + IM-incompatible UI tools
+    // Build disallowed tools list: group deny + channel-incompatible UI tools
     const disallowedToolsList = [...currentGroupToolsDeny];
-    if (currentScenario.type === 'im') {
-      disallowedToolsList.push('AskUserQuestion', 'EnterPlanMode', 'ExitPlanMode');
-    }
+    disallowedToolsList.push(...getChannelInteractionDisallowedTools(currentScenario));
 
     // SDK 0.2.84 bug: NA() returns "firstParty" for ANY non-bedrock/vertex/foundry provider,
     // causing xd7() to enable thinking for all non-claude-3 models on third-party APIs.
@@ -10135,6 +10173,14 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         // PermissionResult.deny.interrupt) and is exactly the right semantic
         // for control-transfer tools like AskUserQuestion / ExitPlanMode.
         if (toolName === 'AskUserQuestion') {
+          if (shouldDisallowAskUserQuestion(currentScenario)) {
+            console.warn(`[canUseTool] AskUserQuestion denied: current ${currentScenario.type} host does not support native-card interaction`);
+            return {
+              behavior: 'deny' as const,
+              message: channelInteractionDenyReason(currentScenario),
+              interrupt: true,
+            };
+          }
           console.log('[canUseTool] AskUserQuestion detected, prompting user');
           const answers = await handleAskUserQuestion(input, options.signal);
           if (answers === null) {
@@ -10273,6 +10319,19 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           hooks: [
             async (input: HookInput): Promise<HookJSONOutput> => {
               const pre = input as PreToolUseHookInput;
+              if (shouldHardDenyChannelInteractionTool(pre.tool_name, currentScenario)) {
+                const reason = pre.tool_name === 'AskUserQuestion'
+                  ? channelInteractionDenyReason(currentScenario)
+                  : '当前渠道不支持该交互式工具，请改用普通文本完成这一步。';
+                console.warn(`[permission] channel hard gate denied: ${pre.tool_name} scenario=${currentScenario.type}`);
+                return {
+                  hookSpecificOutput: {
+                    hookEventName: 'PreToolUse' as const,
+                    permissionDecision: 'deny' as const,
+                    permissionDecisionReason: reason,
+                  },
+                };
+              }
               // Fail-closed effective mode: 'plan' if either source says plan
               // (see isPlanModeInEffect for the two desync windows this closes).
               const effectiveMode = isPlanModeInEffect(configState.currentPermissionMode, pre.permission_mode) ? 'plan' : configState.currentPermissionMode;

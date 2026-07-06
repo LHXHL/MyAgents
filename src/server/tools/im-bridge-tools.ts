@@ -8,6 +8,8 @@
 import { cancellableFetch } from '../utils/cancellation';
 import { getCurrentTurnSignal } from '../utils/turn-abort';
 import { maybeSpill } from '../utils/large-value-store';
+import type { HostInteractionCapability } from '../../shared/types/hostInteraction';
+import { isBridgeAskUserQuestionTool } from '../host-interaction';
 
 type CallToolResult = {
   content: Array<{ type: 'text'; text: string }>;
@@ -82,6 +84,8 @@ interface ImBridgeToolsContext {
   sourceType?: string;
   /** Feishu account ID for multi-account routing (default: 'default') */
   accountId?: string;
+  /** Host-level interaction capability for this channel turn. */
+  hostInteraction?: HostInteractionCapability;
 }
 
 let bridgeToolsContext: ImBridgeToolsContext | null = null;
@@ -179,7 +183,20 @@ export async function setImBridgeToolsContext(ctx: ImBridgeToolsContext): Promis
     // capture, an in-flight Feishu OAuth call could end up using the wrong
     // sender open_id / chat_id / account_id.
     const localCtx: ImBridgeToolsContext = ctx;
-    const dynamicTools = data.tools.filter(t => t.name).map(pluginTool =>
+    const pluginTools = data.tools.filter(t => {
+      if (!t.name) return false;
+      if (isBridgeAskUserQuestionTool(t.name)) {
+        console.log(`[im-bridge-tools] Filtered unsupported bridge AskUserQuestion tool: ${t.name}`);
+        return false;
+      }
+      return true;
+    });
+    if (pluginTools.length === 0) {
+      console.log('[im-bridge-tools] No bridge tools left after host-interaction filtering');
+      if (myGeneration === contextGeneration) dynamicServer = null;
+      return;
+    }
+    const dynamicTools = pluginTools.map(pluginTool =>
       tool(
         pluginTool.name,
         pluginTool.description || '',
@@ -319,7 +336,7 @@ export async function setImBridgeToolsContext(ctx: ImBridgeToolsContext): Promis
       tools: dynamicTools,
     });
 
-    console.log(`[im-bridge-tools] Dynamic MCP server created with ${data.tools.length} tools: ${data.tools.map(t => t.name).join(', ')}`);
+    console.log(`[im-bridge-tools] Dynamic MCP server created with ${pluginTools.length} tools: ${pluginTools.map(t => t.name).join(', ')}`);
   } catch (err) {
     console.warn(`[im-bridge-tools] Failed to create dynamic server: ${err}`);
     // Only clear if this call is still the current generation — otherwise

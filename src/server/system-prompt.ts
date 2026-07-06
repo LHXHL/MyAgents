@@ -12,14 +12,15 @@
 
 import type { RuntimeType } from '../shared/types/runtime';
 import type { OfficialToolId } from '../shared/official-tools';
+import type { HostInteractionCapability } from '../shared/types/hostInteraction';
 import { buildCliToolsAppend, buildWidgetSection, buildSessionInboxSection } from './system-prompt-cli-tools';
 
 // ===== Scenario types =====
 
 export type InteractionScenario =
   | { type: 'desktop'; surface?: 'chat' | 'floating-ball' }
-  | { type: 'im'; platform: 'telegram' | 'feishu'; sourceType: 'private' | 'group'; botName?: string }
-  | { type: 'agent-channel'; platform: string; sourceType: 'private' | 'group'; botName?: string; agentName?: string }
+  | { type: 'im'; platform: 'telegram' | 'feishu'; sourceType: 'private' | 'group'; botName?: string; hostInteraction?: HostInteractionCapability }
+  | { type: 'agent-channel'; platform: string; sourceType: 'private' | 'group'; botName?: string; agentName?: string; hostInteraction?: HostInteractionCapability }
   | { type: 'cron'; taskId: string; intervalMinutes: number; aiCanExit: boolean }
   | { type: 'registeredAgent'; platform: 'space'; registeredAgentId?: string; sourceType?: 'issue-delivery' };
 

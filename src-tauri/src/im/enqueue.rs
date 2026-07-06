@@ -38,6 +38,7 @@ pub(super) async fn ensure_im_consumer<A>(
     initial_replay_request_id: String,
     adapter: Arc<A>,
     pending_approvals: PendingApprovals,
+    pending_questions: PendingQuestions,
     stream_client: Client,
     on_terminal: Arc<dyn Fn(String, reply_router::TerminalOutcome) + Send + Sync>,
 ) -> Option<reply_router::SharedReplyRouter>
@@ -99,7 +100,7 @@ where
     }
 
     let cancel: event_consumer::CancelFlag = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let reply_router = reply_router::shared_router(pending_approvals);
+    let reply_router = reply_router::shared_router(pending_approvals, pending_questions);
     let join = event_consumer::spawn_consumer(
         stream_client,
         sidecar_port,
@@ -185,6 +186,10 @@ pub(super) async fn enqueue_to_sidecar(
         "requestId": msg.request_id,
         "metadataBirthPending": metadata_birth_pending,
         "configHeldByTab": config_held_by_tab,
+        "hostInteraction": match &msg.platform {
+            ImPlatform::Feishu => HostInteractionCapability::native_card(),
+            _ => HostInteractionCapability::none(),
+        },
     });
     if !is_external_runtime_type(runtime) {
         if let Some(env) = provider_env {

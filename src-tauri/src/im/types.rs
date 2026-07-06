@@ -120,6 +120,69 @@ pub enum ImSourceType {
     Group,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostInteractionCapability {
+    pub ask_user_question: String,
+}
+
+impl HostInteractionCapability {
+    pub fn none() -> Self {
+        Self {
+            ask_user_question: "none".to_string(),
+        }
+    }
+
+    pub fn native_card() -> Self {
+        Self {
+            ask_user_question: "native-card".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserQuestionOption {
+    pub label: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub preview: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserQuestionItem {
+    #[serde(default)]
+    pub id: Option<String>,
+    pub question: String,
+    pub header: String,
+    #[serde(default)]
+    pub options: Vec<AskUserQuestionOption>,
+    #[serde(default)]
+    pub multi_select: bool,
+    #[serde(default = "default_question_required")]
+    pub required: bool,
+    #[serde(default)]
+    pub is_secret: bool,
+}
+
+fn default_question_required() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AskUserQuestionPayload {
+    #[serde(rename = "requestId")]
+    pub request_id: String,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    pub questions: Vec<AskUserQuestionItem>,
+    #[serde(default)]
+    pub preview_format: Option<String>,
+}
+
 /// Group permission status
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]

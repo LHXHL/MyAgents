@@ -10,6 +10,12 @@ import { killWithEscalation } from './utils/kill-with-escalation';
 import { InactivityWatchdog } from '../utils/inactivity-watchdog';
 import { buildSystemPromptAppend } from '../system-prompt';
 import type { InteractionScenario } from '../system-prompt';
+import {
+  getChannelInteractionDisallowedTools,
+  shouldDisallowAskUserQuestion,
+  shouldUseNonBypassForNativeAskUserQuestion,
+  supportsAskUserQuestionNativeCard,
+} from '../host-interaction';
 import type {
   ExternalRuntimeConfigPatch,
   ExternalRuntimeConfigSnapshot,
@@ -502,6 +508,9 @@ function broadcastExternalInteractiveExpired(
       broadcast('ask-user-question:expired', { requestId, ...(sessionId ? { sessionId } : {}), reason });
     } catch (e) {
       console.warn(`[external-session] broadcast ask-user-question:expired for ${requestId} failed:`, e);
+    }
+    if (supportsAskUserQuestionNativeCard(getExternalLifecycleScenario())) {
+      fireExternalImCallback('ask-user-question-expired', JSON.stringify({ requestId, reason }));
     }
     return;
   }
@@ -1819,6 +1828,12 @@ async function _doStartExternalSession(options: {
     options.resumeSessionId ? 'resume-start-options' : 'start-options',
     options.sessionId,
   );
+  const runtimePermissionMode = shouldUseNonBypassForNativeAskUserQuestion(
+    startPermissionMode,
+    options.scenario,
+  )
+    ? 'auto'
+    : startPermissionMode;
 
   const managedCodexMcpServers = runtimeType === 'codex' && runtimeSource === 'managed-provider'
     ? resolveWorkspaceConfig(options.workspacePath, existingMetadataAtStart, { includeMcp: true }).mcpServers
@@ -1838,7 +1853,7 @@ async function _doStartExternalSession(options: {
     clearPendingExternalSessionBirth(options.sessionId);
   }
 
-  console.log(`[external-session] Starting ${runtimeType} session for ${options.sessionId}, model=${startModel || '(default)'}, permissionMode=${startPermissionMode || '(default)'}, scenario=${options.scenario.type}, resume=${options.resumeSessionId || 'none'}`);
+  console.log(`[external-session] Starting ${runtimeType} session for ${options.sessionId}, model=${startModel || '(default)'}, permissionMode=${startPermissionMode || '(default)'}${runtimePermissionMode !== startPermissionMode ? ` -> runtime:${runtimePermissionMode}` : ''}, scenario=${options.scenario.type}, resume=${options.resumeSessionId || 'none'}`);
   // Detect pre-warm: prewarmExternalSession calls us with initialMessage=undefined.
   // Stamp this onto the session_init broadcast so the frontend doesn't enter the
   // "loading" state for a process that hasn't started processing any turn yet.
@@ -1930,6 +1945,7 @@ async function _doStartExternalSession(options: {
   // Set isRunning BEFORE spawning — prevents waitForExternalSessionIdle from
   // seeing the pre-start state and returning true prematurely. Reset in catch.
   setExternalLifecycleRunning(true);
+  const disallowedTools = getChannelInteractionDisallowedTools(options.scenario);
 
   const startOnce = (resumeId: string | undefined): Promise<RuntimeProcess> =>
     runtime.startSession(
@@ -1940,10 +1956,11 @@ async function _doStartExternalSession(options: {
         initialImages: options.initialImages,
         systemPromptAppend,
         model: startModel,
-        permissionMode: startPermissionMode,
+        permissionMode: runtimePermissionMode,
         reasoningEffort: startReasoningEffort,
         scenario: options.scenario,
         resumeSessionId: resumeId,
+        disallowedTools,
         envPolicy: resolvedEnvPolicy,
         runtimeSource,
         mcpServers: managedCodexMcpServers,
@@ -3602,7 +3619,9 @@ function applyExternalToolResult(event: Extract<UnifiedEvent, { kind: 'tool_resu
 function autoDenyNonInteractiveRequest(event: Extract<UnifiedEvent, { kind: 'permission_request' }>): boolean {
   const scenario = getExternalLifecycleScenario();
   if (scenario.type === 'desktop') return false;
-  const reason = `External runtime interactive request "${event.toolName}" was denied because ${scenario.type} sessions cannot render approval UI.`;
+  if (event.toolName !== 'AskUserQuestion') return false;
+  if (!shouldDisallowAskUserQuestion(scenario)) return false;
+  const reason = `External runtime AskUserQuestion request was denied because this ${scenario.type} host does not support native-card interaction.`;
   console.warn(`[external-session] ${reason} requestId=${event.requestId}`);
   fireExternalImCallback('error', reason);
   const active = getExternalActivePair();
@@ -3610,6 +3629,20 @@ function autoDenyNonInteractiveRequest(event: Extract<UnifiedEvent, { kind: 'per
     void active.runtime.respondPermission(active.process, event.requestId, 'deny', reason, undefined, undefined, true)
       .catch((err) => console.error(`[external-session] auto-deny failed for requestId=${event.requestId}:`, err));
   }
+  return true;
+}
+
+function autoAllowFullAgencyNativeCardRequest(event: Extract<UnifiedEvent, { kind: 'permission_request' }>): boolean {
+  if (event.toolName === 'AskUserQuestion') return false;
+  const scenario = getExternalLifecycleScenario();
+  if (!shouldUseNonBypassForNativeAskUserQuestion(getExternalRuntimeDesiredPermissionMode(), scenario)) {
+    return false;
+  }
+  const active = getExternalActivePair();
+  if (!active) return false;
+  console.log(`[external-session] native-card fullAgency fast-path: auto-approved ${event.toolName} requestId=${event.requestId}`);
+  void active.runtime.respondPermission(active.process, event.requestId, 'allow_once')
+    .catch((err) => console.error(`[external-session] fullAgency auto-allow failed for requestId=${event.requestId}:`, err));
   return true;
 }
 
@@ -3828,6 +3861,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
 
     case 'permission_request': {
       if (autoDenyNonInteractiveRequest(event)) break;
+      if (autoAllowFullAgencyNativeCardRequest(event)) break;
       // AskUserQuestion carries a structured payload (questions/options/previews) and
       // needs the dedicated wizard UI, not the generic allow/deny card. Route it through
       // the ask-user-question:request channel so the frontend mounts AskUserQuestionPrompt
@@ -3847,8 +3881,9 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
           data: requestPayload,
         });
         broadcast('ask-user-question:request', requestPayload);
-        // IM/agent-channel bots can't render AskUserQuestion; claude-code.ts already
-        // puts it in --disallowed-tools for those scenarios, so no imEventBus fan-out here.
+        if (supportsAskUserQuestionNativeCard(getExternalLifecycleScenario())) {
+          fireExternalImCallback('ask-user-question-request', JSON.stringify(requestPayload));
+        }
         break;
       }
 

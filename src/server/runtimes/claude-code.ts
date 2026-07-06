@@ -404,14 +404,15 @@ export class ClaudeCodeRuntime implements AgentRuntime {
       args.push('--max-turns', String(options.maxTurns));
     }
 
-    // Tool control
-    if (options.disallowedTools?.length) {
-      args.push('--disallowed-tools', ...options.disallowedTools);
+    // Tool control. Channel sessions receive their host-interaction overlay
+    // from external-session; cron/registered-agent remain headless and cannot
+    // render AskUserQuestion.
+    const disallowedTools = new Set(options.disallowedTools ?? []);
+    if (isHeadlessAutomation && !isImOrChannel) {
+      disallowedTools.add('AskUserQuestion');
     }
-
-    // Headless owners cannot render interactive-only tool UI.
-    if (isHeadlessAutomation) {
-      args.push('--disallowed-tools', 'AskUserQuestion');
+    if (disallowedTools.size > 0) {
+      args.push('--disallowed-tools', ...disallowedTools);
     }
 
     // Inject SessionStart hook settings for reliable session ID tracking

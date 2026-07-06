@@ -72,6 +72,7 @@ use router::{create_sidecar_stream_client, RouteError, SessionRouter, GLOBAL_CON
 pub use state::{
     create_agent_state, create_im_bot_state, signal_all_agents_shutdown, signal_all_bots_shutdown,
     AgentInstance, ApprovalCallback, ChannelInstance, ImBotInstance, ManagedAgents, ManagedImBots,
+    QuestionCallback,
 };
 use state::{
     ensure_sidecar_port_for_command, fallback_runtime_models, is_external_runtime_type,
@@ -81,14 +82,14 @@ use state::{
 };
 pub(crate) use state::{
     AgentChannelLink, AnyAdapter, ImConsumerHandle, ImConsumers, PeerLocks, PendingApproval,
-    PendingApprovals, SharedAgentLink,
+    PendingApprovals, PendingQuestion, PendingQuestions, SharedAgentLink,
 };
 use telegram::TelegramAdapter;
 use types::{
-    AgentConfigPatch, AgentConfigRust, AgentStatus, BotConfigPatch, ChannelConfigRust,
-    ChannelStatus, GroupActivation, GroupEvent, GroupPermission, GroupPermissionStatus,
-    ImAttachmentType, ImBotStatus, ImConfig, ImConversation, ImMessage, ImPlatform, ImSourceType,
-    ImStatus, LastActiveChannel,
+    AgentConfigPatch, AgentConfigRust, AgentStatus, AskUserQuestionItem, AskUserQuestionPayload,
+    BotConfigPatch, ChannelConfigRust, ChannelStatus, GroupActivation, GroupEvent, GroupPermission,
+    GroupPermissionStatus, HostInteractionCapability, ImAttachmentType, ImBotStatus, ImConfig,
+    ImConversation, ImMessage, ImPlatform, ImSourceType, ImStatus, LastActiveChannel,
 };
 
 // ===== SSE Stream → IM Draft (legacy /api/im/chat path — deleted in C-7) ====

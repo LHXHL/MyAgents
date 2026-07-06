@@ -1,11 +1,13 @@
-/// Abstract IM channel adapter trait.
-///
-/// Each messaging platform (Telegram, Discord, Slack, ...) implements this
-/// trait so that the core processing loop in `mod.rs` stays channel-agnostic.
+// Abstract IM channel adapter trait.
+//
+// Each messaging platform (Telegram, Discord, Slack, ...) implements this
+// trait so that the core processing loop in `mod.rs` stays channel-agnostic.
 
 /// Result alias with plain String error (channel-specific error types are
 /// mapped to String at the impl boundary).
 pub type AdapterResult<T> = Result<T, String>;
+
+use super::types::{AskUserQuestionPayload, ImSourceType};
 
 pub trait ImAdapter: Send + Sync + 'static {
     /// Verify the bot connection and return a human-readable identifier
@@ -101,6 +103,27 @@ pub trait ImStreamAdapter: ImAdapter {
         message_id: &str,
         status: &str,
     ) -> impl std::future::Future<Output = AdapterResult<()>> + Send;
+
+    /// Send a native AskUserQuestion card. Unsupported adapters use the
+    /// default error and should only be called when hostInteraction allows it.
+    fn send_question_card(
+        &self,
+        _chat_id: &str,
+        _payload: &AskUserQuestionPayload,
+        _source_type: &ImSourceType,
+    ) -> impl std::future::Future<Output = AdapterResult<Option<String>>> + Send {
+        async { Err("AskUserQuestion native card is not supported by this adapter".to_string()) }
+    }
+
+    /// Update a question card/message to show submitted/cancelled/expired status.
+    fn update_question_status(
+        &self,
+        _chat_id: &str,
+        _message_id: &str,
+        _status: &str,
+    ) -> impl std::future::Future<Output = AdapterResult<()>> + Send {
+        async { Ok(()) }
+    }
 
     /// Send a photo/image to the given chat. Returns the sent message ID if available.
     fn send_photo(

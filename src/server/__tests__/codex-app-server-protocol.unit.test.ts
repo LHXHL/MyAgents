@@ -467,6 +467,76 @@ describe('Codex app-server protocol helpers', () => {
     });
   });
 
+  it('serializes unsupported Codex structured input as non-pending denial results', () => {
+    const toolInput: PendingCodexRequest = {
+      kind: 'tool_user_input',
+      rpcId: 8,
+      method: 'item/tool/requestUserInput',
+      params: { questions: [{ id: 'choice', question: 'Pick', options: ['A', 'B'] }] },
+    };
+    expect(serializeCodexPermissionResponse(toolInput, 'deny', undefined, true)).toEqual({
+      type: 'result',
+      result: { answers: {} },
+    });
+
+    const form: PendingCodexRequest = {
+      kind: 'mcp_elicitation',
+      rpcId: 9,
+      method: 'mcpServer/elicitation/request',
+      params: {
+        mode: 'form',
+        requestedSchema: {
+          properties: { token: { type: 'string', format: 'password' } },
+          required: ['token'],
+        },
+      },
+    };
+    expect(serializeCodexPermissionResponse(form, 'deny', undefined, true)).toEqual({
+      type: 'result',
+      result: { action: 'cancel', content: null, _meta: null },
+    });
+  });
+
+  it('does not track unsupported channel MCP form elicitation as pending', () => {
+    const runtime = new CodexRuntime();
+    const pendingRequests = new Map<string, PendingCodexRequest>();
+    const respond = vi.fn();
+    const respondError = vi.fn();
+    const codexProc = {
+      pendingRequests,
+      scenario: { type: 'im', hostInteraction: { askUserQuestion: 'none' } },
+      rpc: { respond, respondError },
+    };
+    const onEvent = vi.fn();
+
+    (runtime as unknown as {
+      handleServerRequest(
+        proc: typeof codexProc,
+        rpcId: number,
+        method: string,
+        params: unknown,
+        onEvent: (event: unknown) => void,
+      ): void;
+    }).handleServerRequest(
+      codexProc,
+      42,
+      'mcpServer/elicitation/request',
+      {
+        mode: 'form',
+        requestedSchema: {
+          properties: { token: { type: 'string', format: 'password' } },
+          required: ['token'],
+        },
+      },
+      onEvent,
+    );
+
+    expect(pendingRequests.size).toBe(0);
+    expect(onEvent).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(42, { action: 'cancel', content: null, _meta: null });
+    expect(respondError).not.toHaveBeenCalled();
+  });
+
   it('serializes MCP elicitations and permission profile requests', () => {
     const elicitation: PendingCodexRequest = {
       kind: 'mcp_elicitation',

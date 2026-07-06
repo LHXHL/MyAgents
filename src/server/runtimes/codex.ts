@@ -21,6 +21,8 @@ import { CODEX_PERMISSION_MODES } from '../../shared/types/runtime';
 import { coerceFileChanges, formatFileChangeForResult } from '../../shared/fileChange';
 import type { AgentPlanTodo, AgentRuntime, RuntimeConfigCapabilities, RuntimeProcess, SessionStartOptions, UnifiedEvent, UnifiedEventCallback, ResolvedImagePayload, SubAgentScope } from './types';
 import { StaleRuntimeSessionError } from './types';
+import type { InteractionScenario } from '../system-prompt';
+import { shouldDisallowAskUserQuestion } from '../host-interaction';
 import { mapCodexTokenUsage, type CodexThreadTokenUsage } from './codex-token-usage';
 import { stripAnsi } from './env-utils';
 import { resolveCodexCommandContext } from './codex-command-context';
@@ -876,7 +878,7 @@ function toolRequestUserInputToAskUserQuestion(params: Record<string, unknown>):
       question: stringValue(q.question) || '',
       options,
       multiSelect: q.multiSelect === true,
-      required: true,
+      required: q.required === false || q.optional === true ? false : true,
       isSecret: q.isSecret === true,
     };
   });
@@ -1425,6 +1427,7 @@ class CodexProcess implements RuntimeProcess {
   collabControlToolParents = new Map<string, string[]>();
 
   workspacePath = '';
+  scenario: InteractionScenario = { type: 'desktop' };
   model = '';
   approvalPolicy: CodexApprovalPolicy = 'on-request';
   sandbox: CodexSandboxMode = 'workspace-write';
@@ -2239,6 +2242,7 @@ export class CodexRuntime implements AgentRuntime {
     const codexProc = new CodexProcess(proc);
     codexProc.sessionId = options.sessionId;
     codexProc.workspacePath = options.workspacePath;
+    codexProc.scenario = options.scenario;
 
     // Dedup guard: prevent double session_complete from notification + process exit
     let sessionCompleteEmitted = false;
@@ -3435,6 +3439,16 @@ export class CodexRuntime implements AgentRuntime {
       }
 
       case 'item/tool/requestUserInput': {
+        if (shouldDisallowAskUserQuestion(codexProc.scenario)) {
+          const action = serializeCodexPermissionResponse(
+            { kind: 'tool_user_input', rpcId, method, params: p },
+            'deny',
+            undefined,
+            true,
+          );
+          codexProc.rpc.respond(rpcId, action.type === 'result' ? action.result : null);
+          break;
+        }
         track({ kind: 'tool_user_input', rpcId, method, params: p });
         onEvent({
           kind: 'permission_request',
@@ -3447,10 +3461,24 @@ export class CodexRuntime implements AgentRuntime {
       }
 
       case 'mcpServer/elicitation/request': {
-        track({ kind: 'mcp_elicitation', rpcId, method, params: p });
         const requestedSchema = objectValue(p.requestedSchema);
         const hasFormFields = Object.keys(objectValue(requestedSchema.properties)).length > 0;
         if ((p.mode === 'form' || p.mode === 'openai/form') && hasFormFields) {
+          if (shouldDisallowAskUserQuestion(codexProc.scenario)) {
+            const action = serializeCodexPermissionResponse(
+              { kind: 'mcp_elicitation', rpcId, method, params: p },
+              'deny',
+              undefined,
+              true,
+            );
+            if (action.type === 'error') {
+              codexProc.rpc.respondError(rpcId, action.code, action.message);
+            } else {
+              codexProc.rpc.respond(rpcId, action.result);
+            }
+            break;
+          }
+          track({ kind: 'mcp_elicitation', rpcId, method, params: p });
           onEvent({
             kind: 'permission_request',
             requestId,
@@ -3460,6 +3488,7 @@ export class CodexRuntime implements AgentRuntime {
           });
           break;
         }
+        track({ kind: 'mcp_elicitation', rpcId, method, params: p });
         const isToolApproval = isCodexMcpApprovalElicitation(p);
         onEvent({
           kind: 'permission_request',

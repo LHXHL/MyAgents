@@ -225,7 +225,8 @@ Per-Message Task:
  │ ├── "partial" 事件 → ReplyRouter 节流编辑消息（≥1s 间隔，截断平台限制）
  │ ├── "block-end" 事件 → 定稿（超长则分片发送）
  │ ├── "complete" 事件 → 返回 sessionId，slot terminal
- │ └── "error" / "cancelled" 事件 → 删除 draft，发送错误/取消反馈
+ │ ├── "permission-request" / "ask-user-question-request" → 原生卡片或文本 fallback
+ │ └── "error" / "cancelled" / "ask-user-question-expired" 事件 → 删除 draft / 失效 pending，发送反馈
  │
  ├── 清除 ACK：setMessageReaction("")
  ├── 更新 Session 状态：record_response(session_key, sessionId)
@@ -426,7 +427,17 @@ type PendingApprovals = Arc<Mutex<HashMap<String, PendingApproval>>>;
 - **飞书**：`msg_type: "interactive"` 交互卡片，3 个按钮（允许/始终允许/拒绝），`card.action.trigger` 事件回调
 - **Telegram**：`inline_keyboard` + `callback_query`，short_id 映射解决 64 byte `callback_data` 限制
 
-### 2.12 飞书 WebSocket 事件 ACK
+### 2.12 Channel Host Interaction Capability
+
+IM / Agent Channel 的结构化人类交互不是普通工具偏好，而是 host 能力。Rust `/api/im/enqueue` payload 带 `hostInteraction: { askUserQuestion: 'none' | 'native-card' }`，Node 侧 `InteractionScenario` 同步携带该字段。
+
+- 默认值必须是 `'none'`。Telegram、Dingtalk、OpenClaw Bridge 默认不承接 `AskUserQuestion`，Node 会把它作为 channel compatibility overlay 禁用，避免 AI 发出桌面-only 选项后 IM 用户收不到。
+- 原生飞书 adapter 当前声明 `'native-card'`，因此 runtime 可放开 `AskUserQuestion`，并通过 IM event bus 的 `ask-user-question-request` / `ask-user-question-expired` 交给 Rust `ReplyRouter`。
+- `ReplyRouter` 解析 request 后调用 `adapter.send_question_card()`，并在 `PendingQuestion` 中保存 inner `requestId`、chat、card message id、requester、questions 和 sidecar port。用户按钮或文本 fallback 进入 `QuestionCallback`，Rust POST 现有 `/api/ask-user-question/respond`，只有 HTTP 2xx 且 JSON `{success:true}` 后才删除 pending / 更新卡片状态；失败时保留 pending 让用户重试。
+- 敏感问题（`isSecret`）在 IM 渠道 fail-closed：不要求用户在聊天历史里输入 secret，直接通知用户并向 sidecar 回传取消。安全输入能力需要单独设计，不能用普通 IM 文本兜底。
+- 文本 fallback 只用于自由文本、多题、多选等卡片按钮无法完整表达的场景；同 chat 多个 pending 时固定路由到最新 pending，并记录 warning。
+
+### 2.13 飞书 WebSocket 事件 ACK
 
 飞书 WS 协议要求客户端对数据帧发送 ACK 确认。未 ACK 的事件在 WebSocket 重连后会被服务端重放。
 
@@ -438,7 +449,7 @@ ws_write.send(WsMessage::Binary(ack_data.into())).await;
 
 配合 72 小时 dedup 缓存 TTL（`DEDUP_TTL_SECS = 72 * 60 * 60`）作为防御兜底，防止长时间运行后重连导致消息重复处理。
 
-### 2.13 Plugin Bridge（OpenClaw 社区插件桥接）
+### 2.14 Plugin Bridge（OpenClaw 社区插件桥接）
 
 **设计动机**：OpenClaw 生态有大量 Channel Plugin（QQ Bot、WeChat、Matrix 等），均为 TypeScript 实现。为避免为每个平台写 Rust 适配器，引入 Plugin Bridge 机制——独立 Node.js 进程加载社区插件，仅做 Channel I/O，AI 推理走现有 Rust → Node.js Sidecar 管道。
 
@@ -544,7 +555,7 @@ OpenClaw 飞书插件通过 `mentionedBot(ctx.mentions)` 检测 @mention，结�
  → rm -rf plugin 目录
 ```
 
-### 2.14 群聊处理
+### 2.15 群聊处理
 
 #### 群激活策略
 

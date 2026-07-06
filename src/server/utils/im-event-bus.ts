@@ -22,6 +22,8 @@ export type ImEventType =
   | 'complete'           // turn finished (success)
   | 'error'              // turn failed / aborted
   | 'permission-request' // SDK asks user permission
+  | 'ask-user-question-request' // runtime asks user structured questions
+  | 'ask-user-question-expired' // structured question no longer accepts answers
   | 'activity'           // non-text content_block_start (thinking / tool_use)
   | 'cancelled'          // explicit user cancel (Pattern D)
   | 'gap';               // ring buffer overflow — some events were dropped
@@ -37,6 +39,8 @@ export interface ImEvent {
   /** Event payload. Type depends on `type`:
    *    - 'delta' / 'block-end' / 'complete' / 'error' / 'cancelled': string
    *    - 'permission-request': JSON string with { requestId, toolName, input }
+   *    - 'ask-user-question-request': JSON string with { requestId, sessionId?, questions, previewFormat }
+   *    - 'ask-user-question-expired': JSON string with { requestId, reason }
    *    - 'activity': string (content block type)
    *    - 'gap': { droppedSeqs: [from, to], requestIds?: string[] } */
   data?: unknown;

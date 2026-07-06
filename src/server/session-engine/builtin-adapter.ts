@@ -267,7 +267,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async sendDesktopMessage(request: DesktopMessageRequest): Promise<DesktopAdmissionResult> {
-      setInteractionScenario(request.scenario);
+      await setInteractionScenario(request.scenario);
       if (request.backgroundAgentPermissionMode) {
         setBackgroundAgentPermissionMode(request.backgroundAgentPermissionMode);
       }
@@ -305,7 +305,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async enqueueImMessage(request: ImMessageRequest): Promise<ImAdmissionResult> {
-      setInteractionScenario(request.scenario);
+      await setInteractionScenario(request.scenario);
       const routed = providerEnvForRouteRequest(request);
       if (routed.error) {
         return { success: false, error: routed.error, status: routed.status };
@@ -335,7 +335,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async enqueueBackgroundMessage(request) {
-      setInteractionScenario(request.scenario);
+      await setInteractionScenario(request.scenario);
       const routed = providerEnvForRouteRequest(request);
       if (routed.error) {
         return { success: false, error: routed.error, status: routed.status };
@@ -359,9 +359,9 @@ export function createBuiltinSessionEngine(): SessionEngine {
       return { success: true, queued: result.queued };
     },
 
-    enqueueInboxMessage(request) {
+    async enqueueInboxMessage(request) {
       const scenario = request.scenario ?? { type: 'desktop' as const };
-      setInteractionScenario(scenario);
+      await setInteractionScenario(scenario);
       return enqueueUserMessage(
         request.text,
         undefined,
@@ -379,7 +379,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult> {
-      setInteractionScenario(request.scenario);
+      await setInteractionScenario(request.scenario);
       getAndClearLastAgentError();
       const injectedTurnId = randomUUID();
       const routed = providerEnvForRouteRequest(request);
@@ -531,7 +531,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async updateDesktopInteractionScenario(scenario) {
-      setInteractionScenario(scenario);
+      await setInteractionScenario(scenario);
       return { success: true };
     },
 

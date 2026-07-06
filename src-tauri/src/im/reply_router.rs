@@ -20,14 +20,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use tokio::sync::Mutex;
 
 use super::adapter::{self, ImStreamAdapter};
-use super::types::ImSourceType;
+use super::types::{AskUserQuestionPayload, ImSourceType};
 use super::{
     finalize_block, format_draft_text, has_sentence_boundary, GroupStreamContext, PendingApproval,
-    PendingApprovals, THINKING_PLACEHOLDER,
+    PendingApprovals, PendingQuestion, PendingQuestions, THINKING_PLACEHOLDER,
 };
 use crate::{ulog_error, ulog_info, ulog_warn};
 
@@ -40,6 +40,7 @@ pub struct ReplySlot {
     /// Original IM message_id — used by adapter.ack_clear() on terminal.
     pub message_id: String,
     pub source_type: ImSourceType,
+    pub requester_user_id: Option<String>,
     /// Whether the request is in group "always" mode (for NO_REPLY detection).
     pub group_activation_always: bool,
 
@@ -68,6 +69,7 @@ impl ReplySlot {
         chat_id: String,
         message_id: String,
         source_type: ImSourceType,
+        requester_user_id: Option<String>,
         group_activation_always: bool,
     ) -> Self {
         Self {
@@ -75,6 +77,7 @@ impl ReplySlot {
             chat_id,
             message_id,
             source_type,
+            requester_user_id,
             group_activation_always,
             block_text: String::new(),
             draft_id: None,
@@ -96,13 +99,18 @@ impl ReplySlot {
 pub struct ReplyRouter {
     slots: HashMap<String, ReplySlot>,
     pending_approvals: PendingApprovals,
+    pending_questions: PendingQuestions,
 }
 
 impl ReplyRouter {
-    pub(crate) fn new(pending_approvals: PendingApprovals) -> Self {
+    pub(crate) fn new(
+        pending_approvals: PendingApprovals,
+        pending_questions: PendingQuestions,
+    ) -> Self {
         Self {
             slots: HashMap::new(),
             pending_approvals,
+            pending_questions,
         }
     }
 
@@ -114,6 +122,7 @@ impl ReplyRouter {
         chat_id: String,
         message_id: String,
         source_type: ImSourceType,
+        requester_user_id: Option<String>,
         group_ctx: Option<&GroupStreamContext>,
     ) {
         if self.slots.contains_key(&request_id) {
@@ -128,6 +137,7 @@ impl ReplyRouter {
             chat_id,
             message_id,
             source_type,
+            requester_user_id,
             group_activation_always,
         );
         self.slots.insert(request_id, slot);
@@ -196,6 +206,134 @@ impl ReplyRouter {
         }
 
         outcome
+    }
+
+    async fn handle_question_request<A: ImStreamAdapter>(
+        &mut self,
+        event: &Value,
+        request_id: &str,
+        adapter: &A,
+        sidecar_port: u16,
+    ) {
+        let Some(slot) = self.slots.get(request_id) else {
+            return;
+        };
+        let raw = event.get("data").and_then(|v| v.as_str()).unwrap_or("");
+        let payload: AskUserQuestionPayload = match serde_json::from_str(raw) {
+            Ok(payload) => payload,
+            Err(e) => {
+                ulog_warn!("[reply-router] Invalid AskUserQuestion payload: {}", e);
+                return;
+            }
+        };
+        let question_request_id = payload.request_id.clone();
+        let chat_id = slot.chat_id.clone();
+        let requester_user_id = slot.requester_user_id.clone();
+        let source_type = slot.source_type.clone();
+
+        if payload.questions.iter().any(|q| q.is_secret) {
+            let _ = adapter
+                .send_message(
+                    &chat_id,
+                    "本次提问包含敏感输入，IM 渠道暂不支持安全收集，已自动取消。请在桌面端继续，或改用非敏感文本。",
+                )
+                .await;
+            let url = format!(
+                "http://127.0.0.1:{}/api/ask-user-question/respond",
+                sidecar_port
+            );
+            match crate::local_http::json_client(Duration::from_secs(30))
+                .post(&url)
+                .json(&json!({
+                    "requestId": question_request_id,
+                    "answers": Value::Null,
+                }))
+                .send()
+                .await
+            {
+                Ok(resp) => {
+                    let status = resp.status();
+                    match resp.json::<Value>().await {
+                        Ok(body)
+                            if status.is_success()
+                                && body.get("success").and_then(Value::as_bool) == Some(true) =>
+                        {
+                            ulog_info!(
+                                "[reply-router] AskUserQuestion secret request cancelled: rid={}",
+                                &payload.request_id[..payload.request_id.len().min(16)]
+                            );
+                        }
+                        Ok(body) => {
+                            ulog_error!(
+                                "[reply-router] AskUserQuestion secret cancel failed: HTTP {} body={}",
+                                status,
+                                body
+                            );
+                        }
+                        Err(e) => {
+                            ulog_error!(
+                                "[reply-router] AskUserQuestion secret cancel returned invalid JSON: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+                Err(e) => {
+                    ulog_error!("[reply-router] AskUserQuestion secret cancel error: {}", e);
+                }
+            }
+            return;
+        }
+
+        let card_msg_id = match adapter
+            .send_question_card(&chat_id, &payload, &source_type)
+            .await
+        {
+            Ok(Some(mid)) => mid,
+            Ok(None) => String::new(),
+            Err(e) => {
+                ulog_error!("[reply-router] Failed to send AskUserQuestion card: {}", e);
+                return;
+            }
+        };
+        {
+            let mut guard = self.pending_questions.lock().await;
+            let now = Instant::now();
+            guard.retain(|_, p| now.duration_since(p.created_at) < Duration::from_secs(15 * 60));
+            guard.insert(
+                question_request_id,
+                PendingQuestion {
+                    sidecar_port,
+                    chat_id,
+                    card_message_id: card_msg_id,
+                    requester_user_id,
+                    source_type,
+                    questions: payload.questions,
+                    created_at: now,
+                },
+            );
+        }
+    }
+
+    async fn handle_question_expired<A: ImStreamAdapter>(&mut self, event: &Value, adapter: &A) {
+        let raw = event.get("data").and_then(|v| v.as_str()).unwrap_or("");
+        let json_payload: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+        let question_request_id = json_payload["requestId"].as_str().unwrap_or("").to_string();
+        if question_request_id.is_empty() {
+            return;
+        }
+        let pending = self
+            .pending_questions
+            .lock()
+            .await
+            .remove(&question_request_id);
+        if let Some(p) = pending {
+            if !p.card_message_id.is_empty() {
+                let _ = adapter
+                    .update_question_status(&p.chat_id, &p.card_message_id, "expired")
+                    .await;
+            }
+        }
     }
 
     async fn dispatch_edit_based<A: ImStreamAdapter>(
@@ -333,6 +471,17 @@ impl ReplyRouter {
                     session_id: None,
                     silent: false,
                 })
+            }
+
+            "ask-user-question-request" => {
+                self.handle_question_request(event, request_id, adapter, sidecar_port)
+                    .await;
+                None
+            }
+
+            "ask-user-question-expired" => {
+                self.handle_question_expired(event, adapter).await;
+                None
             }
 
             "permission-request" => {
@@ -566,6 +715,17 @@ impl ReplyRouter {
                 })
             }
 
+            "ask-user-question-request" => {
+                self.handle_question_request(event, request_id, adapter, sidecar_port)
+                    .await;
+                None
+            }
+
+            "ask-user-question-expired" => {
+                self.handle_question_expired(event, adapter).await;
+                None
+            }
+
             "permission-request" => {
                 // Same as edit-based path
                 let raw = data.and_then(|v| v.as_str()).unwrap_or("");
@@ -732,8 +892,14 @@ pub struct TerminalOutcome {
 /// (one event), so contention is negligible.
 pub type SharedReplyRouter = Arc<Mutex<ReplyRouter>>;
 
-pub(crate) fn shared_router(pending_approvals: PendingApprovals) -> SharedReplyRouter {
-    Arc::new(Mutex::new(ReplyRouter::new(pending_approvals)))
+pub(crate) fn shared_router(
+    pending_approvals: PendingApprovals,
+    pending_questions: PendingQuestions,
+) -> SharedReplyRouter {
+    Arc::new(Mutex::new(ReplyRouter::new(
+        pending_approvals,
+        pending_questions,
+    )))
 }
 
 // Allow `adapter` module to be referenced — keeps cargo check happy if no other
@@ -750,7 +916,7 @@ mod tests {
 
     use super::ReplyRouter;
     use crate::im::adapter::{AdapterResult, ImAdapter, ImStreamAdapter};
-    use crate::im::types::ImSourceType;
+    use crate::im::types::{AskUserQuestionPayload, ImSourceType};
 
     #[derive(Default)]
     struct RecordingAdapter {
@@ -837,6 +1003,24 @@ mod tests {
             Ok(())
         }
 
+        async fn send_question_card(
+            &self,
+            _chat_id: &str,
+            _payload: &AskUserQuestionPayload,
+            _source_type: &ImSourceType,
+        ) -> AdapterResult<Option<String>> {
+            Ok(Some("question-id".to_string()))
+        }
+
+        async fn update_question_status(
+            &self,
+            _chat_id: &str,
+            _message_id: &str,
+            _status: &str,
+        ) -> AdapterResult<()> {
+            Ok(())
+        }
+
         async fn send_photo(
             &self,
             _chat_id: &str,
@@ -869,14 +1053,68 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ask_user_question_request_registers_pending_question_by_inner_id() {
+        let pending_approvals = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let pending_questions = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut router = ReplyRouter::new(
+            Arc::clone(&pending_approvals),
+            Arc::clone(&pending_questions),
+        );
+        router.register(
+            "turn-1".to_string(),
+            "chat-1".to_string(),
+            "msg-1".to_string(),
+            ImSourceType::Private,
+            Some("user-1".to_string()),
+            None,
+        );
+        let adapter = RecordingAdapter::default();
+
+        router
+            .dispatch(
+                &json!({
+                    "seq": 1,
+                    "requestId": "turn-1",
+                    "type": "ask-user-question-request",
+                    "data": serde_json::to_string(&json!({
+                        "requestId": "ask-1",
+                        "questions": [{
+                            "id": "choice",
+                            "header": "Choice",
+                            "question": "Pick one",
+                            "options": [{ "label": "A", "description": "" }],
+                            "multiSelect": false
+                        }],
+                        "previewFormat": "html"
+                    })).unwrap(),
+                    "ts": 0
+                }),
+                &adapter,
+                4321,
+            )
+            .await;
+
+        let guard = pending_questions.lock().await;
+        let pending = guard
+            .get("ask-1")
+            .expect("question is tracked by inner request id");
+        assert_eq!(pending.sidecar_port, 4321);
+        assert_eq!(pending.chat_id, "chat-1");
+        assert_eq!(pending.requester_user_id.as_deref(), Some("user-1"));
+        assert!(!guard.contains_key("turn-1"));
+    }
+
+    #[tokio::test]
     async fn scoped_gap_warns_only_affected_active_slots() {
         let pending_approvals = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
-        let mut router = ReplyRouter::new(pending_approvals);
+        let pending_questions = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut router = ReplyRouter::new(pending_approvals, pending_questions);
         router.register(
             "active-request".to_string(),
             "chat-active".to_string(),
             "msg-active".to_string(),
             ImSourceType::Private,
+            None,
             None,
         );
         router.register(
@@ -884,6 +1122,7 @@ mod tests {
             "chat-other".to_string(),
             "msg-other".to_string(),
             ImSourceType::Private,
+            None,
             None,
         );
         let adapter = RecordingAdapter::default();
