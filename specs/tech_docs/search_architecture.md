@@ -86,6 +86,8 @@ MyAgents 的全文搜索由一个 Rust 层单例 `SearchEngine` 提供，构建�
 存储字段（`STORED` 回取）：`session_id`、`message_id`、`agent_dir`、`role`、`timestamp`、`last_active_at`、`source`、`message_count`。
 索引字段（用于全文匹配，走 `"chinese"` 分词器）：`title`、`content`。
 
+Session `content` 只索引用户可见文本：leading `<system-reminder>...</system-reminder>` 的 hidden payload 属于模型上下文，不进入搜索；有 visible tail 时只索引 tail，纯 hidden reminder 索引为空。这个语义变化也必须 bump `SCHEMA_VERSION`，让旧索引重建。
+
 ### File Schema (`schema::file_schema`)
 
 存储：`path`、`ext`。索引：`name`、`content`。

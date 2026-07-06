@@ -318,7 +318,7 @@ Agent 工作区可以同时绑定多个 Channel（例如微信 + 飞书，或多
 
 投递规则：
 - Agent 级 `route_agent_heartbeat_once()` 只负责解析一次目标并发送 `HeartbeatWake { target_session_key }`；per-bot `HeartbeatRunner` 收到显式 target 后只验证并投递该 private session，验证失败不得 fallback。
-- Cron / Task Center completion 复用同一个 Agent 目标解析器。它先解析当前 private target，再把 `PendingCronEvent` append 到目标 Channel 的 pending queue；没有当前 private target 时只保留 cron 执行历史，不把事件塞进配置里的旧 bot queue。
+- Cron / Task Center completion 复用同一个 Agent 目标解析器。它先解析当前 private target，再把携带 `target_session_key` 的 `PendingCronEvent` append 到目标 Channel 的 pending queue；per-bot `HeartbeatRunner` 只 snapshot 当前 private session 匹配的 pending event（历史无 target 的 legacy event 仍兼容处理）。没有当前 private target 时只保留 cron 执行历史，不把事件塞进配置里的旧 bot queue。
 - Management API `/api/im/wake` 对 Agent Channel 也走 Agent 目标解析器；文本 `manual_wake` 只 POST 到显式 private active session。Legacy standalone bot 保留 targetless latest-private fallback。
 - Wake coalescing 同优先级时优先保留带 `target_session_key` 的 wake，避免 target metadata 被普通 interval/manual wake 覆盖。
 
@@ -450,7 +450,7 @@ type PendingApprovals = Arc<Mutex<HashMap<String, PendingApproval>>>;
 
 ### 2.13 Channel Host Interaction Capability
 
-IM / Agent Channel 的结构化人类交互不是普通工具偏好，而是 host 能力。Rust `/api/im/enqueue` payload 带 `hostInteraction: { askUserQuestion: 'none' | 'native-card' }`，Node 侧 `InteractionScenario` 同步携带该字段。
+IM / Agent Channel 的结构化人类交互不是普通工具偏好，而是 host 能力。Rust `/api/im/enqueue` 与 heartbeat payload 都带 `hostInteraction: { askUserQuestion: 'none' | 'native-card' }`，Node 侧 `InteractionScenario` 同步携带该字段。
 
 - 默认值必须是 `'none'`。Telegram、Dingtalk、OpenClaw Bridge 默认不承接 `AskUserQuestion`，Node 会把它作为 channel compatibility overlay 禁用，避免 AI 发出桌面-only 选项后 IM 用户收不到。
 - 原生飞书 adapter 当前声明 `'native-card'`，因此 runtime 可放开 `AskUserQuestion`，并通过 IM event bus 的 `ask-user-question-request` / `ask-user-question-expired` 交给 Rust `ReplyRouter`。

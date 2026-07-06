@@ -45,7 +45,7 @@
    的来源。例如 `<HEARTBEAT>` / `<CRON_TASK>` / `<FLOATING_BALL_CONTEXT>`。
 3. `</system-reminder>` 后面的文本是 `visibleText`，会作为用户气泡正文展示。
 4. `system-reminder` 内部 payload 会进入模型上下文；在有 `visibleText` 的标准
-   mixed message 中，用户气泡只展示 `visibleText`。
+   mixed message 中，用户气泡和 Session 搜索索引都只使用 `visibleText`。
 5. 同一条消息只应有一个 leading `system-reminder` envelope；解析器只消费第一段。
 6. 如果希望用户气泡隐藏 payload，必须提供 visible tail，或为该 `kind` 补专门的
    纯隐藏展示语义。不要假设所有纯 reminder 都会自动隐藏。
@@ -178,6 +178,7 @@ instruction、cron output 都只给模型看。
 - builder 输出的完整协议结构。
 - `parseLeadingSystemReminder()` 能解析出正确 `kind` 和 `visibleText`。
 - `Message` 渲染不会显示 hidden payload，会显示 badge 和 visible tail。
+- Session 搜索不会索引 hidden payload；有 visible tail 时只索引 tail。
 - prompt/tool/cloud/user 可控字段不能通过 `</system-reminder>` 或同级 tag 注入破坏
   envelope。
 - 如果影响标题/预览/搜索跳转，补对应 helper 的单测。
