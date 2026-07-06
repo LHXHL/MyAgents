@@ -33,6 +33,16 @@ export interface LastActiveChannel {
 }
 
 /**
+ * Private-only heartbeat/cron target tracking.
+ * LastActiveChannel may point at a group; heartbeat delivery never should.
+ */
+export interface LastActivePrivateTarget {
+  channelId: string;
+  sessionKey: string;
+  lastActiveAt: string; // ISO timestamp
+}
+
+/**
  * Channel-level config overrides (empty = inherit from Agent)
  */
 export interface ChannelOverrides {
@@ -135,6 +145,7 @@ export interface AgentConfig {
 
   // Active message routing
   lastActiveChannel?: LastActiveChannel;
+  lastActivePrivateTarget?: LastActivePrivateTarget;
 
   // Agent Runtime (v0.1.59)
   runtime?: RuntimeType;           // 'builtin' | 'claude-code' | 'codex', defaults to 'builtin'

@@ -2239,6 +2239,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                             let health = Arc::clone(&task_health);
                             let agent_link = Arc::clone(&task_agent_link);
                             let session_key_cap = session_key.clone();
+                            let source_type_cap = msg.source_type.clone();
                             Arc::new(move |req_id: String, outcome: reply_router::TerminalOutcome| {
                                 let router = Arc::clone(&router);
                                 let manager = Arc::clone(&manager);
@@ -2246,6 +2247,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                                 let health = Arc::clone(&health);
                                 let agent_link = Arc::clone(&agent_link);
                                 let session_key = session_key_cap.clone();
+                                let source_type = source_type_cap.clone();
                                 tauri::async_runtime::spawn(async move {
                                     {
                                         let mut router_g = router.lock().await;
@@ -2276,9 +2278,22 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                                             let new_lac = LastActiveChannel {
                                                 channel_id: link.channel_id.clone(),
                                                 session_key: session_key.clone(),
-                                                last_active_at: now_str,
+                                                last_active_at: now_str.clone(),
                                             };
                                             *link.last_active_channel.write().await = Some(new_lac);
+                                            if source_type == ImSourceType::Private {
+                                                let new_private_target = LastActivePrivateTarget {
+                                                    channel_id: link.channel_id.clone(),
+                                                    session_key: session_key.clone(),
+                                                    last_active_at: now_str.clone(),
+                                                };
+                                                *link.last_active_private_target.write().await =
+                                                    Some(new_private_target);
+                                                ulog_debug!(
+                                                    "[agent] Updated lastActivePrivateTarget: agent={}, channel={}, session={} requestId={}",
+                                                    link.agent_id, link.channel_id, session_key, req_id,
+                                                );
+                                            }
                                             ulog_debug!(
                                                 "[agent] Updated lastActiveChannel: agent={}, channel={}, session={} requestId={}",
                                                 link.agent_id, link.channel_id, session_key, req_id,
@@ -2834,7 +2849,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
         // Build the wake channel BEFORE the runner so we can hand the runner a
         // clone of the sender (used for self-cascade when more cron events
         // remain after a single-event run_once cycle).
-        let (wake_tx, wake_rx) = mpsc::channel::<types::WakeReason>(64);
+        let (wake_tx, wake_rx) = mpsc::channel::<types::HeartbeatWake>(64);
         let (runner, config_arc, _mau_config_arc, _mau_running_arc) =
             heartbeat::HeartbeatRunner::new(
                 hb_config,

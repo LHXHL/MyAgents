@@ -880,6 +880,42 @@ impl WakeReason {
     }
 }
 
+/// Wake envelope for a per-bot heartbeat runner.
+///
+/// `WakeReason` keeps priority/business semantics. `target_session_key` is
+/// routing metadata supplied by the Agent-level arbiter when it has already
+/// selected the exact private peer session to wake.
+#[derive(Debug, Clone)]
+pub struct HeartbeatWake {
+    pub reason: WakeReason,
+    pub target_session_key: Option<String>,
+}
+
+impl HeartbeatWake {
+    pub fn new(reason: WakeReason) -> Self {
+        Self {
+            reason,
+            target_session_key: None,
+        }
+    }
+
+    pub fn targeted(reason: WakeReason, target_session_key: String) -> Self {
+        Self {
+            reason,
+            target_session_key: Some(target_session_key),
+        }
+    }
+
+    pub fn with_target(mut self, target_session_key: Option<String>) -> Self {
+        self.target_session_key = target_session_key;
+        self
+    }
+
+    pub fn is_high_priority(&self) -> bool {
+        self.reason.is_high_priority()
+    }
+}
+
 /// Telegram API error types
 #[derive(Debug)]
 pub enum TelegramError {
@@ -1014,6 +1050,25 @@ pub struct LastActiveChannel {
     pub last_active_at: String,
 }
 
+/// Private-only heartbeat/cron target tracking.
+///
+/// `LastActiveChannel` remains the generic "last IM entry" and may point at a
+/// group. Heartbeat delivery is private-only, so it needs its own authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LastActivePrivateTarget {
+    pub channel_id: String,
+    pub session_key: String,
+    pub last_active_at: String,
+}
+
+/// Complete Agent-level heartbeat delivery target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HeartbeatTarget {
+    pub channel_id: String,
+    pub session_key: String,
+}
+
 /// Agent configuration (read from config.json agents[])
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1060,6 +1115,8 @@ pub struct AgentConfigRust {
     // Active message routing
     #[serde(default)]
     pub last_active_channel: Option<LastActiveChannel>,
+    #[serde(default)]
+    pub last_active_private_target: Option<LastActivePrivateTarget>,
 
     // Agent Runtime (v0.1.59 / v0.1.66) — 'builtin' | 'claude-code' | 'codex' | 'gemini'
     #[serde(default)]
@@ -1352,6 +1409,7 @@ mod tests {
             memory_evolution: None,
             channels: vec![],
             last_active_channel: None,
+            last_active_private_target: None,
             runtime: Some("builtin".to_string()),
             runtime_config: None,
             setup_completed: Some(true),

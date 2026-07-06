@@ -17,7 +17,7 @@ use crate::{ulog_debug, ulog_info, ulog_warn};
 use super::adapter::push_text_preferring_stream;
 use super::health::{self, HealthManager};
 use super::router::{EnsureSidecarPrep, SessionRouter};
-use super::types::{ActiveHours, HeartbeatConfig, PendingCronEvent, WakeReason};
+use super::types::{ActiveHours, HeartbeatConfig, HeartbeatWake, PendingCronEvent, WakeReason};
 use super::{AnyAdapter, PeerLocks};
 
 /// Response from sidecar /api/im/heartbeat endpoint
@@ -81,7 +81,7 @@ pub struct HeartbeatRunner {
     /// heartbeat interval. `try_send` with the existing 64-slot buffer is
     /// fine — pending is durable, so missing a wake just means waiting one
     /// interval tick instead of immediate processing.
-    self_wake_tx: mpsc::Sender<WakeReason>,
+    self_wake_tx: mpsc::Sender<HeartbeatWake>,
 }
 
 impl HeartbeatRunner {
@@ -97,7 +97,7 @@ impl HeartbeatRunner {
         runtime_config: Arc<RwLock<Option<serde_json::Value>>>,
         memory_update_config: Option<super::types::MemoryAutoUpdateConfig>,
         pending_cron_events: Arc<Mutex<Vec<PendingCronEvent>>>,
-        self_wake_tx: mpsc::Sender<WakeReason>,
+        self_wake_tx: mpsc::Sender<HeartbeatWake>,
     ) -> (
         Self,
         Arc<RwLock<HeartbeatConfig>>,
@@ -131,7 +131,7 @@ impl HeartbeatRunner {
     pub(crate) async fn run_loop<R: Runtime>(
         self,
         mut shutdown_rx: watch::Receiver<bool>,
-        mut wake_rx: mpsc::Receiver<WakeReason>,
+        mut wake_rx: mpsc::Receiver<HeartbeatWake>,
         router: Arc<Mutex<SessionRouter>>,
         sidecar_manager: ManagedSidecarManager,
         adapter: Arc<AnyAdapter>,
@@ -248,7 +248,7 @@ impl HeartbeatRunner {
                 }
                 _ = interval.tick() => {
                     let ok = self.run_once(
-                        WakeReason::Interval,
+                        HeartbeatWake::new(WakeReason::Interval),
                         &router,
                         &sidecar_manager,
                         &adapter,
@@ -268,13 +268,18 @@ impl HeartbeatRunner {
                         reasons.push(r);
                     }
 
-                    // Use highest-priority reason
-                    let best_reason = reasons.into_iter()
-                        .max_by_key(|r| if r.is_high_priority() { 1 } else { 0 })
-                        .unwrap_or(WakeReason::Interval);
+                    // Use highest-priority wake; for equal priority preserve explicit routing metadata.
+                    let best_wake = reasons.into_iter()
+                        .max_by_key(|w| {
+                            (
+                                u8::from(w.is_high_priority()),
+                                u8::from(w.target_session_key.is_some()),
+                            )
+                        })
+                        .unwrap_or_else(|| HeartbeatWake::new(WakeReason::Interval));
 
                     let ok = self.run_once(
-                        best_reason,
+                        best_wake,
                         &router,
                         &sidecar_manager,
                         &adapter,
@@ -306,7 +311,7 @@ impl HeartbeatRunner {
     /// double "(No response)" messages.
     async fn run_once<R: Runtime>(
         &self,
-        reason: WakeReason,
+        wake: HeartbeatWake,
         router: &Arc<Mutex<SessionRouter>>,
         sidecar_manager: &ManagedSidecarManager,
         adapter: &Arc<AnyAdapter>,
@@ -317,6 +322,8 @@ impl HeartbeatRunner {
         workspace_path: &str,
     ) -> bool {
         let config = self.config.read().await.clone();
+        let reason = wake.reason.clone();
+        let target_session_key = wake.target_session_key.clone();
         let is_high_priority = reason.is_high_priority();
 
         // Gate 1: Enabled check (high-priority wakes bypass — agent-level heartbeat
@@ -365,21 +372,40 @@ impl HeartbeatRunner {
             *executing = true;
         }
 
-        // Find any peer session (even if sidecar was idle-collected).
-        // Unlike the old find_any_active_session which gave up when port=0,
-        // we pick any session and let ensure_sidecar handle the wake-up.
+        // Resolve the peer session (even if sidecar was idle-collected).
+        // Agent-level heartbeat supplies an explicit private target; that path
+        // must not fallback to another historical peer if the target vanished.
+        // Legacy per-bot wakes with no explicit target keep the old latest-private
+        // behavior.
         let (session_key, source, source_id) = {
             let router_guard = router.lock().await;
-            match router_guard.find_any_peer_session() {
-                Some(info) => info,
-                None => {
-                    // No peer sessions at all — no one has ever talked to this bot
-                    ulog_debug!(
-                        "[heartbeat] No peer sessions for {}, skipping",
-                        self.bot_label
-                    );
-                    *self.executing.lock().await = false;
-                    return true; // No peers is not a failure
+            if let Some(ref target_key) = target_session_key {
+                match router_guard.get_private_peer_session_target(target_key) {
+                    Some(target) => (target.session_key, target.source, target.source_id),
+                    None => {
+                        ulog_warn!(
+                            "[heartbeat] Explicit private target missing for {} agent={} session_key={} reason={}, skipping",
+                            self.bot_label,
+                            agent_id,
+                            target_key,
+                            reason_label(&reason),
+                        );
+                        *self.executing.lock().await = false;
+                        return true;
+                    }
+                }
+            } else {
+                match router_guard.latest_private_peer_session_target() {
+                    Some(target) => (target.session_key, target.source, target.source_id),
+                    None => {
+                        // No private peer sessions at all — no one has ever talked to this bot
+                        ulog_debug!(
+                            "[heartbeat] No private peer sessions for {}, skipping",
+                            self.bot_label
+                        );
+                        *self.executing.lock().await = false;
+                        return true; // No peers is not a failure
+                    }
                 }
             }
         };
@@ -765,7 +791,9 @@ impl HeartbeatRunner {
         if cron_event_acked_this_cycle {
             let still_pending = self.pending_cron_events.lock().await.len();
             if still_pending > 0 {
-                match self.self_wake_tx.try_send(WakeReason::Manual) {
+                let cascade_wake =
+                    HeartbeatWake::new(WakeReason::Manual).with_target(target_session_key.clone());
+                match self.self_wake_tx.try_send(cascade_wake) {
                     Ok(_) => ulog_info!(
                         "[heartbeat] Cascade-wake scheduled — {} cron event(s) still pending",
                         still_pending

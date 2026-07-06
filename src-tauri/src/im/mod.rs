@@ -60,9 +60,11 @@ use commands::{persist_bot_config_patch, read_available_providers_from_disk};
 pub(crate) use config_store::is_agent_workspace_archived;
 use config_store::{
     missing_configured_channel_status, persist_agent_config_patch, read_agent_configs_from_disk,
-    read_im_configs_from_disk, resolve_target_channel, should_report_missing_configured_channel,
+    read_im_configs_from_disk, route_agent_heartbeat_once,
+    should_report_missing_configured_channel,
 };
 pub use config_store::{monitor_agent_channels, schedule_agent_auto_start, schedule_auto_start};
+pub(crate) use config_store::{resolve_agent_heartbeat_route, AgentHeartbeatRouteResolution};
 use dingtalk::DingtalkAdapter;
 use enqueue::{drop_im_consumer, enqueue_to_sidecar, ensure_im_consumer};
 use feishu::FeishuAdapter;
@@ -90,6 +92,7 @@ use types::{
     BotConfigPatch, ChannelConfigRust, ChannelStatus, GroupActivation, GroupEvent, GroupPermission,
     GroupPermissionStatus, HostInteractionCapability, ImAttachmentType, ImBotStatus, ImConfig,
     ImConversation, ImMessage, ImPlatform, ImSourceType, ImStatus, LastActiveChannel,
+    LastActivePrivateTarget,
 };
 
 // ===== SSE Stream → IM Draft (legacy /api/im/chat path — deleted in C-7) ====

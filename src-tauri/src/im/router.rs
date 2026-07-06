@@ -138,6 +138,15 @@ pub struct SessionRouter {
     agent_id: Option<String>,
 }
 
+/// Private peer target selected for heartbeat/cron delivery.
+#[derive(Debug, Clone)]
+pub struct HeartbeatPeerTarget {
+    pub session_key: String,
+    pub source: String,
+    pub source_id: String,
+    pub last_active: Instant,
+}
+
 /// Create an HTTP client configured for local Sidecar communication.
 pub fn create_sidecar_http_client() -> Client {
     crate::local_http::json_client(Duration::from_secs(SIDECAR_HTTP_TIMEOUT_SECS))
@@ -944,17 +953,54 @@ impl SessionRouter {
     /// Used by heartbeat/cron to find a session to wake up even if sidecar was idle-collected.
     /// Picks the most recently active session for deterministic behavior.
     pub fn find_any_peer_session(&self) -> Option<(String, String, String)> {
+        self.latest_private_peer_session_target()
+            .map(|target| (target.session_key, target.source, target.source_id))
+    }
+
+    /// Return a private peer target by exact session key.
+    /// Explicit Agent-level heartbeat targets use this and never fallback to
+    /// another peer if it returns None.
+    pub fn get_private_peer_session_target(
+        &self,
+        session_key: &str,
+    ) -> Option<HeartbeatPeerTarget> {
+        self.peer_sessions
+            .get(session_key)
+            .filter(|ps| ps.source_type == ImSourceType::Private)
+            .map(peer_to_heartbeat_target)
+    }
+
+    /// Return the latest private peer target, ignoring sidecar liveness.
+    /// Used only by legacy per-bot wakes that have no explicit Agent target.
+    pub fn latest_private_peer_session_target(&self) -> Option<HeartbeatPeerTarget> {
         self.peer_sessions
             .values()
-            .filter(|ps| ps.source_type == ImSourceType::Private) // Skip groups for heartbeat
+            .filter(|ps| ps.source_type == ImSourceType::Private)
             .max_by_key(|ps| ps.last_active)
-            .map(|ps| {
-                (
-                    ps.session_key.clone(),
-                    session_key_to_source_str(&ps.session_key),
-                    ps.source_id.clone(),
-                )
-            })
+            .map(peer_to_heartbeat_target)
+    }
+
+    pub fn active_private_peer_session_port(&self, session_key: &str) -> Option<u16> {
+        self.peer_sessions
+            .get(session_key)
+            .filter(|ps| ps.source_type == ImSourceType::Private)
+            .filter(|ps| ps.sidecar_port > 0)
+            .map(|ps| ps.sidecar_port)
+    }
+
+    pub fn latest_active_private_peer_session_port(&self) -> Option<u16> {
+        self.peer_sessions
+            .values()
+            .filter(|ps| ps.source_type == ImSourceType::Private)
+            .filter(|ps| ps.sidecar_port > 0)
+            .max_by_key(|ps| ps.last_active)
+            .map(|ps| ps.sidecar_port)
+    }
+
+    pub fn peer_source_type(&self, session_key: &str) -> Option<ImSourceType> {
+        self.peer_sessions
+            .get(session_key)
+            .map(|ps| ps.source_type.clone())
     }
 
     /// Touch session activity timestamp to prevent idle collection.
@@ -1462,6 +1508,15 @@ fn session_key_to_source_str(session_key: &str) -> String {
     }
 }
 
+fn peer_to_heartbeat_target(ps: &PeerSession) -> HeartbeatPeerTarget {
+    HeartbeatPeerTarget {
+        session_key: ps.session_key.clone(),
+        source: session_key_to_source_str(&ps.session_key),
+        source_id: ps.source_id.clone(),
+        last_active: ps.last_active,
+    }
+}
+
 /// Parse session key into (source_type, source_id)
 /// Supports both legacy and new format:
 ///   Legacy: im:{platform}:{private|group}:{id}
@@ -1533,6 +1588,43 @@ mod tests {
             metadata_indexed: true,
             last_active: Instant::now(),
         }
+    }
+
+    #[test]
+    fn heartbeat_private_target_helper_rejects_group_session() {
+        let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+        router.upsert_peer_session(peer("agent:a:openclaw:weixin:group:g1", "g1"));
+        router.upsert_peer_session(peer("agent:a:openclaw:weixin:private:u1", "p1"));
+
+        assert!(router
+            .get_private_peer_session_target("agent:a:openclaw:weixin:group:g1")
+            .is_none());
+        assert_eq!(
+            router
+                .get_private_peer_session_target("agent:a:openclaw:weixin:private:u1")
+                .map(|target| target.session_key),
+            Some("agent:a:openclaw:weixin:private:u1".to_string())
+        );
+    }
+
+    #[test]
+    fn latest_private_heartbeat_target_ignores_newer_group() {
+        let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+        let mut old_private = peer("agent:a:openclaw:weixin:private:old", "p-old");
+        old_private.last_active = Instant::now() - std::time::Duration::from_secs(60);
+        let mut current_private = peer("agent:a:openclaw:weixin:private:current", "p-current");
+        current_private.last_active = Instant::now() - std::time::Duration::from_secs(10);
+        let newer_group = peer("agent:a:openclaw:weixin:group:g1", "g1");
+        router.upsert_peer_session(old_private);
+        router.upsert_peer_session(current_private);
+        router.upsert_peer_session(newer_group);
+
+        assert_eq!(
+            router
+                .latest_private_peer_session_target()
+                .map(|target| target.session_key),
+            Some("agent:a:openclaw:weixin:private:current".to_string())
+        );
     }
 
     #[test]

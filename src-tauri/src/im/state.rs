@@ -883,7 +883,7 @@ pub struct ImBotInstance {
     /// Heartbeat runner background task handle
     pub(super) heartbeat_handle: Option<tauri::async_runtime::JoinHandle<()>>,
     /// Channel to send wake signals to heartbeat runner
-    pub heartbeat_wake_tx: Option<mpsc::Sender<types::WakeReason>>,
+    pub heartbeat_wake_tx: Option<mpsc::Sender<types::HeartbeatWake>>,
     /// Shared heartbeat config (for hot updates)
     pub(super) heartbeat_config: Option<Arc<tokio::sync::RwLock<types::HeartbeatConfig>>>,
     /// Pending cron-completion events waiting to be relayed to IM (v0.2.4).
@@ -925,7 +925,7 @@ pub struct ImBotInstance {
 
 // ===== Agent Architecture (v0.1.41) =====
 
-use types::{AgentConfigRust, LastActiveChannel};
+use types::{AgentConfigRust, LastActiveChannel, LastActivePrivateTarget};
 
 /// Info linking an ImBotInstance back to its parent Agent (set after moving into AgentInstance).
 /// The processing loop holds a clone of this Arc; writing to it after spawn is visible to the task.
@@ -935,6 +935,8 @@ pub(crate) struct AgentChannelLink {
     pub agent_id: String,
     /// Shared with `AgentInstance.last_active_channel` — the processing loop writes here.
     pub last_active_channel: Arc<RwLock<Option<LastActiveChannel>>>,
+    /// Shared with `AgentInstance.last_active_private_target` — private-only HB target.
+    pub last_active_private_target: Arc<RwLock<Option<LastActivePrivateTarget>>>,
     /// Shared with `AgentInstance.runtime_config` so IM commands update the agent-level runtime profile.
     pub runtime_config: Arc<RwLock<Option<serde_json::Value>>>,
 }
@@ -956,6 +958,7 @@ pub struct AgentInstance {
     pub config: AgentConfigRust,
     pub channels: HashMap<String, ChannelInstance>,
     pub last_active_channel: Arc<tokio::sync::RwLock<Option<LastActiveChannel>>>,
+    pub last_active_private_target: Arc<tokio::sync::RwLock<Option<LastActivePrivateTarget>>>,
     // Agent-level heartbeat (shared across channels)
     pub heartbeat_handle: Option<tauri::async_runtime::JoinHandle<()>>,
     pub heartbeat_wake_tx: Option<mpsc::Sender<types::WakeReason>>,

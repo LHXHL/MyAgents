@@ -741,6 +741,7 @@ export async function invokeStartAgentChannel(
       memoryEvolution: agent.memoryEvolution,
       channels: [],
       lastActiveChannel: agent.lastActiveChannel,
+      lastActivePrivateTarget: agent.lastActivePrivateTarget,
     },
     channelConfig: {
       id: channel.id,

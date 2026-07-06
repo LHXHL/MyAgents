@@ -698,24 +698,26 @@ struct WakeRequest {
     text: Option<String>,
 }
 
+struct BotRefs {
+    router: std::sync::Arc<tokio::sync::Mutex<im::router::SessionRouter>>,
+    wake_tx: Option<tokio::sync::mpsc::Sender<im::types::HeartbeatWake>>,
+    agent_id: Option<String>,
+}
+
 /// Look up a bot instance by ID — checks ManagedAgents first (primary path), then
 /// falls back to ManagedImBots (legacy compatibility, usually empty after migration).
-/// Returns (router Arc, heartbeat wake_tx) with locks already dropped.
-async fn find_bot_refs(
-    bot_id: &str,
-) -> Option<(
-    std::sync::Arc<tokio::sync::Mutex<im::router::SessionRouter>>,
-    Option<tokio::sync::mpsc::Sender<im::types::WakeReason>>,
-)> {
+/// Returns refs with locks already dropped.
+async fn find_bot_refs(bot_id: &str) -> Option<BotRefs> {
     // Check agent channels first (primary path after v0.1.41 migration)
     if let Some(agents) = get_agents() {
         let agents_guard = agents.lock().await;
-        for agent in agents_guard.values() {
+        for (agent_id, agent) in agents_guard.iter() {
             if let Some(ch_inst) = agent.channels.get(bot_id) {
-                return Some((
-                    std::sync::Arc::clone(&ch_inst.bot_instance.router),
-                    ch_inst.bot_instance.heartbeat_wake_tx.clone(),
-                ));
+                return Some(BotRefs {
+                    router: std::sync::Arc::clone(&ch_inst.bot_instance.router),
+                    wake_tx: ch_inst.bot_instance.heartbeat_wake_tx.clone(),
+                    agent_id: Some(agent_id.clone()),
+                });
             }
         }
     }
@@ -723,13 +725,41 @@ async fn find_bot_refs(
     if let Some(bots) = get_im_bots() {
         let bots_guard = bots.lock().await;
         if let Some(instance) = bots_guard.get(bot_id) {
-            return Some((
-                std::sync::Arc::clone(&instance.router),
-                instance.heartbeat_wake_tx.clone(),
-            ));
+            return Some(BotRefs {
+                router: std::sync::Arc::clone(&instance.router),
+                wake_tx: instance.heartbeat_wake_tx.clone(),
+                agent_id: None,
+            });
         }
     }
     None
+}
+
+async fn post_manual_wake_text(
+    router: &std::sync::Arc<tokio::sync::Mutex<im::router::SessionRouter>>,
+    target_session_key: Option<&str>,
+    text: &str,
+) {
+    let port = {
+        let router_guard = router.lock().await;
+        match target_session_key {
+            Some(session_key) => router_guard.active_private_peer_session_port(session_key),
+            None => router_guard.latest_active_private_peer_session_port(),
+        }
+    };
+
+    if let Some(port) = port {
+        let client = crate::local_http::builder().build().unwrap_or_default();
+        let body = serde_json::json!({
+            "event": "manual_wake",
+            "content": text,
+        });
+        let _ = client
+            .post(format!("http://127.0.0.1:{}/api/im/system-event", port))
+            .json(&body)
+            .send()
+            .await;
+    }
 }
 
 /// Look up a bot's adapter by ID — checks ManagedAgents first, then legacy ManagedImBots.
@@ -839,42 +869,81 @@ async fn list_im_channels_handler() -> Json<serde_json::Value> {
 }
 
 async fn wake_bot_handler(Json(payload): Json<WakeRequest>) -> Json<serde_json::Value> {
-    let (router, wake_tx) = match find_bot_refs(&payload.bot_id).await {
+    let refs = match find_bot_refs(&payload.bot_id).await {
         Some(refs) => refs,
         None => return Json(serde_json::json!({ "ok": false, "error": "Bot not found" })),
     };
 
-    // Step 1: If text provided, try to POST system event to Bot Sidecar
-    if let Some(ref text) = payload.text {
-        let port = {
-            let router_guard = router.lock().await;
-            router_guard.find_any_active_session().map(|(p, _, _)| p)
+    if let Some(agent_id) = refs.agent_id {
+        let agents = match get_agents() {
+            Some(agents) => agents,
+            None => {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": "Agent state not available"
+                }))
+            }
+        };
+        let route = match im::resolve_agent_heartbeat_route(agents, &agent_id).await {
+            im::AgentHeartbeatRouteResolution::Target(route) => route,
+            im::AgentHeartbeatRouteResolution::NoPrivateTarget => {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": "No private heartbeat target for this Agent"
+                }))
+            }
+            im::AgentHeartbeatRouteResolution::AgentMissing => {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": "Agent not found"
+                }))
+            }
         };
 
-        if let Some(port) = port {
-            let client = crate::local_http::builder().build().unwrap_or_default();
-            let body = serde_json::json!({
-                "event": "manual_wake",
-                "content": text,
-            });
-            let _ = client
-                .post(format!("http://127.0.0.1:{}/api/im/system-event", port))
-                .json(&body)
-                .send()
-                .await;
+        if let Some(ref text) = payload.text {
+            post_manual_wake_text(&route.router, Some(&route.target.session_key), text).await;
         }
-    }
 
-    // Step 2: Send WakeReason::Manual to heartbeat runner
-    if let Some(ref wake_tx) = wake_tx {
-        match wake_tx.send(im::types::WakeReason::Manual).await {
-            Ok(_) => Json(serde_json::json!({ "ok": true })),
-            Err(e) => {
-                Json(serde_json::json!({ "ok": false, "error": format!("Wake failed: {}", e) }))
+        if let Some(wake_tx) = route.wake_tx {
+            let wake = im::types::HeartbeatWake::targeted(
+                im::types::WakeReason::Manual,
+                route.target.session_key,
+            );
+            match wake_tx.send(wake).await {
+                Ok(_) => Json(serde_json::json!({ "ok": true })),
+                Err(e) => Json(serde_json::json!({
+                    "ok": false,
+                    "error": format!("Wake failed: {}", e)
+                })),
             }
+        } else {
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "Heartbeat not configured for this Agent"
+            }))
         }
     } else {
-        Json(serde_json::json!({ "ok": false, "error": "Heartbeat not configured for this bot" }))
+        if let Some(ref text) = payload.text {
+            post_manual_wake_text(&refs.router, None, text).await;
+        }
+
+        if let Some(ref wake_tx) = refs.wake_tx {
+            match wake_tx
+                .send(im::types::HeartbeatWake::new(im::types::WakeReason::Manual))
+                .await
+            {
+                Ok(_) => Json(serde_json::json!({ "ok": true })),
+                Err(e) => Json(serde_json::json!({
+                    "ok": false,
+                    "error": format!("Wake failed: {}", e)
+                })),
+            }
+        } else {
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "Heartbeat not configured for this bot"
+            }))
+        }
     }
 }
 

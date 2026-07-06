@@ -301,7 +301,28 @@ pub struct SessionRouter {
 
 **Sidecar 所有权**：IM Bot 使用 `SidecarOwner::ImBot(session_key)` 作为 Sidecar 的 owner，与 `Tab`、`CronTask`、`BackgroundCompletion` 并列。当所有 owner 释放时 Sidecar 自动停止。`ensure_session_sidecar()` 和 `release_session_sidecar()` 统一管理生命周期。
 
-### 2.7 健康状态持久化
+### 2.7 Agent Heartbeat 私聊目标
+
+Agent 工作区可以同时绑定多个 Channel（例如微信 + 飞书，或多个飞书 Bot）。Heartbeat 不能逐个 Channel 广播，也不能只根据某个 Channel 的“最近活跃 peer”临场猜测；它必须由 Agent 级状态先解析出一个完整的私聊目标 `{ channel_id, session_key }`，再把 wake 精确投递给对应 Channel 的 heartbeat runner。
+
+权威状态：
+- `AgentInstance.last_active_channel` 保留“最近活跃 Channel/Session”历史，但它可以指向 group，只能作为迁移线索。
+- `AgentInstance.last_active_private_target` 是 heartbeat / cron / manual wake 的目标权威，只在私聊用户消息或私聊 handover 时更新；群聊消息不会覆盖它。
+- `SessionRouter` 提供 private-only helper（exact private target、latest private target、active private port）。Agent 目标解析必须使用这些 helper 验证目标仍是当前 Channel 内有效的 private peer。
+
+解析规则：
+- 已有 `last_active_private_target`：只投递到该 Channel 的精确 private session；目标缺失、变成 group、或 Channel 非 Online 时直接跳过，不 fallback。
+- 没有 private target 但 `last_active_channel` 指向 Online Channel 的 private session：迁移并 seed `last_active_private_target`。
+- `last_active_channel` 指向 group、目标 Channel 不在线、或 session 已不可判定：跳过，不 fallback 到旧私聊。
+- 完全没有历史时，才允许 bootstrap 到所有 Online Channel 中最近的 private session。
+
+投递规则：
+- Agent 级 `route_agent_heartbeat_once()` 只负责解析一次目标并发送 `HeartbeatWake { target_session_key }`；per-bot `HeartbeatRunner` 收到显式 target 后只验证并投递该 private session，验证失败不得 fallback。
+- Cron / Task Center completion 复用同一个 Agent 目标解析器。它先解析当前 private target，再把 `PendingCronEvent` append 到目标 Channel 的 pending queue；没有当前 private target 时只保留 cron 执行历史，不把事件塞进配置里的旧 bot queue。
+- Management API `/api/im/wake` 对 Agent Channel 也走 Agent 目标解析器；文本 `manual_wake` 只 POST 到显式 private active session。Legacy standalone bot 保留 targetless latest-private fallback。
+- Wake coalescing 同优先级时优先保留带 `target_session_key` 的 wake，避免 target metadata 被普通 interval/manual wake 覆盖。
+
+### 2.8 健康状态持久化
 
 ```rust
 pub struct HealthManager {
@@ -330,7 +351,7 @@ pub struct ImHealthState {
 - 去重缓存：`~/.myagents/im_bots/{bot_id}/dedup.json`（仅飞书）
 - 遗留文件迁移：启动时自动迁移 v1（`im_state.json`）和 v2（`im_{botId}_*.json`）到 v3 子目录，孤儿文件自动清理
 
-### 2.8 消息缓冲
+### 2.9 消息缓冲
 
 ```rust
 pub struct MessageBuffer {
@@ -342,7 +363,7 @@ pub struct MessageBuffer {
 
 Sidecar 不可用时入站消息进入缓冲队列；恢复后由 peer lock 保护入队顺序，回复生命周期仍由 `/api/im/events` 的 requestId 事件归属，而不是依赖同一 SSE 流内重放。
 
-### 2.9 Draft / Reply 渲染（`/api/im/events` → ReplyRouter）
+### 2.10 Draft / Reply 渲染（`/api/im/events` → ReplyRouter）
 
 当前实现是 Sidecar 事件总线 + Rust consumer：
 
@@ -365,13 +386,13 @@ Rust ImEventConsumer 连接 Node /api/im/events?since=<seq>
 
 `ImEventConsumer` 拥有 SSE reconnect lifecycle，使用 `since=<lastSeq>` 恢复 ring-buffered events；`ReplyRouter` 拥有每个 requestId 的 draft/message slot。多 block 回复继续按 block 独立创建/编辑/定稿。
 
-### 2.10 Tauri 事件
+### 2.11 Tauri 事件
 
 | 事件 | Payload | 触发时机 |
 |------|---------|---------|
 | `im:user-bound` | `{ botId, userId, username? }` | 用户通过 QR 码绑定成功 |
 
-### 2.11 交互式权限审批
+### 2.12 交互式权限审批
 
 当 IM Bot 使用非 `fullAgency` 模式时，SDK 的 `canUseTool()` 会阻塞等待审批。审批请求通过飞书交互卡片 / Telegram Inline Keyboard 展示给用户。
 
@@ -427,7 +448,7 @@ type PendingApprovals = Arc<Mutex<HashMap<String, PendingApproval>>>;
 - **飞书**：`msg_type: "interactive"` 交互卡片，3 个按钮（允许/始终允许/拒绝），`card.action.trigger` 事件回调
 - **Telegram**：`inline_keyboard` + `callback_query`，short_id 映射解决 64 byte `callback_data` 限制
 
-### 2.12 Channel Host Interaction Capability
+### 2.13 Channel Host Interaction Capability
 
 IM / Agent Channel 的结构化人类交互不是普通工具偏好，而是 host 能力。Rust `/api/im/enqueue` payload 带 `hostInteraction: { askUserQuestion: 'none' | 'native-card' }`，Node 侧 `InteractionScenario` 同步携带该字段。
 
@@ -437,7 +458,7 @@ IM / Agent Channel 的结构化人类交互不是普通工具偏好，而是 hos
 - 敏感问题（`isSecret`）在 IM 渠道 fail-closed：不要求用户在聊天历史里输入 secret，直接通知用户并向 sidecar 回传取消。安全输入能力需要单独设计，不能用普通 IM 文本兜底。
 - 文本 fallback 只用于自由文本、多题、多选等卡片按钮无法完整表达的场景；同 chat 多个 pending 时固定路由到最新 pending，并记录 warning。
 
-### 2.13 飞书 WebSocket 事件 ACK
+### 2.14 飞书 WebSocket 事件 ACK
 
 飞书 WS 协议要求客户端对数据帧发送 ACK 确认。未 ACK 的事件在 WebSocket 重连后会被服务端重放。
 
@@ -449,7 +470,7 @@ ws_write.send(WsMessage::Binary(ack_data.into())).await;
 
 配合 72 小时 dedup 缓存 TTL（`DEDUP_TTL_SECS = 72 * 60 * 60`）作为防御兜底，防止长时间运行后重连导致消息重复处理。
 
-### 2.14 Plugin Bridge（OpenClaw 社区插件桥接）
+### 2.15 Plugin Bridge（OpenClaw 社区插件桥接）
 
 **设计动机**：OpenClaw 生态有大量 Channel Plugin（QQ Bot、WeChat、Matrix 等），均为 TypeScript 实现。为避免为每个平台写 Rust 适配器，引入 Plugin Bridge 机制——独立 Node.js 进程加载社区插件，仅做 Channel I/O，AI 推理走现有 Rust → Node.js Sidecar 管道。
 
@@ -555,7 +576,7 @@ OpenClaw 飞书插件通过 `mentionedBot(ctx.mentions)` 检测 @mention，结�
  → rm -rf plugin 目录
 ```
 
-### 2.15 群聊处理
+### 2.16 群聊处理
 
 #### 群激活策略
 
@@ -1035,7 +1056,14 @@ interface AgentConfig {
  workspacePath?: string;
  providerId?: string;
  model?: string;
+ lastActivePrivateTarget?: LastActivePrivateTarget;
  channels: ChannelConfig[];
+}
+
+interface LastActivePrivateTarget {
+ channelId: string;
+ sessionKey: string;
+ lastActiveAt: string;
 }
 
 interface ChannelConfig {
