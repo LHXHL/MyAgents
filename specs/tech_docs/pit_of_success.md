@@ -25,9 +25,10 @@ CLAUDE.md 的 Pit-of-Success 红线总表是这些模块的**速查索引**；�
 - [`DeferredInitState` + readiness endpoints](#deferredinitstate) — 三分健康探针
 
 **Node.js 辅助层**
-- [`fs-utils`](#fs-utils) — 跨平台 mkdir / 目录判定
+- [`fs-utils`](#fs-utils) — 跨平台 mkdir / 目录判定 + 断链 symlink 探针（cpSync C++ 异常）
 - [`subprocess`](#subprocess) — Node 子进程 stream 形态适配
-- [`file-response`](#file-response) — 流式 HTTP 文件响应
+- [`file-response`](#file-response) — 流式 HTTP 文件响应 + 渲染器直连接口的 CORS/CSP
+- [`applyContextWindowSuffix`](#context-window-suffix) — >200K 模型上下文窗口解锁（`[1m]` wrap + env cap）
 
 **结构性其他**
 - [Builtin MCP 懒加载](#builtin-mcp) — META/INSTANCE 两层架构
@@ -37,6 +38,7 @@ CLAUDE.md 的 Pit-of-Success 红线总表是这些模块的**速查索引**；�
 - [`workspacePath` 工作区路径标识比较](#workspace-path-identity) — 跨存储路径相等判定（防 Win 斜杠/盘符误判）
 - [Client-action 斜杠命令](#client-action-slash) — 渲染层 UI 动作命令，名字保留、勿进文本插入 builtin 清单
 - [System-skill 同步完整性门控](#system-skill-sync) — 验源完整再清目标 + 全落地才写版本戳
+- [同步 Tauri 命令与主线程冻结](#sync-tauri-command) — 阻塞命令改 async + spawn_blocking，否则 WKWebView 整体冻结
 - [Test classification + non-credentialed no-egress](#test-classification-no-egress) — server 测试显式分层，非 credentialed Node 测试禁止真实出站
 
 ---
@@ -368,6 +370,13 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 
 **Surface.** `ensureDirSync` / `ensureDir` / `isDirEntry`
 
+**断链 symlink 探针（v0.2.5 事故，CLAUDE.md 红线）.** `existsSync` / `Path::exists()` 跟随 symlink——**断链 symlink 返回 false**，代码以为"路径为空"，紧接着的写操作踩雷：Node v24 **sync `cpSync({recursive:true})`** 走进 `std::filesystem::equivalent` 抛未捕获 C++ 异常（`libc++abi: filesystem error: in equivalent: Operation not supported`），JS try/catch 接不住 → 整个 sidecar abort → Tauri 健康检查重启 → 死循环。v0.2.5 实战：`~/.myagents/skills/docx` 是断链，全局 sidecar 起不来。注意 async `fs.cp` 不崩，**只有 sync `cpSync` 崩**。
+
+在跑写操作（`cpSync` / `fs::create_dir_all` / `fs::remove_dir_all`）之前 MUST 用**不跟随 symlink** 的 API 探测：
+
+- **Node**：`lstatSync` + `existsSync` 双探——`isSymbolicLink() && !existsSync(p)` ⇒ 断链，先 `unlinkSync` 再写。修复样板 `src/server/index.ts::seedBundledSkills`。
+- **Rust**：`fs::symlink_metadata`（**不要** `fs::metadata()` / `Path::exists()`，同为跟随语义）；拿到 `Metadata` 后 `is_symlink() || is_file()` → `remove_file`，是目录 → `remove_dir_all`。修复样板 `src-tauri/src/commands.rs::cmd_sync_system_skills`。
+
 ---
 
 <a id="subprocess"></a>
@@ -394,6 +403,38 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 **Surface.**
 - `fileResponse(p, { contentType })` — 用 `createReadStream + Readable.toWeb` 生成流式 Web Response
 - `sniffMime(path)` — ext→MIME 映射
+
+**CORS / CSP（渲染器直连 sidecar HTTP 的接口，#109）.** 绝大部分 sidecar 接口走 Tauri invoke proxy，不涉及浏览器同源策略；但渲染器**原生 `fetch('http://127.0.0.1:<port>/...')` 直连**的接口（`>1MB` 溢出回 ref-url 的 `/refs/:id`、附件 `/attachment/*`）如果不带 `Access-Control-Allow-Origin`，WebKit 拿到 opaque 响应拒绝可读，JS 侧报 `TypeError: Load failed`（#109 实战）。这类接口必须返回 `Access-Control-Allow-Origin: '*'`，惯例：`fileResponse(path, { headers: { 'Access-Control-Allow-Origin': '*' } })`。CSP 同步：渲染器直连的 `http(s)://...` 端口要列进 `connect-src`（管 fetch/XHR/WS 的标准指令就是 `connect-src`；曾经配过非标准 `fetch-src`，引擎一律忽略，已移除，别再加回来）。
+
+---
+
+<a id="context-window-suffix"></a>
+## `applyContextWindowSuffix` (`src/server/utils/model-capabilities.ts`)
+
+**Problem.** SDK 对不认识的 model id 一律按 200K 上下文窗口 fallback。>200K 窗口的模型不经处理就退化：1M 档（claude-opus-4-7 / claude-opus-4-6 / deepseek-v4-pro / gemini-2.5-pro / gpt-5.4 等）和 200K–1M 中间档（minimax-m3 512K / doubao 262K / kimi-k2.5 262K，#335 同病）都会 `/context` 显 200K、auto-compact 在 ~187K 就触发、附件按 200K 截断。`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 只能 `Math.min` 下调不能上调，对 >200K 模型彻底无效。
+
+**Surface.** `applyContextWindowSuffix(model)` — wrap 策略：registry contextLength **>200K 即加 `[1m]` 后缀**（不是只 ≥1M）。SDK 窗口先解锁到 1M，再由 env cap 钳回真实值（有效压缩窗口 = min(1M, registry) − ~33K）。SDK `normalizeModelStringForAPI` 在 wire 上剥 `[1m]`，上游 API 看不到后缀。已知装饰性偏差：SDK `/context` 头条会显 1M，MyAgents 自己的占用圆环显 registry 真值。
+
+**Invariants enforced.**
+- 所有 SDK ingress 必须过 wrap：`query({ model })`、`query({ agents: { ...{ model } } })`、`querySession.setModel()`、`ANTHROPIC_DEFAULT_{SONNET,OPUS,HAIKU}_MODEL` env。
+- **反向同样是红线**：bridge `modelOverride`、`*_MODEL_NAME` env、cron / persisted state、所有用户可见处必须用**未 wrap** 的原始 model id。
+
+**Don't.**
+- 别给 `claude-sonnet-4-6` 开 1M：Anthropic Sonnet 4.6 wire-default 200K，1M 需要 `context-1m-2025-08-07` beta header + Tier-4 配额或 "extra usage" 付费开关，订阅默认开 1M 会报 `Extra usage is required for 1M context`（v0.2.11 修复，预设 contextLength 已降回 200K）。
+- registry key 永远存**裸 id**：`[1m]` / 手填空格形 ` 1m` 必须在 ingest + lookup 两侧 strip（#338 双成因之一，只修一侧会残留）；不完整 capability 条目（有 modalities 无 contextLength）要 per-FIELD merge（`mergeCapabilityInto`），per-entry first-wins 会遮蔽预设的真实窗口。
+
+---
+
+<a id="sync-tauri-command"></a>
+## 同步 Tauri 命令与 WebView 主线程冻结
+
+**Problem.** 同步 `#[tauri::command] pub fn` 跑在主线程——macOS 上这就是 WKWebView 的 UI 线程。命令执行期间整个 WebView 冻结、画不出任何东西：React 提交了 DOM 也绘制不出。0.2.31 实战：`cmd_ensure_session_sidecar` 同步等 sidecar 冷启动 ~800ms → 点工作区后整个 UI 卡死 ~800ms 才翻页；所有前端补丁（flushSync / deferred-mount）全部无效，因为冻结发生在 Rust 主线程（935fc344 修复）。
+
+**排查信号.** 点击后页面不变但 React 已 commit → 用 double-rAF `chat_painted` 探针量**真实绘制时刻**（不是 commit 时刻）；若绘制时刻 ≈ 某同步命令返回时刻，即是它。注意 unified 日志只显 commit 不显 paint，容易被误导去改前端。
+
+**正确做法.** 改 `pub async fn` + 把阻塞部分丢进 `tauri::async_runtime::spawn_blocking`。先把 `State` 里的 Arc clone 出来，**别跨 `.await` 持 State guard**。快速查表 / getter 类同步命令不受影响，无需改。
+
+**Don't.** 在同步命令里做：等 sidecar 就绪 / 轮询 / 网络请求 / 大量文件 copy / kill+wait。改动任何可能阻塞 >1 帧的命令时必查此节。
 
 ---
 

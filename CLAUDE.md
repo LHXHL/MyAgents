@@ -74,6 +74,7 @@
 | SDK 自定义 Tool / `createSdkMcpServer` | `tech_docs/sdk_custom_tools_guide.md` |
 | React 稳定性 5 条规则 | `tech_docs/react_stability_rules.md` |
 | UI 国际化 / 语言设置 / 文案资源 / native 托盘语言 | `tech_docs/i18n_architecture.md` |
+| 埋点 / Analytics 事件 / runtime 维度口径 | `tech_docs/analytics_design.md` |
 | Tool Attachment 管道 / 富媒体产物归一化 | `tech_docs/tool_attachment_pipeline.md` |
 | Claude Plugin 加载（PRD 0.2.17）/ SDK Options.plugins / 安装管线 | `tech_docs/plugin_loading.md` |
 
@@ -144,9 +145,7 @@ MCP / Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**
 **MCP 配置权威来源分离**：Tab 由前端 `/api/mcp/set` 配，IM/Cron 由 self-resolve 从磁盘读。混用会导致 fingerprint 差异 → abort → 30s 重启循环。
 
 ### Multi-Agent Runtime
-内置 SDK（builtin）+ 外部 Runtime（Claude Code CLI / Codex CLI / Gemini CLI）。功能门控 `config.multiAgentRuntime`（默认关闭）。**新增"config 同步"、"注入 user 消息"、"等待 turn 完成"、"session 读/操作"的 sidecar 端点 MUST 走 `src/server/session-engine/` facade**，由 `selector.ts` 统一选择 builtin/external adapter；禁止在 `index.ts` 或新 route module 里手写 `shouldUseExternalRuntime()` 分支。漏分流会让 builtin SDK 去 resume 一个外部 runtime 从没创建的会话 → `No conversation found` → `num_turns:0` 静默空转 + 假成功（#2145eddd memory-update 实战：夜间记忆更新对 Codex 会话 0 turn、孤儿气泡）。同步/注入类 endpoint 的 `completed` 必须 gate 在真·turn 成功上（external=`didLastTurnSucceed`，builtin=`!getAndClearLastAgentError()`），由 Engine adapter 封装，别只凭 `waitForSessionIdle`。详见 `tech_docs/multi_agent_runtime.md`。
-
-`agent-session.ts` / `runtimes/external-session.ts` 都是 public facade，不是新 owner state 的落点。Builtin 内核状态与行为在 `src/server/builtin-session/*`；external runtime 内核状态与行为在 `src/server/runtimes/external-session/*`（lifecycle / runtime-config / operation-queue / turn-lifecycle / content-blocks / transcript-persistence / interactive）。改 terminal、transcript、queue、interactive、content 相关问题时先找对应 owner API，禁止把 `saveSessionMessages()`、IM registry、terminal classification、mutable content/transcript refs 重新写回 facade。
+内置 SDK（builtin）+ 外部 Runtime（Claude Code / Codex / Gemini CLI），门控 `config.multiAgentRuntime`（默认关闭）。**新增"config 同步 / 注入 user 消息 / 等待 turn 完成 / session 读操作"的 sidecar 端点 MUST 走 `src/server/session-engine/` facade**（`selector.ts` 统一选 adapter），禁止手写 `shouldUseExternalRuntime()` 分支——漏分流 = builtin 去 resume 外部会话 → 静默空转 + 假成功。`completed` 必须 gate 在真·turn 成功（external=`didLastTurnSucceed`，builtin=`!getAndClearLastAgentError()`），别只凭 `waitForSessionIdle`。`agent-session.ts` / `runtimes/external-session.ts` 是 public facade 不是 owner state 落点，内核在 `src/server/builtin-session/*` 与 `src/server/runtimes/external-session/*`。详见 `tech_docs/multi_agent_runtime.md`。
 
 ### 定时任务系统
 Rust `CronTaskManager` 统一管理所有定时任务（Chat 定时 / 独立创建 / AI 工具 / IM Cron / Heartbeat）。Cron Tool（`im-cron` MCP）已泛化为**所有 Session 可用**，始终信任。新增 `CronTask` 字段 MUST 带 `#[serde(default)]`。详见 ARCHITECTURE「定时任务系统」。
@@ -161,13 +160,7 @@ Rust `CronTaskManager` 统一管理所有定时任务（Chat 定时 / 独立创�
 独立 Node.js 进程加载 OpenClaw Channel Plugin。MUST 与 Sidecar 同等待遇（环境变量、日志宏、config 范围）。修改 SDK shim MUST 三处同步 bump 版本（`sdk-shim/package.json` / `compat-runtime.ts` / `bridge.rs::SHIM_COMPAT_VERSION`）。详见 `tech_docs/plugin_bridge_architecture.md`。
 
 ### 工作区文件 IO（两层模型）
-"OS 文件操作" 与 "AI runtime 容器" 解耦：所有工作区文件操作走 Tauri invoke（`cmd_workspace_*`，`src-tauri/src/workspace_files/`），**禁止**走 Sidecar HTTP。Launcher 没 Sidecar 也能用文件能力；云端协作时客户端可拆。前端唯一入口 `useWorkspaceFileService(workspacePath)`。
-- **读侧**用 `path_safety::resolve_existing_inside_workspace`（canonicalize + prefix-check 防 `evil_link → /etc/passwd` symlink 逃逸）
-- **写侧**用 `path_safety::resolve_inside_workspace`（lexical，因 `fs::canonicalize` 在不存在路径上失败）
-- **绝对路径揭示**（Skill/Command 详情）走 `cmd_open_path_external`，挡 home/tmp prefix + credential 黑名单
-- **fs watcher** 用 token-based handle：`watch_start` 返回 `{token, eventKey}`，`watch_stop({token})` 索引；进程 nonce 防跨重启 token 碰撞
-
-详见 ARCHITECTURE「工作区文件 IO」。
+"OS 文件操作"与"AI runtime 容器"解耦：所有工作区文件操作走 Tauri invoke（`cmd_workspace_*`），**禁止**走 Sidecar HTTP（Launcher 没 Sidecar；云端协作要可拆）。前端唯一入口 `useWorkspaceFileService(workspacePath)`；路径解析走 `path_safety` 单 chokepoint（读侧 canonicalize / 写侧 lexical 双轨）。详见 ARCHITECTURE「工作区文件 IO」与 `pit_of_success.md`「workspace_files」。
 
 ---
 
@@ -188,9 +181,9 @@ Rust `CronTaskManager` 统一管理所有定时任务（Chat 定时 / 独立创�
 | 裸 `reqwest::Client::new()` 连 localhost | 系统代理拦 localhost → 502 | `crate::local_http::builder()` / `json_client()` / `sse_client()` | clippy |
 | 裸 `std::process::Command::new()` | Windows GUI 弹黑色控制台窗口 | `crate::process_cmd::new()` | clippy |
 | 裸 `tokio::spawn` / `tokio::task::spawn` | macOS startup-abort（panic 跨 FFI 不能 unwind） | `tauri::async_runtime::spawn` | clippy |
-| 同步 `#[tauri::command] pub fn` 里做会阻塞 >1 帧的工作（等 sidecar 就绪 / 轮询 / 网络 / 大量文件 copy / kill+wait） | **同步 Tauri 命令跑在主线程 = macOS 上 WKWebView 的 UI 线程 → 命令执行期间整个 WebView 冻结、画不出任何东西**（React 提交了 DOM 也绘制不出）。#0.2.31 实战：`cmd_ensure_session_sidecar` 同步等 sidecar 冷启动 ~800ms → 点工作区卡后整个 UI 卡死 ~800ms 才翻页；所有前端补丁（flushSync / deferred-mount）都没用，因为冻结在 Rust 主线程。**排查信号**：点击后页面不变但 React 已 commit → 用 double-rAF `chat_painted` 量*真实绘制*（不是 commit），若绘制时刻 ≈ 某同步命令返回时刻，即是它 | 改 `pub async fn` + 把阻塞部分丢进 `tauri::async_runtime::spawn_blocking`（先把 `State` 里的 Arc clone 出来，**别跨 `.await` 持 State guard**）。快速查表 / getter 类同步命令不受影响，无需改 | — (静态判不出某命令是否阻塞，靠 review；改阻塞命令时必查) |
-| 子进程 spawn 不调 `apply_to_subprocess`；或 provider-owned 子进程不用 provider-aware proxy helper | Node fetch 读继承的 HTTP_PROXY → localhost 通信被代理 → 502；provider custom scope 被绕过，未选 provider 可能错误使用 MyAgents proxy 或丢失原始系统 proxy baseline | 无 provider owner 的子进程用 `crate::proxy_config::apply_to_subprocess(&mut cmd)`；provider-owned 子进程用 `apply_to_subprocess_for_provider(&mut cmd, provider_id)`；Node provider-owned 请求用 `applyProviderProxyPolicyToEnv(env, providerId)` / `getProxyForProviderUrl(providerId, url)`。Rust 注入 MyAgents proxy 时必须带 `MYAGENTS_PROXY_INHERITED_ENV_JSON`，供 excluded provider 恢复注入前 env | — (语义检查难自动化) |
-| Chat 新增"mount 期把配置推给 sidecar"的 effect 不门控 `sidecarConfigDisposition`；或 instant-flip 到 chat 时用 pre-ensure 检查（`getSessionPort`）预测 push-vs-adopt | config-stomp TOCTOU（#300/#301）：并发 Rust creator（cron / IM / 崩溃重启）在"检查"与"ensure"之间起 sidecar → ensure 接管活 sidecar 而 Chat 仍推配置 → 冲掉 + MCP 指纹 abort + 30s 重启循环。即时进入（flip 先于 ensure）放大了这条 | 唯一裁决者 = `ensureSessionSidecar` 后的 `result.isNew`（Rust 锁内）；flip 前不确定就置 `'pending'`（Chat 既不推也不采纳）；配置推 effect 门控 `disposition==='push'` 且依赖布尔 `configPending`（pending→push 重跑、adopt→push 不重放），采纳 effect 依赖 `isAdopt`；用户主动改走 defer-while-pending；catch 把 pending tab 重置为终态 `push`。详见 `tech_docs/session_architecture.md`「Sidecar 配置归置」 | — (effect 门控漏项 AST 抓不出，靠 review) |
+| 同步 `#[tauri::command] pub fn` 里做会阻塞 >1 帧的工作（等 sidecar / 轮询 / 网络 / 大量文件 copy / kill+wait） | 主线程 = macOS WKWebView UI 线程 → 命令执行期间**整个 WebView 冻结**，React commit 了也绘制不出（0.2.31 点工作区卡 800ms 实战，前端补丁全部无效） | 改 `pub async fn` + 阻塞段进 `tauri::async_runtime::spawn_blocking`（State 的 Arc 先 clone，别跨 `.await` 持 guard）。排查与样板见 `pit_of_success.md`「同步 Tauri 命令」 | — (靠 review，改阻塞命令必查) |
+| 子进程 spawn 不调 `apply_to_subprocess`；或 provider-owned 子进程/请求不用 provider-aware helper | 继承的 HTTP_PROXY 代理掉 localhost → 502；provider proxy scope 被绕过 | 无 provider owner：`crate::proxy_config::apply_to_subprocess`；provider-owned：`apply_to_subprocess_for_provider` / Node `applyProviderProxyPolicyToEnv` / `getProxyForProviderUrl`。详见 `tech_docs/proxy_config.md` | — (语义检查难自动化) |
+| Chat 新增"mount 期推配置给 sidecar"的 effect 不门控 `sidecarConfigDisposition`；或 flip 前用 pre-ensure 检查（`getSessionPort`）预测 push-vs-adopt | config-stomp TOCTOU（#300/#301）：并发 Rust creator 在检查与 ensure 之间起 sidecar → 配置被冲掉 + MCP 指纹 abort + 30s 重启循环 | 唯一裁决者 = `ensureSessionSidecar` 的 `result.isNew`（Rust 锁内）；不确定就置 `'pending'`。三态门控细节见 `tech_docs/session_architecture.md`「Sidecar 配置归置」 | — (effect 门控漏项靠 review) |
 | 裸 `which::which()` 查系统工具 | Finder 启动时 PATH 缺失 | `crate::system_binary::find()` | clippy |
 | Tauri `resource_dir()` / `current_exe()` 路径直接喂 Node / npm / URL / 子进程 | Windows `\\?\` 长路径前缀让 `fileURLToPath` / spawn 报 `ERR_INVALID_FILE_URL_PATH` 或静默挂 | `crate::sidecar::normalize_external_path(p)`，在路径"出 Rust 边界"前剥前缀 | — (路径来源动态) |
 | `~/.myagents/config.json` 裸 `tmp + rename` | 多写者 race，密钥静默丢失 | Node `withConfigLock` / Rust `with_config_lock` / renderer `withConfigLock` | — (路径作用域，banning all `fs::rename` 噪音过大) |
@@ -198,12 +191,12 @@ Rust `CronTaskManager` 统一管理所有定时任务（Chat 定时 / 独立创�
 | Runtime 子进程 stop 用裸 `SIGTERM + waitForExit` | 进程拒收 SIGTERM 时永久卡死 | `killWithEscalation` | — (跨多语句模式，false-positive 高) |
 | 工具 / bridge 裸 `fetch()` 无 AbortSignal | 下游卡住 → tool turn / IM 消息处理永久 hang 直到 OS TCP 超时（分钟级） | `cancellableFetch` / `withAbortSignal`（`@/server/utils/cancellation`，默认 30s 超时 + parentSignal 传递） | eslint (`src/server/tools/**` + `plugin-bridge/**`) |
 | 大 payload（>256KB）直接进 SSE / IPC JSON | OOM / UI 卡死 / 慢 client 拖死 sidecar | `maybeSpill` + `/refs/:id` + SSE 优先级队列 | — (运行时 size 判定) |
-| Sidecar 路由直接给 WebView fetch 使用却不带 `Access-Control-Allow-Origin` | 渲染器 native `fetch('http://127.0.0.1:<port>/...')` 拿到 opaque 响应，被 WebKit 拒绝可读，JS 侧报 `TypeError: Load failed`（#109 实战出现）。绝大部分 sidecar 接口走 Tauri invoke proxy 不走原生 fetch，所以这条只对**渲染器直连 sidecar HTTP 端口**的接口生效（比如 `>1MB` 溢出回 ref-url 的 `/refs/:id`、附件 `/attachment/*`） | 这类接口必须返回 `Access-Control-Allow-Origin: '*'`。已有惯例：`fileResponse(path, { headers: { 'Access-Control-Allow-Origin': '*' } })`。CSP 同步——渲染器直连的 `http(s)://...` 端口要在 `connect-src` 里列出（管 fetch/XHR/WS 的标准指令就是 `connect-src`；曾经配的非标准 `fetch-src` 引擎一律忽略，已移除，别再加回来） | — (handler 内部行为，AST 抓不出意图) |
+| 渲染器**原生 fetch 直连**的 sidecar 路由（`/refs/:id`、`/attachment/*`；invoke-proxy 接口不受影响）不带 `Access-Control-Allow-Origin` | WebKit opaque 响应拒绝可读 → JS 报 `TypeError: Load failed`（#109） | `fileResponse(path, { headers: { 'Access-Control-Allow-Origin': '*' } })`；端口列进 CSP `connect-src`。详见 `pit_of_success.md`「file-response」 | — (handler 内部行为靠 review) |
 | 同步 busy-wait（`Atomics.wait` / spin / `while Date.now()`） | 阻塞 event loop / Sidecar 停止 drain SDK 消息 / pegs CPU | 异步 polling / 现成 helper（`setTimeout` / `withFileLock`） | eslint (`Atomics.wait`) |
 | readiness 等同 liveness | renderer 假就绪 | `/health/{live,ready,functional}` 三分；renderer 挂 `/health/ready` | — (语义检查) |
 | `src/server/tools/*.ts` 顶层 import SDK / zod | builtin MCP 懒加载失效，冷启动每次税 ~500–1000ms（6 tools = ~3–6s） | factory 内部 `await import(...)` | eslint |
 | 直接设置 `shouldAbortSession = true` | 跳过 abort cleanup 链（pending 救援、IM bus 通知、generator 唤醒）→ pending IM 回复永久 hang | `abortPersistentSession()` | eslint |
-| 给 SDK 传 `allowDangerouslySkipPermissions:true` 后假设 `permissionMode:'plan'` 仍拦写；或用 per-agent `permissionMode` / `canUseTool` 去拦 `run_in_background` 子 Agent | **SDK 在多条路径下根本不调 `canUseTool`**：(1) plan 被降级 allow-all——原生解析器 `plan && bypassAvailable → "allow"`，只有 `"ask"` 分支才发 `can_use_tool`，弱模型 `rm -rf`/`Edit` 直接执行、`permission_denials` 空（#295）；(2) 后台子 Agent 的工具调用从不进 canUseTool，无 hook 放行 → SDK 自动拒绝、委派失败（#264）。注：MyAgents `auto→acceptEdits`，per-agent `permissionMode` 在此默认下被 SDK 跳过 | 用 **hook** 硬闸（跑在原生解析器之前，`deny` 无条件采纳）：plan 用 `PreToolUse` hook（`plan-mode-gate.ts`，**fail-closed 同时看 SDK 传入的 `permission_mode` 和本地 live 镜像，任一为 `plan` 即拦**，覆盖 AI 中途 `EnterPlanMode`）；后台 Agent 用 `PermissionRequest` hook（`background-agent-permission.ts`，按 `task_started.task_id===agent_id` 关联后台性） | — |
+| 假设 `canUseTool` / `permissionMode:'plan'` / per-agent `permissionMode` 能拦住所有工具调用 | **SDK 多条路径根本不调 canUseTool**：plan + `allowDangerouslySkipPermissions` 被降级 allow-all（#295 弱模型直接 `rm -rf`）；后台子 Agent 从不进 canUseTool，无 hook 放行即自动拒绝（#264 委派静默失败） | 用 **hook** 硬闸（跑在原生解析器之前，deny 无条件采纳）：plan 用 `PreToolUse`（`plan-mode-gate.ts`，fail-closed），后台 Agent 用 `PermissionRequest`（`background-agent-permission.ts`）。详见 `tech_docs/sdk_canUseTool_guide.md`「hook 硬闸」 | — |
 | 函数参数用 `undefined` / `null` 表特定动作 | 内部调用方误触发 | 自解释字面量（如 `'subscription'`） | — (设计原则) |
 | 新增 SSE 事件不注册白名单 | 前端静默丢弃 | 在 `SseConnection.ts::JSON_EVENTS` 注册 | — (跨文件分析复杂) |
 | Sidecar 用 `__dirname` | esbuild 硬编码路径到源文件位置 → 运行时落到不存在/陈旧的 dist/ 路径 | `fileURLToPath(import.meta.url)` / `getScriptDir()`（`@/server/utils/runtime`） | eslint (`src/server/**`) |
@@ -211,24 +204,24 @@ Rust `CronTaskManager` 统一管理所有定时任务（Chat 定时 / 独立创�
 | 日志日期用 UTC `toISOString().split('T')[0]` | UTC 与本地日期在 UTC+8 有 1/3 时间不匹配 → 日志写错文件，按"今天的日期" grep 找不到 | `localDate()`（`@/shared/logTime`） | eslint |
 | Rust 日志用 `log::info!` / `warn!` / `error!` / `debug!` / `trace!` | 不进统一日志（`~/.myagents/logs/unified-{date}.log`），renderer 日志面板和"读 unified log"的红线全失效 | `ulog_info!` / `ulog_warn!` / `ulog_error!` / `ulog_debug!` | clippy |
 | 前端 `@tauri-apps/plugin-fs` 读写工作区 | Tauri fs scope 仅覆盖 `~/.myagents/**`，工作区路径会失败 | `invoke('cmd_read_workspace_file')` / `cmd_write_workspace_file` | — (路径作用域，import 维度判不准) |
-| 工作区文件 IO 走 sidecar HTTP（`/api/files/*`、`/api/commands`、`/api/git/branch`、`/api/claude-md`、`/agent/{dir,dir/expand,file,download,import,new-file,new-folder,rename,delete,move,open-in-finder,open-with-default,open-path,search-files,check-paths,save-file}` 共 18 个端点） | 启动页没有 Sidecar，这些路径在 launcher 直接死掉（PRD 0.2.7 实战：`'API 未就绪'` toast、空斜杠菜单）；把"AI runtime 容器"和"OS 文件操作"耦合，云端协作时分不开 | 走 Rust invoke：`cmd_workspace_*`（见 `src-tauri/src/workspace_files/`）。前端入口 `useWorkspaceFileService(workspacePath)`；绝对路径揭示用 `cmd_open_path_external`（Skill/Command 详情面板）；CLAUDE.md 编辑用 `cmd_workspace_read_claude_md` / `cmd_workspace_write_claude_md`。**18 个 sidecar 端点已全部下线（v0.2.7 Phase E）** | eslint (字面量封禁) |
-| Chat / Launcher 各自实现"选项变更持久化" | 字段集合 / 分支条件漂移（v0.2.7 之前 Chat 把 external runtime 的 permission mode 写到 `Agent.permissionMode` 而不是 `runtimeConfig.permissionMode`，launcher 是对的；cross-protocol guard 仅 Chat 有；MCP 写盘字段也不同） | 调统一 `persistInputOptionChange(...)`（`src/renderer/api/persistInputOption.ts`）。helper 接 `sessionId` / `isExternalRuntime` / `currentRuntimeConfig`，分支由它处理。新增字段只改这一个文件 | — (设计层模式) |
+| 工作区文件 IO 走 sidecar HTTP | Launcher 没有 Sidecar，这些路径直接死掉（PRD 0.2.7 实战）；"AI runtime 容器"与"OS 文件操作"耦合，云端协作拆不开。18 个旧端点已全部下线（v0.2.7 Phase E） | Rust invoke `cmd_workspace_*`；前端唯一入口 `useWorkspaceFileService(workspacePath)`。详见 ARCHITECTURE「工作区文件 IO」 | eslint (字面量封禁) |
+| Chat / Launcher 各自实现"选项变更持久化" | 字段集合 / 分支条件漂移（v0.2.7 前 external permission mode 曾写错落点） | 统一调 `persistInputOptionChange(...)`（`src/renderer/api/persistInputOption.ts`），新增字段只改这一个文件 | — (设计层模式) |
 | 依赖用户系统安装的运行时 | 用户未装 → 功能不可用 | 内置 Node.js（`runtime.ts::getBundledNodePath()`） | — (设计决策) |
-| 用 `existsSync` / `Path::exists()` 当"路径上有没有东西"探针，紧接着 `cpSync({recursive:true})` / `fs::create_dir_all` / `fs::remove_dir_all` 跑过去 | 跟随 symlink 语义 → **断链 symlink 返回 false** → 代码以为不存在 → Node v24 `cpSync` 走进 `std::filesystem::equivalent` 抛**未捕获 C++ 异常**（`libc++abi: filesystem error: in equivalent: Operation not supported`），JS try/catch 接不住，整个 sidecar abort，Tauri 健康检查重启 → 死循环（v0.2.5 实战：`~/.myagents/skills/docx` 是断链让全局 sidecar 起不来）。注意 async `fs.cp` 不崩，**只有 sync `cpSync` 崩** | 在跑写操作之前 MUST 用**不跟随 symlink** 的 API 探：Node 用 `lstatSync` + `existsSync` 双探（`isSymbolicLink && !existsSync` ⇒ 断链，先 `unlinkSync`），Rust **MUST 用 `fs::symlink_metadata`，不要用 `fs::metadata()`**（后者跟随 symlink 与 `Path::exists()` 同病）；拿到 `Metadata` 后 `is_symlink() \|\| is_file()` → `remove_file`，是目录 → `remove_dir_all`。修复样板见 `src/server/index.ts::seedBundledSkills` 与 `src-tauri/src/commands.rs::cmd_sync_system_skills` | — (跨语句模式) |
+| 用 `existsSync` / `Path::exists()` 探"路径有没有东西"后紧接 `cpSync` / `create_dir_all` / `remove_dir_all` | 断链 symlink 返回 false → Node sync `cpSync` 抛 JS 接不住的 C++ 异常 → sidecar abort 重启死循环（v0.2.5 实战） | 写前用**不跟随 symlink** 的探针：Node `lstatSync`+`existsSync` 双探，Rust `fs::symlink_metadata`（不要 `fs::metadata()`）。样板与细节见 `pit_of_success.md`「fs-utils」 | — (跨语句模式) |
 | 新增 overlay / 可关闭面板不调 `useCloseLayer` | Cmd+W 跳过该面板直接关 Tab | `useCloseLayer(handler, zIndex)`，zIndex 与 CSS 一致 | — (语义识别) |
 | Overlay 遮罩用裸 `<div>` + `onClick` / `onMouseDown` | 选中文字拖到面板外松手会误关 | `<OverlayBackdrop>` 组件 | — (语义识别) |
 | onClick 里 `requestAnimationFrame(() => otherEl.focus())` 抢焦点 | macOS WebKit 触摸板 tap 会被吞掉 | `onMouseDown={retainFocusOnMouseDown}`（`@/utils/focusRetention`） | — (语义识别) |
 | 前端硬编码颜色（`#fff`、`bg-blue-500`） | 破坏设计系统一致性 | CSS Token `var(--xxx)`，参考 DESIGN.md | — (Tailwind class 形态太多，false positive 炸裂) |
-| 前端任意 px 字号（`text-[13px]`）或已删档位类名（`text-2xs/2sm/md`） | 字阶漂移：幽灵字阶曾长到 ~700 处 → 跨场景"字号大小不一"（用户投诉根因，PRD 0.2.34 三阶段清零）；死类名无 @theme token，写了编译不报错但字号**静默失效** | 终局七档 utility：`text-xs`(12 meta)/`text-sm`(14 UI/表格)/`text-base`(16 正文)/`text-lg`(18 弹窗标题)/`text-xl`(20)/`text-2xl`(22)/`text-3xl`(28)，定义在 index.css `@theme`。xs/sm/base/lg/xl 与 Tailwind 官方一致，**唯 text-2xl=22px（官方 24）与 text-3xl=28px（官方 30）**。离阶展示型字号（品牌字）先在 DESIGN.md 立档再单行 disable | eslint (`src/renderer/**`) |
+| 前端任意 px 字号（`text-[13px]`）或已删档位类名（`text-2xs/2sm/md`） | 字阶漂移（幽灵字阶曾 ~700 处，PRD 0.2.34 清零）；死类名无 @theme token，编译不报错但**静默失效** | 终局七档 `text-xs/sm/base/lg/xl/2xl/3xl`（12/14/16/18/20/22/28；**2xl=22、3xl=28 与官方不同**）。档位职责与离阶豁免见 DESIGN.md §2.2 | eslint (`src/renderer/**`) |
 | 表单原生 `<select>` | 系统下拉框跨平台不一致 + 不可主题化 → 破坏 DESIGN.md 视觉一致性 | `<CustomSelect>` 组件 | eslint |
 | 新增手写 SDK shim 不加入 `_handwritten.json` | `generate:sdk-shims` 下次覆盖手写 | 同步加入 `sdk-shim/plugin-sdk/_handwritten.json` | — (协调性变更) |
-| 把 model id 直接喂给 SDK ingress（`query({ model })`、`query({ agents: { ...{ model } } })`、`querySession.setModel()`、`ANTHROPIC_DEFAULT_{SONNET,OPUS,HAIKU}_MODEL` env）不过 `applyContextWindowSuffix` | 1M 窗口模型（claude-opus-4-7 / claude-opus-4-6 / deepseek-v4-pro / gemini-2.5-pro / gpt-5.4 ……）退回 SDK 200K fallback，`/context` 显 200K，auto-compact 在 ~187K 触发，附件按 200K 截。`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 只能 `Math.min` 下调不能上调，对 >200K 模型彻底无效。**200K–1M 中间档（minimax-m3 512K / doubao 262K / kimi-k2.5 262K）同病**（#335）：wrap 策略为 registry contextLength **>200K 即加 `[1m]`**（不是只 ≥1M），SDK 窗口解锁到 1M 后由 env cap 收回真实值（有效压缩窗口 = min(1M, registry) − ~33K）；SDK `/context` 头条会显 1M（已知装饰性偏差，MyAgents 自己的圆环显 registry 真值）。注意 `claude-sonnet-4-6` 不在此列：Anthropic Sonnet 4.6 wire-default 200K，1M 需要 `context-1m-2025-08-07` beta header + Tier-4 配额或"extra usage"付费开关，订阅默认开 1M 会触发 `Extra usage is required for 1M context` 报错（v0.2.11 修复，预设 contextLength 已降回 200K） | `applyContextWindowSuffix(model)`（`@/server/utils/model-capabilities`）。注意反向：bridge `modelOverride`、`*_MODEL_NAME` env、cron / persisted state、所有用户可见处必须用未 wrap 的原始 model id。SDK `normalizeModelStringForAPI` 在 wire 上剥 `[1m]`，所以上游 API 不会看到后缀 | — (DOM 层级注入位置无固定 AST 形态，靠 review 兜底) |
-| 工具产物的图片 / 音频 / PDF 等富媒体走 `tool_result.content` 字符串或为单点工具写专门 React 组件 | (1) 用户切到 Codex Runtime 调 OpenAI 官方 `image_generation` → 工具卡显示但**图片完全不渲染**（v0.2.15 实战）；(2) 大 base64 直接进 SSE → 撞 256KB 红线；(3) 每个产图工具都要写一个 React 组件——v0.2.15 之前 `mcp__gemini-image__` 是唯一支持的，Codex 官方工具名不匹配走不到分支 | 走协议层一等公民 `tool_result.attachments: ToolAttachment[]`：sidecar 用 `saveToolAttachment(...)`（`src/server/runtimes/tool-attachments.ts`）落盘到 `~/.myagents/generated/tool-attachments/<sid>/<tid>/<file>` 或零拷贝引用外部路径，前端用单一 `ToolAttachmentGallery` 渲染。详见 `tech_docs/tool_attachment_pipeline.md` | — (设计层模式) |
-| 攻击者控制的绝对路径直接进 `validateExternalReadPathNode(path)`（`canonicalizeSymlinks: false`）后引用为 attachment | symlink 逃逸：`~/.codex/sessions/evil_link.png` → `/etc/passwd` lexical 检查通过 → endpoint 流回敏感字节 | 读侧 MUST 用 `canonicalizeSymlinks: true`（默认），`fs.realpath` 解析后再过 blacklist；并 `lstatSync.isSymbolicLink()` 拒绝 symlink leaf；外部路径还要过 `isAllowedExternalAttachmentPrefix` positive allow-list（仅允许 `~/.codex/` `~/.myagents/` `~/Documents/` 等）。详见 `tech_docs/tool_attachment_pipeline.md` 第 4 节 | — (语义检查，靠 review) |
-| URL 下载（`dynamicToolCall.imageUrl` 等 prompt 可控的 URL）直接走 `cancellableFetch(url)` 不限 scheme / 不挡私网 | SSRF：恶意 MCP 工具用 `http://169.254.169.254/...`（AWS metadata）或 `http://127.0.0.1:.../` 让 sidecar 当跳板 | `tool-attachments.ts::downloadAndSaveUrl` 已限定 `https:` + 拒绝 loopback / RFC1918 / 169.254/16 / IPv6 ULA + `redirect: 'error'`。新增"prompt 可控的 URL 下载"路径 MUST 同样校验 | — (调用方语义) |
+| model id 直接喂 SDK ingress（`query({model})`、agents model、`setModel()`、`ANTHROPIC_DEFAULT_*_MODEL` env）不过 `applyContextWindowSuffix` | >200K 窗口模型退回 SDK 200K fallback：auto-compact ~187K 触发、附件按 200K 截（1M 档与 512K/262K 中间档同病，#335） | `applyContextWindowSuffix(model)`（`@/server/utils/model-capabilities`）。**反向**：bridge / cron / 用户可见处必须用未 wrap 原始 id。wrap 策略、sonnet-4-6 例外、registry 裸 key 规则见 `pit_of_success.md`「applyContextWindowSuffix」 | — (靠 review 兜底) |
+| 工具产物富媒体走 `tool_result.content` 字符串或为单点工具写专门 React 组件 | 换 Runtime 后图片不渲染（v0.2.15 实战）；大 base64 撞 256KB SSE 红线；每个产图工具都要新组件 | 协议层一等公民 `tool_result.attachments: ToolAttachment[]` + `saveToolAttachment(...)`，前端统一 `ToolAttachmentGallery`。详见 `tech_docs/tool_attachment_pipeline.md` | — (设计层模式) |
+| 攻击者可控路径以 `canonicalizeSymlinks: false` 校验后引用为 attachment | symlink 逃逸：lexical 检查放行 `evil_link → /etc/passwd`，endpoint 流回敏感字节 | 读侧 `canonicalizeSymlinks: true`（默认）+ 拒绝 symlink leaf + `isAllowedExternalAttachmentPrefix` allow-list。详见 `tech_docs/tool_attachment_pipeline.md` §4 | — (语义检查，靠 review) |
+| prompt 可控的 URL 直接下载，不限 scheme / 不挡私网 | SSRF：`http://169.254.169.254`（云 metadata）/ loopback 把 sidecar 当跳板 | 照 `tool-attachments.ts::downloadAndSaveUrl` 校验（https-only + 拒私网/link-local + `redirect:'error'`）。详见 `tech_docs/tool_attachment_pipeline.md` §4 | — (调用方语义) |
 | Node 端 path-safety 黑名单（`src/server/utils/path-safety.ts`）与 Rust `commands::validate_file_path` 不同步 | 两侧任何一边新增 credential dir 后，另一边静默放行 → 攻击面 | 改一处 MUST 同步另一处。后续 PR 会加 cross-check test（PRD 0.2.15 §7.2 TODO） | — (跨语言同步) |
-| 会话历史恢复让 SSE `chat:message-replay`（sidecar 内存）与 REST 并存为双历史源；或按"已恢复"统一 skip 该事件 | REST（磁盘·权威·分页有序）与内存 replay（可能传输截断）互相覆盖 → 恢复丢最新消息（#0608）；且 `chat:message-replay` **重载**：SSE-connect 冷历史 backfill **＋ 新发 user/command 气泡的 live echo**（前端不本地 append，靠它显示气泡）→ 统一 skip 会吞掉 user 气泡 | 会话历史恢复**唯一权威 = REST `/sessions/:id`**（active session 已 merge 内存未持久化消息），SSE replay 让位：用**同步**标志 `restoredSessionIdRef` 决策，**禁止**用异步滞后的 `historyMessagesRef.length` 做同步 clear 判断；冷历史 backfill 打 `replayKind:'cold-history'`，live echo 不打，**只 skip 冷历史**（纯核心 `sessionRestoreGuards.ts`）。诊断"恢复只显示一部分"：磁盘 `~/.myagents/refs/<id>` spilled body = 后端实发 JSON（node 直接 parse），先把"后端发了什么"与"前端显示什么"一刀切开 | — (语义，靠 review) |
-| 比较工作区路径（`Project.path` ↔ cron/task `workspacePath` / session `agentDir` / config `defaultWorkspacePath`）用 raw `===` 或 inline `.replace(/\\/g,'/')` | Win 上 `projects.json` 存反斜杠、cron/session 存正斜杠 → 永不相等且**静默**：#320 定时任务"升级为新版任务"全报"找不到工作区"，连带 task 卡掉工作区名 / Recent 会话空白 / 工作区过滤全"(已失效)" | `workspacePathsEqual(a,b)` 谓词 / `normalizeWorkspacePathIdentity(p)` 做 Set·Map 键（`src/shared/workspacePath.ts`，Rust `cron_task/validation.rs::normalize_path` 的逐行 TS 端口；键 build+lookup 两侧都要过）。详见 `pit_of_success.md`「workspacePath」 | — (语义，靠 review) |
+| 会话历史恢复让 SSE `chat:message-replay` 与 REST 并存双历史源；或按"已恢复"统一 skip 该事件 | 双源互相覆盖 → 恢复丢最新消息（#0608）；replay 事件**重载**（冷历史 backfill + user 气泡 live echo），统一 skip 会吞掉 user 气泡 | 恢复唯一权威 = REST `/sessions/:id`；同步标志 `restoredSessionIdRef` 决策，**只 skip** `replayKind:'cold-history'`（`sessionRestoreGuards.ts`）。详见 `tech_docs/session_architecture.md`「会话历史恢复」 | — (语义，靠 review) |
+| 比较工作区路径用 raw `===` 或 inline `.replace(/\\/g,'/')` | Win 反斜杠 vs 正斜杠永不相等且**静默**（#320 升级任务/Recent/过滤全链条失效） | `workspacePathsEqual(a,b)` / `normalizeWorkspacePathIdentity(p)` 做 Set·Map 键（`src/shared/workspacePath.ts`，build+lookup 两侧都过）。详见 `pit_of_success.md`「workspacePath」 | — (语义，靠 review) |
 
 ### 架构边界（dependency-cruiser 强制）
 
@@ -271,25 +264,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D c
 
 ## Managed Codex Runtime 资源发布
 
-Managed Codex Runtime 是桌面 App 之外的独立可执行资源。它不随 `publish_release.sh` / `publish_windows.ps1` 上传；只有客户端代码锁定了新的 `REQUIRED_RUNTIME_SET` / `REQUIRED_VERSION`，或需要补发缺失平台资源时，才单独发布。细节见 `specs/guides/build_and_release_guide.md`。
-
-底层脚本入口：
-
-```bash
-./publish_managed_codex_runtime.sh -y
-```
-
-```powershell
-powershell -ExecutionPolicy Bypass -File ./publish_managed_codex_runtime.ps1 -Yes
-```
-
-`package.json` 里的 `npm run publish:managed-codex -- -y` 和 `npm run publish:managed-codex:win -- -Yes` 只是上述脚本的快捷别名，便于 AI / CI 统一调用；真正维护和审查的入口是根目录这两个 publish 脚本。
-
-发布脚本默认从 `src-tauri/src/managed_codex.rs` 读取 `REQUIRED_RUNTIME_SET` 与 `REQUIRED_VERSION`，不要手动从桌面 App 版本推导。macOS 脚本默认发布 `darwin-arm64,darwin-x64`；Windows 脚本默认发布 `win32-x64`。两边上传到同一个 R2 前缀：`runtimes/codex/sets/<runtime-set>/...`。
-
-非交互发布必须显式带 `-y` / `-Yes`。默认禁止覆盖已存在的同平台 manifest；除非确认远端内容错误，否则不要使用 `--force-republish` / `-ForceRepublish`。
-
-Windows 资源必须在 Windows 发布端验证 OpenAI `codex.exe` 的 Authenticode 签名；不要在 macOS 上绕过这一步上传 Windows 正式资源。
+独立于桌面 App 的可执行资源，**不随** `publish_release.sh` / `publish_windows.ps1` 上传；仅当客户端锁定新 `REQUIRED_RUNTIME_SET` / `REQUIRED_VERSION`（权威来源 `src-tauri/src/managed_codex.rs`，别从 App 版本推导）或补发缺失平台时，用根目录 `./publish_managed_codex_runtime.sh -y`（macOS）/ `publish_managed_codex_runtime.ps1 -Yes`（Windows）单独发布。非交互必须显式 `-y`/`-Yes`；默认禁止覆盖已存在的同平台 manifest（`--force-republish` 仅在确认远端内容错误时用）；**Windows 资源必须在 Windows 发布端验证 `codex.exe` 的 Authenticode 签名，不得在 macOS 上绕过**。平台矩阵 / R2 前缀等细节见 `specs/guides/build_and_release_guide.md`。
 
 ## Rust 工具链纪律
 
@@ -303,7 +278,7 @@ Rust 工具链由仓库根目录 `rust-toolchain.toml` 固定，开发机和 CI 
 
 测试不是为了追覆盖率，而是把重要行为、历史事故和架构边界变成可执行契约；AI 开发时 MUST 把它当成开发回合内的护栏，主动跑、即时修。
 
-当前 Vitest 四池（见 `vitest.config.ts`）：`unit` = 纯逻辑快池（`src/shared/**` / `src/renderer/**` 的 `*.test.ts` + server 侧 `*.unit.test.ts`，并行、秒级）；`dom` = `*.test.tsx` 组件 / hook / 安全不变量（jsdom，秒级）；`integration` = CI-safe 后端集成池（`*.integration.test.ts`，singleFork，允许 module globals / loopback / 临时 HOME / SessionStore）；`credentialed` = 真实 Provider / SDK / network smoke（`*.credentialed.test.ts`，显式本地跑，不被 `npm test` / public CI 执行）。`unit` / `integration` 都加载 `src/test/setup-no-egress.ts`，禁止非 loopback 出站；Rust 测试走 `cargo test`，`npm test` 不覆盖 Rust。
+当前 Vitest 四池（`vitest.config.ts`，完整不变量见 `pit_of_success.md`「Test classification」）：`unit` 纯逻辑快池（含 server `*.unit.test.ts`）；`dom` = `*.test.tsx`（jsdom）；`integration` = CI-safe 后端集成池（`*.integration.test.ts`，串行）；`credentialed` = 真实 Provider / SDK / network smoke（显式本地跑，不进 `npm test` / CI）。`unit` / `integration` 禁止非 loopback 出站；Rust 走 `cargo test`，`npm test` 不覆盖。
 
 - **操作速查**：组件测试的 `*.test.tsx` 只进 `dom`，不会被 `test:unit` 覆盖；旧 `stateful` 池已拆成 `integration`（stateful but deterministic，进 CI）和 `credentialed`（真实密钥/真实网络，显式本地跑）；`test:changed` 只适合本地快速回归，改测试分层、CI、runtime/session 边界时仍要跑 `test:classification` + 对应全池。
 - **何时补测试**：修 bug MUST 补能复现该 bug 的回归测试；新增红线 helper / 纯函数 MUST 配单测；改 pure policy / parser / queue / config 判断，优先进 `unit`；改 session / runtime / turn / transcript / IO / security 边界时，补 integration / boundary guard，能静态拦的用 lint / depcruise / clippy。
@@ -333,7 +308,7 @@ Rust 工具链由仓库根目录 `rust-toolchain.toml` 固定，开发机和 CI 
 - **AI / Agent 异常**：搜 `[agent]` `pre-warm` `timeout`
 - **定时任务**：搜 `[CronTask]`
 - **终端**：搜 `[terminal]`
-- **前端整页崩溃（「界面渲染出错」/ 白屏）**：搜 `[AppErrorBoundary]`（`componentDidCatch` 把 error + componentStack 经 console.error 写进统一日志）+ `[REACT] [ERROR]`。`AppErrorBoundary` 在 React 根（main.tsx，所有 provider 外，无 per-tab/per-message 边界）→ **任意组件 render 抛错 = 整页崩**。先看 `error.message`（保真、是定位线索）+ 时间线（崩前用户在做什么）。componentStack 只在 dev / 有 sourcemap 时能定位组件，release 包被 minify。
+- **前端整页崩溃（「界面渲染出错」/ 白屏）**：搜 `[AppErrorBoundary]` + `[REACT] [ERROR]`。边界在 React 根、无 per-tab/per-message 子边界 → **任意组件 render 抛错 = 整页崩**；先看 `error.message` + 时间线。详见 `tech_docs/unified_logging.md`。
 - **Rust 层**：额外查 `~/Library/Logs/com.myagents.app/MyAgents.log`
 
 详见 `tech_docs/unified_logging.md`。
@@ -351,8 +326,3 @@ Rust 工具链由仓库根目录 `rust-toolchain.toml` 固定，开发机和 CI 
 - **utility skill vs system skill**：清单内 = system（强制更新）；其它 = utility（首次 seed 后归用户）
 
 ---
-
-## 求助 / 反馈
-
-- `/help` — Claude Code 用法
-- 反馈：https://github.com/anthropics/claude-code/issues

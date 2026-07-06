@@ -14,8 +14,8 @@
 |----------------|-----------------|
 | `'bypassPermissions'` | ❌ 不调用 |
 | `'default'` | ✅ 正常调用 |
-| `'plan'` | ✅ 正常调用 |
-| `'acceptEdits'` | ✅ 正常调用 |
+| `'plan'` | ⚠️ 仅在**没传** `allowDangerouslySkipPermissions:true` 时调用（见下节 #295） |
+| `'acceptEdits'` | ✅ 正常调用（但会跳过 per-agent `permissionMode`，见下节） |
 
 ```typescript
 // 正确配置
@@ -30,6 +30,26 @@ query({
   }
 });
 ```
+
+## ⚠️ SDK 根本不调 canUseTool 的路径 → 必须用 hook 硬闸
+
+**canUseTool 不是万能闸。** SDK 原生权限解析器在多条路径上直接短路，`canUseTool` 一次都不会被调用。把安全规则只写在 canUseTool 里，在这些路径上是**静默失效**：
+
+### 路径 1：plan 模式被 `allowDangerouslySkipPermissions:true` 降级为 allow-all（issue #295）
+
+MyAgents 为了 fullAgency 热切换永远传 `allowDangerouslySkipPermissions:true`，这使原生 CLI `isBypassPermissionsModeAvailable=true`。原生解析器逻辑是 `plan && bypassAvailable → "allow"`——只有走到 `"ask"` 分支才会发 `can_use_tool` 消息。后果：plan 模式下 canUseTool 的只读规则根本不跑，弱模型 `rm -rf` / `Edit` 直接执行，`permission_denials` 为空。
+
+**修法：`PreToolUse` hook 硬闸**（`src/server/plan-mode-gate.ts`）。hook 跑在原生解析器**之前**，`deny` 被无条件采纳。fail-closed 设计：同时看 SDK 传入的 `permission_mode` **和**本地 live 镜像 `currentPermissionMode`，任一为 `plan` 即拦——覆盖 agent 配置、UI 切换、AI 中途 `EnterPlanMode` 三条进入 plan 的路径（flag+respawn 做不到 mid-turn 生效）。allowlist 与 `getPermissionRules('plan')` 共享。纯核心可单测。
+
+### 路径 2：后台子 Agent（`run_in_background`）从不进 canUseTool（issue #264）
+
+后台子 Agent 的工具调用走 SDK `PermissionRequest` hook（消息带 `agent_id`，且 `task_started.task_id === agent_id` 可用于关联后台性），无人放行就**自动拒绝**——症状是委派静默失败，不是挂死。per-agent `permissionMode` 也救不了：MyAgents 默认 `auto→acceptEdits` 下 per-agent mode 被 SDK 跳过。
+
+**修法：注册 `PermissionRequest` hook**（`src/server/background-agent-permission.ts`）+ `AppConfig.backgroundAgentPermissionMode`（`'inherit'` 继承 sessionAlwaysAllowed / `'fullAgency'` 自治）。
+
+### 通用教训
+
+SDK 权限相关的拦截需求，先问"这条路径 canUseTool 到底会不会被调"——不确定就用 hook（`PreToolUse` / `PermissionRequest`），hook 在原生解析器之前执行且 deny 无条件生效。两个既有 hook 文件就是样板。
 
 ## ⚠️ 必须包含 updatedInput
 
