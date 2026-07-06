@@ -57,6 +57,7 @@
 | Plugin Bridge / OpenClaw / SDK shim | `tech_docs/plugin_bridge_architecture.md` |
 | Claude Code / Codex / Gemini Runtime | `tech_docs/multi_agent_runtime.md` |
 | Session ID / 存储 / 状态同步 | `tech_docs/session_architecture.md` |
+| System Reminder 隐藏消息协议 / user bubble badge / 注入 user message 的隐藏 payload | `tech_docs/system_reminder_protocol.md` |
 | Task / Cron provider routing 三层架构 | `tech_docs/task_provider_routing.md` |
 | 全文搜索（Tantivy / jieba） | `tech_docs/search_architecture.md` |
 | 内置 Node.js / SDK native binary / PATH 注入 | `tech_docs/bundled_node.md` |

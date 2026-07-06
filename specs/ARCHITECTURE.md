@@ -909,6 +909,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 ### 通信与会话
 - [Session 架构](./tech_docs/session_architecture.md) — ID 格式、JSONL 存储、SDK 双重存储、状态同步
+- [System Reminder 隐藏消息协议](./tech_docs/system_reminder_protocol.md) — 注入 user message 的 hidden payload、badge tag、visible tail 前端展示规则
 - [代理配置](./tech_docs/proxy_config.md) — 系统代理 + SOCKS5 桥接
 - [统一日志](./tech_docs/unified_logging.md) — 日志格式、来源、排查指南
 - [三方供应商](./tech_docs/third_party_providers.md) — 环境变量、认证模式、Bridge 原理

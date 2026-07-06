@@ -126,3 +126,26 @@ describe('Space issue system-reminder user bubble', () => {
         expect(container).not.toHaveTextContent('hidden issue facts');
     });
 });
+
+describe('Heartbeat system-reminder user bubble', () => {
+    it('hides cron relay payload and renders only the visible system notice', () => {
+        const content = [
+            '<system-reminder>',
+            '<HEARTBEAT>',
+            '<instruction>hidden relay instruction</instruction>',
+            '<task-meta>hidden task metadata</task-meta>',
+            '<task-result>hidden task result</task-result>',
+            '</HEARTBEAT>',
+            '</system-reminder>',
+            '[System]收到来自系统投送的信息',
+        ].join('\n');
+
+        const { container } = render(<Message message={userMessage(content)} />);
+
+        expect(container).toHaveTextContent('[System]收到来自系统投送的信息');
+        expect(container).toHaveTextContent(/Heartbeat|心跳感知/);
+        expect(container).not.toHaveTextContent('hidden relay instruction');
+        expect(container).not.toHaveTextContent('hidden task metadata');
+        expect(container).not.toHaveTextContent('hidden task result');
+    });
+});

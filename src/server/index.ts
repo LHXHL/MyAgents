@@ -668,8 +668,7 @@ import type { RuntimeBackedProviderIdentity } from '../shared/providerExecution'
 import { normalizeSessionOrigin, originFromTurnAttribution } from '../shared/session-origin';
 import type { SessionOrigin } from '../shared/session-origin';
 import type { InteractionScenario } from './system-prompt';
-// PRD 0.2.18 Session Inbox — sanitize helper for cron envelope wrapping
-import { neutralizeInboxStructuralTags, sanitizeInboxLabel } from './inbox/sanitize-label';
+import { buildCronEventRelayMessage } from './utils/cron-event-relay';
 
 type PermissionMode = 'auto' | 'plan' | 'fullAgency' | 'custom';
 
@@ -1815,81 +1814,6 @@ function pushSystemEvent(event: { event: string; content: string; timestamp: num
 /** Drain all pending system events (used by heartbeat endpoint) */
 export function drainSystemEvents(): Array<{ event: string; content: string; timestamp: number; taskId?: string }> {
   return systemEventQueue.splice(0);
-}
-
-/** Build a dedicated prompt for cron completion events (replaces standard heartbeat prompt) */
-function buildCronEventPrompt(
-  cronEvents: Array<{
-    event: string;
-    content: string;
-    timestamp: number;
-    taskId?: string;
-    // PRD 0.2.18 Phase 3 — inbox envelope bridge: when present, wrap content
-    // with `<inbox-message from="..." reply_back="false">` so the IM Bot AI
-    // sees the same envelope context as `myagents session send` messages.
-    fromSessionId?: string;
-    fromLabel?: string;
-  }>
-): string {
-  const now = new Date().toLocaleString('en-US', {
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
-  });
-
-  // Lazy-load sanitize helper — used only when from_label is present.
-  const wrapInboxIfNeeded = (
-    e: { content: string; fromSessionId?: string; fromLabel?: string; taskId?: string },
-  ): string => {
-    if (!e.fromSessionId || !e.fromLabel) return e.content;
-    const label = sanitizeInboxLabel(e.fromLabel);
-    // Cross-review CC HIGH #5 + Architecture M1: use the single-source-of-truth
-    // helper instead of an inline copy. Inline regex was missing whitespace-
-    // tolerant close tags and fullwidth-bracket smuggling (cross-review Codex
-    // Critical #2) — defense in the shared helper covers both.
-    const safeBody = neutralizeInboxStructuralTags(e.content);
-    return `<inbox-message from="${label}" reply_back="false">\n${safeBody}\n</inbox-message>`;
-  };
-
-  if (cronEvents.length === 1) {
-    const e = cronEvents[0];
-    const wrappedContent = wrapInboxIfNeeded(e);
-    return (
-      'A scheduled task has been triggered and completed. ' +
-      'Please relay these results to the user in a helpful and friendly way.\n' +
-      `Task id: ${e.taskId || 'unknown'}\n` +
-      (e.fromSessionId ? `Source session id: ${e.fromSessionId} (use \`myagents session send ${e.fromSessionId} -p "..."\` to follow up)\n` : '') +
-      `Current time: ${now}\n` +
-      'The task results are:\n' +
-      '```markdown\n' +
-      wrappedContent + '\n' +
-      '```'
-    );
-  }
-
-  // Multiple tasks
-  let prompt =
-    'Scheduled tasks have been triggered and completed. ' +
-    'Please relay these results to the user in a helpful and friendly way.\n' +
-    `Current time: ${now}\n`;
-
-  // PRD 0.2.18 cross-review fix (CC): align with single-event branch by also
-  // emitting follow-up hint when fromSessionId is present, so the IM Bot AI
-  // knows it can `myagents session send <sid>` to ask follow-ups on any of
-  // the bundled cron deliveries.
-  for (const e of cronEvents) {
-    const wrappedContent = wrapInboxIfNeeded(e);
-    prompt +=
-      `\nTask id: ${e.taskId || 'unknown'}\n` +
-      (e.fromSessionId
-        ? `Source session id: ${e.fromSessionId} (use \`myagents session send ${e.fromSessionId} -p "..."\` to follow up)\n`
-        : '') +
-      'The task results are:\n' +
-      '```markdown\n' +
-      wrappedContent + '\n' +
-      '```\n';
-  }
-  return prompt;
 }
 
 /**
@@ -8999,7 +8923,7 @@ async function main() {
               content: string;
               timestamp: number;
               // PRD 0.2.18 Phase 3 — inbox envelope bridge fields (optional).
-              // When present, buildCronEventPrompt wraps the cron content with
+              // When present, buildCronEventRelayMessage wraps the cron content with
               // an `<inbox-message from="..." reply_back="false">` prefix so
               // the IM Bot AI can `myagents session send <fromSessionId>` to
               // follow up. Cron uses reply_back=false because the cron task
@@ -9136,10 +9060,14 @@ description: >
           }
 
           let enrichedPrompt: string;
+          let alreadyWrappedSystemReminder = false;
 
           if (effectiveCronEvents.length > 0) {
-            // Cron event prompt: completely replaces standard heartbeat prompt
-            enrichedPrompt = buildCronEventPrompt(effectiveCronEvents);
+            // Cron event prompt: completely replaces standard heartbeat prompt.
+            // It already contains the hidden <system-reminder><HEARTBEAT> payload
+            // plus a user-visible tail for the chat bubble.
+            enrichedPrompt = buildCronEventRelayMessage(effectiveCronEvents);
+            alreadyWrappedSystemReminder = true;
             // Push back non-cron events so they aren't lost — next heartbeat cycle will pick them up
             for (const e of otherEvents) {
               pushSystemEvent(e);
@@ -9155,10 +9083,16 @@ description: >
             }
           }
 
-          // Wrap the entire heartbeat message in <system-reminder><HEARTBEAT> tags
-          enrichedPrompt = `<system-reminder>\n<HEARTBEAT>\n${enrichedPrompt}\n</HEARTBEAT>\n</system-reminder>`;
+          // Wrap ordinary heartbeat messages in <system-reminder><HEARTBEAT> tags.
+          // Cron relay messages already carry that envelope and keep the visible
+          // bubble text outside it.
+          if (!alreadyWrappedSystemReminder) {
+            enrichedPrompt = `<system-reminder>\n<HEARTBEAT>\n${enrichedPrompt}\n</HEARTBEAT>\n</system-reminder>`;
+          }
 
-          // Inject heartbeat prompt as user message (wrapped in <system-reminder><HEARTBEAT> tags)
+          // Inject heartbeat prompt as user message. Ordinary heartbeat turns are
+          // pure <system-reminder><HEARTBEAT> payloads; cron relay turns append a
+          // short visible system notice after that hidden envelope.
           // System prompt is already permanently injected at IM session creation (/api/im/chat)
           // Heartbeat is unattended — bypass all permissions so tool use doesn't block.
           // Pass current model + providerEnv for consistency (undefined is also safe —

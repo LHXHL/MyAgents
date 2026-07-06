@@ -128,7 +128,9 @@ metadata 来选择 registered-agent scenario 和 lazy session materialization，
 prompt 不走通用 `<myagents-session-event>` 外包。Rust Space owner 会直接渲染
 `<system-reminder><myagents-space-issue><myagents-space-event ...>` user message，
 让前端隐藏内部处理指令并显示 `Space issue` badge。这个特例只适用于 Space Issue
-delivery，不改变 `myagents session send/watch` 的通用事件协议。
+delivery，不改变 `myagents session send/watch` 的通用事件协议。`system-reminder`
+的通用隐藏 payload / badge / visible tail 规则见
+`system_reminder_protocol.md`。
 
 ### Desktop 连续 Query 队列模式（0.2.37）
 
