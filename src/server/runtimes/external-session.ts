@@ -38,6 +38,7 @@ import { deriveSessionTitle } from '../../shared/sessionTitle';
 import { isPendingSessionId } from '../../shared/constants';
 import { resolveChatQueueResponseMode } from '../session-core/turn-queue';
 import {
+  commitPreparedSessionForFirstUserTurn,
   saveSessionMetadata,
   updateSessionMetadata,
   getSessionMetadata,
@@ -733,8 +734,9 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
   userMsg: SessionMessage;
   failureContext: string;
 }): Promise<void> {
+  let metadataResult: { preparedExisting: boolean; runtimeSessionId?: string };
   try {
-    await ensureExternalSessionMetadataForRealUserTurn({
+    metadataResult = await ensureExternalSessionMetadataForRealUserTurn({
       sessionId: params.sessionId,
       workspacePath: params.workspacePath,
       messageText: params.messageText,
@@ -748,6 +750,21 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
   } catch (err) {
     rollbackPreDispatchUserTurn(params.userMsg, err instanceof Error ? err.message : String(err));
     throw err;
+  }
+
+  if (metadataResult.preparedExisting) {
+    try {
+      const updated = await commitPreparedSessionForFirstUserTurn(params.sessionId, {
+        messageText: params.messageText,
+        runtimeSessionId: metadataResult.runtimeSessionId,
+        origin: params.birthOrigin,
+      });
+      if (!updated) {
+        console.warn(`[external-session] prepared metadata commit skipped for ${params.sessionId}: metadata disappeared after user message persist`);
+      }
+    } catch (err) {
+      console.warn('[external-session] prepared metadata commit after user message persist failed:', err);
+    }
   }
 }
 
@@ -766,7 +783,7 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
   turnPath: ExternalMetadataTurnPath;
   metadataBirthPending?: boolean;
   birthOrigin?: SessionOrigin;
-}): Promise<void> {
+}): Promise<{ preparedExisting: boolean; runtimeSessionId?: string }> {
   const { sessionId, workspacePath, messageText, origin, scenario, turnPath } = params;
   if (!sessionId) {
     throw new Error(`[external-session] Cannot persist ${origin}: missing sessionId`);
@@ -775,9 +792,13 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
   const pendingBirth = pendingBirthForSession(sessionId);
   const existing = getSessionMetadata(sessionId);
   if (existing) {
-    if (pendingBirth?.runtimeSessionId && existing.runtimeSessionId !== pendingBirth.runtimeSessionId) {
+    const runtimeSessionId = pendingBirth?.runtimeSessionId;
+    if (existing.materializationState === 'prepared') {
+      clearPendingExternalSessionBirth(sessionId);
+      return { preparedExisting: true, runtimeSessionId };
+    } else if (runtimeSessionId && existing.runtimeSessionId !== runtimeSessionId) {
       try {
-        const updated = await updateSessionMetadata(sessionId, { runtimeSessionId: pendingBirth.runtimeSessionId });
+        const updated = await updateSessionMetadata(sessionId, { runtimeSessionId });
         if (!updated) {
           console.warn(`[external-session] runtimeSessionId patch skipped for ${sessionId}: metadata disappeared during ${origin}`);
         }
@@ -786,7 +807,7 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
       }
     }
     clearPendingExternalSessionBirth(sessionId);
-    return;
+    return { preparedExisting: false };
   }
 
   const hasOwnedFreshStartAuthority =
@@ -837,6 +858,7 @@ async function ensureExternalSessionMetadataForRealUserTurn(params: {
   }
   clearPendingExternalSessionBirth(sessionId);
   console.log(`[external-session] session ${sessionId} persisted to SessionStore (${origin})`);
+  return { preparedExisting: false };
 }
 
 function flushPendingThinking(forceComplete: boolean): void {

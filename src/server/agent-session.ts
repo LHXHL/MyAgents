@@ -85,7 +85,7 @@ import {
 import type { SystemInitInfo } from '../shared/types/system';
 import type { SlashCommand as UiSlashCommand } from '../shared/slashCommands';
 import type { OfficialToolId } from '../shared/official-tools';
-import { deleteSession, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData } from './SessionStore';
+import { commitPreparedSessionForFirstUserTurn, deleteSession, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData } from './SessionStore';
 import { firePostTurnTitleHook } from './turn-hooks';
 import { createSessionMetadata, type SessionMetadata, type SessionMessage, type MessageAttachment, type SessionSource, type TurnAnalyticsSource } from './types/session';
 import { originFromMaterializationScenario } from '../shared/session-origin';
@@ -861,9 +861,10 @@ async function surfaceInFlightQueueItem(
   }
 
   if (options.awaitPersist) {
-    await persistMessagesToStorage();
+    await persistMessagesToStorageAndCommitPreparedFirstUserTurn(userMessage.content as string);
   } else if (options.schedulePersist) {
-    void persistMessagesToStorage().catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
+    void persistMessagesToStorageAndCommitPreparedFirstUserTurn(userMessage.content as string)
+      .catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
   }
 
   // PRD 0.2.14 — desktop → IM mirror (queued replay / confirmed boundary path).
@@ -1632,7 +1633,8 @@ function startNextTurnQueuedItem(
     metadata: item.source ? { source: item.source } : undefined,
   };
   appendMessage(userMessage);
-  void persistMessagesToStorage().catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
+  void persistMessagesToStorageAndCommitPreparedFirstUserTurn(item.messageText)
+    .catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
 
   if (item.source === 'desktop') {
     fireDesktopUserMirror(item.messageText, item.mirrorImages);
@@ -4182,6 +4184,36 @@ async function persistMessagesToStorage(targetMessageCount = transcriptState.mes
   });
 }
 
+async function commitPreparedSessionAfterUserMessagePersist(
+  messageText: string,
+  origin?: SessionOrigin,
+): Promise<void> {
+  const meta = getSessionMetadata(sessionId);
+  if (meta?.materializationState !== 'prepared') return;
+  const title = deriveSessionTitle(messageText, 40) || (messageText ? 'New Chat' : '图片消息');
+  const updated = await commitPreparedSessionForFirstUserTurn(sessionId, {
+    messageText,
+    title,
+    origin,
+  });
+  if (!updated) {
+    console.warn(`[agent] prepared metadata commit skipped for ${sessionId}: metadata disappeared after user message persist`);
+  }
+}
+
+async function persistMessagesToStorageAndCommitPreparedFirstUserTurn(
+  messageText: string,
+  origin?: SessionOrigin,
+  targetMessageCount = transcriptState.messages.length,
+): Promise<void> {
+  await persistMessagesToStorage(targetMessageCount);
+  try {
+    await commitPreparedSessionAfterUserMessagePersist(messageText, origin);
+  } catch (error) {
+    console.warn('[agent] prepared metadata commit after user message persist failed:', error);
+  }
+}
+
 export function getSessionId(): string {
   return sessionId;
 }
@@ -4226,8 +4258,6 @@ export async function ensureSessionMetadataForSdkSystemInit(nextSystemInit: Syst
     const updated = await updateSessionMetadata(targetSessionId, {
       sdkSessionId: sdkSessionId ?? targetSessionId,
       unifiedSession: sdkSessionId ? sdkSessionId === targetSessionId : targetMeta.unifiedSession,
-      materializationState: undefined,
-      materializationSourceSessionId: undefined,
     });
     if (!updated) {
       throw new Error(`[agent] failed to update session metadata for SDK system_init session ${targetSessionId}`);
@@ -4246,8 +4276,6 @@ export async function ensureSessionMetadataForSdkSystemInit(nextSystemInit: Syst
           id: targetSessionId,
           sdkSessionId: sdkSessionId ?? targetSessionId,
           unifiedSession: sdkSessionId ? sdkSessionId === targetSessionId : previousMeta.unifiedSession,
-          materializationState: undefined,
-          materializationSourceSessionId: undefined,
         }
       : createMetadataForSessionId(
           targetSessionId,
@@ -4288,7 +4316,8 @@ export async function ensureSessionMetadataForSdkSystemInit(nextSystemInit: Syst
 }
 
 async function materializeInitialPromptSessionMetadata(initialPromptText: string): Promise<void> {
-  if (getSessionMetadata(sessionId)) {
+  const existing = getSessionMetadata(sessionId);
+  if (existing) {
     setLazySessionMaterializationAllowed(false);
     return;
   }
@@ -8026,15 +8055,12 @@ export async function enqueueUserMessage(
       // to '' but is not an image message — only reserve '图片消息' for genuinely
       // text-less (image-only) input; otherwise 'New Chat'.
       const title = deriveSessionTitle(trimmed, 40) || (trimmed ? 'New Chat' : '图片消息');
-      const existingPatch: Partial<SessionMetadata> = {};
-      if (existingMeta.title === 'New Chat') {
-        existingPatch.title = title;
-      }
-      if (!existingMeta.origin && options?.sessionBirthOrigin) {
-        existingPatch.origin = options.sessionBirthOrigin;
-      }
-      if (Object.keys(existingPatch).length > 0) {
-        await updateSessionMetadata(sessionId, existingPatch);
+      if (existingMeta.materializationState !== 'prepared') {
+        await commitPreparedSessionForFirstUserTurn(sessionId, {
+          messageText: trimmed,
+          title,
+          origin: options?.sessionBirthOrigin,
+        });
       }
       console.log(`[agent] session ${sessionId} already exists in SessionStore, preserving stats`);
     } else {
@@ -8454,7 +8480,7 @@ export async function enqueueUserMessage(
   broadcast('chat:message-replay', { message: userMessage });
 
   // Persist transcriptState.messages to disk after adding user message
-  await persistMessagesToStorage();
+  await persistMessagesToStorageAndCommitPreparedFirstUserTurn(trimmed, options?.sessionBirthOrigin);
 
   // PRD 0.2.14 — desktop → IM mirror (direct-send path, single push site).
   // Q1·C: mirror the full user text + PNG/JPG attachments. Rust silently

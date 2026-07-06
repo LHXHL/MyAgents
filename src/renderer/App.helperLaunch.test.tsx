@@ -363,6 +363,8 @@ describe('App helper launch', () => {
             runtimeSource: 'managed-provider',
             model: 'gpt-5.5',
           }),
+          prepareForFirstUserMessage: true,
+          materializationSourceSessionId: expect.stringMatching(/^pending-/),
         }),
       );
     });
@@ -414,6 +416,8 @@ describe('App helper launch', () => {
           reasoningEffort: 'xhigh',
           mcpEnabledServers: ['filesystem'],
           enabledPluginIds: ['plugin-a'],
+          prepareForFirstUserMessage: true,
+          materializationSourceSessionId: expect.stringMatching(/^pending-/),
         }),
       );
     });

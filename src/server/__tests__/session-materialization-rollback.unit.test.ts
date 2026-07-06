@@ -219,7 +219,7 @@ describe('materializePendingDesktopSession rollback guard', () => {
     expect(result.metadata?.materializationSourceSessionId).toBeTruthy();
   });
 
-  it('migrates pending builtin SDK system_init metadata to the concrete SDK session id', async () => {
+  it('migrates pending builtin SDK system_init metadata to the concrete SDK session id without committing visibility', async () => {
     const savedMetadata = new Map<string, SessionMetadata>();
     const pendingMeta: SessionMetadata = {
       id: 'pending-tab-1',
@@ -257,8 +257,8 @@ describe('materializePendingDesktopSession rollback guard', () => {
       id: concreteSessionId,
       sdkSessionId: concreteSessionId,
       unifiedSession: true,
-      materializationState: undefined,
-      materializationSourceSessionId: undefined,
+      materializationState: 'prepared',
+      materializationSourceSessionId: 'pending-tab-1',
     });
     expect(savedMetadata.has('pending-tab-1')).toBe(false);
   });

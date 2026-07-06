@@ -1921,6 +1921,8 @@ export default function App() {
           const prepared = await createSession(project.path, birth.runtime, {
             ...birth.opts,
             origin: originFromDesktopSurface(pendingSurfaceForLaunch?.surface),
+            prepareForFirstUserMessage: true,
+            materializationSourceSessionId: effectiveSessionId,
           });
           effectiveSessionId = prepared.id;
         } catch (err) {

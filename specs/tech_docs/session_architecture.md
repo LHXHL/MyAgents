@@ -39,8 +39,8 @@ interface SessionMetadata {
     providerRoute?: ProviderRoute; // canonical builtin provider/model identity
     providerEnvJson?: string;      // read-only legacy fallback; new route snapshots do not persist env
     configSnapshotAt?: string;  // 存在即 owned snapshot；读侧不得用 Agent 补 owned 缺字段
-    materializationState?: 'prepared'; // pending->real 两阶段 materialize 隐藏行
-    materializationSourceSessionId?: string; // prepared 来源 pending id
+    materializationState?: 'prepared'; // pending->real 两阶段 materialize、runtime-backed 首 query 前草稿隐藏行
+    materializationSourceSessionId?: string; // prepared 来源 pending/desktop draft id
 }
 
 interface SessionStats {

@@ -34,6 +34,7 @@ pub mod process_cmd;
 mod proxy_config;
 pub mod search;
 pub mod session_metadata;
+pub mod session_visibility;
 mod sidecar;
 pub mod space_cloud;
 mod space_cloud_mock;

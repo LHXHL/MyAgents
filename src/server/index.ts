@@ -583,6 +583,7 @@ import {
   getSessionData,
   getSessionMetadata,
   getSessionsByAgentDir,
+  isHistoryVisibleSession,
   updateSessionMetadata,
   getAttachmentPath,
 } from './SessionStore';
@@ -3755,7 +3756,7 @@ async function main() {
           // Zero-trust: strip providerEnvJson before handing to clients.
           // Matches PATCH response behavior (see PATCH /sessions/:id).
           const safeSessions = sessions
-            .filter((session) => session.materializationState !== 'prepared')
+            .filter(isHistoryVisibleSession)
             .map(normalizeSessionListPreview)
             .map(redactSessionMetadata);
           return jsonResponse({ success: true, sessions: safeSessions });
@@ -3784,6 +3785,8 @@ async function main() {
           enabledPluginIds?: string[];
           enabledOfficialToolIds?: import('../shared/official-tools').OfficialToolId[];
           origin?: unknown;
+          prepareForFirstUserMessage?: boolean;
+          materializationSourceSessionId?: string;
         };
         let payload: CreateSessionPayload;
         try {
@@ -3813,10 +3816,16 @@ async function main() {
         if (payload.origin !== undefined && !payloadOrigin) {
           return jsonResponse({ success: false, error: 'Invalid session origin.' }, 400);
         }
+        const payloadProviderExecutionIdentity = payload.providerExecutionIdentity === undefined
+          ? undefined
+          : runtimeBackedProviderIdentityFromSnapshot(payload.providerExecutionIdentity);
+        if (payload.providerExecutionIdentity !== undefined && !payloadProviderExecutionIdentity) {
+          return jsonResponse({ success: false, error: 'Invalid providerExecutionIdentity.' }, 400);
+        }
         const managedCodexReady = isManagedCodexProviderReady(loadConfig());
         if (
           runtimeSourceValue === 'managed-provider'
-          || payload.providerExecutionIdentity?.runtimeSource === 'managed-provider'
+          || payloadProviderExecutionIdentity?.runtimeSource === 'managed-provider'
           || payload.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
         ) {
           if (!managedCodexReady) {
@@ -3825,7 +3834,7 @@ async function main() {
               error: managedCodexNotReadyMessage('session creation'),
             }, 400);
           }
-          if (runtimeSourceValue === 'managed-provider' && !payload.providerExecutionIdentity) {
+          if (runtimeSourceValue === 'managed-provider' && !payloadProviderExecutionIdentity) {
             return jsonResponse({
               success: false,
               error: 'Managed Codex session creation requires providerExecutionIdentity.',
@@ -3857,10 +3866,10 @@ async function main() {
         if (runtimeSourceValue && (baseSnapshot.runtime ?? runtimeValue) !== 'builtin') {
           baseSnapshot.runtimeSource = runtimeSourceValue;
         }
-        if (payload.providerExecutionIdentity) {
-          baseSnapshot.providerExecutionIdentity = payload.providerExecutionIdentity;
-          baseSnapshot.providerId = payload.providerExecutionIdentity.providerId;
-          baseSnapshot.model = payload.providerExecutionIdentity.model;
+        if (payloadProviderExecutionIdentity) {
+          baseSnapshot.providerExecutionIdentity = payloadProviderExecutionIdentity;
+          baseSnapshot.providerId = payloadProviderExecutionIdentity.providerId;
+          baseSnapshot.model = payloadProviderExecutionIdentity.model;
           baseSnapshot.providerRoute = undefined;
           baseSnapshot.providerEnvJson = undefined;
         } else {
@@ -3900,6 +3909,25 @@ async function main() {
         if (payload.mcpEnabledServers !== undefined) baseSnapshot.mcpEnabledServers = payload.mcpEnabledServers;
         if (payload.enabledPluginIds !== undefined) baseSnapshot.enabledPluginIds = payload.enabledPluginIds;
         if (payload.enabledOfficialToolIds !== undefined) baseSnapshot.enabledOfficialToolIds = payload.enabledOfficialToolIds;
+        if (payload.prepareForFirstUserMessage === true) {
+          if (baseSnapshot.origin?.kind !== 'desktop') {
+            return jsonResponse({
+              success: false,
+              error: 'Prepared session birth is only supported for desktop sessions.',
+            }, 400);
+          }
+          if (!baseSnapshot.providerExecutionIdentity) {
+            return jsonResponse({
+              success: false,
+              error: 'Prepared session birth requires providerExecutionIdentity.',
+            }, 400);
+          }
+          baseSnapshot.materializationState = 'prepared';
+          baseSnapshot.materializationSourceSessionId = typeof payload.materializationSourceSessionId === 'string'
+            && payload.materializationSourceSessionId.trim()
+            ? payload.materializationSourceSessionId.trim()
+            : undefined;
+        }
         const session = await createSession(agentDirValue, baseSnapshot);
         return jsonResponse({ success: true, session });
       }
