@@ -31,7 +31,7 @@ let BASE = '';
 const rawArgs = process.argv.slice(2);
 
 /** Parse CLI arguments into structured flags and positional args */
-function parseArgs(args: string[]): { positional: string[]; flags: Record<string, unknown> } {
+export function parseArgs(args: string[]): { positional: string[]; flags: Record<string, unknown> } {
   const positional: string[] = [];
   const flags: Record<string, unknown> = {};
   const repeatable = new Set(['args', 'env', 'headers', 'models', 'model-names', 'image']);
@@ -106,8 +106,13 @@ function parseArgs(args: string[]): { positional: string[]; flags: Record<string
           continue;
         }
         arr.push(value);
+        let j = i + 2;
+        while (j < args.length && !args[j].startsWith('--')) {
+          arr.push(args[j]);
+          j++;
+        }
         flags[cKey] = arr;
-        i += 2;
+        i = j;
         continue;
       }
       // Key-value flags (non-repeatable)
@@ -3762,7 +3767,9 @@ function parseIntervalMinutesFlag(raw: unknown): number | undefined {
 // Entry
 // ---------------------------------------------------------------------------
 
-main().catch(err => {
-  console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
-  process.exit(1);
-});
+if (!process.env.VITEST) {
+  main().catch(err => {
+    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  });
+}

@@ -56,6 +56,7 @@ export default defineConfig({
           include: [
             'src/shared/**/*.test.ts',
             'src/renderer/**/*.test.ts',
+            'src/cli/**/*.unit.test.ts',
             'src/server/**/*.unit.test.ts',
           ],
           setupFiles: ['src/test/setup-no-egress.ts'],

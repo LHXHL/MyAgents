@@ -100,6 +100,35 @@ describe('admin-api help registry', () => {
   });
 });
 
+describe('admin-api model add', () => {
+  it('expands custom provider models from repeated and comma-separated CLI inputs', async () => {
+    const { handleModelAdd } = await import('./admin-api');
+
+    const result = handleModelAdd({
+      dryRun: true,
+      provider: {
+        id: 'sensenova',
+        name: 'SensNova',
+        baseUrl: 'https://token.sensenova.cn/v1',
+        apiProtocol: 'openai',
+        authType: 'api_key',
+        models: ['sensenova-6.7-flash-lite, deepseek-v4-flash', 'glm-5.2', 'deepseek-v4-flash'],
+        modelNames: ['Flash Lite', 'DeepSeek Flash', 'GLM 5.2', 'Duplicate Name'],
+        primaryModel: 'deepseek-v4-flash',
+      },
+    });
+
+    expect(result.success).toBe(true);
+    const preview = result.preview as { models: Array<{ model: string; modelName: string }>; primaryModel: string };
+    expect(preview.primaryModel).toBe('deepseek-v4-flash');
+    expect(preview.models).toEqual([
+      { model: 'sensenova-6.7-flash-lite', modelName: 'Flash Lite', modelSeries: 'sensenova' },
+      { model: 'deepseek-v4-flash', modelName: 'DeepSeek Flash', modelSeries: 'sensenova' },
+      { model: 'glm-5.2', modelName: 'GLM 5.2', modelSeries: 'sensenova' },
+    ]);
+  });
+});
+
 describe('admin-api MCP project scope', () => {
   it('fails project-only enable when the current workspace is not registered', async () => {
     const { handleMcpEnable } = await import('./admin-api');
