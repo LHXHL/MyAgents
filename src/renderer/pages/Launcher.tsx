@@ -1,7 +1,7 @@
 /**
  * Launcher - Main entry page for MyAgents
  * Two-column layout: Brand section (left 60%) + Workspaces (right 40%)
- * Responsive: stacks vertically below 768px
+ * Responsive: stacks vertically below 640px
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';

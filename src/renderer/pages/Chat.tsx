@@ -125,7 +125,7 @@ import {
   projectInputChromeRuntime,
   shouldUseExternalRuntimeInputControls,
 } from '@/utils/runtimeUiProjection';
-import { resolveWorkspacePanelMode } from '@/utils/chatWorkspaceLayout';
+import { DEFAULT_WORKSPACE_LAYOUT_METRICS, resolveWorkspacePanelMode } from '@/utils/chatWorkspaceLayout';
 import {
   isManagedProviderSessionSnapshot,
   managedProviderSnapshotModel,
@@ -157,6 +157,39 @@ type SwitchDialogCopy = {
   message: string;
   confirmText: string;
 };
+
+type WorkspaceLayoutMetrics = {
+  viewportWidthPx: number;
+  contentMinWidthPx: number;
+  sidebarMinWidthPx: number;
+};
+
+function readRootPixelToken(tokenName: string, fallback: number): number {
+  if (typeof document === 'undefined') return fallback;
+  const value = Number.parseFloat(
+    getComputedStyle(document.documentElement).getPropertyValue(tokenName),
+  );
+  return Number.isFinite(value) ? value : fallback;
+}
+
+function readWorkspaceLayoutMetrics(): WorkspaceLayoutMetrics {
+  return {
+    viewportWidthPx: typeof window === 'undefined' ? Number.POSITIVE_INFINITY : window.innerWidth,
+    contentMinWidthPx: readRootPixelToken(
+      '--breakpoint-mobile',
+      DEFAULT_WORKSPACE_LAYOUT_METRICS.contentMinWidthPx,
+    ),
+    sidebarMinWidthPx: readRootPixelToken(
+      '--sidebar-min-width',
+      DEFAULT_WORKSPACE_LAYOUT_METRICS.sidebarMinWidthPx,
+    ),
+  };
+}
+
+function shouldShowWorkspaceByDefault(): boolean {
+  const metrics = readWorkspaceLayoutMetrics();
+  return metrics.viewportWidthPx - metrics.sidebarMinWidthPx >= metrics.contentMinWidthPx;
+}
 
 // Lazy load FilePreviewModal for split view panel
 const FilePreviewModal = lazy(() => import('@/components/FilePreviewModal'));
@@ -602,11 +635,11 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // Imperative handle for the inline title editor — lets the SessionMenuButton's
   // "重命名" item invoke the same flow as clicking the title.
   const titleEditorRef = useRef<SessionTitleEditorHandle>(null);
-  // Narrow mode: workspace renders as overlay drawer instead of side panel
-  // Initialize from window.innerWidth to avoid layout flash (FOUC) on first render
-  const [isNarrowLayout, setIsNarrowLayout] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768);
-  // In narrow mode, default workspace to hidden (overlay) — otherwise it blocks chat on startup
-  const [showWorkspace, setShowWorkspace] = useState(() => typeof window === 'undefined' || window.innerWidth >= 768);
+  const [workspaceLayoutMetrics, setWorkspaceLayoutMetrics] = useState(readWorkspaceLayoutMetrics);
+  const isNarrowLayout = workspaceLayoutMetrics.viewportWidthPx < workspaceLayoutMetrics.contentMinWidthPx;
+  // If workspace would render as an overlay at startup, keep it hidden so it
+  // does not block the chat before the user explicitly opens it.
+  const [showWorkspace, setShowWorkspace] = useState(shouldShowWorkspaceByDefault);
   const [showWorkspaceConfig, setShowWorkspaceConfig] = useState(false); // Workspace config panel
   // State to trigger workspace refresh
   const [workspaceRefreshTrigger, setWorkspaceRefreshTrigger] = useState(0);
@@ -631,12 +664,10 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     readIntroductionContent,
   );
   useEffect(() => {
-    const breakpoint = parseInt(getComputedStyle(document.documentElement)
-      .getPropertyValue('--breakpoint-mobile') || '768', 10);
-    const check = () => setIsNarrowLayout(window.innerWidth < breakpoint);
-    check(); // Re-check with actual CSS variable value
-    window.addEventListener('resize', check);
-    return () => window.removeEventListener('resize', check);
+    const updateLayoutMetrics = () => setWorkspaceLayoutMetrics(readWorkspaceLayoutMetrics());
+    updateLayoutMetrics();
+    window.addEventListener('resize', updateLayoutMetrics);
+    return () => window.removeEventListener('resize', updateLayoutMetrics);
   }, []);
 
   // Split view: right-side file preview panel (experimental).
@@ -718,8 +749,11 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   }, [splitPanelVisible, startSplitWidthTransitionSuspension]);
 
   const workspacePanelMode = resolveWorkspacePanelMode({
-    isNarrowLayout,
+    viewportWidthPx: workspaceLayoutMetrics.viewportWidthPx,
     splitPanelVisible: isSplitViewEnabled && splitPanelVisible,
+    splitRatio,
+    contentMinWidthPx: workspaceLayoutMetrics.contentMinWidthPx,
+    sidebarMinWidthPx: workspaceLayoutMetrics.sidebarMinWidthPx,
   });
   const shouldUseWorkspaceOverlay = workspacePanelMode === 'overlay';
 

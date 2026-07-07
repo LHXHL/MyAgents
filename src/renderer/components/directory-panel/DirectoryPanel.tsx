@@ -362,11 +362,11 @@ const DirectoryPanel = memo(
     useEffect(() => {
       const checkNarrowMode = () => {
         // Check if we're in stacked/narrow layout by checking window width
-        // Use CSS custom property --breakpoint-mobile (768px) for consistency
+        // Use CSS custom property --breakpoint-mobile (640px) for consistency
         const breakpoint = parseInt(
           getComputedStyle(document.documentElement).getPropertyValue(
             "--breakpoint-mobile",
-          ) || "768",
+          ) || "640",
           10,
         );
         const narrow = window.innerWidth < breakpoint;
@@ -3092,6 +3092,7 @@ const DirectoryPanel = memo(
                     e.stopPropagation();
                     onCollapse();
                   }}
+                  aria-label={t("workspaceFiles.directory.collapseWorkspace")}
                   className="flex h-6 w-6 items-center justify-center rounded text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                   title={t("workspaceFiles.directory.collapseWorkspace")}
                 >

@@ -163,7 +163,7 @@
 
 :root {
   /* ========== Layout ========== */
-  --breakpoint-mobile: 768px;
+  --breakpoint-mobile: 640px;
   --sidebar-min-width: 320px;
   --header-height: 48px;
 
@@ -909,8 +909,8 @@ pre code {
   pointer-events: none;
 }
 
-/* Responsive: stack vertically below 768px (use --breakpoint-mobile) */
-@media (max-width: 767px) {
+/* Responsive: stack vertically below 640px (use --breakpoint-mobile) */
+@media (max-width: 639px) {
   .launcher-layout {
     grid-template-columns: 1fr;
     grid-template-rows: auto 1fr;
