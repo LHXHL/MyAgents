@@ -1,12 +1,11 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { ArrowLeft, Bot, Camera, Check, ChevronRight, Copy, Loader2, MoreHorizontal, RefreshCw, Save, Shield, Trash2, UserPlus, Users, X } from "lucide-react";
+import { ArrowLeft, Bot, Camera, Check, ChevronRight, Copy, Loader2, MoreHorizontal, RefreshCw, Save, Shield, Trash2, Users, X } from "lucide-react";
 
 import {
   spaceApproveJoinRequest,
   spaceErrorMessage,
   spaceGetMembers,
-  spaceInviteMember,
   spaceRejectJoinRequest,
   spaceRemoveMember,
   spaceUpdateMemberRole,
@@ -18,7 +17,6 @@ import {
   type SpaceSession,
 } from "@/api/spaceCloud";
 import myagentsWebLogo from "@/assets/brand/myagents-web-logo.png";
-import CustomSelect from "@/components/CustomSelect";
 import OverlayBackdrop from "@/components/OverlayBackdrop";
 import { useToast } from "@/components/Toast";
 import type { Project } from "@/config/types";
@@ -85,9 +83,9 @@ function SummaryMetric({ label, value }: { label: string; value: string | number
 
 function ResourceMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="min-w-0 rounded-xl bg-[var(--paper-elevated)]/55 px-3 py-2">
-      <div className="truncate text-xs font-medium text-[var(--ink-muted)]">{label}</div>
-      <div className="mt-0.5 truncate text-sm font-semibold text-[var(--ink-secondary)]">{value}</div>
+    <div className="flex min-h-10 min-w-0 items-center justify-between gap-3 rounded-xl bg-[var(--paper-elevated)]/55 px-3 py-2">
+      <div className="min-w-0 truncate text-sm font-medium text-[var(--ink-muted)]">{label}</div>
+      <div className="shrink-0 truncate text-right text-sm font-semibold text-[var(--ink-secondary)]">{value}</div>
     </div>
   );
 }
@@ -145,8 +143,6 @@ export function SpaceSettingsWorkspace({
   const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [editingOverview, setEditingOverview] = useState(false);
   const [pickingAvatar, setPickingAvatar] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<"member" | "admin">("member");
   const [menuMemberId, setMenuMemberId] = useState<string | null>(null);
   const pendingCount = session.spaces?.find((space) => space.id === session.space.id)?.pendingJoinRequestCount ?? 0;
   const overviewUsage = membersState?.usage;
@@ -280,15 +276,6 @@ export function SpaceSettingsWorkspace({
     }
   };
 
-  const invite = async () => {
-    const email = inviteEmail.trim();
-    if (!email) return;
-    await runMemberAction("invite", async () => {
-      await spaceInviteMember({ spaceId: session.space.slug || session.space.id, email, role: inviteRole });
-      setInviteEmail("");
-    });
-  };
-
   const renderShell = (children: ReactNode) => (
     <div className="flex min-h-0 flex-1 flex-col bg-[var(--paper)]/40">
       <header className="border-b border-[var(--line-subtle)] bg-[var(--paper-elevated)]/35 px-6 py-2 backdrop-blur-md">
@@ -372,33 +359,16 @@ export function SpaceSettingsWorkspace({
   if (section === "members") {
     return renderShell(
       <div className={`${SPACE_LIST_FRAME_CLASS} space-y-5`}>
-        <div className="flex flex-wrap items-end gap-2 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)]/70 p-3.5">
-          <label className="min-w-0 flex-1 text-xs font-semibold text-[var(--ink-muted)]">
-            {t("space.settings.inviteEmailLabel")}
-            <input
-              value={inviteEmail}
-              onChange={(event) => setInviteEmail(event.target.value)}
-              placeholder={t("space.settings.inviteEmailPlaceholder")}
-              className="mt-1 h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent-warm)]"
-            />
-          </label>
-          <div className="w-36">
-            <div className="mb-1 text-xs font-semibold text-[var(--ink-muted)]">{t("space.settings.inviteRoleLabel")}</div>
-            <CustomSelect
-              value={inviteRole}
-              onChange={(value) => setInviteRole(value === "admin" ? "admin" : "member")}
-              size="md"
-              className="w-full"
-              options={[
-                { value: "role-heading", label: t("space.settings.inviteRoleLabel"), isSeparator: true },
-                { value: "member", label: t("space.settings.roleMemberInvite") },
-                { value: "admin", label: t("space.settings.roleAdminInvite") },
-              ]}
-            />
-          </div>
-          <button type="button" onClick={invite} disabled={busyKey === "invite" || memberQuotaReached || !inviteEmail.trim()} title={memberQuotaReached ? t("space.settings.memberQuotaReached") : undefined} className="flex h-10 items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] disabled:cursor-not-allowed disabled:opacity-60">
-            {busyKey === "invite" ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserPlus className="h-4 w-4" />}
-            {t("space.settings.addMember")}
+        <div className="flex min-h-12 flex-wrap items-center gap-2 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)]/70 px-3.5 py-3">
+          <p className="min-w-0 flex-1 text-sm font-medium text-[var(--ink-secondary)]">
+            {t("space.settings.joinByShortSlug")}
+          </p>
+          <code className="max-w-full shrink-0 truncate rounded-lg border border-[var(--line-subtle)] bg-[var(--paper)] px-2.5 py-1 font-mono text-sm font-semibold text-[var(--ink)]">
+            {session.space.slug || session.space.id}
+          </code>
+          <button type="button" onClick={copySlug} className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-[var(--button-secondary-bg)] px-2.5 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]">
+            <Copy className="h-3.5 w-3.5" />
+            {t("space.common.copy")}
           </button>
         </div>
         {memberQuotaReached ? (
