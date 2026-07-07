@@ -293,6 +293,7 @@ Rust 工具链由仓库根目录 `rust-toolchain.toml` 固定，开发机和 CI 
 
 - **提交前 MUST**：`npm run typecheck` + `npm run test:unit`（秒级；若动了 `.test.tsx`/组件再加 `npm run test:dom`；若动了后端 session/runtime/IO/security 再加 `npm run test:classification` + `npm run test:integration`），检查当前分支（`git branch --show-current`）
 - **并发 writer 纪律（本仓库常态）**：working tree 可能被并行 session / 用户同时改，会话开始的 git 快照是**冻结的**、不反映实时树。提交前 MUST 重跑 `git status`；**禁止 `git add -A` / `git add .`**——显式列出只属于你的文件；对改过的文件用 `git diff -- <file>` 确认没混入别人的 hunk（混了就别整文件 stage，隔离自己的 hunk 或先协调）；验证后**尽快提交**（拖延会被并发 `commit -a` 把混合文件卷走）。**禁止** `checkout HEAD -- <file>` / amend 共享 commit 去"清理"——会毁掉对方未提交工作，改用追加 commit。whole-tree `npm run lint` / `typecheck` 可能因别人未提交代码报错，用 `npx eslint <你的文件>` 自查
+- **ignored 草稿目录纪律**：`.gitignore` 是提交边界，不是提醒。**禁止 `git add -f` / `git add --force`** 把 ignored 文件塞进提交，除非用户在本次消息里明确要求"强制纳入 git"。`specs/prd/`、`specs/research/` 是本地 PRD / 研究草稿区，默认只落盘、不提交；若误提交，立刻用 `git rm --cached <path>` 移出 tracking，并保留本地文件
 - **发布前验"已提交态"而非工作树**：并发 writer 可能提交了组件改动、却把配套测试 fix 留在工作区 → **已提交分支是红的，但你本地 `npm test` 因工作区 fix 而绿**（0.2.29 实战：`SimpleChatInput` 的 `useConfigData` 改动已提交、其测试 mock 未提交 → 已提交态 `useConfigData must be used within <ConfigProvider>`）。合 main / 打 tag 前 MUST 先 `git stash` 掉无关工作区文件（或确认 `git status` 干净）再跑易红测试；load-bearing 的未提交 fix 就显式提交进发布准备，别 ship 红分支
 - **分支策略**：`dev/x.x.x` 开发 → 合并到 `main`。MUST NOT 在 main 直接提交
 - **合并到 main**：需 typecheck + lint 通过 + 用户明确确认
