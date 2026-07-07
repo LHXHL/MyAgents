@@ -61,9 +61,9 @@ import {
   applyProviderProxyPolicyToEnv,
   getProviderProxyScopeKey,
   initSocksBridgeFromCurrentEnv,
-  PROXY_NO_PROXY_VAL,
   setProcessProxyConfig,
 } from './proxy-state';
+import { buildMcpSubprocessEnv } from './session-core/mcp-env-policy';
 // Phase E (PRD 0.2.7): the sidecar file watcher (`file-watcher.ts` →
 // SSE `workspace:files-changed`) is removed. The renderer subscribes to
 // the Rust workspace_files watcher (Tauri event
@@ -3344,38 +3344,10 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
       }
 
       // Build MCP config with proxy env inherited from parent Sidecar.
-      // MCP subprocesses (ddg-search, edge-tts, etc.) need outbound proxy to reach
-      // external APIs when the user has VPN/proxy configured. Previous approach stripped
-      // ALL proxy vars to protect Playwright's localhost WebSocket — but that broke every
-      // MCP that needs internet access under proxy.
-      //
-      // New strategy (mirrors Rust proxy_config::apply_to_subprocess):
-      // - Inherit parent's proxy vars (HTTP_PROXY, HTTPS_PROXY) so outbound works
-      // - ALWAYS inject NO_PROXY to protect localhost (Playwright ws, Chrome DevTools)
-      // - User-defined server.env has highest priority (can override proxy)
-      const mcpEnv: Record<string, string> = {};
-
-      // Inherit proxy env from parent sidecar (if set)
-      for (const proxyVar of [
-        'HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
-        'ALL_PROXY', 'all_proxy',
-      ]) {
-        const val = process.env[proxyVar];
-        if (val) mcpEnv[proxyVar] = val;
-      }
-      // ALWAYS inject NO_PROXY to protect localhost — prevents proxy from intercepting
-      // MCP localhost WebSocket connections (e.g., playwright-core ↔ Chrome DevTools)
-      mcpEnv.NO_PROXY = PROXY_NO_PROXY_VAL;
-      mcpEnv.no_proxy = PROXY_NO_PROXY_VAL;
-
-      // Copy user-defined env vars for this server (can override outbound proxy vars)
-      if (server.env && Object.keys(server.env).length > 0) {
-        Object.assign(mcpEnv, server.env);
-      }
-      // Re-enforce NO_PROXY after user env merge — user env must NOT defeat localhost protection.
-      // Outbound proxy (HTTP_PROXY) can be overridden by user, but NO_PROXY is non-negotiable.
-      mcpEnv.NO_PROXY = PROXY_NO_PROXY_VAL;
-      mcpEnv.no_proxy = PROXY_NO_PROXY_VAL;
+      // MCP subprocesses need outbound proxy inheritance, while localhost still
+      // needs NO_PROXY protection. Per-server env has final authority so users
+      // can work around downstream proxy parser bugs for a specific MCP.
+      const mcpEnv = buildMcpSubprocessEnv(process.env, server.env);
 
       // Playwright MCP: two user-selectable modes (configured in Settings UI):
       // - Isolated (--isolated): concurrent browser sessions, storage-state for login
