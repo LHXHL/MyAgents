@@ -4,6 +4,7 @@ import { useDraggable, useDroppable } from "@dnd-kit/core";
 
 import { getFileIconElement } from "@/utils/fileIcons";
 
+import { OverflowNameTooltip } from "./OverflowNameTooltip";
 import type { VisibleTreeRow } from "./treeTypes";
 
 interface WorkspaceTreeRowProps {
@@ -127,9 +128,10 @@ export const WorkspaceTreeRow = memo(function WorkspaceTreeRow({
           className: "h-3.5 w-3.5 flex-shrink-0 text-[var(--accent-warm)]",
         })
       )}
-      <span className="min-w-0 flex-1 truncate font-medium">
-        {row.data.name}
-      </span>
+      <OverflowNameTooltip
+        label={row.data.name}
+        className="min-w-0 flex-1 truncate font-medium"
+      />
     </div>
   );
 });
