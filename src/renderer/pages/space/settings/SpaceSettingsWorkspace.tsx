@@ -345,7 +345,6 @@ export function SpaceSettingsWorkspace({
         goals={goals}
         projects={projects}
         actions={actions}
-        onRefresh={onRefresh}
         onRegister={onRegister}
         registerDisabled={agentQuotaReached}
         registerDisabledHint={agentQuotaReached ? t("space.settings.agentQuotaReached") : undefined}

@@ -629,6 +629,7 @@
       "register": "登记",
       "empty": "暂无 Registered Agents",
       "registerAgent": "登记 Agent",
+      "details": "详情",
       "editAgent": "编辑 Agent {{name}}",
       "edit": "编辑",
       "enableAgent": "启用 Agent {{name}}",

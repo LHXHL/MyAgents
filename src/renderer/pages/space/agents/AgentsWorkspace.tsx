@@ -6,12 +6,12 @@ import {
   Check,
   Clock,
   Computer,
+  Eye,
   FolderOpen,
   Loader2,
   Plus,
   Power,
   PowerOff,
-  RefreshCw,
   Settings,
   Target,
   Trash2,
@@ -27,6 +27,9 @@ import CustomSelect, { type SelectOption } from "@/components/CustomSelect";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import OverlayBackdrop from "@/components/OverlayBackdrop";
 import { useToast } from "@/components/Toast";
+import DropdownMenu, {
+  type DropdownMenuSection,
+} from "@/components/ui/DropdownMenu";
 import type { Project } from "@/config/types";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
 import { spaceErrorMessage } from "@/api/spaceCloud";
@@ -36,7 +39,6 @@ import type { SpaceActions } from "@/pages/space/spaceStore";
 import {
   SPACE_LIST_FRAME_CLASS,
   SPACE_PRIMARY_TOOL_BUTTON_CLASS,
-  SPACE_REFRESH_TOOL_BUTTON_CLASS,
   SPACE_TWO_COLUMN_GRID_CLASS,
   formatTime,
 } from "@/pages/space/spaceUi";
@@ -188,7 +190,6 @@ export function AgentsWorkspace({
   goals,
   projects,
   actions,
-  onRefresh,
   onRegister,
   registerDisabled = false,
   registerDisabledHint,
@@ -198,7 +199,6 @@ export function AgentsWorkspace({
   goals: SpaceGoal[];
   projects: Project[];
   actions: SpaceActions;
-  onRefresh: () => Promise<void>;
   onRegister: () => void;
   registerDisabled?: boolean;
   registerDisabledHint?: string;
@@ -248,81 +248,64 @@ export function AgentsWorkspace({
 
   return (
     <>
-      <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]">
-        <section className="flex min-h-12 items-center gap-2.5 border-b border-[var(--line)] bg-[var(--paper-elevated)]/60 px-5 py-1.5 backdrop-blur-md">
-          <div className="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold text-[var(--ink-secondary)]">
+      <div className={`${SPACE_LIST_FRAME_CLASS} space-y-3`}>
+        <section className="flex min-h-10 items-center gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2 text-base font-semibold text-[var(--ink-secondary)]">
             <Bot className="h-4 w-4 shrink-0" />
-            <span>Agents</span>
+            <h2 className="truncate">Agents</h2>
             <span className="rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">
               {agents.length}
             </span>
           </div>
-          <div className="flex shrink-0 items-center gap-2.5">
-            {admin && (
-              <button
-                type="button"
-                onClick={onRegister}
-                disabled={registerDisabled}
-                title={registerDisabledHint}
-                className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}
-              >
-                <Plus className="h-4 w-4" />
-                {t("space.agents.register")}
-              </button>
-            )}
+          {admin && (
             <button
               type="button"
-              onClick={() => void onRefresh()}
-              className={SPACE_REFRESH_TOOL_BUTTON_CLASS}
-              aria-label={t("space.common.refresh")}
-              title={t("space.common.refresh")}
+              onClick={onRegister}
+              disabled={registerDisabled}
+              title={registerDisabledHint}
+              className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}
             >
-              <RefreshCw className="h-4 w-4" />
+              <Plus className="h-4 w-4" />
+              {t("space.agents.register")}
             </button>
-          </div>
-        </section>
-        <main className="min-h-0 overflow-y-auto px-6 pb-8 pt-3">
-          {agents.length === 0 ? (
-            <div
-              className={`${SPACE_LIST_FRAME_CLASS} grid h-40 place-items-center rounded-[20px] border border-dashed border-[var(--line)] bg-[var(--paper-elevated)]/40 text-sm text-[var(--ink-muted)]`}
-            >
-              <div className="text-center">
-                <Bot className="mx-auto mb-3 h-8 w-8 text-[var(--ink-muted)]" />
-                <p>{t("space.agents.empty")}</p>
-                {admin && (
-                  <button
-                    type="button"
-                    onClick={onRegister}
-                    disabled={registerDisabled}
-                    title={registerDisabledHint}
-                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <Plus className="h-4 w-4" />
-                    {t("space.agents.registerAgent")}
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div
-              className={`${SPACE_LIST_FRAME_CLASS} ${SPACE_TWO_COLUMN_GRID_CLASS}`}
-            >
-              {agents.map((agent) => (
-                <AgentCard
-                  key={agent.id}
-                  agent={agent}
-                  admin={admin}
-                  busy={busyAgentId === agent.id}
-                  t={t}
-                  onOpen={() => setSelectedAgentId(agent.id)}
-                  onEdit={() => setEditingAgent(agent)}
-                  onToggle={() => void toggleAgentStatus(agent)}
-                  onRevoke={() => setRevokeTarget(agent)}
-                />
-              ))}
-            </div>
           )}
-        </main>
+        </section>
+        {agents.length === 0 ? (
+          <div className="grid h-40 place-items-center rounded-[20px] border border-dashed border-[var(--line)] bg-[var(--paper-elevated)]/40 text-sm text-[var(--ink-muted)]">
+            <div className="text-center">
+              <Bot className="mx-auto mb-3 h-8 w-8 text-[var(--ink-muted)]" />
+              <p>{t("space.agents.empty")}</p>
+              {admin && (
+                <button
+                  type="button"
+                  onClick={onRegister}
+                  disabled={registerDisabled}
+                  title={registerDisabledHint}
+                  className="mt-3 inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t("space.agents.registerAgent")}
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className={SPACE_TWO_COLUMN_GRID_CLASS}>
+            {agents.map((agent) => (
+              <AgentCard
+                key={agent.id}
+                agent={agent}
+                admin={admin}
+                busy={busyAgentId === agent.id}
+                t={t}
+                onOpen={() => setSelectedAgentId(agent.id)}
+                onEdit={() => setEditingAgent(agent)}
+                onToggle={() => void toggleAgentStatus(agent)}
+                onRevoke={() => setRevokeTarget(agent)}
+              />
+            ))}
+          </div>
+        )}
       </div>
       {selectedAgent && (
         <AgentDetailOverlay
@@ -665,11 +648,12 @@ function AgentCard({
           </p>
         </div>
         {admin && (
-          <AgentActionButtons
+          <AgentCardMenu
             agent={agent}
             busy={busy}
             disabled={disabled}
             t={t}
+            onOpen={onOpen}
             onEdit={onEdit}
             onToggle={onToggle}
             onRevoke={onRevoke}
@@ -677,7 +661,7 @@ function AgentCard({
         )}
       </div>
 
-      <div className="mt-3 grid gap-2">
+      <div className="mt-2.5 grid gap-1.5">
         <AgentCardField
           icon={Computer}
           label={t("space.agents.localComputer")}
@@ -698,6 +682,81 @@ function AgentCard({
         />
       </div>
     </article>
+  );
+}
+
+function AgentCardMenu({
+  agent,
+  busy,
+  disabled,
+  t,
+  onOpen,
+  onEdit,
+  onToggle,
+  onRevoke,
+}: {
+  agent: LocalRegisteredAgent;
+  busy: boolean;
+  disabled: boolean;
+  t: ReturnType<typeof useTranslation>["t"];
+  onOpen: () => void;
+  onEdit: () => void;
+  onToggle: () => void;
+  onRevoke: () => void;
+}) {
+  const actionDisabled = busy || disabled;
+  const toggleLabel =
+    agent.status === "disabled"
+      ? t("space.agents.enable")
+      : t("space.agents.disable");
+  const sections: DropdownMenuSection[] = [
+    {
+      items: [
+        {
+          icon: <Eye className="h-3.5 w-3.5" />,
+          label: t("space.agents.details"),
+          onClick: onOpen,
+        },
+      ],
+    },
+    {
+      items: [
+        {
+          icon: <Settings className="h-3.5 w-3.5" />,
+          label: t("space.agents.edit"),
+          onClick: onEdit,
+          disabled: actionDisabled,
+        },
+        {
+          icon: busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : agent.status === "disabled" ? (
+            <Power className="h-3.5 w-3.5" />
+          ) : (
+            <PowerOff className="h-3.5 w-3.5" />
+          ),
+          label: toggleLabel,
+          onClick: onToggle,
+          disabled: actionDisabled,
+        },
+        {
+          icon: <Trash2 className="h-3.5 w-3.5" />,
+          label: t("space.agents.revoke"),
+          onClick: onRevoke,
+          disabled: actionDisabled,
+          danger: true,
+        },
+      ],
+    },
+  ];
+
+  return (
+    <DropdownMenu
+      sections={sections}
+      size="md"
+      minWidth={160}
+      title={t("dropdown.moreActions")}
+    />
   );
 }
 
@@ -792,14 +851,14 @@ function AgentCardField({
   muted?: boolean;
 }) {
   return (
-    <div className="grid grid-cols-[14px_92px_minmax(0,1fr)] items-center gap-2 rounded-lg bg-[var(--paper)]/35 px-2 py-1.5">
+    <div className="grid grid-cols-[14px_92px_minmax(0,1fr)] items-center gap-2 rounded-md bg-[var(--paper)]/35 px-2 py-1 text-xs leading-5">
       <Icon className="h-3.5 w-3.5 text-[var(--ink-subtle)]" />
-      <span className="truncate text-xs font-normal text-[var(--ink-subtle)]">
+      <span className="truncate font-normal text-[var(--ink-subtle)]">
         {label}
       </span>
       <span
         title={title ?? value}
-        className={`truncate text-sm font-normal ${mono ? "font-mono" : ""} ${muted ? "text-[var(--ink-subtle)]" : "text-[var(--ink-muted)]"}`}
+        className={`truncate font-normal ${mono ? "font-mono" : ""} ${muted ? "text-[var(--ink-subtle)]" : "text-[var(--ink-muted)]"}`}
       >
         {value}
       </span>

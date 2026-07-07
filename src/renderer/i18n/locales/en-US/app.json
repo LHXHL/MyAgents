@@ -629,6 +629,7 @@
       "register": "Register",
       "empty": "No Registered Agents",
       "registerAgent": "Register Agent",
+      "details": "Details",
       "editAgent": "Edit Agent {{name}}",
       "edit": "Edit",
       "enableAgent": "Enable Agent {{name}}",
