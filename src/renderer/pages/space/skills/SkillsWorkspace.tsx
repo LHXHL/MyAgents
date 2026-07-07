@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ArrowLeft, ChevronDown, Download, FileText, Folder, Link, Loader2, MoreHorizontal, Package, RefreshCw, RotateCcw, Search, Trash2, UploadCloud, X } from 'lucide-react';
+import { ArrowLeft, ChevronDown, ChevronRight, Download, FileText, Folder, Link, Loader2, MoreHorizontal, Package, RefreshCw, RotateCcw, Search, Trash2, UploadCloud, X } from 'lucide-react';
 
 import { spaceCleanupSkillExportPackages, spaceErrorMessage, spaceExportSkillFromUrl, spaceInspectSkillSource, spaceListLocalSkills, type SpaceLocalSkill, type SpaceSkill, type SpaceSkillFile, type SpaceSkillSourceInspection, type SpaceSkillUrlCandidate, type SpaceSkillUrlExportResponse, type SpaceSkillUrlPackage, type SpaceSkillUrlPreview } from '@/api/spaceCloud';
 import ConfirmDialog from '@/components/ConfirmDialog';
@@ -13,6 +13,7 @@ import { useTauriFileDrop } from '@/hooks/useTauriFileDrop';
 import { SpaceIdentityLine } from '@/pages/space/SpaceAvatar';
 import { getSkillFileState, getSkillRevisionState, SPACE_VISIBLE_REFRESH_TTL_MS, type SpaceActions, type SpaceSkillDetailState } from '@/pages/space/spaceStore';
 import { SPACE_LIST_FRAME_CLASS, SPACE_PRIMARY_TOOL_BUTTON_CLASS, SPACE_REFRESH_TOOL_BUTTON_CLASS, SPACE_TWO_COLUMN_GRID_CLASS, formatBytes, formatDate } from '@/pages/space/spaceUi';
+import { createSkillFileTreeRows } from './skillFileTree';
 
 type SkillDetailMode = 'entry' | 'files' | 'history';
 const EMPTY_SKILL_FILES: SpaceSkillFile[] = [];
@@ -635,26 +636,6 @@ function findEntryFile(files: SpaceSkillFile[]): SpaceSkillFile | null {
   return files.find((file) => isRootFile(file, 'SKILL.md')) ?? files.find((file) => isRootFile(file, 'README.md')) ?? null;
 }
 
-function fileDepth(file: SpaceSkillFile): number {
-  return Math.max(0, file.path.split('/').length - 1);
-}
-
-function sortSkillFiles(files: SpaceSkillFile[]): SpaceSkillFile[] {
-  return [...files].sort((left, right) => {
-    if (left.parentPath === right.parentPath && left.isDir !== right.isDir) {
-      return left.isDir ? -1 : 1;
-    }
-    return left.path.localeCompare(right.path);
-  });
-}
-
-function isPreviewableFile(file: SpaceSkillFile): boolean {
-  if (file.isDir) return false;
-  const name = file.name.toLowerCase();
-  const mimeType = file.mimeType?.toLowerCase() ?? '';
-  return mimeType.startsWith('text/') || name.endsWith('.md') || name.endsWith('.mdx') || name.endsWith('.json') || name.endsWith('.yaml') || name.endsWith('.yml') || name.endsWith('.toml') || name.endsWith('.js') || name.endsWith('.ts') || name.endsWith('.tsx') || name.endsWith('.py') || name.endsWith('.sh') || name.endsWith('.txt');
-}
-
 function stripFrontmatter(markdown: string): string {
   return markdown.replace(/^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/, '');
 }
@@ -678,13 +659,17 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
   const [rollbackTarget, setRollbackTarget] = useState<number | null>(null);
   const [rollingBack, setRollingBack] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [expandedFileTreePaths, setExpandedFileTreePaths] = useState<Set<string>>(() => new Set());
   const workspaceMenuRef = useRef<HTMLSpanElement | null>(null);
   const adminMenuRef = useRef<HTMLSpanElement | null>(null);
   const detail = detailState?.detail ?? null;
   const detailLoading = detailState?.isLoading ?? true;
   const files = detail?.files ?? EMPTY_SKILL_FILES;
   const entryFile = useMemo(() => findEntryFile(files), [files]);
-  const sortedFiles = useMemo(() => sortSkillFiles(files), [files]);
+  const fileTreeRows = useMemo(
+    () => createSkillFileTreeRows(files, expandedFileTreePaths),
+    [expandedFileTreePaths, files],
+  );
   const activeMode: SkillDetailMode = mode === 'history' ? 'history' : entryFile ? mode : 'files';
   const previewFile = activeMode === 'files' && previewPath ? (files.find((file) => file.path === previewPath && !file.isDir) ?? null) : null;
   const activeFile = activeMode === 'entry' ? entryFile : previewFile;
@@ -707,6 +692,7 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
 
   useEffect(() => {
     setPreviewPath('');
+    setExpandedFileTreePaths(new Set());
     setWorkspaceMenuOpen(false);
     setAdminMenuOpen(false);
     void actions.refreshSkillDetail(skill.id, { maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }).catch((error) => toast.error(spaceErrorMessage(error)));
@@ -755,6 +741,15 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
     setAdminMenuOpen(false);
     onModeChange(nextMode);
   };
+
+  const toggleFileTreeFolder = useCallback((path: string) => {
+    setExpandedFileTreePaths((current) => {
+      const next = new Set(current);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
 
   const install = async (target: 'global' | 'project', workspacePath?: string) => {
     if (target === 'project' && !workspacePath) {
@@ -887,29 +882,54 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
         <span className="text-sm font-medium text-[var(--ink-muted)]">{t('space.skills.totalFiles', { count: files.length })}</span>
       </header>
       <div className="mt-3 overflow-hidden rounded-xl border border-[var(--line-subtle)] bg-[var(--paper)]/45 p-1.5">
-        {sortedFiles.map((file) => {
+        {fileTreeRows.map(({ file, depth, hasChildren, isExpanded }) => {
           const isEntry = entryFile?.path === file.path;
-          const previewable = isPreviewableFile(file);
-          const content = (
-            <>
-              <span className="flex min-w-0 flex-1 items-center gap-2.5" style={{ paddingLeft: `${fileDepth(file) * 1.25}rem` }}>
-                {file.isDir ? <Folder className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" /> : <FileText className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />}
-                <span className={`min-w-0 truncate ${file.isDir ? 'font-semibold text-[var(--ink-secondary)]' : 'font-medium text-[var(--ink-muted)]'}`}>{file.name}</span>
-                {isEntry && <span className="shrink-0 rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">{t('space.skills.mainFile')}</span>}
-              </span>
-              <span className="shrink-0 text-sm font-medium text-[var(--ink-muted)]">{file.isDir ? '' : formatBytes(file.sizeBytes)}</span>
-            </>
-          );
-          if (!previewable) {
+          const isSelected = previewPath === file.path;
+          if (file.isDir) {
             return (
-              <div key={file.id} className="flex min-h-10 items-center gap-3 rounded-lg px-2.5 text-left text-sm opacity-80">
-                {content}
-              </div>
+              <button
+                key={file.id}
+                type="button"
+                onClick={() => {
+                  if (hasChildren) toggleFileTreeFolder(file.path);
+                }}
+                aria-expanded={hasChildren ? isExpanded : undefined}
+                className={`flex min-h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left text-sm transition-colors ${
+                  hasChildren
+                    ? 'hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
+                    : 'cursor-default opacity-80'
+                }`}
+              >
+                <span className="flex min-w-0 flex-1 items-center gap-2.5" style={{ paddingLeft: `${depth * 1.25}rem` }}>
+                  {hasChildren ? (
+                    isExpanded ? <ChevronDown className="h-4 w-4 shrink-0 text-[var(--ink-subtle)]" /> : <ChevronRight className="h-4 w-4 shrink-0 text-[var(--ink-subtle)]" />
+                  ) : (
+                    <span className="h-4 w-4 shrink-0" />
+                  )}
+                  <Folder className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />
+                  <span className="min-w-0 truncate font-semibold text-[var(--ink-secondary)]">{file.name}</span>
+                </span>
+                <span className="shrink-0 text-sm font-medium text-[var(--ink-muted)]" />
+              </button>
             );
           }
           return (
-            <button key={file.id} type="button" onClick={() => setPreviewPath(file.path)} className="flex min-h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left text-sm transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--accent-warm)]">
-              {content}
+            <button
+              key={file.id}
+              type="button"
+              onClick={() => setPreviewPath(file.path)}
+              className={`flex min-h-10 w-full items-center gap-3 rounded-lg px-2.5 text-left text-sm transition-colors ${
+                isSelected
+                  ? 'bg-[var(--paper-inset)] text-[var(--ink)]'
+                  : 'hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
+              }`}
+            >
+              <span className="flex min-w-0 flex-1 items-center gap-2.5" style={{ paddingLeft: `${depth * 1.25 + 1.625}rem` }}>
+                <FileText className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />
+                <span className={`min-w-0 truncate font-medium ${isSelected ? 'text-[var(--ink)]' : 'text-[var(--ink-muted)]'}`}>{file.name}</span>
+                {isEntry && <span className="shrink-0 rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">{t('space.skills.mainFile')}</span>}
+              </span>
+              <span className="shrink-0 text-sm font-medium text-[var(--ink-muted)]">{formatBytes(file.sizeBytes)}</span>
             </button>
           );
         })}
