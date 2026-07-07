@@ -110,6 +110,7 @@ function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
       provider_api_protocol: null,
     }),
     probeForkPersistenceIfReady: vi.fn(),
+    recoverInvalidResumeAnchorError: vi.fn(() => false),
     handleTerminalRecovery: vi.fn(),
     applyDeferredRestartIfNeeded: vi.fn(),
     ...overrides,
@@ -200,6 +201,29 @@ describe('turn-lifecycle owner', () => {
 
     expect(deps.failCurrentImRequest).not.toHaveBeenCalled();
     expect(deps.completeCurrentImRequest).toHaveBeenCalledWith('');
+  });
+
+  it('recovers SDK missing resume anchor result errors without surfacing a user error', () => {
+    const { deps, broadcasts } = makeDeps({
+      recoverInvalidResumeAnchorError: vi.fn(() => true),
+    });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+
+    lifecycle.handleSdkResult(makeResult({
+      subtype: 'error_during_execution',
+      is_error: true,
+      result: 'Claude Code returned an error result: No message found with message.uuid of: 75c9051f-a071-4243-bc25-92cfc396e2db',
+      terminal_reason: 'error',
+    }));
+
+    expect(deps.recoverInvalidResumeAnchorError).toHaveBeenCalledWith(
+      'Claude Code returned an error result: No message found with message.uuid of: 75c9051f-a071-4243-bc25-92cfc396e2db',
+    );
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:agent-error');
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-error');
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
+    expect(deps.persistTranscript).not.toHaveBeenCalled();
+    expect(deps.abortTurnAbort).toHaveBeenCalledWith('session-1', 'error');
   });
 
   it('does not title a completed turn when turn-end persistence fails', async () => {

@@ -14,6 +14,7 @@ import {
   type TransientProviderTextError,
   type TransientProviderTextRetryDecision,
 } from '../session-core/turn-result-policy';
+import { isSdkMissingResumeMessageError } from '../session-core/resume-error-recovery';
 import { decideInFlightActionOnResult } from '../utils/inflight-terminal';
 import type { InFlightMetadata, ProviderEnv, TurnProviderAnalytics } from './types';
 import {
@@ -138,6 +139,7 @@ export type BuiltinTurnLifecycleDeps = {
   setLastAgentError: (error: string) => void;
   buildTurnProviderAnalytics: (providerEnv: ProviderEnv | undefined) => TurnProviderAnalytics;
   probeForkPersistenceIfReady: (resultMessage: BuiltinSdkResultMessage) => void;
+  recoverInvalidResumeAnchorError: (rawError: string) => boolean;
   handleTerminalRecovery: (reason: 'image' | 'stale' | undefined) => void;
   applyDeferredRestartIfNeeded: () => void;
 };
@@ -388,6 +390,13 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
 
     if (resultMessage.is_error) {
       const rawError = resultText || resultMessage.errors?.join('; ') || getLastAssistantMessageError() || '';
+      if (isSdkMissingResumeMessageError(rawError) && deps.recoverInvalidResumeAnchorError(rawError)) {
+        console.warn('[agent] SDK result rejected resumeSessionAt anchor; cleared stale anchor and restarting without surfacing user error');
+        deps.clearApiRetryStatus();
+        recordInjectedTurnOutcome('error', rawError);
+        commonTerminalCleanup('error');
+        return;
+      }
       if (
         (rawError.includes('unknown variant') && rawError.includes('image')) ||
         (rawError.includes('image') && rawError.includes('exceed') && rawError.includes('max allowed size'))

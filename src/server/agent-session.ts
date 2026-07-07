@@ -26,6 +26,13 @@ import {
 import { shouldBlockToolInPlanMode, planModeDenyMessage, isPlanModeInEffect, PLAN_MODE_READONLY_TOOLS, PLAN_MODE_HOST_INTERACTION_TOOLS, applyPermissionModeSelection, computePlanExitState, computeRestoredPlanState } from './utils/plan-mode-gate';
 import { planRetraction } from './utils/message-retraction';
 import type { TransientProviderTextRetryDecision } from './session-core/turn-result-policy';
+import {
+  buildResumeAnchorReplayItem,
+  extractSdkMissingResumeMessageUuid,
+  isSdkMissingResumeMessageError,
+  shouldSuppressRecoveredResumeAnchorError,
+  type InvalidResumeAnchorKind,
+} from './session-core/resume-error-recovery';
 import { diagnoseSdkSubprocessFailure } from './utils/sdk-subprocess-diagnostics';
 import { InactivityWatchdog } from './utils/inactivity-watchdog';
 import {
@@ -1751,7 +1758,8 @@ function maybeSurfaceInFlightAtAssistantTurnStart(reason: string): void {
 }
 
 /** 中止持久 session：唤醒所有被阻塞的 Promise */
-function abortPersistentSession(): void {
+function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {}): void {
+  const notifyPendingRequests = options.notifyPendingRequests ?? true;
   clearTransientProviderRetryTimer('abort');
   // Log warning if browser was used but storage state wasn't saved
   // (The system prompt instructs the AI to save, but this is the fallback detection)
@@ -1779,12 +1787,16 @@ function abortPersistentSession(): void {
   rescuePendingToQueue();
   // Pattern B/C/G: notify IM bus subscribers + tear down ALL pending registry
   // entries (whole-session abort affects every in-flight request, not just head).
-  // Emit an 'error' for each pending requestId so each subscriber's reply slot
-  // closes — emitImEvent only tags head, so iterate manually.
-  for (const reqId of getPendingRequestIds()) {
-    imEventBus.emit(reqId, 'error', '会话已中断，请重新发送');
-    imRequestRegistry.setStatus(reqId, 'failed');
-    imRequestRegistry.unregister(reqId);
+  // Emit an 'error' for each requestId so each subscriber's reply slot closes —
+  // emitImEvent only tags head, so iterate manually. Internal self-healing
+  // restarts may suppress this notification when the turn lifecycle will own
+  // terminal cleanup and no user-visible abort should be emitted.
+  if (notifyPendingRequests) {
+    for (const reqId of getPendingRequestIds()) {
+      imEventBus.emit(reqId, 'error', '会话已中断，请重新发送');
+      imRequestRegistry.setStatus(reqId, 'failed');
+      imRequestRegistry.unregister(reqId);
+    }
   }
   clearPendingRequests();
   // PRD 0.2.18 Session Inbox — if abort happens while an inbox-message turn is
@@ -1792,7 +1804,7 @@ function abortPersistentSession(): void {
   // wait forever. Fire-and-forget. Read + clear immediately to avoid the
   // recovery session inheriting this binding.
   const { inboxMeta: replyMeta, replyText: abortedReplyText } = terminalCleanup();
-  if (replyMeta) {
+  if (notifyPendingRequests && replyMeta) {
     const abortedSessionId = sessionId;
     void import('./inbox/reply-deliver').then(({ deliverInboxReply }) =>
       deliverInboxReply(abortedSessionId, replyMeta, {
@@ -1807,17 +1819,19 @@ function abortPersistentSession(): void {
     );
   }
   setCurrentTurnInjectedTurnId(undefined);
-  void import('./inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
-    deliverSessionWatchEvents(sessionId, {
-      text: abortedReplyText,
-      error: {
-        code: 'session_aborted',
-        message: 'target session was aborted before the turn completed',
-      },
-    }),
-  ).catch((err) =>
-    console.error('[session-watch] abort-path watch push failed:', err),
-  );
+  if (notifyPendingRequests) {
+    void import('./inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
+      deliverSessionWatchEvents(sessionId, {
+        text: abortedReplyText,
+        error: {
+          code: 'session_aborted',
+          message: 'target session was aborted before the turn completed',
+        },
+      }),
+    ).catch((err) =>
+      console.error('[session-watch] abort-path watch push failed:', err),
+    );
+  }
   // 唤醒被阻塞的 generator（waitForMessage）
   forceWakeGeneratorWithNull();
   // 强制 subprocess 产出消息/错误，解除 for-await 阻塞
@@ -6327,6 +6341,7 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   setLastAgentError: (error) => { lastAgentError = error; },
   buildTurnProviderAnalytics,
   probeForkPersistenceIfReady,
+  recoverInvalidResumeAnchorError,
   handleTerminalRecovery,
   applyDeferredRestartIfNeeded,
 });
@@ -6359,6 +6374,61 @@ function probeForkPersistenceIfReady(resultMessage: BuiltinSdkResultMessage): vo
     .catch(e => {
       console.log(`[agent] forkFrom persistence probe inconclusive, keeping flag: ${(e as Error)?.message ?? e}`);
     });
+}
+
+function recoverInvalidResumeAnchorError(rawError: string): boolean {
+  if (!isSdkMissingResumeMessageError(rawError)) return false;
+
+  const rejectedUuid = extractSdkMissingResumeMessageUuid(rawError);
+  const recoveredAnchors: InvalidResumeAnchorKind[] = [];
+
+  if (pendingResumeSessionAt && (!rejectedUuid || pendingResumeSessionAt === rejectedUuid)) {
+    console.warn(`[agent] SDK result rejected rewind resumeSessionAt ${pendingResumeSessionAt} — clearing anchor`);
+    deleteCurrentSessionUuid(pendingResumeSessionAt);
+    pendingResumeSessionAt = undefined;
+    recoveredAnchors.push('rewind');
+  }
+
+  if (transcriptState.pendingReloadAnchor && (!rejectedUuid || transcriptState.pendingReloadAnchor === rejectedUuid)) {
+    console.warn(`[agent] SDK result rejected reloadAnchor ${transcriptState.pendingReloadAnchor} — clearing anchor`);
+    deleteCurrentSessionUuid(transcriptState.pendingReloadAnchor);
+    setPendingReloadAnchor(undefined);
+    recoveredAnchors.push('reload');
+  } else if (rejectedUuid && transcriptState.currentSessionUuids.has(rejectedUuid)) {
+    // Result-shaped SDK errors can arrive after system_init already consumed
+    // pendingReloadAnchor. The rejected UUID is still unsafe as a future anchor.
+    console.warn(`[agent] SDK result rejected known session uuid ${rejectedUuid} — evicting from resume anchor cache`);
+    deleteCurrentSessionUuid(rejectedUuid);
+    recoveredAnchors.push('reload');
+  }
+
+  const failedForkMeta = getSessionMetadata(sessionId);
+  if (failedForkMeta?.forkFrom?.messageUuid && (!rejectedUuid || failedForkMeta.forkFrom.messageUuid === rejectedUuid)) {
+    const rejectedForkUuid = failedForkMeta.forkFrom.messageUuid;
+    console.warn(`[agent] SDK result rejected fork anchor ${rejectedForkUuid} — clearing persisted fork anchor`);
+    delete failedForkMeta.forkFrom.messageUuid;
+    saveSessionMetadata(failedForkMeta).catch(e =>
+      console.warn('[agent] forkFrom.messageUuid clear failed after SDK result error:', e),
+    );
+    deleteCurrentSessionUuid(rejectedForkUuid);
+    recoveredAnchors.push('fork');
+  }
+
+  if (!shouldSuppressRecoveredResumeAnchorError({ errorMessage: rawError, recoveredAnchors })) {
+    return false;
+  }
+
+  const replayItem = buildResumeAnchorReplayItem(getCurrentTurnSourceItem());
+  abortPersistentSession({ notifyPendingRequests: false });
+  if (replayItem) {
+    unshiftMessage(replayItem);
+    console.log(`[agent] Requeued current turn ${replayItem.id} after SDK resumeSessionAt result recovery`);
+  } else {
+    console.warn('[agent] SDK resumeSessionAt result recovery had no current turn source to requeue');
+  }
+  schedulePreWarm();
+  console.log(`[agent] Recovering from SDK resumeSessionAt result error after clearing ${recoveredAnchors.join(',')} anchor(s)`);
+  return true;
 }
 
 function handleTerminalRecovery(reason: 'image' | 'stale' | undefined): void {
@@ -11846,6 +11916,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const errorStack = error instanceof Error ? error.stack : String(error);
     console.error('[agent] session error:', errorMessage);
     console.error('[agent] session error stack:', errorStack);
+    const recoveredInvalidResumeAnchors: InvalidResumeAnchorKind[] = [];
 
     // "Session ID already in use" recovery: SDK session dir exists on disk but our
     // in-memory metadata was lost (fresh Bun process after crash/restart).
@@ -11875,7 +11946,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // effectiveResumeAt prefers rewindResumeAt ?? forkResumeAt (see line ~7776), so
     // when both are set the rewind UUID is the one actually sent to the SDK. Capture
     // that here so the fork branch below can avoid clearing an innocent fork anchor.
-    const rewindAnchorWasSent = errorMessage.includes('No message found with message.uuid')
+    const rewindAnchorWasSent = isSdkMissingResumeMessageError(errorMessage)
       && pendingResumeSessionAt !== undefined;
 
     // Rewind-mode "No message found" recovery (issue #189). Fires when the session
@@ -11888,7 +11959,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // is true) — neither anchor clears and every retry resends the same UUID (the #220
     // loop class, fresh-fork sub-case). Clearing an in-memory anchor is safe in any
     // registration state, so allow it whenever pendingResumeSessionAt is set.
-    if (errorMessage.includes('No message found with message.uuid')
+    if (isSdkMissingResumeMessageError(errorMessage)
       && (sessionRegistered || pendingResumeSessionAt !== undefined)) {
       const rejectedUuid = pendingResumeSessionAt;
       pendingResumeSessionAt = undefined;
@@ -11902,6 +11973,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       if (rejectedUuid) {
         console.warn(`[agent] resumeSessionAt UUID rejected by SDK — clearing rewind anchor, retry will resume with full history`);
         deleteCurrentSessionUuid(rejectedUuid);
+        recoveredInvalidResumeAnchors.push('rewind');
       }
       // Don't modify sessionRegistered — session exists, just the UUID is invalid.
       // Don't return — let pre-warm retry (finally block) handle recovery.
@@ -11918,12 +11990,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // `sentReloadAnchor`, not the module var, so a late catch from an aborted start can't
     // evict against a newer session. Retry resumes with full history (window-B reconcile
     // skipped this round; self-heals once the user continues and a newer leaf is written).
-    if (errorMessage.includes('No message found with message.uuid') && sentReloadAnchor) {
+    if (isSdkMissingResumeMessageError(errorMessage) && sentReloadAnchor) {
       console.warn(`[agent] reloadAnchor UUID ${sentReloadAnchor} rejected by SDK — evicting from transcriptState.currentSessionUuids so retry resumes with full history (no re-derive loop)`);
       deleteCurrentSessionUuid(sentReloadAnchor);
       // Clear the load-captured anchor only if it's still THIS query's — a newer load/start
       // may have already replaced it; don't wipe a newer session's pending anchor.
       if (transcriptState.pendingReloadAnchor === sentReloadAnchor) setPendingReloadAnchor(undefined);
+      recoveredInvalidResumeAnchors.push('reload');
     }
 
     // Fork-mode "No message found" recovery (issue #220). The durable anchor here lives
@@ -11943,7 +12016,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // UI shows (UI has the N copied transcriptState.messages; SDK has all source transcriptState.messages). Same
     // degradation philosophy as the rewind branch's "resume with full history". Better
     // than a fail-loop or losing the fork entirely.
-    if (errorMessage.includes('No message found with message.uuid') && !rewindAnchorWasSent) {
+    if (isSdkMissingResumeMessageError(errorMessage) && !rewindAnchorWasSent) {
       const failedForkMeta = getSessionMetadata(sessionId);
       if (failedForkMeta?.forkFrom?.messageUuid) {
         const rejectedForkUuid = failedForkMeta.forkFrom.messageUuid;
@@ -11958,8 +12031,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           console.warn(`[agent] forkFrom.messageUuid clear: disk persist failed (next retry will re-read stale UUID and re-enter this recovery): ${(saveErr as Error)?.message ?? saveErr}`);
         }
         deleteCurrentSessionUuid(rejectedForkUuid);
+        recoveredInvalidResumeAnchors.push('fork');
       }
     }
+    const suppressRecoveredResumeAnchorError = shouldSuppressRecoveredResumeAnchorError({
+      errorMessage,
+      recoveredAnchors: recoveredInvalidResumeAnchors,
+    });
 
     // "No conversation found" recovery: our metadata has sessionRegistered=true but
     // the SDK session directory is gone (e.g., IM Bot restart after previous Sidecar
@@ -12008,7 +12086,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // during an active abort is by definition our doing, not a provider/infra
     // issue to surface. Error is still logged above (line 6611–6612) for
     // debugging, just not broadcast.
-    if (!lifecycleState.preWarming && !lifecycleState.abortRequested) {
+    if (suppressRecoveredResumeAnchorError) {
+      console.log(`[agent] Suppressing recoverable SDK resumeSessionAt error after clearing ${recoveredInvalidResumeAnchors.join(',')} anchor(s); recovery pre-warm will retry with bare resume`);
+    } else if (!lifecycleState.preWarming && !lifecycleState.abortRequested) {
       broadcast('chat:message-error', userFacingError);
       handleMessageError(errorMessage, sdkSubprocessDiagnostic?.imMessage);
       setSessionState('error');
