@@ -102,6 +102,11 @@ querySession = query({
 | Subprocess crash 恢复 | `finally` 块触发 `schedulePreWarm()` 重建 session |
 | 配置变更重启 | MCP / Agent 变更导致 session 中止后恢复 |
 
+`resumeSessionAt` 是 `resume` 的精确截断锚点，不是 session 存在性的证明。SDK
+会用自己的 transcript 链校验该 UUID；若 SDK 拒绝锚点（`No message found with
+message.uuid`），MyAgents 必须清掉该 stale anchor 并降级为裸 `resume`。这类恢复
+是内部一致性降级：保留日志用于排障，但不向用户 toast / Agent Error。
+
 ### Session 间事件协议（send / watch）
 
 `myagents session send` / `watch` 不是普通文本拼接，而是结构化的 session event
@@ -229,6 +234,13 @@ if (sdkMessage.uuid) {
 }
 ```
 
+**身份边界**：`sdkUuid` 的值就是 SDK stream / transcript 中的 message UUID；MyAgents
+不另造这个 ID。但 MyAgents JSONL 里“曾经记录过该 `sdkUuid`”不等于 SDK 当前
+`resume` loader 仍能寻址它。SDK 的可寻址性由 SDK 自己的 transcript store 和
+`parentUuid` 链决定，可能因 flush race、compact/snip、fork remap、历史清理或
+异常重启而变化。因此 `sdkUuid` 是精确恢复的候选锚点；一旦 SDK 拒绝，必须清锚点
+并裸 `resume`，不能重试同一个 UUID。
+
 ### currentSessionUuids 新鲜度追踪
 
 每个 Sidecar 进程维护 `currentSessionUuids: Set<string>`，记录当前 SDK session 分配的所有消息 UUID。
@@ -241,6 +253,30 @@ if (sdkMessage.uuid) {
 | 校验 | rewind / fork 时判断 UUID 是否属于当前 session |
 
 **新鲜度规则**：若 `lastAssistantUuid ∉ currentSessionUuids`（旧 UUID，来自其他 session），rewind 拒绝使用 `resumeSessionAt`，改为新建 session。
+
+`currentSessionUuids` 是 MyAgents 侧的 freshness cache，不是 SDK transcript 权威。
+从磁盘 seed 的 UUID 只能说明 MyAgents store 里存在过该身份；它可用于避免明显
+stale 的锚点，但不能证明 `resumeSessionAt` 一定会被 SDK 接受。SDK 报
+`No message found with message.uuid` 才是最终拒绝信号；恢复逻辑要驱逐该 UUID，
+防止 pre-warm / reload 反复派生同一个坏锚点。
+
+### reloadAnchor：冷加载后的 Rewind 对齐
+
+Rewind 会立即截断 MyAgents store；SDK 侧只能等下一次 `query({ resume,
+resumeSessionAt })` 才截断。如果用户 rewind 后没有继续发送消息就切走、关 Tab
+或重启，内存里的 `pendingResumeSessionAt` 会消失；裸 `resume` 会让 SDK 回到它
+自己的最新 leaf，导致 UI 显示 `[1..N]` 但 AI 实际看到 `[1..M]`。
+
+为关闭这个窗口，`loadTranscriptFromSessionMessages()` 在冷加载时从**持久化尾部**
+捕获 `pendingReloadAnchor`：只有尾消息是 `assistant`、带 `sdkUuid`、且通过
+`currentSessionUuids` 预筛时才捕获。`startStreamingSession()` 只在非 fork、没有
+in-process rewind anchor、且确实是 `resume` 时把它折入 `resumeSessionAt`。成功
+收到 `system_init` 后消费该 anchor。
+
+如果 reload / rewind / fork anchor 被 SDK 拒绝，恢复策略统一为：删除对应
+freshness cache / 持久 anchor，静默重启为裸 `resume`，并在当前 turn 场景下重投
+用户消息。产品取舍是“会话必须能继续，最多退化为 SDK 看到比 UI 更多/更旧的上下文”，
+而不是因为一个 stale UUID 让用户消息失败或进入重启循环。
 
 ### awaitSessionTermination 超时防护
 
