@@ -561,6 +561,8 @@
       "sourceFolder": "Folder",
       "sourceFileOrFolder": "File / folder",
       "sourceUrl": "Link import",
+      "source": "Source",
+      "sourceRawZip": "Zip",
       "noLocalSkills": "No publishable local Skills",
       "noMatchingLocalSkills": "No local Skills match",
       "localSearchPlaceholder": "Search Skill name",

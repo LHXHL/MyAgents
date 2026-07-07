@@ -561,6 +561,8 @@
       "sourceFolder": "文件夹",
       "sourceFileOrFolder": "文件 / 文件夹",
       "sourceUrl": "链接导入",
+      "source": "来源",
+      "sourceRawZip": "压缩包",
       "noLocalSkills": "暂无可发布的本机 Skill",
       "noMatchingLocalSkills": "没有匹配的本机 Skill",
       "localSearchPlaceholder": "搜索 Skill 名称",

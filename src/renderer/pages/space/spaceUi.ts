@@ -42,17 +42,17 @@ export function formatBytes(value?: number | null): string {
 }
 
 export function statusPillClass(status: string): string {
-  if (status === 'doing') return 'bg-[var(--warning-bg)] text-[var(--warning)]';
-  if (status === 'todo') return 'bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]';
+  if (status === 'todo') return 'bg-[var(--warning-bg)] text-[var(--warning)]';
+  if (status === 'doing') return 'bg-[var(--error-bg)] text-[var(--error)]';
   if (status === 'done') return 'bg-[var(--success-bg)] text-[var(--success)]';
   if (isClosedIssue(status)) return 'bg-[var(--paper-inset)] text-[var(--ink-muted)]';
-  return 'bg-[var(--success-bg)] text-[var(--success)]';
+  return 'bg-[var(--paper-inset)] text-[var(--ink)]';
 }
 
 export function statusTextClass(status: string): string {
-  if (status === 'doing') return 'text-[var(--warning)]';
-  if (status === 'todo') return 'text-[var(--accent-warm)]';
+  if (status === 'todo') return 'text-[var(--warning)]';
+  if (status === 'doing') return 'text-[var(--error)]';
   if (status === 'done') return 'text-[var(--success)]';
   if (isClosedIssue(status)) return 'text-[var(--ink-muted)]';
-  return 'text-[var(--success)]';
+  return 'text-[var(--ink)]';
 }

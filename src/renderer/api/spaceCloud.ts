@@ -275,6 +275,20 @@ export interface SpaceSkill {
   uploader?: SpaceUserSummary | null;
   createdAt: string;
   updatedAt: string;
+  source?: SpaceSkillSourceMeta | null;
+}
+
+export interface SpaceSkillSourceMeta {
+  type: "github" | "raw_zip" | "url" | string;
+  url: string;
+  resolvedUrl?: string | null;
+  owner?: string | null;
+  repo?: string | null;
+  ref?: string | null;
+  effectiveRef?: string | null;
+  rootPath?: string | null;
+  skillName?: string | null;
+  updatedAt?: string | null;
 }
 
 export interface SpaceSkillFile {
@@ -365,6 +379,7 @@ export interface SpaceSkillUrlPackage extends SpaceSkillUrlCandidate {
   filePath: string;
   fileCount: number;
   packageSizeBytes: number;
+  source?: SpaceSkillSourceMeta | null;
 }
 
 export interface SpaceSkillUrlExportResponse {
@@ -375,6 +390,7 @@ export interface SpaceSkillUrlExportResponse {
   error?: string;
   sourceUrl?: string;
   effectiveRef?: string;
+  source?: SpaceSkillSourceMeta | null;
 }
 
 export type SpaceIssueSubscriptionRunMode = "single_session" | "new_session";
@@ -1258,6 +1274,7 @@ export function spaceUploadSkillZip(input: {
   name?: string;
   description?: string;
   skillId?: string;
+  source?: SpaceSkillSourceMeta | null;
 }) {
   return inv<{ skill: SpaceSkill }>("cmd_space_upload_skill", { input });
 }

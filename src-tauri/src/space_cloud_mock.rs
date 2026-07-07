@@ -9,9 +9,10 @@ use serde_json::{json, Value};
 use crate::space_cloud::{
     LocalRegisteredAgent, LocalRegisteredAgentPublic, SpaceApiRequestInput,
     SpaceDownloadAttachmentResult, SpaceIssueSubscriptionRunMode, SpaceProcessDeliveryResult,
-    SpaceRegisterAgentInput, SpaceSession, SpaceSessionPublic, SpaceUpdateProfileInput,
-    SpaceUpdateSpaceInput, SpaceUploadIssueAttachmentsInput, SpaceUploadSkillInput,
-    MAX_ATTACHMENT_UPLOAD_BYTES, MAX_ATTACHMENT_UPLOAD_COUNT, MAX_SKILL_ZIP_BYTES,
+    SpaceRegisterAgentInput, SpaceSession, SpaceSessionPublic, SpaceSkillSourceMetaInput,
+    SpaceUpdateProfileInput, SpaceUpdateSpaceInput, SpaceUploadIssueAttachmentsInput,
+    SpaceUploadSkillInput, MAX_ATTACHMENT_UPLOAD_BYTES, MAX_ATTACHMENT_UPLOAD_COUNT,
+    MAX_SKILL_ZIP_BYTES,
 };
 use crate::workspace_files::path_safety::{
     atomic_write_file, resolve_inside_workspace, validate_workspace_root,
@@ -616,6 +617,21 @@ fn patch_mock_user_summaries(state: &mut MockState, user_id: &str, name: &str, a
     }
 }
 
+fn skill_source_json(source: &SpaceSkillSourceMetaInput) -> Value {
+    json!({
+        "type": source.source_type.as_str(),
+        "url": source.url.as_str(),
+        "resolvedUrl": source.resolved_url.as_deref(),
+        "owner": source.owner.as_deref(),
+        "repo": source.repo.as_deref(),
+        "ref": source.ref_name.as_deref(),
+        "effectiveRef": source.effective_ref.as_deref(),
+        "rootPath": source.root_path.as_deref(),
+        "skillName": source.skill_name.as_deref(),
+        "updatedAt": "2026-06-24T10:15:00.000Z"
+    })
+}
+
 pub fn upload_skill(input: SpaceUploadSkillInput) -> Result<Value, String> {
     let file_path = PathBuf::from(input.file_path.trim());
     if !file_path.is_absolute() {
@@ -668,6 +684,9 @@ pub fn upload_skill(input: SpaceUploadSkillInput) -> Result<Value, String> {
             object.insert("currentRevision".to_string(), json!(latest));
             object.insert("uploader".to_string(), uploader.clone());
             object.insert("updatedAt".to_string(), "2026-06-24T10:15:00.000Z".into());
+            if let Some(source) = input.source.as_ref() {
+                object.insert("source".to_string(), skill_source_json(source));
+            }
         }
         record.revisions.insert(
             0,
@@ -691,7 +710,7 @@ pub fn upload_skill(input: SpaceUploadSkillInput) -> Result<Value, String> {
         return Ok(json!({ "skill": record.skill.clone() }));
     }
     let id = state.next_id("skl");
-    let skill = json!({
+    let mut skill = json!({
         "id": id,
         "name": title_case(&name),
         "slug": safe_local_name(&name),
@@ -702,6 +721,9 @@ pub fn upload_skill(input: SpaceUploadSkillInput) -> Result<Value, String> {
         "createdAt": "2026-06-24T09:37:00.000Z",
         "updatedAt": "2026-06-24T09:37:00.000Z"
     });
+    if let (Some(source), Some(object)) = (input.source.as_ref(), skill.as_object_mut()) {
+        object.insert("source".to_string(), skill_source_json(source));
+    }
     let record = skill_record(
         skill.clone(),
         "Uploaded mock Skill package for UI verification.",
@@ -3072,7 +3094,19 @@ fn skill(id: &str, name: &str, slug: &str, description: &str, revision: u32) -> 
             "avatarUrl": "https://space.mock.myagents.local/mock-avatar/ethan.png"
         },
         "createdAt": "2026-06-10T08:00:00.000Z",
-        "updatedAt": format!("2026-06-{:02}T12:00:00.000Z", 12 + (revision % 10))
+        "updatedAt": format!("2026-06-{:02}T12:00:00.000Z", 12 + (revision % 10)),
+        "source": {
+            "type": "github",
+            "url": format!("https://github.com/myagents/mock-skills/tree/main/{}", slug),
+            "resolvedUrl": "https://codeload.github.com/myagents/mock-skills/zip/refs/heads/main",
+            "owner": "myagents",
+            "repo": "mock-skills",
+            "ref": null,
+            "effectiveRef": "main",
+            "rootPath": slug,
+            "skillName": slug,
+            "updatedAt": "2026-06-10T08:00:00.000Z"
+        }
     })
 }
 

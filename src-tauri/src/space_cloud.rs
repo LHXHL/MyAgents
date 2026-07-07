@@ -562,6 +562,31 @@ pub struct SpaceUploadSkillInput {
     pub description: Option<String>,
     #[serde(default)]
     pub skill_id: Option<String>,
+    #[serde(default)]
+    pub source: Option<SpaceSkillSourceMetaInput>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceSkillSourceMetaInput {
+    #[serde(rename = "type")]
+    pub source_type: String,
+    pub url: String,
+    #[serde(default)]
+    pub resolved_url: Option<String>,
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    #[serde(rename = "ref")]
+    pub ref_name: Option<String>,
+    #[serde(default)]
+    pub effective_ref: Option<String>,
+    #[serde(default)]
+    pub root_path: Option<String>,
+    #[serde(default)]
+    pub skill_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1865,6 +1890,36 @@ pub async fn cmd_space_cleanup_skill_export_packages(
     Ok(())
 }
 
+fn add_optional_form_text(
+    form: reqwest::multipart::Form,
+    name: &'static str,
+    value: Option<&str>,
+) -> reqwest::multipart::Form {
+    if let Some(trimmed) = value.map(str::trim).filter(|value| !value.is_empty()) {
+        form.text(name, trimmed.to_string())
+    } else {
+        form
+    }
+}
+
+fn add_skill_source_form_fields(
+    mut form: reqwest::multipart::Form,
+    source: Option<&SpaceSkillSourceMetaInput>,
+) -> reqwest::multipart::Form {
+    let Some(source) = source else {
+        return form;
+    };
+    form = add_optional_form_text(form, "sourceType", Some(source.source_type.as_str()));
+    form = add_optional_form_text(form, "sourceUrl", Some(source.url.as_str()));
+    form = add_optional_form_text(form, "sourceResolvedUrl", source.resolved_url.as_deref());
+    form = add_optional_form_text(form, "sourceOwner", source.owner.as_deref());
+    form = add_optional_form_text(form, "sourceRepo", source.repo.as_deref());
+    form = add_optional_form_text(form, "sourceRef", source.ref_name.as_deref());
+    form = add_optional_form_text(form, "sourceEffectiveRef", source.effective_ref.as_deref());
+    form = add_optional_form_text(form, "sourceRootPath", source.root_path.as_deref());
+    add_optional_form_text(form, "sourceSkillName", source.skill_name.as_deref())
+}
+
 #[tauri::command]
 pub async fn cmd_space_upload_skill(input: SpaceUploadSkillInput) -> Result<Value, String> {
     if crate::space_cloud_mock::is_enabled() {
@@ -1888,6 +1943,7 @@ pub async fn cmd_space_upload_skill(input: SpaceUploadSkillInput) -> Result<Valu
     {
         form = form.text("description", description.trim().to_string());
     }
+    form = add_skill_source_form_fields(form, input.source.as_ref());
     let path = if let Some(skill_id) = input.skill_id.as_deref().filter(|s| !s.trim().is_empty()) {
         format!("/api/skills/{}/revisions", url_component(skill_id.trim()))
     } else {

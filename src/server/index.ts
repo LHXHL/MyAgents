@@ -80,7 +80,7 @@ import {
   type CommandFrontmatter
 } from '../shared/slashCommands';
 import { sanitizeFolderName, isWindowsReservedName } from '../shared/utils';
-import { resolveSkillUrl } from './skills/url-resolver';
+import { resolveSkillUrl, type ResolvedSkillSource } from './skills/url-resolver';
 import { fetchSkillZip, TarballFetchError } from './skills/tarball-fetcher';
 import { analyseTree, buildInstallPayload, writeSkillFiles, type SkillCandidate } from './skills/installer';
 import {
@@ -103,10 +103,65 @@ type SpaceSkillExportPackage = {
   rootPath: string;
   fileCount: number;
   packageSizeBytes: number;
+  source: SpaceSkillSourceMeta;
 };
+
+type SpaceSkillSourceMeta = {
+  type: 'github' | 'raw_zip' | 'url';
+  url: string;
+  resolvedUrl?: string | null;
+  owner?: string | null;
+  repo?: string | null;
+  ref?: string | null;
+  effectiveRef?: string | null;
+  rootPath?: string | null;
+  skillName?: string | null;
+};
+
+function encodeGithubPath(path: string): string {
+  return path
+    .split('/')
+    .filter(Boolean)
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+}
+
+function buildSkillSourceMeta(
+  src: ResolvedSkillSource,
+  tree: Awaited<ReturnType<typeof fetchSkillZip>>,
+  cand: SkillCandidate,
+): SpaceSkillSourceMeta {
+  if (src.kind === 'github' && src.owner && src.repo) {
+    const effectiveRef = tree.effectiveRef ?? src.ref ?? null;
+    const rootPath = cand.rootPath || src.subPath || null;
+    const baseUrl = `https://github.com/${encodeURIComponent(src.owner)}/${encodeURIComponent(src.repo)}`;
+    const url = effectiveRef
+      ? `${baseUrl}/tree/${encodeURIComponent(effectiveRef)}${rootPath ? `/${encodeGithubPath(rootPath)}` : ''}`
+      : baseUrl;
+    return {
+      type: 'github',
+      url,
+      resolvedUrl: tree.sourceUrl,
+      owner: src.owner,
+      repo: src.repo,
+      ref: src.ref ?? null,
+      effectiveRef,
+      rootPath,
+      skillName: cand.suggestedFolderName,
+    };
+  }
+  return {
+    type: src.kind === 'raw-zip' ? 'raw_zip' : 'url',
+    url: src.rawZipUrl ?? tree.sourceUrl,
+    resolvedUrl: tree.sourceUrl,
+    rootPath: cand.rootPath || null,
+    skillName: cand.suggestedFolderName,
+  };
+}
 
 async function writeSpaceSkillExportPackages(
   tree: Awaited<ReturnType<typeof fetchSkillZip>>,
+  source: ResolvedSkillSource,
   candidates: SkillCandidate[],
 ): Promise<SpaceSkillExportPackage[]> {
   const { default: AdmZip } = await import('adm-zip');
@@ -143,6 +198,7 @@ async function writeSpaceSkillExportPackages(
       rootPath: cand.rootPath,
       fileCount: files.size,
       packageSizeBytes: statSync(filePath).size,
+      source: buildSkillSourceMeta(source, tree, cand),
     });
   }
 
@@ -6708,7 +6764,7 @@ async function main() {
               return jsonResponse({ success: false, error: '未选择任何 skill' }, 400);
             }
 
-            const packages = await writeSpaceSkillExportPackages(tree, chosen);
+            const packages = await writeSpaceSkillExportPackages(tree, resolved, chosen);
             if (packages.length === 0) {
               return jsonResponse({ success: false, error: '未找到可发布的文件' }, 500);
             }
@@ -6764,7 +6820,7 @@ async function main() {
             });
           }
 
-          const packages = await writeSpaceSkillExportPackages(tree, [analysis.skill]);
+          const packages = await writeSpaceSkillExportPackages(tree, resolved, [analysis.skill]);
           if (packages.length === 0) {
             return jsonResponse({ success: false, error: '未找到可发布的文件' }, 500);
           }

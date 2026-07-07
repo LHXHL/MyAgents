@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowLeft, ChevronDown, ChevronRight, Download, FileText, Folder, Link, Loader2, MoreHorizontal, Package, RefreshCw, RotateCcw, Search, Trash2, UploadCloud, X } from 'lucide-react';
 
-import { spaceCleanupSkillExportPackages, spaceErrorMessage, spaceExportSkillFromUrl, spaceInspectSkillSource, spaceListLocalSkills, type SpaceLocalSkill, type SpaceSkill, type SpaceSkillFile, type SpaceSkillSourceInspection, type SpaceSkillUrlCandidate, type SpaceSkillUrlExportResponse, type SpaceSkillUrlPackage, type SpaceSkillUrlPreview } from '@/api/spaceCloud';
+import { spaceCleanupSkillExportPackages, spaceErrorMessage, spaceExportSkillFromUrl, spaceInspectSkillSource, spaceListLocalSkills, type SpaceLocalSkill, type SpaceSkill, type SpaceSkillFile, type SpaceSkillSourceInspection, type SpaceSkillSourceMeta, type SpaceSkillUrlCandidate, type SpaceSkillUrlExportResponse, type SpaceSkillUrlPackage, type SpaceSkillUrlPreview } from '@/api/spaceCloud';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import Markdown from '@/components/Markdown';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
@@ -13,6 +13,7 @@ import { useTauriFileDrop } from '@/hooks/useTauriFileDrop';
 import { SpaceIdentityLine } from '@/pages/space/SpaceAvatar';
 import { getSkillFileState, getSkillRevisionState, SPACE_VISIBLE_REFRESH_TTL_MS, type SpaceActions, type SpaceSkillDetailState } from '@/pages/space/spaceStore';
 import { SPACE_LIST_FRAME_CLASS, SPACE_PRIMARY_TOOL_BUTTON_CLASS, SPACE_REFRESH_TOOL_BUTTON_CLASS, SPACE_TWO_COLUMN_GRID_CLASS, formatBytes, formatDate } from '@/pages/space/spaceUi';
+import { openExternal } from '@/utils/openExternal';
 import { createSkillFileTreeRows } from './skillFileTree';
 
 type SkillDetailMode = 'entry' | 'files' | 'history';
@@ -29,6 +30,30 @@ function skillSlug(value: string): string {
 
 function shortHash(value?: string | null): string {
   return value ? value.slice(0, 10) : '';
+}
+
+function skillSourcePrimary(source?: SpaceSkillSourceMeta | null): string {
+  if (!source) return '';
+  if (source.type === 'github' && source.owner && source.repo) {
+    return `${source.owner}/${source.repo}`;
+  }
+  return source.url;
+}
+
+function skillSourceSecondary(source?: SpaceSkillSourceMeta | null): string {
+  if (!source) return '';
+  const parts = [];
+  const ref = source.effectiveRef || source.ref;
+  if (ref) parts.push(`@${ref}`);
+  if (source.rootPath) parts.push(source.rootPath);
+  return parts.join(' · ');
+}
+
+function skillSourceKindLabel(source: SpaceSkillSourceMeta | null | undefined, t: ReturnType<typeof useTranslation>['t']): string {
+  if (!source) return t('space.skills.sourceUrl');
+  if (source.type === 'github') return 'GitHub';
+  if (source.type === 'raw_zip') return t('space.skills.sourceRawZip');
+  return t('space.skills.sourceUrl');
 }
 
 export function SkillsWorkspace({ admin, skills, loading, selectedSkillId, projects, actions, skillDetailState, isActive, onSelectSkill, onRefresh, onUploaded }: { admin: boolean; skills: SpaceSkill[]; loading: boolean; selectedSkillId: string | null; projects: Project[]; actions: SpaceActions; skillDetailState?: SpaceSkillDetailState; isActive: boolean; onSelectSkill: (id: string | null) => void; onRefresh: () => Promise<void>; onUploaded: (id: string) => void }) {
@@ -132,10 +157,6 @@ function SpaceSkillCard({ skill, onOpen, t }: { skill: SpaceSkill; onOpen: () =>
         <span>
           <span className="font-semibold text-[var(--ink-muted)]">{formatDate(skill.createdAt)}</span>
         </span>
-        <span className="text-[var(--line-strong)]">·</span>
-        <span className="inline-flex max-w-full rounded-md bg-[var(--accent-cool-subtle)] px-1.5 py-0.5 text-xs font-semibold text-[var(--accent-cool)]">
-          <span className="truncate"># {t('space.skills.officialTag')}</span>
-        </span>
       </span>
     </button>
   );
@@ -154,6 +175,7 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
   const [sourceLabel, setSourceLabel] = useState('');
   const [sourceScopeLabel, setSourceScopeLabel] = useState('');
   const [sourceHasDangerousTools, setSourceHasDangerousTools] = useState(false);
+  const [sourceMeta, setSourceMeta] = useState<SpaceSkillSourceMeta | null>(null);
   const [inspection, setInspection] = useState<SpaceSkillSourceInspection | null>(null);
   const [publishAction, setPublishAction] = useState<'create' | 'update'>('create');
   const [newName, setNewName] = useState('');
@@ -221,14 +243,34 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
     return localSkills.filter((skill) => skill.name.toLowerCase().includes(query));
   }, [localQuery, localSkills]);
 
-  const inspectPath = useCallback(async (path: string, label: string, scopeLabel: string, hasDangerousTools = false) => {
+  const clearSelectedSource = useCallback(() => {
+    inspectSeqRef.current += 1;
+    setSourcePath('');
+    setSourceLabel('');
+    setSourceScopeLabel('');
+    setSourceHasDangerousTools(false);
+    setSourceMeta(null);
+    setInspection(null);
+    setPublishAction('create');
+    setNewName('');
+  }, []);
+
+  const changePublishMode = useCallback((nextMode: PublishSourceMode) => {
+    if (nextMode === mode) return;
+    clearSelectedSource();
+    setMode(nextMode);
+  }, [clearSelectedSource, mode]);
+
+  const inspectPath = useCallback(async (path: string, label: string, scopeLabel: string, hasDangerousTools = false, source: SpaceSkillSourceMeta | null = null) => {
     const seq = ++inspectSeqRef.current;
     setSourcePath('');
     setSourceLabel(label);
     setSourceScopeLabel(scopeLabel);
     setSourceHasDangerousTools(false);
+    setSourceMeta(null);
     setInspection(null);
     setNewName('');
+    setPublishAction('create');
     try {
       const result = await spaceInspectSkillSource(path);
       if (seq !== inspectSeqRef.current) return;
@@ -236,6 +278,7 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
       setSourceLabel(label);
       setSourceScopeLabel(scopeLabel);
       setSourceHasDangerousTools(hasDangerousTools);
+      setSourceMeta(source);
       setInspection(result);
       setNewName(result.name);
       const nextConflict = skills.find((skill) => skill.slug === skillSlug(result.name)) ?? null;
@@ -244,6 +287,7 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
       if (seq !== inspectSeqRef.current) return;
       setSourcePath('');
       setSourceHasDangerousTools(false);
+      setSourceMeta(null);
       setInspection(null);
       setNewName('');
       toast.error(spaceErrorMessage(error));
@@ -264,7 +308,7 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
   }, [inspectPath, mode, registerZone, t, toast, unregisterZone]);
 
   const inspectUrlPackage = async (item: SpaceSkillUrlPackage) => {
-    await inspectPath(item.filePath, item.rootPath || item.suggestedFolderName, t('space.skills.sourceUrl'), item.hasDangerousTools);
+    await inspectPath(item.filePath, item.rootPath || item.suggestedFolderName, skillSourceKindLabel(item.source, t), item.hasDangerousTools, item.source ?? null);
   };
 
   const applyUrlResponse = async (result: SpaceSkillUrlExportResponse) => {
@@ -298,8 +342,7 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
     setUrlPreview(null);
     cleanupUrlPackages();
     setUrlPackages([]);
-    setInspection(null);
-    setSourcePath('');
+    clearSelectedSource();
     try {
       const result = await spaceExportSkillFromUrl({ url: urlValue.trim() });
       await applyUrlResponse(result);
@@ -371,11 +414,12 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
       const targetName = publishAction === 'create' ? newName.trim() || inspection.name : undefined;
       const result =
         publishAction === 'update' && conflict
-          ? await actions.uploadSkillRevision(conflict.id, sourcePath)
+          ? await actions.uploadSkillRevision(conflict.id, sourcePath, sourceMeta)
           : await actions.uploadSkillZip({
               filePath: sourcePath,
               name: targetName,
               description: inspection.description ?? undefined,
+              source: sourceMeta,
             });
       cleanupUrlPackages();
       setUrlPackages([]);
@@ -413,7 +457,7 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
                 ['file', UploadCloud, t('space.skills.publishFromFile')],
                 ['url', Link, t('space.skills.publishFromUrl')],
               ] as const).map(([value, Icon, label]) => (
-                <button key={value} type="button" onClick={() => setMode(value)} className={`flex h-10 items-center gap-2 rounded-lg px-3 text-left text-sm font-semibold transition-colors ${mode === value ? 'bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm' : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'}`}>
+                <button key={value} type="button" onClick={() => changePublishMode(value)} className={`flex h-10 items-center gap-2 rounded-lg px-3 text-left text-sm font-semibold transition-colors ${mode === value ? 'bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm' : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'}`}>
                   <Icon className="h-4 w-4" />
                   {label}
                 </button>
@@ -421,181 +465,153 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
             </div>
           </aside>
 
-          <main className="min-h-0 overflow-y-auto p-5">
-            {mode === 'local' && (
-              <section className="grid min-h-0 gap-3">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <h3 className="text-base font-semibold text-[var(--ink)]">{t('space.skills.localSkills')}</h3>
-                  <div className="flex min-w-56 items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5">
-                    <Search className="h-4 w-4 shrink-0 text-[var(--ink-subtle)]" />
-                    <input
-                      value={localQuery}
-                      onChange={(event) => setLocalQuery(event.target.value)}
-                      placeholder={t('space.skills.localSearchPlaceholder')}
-                      className="h-9 min-w-0 flex-1 bg-transparent text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-subtle)]"
-                    />
-                    {loadingLocal && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[var(--ink-muted)]" />}
-                  </div>
-                </div>
-                <div className="grid max-h-[460px] gap-2 overflow-y-auto pr-1">
-                  {filteredLocalSkills.map((skill) => (
-                    <button key={skill.id} type="button" onClick={() => void inspectPath(skill.path, skill.name, skill.scope === 'project' ? (skill.workspaceLabel || t('space.skills.sourceProject')) : t('space.skills.sourceGlobal'))} className={`rounded-lg border px-3 py-2 text-left transition-colors ${sourcePath === skill.path ? 'border-[var(--accent-warm)] bg-[var(--accent-warm-subtle)]' : 'border-[var(--line-subtle)] bg-[var(--paper-elevated)] hover:border-[var(--line)]'}`}>
-                      <div className="flex min-w-0 items-center gap-2">
-                        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink)]">{skill.name}</span>
-                        <span className="shrink-0 rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">{skill.scope === 'project' ? (skill.workspaceLabel || t('space.skills.sourceProject')) : t('space.skills.sourceGlobal')}</span>
-                      </div>
-                      <p className="mt-1 truncate text-xs font-medium text-[var(--ink-subtle)]">{skill.path}</p>
-                    </button>
-                  ))}
-                  {!loadingLocal && localSkills.length === 0 && <div className="rounded-lg border border-dashed border-[var(--line-subtle)] px-4 py-8 text-center text-sm text-[var(--ink-muted)]">{t('space.skills.noLocalSkills')}</div>}
-                  {!loadingLocal && localSkills.length > 0 && filteredLocalSkills.length === 0 && <div className="rounded-lg border border-dashed border-[var(--line-subtle)] px-4 py-8 text-center text-sm text-[var(--ink-muted)]">{t('space.skills.noMatchingLocalSkills')}</div>}
-                </div>
-              </section>
-            )}
-
-            {mode === 'file' && (
-              <section
-                ref={fileDropRef}
-                onDragOver={(event) => event.preventDefault()}
-                onDrop={(event) => event.preventDefault()}
-                className={`grid min-h-64 place-items-center rounded-lg border border-dashed px-4 py-10 text-center transition-colors ${fileDropActive ? 'border-[var(--accent-warm)] bg-[var(--accent-warm-subtle)]' : 'border-[var(--line-subtle)] bg-[var(--paper)]/45'}`}
-              >
-                <div className="max-w-md">
-                  <UploadCloud className="mx-auto mb-3 h-8 w-8 text-[var(--ink-subtle)]" />
-                  <h3 className="text-base font-semibold text-[var(--ink)]">{t('space.skills.dropSkillSource')}</h3>
-                  <p className="mt-1 text-sm text-[var(--ink-muted)]">{t('space.skills.dropSkillSourceHint')}</p>
-                  <div className="mt-4 flex flex-wrap justify-center gap-2">
-                    <button type="button" onClick={() => void chooseFile()} className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]">
-                      <UploadCloud className="h-4 w-4" />
-                      {t('space.skills.chooseSkillFile')}
-                    </button>
-                    <button type="button" onClick={() => void chooseFolder()} className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]">
-                      <Folder className="h-4 w-4" />
-                      {t('space.skills.chooseSkillFolder')}
-                    </button>
-                  </div>
-                  <p className="mt-3 text-xs font-medium text-[var(--ink-subtle)]">{t('space.skills.supportedSourceFormats')}</p>
-                </div>
-              </section>
-            )}
-
-            {mode === 'url' && (
-              <section className="grid gap-3">
-                <div className="rounded-lg border border-[var(--line-subtle)] bg-[var(--paper)]/45 p-3">
-                  <textarea
-                    value={urlValue}
-                    onChange={(event) => setUrlValue(event.target.value)}
-                    rows={4}
-                    placeholder={t('space.skills.urlInputPlaceholder')}
-                    className="w-full resize-none rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2 font-mono text-sm text-[var(--ink)] outline-none transition-colors placeholder:text-[var(--ink-subtle)] focus:border-[var(--accent-warm)]"
-                  />
-                  <div className="mt-2 flex justify-end">
-                    <button type="button" disabled={!urlValue.trim() || urlLoading} onClick={() => void probeUrl()} className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60">
-                      {urlLoading && <Loader2 className="h-4 w-4 animate-spin" />}
-                      {t('space.skills.analyzeUrl')}
-                    </button>
-                  </div>
-                </div>
-                {urlError && <div className="rounded-lg border border-[var(--error)]/30 bg-[var(--error-bg)] px-3 py-2 text-sm text-[var(--error)]">{urlError}</div>}
-                {urlPreview?.mode === 'multi' && (
-                  <div className="grid max-h-64 gap-2 overflow-y-auto pr-1">
-                    <p className="text-sm font-semibold text-[var(--ink-secondary)]">{t('space.skills.urlCandidates')}</p>
-                    {urlPreview.candidates.map((candidate) => (
-                      <UrlCandidateButton
-                        key={`${candidate.suggestedFolderName}:${candidate.rootPath}`}
-                        candidate={candidate}
-                        disabled={urlLoading}
-                        onSelect={() => void exportUrlCandidate({ folderNames: [candidate.suggestedFolderName] })}
-                        t={t}
+          <main className="relative min-h-0 overflow-hidden p-5">
+            <div className={`h-full min-h-0 overflow-y-auto pr-1 ${inspection ? 'pb-60' : ''}`}>
+              {mode === 'local' && (
+                <section className="grid min-h-0 gap-3">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h3 className="text-base font-semibold text-[var(--ink)]">{t('space.skills.localSkills')}</h3>
+                    <div className="flex min-w-56 items-center gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5">
+                      <Search className="h-4 w-4 shrink-0 text-[var(--ink-subtle)]" />
+                      <input
+                        value={localQuery}
+                        onChange={(event) => setLocalQuery(event.target.value)}
+                        placeholder={t('space.skills.localSearchPlaceholder')}
+                        className="h-9 min-w-0 flex-1 bg-transparent text-sm text-[var(--ink)] outline-none placeholder:text-[var(--ink-subtle)]"
                       />
-                    ))}
-                  </div>
-                )}
-                {urlPreview?.mode === 'marketplace' && (
-                  <div className="grid max-h-72 gap-3 overflow-y-auto pr-1">
-                    <div>
-                      <p className="text-sm font-semibold text-[var(--ink-secondary)]">{urlPreview.marketplaceName}</p>
-                      {urlPreview.marketplaceDescription && <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{urlPreview.marketplaceDescription}</p>}
+                      {loadingLocal && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[var(--ink-muted)]" />}
                     </div>
-                    {urlPreview.plugins.map((plugin) => (
-                      <div key={plugin.name} className="rounded-lg border border-[var(--line-subtle)] bg-[var(--paper-elevated)] p-3">
-                        <div className="mb-2">
-                          <p className="text-sm font-semibold text-[var(--ink)]">{plugin.name}</p>
-                          {plugin.description && <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{plugin.description}</p>}
-                        </div>
-                        <div className="grid gap-2">
-                          {plugin.skills.map((candidate) => (
-                            <UrlCandidateButton
-                              key={`${plugin.name}:${candidate.suggestedFolderName}:${candidate.rootPath}`}
-                              candidate={candidate}
-                              disabled={urlLoading}
-                              onSelect={() => void exportUrlCandidate({ pluginName: plugin.name, folderNames: [candidate.suggestedFolderName] })}
-                              t={t}
-                            />
-                          ))}
-                        </div>
-                      </div>
-                    ))}
                   </div>
-                )}
-                {urlPackages.length > 1 && (
                   <div className="grid gap-2">
-                    <p className="text-sm font-semibold text-[var(--ink-secondary)]">{t('space.skills.preparedUrlPackages')}</p>
-                    {urlPackages.map((item) => (
-                      <button key={item.tempId} type="button" onClick={() => void inspectUrlPackage(item)} className={`rounded-lg border px-3 py-2 text-left transition-colors ${sourcePath === item.filePath ? 'border-[var(--accent-warm)] bg-[var(--accent-warm-subtle)]' : 'border-[var(--line-subtle)] bg-[var(--paper-elevated)] hover:border-[var(--line)]'}`}>
-                        <span className="block truncate text-sm font-semibold text-[var(--ink)]">{item.name}</span>
-                        <span className="mt-1 block truncate text-xs font-medium text-[var(--ink-subtle)]">{item.rootPath || item.suggestedFolderName}</span>
+                    {filteredLocalSkills.map((skill) => (
+                      <button key={skill.id} type="button" onClick={() => void inspectPath(skill.path, skill.name, skill.scope === 'project' ? (skill.workspaceLabel || t('space.skills.sourceProject')) : t('space.skills.sourceGlobal'))} className={`rounded-lg border px-3 py-2 text-left transition-colors ${sourcePath === skill.path ? 'border-[var(--ink)] bg-[var(--paper)]' : 'border-[var(--line-subtle)] bg-[var(--paper-elevated)] hover:border-[var(--line)]'}`}>
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-[var(--ink)]">{skill.name}</span>
+                          <span className="shrink-0 rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">{skill.scope === 'project' ? (skill.workspaceLabel || t('space.skills.sourceProject')) : t('space.skills.sourceGlobal')}</span>
+                        </div>
+                        <p className="mt-1 truncate text-xs font-medium text-[var(--ink-subtle)]">{skill.path}</p>
                       </button>
                     ))}
+                    {!loadingLocal && localSkills.length === 0 && <div className="rounded-lg border border-dashed border-[var(--line-subtle)] px-4 py-8 text-center text-sm text-[var(--ink-muted)]">{t('space.skills.noLocalSkills')}</div>}
+                    {!loadingLocal && localSkills.length > 0 && filteredLocalSkills.length === 0 && <div className="rounded-lg border border-dashed border-[var(--line-subtle)] px-4 py-8 text-center text-sm text-[var(--ink-muted)]">{t('space.skills.noMatchingLocalSkills')}</div>}
                   </div>
-                )}
-              </section>
-            )}
+                </section>
+              )}
+
+              {mode === 'file' && (
+                <section
+                  ref={fileDropRef}
+                  onDragOver={(event) => event.preventDefault()}
+                  onDrop={(event) => event.preventDefault()}
+                  className={`grid min-h-64 place-items-center rounded-lg border border-dashed px-4 py-10 text-center transition-colors ${fileDropActive ? 'border-[var(--accent-warm)] bg-[var(--accent-warm-subtle)]' : 'border-[var(--line-subtle)] bg-[var(--paper)]/45'}`}
+                >
+                  <div className="max-w-md">
+                    <UploadCloud className="mx-auto mb-3 h-8 w-8 text-[var(--ink-subtle)]" />
+                    <h3 className="text-base font-semibold text-[var(--ink)]">{t('space.skills.dropSkillSource')}</h3>
+                    <p className="mt-1 text-sm text-[var(--ink-muted)]">{t('space.skills.dropSkillSourceHint')}</p>
+                    <div className="mt-4 flex flex-wrap justify-center gap-2">
+                      <button type="button" onClick={() => void chooseFile()} className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]">
+                        <UploadCloud className="h-4 w-4" />
+                        {t('space.skills.chooseSkillFile')}
+                      </button>
+                      <button type="button" onClick={() => void chooseFolder()} className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]">
+                        <Folder className="h-4 w-4" />
+                        {t('space.skills.chooseSkillFolder')}
+                      </button>
+                    </div>
+                    <p className="mt-3 text-xs font-medium text-[var(--ink-subtle)]">{t('space.skills.supportedSourceFormats')}</p>
+                  </div>
+                </section>
+              )}
+
+              {mode === 'url' && (
+                <section className="grid gap-3">
+                  <div className="rounded-lg border border-[var(--line-subtle)] bg-[var(--paper)]/45 p-3">
+                    <textarea
+                      value={urlValue}
+                      onChange={(event) => setUrlValue(event.target.value)}
+                      rows={4}
+                      placeholder={t('space.skills.urlInputPlaceholder')}
+                      className="w-full resize-none rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-3 py-2 font-mono text-sm text-[var(--ink)] outline-none transition-colors placeholder:text-[var(--ink-subtle)] focus:border-[var(--ink)]"
+                    />
+                    <div className="mt-2 flex justify-end">
+                      <button type="button" disabled={!urlValue.trim() || urlLoading} onClick={() => void probeUrl()} className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60">
+                        {urlLoading && <Loader2 className="h-4 w-4 animate-spin" />}
+                        {t('space.skills.analyzeUrl')}
+                      </button>
+                    </div>
+                  </div>
+                  {urlError && <div className="rounded-lg border border-[var(--error)]/30 bg-[var(--error-bg)] px-3 py-2 text-sm text-[var(--error)]">{urlError}</div>}
+                  {urlPreview?.mode === 'multi' && (
+                    <div className="grid max-h-64 gap-2 overflow-y-auto pr-1">
+                      <p className="text-sm font-semibold text-[var(--ink-secondary)]">{t('space.skills.urlCandidates')}</p>
+                      {urlPreview.candidates.map((candidate) => (
+                        <UrlCandidateButton
+                          key={`${candidate.suggestedFolderName}:${candidate.rootPath}`}
+                          candidate={candidate}
+                          disabled={urlLoading}
+                          onSelect={() => void exportUrlCandidate({ folderNames: [candidate.suggestedFolderName] })}
+                          t={t}
+                        />
+                      ))}
+                    </div>
+                  )}
+                  {urlPreview?.mode === 'marketplace' && (
+                    <div className="grid max-h-72 gap-3 overflow-y-auto pr-1">
+                      <div>
+                        <p className="text-sm font-semibold text-[var(--ink-secondary)]">{urlPreview.marketplaceName}</p>
+                        {urlPreview.marketplaceDescription && <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{urlPreview.marketplaceDescription}</p>}
+                      </div>
+                      {urlPreview.plugins.map((plugin) => (
+                        <div key={plugin.name} className="rounded-lg border border-[var(--line-subtle)] bg-[var(--paper-elevated)] p-3">
+                          <div className="mb-2">
+                            <p className="text-sm font-semibold text-[var(--ink)]">{plugin.name}</p>
+                            {plugin.description && <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{plugin.description}</p>}
+                          </div>
+                          <div className="grid gap-2">
+                            {plugin.skills.map((candidate) => (
+                              <UrlCandidateButton
+                                key={`${plugin.name}:${candidate.suggestedFolderName}:${candidate.rootPath}`}
+                                candidate={candidate}
+                                disabled={urlLoading}
+                                onSelect={() => void exportUrlCandidate({ pluginName: plugin.name, folderNames: [candidate.suggestedFolderName] })}
+                                t={t}
+                              />
+                            ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {urlPackages.length > 1 && (
+                    <div className="grid gap-2">
+                      <p className="text-sm font-semibold text-[var(--ink-secondary)]">{t('space.skills.preparedUrlPackages')}</p>
+                      {urlPackages.map((item) => (
+                        <button key={item.tempId} type="button" onClick={() => void inspectUrlPackage(item)} className={`rounded-lg border px-3 py-2 text-left transition-colors ${sourcePath === item.filePath ? 'border-[var(--ink)] bg-[var(--paper)]' : 'border-[var(--line-subtle)] bg-[var(--paper-elevated)] hover:border-[var(--line)]'}`}>
+                          <span className="block truncate text-sm font-semibold text-[var(--ink)]">{item.name}</span>
+                          <span className="mt-1 block truncate text-xs font-medium text-[var(--ink-subtle)]">{item.rootPath || item.suggestedFolderName}</span>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </section>
+              )}
+            </div>
 
             {inspection && (
-              <section className="mt-5 rounded-lg border border-[var(--line-subtle)] bg-[var(--paper-elevated)] p-4">
-                <div className="flex flex-wrap items-start gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex min-w-0 flex-wrap items-center gap-2">
-                      <h3 className="min-w-0 truncate text-base font-semibold text-[var(--ink)]">{inspection.name}</h3>
-                      <span className="rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">{sourceScopeLabel}</span>
-                    </div>
-                    <p className="mt-1 line-clamp-2 text-sm text-[var(--ink-muted)]">{inspection.description || t('space.common.noDescription')}</p>
-                    {sourceHasDangerousTools && (
-                      <p className="mt-2 inline-flex rounded-md bg-[var(--warning-bg)] px-2 py-1 text-xs font-semibold text-[var(--warning)]">{t('space.skills.dangerousTools')}</p>
-                    )}
-                  </div>
-                  <div className="text-right text-xs font-semibold text-[var(--ink-subtle)]">
-                    <div>{formatBytes(inspection.packageSizeBytes)}</div>
-                    <div>{shortHash(inspection.packageHash)}</div>
-                  </div>
-                </div>
-                <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-medium text-[var(--ink-muted)] max-sm:grid-cols-1">
-                  <span>{t('space.skills.filesCount', { count: inspection.fileCount })}</span>
-                  <span className="truncate">{sourceLabel}</span>
-                </div>
-
-                <div className="mt-4 grid gap-2">
-                  {conflict && (
-                    <div className="rounded-lg border border-[var(--accent-warm)] bg-[var(--accent-warm-subtle)] px-3 py-2 text-sm text-[var(--ink-secondary)]">
-                      {t('space.skills.conflictWith', { name: conflict.name })}
-                    </div>
-                  )}
-                  <label className="flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border border-[var(--line-subtle)] px-3 text-sm font-semibold text-[var(--ink-secondary)]">
-                    <input type="radio" checked={publishAction === 'create'} onChange={() => setPublishAction('create')} />
-                    {t('space.skills.publishAsNew')}
-                  </label>
-                  {publishAction === 'create' && (
-                    <input value={newName} onChange={(event) => setNewName(event.target.value)} className="h-10 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]" />
-                  )}
-                  {conflict && (
-                    <label className="flex min-h-10 cursor-pointer items-center gap-2 rounded-lg border border-[var(--line-subtle)] px-3 text-sm font-semibold text-[var(--ink-secondary)]">
-                      <input type="radio" checked={publishAction === 'update'} onChange={() => setPublishAction('update')} />
-                      {t('space.skills.publishAsUpdate', { version: conflict.latestRevision + 1 })}
-                    </label>
-                  )}
-                </div>
-              </section>
+              <PublishInspectionDock
+                inspection={inspection}
+                sourceLabel={sourceLabel}
+                sourceScopeLabel={sourceScopeLabel}
+                sourceHasDangerousTools={sourceHasDangerousTools}
+                conflict={conflict}
+                publishAction={publishAction}
+                newName={newName}
+                onPublishActionChange={setPublishAction}
+                onNewNameChange={setNewName}
+                onClose={clearSelectedSource}
+                t={t}
+              />
             )}
           </main>
         </div>
@@ -612,6 +628,64 @@ function PublishSkillDialog({ skills, projects, actions, isActive, onClose, onPu
   );
 }
 
+function PublishInspectionDock({ inspection, sourceLabel, sourceScopeLabel, sourceHasDangerousTools, conflict, publishAction, newName, onPublishActionChange, onNewNameChange, onClose, t }: { inspection: SpaceSkillSourceInspection; sourceLabel: string; sourceScopeLabel: string; sourceHasDangerousTools: boolean; conflict: SpaceSkill | null; publishAction: 'create' | 'update'; newName: string; onPublishActionChange: (action: 'create' | 'update') => void; onNewNameChange: (value: string) => void; onClose: () => void; t: ReturnType<typeof useTranslation>['t'] }) {
+  return (
+    <section className="absolute inset-x-5 bottom-4 z-10 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)]/95 p-3.5 shadow-xl backdrop-blur-md">
+      <header className="flex min-w-0 items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <h3 className="min-w-0 truncate text-base font-semibold text-[var(--ink)]">{inspection.name}</h3>
+            <span className="shrink-0 rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">{sourceScopeLabel}</span>
+            {sourceHasDangerousTools && <span className="shrink-0 rounded-md bg-[var(--warning-bg)] px-2 py-0.5 text-xs font-semibold text-[var(--warning)]">{t('space.skills.dangerousTools')}</span>}
+          </div>
+          <p className="mt-1 truncate text-sm text-[var(--ink-muted)]">{inspection.description || t('space.common.noDescription')}</p>
+        </div>
+        <div className="flex shrink-0 items-start gap-2">
+          <div className="pt-0.5 text-right text-xs font-semibold text-[var(--ink-subtle)]">
+            <div>{formatBytes(inspection.packageSizeBytes)}</div>
+            <div>{shortHash(inspection.packageHash)}</div>
+          </div>
+          <button type="button" onClick={onClose} className="grid h-7 w-7 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]" aria-label={t('space.detail.close')}>
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      </header>
+
+      <div className="mt-2 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-xs font-medium text-[var(--ink-muted)]">
+        <span className="shrink-0">{t('space.skills.filesCount', { count: inspection.fileCount })}</span>
+        <span className="h-1 w-1 shrink-0 rounded-full bg-[var(--line-strong)]" />
+        <span className="min-w-0 flex-1 truncate">{sourceLabel}</span>
+      </div>
+      {conflict && <p className="mt-2 truncate text-xs font-semibold text-[var(--warning)]">{t('space.skills.conflictWith', { name: conflict.name })}</p>}
+
+      <div className="mt-3 grid gap-2">
+        <label className={`grid min-h-10 cursor-pointer grid-cols-[minmax(0,1fr)_minmax(10rem,14rem)] items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-colors max-md:grid-cols-1 ${publishAction === 'create' ? 'border-[var(--ink)] bg-[var(--paper)] text-[var(--ink)]' : 'border-[var(--line-subtle)] text-[var(--ink-secondary)] hover:border-[var(--line)] hover:bg-[var(--paper)]/65'}`}>
+          <span className="flex min-w-0 items-center gap-2 font-semibold">
+            <input type="radio" checked={publishAction === 'create'} onChange={() => onPublishActionChange('create')} className="accent-[var(--ink)]" />
+            <span className="truncate">{t('space.skills.publishAsNew')}</span>
+          </span>
+          <input
+            value={newName}
+            onFocus={() => onPublishActionChange('create')}
+            onChange={(event) => onNewNameChange(event.target.value)}
+            className="h-8 min-w-0 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] px-2.5 text-sm font-medium text-[var(--ink)] outline-none transition-colors focus:border-[var(--ink)]"
+          />
+        </label>
+
+        {conflict && (
+          <label className={`grid min-h-10 cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center gap-3 rounded-lg border px-3 py-2 text-sm transition-colors max-md:grid-cols-1 ${publishAction === 'update' ? 'border-[var(--ink)] bg-[var(--paper)] text-[var(--ink)]' : 'border-[var(--line-subtle)] text-[var(--ink-secondary)] hover:border-[var(--line)] hover:bg-[var(--paper)]/65'}`}>
+            <span className="flex min-w-0 items-center gap-2 font-semibold">
+              <input type="radio" checked={publishAction === 'update'} onChange={() => onPublishActionChange('update')} className="accent-[var(--ink)]" />
+              <span className="truncate">{t('space.skills.publishAsUpdate', { version: conflict.latestRevision + 1 })}</span>
+            </span>
+            <span className="min-w-0 truncate text-xs font-semibold text-[var(--ink-muted)]">{conflict.name}</span>
+          </label>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function UrlCandidateButton({ candidate, disabled, onSelect, t }: { candidate: SpaceSkillUrlCandidate; disabled: boolean; onSelect: () => void; t: ReturnType<typeof useTranslation>['t'] }) {
   return (
     <button type="button" disabled={disabled} onClick={onSelect} className="rounded-lg border border-[var(--line-subtle)] bg-[var(--paper-elevated)] px-3 py-2 text-left transition-colors hover:border-[var(--line)] disabled:cursor-not-allowed disabled:opacity-60">
@@ -622,7 +696,7 @@ function UrlCandidateButton({ candidate, disabled, onSelect, t }: { candidate: S
       {candidate.description && <p className="mt-1 line-clamp-2 text-xs text-[var(--ink-muted)]">{candidate.description}</p>}
       <div className="mt-1 flex min-w-0 items-center justify-between gap-2 text-xs font-medium text-[var(--ink-subtle)]">
         <span className="truncate">{candidate.rootPath || candidate.suggestedFolderName}</span>
-        <span className="shrink-0 text-[var(--accent-warm)]">{t('space.skills.selectCandidate')}</span>
+        <span className="shrink-0 text-[var(--ink)]">{t('space.skills.selectCandidate')}</span>
       </div>
     </button>
   );
@@ -876,7 +950,7 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
   };
 
   const renderFilesList = () => (
-    <section className="rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)] px-4 py-4">
+    <section>
       <header className="flex items-center justify-between gap-3">
         <h3 className="text-base font-semibold text-[var(--ink)]">{t('space.skills.packageContents')}</h3>
         <span className="text-sm font-medium text-[var(--ink-muted)]">{t('space.skills.totalFiles', { count: files.length })}</span>
@@ -940,7 +1014,7 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
   const renderEntryDocument = () => {
     if (!entryFile) return null;
     return (
-      <article className="rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)] px-6 py-5 shadow-sm shadow-[var(--line-subtle)] max-sm:px-5">
+      <article className="rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)] px-6 py-5 max-sm:px-5">
         {fileLoading ? (
           <div className="flex min-h-56 items-center justify-center text-sm text-[var(--ink-muted)]">
             <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -956,7 +1030,7 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
   };
 
   const renderHistory = () => (
-    <section className="rounded-lg border border-[var(--line-subtle)] bg-[var(--paper-elevated)] p-4">
+    <section>
       {revisionState?.isLoading && !history ? (
         <div className="flex min-h-40 items-center justify-center text-sm text-[var(--ink-muted)]">
           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
@@ -1025,7 +1099,6 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
                   />
                   <span className="text-[var(--line-strong)]">·</span>
                   <span>{formatDate(skill.createdAt)}</span>
-                  <span className="inline-flex rounded-md bg-[var(--accent-cool-subtle)] px-2 py-1 text-xs font-semibold text-[var(--accent-cool)]"># {t('space.skills.officialTag')}</span>
                   <span className="min-w-0 flex-1" />
                   {admin && (
                     <span ref={adminMenuRef} className="relative">
@@ -1062,6 +1135,21 @@ function SkillDetailWorkspace({ skill, mode, admin, projects, actions, detailSta
                     <span className="rounded-md bg-[var(--paper-inset)] px-2 py-1">v{skill.currentRevision}</span>
                     {skill.currentRevision !== skill.latestRevision && <span className="rounded-md bg-[var(--accent-warm-subtle)] px-2 py-1 text-[var(--accent-warm)]">{t('space.skills.latestVersion', { revision: skill.latestRevision })}</span>}
                   </div>
+                  {skill.source && (
+                    <div className="mt-3 flex max-w-[72ch] items-center gap-2.5 rounded-lg border border-[var(--line-subtle)] bg-[var(--paper)]/50 px-3 py-2 text-sm">
+                      <Link className="h-4 w-4 shrink-0 text-[var(--ink-muted)]" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <span className="shrink-0 text-xs font-semibold text-[var(--ink-subtle)]">{t('space.skills.source')}</span>
+                          <span className="shrink-0 rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">{skillSourceKindLabel(skill.source, t)}</span>
+                          <button type="button" onClick={() => void openExternal(skill.source?.url ?? '')} className="min-w-0 truncate text-left text-sm font-semibold text-[var(--ink)] underline-offset-4 hover:underline">
+                            {skillSourcePrimary(skill.source)}
+                          </button>
+                        </div>
+                        {skillSourceSecondary(skill.source) && <p className="mt-0.5 truncate text-xs font-medium text-[var(--ink-muted)]">{skillSourceSecondary(skill.source)}</p>}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </section>
 

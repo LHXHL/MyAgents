@@ -244,10 +244,12 @@ export interface SpaceActions {
     name?: string;
     description?: string;
     skillId?: string;
+    source?: SpaceSkill["source"];
   }) => Promise<SpaceSkill>;
   uploadSkillRevision: (
     skillId: string,
     filePath: string,
+    source?: SpaceSkill["source"],
   ) => Promise<SpaceSkill>;
   rollbackSkill: (skillId: string, revision: number) => Promise<SpaceSkill>;
   deleteSkill: (skillId: string) => Promise<void>;
@@ -1596,9 +1598,9 @@ export const actions: SpaceActions = {
       return result.skill;
     }),
 
-  uploadSkillRevision: (skillId, filePath) =>
+  uploadSkillRevision: (skillId, filePath, source) =>
     withSpaceMutationMetric("skill.revision.upload", async () => {
-      const result = await spaceUploadSkillZip({ filePath, skillId });
+      const result = await spaceUploadSkillZip(source ? { filePath, skillId, source } : { filePath, skillId });
       setState({
         skills: {
           ...state.skills,
