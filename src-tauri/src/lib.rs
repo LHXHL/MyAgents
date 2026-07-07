@@ -605,6 +605,7 @@ pub fn run() {
             space_cloud::cmd_space_mark_dispatch_delivered,
             space_cloud::cmd_space_poll_deliveries,
             space_cloud::cmd_space_mark_delivery_delivered,
+            space_cloud::cmd_space_wake_connector,
             space_cloud::cmd_space_process_deliveries_once,
             space_cloud::cmd_space_process_dispatches_once,
             space_cloud::cmd_space_install_skill,

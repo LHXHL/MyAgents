@@ -11,6 +11,7 @@ import {
   spaceErrorMessage,
   isSpaceErrorCode,
   spaceJoinSpace,
+  spaceWakeConnector,
   spaceUpdateSpace,
   type LocalRegisteredAgent,
   type SpaceIssueSubscriptionRunMode,
@@ -562,6 +563,25 @@ export default function Space({ isActive }: { isActive: boolean }) {
       ]).catch((error) => toast.error(spaceErrorMessage(error)));
     }
   }, [actions, issueQuery, issueQueryKey, activeMode, spaceData.boot, toast]);
+
+  useEffect(() => {
+    if (!isActive || spaceData.boot !== "ready") return;
+    const startedAt = nowForSpaceMetric();
+    void spaceWakeConnector()
+      .then(() => {
+        recordSpaceMetric("space_delivery_wake", {
+          durationMs: Math.round(nowForSpaceMetric() - startedAt),
+          ok: true,
+        });
+      })
+      .catch((error) => {
+        recordSpaceMetric("space_delivery_wake", {
+          durationMs: Math.round(nowForSpaceMetric() - startedAt),
+          ok: false,
+          error: spaceErrorMessage(error),
+        });
+      });
+  }, [isActive, session?.baseUrl, session?.space?.id, spaceData.boot]);
 
   const revalidateForEvents = useCallback(
     async (events: SpaceEvent[]) => {

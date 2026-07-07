@@ -1,9 +1,10 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::sync::{LazyLock, Mutex};
+use std::time::{Duration, Instant};
 
 use reqwest::header::{AUTHORIZATION, CONTENT_DISPOSITION};
 use serde::{Deserialize, Serialize};
@@ -30,7 +31,11 @@ const SPACE_PUBLIC_CLIENT_ID_HEADER: &str = "X-MyAgents-Space-Client-Id";
 const SESSION_FILE: &str = "session.json";
 const LOCAL_AGENTS_FILE: &str = "registered_agents.json";
 const DELIVERY_LOG_FILE: &str = "delivery_log.json";
-const SPACE_CONNECTOR_INTERVAL_SECS: u64 = 60;
+const SPACE_CONNECTOR_FALLBACK_INTERVAL_SECS: u64 = 60;
+const SPACE_CONNECTOR_MIN_INTERVAL_SECS: u64 = 30;
+const SPACE_CONNECTOR_MAX_INTERVAL_SECS: u64 = 600;
+const SPACE_CONNECTOR_ERROR_MAX_INTERVAL_SECS: u64 = 300;
+const SPACE_CONNECTOR_JITTER_PERCENT: i64 = 15;
 pub(crate) const MAX_SKILL_ZIP_BYTES: usize = 50 * 1024 * 1024;
 const MAX_SKILL_ZIP_ENTRIES: usize = 512;
 const MAX_SKILL_FILE_BYTES: u64 = 10 * 1024 * 1024;
@@ -41,6 +46,8 @@ pub(crate) const MAX_ATTACHMENT_UPLOAD_COUNT: usize = 5;
 const MAX_PROFILE_AVATAR_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_SPACE_AVATAR_BYTES: u64 = MAX_PROFILE_AVATAR_BYTES;
 static SPACE_CONNECTOR_STARTED: AtomicBool = AtomicBool::new(false);
+static SPACE_CONNECTOR_RUNTIME: LazyLock<SpaceConnectorRuntime> =
+    LazyLock::new(SpaceConnectorRuntime::default);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -522,6 +529,8 @@ pub struct SpaceMarkDispatchDeliveredInput {
 #[serde(rename_all = "camelCase")]
 pub struct SpacePollDeliveriesInput {
     pub registered_agent_id: String,
+    #[serde(default)]
+    pub empty_streak: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -850,6 +859,57 @@ pub struct SpaceProcessDeliveryResult {
     pub processed: usize,
     pub delivered: usize,
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SpaceAgentPollState {
+    next_due_at: Instant,
+    empty_streak: u32,
+    last_interval_secs: u64,
+}
+
+#[derive(Debug)]
+struct SpaceAgentPollJob {
+    agent: LocalRegisteredAgent,
+    key: String,
+    empty_streak: u32,
+}
+
+#[derive(Debug, Default)]
+struct SpaceConnectorSchedule {
+    agents: HashMap<String, SpaceAgentPollState>,
+    wake_agent_ids: HashSet<String>,
+}
+
+struct SpaceConnectorRuntime {
+    notify: tokio::sync::Notify,
+    schedule: Mutex<SpaceConnectorSchedule>,
+    run_lock: tokio::sync::Mutex<()>,
+}
+
+impl Default for SpaceConnectorRuntime {
+    fn default() -> Self {
+        Self {
+            notify: tokio::sync::Notify::new(),
+            schedule: Mutex::new(SpaceConnectorSchedule::default()),
+            run_lock: tokio::sync::Mutex::new(()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpacePollHint {
+    next_after_seconds: u64,
+    reason: Option<String>,
+    from_service: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpaceAgentDeliveryOutcome {
+    processed: usize,
+    delivered: usize,
+    returned_count: usize,
+    poll_hint: SpacePollHint,
 }
 
 #[tauri::command]
@@ -1238,6 +1298,7 @@ pub async fn cmd_space_register_agent(
         updated_at: required_value_string(&registered, "updatedAt")?,
     };
     upsert_local_agent(agent.clone())?;
+    wake_space_connector_for_agent(&agent.id);
     Ok(agent.into())
 }
 
@@ -1417,6 +1478,7 @@ pub async fn cmd_space_update_registered_agent(
             return Err("No Registered Agent changes provided".to_string());
         };
         upsert_local_agent(agent.clone())?;
+        wake_space_connector_for_agent(&agent.id);
         return Ok(agent.into());
     }
 
@@ -1480,6 +1542,7 @@ pub async fn cmd_space_update_registered_agent(
     if let Some(agent) = agent.as_mut() {
         apply_subscription_to_local_agent(agent, subscription);
         upsert_local_agent(agent.clone())?;
+        wake_space_connector_for_agent(&agent.id);
         return Ok(agent.clone().into());
     }
     let registered = data
@@ -1582,9 +1645,13 @@ pub async fn cmd_space_mark_dispatch_delivered(
 pub async fn cmd_space_poll_deliveries(input: SpacePollDeliveriesInput) -> Result<Value, String> {
     let agent = require_local_agent(&input.registered_agent_id)?;
     let session = space_base_url()?;
+    let empty_streak = input.empty_streak.unwrap_or(0);
     authorized_json_request(
         &session,
-        "/api/registered-agents/me/deliveries?status=pending&limit=20",
+        &format!(
+            "/api/registered-agents/me/deliveries?status=pending&limit=20&emptyStreak={}",
+            empty_streak
+        ),
         &agent.token,
         reqwest::Method::GET,
         None,
@@ -1611,6 +1678,13 @@ pub async fn cmd_space_mark_delivery_delivered(
         })),
     )
     .await
+}
+
+#[tauri::command]
+pub async fn cmd_space_wake_connector() -> Result<(), String> {
+    ensure_space_available()?;
+    wake_space_connector();
+    Ok(())
 }
 
 #[tauri::command]
@@ -2019,10 +2093,13 @@ pub fn start_space_connector(app_handle: AppHandle, manager: ManagedSidecarManag
     tauri::async_runtime::spawn(async move {
         loop {
             if !team_space_runtime_enabled() {
-                tokio::time::sleep(Duration::from_secs(60)).await;
+                wait_for_space_connector_wake(Duration::from_secs(
+                    SPACE_CONNECTOR_FALLBACK_INTERVAL_SECS,
+                ))
+                .await;
                 continue;
             }
-            match process_pending_deliveries(&app_handle, &manager).await {
+            match process_due_deliveries(&app_handle, &manager, false).await {
                 Ok(result) => {
                     if result.processed > 0 || !result.errors.is_empty() {
                         ulog_info!(
@@ -2035,9 +2112,245 @@ pub fn start_space_connector(app_handle: AppHandle, manager: ManagedSidecarManag
                 }
                 Err(error) => ulog_warn!("[space] connector tick failed: {}", error),
             }
-            tokio::time::sleep(Duration::from_secs(SPACE_CONNECTOR_INTERVAL_SECS)).await;
+            wait_for_space_connector_wake(next_space_connector_delay()).await;
         }
     });
+}
+
+fn wake_space_connector() {
+    SPACE_CONNECTOR_RUNTIME.notify.notify_one();
+}
+
+fn wake_space_connector_for_agent(agent_id: &str) {
+    if let Ok(mut schedule) = SPACE_CONNECTOR_RUNTIME.schedule.lock() {
+        schedule.wake_agent_ids.insert(agent_id.to_string());
+    }
+    wake_space_connector();
+}
+
+fn reset_space_connector_schedule() {
+    if let Ok(mut schedule) = SPACE_CONNECTOR_RUNTIME.schedule.lock() {
+        schedule.agents.clear();
+        schedule.wake_agent_ids.clear();
+    }
+}
+
+async fn wait_for_space_connector_wake(duration: Duration) {
+    tokio::select! {
+        _ = tokio::time::sleep(duration) => {}
+        _ = SPACE_CONNECTOR_RUNTIME.notify.notified() => {}
+    }
+}
+
+fn next_space_connector_delay() -> Duration {
+    let now = Instant::now();
+    let Ok(schedule) = SPACE_CONNECTOR_RUNTIME.schedule.lock() else {
+        return Duration::from_secs(SPACE_CONNECTOR_FALLBACK_INTERVAL_SECS);
+    };
+    if !schedule.wake_agent_ids.is_empty() {
+        return Duration::ZERO;
+    }
+    schedule
+        .agents
+        .values()
+        .map(|state| state.next_due_at.saturating_duration_since(now))
+        .min()
+        .unwrap_or_else(|| Duration::from_secs(SPACE_CONNECTOR_FALLBACK_INTERVAL_SECS))
+}
+
+fn space_agent_poll_key(scope: &SpaceRuntimeScope, agent: &LocalRegisteredAgent) -> String {
+    format!(
+        "{}::{}",
+        scope.base_url.trim().trim_end_matches('/'),
+        agent.id
+    )
+}
+
+fn initial_space_agent_poll_state(now: Instant) -> SpaceAgentPollState {
+    SpaceAgentPollState {
+        next_due_at: now,
+        empty_streak: 0,
+        last_interval_secs: SPACE_CONNECTOR_FALLBACK_INTERVAL_SECS,
+    }
+}
+
+fn take_due_space_agent_jobs(
+    scope: &SpaceRuntimeScope,
+    agents: Vec<LocalRegisteredAgent>,
+    force_all: bool,
+) -> Vec<SpaceAgentPollJob> {
+    let now = Instant::now();
+    let mut current_keys = HashSet::new();
+    let mut agent_ids = HashSet::new();
+    for agent in &agents {
+        current_keys.insert(space_agent_poll_key(scope, agent));
+        agent_ids.insert(agent.id.clone());
+    }
+    let Ok(mut schedule) = SPACE_CONNECTOR_RUNTIME.schedule.lock() else {
+        return agents
+            .into_iter()
+            .map(|agent| SpaceAgentPollJob {
+                key: space_agent_poll_key(scope, &agent),
+                agent,
+                empty_streak: 0,
+            })
+            .collect();
+    };
+    schedule.agents.retain(|key, _| current_keys.contains(key));
+    schedule
+        .wake_agent_ids
+        .retain(|agent_id| agent_ids.contains(agent_id));
+    let mut jobs = Vec::new();
+    for agent in agents {
+        let key = space_agent_poll_key(scope, &agent);
+        let woken = schedule.wake_agent_ids.remove(&agent.id);
+        let state = schedule
+            .agents
+            .entry(key.clone())
+            .or_insert_with(|| initial_space_agent_poll_state(now));
+        if force_all || woken || state.next_due_at <= now {
+            jobs.push(SpaceAgentPollJob {
+                agent,
+                key,
+                empty_streak: state.empty_streak,
+            });
+        }
+    }
+    jobs
+}
+
+fn record_space_agent_poll_success(key: &str, outcome: &SpaceAgentDeliveryOutcome) {
+    let now = Instant::now();
+    if let Ok(mut schedule) = SPACE_CONNECTOR_RUNTIME.schedule.lock() {
+        let previous = schedule
+            .agents
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| initial_space_agent_poll_state(now));
+        schedule.agents.insert(
+            key.to_string(),
+            next_success_space_agent_poll_state(key, &previous, outcome, now),
+        );
+    }
+    if outcome.returned_count > 0
+        || outcome.poll_hint.next_after_seconds != SPACE_CONNECTOR_FALLBACK_INTERVAL_SECS
+    {
+        ulog_info!(
+            "[space] connector poll key={} returned={} next={}s reason={}",
+            key,
+            outcome.returned_count,
+            outcome.poll_hint.next_after_seconds,
+            outcome.poll_hint.reason.as_deref().unwrap_or("legacy")
+        );
+    }
+}
+
+fn record_space_agent_poll_error(key: &str) {
+    let now = Instant::now();
+    if let Ok(mut schedule) = SPACE_CONNECTOR_RUNTIME.schedule.lock() {
+        let previous = schedule
+            .agents
+            .get(key)
+            .cloned()
+            .unwrap_or_else(|| initial_space_agent_poll_state(now));
+        schedule.agents.insert(
+            key.to_string(),
+            next_error_space_agent_poll_state(&previous, now),
+        );
+    }
+}
+
+fn next_success_space_agent_poll_state(
+    key: &str,
+    previous: &SpaceAgentPollState,
+    outcome: &SpaceAgentDeliveryOutcome,
+    now: Instant,
+) -> SpaceAgentPollState {
+    let empty_streak = if outcome.returned_count > 0 {
+        0
+    } else {
+        previous.empty_streak.saturating_add(1).min(1000)
+    };
+    let interval_secs = if outcome.poll_hint.from_service {
+        jittered_space_poll_interval_secs(outcome.poll_hint.next_after_seconds, key, empty_streak)
+    } else {
+        outcome.poll_hint.next_after_seconds
+    };
+    SpaceAgentPollState {
+        next_due_at: now + Duration::from_secs(interval_secs),
+        empty_streak,
+        last_interval_secs: interval_secs,
+    }
+}
+
+fn next_error_space_agent_poll_state(
+    previous: &SpaceAgentPollState,
+    now: Instant,
+) -> SpaceAgentPollState {
+    let interval_secs = previous.last_interval_secs.saturating_mul(2).clamp(
+        SPACE_CONNECTOR_MIN_INTERVAL_SECS,
+        SPACE_CONNECTOR_ERROR_MAX_INTERVAL_SECS,
+    );
+    SpaceAgentPollState {
+        next_due_at: now + Duration::from_secs(interval_secs),
+        empty_streak: previous.empty_streak,
+        last_interval_secs: interval_secs,
+    }
+}
+
+fn space_poll_hint_from_data(data: &Value) -> SpacePollHint {
+    let poll = data.get("poll").filter(|value| value.is_object());
+    let next_after_seconds = poll
+        .and_then(|value| value.get("nextAfterSeconds"))
+        .and_then(value_u64)
+        .map(clamp_space_poll_interval_secs)
+        .unwrap_or(SPACE_CONNECTOR_FALLBACK_INTERVAL_SECS);
+    let reason = poll
+        .and_then(|value| value.get("reason"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    SpacePollHint {
+        next_after_seconds,
+        reason,
+        from_service: poll.is_some(),
+    }
+}
+
+fn value_u64(value: &Value) -> Option<u64> {
+    if let Some(number) = value.as_u64() {
+        return Some(number);
+    }
+    if let Some(number) = value.as_i64() {
+        return u64::try_from(number).ok();
+    }
+    value.as_str()?.trim().parse::<u64>().ok()
+}
+
+fn clamp_space_poll_interval_secs(value: u64) -> u64 {
+    value.clamp(
+        SPACE_CONNECTOR_MIN_INTERVAL_SECS,
+        SPACE_CONNECTOR_MAX_INTERVAL_SECS,
+    )
+}
+
+fn jittered_space_poll_interval_secs(base_secs: u64, key: &str, salt: u32) -> u64 {
+    let clamped = clamp_space_poll_interval_secs(base_secs);
+    let mut hasher = Sha256::new();
+    hasher.update(key.as_bytes());
+    hasher.update(salt.to_le_bytes());
+    hasher.update(clamped.to_le_bytes());
+    let digest = hasher.finalize();
+    let spread = (SPACE_CONNECTOR_JITTER_PERCENT * 2 + 1) as u16;
+    let bucket = u16::from_le_bytes([digest[0], digest[1]]) % spread;
+    let percent = i64::from(bucket) - SPACE_CONNECTOR_JITTER_PERCENT;
+    let millis = (clamped as i64)
+        .saturating_mul(1000)
+        .saturating_mul(100 + percent)
+        / 100;
+    let seconds = ((millis + 999) / 1000).max(1) as u64;
+    clamp_space_poll_interval_secs(seconds)
 }
 
 pub async fn space_cli_issue_get(input: SpaceCliIssueGetInput) -> Result<Value, String> {
@@ -2252,24 +2565,55 @@ pub async fn process_pending_deliveries(
     app_handle: &AppHandle,
     manager: &ManagedSidecarManager,
 ) -> Result<SpaceProcessDeliveryResult, String> {
+    process_due_deliveries(app_handle, manager, true).await
+}
+
+async fn process_due_deliveries(
+    app_handle: &AppHandle,
+    manager: &ManagedSidecarManager,
+    force_all: bool,
+) -> Result<SpaceProcessDeliveryResult, String> {
     if crate::space_cloud_mock::is_enabled() {
         return Ok(crate::space_cloud_mock::process_deliveries_once());
     }
-    let scope = space_runtime_scope()?;
+    let _guard = SPACE_CONNECTOR_RUNTIME.run_lock.lock().await;
     if !team_space_runtime_enabled() {
+        reset_space_connector_schedule();
         return Ok(SpaceProcessDeliveryResult {
             processed: 0,
             delivered: 0,
             errors: Vec::new(),
         });
     }
+    let scope = match space_runtime_scope() {
+        Ok(scope) => scope,
+        Err(error) => {
+            reset_space_connector_schedule();
+            return Err(error);
+        }
+    };
     let agents_path = registered_agents_path_in_dir(&scope.data_dir);
     let delivery_log_path = delivery_log_path_in_dir(&scope.data_dir);
-    let agents = read_current_runnable_local_agents_for_scope(&scope)?
+    let agents = match read_current_runnable_local_agents_for_scope(&scope) {
+        Ok(agents) => agents,
+        Err(error) => {
+            reset_space_connector_schedule();
+            return Err(error);
+        }
+    };
+    let agents = match agents
         .into_iter()
         .map(|agent| ensure_agent_delivery_session_at_path(agent, agents_path.clone()))
-        .collect::<Result<Vec<_>, _>>()?;
-    if agents.is_empty() {
+        .collect::<Result<Vec<_>, _>>()
+    {
+        Ok(agents) => agents,
+        Err(error) => {
+            reset_space_connector_schedule();
+            return Err(error);
+        }
+    };
+    let jobs = take_due_space_agent_jobs(&scope, agents, force_all);
+    if jobs.is_empty() {
         return Ok(SpaceProcessDeliveryResult {
             processed: 0,
             delivered: 0,
@@ -2279,7 +2623,8 @@ pub async fn process_pending_deliveries(
     let mut processed = 0usize;
     let mut delivered = 0usize;
     let mut errors = Vec::new();
-    for mut agent in agents {
+    for job in jobs {
+        let mut agent = job.agent;
         match process_agent_deliveries(
             app_handle,
             manager,
@@ -2287,14 +2632,17 @@ pub async fn process_pending_deliveries(
             &mut agent,
             &agents_path,
             &delivery_log_path,
+            job.empty_streak,
         )
         .await
         {
-            Ok((p, d)) => {
-                processed += p;
-                delivered += d;
+            Ok(outcome) => {
+                record_space_agent_poll_success(&job.key, &outcome);
+                processed += outcome.processed;
+                delivered += outcome.delivered;
             }
             Err(error) => {
+                record_space_agent_poll_error(&job.key);
                 ulog_warn!(
                     "[space] delivery processing failed for agent {}: {}",
                     agent.id,
@@ -2347,10 +2695,14 @@ async fn process_agent_deliveries(
     agent: &mut LocalRegisteredAgent,
     agents_path: &Path,
     delivery_log_path: &Path,
-) -> Result<(usize, usize), String> {
+    empty_streak: u32,
+) -> Result<SpaceAgentDeliveryOutcome, String> {
     let data = authorized_json_data_request(
         base_url,
-        "/api/registered-agents/me/deliveries?status=pending&limit=20",
+        &format!(
+            "/api/registered-agents/me/deliveries?status=pending&limit=20&emptyStreak={}",
+            empty_streak
+        ),
         &agent.token,
         reqwest::Method::GET,
         None,
@@ -2361,6 +2713,8 @@ async fn process_agent_deliveries(
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
+    let returned_count = items.len();
+    let poll_hint = space_poll_hint_from_data(&data);
     let mut processed = 0usize;
     let mut delivered = 0usize;
     let mut targeted_pending = Vec::new();
@@ -2429,7 +2783,12 @@ async fn process_agent_deliveries(
     }
 
     if targeted_pending.is_empty() && subscription_pending.is_empty() {
-        return Ok((processed, delivered));
+        return Ok(SpaceAgentDeliveryOutcome {
+            processed,
+            delivered,
+            returned_count,
+            poll_hint,
+        });
     }
 
     for delivery_item in targeted_pending {
@@ -2464,7 +2823,12 @@ async fn process_agent_deliveries(
     }
 
     if subscription_pending.is_empty() {
-        return Ok((processed, delivered));
+        return Ok(SpaceAgentDeliveryOutcome {
+            processed,
+            delivered,
+            returned_count,
+            poll_hint,
+        });
     }
 
     match agent.issue_subscription_run_mode {
@@ -2528,7 +2892,12 @@ async fn process_agent_deliveries(
             }
         }
     }
-    Ok((processed, delivered))
+    Ok(SpaceAgentDeliveryOutcome {
+        processed,
+        delivered,
+        returned_count,
+        poll_hint,
+    })
 }
 
 async fn deliver_space_deliveries(
@@ -5019,6 +5388,197 @@ mod tests {
     }
 
     #[test]
+    fn space_poll_hint_clamps_and_parses_response_policy() {
+        let missing = space_poll_hint_from_data(&serde_json::json!({ "items": [] }));
+        assert_eq!(
+            missing.next_after_seconds,
+            SPACE_CONNECTOR_FALLBACK_INTERVAL_SECS
+        );
+        assert_eq!(missing.reason, None);
+        assert!(!missing.from_service);
+
+        let below_min = space_poll_hint_from_data(&serde_json::json!({
+            "poll": {
+                "nextAfterSeconds": 0,
+                "reason": " active-claim "
+            }
+        }));
+        assert_eq!(
+            below_min.next_after_seconds,
+            SPACE_CONNECTOR_MIN_INTERVAL_SECS
+        );
+        assert_eq!(below_min.reason.as_deref(), Some("active-claim"));
+        assert!(below_min.from_service);
+
+        let above_max = space_poll_hint_from_data(&serde_json::json!({
+            "poll": {
+                "nextAfterSeconds": "9999",
+                "reason": "  "
+            }
+        }));
+        assert_eq!(
+            above_max.next_after_seconds,
+            SPACE_CONNECTOR_MAX_INTERVAL_SECS
+        );
+        assert_eq!(above_max.reason, None);
+        assert!(above_max.from_service);
+    }
+
+    #[test]
+    fn successful_space_poll_updates_empty_streak_and_jittered_due_time() {
+        let now = Instant::now();
+        let previous = SpaceAgentPollState {
+            next_due_at: now,
+            empty_streak: 3,
+            last_interval_secs: 60,
+        };
+        let empty_outcome = SpaceAgentDeliveryOutcome {
+            processed: 0,
+            delivered: 0,
+            returned_count: 0,
+            poll_hint: SpacePollHint {
+                next_after_seconds: 180,
+                reason: Some("idle".to_string()),
+                from_service: true,
+            },
+        };
+
+        let empty_next = next_success_space_agent_poll_state(
+            "https://space.test::rag_1",
+            &previous,
+            &empty_outcome,
+            now,
+        );
+        assert_eq!(empty_next.empty_streak, 4);
+        let empty_delay = empty_next.next_due_at.duration_since(now).as_secs();
+        assert_eq!(empty_next.last_interval_secs, empty_delay);
+        assert!(
+            (153..=207).contains(&empty_delay),
+            "180s policy should stay within +/-15% jitter, got {empty_delay}s"
+        );
+
+        let delivered_outcome = SpaceAgentDeliveryOutcome {
+            processed: 1,
+            delivered: 1,
+            returned_count: 1,
+            poll_hint: SpacePollHint {
+                next_after_seconds: 60,
+                reason: Some("delivery".to_string()),
+                from_service: true,
+            },
+        };
+        let delivered_next = next_success_space_agent_poll_state(
+            "https://space.test::rag_1",
+            &empty_next,
+            &delivered_outcome,
+            now,
+        );
+        assert_eq!(delivered_next.empty_streak, 0);
+        let delivered_delay = delivered_next.next_due_at.duration_since(now).as_secs();
+        assert!(
+            (51..=69).contains(&delivered_delay),
+            "60s policy should stay within +/-15% jitter, got {delivered_delay}s"
+        );
+
+        let legacy_outcome = SpaceAgentDeliveryOutcome {
+            processed: 0,
+            delivered: 0,
+            returned_count: 0,
+            poll_hint: SpacePollHint {
+                next_after_seconds: SPACE_CONNECTOR_FALLBACK_INTERVAL_SECS,
+                reason: None,
+                from_service: false,
+            },
+        };
+        let legacy_next = next_success_space_agent_poll_state(
+            "https://space.test::rag_1",
+            &delivered_next,
+            &legacy_outcome,
+            now,
+        );
+        assert_eq!(
+            legacy_next.last_interval_secs,
+            SPACE_CONNECTOR_FALLBACK_INTERVAL_SECS
+        );
+        assert_eq!(
+            legacy_next.next_due_at.duration_since(now).as_secs(),
+            SPACE_CONNECTOR_FALLBACK_INTERVAL_SECS
+        );
+    }
+
+    #[test]
+    fn failed_space_poll_backs_off_without_changing_empty_streak() {
+        let now = Instant::now();
+        let previous = SpaceAgentPollState {
+            next_due_at: now,
+            empty_streak: 7,
+            last_interval_secs: 60,
+        };
+
+        let first_error = next_error_space_agent_poll_state(&previous, now);
+        assert_eq!(first_error.empty_streak, 7);
+        assert_eq!(first_error.last_interval_secs, 120);
+        assert_eq!(first_error.next_due_at.duration_since(now).as_secs(), 120);
+
+        let capped_error = next_error_space_agent_poll_state(
+            &SpaceAgentPollState {
+                next_due_at: now,
+                empty_streak: 7,
+                last_interval_secs: 200,
+            },
+            now,
+        );
+        assert_eq!(capped_error.last_interval_secs, 300);
+
+        let min_error = next_error_space_agent_poll_state(
+            &SpaceAgentPollState {
+                next_due_at: now,
+                empty_streak: 7,
+                last_interval_secs: 10,
+            },
+            now,
+        );
+        assert_eq!(
+            min_error.last_interval_secs,
+            SPACE_CONNECTOR_MIN_INTERVAL_SECS
+        );
+    }
+
+    #[test]
+    fn empty_agent_poll_prunes_stale_connector_schedule() {
+        reset_space_connector_schedule();
+        let now = Instant::now();
+        let scope = SpaceRuntimeScope {
+            base_url: "https://space.test".to_string(),
+            data_dir: PathBuf::from("/tmp/myagents-space-test"),
+        };
+        {
+            let mut schedule = SPACE_CONNECTOR_RUNTIME
+                .schedule
+                .lock()
+                .expect("schedule lock should be available");
+            schedule.agents.insert(
+                "https://space.test::rag_stale".to_string(),
+                SpaceAgentPollState {
+                    next_due_at: now,
+                    empty_streak: 4,
+                    last_interval_secs: 30,
+                },
+            );
+            schedule.wake_agent_ids.insert("rag_stale".to_string());
+        }
+
+        let jobs = take_due_space_agent_jobs(&scope, Vec::new(), false);
+        assert!(jobs.is_empty());
+        let schedule = SPACE_CONNECTOR_RUNTIME
+            .schedule
+            .lock()
+            .expect("schedule lock should be available");
+        assert!(schedule.agents.is_empty());
+        assert!(schedule.wake_agent_ids.is_empty());
+    }
+
+    #[test]
     fn legacy_space_session_json_defaults_multi_space_fields() {
         let session: SpaceSession = serde_json::from_value(serde_json::json!({
             "baseUrl": "https://space.myagents.test",
@@ -5362,6 +5922,7 @@ mod tests {
 
         let pending = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
             registered_agent_id: "rag_mock_frontend".to_string(),
+            empty_streak: None,
         })
         .await
         .expect("mock deliveries should poll");
@@ -5394,6 +5955,7 @@ mod tests {
 
         let empty = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
             registered_agent_id: "rag_mock_frontend".to_string(),
+            empty_streak: None,
         })
         .await
         .expect("mock deliveries should poll after mark");
@@ -5490,6 +6052,7 @@ mod tests {
 
         let pending = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
             registered_agent_id: "rag_mock_frontend".to_string(),
+            empty_streak: None,
         })
         .await
         .expect("mock deliveries should poll");
@@ -5576,6 +6139,7 @@ mod tests {
 
         let deliveries = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
             registered_agent_id: "rag_mock_frontend".to_string(),
+            empty_streak: None,
         })
         .await
         .expect("deliveries should poll after comment");
@@ -5632,6 +6196,7 @@ mod tests {
         .expect("agent self comment should succeed");
         let after_self_comment = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
             registered_agent_id: "rag_mock_frontend".to_string(),
+            empty_streak: None,
         })
         .await
         .expect("deliveries should poll after self comment");

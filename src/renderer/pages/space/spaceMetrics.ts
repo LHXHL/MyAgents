@@ -7,6 +7,7 @@ export type SpaceMetricName =
   | 'space_issue_list_render_count'
   | 'space_tab_visible_revalidate_start'
   | 'space_tab_visible_revalidate_end'
+  | 'space_delivery_wake'
   | 'space_mutation_latency';
 
 export interface SpaceMetricPayload {

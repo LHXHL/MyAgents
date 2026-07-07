@@ -1389,6 +1389,10 @@ export function spaceProcessDeliveriesOnce() {
   );
 }
 
+export function spaceWakeConnector() {
+  return inv<void>("cmd_space_wake_connector");
+}
+
 export function findProjectForAgent(
   projects: Project[],
   agent: LocalRegisteredAgent,
