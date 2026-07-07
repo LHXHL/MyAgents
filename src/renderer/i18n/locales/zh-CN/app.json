@@ -705,7 +705,7 @@
       "inviteEmailPlaceholder": "输入用户的 Google 邮箱",
       "inviteRoleLabel": "选择用户身份",
       "addMember": "添加",
-      "joinByShortSlug": "使用 Space 短链加入 MyAgents：",
+      "joinByShortSlug": "邀请用户使用短链加入 MyAgents：",
       "loadingMembers": "加载中...",
       "joinRequests": "申请加入",
       "pendingInvitations": "待接受邀请",

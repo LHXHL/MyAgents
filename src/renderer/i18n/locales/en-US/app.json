@@ -705,7 +705,7 @@
       "inviteEmailPlaceholder": "Enter the user's Google email",
       "inviteRoleLabel": "Choose role",
       "addMember": "Add",
-      "joinByShortSlug": "Join MyAgents with the Space short link:",
+      "joinByShortSlug": "Invite users to join MyAgents with the short link:",
       "loadingMembers": "Loading...",
       "joinRequests": "Join requests",
       "pendingInvitations": "Pending invitations",

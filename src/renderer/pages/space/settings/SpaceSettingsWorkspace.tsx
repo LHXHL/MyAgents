@@ -359,16 +359,15 @@ export function SpaceSettingsWorkspace({
   if (section === "members") {
     return renderShell(
       <div className={`${SPACE_LIST_FRAME_CLASS} space-y-5`}>
-        <div className="flex min-h-12 flex-wrap items-center gap-2 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)]/70 px-3.5 py-3">
-          <p className="min-w-0 flex-1 text-sm font-medium text-[var(--ink-secondary)]">
+        <div className="inline-flex min-h-11 max-w-full flex-wrap items-center gap-2 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)]/55 px-3 py-2">
+          <span className="min-w-0 text-sm font-medium text-[var(--ink-secondary)]">
             {t("space.settings.joinByShortSlug")}
-          </p>
-          <code className="max-w-full shrink-0 truncate rounded-lg border border-[var(--line-subtle)] bg-[var(--paper)] px-2.5 py-1 font-mono text-sm font-semibold text-[var(--ink)]">
+          </span>
+          <code className="max-w-full shrink-0 truncate rounded-md bg-[var(--paper-inset)]/55 px-2 py-0.5 font-mono text-sm font-semibold text-[var(--ink)]">
             {session.space.slug || session.space.id}
           </code>
-          <button type="button" onClick={copySlug} className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-[var(--button-secondary-bg)] px-2.5 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]">
+          <button type="button" onClick={copySlug} title={t("fileActions.copy")} aria-label={t("fileActions.copy")} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-[var(--button-secondary-bg)] text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)]">
             <Copy className="h-3.5 w-3.5" />
-            {t("space.common.copy")}
           </button>
         </div>
         {memberQuotaReached ? (
