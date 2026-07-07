@@ -33,9 +33,9 @@ MyAgents 支持统一的代理配置，用于访问外部服务（Anthropic API�
 | `protocol` | string | ❌ | "http" | 代理协议：`http` 或 `socks5` |
 | `host` | string | ❌ | "127.0.0.1" | 代理服务器地址 |
 | `port` | number | ❌ | 7890 | 代理服务器端口 _// 默认值: proxy_config.rs:7_ |
-| `scope` | object | ❌ | `{ "mode": "all" }` | Provider 适用范围：`all` 或 `custom + providerIds` |
+| `scope` | object | ❌ | `{ "mode": "all" }` | Provider / first-party service owner 适用范围：`all` 或 `custom + providerIds` |
 
-`scope.mode = "custom"` 只控制 **MyAgents 是否主动给该 provider 注入应用代理**。未选中的 provider 不是“强制直连”：Rust 会把注入前的 proxy env 作为 `MYAGENTS_PROXY_INHERITED_ENV_JSON` 传给 Node，Node 端 excluded provider 会恢复这个 baseline，因此系统代理 / TUN / 终端继承环境仍可自然生效。
+`scope.mode = "custom"` 控制 **MyAgents 是否主动给某个 owner 注入应用代理**。Provider-owned runtime 的未选 provider 不是“强制直连”：Rust 会把注入前的 proxy env 作为 `MYAGENTS_PROXY_INHERITED_ENV_JSON` 传给 Node，Node 端 excluded provider 会恢复这个 baseline，因此系统代理 / TUN / 终端继承环境仍可自然生效。First-party service owner 由 Rust 直接发请求，未选中时走 direct；当前 owner id 是 `myagents-space`。
 
 ---
 
@@ -65,7 +65,12 @@ MyAgents 支持统一的代理配置，用于访问外部服务（Anthropic API�
    - 启动条件检查 + 24h interval，ETag/If-None-Match 增量
    - **实现**: `src-tauri/src/litellm_cache.rs`（`build_client_with_proxy`）
 
-5. **其他外部资源**
+5. **First-party MyAgents cloud services**
+   - Team Space / Cloud Space API (`space.myagents.io` / staging origin)
+   - **实现**: `src-tauri/src/space_cloud.rs` 使用 `build_client_with_proxy_for_service(..., "myagents-space")`
+   - `scope.mode="all"` 时使用 MyAgents proxy；`scope.mode="custom"` 且未显式包含 `myagents-space` 时 direct，避免只为 AI provider 配的代理拖慢/卡死 Team Space。
+
+6. **其他外部资源**
    - 下载二维码等 CDN 资源
 
 ### ❌ 不使用代理的场景
@@ -139,6 +144,14 @@ pub fn build_client_with_proxy_for_provider(
 ) -> Client {
     // 仅当 provider_id 命中 proxySettings.scope 时注入 MyAgents proxy；
     // 否则继承系统网络行为。
+}
+
+pub fn build_client_with_proxy_for_service(
+    builder: ClientBuilder,
+    service_id: &str,
+) -> Client {
+    // first-party service owner。scope=all 或 service_id 命中 custom scope 时
+    // 使用 MyAgents proxy；custom scope 未命中时 direct。
 }
 ```
 
@@ -284,7 +297,11 @@ curl -x http://127.0.0.1:7890 https://download.myagents.io/update/darwin-aarch64
 
 ### 添加新的外部 HTTP 请求
 
-如果需要添加新的外部 HTTP 请求，请使用 `proxy_config::build_client_with_proxy`：
+如果需要添加新的外部 HTTP 请求，先判断 owner：
+
+- Provider-owned 请求用 `build_client_with_proxy_for_provider(...)` / Node `getProxyForProviderUrl(...)`。
+- First-party MyAgents cloud service 用 `build_client_with_proxy_for_service(...)`，并给服务分配稳定 owner id。
+- 其它无明确 owner 的外部资源才用 `build_client_with_proxy(...)`。
 
 ```rust
 use crate::proxy_config;
@@ -314,6 +331,7 @@ let client = reqwest::Client::builder()
 | 组件 | 代理来源 | 特殊处理 |
 |------|---------|---------|
 | Rust reqwest（HTTP proxy） | `proxy_config::read_proxy_settings()` | `local_http` 内置 `.no_proxy()` |
+| Team Space / Cloud Space | `build_client_with_proxy_for_service(..., "myagents-space")` | custom scope 未包含 `myagents-space` 时 direct |
 | Node.js Sidecar subprocess | env vars（`HTTP_PROXY` 等） | SDK 子进程继承 |
 | OpenAI Bridge subprocess | **代理变量被剥离** | SDK→Bridge 是 loopback，Bridge→upstream 从 `process.env` 读代理 |
 | Plugin Bridge | `apply_proxy_env()` 注入 | 与 Sidecar 相同逻辑 |

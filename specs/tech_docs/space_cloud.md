@@ -101,6 +101,7 @@ Legacy 兼容规则：
 ## 网络与安全
 
 - 所有 Space HTTP 请求由 Rust `reqwest` 发起，并带 build-time public client id header；renderer 不持有 session token。
+- Space HTTP client 是 first-party proxy owner `myagents-space`。`proxySettings.scope.mode="all"` 时走 MyAgents 显式代理；`custom` 且未包含 `myagents-space` 时 direct，避免只为 AI provider 配的代理拖慢 Team Space。不要改回通用 `build_client_with_proxy`。
 - 用户可控 workspace 路径进入 Rust 后必须通过 `validate_workspace_root`。
 - 写入 workspace 的附件下载走 `resolve_inside_workspace`，只能落在目标 workspace 内。
 - Skill zip 安装有总大小、单文件大小、entry 数限制，并防 Zip-Slip；安装目标只允许 global 或当前 project。
