@@ -125,6 +125,7 @@ import {
   projectInputChromeRuntime,
   shouldUseExternalRuntimeInputControls,
 } from '@/utils/runtimeUiProjection';
+import { resolveWorkspacePanelMode } from '@/utils/chatWorkspaceLayout';
 import {
   isManagedProviderSessionSnapshot,
   managedProviderSnapshotModel,
@@ -716,8 +717,11 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     if (!splitPanelVisible) startSplitWidthTransitionSuspension();
   }, [splitPanelVisible, startSplitWidthTransitionSuspension]);
 
-  // When split view is active or layout is narrow, workspace uses overlay drawer
-  const shouldUseWorkspaceOverlay = isNarrowLayout || (isSplitViewEnabled && splitPanelVisible);
+  const workspacePanelMode = resolveWorkspacePanelMode({
+    isNarrowLayout,
+    splitPanelVisible: isSplitViewEnabled && splitPanelVisible,
+  });
+  const shouldUseWorkspaceOverlay = workspacePanelMode === 'overlay';
 
   // Cmd+W: split panel visible → always close the active view first (no focus detection).
   // Simpler mental model: Cmd+W closes from right to left, outside to inside.
@@ -943,16 +947,6 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     window.addEventListener(CUSTOM_EVENTS.OPEN_IN_BROWSER_PANEL, handler);
     return () => window.removeEventListener(CUSTOM_EVENTS.OPEN_IN_BROWSER_PANEL, handler);
   }, [isActive, browserPanelCtx]);
-
-  // When split panel closes entirely, restore workspace sidebar to visible
-  const prevSplitVisibleRef = useRef(splitPanelVisible);
-  useEffect(() => {
-    if (prevSplitVisibleRef.current && !splitPanelVisible) {
-      // Split just closed → show workspace sidebar
-      setShowWorkspace(true);
-    }
-    prevSplitVisibleRef.current = splitPanelVisible;
-  }, [splitPanelVisible]);
 
   // Cleanup terminal PTY on unmount (Tab close)
   useEffect(() => {
@@ -4590,7 +4584,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
   return (
     <div className="relative flex h-full flex-row overflow-hidden overscroll-none bg-[var(--paper-elevated)] text-[var(--ink)]">
-      {/* Left side: chat area (+ side workspace when wide & no split) */}
+      {/* Left side: chat area (+ side workspace when wide) */}
       <div
         className={`relative flex min-w-0 flex-row overflow-hidden ${!isDraggingSplit ? 'transition-[width] duration-300 ease-in-out' : ''}`}
         style={{ width: splitPanelVisible ? `${splitRatio * 100}%` : '100%' }}

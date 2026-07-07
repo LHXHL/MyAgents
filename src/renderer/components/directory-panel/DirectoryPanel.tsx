@@ -3001,17 +3001,6 @@ const DirectoryPanel = memo(
           }
         >
           <div className="flex items-center gap-2">
-            {/* Collapse toggle button - in wide mode, calls onCollapse */}
-            {!isNarrowMode && onCollapse && (
-              <button
-                type="button"
-                onClick={onCollapse}
-                className="flex h-5 w-5 items-center justify-center rounded text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                title={t("workspaceFiles.directory.collapseWorkspace")}
-              >
-                <PanelRightClose className="h-4 w-4" />
-              </button>
-            )}
             <span className="text-base font-semibold text-[var(--ink)]">
               {t("workspaceFiles.directory.title")}
             </span>
@@ -3092,6 +3081,24 @@ const DirectoryPanel = memo(
           </div>
           {/* Right side buttons */}
           <div className="flex items-center gap-1">
+            {!isNarrowMode && onCollapse && (
+              <Tip
+                label={t("workspaceFiles.directory.collapseWorkspace")}
+                position="bottom"
+              >
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onCollapse();
+                  }}
+                  className="flex h-6 w-6 items-center justify-center rounded text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                  title={t("workspaceFiles.directory.collapseWorkspace")}
+                >
+                  <PanelRightClose className="h-4 w-4" />
+                </button>
+              </Tip>
+            )}
             {onOpenConfig && (
               <button
                 type="button"
