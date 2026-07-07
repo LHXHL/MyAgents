@@ -1821,6 +1821,13 @@
       "teamAvailable": "显示标题栏中的「团队」tab。该功能仍在开发中，默认关闭，关闭时已打开的团队页面也会被隐藏。",
       "teamUnavailable": "当前构建未包含团队服务。构建时设置 MYAGENTS_SPACE_ENABLED=true 与 MYAGENTS_SPACE_BASE_URL 后才可开启。",
       "teamUnavailableWithReason": "当前构建未包含团队服务。构建时设置 MYAGENTS_SPACE_ENABLED=true 与 MYAGENTS_SPACE_BASE_URL 后才可开启。({{reason}})",
+      "spaceEnvironmentTitle": "团队服务环境",
+      "spaceEnvironmentDescription": "在构建时烘焙的服务 origin 之间切换本地 Space 客户端。当前 origin：{{origin}}",
+      "spaceEnvironmentSaveFailed": "切换 Space 环境失败：{{message}}",
+      "spaceEnvironment": {
+        "production": "生产",
+        "staging": "Staging"
+      },
       "splitViewTitle": "分屏预览（实验性）",
       "splitViewDescription": "点击文件在右侧分屏打开预览，而非弹窗。",
       "backgroundAgentPermissionTitle": "后台 Agent 权限",

@@ -687,8 +687,10 @@ Cloud Space 把官方/团队空间接入桌面端，目前仍是开发中/半成
 
 - Space 不是 AI Runtime / Session Sidecar。云端登录、HTTP 请求、附件/Skill IO、registered-agent IssueDelivery poll/process 都由 Rust Tauri command 拥有。
 - Renderer 只通过 `src/renderer/api/spaceCloud.ts` 调 Tauri invoke，不直连 Space 服务，也不持有 session token。
-- build-time capability 由 `src-tauri/build.rs` 注入 `MYAGENTS_SPACE_*`，`cmd_space_get_capability` 只裁决构建能力；开发中入口还受 `config.teamSpaceEnabled` 默认关闭门控。
-- 本地状态在 `~/.myagents/space/{session.json,registered_agents.json,delivery_log.json}`，不进入 SessionStore。
+- build-time capability 由 `src-tauri/build.rs` 注入 `MYAGENTS_SPACE_*`，`cmd_space_get_capability` 只裁决构建能力与当前 build-time origin；开发中入口还受 `config.teamSpaceEnabled` 默认关闭门控。debug 构建可烘焙 `MYAGENTS_SPACE_STAGING_BASE_URL`，release profile 机制性丢弃 staging origin。
+- `config.spaceEnvironment` 只在烘焙的 `production` / `staging` origin 之间二选一，Renderer 不提供自由 URL 输入。
+- 本地状态 production 在 `~/.myagents/space/{session.json,registered_agents.json,delivery_log.json}`，staging 在 `~/.myagents/space/staging/{...}`；二者不进入 SessionStore。全局 Skill 安装仍是 `~/.myagents/skills`，不随 Space 环境切换。
+- Space renderer cache identity 包含服务 origin；切换 production/staging 时即使 space slug 同为 `official` 也必须清缓存。
 - 本地端点身份统一由 `~/.myagents/device_id` 表达，Rust owner 是 `src-tauri/src/device_identity.rs`。Analytics 的 `device_id` 与 Space 的 `deviceId` 消费同一个值，不再派生第二套云端 device id。
 - 云端概念是 `user_devices(userId, deviceId)`，用于记录某个登录用户在某个本地端点上的设备名、平台、系统版本、客户端版本与 last seen。客户端登录/授权后会尝试 upsert；registered-agent 注册/编辑 payload 也携带这些字段供服务端落表。
 - Registered Agent 是执行实体，归属于 `(ownerUserId, deviceId)`，并关联该设备上的本地 Agent 工作区。只有 `ownerUserId === current session user` 且 `deviceId === current local device_id` 的 Agent 才是当前设备可编辑/可执行的 local Agent。

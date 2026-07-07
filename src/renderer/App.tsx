@@ -422,7 +422,7 @@ export default function App() {
   // App config for tray behavior (shared via ConfigProvider — no CONFIG_CHANGED event needed)
   // Also get projects + CRUD actions for bug report (ensureSelfAwarenessWorkspace needs them)
   const { config, isLoading: configLoading, providers: appProviders, apiKeys: appApiKeys, providerVerifyStatus: appProviderVerifyStatus, projects: configProjects, addProject: configAddProject, patchProject: configPatchProject } = useConfig();
-  const spaceBuildCapability = useSpaceBuildCapability();
+  const spaceBuildCapability = useSpaceBuildCapability(config.spaceEnvironment);
   const teamSpaceAvailable = spaceBuildCapability.available && config.teamSpaceEnabled === true;
 
   // Helper Agent's persisted model defaults — used by BugReportOverlay for

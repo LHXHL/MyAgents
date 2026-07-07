@@ -12,6 +12,7 @@ import {
   spaceDownloadIssueAttachment,
   spaceGetIssue,
   spaceGetOfficial,
+  spaceGetCapability,
   spaceGetSession,
   spaceGetSkill,
   spaceGetSkillFile,
@@ -138,6 +139,7 @@ interface SpaceEventsState {
 
 interface StoreState {
   boot: BootState;
+  serviceBaseUrl: string | null;
   session: SpaceSession | null;
   spaceId: string | null;
   goals: SpaceGoal[];
@@ -295,6 +297,7 @@ const EMPTY_ISSUE_LIST: SpaceIssueListState = {
 
 const initialState = (): StoreState => ({
   boot: "idle",
+  serviceBaseUrl: null,
   session: null,
   spaceId: null,
   goals: [],
@@ -357,6 +360,17 @@ function emit(): void {
 function setState(patch: Partial<StoreState>): void {
   state = { ...state, ...patch };
   emit();
+}
+
+function applyServiceBaseUrl(serviceBaseUrl: string | null): void {
+  if (!serviceBaseUrl) return;
+  if (state.serviceBaseUrl === serviceBaseUrl) return;
+  if (state.serviceBaseUrl) {
+    state = { ...initialState(), boot: state.boot, serviceBaseUrl };
+    emit();
+    return;
+  }
+  setState({ serviceBaseUrl });
 }
 
 function startRequest(key: string): number {
@@ -784,11 +798,16 @@ export const actions: SpaceActions = {
       const startedAt = nowForSpaceMetric();
       recordSpaceMetric("space_boot_start");
       try {
+        const capability = await spaceGetCapability();
+        if (!isLatest("boot", requestSeq)) return;
+        applyServiceBaseUrl(capability.baseUrl?.trim() || null);
         const session = await spaceGetSession();
         if (!isLatest("boot", requestSeq)) return;
+        applyServiceBaseUrl(session?.baseUrl?.trim() || null);
         if (!session) {
           setState({
             ...initialState(),
+            serviceBaseUrl: capability.baseUrl?.trim() || null,
             boot: "signedOut",
             bootLastFetchedAt: Date.now(),
           });
@@ -807,10 +826,15 @@ export const actions: SpaceActions = {
           state.spaceId && state.spaceId !== nextSpaceId,
         );
         if (spaceChanged) {
-          state = { ...initialState(), boot: state.boot };
+          state = {
+            ...initialState(),
+            boot: state.boot,
+            serviceBaseUrl: session.baseUrl.trim() || capability.baseUrl?.trim() || null,
+          };
         }
         setState({
           boot: "ready",
+          serviceBaseUrl: session.baseUrl.trim() || capability.baseUrl?.trim() || null,
           session: {
             ...session,
             space: official.space,

@@ -12,7 +12,9 @@ Space 是 build-time capability：
 
 - `src-tauri/build.rs` 读取环境变量或仓库根 `.env`，仅转发 `MYAGENTS_SPACE_*` 白名单。
 - `MYAGENTS_SPACE_ENABLED=true` 时必须提供 HTTPS 且不带 path/credential 的 `MYAGENTS_SPACE_BASE_URL`；build/runtime 校验会移除 query/fragment 并注入规范化后的 origin。
-- `cmd_space_get_capability` 返回 `{available, baseUrl, publicClientId, reason}`，只代表构建能力；前端还必须叠加 `config.teamSpaceEnabled === true`（默认关闭）才展示开发中的 Team Space 入口。
+- debug 构建可以额外烘焙 `MYAGENTS_SPACE_STAGING_BASE_URL`。release profile 会在 `build.rs` 中无条件丢弃 staging origin，因此生产二进制不能暴露 staging 服务开关。
+- `cmd_space_get_capability` 返回 `{available, baseUrl, publicClientId, reason, environments, activeEnvironment}`，只代表构建能力与 Rust 当前选中的 build-time origin；前端还必须叠加 `config.teamSpaceEnabled === true`（默认关闭）才展示开发中的 Team Space 入口。
+- `config.spaceEnvironment` 只能在烘焙的 `production` / `staging` origin 之间二选一，默认 `production`。Renderer 不提供自由 URL 输入；所有云端请求仍从 Rust `space_build_capability()` / `space_base_url()` 单一咽喉读取当前 origin。
 - 缺少能力时，Space UI 不应降级为硬编码 URL；所有云端请求必须经 Rust 能力检查。
 
 ### Dev/Test mock data mode
@@ -65,13 +67,19 @@ Registered Agent 执行请求是 token-only capability：
 
 ## 本地状态
 
-Space 本地状态保存在 `~/.myagents/space/` 下：
+Space 本地状态由 Rust `space_data_dir()` 按当前环境选择：
 
+- production 保持兼容路径 `~/.myagents/space/{session.json,registered_agents.json,delivery_log.json}`。
+- staging 使用 `~/.myagents/space/staging/{session.json,registered_agents.json,delivery_log.json}`。
 - `session.json` — 云端 session token 与用户/space/membership 摘要；Rust 对外只返回 redacted public view。
 - `registered_agents.json` — 本机注册到 Space 的 Agent 映射，包含本地 workspace path、`ownerUserId`、`deviceId`、设备摘要、订阅状态与云端 token。
 - `delivery_log.json` — 已投递 IssueDelivery 到本地 session 的映射，用于幂等与 delivered 标记。
 
 这些文件属于桌面客户端状态，不进入 SessionStore，也不由 Sidecar 管理。
+
+全局 Skill 安装路径不属于 Space 服务环境状态，始终是 `~/.myagents/skills`；不能从环境化后的 `space_data_dir()` 反推。
+
+Renderer `spaceStore` 的缓存身份必须至少包含服务 origin。production/staging 都可能使用 `official` slug，切换环境时即使 slug 不变也必须清掉 issue/skill/agent/event 缓存，避免旧环境数据被拿来驱动新环境 API。
 
 Legacy 兼容规则：
 

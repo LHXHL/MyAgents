@@ -1821,6 +1821,13 @@
       "teamAvailable": "Show the Team tab in the title bar. This feature is still in development, off by default, and already-open team pages are hidden when disabled.",
       "teamUnavailable": "This build does not include the team service. Build with MYAGENTS_SPACE_ENABLED=true and MYAGENTS_SPACE_BASE_URL to enable it.",
       "teamUnavailableWithReason": "This build does not include the team service. Build with MYAGENTS_SPACE_ENABLED=true and MYAGENTS_SPACE_BASE_URL to enable it. ({{reason}})",
+      "spaceEnvironmentTitle": "Team Service Environment",
+      "spaceEnvironmentDescription": "Switch the local Space client between baked service origins. Active origin: {{origin}}",
+      "spaceEnvironmentSaveFailed": "Failed to switch Space environment: {{message}}",
+      "spaceEnvironment": {
+        "production": "Production",
+        "staging": "Staging"
+      },
       "splitViewTitle": "Split View Preview (Experimental)",
       "splitViewDescription": "Open file previews in a right-side split view instead of a modal.",
       "backgroundAgentPermissionTitle": "Background Agent Permissions",

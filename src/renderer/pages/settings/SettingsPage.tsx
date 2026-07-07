@@ -46,6 +46,7 @@ import {
     isManagedCodexProviderGateEnabled,
     type ChatQueueResponseMode,
     type ProxyProtocol,
+    type SpaceEnvironment,
 } from '@/config/types';
 import {
     getAllMcpServers,
@@ -62,6 +63,7 @@ import {
 } from '@/config/configService';
 import { useConfig } from '@/hooks/useConfig';
 import { useSpaceBuildCapability } from '@/hooks/useSpaceBuildCapability';
+import { actions as spaceActions } from '@/pages/space/spaceStore';
 import { useHelperAgentModelDefaults } from '@/hooks/useHelperAgentModelDefaults';
 import { useAutostart } from '@/hooks/useAutostart';
 import { getBuildVersions } from '@/utils/debug';
@@ -245,7 +247,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         saveProviderModelAliases,
         refreshConfig,
     } = useConfig();
-    const spaceBuildCapability = useSpaceBuildCapability();
+    const spaceBuildCapability = useSpaceBuildCapability(config.spaceEnvironment);
     const toast = useToast();
     const { t: tSettings } = useTranslation('settings');
     const { t: tCommon } = useTranslation('common');
@@ -266,6 +268,24 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         { value: 'zh-CN', label: tCommon('language.zhCN') },
         { value: 'en-US', label: tCommon('language.enUS') },
     ], [tCommon]);
+    const availableSpaceEnvironments = useMemo(
+        () => new Set(spaceBuildCapability.environments ?? ['production']),
+        [spaceBuildCapability.environments],
+    );
+    const activeSpaceEnvironment: SpaceEnvironment =
+        config.spaceEnvironment === 'staging' && availableSpaceEnvironments.has('staging')
+            ? 'staging'
+            : 'production';
+    const updateSpaceEnvironment = useCallback((environment: SpaceEnvironment) => {
+        if (!availableSpaceEnvironments.has(environment)) return;
+        void (async () => {
+            await updateConfig({ spaceEnvironment: environment });
+            await spaceActions.ensureBootstrapped({ force: true, silent: true });
+        })().catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            toast.error(tSettings('about.developer.spaceEnvironmentSaveFailed', { message }));
+        });
+    }, [availableSpaceEnvironments, tSettings, toast, updateConfig]);
     const [claudeTranscriptCleanupDaysDraft, setClaudeTranscriptCleanupDaysDraft] = useState(
         String(DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS),
     );
@@ -4948,6 +4968,40 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 </button>
                                             </div>
                                         </div>
+
+                                        {spaceBuildCapability.available && availableSpaceEnvironments.has('staging') && (
+                                            <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+                                                <div className="flex items-center justify-between gap-4">
+                                                    <div className="flex-1 pr-4">
+                                                        <h3 className="text-sm font-medium text-[var(--ink)]">{tSettings('about.developer.spaceEnvironmentTitle')}</h3>
+                                                        <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                                                            {tSettings('about.developer.spaceEnvironmentDescription', {
+                                                                origin: spaceBuildCapability.baseUrl ?? '',
+                                                            })}
+                                                        </p>
+                                                    </div>
+                                                    <div className="flex shrink-0 rounded-lg border border-[var(--line)] bg-[var(--paper)] p-0.5">
+                                                        {(['production', 'staging'] as const).map((environment) => {
+                                                            const selected = activeSpaceEnvironment === environment;
+                                                            return (
+                                                                <button
+                                                                    key={environment}
+                                                                    type="button"
+                                                                    onClick={() => updateSpaceEnvironment(environment)}
+                                                                    aria-pressed={selected}
+                                                                    className={`min-w-[96px] rounded-md px-3 py-1.5 text-sm font-medium transition-colors ${selected
+                                                                        ? 'bg-[var(--accent)] text-[var(--button-primary-text)]'
+                                                                        : 'text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]'
+                                                                        }`}
+                                                                >
+                                                                    {tSettings(`about.developer.spaceEnvironment.${environment}`)}
+                                                                </button>
+                                                            );
+                                                        })}
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
 
                                         {/* Split View Toggle */}
                                         <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">

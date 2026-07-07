@@ -7,6 +7,7 @@ use std::{
 const SPACE_BUILD_ENV_KEYS: &[&str] = &[
     "MYAGENTS_SPACE_ENABLED",
     "MYAGENTS_SPACE_BASE_URL",
+    "MYAGENTS_SPACE_STAGING_BASE_URL",
     "MYAGENTS_SPACE_PUBLIC_CLIENT_ID",
     "MYAGENTS_SPACE_CLIENT_ID",
 ];
@@ -42,6 +43,17 @@ fn expose_space_build_env() {
                 .map(|value| ((*key).to_string(), value))
         })
         .collect::<HashMap<_, _>>();
+
+    if env::var("PROFILE").as_deref() == Ok("release") {
+        resolved_env.remove("MYAGENTS_SPACE_STAGING_BASE_URL");
+    }
+    if resolved_env
+        .get("MYAGENTS_SPACE_STAGING_BASE_URL")
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(false)
+    {
+        resolved_env.remove("MYAGENTS_SPACE_STAGING_BASE_URL");
+    }
 
     normalize_space_build_env(&mut resolved_env);
 
@@ -128,11 +140,25 @@ fn normalize_space_build_env(values: &mut HashMap<String, String>) {
         .map(String::as_str)
         .unwrap_or("")
         .trim();
-    match normalize_space_base_url(base_url) {
+    match normalize_space_base_url("MYAGENTS_SPACE_BASE_URL", base_url) {
         Ok(normalized) => {
             values.insert("MYAGENTS_SPACE_BASE_URL".to_string(), normalized);
         }
         Err(error) => panic!("Invalid Space build configuration: {error}"),
+    }
+
+    if let Some(staging_url) = values
+        .get("MYAGENTS_SPACE_STAGING_BASE_URL")
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        match normalize_space_base_url("MYAGENTS_SPACE_STAGING_BASE_URL", staging_url) {
+            Ok(normalized) => {
+                values.insert("MYAGENTS_SPACE_STAGING_BASE_URL".to_string(), normalized);
+            }
+            Err(error) => panic!("Invalid Space staging build configuration: {error}"),
+        }
     }
 }
 
@@ -143,25 +169,24 @@ fn space_enabled_flag(value: &str) -> bool {
     )
 }
 
-fn normalize_space_base_url(raw: &str) -> Result<String, String> {
+fn normalize_space_base_url(key: &str, raw: &str) -> Result<String, String> {
     if raw.is_empty() {
-        return Err(
-            "MYAGENTS_SPACE_BASE_URL is required when MYAGENTS_SPACE_ENABLED=true".to_string(),
-        );
+        return Err(format!(
+            "{key} is required when MYAGENTS_SPACE_ENABLED=true"
+        ));
     }
-    let mut url = url::Url::parse(raw)
-        .map_err(|error| format!("Invalid MYAGENTS_SPACE_BASE_URL: {error}"))?;
+    let mut url = url::Url::parse(raw).map_err(|error| format!("Invalid {key}: {error}"))?;
     if url.scheme() != "https" {
-        return Err("MYAGENTS_SPACE_BASE_URL must use https".to_string());
+        return Err(format!("{key} must use https"));
     }
     if url.host_str().is_none() {
-        return Err("MYAGENTS_SPACE_BASE_URL must include a host".to_string());
+        return Err(format!("{key} must include a host"));
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err("MYAGENTS_SPACE_BASE_URL must not include credentials".to_string());
+        return Err(format!("{key} must not include credentials"));
     }
     if url.path() != "/" {
-        return Err("MYAGENTS_SPACE_BASE_URL must not include a path".to_string());
+        return Err(format!("{key} must not include a path"));
     }
     url.set_query(None);
     url.set_fragment(None);

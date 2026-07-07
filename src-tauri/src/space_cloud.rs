@@ -23,6 +23,7 @@ use crate::{ulog_info, ulog_warn};
 
 const SPACE_ENABLED_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_ENABLED");
 const SPACE_BASE_URL_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_BASE_URL");
+const SPACE_STAGING_BASE_URL_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_STAGING_BASE_URL");
 const SPACE_PUBLIC_CLIENT_ID_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_PUBLIC_CLIENT_ID");
 const SPACE_LEGACY_CLIENT_ID_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_CLIENT_ID");
 const SPACE_PUBLIC_CLIENT_ID_HEADER: &str = "X-MyAgents-Space-Client-Id";
@@ -77,6 +78,30 @@ pub struct SpaceBuildCapability {
     pub base_url: Option<String>,
     pub public_client_id: Option<String>,
     pub reason: Option<String>,
+    pub environments: Vec<SpaceEnvironment>,
+    pub active_environment: SpaceEnvironment,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SpaceEnvironment {
+    Production,
+    Staging,
+}
+
+#[derive(Debug, Clone)]
+struct SpaceRuntimeScope {
+    base_url: String,
+    data_dir: PathBuf,
+}
+
+impl SpaceEnvironment {
+    fn config_value(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::Staging => "staging",
+        }
+    }
 }
 
 impl From<SpaceSession> for SpaceSessionPublic {
@@ -1631,9 +1656,8 @@ pub async fn cmd_space_install_skill(
     }
     let install_root = match input.target {
         SpaceSkillInstallTarget::Global => {
-            let root = space_data_dir()?
-                .parent()
-                .ok_or_else(|| "Invalid data dir".to_string())?
+            let root = crate::app_dirs::myagents_data_dir()
+                .ok_or_else(|| "Home dir not found".to_string())?
                 .join("skills");
             fs::create_dir_all(&root).map_err(|e| format!("Failed to create skills dir: {}", e))?;
             root
@@ -2231,7 +2255,7 @@ pub async fn process_pending_deliveries(
     if crate::space_cloud_mock::is_enabled() {
         return Ok(crate::space_cloud_mock::process_deliveries_once());
     }
-    ensure_space_available()?;
+    let scope = space_runtime_scope()?;
     if !team_space_runtime_enabled() {
         return Ok(SpaceProcessDeliveryResult {
             processed: 0,
@@ -2239,9 +2263,11 @@ pub async fn process_pending_deliveries(
             errors: Vec::new(),
         });
     }
-    let agents = read_current_runnable_local_agents()?
+    let agents_path = registered_agents_path_in_dir(&scope.data_dir);
+    let delivery_log_path = delivery_log_path_in_dir(&scope.data_dir);
+    let agents = read_current_runnable_local_agents_for_scope(&scope)?
         .into_iter()
-        .map(ensure_agent_delivery_session)
+        .map(|agent| ensure_agent_delivery_session_at_path(agent, agents_path.clone()))
         .collect::<Result<Vec<_>, _>>()?;
     if agents.is_empty() {
         return Ok(SpaceProcessDeliveryResult {
@@ -2250,12 +2276,20 @@ pub async fn process_pending_deliveries(
             errors: Vec::new(),
         });
     }
-    let base_url = space_base_url()?;
     let mut processed = 0usize;
     let mut delivered = 0usize;
     let mut errors = Vec::new();
     for mut agent in agents {
-        match process_agent_deliveries(app_handle, manager, &base_url, &mut agent).await {
+        match process_agent_deliveries(
+            app_handle,
+            manager,
+            &scope.base_url,
+            &mut agent,
+            &agents_path,
+            &delivery_log_path,
+        )
+        .await
+        {
             Ok((p, d)) => {
                 processed += p;
                 delivered += d;
@@ -2311,6 +2345,8 @@ async fn process_agent_deliveries(
     manager: &ManagedSidecarManager,
     base_url: &str,
     agent: &mut LocalRegisteredAgent,
+    agents_path: &Path,
+    delivery_log_path: &Path,
 ) -> Result<(usize, usize), String> {
     let data = authorized_json_data_request(
         base_url,
@@ -2338,9 +2374,15 @@ async fn process_agent_deliveries(
             .or_else(|| optional_value_string(&issue_meta, "id"))
             .ok_or_else(|| "Space delivery response missing issueId".to_string())?;
 
-        if let Some(existing) = find_delivery_log(base_url, &delivery_id)? {
+        if let Some(existing) =
+            find_delivery_log_in_path(delivery_log_path, base_url, &delivery_id)?
+        {
             mark_delivery_delivered(base_url, agent, &delivery_id, &existing.session_id).await?;
-            update_delivery_log_delivered(base_url, &delivery_id)?;
+            update_delivery_log_delivered_at_path(
+                delivery_log_path.to_path_buf(),
+                base_url,
+                &delivery_id,
+            )?;
             processed += 1;
             delivered += 1;
             continue;
@@ -2408,8 +2450,15 @@ async fn process_agent_deliveries(
             std::slice::from_ref(&delivery_item),
         )
         .await?;
-        record_delivered_space_delivery(base_url, agent, &delivery_item, &session_id, &message_id)
-            .await?;
+        record_delivered_space_delivery(
+            delivery_log_path,
+            base_url,
+            agent,
+            &delivery_item,
+            &session_id,
+            &message_id,
+        )
+        .await?;
         processed += 1;
         delivered += 1;
     }
@@ -2438,6 +2487,7 @@ async fn process_agent_deliveries(
             .await?;
             for delivery_item in &subscription_pending {
                 record_delivered_space_delivery(
+                    delivery_log_path,
                     base_url,
                     agent,
                     delivery_item,
@@ -2451,7 +2501,11 @@ async fn process_agent_deliveries(
         }
         SpaceIssueSubscriptionRunMode::NewSession => {
             for delivery_item in subscription_pending {
-                let session_id = ensure_agent_issue_session(agent, &delivery_item.issue_id)?;
+                let session_id = ensure_agent_issue_session_at_path(
+                    agent,
+                    &delivery_item.issue_id,
+                    agents_path,
+                )?;
                 let message_id = deliver_space_deliveries(
                     app_handle,
                     manager,
@@ -2461,6 +2515,7 @@ async fn process_agent_deliveries(
                 )
                 .await?;
                 record_delivered_space_delivery(
+                    delivery_log_path,
                     base_url,
                     agent,
                     &delivery_item,
@@ -2546,6 +2601,7 @@ async fn deliver_space_deliveries(
 }
 
 async fn record_delivered_space_delivery(
+    delivery_log_path: &Path,
     base_url: &str,
     agent: &LocalRegisteredAgent,
     delivery: &PendingSpaceDelivery,
@@ -2553,23 +2609,31 @@ async fn record_delivered_space_delivery(
     message_id: &str,
 ) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
-    upsert_delivery_log(SpaceDeliveryLogEntry {
-        delivery_id: delivery.delivery_id.clone(),
-        base_url: base_url.to_string(),
-        registered_agent_id: agent.id.clone(),
-        issue_id: delivery.issue_id.clone(),
-        session_id: session_id.to_string(),
-        message_id: message_id.to_string(),
-        delivered_at: None,
-        created_at: now.clone(),
-        updated_at: now,
-    })?;
+    upsert_delivery_log_at_path(
+        SpaceDeliveryLogEntry {
+            delivery_id: delivery.delivery_id.clone(),
+            base_url: base_url.to_string(),
+            registered_agent_id: agent.id.clone(),
+            issue_id: delivery.issue_id.clone(),
+            session_id: session_id.to_string(),
+            message_id: message_id.to_string(),
+            delivered_at: None,
+            created_at: now.clone(),
+            updated_at: now,
+        },
+        delivery_log_path.to_path_buf(),
+    )?;
     mark_delivery_delivered(base_url, agent, &delivery.delivery_id, session_id).await?;
-    update_delivery_log_delivered(base_url, &delivery.delivery_id)
+    update_delivery_log_delivered_at_path(
+        delivery_log_path.to_path_buf(),
+        base_url,
+        &delivery.delivery_id,
+    )
 }
 
-fn ensure_agent_delivery_session(
+fn ensure_agent_delivery_session_at_path(
     mut agent: LocalRegisteredAgent,
+    agents_path: PathBuf,
 ) -> Result<LocalRegisteredAgent, String> {
     if agent
         .delivery_session_id
@@ -2582,13 +2646,14 @@ fn ensure_agent_delivery_session(
     }
     agent.delivery_session_id = Some(uuid::Uuid::new_v4().to_string());
     agent.updated_at = chrono::Utc::now().to_rfc3339();
-    upsert_local_agent(agent.clone())?;
+    upsert_local_agent_at_path(agent.clone(), agents_path)?;
     Ok(agent)
 }
 
-fn ensure_agent_issue_session(
+fn ensure_agent_issue_session_at_path(
     agent: &mut LocalRegisteredAgent,
     issue_id: &str,
+    agents_path: &Path,
 ) -> Result<String, String> {
     if let Some(session_id) = agent
         .issue_session_ids
@@ -2604,7 +2669,7 @@ fn ensure_agent_issue_session(
         .issue_session_ids
         .insert(issue_id.to_string(), session_id.clone());
     agent.updated_at = chrono::Utc::now().to_rfc3339();
-    upsert_local_agent(agent.clone())?;
+    upsert_local_agent_at_path(agent.clone(), agents_path.to_path_buf())?;
     Ok(session_id)
 }
 
@@ -2978,29 +3043,53 @@ fn configured_public_client_id() -> Option<String> {
         .map(ToString::to_string)
 }
 
-fn validate_configured_space_base_url(raw: &str) -> Result<String, String> {
+fn validate_configured_space_base_url(key: &str, raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("MYAGENTS_SPACE_BASE_URL is empty".to_string());
+        return Err(format!("{key} is empty"));
     }
-    let url = reqwest::Url::parse(trimmed)
-        .map_err(|e| format!("Invalid MYAGENTS_SPACE_BASE_URL: {}", e))?;
+    let url = reqwest::Url::parse(trimmed).map_err(|e| format!("Invalid {key}: {}", e))?;
     if url.scheme() != "https" {
-        return Err("MYAGENTS_SPACE_BASE_URL must use https".to_string());
+        return Err(format!("{key} must use https"));
     }
     if url.host_str().is_none() {
-        return Err("MYAGENTS_SPACE_BASE_URL must include a host".to_string());
+        return Err(format!("{key} must include a host"));
     }
     if !url.username().is_empty() || url.password().is_some() {
-        return Err("MYAGENTS_SPACE_BASE_URL must not include credentials".to_string());
+        return Err(format!("{key} must not include credentials"));
     }
     let mut normalized = url;
     if normalized.path() != "/" {
-        return Err("MYAGENTS_SPACE_BASE_URL must not include a path".to_string());
+        return Err(format!("{key} must not include a path"));
     }
     normalized.set_query(None);
     normalized.set_fragment(None);
     Ok(normalized.to_string().trim_end_matches('/').to_string())
+}
+
+fn configured_staging_base_url() -> Result<Option<String>, String> {
+    SPACE_STAGING_BASE_URL_ENV
+        .map(|value| validate_configured_space_base_url("MYAGENTS_SPACE_STAGING_BASE_URL", value))
+        .transpose()
+}
+
+fn configured_space_environment(staging_available: bool) -> SpaceEnvironment {
+    if !staging_available {
+        return SpaceEnvironment::Production;
+    }
+    let Some(dir) = crate::app_dirs::myagents_data_dir() else {
+        return SpaceEnvironment::Production;
+    };
+    let Ok(content) = fs::read_to_string(dir.join("config.json")) else {
+        return SpaceEnvironment::Production;
+    };
+    let Ok(config) = serde_json::from_str::<Value>(crate::utils::bom::strip_bom(&content)) else {
+        return SpaceEnvironment::Production;
+    };
+    match config.get("spaceEnvironment").and_then(Value::as_str) {
+        Some("staging") => SpaceEnvironment::Staging,
+        _ => SpaceEnvironment::Production,
+    }
 }
 
 pub fn space_build_capability() -> SpaceBuildCapability {
@@ -3010,6 +3099,8 @@ pub fn space_build_capability() -> SpaceBuildCapability {
             base_url: Some(crate::space_cloud_mock::MOCK_BASE_URL.to_string()),
             public_client_id: Some("mock-public-client".to_string()),
             reason: None,
+            environments: vec![SpaceEnvironment::Production],
+            active_environment: SpaceEnvironment::Production,
         };
     }
     if !space_enabled_flag() {
@@ -3018,10 +3109,12 @@ pub fn space_build_capability() -> SpaceBuildCapability {
             base_url: None,
             public_client_id: configured_public_client_id(),
             reason: Some("Team Space is not enabled in this build".to_string()),
+            environments: vec![SpaceEnvironment::Production],
+            active_environment: SpaceEnvironment::Production,
         };
     }
     let base_url = match SPACE_BASE_URL_ENV {
-        Some(value) => match validate_configured_space_base_url(value) {
+        Some(value) => match validate_configured_space_base_url("MYAGENTS_SPACE_BASE_URL", value) {
             Ok(url) => url,
             Err(error) => {
                 return SpaceBuildCapability {
@@ -3029,6 +3122,8 @@ pub fn space_build_capability() -> SpaceBuildCapability {
                     base_url: None,
                     public_client_id: configured_public_client_id(),
                     reason: Some(error),
+                    environments: vec![SpaceEnvironment::Production],
+                    active_environment: SpaceEnvironment::Production,
                 };
             }
         },
@@ -3041,14 +3136,40 @@ pub fn space_build_capability() -> SpaceBuildCapability {
                     "MYAGENTS_SPACE_BASE_URL is required when MYAGENTS_SPACE_ENABLED=true"
                         .to_string(),
                 ),
+                environments: vec![SpaceEnvironment::Production],
+                active_environment: SpaceEnvironment::Production,
             };
         }
     };
+    let staging_base_url = match configured_staging_base_url() {
+        Ok(value) => value,
+        Err(error) => {
+            return SpaceBuildCapability {
+                available: false,
+                base_url: None,
+                public_client_id: configured_public_client_id(),
+                reason: Some(error),
+                environments: vec![SpaceEnvironment::Production],
+                active_environment: SpaceEnvironment::Production,
+            };
+        }
+    };
+    let mut environments = vec![SpaceEnvironment::Production];
+    if staging_base_url.is_some() {
+        environments.push(SpaceEnvironment::Staging);
+    }
+    let active_environment = configured_space_environment(staging_base_url.is_some());
+    let active_base_url = match active_environment {
+        SpaceEnvironment::Production => base_url,
+        SpaceEnvironment::Staging => staging_base_url.unwrap_or(base_url),
+    };
     SpaceBuildCapability {
         available: true,
-        base_url: Some(base_url),
+        base_url: Some(active_base_url),
         public_client_id: configured_public_client_id(),
         reason: None,
+        environments,
+        active_environment,
     }
 }
 
@@ -3571,28 +3692,53 @@ async fn authorized_bytes_request(
         .map_err(|e| format!("Space download failed: {}", e))
 }
 
-fn space_data_dir() -> Result<PathBuf, String> {
-    let dir = crate::app_dirs::myagents_data_dir()
+fn space_runtime_scope() -> Result<SpaceRuntimeScope, String> {
+    let capability = ensure_space_available()?;
+    let base_url = capability_base_url(&capability)?;
+    let data_dir = space_data_dir_for_environment(capability.active_environment)?;
+    Ok(SpaceRuntimeScope { base_url, data_dir })
+}
+
+fn space_data_dir_for_environment(environment: SpaceEnvironment) -> Result<PathBuf, String> {
+    let mut dir = crate::app_dirs::myagents_data_dir()
         .ok_or_else(|| "Home dir not found".to_string())?
         .join("space");
+    if environment == SpaceEnvironment::Staging {
+        dir = dir.join(SpaceEnvironment::Staging.config_value());
+    }
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create Space data dir: {}", e))?;
     Ok(dir)
 }
 
-pub fn registered_agents_path() -> Result<PathBuf, String> {
-    Ok(space_data_dir()?.join(LOCAL_AGENTS_FILE))
+fn space_data_dir() -> Result<PathBuf, String> {
+    space_data_dir_for_environment(space_build_capability().active_environment)
 }
 
-fn delivery_log_path() -> Result<PathBuf, String> {
-    Ok(space_data_dir()?.join(DELIVERY_LOG_FILE))
+fn registered_agents_path_in_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(LOCAL_AGENTS_FILE)
+}
+
+fn delivery_log_path_in_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(DELIVERY_LOG_FILE)
+}
+
+fn session_path_in_dir(data_dir: &Path) -> PathBuf {
+    data_dir.join(SESSION_FILE)
+}
+
+pub fn registered_agents_path() -> Result<PathBuf, String> {
+    Ok(registered_agents_path_in_dir(&space_data_dir()?))
 }
 
 fn session_path() -> Result<PathBuf, String> {
-    Ok(space_data_dir()?.join(SESSION_FILE))
+    Ok(session_path_in_dir(&space_data_dir()?))
 }
 
 fn read_session() -> Result<Option<SpaceSession>, String> {
-    let path = session_path()?;
+    read_session_from_path(&session_path()?)
+}
+
+fn read_session_from_path(path: &Path) -> Result<Option<SpaceSession>, String> {
     match fs::read_to_string(&path) {
         Ok(content) => serde_json::from_str(&content)
             .map(Some)
@@ -3616,16 +3762,8 @@ fn require_session() -> Result<SpaceSession, String> {
     Ok(session)
 }
 
-fn read_local_agents() -> Result<LocalRegisteredAgentsFile, String> {
-    let path = registered_agents_path()?;
-    match fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid local Space agents file: {}", e)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Ok(LocalRegisteredAgentsFile::default())
-        }
-        Err(e) => Err(format!("Failed to read local Space agents file: {}", e)),
-    }
+fn read_local_agents_from_path(path: &Path) -> Result<LocalRegisteredAgentsFile, String> {
+    read_local_agents_unlocked(path)
 }
 
 fn read_current_session() -> Result<Option<SpaceSession>, String> {
@@ -3633,8 +3771,15 @@ fn read_current_session() -> Result<Option<SpaceSession>, String> {
         return Ok(Some(crate::space_cloud_mock::session()));
     }
     let configured_base_url = space_base_url()?;
-    Ok(read_session()?
-        .filter(|session| space_base_urls_equal(&session.base_url, &configured_base_url)))
+    read_current_session_for_base_url(&configured_base_url, &space_data_dir()?)
+}
+
+fn read_current_session_for_base_url(
+    base_url: &str,
+    data_dir: &Path,
+) -> Result<Option<SpaceSession>, String> {
+    Ok(read_session_from_path(&session_path_in_dir(data_dir))?
+        .filter(|session| space_base_urls_equal(&session.base_url, base_url)))
 }
 
 fn read_current_local_agents() -> Result<Vec<LocalRegisteredAgent>, String> {
@@ -3686,17 +3831,25 @@ fn read_current_local_agents() -> Result<Vec<LocalRegisteredAgent>, String> {
             .collect());
     }
     let configured_base_url = space_base_url()?;
-    let mut agents = read_local_agents()?
+    read_current_local_agents_for_base_url(&configured_base_url, &space_data_dir()?)
+}
+
+fn read_current_local_agents_for_base_url(
+    base_url: &str,
+    data_dir: &Path,
+) -> Result<Vec<LocalRegisteredAgent>, String> {
+    let agents_path = registered_agents_path_in_dir(data_dir);
+    let mut agents = read_local_agents_from_path(&agents_path)?
         .items
         .into_iter()
-        .filter(|agent| space_base_urls_equal(&agent.base_url, &configured_base_url))
+        .filter(|agent| space_base_urls_equal(&agent.base_url, base_url))
         .collect::<Vec<_>>();
 
-    if let Some(session) = read_current_session()? {
+    if let Some(session) = read_current_session_for_base_url(base_url, data_dir)? {
         let identity = current_device_identity()?;
         for agent in agents.iter_mut() {
             if normalize_legacy_local_agent_identity(agent, &session, &identity) {
-                upsert_local_agent(agent.clone())?;
+                upsert_local_agent_at_path(agent.clone(), agents_path.clone())?;
             }
         }
     }
@@ -3705,7 +3858,10 @@ fn read_current_local_agents() -> Result<Vec<LocalRegisteredAgent>, String> {
 }
 
 fn upsert_local_agent(agent: LocalRegisteredAgent) -> Result<(), String> {
-    let path = registered_agents_path()?;
+    upsert_local_agent_at_path(agent, registered_agents_path()?)
+}
+
+fn upsert_local_agent_at_path(agent: LocalRegisteredAgent, path: PathBuf) -> Result<(), String> {
     let lock_path = path.clone();
     with_json_file_lock(&lock_path, move || {
         let mut file = read_local_agents_unlocked(&path)?;
@@ -3781,6 +3937,22 @@ fn read_current_runnable_local_agents() -> Result<Vec<LocalRegisteredAgent>, Str
         .filter(|agent| agent.status == "active")
         .filter(|agent| local_agent_matches_current_identity(agent, &session, &local_device_id))
         .collect())
+}
+
+fn read_current_runnable_local_agents_for_scope(
+    scope: &SpaceRuntimeScope,
+) -> Result<Vec<LocalRegisteredAgent>, String> {
+    let Some(session) = read_current_session_for_base_url(&scope.base_url, &scope.data_dir)? else {
+        return Ok(Vec::new());
+    };
+    let local_device_id = crate::device_identity::get_or_create_device_id()?;
+    Ok(
+        read_current_local_agents_for_base_url(&scope.base_url, &scope.data_dir)?
+            .into_iter()
+            .filter(|agent| agent.status == "active")
+            .filter(|agent| local_agent_matches_current_identity(agent, &session, &local_device_id))
+            .collect(),
+    )
 }
 
 fn local_agent_matches_current_identity(
@@ -3913,27 +4085,24 @@ fn read_local_agents_unlocked(path: &Path) -> Result<LocalRegisteredAgentsFile, 
     }
 }
 
-fn read_delivery_log() -> Result<SpaceDeliveryLogFile, String> {
-    let path = delivery_log_path()?;
-    match fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content)
-            .map_err(|e| format!("Invalid Space delivery log file: {}", e)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(SpaceDeliveryLogFile::default()),
-        Err(e) => Err(format!("Failed to read Space delivery log file: {}", e)),
-    }
+fn read_delivery_log_from_path(path: &Path) -> Result<SpaceDeliveryLogFile, String> {
+    read_delivery_log_unlocked(path)
 }
 
-fn find_delivery_log(
+fn find_delivery_log_in_path(
+    path: &Path,
     base_url: &str,
     delivery_id: &str,
 ) -> Result<Option<SpaceDeliveryLogEntry>, String> {
-    Ok(read_delivery_log()?.items.into_iter().find(|entry| {
-        entry.delivery_id == delivery_id && space_base_urls_equal(&entry.base_url, base_url)
-    }))
+    Ok(read_delivery_log_from_path(path)?
+        .items
+        .into_iter()
+        .find(|entry| {
+            entry.delivery_id == delivery_id && space_base_urls_equal(&entry.base_url, base_url)
+        }))
 }
 
-fn upsert_delivery_log(entry: SpaceDeliveryLogEntry) -> Result<(), String> {
-    let path = delivery_log_path()?;
+fn upsert_delivery_log_at_path(entry: SpaceDeliveryLogEntry, path: PathBuf) -> Result<(), String> {
     let lock_path = path.clone();
     with_json_file_lock(&lock_path, move || {
         let mut file = read_delivery_log_unlocked(&path)?;
@@ -3946,8 +4115,11 @@ fn upsert_delivery_log(entry: SpaceDeliveryLogEntry) -> Result<(), String> {
     })
 }
 
-fn update_delivery_log_delivered(base_url: &str, delivery_id: &str) -> Result<(), String> {
-    let path = delivery_log_path()?;
+fn update_delivery_log_delivered_at_path(
+    path: PathBuf,
+    base_url: &str,
+    delivery_id: &str,
+) -> Result<(), String> {
     let base_url = base_url.to_string();
     let delivery_id = delivery_id.to_string();
     let lock_path = path.clone();
@@ -5826,6 +5998,8 @@ mod tests {
             base_url: Some("https://space.myagents.test".to_string()),
             public_client_id: Some("client_test_123".to_string()),
             reason: None,
+            environments: vec![SpaceEnvironment::Production],
+            active_environment: SpaceEnvironment::Production,
         };
         // The request is never sent; this only constructs a request for an
         // external Space URL so the header helper can be asserted.

@@ -132,6 +132,8 @@ export interface SpaceBuildCapability {
   baseUrl?: string | null;
   publicClientId?: string | null;
   reason?: string | null;
+  environments?: Array<"production" | "staging">;
+  activeEnvironment?: "production" | "staging";
 }
 
 export interface SpaceTag {

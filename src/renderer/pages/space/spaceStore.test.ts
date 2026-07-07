@@ -14,6 +14,7 @@ const apiMocks = vi.hoisted(() => ({
   spaceDownloadIssueAttachment: vi.fn(),
   spaceGetIssue: vi.fn(),
   spaceGetOfficial: vi.fn(),
+  spaceGetCapability: vi.fn(),
   spaceGetSession: vi.fn(),
   spaceGetSkill: vi.fn(),
   spaceGetSkillFile: vi.fn(),
@@ -52,6 +53,7 @@ vi.mock('@/api/spaceCloud', () => ({
   spaceDownloadIssueAttachment: apiMocks.spaceDownloadIssueAttachment,
   spaceGetIssue: apiMocks.spaceGetIssue,
   spaceGetOfficial: apiMocks.spaceGetOfficial,
+  spaceGetCapability: apiMocks.spaceGetCapability,
   spaceGetSession: apiMocks.spaceGetSession,
   spaceGetSkill: apiMocks.spaceGetSkill,
   spaceGetSkillFile: apiMocks.spaceGetSkillFile,
@@ -209,6 +211,14 @@ function deferred<T>() {
 beforeEach(() => {
   __resetSpaceStoreForTest();
   vi.clearAllMocks();
+  apiMocks.spaceGetCapability.mockResolvedValue({
+    available: true,
+    baseUrl: fakeSession.baseUrl,
+    publicClientId: null,
+    reason: null,
+    environments: ['production'],
+    activeEnvironment: 'production',
+  });
 });
 
 describe('spaceStore snapshot', () => {
@@ -251,6 +261,63 @@ describe('spaceStore boot', () => {
 
     expect(apiMocks.spaceGetOfficial).toHaveBeenCalledWith('official');
     expect(getSnapshot().spaceId).toBe('official');
+  });
+
+  it('clears cached space data when the service origin changes with the same slug', async () => {
+    __setSpaceStoreStateForTest({
+      boot: 'ready',
+      serviceBaseUrl: 'https://space.myagents.test',
+      session: fakeSession,
+      spaceId: 'official',
+      issuesByKey: {
+        [scoped('limit=50')]: {
+          items: [fakeIssue],
+          hasMore: false,
+          nextCursor: null,
+          lastFetchedAt: Date.now(),
+          isLoading: false,
+          error: null,
+        },
+      },
+      skillDetails: {
+        [scoped(fakeSkill.id)]: {
+          detail: {
+            skill: fakeSkill,
+            files: [],
+          },
+          lastFetchedAt: Date.now(),
+          isLoading: false,
+          error: null,
+        },
+      },
+    });
+    const stagingSession: SpaceSession = {
+      ...fakeSession,
+      baseUrl: 'https://space-staging.myagents.test',
+    };
+    apiMocks.spaceGetCapability.mockResolvedValueOnce({
+      available: true,
+      baseUrl: stagingSession.baseUrl,
+      publicClientId: null,
+      reason: null,
+      environments: ['production', 'staging'],
+      activeEnvironment: 'staging',
+    });
+    apiMocks.spaceGetSession.mockResolvedValueOnce(stagingSession);
+    apiMocks.spaceGetOfficial.mockResolvedValueOnce({
+      space: stagingSession.space,
+      membership: stagingSession.membership,
+      goals: [],
+    });
+
+    await actions.ensureBootstrapped({ force: true, silent: true });
+
+    const snapshot = getSnapshot();
+    expect(snapshot.serviceBaseUrl).toBe(stagingSession.baseUrl);
+    expect(snapshot.session?.baseUrl).toBe(stagingSession.baseUrl);
+    expect(snapshot.spaceId).toBe('official');
+    expect(snapshot.issuesByKey).toEqual({});
+    expect(snapshot.skillDetails).toEqual({});
   });
 });
 
