@@ -948,16 +948,6 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     return () => window.removeEventListener(CUSTOM_EVENTS.OPEN_IN_BROWSER_PANEL, handler);
   }, [isActive, browserPanelCtx]);
 
-  // When split panel closes entirely, restore workspace sidebar to visible
-  const prevSplitVisibleRef = useRef(splitPanelVisible);
-  useEffect(() => {
-    if (prevSplitVisibleRef.current && !splitPanelVisible) {
-      // Split just closed → show workspace sidebar
-      setShowWorkspace(true);
-    }
-    prevSplitVisibleRef.current = splitPanelVisible;
-  }, [splitPanelVisible]);
-
   // Cleanup terminal PTY on unmount (Tab close)
   useEffect(() => {
     return () => {
