@@ -30,8 +30,10 @@ const apiMocks = vi.hoisted(() => ({
   spaceRegisterAgent: vi.fn(),
   spaceRevokeRegisteredAgent: vi.fn(),
   spaceRollbackSkill: vi.fn(),
+  spaceSetActiveSpace: vi.fn(),
   spaceSetIssueState: vi.fn(),
   spaceUpdateGoal: vi.fn(),
+  spaceUpdateIssue: vi.fn(),
   spaceUpdateProfile: vi.fn(),
   spaceUpdateRegisteredAgent: vi.fn(),
   spaceUploadIssueAttachments: vi.fn(),
@@ -69,12 +71,22 @@ vi.mock('@/api/spaceCloud', () => ({
   spaceRegisterAgent: apiMocks.spaceRegisterAgent,
   spaceRevokeRegisteredAgent: apiMocks.spaceRevokeRegisteredAgent,
   spaceRollbackSkill: apiMocks.spaceRollbackSkill,
+  spaceSetActiveSpace: apiMocks.spaceSetActiveSpace,
   spaceSetIssueState: apiMocks.spaceSetIssueState,
   spaceUpdateGoal: apiMocks.spaceUpdateGoal,
+  spaceUpdateIssue: apiMocks.spaceUpdateIssue,
   spaceUpdateProfile: apiMocks.spaceUpdateProfile,
   spaceUpdateRegisteredAgent: apiMocks.spaceUpdateRegisteredAgent,
   spaceUploadIssueAttachments: apiMocks.spaceUploadIssueAttachments,
   spaceUploadSkillZip: apiMocks.spaceUploadSkillZip,
+}));
+
+const analyticsMocks = vi.hoisted(() => ({
+  track: vi.fn(),
+}));
+
+vi.mock('@/analytics', () => ({
+  track: analyticsMocks.track,
 }));
 
 import type {
@@ -219,6 +231,7 @@ beforeEach(() => {
     environments: ['production'],
     activeEnvironment: 'production',
   });
+  apiMocks.spaceSetActiveSpace.mockResolvedValue(undefined);
 });
 
 describe('spaceStore snapshot', () => {
@@ -318,6 +331,44 @@ describe('spaceStore boot', () => {
     expect(snapshot.spaceId).toBe('official');
     expect(snapshot.issuesByKey).toEqual({});
     expect(snapshot.skillDetails).toEqual({});
+  });
+
+  it('tracks explicit space switches without emitting a second open event', async () => {
+    const teamSpace = {
+      ...fakeSession.space,
+      id: 'space-2',
+      slug: 'team',
+      name: 'Team Space',
+      spaceKind: 'team',
+    };
+    const teamSession: SpaceSession = {
+      ...fakeSession,
+      lastActiveSpaceId: 'team',
+      space: teamSpace,
+      membership: { id: 'membership-2', role: 'member' },
+    };
+    apiMocks.spaceGetSession
+      .mockResolvedValueOnce(fakeSession)
+      .mockResolvedValueOnce(teamSession);
+    apiMocks.spaceGetOfficial
+      .mockResolvedValueOnce({
+        space: fakeSession.space,
+        membership: fakeSession.membership,
+        goals: [],
+      })
+      .mockResolvedValueOnce({
+        space: teamSpace,
+        membership: teamSession.membership,
+        goals: [],
+      });
+
+    await actions.ensureBootstrapped({ force: true });
+    await actions.switchSpace('team');
+
+    const events = analyticsMocks.track.mock.calls.map((call) => call[0]);
+    expect(apiMocks.spaceSetActiveSpace).toHaveBeenCalledWith('team');
+    expect(events.filter((event) => event === 'space_open')).toHaveLength(1);
+    expect(events.filter((event) => event === 'space_switch')).toHaveLength(1);
   });
 });
 

@@ -57,9 +57,11 @@ import {
 import { SpaceAvatar } from "@/pages/space/SpaceAvatar";
 import SpaceProfileSettingsDialog from "@/pages/space/SpaceProfileSettingsDialog";
 import {
-  nowForSpaceMetric,
-  recordSpaceMetric,
-} from "@/pages/space/spaceMetrics";
+	  nowForSpaceMetric,
+	  recordSpaceMetric,
+	  trackSpaceAuth,
+	  withSpaceMutationMetric,
+	} from "@/pages/space/spaceMetrics";
 import {
   PAPER_GRID_STYLE,
   SPACE_BACKGROUND_STYLE,
@@ -743,6 +745,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
             stopAuth();
             toast.success(t("space.toasts.loginSuccess"));
             await actions.ensureBootstrapped({ force: true });
+            trackSpaceAuth("success", true);
             void spaceAuthAck(authFlow.token).catch((error) => {
               console.warn("[Space] auth ack failed:", errMessage(error));
             });
@@ -751,6 +754,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
           if (result.status === "failed") {
             stopAuth();
             toast.error(String(result.error ?? t("space.toasts.loginFailed")));
+            trackSpaceAuth("failure", false, result.error ?? "failed");
             void spaceAuthAck(authFlow.token).catch((error) => {
               console.warn("[Space] auth ack failed:", errMessage(error));
             });
@@ -773,6 +777,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
       if (!cancelled) {
         stopAuth();
         toast.error(t("space.toasts.loginTimeout"));
+        trackSpaceAuth("failure", false, "timeout");
       }
     };
 
@@ -784,6 +789,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
 
   const startLogin = useCallback(async () => {
     setAuthBusy(true);
+    trackSpaceAuth("start", true);
     try {
       const result = await spaceAuthStart();
       authPollWarningShownRef.current = false;
@@ -794,6 +800,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
       toast.info(t("space.toasts.browserLoginOpened"));
     } catch (error) {
       setAuthBusy(false);
+      trackSpaceAuth("failure", false, error);
       toast.error(spaceErrorMessage(error));
     }
   }, [t, toast]);
@@ -842,33 +849,33 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const submitSpaceDialog = useCallback(async (input: SpaceQuickActionSubmitInput) => {
     if (!spaceDialogMode || input.mode !== spaceDialogMode) return;
     setSpaceDialogBusy(true);
-    setSpaceDialogError(null);
-    try {
-      if (input.mode === "join") {
-        const result = await spaceJoinSpace({ slug: input.slug });
-        toast.success(
-          result.status === "pending"
-            ? t("space.toasts.spaceJoinRequested")
-            : t("space.toasts.spaceJoined"),
-        );
+	    setSpaceDialogError(null);
+	    try {
+	      if (input.mode === "join") {
+	        const result = await withSpaceMutationMetric("member.join", () => spaceJoinSpace({ slug: input.slug }));
+	        toast.success(
+	          result.status === "pending"
+	            ? t("space.toasts.spaceJoinRequested")
+	            : t("space.toasts.spaceJoined"),
+	        );
         await actions.ensureBootstrapped({ force: true });
         if (result.status === "joined") {
-          await actions.switchSpace(result.space.id || result.space.slug);
-        }
-      } else {
-        const result = await spaceCreateSpace({
-          name: input.name,
-          slug: input.slug,
-        });
-        if (input.avatarFilePath) {
-          try {
-            await spaceUpdateSpace({
-              spaceId: result.space.id || result.space.slug,
-              avatarFilePath: input.avatarFilePath,
-            });
-          } catch (error) {
-            toast.warning(spaceErrorMessage(error));
-          }
+	          await actions.switchSpace(result.space.id || result.space.slug);
+	        }
+	      } else {
+	        const result = await withSpaceMutationMetric("settings.create", () => spaceCreateSpace({
+	          name: input.name,
+	          slug: input.slug,
+	        }));
+	        if (input.avatarFilePath) {
+	          try {
+	            await withSpaceMutationMetric("settings.update", () => spaceUpdateSpace({
+	              spaceId: result.space.id || result.space.slug,
+	              avatarFilePath: input.avatarFilePath,
+	            }));
+	          } catch (error) {
+	            toast.warning(spaceErrorMessage(error));
+	          }
         }
         toast.success(t("space.toasts.spaceCreated"));
         await actions.ensureBootstrapped({ force: true });

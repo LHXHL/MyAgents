@@ -158,6 +158,38 @@ Feature usage:
 - `task_center_open`
 - `bug_report_submit`
 
+MyAgents Space:
+
+- `space_open`
+- `space_auth_start`
+- `space_auth_complete`
+- `space_switch`
+- `space_issue_mutation`
+- `space_goal_mutation`
+- `space_skill_mutation`
+- `space_registered_agent_mutation`
+- `space_member_mutation`
+- `space_settings_mutation`
+
+Space event dimensions are deliberately allowlisted:
+
+- `space_kind`: `official`, `team`, `personal`, or `unknown`.
+- `is_official`: boolean derived from `space_kind`.
+- `space_role`: `owner`, `admin`, `member`, or `unknown`.
+- `space_surface`: `home`, `issue_list`, `issue_detail`, `goals`,
+  `skills`, `agents`, `members`, `settings`, or `unknown`.
+- `operation`: normalized product operation such as `create`, `update`,
+  `comment`, `state_change`, `install`, `register`, or `revoke`.
+- `ok`: boolean success marker.
+- `error_code`: normalized error bucket only; raw error messages are not
+  uploaded.
+- `duration_ms`: mutation duration.
+
+Space analytics must not upload user-defined Space names/slugs, raw Issue,
+Goal, Skill, or Agent ids, Issue titles/bodies/comments, member emails, Google
+profile details, or workspace paths. Space business facts are owned by
+MyAgents_space admin APIs; client events only describe desktop usage behavior.
+
 System events:
 
 - `update_check`

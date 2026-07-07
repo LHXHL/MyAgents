@@ -24,6 +24,7 @@ import { useCloseLayer } from "@/hooks/useCloseLayer";
 import { useWorkspaceFileService } from "@/hooks/useWorkspaceFileService";
 import { AgentsWorkspace } from "@/pages/space/agents/AgentsWorkspace";
 import { SpaceAvatar } from "@/pages/space/SpaceAvatar";
+import { withSpaceMutationMetric } from "@/pages/space/spaceMetrics";
 import type { SpaceActions } from "@/pages/space/spaceStore";
 import { SPACE_LIST_FRAME_CLASS } from "@/pages/space/spaceUi";
 
@@ -234,11 +235,11 @@ export function SpaceSettingsWorkspace({
   const saveOverview = async () => {
     setBusyKey("overview");
     try {
-      await spaceUpdateSpace({
+      await withSpaceMutationMetric("settings.update", () => spaceUpdateSpace({
         spaceId: session.space.slug || session.space.id,
         name: name.trim(),
         avatarFilePath,
-      });
+      }));
       toast.success(t("space.toasts.spaceUpdated"));
       await actions.ensureBootstrapped({ force: true });
       setEditingOverview(false);
@@ -262,10 +263,10 @@ export function SpaceSettingsWorkspace({
     }
   };
 
-  const runMemberAction = async (key: string, action: () => Promise<unknown>) => {
+  const runMemberAction = async (key: string, operation: string, action: () => Promise<unknown>) => {
     setBusyKey(key);
     try {
-      await action();
+      await withSpaceMutationMetric(operation, action);
       await reloadMembers();
       await actions.ensureBootstrapped({ force: true, silent: true });
     } catch (error) {
@@ -385,10 +386,10 @@ export function SpaceSettingsWorkspace({
                   <div className="truncate text-sm font-semibold text-[var(--ink)]">{request.user.name || request.user.email}</div>
                   <div className="truncate text-xs text-[var(--ink-muted)]">{request.user.email}</div>
                 </div>
-                <button type="button" disabled={memberQuotaReached} title={memberQuotaReached ? t("space.settings.memberQuotaReached") : undefined} onClick={() => runMemberAction(`approve:${request.id}`, () => spaceApproveJoinRequest({ spaceId: session.space.slug || session.space.id, requestId: request.id }))} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--success)] hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-40">
+                <button type="button" disabled={memberQuotaReached} title={memberQuotaReached ? t("space.settings.memberQuotaReached") : undefined} onClick={() => runMemberAction(`approve:${request.id}`, "member.approve", () => spaceApproveJoinRequest({ spaceId: session.space.slug || session.space.id, requestId: request.id }))} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--success)] hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-40">
                   <Check className="h-4 w-4" />
                 </button>
-                <button type="button" onClick={() => runMemberAction(`reject:${request.id}`, () => spaceRejectJoinRequest({ spaceId: session.space.slug || session.space.id, requestId: request.id }))} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--error)] hover:bg-[var(--hover-bg)]">
+                <button type="button" onClick={() => runMemberAction(`reject:${request.id}`, "member.reject", () => spaceRejectJoinRequest({ spaceId: session.space.slug || session.space.id, requestId: request.id }))} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--error)] hover:bg-[var(--hover-bg)]">
                   <Trash2 className="h-4 w-4" />
                 </button>
               </div>
@@ -427,10 +428,10 @@ export function SpaceSettingsWorkspace({
                   </button>
                   {menuMemberId === member.id ? (
                     <div className="absolute right-0 z-20 mt-1 w-36 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-1 shadow-md">
-                      <button type="button" onClick={() => runMemberAction(`role:${member.id}`, () => spaceUpdateMemberRole({ spaceId: session.space.slug || session.space.id, memberId: member.id, role: member.role === "admin" ? "member" : "admin" }))} className="w-full rounded-md px-2 py-1.5 text-left text-xs text-[var(--ink)] hover:bg-[var(--hover-bg)]">
+                      <button type="button" onClick={() => runMemberAction(`role:${member.id}`, "member.role", () => spaceUpdateMemberRole({ spaceId: session.space.slug || session.space.id, memberId: member.id, role: member.role === "admin" ? "member" : "admin" }))} className="w-full rounded-md px-2 py-1.5 text-left text-xs text-[var(--ink)] hover:bg-[var(--hover-bg)]">
                         {member.role === "admin" ? t("space.settings.changeToMember") : t("space.settings.changeToAdmin")}
                       </button>
-                      <button type="button" onClick={() => runMemberAction(`remove:${member.id}`, () => spaceRemoveMember({ spaceId: session.space.slug || session.space.id, memberId: member.id }))} className="w-full rounded-md px-2 py-1.5 text-left text-xs text-[var(--error)] hover:bg-[var(--hover-bg)]">
+                      <button type="button" onClick={() => runMemberAction(`remove:${member.id}`, "member.remove", () => spaceRemoveMember({ spaceId: session.space.slug || session.space.id, memberId: member.id }))} className="w-full rounded-md px-2 py-1.5 text-left text-xs text-[var(--error)] hover:bg-[var(--hover-bg)]">
                         {t("space.settings.removeMember")}
                       </button>
                     </div>

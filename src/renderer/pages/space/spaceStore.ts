@@ -56,6 +56,9 @@ import { buildIssueQueryKey } from "./spaceHelpers";
 import {
   nowForSpaceMetric,
   recordSpaceMetric,
+  setSpaceAnalyticsContext,
+  trackSpaceOpen,
+  trackSpaceSwitch,
   withSpaceMutationMetric,
 } from "./spaceMetrics";
 
@@ -164,6 +167,7 @@ interface RefreshOptions {
   force?: boolean;
   silent?: boolean;
   maxAgeMs?: number;
+  trackOpen?: boolean;
 }
 
 export interface SpaceActions {
@@ -807,6 +811,7 @@ export const actions: SpaceActions = {
         if (!isLatest("boot", requestSeq)) return;
         applyServiceBaseUrl(session?.baseUrl?.trim() || null);
         if (!session) {
+          setSpaceAnalyticsContext(null);
           setState({
             ...initialState(),
             serviceBaseUrl: capability.baseUrl?.trim() || null,
@@ -824,6 +829,8 @@ export const actions: SpaceActions = {
         });
         if (!isLatest("boot", requestSeq)) return;
         const nextSpaceId = spaceRouteSegment(official.space || session.space);
+        const previousBoot = state.boot;
+        const previousSpaceId = state.spaceId;
         const spaceChanged = Boolean(
           state.spaceId && state.spaceId !== nextSpaceId,
         );
@@ -847,6 +854,13 @@ export const actions: SpaceActions = {
           bootError: null,
           bootLastFetchedAt: Date.now(),
         });
+        setSpaceAnalyticsContext({
+          spaceKind: official.space?.spaceKind ?? session.space?.spaceKind ?? null,
+          role: official.membership?.role ?? session.membership?.role ?? null,
+        });
+        if (options.trackOpen !== false && !options.silent && (previousBoot !== "ready" || previousSpaceId !== nextSpaceId)) {
+          trackSpaceOpen("home");
+        }
         recordSpaceMetric("space_boot_end", {
           durationMs: Math.round(nowForSpaceMetric() - startedAt),
           ok: true,
@@ -889,7 +903,8 @@ export const actions: SpaceActions = {
     const previousBoot = state.boot;
     state = { ...initialState(), boot: previousBoot };
     emit();
-    await actions.ensureBootstrapped({ force: true });
+    await actions.ensureBootstrapped({ force: true, trackOpen: false });
+    trackSpaceSwitch();
   },
 
   refreshIssues: async (
