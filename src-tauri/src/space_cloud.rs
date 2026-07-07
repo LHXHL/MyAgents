@@ -28,7 +28,6 @@ const SPACE_STAGING_BASE_URL_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_STA
 const SPACE_PUBLIC_CLIENT_ID_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_PUBLIC_CLIENT_ID");
 const SPACE_LEGACY_CLIENT_ID_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_CLIENT_ID");
 const SPACE_PUBLIC_CLIENT_ID_HEADER: &str = "X-MyAgents-Space-Client-Id";
-const SPACE_PROXY_SERVICE_ID: &str = "myagents-space";
 const SESSION_FILE: &str = "session.json";
 const LOCAL_AGENTS_FILE: &str = "registered_agents.json";
 const DELIVERY_LOG_FILE: &str = "delivery_log.json";
@@ -3383,13 +3382,12 @@ fn escape_prompt_attr(value: &str) -> String {
 
 fn http_client() -> Result<reqwest::Client, String> {
     // Space talks to configured external HTTPS origins. `local_http` is
-    // localhost-only; this is a first-party service owner so custom provider
-    // proxy scopes do not accidentally route Space through AI proxies.
+    // localhost-only; this client must honor the app's proxy settings.
     #[allow(clippy::disallowed_methods)]
     let builder = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .redirect(reqwest::redirect::Policy::limited(5));
-    crate::proxy_config::build_client_with_proxy_for_service(builder, SPACE_PROXY_SERVICE_ID)
+    crate::proxy_config::build_client_with_proxy(builder)
         .map_err(|e| format!("Failed to build Space HTTP client: {}", e))
 }
 

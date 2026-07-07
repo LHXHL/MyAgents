@@ -427,47 +427,6 @@ pub fn build_client_with_proxy_for_provider(
         .map_err(|e| format!("[proxy_config] Failed to build HTTP client: {}", e))
 }
 
-/// Build a reqwest client for first-party MyAgents cloud services.
-///
-/// `scope.mode = "custom"` limits the explicit MyAgents proxy to named owners
-/// in `providerIds`. First-party services are direct unless the scope is `all`
-/// or the service id is explicitly listed.
-pub fn build_client_with_proxy_for_service(
-    builder: reqwest::ClientBuilder,
-    service_id: &str,
-) -> Result<reqwest::Client, String> {
-    let final_builder = if let Some(proxy_settings) = read_proxy_settings() {
-        if proxy_enabled_for_provider(&proxy_settings, service_id) {
-            let proxy_url = get_proxy_url(&proxy_settings)?;
-            ulog_info!(
-                "[proxy_config] Using proxy for service requests service={}: {}",
-                service_id,
-                proxy_url
-            );
-            let proxy = reqwest::Proxy::all(&proxy_url)
-                .map_err(|e| format!("[proxy_config] Failed to create proxy: {}", e))?
-                .no_proxy(reqwest::NoProxy::from_string(LOCALHOST_NO_PROXY));
-            builder.proxy(proxy)
-        } else {
-            ulog_info!(
-                "[proxy_config] MyAgents proxy scope excludes service {}; using direct network",
-                service_id
-            );
-            builder.no_proxy()
-        }
-    } else {
-        ulog_info!(
-            "[proxy_config] No proxy configured for service {}, inheriting system network behavior",
-            service_id
-        );
-        builder
-    };
-
-    final_builder
-        .build()
-        .map_err(|e| format!("[proxy_config] Failed to build HTTP client: {}", e))
-}
-
 pub fn build_blocking_client_with_proxy_for_provider(
     builder: reqwest::blocking::ClientBuilder,
     provider_id: &str,
@@ -603,36 +562,6 @@ mod tests {
 
         assert!(proxy_enabled_for_provider(&settings, "codex-sub"));
         assert!(!proxy_enabled_for_provider(&settings, "anthropic-sub"));
-    }
-
-    #[test]
-    fn test_custom_scope_excludes_first_party_service_owner() {
-        let settings = ProxySettings {
-            enabled: true,
-            protocol: None,
-            host: None,
-            port: None,
-            scope: Some(ProxyScopeSettings::Custom {
-                provider_ids: vec!["codex-sub".to_string()],
-            }),
-        };
-
-        assert!(!proxy_enabled_for_provider(&settings, "myagents-space"));
-    }
-
-    #[test]
-    fn test_custom_scope_can_include_first_party_service_owner() {
-        let settings = ProxySettings {
-            enabled: true,
-            protocol: None,
-            host: None,
-            port: None,
-            scope: Some(ProxyScopeSettings::Custom {
-                provider_ids: vec!["myagents-space".to_string()],
-            }),
-        };
-
-        assert!(proxy_enabled_for_provider(&settings, "myagents-space"));
     }
 
     #[test]
