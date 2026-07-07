@@ -36,6 +36,17 @@ Phase 2 为本地验证和自动化测试新增了显式 mock mode：
 | Renderer UI  | `src/renderer/pages/Space.tsx` + `src/renderer/pages/space/*` | Space shell 与 Issues / Skills / Agents 三个 workspace，登录轮询、创建/评论/Goal 订阅、Skill 安装、本地缓存                                                                                                                                                                                                                        |
 | CLI          | `src/cli/myagents.ts` + Management API                        | Agent 可调用的 Space issue list/view/comment/claim/ignore/complete/cancel、claim local-task 与 attachment download 操作；`space issue claim --create-attached` 负责编排 claim -> attached Task -> local task ref，`space issue complete --taskId ... --body-file ...` 负责编排 result comment -> cloud complete -> local task done |
 
+## Cloud Worker 容量与一致性不变量
+
+`MyAgents_space` 是 Cloud Space 的服务端 counterpart；桌面端只消费它暴露的 API，不在客户端重建服务端策略。
+
+- D1 访问统一走 `src/services/db.ts::db(...)` / `createPrimaryDb(...)` facade。请求路径使用 D1 Sessions API 维护 bookmark，并通过 `x-d1-bookmark` header 回传；`first/all/raw` 只对瞬态读错误做一次短重试，`run/batch` 写路径不做自动重试，避免重复写入。
+- Worker `wrangler.jsonc` 开启 Smart Placement、Observability、Rate Limiting binding 与 scheduled prune。`src/services/prune.ts` 定期清理已结束的 `issue_deliveries` 以及历史 `space_events` / `issue_updates`；保留期与批大小由 `SPACE_DELIVERY_RETENTION_DAYS`、`SPACE_EVENT_RETENTION_DAYS`、`SPACE_PRUNE_BATCH_SIZE`、`SPACE_PRUNE_MAX_BATCHES` 控制。
+- delivery fanout/backfill 只能先用固定查询选出订阅/Issue，再由 JS 生成 delivery id 后 batch `INSERT OR IGNORE`。不要为了每个订阅或每个 Issue 发散成 N 次查询，也不要把 delivery id 生成塞回 SQL 表达式。
+- `/api/registered-agents/me/deliveries` 是读路径：根据 token 识别 registered agent，读取 pending delivery，附带 `poll` 提示；它不更新 device `last_seen`，也不在 poll 中写入心跳。
+- `src/services/pollPolicy.ts` 是服务端 poll 策略数字的唯一 owner。客户端传 `emptyStreak`，服务端根据 returned count、空轮询次数、active claim 与可选 `SPACE_POLL_*` 环境变量返回 `poll.nextAfterSeconds` / `reason`。客户端只负责 clamp、jitter、错误退避与执行，不复制策略阈值。
+- active claim 快路径依赖 `issue_claims(actor_type, actor_id, status)` 索引；如果 claim 查询语义变化，必须同步检查迁移与 poll policy。
+
 ## Device / Registered Agent 身份模型
 
 Space 不创建第二套“云端 device id”。本地端点身份的唯一值是既有 `~/.myagents/device_id`：
@@ -111,13 +122,19 @@ Cloud Worker 用 `users.name_source` / `avatar_source` 区分 Google 默认资�
 
 ## IssueDelivery / Claim 处理
 
-Registered Agent 可从 Space 拉取 IssueDelivery，并将其作为轻量通知注入到本地 AI session。Issue claim 在产品语义上是 Issue 的唯一经办人/接手人，不是一个带 `active/completed/cancelled` 生命周期的锁；生命周期由 Issue 自身的 `state` 表达。
+Registered Agent 可从 Space 拉取 IssueDelivery，并将其作为轻量通知注入到本地 AI session。Issue claim 在产品语义上是 Issue 的唯一经办人/接手人，不是脱离 Issue 的独立任务或锁 owner；产品生命周期仍由 Issue 自身的 `state` 表达。`issue_claims.status` 是云端执行层的 operational 状态：`active` 用于唯一经办人、follow-up 投递和 poll 快路径，`completed` / `cancelled` 用于结束或释放该经办关系。
 
 1. `cmd_space_register_agent` 在云端创建 registered agent，并写入本地映射。
-2. `cmd_space_poll_deliveries` / `cmd_space_process_deliveries_once` 拉取待处理 delivery。
+2. Rust 启动时调用 `start_space_connector()` 创建进程内 connector。connector 按本地 runnable registered agents 维护每个 agent 的 `next_due_at`、`empty_streak`、`last_interval_secs`；`cmd_space_wake_connector` 只是唤醒 connector，`cmd_space_process_deliveries_once` 仅保留为手动强制处理入口。
 3. Rust 通过 session inbox 注入 `space.issue_delivery` metadata 和固定处理指令，写 `delivery_log.json`，再调用 `cmd_space_mark_delivery_delivered` 对云端确认。最终进入 AI session 的 user message 由 Rust 渲染为 `<system-reminder><myagents-space-issue><myagents-space-event ...>` 结构：`system-reminder` 隐藏内部 payload，`myagents-space-issue` 供前端展示 `Space issue` badge，`myagents-space-event` 内部拆成 `<issue-instruction>` / `<runtime-context>` / 一个或多个 `<issue>`。`<issue-instruction>` 是简版 skill，统一要求 Agent 使用 `myagents space issue` CLI；`<issue>` 只放事实数据，不重复 action 命令。`system-reminder` 的通用展示协议见 `system_reminder_protocol.md`。
 4. AI session 决定处理时调用 `myagents space issue claim <issueId> --deliveryId <deliveryId> --create-attached ...`。CLI 会先 claim，再创建 attached-session Task，再回写 `claim.localTaskId/localSessionId`；若本地 Task 创建或回写失败，CLI 立即调用 `cancel-claim` 让 Issue 回到 `todo`。
-5. AI session 完成执行时优先调用 `myagents space issue complete <issueId> --taskId <taskId> --body-file result.md --message "..."`，由 CLI 顺序完成 result comment、云端 Issue state 更新、本地 Task 状态更新。`complete` 不清空 claim；`done + claim` 表示该 Issue 已由该经办人处理完成。
+5. AI session 完成执行时优先调用 `myagents space issue complete <issueId> --taskId <taskId> --body-file result.md --message "..."`，由 CLI 顺序完成 result comment、云端 Issue state 更新、本地 Task 状态更新。`complete` 保留并标记 claim 为 `completed`；`done + completed claim` 表示该 Issue 已由该经办人处理完成。
+
+Delivery connector 的轮询节奏由云端提示 + 本地执行机制共同决定：
+
+- 每次 poll 带上当前 agent 的 `emptyStreak`。服务端返回 `poll.nextAfterSeconds` 与 `poll.reason`；老服务端缺少 `poll` 时客户端回退到 60s。
+- Rust 对服务端提示 clamp 到 30s-600s，并按 agent key 与 empty streak 加稳定 jitter；poll 失败时按上次间隔指数退避，最大 300s。
+- `cmd_space_wake_connector` 用于 Space 页面激活、registered agent 创建/更新等“可能有新工作”的边界。Renderer 不自己 poll/process delivery，也不持有 registered-agent token。
 
 Delivery 分两类：
 
