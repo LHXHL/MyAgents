@@ -906,7 +906,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
 
   if (spaceData.boot === "idle" || spaceData.boot === "loading") {
     return (
-      <div className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]">
+      <div data-ui-theme="space-mono" className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]">
         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
         {t("space.common.loadingTeam")}
       </div>
@@ -915,7 +915,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
 
   if (spaceData.boot === "error") {
     return (
-      <div className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]">
+      <div data-ui-theme="space-mono" className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]">
         <div className="text-center">
           <p>{spaceData.bootError ?? t("space.common.teamLoadFailed")}</p>
           <button
@@ -947,6 +947,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
 
   return (
     <div
+      data-ui-theme="space-mono"
       className="relative h-full overflow-hidden bg-[var(--paper)]"
       style={SPACE_BACKGROUND_STYLE}
     >

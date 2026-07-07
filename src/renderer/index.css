@@ -439,6 +439,36 @@
   color-scheme: dark;
 }
 
+/* Team Space brand pilot: keep the app's warm paper material while swapping
+   Space-only brand actions from warm brown to the logo's charcoal black. */
+[data-ui-theme="space-mono"] {
+  --accent: #1c1612;
+  --accent-warm: #1c1612;
+  --accent-warm-hover: #2e2825;
+  --accent-warm-subtle: rgb(28 22 18 / 0.08);
+  --accent-warm-muted: rgb(28 22 18 / 0.16);
+  --accent-warm-subtle-a0: rgb(28 22 18 / 0);
+  --hover-bg: rgb(28 22 18 / 0.07);
+  --button-primary-bg: #1c1612;
+  --button-primary-bg-hover: #2e2825;
+  --button-primary-text: #ffffff;
+  --focus-border: #1c1612;
+}
+
+.dark [data-ui-theme="space-mono"] {
+  --accent: #e4dcd4;
+  --accent-warm: #e4dcd4;
+  --accent-warm-hover: #ffffff;
+  --accent-warm-subtle: rgb(228 220 212 / 0.12);
+  --accent-warm-muted: rgb(228 220 212 / 0.20);
+  --accent-warm-subtle-a0: rgb(228 220 212 / 0);
+  --hover-bg: rgb(228 220 212 / 0.10);
+  --button-primary-bg: #e4dcd4;
+  --button-primary-bg-hover: #ffffff;
+  --button-primary-text: #1a1614;
+  --focus-border: #e4dcd4;
+}
+
 /* Viewport-locked app: prevent document-level scrolling entirely.
    All scrolling is handled by inner containers (MessageList, panels, etc.). */
 html,

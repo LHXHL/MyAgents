@@ -67,6 +67,7 @@ describe('space issue helpers', () => {
     expect(ownerOptions.map((option) => option.value)).toEqual([
       'open',
       'todo',
+      'doing',
       'done',
       'closed',
     ]);

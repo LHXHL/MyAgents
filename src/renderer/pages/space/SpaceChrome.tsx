@@ -19,7 +19,7 @@ function joinPolicyLabel(policy: string | null | undefined): string {
 export function SpaceLogin({ authBusy, authFlow, onLogin }: { authBusy: boolean; authFlow: { token: string; expiresAt: number } | null; onLogin: () => void }) {
   const { t } = useTranslation('app');
   return (
-    <div className="relative flex h-full items-center justify-center overflow-hidden bg-[var(--paper)] px-6">
+    <div data-ui-theme="space-mono" className="relative flex h-full items-center justify-center overflow-hidden bg-[var(--paper)] px-6">
       <div aria-hidden className="pointer-events-none absolute inset-0 opacity-40" style={PAPER_GRID_STYLE} />
       <div className="relative z-10 w-full max-w-md rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-6 shadow-md">
         <div className="mb-6 flex items-center gap-3">

@@ -129,13 +129,11 @@ export function getIssueStatusOptions(args: {
 }): Array<{ value: string; label: string; kind: 'set-status' | 'close-own' }> {
   if (!args.session || !args.issue) return [];
   if (isSpaceAdmin(args.session)) {
-    return ISSUE_STATUSES
-      .filter((state) => state !== 'doing')
-      .map((state) => ({
-        value: state,
-        label: issueStatusLabel(state, args.t),
-        kind: 'set-status',
-      }));
+    return ISSUE_STATUSES.map((state) => ({
+      value: state,
+      label: issueStatusLabel(state, args.t),
+      kind: 'set-status',
+    }));
   }
   if (canCloseOwnIssue(args.session, args.issue)) {
     return [{

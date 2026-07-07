@@ -48,3 +48,11 @@ export function statusPillClass(status: string): string {
   if (isClosedIssue(status)) return 'bg-[var(--paper-inset)] text-[var(--ink-muted)]';
   return 'bg-[var(--success-bg)] text-[var(--success)]';
 }
+
+export function statusTextClass(status: string): string {
+  if (status === 'doing') return 'text-[var(--warning)]';
+  if (status === 'todo') return 'text-[var(--accent-warm)]';
+  if (status === 'done') return 'text-[var(--success)]';
+  if (isClosedIssue(status)) return 'text-[var(--ink-muted)]';
+  return 'text-[var(--success)]';
+}

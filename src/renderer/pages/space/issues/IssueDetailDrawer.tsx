@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, ChevronLeft, ChevronRight, Copy, Download, FileText, Loader2, MessageSquare, Paperclip, Pencil, Save, Send, Target, UploadCloud, X } from 'lucide-react';
+import { Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, FileText, Loader2, MessageSquare, Paperclip, Pencil, Save, Send, Target, UploadCloud, X } from 'lucide-react';
 
 import { spaceErrorMessage, type SpaceAttachment, type SpaceSession } from '@/api/spaceCloud';
 import Markdown from '@/components/Markdown';
@@ -25,7 +25,7 @@ import {
   type SpaceActions,
   type SpaceIssueDetailState,
 } from '@/pages/space/spaceStore';
-import { formatBytes, formatTime, statusPillClass } from '@/pages/space/spaceUi';
+import { formatBytes, formatTime, statusPillClass, statusTextClass } from '@/pages/space/spaceUi';
 
 function basename(path: string): string {
   return path.split(/[/\\]/).pop() || path;
@@ -361,18 +361,28 @@ export function IssueDetailDrawer({
                       )}
                       {statusMenuOpen && statusOptions.length > 0 && (
                         <div className="absolute left-0 top-full z-30 mt-2 w-48 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-1.5 shadow-lg">
-                          {statusOptions.map((option) => (
-                            <button
-                              key={`${option.kind}:${option.value}`}
-                              type="button"
-                              onClick={() => void changeStatus(option)}
-                              className={`flex h-9 w-full items-center justify-between rounded-lg px-2.5 text-left text-sm font-semibold transition-colors hover:bg-[var(--paper-inset)] ${
-                                detail.issue.state === option.value ? 'text-[var(--accent-warm)]' : 'text-[var(--ink-secondary)]'
-                              }`}
-                            >
-                              {option.label}
-                            </button>
-                          ))}
+                          {statusOptions.map((option) => {
+                            const selected = detail.issue.state === option.value;
+                            return (
+                              <button
+                                key={`${option.kind}:${option.value}`}
+                                type="button"
+                                onClick={() => {
+                                  if (selected) {
+                                    setStatusMenuOpen(false);
+                                    return;
+                                  }
+                                  void changeStatus(option);
+                                }}
+                                className={`flex h-9 w-full items-center justify-between gap-3 rounded-lg px-2.5 text-left text-sm font-semibold transition-colors hover:bg-[var(--paper-inset)] ${
+                                  selected ? 'bg-[var(--paper-inset)]/70' : ''
+                                }`}
+                              >
+                                <span className={statusTextClass(option.value)}>{option.label}</span>
+                                {selected ? <Check className={`h-4 w-4 shrink-0 ${statusTextClass(option.value)}`} /> : null}
+                              </button>
+                            );
+                          })}
                         </div>
                       )}
                     </span>
