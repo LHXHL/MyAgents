@@ -2905,14 +2905,21 @@ async fn process_agent_deliveries(
                 &subscription_pending,
             )
             .await?;
+            record_injected_space_deliveries(
+                delivery_log_path,
+                base_url,
+                agent,
+                &subscription_pending,
+                &session_id,
+                &message_id,
+            )?;
             for delivery_item in &subscription_pending {
-                record_delivered_space_delivery(
+                mark_recorded_space_delivery_delivered(
                     delivery_log_path,
                     base_url,
                     agent,
                     delivery_item,
                     &session_id,
-                    &message_id,
                 )
                 .await?;
                 processed += 1;
@@ -3033,9 +3040,30 @@ async fn record_delivered_space_delivery(
     session_id: &str,
     message_id: &str,
 ) -> Result<(), String> {
+    record_injected_space_deliveries(
+        delivery_log_path,
+        base_url,
+        agent,
+        std::slice::from_ref(delivery),
+        session_id,
+        message_id,
+    )?;
+    mark_recorded_space_delivery_delivered(delivery_log_path, base_url, agent, delivery, session_id)
+        .await
+}
+
+fn record_injected_space_deliveries(
+    delivery_log_path: &Path,
+    base_url: &str,
+    agent: &LocalRegisteredAgent,
+    deliveries: &[PendingSpaceDelivery],
+    session_id: &str,
+    message_id: &str,
+) -> Result<(), String> {
     let now = chrono::Utc::now().to_rfc3339();
-    upsert_delivery_log_at_path(
-        SpaceDeliveryLogEntry {
+    let entries = deliveries
+        .iter()
+        .map(|delivery| SpaceDeliveryLogEntry {
             delivery_id: delivery.delivery_id.clone(),
             base_url: base_url.to_string(),
             registered_agent_id: agent.id.clone(),
@@ -3044,10 +3072,19 @@ async fn record_delivered_space_delivery(
             message_id: message_id.to_string(),
             delivered_at: None,
             created_at: now.clone(),
-            updated_at: now,
-        },
-        delivery_log_path.to_path_buf(),
-    )?;
+            updated_at: now.clone(),
+        })
+        .collect::<Vec<_>>();
+    upsert_delivery_logs_at_path(entries, delivery_log_path.to_path_buf())
+}
+
+async fn mark_recorded_space_delivery_delivered(
+    delivery_log_path: &Path,
+    base_url: &str,
+    agent: &LocalRegisteredAgent,
+    delivery: &PendingSpaceDelivery,
+    session_id: &str,
+) -> Result<(), String> {
     mark_delivery_delivered(base_url, agent, &delivery.delivery_id, session_id).await?;
     update_delivery_log_delivered_at_path(
         delivery_log_path.to_path_buf(),
@@ -4533,15 +4570,20 @@ fn find_delivery_log_in_path(
         }))
 }
 
-fn upsert_delivery_log_at_path(entry: SpaceDeliveryLogEntry, path: PathBuf) -> Result<(), String> {
+fn upsert_delivery_logs_at_path(
+    entries: Vec<SpaceDeliveryLogEntry>,
+    path: PathBuf,
+) -> Result<(), String> {
     let lock_path = path.clone();
     with_json_file_lock(&lock_path, move || {
         let mut file = read_delivery_log_unlocked(&path)?;
         file.items.retain(|existing| {
-            existing.delivery_id != entry.delivery_id
-                || !space_base_urls_equal(&existing.base_url, &entry.base_url)
+            !entries.iter().any(|entry| {
+                existing.delivery_id == entry.delivery_id
+                    && space_base_urls_equal(&existing.base_url, &entry.base_url)
+            })
         });
-        file.items.push(entry);
+        file.items.extend(entries);
         write_private_json_unlocked(&path, &file)
     })
 }
@@ -5713,6 +5755,51 @@ mod tests {
             update_summary: None,
             notification_version: 1,
         }
+    }
+
+    #[test]
+    fn record_injected_space_deliveries_logs_whole_batch_before_cloud_marks() {
+        let dir = tempfile::tempdir().expect("delivery log tempdir");
+        let log_path = dir.path().join("delivery_log.json");
+        let agent = test_registered_agent(Some("usr_current"), Some("device_current"));
+        let deliveries = vec![
+            test_pending_delivery("delivery_1", "issue_1", 113, "First"),
+            test_pending_delivery("delivery_2", "issue_2", 114, "Second"),
+        ];
+
+        record_injected_space_deliveries(
+            &log_path,
+            "https://space.myagents.test",
+            &agent,
+            &deliveries,
+            "session_shared",
+            "message_batch",
+        )
+        .expect("batch log write should succeed");
+
+        let log = read_delivery_log_from_path(&log_path).expect("delivery log should read");
+        assert_eq!(log.items.len(), 2);
+        assert!(log.items.iter().all(|entry| {
+            entry.session_id == "session_shared"
+                && entry.message_id == "message_batch"
+                && entry.delivered_at.is_none()
+        }));
+
+        update_delivery_log_delivered_at_path(
+            log_path.clone(),
+            "https://space.myagents.test",
+            "delivery_1",
+        )
+        .expect("delivered marker should update");
+        let log = read_delivery_log_from_path(&log_path).expect("delivery log should read");
+        assert!(log
+            .items
+            .iter()
+            .any(|entry| entry.delivery_id == "delivery_1" && entry.delivered_at.is_some()));
+        assert!(log
+            .items
+            .iter()
+            .any(|entry| entry.delivery_id == "delivery_2" && entry.delivered_at.is_none()));
     }
 
     fn issue_block<'a>(prompt: &'a str, issue_id: &str) -> &'a str {

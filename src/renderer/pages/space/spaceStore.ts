@@ -368,10 +368,11 @@ function setState(patch: Partial<StoreState>): void {
   emit();
 }
 
-function applyServiceBaseUrl(serviceBaseUrl: string | null): void {
+function applyServiceBaseUrl(serviceBaseUrl: string | null, preserveBootSeq?: number): void {
   if (!serviceBaseUrl) return;
   if (state.serviceBaseUrl === serviceBaseUrl) return;
   if (state.serviceBaseUrl) {
+    invalidatePendingRequests({ preserveBootSeq });
     state = { ...initialState(), boot: state.boot, serviceBaseUrl };
     emit();
     return;
@@ -449,10 +450,15 @@ function runRequest(
   return promise;
 }
 
-function invalidatePendingRequests(): void {
+function invalidatePendingRequests(options: { preserveBootSeq?: number } = {}): void {
   seq += 1;
-  bootPromise = null;
+  if (options.preserveBootSeq === undefined) {
+    bootPromise = null;
+  }
   latestSeqByKey.clear();
+  if (options.preserveBootSeq !== undefined) {
+    latestSeqByKey.set("boot", options.preserveBootSeq);
+  }
   inFlightRequests.clear();
 }
 
@@ -806,10 +812,10 @@ export const actions: SpaceActions = {
       try {
         const capability = await spaceGetCapability();
         if (!isLatest("boot", requestSeq)) return;
-        applyServiceBaseUrl(capability.baseUrl?.trim() || null);
+        applyServiceBaseUrl(capability.baseUrl?.trim() || null, requestSeq);
         const session = await spaceGetSession();
         if (!isLatest("boot", requestSeq)) return;
-        applyServiceBaseUrl(session?.baseUrl?.trim() || null);
+        applyServiceBaseUrl(session?.baseUrl?.trim() || null, requestSeq);
         if (!session) {
           setSpaceAnalyticsContext(null);
           setState({

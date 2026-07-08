@@ -6393,6 +6393,9 @@ function recoverInvalidResumeAnchorError(rawError: string): boolean {
   const replayItem = buildResumeAnchorReplayItem(getCurrentTurnSourceItem());
   abortPersistentSession({ notifyPendingRequests: false });
   if (replayItem) {
+    if (replayItem.injectedTurnId) {
+      setCurrentTurnInjectedTurnId(undefined);
+    }
     unshiftMessage(replayItem);
     console.log(`[agent] Requeued current turn ${replayItem.id} after SDK resumeSessionAt result recovery`);
   } else {

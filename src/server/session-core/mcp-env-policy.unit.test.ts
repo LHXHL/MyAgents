@@ -18,37 +18,37 @@ describe('mcp-env-policy', () => {
     expect(env.no_proxy).toBe(MCP_LOCALHOST_NO_PROXY_VAL);
   });
 
-  it('lets per-server NO_PROXY override the default and mirrors the other casing', () => {
+  it('merges per-server NO_PROXY with mandatory localhost protection and mirrors the other casing', () => {
     const env = buildMcpSubprocessEnv({
       NO_PROXY: 'localhost,127.0.0.1,[::1]',
       no_proxy: 'localhost,127.0.0.1,[::1]',
     }, {
-      NO_PROXY: 'localhost,127.0.0.1,::1',
+      NO_PROXY: '.corp.local',
     });
 
-    expect(env.NO_PROXY).toBe('localhost,127.0.0.1,::1');
-    expect(env.no_proxy).toBe('localhost,127.0.0.1,::1');
+    expect(env.NO_PROXY).toBe(`${MCP_LOCALHOST_NO_PROXY_VAL},.corp.local`);
+    expect(env.no_proxy).toBe(`${MCP_LOCALHOST_NO_PROXY_VAL},.corp.local`);
   });
 
-  it('preserves explicit per-server values for both casings when both are configured', () => {
+  it('preserves explicit per-server values for both casings while keeping localhost protection', () => {
     const env = buildMcpSubprocessEnv({}, {
       NO_PROXY: 'localhost,127.0.0.1,::1',
       no_proxy: 'localhost,127.0.0.1,::1,.corp.local',
       MINERU_API_TOKEN: 'token',
     });
 
-    expect(env.NO_PROXY).toBe('localhost,127.0.0.1,::1');
-    expect(env.no_proxy).toBe('localhost,127.0.0.1,::1,.corp.local');
+    expect(env.NO_PROXY).toBe(MCP_LOCALHOST_NO_PROXY_VAL);
+    expect(env.no_proxy).toBe(`${MCP_LOCALHOST_NO_PROXY_VAL},.corp.local`);
     expect(env.MINERU_API_TOKEN).toBe('token');
   });
 
   it('mirrors a lowercase-only per-server no_proxy override to uppercase', () => {
     const env = buildMcpSubprocessEnv({}, {
-      no_proxy: 'localhost,127.0.0.1,::1',
+      no_proxy: '.corp.local',
     });
 
-    expect(env.NO_PROXY).toBe('localhost,127.0.0.1,::1');
-    expect(env.no_proxy).toBe('localhost,127.0.0.1,::1');
+    expect(env.NO_PROXY).toBe(`${MCP_LOCALHOST_NO_PROXY_VAL},.corp.local`);
+    expect(env.no_proxy).toBe(`${MCP_LOCALHOST_NO_PROXY_VAL},.corp.local`);
   });
 
   it('treats empty per-server NO_PROXY values as absent to keep localhost protection', () => {

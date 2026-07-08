@@ -393,7 +393,6 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       if (isSdkMissingResumeMessageError(rawError) && deps.recoverInvalidResumeAnchorError(rawError)) {
         console.warn('[agent] SDK result rejected resumeSessionAt anchor; cleared stale anchor and restarting without surfacing user error');
         deps.clearApiRetryStatus();
-        recordInjectedTurnOutcome('error', rawError);
         commonTerminalCleanup('error');
         return;
       }

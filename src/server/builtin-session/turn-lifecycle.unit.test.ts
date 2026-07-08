@@ -2,8 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendMessage, resetTranscriptForTest, transcriptState } from './transcript';
 import {
   markCurrentTurnHasOutput,
+  consumeInjectedTurnOutcome,
   pushPendingRequest,
   resetTurnForTest,
+  setCurrentTurnInjectedTurnId,
   setCurrentTurnCompactResult,
   setCurrentTurnStartTime,
   setCurrentTurnToolCount,
@@ -224,6 +226,23 @@ describe('turn-lifecycle owner', () => {
     expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
     expect(deps.persistTranscript).not.toHaveBeenCalled();
     expect(deps.abortTurnAbort).toHaveBeenCalledWith('session-1', 'error');
+  });
+
+  it('does not finalize an injected turn outcome for recoverable resume anchor errors', () => {
+    const { deps } = makeDeps({
+      recoverInvalidResumeAnchorError: vi.fn(() => true),
+    });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    setCurrentTurnInjectedTurnId('injected-replay');
+
+    lifecycle.handleSdkResult(makeResult({
+      subtype: 'error_during_execution',
+      is_error: true,
+      result: 'No message found with message.uuid of: 75c9051f-a071-4243-bc25-92cfc396e2db',
+      terminal_reason: 'error',
+    }));
+
+    expect(consumeInjectedTurnOutcome('injected-replay')).toBeUndefined();
   });
 
   it('does not title a completed turn when turn-end persistence fails', async () => {

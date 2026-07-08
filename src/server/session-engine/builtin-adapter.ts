@@ -68,6 +68,26 @@ import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox
 import { shrinkReplayContentForClient } from '../utils/session-message-preview';
 import type { SessionMessage } from '../types/session';
 
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function waitForInjectedTurnOutcome(
+  injectedTurnId: string,
+  timeoutMs: number,
+  pollMs: number,
+): Promise<ReturnType<typeof consumeInjectedTurnOutcome>> {
+  const deadline = Date.now() + Math.max(0, timeoutMs);
+  while (Date.now() <= deadline) {
+    const outcome = consumeInjectedTurnOutcome(injectedTurnId);
+    if (outcome) return outcome;
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) break;
+    await delay(Math.min(pollMs, remaining));
+  }
+  return undefined;
+}
+
 function providerEnvForRouteRequest(request: {
   providerRoute?: ProviderRoute;
   providerEnv?: ProviderEnv | 'subscription';
@@ -403,6 +423,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       if (enqueueResult.error) {
         return { success: false, enqueued: false, error: enqueueResult.error, status: 503 };
       }
+      const waitStartedAt = Date.now();
       const completed = await waitForSessionIdle(request.timeoutMs, request.pollMs ?? 1000);
       if (!completed) {
         let retainForLateTerminal = true;
@@ -413,7 +434,12 @@ export function createBuiltinSessionEngine(): SessionEngine {
         discardInjectedTurnOutcome(injectedTurnId, { retainForLateTerminal });
         return { ...decideBuiltinInjectedTurnResult({ idleCompleted: false }), enqueued: true };
       }
-      const outcome = consumeInjectedTurnOutcome(injectedTurnId);
+      const outcome = consumeInjectedTurnOutcome(injectedTurnId)
+        ?? await waitForInjectedTurnOutcome(
+          injectedTurnId,
+          Math.max(0, request.timeoutMs - (Date.now() - waitStartedAt)),
+          request.pollMs ?? 1000,
+        );
       return { ...decideBuiltinInjectedTurnResult({ idleCompleted: true, outcome }), enqueued: true };
     },
 

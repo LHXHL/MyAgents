@@ -13,6 +13,24 @@ function nonEmpty(value: string | undefined): string | undefined {
   return value && value.trim().length > 0 ? value : undefined;
 }
 
+function mergeNoProxyWithLocalhost(value: string | undefined): string {
+  const entries = [
+    ...MCP_LOCALHOST_NO_PROXY_VAL.split(','),
+    ...(value?.split(',') ?? []),
+  ]
+    .map(item => item.trim())
+    .filter(Boolean);
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  for (const entry of entries) {
+    const key = entry.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(entry);
+  }
+  return merged.join(',');
+}
+
 export function buildMcpSubprocessEnv(
   parentEnv: NodeJS.ProcessEnv,
   serverEnv: Record<string, string> | undefined,
@@ -30,16 +48,16 @@ export function buildMcpSubprocessEnv(
   const userNoProxyLower = nonEmpty(serverEnv?.no_proxy);
   const explicitNoProxy = userNoProxy ?? userNoProxyLower;
 
-  env.NO_PROXY = explicitNoProxy ?? MCP_LOCALHOST_NO_PROXY_VAL;
-  env.no_proxy = userNoProxyLower ?? explicitNoProxy ?? MCP_LOCALHOST_NO_PROXY_VAL;
+  env.NO_PROXY = mergeNoProxyWithLocalhost(explicitNoProxy);
+  env.no_proxy = mergeNoProxyWithLocalhost(userNoProxyLower ?? explicitNoProxy);
 
   if (serverEnv && Object.keys(serverEnv).length > 0) {
     Object.assign(env, serverEnv);
   }
 
   if (explicitNoProxy !== undefined) {
-    env.NO_PROXY = userNoProxy ?? explicitNoProxy;
-    env.no_proxy = userNoProxyLower ?? explicitNoProxy;
+    env.NO_PROXY = mergeNoProxyWithLocalhost(userNoProxy ?? explicitNoProxy);
+    env.no_proxy = mergeNoProxyWithLocalhost(userNoProxyLower ?? explicitNoProxy);
   } else {
     env.NO_PROXY = MCP_LOCALHOST_NO_PROXY_VAL;
     env.no_proxy = MCP_LOCALHOST_NO_PROXY_VAL;

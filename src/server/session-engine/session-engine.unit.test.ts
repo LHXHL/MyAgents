@@ -21,7 +21,7 @@ const mocks = vi.hoisted(() => {
       assistantMessagePresent: boolean;
       text: string;
       error?: string;
-    }>(() => ({
+    } | undefined>(() => ({
       status: 'complete' as const,
       assistantMessagePresent: true,
       text: 'builtin answer',
@@ -560,6 +560,33 @@ describe('session-engine selector and adapters', () => {
     const injectedTurnId = mocks.consumeInjectedTurnOutcome.mock.calls[0][0];
     expect(typeof injectedTurnId).toBe('string');
     expect(mocks.enqueueUserMessage.mock.calls[0][11]).toEqual({ injectedTurnId });
+  });
+
+  it('waits for a recovered builtin injected turn outcome after an early idle signal', async () => {
+    mocks.consumeInjectedTurnOutcome
+      .mockReturnValueOnce(undefined)
+      .mockReturnValueOnce({
+        status: 'complete',
+        assistantMessagePresent: true,
+        text: 'replayed answer',
+      });
+
+    const result = await getSessionEngine().runInjectedTurn({
+      prompt: 'space delivery',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+      timeoutMs: 1000,
+      pollMs: 1,
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      enqueued: true,
+      text: 'replayed answer',
+    });
+    expect(mocks.consumeInjectedTurnOutcome).toHaveBeenCalledTimes(2);
   });
 
   it('propagates turn-local injected errors without reading stale assistant text', async () => {

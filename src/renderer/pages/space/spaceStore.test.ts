@@ -333,6 +333,49 @@ describe('spaceStore boot', () => {
     expect(snapshot.skillDetails).toEqual({});
   });
 
+  it('invalidates in-flight requests when the service origin changes with the same slug', async () => {
+    __setSpaceStoreStateForTest({
+      boot: 'ready',
+      serviceBaseUrl: 'https://space.myagents.test',
+      session: fakeSession,
+      spaceId: 'official',
+    });
+    const pendingIssues = deferred<{
+      items: SpaceIssue[];
+      hasMore: boolean;
+      nextCursor: null;
+    }>();
+    apiMocks.spaceListIssues.mockReturnValueOnce(pendingIssues.promise);
+
+    const staleRefresh = actions.refreshIssues({ limit: 50 }, { force: true });
+    const stagingSession: SpaceSession = {
+      ...fakeSession,
+      baseUrl: 'https://space-staging.myagents.test',
+    };
+    apiMocks.spaceGetCapability.mockResolvedValueOnce({
+      available: true,
+      baseUrl: stagingSession.baseUrl,
+      publicClientId: null,
+      reason: null,
+      environments: ['production', 'staging'],
+      activeEnvironment: 'staging',
+    });
+    apiMocks.spaceGetSession.mockResolvedValueOnce(stagingSession);
+    apiMocks.spaceGetOfficial.mockResolvedValueOnce({
+      space: stagingSession.space,
+      membership: stagingSession.membership,
+      goals: [],
+    });
+
+    await actions.ensureBootstrapped({ force: true, silent: true });
+    pendingIssues.resolve({ items: [fakeIssue], hasMore: false, nextCursor: null });
+    await staleRefresh;
+
+    const snapshot = getSnapshot();
+    expect(snapshot.serviceBaseUrl).toBe(stagingSession.baseUrl);
+    expect(snapshot.issuesByKey).toEqual({});
+  });
+
   it('tracks explicit space switches without emitting a second open event', async () => {
     const teamSpace = {
       ...fakeSession.space,
