@@ -27,6 +27,21 @@ pub(super) fn check_end_conditions_static(task: &CronTask) -> bool {
     false
 }
 
+fn is_legacy_builtin_managed_memory_runtime_override(
+    managed_kind: Option<&str>,
+    runtime: Option<&str>,
+    provider_id: Option<&str>,
+    model: Option<&str>,
+) -> bool {
+    matches!(
+        managed_kind,
+        Some(crate::task::MANAGED_KIND_MEMORY_GARDENER)
+            | Some(crate::task::MANAGED_KIND_MEMORY_MOLT)
+    ) && runtime == Some("builtin")
+        && provider_id.is_none()
+        && model.is_none()
+}
+
 /// Rotate the session id for a `NewSession` cron task ahead of the next execution.
 ///
 /// Keeps the Rust `ManagedSidecar` registry key and Bun's actual session id in
@@ -357,6 +372,30 @@ pub(super) async fn execute_task_directly(
         task.prompt.clone()
     };
 
+    let mut payload_runtime = task.runtime.clone();
+    let mut payload_runtime_config = task.runtime_config.clone();
+    if is_legacy_builtin_managed_memory_runtime_override(
+        task.managed_kind.as_deref(),
+        task.runtime.as_deref(),
+        task.provider_id.as_deref(),
+        task.model.as_deref(),
+    ) {
+        let agent_identity =
+            crate::sidecar::runtime_identity::resolve_agent_runtime_identity_from_config(
+                std::path::Path::new(&task.workspace_path),
+            );
+        if agent_identity.as_ref().is_some_and(|identity| {
+            identity.runtime == "codex" && identity.runtime_source_label() == "managed-provider"
+        }) {
+            ulog_warn!(
+                "[CronTask] task {} is a legacy managed memory task with runtime=builtin; dropping the stale runtime override so Agent managed Codex config can resolve",
+                task.id
+            );
+            payload_runtime = None;
+            payload_runtime_config = None;
+        }
+    }
+
     let payload = CronExecutePayload {
         task_id: task.id.clone(),
         prompt: prompt_to_send,
@@ -384,8 +423,8 @@ pub(super) async fn execute_task_directly(
         // either honor the snapshot path (FollowAgent / legacy) or
         // short-circuit to task-owned values (Subscription / Explicit).
         provider_intent: Some(task.provider_intent),
-        runtime: task.runtime.clone(),
-        runtime_config: task.runtime_config.clone(),
+        runtime: payload_runtime,
+        runtime_config: payload_runtime_config,
         mcp_enabled_servers: task.mcp_enabled_servers.clone(),
         run_mode: Some(run_mode_str.to_string()),
         interval_minutes: Some(task.interval_minutes),
@@ -649,4 +688,44 @@ fn send_task_notification(
         navigation,
         Some(badge_increment),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_builtin_runtime_override_repair_is_limited_to_system_memory_tasks() {
+        assert!(is_legacy_builtin_managed_memory_runtime_override(
+            Some(crate::task::MANAGED_KIND_MEMORY_GARDENER),
+            Some("builtin"),
+            None,
+            None,
+        ));
+        assert!(is_legacy_builtin_managed_memory_runtime_override(
+            Some(crate::task::MANAGED_KIND_MEMORY_MOLT),
+            Some("builtin"),
+            None,
+            None,
+        ));
+
+        assert!(!is_legacy_builtin_managed_memory_runtime_override(
+            Some(crate::task::MANAGED_KIND_MEMORY_GARDENER),
+            Some("codex"),
+            None,
+            None,
+        ));
+        assert!(!is_legacy_builtin_managed_memory_runtime_override(
+            Some(crate::task::MANAGED_KIND_MEMORY_GARDENER),
+            Some("builtin"),
+            Some("anthropic"),
+            None,
+        ));
+        assert!(!is_legacy_builtin_managed_memory_runtime_override(
+            Some("user-task"),
+            Some("builtin"),
+            None,
+            None,
+        ));
+    }
 }

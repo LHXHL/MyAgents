@@ -167,6 +167,39 @@ describe('snapshotForOwnedSession — reasoning effort capture (#324)', () => {
     expect(systemCliSnap.model).toBeUndefined();
   });
 
+  it('explicit managed-provider runtime override preserves Managed Codex provider identity', () => {
+    const snap = snapshotForOwnedSession(makeAgent({
+      providerId: 'codex-sub',
+      model: 'gpt-5.5',
+      runtime: 'builtin',
+      runtimeConfig: {
+        source: 'system-cli',
+        model: 'stale-system-codex-model',
+        permissionMode: 'no-restrictions',
+      },
+    }), {
+      runtimeOverride: 'codex',
+      runtimeSourceOverride: 'managed-provider',
+      managedCodexProviderReady: true,
+    });
+
+    expect(snap).toMatchObject({
+      runtime: 'codex',
+      runtimeSource: 'managed-provider',
+      providerId: 'codex-sub',
+      model: 'gpt-5.5',
+      providerExecutionIdentity: {
+        kind: 'runtime-backed-provider',
+        providerId: 'codex-sub',
+        runtime: 'codex',
+        runtimeSource: 'managed-provider',
+        model: 'gpt-5.5',
+      },
+    });
+    expect(snap.providerRoute).toBeUndefined();
+    expect(snap.providerEnvJson).toBeUndefined();
+  });
+
   it('Managed Codex IM snapshot freezes only the runtime identity', () => {
     expect(snapshotForImSession(makeAgent({
       providerId: 'codex-sub',

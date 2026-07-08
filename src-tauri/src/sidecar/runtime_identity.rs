@@ -51,7 +51,7 @@ impl RuntimeIdentity {
 /// matching the given workspace path. Returns None for "builtin" (the default).
 /// Used for NEW sessions (the agent config decides the default runtime for new conversations)
 /// and for IM/Agent sidecar paths that don't have a session_id yet.
-pub(super) fn resolve_agent_runtime_identity_from_config(
+pub(crate) fn resolve_agent_runtime_identity_from_config(
     workspace_path: &std::path::Path,
 ) -> Option<RuntimeIdentity> {
     let config_path = dirs::home_dir()?.join(".myagents").join("config.json");

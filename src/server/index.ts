@@ -3058,10 +3058,16 @@ async function main() {
           // freshness keeps "live-follow" semantics for cron without inventing a third
           // owner kind in resolveSessionConfig (PRD D4 footnote).
           const cronAgent = findAgentByWorkspacePath(agentDir) as AgentConfig | undefined;
-          const overrideRuntime = payload.runtime ?? getActiveRuntimeType();
+          const payloadRuntime = payload.runtime;
+          const overrideRuntime = payloadRuntime ?? getActiveRuntimeType();
+          const overrideRuntimeType = VALID_RUNTIMES.includes(overrideRuntime as RuntimeType)
+            ? overrideRuntime as RuntimeType
+            : 'builtin';
+          const overrideRuntimeSource = getRuntimeConfigSource(payload.runtimeConfig ?? null);
           const cronSnapshot: Partial<SessionMetadata> = cronAgent
             ? snapshotForOwnedSession(cronAgent, {
-                runtimeOverride: overrideRuntime,
+                ...(payloadRuntime ? { runtimeOverride: overrideRuntimeType } : {}),
+                ...(payloadRuntime && overrideRuntimeSource ? { runtimeSourceOverride: overrideRuntimeSource } : {}),
                 managedCodexProviderReady: managedCodexReady,
               })
             : { runtime: overrideRuntime };
@@ -3071,10 +3077,6 @@ async function main() {
           if (systemMaintenanceKind) {
             cronSnapshot.systemMaintenanceKind = systemMaintenanceKind;
           }
-          const overrideRuntimeType = VALID_RUNTIMES.includes(overrideRuntime as RuntimeType)
-            ? overrideRuntime as RuntimeType
-            : 'builtin';
-          const overrideRuntimeSource = getRuntimeConfigSource(payload.runtimeConfig ?? null);
           if (overrideRuntimeType !== 'builtin' && overrideRuntimeSource) {
             cronSnapshot.runtimeSource = overrideRuntimeSource;
           }

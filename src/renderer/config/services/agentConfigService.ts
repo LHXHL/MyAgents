@@ -3,6 +3,13 @@ import type { AppConfig, McpServerDefinition, Project, WorkspaceTemplate, Worksp
 import { getEffectiveModelAliases, isProjectArchived, PRESET_TEMPLATES } from '../types';
 import type { AgentConfig, ChannelConfig, ChannelOverrides } from '../../../shared/types/agent';
 import type { ImBotConfig } from '../../../shared/types/im';
+import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../../shared/config-types';
+import {
+  createRuntimeBackedProviderIdentity,
+  runtimeBackedProviderPermissionMode,
+  runtimeConfigForRuntimeBackedProvider,
+} from '../../../shared/providerExecution';
+import type { RuntimeConfig, RuntimeType } from '../../../shared/types/runtime';
 import { atomicModifyConfig, loadAppConfig } from './appConfigService';
 import { loadProjects } from './projectService';
 import { getAllMcpServersFromConfig } from './mcpService';
@@ -703,6 +710,34 @@ async function disableMemoryAutoUpdateTaskForAgent(
   });
 }
 
+export function projectMemoryEvolutionTaskRuntimeForAgent(
+  agent: Pick<AgentConfig, 'providerId' | 'model' | 'permissionMode' | 'runtime' | 'runtimeConfig'>,
+): { runtime?: RuntimeType; runtimeConfig?: RuntimeConfig } {
+  const model = typeof agent.model === 'string' ? agent.model.trim() : '';
+  if (agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID && model) {
+    const identity = createRuntimeBackedProviderIdentity({
+      providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
+      model,
+    });
+    const runtimeConfig = runtimeConfigForRuntimeBackedProvider(identity, agent.runtimeConfig);
+    const permissionMode = agent.runtimeConfig?.permissionMode
+      ?? runtimeBackedProviderPermissionMode(identity, agent.permissionMode);
+    return {
+      runtime: identity.runtime,
+      runtimeConfig: {
+        ...runtimeConfig,
+        ...(permissionMode ? { permissionMode } : {}),
+        ...(agent.runtimeConfig?.reasoningEffort ? { reasoningEffort: agent.runtimeConfig.reasoningEffort } : {}),
+      },
+    };
+  }
+
+  return {
+    runtime: agent.runtime,
+    runtimeConfig: agent.runtimeConfig,
+  };
+}
+
 export async function configureMemoryEvolutionTasksForAgent(
   agent: AgentConfig,
   workspaceId: string,
@@ -712,13 +747,14 @@ export async function configureMemoryEvolutionTasksForAgent(
   if (!isTauriEnvironment()) return;
 
   const { invoke } = await import('@tauri-apps/api/core');
+  const runtimeProjection = projectMemoryEvolutionTaskRuntimeForAgent(agent);
   await invoke('cmd_configure_memory_evolution_tasks', {
     request: {
       agentId: agent.id,
       workspaceId,
       workspacePath: agent.workspacePath,
-      runtime: agent.runtime,
-      runtimeConfig: agent.runtimeConfig,
+      runtime: runtimeProjection.runtime,
+      runtimeConfig: runtimeProjection.runtimeConfig,
       mcpEnabledServers: agent.mcpEnabledServers,
       memoryAutoUpdate: agent.memoryAutoUpdate,
       heartbeat: agent.heartbeat,
