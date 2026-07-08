@@ -2477,6 +2477,8 @@ async function main() {
             ...(result.queueId ? { queueId: result.queueId } : {}),
             ...(result.isInFlight !== undefined ? { isInFlight: result.isInFlight } : {}),
             ...(result.deliveryMode ? { deliveryMode: result.deliveryMode } : {}),
+            ...(result.canCancel !== undefined ? { canCancel: result.canCancel } : {}),
+            ...(result.canForceExecute !== undefined ? { canForceExecute: result.canForceExecute } : {}),
           });
         } catch (error) {
           return jsonResponse(

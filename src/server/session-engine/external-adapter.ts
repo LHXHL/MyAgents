@@ -272,6 +272,8 @@ export function createExternalSessionEngine(): SessionEngine {
         queueId: sent.queueId,
         isInFlight: sent.isInFlight,
         deliveryMode: sent.deliveryMode,
+        canCancel: sent.canCancel,
+        canForceExecute: sent.canForceExecute,
       };
     },
 

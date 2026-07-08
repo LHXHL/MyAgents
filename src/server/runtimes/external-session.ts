@@ -2627,6 +2627,8 @@ export function enqueueExternalSendForDesktop(
   queueId?: string;
   isInFlight?: boolean;
   deliveryMode?: 'realtime' | 'turn';
+  canCancel?: boolean;
+  canForceExecute?: boolean;
   dispatch: Promise<{ queued: boolean; error?: string }>;
 } {
   const queueResponseMode = resolveChatQueueResponseMode(
@@ -2656,8 +2658,22 @@ export function enqueueExternalSendForDesktop(
       return { queued: false, dispatch: Promise.resolve({ queued: false, error: queued.error }) };
     }
     const queueId = queued.queueId;
-    broadcast('queue:added', { queueId, messageText: text.slice(0, 100), isInFlight: false, deliveryMode: 'turn' });
-    return { queued: true, queueId, deliveryMode: 'turn', dispatch: Promise.resolve({ queued: true }) };
+    broadcast('queue:added', {
+      queueId,
+      messageText: text.slice(0, 100),
+      isInFlight: false,
+      deliveryMode: 'turn',
+      canCancel: true,
+      canForceExecute: true,
+    });
+    return {
+      queued: true,
+      queueId,
+      deliveryMode: 'turn',
+      canCancel: true,
+      canForceExecute: true,
+      dispatch: Promise.resolve({ queued: true }),
+    };
   }
 
   if (queueResponseMode === 'realtime' && canSteerActiveTurn) {
@@ -2669,7 +2685,14 @@ export function enqueueExternalSendForDesktop(
       timestamp: new Date().toISOString(),
       attachments: sessionMessageAttachmentsFromImages(context.sessionId, images),
     };
-    broadcast('queue:added', { queueId, messageText: text.slice(0, 100), isInFlight: true, deliveryMode: 'realtime' });
+    broadcast('queue:added', {
+      queueId,
+      messageText: text.slice(0, 100),
+      isInFlight: true,
+      deliveryMode: 'realtime',
+      canCancel: false,
+      canForceExecute: false,
+    });
     const generation = getExternalOperationGeneration();
     const dispatch = chainExternalDesktopSend(
       () => steerExternalMessageForDesktop({
@@ -2686,7 +2709,15 @@ export function enqueueExternalSendForDesktop(
       }
       throw err;
     });
-    return { queued: true, queueId, isInFlight: true, deliveryMode: 'realtime', dispatch };
+    return {
+      queued: true,
+      queueId,
+      isInFlight: true,
+      deliveryMode: 'realtime',
+      canCancel: false,
+      canForceExecute: false,
+      dispatch,
+    };
   }
 
   // Idle path: surface + send immediately (unchanged behavior). No queueId — this becomes a

@@ -3066,7 +3066,14 @@ export default function TabProvider({
                 // `isInFlight` indicates the backend has already yielded this item
                 // to the SDK CLI. It remains conditionally cancellable via the
                 // SDK control plane until replay/dequeue confirmation arrives.
-                const payload = data as { queueId: string; messageText: string; isInFlight?: boolean; deliveryMode?: 'realtime' | 'turn' } | null;
+                const payload = data as {
+                    queueId: string;
+                    messageText: string;
+                    isInFlight?: boolean;
+                    deliveryMode?: 'realtime' | 'turn';
+                    canCancel?: boolean;
+                    canForceExecute?: boolean;
+                } | null;
                 if (payload?.queueId) {
                     console.log(`[TabProvider] queue:added queueId=${payload.queueId} isInFlight=${!!payload.isInFlight}`);
                     setQueuedMessages(prev => {
@@ -3074,15 +3081,21 @@ export default function TabProvider({
                         const existingIdx = prev.findIndex(q => q.queueId === payload.queueId);
                         if (existingIdx !== -1) {
                             const nextDeliveryMode = payload.deliveryMode ?? prev[existingIdx].deliveryMode;
+                            const nextCanCancel = payload.canCancel ?? prev[existingIdx].canCancel;
+                            const nextCanForceExecute = payload.canForceExecute ?? prev[existingIdx].canForceExecute;
                             if (
                                 prev[existingIdx].isInFlight === !!payload.isInFlight
                                 && prev[existingIdx].deliveryMode === nextDeliveryMode
+                                && prev[existingIdx].canCancel === nextCanCancel
+                                && prev[existingIdx].canForceExecute === nextCanForceExecute
                             ) return prev;
                             const next = [...prev];
                             next[existingIdx] = {
                                 ...prev[existingIdx],
                                 isInFlight: !!payload.isInFlight,
                                 deliveryMode: nextDeliveryMode,
+                                canCancel: nextCanCancel,
+                                canForceExecute: nextCanForceExecute,
                             };
                             return next;
                         }
@@ -3094,6 +3107,8 @@ export default function TabProvider({
                             timestamp: Date.now(),
                             isInFlight: !!payload.isInFlight,
                             deliveryMode: payload.deliveryMode,
+                            canCancel: payload.canCancel,
+                            canForceExecute: payload.canForceExecute,
                         }];
                     });
                 }
@@ -3619,6 +3634,8 @@ export default function TabProvider({
                 text: trimmed,
                 images: images?.map(queuedImageInfo),
                 timestamp: Date.now(),
+                canCancel: false,
+                canForceExecute: false,
             }]);
         }
 
@@ -3653,6 +3670,8 @@ export default function TabProvider({
             queueId?: string;
             isInFlight?: boolean;
             deliveryMode?: 'realtime' | 'turn';
+            canCancel?: boolean;
+            canForceExecute?: boolean;
         }>('/chat/send', sendPayload).then((response) => {
             if (response.success) {
                 trackTabEvent('message_send', {
@@ -3684,6 +3703,8 @@ export default function TabProvider({
                                     queueId: realQueueId,
                                     isInFlight: !!response.isInFlight,
                                     deliveryMode: response.deliveryMode,
+                                    canCancel: response.canCancel,
+                                    canForceExecute: response.canForceExecute,
                                     images: images?.map(queuedImageInfo),
                                 }
                                 : q
@@ -3697,6 +3718,8 @@ export default function TabProvider({
                                     ? {
                                         ...q,
                                         deliveryMode: response.deliveryMode ?? q.deliveryMode,
+                                        canCancel: response.canCancel ?? q.canCancel,
+                                        canForceExecute: response.canForceExecute ?? q.canForceExecute,
                                         images: images?.length ? images.map(queuedImageInfo) : q.images,
                                     }
                                     : q
@@ -3709,6 +3732,8 @@ export default function TabProvider({
                                 timestamp: Date.now(),
                                 isInFlight: !!response.isInFlight,
                                 deliveryMode: response.deliveryMode,
+                                canCancel: response.canCancel,
+                                canForceExecute: response.canForceExecute,
                             }];
                         });
                     }

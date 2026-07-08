@@ -15,13 +15,14 @@ export interface QueuedMessageInfo {
   images?: QueuedImageInfo[];  // Lightweight image info for display and restore
   timestamp: number;
   deliveryMode?: 'realtime' | 'turn';
+  /** Defaults to true for legacy/builtin queues. Some runtimes cannot retract accepted input. */
+  canCancel?: boolean;
+  /** Defaults to true for legacy/builtin queues. Some runtimes cannot force a single accepted input. */
+  canForceExecute?: boolean;
   /**
-   * True when this queue item has already been yielded to the SDK CLI
-   * subprocess and is waiting to be drained into AI's context. It is still
-   * conditionally cancellable: cancel uses SDK cancel_async_message and
-   * succeeds only before the SDK dequeues it. The play (▷ force-execute)
-   * button interrupts the current turn so AI processes the queued message
-   * right away instead of after the next tool break.
+   * True when this queue item has crossed from a purely local queue into the
+   * runtime's in-flight path. Whether it is still cancellable/forceable is
+   * runtime-specific and represented by canCancel/canForceExecute.
    */
   isInFlight?: boolean;
 }

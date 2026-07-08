@@ -43,6 +43,8 @@ export type DesktopAdmissionResult = {
   queueId?: string;
   isInFlight?: boolean;
   deliveryMode?: EnqueueResult['deliveryMode'];
+  canCancel?: boolean;
+  canForceExecute?: boolean;
   error?: string;
   status?: number;
 };

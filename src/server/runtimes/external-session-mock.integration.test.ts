@@ -448,10 +448,13 @@ describe('external SessionEngine with fake runtime', () => {
         && (item.data as { userMessage?: { content?: string } }).userMessage?.content === 'second',
     );
     expect(started).toBeUndefined();
-    expect(broadcastEvents.find(
-      (item) => item.event === 'queue:cancelled'
-        && (item.data as { queueId?: string }).queueId === second.queueId,
-    )).toBeDefined();
+    await waitFor(
+      () => broadcastEvents.some(
+        (item) => item.event === 'queue:cancelled'
+          && (item.data as { queueId?: string }).queueId === second.queueId,
+      ),
+      'rejected realtime steer queue cancellation',
+    );
 
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     const persisted = harness.sessionStore.getSessionData(sessionId);
