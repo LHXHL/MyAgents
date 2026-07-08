@@ -69,6 +69,7 @@ import {
 import { spaceSlugCandidate } from "@/pages/space/spaceSlug";
 
 const AUTH_POLL_DELAY_MS = 3000;
+const AUTH_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const SPACE_EVENTS_SYNC_INTERVAL_MS = 15_000;
 
 type SpaceQuickActionSubmitInput =
@@ -830,10 +831,15 @@ export default function Space({ isActive }: { isActive: boolean }) {
     trackSpaceAuth("start", true);
     try {
       const result = await spaceAuthStart();
+      const serverExpiresInMs =
+        Number.isFinite(result.expiresInSeconds) && result.expiresInSeconds > 0
+          ? result.expiresInSeconds * 1000
+          : AUTH_POLL_TIMEOUT_MS;
       authPollWarningShownRef.current = false;
       setAuthFlow({
         token: result.loginToken,
-        expiresAt: Date.now() + result.expiresInSeconds * 1000,
+        expiresAt:
+          Date.now() + Math.min(serverExpiresInMs, AUTH_POLL_TIMEOUT_MS),
       });
       toast.info(t("space.toasts.browserLoginOpened"));
     } catch (error) {
