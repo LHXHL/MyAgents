@@ -185,6 +185,43 @@ describe('handleSessionReadRoute', () => {
     });
   });
 
+  it('allows the active prepared session to load while it stays hidden from history', async () => {
+    mocks.getSessionData.mockReturnValue({
+      id: 'sid',
+      runtime: 'codex',
+      runtimeSource: 'managed-provider',
+      materializationState: 'prepared',
+      providerEnvJson: undefined,
+      messages: [],
+    });
+    mocks.isHistoryVisibleSession.mockReturnValue(false);
+    mocks.engine.getLiveSessionOverlay.mockReturnValue({
+      isActive: true,
+      runtime: 'codex',
+      liveSessionState: 'idle',
+    });
+
+    const response = await handleSessionReadRoute(
+      '/sessions/sid',
+      new Request('http://local/sessions/sid?limit=80'),
+      new URL('http://local/sessions/sid?limit=80'),
+    );
+
+    const body = await readJson(response as Response);
+    expect(response?.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.session).toMatchObject({
+      id: 'sid',
+      runtime: 'codex',
+      runtimeSource: 'managed-provider',
+      materializationState: 'prepared',
+      liveSessionState: 'idle',
+      totalCount: 0,
+      hasMoreBefore: false,
+      messages: [],
+    });
+  });
+
   it('does not catch more specific /sessions subroutes owned by index.ts', async () => {
     await expect(handleSessionReadRoute(
       '/sessions/sid/stats',

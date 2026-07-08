@@ -144,7 +144,9 @@ function handleSessionDetails(sessionId: string, url: URL): Response {
     }
     return jsonResponse({ success: false, error: 'Session not found.' }, 404);
   }
-  if (!isHistoryVisibleSession(session)) {
+  const isActivePreparedSession =
+    overlay.isActive && session.materializationState === 'prepared';
+  if (!isHistoryVisibleSession(session) && !isActivePreparedSession) {
     return jsonResponse({ success: false, error: 'Session not found.' }, 404);
   }
 
