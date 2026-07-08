@@ -30,7 +30,7 @@ import type { RuntimeType } from '../shared/types/runtime';
 import { ensureDirSync } from './utils/fs-utils';
 
 const TITLE_MAX_LENGTH = 30;
-const TIMEOUT_MS = 15_000;
+export const BUILTIN_TITLE_TIMEOUT_MS = 30_000;
 /** External runtimes (Gemini/Codex/CC) have higher cold-start cost — node/CLI
  *  spawn + ACP/JSON-RPC handshake + potential OAuth refresh. Gemini alone can
  *  take ~10s to first token. 30s keeps headroom without stalling the UI. */
@@ -141,6 +141,45 @@ function cleanTitle(raw: string): string {
   return capTitleAtBoundary(cleaned, TITLE_MAX_LENGTH);
 }
 
+type SdkTextContentBlock = { type?: string; text?: string };
+type SdkAssistantLikeMessage = {
+  type?: string;
+  message?: { content?: SdkTextContentBlock[] };
+};
+type SdkResultLikeMessage = {
+  type?: string;
+  subtype?: string;
+  result?: string;
+  messages?: Array<{ role: string; content?: SdkTextContentBlock[] }>;
+};
+
+function textFromContentBlocks(content: SdkTextContentBlock[] | undefined): string {
+  if (!Array.isArray(content)) return '';
+  return content
+    .map((block) => (typeof block?.text === 'string' ? block.text : ''))
+    .join('')
+    .trim();
+}
+
+export function extractTitleTextFromSdkMessage(message: unknown): string | null {
+  if (!message || typeof message !== 'object') return null;
+  const typed = message as SdkAssistantLikeMessage & SdkResultLikeMessage;
+  if (typed.type === 'assistant') {
+    const text = textFromContentBlocks(typed.message?.content);
+    return text || null;
+  }
+  if (typed.type === 'result' && typed.subtype === 'success' && Array.isArray(typed.messages)) {
+    const lastAssistant = typed.messages.filter(m => m.role === 'assistant').pop();
+    const text = textFromContentBlocks(lastAssistant?.content);
+    return text || null;
+  }
+  if (typed.type === 'result' && typed.subtype === 'success' && typeof typed.result === 'string') {
+    const text = typed.result.trim();
+    return text || null;
+  }
+  return null;
+}
+
 /**
  * Generate a short session title using the SDK query() path.
  * Accepts multiple QA rounds (typically 3) for richer context.
@@ -209,6 +248,11 @@ async function generateTitleInner(
         pathToClaudeCodeExecutable: cliPath,
         env,
         systemPrompt: SYSTEM_PROMPT,
+        // Title generation is a short text-classification task. Adaptive thinking
+        // can spend the whole one-shot budget on hidden reasoning or delay first
+        // text on strong reasoning models, so force the cheapest text path.
+        thinking: { type: 'disabled' },
+        effort: 'low',
         includePartialMessages: false,
         persistSession: false,
         mcpServers: {},
@@ -232,25 +276,13 @@ async function generateTitleInner(
 
     // Race: SDK response vs timeout
     const timeoutPromise = new Promise<null>((resolve) => {
-      setTimeout(() => resolve(null), TIMEOUT_MS);
+      setTimeout(() => resolve(null), BUILTIN_TITLE_TIMEOUT_MS);
     });
 
     const queryPromise = (async (): Promise<string | null> => {
       for await (const message of titleQuery) {
-        if (message.type === 'assistant') {
-          const msg = message as { message?: { content?: Array<{ text?: string }> } };
-          const text = msg.message?.content?.[0]?.text;
-          if (text) return text;
-        }
-        // result type — extract from last assistant message if available
-        if (message.type === 'result') {
-          const resultMsg = message as { subtype?: string; messages?: Array<{ role: string; content?: Array<{ text?: string }> }> };
-          if (resultMsg.subtype === 'success' && resultMsg.messages) {
-            const lastAssistant = resultMsg.messages.filter(m => m.role === 'assistant').pop();
-            const text = lastAssistant?.content?.[0]?.text;
-            if (text) return text;
-          }
-        }
+        const text = extractTitleTextFromSdkMessage(message);
+        if (text) return text;
       }
       return null;
     })();

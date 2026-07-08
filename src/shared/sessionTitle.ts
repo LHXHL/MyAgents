@@ -104,8 +104,12 @@ export const AUTO_TITLE_MIN_ROUNDS = 2;
  */
 export const TITLE_GEN_MESSAGE_LIMIT = 20;
 
-/** Bounded retries: stop after this many *generation* attempts for one session. */
-export const MAX_TITLE_GEN_ATTEMPTS = 5;
+/**
+ * Bounded retries: stop after this many *generation* attempts for one session.
+ * Keep this above the historical 0.2.49 cap (5) so sessions that exhausted the
+ * old, too-fragile title path get a post-upgrade retry window.
+ */
+export const MAX_TITLE_GEN_ATTEMPTS = 10;
 
 export interface TitleRound {
   user: string;

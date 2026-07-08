@@ -223,6 +223,10 @@ describe('shouldAttemptAutoTitle', () => {
     expect(shouldAttemptAutoTitle({ userMessageCount: 5, titleGenAttempts: MAX_TITLE_GEN_ATTEMPTS })).toBe(false);
     expect(shouldAttemptAutoTitle({ userMessageCount: 5, titleGenAttempts: MAX_TITLE_GEN_ATTEMPTS - 1 })).toBe(true);
   });
+
+  it('allows sessions that exhausted the old 0.2.49 five-attempt cap to retry', () => {
+    expect(shouldAttemptAutoTitle({ userMessageCount: 5, titleGenAttempts: 5 })).toBe(true);
+  });
 });
 
 describe('capTitleAtBoundary', () => {
