@@ -952,7 +952,7 @@ pub async fn cmd_space_get_session() -> Result<Option<SpaceSessionPublic>, Strin
         return Ok(None);
     };
     let identity = current_device_identity()?;
-    try_upsert_space_user_device(&session, &identity).await;
+    spawn_space_user_device_upsert(session.clone(), identity);
     match refresh_session_from_cloud(&session).await {
         Ok(refreshed) => {
             write_private_json(&session_path()?, &refreshed)?;
@@ -1049,7 +1049,7 @@ pub async fn cmd_space_auth_poll(input: SpaceAuthPollInput) -> Result<Value, Str
         };
         write_private_json(&session_path()?, &session)?;
         let identity = current_device_identity()?;
-        try_upsert_space_user_device(&session, &identity).await;
+        spawn_space_user_device_upsert(session, identity);
         if let Some(map) = data.as_object_mut() {
             map.remove("sessionToken");
         }
@@ -3997,6 +3997,12 @@ async fn try_upsert_space_user_device(session: &SpaceSession, identity: &DeviceI
             error
         );
     }
+}
+
+fn spawn_space_user_device_upsert(session: SpaceSession, identity: DeviceIdentity) {
+    tauri::async_runtime::spawn(async move {
+        try_upsert_space_user_device(&session, &identity).await;
+    });
 }
 
 async fn authorized_json_data_request(

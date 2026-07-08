@@ -42,6 +42,7 @@ Phase 2 为本地验证和自动化测试新增了显式 mock mode：
 
 - D1 访问统一走 `src/services/db.ts::db(...)` / `createPrimaryDb(...)` facade。请求路径使用 D1 Sessions API 维护 bookmark，并通过 `x-d1-bookmark` header 回传；`first/all/raw` 只对瞬态读错误做一次短重试，`run/batch` 写路径不做自动重试，避免重复写入。
 - Worker `wrangler.jsonc` 开启 Smart Placement、Observability、Rate Limiting binding 与 scheduled prune。`src/services/prune.ts` 定期清理已结束的 `issue_deliveries` 以及历史 `space_events` / `issue_updates`；保留期与批大小由 `SPACE_DELIVERY_RETENTION_DAYS`、`SPACE_EVENT_RETENTION_DAYS`、`SPACE_PRUNE_BATCH_SIZE`、`SPACE_PRUNE_MAX_BATCHES` 控制。
+- Desktop OAuth handoff 必须由 D1 `desktop_login_sessions` 拥有，不能用 Cloudflare KV。浏览器 callback 写入 `done` 后，桌面端 poll 需要跨浏览器/客户端边缘节点立即读到同一状态；KV 的最终一致传播窗口会把“浏览器已成功”放大成约 1 分钟的客户端等待。
 - Space 业务统计事实由 `MyAgents_space` 拥有：只读 admin endpoints 位于 `/api/admin/dashboard/*`，通过 `SPACE_ADMIN_API_KEY` bearer secret 做 Worker-to-Worker 鉴权，供 `MyAgents_web` admin proxy 消费。`MyAgents_web` 不直接绑定或查询 Space D1；它只负责 Web admin auth、缓存、UI 以及客户端 analytics `space_*` 事件查询。
 - `agg_space_global_day` 是 Space 全局规模趋势 snapshot 表，由 scheduled cron 写入；`GET /api/admin/dashboard/overview` 必须保持读路径，不在请求中 materialize/重写历史 snapshot。当天 current metrics 可作为 response 内存 partial point 合并，不能把读请求变成 rollup owner。
 - delivery fanout/backfill 只能先用固定查询选出订阅/Issue，再由 JS 生成 delivery id 后 batch `INSERT OR IGNORE`。不要为了每个订阅或每个 Issue 发散成 N 次查询，也不要把 delivery id 生成塞回 SQL 表达式。
@@ -61,7 +62,7 @@ Space 不创建第二套“云端 device id”。本地端点身份的唯一值�
 
 - 必备字段：`userId`、`deviceId`。
 - 设备摘要字段：`deviceName`、`platform`、`osVersion`、`appVersion`、`status`、`lastSeenAt`。
-- 登录/授权完成后，客户端尝试调用 `/api/devices/upsert` 写入当前 `user_devices` 记录；为兼容桌面端与云端部署顺序，该调用失败不阻塞 Space 登录。
+- 登录/授权完成后，客户端尝试调用 `/api/devices/upsert` 写入当前 `user_devices` 记录；为兼容桌面端与云端部署顺序，该调用失败不阻塞 Space 登录。客户端 auth poll / session read 路径必须把该 upsert 作为后台 best-effort，不能同步 await 到 UI 登录完成之前。
 - `cmd_space_register_agent` / `cmd_space_update_registered_agent` payload 同时携带 `deviceId`、`deviceName`、`platform`、`osVersion`、`appVersion`，服务端必须在 registered-agent mutation 中同步维护 `user_devices`，不能只依赖 bootstrap upsert。
 
 Registered Agent 是“执行实体”，不是设备本身：
