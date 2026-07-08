@@ -247,7 +247,6 @@ import {
   getLastPersistedRuntimeUsageTotals,
   persistExternalUserMessageAppend,
   pushExternalSessionMessage,
-  removeAndPersistExternalSessionMessage,
   removeExternalSessionMessageById,
   resetExternalTranscriptState,
   setExternalSessionMessages,
@@ -354,6 +353,15 @@ let pendingExternalProxyRestartOriginalKey: string | null = null;
 // Set by sendExternalMessage when it pre-broadcasts the user message for instant display.
 // Consumed by _doStartExternalSession / Case 3 to reuse the message (skip duplicate broadcast).
 let earlyBroadcastedUserMsg: SessionMessage | null = null;
+interface PendingRealtimeSteeredUserMessage {
+  queueId: string;
+  sessionId: string;
+  userMsg: SessionMessage;
+  text: string;
+}
+
+const pendingRealtimeSteeredUserMessages: PendingRealtimeSteeredUserMessage[] = [];
+
 function sessionMessageAttachmentsFromImages(
   sessionId: string | undefined,
   images: ImagePayload[] | undefined,
@@ -383,6 +391,69 @@ function sessionMessageAttachmentsFromImages(
 function clearExternalQueueWithCancellation(): void {
   for (const queueId of clearExternalQueueOwnerWithCancellation()) {
     broadcast('queue:cancelled', { queueId });
+  }
+  clearPendingRealtimeSteeredUserMessagesWithCancellation();
+}
+
+function clearPendingRealtimeSteeredUserMessagesWithCancellation(): void {
+  while (pendingRealtimeSteeredUserMessages.length > 0) {
+    const pending = pendingRealtimeSteeredUserMessages.shift();
+    if (pending) broadcast('queue:cancelled', { queueId: pending.queueId });
+  }
+}
+
+function registerPendingRealtimeSteeredUserMessage(entry: PendingRealtimeSteeredUserMessage): void {
+  pendingRealtimeSteeredUserMessages.push(entry);
+}
+
+function forgetPendingRealtimeSteeredUserMessage(userMessageId: string): void {
+  const index = pendingRealtimeSteeredUserMessages.findIndex((entry) => entry.userMsg.id === userMessageId);
+  if (index !== -1) pendingRealtimeSteeredUserMessages.splice(index, 1);
+}
+
+function takePendingRealtimeSteeredUserMessage(clientUserMessageId?: string): PendingRealtimeSteeredUserMessage | undefined {
+  if (clientUserMessageId) {
+    const index = pendingRealtimeSteeredUserMessages.findIndex((entry) => entry.userMsg.id === clientUserMessageId);
+    if (index !== -1) {
+      const [entry] = pendingRealtimeSteeredUserMessages.splice(index, 1);
+      return entry;
+    }
+    return undefined;
+  }
+  return pendingRealtimeSteeredUserMessages.shift();
+}
+
+function surfaceRealtimeSteeredUserMessage(entry: PendingRealtimeSteeredUserMessage): void {
+  pushExternalSessionMessage(entry.userMsg);
+  void persistExternalUserMessageAppend(
+    entry.sessionId,
+    '[external-session] Failed to persist accepted realtime steered user message',
+  ).catch((err) => {
+    console.error('[external-session] failed to persist accepted realtime steered user message:', err);
+  });
+  broadcast('queue:started', {
+    queueId: entry.queueId,
+    midTurnBreak: true,
+    userMessage: {
+      id: entry.userMsg.id,
+      role: entry.userMsg.role,
+      content: entry.text,
+      timestamp: entry.userMsg.timestamp,
+      attachments: entry.userMsg.attachments,
+    },
+  });
+}
+
+function surfaceAcceptedRealtimeSteeredUserMessage(clientUserMessageId?: string): void {
+  const entry = takePendingRealtimeSteeredUserMessage(clientUserMessageId);
+  if (!entry) return;
+  surfaceRealtimeSteeredUserMessage(entry);
+}
+
+function surfaceAllPendingRealtimeSteeredUserMessages(): void {
+  while (pendingRealtimeSteeredUserMessages.length > 0) {
+    const entry = pendingRealtimeSteeredUserMessages.shift();
+    if (entry) surfaceRealtimeSteeredUserMessage(entry);
   }
 }
 
@@ -2497,18 +2568,12 @@ async function steerExternalMessageForDesktop(input: {
     return { queued: false, error: message };
   }
 
-  pushExternalSessionMessage(input.userMsg);
-  try {
-    await persistExternalUserMessageAppend(
-      input.context.sessionId,
-      '[external-session] Failed to persist realtime steered user message',
-    );
-  } catch (err) {
-    removeMessageFromInMemoryHistory(input.userMsg.id);
-    broadcast('queue:cancelled', { queueId: input.queueId });
-    return { queued: false, error: err instanceof Error ? err.message : String(err) };
-  }
-
+  registerPendingRealtimeSteeredUserMessage({
+    queueId: input.queueId,
+    sessionId: input.context.sessionId,
+    userMsg: input.userMsg,
+    text: input.text,
+  });
   try {
     await active.runtime.steerMessage(
       active.process,
@@ -2516,31 +2581,12 @@ async function steerExternalMessageForDesktop(input: {
       resolvedImages && resolvedImages.length > 0 ? resolvedImages : undefined,
       { clientUserMessageId: input.userMsg.id },
     );
-    broadcast('queue:started', {
-      queueId: input.queueId,
-      midTurnBreak: true,
-      userMessage: {
-        id: input.userMsg.id,
-        role: input.userMsg.role,
-        content: input.text,
-        timestamp: input.userMsg.timestamp,
-        attachments: input.userMsg.attachments,
-      },
-    });
     return { queued: true };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.warn(`[external-session] realtime steer failed, retracting user message ${input.userMsg.id}: ${message}`);
-    try {
-      await removeAndPersistExternalSessionMessage(
-        input.context.sessionId,
-        input.userMsg.id,
-        '[external-session] Failed to retract rejected realtime steered user message',
-      );
-    } catch (persistErr) {
-      console.error('[external-session] failed to persist realtime steer retraction:', persistErr);
-    }
-    broadcast('chat:messages-retracted', { messageIds: [input.userMsg.id] });
+    forgetPendingRealtimeSteeredUserMessage(input.userMsg.id);
+    broadcast('queue:cancelled', { queueId: input.queueId });
     return { queued: false, error: message };
   }
 }
@@ -2556,14 +2602,17 @@ async function steerExternalMessageForDesktop(input: {
  *   which the renderer surfaced as "AI 调用失败：网络错误". This helper
  *   decouples the HTTP response from runtime dispatch:
  *
- *   1. Broadcast the user-message bubble synchronously so the renderer shows
- *      it the moment the user clicks send (regardless of queue depth).
+ *   1. Return a queue id synchronously so the renderer can show/reconcile a
+ *      queue pill while dispatch happens outside the HTTP request lifetime.
  *   2. Chain the actual sendExternalMessage onto a module-level promise tail
  *      so concurrent desktop sends serialize against each other. Without this
  *      tail, multiple sends would all wake from the same turnCompleted gate
  *      simultaneously, overwrite earlyBroadcastedUserMsg, and double-write
  *      to the persistent-runtime stdin.
- *   3. Return the dispatch promise. Callers should fire-and-forget and
+ *   3. Realtime Codex steering still promotes the pill only after Codex emits
+ *      its native userMessage echo; turn/steer RPC success is transport ack,
+ *      not runtime-consumption ack.
+ *   4. Return the dispatch promise. Callers should fire-and-forget and
  *      surface failures via chat:agent-error since the HTTP response is
  *      already on its way back to the renderer.
  */
@@ -3067,6 +3116,8 @@ export async function stopExternalSession(options?: {
     // items that nothing will ever drain (no turn is running) → the session wedges.
     if (!preserveQueue) {
       clearExternalQueueWithCancellation();
+    } else {
+      clearPendingRealtimeSteeredUserMessagesWithCancellation();
     }
     setExternalSessionState('idle');
     emitExternalTurnTrace('final', {
@@ -4131,6 +4182,11 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       break;
     }
 
+    case 'user_message_accepted': {
+      surfaceAcceptedRealtimeSteeredUserMessage(event.clientUserMessageId);
+      break;
+    }
+
     case 'status_change': {
       // Map runtime states to frontend session states (match builtin runtime behavior)
       const stateMap: Record<string, string> = { running: 'running', error: 'error', waiting_permission: 'running' };
@@ -4141,6 +4197,10 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
     case 'turn_complete': {
       // Mark turn complete — session_complete will follow for CC -p mode
       clearWatchdog();
+      // Defensive fallback: Codex should emit item/started userMessage for
+      // accepted turn/steer input. If an older app-server does not, promote the
+      // pending pill at the turn boundary rather than leaving it orphaned.
+      surfaceAllPendingRealtimeSteeredUserMessages();
       const turnPlan = markExternalTurnComplete(event, {
         intentionalStopInProgress: getExternalUserRequestedStop(),
       });

@@ -277,6 +277,13 @@ export type UnifiedEvent =
   // === Message replay (for session resume) ===
   | { kind: 'message_replay'; message: { id: string; role: string; content: unknown; timestamp?: string } }
 
+  // === Live user message echo ===
+  // Codex emits this when a turn/steer input is actually admitted into the
+  // active turn. The session layer uses it to promote a realtime queue pill to
+  // a visible user bubble; the turn/steer RPC response alone is only transport
+  // acknowledgement.
+  | { kind: 'user_message_accepted'; clientUserMessageId?: string }
+
   // === Passthrough for unrecognized events ===
   | { kind: 'raw'; data: unknown };
 

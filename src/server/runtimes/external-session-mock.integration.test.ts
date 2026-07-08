@@ -57,6 +57,10 @@ class FakeRuntime implements AgentRuntime {
     }
   }
 
+  emitUserMessageAccepted(clientUserMessageId?: string): void {
+    this.emit({ kind: 'user_message_accepted', clientUserMessageId });
+  }
+
   async detect() {
     return { installed: true, version: 'fake-runtime' };
   }
@@ -362,7 +366,7 @@ describe('external SessionEngine with fake runtime', () => {
 
   it('steers a second desktop send into the active Codex turn in realtime mode', async () => {
     const harness = await createHarness([
-      { kind: 'success', text: 'single steered answer', completeDelayMs: 80 },
+      { kind: 'success', text: 'single steered answer', completeDelayMs: 300 },
     ], { realtimeSteering: true });
     const sessionId = 'session-realtime-steer';
     const workspacePath = join(harness.home, 'workspace');
@@ -381,6 +385,19 @@ describe('external SessionEngine with fake runtime', () => {
 
     expect(harness.runtime.sentMessages).toEqual(['first']);
     expect(harness.runtime.steeredMessages[0]).toMatchObject({ message: 'second' });
+    expect(broadcastEvents.find(
+      (item) => item.event === 'queue:started'
+        && (item.data as { userMessage?: { content?: string } }).userMessage?.content === 'second',
+    )).toBeUndefined();
+
+    harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+    await waitFor(
+      () => broadcastEvents.some(
+        (item) => item.event === 'queue:started'
+          && (item.data as { userMessage?: { content?: string } }).userMessage?.content === 'second',
+      ),
+      'runtime user-message accepted',
+    );
     const started = broadcastEvents.find(
       (item) => item.event === 'queue:started'
         && (item.data as { userMessage?: { content?: string } }).userMessage?.content === 'second',
@@ -432,8 +449,8 @@ describe('external SessionEngine with fake runtime', () => {
     );
     expect(started).toBeUndefined();
     expect(broadcastEvents.find(
-      (item) => item.event === 'chat:messages-retracted'
-        && (item.data as { messageIds?: string[] }).messageIds?.length === 1,
+      (item) => item.event === 'queue:cancelled'
+        && (item.data as { queueId?: string }).queueId === second.queueId,
     )).toBeDefined();
 
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
