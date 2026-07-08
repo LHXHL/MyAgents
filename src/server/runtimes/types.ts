@@ -214,6 +214,9 @@ export type UnifiedEvent =
     attachment: ToolAttachment;
   }
 
+  // === Turn lifecycle ===
+  | { kind: 'turn_started' }
+
   // === Permission delegation ===
   | {
     kind: 'permission_request';

@@ -2801,11 +2801,18 @@ export class CodexRuntime implements AgentRuntime {
         return { kind: 'session_complete', result: '', subtype: 'success' };
 
       // ── Turn lifecycle ──
-      case 'turn/started':
+      case 'turn/started': {
+        const turnId = stringValue(p.turnId)
+          ?? stringValue(objectValue(p.turn).id);
+        if (turnId) {
+          codexProc.currentTurnId = turnId;
+        }
         return [
+          { kind: 'turn_started' },
           { kind: 'status_change', state: 'running' },
           { kind: 'agent_plan_update', todos: [] },
         ];
+      }
 
       case 'turn/completed': {
         const turn = p.turn;

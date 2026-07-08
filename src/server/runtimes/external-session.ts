@@ -3763,6 +3763,15 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
   recordRuntimeActivity();
 
   switch (event.kind) {
+    case 'turn_started':
+      if (!isExternalTurnCompleted() && getExternalTurnStartTime() === 0) {
+        clearExternalPrewarmingSession();
+        markExternalTurnStarted();
+        beginExternalTurnTrace('external_runtime_turn_started', getExternalLifecycleSessionId());
+        setExternalSessionState('running');
+      }
+      break;
+
     case 'text_delta':
       if (appendSubagentTraceDelta(event, 'AgentMessage')) {
         break;
