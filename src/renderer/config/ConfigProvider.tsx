@@ -55,6 +55,7 @@ import {
 import {
     addAgentConfig,
     buildAgentForProject,
+    configureMemoryAutoUpdateTaskForAgent,
     configureMemoryEvolutionTasksForAgent,
     ensureAllProjectsHaveAgent,
     migrateImBotConfigsToAgents,
@@ -135,6 +136,25 @@ async function reconcileMemoryEvolutionTasks(
         } catch (err) {
             console.warn(
                 `[ConfigProvider] Memory evolution task reconcile failed for agent ${agent.id}:`,
+                err,
+            );
+        }
+    }
+}
+
+async function reconcileMemoryAutoUpdateTasks(
+    agents: readonly AgentConfig[] | undefined,
+): Promise<void> {
+    if (!isTauriEnvironment()) return;
+    if (!agents?.length) return;
+
+    for (const agent of agents) {
+        if (!agent.memoryAutoUpdate) continue;
+        try {
+            await configureMemoryAutoUpdateTaskForAgent(agent);
+        } catch (err) {
+            console.warn(
+                `[ConfigProvider] Memory auto-update task reconcile failed for agent ${agent.id}:`,
                 err,
             );
         }
@@ -432,6 +452,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
             setRawProviders(loadedProviders);
             setApiKeys(loadedApiKeys);
             setProviderVerifyStatus(loadedVerifyStatus);
+            void reconcileMemoryAutoUpdateTasks(loadedConfig.agents);
             void reconcileMemoryEvolutionTasks(loadedConfig.agents, loadedProjects);
         } catch (err) {
             console.error('Failed to load config:', err);

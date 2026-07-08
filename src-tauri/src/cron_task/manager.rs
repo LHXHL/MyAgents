@@ -1480,11 +1480,16 @@ impl CronTaskManager {
             }
         }
 
+        let managed_kind = match config.managed_kind {
+            Some(kind) if kind.trim().is_empty() => None,
+            Some(kind) if crate::task::is_supported_managed_kind(&kind) => Some(kind),
+            Some(kind) => return Err(format!("unsupported managedKind: {}", kind)),
+            None => None,
+        };
+        let random_id = Uuid::new_v4().to_string().replace('-', "");
+
         let task = CronTask {
-            id: format!(
-                "cron_{}",
-                Uuid::new_v4().to_string().replace("-", "")[..12].to_string()
-            ),
+            id: format!("cron_{}", &random_id[..12]),
             workspace_path: config.workspace_path,
             session_id: config.session_id,
             prompt: config.prompt,
@@ -1506,7 +1511,7 @@ impl CronTaskManager {
             runtime: config.runtime,
             runtime_config: config.runtime_config,
             mcp_enabled_servers: config.mcp_enabled_servers,
-            managed_kind: config.managed_kind,
+            managed_kind,
             last_error: None,
             last_run_ok: None,
             last_run_duration_ms: None,
@@ -1545,6 +1550,36 @@ impl CronTaskManager {
             .find(|t| t.task_id.as_deref() == Some(ta_task_id))
             .cloned()
             .map(enrich_task)
+    }
+
+    /// System-only backfill for product-owned managed task markers.
+    ///
+    /// Ordinary CronTask update surfaces intentionally cannot mutate
+    /// `managed_kind`; reconcile owners use this to repair older Task→Cron
+    /// projections that predate the marker mirror.
+    pub async fn set_managed_kind(
+        &self,
+        task_id: &str,
+        managed_kind: Option<String>,
+    ) -> Result<CronTask, String> {
+        let managed_kind = match managed_kind {
+            Some(kind) if kind.trim().is_empty() => None,
+            Some(kind) if crate::task::is_supported_managed_kind(&kind) => Some(kind),
+            Some(kind) => return Err(format!("unsupported managedKind: {}", kind)),
+            None => None,
+        };
+        let mut tasks = self.tasks.write().await;
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| format!("Task not found: {}", task_id))?;
+        task.managed_kind = managed_kind;
+        task.updated_at = Utc::now();
+        let task_clone = task.clone();
+        drop(tasks);
+
+        self.save_to_disk().await?;
+
+        Ok(enrich_task(task_clone))
     }
 
     /// Delete every CronTask linked to the given Task Center id. Used when a

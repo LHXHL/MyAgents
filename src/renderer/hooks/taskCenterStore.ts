@@ -42,6 +42,7 @@ import { extractPlatformDisplay } from '@/utils/taskCenterUtils';
 import { perfMark } from '@/utils/perfMark';
 import { RENDERER_PERF_PHASE } from '../../shared/perfTrace';
 import { CUSTOM_EVENTS } from '../../shared/constants';
+import { isManagedScheduledJob } from '../../shared/managedScheduledJob';
 import type { CronTask } from '@/types/cronTask';
 import type { Task } from '../../shared/types/task';
 
@@ -141,6 +142,7 @@ export function computeSessionTagsMap(
     const cronSessionIds = new Set<string>();
     const bgSessionIds = new Set<string>(backgroundSessionIds);
     for (const t of cronTasks) {
+        if (isManagedScheduledJob(t)) continue;
         if (t.status !== 'running') continue;
         const sid = t.internalSessionId || t.sessionId;
         if (t.schedule?.kind === 'at') bgSessionIds.add(sid);
@@ -174,7 +176,12 @@ export function computeCronBotInfoMap(agents: AgentConfig[]): Map<string, { name
 /** `taskList` is Tauri-only; browser dev mode returns [] silently. */
 async function fetchTaskList(): Promise<Task[]> {
     if (!taskCenterAvailable()) return []; // non-Tauri / unavailable → legitimately empty
-    return taskList({}); // in Tauri: let failures REJECT so callers preserve the prior slice (not blank it)
+    const tasks = await taskList({});
+    return tasks.filter((task) => !isManagedScheduledJob(task)); // in Tauri: let failures REJECT so callers preserve the prior slice (not blank it)
+}
+
+function filterManagedCronTasks(data: CronTask[]): CronTask[] {
+    return data.filter((task) => !isManagedScheduledJob(task));
 }
 
 // ===== Store internals =====
@@ -380,7 +387,7 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
 
         const [sessionsData, cronData, newTasks, bgSessions, agentStatusResult, appConfig] = await Promise.all([
             sessionsPromise,
-            getAllCronTasks().catch(() => { ok.cron = false; return state.cronTasks; }),
+            getAllCronTasks().then(filterManagedCronTasks).catch(() => { ok.cron = false; return state.cronTasks; }),
             fetchTaskList().catch(() => { ok.tasks = false; return state.tasks; }),
             getBackgroundSessions().catch(() => { ok.bg = false; return state.backgroundSessionIds; }),
             agentStatusPromise,
@@ -403,7 +410,7 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
         const patch: Partial<StoreState> = {};
         if (isLatest('sessions', requestSeq)) patch.sessions = sortSessionsByLastActive(filterTombstoned(sessionsData, deletedSessionIds));
         if (isLatest('sessions', requestSeq)) patch.isSessionsLoading = false;
-        if (ok.cron && isLatest('cronTasks', requestSeq)) patch.cronTasks = cronData;
+        if (ok.cron && isLatest('cronTasks', requestSeq)) patch.cronTasks = filterManagedCronTasks(cronData);
         if (ok.tasks && isLatest('tasks', requestSeq)) patch.tasks = newTasks;
         if (ok.bg && isLatest('backgroundSessions', requestSeq)) patch.backgroundSessionIds = bgSessions;
         if (ok.status && isLatest('agentStatuses', requestSeq)) patch.agentStatuses = agentStatusResult;
@@ -442,7 +449,7 @@ function refreshSessionsNow(): void {
 }
 function refreshCronTasksNow(): void {
     const s = startRequest('cronTasks');
-    getAllCronTasks().then((data) => { if (isLatest('cronTasks', s)) setState({ cronTasks: data }); })
+    getAllCronTasks().then((data) => { if (isLatest('cronTasks', s)) setState({ cronTasks: filterManagedCronTasks(data) }); })
         .catch((err) => console.warn('[taskCenterStore] refresh cron failed:', err));
 }
 function refreshTasksNow(): void {

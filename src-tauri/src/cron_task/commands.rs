@@ -1,10 +1,40 @@
 use super::*;
 
+const MANAGED_CRON_TASK_ERROR: &str =
+    "Managed scheduled jobs are internal and cannot be managed from ordinary CronTask surfaces";
+
+fn is_managed_cron_task(task: &CronTask) -> bool {
+    task.managed_kind
+        .as_deref()
+        .is_some_and(crate::task::is_supported_managed_kind)
+}
+
+async fn get_ordinary_cron_task(
+    manager: &CronTaskManager,
+    task_id: &str,
+) -> Result<CronTask, String> {
+    let task = manager
+        .get_task(task_id)
+        .await
+        .ok_or_else(|| format!("Task not found: {}", task_id))?;
+    if is_managed_cron_task(&task) {
+        return Err(MANAGED_CRON_TASK_ERROR.to_string());
+    }
+    Ok(task)
+}
+
 // ============ Tauri Commands ============
 
 /// Create a new cron task
 #[tauri::command]
 pub async fn cmd_create_cron_task(config: CronTaskConfig) -> Result<CronTask, String> {
+    if config
+        .managed_kind
+        .as_deref()
+        .is_some_and(|kind| !kind.trim().is_empty())
+    {
+        return Err(MANAGED_CRON_TASK_ERROR.to_string());
+    }
     let manager = get_cron_task_manager();
     manager.create_task(config).await
 }
@@ -17,6 +47,7 @@ pub async fn cmd_start_cron_task(
     task_id: String,
 ) -> Result<CronTask, String> {
     let manager = get_cron_task_manager();
+    get_ordinary_cron_task(manager, &task_id).await?;
     let task = manager.start_task(&task_id).await?;
 
     ulog_info!(
@@ -44,6 +75,7 @@ pub async fn cmd_stop_cron_task(
     exit_reason: Option<String>,
 ) -> Result<CronTask, String> {
     let manager = get_cron_task_manager();
+    get_ordinary_cron_task(manager, &task_id).await?;
     manager.stop_task(&task_id, exit_reason).await
 }
 
@@ -54,6 +86,7 @@ pub async fn cmd_delete_cron_task(
     task_id: String,
 ) -> Result<(), String> {
     let manager = get_cron_task_manager();
+    get_ordinary_cron_task(manager, &task_id).await?;
     manager.delete_task(&task_id).await?;
     let _ = app_handle.emit(
         "cron:task-deleted",
@@ -66,10 +99,7 @@ pub async fn cmd_delete_cron_task(
 #[tauri::command]
 pub async fn cmd_get_cron_task(task_id: String) -> Result<CronTask, String> {
     let manager = get_cron_task_manager();
-    manager
-        .get_task(&task_id)
-        .await
-        .ok_or_else(|| format!("Task not found: {}", task_id))
+    get_ordinary_cron_task(manager, &task_id).await
 }
 
 /// Get all cron tasks
@@ -80,7 +110,7 @@ pub async fn cmd_get_cron_tasks() -> Result<Vec<CronTask>, String> {
         .get_all_tasks()
         .await
         .into_iter()
-        .filter(|task| task.managed_kind.is_none())
+        .filter(|task| !is_managed_cron_task(task))
         .collect())
 }
 
@@ -92,7 +122,7 @@ pub async fn cmd_get_workspace_cron_tasks(workspace_path: String) -> Result<Vec<
         .get_tasks_for_workspace(&workspace_path)
         .await
         .into_iter()
-        .filter(|task| task.managed_kind.is_none())
+        .filter(|task| !is_managed_cron_task(task))
         .collect())
 }
 
@@ -101,7 +131,10 @@ pub async fn cmd_get_workspace_cron_tasks(workspace_path: String) -> Result<Vec<
 #[allow(non_snake_case)]
 pub async fn cmd_get_session_cron_task(sessionId: String) -> Result<Option<CronTask>, String> {
     let manager = get_cron_task_manager();
-    Ok(manager.get_active_task_for_session(&sessionId).await)
+    Ok(manager
+        .get_active_task_for_session(&sessionId)
+        .await
+        .filter(|task| !is_managed_cron_task(task)))
 }
 
 /// Get active cron task for a tab (running only)
@@ -109,7 +142,10 @@ pub async fn cmd_get_session_cron_task(sessionId: String) -> Result<Option<CronT
 #[allow(non_snake_case)]
 pub async fn cmd_get_tab_cron_task(tabId: String) -> Result<Option<CronTask>, String> {
     let manager = get_cron_task_manager();
-    Ok(manager.get_active_task_for_tab(&tabId).await)
+    Ok(manager
+        .get_active_task_for_tab(&tabId)
+        .await
+        .filter(|task| !is_managed_cron_task(task)))
 }
 
 /// Record task execution (called by Sidecar after execution completes)
@@ -143,7 +179,12 @@ pub async fn cmd_update_cron_task_session(
 #[tauri::command]
 pub async fn cmd_get_tasks_to_recover() -> Result<Vec<CronTask>, String> {
     let manager = get_cron_task_manager();
-    Ok(manager.get_tasks_to_recover().await)
+    Ok(manager
+        .get_tasks_to_recover()
+        .await
+        .into_iter()
+        .filter(|task| !is_managed_cron_task(task))
+        .collect())
 }
 
 /// Start the scheduler for a task
@@ -163,10 +204,7 @@ pub async fn cmd_start_cron_scheduler(
     ulog_debug!("[CronTask] Got manager, getting task...");
 
     // Get task info for session activation
-    let task = manager
-        .get_task(&task_id)
-        .await
-        .ok_or_else(|| format!("Task not found: {}", task_id))?;
+    let task = get_ordinary_cron_task(manager, &task_id).await?;
     ulog_debug!(
         "[CronTask] Got task: {}, session_id: {}",
         task_id,
@@ -268,10 +306,12 @@ pub async fn cmd_is_task_executing(task_id: String) -> Result<bool, String> {
 
 /// Get execution history (run records) for a cron task
 #[tauri::command]
-pub fn cmd_get_cron_runs(
+pub async fn cmd_get_cron_runs(
     task_id: String,
     limit: Option<usize>,
 ) -> Result<Vec<CronRunRecord>, String> {
+    let manager = get_cron_task_manager();
+    get_ordinary_cron_task(manager, &task_id).await?;
     Ok(read_cron_runs(&task_id, limit.unwrap_or(20)))
 }
 
@@ -298,6 +338,7 @@ pub async fn cmd_update_cron_task_fields(
     // so changing a running cron's schedule through any surface takes effect
     // immediately.
     let manager = get_cron_task_manager();
+    get_ordinary_cron_task(manager, &task_id).await?;
     let mut patch = serde_json::Map::new();
     if let Some(n) = name {
         patch.insert("name".to_string(), serde_json::Value::String(n));

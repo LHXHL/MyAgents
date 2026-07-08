@@ -25,6 +25,7 @@ mod macos_arrow_filter;
 mod macos_traffic_light;
 pub mod managed_codex;
 pub mod management_api;
+pub mod memory_auto_update;
 pub mod memory_evolution;
 pub mod notification;
 pub mod notification_badge;
@@ -364,6 +365,7 @@ pub fn run() {
             // System skills sync (task-alignment / task-implement etc.)
             commands::cmd_sync_system_skills,
             memory_evolution::cmd_configure_memory_evolution_tasks,
+            memory_auto_update::cmd_configure_memory_auto_update_task,
             // Cron task commands
             cron_task::commands::cmd_create_cron_task,
             cron_task::commands::cmd_start_cron_task,

@@ -6,6 +6,9 @@ use super::*;
 pub struct CronExecutePayload {
     pub task_id: String,
     pub prompt: String,
+    /// Product-owned hidden maintenance marker mirrored from CronTask.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub managed_kind: Option<String>,
     /// Task Center Task id when this CronTask is the execution provider for a Task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_center_task_id: Option<String>,
@@ -412,6 +415,7 @@ pub async fn cmd_execute_cron_task(
     providerIntent: Option<crate::cron_task::ProviderIntent>,
     runtime: Option<String>,
     runtimeConfig: Option<serde_json::Value>,
+    managedKind: Option<String>,
     runMode: Option<String>,
     intervalMinutes: Option<u32>,
     executionNumber: Option<u32>,
@@ -419,6 +423,7 @@ pub async fn cmd_execute_cron_task(
     let payload = CronExecutePayload {
         task_id: taskId.clone(),
         prompt,
+        managed_kind: managedKind,
         task_center_task_id: None,
         session_id: sessionId,
         is_first_execution: isFirstExecution,

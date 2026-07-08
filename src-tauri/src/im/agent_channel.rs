@@ -2850,20 +2850,18 @@ pub(super) async fn create_bot_instance<R: Runtime>(
         // clone of the sender (used for self-cascade when more cron events
         // remain after a single-event run_once cycle).
         let (wake_tx, wake_rx) = mpsc::channel::<types::HeartbeatWake>(64);
-        let (runner, config_arc, _mau_config_arc, _mau_running_arc) =
-            heartbeat::HeartbeatRunner::new(
-                hb_config,
-                hb_bot_label,
-                Arc::clone(&current_model),
-                Arc::clone(&current_provider_env),
-                Arc::clone(&mcp_servers_json),
-                Arc::clone(&runtime),
-                Arc::clone(&runtime_config),
-                types::HostInteractionCapability::for_platform(&config.platform),
-                None, // Memory auto-update: not used for per-channel heartbeat (Agent-level only)
-                Arc::clone(&pending_cron_events),
-                wake_tx.clone(),
-            );
+        let (runner, config_arc) = heartbeat::HeartbeatRunner::new(
+            hb_config,
+            hb_bot_label,
+            Arc::clone(&current_model),
+            Arc::clone(&current_provider_env),
+            Arc::clone(&mcp_servers_json),
+            Arc::clone(&runtime),
+            Arc::clone(&runtime_config),
+            types::HostInteractionCapability::for_platform(&config.platform),
+            Arc::clone(&pending_cron_events),
+            wake_tx.clone(),
+        );
 
         let hb_shutdown_rx = shutdown_rx.clone();
         let hb_router = Arc::clone(&router);

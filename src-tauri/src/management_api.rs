@@ -230,7 +230,6 @@ struct CreateCronResponse {
 struct ListCronQuery {
     source_bot_id: Option<String>,
     workspace_path: Option<String>,
-    include_managed: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -340,6 +339,43 @@ struct ApiResponse {
     ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+}
+
+const MANAGED_CRON_TASK_ERROR: &str =
+    "Managed scheduled jobs are internal and cannot be managed from ordinary CronTask surfaces";
+
+fn is_managed_cron_task(task: &CronTask) -> bool {
+    task.managed_kind
+        .as_deref()
+        .is_some_and(crate::task::is_supported_managed_kind)
+}
+
+async fn get_ordinary_cron_task(
+    manager: &cron_task::CronTaskManager,
+    task_id: &str,
+) -> Result<CronTask, String> {
+    let task = manager
+        .get_task(task_id)
+        .await
+        .ok_or_else(|| format!("Task not found: {}", task_id))?;
+    if is_managed_cron_task(&task) {
+        return Err(MANAGED_CRON_TASK_ERROR.to_string());
+    }
+    Ok(task)
+}
+
+fn managed_api_response() -> ApiResponse {
+    ApiResponse {
+        ok: false,
+        error: Some(MANAGED_CRON_TASK_ERROR.to_string()),
+    }
+}
+
+fn managed_json_response() -> serde_json::Value {
+    serde_json::json!({
+        "ok": false,
+        "error": MANAGED_CRON_TASK_ERROR,
+    })
 }
 
 // ===== Handlers =====
@@ -506,9 +542,7 @@ async fn list_cron_handler(Query(query): Query<ListCronQuery>) -> Json<serde_jso
     } else {
         manager.get_all_tasks().await
     };
-    if !query.include_managed.unwrap_or(false) {
-        tasks.retain(|t| t.managed_kind.is_none());
-    }
+    tasks.retain(|t| !is_managed_cron_task(t));
 
     // PRD 0.2.5 R9 — single snapshot of "currently executing" set, applied
     // to all summaries. Avoids N separate lock acquisitions; correct for
@@ -528,6 +562,12 @@ async fn list_cron_handler(Query(query): Query<ListCronQuery>) -> Json<serde_jso
 
 async fn update_cron_handler(Json(req): Json<UpdateCronRequest>) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
+    if let Err(e) = get_ordinary_cron_task(manager, &req.task_id).await {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": e,
+        }));
+    }
 
     match manager.update_task_fields(&req.task_id, req.patch).await {
         Ok(updated) => {
@@ -552,6 +592,12 @@ async fn update_cron_handler(Json(req): Json<UpdateCronRequest>) -> Json<serde_j
 
 async fn delete_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<ApiResponse> {
     let manager = cron_task::get_cron_task_manager();
+    if get_ordinary_cron_task(manager, &req.task_id)
+        .await
+        .is_err_and(|e| e == MANAGED_CRON_TASK_ERROR)
+    {
+        return Json(managed_api_response());
+    }
 
     // Stop first if running
     let _ = manager
@@ -574,12 +620,12 @@ async fn run_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<ApiResponse> {
     let manager = cron_task::get_cron_task_manager();
 
     // Check task exists
-    let task = match manager.get_task(&req.task_id).await {
-        Some(t) => t,
-        None => {
+    let task = match get_ordinary_cron_task(manager, &req.task_id).await {
+        Ok(t) => t,
+        Err(e) => {
             return Json(ApiResponse {
                 ok: false,
-                error: Some(format!("Task not found: {}", req.task_id)),
+                error: Some(e),
             });
         }
     };
@@ -612,6 +658,12 @@ async fn run_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<ApiResponse> {
 /// kicks off (does NOT wait for the AI to finish).
 async fn trigger_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
+    if let Err(e) = get_ordinary_cron_task(manager, &req.task_id).await {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": e,
+        }));
+    }
     match manager.trigger_now(&req.task_id).await {
         Ok(info) => Json(serde_json::json!({
             "ok": true,
@@ -649,6 +701,12 @@ struct RunsQuery {
 }
 
 async fn runs_cron_handler(Query(params): Query<RunsQuery>) -> Json<serde_json::Value> {
+    let manager = cron_task::get_cron_task_manager();
+    if let Some(task) = manager.get_task(&params.task_id).await {
+        if is_managed_cron_task(&task) {
+            return Json(managed_json_response());
+        }
+    }
     let limit = params.limit.unwrap_or(20);
     let runs = cron_task::read_cron_runs(&params.task_id, limit);
     Json(serde_json::json!({ "ok": true, "runs": runs }))
@@ -663,13 +721,14 @@ struct StatusQuery {
 
 async fn status_cron_handler(Query(params): Query<StatusQuery>) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
-    let tasks = if let Some(bot_id) = &params.bot_id {
+    let mut tasks = if let Some(bot_id) = &params.bot_id {
         manager.get_tasks_for_bot(bot_id).await
     } else if let Some(workspace) = &params.workspace_path {
         manager.get_tasks_for_workspace(workspace).await
     } else {
         manager.get_all_tasks().await
     };
+    tasks.retain(|task| !is_managed_cron_task(task));
 
     let total = tasks.len();
     let running = tasks
@@ -1072,6 +1131,12 @@ async fn send_media_handler(Json(req): Json<SendMediaRequest>) -> Json<serde_jso
 
 async fn stop_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<ApiResponse> {
     let manager = cron_task::get_cron_task_manager();
+    if get_ordinary_cron_task(manager, &req.task_id)
+        .await
+        .is_err_and(|e| e == MANAGED_CRON_TASK_ERROR)
+    {
+        return Json(managed_api_response());
+    }
     match manager
         .stop_task(&req.task_id, Some("Stopped via admin CLI".to_string()))
         .await
@@ -1439,7 +1504,6 @@ struct TaskListQuery {
     status: Option<String>,
     tag: Option<String>,
     include_deleted: Option<bool>,
-    include_managed: Option<bool>,
 }
 
 async fn task_list_handler(Query(q): Query<TaskListQuery>) -> Json<serde_json::Value> {
@@ -1454,7 +1518,7 @@ async fn task_list_handler(Query(q): Query<TaskListQuery>) -> Json<serde_json::V
         status: q.status.and_then(|s| parse_status_filter(&s)),
         tag: q.tag,
         include_deleted: q.include_deleted,
-        include_managed: q.include_managed,
+        include_managed: None,
     };
     let tasks = store.list(filter).await;
     Json(serde_json::json!({ "ok": true, "tasks": tasks }))
@@ -1493,8 +1557,8 @@ async fn task_get_handler(Query(q): Query<TaskGetQuery>) -> Json<serde_json::Val
             "error": "task store not initialized"
         }));
     };
-    match store.get(&q.id).await {
-        Some(t) => {
+    match store.get_ordinary(&q.id).await {
+        Ok(t) => {
             // Attach task.docs (four absolute paths) so the AI / CLI
             // reading this response knows where task.md / verify.md /
             // progress.md / alignment.md live without having to
@@ -1512,10 +1576,7 @@ async fn task_get_handler(Query(q): Query<TaskGetQuery>) -> Json<serde_json::Val
             };
             Json(serde_json::json!({ "ok": true, "task": task::TaskWithDocs { task: t, docs } }))
         }
-        None => Json(serde_json::json!({
-            "ok": false,
-            "error": "not_found"
-        })),
+        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
     }
 }
 
@@ -1565,6 +1626,9 @@ async fn task_update_handler(Json(input): Json<task::TaskUpdateInput>) -> Json<s
             "error": "task store not initialized"
         }));
     };
+    if let Err(error) = store.get_ordinary(&input.id).await {
+        return Json(serde_json::json!({ "ok": false, "error": error }));
+    }
     // Reuses `TaskStore::update`, which:
     //   * rejects updates on Running/Verifying tasks (state-machine guard),
     //   * applies mode-transition hygiene (clearing recurring fields when
@@ -1619,6 +1683,9 @@ async fn task_update_status_handler(
             "error": "task store not initialized"
         }));
     };
+    if let Err(error) = store.get_ordinary(&req.id).await {
+        return Json(serde_json::json!({ "ok": false, "error": error }));
+    }
     match store
         .update_status(task::TaskUpdateStatusInput {
             id: req.id,
@@ -1654,6 +1721,9 @@ async fn task_append_session_handler(
             "error": "task store not initialized"
         }));
     };
+    if let Err(error) = store.get_ordinary(&req.id).await {
+        return Json(serde_json::json!({ "ok": false, "error": error }));
+    }
     match store.append_session(&req.id, &req.session_id).await {
         Ok(t) => Json(serde_json::json!({ "ok": true, "task": t })),
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
@@ -1675,6 +1745,9 @@ async fn task_archive_handler(Json(req): Json<TaskArchiveApiRequest>) -> Json<se
             "error": "task store not initialized"
         }));
     };
+    if let Err(error) = store.get_ordinary(&req.id).await {
+        return Json(serde_json::json!({ "ok": false, "error": error }));
+    }
     match store.archive(&req.id, req.message).await {
         Ok(t) => Json(serde_json::json!({ "ok": true, "task": t })),
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
@@ -1694,7 +1767,10 @@ async fn task_delete_handler(Json(req): Json<TaskDeleteApiRequest>) -> Json<serd
             "error": "task store not initialized"
         }));
     };
-    let source_thought = store.get(&req.id).await.and_then(|t| t.source_thought_id);
+    let source_thought = match store.get_ordinary(&req.id).await {
+        Ok(task) => task.source_thought_id,
+        Err(error) => return Json(serde_json::json!({ "ok": false, "error": error })),
+    };
     match store.delete(&req.id).await {
         Ok(()) => {
             if let (Some(thought_id), Some(thoughts)) =
@@ -1880,6 +1956,11 @@ async fn task_create_from_alignment_handler(
 ///   once and stays stopped after.
 /// - For scheduled/recurring/loop the CronTask schedule mirrors the Task.
 async fn task_run_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_json::Value> {
+    if let Some(store) = task::get_task_store() {
+        if let Err(error) = store.get_ordinary(&req.id).await {
+            return Json(serde_json::json!({ "ok": false, "error": error }));
+        }
+    }
     match run_task_by_id(&req.id).await {
         Ok((task, cron_id)) => Json(serde_json::json!({
             "ok": true,
@@ -1930,8 +2011,9 @@ async fn task_rerun_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_jso
     let Some(task_store) = task::get_task_store() else {
         return Json(serde_json::json!({ "ok": false, "error": "task store not initialized" }));
     };
-    let Some(ta) = task_store.get(&req.id).await else {
-        return Json(serde_json::json!({ "ok": false, "error": "task not found" }));
+    let ta = match task_store.get_ordinary(&req.id).await {
+        Ok(task) => task,
+        Err(error) => return Json(serde_json::json!({ "ok": false, "error": error })),
     };
 
     if !matches!(
@@ -1994,8 +2076,9 @@ async fn task_read_doc_handler(
     let Some(store) = task::get_task_store() else {
         return Json(serde_json::json!({ "ok": false, "error": "task store not initialized" }));
     };
-    let Some(ta) = store.get(&q.id).await else {
-        return Json(serde_json::json!({ "ok": false, "error": "task not found" }));
+    let ta = match store.get_ordinary(&q.id).await {
+        Ok(task) => task,
+        Err(error) => return Json(serde_json::json!({ "ok": false, "error": error })),
     };
     // Delegate to `task::task_doc_filename` so the Management API, Tauri
     // IPC, and any future doc-reading surface all share one whitelist —
@@ -2057,6 +2140,9 @@ async fn task_write_doc_handler(Json(req): Json<TaskWriteDocRequest>) -> Json<se
                 filename
             ),
         }));
+    }
+    if let Err(error) = store.get_ordinary(&req.id).await {
+        return Json(serde_json::json!({ "ok": false, "error": error }));
     }
     match store.write_doc(&req.id, filename, &req.content).await {
         Ok(()) => Json(serde_json::json!({ "ok": true })),

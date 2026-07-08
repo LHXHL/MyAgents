@@ -517,6 +517,13 @@ export async function patchAgentConfig(
       ? { ...patch, providerEnvJson: resolvedProviderEnvJson ?? undefined }
       : patch;
     await syncAgentRuntime(agentId, effectivePatch, updated, resolvedMcpJson);
+    if ('memoryAutoUpdate' in patch) {
+      try {
+        await configureMemoryAutoUpdateTaskForAgent(updated);
+      } catch (e) {
+        console.warn('[agentConfigService] Memory auto-update task reconcile failed:', e);
+      }
+    }
   }
 
   return updated;
@@ -653,6 +660,47 @@ export async function addAgentConfig(agent: AgentConfig): Promise<void> {
       agents,
     };
   });
+  if (agent.memoryAutoUpdate?.enabled) {
+    try {
+      await configureMemoryAutoUpdateTaskForAgent(agent);
+    } catch (e) {
+      console.warn('[agentConfigService] Memory auto-update task provisioning failed:', e);
+    }
+  }
+}
+
+export async function configureMemoryAutoUpdateTaskForAgent(
+  agent: AgentConfig,
+): Promise<void> {
+  const { isTauriEnvironment } = await import('@/utils/browserMock');
+  if (!isTauriEnvironment()) return;
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cmd_configure_memory_auto_update_task', {
+    request: {
+      agentId: agent.id,
+      workspacePath: agent.workspacePath,
+      memoryAutoUpdate: agent.memoryAutoUpdate,
+      heartbeat: agent.heartbeat,
+    },
+  });
+}
+
+async function disableMemoryAutoUpdateTaskForAgent(
+  agent: Pick<AgentConfig, 'id' | 'workspacePath' | 'heartbeat'>,
+): Promise<void> {
+  const { isTauriEnvironment } = await import('@/utils/browserMock');
+  if (!isTauriEnvironment()) return;
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cmd_configure_memory_auto_update_task', {
+    request: {
+      agentId: agent.id,
+      workspacePath: agent.workspacePath,
+      memoryAutoUpdate: undefined,
+      heartbeat: agent.heartbeat,
+    },
+  });
 }
 
 export async function configureMemoryEvolutionTasksForAgent(
@@ -683,13 +731,22 @@ export async function configureMemoryEvolutionTasksForAgent(
  * Remove an agent config from disk.
  */
 export async function removeAgentConfig(agentId: string): Promise<void> {
+  let removedAgent: AgentConfig | undefined;
   await atomicModifyConfig(config => {
+    removedAgent = (config.agents || []).find(a => a.id === agentId);
     const agents = (config.agents || []).filter(a => a.id !== agentId);
     return {
       ...config,
       agents,
     };
   });
+  if (removedAgent?.workspacePath) {
+    try {
+      await disableMemoryAutoUpdateTaskForAgent(removedAgent);
+    } catch (e) {
+      console.warn('[agentConfigService] Memory auto-update task cleanup failed:', e);
+    }
+  }
 }
 
 // ============= Runtime Helpers =============

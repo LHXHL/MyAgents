@@ -50,7 +50,10 @@ export type TaskRunMode = 'single-session' | 'new-session';
 export type TaskExecutor = 'user' | 'agent';
 
 /** Product-owned managed task kinds. Ordinary user tasks leave this unset. */
-export type ManagedTaskKind = 'memory_gardener' | 'memory_molt';
+export type ManagedTaskKind =
+  | 'memory_gardener'
+  | 'memory_molt'
+  | 'memory_auto_update_batch';
 
 /**
  * How the task was created — governs the initial prompt construction on dispatch

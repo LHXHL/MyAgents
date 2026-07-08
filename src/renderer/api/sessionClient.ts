@@ -14,6 +14,10 @@ import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecuti
 import type { RuntimeSource } from '../../shared/types/runtime';
 import type { OfficialToolId } from '../../shared/official-tools';
 import type { SessionOrigin } from '../../shared/session-origin';
+import {
+    isSystemMaintenanceSession,
+    type SystemMaintenanceSessionKind,
+} from '../../shared/managedScheduledJob';
 
 export interface SessionStats {
     messageCount: number;
@@ -50,6 +54,8 @@ export interface SessionMetadata {
     stats?: SessionStats;
     /** Associated cron task ID (if this session is used by a scheduled task) */
     cronTaskId?: string;
+    /** Product-owned hidden maintenance marker. Ordinary automation sessions leave this unset. */
+    systemMaintenanceKind?: SystemMaintenanceSessionKind;
     /**
      * Legacy channel/source metadata. Kept for compatibility with old sessions
      * and IM channel identifiers; use `origin` for product/statistics origin.
@@ -148,7 +154,9 @@ export interface SessionDetailedStats {
 }
 
 function sortSessionsByLastActive(data: SessionMetadata[]): SessionMetadata[] {
-    return [...data].sort((a, b) => new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime());
+    return [...data]
+        .filter((session) => !isSystemMaintenanceSession(session))
+        .sort((a, b) => new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime());
 }
 
 /**

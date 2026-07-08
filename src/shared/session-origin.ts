@@ -37,6 +37,13 @@ export type OriginAnalyticsFields = {
   origin_surface: OriginSurface;
 };
 
+export {
+  isSystemMaintenanceKind,
+  isSystemMaintenanceSession,
+  normalizeSystemMaintenanceKind,
+  type SystemMaintenanceSessionKind,
+} from './managedScheduledJob';
+
 export const UNKNOWN_SESSION_ORIGIN: SessionOrigin = {
   kind: 'unknown',
   surface: 'unknown',

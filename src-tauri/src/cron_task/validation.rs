@@ -8,7 +8,7 @@ use super::*;
 ///
 /// pub(crate): this is the canonical Rust workspace-path identity (the TS port
 /// lives in src/shared/workspacePath.ts — keep both in sync). Other modules
-/// (im::handover, im::memory_update) MUST reuse it instead of hand-rolling
+/// (im::handover, memory_auto_update) MUST reuse it instead of hand-rolling
 /// `.replace('\\', "/")`, which misses drive-letter case folding and
 /// trailing-slash trimming (#320 family).
 pub(crate) fn normalize_path(path: &str) -> String {

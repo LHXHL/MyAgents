@@ -5,6 +5,7 @@ import { deriveSessionTitle } from '../../shared/sessionTitle';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { SessionOrigin } from '../../shared/session-origin';
+import type { SystemMaintenanceSessionKind } from '../../shared/managedScheduledJob';
 
 /**
  * Session statistics for tracking usage
@@ -34,6 +35,8 @@ export interface SessionMetadata {
     stats?: SessionStats;
     /** Associated cron task ID (if this session is used by a scheduled task) */
     cronTaskId?: string;
+    /** Product-owned hidden maintenance marker. Ordinary automation sessions leave this unset. */
+    systemMaintenanceKind?: SystemMaintenanceSessionKind;
     /** Legacy channel/source metadata; use `origin` for product/statistics origin. */
     source?: SessionSource;
     /** Stable product/statistics origin. This is the session birth fact; legacy `source` is channel metadata. */

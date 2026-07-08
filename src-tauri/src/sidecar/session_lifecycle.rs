@@ -164,9 +164,9 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
     //     spawn path below uses the owner-aware priority chain to pick the
     //     correct runtime from agent config.
     //
-    //   - memory_update.rs direct callers: they target an existing session_id
+    //   - memory auto-update callers: they target an existing session_id
     //     that may be shared with a desktop Tab. Killing the Sidecar here
-    //     would orphan the Tab's SSE stream. Better to let memory_update
+    //     would orphan the Tab's SSE stream. Better to let memory_auto_update
     //     reuse the existing (possibly stale-runtime) Sidecar — memory file
     //     updates are runtime-agnostic so a mismatched runtime doesn't
     //     actually break anything.

@@ -103,6 +103,20 @@ describe('pre-query session draft visibility', () => {
         expect(store.isHistoryVisibleSession(channel)).toBe(true);
     });
 
+    it('hides system maintenance sessions from ordinary history', () => {
+        const meta = managedCodexMeta('88888888-8888-4888-8888-888888888888', {
+            title: 'Memory gardener',
+            runtime: 'builtin',
+            runtimeSource: undefined,
+            providerId: undefined,
+            providerExecutionIdentity: undefined,
+            origin: { kind: 'automation', surface: 'cron' },
+            systemMaintenanceKind: 'memory_gardener',
+        });
+
+        expect(store.isHistoryVisibleSession(meta)).toBe(false);
+    });
+
     it('keeps legacy Managed Codex rows visible after a user message exists on disk', () => {
         const id = '55555555-5555-4555-8555-555555555555';
         const meta = managedCodexMeta(id);

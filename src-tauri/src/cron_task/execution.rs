@@ -179,6 +179,10 @@ pub(super) async fn execute_task_directly(
 
     ulog_info!("[CronTask] Got SidecarManager state for task {}", task.id);
 
+    if task.managed_kind.as_deref() == Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH) {
+        return crate::memory_auto_update::run_managed_cron_batch(handle, task).await;
+    }
+
     if matches!(
         task.managed_kind.as_deref(),
         Some(crate::task::MANAGED_KIND_MEMORY_GARDENER)
@@ -356,6 +360,7 @@ pub(super) async fn execute_task_directly(
     let payload = CronExecutePayload {
         task_id: task.id.clone(),
         prompt: prompt_to_send,
+        managed_kind: task.managed_kind.clone(),
         task_center_task_id: task.task_id.clone(),
         session_id: Some(effective_session_id.clone()),
         is_first_execution: Some(is_first_execution),

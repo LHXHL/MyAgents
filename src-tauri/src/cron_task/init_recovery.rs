@@ -29,6 +29,15 @@ pub async fn initialize_cron_manager(handle: AppHandle) {
     // Recover running tasks (方案 A: Rust 层统一恢复)
     recover_running_tasks(&handle).await;
 
+    if let Err(error) =
+        crate::memory_auto_update::reconcile_memory_auto_update_tasks_from_disk().await
+    {
+        ulog_warn!(
+            "[memory-auto-update] startup disk-first reconcile failed: {}",
+            error
+        );
+    }
+
     // Emit event to notify frontend that cron manager is ready
     // Frontend no longer needs to call recoverCronTasks
     let _ = handle.emit("cron:manager-ready", serde_json::json!({}));

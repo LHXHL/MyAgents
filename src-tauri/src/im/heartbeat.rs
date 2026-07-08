@@ -2,7 +2,6 @@
 // Periodically checks a user-defined checklist and pushes results to IM.
 // Supports active hours, instant wake (from cron completion), and dedup.
 
-use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -95,9 +94,6 @@ pub struct HeartbeatRunner {
     runtime: Arc<RwLock<String>>,
     runtime_config: Arc<RwLock<Option<serde_json::Value>>>,
     host_interaction: HostInteractionCapability,
-    // Memory auto-update (v0.1.43)
-    memory_update_config: Arc<RwLock<Option<super::types::MemoryAutoUpdateConfig>>>,
-    memory_update_running: Arc<AtomicBool>,
     /// Pending cron events shared with `ImBotInstance` (v0.2.4). Snapshot in
     /// run_once → ship to sidecar via HeartbeatRequest body → clear delivered
     /// entries only after IM push success. Same Arc as the bot instance, so
@@ -117,7 +113,7 @@ pub struct HeartbeatRunner {
 
 impl HeartbeatRunner {
     /// Create a new HeartbeatRunner.
-    /// Returns (runner, config_arc, mau_config_arc, mau_running_arc) — caller keeps arcs for hot-updating.
+    /// Returns (runner, config_arc) — caller keeps the config arc for hot-updating.
     pub fn new(
         config: HeartbeatConfig,
         bot_label: String,
@@ -127,18 +123,10 @@ impl HeartbeatRunner {
         runtime: Arc<RwLock<String>>,
         runtime_config: Arc<RwLock<Option<serde_json::Value>>>,
         host_interaction: HostInteractionCapability,
-        memory_update_config: Option<super::types::MemoryAutoUpdateConfig>,
         pending_cron_events: Arc<Mutex<Vec<PendingCronEvent>>>,
         self_wake_tx: mpsc::Sender<HeartbeatWake>,
-    ) -> (
-        Self,
-        Arc<RwLock<HeartbeatConfig>>,
-        Arc<RwLock<Option<super::types::MemoryAutoUpdateConfig>>>,
-        Arc<AtomicBool>,
-    ) {
+    ) -> (Self, Arc<RwLock<HeartbeatConfig>>) {
         let config = Arc::new(RwLock::new(config));
-        let mau_config = Arc::new(RwLock::new(memory_update_config));
-        let mau_running = Arc::new(AtomicBool::new(false));
         let runner = Self {
             bot_label,
             config: Arc::clone(&config),
@@ -152,12 +140,10 @@ impl HeartbeatRunner {
             runtime,
             runtime_config,
             host_interaction,
-            memory_update_config: Arc::clone(&mau_config),
-            memory_update_running: Arc::clone(&mau_running),
             pending_cron_events,
             self_wake_tx,
         };
-        (runner, config, mau_config, mau_running)
+        (runner, config)
     }
 
     /// Main heartbeat loop. Runs until shutdown signal.
@@ -352,7 +338,7 @@ impl HeartbeatRunner {
         peer_locks: &PeerLocks,
         health: &Arc<HealthManager>,
         agent_id: &str,
-        workspace_path: &str,
+        _workspace_path: &str,
     ) -> bool {
         let config = self.config.read().await.clone();
         let reason = wake.reason.clone();
@@ -848,28 +834,6 @@ impl HeartbeatRunner {
                     }
                 }
             }
-        }
-
-        // Memory auto-update check (v0.1.43)
-        // Lightweight check after heartbeat — spawns independent task if conditions met
-        if success {
-            super::memory_update::check_and_spawn(
-                agent_id,
-                workspace_path,
-                &self.memory_update_config,
-                &self.memory_update_running,
-                sidecar_manager,
-                app_handle,
-                &self.current_model,
-                &self.current_provider_env,
-                &self.mcp_servers_json,
-                {
-                    let cfg = self.config.read().await;
-                    cfg.active_hours.as_ref().map(|ah| ah.timezone.clone())
-                }
-                .as_deref(),
-            )
-            .await;
         }
 
         success

@@ -21,6 +21,7 @@ import { join } from 'path';
 import type { SessionMetadata, SessionData, SessionMessage, SessionStats } from './types/session';
 import { createSessionMetadata, generateSessionTitle } from './types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
+import { isSystemMaintenanceSession } from '../shared/managedScheduledJob';
 import { stripBom } from '../shared/utils';
 import { workspacePathsEqual } from '../shared/workspacePath';
 import { ensureDirSync } from './utils/fs-utils';
@@ -518,6 +519,7 @@ export function isLegacyPreQueryManagedCodexDraft(session: SessionMetadata): boo
 
 export function isHistoryVisibleSession(session: SessionMetadata): boolean {
     return session.materializationState !== 'prepared'
+        && !isSystemMaintenanceSession(session)
         && !isLegacyPreQueryManagedCodexDraft(session);
 }
 

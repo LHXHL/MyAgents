@@ -29,6 +29,7 @@ import { useConfig } from '@/hooks/useConfig';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import { isProjectActiveForUser } from '@/config/types';
+import { isManagedScheduledJob } from '@/../shared/managedScheduledJob';
 import type { Task, TaskStatus } from '@/../shared/types/task';
 import { normalizeWorkspacePathIdentity, workspacePathsEqual } from '@/../shared/workspacePath';
 import { canAutoUpgrade, isBenignAlreadyLinked, upgradeLegacyCron, type LegacyCronRaw } from './legacyUpgrade';
@@ -168,7 +169,7 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
       const mergedNative = upgradedTasks.length
         ? [...upgradedTasks, ...nativeList]
         : nativeList;
-      setTasks(mergedNative.filter((task) => !task.managedKind));
+      setTasks(mergedNative.filter((task) => !isManagedScheduledJob(task)));
       setLegacy(remainingLegacy);
       if (upgradedTasks.length > 0) {
         toastRef.current.success(
@@ -742,7 +743,7 @@ async function fetchLegacyCronTasks(unnamedLegacyTaskLabel: string): Promise<Leg
       'cmd_get_cron_tasks',
     )) as Array<Record<string, unknown>>;
     return all
-      .filter((t) => !t.taskId && !t.task_id && !getRawManagedKind(t))
+      .filter((t) => !t.taskId && !t.task_id && !isManagedScheduledJob(t))
       .map<LegacyCronRow>((t) => {
         const status = (t.status as string | undefined) === 'running' ? 'running' : 'stopped';
         const updatedAt =
@@ -772,11 +773,6 @@ async function fetchLegacyCronTasks(unnamedLegacyTaskLabel: string): Promise<Leg
     console.warn('[TaskListPanel] fetchLegacyCronTasks failed', err);
     return [];
   }
-}
-
-function getRawManagedKind(row: Record<string, unknown>): string {
-  const value = row.managedKind ?? row.managed_kind;
-  return typeof value === 'string' ? value.trim() : '';
 }
 
 /**

@@ -1,5 +1,5 @@
 import { getSessionEngine } from '../session-engine';
-import { getSessionData } from '../SessionStore';
+import { getSessionData, isHistoryVisibleSession } from '../SessionStore';
 import { pendingSessionWatchCount, registerPendingSessionWatch } from '../inbox/watch-registry';
 import {
   shrinkSessionMessageForClient,
@@ -142,6 +142,9 @@ function handleSessionDetails(sessionId: string, url: URL): Response {
         },
       });
     }
+    return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+  }
+  if (!isHistoryVisibleSession(session)) {
     return jsonResponse({ success: false, error: 'Session not found.' }, 404);
   }
 

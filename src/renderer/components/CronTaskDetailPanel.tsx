@@ -15,6 +15,7 @@ import {
 import { getFolderName } from '@/utils/taskCenterUtils';
 import { workspacePathsEqual } from '@/../shared/workspacePath';
 import { isSupportedLocale } from '@/../shared/i18n';
+import { isManagedScheduledJob } from '@/../shared/managedScheduledJob';
 import WorkspaceIcon from './launcher/WorkspaceIcon';
 import { useToast } from './Toast';
 import { useConfig } from '@/hooks/useConfig';
@@ -92,6 +93,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
     const isMountedRef = useRef(true);
     useEffect(() => () => { isMountedRef.current = false; }, []);
     const project = useMemo(() => projects.find(p => workspacePathsEqual(p.path, task.workspacePath)), [projects, task.workspacePath]);
+    const isManagedTask = isManagedScheduledJob(task);
     const agent = useMemo(
         () => project?.agentId ? config.agents?.find(a => a.id === project.agentId) : undefined,
         [config.agents, project?.agentId],
@@ -115,7 +117,8 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
         })();
     }, [internalSessionId, task.runMode]);
 
-    const canSyncToAgent = task.runMode === 'single_session'
+    const canSyncToAgent = !isManagedTask
+        && task.runMode === 'single_session'
         && !!project?.agentId
         && !!sessionMeta?.configSnapshotAt;
 
@@ -443,11 +446,12 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
 
                                 <div className="border-t border-[var(--line)]" />
 
-                                {/* 执行历史 */}
-                                <div>
-                                    <SectionHeader icon={History}>{t('cron.detail.sectionHistory')}</SectionHeader>
-                                    <div className="mt-2"><TaskRunHistory taskId={task.id} sessionId={task.internalSessionId || task.sessionId} onOpenSession={onOpenSession ? (sid) => { onOpenSession(sid); onClose(); } : undefined} /></div>
-                                </div>
+                                {!isManagedTask && (
+                                    <div>
+                                        <SectionHeader icon={History}>{t('cron.detail.sectionHistory')}</SectionHeader>
+                                        <div className="mt-2"><TaskRunHistory taskId={task.id} sessionId={task.internalSessionId || task.sessionId} onOpenSession={onOpenSession ? (sid) => { onOpenSession(sid); onClose(); } : undefined} /></div>
+                                    </div>
+                                )}
                             </>
                         )}
                     </div>
@@ -467,9 +471,11 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                             </>
                         ) : (
                             <>
-                                <button onClick={() => setShowDeleteConfirm(true)} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-[var(--error)] hover:bg-[var(--error-bg)] transition-colors">
-                                    <Trash2 className="h-3.5 w-3.5" />{t('cron.detail.delete')}
-                                </button>
+                                {isManagedTask ? <div /> : (
+                                    <button onClick={() => setShowDeleteConfirm(true)} className="flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium text-[var(--error)] hover:bg-[var(--error-bg)] transition-colors">
+                                        <Trash2 className="h-3.5 w-3.5" />{t('cron.detail.delete')}
+                                    </button>
+                                )}
                                 <div className="flex items-center gap-2.5">
                                     {canSyncToAgent && (
                                         <button
@@ -480,16 +486,18 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                                             <ArrowUpToLine className="h-3.5 w-3.5" />{t('cron.detail.syncToAgent')}
                                         </button>
                                     )}
-                                    <button onClick={startEditing} className="flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-4 py-2 text-sm font-medium text-[var(--ink-muted)] hover:border-[var(--line-strong)] hover:text-[var(--ink)] transition-colors">
-                                        <Pencil className="h-3.5 w-3.5" />{t('cron.detail.edit')}
-                                    </button>
-                                    {task.status === 'running' && onStop && (
+                                    {!isManagedTask && (
+                                        <button onClick={startEditing} className="flex items-center gap-1.5 rounded-lg border border-[var(--line)] px-4 py-2 text-sm font-medium text-[var(--ink-muted)] hover:border-[var(--line-strong)] hover:text-[var(--ink)] transition-colors">
+                                            <Pencil className="h-3.5 w-3.5" />{t('cron.detail.edit')}
+                                        </button>
+                                    )}
+                                    {!isManagedTask && task.status === 'running' && onStop && (
                                         <button onClick={() => setShowStopConfirm(true)} disabled={isStopping}
                                             className="flex items-center gap-1.5 rounded-lg border border-[var(--error)]/30 px-4 py-2 text-sm font-medium text-[var(--error)] hover:bg-[var(--error-bg)] disabled:opacity-50 transition-colors">
                                             <Square className="h-3.5 w-3.5" />{isStopping ? t('cron.detail.stopping') : t('cron.detail.stop')}
                                         </button>
                                     )}
-                                    {task.status === 'stopped' && (!resumeBlockReason ? (
+                                    {!isManagedTask && task.status === 'stopped' && (!resumeBlockReason ? (
                                         <button onClick={handleResume} disabled={isResuming}
                                             className="flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white hover:bg-[var(--accent-warm-hover)] disabled:opacity-50 transition-colors">
                                             <Play className="h-3.5 w-3.5" />{isResuming ? t('cron.detail.resuming') : t('cron.detail.resume')}

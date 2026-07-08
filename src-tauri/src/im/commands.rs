@@ -1338,8 +1338,6 @@ pub async fn cmd_start_agent_channel(
                 agentConfig.runtime.as_deref(),
             ))),
             runtime_config: Arc::new(RwLock::new(agentConfig.runtime_config.clone())),
-            memory_update_config: None,
-            memory_update_running: None,
             memory_evolution_config: None,
         });
 
@@ -1855,6 +1853,9 @@ pub async fn cmd_update_agent_config(
 
     // Hot-reload running instance if present (runtime only — disk persistence
     // is handled by the TypeScript patchAgentConfig service)
+    let mut memory_auto_update_reconcile: Option<
+        crate::memory_auto_update::ConfigureMemoryAutoUpdateTaskRequest,
+    > = None;
     let mut agents_guard = agentState.lock().await;
     if let Some(agent) = agents_guard.get_mut(&agentId) {
         // ── Snapshot capture for runtime-change session detach ──
@@ -2072,9 +2073,14 @@ pub async fn cmd_update_agent_config(
             } else {
                 serde_json::from_str(mau_json).ok()
             };
-            if let Some(ref mau_arc) = agent.memory_update_config {
-                *mau_arc.write().await = agent.config.memory_auto_update.clone();
-            }
+            memory_auto_update_reconcile = Some(
+                crate::memory_auto_update::ConfigureMemoryAutoUpdateTaskRequest {
+                    agent_id: agent.config.id.clone(),
+                    workspace_path: agent.config.workspace_path.clone(),
+                    memory_auto_update: agent.config.memory_auto_update.clone(),
+                    heartbeat: agent.config.heartbeat.clone(),
+                },
+            );
         }
         // Hot-reload long-term memory evolution config (v0.2.49)
         if let Some(ref evo_json) = patch.memory_evolution_config_json {
@@ -2262,6 +2268,17 @@ pub async fn cmd_update_agent_config(
         }
     }
     drop(agents_guard);
+
+    if let Some(request) = memory_auto_update_reconcile {
+        if let Err(error) =
+            crate::memory_auto_update::configure_memory_auto_update_task(request).await
+        {
+            ulog_warn!(
+                "[memory-auto-update] failed to reconcile hidden CronTask after agent config update: {}",
+                error
+            );
+        }
+    }
 
     let _ = app_handle.emit("agent:config-changed", json!({}));
     Ok(())

@@ -723,6 +723,11 @@ import type { RuntimeConfig, RuntimeSource, RuntimeType } from '../shared/types/
 import type { RuntimeBackedProviderIdentity } from '../shared/providerExecution';
 import { normalizeSessionOrigin, originFromTurnAttribution } from '../shared/session-origin';
 import type { SessionOrigin } from '../shared/session-origin';
+import {
+  isSystemMaintenanceSession,
+  normalizeSystemMaintenanceKind,
+  type SystemMaintenanceSessionKind,
+} from '../shared/managedScheduledJob';
 import type { InteractionScenario } from './system-prompt';
 import { buildCronEventRelayMessage, neutralizeSystemReminderStructuralTags } from './utils/cron-event-relay';
 
@@ -982,6 +987,8 @@ function resolveCronProviderRouting(
 type CronExecutePayload = {
   taskId: string;
   prompt: string;
+  /** Product-owned hidden maintenance marker mirrored from CronTask. */
+  managedKind?: string;
   /** Task Center Task id when this cron is the provider backing a Task. */
   taskCenterTaskId?: string;
   /** Session ID for single_session mode (reuse existing session) */
@@ -1045,6 +1052,10 @@ type CronExecutePayload = {
   /** Schedule kind from Rust CronSchedule when available. */
   scheduleKind?: CronScheduleKind;
 };
+
+function systemMaintenanceKindFromCronPayload(payload: CronExecutePayload): SystemMaintenanceSessionKind | undefined {
+  return normalizeSystemMaintenanceKind(payload.managedKind);
+}
 
 function parseArgs(argv: string[]): { agentDir: string; initialPrompt?: string; port: number; sessionId?: string; noPreWarm?: boolean } {
   const args = argv.slice(2);
@@ -3056,6 +3067,10 @@ async function main() {
             : { runtime: overrideRuntime };
           cronSnapshot.origin = cronTurnOrigin;
           cronSnapshot.cronTaskId = taskId;
+          const systemMaintenanceKind = systemMaintenanceKindFromCronPayload(payload);
+          if (systemMaintenanceKind) {
+            cronSnapshot.systemMaintenanceKind = systemMaintenanceKind;
+          }
           const overrideRuntimeType = VALID_RUNTIMES.includes(overrideRuntime as RuntimeType)
             ? overrideRuntime as RuntimeType
             : 'builtin';
@@ -3935,6 +3950,9 @@ async function main() {
         if (!session) {
           return jsonResponse({ success: false, error: 'Session not found.' }, 404);
         }
+        if (!isHistoryVisibleSession(session)) {
+          return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+        }
 
         const idx = session.messages.findIndex(m => m.id === lastMessageId);
         // idx === -1 signals "caller's baseline is gone" (session was rewound,
@@ -3960,6 +3978,9 @@ async function main() {
 
         const session = getSessionData(sessionId);
         if (!session) {
+          return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+        }
+        if (!isHistoryVisibleSession(session)) {
           return jsonResponse({ success: false, error: 'Session not found.' }, 404);
         }
 
@@ -4023,7 +4044,15 @@ async function main() {
           return jsonResponse({ success: false, error: 'Session ID required.' }, 400);
         }
 
-        const deleted = await deleteSession(sessionId);
+        const existingMeta = getSessionMetadata(sessionId);
+        if (!existingMeta) {
+          return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+        }
+        if (isSystemMaintenanceSession(existingMeta)) {
+          return jsonResponse({ success: false, error: 'System maintenance session is not user-editable.' }, 403);
+        }
+
+        const deleted = await deleteSession(sessionId, current => !isSystemMaintenanceSession(current));
         if (!deleted) {
           return jsonResponse({ success: false, error: 'Session not found.' }, 404);
         }
@@ -4103,6 +4132,9 @@ async function main() {
               return jsonResponse({ success: false, error: 'Session not found.' }, 404);
             }
             break;
+          }
+          if (isSystemMaintenanceSession(existingMeta)) {
+            return jsonResponse({ success: false, error: 'System maintenance session is not user-editable.' }, 403);
           }
           sawExistingSession = true;
           const nowIso = new Date().toISOString();

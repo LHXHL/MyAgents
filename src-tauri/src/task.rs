@@ -265,6 +265,31 @@ fn default_task_executor_agent() -> TaskExecutor {
 
 pub const MANAGED_KIND_MEMORY_GARDENER: &str = "memory_gardener";
 pub const MANAGED_KIND_MEMORY_MOLT: &str = "memory_molt";
+pub const MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH: &str = "memory_auto_update_batch";
+pub const MANAGED_TASK_ERROR: &str =
+    "Managed scheduled jobs are internal and cannot be managed from ordinary Task surfaces";
+
+pub fn is_supported_managed_kind(kind: &str) -> bool {
+    matches!(
+        kind.trim(),
+        MANAGED_KIND_MEMORY_GARDENER
+            | MANAGED_KIND_MEMORY_MOLT
+            | MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH
+    )
+}
+
+pub fn is_managed_task(task: &Task) -> bool {
+    task.managed_kind
+        .as_deref()
+        .is_some_and(is_supported_managed_kind)
+}
+
+fn reject_managed_kind_from_ordinary_create(kind: &Option<String>) -> Result<(), String> {
+    if kind.as_deref().is_some_and(|raw| !raw.trim().is_empty()) {
+        return Err(MANAGED_TASK_ERROR.to_string());
+    }
+    Ok(())
+}
 
 fn normalize_managed_kind(kind: Option<String>) -> Result<Option<String>, String> {
     let Some(raw) = kind else {
@@ -274,9 +299,10 @@ fn normalize_managed_kind(kind: Option<String>) -> Result<Option<String>, String
     if trimmed.is_empty() {
         return Ok(None);
     }
-    match trimmed {
-        MANAGED_KIND_MEMORY_GARDENER | MANAGED_KIND_MEMORY_MOLT => Ok(Some(trimmed.to_string())),
-        _ => Err(format!("unsupported managedKind: {}", trimmed)),
+    if is_supported_managed_kind(trimmed) {
+        Ok(Some(trimmed.to_string()))
+    } else {
+        Err(format!("unsupported managedKind: {}", trimmed))
     }
 }
 
@@ -1115,7 +1141,44 @@ impl TaskStore {
 
     // ---- Create ----
 
-    pub async fn create_direct(&self, mut input: TaskCreateDirectInput) -> Result<Task, String> {
+    pub async fn create_direct(&self, input: TaskCreateDirectInput) -> Result<Task, String> {
+        reject_managed_kind_from_ordinary_create(&input.managed_kind)?;
+        self.create_direct_internal(
+            input,
+            TransitionActor::User,
+            Some(TransitionSource::Ui),
+            "created (direct)",
+        )
+        .await
+    }
+
+    pub async fn create_system_managed_direct(
+        &self,
+        input: TaskCreateDirectInput,
+    ) -> Result<Task, String> {
+        if !input
+            .managed_kind
+            .as_deref()
+            .is_some_and(is_supported_managed_kind)
+        {
+            return Err("system managed task requires a supported managedKind".to_string());
+        }
+        self.create_direct_internal(
+            input,
+            TransitionActor::System,
+            Some(TransitionSource::Scheduler),
+            "created (system-managed)",
+        )
+        .await
+    }
+
+    async fn create_direct_internal(
+        &self,
+        mut input: TaskCreateDirectInput,
+        created_actor: TransitionActor,
+        created_source: Option<TransitionSource>,
+        created_message: &'static str,
+    ) -> Result<Task, String> {
         // Validate workspace_path + name up front so we don't half-write.
         let workspace_path = canonicalize_workspace_path(&input.workspace_path)?;
         validate_task_name(&input.name)?;
@@ -1177,9 +1240,9 @@ impl TaskStore {
                 from: None,
                 to: TaskStatus::Todo,
                 at: now,
-                actor: TransitionActor::User,
-                message: Some("created (direct)".to_string()),
-                source: Some(TransitionSource::Ui),
+                actor: created_actor,
+                message: Some(created_message.to_string()),
+                source: created_source,
             }],
             notification: input.notification,
             dispatch_origin: TaskDispatchOrigin::Direct,
@@ -1232,9 +1295,9 @@ impl TaskStore {
                 "from": serde_json::Value::Null,
                 "to": TaskStatus::Todo.as_str(),
                 "at": t.created_at,
-                "actor": TransitionActor::User.as_str(),
-                "source": TransitionSource::Ui.as_str(),
-                "message": "created (direct)",
+                "actor": created_actor.as_str(),
+                "source": created_source.map(|source| source.as_str()),
+                "message": created_message,
                 "event": "created",
             }),
         );
@@ -1719,6 +1782,17 @@ impl TaskStore {
         self.inner.read().await.get(id).cloned()
     }
 
+    pub async fn get_ordinary(&self, id: &str) -> Result<Task, String> {
+        let task = self
+            .get(id)
+            .await
+            .ok_or_else(|| String::from(TaskOpError::not_found(id)))?;
+        if is_managed_task(&task) {
+            return Err(MANAGED_TASK_ERROR.to_string());
+        }
+        Ok(task)
+    }
+
     /// Check-and-write `~/.myagents/tasks/<id>/<filename>` atomically with respect to
     /// the running/verifying lock. The status check and the file write
     /// both happen under the same write lock so a concurrent
@@ -1761,7 +1835,7 @@ impl TaskStore {
         let mut out: Vec<Task> = inner.values().cloned().collect();
 
         if !filter.include_managed.unwrap_or(false) {
-            out.retain(|t| t.managed_kind.is_none());
+            out.retain(|t| !is_managed_task(t));
         }
         if !filter.include_deleted.unwrap_or(false) {
             out.retain(|t| !t.deleted);
@@ -3265,7 +3339,9 @@ pub async fn cmd_task_list(
     state: tauri::State<'_, ManagedTaskStore>,
     filter: Option<TaskListFilter>,
 ) -> Result<Vec<Task>, String> {
-    Ok(state.list(filter.unwrap_or_default()).await)
+    let mut filter = filter.unwrap_or_default();
+    filter.include_managed = None;
+    Ok(state.list(filter).await)
 }
 
 #[tauri::command]
@@ -3273,8 +3349,10 @@ pub async fn cmd_task_get(
     state: tauri::State<'_, ManagedTaskStore>,
     id: String,
 ) -> Result<Option<TaskWithDocs>, String> {
-    let Some(task) = state.get(&id).await else {
-        return Ok(None);
+    let task = match state.get_ordinary(&id).await {
+        Ok(task) => task,
+        Err(error) if error == String::from(TaskOpError::not_found(&id)) => return Ok(None),
+        Err(error) => return Err(error),
     };
     let docs = build_task_docs(&task.id)?;
     Ok(Some(TaskWithDocs { task, docs }))
@@ -3285,6 +3363,7 @@ pub async fn cmd_task_update(
     state: tauri::State<'_, ManagedTaskStore>,
     input: TaskUpdateInput,
 ) -> Result<Task, String> {
+    state.get_ordinary(&input.id).await?;
     state.update(input).await
 }
 
@@ -3293,6 +3372,7 @@ pub async fn cmd_task_update_status(
     state: tauri::State<'_, ManagedTaskStore>,
     input: UiTaskUpdateStatusInput,
 ) -> Result<Task, String> {
+    state.get_ordinary(&input.id).await?;
     // Trust boundary: UI callers are stamped as user/ui here. The internal
     // `update_status` API remains available for scheduler / watchdog / crash /
     // endCondition / rerun paths with their own actor/source context.
@@ -3314,6 +3394,7 @@ pub async fn cmd_task_append_session(
     id: String,
     session_id: String,
 ) -> Result<Task, String> {
+    state.get_ordinary(&id).await?;
     state.append_session(&id, &session_id).await
 }
 
@@ -3367,6 +3448,7 @@ pub async fn cmd_task_archive(
     id: String,
     message: Option<String>,
 ) -> Result<Task, String> {
+    state.get_ordinary(&id).await?;
     state.archive(&id, message).await
 }
 
@@ -3377,7 +3459,7 @@ pub async fn cmd_task_delete(
     id: String,
 ) -> Result<(), String> {
     // Capture source_thought_id before delete so we can unlink after.
-    let source_thought_id = task_state.get(&id).await.and_then(|t| t.source_thought_id);
+    let source_thought_id = task_state.get_ordinary(&id).await?.source_thought_id;
     task_state.delete(&id).await?;
     if let Some(thought_id) = source_thought_id {
         if let Err(e) = thought_state.unlink_task(&thought_id, &id).await {
@@ -3408,10 +3490,7 @@ pub async fn cmd_task_read_doc(
     id: String,
     doc: String,
 ) -> Result<String, String> {
-    let task = state
-        .get(&id)
-        .await
-        .ok_or_else(|| String::from(TaskOpError::not_found(&id)))?;
+    let task = state.get_ordinary(&id).await?;
     let filename = task_doc_filename(&doc)?;
     let path = task_docs_dir(&task.id)?.join(filename);
     match fs::read_to_string(&path) {
@@ -3448,6 +3527,7 @@ pub async fn cmd_task_write_doc(
             filename
         ));
     }
+    state.get_ordinary(&id).await?;
     state.write_doc(&id, filename, &content).await
 }
 
@@ -3463,10 +3543,7 @@ pub async fn cmd_task_open_docs_dir(
 ) -> Result<(), String> {
     // Validate the task exists so the UI can't open a docs dir for a
     // deleted / unknown task (Finder would happily open an empty dir).
-    let _task = state
-        .get(&id)
-        .await
-        .ok_or_else(|| String::from(TaskOpError::not_found(&id)))?;
+    state.get_ordinary(&id).await?;
     let dir = task_docs_dir(&id)?;
     fs::create_dir_all(&dir).map_err(|e| format!("mkdir task dir: {}", e))?;
     let path = dir.to_string_lossy().to_string();
@@ -3631,7 +3708,7 @@ mod tests {
         });
     }
 
-    fn sample_direct_input(ws: &PathBuf) -> TaskCreateDirectInput {
+    fn sample_direct_input(ws: &Path) -> TaskCreateDirectInput {
         TaskCreateDirectInput {
             name: "升级 openclaw lark 适配器".to_string(),
             executor: TaskExecutor::Agent,
@@ -3675,6 +3752,48 @@ mod tests {
             actor,
             source,
         }
+    }
+
+    #[tokio::test]
+    async fn ordinary_create_rejects_managed_kind() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let mut input = sample_direct_input(&ws);
+        input.managed_kind = Some(MANAGED_KIND_MEMORY_GARDENER.to_string());
+
+        let err = store
+            .create_direct(input)
+            .await
+            .expect_err("ordinary create must not mint hidden managed tasks");
+        assert_eq!(err, MANAGED_TASK_ERROR);
+        assert!(store.list(TaskListFilter::default()).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn system_managed_create_is_hidden_from_default_list() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let mut input = sample_direct_input(&ws);
+        input.managed_kind = Some(MANAGED_KIND_MEMORY_GARDENER.to_string());
+
+        let created = store.create_system_managed_direct(input).await.unwrap();
+        assert!(is_managed_task(&created));
+        assert!(store.list(TaskListFilter::default()).await.is_empty());
+
+        let visible_to_system = store
+            .list(TaskListFilter {
+                include_managed: Some(true),
+                ..Default::default()
+            })
+            .await;
+        assert_eq!(visible_to_system.len(), 1);
+        assert_eq!(visible_to_system[0].id, created.id);
     }
 
     #[test]

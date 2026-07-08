@@ -15,7 +15,6 @@ pub mod group_history;
 pub mod handover;
 pub mod health;
 pub mod heartbeat;
-pub mod memory_update;
 pub mod reply_router;
 pub mod router;
 pub mod runtime_change;
