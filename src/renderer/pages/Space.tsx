@@ -68,7 +68,7 @@ import {
 } from "@/pages/space/spaceUi";
 import { spaceSlugCandidate } from "@/pages/space/spaceSlug";
 
-const AUTH_POLL_DELAY_MS = 2000;
+const AUTH_POLL_DELAY_MS = 3000;
 const SPACE_EVENTS_SYNC_INTERVAL_MS = 15_000;
 
 type SpaceQuickActionSubmitInput =
@@ -249,10 +249,6 @@ function errMessage(error: unknown): string {
   return spaceErrorMessage(error);
 }
 
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => window.setTimeout(resolve, ms));
-}
-
 function agentIssueSubscriptionRunMode(
   value?: SpaceIssueSubscriptionRunMode | null,
 ): SpaceIssueSubscriptionRunMode {
@@ -384,6 +380,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
     expiresAt: number;
   } | null>(null);
   const authPollWarningShownRef = useRef(false);
+  const authPollWakeRef = useRef<(() => void) | null>(null);
   const [mode, setMode] = useState<ViewMode>("issues");
   const [issueQ, setIssueQ] = useState("");
   const [selectedGoalId, setSelectedGoalId] = useState("");
@@ -729,8 +726,38 @@ export default function Space({ isActive }: { isActive: boolean }) {
     if (!authFlow) return;
     let cancelled = false;
 
+    const wakeAuthPoll = () => {
+      authPollWakeRef.current?.();
+    };
+
+    const wakeAuthPollWhenVisible = () => {
+      if (document.visibilityState === "visible") {
+        wakeAuthPoll();
+      }
+    };
+
+    const waitForNextPoll = (ms: number): Promise<void> => {
+      if (ms <= 0) return Promise.resolve();
+      return new Promise((resolve) => {
+        let timer: number | null = null;
+        const finish = () => {
+          if (timer !== null) {
+            window.clearTimeout(timer);
+            timer = null;
+          }
+          if (authPollWakeRef.current === finish) {
+            authPollWakeRef.current = null;
+          }
+          resolve();
+        };
+        timer = window.setTimeout(finish, ms);
+        authPollWakeRef.current = finish;
+      });
+    };
+
     const stopAuth = () => {
       authPollWarningShownRef.current = false;
+      authPollWakeRef.current = null;
       setAuthFlow(null);
       setAuthBusy(false);
     };
@@ -771,7 +798,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
           }
         }
         const elapsed = Date.now() - startedAt;
-        await wait(Math.max(0, AUTH_POLL_DELAY_MS - elapsed));
+        await waitForNextPoll(Math.max(0, AUTH_POLL_DELAY_MS - elapsed));
       }
 
       if (!cancelled) {
@@ -781,11 +808,22 @@ export default function Space({ isActive }: { isActive: boolean }) {
       }
     };
 
+    window.addEventListener("focus", wakeAuthPoll);
+    document.addEventListener("visibilitychange", wakeAuthPollWhenVisible);
     void poll();
     return () => {
       cancelled = true;
+      wakeAuthPoll();
+      window.removeEventListener("focus", wakeAuthPoll);
+      document.removeEventListener("visibilitychange", wakeAuthPollWhenVisible);
     };
   }, [actions, authFlow, t, toast]);
+
+  useEffect(() => {
+    if (authFlow && isActive) {
+      authPollWakeRef.current?.();
+    }
+  }, [authFlow, isActive]);
 
   const startLogin = useCallback(async () => {
     setAuthBusy(true);
