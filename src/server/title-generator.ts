@@ -18,7 +18,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { resolveClaudeCodeCli, buildClaudeSessionEnv, startOneShotBridge, type ProviderEnv } from './agent-session';
-import { applyContextWindowSuffix } from './utils/model-capabilities';
+import { applyProviderContextWindowSuffix } from './utils/model-capabilities';
 import { SUBSCRIPTION_PROVIDER_ID } from '../shared/config-types';
 import { isLikelyErrorTitle } from '../shared/titleFilters';
 import { capTitleAtBoundary } from '../shared/sessionTitle';
@@ -266,9 +266,10 @@ async function generateTitleInner(
         // to invoke, so bypassPermissions becomes moot. The model can still
         // produce the title text (tools are orthogonal to generation).
         tools: [],
-        // Wrap with [1m] when contextLength >200K (#335) so SDK uses the 1M path even
-        // for a one-shot title-gen subprocess. SDK strips the suffix before the wire.
-        ...(model ? { model: applyContextWindowSuffix(model) } : {}),
+        // Wrap with [1m] when this provider's contextLength >200K (#335) so SDK
+        // uses the 1M path even for a one-shot title-gen subprocess. SDK strips
+        // the suffix before the wire.
+        ...(model ? { model: applyProviderContextWindowSuffix(model, providerEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID) } : {}),
       },
     });
 

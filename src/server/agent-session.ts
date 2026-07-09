@@ -14,7 +14,7 @@ import { getScriptDir, getBundledNodeDir, getSystemNodeDirs, getBundledRuntimePa
 import { getCrossPlatformEnv } from './utils/platform';
 import { ensureDirSync } from './utils/fs-utils';
 import { getMyAgentsNpmGlobalBinDir, getMyAgentsNpmGlobalPrefix, scrubMyAgentsNpmPrefixEnv } from './utils/npm-prefix-env';
-import { applyContextWindowSuffix, lookupModelContextLength, lookupProviderModelContextLength, modelSupportsModality } from './utils/model-capabilities';
+import { applyProviderContextWindowSuffix, lookupProviderModelContextLength, modelSupportsModality } from './utils/model-capabilities';
 import { modelAliasEnvChangesForModel, resolveSessionModelAliases } from './utils/model-aliases';
 import { resolveEffectiveResumeAt } from './utils/rewind-anchor';
 import { buildForkUuidRemap, remapStoredSdkUuids } from './utils/fork-remap';
@@ -2011,8 +2011,9 @@ async function broadcastBuiltinContextUsage(): Promise<void> {
   // `resetTurnUsage()` 可能把 `turnState.currentTurnUsage.model`/`sessionId` 改掉，给本轮的 broadcast/
   // 持久化盖错头。`turnState.latestMainAssistantUsage` 在函数入口同步读，已经天然是快照。
   const occupiedFromPerCall = resolveContextOccupancyTokens(turnState.latestMainAssistantUsage);
+  const currentProviderId = getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID;
   const providerScopedLookup = (model?: string | null) =>
-    lookupProviderModelContextLength(model, configState.currentProviderEnv?.providerId);
+    lookupProviderModelContextLength(model, currentProviderId);
   const snapshotModel = chooseBuiltinContextUsageModel({
     sdkResultModel: turnState.currentTurnUsage.model,
     configuredModel: configState.currentModel,
@@ -2650,7 +2651,8 @@ let pendingSetModelPromise: Promise<void> | null = null;
 function dispatchSetModelToSdk(model: string): Promise<void> {
   if (!lifecycleState.query) return Promise.resolve();
   const session = lifecycleState.query;
-  const wrapped = applyContextWindowSuffix(model);
+  const providerId = getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID;
+  const wrapped = applyProviderContextWindowSuffix(model, providerId);
   const promise = session.setModel(wrapped).catch(err => {
     console.error('[agent] failed to apply model to running session:', err);
   });
@@ -2736,8 +2738,9 @@ export function setSessionModel(model: string, opts?: { imConfigSync?: boolean }
   // respawn. Schedule a deferred restart so the fresh env reflects the new
   // model's real window. Same rationale as the `provider` reason in
   // `setSessionProviderEnv` — env-baked knobs need a respawn.
-  const oldCtx = lookupModelContextLength(oldModel);
-  const newCtx = lookupModelContextLength(model);
+  const providerId = getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID;
+  const oldCtx = lookupProviderModelContextLength(oldModel, providerId);
+  const newCtx = lookupProviderModelContextLength(model, providerId);
   if (oldCtx !== newCtx) {
     if (lifecycleState.query) {
       console.log(`[agent] model window changed (${oldCtx ?? 'SDK-default'} → ${newCtx ?? 'SDK-default'}) → schedule deferred restart to reinject CLAUDE_CODE_AUTO_COMPACT_WINDOW`);
@@ -5440,10 +5443,10 @@ export function buildClaudeSessionEnv(
     // SDK /model picker (modelOptions.ts:85) and would surface the suffix to
     // users. SDK strips [1m] before the wire (normalizeModelStringForAPI),
     // so the upstream API never sees it.
-    const fableWrapped = applyContextWindowSuffix(aliases.fable);
-    const sonnetWrapped = applyContextWindowSuffix(aliases.sonnet);
-    const opusWrapped = applyContextWindowSuffix(aliases.opus);
-    const haikuWrapped = applyContextWindowSuffix(aliases.haiku);
+    const fableWrapped = applyProviderContextWindowSuffix(aliases.fable, effectiveProviderId);
+    const sonnetWrapped = applyProviderContextWindowSuffix(aliases.sonnet, effectiveProviderId);
+    const opusWrapped = applyProviderContextWindowSuffix(aliases.opus, effectiveProviderId);
+    const haikuWrapped = applyProviderContextWindowSuffix(aliases.haiku, effectiveProviderId);
     if (aliases.fable) {
       env.ANTHROPIC_DEFAULT_FABLE_MODEL = fableWrapped!;
       env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME = aliases.fable;
@@ -5473,8 +5476,9 @@ export function buildClaudeSessionEnv(
   // compaction. SDK exposes `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env which caps
   // the window via `Math.min(contextWindow, envCap)` (autoCompact.ts:40-46).
   //
-  // We look the resolved model up in the flat custom+discovered+preset
-  // registry (see utils/model-capabilities.ts). The resolution order prefers
+  // We look the resolved model up in the active provider's model registry
+  // first, then fall back to the flat custom+discovered+preset registry
+  // (see utils/model-capabilities.ts). The resolution order prefers
   // `modelOverride` (one-shot callers that spawn against a different
   // provider/model) over `configState.currentModel` (active Tab session state) — see the
   // function JSDoc for the rationale.
@@ -5491,7 +5495,7 @@ export function buildClaudeSessionEnv(
   // case (primary model hits its own 128K ceiling) is what this fixes;
   // sub-agents on a smaller window would be further over-capped, not
   // under-capped.
-  const modelContextLength = lookupModelContextLength(resolvedModel);
+  const modelContextLength = lookupProviderModelContextLength(resolvedModel, effectiveProviderId);
   if (modelContextLength && modelContextLength > 0) {
     env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(modelContextLength);
     console.log(`[env] CLAUDE_CODE_AUTO_COMPACT_WINDOW=${modelContextLength} (model=${resolvedModel ?? '(unknown)'})`);
@@ -9907,14 +9911,14 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // via setPermissionMode('bypassPermissions'). Without this flag at query creation time,
       // the SDK silently ignores the mode switch and keeps calling canUseTool.
       allowDangerouslySkipPermissions: true,
-      // applyContextWindowSuffix appends [1m] when the registered contextLength
-      // exceeds the SDK 200K default (#335) — without it, SDK
+      // applyProviderContextWindowSuffix appends [1m] when the active provider's
+      // registered contextLength exceeds the SDK 200K default (#335) — without it, SDK
       // getContextWindowForModel() falls back to 200K for non-Anthropic models
       // and /context, auto-compact, attachment trimming all use the wrong
       // ceiling; CLAUDE_CODE_AUTO_COMPACT_WINDOW then pulls the effective
       // window back to the registry value. SDK strips the suffix back out
       // before the wire (normalizeModelStringForAPI in model.ts:616).
-      model: applyContextWindowSuffix(configState.currentModel),
+      model: applyProviderContextWindowSuffix(configState.currentModel, getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID),
       pathToClaudeCodeExecutable: resolveClaudeCodeCli(),
       env,
       stderr: (message: string) => {
@@ -10003,7 +10007,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           : []),
       ],
       // Sub-agents: inject custom agent definitions if configured
-      // Each sub-agent's `model` runs through applyContextWindowSuffix so a sub-agent
+      // Each sub-agent's `model` runs through applyProviderContextWindowSuffix so a sub-agent
       // pinned to a 1M model gets the [1m] tag independently of the main session's
       // model (the parent could be on a 200K model, the sub-agent on a 1M one,
       // or vice versa). The original configState.currentAgentDefinitions is left untouched
@@ -10013,7 +10017,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             agents: Object.fromEntries(
               Object.entries(configState.currentAgentDefinitions).map(([name, a]) => [
                 name,
-                a.model ? { ...a, model: applyContextWindowSuffix(a.model) } : a,
+                a.model ? { ...a, model: applyProviderContextWindowSuffix(a.model, getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID) } : a,
               ])
             ),
           }

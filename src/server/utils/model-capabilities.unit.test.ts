@@ -5,6 +5,7 @@ import { join } from 'path';
 
 import {
   applyContextWindowSuffix,
+  applyProviderContextWindowSuffix,
   parseLiteLLMCatalog,
   lookupModelContextLength,
   lookupModelCapability,
@@ -237,6 +238,23 @@ describe('capability-suffix tolerance + per-field merge (#338)', () => {
 
     expect(lookupProviderModelContextLength('claude-sonnet-4-6[1m]', 'dragon-b')).toBe(200_000);
     expect(lookupProviderModelContextLength('claude-sonnet-4-6[1m]', 'dragon-a')).toBe(1_000_000);
+  });
+
+  it('wraps SDK model ids with the active provider window, not a global duplicate model id', () => {
+    writeFileSync(
+      join(tmpHome, '.myagents', 'config.json'),
+      JSON.stringify({
+        presetCustomModels: {
+          'custom-dragon': [{ model: 'claude-opus-4-6', contextLength: 1_000_000 }],
+        },
+      }),
+    );
+    __resetModelCapabilityCacheForTests();
+
+    expect(lookupModelContextLength('claude-opus-4-6')).toBe(1_000_000);
+    expect(applyContextWindowSuffix('claude-opus-4-6')).toBe('claude-opus-4-6[1m]');
+    expect(applyProviderContextWindowSuffix('claude-opus-4-6', 'anthropic-sub')).toBe('claude-opus-4-6');
+    expect(applyProviderContextWindowSuffix('claude-opus-4-6', 'custom-dragon')).toBe('claude-opus-4-6[1m]');
   });
 
   // Per-field merge interaction with modalities (Codex review note): a higher-

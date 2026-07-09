@@ -10,7 +10,7 @@ import { existsSync, readFileSync } from 'fs';
 import { execFileSync, execSync } from 'child_process';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { resolveClaudeCodeCli, buildClaudeSessionEnv, startOneShotBridge, getSidecarPort, type ProviderEnv } from './agent-session';
-import { applyContextWindowSuffix } from './utils/model-capabilities';
+import { applyProviderContextWindowSuffix } from './utils/model-capabilities';
 import { ensureDirSync } from './utils/fs-utils';
 import { getLastBridgeError } from './openai-bridge';
 import { getProxyForProviderUrl } from './proxy-state';
@@ -94,6 +94,7 @@ async function verifyViaSdk(
   env: NodeJS.ProcessEnv,
   opts: {
     model?: string;
+    providerId?: string;
     sessionId: string;
     logPrefix: string;
     parseError: (text: string, originalText?: string) => VerifyError & { failureKind?: SubscriptionVerifyFailureKind };
@@ -246,8 +247,9 @@ async function verifyViaSdk(
         includePartialMessages: true,
         persistSession: false,
         mcpServers: {},
-        // Wrap with [1m] when contextLength >200K (#335) so SDK uses the 1M path.
-        ...(opts.model ? { model: applyContextWindowSuffix(opts.model) } : {}),
+        // Wrap with [1m] when this provider's contextLength >200K (#335) so SDK
+        // uses the 1M path.
+        ...(opts.model ? { model: applyProviderContextWindowSuffix(opts.model, opts.providerId) } : {}),
       },
     });
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -440,6 +442,7 @@ export async function verifyProviderViaSdk(
     });
     return await verifyViaSdk(env, {
       model,
+      providerId,
       sessionId: randomUUID(),
       logPrefix: 'provider/verify',
       parseError: parseProviderError,
@@ -595,6 +598,7 @@ export async function verifySubscription(): Promise<SubscriptionVerifyResult> {
   });
   return verifyViaSdk(env, {
     sessionId: randomUUID(),
+    providerId: SUBSCRIPTION_PROVIDER_ID,
     logPrefix: 'subscription/verify',
     parseError: parseSubscriptionError,
     settingSources: [],
