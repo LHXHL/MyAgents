@@ -42,9 +42,7 @@ import { useSpaceData } from "@/pages/space/useSpaceData";
 import { IssuesWorkspace } from "@/pages/space/issues/IssuesWorkspace";
 import { CreateIssueDialog } from "@/pages/space/issues/CreateIssueDialog";
 import { IssueDetailDrawer } from "@/pages/space/issues/IssueDetailDrawer";
-import {
-  RegisterAgentDialog,
-} from "@/pages/space/agents/AgentsWorkspace";
+import { RegisterAgentDialog } from "@/pages/space/agents/AgentsWorkspace";
 import { SpaceSettingsWorkspace } from "@/pages/space/settings/SpaceSettingsWorkspace";
 import { GoalsWorkspace } from "@/pages/space/goals/GoalsWorkspace";
 import { GoalPathSelectLabel } from "@/pages/space/GoalPathSelectLabel";
@@ -57,11 +55,11 @@ import {
 import { SpaceAvatar } from "@/pages/space/SpaceAvatar";
 import SpaceProfileSettingsDialog from "@/pages/space/SpaceProfileSettingsDialog";
 import {
-	  nowForSpaceMetric,
-	  recordSpaceMetric,
-	  trackSpaceAuth,
-	  withSpaceMutationMetric,
-	} from "@/pages/space/spaceMetrics";
+  nowForSpaceMetric,
+  recordSpaceMetric,
+  trackSpaceAuth,
+  withSpaceMutationMetric,
+} from "@/pages/space/spaceMetrics";
 import {
   PAPER_GRID_STYLE,
   SPACE_BACKGROUND_STYLE,
@@ -128,10 +126,15 @@ function SpaceQuickActionDialog({
     return true;
   }, 220);
   const title =
-    mode === "join" ? t("space.spaceActions.joinTitle") : t("space.spaceActions.createTitle");
-  const slugError = mode === "create" && error?.field === "slug" ? error.message : null;
+    mode === "join"
+      ? t("space.spaceActions.joinTitle")
+      : t("space.spaceActions.createTitle");
+  const slugError =
+    mode === "create" && error?.field === "slug" ? error.message : null;
   const canSubmit =
-    mode === "join" ? Boolean(joinSlug.trim()) : Boolean(name.trim() && createSlug.trim());
+    mode === "join"
+      ? Boolean(joinSlug.trim())
+      : Boolean(name.trim() && createSlug.trim());
   const submit = () => {
     if (!canSubmit || busy) return;
     if (mode === "join") {
@@ -152,7 +155,10 @@ function SpaceQuickActionDialog({
         multiple: false,
         directory: false,
         filters: [
-          { name: t("space.profile.imageFilter"), extensions: ["png", "jpg", "jpeg", "webp"] },
+          {
+            name: t("space.profile.imageFilter"),
+            extensions: ["png", "jpg", "jpeg", "webp"],
+          },
         ],
       });
       if (!selected || Array.isArray(selected)) return;
@@ -163,11 +169,19 @@ function SpaceQuickActionDialog({
     }
   };
   return (
-    <OverlayBackdrop onClose={busy ? undefined : onClose} className="z-[220] items-center justify-center px-4 py-8">
+    <OverlayBackdrop
+      onClose={busy ? undefined : onClose}
+      className="z-[220] items-center justify-center px-4 py-8"
+    >
       <section className="w-full max-w-md rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl">
         <header className="flex min-h-12 items-center justify-between border-b border-[var(--line-subtle)] px-4">
           <h2 className="text-lg font-semibold text-[var(--ink)]">{title}</h2>
-          <button type="button" disabled={busy} onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-50">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={onClose}
+            className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-50"
+          >
             <X className="h-4 w-4" />
           </button>
         </header>
@@ -192,7 +206,12 @@ function SpaceQuickActionDialog({
             <>
               <div className="flex items-center gap-3">
                 <SpaceAvatar name={name} avatarUrl={avatarPreview} size={44} />
-                <button type="button" onClick={pickAvatar} disabled={busy} className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-60">
+                <button
+                  type="button"
+                  onClick={pickAvatar}
+                  disabled={busy}
+                  className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-60"
+                >
                   {t("space.spaceActions.chooseAvatar")}
                 </button>
               </div>
@@ -205,7 +224,8 @@ function SpaceQuickActionDialog({
                     const nextName = event.target.value;
                     onClearError();
                     setName(nextName);
-                    if (!slugEdited) setCreateSlug(spaceSlugCandidate(nextName));
+                    if (!slugEdited)
+                      setCreateSlug(spaceSlugCandidate(nextName));
                   }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") submit();
@@ -229,14 +249,22 @@ function SpaceQuickActionDialog({
                   className={`mt-1 h-10 w-full rounded-lg border bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)] ${slugError ? "border-[var(--error)]" : "border-[var(--line)]"}`}
                 />
                 {slugError ? (
-                  <span className="mt-1 block text-xs font-medium text-[var(--error)]" role="alert">
+                  <span
+                    className="mt-1 block text-xs font-medium text-[var(--error)]"
+                    role="alert"
+                  >
                     {slugError}
                   </span>
                 ) : null}
               </label>
             </>
           )}
-          <button type="button" disabled={!canSubmit || busy} onClick={submit} className="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] disabled:cursor-not-allowed disabled:opacity-60">
+          <button
+            type="button"
+            disabled={!canSubmit || busy}
+            onClick={submit}
+            className="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] disabled:cursor-not-allowed disabled:opacity-60"
+          >
             {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
             {title}
           </button>
@@ -353,6 +381,10 @@ function registeredAgentToListItem(
     displayName: agent.displayName || localFallback?.displayName || agent.id,
     workspacePath: agent.workspacePath ?? localFallback?.workspacePath ?? "",
     workspaceLabel: agent.workspaceLabel ?? localFallback?.workspaceLabel,
+    avatarUrl: agent.avatarUrl ?? localFallback?.avatarUrl,
+    avatarSource: agent.avatarSource ?? localFallback?.avatarSource,
+    avatarPresetId: agent.avatarPresetId ?? localFallback?.avatarPresetId,
+    avatarUrls: agent.avatarUrls ?? localFallback?.avatarUrls,
     goalId: subscription?.goalId ?? localFallback?.goalId,
     goalPathLabel: subscription?.goalPathLabel ?? localFallback?.goalPathLabel,
     stateFilter: subscription?.stateFilter?.length
@@ -393,9 +425,12 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [profileSettingsOpen, setProfileSettingsOpen] = useState(false);
-  const [spaceDialogMode, setSpaceDialogMode] = useState<"join" | "create" | null>(null);
+  const [spaceDialogMode, setSpaceDialogMode] = useState<
+    "join" | "create" | null
+  >(null);
   const [spaceDialogBusy, setSpaceDialogBusy] = useState(false);
-  const [spaceDialogError, setSpaceDialogError] = useState<SpaceQuickActionError | null>(null);
+  const [spaceDialogError, setSpaceDialogError] =
+    useState<SpaceQuickActionError | null>(null);
   const [localDeviceId, setLocalDeviceId] = useState<string | null>(null);
 
   const session = spaceData.session;
@@ -421,13 +456,16 @@ export default function Space({ isActive }: { isActive: boolean }) {
     if (!issueDetailId) {
       return { previousIssueId: null, nextIssueId: null };
     }
-    const currentIndex = issues.findIndex((issue) => issue.id === issueDetailId);
+    const currentIndex = issues.findIndex(
+      (issue) => issue.id === issueDetailId,
+    );
     if (currentIndex < 0) {
       return { previousIssueId: null, nextIssueId: null };
     }
     return {
       previousIssueId: currentIndex > 0 ? issues[currentIndex - 1].id : null,
-      nextIssueId: currentIndex < issues.length - 1 ? issues[currentIndex + 1].id : null,
+      nextIssueId:
+        currentIndex < issues.length - 1 ? issues[currentIndex + 1].id : null,
     };
   }, [issueDetailId, issues]);
   const issuesLoading =
@@ -447,8 +485,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
     session?.space?.id ||
     session?.space?.slug ||
     DEFAULT_SPACE_ID;
-  const currentIdentitySpaceId =
-    session?.space?.id || activeCacheSpaceId;
+  const currentIdentitySpaceId = session?.space?.id || activeCacheSpaceId;
   const spaceCacheKey = useCallback(
     (id: string) => `${activeCacheSpaceId}\n${id}`,
     [activeCacheSpaceId],
@@ -869,16 +906,19 @@ export default function Space({ isActive }: { isActive: boolean }) {
     toast.success(t("space.toasts.refreshed"));
   }, [actions, issueQuery, activeMode, t, toast]);
 
-  const switchSpace = useCallback(async (spaceId: string) => {
-    try {
-      await actions.switchSpace(spaceId);
-      setIssueDetailId(null);
-      setSelectedSkillId(null);
-      setMode("issues");
-    } catch (error) {
-      toast.error(spaceErrorMessage(error));
-    }
-  }, [actions, toast]);
+  const switchSpace = useCallback(
+    async (spaceId: string) => {
+      try {
+        await actions.switchSpace(spaceId);
+        setIssueDetailId(null);
+        setSelectedSkillId(null);
+        setMode("issues");
+      } catch (error) {
+        toast.error(spaceErrorMessage(error));
+      }
+    },
+    [actions, toast],
+  );
 
   const joinSpace = useCallback(() => {
     setSpaceDialogError(null);
@@ -890,55 +930,67 @@ export default function Space({ isActive }: { isActive: boolean }) {
     setSpaceDialogMode("create");
   }, []);
 
-  const submitSpaceDialog = useCallback(async (input: SpaceQuickActionSubmitInput) => {
-    if (!spaceDialogMode || input.mode !== spaceDialogMode) return;
-    setSpaceDialogBusy(true);
-	    setSpaceDialogError(null);
-	    try {
-	      if (input.mode === "join") {
-	        const result = await withSpaceMutationMetric("member.join", () => spaceJoinSpace({ slug: input.slug }));
-	        toast.success(
-	          result.status === "pending"
-	            ? t("space.toasts.spaceJoinRequested")
-	            : t("space.toasts.spaceJoined"),
-	        );
-        await actions.ensureBootstrapped({ force: true });
-        if (result.status === "joined") {
-	          await actions.switchSpace(result.space.id || result.space.slug);
-	        }
-	      } else {
-	        const result = await withSpaceMutationMetric("settings.create", () => spaceCreateSpace({
-	          name: input.name,
-	          slug: input.slug,
-	        }));
-	        if (input.avatarFilePath) {
-	          try {
-	            await withSpaceMutationMetric("settings.update", () => spaceUpdateSpace({
-	              spaceId: result.space.id || result.space.slug,
-	              avatarFilePath: input.avatarFilePath,
-	            }));
-	          } catch (error) {
-	            toast.warning(spaceErrorMessage(error));
-	          }
+  const submitSpaceDialog = useCallback(
+    async (input: SpaceQuickActionSubmitInput) => {
+      if (!spaceDialogMode || input.mode !== spaceDialogMode) return;
+      setSpaceDialogBusy(true);
+      setSpaceDialogError(null);
+      try {
+        if (input.mode === "join") {
+          const result = await withSpaceMutationMetric("member.join", () =>
+            spaceJoinSpace({ slug: input.slug }),
+          );
+          toast.success(
+            result.status === "pending"
+              ? t("space.toasts.spaceJoinRequested")
+              : t("space.toasts.spaceJoined"),
+          );
+          await actions.ensureBootstrapped({ force: true });
+          if (result.status === "joined") {
+            await actions.switchSpace(result.space.id || result.space.slug);
+          }
+        } else {
+          const result = await withSpaceMutationMetric("settings.create", () =>
+            spaceCreateSpace({
+              name: input.name,
+              slug: input.slug,
+            }),
+          );
+          if (input.avatarFilePath) {
+            try {
+              await withSpaceMutationMetric("settings.update", () =>
+                spaceUpdateSpace({
+                  spaceId: result.space.id || result.space.slug,
+                  avatarFilePath: input.avatarFilePath,
+                }),
+              );
+            } catch (error) {
+              toast.warning(spaceErrorMessage(error));
+            }
+          }
+          toast.success(t("space.toasts.spaceCreated"));
+          await actions.ensureBootstrapped({ force: true });
+          await actions.switchSpace(result.space.id || result.space.slug);
         }
-        toast.success(t("space.toasts.spaceCreated"));
-        await actions.ensureBootstrapped({ force: true });
-        await actions.switchSpace(result.space.id || result.space.slug);
+        setSpaceDialogMode(null);
+      } catch (error) {
+        if (
+          input.mode === "create" &&
+          isSpaceErrorCode(error, "SPACE_SLUG_CONFLICT")
+        ) {
+          setSpaceDialogError({
+            field: "slug",
+            message: t("space.spaceActions.slugConflict"),
+          });
+        } else {
+          toast.error(spaceErrorMessage(error));
+        }
+      } finally {
+        setSpaceDialogBusy(false);
       }
-      setSpaceDialogMode(null);
-    } catch (error) {
-      if (input.mode === "create" && isSpaceErrorCode(error, "SPACE_SLUG_CONFLICT")) {
-        setSpaceDialogError({
-          field: "slug",
-          message: t("space.spaceActions.slugConflict"),
-        });
-      } else {
-        toast.error(spaceErrorMessage(error));
-      }
-    } finally {
-      setSpaceDialogBusy(false);
-    }
-  }, [actions, spaceDialogMode, t, toast]);
+    },
+    [actions, spaceDialogMode, t, toast],
+  );
 
   const closeSpaceDialog = useCallback(() => {
     setSpaceDialogError(null);
@@ -957,7 +1009,10 @@ export default function Space({ isActive }: { isActive: boolean }) {
 
   if (spaceData.boot === "idle" || spaceData.boot === "loading") {
     return (
-      <div data-ui-theme="space-mono" className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]">
+      <div
+        data-ui-theme="space-mono"
+        className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]"
+      >
         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
         {t("space.common.loadingTeam")}
       </div>
@@ -966,7 +1021,10 @@ export default function Space({ isActive }: { isActive: boolean }) {
 
   if (spaceData.boot === "error") {
     return (
-      <div data-ui-theme="space-mono" className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]">
+      <div
+        data-ui-theme="space-mono"
+        className="flex h-full items-center justify-center bg-[var(--paper)] text-sm text-[var(--ink-muted)]"
+      >
         <div className="text-center">
           <p>{spaceData.bootError ?? t("space.common.teamLoadFailed")}</p>
           <button
@@ -1076,6 +1134,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
               goals={goals}
               projects={projects}
               actions={actions}
+              avatarPresets={spaceData.avatarPresets}
               onRefresh={refreshCurrent}
               onRegister={() => setRegisterOpen(true)}
               onExit={() => setMode("issues")}
@@ -1140,6 +1199,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
         <SpaceProfileSettingsDialog
           session={session}
           actions={actions}
+          avatarPresets={spaceData.avatarPresets}
           onClose={() => setProfileSettingsOpen(false)}
         />
       )}

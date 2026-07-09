@@ -89,5 +89,12 @@ specs/dev_exp/
 
 start_dev.sh
 
+# Generated avatar candidate assets. Keep scripts/config docs tracked, but do
+# not commit raw/generated image batches or generated manifests.
+specs/assets/avatar-candidates/**/raw/
+specs/assets/avatar-candidates/**/*-v*/
+specs/assets/avatar-candidates/**/r2/
+specs/assets/avatar-candidates/**/manifest.json
+
 # Default workspace (cloned by setup.sh)
 /mino/

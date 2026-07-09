@@ -381,6 +381,14 @@
       "save": "Save",
       "saving": "Saving"
     },
+    "avatarPicker": {
+      "peopleTitle": "Choose avatar",
+      "agentsTitle": "Choose Agent avatar",
+      "upload": "Upload image",
+      "uploadTitle": "Choose avatar image",
+      "preset": "Preset avatar",
+      "loading": "Loading avatars"
+    },
     "common": {
       "refresh": "Refresh",
       "create": "Create",
@@ -430,6 +438,7 @@
       "agentDisabled": "Agent disabled",
       "agentRevoked": "Agent revoked",
       "agentUpdated": "Registered Agent updated",
+      "agentAvatarUpdated": "Agent avatar updated",
       "agentCreated": "Registered Agent created",
       "spaceCreated": "Space created",
       "spaceJoined": "Joined Space",
@@ -640,6 +649,7 @@
       "disable": "Disable",
       "revokeAgent": "Revoke Agent {{name}}",
       "revoke": "Revoke",
+      "changeAvatar": "Change Agent avatar",
       "viewSettings": "View registration settings",
       "status": "Status",
       "lastSync": "Last sync",

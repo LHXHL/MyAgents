@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import {
   Activity,
   Bot,
+  Camera,
   Check,
   Clock,
   Computer,
@@ -35,7 +36,14 @@ import { useCloseLayer } from "@/hooks/useCloseLayer";
 import { spaceErrorMessage } from "@/api/spaceCloud";
 import { issueStatusLabel } from "@/pages/space/spaceHelpers";
 import { GoalPathSelectLabel } from "@/pages/space/GoalPathSelectLabel";
-import type { SpaceActions } from "@/pages/space/spaceStore";
+import AvatarPicker, {
+  type AvatarPickerSelection,
+} from "@/pages/space/AvatarPicker";
+import { SpaceAvatar } from "@/pages/space/SpaceAvatar";
+import type {
+  SpaceActions,
+  SpaceAvatarPresetsState,
+} from "@/pages/space/spaceStore";
 import {
   SPACE_LIST_FRAME_CLASS,
   SPACE_PRIMARY_TOOL_BUTTON_CLASS,
@@ -190,6 +198,7 @@ export function AgentsWorkspace({
   goals,
   projects,
   actions,
+  avatarPresets,
   onRegister,
   registerDisabled = false,
   registerDisabledHint,
@@ -199,6 +208,7 @@ export function AgentsWorkspace({
   goals: SpaceGoal[];
   projects: Project[];
   actions: SpaceActions;
+  avatarPresets: SpaceAvatarPresetsState;
   onRegister: () => void;
   registerDisabled?: boolean;
   registerDisabledHint?: string;
@@ -313,6 +323,8 @@ export function AgentsWorkspace({
           admin={admin}
           busy={busyAgentId === selectedAgent.id}
           t={t}
+          actions={actions}
+          avatarPresets={avatarPresets}
           onClose={() => setSelectedAgentId(null)}
           onEdit={() => setEditingAgent(selectedAgent)}
           onToggle={() => void toggleAgentStatus(selectedAgent)}
@@ -631,7 +643,13 @@ function AgentCard({
       onKeyDown={handleKeyDown}
       className="group cursor-pointer rounded-xl bg-[var(--paper-elevated)] px-3.5 py-3 text-left outline-none transition-shadow hover:shadow-sm focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)]/30"
     >
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2.5">
+      <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2.5">
+        <SpaceAvatar
+          name={agent.displayName}
+          avatarUrl={agent.avatarUrl}
+          type="registered_agent"
+          size={36}
+        />
         <div className="min-w-0">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <h3 className="min-w-0 truncate text-base font-semibold text-[var(--ink)]">
@@ -871,6 +889,8 @@ function AgentDetailOverlay({
   admin,
   busy,
   t,
+  actions,
+  avatarPresets,
   onClose,
   onEdit,
   onToggle,
@@ -880,24 +900,74 @@ function AgentDetailOverlay({
   admin: boolean;
   busy: boolean;
   t: ReturnType<typeof useTranslation>["t"];
+  actions: SpaceActions;
+  avatarPresets: SpaceAvatarPresetsState;
   onClose: () => void;
   onEdit: () => void;
   onToggle: () => void;
   onRevoke: () => void;
 }) {
+  const toast = useToast();
+  const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
+  const [avatarBusy, setAvatarBusy] = useState(false);
   useCloseLayer(() => {
+    if (avatarPickerOpen || avatarBusy) return false;
     onClose();
     return true;
   }, 230);
 
+  const selectAvatar = async (selection: AvatarPickerSelection) => {
+    if (avatarBusy) return;
+    setAvatarBusy(true);
+    try {
+      await actions.updateRegisteredAgentAvatar(
+        selection.type === "upload"
+          ? { id: agent.id, avatarFilePath: selection.avatarFilePath }
+          : { id: agent.id, avatarPresetId: selection.presetId },
+      );
+      toast.success(t("space.toasts.agentAvatarUpdated"));
+      setAvatarPickerOpen(false);
+    } catch (error) {
+      toast.error(spaceErrorMessage(error));
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
   return (
     <OverlayBackdrop
-      onClose={onClose}
+      onClose={avatarBusy || avatarPickerOpen ? undefined : onClose}
       className="z-[230] items-stretch justify-end bg-black/20 backdrop-blur-sm"
     >
       <aside className="h-full w-[min(72vw,900px)] overflow-y-auto border-l border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl max-lg:w-[min(92vw,820px)]">
         <header className="sticky top-0 z-10 border-b border-[var(--line-subtle)] bg-[var(--paper-elevated)]/95 px-7 py-5 backdrop-blur-md">
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+          <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3">
+            <button
+              type="button"
+              disabled={
+                !admin || busy || avatarBusy || agent.status === "revoked"
+              }
+              onClick={() => setAvatarPickerOpen(true)}
+              className="group relative grid h-14 w-14 place-items-center rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)] disabled:cursor-not-allowed disabled:opacity-70"
+              aria-label={t("space.agents.changeAvatar")}
+              title={t("space.agents.changeAvatar")}
+            >
+              <SpaceAvatar
+                name={agent.displayName}
+                avatarUrl={agent.avatarUrl}
+                type="registered_agent"
+                size={56}
+              />
+              {admin && agent.status !== "revoked" && (
+                <span className="absolute inset-0 grid place-items-center rounded-full bg-[var(--ink)]/45 text-[var(--paper)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                  {avatarBusy ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Camera className="h-4 w-4" />
+                  )}
+                </span>
+              )}
+            </button>
             <div className="min-w-0">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <h2 className="truncate text-xl font-semibold leading-tight text-[var(--ink)]">
@@ -1096,6 +1166,22 @@ function AgentDetailOverlay({
           </section>
         </div>
       </aside>
+      {avatarPickerOpen && (
+        <AvatarPicker
+          kind="agents"
+          presets={avatarPresets.agents}
+          selectedPresetId={agent.avatarPresetId ?? null}
+          currentAvatarUrl={agent.avatarUrl ?? null}
+          loading={avatarPresets.isLoading}
+          error={avatarPresets.error}
+          disabled={avatarBusy}
+          onLoad={() =>
+            void actions.loadAvatarPresets({ maxAgeMs: 5 * 60_000 })
+          }
+          onSelect={(selection) => void selectAvatar(selection)}
+          onClose={() => setAvatarPickerOpen(false)}
+        />
+      )}
     </OverlayBackdrop>
   );
 }

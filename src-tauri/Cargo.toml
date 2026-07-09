@@ -72,7 +72,7 @@ tantivy-jieba = "0.11"
 notify-debouncer-full = "0.6"
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 trash = "5.2.3"
-image = { version = "0.25.10", default-features = false, features = ["png", "webp"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 sha2 = "0.10"
 zip = { version = "2.4.2", default-features = false, features = ["deflate-zlib"] }
 

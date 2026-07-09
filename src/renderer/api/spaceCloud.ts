@@ -4,6 +4,16 @@ import { workspacePathsEqual } from "@/../shared/workspacePath";
 
 export const DEFAULT_SPACE_ID = "official";
 
+export type SpaceAvatarUrls = Record<"64" | "128" | "256", string>;
+
+export interface SpaceAvatarPreset {
+  id: string;
+  kind: "people" | "agents";
+  version: string;
+  url: string;
+  urls: SpaceAvatarUrls;
+}
+
 function isTauri(): boolean {
   return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 }
@@ -25,12 +35,16 @@ export interface SpaceUser {
   email: string;
   name?: string | null;
   avatarUrl?: string | null;
+  avatarPresetId?: string | null;
+  avatarUrls?: SpaceAvatarUrls | null;
 }
 
 export interface SpaceUserSummary {
   id: string;
   name?: string | null;
   avatarUrl?: string | null;
+  avatarPresetId?: string | null;
+  avatarUrls?: SpaceAvatarUrls | null;
 }
 
 export interface SpaceInfo {
@@ -421,6 +435,10 @@ export interface LocalRegisteredAgent {
   displayName: string;
   workspacePath: string;
   workspaceLabel?: string | null;
+  avatarUrl?: string | null;
+  avatarSource?: "preset" | "r2" | string | null;
+  avatarPresetId?: string | null;
+  avatarUrls?: SpaceAvatarUrls | null;
   goalId?: string | null;
   goalPathLabel?: string | null;
   stateFilter: string[];
@@ -445,6 +463,10 @@ export interface SpaceRegisteredAgent {
   displayName: string;
   workspacePath?: string | null;
   workspaceLabel?: string | null;
+  avatarUrl?: string | null;
+  avatarSource?: "preset" | "r2" | string | null;
+  avatarPresetId?: string | null;
+  avatarUrls?: SpaceAvatarUrls | null;
   subscriptions?: SpaceGoalSubscription[];
   goalMd?: string | null;
   issueSubscriptionRunMode?: SpaceIssueSubscriptionRunMode | null;
@@ -657,7 +679,7 @@ export function normalizeSpaceError(
   const quota =
     typeof envelope?.quota === "string"
       ? envelope.quota
-      : raw.match(/\bquota=([A-Za-z0-9_]+)/)?.[1] ?? "";
+      : (raw.match(/\bquota=([A-Za-z0-9_]+)/)?.[1] ?? "");
   const rawLimit = Number(raw.match(/\blimit=(\d+)/)?.[1] ?? Number.NaN);
   const rawUsage = Number(raw.match(/\busage=(\d+)/)?.[1] ?? Number.NaN);
   const quotaLimit =
@@ -679,7 +701,9 @@ export function normalizeSpaceError(
   const debugSuffix = [code, requestId].filter(Boolean).join(" ");
 
   if (code === "SPACE_QUOTA_EXCEEDED" || raw.includes("SPACE_QUOTA_EXCEEDED")) {
-    const quotaLabel = quota ? spaceText(`quotas.${quota}`) : spaceText("quotas.default");
+    const quotaLabel = quota
+      ? spaceText(`quotas.${quota}`)
+      : spaceText("quotas.default");
     return {
       userMessage:
         quotaLimit !== null && quotaUsage !== null
@@ -689,7 +713,10 @@ export function normalizeSpaceError(
               usage: quotaUsage,
               limit: quotaLimit,
             })
-          : spaceText("templates.quotaExceeded", { operation, quota: quotaLabel }),
+          : spaceText("templates.quotaExceeded", {
+              operation,
+              quota: quotaLabel,
+            }),
       debugMessage: [debugSuffix, sanitized].filter(Boolean).join(" · "),
     };
   }
@@ -838,7 +865,9 @@ export function spaceGetSession(): Promise<SpaceSession | null> {
   return inv("cmd_space_get_session");
 }
 
-export function spaceSetActiveSpace(spaceId: string): Promise<SpaceSession | null> {
+export function spaceSetActiveSpace(
+  spaceId: string,
+): Promise<SpaceSession | null> {
   return inv("cmd_space_set_active_space", { input: { spaceId } });
 }
 
@@ -868,9 +897,17 @@ export function spaceLogout(): Promise<void> {
   return inv("cmd_space_logout");
 }
 
+export function spaceGetAvatarPresets(): Promise<{
+  people: SpaceAvatarPreset[];
+  agents: SpaceAvatarPreset[];
+}> {
+  return inv("cmd_space_get_avatar_presets");
+}
+
 export function spaceUpdateProfile(input: {
   name: string;
   avatarFilePath?: string | null;
+  avatarPresetId?: string | null;
   nameChanged?: boolean;
 }): Promise<SpaceSession> {
   return inv("cmd_space_update_profile", { input });
@@ -910,9 +947,7 @@ export function spaceJoinSpace(input: { slug: string }) {
   }>("POST", "/api/spaces/join", input);
 }
 
-export function spaceGetOfficial(
-  spaceId = DEFAULT_SPACE_ID,
-): Promise<{
+export function spaceGetOfficial(spaceId = DEFAULT_SPACE_ID): Promise<{
   space: SpaceInfo;
   membership: SpaceMembership;
   goals: SpaceGoal[];
@@ -949,14 +984,20 @@ export function spaceUpdateMemberRole(input: {
   );
 }
 
-export function spaceRemoveMember(input: { spaceId: string; memberId: string }) {
+export function spaceRemoveMember(input: {
+  spaceId: string;
+  memberId: string;
+}) {
   return spaceApi<{ removed: boolean; revokedRegisteredAgentIds?: string[] }>(
     "DELETE",
     `/api/spaces/${spacePath(input.spaceId)}/members/${encodeURIComponent(input.memberId)}`,
   );
 }
 
-export function spaceApproveJoinRequest(input: { spaceId: string; requestId: string }) {
+export function spaceApproveJoinRequest(input: {
+  spaceId: string;
+  requestId: string;
+}) {
   return spaceApi<{ approved: boolean; membership: SpaceMembership }>(
     "POST",
     `/api/spaces/${spacePath(input.spaceId)}/join-requests/${encodeURIComponent(input.requestId)}/approve`,
@@ -964,7 +1005,10 @@ export function spaceApproveJoinRequest(input: { spaceId: string; requestId: str
   );
 }
 
-export function spaceRejectJoinRequest(input: { spaceId: string; requestId: string }) {
+export function spaceRejectJoinRequest(input: {
+  spaceId: string;
+  requestId: string;
+}) {
   return spaceApi<{ rejected: boolean }>(
     "POST",
     `/api/spaces/${spacePath(input.spaceId)}/join-requests/${encodeURIComponent(input.requestId)}/reject`,
@@ -981,11 +1025,10 @@ export function spaceInviteMember(input: {
     status: "joined" | "invited" | string;
     membership?: SpaceMembership;
     invitation?: SpaceInvitation;
-  }>(
-    "POST",
-    `/api/spaces/${spacePath(input.spaceId)}/invitations`,
-    { email: input.email, role: input.role ?? "member" },
-  );
+  }>("POST", `/api/spaces/${spacePath(input.spaceId)}/invitations`, {
+    email: input.email,
+    role: input.role ?? "member",
+  });
 }
 
 export function spaceListGoals(
@@ -1332,6 +1375,16 @@ export function spaceUpdateRegisteredAgent(input: {
   issueSubscriptionRunMode?: SpaceIssueSubscriptionRunMode;
 }) {
   return inv<LocalRegisteredAgent>("cmd_space_update_registered_agent", {
+    input,
+  });
+}
+
+export function spaceUpdateRegisteredAgentAvatar(input: {
+  id: string;
+  avatarFilePath?: string | null;
+  avatarPresetId?: string | null;
+}) {
+  return inv<LocalRegisteredAgent>("cmd_space_update_registered_agent_avatar", {
     input,
   });
 }

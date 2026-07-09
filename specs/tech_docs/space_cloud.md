@@ -113,11 +113,13 @@ Legacy 兼容规则：
 
 登录用户资料是云端 `users` 的 account-level 数据；本地 `~/.myagents/space/session.json` 只缓存 redacted 摘要。桌面端更新昵称/头像必须走 `cmd_space_update_profile`，由 Rust 读取本地图片、做 symlink/大小/扩展名校验并 multipart 调用 Cloud Worker `/api/me/profile`。Renderer 只能通过 `src/renderer/api/spaceCloud.ts` wrapper 和 `spaceStore` 更新本地 UI 缓存，不能直接 fetch Worker 或持有 session token。
 
-Cloud Worker 用 `users.name_source` / `avatar_source` 区分 Google 默认资料与用户自定义资料：
+Cloud Worker 用 `users.name_source` / `avatar_source` 区分登录资料、MyAgents 预设头像和用户上传头像：
 
 - `name_source='google'` 时，Google 重登可以刷新 `users.name`；`name_source='user'` 时不得覆盖。
-- `avatar_source='google'` 时，Google 重登可以刷新 `users.avatar_url`；`avatar_source='r2'` 时不得覆盖。
-- 头像上传写入 `ASSETS` R2 bucket 的 `avatars/users/<userId>/<sha256>.<ext>`，并把 `users.avatar_url` 写成公开 R2 URL。
+- Google / OAuth `picture` 不进入产品头像展示体系；无用户上传时，Cloud Worker 持久化 `avatar_source='preset'` + `avatar_preset_id`，并在序列化时由 `R2_PUBLIC_BASE_URL` 投影成 `avatars/presets/{people|agents}/v1/<presetId>/{64|128|256}.webp`。
+- `avatar_source='r2'` 表示用户或 Registered Agent 在 MyAgents 内部上传的头像，Google 重登不得覆盖。
+- 用户头像上传写入 `ASSETS` R2 bucket 的 `avatars/users/<userId>/<sha256>.<ext>`；Registered Agent 头像上传写入 `avatars/registered-agents/<registeredAgentId>/<sha256>.<ext>` 并计入 Space storage quota。
+- 头像 legacy 修复不能放在 `getAuth` / `getAgentAuth` / poll/list 读路径里做 lazy mutation；迁移、OAuth upsert、Agent 注册/头像更新是头像字段写入 owner，读路径只做 R2 URL 投影。
 
 头像 URL 明确不走 Worker 附件下载 route。部署侧必须给 `myagents-space-assets` / `ASSETS` bucket 启用 public `r2.dev` URL 或绑定自定义域名，并在 `MyAgents_space` Worker 环境配置 `R2_PUBLIC_BASE_URL`。缺少该配置时头像上传应 fail closed；不要回退到 Worker 代理图片流量。
 

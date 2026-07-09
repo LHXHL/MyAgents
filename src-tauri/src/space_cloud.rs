@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+use image::ImageEncoder;
 use reqwest::header::{AUTHORIZATION, CONTENT_DISPOSITION};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -45,6 +46,8 @@ pub(crate) const MAX_ATTACHMENT_UPLOAD_BYTES: u64 = 25 * 1024 * 1024;
 pub(crate) const MAX_ATTACHMENT_UPLOAD_COUNT: usize = 5;
 const MAX_PROFILE_AVATAR_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_SPACE_AVATAR_BYTES: u64 = MAX_PROFILE_AVATAR_BYTES;
+const MAX_AGENT_AVATAR_BYTES: u64 = MAX_PROFILE_AVATAR_BYTES;
+const NORMALIZED_AVATAR_MAX_EDGE: u32 = 256;
 static SPACE_CONNECTOR_STARTED: AtomicBool = AtomicBool::new(false);
 static SPACE_CONNECTOR_RUNTIME: LazyLock<SpaceConnectorRuntime> =
     LazyLock::new(SpaceConnectorRuntime::default);
@@ -176,6 +179,14 @@ pub struct LocalRegisteredAgent {
     pub workspace_path: String,
     pub workspace_label: Option<String>,
     #[serde(default)]
+    pub avatar_url: Option<String>,
+    #[serde(default)]
+    pub avatar_source: Option<String>,
+    #[serde(default)]
+    pub avatar_preset_id: Option<String>,
+    #[serde(default)]
+    pub avatar_urls: Option<Value>,
+    #[serde(default)]
     pub goal_id: Option<String>,
     #[serde(default)]
     pub goal_path_label: Option<String>,
@@ -231,6 +242,10 @@ pub struct LocalRegisteredAgentPublic {
     pub display_name: String,
     pub workspace_path: String,
     pub workspace_label: Option<String>,
+    pub avatar_url: Option<String>,
+    pub avatar_source: Option<String>,
+    pub avatar_preset_id: Option<String>,
+    pub avatar_urls: Option<Value>,
     pub goal_id: Option<String>,
     pub goal_path_label: Option<String>,
     pub state_filter: Vec<String>,
@@ -263,6 +278,10 @@ impl From<LocalRegisteredAgent> for LocalRegisteredAgentPublic {
             display_name: agent.display_name,
             workspace_path: agent.workspace_path,
             workspace_label: agent.workspace_label,
+            avatar_url: agent.avatar_url,
+            avatar_source: agent.avatar_source,
+            avatar_preset_id: agent.avatar_preset_id,
+            avatar_urls: agent.avatar_urls,
             goal_id: agent.goal_id,
             goal_path_label: agent.goal_path_label,
             state_filter: agent.state_filter,
@@ -311,6 +330,24 @@ fn apply_subscription_to_local_agent(
         value_string_array(subscription, "stateFilter").filter(|items| !items.is_empty())
     {
         agent.state_filter = state_filter;
+    }
+}
+
+fn apply_cloud_avatar_to_local_agent(agent: &mut LocalRegisteredAgent, registered: &Value) {
+    if registered.get("avatarUrl").is_some() {
+        agent.avatar_url = optional_value_string(registered, "avatarUrl");
+    }
+    if registered.get("avatarSource").is_some() {
+        agent.avatar_source = optional_value_string(registered, "avatarSource");
+    }
+    if registered.get("avatarPresetId").is_some() {
+        agent.avatar_preset_id = optional_value_string(registered, "avatarPresetId");
+    }
+    if registered.get("avatarUrls").is_some() {
+        agent.avatar_urls = registered
+            .get("avatarUrls")
+            .filter(|value| value.is_object())
+            .cloned();
     }
 }
 
@@ -408,6 +445,17 @@ fn local_registered_agent_public_from_cloud(
             .and_then(Value::as_str)
             .map(ToString::to_string)
             .or_else(|| fallback.and_then(|agent| agent.workspace_label.clone())),
+        avatar_url: optional_value_string(registered, "avatarUrl")
+            .or_else(|| fallback.and_then(|agent| agent.avatar_url.clone())),
+        avatar_source: optional_value_string(registered, "avatarSource")
+            .or_else(|| fallback.and_then(|agent| agent.avatar_source.clone())),
+        avatar_preset_id: optional_value_string(registered, "avatarPresetId")
+            .or_else(|| fallback.and_then(|agent| agent.avatar_preset_id.clone())),
+        avatar_urls: registered
+            .get("avatarUrls")
+            .filter(|value| value.is_object())
+            .cloned()
+            .or_else(|| fallback.and_then(|agent| agent.avatar_urls.clone())),
         goal_id: subscription
             .and_then(|value| optional_value_string(value, "goalId"))
             .or_else(|| fallback.and_then(|agent| agent.goal_id.clone())),
@@ -502,6 +550,16 @@ pub struct SpaceUpdateRegisteredAgentInput {
     pub status: Option<String>,
     #[serde(default)]
     pub issue_subscription_run_mode: Option<SpaceIssueSubscriptionRunMode>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceUpdateRegisteredAgentAvatarInput {
+    pub id: String,
+    #[serde(default)]
+    pub avatar_file_path: Option<String>,
+    #[serde(default)]
+    pub avatar_preset_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -663,6 +721,8 @@ pub struct SpaceUpdateProfileInput {
     pub name: String,
     #[serde(default)]
     pub avatar_file_path: Option<String>,
+    #[serde(default)]
+    pub avatar_preset_id: Option<String>,
     #[serde(default)]
     pub name_changed: Option<bool>,
 }
@@ -1135,6 +1195,23 @@ pub async fn cmd_space_update_profile(
 }
 
 #[tauri::command]
+pub async fn cmd_space_get_avatar_presets() -> Result<Value, String> {
+    if crate::space_cloud_mock::is_enabled() {
+        return crate::space_cloud_mock::avatar_presets();
+    }
+    ensure_space_available()?;
+    let session = require_session()?;
+    authorized_json_data_request(
+        &session.base_url,
+        "/api/avatar-presets",
+        &session.session_token,
+        reqwest::Method::GET,
+        None,
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn cmd_space_update_space(
     input: SpaceUpdateSpaceInput,
 ) -> Result<SpaceSessionPublic, String> {
@@ -1308,6 +1385,13 @@ pub async fn cmd_space_register_agent(
             .get("workspaceLabel")
             .and_then(Value::as_str)
             .map(ToString::to_string),
+        avatar_url: optional_value_string(&registered, "avatarUrl"),
+        avatar_source: optional_value_string(&registered, "avatarSource"),
+        avatar_preset_id: optional_value_string(&registered, "avatarPresetId"),
+        avatar_urls: registered
+            .get("avatarUrls")
+            .filter(|value| value.is_object())
+            .cloned(),
         goal_id: optional_value_string(&subscription, "goalId").or(Some(goal_id.to_string())),
         goal_path_label: optional_value_string(&subscription, "goalPathLabel"),
         state_filter: value_string_array(&subscription, "stateFilter")
@@ -1557,6 +1641,7 @@ pub async fn cmd_space_update_registered_agent(
             {
                 agent.issue_subscription_run_mode = issue_subscription_run_mode;
             }
+            apply_cloud_avatar_to_local_agent(agent, registered);
             agent.status = required_value_string(registered, "status")?;
             agent.updated_at = required_value_string(registered, "updatedAt")?;
         }
@@ -1574,6 +1659,45 @@ pub async fn cmd_space_update_registered_agent(
         .get("registeredAgent")
         .ok_or_else(|| "Space API response missing registeredAgent".to_string())?;
     local_registered_agent_public_from_cloud(&session, registered, subscription, None)
+}
+
+#[tauri::command]
+pub async fn cmd_space_update_registered_agent_avatar(
+    input: SpaceUpdateRegisteredAgentAvatarInput,
+) -> Result<LocalRegisteredAgentPublic, String> {
+    if crate::space_cloud_mock::is_enabled() {
+        return crate::space_cloud_mock::update_registered_agent_avatar(input);
+    }
+    ensure_space_available()?;
+    let session = require_session()?;
+    let mut agent = read_current_local_agents()?
+        .into_iter()
+        .find(|agent| agent.id == input.id);
+    let form = registered_agent_avatar_form(&input)?;
+    let data = authorized_multipart_data_request(
+        &session.base_url,
+        &format!("/api/registered-agents/{}/avatar", url_component(&input.id)),
+        &session.session_token,
+        form,
+    )
+    .await?;
+    let registered = data
+        .get("registeredAgent")
+        .ok_or_else(|| "Space API response missing registeredAgent".to_string())?;
+    if let Some(agent) = agent.as_mut() {
+        apply_cloud_avatar_to_local_agent(agent, registered);
+        agent.updated_at = required_value_string(registered, "updatedAt")
+            .unwrap_or_else(|_| chrono::Utc::now().to_rfc3339());
+        upsert_local_agent(agent.clone())?;
+        wake_space_connector_for_agent(&agent.id);
+        return Ok(agent.clone().into());
+    }
+    local_registered_agent_public_from_cloud(
+        &session,
+        registered,
+        first_subscription_from_data(&data),
+        None,
+    )
 }
 
 #[tauri::command]
@@ -3770,6 +3894,14 @@ fn profile_form(input: SpaceUpdateProfileInput) -> Result<reqwest::multipart::Fo
             "nameChanged",
             input.name_changed.unwrap_or(true).to_string(),
         );
+    let avatar_preset_id = input
+        .avatar_preset_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(preset_id) = avatar_preset_id {
+        form = form.text("avatarPresetId", preset_id.to_string());
+    }
     let Some(path) = input
         .avatar_file_path
         .as_deref()
@@ -3778,31 +3910,45 @@ fn profile_form(input: SpaceUpdateProfileInput) -> Result<reqwest::multipart::Fo
     else {
         return Ok(form);
     };
+    if avatar_preset_id.is_some() {
+        return Err("Choose either an avatar file or an avatar preset".to_string());
+    }
     let file_path = PathBuf::from(path);
-    if !file_path.is_absolute() {
-        return Err("Avatar image path must be absolute".to_string());
+    form = form.part(
+        "avatar",
+        normalized_avatar_upload_part(&file_path, MAX_PROFILE_AVATAR_BYTES)?,
+    );
+    Ok(form)
+}
+
+fn registered_agent_avatar_form(
+    input: &SpaceUpdateRegisteredAgentAvatarInput,
+) -> Result<reqwest::multipart::Form, String> {
+    let avatar_preset_id = input
+        .avatar_preset_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let avatar_file_path = input
+        .avatar_file_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if avatar_preset_id.is_some() && avatar_file_path.is_some() {
+        return Err("Choose either an avatar file or an avatar preset".to_string());
     }
-    let metadata = fs::symlink_metadata(&file_path)
-        .map_err(|e| format!("Failed to inspect avatar image: {}", e))?;
-    if metadata.file_type().is_symlink() {
-        return Err("Avatar image path must not be a symlink".to_string());
+    let mut form = reqwest::multipart::Form::new();
+    if let Some(preset_id) = avatar_preset_id {
+        return Ok(form.text("avatarPresetId", preset_id.to_string()));
     }
-    if !metadata.is_file() {
-        return Err("Avatar image path must be a file".to_string());
-    }
-    if metadata.len() > MAX_PROFILE_AVATAR_BYTES {
-        return Err(format!(
-            "Avatar image exceeds {} bytes",
-            MAX_PROFILE_AVATAR_BYTES
-        ));
-    }
-    let (mime, filename) = profile_avatar_mime_and_filename(&file_path)?;
-    let bytes = read_profile_avatar_bytes(&file_path, &metadata)?;
-    let part = reqwest::multipart::Part::bytes(bytes)
-        .file_name(filename)
-        .mime_str(mime)
-        .map_err(|e| format!("Failed to build avatar upload part: {}", e))?;
-    form = form.part("avatar", part);
+    let Some(path) = avatar_file_path else {
+        return Err("Avatar file or preset is required".to_string());
+    };
+    let file_path = PathBuf::from(path);
+    form = form.part(
+        "avatar",
+        normalized_avatar_upload_part(&file_path, MAX_AGENT_AVATAR_BYTES)?,
+    );
     Ok(form)
 }
 
@@ -3845,7 +3991,7 @@ fn space_form(input: SpaceUpdateSpaceInput) -> Result<reqwest::multipart::Form, 
         ));
     }
     let (mime, filename) = profile_avatar_mime_and_filename(&file_path)?;
-    let bytes = read_profile_avatar_bytes(&file_path, &metadata)?;
+    let bytes = read_avatar_file_bytes(&file_path, &metadata, MAX_SPACE_AVATAR_BYTES)?;
     let part = reqwest::multipart::Part::bytes(bytes)
         .file_name(filename)
         .mime_str(mime)
@@ -3853,9 +3999,76 @@ fn space_form(input: SpaceUpdateSpaceInput) -> Result<reqwest::multipart::Form, 
     Ok(form.part("avatar", part))
 }
 
-fn read_profile_avatar_bytes(
+fn normalized_avatar_upload_part(
+    file_path: &Path,
+    max_bytes: u64,
+) -> Result<reqwest::multipart::Part, String> {
+    if !file_path.is_absolute() {
+        return Err("Avatar image path must be absolute".to_string());
+    }
+    let metadata = fs::symlink_metadata(file_path)
+        .map_err(|e| format!("Failed to inspect avatar image: {}", e))?;
+    if metadata.file_type().is_symlink() {
+        return Err("Avatar image path must not be a symlink".to_string());
+    }
+    if !metadata.is_file() {
+        return Err("Avatar image path must be a file".to_string());
+    }
+    if metadata.len() > max_bytes {
+        return Err(format!("Avatar image exceeds {} bytes", max_bytes));
+    }
+    validate_avatar_file_extension(file_path)?;
+    let bytes = read_avatar_file_bytes(file_path, &metadata, max_bytes)?;
+    let normalized = normalize_avatar_bytes_to_webp(&bytes)?;
+    reqwest::multipart::Part::bytes(normalized)
+        .file_name("avatar.webp")
+        .mime_str("image/webp")
+        .map_err(|e| format!("Failed to build avatar upload part: {}", e))
+}
+
+fn validate_avatar_file_extension(file_path: &Path) -> Result<(), String> {
+    let ext = file_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .map(|value| value.to_ascii_lowercase())
+        .ok_or_else(|| "Avatar image must be png, jpg, jpeg, or webp".to_string())?;
+    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+        Ok(())
+    } else {
+        Err("Avatar image must be png, jpg, jpeg, or webp".to_string())
+    }
+}
+
+fn normalize_avatar_bytes_to_webp(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let image = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| format!("Failed to inspect avatar image: {}", e))?
+        .decode()
+        .map_err(|e| format!("Failed to decode avatar image: {}", e))?;
+    let resized = if image.width() > NORMALIZED_AVATAR_MAX_EDGE
+        || image.height() > NORMALIZED_AVATAR_MAX_EDGE
+    {
+        image.resize(
+            NORMALIZED_AVATAR_MAX_EDGE,
+            NORMALIZED_AVATAR_MAX_EDGE,
+            image::imageops::FilterType::Lanczos3,
+        )
+    } else {
+        image
+    };
+    let rgba = resized.to_rgba8();
+    let (width, height) = rgba.dimensions();
+    let mut output = Vec::new();
+    image::codecs::webp::WebPEncoder::new_lossless(&mut output)
+        .write_image(rgba.as_raw(), width, height, image::ColorType::Rgba8.into())
+        .map_err(|e| format!("Failed to encode avatar image: {}", e))?;
+    Ok(output)
+}
+
+fn read_avatar_file_bytes(
     file_path: &Path,
     _validated_metadata: &fs::Metadata,
+    max_bytes: u64,
 ) -> Result<Vec<u8>, String> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
@@ -3873,11 +4086,8 @@ fn read_profile_avatar_bytes(
     if !opened_metadata.is_file() {
         return Err("Avatar image path must be a file".to_string());
     }
-    if opened_metadata.len() > MAX_PROFILE_AVATAR_BYTES {
-        return Err(format!(
-            "Avatar image exceeds {} bytes",
-            MAX_PROFILE_AVATAR_BYTES
-        ));
+    if opened_metadata.len() > max_bytes {
+        return Err(format!("Avatar image exceeds {} bytes", max_bytes));
     }
     #[cfg(unix)]
     {
@@ -3897,14 +4107,11 @@ fn read_profile_avatar_bytes(
         return Err("Avatar image path must be a file".to_string());
     }
     let mut bytes = Vec::with_capacity(opened_metadata.len() as usize);
-    file.take(MAX_PROFILE_AVATAR_BYTES + 1)
+    file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| format!("Failed to read avatar image: {}", e))?;
-    if bytes.len() as u64 > MAX_PROFILE_AVATAR_BYTES {
-        return Err(format!(
-            "Avatar image exceeds {} bytes",
-            MAX_PROFILE_AVATAR_BYTES
-        ));
+    if bytes.len() as u64 > max_bytes {
+        return Err(format!("Avatar image exceeds {} bytes", max_bytes));
     }
     Ok(bytes)
 }
@@ -4284,6 +4491,10 @@ fn read_current_local_agents() -> Result<Vec<LocalRegisteredAgent>, String> {
                 display_name: agent.display_name.clone(),
                 workspace_path: agent.workspace_path.clone(),
                 workspace_label: agent.workspace_label.clone(),
+                avatar_url: agent.avatar_url.clone(),
+                avatar_source: agent.avatar_source.clone(),
+                avatar_preset_id: agent.avatar_preset_id.clone(),
+                avatar_urls: agent.avatar_urls.clone(),
                 goal_id: agent.goal_id.clone(),
                 goal_path_label: agent.goal_path_label.clone(),
                 state_filter: agent.state_filter.clone(),
@@ -5721,6 +5932,10 @@ mod tests {
             display_name: "Legacy Agent".to_string(),
             workspace_path: "/tmp/myagents-legacy".to_string(),
             workspace_label: Some("Legacy".to_string()),
+            avatar_url: None,
+            avatar_source: None,
+            avatar_preset_id: None,
+            avatar_urls: None,
             goal_id: Some("goal_test".to_string()),
             goal_path_label: Some("Root / Legacy".to_string()),
             state_filter: vec!["todo".to_string()],

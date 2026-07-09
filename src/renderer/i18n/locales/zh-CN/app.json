@@ -381,6 +381,14 @@
       "save": "保存",
       "saving": "保存中"
     },
+    "avatarPicker": {
+      "peopleTitle": "选择头像",
+      "agentsTitle": "选择 Agent 头像",
+      "upload": "上传图片",
+      "uploadTitle": "选择头像图片",
+      "preset": "预设头像",
+      "loading": "头像加载中"
+    },
     "common": {
       "refresh": "刷新",
       "create": "创建",
@@ -430,6 +438,7 @@
       "agentDisabled": "Agent 已禁用",
       "agentRevoked": "Agent 已撤销",
       "agentUpdated": "Registered Agent 已更新",
+      "agentAvatarUpdated": "Agent 头像已更新",
       "agentCreated": "Registered Agent 已创建",
       "spaceCreated": "Space 已创建",
       "spaceJoined": "已加入 Space",
@@ -640,6 +649,7 @@
       "disable": "禁用",
       "revokeAgent": "撤销 Agent {{name}}",
       "revoke": "撤销",
+      "changeAvatar": "更换 Agent 头像",
       "viewSettings": "查看登记设置",
       "status": "状态",
       "lastSync": "上次同步",

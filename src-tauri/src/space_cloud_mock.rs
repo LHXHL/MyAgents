@@ -10,9 +10,9 @@ use crate::space_cloud::{
     LocalRegisteredAgent, LocalRegisteredAgentPublic, SpaceApiRequestInput,
     SpaceDownloadAttachmentResult, SpaceIssueSubscriptionRunMode, SpaceProcessDeliveryResult,
     SpaceRegisterAgentInput, SpaceSession, SpaceSessionPublic, SpaceSkillSourceMetaInput,
-    SpaceUpdateProfileInput, SpaceUpdateSpaceInput, SpaceUploadIssueAttachmentsInput,
-    SpaceUploadSkillInput, MAX_ATTACHMENT_UPLOAD_BYTES, MAX_ATTACHMENT_UPLOAD_COUNT,
-    MAX_SKILL_ZIP_BYTES,
+    SpaceUpdateProfileInput, SpaceUpdateRegisteredAgentAvatarInput, SpaceUpdateSpaceInput,
+    SpaceUploadIssueAttachmentsInput, SpaceUploadSkillInput, MAX_ATTACHMENT_UPLOAD_BYTES,
+    MAX_ATTACHMENT_UPLOAD_COUNT, MAX_SKILL_ZIP_BYTES,
 };
 use crate::workspace_files::path_safety::{
     atomic_write_file, resolve_inside_workspace, validate_workspace_root,
@@ -23,6 +23,46 @@ const MOCK_SPACE_ID: &str = "space_mock_official";
 const MOCK_ROOT_GOAL_ID: &str = "goal_mock_root";
 const MOCK_OWNER_USER_ID: &str = "usr_mock_owner";
 const MOCK_REMOTE_DEVICE_ID: &str = "mock-remote-device-windows";
+
+fn mock_avatar_preset_url(kind: &str, preset_id: &str, size: u16) -> String {
+    format!(
+        "{}/mock-avatar/presets/{}/v1/{}/{}.webp",
+        MOCK_BASE_URL, kind, preset_id, size
+    )
+}
+
+fn mock_avatar_preset(kind: &str, preset_id: &str) -> Value {
+    json!({
+        "id": preset_id,
+        "kind": kind,
+        "version": "v1",
+        "url": mock_avatar_preset_url(kind, preset_id, 128),
+        "urls": {
+            "64": mock_avatar_preset_url(kind, preset_id, 64),
+            "128": mock_avatar_preset_url(kind, preset_id, 128),
+            "256": mock_avatar_preset_url(kind, preset_id, 256)
+        }
+    })
+}
+
+fn mock_avatar_urls(kind: &str, preset_id: &str) -> Value {
+    json!({
+        "64": mock_avatar_preset_url(kind, preset_id, 64),
+        "128": mock_avatar_preset_url(kind, preset_id, 128),
+        "256": mock_avatar_preset_url(kind, preset_id, 256)
+    })
+}
+
+pub fn avatar_presets() -> Result<Value, String> {
+    Ok(json!({
+        "people": (1..=16)
+            .map(|index| mock_avatar_preset("people", &format!("person-{index:02}")))
+            .collect::<Vec<_>>(),
+        "agents": (1..=16)
+            .map(|index| mock_avatar_preset("agents", &format!("agent-{index:02}")))
+            .collect::<Vec<_>>()
+    }))
+}
 
 #[derive(Clone)]
 struct MockSkillRecord {
@@ -179,6 +219,7 @@ pub fn register_agent(
     let mut state = state().lock().expect("mock state poisoned");
     let goal_path_label = goal_label(&state, goal_id);
     let id = state.next_id("rag");
+    let avatar_preset_id = format!("agent-{:02}", (state.seq % 16) + 1);
     let local_agent_id = format!("local-agent-{}", safe_local_name(&input.workspace_id));
     let agent = LocalRegisteredAgent {
         id: id.clone(),
@@ -205,6 +246,10 @@ pub fn register_agent(
                 Some(trimmed.to_string())
             }
         }),
+        avatar_url: Some(mock_avatar_preset_url("agents", &avatar_preset_id, 128)),
+        avatar_source: Some("preset".to_string()),
+        avatar_preset_id: Some(avatar_preset_id.clone()),
+        avatar_urls: Some(mock_avatar_urls("agents", &avatar_preset_id)),
         goal_id: Some(goal_id.to_string()),
         goal_path_label,
         state_filter: input
@@ -248,6 +293,75 @@ pub fn revoke_agent(id: &str) -> Result<LocalRegisteredAgentPublic, String> {
         .ok_or_else(|| format!("Registered Agent not found locally: {}", id))?;
     agent.status = "revoked".to_string();
     agent.updated_at = "2026-06-24T09:51:00.000Z".to_string();
+    Ok(agent.clone().into())
+}
+
+pub fn update_registered_agent_avatar(
+    input: SpaceUpdateRegisteredAgentAvatarInput,
+) -> Result<LocalRegisteredAgentPublic, String> {
+    let avatar_preset_id = input
+        .avatar_preset_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let avatar_file_path = input
+        .avatar_file_path
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if avatar_preset_id.is_some() && avatar_file_path.is_some() {
+        return Err("Choose either an avatar file or an avatar preset".to_string());
+    }
+    if avatar_preset_id.is_none() && avatar_file_path.is_none() {
+        return Err("Avatar file or preset is required".to_string());
+    }
+    let mut state = state().lock().expect("mock state poisoned");
+    let next_upload_seq = state.seq + 1;
+    let agent_index = state
+        .agents
+        .iter()
+        .position(|agent| agent.id == input.id)
+        .ok_or_else(|| format!("Registered Agent not found locally: {}", input.id))?;
+    state.seq += 1;
+    let agent = &mut state.agents[agent_index];
+    if let Some(preset_id) = avatar_preset_id {
+        agent.avatar_url = Some(mock_avatar_preset_url("agents", preset_id, 128));
+        agent.avatar_source = Some("preset".to_string());
+        agent.avatar_preset_id = Some(preset_id.to_string());
+        agent.avatar_urls = Some(mock_avatar_urls("agents", preset_id));
+    } else if let Some(path) = avatar_file_path {
+        let file_path = PathBuf::from(path);
+        if !file_path.is_absolute() {
+            return Err("Avatar image path must be absolute".to_string());
+        }
+        let ext = file_path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase())
+            .ok_or_else(|| "Avatar image must be png, jpg, jpeg, or webp".to_string())?;
+        if !matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "webp") {
+            return Err("Avatar image must be png, jpg, jpeg, or webp".to_string());
+        }
+        let metadata = fs::symlink_metadata(&file_path)
+            .map_err(|e| format!("Failed to inspect avatar image: {}", e))?;
+        if metadata.file_type().is_symlink() {
+            return Err("Avatar image path must not be a symlink".to_string());
+        }
+        if !metadata.is_file() {
+            return Err("Avatar image path must be a file".to_string());
+        }
+        if metadata.len() > 5 * 1024 * 1024 {
+            return Err("Avatar image exceeds 5242880 bytes".to_string());
+        }
+        agent.avatar_url = Some(format!(
+            "{}/mock-avatar/agent-uploaded-{}.webp",
+            MOCK_BASE_URL, next_upload_seq
+        ));
+        agent.avatar_source = Some("r2".to_string());
+        agent.avatar_preset_id = None;
+        agent.avatar_urls = None;
+    }
+    agent.updated_at = "2026-06-24T09:54:00.000Z".to_string();
     Ok(agent.clone().into())
 }
 
@@ -475,12 +589,22 @@ pub fn update_profile(input: SpaceUpdateProfileInput) -> Result<SpaceSessionPubl
         return Err("Profile name must be at most 40 characters".to_string());
     }
     let mut state = state().lock().expect("mock state poisoned");
-    let avatar_url = if let Some(path) = input
+    let avatar_preset_id = input
+        .avatar_preset_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let avatar_file_path = input
         .avatar_file_path
         .as_deref()
         .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
+        .filter(|value| !value.is_empty());
+    if avatar_preset_id.is_some() && avatar_file_path.is_some() {
+        return Err("Choose either an avatar file or an avatar preset".to_string());
+    }
+    let avatar_url = if let Some(preset_id) = avatar_preset_id {
+        Some(mock_avatar_preset_url("people", preset_id, 128))
+    } else if let Some(path) = avatar_file_path {
         let file_path = PathBuf::from(path);
         if !file_path.is_absolute() {
             return Err("Avatar image path must be absolute".to_string());
@@ -505,10 +629,9 @@ pub fn update_profile(input: SpaceUpdateProfileInput) -> Result<SpaceSessionPubl
             return Err("Avatar image exceeds 5242880 bytes".to_string());
         }
         Some(format!(
-            "{}/mock-avatar/uploaded-{}.{}",
+            "{}/mock-avatar/uploaded-{}.webp",
             MOCK_BASE_URL,
-            state.seq + 1,
-            if ext == "jpeg" { "jpg" } else { ext.as_str() }
+            state.seq + 1
         ))
     } else {
         None
@@ -518,6 +641,18 @@ pub fn update_profile(input: SpaceUpdateProfileInput) -> Result<SpaceSessionPubl
         user.insert("name".to_string(), json!(name));
         if let Some(url) = avatar_url.as_deref() {
             user.insert("avatarUrl".to_string(), json!(url));
+            if let Some(preset_id) = avatar_preset_id {
+                user.insert("avatarSource".to_string(), json!("preset"));
+                user.insert("avatarPresetId".to_string(), json!(preset_id));
+                user.insert(
+                    "avatarUrls".to_string(),
+                    mock_avatar_urls("people", preset_id),
+                );
+            } else {
+                user.insert("avatarSource".to_string(), json!("r2"));
+                user.insert("avatarPresetId".to_string(), Value::Null);
+                user.insert("avatarUrls".to_string(), Value::Null);
+            }
         }
     }
     let user_id = state
@@ -1092,7 +1227,10 @@ fn initial_state() -> MockState {
         "id": MOCK_OWNER_USER_ID,
         "email": "myagents.io@gmail.com",
         "name": "Ethan",
-        "avatarUrl": "https://space.mock.myagents.local/mock-avatar/ethan.png"
+        "avatarUrl": mock_avatar_preset_url("people", "person-01", 128),
+        "avatarSource": "preset",
+        "avatarPresetId": "person-01",
+        "avatarUrls": mock_avatar_urls("people", "person-01")
     });
     let tags = vec![
         tag("bug", "Bug reports and regressions"),
@@ -3295,6 +3433,12 @@ fn agent(
             Some("2026-06-24T08:45:00.000Z".to_string()),
         )
     };
+    let avatar_index = id
+        .bytes()
+        .fold(0usize, |acc, byte| acc.wrapping_add(byte as usize))
+        % 16
+        + 1;
+    let avatar_preset_id = format!("agent-{avatar_index:02}");
     LocalRegisteredAgent {
         id: id.to_string(),
         base_url: MOCK_BASE_URL.to_string(),
@@ -3316,6 +3460,10 @@ fn agent(
         display_name: display_name.to_string(),
         workspace_path: workspace_path.to_string(),
         workspace_label: Some(workspace_label.to_string()),
+        avatar_url: Some(mock_avatar_preset_url("agents", &avatar_preset_id, 128)),
+        avatar_source: Some("preset".to_string()),
+        avatar_preset_id: Some(avatar_preset_id.clone()),
+        avatar_urls: Some(mock_avatar_urls("agents", &avatar_preset_id)),
         goal_id: Some(goal_id.to_string()),
         goal_path_label: Some(
             match goal_id {
