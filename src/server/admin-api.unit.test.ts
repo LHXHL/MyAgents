@@ -17,6 +17,16 @@ const managementApiMocks = vi.hoisted(() => ({
   managementApi: vi.fn(async (): Promise<Record<string, unknown>> => ({ ok: true, taskUpdated: 0, cronUpdated: 0 })),
 }));
 
+const sessionEngineMocks = vi.hoisted(() => {
+  const state = {
+    context: { sessionId: null as string | null, workspacePath: null as string | null },
+  };
+  return {
+    state,
+    getCurrentSessionContext: vi.fn(() => state.context),
+  };
+});
+
 vi.mock('./agent-session', () => ({
   SDK_RESERVED_MCP_NAMES: new Set<string>(),
   getAgentState: () => ({ agentDir: agentSessionMocks.agentDir }),
@@ -35,6 +45,12 @@ vi.mock('./sse', () => ({
 vi.mock('./utils/management-api-client', () => ({
   ADMIN_LOOPBACK_TIMEOUT_MS: 10_000,
   managementApi: managementApiMocks.managementApi,
+}));
+
+vi.mock('./session-engine', () => ({
+  getSessionEngine: () => ({
+    getCurrentSessionContext: sessionEngineMocks.getCurrentSessionContext,
+  }),
 }));
 
 let scratch: string;
@@ -65,6 +81,8 @@ beforeEach(() => {
   agentSessionMocks.setMcpServers.mockClear();
   managementApiMocks.managementApi.mockClear();
   managementApiMocks.managementApi.mockResolvedValue({ ok: true, taskUpdated: 0, cronUpdated: 0 });
+  sessionEngineMocks.state.context = { sessionId: null, workspacePath: null };
+  sessionEngineMocks.getCurrentSessionContext.mockClear();
 });
 
 afterEach(() => {
@@ -88,6 +106,36 @@ describe('admin-api help registry', () => {
     expect(text).not.toContain('Unknown command group');
   });
 
+  it('documents Goal Mode for myagents goal --help', async () => {
+    const { handleHelp } = await import('./admin-api');
+
+    const result = handleHelp({ path: ['goal'] });
+    const text = (result.data as { text?: string } | undefined)?.text ?? '';
+
+    expect(result.success).toBe(true);
+    expect(text).toContain('myagents goal');
+    expect(text).toContain('Goal Mode');
+    expect(text).toContain('create --objective');
+    expect(text).toContain('update --status complete');
+    expect(text).toContain('Do not infer Goal Mode');
+    expect(text).not.toContain('Unknown command group');
+  });
+
+  it('does not advertise loop schedule creation from ordinary cron help', async () => {
+    const { handleHelp } = await import('./admin-api');
+
+    const shortHelp = handleHelp({ path: ['cron'] });
+    const readme = handleHelp({ path: ['cron', 'readme'] });
+    const shortText = (shortHelp.data as { text?: string } | undefined)?.text ?? '';
+    const readmeText = (readme.data as { text?: string } | undefined)?.text ?? '';
+
+    expect(shortHelp.success).toBe(true);
+    expect(readme.success).toBe(true);
+    expect(shortText).not.toContain('{"kind":"loop"}');
+    expect(readmeText).not.toContain('{"kind":"loop"}');
+    expect(handleHelp({ path: ['goal'] }).success).toBe(true);
+  });
+
   it('includes vision in the derived command group list', async () => {
     const { handleHelp } = await import('./admin-api');
 
@@ -97,6 +145,53 @@ describe('admin-api help registry', () => {
     expect(result.success).toBe(true);
     expect(text).toContain('Unknown command group "definitely-not-a-command"');
     expect(text).toContain('vision');
+  });
+});
+
+describe('admin-api goal', () => {
+  it('creates a current-session Goal without Cron delivery ownership', async () => {
+    const { setImCronContext, clearImCronContext } = await import('./tools/im-cron-tool');
+    const { handleGoalCreate } = await import('./admin-api');
+    sessionEngineMocks.state.context = {
+      sessionId: 'session-im-goal',
+      workspacePath: '/tmp/myagents-goal-workspace',
+    };
+    setImCronContext({
+      botId: 'bot-feishu',
+      chatId: 'chat-123',
+      platform: 'feishu',
+      workspacePath: '/tmp/myagents-goal-workspace',
+    });
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      goal: { id: 'goal_1', objective: 'Ship it', status: 'active' },
+    });
+
+    const result = await handleGoalCreate({ objective: 'Ship it' });
+
+    expect(result.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith('/api/goal/create', 'POST', {
+      sessionId: 'session-im-goal',
+      workspacePath: '/tmp/myagents-goal-workspace',
+      objective: 'Ship it',
+    });
+    clearImCronContext();
+  });
+});
+
+describe('admin-api cron create', () => {
+  it('rejects loop schedules before ordinary cron creation reaches Rust', async () => {
+    const { handleCronCreate } = await import('./admin-api');
+
+    const result = await handleCronCreate({
+      prompt: 'Keep going',
+      schedule: { kind: 'loop' },
+      workspacePath: '/tmp/myagents-goal-workspace',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Use myagents goal create');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
   });
 });
 

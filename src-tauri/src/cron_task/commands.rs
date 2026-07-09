@@ -12,9 +12,11 @@ fn is_managed_cron_task(task: &CronTask) -> bool {
 }
 
 fn is_goal_task(task: &CronTask) -> bool {
-    matches!(task.schedule, Some(CronSchedule::Loop))
-        && task.run_mode == RunMode::SingleSession
-        && !is_managed_cron_task(task)
+    task.goal_status.is_some()
+        || task
+            .goal_objective
+            .as_deref()
+            .is_some_and(|objective| !objective.trim().is_empty())
 }
 
 async fn get_ordinary_cron_task(
@@ -57,8 +59,40 @@ pub async fn cmd_create_cron_task(config: CronTaskConfig) -> Result<CronTask, St
     {
         return Err(MANAGED_CRON_TASK_ERROR.to_string());
     }
+    if matches!(config.schedule, Some(CronSchedule::Loop)) {
+        return Err(GOAL_CRON_TASK_ERROR.to_string());
+    }
     let manager = get_cron_task_manager();
     manager.create_task(config).await
+}
+
+#[tauri::command]
+pub async fn cmd_create_goal_task(config: CronTaskConfig) -> Result<CronTask, String> {
+    let manager = get_cron_task_manager();
+    manager.create_goal_task(config).await
+}
+
+#[tauri::command]
+pub async fn cmd_get_goal_task(task_id: String) -> Result<CronTask, String> {
+    let manager = get_cron_task_manager();
+    get_goal_task(manager, &task_id).await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_get_session_goal_task(
+    sessionId: String,
+    workspacePath: Option<String>,
+    includeTerminal: Option<bool>,
+) -> Result<Option<CronTask>, String> {
+    let manager = get_cron_task_manager();
+    Ok(manager
+        .get_goal_for_session(
+            &sessionId,
+            workspacePath.as_deref(),
+            includeTerminal.unwrap_or(false),
+        )
+        .await)
 }
 
 /// Start a cron task
@@ -169,7 +203,7 @@ pub async fn cmd_get_cron_tasks() -> Result<Vec<CronTask>, String> {
         .get_all_tasks()
         .await
         .into_iter()
-        .filter(|task| !is_managed_cron_task(task))
+        .filter(|task| !is_managed_cron_task(task) && !is_goal_task(task))
         .collect())
 }
 
@@ -181,7 +215,7 @@ pub async fn cmd_get_workspace_cron_tasks(workspace_path: String) -> Result<Vec<
         .get_tasks_for_workspace(&workspace_path)
         .await
         .into_iter()
-        .filter(|task| !is_managed_cron_task(task))
+        .filter(|task| !is_managed_cron_task(task) && !is_goal_task(task))
         .collect())
 }
 
@@ -193,7 +227,7 @@ pub async fn cmd_get_session_cron_task(sessionId: String) -> Result<Option<CronT
     Ok(manager
         .get_active_task_for_session(&sessionId)
         .await
-        .filter(|task| !is_managed_cron_task(task)))
+        .filter(|task| !is_managed_cron_task(task) && !is_goal_task(task)))
 }
 
 /// Get active cron task for a tab (running only)
@@ -204,7 +238,7 @@ pub async fn cmd_get_tab_cron_task(tabId: String) -> Result<Option<CronTask>, St
     Ok(manager
         .get_active_task_for_tab(&tabId)
         .await
-        .filter(|task| !is_managed_cron_task(task)))
+        .filter(|task| !is_managed_cron_task(task) && !is_goal_task(task)))
 }
 
 /// Record task execution (called by Sidecar after execution completes)
@@ -242,7 +276,7 @@ pub async fn cmd_get_tasks_to_recover() -> Result<Vec<CronTask>, String> {
         .get_tasks_to_recover()
         .await
         .into_iter()
-        .filter(|task| !is_managed_cron_task(task))
+        .filter(|task| !is_managed_cron_task(task) && !is_goal_task(task))
         .collect())
 }
 

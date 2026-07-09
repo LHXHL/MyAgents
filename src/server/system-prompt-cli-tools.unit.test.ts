@@ -12,8 +12,54 @@ describe('buildCliToolsAppend', () => {
     const text = buildCliToolsAppend({ type: 'desktop' }, { includeUserTools: false });
 
     expect(text).toContain('<myagents-cli-cron>');
+    expect(text).toContain('<myagents-cli-goal>');
     expect(text).toContain('<myagents-cli-thought>');
+    expect(text).toContain('myagents goal --help');
     expect(text).not.toContain('<myagents-user-tools>');
+  });
+
+  it('injects Goal Mode into private user-facing channel prompts', () => {
+    const imText = buildCliToolsAppend(
+      { type: 'im', platform: 'feishu', sourceType: 'private' },
+      { includeUserTools: false },
+    );
+    const channelText = buildCliToolsAppend(
+      { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+      { includeUserTools: false },
+    );
+
+    expect(imText).toContain('<myagents-cli-goal>');
+    expect(channelText).toContain('<myagents-cli-goal>');
+    expect(imText).toContain('目标模式');
+    expect(channelText).toContain('设立目标');
+  });
+
+  it('does not inject Goal Mode into headless or semi-open prompts', () => {
+    const cronText = buildCliToolsAppend(
+      { type: 'cron', taskId: 'task-1', intervalMinutes: 5, aiCanExit: true },
+      { includeUserTools: false },
+    );
+    const registeredAgentText = buildCliToolsAppend(
+      { type: 'registeredAgent', platform: 'space', registeredAgentId: 'ra-1' },
+      { includeUserTools: false },
+    );
+    const imGroupText = buildCliToolsAppend(
+      { type: 'im', platform: 'feishu', sourceType: 'group' },
+      { includeUserTools: false },
+    );
+    const agentChannelGroupText = buildCliToolsAppend(
+      { type: 'agent-channel', platform: 'feishu', sourceType: 'group' },
+      { includeUserTools: false },
+    );
+
+    expect(cronText).not.toContain('<myagents-cli-goal>');
+    expect(cronText).not.toContain('myagents goal create');
+    expect(registeredAgentText).not.toContain('<myagents-cli-goal>');
+    expect(registeredAgentText).not.toContain('myagents goal create');
+    expect(imGroupText).not.toContain('<myagents-cli-goal>');
+    expect(imGroupText).not.toContain('myagents goal create');
+    expect(agentChannelGroupText).not.toContain('<myagents-cli-goal>');
+    expect(agentChannelGroupText).not.toContain('myagents goal create');
   });
 
   it('includes user-registered CLI tools only when explicitly enabled', () => {

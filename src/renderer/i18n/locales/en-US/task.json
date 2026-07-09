@@ -278,7 +278,7 @@
     },
     "settingsModal": {
       "title": "Scheduled task",
-      "goalTitle": "Goal Mode",
+      "goalTitle": "Goal Loop",
       "executionMode": "Execution mode",
       "loopModeDescription": "This chat keeps running after each reply, carrying the current context forward until AI marks the goal complete or blocked, or you cancel it.",
       "currentSession": "Current chat",
@@ -312,8 +312,8 @@
       "recurring": "Recurring",
       "once": "Once",
       "loop": "Goal Mode",
-      "loopTitle": "Goal Mode",
-      "loopDescription": "Enter your goal in the input box, then send it to keep working until completion. Each finished turn starts the next one with the current chat context. It stops automatically after 10 consecutive failures.",
+      "loopTitle": "Goal Loop",
+      "loopDescription": "Goal Loop is designed for long-running work. Give AI a goal, and it can work continuously for up to dozens of hours, organizing context along the way until the goal is fully reached.\n\nAfter turning on Goal Loop, write what you want to accomplish in the input box and send it to begin. During the process, you can add information or adjust direction at any time, and AI will carry it into the next steps.",
       "approxPrefix": "About {{distance}} from now",
       "expired": "Expired"
     },

@@ -1762,7 +1762,6 @@ Options for 'add':
                    '{"kind":"at","at":"2026-04-23T09:10:00+08:00"}'
                    '{"kind":"every","minutes":30}'
                    '{"kind":"cron","expr":"0 9 * * *","tz":"Asia/Shanghai"}'
-                   '{"kind":"loop"}'
                  On create, non-JSON cron input is stored with the local IANA
                  timezone. JSON "tz" is optional; use it for a different
                  timezone or explicit UTC.
@@ -1774,6 +1773,59 @@ Options for 'update' <id>:
   accepted as an alias for --prompt here.
 
 See 'myagents cron readme' for long-form usage + exit-from-task flow.`,
+
+  goal: `myagents goal — Manage the current session Goal Mode
+
+Goal Mode turns the current MyAgents session into a long-running objective. MyAgents
+keeps starting the next turn with the current session context until the Goal is
+complete, blocked, or canceled by the user.
+
+Use it when the User explicitly asks to start / enter / use Goal Mode, Goal
+Loop, 目标模式, 设立目标, or to keep a goal running continuously until completion.
+Do not infer Goal Mode from an ordinary complex request.
+
+Commands:
+  get | list                               Show the current session Goal
+  create --objective "<objective>"         Create and start a Goal in this session
+  update --status complete --reason "..."  Mark the active Goal complete
+  update --status blocked --reason "..."   Mark the active Goal blocked
+
+When to call:
+  get
+    Use when the user asks what Goal is active, or before making a state change.
+    Effect: returns the current session Goal, or null if none is active.
+
+  create
+    Use only when the User explicitly asks to start Goal Mode / Goal Loop /
+    目标模式 / 设立目标 / continuous goal execution. If this session already has an
+    unfinished Goal, creation fails instead of replacing it.
+    Effect: creates a current-session Goal and starts automatic continuation.
+
+  update --status complete
+    Use only when current evidence proves every requirement in the Goal has
+    been satisfied and no required work remains.
+    Effect: stops automatic continuation, marks the Goal complete, and notifies
+    the user if notifications are enabled.
+
+  update --status blocked
+    Use only when the same blocker has repeated for at least three consecutive
+    Goal turns and you cannot make meaningful progress without user input or an
+    external-state change.
+    Effect: stops automatic continuation, marks the Goal blocked, and surfaces
+    the reason to the user.
+
+Rules:
+  - Do not create a Goal just because a task is long, hard, or multi-step.
+  - Do not use update to pause, resume, cancel, or replace a Goal; those are
+    controlled by the user/system.
+  - Do not mark complete for partial progress, a stopped turn, or a plausible
+    final answer without evidence.
+
+Examples:
+  myagents goal get
+  myagents goal create --objective "finish the migration and verify tests"
+  myagents goal update --status complete --reason "all requirements verified"
+  myagents goal update --status blocked --reason "missing production credentials"`,
 
   plugin: `myagents plugin — Manage OpenClaw channel plugins (IM adapters from npm)
 
@@ -2357,6 +2409,13 @@ export async function handleCronCreate(payload: Record<string, unknown>): Promis
   let finalPayload: Record<string, unknown> = (payload.workspacePath || payload.workspace_path)
     ? payload
     : { ...payload, workspacePath: resolvedWorkspacePath };
+  const schedule = finalPayload.schedule as { kind?: unknown } | undefined;
+  if (schedule?.kind === 'loop') {
+    return {
+      success: false,
+      error: 'Loop schedules are Goal Mode tasks. Use myagents goal create --objective "<objective>" instead of myagents cron add.',
+    };
+  }
 
   // Issue #197 — auto-capture provider/model from the workspace context when
   // the caller didn't supply any provider hint. Renderer Chat already does
@@ -3170,7 +3229,6 @@ CREATE OPTIONS (myagents cron add ...)
                                     '{"kind":"at","at":"2026-04-23T09:10:00+08:00"}'
                                     '{"kind":"every","minutes":30}'
                                     '{"kind":"cron","expr":"0 9 * * *","tz":"Asia/Shanghai"}'
-                                    '{"kind":"loop"}'
                                   On create, non-JSON cron input is stored with
                                   the current machine's IANA timezone. JSON "tz"
                                   is optional; use it for a different timezone

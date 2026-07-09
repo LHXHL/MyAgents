@@ -453,6 +453,12 @@ async fn create_cron_handler(Json(req): Json<CreateCronRequest>) -> Json<serde_j
     let manager = cron_task::get_cron_task_manager();
 
     let is_loop = matches!(&req.schedule, Some(CronSchedule::Loop));
+    if is_loop {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": GOAL_CRON_TASK_ERROR,
+        }));
+    }
     let run_mode = if is_loop {
         cron_task::RunMode::SingleSession // Loop always uses single_session
     } else {
@@ -556,7 +562,7 @@ async fn list_cron_handler(Query(query): Query<ListCronQuery>) -> Json<serde_jso
     } else {
         manager.get_all_tasks().await
     };
-    tasks.retain(|t| !is_managed_cron_task(t));
+    tasks.retain(|t| !is_managed_cron_task(t) && !is_goal_task(t));
 
     // PRD 0.2.5 R9 — single snapshot of "currently executing" set, applied
     // to all summaries. Avoids N separate lock acquisitions; correct for
@@ -606,11 +612,14 @@ async fn update_cron_handler(Json(req): Json<UpdateCronRequest>) -> Json<serde_j
 
 async fn delete_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<ApiResponse> {
     let manager = cron_task::get_cron_task_manager();
-    if get_ordinary_cron_task(manager, &req.task_id)
-        .await
-        .is_err_and(|e| e == MANAGED_CRON_TASK_ERROR)
-    {
-        return Json(managed_api_response());
+    if let Err(e) = get_ordinary_cron_task(manager, &req.task_id).await {
+        if e == MANAGED_CRON_TASK_ERROR {
+            return Json(managed_api_response());
+        }
+        return Json(ApiResponse {
+            ok: false,
+            error: Some(e),
+        });
     }
 
     // Stop first if running
@@ -716,10 +725,11 @@ struct RunsQuery {
 
 async fn runs_cron_handler(Query(params): Query<RunsQuery>) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
-    if let Some(task) = manager.get_task(&params.task_id).await {
-        if is_managed_cron_task(&task) {
+    if let Err(e) = get_ordinary_cron_task(manager, &params.task_id).await {
+        if e == MANAGED_CRON_TASK_ERROR {
             return Json(managed_json_response());
         }
+        return Json(serde_json::json!({ "ok": false, "error": e }));
     }
     let limit = params.limit.unwrap_or(20);
     let runs = cron_task::read_cron_runs(&params.task_id, limit);
@@ -742,7 +752,7 @@ async fn status_cron_handler(Query(params): Query<StatusQuery>) -> Json<serde_js
     } else {
         manager.get_all_tasks().await
     };
-    tasks.retain(|task| !is_managed_cron_task(task));
+    tasks.retain(|task| !is_managed_cron_task(task) && !is_goal_task(task));
 
     let total = tasks.len();
     let running = tasks
@@ -789,16 +799,11 @@ struct GoalUpdateRequest {
 }
 
 fn is_goal_task(task: &CronTask) -> bool {
-    matches!(task.schedule, Some(CronSchedule::Loop))
-        && task.run_mode == cron_task::RunMode::SingleSession
-        && !is_managed_cron_task(task)
-}
-
-fn is_goal_terminal_status(status: Option<&GoalStatus>) -> bool {
-    matches!(
-        status,
-        Some(GoalStatus::Complete | GoalStatus::Blocked | GoalStatus::Canceled)
-    )
+    task.goal_status.is_some()
+        || task
+            .goal_objective
+            .as_deref()
+            .is_some_and(|objective| !objective.trim().is_empty())
 }
 
 fn goal_to_json(task: CronTask) -> serde_json::Value {
@@ -824,18 +829,9 @@ async fn find_current_goal(
     session_id: &str,
     workspace_path: Option<&str>,
 ) -> Option<CronTask> {
-    let mut tasks = if let Some(workspace_path) = workspace_path {
-        manager.get_tasks_for_workspace(workspace_path).await
-    } else {
-        manager.get_all_tasks().await
-    };
-    tasks.sort_by_key(|task| task.updated_at);
-    tasks.into_iter().rev().find(|task| {
-        task.session_id == session_id
-            && is_goal_task(task)
-            && task.status == cron_task::TaskStatus::Running
-            && !is_goal_terminal_status(task.goal_status.as_ref())
-    })
+    manager
+        .get_goal_for_session(session_id, workspace_path, false)
+        .await
 }
 
 async fn goal_get_handler(Query(params): Query<GoalSessionQuery>) -> Json<serde_json::Value> {
@@ -916,21 +912,11 @@ async fn goal_create_handler(Json(req): Json<GoalCreateRequest>) -> Json<serde_j
         goal_paused_reason: None,
     };
 
-    match manager.create_task(config).await {
-        Ok(task) => {
-            let task_id = task.id.clone();
-            if let Err(e) = manager.start_task(&task_id).await {
-                return Json(serde_json::json!({ "ok": false, "error": e }));
-            }
-            if let Err(e) = manager.start_task_scheduler(&task_id).await {
-                return Json(serde_json::json!({ "ok": false, "error": e }));
-            }
-            let goal = manager.get_task(&task_id).await.unwrap_or(task);
-            Json(serde_json::json!({
-                "ok": true,
-                "goal": goal_to_json(goal),
-            }))
-        }
+    match manager.create_goal_task(config).await {
+        Ok(task) => Json(serde_json::json!({
+            "ok": true,
+            "goal": goal_to_json(task),
+        })),
         Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
     }
 }
@@ -1356,11 +1342,14 @@ async fn send_media_handler(Json(req): Json<SendMediaRequest>) -> Json<serde_jso
 
 async fn stop_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<ApiResponse> {
     let manager = cron_task::get_cron_task_manager();
-    if get_ordinary_cron_task(manager, &req.task_id)
-        .await
-        .is_err_and(|e| e == MANAGED_CRON_TASK_ERROR)
-    {
-        return Json(managed_api_response());
+    if let Err(e) = get_ordinary_cron_task(manager, &req.task_id).await {
+        if e == MANAGED_CRON_TASK_ERROR {
+            return Json(managed_api_response());
+        }
+        return Json(ApiResponse {
+            ok: false,
+            error: Some(e),
+        });
     }
     match manager
         .stop_task(&req.task_id, Some("Stopped via admin CLI".to_string()))

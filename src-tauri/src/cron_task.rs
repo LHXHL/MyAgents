@@ -42,8 +42,9 @@ pub(crate) mod validation;
 
 #[allow(unused_imports)]
 pub use commands::{
-    cmd_create_cron_task, cmd_delete_cron_task, cmd_get_cron_runs, cmd_get_cron_task,
-    cmd_get_cron_tasks, cmd_get_session_cron_task, cmd_get_tab_cron_task, cmd_get_tasks_to_recover,
+    cmd_create_cron_task, cmd_create_goal_task, cmd_delete_cron_task, cmd_get_cron_runs,
+    cmd_get_cron_task, cmd_get_cron_tasks, cmd_get_goal_task, cmd_get_session_cron_task,
+    cmd_get_session_goal_task, cmd_get_tab_cron_task, cmd_get_tasks_to_recover,
     cmd_get_workspace_cron_tasks, cmd_is_task_executing, cmd_mark_goal_terminal,
     cmd_mark_task_complete, cmd_mark_task_executing, cmd_pause_goal_task,
     cmd_record_cron_execution, cmd_resume_goal_task, cmd_start_cron_scheduler, cmd_start_cron_task,
@@ -142,6 +143,53 @@ mod cron_dialect_tests {
         }
     }
 
+    fn test_manager_with_storage(
+        tasks: HashMap<String, CronTask>,
+        storage_path: PathBuf,
+    ) -> CronTaskManager {
+        CronTaskManager {
+            tasks: Arc::new(RwLock::new(tasks)),
+            storage_path,
+            shutdown: Arc::new(RwLock::new(false)),
+            executing_tasks: Arc::new(RwLock::new(HashSet::new())),
+            active_schedulers: Arc::new(RwLock::new(HashSet::new())),
+            scheduler_handles: Arc::new(RwLock::new(HashMap::new())),
+            app_handle: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    fn sample_cron_config(workspace_path: &str, session_id: &str) -> CronTaskConfig {
+        CronTaskConfig {
+            workspace_path: workspace_path.to_string(),
+            session_id: session_id.to_string(),
+            prompt: "prompt".to_string(),
+            interval_minutes: 5,
+            end_conditions: EndConditions::default(),
+            run_mode: RunMode::SingleSession,
+            notify_enabled: true,
+            tab_id: None,
+            permission_mode: default_permission_mode(),
+            model: None,
+            provider_env: None,
+            provider_id: None,
+            provider_intent: ProviderIntent::FollowAgent,
+            runtime: None,
+            runtime_config: None,
+            mcp_enabled_servers: None,
+            managed_kind: None,
+            source_bot_id: None,
+            delivery: None,
+            schedule: None,
+            name: None,
+            task_id: None,
+            goal_status: None,
+            goal_objective: None,
+            goal_updated_at: None,
+            goal_terminal_reason: None,
+            goal_paused_reason: None,
+        }
+    }
+
     #[test]
     fn normalize_path_matches_windows_separator_variants() {
         assert_eq!(
@@ -231,6 +279,90 @@ mod cron_dialect_tests {
             .expect_err("ordinary cron run-now must reject Goal tasks");
 
         assert!(err.contains("Goal Mode tasks"));
+    }
+
+    #[tokio::test]
+    async fn session_goal_lookup_scopes_by_session_workspace_and_terminal_flag() {
+        let mut active = sample_goal_task("goal-active", TaskStatus::Running, GoalStatus::Active);
+        active.session_id = "session-a".to_string();
+        active.workspace_path = "C:/Users/me/project".to_string();
+
+        let mut terminal =
+            sample_goal_task("goal-terminal", TaskStatus::Stopped, GoalStatus::Complete);
+        terminal.session_id = "session-a".to_string();
+        terminal.workspace_path = "C:/Users/me/project".to_string();
+        terminal.updated_at = active.updated_at + chrono::Duration::seconds(5);
+
+        let mut other_session =
+            sample_goal_task("goal-other", TaskStatus::Running, GoalStatus::Active);
+        other_session.session_id = "session-b".to_string();
+        other_session.workspace_path = "C:/Users/me/project".to_string();
+
+        let manager = {
+            let mut tasks = HashMap::new();
+            tasks.insert(active.id.clone(), active);
+            tasks.insert(terminal.id.clone(), terminal);
+            tasks.insert(other_session.id.clone(), other_session);
+            CronTaskManager {
+                tasks: Arc::new(RwLock::new(tasks)),
+                storage_path: PathBuf::from("unused"),
+                shutdown: Arc::new(RwLock::new(false)),
+                executing_tasks: Arc::new(RwLock::new(HashSet::new())),
+                active_schedulers: Arc::new(RwLock::new(HashSet::new())),
+                scheduler_handles: Arc::new(RwLock::new(HashMap::new())),
+                app_handle: Arc::new(RwLock::new(None)),
+            }
+        };
+
+        let unfinished = manager
+            .get_goal_for_session("session-a", Some(r"C:\Users\me\project"), false)
+            .await
+            .expect("unfinished active goal");
+        assert_eq!(unfinished.id, "goal-active");
+
+        let latest = manager
+            .get_goal_for_session("session-a", Some("C:/Users/me/project"), true)
+            .await
+            .expect("latest terminal-inclusive goal");
+        assert_eq!(latest.id, "goal-terminal");
+
+        assert!(manager
+            .get_goal_for_session("session-b", Some("C:/Users/me/other"), false)
+            .await
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn manager_create_task_rejects_duplicate_unfinished_goal_but_allows_internal_loop_shape()
+    {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let mut active = sample_goal_task("goal-active", TaskStatus::Running, GoalStatus::Active);
+        active.session_id = "session-a".to_string();
+        active.workspace_path = "/tmp/goal-workspace".to_string();
+        let mut tasks = HashMap::new();
+        tasks.insert(active.id.clone(), active);
+        let manager = test_manager_with_storage(tasks, storage_path);
+
+        let mut duplicate_goal = sample_cron_config("/tmp/goal-workspace", "session-a");
+        duplicate_goal.schedule = Some(CronSchedule::Loop);
+        duplicate_goal.goal_status = Some(GoalStatus::Active);
+        duplicate_goal.goal_objective = Some("another goal".to_string());
+
+        let err = manager
+            .create_task(duplicate_goal)
+            .await
+            .expect_err("duplicate unfinished Goal should be rejected atomically");
+        assert!(err.contains("unfinished Goal"));
+
+        let mut internal_loop = sample_cron_config("/tmp/goal-workspace", "session-a");
+        internal_loop.schedule = Some(CronSchedule::Loop);
+        let created = manager
+            .create_task(internal_loop)
+            .await
+            .expect("loop-shaped non-Goal tasks remain available to internal owners");
+        assert_eq!(created.schedule, Some(CronSchedule::Loop));
+        assert_eq!(created.goal_status, None);
     }
 
     /// Fingerprint cases for `translate_unix_dow_to_crate_dow` — encodes the

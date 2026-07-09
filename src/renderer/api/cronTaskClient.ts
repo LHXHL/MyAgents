@@ -56,6 +56,9 @@ async function invokeCommandWithFallback<T>(
 export const createCronTask = (config: CronTaskConfig): Promise<CronTask> =>
   invokeCommand('cmd_create_cron_task', { config });
 
+export const createGoalTask = (config: CronTaskConfig): Promise<CronTask> =>
+  invokeCommand('cmd_create_goal_task', { config });
+
 /** Start a cron task */
 export const startCronTask = (taskId: string): Promise<CronTask> =>
   invokeCommand('cmd_start_cron_task', { taskId });
@@ -84,6 +87,9 @@ export const deleteCronTask = (taskId: string): Promise<void> =>
 export const getCronTask = (taskId: string): Promise<CronTask> =>
   invokeCommand('cmd_get_cron_task', { taskId });
 
+export const getGoalTask = (taskId: string): Promise<CronTask> =>
+  invokeCommand('cmd_get_goal_task', { taskId });
+
 /** Get all cron tasks */
 export const getAllCronTasks = (): Promise<CronTask[]> =>
   invokeCommandWithFallback('cmd_get_cron_tasks', undefined, []);
@@ -95,6 +101,17 @@ export const getWorkspaceCronTasks = (workspacePath: string): Promise<CronTask[]
 /** Get active cron task for a session (running only) */
 export const getSessionCronTask = (sessionId: string): Promise<CronTask | null> =>
   invokeCommandWithFallback('cmd_get_session_cron_task', { sessionId }, null);
+
+export const getSessionGoalTask = (
+  sessionId: string,
+  workspacePath?: string,
+  includeTerminal = true,
+): Promise<CronTask | null> =>
+  invokeCommandWithFallback(
+    'cmd_get_session_goal_task',
+    { sessionId, workspacePath, includeTerminal },
+    null,
+  );
 
 /** Get active cron task for a tab (running only) */
 export const getTabCronTask = (tabId: string): Promise<CronTask | null> =>

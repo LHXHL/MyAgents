@@ -1,7 +1,11 @@
 use super::*;
 
 fn is_goal_task(task: &CronTask) -> bool {
-    matches!(task.schedule, Some(CronSchedule::Loop)) && task.run_mode == RunMode::SingleSession
+    task.goal_status.is_some()
+        || task
+            .goal_objective
+            .as_deref()
+            .is_some_and(|objective| !objective.trim().is_empty())
 }
 
 fn is_goal_terminal(status: &GoalStatus) -> bool {
@@ -9,6 +13,16 @@ fn is_goal_terminal(status: &GoalStatus) -> bool {
         status,
         GoalStatus::Complete | GoalStatus::Blocked | GoalStatus::Canceled
     )
+}
+
+fn goal_status_wire(status: &GoalStatus) -> &'static str {
+    match status {
+        GoalStatus::Active => "active",
+        GoalStatus::Paused => "paused",
+        GoalStatus::Complete => "complete",
+        GoalStatus::Blocked => "blocked",
+        GoalStatus::Canceled => "canceled",
+    }
 }
 
 /// Manager for cron tasks
@@ -808,6 +822,7 @@ impl CronTaskManager {
                     Ok((success, ai_exit_reason, output_text, internal_sid)) => {
                         // Update execution count, last_executed_at, and internal_session_id
                         let updated_execution_count;
+                        let updated_goal_task;
                         {
                             let mut tasks_guard = tasks.write().await;
                             if let Some(t) = tasks_guard.get_mut(&task_id_owned) {
@@ -825,8 +840,14 @@ impl CronTaskManager {
                                     t.internal_session_id = internal_sid.clone();
                                 }
                                 updated_execution_count = t.execution_count;
+                                updated_goal_task = if is_goal_task(t) {
+                                    Some(enrich_task(t.clone()))
+                                } else {
+                                    None
+                                };
                             } else {
                                 updated_execution_count = task.execution_count + 1;
+                                updated_goal_task = None;
                             }
                         }
 
@@ -874,6 +895,19 @@ impl CronTaskManager {
                                 "internalSessionId": internal_sid
                             }),
                         );
+                        if let Some(ref goal_task) = updated_goal_task {
+                            let _ = handle.emit(
+                                "goal:changed",
+                                serde_json::json!({
+                                    "changeKind": "execution_complete",
+                                    "taskId": goal_task.id,
+                                    "sessionId": goal_task.session_id,
+                                    "workspacePath": goal_task.workspace_path,
+                                    "goalStatus": goal_task.goal_status.as_ref().map(goal_status_wire),
+                                    "goal": goal_task,
+                                }),
+                            );
+                        }
 
                         // Deliver results to IM Bot + wake heartbeat (v0.1.21)
                         // Use actual AI output when available, fallback to generic summary
@@ -1231,6 +1265,25 @@ impl CronTaskManager {
         .await?;
         *tasks = next;
         Ok(updated)
+    }
+
+    async fn emit_goal_changed(&self, task: &CronTask, change_kind: &str) {
+        if !is_goal_task(task) {
+            return;
+        }
+        if let Some(ref handle) = *self.app_handle.read().await {
+            let _ = handle.emit(
+                "goal:changed",
+                serde_json::json!({
+                    "changeKind": change_kind,
+                    "taskId": task.id,
+                    "sessionId": task.session_id,
+                    "workspacePath": task.workspace_path,
+                    "goalStatus": task.goal_status.as_ref().map(goal_status_wire),
+                    "goal": task,
+                }),
+            );
+        }
     }
 
     /// PRD 0.2.5 R4 — fire one immediate execution of an existing cron task
@@ -1599,6 +1652,18 @@ impl CronTaskManager {
         };
 
         let mut tasks = self.tasks.write().await;
+        if is_goal_task(&task) && !task.goal_status.as_ref().is_some_and(is_goal_terminal) {
+            let workspace = normalize_path(&task.workspace_path);
+            let has_unfinished_goal = tasks.values().any(|existing| {
+                existing.session_id == task.session_id
+                    && normalize_path(&existing.workspace_path) == workspace
+                    && is_goal_task(existing)
+                    && !existing.goal_status.as_ref().is_some_and(is_goal_terminal)
+            });
+            if has_unfinished_goal {
+                return Err("Current session already has an unfinished Goal".to_string());
+            }
+        }
         tasks.insert(task.id.clone(), task.clone());
         drop(tasks);
 
@@ -1711,6 +1776,43 @@ impl CronTaskManager {
             .map(enrich_task)
     }
 
+    /// Get the latest Goal Mode task for a session.
+    ///
+    /// `include_terminal=false` is used by AI/CLI state transitions: only the
+    /// unfinished Goal should be mutable. `include_terminal=true` is reserved
+    /// for explicit inspection/debug reads; normal desktop hydrate only
+    /// restores active/paused Goals so old terminal Goals do not reappear.
+    pub async fn get_goal_for_session(
+        &self,
+        session_id: &str,
+        workspace_path: Option<&str>,
+        include_terminal: bool,
+    ) -> Option<CronTask> {
+        let tasks = self.tasks.read().await;
+        let normalized_workspace = workspace_path.map(normalize_path);
+        let mut matches: Vec<CronTask> = tasks
+            .values()
+            .filter(|task| {
+                if task.session_id != session_id || !is_goal_task(task) {
+                    return false;
+                }
+                if let Some(ref workspace) = normalized_workspace {
+                    if normalize_path(&task.workspace_path) != *workspace {
+                        return false;
+                    }
+                }
+                if include_terminal {
+                    return true;
+                }
+                task.status == TaskStatus::Running
+                    && !task.goal_status.as_ref().is_some_and(is_goal_terminal)
+            })
+            .cloned()
+            .collect();
+        matches.sort_by_key(|task| task.updated_at);
+        matches.into_iter().next_back().map(enrich_task)
+    }
+
     /// Get active task for a specific tab (running only, enriched)
     pub async fn get_active_task_for_tab(&self, tab_id: &str) -> Option<CronTask> {
         let tasks = self.tasks.read().await;
@@ -1719,6 +1821,55 @@ impl CronTaskManager {
             .find(|t| t.tab_id.as_deref() == Some(tab_id) && t.status == TaskStatus::Running)
             .cloned()
             .map(enrich_task)
+    }
+
+    /// Create, start, and schedule a current-session Goal Mode task.
+    pub async fn create_goal_task(&self, mut config: CronTaskConfig) -> Result<CronTask, String> {
+        let objective = config.prompt.trim().to_string();
+        if objective.is_empty() {
+            return Err("Goal objective is required".to_string());
+        }
+        if config.session_id.trim().is_empty() {
+            return Err("sessionId is required".to_string());
+        }
+        if config.workspace_path.trim().is_empty() {
+            return Err("workspacePath is required".to_string());
+        }
+        if self
+            .get_goal_for_session(&config.session_id, Some(&config.workspace_path), false)
+            .await
+            .is_some()
+        {
+            return Err("Current session already has an unfinished Goal".to_string());
+        }
+
+        let now = Utc::now();
+        config.prompt = objective.clone();
+        config.interval_minutes = config.interval_minutes.max(5);
+        config.run_mode = RunMode::SingleSession;
+        config.schedule = Some(CronSchedule::Loop);
+        config.goal_status = Some(GoalStatus::Active);
+        config.goal_objective = Some(objective);
+        config.goal_updated_at = Some(now);
+        config.goal_terminal_reason = None;
+        config.goal_paused_reason = None;
+        config.delivery = None;
+
+        let created = self.create_task(config).await?;
+        let started = match self.start_task(&created.id).await {
+            Ok(task) => task,
+            Err(error) => {
+                let _ = self.delete_task(&created.id).await;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.start_task_scheduler(&started.id).await {
+            let _ = self.delete_task(&started.id).await;
+            return Err(error);
+        }
+        let task = self.get_task(&started.id).await.unwrap_or(started);
+        self.emit_goal_changed(&task, "created").await;
+        Ok(task)
     }
 
     /// Get tasks created by a specific IM Bot (v0.1.21, enriched)
@@ -2132,6 +2283,7 @@ impl CronTaskManager {
                 }),
             );
             if is_goal_task(&task_clone) {
+                self.emit_goal_changed(&task_clone, "terminal").await;
                 send_goal_terminal_notification(handle, &task_clone);
             }
         }
@@ -2178,6 +2330,7 @@ impl CronTaskManager {
                 serde_json::json!({ "taskId": task_id, "goalStatus": "paused" }),
             );
         }
+        self.emit_goal_changed(&updated, "paused").await;
         Ok(enrich_task(updated))
     }
 
@@ -2202,13 +2355,26 @@ impl CronTaskManager {
         drop(tasks);
 
         self.save_to_disk().await?;
-        let _ = self.start_task_scheduler(task_id).await;
+        if let Err(error) = self.start_task_scheduler(task_id).await {
+            let mut tasks = self.tasks.write().await;
+            if let Some(task) = tasks.get_mut(task_id) {
+                let now = Utc::now();
+                task.goal_status = Some(GoalStatus::Paused);
+                task.goal_paused_reason = Some(GoalPausedReason::UserStop);
+                task.goal_updated_at = Some(now);
+                task.updated_at = now;
+            }
+            drop(tasks);
+            let _ = self.save_to_disk().await;
+            return Err(format!("Failed to resume Goal scheduler: {}", error));
+        }
         if let Some(ref handle) = *self.app_handle.read().await {
             let _ = handle.emit(
                 "cron:task-updated",
                 serde_json::json!({ "taskId": task_id, "goalStatus": "active" }),
             );
         }
+        self.emit_goal_changed(&updated, "resumed").await;
         Ok(enrich_task(updated))
     }
 
@@ -2246,6 +2412,7 @@ impl CronTaskManager {
                 serde_json::json!({ "taskId": task_id, "goalObjectiveUpdated": true }),
             );
         }
+        self.emit_goal_changed(&updated, "objective_updated").await;
         Ok(enrich_task(updated))
     }
 

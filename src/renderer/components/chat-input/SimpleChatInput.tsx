@@ -69,6 +69,12 @@ function getCurrentModelLabel(
   return provider ? getModelDisplayName(provider, modelId) : modelId;
 }
 
+function isGoalBarTask(
+  task: SimpleChatInputProps['cronTask'] | SimpleChatInputProps['stoppedCronTask'] | null | undefined,
+): boolean {
+  return Boolean(task?.goalStatus || task?.goalObjective);
+}
+
 
 // File search result type
 interface FileSearchResult {
@@ -1223,7 +1229,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const showDraftCronBar = cronModeEnabled && !cronTask && !!cronConfig;
   const terminalGoalTask = !isLauncherMode
     && cronTask?.status === 'stopped'
-    && cronTask.schedule?.kind === 'loop'
+    && isGoalBarTask(cronTask)
     && (cronTask.goalStatus === 'complete' || cronTask.goalStatus === 'blocked' || cronTask.goalStatus === 'canceled')
     ? cronTask
     : null;
@@ -1231,6 +1237,8 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     ? cronTask
     : null;
   const visibleStoppedCronTask = !isLauncherMode ? (stoppedCronTask ?? terminalGoalTask) : null;
+  const activeTaskIsGoal = isGoalBarTask(activeCronTask);
+  const visibleStoppedTaskIsGoal = isGoalBarTask(visibleStoppedCronTask);
   const hasCronBar = showDraftCronBar || !!activeCronTask || !!visibleStoppedCronTask;
 
   return (
@@ -1306,13 +1314,13 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
             intervalMinutes={activeCronTask.intervalMinutes}
             schedule={activeCronTask.schedule}
             goalStatus={activeCronTask.goalStatus}
-            goalObjective={activeCronTask.goalObjective ?? activeCronTask.prompt}
+            goalObjective={activeTaskIsGoal ? (activeCronTask.goalObjective ?? activeCronTask.prompt) : undefined}
             goalTerminalReason={activeCronTask.goalTerminalReason}
             executionCount={activeCronTask.executionCount}
             maxExecutions={activeCronTask.endConditions?.maxExecutions}
             nextExecutionAt={activeCronTask.nextExecutionAt}
             executionNumber={cronExecutionNumber}
-            onGoalObjectiveClick={onGoalEdit}
+            onGoalObjectiveClick={activeTaskIsGoal ? onGoalEdit : undefined}
             onStop={() => onCronStop?.()}
           />
         )}
@@ -1322,7 +1330,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
             intervalMinutes={visibleStoppedCronTask.intervalMinutes}
             schedule={visibleStoppedCronTask.schedule}
             goalStatus={visibleStoppedCronTask.goalStatus}
-            goalObjective={visibleStoppedCronTask.goalObjective ?? visibleStoppedCronTask.prompt}
+            goalObjective={visibleStoppedTaskIsGoal ? (visibleStoppedCronTask.goalObjective ?? visibleStoppedCronTask.prompt) : undefined}
             goalTerminalReason={visibleStoppedCronTask.goalTerminalReason}
             executionCount={visibleStoppedCronTask.executionCount}
             maxExecutions={visibleStoppedCronTask.endConditions?.maxExecutions}

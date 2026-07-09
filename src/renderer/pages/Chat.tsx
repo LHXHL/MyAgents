@@ -458,7 +458,7 @@ function isTerminalGoalStatus(status: CronTask['goalStatus'] | undefined): boole
 }
 
 function isCurrentSessionGoalTask(task: CronTask | null | undefined): task is CronTask {
-  return Boolean(task && task.schedule?.kind === 'loop' && task.runMode !== 'new_session');
+  return Boolean(task && (task.goalStatus || task.goalObjective));
 }
 
 export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
@@ -1966,7 +1966,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     ? cronState.task
     : null;
   const composerConfigLockedReason = activeCurrentSessionCronTask
-    ? t(activeCurrentSessionCronTask.schedule?.kind === 'loop'
+    ? t(isCurrentSessionGoalTask(activeCurrentSessionCronTask)
       ? 'shell.toasts.composerLockedByGoal'
       : 'shell.toasts.composerLockedByCron')
     : undefined;

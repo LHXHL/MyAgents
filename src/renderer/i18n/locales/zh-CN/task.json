@@ -278,7 +278,7 @@
     },
     "settingsModal": {
       "title": "定时任务",
-      "goalTitle": "目标模式",
+      "goalTitle": "目标模式 Goal Loop",
       "executionMode": "执行模式",
       "loopModeDescription": "当前会话会在每轮回复结束后继续执行，持续推进输入框里的目标，直到 AI 判断完成、受阻，或你手动取消。",
       "currentSession": "当前对话",
@@ -312,8 +312,8 @@
       "recurring": "周期触发",
       "once": "仅一次",
       "loop": "目标模式",
-      "loopTitle": "目标模式",
-      "loopDescription": "输入框输入你的目标，发送后持续执行直到完成。每轮结束后自动继续，保留当前会话上下文；连续失败 10 次会自动停止。",
+      "loopTitle": "目标模式 Goal Loop",
+      "loopDescription": "目标模式专为长程任务设计，你给出目标，AI 可开启最长数十个小时的连续工作，自动整理上下文，直至你的目标完全达成。\n\n开启目标模式后，即可在输入框内写下你想完成的目标发送即开始执行；过程中你可以随时补充信息、调整方向，AI 会稳稳接住你。",
       "approxPrefix": "距现在约 {{distance}}",
       "expired": "已过期"
     },

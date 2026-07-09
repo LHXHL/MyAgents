@@ -133,6 +133,21 @@ export interface CronTask {
   goalPausedReason?: GoalPausedReason;
 }
 
+export interface GoalChangedPayload {
+  changeKind:
+    | 'created'
+    | 'execution_complete'
+    | 'paused'
+    | 'resumed'
+    | 'objective_updated'
+    | 'terminal';
+  taskId: string;
+  sessionId: string;
+  workspacePath: string;
+  goalStatus?: GoalStatus;
+  goal: CronTask;
+}
+
 /**
  * Provider environment for third-party API access
  */

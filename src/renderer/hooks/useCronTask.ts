@@ -1,12 +1,15 @@
 // Hook for managing cron task state within a Tab
 import { useState, useCallback, useRef, useEffect } from 'react';
-import type { CronTask, CronTaskConfig, CronDelivery, CronEndConditions, CronRunMode, CronTaskTriggerPayload, CronSchedule } from '@/types/cronTask';
+import type { CronTask, CronTaskConfig, CronDelivery, CronEndConditions, CronRunMode, CronTaskTriggerPayload, CronSchedule, GoalChangedPayload } from '@/types/cronTask';
 import type { RuntimeConfig, RuntimeType } from '../../shared/types/runtime';
 import {
   createCronTask,
+  createGoalTask,
   startCronTask,
   stopCronTask,
   getCronTask,
+  getGoalTask,
+  getSessionGoalTask,
   recordCronExecution,
   startCronScheduler,
   markTaskExecuting,
@@ -27,6 +30,7 @@ import {
   resolveCronProviderEnvForExecution,
   resolveCronProviderIntentForExecution,
 } from '@/utils/cronExecutionProjection';
+import { workspacePathsEqual } from '@/../shared/workspacePath';
 
 export interface CronTaskState {
   /** Whether cron mode is enabled (before task is created) */
@@ -90,16 +94,29 @@ const initialState: CronTaskState = {
   error: null,
 };
 
-function isGoalTask(task: CronTask | null | undefined): task is CronTask {
-  return Boolean(task && task.schedule?.kind === 'loop' && task.runMode !== 'new_session');
+function isGoalTask(task: CronTask | null | undefined): boolean {
+  return Boolean(task && (task.goalStatus || task.goalObjective));
+}
+
+function readTaskForSurface(task: CronTask): Promise<CronTask> {
+  return isGoalTask(task)
+    ? getGoalTask(task.id)
+    : getCronTask(task.id);
 }
 
 function isTerminalGoalTask(task: CronTask | null | undefined): task is CronTask {
-  return isGoalTask(task) && (
+  if (!task || !isGoalTask(task)) return false;
+  return (
     task.goalStatus === 'complete' ||
     task.goalStatus === 'blocked' ||
     task.goalStatus === 'canceled'
   );
+}
+
+function goalSortTime(task: CronTask): number {
+  const raw = task.goalUpdatedAt ?? task.updatedAt ?? task.createdAt;
+  const parsed = raw ? Date.parse(raw) : Number.NaN;
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function stateAfterStoppedTask(prev: CronTaskState, task: CronTask): CronTaskState {
@@ -151,6 +168,7 @@ export function useCronTask(options: UseCronTaskOptions) {
 
   // Track component mount state to prevent setState after unmount
   const mountedRef = useRef(true);
+  const dismissedGoalIdsRef = useRef<Set<string>>(new Set());
 
   // Refs for Tauri event handlers to avoid recreating listeners on handler changes
   // These refs are updated when handlers change, but the listeners always call through refs
@@ -161,6 +179,7 @@ export function useCronTask(options: UseCronTaskOptions) {
   const handleExecutionCompleteRef = useRef<((payload: { taskId: string; success: boolean; executionCount: number }) => Promise<void>) | null>(null);
   const handleExecutionErrorRef = useRef<((payload: { taskId: string; error: string }) => void) | null>(null);
   const handleTaskStoppedRef = useRef<((payload: { taskId: string; exitReason?: string | null }) => Promise<void>) | null>(null);
+  const handleGoalChangedRef = useRef<((payload: GoalChangedPayload) => void) | null>(null);
   // Track whether Tauri event listeners are ready (for debugging race conditions)
   const listenersReadyRef = useRef(false);
 
@@ -308,6 +327,7 @@ export function useCronTask(options: UseCronTaskOptions) {
     setState(prev => ({ ...prev, isStarting: true, error: null }));
 
     let createdTaskId: string | null = null;
+    let createdTaskIsGoal = false;
     try {
       const providerEnv = resolveCronProviderEnvForExecution({
         runtime: currentConfig.runtime,
@@ -325,7 +345,7 @@ export function useCronTask(options: UseCronTaskOptions) {
       // to legacy providerEnv path only for builtin execution. R2 invariant:
       // providerId and external runtime payloads drop providerEnv so no apiKey
       // snapshot lands in cron_tasks.json or crosses runtime ownership.
-      const task = await createCronTask({
+      const taskConfig: CronTaskConfig = {
         workspacePath,
         sessionId,
         tabId,
@@ -366,7 +386,30 @@ export function useCronTask(options: UseCronTaskOptions) {
               goalPausedReason: undefined,
             }
           : {}),
-      });
+      };
+
+      if (isGoalMode) {
+        const startedTask = await createGoalTask(taskConfig);
+        createdTaskId = startedTask.id;
+        createdTaskIsGoal = true;
+
+        if (!stateRef.current.isEnabled) {
+          try {
+            await markGoalTerminal(startedTask.id, 'canceled', 'Canceled before Goal Mode started');
+          } catch (cleanupErr) {
+            console.warn('[useCronTask] failed to cancel orphaned Goal after cancel:', cleanupErr);
+          }
+          return;
+        }
+
+        setState(prev => ({ ...prev, task: startedTask, isStarting: false }));
+        if (isDebugMode()) {
+          console.log('[useCronTask] Goal task created:', startedTask.id);
+        }
+        return;
+      }
+
+      const task = await createCronTask(taskConfig);
       createdTaskId = task.id;
 
       // Cancellation check (Codex review Medium #2): user can call
@@ -430,7 +473,11 @@ export function useCronTask(options: UseCronTaskOptions) {
       // If we did create a Rust task before the error, attempt cleanup.
       if (createdTaskId) {
         try {
-          await stopCronTask(createdTaskId);
+          if (createdTaskIsGoal) {
+            await markGoalTerminal(createdTaskId, 'canceled', 'Canceled after Goal Mode start failed');
+          } else {
+            await stopCronTask(createdTaskId);
+          }
         } catch (cleanupErr) {
           console.warn('[useCronTask] failed to stop partial task on error:', cleanupErr);
         }
@@ -542,6 +589,7 @@ export function useCronTask(options: UseCronTaskOptions) {
     const currentConfig = stateRef.current.config;
     if (!currentTask || currentTask.schedule?.kind !== 'loop') return null;
     try {
+      dismissedGoalIdsRef.current.add(currentTask.id);
       const stoppedTask = await markGoalTerminal(currentTask.id, 'canceled', reason);
       track('cron_stop', {
         reason: 'manual',
@@ -560,8 +608,12 @@ export function useCronTask(options: UseCronTaskOptions) {
   }, [setState, stateRef]);
 
   const dismissStoppedTask = useCallback(() => {
+    const currentTask = stateRef.current.task;
+    if (isTerminalGoalTask(currentTask)) {
+      dismissedGoalIdsRef.current.add(currentTask.id);
+    }
     setState(initialState);
-  }, [setState]);
+  }, [setState, stateRef]);
 
   // Refresh task state from server
   const refresh = useCallback(async () => {
@@ -569,7 +621,7 @@ export function useCronTask(options: UseCronTaskOptions) {
     if (!currentTask) return;
 
     try {
-      const task = await getCronTask(currentTask.id);
+      const task = await readTaskForSurface(currentTask);
       setState(prev => ({ ...prev, task }));
 
       // Check if task is stopped (end conditions met or AI exit)
@@ -591,7 +643,9 @@ export function useCronTask(options: UseCronTaskOptions) {
 
     console.log('[useCronTask] AI requested task exit:', taskId, reason);
     try {
-      const stoppedTask = await stopCronTask(taskId, reason);
+      const stoppedTask = isGoalTask(currentTask)
+        ? await markGoalTerminal(taskId, 'complete', reason)
+        : await stopCronTask(taskId, reason);
       // Track cron_stop event (AI exit)
       track('cron_stop', {
         reason: 'ai_exit',
@@ -605,7 +659,7 @@ export function useCronTask(options: UseCronTaskOptions) {
         optionsRef.current.onComplete(stoppedTask, reason);
       }
 
-      setState(initialState);
+      setState(prev => stateAfterStoppedTask(prev, stoppedTask));
     } catch (error) {
       console.error('[useCronTask] Failed to stop task:', error);
     }
@@ -723,7 +777,7 @@ export function useCronTask(options: UseCronTaskOptions) {
 
     // Refresh task state from server to get updated lastExecutedAt and executionCount
     try {
-      const task = await getCronTask(payload.taskId);
+      const task = await readTaskForSurface(currentTask);
       // Check if component is still mounted before updating state
       if (!mountedRef.current) return;
 
@@ -773,7 +827,7 @@ export function useCronTask(options: UseCronTaskOptions) {
     isExecutingRef.current = false;
     // Task will continue to next interval, just log the error
     // Optionally refresh to get updated lastError
-    getCronTask(payload.taskId).then(task => {
+    readTaskForSurface(currentTask).then(task => {
       if (!mountedRef.current) return;
       setState(prev => ({
         ...prev,
@@ -797,7 +851,7 @@ export function useCronTask(options: UseCronTaskOptions) {
     if (!currentTask || currentTask.id !== payload.taskId) return;
 
     try {
-      const task = await getCronTask(payload.taskId);
+      const task = await readTaskForSurface(currentTask);
       if (!mountedRef.current) return;
       isExecutingRef.current = false;
       if (optionsRef.current.onComplete) {
@@ -919,6 +973,11 @@ export function useCronTask(options: UseCronTaskOptions) {
         (event) => { void handleTaskStoppedRef.current?.(event.payload); },
         ac.signal,
       ),
+      listenWithCleanup<GoalChangedPayload>(
+        'goal:changed',
+        (event) => { handleGoalChangedRef.current?.(event.payload); },
+        ac.signal,
+      ),
     ]).then(() => {
       if (ac.signal.aborted) return;
       listenersReadyRef.current = true;
@@ -1010,8 +1069,10 @@ export function useCronTask(options: UseCronTaskOptions) {
         // pre-0.2.9 cron tasks that haven't yet migrated.
         providerEnv: task.providerEnv,
         providerId: task.providerId,
+        providerIntent: task.providerIntent,
         runtime: task.runtime,
         runtimeConfig: task.runtimeConfig,
+        schedule: task.schedule,
         delivery: task.delivery,
         executionTarget: recoveredExecutionTarget,
         mcpEnabledServers: task.mcpEnabledServers,
@@ -1023,6 +1084,68 @@ export function useCronTask(options: UseCronTaskOptions) {
       error: null,
     });
   }, [setState]);
+
+  const handleGoalChanged = useCallback((payload: GoalChangedPayload) => {
+    const currentOptions = optionsRef.current;
+    if (!payload.goal) return;
+    if (!isGoalTask(payload.goal)) return;
+    if (isTerminalGoalTask(payload.goal) && dismissedGoalIdsRef.current.has(payload.goal.id)) return;
+    if (payload.sessionId !== currentOptions.sessionId) return;
+    if (!workspacePathsEqual(payload.workspacePath, currentOptions.workspacePath)) return;
+
+    const currentState = stateRef.current;
+    if (currentState.isEnabled && currentState.config && !currentState.task) {
+      // The user has a local scheduled-task draft open. Do not overwrite the
+      // draft with an external Goal event until the user sends or cancels it.
+      return;
+    }
+    const existingGoal = currentState.task;
+    if (existingGoal && isGoalTask(existingGoal)) {
+      if (existingGoal.id === payload.goal.id) {
+        if (goalSortTime(payload.goal) < goalSortTime(existingGoal)) return;
+      } else if (isTerminalGoalTask(payload.goal)) {
+        return;
+      }
+    }
+    restoreFromTask(payload.goal);
+  }, [restoreFromTask, stateRef]);
+
+  handleGoalChangedRef.current = handleGoalChanged;
+
+  useEffect(() => {
+    if (!isTauriEnvironment()) return;
+    if (!sessionId || sessionId.startsWith('pending-')) return;
+
+    let cancelled = false;
+    getSessionGoalTask(sessionId, workspacePath, false)
+      .then(goal => {
+        if (cancelled || !mountedRef.current) return;
+        const currentState = stateRef.current;
+        if (goal) {
+          if (isTerminalGoalTask(goal) && dismissedGoalIdsRef.current.has(goal.id)) {
+            return;
+          }
+          if (currentState.isEnabled && currentState.config && !currentState.task) {
+            return;
+          }
+          restoreFromTask(goal);
+          return;
+        }
+        const currentTask = currentState.task;
+        if (currentTask && isGoalTask(currentTask) && currentTask.sessionId !== sessionId) {
+          setState(initialState);
+        }
+      })
+      .catch(error => {
+        if (!cancelled) {
+          console.warn('[useCronTask] Failed to hydrate Goal state:', error);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionId, workspacePath, restoreFromTask, setState, stateRef]);
 
   // Update task's sessionId (called when session is created after task creation)
   const updateSessionId = useCallback(async (newSessionId: string) => {

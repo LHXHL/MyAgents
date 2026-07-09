@@ -813,6 +813,25 @@ function desktopScenarioForAnalyticsSource(
     : { type: 'desktop' };
 }
 
+function goalContinuationScenarioForSession(
+  meta: SessionMetadata | null | undefined,
+): InteractionScenario {
+  const origin = normalizeSessionOrigin(meta?.origin);
+  if (origin?.kind === 'agent-channel') {
+    const source = typeof meta?.source === 'string' ? meta.source : '';
+    const parts = source.split('_').filter(Boolean);
+    const tail = parts[parts.length - 1];
+    const sourceType: 'private' | 'group' = tail === 'group' ? 'group' : 'private';
+    const platform = parts.length > 1 ? parts.slice(0, -1).join('_') : (parts[0] || 'unknown');
+    return {
+      type: 'agent-channel',
+      platform,
+      sourceType,
+    };
+  }
+  return { type: 'desktop' };
+}
+
 function getRuntimeConfigModel(
   runtimeConfig?: RuntimeConfig | null,
   runtime: RuntimeType = getActiveRuntimeType(),
@@ -3057,6 +3076,10 @@ async function main() {
         return await withCronDispatchLock(async () => {
         // Handle session setup based on runMode
         const effectiveRunMode = runMode ?? 'single_session';
+        const isCurrentSessionGoal =
+          payload.scheduleKind === 'loop' &&
+          effectiveRunMode === 'single_session' &&
+          Boolean(payload.goalStatus);
         const { agentDir } = getAgentState();
         const managedCodexReady = isManagedCodexProviderReady(loadConfig());
 
@@ -3207,10 +3230,12 @@ async function main() {
             }
           }
           const existing = getSessionMetadata(sessionId);
-          await updateSessionMetadata(sessionId, {
-            ...(existing?.origin ? {} : { origin: cronTurnOrigin }),
-            cronTaskId: taskId,
-          });
+          if (!isCurrentSessionGoal) {
+            await updateSessionMetadata(sessionId, {
+              ...(existing?.origin ? {} : { origin: cronTurnOrigin }),
+              cronTaskId: taskId,
+            });
+          }
         } else {
           console.log(`[cron] execute-sync taskId=${taskId} no sessionId provided, using current session`);
         }
@@ -3442,15 +3467,26 @@ async function main() {
         setCronTaskContext(taskId, aiCanExit ?? false, effectiveSessionId);
         console.log(`[cron] execute-sync: cron context set for taskId=${taskId}`);
 
-        // Set System Prompt append for cron task context
-        // Set interaction scenario for cron task (L1 + L2-desktop + L3-cron)
+        const goalSessionMeta = isCurrentSessionGoal
+          ? getSessionMetadata(effectiveSessionId ?? getSessionId())
+          : null;
+        const turnScenario: InteractionScenario = isCurrentSessionGoal
+          ? goalContinuationScenarioForSession(goalSessionMeta)
+          : {
+              type: 'cron',
+              taskId,
+              intervalMinutes: intervalMinutes ?? 15,
+              aiCanExit: aiCanExit ?? false,
+            };
+        const turnOrigin = isCurrentSessionGoal
+          ? (normalizeSessionOrigin(goalSessionMeta?.origin) ?? { kind: 'desktop' as const, surface: 'unknown' as const })
+          : cronTurnOrigin;
+
+        // Set System Prompt append for this turn. Goal Loop is a session
+        // working mode, so it keeps the session's desktop/channel scenario;
+        // ordinary cron keeps the automation scenario.
         try {
-          await setInteractionScenario({
-            type: 'cron',
-            taskId,
-            intervalMinutes: intervalMinutes ?? 15,
-            aiCanExit: aiCanExit ?? false,
-          });
+          await setInteractionScenario(turnScenario);
           console.log('[cron] execute-sync: interaction scenario set');
         } catch (e) {
           console.error('[cron] execute-sync: error setting interaction scenario', e);
@@ -3558,12 +3594,7 @@ async function main() {
             prompt: wrappedPrompt,
             sessionId: getRuntimeSessionIdForRequest(),
             workspacePath: agentDir,
-            scenario: {
-              type: 'cron',
-              taskId: taskId ?? 'unknown',
-              intervalMinutes: intervalMinutes ?? 0,
-              aiCanExit: aiCanExit ?? false,
-            },
+            scenario: turnScenario,
             permissionMode: effectivePermissionMode,
             model: engine.kind === 'external'
               ? getRuntimeConfigModel(effectiveRuntimeConfig ?? null)
@@ -3571,7 +3602,7 @@ async function main() {
             providerRoute: engine.kind === 'builtin' ? effectiveProviderRoute : undefined,
             providerEnv: engine.kind === 'builtin' ? effectiveProviderEnv : undefined,
             runtimeConfig: effectiveRuntimeConfig ?? null,
-            analyticsOrigin: cronTurnOrigin,
+            analyticsOrigin: turnOrigin,
             timeoutMs: 3600000,
             pollMs: 1000,
           });

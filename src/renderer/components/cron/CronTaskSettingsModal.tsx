@@ -238,35 +238,30 @@ function CronTaskSettingsForm({
 
           {/* ── 执行计划 ── */}
           <div>
-            <SectionHeader icon={Clock}>{t('cron.settingsModal.schedule')}</SectionHeader>
-            <div className="mt-3">
-              <ScheduleTypeTabs value={schedule} intervalMinutes={intervalMinutes} onChange={handleScheduleChange} />
-            </div>
+            <ScheduleTypeTabs value={schedule} intervalMinutes={intervalMinutes} onChange={handleScheduleChange} />
           </div>
 
-          <div className="border-t border-[var(--line)]" />
+          {!isLoopSchedule && (
+            <>
+              <div className="border-t border-[var(--line)]" />
 
-          {/* ── 执行模式 ── */}
-          <div>
-            <SectionHeader icon={MessageSquare}>{t('cron.settingsModal.executionMode')}</SectionHeader>
-            <div className="mt-3">
-              {isLoopSchedule ? (
-                <p className="text-sm text-[var(--ink-muted)]">{t('cron.settingsModal.loopModeDescription')}</p>
-              ) : (
-                <div className="flex gap-2">
-                  <PillButton selected={executionTarget === 'current_session'} onClick={() => setExecutionTarget('current_session')}>{t('cron.settingsModal.currentSession')}</PillButton>
-                  <PillButton selected={executionTarget === 'new_task'} onClick={() => setExecutionTarget('new_task')}>{t('cron.settingsModal.newTask')}</PillButton>
+              {/* ── 执行模式 ── */}
+              <div>
+                <SectionHeader icon={MessageSquare}>{t('cron.settingsModal.executionMode')}</SectionHeader>
+                <div className="mt-3">
+                  <div className="flex gap-2">
+                    <PillButton selected={executionTarget === 'current_session'} onClick={() => setExecutionTarget('current_session')}>{t('cron.settingsModal.currentSession')}</PillButton>
+                    <PillButton selected={executionTarget === 'new_task'} onClick={() => setExecutionTarget('new_task')}>{t('cron.settingsModal.newTask')}</PillButton>
+                  </div>
+                  <p className="mt-1.5 text-sm text-[var(--ink-muted)]">
+                    {executionTarget === 'current_session'
+                      ? t('cron.settingsModal.currentSessionDescription')
+                      : t('cron.settingsModal.newTaskDescription')}
+                  </p>
                 </div>
-              )}
-              {!isLoopSchedule && (
-                <p className="mt-1.5 text-sm text-[var(--ink-muted)]">
-                  {executionTarget === 'current_session'
-                    ? t('cron.settingsModal.currentSessionDescription')
-                    : t('cron.settingsModal.newTaskDescription')}
-                </p>
-              )}
-            </div>
-          </div>
+              </div>
+            </>
+          )}
 
           <div className="border-t border-[var(--line)]" />
 

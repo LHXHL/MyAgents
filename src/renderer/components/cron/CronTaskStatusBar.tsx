@@ -51,7 +51,7 @@ export default function CronTaskStatusBar({
   const { t, i18n } = useTranslation('task');
   const locale = isSupportedLocale(i18n.language) ? i18n.language : 'zh-CN';
   const [now, setNow] = useState(() => Date.now());
-  const isGoalMode = schedule?.kind === 'loop' || Boolean(goalStatus || goalObjective);
+  const isGoalMode = Boolean(goalStatus || goalObjective) || (mode === 'draft' && schedule?.kind === 'loop');
   const isGoalPaused = goalStatus === 'paused';
   const isGoalTerminal = goalStatus === 'complete' || goalStatus === 'blocked' || goalStatus === 'canceled';
   const isActive = (mode === 'running' || mode === 'executing') && !isGoalTerminal;

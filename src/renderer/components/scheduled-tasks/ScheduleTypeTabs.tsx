@@ -216,9 +216,13 @@ export default function ScheduleTypeTabs({ value, intervalMinutes, onChange, err
         {activeKind === 'loop' && (
           <div className="rounded-lg border border-[var(--line)] bg-[var(--paper)] px-4 py-3">
             <p className="text-sm font-medium text-[var(--ink)]">{t('cron.scheduleTabs.loopTitle')}</p>
-            <p className="mt-1.5 text-xs leading-relaxed text-[var(--ink-muted)]">
-              {t('cron.scheduleTabs.loopDescription')}
-            </p>
+            <div className="mt-1.5 space-y-1.5 text-sm leading-relaxed text-[var(--ink-muted)]">
+              {t('cron.scheduleTabs.loopDescription')
+                .split('\n\n')
+                .map(paragraph => (
+                  <p key={paragraph}>{paragraph}</p>
+                ))}
+            </div>
           </div>
         )}
 

@@ -1,7 +1,11 @@
 use super::*;
 
 fn is_goal_task(task: &CronTask) -> bool {
-    matches!(task.schedule, Some(CronSchedule::Loop)) && task.run_mode == RunMode::SingleSession
+    task.goal_status.is_some()
+        || task
+            .goal_objective
+            .as_deref()
+            .is_some_and(|objective| !objective.trim().is_empty())
 }
 
 fn is_goal_terminal(status: &GoalStatus) -> bool {
@@ -457,15 +461,21 @@ pub(super) async fn execute_task_directly(
         interval_minutes: Some(task.interval_minutes),
         execution_number: Some(execution_number),
         schedule_kind,
-        goal_status: task
-            .goal_status
-            .as_ref()
-            .map(goal_status_wire)
-            .map(str::to_string),
-        goal_objective: task
-            .goal_objective
-            .clone()
-            .or_else(|| Some(task.prompt.clone())),
+        goal_status: if is_goal_task(task) {
+            task.goal_status
+                .as_ref()
+                .map(goal_status_wire)
+                .map(str::to_string)
+        } else {
+            None
+        },
+        goal_objective: if is_goal_task(task) {
+            task.goal_objective
+                .clone()
+                .or_else(|| Some(task.prompt.clone()))
+        } else {
+            None
+        },
         goal_updated_at: task.goal_updated_at.map(|dt| dt.to_rfc3339()),
         goal_terminal_reason: task.goal_terminal_reason.clone(),
         goal_paused_reason: task
@@ -699,6 +709,17 @@ pub(super) async fn stop_task_internal(
     );
 
     if let Some(task) = stopped_goal_task.as_ref() {
+        let _ = handle.emit(
+            "goal:changed",
+            serde_json::json!({
+                "changeKind": "terminal",
+                "taskId": task.id,
+                "sessionId": task.session_id,
+                "workspacePath": task.workspace_path,
+                "goalStatus": task.goal_status.as_ref().map(goal_status_wire),
+                "goal": task,
+            }),
+        );
         send_goal_terminal_notification(handle, task);
     }
 
