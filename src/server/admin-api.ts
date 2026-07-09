@@ -1763,9 +1763,11 @@ Options for 'add':
                    '{"kind":"every","minutes":30}'
                    '{"kind":"cron","expr":"0 9 * * *","tz":"Asia/Shanghai"}'
                    '{"kind":"loop"}'
-                 Non-JSON input is treated as a cron expression.
+                 On create, non-JSON cron input is stored with the local IANA
+                 timezone. JSON "tz" is optional; use it for a different
+                 timezone or explicit UTC.
   --every        Interval in minutes (alternative to --schedule)
-  --workspace    Workspace path (required)
+  --workspace    Workspace path. Defaults to the current session workspace.
 
 Options for 'update' <id>:
   Same flags as add (plus --model, --permissionMode). --message is also
@@ -1864,9 +1866,11 @@ Scheduling (for executionMode = 'recurring' / 'scheduled'; omitting
 emits a warning when you do):
   --intervalMinutes <n>            Fixed interval in minutes (recurring; min 5)
   --cronExpression "0 */3 * * *"   Cron expression (recurring; takes precedence over interval)
-  --cronTimezone Asia/Shanghai     IANA tz id for cronExpression
+  --cronTimezone Asia/Shanghai     IANA tz id for cronExpression; create-direct
+                                  defaults to local timezone when omitted
   --dispatchAt 2026-06-01T09:00:00+08:00  Epoch-ms or ISO 8601 (scheduled mode;
-                                          tz offset MUST be +HH:MM, not +HH)
+                                          offset/Z required; offset MUST be
+                                          +HH:MM, not +HH)
 
 IM / desktop notification (forward to a bot configured via
 \`myagents im channels\` — without --notificationBotChannelId the task runs
@@ -3022,6 +3026,30 @@ WHAT
   one-shot). Tasks run inside MyAgents regardless of which runtime the current
   chat uses. A task can deliver results to an IM channel.
 
+TIME SEMANTICS
+  MyAgents stores execution facts as absolute instants (UTC internally), but
+  recurring wall-clock schedules are defined by cron expression + IANA timezone.
+
+  For recurring "every day at 09:00" style tasks, the default create path is:
+    --schedule "0 9 * * *"
+
+  On create, a bare non-JSON --schedule is normalized to the current machine's
+  IANA timezone (for example Asia/Shanghai). The timezone field is optional and
+  only needed when the user wants a different wall-clock timezone or explicit
+  UTC:
+    '{"kind":"cron","expr":"0 9 * * *","tz":"America/New_York"}'
+    '{"kind":"cron","expr":"0 9 * * *","tz":"UTC"}'
+
+  On update, a bare cron expression keeps the existing cron timezone when the
+  previous schedule already had one.
+
+  One-shot schedules are absolute timestamps. Use ISO 8601 with Z or an offset:
+    '{"kind":"at","at":"2026-04-23T09:10:00+08:00"}'
+
+  When auditing tasks, look at schedule.kind + schedule.expr + schedule.tz first.
+  lastExecutedAt / nextExecutionAt are instants; convert them to the schedule's
+  timezone before judging what the user configured.
+
 COMMANDS
   list                            List tasks in the current workspace
   status                          Totals + next execution time
@@ -3072,11 +3100,14 @@ CREATE OPTIONS (myagents cron add ...)
   --every <minutes>               Run every N minutes (min 5)
   --schedule <expr|json>          Either a cron expression, e.g. "0 9 * * *",
                                   OR a JSON CronSchedule object:
-                                    '{"kind":"at","at":"2026-04-23T09:10+08:00"}'
+                                    '{"kind":"at","at":"2026-04-23T09:10:00+08:00"}'
                                     '{"kind":"every","minutes":30}'
                                     '{"kind":"cron","expr":"0 9 * * *","tz":"Asia/Shanghai"}'
                                     '{"kind":"loop"}'
-                                  Non-JSON values are treated as cron expressions.
+                                  On create, non-JSON cron input is stored with
+                                  the current machine's IANA timezone. JSON "tz"
+                                  is optional; use it for a different timezone
+                                  or explicit UTC.
   --workspace <path>              Workspace the task runs in. Defaults to the
                                   current session workspace.
 
@@ -3092,6 +3123,14 @@ EXAMPLES
   printf '%s\\n' 'Check the build log for new errors.' \\
     'If errors found, summarize and tag me.' > /tmp/cron-check.txt
   myagents cron add --name build-watch --prompt-file /tmp/cron-check.txt --every 15
+
+  # Wall-clock daily run at 09:00 in this machine's local timezone
+  myagents cron add --name daily-report --prompt "write daily report" \\
+    --schedule "0 9 * * *"
+
+  # Wall-clock daily run in an explicit non-local timezone
+  myagents cron add --name ny-open --prompt "check market open news" \\
+    --schedule '{"kind":"cron","expr":"30 9 * * 1-5","tz":"America/New_York"}'
 
   # Look at recent runs
   myagents cron list

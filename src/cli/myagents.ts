@@ -455,7 +455,9 @@ function printResult(group: string, action: string, result: Record<string, unkno
     }
     console.log(`✓ Triggered ${data.taskId ?? '(unknown)'}`);
     if (data.sessionId) console.log(`  session: ${data.sessionId}`);
-    if (data.dispatchedAt) console.log(`  dispatched: ${data.dispatchedAt}`);
+    if (data.dispatchedAt) {
+      console.log(`  dispatched: ${formatCronInstantWithUtc(data.dispatchedAt, resolveLocalTimezone())}`);
+    }
     console.log(`  runs:    myagents cron runs ${data.taskId ?? '<id>'} --limit 1`);
     return;
   }
@@ -468,29 +470,18 @@ function printResult(group: string, action: string, result: Record<string, unkno
     const taskId = task?.id ?? '<id>';
     console.log(`✓ Updated ${taskId}`);
     if (task) {
-      const sched = task.schedule as Record<string, unknown> | undefined;
-      if (sched && sched.kind === 'cron') {
-        const tz = (sched.tz as string | undefined) ?? 'UTC';
-        console.log(`  schedule: ${sched.expr} (${tz})`);
-      }
+      const tz = cronDisplayTimezone(task.schedule);
+      console.log(`  schedule: ${formatCronTaskScheduleForDisplay(task, 'long')}`);
       const nextRaw = task.nextExecutionAt as string | undefined;
       if (nextRaw) {
-        // Format in the schedule's tz (or UTC fallback) so the time the
-        // user reads matches the time the scheduler will actually fire.
-        const nextDate = new Date(nextRaw);
-        if (!Number.isNaN(nextDate.getTime())) {
-          const tz = ((task.schedule as Record<string, unknown> | undefined)?.tz as string | undefined) ?? 'UTC';
-          let local = '';
-          try {
-            local = nextDate.toLocaleString('sv-SE', { timeZone: tz, hour12: false });
-          } catch {
-            local = nextDate.toISOString();
-          }
-          const diffMs = nextDate.getTime() - Date.now();
+        const nextMs = parseInstantMs(nextRaw);
+        if (nextMs !== null) {
+          const local = formatCronInstantForDisplay(nextMs, tz.timezone, 'long');
+          const diffMs = nextMs - Date.now();
           const diffStr = diffMs > 0
             ? ` (in ${formatRelativeMs(diffMs)})`
             : ' (in the past)';
-          console.log(`  next fire: ${local} ${tz}${diffStr}`);
+          console.log(`  next fire: ${local}${diffStr}`);
         }
       }
     }
@@ -1291,6 +1282,145 @@ function printStatus(data: Record<string, unknown>): void {
   console.log(`Agents: ${data.agents}`);
 }
 
+export function resolveLocalTimezone(): string {
+  try {
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    return tz && isValidTimezone(tz) ? tz : 'UTC';
+  } catch {
+    return 'UTC';
+  }
+}
+
+function isValidTimezone(tz: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz }).format(new Date(0));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function parseInstantMs(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const raw = value.trim();
+    const asNumber = /^-?\d+$/.test(raw) ? Number(raw) : Number.NaN;
+    if (Number.isFinite(asNumber)) return asNumber;
+    const parsed = new Date(raw).getTime();
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function timezoneOffset(ms: number, timezone: string, prefix: 'utc' | 'plain' = 'utc'): string {
+  try {
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: timezone,
+      timeZoneName: 'shortOffset',
+    }).formatToParts(new Date(ms));
+    const raw = parts.find((part) => part.type === 'timeZoneName')?.value ?? '';
+    if (raw === 'GMT' || raw === 'UTC') return prefix === 'utc' ? 'UTC+00:00' : '+00:00';
+    const match = raw.match(/^(?:GMT|UTC)([+-])(\d{1,2})(?::(\d{2}))?$/);
+    if (!match) return prefix === 'utc' ? raw.replace(/^GMT/, 'UTC') : raw;
+    const [, sign, hour, minute = '00'] = match;
+    const normalized = `${sign}${hour.padStart(2, '0')}:${minute}`;
+    return prefix === 'utc' ? `UTC${normalized}` : normalized;
+  } catch {
+    return prefix === 'utc' ? 'UTC?' : '?';
+  }
+}
+
+function formatDateTimeInTimezone(ms: number, timezone: string, withSeconds = false): string {
+  try {
+    return new Intl.DateTimeFormat('sv-SE', {
+      timeZone: timezone,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      ...(withSeconds ? { second: '2-digit' } : {}),
+      hour12: false,
+    }).format(new Date(ms));
+  } catch {
+    return new Date(ms).toISOString();
+  }
+}
+
+export function formatCronInstantForDisplay(
+  value: unknown,
+  timezone = resolveLocalTimezone(),
+  style: 'long' | 'table' | 'tableSeconds' = 'long',
+): string {
+  const ms = parseInstantMs(value);
+  if (ms === null) return '—';
+  const tz = isValidTimezone(timezone) ? timezone : 'UTC';
+  const local = formatDateTimeInTimezone(ms, tz, style === 'tableSeconds');
+  if (style === 'table' || style === 'tableSeconds') {
+    return `${local} ${timezoneOffset(ms, tz, 'plain')}`;
+  }
+  return `${local} ${tz} (${timezoneOffset(ms, tz, 'utc')})`;
+}
+
+function formatCronInstantWithUtc(value: unknown, timezone = resolveLocalTimezone()): string {
+  const ms = parseInstantMs(value);
+  if (ms === null) return '—';
+  return `${formatCronInstantForDisplay(ms, timezone, 'long')} [UTC ${new Date(ms).toISOString()}]`;
+}
+
+function cronDisplayTimezone(schedule: unknown): { timezone: string; label: string } {
+  if (schedule && typeof schedule === 'object') {
+    const s = schedule as Record<string, unknown>;
+    if (s.kind === 'cron') {
+      const raw = typeof s.tz === 'string' ? s.tz.trim() : '';
+      if (!raw) return { timezone: 'UTC', label: 'UTC(default)' };
+      if (isValidTimezone(raw)) return { timezone: raw, label: raw };
+      return { timezone: 'UTC', label: `${raw}(invalid; UTC shown)` };
+    }
+  }
+  const local = resolveLocalTimezone();
+  return { timezone: local, label: local };
+}
+
+export function formatCronTaskScheduleForDisplay(
+  task: Record<string, unknown>,
+  style: 'short' | 'long' = 'short',
+): string {
+  const schedule = task.schedule as Record<string, unknown> | undefined;
+  if (schedule && typeof schedule === 'object') {
+    switch (schedule.kind) {
+      case 'cron': {
+        const expr = String(schedule.expr ?? '').trim() || '<empty cron>';
+        const tz = cronDisplayTimezone(schedule);
+        return style === 'long' ? `${expr} @ ${tz.label}` : expr;
+      }
+      case 'every': {
+        const minutes = Number(schedule.minutes);
+        return Number.isFinite(minutes) ? `every ${minutes}m` : 'every ?m';
+      }
+      case 'at': {
+        if (style === 'long') {
+          const tz = cronDisplayTimezone(schedule);
+          return `once @ ${formatCronInstantForDisplay(schedule.at, tz.timezone, 'long')}`;
+        }
+        return 'once';
+      }
+      case 'loop':
+        return 'loop';
+      default:
+        return String(schedule.kind ?? 'unknown');
+    }
+  }
+  const interval = Number(task.intervalMinutes);
+  return Number.isFinite(interval) ? `every ${interval}m` : 'every ?m';
+}
+
+function clipCell(value: string, width: number): string {
+  if (value.length <= width) return value;
+  if (width <= 3) return value.slice(0, width);
+  return `${value.slice(0, width - 3)}...`;
+}
+
 function printCronList(tasks: Array<Record<string, unknown>>): void {
   if (!tasks || tasks.length === 0) {
     console.log('No cron tasks configured.');
@@ -1304,20 +1434,6 @@ function printCronList(tasks: Array<Record<string, unknown>>): void {
   // rendered as a `*` marker after the task ID. See `cron readme` for
   // the full vocabulary explanation.
 
-  // R6: short time format for "Next" / "Last" columns. Locale-independent,
-  // fixed width (16 chars), readable.
-  const fmtTime = (iso: unknown): string => {
-    if (!iso || typeof iso !== 'string') return '—';
-    const d = new Date(iso);
-    if (Number.isNaN(d.getTime())) return '—';
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mi = String(d.getMinutes()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
-  };
-
   const fmtDuration = (ms: unknown): string => {
     if (typeof ms !== 'number' || !Number.isFinite(ms)) return '—';
     if (ms < 1000) return `${ms}ms`;
@@ -1327,22 +1443,20 @@ function printCronList(tasks: Array<Record<string, unknown>>): void {
   console.log(
     pad('ID', 24) +
     pad('Status', 10) +
-    pad('Schedule', 18) +
-    pad('Next', 18) +
-    pad('Last', 18) +
+    pad('Schedule', 22) +
+    pad('TZ', 20) +
+    pad('Next', 26) +
+    pad('Last', 28) +
     pad('Dur', 9) +
     pad('Runs', 6) +
     'Name'
   );
   for (const t of tasks) {
-    const schedule = t.schedule
-      ? (typeof t.schedule === 'object' && (t.schedule as Record<string, unknown>).kind === 'cron'
-        ? String((t.schedule as Record<string, unknown>).expr)
-        : `Every ${t.intervalMinutes}m`)
-      : `Every ${t.intervalMinutes}m`;
+    const schedule = formatCronTaskScheduleForDisplay(t, 'short');
+    const tz = cronDisplayTimezone(t.schedule);
     const lastOk = t.lastRunOk;
     const lastMark = lastOk === true ? '✓ ' : lastOk === false ? '✗ ' : '  ';
-    const lastTime = fmtTime(t.lastExecutedAt);
+    const lastTime = formatCronInstantForDisplay(t.lastExecutedAt, tz.timezone, 'table');
     const last = lastTime === '—' ? '—' : `${lastMark}${lastTime}`;
     // Asterisk marker = a tick is firing this very instant (scheduled or
     // run-now). Distinct from `Running` status — see `cron readme`.
@@ -1350,9 +1464,10 @@ function printCronList(tasks: Array<Record<string, unknown>>): void {
     console.log(
       pad(idDisplay, 24) +
       pad(String(t.status), 10) +
-      pad(schedule.slice(0, 16), 18) +
-      pad(fmtTime(t.nextExecutionAt), 18) +
-      pad(last.slice(0, 17), 18) +
+      pad(clipCell(schedule, 20), 22) +
+      pad(clipCell(tz.label, 18), 20) +
+      pad(formatCronInstantForDisplay(t.nextExecutionAt, tz.timezone, 'table'), 26) +
+      pad(clipCell(last, 26), 28) +
       pad(fmtDuration(t.lastRunDurationMs), 9) +
       pad(String(t.executionCount ?? 0), 6) +
       String(t.name ?? (t.prompt as string)?.slice(0, 40) ?? '')
@@ -1381,37 +1496,33 @@ function printCronRuns(runs: Array<Record<string, unknown>>, full: boolean = fal
     return collapsed.slice(0, maxLen - 1) + '\u2026';
   };
 
-  // Locale-independent fixed-width time format (19 chars).
-  const fmtTime = (ts: unknown): string => {
-    if (!ts) return '?'.padEnd(19);
-    const d = new Date(Number(ts));
-    if (Number.isNaN(d.getTime())) return '?'.padEnd(19);
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    const hh = String(d.getHours()).padStart(2, '0');
-    const mi = String(d.getMinutes()).padStart(2, '0');
-    const ss = String(d.getSeconds()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
-  };
-
   const outputMaxLen = full ? Number.POSITIVE_INFINITY : 80;
-  console.log(pad('Time', 21) + pad('Status', 8) + pad('Duration', 12) + 'Output');
+  const localTz = resolveLocalTimezone();
+  console.log(`Times shown in ${localTz} (${timezoneOffset(Date.now(), localTz, 'utc')}). Raw timestamps are available with --json.`);
+  console.log(pad('Time', 31) + pad('Status', 8) + pad('Duration', 12) + 'Output');
   for (const r of runs) {
-    const time = fmtTime(r.ts);
+    const time = formatCronInstantForDisplay(r.ts, localTz, 'tableSeconds');
     const status = r.ok ? '\u2713' : '\u2717';
     const dur = r.durationMs ? `${(Number(r.durationMs) / 1000).toFixed(1)}s` : '?';
     const raw = r.ok ? String(r.content ?? '') : String(r.error ?? '');
     const output = formatCell(raw, outputMaxLen);
-    console.log(pad(time, 21) + pad(status, 8) + pad(dur, 12) + output);
+    console.log(pad(time, 31) + pad(status, 8) + pad(dur, 12) + output);
   }
 }
 
 function printCronStatus(data: Record<string, unknown>): void {
+  const localTz = resolveLocalTimezone();
   console.log(`Total tasks: ${data.totalTasks ?? 0}`);
   console.log(`Running:     ${data.runningTasks ?? 0}`);
-  if (data.lastExecutedAt) console.log(`Last executed: ${data.lastExecutedAt}`);
-  if (data.nextExecutionAt) console.log(`Next execution: ${data.nextExecutionAt}`);
+  if (data.lastExecutedAt) {
+    console.log(`Last executed: ${formatCronInstantWithUtc(data.lastExecutedAt, localTz)}`);
+  }
+  if (data.nextExecutionAt) {
+    console.log(`Next execution: ${formatCronInstantWithUtc(data.nextExecutionAt, localTz)}`);
+  }
+  if (data.lastExecutedAt || data.nextExecutionAt) {
+    console.log(`Display timezone: ${localTz} (${timezoneOffset(Date.now(), localTz, 'utc')}); per-task cron tz is shown by 'myagents cron list'.`);
+  }
 }
 
 function printChannelList(channels: Array<Record<string, unknown>>): void {
@@ -1590,18 +1701,19 @@ function printTaskDetail(task: Record<string, unknown>): void {
   if (mode !== 'once') {
     console.log('\nSchedule:');
     if (task.cronExpression) {
+      const cronTz = typeof task.cronTimezone === 'string' && task.cronTimezone.trim()
+        ? task.cronTimezone.trim()
+        : 'UTC(default legacy)';
       console.log(
-        `  Cron:           ${task.cronExpression}${task.cronTimezone ? ` (${task.cronTimezone})` : ''}`,
+        `  Cron:           ${task.cronExpression} @ ${cronTz}`,
       );
     } else if (task.intervalMinutes) {
       console.log(`  Interval:       every ${task.intervalMinutes} minute(s)`);
     } else if (task.dispatchAt) {
-      const when = typeof task.dispatchAt === 'number' ? new Date(task.dispatchAt).toISOString() : String(task.dispatchAt);
-      console.log(`  Dispatch at:    ${when}`);
+      console.log(`  Dispatch at:    ${formatCronInstantWithUtc(task.dispatchAt, resolveLocalTimezone())}`);
     }
     if (task.lastExecutedAt) {
-      const last = typeof task.lastExecutedAt === 'number' ? new Date(task.lastExecutedAt).toISOString() : String(task.lastExecutedAt);
-      console.log(`  Last executed:  ${last}`);
+      console.log(`  Last executed:  ${formatCronInstantWithUtc(task.lastExecutedAt, resolveLocalTimezone())}`);
     }
   }
 
@@ -1610,8 +1722,7 @@ function printTaskDetail(task: Record<string, unknown>): void {
   if (end && (end.deadline || end.maxExecutions || end.aiCanExit === false)) {
     console.log('\nEnd conditions:');
     if (end.deadline) {
-      const dl = typeof end.deadline === 'number' ? new Date(end.deadline).toISOString() : String(end.deadline);
-      console.log(`  Deadline:       ${dl}`);
+      console.log(`  Deadline:       ${formatCronInstantWithUtc(end.deadline, resolveLocalTimezone())}`);
     }
     if (end.maxExecutions) console.log(`  Max executions: ${end.maxExecutions}`);
     if (end.aiCanExit === false) console.log(`  AI can exit:    no (must run to end conditions)`);
@@ -2877,7 +2988,7 @@ function buildRequestBody(
         name: flags.name,
         message: promptText,
         workspacePath: flags.workspace,
-        schedule: normalizeScheduleFlag(flags.schedule),
+        schedule: normalizeScheduleFlag(flags.schedule, { fillMissingCronTimezone: true }),
         intervalMinutes: flags.every ? Number(flags.every) : undefined,
         // Forward --dry-run so the admin handler can return a preview
         // instead of writing to the cron store. Issue #149.
@@ -3056,6 +3167,10 @@ function buildRequestBody(
       const taskMdContent = resolveTaskMdContent(flags);
       const executionMode = (flags.executionMode as string | undefined) ?? 'once';
       maybeWarnRecurringWithoutInterval(executionMode, flags);
+      const cronExpression = typeof flags.cronExpression === 'string' ? flags.cronExpression : undefined;
+      const cronTimezone = typeof flags.cronTimezone === 'string'
+        ? flags.cronTimezone
+        : (executionMode === 'recurring' && cronExpression?.trim() ? resolveLocalTimezone() : undefined);
       return {
         name: rest[0] || flags.name,
         executor: flags.executor ?? 'agent',
@@ -3076,8 +3191,8 @@ function buildRequestBody(
         // recurring task to default to 60 min and every cron / dispatchAt
         // schedule to be set via GUI afterward.
         intervalMinutes: parseIntervalMinutesFlag(flags.intervalMinutes),
-        cronExpression: flags.cronExpression,
-        cronTimezone: flags.cronTimezone,
+        cronExpression,
+        cronTimezone,
         dispatchAt: parseDispatchAtFlag(flags.dispatchAt),
         notification: buildNotificationFromFlags(flags),
         // Per-task runtime overrides. Admin-api validates these before
@@ -3432,8 +3547,17 @@ function tryParseJson(value: string | undefined): unknown {
  * deserialize error three hops away. We detect "looks like JSON" by the
  * leading `{` — a real cron expression never starts with that.
  */
-function normalizeScheduleFlag(raw: unknown): Record<string, unknown> | undefined {
+export function normalizeScheduleFlag(
+  raw: unknown,
+  options: { fillMissingCronTimezone?: boolean; defaultTimezone?: string } = {},
+): Record<string, unknown> | undefined {
   if (raw === undefined || raw === null || raw === '') return undefined;
+  const defaultTimezone = options.defaultTimezone ?? resolveLocalTimezone();
+  const withDefaultCronTimezone = (obj: Record<string, unknown>): Record<string, unknown> => {
+    if (!options.fillMissingCronTimezone || obj.kind !== 'cron') return obj;
+    const tz = typeof obj.tz === 'string' ? obj.tz.trim() : '';
+    return tz ? obj : { ...obj, tz: defaultTimezone };
+  };
   if (typeof raw !== 'string') {
     console.error('Error: --schedule must be a cron expression string or a JSON object (e.g. \'{"kind":"at","at":"2026-04-23T09:10:00+08:00"}\')');
     process.exit(2);
@@ -3493,10 +3617,10 @@ function normalizeScheduleFlag(raw: unknown): Record<string, unknown> | undefine
       }
     }
     // 'loop' has no required fields.
-    return obj;
+    return withDefaultCronTimezone(obj);
   }
   // Non-JSON input → treat as a standard cron expression.
-  return { kind: 'cron', expr: trimmed };
+  return withDefaultCronTimezone({ kind: 'cron', expr: trimmed });
 }
 
 /** Hard cap for `--taskMdContent` (inline string). Mirrors the `--taskMdFile`
@@ -3695,12 +3819,11 @@ function buildNotificationFromFlags(
  * silent fall-through would later become a confusing "task never fires"
  * because Rust treats `None` as "no schedule".
  */
-function parseDispatchAtFlag(raw: unknown): number | undefined {
+export function parseDispatchAtValue(raw: unknown): number | undefined {
   if (raw === undefined) return undefined;
   if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
   if (typeof raw !== 'string' || raw.trim().length === 0) {
-    console.error('Error: --dispatchAt must be a number (epoch ms) or an ISO 8601 timestamp');
-    process.exit(2);
+    throw new Error('Error: --dispatchAt must be a number (epoch ms) or an ISO 8601 timestamp');
   }
   const trimmed = raw.trim();
   // Pure-integer path: epoch-ms (the Rust wire format). `parseInt` would
@@ -3710,12 +3833,23 @@ function parseDispatchAtFlag(raw: unknown): number | undefined {
     const n = Number(trimmed);
     if (Number.isFinite(n)) return n;
   }
+  if (!/(?:[zZ]|[+-]\d{2}:\d{2})$/.test(trimmed)) {
+    throw new Error(`Error: --dispatchAt "${raw}" must include an explicit timezone offset or Z (e.g. 2026-06-01T09:00:00+08:00). For recurring cron schedules, use --cronTimezone/JSON "tz" instead.`);
+  }
   const ms = Date.parse(trimmed);
   if (Number.isNaN(ms)) {
-    console.error(`Error: --dispatchAt "${raw}" is not a valid timestamp (try epoch ms or ISO 8601, e.g. 2026-06-01T09:00:00+08:00)`);
-    process.exit(2);
+    throw new Error(`Error: --dispatchAt "${raw}" is not a valid timestamp (try epoch ms or ISO 8601, e.g. 2026-06-01T09:00:00+08:00)`);
   }
   return ms;
+}
+
+function parseDispatchAtFlag(raw: unknown): number | undefined {
+  try {
+    return parseDispatchAtValue(raw);
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exit(2);
+  }
 }
 
 /**

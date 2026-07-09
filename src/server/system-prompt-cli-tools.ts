@@ -51,12 +51,19 @@ Quick reference (full docs: run \`myagents cron readme\`):
       # Long / multiline / quoted prompts — write to a file first (using your
       # normal file-writing tool) and pass --prompt-file. This avoids shell
       # escape problems with quotes, newlines, and backticks.
+  myagents cron add --name X --prompt "..." --schedule "0 9 * * *"
+      # Wall-clock schedules like "daily at 09:00" default to this machine's
+      # IANA timezone. Use JSON with "tz" only for a different timezone or UTC.
+  myagents cron add --name X --prompt "..." --schedule '{"kind":"cron","expr":"0 9 * * *","tz":"America/New_York"}'
+      # Explicit non-local timezone example.
   myagents cron runs <taskId> --limit 5    # inspect recent executions
   myagents cron remove <taskId>            # delete a task
 
 Pass \`--json\` on any command for machine-parseable output. Non-zero exit means
 the command failed; read stderr for the reason. Before running any command,
-always call \`myagents cron readme\` once if you haven't yet this session.
+always call \`myagents cron readme\` once if you haven't yet this session. When
+auditing schedules, inspect schedule.expr + schedule.tz; lastExecutedAt is an
+execution instant, not the user's configured wall-clock time.
 </myagents-cli-cron>`;
 
 const SECTION_CRON_EXIT = `<myagents-cli-cron-exit>
