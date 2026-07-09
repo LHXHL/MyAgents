@@ -2,11 +2,19 @@ use super::*;
 
 const MANAGED_CRON_TASK_ERROR: &str =
     "Managed scheduled jobs are internal and cannot be managed from ordinary CronTask surfaces";
+const GOAL_CRON_TASK_ERROR: &str =
+    "Goal Mode tasks are managed through Goal controls and cannot be managed from ordinary CronTask surfaces";
 
 fn is_managed_cron_task(task: &CronTask) -> bool {
     task.managed_kind
         .as_deref()
         .is_some_and(crate::task::is_supported_managed_kind)
+}
+
+fn is_goal_task(task: &CronTask) -> bool {
+    matches!(task.schedule, Some(CronSchedule::Loop))
+        && task.run_mode == RunMode::SingleSession
+        && !is_managed_cron_task(task)
 }
 
 async fn get_ordinary_cron_task(
@@ -19,6 +27,20 @@ async fn get_ordinary_cron_task(
         .ok_or_else(|| format!("Task not found: {}", task_id))?;
     if is_managed_cron_task(&task) {
         return Err(MANAGED_CRON_TASK_ERROR.to_string());
+    }
+    if is_goal_task(&task) {
+        return Err(GOAL_CRON_TASK_ERROR.to_string());
+    }
+    Ok(task)
+}
+
+async fn get_goal_task(manager: &CronTaskManager, task_id: &str) -> Result<CronTask, String> {
+    let task = manager
+        .get_task(task_id)
+        .await
+        .ok_or_else(|| format!("Task not found: {}", task_id))?;
+    if !is_goal_task(&task) {
+        return Err("Task is not a Goal Mode task".to_string());
     }
     Ok(task)
 }
@@ -77,6 +99,43 @@ pub async fn cmd_stop_cron_task(
     let manager = get_cron_task_manager();
     get_ordinary_cron_task(manager, &task_id).await?;
     manager.stop_task(&task_id, exit_reason).await
+}
+
+#[tauri::command]
+pub async fn cmd_pause_goal_task(task_id: String) -> Result<CronTask, String> {
+    let manager = get_cron_task_manager();
+    get_goal_task(manager, &task_id).await?;
+    manager
+        .pause_goal_task(&task_id, GoalPausedReason::UserStop)
+        .await
+}
+
+#[tauri::command]
+pub async fn cmd_resume_goal_task(task_id: String) -> Result<CronTask, String> {
+    let manager = get_cron_task_manager();
+    get_goal_task(manager, &task_id).await?;
+    manager.resume_goal_task(&task_id).await
+}
+
+#[tauri::command]
+pub async fn cmd_update_goal_objective(
+    task_id: String,
+    objective: String,
+) -> Result<CronTask, String> {
+    let manager = get_cron_task_manager();
+    get_goal_task(manager, &task_id).await?;
+    manager.update_goal_objective(&task_id, objective).await
+}
+
+#[tauri::command]
+pub async fn cmd_mark_goal_terminal(
+    task_id: String,
+    status: GoalStatus,
+    reason: Option<String>,
+) -> Result<CronTask, String> {
+    let manager = get_cron_task_manager();
+    get_goal_task(manager, &task_id).await?;
+    manager.mark_goal_terminal(&task_id, status, reason).await
 }
 
 /// Delete a cron task

@@ -55,10 +55,10 @@ export async function summarizeSchedule(
   if (mode === 'loop') {
     return {
       mode,
-      title: locale === 'zh-CN' ? '心跳循环' : 'Heartbeat loop',
+      title: locale === 'zh-CN' ? '目标模式' : 'Goal Mode',
       next: locale === 'zh-CN'
-        ? '连续触发(无定时),完成即下一轮'
-        : 'Runs continuously; the next round starts after completion',
+        ? '连续执行，完成当前轮后进入下一轮'
+        : 'Runs continuously; the next round starts after the current one finishes',
     };
   }
 

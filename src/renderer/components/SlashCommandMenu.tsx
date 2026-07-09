@@ -88,13 +88,21 @@ export default function SlashCommandMenu({
 
 // Helper function to filter and sort commands (used by SimpleChatInput)
 //
-// Built-in/system commands (`source: 'builtin'`, e.g. /loop, /compact) always
+// Built-in/system commands (`source: 'builtin'`, e.g. /goal, /compact) always
 // rank above user skills & commands so the app's own capabilities surface
 // first. Within a tier the existing order is preserved (alphabetical with no
 // query; prefix-match-then-alphabetical when filtering).
 export function filterAndSortCommands(commands: SlashCommand[], query: string): SlashCommand[] {
     const q = query.toLowerCase();
     const tier = (c: SlashCommand) => (c.source === 'builtin' ? 0 : 1);
+    const matches = (cmd: SlashCommand) => {
+        const name = cmd.name.toLowerCase();
+        const description = cmd.description.toLowerCase();
+        const aliases = cmd.aliases ?? [];
+        return name.includes(q) ||
+            description.includes(q) ||
+            aliases.some((alias) => alias.toLowerCase().includes(q));
+    };
 
     if (!q) {
         // No query: builtins first, then alphabetical within each tier
@@ -102,10 +110,7 @@ export function filterAndSortCommands(commands: SlashCommand[], query: string): 
     }
 
     return commands
-        .filter(cmd =>
-            cmd.name.toLowerCase().includes(q) ||
-            cmd.description.toLowerCase().includes(q)
-        )
+        .filter(matches)
         .sort((a, b) => {
             // Builtins first, regardless of match quality
             const tierDiff = tier(a) - tier(b);
@@ -113,8 +118,10 @@ export function filterAndSortCommands(commands: SlashCommand[], query: string): 
 
             const aName = a.name.toLowerCase();
             const bName = b.name.toLowerCase();
-            const aStartsWith = aName.startsWith(q);
-            const bStartsWith = bName.startsWith(q);
+            const aAliasStartsWith = a.aliases?.some((alias) => alias.toLowerCase().startsWith(q)) ?? false;
+            const bAliasStartsWith = b.aliases?.some((alias) => alias.toLowerCase().startsWith(q)) ?? false;
+            const aStartsWith = aName.startsWith(q) || aAliasStartsWith;
+            const bStartsWith = bName.startsWith(q) || bAliasStartsWith;
 
             // Prefix match comes first
             if (aStartsWith && !bStartsWith) return -1;

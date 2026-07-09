@@ -176,13 +176,13 @@
         "description": "每隔固定时间触发一次，可设置结束条件"
       },
       "loop": {
-        "label": "Ralph Loop",
-        "description": "完成后立即下一轮（同会话持续打磨），必须设置退出条件"
+        "label": "目标模式",
+        "description": "完成当前轮后立即进入下一轮，在同一会话里持续推进目标"
       }
     },
     "scheduledTime": "执行时间",
     "sessionStrategy": "会话策略",
-    "loopSessionStrategy": "连续对话（保持上下文）— Ralph Loop 固定使用此模式",
+    "loopSessionStrategy": "连续对话（保持上下文）— 目标模式固定使用此模式",
     "newSession": "新开对话",
     "singleSession": "连续对话",
     "newSessionDescription": "每次执行创建新会话，无历史记忆，上下文干净",
@@ -234,7 +234,7 @@
       "onceAt": "定时：{{time}}",
       "every": "每 {{interval}}",
       "cron": "Cron: {{expr}}",
-      "loop": "Ralph Loop 无限循环"
+      "loop": "目标模式"
     },
     "nextExecution": {
       "waiting": "等待触发",
@@ -253,12 +253,20 @@
     },
     "statusBar": {
       "draftTitle": "定时模式",
+      "goalDraftTitle": "目标模式",
       "stoppedTitle": "定时任务已停止",
-      "loopExecutingTitle": "心跳循环执行中",
-      "loopRunningTitle": "心跳循环进行中",
+      "loopExecutingTitle": "目标执行中",
+      "loopRunningTitle": "目标模式运行中",
+      "goalPausedTitle": "当前轮已停止",
+      "goalCompleteTitle": "目标已完成",
+      "goalBlockedTitle": "目标受阻",
+      "goalCanceledTitle": "目标已停止",
       "executingTitle": "定时任务执行中",
       "runningTitle": "定时任务运行中",
       "stoppedDetail": "点击关闭可恢复任务内容到输入框",
+      "goalPausedDetail": "输入补充后继续目标",
+      "goalObjectiveFallback": "输入框输入你的目标，发送后持续执行直到完成",
+      "goalEditTitle": "编辑目标",
       "scheduleOnce": "{{time}} 执行一次",
       "scheduleEvery": "每 {{interval}} 执行一次",
       "roundExecuting": "第 {{count}} 轮执行中",
@@ -270,8 +278,9 @@
     },
     "settingsModal": {
       "title": "定时任务",
+      "goalTitle": "目标模式",
       "executionMode": "执行模式",
-      "loopModeDescription": "连续对话（保持上下文）— Ralph Loop 固定使用此模式",
+      "loopModeDescription": "当前会话会在每轮回复结束后继续执行，持续推进输入框里的目标，直到 AI 判断完成、受阻，或你手动取消。",
       "currentSession": "当前对话",
       "newTask": "新开对话",
       "currentSessionDescription": "在当前对话中定时执行，保持上下文",
@@ -287,6 +296,7 @@
       "aiCanExit": "允许 AI 自主结束任务",
       "notifications": "任务通知",
       "notifyOnCompletion": "每次执行完即发送通知",
+      "goalNotifyOnStop": "目标完成、受阻或停止时发送通知",
       "deliveryChannel": "投递渠道",
       "desktopDefault": "桌面通知（默认）",
       "cancel": "取消",
@@ -301,9 +311,9 @@
     "scheduleTabs": {
       "recurring": "周期触发",
       "once": "仅一次",
-      "loop": "无限循环",
-      "loopTitle": "Ralph Loop 无限循环",
-      "loopDescription": "让 AI 持续无限运行的模式。每次 AI 完成回复后，自动发起下一轮执行，不受时间调度约束。适用于需要 AI 持续工作直到任务完成的场景。连续失败 10 次将自动停止。",
+      "loop": "目标模式",
+      "loopTitle": "目标模式",
+      "loopDescription": "输入框输入你的目标，发送后持续执行直到完成。每轮结束后自动继续，保留当前会话上下文；连续失败 10 次会自动停止。",
       "approxPrefix": "距现在约 {{distance}}",
       "expired": "已过期"
     },
@@ -612,7 +622,7 @@
   },
   "badges": {
     "category": {
-      "loop": "心跳循环",
+      "loop": "目标模式",
       "once": "一次性",
       "recurring": "周期",
       "scheduled": "定时",

@@ -10,7 +10,7 @@
 // category chip on the left already carry the "state" and "kind" axes;
 // a third indicator in the form of a color stripe would triple-count
 // the same signal. Legacy-cron identity collapses into the category
-// chip as "心跳循环 · 遗留" / "周期 · 遗留" etc., so the grid no longer
+// chip as "目标模式 · 遗留" / "周期 · 遗留" etc., so the grid no longer
 // needs a separate "遗留" pill — see <TaskCategoryBadge legacy />.
 
 import { useEffect, useState } from 'react';
@@ -139,7 +139,7 @@ export function TaskCardItem(props: TaskCardItemProps) {
  * Content varies per category:
  *
  *   once       workspace · 一次性 · <updatedAt-relative>
- *   loop       workspace · 心跳循环 · 第 N 轮
+ *   loop       workspace · 目标模式 · 第 N 轮
  *   scheduled  workspace · <formatted dispatch time>
  *   recurring  workspace · <interval or cron> [· 已执行 N 次]
  *

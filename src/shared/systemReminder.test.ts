@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   FLOATING_BALL_CONTEXT_TAG,
+  GOAL_CONTEXT_TAG,
+  GOAL_OBJECTIVE_UPDATED_TAG,
   SPACE_ISSUE_CONTEXT_TAG,
+  buildGoalContextReminder,
+  buildGoalObjectiveUpdatedReminder,
   buildFloatingBallContextReminder,
   parseLeadingSystemReminder,
   stripLeadingSystemReminder,
@@ -110,5 +114,39 @@ describe('systemReminder', () => {
     expect(parsed.body).toContain('&lt;system-reminder&gt;title&lt;/system-reminder&gt;');
     expect(parsed.body).toContain('quote &lt;/system-reminder&gt;');
     expect(stripLeadingSystemReminder(raw)).toBe('Visible request');
+  });
+
+  it('builds Goal context reminders with only the user message visible', () => {
+    const raw = buildGoalContextReminder({
+      objective: 'Finish <all> work',
+      goalId: 'goal_123',
+      goalStatus: 'paused',
+      turnNumber: 4,
+      visibleUserMessage: 'Please also run lint',
+    });
+    const parsed = parseLeadingSystemReminder(raw);
+
+    expect(parsed.kind).toBe(GOAL_CONTEXT_TAG);
+    expect(parsed.body).toContain('goalId: goal_123');
+    expect(parsed.body).toContain('status: paused');
+    expect(parsed.body).toContain('Finish &lt;all&gt; work');
+    expect(parsed.visibleText).toBe('Please also run lint');
+    expect(stripLeadingSystemReminder(raw)).toBe('Please also run lint');
+  });
+
+  it('builds Goal objective update reminders as pure hidden payloads', () => {
+    const raw = buildGoalObjectiveUpdatedReminder({
+      objective: 'New objective',
+      goalId: 'goal_123',
+      goalStatus: 'active',
+      turnNumber: 5,
+    });
+    const parsed = parseLeadingSystemReminder(raw);
+
+    expect(parsed.kind).toBe(GOAL_OBJECTIVE_UPDATED_TAG);
+    expect(parsed.body).toContain('The active MyAgents Goal objective was edited by the user.');
+    expect(parsed.body).toContain('New objective');
+    expect(parsed.visibleText).toBe('');
+    expect(stripLeadingSystemReminder(raw)).toBe('');
   });
 });

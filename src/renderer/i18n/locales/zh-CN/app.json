@@ -68,6 +68,7 @@
   "tabProvider": {
     "compactSuccess": "上下文已压缩",
     "compactFailed": "上下文压缩失败",
+    "hiddenSystemMessage": "系统消息",
     "sendFailed": "发送失败",
     "networkError": "网络错误",
     "networkDisconnected": "网络连接中断，请重试"
@@ -217,7 +218,9 @@
       "heartbeat": "心跳感知",
       "cronTask": "定时任务",
       "floatingContext": "悬浮上下文",
-      "spaceIssue": "Space issue"
+      "spaceIssue": "Space issue",
+      "goalMode": "目标模式",
+      "goalUpdate": "目标更新"
     },
     "systemInfo": "系统信息",
     "expand": "展开"

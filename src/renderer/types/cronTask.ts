@@ -30,6 +30,10 @@ export type CronProviderIntent = 'followAgent' | 'subscription' | 'explicit';
  */
 export type CronTaskStatus = 'running' | 'stopped';
 
+export type GoalStatus = 'active' | 'paused' | 'complete' | 'blocked' | 'canceled';
+
+export type GoalPausedReason = 'user_stop';
+
 /**
  * End conditions for a cron task
  * Note: Uses camelCase to match Rust's serde(rename_all = "camelCase")
@@ -117,6 +121,16 @@ export interface CronTask {
   internalSessionId?: string;
   /** Last activity timestamp — updated on create, start, stop, execute */
   updatedAt?: string;
+  /** Goal Mode lifecycle status for loop tasks. CronTask.status still owns scheduler liveness. */
+  goalStatus?: GoalStatus;
+  /** Persistent Goal objective. Falls back to prompt for pre-Goal loop tasks. */
+  goalObjective?: string;
+  /** Last Goal status/objective update timestamp. */
+  goalUpdatedAt?: string;
+  /** Terminal reason for complete/blocked/canceled Goal states. */
+  goalTerminalReason?: string;
+  /** Pause reason for paused Goal tasks. */
+  goalPausedReason?: GoalPausedReason;
 }
 
 /**
@@ -186,8 +200,13 @@ export interface CronTaskConfig {
    * task.mcpEnabledServers makes the override branch fire with the exact
    * same set the pre-warm already loaded, so `applyMcpOverrideAndAwaitReady`
    * short-circuits as a no-op (`agent-session.ts:1282`).
-   */
+  */
   mcpEnabledServers?: string[];
+  goalStatus?: GoalStatus;
+  goalObjective?: string;
+  goalUpdatedAt?: string;
+  goalTerminalReason?: string;
+  goalPausedReason?: GoalPausedReason;
 }
 
 /**
@@ -219,6 +238,11 @@ export interface CronTaskTriggerPayload {
   runMode: CronRunMode;
   notifyEnabled: boolean;
   tabId?: string;
+  goalStatus?: GoalStatus;
+  goalObjective?: string;
+  goalUpdatedAt?: string;
+  goalTerminalReason?: string;
+  goalPausedReason?: GoalPausedReason;
 }
 
 /**
@@ -300,7 +324,7 @@ export function formatScheduleDescription(task: CronTask): string {
       case 'cron':
         return formatCronExpression(task.schedule.expr);
       case 'loop':
-        return 'Ralph Loop 无限循环';
+        return '目标模式';
     }
   }
   return `每 ${formatCronInterval(task.intervalMinutes)}`;

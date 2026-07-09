@@ -2497,6 +2497,73 @@ export async function handleCronStatus(payload: { workspacePath?: string }): Pro
   return wrapped;
 }
 
+function currentGoalContext(): { sessionId?: string; workspacePath: string; error?: string } {
+  const sessionContext = getSessionEngine().getCurrentSessionContext();
+  const sessionId = sessionContext.sessionId ?? process.env.MYAGENTS_SESSION_ID;
+  if (!sessionId) {
+    return {
+      workspacePath: sessionContext.workspacePath ?? defaultCronWorkspace(),
+      error: 'No current session. Run this command from inside a MyAgents AI session.',
+    };
+  }
+  return {
+    sessionId,
+    workspacePath: sessionContext.workspacePath ?? defaultCronWorkspace(),
+  };
+}
+
+export async function handleGoalGet(): Promise<AdminResponse> {
+  const ctx = currentGoalContext();
+  if (ctx.error || !ctx.sessionId) return { success: false, error: ctx.error };
+  const resp = await managementApi(`/api/goal/get${qsFrom({
+    sessionId: ctx.sessionId,
+    workspacePath: ctx.workspacePath,
+  })}`);
+  if (resp.ok) {
+    return { success: true, data: { goal: (resp as Record<string, unknown>).goal ?? null } };
+  }
+  return mgmtError(resp, 'Failed to get Goal');
+}
+
+export async function handleGoalCreate(payload: { objective?: string }): Promise<AdminResponse> {
+  const objective = payload.objective?.trim();
+  if (!objective) return { success: false, error: 'Missing required field: objective' };
+  const ctx = currentGoalContext();
+  if (ctx.error || !ctx.sessionId) return { success: false, error: ctx.error };
+  const resp = await managementApi('/api/goal/create', 'POST', {
+    sessionId: ctx.sessionId,
+    workspacePath: ctx.workspacePath,
+    objective,
+  });
+  if (resp.ok) {
+    return { success: true, data: { goal: (resp as Record<string, unknown>).goal } };
+  }
+  return mgmtError(resp, 'Failed to create Goal');
+}
+
+export async function handleGoalUpdate(payload: {
+  status?: string;
+  reason?: string;
+}): Promise<AdminResponse> {
+  const status = payload.status;
+  if (status !== 'complete' && status !== 'blocked') {
+    return { success: false, error: 'Goal status must be complete or blocked' };
+  }
+  const ctx = currentGoalContext();
+  if (ctx.error || !ctx.sessionId) return { success: false, error: ctx.error };
+  const reason = payload.reason?.trim() || (status === 'complete' ? 'Goal achieved' : 'Goal blocked');
+  const resp = await managementApi('/api/goal/update', 'POST', {
+    sessionId: ctx.sessionId,
+    workspacePath: ctx.workspacePath,
+    status,
+    reason,
+  });
+  if (resp.ok) {
+    return { success: true, data: { goal: (resp as Record<string, unknown>).goal } };
+  }
+  return mgmtError(resp, 'Failed to update Goal');
+}
+
 // ---------------------------------------------------------------------------
 // Task Center forwarding (v0.1.69)
 //

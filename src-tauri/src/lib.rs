@@ -381,6 +381,10 @@ pub fn run() {
             cron_task::commands::cmd_update_cron_task_tab,
             cron_task::commands::cmd_update_cron_task_session,
             cron_task::commands::cmd_get_tasks_to_recover,
+            cron_task::commands::cmd_pause_goal_task,
+            cron_task::commands::cmd_resume_goal_task,
+            cron_task::commands::cmd_update_goal_objective,
+            cron_task::commands::cmd_mark_goal_terminal,
             // Cron scheduler commands
             cron_task::commands::cmd_start_cron_scheduler,
             cron_task::commands::cmd_mark_task_executing,

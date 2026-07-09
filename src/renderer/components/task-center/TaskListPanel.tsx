@@ -743,7 +743,7 @@ async function fetchLegacyCronTasks(unnamedLegacyTaskLabel: string): Promise<Leg
       'cmd_get_cron_tasks',
     )) as Array<Record<string, unknown>>;
     return all
-      .filter((t) => !t.taskId && !t.task_id && !isManagedScheduledJob(t))
+      .filter((t) => !t.taskId && !t.task_id && !isManagedScheduledJob(t) && !isGoalModeCronTask(t))
       .map<LegacyCronRow>((t) => {
         const status = (t.status as string | undefined) === 'running' ? 'running' : 'stopped';
         const updatedAt =
@@ -773,6 +773,13 @@ async function fetchLegacyCronTasks(unnamedLegacyTaskLabel: string): Promise<Leg
     console.warn('[TaskListPanel] fetchLegacyCronTasks failed', err);
     return [];
   }
+}
+
+function isGoalModeCronTask(t: Record<string, unknown>): boolean {
+  const schedule = t.schedule as Record<string, unknown> | undefined;
+  const kind = schedule?.kind;
+  const runMode = t.runMode ?? t.run_mode;
+  return kind === 'loop' && runMode !== 'new_session';
 }
 
 /**

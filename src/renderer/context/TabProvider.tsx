@@ -53,6 +53,7 @@ import type { TerminalReason } from '../../shared/terminalReason';
 import type { SlashCommand } from '../../shared/slashCommands';
 import type { LogEntry } from '@/types/log';
 import type { ProviderRoute } from '../../shared/providerRoute';
+import { stripLeadingSystemReminder } from '../../shared/systemReminder';
 import { parsePartialJson } from '@/utils/parsePartialJson';
 import { enqueuePermissionRequest, peekPermissionRequest, removePermissionRequest } from '@/utils/permissionQueue';
 import { i18n } from '@/i18n';
@@ -82,6 +83,11 @@ const TOOL_RESULT_TAIL_KEEP = 1024;
 
 function appText(key: string, options?: Record<string, unknown>): string {
     return String(i18n.t(`app:${key}`, options));
+}
+
+function queueDisplayText(raw: string): string {
+    const visible = stripLeadingSystemReminder(raw).trim();
+    return visible || appText('tabProvider.hiddenSystemMessage');
 }
 
 function analyticsRuntimeSource(
@@ -3078,6 +3084,7 @@ export default function TabProvider({
                     canForceExecute?: boolean;
                 } | null;
                 if (payload?.queueId) {
+                    const visibleMessageText = queueDisplayText(payload.messageText);
                     console.log(`[TabProvider] queue:added queueId=${payload.queueId} isInFlight=${!!payload.isInFlight}`);
                     setQueuedMessages(prev => {
                         // Exact queueId match — already added by .then(); update isInFlight if it changed.
@@ -3095,6 +3102,7 @@ export default function TabProvider({
                             const next = [...prev];
                             next[existingIdx] = {
                                 ...prev[existingIdx],
+                                text: visibleMessageText,
                                 isInFlight: !!payload.isInFlight,
                                 deliveryMode: nextDeliveryMode,
                                 canCancel: nextCanCancel,
@@ -3106,7 +3114,7 @@ export default function TabProvider({
                         if (prev.some(q => q.queueId.startsWith('opt-'))) return prev;
                         return [...prev, {
                             queueId: payload.queueId,
-                            text: payload.messageText,
+                            text: visibleMessageText,
                             timestamp: Date.now(),
                             isInFlight: !!payload.isInFlight,
                             deliveryMode: payload.deliveryMode,
@@ -3584,6 +3592,7 @@ export default function TabProvider({
     ): Promise<boolean> => {
         const trimmed = text.trim();
         if (!trimmed && (!images || images.length === 0)) return false;
+        const visibleQueueText = queueDisplayText(trimmed);
 
         // Detect skill/slash command: /command at start of message (for analytics)
         const skillMatch = trimmed.match(/^\/([a-zA-Z][a-zA-Z0-9_-]*)/);
@@ -3634,7 +3643,7 @@ export default function TabProvider({
         if (localQueueId) {
             setQueuedMessages(prev => [...prev, {
                 queueId: localQueueId,
-                text: trimmed,
+                text: visibleQueueText,
                 images: images?.map(queuedImageInfo),
                 timestamp: Date.now(),
                 canCancel: false,
@@ -3730,7 +3739,7 @@ export default function TabProvider({
                             }
                             return [...prev, {
                                 queueId: realQueueId,
-                                text: trimmed,
+                                text: visibleQueueText,
                                 images: images?.map(queuedImageInfo),
                                 timestamp: Date.now(),
                                 isInFlight: !!response.isInFlight,

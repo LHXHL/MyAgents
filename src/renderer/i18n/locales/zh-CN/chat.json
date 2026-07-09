@@ -131,7 +131,8 @@
       "context": "显示或管理当前上下文",
       "cost": "查看 token 使用量和费用",
       "init": "初始化项目配置 (.CLAUDE.md)",
-      "loop": "无限循环执行任务（Ralph Loop）",
+      "goal": "目标模式：持续执行直到完成",
+      "loop": "目标模式（/goal 的兼容别名）",
       "pr-comments": "生成 Pull Request 评论",
       "release-notes": "根据最近提交生成发布说明",
       "review": "对代码进行审查",
@@ -168,6 +169,16 @@
       "confirm": "仍要发送",
       "cancel": "取消"
     }
+  },
+  "goalEdit": {
+    "title": "编辑目标",
+    "subtitle": "更新后会通知当前会话采用新目标",
+    "placeholder": "输入新的目标...",
+    "update": "更新",
+    "updating": "更新中...",
+    "updated": "目标已更新",
+    "updateFailed": "目标更新失败",
+    "empty": "目标不能为空"
   },
   "floatingBall": {
     "ballState": {
@@ -832,6 +843,7 @@
     },
     "toasts": {
       "composerLockedByCron": "当前会话有定时任务运行中，停止任务后可修改此设置",
+      "composerLockedByGoal": "当前会话处于目标模式，目标停止后可修改此设置",
       "providerUnavailable": "当前会话指定的 Provider「{{providerId}}」不可用（缺少 API Key 或已被禁用）。请在设置中补充密钥，或在模型选择器中切换 Provider 后再发送。",
       "snapshotProviderIncomplete": "这个历史会话缺少 Provider 信息，请先在模型选择器里重新选择一次模型。",
       "previewWorkspaceUnavailable": "无法打开预览：工作区文件服务不可用",

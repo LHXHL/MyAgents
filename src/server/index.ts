@@ -1051,6 +1051,11 @@ type CronExecutePayload = {
   executionNumber?: number;
   /** Schedule kind from Rust CronSchedule when available. */
   scheduleKind?: CronScheduleKind;
+  goalStatus?: string;
+  goalObjective?: string;
+  goalUpdatedAt?: string;
+  goalTerminalReason?: string;
+  goalPausedReason?: string;
 };
 
 function systemMaintenanceKindFromCronPayload(payload: CronExecutePayload): SystemMaintenanceSessionKind | undefined {
@@ -1630,6 +1635,11 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'cron/runs') return await api.handleCronRuns(payload as Parameters<typeof api.handleCronRuns>[0]);
   if (route === 'cron/status') return await api.handleCronStatus(payload as Parameters<typeof api.handleCronStatus>[0]);
   if (route === 'cron/exit') return api.handleCronExit(payload as Parameters<typeof api.handleCronExit>[0]);
+
+  // Goal Mode commands
+  if (route === 'goal/get') return await api.handleGoalGet();
+  if (route === 'goal/create') return await api.handleGoalCreate(payload as Parameters<typeof api.handleGoalCreate>[0]);
+  if (route === 'goal/update') return await api.handleGoalUpdate(payload as Parameters<typeof api.handleGoalUpdate>[0]);
 
   // IM runtime commands. send-media + wake are session-scoped (require an
   // IM Bot / Agent Channel context — handlers reject otherwise). channels is
@@ -2778,6 +2788,9 @@ async function main() {
             runMode: payload.runMode,
             intervalMinutes: intervalMinutes ?? 15,
             executionNumber,
+            goalObjective: payload.goalObjective,
+            goalStatus: payload.goalStatus,
+            goalUpdatedAt: payload.goalUpdatedAt,
           });
 
           // PRD #119: intent-driven resolution — see /cron/execute-sync for
@@ -3459,6 +3472,9 @@ async function main() {
             runMode: effectiveRunMode,
             intervalMinutes: intervalMinutes ?? 15,
             executionNumber,
+            goalObjective: payload.goalObjective,
+            goalStatus: payload.goalStatus,
+            goalUpdatedAt: payload.goalUpdatedAt,
           });
           console.log('[cron] execute-sync: about to enqueue user message');
 

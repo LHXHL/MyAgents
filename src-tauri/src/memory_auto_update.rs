@@ -259,6 +259,11 @@ pub async fn configure_memory_auto_update_task(
             schedule: Some(desired_schedule),
             name: Some(MANAGED_AUTO_UPDATE_NAME.to_string()),
             task_id: None,
+            goal_status: None,
+            goal_objective: None,
+            goal_updated_at: None,
+            goal_terminal_reason: None,
+            goal_paused_reason: None,
         })
         .await?;
     manager.start_task(&task.id).await?;

@@ -198,7 +198,7 @@ function describeSchedule(s: Record<string, unknown> | null, t: TFunction<'task'
   }
   if (kind === 'at') return t('cron.legacy.scheduleOnce', { time: String(s.at ?? '?') });
   if (kind === 'cron') return t('cron.legacy.scheduleCron', { expr: String(s.expr ?? '?') });
-  if (kind === 'loop') return 'Ralph Loop';
+  if (kind === 'loop') return t('cron.schedule.loop');
   return t('cron.legacy.scheduleFallback');
 }
 

@@ -59,6 +59,16 @@ pub struct CronExecutePayload {
     /// Schedule kind for cron reminder metadata ("at" | "every" | "cron" | "loop").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub schedule_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal_objective: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal_updated_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal_terminal_reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal_paused_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -443,6 +453,11 @@ pub async fn cmd_execute_cron_task(
         interval_minutes: intervalMinutes,
         execution_number: executionNumber,
         schedule_kind: None,
+        goal_status: None,
+        goal_objective: None,
+        goal_updated_at: None,
+        goal_terminal_reason: None,
+        goal_paused_reason: None,
     };
 
     execute_cron_task(&app_handle, &state, &workspacePath, payload).await

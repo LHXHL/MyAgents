@@ -256,7 +256,7 @@ pub(super) fn compute_next_execution(task: &CronTask) -> Option<String> {
             Err(_) => None,
         },
         Some(CronSchedule::Loop) => {
-            // Ralph Loop: no scheduled time, triggered by completion
+            // Goal Mode: no scheduled time, triggered by completion
             None
         }
         None => {

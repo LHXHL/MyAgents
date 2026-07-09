@@ -44,14 +44,18 @@ pub(crate) mod validation;
 pub use commands::{
     cmd_create_cron_task, cmd_delete_cron_task, cmd_get_cron_runs, cmd_get_cron_task,
     cmd_get_cron_tasks, cmd_get_session_cron_task, cmd_get_tab_cron_task, cmd_get_tasks_to_recover,
-    cmd_get_workspace_cron_tasks, cmd_is_task_executing, cmd_mark_task_complete,
-    cmd_mark_task_executing, cmd_record_cron_execution, cmd_start_cron_scheduler,
-    cmd_start_cron_task, cmd_stop_cron_task, cmd_update_cron_task_fields,
-    cmd_update_cron_task_session, cmd_update_cron_task_tab,
+    cmd_get_workspace_cron_tasks, cmd_is_task_executing, cmd_mark_goal_terminal,
+    cmd_mark_task_complete, cmd_mark_task_executing, cmd_pause_goal_task,
+    cmd_record_cron_execution, cmd_resume_goal_task, cmd_start_cron_scheduler, cmd_start_cron_task,
+    cmd_stop_cron_task, cmd_update_cron_task_fields, cmd_update_cron_task_session,
+    cmd_update_cron_task_tab, cmd_update_goal_objective,
 };
 use delivery::deliver_cron_result_to_bot;
 pub use delivery::{deliver_task_notification_to_bot, deliver_task_notification_to_bot_checked};
-use execution::{check_end_conditions_static, execute_task_directly, stop_task_internal};
+use execution::{
+    check_end_conditions_static, execute_task_directly, send_goal_terminal_notification,
+    stop_task_internal,
+};
 pub use init_recovery::initialize_cron_manager;
 pub use manager::{get_cron_task_manager, CronTaskManager};
 pub use run_records::{
@@ -67,8 +71,8 @@ use store::{atomic_save_task_snapshot, atomic_save_tasks};
 use types::default_permission_mode;
 use types::CronTaskStore;
 pub use types::{
-    CronDelivery, CronSchedule, CronTask, CronTaskConfig, EndConditions, ProviderIntent,
-    RecurringWindow, RunMode, TaskProviderEnv, TaskStatus,
+    CronDelivery, CronSchedule, CronTask, CronTaskConfig, EndConditions, GoalPausedReason,
+    GoalStatus, ProviderIntent, RecurringWindow, RunMode, TaskProviderEnv, TaskStatus,
 };
 pub(crate) use validation::normalize_path;
 pub use validation::validate_cron_expression;
@@ -116,6 +120,11 @@ mod cron_dialect_tests {
             internal_session_id: None,
             updated_at: now,
             task_id: None,
+            goal_status: None,
+            goal_objective: None,
+            goal_updated_at: None,
+            goal_terminal_reason: None,
+            goal_paused_reason: None,
         }
     }
 
@@ -166,6 +175,62 @@ mod cron_dialect_tests {
 
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].id, "task-1");
+    }
+
+    fn sample_goal_task(id: &str, task_status: TaskStatus, goal_status: GoalStatus) -> CronTask {
+        let mut task = sample_task(id, "/tmp/goal-workspace");
+        task.schedule = Some(CronSchedule::Loop);
+        task.run_mode = RunMode::SingleSession;
+        task.status = task_status;
+        task.goal_status = Some(goal_status);
+        task.goal_objective = Some("finish the goal".to_string());
+        task
+    }
+
+    #[tokio::test]
+    async fn terminal_goal_cannot_be_restarted_through_manager_start() {
+        let task = sample_goal_task("goal-terminal", TaskStatus::Stopped, GoalStatus::Complete);
+        let manager = test_manager_with_task(task);
+
+        let err = manager
+            .start_task("goal-terminal")
+            .await
+            .expect_err("terminal goals must not restart");
+
+        assert!(err.contains("Terminal Goal"));
+    }
+
+    #[tokio::test]
+    async fn ordinary_update_rejects_goal_tasks_without_canceling_them() {
+        let task = sample_goal_task("goal-active", TaskStatus::Running, GoalStatus::Active);
+        let manager = test_manager_with_task(task);
+
+        let err = manager
+            .update_task_fields(
+                "goal-active",
+                serde_json::json!({ "name": "should not apply" }),
+            )
+            .await
+            .expect_err("ordinary cron update must reject Goal tasks");
+        let stored = manager.get_task("goal-active").await.expect("task remains");
+
+        assert!(err.contains("Goal Mode tasks"));
+        assert_eq!(stored.status, TaskStatus::Running);
+        assert_eq!(stored.goal_status, Some(GoalStatus::Active));
+        assert_eq!(stored.name, None);
+    }
+
+    #[tokio::test]
+    async fn ordinary_run_now_rejects_goal_tasks_before_app_handle_check() {
+        let task = sample_goal_task("goal-run-now", TaskStatus::Running, GoalStatus::Active);
+        let manager = test_manager_with_task(task);
+
+        let err = manager
+            .trigger_now("goal-run-now")
+            .await
+            .expect_err("ordinary cron run-now must reject Goal tasks");
+
+        assert!(err.contains("Goal Mode tasks"));
     }
 
     /// Fingerprint cases for `translate_unix_dow_to_crate_dow` — encodes the

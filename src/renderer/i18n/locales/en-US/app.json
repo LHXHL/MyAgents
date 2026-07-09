@@ -68,6 +68,7 @@
   "tabProvider": {
     "compactSuccess": "Context compressed",
     "compactFailed": "Context compression failed",
+    "hiddenSystemMessage": "System message",
     "sendFailed": "Send failed",
     "networkError": "Network error",
     "networkDisconnected": "Network connection interrupted. Try again."
@@ -217,7 +218,9 @@
       "heartbeat": "Heartbeat",
       "cronTask": "Scheduled task",
       "floatingContext": "Floating context",
-      "spaceIssue": "Space issue"
+      "spaceIssue": "Space issue",
+      "goalMode": "Goal Mode",
+      "goalUpdate": "Goal Update"
     },
     "systemInfo": "System info",
     "expand": "Expand"

@@ -1,5 +1,16 @@
 use super::*;
 
+fn is_goal_task(task: &CronTask) -> bool {
+    matches!(task.schedule, Some(CronSchedule::Loop)) && task.run_mode == RunMode::SingleSession
+}
+
+fn is_goal_terminal(status: &GoalStatus) -> bool {
+    matches!(
+        status,
+        GoalStatus::Complete | GoalStatus::Blocked | GoalStatus::Canceled
+    )
+}
+
 /// Manager for cron tasks
 pub struct CronTaskManager {
     pub(crate) tasks: Arc<RwLock<HashMap<String, CronTask>>>,
@@ -343,9 +354,9 @@ impl CronTaskManager {
             // instead of tokio::time::sleep() which uses monotonic time that pauses
             // during system sleep/suspend.
             let initial_target: Option<DateTime<Utc>> = if is_loop {
-                // Ralph Loop: execute immediately (2s startup delay)
+                // Goal Mode: execute immediately (2s startup delay)
                 ulog_info!(
-                    "[CronTask] Task {} Ralph Loop mode, executing in 2 seconds",
+                    "[CronTask] Task {} Goal Mode loop, executing in 2 seconds",
                     task_id_owned
                 );
                 Some(Utc::now() + chrono::Duration::seconds(2))
@@ -494,7 +505,7 @@ impl CronTaskManager {
                 Some(Utc::now() + chrono::Duration::seconds(interval_secs))
             };
 
-            // Ralph Loop: track consecutive failures for exponential backoff
+            // Goal Mode loop: track consecutive failures for exponential backoff
             let mut loop_consecutive_failures: u32 = 0;
 
             // Wait for initial period using wall-clock polling (survives system sleep)
@@ -544,6 +555,20 @@ impl CronTaskManager {
                     break;
                 }
 
+                if is_loop && task.goal_status.as_ref().is_some_and(is_goal_terminal) {
+                    ulog_info!(
+                        "[CronTask] Task {} Goal Mode reached terminal status {:?}, stopping scheduler",
+                        task_id_owned,
+                        task.goal_status
+                    );
+                    break;
+                }
+
+                if is_loop && task.goal_status == Some(GoalStatus::Paused) {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+
                 // Check end conditions before execution
                 let should_complete = check_end_conditions_static(&task);
                 if should_complete {
@@ -553,7 +578,18 @@ impl CronTaskManager {
                     );
                     // Complete task and deactivate session
                     if let Some(ref handle) = *app_handle.read().await {
-                        stop_task_internal(handle, &tasks, &task_id_owned, None).await;
+                        stop_task_internal(
+                            handle,
+                            &tasks,
+                            &task_id_owned,
+                            None,
+                            if is_loop {
+                                Some(GoalStatus::Canceled)
+                            } else {
+                                None
+                            },
+                        )
+                        .await;
                     }
                     break;
                 }
@@ -794,19 +830,20 @@ impl CronTaskManager {
                             }
                         }
 
-                        // Ralph Loop: reset failure counter on success, increment on logical failure
+                        // Goal Mode loop: reset failure counter on success, increment on logical failure
                         if is_loop {
                             if success {
                                 loop_consecutive_failures = 0;
                             } else {
                                 loop_consecutive_failures += 1;
                                 if loop_consecutive_failures >= 10 {
-                                    ulog_error!("[CronTask] Task {} Ralph Loop: 10 consecutive failures (logical), stopping", task_id_owned);
+                                    ulog_error!("[CronTask] Task {} Goal Mode: 10 consecutive failures (logical), blocking", task_id_owned);
                                     stop_task_internal(
                                         &handle,
                                         &tasks,
                                         &task_id_owned,
-                                        Some("Ralph Loop: 10 consecutive failures".to_string()),
+                                        Some("Goal Mode: 10 consecutive failures".to_string()),
+                                        Some(GoalStatus::Blocked),
                                     )
                                     .await;
                                     break;
@@ -819,7 +856,7 @@ impl CronTaskManager {
                                     5 => 120,
                                     _ => 300,
                                 };
-                                ulog_warn!("[CronTask] Task {} Ralph Loop: logical failure #{}, backoff {}s",
+                                ulog_warn!("[CronTask] Task {} Goal Mode: logical failure #{}, backoff {}s",
                                     task_id_owned, loop_consecutive_failures, backoff_secs);
                             }
                         }
@@ -876,7 +913,18 @@ impl CronTaskManager {
                                 task_id_owned,
                                 reason
                             );
-                            stop_task_internal(&handle, &tasks, &task_id_owned, Some(reason)).await;
+                            stop_task_internal(
+                                &handle,
+                                &tasks,
+                                &task_id_owned,
+                                Some(reason),
+                                if is_loop {
+                                    Some(GoalStatus::Complete)
+                                } else {
+                                    None
+                                },
+                            )
+                            .await;
                             break;
                         }
 
@@ -888,6 +936,7 @@ impl CronTaskManager {
                                 &tasks,
                                 &task_id_owned,
                                 Some("One-shot task completed".to_string()),
+                                None,
                             )
                             .await;
                             // Remove from persistence (CT-08: one-shot tasks auto-delete)
@@ -918,7 +967,18 @@ impl CronTaskManager {
                                 "[CronTask] Task {} reached end condition after execution",
                                 task_id_owned
                             );
-                            stop_task_internal(&handle, &tasks, &task_id_owned, None).await;
+                            stop_task_internal(
+                                &handle,
+                                &tasks,
+                                &task_id_owned,
+                                None,
+                                if is_loop {
+                                    Some(GoalStatus::Canceled)
+                                } else {
+                                    None
+                                },
+                            )
+                            .await;
                             break;
                         }
                     }
@@ -929,7 +989,7 @@ impl CronTaskManager {
                         // iteration's status check (line ~964) will break.
                         // Skip `last_error` + `cron:execution-error` so the
                         // UI doesn't briefly show this as a failed tick.
-                        // Also skip the Ralph Loop backoff branch — this is
+                        // Also skip the Goal Mode backoff branch — this is
                         // a terminal stop, not a retryable failure.
                         ulog_info!(
                             "[CronTask] Task {} exited via terminal-stop sentinel: {}",
@@ -958,16 +1018,17 @@ impl CronTaskManager {
                             }),
                         );
 
-                        // Ralph Loop: exponential backoff on failure (3→10→30→60→120→300s, max 10 consecutive)
+                        // Goal Mode loop: exponential backoff on failure (3→10→30→60→120→300s, max 10 consecutive)
                         if is_loop {
                             loop_consecutive_failures += 1;
                             if loop_consecutive_failures >= 10 {
-                                ulog_error!("[CronTask] Task {} Ralph Loop: 10 consecutive failures, stopping", task_id_owned);
+                                ulog_error!("[CronTask] Task {} Goal Mode: 10 consecutive failures, blocking", task_id_owned);
                                 stop_task_internal(
                                     &handle,
                                     &tasks,
                                     &task_id_owned,
-                                    Some("Ralph Loop: 10 consecutive failures".to_string()),
+                                    Some("Goal Mode: 10 consecutive failures".to_string()),
+                                    Some(GoalStatus::Blocked),
                                 )
                                 .await;
                                 break;
@@ -981,7 +1042,7 @@ impl CronTaskManager {
                                 _ => 300,
                             };
                             ulog_warn!(
-                                "[CronTask] Task {} Ralph Loop: failure #{}, backoff {}s",
+                                "[CronTask] Task {} Goal Mode: failure #{}, backoff {}s",
                                 task_id_owned,
                                 loop_consecutive_failures,
                                 backoff_secs
@@ -1007,10 +1068,10 @@ impl CronTaskManager {
                     ulog_warn!("[CronTask] Failed to save task state: {}", e);
                 }
 
-                // Ralph Loop: skip time-based scheduling, re-execute after 3s buffer
+                // Goal Mode: skip time-based scheduling, re-execute after 3s buffer
                 if is_loop {
                     ulog_info!(
-                        "[CronTask] Task {} Ralph Loop: next execution in 3 seconds",
+                        "[CronTask] Task {} Goal Mode: next execution in 3 seconds",
                         task_id_owned
                     );
                     let buffer_target = Utc::now() + chrono::Duration::seconds(3);
@@ -1187,6 +1248,11 @@ impl CronTaskManager {
             .get_task(task_id)
             .await
             .ok_or_else(|| format!("Task not found: {}", task_id))?;
+        if is_goal_task(&task) {
+            return Err(
+                "Goal Mode tasks cannot be run from ordinary CronTask run-now surfaces".to_string(),
+            );
+        }
 
         // PRD 0.2.5 cross-review I1 — validate app_handle BEFORE reserving
         // the executing slot. Otherwise an early Err here would leak the
@@ -1373,7 +1439,8 @@ impl CronTaskManager {
                             task_id_owned,
                             reason
                         );
-                        stop_task_internal(&handle, &tasks_arc, &task_id_owned, Some(reason)).await;
+                        stop_task_internal(&handle, &tasks_arc, &task_id_owned, Some(reason), None)
+                            .await;
                     } else {
                         // End condition check (deadline / max_executions)
                         let should_stop = {
@@ -1388,7 +1455,8 @@ impl CronTaskManager {
                                 "[CronTask] trigger_now: task {} reached end condition",
                                 task_id_owned
                             );
-                            stop_task_internal(&handle, &tasks_arc, &task_id_owned, None).await;
+                            stop_task_internal(&handle, &tasks_arc, &task_id_owned, None, None)
+                                .await;
                         }
                     }
                 }
@@ -1523,6 +1591,11 @@ impl CronTaskManager {
             internal_session_id: None, // Set after first execution
             updated_at: Utc::now(),
             task_id: config.task_id.clone(),
+            goal_status: config.goal_status,
+            goal_objective: config.goal_objective,
+            goal_updated_at: config.goal_updated_at,
+            goal_terminal_reason: config.goal_terminal_reason,
+            goal_paused_reason: config.goal_paused_reason,
         };
 
         let mut tasks = self.tasks.write().await;
@@ -1677,6 +1750,9 @@ impl CronTaskManager {
             let task = tasks
                 .get(task_id)
                 .ok_or_else(|| format!("Task not found: {}", task_id))?;
+            if is_goal_task(task) {
+                return Err("Goal Mode tasks are managed through Goal controls and cannot be updated through ordinary CronTask surfaces".to_string());
+            }
             (
                 task.status == TaskStatus::Running,
                 task.schedule.clone(),
@@ -1988,6 +2064,9 @@ impl CronTaskManager {
         if task.status == TaskStatus::Running {
             return Err("Task is already running".to_string());
         }
+        if is_goal_task(task) && task.goal_status.as_ref().is_some_and(is_goal_terminal) {
+            return Err("Terminal Goal cannot be restarted".to_string());
+        }
 
         task.status = TaskStatus::Running;
         task.updated_at = Utc::now();
@@ -2014,9 +2093,21 @@ impl CronTaskManager {
             .ok_or_else(|| format!("Task not found: {}", task_id))?;
 
         let session_id = task.session_id.clone();
+        let now = Utc::now();
         task.status = TaskStatus::Stopped;
         task.exit_reason = exit_reason.clone();
-        task.updated_at = Utc::now();
+        if is_goal_task(task) {
+            let current_terminal = task.goal_status.as_ref().is_some_and(is_goal_terminal);
+            if !current_terminal {
+                task.goal_status = Some(GoalStatus::Canceled);
+            }
+            if task.goal_terminal_reason.is_none() {
+                task.goal_terminal_reason = exit_reason.clone();
+            }
+            task.goal_paused_reason = None;
+            task.goal_updated_at = Some(now);
+        }
+        task.updated_at = now;
         let task_clone = task.clone();
         drop(tasks);
 
@@ -2040,6 +2131,9 @@ impl CronTaskManager {
                     "exitReason": exit_reason
                 }),
             );
+            if is_goal_task(&task_clone) {
+                send_goal_terminal_notification(handle, &task_clone);
+            }
         }
 
         ulog_info!(
@@ -2049,6 +2143,137 @@ impl CronTaskManager {
         );
 
         Ok(task_clone)
+    }
+
+    pub async fn pause_goal_task(
+        &self,
+        task_id: &str,
+        reason: GoalPausedReason,
+    ) -> Result<CronTask, String> {
+        let mut tasks = self.tasks.write().await;
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| format!("Task not found: {}", task_id))?;
+        if !is_goal_task(task) {
+            return Err("Task is not a Goal Mode task".to_string());
+        }
+        if task.status != TaskStatus::Running {
+            return Err("Goal is not running".to_string());
+        }
+        if task.goal_status.as_ref().is_some_and(is_goal_terminal) {
+            return Err("Goal is already terminal".to_string());
+        }
+        let now = Utc::now();
+        task.goal_status = Some(GoalStatus::Paused);
+        task.goal_paused_reason = Some(reason);
+        task.goal_updated_at = Some(now);
+        task.updated_at = now;
+        let updated = task.clone();
+        drop(tasks);
+
+        self.save_to_disk().await?;
+        if let Some(ref handle) = *self.app_handle.read().await {
+            let _ = handle.emit(
+                "cron:task-updated",
+                serde_json::json!({ "taskId": task_id, "goalStatus": "paused" }),
+            );
+        }
+        Ok(enrich_task(updated))
+    }
+
+    pub async fn resume_goal_task(&self, task_id: &str) -> Result<CronTask, String> {
+        let mut tasks = self.tasks.write().await;
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| format!("Task not found: {}", task_id))?;
+        if !is_goal_task(task) {
+            return Err("Task is not a Goal Mode task".to_string());
+        }
+        if task.goal_status.as_ref().is_some_and(is_goal_terminal) {
+            return Err("Goal is already terminal".to_string());
+        }
+        let now = Utc::now();
+        task.status = TaskStatus::Running;
+        task.goal_status = Some(GoalStatus::Active);
+        task.goal_paused_reason = None;
+        task.goal_updated_at = Some(now);
+        task.updated_at = now;
+        let updated = task.clone();
+        drop(tasks);
+
+        self.save_to_disk().await?;
+        let _ = self.start_task_scheduler(task_id).await;
+        if let Some(ref handle) = *self.app_handle.read().await {
+            let _ = handle.emit(
+                "cron:task-updated",
+                serde_json::json!({ "taskId": task_id, "goalStatus": "active" }),
+            );
+        }
+        Ok(enrich_task(updated))
+    }
+
+    pub async fn update_goal_objective(
+        &self,
+        task_id: &str,
+        objective: String,
+    ) -> Result<CronTask, String> {
+        let objective = objective.trim().to_string();
+        if objective.is_empty() {
+            return Err("Goal objective is required".to_string());
+        }
+        let mut tasks = self.tasks.write().await;
+        let task = tasks
+            .get_mut(task_id)
+            .ok_or_else(|| format!("Task not found: {}", task_id))?;
+        if !is_goal_task(task) {
+            return Err("Task is not a Goal Mode task".to_string());
+        }
+        if task.goal_status.as_ref().is_some_and(is_goal_terminal) {
+            return Err("Cannot edit a terminal Goal".to_string());
+        }
+        let now = Utc::now();
+        task.prompt = objective.clone();
+        task.goal_objective = Some(objective);
+        task.goal_updated_at = Some(now);
+        task.updated_at = now;
+        let updated = task.clone();
+        drop(tasks);
+
+        self.save_to_disk().await?;
+        if let Some(ref handle) = *self.app_handle.read().await {
+            let _ = handle.emit(
+                "cron:task-updated",
+                serde_json::json!({ "taskId": task_id, "goalObjectiveUpdated": true }),
+            );
+        }
+        Ok(enrich_task(updated))
+    }
+
+    pub async fn mark_goal_terminal(
+        &self,
+        task_id: &str,
+        status: GoalStatus,
+        reason: Option<String>,
+    ) -> Result<CronTask, String> {
+        if !is_goal_terminal(&status) {
+            return Err("Goal terminal status must be complete, blocked, or canceled".to_string());
+        }
+        {
+            let mut tasks = self.tasks.write().await;
+            let task = tasks
+                .get_mut(task_id)
+                .ok_or_else(|| format!("Task not found: {}", task_id))?;
+            if !is_goal_task(task) {
+                return Err("Task is not a Goal Mode task".to_string());
+            }
+            let now = Utc::now();
+            task.goal_status = Some(status);
+            task.goal_terminal_reason = reason.clone();
+            task.goal_paused_reason = None;
+            task.goal_updated_at = Some(now);
+            task.updated_at = now;
+        }
+        self.stop_task(task_id, reason).await
     }
 
     /// Internal helper to deactivate a session via SidecarManager

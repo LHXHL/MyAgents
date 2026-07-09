@@ -12,7 +12,8 @@ use std::sync::OnceLock;
 use tokio::net::TcpListener;
 
 use crate::cron_task::{
-    self, CronDelivery, CronSchedule, CronTask, CronTaskConfig, ProviderIntent, TaskProviderEnv,
+    self, CronDelivery, CronSchedule, CronTask, CronTaskConfig, GoalStatus, ProviderIntent,
+    TaskProviderEnv,
 };
 use crate::im::adapter::{ImAdapter, ImStreamAdapter};
 use crate::im::bridge;
@@ -92,6 +93,9 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/cron/trigger", post(trigger_cron_handler))
         .route("/api/cron/runs", get(runs_cron_handler))
         .route("/api/cron/status", get(status_cron_handler))
+        .route("/api/goal/get", get(goal_get_handler))
+        .route("/api/goal/create", post(goal_create_handler))
+        .route("/api/goal/update", post(goal_update_handler))
         .route(
             "/api/mcp/remove-references",
             post(remove_mcp_references_handler),
@@ -343,6 +347,8 @@ struct ApiResponse {
 
 const MANAGED_CRON_TASK_ERROR: &str =
     "Managed scheduled jobs are internal and cannot be managed from ordinary CronTask surfaces";
+const GOAL_CRON_TASK_ERROR: &str =
+    "Goal Mode tasks are managed through Goal controls and cannot be managed from ordinary CronTask surfaces";
 
 fn is_managed_cron_task(task: &CronTask) -> bool {
     task.managed_kind
@@ -360,6 +366,9 @@ async fn get_ordinary_cron_task(
         .ok_or_else(|| format!("Task not found: {}", task_id))?;
     if is_managed_cron_task(&task) {
         return Err(MANAGED_CRON_TASK_ERROR.to_string());
+    }
+    if is_goal_task(&task) {
+        return Err(GOAL_CRON_TASK_ERROR.to_string());
     }
     Ok(task)
 }
@@ -492,6 +501,11 @@ async fn create_cron_handler(Json(req): Json<CreateCronRequest>) -> Json<serde_j
         schedule: req.schedule,
         name: req.name,
         task_id: None,
+        goal_status: None,
+        goal_objective: None,
+        goal_updated_at: None,
+        goal_terminal_reason: None,
+        goal_paused_reason: None,
     };
 
     match manager.create_task(config).await {
@@ -748,6 +762,217 @@ async fn status_cron_handler(Query(params): Query<StatusQuery>) -> Json<serde_js
         "lastExecutedAt": last_executed,
         "nextExecutionAt": next_execution,
     }))
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoalSessionQuery {
+    session_id: String,
+    workspace_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoalCreateRequest {
+    session_id: String,
+    workspace_path: String,
+    objective: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoalUpdateRequest {
+    session_id: String,
+    workspace_path: Option<String>,
+    status: String,
+    reason: Option<String>,
+}
+
+fn is_goal_task(task: &CronTask) -> bool {
+    matches!(task.schedule, Some(CronSchedule::Loop))
+        && task.run_mode == cron_task::RunMode::SingleSession
+        && !is_managed_cron_task(task)
+}
+
+fn is_goal_terminal_status(status: Option<&GoalStatus>) -> bool {
+    matches!(
+        status,
+        Some(GoalStatus::Complete | GoalStatus::Blocked | GoalStatus::Canceled)
+    )
+}
+
+fn goal_to_json(task: CronTask) -> serde_json::Value {
+    serde_json::json!({
+        "id": task.id,
+        "objective": task.goal_objective.unwrap_or(task.prompt),
+        "status": task.goal_status
+            .map(|status| serde_json::to_value(status).unwrap_or(serde_json::Value::String("active".to_string())))
+            .unwrap_or_else(|| serde_json::Value::String("active".to_string())),
+        "turnCount": task.execution_count,
+        "createdAt": task.created_at.to_rfc3339(),
+        "updatedAt": task.goal_updated_at
+            .map(|dt| dt.to_rfc3339())
+            .unwrap_or_else(|| task.updated_at.to_rfc3339()),
+        "terminalReason": task.goal_terminal_reason.or(task.exit_reason),
+        "sessionId": task.session_id,
+        "workspacePath": task.workspace_path,
+    })
+}
+
+async fn find_current_goal(
+    manager: &cron_task::CronTaskManager,
+    session_id: &str,
+    workspace_path: Option<&str>,
+) -> Option<CronTask> {
+    let mut tasks = if let Some(workspace_path) = workspace_path {
+        manager.get_tasks_for_workspace(workspace_path).await
+    } else {
+        manager.get_all_tasks().await
+    };
+    tasks.sort_by_key(|task| task.updated_at);
+    tasks.into_iter().rev().find(|task| {
+        task.session_id == session_id
+            && is_goal_task(task)
+            && task.status == cron_task::TaskStatus::Running
+            && !is_goal_terminal_status(task.goal_status.as_ref())
+    })
+}
+
+async fn goal_get_handler(Query(params): Query<GoalSessionQuery>) -> Json<serde_json::Value> {
+    if params.session_id.trim().is_empty() {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "sessionId is required",
+        }));
+    }
+    let manager = cron_task::get_cron_task_manager();
+    let goal = find_current_goal(
+        manager,
+        &params.session_id,
+        params.workspace_path.as_deref(),
+    )
+    .await;
+    Json(serde_json::json!({
+        "ok": true,
+        "goal": goal.map(goal_to_json),
+    }))
+}
+
+async fn goal_create_handler(Json(req): Json<GoalCreateRequest>) -> Json<serde_json::Value> {
+    let session_id = req.session_id.trim();
+    let workspace_path = req.workspace_path.trim();
+    let objective = req.objective.trim();
+    if session_id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "sessionId is required" }));
+    }
+    if workspace_path.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "workspacePath is required" }));
+    }
+    if objective.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "objective is required" }));
+    }
+
+    let manager = cron_task::get_cron_task_manager();
+    if let Some(existing) = find_current_goal(manager, session_id, Some(workspace_path)).await {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "Current session already has an unfinished Goal",
+            "goal": goal_to_json(existing),
+        }));
+    }
+
+    let now = chrono::Utc::now();
+    let config = CronTaskConfig {
+        workspace_path: workspace_path.to_string(),
+        session_id: session_id.to_string(),
+        prompt: objective.to_string(),
+        interval_minutes: 5,
+        end_conditions: cron_task::EndConditions {
+            deadline: None,
+            max_executions: None,
+            ai_can_exit: true,
+        },
+        run_mode: cron_task::RunMode::SingleSession,
+        notify_enabled: true,
+        tab_id: None,
+        permission_mode: String::new(),
+        model: None,
+        provider_env: None,
+        provider_id: None,
+        provider_intent: ProviderIntent::FollowAgent,
+        runtime: None,
+        runtime_config: None,
+        mcp_enabled_servers: None,
+        managed_kind: None,
+        source_bot_id: None,
+        delivery: None,
+        schedule: Some(CronSchedule::Loop),
+        name: Some("Goal".to_string()),
+        task_id: None,
+        goal_status: Some(GoalStatus::Active),
+        goal_objective: Some(objective.to_string()),
+        goal_updated_at: Some(now),
+        goal_terminal_reason: None,
+        goal_paused_reason: None,
+    };
+
+    match manager.create_task(config).await {
+        Ok(task) => {
+            let task_id = task.id.clone();
+            if let Err(e) = manager.start_task(&task_id).await {
+                return Json(serde_json::json!({ "ok": false, "error": e }));
+            }
+            if let Err(e) = manager.start_task_scheduler(&task_id).await {
+                return Json(serde_json::json!({ "ok": false, "error": e }));
+            }
+            let goal = manager.get_task(&task_id).await.unwrap_or(task);
+            Json(serde_json::json!({
+                "ok": true,
+                "goal": goal_to_json(goal),
+            }))
+        }
+        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
+    }
+}
+
+async fn goal_update_handler(Json(req): Json<GoalUpdateRequest>) -> Json<serde_json::Value> {
+    let session_id = req.session_id.trim();
+    if session_id.is_empty() {
+        return Json(serde_json::json!({ "ok": false, "error": "sessionId is required" }));
+    }
+    let status = match req.status.as_str() {
+        "complete" => GoalStatus::Complete,
+        "blocked" => GoalStatus::Blocked,
+        other => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": format!("Unsupported Goal status '{}'. Use complete or blocked.", other),
+            }));
+        }
+    };
+    let manager = cron_task::get_cron_task_manager();
+    let goal = match find_current_goal(manager, session_id, req.workspace_path.as_deref()).await {
+        Some(goal) => goal,
+        None => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "error": "No active Goal in current session",
+            }));
+        }
+    };
+    match manager
+        .mark_goal_terminal(&goal.id, status, req.reason)
+        .await
+    {
+        Ok(task) => Json(serde_json::json!({
+            "ok": true,
+            "goal": goal_to_json(task),
+        })),
+        Err(error) => Json(serde_json::json!({
+            "ok": false,
+            "error": error,
+        })),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2335,6 +2560,11 @@ async fn ensure_cron_for_task(ta: &task::Task) -> Result<String, String> {
         schedule: Some(schedule),
         name: Some(ta.name.clone()),
         task_id: Some(ta.id.clone()),
+        goal_status: None,
+        goal_objective: None,
+        goal_updated_at: None,
+        goal_terminal_reason: None,
+        goal_paused_reason: None,
     };
 
     let created = manager

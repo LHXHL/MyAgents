@@ -1,13 +1,13 @@
 // TaskCategoryBadge — top-left chip on a task card signalling *how* the
 // task runs (its execution mode). Designed to be the first thing the user
-// scans: "this is a heartbeat loop" vs "this is a one-shot" vs "this is
+// scans: "this is Goal Mode" vs "this is a one-shot" vs "this is
 // scheduled" vs "this is recurring" is the question the card needs to
 // answer in one glance.
 //
 // Four categories, four icons, four color families — all reuse existing
 // DESIGN.md tokens (no new colors introduced):
 //
-//   loop       → Heart   + --heartbeat   ("心跳循环")
+//   loop       → Flag    + --heartbeat   ("目标模式")
 //   once       → Play    + --accent-warm ("一次性")
 //   scheduled  → Clock   + --success     ("定时")
 //   recurring  → Repeat  + --info        ("周期")
@@ -21,7 +21,7 @@
 // marker — that way the grid doesn't sprout a fifth unique category
 // just for backward compat.
 
-import { Clock, Heart, Play, Repeat } from 'lucide-react';
+import { Clock, Flag, Play, Repeat } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import type { TaskExecutionMode } from '@/../shared/types/task';
@@ -36,7 +36,7 @@ interface CategoryStyle {
 
 const CATEGORY_STYLE: Record<Category, CategoryStyle> = {
   loop: {
-    icon: Heart,
+    icon: Flag,
     bg: 'bg-[var(--heartbeat-bg)]',
     fg: 'text-[var(--heartbeat)]',
   },

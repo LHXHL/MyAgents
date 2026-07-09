@@ -176,13 +176,13 @@
         "description": "Trigger repeatedly at a fixed cadence; end conditions are available"
       },
       "loop": {
-        "label": "Ralph Loop",
-        "description": "Start the next round immediately after completion in the same session; requires an exit condition"
+        "label": "Goal Mode",
+        "description": "Start the next round immediately after the current turn finishes in the same session"
       }
     },
     "scheduledTime": "Execution time",
     "sessionStrategy": "Session strategy",
-    "loopSessionStrategy": "Continuous conversation (keeps context) - Ralph Loop always uses this mode",
+    "loopSessionStrategy": "Continuous conversation (keeps context) - Goal Mode always uses this mode",
     "newSession": "New conversation",
     "singleSession": "Continuous conversation",
     "newSessionDescription": "Each run creates a fresh session with no history, keeping context clean",
@@ -234,7 +234,7 @@
       "onceAt": "Scheduled: {{time}}",
       "every": "Every {{interval}}",
       "cron": "Cron: {{expr}}",
-      "loop": "Ralph Loop"
+      "loop": "Goal Mode"
     },
     "nextExecution": {
       "waiting": "Waiting to trigger",
@@ -253,12 +253,20 @@
     },
     "statusBar": {
       "draftTitle": "Scheduled mode",
+      "goalDraftTitle": "Goal Mode",
       "stoppedTitle": "Scheduled task stopped",
-      "loopExecutingTitle": "Heartbeat loop executing",
-      "loopRunningTitle": "Heartbeat loop running",
+      "loopExecutingTitle": "Goal executing",
+      "loopRunningTitle": "Goal Mode running",
+      "goalPausedTitle": "Current turn stopped",
+      "goalCompleteTitle": "Goal complete",
+      "goalBlockedTitle": "Goal blocked",
+      "goalCanceledTitle": "Goal stopped",
       "executingTitle": "Scheduled task executing",
       "runningTitle": "Scheduled task running",
       "stoppedDetail": "Close to restore the task content to the input box",
+      "goalPausedDetail": "Send a follow-up to continue the goal",
+      "goalObjectiveFallback": "Enter your goal in the input box, then send it to keep working until completion",
+      "goalEditTitle": "Edit goal",
       "scheduleOnce": "Run once at {{time}}",
       "scheduleEvery": "Run every {{interval}}",
       "roundExecuting": "Round {{count}} executing",
@@ -270,8 +278,9 @@
     },
     "settingsModal": {
       "title": "Scheduled task",
+      "goalTitle": "Goal Mode",
       "executionMode": "Execution mode",
-      "loopModeDescription": "Continuous conversation (keeps context) - Ralph Loop always uses this mode",
+      "loopModeDescription": "This chat keeps running after each reply, carrying the current context forward until AI marks the goal complete or blocked, or you cancel it.",
       "currentSession": "Current chat",
       "newTask": "New chat",
       "currentSessionDescription": "Run on a schedule in the current chat and keep context",
@@ -287,6 +296,7 @@
       "aiCanExit": "Allow AI to end the task",
       "notifications": "Task notifications",
       "notifyOnCompletion": "Send a notification after each run",
+      "goalNotifyOnStop": "Notify when the goal completes, blocks, or stops",
       "deliveryChannel": "Delivery channel",
       "desktopDefault": "Desktop notification (default)",
       "cancel": "Cancel",
@@ -301,9 +311,9 @@
     "scheduleTabs": {
       "recurring": "Recurring",
       "once": "Once",
-      "loop": "Infinite loop",
-      "loopTitle": "Ralph Loop",
-      "loopDescription": "Keep AI running continuously. After each AI reply finishes, the next run starts automatically without time-based scheduling. Use this when AI should keep working until the task is complete. It stops automatically after 10 consecutive failures.",
+      "loop": "Goal Mode",
+      "loopTitle": "Goal Mode",
+      "loopDescription": "Enter your goal in the input box, then send it to keep working until completion. Each finished turn starts the next one with the current chat context. It stops automatically after 10 consecutive failures.",
       "approxPrefix": "About {{distance}} from now",
       "expired": "Expired"
     },
@@ -612,7 +622,7 @@
   },
   "badges": {
     "category": {
-      "loop": "Heartbeat",
+      "loop": "Goal Mode",
       "once": "One-time",
       "recurring": "Recurring",
       "scheduled": "Scheduled",

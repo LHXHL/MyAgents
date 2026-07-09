@@ -2,13 +2,14 @@
 name: myagents-cli
 description: >-
   你正在 MyAgents 这款 AI 产品里运行——MyAgents 自带一套"产品能力"（定时任务、任务中心、想法收集、MCP 工具接入、
-  模型 Provider、IM Bot 渠道、社区插件、Skills 安装、MyAgents Cloud Space、Generative UI Widget 等），全部通过内置 `myagents` CLI 暴露给你。
+  模型 Provider、IM Bot 渠道、社区插件、Skills 安装、MyAgents Cloud Space、Generative UI Widget、Goal 目标模式等），全部通过内置 `myagents` CLI 暴露给你。
   当用户的需求**落在 MyAgents 产品能力的射程内**，就加载并使用这个 skill，用 CLI 主动帮用户把事情做掉，
   而不是让用户去 GUI 点击。
   典型触发场景：用户说"每天 X 点帮我 Y"（→ cron）、"记一下这个想法"（→ thought）、"派发成任务"（→ task）、
   "接个 X 工具进来"（→ mcp）、"配 X 模型/Provider"（→ model）、"在飞书/钉钉/Telegram 里跟我聊"（→ agent channel）、
   "装个 X 插件 / 装个 X skill"（→ plugin / skill）、"处理 Space Issue / 下载附件 / 回复 Issue"（→ space）、
-  "把图发到 IM 里"（→ im send-media）、"用已配置的读图模型理解图片"（→ vision analyze）、"做个图表/仪表盘"
+  "把图发到 IM 里"（→ im send-media）、"用已配置的读图模型理解图片"（→ vision analyze）、"持续执行直到目标完成"（→ goal）、
+  "做个图表/仪表盘"
   （→ widget readme）、"看下我有啥任务/定时/Runtime/版本"（→ list / status / version）、"改下应用设置"（→ config）。
   即使用户没说"用 MyAgents 做"几个字，只要意图能映射到上述能力之一，就该走这个 skill。
   反向边界：纯业务任务（写代码、查资料、读文件）不归这里；用户自己会话里给 AI 排任务用 im-cron MCP，不是这里。
@@ -17,7 +18,7 @@ author: MyAgents
 
 # myagents-cli — MyAgents 产品能力的 CLI 入口
 
-你正运行在 MyAgents 产品内。MyAgents 不只是一个 chat UI，它是一套带状态的 Agent 平台：定时任务、任务中心、IM Bot、MCP、Provider、插件、Skill、Cloud Space、Widget——这些都是产品能力，由内置 `myagents` CLI 一站暴露给你。
+你正运行在 MyAgents 产品内。MyAgents 不只是一个 chat UI，它是一套带状态的 Agent 平台：Goal 目标模式、定时任务、任务中心、IM Bot、MCP、Provider、插件、Skill、Cloud Space、Widget——这些都是产品能力，由内置 `myagents` CLI 一站暴露给你。
 
 **这个 skill 不只是"管理工具"，它是 MyAgents 产品能力的执行入口**。用户表达的需求只要能映射到产品能力，就该用 CLI 主动帮用户做掉，而不是给用户一堆操作步骤让他自己去 Settings 点。这份文档列出全部能力以及"什么时候应该用哪条命令"。
 
@@ -256,6 +257,23 @@ myagents cron readme                                    # 拉 cron 工具的完�
 - "停了它别再跑" → `cron stop`（保留配置）；彻底删用 `cron remove`
 - "上次执行成功了吗" → `cron runs <taskId>`
 - `cron exit` / `cron readme` 是 AI 在自己 cron 任务运行中用的——给用户管 cron 用前面那一串
+
+### Goal 目标模式（goal）
+
+Goal 是当前会话内的持续执行模式：宿主会在每轮完成后自动发起下一轮，直到 AI 主动标记完成/受阻，或用户在 UI 中取消。它复用当前 session 上下文，不是独立任务中心任务。
+
+```bash
+myagents goal get                                      # 查看当前 session 的 Goal
+myagents goal create --objective "..."                 # 为当前 session 创建并启动 Goal
+myagents goal update --status complete --reason "..."  # AI 判断目标完成时主动退出
+myagents goal update --status blocked --reason "..."   # AI 判断无法继续时主动退出
+```
+
+**何时用：**
+- 当前会话进入 Goal 后，你完成了用户目标 → `goal update --status complete --reason "..."`
+- 你连续尝试后确认缺关键输入/外部状态，无法继续推进 → `goal update --status blocked --reason "..."`
+- 用户问"现在目标是什么/状态如何" → `goal get`
+- 不要用 `goal update` 表示用户取消；取消由 UI/宿主控制。
 
 ### 任务中心（task / thought）
 

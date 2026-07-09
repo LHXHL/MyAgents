@@ -88,6 +88,9 @@ export interface SimpleChatInputProps {
     status: 'running' | 'paused' | 'stopped' | 'completed';
     intervalMinutes: number;
     schedule?: import('@/types/cronTask').CronSchedule;
+    goalStatus?: import('@/types/cronTask').GoalStatus;
+    goalObjective?: string;
+    goalTerminalReason?: string;
     executionCount: number;
     lastExecutedAt?: string;
     nextExecutionAt?: string;
@@ -101,6 +104,9 @@ export interface SimpleChatInputProps {
     status?: 'stopped';
     intervalMinutes: number;
     schedule?: import('@/types/cronTask').CronSchedule;
+    goalStatus?: import('@/types/cronTask').GoalStatus;
+    goalObjective?: string;
+    goalTerminalReason?: string;
     executionCount: number;
     nextExecutionAt?: string;
     prompt?: string;
@@ -117,6 +123,7 @@ export interface SimpleChatInputProps {
   onCronCancel?: () => void;
   onCronStop?: () => void;
   onCronDismissStopped?: () => void;
+  onGoalEdit?: () => void;
   onSlashAction?: (name: string) => void;
   sdkSlashCommands?: SlashCommand[];
   mode?: 'chat' | 'launcher';

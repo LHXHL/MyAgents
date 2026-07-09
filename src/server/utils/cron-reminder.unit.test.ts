@@ -8,7 +8,7 @@ describe('buildCronTaskReminder', () => {
       taskId: 'cron_123',
       prompt: 'Goal: polish the wiki',
       aiCanExit: true,
-      scheduleKind: 'loop',
+      scheduleKind: 'cron',
       runMode: 'single_session',
       executionNumber: 2,
       intervalMinutes: 30,
@@ -21,7 +21,7 @@ describe('buildCronTaskReminder', () => {
       'The user-visible text after this reminder is the task prompt for this execution.',
       '',
       'cronTaskId: cron_123',
-      'scheduleKind: loop',
+      'scheduleKind: cron',
       'runMode: single_session',
       'executionNumber: 2',
       'intervalMinutes: 30',
@@ -46,5 +46,29 @@ describe('buildCronTaskReminder', () => {
 
     expect(wrapped).toContain('allowExit: false');
     expect(wrapped).not.toContain('myagents cron exit');
+  });
+
+  it('uses Goal continuation reminder for loop tasks', () => {
+    const wrapped = buildCronTaskReminder({
+      taskId: 'goal_123',
+      prompt: 'Ship Goal Mode',
+      goalObjective: 'Ship Goal Mode with pause/resume',
+      goalStatus: 'active',
+      aiCanExit: true,
+      scheduleKind: 'loop',
+      runMode: 'single_session',
+      executionNumber: 3,
+      intervalMinutes: 30,
+    });
+
+    expect(wrapped).toContain('<system-reminder>');
+    expect(wrapped).toContain('<GOAL_CONTINUATION>');
+    expect(wrapped).toContain('goalId: goal_123');
+    expect(wrapped).toContain('status: active');
+    expect(wrapped).toContain('turnNumber: 3');
+    expect(wrapped).toContain('Ship Goal Mode with pause/resume');
+    expect(wrapped).toContain('myagents goal update --status complete');
+    expect(wrapped).not.toContain('<CRON_TASK>');
+    expect(wrapped).not.toMatch(/<\/system-reminder>\s*Ship Goal Mode/);
   });
 });

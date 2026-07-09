@@ -221,6 +221,7 @@ Commands:
   runtime   Inspect Agent Runtimes (list installed + describe models/modes)
   skill     Manage skills (install from URL, list, enable/disable, sync)
   cron      Manage scheduled tasks (list/add/runs/exit ...)
+  goal      Manage the current session Goal (get/create/update)
   task      Manage Task Center tasks (list/get/update-status/run/rerun ...)
   thought   Manage Task Center thoughts (list/create)
   space     MyAgents Cloud Space issue/attachment bridge
@@ -260,6 +261,9 @@ Examples:
   myagents skill remove my-skill
   myagents skill sync
   myagents cron list
+  myagents goal get
+  myagents goal create --objective "finish the migration and verify tests"
+  myagents goal update --status complete --reason "all requirements verified"
   myagents runtime list                       # see installed runtimes + install hints
   myagents runtime describe codex             # models + permission modes
   myagents runtime diagnose codex             # auth / features / MCP / apps / env snapshot (issue #194)
@@ -490,6 +494,10 @@ function printResult(group: string, action: string, result: Record<string, unkno
   if (group === 'cron' && action === 'status') {
     printCronStatus(result.data as Record<string, unknown>);
     if (result.hint) console.log(`\n${result.hint}`);
+    return;
+  }
+  if (group === 'goal') {
+    printGoalResult(action, result.data as Record<string, unknown> | undefined);
     return;
   }
   if (group === 'plugin' && action === 'list') {
@@ -1525,6 +1533,29 @@ function printCronStatus(data: Record<string, unknown>): void {
   }
 }
 
+function printGoalResult(action: string, data?: Record<string, unknown>): void {
+  const goal = (data?.goal as Record<string, unknown> | null | undefined) ?? null;
+  if (!goal) {
+    console.log('No active Goal in the current session.');
+    return;
+  }
+  const prefix = action === 'create'
+    ? '✓ Goal created'
+    : action === 'update'
+      ? '✓ Goal updated'
+      : 'Goal';
+  console.log(prefix);
+  console.log(`  id:      ${goal.id ?? '(unknown)'}`);
+  console.log(`  status:  ${goal.status ?? '(unknown)'}`);
+  console.log(`  turns:   ${goal.turnCount ?? 0}`);
+  if (goal.updatedAt) console.log(`  updated: ${goal.updatedAt}`);
+  if (goal.terminalReason) console.log(`  reason:  ${goal.terminalReason}`);
+  if (goal.objective) {
+    const objective = String(goal.objective).replace(/\s+/g, ' ').trim();
+    console.log(`  objective: ${objective.length > 180 ? `${objective.slice(0, 179)}…` : objective}`);
+  }
+}
+
 function printChannelList(channels: Array<Record<string, unknown>>): void {
   if (!channels || channels.length === 0) {
     console.log('No channels configured for this agent.');
@@ -2072,6 +2103,11 @@ function buildRoute(group: string, action: string, rest: string[]): string {
   if (action === 'readme' && (group === 'cron' || group === 'im' || group === 'widget' || group === 'thought')) {
     return `readme/${group}`;
   }
+  if (group === 'goal') {
+    if (action === 'get' || action === 'list') return 'goal/get';
+    if (action === 'create') return 'goal/create';
+    if (action === 'update') return 'goal/update';
+  }
   // `widget` only exists for readme lookup — any form of invocation
   // (`myagents widget`, `myagents widget chart`, `myagents widget readme chart`)
   // routes to the same handler. The handler parses modules from the payload.
@@ -2598,6 +2634,33 @@ function buildRequestBody(
         process.exit(1);
       }
       return { images, prompt, promptFile };
+    }
+    return {};
+  }
+
+  if (group === 'goal') {
+    if (action === 'get' || action === 'list') return {};
+    if (action === 'create') {
+      assertStringFlag(flags.objective, 'objective');
+      const objective = ((flags.objective as string | undefined) ?? rest.join(' ')).trim();
+      if (!objective) {
+        console.error('Error: goal create requires --objective <objective> or a positional objective.');
+        console.error('  Usage: myagents goal create --objective "finish the task"');
+        process.exit(2);
+      }
+      return { objective };
+    }
+    if (action === 'update') {
+      assertStringFlag(flags.status, 'status');
+      assertStringFlag(flags.reason, 'reason');
+      const status = ((flags.status as string | undefined) ?? rest[0] ?? '').trim();
+      if (status !== 'complete' && status !== 'blocked') {
+        console.error('Error: goal update requires --status complete|blocked.');
+        console.error('  Usage: myagents goal update --status complete --reason "all requirements verified"');
+        process.exit(2);
+      }
+      const reason = ((flags.reason as string | undefined) ?? rest.slice(1).join(' ')).trim();
+      return { status, reason: reason || undefined };
     }
     return {};
   }

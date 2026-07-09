@@ -2,7 +2,7 @@
 // Communicates with Rust CronTaskManager via Tauri commands
 
 import { isTauriEnvironment } from '@/utils/browserMock';
-import type { CronTask, CronTaskConfig, CronRunRecord, CronSchedule, CronEndConditions, CronDelivery } from '@/types/cronTask';
+import type { CronTask, CronTaskConfig, CronRunRecord, CronSchedule, CronEndConditions, CronDelivery, GoalStatus } from '@/types/cronTask';
 
 // Cached invoke function to avoid repeated dynamic imports
 let cachedInvoke: typeof import('@tauri-apps/api/core').invoke | null = null;
@@ -63,6 +63,18 @@ export const startCronTask = (taskId: string): Promise<CronTask> =>
 /** Stop a cron task with optional exit reason */
 export const stopCronTask = (taskId: string, exitReason?: string): Promise<CronTask> =>
   invokeCommand('cmd_stop_cron_task', { taskId, exitReason });
+
+export const pauseGoalTask = (taskId: string): Promise<CronTask> =>
+  invokeCommand('cmd_pause_goal_task', { taskId });
+
+export const resumeGoalTask = (taskId: string): Promise<CronTask> =>
+  invokeCommand('cmd_resume_goal_task', { taskId });
+
+export const updateGoalObjective = (taskId: string, objective: string): Promise<CronTask> =>
+  invokeCommand('cmd_update_goal_objective', { taskId, objective });
+
+export const markGoalTerminal = (taskId: string, status: GoalStatus, reason?: string): Promise<CronTask> =>
+  invokeCommand('cmd_mark_goal_terminal', { taskId, status, reason });
 
 /** Delete a cron task */
 export const deleteCronTask = (taskId: string): Promise<void> =>

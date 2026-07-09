@@ -1,5 +1,32 @@
 use super::*;
 
+fn is_goal_task(task: &CronTask) -> bool {
+    matches!(task.schedule, Some(CronSchedule::Loop)) && task.run_mode == RunMode::SingleSession
+}
+
+fn is_goal_terminal(status: &GoalStatus) -> bool {
+    matches!(
+        status,
+        GoalStatus::Complete | GoalStatus::Blocked | GoalStatus::Canceled
+    )
+}
+
+fn goal_status_wire(status: &GoalStatus) -> &'static str {
+    match status {
+        GoalStatus::Active => "active",
+        GoalStatus::Paused => "paused",
+        GoalStatus::Complete => "complete",
+        GoalStatus::Blocked => "blocked",
+        GoalStatus::Canceled => "canceled",
+    }
+}
+
+fn goal_paused_reason_wire(reason: &GoalPausedReason) -> &'static str {
+    match reason {
+        GoalPausedReason::UserStop => "user_stop",
+    }
+}
+
 // ============ Helper Functions ============
 
 /// Check if task should end based on conditions (static version for use in scheduler)
@@ -430,6 +457,22 @@ pub(super) async fn execute_task_directly(
         interval_minutes: Some(task.interval_minutes),
         execution_number: Some(execution_number),
         schedule_kind,
+        goal_status: task
+            .goal_status
+            .as_ref()
+            .map(goal_status_wire)
+            .map(str::to_string),
+        goal_objective: task
+            .goal_objective
+            .clone()
+            .or_else(|| Some(task.prompt.clone())),
+        goal_updated_at: task.goal_updated_at.map(|dt| dt.to_rfc3339()),
+        goal_terminal_reason: task.goal_terminal_reason.clone(),
+        goal_paused_reason: task
+            .goal_paused_reason
+            .as_ref()
+            .map(goal_paused_reason_wire)
+            .map(str::to_string),
     };
 
     let _ = handle.emit("cron:debug", serde_json::json!({
@@ -510,14 +553,21 @@ pub(super) async fn execute_task_directly(
             // Stop the underlying CronTask too so the scheduler doesn't keep
             // retrying every interval. The user's UI action (re-pick provider
             // → save) will rebuild and restart it via ensure_cron_for_task.
-            let _ = get_cron_task_manager()
-                .stop_task(&task.id, Some(format!("provider unavailable: {}", err_msg)))
-                .await;
+            let terminal_reason = Some(format!("provider unavailable: {}", err_msg));
+            let manager = get_cron_task_manager();
+            let _ = if is_goal_task(task) {
+                manager
+                    .mark_goal_terminal(&task.id, GoalStatus::Blocked, terminal_reason)
+                    .await
+            } else {
+                manager.stop_task(&task.id, terminal_reason).await
+            };
         }
     }
 
-    // Send notification if enabled
-    if task.notify_enabled {
+    // Send notification if enabled. Goal Mode notifies only on terminal
+    // status, not after every automatic continuation turn.
+    if task.notify_enabled && !is_goal_task(task) {
         send_task_notification(handle, task, &result, &effective_session_id);
     }
 
@@ -543,6 +593,7 @@ pub(super) async fn stop_task_internal(
     tasks: &Arc<RwLock<HashMap<String, CronTask>>>,
     task_id: &str,
     exit_reason: Option<String>,
+    goal_terminal_status: Option<GoalStatus>,
 ) {
     // Get session ID before updating status
     let session_id = {
@@ -599,13 +650,36 @@ pub(super) async fn stop_task_internal(
     }
 
     // Update task status
-    {
+    let stopped_goal_task = {
         let mut tasks_guard = tasks.write().await;
         if let Some(task) = tasks_guard.get_mut(task_id) {
+            let is_goal = is_goal_task(task);
+            let now = Utc::now();
             task.status = TaskStatus::Stopped;
             task.exit_reason = exit_reason.clone();
+            if is_goal {
+                let next_goal_status = task
+                    .goal_status
+                    .as_ref()
+                    .filter(|status| is_goal_terminal(status))
+                    .cloned()
+                    .or(goal_terminal_status)
+                    .unwrap_or(GoalStatus::Canceled);
+                task.goal_status = Some(next_goal_status);
+                if task.goal_terminal_reason.is_none() {
+                    task.goal_terminal_reason = exit_reason.clone();
+                }
+                task.goal_paused_reason = None;
+                task.goal_updated_at = Some(now);
+                task.updated_at = now;
+                Some(task.clone())
+            } else {
+                None
+            }
+        } else {
+            None
         }
-    }
+    };
 
     // Save to disk atomically (prevents data corruption on crash)
     if let Some(parent) = dirs::home_dir() {
@@ -624,11 +698,68 @@ pub(super) async fn stop_task_internal(
         }),
     );
 
+    if let Some(task) = stopped_goal_task.as_ref() {
+        send_goal_terminal_notification(handle, task);
+    }
+
     // PRD §11 — propagate completion to Task Center if this CronTask is linked
     // to a Task (best-effort, failures logged).
     crate::task::mark_cron_completion_if_linked(task_id, exit_reason.as_deref()).await;
 
     ulog_info!("[CronTask] Task {} stopped", task_id);
+}
+
+/// Send system notification for terminal Goal status.
+pub(super) fn send_goal_terminal_notification(handle: &AppHandle, task: &CronTask) {
+    let status = task.goal_status.as_ref();
+    let title = match status {
+        Some(GoalStatus::Complete) => "目标已完成",
+        Some(GoalStatus::Blocked) => "目标受阻",
+        Some(GoalStatus::Canceled) => "目标已停止",
+        _ => "目标已停止",
+    };
+    let reason = task
+        .goal_terminal_reason
+        .as_deref()
+        .or(task.exit_reason.as_deref())
+        .unwrap_or("Goal has stopped.");
+    let objective = task
+        .goal_objective
+        .as_deref()
+        .unwrap_or(task.prompt.as_str())
+        .trim();
+    let body = if objective.is_empty() {
+        reason.to_string()
+    } else {
+        format!("{} · {}", objective, reason)
+    };
+
+    let session_id = task
+        .internal_session_id
+        .clone()
+        .unwrap_or_else(|| task.session_id.clone());
+    let navigation = crate::notification::NotificationNavigation::for_session(
+        task.tab_id.clone(),
+        session_id.clone(),
+        task.workspace_path.clone(),
+    );
+    let badge_increment = crate::notification_badge::NotificationBadgeIncrement {
+        id: format!("goal:{}:{}:{}", task.id, task.execution_count, session_id),
+        source: "goal".to_string(),
+        created_at: chrono::Utc::now().timestamp_millis(),
+        target: crate::notification_badge::NotificationBadgeTarget::Session {
+            session_id,
+            workspace_path: task.workspace_path.clone(),
+        },
+    };
+
+    crate::notification::show_with_navigation_target_and_badge(
+        handle,
+        title,
+        &body,
+        navigation,
+        Some(badge_increment),
+    );
 }
 
 /// Send system notification for task execution

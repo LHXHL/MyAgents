@@ -21,6 +21,26 @@ pub enum TaskStatus {
     Stopped,
 }
 
+/// Goal Mode lifecycle state. This is intentionally separate from
+/// `TaskStatus`: `TaskStatus::Running` means the scheduler/Sidecar owner is
+/// still retained, while `GoalStatus::Paused` means the loop should wait for a
+/// user query before continuing.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalStatus {
+    Active,
+    Paused,
+    Complete,
+    Blocked,
+    Canceled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalPausedReason {
+    UserStop,
+}
+
 /// End conditions for a cron task
 ///
 /// `skip_serializing_if = "Option::is_none"` on the optional fields is
@@ -151,7 +171,7 @@ pub enum CronSchedule {
     },
     /// Cron expression with optional timezone
     Cron { expr: String, tz: Option<String> },
-    /// Ralph Loop: completion-triggered re-execution (no time-based scheduling)
+    /// Goal Mode: completion-triggered re-execution (no time-based scheduling)
     /// AI finishes → 3s buffer → execute again. Exponential backoff on failure.
     Loop,
 }
@@ -279,6 +299,22 @@ pub struct CronTask {
     /// (PRD §9.3.1) instead of using the `prompt` field as a frozen string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    /// Goal Mode lifecycle status for loop tasks. Optional for legacy loop
+    /// CronTasks; new `/goal` tasks set this to `Active` at creation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_status: Option<GoalStatus>,
+    /// Persistent Goal objective. Falls back to `prompt` for legacy loop tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_objective: Option<String>,
+    /// Last Goal objective/status update timestamp.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_updated_at: Option<DateTime<Utc>>,
+    /// Terminal reason for complete/blocked/canceled Goal states.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_terminal_reason: Option<String>,
+    /// Pause reason for paused Goal tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_paused_reason: Option<GoalPausedReason>,
 }
 
 /// Configuration for creating a new cron task
@@ -343,6 +379,16 @@ pub struct CronTaskConfig {
     /// CronTask is dispatched by a Task Center task.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_status: Option<GoalStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_objective: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_updated_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_terminal_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_paused_reason: Option<GoalPausedReason>,
 }
 
 fn default_true() -> bool {

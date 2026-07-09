@@ -12,7 +12,7 @@ import { type PermissionMode, PERMISSION_MODES, type Provider, type ProviderVeri
 import { useConfigData } from '@/config/useConfigData';
 import { resolveEnterKeyAction, sendKeyHint } from '@/utils/chatSendKey';
 import SlashCommandMenu, { type SlashCommand, filterAndSortCommands, mergeSlashCommands } from '../SlashCommandMenu';
-import { isClientActionCommand, withClientActionCommands } from '@/utils/slashActions';
+import { isClientActionCommand, resolveClientActionName, withClientActionCommands } from '@/utils/slashActions';
 import QueuedMessagesPanel from '../QueuedMessageBubble';
 import CronTaskStatusBar from '../cron/CronTaskStatusBar';
 import { useUndoStack } from '@/hooks/useUndoStack';
@@ -138,6 +138,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   onCronCancel,
   onCronStop,
   onCronDismissStopped,
+  onGoalEdit,
   onSlashAction,
   sdkSlashCommands = [],
   mode = 'chat',
@@ -925,6 +926,17 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
 
     const text = inputValue.trim();
     if (!text && images.length === 0) return;
+    if (onSlashAction && images.length === 0 && text.startsWith('/')) {
+      const actionName = resolveClientActionName(text);
+      if (actionName) {
+        if (showConfigLockedReason()) return;
+        setInputValue('');
+        setShowSlashMenu(false);
+        setSlashPosition(null);
+        onSlashAction(actionName);
+        return;
+      }
+    }
 
     // Prevent double-fire (rapid Enter + click, or concurrent async sends).
     // Must run BEFORE consuming `bypassRepetitionRef` so a confirm-during-
@@ -981,21 +993,21 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     } finally {
       sendingRef.current = false;
     }
-  }, [onSend, images, inputValue, provider, currentModelId, isExternalRuntime, setImages, t]);
+  }, [onSend, images, inputValue, provider, currentModelId, isExternalRuntime, setImages, t, onSlashAction, showConfigLockedReason]);
 
   // Handle keyboard navigation in file search and slash menu
   // Handler for selecting a slash command — shared by the click path
   // (`onSelect`) and the keyboard path (Enter/Tab in `handleKeyDown`). Defined
   // above `handleKeyDown` so the latter can reference it without a TDZ.
   //
-  // Client-action builtins (e.g. /loop) strip the typed `/fragment` and
-  // dispatch a renderer-side action via `onSlashAction` instead of inserting
-  // text — the action (opening the loop panel) owns what happens next, and the
+// Client-action builtins (e.g. /goal) strip the typed `/fragment` and
+// dispatch a renderer-side action via `onSlashAction` instead of inserting
+// text — the action (opening the Goal panel) owns what happens next, and the
   // task content is entered into the input afterwards. Everything else inserts
   // `/name ` as before.
   const handleSlashSelect = useCallback((cmd: SlashCommand) => {
     if (slashPosition === null) return;
-    if (onSlashAction && isClientActionCommand(cmd) && cmd.name === 'loop' && showConfigLockedReason()) {
+    if (onSlashAction && isClientActionCommand(cmd) && showConfigLockedReason()) {
       setShowSlashMenu(false);
       setSlashPosition(null);
       return;
@@ -1007,7 +1019,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       setInputValue(`${before}${after}`);
       setShowSlashMenu(false);
       setSlashPosition(null);
-      onSlashAction(cmd.name);
+      onSlashAction(resolveClientActionName(cmd.name) ?? cmd.name);
       return;
     }
 
@@ -1105,7 +1117,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
         const selected = filteredSlashCommands[selectedSlashIndex];
         if (selected) {
           // Single dispatch point shared with the click path — also handles
-          // client-action commands (e.g. /loop) vs plain text insertion.
+          // client-action commands (e.g. /goal) vs plain text insertion.
           handleSlashSelect(selected);
         }
         return;
@@ -1209,10 +1221,16 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   }, [cyclePermissionMode, undoStack, fileService, showSlashMenu, filteredSlashCommands, slashSearchQuery, selectedSlashIndex, slashPosition, showFileSearch, fileSearchResults, selectedFileIndex, inputValue, atPosition, fileSearchQuery, images.length, handleSend, handleSkillSelect, handleSlashSelect, mentionTab, thoughtResults]);
 
   const showDraftCronBar = cronModeEnabled && !cronTask && !!cronConfig;
+  const terminalGoalTask = !isLauncherMode
+    && cronTask?.status === 'stopped'
+    && cronTask.schedule?.kind === 'loop'
+    && (cronTask.goalStatus === 'complete' || cronTask.goalStatus === 'blocked' || cronTask.goalStatus === 'canceled')
+    ? cronTask
+    : null;
   const activeCronTask = !isLauncherMode && cronTask?.status === 'running' && cronTask.runMode !== 'new_session'
     ? cronTask
     : null;
-  const visibleStoppedCronTask = !isLauncherMode ? stoppedCronTask : null;
+  const visibleStoppedCronTask = !isLauncherMode ? (stoppedCronTask ?? terminalGoalTask) : null;
   const hasCronBar = showDraftCronBar || !!activeCronTask || !!visibleStoppedCronTask;
 
   return (
@@ -1287,10 +1305,14 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
             mode={cronIsExecuting ? 'executing' : 'running'}
             intervalMinutes={activeCronTask.intervalMinutes}
             schedule={activeCronTask.schedule}
+            goalStatus={activeCronTask.goalStatus}
+            goalObjective={activeCronTask.goalObjective ?? activeCronTask.prompt}
+            goalTerminalReason={activeCronTask.goalTerminalReason}
             executionCount={activeCronTask.executionCount}
             maxExecutions={activeCronTask.endConditions?.maxExecutions}
             nextExecutionAt={activeCronTask.nextExecutionAt}
             executionNumber={cronExecutionNumber}
+            onGoalObjectiveClick={onGoalEdit}
             onStop={() => onCronStop?.()}
           />
         )}
@@ -1299,6 +1321,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
             mode="stopped"
             intervalMinutes={visibleStoppedCronTask.intervalMinutes}
             schedule={visibleStoppedCronTask.schedule}
+            goalStatus={visibleStoppedCronTask.goalStatus}
+            goalObjective={visibleStoppedCronTask.goalObjective ?? visibleStoppedCronTask.prompt}
+            goalTerminalReason={visibleStoppedCronTask.goalTerminalReason}
             executionCount={visibleStoppedCronTask.executionCount}
             maxExecutions={visibleStoppedCronTask.endConditions?.maxExecutions}
             onDismissStopped={() => onCronDismissStopped?.()}
@@ -2019,7 +2044,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
               </Popover>
               </>
 
-              {/* Heartbeat Loop Button — PRD 0.2.7 D1: launcher exposes this
+              {/* Goal/Schedule Button — PRD 0.2.7 D1: launcher exposes this
                *  too. The handler stages cron config on launcher; actual
                *  cmd_create_cron_task runs after handoff to chat. */}
               {onCronButtonClick && (
