@@ -156,6 +156,54 @@ delivery，不改变 `myagents session send/watch` 的通用事件协议。`syst
 
 规则 owner：`src/server/session-core/turn-queue.ts`。副作用 state owner：`src/server/builtin-session/queue.ts`。`agent-session.ts` facade 负责把 enqueue / cancel / force / terminal orchestration 接到 SDK、SSE、IM reply 等副作用，但 queue 数组、in-flight slot、turn admission ticket 不再作为 facade 顶层裸状态维护。admission、cancel location、force-start reordering、abort ticket 清理必须继续调用 `turn-queue` policy。
 
+### Goal Mode Session State（0.2.50）
+
+Goal Mode 是 current-session 长程目标状态。它不作为字段嵌入 `SessionMetadata`，而是用带显式 Goal 字段的 backing `CronTask` 表达：
+
+```typescript
+type GoalStatus = 'active' | 'paused' | 'complete' | 'blocked' | 'canceled';
+
+interface GoalView {
+    id: string;                 // backing CronTask id
+    sessionId: string;
+    workspacePath: string;
+    objective: string;
+    status: GoalStatus;
+    turnCount: number;          // backing executionCount
+    updatedAt?: string;
+    terminalReason?: string;
+}
+```
+
+权威边界：
+
+- Goal 属于 session，不属于某个 Tab、输入框 draft 或普通 CronTask surface。
+- UI `/goal` 正式创建、AI 调 `myagents goal create --objective ...`、私聊 IM / 私有 Agent Channel 里 AI 调 CLI 创建，都会写入当前 session 的同一个 Goal。
+- backing store 继续复用 `CronTaskManager` / `CronSchedule::Loop` / `RunMode::SingleSession`；但是否是 Goal 只看显式 `goalStatus` / `goalObjective` 等字段，不能从 loop schedule 形状推断。
+- 同一 session 同时只允许一个 unfinished Goal。已有 active/paused Goal 时再次 create 必须失败，而不是覆盖。
+- `myagents goal update` 只允许模型写 `complete` / `blocked`。`paused` 来自用户 Stop 当前 turn，`canceled` 来自用户取消，恢复来自用户 query 或显式继续。
+
+Facade 与事件：
+
+- Tauri command：`cmd_create_goal_task`、`cmd_get_goal_task`、`cmd_get_session_goal_task`。
+- Rust Management API：`/api/goal/get`、`/api/goal/create`、`/api/goal/update`。
+- CLI/Admin API：`myagents goal get|list`、`create --objective`、`update --status complete|blocked --reason`。
+- 所有 create / pause / resume / objective update / execution complete / terminal 都广播 `goal:changed`，payload 至少包含 `sessionId`、`workspacePath`、`goal`、`changeKind`（`created` / `execution_complete` / `paused` / `resumed` / `objective_updated` / `terminal`）。
+
+Renderer hydrate：
+
+- Tab birth / session switch / history restore 时，renderer 按当前 `sessionId + workspacePath` 查询 Goal。
+- 只主动恢复 `active` / `paused` Goal 横条。
+- `complete` / `blocked` / `canceled` 只通过当前打开 Tab 的实时 `goal:changed` 展示；用户关闭后不在历史恢复时重新复活。
+
+Turn 与输出路由：
+
+- Goal continuation 通过 `/cron/execute-sync` 复用 scheduler，但不是普通 cron automation turn。
+- current-session Goal continuation 必须保留 session 原始 interaction scenario / 输出路由：desktop 回桌面 transcript，IM / Agent Channel 回原 channel。
+- current-session Goal 不使用 `CronDelivery` 作为 owner；delivery 是普通 Cron 结果投送或未来 detached/new-session Goal 才需要讨论的能力。
+- 用户点击 Stop 只停止当前 AI turn 并把 Goal 置为 `paused`；scheduler 不再自动续跑，但 CronTask owner 不释放。
+- terminal 状态才停止 scheduler、释放 CronTask owner、发送终态通知。
+
 ### Builtin Session Owner Split（Phase6 / Phase7）
 
 `src/server/agent-session.ts` 是 builtin SDK 会话的 public facade：`SessionEngine` adapter、legacy callers、route-facing code 仍从这里 import。Phase6 后，facade 后面的核心 mutable state 分给 `src/server/builtin-session/` owner；Phase7 后，turn terminal 与 transcript persistence 这两类最重行为也拆到明确 owner：

@@ -301,6 +301,16 @@ pub struct SessionRouter {
 
 **Sidecar 所有权**：IM Bot 使用 `SidecarOwner::ImBot(session_key)` 作为 Sidecar 的 owner，与 `Tab`、`CronTask`、`BackgroundCompletion` 并列。当所有 owner 释放时 Sidecar 自动停止。`ensure_session_sidecar()` 和 `release_session_sidecar()` 统一管理生命周期。
 
+### 2.6.1 IM / Agent Channel 中的 Goal Mode
+
+Goal Mode 是 current-session 状态，因此 IM / Agent Channel 里由 AI 调 `myagents goal create --objective ...` 创建的 Goal，仍属于当前 peer session：
+
+- 创建入口和桌面 `/goal` 等价，最终走 Goal facade / `/api/goal/create`，而不是普通 Cron create。
+- 后续自动续跑复用 backing `CronTask` scheduler，但 `/cron/execute-sync` 会把 current-session Goal 的 interaction scenario 恢复为原 IM / Agent Channel scenario。
+- 输出沿用当前 session 的 IM event bus / ReplyRouter：私聊或私有 Agent Channel 中的 Goal continuation 继续回复原 channel，不要求用户额外选择 `CronDelivery`。
+- 桌面端从历史打开同一个 IM / Agent Channel session 时，应通过 `sessionId + workspacePath` hydrate active/paused Goal 横条。
+- Cron / Registered Agent / 群聊场景不主动注入 Goal create prompt。未来如果要做“Bot 发起独立后台 Goal session，完成后回投原 channel”的 detached/new-session Goal，需要单独设计 parent session / return target；不要把它混进 current-session Goal。
+
 ### 2.7 Agent Heartbeat 私聊目标
 
 Agent 工作区可以同时绑定多个 Channel（例如微信 + 飞书，或多个飞书 Bot）。Heartbeat 不能逐个 Channel 广播，也不能只根据某个 Channel 的“最近活跃 peer”临场猜测；它必须由 Agent 级状态先解析出一个完整的私聊目标 `{ channel_id, session_key }`，再把 wake 精确投递给对应 Channel 的 heartbeat runner。

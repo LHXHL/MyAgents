@@ -8,6 +8,8 @@ MyAgents 内置了一个自配置 CLI 工具（`myagents`），让 AI 和用户�
 
 GUI 能做的配置操作（MCP 管理、Provider 配置、Agent Channel 管理、定时任务等），AI 也应该能做。传统方式是让 AI 输出操作步骤让用户去 GUI 点击，但这违背了 Agent 产品的自主性原则。CLI 让 AI 通过 Bash 工具**直接执行**管理操作，能力与 GUI 对等（部分命令如 `agent show` / `runtime describe` 甚至只在 CLI 存在，服务于 AI 的发现链路）。
 
+Goal Mode 是 CLI 的特殊 current-session 控制能力：`myagents goal create` 与 UI `/goal` 创建同一个 session-owned Goal，`myagents goal update` 是模型把 Goal 标记为 complete / blocked 的受限出口。它不是普通 Cron command 的别名。
+
 ## 架构图
 
 ```
@@ -94,6 +96,7 @@ Groups:
   tool      用户注册 CLI 工具注册表（实验室开关开启后可用）
   vision    官方图片理解 CLI 工具（readme/analyze；由设置页工具箱开关和读图模型配置门控）
   cron      管理定时任务（list/add/start/stop/remove/update/runs/status）
+  goal      管理当前 session Goal Mode（get/create/update）
   task      管理任务中心任务（list/get/create-direct/create-from-alignment/run/rerun/...）
   thought   管理任务中心想法（list/create）
   im        IM runtime actions（send-media）
@@ -155,6 +158,26 @@ myagents agent list --active|--archived           # 按工作区归档状态筛�
 ```
 
 这三条命令的存在让 `task create-direct --runtime X --model Y --permissionMode Z` 的值空间对 AI 完全自解释 —— `--help` 里只列 flag，值通过 `runtime describe` 查，避免 `--help` 文案与实际可用值漂移。
+
+### Goal Mode 命令（0.2.50）
+
+`myagents goal --help` 是 Goal Mode 的内置 skill 文档。系统提示词只告诉模型在明确 User 要求“Goal Mode / Goal Loop / 目标模式 / 设立目标 / 持续执行直到完成”时先运行 help，再按 help 使用子命令；不要把 help 全量塞进主 system prompt。
+
+命令语义：
+
+| 命令 | 何时调用 | 效果 |
+|------|----------|------|
+| `myagents goal get` / `list` | 查看当前 session 是否已有 Goal，或状态更新前确认 | 返回当前 session Goal，或 `goal: null` |
+| `myagents goal create --objective "..."` | 仅当 User 明确要求进入 Goal/目标模式 | 创建 current-session Goal，启动自动续跑，广播 `goal:changed` |
+| `myagents goal update --status complete --reason "..."` | 当前证据证明 objective 全部完成且无剩余工作 | 停止自动续跑，标记 complete，终态通知 |
+| `myagents goal update --status blocked --reason "..."` | 同一 blocker 连续至少 3 个 Goal turn 仍无法推进 | 停止自动续跑，标记 blocked，终态通知 |
+
+边界：
+
+- Goal create/update 按当前 Sidecar session 解析 `sessionId + workspacePath`；不能跨 session 创建 Goal，也不能覆盖同 session 未完成 Goal。
+- `update` 只接受 `complete` / `blocked`。pause/resume/cancel 由用户或系统路径控制。
+- 普通 Cron surface 不创建或管理 Goal。`myagents cron add --schedule '{"kind":"loop"}'` 会被拒绝；Goal 创建统一走 `myagents goal create --objective ...`。
+- current-session Goal 不附带 `CronDelivery`；IM / Agent Channel session 依赖当前 session 输出路由。
 
 ### Runtime 自诊断（PRD 0.2.16）
 
@@ -221,8 +244,9 @@ myagents status
 ```rust
 // src-tauri/src/cli.rs
 const CLI_COMMANDS: &[&str] = &[
-    "mcp", "model", "agent", "runtime", "config", "status", "reload", "version",
-    "cron", "plugin", "skill", "task", "thought", "im", "widget", "vision", "diagnose",
+    "mcp", "vision", "model", "agent", "runtime", "config", "status", "reload", "version",
+    "cron", "goal", "plugin", "skill", "task", "thought", "im", "session", "widget",
+    "space", "diagnose", "tool",
 ];
 
 pub fn is_cli_mode(args: &[String]) -> bool {
@@ -269,6 +293,7 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 | `/api/admin/agent/*` | Agent 启用/禁用/归档/取消归档/属性设置/**show**、Channel CRUD、runtime 状态查询 |
 | `/api/admin/runtime/*` | 跨 runtime 发现：`list` / `describe` |
 | `/api/admin/cron/*` | 定时任务 CRUD、启停、执行历史、状态查询 |
+| `/api/admin/goal/*` | 当前 session Goal Mode：`get` / `create` / `update` |
 | `/api/admin/task/*` | 任务中心：list/get/create-direct/create-from-alignment/run/rerun/update-status/append-session/archive/delete/read-doc/write-doc |
 | `/api/admin/thought/*` | 任务中心想法：list/create |
 | `/api/admin/skill/*` | Skills CRUD、URL 安装、启停、sync |

@@ -23,6 +23,8 @@ Task 执行    =  每次 tick 派生 session（live re-derive）
 
 **会话边界**：Task / Cron 持久层仍只存 `providerId + model` intent，不存 credential。执行层如果创建/冻结 builtin session snapshot，必须把 intent 写成 `ProviderRoute`（`{providerId, model}` 的 canonical 会话身份），并让 Sidecar 每次发送时从当前配置 materialize `ProviderEnv`；不得把 `provider_env` / `providerEnvJson` 作为新的 durable identity 写回。
 
+**Goal 边界**：Goal Mode 复用 `CronTask` backing store，因此 provider/model/MCP override 字段仍按本页规则 live resolve；但 Goal 是 current-session 工作状态，不是普通 Task tick。Goal create/update 走 `/api/goal/*` / `myagents goal ...`，普通 Cron create/list/update/run-now surface 不能创建或管理 Goal。
+
 ## 2. 三层职责
 
 ```

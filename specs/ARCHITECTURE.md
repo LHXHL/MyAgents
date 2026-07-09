@@ -8,6 +8,7 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 
 支持：
 - 多 Tab 对话
+- Goal 模式（current-session 长程目标）
 - IM Bot（Telegram / 钉钉 / OpenClaw 社区插件）
 - 定时任务
 - MCP 工具集成
@@ -146,6 +147,16 @@ pub enum SidecarOwner {
 - Tab 会话的 MCP 由前端 `/api/mcp/set` 配置（`initializeAgent` 中 MUST NOT self-resolve MCP）
 - IM / Cron 会话的 MCP 由 self-resolve 从磁盘读取
 - 混用会导致 fingerprint 差异 → abort → 30s 重启循环
+
+### Goal 模式（Session 一等状态）
+
+Goal 模式是当前 MyAgents session 的长程工作状态：用户通过 `/goal`，或 AI 在明确 User 要求后调用 `myagents goal create --objective ...`，都会让**同一个 current session** 进入 Goal Mode。Goal 不属于某个 React hook，也不属于普通 Cron surface；桌面、私聊 IM、私有 Agent Channel 打开同一 session 时应看到同一条 Goal 横条。
+
+当前实现复用 `CronTaskManager`、`CronSchedule::Loop`、`RunMode::SingleSession` 做 backing store 和 scheduler，但产品 identity 只看显式 Goal 字段（`goalStatus` / `goalObjective` 等），不能从 `schedule.kind === 'loop'` 推断。普通 Cron/Task Center loop-shaped 执行没有这些字段时不是 Goal。
+
+Goal 的状态变更通过 Goal facade 进入：Tauri `cmd_create_goal_task` / `cmd_get_goal_task` / `cmd_get_session_goal_task`，Rust Management API `/api/goal/get|create|update`，以及 CLI/Admin `myagents goal get|create|update`。变更广播 `goal:changed`，payload 带 `sessionId`、`workspacePath`、`goal`、`changeKind`，renderer 按 `sessionId + workspacePath` hydrate active/paused Goal；terminal Goal 只通过实时事件展示，避免历史打开时反复复活。
+
+current-session Goal continuation 保留 session 原始 interaction scenario / 输出路由：desktop 仍写当前桌面 session，IM / Agent Channel 仍回原 channel。`CronDelivery` 是普通 Cron 结果投送能力，不是 current-session Goal 的 owner。detached/new-session Goal 尚未实现。
 
 ### Rust 代理层
 
@@ -294,7 +305,7 @@ type InteractionScenario =
 
 ### 4. 自配置 CLI (`src/cli/` + `src-tauri/src/cli.rs`)
 
-内置命令行 `myagents`，让 AI 和用户都能通过 Bash 管理应用配置（MCP / Provider / Agent / Cron / Plugin），能力与 GUI 对等。
+内置命令行 `myagents`，让 AI 和用户都能通过 Bash 管理应用配置（MCP / Provider / Agent / Cron / Goal / Plugin），能力与 GUI 对等。
 
 **两个使用场景：**
 
@@ -324,6 +335,8 @@ type InteractionScenario =
 - 始终信任（`canUseTool` auto-allow），`list` / `status` 按工作区过滤
 
 新增 `CronTask` 字段 MUST 带 `#[serde(default)]`。
+
+**Goal 边界：** Goal Mode 的 backing 数据也存在 `cron_tasks.json`，但普通 cron create/list/start/stop/delete/update/run-now surface 必须过滤或拒绝 Goal task。Goal 创建统一走 `/goal` 或 `myagents goal create --objective ...`；`myagents cron add --schedule '{"kind":"loop"}'` 不再是用户入口。
 
 ### 6. Agent 架构 (`src-tauri/src/im/`)
 
@@ -755,6 +768,8 @@ Cloud Space 把官方/团队空间接入桌面端，目前仍是开发中/半成
 | 关闭 Tab | `releaseSessionSidecar(sessionId, 'tab', tabId)` |
 | 定时任务启动 | `ensureSessionSidecar(sessionId, workspace, 'cron', taskId)` |
 | 定时任务结束 | `releaseSessionSidecar(sessionId, 'cron', taskId)` |
+| Goal 自动续跑 | 复用 CronTask owner，但 continuation 保留 session 原始 desktop / IM / Agent Channel 输出路由 |
+| Goal 终态 | terminal 后停止 scheduler、释放 CronTask owner、广播 `goal:changed` |
 | IM 消息到达 | `ensureSessionSidecar(sessionId, workspace, 'agent', sessionKey)` |
 | IM Session 空闲超时 | `releaseSessionSidecar(sessionId, 'agent', sessionKey)` |
 | 终端打开 | `cmd_terminal_create(workspace, rows, cols, port, id)` |
@@ -912,7 +927,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 - [自动更新系统](./tech_docs/auto_update.md) — Chrome/VSCode 风格静默更新机制
 
 ### 通信与会话
-- [Session 架构](./tech_docs/session_architecture.md) — ID 格式、JSONL 存储、SDK 双重存储、状态同步
+- [Session 架构](./tech_docs/session_architecture.md) — ID 格式、JSONL 存储、SDK 双重存储、状态同步、Goal Mode session 状态
 - [System Reminder 隐藏消息协议](./tech_docs/system_reminder_protocol.md) — 注入 user message 的 hidden payload、badge tag、visible tail 前端展示规则
 - [代理配置](./tech_docs/proxy_config.md) — 系统代理 + SOCKS5 桥接
 - [统一日志](./tech_docs/unified_logging.md) — 日志格式、来源、排查指南

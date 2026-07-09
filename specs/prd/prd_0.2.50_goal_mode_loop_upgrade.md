@@ -1,17 +1,19 @@
 ---
 type: prd
-status: ready-for-development
+status: implemented
 created: 2026-07-09
 updated: 2026-07-10
 scope: "把现有 Ralph Loop / `/loop` 正式升级为 Goal / 目标模式：外显改成会话内长期目标，内部首版继续复用现有 `CronSchedule::Loop` + `single_session` 自动续跑链路；但产品架构必须校准为 session-first：Goal 是 MyAgents session 的一等状态，UI `/goal`、AI `myagents goal create`、IM/Agent Channel 里的明确目标模式请求必须创建同一个 current-session Goal，并让桌面打开该 session 时恢复同一条 Goal 横条。不引入 token budget，不重做独立 Goal runtime，不自动创建 Task Center task。"
 issue: 用户需求讨论收敛
 research: "specs/research/codex-cli-goal-command-research.md"
-review: "architecture-correction-ready（2026-07-10：0.2.50 首轮实现已完成基础 Goal/CLI/prompt/UI，但复盘确认 Goal 不能只是 UI hook + CronTask 的组合效果，必须补齐 session-first facade、CLI/UI/IM 等价入口、session hydrate 与 goal changed 事件；实现期重点验证 AI CLI create 后桌面横条自动出现、打开 IM session 历史能恢复 Goal 横条、Goal continuation 保留 session/channel 语义）"
+review: "implemented-docs-aligned（2026-07-10：已完成 session-first Goal facade、CLI/UI/IM 等价入口、session hydrate、goal:changed 事件、current-session 输出路由保留、ordinary Cron surface 隔离，并同步更新长期架构文档）"
 ---
 
 # Goal 模式升级 PRD
 
 > 执行须知（给空 session 的你）：本 PRD 自带需求 context，但不替代项目文档。实现前必须主动读 `specs/ARCHITECTURE.md`、`specs/tech_docs/session_architecture.md`、`specs/tech_docs/multi_agent_runtime.md`、`specs/tech_docs/task_center.md`、`specs/tech_docs/task_provider_routing.md`、`specs/tech_docs/system_reminder_protocol.md`、`specs/tech_docs/cli_architecture.md`、`specs/DESIGN.md`，以及关联研究报告 `specs/research/codex-cli-goal-command-research.md`。本文引用源码用符号名和文件路径，不给行号；实现时请用 `rg` 重新定位真实位置。
+
+当前状态（2026-07-10）：本 PRD 已实现。长期架构事实已同步到 `ARCHITECTURE.md`、`session_architecture.md`、`system_reminder_protocol.md`、`cli_architecture.md`、`task_center.md`、`task_provider_routing.md`、`im_integration_architecture.md`。后续改 Goal Mode 时，应以这些 tech docs 作为 ground truth，并把本 PRD 当作需求和验收背景。
 
 ## 背景与产品定位
 
@@ -241,7 +243,7 @@ interface CronTask {
 
 ## 架构校准：Goal 是 Session 一等状态
 
-2026-07-10 复盘后，必须把本 PRD 的技术目标从“UI 复用 loop 做出 Goal 体验”校准为“Goal 是 MyAgents session 的一等状态”。当前首轮实现已经能跑通 UI `/goal`、loop continuation、`myagents goal update` 等能力，但它仍然隐含了一个错误 owner：输入框横条主要由前端 `useCronTask` 本地状态持有，AI 通过 CLI 创建 Goal 后，前端未必知道当前 session 已进入 Goal Mode。
+2026-07-10 复盘后，本 PRD 的技术目标从“UI 复用 loop 做出 Goal 体验”校准为“Goal 是 MyAgents session 的一等状态”。下文保留当时的 owner 纠偏逻辑，实际实现已按后续“已完成架构校准清单”落地。
 
 最终正确语义：
 
@@ -252,9 +254,9 @@ interface CronTask {
 - current-session Goal 不需要“delivery”才能成立。它应该沿着当前 session 的输出通道继续工作：桌面 session 回桌面，IM/Agent Channel session 回原 channel。delivery 是额外通知/回投配置，不能被当成 current-session Goal 的 owner。
 - detached / new-session Goal 是另一类能力：由一个 session 发起，另一个独立 session 执行，完成/受阻/进展回投到发起 session 或 channel。本期不做，避免和 current-session Goal 混在一起。
 
-### 当前实现偏差
+### 已修正的实现偏差
 
-首轮实现存在这些必须修正的偏差：
+首轮实现曾存在这些偏差；当前实现已通过 session-level Goal facade、`goal:changed` 和 session hydrate 修正：
 
 1. **UI create 和 CLI create 不等价**
    - UI `/goal` 路径：`useCronTask.enableCronMode` / `startTask` 创建 backing `CronTask`，前端本地持有 `currentTask`，所以横条能显示。
@@ -269,13 +271,13 @@ interface CronTask {
    - 对普通定时任务这是对的；对 current-session Goal 不对。Goal continuation 应该保留原 session 的 interaction scenario / output route。
    - 对 IM/Agent Channel current-session Goal，后续自动 turn 必须继续回到原 channel；不能要求用户额外配置 delivery，也不能只写入后台 session 而不通知用户。
 
-4. **系统 prompt 已经暴露了 create 能力，但底层还没有完全等价**
-   - 如果 prompt 告诉模型在 desktop / IM / agent-channel 明确 User 要求时可以 `myagents goal create`，底层就必须让这个命令和 UI `/goal` 等价。
-   - 在完成本章节任务前，若保守发布，应临时收窄 Goal create prompt 的注入范围或文案；正式发布必须补齐等价性。
+4. **系统 prompt 曾先暴露 create 能力，底层等价性随后补齐**
+   - 如果 prompt 告诉模型在 desktop / IM / agent-channel 明确 User 要求时可以 `myagents goal create`，底层必须让这个命令和 UI `/goal` 等价。
+   - 当前实现已补齐等价性，并把 Goal create prompt 注入范围收窄到 desktop + private IM / private agent-channel。
 
 ### 目标架构
 
-新增一个 session-level Goal facade。它可以继续扫描/操作 backing `CronTask`，不要求新增独立数据库，但对外 API 和 UI 心智必须是 session-first：
+当前架构包含一个 session-level Goal facade。它继续扫描/操作 backing `CronTask`，不新增独立数据库，但对外 API 和 UI 心智是 session-first：
 
 ```text
 getCurrentGoal(sessionId, workspacePath) -> Goal | null
@@ -284,15 +286,15 @@ updateGoalForSession(sessionId, workspacePath, patch) -> Goal
 cancelGoalForSession(sessionId, workspacePath, reason) -> Goal
 ```
 
-实现落点建议：
+实现落点：
 
-- Rust `CronTaskManager` / Management API 继续拥有 backing `CronTask` 的持久化和 scheduler。
-- Rust 或 Node Admin API 增加清晰的 Goal facade 方法；不要让 renderer/CLI 到处直接扫普通 cron list。
-- facade 返回统一 `Goal` view：`id`、`sessionId`、`workspacePath`、`objective`、`status`、`turnCount`、`createdAt`、`updatedAt`、`terminalReason`、`origin`。
+- Rust `CronTaskManager` / Management API 拥有 backing `CronTask` 的持久化和 scheduler。
+- Goal facade 方法集中在 Tauri command、Rust Management API 和 Node Admin API；renderer/CLI 不直接扫普通 cron list。
+- facade 返回统一 Goal view：`id`、`sessionId`、`workspacePath`、`objective`、`status`、`turnCount`、`createdAt`、`updatedAt`、`terminalReason`。
 - facade 所有变更都发出 `goal:changed` 事件，payload 至少包含 `sessionId`、`workspacePath`、`goal`、`changeKind`。
-- renderer `useCronTask` 或新的 `useGoalMode` 必须在 Tab session birth / switch / restore 时主动 hydrate：按当前 `sessionId + workspacePath` 调 facade，若存在 active/paused Goal，则显示横条；terminal Goal 只由实时 `goal:changed` 更新当前打开的 Tab。
-- CLI `myagents goal create` 成功后必须触发同一 `goal:changed` 事件；桌面当前打开这个 session 时横条应自动出现。
-- UI `/goal` 创建也应走同一 facade。允许前端保留 draft 横条，但正式创建后状态来源必须切到 facade 返回的 Goal，而不是只依赖创建前的本地 config。
+- renderer 在 Tab session birth / switch / restore 时主动 hydrate：按当前 `sessionId + workspacePath` 调 facade，若存在 active/paused Goal，则显示横条；terminal Goal 只由实时 `goal:changed` 更新当前打开的 Tab。
+- CLI `myagents goal create` 成功后触发同一 `goal:changed` 事件；桌面当前打开这个 session 时横条自动出现。
+- UI `/goal` 创建也走同一 facade。前端只保留 draft 横条；正式创建后状态来源切到 facade 返回的 Goal。
 
 ### Interaction scenario 与输出路由
 
@@ -1147,6 +1149,7 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
   - current-session Goal 不附带 `CronDelivery`；IM/Agent Channel 依赖当前 session 输出路径，不把 delivery 当作 owner。
   - Renderer hydrate 只恢复 active / paused Goal；complete / blocked / canceled 通过当前 tab 的实时 `goal:changed` 展示，并在用户 dismiss 后不再复活。
   - Goal CLI prompt 注入限定为 desktop + private IM / private agent-channel，group / cron / registeredAgent 不注入。
+  - 文档对齐完成：架构总览、Session、System Reminder、CLI、Task Center、Task Provider Routing、IM 集成文档均已同步到 session-owned Goal 口径；PRD 状态从 ready-for-development 更新为 implemented。
 
 ### 验证记录
 

@@ -560,7 +560,7 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 <a id="client-action-slash"></a>
 ## Client-action 斜杠命令 (`src/renderer/utils/slashActions.ts`)
 
-**Problem.** 多数斜杠命令要么插文本发给 AI（`/compact`），要么是 Rust 扫描器发现的磁盘 skill/command。但有一类是 **client-action**：选中触发**渲染层 UI 动作**（`/loop` 开循环定时面板），从不发给 AI。若把它当普通 builtin 注册进 Rust/shared 文本插入清单，会在没接处理器的宿主里成为"点了没反应"的死条目；若不保留名字，用户一个叫 `loop` 的磁盘 skill 会把 `/loop` 静默 shadow 成插文本。
+**Problem.** 多数斜杠命令要么插文本发给 AI（`/compact`），要么是 Rust 扫描器发现的磁盘 skill/command。但有一类是 **client-action**：选中触发**渲染层 UI 动作**（`/goal` 打开目标模式面板，`/loop` 作为兼容 alias），从不发给 AI。若把它当普通 builtin 注册进 Rust/shared 文本插入清单，会在没接处理器的宿主里成为"点了没反应"的死条目；若不保留名字，用户一个叫 `goal` / `loop` 的磁盘 skill 会把 `/goal` / `/loop` 静默 shadow 成插文本。
 
 **Surface.**
 - `CLIENT_ACTION_SLASH_COMMANDS` — 定义（仅渲染层，唯一来源）
@@ -569,7 +569,7 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 
 **Invariants enforced.** 命令与其动作**按构造耦合**：没处理器就不出现（不会死条目），名字被保留（不会被同名 skill shadow）。
 
-**Don't.** 把 client-action 命令（如 `loop`）加进 Rust / `shared` 的文本插入 builtin 清单——会在 launcher 等无处理器场景出现死条目。它只属于 `slashActions.ts`。
+**Don't.** 把 client-action 命令（如 `goal` / `loop`）加进 Rust / `shared` 的文本插入 builtin 清单——会在 launcher 等无处理器场景出现死条目。它只属于 `slashActions.ts`。
 
 ---
 

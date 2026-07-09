@@ -65,6 +65,16 @@ Todo → Running → Verifying ↔ Done
 
 **好处**：用户中途编辑 task.md，下一次执行立即生效——不需要手动同步 Prompt，也不会跑半新半旧。
 
+### Goal Mode 与 Task/Cron 边界
+
+Goal Mode（0.2.50）也复用 `CronTask` 作为 backing store 和 scheduler，但它不是 Task Center task：
+
+- Goal 不自动创建 `TaskStore` 记录，不写 `task_id`，不进入 Task 状态机。
+- Goal identity 只由显式 `goalStatus` / `goalObjective` 等字段表达；不能把 `CronSchedule::Loop` 或 `RunMode::SingleSession` 形状本身当成 Goal。
+- 普通 Task / Cron surface 必须过滤或拒绝 Goal task；Goal 的 create/get/update 走 Goal facade（Tauri `cmd_*_goal_task`、Management API `/api/goal/*`、CLI `myagents goal ...`）。
+- Task Center 内部将来仍可使用 loop-shaped CronTask 作为执行机制，只要没有 Goal 字段，它就是 Task/Cron 执行，不是 Goal Mode。
+- legacy Cron 升级逻辑不能把 Goal 自动迁成 Task，也不能把 Task-linked Cron 误识别为 Goal。
+
 ## AI 讨论路径（想法 → 正式任务）
 
 完整 5 步流程：
