@@ -19,6 +19,7 @@ import { accumulateTaskTodos, isTaskTodoTool, type TaskToolCall } from '@/utils/
 import {
   BACKGROUND_TASK_STATUS_EVENT,
   collectCompletedBackgroundToolIdsFromHistory,
+  getActiveBackgroundTasks,
   getBackgroundTaskStatus,
   hydrateBackgroundTaskStatusesFromHistory,
   isBackgroundTaskRegistered,
@@ -60,6 +61,7 @@ export function useAgentStatusState(
   return useMemo<AgentStatusState>(() => {
     let todos: TodoItem[] = [];
     const subagents: SubagentStatus[] = [];
+    const seenSubagentToolIds = new Set<string>();
     // SDK 0.3.142+ Task tools (TaskCreate/Update/Get/List), collected in order for
     // the task-id accumulator. Used in preference to the legacy TodoWrite snapshot
     // when present (a session uses one or the other, never both).
@@ -99,6 +101,7 @@ export function useAgentStatusState(
         }
 
         if (isSubagentContainerTool(tool.name)) {
+          seenSubagentToolIds.add(tool.id);
           const input = tool.parsedInput as AgentInput | undefined;
           const isBackground = isBackgroundSubagentTool(tool);
 
@@ -120,6 +123,22 @@ export function useAgentStatusState(
           }
         }
       }
+    }
+
+    for (const task of getActiveBackgroundTasks()) {
+      if (seenSubagentToolIds.has(task.toolUseId)) continue;
+      if (completedBgFromHistory.has(task.toolUseId)) continue;
+      if (isTerminalStatus(task.status)) continue;
+      subagents.push({
+        id: task.toolUseId,
+        agentType: task.taskType ?? 'general-purpose',
+        description: task.description ?? '',
+        mode: 'background',
+        startedAt: task.startedAt,
+        inputTokens: 0,
+        outputTokens: 0,
+        toolCount: 0,
+      });
     }
 
     // SDK 0.3.142+ Task tools take precedence over the legacy TodoWrite snapshot.

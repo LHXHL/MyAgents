@@ -2999,7 +2999,7 @@ export default function TabProvider({
             // Background task lifecycle (SDK Task tool)
             case 'chat:task-started': {
                 console.log(`[TabProvider ${tabId}] ${eventName}:`, data);
-                const startPayload = data as { taskId?: string; toolUseId?: string; description?: string };
+                const startPayload = data as { taskId?: string; toolUseId?: string; description?: string; taskType?: string };
                 if (startPayload.taskId && startPayload.description) {
                     setBackgroundTaskDescription(startPayload.taskId, startPayload.description);
                 }
@@ -3007,7 +3007,10 @@ export default function TabProvider({
                 // (which only know their tool.id = toolUseId) can look up status
                 // from task-notification events (which only carry taskId).
                 if (startPayload.taskId && startPayload.toolUseId) {
-                    registerBackgroundTask(startPayload.taskId, startPayload.toolUseId);
+                    registerBackgroundTask(startPayload.taskId, startPayload.toolUseId, {
+                        description: startPayload.description,
+                        taskType: startPayload.taskType,
+                    });
                 } else if (startPayload.taskId && !startPayload.toolUseId) {
                     console.warn(`[TabProvider ${tabId}] chat:task-started missing toolUseId for task ${startPayload.taskId} — background task status matching will degrade`);
                 }

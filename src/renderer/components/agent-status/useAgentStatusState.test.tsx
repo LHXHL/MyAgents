@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 
 import type { ContentBlock, Message, ToolUseSimple } from '@/types/chat';
-import { clearAllBackgroundTaskStatuses, getBackgroundTaskStatus, registerBackgroundTask } from '@/utils/backgroundTaskStatus';
+import { clearAllBackgroundTaskStatuses, getBackgroundTaskStatus, hydrateBackgroundTaskStatusesFromHistory, registerBackgroundTask } from '@/utils/backgroundTaskStatus';
 
 import { useAgentStatusState } from './useAgentStatusState';
 
@@ -162,6 +162,59 @@ describe('useAgentStatusState — builtin background subagents', () => {
       description: 'Audit background tasks',
       mode: 'background',
     });
+  });
+
+  it('keeps a started background task visible even when no Task tool block is present in messages', () => {
+    registerBackgroundTask('bg-task-1', 'Task-m1', {
+      description: 'Audit background tasks',
+      taskType: 'local_agent',
+    });
+
+    const { result } = renderHook(() => useAgentStatusState([]));
+
+    expect(result.current.summary.subagentRunning).toBe(1);
+    expect(result.current.subagents[0]).toMatchObject({
+      id: 'Task-m1',
+      agentType: 'local_agent',
+      description: 'Audit background tasks',
+      mode: 'background',
+    });
+  });
+
+  it('reacts to a live task-started event when the panel is already mounted', async () => {
+    const { result } = renderHook(() => useAgentStatusState([]));
+
+    expect(result.current.summary.subagentRunning).toBe(0);
+
+    act(() => {
+      registerBackgroundTask('bg-task-1', 'Task-m1', {
+        description: 'Audit background tasks',
+        taskType: 'local_agent',
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.summary.subagentRunning).toBe(1);
+    });
+    expect(result.current.subagents[0]).toMatchObject({
+      id: 'Task-m1',
+      agentType: 'local_agent',
+      description: 'Audit background tasks',
+      mode: 'background',
+    });
+  });
+
+  it('does not hydrate terminal task notifications that cannot be mapped to a toolUseId', () => {
+    hydrateBackgroundTaskStatusesFromHistory([
+      {
+        id: 'task-notification-bg-task-1',
+        role: 'user',
+        content: '<task-notification>{"taskId":"bg-task-1","status":"stopped","description":"Old task"}</task-notification>',
+        timestamp: new Date(0),
+      },
+    ]);
+
+    expect(getBackgroundTaskStatus('bg-task-1')).toBeUndefined();
   });
 
   it('does not treat explicit run_in_background false as background', () => {
