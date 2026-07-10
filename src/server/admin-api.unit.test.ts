@@ -177,6 +177,57 @@ describe('admin-api goal', () => {
     });
     clearImCronContext();
   });
+
+  it('forwards the active scheduler lease when the model terminalizes a Goal', async () => {
+    const { setGoalTurnAuthority, clearGoalTurnAuthority } = await import('./session-engine/goal-turn-authority');
+    const { handleGoalUpdate } = await import('./admin-api');
+    sessionEngineMocks.state.context = {
+      sessionId: 'session-goal-turn',
+      workspacePath: '/tmp/myagents-goal-workspace',
+    };
+    setGoalTurnAuthority({
+      sessionId: 'session-goal-turn',
+      goalId: 'goal-1',
+      leaseId: 'lease-current',
+    });
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, goal: { id: 'goal-1' } });
+
+    const result = await handleGoalUpdate({ status: 'complete', reason: 'done' });
+
+    expect(result.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith('/api/goal/update', 'POST', {
+      sessionId: 'session-goal-turn',
+      workspacePath: '/tmp/myagents-goal-workspace',
+      goalId: 'goal-1',
+      leaseId: 'lease-current',
+      status: 'complete',
+      reason: 'done',
+    });
+    clearGoalTurnAuthority('session-goal-turn', 'lease-current');
+  });
+
+  it('rejects a terminal update after the scheduler turn authority is released', async () => {
+    const { setGoalTurnAuthority, clearGoalTurnAuthority } = await import('./session-engine/goal-turn-authority');
+    const { handleGoalUpdate } = await import('./admin-api');
+    sessionEngineMocks.state.context = {
+      sessionId: 'session-stale-goal-turn',
+      workspacePath: '/tmp/myagents-goal-workspace',
+    };
+    setGoalTurnAuthority({
+      sessionId: 'session-stale-goal-turn',
+      goalId: 'goal-1',
+      leaseId: 'lease-old-objective',
+    });
+    clearGoalTurnAuthority('session-stale-goal-turn', 'lease-old-objective');
+
+    const result = await handleGoalUpdate({ status: 'complete', reason: 'stale completion' });
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Goal terminal update requires the active Goal turn authority',
+    });
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
 });
 
 describe('admin-api cron create', () => {

@@ -72,7 +72,7 @@ function getCurrentModelLabel(
 function isGoalBarTask(
   task: SimpleChatInputProps['cronTask'] | SimpleChatInputProps['stoppedCronTask'] | null | undefined,
 ): boolean {
-  return Boolean(task?.goalStatus || task?.goalObjective);
+  return Boolean(task?.goalStatus);
 }
 
 

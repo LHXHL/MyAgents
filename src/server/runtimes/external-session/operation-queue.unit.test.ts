@@ -213,6 +213,40 @@ describe('external operation queue owner', () => {
     queue.releaseExternalDrainReservation(reserved);
   });
 
+  it('settles queued dispatch acceptance only when the drained operation is accepted', async () => {
+    const queue = await loadFreshQueueOwner();
+    const queued = queue.enqueueExternalMessageOperation({
+      text: 'wait for drain',
+      context: context(),
+      runtimeConfig: snapshot(),
+    });
+    if (!queued.queued) throw new Error('test queue setup failed');
+
+    let settled = false;
+    void queued.dispatchAcceptance.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    const reserved = queue.reserveExternalOperationForDrain();
+    if (!reserved || reserved.kind !== 'message') throw new Error('expected queued message');
+    queue.settleExternalMessageOperation(reserved, { queued: true });
+
+    await expect(queued.dispatchAcceptance).resolves.toEqual({ queued: true });
+  });
+
+  it('settles queued dispatch acceptance as rejected when the queue item is cancelled', async () => {
+    const queue = await loadFreshQueueOwner();
+    const queued = queue.enqueueExternalMessageOperation({
+      text: 'cancel me',
+      context: context(),
+      runtimeConfig: snapshot(),
+    });
+    if (!queued.queued) throw new Error('test queue setup failed');
+
+    expect(queue.cancelExternalQueuedMessage(queued.queueId)).toBe('cancel me');
+    await expect(queued.dispatchAcceptance).resolves.toEqual({ queued: false });
+  });
+
   it('resets stale desktop send tails without running old queued closures', async () => {
     const queue = await loadFreshQueueOwner();
     let releaseFirst!: () => void;

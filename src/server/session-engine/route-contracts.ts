@@ -26,6 +26,15 @@ export const SESSION_ENGINE_ROUTE_CONTRACTS: SessionEngineRouteContract[] = [
     behavior: 'Stops active external process or builtin turn; external-inactive keeps builtin fallback.',
   },
   {
+    path: '/api/goal/objective',
+    method: 'POST',
+    engineMethod: 'updateObjective (Goal orchestrator)',
+    requiredFields: ['objective'],
+    responseKeys: ['success', 'goal', 'delivery', 'error'],
+    failureStatuses: [400, 408, 409, 500, 503],
+    behavior: 'Persists through the Rust Goal owner, steers capable active turns, and otherwise stops at a turn boundary before restarting.',
+  },
+  {
     path: '/chat/reset',
     method: 'POST',
     engineMethod: 'resetForNewDesktopSession',

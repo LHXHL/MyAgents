@@ -303,11 +303,13 @@ pub struct SessionRouter {
 
 ### 2.6.1 IM / Agent Channel 中的 Goal Mode
 
-Goal Mode 是 current-session 状态，因此 IM / Agent Channel 里由 AI 调 `myagents goal create --objective ...` 创建的 Goal，仍属于当前 peer session：
+Goal Mode 是 current-session 状态，因此 IM / Agent Channel 里由 AI 调 `myagents goal create --objective-file ...` 创建的 Goal，仍属于当前 peer session：
 
 - 创建入口和桌面 `/goal` 等价，最终走 Goal facade / `/api/goal/create`，而不是普通 Cron create。
 - 后续自动续跑复用 backing `CronTask` scheduler，但 `/cron/execute-sync` 会把 current-session Goal 的 interaction scenario 恢复为原 IM / Agent Channel scenario。
-- 输出沿用当前 session 的 IM event bus / ReplyRouter：私聊或私有 Agent Channel 中的 Goal continuation 继续回复原 channel，不要求用户额外选择 `CronDelivery`。
+- ordinary user ingress 由 SessionEngine Goal orchestrator 统一注入 Goal context；Rust reserve 后，adapter 在真实 Runtime promotion 前 claim，transport 接受后 finalize，idle 后 release，避免 renderer/渠道各自维护 Goal 逻辑。
+- 自动 continuation 仅在 Sidecar 明确返回 `goalChannelDeliveryExpected=true`（turn origin 为 `agent-channel`）时把成功文本写入持久 outbox，不创建或读取 `CronDelivery`。每个 Goal 的唯一 replay worker 按 `sessionId -> peer session` binding 投递；没有 binding 不 ACK，并在运行中/启动恢复后持续重试。
+- Channel 投递是 at-least-once：稳定 delivery id 防止同一 lease 在健康进程内重复入队，但 push 成功后、outbox 删除前崩溃会在恢复后重发。群聊结果为 `<NO_REPLY>` / `NO_REPLY` 时保持静默。
 - 桌面端从历史打开同一个 IM / Agent Channel session 时，应通过 `sessionId + workspacePath` hydrate active/paused Goal 横条。
 - Cron / Registered Agent / 群聊场景不主动注入 Goal create prompt。未来如果要做“Bot 发起独立后台 Goal session，完成后回投原 channel”的 detached/new-session Goal，需要单独设计 parent session / return target；不要把它混进 current-session Goal。
 

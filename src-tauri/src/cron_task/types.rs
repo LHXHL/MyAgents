@@ -35,10 +35,106 @@ pub enum GoalStatus {
     Canceled,
 }
 
+impl GoalStatus {
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, Self::Complete | Self::Blocked | Self::Canceled)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalPausedReason {
     UserStop,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalTerminalActor {
+    Model,
+    User,
+    System,
+}
+
+#[derive(Debug, Clone)]
+pub enum GoalTerminalOutcome {
+    Applied(CronTask),
+    AlreadyTerminal(CronTask),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalTurnLeaseState {
+    Pending,
+    Claimed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalTurnLease {
+    pub id: String,
+    pub turn_number: u32,
+    pub state: GoalTurnLeaseState,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalUserAdmissionState {
+    #[default]
+    Pending,
+    Claimed,
+    Dispatched,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalUserAdmissionKind {
+    UserQuery,
+    ObjectiveRestart,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalUserAdmission {
+    pub id: String,
+    pub revision: u64,
+    pub turn_number: u32,
+    #[serde(default)]
+    pub state: GoalUserAdmissionState,
+    pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state_updated_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalDeliveryState {
+    Pending,
+    Sending,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GoalDeliveryOutboxItem {
+    pub id: String,
+    pub lease_id: String,
+    pub session_id: String,
+    pub text: String,
+    pub state: GoalDeliveryState,
+    pub attempts: u32,
+    pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
+impl GoalTerminalOutcome {
+    pub fn task(&self) -> &CronTask {
+        match self {
+            Self::Applied(task) | Self::AlreadyTerminal(task) => task,
+        }
+    }
+
+    pub fn was_applied(&self) -> bool {
+        matches!(self, Self::Applied(_))
+    }
 }
 
 /// End conditions for a cron task
@@ -299,11 +395,11 @@ pub struct CronTask {
     /// (PRD §9.3.1) instead of using the `prompt` field as a frozen string.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub task_id: Option<String>,
-    /// Goal Mode lifecycle status for loop tasks. Optional for legacy loop
-    /// CronTasks; new `/goal` tasks set this to `Active` at creation.
+    /// Explicit Goal Mode identity and lifecycle status. A loop schedule alone
+    /// remains an ordinary CronTask.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_status: Option<GoalStatus>,
-    /// Persistent Goal objective. Falls back to `prompt` for legacy loop tasks.
+    /// Persistent Goal objective. Explicit Goals populate this at creation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_objective: Option<String>,
     /// Last Goal objective/status update timestamp.
@@ -315,6 +411,47 @@ pub struct CronTask {
     /// Pause reason for paused Goal tasks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub goal_paused_reason: Option<GoalPausedReason>,
+    /// Monotonic version for Goal state ordering across hydrate/events.
+    #[serde(default)]
+    pub goal_revision: u64,
+    /// Monotonic Goal control epoch. Unlike `goal_revision`, admission/lease
+    /// bookkeeping does not advance this value. It changes only when the
+    /// objective or explicit lifecycle control state changes, so stale user
+    /// queries cannot resume a Goal after pause/cancel while same-epoch queries
+    /// queue. A user-query-driven paused-to-active transition stays in the
+    /// paused snapshot's epoch.
+    #[serde(default)]
+    pub goal_control_revision: u64,
+    /// Scheduler-only turn barrier, claimed immediately before runtime dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_turn_lease: Option<GoalTurnLease>,
+    /// Ordered two-phase desktop/IM dispatch reservations. Each queued user
+    /// query owns independent claim, dispatch, and release state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub goal_user_admissions: Vec<GoalUserAdmission>,
+    /// Durable at-least-once IM delivery queue, deduplicated by scheduler lease.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub goal_delivery_outbox: Vec<GoalDeliveryOutboxItem>,
+}
+
+impl CronTask {
+    /// Goal identity is explicit. A loop schedule or an orphaned objective does
+    /// not promote an ordinary CronTask into Goal Mode.
+    pub fn is_goal(&self) -> bool {
+        self.goal_status.is_some()
+    }
+
+    pub fn bump_goal_revision(&mut self) {
+        if self.is_goal() {
+            self.goal_revision = self.goal_revision.saturating_add(1);
+        }
+    }
+
+    pub fn bump_goal_control_revision(&mut self) {
+        if self.is_goal() {
+            self.goal_control_revision = self.goal_control_revision.saturating_add(1);
+        }
+    }
 }
 
 /// Configuration for creating a new cron task

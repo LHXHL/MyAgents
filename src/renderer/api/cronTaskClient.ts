@@ -70,12 +70,6 @@ export const stopCronTask = (taskId: string, exitReason?: string): Promise<CronT
 export const pauseGoalTask = (taskId: string): Promise<CronTask> =>
   invokeCommand('cmd_pause_goal_task', { taskId });
 
-export const resumeGoalTask = (taskId: string): Promise<CronTask> =>
-  invokeCommand('cmd_resume_goal_task', { taskId });
-
-export const updateGoalObjective = (taskId: string, objective: string): Promise<CronTask> =>
-  invokeCommand('cmd_update_goal_objective', { taskId, objective });
-
 export const markGoalTerminal = (taskId: string, status: GoalStatus, reason?: string): Promise<CronTask> =>
   invokeCommand('cmd_mark_goal_terminal', { taskId, status, reason });
 

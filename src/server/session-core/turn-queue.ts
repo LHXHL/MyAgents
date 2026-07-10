@@ -11,6 +11,14 @@ export type QueueAdmissionAction =
 
 export type QueueLocation = 'message' | 'pending-mid-turn' | 'turn-boundary' | 'in-flight';
 
+export type DispatchGuardResult = {
+  accepted: boolean;
+  error?: string;
+  code?: string;
+};
+
+export type DispatchGuard = () => Promise<DispatchGuardResult>;
+
 export function shouldApplyChatQueueResponseMode(
   fromDesktopChatSend: boolean | undefined,
 ): boolean {

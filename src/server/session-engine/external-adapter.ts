@@ -54,6 +54,7 @@ import type {
   InjectedTurnResult,
   SessionEngine,
 } from './types';
+import { cancelPendingGoalDispatches } from './goal-turn-authority';
 import { decideExternalInjectedTurnResult } from '../session-core/turn-result-policy';
 import { getEffectiveOfficialToolIdsForSession } from '../utils/admin-config';
 import { getSessionData, updateSessionMetadata } from '../SessionStore';
@@ -252,19 +253,25 @@ export function createExternalSessionEngine(): SessionEngine {
           permissionMode: request.permissionMode,
           model: request.model,
           reasoningEffort: request.reasoningEffort,
+          beforeDispatch: request.beforeDispatch,
         },
       );
-      sent.dispatch
+      const dispatchAcceptance = sent.dispatch
         .then((result) => {
-          if (!result.queued && result.error) {
-            console.error(`[chat] external send failed: ${result.error}`);
-            broadcast('chat:agent-error', { message: result.error });
+          if (!result.queued) {
+            if (result.error) {
+              console.error(`[chat] external send failed: ${result.error}`);
+              broadcast('chat:agent-error', { message: result.error });
+            }
+            return { accepted: false, ...(result.error ? { error: result.error } : {}) };
           }
+          return { accepted: true };
         })
         .catch((err) => {
-          const msg = err instanceof Error ? err.message : String(err);
-          console.error(`[chat] external send threw: ${msg}`);
-          broadcast('chat:agent-error', { message: msg });
+          const message = err instanceof Error ? err.message : String(err);
+          console.error(`[chat] external send threw: ${message}`);
+          broadcast('chat:agent-error', { message });
+          return { accepted: false, error: message };
         });
       return {
         success: true,
@@ -274,6 +281,7 @@ export function createExternalSessionEngine(): SessionEngine {
         deliveryMode: sent.deliveryMode,
         canCancel: sent.canCancel,
         canForceExecute: sent.canForceExecute,
+        dispatchAcceptance,
       };
     },
 
@@ -293,6 +301,7 @@ export function createExternalSessionEngine(): SessionEngine {
           requestId: request.requestId,
           metadataBirthPending: request.metadataBirthPending === true,
           analyticsOrigin: request.analyticsOrigin,
+          beforeDispatch: request.beforeDispatch,
         },
       );
       if (!result.queued) {
@@ -323,6 +332,7 @@ export function createExternalSessionEngine(): SessionEngine {
           model: request.model,
           reasoningEffort: request.reasoningEffort,
           analyticsOrigin: request.analyticsOrigin,
+          ...(request.beforeDispatch ? { beforeDispatch: request.beforeDispatch } : {}),
         },
       );
       if (!result.queued) {
@@ -352,6 +362,10 @@ export function createExternalSessionEngine(): SessionEngine {
       );
     },
 
+    async ensureGoalSessionConfig() {
+      return { success: true };
+    },
+
     async runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult> {
       const result = await sendExternalMessage(
         request.prompt,
@@ -366,6 +380,7 @@ export function createExternalSessionEngine(): SessionEngine {
           model: request.model,
           reasoningEffort: request.reasoningEffort,
           analyticsOrigin: request.analyticsOrigin,
+          beforeDispatch: request.beforeDispatch,
         },
       );
       if (!result.queued) {
@@ -391,6 +406,7 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async stopTurn() {
+      cancelPendingGoalDispatches();
       if (!isExternalSessionActive()) {
         return { success: true, alreadyStopped: true };
       }

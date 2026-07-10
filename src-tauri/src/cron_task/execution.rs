@@ -1,18 +1,7 @@
 use super::*;
 
 fn is_goal_task(task: &CronTask) -> bool {
-    task.goal_status.is_some()
-        || task
-            .goal_objective
-            .as_deref()
-            .is_some_and(|objective| !objective.trim().is_empty())
-}
-
-fn is_goal_terminal(status: &GoalStatus) -> bool {
-    matches!(
-        status,
-        GoalStatus::Complete | GoalStatus::Blocked | GoalStatus::Canceled
-    )
+    task.is_goal()
 }
 
 fn goal_status_wire(status: &GoalStatus) -> &'static str {
@@ -152,12 +141,13 @@ async fn rotate_new_session_id(handle: &AppHandle, task: &CronTask) -> Result<St
 }
 
 /// Execute a task directly via Sidecar (without going through frontend)
-/// Returns (success, ai_exit_reason, output_text, internal_session_id) tuple
+/// Returns (success, ai_exit_reason, output_text, internal_session_id,
+/// goal_channel_delivery_expected) tuple.
 pub(super) async fn execute_task_directly(
     handle: &AppHandle,
     task: &CronTask,
     is_first_execution: bool,
-) -> Result<(bool, Option<String>, Option<String>, Option<String>), String> {
+) -> Result<(bool, Option<String>, Option<String>, Option<String>, bool), String> {
     ulog_info!(
         "[CronTask] execute_task_directly starting for task {}",
         task.id
@@ -226,7 +216,9 @@ pub(super) async fn execute_task_directly(
     ulog_info!("[CronTask] Got SidecarManager state for task {}", task.id);
 
     if task.managed_kind.as_deref() == Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH) {
-        return crate::memory_auto_update::run_managed_cron_batch(handle, task).await;
+        return crate::memory_auto_update::run_managed_cron_batch(handle, task)
+            .await
+            .map(|(success, exit, output, session_id)| (success, exit, output, session_id, false));
     }
 
     if matches!(
@@ -297,7 +289,11 @@ pub(super) async fn execute_task_directly(
 
     // Build execution payload
     // execution_number is 1-based (first execution = 1)
-    let execution_number = task.execution_count + 1;
+    let execution_number = if task.is_goal() {
+        task.execution_count
+    } else {
+        task.execution_count + 1
+    };
     let schedule_kind = task.schedule.as_ref().map(|schedule| {
         match schedule {
             CronSchedule::At { .. } => "at",
@@ -403,14 +399,25 @@ pub(super) async fn execute_task_directly(
         task.prompt.clone()
     };
 
-    let mut payload_runtime = task.runtime.clone();
-    let mut payload_runtime_config = task.runtime_config.clone();
-    if is_legacy_builtin_managed_memory_runtime_override(
-        task.managed_kind.as_deref(),
-        task.runtime.as_deref(),
-        task.provider_id.as_deref(),
-        task.model.as_deref(),
-    ) {
+    let is_goal = task.is_goal();
+    // A current-session Goal follows the live Session configuration. Clear
+    // task-captured model/provider/runtime/MCP overrides before Rust ensures
+    // the Sidecar, otherwise a stale creation snapshot can switch runtimes
+    // before the Node SessionEngine has a chance to restore session state.
+    let mut payload_runtime = if is_goal { None } else { task.runtime.clone() };
+    let mut payload_runtime_config = if is_goal {
+        None
+    } else {
+        task.runtime_config.clone()
+    };
+    if !is_goal
+        && is_legacy_builtin_managed_memory_runtime_override(
+            task.managed_kind.as_deref(),
+            task.runtime.as_deref(),
+            task.provider_id.as_deref(),
+            task.model.as_deref(),
+        )
+    {
         let agent_identity =
             crate::sidecar::runtime_identity::resolve_agent_runtime_identity_from_config(
                 std::path::Path::new(&task.workspace_path),
@@ -436,27 +443,43 @@ pub(super) async fn execute_task_directly(
         is_first_execution: Some(is_first_execution),
         ai_can_exit: Some(task.end_conditions.ai_can_exit),
         permission_mode: Some(task.permission_mode.clone()),
-        model: task.model.clone(),
+        model: if is_goal { None } else { task.model.clone() },
         // PRD 0.2.9: legacy snapshot path — only forwarded for tasks persisted
         // in 0.2.8 or earlier (when `provider_env` was the persistence shape).
         // New crons have `provider_env: None` and `provider_id: Some(_)`; the
         // sidecar prefers `provider_id` and live-resolves on every tick.
-        provider_env: task.provider_env.as_ref().map(|env| ProviderEnv {
-            base_url: env.base_url.clone(),
-            api_key: env.api_key.clone(),
-            api_protocol: env.api_protocol.clone(),
-            max_output_tokens: env.max_output_tokens,
-            max_output_tokens_param_name: env.max_output_tokens_param_name.clone(),
-            upstream_format: env.upstream_format.clone(),
-        }),
-        provider_id: task.provider_id.clone(),
+        provider_env: if is_goal {
+            None
+        } else {
+            task.provider_env.as_ref().map(|env| ProviderEnv {
+                base_url: env.base_url.clone(),
+                api_key: env.api_key.clone(),
+                api_protocol: env.api_protocol.clone(),
+                max_output_tokens: env.max_output_tokens,
+                max_output_tokens_param_name: env.max_output_tokens_param_name.clone(),
+                upstream_format: env.upstream_format.clone(),
+            })
+        },
+        provider_id: if is_goal {
+            None
+        } else {
+            task.provider_id.clone()
+        },
         // PRD #119: forward routing intent so the sidecar handler can
         // either honor the snapshot path (FollowAgent / legacy) or
         // short-circuit to task-owned values (Subscription / Explicit).
-        provider_intent: Some(task.provider_intent),
+        provider_intent: if is_goal {
+            None
+        } else {
+            Some(task.provider_intent)
+        },
         runtime: payload_runtime,
         runtime_config: payload_runtime_config,
-        mcp_enabled_servers: task.mcp_enabled_servers.clone(),
+        mcp_enabled_servers: if is_goal {
+            None
+        } else {
+            task.mcp_enabled_servers.clone()
+        },
         run_mode: Some(run_mode_str.to_string()),
         interval_minutes: Some(task.interval_minutes),
         execution_number: Some(execution_number),
@@ -483,6 +506,8 @@ pub(super) async fn execute_task_directly(
             .as_ref()
             .map(goal_paused_reason_wire)
             .map(str::to_string),
+        goal_lease_id: task.goal_turn_lease.as_ref().map(|lease| lease.id.clone()),
+        goal_expected_revision: task.goal_turn_lease.as_ref().map(|_| task.goal_revision),
     };
 
     let _ = handle.emit("cron:debug", serde_json::json!({
@@ -567,8 +592,14 @@ pub(super) async fn execute_task_directly(
             let manager = get_cron_task_manager();
             let _ = if is_goal_task(task) {
                 manager
-                    .mark_goal_terminal(&task.id, GoalStatus::Blocked, terminal_reason)
+                    .transition_goal_terminal(
+                        &task.id,
+                        GoalStatus::Blocked,
+                        terminal_reason,
+                        GoalTerminalActor::System,
+                    )
                     .await
+                    .map(|outcome| outcome.task().clone())
             } else {
                 manager.stop_task(&task.id, terminal_reason).await
             };
@@ -592,6 +623,7 @@ pub(super) async fn execute_task_directly(
         ai_exit_reason,
         result.output_text,
         result.session_id,
+        result.goal_channel_delivery_expected,
     ))
 }
 
@@ -603,7 +635,6 @@ pub(super) async fn stop_task_internal(
     tasks: &Arc<RwLock<HashMap<String, CronTask>>>,
     task_id: &str,
     exit_reason: Option<String>,
-    goal_terminal_status: Option<GoalStatus>,
 ) {
     // Get session ID before updating status
     let session_id = {
@@ -660,36 +691,15 @@ pub(super) async fn stop_task_internal(
     }
 
     // Update task status
-    let stopped_goal_task = {
+    {
         let mut tasks_guard = tasks.write().await;
         if let Some(task) = tasks_guard.get_mut(task_id) {
-            let is_goal = is_goal_task(task);
             let now = Utc::now();
             task.status = TaskStatus::Stopped;
             task.exit_reason = exit_reason.clone();
-            if is_goal {
-                let next_goal_status = task
-                    .goal_status
-                    .as_ref()
-                    .filter(|status| is_goal_terminal(status))
-                    .cloned()
-                    .or(goal_terminal_status)
-                    .unwrap_or(GoalStatus::Canceled);
-                task.goal_status = Some(next_goal_status);
-                if task.goal_terminal_reason.is_none() {
-                    task.goal_terminal_reason = exit_reason.clone();
-                }
-                task.goal_paused_reason = None;
-                task.goal_updated_at = Some(now);
-                task.updated_at = now;
-                Some(task.clone())
-            } else {
-                None
-            }
-        } else {
-            None
+            task.updated_at = now;
         }
-    };
+    }
 
     // Save to disk atomically (prevents data corruption on crash)
     if let Some(parent) = dirs::home_dir() {
@@ -708,21 +718,6 @@ pub(super) async fn stop_task_internal(
         }),
     );
 
-    if let Some(task) = stopped_goal_task.as_ref() {
-        let _ = handle.emit(
-            "goal:changed",
-            serde_json::json!({
-                "changeKind": "terminal",
-                "taskId": task.id,
-                "sessionId": task.session_id,
-                "workspacePath": task.workspace_path,
-                "goalStatus": task.goal_status.as_ref().map(goal_status_wire),
-                "goal": task,
-            }),
-        );
-        send_goal_terminal_notification(handle, task);
-    }
-
     // PRD §11 — propagate completion to Task Center if this CronTask is linked
     // to a Task (best-effort, failures logged).
     crate::task::mark_cron_completion_if_linked(task_id, exit_reason.as_deref()).await;
@@ -732,6 +727,9 @@ pub(super) async fn stop_task_internal(
 
 /// Send system notification for terminal Goal status.
 pub(super) fn send_goal_terminal_notification(handle: &AppHandle, task: &CronTask) {
+    if !should_send_goal_terminal_notification(task) {
+        return;
+    }
     let status = task.goal_status.as_ref();
     let title = match status {
         Some(GoalStatus::Complete) => "目标已完成",
@@ -781,6 +779,14 @@ pub(super) fn send_goal_terminal_notification(handle: &AppHandle, task: &CronTas
         navigation,
         Some(badge_increment),
     );
+}
+
+pub(super) fn should_send_goal_terminal_notification(task: &CronTask) -> bool {
+    task.notify_enabled
+        && task
+            .goal_status
+            .as_ref()
+            .is_some_and(GoalStatus::is_terminal)
 }
 
 /// Send system notification for task execution

@@ -42,6 +42,22 @@ describe('systemReminder', () => {
     expect(stripLeadingSystemReminder(raw)).toBe('Summarize this');
   });
 
+  it('keeps the outer badge but strips nested reminder envelopes from visible text', () => {
+    const floating = `${buildFloatingBallContextReminder({ appName: 'Safari' })}\n\nVisible request`;
+    const raw = buildGoalContextReminder({
+      objective: 'Finish the task',
+      goalId: 'goal_nested',
+      goalStatus: 'active',
+      turnNumber: 2,
+      visibleUserMessage: floating,
+    });
+
+    const parsed = parseLeadingSystemReminder(raw);
+    expect(parsed.kind).toBe(GOAL_CONTEXT_TAG);
+    expect(parsed.visibleText).toBe('Visible request');
+    expect(stripLeadingSystemReminder(raw)).toBe('Visible request');
+  });
+
   it('parses mixed cron reminders with hidden operational context and visible task text', () => {
     const raw = [
       '<system-reminder>',
@@ -149,4 +165,21 @@ describe('systemReminder', () => {
     expect(parsed.visibleText).toBe('');
     expect(stripLeadingSystemReminder(raw)).toBe('');
   });
+
+  it('removes every autonomous terminal command when Goal exit is disabled', () => {
+    const raw = buildGoalContextReminder({
+      objective: 'Keep working',
+      goalId: 'goal_no_exit',
+      goalStatus: 'active',
+      turnNumber: 2,
+      aiCanExit: false,
+      visibleUserMessage: 'Continue',
+    });
+    const parsed = parseLeadingSystemReminder(raw);
+
+    expect(parsed.body).toContain('disabled autonomous Goal termination');
+    expect(parsed.body).not.toContain('myagents goal update --status');
+    expect(parsed.visibleText).toBe('Continue');
+  });
+
 });

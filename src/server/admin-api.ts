@@ -60,6 +60,7 @@ import { readLoopbackJson } from './utils/loopback-response';
 import { ADMIN_LOOPBACK_TIMEOUT_MS, managementApi } from './utils/management-api-client';
 import { getCuseDiagnostics } from './utils/cuse-diagnostics';
 import { getSessionEngine } from './session-engine';
+import { getGoalTurnAuthority } from './session-engine/goal-turn-authority';
 
 // Long-running sidecar operations need their own budget. Anchored to the
 // sidecar's internal `FETCH_TIMEOUT_MS` (300s for tarball download) plus a
@@ -1786,9 +1787,13 @@ Do not infer Goal Mode from an ordinary complex request.
 
 Commands:
   get | list                               Show the current session Goal
-  create --objective "<objective>"         Create and start a Goal in this session
-  update --status complete --reason "..."  Mark the active Goal complete
-  update --status blocked --reason "..."   Mark the active Goal blocked
+  create --objective-file <path>            Create a Goal from workspace text
+  update --status complete                  Mark the active Goal complete
+  update --status blocked                   Mark the active Goal blocked
+
+Use --reason-file <path> when a terminal reason is needed. Goal objective and
+reason text are file-only inputs so arbitrary user text never enters a shell
+command line.
 
 When to call:
   get
@@ -1823,9 +1828,9 @@ Rules:
 
 Examples:
   myagents goal get
-  myagents goal create --objective "finish the migration and verify tests"
-  myagents goal update --status complete --reason "all requirements verified"
-  myagents goal update --status blocked --reason "missing production credentials"`,
+  myagents goal create --objective-file myagents_files/goal-objective.txt
+  myagents goal update --status complete
+  myagents goal update --status blocked`,
 
   plugin: `myagents plugin — Manage OpenClaw channel plugins (IM adapters from npm)
 
@@ -2413,7 +2418,7 @@ export async function handleCronCreate(payload: Record<string, unknown>): Promis
   if (schedule?.kind === 'loop') {
     return {
       success: false,
-      error: 'Loop schedules are Goal Mode tasks. Use myagents goal create --objective "<objective>" instead of myagents cron add.',
+      error: 'Loop schedules are Goal Mode tasks. Use myagents goal create --objective-file <path> after writing the objective to that file; do not use myagents cron add.',
     };
   }
 
@@ -2610,10 +2615,17 @@ export async function handleGoalUpdate(payload: {
   }
   const ctx = currentGoalContext();
   if (ctx.error || !ctx.sessionId) return { success: false, error: ctx.error };
+  const authority = getGoalTurnAuthority(ctx.sessionId);
+  if (!authority) {
+    return { success: false, error: 'Goal terminal update requires the active Goal turn authority' };
+  }
   const reason = payload.reason?.trim() || (status === 'complete' ? 'Goal achieved' : 'Goal blocked');
   const resp = await managementApi('/api/goal/update', 'POST', {
     sessionId: ctx.sessionId,
     workspacePath: ctx.workspacePath,
+    goalId: authority.goalId,
+    ...(authority.leaseId ? { leaseId: authority.leaseId } : {}),
+    ...(authority.admissionId ? { admissionId: authority.admissionId } : {}),
     status,
     reason,
   });

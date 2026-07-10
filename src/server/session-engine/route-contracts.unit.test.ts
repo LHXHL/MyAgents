@@ -12,6 +12,7 @@ describe('SESSION_ENGINE_ROUTE_CONTRACTS', () => {
       'POST /chat/reset',
       'POST /chat/rewind',
       'POST /chat/external-retry',
+      'POST /api/goal/objective',
       'GET /chat/stream',
       'POST /chat/queue/cancel',
       'POST /chat/queue/force',

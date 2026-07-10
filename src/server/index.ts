@@ -698,6 +698,8 @@ import {
   getSessionEngine,
   stopActiveTurn,
 } from './session-engine';
+import { goalOrchestrator } from './session-engine/goal-orchestrator';
+import { cancelPendingGoalDispatches } from './session-engine/goal-turn-authority';
 import { handleSessionEngineQueueRoute } from './routes/session-engine-queue';
 import { handleSessionEngineRuntimeRoute } from './routes/session-engine-runtime';
 import { handleSessionReadRoute } from './routes/session-read';
@@ -1075,6 +1077,9 @@ type CronExecutePayload = {
   goalUpdatedAt?: string;
   goalTerminalReason?: string;
   goalPausedReason?: string;
+  /** Pending scheduler lease. Sidecar claims it only at a clean turn boundary. */
+  goalLeaseId?: string;
+  goalExpectedRevision?: number;
 };
 
 function systemMaintenanceKindFromCronPayload(payload: CronExecutePayload): SystemMaintenanceSessionKind | undefined {
@@ -2481,7 +2486,7 @@ async function main() {
           const providerLabel = typeof providerEnv === 'object' ? providerEnv?.baseUrl ?? 'anthropic' : (providerEnv ?? 'anthropic');
           const runtimeLabel = engine.kind === 'external' ? getActiveRuntimeType() : 'builtin';
           console.log(`[chat] send via ${runtimeLabel}: text="${text.slice(0, 200)}" images=${images.length} mode=${permissionMode} model=${model ?? 'default'} baseUrl=${providerLabel}`);
-          const result = await engine.sendDesktopMessage({
+          const result = await goalOrchestrator.sendDesktopMessage(engine, {
             text,
             images,
             permissionMode,
@@ -2527,6 +2532,45 @@ async function main() {
             500
           );
         }
+      }
+
+      if (pathname === '/api/goal/objective' && request.method === 'POST') {
+        try {
+          const payload = (await request.json()) as { objective?: string; sessionId?: string };
+          const objective = payload.objective?.trim() ?? '';
+          if (!objective) {
+            return jsonResponse({ success: false, error: 'Goal objective is required.' }, 400);
+          }
+          const engine = getSessionEngine();
+          const runtimeSessionId = getRuntimeSessionIdForRequest();
+          if (payload.sessionId && payload.sessionId !== runtimeSessionId) {
+            return jsonResponse({ success: false, error: 'Goal session does not match the active Sidecar session.' }, 409);
+          }
+          const sessionMeta = getSessionMetadata(runtimeSessionId);
+          const scenario = goalContinuationScenarioForSession(sessionMeta);
+          const analyticsOrigin = normalizeSessionOrigin(sessionMeta?.origin)
+            ?? { kind: 'desktop' as const, surface: 'unknown' as const };
+          const result = await goalOrchestrator.updateObjective(engine, {
+            sessionId: runtimeSessionId,
+            workspacePath: agentDir,
+            objective,
+            turnRequest: {
+              scenario,
+              analyticsOrigin,
+            },
+          });
+          return jsonResponse(result, result.success ? 200 : (result.status ?? 500));
+        } catch (error) {
+          return jsonResponse({
+            success: false,
+            error: error instanceof Error ? error.message : 'Failed to update Goal objective',
+          }, 500);
+        }
+      }
+
+      if (pathname === '/api/goal/dispatch/cancel' && request.method === 'POST') {
+        cancelPendingGoalDispatches();
+        return jsonResponse({ success: true });
       }
 
       // ─── Runtime API endpoints (v0.1.59) ───
@@ -2764,6 +2808,7 @@ async function main() {
         }
 
         const { taskId, prompt, aiCanExit, model, providerEnv, intervalMinutes, executionNumber } = payload;
+        const isCurrentSessionGoal = (payload.runMode ?? 'single_session') === 'single_session' && Boolean(payload.goalStatus);
         const cronTurnOrigin: SessionOrigin = {
           kind: 'automation',
           surface: payload.taskCenterTaskId ? 'task_run' : 'cron',
@@ -2771,6 +2816,13 @@ async function main() {
 
         if (!taskId || !prompt) {
           return jsonResponse({ success: false, error: 'taskId and prompt are required.' }, 400);
+        }
+        if (isCurrentSessionGoal) {
+          return jsonResponse({
+            success: false,
+            error: 'Goal continuations require the lease-aware /cron/execute-sync path.',
+            code: 'goal_requires_sync',
+          }, 409);
         }
 
         // Get current session ID for context isolation
@@ -2783,8 +2835,6 @@ async function main() {
           });
         }
 
-        // Set cron task context so the exit_cron_task tool knows which task is running
-        // Pass sessionId for proper isolation between concurrent tasks
         setCronTaskContext(taskId, aiCanExit ?? false, currentSessionId);
 
         // Set interaction scenario for cron task (L1 + L2-desktop + L3-cron)
@@ -3077,9 +3127,7 @@ async function main() {
         // Handle session setup based on runMode
         const effectiveRunMode = runMode ?? 'single_session';
         const isCurrentSessionGoal =
-          payload.scheduleKind === 'loop' &&
-          effectiveRunMode === 'single_session' &&
-          Boolean(payload.goalStatus);
+          effectiveRunMode === 'single_session' && Boolean(payload.goalStatus);
         const { agentDir } = getAgentState();
         const managedCodexReady = isManagedCodexProviderReady(loadConfig());
 
@@ -3221,6 +3269,14 @@ async function main() {
             console.log(`[cron] execute-sync taskId=${taskId} attempting to switch to session ${sessionId}`);
             const switched = await switchToSession(sessionId);
             if (!switched) {
+              if (isCurrentSessionGoal) {
+                clearCronTaskContext(effectiveSessionId);
+                resetInteractionScenario();
+                return jsonResponse({
+                  success: false,
+                  error: `Goal Sidecar is not bound to its owning session ${sessionId}.`,
+                }, 409);
+              }
               console.warn(`[cron] execute-sync taskId=${taskId} failed to switch to session ${sessionId}, will use current session instead`);
               // Log current session state for debugging
               const currentState = getAgentState();
@@ -3235,6 +3291,14 @@ async function main() {
               ...(existing?.origin ? {} : { origin: cronTurnOrigin }),
               cronTaskId: taskId,
             });
+          }
+          if (isCurrentSessionGoal && getSessionId() !== sessionId) {
+            clearCronTaskContext(effectiveSessionId);
+            resetInteractionScenario();
+            return jsonResponse({
+              success: false,
+              error: `Goal Sidecar session mismatch: expected ${sessionId}, active ${getSessionId() || '(none)'}.`,
+            }, 409);
           }
         } else {
           console.log(`[cron] execute-sync taskId=${taskId} no sessionId provided, using current session`);
@@ -3279,7 +3343,15 @@ async function main() {
         let effectiveProviderRoute: ProviderRoute | undefined;
         let effectiveRuntimeConfig = payload.runtimeConfig;
 
-        if (payload.providerId) {
+        if (isCurrentSessionGoal) {
+          // Goal execution follows the active Session. Do not even resolve
+          // task-captured routing here: a provider removed after Goal creation
+          // must not fail a turn that has since switched to another provider.
+          effectiveModel = undefined;
+          effectiveProviderEnv = undefined;
+          effectiveProviderRoute = undefined;
+          effectiveRuntimeConfig = undefined;
+        } else if (payload.providerId) {
           // PRD 0.2.9 — Per-tick live-resolve.
           try {
             effectiveProviderEnv = resolveCronProviderRouting(payload.providerId);
@@ -3462,10 +3534,13 @@ async function main() {
           return jsonResponse({ success: false, error: errMsg }, 400);
         }
 
-        // Set cron task context so the exit_cron_task tool knows which task is running
-        // Pass sessionId for proper isolation between concurrent tasks
-        setCronTaskContext(taskId, aiCanExit ?? false, effectiveSessionId);
-        console.log(`[cron] execute-sync: cron context set for taskId=${taskId}`);
+        // Explicit Goals use `myagents goal update`, which is resolved from
+        // the current session. The legacy cron exit context must never be
+        // present in a Goal turn.
+        if (!isCurrentSessionGoal) {
+          setCronTaskContext(taskId, aiCanExit ?? false, effectiveSessionId);
+          console.log(`[cron] execute-sync: cron context set for taskId=${taskId}`);
+        }
 
         const goalSessionMeta = isCurrentSessionGoal
           ? getSessionMetadata(effectiveSessionId ?? getSessionId())
@@ -3528,7 +3603,14 @@ async function main() {
             cronRuntimeType,
           );
 
-          if (engine.kind === 'builtin') {
+          if (isCurrentSessionGoal) {
+            const ensured = await engine.ensureGoalSessionConfig();
+            if (!ensured.success) {
+              clearCronTaskContext(effectiveSessionId);
+              resetInteractionScenario();
+              return jsonResponse({ success: false, error: ensured.error ?? 'Failed to restore Goal session configuration' }, 503);
+            }
+          } else if (engine.kind === 'builtin') {
             // PRD 0.2.4 §需求 4 — reconcile MCP set + run the turn under
             // a single locked critical section so two concurrent cron
             // ticks never interleave their abort/restart with each
@@ -3590,22 +3672,66 @@ async function main() {
           // PRD 0.2.5 R2: effectivePermissionMode resolved above via
           // resolveCronPermissionMode. `runInjectedTurn` owns the runtime
           // dispatch, finalization wait, and success gate for builtin/external.
-          const turnResult = await engine.runInjectedTurn({
+          const runInjectedGoalOrCronTurn = (beforeDispatch?: import('./session-core/turn-queue').DispatchGuard) => engine.runInjectedTurn({
             prompt: wrappedPrompt,
             sessionId: getRuntimeSessionIdForRequest(),
             workspacePath: agentDir,
             scenario: turnScenario,
             permissionMode: effectivePermissionMode,
-            model: engine.kind === 'external'
-              ? getRuntimeConfigModel(effectiveRuntimeConfig ?? null)
-              : effectiveModel,
-            providerRoute: engine.kind === 'builtin' ? effectiveProviderRoute : undefined,
-            providerEnv: engine.kind === 'builtin' ? effectiveProviderEnv : undefined,
-            runtimeConfig: effectiveRuntimeConfig ?? null,
+            // A Goal belongs to this Session. Its live SessionEngine config is
+            // authoritative; task-captured config would become stale after a
+            // user changes model/provider/runtime/MCP while the Goal is active.
+            model: isCurrentSessionGoal
+              ? undefined
+              : (engine.kind === 'external'
+                ? getRuntimeConfigModel(effectiveRuntimeConfig ?? null)
+                : effectiveModel),
+            providerRoute: !isCurrentSessionGoal && engine.kind === 'builtin' ? effectiveProviderRoute : undefined,
+            providerEnv: !isCurrentSessionGoal && engine.kind === 'builtin' ? effectiveProviderEnv : undefined,
+            runtimeConfig: isCurrentSessionGoal ? null : (effectiveRuntimeConfig ?? null),
             analyticsOrigin: turnOrigin,
             timeoutMs: 3600000,
             pollMs: 1000,
+            turnBoundaryOnly: isCurrentSessionGoal,
+            beforeDispatch,
           });
+          let turnResult: Awaited<ReturnType<typeof runInjectedGoalOrCronTurn>>;
+          if (isCurrentSessionGoal) {
+            if (!payload.goalLeaseId || payload.goalExpectedRevision === undefined) {
+              clearCronTaskContext(effectiveSessionId);
+              resetInteractionScenario();
+              return jsonResponse({
+                success: false,
+                error: 'Goal scheduler payload is missing goalLeaseId or goalExpectedRevision.',
+                code: 'stale_lease',
+              }, 409);
+            }
+            const claimedRun = await goalOrchestrator.runClaimedSchedulerTurn(
+              engine,
+              {
+                sessionId: effectiveSessionId ?? getRuntimeSessionIdForRequest(),
+                workspacePath: agentDir,
+                goalId: taskId,
+                leaseId: payload.goalLeaseId,
+                expectedRevision: payload.goalExpectedRevision,
+                timeoutMs: 3_600_000,
+                pollMs: 100,
+              },
+              (beforeDispatch) => runInjectedGoalOrCronTurn(beforeDispatch),
+            );
+            if (!claimedRun.success) {
+              clearCronTaskContext(effectiveSessionId);
+              resetInteractionScenario();
+              return jsonResponse({
+                success: false,
+                error: claimedRun.error,
+                ...(claimedRun.code ? { code: claimedRun.code } : {}),
+              }, claimedRun.status);
+            }
+            turnResult = claimedRun.value;
+          } else {
+            turnResult = await runInjectedGoalOrCronTurn();
+          }
           if (!turnResult.success) {
             console.warn(`[cron] execute-sync taskId=${taskId} failed via ${engine.kind}: ${turnResult.error ?? 'Unknown error'}`);
             clearCronTaskContext(effectiveSessionId);
@@ -3622,7 +3748,7 @@ async function main() {
           let aiRequestedExit = false;
           let exitReason: string | undefined;
 
-          if (textContent) {
+          if (!isCurrentSessionGoal && textContent) {
             const completionMatch = textContent.match(CRON_TASK_COMPLETE_PATTERN);
             if (completionMatch) {
               aiRequestedExit = true;
@@ -3637,10 +3763,12 @@ async function main() {
             }
           }
 
-          const exitRequest = consumeCronTaskExitRequest(effectiveSessionId);
-          if (exitRequest) {
-            aiRequestedExit = true;
-            exitReason = exitRequest.reason;
+          if (!isCurrentSessionGoal) {
+            const exitRequest = consumeCronTaskExitRequest(effectiveSessionId);
+            if (exitRequest) {
+              aiRequestedExit = true;
+              exitReason = exitRequest.reason;
+            }
           }
 
           // Clear cron task context after execution
@@ -3660,6 +3788,7 @@ async function main() {
             exitReason,
             outputText: textContent || undefined,
             sessionId: actualSessionId,
+            goalChannelDeliveryExpected: isCurrentSessionGoal && turnOrigin.kind === 'agent-channel',
           };
           console.log(`[cron] execute-sync taskId=${taskId} returning response:`, JSON.stringify(response));
           return jsonResponse(response);
@@ -8722,7 +8851,7 @@ async function main() {
             const resolvedExternalReasoningEffort = snapshotResolvedConfig
               ? snapshotResolvedConfig.reasoningEffort
               : (heldImConfig?.reasoningEffort ?? getRuntimeConfigReasoningEffort(runtimeConfig, effectiveRuntime));
-            const result = await engine.enqueueImMessage({
+            const result = await goalOrchestrator.enqueueImMessage(engine, {
               message: finalMessage,
               images: payload.images ?? undefined,
               requestId: payload.requestId,
@@ -8817,7 +8946,7 @@ async function main() {
             }
 
             applyBackgroundAgentPermissionModeFromDisk(); // #264 — IM/Cron self-resolve
-            const result = await engine.enqueueImMessage({
+            const result = await goalOrchestrator.enqueueImMessage(engine, {
               message: finalMessage,
               images: payload.images,
               requestId: payload.requestId,

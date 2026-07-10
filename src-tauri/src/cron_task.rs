@@ -72,8 +72,10 @@ use store::{atomic_save_task_snapshot, atomic_save_tasks};
 use types::default_permission_mode;
 use types::CronTaskStore;
 pub use types::{
-    CronDelivery, CronSchedule, CronTask, CronTaskConfig, EndConditions, GoalPausedReason,
-    GoalStatus, ProviderIntent, RecurringWindow, RunMode, TaskProviderEnv, TaskStatus,
+    CronDelivery, CronSchedule, CronTask, CronTaskConfig, EndConditions, GoalDeliveryOutboxItem,
+    GoalDeliveryState, GoalPausedReason, GoalStatus, GoalTerminalActor, GoalTerminalOutcome,
+    GoalTurnLease, GoalTurnLeaseState, GoalUserAdmission, GoalUserAdmissionKind,
+    GoalUserAdmissionState, ProviderIntent, RecurringWindow, RunMode, TaskProviderEnv, TaskStatus,
 };
 pub(crate) use validation::normalize_path;
 pub use validation::validate_cron_expression;
@@ -126,6 +128,11 @@ mod cron_dialect_tests {
             goal_updated_at: None,
             goal_terminal_reason: None,
             goal_paused_reason: None,
+            goal_revision: 0,
+            goal_control_revision: 0,
+            goal_turn_lease: None,
+            goal_user_admissions: Vec::new(),
+            goal_delivery_outbox: Vec::new(),
         }
     }
 
@@ -139,6 +146,7 @@ mod cron_dialect_tests {
             executing_tasks: Arc::new(RwLock::new(HashSet::new())),
             active_schedulers: Arc::new(RwLock::new(HashSet::new())),
             scheduler_handles: Arc::new(RwLock::new(HashMap::new())),
+            goal_delivery_replayers: Arc::new(RwLock::new(HashSet::new())),
             app_handle: Arc::new(RwLock::new(None)),
         }
     }
@@ -154,6 +162,7 @@ mod cron_dialect_tests {
             executing_tasks: Arc::new(RwLock::new(HashSet::new())),
             active_schedulers: Arc::new(RwLock::new(HashSet::new())),
             scheduler_handles: Arc::new(RwLock::new(HashMap::new())),
+            goal_delivery_replayers: Arc::new(RwLock::new(HashSet::new())),
             app_handle: Arc::new(RwLock::new(None)),
         }
     }
@@ -232,6 +241,8 @@ mod cron_dialect_tests {
         task.status = task_status;
         task.goal_status = Some(goal_status);
         task.goal_objective = Some("finish the goal".to_string());
+        task.goal_revision = 1;
+        task.goal_control_revision = 1;
         task
     }
 
@@ -246,6 +257,21 @@ mod cron_dialect_tests {
             .expect_err("terminal goals must not restart");
 
         assert!(err.contains("Terminal Goal"));
+    }
+
+    #[tokio::test]
+    async fn ordinary_stop_cannot_reinterpret_an_explicit_goal() {
+        let task = sample_goal_task("goal-stop", TaskStatus::Running, GoalStatus::Active);
+        let manager = test_manager_with_task(task);
+
+        let err = manager
+            .stop_task("goal-stop", Some("ordinary stop".to_string()))
+            .await
+            .expect_err("ordinary stop must reject Goal tasks");
+        let stored = manager.get_task("goal-stop").await.expect("Goal remains");
+        assert!(err.contains("Goal controls"));
+        assert_eq!(stored.status, TaskStatus::Running);
+        assert_eq!(stored.goal_status, Some(GoalStatus::Active));
     }
 
     #[tokio::test]
@@ -310,6 +336,7 @@ mod cron_dialect_tests {
                 executing_tasks: Arc::new(RwLock::new(HashSet::new())),
                 active_schedulers: Arc::new(RwLock::new(HashSet::new())),
                 scheduler_handles: Arc::new(RwLock::new(HashMap::new())),
+                goal_delivery_replayers: Arc::new(RwLock::new(HashSet::new())),
                 app_handle: Arc::new(RwLock::new(None)),
             }
         };
@@ -363,6 +390,794 @@ mod cron_dialect_tests {
             .expect("loop-shaped non-Goal tasks remain available to internal owners");
         assert_eq!(created.schedule, Some(CronSchedule::Loop));
         assert_eq!(created.goal_status, None);
+    }
+
+    #[tokio::test]
+    async fn concurrent_goal_creates_commit_only_one_unfinished_goal() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager =
+            test_manager_with_storage(HashMap::new(), temp.path().join("cron_tasks.json"));
+        let mut first = sample_cron_config("/tmp/goal-race", "session-race");
+        first.schedule = Some(CronSchedule::Loop);
+        first.goal_status = Some(GoalStatus::Active);
+        first.goal_objective = Some("first objective".to_string());
+        let mut second = first.clone();
+        second.prompt = "second objective".to_string();
+        second.goal_objective = Some("second objective".to_string());
+
+        let (first_result, second_result) =
+            tokio::join!(manager.create_task(first), manager.create_task(second));
+        assert_ne!(first_result.is_ok(), second_result.is_ok());
+        assert_eq!(
+            manager
+                .get_all_tasks()
+                .await
+                .into_iter()
+                .filter(CronTask::is_goal)
+                .count(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn create_task_disk_failure_does_not_leave_ghost_task() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = test_manager_with_storage(HashMap::new(), temp.path().to_path_buf());
+        let config = sample_cron_config("/tmp/save-failure", "session-save-failure");
+
+        manager
+            .create_task(config)
+            .await
+            .expect_err("renaming a task snapshot over a directory must fail");
+        assert!(manager.get_all_tasks().await.is_empty());
+    }
+
+    #[test]
+    fn goal_identity_requires_explicit_status() {
+        let mut loop_task = sample_task("loop", "/tmp/goal-workspace");
+        loop_task.schedule = Some(CronSchedule::Loop);
+        loop_task.goal_objective = Some("orphaned objective".to_string());
+        assert!(!loop_task.is_goal());
+
+        loop_task.goal_status = Some(GoalStatus::Active);
+        assert!(loop_task.is_goal());
+    }
+
+    #[test]
+    fn goal_admission_event_distinguishes_resume_from_active_turn() {
+        assert_eq!(manager::goal_admission_change_kind(false), "turn_admitted");
+        assert_eq!(manager::goal_admission_change_kind(true), "resumed");
+    }
+
+    #[test]
+    fn goal_revisions_default_for_persisted_pre_revision_tasks() {
+        let task = sample_goal_task("goal-old", TaskStatus::Running, GoalStatus::Active);
+        let mut value = serde_json::to_value(task).expect("serialize task");
+        let object = value.as_object_mut().expect("task object");
+        object.remove("goalRevision");
+        object.remove("goalControlRevision");
+        let restored: CronTask = serde_json::from_value(value).expect("deserialize old task");
+        assert_eq!(restored.goal_revision, 0);
+        assert_eq!(restored.goal_control_revision, 0);
+    }
+
+    #[test]
+    fn startup_recovery_revokes_turn_authorities_and_requeues_terminal_outbox() {
+        let mut task = sample_goal_task("goal-recovery", TaskStatus::Stopped, GoalStatus::Complete);
+        let now = Utc::now();
+        task.goal_turn_lease = Some(GoalTurnLease {
+            id: "claimed-before-crash".to_string(),
+            turn_number: 1,
+            state: GoalTurnLeaseState::Claimed,
+            created_at: now,
+        });
+        task.goal_user_admissions.push(GoalUserAdmission {
+            id: "user-before-crash".to_string(),
+            revision: task.goal_revision,
+            turn_number: 2,
+            state: GoalUserAdmissionState::Dispatched,
+            created_at: now,
+            state_updated_at: Some(now),
+        });
+        task.goal_delivery_outbox.push(GoalDeliveryOutboxItem {
+            id: "goal_delivery_claimed-before-crash".to_string(),
+            lease_id: "claimed-before-crash".to_string(),
+            session_id: task.session_id.clone(),
+            text: "deliver after restart".to_string(),
+            state: GoalDeliveryState::Sending,
+            attempts: 1,
+            created_at: now,
+            last_error: None,
+        });
+        let initial_revision = task.goal_revision;
+        let initial_control_revision = task.goal_control_revision;
+        let mut tasks = HashMap::from([(task.id.clone(), task)]);
+
+        assert_eq!(
+            CronTaskManager::recover_goal_leases_and_outbox(&mut tasks),
+            3
+        );
+        let recovered = tasks.get("goal-recovery").expect("recovered Goal");
+        assert!(recovered.goal_turn_lease.is_none());
+        assert!(recovered.goal_user_admissions.is_empty());
+        assert_eq!(
+            recovered.goal_delivery_outbox[0].state,
+            GoalDeliveryState::Pending
+        );
+        assert_eq!(recovered.goal_revision, initial_revision + 1);
+        assert_eq!(recovered.goal_control_revision, initial_control_revision);
+    }
+
+    #[tokio::test]
+    async fn goal_turn_authorities_are_two_phase_and_user_can_queue_behind_auto_turn() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let task = sample_goal_task("goal-admit", TaskStatus::Running, GoalStatus::Active);
+        let manager =
+            test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
+
+        let prepared = manager
+            .admit_goal_scheduler_turn("goal-admit", 1)
+            .await
+            .expect("active Goal prepares scheduler candidate");
+        let unchanged = manager.get_task("goal-admit").await.expect("stored Goal");
+        assert_eq!(unchanged.execution_count, 0);
+        assert_eq!(unchanged.goal_revision, 1);
+        assert!(unchanged.goal_turn_lease.is_none());
+
+        let claimed = manager
+            .claim_goal_scheduler_turn("goal-admit", &prepared.lease.id, 1)
+            .await
+            .expect("idle-boundary claim commits the auto turn");
+        assert_eq!(claimed.execution_count, 1);
+        assert_eq!(claimed.goal_revision, 2);
+        assert_eq!(
+            claimed.goal_turn_lease.as_ref().map(|lease| &lease.state),
+            Some(&GoalTurnLeaseState::Claimed)
+        );
+
+        let (reserved, admission, _) = manager
+            .reserve_goal_user_admission(
+                "goal-admit",
+                "user-1",
+                claimed.goal_revision,
+                GoalUserAdmissionKind::UserQuery,
+            )
+            .await
+            .expect("one user turn may queue behind a claimed auto turn");
+        assert_eq!(reserved.execution_count, 1);
+        assert_eq!(admission.turn_number, 2);
+        assert_eq!(admission.state, GoalUserAdmissionState::Pending);
+        assert!(reserved.goal_turn_lease.is_some());
+
+        let finalized_auto = manager
+            .finalize_goal_scheduler_turn(
+                "goal-admit",
+                &prepared.lease.id,
+                true,
+                None,
+                5,
+                None,
+                None,
+                false,
+            )
+            .await
+            .expect("auto turn finalizes");
+        assert!(finalized_auto.applied);
+        assert_eq!(finalized_auto.task.goal_user_admissions.len(), 1);
+
+        manager
+            .claim_goal_user_admission("goal-admit", "user-1")
+            .await
+            .expect("queued user turn claims immediately before dispatch");
+        let (dispatched, resumed) = manager
+            .finalize_goal_user_admission("goal-admit", "user-1", true)
+            .await
+            .expect("transport acceptance commits user turn");
+        assert!(!resumed);
+        assert_eq!(dispatched.execution_count, 2);
+        assert_eq!(
+            dispatched
+                .goal_user_admissions
+                .first()
+                .map(|admission| &admission.state),
+            Some(&GoalUserAdmissionState::Dispatched)
+        );
+        let released = manager
+            .release_goal_user_admission("goal-admit", "user-1")
+            .await
+            .expect("turn-idle release clears user authority");
+        assert!(released.goal_user_admissions.is_empty());
+
+        manager
+            .pause_goal_task("goal-admit", GoalPausedReason::UserStop)
+            .await
+            .expect("pause Goal");
+        let paused = manager.get_task("goal-admit").await.expect("paused Goal");
+        assert!(manager
+            .admit_goal_scheduler_turn("goal-admit", paused.goal_revision)
+            .await
+            .is_err());
+
+        let (_, admission, _) = manager
+            .reserve_goal_user_admission(
+                "goal-admit",
+                "user-resume",
+                paused.goal_revision,
+                GoalUserAdmissionKind::UserQuery,
+            )
+            .await
+            .expect("paused Goal reserves a user turn without resuming yet");
+        assert_eq!(admission.state, GoalUserAdmissionState::Pending);
+        manager
+            .claim_goal_user_admission("goal-admit", "user-resume")
+            .await
+            .expect("paused user turn claims before dispatch");
+        let (second, resumed) = manager
+            .finalize_goal_user_admission("goal-admit", "user-resume", true)
+            .await
+            .expect("accepted user ingress resumes Goal");
+        assert!(resumed);
+        assert_eq!(second.goal_status, Some(GoalStatus::Active));
+        assert_eq!(second.execution_count, 3);
+    }
+
+    #[tokio::test]
+    async fn goal_terminal_transition_is_actor_aware_and_first_writer_wins() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let mut task =
+            sample_goal_task("goal-terminal-cas", TaskStatus::Running, GoalStatus::Active);
+        task.end_conditions.ai_can_exit = false;
+        let manager =
+            test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
+
+        let prepared = manager
+            .admit_goal_scheduler_turn("goal-terminal-cas", 1)
+            .await
+            .expect("prepare authority");
+        manager
+            .claim_goal_scheduler_turn("goal-terminal-cas", &prepared.lease.id, 1)
+            .await
+            .expect("claim authority");
+        let model_error = manager
+            .transition_goal_terminal_authorized(
+                "goal-terminal-cas",
+                GoalStatus::Complete,
+                Some("model done".to_string()),
+                GoalTerminalActor::Model,
+                &prepared.lease.id,
+            )
+            .await
+            .expect_err("aiCanExit=false rejects model terminal transition");
+        assert!(model_error.contains("does not allow AI"));
+
+        let applied = manager
+            .transition_goal_terminal(
+                "goal-terminal-cas",
+                GoalStatus::Blocked,
+                Some("system guard".to_string()),
+                GoalTerminalActor::System,
+            )
+            .await
+            .expect("system guard bypasses aiCanExit");
+        assert!(applied.was_applied());
+        assert_eq!(applied.task().goal_status, Some(GoalStatus::Blocked));
+
+        let repeated = manager
+            .transition_goal_terminal(
+                "goal-terminal-cas",
+                GoalStatus::Complete,
+                Some("late completion".to_string()),
+                GoalTerminalActor::System,
+            )
+            .await
+            .expect("terminal retry is idempotent");
+        assert!(!repeated.was_applied());
+        assert_eq!(repeated.task().goal_status, Some(GoalStatus::Blocked));
+        assert_eq!(
+            repeated.task().goal_terminal_reason.as_deref(),
+            Some("system guard")
+        );
+    }
+
+    #[tokio::test]
+    async fn model_terminal_transition_succeeds_when_ai_exit_is_enabled() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let mut task = sample_goal_task(
+            "goal-model-complete",
+            TaskStatus::Running,
+            GoalStatus::Active,
+        );
+        task.end_conditions.ai_can_exit = true;
+        let manager =
+            test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
+
+        let prepared = manager
+            .admit_goal_scheduler_turn("goal-model-complete", 1)
+            .await
+            .expect("prepare authority");
+        manager
+            .claim_goal_scheduler_turn("goal-model-complete", &prepared.lease.id, 1)
+            .await
+            .expect("claim authority");
+        let outcome = manager
+            .transition_goal_terminal_authorized(
+                "goal-model-complete",
+                GoalStatus::Complete,
+                Some("verified".to_string()),
+                GoalTerminalActor::Model,
+                &prepared.lease.id,
+            )
+            .await
+            .expect("model can complete when aiCanExit is enabled");
+        assert!(outcome.was_applied());
+        assert_eq!(outcome.task().status, TaskStatus::Stopped);
+        assert_eq!(outcome.task().goal_status, Some(GoalStatus::Complete));
+    }
+
+    #[tokio::test]
+    async fn model_terminal_from_user_turn_retains_owner_until_admission_release() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let mut task = sample_goal_task(
+            "goal-user-complete",
+            TaskStatus::Running,
+            GoalStatus::Active,
+        );
+        task.end_conditions.ai_can_exit = true;
+        let manager =
+            test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
+
+        let (_, reserved, _) = manager
+            .reserve_goal_user_admission(
+                "goal-user-complete",
+                "user-completion-turn",
+                1,
+                GoalUserAdmissionKind::UserQuery,
+            )
+            .await
+            .expect("reserve user turn");
+        manager
+            .claim_goal_user_admission("goal-user-complete", &reserved.id)
+            .await
+            .expect("claim user turn");
+        manager
+            .finalize_goal_user_admission("goal-user-complete", &reserved.id, true)
+            .await
+            .expect("mark user turn dispatched");
+
+        let outcome = manager
+            .transition_goal_terminal_authorized(
+                "goal-user-complete",
+                GoalStatus::Complete,
+                Some("verified from user turn".to_string()),
+                GoalTerminalActor::Model,
+                &reserved.id,
+            )
+            .await
+            .expect("user turn may complete Goal");
+        assert!(outcome.was_applied());
+        assert_eq!(outcome.task().status, TaskStatus::Stopped);
+        assert_eq!(outcome.task().goal_user_admissions.len(), 1);
+        assert_eq!(outcome.task().goal_user_admissions[0].id, reserved.id);
+
+        let released = manager
+            .release_goal_user_admission("goal-user-complete", &reserved.id)
+            .await
+            .expect("release after runtime idle");
+        assert!(released.goal_user_admissions.is_empty());
+        assert_eq!(released.goal_status, Some(GoalStatus::Complete));
+        manager
+            .release_goal_user_admission("goal-user-complete", &reserved.id)
+            .await
+            .expect("release compensation is idempotent");
+    }
+
+    #[tokio::test]
+    async fn objective_update_revokes_claimed_turn_and_rejects_stale_terminal_and_output() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let task = sample_goal_task("goal-stale-turn", TaskStatus::Running, GoalStatus::Active);
+        let manager =
+            test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
+
+        let prepared = manager
+            .admit_goal_scheduler_turn("goal-stale-turn", 1)
+            .await
+            .expect("prepare auto turn");
+        let claimed = manager
+            .claim_goal_scheduler_turn("goal-stale-turn", &prepared.lease.id, 1)
+            .await
+            .expect("claim auto turn");
+        let (updated, invalidated) = manager
+            .update_goal_objective_cas(
+                "goal-stale-turn",
+                "new objective".to_string(),
+                Some(claimed.goal_revision),
+            )
+            .await
+            .expect("objective update wins");
+        assert_eq!(invalidated.as_deref(), Some(prepared.lease.id.as_str()));
+        assert_eq!(updated.goal_objective.as_deref(), Some("new objective"));
+
+        let terminal_error = manager
+            .transition_goal_terminal_authorized(
+                "goal-stale-turn",
+                GoalStatus::Complete,
+                Some("old objective complete".to_string()),
+                GoalTerminalActor::Model,
+                &prepared.lease.id,
+            )
+            .await
+            .expect_err("old turn cannot terminalize the new objective");
+        assert!(terminal_error.starts_with("stale_lease"));
+
+        let finalized = manager
+            .finalize_goal_scheduler_turn(
+                "goal-stale-turn",
+                &prepared.lease.id,
+                true,
+                None,
+                10,
+                Some("old-internal-session".to_string()),
+                Some("stale output".to_string()),
+                true,
+            )
+            .await
+            .expect("stale finalization is a no-op");
+        assert!(!finalized.applied);
+        assert!(finalized.task.goal_delivery_outbox.is_empty());
+        assert!(finalized.task.internal_session_id.is_none());
+        assert_eq!(finalized.task.goal_status, Some(GoalStatus::Active));
+    }
+
+    #[tokio::test]
+    async fn expired_user_reservation_does_not_block_scheduler_claim() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let mut task = sample_goal_task(
+            "goal-expired-admission",
+            TaskStatus::Running,
+            GoalStatus::Active,
+        );
+        let expired_at = Utc::now() - chrono::Duration::minutes(66);
+        task.goal_user_admissions.push(GoalUserAdmission {
+            id: "abandoned-user-turn".to_string(),
+            revision: task.goal_revision,
+            turn_number: 1,
+            state: GoalUserAdmissionState::Pending,
+            created_at: expired_at,
+            state_updated_at: Some(expired_at),
+        });
+        let manager =
+            test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
+
+        let prepared = manager
+            .admit_goal_scheduler_turn("goal-expired-admission", 1)
+            .await
+            .expect("expired reservation does not block candidate preparation");
+        let claimed = manager
+            .claim_goal_scheduler_turn("goal-expired-admission", &prepared.lease.id, 1)
+            .await
+            .expect("atomic claim reaps expired reservation");
+        assert!(claimed.goal_user_admissions.is_empty());
+        assert_eq!(claimed.execution_count, 1);
+    }
+
+    #[tokio::test]
+    async fn user_admission_requires_predispatch_claim_and_pause_invalidates_it() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let task = sample_goal_task("goal-user-gate", TaskStatus::Running, GoalStatus::Active);
+        let manager =
+            test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
+
+        manager
+            .reserve_goal_user_admission(
+                "goal-user-gate",
+                "user-gate",
+                1,
+                GoalUserAdmissionKind::UserQuery,
+            )
+            .await
+            .expect("reserve user turn");
+        let error = manager
+            .finalize_goal_user_admission("goal-user-gate", "user-gate", true)
+            .await
+            .expect_err("transport acceptance cannot bypass predispatch claim");
+        assert!(error.starts_with("stale_admission"));
+
+        manager
+            .claim_goal_user_admission("goal-user-gate", "user-gate")
+            .await
+            .expect("claim user turn");
+        manager
+            .pause_goal_task("goal-user-gate", GoalPausedReason::UserStop)
+            .await
+            .expect("pause invalidates claimed user authority");
+        let stale = manager
+            .finalize_goal_user_admission("goal-user-gate", "user-gate", true)
+            .await
+            .expect_err("stale transport completion cannot resume paused Goal");
+        assert!(stale.starts_with("stale_admission"));
+        let stored = manager
+            .get_task("goal-user-gate")
+            .await
+            .expect("stored Goal");
+        assert_eq!(stored.goal_status, Some(GoalStatus::Paused));
+        assert_eq!(stored.execution_count, 0);
+    }
+
+    #[tokio::test]
+    async fn multiple_user_messages_keep_ordered_independent_authorities() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let task = sample_goal_task("goal-user-queue", TaskStatus::Running, GoalStatus::Active);
+        let manager =
+            test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
+
+        let (after_first, first, _) = manager
+            .reserve_goal_user_admission(
+                "goal-user-queue",
+                "user-first",
+                1,
+                GoalUserAdmissionKind::UserQuery,
+            )
+            .await
+            .expect("reserve first user query");
+        let (_, second, _) = manager
+            .reserve_goal_user_admission_at_objective(
+                "goal-user-queue",
+                "user-second",
+                1,
+                GoalUserAdmissionKind::UserQuery,
+                Some("finish the goal"),
+                Some(1),
+            )
+            .await
+            .expect("same-objective user query tolerates admission revision churn");
+        assert!(after_first.goal_revision > 1);
+        assert_eq!(after_first.goal_control_revision, 1);
+        assert_eq!(first.turn_number, 1);
+        assert_eq!(second.turn_number, 2);
+
+        manager
+            .claim_goal_user_admission("goal-user-queue", "user-first")
+            .await
+            .expect("claim first query");
+        manager
+            .finalize_goal_user_admission("goal-user-queue", "user-first", true)
+            .await
+            .expect("dispatch first query");
+        manager
+            .claim_goal_user_admission("goal-user-queue", "user-second")
+            .await
+            .expect("claim second query");
+        let (after_second, _) = manager
+            .finalize_goal_user_admission("goal-user-queue", "user-second", true)
+            .await
+            .expect("dispatch second query");
+        assert_eq!(after_second.execution_count, 2);
+        assert_eq!(after_second.goal_user_admissions.len(), 2);
+
+        manager
+            .release_goal_user_admission("goal-user-queue", "user-first")
+            .await
+            .expect("release first authority independently");
+        let remaining = manager
+            .get_task("goal-user-queue")
+            .await
+            .expect("stored Goal");
+        assert_eq!(remaining.goal_user_admissions.len(), 1);
+        assert_eq!(remaining.goal_user_admissions[0].id, "user-second");
+        manager
+            .release_goal_user_admission("goal-user-queue", "user-second")
+            .await
+            .expect("release second authority");
+        assert!(manager
+            .get_task("goal-user-queue")
+            .await
+            .expect("stored Goal")
+            .goal_user_admissions
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn goal_control_revision_rejects_a_query_snapshot_taken_before_pause() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let task = sample_goal_task(
+            "goal-control-epoch",
+            TaskStatus::Running,
+            GoalStatus::Active,
+        );
+        let manager =
+            test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
+
+        let paused = manager
+            .pause_goal_task("goal-control-epoch", GoalPausedReason::UserStop)
+            .await
+            .expect("pause Goal");
+        assert_eq!(paused.goal_control_revision, 2);
+
+        let stale = manager
+            .reserve_goal_user_admission_at_objective(
+                "goal-control-epoch",
+                "stale-before-pause",
+                1,
+                GoalUserAdmissionKind::UserQuery,
+                Some("finish the goal"),
+                Some(1),
+            )
+            .await
+            .expect_err("pre-pause query snapshot must not resume the Goal");
+        assert!(stale.starts_with("stale_revision"));
+
+        let (reserved, _, _) = manager
+            .reserve_goal_user_admission_at_objective(
+                "goal-control-epoch",
+                "fresh-after-pause",
+                paused.goal_revision,
+                GoalUserAdmissionKind::UserQuery,
+                Some("finish the goal"),
+                Some(paused.goal_control_revision),
+            )
+            .await
+            .expect("fresh query can reserve against the paused Goal");
+        assert_eq!(reserved.goal_control_revision, paused.goal_control_revision);
+        manager
+            .claim_goal_user_admission("goal-control-epoch", "fresh-after-pause")
+            .await
+            .expect("claim fresh query");
+        let (resumed, did_resume) = manager
+            .finalize_goal_user_admission("goal-control-epoch", "fresh-after-pause", true)
+            .await
+            .expect("accepted fresh query resumes the Goal");
+        assert!(did_resume);
+        assert_eq!(resumed.goal_status, Some(GoalStatus::Active));
+        assert_eq!(resumed.goal_control_revision, paused.goal_control_revision);
+
+        let (second, _, _) = manager
+            .reserve_goal_user_admission_at_objective(
+                "goal-control-epoch",
+                "also-fresh-after-pause",
+                paused.goal_revision,
+                GoalUserAdmissionKind::UserQuery,
+                Some("finish the goal"),
+                Some(paused.goal_control_revision),
+            )
+            .await
+            .expect("another post-pause query stays in the same control epoch");
+        assert_eq!(second.goal_control_revision, paused.goal_control_revision);
+    }
+
+    #[tokio::test]
+    async fn objective_restart_cannot_queue_behind_claimed_scheduler_turn() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let task = sample_goal_task(
+            "goal-objective-restart",
+            TaskStatus::Running,
+            GoalStatus::Active,
+        );
+        let manager =
+            test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
+        let prepared = manager
+            .admit_goal_scheduler_turn("goal-objective-restart", 1)
+            .await
+            .expect("prepare scheduler turn");
+        let claimed = manager
+            .claim_goal_scheduler_turn("goal-objective-restart", &prepared.lease.id, 1)
+            .await
+            .expect("claim scheduler turn");
+
+        let error = manager
+            .reserve_goal_user_admission(
+                "goal-objective-restart",
+                "restart",
+                claimed.goal_revision,
+                GoalUserAdmissionKind::ObjectiveRestart,
+            )
+            .await
+            .expect_err("objective restart must not duplicate a claimed continuation");
+        assert!(error.starts_with("lease_conflict"));
+
+        manager
+            .reserve_goal_user_admission(
+                "goal-objective-restart",
+                "ordinary-query",
+                claimed.goal_revision,
+                GoalUserAdmissionKind::UserQuery,
+            )
+            .await
+            .expect("ordinary query may queue behind claimed continuation");
+    }
+
+    #[tokio::test]
+    async fn goal_channel_outbox_is_gated_by_turn_origin() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let task = sample_goal_task(
+            "goal-outbox-origin",
+            TaskStatus::Running,
+            GoalStatus::Active,
+        );
+        let manager =
+            test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
+
+        let desktop = manager
+            .admit_goal_scheduler_turn("goal-outbox-origin", 1)
+            .await
+            .expect("prepare desktop turn");
+        manager
+            .claim_goal_scheduler_turn("goal-outbox-origin", &desktop.lease.id, 1)
+            .await
+            .expect("claim desktop turn");
+        let desktop_done = manager
+            .finalize_goal_scheduler_turn(
+                "goal-outbox-origin",
+                &desktop.lease.id,
+                true,
+                None,
+                1,
+                None,
+                Some("desktop output".to_string()),
+                false,
+            )
+            .await
+            .expect("finalize desktop turn");
+        assert!(!desktop_done.delivery_enqueued);
+        assert!(desktop_done.task.goal_delivery_outbox.is_empty());
+
+        let channel = manager
+            .admit_goal_scheduler_turn("goal-outbox-origin", desktop_done.task.goal_revision)
+            .await
+            .expect("prepare channel turn");
+        manager
+            .claim_goal_scheduler_turn(
+                "goal-outbox-origin",
+                &channel.lease.id,
+                desktop_done.task.goal_revision,
+            )
+            .await
+            .expect("claim channel turn");
+        let channel_done = manager
+            .finalize_goal_scheduler_turn(
+                "goal-outbox-origin",
+                &channel.lease.id,
+                true,
+                None,
+                1,
+                None,
+                Some("channel output".to_string()),
+                true,
+            )
+            .await
+            .expect("finalize channel turn");
+        assert!(channel_done.delivery_enqueued);
+        assert_eq!(channel_done.task.goal_delivery_outbox.len(), 1);
+    }
+
+    #[test]
+    fn missing_channel_binding_does_not_ack_durable_delivery() {
+        assert!(manager::goal_delivery_was_acknowledged(&Ok(true)));
+        assert!(!manager::goal_delivery_was_acknowledged(&Ok(false)));
+        assert!(!manager::goal_delivery_was_acknowledged(&Err(
+            "temporary channel error".to_string()
+        )));
+    }
+
+    #[test]
+    fn goal_terminal_notification_respects_toggle_and_status() {
+        let mut task = sample_goal_task("goal-notify", TaskStatus::Stopped, GoalStatus::Complete);
+        assert!(execution::should_send_goal_terminal_notification(&task));
+        task.notify_enabled = false;
+        assert!(!execution::should_send_goal_terminal_notification(&task));
+        task.notify_enabled = true;
+        task.goal_status = Some(GoalStatus::Active);
+        assert!(!execution::should_send_goal_terminal_notification(&task));
     }
 
     /// Fingerprint cases for `translate_unix_dow_to_crate_dow` — encodes the

@@ -48,7 +48,7 @@ describe('buildCronTaskReminder', () => {
     expect(wrapped).not.toContain('myagents cron exit');
   });
 
-  it('uses Goal continuation reminder for loop tasks', () => {
+  it('uses Goal continuation reminder only for explicit Goal tasks', () => {
     const wrapped = buildCronTaskReminder({
       taskId: 'goal_123',
       prompt: 'Ship Goal Mode',
@@ -70,5 +70,34 @@ describe('buildCronTaskReminder', () => {
     expect(wrapped).toContain('myagents goal update --status complete');
     expect(wrapped).not.toContain('<CRON_TASK>');
     expect(wrapped).not.toMatch(/<\/system-reminder>\s*Ship Goal Mode/);
+  });
+
+  it('keeps a legacy loop task on the ordinary cron reminder path', () => {
+    const wrapped = buildCronTaskReminder({
+      taskId: 'legacy_loop',
+      prompt: 'Continue legacy loop work',
+      aiCanExit: true,
+      scheduleKind: 'loop',
+      runMode: 'single_session',
+    });
+
+    expect(wrapped).toContain('<CRON_TASK>');
+    expect(wrapped).not.toContain('<GOAL_CONTINUATION>');
+  });
+
+  it('does not expose Goal terminal commands when autonomous exit is disabled', () => {
+    const wrapped = buildCronTaskReminder({
+      taskId: 'goal_no_exit',
+      prompt: 'Keep investigating',
+      goalObjective: 'Find the root cause',
+      goalStatus: 'active',
+      aiCanExit: false,
+      scheduleKind: 'loop',
+      runMode: 'single_session',
+    });
+
+    expect(wrapped).toContain('disabled autonomous Goal termination');
+    expect(wrapped).not.toContain('myagents goal update --status');
+    expect(wrapped).not.toContain('myagents cron exit');
   });
 });

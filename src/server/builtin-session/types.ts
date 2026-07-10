@@ -13,6 +13,7 @@ import type { ImagePayload } from '../runtimes/types';
 import type { MessageUsage, SessionSource, TurnAnalyticsSource } from '../types/session';
 import type { MirrorImage } from '../utils/im-mirror';
 import type { ModelAliases } from '../utils/model-aliases';
+import type { DispatchGuard } from '../session-core/turn-queue';
 
 export type BuiltinSessionState = 'idle' | 'starting' | 'running' | 'error';
 
@@ -143,6 +144,8 @@ export type MessageQueueItem = {
   providerAnalytics?: TurnProviderAnalytics;
   inboxMeta?: InboxTurnMeta;
   injectedTurnId?: string;
+  beforeDispatch?: DispatchGuard;
+  settleDispatchAcceptance?: (result: { accepted: boolean; error?: string }) => void;
   transientProviderRetry?: {
     rootQueueId: string;
     attempt: number;

@@ -16,7 +16,7 @@ export type {
   InboxMessageRequest,
   InjectedTurnRequest,
   InjectedTurnResult,
-  RuntimeConfigPatch,
   SessionEngine,
+  RuntimeConfigPatch,
   SessionEngineKind,
 } from './types';

@@ -21,12 +21,13 @@ function metadataLine(label: string, value: string | number | boolean | undefine
 }
 
 export function buildCronTaskReminder(input: CronReminderInput): string {
-  if (input.scheduleKind === 'loop') {
+  if (input.goalStatus) {
     return buildGoalContinuationReminder({
       objective: input.goalObjective?.trim() || input.prompt,
       goalId: input.taskId,
-      goalStatus: input.goalStatus || 'active',
+      goalStatus: input.goalStatus,
       turnNumber: input.executionNumber ?? 1,
+      aiCanExit: input.aiCanExit,
     });
   }
 

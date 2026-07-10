@@ -270,10 +270,17 @@
       "scheduleOnce": "Run once at {{time}}",
       "scheduleEvery": "Run every {{interval}}",
       "roundExecuting": "Round {{count}} executing",
+      "roundRunning": "Round {{count}}",
       "settingsTitle": "Edit settings",
       "cancelTitle": "Cancel schedule",
       "stopTitle": "Stop scheduled task",
+      "cancelGoalTitle": "Cancel and end the current goal",
+      "cancelGoalButton": "Cancel goal",
+      "cancelGoalConfirmTitle": "Cancel the current goal?",
+      "cancelGoalConfirmMessage": "The goal will become canceled and automatic continuation will stop. Existing conversation history and work results are kept.",
+      "cancelGoalFailed": "Could not cancel the goal. Please try again.",
       "dismissStoppedTitle": "Close and restore task content to the input box",
+      "dismissGoalTitle": "Dismiss goal status",
       "stopButton": "Stop"
     },
     "settingsModal": {

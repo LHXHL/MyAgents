@@ -82,10 +82,6 @@ import {
 } from '../../shared/official-tools';
 import { isSupportedLocale } from '../../shared/i18n';
 import { workspacePathsEqual } from '../../shared/workspacePath';
-import {
-  buildGoalContextReminder,
-  buildGoalObjectiveUpdatedReminder,
-} from '../../shared/systemReminder';
 import { coerceReasoningEffortForRuntime, reasoningEffortChoices } from '../../shared/reasoningEffort';
 import type { ProviderHistoryEnv } from '../../shared/providerHistory';
 import { createConcreteProviderRoute, hasProviderRouteCredential, isConcreteProviderRoute } from '../../shared/providerRoute';
@@ -458,7 +454,7 @@ function isTerminalGoalStatus(status: CronTask['goalStatus'] | undefined): boole
 }
 
 function isCurrentSessionGoalTask(task: CronTask | null | undefined): task is CronTask {
-  return Boolean(task && (task.goalStatus || task.goalObjective));
+  return Boolean(task?.goalStatus);
 }
 
 export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
@@ -1096,6 +1092,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const [goalEditOpen, setGoalEditOpen] = useState(false);
   const [goalEditDraft, setGoalEditDraft] = useState('');
   const [goalEditSubmitting, setGoalEditSubmitting] = useState(false);
+  const [goalCancelConfirmOpen, setGoalCancelConfirmOpen] = useState(false);
   const [stoppedCronRecovery, setStoppedCronRecovery] = useState<{
     prompt: string;
     task: CronTask | null;
@@ -1915,8 +1912,6 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     startTask: startCronTask,
     stop: stopCronTask,
     pauseGoal,
-    resumeGoal,
-    editGoalObjective,
     cancelGoal,
     dismissStoppedTask: dismissCronTask,
     restoreFromTask: restoreCronTask,
@@ -1961,7 +1956,6 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // PERFORMANCE: Ref-stabilize cronState for handleSendMessage
   const cronStateRef = useRef(cronState);
   cronStateRef.current = cronState;
-  const pendingGoalResumeTaskIdRef = useRef<string | null>(null);
   const activeCurrentSessionCronTask = cronState.task?.status === 'running' && cronState.task.runMode !== 'new_session'
     ? cronState.task
     : null;
@@ -1990,17 +1984,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
   useEffect(() => {
     setStoppedCronRecovery(null);
+    setGoalCancelConfirmOpen(false);
   }, [sessionId]);
-
-  useEffect(() => {
-    const pendingTaskId = pendingGoalResumeTaskIdRef.current;
-    if (!pendingTaskId) return;
-    if (isLoading || sessionState === 'running' || sessionState === 'starting') return;
-    const task = cronState.task;
-    if (task?.id !== pendingTaskId || task.goalStatus !== 'paused') return;
-    pendingGoalResumeTaskIdRef.current = null;
-    void resumeGoal(pendingTaskId);
-  }, [cronState.task, isLoading, resumeGoal, sessionState]);
 
   // Sync cron task's sessionId when session is created after task creation
   // This handles two cases:
@@ -3682,27 +3667,10 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         return; // startCronTask handles the message sending via onExecute callback
       }
 
-      let outboundText = text;
-      const goalTask = cronStateRef.current.task;
-      if (isCurrentSessionGoalTask(goalTask) && goalTask.status === 'running' && !isTerminalGoalStatus(goalTask.goalStatus)) {
-        if (goalTask.goalStatus === 'paused') {
-          pendingGoalResumeTaskIdRef.current = goalTask.id;
-        }
-        if (!text.trimStart().startsWith('/')) {
-          outboundText = buildGoalContextReminder({
-            objective: goalTask.goalObjective || goalTask.prompt || text,
-            goalId: goalTask.id,
-            goalStatus: goalTask.goalStatus ?? 'active',
-            turnNumber: (goalTask.executionCount ?? 0) + 1,
-            visibleUserMessage: text,
-          });
-        }
-      }
-
       // sendMessage is fire-and-forget (returns true immediately for optimistic UI).
       // Error handling is done inside sendMessage's .then()/.catch() in TabProvider.
       // Use effective model/permission (runtime-aware) — not the builtin values
-      await sendMessage(outboundText, images, effectivePermissionMode, effectiveModel, isExternalRuntime ? undefined : providerEnv, undefined,
+      await sendMessage(text, images, effectivePermissionMode, effectiveModel, isExternalRuntime ? undefined : providerEnv, undefined,
         // #324 — builtin only: external runtimes apply effort via /api/reasoning-effort/set
         isExternalRuntime ? undefined : reasoningEffort,
         isExternalRuntime ? undefined : providerRoute);
@@ -3770,15 +3738,20 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // Stable callbacks for SimpleChatInput (extracted from inline arrows to enable memo)
   const handleStop = useCallback(async () => {
     try {
-      await stopResponse();
       const task = cronStateRef.current.task;
       if (isCurrentSessionGoalTask(task) && !isTerminalGoalStatus(task.goalStatus)) {
-        await pauseGoal();
+        // Cancel any claim currently round-tripping through Rust before pause.
+        // A late successful response then fails closed even if /chat/stop later
+        // observes no active runtime yet.
+        await apiPost('/api/goal/dispatch/cancel', {});
+        const paused = await pauseGoal();
+        if (!paused) return;
       }
+      await stopResponse();
     } catch (error) {
       console.error('[Chat] Failed to stop message:', error);
     }
-  }, [pauseGoal, stopResponse]);
+  }, [apiPost, pauseGoal, stopResponse]);
 
   const handleOpenAgentSettings = useCallback(() => setShowWorkspaceConfig(true), []);
 
@@ -4102,9 +4075,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     const stopSessionId = sessionIdRef.current;
     const currentTask = cronStateRef.current.task;
     if (isCurrentSessionGoalTask(currentTask)) {
-      const result = await cancelGoal('Canceled by user');
-      if (!result || sessionIdRef.current !== stopSessionId) return;
-      setStoppedCronRecovery(null);
+      setGoalCancelConfirmOpen(true);
       return;
     }
     const result = await stopCronTask();
@@ -4117,7 +4088,30 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         sessionId: stopSessionId ?? '',
       });
     }
-  }, [cancelGoal, stopCronTask]);
+  }, [stopCronTask]);
+
+  const handleGoalCancelConfirm = useCallback(async () => {
+    const stopSessionId = sessionIdRef.current;
+    try {
+      // Revoke Goal authority before stopping the runtime. Otherwise a
+      // scheduler claim can slip into the stop→terminal gap and start a turn
+      // that has already been canceled at the product layer.
+      await apiPost('/api/goal/dispatch/cancel', {});
+      const result = await cancelGoal('Canceled by user');
+      if (!result) {
+        toastRef.current.error(tTask('cron.statusBar.cancelGoalFailed'));
+        return;
+      }
+      const stopped = await stopResponse();
+      if (!stopped) {
+        toastRef.current.error(tTask('cron.statusBar.cancelGoalFailed'));
+      }
+      if (sessionIdRef.current !== stopSessionId) return;
+      setStoppedCronRecovery(null);
+    } finally {
+      setGoalCancelConfirmOpen(false);
+    }
+  }, [apiPost, cancelGoal, stopResponse, tTask]);
 
   const handleGoalEditOpen = useCallback(() => {
     const task = cronStateRef.current.task;
@@ -4139,34 +4133,15 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     }
     setGoalEditSubmitting(true);
     try {
-      const updated = await editGoalObjective(objective);
-      if (!updated) {
+      const result = await apiPost<{ success: boolean; error?: string }>(
+        '/api/goal/objective',
+        { objective, sessionId: beforeTask.sessionId },
+      );
+      if (!result.success) {
+        console.error('[Chat] Goal objective update rejected:', result.error);
         toastRef.current.error(t('goalEdit.updateFailed'));
         return;
       }
-      if (beforeTask.goalStatus === 'paused') {
-        setGoalEditOpen(false);
-        toastRef.current.success(t('goalEdit.updated'));
-        return;
-      }
-      const providerRoute = buildBuiltinProviderRoute(currentProviderRef.current, effectiveModel);
-      const providerEnv = providerRoute ? undefined : buildProviderEnv(currentProviderRef.current);
-      const reminder = buildGoalObjectiveUpdatedReminder({
-        objective,
-        goalId: updated.id,
-        goalStatus: updated.goalStatus ?? 'active',
-        turnNumber: (updated.executionCount ?? 0) + 1,
-      });
-      await sendMessage(
-        reminder,
-        undefined,
-        effectivePermissionMode,
-        effectiveModel,
-        isExternalRuntime || providerRoute ? undefined : providerEnv,
-        false,
-        isExternalRuntime ? undefined : reasoningEffort,
-        isExternalRuntime ? undefined : providerRoute,
-      );
       setGoalEditOpen(false);
       toastRef.current.success(t('goalEdit.updated'));
     } catch (error) {
@@ -4175,7 +4150,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     } finally {
       setGoalEditSubmitting(false);
     }
-  }, [buildProviderEnv, editGoalObjective, effectiveModel, effectivePermissionMode, goalEditDraft, isExternalRuntime, reasoningEffort, sendMessage, t]);
+  }, [apiPost, goalEditDraft, t]);
 
   const handleCronDismissStopped = useCallback(() => {
     const currentTask = cronStateRef.current.task;
@@ -5621,6 +5596,18 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
           confirmVariant="primary"
           onConfirm={handleForkConfirm}
           onCancel={() => setForkTarget(null)}
+        />
+      )}
+
+      {goalCancelConfirmOpen && (
+        <ConfirmDialog
+          title={tTask('cron.statusBar.cancelGoalConfirmTitle')}
+          message={tTask('cron.statusBar.cancelGoalConfirmMessage')}
+          confirmText={tTask('cron.statusBar.cancelGoalButton')}
+          cancelText={tTask('cron.settingsModal.cancel')}
+          confirmVariant="danger"
+          onConfirm={handleGoalCancelConfirm}
+          onCancel={() => setGoalCancelConfirmOpen(false)}
         />
       )}
 

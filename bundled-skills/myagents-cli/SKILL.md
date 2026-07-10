@@ -264,14 +264,15 @@ Goal 是当前会话内的持续执行模式：宿主会在每轮完成后自动
 
 ```bash
 myagents goal get                                      # 查看当前 session 的 Goal
-myagents goal create --objective "..."                 # 为当前 session 创建并启动 Goal
-myagents goal update --status complete --reason "..."  # AI 判断目标完成时主动退出
-myagents goal update --status blocked --reason "..."   # AI 判断无法继续时主动退出
+myagents goal create --objective-file myagents_files/goal-objective.txt   # 为当前 session 创建并启动 Goal
+myagents goal update --status complete                 # AI 判断目标完成时主动退出
+myagents goal update --status blocked                  # AI 判断无法继续时主动退出
 ```
 
 **何时用：**
-- 当前会话进入 Goal 后，你完成了用户目标 → `goal update --status complete --reason "..."`
-- 你连续尝试后确认缺关键输入/外部状态，无法继续推进 → `goal update --status blocked --reason "..."`
+- 用户明确要求进入 Goal 时，先用标准文件工具把 objective 写入 workspace 内的文本文件，再传 `--objective-file`；不要把用户文本拼入 Shell 命令。
+- 当前会话进入 Goal 后，你完成了用户目标 → `goal update --status complete`
+- 你连续尝试后确认缺关键输入/外部状态，无法继续推进 → `goal update --status blocked`
 - 用户问"现在目标是什么/状态如何" → `goal get`
 - 不要用 `goal update` 表示用户取消；取消由 UI/宿主控制。
 

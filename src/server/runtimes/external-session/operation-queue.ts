@@ -98,11 +98,19 @@ export function enqueueExternalMessageOperation(input: {
   images?: ImagePayload[];
   context: ExternalSendContext;
   runtimeConfig: ExternalRuntimeConfigSnapshot;
-}): { queued: true; queueId: string } | { queued: false; error: string } {
+}): {
+  queued: true;
+  queueId: string;
+  dispatchAcceptance: Promise<{ queued: boolean; error?: string }>;
+} | { queued: false; error: string } {
   if (queuedExternalMessageCount() >= EXTERNAL_MAX_QUEUE_SIZE) {
     return { queued: false, error: '排队消息已达上限，请稍后再发' };
   }
   const queueId = nextExternalQueueId();
+  let settleDispatchAcceptance!: (result: { queued: boolean; error?: string }) => void;
+  const dispatchAcceptance = new Promise<{ queued: boolean; error?: string }>((resolve) => {
+    settleDispatchAcceptance = resolve;
+  });
   externalOperationQueue.push({
     kind: 'message',
     queueId,
@@ -110,8 +118,10 @@ export function enqueueExternalMessageOperation(input: {
     images: input.images,
     context: input.context,
     runtimeConfig: input.runtimeConfig,
+    dispatchAcceptance,
+    settleDispatchAcceptance,
   });
-  return { queued: true, queueId };
+  return { queued: true, queueId, dispatchAcceptance };
 }
 
 export function enqueueExternalConfigOperation(
@@ -134,11 +144,17 @@ export function enqueueExternalConfigOperation(
 }
 
 export function clearExternalQueueWithCancellation(): string[] {
-  const cancelledQueueIds = externalOperationQueue
-    .filter((item): item is ExternalQueuedMessageOperation => item.kind === 'message')
-    .map((item) => item.queueId);
+  const queuedMessages = externalOperationQueue
+    .filter((item): item is ExternalQueuedMessageOperation => item.kind === 'message');
+  const cancelledQueueIds = queuedMessages.map((item) => item.queueId);
+  for (const item of queuedMessages) {
+    item.settleDispatchAcceptance({ queued: false });
+  }
   if (externalReservedDrainOperation?.kind === 'message') {
     cancelledQueueIds.push(externalReservedDrainOperation.queueId);
+    externalReservedDrainOperation.settleDispatchAcceptance({
+      queued: false,
+    });
   }
   externalOperationQueue.length = 0;
   externalReservedDrainOperation = null;
@@ -193,7 +209,15 @@ export function cancelExternalQueuedMessage(queueId: string): string | null {
   const idx = externalOperationQueue.findIndex(q => q.kind === 'message' && q.queueId === queueId);
   if (idx < 0) return null;
   const [item] = externalOperationQueue.splice(idx, 1) as ExternalQueuedMessageOperation[];
+  item.settleDispatchAcceptance({ queued: false });
   return item.text;
+}
+
+export function settleExternalMessageOperation(
+  item: ExternalQueuedMessageOperation,
+  result: { queued: boolean; error?: string },
+): void {
+  item.settleDispatchAcceptance(result);
 }
 
 export function getExternalQueueStatusSnapshot(): Array<{ id: string; messagePreview: string }> {

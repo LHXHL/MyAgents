@@ -178,17 +178,26 @@ interface GoalView {
 权威边界：
 
 - Goal 属于 session，不属于某个 Tab、输入框 draft 或普通 CronTask surface。
-- UI `/goal` 正式创建、AI 调 `myagents goal create --objective ...`、私聊 IM / 私有 Agent Channel 里 AI 调 CLI 创建，都会写入当前 session 的同一个 Goal。
-- backing store 继续复用 `CronTaskManager` / `CronSchedule::Loop` / `RunMode::SingleSession`；但是否是 Goal 只看显式 `goalStatus` / `goalObjective` 等字段，不能从 loop schedule 形状推断。
+- UI `/goal` 正式创建、AI 调 `myagents goal create --objective-file ...`、私聊 IM / 私有 Agent Channel 里 AI 调 CLI 创建，都会写入当前 session 的同一个 Goal。
+- backing store 继续复用 `CronTaskManager` / `CronSchedule::Loop` / `RunMode::SingleSession`；但是否是 Goal 只看显式 `goalStatus`，不能从 `goalObjective` 或 loop schedule 形状推断。旧 Loop 不迁移。
 - 同一 session 同时只允许一个 unfinished Goal。已有 active/paused Goal 时再次 create 必须失败，而不是覆盖。
 - `myagents goal update` 只允许模型写 `complete` / `blocked`。`paused` 来自用户 Stop 当前 turn，`canceled` 来自用户取消，恢复来自用户 query 或显式继续。
+- desktop/IM user ingress 统一经过 `session-engine/goal-orchestrator.ts`。同 session 的 Goal lookup+reserve 串行：Rust 先持久化 Pending admission；builtin/external queue 真正 promotion 时调用 `beforeDispatch` 原子 claim；transport 接受后 finalize 为 Dispatched，Runtime idle 后持续幂等重试 release，成功或确认 admission 已不存在前保留 Node authority。paused→active 和 `executionCount` 只在 accepted finalization 提交。多条 user admission 各有独立 authority，按队列顺序释放；user query 的 stale `goalRevision` 只有在 objective 与 `goalControlRevision` 都未变化时才视为同一 semantic epoch，避免 admission churn 假 409，同时阻止 Stop 前旧快照恢复 Goal。
+- scheduler admission 是两阶段协议：Rust scheduler 只生成不落盘的 candidate；Sidecar 等待 session idle 且 user queue 清空；builtin/external adapter 在实际 Runtime 发送边界调用 `/api/goal/scheduler/claim`。revision、pause、objective、terminal 或 user admission 任一先获胜都会让 claim fail closed。
+- renderer Pause/Cancel 在写 Rust Goal 状态前，先调用当前 Tab Sidecar `/api/goal/dispatch/cancel` 标记所有 pending guards canceled；adapter 对晚到的成功 scheduler claim 调 revoke、对 user claim 调 release，然后拒绝 dispatch。`stopTurn()` 也执行同一 cancel，作为 objective/服务端路径的防线。
+- Goal 自动 continuation 必须设置 `turnBoundaryOnly`，不能 steer/merge 进当前 user turn。objective edit 不走 realtime steering：有普通排队消息时返回 `queue_conflict` 并保留消息；否则 stop/wait、revision CAS、再次 stop/wait/re-read，active Goal 用 `objective_restart` admission 启新 turn，paused Goal只持久化。
+- Goal 的 model/provider/runtime/reasoning/MCP 由 session 当前状态拥有，不从 CronTask creation snapshot 恢复。冷 Sidecar 依赖 session metadata 选 runtime；builtin MCP 仅在当前进程尚未 materialize MCP 时从 session snapshot 恢复。permission 是唯一保留的 creation-surface policy：UI 使用当前显式值，CLI 空值解析为 runtime 最大权限。
+- Rust terminal transition 是 actor-aware、disk-first、first-writer-wins：Model 只能 complete/blocked 且 `aiCanExit=false` 时硬拒绝；User 只能 canceled；System failure protector 可 terminal。首次 Applied transition 广播事件并发 notification；model terminal 保留当前 scheduler lease 或 user admission，等 turn finalize/idle 后才释放 owner。
+- `goal:changed` 携带单调 `goalRevision`；renderer 拒绝旧 hydrate/event，并在 listener 注册空窗后按时间戳补查 terminal，迟到 active payload 不能回滚终态。Management API 另返回 `goalControlRevision` 作为 objective/显式 lifecycle 控制代次；admission/lease/outbox bookkeeping 以及 user query 触发的 paused→active 不推进该字段。
+- IM/Agent Channel 自动 continuation 的成功文本按 session binding 回原 channel，不经过 `CronDelivery`。仅 `agent-channel` origin 进入持久 outbox；唯一 replay worker 对无 binding/临时错误持续重试，启动时恢复 `Sending` 为 `Pending`。这是 at-least-once，不是 exactly-once：push 成功到 outbox 删除之间崩溃可能重复。群聊 `NO_REPLY` 不发送。
+- Goal execution state 以 `cron_tasks.json` 中 lease finalization 结果为权威；`cron_runs/*.jsonl` 只是 finalize `applied=true` 后写入的 best-effort history projection。状态提交与 JSONL append 之间崩溃可能缺少一条 history，但绝不能先写 stale/撤销 turn，也不能从 history 反推 Goal 状态。
 
 Facade 与事件：
 
 - Tauri command：`cmd_create_goal_task`、`cmd_get_goal_task`、`cmd_get_session_goal_task`。
-- Rust Management API：`/api/goal/get`、`/api/goal/create`、`/api/goal/update`。
-- CLI/Admin API：`myagents goal get|list`、`create --objective`、`update --status complete|blocked --reason`。
-- 所有 create / pause / resume / objective update / execution complete / terminal 都广播 `goal:changed`，payload 至少包含 `sessionId`、`workspacePath`、`goal`、`changeKind`（`created` / `execution_complete` / `paused` / `resumed` / `objective_updated` / `terminal`）。
+- Rust Management API：`/api/goal/get|create|update|objective`、`/api/goal/admit[/claim|/finalize|/release]`、`/api/goal/scheduler/claim|revoke`。
+- CLI/Admin API：`myagents goal get|list`、`create --objective-file <path>`、`update --status complete|blocked`。
+- create、admission reserve/claim/finalize/release、pause/resume、objective update、scheduler claim/finalize 和 terminal 都广播 `goal:changed`；payload 至少包含 `sessionId`、`workspacePath`、`goal`、`changeKind` 与单调 `goalRevision`。
 
 Renderer hydrate：
 

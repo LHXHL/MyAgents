@@ -95,6 +95,22 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/cron/status", get(status_cron_handler))
         .route("/api/goal/get", get(goal_get_handler))
         .route("/api/goal/create", post(goal_create_handler))
+        .route("/api/goal/admit", post(goal_admit_handler))
+        .route("/api/goal/admit/claim", post(goal_admit_claim_handler))
+        .route(
+            "/api/goal/admit/finalize",
+            post(goal_admit_finalize_handler),
+        )
+        .route("/api/goal/admit/release", post(goal_admit_release_handler))
+        .route(
+            "/api/goal/scheduler/claim",
+            post(goal_scheduler_claim_handler),
+        )
+        .route(
+            "/api/goal/scheduler/revoke",
+            post(goal_scheduler_revoke_handler),
+        )
+        .route("/api/goal/objective", post(goal_objective_handler))
         .route("/api/goal/update", post(goal_update_handler))
         .route(
             "/api/mcp/remove-references",
@@ -794,26 +810,90 @@ struct GoalCreateRequest {
 struct GoalUpdateRequest {
     session_id: String,
     workspace_path: Option<String>,
+    goal_id: String,
     status: String,
     reason: Option<String>,
+    lease_id: Option<String>,
+    admission_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoalAdmitRequest {
+    session_id: String,
+    workspace_path: Option<String>,
+    goal_id: String,
+    expected_revision: u64,
+    expected_objective: Option<String>,
+    #[serde(default)]
+    expected_control_revision: Option<u64>,
+    admission_id: String,
+    admission_kind: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoalAdmitFinalizeRequest {
+    session_id: String,
+    workspace_path: Option<String>,
+    goal_id: String,
+    admission_id: String,
+    outcome: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoalAdmissionIdentityRequest {
+    session_id: String,
+    workspace_path: Option<String>,
+    goal_id: String,
+    admission_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoalSchedulerClaimRequest {
+    session_id: String,
+    workspace_path: Option<String>,
+    goal_id: String,
+    lease_id: String,
+    expected_revision: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoalSchedulerIdentityRequest {
+    session_id: String,
+    workspace_path: Option<String>,
+    goal_id: String,
+    lease_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GoalObjectiveRequest {
+    session_id: String,
+    workspace_path: Option<String>,
+    goal_id: String,
+    objective: String,
+    expected_revision: u64,
 }
 
 fn is_goal_task(task: &CronTask) -> bool {
-    task.goal_status.is_some()
-        || task
-            .goal_objective
-            .as_deref()
-            .is_some_and(|objective| !objective.trim().is_empty())
+    task.is_goal()
 }
 
 fn goal_to_json(task: CronTask) -> serde_json::Value {
     serde_json::json!({
         "id": task.id,
-        "objective": task.goal_objective.unwrap_or(task.prompt),
+        "objective": task.goal_objective.unwrap_or_default(),
         "status": task.goal_status
-            .map(|status| serde_json::to_value(status).unwrap_or(serde_json::Value::String("active".to_string())))
-            .unwrap_or_else(|| serde_json::Value::String("active".to_string())),
+            .and_then(|status| serde_json::to_value(status).ok()),
         "turnCount": task.execution_count,
+        "revision": task.goal_revision,
+        "controlRevision": task.goal_control_revision,
+        "aiCanExit": task.end_conditions.ai_can_exit,
+        "notifyEnabled": task.notify_enabled,
         "createdAt": task.created_at.to_rfc3339(),
         "updatedAt": task.goal_updated_at
             .map(|dt| dt.to_rfc3339())
@@ -822,6 +902,276 @@ fn goal_to_json(task: CronTask) -> serde_json::Value {
         "sessionId": task.session_id,
         "workspacePath": task.workspace_path,
     })
+}
+
+fn goal_error_code(error: &str) -> &'static str {
+    for code in [
+        "stale_revision",
+        "stale_admission",
+        "stale_lease",
+        "lease_conflict",
+        "terminal",
+        "goal_changed",
+    ] {
+        if error.starts_with(code) {
+            return code;
+        }
+    }
+    "goal_error"
+}
+
+fn goal_error_json(error: String, goal: Option<CronTask>) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": false,
+        "code": goal_error_code(&error),
+        "error": error,
+        "goal": goal.map(goal_to_json),
+    }))
+}
+
+async fn goal_admit_handler(Json(req): Json<GoalAdmitRequest>) -> Json<serde_json::Value> {
+    let session_id = req.session_id.trim();
+    let goal_id = req.goal_id.trim();
+    let admission_id = req.admission_id.trim();
+    if session_id.is_empty() || goal_id.is_empty() || admission_id.is_empty() {
+        return Json(serde_json::json!({
+            "ok": false,
+            "code": "invalid_request",
+            "error": "sessionId, goalId, and admissionId are required",
+        }));
+    }
+    let admission_kind = match req.admission_kind.as_str() {
+        "user_query" => cron_task::GoalUserAdmissionKind::UserQuery,
+        "objective_restart" => cron_task::GoalUserAdmissionKind::ObjectiveRestart,
+        _ => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "code": "invalid_request",
+                "error": "admissionKind must be user_query or objective_restart",
+            }));
+        }
+    };
+    let manager = cron_task::get_cron_task_manager();
+    let Some(goal) = find_current_goal(manager, session_id, req.workspace_path.as_deref()).await
+    else {
+        return goal_error_json(
+            "terminal: No active Goal in current session".to_string(),
+            None,
+        );
+    };
+    if goal.id != goal_id {
+        return goal_error_json(
+            "goal_changed: Goal identity changed before turn admission".to_string(),
+            Some(goal),
+        );
+    }
+    match manager
+        .reserve_goal_user_admission_at_objective(
+            goal_id,
+            admission_id,
+            req.expected_revision,
+            admission_kind,
+            req.expected_objective.as_deref(),
+            req.expected_control_revision,
+        )
+        .await
+    {
+        Ok((goal, admission, preempted_lease_id)) => Json(serde_json::json!({
+            "ok": true,
+            "goal": goal_to_json(goal),
+            "preemptedLeaseId": preempted_lease_id,
+            "reservation": {
+                "id": admission.id,
+                "revision": admission.revision,
+                "turnNumber": admission.turn_number,
+            },
+        })),
+        Err(error) => goal_error_json(error, manager.get_task(goal_id).await),
+    }
+}
+
+async fn goal_admit_claim_handler(
+    Json(req): Json<GoalAdmissionIdentityRequest>,
+) -> Json<serde_json::Value> {
+    let manager = cron_task::get_cron_task_manager();
+    let current = manager.get_task(&req.goal_id).await;
+    if current.as_ref().is_none_or(|goal| {
+        goal.session_id != req.session_id
+            || req.workspace_path.as_deref().is_some_and(|workspace| {
+                cron_task::normalize_path(&goal.workspace_path)
+                    != cron_task::normalize_path(workspace)
+            })
+    }) {
+        return goal_error_json("goal_changed: Goal identity changed".to_string(), current);
+    }
+    match manager
+        .claim_goal_user_admission(&req.goal_id, &req.admission_id)
+        .await
+    {
+        Ok((goal, admission)) => Json(serde_json::json!({
+            "ok": true,
+            "goal": goal_to_json(goal),
+            "reservation": {
+                "id": admission.id,
+                "revision": admission.revision,
+                "turnNumber": admission.turn_number,
+            },
+        })),
+        Err(error) => goal_error_json(error, manager.get_task(&req.goal_id).await),
+    }
+}
+
+async fn goal_admit_finalize_handler(
+    Json(req): Json<GoalAdmitFinalizeRequest>,
+) -> Json<serde_json::Value> {
+    let session_id = req.session_id.trim();
+    let goal_id = req.goal_id.trim();
+    let admission_id = req.admission_id.trim();
+    let accepted = match req.outcome.as_str() {
+        "accepted" => true,
+        "aborted" => false,
+        _ => {
+            return Json(serde_json::json!({
+                "ok": false,
+                "code": "invalid_request",
+                "error": "outcome must be accepted or aborted",
+            }));
+        }
+    };
+    if session_id.is_empty() || goal_id.is_empty() || admission_id.is_empty() {
+        return Json(serde_json::json!({
+            "ok": false,
+            "code": "invalid_request",
+            "error": "sessionId, goalId, and admissionId are required",
+        }));
+    }
+    let manager = cron_task::get_cron_task_manager();
+    let current = manager.get_task(goal_id).await;
+    if current.as_ref().is_none_or(|goal| {
+        goal.session_id != session_id
+            || req.workspace_path.as_deref().is_some_and(|workspace| {
+                cron_task::normalize_path(&goal.workspace_path)
+                    != cron_task::normalize_path(workspace)
+            })
+    }) {
+        return goal_error_json("goal_changed: Goal identity changed".to_string(), current);
+    }
+    match manager
+        .finalize_goal_user_admission(goal_id, admission_id, accepted)
+        .await
+    {
+        Ok((goal, resumed)) => Json(serde_json::json!({
+            "ok": true,
+            "goal": goal_to_json(goal),
+            "resumed": resumed,
+        })),
+        Err(error) => goal_error_json(error, manager.get_task(goal_id).await),
+    }
+}
+
+async fn goal_admit_release_handler(
+    Json(req): Json<GoalAdmissionIdentityRequest>,
+) -> Json<serde_json::Value> {
+    let manager = cron_task::get_cron_task_manager();
+    let current = manager.get_task(&req.goal_id).await;
+    if current.as_ref().is_none_or(|goal| {
+        goal.session_id != req.session_id
+            || req.workspace_path.as_deref().is_some_and(|workspace| {
+                cron_task::normalize_path(&goal.workspace_path)
+                    != cron_task::normalize_path(workspace)
+            })
+    }) {
+        return goal_error_json("goal_changed: Goal identity changed".to_string(), current);
+    }
+    match manager
+        .release_goal_user_admission(&req.goal_id, &req.admission_id)
+        .await
+    {
+        Ok(goal) => Json(serde_json::json!({ "ok": true, "goal": goal_to_json(goal) })),
+        Err(error) => goal_error_json(error, manager.get_task(&req.goal_id).await),
+    }
+}
+
+async fn goal_scheduler_claim_handler(
+    Json(req): Json<GoalSchedulerClaimRequest>,
+) -> Json<serde_json::Value> {
+    let manager = cron_task::get_cron_task_manager();
+    let current = manager.get_task(&req.goal_id).await;
+    if current.as_ref().is_none_or(|goal| {
+        goal.session_id != req.session_id
+            || req.workspace_path.as_deref().is_some_and(|workspace| {
+                cron_task::normalize_path(&goal.workspace_path)
+                    != cron_task::normalize_path(workspace)
+            })
+    }) {
+        return goal_error_json("goal_changed: Goal identity changed".to_string(), current);
+    }
+    match manager
+        .claim_goal_scheduler_turn(&req.goal_id, &req.lease_id, req.expected_revision)
+        .await
+    {
+        Ok(goal) => Json(serde_json::json!({ "ok": true, "goal": goal_to_json(goal) })),
+        Err(error) => goal_error_json(error, manager.get_task(&req.goal_id).await),
+    }
+}
+
+async fn goal_scheduler_revoke_handler(
+    Json(req): Json<GoalSchedulerIdentityRequest>,
+) -> Json<serde_json::Value> {
+    let manager = cron_task::get_cron_task_manager();
+    let current = manager.get_task(&req.goal_id).await;
+    if current.as_ref().is_none_or(|goal| {
+        goal.session_id != req.session_id
+            || req.workspace_path.as_deref().is_some_and(|workspace| {
+                cron_task::normalize_path(&goal.workspace_path)
+                    != cron_task::normalize_path(workspace)
+            })
+    }) {
+        return goal_error_json("goal_changed: Goal identity changed".to_string(), current);
+    }
+    match manager
+        .revoke_goal_scheduler_lease(&req.goal_id, &req.lease_id)
+        .await
+    {
+        Ok(goal) => Json(serde_json::json!({ "ok": true, "goal": goal_to_json(goal) })),
+        Err(error) => goal_error_json(error, manager.get_task(&req.goal_id).await),
+    }
+}
+
+async fn goal_objective_handler(Json(req): Json<GoalObjectiveRequest>) -> Json<serde_json::Value> {
+    let session_id = req.session_id.trim();
+    let goal_id = req.goal_id.trim();
+    let objective = req.objective.trim();
+    if session_id.is_empty() || goal_id.is_empty() || objective.is_empty() {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "sessionId, goalId, and objective are required",
+        }));
+    }
+    let manager = cron_task::get_cron_task_manager();
+    let Some(goal) = find_current_goal(manager, session_id, req.workspace_path.as_deref()).await
+    else {
+        return Json(
+            serde_json::json!({ "ok": false, "error": "No active Goal in current session" }),
+        );
+    };
+    if goal.id != goal_id {
+        return goal_error_json(
+            "goal_changed: Goal identity changed before objective update".to_string(),
+            Some(goal),
+        );
+    }
+    match manager
+        .update_goal_objective_cas(&goal.id, objective.to_string(), Some(req.expected_revision))
+        .await
+    {
+        Ok((goal, invalidated_lease_id)) => Json(serde_json::json!({
+            "ok": true,
+            "goal": goal_to_json(goal),
+            "invalidatedLeaseId": invalidated_lease_id,
+        })),
+        Err(error) => goal_error_json(error, manager.get_task(&goal.id).await),
+    }
 }
 
 async fn find_current_goal(
@@ -923,8 +1273,11 @@ async fn goal_create_handler(Json(req): Json<GoalCreateRequest>) -> Json<serde_j
 
 async fn goal_update_handler(Json(req): Json<GoalUpdateRequest>) -> Json<serde_json::Value> {
     let session_id = req.session_id.trim();
-    if session_id.is_empty() {
-        return Json(serde_json::json!({ "ok": false, "error": "sessionId is required" }));
+    let goal_id = req.goal_id.trim();
+    if session_id.is_empty() || goal_id.is_empty() {
+        return Json(
+            serde_json::json!({ "ok": false, "error": "sessionId and goalId are required" }),
+        );
     }
     let status = match req.status.as_str() {
         "complete" => GoalStatus::Complete,
@@ -946,18 +1299,34 @@ async fn goal_update_handler(Json(req): Json<GoalUpdateRequest>) -> Json<serde_j
             }));
         }
     };
+    if goal.id != goal_id {
+        return goal_error_json(
+            "goal_changed: Goal identity changed before terminal update".to_string(),
+            Some(goal),
+        );
+    }
+    let authority_id = req.lease_id.as_deref().or(req.admission_id.as_deref());
+    let Some(authority_id) = authority_id else {
+        return goal_error_json(
+            "stale_lease: Goal terminal update requires current turn authority".to_string(),
+            Some(goal),
+        );
+    };
     match manager
-        .mark_goal_terminal(&goal.id, status, req.reason)
+        .transition_goal_terminal_authorized(
+            &goal.id,
+            status,
+            req.reason,
+            cron_task::GoalTerminalActor::Model,
+            authority_id,
+        )
         .await
     {
-        Ok(task) => Json(serde_json::json!({
+        Ok(outcome) => Json(serde_json::json!({
             "ok": true,
-            "goal": goal_to_json(task),
+            "goal": goal_to_json(outcome.task().clone()),
         })),
-        Err(error) => Json(serde_json::json!({
-            "ok": false,
-            "error": error,
-        })),
+        Err(error) => goal_error_json(error, manager.get_task(&goal.id).await),
     }
 }
 
@@ -2722,33 +3091,14 @@ struct MirrorImage {
 const DESKTOP_USER_PREFIX: &str = "[From: 桌面端用户消息]";
 const MIRROR_IMAGE_MAX_BYTES: usize = 5 * 1024 * 1024;
 
-/// Find the channel currently bound to `session_id`. Scans agent channels'
-/// `peer_sessions`. Returns `(adapter, chat_id, channel_id)` of the first
-/// match — by invariant only one channel binds a given session_id at a time.
-async fn find_channel_for_session(
-    session_id: &str,
-) -> Option<(std::sync::Arc<im::AnyAdapter>, String, String)> {
-    let agents = get_agents()?;
-    let agents_guard = agents.lock().await;
-    for agent in agents_guard.values() {
-        for (channel_id, ch) in &agent.channels {
-            let router = ch.bot_instance.router.lock().await;
-            for ps in router.peer_sessions_iter() {
-                if ps.session_id == session_id {
-                    return Some((
-                        std::sync::Arc::clone(&ch.bot_instance.adapter),
-                        ps.source_id.clone(),
-                        channel_id.clone(),
-                    ));
-                }
-            }
-        }
-    }
-    None
-}
-
 async fn mirror_to_channel_handler(Json(req): Json<MirrorRequest>) -> Json<serde_json::Value> {
-    let resolved = match find_channel_for_session(&req.session_id).await {
+    let resolved = match im::session_delivery::find_channel_for_session(
+        get_agents(),
+        get_im_bots(),
+        &req.session_id,
+    )
+    .await
+    {
         Some(t) => t,
         None => {
             // Session has no channel binding — silent no-op (this is the
@@ -2756,7 +3106,9 @@ async fn mirror_to_channel_handler(Json(req): Json<MirrorRequest>) -> Json<serde
             return Json(serde_json::json!({ "mirrored": false }));
         }
     };
-    let (adapter, chat_id, channel_id) = resolved;
+    let adapter = std::sync::Arc::clone(&resolved.adapter);
+    let chat_id = resolved.chat_id.clone();
+    let channel_id = resolved.channel_id.clone();
 
     // ----- Body text (with prefix for user role) -----
     //
@@ -2786,7 +3138,7 @@ async fn mirror_to_channel_handler(Json(req): Json<MirrorRequest>) -> Json<serde
                 let payload = format!("{}\n{}", DESKTOP_USER_PREFIX, body);
                 adapter.send_message(&chat_id, &payload).await
             }
-            _ => im::adapter::push_text_preferring_stream(adapter.as_ref(), &chat_id, &body).await,
+            _ => im::session_delivery::push_assistant_text(&resolved, &body).await,
         };
         match result {
             Ok(_) => sent_text = true,

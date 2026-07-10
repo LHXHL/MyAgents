@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => {
   return {
     state,
     broadcast: vi.fn(),
+    applyMcpOverrideAndAwaitReady: vi.fn(async () => undefined),
     cancelBuiltinImRequest: vi.fn(async () => ({ aborted: false, mode: 'unknown' as const })),
     cancelQueueItem: vi.fn<() => Promise<
       | { status: 'cancelled'; cancelledText: string }
@@ -33,6 +34,7 @@ const mocks = vi.hoisted(() => {
       isInFlight?: boolean;
       deliveryMode?: 'queue' | 'realtime' | 'turn';
       error?: string;
+      dispatchAcceptance?: Promise<{ accepted: boolean; error?: string }>;
     }>>(async () => ({ queued: true, queueId: 'q1', isInFlight: false, deliveryMode: 'queue' as const })),
     forceExecuteQueueItem: vi.fn(async () => true),
     getAndClearLastAgentError: vi.fn<() => string | null>(() => null),
@@ -139,10 +141,13 @@ const mocks = vi.hoisted(() => {
         : (sessionMeta?.enabledOfficialToolIds ? [...sessionMeta.enabledOfficialToolIds] : [])
     )),
     materializeProviderRouteEnv: vi.fn(() => undefined),
+    loadConfig: vi.fn(() => ({ chatQueueResponseMode: 'realtime' })),
+    resolveWorkspaceConfig: vi.fn(() => ({ mcpServers: [{ id: 'snapshot-mcp' }] })),
   };
 });
 
 vi.mock('../agent-session', () => ({
+  applyMcpOverrideAndAwaitReady: mocks.applyMcpOverrideAndAwaitReady,
   cancelImRequest: mocks.cancelBuiltinImRequest,
   cancelQueueItem: mocks.cancelQueueItem,
   consumeInjectedTurnOutcome: mocks.consumeInjectedTurnOutcome,
@@ -232,7 +237,9 @@ vi.mock('../runtimes/external-session', () => ({
 
 vi.mock('../utils/admin-config', () => ({
   getEffectiveOfficialToolIdsForSession: mocks.getEffectiveOfficialToolIdsForSession,
+  loadConfig: mocks.loadConfig,
   materializeProviderRouteEnv: mocks.materializeProviderRouteEnv,
+  resolveWorkspaceConfig: mocks.resolveWorkspaceConfig,
 }));
 
 vi.mock('../SessionStore', () => ({
@@ -302,8 +309,30 @@ describe('session-engine selector and adapters', () => {
       {
         fromDesktopChatSend: true,
         sessionBirthOrigin: { kind: 'desktop', surface: 'launcher_input' },
+        beforeDispatch: undefined,
       },
     );
+  });
+
+  it('passes Goal dispatch guards into builtin queue ownership and exposes its acknowledgement', async () => {
+    const beforeDispatch = vi.fn(async () => ({ accepted: true }));
+    const dispatchAcceptance = Promise.resolve({ accepted: true });
+    mocks.enqueueUserMessage.mockResolvedValueOnce({
+      queued: true,
+      queueId: 'q-goal',
+      dispatchAcceptance,
+    });
+
+    const result = await getSessionEngine().sendDesktopMessage({
+      text: 'guarded Goal turn',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: desktopScenario,
+      beforeDispatch,
+    });
+
+    expect(mocks.enqueueUserMessage.mock.calls[0]?.[11]).toMatchObject({ beforeDispatch });
+    expect(result.dispatchAcceptance).toBe(dispatchAcceptance);
   });
 
   it('exposes builtin read and config surfaces without route-level helpers', () => {
@@ -440,7 +469,8 @@ describe('session-engine selector and adapters', () => {
       scenario: desktopScenario,
     });
 
-    expect(result).toEqual({ success: true, queued: true, queueId: 'xq-runtime' });
+    expect(result).toMatchObject({ success: true, queued: true, queueId: 'xq-runtime' });
+    expect(result.dispatchAcceptance).toBeInstanceOf(Promise);
     expect(mocks.enqueueExternalSendForDesktop).toHaveBeenCalledWith(
       'hello external',
       [],
@@ -465,6 +495,38 @@ describe('session-engine selector and adapters', () => {
     await Promise.resolve();
 
     expect(mocks.broadcast).toHaveBeenCalledWith('chat:agent-error', { message: 'runtime failed' });
+  });
+
+  it('exposes external dispatch acceptance without delaying desktop response', async () => {
+    mocks.state.useExternal = true;
+    let resolveDispatch!: (result: { queued: boolean; error?: string }) => void;
+    const dispatch = new Promise<{ queued: boolean; error?: string }>((resolve) => {
+      resolveDispatch = resolve;
+    });
+    mocks.enqueueExternalSendForDesktop.mockReturnValueOnce({
+      queued: true,
+      queueId: 'xq-goal',
+      dispatch,
+    });
+
+    const result = await getSessionEngine().sendDesktopMessage({
+      text: 'continue Goal',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: desktopScenario,
+    });
+
+    expect(result).toMatchObject({ success: true, queued: true, queueId: 'xq-goal' });
+    expect(result.dispatchAcceptance).toBeInstanceOf(Promise);
+
+    resolveDispatch({ queued: false, error: 'runtime rejected Goal turn' });
+    await expect(result.dispatchAcceptance).resolves.toEqual({
+      accepted: false,
+      error: 'runtime rejected Goal turn',
+    });
+    expect(mocks.broadcast).toHaveBeenCalledWith('chat:agent-error', {
+      message: 'runtime rejected Goal turn',
+    });
   });
 
   it('keeps stop fallback on builtin when external runtime is selected but inactive', async () => {
@@ -560,6 +622,49 @@ describe('session-engine selector and adapters', () => {
     const injectedTurnId = mocks.consumeInjectedTurnOutcome.mock.calls[0][0];
     expect(typeof injectedTurnId).toBe('string');
     expect(mocks.enqueueUserMessage.mock.calls[0][11]).toEqual({ injectedTurnId });
+  });
+
+  it('forces automatic Goal injections onto a turn boundary', async () => {
+    const result = await getSessionEngine().runInjectedTurn({
+      prompt: 'continue goal',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+      timeoutMs: 1000,
+      pollMs: 1,
+      turnBoundaryOnly: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(mocks.enqueueUserMessage.mock.calls[0][11]).toEqual({
+      injectedTurnId: expect.any(String),
+      queueResponseModeOverride: 'turn',
+    });
+  });
+
+  it('restores Goal MCP from the session snapshot only when the active set is uninitialized', async () => {
+    mocks.getMcpServers.mockReturnValueOnce(null as never);
+
+    const result = await getSessionEngine().ensureGoalSessionConfig();
+
+    expect(result).toEqual({ success: true });
+    expect(mocks.resolveWorkspaceConfig).toHaveBeenCalledWith(
+      '/workspace',
+      expect.objectContaining({ id: 'builtin-session' }),
+      { includeMcp: true },
+    );
+    expect(mocks.applyMcpOverrideAndAwaitReady).toHaveBeenCalledWith([{ id: 'snapshot-mcp' }]);
+  });
+
+  it('preserves an initialized empty Goal MCP set', async () => {
+    mocks.getMcpServers.mockReturnValueOnce([]);
+
+    const result = await getSessionEngine().ensureGoalSessionConfig();
+
+    expect(result).toEqual({ success: true });
+    expect(mocks.resolveWorkspaceConfig).not.toHaveBeenCalled();
+    expect(mocks.applyMcpOverrideAndAwaitReady).not.toHaveBeenCalled();
   });
 
   it('waits for a recovered builtin injected turn outcome after an early idle signal', async () => {

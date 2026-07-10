@@ -123,7 +123,7 @@ export interface CronTask {
   updatedAt?: string;
   /** Goal Mode lifecycle status for loop tasks. CronTask.status still owns scheduler liveness. */
   goalStatus?: GoalStatus;
-  /** Persistent Goal objective. Falls back to prompt for pre-Goal loop tasks. */
+  /** Persistent objective for an explicitly identified Goal. */
   goalObjective?: string;
   /** Last Goal status/objective update timestamp. */
   goalUpdatedAt?: string;
@@ -131,6 +131,10 @@ export interface CronTask {
   goalTerminalReason?: string;
   /** Pause reason for paused Goal tasks. */
   goalPausedReason?: GoalPausedReason;
+  /** Monotonic Goal state version used to reject stale hydrate/event payloads. */
+  goalRevision?: number;
+  /** Goal objective/lifecycle control epoch; admission bookkeeping does not advance it. */
+  goalControlRevision?: number;
 }
 
 export interface GoalChangedPayload {
@@ -139,6 +143,7 @@ export interface GoalChangedPayload {
     | 'execution_complete'
     | 'paused'
     | 'resumed'
+    | 'turn_admitted'
     | 'objective_updated'
     | 'terminal';
   taskId: string;

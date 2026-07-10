@@ -9,6 +9,7 @@ import type { MessageUsage, TurnAnalyticsSource } from '../../types/session';
 import type { SystemInitInfo } from '../../../shared/types/system';
 import type { ToolDisplayPayload } from '../../../shared/toolDisplay/filePatch';
 import type { SessionOrigin } from '../../../shared/session-origin';
+import type { DispatchGuard } from '../../session-core/turn-queue';
 
 export interface PersistContentBlock {
   type: 'text' | 'tool_use' | 'thinking';
@@ -106,6 +107,8 @@ export interface ExternalQueuedMessageOperation {
   images?: ImagePayload[];
   context: ExternalSendContext;
   runtimeConfig: ExternalRuntimeConfigSnapshot;
+  dispatchAcceptance: Promise<{ queued: boolean; error?: string }>;
+  settleDispatchAcceptance: (result: { queued: boolean; error?: string }) => void;
 }
 
 export interface ExternalQueuedConfigOperation {
@@ -157,6 +160,7 @@ export interface ExternalSendContext {
   metadataBirthPending?: boolean;
   /** PRD 0.2.18 Session Inbox metadata for cross-session messages. */
   inboxMeta?: import('../../inbox/types').InboxTurnMeta;
+  beforeDispatch?: DispatchGuard;
 }
 
 export interface ExternalSystemInitPayload {

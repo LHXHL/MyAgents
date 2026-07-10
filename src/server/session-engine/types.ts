@@ -13,6 +13,7 @@ import type { ProviderRoute } from '../../shared/providerRoute';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { OfficialToolId } from '../../shared/official-tools';
 import type { SessionOrigin } from '../../shared/session-origin';
+import type { DispatchGuard } from '../session-core/turn-queue';
 
 export type SessionEngineKind = 'builtin' | 'external';
 
@@ -35,6 +36,7 @@ export type DesktopMessageRequest = {
   analyticsSource?: TurnAnalyticsSource;
   analyticsOrigin?: SessionOrigin;
   birthOrigin?: SessionOrigin;
+  beforeDispatch?: DispatchGuard;
 };
 
 export type DesktopAdmissionResult = {
@@ -47,6 +49,8 @@ export type DesktopAdmissionResult = {
   canForceExecute?: boolean;
   error?: string;
   status?: number;
+  /** Internal dispatch acknowledgement; HTTP serializers must not expose it. */
+  dispatchAcceptance?: Promise<{ accepted: boolean; error?: string }>;
 };
 
 export type ImMessageRequest = {
@@ -65,6 +69,7 @@ export type ImMessageRequest = {
   metadataBirthPending?: boolean;
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
   analyticsOrigin?: SessionOrigin;
+  beforeDispatch?: DispatchGuard;
 };
 
 export type ImAdmissionResult = {
@@ -72,6 +77,7 @@ export type ImAdmissionResult = {
   queued?: boolean;
   error?: string;
   status?: number;
+  dispatchAcceptance?: Promise<{ accepted: boolean; error?: string }>;
 };
 
 export type ImCancelResult = {
@@ -102,6 +108,8 @@ export type BackgroundMessageRequest = {
   reasoningEffort?: string;
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
   analyticsOrigin?: SessionOrigin;
+  turnBoundaryOnly?: boolean;
+  beforeDispatch?: DispatchGuard;
 };
 
 export type InjectedTurnRequest = {
@@ -119,6 +127,10 @@ export type InjectedTurnRequest = {
   analyticsOrigin?: SessionOrigin;
   timeoutMs: number;
   pollMs?: number;
+  /** Automatic Goal continuations must never merge into an active user turn. */
+  turnBoundaryOnly?: boolean;
+  /** Final lease/admission check at the runtime promotion boundary. */
+  beforeDispatch?: DispatchGuard;
 };
 
 export type InjectedTurnResult = {
@@ -267,6 +279,7 @@ export interface SessionEngine {
   cancelImRequest(requestId: string, reason?: string): Promise<ImCancelResult>;
   enqueueBackgroundMessage(request: BackgroundMessageRequest): Promise<ImAdmissionResult>;
   enqueueInboxMessage(request: InboxMessageRequest): Promise<{ queued: boolean; error?: string }>;
+  ensureGoalSessionConfig(): Promise<{ success: boolean; error?: string }>;
   runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult>;
   stopTurn(): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }>;
   cancelQueuedMessage(queueId: string): Promise<QueueCancelResult>;

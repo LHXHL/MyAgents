@@ -235,7 +235,7 @@ interface CronTask {
 
 具体字段命名可在实现时微调，但必须满足：
 
-- 旧 `CronSchedule::Loop` task 能以默认值兼容显示为 Goal。
+- 旧 `CronSchedule::Loop` task 继续作为普通 Cron Loop 运行，不自动迁移或推断为 Goal。只有显式 `goalStatus` 才构成 Goal identity。
 - `paused` 能阻止 scheduler 自动续跑。
 - `complete` / `blocked` / `canceled` 能区分终态通知 reason。
 - 不能只靠 `exitReason` 字符串推断产品状态。
@@ -314,7 +314,7 @@ current-session Goal continuation 必须继承或恢复该 session 的交互场�
 
 本期只做 current-session Goal：
 
-- `myagents goal create --objective ...` 创建当前 session Goal。
+- `myagents goal create --objective-file ...` 创建当前 session Goal。
 - UI `/goal` 创建当前 session Goal。
 - IM/Agent Channel 里 AI 调 CLI 创建当前 session Goal。
 - 不提供 `--detached`、`--new-session`、`--delivery`。
@@ -342,7 +342,7 @@ current-session Goal continuation 必须继承或恢复该 session 的交互场�
 
 AI 通过 CLI 创建 Goal 是同一条路径：
 
-- User 明确要求“进入目标模式 / Goal Loop / 目标模式 / 设立目标 / 持续执行直到完成”时，模型可在查看 `myagents goal --help` 后调用 `myagents goal create --objective "..."`。
+- User 明确要求“进入目标模式 / Goal Loop / 目标模式 / 设立目标 / 持续执行直到完成”时，模型可在查看 `myagents goal --help` 后，先将 objective 写入 workspace 文本文件，再调用 `myagents goal create --objective-file <path>`。
 - CLI create 使用当前 session context，不能创建全局 Goal，也不能覆盖未完成 Goal。
 - CLI create 成功后，UI、scheduler、prompt 注入、Stop/Pause、terminal 通知必须与 UI `/goal` 创建完全等价。
 
@@ -392,7 +392,7 @@ Goal 模式下新增语义：
 实现路径：
 
 - `Chat.handleStop` / `stopResponse` 仍通过 `src/server/session-engine/` facade 停止当前 AI turn，不能手写 runtime 分支。
-- Stop 成功后，如果 `cronState.task.schedule.kind === 'loop'` 且是当前 session Goal，renderer 调用新的 Rust/Tauri Goal pause API，把 `goalStatus` 写为 `paused`、`goalPausedReason` 写为 `user_stop`。
+- Stop 成功后，如果当前任务有显式 `goalStatus` 且属于当前 session，renderer 调用 Rust/Tauri Goal pause API，把 `goalStatus` 写为 `paused`、`goalPausedReason` 写为 `user_stop`。不能只凭 `schedule.kind === 'loop'` 判定 Goal。
 - Rust `CronTaskManager` 在 loop 下一轮调度前检查 `goalStatus`；如果是 `paused`，不继续执行，也不释放 CronTask owner。
 - 终态 `complete` / `blocked` / `canceled` 才停止 scheduler 并释放 CronTask owner。
 
@@ -423,23 +423,15 @@ Goal 模式下新增语义：
 - 未来 `/goal edit`。
 - 未来其它等价 UI。
 
-更新后按当前执行状态分流：
+实现最终采用一致的 turn-boundary 更新协议：
 
 | 当前状态 | 行为 |
 |----------|------|
-| idle / active but no turn running | 持久化 objective，下一轮 / 立即续跑使用新 objective |
-| running 且当前投递策略可实时注入 | 持久化 objective，复用现有 realtime query/steer 管道注入 `objective_updated` reminder，不停止当前 turn |
-| running 但 runtime 不支持 turn 内 steering | 持久化 objective，停止当前 turn，再用新 objective 启动下一轮 |
+| 有普通 user query 正在排队 | 返回 `queue_conflict`，保留所有用户消息，绝不静默取消 |
+| idle / running active Goal | stop/wait → revision CAS → 再次 stop/wait/re-read → 以 `objective_restart` admission 启动新 turn |
 | paused | 只更新 objective 和横条展示，保持 paused，等用户 query 或显式继续 |
 
-Codex 对应逻辑见研究报告 `objective_updated.md` 章节。MyAgents 模板在下文固定为 `<system-reminder>` 结构，并把状态更新路径改成 `myagents goal update`。
-
-注意：这里的“实时注入”不是新增底层 runtime 能力。当前代码已经存在两条路径：
-
-- builtin SDK：`enqueueUserMessage` 在 `realtime` 模式下会把第一条 busy-time query 交给 SDK async command queue，`messageGenerator` 在工具边界 / 下一次模型请求前让模型读到。
-- Codex external runtime：`AgentRuntime.steerMessage` 通过 `turn/steer` 追加到当前 active turn。
-
-Goal 需要新增的是面向 Goal 的统一封装和语义：同样复用上述投递机制，但注入内容是 hidden `<system-reminder>`，不能错误渲染成普通用户改 objective，也不能绕过 `session-engine` facade 直接调用具体 runtime。
+Objective CAS 会撤销旧 scheduler lease 和旧 admission authority；CAS 后的第二次 stop/wait 用于关闭 claim 恰好发生在第一次 idle 检查与 CAS 之间的窗口。`GOAL_OBJECTIVE_UPDATED` 作为新 turn 的 hidden reminder，不作为 mid-turn steer。所有路径必须经过 `session-engine` facade。
 
 ## Prompt 与模型工具
 
@@ -451,12 +443,12 @@ Goal 需要新增的是面向 Goal 的统一封装和语义：同样复用上述
 
 - `GOAL_CONTINUATION`：自动续跑 / Goal 第一轮启动。
 - `GOAL_CONTEXT`：Goal 运行中用户发送普通 query，query 作为 visible tail。
-- `GOAL_OBJECTIVE_UPDATED`：用户显式编辑 objective，运行中 runtime 支持实时注入时使用。
+- `GOAL_OBJECTIVE_UPDATED`：用户显式编辑 objective 后，以受 admission guard 的新 turn 重启时使用。
 
 实现要求：
 
 - 普通 scheduled / recurring cron 继续用现有 cron reminder。
-- `schedule.kind === 'loop'` 且是 Goal 模式时使用 Goal reminder。
+- 只有显式 `goalStatus` 的 Goal 使用 Goal reminder；`schedule.kind === 'loop'` 只是 scheduler 机制，不能作为产品身份判定。
 - Goal reminder 必须把 objective 当用户数据处理，不把 objective 提升成 system/developer 指令。
 - 新增 tag 常量应集中定义在 `src/shared/systemReminder.ts`，避免在 renderer/server 各自手写字符串：
   - `GOAL_CONTINUATION_TAG = 'GOAL_CONTINUATION'`
@@ -537,7 +529,7 @@ Before deciding that the Goal is achieved, treat completion as unproven and veri
 Only mark the Goal complete when current evidence proves every requirement has been satisfied and no required work remains. If the evidence is incomplete, weak, indirect, merely consistent with completion, or leaves any requirement missing, incomplete, or unverified, keep working instead of marking the Goal complete.
 
 If the Goal is achieved, run:
-  myagents goal update --status complete --reason "brief reason"
+  myagents goal update --status complete
 
 Blocked audit:
 - Do not mark the Goal blocked the first time a blocker appears.
@@ -548,7 +540,7 @@ Blocked audit:
 - Never use status "blocked" merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.
 
 If the strict blocked audit is satisfied, run:
-  myagents goal update --status blocked --reason "brief reason"
+  myagents goal update --status blocked
 
 Do not call myagents goal update unless the Goal is complete or the strict blocked audit above is satisfied. Do not mark a Goal complete merely because you are stopping, because the user interrupted a turn, or because you made partial progress.
 </instruction>
@@ -595,10 +587,10 @@ Completion and blocked rules still apply:
 - Only mark the Goal blocked when the same blocking condition has repeated for at least three consecutive Goal turns and you are truly at an impasse.
 
 If the updated Goal is achieved, run:
-  myagents goal update --status complete --reason "brief reason"
+  myagents goal update --status complete
 
 If the strict blocked audit is satisfied, run:
-  myagents goal update --status blocked --reason "brief reason"
+  myagents goal update --status blocked
 
 Do not call myagents goal update merely because the objective was edited.
 </instruction>
@@ -643,10 +635,10 @@ Completion and blocked rules still apply:
 - Only mark the Goal blocked when the same blocking condition has repeated for at least three consecutive Goal turns and you are truly at an impasse.
 
 If the Goal is achieved, run:
-  myagents goal update --status complete --reason "brief reason"
+  myagents goal update --status complete
 
 If the strict blocked audit is satisfied, run:
-  myagents goal update --status blocked --reason "brief reason"
+  myagents goal update --status blocked
 </instruction>
 <objective>
 {{ objective }}
@@ -687,7 +679,7 @@ turnNumber: {{ turn_number }}
 
 如果没有 active/current Goal，返回 `goal: null`。
 
-#### `myagents goal create --objective "<objective>"`
+#### `myagents goal create --objective-file <workspace-relative-path>`
 
 只在 User 明确要求创建 goal / 进入目标模式 / Goal Loop / 目标模式 / 设立目标 / 持续执行直到完成时可用。模型不能从普通任务里自行推断并创建 Goal。
 
@@ -697,9 +689,11 @@ turnNumber: {{ turn_number }}
 - 本期不支持 `token_budget`。
 - UI `/goal` 创建和 CLI create 是等价入口；二者都必须走 session-level Goal facade。
 - `myagents goal create` 按当前 session 归属创建 Goal；不能跨 session 创建，也不能覆盖同 session 未完成 Goal。
+- 调用方必须先用标准文件工具将用户提供的 objective 写入 workspace 文本文件，再传 `--objective-file`；Goal objective/reason 不接受 inline 或 positional 文本，不得将用户文本直接拼入 Shell 命令。
+- CLI 创建的 Goal 保留无人值守入口的 runtime 最大权限语义；model / provider / runtime / reasoning / MCP 一律由当前 session 继承，不持久化另一份 Goal 快照。
 - CLI create 成功后必须让当前 session 的 Goal 横条可被桌面端感知：当前 Tab 自动出现，历史打开/切回该 session 时也能恢复。
 
-#### `myagents goal update --status complete|blocked --reason "<brief reason>"`
+#### `myagents goal update --status complete|blocked [--reason-file <workspace-relative-path>]`
 
 模型唯一可用的状态更新路径。
 
@@ -714,8 +708,7 @@ turnNumber: {{ turn_number }}
 
 兼容：
 
-- `myagents cron exit` 可以保留为 legacy alias，但 Goal prompt 中必须引导模型使用 `myagents goal update`。
-- 旧 cron scheduled task 仍可继续使用 `myagents cron exit`，不要破坏非 Goal 定时任务。
+- `myagents cron exit` 仅保留给非 Goal cron scheduled task。显式 Goal 不注册 Cron exit context，不消费 Cron exit marker，也不从文本匹配退出。
 
 ## UI 详细要求
 
@@ -913,7 +906,7 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
 ### 2.1 AI CLI create 等价入口
 
 - 桌面普通会话中，User 直接说“请进入目标模式，持续完成 X”。
-- AI 在查看 `myagents goal --help` 后调用 `myagents goal create --objective "X"`。
+- AI 在查看 `myagents goal --help` 后把 objective 写入 workspace 文本文件，再调用 `myagents goal create --objective-file <path>`。
 - CLI create 成功后，当前桌面 Tab 输入框上方自动出现 Goal 横条，不需要用户重新点 `/goal`。
 - 刷新/切换/从历史重新打开同一 session 后，横条仍能按 session hydrate 恢复。
 - 后续 Stop/Pause、普通 query 恢复、objective 编辑、complete/blocked 终态都和 `/goal` UI 创建路径一致。
@@ -921,7 +914,7 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
 ### 2.2 IM / Agent Channel current-session Goal
 
 - IM/Agent Channel 私域会话中，User 明确说“用目标模式/设立目标/Goal Loop 持续完成 X”。
-- AI 可调用 `myagents goal create --objective "X"`，创建当前 channel session 的 Goal。
+- AI 可通过 `myagents goal create --objective-file <path>` 创建当前 channel session 的 Goal。
 - 后续 Goal continuation 仍沿着该 session 的 IM/Agent Channel 输出通道返回用户，不要求用户额外配置 delivery。
 - 桌面端从历史打开这个 IM/Agent Channel session 时，能看到同一条 Goal 横条和当前状态。
 - Cron / Registered Agent 场景不会主动注入 Goal create prompt，也不会自动创建 Goal。
@@ -935,7 +928,7 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
 
 ### 4. 模型完成
 
-- 模型调用 `myagents goal update --status complete --reason "..."`
+- 模型调用 `myagents goal update --status complete`
 - Goal 停止。
 - 横条显示 complete。
 - 发送终态通知。
@@ -944,7 +937,7 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
 ### 5. 模型 blocked
 
 - 模型第一次遇到困难不能 blocked，prompt 要约束它继续推进。
-- 同一 blocker 连续三轮后，模型可调用 `myagents goal update --status blocked --reason "..."`
+- 同一 blocker 连续三轮后，模型可调用 `myagents goal update --status blocked`
 - Goal 停止。
 - 横条显示 blocked。
 - 发送通知。
@@ -987,7 +980,7 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
 - `myagents goal update`：只接受 `complete` / `blocked`。
 - blocked audit prompt snapshot：保留 Codex 三轮 blocked 约束。
 - notification policy：每轮 execution complete 不通知，terminal stop 通知。
-- state mapping：legacy loop task 默认映射 Goal active；连续失败映射 blocked。
+- state identity：legacy loop task 保持 ordinary Cron；只有显式 `goalStatus` 才进入 Goal；Goal 连续失败由 system actor 映射 blocked。
 
 ### DOM / React
 
@@ -1057,8 +1050,8 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
 - pure `GOAL_CONTINUATION` / `GOAL_OBJECTIVE_UPDATED` user message 不渲染用户气泡，不泄漏 hidden XML payload。
 - 用户 Stop 当前 turn 后，Goal 进入 `paused`，3 秒 loop buffer 不会再次启动下一轮。
 - paused Goal 下用户下一条 query 正常发送，并在该 turn 后恢复自动续跑。
-- objective 编辑可更新持久 objective；running 且可 realtime steering 时注入 `GOAL_OBJECTIVE_UPDATED`，否则走 stop + 下一轮新 objective。
-- `myagents goal get/create/update` 可用；模型调用 `update --status complete|blocked --reason` 后 Goal terminal、横条更新、通知发送、loop 停止。
+- objective 编辑在无排队用户消息时通过 stop/wait + revision CAS + guarded restart 更新；有排队消息时明确冲突且保留消息。
+- `myagents goal get/create/update` 可用；模型调用 `update --status complete|blocked` 后 Goal terminal、横条更新、通知发送、loop 停止；复杂 reason 通过 `--reason-file` 传入。
 - AI 在桌面 session 调 `myagents goal create` 后，当前 Tab 自动出现横条；从历史打开同一 session 时也能恢复。
 - AI 在 IM/Agent Channel session 调 `myagents goal create` 后，Goal 在当前 channel session 中持续执行；桌面打开该 channel session 历史能看到横条。
 - Cron / Registered Agent 不主动注入 Goal create prompt。
@@ -1086,9 +1079,9 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
 
 ### 已完成架构校准清单
 
-- [x] session-level Goal facade：新增 `cmd_create_goal_task`、`cmd_get_goal_task`、`cmd_get_session_goal_task`，Rust Management API 增加 `/api/goal/get|create|update`。
-- [x] backing store 继续复用 `CronTask`，但 Goal identity 使用显式 `goalStatus` / `goalObjective` 字段，不再从 `CronSchedule::Loop + single_session` 形状推断。
-- [x] `goal:changed` 事件覆盖 create / pause / resume / objective update / execution complete / terminal；payload 带 `sessionId`、`workspacePath`、`goal`、`changeKind`。
+- [x] session-level Goal facade：新增 `cmd_create_goal_task`、`cmd_get_goal_task`、`cmd_get_session_goal_task`，Rust Management API 增加 `/api/goal/get|create|update|admit|objective`。
+- [x] backing store 继续复用 `CronTask`，但 Goal identity 只使用显式 `goalStatus` 字段，不再从 `goalObjective` 或 `CronSchedule::Loop + single_session` 形状推断。旧 Loop 不做数据迁移。
+- [x] `goal:changed` 事件覆盖 create / turn admission / pause / resume / objective update / execution complete / terminal；payload 带 `sessionId`、`workspacePath`、`goal`、`changeKind` 和单调 `goalRevision`。
 - [x] Tab birth / session switch / history restore 主动按 `sessionId + workspacePath` hydrate active / paused Goal；terminal Goal 只通过实时事件更新当前打开的横条，避免历史终态反复复活。
 - [x] UI `/goal` 正式创建切到 Goal facade；draft 横条仍是前端本地状态，发送 objective 后事实源切到 facade 返回的 Goal。
 - [x] `myagents goal create` 与 UI `/goal` 等价：成功后同一 session 的 desktop tab 可通过 `goal:changed` / hydrate 显示横条。
@@ -1143,12 +1136,19 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
   - `CronTaskManager` 新增 `create_goal_task()`、`get_goal_for_session()` 和 `goal:changed` 事件；create / pause / resume / objective update / terminal / execution complete 均可驱动 renderer hydrate。
   - `useCronTask` 的 Goal 创建、刷新、事件监听、session restore 均切到 Goal 专用 API；CLI/AI 创建 Goal 后，当前 desktop tab 可按 `sessionId + workspacePath` 自动显示横条。
   - `/cron/execute-sync` 对 current-session Goal 不再把 session origin/`cronTaskId` 改成 automation；Goal continuation 使用 session 原始 desktop / agent-channel interaction scenario，普通 Cron 继续使用 cron scenario。
-  - Goal identity 改为显式 `goalStatus` / `goalObjective`：`CronSchedule::Loop` 只是 scheduler 机制，Task Center / 内部 owner 仍可使用 loop-shaped task 而不被误判为 Goal。
+  - Goal identity 改为显式 `goalStatus`：`goalObjective` 是 Goal 数据而非身份标识；`CronSchedule::Loop` 只是 scheduler 机制，Task Center / 内部 owner 仍可使用 loop-shaped task 而不被误判为 Goal。
   - 普通 Cron surface 全面隔离 Goal：Tauri command、Rust Management API、Node Admin API 均拒绝从 ordinary cron create loop；list/status/runs/start/stop/delete/update/run-now 不再暴露或操作 Goal。
-  - CLI 文档移除 `myagents cron add --schedule '{"kind":"loop"}'`，Goal 创建统一走 `myagents goal create --objective ...`。
+  - CLI 文档移除 `myagents cron add --schedule '{"kind":"loop"}'`，Goal 创建统一走 `myagents goal create --objective-file ...`。
   - current-session Goal 不附带 `CronDelivery`；IM/Agent Channel 依赖当前 session 输出路径，不把 delivery 当作 owner。
   - Renderer hydrate 只恢复 active / paused Goal；complete / blocked / canceled 通过当前 tab 的实时 `goal:changed` 展示，并在用户 dismiss 后不再复活。
   - Goal CLI prompt 注入限定为 desktop + private IM / private agent-channel，group / cron / registeredAgent 不注入。
+  - desktop/IM user ingress 统一经过 SessionEngine Goal orchestrator；同 session lookup+reserve 串行，Runtime promotion 前 claim、transport 接受后 finalize、idle 后持续幂等重试 release，确认释放前保留 Node authority。`goalRevision` 负责全部状态的单调排序；`goalControlRevision` 只表达显式 pause/resume、objective、terminal 控制代次，user query 触发的 paused→active 保持同代。Stop 前旧请求不能借相同 objective 恢复 Goal，同时同代并发消息不受 admission revision churn 干扰。paused 恢复与轮次计数在 Rust 事务内完成。
+  - scheduler candidate 不落盘；Sidecar 等 idle/queue drain 后，在 builtin/external 实际发送前原子 claim。Stop/Cancel 先撤销 Goal authority再停 Runtime；objective edit 用双 stop/wait + CAS，不做 realtime steering。
+  - Goal 只持久化 permission policy：UI 保留当前显式值，CLI 空值使用 runtime 最大权限；model/provider/runtime/reasoning/MCP 每轮继承 current session，冷启动通过 session metadata 恢复 runtime identity。
+  - terminal transition 使用 actor-aware first-writer-wins CAS：Model 受 `aiCanExit` 服务端硬闸，User 只能 cancel，System failure protector 可 terminal；model turn 的 owner 延迟到 scheduler finalize 或 user admission idle 后释放。
+  - IM/Agent Channel 自动 continuation 只为明确 `agent-channel` origin 写持久 outbox，不使用 `CronDelivery`；唯一 replay worker 在无 binding/临时错误时持续重试。语义为 at-least-once，崩溃窗口可能重复；群聊 `NO_REPLY` 静默。
+  - Goal run history 只在 scheduler lease finalization `applied=true` 后写入；被 pause/objective/terminal 撤销的旧 turn 即使返回成功也不进入历史。
+  - `cron_tasks.json` 的 finalized execution state 是权威，`cron_runs/*.jsonl` 是 best-effort 投影；状态提交后、history append 前崩溃允许缺行，查询层不得反向覆盖 Goal 状态。
   - 文档对齐完成：架构总览、Session、System Reminder、CLI、Task Center、Task Provider Routing、IM 集成文档均已同步到 session-owned Goal 口径；PRD 状态从 ready-for-development 更新为 implemented。
 
 ### 验证记录
@@ -1176,3 +1176,11 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
   - `cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D clippy::disallowed_methods -D clippy::disallowed_macros`：通过，只有既有 warnings。
   - `cargo test --manifest-path src-tauri/Cargo.toml cron_task:: -- --nocapture`：通过，15 个 cron_task 相关测试通过，含 session Goal lookup 与 duplicate unfinished Goal guard。
   - `npx vitest run src/server/system-prompt-cli-tools.unit.test.ts src/server/admin-api.unit.test.ts src/server/utils/cron-reminder.unit.test.ts src/shared/systemReminder.test.ts src/renderer/components/Message.proseContext.test.tsx src/renderer/components/SlashCommandMenu.test.ts src/renderer/utils/slashActions.test.ts`：通过，62 个测试通过，含 Goal help、ordinary cron loop reject、private-only Goal prompt 注入、current-session Goal 不附带 delivery。
+- 最终并发与权限修复验证（2026-07-10）：
+  - `npm run typecheck`、`npm run lint`、`npm run test:classification`：通过；classification 覆盖 146 个 server tests（32 integration、3 credentialed），lint 仍只有既有 `chatSuggestions.ts` orphan warning。
+  - `npm run test:unit`：257 个文件通过，2234 passed、3 skipped；Goal orchestrator/authority 专项 24 个测试通过。
+  - `npm run test:dom`：78 个文件、392 个测试通过。
+  - `npm run test:integration`：32 个文件、247 个测试通过。
+  - `cargo test --manifest-path src-tauri/Cargo.toml --lib`：549 个测试通过，覆盖 control epoch、两阶段 admission、terminal authority 与 outbox recovery。
+  - `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`、强制 clippy、`git diff --check`：通过；clippy 只有仓库既有 warnings。
+  - 最终独立对抗复审未发现剩余 P0/P1。

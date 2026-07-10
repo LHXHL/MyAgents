@@ -31,6 +31,8 @@ export interface GoalReminderInput {
   goalId: string;
   goalStatus: string;
   turnNumber: number;
+  /** Defaults to true for compatibility with Goal records created before this field was exposed. */
+  aiCanExit?: boolean;
 }
 
 export interface GoalContextReminderInput extends GoalReminderInput {
@@ -55,7 +57,7 @@ function leadingReminderKind(body: string): string | undefined {
   return match?.[1];
 }
 
-export function parseLeadingSystemReminder(raw: string | null | undefined): ParsedLeadingSystemReminder {
+function parseSingleLeadingSystemReminder(raw: string | null | undefined): ParsedLeadingSystemReminder {
   const text = raw ?? '';
   const leadingTrimmed = text.trimStart();
   if (!leadingTrimmed.startsWith(SYSTEM_REMINDER_OPEN)) {
@@ -89,6 +91,19 @@ export function parseLeadingSystemReminder(raw: string | null | undefined): Pars
     visibleText,
     rawReminder,
   };
+}
+
+export function parseLeadingSystemReminder(raw: string | null | undefined): ParsedLeadingSystemReminder {
+  const outer = parseSingleLeadingSystemReminder(raw);
+  if (!outer.hasReminder) return outer;
+
+  let visibleText = outer.visibleText;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const nested = parseSingleLeadingSystemReminder(visibleText);
+    if (!nested.hasReminder) break;
+    visibleText = nested.visibleText;
+  }
+  return visibleText === outer.visibleText ? outer : { ...outer, visibleText };
 }
 
 /**
@@ -161,6 +176,49 @@ function objectiveLines(objective: string): string[] {
   ];
 }
 
+function goalTerminalGuidance(input: GoalReminderInput): string[] {
+  if (input.aiCanExit === false) {
+    return [
+      'Termination policy:',
+      '- The user disabled autonomous Goal termination. You cannot mark this Goal complete or blocked.',
+      '- Keep the Goal active even if you believe it is complete or blocked; report your evidence or blocker in the response and wait for the user or system to decide the terminal state.',
+      '- Do not call `myagents goal update` for this Goal.',
+    ];
+  }
+  return [
+    'If the Goal is achieved, run:',
+    '  myagents goal update --status complete',
+    '',
+    'Blocked audit:',
+    '- Do not mark the Goal blocked the first time a blocker appears.',
+    '- Only use status "blocked" when the same blocking condition has repeated for at least three consecutive Goal turns, counting the original/user-triggered turn and any automatic Goal continuations.',
+    '- If the user resumes a Goal that was previously marked "blocked", treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed Goal turns, mark the Goal blocked again.',
+    '- Use status "blocked" only when you are truly at an impasse and cannot make meaningful progress without user input or an external-state change.',
+    '- Once the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the Goal active; mark it blocked.',
+    '- Never use status "blocked" merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.',
+    '',
+    'If the strict blocked audit is satisfied, run:',
+    '  myagents goal update --status blocked',
+    '',
+    'Do not call myagents goal update unless the Goal is complete or the strict blocked audit above is satisfied. Do not mark a Goal complete merely because you are stopping, because the user interrupted a turn, or because you made partial progress.',
+  ];
+}
+
+function goalUpdateGuidance(input: GoalReminderInput): string[] {
+  if (input.aiCanExit === false) {
+    return [
+      'The user disabled autonomous Goal termination. Do not call `myagents goal update`; report completion evidence or blockers without changing the Goal status.',
+    ];
+  }
+  return [
+    'If the updated Goal is achieved, run:',
+    '  myagents goal update --status complete',
+    '',
+    'If the strict blocked audit is satisfied, run:',
+    '  myagents goal update --status blocked',
+  ];
+}
+
 export function buildGoalContinuationReminder(input: GoalReminderInput): string {
   return [
     SYSTEM_REMINDER_OPEN,
@@ -203,21 +261,7 @@ export function buildGoalContinuationReminder(input: GoalReminderInput): string 
     '',
     'Only mark the Goal complete when current evidence proves every requirement has been satisfied and no required work remains. If the evidence is incomplete, weak, indirect, merely consistent with completion, or leaves any requirement missing, incomplete, or unverified, keep working instead of marking the Goal complete.',
     '',
-    'If the Goal is achieved, run:',
-    '  myagents goal update --status complete --reason "brief reason"',
-    '',
-    'Blocked audit:',
-    '- Do not mark the Goal blocked the first time a blocker appears.',
-    '- Only use status "blocked" when the same blocking condition has repeated for at least three consecutive Goal turns, counting the original/user-triggered turn and any automatic Goal continuations.',
-    '- If the user resumes a Goal that was previously marked "blocked", treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed Goal turns, mark the Goal blocked again.',
-    '- Use status "blocked" only when you are truly at an impasse and cannot make meaningful progress without user input or an external-state change.',
-    '- Once the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the Goal active; mark it blocked.',
-    '- Never use status "blocked" merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.',
-    '',
-    'If the strict blocked audit is satisfied, run:',
-    '  myagents goal update --status blocked --reason "brief reason"',
-    '',
-    'Do not call myagents goal update unless the Goal is complete or the strict blocked audit above is satisfied. Do not mark a Goal complete merely because you are stopping, because the user interrupted a turn, or because you made partial progress.',
+    ...goalTerminalGuidance(input),
     '</instruction>',
     ...objectiveLines(input.objective),
     ...goalStateLines(input),
@@ -243,11 +287,7 @@ export function buildGoalObjectiveUpdatedReminder(input: GoalReminderInput): str
     '- Only mark the Goal complete when current evidence proves every requirement in the updated objective has been satisfied and no required work remains.',
     '- Only mark the Goal blocked when the same blocking condition has repeated for at least three consecutive Goal turns and you are truly at an impasse.',
     '',
-    'If the updated Goal is achieved, run:',
-    '  myagents goal update --status complete --reason "brief reason"',
-    '',
-    'If the strict blocked audit is satisfied, run:',
-    '  myagents goal update --status blocked --reason "brief reason"',
+    ...goalUpdateGuidance(input),
     '',
     'Do not call myagents goal update merely because the objective was edited.',
     '</instruction>',
@@ -277,11 +317,7 @@ export function buildGoalContextReminder(input: GoalContextReminderInput): strin
     '- Only mark the Goal complete when current evidence proves every requirement in the objective has been satisfied and no required work remains.',
     '- Only mark the Goal blocked when the same blocking condition has repeated for at least three consecutive Goal turns and you are truly at an impasse.',
     '',
-    'If the Goal is achieved, run:',
-    '  myagents goal update --status complete --reason "brief reason"',
-    '',
-    'If the strict blocked audit is satisfied, run:',
-    '  myagents goal update --status blocked --reason "brief reason"',
+    ...goalUpdateGuidance(input),
     '</instruction>',
     ...objectiveLines(input.objective),
     ...goalStateLines(input),

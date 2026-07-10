@@ -16,6 +16,7 @@ pub async fn initialize_cron_manager(handle: AppHandle) {
     // crashes before the next mutation. Idempotent: if no tasks needed
     // migration, this is just a no-op rewrite of the same content.
     persist_legacy_auto_migration(manager).await;
+    replay_goal_delivery_outboxes(manager).await;
 
     // Safety-net heal: recurring/scheduled Tasks whose schedule fields
     // were wiped by an earlier migration bug can be repaired from the
@@ -42,6 +43,12 @@ pub async fn initialize_cron_manager(handle: AppHandle) {
     // Frontend no longer needs to call recoverCronTasks
     let _ = handle.emit("cron:manager-ready", serde_json::json!({}));
     ulog_info!("[CronTask] Emitted cron:manager-ready event");
+}
+
+async fn replay_goal_delivery_outboxes(manager: &'static CronTaskManager) {
+    for task_id in manager.goal_delivery_outbox_task_ids().await {
+        manager.ensure_goal_delivery_replay(&task_id).await;
+    }
 }
 
 /// PRD 0.2.5 R3 — persist the legacy permissionMode='auto' migration that

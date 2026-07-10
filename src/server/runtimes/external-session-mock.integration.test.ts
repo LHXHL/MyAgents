@@ -357,11 +357,38 @@ describe('external SessionEngine with fake runtime', () => {
     expect(second.queued).toBe(true);
     expect(second.queueId).toBeDefined();
     expect(harness.runtime.sentMessages).toEqual(['first']);
+    let dispatchAccepted = false;
+    void second.dispatchAcceptance?.then(() => { dispatchAccepted = true; });
+    await Promise.resolve();
+    expect(dispatchAccepted).toBe(false);
 
     await waitFor(() => harness.runtime.sentMessages.includes('second'), 'queued second dispatch');
+    await expect(second.dispatchAcceptance).resolves.toEqual({ accepted: true });
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     expect(harness.runtime.sentMessages).toEqual(['first', 'second']);
     expect(harness.engine.getLatestAssistantResult().latestResult).toBe('second queued answer');
+  });
+
+  it('rejects a stale Goal admission at queued promotion without runtime dispatch', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'first answer', completeDelayMs: 80 },
+    ]);
+    const sessionId = 'session-goal-gate';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'first'));
+    await waitFor(() => harness.runtime.sentMessages.includes('first'), 'first dispatch');
+    const second = await harness.engine.sendDesktopMessage({
+      ...desktopRequest(sessionId, workspacePath, 'stale Goal turn'),
+      beforeDispatch: async () => ({ accepted: false, code: 'terminal', error: 'Goal is terminal' }),
+    });
+
+    expect(second.queueId).toBeDefined();
+    await expect(second.dispatchAcceptance).resolves.toEqual({
+      accepted: false,
+      error: 'Goal is terminal',
+    });
+    expect(harness.runtime.sentMessages).toEqual(['first']);
   });
 
   it('steers a second desktop send into the active Codex turn in realtime mode', async () => {

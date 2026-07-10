@@ -150,6 +150,7 @@ import { imEventBus, type ImEventType } from './utils/im-event-bus';
 import { imRequestRegistry } from './utils/im-request-registry';
 import { mirrorIfChannelBound, type MirrorImage } from './utils/im-mirror';
 import { normalizeClaudeTranscriptCleanupPeriodDays, SUBSCRIPTION_PROVIDER_ID, type ProxySettings } from '../shared/config-types';
+import { stripLeadingSystemReminder } from '../shared/systemReminder';
 import { createConcreteProviderRoute, isConcreteProviderRoute } from '../shared/providerRoute';
 import type {
   ContentBlock,
@@ -834,13 +835,22 @@ function fireDesktopUserMirror(content: string, images: MirrorImage[] | undefine
   // Only fire if there's a chance an IM channel is bound. Rust silently
   // no-ops if not, but skipping the round-trip when content is trivially
   // empty avoids needless network chatter.
-  if (!content && (!images || images.length === 0)) return;
+  let visibleContent = content;
+  // Hidden reminders may be stacked (for example Goal context wrapping a
+  // floating-ball reminder). Never leak those control payloads into a bound
+  // IM channel; peel every leading envelope and mirror only the visible tail.
+  for (let i = 0; i < 8; i += 1) {
+    const stripped = stripLeadingSystemReminder(visibleContent);
+    if (stripped === visibleContent) break;
+    visibleContent = stripped;
+  }
+  if (!visibleContent && (!images || images.length === 0)) return;
   currentTurnMirrorEnabled = true;
   currentTurnMirrorSessionId = sessionId;
   void mirrorIfChannelBound({
     sessionId,
     role: 'user',
-    text: content,
+    text: visibleContent,
     images,
   });
 }
@@ -6884,12 +6894,14 @@ function drainQueueWithCancellation(): void {
   for (const item of drained.messages) {
     pushInboxAbortReplyForQueuedItem(item, 'message_dropped_on_reset');
     releaseTurnAdmissionTicket(item.id);
+    item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
     item.resolve();
     broadcast('queue:cancelled', { queueId: item.id });
   }
   for (const item of drained.turnBoundary) {
     if (item.sourceItem) {
       pushInboxAbortReplyForQueuedItem(item.sourceItem, 'message_dropped_on_reset');
+      item.sourceItem.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
       item.sourceItem.resolve();
     }
     if (item.queueId === getForceTurnBoundaryQueueId()) {
@@ -7602,6 +7614,7 @@ export type EnqueueResult = {
   isInFlight?: boolean;
   deliveryMode?: QueueDeliveryMode;
   error?: string;    // present when queue is full or other rejection
+  dispatchAcceptance?: Promise<{ accepted: boolean; error?: string }>;
 };
 
 async function enqueueWatchdogResumeReminderAtQueueFront(
@@ -7826,6 +7839,8 @@ export async function enqueueUserMessage(
     injectedTurnId?: string;
     allowLazySessionMaterialization?: boolean;
     sessionBirthOrigin?: SessionOrigin;
+    queueResponseModeOverride?: 'realtime' | 'turn';
+    beforeDispatch?: import('./session-core/turn-queue').DispatchGuard;
   },
 ): Promise<EnqueueResult> {
   // 等待进行中的 resetSession/switchToSession 完成，防止消息投递到已死的 generator
@@ -7857,8 +7872,14 @@ export async function enqueueUserMessage(
   }
 
   const queueId = randomUUID();
+  let settleDispatchAcceptance: ((result: { accepted: boolean; error?: string }) => void) | undefined;
+  const dispatchAcceptance = options?.beforeDispatch
+    ? new Promise<{ accepted: boolean; error?: string }>((resolve) => {
+        settleDispatchAcceptance = resolve;
+      })
+    : undefined;
   const effectiveQueueSource = metadata?.source ?? currentScenario.type;
-  const queueResponseMode = resolveChatQueueResponseMode(
+  const queueResponseMode = options?.queueResponseModeOverride ?? resolveChatQueueResponseMode(
     loadAdminConfig().chatQueueResponseMode,
     options?.fromDesktopChatSend,
   );
@@ -8453,6 +8474,8 @@ export async function enqueueUserMessage(
       providerAnalytics: turnProviderAnalytics,
       inboxMeta,
       injectedTurnId: options?.injectedTurnId,
+      beforeDispatch: options?.beforeDispatch,
+      settleDispatchAcceptance,
     };
 
     // (v0.2.12 mid-turn injection) Lockstep yield. Only one queued message
@@ -8467,7 +8490,8 @@ export async function enqueueUserMessage(
       const turnItem = reservedTurnBoundaryItem;
       if (turnItem && !getTurnBoundaryQueue().includes(turnItem)) {
         console.log(`[agent] Turn-boundary queue item ${queueId} was cancelled before preparation completed`);
-        return { queued: false };
+        settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled before dispatch' });
+        return { queued: false, error: 'Queue item was cancelled before dispatch' };
       }
       const readyTurnItem = turnItem ?? {
         queueId,
@@ -8544,7 +8568,13 @@ export async function enqueueUserMessage(
     // (v0.2.12) queueState.inFlightToCliId === queueId only when this enqueue took the
     // immediate-yield path. Frontend uses this to set the optimistic pill's
     // isInFlight flag from the very first paint, before the SSE round-trip.
-    return { queued: true, queueId, isInFlight: getInFlightQueueId() === queueId, deliveryMode: queueDeliveryMode };
+    return {
+      queued: true,
+      queueId,
+      isInFlight: getInFlightQueueId() === queueId,
+      deliveryMode: queueDeliveryMode,
+      dispatchAcceptance,
+    };
   }
 
   // Direct send path: push user message to transcriptState.messages[] and broadcast immediately.
@@ -8593,6 +8623,8 @@ export async function enqueueUserMessage(
     providerAnalytics: turnProviderAnalytics,
     inboxMeta,
     injectedTurnId: options?.injectedTurnId,
+    beforeDispatch: options?.beforeDispatch,
+    settleDispatchAcceptance,
   };
 
   if (!isSessionActive()) {
@@ -8616,7 +8648,7 @@ export async function enqueueUserMessage(
     wakeGenerator(queueItem);
   }
 
-  return { queued: false };
+  return { queued: false, dispatchAcceptance };
   } finally {
     if (reservedTurnBoundaryItem && !reservedTurnBoundaryItem.ready) {
       const reservationIdx = getTurnBoundaryQueue().indexOf(reservedTurnBoundaryItem);
@@ -8890,18 +8922,21 @@ export async function cancelImRequest(
 ): Promise<{ aborted: boolean; mode: 'running' | 'queued' | 'unknown' }> {
   const removed = removeQueuedItemByRequestId(requestId);
   if (removed.location === 'message' && removed.item) {
+    removed.item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
     removed.item.resolve();
     broadcast('queue:cancelled', { queueId: removed.item.id });
     console.log(`[agent] cancelImRequest requestId=${requestId} mode=queued`);
     return { aborted: true, mode: 'queued' };
   }
   if (removed.location === 'pending-mid-turn' && removed.pending) {
+    removed.pending.sourceItem.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
     removed.pending.sourceItem.resolve();
     broadcast('queue:cancelled', { queueId: removed.pending.queueId });
     console.log(`[agent] cancelImRequest requestId=${requestId} mode=pending-mid-turn (never yielded to CLI)`);
     return { aborted: true, mode: 'queued' };
   }
   if (removed.location === 'turn-boundary' && removed.turnBoundary) {
+    removed.turnBoundary.sourceItem?.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
     removed.turnBoundary.sourceItem?.resolve();
     if (removed.turnBoundary.queueId === getForceTurnBoundaryQueueId()) {
       setForceTurnBoundaryQueueId(null);
@@ -8966,6 +9001,7 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
   switch (removed.location) {
     case 'message': {
       const item = removed.item!;
+      item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
       item.resolve();
       broadcast('queue:cancelled', { queueId });
       console.log(`[agent] Queue item ${queueId} cancelled from queueState.messageQueue (wasQueued=${item.wasQueued})`);
@@ -8973,6 +9009,7 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
     }
     case 'pending-mid-turn': {
       const pending = removed.pending!;
+      pending.sourceItem.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
       pending.sourceItem.resolve();
       broadcast('queue:cancelled', { queueId });
       console.log(`[agent] Queue item ${queueId} cancelled from queueState.pendingMidTurnQueue (never yielded to CLI)`);
@@ -8986,6 +9023,7 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
     }
     case 'turn-boundary': {
       const turnBoundary = removed.turnBoundary!;
+      turnBoundary.sourceItem?.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
       turnBoundary.sourceItem?.resolve();
       if (turnBoundary.queueId === getForceTurnBoundaryQueueId()) {
         setForceTurnBoundaryQueueId(null);
@@ -12292,6 +12330,32 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     if (!item) {
       console.log('[messageGenerator] Received null — exiting (abort or session end)');
       return; // generator return → SDK endInput() → stdin EOF → subprocess 退出
+    }
+    if (item.beforeDispatch) {
+      let guardResult: Awaited<ReturnType<NonNullable<typeof item.beforeDispatch>>>;
+      try {
+        guardResult = await item.beforeDispatch();
+      } catch (error) {
+        guardResult = {
+          accepted: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      if (!guardResult.accepted) {
+        releaseTurnAdmissionTicket(item.id);
+        if (getInFlightQueueId() === item.id) clearInFlightSlot();
+        setPromotedItemInFlight(false);
+        item.settleDispatchAcceptance?.({ accepted: false, error: guardResult.error });
+        item.resolve();
+        broadcast('queue:cancelled', { queueId: item.id });
+        console.warn(`[goal] pre-dispatch gate rejected builtin queue item ${item.id}: ${guardResult.error ?? guardResult.code ?? 'stale admission'}`);
+        if (!hasQueuedOrInFlightWork() && !isTurnInFlight()) {
+          setSessionState('idle');
+        }
+        schedulePostTerminalQueueDrain('recovery');
+        continue;
+      }
+      item.settleDispatchAcceptance?.({ accepted: true });
     }
     releaseTurnAdmissionTicket(item.id);
 

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   cancelQueueItem,
   cancelImRequest as cancelBuiltinImRequest,
+  applyMcpOverrideAndAwaitReady,
   consumeInjectedTurnOutcome,
   discardInjectedTurnOutcome,
   enqueueUserMessage,
@@ -51,7 +52,7 @@ import type { MessageWire, PermissionMode, ProviderEnv } from '../agent-session'
 import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import type { CancelReason } from '../utils/cancellation';
 import { createConcreteProviderRoute, isConcreteProviderRoute, type ProviderRoute } from '../../shared/providerRoute';
-import { getEffectiveOfficialToolIdsForSession, materializeProviderRouteEnv } from '../utils/admin-config';
+import { getEffectiveOfficialToolIdsForSession, materializeProviderRouteEnv, resolveWorkspaceConfig } from '../utils/admin-config';
 import type {
   DesktopAdmissionResult,
   DesktopMessageRequest,
@@ -62,6 +63,7 @@ import type {
   SessionEngineReplayMessage,
   SessionEngine,
 } from './types';
+import { cancelPendingGoalDispatches } from './goal-turn-authority';
 import { decideBuiltinInjectedTurnResult } from '../session-core/turn-result-policy';
 import { getSessionData } from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
@@ -310,6 +312,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         {
           fromDesktopChatSend: true,
           sessionBirthOrigin: request.birthOrigin,
+          beforeDispatch: request.beforeDispatch,
         },
       );
       if (result.error) {
@@ -321,6 +324,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         queueId: result.queueId,
         isInFlight: result.isInFlight,
         deliveryMode: result.deliveryMode,
+        dispatchAcceptance: result.dispatchAcceptance,
       };
     },
 
@@ -342,12 +346,15 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         undefined,
         request.analyticsOrigin,
-        { allowLazySessionMaterialization: request.metadataBirthPending === true },
+        {
+          allowLazySessionMaterialization: request.metadataBirthPending === true,
+          beforeDispatch: request.beforeDispatch,
+        },
       );
       if (result.error) {
         return { success: false, error: result.error, status: 503 };
       }
-      return { success: true, queued: result.queued };
+      return { success: true, queued: result.queued, dispatchAcceptance: result.dispatchAcceptance };
     },
 
     cancelImRequest(requestId, reason) {
@@ -372,11 +379,15 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         undefined,
         request.analyticsOrigin,
+        {
+          ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
+          beforeDispatch: request.beforeDispatch,
+        },
       );
       if (result.error) {
         return { success: false, error: result.error, status: 503 };
       }
-      return { success: true, queued: result.queued };
+      return { success: true, queued: result.queued, dispatchAcceptance: result.dispatchAcceptance };
     },
 
     async enqueueInboxMessage(request) {
@@ -396,6 +407,22 @@ export function createBuiltinSessionEngine(): SessionEngine {
         request.analyticsOrigin,
         { allowLazySessionMaterialization: request.allowLazySessionMaterialization === true },
       );
+    },
+
+    async ensureGoalSessionConfig() {
+      if (getMcpServers() !== null) return { success: true };
+      const sessionId = getSessionId();
+      const workspacePath = getBuiltinWorkspacePath();
+      if (!workspacePath) {
+        return { success: false, error: 'Goal session has no workspace path' };
+      }
+      const resolved = resolveWorkspaceConfig(
+        workspacePath,
+        sessionId ? getSessionData(sessionId) : null,
+        { includeMcp: true },
+      );
+      await applyMcpOverrideAndAwaitReady(resolved.mcpServers);
+      return { success: true };
     },
 
     async runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult> {
@@ -418,7 +445,11 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         undefined,
         request.analyticsOrigin,
-        { injectedTurnId },
+        {
+          injectedTurnId,
+          ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
+          ...(request.beforeDispatch ? { beforeDispatch: request.beforeDispatch } : {}),
+        },
       );
       if (enqueueResult.error) {
         return { success: false, enqueued: false, error: enqueueResult.error, status: 503 };
@@ -444,6 +475,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async stopTurn() {
+      cancelPendingGoalDispatches();
       const stopped = await interruptCurrentResponse();
       return stopped ? { success: true } : { success: true, alreadyStopped: true };
     },

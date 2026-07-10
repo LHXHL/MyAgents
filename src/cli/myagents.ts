@@ -262,8 +262,8 @@ Examples:
   myagents skill sync
   myagents cron list
   myagents goal get
-  myagents goal create --objective "finish the migration and verify tests"
-  myagents goal update --status complete --reason "all requirements verified"
+  myagents goal create --objective-file myagents_files/goal-objective.txt
+  myagents goal update --status complete
   myagents runtime list                       # see installed runtimes + install hints
   myagents runtime describe codex             # models + permission modes
   myagents runtime diagnose codex             # auth / features / MCP / apps / env snapshot (issue #194)
@@ -2164,37 +2164,60 @@ function optionalNumberFlag(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function readTextFileFlag(path: string, flagName: string, workspacePath?: string): string {
+export function readWorkspaceTextFile(path: string, workspacePath = process.cwd()): string {
+  const fs = require('fs') as typeof import('fs');
+  const pathMod = require('path') as typeof import('path');
+  const MAX_BYTES = 1024 * 1024;
+  const workspaceReal = fs.realpathSync(pathMod.resolve(workspacePath));
+  const requested = pathMod.resolve(workspaceReal, path);
+  const parentReal = fs.realpathSync(pathMod.dirname(requested));
+  const target = pathMod.join(parentReal, pathMod.basename(requested));
+  const rel = pathMod.relative(workspaceReal, target);
+  if (rel === '' || rel.startsWith('..') || pathMod.isAbsolute(rel)) {
+    throw new Error(`path must stay inside workspace "${workspacePath}"`);
+  }
+  const leaf = fs.lstatSync(target);
+  if (leaf.isSymbolicLink()) {
+    throw new Error('path must not be a symlink');
+  }
+  if (!leaf.isFile()) throw new Error('path must be a regular file');
+
+  const noFollow = typeof fs.constants.O_NOFOLLOW === 'number' ? fs.constants.O_NOFOLLOW : 0;
+  const fd = fs.openSync(target, fs.constants.O_RDONLY | noFollow);
   try {
-    const fs = require('fs') as typeof import('fs');
-    const pathMod = require('path') as typeof import('path');
-    const MAX_BYTES = 1024 * 1024;
-    const target = pathMod.resolve(workspacePath ?? process.cwd(), path);
-    if (workspacePath) {
-      const workspaceReal = fs.realpathSync(pathMod.resolve(workspacePath));
-      const targetReal = fs.realpathSync(target);
-      const rel = pathMod.relative(workspaceReal, targetReal);
-      if (rel === '' || rel.startsWith('..') || pathMod.isAbsolute(rel)) {
-        console.error(`Error: --${flagName} must stay inside workspace "${workspacePath}"`);
-        process.exit(1);
-      }
-      const leaf = fs.lstatSync(target);
-      if (leaf.isSymbolicLink()) {
-        console.error(`Error: --${flagName} must not be a symlink`);
-        process.exit(1);
-      }
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) throw new Error('path must be a regular file');
+    const openedReal = fs.realpathSync(target);
+    const openedRel = pathMod.relative(workspaceReal, openedReal);
+    if (openedRel === '' || openedRel.startsWith('..') || pathMod.isAbsolute(openedRel)) {
+      throw new Error(`path must stay inside workspace "${workspacePath}"`);
     }
-    const stat = fs.statSync(target);
-    if (stat.size > MAX_BYTES) {
-      console.error(`Error: --${flagName} "${target}" exceeds ${MAX_BYTES} bytes`);
-      process.exit(1);
+    const current = fs.statSync(target);
+    if (current.dev !== stat.dev || current.ino !== stat.ino) {
+      throw new Error('path changed while it was being opened');
     }
-    const body = fs.readFileSync(target, 'utf-8');
+
+    const bytes = Buffer.allocUnsafe(MAX_BYTES + 1);
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = fs.readSync(fd, bytes, offset, bytes.length - offset, null);
+      if (count === 0) break;
+      offset += count;
+    }
+    if (offset > MAX_BYTES) throw new Error(`file exceeds ${MAX_BYTES} bytes`);
+    const body = bytes.subarray(0, offset).toString('utf8');
     if (body.includes('\0')) {
-      console.error(`Error: --${flagName} "${target}" contains NUL bytes`);
-      process.exit(1);
+      throw new Error('file contains NUL bytes');
     }
     return body;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function readTextFileFlag(path: string, flagName: string, workspacePath?: string): string {
+  try {
+    return readWorkspaceTextFile(path, workspacePath ?? process.cwd());
   } catch (err) {
     console.error(`Error: failed to read --${flagName} "${path}": ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
@@ -2598,7 +2621,7 @@ async function completeSpaceIssueWithLocalFollowup(
   };
 }
 
-function buildRequestBody(
+export function buildRequestBody(
   group: string,
   action: string,
   rest: string[],
@@ -2641,25 +2664,39 @@ function buildRequestBody(
   if (group === 'goal') {
     if (action === 'get' || action === 'list') return {};
     if (action === 'create') {
-      assertStringFlag(flags.objective, 'objective');
-      const objective = ((flags.objective as string | undefined) ?? rest.join(' ')).trim();
+      assertStringFlag(flags.objectiveFile, 'objective-file');
+      if (flags.objective !== undefined || rest.length > 0) {
+        console.error('Error: inline Goal objectives are not accepted; write the objective to a workspace file.');
+        process.exit(2);
+      }
+      const objective = typeof flags.objectiveFile === 'string'
+        ? readTextFileFlag(flags.objectiveFile, 'objective-file', process.cwd()).trim()
+        : '';
       if (!objective) {
-        console.error('Error: goal create requires --objective <objective> or a positional objective.');
-        console.error('  Usage: myagents goal create --objective "finish the task"');
+        console.error('Error: goal create requires --objective-file <workspace-relative-path>.');
+        console.error('  Usage: myagents goal create --objective-file myagents_files/goal-objective.txt');
         process.exit(2);
       }
       return { objective };
     }
     if (action === 'update') {
       assertStringFlag(flags.status, 'status');
-      assertStringFlag(flags.reason, 'reason');
-      const status = ((flags.status as string | undefined) ?? rest[0] ?? '').trim();
-      if (status !== 'complete' && status !== 'blocked') {
-        console.error('Error: goal update requires --status complete|blocked.');
-        console.error('  Usage: myagents goal update --status complete --reason "all requirements verified"');
+      assertStringFlag(flags.reasonFile, 'reason-file');
+      if (flags.reason !== undefined || rest.length > 0) {
+        console.error('Error: inline Goal status/reason values are not accepted; use --status and --reason-file.');
         process.exit(2);
       }
-      const reason = ((flags.reason as string | undefined) ?? rest.slice(1).join(' ')).trim();
+      const status = ((flags.status as string | undefined) ?? '').trim();
+      if (status !== 'complete' && status !== 'blocked') {
+        console.error('Error: goal update requires --status complete|blocked.');
+        console.error('  Usage: myagents goal update --status complete');
+        process.exit(2);
+      }
+      const reason = (
+        typeof flags.reasonFile === 'string'
+          ? readTextFileFlag(flags.reasonFile, 'reason-file', process.cwd())
+          : ''
+      ).trim();
       return { status, reason: reason || undefined };
     }
     return {};

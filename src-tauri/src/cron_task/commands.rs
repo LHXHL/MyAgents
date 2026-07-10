@@ -12,11 +12,7 @@ fn is_managed_cron_task(task: &CronTask) -> bool {
 }
 
 fn is_goal_task(task: &CronTask) -> bool {
-    task.goal_status.is_some()
-        || task
-            .goal_objective
-            .as_deref()
-            .is_some_and(|objective| !objective.trim().is_empty())
+    task.is_goal()
 }
 
 async fn get_ordinary_cron_task(

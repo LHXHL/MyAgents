@@ -1,14 +1,102 @@
-import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   formatCronInstantForDisplay,
   formatCronTaskScheduleForDisplay,
+  buildRequestBody,
   normalizeScheduleFlag,
   parseArgs,
   parseDispatchAtValue,
+  readWorkspaceTextFile,
 } from './myagents';
 
+describe('myagents CLI Goal file inputs', () => {
+  it('reads shell-sensitive objective and reason text from workspace files', () => {
+    const dir = mkdtempSync(join(process.cwd(), '.goal-cli-test-'));
+    try {
+      const objectivePath = join(dir, 'objective.txt');
+      const reasonPath = join(dir, 'reason.txt');
+      const objective = 'finish $(touch should-not-run) with `literal` and "quotes"';
+      const reason = 'verified $HOME without shell expansion';
+      writeFileSync(objectivePath, objective, 'utf8');
+      writeFileSync(reasonPath, reason, 'utf8');
+
+      expect(buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+      })).toEqual({ objective });
+      expect(buildRequestBody('goal', 'update', [], {
+        status: 'complete',
+        reasonFile: reasonPath,
+      })).toEqual({ status: 'complete', reason });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects paths outside the workspace, symlinks, oversized files, and NUL bytes', () => {
+    const root = mkdtempSync(join(process.cwd(), '.goal-cli-safety-test-'));
+    const workspace = join(root, 'workspace');
+    mkdirSync(workspace);
+    try {
+      const outside = join(root, 'outside.txt');
+      writeFileSync(outside, 'outside', 'utf8');
+      expect(() => readWorkspaceTextFile(outside, workspace)).toThrow(/inside workspace/);
+
+      const target = join(workspace, 'target.txt');
+      const link = join(workspace, 'link.txt');
+      writeFileSync(target, 'target', 'utf8');
+      symlinkSync(target, link);
+      expect(() => readWorkspaceTextFile(link, workspace)).toThrow(/symlink/);
+
+      const oversized = join(workspace, 'oversized.txt');
+      writeFileSync(oversized, 'x'.repeat(1024 * 1024 + 1), 'utf8');
+      expect(() => readWorkspaceTextFile(oversized, workspace)).toThrow(/exceeds/);
+
+      const nul = join(workspace, 'nul.txt');
+      writeFileSync(nul, 'before\0after', 'utf8');
+      expect(() => readWorkspaceTextFile(nul, workspace)).toThrow(/NUL/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects inline and positional Goal text before building an API request', () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(() => buildRequestBody('goal', 'create', [], {
+        objective: '$(touch should-not-run)',
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('goal', 'create', ['positional objective'], {}))
+        .toThrow('process.exit(2)');
+      expect(() => buildRequestBody('goal', 'update', [], {
+        status: 'complete',
+        reason: '`touch should-not-run`',
+      })).toThrow('process.exit(2)');
+    } finally {
+      exit.mockRestore();
+      error.mockRestore();
+    }
+  });
+});
+
 describe('myagents CLI parseArgs', () => {
+  it('normalizes file-only Goal flags to camelCase', () => {
+    expect(parseArgs([
+      'goal',
+      'create',
+      '--objective-file',
+      'myagents_files/objective.txt',
+    ])).toMatchObject({
+      positional: ['goal', 'create'],
+      flags: { objectiveFile: 'myagents_files/objective.txt' },
+    });
+  });
+
   it('collects consecutive values for repeatable flags', () => {
     expect(parseArgs([
       'model',

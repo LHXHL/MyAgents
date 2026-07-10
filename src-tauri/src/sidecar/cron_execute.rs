@@ -69,6 +69,14 @@ pub struct CronExecutePayload {
     pub goal_terminal_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub goal_paused_reason: Option<String>,
+    /// Scheduler admission barrier. Sidecar claims this through the Rust
+    /// Management API at the clean turn boundary immediately before dispatch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal_lease_id: Option<String>,
+    /// Revision captured when Rust prepared the local scheduler candidate.
+    /// The Sidecar submits it with `goal_lease_id` for one atomic admit+claim.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal_expected_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -101,6 +109,10 @@ pub struct CronExecuteResponse {
     pub exit_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_text: Option<String>,
+    /// True only when the turn originated from an Agent Channel and its
+    /// output must be delivered through that channel's durable outbox.
+    #[serde(default)]
+    pub goal_channel_delivery_expected: bool,
     /// Internal SDK session ID where conversation data is stored
     /// (may differ from the Sidecar session key used for process management)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -458,6 +470,8 @@ pub async fn cmd_execute_cron_task(
         goal_updated_at: None,
         goal_terminal_reason: None,
         goal_paused_reason: None,
+        goal_lease_id: None,
+        goal_expected_revision: None,
     };
 
     execute_cron_task(&app_handle, &state, &workspacePath, payload).await

@@ -776,7 +776,7 @@ async function fetchLegacyCronTasks(unnamedLegacyTaskLabel: string): Promise<Leg
 }
 
 function isGoalModeCronTask(t: Record<string, unknown>): boolean {
-  return Boolean(t.goalStatus ?? t.goal_status ?? t.goalObjective ?? t.goal_objective);
+  return Boolean(t.goalStatus ?? t.goal_status);
 }
 
 /**

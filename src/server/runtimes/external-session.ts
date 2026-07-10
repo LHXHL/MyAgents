@@ -133,6 +133,7 @@ import {
   nextExternalUserMessageId,
   releaseExternalDrainReservation,
   reserveExternalOperationForDrain,
+  settleExternalMessageOperation,
   setExternalOperationDrainInFlight,
   shouldQueueExternalDesktopSend,
   unshiftExternalOperation,
@@ -1822,6 +1823,7 @@ export async function startExternalSession(options: {
   metadataBirthPending?: boolean;
   /** Internal: false when a per-message snapshot should not overwrite desired last* state. */
   recordConfigState?: boolean;
+  beforeDispatch?: import('../session-core/turn-queue').DispatchGuard;
 }): Promise<void> {
   // Concurrency guard — wait for any in-flight start to finish
   await awaitExternalLifecycleStarting();
@@ -1861,6 +1863,7 @@ async function _doStartExternalSession(options: {
   envPolicy?: import('../../shared/types/runtime').RuntimeEnvPolicy;
   metadataBirthPending?: boolean;
   recordConfigState?: boolean;
+  beforeDispatch?: import('../session-core/turn-queue').DispatchGuard;
 }): Promise<void> {
 
   const runtimeType = getCurrentRuntimeType();
@@ -2074,6 +2077,13 @@ async function _doStartExternalSession(options: {
     runtimeSource,
     options.scenario,
   );
+
+  if (options.initialMessage && options.beforeDispatch) {
+    const guarded = await options.beforeDispatch();
+    if (!guarded.accepted) {
+      throw new Error(guarded.error ?? guarded.code ?? 'External dispatch rejected by Goal admission gate');
+    }
+  }
 
   const startOnce = (resumeId: string | undefined): Promise<RuntimeProcess> =>
     runtime.startSession(
@@ -2373,6 +2383,7 @@ export async function sendExternalMessage(
         birthOrigin: context.birthOrigin,
         metadataBirthPending: context.metadataBirthPending,
         recordConfigState: !hasQueuedExternalConfigOperation(),
+        beforeDispatch: context.beforeDispatch,
       });
       return { queued: true };
     } catch (err) {
@@ -2415,6 +2426,7 @@ export async function sendExternalMessage(
         resumeSessionId: resumeId, // CC: --resume <myagents-session-id>; Codex: --resume <threadId>
         metadataBirthPending: context?.metadataBirthPending,
         recordConfigState: !hasQueuedExternalConfigOperation(),
+        beforeDispatch: context?.beforeDispatch,
       });
       return { queued: true };
     } catch (err) {
@@ -2515,6 +2527,28 @@ export async function sendExternalMessage(
       return { queued: false, error: applyResult.error };
     }
 
+    if (context?.beforeDispatch) {
+      const guarded = await context.beforeDispatch();
+      if (!guarded.accepted) {
+        const error = guarded.error ?? guarded.code ?? 'Goal admission is stale';
+        clearWatchdog();
+        clearExternalTurnStartTime();
+        setExternalTurnCompleted(true);
+        clearExternalInboxMetaOnRejection({
+          sessionId: getExternalLifecycleSessionId(),
+          errorCode: 'goal_admission_rejected',
+          errorMessage: error,
+        });
+        setExternalSessionState('idle');
+        emitExternalTurnTrace('final', {
+          status: 'error',
+          detail: { source: 'goal_admission_rejected', error },
+        });
+        clearExternalTurnTrace();
+        return { queued: false, error };
+      }
+    }
+
     setExternalSessionState('running');
     await activeRuntime.sendMessage(activeProcess, text, hasImages ? resolvedImages : undefined);
     return { queued: true };
@@ -2566,6 +2600,14 @@ async function steerExternalMessageForDesktop(input: {
     console.error('[external-session] failed to resolve realtime steer image attachments:', err);
     broadcast('queue:cancelled', { queueId: input.queueId });
     return { queued: false, error: message };
+  }
+
+  if (input.context.beforeDispatch) {
+    const guarded = await input.context.beforeDispatch();
+    if (!guarded.accepted) {
+      broadcast('queue:cancelled', { queueId: input.queueId });
+      return { queued: false, error: guarded.error ?? guarded.code ?? 'Goal admission is stale' };
+    }
   }
 
   registerPendingRealtimeSteeredUserMessage({
@@ -2672,7 +2714,7 @@ export function enqueueExternalSendForDesktop(
       deliveryMode: 'turn',
       canCancel: true,
       canForceExecute: true,
-      dispatch: Promise.resolve({ queued: true }),
+      dispatch: queued.dispatchAcceptance,
     };
   }
 
@@ -2826,17 +2868,21 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
     // otherwise the pill has already become a bubble but the error is silently swallowed.
     void task
       .then((result) => {
-        if (result && !result.queued && result.error) {
+        settleExternalMessageOperation(item, result ?? { queued: false });
+        if (result && !result.queued) {
           rollbackReservedExternalTurnAfterDrainFailure();
-          broadcast('chat:agent-error', { message: result.error });
+          broadcast('queue:cancelled', { queueId: item.queueId });
         }
       })
       .catch((err) => {
         if (isExternalQueueGenerationStaleError(err)) {
+          settleExternalMessageOperation(item, { queued: false });
           return;
         }
+        const message = err instanceof Error ? err.message : String(err);
+        settleExternalMessageOperation(item, { queued: false, error: message });
         rollbackReservedExternalTurnAfterDrainFailure();
-        broadcast('chat:agent-error', { message: err instanceof Error ? err.message : String(err) });
+        broadcast('queue:cancelled', { queueId: item.queueId });
       })
       .finally(() => {
         releaseExternalDrainReservation(item);

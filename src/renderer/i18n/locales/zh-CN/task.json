@@ -270,10 +270,17 @@
       "scheduleOnce": "{{time}} 执行一次",
       "scheduleEvery": "每 {{interval}} 执行一次",
       "roundExecuting": "第 {{count}} 轮执行中",
+      "roundRunning": "第 {{count}} 轮",
       "settingsTitle": "修改设置",
       "cancelTitle": "取消定时",
       "stopTitle": "停止定时任务",
+      "cancelGoalTitle": "取消并结束当前目标",
+      "cancelGoalButton": "取消目标",
+      "cancelGoalConfirmTitle": "取消当前目标？",
+      "cancelGoalConfirmMessage": "目标将进入已取消终态，后续不再自动续跑。此操作不会删除已有会话和工作结果。",
+      "cancelGoalFailed": "取消目标失败，请重试。",
       "dismissStoppedTitle": "关闭并恢复任务内容到输入框",
+      "dismissGoalTitle": "关闭目标状态",
       "stopButton": "停止"
     },
     "settingsModal": {
