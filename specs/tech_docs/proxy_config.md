@@ -60,6 +60,10 @@ MyAgents 支持统一的代理配置，用于访问外部服务（Anthropic API�
    - 下载更新包 (`download.myagents.io/releases/`)
    - **实现**: `src-tauri/src/updater.rs` + `proxy_config.rs`
 
+   Managed Codex 的登录检查 / Runtime 子进程仍按 `codex-sub` provider scope 走代理；但 Runtime manifest / artifact 是 `download.myagents.io` 的 MyAgents 一方控制面流量。下载器先尊重当前配置 / 继承的网络路径；manifest + signature 与 artifact 的每次完整 request/body future 都由 async deadline 包住，首选路径 90 秒硬墙钟到期即取消该次传输（持续有少量字节流入也不会续期）。网络、size、SHA-256 或 minisign 任一失败后，仅对已严格验证 host/path 的 `download.myagents.io` 直连重试。直连 client 禁止 redirect，结果仍必须通过 size + SHA-256 + minisign + 平台签名全链路校验，不是通用的 proxy bypass。
+
+   Runtime 安装锁用 pid + process start time 识别 owner；活 owner 不受锁龄影响，前一 App 进程在下载中退出时，死 owner 经过 5 秒宽限即可被下一次启动回收，不会留下 30 分钟的假“下载中”。取得安装锁后会先清理该 runtime root 下遗留的 `.download-*` 临时目录，再创建本次唯一 staging 目录，避免反复退出积累大文件。
+
 4. **LiteLLM 模型数据缓存**
    - 拉取模型上下文窗口数据 (`raw.githubusercontent.com/BerriAI/litellm/.../model_prices_and_context_window.json`)
    - 启动条件检查 + 24h interval，ETag/If-None-Match 增量

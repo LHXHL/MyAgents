@@ -35,6 +35,8 @@ const MAX_UNPACKED_BYTES: u64 = 900 * 1024 * 1024;
 const MAX_ARCHIVE_ENTRIES: usize = 4096;
 const MAX_CAPTURED_OUTPUT_CHARS: usize = 1000;
 const DOWNLOADING_STATE_TTL_SECS: i64 = 30 * 60;
+const PREFERRED_DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(90);
+const DIRECT_DOWNLOAD_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -689,16 +691,27 @@ fn validate_manifest_for_platform(
 }
 
 #[allow(clippy::disallowed_methods)]
-fn external_http_client(timeout: Duration) -> Result<reqwest::blocking::Client, String> {
-    let builder = reqwest::blocking::Client::builder()
+fn external_http_client(timeout: Duration) -> Result<reqwest::Client, String> {
+    let builder = reqwest::Client::builder()
         .timeout(timeout)
         .connect_timeout(Duration::from_secs(30));
-    crate::proxy_config::build_blocking_client_with_proxy_for_provider(builder, CODEX_PROVIDER_ID)
+    crate::proxy_config::build_client_with_proxy_for_provider(builder, CODEX_PROVIDER_ID)
         .map_err(|e| format!("[managed-codex] Failed to build HTTP client: {}", e))
 }
 
-fn fetch_limited_bytes(
-    client: &reqwest::blocking::Client,
+#[allow(clippy::disallowed_methods)]
+fn direct_external_http_client(timeout: Duration) -> Result<reqwest::Client, String> {
+    reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(timeout)
+        .connect_timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|e| format!("[managed-codex] Failed to build direct HTTP client: {}", e))
+}
+
+async fn fetch_limited_bytes(
+    client: &reqwest::Client,
     url: &str,
     max_bytes: u64,
     label: &str,
@@ -707,6 +720,7 @@ fn fetch_limited_bytes(
     let mut response = client
         .get(url)
         .send()
+        .await
         .map_err(|e| format!("[managed-codex] Failed to fetch {}: {}", label, e))?
         .error_for_status()
         .map_err(|e| format!("[managed-codex] Failed to fetch {}: {}", label, e))?;
@@ -719,68 +733,161 @@ fn fetch_limited_bytes(
     }
     let mut out = Vec::new();
     let mut total = 0u64;
-    let mut buf = [0u8; 16 * 1024];
     loop {
-        let read = response
-            .read(&mut buf)
-            .map_err(|e| format!("[managed-codex] Failed to read {}: {}", label, e))?;
-        if read == 0 {
+        let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| format!("[managed-codex] Failed to read {}: {}", label, e))?
+        else {
             break;
-        }
-        total += read as u64;
+        };
+        total += chunk.len() as u64;
         if total > max_bytes {
             return Err(format!("[managed-codex] {} exceeded max size", label));
         }
-        out.extend_from_slice(&buf[..read]);
+        out.extend_from_slice(&chunk);
     }
     Ok(out)
 }
 
-fn download_to_file_with_hash(
-    client: &reqwest::blocking::Client,
+async fn download_to_file_with_hash(
+    client: &reqwest::Client,
     url: &str,
     path: &Path,
     max_bytes: u64,
     progress_total_bytes: Option<u64>,
+    attempt_timeout: Duration,
     mut on_progress: impl FnMut(u64, Option<u64>),
 ) -> Result<(u64, String), String> {
     validate_download_url(url)?;
-    let mut response = client
-        .get(url)
-        .send()
-        .map_err(|e| format!("[managed-codex] Failed to download artifact: {}", e))?
-        .error_for_status()
-        .map_err(|e| format!("[managed-codex] Failed to download artifact: {}", e))?;
-    if response.content_length().unwrap_or(0) > max_bytes {
+    tokio::time::timeout(attempt_timeout, async {
+        let mut response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("[managed-codex] Failed to download artifact: {}", e))?
+            .error_for_status()
+            .map_err(|e| format!("[managed-codex] Failed to download artifact: {}", e))?;
+        if response.content_length().unwrap_or(0) > max_bytes {
+            return Err(format!(
+                "[managed-codex] Artifact exceeds max size: {} bytes",
+                response.content_length().unwrap_or(0)
+            ));
+        }
+        let total_for_progress = progress_total_bytes.or_else(|| response.content_length());
+        on_progress(0, total_for_progress);
+        let mut file = File::create(path)
+            .map_err(|e| format!("[managed-codex] Failed to create artifact file: {}", e))?;
+        let mut hasher = Sha256::new();
+        let mut total = 0u64;
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|e| format!("[managed-codex] Failed to read artifact: {}", e))?
+        {
+            total += chunk.len() as u64;
+            if total > max_bytes {
+                return Err("[managed-codex] Artifact exceeded max size".to_string());
+            }
+            hasher.update(&chunk);
+            file.write_all(&chunk)
+                .map_err(|e| format!("[managed-codex] Failed to write artifact: {}", e))?;
+            on_progress(total, total_for_progress);
+        }
+        Ok((total, format!("{:x}", hasher.finalize())))
+    })
+    .await
+    .map_err(|_| {
+        format!(
+            "[managed-codex] Artifact download attempt exceeded {} seconds",
+            attempt_timeout.as_secs()
+        )
+    })?
+}
+
+fn validate_downloaded_artifact_digest(
+    artifact: &ManagedCodexArtifact,
+    downloaded_bytes: u64,
+    actual_sha: &str,
+) -> Result<(), String> {
+    if let Some(expected_size) = artifact.archive_size_bytes {
+        if downloaded_bytes != expected_size {
+            return Err(format!(
+                "[managed-codex] Artifact size mismatch: expected {}, got {}",
+                expected_size, downloaded_bytes
+            ));
+        }
+    }
+    let expected_sha = normalize_sha256_hex(&artifact.sha256)?;
+    if actual_sha != expected_sha {
         return Err(format!(
-            "[managed-codex] Artifact exceeds max size: {} bytes",
-            response.content_length().unwrap_or(0)
+            "[managed-codex] Artifact SHA-256 mismatch: expected {}, got {}",
+            expected_sha, actual_sha
         ));
     }
-    let total_for_progress = progress_total_bytes.or_else(|| response.content_length());
-    on_progress(0, total_for_progress);
-    let mut file = File::create(path)
-        .map_err(|e| format!("[managed-codex] Failed to create artifact file: {}", e))?;
-    let mut hasher = Sha256::new();
-    let mut total = 0u64;
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let read = response
-            .read(&mut buf)
-            .map_err(|e| format!("[managed-codex] Failed to read artifact: {}", e))?;
-        if read == 0 {
-            break;
+    Ok(())
+}
+
+async fn download_and_verify_artifact_attempt(
+    client: &reqwest::Client,
+    artifact: &ManagedCodexArtifact,
+    path: &Path,
+    attempt_timeout: Duration,
+    on_progress: &mut impl FnMut(u64, Option<u64>),
+) -> Result<(u64, String), String> {
+    let (downloaded_bytes, actual_sha) = download_to_file_with_hash(
+        client,
+        &artifact.url,
+        path,
+        artifact.archive_size_bytes.unwrap_or(MAX_ARCHIVE_BYTES),
+        artifact.archive_size_bytes,
+        attempt_timeout,
+        on_progress,
+    )
+    .await?;
+    validate_downloaded_artifact_digest(artifact, downloaded_bytes, &actual_sha)?;
+    verify_minisign_file(path, &artifact.signature)?;
+    Ok((downloaded_bytes, actual_sha))
+}
+
+async fn download_artifact_with_direct_fallback(
+    preferred_client: &reqwest::Client,
+    direct_client: &reqwest::Client,
+    artifact: &ManagedCodexArtifact,
+    path: &Path,
+    mut on_progress: impl FnMut(u64, Option<u64>),
+) -> Result<(u64, String), String> {
+    match download_and_verify_artifact_attempt(
+        preferred_client,
+        artifact,
+        path,
+        PREFERRED_DOWNLOAD_ATTEMPT_TIMEOUT,
+        &mut on_progress,
+    )
+    .await
+    {
+        Ok(result) => Ok(result),
+        Err(preferred_error) => {
+            ulog_warn!(
+                "[managed-codex] configured proxy/inherited network path failed; retrying first-party CDN directly: {}",
+                preferred_error
+            );
+            download_and_verify_artifact_attempt(
+                direct_client,
+                artifact,
+                path,
+                DIRECT_DOWNLOAD_ATTEMPT_TIMEOUT,
+                &mut on_progress,
+            )
+            .await
+            .map_err(|direct_error| {
+                format!(
+                    "[managed-codex] Artifact download failed via configured network path ({}) and direct fallback ({})",
+                    preferred_error, direct_error
+                )
+            })
         }
-        total += read as u64;
-        if total > max_bytes {
-            return Err("[managed-codex] Artifact exceeded max size".to_string());
-        }
-        hasher.update(&buf[..read]);
-        file.write_all(&buf[..read])
-            .map_err(|e| format!("[managed-codex] Failed to write artifact: {}", e))?;
-        on_progress(total, total_for_progress);
     }
-    Ok((total, format!("{:x}", hasher.finalize())))
 }
 
 fn base64_to_string(value: &str, label: &str) -> Result<String, String> {
@@ -1180,20 +1287,21 @@ fn verify_platform_signature(
     }
 }
 
-fn fetch_verified_manifest(
-    client: &reqwest::blocking::Client,
+async fn fetch_verified_manifest(
+    client: &reqwest::Client,
     platform: &str,
 ) -> Result<(ManagedCodexManifest, String), String> {
     let manifest_url = manifest_url_for_platform(platform);
     let manifest_signature_url = manifest_signature_url_for_platform(platform);
     let manifest_bytes =
-        fetch_limited_bytes(client, &manifest_url, MAX_MANIFEST_BYTES, "manifest")?;
+        fetch_limited_bytes(client, &manifest_url, MAX_MANIFEST_BYTES, "manifest").await?;
     let signature_bytes = fetch_limited_bytes(
         client,
         &manifest_signature_url,
         MAX_MANIFEST_SIGNATURE_BYTES,
         "manifest signature",
-    )?;
+    )
+    .await?;
     let signature = String::from_utf8(signature_bytes)
         .map_err(|e| format!("[managed-codex] Manifest signature is not UTF-8: {}", e))?;
     let signature = signature.trim();
@@ -1204,6 +1312,21 @@ fn fetch_verified_manifest(
     let manifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|e| format!("[managed-codex] Invalid manifest JSON: {}", e))?;
     Ok((manifest, signature.to_string()))
+}
+
+async fn fetch_verified_manifest_with_timeout(
+    client: &reqwest::Client,
+    platform: &str,
+    attempt_timeout: Duration,
+) -> Result<(ManagedCodexManifest, String), String> {
+    tokio::time::timeout(attempt_timeout, fetch_verified_manifest(client, platform))
+        .await
+        .map_err(|_| {
+            format!(
+                "[managed-codex] Manifest fetch attempt exceeded {} seconds",
+                attempt_timeout.as_secs()
+            )
+        })?
 }
 
 fn zip_entry_is_symlink(mode: Option<u32>) -> bool {
@@ -1411,6 +1534,45 @@ fn remove_path_entry(path: &Path) -> Result<(), String> {
     }
 }
 
+fn cleanup_abandoned_download_dirs(root: &Path) -> Result<usize, String> {
+    let entries = match fs::read_dir(root) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(0),
+        Err(err) => {
+            return Err(format!(
+                "[managed-codex] Failed to inspect runtime root {}: {}",
+                root.display(),
+                err
+            ))
+        }
+    };
+    let mut removed = 0usize;
+    for entry in entries {
+        let entry = entry.map_err(|err| {
+            format!(
+                "[managed-codex] Failed to inspect runtime root entry: {}",
+                err
+            )
+        })?;
+        let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
+            continue;
+        };
+        if !name.starts_with(".download-") {
+            continue;
+        }
+        remove_path_entry(&entry.path())?;
+        removed += 1;
+    }
+    if removed > 0 {
+        ulog_info!(
+            "[managed-codex] removed {} abandoned download director{}",
+            removed,
+            if removed == 1 { "y" } else { "ies" }
+        );
+    }
+    Ok(removed)
+}
+
 fn install_verified_artifact(
     platform: &str,
     artifact: &ManagedCodexArtifact,
@@ -1553,7 +1715,10 @@ where
     let lock_path = runtime_root()?.join("install.lock");
     let options = FileLockOptions {
         timeout: Duration::from_secs(30),
-        stale: Duration::from_secs(30 * 60),
+        // The owner token includes pid + process start time, so a live installer
+        // remains protected regardless of lock age. A short grace lets the next
+        // App launch recover promptly when the previous process died mid-download.
+        stale: Duration::from_secs(5),
         poll: Duration::from_millis(100),
     };
     with_file_lock_blocking(&lock_path, options, || {
@@ -2407,7 +2572,8 @@ pub async fn cmd_managed_codex_check_update() -> Result<ManagedCodexStatus, Stri
 
 #[tauri::command]
 pub async fn cmd_managed_codex_download() -> Result<ManagedCodexStatus, String> {
-    tauri::async_runtime::spawn_blocking(|| -> Result<ManagedCodexStatus, String> {
+    let runtime_handle = tokio::runtime::Handle::current();
+    tauri::async_runtime::spawn_blocking(move || -> Result<ManagedCodexStatus, String> {
         with_runtime_install_lock(|| {
             let platform = platform_key().ok_or_else(|| {
                 format!(
@@ -2422,6 +2588,11 @@ pub async fn cmd_managed_codex_download() -> Result<ManagedCodexStatus, String> 
                 platform,
                 manifest_url_for_platform(platform)
             );
+
+            let root = runtime_root()?;
+            fs::create_dir_all(&root)
+                .map_err(|e| format!("[managed-codex] Failed to create runtime root: {}", e))?;
+            cleanup_abandoned_download_dirs(&root)?;
 
             let installed = runtime_install_state();
             if installed.status == "installed" {
@@ -2452,14 +2623,41 @@ pub async fn cmd_managed_codex_download() -> Result<ManagedCodexStatus, String> 
             persist_status(&downloading, &current_auth, false)?;
 
             let result = (|| -> Result<ManagedCodexStatus, String> {
-                let client = external_http_client(Duration::from_secs(15 * 60))?;
-                let (manifest, manifest_signature) = fetch_verified_manifest(&client, platform)?;
+                // Honor the configured/provider network path first, but bound a
+                // large-artifact attempt so a degraded proxy cannot monopolize
+                // the entire App-launch retry. The direct fallback is restricted
+                // to the validated first-party download.myagents.io URL and the
+                // payload is still size/hash/minisign/platform-signature checked.
+                let client = external_http_client(PREFERRED_DOWNLOAD_ATTEMPT_TIMEOUT)?;
+                let direct_client = direct_external_http_client(DIRECT_DOWNLOAD_ATTEMPT_TIMEOUT)?;
+                let (manifest, manifest_signature) =
+                    match runtime_handle.block_on(fetch_verified_manifest_with_timeout(
+                        &client,
+                        platform,
+                        PREFERRED_DOWNLOAD_ATTEMPT_TIMEOUT,
+                    )) {
+                        Ok(result) => result,
+                        Err(preferred_error) => {
+                            ulog_warn!(
+                                "[managed-codex] manifest fetch failed via configured network path; retrying first-party CDN directly: {}",
+                                preferred_error
+                            );
+                            runtime_handle
+                                .block_on(fetch_verified_manifest_with_timeout(
+                                    &direct_client,
+                                    platform,
+                                    DIRECT_DOWNLOAD_ATTEMPT_TIMEOUT,
+                                ))
+                                .map_err(|direct_error| {
+                                    format!(
+                                        "[managed-codex] Manifest fetch failed via configured network path ({}) and direct fallback ({})",
+                                        preferred_error, direct_error
+                                    )
+                                })?
+                        }
+                    };
                 let artifact = validate_manifest_for_platform(manifest, platform)?;
 
-                let root = runtime_root()?;
-                fs::create_dir_all(&root).map_err(|e| {
-                    format!("[managed-codex] Failed to create runtime root: {}", e)
-                })?;
                 let tmp_dir = root.join(format!(
                     ".download-{}-{}-{}",
                     REQUIRED_VERSION,
@@ -2475,46 +2673,31 @@ pub async fn cmd_managed_codex_download() -> Result<ManagedCodexStatus, String> 
                     let progress_installed = installed.clone();
                     let mut last_progress_percent: Option<u8> = None;
                     let mut last_progress_at = Instant::now() - Duration::from_secs(1);
-                    let (downloaded_bytes, actual_sha) = download_to_file_with_hash(
-                        &client,
-                        &artifact.url,
-                        &archive_path,
-                        artifact.archive_size_bytes.unwrap_or(MAX_ARCHIVE_BYTES),
-                        artifact.archive_size_bytes,
-                        |downloaded, total| {
-                            let percent = download_progress_percent(downloaded, total);
-                            let should_persist = downloaded == 0
-                                || percent != last_progress_percent
-                                || last_progress_at.elapsed() >= Duration::from_secs(1);
-                            if !should_persist {
-                                return;
-                            }
-                            last_progress_percent = percent;
-                            last_progress_at = Instant::now();
-                            persist_download_progress(
-                                platform,
-                                &progress_installed,
-                                downloaded,
-                                total,
-                            );
-                        },
+                    let (downloaded_bytes, actual_sha) = runtime_handle.block_on(
+                        download_artifact_with_direct_fallback(
+                            &client,
+                            &direct_client,
+                            &artifact,
+                            &archive_path,
+                            |downloaded, total| {
+                                let percent = download_progress_percent(downloaded, total);
+                                let should_persist = downloaded == 0
+                                    || percent != last_progress_percent
+                                    || last_progress_at.elapsed() >= Duration::from_secs(1);
+                                if !should_persist {
+                                    return;
+                                }
+                                last_progress_percent = percent;
+                                last_progress_at = Instant::now();
+                                persist_download_progress(
+                                    platform,
+                                    &progress_installed,
+                                    downloaded,
+                                    total,
+                                );
+                            },
+                        ),
                     )?;
-                    let expected_sha = normalize_sha256_hex(&artifact.sha256)?;
-                    if let Some(expected_size) = artifact.archive_size_bytes {
-                        if downloaded_bytes != expected_size {
-                            return Err(format!(
-                                "[managed-codex] Artifact size mismatch: expected {}, got {}",
-                                expected_size, downloaded_bytes
-                            ));
-                        }
-                    }
-                    if actual_sha != expected_sha {
-                        return Err(format!(
-                            "[managed-codex] Artifact SHA-256 mismatch: expected {}, got {}",
-                            expected_sha, actual_sha
-                        ));
-                    }
-                    verify_minisign_file(&archive_path, &artifact.signature)?;
                     install_verified_artifact(
                         platform,
                         &artifact,
@@ -2952,6 +3135,22 @@ mod tests {
             platform: Some(platform.to_string()),
             artifacts: HashMap::from([(platform.to_string(), valid_artifact(platform))]),
         }
+    }
+
+    #[test]
+    fn downloaded_artifact_digest_requires_exact_size_and_sha() {
+        let mut artifact = valid_artifact("darwin-arm64");
+        artifact.archive_size_bytes = Some(42);
+
+        assert!(validate_downloaded_artifact_digest(&artifact, 42, &artifact.sha256).is_ok());
+
+        let size_error =
+            validate_downloaded_artifact_digest(&artifact, 41, &artifact.sha256).unwrap_err();
+        assert!(size_error.contains("Artifact size mismatch"));
+
+        let hash_error =
+            validate_downloaded_artifact_digest(&artifact, 42, &"ab".repeat(32)).unwrap_err();
+        assert!(hash_error.contains("Artifact SHA-256 mismatch"));
     }
 
     #[test]
@@ -3440,6 +3639,21 @@ On a remote or headless machine? Use `codex login --device-auth` instead.";
         assert!(has_path_entry(&broken_link).unwrap());
         remove_path_entry(&broken_link).unwrap();
         assert!(!has_path_entry(&broken_link).unwrap());
+    }
+
+    #[test]
+    fn abandoned_download_cleanup_only_removes_owned_temp_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let abandoned = root.path().join(".download-0.0.0-platform-id");
+        let retained = root.path().join("0.0.0");
+        fs::create_dir_all(&abandoned).unwrap();
+        fs::create_dir_all(&retained).unwrap();
+        fs::write(abandoned.join("partial.zip"), b"partial").unwrap();
+        fs::write(retained.join("installed.json"), b"keep").unwrap();
+
+        assert_eq!(cleanup_abandoned_download_dirs(root.path()).unwrap(), 1);
+        assert!(!has_path_entry(&abandoned).unwrap());
+        assert!(has_path_entry(&retained).unwrap());
     }
 
     #[test]
