@@ -1,4 +1,3 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -14,15 +13,18 @@ import {
   getManagedCodexProviderReadiness,
   isManagedCodexRequiredRuntimeInstalled,
   isManagedCodexProviderGateEnabled,
+  isManagedCodexRuntimeUsable,
   isManagedCodexSubscriptionAuthValid,
   mergePresetModelWithCustomEntry,
   normalizeChatQueueResponseMode,
   normalizeClaudeTranscriptCleanupPeriodDays,
   normalizeProviderOrder,
+  shouldAutoUpdateManagedCodexRuntime,
   splitProviderModelInput,
   withManagedCodexRuntimeModels,
   withManagedCodexProviderCatalog,
 } from './config-types';
+import managedCodexRuntimeLock from './managed-codex-runtime.json';
 
 // normalizeProviderOrder reconciles a persisted provider order against the set
 // of providers that actually exist now: honor the saved order, drop stale/
@@ -270,19 +272,91 @@ describe('CLI tool registry defaults', () => {
 });
 
 describe('Managed Codex provider readiness', () => {
-  function readManagedCodexRustConst(name: string): string {
-    const source = readFileSync('src-tauri/src/managed_codex.rs', 'utf8');
-    const match = source.match(new RegExp(`^const ${name}:.*= "([^"]+)";`, 'm'));
-    if (!match) throw new Error(`Missing Rust Managed Codex constant: ${name}`);
-    return match[1];
-  }
-
-  it('keeps the shared runtime lock aligned with the Rust downloader lock', () => {
-    expect(MANAGED_CODEX_REQUIRED_RUNTIME.version).toBe(readManagedCodexRustConst('REQUIRED_VERSION'));
-    expect(MANAGED_CODEX_REQUIRED_RUNTIME.runtimeSet).toBe(readManagedCodexRustConst('REQUIRED_RUNTIME_SET'));
+  it('derives every shared runtime identity field from the single lock', () => {
+    expect(MANAGED_CODEX_REQUIRED_RUNTIME.version).toBe(managedCodexRuntimeLock.version);
+    expect(MANAGED_CODEX_REQUIRED_RUNTIME.runtimeSet).toBe(`codex-${managedCodexRuntimeLock.version}`);
     expect(MANAGED_CODEX_REQUIRED_RUNTIME.manifestBaseUrl).toBe(
-      `${readManagedCodexRustConst('RUNTIME_SETS_BASE_URL')}/${readManagedCodexRustConst('REQUIRED_RUNTIME_SET')}`,
+      `https://download.myagents.io/runtimes/codex/sets/codex-${managedCodexRuntimeLock.version}`,
     );
+  });
+
+  it('auto-updates stale installs and retries a failed upgrade on the next App launch', () => {
+    const staleInstall = {
+      installedVersion: '0.0.0-previous',
+      requiredVersion: MANAGED_CODEX_REQUIRED_RUNTIME.version,
+    };
+
+    expect(shouldAutoUpdateManagedCodexRuntime({
+      managedCodexProviderDevGate: true,
+      managedCodexRuntimeInstall: { status: 'installed', ...staleInstall },
+    })).toBe(true);
+    expect(shouldAutoUpdateManagedCodexRuntime({
+      managedCodexProviderDevGate: true,
+      managedCodexRuntimeInstall: { status: 'update-required', ...staleInstall },
+    })).toBe(true);
+    expect(shouldAutoUpdateManagedCodexRuntime({
+      managedCodexProviderDevGate: true,
+      managedCodexRuntimeInstall: { status: 'error', ...staleInstall },
+    })).toBe(true);
+    expect(shouldAutoUpdateManagedCodexRuntime({
+      managedCodexProviderDevGate: true,
+      managedCodexRuntimeInstall: {
+        status: 'error',
+        installedVersion: MANAGED_CODEX_REQUIRED_RUNTIME.version,
+      },
+    })).toBe(true);
+    expect(shouldAutoUpdateManagedCodexRuntime({
+      managedCodexProviderDevGate: true,
+      managedCodexRuntimeInstall: { status: 'downloading', ...staleInstall },
+    })).toBe(true);
+    expect(shouldAutoUpdateManagedCodexRuntime({
+      managedCodexProviderDevGate: true,
+      managedCodexRuntimeInstall: { status: 'checking', ...staleInstall },
+    })).toBe(true);
+  });
+
+  it('keeps a verified stale runtime usable while its replacement downloads or retries', () => {
+    const staleVersion = '0.0.0-previous';
+    expect(isManagedCodexRuntimeUsable({
+      status: 'downloading',
+      usable: true,
+      installedVersion: staleVersion,
+    })).toBe(true);
+    expect(isManagedCodexRuntimeUsable({
+      status: 'error',
+      usable: true,
+      installedVersion: staleVersion,
+    })).toBe(true);
+    expect(isManagedCodexRuntimeUsable({
+      status: 'update-required',
+      installedVersion: staleVersion,
+    })).toBe(false);
+    expect(isManagedCodexRuntimeUsable({
+      status: 'update-required',
+      usable: false,
+      installedVersion: staleVersion,
+    })).toBe(false);
+  });
+
+  it('does not auto-download for new users or retry a failed first install', () => {
+    expect(shouldAutoUpdateManagedCodexRuntime({
+      managedCodexProviderDevGate: true,
+    })).toBe(false);
+    expect(shouldAutoUpdateManagedCodexRuntime({
+      managedCodexProviderDevGate: true,
+      managedCodexRuntimeInstall: { status: 'not-installed' },
+    })).toBe(false);
+    expect(shouldAutoUpdateManagedCodexRuntime({
+      managedCodexProviderDevGate: true,
+      managedCodexRuntimeInstall: { status: 'error' },
+    })).toBe(false);
+    expect(shouldAutoUpdateManagedCodexRuntime({
+      managedCodexProviderDevGate: false,
+      managedCodexRuntimeInstall: {
+        status: 'update-required',
+        installedVersion: '0.0.0-previous',
+      },
+    })).toBe(false);
   });
 
   it('defaults the developer gate on but still honors explicit disablement', () => {
@@ -339,6 +413,7 @@ describe('Managed Codex provider readiness', () => {
   it('requires exact runtime version, subscription auth, and no explicit disablement', () => {
     const runtime = {
       status: 'installed' as const,
+      usable: true,
       installedVersion: MANAGED_CODEX_REQUIRED_RUNTIME.version,
       requiredVersion: MANAGED_CODEX_REQUIRED_RUNTIME.version,
     };
@@ -353,6 +428,26 @@ describe('Managed Codex provider readiness', () => {
       managedCodexProviderDevGate: true,
       managedCodexRuntimeInstall: runtime,
       managedCodexAuth: auth,
+    })).toMatchObject({
+      visible: true,
+      selectable: true,
+      reason: 'ready',
+    });
+  });
+
+  it('keeps a verified stale runtime selectable while the required version updates', () => {
+    expect(getManagedCodexProviderReadiness({
+      managedCodexProviderDevGate: true,
+      managedCodexRuntimeInstall: {
+        status: 'downloading',
+        usable: true,
+        installedVersion: '0.0.0-previous',
+        requiredVersion: MANAGED_CODEX_REQUIRED_RUNTIME.version,
+      },
+      managedCodexAuth: {
+        status: 'valid',
+        authMethod: 'chatgpt',
+      },
     })).toMatchObject({
       visible: true,
       selectable: true,
@@ -375,6 +470,7 @@ describe('Managed Codex provider readiness', () => {
       disabledProviderIds: [CODEX_SUBSCRIPTION_PROVIDER_ID],
       managedCodexRuntimeInstall: {
         status: 'installed',
+        usable: true,
         installedVersion: MANAGED_CODEX_REQUIRED_RUNTIME.version,
       },
       managedCodexAuth: {

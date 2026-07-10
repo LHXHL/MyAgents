@@ -233,7 +233,7 @@ These are representative incidents that shaped the patterns below:
 - If a manifest says a Windows artifact is signed, verify it on Windows and persist the signer certificate SHA-256.
 - If a packaging script emits machine-readable PowerShell output, use the Trap 1 base64 UTF-8 JSON envelope.
 - Release checks should inspect committed artifacts/config, not just a dirty working tree that may contain local fixes.
-- Build scripts should not infer Managed Codex runtime version from the desktop app version; use `REQUIRED_RUNTIME_SET` / `REQUIRED_VERSION`.
+- Build scripts should not infer Managed Codex runtime version from the desktop app version; use `src/shared/managed-codex-runtime.json::version` and derive the immutable set as `codex-<version>`.
 - Windows build/test failures can be toolchain environment issues, but do not paper over them until you know whether the binary launches.
 
 **Smells.**

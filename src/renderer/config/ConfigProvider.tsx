@@ -19,7 +19,7 @@ import {
     applyManagedCodexProviderReadiness,
     applyProviderEnablementAndOrder,
     getManagedCodexProviderReadiness,
-    isManagedCodexProviderGateEnabled,
+    shouldAutoUpdateManagedCodexRuntime,
     withManagedCodexProviderCatalog,
 } from './types';
 import type { RuntimeModelInfo } from '../../shared/types/runtime';
@@ -66,6 +66,11 @@ import { listenWithCleanup } from '@/utils/tauriListen';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { normalizeUiLanguage, type SupportedLocale, type UiLanguage } from '../../shared/i18n';
 import { removeProviderFromProxySettingsScope } from '../../shared/proxyScope';
+
+// Main-window process scope: an App launch may make at most one background
+// update attempt even if React remounts ConfigProvider. A real App relaunch
+// reloads this module and re-arms the attempt.
+let managedCodexStartupUpdateEvaluated = false;
 
 /**
  * Normalize agents loaded from disk: ensure every agent has a `channels` array.
@@ -159,17 +164,6 @@ async function reconcileMemoryAutoUpdateTasks(
             );
         }
     }
-}
-
-function shouldAutoUpdateManagedCodexRuntime(config: AppConfig): boolean {
-    if (!isManagedCodexProviderGateEnabled(config)) return false;
-    const install = config.managedCodexRuntimeInstall;
-    const userEngaged = Boolean(install?.status || install?.installedVersion || install?.installedAt);
-    if (!userEngaged || !install) return false;
-    if (install.status === 'downloading' || install.status === 'checking') return false;
-    if (install.status === 'update-required') return true;
-    return install.status === 'installed'
-        && install.installedVersion !== MANAGED_CODEX_REQUIRED_RUNTIME.version;
 }
 
 // ============= Context Types =============
@@ -281,6 +275,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         () => getManagedCodexProviderReadiness(config),
         [config],
     );
+    const managedCodexShouldAutoUpdate = shouldAutoUpdateManagedCodexRuntime(config);
     const managedCodexModelListKey = useMemo(
         () => [
             managedCodexReadiness.reason,
@@ -303,7 +298,6 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     // Mount guard
     const isMountedRef = useRef(true);
     const configRef = useRef<AppConfig>(DEFAULT_CONFIG);
-    const managedCodexAutoUpdateRef = useRef(false);
     useEffect(() => {
         isMountedRef.current = true;
         return () => { isMountedRef.current = false; };
@@ -474,11 +468,28 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     useEffect(() => {
         if (!isTauriEnvironment()) return;
         if (isLoading) return;
-        if (managedCodexAutoUpdateRef.current) return;
-        if (!shouldAutoUpdateManagedCodexRuntime(config)) return;
+        if (error) return;
+        if (managedCodexStartupUpdateEvaluated) return;
+        // This is a startup decision, not a subscription to later config
+        // changes. Claim the mount before evaluating so a manual download that
+        // later writes `downloading` cannot schedule a second download.
+        managedCodexStartupUpdateEvaluated = true;
+        if (!managedCodexShouldAutoUpdate) return;
 
-        managedCodexAutoUpdateRef.current = true;
+        // One automatic attempt per App module lifetime. A failed download is
+        // persisted as `error`; the next App launch retries, while this launch never loops on
+        // load() refreshing the same failure state.
         (async () => {
+            try {
+                const { invoke } = await import('@tauri-apps/api/core');
+                // Hydrate `usable` and auth with the currently installed
+                // runtime before the long download. This makes the verified old
+                // provider available to Chat while its replacement downloads.
+                await invoke('cmd_managed_codex_status');
+                await load();
+            } catch (err) {
+                console.warn('[managed-codex] startup status refresh failed:', err);
+            }
             try {
                 const { invoke } = await import('@tauri-apps/api/core');
                 console.info(
@@ -491,14 +502,14 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
                     err,
                 );
             } finally {
-                managedCodexAutoUpdateRef.current = false;
                 await load();
             }
         })();
     }, [
-        config,
+        error,
         isLoading,
         load,
+        managedCodexShouldAutoUpdate,
     ]);
 
     useEffect(() => {

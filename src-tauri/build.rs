@@ -11,10 +11,84 @@ const SPACE_BUILD_ENV_KEYS: &[&str] = &[
     "MYAGENTS_SPACE_PUBLIC_CLIENT_ID",
     "MYAGENTS_SPACE_CLIENT_ID",
 ];
+const MANAGED_CODEX_RUNTIME_LOCK_PATH: &str = "../src/shared/managed-codex-runtime.json";
 
 fn main() {
+    expose_managed_codex_runtime_lock();
     expose_space_build_env();
     tauri_build::build()
+}
+
+fn expose_managed_codex_runtime_lock() {
+    let manifest_dir = env::var_os("CARGO_MANIFEST_DIR")
+        .map(PathBuf::from)
+        .expect("CARGO_MANIFEST_DIR is required");
+    let lock_path = manifest_dir.join(MANAGED_CODEX_RUNTIME_LOCK_PATH);
+    println!("cargo:rerun-if-changed={}", lock_path.display());
+
+    let content = fs::read_to_string(&lock_path).unwrap_or_else(|error| {
+        panic!(
+            "Failed to read Managed Codex runtime lock {}: {error}",
+            lock_path.display()
+        )
+    });
+    let lock: serde_json::Value = serde_json::from_str(&content).unwrap_or_else(|error| {
+        panic!(
+            "Invalid Managed Codex runtime lock {}: {error}",
+            lock_path.display()
+        )
+    });
+    let version = required_runtime_lock_string(&lock, "version", &lock_path);
+
+    if !is_canonical_runtime_version(version) {
+        panic!("Managed Codex version must be canonical semver without surrounding whitespace: {version:?}");
+    }
+    let runtime_set = format!("codex-{version}");
+
+    println!("cargo:rustc-env=MYAGENTS_MANAGED_CODEX_VERSION={version}");
+    println!("cargo:rustc-env=MYAGENTS_MANAGED_CODEX_RUNTIME_SET={runtime_set}");
+}
+
+fn is_canonical_runtime_version(version: &str) -> bool {
+    if version.is_empty() || version.trim() != version {
+        return false;
+    }
+    let (core, prerelease) = match version.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (version, None),
+    };
+    let mut core_parts = core.split('.');
+    let core_valid = (0..3).all(|_| {
+        core_parts
+            .next()
+            .map(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+            .unwrap_or(false)
+    }) && core_parts.next().is_none();
+    let prerelease_valid = prerelease
+        .map(|value| {
+            !value.is_empty()
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+        })
+        .unwrap_or(true);
+    core_valid && prerelease_valid
+}
+
+fn required_runtime_lock_string<'a>(
+    lock: &'a serde_json::Value,
+    key: &str,
+    path: &Path,
+) -> &'a str {
+    lock.get(key)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| {
+            panic!(
+                "Managed Codex runtime lock {} requires non-empty string field {key}",
+                path.display()
+            )
+        })
 }
 
 fn expose_space_build_env() {

@@ -19,8 +19,8 @@ use crate::utils::file_lock::{with_file_lock_blocking, FileLockError, FileLockOp
 use crate::{ulog_error, ulog_info, ulog_warn};
 
 const CODEX_PROVIDER_ID: &str = "codex-sub";
-const REQUIRED_VERSION: &str = "0.142.2";
-const REQUIRED_RUNTIME_SET: &str = "codex-0.142.2";
+pub(crate) const REQUIRED_VERSION: &str = env!("MYAGENTS_MANAGED_CODEX_VERSION");
+pub(crate) const REQUIRED_RUNTIME_SET: &str = env!("MYAGENTS_MANAGED_CODEX_RUNTIME_SET");
 const RUNTIME_SETS_BASE_URL: &str = "https://download.myagents.io/runtimes/codex/sets";
 // Keep this in sync with `src-tauri/tauri.conf.json > plugins.updater.pubkey`.
 // Managed runtime manifests and artifacts use the same minisign trust root as app updates.
@@ -40,6 +40,8 @@ const DOWNLOADING_STATE_TTL_SECS: i64 = 30 * 60;
 #[serde(rename_all = "camelCase")]
 pub struct ManagedCodexRuntimeInstallState {
     pub status: String,
+    #[serde(default)]
+    pub usable: bool,
     pub required_version: Option<String>,
     pub installed_version: Option<String>,
     pub platform: Option<String>,
@@ -231,6 +233,41 @@ fn required_install_dir(platform: &str) -> Result<PathBuf, String> {
     Ok(runtime_root()?.join(REQUIRED_VERSION).join(platform))
 }
 
+fn is_canonical_runtime_version(version: &str) -> bool {
+    if version.is_empty() || version.trim() != version {
+        return false;
+    }
+    let (core, prerelease) = match version.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (version, None),
+    };
+    let mut core_parts = core.split('.');
+    let core_valid = (0..3).all(|_| {
+        core_parts
+            .next()
+            .map(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit()))
+            .unwrap_or(false)
+    }) && core_parts.next().is_none();
+    let prerelease_valid = prerelease
+        .map(|value| {
+            !value.is_empty()
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+        })
+        .unwrap_or(true);
+    core_valid && prerelease_valid
+}
+
+fn install_dir_for_version(version: &str, platform: &str) -> Option<PathBuf> {
+    if !is_canonical_runtime_version(version) {
+        return None;
+    }
+    let root = runtime_root().ok()?;
+    let candidate = root.join(version).join(platform);
+    candidate.starts_with(&root).then_some(candidate)
+}
+
 fn normalize_out_path(path: PathBuf) -> String {
     crate::sidecar::normalize_external_path(path)
         .to_string_lossy()
@@ -243,17 +280,16 @@ fn read_installed_json() -> Option<InstalledJson> {
     serde_json::from_str(&content).ok()
 }
 
-fn managed_codex_binary_path(platform: &str) -> Option<PathBuf> {
-    let dir = required_install_dir(platform).ok()?;
-    if let Some(meta) = read_installed_json() {
-        if meta.version == REQUIRED_VERSION && meta.platform == platform {
-            if let Some(rel) = meta.executable_relative_path.as_deref() {
-                if let Ok(rel_path) = validate_installed_executable_relative_path(rel) {
-                    let candidate = dir.join(rel_path);
-                    if candidate.is_file() {
-                        return Some(candidate);
-                    }
-                }
+fn binary_path_for_installed_meta(meta: &InstalledJson, platform: &str) -> Option<PathBuf> {
+    if meta.platform != platform {
+        return None;
+    }
+    let dir = install_dir_for_version(&meta.version, platform)?;
+    if let Some(rel) = meta.executable_relative_path.as_deref() {
+        if let Ok(rel_path) = validate_installed_executable_relative_path(rel) {
+            let candidate = dir.join(rel_path);
+            if is_regular_file_within_runtime_root(&candidate) {
+                return Some(candidate);
             }
         }
     }
@@ -267,7 +303,36 @@ fn managed_codex_binary_path(platform: &str) -> Option<PathBuf> {
     } else {
         vec![dir.join("codex"), dir.join("bin").join("codex")]
     };
-    candidates.into_iter().find(|p| p.is_file())
+    candidates
+        .into_iter()
+        .find(|path| is_regular_file_within_runtime_root(path))
+}
+
+fn is_regular_file_within_runtime_root(path: &Path) -> bool {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return false;
+    }
+    let Ok(root) = runtime_root().and_then(|root| {
+        fs::canonicalize(root)
+            .map_err(|err| format!("[managed-codex] Cannot resolve runtime root: {}", err))
+    }) else {
+        return false;
+    };
+    let Ok(candidate) = fs::canonicalize(path) else {
+        return false;
+    };
+    candidate != root && candidate.starts_with(root)
+}
+
+fn managed_codex_binary_path(platform: &str) -> Option<PathBuf> {
+    let meta = read_installed_json()?;
+    if !installed_meta_has_required_security(&meta, platform) {
+        return None;
+    }
+    binary_path_for_installed_meta(&meta, platform)
 }
 
 fn normalize_sha256_hex(value: &str) -> Result<String, String> {
@@ -1287,10 +1352,20 @@ fn write_installed_json(meta: &InstalledJson) -> Result<(), String> {
         )
     })?;
     let tmp = path.with_extension(format!("json.tmp-{}", uuid::Uuid::new_v4()));
-    fs::write(&tmp, bytes)
-        .map_err(|e| format!("[managed-codex] Failed to write install metadata: {}", e))?;
-    fs::rename(&tmp, &path)
-        .map_err(|e| format!("[managed-codex] Failed to publish install metadata: {}", e))?;
+    if let Err(err) = fs::write(&tmp, bytes) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!(
+            "[managed-codex] Failed to write install metadata: {}",
+            err
+        ));
+    }
+    if let Err(err) = fs::rename(&tmp, &path) {
+        let _ = fs::remove_file(&tmp);
+        return Err(format!(
+            "[managed-codex] Failed to publish install metadata: {}",
+            err
+        ));
+    }
     Ok(())
 }
 
@@ -1366,10 +1441,18 @@ fn install_verified_artifact(
             return Err(err);
         }
     };
-    let signing = artifact
-        .signing
-        .as_ref()
-        .ok_or_else(|| "[managed-codex] artifact signing metadata missing".to_string())?;
+    let executable_relative_path =
+        match normalize_executable_relative_path_for_metadata(&artifact.executable_relative_path) {
+            Ok(path) => path,
+            Err(err) => {
+                let _ = remove_path_entry(&staging);
+                return Err(err);
+            }
+        };
+    let Some(signing) = artifact.signing.as_ref() else {
+        let _ = remove_path_entry(&staging);
+        return Err("[managed-codex] artifact signing metadata missing".to_string());
+    };
     let platform_signature =
         match verify_platform_signature(platform, &staging.join(&executable_rel), signing) {
             Ok(result) => result,
@@ -1388,18 +1471,43 @@ fn install_verified_artifact(
     );
 
     if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| format!("[managed-codex] Failed to create install parent: {}", e))?;
+        if let Err(err) = fs::create_dir_all(parent) {
+            let _ = remove_path_entry(&staging);
+            return Err(format!(
+                "[managed-codex] Failed to create install parent: {}",
+                err
+            ));
+        }
     }
-    if has_path_entry(&target)? {
-        fs::rename(&target, &backup)
-            .map_err(|e| format!("[managed-codex] Failed to stage existing runtime: {}", e))?;
+    let target_exists = match has_path_entry(&target) {
+        Ok(exists) => exists,
+        Err(err) => {
+            let _ = remove_path_entry(&staging);
+            return Err(err);
+        }
+    };
+    if target_exists {
+        if let Err(err) = fs::rename(&target, &backup) {
+            let _ = remove_path_entry(&staging);
+            return Err(format!(
+                "[managed-codex] Failed to stage existing runtime: {}",
+                err
+            ));
+        }
     }
     if let Err(e) = fs::rename(&staging, &target) {
-        if has_path_entry(&backup).unwrap_or(false) {
-            let _ = fs::rename(&backup, &target);
+        let rollback_error = if target_exists {
+            fs::rename(&backup, &target).err()
+        } else {
+            None
+        };
+        let _ = remove_path_entry(&staging);
+        if let Some(rollback_error) = rollback_error {
+            return Err(format!(
+                "[managed-codex] Failed to publish managed runtime: {}; failed to restore previous runtime: {}",
+                e, rollback_error
+            ));
         }
-        let _ = fs::remove_dir_all(&staging);
         return Err(format!(
             "[managed-codex] Failed to publish managed runtime: {}",
             e
@@ -1414,18 +1522,27 @@ fn install_verified_artifact(
         platform_signature: Some(platform_signature),
         installed_at: Some(now_iso()),
         source_url: Some(artifact.url.clone()),
-        executable_relative_path: Some(normalize_executable_relative_path_for_metadata(
-            &artifact.executable_relative_path,
-        )?),
+        executable_relative_path: Some(executable_relative_path),
     };
     if let Err(err) = write_installed_json(&installed_json) {
         let _ = remove_path_entry(&target);
-        if has_path_entry(&backup).unwrap_or(false) {
-            let _ = fs::rename(&backup, &target);
+        if target_exists {
+            if let Err(rollback_error) = fs::rename(&backup, &target) {
+                return Err(format!(
+                    "{}; failed to restore previous runtime: {}",
+                    err, rollback_error
+                ));
+            }
         }
         return Err(err);
     }
-    let _ = remove_path_entry(&backup);
+    if let Err(err) = remove_path_entry(&backup) {
+        ulog_warn!(
+            "[managed-codex] installed runtime but could not remove backup {}: {}",
+            backup.display(),
+            err
+        );
+    }
     Ok(())
 }
 
@@ -1446,6 +1563,9 @@ where
 }
 
 fn installed_meta_has_required_security(meta: &InstalledJson, platform: &str) -> bool {
+    if !is_canonical_runtime_version(&meta.version) || meta.platform != platform {
+        return false;
+    }
     let Some(signature) = meta.manifest_signature.as_deref() else {
         return false;
     };
@@ -1476,11 +1596,96 @@ fn installed_meta_has_required_security(meta: &InstalledJson, platform: &str) ->
     }
 }
 
+fn classify_runtime_install_state(
+    platform: &str,
+    installed: Option<InstalledJson>,
+    installed_binary_exists: bool,
+    checked_at: Option<String>,
+) -> ManagedCodexRuntimeInstallState {
+    let Some(meta) = installed else {
+        return ManagedCodexRuntimeInstallState {
+            status: "not-installed".to_string(),
+            usable: false,
+            required_version: Some(REQUIRED_VERSION.to_string()),
+            installed_version: None,
+            platform: Some(platform.to_string()),
+            installed_at: None,
+            last_checked_at: checked_at,
+            downloaded_bytes: None,
+            total_bytes: None,
+            progress_percent: None,
+            error: None,
+        };
+    };
+
+    let usable = meta.platform == platform
+        && installed_binary_exists
+        && installed_meta_has_required_security(&meta, platform);
+
+    if meta.version != REQUIRED_VERSION || meta.platform != platform {
+        return ManagedCodexRuntimeInstallState {
+            status: "update-required".to_string(),
+            usable,
+            required_version: Some(REQUIRED_VERSION.to_string()),
+            installed_version: Some(meta.version),
+            platform: Some(platform.to_string()),
+            installed_at: meta.installed_at,
+            last_checked_at: checked_at,
+            downloaded_bytes: None,
+            total_bytes: None,
+            progress_percent: None,
+            error: None,
+        };
+    }
+
+    if !installed_binary_exists {
+        return ManagedCodexRuntimeInstallState {
+            status: "error".to_string(),
+            usable: false,
+            required_version: Some(REQUIRED_VERSION.to_string()),
+            installed_version: Some(meta.version),
+            platform: Some(platform.to_string()),
+            installed_at: meta.installed_at,
+            last_checked_at: checked_at,
+            downloaded_bytes: None,
+            total_bytes: None,
+            progress_percent: None,
+            error: Some(
+                "Installed metadata exists, but the managed Codex binary is missing".to_string(),
+            ),
+        };
+    }
+
+    let security_ready = installed_meta_has_required_security(&meta, platform);
+    ManagedCodexRuntimeInstallState {
+        status: if security_ready {
+            "installed".to_string()
+        } else {
+            "update-required".to_string()
+        },
+        usable: security_ready,
+        required_version: Some(REQUIRED_VERSION.to_string()),
+        installed_version: Some(meta.version),
+        platform: Some(platform.to_string()),
+        installed_at: meta.installed_at,
+        last_checked_at: checked_at,
+        downloaded_bytes: None,
+        total_bytes: None,
+        progress_percent: None,
+        error: if security_ready {
+            None
+        } else {
+            Some("Managed Codex runtime requires refreshed signed install metadata".to_string())
+        },
+    }
+}
+
 fn runtime_install_state() -> ManagedCodexRuntimeInstallState {
     let checked_at = Some(now_iso());
     let Some(platform) = platform_key() else {
         return ManagedCodexRuntimeInstallState {
             status: "error".to_string(),
+            usable: false,
             required_version: Some(REQUIRED_VERSION.to_string()),
             installed_version: None,
             platform: None,
@@ -1498,76 +1703,11 @@ fn runtime_install_state() -> ManagedCodexRuntimeInstallState {
     };
 
     let installed = read_installed_json();
-    let binary = managed_codex_binary_path(platform);
-    match (installed, binary) {
-        (Some(meta), Some(_))
-            if meta.version == REQUIRED_VERSION
-                && meta.platform == platform
-                && installed_meta_has_required_security(&meta, platform) =>
-        {
-            ManagedCodexRuntimeInstallState {
-                status: "installed".to_string(),
-                required_version: Some(REQUIRED_VERSION.to_string()),
-                installed_version: Some(meta.version),
-                platform: Some(platform.to_string()),
-                installed_at: meta.installed_at,
-                last_checked_at: checked_at,
-                downloaded_bytes: None,
-                total_bytes: None,
-                progress_percent: None,
-                error: None,
-            }
-        }
-        (Some(meta), Some(_)) => {
-            let needs_security_refresh =
-                meta.platform == platform && meta.version == REQUIRED_VERSION;
-            ManagedCodexRuntimeInstallState {
-                status: "update-required".to_string(),
-                required_version: Some(REQUIRED_VERSION.to_string()),
-                installed_version: Some(meta.version),
-                platform: Some(platform.to_string()),
-                installed_at: meta.installed_at,
-                last_checked_at: checked_at,
-                downloaded_bytes: None,
-                total_bytes: None,
-                progress_percent: None,
-                error: if needs_security_refresh {
-                    Some(
-                        "Managed Codex runtime requires refreshed signed install metadata"
-                            .to_string(),
-                    )
-                } else {
-                    None
-                },
-            }
-        }
-        (Some(meta), None) => ManagedCodexRuntimeInstallState {
-            status: "error".to_string(),
-            required_version: Some(REQUIRED_VERSION.to_string()),
-            installed_version: Some(meta.version),
-            platform: Some(platform.to_string()),
-            installed_at: meta.installed_at,
-            last_checked_at: checked_at,
-            downloaded_bytes: None,
-            total_bytes: None,
-            progress_percent: None,
-            error: Some(
-                "Installed metadata exists, but the managed Codex binary is missing".to_string(),
-            ),
-        },
-        (None, _) => ManagedCodexRuntimeInstallState {
-            status: "not-installed".to_string(),
-            required_version: Some(REQUIRED_VERSION.to_string()),
-            installed_version: None,
-            platform: Some(platform.to_string()),
-            installed_at: None,
-            last_checked_at: checked_at,
-            downloaded_bytes: None,
-            total_bytes: None,
-            progress_percent: None,
-            error: None,
-        },
-    }
+    let installed_binary_exists = installed
+        .as_ref()
+        .and_then(|meta| binary_path_for_installed_meta(meta, platform))
+        .is_some();
+    classify_runtime_install_state(platform, installed, installed_binary_exists, checked_at)
 }
 
 fn managed_env() -> Result<HashMap<String, String>, String> {
@@ -1963,7 +2103,7 @@ fn login_status_indicates_logged_out(output: &str) -> bool {
 }
 
 fn auth_state_from_login_status() -> ManagedCodexAuthState {
-    if runtime_install_state().status != "installed" {
+    if !runtime_install_state().usable {
         return ManagedCodexAuthState {
             status: "unknown".to_string(),
             auth_method: None,
@@ -2087,11 +2227,17 @@ fn persist_status(
     _disable_provider: bool,
 ) -> Result<(), String> {
     let path = config_path()?;
-    let install_value = serde_json::to_value(install)
-        .map_err(|e| format!("[managed-codex] Cannot serialize install state: {}", e))?;
-    let auth_value = serde_json::to_value(auth)
+    let install = install.clone();
+    let auth = auth.clone();
+    let auth_value = serde_json::to_value(&auth)
         .map_err(|e| format!("[managed-codex] Cannot serialize auth state: {}", e))?;
     crate::config_io::with_config_lock(&path, false, move |config| {
+        // Reconcile only after acquiring the config lock. A status/progress
+        // writer may have waited here while the installer atomically switched
+        // installed.json; serializing earlier could downgrade the new pointer.
+        let install = reconcile_install_state_before_persist(&install);
+        let install_value = serde_json::to_value(&install)
+            .map_err(|e| format!("[managed-codex] Cannot serialize install state: {}", e))?;
         if !config.is_object() {
             *config = json!({});
         }
@@ -2137,6 +2283,47 @@ fn persist_status(
     Ok(())
 }
 
+fn persist_runtime_install_state(install: &ManagedCodexRuntimeInstallState) -> Result<(), String> {
+    let path = config_path()?;
+    let install = install.clone();
+    crate::config_io::with_config_lock(&path, false, move |config| {
+        let install = reconcile_install_state_before_persist(&install);
+        let install_value = serde_json::to_value(&install)
+            .map_err(|e| format!("[managed-codex] Cannot serialize install state: {}", e))?;
+        if !config.is_object() {
+            *config = json!({});
+        }
+        let obj = config
+            .as_object_mut()
+            .ok_or_else(|| "[managed-codex] config root is not an object".to_string())?;
+        obj.insert("managedCodexRuntimeInstall".to_string(), install_value);
+        Ok(())
+    })?;
+    Ok(())
+}
+
+fn reconcile_install_state_before_persist(
+    candidate: &ManagedCodexRuntimeInstallState,
+) -> ManagedCodexRuntimeInstallState {
+    let authoritative = runtime_install_state();
+    reconcile_install_state(candidate, authoritative)
+}
+
+fn reconcile_install_state(
+    candidate: &ManagedCodexRuntimeInstallState,
+    authoritative: ManagedCodexRuntimeInstallState,
+) -> ManagedCodexRuntimeInstallState {
+    if authoritative.status == "installed"
+        || authoritative.installed_version != candidate.installed_version
+        || authoritative.platform != candidate.platform
+        || authoritative.usable != candidate.usable
+    {
+        authoritative
+    } else {
+        candidate.clone()
+    }
+}
+
 fn download_progress_percent(downloaded_bytes: u64, total_bytes: Option<u64>) -> Option<u8> {
     let total = total_bytes?;
     if total == 0 {
@@ -2148,12 +2335,12 @@ fn download_progress_percent(downloaded_bytes: u64, total_bytes: Option<u64>) ->
 fn persist_download_progress(
     platform: &str,
     installed: &ManagedCodexRuntimeInstallState,
-    auth: &ManagedCodexAuthState,
     downloaded_bytes: u64,
     total_bytes: Option<u64>,
 ) {
     let install = ManagedCodexRuntimeInstallState {
         status: "downloading".to_string(),
+        usable: installed.usable,
         required_version: Some(REQUIRED_VERSION.to_string()),
         installed_version: installed.installed_version.clone(),
         platform: Some(platform.to_string()),
@@ -2164,7 +2351,7 @@ fn persist_download_progress(
         progress_percent: download_progress_percent(downloaded_bytes, total_bytes),
         error: None,
     };
-    if let Err(err) = persist_status(&install, auth, false) {
+    if let Err(err) = persist_runtime_install_state(&install) {
         ulog_warn!(
             "[managed-codex] failed to persist download progress: {}",
             err
@@ -2250,6 +2437,7 @@ pub async fn cmd_managed_codex_download() -> Result<ManagedCodexStatus, String> 
 
             let downloading = ManagedCodexRuntimeInstallState {
                 status: "downloading".to_string(),
+                usable: installed.usable,
                 required_version: Some(REQUIRED_VERSION.to_string()),
                 installed_version: installed.installed_version.clone(),
                 platform: Some(platform.to_string()),
@@ -2284,7 +2472,6 @@ pub async fn cmd_managed_codex_download() -> Result<ManagedCodexStatus, String> 
                 let archive_path = tmp_dir.join("codex-runtime.zip");
 
                 let cleanup_result = (|| -> Result<ManagedCodexStatus, String> {
-                    let progress_auth = current_auth.clone();
                     let progress_installed = installed.clone();
                     let mut last_progress_percent: Option<u8> = None;
                     let mut last_progress_at = Instant::now() - Duration::from_secs(1);
@@ -2307,7 +2494,6 @@ pub async fn cmd_managed_codex_download() -> Result<ManagedCodexStatus, String> 
                             persist_download_progress(
                                 platform,
                                 &progress_installed,
-                                &progress_auth,
                                 downloaded,
                                 total,
                             );
@@ -2353,8 +2539,30 @@ pub async fn cmd_managed_codex_download() -> Result<ManagedCodexStatus, String> 
             match result {
                 Ok(status) => Ok(status),
                 Err(err) => {
+                    let authoritative = runtime_install_state();
+                    if authoritative.status == "installed" {
+                        let auth = auth_state_from_login_status();
+                        if let Err(persist_err) = persist_status(&authoritative, &auth, false) {
+                            ulog_warn!(
+                                "[managed-codex] runtime installed but final status persistence failed: {}",
+                                persist_err
+                            );
+                        }
+                        ulog_warn!(
+                            "[managed-codex] runtime installation completed before a post-install status error: {}",
+                            err
+                        );
+                        return Ok(ManagedCodexStatus {
+                            runtime_install: authoritative,
+                            auth,
+                            codex_home: codex_home().ok().map(normalize_out_path),
+                            runtime_path: managed_codex_binary_path(platform)
+                                .map(normalize_out_path),
+                        });
+                    }
                     let install = ManagedCodexRuntimeInstallState {
                         status: "error".to_string(),
+                        usable: installed.usable,
                         required_version: Some(REQUIRED_VERSION.to_string()),
                         installed_version: installed.installed_version,
                         platform: Some(platform.to_string()),
@@ -2470,8 +2678,8 @@ fn finish_login_attempt(ok: bool, output: String) {
 pub async fn cmd_managed_codex_login_start() -> Result<ManagedCodexLoginState, String> {
     tauri::async_runtime::spawn_blocking(|| -> Result<ManagedCodexLoginState, String> {
         let install = runtime_install_state();
-        if install.status != "installed" {
-            let err = "Managed Codex runtime must be installed before login".to_string();
+        if !install.usable {
+            let err = "A verified Managed Codex runtime must be available before login".to_string();
             persist_login_auth_state("error", Some(err.clone()));
             return Err(err);
         }
@@ -2600,8 +2808,8 @@ pub async fn cmd_managed_codex_login() -> Result<ManagedCodexStatus, String> {
     tauri::async_runtime::spawn_blocking(|| -> Result<ManagedCodexStatus, String> {
         ulog_info!("[managed-codex] login start runtime=codex runtimeSource=managed-provider");
         let install = runtime_install_state();
-        if install.status != "installed" {
-            let err = "Managed Codex runtime must be installed before login".to_string();
+        if !install.usable {
+            let err = "A verified Managed Codex runtime must be available before login".to_string();
             let auth = ManagedCodexAuthState {
                 status: "error".to_string(),
                 auth_method: None,
@@ -2655,7 +2863,7 @@ pub async fn cmd_managed_codex_login() -> Result<ManagedCodexStatus, String> {
 pub async fn cmd_managed_codex_logout() -> Result<ManagedCodexStatus, String> {
     tauri::async_runtime::spawn_blocking(|| -> Result<ManagedCodexStatus, String> {
         ulog_info!("[managed-codex] logout start runtime=codex runtimeSource=managed-provider");
-        if runtime_install_state().status == "installed" {
+        if runtime_install_state().usable {
             match run_codex_capture(
                 &["-c", "cli_auth_credentials_store=\"file\"", "logout"],
                 Duration::from_secs(30),
@@ -2759,6 +2967,49 @@ mod tests {
     }
 
     #[test]
+    fn installed_versions_use_canonical_runtime_grammar() {
+        assert!(is_canonical_runtime_version(REQUIRED_VERSION));
+        assert!(is_canonical_runtime_version("0.144.1-beta.1"));
+        assert!(!is_canonical_runtime_version(".."));
+        assert!(!is_canonical_runtime_version("0.144.1/../../escape"));
+        assert!(install_dir_for_version("..", "darwin-arm64").is_none());
+    }
+
+    #[test]
+    fn authoritative_installed_pointer_wins_over_late_download_state() {
+        let late_download = ManagedCodexRuntimeInstallState {
+            status: "downloading".to_string(),
+            usable: true,
+            required_version: Some(REQUIRED_VERSION.to_string()),
+            installed_version: Some("0.0.0-previous".to_string()),
+            platform: Some("darwin-arm64".to_string()),
+            installed_at: None,
+            last_checked_at: Some("2026-07-10T00:00:00Z".to_string()),
+            downloaded_bytes: Some(1),
+            total_bytes: Some(2),
+            progress_percent: Some(50),
+            error: None,
+        };
+        let authoritative = ManagedCodexRuntimeInstallState {
+            status: "installed".to_string(),
+            usable: true,
+            required_version: Some(REQUIRED_VERSION.to_string()),
+            installed_version: Some(REQUIRED_VERSION.to_string()),
+            platform: Some("darwin-arm64".to_string()),
+            installed_at: Some("2026-07-10T00:00:01Z".to_string()),
+            last_checked_at: Some("2026-07-10T00:00:01Z".to_string()),
+            downloaded_bytes: None,
+            total_bytes: None,
+            progress_percent: None,
+            error: None,
+        };
+
+        let selected = reconcile_install_state(&late_download, authoritative.clone());
+        assert_eq!(selected.status, "installed");
+        assert_eq!(selected.installed_version, authoritative.installed_version);
+    }
+
+    #[test]
     fn runtime_state_missing_metadata_is_not_installed_or_unsupported() {
         let state = runtime_install_state();
         assert_eq!(state.required_version.as_deref(), Some(REQUIRED_VERSION));
@@ -2766,6 +3017,90 @@ mod tests {
             state.status.as_str(),
             "not-installed" | "error" | "installed" | "update-required"
         ));
+    }
+
+    #[test]
+    fn stale_installed_version_is_update_required_even_without_required_binary() {
+        let state = classify_runtime_install_state(
+            "darwin-arm64",
+            Some(InstalledJson {
+                version: "0.0.0-previous".to_string(),
+                platform: "darwin-arm64".to_string(),
+                sha256: None,
+                manifest_signature: None,
+                artifact_signature_verified: None,
+                platform_signature: None,
+                installed_at: Some("2026-01-01T00:00:00Z".to_string()),
+                source_url: None,
+                executable_relative_path: Some("bin/codex".to_string()),
+            }),
+            false,
+            Some("2026-07-10T00:00:00Z".to_string()),
+        );
+
+        assert_eq!(state.status, "update-required");
+        assert_eq!(state.installed_version.as_deref(), Some("0.0.0-previous"));
+        assert_eq!(state.required_version.as_deref(), Some(REQUIRED_VERSION));
+        assert_eq!(state.error, None);
+        assert!(!state.usable);
+    }
+
+    #[test]
+    fn verified_stale_runtime_remains_usable_during_update() {
+        let state = classify_runtime_install_state(
+            "darwin-arm64",
+            Some(InstalledJson {
+                version: "0.0.0-previous".to_string(),
+                platform: "darwin-arm64".to_string(),
+                sha256: Some("ab".repeat(32)),
+                manifest_signature: Some("verified-manifest-signature".to_string()),
+                artifact_signature_verified: Some(true),
+                platform_signature: Some(ManagedCodexSigningVerification {
+                    kind: "codesign".to_string(),
+                    verified_at: "2026-01-01T00:00:00Z".to_string(),
+                    team_id: Some("2DC432GLL2".to_string()),
+                    signing_identity: Some("Developer ID Application".to_string()),
+                    publisher: None,
+                    certificate_sha256: None,
+                    notarization: None,
+                }),
+                installed_at: Some("2026-01-01T00:00:00Z".to_string()),
+                source_url: None,
+                executable_relative_path: Some("bin/codex".to_string()),
+            }),
+            true,
+            Some("2026-07-10T00:00:00Z".to_string()),
+        );
+
+        assert_eq!(state.status, "update-required");
+        assert!(state.usable);
+    }
+
+    #[test]
+    fn required_version_with_missing_binary_is_an_install_error() {
+        let state = classify_runtime_install_state(
+            "darwin-arm64",
+            Some(InstalledJson {
+                version: REQUIRED_VERSION.to_string(),
+                platform: "darwin-arm64".to_string(),
+                sha256: None,
+                manifest_signature: None,
+                artifact_signature_verified: None,
+                platform_signature: None,
+                installed_at: None,
+                source_url: None,
+                executable_relative_path: Some("bin/codex".to_string()),
+            }),
+            false,
+            None,
+        );
+
+        assert_eq!(state.status, "error");
+        assert!(state
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("binary is missing"));
     }
 
     #[cfg(target_os = "windows")]
@@ -2797,6 +3132,7 @@ mod tests {
     fn fresh_downloading_state_is_owned_by_download_flow() {
         let state = ManagedCodexRuntimeInstallState {
             status: "downloading".to_string(),
+            usable: false,
             required_version: Some(REQUIRED_VERSION.to_string()),
             installed_version: None,
             platform: Some("darwin-arm64".to_string()),
@@ -2818,6 +3154,7 @@ mod tests {
             (Utc::now() - chrono::Duration::seconds(DOWNLOADING_STATE_TTL_SECS + 1)).to_rfc3339();
         let state = ManagedCodexRuntimeInstallState {
             status: "downloading".to_string(),
+            usable: false,
             required_version: Some(REQUIRED_VERSION.to_string()),
             installed_version: None,
             platform: Some("darwin-arm64".to_string()),

@@ -7,7 +7,6 @@ use super::*;
 use crate::utils::bom::strip_bom;
 
 const CODEX_SUBSCRIPTION_PROVIDER_ID: &str = "codex-sub";
-const MANAGED_CODEX_REQUIRED_VERSION: &str = "0.142.2";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeIdentity {
@@ -106,6 +105,10 @@ pub(super) fn resolve_agent_runtime_from_config(
 fn managed_codex_provider_ready(cfg: &serde_json::Value) -> bool {
     let install = cfg.get("managedCodexRuntimeInstall");
     let auth = cfg.get("managedCodexAuth");
+    let runtime_usable = install
+        .and_then(|value| value.get("usable"))
+        .and_then(|value| value.as_bool())
+        .unwrap_or(false);
     let provider_disabled = cfg
         .get("disabledProviderIds")
         .and_then(|v| v.as_array())
@@ -118,14 +121,7 @@ fn managed_codex_provider_ready(cfg: &serde_json::Value) -> bool {
         .and_then(|v| v.as_bool())
         .unwrap_or(false)
         && !provider_disabled
-        && install
-            .and_then(|v| v.get("status"))
-            .and_then(|v| v.as_str())
-            == Some("installed")
-        && install
-            .and_then(|v| v.get("installedVersion"))
-            .and_then(|v| v.as_str())
-            == Some(MANAGED_CODEX_REQUIRED_VERSION)
+        && runtime_usable
         && auth.and_then(|v| v.get("status")).and_then(|v| v.as_str()) == Some("valid")
         && matches!(
             auth.and_then(|v| v.get("authMethod"))
@@ -293,7 +289,8 @@ mod tests {
         let missing_gate = serde_json::json!({
             "managedCodexRuntimeInstall": {
                 "status": "installed",
-                "installedVersion": MANAGED_CODEX_REQUIRED_VERSION
+                "usable": true,
+                "installedVersion": crate::managed_codex::REQUIRED_VERSION
             },
             "managedCodexAuth": {
                 "status": "valid",
@@ -306,7 +303,8 @@ mod tests {
             "managedCodexProviderDevGate": true,
             "managedCodexRuntimeInstall": {
                 "status": "installed",
-                "installedVersion": MANAGED_CODEX_REQUIRED_VERSION
+                "usable": true,
+                "installedVersion": crate::managed_codex::REQUIRED_VERSION
             },
             "managedCodexAuth": {
                 "status": "valid",
@@ -315,11 +313,25 @@ mod tests {
         });
         assert!(managed_codex_provider_ready(&ready));
 
+        let stale_but_usable = serde_json::json!({
+            "managedCodexProviderDevGate": true,
+            "managedCodexRuntimeInstall": {
+                "status": "downloading",
+                "usable": true,
+                "installedVersion": "0.0.0-previous"
+            },
+            "managedCodexAuth": {
+                "status": "valid",
+                "authMethod": "chatgpt"
+            }
+        });
+        assert!(managed_codex_provider_ready(&stale_but_usable));
+
         let gate_off = serde_json::json!({
             "managedCodexProviderDevGate": false,
             "managedCodexRuntimeInstall": {
                 "status": "installed",
-                "installedVersion": MANAGED_CODEX_REQUIRED_VERSION
+                "installedVersion": crate::managed_codex::REQUIRED_VERSION
             },
             "managedCodexAuth": {
                 "status": "valid",
@@ -332,7 +344,7 @@ mod tests {
             "managedCodexProviderDevGate": true,
             "managedCodexRuntimeInstall": {
                 "status": "installed",
-                "installedVersion": MANAGED_CODEX_REQUIRED_VERSION
+                "installedVersion": crate::managed_codex::REQUIRED_VERSION
             },
             "managedCodexAuth": {
                 "status": "valid",
@@ -346,7 +358,7 @@ mod tests {
             "disabledProviderIds": [CODEX_SUBSCRIPTION_PROVIDER_ID],
             "managedCodexRuntimeInstall": {
                 "status": "installed",
-                "installedVersion": MANAGED_CODEX_REQUIRED_VERSION
+                "installedVersion": crate::managed_codex::REQUIRED_VERSION
             },
             "managedCodexAuth": {
                 "status": "valid",

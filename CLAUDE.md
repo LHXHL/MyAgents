@@ -265,7 +265,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D c
 
 ## Managed Codex Runtime 资源发布
 
-独立于桌面 App 的可执行资源，**不随** `publish_release.sh` / `publish_windows.ps1` 上传；仅当客户端锁定新 `REQUIRED_RUNTIME_SET` / `REQUIRED_VERSION`（权威来源 `src-tauri/src/managed_codex.rs`，别从 App 版本推导）或补发缺失平台时，用根目录 `./publish_managed_codex_runtime.sh -y`（macOS）/ `publish_managed_codex_runtime.ps1 -Yes`（Windows）单独发布。非交互必须显式 `-y`/`-Yes`；默认禁止覆盖已存在的同平台 manifest（`--force-republish` 仅在确认远端内容错误时用）；**Windows 资源必须在 Windows 发布端验证 `codex.exe` 的 Authenticode 签名，不得在 macOS 上绕过**。平台矩阵 / R2 前缀等细节见 `specs/guides/build_and_release_guide.md`。
+独立于桌面 App 的可执行资源，**不随** `publish_release.sh` / `publish_windows.ps1` 上传；客户端 runtime 版本的唯一权威是 `src/shared/managed-codex-runtime.json::version`，runtime set 固定派生为 `codex-<version>`（别从 App 版本推导）。升级时只改这一个值，再用根目录 `./publish_managed_codex_runtime.sh -y`（macOS）/ `publish_managed_codex_runtime.ps1 -Yes`（Windows）分别发布；官方发布入口不接受版本 / set 覆盖，Rust、TypeScript 与打包器都从锁文件派生。非交互必须显式 `-y`/`-Yes`；默认禁止覆盖已存在的同平台 manifest（`--force-republish` 仅在确认远端内容错误时用）；**Windows 资源必须在 Windows 发布端验证所有原生可执行文件的 Authenticode 签名，不得在 macOS 上绕过**。客户端升级期间，已验证旧 runtime 继续承载既有 Sidecar；下载完成只切换后续新 Sidecar 的默认版本，禁止为了升级 abort / 热重启活跃 Session。平台矩阵 / R2 前缀等细节见 `specs/guides/build_and_release_guide.md`。
 
 ## Rust 工具链纪律
 

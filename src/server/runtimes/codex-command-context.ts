@@ -1,10 +1,11 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from 'fs';
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
-import { join } from 'path';
+import { isAbsolute, join, relative, resolve } from 'path';
 
 import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   MANAGED_CODEX_REQUIRED_RUNTIME,
+  isCanonicalManagedCodexRuntimeVersion,
 } from '../../shared/config-types';
 import type { RuntimeEnvPolicy, RuntimeSource } from '../../shared/types/runtime';
 import { ensureDirSync } from '../utils/fs-utils';
@@ -23,6 +24,13 @@ export interface CodexCommandContext {
 interface ManagedCodexInstalledJson {
   version?: string;
   platform?: string;
+  manifestSignature?: string;
+  artifactSignatureVerified?: boolean;
+  platformSignature?: {
+    type?: string;
+    teamId?: string;
+    certificateSha256?: string;
+  };
   executableRelativePath?: string;
 }
 
@@ -167,21 +175,33 @@ export function getManagedCodexRuntimeRoot(): string {
   return join(homedir(), '.myagents', 'runtimes', 'codex');
 }
 
-function managedCodexInstallDir(platform: string): string {
-  return join(
-    getManagedCodexRuntimeRoot(),
-    MANAGED_CODEX_REQUIRED_RUNTIME.version,
-    platform,
-  );
+function managedCodexInstallDir(platform: string, version = MANAGED_CODEX_REQUIRED_RUNTIME.version): string {
+  if (!isCanonicalManagedCodexRuntimeVersion(version)) {
+    throw new Error(`Invalid Managed Codex installed version: ${String(version)}`);
+  }
+  const root = resolve(getManagedCodexRuntimeRoot());
+  const installDir = resolve(root, version, platform);
+  const rel = relative(root, installDir);
+  if (!rel || rel === '..' || rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) || isAbsolute(rel)) {
+    throw new Error(`Managed Codex install directory escapes runtime root: ${installDir}`);
+  }
+  return installDir;
 }
 
 function managedCodexInstalledJsonPath(): string {
   return join(getManagedCodexRuntimeRoot(), 'installed.json');
 }
 
-function isExecutableFile(path: string): boolean {
+function isExecutableFileWithinRuntime(path: string): boolean {
   try {
-    return statSync(path).isFile();
+    if (!statSync(path).isFile() || lstatSync(path).isSymbolicLink()) return false;
+    const realRoot = realpathSync(getManagedCodexRuntimeRoot());
+    const realPath = realpathSync(path);
+    const rel = relative(realRoot, realPath);
+    return Boolean(rel)
+      && rel !== '..'
+      && !rel.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`)
+      && !isAbsolute(rel);
   } catch {
     return false;
   }
@@ -215,25 +235,29 @@ function safeManagedCodexInstalledRelativePath(raw: string | undefined): string 
 }
 
 export function resolveManagedCodexCommandPath(): string {
-  const platform = managedCodexPlatform();
-  if (!platform) {
-    throw new Error(`Managed Codex is not supported on ${process.platform}-${process.arch}`);
-  }
+  return resolveManagedCodexInstallation().commandPath;
+}
 
-  const installDir = managedCodexInstallDir(platform);
-  const installed = readManagedCodexInstalledJson();
-  if (
-    installed?.version === MANAGED_CODEX_REQUIRED_RUNTIME.version
-    && installed.platform === platform
-  ) {
-    const rel = safeManagedCodexInstalledRelativePath(installed.executableRelativePath);
-    if (rel) {
-      const commandPath = join(installDir, rel);
-      if (isExecutableFile(commandPath)) return commandPath;
-    }
+function hasVerifiedManagedCodexMetadata(
+  installed: ManagedCodexInstalledJson,
+  platform: string,
+): boolean {
+  if (!installed.manifestSignature?.trim() || installed.artifactSignatureVerified !== true) {
+    return false;
   }
+  const signing = installed.platformSignature;
+  if (platform.startsWith('darwin-')) {
+    return signing?.type === 'codesign' && Boolean(signing.teamId?.trim());
+  }
+  if (platform === 'win32-x64') {
+    return signing?.type === 'authenticode'
+      && /^[0-9a-f]{64}$/i.test(signing.certificateSha256 ?? '');
+  }
+  return false;
+}
 
-  const candidates = process.platform === 'win32'
+function managedCodexBinaryCandidates(installDir: string): string[] {
+  return process.platform === 'win32'
     ? [
         join(installDir, 'codex.exe'),
         join(installDir, 'codex.cmd'),
@@ -244,13 +268,32 @@ export function resolveManagedCodexCommandPath(): string {
         join(installDir, 'codex'),
         join(installDir, 'bin', 'codex'),
       ];
-  const commandPath = candidates.find(isExecutableFile);
-  if (!commandPath) {
-    throw new Error(
-      `Managed Codex runtime ${MANAGED_CODEX_REQUIRED_RUNTIME.version} is not installed for ${platform}`,
-    );
+}
+
+function resolveManagedCodexInstallation(): { commandPath: string; version: string } {
+  const platform = managedCodexPlatform();
+  if (!platform) {
+    throw new Error(`Managed Codex is not supported on ${process.platform}-${process.arch}`);
   }
-  return commandPath;
+
+  const installed = readManagedCodexInstalledJson();
+  const installedVersion = installed?.version;
+  const canUseInstalledVersion = isCanonicalManagedCodexRuntimeVersion(installedVersion)
+    && installed?.platform === platform
+    && hasVerifiedManagedCodexMetadata(installed, platform);
+  if (canUseInstalledVersion) {
+    const installDir = managedCodexInstallDir(platform, installedVersion);
+    const rel = safeManagedCodexInstalledRelativePath(installed.executableRelativePath);
+    if (rel) {
+      const commandPath = join(installDir, rel);
+      if (isExecutableFileWithinRuntime(commandPath)) return { commandPath, version: installedVersion };
+    }
+    const commandPath = managedCodexBinaryCandidates(installDir).find(isExecutableFileWithinRuntime);
+    if (commandPath) return { commandPath, version: installedVersion };
+  }
+  throw new Error(
+    `Managed Codex runtime is not installed with verified metadata for ${platform}`,
+  );
 }
 
 function looksLikeAuthEnvName(name: string): boolean {
@@ -307,13 +350,13 @@ export function resolveCodexCommandContext(args: {
   const source = args.source ?? 'system-cli';
   if (source === 'managed-provider') {
     const platform = managedCodexPlatform();
-    const commandPath = resolveManagedCodexCommandPath();
+    const installation = resolveManagedCodexInstallation();
     return {
       source,
-      commandPath,
+      commandPath: installation.commandPath,
       env: buildManagedCodexEnv(args.envPolicy),
       codexHome: getManagedCodexHome(),
-      version: MANAGED_CODEX_REQUIRED_RUNTIME.version,
+      version: installation.version,
       platform: platform ?? undefined,
     };
   }

@@ -43,6 +43,7 @@ import {
     normalizeClaudeTranscriptCleanupPeriodDays,
     normalizeChatQueueResponseMode,
     getManagedCodexProviderReadiness,
+    isManagedCodexRuntimeUsable,
     isManagedCodexProviderGateEnabled,
     type ChatQueueResponseMode,
     type ProxyProtocol,
@@ -3075,16 +3076,24 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         const install = config.managedCodexRuntimeInstall;
         const auth = config.managedCodexAuth;
         const installStatus = install?.status;
+        const runtimeUsable = isManagedCodexRuntimeUsable(install);
         const authStatus = auth?.status;
         const isDownloadingRuntime = managedCodexBusy === 'download'
             || installStatus === 'downloading'
             || managedCodexReadiness.reason === 'runtime-downloading';
         const isCommandBusy = managedCodexBusy !== null;
         const busy = isCommandBusy || isDownloadingRuntime;
-        const needsDownload = managedCodexReadiness.reason === 'runtime-not-installed'
+        const needsDownload = !runtimeUsable && (managedCodexReadiness.reason === 'runtime-not-installed'
             || managedCodexReadiness.reason === 'runtime-error'
-            || managedCodexReadiness.reason === 'runtime-update-required';
-        const showDownloadRow = needsDownload || isDownloadingRuntime;
+            || managedCodexReadiness.reason === 'runtime-update-required');
+        const hasVersionDrift = Boolean(
+            install?.installedVersion
+            && install.installedVersion !== managedCodexReadiness.requiredVersion,
+        );
+        const showDownloadRow = needsDownload
+            || isDownloadingRuntime
+            || hasVersionDrift
+            || (runtimeUsable && (installStatus === 'update-required' || installStatus === 'error'));
         const needsLogin = managedCodexReadiness.reason === 'auth-missing'
             || managedCodexReadiness.reason === 'auth-invalid'
             || managedCodexReadiness.reason === 'auth-error'
@@ -3095,7 +3104,24 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             : null;
         const downloadButtonLabel = isDownloadingRuntime
             ? (progressPercent == null ? tSettings('providers.managedCodex.downloading') : `${progressPercent}%`)
-            : installStatus === 'update-required' ? tSettings('providers.managedCodex.update') : tSettings('providers.managedCodex.download');
+            : (installStatus === 'update-required' || installStatus === 'error' || hasVersionDrift)
+                ? tSettings('providers.managedCodex.update')
+                : tSettings('providers.managedCodex.download');
+        const runtimeRowLabel = runtimeUsable && install?.installedVersion
+            ? isDownloadingRuntime
+                ? tSettings('providers.managedCodex.updatingWithCurrent', {
+                    current: install.installedVersion,
+                    required: managedCodexReadiness.requiredVersion,
+                })
+                : installStatus === 'error'
+                    ? tSettings('providers.managedCodex.updateFailedWithCurrent', {
+                        current: install.installedVersion,
+                    })
+                    : tSettings('providers.managedCodex.updateAvailableWithCurrent', {
+                        current: install.installedVersion,
+                        required: managedCodexReadiness.requiredVersion,
+                    })
+            : tSettings('providers.managedCodex.downloadRuntime');
         const modelLine = provider.models
             .map(model => model.modelName || model.model)
             .join(', ');
@@ -3107,7 +3133,8 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             : authStatus === 'error' || authStatus === 'invalid'
                 ? tSettings('providers.managedCodex.verifyFailed')
                 : tSettings('providers.managedCodex.notLoggedIn');
-        const runtimeError = install?.error && (managedCodexReadiness.reason === 'runtime-error'
+        const runtimeError = install?.error && (installStatus === 'error'
+            || managedCodexReadiness.reason === 'runtime-error'
             || managedCodexReadiness.reason === 'runtime-update-required')
             ? install.error
             : null;
@@ -3141,13 +3168,13 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                     )}
                 </div>
 
-                {showDownloadRow ? (
+                {showDownloadRow && (
                     <div className="space-y-2">
                         <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5">
                             <div className="flex min-w-0 items-center gap-2">
                                 <Download className="h-4 w-4 shrink-0 text-[var(--accent)]" />
                                 <span className="truncate text-sm font-semibold text-[var(--ink)]">
-                                    {tSettings('providers.managedCodex.downloadRuntime')}
+                                    {runtimeRowLabel}
                                 </span>
                             </div>
                             <button
@@ -3166,7 +3193,8 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             <p className="text-xs text-[var(--error)]">{runtimeError}</p>
                         )}
                     </div>
-                ) : (
+                )}
+                {runtimeUsable && (
                     <div className="space-y-3">
                         <p className="text-sm text-[var(--ink-muted)]">
                             {tSettings('providers.managedCodex.description')}

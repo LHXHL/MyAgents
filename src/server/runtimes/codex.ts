@@ -25,7 +25,7 @@ import type { InteractionScenario } from '../system-prompt';
 import { shouldDisallowAskUserQuestion } from '../host-interaction';
 import { mapCodexTokenUsage, type CodexThreadTokenUsage } from './codex-token-usage';
 import { stripAnsi } from './env-utils';
-import { resolveCodexCommandContext } from './codex-command-context';
+import { resolveCodexCommandContext, type CodexCommandContext } from './codex-command-context';
 import { ensureDirSync } from '../utils/fs-utils';
 import { getBundledCusePath } from '../utils/runtime';
 import { killWithEscalation } from './utils/kill-with-escalation';
@@ -1234,7 +1234,10 @@ function isSubAgentScopedEvent(
 const modelCache = new Map<string, { models: RuntimeModelInfo[]; timestamp: number }>();
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-function modelCacheKey(runtimeSource: RuntimeSource): string {
+export function codexModelCacheKey(runtimeSource: RuntimeSource, context: CodexCommandContext): string {
+  if (runtimeSource === 'managed-provider') {
+    return `${runtimeSource}:${context.version ?? 'unknown'}:${context.commandPath}`;
+  }
   return runtimeSource;
 }
 
@@ -2045,7 +2048,14 @@ export class CodexRuntime implements AgentRuntime {
 
   async queryModels(options: { runtimeSource?: RuntimeSource } = {}): Promise<RuntimeModelInfo[]> {
     const runtimeSource = options.runtimeSource ?? 'system-cli';
-    const cacheKey = modelCacheKey(runtimeSource);
+    let context: CodexCommandContext;
+    try {
+      context = resolveCodexCommandContext({ source: runtimeSource });
+    } catch (err) {
+      console.error(`[codex] Failed to resolve model runtime for source=${runtimeSource}:`, err);
+      return [];
+    }
+    const cacheKey = codexModelCacheKey(runtimeSource, context);
     // Return cached if fresh
     const cached = modelCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < MODEL_CACHE_TTL_MS) {
@@ -2053,7 +2063,7 @@ export class CodexRuntime implements AgentRuntime {
     }
 
     try {
-      const models = await this.queryModelsViaAppServer(runtimeSource);
+      const models = await this.queryModelsViaAppServer(runtimeSource, context);
       modelCache.set(cacheKey, { models, timestamp: Date.now() });
       return models;
     } catch (err) {
@@ -2063,9 +2073,11 @@ export class CodexRuntime implements AgentRuntime {
     }
   }
 
-  private async queryModelsViaAppServer(runtimeSource: RuntimeSource): Promise<RuntimeModelInfo[]> {
+  private async queryModelsViaAppServer(
+    runtimeSource: RuntimeSource,
+    context: CodexCommandContext,
+  ): Promise<RuntimeModelInfo[]> {
     // Spawn a temporary app-server to query model/list
-    const context = resolveCodexCommandContext({ source: runtimeSource });
     const codexEnv = context.env;
     const proc = spawn(buildCodexAppServerArgs({
       commandPath: context.commandPath,

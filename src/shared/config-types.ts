@@ -5,6 +5,7 @@ import type { RuntimeModelInfo, RuntimeSource, RuntimeType } from './types/runti
 import type { UiLanguage } from './i18n';
 import type { OfficialToolId, OfficialToolSettings } from './official-tools';
 import type { SubscriptionVerifyFailureKind } from './subscription';
+import managedCodexRuntimeLock from './managed-codex-runtime.json';
 
 /**
  * Permission mode for agent behavior
@@ -578,6 +579,8 @@ export type ManagedCodexInstallStatus =
 
 export interface ManagedCodexRuntimeInstallState {
   status: ManagedCodexInstallStatus;
+  /** A previously verified runtime is available for new Sidecars, even while an update is pending. */
+  usable?: boolean;
   requiredVersion?: string;
   installedVersion?: string;
   platform?: string;
@@ -597,11 +600,23 @@ export interface ManagedCodexAuthState {
   error?: string;
 }
 
+const MANAGED_CODEX_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+export function isCanonicalManagedCodexRuntimeVersion(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.trim() === value
+    && MANAGED_CODEX_VERSION_RE.test(value);
+}
+const managedCodexVersion = managedCodexRuntimeLock.version;
+if (!isCanonicalManagedCodexRuntimeVersion(managedCodexVersion)) {
+  throw new Error('managed-codex-runtime.json requires a canonical semver version');
+}
+const managedCodexRuntimeSet = `codex-${managedCodexVersion}` as const;
+
 export const MANAGED_CODEX_REQUIRED_RUNTIME = {
   component: 'codex',
-  version: '0.142.2',
-  runtimeSet: 'codex-0.142.2',
-  manifestBaseUrl: 'https://download.myagents.io/runtimes/codex/sets/codex-0.142.2',
+  version: managedCodexVersion,
+  runtimeSet: managedCodexRuntimeSet,
+  manifestBaseUrl: `https://download.myagents.io/runtimes/codex/sets/${managedCodexRuntimeSet}`,
   manifestPublicKeyId: 'myagents-runtime-manifest-ed25519-2026-06',
 } as const;
 
@@ -1051,6 +1066,32 @@ export function isManagedCodexProviderGateEnabled(
   return config.managedCodexProviderDevGate === true;
 }
 
+export function shouldAutoUpdateManagedCodexRuntime(
+  config: Pick<AppConfig, 'managedCodexProviderDevGate' | 'managedCodexRuntimeInstall'>,
+): boolean {
+  if (!isManagedCodexProviderGateEnabled(config)) return false;
+  const install = config.managedCodexRuntimeInstall;
+  if (!install?.installedVersion) return false;
+  if (
+    install.status === 'downloading'
+    || install.status === 'checking'
+    || install.status === 'update-required'
+    || install.status === 'error'
+  ) {
+    return true;
+  }
+  if (install.status === 'installed') {
+    return install.installedVersion !== MANAGED_CODEX_REQUIRED_RUNTIME.version;
+  }
+  return false;
+}
+
+export function isManagedCodexRuntimeUsable(
+  state: ManagedCodexRuntimeInstallState | undefined,
+): boolean {
+  return state?.usable === true;
+}
+
 export function isManagedCodexRequiredRuntimeInstalled(
   state: ManagedCodexRuntimeInstallState | undefined,
 ): boolean {
@@ -1081,7 +1122,7 @@ export function getManagedCodexProviderReadiness(
   }
 
   const install = config.managedCodexRuntimeInstall;
-  if (!isManagedCodexRequiredRuntimeInstalled(install)) {
+  if (!isManagedCodexRuntimeUsable(install)) {
     let reason: ManagedCodexProviderReadinessReason = 'runtime-not-installed';
     if (install?.status === 'downloading' || install?.status === 'checking') {
       reason = 'runtime-downloading';

@@ -11,6 +11,7 @@ import {
   buildCodexSandboxPolicy,
   buildCodexTurnStartParams,
   CodexRuntime,
+  codexModelCacheKey,
   configureCodexSkillExtraRoots,
   initializeCodexRpc,
   KNOWN_CODEX_SERVER_REQUEST_METHODS,
@@ -70,6 +71,23 @@ describe('Codex app-server protocol helpers', () => {
       'applyPatchApproval',
       'execCommandApproval',
     ]);
+  });
+
+  it('invalidates managed model discovery when the installed runtime pointer changes', () => {
+    const oldKey = codexModelCacheKey('managed-provider', {
+      source: 'managed-provider',
+      commandPath: '/runtime/0.142.2/codex',
+      env: {},
+      version: '0.142.2',
+    });
+    const newKey = codexModelCacheKey('managed-provider', {
+      source: 'managed-provider',
+      commandPath: '/runtime/0.144.1/codex',
+      env: {},
+      version: '0.144.1',
+    });
+
+    expect(newKey).not.toBe(oldKey);
   });
 
   it('keeps system-cli Codex app-server startup free of managed provider MCP config', () => {
