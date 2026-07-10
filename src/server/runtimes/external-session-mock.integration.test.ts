@@ -538,6 +538,14 @@ describe('external SessionEngine with fake runtime', () => {
     expect(persisted?.messages.some((message) => (
       message.role === 'assistant' && message.content.includes('FakeTool')
     ))).toBe(true);
+    expect(broadcastEvents).toContainEqual(expect.objectContaining({
+      event: 'chat:message-replay',
+      data: expect.objectContaining({
+        replayKind: 'live-user-echo',
+        sessionId,
+        message: expect.objectContaining({ role: 'user', content: 'hello' }),
+      }),
+    }));
   });
 
   it('does not report failed injected turns as successful', async () => {
@@ -690,6 +698,7 @@ describe('external SessionEngine with fake runtime', () => {
         && (item.data as { userMessage?: { content?: string } }).userMessage?.content === 'second',
     );
     expect(started?.data).toMatchObject({
+      sessionId,
       midTurnBreak: true,
       userMessage: { content: 'second' },
     });

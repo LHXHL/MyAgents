@@ -10,6 +10,7 @@ export interface CronReminderInput {
   runMode?: string;
   intervalMinutes?: number;
   executionNumber?: number;
+  isFirstExecution?: boolean;
   goalObjective?: string;
   goalStatus?: string;
   goalUpdatedAt?: string;
@@ -22,13 +23,15 @@ function metadataLine(label: string, value: string | number | boolean | undefine
 
 export function buildCronTaskReminder(input: CronReminderInput): string {
   if (input.goalStatus) {
-    return buildGoalContinuationReminder({
-      objective: input.goalObjective?.trim() || input.prompt,
+    const objective = input.goalObjective?.trim() || input.prompt;
+    const reminder = buildGoalContinuationReminder({
+      objective,
       goalId: input.taskId,
       goalStatus: input.goalStatus,
       turnNumber: input.executionNumber ?? 1,
       aiCanExit: input.aiCanExit,
     });
+    return input.isFirstExecution ? `${reminder}\n${objective}` : reminder;
   }
 
   const lines = [

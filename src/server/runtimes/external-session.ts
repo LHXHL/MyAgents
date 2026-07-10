@@ -41,6 +41,7 @@ import {
 import { resolveCodexWorkspaceInstructions } from './workspace-instructions';
 import { RUNTIME_DISPLAY_NAMES, type RuntimeEnvPolicy, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
+import { createLiveUserMessageReplay } from '../../shared/chatMessageReplay';
 import { isPendingSessionId } from '../../shared/constants';
 import { resolveChatQueueResponseMode } from '../session-core/turn-queue';
 import {
@@ -439,6 +440,7 @@ function surfaceRealtimeSteeredUserMessage(entry: PendingRealtimeSteeredUserMess
   });
   broadcast('queue:started', {
     queueId: entry.queueId,
+    sessionId: entry.sessionId,
     midTurnBreak: true,
     userMessage: {
       id: entry.userMsg.id,
@@ -2038,7 +2040,7 @@ async function _doStartExternalSession(options: {
       timestamp: new Date().toISOString(),
     };
     if (!earlyBroadcastedUserMsg) {
-      broadcast('chat:message-replay', { message: userMsg });
+      broadcast('chat:message-replay', createLiveUserMessageReplay(options.sessionId, userMsg));
     }
     earlyBroadcastedUserMsg = null;  // Consumed
     pushExternalSessionMessage(userMsg);
@@ -2342,7 +2344,10 @@ export async function sendExternalMessage(
     if (context?.beforeDispatch) {
       surfaceUserMessageAfterGuard = true;
     } else {
-      broadcast('chat:message-replay', { message: earlyUserMsg });
+      broadcast('chat:message-replay', createLiveUserMessageReplay(
+        context?.sessionId ?? getExternalLifecycleSessionId(),
+        earlyUserMsg,
+      ));
     }
   }
   earlyBroadcastedUserMsg = earlyUserMsg;
@@ -2419,7 +2424,10 @@ export async function sendExternalMessage(
   }
   if (dispatchPromotion) setExternalSessionState('running');
   if (surfaceUserMessageAfterGuard) {
-    broadcast('chat:message-replay', { message: earlyUserMsg });
+    broadcast('chat:message-replay', createLiveUserMessageReplay(
+      context?.sessionId ?? getExternalLifecycleSessionId(),
+      earlyUserMsg,
+    ));
   }
   onDispatchAccepted?.();
 
@@ -2569,7 +2577,10 @@ export async function sendExternalMessage(
       attachments: userAttachments,
     };
     if (!earlyBroadcastedUserMsg) {
-      broadcast('chat:message-replay', { message: userMsg });
+      broadcast('chat:message-replay', createLiveUserMessageReplay(
+        getExternalLifecycleSessionId(),
+        userMsg,
+      ));
     }
     earlyBroadcastedUserMsg = null;  // Consumed
     pushExternalSessionMessage(userMsg);
@@ -2673,6 +2684,7 @@ async function steerExternalMessageForDesktop(input: {
         setExternalSessionState('running');
         broadcast('queue:started', {
           queueId: input.queueId,
+          sessionId: input.context.sessionId,
           userMessage: {
             id: input.userMsg.id,
             role: input.userMsg.role,
@@ -2863,7 +2875,7 @@ export function enqueueExternalSendForDesktop(
     attachments: sessionMessageAttachmentsFromImages(context.sessionId, images),
   };
   if (!context.beforeDispatch) {
-    broadcast('chat:message-replay', { message: userMsg });
+    broadcast('chat:message-replay', createLiveUserMessageReplay(context.sessionId, userMsg));
   }
 
   const runtimeConfig = captureExternalRuntimeConfigSnapshot(model, permissionMode, context);
@@ -2956,6 +2968,7 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
             setExternalOperationDrainInFlight(false);
             broadcast('queue:started', {
               queueId: item.queueId,
+              sessionId: item.context.sessionId,
               userMessage: {
                 id: userMsg.id,
                 role: 'user',

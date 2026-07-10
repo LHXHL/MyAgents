@@ -37,7 +37,7 @@ import type { AskUserQuestionRequest, AskUserQuestion } from '../../shared/types
 import type { ExitPlanModeRequest, EnterPlanModeRequest, ExitPlanModeAllowedPrompt } from '../../shared/types/planMode';
 import { CUSTOM_EVENTS, isPendingSessionId } from '../../shared/constants';
 import { TabContext, TabApiContext, TabActiveContext, type AdoptMigratedSessionOptions, type LoadOlderMessagesOptions, type SessionState, type SystemNotice, type TabContextValue, type TabApiContextValue } from './TabContext';
-import { appendUniqueMessageById, upsertMessageById, updateMessageById, shouldSkipHistoryReplay, shouldClearHistoryOnInit } from './sessionRestoreGuards';
+import { appendUniqueMessageById, upsertMessageById, updateMessageById, shouldAcceptLiveTurnEvent, shouldSkipHistoryReplay, shouldClearHistoryOnInit } from './sessionRestoreGuards';
 import {
     decideSystemInitSessionId,
     decidePersistedContextUsageSeed,
@@ -54,6 +54,11 @@ import type { SlashCommand } from '../../shared/slashCommands';
 import type { LogEntry } from '@/types/log';
 import type { ProviderRoute } from '../../shared/providerRoute';
 import { stripLeadingSystemReminder } from '../../shared/systemReminder';
+import {
+    COLD_HISTORY_REPLAY_KIND,
+    LIVE_USER_ECHO_REPLAY_KIND,
+    type ChatMessageReplayPayload,
+} from '../../shared/chatMessageReplay';
 import { parsePartialJson } from '@/utils/parsePartialJson';
 import { enqueuePermissionRequest, peekPermissionRequest, removePermissionRequest } from '@/utils/permissionQueue';
 import { i18n } from '@/i18n';
@@ -1630,20 +1635,39 @@ export default function TabProvider({
             }
 
             case 'chat:message-replay': {
-                const payload = data as { message: WireSessionMessage; replayKind?: 'cold-history' } | null;
+                const payload = data as ChatMessageReplayPayload<WireSessionMessage> | null;
                 if (!payload?.message) break;
                 const msg = payload.message;
                 // `chat:message-replay` is OVERLOADED: the SSE-connect backfill carries
                 // replayKind:'cold-history' (the whole in-memory transcript), while a
-                // freshly-sent user / command bubble arrives on the SAME event with no
-                // replayKind (a LIVE echo — the chat bubble's authoritative render path,
-                // see agent-session.ts). Skip when a new session is being born or
+                // freshly-sent user / command bubble arrives on the SAME event tagged
+                // replayKind:'live-user-echo' with its source session id (the chat
+                // bubble's authoritative render path, see agent-session.ts). Skip when
+                // a new session is being born or
                 // loadSession is in flight (both guard the cold-history race); ADDITIONALLY
                 // skip COLD-HISTORY for a REST-restored session (REST owns the ordered,
                 // paginated history — older pages come via ?before=). A LIVE echo must
                 // ALWAYS render, else a new user message vanishes after a restore (#0608
                 // Codex review).
-                const isColdHistoryReplay = payload.replayKind === 'cold-history';
+                const isColdHistoryReplay = payload.replayKind === COLD_HISTORY_REPLAY_KIND;
+                const currentIdForReplay = currentSessionIdRef.current;
+                const connectedIdForReplay = connectedSseSessionIdRef.current;
+                const isExplicitLiveEcho = payload.replayKind === LIVE_USER_ECHO_REPLAY_KIND;
+                const isCurrentSessionLiveEcho = Boolean(payload.sessionId)
+                    && shouldAcceptSessionScopedSseSnapshot({
+                        connectedSessionId: connectedIdForReplay,
+                        currentSessionId: currentIdForReplay,
+                        payloadSessionId: payload.sessionId,
+                        isConnectedSessionPending: connectedIdForReplay ? isPendingSessionId(connectedIdForReplay) : false,
+                        isCurrentSessionPending: currentIdForReplay ? isPendingSessionId(currentIdForReplay) : false,
+                    });
+                if (isExplicitLiveEcho && !shouldAcceptLiveTurnEvent({
+                    isNewSession: isNewSessionRef.current,
+                    payloadSessionId: payload.sessionId ?? null,
+                    isCurrentSessionScope: isCurrentSessionLiveEcho,
+                })) {
+                    break;
+                }
                 const isResetBirthReplayPending =
                     resetBirthPendingRef.current &&
                     (
@@ -1654,11 +1678,20 @@ export default function TabProvider({
                     isNewSession: isNewSessionRef.current,
                     isLoadingSession: isLoadingSessionRef.current,
                     isColdHistoryReplay,
+                    isCurrentSessionLiveEcho,
                     isResetBirthPending: isResetBirthReplayPending,
                     restoredSessionId: restoredSessionIdRef.current,
                     currentSessionId: currentSessionIdRef.current,
                 })) {
                     break;
+                }
+                if (isNewSessionRef.current && isCurrentSessionLiveEcho) {
+                    // A session-stamped live user echo is the ordered boundary
+                    // between any stale pre-reset events and the new turn. Goal
+                    // and other server-initiated turns do not call the renderer's
+                    // sendMessage(), so this protocol event owns ending the stale
+                    // birth window for those paths.
+                    isNewSessionRef.current = false;
                 }
                 if (seenIdsRef.current.has(msg.id)) break;
                 seenIdsRef.current.add(msg.id);
@@ -3134,6 +3167,7 @@ export default function TabProvider({
                 // injection point so the user message appears at the correct chronological position.
                 const payload = data as {
                     queueId: string;
+                    sessionId?: string;
                     midTurnBreak?: boolean;
                     userMessage?: {
                         id: string;
@@ -3144,6 +3178,26 @@ export default function TabProvider({
                     };
                 } | null;
                 if (payload?.queueId) {
+                    const currentIdForQueueStart = currentSessionIdRef.current;
+                    const connectedIdForQueueStart = connectedSseSessionIdRef.current;
+                    const isCurrentSessionQueueStart = Boolean(payload.sessionId)
+                        && shouldAcceptSessionScopedSseSnapshot({
+                            connectedSessionId: connectedIdForQueueStart,
+                            currentSessionId: currentIdForQueueStart,
+                            payloadSessionId: payload.sessionId,
+                            isConnectedSessionPending: connectedIdForQueueStart ? isPendingSessionId(connectedIdForQueueStart) : false,
+                            isCurrentSessionPending: currentIdForQueueStart ? isPendingSessionId(currentIdForQueueStart) : false,
+                        });
+                    if (!shouldAcceptLiveTurnEvent({
+                        isNewSession: isNewSessionRef.current,
+                        payloadSessionId: payload.sessionId ?? null,
+                        isCurrentSessionScope: isCurrentSessionQueueStart,
+                    })) {
+                        break;
+                    }
+                    if (isNewSessionRef.current && isCurrentSessionQueueStart) {
+                        isNewSessionRef.current = false;
+                    }
                     // Track started IDs to prevent sendMessage .then() from re-adding
                     startedQueueIdsRef.current.add(payload.queueId);
                     console.log(`[TabProvider] queue:started queueId=${payload.queueId} midTurnBreak=${!!payload.midTurnBreak} streaming=${isStreamingRef.current}`);

@@ -184,6 +184,7 @@ interface GoalView {
 - `myagents goal update` 只允许模型写 `complete` / `blocked`。`paused` 来自用户 Stop 当前 turn，`canceled` 来自用户取消，恢复来自用户 query 或显式继续。
 - desktop/IM user ingress 统一经过 `session-engine/goal-orchestrator.ts`。同 session 的 Goal lookup+reserve 串行：Rust 先持久化 Pending admission；builtin/external queue 真正 promotion 时调用 `beforeDispatch` 原子 claim；external path 在 guard accepted 前不 surface user bubble、不写 transcript/SessionStore、不标记 turn running，accepted 后由 turn-lifecycle promotion token 持有跨 await 的 Stop 权限，最终 transport 前复核 token。guarded fresh/resume 必须先用空 `initialMessage` 建立并注册 Runtime process，复核 token 后再显式 `sendMessage`，不能让 `startSession` 在不可取消的启动握手中隐式消费 prompt。transport 接受后 finalize 为 Dispatched，Runtime idle 后持续幂等重试 release，成功或确认 admission 已不存在前保留 Node authority。paused→active 和 `executionCount` 只在 accepted finalization 提交。多条 user admission 各有独立 authority，按队列顺序释放；user query 的 stale `goalRevision` 只有在 objective 与 `goalControlRevision` 都未变化时才视为同一 semantic epoch，避免 admission churn 假 409，同时阻止 Stop 前旧快照恢复 Goal。
 - scheduler admission 是两阶段协议：Rust scheduler 只生成不落盘的 candidate；Sidecar 等待真实 turn idle 且 user queue 清空；builtin/external adapter 在实际 Runtime 发送边界调用 `/api/goal/scheduler/claim`。external persistent process 的 liveness 不等于 turn busy：Codex/Gemini pre-warm 进程存活但 `sessionState='idle'` 时必须立即通过 idle gate，同时保留进程供首轮复用。revision、pause、objective、terminal 或 user admission 任一先获胜都会让 claim fail closed，且失败不得留下 bubble/history/伪 running 状态。
+- Goal 创建后的第一轮 `GOAL_CONTINUATION` reminder 在 envelope 后附加原始 objective 作为 visible tail，用户看到原 query + Goal badge，模型仍收到完整 hidden Goal context；第二轮起的自动 continuation 保持纯隐藏，不生成伪 user bubble。是否首轮只看 Rust scheduler 传入的 `isFirstExecution`，不能从当前有无历史或 Goal `executionNumber` 猜测。
 - renderer Pause/Cancel 在写 Rust Goal 状态前，先调用当前 Tab Sidecar `/api/goal/dispatch/cancel` 标记所有 pending guards canceled；adapter 对晚到的成功 scheduler claim 调 revoke、对 user claim 调 release，然后拒绝 dispatch。`stopTurn()` 也执行同一 cancel，作为 objective/服务端路径的防线。
 - Goal 自动 continuation 必须设置 `turnBoundaryOnly`，不能 steer/merge 进当前 user turn。objective edit 不走 realtime steering：有普通排队消息时返回 `queue_conflict` 并保留消息；否则 stop/wait、revision CAS、再次 stop/wait/re-read，active Goal 用 `objective_restart` admission 启新 turn，paused Goal只持久化。
 - Goal 的 model/provider/runtime/reasoning/MCP 由 session 当前状态拥有，不从 CronTask creation snapshot 恢复。冷 Sidecar 依赖 session metadata 选 runtime；builtin MCP 仅在当前进程尚未 materialize MCP 时从 session snapshot 恢复。permission 是唯一保留的 creation-surface policy：UI 使用当前显式值，CLI 空值解析为 runtime 最大权限。
@@ -570,7 +571,7 @@ case 'chat:tool-use-start':
 
 ### 标志重置时机（关键）
 
-`isNewSessionRef` MUST 在 **API 调用之前** 重置：
+renderer 自己发起普通消息时，`isNewSessionRef` MUST 在 **API 调用之前** 重置：
 
 ```typescript
 const sendMessage = async (text) => {
@@ -581,6 +582,8 @@ const sendMessage = async (text) => {
 ```
 
 **为什么不能等 API 返回后**：API 是异步的，期间后端会发 `chat:message-replay`（用户消息），如果标志还是 `true` 用户消息会被过滤丢失。
+
+但 Goal scheduler、CLI Goal、Rust direct Cron 等 server-initiated turn 不经过 renderer `sendMessage()`。Runtime 因此必须发送 session-scoped turn 边界：直接消息用 `chat:message-replay { replayKind:'live-user-echo', sessionId, message }`，排队消息实际开始用 `queue:started { sessionId, ... }`。renderer 只有在 `sessionId` 通过当前 SSE/session scope 校验后，才清除 `isNewSessionRef` 并渲染气泡。这样后续 thinking/tool/message chunk 会实时进入当前 turn，同时旧 session 或无身份的迟到事件仍被防护标志拒绝。带 `beforeDispatch` 的 builtin Goal 在 guard accepted 前必须延迟 append、持久化和上述 turn 边界，与 external Runtime 保持 fail-closed。
 
 ### 9 种结束场景必须重置的状态
 
@@ -617,7 +620,7 @@ setSystemStatus(null);
 上面的「新会话」靠 `isNewSessionRef` skip 旧事件；**恢复一个已存在会话的历史**是另一条路径，权威源不同。恢复历史的**唯一权威 = REST `GET /sessions/:id`**（磁盘、分页、有序；active session 已 merge 内存未持久化消息）。SSE `chat:message-replay` 让位——它是**重载**事件：SSE-connect 冷历史 backfill **＋** 新发 user/command 气泡的 live echo。
 
 - `loadSession` 用**同步**标志 `restoredSessionIdRef`（**不是**异步滞后的 `historyMessagesRef.length`）决定是否 skip replay。在 `setHistoryMessages` 前就放开 loading 标志，会让迟到的 `chat:init` 命中 `!isLoading && length===0` → 清掉刚恢复的 REST 页 + `seenIds` → 内存 replay（可能传输截断）回填**旧**集（#0608 实测：后端发 id 111-190，前端却停在 109）。
-- 冷历史 backfill 打 `replayKind:'cold-history'`，**只 skip 它**；live echo 不打标记、永远渲染（统一 skip 会吞掉刚发的 user 气泡）。决策纯核心 `sessionRestoreGuards.ts`（可单测）。
+- 冷历史 backfill 打 `replayKind:'cold-history'`；新发 user/command 气泡打 `replayKind:'live-user-echo'` 并携带创建事件时的 `sessionId`。REST-restored session 只 skip cold history；新 session birth 只接受通过当前 session scope 校验的 live echo。决策纯核心 `sessionRestoreGuards.ts`（可单测）。
 - `GET /sessions/:id` 的 active overlay（builtin 内存未持久化消息、external live streaming message、live session state）由 `SessionEngine.getLiveSessionOverlay()` 提供。Route 只做分页、redaction、response shaping，不直接读取 `agent-session.ts` / `external-session.ts`。
 - 诊断"恢复只显示一部分"：读磁盘 `~/.myagents/refs/<id>` 的 spilled body（后端实发的 JSON，可直接 `node` 解析）对比前端显示，先把"后端发了什么 vs 前端显示什么"一刀切开。
 
@@ -628,6 +631,8 @@ Tab 级 SSE 连接只能保证“事件来自这个 Tab 当前连着的 sidecar 
 凡是会更新 Tab 会话快照或展示阻塞式交互 UI 的 SSE 事件，payload MUST 带 `sessionId`，前端 MUST 先通过 `src/renderer/context/sessionScopedEventGuards.ts::shouldAcceptSessionScopedSseSnapshot()` 或 `decideSystemInitSessionId()` 过滤，再写 React state。当前范围包括：
 
 - `chat:system-init`：既是 runtime/config 快照，也是新 session birth 信号；只有 pending/null/reset → concrete id 的 birth 窗口允许同步 Tab sessionId，普通历史切换中的 mismatch 一律视为 stale。
+- `chat:message-replay` 的 `live-user-echo`：既是用户气泡，也是 server-initiated turn 结束 new-session stale window 的有序边界；必须带创建时的 `sessionId`。
+- `queue:started`：排队消息正式 promotion 后的用户气泡与 turn 边界；必须带 promotion 所属的 `sessionId`，guarded Goal 只能在 admission accepted 后发送。
 - `permission:request` / `permission:expired`
 - `ask-user-question:request` / `ask-user-question:expired`
 - `exit-plan-mode:*` / `enter-plan-mode:*`

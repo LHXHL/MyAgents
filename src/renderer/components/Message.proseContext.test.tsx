@@ -43,6 +43,7 @@ import type { Message as MessageType } from '@/types/chat';
 import {
     SPACE_ISSUE_CONTEXT_TAG,
     buildGoalContextReminder,
+    buildGoalContinuationReminder,
     buildGoalObjectiveUpdatedReminder,
 } from '../../shared/systemReminder';
 
@@ -155,6 +156,23 @@ describe('Heartbeat system-reminder user bubble', () => {
 });
 
 describe('Goal system-reminder user bubble', () => {
+    it('renders the first Goal query with the Goal Mode badge', () => {
+        const objective = '分析这个项目有什么价值';
+        const content = `${buildGoalContinuationReminder({
+            objective,
+            goalId: 'goal_first',
+            goalStatus: 'active',
+            turnNumber: 1,
+        })}\n${objective}`;
+
+        const { container } = render(<Message message={userMessage(content)} />);
+
+        expect(container.querySelector('[data-role="user"]')).not.toBeNull();
+        expect(container).toHaveTextContent(/Goal Mode|目标模式/);
+        expect(container).toHaveTextContent(objective);
+        expect(container).not.toHaveTextContent('Continue working toward the active MyAgents Goal');
+    });
+
     it('does not render pure hidden Goal reminders as user bubbles', () => {
         const content = buildGoalObjectiveUpdatedReminder({
             objective: 'hidden updated objective',

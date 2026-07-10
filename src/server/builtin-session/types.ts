@@ -107,6 +107,17 @@ export type MessageWire = {
   durationMs?: number;
 };
 
+type DeferredUserSurfaceBase = {
+  message: MessageWire;
+  sessionBirthOrigin?: SessionOrigin;
+  mirrorImages?: MirrorImage[];
+};
+
+export type DeferredUserSurface = DeferredUserSurfaceBase & (
+  | { event: 'message-replay' }
+  | { event: 'queue-started'; queueId: string; midTurnBreak?: boolean }
+);
+
 export type BuiltinRestartReason =
   | 'mcp'
   | 'agents'
@@ -145,6 +156,8 @@ export type MessageQueueItem = {
   inboxMeta?: InboxTurnMeta;
   injectedTurnId?: string;
   beforeDispatch?: DispatchGuard;
+  /** User history/UI side effects held until a dispatch guard accepts. */
+  deferredUserSurface?: DeferredUserSurface;
   settleDispatchAcceptance?: (result: { accepted: boolean; error?: string }) => void;
   transientProviderRetry?: {
     rootQueueId: string;

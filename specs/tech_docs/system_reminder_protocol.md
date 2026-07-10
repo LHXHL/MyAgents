@@ -125,7 +125,8 @@ instruction、cron output 都只给模型看。
 | 入口 | Builder / 位置 | 结构 |
 |------|----------------|------|
 | Cron task 执行 | `src/server/utils/cron-reminder.ts::buildCronTaskReminder` | `<system-reminder><CRON_TASK>...</CRON_TASK></system-reminder>` + 原 task prompt |
-| Goal 自动续跑 | `src/shared/systemReminder.ts::buildGoalContinuationReminder`，调用方 `src/server/utils/cron-reminder.ts::buildCronTaskReminder` | `<system-reminder><GOAL_CONTINUATION>...</GOAL_CONTINUATION></system-reminder>`，纯隐藏 |
+| Goal 第一轮启动 | `src/shared/systemReminder.ts::buildGoalContinuationReminder`，调用方 `src/server/utils/cron-reminder.ts::buildCronTaskReminder` | `<system-reminder><GOAL_CONTINUATION>...</GOAL_CONTINUATION></system-reminder>` + 原始 Goal objective；用户气泡显示原文与 Goal badge |
+| Goal 自动续跑 | 同上 | `<system-reminder><GOAL_CONTINUATION>...</GOAL_CONTINUATION></system-reminder>`，第二轮起纯隐藏 |
 | Goal 普通 query context | `src/shared/systemReminder.ts::buildGoalContextReminder`，调用方 Goal-aware chat enqueue 路径 | `<system-reminder><GOAL_CONTEXT>...</GOAL_CONTEXT></system-reminder>` + 用户 visible query |
 | Goal objective 更新 | `src/shared/systemReminder.ts::buildGoalObjectiveUpdatedReminder` | `<system-reminder><GOAL_OBJECTIVE_UPDATED>...</GOAL_OBJECTIVE_UPDATED></system-reminder>`，纯隐藏 |
 | 浮球消息 | `src/shared/systemReminder.ts::buildFloatingBallContextReminder`，调用方 `src/renderer/floating-ball/useFloatingSession.ts` | `<system-reminder><FLOATING_BALL_CONTEXT>...</FLOATING_BALL_CONTEXT></system-reminder>` + 用户文本 |

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { parseLeadingSystemReminder } from '../../shared/systemReminder';
 import { buildCronTaskReminder } from './cron-reminder';
 
 describe('buildCronTaskReminder', () => {
@@ -70,6 +71,34 @@ describe('buildCronTaskReminder', () => {
     expect(wrapped).toContain('myagents goal update --status complete');
     expect(wrapped).not.toContain('<CRON_TASK>');
     expect(wrapped).not.toMatch(/<\/system-reminder>\s*Ship Goal Mode/);
+  });
+
+  it('shows the original Goal query only on the first execution', () => {
+    const first = buildCronTaskReminder({
+      taskId: 'goal_first',
+      prompt: '分析这个项目有什么价值',
+      goalObjective: '分析这个项目有什么价值',
+      goalStatus: 'active',
+      aiCanExit: true,
+      isFirstExecution: true,
+    });
+    const continuation = buildCronTaskReminder({
+      taskId: 'goal_first',
+      prompt: '分析这个项目有什么价值',
+      goalObjective: '分析这个项目有什么价值',
+      goalStatus: 'active',
+      aiCanExit: true,
+      isFirstExecution: false,
+    });
+
+    expect(parseLeadingSystemReminder(first)).toMatchObject({
+      kind: 'GOAL_CONTINUATION',
+      visibleText: '分析这个项目有什么价值',
+    });
+    expect(parseLeadingSystemReminder(continuation)).toMatchObject({
+      kind: 'GOAL_CONTINUATION',
+      visibleText: '',
+    });
   });
 
   it('keeps a legacy loop task on the ordinary cron reminder path', () => {

@@ -78,6 +78,7 @@ import {
 } from '../shared/toolDisplay/filePatch';
 import { parsePartialJson } from '../shared/parsePartialJson';
 import { deriveSessionTitle } from '../shared/sessionTitle';
+import { createLiveUserMessageReplay } from '../shared/chatMessageReplay';
 import { isPendingSessionId } from '../shared/constants';
 import { workspacePathsEqual } from '../shared/workspacePath';
 import { normalizeReasoningEffort, isSdkEffortLevel } from '../shared/reasoningEffort';
@@ -320,6 +321,7 @@ import { createBuiltinTurnLifecycle, type BuiltinSdkResultMessage } from './buil
 import type {
   BuiltinRestartReason as RestartReason,
   BuiltinInjectedTurnOutcome,
+  DeferredUserSurface,
   InFlightMetadata,
   MessageQueueItem,
   QueueDeliveryMode,
@@ -855,6 +857,37 @@ function fireDesktopUserMirror(content: string, images: MirrorImage[] | undefine
   });
 }
 
+async function surfaceBuiltinUserMessage(surface: DeferredUserSurface): Promise<void> {
+  appendMessage(surface.message);
+  if (surface.event === 'message-replay') {
+    broadcast('chat:message-replay', createLiveUserMessageReplay(sessionId, surface.message));
+  } else {
+    broadcast('queue:started', {
+      queueId: surface.queueId,
+      sessionId,
+      ...(surface.midTurnBreak ? { midTurnBreak: true } : {}),
+      userMessage: {
+        id: surface.message.id,
+        role: surface.message.role,
+        content: surface.message.content,
+        timestamp: surface.message.timestamp,
+        attachments: surface.message.attachments,
+      },
+    });
+  }
+
+  const messageText = typeof surface.message.content === 'string' ? surface.message.content : '';
+  await persistMessagesToStorageAndCommitPreparedFirstUserTurn(
+    messageText,
+    surface.sessionBirthOrigin,
+  );
+  if (surface.message.metadata?.source === 'desktop') {
+    fireDesktopUserMirror(messageText, surface.mirrorImages);
+  } else {
+    clearMirrorState();
+  }
+}
+
 type SurfaceInFlightOptions = {
   sdkUuid?: string;
   midTurnBreak?: boolean;
@@ -902,6 +935,7 @@ async function surfaceInFlightQueueItem(
   console.log(`[agent] In-flight queue item ${queueId} surfaced via queue:started (${options.reason})`);
   broadcast('queue:started', {
     queueId,
+    sessionId,
     ...(options.midTurnBreak ? { midTurnBreak: true } : {}),
     userMessage: {
       id: userMessage.id,
@@ -1659,26 +1693,18 @@ function startNextTurnQueuedItem(
     attachments: item.attachments,
     metadata: item.source ? { source: item.source } : undefined,
   };
-  appendMessage(userMessage);
-  void persistMessagesToStorageAndCommitPreparedFirstUserTurn(item.messageText)
-    .catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
-
-  if (item.source === 'desktop') {
-    fireDesktopUserMirror(item.messageText, item.mirrorImages);
-  } else {
-    clearMirrorState();
-  }
-
-  broadcast('queue:started', {
+  const surface: DeferredUserSurface = {
+    event: 'queue-started',
     queueId: item.queueId,
-    userMessage: {
-      id: userMessage.id,
-      role: userMessage.role,
-      content: userMessage.content,
-      timestamp: userMessage.timestamp,
-      attachments: userMessage.attachments,
-    },
-  });
+    message: userMessage,
+    mirrorImages: item.mirrorImages,
+  };
+  if (item.sourceItem.beforeDispatch) {
+    item.sourceItem.deferredUserSurface = surface;
+  } else {
+    void surfaceBuiltinUserMessage(surface)
+      .catch(err => console.error('[agent] failed to surface turn-boundary user message:', err));
+  }
 
   console.log(`[agent] Starting turn-boundary queued message: queueId=${item.queueId} reason=${reason} remaining=${getTurnBoundaryQueue().length}`);
   setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
@@ -7631,7 +7657,7 @@ async function enqueueWatchdogResumeReminderAtQueueFront(
     timestamp: new Date().toISOString(),
   };
   appendMessage(userMessage);
-  broadcast('chat:message-replay', { message: userMessage });
+  broadcast('chat:message-replay', createLiveUserMessageReplay(sessionId, userMessage));
   await persistMessagesToStorage();
 
   // Cross-review (#0.2.29) — a `switchToSession` can land inside the await
@@ -8577,13 +8603,12 @@ export async function enqueueUserMessage(
     };
   }
 
-  // Direct send path: push user message to transcriptState.messages[] and broadcast immediately.
-  // NOTE (issue #173): this is the SOLE writer to transcriptState.messages[] for direct-send.
-  // The messageGenerator's `!item.wasQueued` branch intentionally does NOT
-  // push again — see the matching comment block there. Re-introducing a push
-  // anywhere downstream of this site duplicates the user bubble in the UI
-  // (different transcriptState.messageSequence id breaks frontend dedup) and writes two
-  // SessionStore entries.
+  // Direct send path. Guarded Goal turns hold every user history/UI side effect
+  // until the admission claim succeeds in the generator; ordinary messages keep
+  // the immediate bubble path.
+  // NOTE (issue #173): surfaceBuiltinUserMessage is the sole writer for this
+  // direct-send message. It runs here for ordinary turns or once after the
+  // generator accepts a guarded turn; never do both.
   const userMessage: MessageWire = {
     id: allocateMessageId(),
     role: 'user',
@@ -8592,21 +8617,14 @@ export async function enqueueUserMessage(
     attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
     metadata,
   };
-  appendMessage(userMessage);
-  broadcast('chat:message-replay', { message: userMessage });
-
-  // Persist transcriptState.messages to disk after adding user message
-  await persistMessagesToStorageAndCommitPreparedFirstUserTurn(trimmed, options?.sessionBirthOrigin);
-
-  // PRD 0.2.14 — desktop → IM mirror (direct-send path, single push site).
-  // Q1·C: mirror the full user text + PNG/JPG attachments. Rust silently
-  // no-ops if no channel binding exists for this session.
-  if (metadata?.source === 'desktop') {
-    fireDesktopUserMirror(trimmed, toMirrorImages(resolvedImages));
-  } else {
-    // New non-desktop turn — make sure stale mirror state from a prior
-    // desktop turn doesn't bleed into this AI response.
-    clearMirrorState();
+  const directUserSurface: DeferredUserSurface = {
+    event: 'message-replay',
+    message: userMessage,
+    sessionBirthOrigin: options?.sessionBirthOrigin,
+    mirrorImages: toMirrorImages(resolvedImages),
+  };
+  if (!options?.beforeDispatch) {
+    await surfaceBuiltinUserMessage(directUserSurface);
   }
 
   const queueItem: MessageQueueItem = {
@@ -8624,6 +8642,7 @@ export async function enqueueUserMessage(
     inboxMeta,
     injectedTurnId: options?.injectedTurnId,
     beforeDispatch: options?.beforeDispatch,
+    deferredUserSurface: options?.beforeDispatch ? directUserSurface : undefined,
     settleDispatchAcceptance,
   };
 
@@ -11641,7 +11660,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               timestamp: new Date().toISOString(),
             };
             appendMessage(localCommandMessage);
-            broadcast('chat:message-replay', { message: localCommandMessage });
+            broadcast('chat:message-replay', createLiveUserMessageReplay(sessionId, localCommandMessage));
             await persistMessagesToStorage();
           }
 
@@ -12355,6 +12374,10 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         schedulePostTerminalQueueDrain('recovery');
         continue;
       }
+      if (item.deferredUserSurface) {
+        await surfaceBuiltinUserMessage(item.deferredUserSurface);
+        item.deferredUserSurface = undefined;
+      }
       item.settleDispatchAcceptance?.({ accepted: true });
     }
     releaseTurnAdmissionTicket(item.id);
@@ -12378,9 +12401,9 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       console.log(`[agent] pre-warm → active (from queued message), sessionRegistered=${sessionRegistered}`);
     }
 
-    // Direct-send items (wasQueued=false): enqueueUserMessage already pushed
-    // the user message to transcriptState.messages[], persisted it, and broadcast
-    // chat:message-replay. Generator MUST NOT push again — doing so allocates
+    // Direct-send items (wasQueued=false): enqueueUserMessage already surfaced
+    // the ordinary user message; guarded items were surfaced once immediately
+    // after the accepted gate above. Generator MUST NOT push again — doing so allocates
     // a second `transcriptState.messageSequence++` id and writes a second SessionStore entry
     // (issue #173). Generator's job here is purely turn-scoped state setup so
     // the upcoming yield's response is properly tracked.

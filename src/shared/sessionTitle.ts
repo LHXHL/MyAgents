@@ -1,5 +1,11 @@
 import { isLikelyErrorTitle } from './titleFilters';
-import { FLOATING_BALL_CONTEXT_TAG, parseLeadingSystemReminder } from './systemReminder';
+import {
+  FLOATING_BALL_CONTEXT_TAG,
+  GOAL_CONTEXT_TAG,
+  GOAL_CONTINUATION_TAG,
+  GOAL_OBJECTIVE_UPDATED_TAG,
+  parseLeadingSystemReminder,
+} from './systemReminder';
 
 /**
  * Canonical session-title derivation, shared by the sidecar (storage layer,
@@ -31,6 +37,12 @@ export function stripSystemWrapper(raw: string): string {
   const reminder = parseLeadingSystemReminder(text);
   const isCronReminder = reminder.hasReminder && reminder.kind === 'CRON_TASK';
   if (reminder.hasReminder) {
+    const isPureGoalReminder = !reminder.visibleText && (
+      reminder.kind === GOAL_CONTINUATION_TAG
+      || reminder.kind === GOAL_CONTEXT_TAG
+      || reminder.kind === GOAL_OBJECTIVE_UPDATED_TAG
+    );
+    if (isPureGoalReminder) return '';
     if (!reminder.visibleText && reminder.kind === FLOATING_BALL_CONTEXT_TAG) return '';
     text = reminder.visibleText || reminder.body;
   }
