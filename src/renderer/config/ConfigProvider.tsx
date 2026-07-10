@@ -12,6 +12,8 @@ import {
     type ModelAliases,
     type Provider,
     type ProviderVerifyStatus,
+    type ManagedCodexAuthState,
+    type ManagedCodexRuntimeInstallState,
     type ProxySettings,
     PRESET_PROVIDERS,
     PROXY_DEFAULTS,
@@ -67,10 +69,17 @@ import { workspacePathsEqual } from '../../shared/workspacePath';
 import { normalizeUiLanguage, type SupportedLocale, type UiLanguage } from '../../shared/i18n';
 import { removeProviderFromProxySettingsScope } from '../../shared/proxyScope';
 
+interface ManagedCodexStatusResult {
+    runtimeInstall: ManagedCodexRuntimeInstallState;
+    auth: ManagedCodexAuthState;
+}
+
 // Main-window process scope: an App launch may make at most one background
 // update attempt even if React remounts ConfigProvider. A real App relaunch
-// reloads this module and re-arms the attempt.
+// reloads this module and re-arms the attempt. The in-flight request lives at
+// the same scope so startup and Settings keep one download owner across remounts.
 let managedCodexStartupUpdateEvaluated = false;
+let managedCodexRuntimeUpdateRequest: Promise<ManagedCodexStatusResult> | null = null;
 
 /**
  * Normalize agents loaded from disk: ensure every agent has a `channels` array.
@@ -176,6 +185,7 @@ export interface ConfigDataValue {
     providerVerifyStatus: Record<string, ProviderVerifyStatus>;
     isLoading: boolean;
     error: string | null;
+    managedCodexRuntimeUpdateInFlight: boolean;
 }
 
 export interface ConfigActionsValue {
@@ -185,6 +195,7 @@ export interface ConfigActionsValue {
     refreshConfig: () => Promise<void>;
     reload: () => Promise<void>;
     refreshProviderData: () => Promise<void>;
+    requestManagedCodexRuntimeUpdate: () => Promise<void>;
     // Projects
     addProject: (path: string, options?: AddProjectOptions) => Promise<Project>;
     updateProject: (project: Project) => Promise<void>;
@@ -239,6 +250,9 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     const [providerVerifyStatus, setProviderVerifyStatus] = useState<Record<string, ProviderVerifyStatus>>({});
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [managedCodexRuntimeUpdateInFlight, setManagedCodexRuntimeUpdateInFlight] = useState(
+        () => managedCodexRuntimeUpdateRequest !== null,
+    );
 
     // Derived: merge preset custom models + apply user primary model overrides
     const providers = useMemo(() => {
@@ -466,53 +480,6 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     }, [load]);
 
     useEffect(() => {
-        if (!isTauriEnvironment()) return;
-        if (isLoading) return;
-        if (error) return;
-        if (managedCodexStartupUpdateEvaluated) return;
-        // This is a startup decision, not a subscription to later config
-        // changes. Claim the mount before evaluating so a manual download that
-        // later writes `downloading` cannot schedule a second download.
-        managedCodexStartupUpdateEvaluated = true;
-        if (!managedCodexShouldAutoUpdate) return;
-
-        // One automatic attempt per App module lifetime. A failed download is
-        // persisted as `error`; the next App launch retries, while this launch never loops on
-        // load() refreshing the same failure state.
-        (async () => {
-            try {
-                const { invoke } = await import('@tauri-apps/api/core');
-                // Hydrate `usable` and auth with the currently installed
-                // runtime before the long download. This makes the verified old
-                // provider available to Chat while its replacement downloads.
-                await invoke('cmd_managed_codex_status');
-                await load();
-            } catch (err) {
-                console.warn('[managed-codex] startup status refresh failed:', err);
-            }
-            try {
-                const { invoke } = await import('@tauri-apps/api/core');
-                console.info(
-                    `[managed-codex] auto update start runtime=codex runtimeSource=managed-provider requiredVersion=${MANAGED_CODEX_REQUIRED_RUNTIME.version}`,
-                );
-                await invoke('cmd_managed_codex_download');
-            } catch (err) {
-                console.warn(
-                    `[managed-codex] auto update failed runtime=codex runtimeSource=managed-provider requiredVersion=${MANAGED_CODEX_REQUIRED_RUNTIME.version}`,
-                    err,
-                );
-            } finally {
-                await load();
-            }
-        })();
-    }, [
-        error,
-        isLoading,
-        load,
-        managedCodexShouldAutoUpdate,
-    ]);
-
-    useEffect(() => {
         if (managedCodexReadiness.reason !== 'ready' && managedCodexReadiness.reason !== 'provider-disabled') {
             setManagedCodexRuntimeModels([]);
             return;
@@ -687,6 +654,118 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     const refreshConfig = useCallback(async () => {
         await refreshConfigFromDisk('manual refresh', { syncNativeUiLanguage: true });
     }, [refreshConfigFromDisk]);
+
+    const applyManagedCodexStatus = useCallback((status: ManagedCodexStatusResult) => {
+        if (!isMountedRef.current) return;
+        setConfig(previous => {
+            const next = {
+                ...previous,
+                managedCodexRuntimeInstall: status.runtimeInstall,
+                managedCodexAuth: status.auth,
+            };
+            configRef.current = next;
+            return next;
+        });
+    }, []);
+
+    const observeManagedCodexRuntimeUpdate = useCallback(async (
+        request: Promise<ManagedCodexStatusResult>,
+    ): Promise<void> => {
+        setManagedCodexRuntimeUpdateInFlight(true);
+        try {
+            applyManagedCodexStatus(await request);
+        } finally {
+            // Disk remains authoritative. The command result above keeps the
+            // UI coherent even if this follow-up disk read fails.
+            await refreshConfig();
+            if (isMountedRef.current && managedCodexRuntimeUpdateRequest !== request) {
+                setManagedCodexRuntimeUpdateInFlight(false);
+            }
+        }
+    }, [applyManagedCodexStatus, refreshConfig]);
+
+    const requestManagedCodexRuntimeUpdateInternal = useCallback((
+        hydrateBeforeDownload: boolean,
+    ): Promise<void> => {
+        if (!isTauriEnvironment()) {
+            return Promise.reject(new Error('Managed Codex runtime updates require the desktop app'));
+        }
+        let request = managedCodexRuntimeUpdateRequest;
+        if (!request) {
+            const started = (async (): Promise<ManagedCodexStatusResult> => {
+                const { invoke } = await import('@tauri-apps/api/core');
+                if (hydrateBeforeDownload) {
+                    try {
+                        await invoke('cmd_managed_codex_status');
+                        await refreshConfig();
+                    } catch (err) {
+                        console.warn('[managed-codex] startup status refresh failed:', err);
+                    }
+                }
+                return invoke<ManagedCodexStatusResult>('cmd_managed_codex_download');
+            })();
+            const tracked = started.finally(() => {
+                if (managedCodexRuntimeUpdateRequest === tracked) {
+                    managedCodexRuntimeUpdateRequest = null;
+                }
+            });
+            managedCodexRuntimeUpdateRequest = tracked;
+            request = tracked;
+        }
+        return observeManagedCodexRuntimeUpdate(request);
+    }, [observeManagedCodexRuntimeUpdate, refreshConfig]);
+
+    const requestManagedCodexRuntimeUpdate = useCallback(
+        () => requestManagedCodexRuntimeUpdateInternal(false),
+        [requestManagedCodexRuntimeUpdateInternal],
+    );
+
+    useEffect(() => {
+        const activeRequest = managedCodexRuntimeUpdateRequest;
+        if (!activeRequest) {
+            // A process request may settle between this Provider's render-time
+            // state initializer and passive-effect registration after remount.
+            setManagedCodexRuntimeUpdateInFlight(false);
+            return;
+        }
+        void observeManagedCodexRuntimeUpdate(activeRequest).catch(() => {});
+    }, [observeManagedCodexRuntimeUpdate]);
+
+    useEffect(() => {
+        if (!isTauriEnvironment()) return;
+        if (isLoading) return;
+        if (error) return;
+        if (managedCodexStartupUpdateEvaluated) return;
+        // This is a startup decision, not a subscription to later config
+        // changes. The shared request action below is the single in-process
+        // update owner for both startup and Settings-triggered updates.
+        managedCodexStartupUpdateEvaluated = true;
+        if (!managedCodexShouldAutoUpdate) return;
+
+        // One automatic attempt per App module lifetime. A failed download is
+        // persisted as `error`; the next App launch retries, while this launch
+        // never loops on config refreshes of the same failure state.
+        void (async () => {
+            try {
+                console.info(
+                    `[managed-codex] auto update start runtime=codex runtimeSource=managed-provider requiredVersion=${MANAGED_CODEX_REQUIRED_RUNTIME.version}`,
+                );
+                // Claim the process-scoped request before the first preflight
+                // await so manual update/auth operations observe in-flight now.
+                await requestManagedCodexRuntimeUpdateInternal(true);
+            } catch (err) {
+                console.warn(
+                    `[managed-codex] auto update failed runtime=codex runtimeSource=managed-provider requiredVersion=${MANAGED_CODEX_REQUIRED_RUNTIME.version}`,
+                    err,
+                );
+            }
+        })();
+    }, [
+        error,
+        isLoading,
+        managedCodexShouldAutoUpdate,
+        requestManagedCodexRuntimeUpdateInternal,
+    ]);
 
     const refreshProviderData = useCallback(async () => {
         try {
@@ -954,8 +1033,24 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
     // ============= Memoized Context Values =============
 
     const data = useMemo<ConfigDataValue>(() => ({
-        config, projects, providers, apiKeys, providerVerifyStatus, isLoading, error,
-    }), [config, projects, providers, apiKeys, providerVerifyStatus, isLoading, error]);
+        config,
+        projects,
+        providers,
+        apiKeys,
+        providerVerifyStatus,
+        isLoading,
+        error,
+        managedCodexRuntimeUpdateInFlight,
+    }), [
+        config,
+        projects,
+        providers,
+        apiKeys,
+        providerVerifyStatus,
+        isLoading,
+        error,
+        managedCodexRuntimeUpdateInFlight,
+    ]);
 
     const actions = useMemo<ConfigActionsValue>(() => ({
         updateConfig, patchProxySettings, refreshConfig, reload: load, refreshProviderData,
@@ -964,6 +1059,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         savePresetCustomModels, removePresetCustomModel, savePrimaryModel, saveProviderModelAliases,
         saveApiKey, deleteApiKey,
         saveProviderVerifyStatus,
+        requestManagedCodexRuntimeUpdate,
     }), [
         updateConfig, patchProxySettings, refreshConfig, load, refreshProviderData,
         addProject, updateProject, patchProject, removeProject, touchProject,
@@ -971,6 +1067,7 @@ export function ConfigProvider({ children }: { children: React.ReactNode }) {
         savePresetCustomModels, removePresetCustomModel, savePrimaryModel, saveProviderModelAliases,
         saveApiKey, deleteApiKey,
         saveProviderVerifyStatus,
+        requestManagedCodexRuntimeUpdate,
     ]);
 
     return (

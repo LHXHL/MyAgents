@@ -1,14 +1,20 @@
 import React from 'react';
-import { render, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DEFAULT_CONFIG } from './types';
 import { ConfigProvider } from './ConfigProvider';
+import { useConfigActions } from './useConfigActions';
+import { useConfigData } from './useConfigData';
 
 const mocks = vi.hoisted(() => ({
     invoke: vi.fn(),
     loadAppConfig: vi.fn(),
     loadProjects: vi.fn(),
+    statusPromise: undefined as Promise<void> | undefined,
+    resolveStatus: undefined as (() => void) | undefined,
+    downloadPromise: undefined as Promise<never> | undefined,
+    rejectDownload: undefined as ((error: Error) => void) | undefined,
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({ invoke: mocks.invoke }));
@@ -74,17 +80,54 @@ describe('ConfigProvider Managed Codex startup update lifecycle', () => {
                 authMethod: 'chatgpt',
             },
         }));
+        mocks.statusPromise = new Promise<void>(resolve => {
+            mocks.resolveStatus = resolve;
+        });
+        mocks.downloadPromise = new Promise<never>((_, reject) => {
+            mocks.rejectDownload = reject;
+        });
         mocks.invoke.mockImplementation(async (command: string) => {
+            if (command === 'cmd_managed_codex_status') {
+                return mocks.statusPromise;
+            }
             if (command === 'cmd_managed_codex_download') {
-                throw new Error('offline');
+                return mocks.downloadPromise;
             }
             return undefined;
         });
     });
 
-    it('attempts once per App module, without looping after refresh or React remount', async () => {
-        const first = render(<ConfigProvider><div>child</div></ConfigProvider>);
+    function UpdateStateProbe() {
+        const { managedCodexRuntimeUpdateInFlight } = useConfigData();
+        const { requestManagedCodexRuntimeUpdate } = useConfigActions();
+        return (
+            <>
+                <div data-testid="managed-codex-update-in-flight">
+                    {String(managedCodexRuntimeUpdateInFlight)}
+                </div>
+                <button
+                    type="button"
+                    onClick={() => void requestManagedCodexRuntimeUpdate().catch(() => {})}
+                >
+                    request update
+                </button>
+            </>
+        );
+    }
 
+    it('attempts once per App module, without looping after refresh or React remount', async () => {
+        const first = render(<ConfigProvider><UpdateStateProbe /></ConfigProvider>);
+
+        await waitFor(() => expect(screen.getByTestId('managed-codex-update-in-flight')).toHaveTextContent('true'));
+        expect(mocks.invoke.mock.calls.filter(([command]) => (
+            command === 'cmd_managed_codex_download'
+        ))).toHaveLength(0);
+        fireEvent.click(screen.getByRole('button', { name: 'request update' }));
+        expect(mocks.invoke.mock.calls.filter(([command]) => (
+            command === 'cmd_managed_codex_download'
+        ))).toHaveLength(0);
+
+        mocks.resolveStatus?.();
         await waitFor(() => {
             expect(mocks.invoke.mock.calls.filter(([command]) => (
                 command === 'cmd_managed_codex_download'
@@ -93,14 +136,22 @@ describe('ConfigProvider Managed Codex startup update lifecycle', () => {
         const invokedCommands = mocks.invoke.mock.calls.map(([command]) => command);
         expect(invokedCommands.indexOf('cmd_managed_codex_status'))
             .toBeLessThan(invokedCommands.indexOf('cmd_managed_codex_download'));
-        await waitFor(() => expect(mocks.loadAppConfig.mock.calls.length).toBeGreaterThanOrEqual(3));
+
+        first.unmount();
+        const loadsBeforeRemount = mocks.loadAppConfig.mock.calls.length;
+        render(<ConfigProvider><UpdateStateProbe /></ConfigProvider>);
+        await waitFor(() => expect(screen.getByTestId('managed-codex-update-in-flight')).toHaveTextContent('true'));
+        fireEvent.click(screen.getByRole('button', { name: 'request update' }));
         expect(mocks.invoke.mock.calls.filter(([command]) => (
             command === 'cmd_managed_codex_download'
         ))).toHaveLength(1);
 
-        first.unmount();
-        const loadsBeforeRemount = mocks.loadAppConfig.mock.calls.length;
-        render(<ConfigProvider><div>child</div></ConfigProvider>);
+        mocks.rejectDownload?.(new Error('offline'));
+        await waitFor(() => expect(screen.getByTestId('managed-codex-update-in-flight')).toHaveTextContent('false'));
+        await waitFor(() => expect(mocks.loadAppConfig.mock.calls.length).toBeGreaterThanOrEqual(3));
+        expect(mocks.invoke.mock.calls.filter(([command]) => (
+            command === 'cmd_managed_codex_download'
+        ))).toHaveLength(1);
 
         await waitFor(() => expect(mocks.loadAppConfig.mock.calls.length).toBeGreaterThan(loadsBeforeRemount));
         expect(mocks.invoke.mock.calls.filter(([command]) => (

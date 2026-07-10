@@ -19,6 +19,7 @@ export interface UseConfigResult {
     config: AppConfig;
     isLoading: boolean;
     error: string | null;
+    managedCodexRuntimeUpdateInFlight: boolean;
 
     // Projects
     projects: Project[];
@@ -71,6 +72,9 @@ export interface UseConfigResult {
 
     // Refresh only provider-related data (apiKeys and verifyStatus) - lightweight, no loading state
     refreshProviderData: () => Promise<void>;
+
+    /** Shared single-flight owner for startup and Settings-triggered Managed Codex updates. */
+    requestManagedCodexRuntimeUpdate: () => Promise<void>;
 }
 
 export function useConfig(): UseConfigResult {
