@@ -10,6 +10,8 @@ let currentTurnStartTime = 0;
 let currentTurnUsage: ExternalTurnUsage | null = null;
 let currentTurnContextUsage: ContextUsage | null = null;
 let currentTurnEstimatedInputTokens = 0;
+let turnPromotionGeneration = 0;
+let activeTurnPromotion: ExternalTurnPromotionToken | null = null;
 
 const turnFinalization = new TurnFinalizationGate();
 
@@ -20,6 +22,36 @@ export function resetExternalTurnLifecycleState(): void {
   currentTurnUsage = null;
   currentTurnContextUsage = null;
   currentTurnEstimatedInputTokens = 0;
+  turnPromotionGeneration += 1;
+  activeTurnPromotion = null;
+}
+
+export type ExternalTurnPromotionToken = Readonly<{ generation: number }>;
+
+export function beginExternalTurnPromotion(): ExternalTurnPromotionToken | null {
+  if (activeTurnPromotion) return null;
+  const token = { generation: ++turnPromotionGeneration };
+  activeTurnPromotion = token;
+  return token;
+}
+
+export function isExternalTurnPromotionCurrent(token: ExternalTurnPromotionToken): boolean {
+  return activeTurnPromotion?.generation === token.generation;
+}
+
+export function finishExternalTurnPromotion(token: ExternalTurnPromotionToken): void {
+  if (isExternalTurnPromotionCurrent(token)) activeTurnPromotion = null;
+}
+
+export function cancelExternalTurnPromotion(): boolean {
+  if (!activeTurnPromotion) return false;
+  turnPromotionGeneration += 1;
+  activeTurnPromotion = null;
+  return true;
+}
+
+export function isExternalTurnPromotionInFlight(): boolean {
+  return activeTurnPromotion !== null;
 }
 
 export function resetExternalTurnAccumulators(): void {

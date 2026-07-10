@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  beginExternalTurnPromotion,
+  cancelExternalTurnPromotion,
+  finishExternalTurnPromotion,
+  isExternalTurnPromotionCurrent,
+  isExternalTurnPromotionInFlight,
   markExternalSessionComplete,
   markExternalTurnStarted,
   resetExternalTurnLifecycleState,
@@ -39,5 +44,21 @@ describe('external turn lifecycle owner', () => {
     );
 
     expect(plan.kind).toBe('suppress-user-stop');
+  });
+
+  it('invalidates a guarded turn promotion exactly once on Stop', () => {
+    const promotion = beginExternalTurnPromotion();
+    expect(promotion).not.toBeNull();
+    expect(beginExternalTurnPromotion()).toBeNull();
+    expect(isExternalTurnPromotionInFlight()).toBe(true);
+    expect(isExternalTurnPromotionCurrent(promotion!)).toBe(true);
+
+    expect(cancelExternalTurnPromotion()).toBe(true);
+    expect(cancelExternalTurnPromotion()).toBe(false);
+    expect(isExternalTurnPromotionCurrent(promotion!)).toBe(false);
+    expect(isExternalTurnPromotionInFlight()).toBe(false);
+
+    finishExternalTurnPromotion(promotion!);
+    expect(isExternalTurnPromotionInFlight()).toBe(false);
   });
 });
