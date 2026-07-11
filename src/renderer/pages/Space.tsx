@@ -677,11 +677,21 @@ export default function Space({ isActive }: { isActive: boolean }) {
     previousModeRef.current = activeMode;
     if (activeMode === "issues") {
       const handle = window.setTimeout(() => {
-        actions
-          .refreshIssues(issueQuery, {
+        const refreshes: Promise<void>[] = [
+          actions.refreshIssues(issueQuery, {
             force: reentered,
             maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
-          })
+          }),
+        ];
+        if (admin) {
+          refreshes.push(
+            actions.refreshRegisteredAgents({
+              force: reentered,
+              maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
+            }),
+          );
+        }
+        Promise.all(refreshes)
           .then(() => {
             if (reentered) setIssueRemoteUpdateAvailable(false);
           })
@@ -714,7 +724,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
         }),
       ]).catch((error) => toast.error(spaceErrorMessage(error)));
     }
-  }, [actions, issueQuery, issueQueryKey, activeMode, spaceData.boot, toast]);
+  }, [actions, admin, issueQuery, issueQueryKey, activeMode, spaceData.boot, toast]);
 
   useEffect(() => {
     if (!isActive || spaceData.boot !== "ready") return;
@@ -1286,6 +1296,8 @@ export default function Space({ isActive }: { isActive: boolean }) {
           issueId={issueDetailId}
           session={session}
           projects={projects}
+          goals={goals}
+          registeredAgents={spaceData.registeredAgents.items}
           detailState={spaceData.issueDetails[spaceCacheKey(issueDetailId)]}
           actions={actions}
           onClose={() => setIssueDetailId(null)}
@@ -1304,6 +1316,8 @@ export default function Space({ isActive }: { isActive: boolean }) {
       {createIssueOpen && (
         <CreateIssueDialog
           goals={goals}
+          session={session}
+          registeredAgents={spaceData.registeredAgents.items}
           actions={actions}
           issueQuery={issueQuery}
           onClose={() => setCreateIssueOpen(false)}

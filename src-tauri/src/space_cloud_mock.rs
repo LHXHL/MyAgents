@@ -88,6 +88,7 @@ struct MockState {
     comments: HashMap<String, Vec<Value>>,
     attachments: HashMap<String, Vec<Value>>,
     claims: HashMap<String, Value>,
+    complete_operations: HashMap<String, Value>,
     skills: Vec<MockSkillRecord>,
     agents: Vec<LocalRegisteredAgent>,
     device_presence: HashMap<String, MockDevicePresence>,
@@ -493,17 +494,32 @@ fn ignore_delivery(
 
 pub fn process_deliveries_once() -> SpaceProcessDeliveryResult {
     let mut state = state().lock().expect("mock state poisoned");
+    let fallback_sessions = state
+        .agents
+        .iter()
+        .filter_map(|agent| {
+            agent
+                .delivery_session_id
+                .as_ref()
+                .map(|session_id| (agent.id.clone(), session_id.clone()))
+        })
+        .collect::<HashMap<_, _>>();
     let mut processed = 0usize;
     for item in &mut state.deliveries {
         if item.pointer("/delivery/status").and_then(Value::as_str) == Some("pending") {
             if let Some(delivery) = item.get_mut("delivery").and_then(Value::as_object_mut) {
+                let registered_agent_id = delivery
+                    .get("registeredAgentId")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
                 let session_id = delivery
                     .get("targetSessionId")
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|value| !value.is_empty())
-                    .unwrap_or("mock-delivery-session")
-                    .to_string();
+                    .map(ToString::to_string)
+                    .or_else(|| fallback_sessions.get(registered_agent_id).cloned())
+                    .unwrap_or_else(|| "mock-delivery-session".to_string());
                 delivery.insert("status".to_string(), json!("delivered"));
                 delivery.insert("deliveredAt".to_string(), json!("2026-06-24T09:46:00.000Z"));
                 delivery.insert("deliveredToSessionId".to_string(), json!(session_id));
@@ -1040,33 +1056,51 @@ fn handle_api_data_request(
         ("GET", ["api", "spaces", "official", "issues"]) => Ok(list_issues(&state, &query)),
         ("POST", ["api", "spaces", "official", "issues"]) => create_issue(&mut state, body),
         ("GET", ["api", "issues", issue_id]) => issue_detail(&state, issue_id, &query),
-        ("PATCH", ["api", "issues", issue_id]) => update_issue(&mut state, issue_id, body),
+        ("GET", ["api", "issues", issue_id, "comments"]) => {
+            issue_comments_page(&state, issue_id, &query)
+        }
+        ("GET", ["api", "issues", issue_id, "comments", comment_id]) => {
+            get_issue_comment(&state, issue_id, comment_id)
+        }
+        ("PATCH", ["api", "issues", issue_id]) => update_issue(&mut state, issue_id, body, &actor),
+        ("PUT", ["api", "issues", issue_id, "assignee"]) => {
+            set_issue_assignee(&mut state, issue_id, body)
+        }
+        ("POST", ["api", "issues", issue_id, "assignee", "cancel"]) => {
+            cancel_issue_assignee(&mut state, issue_id)
+        }
         ("POST", ["api", "issues", issue_id, "comments"]) => {
             comment_issue(&mut state, issue_id, body, &actor)
         }
         ("POST", ["api", "issues", issue_id, "status"]) => {
-            set_issue_status(&mut state, issue_id, body)
+            set_issue_status(&mut state, issue_id, body, &actor)
         }
         ("POST", ["api", "issues", issue_id, "claim"]) => {
             claim_issue(&mut state, issue_id, body, &actor)
         }
         ("POST", ["api", "issues", issue_id, "complete"]) => {
-            set_issue_status_value(&mut state, issue_id, "done")
+            complete_issue(&mut state, issue_id, body, &actor)
         }
         ("POST", ["api", "issues", issue_id, "cancel-claim"]) => {
-            let result = set_issue_status_value(&mut state, issue_id, "todo")?;
-            state.claims.remove(*issue_id);
-            Ok(result)
+            cancel_issue_claim(&mut state, issue_id, body, &actor)
         }
-        ("POST", ["api", "issues", issue_id, "close"]) => {
-            set_issue_status_value(&mut state, issue_id, "closed")
-        }
+        ("POST", ["api", "issues", issue_id, "close"]) => transition_issue_state(
+            &mut state,
+            issue_id,
+            "closed",
+            "issue.state_changed",
+            &actor,
+        ),
         ("POST", ["api", "issues", issue_id, "deliveries", delivery_id, "ignore"]) => {
             ignore_delivery(&mut state, Some(issue_id), delivery_id, &actor)
         }
-        ("POST", ["api", "issues", issue_id, "close-own"]) => {
-            set_issue_status_value(&mut state, issue_id, "closed")
-        }
+        ("POST", ["api", "issues", issue_id, "close-own"]) => transition_issue_state(
+            &mut state,
+            issue_id,
+            "closed",
+            "issue.state_changed",
+            &actor,
+        ),
         ("POST", ["api", "issues", issue_id, "dispatch"]) => {
             dispatch_issue(&mut state, issue_id, body)
         }
@@ -1724,7 +1758,10 @@ fn initial_state() -> MockState {
     let deliveries = vec![delivery_item(
         "del_mock_001",
         &agents[0],
-        &issues[0],
+        // Seed an Issue that actually matches this Agent's UI Goal + todo
+        // subscription; human-only or out-of-scope fixtures must never appear
+        // in an Agent inbox.
+        &issues[10],
         "pending",
     )];
     let events = vec![
@@ -1773,6 +1810,7 @@ fn initial_state() -> MockState {
         comments,
         attachments,
         claims: HashMap::new(),
+        complete_operations: HashMap::new(),
         skills,
         agents,
         device_presence: HashMap::new(),
@@ -2036,6 +2074,49 @@ fn create_issue(state: &mut MockState, body: Option<Value>) -> Result<Value, Str
         .and_then(Value::as_str)
         .unwrap_or("Ethan");
     let user_avatar = state.user.get("avatarUrl").cloned().unwrap_or(Value::Null);
+    let assignee = match body.get("assignee").filter(|value| !value.is_null()) {
+        None => Value::Null,
+        Some(requested) => {
+            let assignee_type = requested
+                .get("type")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "assignee.type is required".to_string())?;
+            let assignee_id = requested
+                .get("id")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "assignee.id is required".to_string())?;
+            match assignee_type {
+                "registered_agent" => {
+                    if body
+                        .get("humanOnly")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false)
+                    {
+                        return Err("humanOnly Issues cannot be assigned to an Agent".to_string());
+                    }
+                    let agent = state
+                        .agents
+                        .iter()
+                        .find(|agent| agent.id == assignee_id && agent.status == "active")
+                        .ok_or_else(|| {
+                            format!("Registered Agent not found or inactive: {}", assignee_id)
+                        })?;
+                    json!({
+                        "type": "registered_agent",
+                        "id": assignee_id,
+                        "name": agent.display_name
+                    })
+                }
+                "user" if assignee_id == user_id => json!({
+                    "type": "user",
+                    "id": assignee_id,
+                    "name": user_name
+                }),
+                "user" => return Err(format!("Space member not found: {}", assignee_id)),
+                other => return Err(format!("Unsupported assignee type: {}", other)),
+            }
+        }
+    };
     let issue = json!({
         "id": id,
         "number": number,
@@ -2047,8 +2128,9 @@ fn create_issue(state: &mut MockState, body: Option<Value>) -> Result<Value, Str
         "state": "open",
         "humanOnly": body.get("humanOnly").and_then(Value::as_bool).unwrap_or(false),
         "status": "open",
-        "creator": { "id": user_id, "name": user_name, "avatarUrl": user_avatar.clone() },
-        "author": { "id": user_id, "name": user_name, "avatarUrl": user_avatar },
+        "creator": { "id": user_id, "type": "user", "name": user_name, "avatarUrl": user_avatar.clone() },
+        "author": { "id": user_id, "type": "user", "name": user_name, "avatarUrl": user_avatar },
+        "assignee": assignee,
         "notificationVersion": 1,
         "goalPathLabel": goal_path_label,
         "tags": tags_for(&state.tags, &tag_identities),
@@ -2060,6 +2142,7 @@ fn create_issue(state: &mut MockState, body: Option<Value>) -> Result<Value, Str
     state.comments.insert(id.clone(), Vec::new());
     state.attachments.insert(id, Vec::new());
     state.issues.insert(0, issue.clone());
+    route_mock_issue_deliveries(state, &issue, "issue.created", None)?;
     Ok(json!({ "issue": issue }))
 }
 
@@ -2377,11 +2460,12 @@ fn issue_detail(
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(5)
         .clamp(1, 20);
-    let cursor = query
+    let all_comments = state.comments.get(issue_id).cloned().unwrap_or_default();
+    let before = query
         .get("commentsCursor")
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(0);
-    let all_comments = state.comments.get(issue_id).cloned().unwrap_or_default();
+        .unwrap_or(all_comments.len())
+        .min(all_comments.len());
     let goal_reference = issue
         .get("goalId")
         .and_then(Value::as_str)
@@ -2399,20 +2483,16 @@ fn issue_detail(
                 }))
             })
         });
-    let page = all_comments
-        .iter()
-        .skip(cursor)
-        .take(limit)
-        .cloned()
-        .collect::<Vec<_>>();
-    let next = cursor + page.len();
+    let start = before.saturating_sub(limit);
+    let page = all_comments[start..before].to_vec();
     Ok(json!({
         "issue": issue_with_claim(state, issue),
         "goalReference": goal_reference,
         "comments": {
             "items": page,
-            "hasMore": next < all_comments.len(),
-            "nextCursor": if next < all_comments.len() { Some(next.to_string()) } else { None },
+            "hasMore": start > 0,
+            "hasMoreOlder": start > 0,
+            "nextCursor": if start > 0 { Some(start.to_string()) } else { None },
             "limit": limit
         },
         "attachments": state.attachments.get(issue_id).cloned().unwrap_or_default(),
@@ -2420,27 +2500,74 @@ fn issue_detail(
     }))
 }
 
+fn issue_comments_page(
+    state: &MockState,
+    issue_id: &str,
+    query: &HashMap<String, String>,
+) -> Result<Value, String> {
+    if find_issue_index(&state.issues, issue_id).is_none() {
+        return Err(format!("Issue not found: {}", issue_id));
+    }
+    let limit = query
+        .get("limit")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(20)
+        .clamp(1, 100);
+    let all_comments = state.comments.get(issue_id).cloned().unwrap_or_default();
+    let before = query
+        .get("cursor")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(all_comments.len())
+        .min(all_comments.len());
+    let start = before.saturating_sub(limit);
+    let items = all_comments[start..before].to_vec();
+    Ok(json!({
+        "items": items,
+        "hasMore": start > 0,
+        "hasMoreOlder": start > 0,
+        "nextCursor": if start > 0 { Some(start.to_string()) } else { None },
+        "limit": limit,
+        "order": "oldest_first"
+    }))
+}
+
 fn update_issue(
     state: &mut MockState,
     issue_id: &str,
     body: Option<Value>,
+    request_actor: &MockActor,
 ) -> Result<Value, String> {
     let body = body.unwrap_or(Value::Null);
     let Some(index) = find_issue_index(&state.issues, issue_id) else {
         return Err(format!("Issue not found: {}", issue_id));
     };
+    if body
+        .get("title")
+        .and_then(Value::as_str)
+        .is_some_and(|title| title.trim().is_empty())
+    {
+        return Err("title is required".to_string());
+    }
+    if body
+        .get("body")
+        .and_then(Value::as_str)
+        .is_some_and(|issue_body| issue_body.trim().is_empty())
+    {
+        return Err("body is required".to_string());
+    }
+    cancel_pending_issue_deliveries(state, issue_id);
     if let Some(issue) = state.issues[index].as_object_mut() {
         if let Some(title) = body.get("title").and_then(Value::as_str).map(str::trim) {
-            if title.is_empty() {
-                return Err("title is required".to_string());
-            }
             issue.insert("title".to_string(), json!(title));
         }
         if let Some(issue_body) = body.get("body").and_then(Value::as_str).map(str::trim) {
-            if issue_body.is_empty() {
-                return Err("body is required".to_string());
-            }
             issue.insert("body".to_string(), json!(issue_body));
+        }
+        if body.get("goalId").is_some() {
+            issue.insert(
+                "goalId".to_string(),
+                body.get("goalId").cloned().unwrap_or(Value::Null),
+            );
         }
         issue.insert("updatedAt".to_string(), json!("2026-06-24T09:55:00.000Z"));
     }
@@ -2451,7 +2578,123 @@ fn update_issue(
         .find(|issue| issue.get("id").and_then(Value::as_str) == Some(issue_id))
         .cloned()
         .unwrap_or(Value::Null);
+    route_mock_issue_deliveries(
+        state,
+        &updated,
+        "issue.updated",
+        registered_agent_actor_id(request_actor),
+    )?;
     Ok(json!({ "issue": issue_with_claim(state, updated) }))
+}
+
+fn set_issue_assignee(
+    state: &mut MockState,
+    issue_id: &str,
+    body: Option<Value>,
+) -> Result<Value, String> {
+    let requested = body
+        .as_ref()
+        .and_then(|value| value.get("assignee"))
+        .ok_or_else(|| "assignee is required".to_string())?;
+    let assignee_type = requested
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "assignee.type is required".to_string())?;
+    let assignee_id = requested
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "assignee.id is required".to_string())?;
+    let name = match assignee_type {
+        "registered_agent" => {
+            if state
+                .issues
+                .iter()
+                .find(|issue| issue.get("id").and_then(Value::as_str) == Some(issue_id))
+                .and_then(|issue| issue.get("humanOnly"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                return Err("humanOnly Issues cannot be assigned to an Agent".to_string());
+            }
+            state
+                .agents
+                .iter()
+                .find(|agent| agent.id == assignee_id && agent.status == "active")
+                .map(|agent| agent.display_name.clone())
+                .ok_or_else(|| format!("Registered Agent not found or inactive: {}", assignee_id))?
+        }
+        "user" if assignee_id == MOCK_OWNER_USER_ID => state
+            .user
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("Mock member")
+            .to_string(),
+        "user" => return Err(format!("Space member not found: {}", assignee_id)),
+        other => return Err(format!("Unsupported assignee type: {}", other)),
+    };
+    let Some(index) = find_issue_index(&state.issues, issue_id) else {
+        return Err(format!("Issue not found: {}", issue_id));
+    };
+    if state.issues[index]
+        .pointer("/assignee/type")
+        .and_then(Value::as_str)
+        == Some(assignee_type)
+        && state.issues[index]
+            .pointer("/assignee/id")
+            .and_then(Value::as_str)
+            == Some(assignee_id)
+    {
+        return Ok(json!({
+            "issue": issue_with_claim(state, state.issues[index].clone()),
+            "idempotent": true
+        }));
+    }
+    cancel_pending_issue_deliveries(state, issue_id);
+    state.claims.remove(issue_id);
+    increment_issue_notification_version(state, issue_id);
+    let updated = {
+        let issue = state.issues[index]
+            .as_object_mut()
+            .ok_or_else(|| "Invalid mock Issue".to_string())?;
+        issue.insert(
+            "assignee".to_string(),
+            json!({ "type": assignee_type, "id": assignee_id, "name": name }),
+        );
+        issue.insert("assignedAt".to_string(), json!("2026-07-12T10:00:00.000Z"));
+        Value::Object(issue.clone())
+    };
+    route_mock_issue_deliveries(state, &updated, "issue.assigned", None)?;
+    Ok(json!({ "issue": updated }))
+}
+
+fn cancel_issue_assignee(state: &mut MockState, issue_id: &str) -> Result<Value, String> {
+    let Some(index) = find_issue_index(&state.issues, issue_id) else {
+        return Err(format!("Issue not found: {}", issue_id));
+    };
+    if state.issues[index]
+        .get("assignee")
+        .is_none_or(Value::is_null)
+    {
+        return Ok(json!({
+            "issue": issue_with_claim(state, state.issues[index].clone()),
+            "idempotent": true
+        }));
+    }
+    cancel_pending_issue_deliveries(state, issue_id);
+    state.claims.remove(issue_id);
+    increment_issue_notification_version(state, issue_id);
+    let updated = {
+        let issue = state.issues[index]
+            .as_object_mut()
+            .ok_or_else(|| "Invalid mock Issue".to_string())?;
+        issue.insert("assignee".to_string(), Value::Null);
+        issue.insert("assignedAt".to_string(), Value::Null);
+        issue.insert("state".to_string(), json!("todo"));
+        issue.insert("status".to_string(), json!("todo"));
+        Value::Object(issue.clone())
+    };
+    route_mock_issue_deliveries(state, &updated, "issue.assignee_cancelled", None)?;
+    Ok(json!({ "issue": updated }))
 }
 
 fn comment_issue(
@@ -2516,16 +2759,175 @@ fn comment_issue(
         .entry(issue_id.to_string())
         .or_default()
         .push(comment.clone());
+    cancel_pending_issue_deliveries(state, issue_id);
     increment_issue_notification_version(state, issue_id);
     refresh_issue_counts(state, issue_id);
-    enqueue_claim_followup_delivery(state, issue_id, author_type, author_id)?;
+    let issue = state
+        .issues
+        .iter()
+        .find(|issue| issue.get("id").and_then(Value::as_str) == Some(issue_id))
+        .cloned()
+        .ok_or_else(|| format!("Issue not found: {}", issue_id))?;
+    let first_new_delivery = state.deliveries.len();
+    route_mock_issue_deliveries(
+        state,
+        &issue,
+        "issue.commented",
+        registered_agent_actor_id(request_actor),
+    )?;
+    for item in state.deliveries.iter_mut().skip(first_new_delivery) {
+        if let Some(delivery) = item.get_mut("delivery").and_then(Value::as_object_mut) {
+            delivery.insert(
+                "updateSummary".to_string(),
+                json!(match delivery.get("deliveryKind").and_then(Value::as_str) {
+                    Some("claim_followup") => "New comment on claimed Issue",
+                    Some("assignment") => "New comment on assigned Issue",
+                    _ => "New comment on subscribed Issue",
+                }),
+            );
+            delivery.insert(
+                "trigger".to_string(),
+                json!({
+                    "updateId": format!("update_{}", comment["id"].as_str().unwrap_or("comment")),
+                    "type": "issue.commented",
+                    "actor": { "type": author_type, "id": author_id, "name": author_name },
+                    "comment": {
+                        "id": comment["id"],
+                        "body": text,
+                        "createdAt": comment["createdAt"]
+                    },
+                    "createdAt": comment["createdAt"]
+                }),
+            );
+        }
+    }
     Ok(json!({ "comment": comment }))
+}
+
+fn get_issue_comment(state: &MockState, issue_id: &str, comment_id: &str) -> Result<Value, String> {
+    let comment = state
+        .comments
+        .get(issue_id)
+        .and_then(|comments| {
+            comments
+                .iter()
+                .find(|comment| comment.get("id").and_then(Value::as_str) == Some(comment_id))
+        })
+        .cloned()
+        .ok_or_else(|| format!("Comment not found: {}", comment_id))?;
+    Ok(json!({ "comment": comment }))
+}
+
+fn complete_issue(
+    state: &mut MockState,
+    issue_id: &str,
+    body: Option<Value>,
+    request_actor: &MockActor,
+) -> Result<Value, String> {
+    let operation_key = body
+        .as_ref()
+        .and_then(|value| value.get("operationKey"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    if let Some(existing) = operation_key
+        .as_ref()
+        .and_then(|key| state.complete_operations.get(key))
+    {
+        if existing.get("issueId").and_then(Value::as_str) != Some(issue_id) {
+            return Err("operationKey was already used for another Issue".to_string());
+        }
+        let mut result = existing
+            .get("response")
+            .cloned()
+            .ok_or_else(|| "Invalid mock completion operation".to_string())?;
+        if let Some(object) = result.as_object_mut() {
+            object.insert("idempotent".to_string(), json!(true));
+        }
+        return Ok(result);
+    }
+    if state
+        .issues
+        .iter()
+        .find(|issue| issue.get("id").and_then(Value::as_str) == Some(issue_id))
+        .and_then(|issue| issue.get("state"))
+        .and_then(Value::as_str)
+        == Some("done")
+    {
+        return Ok(json!({
+            "state": "done",
+            "updatedAt": "2026-06-24T09:40:00.000Z",
+            "commentId": null,
+            "idempotent": true,
+        }));
+    }
+    let result_comment = body
+        .as_ref()
+        .and_then(|value| value.get("resultComment"))
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let comment_id = if let Some(result_comment) = result_comment {
+        let comment_id = state.next_id("cmt");
+        let comment = json!({
+            "id": comment_id,
+            "author": {
+                "id": request_actor.actor_id,
+                "type": request_actor.actor_type,
+                "name": request_actor.actor_name,
+                "avatarUrl": null
+            },
+            "body": result_comment,
+            "createdAt": "2026-06-24T09:40:00.000Z"
+        });
+        state
+            .comments
+            .entry(issue_id.to_string())
+            .or_default()
+            .push(comment);
+        Some(Value::String(comment_id))
+    } else {
+        None
+    };
+    cancel_pending_issue_deliveries(state, issue_id);
+    set_issue_status_value(state, issue_id, "done")?;
+    increment_issue_notification_version(state, issue_id);
+    refresh_issue_counts(state, issue_id);
+    let issue = state
+        .issues
+        .iter()
+        .find(|issue| issue.get("id").and_then(Value::as_str) == Some(issue_id))
+        .cloned()
+        .ok_or_else(|| format!("Issue not found: {}", issue_id))?;
+    route_mock_issue_deliveries(
+        state,
+        &issue,
+        "issue.completed",
+        registered_agent_actor_id(request_actor),
+    )?;
+    state.claims.remove(issue_id);
+    let response = json!({
+        "state": "done",
+        "updatedAt": "2026-06-24T09:40:00.000Z",
+        "commentId": comment_id,
+        "idempotent": false,
+    });
+    if let Some(operation_key) = operation_key {
+        state.complete_operations.insert(
+            operation_key,
+            json!({ "issueId": issue_id, "response": response }),
+        );
+    }
+    Ok(response)
 }
 
 fn set_issue_status(
     state: &mut MockState,
     issue_id: &str,
     body: Option<Value>,
+    request_actor: &MockActor,
 ) -> Result<Value, String> {
     let status = body
         .as_ref()
@@ -2534,7 +2936,41 @@ fn set_issue_status(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| "state is required".to_string())?;
-    set_issue_status_value(state, issue_id, status)
+    transition_issue_state(
+        state,
+        issue_id,
+        status,
+        "issue.state_changed",
+        request_actor,
+    )
+}
+
+fn transition_issue_state(
+    state: &mut MockState,
+    issue_id: &str,
+    status: &str,
+    trigger_type: &str,
+    request_actor: &MockActor,
+) -> Result<Value, String> {
+    cancel_pending_issue_deliveries(state, issue_id);
+    let result = set_issue_status_value(state, issue_id, status)?;
+    increment_issue_notification_version(state, issue_id);
+    let issue = state
+        .issues
+        .iter()
+        .find(|issue| issue.get("id").and_then(Value::as_str) == Some(issue_id))
+        .cloned()
+        .ok_or_else(|| format!("Issue not found: {}", issue_id))?;
+    route_mock_issue_deliveries(
+        state,
+        &issue,
+        trigger_type,
+        registered_agent_actor_id(request_actor),
+    )?;
+    if matches!(status, "done" | "closed") {
+        state.claims.remove(issue_id);
+    }
+    Ok(result)
 }
 
 fn set_issue_status_value(
@@ -2559,12 +2995,9 @@ fn claim_issue(
     body: Option<Value>,
     request_actor: &MockActor,
 ) -> Result<Value, String> {
-    if state.claims.contains_key(issue_id) {
-        return Err("Issue already has a claim handler".to_string());
-    }
-    if find_issue_index(&state.issues, issue_id).is_none() {
+    let Some(issue_index) = find_issue_index(&state.issues, issue_id) else {
         return Err(format!("Issue not found: {}", issue_id));
-    }
+    };
     let delivery_id = body
         .as_ref()
         .and_then(|value| value.get("deliveryId"))
@@ -2609,8 +3042,101 @@ fn claim_issue(
         } else {
             ("user", "usr_mock_owner".to_string(), "Ethan".to_string())
         };
+
+    if state.issues[issue_index]
+        .get("humanOnly")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+        && actor_type == "registered_agent"
+    {
+        return Err("Human-only Issues cannot be claimed by Agents".to_string());
+    }
+    if matches!(
+        state.issues[issue_index]
+            .get("state")
+            .and_then(Value::as_str),
+        Some("done" | "closed")
+    ) {
+        return Err("Completed or closed Issues cannot be claimed".to_string());
+    }
+    if actor_type == "registered_agent" {
+        let agent = state
+            .agents
+            .iter()
+            .find(|agent| agent.id == actor_id)
+            .ok_or_else(|| format!("Registered Agent not found: {}", actor_id))?;
+        let assignee = state.issues[issue_index]
+            .get("assignee")
+            .filter(|value| !value.is_null());
+        let can_claim = match assignee {
+            Some(assignee) => {
+                assignee.get("type").and_then(Value::as_str) == Some("registered_agent")
+                    && assignee.get("id").and_then(Value::as_str) == Some(actor_id.as_str())
+            }
+            None => mock_agent_can_read_issue(state, agent, &state.issues[issue_index]),
+        };
+        if !can_claim {
+            return Err("This Registered Agent cannot claim this Issue".to_string());
+        }
+    }
+
+    if let Some(existing) = state.claims.get(issue_id) {
+        if existing.get("actorType").and_then(Value::as_str) == Some(actor_type)
+            && existing.get("actorId").and_then(Value::as_str) == Some(actor_id.as_str())
+        {
+            let notification_version = existing
+                .get("notificationVersion")
+                .and_then(Value::as_i64)
+                .unwrap_or_else(|| {
+                    state.issues[issue_index]
+                        .get("notificationVersion")
+                        .and_then(Value::as_i64)
+                        .unwrap_or(1)
+                });
+            return Ok(json!({
+                "claim": existing,
+                "assigneeCreated": false,
+                "notificationVersion": notification_version,
+                "idempotent": true
+            }));
+        }
+        return Err("Issue already has a different claim handler".to_string());
+    }
+
+    let assignee = state.issues[issue_index]
+        .get("assignee")
+        .filter(|value| !value.is_null())
+        .cloned();
+    let (origin, assignee_created) = match assignee {
+        None => {
+            let issue = state.issues[issue_index]
+                .as_object_mut()
+                .ok_or_else(|| "Invalid mock Issue".to_string())?;
+            issue.insert(
+                "assignee".to_string(),
+                json!({ "type": actor_type, "id": actor_id, "name": actor_name }),
+            );
+            issue.insert("assignedAt".to_string(), json!("2026-06-24T09:47:00.000Z"));
+            ("self_claim", true)
+        }
+        Some(current)
+            if current.get("type").and_then(Value::as_str) == Some(actor_type)
+                && current.get("id").and_then(Value::as_str) == Some(actor_id.as_str()) =>
+        {
+            ("assignment_confirmation", false)
+        }
+        Some(_) => return Err("Issue is assigned to another handler".to_string()),
+    };
+    cancel_pending_issue_deliveries(state, issue_id);
+    increment_issue_notification_version(state, issue_id);
     let claim_id = state.next_id("claim");
-    let _ = set_issue_status_value(state, issue_id, "doing")?;
+    let notification_version = state
+        .issues
+        .iter()
+        .find(|issue| issue.get("id").and_then(Value::as_str) == Some(issue_id))
+        .and_then(|issue| issue.get("notificationVersion"))
+        .and_then(Value::as_i64)
+        .unwrap_or(1);
     let claim = json!({
             "id": claim_id,
             "spaceId": MOCK_SPACE_ID,
@@ -2620,11 +3146,140 @@ fn claim_issue(
             "actorName": actor_name,
             "localTaskId": null,
             "localSessionId": null,
+            "origin": origin,
+            "notificationVersion": notification_version,
             "claimedAt": "2026-06-24T09:47:00.000Z",
             "updatedAt": "2026-06-24T09:47:00.000Z"
     });
     state.claims.insert(issue_id.to_string(), claim.clone());
-    Ok(json!({ "claim": claim }))
+    if let Some(delivery_id) = delivery_id {
+        if let Some(item) = state
+            .deliveries
+            .iter_mut()
+            .find(|item| item.pointer("/delivery/id").and_then(Value::as_str) == Some(delivery_id))
+        {
+            if let Some(delivery) = item.get_mut("delivery").and_then(Value::as_object_mut) {
+                delivery.insert("status".to_string(), json!("claimed"));
+                delivery.insert("claimId".to_string(), json!(claim_id));
+            }
+        }
+    }
+    Ok(json!({
+        "claim": claim,
+        "assigneeCreated": assignee_created,
+        "notificationVersion": notification_version,
+        "idempotent": false
+    }))
+}
+
+fn cancel_issue_claim(
+    state: &mut MockState,
+    issue_id: &str,
+    body: Option<Value>,
+    request_actor: &MockActor,
+) -> Result<Value, String> {
+    let claim = state
+        .claims
+        .get(issue_id)
+        .cloned()
+        .ok_or_else(|| "Active claim not found".to_string())?;
+    let origin = claim
+        .get("origin")
+        .and_then(Value::as_str)
+        .unwrap_or("self_claim");
+    let clears_assignment = origin == "self_claim";
+    if let Some(request_agent_id) = registered_agent_actor_id(request_actor) {
+        if claim.get("actorType").and_then(Value::as_str) != Some("registered_agent")
+            || claim.get("actorId").and_then(Value::as_str) != Some(request_agent_id)
+        {
+            return Err("Only the claim actor can cancel this Agent claim".to_string());
+        }
+        if body
+            .as_ref()
+            .and_then(|value| value.get("rollback"))
+            .and_then(Value::as_bool)
+            != Some(true)
+        {
+            return Err(
+                "Registered Agents can only cancel a claim as a local setup rollback".to_string(),
+            );
+        }
+    }
+    if clears_assignment {
+        let Some(issue_index) = find_issue_index(&state.issues, issue_id) else {
+            return Err(format!("Issue not found: {}", issue_id));
+        };
+        if registered_agent_actor_id(request_actor).is_some() {
+            let expected_version = body
+                .as_ref()
+                .and_then(|value| value.get("expectedNotificationVersion"))
+                .and_then(Value::as_i64)
+                .ok_or_else(|| {
+                    "expectedNotificationVersion is required for claim rollback".to_string()
+                })?;
+            let issue_version = state.issues[issue_index]
+                .get("notificationVersion")
+                .and_then(Value::as_i64)
+                .unwrap_or(1);
+            let claim_version = claim
+                .get("notificationVersion")
+                .and_then(Value::as_i64)
+                .unwrap_or(issue_version);
+            let claim_actor_id = claim.get("actorId").and_then(Value::as_str);
+            let assignee_type = state.issues[issue_index]
+                .pointer("/assignee/type")
+                .and_then(Value::as_str);
+            let assignee_id = state.issues[issue_index]
+                .pointer("/assignee/id")
+                .and_then(Value::as_str);
+            if expected_version != claim_version
+                || expected_version != issue_version
+                || assignee_type != Some("registered_agent")
+                || assignee_id != claim_actor_id
+                || assignee_id != registered_agent_actor_id(request_actor)
+            {
+                return Err(
+                    "Issue responsibility changed after this claim; rollback rejected".to_string(),
+                );
+            }
+        }
+        cancel_pending_issue_deliveries(state, issue_id);
+        increment_issue_notification_version(state, issue_id);
+        let issue = state.issues[issue_index]
+            .as_object_mut()
+            .ok_or_else(|| "Invalid mock Issue".to_string())?;
+        issue.insert("assignee".to_string(), Value::Null);
+        issue.insert("assignedAt".to_string(), Value::Null);
+        issue.insert("state".to_string(), json!("todo"));
+        issue.insert("status".to_string(), json!("todo"));
+    }
+    state.claims.remove(issue_id);
+    if clears_assignment {
+        let issue = state
+            .issues
+            .iter()
+            .find(|issue| issue.get("id").and_then(Value::as_str) == Some(issue_id))
+            .cloned()
+            .ok_or_else(|| format!("Issue not found: {}", issue_id))?;
+        route_mock_issue_deliveries(
+            state,
+            &issue,
+            "issue.claim.cancelled",
+            registered_agent_actor_id(request_actor),
+        )?;
+    }
+    Ok(json!({
+        "state": if clears_assignment { "todo" } else {
+            state.issues
+                .iter()
+                .find(|issue| issue.get("id").and_then(Value::as_str) == Some(issue_id))
+                .and_then(|issue| issue.get("state"))
+                .and_then(Value::as_str)
+                .unwrap_or("todo")
+        },
+        "assigneeCleared": clears_assignment,
+        "updatedAt": "2026-07-12T10:02:00.000Z"
+    }))
 }
 
 fn claim_local_task(
@@ -2677,6 +3332,188 @@ fn claim_local_task(
     Err(format!("Claim not found: {}", claim_id))
 }
 
+fn cancel_pending_issue_deliveries(state: &mut MockState, issue_id: &str) {
+    for item in &mut state.deliveries {
+        if item.pointer("/delivery/issueId").and_then(Value::as_str) != Some(issue_id)
+            || item.pointer("/delivery/status").and_then(Value::as_str) != Some("pending")
+        {
+            continue;
+        }
+        if let Some(delivery) = item.get_mut("delivery").and_then(Value::as_object_mut) {
+            delivery.insert("status".to_string(), json!("cancelled"));
+            delivery.insert("updatedAt".to_string(), json!("2026-07-12T10:01:00.000Z"));
+        }
+    }
+}
+
+fn route_mock_issue_deliveries(
+    state: &mut MockState,
+    issue: &Value,
+    trigger_type: &str,
+    excluded_registered_agent_id: Option<&str>,
+) -> Result<(), String> {
+    let _issue_id = issue
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| "Invalid mock Issue id".to_string())?;
+    if issue
+        .get("humanOnly")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(());
+    }
+    let assignee = issue.get("assignee").filter(|value| !value.is_null());
+    if let Some(assignee) = assignee {
+        if assignee.get("type").and_then(Value::as_str) != Some("registered_agent") {
+            return Ok(());
+        }
+        let agent_id = assignee
+            .get("id")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "Invalid mock Agent assignee".to_string())?;
+        if excluded_registered_agent_id == Some(agent_id) {
+            return Ok(());
+        }
+        let agent = state
+            .agents
+            .iter()
+            .find(|agent| agent.id == agent_id && agent.status == "active")
+            .cloned()
+            .ok_or_else(|| format!("Registered Agent not found or inactive: {}", agent_id))?;
+        let delivery_id = state.next_id("del");
+        let mut item = delivery_item(&delivery_id, &agent, issue, "pending");
+        let active_claim = state.claims.get(_issue_id).filter(|claim| {
+            claim.get("actorType").and_then(Value::as_str) == Some("registered_agent")
+                && claim.get("actorId").and_then(Value::as_str) == Some(agent_id)
+        });
+        let claim_followup = active_claim.is_some();
+        if let Some(delivery) = item.get_mut("delivery").and_then(Value::as_object_mut) {
+            delivery.insert(
+                "deliveryKind".to_string(),
+                json!(if claim_followup {
+                    "claim_followup"
+                } else {
+                    "assignment"
+                }),
+            );
+            delivery.insert("subscriptionId".to_string(), Value::Null);
+            delivery.insert(
+                "updateSummary".to_string(),
+                json!(if claim_followup {
+                    "Assigned Issue updated"
+                } else {
+                    "Issue explicitly assigned to this Registered Agent"
+                }),
+            );
+            delivery.insert(
+                "cloudInstruction".to_string(),
+                if claim_followup {
+                    json!({
+                        "id": "claim-followup-v1",
+                        "text": "This is a follow-up delivery for a Space Issue assigned to this Registered Agent. Read the trigger and continue the existing work."
+                    })
+                } else {
+                    json!({
+                        "id": "assignment-v1",
+                        "text": "This Space Issue has been explicitly assigned to this Registered Agent. Read the trigger and begin processing the assigned work."
+                    })
+                },
+            );
+            if claim_followup {
+                delivery.insert(
+                    "claimId".to_string(),
+                    active_claim
+                        .and_then(|claim| claim.get("id"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                );
+                delivery.insert(
+                    "targetSessionId".to_string(),
+                    active_claim
+                        .and_then(|claim| claim.get("localSessionId"))
+                        .cloned()
+                        .unwrap_or(Value::Null),
+                );
+            }
+            if let Some(trigger) = delivery.get_mut("trigger").and_then(Value::as_object_mut) {
+                trigger.insert("type".to_string(), json!(trigger_type));
+            }
+        }
+        state.deliveries.push(item);
+        return Ok(());
+    }
+
+    let targets = state
+        .agents
+        .iter()
+        .filter(|agent| {
+            mock_agent_can_read_issue(state, agent, issue)
+                && excluded_registered_agent_id != Some(agent.id.as_str())
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    for agent in targets {
+        let delivery_id = state.next_id("del");
+        let mut item = delivery_item(&delivery_id, &agent, issue, "pending");
+        if let Some(trigger) = item
+            .pointer_mut("/delivery/trigger")
+            .and_then(Value::as_object_mut)
+        {
+            trigger.insert("type".to_string(), json!(trigger_type));
+        }
+        state.deliveries.push(item);
+    }
+    Ok(())
+}
+
+fn mock_agent_can_read_issue(
+    state: &MockState,
+    agent: &LocalRegisteredAgent,
+    issue: &Value,
+) -> bool {
+    if agent.status != "active"
+        || issue
+            .get("humanOnly")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || is_archived(issue)
+    {
+        return false;
+    }
+    if issue.pointer("/assignee/type").and_then(Value::as_str) == Some("registered_agent")
+        && issue.pointer("/assignee/id").and_then(Value::as_str) == Some(agent.id.as_str())
+    {
+        return true;
+    }
+    let Some(issue_goal_id) = issue.get("goalId").and_then(Value::as_str) else {
+        return false;
+    };
+    let Some(subscription_goal_id) = agent.goal_id.as_deref() else {
+        return false;
+    };
+    let issue_goal_active = state
+        .goals
+        .iter()
+        .find(|goal| goal.get("id").and_then(Value::as_str) == Some(issue_goal_id))
+        .is_some_and(|goal| !is_archived(goal));
+    let subscription_goal_active = state
+        .goals
+        .iter()
+        .find(|goal| goal.get("id").and_then(Value::as_str) == Some(subscription_goal_id))
+        .is_some_and(|goal| !is_archived(goal));
+    let issue_state = issue.get("state").and_then(Value::as_str).unwrap_or("todo");
+    issue_goal_active
+        && subscription_goal_active
+        && agent.state_filter.iter().any(|state| state == issue_state)
+        && goal_is_in_subtree(state, issue_goal_id, subscription_goal_id)
+}
+
+fn registered_agent_actor_id(actor: &MockActor) -> Option<&str> {
+    (actor.authenticated && actor.actor_type == "registered_agent")
+        .then_some(actor.actor_id.as_str())
+}
+
 fn increment_issue_notification_version(state: &mut MockState, issue_id: &str) {
     if let Some(index) = find_issue_index(&state.issues, issue_id) {
         if let Some(issue) = state.issues[index].as_object_mut() {
@@ -2688,74 +3525,6 @@ fn increment_issue_notification_version(state: &mut MockState, issue_id: &str) {
             issue.insert("notificationVersion".to_string(), json!(next));
         }
     }
-}
-
-fn enqueue_claim_followup_delivery(
-    state: &mut MockState,
-    issue_id: &str,
-    author_type: &str,
-    author_id: &str,
-) -> Result<(), String> {
-    let Some(claim) = state.claims.get(issue_id).cloned() else {
-        return Ok(());
-    };
-    let claim_actor_type = claim.get("actorType").and_then(Value::as_str).unwrap_or("");
-    let claim_actor_id = claim.get("actorId").and_then(Value::as_str).unwrap_or("");
-    if claim_actor_type != "registered_agent" {
-        return Ok(());
-    }
-    if claim_actor_type == author_type && claim_actor_id == author_id {
-        return Ok(());
-    }
-    let Some(target_session_id) = claim
-        .get("localSessionId")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToString::to_string)
-    else {
-        return Ok(());
-    };
-    let Some(agent) = state
-        .agents
-        .iter()
-        .find(|agent| agent.id == claim_actor_id)
-        .cloned()
-    else {
-        return Ok(());
-    };
-    let Some(issue) = state
-        .issues
-        .iter()
-        .find(|issue| issue.get("id").and_then(Value::as_str) == Some(issue_id))
-        .cloned()
-    else {
-        return Ok(());
-    };
-    let delivery_id = state.next_id("del");
-    let mut item = delivery_item(&delivery_id, &agent, &issue, "pending");
-    if let Some(delivery) = item.get_mut("delivery").and_then(Value::as_object_mut) {
-        delivery.insert("deliveryKind".to_string(), json!("claim_followup"));
-        delivery.insert("subscriptionId".to_string(), Value::Null);
-        delivery.insert(
-            "claimId".to_string(),
-            claim.get("id").cloned().unwrap_or(Value::Null),
-        );
-        delivery.insert("targetSessionId".to_string(), json!(target_session_id));
-        delivery.insert(
-            "updateSummary".to_string(),
-            json!("New comment on claimed Issue"),
-        );
-        delivery.insert(
-            "notificationVersion".to_string(),
-            issue
-                .get("notificationVersion")
-                .cloned()
-                .unwrap_or(json!(1)),
-        );
-    }
-    state.deliveries.push(item);
-    Ok(())
 }
 
 fn dispatch_issue(
@@ -3721,6 +4490,16 @@ fn delivery_item(id: &str, agent: &LocalRegisteredAgent, issue: &Value, status: 
             "notificationVersion": issue.get("notificationVersion").and_then(Value::as_i64).unwrap_or(1),
             "updateSummary": "Issue matched this Registered Agent goal subscription",
             "targetSessionId": null,
+            "cloudInstruction": {
+                "id": "subscription-v1",
+                "text": "This is a subscription delivery for an unassigned Space Issue. Read the trigger and current Issue before deciding whether to dismiss or claim it."
+            },
+            "trigger": {
+                "updateId": format!("update_{}", id),
+                "type": "issue.created",
+                "actor": { "type": "user", "id": MOCK_OWNER_USER_ID, "name": "Ethan" },
+                "createdAt": "2026-06-24T08:55:00.000Z"
+            },
             "status": status,
             "createdAt": "2026-06-24T08:55:00.000Z",
             "updatedAt": "2026-06-24T08:55:00.000Z",
@@ -3732,6 +4511,7 @@ fn delivery_item(id: &str, agent: &LocalRegisteredAgent, issue: &Value, status: 
             "number": issue.get("number").and_then(Value::as_u64),
             "title": title,
             "state": issue_state,
+            "assignee": issue.get("assignee").cloned().unwrap_or(Value::Null),
             "updatedAt": updated_at
         },
         "goalMeta": {
@@ -3970,6 +4750,447 @@ mod tests {
             .and_then(Value::as_u64)
             .unwrap_or(0)
             > 0));
+    }
+
+    #[test]
+    fn mock_delivery_router_respects_human_only_and_agent_self_suppression() {
+        let mut state = initial_state();
+        state.deliveries.clear();
+        let agent = state
+            .agents
+            .iter()
+            .find(|agent| agent.status == "active")
+            .cloned()
+            .expect("active Agent");
+        let mut issue = json!({
+            "id": "iss_delivery_policy",
+            "goalId": agent.goal_id,
+            "state": "todo",
+            "humanOnly": true,
+            "assignee": {
+                "type": "registered_agent",
+                "id": agent.id,
+                "name": agent.display_name
+            },
+            "notificationVersion": 1
+        });
+
+        route_mock_issue_deliveries(&mut state, &issue, "issue.updated", None)
+            .expect("human-only routing should be a no-op");
+        assert!(state.deliveries.is_empty());
+
+        issue["humanOnly"] = json!(false);
+        route_mock_issue_deliveries(&mut state, &issue, "issue.updated", Some(agent.id.as_str()))
+            .expect("self update routing should be a no-op");
+        assert!(state.deliveries.is_empty());
+
+        route_mock_issue_deliveries(&mut state, &issue, "issue.updated", None)
+            .expect("another actor should notify the assigned Agent");
+        assert_eq!(state.deliveries.len(), 1);
+        assert_eq!(
+            state.deliveries[0]
+                .pointer("/delivery/deliveryKind")
+                .and_then(Value::as_str),
+            Some("assignment")
+        );
+
+        state.deliveries.clear();
+        state.claims.insert(
+            "iss_delivery_policy".to_string(),
+            json!({
+                "id": "claim_delivery_policy",
+                "actorType": "registered_agent",
+                "actorId": agent.id,
+                "localSessionId": "session_delivery_policy"
+            }),
+        );
+        route_mock_issue_deliveries(&mut state, &issue, "issue.updated", None)
+            .expect("an active claim should receive a follow-up");
+        assert_eq!(
+            state.deliveries[0]
+                .pointer("/delivery/deliveryKind")
+                .and_then(Value::as_str),
+            Some("claim_followup")
+        );
+    }
+
+    #[test]
+    fn mock_assignee_mutations_are_idempotent() {
+        let mut state = initial_state();
+        let agent = state
+            .agents
+            .iter()
+            .find(|agent| agent.status == "active")
+            .cloned()
+            .expect("active Agent");
+        let issue_id = state.issues[1]
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("Issue id")
+            .to_string();
+        state.issues[1]["humanOnly"] = json!(false);
+        state.issues[1]["assignee"] = json!({
+            "type": "registered_agent",
+            "id": agent.id,
+            "name": agent.display_name
+        });
+        let version_before = state.issues[1]["notificationVersion"]
+            .as_i64()
+            .expect("notification version");
+        let deliveries_before = state.deliveries.len();
+
+        let repeated = set_issue_assignee(
+            &mut state,
+            &issue_id,
+            Some(json!({
+                "assignee": { "type": "registered_agent", "id": agent.id }
+            })),
+        )
+        .expect("repeated assignment should succeed");
+        assert_eq!(
+            repeated.get("idempotent").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            state.issues[1]["notificationVersion"].as_i64(),
+            Some(version_before)
+        );
+        assert_eq!(state.deliveries.len(), deliveries_before);
+
+        cancel_issue_assignee(&mut state, &issue_id).expect("first clear should succeed");
+        let version_after_clear = state.issues[1]["notificationVersion"]
+            .as_i64()
+            .expect("notification version after clear");
+        let deliveries_after_clear = state.deliveries.len();
+        let repeated_clear =
+            cancel_issue_assignee(&mut state, &issue_id).expect("repeated clear should succeed");
+        assert_eq!(
+            repeated_clear.get("idempotent").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            state.issues[1]["notificationVersion"].as_i64(),
+            Some(version_after_clear)
+        );
+        assert_eq!(state.deliveries.len(), deliveries_after_clear);
+    }
+
+    #[test]
+    fn mock_claim_rejects_human_only_and_terminal_issues() {
+        let mut state = initial_state();
+        let agent = state
+            .agents
+            .iter()
+            .find(|agent| agent.status == "active")
+            .cloned()
+            .expect("active Agent");
+        let actor = MockActor {
+            actor_type: "registered_agent".to_string(),
+            actor_id: agent.id,
+            actor_name: agent.display_name,
+            authenticated: true,
+        };
+        let issue_id = state.issues[0]
+            .get("id")
+            .and_then(Value::as_str)
+            .expect("Issue id")
+            .to_string();
+        state.issues[0]["humanOnly"] = json!(true);
+        state.issues[0]["assignee"] = Value::Null;
+
+        let human_only = claim_issue(&mut state, &issue_id, None, &actor)
+            .expect_err("Agent must not claim human-only Issue");
+        assert!(human_only.contains("Human-only"));
+
+        state.issues[0]["humanOnly"] = json!(false);
+        state.issues[0]["state"] = json!("done");
+        let terminal = claim_issue(&mut state, &issue_id, None, &actor)
+            .expect_err("terminal Issue must not be claimable");
+        assert!(terminal.contains("Completed or closed"));
+    }
+
+    #[test]
+    fn mock_self_claim_rollback_refans_out_to_other_subscribers() {
+        let mut state = initial_state();
+        state.deliveries.clear();
+        let active_indexes = state
+            .agents
+            .iter()
+            .enumerate()
+            .filter(|(_, agent)| agent.status == "active")
+            .map(|(index, _)| index)
+            .take(2)
+            .collect::<Vec<_>>();
+        assert_eq!(active_indexes.len(), 2);
+        let actor_index = active_indexes[0];
+        let subscriber_index = active_indexes[1];
+        let goal_id = "goal_mock_ui".to_string();
+        for index in &active_indexes {
+            state.agents[*index].goal_id = Some(MOCK_ROOT_GOAL_ID.to_string());
+            state.agents[*index].state_filter = vec!["todo".to_string()];
+        }
+        let actor_agent = state.agents[actor_index].clone();
+        let subscriber_id = state.agents[subscriber_index].id.clone();
+        let issue_id = "iss_rollback".to_string();
+        state.issues.push(json!({
+            "id": issue_id,
+            "goalId": goal_id,
+            "state": "in_progress",
+            "status": "in_progress",
+            "humanOnly": false,
+            "assignee": {
+                "type": "registered_agent",
+                "id": actor_agent.id,
+                "name": actor_agent.display_name
+            },
+            "notificationVersion": 2
+        }));
+        state.claims.insert(
+            issue_id.clone(),
+            json!({
+                "id": "claim_rollback",
+                "issueId": issue_id,
+                "actorType": "registered_agent",
+                "actorId": actor_agent.id,
+                "actorName": actor_agent.display_name,
+                "origin": "self_claim"
+            }),
+        );
+        let actor = MockActor {
+            actor_type: "registered_agent".to_string(),
+            actor_id: actor_agent.id.clone(),
+            actor_name: actor_agent.display_name,
+            authenticated: true,
+        };
+        let other_actor = MockActor {
+            actor_type: "registered_agent".to_string(),
+            actor_id: subscriber_id.clone(),
+            actor_name: state.agents[subscriber_index].display_name.clone(),
+            authenticated: true,
+        };
+        let unauthorized = cancel_issue_claim(
+            &mut state,
+            &issue_id,
+            Some(json!({ "rollback": true, "expectedNotificationVersion": 2 })),
+            &other_actor,
+        )
+        .expect_err("another Agent must not rollback this claim");
+        assert!(unauthorized.contains("claim actor"));
+
+        let result = cancel_issue_claim(
+            &mut state,
+            &issue_id,
+            Some(json!({ "rollback": true, "expectedNotificationVersion": 2 })),
+            &actor,
+        )
+        .expect("self-claim rollback should succeed");
+        assert_eq!(result.get("state").and_then(Value::as_str), Some("todo"));
+        assert!(state.deliveries.iter().any(|item| {
+            item.pointer("/delivery/registeredAgentId")
+                .and_then(Value::as_str)
+                == Some(subscriber_id.as_str())
+        }));
+        assert!(!state.deliveries.iter().any(|item| {
+            item.pointer("/delivery/registeredAgentId")
+                .and_then(Value::as_str)
+                == Some(actor_agent.id.as_str())
+        }));
+    }
+
+    #[test]
+    fn mock_completion_operation_key_is_scoped_to_its_issue() {
+        let mut state = initial_state();
+        let actor = MockActor {
+            actor_type: "user".to_string(),
+            actor_id: MOCK_OWNER_USER_ID.to_string(),
+            actor_name: "Ethan".to_string(),
+            authenticated: false,
+        };
+        let first_issue_id = state.issues[1]["id"]
+            .as_str()
+            .expect("first Issue id")
+            .to_string();
+        let second_issue_id = state.issues[2]["id"]
+            .as_str()
+            .expect("second Issue id")
+            .to_string();
+        state.issues[1]["state"] = json!("todo");
+        state.issues[2]["state"] = json!("todo");
+
+        complete_issue(
+            &mut state,
+            &first_issue_id,
+            Some(json!({ "operationKey": "op_shared" })),
+            &actor,
+        )
+        .expect("first completion should succeed");
+        let conflict = complete_issue(
+            &mut state,
+            &second_issue_id,
+            Some(json!({ "operationKey": "op_shared" })),
+            &actor,
+        )
+        .expect_err("same operation key must not complete another Issue");
+        assert!(conflict.contains("another Issue"));
+        assert_ne!(state.issues[2]["state"].as_str(), Some("done"));
+    }
+
+    #[test]
+    fn mock_complete_and_close_use_one_versioned_state_mutation() {
+        let mut state = initial_state();
+        let actor = MockActor {
+            actor_type: "user".to_string(),
+            actor_id: MOCK_OWNER_USER_ID.to_string(),
+            actor_name: "Ethan".to_string(),
+            authenticated: false,
+        };
+        let complete_issue_id = state.issues[1]["id"]
+            .as_str()
+            .expect("complete Issue id")
+            .to_string();
+        state.issues[1]["state"] = json!("todo");
+        state.issues[1]["status"] = json!("todo");
+        state.issues[1]["notificationVersion"] = json!(7);
+        let comment_count_before = state.issues[1]["commentCount"].as_u64().unwrap_or(0);
+        let mut stale_delivery = delivery_item(
+            "del_stale_complete",
+            &state.agents[0],
+            &state.issues[1],
+            "pending",
+        );
+        stale_delivery["delivery"]["issueId"] = json!(complete_issue_id);
+        state.deliveries.push(stale_delivery);
+
+        let completed = complete_issue(
+            &mut state,
+            &complete_issue_id,
+            Some(json!({ "resultComment": "Finished once" })),
+            &actor,
+        )
+        .expect("completion should succeed");
+        assert_eq!(completed.get("state").and_then(Value::as_str), Some("done"));
+        assert_eq!(state.issues[1]["notificationVersion"].as_i64(), Some(8));
+        assert_eq!(
+            state.issues[1]["commentCount"].as_u64(),
+            Some(comment_count_before + 1)
+        );
+        assert_eq!(
+            state
+                .deliveries
+                .iter()
+                .find(|item| item.pointer("/delivery/id").and_then(Value::as_str)
+                    == Some("del_stale_complete"))
+                .and_then(|item| item.pointer("/delivery/status"))
+                .and_then(Value::as_str),
+            Some("cancelled")
+        );
+
+        let close_issue_id = state.issues[2]["id"]
+            .as_str()
+            .expect("close Issue id")
+            .to_string();
+        state.issues[2]["state"] = json!("todo");
+        state.issues[2]["status"] = json!("todo");
+        state.issues[2]["notificationVersion"] = json!(3);
+        transition_issue_state(
+            &mut state,
+            &close_issue_id,
+            "closed",
+            "issue.state_changed",
+            &actor,
+        )
+        .expect("close should succeed");
+        assert_eq!(state.issues[2]["state"].as_str(), Some("closed"));
+        assert_eq!(state.issues[2]["notificationVersion"].as_i64(), Some(4));
+    }
+
+    #[test]
+    fn mock_reclaim_preserves_original_version_and_rejects_stale_rollback() {
+        let mut state = initial_state();
+        let agent = state
+            .agents
+            .iter()
+            .find(|agent| {
+                agent.status == "active"
+                    && agent.goal_id.as_deref() == Some("goal_mock_ui")
+                    && agent.state_filter.iter().any(|state| state == "todo")
+            })
+            .cloned()
+            .expect("eligible Agent");
+        let actor = MockActor {
+            actor_type: "registered_agent".to_string(),
+            actor_id: agent.id.clone(),
+            actor_name: agent.display_name.clone(),
+            authenticated: true,
+        };
+        let issue_id = "iss_stale_rollback".to_string();
+        state.issues.push(json!({
+            "id": issue_id,
+            "goalId": "goal_mock_ui",
+            "title": "Stale rollback",
+            "body": "Before update",
+            "state": "todo",
+            "status": "todo",
+            "humanOnly": false,
+            "assignee": null,
+            "notificationVersion": 1
+        }));
+
+        let claimed = claim_issue(&mut state, &issue_id, None, &actor)
+            .expect("initial self-claim should succeed");
+        let claimed_version = claimed["notificationVersion"]
+            .as_i64()
+            .expect("claim version");
+        assert_eq!(claimed_version, 2);
+        let missing_rollback = cancel_issue_claim(
+            &mut state,
+            &issue_id,
+            Some(json!({ "expectedNotificationVersion": claimed_version })),
+            &actor,
+        )
+        .expect_err("Agent cancellation must declare local setup rollback");
+        assert!(missing_rollback.contains("local setup rollback"));
+
+        let user_actor = MockActor {
+            actor_type: "user".to_string(),
+            actor_id: MOCK_OWNER_USER_ID.to_string(),
+            actor_name: "Ethan".to_string(),
+            authenticated: false,
+        };
+        update_issue(
+            &mut state,
+            &issue_id,
+            Some(json!({ "body": "Changed after claim" })),
+            &user_actor,
+        )
+        .expect("post-claim update should succeed");
+
+        let reclaimed = claim_issue(&mut state, &issue_id, None, &actor)
+            .expect("idempotent re-claim should succeed");
+        assert_eq!(
+            reclaimed["notificationVersion"].as_i64(),
+            Some(claimed_version)
+        );
+        let stale = cancel_issue_claim(
+            &mut state,
+            &issue_id,
+            Some(json!({
+                "rollback": true,
+                "expectedNotificationVersion": claimed_version
+            })),
+            &actor,
+        )
+        .expect_err("stale rollback must be rejected");
+        assert!(stale.contains("responsibility changed"));
+        assert_eq!(
+            state
+                .issues
+                .iter()
+                .find(|issue| issue["id"].as_str() == Some(issue_id.as_str()))
+                .and_then(|issue| issue.pointer("/assignee/id"))
+                .and_then(Value::as_str),
+            Some(agent.id.as_str())
+        );
     }
 
     #[test]

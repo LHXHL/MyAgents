@@ -331,24 +331,32 @@ myagents task delete <taskId>                           # 软删除（30 天保�
 
 ```bash
 myagents space status
-myagents issue <issueId> --json [--comments-limit 5] [--comments-cursor <cursor>]
-myagents space issue get <issueId> --json [--comments-limit 5] [--comments-cursor <cursor>]
-myagents space issue comments <issueId> --json [--limit 20] [--cursor <cursor>]
+myagents space issue list --goal <goalId> --state todo --limit 30
+myagents space issue view <issueId> --comments --json                    # current Issue + latest 5 comments
+myagents space issue comments <issueId> --json [--limit 20] [--cursor <opaque-cursor>]
+myagents space issue comment get <issueId> <commentId> --json           # exact full comment
 myagents space issue comment <issueId> (--body "..." | --body-file <path> | --stdin)
-myagents space issue status <issueId> --status <open|triaged|in_progress|resolved|closed|declined|duplicate|archived>
+myagents space issue claim <issueId> --deliveryId <deliveryId> --create-attached \
+  --workspaceId <id> --workspacePath <path> --name "..." --taskMdContent-file task.md
+myagents space issue delivery ignore <deliveryId>
+myagents space issue complete <issueId> --workspacePath <path> \
+  --taskId <taskId> --body-file result.md --message "completed Space issue"
 myagents space attachment download <attachmentId> [--output myagents_files/space/file.bin]
 ```
 
 **何时用：**
-- 你是在 Cloud Space 派发出来的本地 Task 里工作，Task.md 说“你收到了一个 MyAgents Space Issue 通知” → 先 `myagents issue <issueId> --json` 拉完整 Issue；旧环境可用 `myagents space issue get <issueId> --json`。
+- 收到 Space delivery → 先 `myagents space issue view <issueId> --comments --json` 读取当前服务端状态；delivery trigger 只用于定位，不替代当前状态。
+- trigger 的 comment 标记为截断 → 用 `myagents space issue comment get <issueId> <commentId> --json` 精确读取，不要扫描分页猜触发评论。
+- subscription 通知不适合当前 Agent → `space issue delivery ignore` 只忽略这次投送；适合承担时用 `claim --create-attached` 建立/复用责任和本地 Task。
+- assignment 表示责任已经明确交给当前 Agent；仍用 `claim --create-attached` 确认并建立本地 Task/Session 关联，不要 ignore 或自行取消指派。
 - Issue 里有附件 → 用 `myagents space attachment download <attachmentId>` 下载到当前工作区的 `myagents_files/space/`，再读取本地文件。
 - 需要回写结论 → `myagents space issue comment <issueId> --body-file result.md`，长内容优先走 `--body-file` 或 `--stdin`。
-- Goal 明确要求收口状态 → `myagents space issue status <issueId> --status resolved` 或其它合法状态。
+- 工作完成 → 使用一次 `space issue complete --taskId ... --body-file ...`，它会原子完成 Cloud 结果评论 + Issue，再将 attached Task 标为 done；成功后不要再调用 `task update-status done`。
 
 **安全边界：**
 - CLI 会按当前 workspace 自动解析 Registered Agent token；不要要求用户把 Agent token 发给你。
-- `--body-file` 只能读取当前 workspace 内文件；`attachment download --output` 也只能写在当前 workspace 内。不要尝试读写任意绝对路径。
-- `comments` / `issue get` 默认分页，别一次性要求云端返回超长历史；有 `nextCursor` 再继续拉。
+- `--body-file`、`--taskMdContent-file` 只能读取 `--workspacePath`（默认当前 workspace）内的普通文件，拒绝 symlink 和 workspace 外路径；`attachment download --output` 也只能写在当前 workspace 内。
+- `view --comments` 固定最新 5 条；更早历史使用 `issue comments --limit 20 --cursor <opaque-cursor>`，有 `nextCursor` 再继续拉。
 
 ### 社区插件（plugin）
 

@@ -1885,6 +1885,33 @@ Why this exists:
   for those flags intentionally does NOT list models or modes — values depend
   on which CLI you have installed and are dynamic. Use this command instead.`,
 
+  space: `myagents space — MyAgents Cloud Space Issue bridge
+
+Commands:
+  issue list [filters]                         List Issues
+  issue view <issueId> --comments --json       Read current Issue + latest 5 comments
+  issue comments <issueId> [--cursor C]        Read 20 older comments
+  issue comment get <issueId> <commentId>      Read one complete comment by id
+  issue comment <issueId> --body-file <path>   Add a meaningful comment
+  issue claim <issueId> --create-attached ...  Claim/confirm assignment and attach local Task
+  issue delivery ignore <deliveryId>           Dismiss only this delivery
+  issue complete <issueId> --taskId <taskId> --body-file result.md
+                                                Atomically comment + complete Cloud, then local Task
+
+File safety:
+  --body-file and --taskMdContent-file must resolve inside --workspacePath
+  (default: current working directory). Symlinks and paths outside the workspace are rejected.
+
+Examples:
+  myagents space issue view iss_123 --comments --json
+  myagents space issue comment get iss_123 comment_456 --json
+  myagents space issue comments iss_123 --cursor <opaque-cursor> --limit 20 --json
+  myagents space issue claim iss_123 --deliveryId delivery_1 --create-attached \
+    --workspaceId project --workspacePath /path/to/project \
+    --name "Space Issue #123" --taskMdContent-file task.md
+  myagents space issue complete iss_123 --workspacePath /path/to/project \
+    --taskId task_123 --body-file result.md --message "completed Space issue"`,
+
   task: `myagents task — Manage Task Center tasks (v0.1.69+)
 
 Commands:
@@ -3397,6 +3424,14 @@ export async function handleSpaceIssueList(payload: Record<string, unknown>): Pr
 
 export async function handleSpaceIssueComment(payload: Record<string, unknown>): Promise<AdminResponse> {
   return spaceManagementResponse('/api/space/issue-comment', payload, 'Comment posted to MyAgents Space.');
+}
+
+export async function handleSpaceIssueComments(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-comments', payload);
+}
+
+export async function handleSpaceIssueCommentGet(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-comment-get', payload);
 }
 
 export async function handleSpaceIssueStatus(payload: Record<string, unknown>): Promise<AdminResponse> {

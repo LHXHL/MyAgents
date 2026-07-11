@@ -1741,6 +1741,8 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'space/issue-list') return await api.handleSpaceIssueList(payload as Parameters<typeof api.handleSpaceIssueList>[0]);
   if (route === 'space/issue-get') return await api.handleSpaceIssueGet(payload as Parameters<typeof api.handleSpaceIssueGet>[0]);
   if (route === 'space/issue-comment') return await api.handleSpaceIssueComment(payload as Parameters<typeof api.handleSpaceIssueComment>[0]);
+  if (route === 'space/issue-comments') return await api.handleSpaceIssueComments(payload as Parameters<typeof api.handleSpaceIssueComments>[0]);
+  if (route === 'space/issue-comment-get') return await api.handleSpaceIssueCommentGet(payload as Parameters<typeof api.handleSpaceIssueCommentGet>[0]);
   if (route === 'space/issue-status') return await api.handleSpaceIssueStatus(payload as Parameters<typeof api.handleSpaceIssueStatus>[0]);
   if (route === 'space/issue-claim') return await api.handleSpaceIssueClaim(payload as Parameters<typeof api.handleSpaceIssueClaim>[0]);
   if (route === 'space/issue-delivery-ignore') return await api.handleSpaceIssueDeliveryIgnore(payload as Parameters<typeof api.handleSpaceIssueDeliveryIgnore>[0]);

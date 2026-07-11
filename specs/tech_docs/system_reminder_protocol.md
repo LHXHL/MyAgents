@@ -130,10 +130,12 @@ instruction、cron output 都只给模型看。
 | Goal 普通 query context | `src/shared/systemReminder.ts::buildGoalContextReminder`，调用方 Goal-aware chat enqueue 路径 | `<system-reminder><GOAL_CONTEXT>...</GOAL_CONTEXT></system-reminder>` + 用户 visible query |
 | Goal objective 更新 | `src/shared/systemReminder.ts::buildGoalObjectiveUpdatedReminder` | `<system-reminder><GOAL_OBJECTIVE_UPDATED>...</GOAL_OBJECTIVE_UPDATED></system-reminder>`，纯隐藏 |
 | 浮球消息 | `src/shared/systemReminder.ts::buildFloatingBallContextReminder`，调用方 `src/renderer/floating-ball/useFloatingSession.ts` | `<system-reminder><FLOATING_BALL_CONTEXT>...</FLOATING_BALL_CONTEXT></system-reminder>` + 用户文本 |
-| Space IssueDelivery | `src-tauri/src/space_cloud.rs::build_space_issue_delivery_message_for_locale` | `<system-reminder><myagents-space-issue>...</myagents-space-issue></system-reminder>` + 本地化可见提示 |
+| Space IssueDelivery | `src-tauri/src/space_cloud.rs::build_space_issue_delivery_message_for_locale` | `<system-reminder><myagents-space-issue><myagents-space-event><issue-instruction><cloud-issue-instruction>…</cloud-issue-instruction><local-execution-instruction>…</local-execution-instruction></issue-instruction>…</myagents-space-event></myagents-space-issue></system-reminder>` + 本地化可见提示 |
 | Cron 结果投送 IM session | `src/server/utils/cron-event-relay.ts::buildCronEventRelayMessage` | `<system-reminder><HEARTBEAT>...</HEARTBEAT></system-reminder>` + `[System]收到来自系统投送的信息` |
 
 相关但不是完整复用模板的入口：
+
+Space 的双 instruction 是该业务域内部的 trust boundary，不改变通用 reminder wire protocol：Cloud 只固化 assignee/delivery/状态等业务意图，Desktop 只描述当前 CLI/workspace/Task 执行方法；trigger 与 Issue 用户文本属于 facts，必须 XML escape，不能进入 instruction。Renderer 仍只消费外层 `myagents-space-issue` badge 与 reminder 后的 visible tail。
 
 - `src/server/index.ts` 普通 heartbeat：纯
   `<system-reminder><HEARTBEAT>...</HEARTBEAT></system-reminder>`，没有 visible tail；

@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Cloud, Loader2, Paperclip, Target, X } from 'lucide-react';
 
-import { spaceErrorMessage, type SpaceGoal } from '@/api/spaceCloud';
+import { spaceErrorMessage, type SpaceGoal, type SpaceIdentitySummary, type SpaceRegisteredAgent, type SpaceSession } from '@/api/spaceCloud';
 import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import { useToast } from '@/components/Toast';
@@ -10,6 +10,7 @@ import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { GoalPathSelectLabel } from '@/pages/space/GoalPathSelectLabel';
 import type { IssueQueryParams } from '@/pages/space/spaceHelpers';
 import { SPACE_VISIBLE_REFRESH_TTL_MS, type SpaceActions } from '@/pages/space/spaceStore';
+import { IssueAssigneePicker, type AssigneeChoice } from './IssueAssigneePicker';
 
 function basename(path: string): string {
   return path.split(/[\\/]/).pop() || path;
@@ -19,12 +20,16 @@ export function CreateIssueDialog({
   goals,
   actions,
   issueQuery,
+  session,
+  registeredAgents,
   onClose,
   onCreated,
 }: {
   goals: SpaceGoal[];
   actions: SpaceActions;
   issueQuery: IssueQueryParams;
+  session: SpaceSession;
+  registeredAgents: SpaceRegisteredAgent[];
   onClose: () => void;
   onCreated: (keepOpen: boolean) => void;
 }) {
@@ -35,6 +40,7 @@ export function CreateIssueDialog({
   const [title, setTitle] = useState('');
   const [body, setBody] = useState('');
   const [goalId, setGoalId] = useState(issueQuery.goalId ?? '');
+  const [assignee, setAssignee] = useState<SpaceIdentitySummary | null>(null);
   const [filePaths, setFilePaths] = useState<string[]>([]);
   const [continuous, setContinuous] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -95,6 +101,9 @@ export function CreateIssueDialog({
         title: title.trim(),
         body: body.trim(),
         goalId: goalId || null,
+        assignee: assignee?.type === 'user' || assignee?.type === 'registered_agent'
+          ? { type: assignee.type, id: assignee.id }
+          : null,
       });
       if (filePaths.length > 0) {
         await actions.uploadIssueAttachments(issue.id, filePaths);
@@ -109,6 +118,7 @@ export function CreateIssueDialog({
         setTitle('');
         setBody('');
         setFilePaths([]);
+        setAssignee(null);
         window.setTimeout(() => titleInputRef.current?.focus(), 0);
         onCreated(true);
       } else {
@@ -201,6 +211,24 @@ export function CreateIssueDialog({
                 {t('space.createIssue.targetGoal')}
               </span>
               <CustomSelect value={goalId} options={goalOptions} onChange={setGoalId} compact className="w-56 [&>button]:border-0 [&>button]:bg-transparent [&>button]:p-0 [&>button]:shadow-none" />
+            </span>
+            <span className="inline-flex min-h-10 items-center gap-1 rounded-full border border-[var(--line)] bg-[var(--paper-elevated)]/70 px-2.5 text-sm shadow-sm">
+              <span className="pl-1 text-xs font-semibold uppercase text-[var(--ink-muted)]/70">{t('space.detail.assignee')}</span>
+              <IssueAssigneePicker
+                session={session}
+                assignee={assignee}
+                agents={registeredAgents}
+                cancelMode="selection"
+                onSelect={async (choice: AssigneeChoice) => {
+                  setAssignee({
+                    id: choice.id,
+                    type: choice.type,
+                    name: choice.name,
+                    avatarUrl: choice.avatarUrl,
+                  });
+                }}
+                onCancel={async () => setAssignee(null)}
+              />
             </span>
           </div>
           <div className="flex items-center gap-3.5 pb-0.5">

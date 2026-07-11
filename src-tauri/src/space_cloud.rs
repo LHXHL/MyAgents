@@ -7,7 +7,7 @@ use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
 use image::ImageEncoder;
-use reqwest::header::{AUTHORIZATION, CONTENT_DISPOSITION};
+use reqwest::header::{ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_DISPOSITION, USER_AGENT};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -29,6 +29,10 @@ const SPACE_STAGING_BASE_URL_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_STA
 const SPACE_PUBLIC_CLIENT_ID_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_PUBLIC_CLIENT_ID");
 const SPACE_LEGACY_CLIENT_ID_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_CLIENT_ID");
 const SPACE_PUBLIC_CLIENT_ID_HEADER: &str = "X-MyAgents-Space-Client-Id";
+const SPACE_CLIENT_VERSION_HEADER: &str = "X-MyAgents-Client-Version";
+const SPACE_DEVICE_ID_HEADER: &str = "X-MyAgents-Device-Id";
+const SPACE_PLATFORM_HEADER: &str = "X-MyAgents-Platform";
+const SPACE_OS_VERSION_HEADER: &str = "X-MyAgents-OS-Version";
 const SESSION_FILE: &str = "session.json";
 const LOCAL_AGENTS_FILE: &str = "registered_agents.json";
 const DELIVERY_LOG_FILE: &str = "delivery_log.json";
@@ -49,9 +53,45 @@ const MAX_PROFILE_AVATAR_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_SPACE_AVATAR_BYTES: u64 = MAX_PROFILE_AVATAR_BYTES;
 const MAX_AGENT_AVATAR_BYTES: u64 = MAX_PROFILE_AVATAR_BYTES;
 const NORMALIZED_AVATAR_MAX_EDGE: u32 = 256;
+const MAX_CLOUD_ISSUE_INSTRUCTION_CHARS: usize = 20_000;
+const MAX_SPACE_PROMPT_ID_CHARS: usize = 256;
+const MAX_SPACE_PROMPT_LABEL_CHARS: usize = 1_000;
+const MAX_SPACE_PROMPT_SUMMARY_CHARS: usize = 2_000;
+const MAX_SPACE_PROMPT_COMMENT_CHARS: usize = 4_000;
 static SPACE_CONNECTOR_STARTED: AtomicBool = AtomicBool::new(false);
 static SPACE_CONNECTOR_RUNTIME: LazyLock<SpaceConnectorRuntime> =
     LazyLock::new(SpaceConnectorRuntime::default);
+#[derive(Debug)]
+struct SpaceClientDeviceContext {
+    client_version: String,
+    device_id: Option<String>,
+    platform: String,
+    os_version: Option<String>,
+}
+
+static SPACE_CLIENT_DEVICE_CONTEXT: LazyLock<SpaceClientDeviceContext> = LazyLock::new(|| {
+    let fallback_platform = crate::device_identity::platform_identifier();
+    match current_device_identity() {
+        Ok(identity) => SpaceClientDeviceContext {
+            client_version: normalize_space_header_fact(
+                &identity.app_version,
+                env!("CARGO_PKG_VERSION"),
+            ),
+            device_id: normalize_optional_space_header_fact(&identity.device_id),
+            platform: normalize_space_header_fact(&identity.platform, &fallback_platform),
+            os_version: identity
+                .os_version
+                .as_deref()
+                .and_then(normalize_optional_space_header_fact),
+        },
+        Err(_) => SpaceClientDeviceContext {
+            client_version: env!("CARGO_PKG_VERSION").to_string(),
+            device_id: None,
+            platform: normalize_space_header_fact(&fallback_platform, "unknown"),
+            os_version: None,
+        },
+    }
+});
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -885,6 +925,31 @@ pub struct SpaceCliIssueCommentInput {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SpaceCliIssueCommentsInput {
+    pub issue_id: String,
+    #[serde(default)]
+    pub cursor: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpaceCliIssueCommentGetInput {
+    pub issue_id: String,
+    pub comment_id: String,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub workspace_path: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SpaceCliIssueStatusInput {
     pub issue_id: String,
     #[serde(alias = "status")]
@@ -923,6 +988,14 @@ pub struct SpaceCliIssueDeliveryIgnoreInput {
 #[serde(rename_all = "camelCase")]
 pub struct SpaceCliIssueActionInput {
     pub issue_id: String,
+    #[serde(default)]
+    pub result_comment: Option<String>,
+    #[serde(default)]
+    pub operation_key: Option<String>,
+    #[serde(default)]
+    pub rollback: Option<bool>,
+    #[serde(default)]
+    pub expected_notification_version: Option<i64>,
     #[serde(default)]
     pub agent_id: Option<String>,
     #[serde(default)]
@@ -1098,7 +1171,7 @@ pub async fn cmd_space_auth_start() -> Result<Value, String> {
     let capability = ensure_space_available()?;
     let base_url = capability_base_url(&capability)?;
     let client = http_client()?;
-    let response = with_public_client_id_header(
+    let response = with_space_client_context_headers(
         client.post(api_url(&base_url, "/api/auth/desktop/start")?),
         &capability,
     )
@@ -1122,7 +1195,7 @@ pub async fn cmd_space_auth_poll(input: SpaceAuthPollInput) -> Result<Value, Str
         url_component(&input.login_token)
     );
     let response =
-        with_public_client_id_header(client.get(api_url(&base_url, &path)?), &capability)
+        with_space_client_context_headers(client.get(api_url(&base_url, &path)?), &capability)
             .send()
             .await
             .map_err(|e| format!("Space auth poll failed: {}", e))?;
@@ -1166,7 +1239,7 @@ pub async fn cmd_space_auth_poll(input: SpaceAuthPollInput) -> Result<Value, Str
 pub async fn cmd_space_auth_ack(input: SpaceAuthPollInput) -> Result<(), String> {
     let capability = ensure_space_available()?;
     let base_url = capability_base_url(&capability)?;
-    let response = with_public_client_id_header(
+    let response = with_space_client_context_headers(
         http_client()?
             .post(api_url(&base_url, "/api/auth/desktop/ack")?)
             .json(&serde_json::json!({ "token": input.login_token })),
@@ -1199,7 +1272,7 @@ pub async fn cmd_space_logout() -> Result<(), String> {
 
     if let Some(session) = session_to_revoke {
         let client = http_client()?;
-        let _ = with_public_client_id_header(
+        let _ = with_space_client_context_headers(
             client
                 .post(api_url(&session.base_url, "/api/logout")?)
                 .header(AUTHORIZATION, format!("Bearer {}", session.session_token)),
@@ -1292,6 +1365,7 @@ pub async fn cmd_space_api_request(input: SpaceApiRequestInput) -> Result<Value,
         method,
         reqwest::Method::GET
             | reqwest::Method::POST
+            | reqwest::Method::PUT
             | reqwest::Method::PATCH
             | reqwest::Method::DELETE
     ) {
@@ -1303,7 +1377,7 @@ pub async fn cmd_space_api_request(input: SpaceApiRequestInput) -> Result<Value,
     ensure_space_available()?;
     let session = require_session()?;
     let client = http_client()?;
-    let mut req = with_public_client_id_header(
+    let mut req = with_space_client_context_headers(
         client
             .request(method, api_url(&session.base_url, &input.path)?)
             .header(AUTHORIZATION, format!("Bearer {}", session.session_token)),
@@ -2666,19 +2740,7 @@ pub async fn space_cli_issue_get(input: SpaceCliIssueGetInput) -> Result<Value, 
     let agent =
         resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
     let base_url = space_base_url()?;
-    let mut path = format!(
-        "/api/issues/{}?commentsLimit={}",
-        url_component(input.issue_id.trim()),
-        input.comments_limit.unwrap_or(5).clamp(1, 20)
-    );
-    if let Some(cursor) = input
-        .comments_cursor
-        .as_deref()
-        .filter(|s| !s.trim().is_empty())
-    {
-        path.push_str("&commentsCursor=");
-        path.push_str(&url_component(cursor.trim()));
-    }
+    let path = format!("/api/issues/{}", url_component(input.issue_id.trim()));
     authorized_json_data_request(&base_url, &path, &agent.token, reqwest::Method::GET, None).await
 }
 
@@ -2741,6 +2803,47 @@ pub async fn space_cli_issue_comment(input: SpaceCliIssueCommentInput) -> Result
     .await
 }
 
+pub async fn space_cli_issue_comments(input: SpaceCliIssueCommentsInput) -> Result<Value, String> {
+    let agent =
+        resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
+    let base_url = space_base_url()?;
+    let mut path = format!(
+        "/api/issues/{}/comments?limit={}",
+        url_component(input.issue_id.trim()),
+        input.limit.unwrap_or(20).clamp(1, 100)
+    );
+    if let Some(cursor) = input
+        .cursor
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+    {
+        path.push_str("&cursor=");
+        path.push_str(&url_component(cursor));
+    }
+    authorized_json_data_request(&base_url, &path, &agent.token, reqwest::Method::GET, None).await
+}
+
+pub async fn space_cli_issue_comment_get(
+    input: SpaceCliIssueCommentGetInput,
+) -> Result<Value, String> {
+    let agent =
+        resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
+    let base_url = space_base_url()?;
+    authorized_json_data_request(
+        &base_url,
+        &format!(
+            "/api/issues/{}/comments/{}",
+            url_component(input.issue_id.trim()),
+            url_component(input.comment_id.trim())
+        ),
+        &agent.token,
+        reqwest::Method::GET,
+        None,
+    )
+    .await
+}
+
 pub async fn space_cli_issue_status(input: SpaceCliIssueStatusInput) -> Result<Value, String> {
     let agent =
         resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
@@ -2794,22 +2897,31 @@ pub async fn space_cli_issue_delivery_ignore(
 }
 
 pub async fn space_cli_issue_close(input: SpaceCliIssueActionInput) -> Result<Value, String> {
-    space_cli_issue_action(input, "close").await
+    space_cli_issue_action(input, "close", None).await
 }
 
 pub async fn space_cli_issue_complete(input: SpaceCliIssueActionInput) -> Result<Value, String> {
-    space_cli_issue_action(input, "complete").await
+    let body = serde_json::json!({
+        "resultComment": input.result_comment.as_deref(),
+        "operationKey": input.operation_key.as_deref(),
+    });
+    space_cli_issue_action(input, "complete", Some(body)).await
 }
 
 pub async fn space_cli_issue_cancel_claim(
     input: SpaceCliIssueActionInput,
 ) -> Result<Value, String> {
-    space_cli_issue_action(input, "cancel-claim").await
+    let body = serde_json::json!({
+        "rollback": input.rollback,
+        "expectedNotificationVersion": input.expected_notification_version,
+    });
+    space_cli_issue_action(input, "cancel-claim", Some(body)).await
 }
 
 async fn space_cli_issue_action(
     input: SpaceCliIssueActionInput,
     action: &str,
+    body: Option<Value>,
 ) -> Result<Value, String> {
     let agent =
         resolve_local_agent_for_cli(input.agent_id.as_deref(), input.workspace_path.as_deref())?;
@@ -2823,7 +2935,7 @@ async fn space_cli_issue_action(
         ),
         &agent.token,
         reqwest::Method::POST,
-        None,
+        body,
     )
     .await
 }
@@ -3064,12 +3176,45 @@ async fn poll_agent_deliveries(
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SpaceIssueDeliveryKind {
+    Subscription,
+    Assignment,
+    ClaimFollowup,
+}
+
+impl SpaceIssueDeliveryKind {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value.trim() {
+            "subscription" => Ok(Self::Subscription),
+            "assignment" => Ok(Self::Assignment),
+            "claim_followup" => Ok(Self::ClaimFollowup),
+            other => Err(format!(
+                "Unsupported Space deliveryKind '{}'; leaving delivery pending",
+                other
+            )),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Subscription => "subscription",
+            Self::Assignment => "assignment",
+            Self::ClaimFollowup => "claim_followup",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PendingSpaceDelivery {
     delivery_id: String,
-    delivery_kind: String,
+    delivery_kind: SpaceIssueDeliveryKind,
     claim_id: Option<String>,
     target_session_id: Option<String>,
+    cloud_instruction_id: String,
+    cloud_instruction_text: String,
+    trigger: Option<Value>,
+    assignee: Option<Value>,
     issue_id: String,
     issue_number: Option<i64>,
     issue_title: String,
@@ -3081,15 +3226,144 @@ struct PendingSpaceDelivery {
 }
 
 impl PendingSpaceDelivery {
-    fn is_claim_followup(&self) -> bool {
-        self.delivery_kind == "claim_followup" || self.claim_id.is_some()
-    }
-
     fn target_session(&self) -> Option<&str> {
         self.target_session_id
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
+    }
+}
+
+fn sanitize_cloud_issue_instruction(value: &str) -> Result<String, String> {
+    let sanitized = value
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'))
+        .take(MAX_CLOUD_ISSUE_INSTRUCTION_CHARS + 1)
+        .collect::<String>();
+    if sanitized.chars().count() > MAX_CLOUD_ISSUE_INSTRUCTION_CHARS {
+        return Err("Space cloud instruction exceeds the client safety limit".to_string());
+    }
+    let trimmed = sanitized.trim();
+    if trimmed.is_empty() {
+        return Err("Space cloud instruction is empty".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn parse_pending_space_delivery(
+    delivery: &Value,
+    issue_meta: &Value,
+    goal_meta: &Value,
+    agent: &LocalRegisteredAgent,
+) -> Result<PendingSpaceDelivery, String> {
+    let delivery_id = required_value_string(delivery, "id")?;
+    let issue_id = optional_value_string(delivery, "issueId")
+        .or_else(|| optional_value_string(issue_meta, "id"))
+        .ok_or_else(|| "Space delivery response missing issueId".to_string())?;
+    let raw_kind = match delivery
+        .get("deliveryKind")
+        .or_else(|| delivery.get("delivery_kind"))
+    {
+        None => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .ok_or_else(|| "Space deliveryKind must be a string when present".to_string())?
+                .to_string(),
+        ),
+    };
+    let (delivery_kind, cloud_instruction_id, cloud_instruction_text) = match raw_kind {
+        None => (
+            SpaceIssueDeliveryKind::Subscription,
+            "legacy-subscription-v0".to_string(),
+            "This is a legacy subscription notification for an unassigned Space Issue. Read the current Issue before deciding whether to dismiss this delivery or claim responsibility."
+                .to_string(),
+        ),
+        Some(raw_kind) => {
+            let kind = SpaceIssueDeliveryKind::parse(&raw_kind)?;
+            let cloud_instruction = delivery
+                .get("cloudInstruction")
+                .and_then(Value::as_object)
+                .ok_or_else(|| {
+                    format!(
+                        "Space {} delivery {} is missing cloudInstruction",
+                        kind.as_str(),
+                        delivery_id
+                    )
+                })?;
+            let instruction_id = cloud_instruction
+                .get("id")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && value.len() <= 128)
+                .ok_or_else(|| "Space cloud instruction id is invalid".to_string())?
+                .to_string();
+            let instruction_text = cloud_instruction
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or_else(|| "Space cloud instruction text is missing".to_string())?;
+            (
+                kind,
+                instruction_id,
+                sanitize_cloud_issue_instruction(instruction_text)?,
+            )
+        }
+    };
+
+    let pending = PendingSpaceDelivery {
+        delivery_id,
+        delivery_kind,
+        claim_id: optional_value_string(delivery, "claimId")
+            .or_else(|| optional_value_string(delivery, "claim_id")),
+        target_session_id: optional_value_string(delivery, "targetSessionId")
+            .or_else(|| optional_value_string(delivery, "target_session_id")),
+        cloud_instruction_id,
+        cloud_instruction_text,
+        trigger: delivery
+            .get("trigger")
+            .filter(|value| !value.is_null())
+            .cloned(),
+        assignee: issue_meta
+            .get("assignee")
+            .filter(|value| !value.is_null())
+            .cloned(),
+        issue_id,
+        issue_number: optional_value_i64(issue_meta, "number")
+            .or_else(|| optional_value_i64(issue_meta, "issueNumber")),
+        issue_title: optional_value_string(issue_meta, "title")
+            .unwrap_or_else(|| "Untitled Space Issue".to_string()),
+        issue_state: optional_value_string(issue_meta, "state")
+            .or_else(|| optional_value_string(issue_meta, "status"))
+            .unwrap_or_else(|| "todo".to_string()),
+        goal_id: optional_value_string(goal_meta, "id"),
+        goal_path: optional_value_string(goal_meta, "path")
+            .or_else(|| optional_value_string(goal_meta, "goalPathLabel"))
+            .or_else(|| agent.goal_path_label.clone()),
+        update_summary: optional_value_string(delivery, "updateSummary"),
+        notification_version: delivery
+            .get("notificationVersion")
+            .and_then(Value::as_i64)
+            .unwrap_or(1),
+    };
+    Ok(pending)
+}
+
+fn resolve_issue_delivery_session(
+    agent: &mut LocalRegisteredAgent,
+    issue_id: &str,
+    agents_path: &Path,
+) -> Result<String, String> {
+    match agent.issue_subscription_run_mode {
+        SpaceIssueSubscriptionRunMode::SingleSession => agent
+            .delivery_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| format!("Registered Agent {} is missing deliverySessionId", agent.id))
+            .map(ToString::to_string),
+        SpaceIssueSubscriptionRunMode::NewSession => {
+            ensure_agent_issue_session_at_path(agent, issue_id, agents_path)
+        }
     }
 }
 
@@ -3105,15 +3379,22 @@ async fn process_agent_deliveries(
     let mut processed = 0usize;
     let mut delivered = 0usize;
     let mut targeted_pending = Vec::new();
+    let mut assignment_pending = Vec::new();
     let mut subscription_pending = Vec::new();
     for item in items {
         let delivery = item.get("delivery").cloned().unwrap_or(Value::Null);
         let issue_meta = item.get("issueMeta").cloned().unwrap_or(Value::Null);
         let goal_meta = item.get("goalMeta").cloned().unwrap_or(Value::Null);
-        let delivery_id = required_value_string(&delivery, "id")?;
-        let issue_id = optional_value_string(&delivery, "issueId")
-            .or_else(|| optional_value_string(&issue_meta, "id"))
-            .ok_or_else(|| "Space delivery response missing issueId".to_string())?;
+        let delivery_id = match required_value_string(&delivery, "id") {
+            Ok(delivery_id) => delivery_id,
+            Err(error) => {
+                ulog_warn!(
+                    "[space] leaving malformed delivery pending while continuing batch: {}",
+                    error
+                );
+                continue;
+            }
+        };
 
         if let Some(existing) =
             find_delivery_log_in_path(delivery_log_path, base_url, &delivery_id)?
@@ -3129,47 +3410,29 @@ async fn process_agent_deliveries(
             continue;
         }
 
-        let pending_delivery = PendingSpaceDelivery {
-            delivery_id,
-            delivery_kind: optional_value_string(&delivery, "deliveryKind")
-                .or_else(|| optional_value_string(&delivery, "delivery_kind"))
-                .unwrap_or_else(|| "subscription".to_string()),
-            claim_id: optional_value_string(&delivery, "claimId")
-                .or_else(|| optional_value_string(&delivery, "claim_id")),
-            target_session_id: optional_value_string(&delivery, "targetSessionId")
-                .or_else(|| optional_value_string(&delivery, "target_session_id")),
-            issue_id,
-            issue_number: optional_value_i64(&issue_meta, "number")
-                .or_else(|| optional_value_i64(&issue_meta, "issueNumber")),
-            issue_title: optional_value_string(&issue_meta, "title")
-                .unwrap_or_else(|| "Untitled Space Issue".to_string()),
-            issue_state: optional_value_string(&issue_meta, "state")
-                .or_else(|| optional_value_string(&issue_meta, "status"))
-                .unwrap_or_else(|| "todo".to_string()),
-            goal_id: optional_value_string(&goal_meta, "id"),
-            goal_path: optional_value_string(&goal_meta, "path")
-                .or_else(|| optional_value_string(&goal_meta, "goalPathLabel"))
-                .or_else(|| agent.goal_path_label.clone()),
-            update_summary: optional_value_string(&delivery, "updateSummary"),
-            notification_version: delivery
-                .get("notificationVersion")
-                .and_then(Value::as_i64)
-                .unwrap_or(1),
-        };
-        if pending_delivery.is_claim_followup() && pending_delivery.target_session().is_none() {
-            return Err(format!(
-                "Space claim follow-up delivery {} is missing targetSessionId",
-                pending_delivery.delivery_id
-            ));
-        }
-        if pending_delivery.target_session().is_some() {
-            targeted_pending.push(pending_delivery);
-        } else {
-            subscription_pending.push(pending_delivery);
+        let pending_delivery =
+            match parse_pending_space_delivery(&delivery, &issue_meta, &goal_meta, agent) {
+                Ok(pending_delivery) => pending_delivery,
+                Err(error) => {
+                    ulog_warn!(
+                        "[space] leaving delivery {} pending while continuing batch: {}",
+                        delivery_id,
+                        error
+                    );
+                    continue;
+                }
+            };
+        match pending_delivery.delivery_kind {
+            SpaceIssueDeliveryKind::ClaimFollowup => targeted_pending.push(pending_delivery),
+            SpaceIssueDeliveryKind::Assignment => assignment_pending.push(pending_delivery),
+            SpaceIssueDeliveryKind::Subscription => subscription_pending.push(pending_delivery),
         }
     }
 
-    if targeted_pending.is_empty() && subscription_pending.is_empty() {
+    if targeted_pending.is_empty()
+        && assignment_pending.is_empty()
+        && subscription_pending.is_empty()
+    {
         return Ok(SpaceAgentProcessingOutcome {
             processed,
             delivered,
@@ -3177,15 +3440,38 @@ async fn process_agent_deliveries(
     }
 
     for delivery_item in targeted_pending {
-        let session_id = delivery_item
-            .target_session()
-            .ok_or_else(|| {
-                format!(
-                    "Space delivery {} is missing targetSessionId",
-                    delivery_item.delivery_id
-                )
-            })?
-            .to_string();
+        let session_id = if let Some(target_session_id) = delivery_item.target_session() {
+            target_session_id.to_string()
+        } else {
+            resolve_issue_delivery_session(agent, &delivery_item.issue_id, agents_path)?
+        };
+        let message_id = deliver_space_deliveries(
+            app_handle,
+            manager,
+            agent,
+            &session_id,
+            std::slice::from_ref(&delivery_item),
+        )
+        .await?;
+        record_delivered_space_delivery(
+            delivery_log_path,
+            base_url,
+            agent,
+            &delivery_item,
+            &session_id,
+            &message_id,
+        )
+        .await?;
+        processed += 1;
+        delivered += 1;
+    }
+
+    for delivery_item in assignment_pending {
+        let session_id = if let Some(target_session_id) = delivery_item.target_session() {
+            target_session_id.to_string()
+        } else {
+            resolve_issue_delivery_session(agent, &delivery_item.issue_id, agents_path)?
+        };
         let message_id = deliver_space_deliveries(
             app_handle,
             manager,
@@ -3224,33 +3510,49 @@ async fn process_agent_deliveries(
                     format!("Registered Agent {} is missing deliverySessionId", agent.id)
                 })?
                 .to_string();
-            let message_id = deliver_space_deliveries(
-                app_handle,
-                manager,
-                agent,
-                &session_id,
-                &subscription_pending,
-            )
-            .await?;
-            record_injected_space_deliveries(
-                delivery_log_path,
-                base_url,
-                agent,
-                &subscription_pending,
-                &session_id,
-                &message_id,
-            )?;
-            for delivery_item in &subscription_pending {
-                mark_recorded_space_delivery_delivered(
+            let mut instruction_groups: Vec<Vec<PendingSpaceDelivery>> = Vec::new();
+            for delivery_item in subscription_pending {
+                if let Some(group) = instruction_groups.iter_mut().find(|group| {
+                    group.first().is_some_and(|first| {
+                        first.cloud_instruction_id == delivery_item.cloud_instruction_id
+                    })
+                }) {
+                    let first = group.first().expect("non-empty instruction group");
+                    if first.cloud_instruction_text != delivery_item.cloud_instruction_text {
+                        return Err(format!(
+                            "Space subscription instruction {} changed text within one poll batch",
+                            delivery_item.cloud_instruction_id
+                        ));
+                    }
+                    group.push(delivery_item);
+                } else {
+                    instruction_groups.push(vec![delivery_item]);
+                }
+            }
+            for group in instruction_groups {
+                let message_id =
+                    deliver_space_deliveries(app_handle, manager, agent, &session_id, &group)
+                        .await?;
+                record_injected_space_deliveries(
                     delivery_log_path,
                     base_url,
                     agent,
-                    delivery_item,
+                    &group,
                     &session_id,
-                )
-                .await?;
-                processed += 1;
-                delivered += 1;
+                    &message_id,
+                )?;
+                for delivery_item in &group {
+                    mark_recorded_space_delivery_delivered(
+                        delivery_log_path,
+                        base_url,
+                        agent,
+                        delivery_item,
+                        &session_id,
+                    )
+                    .await?;
+                    processed += 1;
+                    delivered += 1;
+                }
             }
         }
         SpaceIssueSubscriptionRunMode::NewSession => {
@@ -3320,7 +3622,7 @@ async fn deliver_space_deliveries(
             "targetSessionId": session_id,
             "createdAt": created_at,
             "deliveryId": first.delivery_id,
-            "deliveryKind": first.delivery_kind,
+            "deliveryKind": first.delivery_kind.as_str(),
             "claimId": first.claim_id,
             "issueId": first.issue_id,
             "issueNumber": first.issue_number,
@@ -3330,6 +3632,9 @@ async fn deliver_space_deliveries(
             "goalPathLabel": first.goal_path,
             "notificationVersion": first.notification_version,
             "updateSummary": first.update_summary,
+            "cloudInstructionId": first.cloud_instruction_id,
+            "trigger": first.trigger,
+            "assignee": first.assignee,
             "deliveryCount": deliveries.len(),
         })),
     };
@@ -3500,19 +3805,25 @@ fn space_issue_task_name(issue_number: Option<i64>, fallback_issue_id: &str) -> 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SpaceIssueDeliveryPromptMode {
     Subscription,
+    Assignment,
     ClaimFollowup,
 }
 
 impl SpaceIssueDeliveryPromptMode {
-    fn attr(self) -> &'static str {
-        match self {
-            Self::Subscription => "subscription",
-            Self::ClaimFollowup => "claim-followup",
+    fn from_kind(kind: SpaceIssueDeliveryKind) -> Self {
+        match kind {
+            SpaceIssueDeliveryKind::Subscription => Self::Subscription,
+            SpaceIssueDeliveryKind::Assignment => Self::Assignment,
+            SpaceIssueDeliveryKind::ClaimFollowup => Self::ClaimFollowup,
         }
     }
 
-    fn is_claim_followup(self) -> bool {
-        self == Self::ClaimFollowup
+    fn attr(self) -> &'static str {
+        match self {
+            Self::Subscription => "subscription",
+            Self::Assignment => "assignment",
+            Self::ClaimFollowup => "claim-followup",
+        }
     }
 }
 
@@ -3538,12 +3849,10 @@ fn build_space_issue_delivery_message_for_locale(
     deliveries: &[PendingSpaceDelivery],
     locale: crate::i18n::SupportedLocale,
 ) -> String {
-    let mode = deliveries
+    let first = deliveries
         .first()
-        .filter(|_| deliveries.len() == 1)
-        .filter(|delivery| delivery.is_claim_followup())
-        .map(|_| SpaceIssueDeliveryPromptMode::ClaimFollowup)
-        .unwrap_or(SpaceIssueDeliveryPromptMode::Subscription);
+        .expect("Space delivery prompt requires at least one delivery");
+    let mode = SpaceIssueDeliveryPromptMode::from_kind(first.delivery_kind);
     let delivery_count = deliveries.len();
     let has_workspace_id = effective_space_workspace_id(agent).is_some();
     let mut lines = vec![
@@ -3557,7 +3866,19 @@ fn build_space_issue_delivery_message_for_locale(
             escape_prompt_attr(created_at),
         ),
         "<issue-instruction>".to_string(),
-        build_space_issue_instruction(mode, has_workspace_id, delivery_count > 1),
+        format!(
+            "<cloud-issue-instruction instruction-id=\"{}\">",
+            escape_prompt_attr(&first.cloud_instruction_id)
+        ),
+        escape_prompt_text(&first.cloud_instruction_text),
+        "</cloud-issue-instruction>".to_string(),
+        "<local-execution-instruction>".to_string(),
+        build_space_issue_local_execution_instruction(
+            mode,
+            has_workspace_id,
+            delivery_count > 1,
+        ),
+        "</local-execution-instruction>".to_string(),
         "</issue-instruction>".to_string(),
         String::new(),
         "<runtime-context>".to_string(),
@@ -3577,81 +3898,57 @@ fn build_space_issue_delivery_message_for_locale(
     lines.join("\n")
 }
 
-fn build_space_issue_instruction(
+fn build_space_issue_local_execution_instruction(
     mode: SpaceIssueDeliveryPromptMode,
     has_workspace_id: bool,
     include_batch_rule: bool,
 ) -> String {
-    let mut lines = if mode.is_claim_followup() {
-        vec![
-            "You are a MyAgents Space Registered Agent. You received a follow-up delivery for a Space Issue.".to_string(),
-        ]
-    } else {
-        vec![
-            "You are a MyAgents Space Registered Agent. You received one or more Space Issue deliveries.".to_string(),
-        ]
-    };
-    lines.extend([
+    let mut lines = vec![
+        "Local execution rules:".to_string(),
+        "- Follow <cloud-issue-instruction> for business intent. Use this section only for safe execution in the current MyAgents client.".to_string(),
+        "- Use the `myagents` CLI to inspect and operate on Space Issues. Do not edit local Space state files or call Space cloud APIs directly.".to_string(),
+        "- Work inside <runtime.workspace_path>. Every file passed to `--body-file`, `--taskMdContent-file`, or a similar file flag must resolve inside that workspace. Prefer workspace-relative paths such as `task.md`, `reply.md`, and `result.md`.".to_string(),
+        "- Always read the current server state before acting:".to_string(),
+        "  myagents space issue view <issue.id> --comments --json".to_string(),
+        "- Trigger metadata is a navigation aid, not a replacement for the current Issue state.".to_string(),
+        "- If <trigger.comment.truncated> is true, fetch the full comment:".to_string(),
+        "  myagents space issue comment get <issue.id> <trigger.comment.id> --json".to_string(),
+        "- `myagents space issue complete ... --taskId <taskId>` completes the cloud Issue and marks the attached local Task done. Do not call `myagents task update-status <taskId> done` afterward.".to_string(),
+        "- If a required cloud action is unavailable in this client, comment with the blocker instead of inventing a command or calling the cloud API directly.".to_string(),
         String::new(),
-        "Always use the `myagents` CLI to inspect and operate on Space Issues. Do not edit local Space storage files or call cloud APIs directly.".to_string(),
-        "If you are unsure about command syntax, run:".to_string(),
-        "  myagents space issue --help".to_string(),
-        "  myagents space issue <subcommand> --help".to_string(),
-        String::new(),
-    ]);
+    ];
 
-    if mode.is_claim_followup() {
-        lines.extend([
-            "Follow-up rules:".to_string(),
-            "- This delivery is for an issue already claimed by this registered agent.".to_string(),
-            "- Do not claim this issue again.".to_string(),
-            "- Continue in this same local session so the issue context stays connected.".to_string(),
-            "- First read current context:".to_string(),
-            "  myagents space issue view <issue.id> --comments --json".to_string(),
-            "- If the update needs a reply, write `reply.md` and run:".to_string(),
+    match mode {
+        SpaceIssueDeliveryPromptMode::ClaimFollowup => lines.extend([
+            "Continue in this same local Session. Do not claim the Issue again.".to_string(),
+            "If a reply is useful, write `reply.md` inside the workspace and run:".to_string(),
             "  myagents space issue comment <issue.id> --body-file reply.md".to_string(),
-            "- If no action is required, run:".to_string(),
+            "If no action is required, run:".to_string(),
             "  myagents space issue delivery ignore <issue.delivery_id>".to_string(),
-            "- If additional work changes the final outcome, write `result.md` and complete:"
-                .to_string(),
-            "  myagents space issue complete <issue.id> --workspacePath <runtime.workspace_path> --taskId <taskId> --body-file result.md --message \"completed Space issue\"".to_string(),
-        ]);
-        return lines.join("\n");
-    }
-
-    lines.extend([
-        "Decision model:".to_string(),
-        "- A delivery is a notification, not an assignment.".to_string(),
-        "- Inspect every issue before deciding.".to_string(),
-        "- If this agent should not handle an issue, ignore that delivery.".to_string(),
-        "- If this agent should handle an issue, create an issue-specific `task.md`, then claim it with an attached local Task.".to_string(),
-        "- Keep discussion and progress on the Space Issue with comments.".to_string(),
-        "- When work is complete, complete the Space Issue through the CLI.".to_string(),
-        String::new(),
-        "Workflow for each subscription issue:".to_string(),
-        "1. Read context:".to_string(),
-        "   myagents space issue view <issue.id> --comments --json".to_string(),
-        String::new(),
-        "2. Ignore if not appropriate:".to_string(),
-        "   myagents space issue delivery ignore <issue.delivery_id>".to_string(),
-        String::new(),
-        "3. Claim if appropriate:".to_string(),
-    ]);
-    if has_workspace_id {
-        lines.extend([
-            "   Write a concrete task plan to `task.md`, then run:".to_string(),
-            "   myagents space issue claim <issue.id> --deliveryId <issue.delivery_id> --create-attached --workspaceId <runtime.workspace_id> --workspacePath <runtime.workspace_path> --sourceSpaceId <runtime.space_id> --name <issue.suggested_task_name> --taskMdContent-file task.md".to_string(),
-        ]);
-    } else {
-        lines.push("   Claiming is currently unavailable because this Registered Agent has no local workspace id. Do not claim any issue until the agent is re-registered from the Space Agents UI.".to_string());
+        ]),
+        SpaceIssueDeliveryPromptMode::Subscription => {
+            lines.extend([
+                "If the cloud instruction says to dismiss the notification:".to_string(),
+                "  myagents space issue delivery ignore <issue.delivery_id>".to_string(),
+                String::new(),
+                "If the cloud instruction says to take responsibility, write a concrete plan to `task.md` inside the workspace, then run:".to_string(),
+            ]);
+            append_space_issue_claim_command(&mut lines, has_workspace_id);
+        }
+        SpaceIssueDeliveryPromptMode::Assignment => {
+            lines.push("Establish or recover the local Task/Session link for this assignment. Write a concrete plan to `task.md` inside the workspace, then run:".to_string());
+            append_space_issue_claim_command(&mut lines, has_workspace_id);
+            lines.extend([
+                String::new(),
+                "In assignment mode, claim confirms the existing assignee and attaches local execution context; it does not compete for responsibility. Reuse an existing Task/Session link instead of creating a duplicate.".to_string(),
+            ]);
+        }
     }
     lines.extend([
         String::new(),
-        "4. Comment when reporting progress or asking questions:".to_string(),
-        "   myagents space issue comment <issue.id> --body-file reply.md".to_string(),
-        String::new(),
-        "5. Complete after implementation:".to_string(),
-        "   myagents space issue complete <issue.id> --workspacePath <runtime.workspace_path> --taskId <taskId> --body-file result.md --message \"completed Space issue\"".to_string(),
+        "When the work is complete, write `result.md` inside the workspace and run exactly once:".to_string(),
+        "  myagents space issue complete <issue.id> --workspacePath \"<runtime.workspace_path>\" --taskId <taskId> --body-file result.md --message \"completed Space issue\"".to_string(),
+        "Treat an already-complete response as success. Do not update the local Task status separately.".to_string(),
     ]);
     if include_batch_rule {
         lines.extend([
@@ -3663,6 +3960,14 @@ fn build_space_issue_instruction(
         ]);
     }
     lines.join("\n")
+}
+
+fn append_space_issue_claim_command(lines: &mut Vec<String>, has_workspace_id: bool) {
+    if has_workspace_id {
+        lines.push("  myagents space issue claim <issue.id> --deliveryId <issue.delivery_id> --create-attached --workspaceId <runtime.workspace_id> --workspacePath \"<runtime.workspace_path>\" --sourceSpaceId <runtime.space_id> --name \"<issue.suggested_task_name>\" --taskMdContent-file task.md".to_string());
+    } else {
+        lines.push("  Claiming is unavailable because this Registered Agent has no local workspace id. Comment with this blocker and ask an administrator to re-register the Agent from the Space Agents UI.".to_string());
+    }
 }
 
 fn build_space_issue_runtime_context(agent: &LocalRegisteredAgent) -> String {
@@ -3691,10 +3996,13 @@ fn build_space_issue_runtime_context(agent: &LocalRegisteredAgent) -> String {
 
 fn build_space_issue_block(delivery: &PendingSpaceDelivery) -> String {
     let mut lines = vec![
-        format!("<issue id=\"{}\">", escape_prompt_attr(&delivery.issue_id)),
+        format!(
+            "<issue id=\"{}\">",
+            escape_bounded_prompt_attr(&delivery.issue_id, MAX_SPACE_PROMPT_ID_CHARS)
+        ),
         format!(
             "- Delivery ID: {}",
-            escape_prompt_text(&delivery.delivery_id)
+            escape_bounded_prompt_text(&delivery.delivery_id, MAX_SPACE_PROMPT_ID_CHARS)
         ),
     ];
     if let Some(claim_id) = delivery
@@ -3702,27 +4010,47 @@ fn build_space_issue_block(delivery: &PendingSpaceDelivery) -> String {
         .as_deref()
         .filter(|value| !value.trim().is_empty())
     {
-        lines.push(format!("- Claim ID: {}", escape_prompt_text(claim_id)));
+        lines.push(format!(
+            "- Claim ID: {}",
+            escape_bounded_prompt_text(claim_id, MAX_SPACE_PROMPT_ID_CHARS)
+        ));
     }
     lines.push(issue_number_prompt_line(delivery.issue_number));
     lines.extend([
-        format!("- Title: {}", escape_prompt_text(&delivery.issue_title)),
-        format!("- State: {}", escape_prompt_text(&delivery.issue_state)),
+        format!(
+            "- Title: {}",
+            escape_bounded_prompt_text(&delivery.issue_title, MAX_SPACE_PROMPT_LABEL_CHARS)
+        ),
+        format!(
+            "- State: {}",
+            escape_bounded_prompt_text(&delivery.issue_state, 64)
+        ),
         format!("- Notification version: {}", delivery.notification_version),
     ]);
+    if let Some(assignee) = delivery.assignee.as_ref() {
+        lines.push(format_identity_fact("Assignee", assignee));
+    } else {
+        lines.push("- Assignee: unassigned".to_string());
+    }
     if let Some(goal_path) = delivery
         .goal_path
         .as_deref()
         .filter(|value| !value.trim().is_empty())
     {
-        lines.push(format!("- Goal: {}", escape_prompt_text(goal_path)));
+        lines.push(format!(
+            "- Goal: {}",
+            escape_bounded_prompt_text(goal_path, MAX_SPACE_PROMPT_LABEL_CHARS)
+        ));
     }
     if let Some(update_summary) = delivery
         .update_summary
         .as_deref()
         .filter(|value| !value.trim().is_empty())
     {
-        lines.push(format!("- Update: {}", escape_prompt_text(update_summary)));
+        lines.push(format!(
+            "- Update: {}",
+            escape_bounded_prompt_text(update_summary, MAX_SPACE_PROMPT_SUMMARY_CHARS)
+        ));
     }
     lines.push(format!(
         "- Suggested task name: {}",
@@ -3731,7 +4059,91 @@ fn build_space_issue_block(delivery: &PendingSpaceDelivery) -> String {
             &delivery.issue_id
         ))
     ));
+    if let Some(trigger) = delivery.trigger.as_ref() {
+        lines.push(build_space_issue_trigger_block(trigger));
+    }
     lines.push("</issue>".to_string());
+    lines.join("\n")
+}
+
+fn format_identity_fact(label: &str, identity: &Value) -> String {
+    let identity_type = identity
+        .get("type")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown");
+    let identity_id = identity
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("unavailable");
+    let identity_name = identity
+        .get("name")
+        .and_then(Value::as_str)
+        .unwrap_or("unnamed");
+    format!(
+        "- {}: {} | {} | {}",
+        label,
+        escape_bounded_prompt_text(identity_type, 64),
+        escape_bounded_prompt_text(identity_id, MAX_SPACE_PROMPT_ID_CHARS),
+        escape_bounded_prompt_text(identity_name, MAX_SPACE_PROMPT_LABEL_CHARS)
+    )
+}
+
+fn build_space_issue_trigger_block(trigger: &Value) -> String {
+    let update_id = trigger
+        .get("updateId")
+        .and_then(Value::as_str)
+        .unwrap_or("unavailable");
+    let mut lines = vec![format!(
+        "<trigger update-id=\"{}\">",
+        escape_bounded_prompt_attr(update_id, MAX_SPACE_PROMPT_ID_CHARS)
+    )];
+    if let Some(trigger_type) = trigger.get("type").and_then(Value::as_str) {
+        lines.push(format!(
+            "- Type: {}",
+            escape_bounded_prompt_text(trigger_type, 128)
+        ));
+    }
+    if let Some(created_at) = trigger.get("createdAt").and_then(Value::as_str) {
+        lines.push(format!(
+            "- Created at: {}",
+            escape_bounded_prompt_text(created_at, 128)
+        ));
+    }
+    if let Some(actor) = trigger.get("actor").filter(|value| value.is_object()) {
+        lines.push(format_identity_fact("Actor", actor));
+    }
+    if let Some(comment) = trigger.get("comment").filter(|value| value.is_object()) {
+        let comment_id = comment
+            .get("id")
+            .and_then(Value::as_str)
+            .unwrap_or("unavailable");
+        let truncated = comment
+            .get("truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        lines.push(format!(
+            "<comment id=\"{}\" truncated=\"{}\">",
+            escape_bounded_prompt_attr(comment_id, MAX_SPACE_PROMPT_ID_CHARS),
+            truncated
+        ));
+        if let Some(author) = comment.get("author").filter(|value| value.is_object()) {
+            lines.push(format_identity_fact("Author", author));
+        }
+        if let Some(created_at) = comment.get("createdAt").and_then(Value::as_str) {
+            lines.push(format!(
+                "- Created at: {}",
+                escape_bounded_prompt_text(created_at, 128)
+            ));
+        }
+        if let Some(body) = comment.get("body").and_then(Value::as_str) {
+            lines.push(format!(
+                "- Body: {}",
+                escape_bounded_prompt_text(body, MAX_SPACE_PROMPT_COMMENT_CHARS)
+            ));
+        }
+        lines.push("</comment>".to_string());
+    }
+    lines.push("</trigger>".to_string());
     lines.join("\n")
 }
 
@@ -3770,6 +4182,10 @@ fn space_issue_visible_text(
                 count
             )
         }
+        (crate::i18n::SupportedLocale::EnUs, SpaceIssueDeliveryPromptMode::Assignment, _) => {
+            "MyAgents Space delivered an Issue assignment. The registered Agent started processing."
+                .to_string()
+        }
         (crate::i18n::SupportedLocale::ZhCn, SpaceIssueDeliveryPromptMode::ClaimFollowup, _) => {
             "MyAgents Space 已投递一个 Issue 后续更新，Registered Agent 开始处理。".to_string()
         }
@@ -3781,6 +4197,9 @@ fn space_issue_visible_text(
                 "MyAgents Space 已投递 {} 个 Issue 通知，Registered Agent 开始处理。",
                 count
             )
+        }
+        (crate::i18n::SupportedLocale::ZhCn, SpaceIssueDeliveryPromptMode::Assignment, _) => {
+            "MyAgents Space 已投递一个 Issue 指派，Registered Agent 开始处理。".to_string()
         }
     }
 }
@@ -3796,6 +4215,25 @@ fn escape_prompt_attr(value: &str) -> String {
     escape_prompt_text(value)
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+fn bounded_prompt_value(value: &str, max_chars: usize) -> String {
+    let mut chars = value
+        .chars()
+        .filter(|character| !character.is_control() || matches!(character, '\n' | '\r' | '\t'));
+    let mut bounded = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        bounded.push('…');
+    }
+    bounded
+}
+
+fn escape_bounded_prompt_text(value: &str, max_chars: usize) -> String {
+    escape_prompt_text(&bounded_prompt_value(value, max_chars))
+}
+
+fn escape_bounded_prompt_attr(value: &str, max_chars: usize) -> String {
+    escape_prompt_attr(&bounded_prompt_value(value, max_chars))
 }
 
 fn http_client() -> Result<reqwest::Client, String> {
@@ -3980,16 +4418,54 @@ fn capability_base_url(capability: &SpaceBuildCapability) -> Result<String, Stri
         .ok_or_else(|| "Team Space build capability is missing baseUrl".to_string())
 }
 
-fn with_public_client_id_header(
+fn normalize_space_header_fact(value: &str, fallback: &str) -> String {
+    let normalized = value
+        .chars()
+        .filter(|character| character.is_ascii_graphic() || *character == ' ')
+        .take(256)
+        .collect::<String>();
+    let trimmed = normalized.trim();
+    if trimmed.is_empty() {
+        fallback.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn normalize_optional_space_header_fact(value: &str) -> Option<String> {
+    let normalized = normalize_space_header_fact(value, "");
+    (!normalized.is_empty()).then_some(normalized)
+}
+
+fn with_space_client_context_headers(
     request: reqwest::RequestBuilder,
     capability: &SpaceBuildCapability,
 ) -> reqwest::RequestBuilder {
-    match capability.public_client_id.as_deref() {
+    let request = match capability.public_client_id.as_deref() {
         Some(client_id) if !client_id.trim().is_empty() => {
             request.header(SPACE_PUBLIC_CLIENT_ID_HEADER, client_id.trim())
         }
         _ => request,
+    };
+
+    let client_version = SPACE_CLIENT_DEVICE_CONTEXT.client_version.as_str();
+    let platform = SPACE_CLIENT_DEVICE_CONTEXT.platform.as_str();
+
+    let mut request = request
+        .header(SPACE_CLIENT_VERSION_HEADER, client_version)
+        .header(SPACE_PLATFORM_HEADER, platform)
+        .header(ACCEPT_LANGUAGE, crate::i18n::current_locale().as_str())
+        .header(
+            USER_AGENT,
+            format!("MyAgents/{client_version} ({platform})"),
+        );
+    if let Some(device_id) = SPACE_CLIENT_DEVICE_CONTEXT.device_id.as_deref() {
+        request = request.header(SPACE_DEVICE_ID_HEADER, device_id);
     }
+    if let Some(os_version) = SPACE_CLIENT_DEVICE_CONTEXT.os_version.as_deref() {
+        request = request.header(SPACE_OS_VERSION_HEADER, os_version);
+    }
+    request
 }
 
 fn api_url(base_url: &str, path: &str) -> Result<String, String> {
@@ -4394,7 +4870,7 @@ async fn authorized_json_request(
     }
     let capability = ensure_space_available()?;
     let client = http_client()?;
-    let mut req = with_public_client_id_header(
+    let mut req = with_space_client_context_headers(
         client
             .request(method, api_url(base_url, path)?)
             .header(AUTHORIZATION, format!("Bearer {}", token)),
@@ -4468,7 +4944,7 @@ async fn authorized_json_data_request(
     }
     let capability = ensure_space_available()?;
     let client = http_client()?;
-    let mut req = with_public_client_id_header(
+    let mut req = with_space_client_context_headers(
         client
             .request(method, api_url(base_url, path)?)
             .header(AUTHORIZATION, format!("Bearer {}", token)),
@@ -4508,7 +4984,7 @@ async fn authorized_multipart_method_data_request(
         );
     }
     let capability = ensure_space_available()?;
-    let response = with_public_client_id_header(
+    let response = with_space_client_context_headers(
         http_client()?
             .request(method, api_url(base_url, path)?)
             .header(AUTHORIZATION, format!("Bearer {}", token))
@@ -4530,7 +5006,7 @@ async fn authorized_raw_request(
         return Err("Mock Space raw HTTP response is not available through this path".to_string());
     }
     let capability = ensure_space_available()?;
-    let response = with_public_client_id_header(
+    let response = with_space_client_context_headers(
         http_client()?
             .get(api_url(base_url, path)?)
             .header(AUTHORIZATION, format!("Bearer {}", token)),
@@ -6164,6 +6640,64 @@ mod tests {
         assert!(refreshed.account_plan.is_null());
     }
 
+    #[test]
+    fn delivery_kind_only_uses_legacy_fallback_when_the_field_is_absent() {
+        let agent = test_registered_agent(Some("usr_current"), Some("device_shared"));
+        let issue = serde_json::json!({
+            "id": "iss_kind",
+            "title": "Kind contract",
+            "state": "todo"
+        });
+        let missing = serde_json::json!({ "id": "del_missing", "issueId": "iss_kind" });
+        let parsed = parse_pending_space_delivery(&missing, &issue, &serde_json::json!({}), &agent)
+            .expect("absent deliveryKind should keep legacy subscription compatibility");
+        assert_eq!(parsed.delivery_kind, SpaceIssueDeliveryKind::Subscription);
+
+        for invalid in [Value::Null, serde_json::json!(""), serde_json::json!(42)] {
+            let delivery = serde_json::json!({
+                "id": "del_invalid",
+                "issueId": "iss_kind",
+                "deliveryKind": invalid
+            });
+            assert!(parse_pending_space_delivery(
+                &delivery,
+                &issue,
+                &serde_json::json!({}),
+                &agent,
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn claim_followup_without_bound_session_is_accepted_for_local_fallback() {
+        let agent = test_registered_agent(Some("usr_current"), Some("device_shared"));
+        let parsed = parse_pending_space_delivery(
+            &serde_json::json!({
+                "id": "del_followup",
+                "issueId": "iss_followup",
+                "deliveryKind": "claim_followup",
+                "targetSessionId": null,
+                "cloudInstruction": {
+                    "id": "claim-followup-v1",
+                    "text": "Continue the assigned Issue from its latest trigger."
+                }
+            }),
+            &serde_json::json!({
+                "id": "iss_followup",
+                "title": "Follow-up race",
+                "state": "doing"
+            }),
+            &serde_json::json!({}),
+            &agent,
+        )
+        .expect(
+            "follow-up should fall back to the Agent issue session before local binding exists",
+        );
+        assert_eq!(parsed.delivery_kind, SpaceIssueDeliveryKind::ClaimFollowup);
+        assert!(parsed.target_session().is_none());
+    }
+
     fn test_registered_agent(
         owner_user_id: Option<&str>,
         device_id: Option<&str>,
@@ -6266,9 +6800,13 @@ mod tests {
     ) -> PendingSpaceDelivery {
         PendingSpaceDelivery {
             delivery_id: delivery_id.to_string(),
-            delivery_kind: "subscription".to_string(),
+            delivery_kind: SpaceIssueDeliveryKind::Subscription,
             claim_id: None,
             target_session_id: None,
+            cloud_instruction_id: "subscription-v1".to_string(),
+            cloud_instruction_text: "Subscription business instruction".to_string(),
+            trigger: None,
+            assignee: None,
             issue_id: issue_id.to_string(),
             issue_number: Some(issue_number),
             issue_title: title.to_string(),
@@ -6469,8 +7007,10 @@ mod tests {
         assert!(prompt.starts_with("<system-reminder>\n<myagents-space-issue>"));
         assert!(prompt.contains("<myagents-space-event version=\"1\" type=\"issue-delivery\" mode=\"subscription\" delivery-count=\"1\" target-session-id=\"session_shared\" created-at=\"2026-07-06T10:30:00+08:00\">"));
         assert!(prompt.contains("<issue-instruction>"));
-        assert!(prompt.contains("Always use the `myagents` CLI"));
-        assert!(prompt.contains("myagents space issue --help"));
+        assert!(prompt.contains("<cloud-issue-instruction instruction-id=\"subscription-v1\">"));
+        assert!(prompt.contains("<local-execution-instruction>"));
+        assert!(prompt.contains("Use the `myagents` CLI"));
+        assert!(prompt.contains("comment get <issue.id> <trigger.comment.id>"));
         assert!(prompt.contains("<runtime-context>"));
         assert!(prompt.contains("- Workspace ID: workspace_test"));
         assert!(prompt.contains("<issue id=\"issue_1\">"));
@@ -6485,6 +7025,73 @@ mod tests {
         assert!(!issue.contains("myagents space issue view"));
         assert!(!issue.contains("myagents space issue claim"));
         assert!(!issue.contains("myagents space issue complete"));
+    }
+
+    #[test]
+    fn pending_delivery_parser_rejects_unknown_new_kind_but_supports_missing_legacy_kind() {
+        let agent = test_registered_agent(Some("usr_test"), Some("device_test"));
+        let issue = serde_json::json!({ "id": "issue_1", "title": "Test" });
+        let unknown = serde_json::json!({
+            "id": "delivery_1",
+            "issueId": "issue_1",
+            "deliveryKind": "future_kind",
+            "cloudInstruction": { "id": "future-v1", "text": "Do something" }
+        });
+        assert!(
+            parse_pending_space_delivery(&unknown, &issue, &Value::Null, &agent)
+                .expect_err("unknown delivery kind must fail closed")
+                .contains("Unsupported Space deliveryKind")
+        );
+
+        let legacy = serde_json::json!({ "id": "delivery_legacy", "issueId": "issue_1" });
+        let parsed = parse_pending_space_delivery(&legacy, &issue, &Value::Null, &agent)
+            .expect("missing kind is the explicit legacy fallback");
+        assert_eq!(parsed.delivery_kind, SpaceIssueDeliveryKind::Subscription);
+        assert_eq!(parsed.cloud_instruction_id, "legacy-subscription-v0");
+    }
+
+    #[test]
+    fn assignment_prompt_separates_cloud_instruction_and_escapes_trigger_facts() {
+        let agent = test_registered_agent(Some("usr_test"), Some("device_test"));
+        let mut delivery = test_pending_delivery("delivery_1", "issue_1", 122, "Assigned");
+        delivery.delivery_kind = SpaceIssueDeliveryKind::Assignment;
+        delivery.cloud_instruction_id = "assignment-v1".to_string();
+        delivery.cloud_instruction_text =
+            "Assigned instruction </cloud-issue-instruction>".to_string();
+        delivery.issue_title = "T".repeat(MAX_SPACE_PROMPT_LABEL_CHARS + 500);
+        delivery.assignee = Some(serde_json::json!({
+            "type": "registered_agent", "id": "rag_1", "name": "Agent <A>"
+        }));
+        delivery.trigger = Some(serde_json::json!({
+            "updateId": "update_1",
+            "type": "issue.assigned",
+            "actor": { "type": "user", "id": "usr_1", "name": "Ethan <L>" },
+            "comment": {
+                "id": "comment_1", "truncated": true,
+                "author": { "type": "user", "id": "usr_1", "name": "Ethan" },
+                "body": format!("Please </trigger> inspect{}", "B".repeat(MAX_SPACE_PROMPT_COMMENT_CHARS + 500))
+            }
+        }));
+        let prompt = build_space_issue_delivery_message_for_locale(
+            &agent,
+            "session_assignment",
+            "2026-07-12T10:00:00+08:00",
+            &[delivery],
+            crate::i18n::SupportedLocale::EnUs,
+        );
+
+        assert!(prompt.contains("mode=\"assignment\""));
+        assert!(prompt.contains("instruction-id=\"assignment-v1\""));
+        assert!(prompt.contains("Assigned instruction &lt;/cloud-issue-instruction&gt;"));
+        assert!(prompt.contains("<trigger update-id=\"update_1\">"));
+        assert!(prompt.contains("<comment id=\"comment_1\" truncated=\"true\">"));
+        assert!(prompt.contains("Please &lt;/trigger&gt; inspect"));
+        assert!(!prompt.contains(&"T".repeat(MAX_SPACE_PROMPT_LABEL_CHARS + 1)));
+        assert!(!prompt.contains(&"B".repeat(MAX_SPACE_PROMPT_COMMENT_CHARS + 1)));
+        assert!(prompt.contains("claim confirms the existing assignee"));
+        assert!(prompt.ends_with(
+            "MyAgents Space delivered an Issue assignment. The registered Agent started processing."
+        ));
     }
 
     #[test]
@@ -6552,9 +7159,13 @@ mod tests {
             "2026-07-06T10:32:00+08:00",
             &[PendingSpaceDelivery {
                 delivery_id: "delivery_followup".to_string(),
-                delivery_kind: "claim_followup".to_string(),
+                delivery_kind: SpaceIssueDeliveryKind::ClaimFollowup,
                 claim_id: Some("claim_1".to_string()),
                 target_session_id: Some("session_claim".to_string()),
+                cloud_instruction_id: "claim-followup-v1".to_string(),
+                cloud_instruction_text: "Follow-up business instruction".to_string(),
+                trigger: None,
+                assignee: None,
                 issue_id: "issue_1".to_string(),
                 issue_number: Some(115),
                 issue_title: "Follow-up question".to_string(),
@@ -6568,9 +7179,10 @@ mod tests {
         );
 
         assert!(prompt.contains("mode=\"claim-followup\" delivery-count=\"1\""));
-        assert!(prompt.contains("Follow-up rules:"));
-        assert!(prompt.contains("Do not claim this issue again"));
-        assert!(!prompt.contains("Workflow for each subscription issue"));
+        assert!(prompt.contains("<cloud-issue-instruction instruction-id=\"claim-followup-v1\">"));
+        assert!(
+            prompt.contains("Continue in this same local Session. Do not claim the Issue again.")
+        );
         assert!(!prompt.contains("--create-attached"));
         assert!(prompt.contains("- Claim ID: claim_1"));
         assert!(prompt.contains("Issue #: #115"));
@@ -6746,7 +7358,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mock_space_claim_followup_targets_claim_local_session() {
+    async fn mock_space_assigned_update_falls_back_after_claim_completion() {
         let _mock = crate::space_cloud_mock::enable_for_test();
 
         let pending = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
@@ -6803,6 +7415,10 @@ mod tests {
 
         space_cli_issue_complete(SpaceCliIssueActionInput {
             issue_id: issue_id.clone(),
+            result_comment: Some("Mock atomic result".to_string()),
+            operation_key: Some("test-complete-operation".to_string()),
+            rollback: None,
+            expected_notification_version: None,
             agent_id: Some("rag_mock_frontend".to_string()),
             workspace_path: None,
         })
@@ -6821,11 +7437,52 @@ mod tests {
             detail.pointer("/issue/state").and_then(Value::as_str),
             Some("done")
         );
+        assert!(detail
+            .pointer("/comments/items")
+            .and_then(Value::as_array)
+            .is_some_and(|comments| comments.iter().any(|comment| {
+                comment.get("body").and_then(Value::as_str) == Some("Mock atomic result")
+            })));
+        assert!(detail.get("claim").is_some_and(Value::is_null));
         assert_eq!(
-            detail
-                .pointer("/claim/localSessionId")
-                .and_then(Value::as_str),
-            Some("session_claim")
+            detail.pointer("/issue/assignee/id").and_then(Value::as_str),
+            Some("rag_mock_frontend")
+        );
+        let result_comment_count = detail
+            .pointer("/comments/items")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or_default();
+        let repeated = space_cli_issue_complete(SpaceCliIssueActionInput {
+            issue_id: issue_id.clone(),
+            result_comment: Some("Mock atomic result".to_string()),
+            operation_key: Some("test-complete-operation".to_string()),
+            rollback: None,
+            expected_notification_version: None,
+            agent_id: Some("rag_mock_frontend".to_string()),
+            workspace_path: None,
+        })
+        .await
+        .expect("repeated complete should be idempotent");
+        assert_eq!(
+            repeated.get("idempotent").and_then(Value::as_bool),
+            Some(true)
+        );
+        let repeated_detail = space_cli_issue_get(SpaceCliIssueGetInput {
+            issue_id: issue_id.clone(),
+            agent_id: Some("rag_mock_frontend".to_string()),
+            workspace_path: None,
+            comments_cursor: None,
+            comments_limit: Some(5),
+        })
+        .await
+        .expect("detail should remain readable after idempotent complete");
+        assert_eq!(
+            repeated_detail
+                .pointer("/comments/items")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(result_comment_count)
         );
 
         cmd_space_api_request(SpaceApiRequestInput {
@@ -6842,49 +7499,46 @@ mod tests {
         })
         .await
         .expect("deliveries should poll after comment");
-        let followup = deliveries
+        let assignment = deliveries
             .pointer("/data/items")
             .and_then(Value::as_array)
             .and_then(|items| {
                 items.iter().find(|item| {
                     item.pointer("/delivery/deliveryKind")
                         .and_then(Value::as_str)
-                        == Some("claim_followup")
+                        == Some("assignment")
                 })
             })
-            .expect("claim follow-up delivery should exist");
-        assert_eq!(
-            followup
-                .pointer("/delivery/targetSessionId")
-                .and_then(Value::as_str),
-            Some("session_claim")
-        );
-        assert_eq!(
-            followup
-                .pointer("/delivery/claimId")
-                .and_then(Value::as_str),
-            Some(claim_id.as_str())
-        );
-        let followup_delivery_id = followup
+            .expect("post-completion assignment update should exist");
+        assert!(assignment
+            .pointer("/delivery/targetSessionId")
+            .is_some_and(Value::is_null));
+        assert!(assignment
+            .pointer("/delivery/claimId")
+            .is_some_and(Value::is_null));
+        let assignment_delivery_id = assignment
             .pointer("/delivery/id")
             .and_then(Value::as_str)
-            .expect("follow-up delivery id")
+            .expect("assignment delivery id")
             .to_string();
 
-        let followup_count_before = deliveries
-            .pointer("/data/items")
-            .and_then(Value::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter(|item| {
-                        item.pointer("/delivery/deliveryKind")
-                            .and_then(Value::as_str)
-                            == Some("claim_followup")
-                    })
-                    .count()
-            })
-            .unwrap_or(0);
+        let processed = crate::space_cloud_mock::process_deliveries_once();
+        assert!(processed.processed >= 1);
+        let delivered_assignment = crate::space_cloud_mock::delivery_by_id(&assignment_delivery_id)
+            .expect("processed assignment delivery");
+        assert_eq!(
+            delivered_assignment
+                .pointer("/delivery/status")
+                .and_then(Value::as_str),
+            Some("delivered")
+        );
+        let delivered_session_id = delivered_assignment
+            .pointer("/delivery/deliveredToSessionId")
+            .and_then(Value::as_str)
+            .expect("post-completion assignment should use the Agent fallback session");
+        assert!(!delivered_session_id.is_empty());
+        assert_ne!(delivered_session_id, "session_claim");
+
         space_cli_issue_comment(SpaceCliIssueCommentInput {
             issue_id: issue_id.clone(),
             body: "agent self update".to_string(),
@@ -6899,7 +7553,7 @@ mod tests {
         })
         .await
         .expect("deliveries should poll after self comment");
-        let followup_count_after = after_self_comment
+        let assignment_count_after = after_self_comment
             .pointer("/data/items")
             .and_then(Value::as_array)
             .map(|items| {
@@ -6908,29 +7562,12 @@ mod tests {
                     .filter(|item| {
                         item.pointer("/delivery/deliveryKind")
                             .and_then(Value::as_str)
-                            == Some("claim_followup")
+                            == Some("assignment")
                     })
                     .count()
             })
             .unwrap_or(0);
-        assert_eq!(followup_count_after, followup_count_before);
-
-        let processed = crate::space_cloud_mock::process_deliveries_once();
-        assert!(processed.processed >= 1);
-        let delivered_followup = crate::space_cloud_mock::delivery_by_id(&followup_delivery_id)
-            .expect("processed follow-up delivery");
-        assert_eq!(
-            delivered_followup
-                .pointer("/delivery/status")
-                .and_then(Value::as_str),
-            Some("delivered")
-        );
-        assert_eq!(
-            delivered_followup
-                .pointer("/delivery/deliveredToSessionId")
-                .and_then(Value::as_str),
-            Some("session_claim")
-        );
+        assert_eq!(assignment_count_after, 0);
     }
 
     #[tokio::test]
@@ -7049,6 +7686,94 @@ mod tests {
             result.pointer("/data/comment/body").and_then(Value::as_str),
             Some("补一条来自测试的评论")
         );
+        let comment_id = result
+            .pointer("/data/comment/id")
+            .and_then(Value::as_str)
+            .expect("comment id")
+            .to_string();
+        let exact_comment = cmd_space_api_request(SpaceApiRequestInput {
+            method: "GET".to_string(),
+            path: format!(
+                "/api/issues/iss_mock_001/comments/{}",
+                url_component(&comment_id)
+            ),
+            body: None,
+        })
+        .await
+        .expect("exact comment should load");
+        assert_eq!(
+            exact_comment
+                .pointer("/data/comment/body")
+                .and_then(Value::as_str),
+            Some("补一条来自测试的评论")
+        );
+
+        let assignment_issue_id = "iss_mock_002";
+        let assigned = cmd_space_api_request(SpaceApiRequestInput {
+            method: "PUT".to_string(),
+            path: format!("/api/issues/{}/assignee", assignment_issue_id),
+            body: Some(serde_json::json!({
+                "assignee": { "type": "registered_agent", "id": "rag_mock_frontend" }
+            })),
+        })
+        .await
+        .expect("PUT assignee should be supported");
+        assert_eq!(
+            assigned
+                .pointer("/data/issue/assignee/id")
+                .and_then(Value::as_str),
+            Some("rag_mock_frontend")
+        );
+        let assignment_deliveries = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
+            registered_agent_id: "rag_mock_frontend".to_string(),
+            empty_streak: None,
+        })
+        .await
+        .expect("assignment delivery should poll");
+        assert!(assignment_deliveries
+            .pointer("/data/items")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(|item| {
+                item.pointer("/delivery/issueId").and_then(Value::as_str)
+                    == Some(assignment_issue_id)
+                    && item
+                        .pointer("/delivery/deliveryKind")
+                        .and_then(Value::as_str)
+                        == Some("assignment")
+            })));
+        let reopened = cmd_space_api_request(SpaceApiRequestInput {
+            method: "POST".to_string(),
+            path: format!("/api/issues/{}/assignee/cancel", assignment_issue_id),
+            body: Some(serde_json::json!({})),
+        })
+        .await
+        .expect("assignee cancellation should reopen issue");
+        assert!(reopened
+            .pointer("/data/issue/assignee")
+            .is_some_and(Value::is_null));
+        assert_eq!(
+            reopened
+                .pointer("/data/issue/state")
+                .and_then(Value::as_str),
+            Some("todo")
+        );
+        let pending_after_cancel = cmd_space_poll_deliveries(SpacePollDeliveriesInput {
+            registered_agent_id: "rag_mock_frontend".to_string(),
+            empty_streak: None,
+        })
+        .await
+        .expect("deliveries should poll after assignment cancellation");
+        assert!(!pending_after_cancel
+            .pointer("/data/items")
+            .and_then(Value::as_array)
+            .is_some_and(|items| items.iter().any(|item| {
+                item.pointer("/delivery/issueId").and_then(Value::as_str)
+                    == Some(assignment_issue_id)
+                    && item
+                        .pointer("/delivery/deliveryKind")
+                        .and_then(Value::as_str)
+                        == Some("assignment")
+            })));
 
         let detail = cmd_space_api_request(SpaceApiRequestInput {
             method: "GET".to_string(),
@@ -7257,7 +7982,7 @@ mod tests {
     }
 
     #[test]
-    fn public_client_id_header_is_applied_to_space_requests() {
+    fn shared_client_context_headers_are_applied_to_space_requests() {
         let capability = SpaceBuildCapability {
             available: true,
             base_url: Some("https://space.myagents.test".to_string()),
@@ -7270,7 +7995,7 @@ mod tests {
         // external Space URL so the header helper can be asserted.
         #[allow(clippy::disallowed_methods)]
         let client = reqwest::Client::builder().build().expect("client");
-        let request = with_public_client_id_header(
+        let request = with_space_client_context_headers(
             client.get("https://space.myagents.test/api/issues/iss_1"),
             &capability,
         )
@@ -7284,5 +8009,52 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("client_test_123")
         );
+        assert_eq!(
+            request
+                .headers()
+                .get(SPACE_CLIENT_VERSION_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(env!("CARGO_PKG_VERSION"))
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get(SPACE_PLATFORM_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            Some(SPACE_CLIENT_DEVICE_CONTEXT.platform.as_str())
+        );
+        assert_eq!(
+            request
+                .headers()
+                .get(ACCEPT_LANGUAGE)
+                .and_then(|value| value.to_str().ok()),
+            Some(crate::i18n::current_locale().as_str())
+        );
+        assert!(request.headers().contains_key(USER_AGENT));
+        if let Some(device_id) = SPACE_CLIENT_DEVICE_CONTEXT.device_id.as_deref() {
+            assert_eq!(
+                request
+                    .headers()
+                    .get(SPACE_DEVICE_ID_HEADER)
+                    .and_then(|value| value.to_str().ok()),
+                Some(device_id)
+            );
+        }
+        assert_eq!(
+            request
+                .headers()
+                .get(SPACE_OS_VERSION_HEADER)
+                .and_then(|value| value.to_str().ok()),
+            SPACE_CLIENT_DEVICE_CONTEXT.os_version.as_deref()
+        );
+    }
+
+    #[test]
+    fn space_header_facts_strip_control_and_non_ascii_bytes() {
+        assert_eq!(
+            normalize_space_header_fact(" macOS\n15 雪 ", "unknown"),
+            "macOS15"
+        );
+        assert_eq!(normalize_space_header_fact("\n雪", "unknown"), "unknown");
     }
 }

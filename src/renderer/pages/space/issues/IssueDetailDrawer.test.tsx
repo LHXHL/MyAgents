@@ -64,6 +64,8 @@ describe('IssueDetailDrawer', () => {
         issueId="iss-1"
         session={session}
         projects={[]}
+        goals={[]}
+        registeredAgents={[]}
         detailState={{ detail, isLoading: false, lastFetchedAt: Date.now(), error: null }}
         actions={actions()}
         onClose={vi.fn()}
@@ -79,10 +81,14 @@ describe('IssueDetailDrawer', () => {
     const metaRow = screen.getByText('#113').parentElement!;
     const metaText = metaRow.textContent ?? '';
     expect(metaText.indexOf('#113')).toBeLessThan(metaText.indexOf('Ethan'));
-    expect(screen.getByText('Ethan').tagName).toBe('SPAN');
+    expect(screen.getAllByText('Ethan').every((node) => node.tagName === 'SPAN')).toBe(true);
     expect(screen.getByText('Commenter').tagName).toBe('SPAN');
     expect(screen.getByRole('button', { name: '编辑' })).toBeInTheDocument();
     expect(screen.queryByText('Issue 口令')).not.toBeInTheDocument();
+    const taskCard = screen.getByRole('region', { name: 'Issue 任务信息' });
+    expect(within(taskCard).getByText('创建人')).toBeInTheDocument();
+    expect(within(taskCard).getByText('Ethan')).toBeInTheDocument();
+    expect(within(taskCard).getByText('待认领')).toBeInTheDocument();
 
     const attachmentsHeading = screen.getByRole('heading', { name: /附件/ });
     expect(within(attachmentsHeading.parentElement!).getByRole('button', { name: '上传' })).toBeInTheDocument();
@@ -101,6 +107,8 @@ describe('IssueDetailDrawer', () => {
         issueId="iss-1"
         session={session}
         projects={[]}
+        goals={[]}
+        registeredAgents={[]}
         detailState={{ detail, isLoading: false, lastFetchedAt: Date.now(), error: null }}
         actions={mockActions}
         onClose={vi.fn()}
@@ -131,6 +139,8 @@ describe('IssueDetailDrawer', () => {
         issueId="iss-1"
         session={session}
         projects={[]}
+        goals={[]}
+        registeredAgents={[]}
         detailState={{ detail, isLoading: false, lastFetchedAt: Date.now(), error: null }}
         actions={actions()}
         onClose={vi.fn()}

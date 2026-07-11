@@ -4,6 +4,7 @@ const apiMocks = vi.hoisted(() => ({
   findProjectForAgent: vi.fn(),
   spaceArchiveGoal: vi.fn(),
   spaceCancelIssueClaim: vi.fn(),
+  spaceCancelIssueAssignee: vi.fn(),
   spaceCloseIssue: vi.fn(),
   spaceCloseOwnIssue: vi.fn(),
   spaceCommentIssue: vi.fn(),
@@ -23,6 +24,7 @@ const apiMocks = vi.hoisted(() => ({
   spaceListGoals: vi.fn(),
   spaceListEvents: vi.fn(),
   spaceListIssues: vi.fn(),
+  spaceListIssueComments: vi.fn(),
   spaceListLocalAgents: vi.fn(),
   spaceListRegisteredAgents: vi.fn(),
   spaceListSkills: vi.fn(),
@@ -32,6 +34,7 @@ const apiMocks = vi.hoisted(() => ({
   spaceRollbackSkill: vi.fn(),
   spaceSetActiveSpace: vi.fn(),
   spaceSetIssueState: vi.fn(),
+  spaceSetIssueAssignee: vi.fn(),
   spaceUpdateGoal: vi.fn(),
   spaceUpdateIssue: vi.fn(),
   spaceUpdateProfile: vi.fn(),
@@ -45,6 +48,7 @@ vi.mock("@/api/spaceCloud", () => ({
   findProjectForAgent: apiMocks.findProjectForAgent,
   spaceArchiveGoal: apiMocks.spaceArchiveGoal,
   spaceCancelIssueClaim: apiMocks.spaceCancelIssueClaim,
+  spaceCancelIssueAssignee: apiMocks.spaceCancelIssueAssignee,
   spaceCloseIssue: apiMocks.spaceCloseIssue,
   spaceCloseOwnIssue: apiMocks.spaceCloseOwnIssue,
   spaceCommentIssue: apiMocks.spaceCommentIssue,
@@ -64,6 +68,7 @@ vi.mock("@/api/spaceCloud", () => ({
   spaceListGoals: apiMocks.spaceListGoals,
   spaceListEvents: apiMocks.spaceListEvents,
   spaceListIssues: apiMocks.spaceListIssues,
+  spaceListIssueComments: apiMocks.spaceListIssueComments,
   spaceListLocalAgents: apiMocks.spaceListLocalAgents,
   spaceListRegisteredAgents: apiMocks.spaceListRegisteredAgents,
   spaceListSkills: apiMocks.spaceListSkills,
@@ -73,6 +78,7 @@ vi.mock("@/api/spaceCloud", () => ({
   spaceRollbackSkill: apiMocks.spaceRollbackSkill,
   spaceSetActiveSpace: apiMocks.spaceSetActiveSpace,
   spaceSetIssueState: apiMocks.spaceSetIssueState,
+  spaceSetIssueAssignee: apiMocks.spaceSetIssueAssignee,
   spaceUpdateGoal: apiMocks.spaceUpdateGoal,
   spaceUpdateIssue: apiMocks.spaceUpdateIssue,
   spaceUpdateProfile: apiMocks.spaceUpdateProfile,
@@ -928,6 +934,130 @@ describe("spaceStore issue refresh", () => {
     const detail = getSnapshot().issueDetails[scoped("iss_123")]?.detail;
     expect(detail?.comments.items).toEqual([]);
     expect(detail?.issue.commentCount).toBe(0);
+  });
+
+  it("prepends older comment pages with id dedupe", async () => {
+    const newest: SpaceIssueComment = {
+      id: "cmt_new",
+      author: { id: "user-1", type: "user" },
+      body: "newest",
+      createdAt: "2026-06-24T02:00:00.000Z",
+    };
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: fakeSession,
+      issueDetails: {
+        [scoped("iss_123")]: {
+          detail: {
+            ...fakeDetail,
+            comments: {
+              items: [newest],
+              hasMore: true,
+              nextCursor: "cursor-1",
+              limit: 5,
+            },
+          },
+          lastFetchedAt: Date.now(),
+          isLoading: false,
+          error: null,
+        },
+      },
+    });
+    apiMocks.spaceListIssueComments.mockResolvedValueOnce({
+      items: [
+        {
+          id: "cmt_old",
+          author: { id: "user-2", type: "user" },
+          body: "older",
+          createdAt: "2026-06-24T01:00:00.000Z",
+        },
+        newest,
+      ],
+      hasMore: false,
+      hasMoreOlder: false,
+      nextCursor: null,
+      limit: 20,
+    });
+
+    await actions.loadOlderIssueComments("iss_123");
+
+    expect(apiMocks.spaceListIssueComments).toHaveBeenCalledWith("iss_123", {
+      cursor: "cursor-1",
+      limit: 20,
+    });
+    expect(
+      getSnapshot().issueDetails[scoped("iss_123")]?.detail?.comments.items.map((item) => item.id),
+    ).toEqual(["cmt_old", "cmt_new"]);
+  });
+
+  it("patches assignee changes and cancellation into detail cache", async () => {
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: fakeSession,
+      issueDetails: {
+        [scoped("iss_123")]: {
+          detail: fakeDetail,
+          lastFetchedAt: Date.now(),
+          isLoading: false,
+          error: null,
+        },
+      },
+    });
+    const assignedIssue: SpaceIssue = {
+      ...fakeIssue,
+      assignee: { id: "rag_1", type: "registered_agent", name: "Debugger" },
+    };
+    apiMocks.spaceSetIssueAssignee.mockResolvedValueOnce({ issue: assignedIssue });
+    await actions.setIssueAssignee("iss_123", { type: "registered_agent", id: "rag_1" });
+    expect(getSnapshot().issueDetails[scoped("iss_123")]?.detail?.issue.assignee?.id)
+      .toBe("rag_1");
+
+    const reopenedIssue = { ...assignedIssue, assignee: null, state: "todo" };
+    apiMocks.spaceCancelIssueAssignee.mockResolvedValueOnce({ issue: reopenedIssue });
+    await actions.cancelIssueAssignee("iss_123");
+    expect(getSnapshot().issueDetails[scoped("iss_123")]?.detail?.issue.assignee).toBeNull();
+  });
+
+  it("keeps the newest assignee mutation when responses complete out of order", async () => {
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: fakeSession,
+      issueDetails: {
+        [scoped("iss_123")]: {
+          detail: fakeDetail,
+          lastFetchedAt: Date.now(),
+          isLoading: false,
+          error: null,
+        },
+      },
+    });
+    const first = deferred<{ issue: SpaceIssue }>();
+    const secondIssue: SpaceIssue = {
+      ...fakeIssue,
+      assignee: { id: "rag_new", type: "registered_agent", name: "Newest" },
+    };
+    apiMocks.spaceSetIssueAssignee
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce({ issue: secondIssue });
+
+    const firstMutation = actions.setIssueAssignee("iss_123", {
+      type: "registered_agent",
+      id: "rag_old",
+    });
+    await actions.setIssueAssignee("iss_123", {
+      type: "registered_agent",
+      id: "rag_new",
+    });
+    first.resolve({
+      issue: {
+        ...fakeIssue,
+        assignee: { id: "rag_old", type: "registered_agent", name: "Stale" },
+      },
+    });
+    await firstMutation;
+
+    expect(getSnapshot().issueDetails[scoped("iss_123")]?.detail?.issue.assignee?.id)
+      .toBe("rag_new");
   });
 
   it("keeps list order stable when a remote detail revalidation has a newer timestamp", async () => {

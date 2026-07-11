@@ -712,7 +712,7 @@ trusted root `~/.myagents/generated/tool-attachments/<sid>/<tid>/<file>`（base6
 
 Cloud Space 把官方/团队空间接入桌面端，目前仍是开发中/半成品能力，不作为已发布用户能力写入 CHANGELOG 或 GitHub Release notes。
 
-**架构真相分工与版本：** 本仓库只维护 Desktop 客户端 owner（Rust connector、本地身份/状态、UI、CLI 与 Task/Session 执行），详细状态见 `specs/tech_docs/space_cloud.md`；Cloud Worker 的 API、鉴权、领域模型、D1/R2、一致性、quota 与运营能力由同级 `hAcKlyc/MyAgents_space` 仓库的 `specs/ARCHITECTURE.md` 维护。本地平级 checkout 路径为 `../MyAgents_space/specs/ARCHITECTURE.md`。两仓独立发版，不按版本号锁步；截至 2026-07-12 最近对照基线为 Desktop `0.2.50` 开发线 ↔ Space API `v0.1.1`，已知契约差异（当前 `claim_followup` 只在 Desktop 前向解析/mock 存在）见 `specs/tech_docs/space_cloud.md`「文档归属与兼容基线」。若契约变化必须同步更新两边实现、测试、文档和兼容基线。
+**架构真相分工与版本：** 本仓库只维护 Desktop 客户端 owner（Rust connector、本地身份/状态、UI、CLI 与 Task/Session 执行），详细状态见 `specs/tech_docs/space_cloud.md`；Cloud Worker 的 API、鉴权、领域模型、D1/R2、一致性、quota 与运营能力由同级 `hAcKlyc/MyAgents_space` 仓库的 `specs/ARCHITECTURE.md` 维护。本地平级 checkout 路径为 `../MyAgents_space/specs/ARCHITECTURE.md`。两仓独立发版，不按版本号锁步；截至 2026-07-12 最近实现对照基线为 Desktop `0.2.50` 开发线 ↔ Space API `dev/0.1.2`（已发布基线仍为 `v0.1.1`），Cloud 与 Desktop 均已实现持久 assignee、`subscription | assignment | claim_followup` 三类 Delivery、trigger/cloud instruction 快照及客户端版本兼容门控。具体 rollout 差异见 `specs/tech_docs/space_cloud.md`「文档归属与兼容基线」。若契约变化必须同步更新两边实现、测试、文档和兼容基线。
 
 **核心边界：**
 

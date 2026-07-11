@@ -1,5 +1,7 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Bot, User } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
+import { Popover } from '../../components/ui/Popover';
 
 type IdentityInput = {
   name?: string | null;
@@ -74,6 +76,8 @@ export function SpaceIdentityLine({
   avatarSize = 22,
   className = '',
   nameClassName = '',
+  showAgentTag = false,
+  agentOwnerName,
 }: {
   name?: string | null;
   email?: string | null;
@@ -82,12 +86,42 @@ export function SpaceIdentityLine({
   avatarSize?: number;
   className?: string;
   nameClassName?: string;
+  showAgentTag?: boolean;
+  agentOwnerName?: string | null;
 }) {
   const label = spaceDisplayName({ name, email });
+  const { t } = useTranslation('app');
+  const [ownerTipOpen, setOwnerTipOpen] = useState(false);
+  const ownerTagRef = useRef<HTMLButtonElement | null>(null);
   return (
     <span className={`inline-flex min-w-0 items-center gap-1.5 align-middle leading-none ${className}`}>
       <SpaceAvatar name={name} email={email} avatarUrl={avatarUrl} type={type} size={avatarSize} />
       <span className={`min-w-0 truncate leading-none ${nameClassName}`}>{label}</span>
+      {showAgentTag && type === 'registered_agent' && (
+        <span className="inline-flex shrink-0">
+          <button
+            ref={ownerTagRef}
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              setOwnerTipOpen((value) => !value);
+            }}
+            className="rounded-md bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs font-medium leading-none text-[var(--ink-muted)] transition-colors hover:text-[var(--ink)]"
+          >
+            Agent
+          </button>
+          <Popover
+            open={ownerTipOpen}
+            onClose={() => setOwnerTipOpen(false)}
+            anchorRef={ownerTagRef}
+            placement="bottom"
+            offset={8}
+            className="max-w-64 px-2.5 py-2 text-xs font-normal leading-5 text-[var(--ink-secondary)]"
+          >
+            {t('space.detail.agentOwner', { name: agentOwnerName || '—' })}
+          </Popover>
+        </span>
+      )}
     </span>
   );
 }

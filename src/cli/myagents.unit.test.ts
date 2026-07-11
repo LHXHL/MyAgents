@@ -6,11 +6,71 @@ import {
   formatCronInstantForDisplay,
   formatCronTaskScheduleForDisplay,
   buildRequestBody,
+  buildRoute,
+  buildClaimCancelBody,
+  buildSpaceCompleteOperationKey,
   normalizeScheduleFlag,
   parseArgs,
   parseDispatchAtValue,
   readWorkspaceTextFile,
 } from './myagents';
+
+describe('myagents CLI Space issue contracts', () => {
+  it('routes and builds exact comment lookup by issue and comment id', () => {
+    expect(buildRoute('space', 'issue', ['comment', 'get', 'iss_1', 'comment_1']))
+      .toBe('space/issue-comment-get');
+    expect(buildRequestBody('space', 'issue', ['comment', 'get', 'iss_1', 'comment_1'], {
+      workspacePath: '/workspace',
+      agentId: 'rag_1',
+    })).toEqual({
+      issueId: 'iss_1',
+      commentId: 'comment_1',
+      agentId: 'rag_1',
+      workspacePath: '/workspace',
+    });
+  });
+
+  it('keeps the Issue detail default comment window at five', () => {
+    expect(buildRequestBody('space', 'issue', ['view', 'iss_1'], {
+      workspacePath: '/workspace',
+    })).toMatchObject({
+      issueId: 'iss_1',
+      commentsLimit: undefined,
+      commentsCursor: undefined,
+    });
+    expect(buildRoute('space', 'issue', ['comments', 'iss_1']))
+      .toBe('space/issue-comments');
+    expect(buildRequestBody('space', 'issue', ['comments', 'iss_1'], {
+      workspacePath: '/workspace',
+      cursor: 'opaque-cursor',
+    })).toMatchObject({
+      issueId: 'iss_1',
+      cursor: 'opaque-cursor',
+      limit: 20,
+    });
+  });
+
+  it('uses claim origin to constrain attached-task rollback', () => {
+    const claimBody = { issueId: 'iss_1', agentId: 'rag_1', workspacePath: '/workspace' };
+    expect(buildClaimCancelBody(claimBody, {
+      data: { claim: { id: 'claim_1', origin: 'self_claim' }, notificationVersion: 7 },
+    })).toMatchObject({ rollback: true, expectedNotificationVersion: 7 });
+    expect(buildClaimCancelBody(claimBody, {
+      data: { claim: { id: 'claim_2', origin: 'assignment_confirmation' }, notificationVersion: 9 },
+    })).toEqual({
+      ...claimBody,
+      rollback: true,
+    });
+  });
+
+  it('generates a stable completion operation key bound to Issue, Task, and result', () => {
+    const input = { issueId: 'iss_1', taskOrSessionId: 'task_1', resultComment: 'done' };
+    expect(buildSpaceCompleteOperationKey(input)).toBe(buildSpaceCompleteOperationKey(input));
+    expect(buildSpaceCompleteOperationKey(input)).not.toBe(
+      buildSpaceCompleteOperationKey({ ...input, resultComment: 'different result' }),
+    );
+  });
+});
 
 describe('myagents CLI Goal file inputs', () => {
   it('reads shell-sensitive objective and reason text from workspace files', () => {

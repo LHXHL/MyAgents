@@ -47,6 +47,11 @@ export interface SpaceUserSummary {
   avatarUrls?: SpaceAvatarUrls | null;
 }
 
+export interface SpaceIdentitySummary extends SpaceUserSummary {
+  type?: "user" | "registered_agent" | "system";
+  owner?: SpaceUserSummary | null;
+}
+
 export interface SpaceInfo {
   id: string;
   slug: string;
@@ -222,11 +227,13 @@ export interface SpaceIssue {
   createdByType?: "user" | "registered_agent";
   createdById?: string;
   createdByUserId?: string;
-  creator?: SpaceUserSummary;
+  creator?: SpaceIdentitySummary;
+  assignee?: SpaceIdentitySummary | null;
+  assignedAt?: string | null;
   notificationVersion?: number;
   goalPathLabel?: string | null;
   status?: string;
-  author?: SpaceUserSummary;
+  author?: SpaceIdentitySummary;
   tags?: SpaceTag[];
   commentCount?: number;
   attachmentCount?: number;
@@ -237,12 +244,7 @@ export interface SpaceIssue {
 
 export interface SpaceIssueComment {
   id: string;
-  author: {
-    id: string;
-    type: "user" | "registered_agent" | "system";
-    name?: string | null;
-    avatarUrl?: string | null;
-  };
+  author: SpaceIdentitySummary & { type: "user" | "registered_agent" | "system" };
   body: string;
   createdAt: string;
 }
@@ -295,6 +297,7 @@ export interface SpaceIssueDetail {
   comments: {
     items: SpaceIssueComment[];
     hasMore: boolean;
+    hasMoreOlder?: boolean;
     nextCursor?: string | null;
     limit: number;
   };
@@ -537,12 +540,29 @@ export interface SpaceDeliveryItem {
     spaceId: string;
     issueId: string;
     registeredAgentId: string;
-    deliveryKind?: "subscription" | "claim_followup" | string | null;
+    deliveryKind?: "subscription" | "assignment" | "claim_followup" | string | null;
     subscriptionId?: string | null;
     claimId?: string | null;
     notificationVersion: number;
     updateSummary?: string | null;
     targetSessionId?: string | null;
+    cloudInstruction?: {
+      id: string;
+      text: string;
+    } | null;
+    trigger?: {
+      updateId: string;
+      type: string;
+      actor?: { type: string; id?: string | null; name?: string | null } | null;
+      createdAt: string;
+      comment?: {
+        id: string;
+        author: SpaceIdentitySummary;
+        createdAt: string;
+        body: string;
+        truncated: boolean;
+      } | null;
+    } | null;
     status: "pending" | "delivered" | "claimed" | "ignored" | string;
     deliveredToSessionId?: string | null;
     deliveredAt?: string | null;
@@ -555,6 +575,7 @@ export interface SpaceDeliveryItem {
     issueNumber?: number | null;
     title: string;
     state: SpaceIssueState | string;
+    assignee?: SpaceIdentitySummary | null;
     updatedAt: string;
   };
   goalMeta?: {
@@ -1165,6 +1186,7 @@ export function spaceCreateIssue(
     goalId?: string | null;
     parentIssueId?: string | null;
     humanOnly?: boolean;
+    assignee?: { type: "user" | "registered_agent"; id: string } | null;
   },
   spaceId = DEFAULT_SPACE_ID,
 ) {
@@ -1179,6 +1201,7 @@ export function spaceUpdateIssue(input: {
   issueId: string;
   title?: string;
   body?: string;
+  goalId?: string | null;
 }) {
   return spaceApi<{ issue: SpaceIssue }>(
     "PATCH",
@@ -1186,16 +1209,27 @@ export function spaceUpdateIssue(input: {
     {
       title: input.title,
       body: input.body,
+      goalId: input.goalId,
     },
   );
 }
 
-export function spaceGetIssue(id: string, commentsCursor?: string | null) {
-  const search = new URLSearchParams({ commentsLimit: "5" });
-  if (commentsCursor) search.set("commentsCursor", commentsCursor);
+export function spaceGetIssue(id: string) {
   return spaceApi<SpaceIssueDetail>(
     "GET",
-    `/api/issues/${encodeURIComponent(id)}?${search.toString()}`,
+    `/api/issues/${encodeURIComponent(id)}`,
+  );
+}
+
+export function spaceListIssueComments(
+  id: string,
+  input: { cursor?: string | null; limit?: number } = {},
+) {
+  const search = new URLSearchParams({ limit: String(input.limit ?? 20) });
+  if (input.cursor) search.set("cursor", input.cursor);
+  return spaceApi<SpaceIssueDetail["comments"]>(
+    "GET",
+    `/api/issues/${encodeURIComponent(id)}/comments?${search.toString()}`,
   );
 }
 
@@ -1212,6 +1246,25 @@ export function spaceSetIssueState(id: string, state: string) {
     "POST",
     `/api/issues/${encodeURIComponent(id)}/status`,
     { state },
+  );
+}
+
+export function spaceSetIssueAssignee(
+  id: string,
+  assignee: { type: "user" | "registered_agent"; id: string },
+) {
+  return spaceApi<{ issue: SpaceIssue }>(
+    "PUT",
+    `/api/issues/${encodeURIComponent(id)}/assignee`,
+    { assignee },
+  );
+}
+
+export function spaceCancelIssueAssignee(id: string) {
+  return spaceApi<{ issue: SpaceIssue }>(
+    "POST",
+    `/api/issues/${encodeURIComponent(id)}/assignee/cancel`,
+    {},
   );
 }
 

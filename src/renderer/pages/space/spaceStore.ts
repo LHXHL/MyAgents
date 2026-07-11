@@ -8,6 +8,7 @@ import {
   spaceCompleteIssue,
   spaceCreateIssue,
   spaceCancelIssueClaim,
+  spaceCancelIssueAssignee,
   spaceDeleteSkill,
   spaceDownloadIssueAttachment,
   spaceGetIssue,
@@ -21,6 +22,7 @@ import {
   spaceListSkillRevisions,
   spaceListGoals,
   spaceListIssues,
+  spaceListIssueComments,
   spaceListEvents,
   spaceListLocalAgents,
   spaceListRegisteredAgents,
@@ -31,6 +33,7 @@ import {
   spaceRollbackSkill,
   spaceSetActiveSpace,
   spaceSetIssueState,
+  spaceSetIssueAssignee,
   spaceUpdateProfile,
   spaceUpdateGoal,
   spaceUpdateIssue,
@@ -45,6 +48,7 @@ import {
   type SpaceEvent,
   type SpaceGoal,
   type SpaceIssue,
+  type SpaceIdentitySummary,
   type SpaceIssueDetail,
   type SpaceIssueSubscriptionRunMode,
   type SpaceRegisteredAgent,
@@ -231,12 +235,20 @@ export interface SpaceActions {
     body: string;
     goalId?: string | null;
     humanOnly?: boolean;
+    assignee?: { type: "user" | "registered_agent"; id: string } | null;
   }) => Promise<SpaceIssue>;
   updateIssue: (input: {
     issueId: string;
-    title: string;
-    body: string;
+    title?: string;
+    body?: string;
+    goalId?: string | null;
   }) => Promise<SpaceIssue>;
+  loadOlderIssueComments: (issueId: string) => Promise<void>;
+  setIssueAssignee: (
+    issueId: string,
+    assignee: { type: "user" | "registered_agent"; id: string },
+  ) => Promise<SpaceIssue>;
+  cancelIssueAssignee: (issueId: string) => Promise<SpaceIssue>;
   uploadIssueAttachments: (
     issueId: string,
     filePaths: string[],
@@ -821,8 +833,8 @@ function patchUserSummary<T extends SpaceUserSummary | null | undefined>(
   } as T;
 }
 
-function currentUserSummary(user: SpaceSession["user"]): SpaceUserSummary {
-  const summary: SpaceUserSummary = { id: user.id };
+function currentUserSummary(user: SpaceSession["user"]): SpaceIdentitySummary {
+  const summary: SpaceIdentitySummary = { id: user.id, type: "user" };
   if (Object.prototype.hasOwnProperty.call(user, "name")) {
     summary.name = user.name ?? null;
   }
@@ -871,9 +883,10 @@ function patchIssueDetailAuthorSummaries(
   };
 }
 
-function registeredAgentSummary(agent: LocalRegisteredAgent): SpaceUserSummary {
+function registeredAgentSummary(agent: LocalRegisteredAgent): SpaceIdentitySummary {
   return {
     id: agent.id,
+    type: "registered_agent",
     name: agent.displayName,
     avatarUrl: agent.avatarUrl ?? null,
     avatarPresetId: agent.avatarPresetId ?? null,
@@ -1806,6 +1819,50 @@ export const actions: SpaceActions = {
         : result.issue;
       patchIssueInLists(issue);
       return issue;
+    }),
+
+  loadOlderIssueComments: (issueId) =>
+    withSpaceMutationMetric("issue.comments.older", async () => {
+      const current = state.issueDetails[detailKey(issueId)]?.detail;
+      if (!current?.comments.hasMore || !current.comments.nextCursor) return;
+      const page = await spaceListIssueComments(issueId, {
+        cursor: current.comments.nextCursor,
+        limit: 20,
+      });
+      patchIssueDetail(issueId, (detail) => {
+        const existingIds = new Set(detail.comments.items.map((item) => item.id));
+        const older = page.items.filter((item) => !existingIds.has(item.id));
+        return {
+          ...detail,
+          comments: {
+            ...detail.comments,
+            ...page,
+            items: [...older, ...detail.comments.items],
+          },
+        };
+      });
+    }),
+
+  setIssueAssignee: (issueId, assignee) =>
+    withSpaceMutationMetric("issue.assignee.set", async () => {
+      const requestKey = `issue:${detailKey(issueId)}`;
+      const requestSeq = startRequest(requestKey);
+      const result = await spaceSetIssueAssignee(issueId, assignee);
+      if (isLatest(requestKey, requestSeq)) {
+        patchIssueInLists(result.issue, { preserveOrder: true });
+      }
+      return result.issue;
+    }),
+
+  cancelIssueAssignee: (issueId) =>
+    withSpaceMutationMetric("issue.assignee.cancel", async () => {
+      const requestKey = `issue:${detailKey(issueId)}`;
+      const requestSeq = startRequest(requestKey);
+      const result = await spaceCancelIssueAssignee(issueId);
+      if (isLatest(requestKey, requestSeq)) {
+        patchIssueInLists(result.issue, { preserveOrder: true });
+      }
+      return result.issue;
     }),
 
   createGoal: (input) =>

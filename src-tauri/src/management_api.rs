@@ -180,6 +180,14 @@ pub async fn start_management_api() -> Result<u16, String> {
             "/api/space/issue-comment",
             post(space_issue_comment_handler),
         )
+        .route(
+            "/api/space/issue-comments",
+            post(space_issue_comments_handler),
+        )
+        .route(
+            "/api/space/issue-comment-get",
+            post(space_issue_comment_get_handler),
+        )
         .route("/api/space/issue-status", post(space_issue_status_handler))
         .route("/api/space/issue-claim", post(space_issue_claim_handler))
         .route(
@@ -2712,6 +2720,18 @@ async fn space_issue_comment_handler(
     space_result(crate::space_cloud::space_cli_issue_comment(input).await)
 }
 
+async fn space_issue_comments_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliIssueCommentsInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_issue_comments(input).await)
+}
+
+async fn space_issue_comment_get_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliIssueCommentGetInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_issue_comment_get(input).await)
+}
+
 async fn space_issue_status_handler(
     Json(input): Json<crate::space_cloud::SpaceCliIssueStatusInput>,
 ) -> Json<serde_json::Value> {
@@ -3736,6 +3756,26 @@ mod tests {
         );
         assert_eq!(
             comment_result
+                .pointer("/data/comment/body")
+                .and_then(Value::as_str),
+            Some("management api comment")
+        );
+        let comment_id = comment_result
+            .pointer("/data/comment/id")
+            .and_then(Value::as_str)
+            .expect("comment id")
+            .to_string();
+        let Json(exact_result) = space_issue_comment_get_handler(Json(
+            crate::space_cloud::SpaceCliIssueCommentGetInput {
+                issue_id: "iss_mock_004".to_string(),
+                comment_id,
+                agent_id: Some("rag_mock_frontend".to_string()),
+                workspace_path: None,
+            },
+        ))
+        .await;
+        assert_eq!(
+            exact_result
                 .pointer("/data/comment/body")
                 .and_then(Value::as_str),
             Some("management api comment")

@@ -18,9 +18,9 @@ Cloud Space 横跨两个独立版本、独立发布的仓库，不能把其中�
 本地平级 checkout 中，云端架构文档地址是 `../MyAgents_space/specs/ARCHITECTURE.md`。截至 2026-07-12，最近一次联合校验基线为：
 
 - Desktop：`package.json` 为 `0.2.50` 开发线；Space 客户端行为基线 commit `4594dd8`。检查时最近的 Desktop release tag 仍是 `v0.2.49`，因此这里描述的是下一开发版本，不代表已发布客户端。
-- Cloud：`MyAgents_space` release `v0.1.1` / commit `1201e7c`；其 `dev/0.1.2` 从该版本起步，尚无新契约差异。
+- Cloud：`MyAgents_space` `dev/0.1.2` / commit `3e22d18`，已包含 assignee、三类 delivery、trigger/cloud instruction、评论分页与 complete 幂等复合动作；仍待随 Cloud 独立发布流程上线。
 
-已知差异：Desktop `0.2.50` 的 types/connector 已能前向解析 `claim_followup`、`targetSessionId`，mock 也实现了定向回原 claim session；Space `v0.1.1` 的 `issue_deliveries` 仍全部依附 Goal subscription，poll payload 不返回这两个字段。生产评论更新当前仍走 subscription fanout，所以客户端必须把 follow-up 模式视为 forward-compatible 能力，不能视为 `v0.1.1` 已上线契约。
+发布兼容：Cloud 先 additive 部署；请求 `X-MyAgents-Client-Version < 0.2.50` 时只返回旧 subscription projection，assignment/follow-up 保持云端 pending，不得降级为 subscription。Desktop `0.2.50` 才消费 `deliveryKind/cloudInstruction/trigger/assignee`。旧 pending subscription 缺 `deliveryKind` 时，客户端只走显式 legacy fallback；字段存在但 kind 未知时 fail closed 并留待升级处理。
 
 这个组合是兼容记录，不是版本绑定。当前 API 没有 URL version prefix；双方通过 additive response、缺省字段 fallback 和 rollout 兼容旧调用方。修改 API 字段、错误码、状态机、permission、poll/presence 或兼容策略时，必须同步更新 Space serializer/tests/架构文档与本仓 types/wrapper/tests/本文。只改 Desktop UI 或本地执行且云端契约不变时，不要把客户端细节复制进云端文档；只改 Worker 内部实现且无契约变化时也不要求改本文。
 
@@ -52,7 +52,7 @@ Phase 2 为本地验证和自动化测试新增了显式 mock mode：
 | Rust         | `src-tauri/src/space_cloud.rs`                                | Space session、HTTP proxy、registered agents、IssueDelivery poll/process、claim wrapper、Skill zip、附件上传下载                                                                                                                                                                                                                   |
 | Renderer API | `src/renderer/api/spaceCloud.ts`                              | Tauri invoke typed wrapper；不直接 `fetch` Space 服务                                                                                                                                                                                                                                                                              |
 | Renderer UI  | `src/renderer/pages/Space.tsx` + `src/renderer/pages/space/*` | Space shell 与 Issues / Skills / Agents 三个 workspace，登录轮询、创建/评论/Goal 订阅、Skill 安装、本地缓存                                                                                                                                                                                                                        |
-| CLI          | `src/cli/myagents.ts` + Management API                        | Agent 可调用的 Space issue list/view/comment/claim/ignore/complete/cancel、claim local-task 与 attachment download 操作；`space issue claim --create-attached` 负责编排 claim -> attached Task -> local task ref，`space issue complete --taskId ... --body-file ...` 负责编排 result comment -> cloud complete -> local task done |
+| CLI          | `src/cli/myagents.ts` + Management API                        | Agent 可调用的 Space issue list/view/comments/comment get/comment/claim/ignore/complete/cancel、claim local-task 与 attachment download；claim saga 按 `origin` 约束回滚，complete 用 `operationKey` 原子完成结果评论 + Cloud Issue，再幂等收口本地 Task |
 
 ## Cloud Worker 容量与一致性不变量
 
@@ -125,7 +125,7 @@ Legacy 兼容规则：
 
 ## 网络与安全
 
-- 所有 Space HTTP 请求由 Rust `reqwest` 发起，并带 build-time public client id header；renderer 不持有 session token。
+- 所有 Space HTTP 请求由 Rust `reqwest` 发起；renderer 不持有 session token。认证、JSON、multipart、raw download、generic renderer proxy、delivery poll/ACK/presence 全部复用 `with_space_client_context_headers`，统一带 public client id、客户端版本、device id、platform、OS version、`Accept-Language` 与 `User-Agent`。设备事实来自进程内缓存的 `current_device_identity()`，不能由各调用方自行拼接。
 - 用户可控 workspace 路径进入 Rust 后必须通过 `validate_workspace_root`。
 - 写入 workspace 的附件下载走 `resolve_inside_workspace`，只能落在目标 workspace 内。
 - Skill zip 安装有总大小、单文件大小、entry 数限制，并防 Zip-Slip；安装目标只允许 global 或当前 project。
@@ -149,13 +149,14 @@ Cloud Worker 用 `users.name_source` / `avatar_source` 区分登录资料、MyAg
 
 ## IssueDelivery / Claim 处理
 
-Registered Agent 可从 Space 拉取 IssueDelivery，并将其作为轻量通知注入到本地 AI session。Issue claim 在产品语义上是 Issue 的唯一经办人/接手人，不是脱离 Issue 的独立任务或锁 owner；产品生命周期仍由 Issue 自身的 `state` 表达。`issue_claims.status` 是云端执行层的 operational 状态：`active` 用于唯一经办人和 poll 快路径，`completed` / `cancelled` 用于结束或释放该经办关系。定向 follow-up 是客户端已预留、云端 `v0.1.1` 尚未实现的后续契约。
+Registered Agent 从 Space 拉取 IssueDelivery，并将其作为轻量通知注入本地 AI session。`Issue.assignee` 是持久责任真相源，可以是真人、Registered Agent 或空，且独立于 Issue `state`；`issue_claims` 只记录 Agent/用户执行层的 operational claim 与本地 Task/Session 连接。完成/关闭保留 assignee，显式取消指派才会清空 assignee、取消 active claim、回到 `todo` 并重新按订阅规则发现。
 
 1. `cmd_space_register_agent` 在云端创建 registered agent，并写入本地映射。
 2. Rust 启动时调用 `start_space_connector()` 创建进程内 connector。connector 按本地 runnable registered agents 维护每个 agent 的 `next_due_at`、`empty_streak`、`last_interval_secs`；`cmd_space_wake_connector` 只是唤醒 connector，`cmd_space_process_deliveries_once` 仅保留为手动强制处理入口。
-3. Rust 通过 session inbox 注入 `space.issue_delivery` metadata 和固定处理指令，写 `delivery_log.json`，再调用 `cmd_space_mark_delivery_delivered` 对云端确认。最终进入 AI session 的 user message 由 Rust 渲染为 `<system-reminder><myagents-space-issue><myagents-space-event ...>` 结构：`system-reminder` 隐藏内部 payload，`myagents-space-issue` 供前端展示 `Space issue` badge，`myagents-space-event` 内部拆成 `<issue-instruction>` / `<runtime-context>` / 一个或多个 `<issue>`。`<issue-instruction>` 是简版 skill，统一要求 Agent 使用 `myagents space issue` CLI；`<issue>` 只放事实数据，不重复 action 命令。`system-reminder` 的通用展示协议见 `system_reminder_protocol.md`。
-4. AI session 决定处理时调用 `myagents space issue claim <issueId> --deliveryId <deliveryId> --create-attached ...`。CLI 会先 claim，再创建 attached-session Task，再回写 `claim.localTaskId/localSessionId`；若本地 Task 创建或回写失败，CLI 立即调用 `cancel-claim` 让 Issue 回到 `todo`。
-5. AI session 完成执行时优先调用 `myagents space issue complete <issueId> --taskId <taskId> --body-file result.md --message "..."`，由 CLI 顺序完成 result comment、云端 Issue state 更新、本地 Task 状态更新。`complete` 保留并标记 claim 为 `completed`；`done + completed claim` 表示该 Issue 已由该经办人处理完成。
+3. Rust 严格解析 delivery snapshot，再通过 session inbox 注入 `space.issue_delivery`。最终 user message 仍由 Rust 渲染为 `<system-reminder><myagents-space-issue><myagents-space-event ...>`：`<cloud-issue-instruction>` 是创建 delivery 时固化的云端业务规则；`<local-execution-instruction>` 是当前客户端真实 CLI/workspace/Task 方法；`<trigger>` 与 Issue facts 一起放在对应 `<issue>` 内。Cloud/user 文本必须做长度约束和 XML escape。`system_reminder_protocol.md` 负责通用隐藏展示协议。
+4. subscription 只有 instruction id/text 相同才可 batch；assignment 永远单 Issue turn，并按 Agent 初始 session 策略选择；claim-followup 必须带 `targetSessionId` 并回到原 local Session。未知新 kind 不可猜成 subscription。
+5. AI 建立本地执行上下文时调用 `claim --create-attached`。Cloud 返回的 active claim 若已有 `localTaskId/localSessionId`，CLI 直接复用；否则 claim -> create attached Task -> bind。失败回滚必须看 claim `origin`：`self_claim` 带 claimed notification version 做 CAS，可撤回本次 assignee；`assignment_confirmation` 只撤 operational claim，绝不能清掉管理员指派。
+6. 完成命令把 `resultComment` 与稳定 `operationKey` 一次发送给 Cloud；Cloud 原子写结果评论、Issue done、claim completed、update/event/delivery。Cloud 成功后 CLI 才更新本地 Task，更新前先读 Task：已经 done 即成功，不发 `done -> done`。成功输出明确提醒不要再次调用 `task update-status`。
 
 Delivery connector 的轮询节奏由云端提示 + 本地执行机制共同决定：
 
@@ -165,19 +166,22 @@ Delivery connector 的轮询节奏由云端提示 + 本地执行机制共同决�
 - connector 读取当前 `baseUrl + user + device` 下全部 active 本地 Agent，不受 Renderer 当前选中 Space 限制；当前 Space 只属于导航/页面状态。每轮 delivery **GET 成功**即保留 poll-success 事实，后续 delivery 解析、session 注入或 ACK 失败不能把活跃客户端误判为离线。
 - 某设备组至少一次 poll 成功后，现有 connector owner 按 `(baseUrl, ownerUserId, deviceId)` 从组内选稳定 token，至多每 60 秒尝试一次 device-presence touch。失败尝试同样进入 60 秒节流，并在下一轮优先换用组内其他 token；一个设备有多个 Agent 也只写一次。不新增 loop，delivery GET 继续纯读。
 
-客户端模型区分两种 Delivery mode，但当前云端版本只发出第一种：
+客户端模型区分三种 Delivery mode：
 
-- `subscription`（Space `v0.1.1` 当前行为）：普通 Goal 订阅通知，用于让 Agent 发现 `todo` Issue。客户端按 Registered Agent 的 Issue 订阅策略选择 session：连续对话复用 `delivery_session_id`，新对话使用 `issue_session_ids[issueId]`。
-- `claim_followup`（Desktop `0.2.50` forward-compatible 行为）：未来云端发出时必须携带 `targetSessionId = claim.localSessionId`，客户端优先投递到该 session，确保同一 Issue 的连续处理回到原本地上下文。缺字段的 `v0.1.1` payload 不得被客户端猜成 follow-up。
+- `subscription`：仅在 assignee 为空且 Goal path + `stateFilter` 命中时广播，是发现通知，不授予责任。
+- `assignment`：人工创建/改派给 Registered Agent 时定向生成，无视该 Agent 是否订阅 Goal；不能与 subscription 混批。
+- `claim_followup`：assignee Agent 责任内由其它身份产生的后续 update，定向 `claim.localSessionId`；Agent 自己触发的 update 不回投。
 
-Space `v0.1.1` 的评论更新仍按 subscription fanout，不保证回到 active claim 的 `localSessionId`。未来云端实现 `claim_followup` 时，目标契约是：
-
-- 如果 Issue 的经办人是 Registered Agent，且评论作者不是该经办人，则生成 `claim_followup` delivery。
-- 经办人自己评论或完成 Issue 时，不把这条评论回推给自己，避免自循环。
-- 没有 claim 经办人时，评论更新回到普通 subscription delivery 规则。
-- `cancel-claim` 清空 Issue 经办人，并让 Issue 回到 `todo`；后续更新不再投给原经办人。
+delivery 只是投送事实，不是 claim/assignee；多个 Agent 可以感知同一未指派 Issue，但只有一个 assignee。用户主动指派真人时不向 Agent 发送；主动指派 Agent 时只给该 Agent。delivery 被客户端成功注入并 ACK 后云端从 pending 消费队列移除，历史行仍保留 delivered 状态用于审计。
 
 该链路保持“云端关注/认领、客户端执行”的边界：云端不直接访问本地文件系统或 Sidecar；本地执行仍走 MyAgents 的 Task/Session 体系。兼容命令 `cmd_space_poll_dispatches` / `cmd_space_process_dispatches_once` 仅作为旧调用方别名保留，语义已映射到 delivery。
+
+## Issue 详情任务卡与评论窗口
+
+- 详情页顶部元信息只保留 Issue 编号、创建者与创建时间。正文/附件之后、评论之前是一张低高度任务卡，同一行集中展示创建人、Goal、状态、经办人；Owner/Admin 可在卡内改 Goal、状态和任意有效经办人。
+- 经办人 picker 的默认列表是 active Registered Agents，其后是当前 Space/user 本机最近选择过的真人；搜索时统一搜索 Agent + Space members。Member 只暴露认领自己/释放自己，Cloud 权限仍是最终边界。
+- picker 当前选择行右侧 X 经过 ConfirmDialog 执行“取消指派”复合动作。详情值区域点击整个人名打开 picker，Agent tag 在这里不承担 owner tooltip；创建者和评论作者是只读身份，灰色 `Agent` tag 可点击显示 Agent owner 的 Space 名称。
+- Issue detail 固定返回最新 5 条评论且按时间正序展示。更早评论通过 `GET /api/issues/:id/comments?cursor=...&limit=20` prepend，按 comment id 去重并补偿外层 scroll height 保持阅读锚点。delivery trigger 指定评论时，CLI 用 `space issue comment get <issueId> <commentId>` 精确读取，不扫描分页。
 
 ## Issue 编号模型
 

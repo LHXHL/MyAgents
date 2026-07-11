@@ -77,7 +77,8 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
         key === 'stdin' ||
         key === 'active' ||
         key === 'archived' ||
-        key === 'create-attached'
+        key === 'create-attached' ||
+        key === 'rollback'
       ) {
         flags[camelCase(key)] = key === 'create-attached'
           ? parseInlineBooleanFlag(key, inlineValue)
@@ -306,6 +307,7 @@ Examples:
       --workspaceId proj --workspacePath /path/to/proj \\
       --name "Space Issue #123" --taskMdContent-file task.md
   myagents space issue comment <issueId> --body-file result.md
+  myagents space issue comment get <issueId> <commentId> --json
   myagents space issue complete <issueId> --taskId <taskId> --body-file result.md \\
       --message "completed Space issue"
   myagents space issue delivery ignore <deliveryId>
@@ -2076,7 +2078,7 @@ async function main(): Promise<void> {
   if (result && !result.success) process.exit(1);
 }
 
-function buildRoute(group: string, action: string, rest: string[]): string {
+export function buildRoute(group: string, action: string, rest: string[]): string {
   // `diagnose runtime <type>` sugar maps to `runtime/diagnose` so handlers
   // and admin routes stay singular (issue #194).
   if (group === 'diagnose' && action === 'runtime') {
@@ -2128,7 +2130,8 @@ function buildRoute(group: string, action: string, rest: string[]): string {
     const issueAction = rest[0] || 'get';
     if (issueAction === 'list') return 'space/issue-list';
     if (issueAction === 'get' || issueAction === 'view') return 'space/issue-get';
-    if (issueAction === 'comments') return 'space/issue-get';
+    if (issueAction === 'comments') return 'space/issue-comments';
+    if (issueAction === 'comment' && rest[1] === 'get') return 'space/issue-comment-get';
     if (issueAction === 'comment') return 'space/issue-comment';
     if (issueAction === 'status') return 'space/issue-status';
     if (issueAction === 'claim') return 'space/issue-claim';
@@ -2342,7 +2345,7 @@ function buildAttachedTaskBodyForSpaceClaim(
   const workspacePath = optionalNonEmptyStringFlag(flags.workspacePath, 'workspacePath')
     ?? stringValue(claimBody, 'workspacePath')
     ?? process.cwd();
-  const taskMdContent = resolveTaskMdContent(flags);
+  const taskMdContent = resolveTaskMdContent(flags, workspacePath);
   if (typeof taskMdContent !== 'string' || !taskMdContent.trim()) {
     console.error('Error: space issue claim --create-attached requires --taskMdFile, --taskMdContentFile, or --taskMdContent');
     process.exit(2);
@@ -2374,16 +2377,39 @@ function buildAttachedTaskBodyForSpaceClaim(
   };
 }
 
-function buildClaimCancelBody(claimBody: Record<string, unknown>): Record<string, unknown> {
+export function buildClaimCancelBody(
+  claimBody: Record<string, unknown>,
+  claimResult: Record<string, unknown>,
+): Record<string, unknown> {
+  const cloudData = objectValue(claimResult.data) ?? {};
+  const claim = extractClaimData(claimResult.data);
+  const origin = stringValue(claim, 'origin') ?? 'self_claim';
   return {
     issueId: claimBody.issueId,
     agentId: claimBody.agentId,
     workspacePath: claimBody.workspacePath,
+    rollback: true,
+    ...(origin === 'self_claim'
+      ? { expectedNotificationVersion: cloudData.notificationVersion }
+      : {}),
   };
 }
 
-async function cancelClaimAfterAttachedFailure(claimBody: Record<string, unknown>): Promise<Record<string, unknown>> {
-  return callApi('space/issue-cancel-claim', buildClaimCancelBody(claimBody));
+export function buildSpaceCompleteOperationKey(input: {
+  issueId: string;
+  taskOrSessionId: string;
+  resultComment?: string;
+}): string {
+  const crypto = require('crypto') as typeof import('crypto');
+  const basis = [input.issueId, input.taskOrSessionId, input.resultComment ?? ''].join('\0');
+  return `desktop-complete-${crypto.createHash('sha256').update(basis).digest('hex')}`;
+}
+
+async function cancelClaimAfterAttachedFailure(
+  claimBody: Record<string, unknown>,
+  claimResult: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  return callApi('space/issue-cancel-claim', buildClaimCancelBody(claimBody, claimResult));
 }
 
 async function stopAttachedTaskAfterClaimFailure(
@@ -2398,7 +2424,7 @@ async function stopAttachedTaskAfterClaimFailure(
 }
 
 function rollbackSuffix(rollback: Record<string, unknown>): string {
-  if (rollback.success) return 'The cloud claim was cancelled.';
+  if (rollback.success) return 'The operational cloud claim rollback completed.';
   return `Cloud claim cancellation also failed: ${String(rollback.error ?? 'unknown error')}.`;
 }
 
@@ -2440,7 +2466,7 @@ async function claimSpaceIssueWithAttachedTask(
   const claim = extractClaimData(claimResult.data);
   const claimId = stringValue(claim, 'id', 'claimId');
   if (!claimId) {
-    const rollback = await cancelClaimAfterAttachedFailure(claimBody);
+    const rollback = await cancelClaimAfterAttachedFailure(claimBody, claimResult);
     return failedAttachedClaimResult(
       'Issue claim succeeded but the response did not include a claim id.',
       claimResult,
@@ -2451,9 +2477,32 @@ async function claimSpaceIssueWithAttachedTask(
   if (!taskBody.sourceSpaceId) taskBody.sourceSpaceId = stringValue(claim, 'spaceId');
   taskBody.sourceClaimId = claimId;
 
+  const existingTaskId = stringValue(claim, 'localTaskId');
+  const existingSessionId = stringValue(claim, 'localSessionId');
+  if (existingTaskId && existingSessionId) {
+    return {
+      success: true,
+      data: {
+        issueId: claimBody.issueId,
+        claim,
+        task: { id: existingTaskId },
+        localSessionId: existingSessionId,
+        reusedExistingLink: true,
+      },
+      hint: 'Issue assignment already has an attached local Task/Session; reused the existing link.',
+    };
+  }
+  if (existingTaskId || existingSessionId) {
+    return {
+      success: false,
+      error: 'The cloud claim has an incomplete local Task/Session link. Refusing to create a duplicate Task; repair the existing link first.',
+      data: { issueId: claimBody.issueId, claim },
+    };
+  }
+
   const taskResult = await callApi('task/create-attached', taskBody);
   if (!taskResult.success) {
-    const rollback = await cancelClaimAfterAttachedFailure(claimBody);
+    const rollback = await cancelClaimAfterAttachedFailure(claimBody, claimResult);
     return failedAttachedClaimResult(
       `Issue claim succeeded but attached task creation failed: ${String(taskResult.error ?? 'unknown error')}.`,
       claimResult,
@@ -2465,7 +2514,7 @@ async function claimSpaceIssueWithAttachedTask(
   const task = extractTaskData(taskResult.data);
   const taskId = stringValue(task, 'id', 'taskId');
   if (!taskId) {
-    const rollback = await cancelClaimAfterAttachedFailure(claimBody);
+    const rollback = await cancelClaimAfterAttachedFailure(claimBody, claimResult);
     return failedAttachedClaimResult(
       'Issue claim and attached task creation succeeded, but the task response did not include a task id.',
       claimResult,
@@ -2492,7 +2541,7 @@ async function claimSpaceIssueWithAttachedTask(
       taskId,
       'Space claim local-task binding failed; cloud claim cancelled.',
     );
-    const rollback = await cancelClaimAfterAttachedFailure(claimBody);
+    const rollback = await cancelClaimAfterAttachedFailure(claimBody, claimResult);
     const linkError = localTaskResult.success
       ? 'cloud response did not confirm the requested local task/session binding'
       : String(localTaskResult.error ?? 'unknown error');
@@ -2551,59 +2600,89 @@ async function completeSpaceIssueWithLocalFollowup(
   const taskStatus = taskId ? 'done' : undefined;
   const message = optionalNonEmptyStringFlag(flags.message, 'message');
 
-  let commentResult: Record<string, unknown> | undefined;
+  let resultComment: string | undefined;
   if (hasSpaceCommentBodyFlags(flags)) {
-    const body = resolveSpaceCommentBody(flags, workspacePath);
-    if (!body.trim()) {
+    resultComment = resolveSpaceCommentBody(flags, workspacePath);
+    if (!resultComment.trim()) {
       console.error('Error: space issue complete comment body is empty. Use --body, --body-file, or omit comment flags.');
       process.exit(2);
     }
-    commentResult = await callApi('space/issue-comment', {
-      issueId,
-      body,
-      agentId: completeBody.agentId,
-      workspacePath,
-    });
-    if (!commentResult.success) return commentResult;
   }
 
-  const completeResult = await callApi('space/issue-complete', completeBody);
+  let existingTaskStatus: string | undefined;
+  let taskAlreadyDone = false;
+  let taskRead: Record<string, unknown> | undefined;
+  if (taskId) {
+    taskRead = await callApi('task/get', { id: taskId });
+    if (!taskRead.success) {
+      return {
+        success: false,
+        error: `Cannot complete the Space Issue because attached Task ${taskId} could not be read: ${String(taskRead.error ?? 'unknown error')}.`,
+        data: { issueId, taskId, taskRead },
+      };
+    }
+    existingTaskStatus = stringValue(extractTaskData(taskRead.data), 'status');
+    taskAlreadyDone = existingTaskStatus === 'done';
+    if (!taskAlreadyDone && existingTaskStatus !== 'running' && existingTaskStatus !== 'verifying') {
+      return {
+        success: false,
+        error: `Cannot complete the Space Issue while attached Task ${taskId} is ${existingTaskStatus ?? 'in an unknown state'}. Move the Task to running or verifying first; the cloud Issue was not changed.`,
+        data: { issueId, taskId, taskStatus: existingTaskStatus, taskRead },
+      };
+    }
+  }
+
+  const operationKey = buildSpaceCompleteOperationKey({
+    issueId,
+    taskOrSessionId: taskId ?? process.env.MYAGENTS_SESSION_ID ?? 'no-local-task',
+    resultComment,
+  });
+  const completeResult = await callApi('space/issue-complete', {
+    ...completeBody,
+    resultComment,
+    operationKey,
+  });
   if (!completeResult.success) {
     return {
       success: false,
       error: String(completeResult.error ?? 'Issue completion failed'),
       data: {
         issueId,
-        comment: commentResult?.data,
         issueComplete: completeResult,
+        operationKey,
       },
     };
   }
 
   let taskResult: Record<string, unknown> | undefined;
-  if (taskId && taskStatus) {
+  if (taskId && taskStatus && !taskAlreadyDone) {
     taskResult = await callApi('task/update-status', {
       id: taskId,
       status: taskStatus,
       message,
     });
     if (!taskResult.success) {
-      return {
-        success: false,
-        error: `Issue completed but local task status update failed: ${String(taskResult.error ?? 'unknown error')}.`,
-        recoveryHint: {
-          recoveryCommand: `myagents task update-status ${taskId} done --message "completed Space issue"`,
-          message: 'Cloud Issue is already complete; rerun this command to close the local Task.',
-        },
-        data: {
-          issueId,
-          comment: commentResult?.data,
-          issueComplete: completeResult.data,
-          taskId,
-          taskStatus,
-          taskUpdate: taskResult,
-        },
-      };
+      const taskAfterFailure = await callApi('task/get', { id: taskId });
+      taskAlreadyDone = taskAfterFailure.success === true
+        && stringValue(extractTaskData(taskAfterFailure.data), 'status') === 'done';
+      if (!taskAlreadyDone) {
+        return {
+          success: false,
+          error: `Issue completed but local task status update failed: ${String(taskResult.error ?? 'unknown error')}.`,
+          recoveryHint: {
+            recoveryCommand: `myagents space issue complete ${shellQuoteArg(issueId)} --workspacePath ${shellQuoteArg(workspacePath)} --taskId ${shellQuoteArg(taskId)} --message "completed Space issue"`,
+            message: 'Cloud Issue is already complete; rerun the Space completion command so it can finish the local Task transition safely.',
+          },
+          data: {
+            issueId,
+            issueComplete: completeResult.data,
+            taskId,
+            taskStatus,
+            taskUpdate: taskResult,
+            taskAfterFailure,
+          },
+        };
+      }
     }
   }
 
@@ -2611,13 +2690,17 @@ async function completeSpaceIssueWithLocalFollowup(
     success: true,
     data: {
       issueId,
-      comment: commentResult?.data,
       issueComplete: completeResult.data,
+      operationKey,
       taskId,
       taskStatus,
+      taskAlreadyDone,
       taskUpdate: taskResult?.data,
     },
-    hint: taskId ? 'Issue completed and local task status updated.' : 'Issue completed.',
+    hint: taskId
+      ? 'Issue completed. Attached task has already been marked done. Do not call task update-status again.'
+      : 'Issue completed.',
+    nextAction: taskId ? 'Do not update the attached Task status again.' : undefined,
   };
 }
 
@@ -2747,7 +2830,22 @@ export function buildRequestBody(
           workspacePath,
         };
       }
-      if (issueAction === 'get' || issueAction === 'view' || issueAction === 'comments') {
+      if (issueAction === 'comments') {
+        const requiredIssueId = requirePositional(
+          issueId as string | undefined,
+          'issueId',
+          'space issue comments',
+          'issueId',
+        );
+        return {
+          issueId: requiredIssueId,
+          agentId: flags.agentId,
+          workspacePath,
+          cursor: flags.cursor,
+          limit: optionalNumberFlag(flags.limit) ?? 20,
+        };
+      }
+      if (issueAction === 'get' || issueAction === 'view') {
         const requiredIssueId = requirePositional(
           issueId as string | undefined,
           'issueId',
@@ -2758,11 +2856,31 @@ export function buildRequestBody(
           issueId: requiredIssueId,
           agentId: flags.agentId,
           workspacePath,
-          commentsLimit: optionalNumberFlag(flags.commentsLimit) ?? (flags.comments ? 20 : undefined),
+          commentsLimit: optionalNumberFlag(flags.commentsLimit) ?? (flags.comments ? 5 : undefined),
           commentsCursor: flags.commentsCursor ?? flags.cursor,
         };
       }
       if (issueAction === 'comment') {
+        if (rest[1] === 'get') {
+          const requiredIssueId = requirePositional(
+            (rest[2] || flags.issueId) as string | undefined,
+            'issueId',
+            'space issue comment get',
+            'issueId',
+          );
+          const requiredCommentId = requirePositional(
+            (rest[3] || flags.commentId) as string | undefined,
+            'commentId',
+            'space issue comment get',
+            'commentId',
+          );
+          return {
+            issueId: requiredIssueId,
+            commentId: requiredCommentId,
+            agentId: flags.agentId,
+            workspacePath,
+          };
+        }
         const requiredIssueId = requirePositional(
           issueId as string | undefined,
           'issueId',
@@ -2835,6 +2953,12 @@ export function buildRequestBody(
         );
         return {
           issueId: requiredIssueId,
+          ...(issueAction === 'cancel-claim'
+            ? {
+                rollback: truthyCliFlag(flags.rollback),
+                expectedNotificationVersion: optionalNumberFlag(flags.expectedNotificationVersion),
+              }
+            : {}),
           agentId: flags.agentId,
           workspacePath,
         };
@@ -3745,6 +3869,7 @@ const TASK_MD_MAX_BYTES = 1024 * 1024;
  */
 function resolveTaskMdContent(
   flags: Record<string, unknown>,
+  workspacePath?: string,
 ): string | undefined {
   const filePath = flags.taskMdFile ?? flags.taskMdContentFile;
   if (filePath !== undefined && filePath !== '') {
@@ -3753,6 +3878,9 @@ function resolveTaskMdContent(
       process.exit(2);
     }
     try {
+      if (workspacePath) {
+        return readWorkspaceTextFile(filePath, workspacePath);
+      }
       // Lazy require — same pattern as the cron `--prompt-file` reader
       // (keeps startup fast for commands that don't need fs).
       const fs = require('fs') as typeof import('fs');

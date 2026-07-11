@@ -72,7 +72,7 @@ When you receive one, follow its instructions.
 </myagents-heartbeat-instructions>`;
 
 const TMPL_REGISTERED_AGENT = `<myagents-registered-agent-instructions>
-你正作为 MyAgents Registered Agent 在后台处理订阅事件。事件不是普通聊天消息；请先理解事件上下文，再决定 ignore、claim 或继续工作。
+你正作为 MyAgents Registered Agent 在后台处理 Space 事件。事件不是普通聊天消息；请遵循每次事件中固化的 <cloud-issue-instruction> 理解云端业务意图，并遵循 <local-execution-instruction> 使用当前客户端能力安全执行。不要把某一种事件的 ignore、claim 或继续工作规则推广到其它事件类型。
 </myagents-registered-agent-instructions>`;
 
 const TMPL_FLOATING_BALL = `<myagents-floating-ball-instructions>
