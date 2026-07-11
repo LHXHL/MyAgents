@@ -1268,12 +1268,7 @@ export const PRESET_PROVIDERS: Provider[] = [
     },
     models: [
       { model: 'grok-4.5', modelName: 'Grok 4.5', modelSeries: 'grok', contextLength: 500_000, inputModalities: ['text', 'image'], outputModalities: ['text'], source: 'preset' },
-      { model: 'grok-build-0.1', modelName: 'Grok Build 0.1', modelSeries: 'grok', contextLength: 256_000, inputModalities: ['text'], outputModalities: ['text'], source: 'preset' },
       { model: 'grok-composer-2.5-fast', modelName: 'Grok Composer 2.5 Fast', modelSeries: 'grok', contextLength: 200_000, inputModalities: ['text'], outputModalities: ['text'], source: 'preset' },
-      { model: 'grok-4.3', modelName: 'Grok 4.3', modelSeries: 'grok', contextLength: 1_000_000, inputModalities: ['text', 'image'], outputModalities: ['text'], source: 'preset' },
-      { model: 'grok-4.20-0309-reasoning', modelName: 'Grok 4.20 Reasoning', modelSeries: 'grok', contextLength: 1_000_000, inputModalities: ['text'], outputModalities: ['text'], source: 'preset' },
-      { model: 'grok-4.20-0309-non-reasoning', modelName: 'Grok 4.20 Non-reasoning', modelSeries: 'grok', contextLength: 1_000_000, inputModalities: ['text'], outputModalities: ['text'], source: 'preset' },
-      { model: 'grok-4.20-multi-agent-0309', modelName: 'Grok 4.20 Multi-Agent', modelSeries: 'grok', contextLength: 1_000_000, inputModalities: ['text'], outputModalities: ['text'], source: 'preset' },
     ],
   },
   {

@@ -98,6 +98,17 @@ describe('normalizeProviderOrder', () => {
   });
 });
 
+describe('Grok subscription preset', () => {
+  it('bundles only the two core models and leaves the remaining catalog to discovery', () => {
+    const grok = PRESET_PROVIDERS.find(provider => provider.id === XAI_SUBSCRIPTION_PROVIDER_ID);
+    expect(grok?.primaryModel).toBe('grok-4.5');
+    expect(grok?.models.map(model => model.model)).toEqual([
+      'grok-4.5',
+      'grok-composer-2.5-fast',
+    ]);
+  });
+});
+
 describe('mergePresetModelWithCustomEntry', () => {
   const preset = {
     model: 'claude-fable-5',

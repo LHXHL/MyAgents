@@ -664,18 +664,11 @@ Hermes 不是模型目录权威。它的 xAI OAuth 列表来自 models.dev 磁�
 | 模型 ID | 展示名 | context | reasoning 参数策略 | 备注 |
 |---|---|---:|---|---|
 | grok-4.5 | Grok 4.5 | 500K | 支持 low / medium / high；默认不发送 | 首选模型 |
-| grok-build-0.1 | Grok Build 0.1 | 256K | 模型会推理，但不暴露 effort 开关 | Grok Build / coding |
 | grok-composer-2.5-fast | Grok Composer 2.5 Fast | 200K | 默认不发送 effort | OAuth 可用但可能不出现在 /v1/models，curated |
-| grok-4.3 | Grok 4.3 | 1M | 支持 none / low / medium / high；默认不发送 | 通用长上下文 |
-| grok-4.20-0309-reasoning | Grok 4.20 Reasoning | 1M | 固定推理形态，不发送 effort | catalog 变化需实测 |
-| grok-4.20-0309-non-reasoning | Grok 4.20 Non-reasoning | 1M | 无 reasoning 控件 | catalog 变化需实测 |
-| grok-4.20-multi-agent-0309 | Grok 4.20 Multi-Agent | 1M | 仅在验证支持时发送 effort | 模型名称不代表 MyAgents Runtime |
 
 primaryModel = grok-4.5。
 
-这些是 0.2.50 的启动 preset，不是永久平台契约。模型可见性最终取决于账号 entitlement；用户可以从 discovery 添加新模型，也可以手工输入 ID。
-
-注意：Hermes 当前硬编码 fallback 对 Grok 4.20 有过 2M 数值，而当前 catalog/官方校准口径为 1M。MyAgents 不继承该冲突值。真实账号 smoke 若返回不同 context_length，只记录差异并核对官方文档，不让 discovery 静默覆盖 bundled preset。
+0.2.50 只预置这两个最核心模型，不把动态 catalog 镜像进 bundled preset。其他模型的可见性最终取决于账号 entitlement；用户从下方 discovery 添加，或手工输入 ID。单次 discovery 缺失仍不能自动删除用户已经添加的模型。
 
 ### 8.3 max output
 
@@ -1213,3 +1206,4 @@ credentialed 测试只进 npm run test:credentialed 或 Rust 等价显式入口�
 - 2026-07-11：Phase 1/2 合并完成实现。新增 `xai-sub` preset、结构化 subscription auth policy、Rust app-global `GrokAuthManager`、独立 secret store、OIDC Device Code、refresh single-flight/rotation/quarantine、generation+session 校验的 Management API，以及不含 secret 的 `managed-oauth` ProviderEnv 引用；Bridge registry 改为 request-scoped async credential resolver，完成 401 一次恢复/原请求重试、第二次 401 quarantine、403/429 保留登录态和模型级 reasoning fail-safe。三轮 Phase 1 review 发现的 cancel/logout race、redirect、stale projection、grant lineage、空 token、`/models` 误标 valid 等问题均已在根因 owner 上修复；验证改为临时 builtin Sidecar → 既有 one-shot SDK → OpenAI Responses Bridge 真请求，只有 SDK terminal success 才由 Rust 按 expected grant lineage 投影 valid；普通 Bridge 2xx 不写状态，执行 bearer 与 verification bearer purpose 在 Rust owner 处硬隔离。
 - 2026-07-11：Phase 3 完成实现。Settings 复用现有 Provider card 外壳并加入独立 `GrokSubscriptionProvider` 状态/Device Code overlay；支持自动打开浏览器、URL/code 复制、poll、validating、重新验证、logout、关闭与卸载清理。`ModelManagementPanel` 增加统一 `discoveryAction`，Grok 通过 Rust 受管 OAuth 获取 `/v1/models` 原始 JSON，再复用共享 OpenAI parser、preset precedence、搜索与添加逻辑；补齐中英文 i18n、DOM/服务测试和架构文档。
 - 2026-07-11：最终自验证证据：TypeScript typecheck 通过；Grok/shared/session 单测与 Bridge 集成定向池通过；Grok card + ModelManagementPanel DOM 12 项通过；lint 通过（dependency-cruiser 仅有仓库既存 `chatSuggestions.ts` warning）；`cargo check --locked` 通过；Grok Rust auth 定向测试 19 项通过，覆盖 execution/verification purpose、lineage stale success/failure、rotation/cancel/logout、redirect、store 权限/损坏与 refresh 分类；cargo clippy 通过（仅仓库既存 warning）。三视角架构、代码质量与前端功能复审均 PASS，无阻断 finding。真实 Grok 账号 credentialed smoke 因当前环境没有可交互订阅凭据而未执行，保留为 §14 E 发布门槛；用户主路径最后一项“真实流式对话 + 本地工具调用”也随该 smoke 验证，不以 mock 证据冒充完成。
+- 2026-07-11：按产品收口决定，将 bundled Grok preset 从七个缩减为 `grok-4.5` 与 `grok-composer-2.5-fast` 两个核心模型；其他账号可见模型统一由模型管理面板下半区 discovery 添加。新增共享配置单测锁定精确 preset 清单，避免动态 catalog 再次膨胀默认列表。
