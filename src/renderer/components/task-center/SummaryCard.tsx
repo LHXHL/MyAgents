@@ -236,8 +236,8 @@ export function SummaryCard({ task, stats }: Props) {
           {task.runtime && task.runtime !== 'builtin' && (
             <MetaRow k="Runtime" v={task.runtime} mono />
           )}
-          {stats?.cronStatus && (
-            <MetaRow k={t('summary.scheduler')} v={stats.cronStatus} mono />
+          {stats?.schedulerStatus && (
+            <MetaRow k={t('summary.scheduler')} v={stats.schedulerStatus} mono />
           )}
           {stats?.sessionCount != null && stats.sessionCount > 0 && (
             <MetaRow k={t('summary.sessionCount')} v={String(stats.sessionCount)} />

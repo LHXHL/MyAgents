@@ -196,6 +196,7 @@ export function decideExternalInjectedTurnResult(params: {
   idleCompleted: boolean;
   turnSucceeded?: boolean;
   text?: string;
+  error?: string;
 }): InjectedTurnDecision {
   if (!params.idleCompleted) {
     return { success: false, error: 'Execution timed out', status: 408 };
@@ -203,7 +204,7 @@ export function decideExternalInjectedTurnResult(params: {
   if (!params.turnSucceeded) {
     return {
       success: false,
-      error: 'External runtime turn failed',
+      error: params.error ?? 'External runtime turn failed',
       status: 503,
     };
   }

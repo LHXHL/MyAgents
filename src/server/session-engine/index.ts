@@ -5,6 +5,8 @@ export {
   getSessionEngineKind,
   getSessionRuntimeType,
   stopActiveTurn,
+  stopOwnedTurn,
+  stopOwnedTurnByQueueId,
 } from './selector';
 export { goalOrchestrator } from './goal-orchestrator';
 export type {

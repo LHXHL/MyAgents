@@ -1,4 +1,5 @@
 import { findQueueLocation, moveQueueIndexToFront } from '../session-core/turn-queue';
+import type { TurnIdentity, TurnOwner } from '../session-core/turn-queue';
 import type {
   InFlightMetadata,
   MessageWire,
@@ -18,7 +19,13 @@ const pendingMidTurnQueue: PendingMidTurnQueueItem[] = [];
 const turnBoundaryQueue: TurnBoundaryQueueItem[] = [];
 let turnAdmissionTicket: TurnAdmissionTicket | null = null;
 let committingTurnAdmissionQueueId: string | null = null;
-let promotedItemInFlight = false;
+let promotedItem: {
+  queueId: string;
+  messageText: string;
+  turnOwner?: TurnOwner;
+  cancelDispatch?: () => void;
+  canceled: boolean;
+} | null = null;
 let inFlightToCliId: string | null = null;
 let forceSurfaceInFlightId: string | null = null;
 let awaitingAssistantStartAckQueueId: string | null = null;
@@ -43,10 +50,7 @@ export const queueState = {
     committingTurnAdmissionQueueId = queueId;
   },
   get promotedItemInFlight(): boolean {
-    return promotedItemInFlight;
-  },
-  set promotedItemInFlight(value: boolean) {
-    promotedItemInFlight = value;
+    return promotedItem !== null;
   },
   get inFlightToCliId(): string | null {
     return inFlightToCliId;
@@ -108,6 +112,15 @@ export function getMutableMessageQueueForOwner(): MessageQueueItem[] {
 
 export function getPendingMidTurnQueue(): readonly PendingMidTurnQueueItem[] {
   return pendingMidTurnQueue;
+}
+
+export function hasQueuedTurnByOwner(owner: TurnOwner): boolean {
+  const matches = (candidate: TurnOwner | undefined) =>
+    candidate?.kind === owner.kind && candidate.id === owner.id;
+  return messageQueue.some(item => matches(item.turnOwner))
+    || pendingMidTurnQueue.some(item => matches(item.sourceItem.turnOwner))
+    || turnBoundaryQueue.some(item => matches(item.sourceItem?.turnOwner))
+    || matches(promotedItem?.turnOwner);
 }
 
 export function getMutablePendingMidTurnQueueForOwner(): PendingMidTurnQueueItem[] {
@@ -196,11 +209,38 @@ export function hasQueuedOrInFlightWork(excludeAdmissionTicketId?: string): bool
 }
 
 export function isPromotedItemInFlight(): boolean {
-  return promotedItemInFlight;
+  return promotedItem !== null;
 }
 
-export function setPromotedItemInFlight(value: boolean): void {
-  promotedItemInFlight = value;
+export function beginPromotedItem(item: {
+  queueId: string;
+  messageText: string;
+  turnOwner?: TurnOwner;
+  cancelDispatch?: () => void;
+}): void {
+  promotedItem = { ...item, canceled: false };
+}
+
+export function cancelPromotedItem(queueId?: string): string | null {
+  if (!promotedItem || (queueId && promotedItem.queueId !== queueId)) return null;
+  promotedItem.canceled = true;
+  promotedItem.cancelDispatch?.();
+  return promotedItem.messageText;
+}
+
+export function isPromotedItemCanceled(queueId: string): boolean {
+  return promotedItem?.queueId === queueId && promotedItem.canceled;
+}
+
+export function clearPromotedItem(queueId?: string): void {
+  if (!promotedItem || (queueId && promotedItem.queueId !== queueId)) return;
+  promotedItem = null;
+}
+
+export function getPromotedTurnIdentity(): TurnIdentity | null {
+  return promotedItem?.turnOwner
+    ? { queueId: promotedItem.queueId, owner: promotedItem.turnOwner }
+    : null;
 }
 
 export function getInFlightQueueId(): string | null {
@@ -362,7 +402,7 @@ export function snapshotQueue() {
     turnBoundaryQueue: [...turnBoundaryQueue],
     turnAdmissionTicket,
     committingTurnAdmissionQueueId,
-    promotedItemInFlight,
+    promotedItemInFlight: promotedItem !== null,
     inFlightToCliId,
     forceSurfaceInFlightId,
     awaitingAssistantStartAckQueueId,
@@ -378,7 +418,7 @@ export function resetQueueForTest(): void {
   turnBoundaryQueue.length = 0;
   turnAdmissionTicket = null;
   committingTurnAdmissionQueueId = null;
-  promotedItemInFlight = false;
+  promotedItem = null;
   inFlightToCliId = null;
   forceSurfaceInFlightId = null;
   awaitingAssistantStartAckQueueId = null;

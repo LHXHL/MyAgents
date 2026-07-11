@@ -23,7 +23,6 @@ import {
   FLOATING_BALL_CONTEXT_TAG,
   GOAL_CONTEXT_TAG,
   GOAL_CONTINUATION_TAG,
-  GOAL_OBJECTIVE_UPDATED_TAG,
   SPACE_ISSUE_CONTEXT_TAG,
   parseLeadingSystemReminder,
 } from '../../shared/systemReminder';
@@ -259,7 +258,6 @@ function systemTagLabel(kind: string, t: (key: string) => string): string | null
   if (kind === FLOATING_BALL_CONTEXT_TAG) return t('message.systemTags.floatingContext');
   if (kind === SPACE_ISSUE_CONTEXT_TAG) return t('message.systemTags.spaceIssue');
   if (kind === GOAL_CONTINUATION_TAG || kind === GOAL_CONTEXT_TAG) return t('message.systemTags.goalMode');
-  if (kind === GOAL_OBJECTIVE_UPDATED_TAG) return t('message.systemTags.goalUpdate');
   return null;
 }
 
@@ -368,7 +366,6 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
       .replace(/<\/?FLOATING_BALL_CONTEXT>/g, '')
       .replace(/<\/?GOAL_CONTINUATION>/g, '')
       .replace(/<\/?GOAL_CONTEXT>/g, '')
-      .replace(/<\/?GOAL_OBJECTIVE_UPDATED>/g, '')
       .replace(/<\/?myagents-space-issue>/g, '')
       .trim();
     const attachmentItems =

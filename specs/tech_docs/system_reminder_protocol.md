@@ -113,7 +113,6 @@ instruction、cron output 都只给模型看。
 | `myagents-space-issue` | Space issue | Space IssueDelivery |
 | `GOAL_CONTINUATION` | 目标模式 | Goal 自动续跑 / Goal 第一轮启动 |
 | `GOAL_CONTEXT` | 目标模式 | Goal 运行中用户普通 query 的 hidden context |
-| `GOAL_OBJECTIVE_UPDATED` | 目标更新 | 用户显式编辑 Goal objective 后的 turn 内注入 |
 
 `MEMORY_UPDATE` 当前是内部纯隐藏场景，不属于有 badge 的可复用展示协议。若要让它
 或新 tag 出现在用户气泡上，先补 `systemTagLabel()`、文案资源和渲染测试。
@@ -124,11 +123,10 @@ instruction、cron output 都只给模型看。
 
 | 入口 | Builder / 位置 | 结构 |
 |------|----------------|------|
-| Cron task 执行 | `src/server/utils/cron-reminder.ts::buildCronTaskReminder` | `<system-reminder><CRON_TASK>...</CRON_TASK></system-reminder>` + 原 task prompt |
-| Goal 第一轮启动 | `src/shared/systemReminder.ts::buildGoalContinuationReminder`，调用方 `src/server/utils/cron-reminder.ts::buildCronTaskReminder` | `<system-reminder><GOAL_CONTINUATION>...</GOAL_CONTINUATION></system-reminder>` + 原始 Goal objective；用户气泡显示原文与 Goal badge |
-| Goal 自动续跑 | 同上 | `<system-reminder><GOAL_CONTINUATION>...</GOAL_CONTINUATION></system-reminder>`，第二轮起纯隐藏 |
+| Scheduled Task 执行 | `src/server/utils/cron-reminder.ts::buildCronTaskReminder` | `<system-reminder><CRON_TASK>...</CRON_TASK></system-reminder>` + 原 task prompt；tag/wire name 为历史兼容 |
+| Goal 第一轮启动 | `src/shared/systemReminder.ts::buildGoalContinuationReminder`，调用方 `src/server/session-engine/goal-orchestrator.ts::goalContext` | `<system-reminder><GOAL_CONTINUATION>...</GOAL_CONTINUATION></system-reminder>` + 原始 Goal query visible tail；用户气泡显示原文与 Goal badge |
+| Goal 自动续跑 | 同一 builder，调用方 `/goal/execute-sync` | `<system-reminder><GOAL_CONTINUATION>...</GOAL_CONTINUATION></system-reminder>`，第二轮起纯隐藏 |
 | Goal 普通 query context | `src/shared/systemReminder.ts::buildGoalContextReminder`，调用方 Goal-aware chat enqueue 路径 | `<system-reminder><GOAL_CONTEXT>...</GOAL_CONTEXT></system-reminder>` + 用户 visible query |
-| Goal objective 更新 | `src/shared/systemReminder.ts::buildGoalObjectiveUpdatedReminder` | `<system-reminder><GOAL_OBJECTIVE_UPDATED>...</GOAL_OBJECTIVE_UPDATED></system-reminder>`，纯隐藏 |
 | 浮球消息 | `src/shared/systemReminder.ts::buildFloatingBallContextReminder`，调用方 `src/renderer/floating-ball/useFloatingSession.ts` | `<system-reminder><FLOATING_BALL_CONTEXT>...</FLOATING_BALL_CONTEXT></system-reminder>` + 用户文本 |
 | Space IssueDelivery | `src-tauri/src/space_cloud.rs::build_space_issue_delivery_message_for_locale` | `<system-reminder><myagents-space-issue><myagents-space-event><issue-instruction><cloud-issue-instruction>…</cloud-issue-instruction><local-execution-instruction>…</local-execution-instruction></issue-instruction>…</myagents-space-event></myagents-space-issue></system-reminder>` + 本地化可见提示 |
 | Cron 结果投送 IM session | `src/server/utils/cron-event-relay.ts::buildCronEventRelayMessage` | `<system-reminder><HEARTBEAT>...</HEARTBEAT></system-reminder>` + `[System]收到来自系统投送的信息` |

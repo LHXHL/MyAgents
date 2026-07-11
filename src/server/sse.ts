@@ -127,7 +127,6 @@ export const SSE_EVENT_PRIORITIES: Readonly<Record<string, SseEventPriority>> = 
   'exit-plan-mode:expired': 'critical',
   'enter-plan-mode:request': 'critical',
   'enter-plan-mode:expired': 'critical',
-  'cron:task-exit-requested': 'critical',
   'mcp:oauth-expired': 'critical',
   'config:changed': 'critical',
   // Plugin lifecycle (PRD 0.2.17). install-progress is per-install progress

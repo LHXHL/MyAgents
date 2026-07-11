@@ -282,6 +282,7 @@
       "cancelGoalConfirmTitle": "取消当前目标？",
       "cancelGoalConfirmMessage": "目标将进入已取消终态，后续不再自动续跑。此操作不会删除已有会话和工作结果。",
       "cancelGoalFailed": "取消目标失败，请重试。",
+      "pauseGoalFailed": "目标已暂停，但当前响应未确认停止，请再次点击停止。",
       "dismissStoppedTitle": "关闭并恢复任务内容到输入框",
       "dismissGoalTitle": "关闭目标状态",
       "stopButton": "停止"
@@ -397,32 +398,21 @@
     },
     "legacy": {
       "untitled": "未命名定时任务",
-      "deleteConfirm": "确认删除遗留定时任务「{{name}}」？此操作不可恢复。",
-      "upgradeConfirm": "将「{{name}}」升级为新版任务？\n\n升级后：\n• 自动创建源想法（内容 = 原始 Prompt）\n• 新任务继承当前调度、结束条件、通知、运行配置\n• 现有调度不中断、执行历史保留\n• 下次打开将进入新版任务详情（支持编辑 / 审计链 / 验收标准）",
       "badge": "遗留定时任务",
-      "description": "这是 v0.1.69 之前创建的定时任务，不含新任务中心的对齐文档。",
+      "description": "这是未能迁移为 Task 的旧格式记录，仅供查看和诊断，不会继续自动调度。",
       "closeTitle": "关闭 (Cmd+W)",
-      "pause": "暂停",
-      "start": "启动",
-      "upgrade": "升级为新版任务",
-      "delete": "删除",
-      "status": "状态",
-      "running": "进行中",
-      "paused": "已暂停",
+      "status": "原记录状态",
+      "running": "曾设为运行",
+      "paused": "曾设为停止",
       "workspace": "工作区",
       "schedule": "调度方式",
       "created": "创建",
       "originalPrompt": "原始 Prompt",
-      "footer": "遗留任务保留原有调度逻辑，执行记录仍可在对话 Tab 的定时面板中查看。点击上方「升级为新版任务」即可获得完整的任务详情（可编辑 Prompt / 调度 / 通知、审计链、验收标准），原调度不中断。",
+      "footer": "可安全迁移的普通定时任务会在应用启动时自动进入 Task 系统。此处仅保留未迁移原始记录，应用不会从旧 Cron 文件恢复其调度。",
       "scheduleFallback": "固定间隔",
       "scheduleEvery": "每 {{minutes}} 分钟",
       "scheduleOnce": "{{time}} 一次性",
       "scheduleCron": "Cron 表达式：{{expr}}"
-    },
-    "legacyUpgrade": {
-      "missingCronTaskId": "缺少 CronTask id，无法升级",
-      "missingWorkspacePath": "缺少工作区路径，无法升级",
-      "workspaceNotFound": "找不到工作区：{{workspacePath}}。请先在启动页添加该工作区，然后重试升级。"
     }
   },
   "advanced": {
@@ -636,6 +626,7 @@
       "once": "一次性",
       "recurring": "周期",
       "scheduled": "定时",
+      "legacyLoop": "旧 Loop",
       "legacy": "遗留",
       "legacyTask": "遗留任务"
     },

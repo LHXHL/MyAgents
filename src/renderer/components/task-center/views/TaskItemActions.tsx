@@ -8,9 +8,8 @@
 // new shape folds everything into the menu so the card's top-right has a
 // single, stable target (`…`) regardless of status.
 //
-// Legacy-cron rows reuse the same component; they surface only 打开详情
-// and 删除 since their other lifecycle operations live in the separate
-// LegacyCronOverlay.
+// Historical Cron rows reuse the same component and surface only read-only
+// detail.
 
 import { Pencil, Play, RotateCcw, Square, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -153,8 +152,8 @@ function primaryActionFor(
   }
 }
 
-/** Derive a TaskStatus-compatible value from a native Task or a legacy cron. */
-export function deriveTaskRowStatus(task: Task | null, legacyRunning?: boolean): TaskStatus {
+/** Historical Cron rows are read-only and therefore render as archived. */
+export function deriveTaskRowStatus(task: Task | null): TaskStatus {
   if (task) return task.status;
-  return legacyRunning ? 'running' : 'stopped';
+  return 'archived';
 }

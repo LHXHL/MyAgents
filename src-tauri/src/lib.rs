@@ -35,6 +35,7 @@ pub mod process_cleanup;
 pub mod process_cmd;
 mod proxy_config;
 pub mod search;
+pub mod session_goal;
 pub mod session_metadata;
 pub mod session_visibility;
 mod sidecar;
@@ -43,6 +44,8 @@ mod space_cloud_mock;
 mod sse_proxy;
 pub mod system_binary;
 pub mod task;
+pub mod task_execution;
+pub mod task_scheduler;
 pub mod terminal;
 pub mod thought;
 mod tray;
@@ -50,6 +53,7 @@ mod updater;
 pub mod utils;
 pub mod wake_lock;
 pub mod workspace_files;
+mod workspace_path;
 
 use sidecar::{
     cleanup_stale_sidecars, cleanup_stale_sidecars_preamble, create_sidecar_state,
@@ -376,30 +380,22 @@ pub fn run() {
             memory_auto_update::cmd_configure_memory_auto_update_task,
             // Cron task commands
             cron_task::commands::cmd_create_cron_task,
-            cron_task::commands::cmd_create_goal_task,
             cron_task::commands::cmd_start_cron_task,
             cron_task::commands::cmd_stop_cron_task,
             cron_task::commands::cmd_delete_cron_task,
             cron_task::commands::cmd_get_cron_task,
-            cron_task::commands::cmd_get_goal_task,
             cron_task::commands::cmd_get_cron_tasks,
+            cron_task::commands::cmd_get_unmigrated_legacy_cron_tasks,
             cron_task::commands::cmd_get_workspace_cron_tasks,
             session_metadata::cmd_list_session_metadata,
             cron_task::commands::cmd_get_session_cron_task,
-            cron_task::commands::cmd_get_session_goal_task,
-            cron_task::commands::cmd_get_tab_cron_task,
-            cron_task::commands::cmd_record_cron_execution,
-            cron_task::commands::cmd_update_cron_task_tab,
             cron_task::commands::cmd_update_cron_task_session,
-            cron_task::commands::cmd_get_tasks_to_recover,
-            cron_task::commands::cmd_pause_goal_task,
-            cron_task::commands::cmd_resume_goal_task,
-            cron_task::commands::cmd_mark_goal_terminal,
-            cron_task::commands::cmd_get_user_scheduler_lifecycle_snapshot,
-            // Cron scheduler commands
-            cron_task::commands::cmd_start_cron_scheduler,
-            cron_task::commands::cmd_mark_task_executing,
-            cron_task::commands::cmd_mark_task_complete,
+            session_goal::commands::cmd_create_session_goal,
+            session_goal::commands::cmd_get_session_goal,
+            session_goal::commands::cmd_pause_session_goal,
+            session_goal::commands::cmd_resume_session_goal,
+            session_goal::commands::cmd_mark_session_goal_terminal,
+            session_goal::commands::cmd_get_user_scheduler_lifecycle_snapshot,
             cron_task::commands::cmd_is_task_executing,
             cron_task::commands::cmd_get_cron_runs,
             cron_task::commands::cmd_update_cron_task_fields,
@@ -408,8 +404,6 @@ pub fn run() {
             sidecar::commands::cmd_activate_session,
             sidecar::commands::cmd_deactivate_session,
             sidecar::commands::cmd_update_session_tab,
-            // Cron task execution (Rust -> Sidecar direct call)
-            sidecar::cron_execute::cmd_execute_cron_task,
             // Session Inbox cross-sidecar delivery (PRD 0.2.18)
             crate::inbox::deliver::cmd_inbox_deliver,
             // Session-centric Sidecar API (v0.1.11)
@@ -604,7 +598,6 @@ pub fn run() {
             task::cmd_task_write_doc,
             task::cmd_task_open_docs_dir,
             task::cmd_task_get_run_stats,
-            legacy_upgrade::cmd_task_upgrade_legacy_cron,
             // MyAgents Cloud Space
             space_cloud::cmd_space_get_capability,
             space_cloud::cmd_space_get_session,
@@ -869,7 +862,7 @@ pub fn run() {
                 let dir_str = data_dir.as_ref().map(|p| p.display().to_string()).unwrap_or_else(|| "?".into());
 
                 // Read config.json for counts (best-effort)
-                let (mut provider, mut mcp, mut agents, mut channels, mut cron, mut proxy) =
+                let (mut provider, mut mcp, mut agents, mut channels, mut scheduled_tasks, mut proxy) =
                     ("?".to_string(), 0u32, 0u32, 0u32, 0u32, false);
                 if let Some(ref dir) = data_dir {
                     if let Ok(c) = std::fs::read_to_string(dir.join("config.json"))
@@ -890,16 +883,22 @@ pub fn run() {
                         }
                         proxy = cfg.get("proxySettings").and_then(|v| v.get("enabled")).and_then(|v| v.as_bool()).unwrap_or(false);
                     }
-                    if let Ok(s) = std::fs::read_to_string(dir.join("cron_tasks.json")) {
-                        // Structure: {"tasks": [{...,"enabled":true/false}, ...]}
-                        cron = serde_json::from_str::<serde_json::Value>(crate::utils::bom::strip_bom(&s)).ok()
-                            .and_then(|v| v.get("tasks")?.as_array().map(|tasks|
-                                tasks.iter().filter(|t| t.get("enabled").and_then(|e| e.as_bool()).unwrap_or(false)).count() as u32
-                            )).unwrap_or(0);
+                    if let Ok(s) = std::fs::read_to_string(dir.join("tasks.jsonl")) {
+                        scheduled_tasks = crate::utils::bom::strip_bom(&s)
+                            .lines()
+                            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+                            .filter(|task| {
+                                task.get("status").and_then(|value| value.as_str()) == Some("running")
+                                    && matches!(
+                                        task.get("executionMode").and_then(|value| value.as_str()),
+                                        Some("scheduled" | "recurring")
+                                    )
+                            })
+                            .count() as u32;
                     }
                 }
 
-                ulog_info!("[boot] v={} build={} os={}-{} provider={} mcp={} agents={} channels={} cron={} proxy={} dir={}", version, build_mode, os, arch, provider, mcp, agents, channels, cron, proxy, dir_str);
+                ulog_info!("[boot] v={} build={} os={}-{} provider={} mcp={} agents={} channels={} scheduled_tasks={} proxy={} dir={}", version, build_mode, os, arch, provider, mcp, agents, channels, scheduled_tasks, proxy, dir_str);
             }
 
             // Setup system tray. setup_tray() ALSO registers `TrayMenuHandles` as
@@ -1041,13 +1040,40 @@ pub fn run() {
             management_api::set_agent_state(agent_state_for_management);
             management_api::set_sidecar_state(sidecar_state_for_management);
 
-            // Start management API (internal HTTP server for Bun→Rust IPC)
-            tauri::async_runtime::spawn(async move {
-                match management_api::start_management_api().await {
-                    Ok(port) => ulog_info!("[App] Management API started on port {}", port),
-                    Err(e) => ulog_error!("[App] Failed to start management API: {}", e),
+            // Subscribe before automation recovery can create or release a
+            // Session Sidecar. The receiver buffers the short gap until its
+            // forwarding task starts.
+            let terminal_event_rx = match sidecar_state_for_terminal_forwarder.lock() {
+                Ok(manager) => Some(manager.subscribe_terminal_events()),
+                Err(error) => {
+                    ulog_error!(
+                        "[sidecar] terminal-event forwarder failed to subscribe: {}",
+                        error
+                    );
+                    None
                 }
+            };
+
+            // Start the internal control plane before any backend automation can
+            // create a Sidecar that needs MYAGENTS_MANAGEMENT_PORT.
+            let automation_app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let port = match management_api::start_management_api().await {
+                    Ok(port) => port,
+                    Err(error) => {
+                        ulog_error!("[App] Failed to start management API: {}", error);
+                        return;
+                    }
+                };
+                ulog_info!("[App] Management API started on port {}", port);
+
+                // Startup convergence is intentionally serial: legacy data must
+                // become Task authority before timers rebuild, and Goal recovery
+                // starts only after the shared control plane/timers are ready.
+                cron_task::initialize_cron_manager(automation_app_handle.clone()).await;
+                session_goal::initialize_session_goal_manager(automation_app_handle).await;
             });
+            ulog_info!("[App] Automation control-plane initialization scheduled");
 
             // Bridge `SidecarManager::terminal_events` → `session:sidecar-terminal`
             // Tauri event. Renderer's App.tsx listens and resets `tab.sessionId`
@@ -1058,28 +1084,21 @@ pub fn run() {
             // UI + sidecar-not-running errors. See `forward_terminal_events_to_renderer`
             // doc-comment for the full rationale.
             //
-            // Spawn order: BEFORE cron/IM auto-start so any sidecar created
-            // and terminally-removed by those subsystems on startup is captured.
-            // The forwarder subscribes synchronously inside the spawned task
-            // (first await is `rx.recv()`); broadcast channel buffers up to 64
-            // events so the few-millisecond gap before `subscribe()` runs is
-            // covered. (Codex review ADV-4.)
-            let app_handle_for_terminal_forwarder = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                sidecar::forward_terminal_events_to_renderer(
-                    app_handle_for_terminal_forwarder,
-                    sidecar_state_for_terminal_forwarder,
-                    cleanup_done_for_terminal_forwarder,
-                ).await;
-            });
-            ulog_info!("[App] Sidecar terminal-event forwarder spawned");
-
-            // Initialize cron task manager with app handle
-            let cron_app_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                cron_task::initialize_cron_manager(cron_app_handle).await;
-            });
-            ulog_info!("[App] Cron task manager initialization scheduled");
+            // The receiver was subscribed before automation recovery above, so
+            // startup removals cannot fall into a no-subscriber gap.
+            if let Some(terminal_event_rx) = terminal_event_rx {
+                let app_handle_for_terminal_forwarder = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    sidecar::forward_terminal_events_to_renderer(
+                        app_handle_for_terminal_forwarder,
+                        sidecar_state_for_terminal_forwarder,
+                        cleanup_done_for_terminal_forwarder,
+                        terminal_event_rx,
+                    )
+                    .await;
+                });
+                ulog_info!("[App] Sidecar terminal-event forwarder spawned");
+            }
 
             // Initialize SearchEngine (full-text search)
             if let Some(data_dir) = app_dirs::myagents_data_dir() {

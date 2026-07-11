@@ -208,7 +208,6 @@ async fn stop_existing_job(
     let Some(task) = find_existing_job(store, workspace_path, spec).await else {
         return Ok(());
     };
-    ensure_linked_cron_managed_marker(&task, spec).await?;
     stop_job_for_update(store, &task, "memory evolution disabled").await
 }
 
@@ -217,10 +216,9 @@ async fn stop_job_for_update(
     task: &task::Task,
     reason: &str,
 ) -> Result<(), String> {
-    if let Some(cron_id) = task.cron_task_id.as_deref() {
-        let manager = crate::cron_task::get_cron_task_manager();
-        let _ = manager.stop_task(cron_id, Some(reason.to_string())).await;
-    }
+    crate::task_scheduler::get_task_scheduler()
+        .stop(&task.id)
+        .await;
     if matches!(task.status, TaskStatus::Running | TaskStatus::Verifying) {
         let _ = store
             .update_status(TaskUpdateStatusInput {
@@ -241,7 +239,6 @@ async fn reconcile_existing_job(
     spec: &EvoJobSpec,
     existing: task::Task,
 ) -> Result<task::Task, String> {
-    ensure_linked_cron_managed_marker(&existing, spec).await?;
     let desired_window = recurring_window(
         request.memory_auto_update.as_ref(),
         request.heartbeat.as_ref(),
@@ -349,42 +346,30 @@ async fn reconcile_existing_job(
         .await
 }
 
-async fn ensure_linked_cron_managed_marker(
-    task: &task::Task,
-    spec: &EvoJobSpec,
-) -> Result<(), String> {
-    let Some(cron_id) = task.cron_task_id.as_deref() else {
-        return Ok(());
-    };
-    let manager = crate::cron_task::get_cron_task_manager();
-    let Some(cron) = manager.get_task(cron_id).await else {
-        return Ok(());
-    };
-    if cron.managed_kind.as_deref() == Some(spec.managed_kind) {
-        return Ok(());
-    }
-    manager
-        .set_managed_kind(cron_id, Some(spec.managed_kind.to_string()))
-        .await
-        .map(|_| ())
-        .map_err(|e| format!("backfill linked cron managed kind: {}", e))
-}
-
 async fn backfill_system_maintenance_session_markers(
     workspace_path: &str,
 ) -> Result<usize, String> {
-    let manager = crate::cron_task::get_cron_task_manager();
-    let managed_by_cron_id: HashMap<String, String> = manager
-        .get_tasks_for_workspace(workspace_path)
+    let Some(store) = task::get_task_store() else {
+        return Ok(0);
+    };
+    let managed_by_cron_id: HashMap<String, String> = store
+        .list(task::TaskListFilter {
+            include_managed: Some(true),
+            ..Default::default()
+        })
         .await
         .into_iter()
-        .filter_map(|cron| {
-            let kind = match cron.managed_kind.as_deref() {
+        .filter(|task| {
+            crate::workspace_path::normalize_workspace_path_identity(&task.workspace_path)
+                == crate::workspace_path::normalize_workspace_path_identity(workspace_path)
+        })
+        .filter_map(|task| {
+            let kind = match task.managed_kind.as_deref() {
                 Some(task::MANAGED_KIND_MEMORY_GARDENER) => task::MANAGED_KIND_MEMORY_GARDENER,
                 Some(task::MANAGED_KIND_MEMORY_MOLT) => task::MANAGED_KIND_MEMORY_MOLT,
                 _ => return None,
             };
-            Some((cron.id, kind.to_string()))
+            Some((task.id, kind.to_string()))
         })
         .collect();
     if managed_by_cron_id.is_empty() {
@@ -468,31 +453,10 @@ async fn arm_task_for_scheduler(
     task: task::Task,
 ) -> Result<String, String> {
     if task.status == TaskStatus::Running {
-        if let Some(cron_id) = task.cron_task_id.as_deref() {
-            let manager = crate::cron_task::get_cron_task_manager();
-            if let Some(cron) = manager.get_task(cron_id).await {
-                if cron.status != crate::cron_task::TaskStatus::Running {
-                    manager
-                        .start_task(cron_id)
-                        .await
-                        .map_err(|e| format!("start_task: {}", e))?;
-                }
-                manager
-                    .start_task_scheduler(cron_id)
-                    .await
-                    .map_err(|e| format!("start_task_scheduler: {}", e))?;
-                return Ok(task.id);
-            }
-        }
-        store
-            .update_status(TaskUpdateStatusInput {
-                id: task.id.clone(),
-                status: TaskStatus::Stopped,
-                message: Some("memory evolution scheduler missing; re-arming".to_string()),
-                actor: TransitionActor::System,
-                source: Some(TransitionSource::Scheduler),
-            })
+        crate::task_scheduler::get_task_scheduler()
+            .start(&task.id)
             .await?;
+        return Ok(task.id);
     }
 
     let current = store
@@ -512,7 +476,7 @@ async fn arm_task_for_scheduler(
             .await?;
     }
 
-    let (task, _cron_id) = crate::management_api::run_task_by_id(&task.id).await?;
+    let task = crate::management_api::run_task_by_id(&task.id).await?;
     Ok(task.id)
 }
 

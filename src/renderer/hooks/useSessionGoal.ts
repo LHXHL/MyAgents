@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import {
-  createGoalTask,
-  getSessionGoalTask,
-  markGoalTerminal,
-  pauseGoalTask,
-  resumeGoalTask,
-} from '@/api/cronTaskClient';
-import { track } from '@/analytics';
+  createSessionGoal,
+  getSessionGoal,
+  markSessionGoalTerminal,
+  pauseSessionGoal,
+  resumeSessionGoal,
+} from '@/api/sessionGoalClient';
+import type { RuntimeType } from '@/../shared/types/runtime';
 import type {
-  CronTask,
-  CronTaskConfig,
   GoalChangedPayload,
-} from '@/types/cronTask';
+  GoalEndConditions,
+  SessionGoal,
+} from '@/types/sessionGoal';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import {
   isTerminalGoalFromListenerGap,
@@ -24,12 +24,17 @@ import { listenWithCleanup } from '@/utils/tauriListen';
 import { workspacePathsEqual } from '@/../shared/workspacePath';
 import { coerceRuntimeBirthPermissionMode } from '@/../shared/runtimeBirthFields';
 
-export type SessionGoalDraftConfig = Omit<CronTaskConfig, 'workspacePath' | 'sessionId' | 'tabId'> & {
+export interface SessionGoalDraftConfig {
   taskKind: 'goal';
-};
+  prompt: string;
+  endConditions: GoalEndConditions;
+  notifyEnabled: boolean;
+  permissionMode?: string;
+  runtime?: RuntimeType;
+}
 
 export interface SessionGoalState {
-  task: CronTask | null;
+  goal: SessionGoal | null;
   isStarting: boolean;
   isExecuting: boolean;
   executionNumber?: number;
@@ -37,7 +42,7 @@ export interface SessionGoalState {
 }
 
 export interface SessionGoalStopResult {
-  task: CronTask;
+  goal: SessionGoal;
   prompt: string | null;
 }
 
@@ -50,7 +55,6 @@ interface UseSessionGoalOptions {
   workspacePath: string;
   sessionId: string;
   materializeOwner?: () => Promise<SessionGoalOwner>;
-  onExecutionComplete?: (task: CronTask, success: boolean) => void | Promise<void>;
 }
 
 interface PendingGoalStart {
@@ -61,26 +65,17 @@ interface PendingGoalStart {
 }
 
 const initialState: SessionGoalState = {
-  task: null,
+  goal: null,
   isStarting: false,
   isExecuting: false,
   executionNumber: undefined,
   error: null,
 };
 
-function isGoalTask(task: CronTask | null | undefined): task is CronTask & { goalStatus: NonNullable<CronTask['goalStatus']> } {
-  return Boolean(task?.goalStatus);
-}
-
-function isTerminalGoal(task: CronTask | null | undefined): boolean {
-  return task?.goalStatus === 'complete'
-    || task?.goalStatus === 'blocked'
-    || task?.goalStatus === 'canceled';
-}
-
-function taskDurationMinutes(task: CronTask): number {
-  const createdAt = Date.parse(task.createdAt);
-  return Number.isFinite(createdAt) ? Math.round((Date.now() - createdAt) / 60_000) : 0;
+function isTerminalGoal(goal: SessionGoal | null | undefined): boolean {
+  return goal?.status === 'complete'
+    || goal?.status === 'blocked'
+    || goal?.status === 'canceled';
 }
 
 function isSameGoalOwner(
@@ -106,11 +101,10 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
   const [listenersReady, setListenersReady] = useState(false);
   const ownerIdentityRef = useRef({ sessionId, workspacePath });
 
-  const acceptSnapshot = useCallback((task: CronTask, patch: Partial<SessionGoalState> = {}) => {
-    if (!isGoalTask(task)) return;
+  const acceptSnapshot = useCallback((goal: SessionGoal, patch: Partial<SessionGoalState> = {}) => {
     setState(prev => {
-      if (!shouldAcceptGoalState(task, prev.task)) return prev;
-      return { ...prev, ...projectGoalExecutionState(task), ...patch, task };
+      if (!shouldAcceptGoalState(goal, prev.goal)) return prev;
+      return { ...prev, ...projectGoalExecutionState(goal), ...patch, goal };
     });
   }, [setState]);
 
@@ -122,7 +116,7 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
   const start = useCallback(async (
     config: SessionGoalDraftConfig,
     promptOverride?: string,
-  ): Promise<CronTask | null> => {
+  ): Promise<SessionGoal | null> => {
     if (stateRef.current.isStarting) {
       throw new Error('[useSessionGoal] Goal start is already in flight');
     }
@@ -137,7 +131,7 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
     };
     pendingStartRef.current = pendingStart;
     setState(prev => ({ ...prev, isStarting: true, error: null }));
-    let createdTaskId: string | null = null;
+    let createdGoalId: string | null = null;
     try {
       const startOwner = optionsRef.current.materializeOwner
         ? await optionsRef.current.materializeOwner()
@@ -154,24 +148,22 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
         setState(initialState);
         return null;
       }
-      const task = await createGoalTask({
+      const goal = await createSessionGoal({
         workspacePath: startOwner.workspacePath,
         sessionId: startOwner.sessionId,
-        prompt: objective,
-        intervalMinutes: config.intervalMinutes,
+        objective,
         endConditions: config.endConditions,
-        runMode: 'single_session',
         notifyEnabled: config.notifyEnabled,
         permissionMode: coerceRuntimeBirthPermissionMode(
           config.permissionMode,
           config.runtime ?? 'builtin',
         ),
       });
-      createdTaskId = task.id;
+      createdGoalId = goal.id;
 
       if (pendingStart.canceled) {
-        dismissedIdsRef.current.add(task.id);
-        await markGoalTerminal(task.id, 'canceled', 'Canceled before Goal Mode started');
+        dismissedIdsRef.current.add(goal.id);
+        await markSessionGoalTerminal(goal.id, 'canceled', 'Canceled before Goal Mode started');
         return null;
       }
       const currentOwnerAfterCreate = optionsRef.current;
@@ -180,14 +172,15 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
         || (!isSameGoalOwner(startOwner, currentOwnerAfterCreate)
           && !(initialOwner.sessionId.startsWith('pending-')
             && isSameGoalOwner(initialOwner, currentOwnerAfterCreate)))) {
-        // Goal is session-owned. Navigating away must not cancel a Goal that
-        // Rust already accepted; the old session will hydrate it when reopened.
-        return task;
+        // The durable Goal belongs to the captured Session and remains paused
+        // awaiting its first user turn. Do not let the caller send that turn
+        // through whichever Session the Tab adopted while create was pending.
+        return null;
       }
-      acceptSnapshot(task, { isStarting: false });
-      return task;
+      acceptSnapshot(goal, { isStarting: false });
+      return goal;
     } catch (error) {
-      if (pendingStart.canceled && !createdTaskId) return null;
+      if (pendingStart.canceled && !createdGoalId) return null;
       if (mountedRef.current && pendingStartRef.current === pendingStart) {
         setState(prev => ({
           ...prev,
@@ -201,26 +194,26 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
     }
   }, [acceptSnapshot, sessionId, setState, stateRef, workspacePath]);
 
-  const pause = useCallback(async (): Promise<CronTask | null> => {
-    const current = stateRef.current.task;
-    if (!isGoalTask(current) || isTerminalGoal(current)) return null;
+  const pause = useCallback(async (): Promise<SessionGoal | null> => {
+    const current = stateRef.current.goal;
+    if (!current || isTerminalGoal(current)) return null;
     try {
-      const task = await pauseGoalTask(current.id);
-      acceptSnapshot(task);
-      return task;
+      const goal = await pauseSessionGoal(current.id);
+      acceptSnapshot(goal);
+      return goal;
     } catch (error) {
       console.error('[useSessionGoal] Failed to pause Goal:', error);
       return null;
     }
   }, [acceptSnapshot, stateRef]);
 
-  const resume = useCallback(async (): Promise<CronTask | null> => {
-    const current = stateRef.current.task;
-    if (!isGoalTask(current) || current.goalStatus !== 'paused') return null;
+  const resume = useCallback(async (): Promise<SessionGoal | null> => {
+    const current = stateRef.current.goal;
+    if (!current || current.status !== 'paused') return null;
     try {
-      const task = await resumeGoalTask(current.id);
-      acceptSnapshot(task);
-      return task;
+      const goal = await resumeSessionGoal(current.id);
+      acceptSnapshot(goal);
+      return goal;
     } catch (error) {
       console.error('[useSessionGoal] Failed to resume Goal:', error);
       return null;
@@ -228,22 +221,17 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
   }, [acceptSnapshot, stateRef]);
 
   const cancel = useCallback(async (reason = 'Canceled by user'): Promise<SessionGoalStopResult | null> => {
-    const current = stateRef.current.task;
-    if (!isGoalTask(current)) return null;
+    const current = stateRef.current.goal;
+    if (!current) return null;
     try {
-      const task = await markGoalTerminal(current.id, 'canceled', reason);
-      if (task.goalStatus === 'canceled') {
-        dismissedIdsRef.current.add(task.id);
-        track('cron_stop', {
-          reason: 'manual',
-          execution_count: task.executionCount ?? current.executionCount ?? 0,
-          duration_minutes: taskDurationMinutes(current),
-        });
+      const goal = await markSessionGoalTerminal(current.id, 'canceled', reason);
+      if (goal.status === 'canceled') {
+        dismissedIdsRef.current.add(goal.id);
         setState(initialState);
       } else {
-        acceptSnapshot(task);
+        acceptSnapshot(goal);
       }
-      return { task, prompt: current.goalObjective || current.prompt || null };
+      return { goal, prompt: current.objective || null };
     } catch (error) {
       console.error('[useSessionGoal] Failed to cancel Goal:', error);
       return null;
@@ -251,36 +239,19 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
   }, [acceptSnapshot, setState, stateRef]);
 
   const dismiss = useCallback(() => {
-    const current = stateRef.current.task;
+    const current = stateRef.current.goal;
     if (current && isTerminalGoal(current)) dismissedIdsRef.current.add(current.id);
     setState(initialState);
   }, [setState, stateRef]);
 
   const handleGoalChangedRef = useRef<(payload: GoalChangedPayload) => void>(() => {});
-  const handleExecutionCompleteRef = useRef<(payload: {
-    taskId: string;
-    success: boolean;
-    executionCount: number;
-    internalSessionId?: string;
-  }) => void>(() => {});
 
   handleGoalChangedRef.current = (payload) => {
     const currentOptions = optionsRef.current;
-    if (!isGoalTask(payload.goal)) return;
     if (payload.sessionId !== currentOptions.sessionId) return;
     if (!workspacePathsEqual(payload.workspacePath, currentOptions.workspacePath)) return;
     if (isTerminalGoal(payload.goal) && dismissedIdsRef.current.has(payload.goal.id)) return;
     acceptSnapshot(payload.goal);
-  };
-
-  handleExecutionCompleteRef.current = (payload) => {
-    const current = stateRef.current.task;
-    if (current?.id !== payload.taskId) return;
-    void optionsRef.current.onExecutionComplete?.({
-      ...current,
-      executionCount: payload.executionCount,
-      ...(payload.internalSessionId ? { internalSessionId: payload.internalSessionId } : {}),
-    }, payload.success);
   };
 
   useEffect(() => {
@@ -294,23 +265,11 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
   useEffect(() => {
     if (!isTauriEnvironment()) return;
     const ac = new AbortController();
-    Promise.all([
-      listenWithCleanup<GoalChangedPayload>(
-        'goal:changed',
-        event => handleGoalChangedRef.current(event.payload),
-        ac.signal,
-      ),
-      listenWithCleanup<{
-        taskId: string;
-        success: boolean;
-        executionCount: number;
-        internalSessionId?: string;
-      }>(
-        'cron:execution-complete',
-        event => handleExecutionCompleteRef.current(event.payload),
-        ac.signal,
-      ),
-    ]).then(() => {
+    listenWithCleanup<GoalChangedPayload>(
+      'goal:changed',
+      event => handleGoalChangedRef.current(event.payload),
+      ac.signal,
+    ).then(() => {
       if (ac.signal.aborted) return;
       listenersReadyAtRef.current = Date.now();
       setListenersReady(true);
@@ -340,7 +299,7 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
       }
       return;
     }
-    const projected = stateRef.current.task;
+    const projected = stateRef.current.goal;
     if (projected
       && projected.sessionId === next.sessionId
       && workspacePathsEqual(projected.workspacePath, next.workspacePath)) return;
@@ -356,12 +315,11 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
     if (!sessionId || sessionId.startsWith('pending-')) return;
 
     let cancelled = false;
-    void getSessionGoalTask(sessionId, workspacePath, true).then(goal => {
+    void getSessionGoal(sessionId, workspacePath, true).then(goal => {
       if (cancelled || !mountedRef.current) return;
       if (!goal) return;
-      if (!isGoalTask(goal)) return;
       if (isTerminalGoal(goal) && dismissedIdsRef.current.has(goal.id)) return;
-      const current = stateRef.current.task;
+      const current = stateRef.current.goal;
       if (isTerminalGoal(goal) && !current && !isTerminalGoalFromListenerGap(
         goal,
         listenerStartedAtRef.current,

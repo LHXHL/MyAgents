@@ -567,7 +567,7 @@ describe('external SessionEngine with fake runtime', () => {
       success: false,
       enqueued: true,
     });
-    expect(result.error).toContain('External runtime turn failed');
+    expect(result.error).toContain('fake turn failed');
     expect(harness.engine.getLatestAssistantResult().latestResult).not.toContain('fake turn failed');
   });
 

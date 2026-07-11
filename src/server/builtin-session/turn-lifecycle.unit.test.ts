@@ -2,11 +2,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendMessage, resetTranscriptForTest, transcriptState } from './transcript';
 import {
   markCurrentTurnHasOutput,
-  consumeInjectedTurnOutcome,
   pushPendingRequest,
   resetTurnForTest,
-  setCurrentTurnInjectedTurnId,
   setCurrentTurnCompactResult,
+  setCurrentTurnSourceItem,
   setCurrentTurnStartTime,
   setCurrentTurnToolCount,
   setSawCompactBoundary,
@@ -228,12 +227,20 @@ describe('turn-lifecycle owner', () => {
     expect(deps.abortTurnAbort).toHaveBeenCalledWith('session-1', 'error');
   });
 
-  it('does not finalize an injected turn outcome for recoverable resume anchor errors', () => {
+  it('does not notify the queue turn for recoverable resume anchor errors', () => {
     const { deps } = makeDeps({
       recoverInvalidResumeAnchorError: vi.fn(() => true),
     });
     const lifecycle = createBuiltinTurnLifecycle(deps);
-    setCurrentTurnInjectedTurnId('injected-replay');
+    const onTerminal = vi.fn();
+    setCurrentTurnSourceItem({
+      id: 'queue-replay',
+      message: { role: 'user', content: 'retry' },
+      messageText: 'retry',
+      wasQueued: false,
+      resolve: vi.fn(),
+      onTerminal,
+    });
 
     lifecycle.handleSdkResult(makeResult({
       subtype: 'error_during_execution',
@@ -242,7 +249,7 @@ describe('turn-lifecycle owner', () => {
       terminal_reason: 'error',
     }));
 
-    expect(consumeInjectedTurnOutcome('injected-replay')).toBeUndefined();
+    expect(onTerminal).not.toHaveBeenCalled();
   });
 
   it('does not title a completed turn when turn-end persistence fails', async () => {

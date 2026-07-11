@@ -7,7 +7,8 @@ import type {
   ProviderVerifyStatus,
 } from '@/config/types';
 import type { QueuedMessageInfo } from '@/types/queue';
-import type { CronRunMode, CronSchedule, GoalStatus, ScheduledTaskKind } from '@/types/cronTask';
+import type { CronRunMode, CronSchedule, ScheduledTaskKind } from '@/types/cronTask';
+import type { SessionGoal } from '@/types/sessionGoal';
 import type { SlashCommand } from '../SlashCommandMenu';
 import type { OfficialToolDefinition, OfficialToolId } from '../../../shared/official-tools';
 import type {
@@ -32,9 +33,6 @@ interface ScheduledTaskBarProjection {
   status?: 'running' | 'paused' | 'stopped' | 'completed';
   intervalMinutes: number;
   schedule?: CronSchedule;
-  goalStatus?: GoalStatus;
-  goalObjective?: string;
-  goalTerminalReason?: string;
   executionCount: number;
   lastExecutedAt?: string;
   nextExecutionAt?: string;
@@ -101,9 +99,10 @@ export interface SimpleChatInputProps {
     intervalMinutes: number;
     schedule?: CronSchedule;
   } | null;
+  goalDraftActive?: boolean;
   cronTask?: ScheduledTaskBarProjection | null;
-  /** Current-session Goal projection. Kept separate so ordinary Cron state is never overwritten. */
-  goalTask?: ScheduledTaskBarProjection | null;
+  /** Current Session Goal. */
+  sessionGoal?: SessionGoal | null;
   stoppedCronTask?: ScheduledTaskBarProjection | null;
   cronIsExecuting?: boolean;
   cronExecutionNumber?: number;
@@ -113,10 +112,14 @@ export interface SimpleChatInputProps {
   onCronButtonClick?: () => void;
   onCronSettings?: () => void;
   onCronCancel?: () => void;
+  onGoalDraftSettings?: () => void;
+  onGoalDraftCancel?: () => void;
   onCronStop?: () => void;
   onCronDismissStopped?: () => void;
   onGoalEdit?: () => void;
   onGoalResume?: () => void;
+  onGoalCancel?: () => void;
+  onGoalDismiss?: () => void;
   onSlashAction?: (name: string) => void;
   sdkSlashCommands?: SlashCommand[];
   mode?: 'chat' | 'launcher';

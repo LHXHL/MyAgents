@@ -1,124 +1,6 @@
 use super::*;
 
-/// Normalize a path for comparison across persisted and caller-supplied forms.
-/// Cron tasks may be stored with POSIX separators while Windows callers query
-/// with backslashes, so compare on a stable lexical identity instead of the raw
-/// string. This intentionally does not canonicalize: workspaces may not exist
-/// when listing historical tasks.
-///
-/// pub(crate): this is the canonical Rust workspace-path identity (the TS port
-/// lives in src/shared/workspacePath.ts — keep both in sync). Other modules
-/// (im::handover, memory_auto_update) MUST reuse it instead of hand-rolling
-/// `.replace('\\', "/")`, which misses drive-letter case folding and
-/// trailing-slash trimming (#320 family).
-pub(crate) fn normalize_path(path: &str) -> String {
-    let windows_style = (path.len() >= 2 && path.as_bytes()[1] == b':')
-        || path.starts_with("\\\\")
-        || path.starts_with("//");
-    let mut normalized = if windows_style {
-        path.replace('\\', "/")
-    } else {
-        path.to_string()
-    };
-    if normalized.is_empty() {
-        return normalized;
-    }
-
-    let bytes = normalized.as_bytes();
-    let min_len = if bytes.len() >= 3 && bytes[1] == b':' && bytes[2] == b'/' {
-        3 // Windows drive root: C:/
-    } else if normalized.starts_with("//") {
-        2 // UNC/network root prefix
-    } else if normalized.starts_with('/') {
-        1 // POSIX root
-    } else {
-        0
-    };
-
-    while normalized.len() > min_len && normalized.ends_with('/') {
-        normalized.pop();
-    }
-
-    let is_windows_identity =
-        (normalized.len() >= 2 && normalized.as_bytes()[1] == b':') || normalized.starts_with("//");
-    if is_windows_identity {
-        normalized = normalized.to_lowercase();
-    }
-
-    normalized
-}
-
-/// Validate the persisted shape of a newly-created Goal task.
-///
-/// This runs only on the create path. Historical records continue to load as
-/// they were written, while every new explicit Goal is guaranteed to be a
-/// current-session Goal rather than a mixed Cron/Task-Center record.
-pub(super) fn has_explicit_goal_create_fields(config: &CronTaskConfig) -> bool {
-    config.goal_status.is_some()
-        || config.goal_objective.is_some()
-        || config.goal_updated_at.is_some()
-        || config.goal_terminal_reason.is_some()
-        || config.goal_paused_reason.is_some()
-}
-
-pub(super) fn validate_new_task_goal_shape(config: &CronTaskConfig) -> Result<(), String> {
-    let Some(status) = config.goal_status.as_ref() else {
-        if has_explicit_goal_create_fields(config) {
-            return Err(
-                "Goal metadata requires an explicit goalStatus on new CronTasks".to_string(),
-            );
-        }
-        return Ok(());
-    };
-
-    if status != &GoalStatus::Active {
-        return Err("New Goal tasks must start with goalStatus=active".to_string());
-    }
-    if !matches!(config.schedule, Some(CronSchedule::Loop)) {
-        return Err("Goal tasks require schedule.kind=loop".to_string());
-    }
-    if config.run_mode != RunMode::SingleSession {
-        return Err("Goal tasks require runMode=single_session".to_string());
-    }
-    if config.session_id.trim().is_empty() || config.workspace_path.trim().is_empty() {
-        return Err("Goal tasks require sessionId and workspacePath".to_string());
-    }
-    if config.session_id.starts_with("pending-") {
-        return Err("Goal tasks require a materialized sessionId".to_string());
-    }
-    let objective = config
-        .goal_objective
-        .as_deref()
-        .map(str::trim)
-        .filter(|objective| !objective.is_empty())
-        .ok_or_else(|| "Goal tasks require a non-empty goalObjective".to_string())?;
-    if config.prompt.trim() != objective {
-        return Err("Goal prompt and goalObjective must match".to_string());
-    }
-    if config.goal_terminal_reason.is_some() || config.goal_paused_reason.is_some() {
-        return Err("New active Goals cannot have terminal or paused reasons".to_string());
-    }
-    if config.managed_kind.is_some() || config.task_id.is_some() {
-        return Err("Goal tasks cannot also be managed Task Center projections".to_string());
-    }
-    if config.tab_id.is_some()
-        || config.model.is_some()
-        || config.provider_env.is_some()
-        || config.provider_id.is_some()
-        || config.provider_intent != ProviderIntent::FollowAgent
-        || config.runtime.is_some()
-        || config.runtime_config.is_some()
-        || config.mcp_enabled_servers.is_some()
-        || config.source_bot_id.is_some()
-        || config.delivery.is_some()
-    {
-        return Err(
-            "Goal session configuration must be inherited from the current session".to_string(),
-        );
-    }
-
-    Ok(())
-}
+pub(crate) use crate::workspace_path::normalize_workspace_path_identity as normalize_path;
 
 /// Validate a cron expression (and optional timezone) at data-boundary time
 /// so bad input is rejected when saved, not silently swallowed at next fire
@@ -269,7 +151,7 @@ pub(super) fn translate_unix_dow_to_crate_dow(dow: &str) -> String {
 /// assuming the caller is using the cron crate's native dialect (Quartz-style,
 /// 1=Sun). We don't translate DOW for those — power users typing 6/7 fields
 /// know what they're doing.
-pub(super) fn next_cron_fire_time(expr: &str, tz: Option<&str>) -> Result<DateTime<Utc>, String> {
+pub(crate) fn next_cron_fire_time(expr: &str, tz: Option<&str>) -> Result<DateTime<Utc>, String> {
     let expr7 = {
         let fields: Vec<&str> = expr.trim().split_whitespace().collect();
         match fields.len() {

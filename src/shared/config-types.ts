@@ -770,7 +770,7 @@ export interface AppConfig {
    *  （builtin SDK async queue；Codex app-server turn/steer）；
    *  'turn' = busy 时留在 turn-boundary queue，上一轮结束后再作为下一轮发送。
    *  不支持实时 steering 的 external runtime 自动 fallback 到 'turn' 行为。
-   *  仅桌面交互发送读取；IM/Cron/Inbox 等非桌面来源保持既有语义。 */
+   *  仅桌面交互发送读取；IM/Task/Inbox 等非桌面来源保持既有语义。 */
   chatQueueResponseMode?: ChatQueueResponseMode;
   showDevTools: boolean; // 显示开发者工具 (Logs/System Info)
   multiAgentRuntime?: boolean; // 多 Agent Runtime 模式（开发者，默认关闭）

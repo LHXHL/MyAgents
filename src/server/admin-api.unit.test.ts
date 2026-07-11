@@ -20,10 +20,12 @@ const managementApiMocks = vi.hoisted(() => ({
 const sessionEngineMocks = vi.hoisted(() => {
   const state = {
     context: { sessionId: null as string | null, workspacePath: null as string | null },
+    turnIdentity: null as { queueId: string; owner: { kind: 'goal' | 'task'; id: string } } | null,
   };
   return {
     state,
     getCurrentSessionContext: vi.fn(() => state.context),
+    getCurrentTurnIdentity: vi.fn(() => state.turnIdentity),
   };
 });
 
@@ -50,6 +52,7 @@ vi.mock('./utils/management-api-client', () => ({
 vi.mock('./session-engine', () => ({
   getSessionEngine: () => ({
     getCurrentSessionContext: sessionEngineMocks.getCurrentSessionContext,
+    getCurrentTurnIdentity: sessionEngineMocks.getCurrentTurnIdentity,
   }),
 }));
 
@@ -82,7 +85,9 @@ beforeEach(() => {
   managementApiMocks.managementApi.mockClear();
   managementApiMocks.managementApi.mockResolvedValue({ ok: true, taskUpdated: 0, cronUpdated: 0 });
   sessionEngineMocks.state.context = { sessionId: null, workspacePath: null };
+  sessionEngineMocks.state.turnIdentity = null;
   sessionEngineMocks.getCurrentSessionContext.mockClear();
+  sessionEngineMocks.getCurrentTurnIdentity.mockClear();
 });
 
 afterEach(() => {
@@ -178,18 +183,16 @@ describe('admin-api goal', () => {
     clearImCronContext();
   });
 
-  it('forwards the active scheduler lease when the model terminalizes a Goal', async () => {
-    const { setGoalTurnAuthority, clearGoalTurnAuthority } = await import('./session-engine/goal-turn-authority');
+  it('forwards the active queue turn when the model terminalizes a Goal', async () => {
     const { handleGoalUpdate } = await import('./admin-api');
     sessionEngineMocks.state.context = {
       sessionId: 'session-goal-turn',
       workspacePath: '/tmp/myagents-goal-workspace',
     };
-    setGoalTurnAuthority({
-      sessionId: 'session-goal-turn',
-      goalId: 'goal-1',
-      leaseId: 'lease-current',
-    });
+    sessionEngineMocks.state.turnIdentity = {
+      queueId: 'queue-current',
+      owner: { kind: 'goal', id: 'goal-1' },
+    };
     managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, goal: { id: 'goal-1' } });
 
     const result = await handleGoalUpdate({ status: 'complete', reason: 'done' });
@@ -199,26 +202,18 @@ describe('admin-api goal', () => {
       sessionId: 'session-goal-turn',
       workspacePath: '/tmp/myagents-goal-workspace',
       goalId: 'goal-1',
-      leaseId: 'lease-current',
+      queueId: 'queue-current',
       status: 'complete',
       reason: 'done',
     });
-    clearGoalTurnAuthority('session-goal-turn', 'lease-current');
   });
 
-  it('rejects a terminal update after the scheduler turn authority is released', async () => {
-    const { setGoalTurnAuthority, clearGoalTurnAuthority } = await import('./session-engine/goal-turn-authority');
+  it('rejects a terminal update without a current Goal-owned queue turn', async () => {
     const { handleGoalUpdate } = await import('./admin-api');
     sessionEngineMocks.state.context = {
       sessionId: 'session-stale-goal-turn',
       workspacePath: '/tmp/myagents-goal-workspace',
     };
-    setGoalTurnAuthority({
-      sessionId: 'session-stale-goal-turn',
-      goalId: 'goal-1',
-      leaseId: 'lease-old-objective',
-    });
-    clearGoalTurnAuthority('session-stale-goal-turn', 'lease-old-objective');
 
     const result = await handleGoalUpdate({ status: 'complete', reason: 'stale completion' });
 

@@ -15,6 +15,7 @@ import SlashCommandMenu, { type SlashCommand, filterAndSortCommands, mergeSlashC
 import { isClientActionCommand, resolveClientActionName, withClientActionCommands } from '@/utils/slashActions';
 import QueuedMessagesPanel from '../QueuedMessageBubble';
 import CronTaskStatusBar from '../cron/CronTaskStatusBar';
+import GoalStatusBar from '../goal/GoalStatusBar';
 import { useUndoStack } from '@/hooks/useUndoStack';
 import { CUSTOM_EVENTS } from '../../../shared/constants';
 import { reasoningEffortChoices, REASONING_EFFORT_DESCRIPTIONS, REASONING_EFFORT_DEFAULT } from '../../../shared/reasoningEffort';
@@ -68,13 +69,6 @@ function getCurrentModelLabel(
   if (!modelId) return fallbackLabel;
   return provider ? getModelDisplayName(provider, modelId) : modelId;
 }
-
-function isGoalBarTask(
-  task: SimpleChatInputProps['cronTask'] | SimpleChatInputProps['stoppedCronTask'] | null | undefined,
-): boolean {
-  return Boolean(task?.goalStatus);
-}
-
 
 // File search result type
 interface FileSearchResult {
@@ -134,8 +128,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   onWorkspaceRefresh,
   cronModeEnabled = false,
   cronConfig,
+  goalDraftActive = false,
   cronTask,
-  goalTask,
+  sessionGoal,
   stoppedCronTask,
   cronIsExecuting = false,
   cronExecutionNumber,
@@ -145,10 +140,14 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   onCronButtonClick,
   onCronSettings,
   onCronCancel,
+  onGoalDraftSettings,
+  onGoalDraftCancel,
   onCronStop,
   onCronDismissStopped,
   onGoalEdit,
   onGoalResume,
+  onGoalCancel,
+  onGoalDismiss,
   onSlashAction,
   sdkSlashCommands = [],
   mode = 'chat',
@@ -1235,25 +1234,16 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     // eslint-disable-next-line react-hooks/exhaustive-deps -- textareaRef is stable
   }, [cyclePermissionMode, undoStack, fileService, showSlashMenu, filteredSlashCommands, slashSearchQuery, selectedSlashIndex, slashPosition, showFileSearch, fileSearchResults, selectedFileIndex, inputValue, atPosition, fileSearchQuery, images.length, handleSend, handleSkillSelect, handleSlashSelect, mentionTab, thoughtResults]);
 
-  const visibleGoalTask = !isLauncherMode && isGoalBarTask(goalTask) ? goalTask : null;
-  const terminalGoalTask = visibleGoalTask
-    && (visibleGoalTask.goalStatus === 'complete' || visibleGoalTask.goalStatus === 'blocked' || visibleGoalTask.goalStatus === 'canceled')
-    ? visibleGoalTask
-    : null;
-  const activeGoalTask = visibleGoalTask && !terminalGoalTask ? visibleGoalTask : null;
-  const showDraftCronBar = cronModeEnabled && !cronTask && !!cronConfig && !visibleGoalTask;
-  const ordinaryActiveCronTask = !visibleGoalTask && !isLauncherMode && cronTask?.status === 'running' && cronTask.runMode !== 'new_session'
+  const visibleGoal = !isLauncherMode ? sessionGoal : null;
+  const showDraftCronBar = cronModeEnabled && !cronTask && !!cronConfig && !visibleGoal;
+  const showDraftGoalBar = !isLauncherMode && goalDraftActive && !visibleGoal;
+  const activeCronTask = !isLauncherMode && cronTask?.status === 'running' && cronTask.runMode !== 'new_session'
     ? cronTask
     : null;
-  const activeCronTask = activeGoalTask ?? ordinaryActiveCronTask;
   const visibleStoppedCronTask = !isLauncherMode
-    ? (terminalGoalTask ?? (!visibleGoalTask ? stoppedCronTask : null))
+    ? stoppedCronTask
     : null;
-  const activeTaskIsGoal = isGoalBarTask(activeCronTask);
-  const visibleStoppedTaskIsGoal = isGoalBarTask(visibleStoppedCronTask);
-  const visibleTaskIsExecuting = activeTaskIsGoal ? goalIsExecuting : cronIsExecuting;
-  const visibleExecutionNumber = activeTaskIsGoal ? goalExecutionNumber : cronExecutionNumber;
-  const hasCronBar = showDraftCronBar || !!activeCronTask || !!visibleStoppedCronTask;
+  const hasStatusBar = showDraftGoalBar || showDraftCronBar || !!visibleGoal || !!activeCronTask || !!visibleStoppedCronTask;
 
   return (
     <>
@@ -1323,20 +1313,35 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
             onCancel={() => onCronCancel?.()}
           />
         )}
+        {showDraftGoalBar && (
+          <CronTaskStatusBar
+            mode="draft"
+            taskKind="goal"
+            intervalMinutes={0}
+            onSettings={() => onGoalDraftSettings?.()}
+            onCancel={() => onGoalDraftCancel?.()}
+          />
+        )}
+        {visibleGoal && (
+          <GoalStatusBar
+            goal={visibleGoal}
+            isExecuting={goalIsExecuting}
+            executionNumber={goalExecutionNumber}
+            onEdit={onGoalEdit}
+            onResume={onGoalResume}
+            onCancel={onGoalCancel}
+            onDismiss={onGoalDismiss}
+          />
+        )}
         {activeCronTask && (
           <CronTaskStatusBar
-            mode={visibleTaskIsExecuting ? 'executing' : 'running'}
+            mode={cronIsExecuting ? 'executing' : 'running'}
             intervalMinutes={activeCronTask.intervalMinutes}
             schedule={activeCronTask.schedule}
-            goalStatus={activeCronTask.goalStatus}
-            goalObjective={activeTaskIsGoal ? (activeCronTask.goalObjective ?? activeCronTask.prompt) : undefined}
-            goalTerminalReason={activeCronTask.goalTerminalReason}
             executionCount={activeCronTask.executionCount}
             maxExecutions={activeCronTask.endConditions?.maxExecutions}
             nextExecutionAt={activeCronTask.nextExecutionAt}
-            executionNumber={visibleExecutionNumber}
-            onGoalObjectiveClick={activeTaskIsGoal ? onGoalEdit : undefined}
-            onResume={activeTaskIsGoal ? onGoalResume : undefined}
+            executionNumber={cronExecutionNumber}
             onStop={() => onCronStop?.()}
           />
         )}
@@ -1345,9 +1350,6 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
             mode="stopped"
             intervalMinutes={visibleStoppedCronTask.intervalMinutes}
             schedule={visibleStoppedCronTask.schedule}
-            goalStatus={visibleStoppedCronTask.goalStatus}
-            goalObjective={visibleStoppedTaskIsGoal ? (visibleStoppedCronTask.goalObjective ?? visibleStoppedCronTask.prompt) : undefined}
-            goalTerminalReason={visibleStoppedCronTask.goalTerminalReason}
             executionCount={visibleStoppedCronTask.executionCount}
             maxExecutions={visibleStoppedCronTask.endConditions?.maxExecutions}
             onDismissStopped={() => onCronDismissStopped?.()}
@@ -1355,7 +1357,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
         )}
 
         <div className={`relative border border-[var(--line)] bg-[var(--paper-elevated)] shadow-md ${
-          hasCronBar
+          hasStatusBar
             ? 'rounded-b-2xl rounded-t-none border-t-0'  // StatusBar visible: no top rounded, no top border
             : 'rounded-2xl'  // Normal: fully rounded
         }`}>

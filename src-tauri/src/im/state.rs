@@ -262,12 +262,14 @@ pub(super) async fn ensure_sidecar_port_for_command<R: Runtime>(
 ) -> Result<u16, String> {
     let drift_result = {
         let mut router_guard = router.lock().await;
-        router_guard.check_and_reset_on_runtime_identity_drift(
-            session_key,
-            desired_runtime,
-            desired_runtime_source,
-            manager,
-        )
+        router_guard
+            .check_and_reset_on_runtime_identity_drift(
+                session_key,
+                desired_runtime,
+                desired_runtime_source,
+                manager,
+            )
+            .await?
     };
     if drift_result.is_some() {
         let _ =

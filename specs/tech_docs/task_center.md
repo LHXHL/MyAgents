@@ -1,177 +1,134 @@
 # 任务中心架构
 
-> 把"想法速记 → 对齐 → 派发 → 执行 → 验收 → 审计"的完整工作流一等公民化。
-> 数据层全部在 Rust，前端按卡片 / 列表双视图呈现，AI 和用户共享同一套 CLI 操作闭环。
+> 0.2.50 起，Task 是所有新定时自动化和任务中心执行的唯一持久化实体。Cron 只保留兼容命令名与旧数据读取，不再是 Task 的调度投影。
 
-## 数据层 (Rust)
+## 1. 所有权
 
-两个持久化 Store，均存于 `~/.myagents/` 用户目录：
+两个 Store 位于 `~/.myagents/`：
 
-| Store | 文件 | 模块 |
-|-------|------|------|
-| `ThoughtStore` | `~/.myagents/thoughts/<YYYY-MM>/<id>.md`（按月分目录的 Markdown + 头部 YAML frontmatter） | `src-tauri/src/thought.rs` |
-| `TaskStore` | `~/.myagents/tasks.jsonl`（元数据行）+ `~/.myagents/tasks/<id>/{task.md, verify.md, progress.md, alignment/…}`（AI 工作区） | `src-tauri/src/task.rs` |
+| Store | 文件 | Owner |
+|---|---|---|
+| `ThoughtStore` | `thoughts/<YYYY-MM>/<id>.md` | 想法与 Task 关联 |
+| `TaskStore` | `tasks.jsonl` + `tasks/<id>/{task.md,verify.md,progress.md,alignment/...}` | Task 身份、状态、调度配置、运行统计与审计 |
 
-### 写盘原子性
+`TaskStore` 是 Task 的唯一真相。不存在 `Task.cronTaskId`、关联 `CronTask` 副本、schedule 双写或启动时反向修补。
 
-两个 Store 均走 `write_atomic_text` —— tmp 文件写入 + `sync_all` + `rename` + 父目录 fsync。
+Task 的核心职责：
 
-TaskStore 的 `create_direct` / `create_migrated` **先写 task.md 再提交 JSONL**（cross-review C3 修复）：JSONL 失败时 best-effort 清理 docs 目录，orphan 目录无害；反序则会残留"有 JSONL 行无 task.md"的鬼任务。
+- 用户可见身份、文档、状态机与审计链。
+- `once / scheduled / recurring` 执行模式及 `dispatchAt / interval / cron expression / timezone / recurring window`。
+- `new-session / single-session` 会话策略。
+- 新执行 Session 的 runtime/provider/model/MCP 初始配置，以及每轮 permission policy。
+- notification、关联 Session、执行次数与最近执行时间。
 
-### 路径穿越防御
+`Loop` 已退出 Task 模型：新建/编辑拒绝，旧 Loop 启动时转 `Stopped`，不转换为 Goal。
 
-`validate_safe_id(value, label)` 在每个 task_id / thought_id / alignmentSessionId 入口拦截：
-- `..`
-- 路径分隔符
-- `\0`
-- Windows 保留名（CON/PRN/COM1-9 等）
-- 非 ASCII 字符
+## 2. 状态与调度
 
-再叠加 `task_docs_dir()` 的 `resolved.starts_with(&base)` 双保险。
-
-## 状态机 + 审计链
-
-### Task 状态
-
-```
-Todo → Running → Verifying ↔ Done
-        ↓
-        Blocked / Stopped / Archived / Deleted
+```text
+Todo -> Running -> Verifying -> Done
+          |             |
+          +-> Blocked / Stopped
+Done -> Archived
+any allowed state -> Deleted (soft delete)
 ```
 
-### 状态变更行为
+对时间型 Task，`Running` 表示 scheduler enabled，不表示某个 AI Turn 正在执行。瞬时执行状态只存在于 `TaskSchedulerController.executions`，API 的 `currentlyExecuting` 由它投影。
 
-每次 `update_status` 都原子写入 `statusHistory: StatusTransition[]`（`{from, to, at, actor, source, message}`）并 append 到 `progress.md`。
+`TaskSchedulerController` 只拥有可重建的内存资源：
 
-广播 Tauri event `task:status-changed`（**非 SSE**，前端 `listen()` 直接消费）让所有打开的任务中心 Tab 实时同步。
+- 一个 `taskId -> timer JoinHandle` map。
+- 一个 `taskId -> { queueId, canceled, sessionId }` 的瞬时 execution map：复用 SessionEngine 普通 turn identity，原子拒绝重叠、撤销未 dispatch turn，并把 stop 与结果提交线性化；它不是持久 TaskRun。
+- 启动时从 `TaskStore` 的 Running Task 重建 timer。
 
-### 崩溃恢复
+启动 Task 只有一个事务入口：`run_task_by_id()` 先校验 schedule、提交 `Running`，再 arm timer；arm 失败则提交 `Blocked`。前端不再分别调用“start task”和“start scheduler”。所有 terminal status 与 soft delete 都经 `TaskStore` 统一停止 timer、取消当前 Turn、释放 Task Sidecar owner。
 
-把遗留 `running / verifying` 迁到 `blocked` 并记入 statusHistory。
+timer handle 只负责“何时触发”。真正的 AI Turn 是独立执行作业；Stop 撤销该次 queue authority，并只对当前 execution Session 请求 SessionEngine stop。只有 stop 得到业务确认才释放 Task owner，历史 `sessionIds` 不承担实时取消索引。
 
-### 软删审计
+### Scheduled tick 与 run-now
 
-`deleted = true` 也写审计 `→ deleted` 伪状态，真删只在 archive 后可选。
+二者复用 `task_execution::execute_task()`，但 lifecycle 不同：
 
-## Task ↔ CronTask 反向指针（执行闭环）
+- Scheduled tick 推进一次性任务终态、失败状态与 end condition。
+- `cron run-now` 是兼容的 manual trigger：Running/Stopped Task 可执行，不启用 scheduler，不改变原 schedule/status；其他终态必须先走 rerun。
+- `lastExecutedAt` 记录任何执行；`lastScheduledAt` 只记录 timer tick。Recurring 的下一次触发只使用后者，因此 manual run 不会移动调度锚点。
 
-**Task 不自己跑**，而是登记一条 `CronTask { task_id: Some(<taskId>) }`。
+每次执行前都重新读取 `task.md`，用户修改会在下一次执行生效。运行历史继续写 `cron_runs/<taskId>.jsonl`，这是查询/审计投影，不是 Task 状态权威。
 
-调度器 tick 时：
-1. 检查 `task_id`
-2. 回调 `task::build_dispatch_prompt()` **动态**构造首条消息：
-   - `direct` 模式 → "执行任务：<task.md>"
-   - `ai-aligned` 模式 → `/task-implement`
+## 3. Session 与配置边界
 
-**好处**：用户中途编辑 task.md，下一次执行立即生效——不需要手动同步 Prompt，也不会跑半新半旧。
+Task 执行统一经过 `task_execution.rs` -> Rust Sidecar bridge -> Node `SessionEngine` facade，builtin/external runtime 均走 adapter selector。
 
-### Goal Mode 与 Task/Cron 边界
+- 已存在的 Session：runtime/model/provider/reasoning/MCP 全部继承该 Session；Task 不做 turn-scoped 覆盖或回滚。
+- 新建执行 Session，或首次 materialize 专属 single-session Session：Task 配置只用于初始化一次。
+- permission 是本轮执行策略，可由 Task 指定；空值解析为对应 runtime 最大权限。
+- durable Task 只保存 provider identity (`providerId + model`)，不保存 credential/env。
+- 执行期间使用 `SidecarOwner::Task(taskId)`；terminal/stop/delete 对称释放。
 
-Goal Mode（0.2.50）也复用 `CronTask` 作为 backing store 和 scheduler，但它不是 Task Center task：
+完整 provider/runtime/MCP 规则见 `task_provider_routing.md`。
 
-- Goal 不自动创建 `TaskStore` 记录，不写 `task_id`，不进入 Task 状态机。
-- Goal identity 只由显式 `goalStatus` 表达；`goalObjective` 是 Goal 数据而不是身份标识。不能把 `CronSchedule::Loop` 或 `RunMode::SingleSession` 形状本身当成 Goal，旧 Loop 不迁移。
-- 普通 Task / Cron surface 必须过滤或拒绝 Goal task；Goal 的 create/get/update 走 Goal facade（Tauri `cmd_*_goal_task`、Management API `/api/goal/*`、CLI `myagents goal ...`）。
-- Task Center 内部将来仍可使用 loop-shaped CronTask 作为执行机制，只要没有 Goal 字段，它就是 Task/Cron 执行，不是 Goal Mode。
-- legacy Cron 升级逻辑不能把 Goal 自动迁成 Task，也不能把 Task-linked Cron 误识别为 Goal。
+## 4. Managed Task
 
-## AI 讨论路径（想法 → 正式任务）
+memory update、memory evolution、Agent heartbeat 等内部定时工作也写入带 `managedKind` 的隐藏 Task，由同一个 Task scheduler 执行。普通 Task Center 列表默认过滤 managed Task，但 Session/history/audit 保留。
 
-完整 5 步流程：
+managed job 不再创建 managed CronTask 旁路。
 
-1. 用户点想法卡「AI 讨论」→ 打开新 Chat Tab + 注入 `task-alignment` Skill
-2. AI 完成 alignment → 四份文档（alignment.md / task.md / verify.md / progress.md）存于 `~/.myagents/tasks/<alignmentSessionId>/alignment/`
-3. AI 调 `myagents task create-from-alignment <alignmentSessionId> --name <name>`
-4. `TaskStore::create_from_alignment` 事务化迁移：
-   - JSONL 先写
-   - 原 alignment 目录 rename 到 `~/.myagents/tasks/<newTaskId>/`
-   - 失败时 JSONL rollback
-5. `dispatchOrigin = 'ai-aligned'`，后续走 `/task-implement` 模板
+## 5. Legacy Cron 迁移
 
-## Legacy Cron 升级 (`legacy_upgrade.rs`)
+`cron_tasks.json` 是只读兼容输入。应用启动顺序为：
 
-早期版本的独立 CronTask 在首次加载时被检测为 "legacy"，自动升级成带 Task 的结构：
-
-- **幂等：** `set_task_id(cron_id, new_task_id, require_null=true)` CAS，已升级过的 cron 会被 short-circuit 跳过
-- **Rollback：**
-  - Task 创建成功但 CAS 失败 → 回滚 Task
-  - CAS 成功后 Rename 失败 → CAS 回滚 + Task 删除
-- **状态保留：**
-  - Running cron → Running task
-  - 已自然结束 → Done
-  - 用户手动停的 → Stopped
-- **Audit 记 `actor=System, source=Migration`**
-
-详见 `pit_of_success.md` 的「Legacy CronTask CAS Upgrade」节。
-
-## 前端布局
-
-`src/renderer/components/task-center/` 32 个组件。
-
-```
-左栏 ThoughtPanel       右栏 TaskListPanel
-  速记流                  - 进行中
-                          - 规划中     ← 三段
-                          - 已完成
-                        卡片 / 列表 ViewToggle
+```text
+校验 legacy store
+-> migrate_legacy_crons_on_startup()
+-> TaskSchedulerController.initialize()
+-> Session Goal recovery
 ```
 
-详情 Overlay (`TaskDetailOverlay` / `TaskEditPanel`) 包含：
-- 名称、描述、Prompt
-- 执行模式
-- per-task Runtime / Model / PermissionMode 覆盖
-- 结束条件、通知订阅
-- 运行统计、status history、关联 session 列表
+标准 Cron get/list/start/stop/update/delete/run-now facade 只投影 TaskStore。未迁移历史行仅通过显式只读命令 `cmd_get_unmigrated_legacy_cron_tasks` 进入 Legacy 面板；deleted Task 仍作为 legacy id tombstone，旧行不会重新出现或再次迁移。
 
-## 全文搜索
+迁移规则：
 
-`search/mod.rs` 新增 `search_thoughts` / `search_tasks` 方法。
+| Legacy row | 处理 |
+|---|---|
+| 普通 At / Every / Cron | 同 ID 迁移为 Task，保留 schedule、状态、执行统计、Session 策略与通知 |
+| 旧 Task-linked projection | 已有 Task 为权威，只补不倒退的 execution/session 数据 |
+| managed row | 迁移/关联为隐藏 managed Task |
+| Loop / 开发期 Goal row | 不迁移、不恢复 |
+| credential 或 workspace 无法安全恢复 | 创建可诊断的 Blocked Task，不猜测路由 |
+| store 损坏 | 整库只读，禁止用空/部分数据覆盖原文件 |
 
-- v1 规模用内存线性扫描（<10k 条）
-- Thought 遍历 ThoughtStore
-- Task 遍历 TaskStore 并按需读 `~/.myagents/tasks/<id>/task.md` 全文
-- 超过规模再切 Tantivy，schema 接口已留好
+迁移幂等依赖原 ID 与 migration provenance，不另建 migration ledger。历史 run 文件尽力沿用/迁移同一 ID。所有新 `cron add/create/update/start/stop` 兼容入口均直接读写 TaskStore，永不写回 legacy 文件。
 
-## CLI
+## 6. 数据完整性
 
-`myagents task` 命令族：
-```
-list / get / run / rerun
-update-status / update-progress / append-session
-archive / delete
-create-direct / create-from-alignment
-```
+Task mutation 的固定事务边界：
 
-`myagents thought` 命令族：
-```
-list / create
+```text
+TaskStore write lock
+-> clone 当前权威 map
+-> mutate + validate
+-> 原子持久化 candidate
+-> 替换内存 map
+-> 解锁
+-> event / notification / scheduler 副作用
 ```
 
-### Actor / Source 自动识别
+`tasks.jsonl` 解析是 all-or-nothing；任一 malformed/duplicate row 使 Store 保持只读。写盘使用 tmp + `sync_all` + rename + parent fsync。Task id/path 入口统一经过 `validate_safe_id` 与 `task_docs_dir()` containment 校验。
 
-| 调用方 | actor | source |
-|--------|-------|--------|
-| AI 子进程（`MYAGENTS_PORT` 环境变量存在） | `agent` | `cli` |
-| 用户终端 | `user` | `cli` |
-| UI 路径（Tauri 层强制） | `user` | `ui` |
+## 7. Goal 边界
 
-三条入口互不伪造，审计链可溯。
+Goal 是 Session 状态，不是 Task execution mode：
 
-## 资源管理
+- 不创建 Task、不占用 Task status/schedule 字段。
+- Task 与 Goal 可在同一 Session 共存；Task scheduler 不感知 Goal。
+- 未来 Task 如需持续执行，可让其 prompt 中的 AI 在当前 Session 调 `myagents goal create`，无需 Task->Goal 编排字段。
 
-| 事件 | 行为 |
-|------|------|
-| 任务立即执行 / 重新派发 | `task::run` → 登记 `CronTask { task_id }` + 触发调度；执行完成后 CronTask 自然结束 |
-| Task 软删除 | `TaskStore::delete` → 写 `→ deleted` 伪状态 + 联动清理 `thought.convertedTaskIds` |
+详见 `session_architecture.md` 的 Goal Mode 章节。
 
-## 详细设计文档
+## 8. 主要入口
 
-- 任务中心完整 PRD（本地）：`prd_0.1.69_task_center.md`
-- Session Config Snapshot 设计：`prd_0.1.69_session_config_snapshot.md`
-
-## 与其他文档的关系
-
-- 与 CronTask 的协同 → `ARCHITECTURE.md` 的「定时任务系统」节
-- Session Config Snapshot 实现 → `pit_of_success.md` 的「Snapshot Helpers」节
-- CLI 完整命令矩阵 → `cli_architecture.md`
-- Management API 路由 → `ARCHITECTURE.md` 的 `/api/task/*` 节
+- Rust：`src-tauri/src/task.rs`、`task_scheduler.rs`、`task_execution.rs`
+- Legacy compatibility：`src-tauri/src/cron_task/*`、`legacy_upgrade.rs`
+- Management API：`/api/task/*` 与兼容 `/api/cron/*`
+- CLI：`myagents task ...`、兼容 `myagents cron ...`
+- Renderer：`src/renderer/components/task-center/`、`useCronTask`（兼容展示 hook）

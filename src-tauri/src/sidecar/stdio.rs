@@ -180,7 +180,7 @@ mod session_activation_tab_uniqueness_tests {
     fn clearing_tab_id_preserves_task_id_and_port() {
         // When session_X loses its tab binding because tab T_A claims
         // session_Y, session_X's other fields (task_id, port, workspace,
-        // is_cron_task) MUST stay intact — the cron / BG owner that
+        // is_cron_task) MUST stay intact — another persistent owner that
         // keeps the sidecar alive still depends on them.
         let mut mgr = SidecarManager::new();
         mgr.activate_session(

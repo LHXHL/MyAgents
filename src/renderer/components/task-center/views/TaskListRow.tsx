@@ -35,7 +35,7 @@ export function TaskListRow(props: TaskListRowProps) {
   const { i18n } = useTranslation('task');
   const locale = isSupportedLocale(i18n.language) ? i18n.language : 'zh-CN';
   const isLegacy = !!legacy && !task;
-  const status = deriveTaskRowStatus(task ?? null, legacy?.status === 'running');
+  const status = deriveTaskRowStatus(task ?? null);
   const name = task?.name ?? legacy?.name ?? '—';
   const workspace = legacy?.workspacePath
     ? shortenPath(legacy.workspacePath)

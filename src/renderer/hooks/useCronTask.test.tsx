@@ -17,17 +17,16 @@ function task(overrides: Partial<CronTask> = {}): CronTask {
     executionCount: 0,
     createdAt: '2026-07-10T10:00:00.000Z',
     notifyEnabled: true,
-    schedule: { kind: 'loop' },
+    schedule: { kind: 'every', minutes: 5 },
     ...overrides,
   };
 }
 
 describe('useCronTask surface ownership', () => {
-  it('restores a legacy Loop as ordinary Cron when goalStatus is absent', () => {
+  it('restores an ordinary time-based Cron', () => {
     const { result } = renderHook(() => useCronTask({
       workspacePath: '/tmp/workspace',
       sessionId: 'session-1',
-      tabId: 'tab-1',
     }));
 
     act(() => result.current.restoreFromTask(task()));
@@ -36,14 +35,13 @@ describe('useCronTask surface ownership', () => {
     expect(result.current.state.config?.taskKind).toBe('cron');
   });
 
-  it('refuses to absorb an explicit Goal into ordinary Cron state', () => {
+  it('refuses to restore a retired legacy Loop', () => {
     const { result } = renderHook(() => useCronTask({
       workspacePath: '/tmp/workspace',
       sessionId: 'session-1',
-      tabId: 'tab-1',
     }));
 
-    act(() => result.current.restoreFromTask(task({ goalStatus: 'active' })));
+    act(() => result.current.restoreFromTask(task({ schedule: { kind: 'loop' } })));
 
     expect(result.current.state.task).toBeNull();
     expect(result.current.state.config).toBeNull();

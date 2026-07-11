@@ -35,8 +35,7 @@ export interface TaskCardItemProps {
   highlighted?: boolean;
   busy?: boolean;
   onOpen: () => void;
-  /** Menu "编辑" action — opens the detail overlay in edit mode. Not
-   *  wired for legacy rows (their schedule lives in the old cron UI). */
+  /** Menu "编辑" action — opens the detail overlay in edit mode. */
   onEdit?: () => void;
   onRun?: () => void;
   onStop?: () => void;
@@ -49,14 +48,14 @@ export function TaskCardItem(props: TaskCardItemProps) {
   const { t, i18n } = useTranslation('task');
   const locale = isSupportedLocale(i18n.language) ? i18n.language : 'zh-CN';
   const isLegacy = !!legacy && !task;
-  const status = deriveTaskRowStatus(task ?? null, legacy?.status === 'running');
+  const status = deriveTaskRowStatus(task ?? null);
   const name = task?.name ?? legacy?.name ?? '—';
   const updatedAt = task?.updatedAt ?? legacy?.updatedAt ?? 0;
   const category = task ? task.executionMode : inferLegacyCategory(legacy);
 
-  // Loop + recurring tasks surface "第 N 轮" / "已执行 N 次" — both pull
-  // from CronTask.execution_count. RunStats is a per-card fetch because
-  // the count lives on the linked CronTask, not on the Task row itself.
+  // Loop + recurring tasks surface "第 N 轮" / "已执行 N 次" from Task
+  // execution history. RunStats remains a per-card fetch to keep the panel
+  // model small.
   // One Tauri round-trip per card; negligible for dashboards < 50 cards
   // and localises the read (no panel-level Map to keep in sync).
   const [runStats, setRunStats] = useState<TaskRunStats | null>(null);

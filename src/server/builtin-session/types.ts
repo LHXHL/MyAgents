@@ -14,7 +14,11 @@ import type { ImagePayload } from '../runtimes/types';
 import type { MessageUsage, SessionSource, TurnAnalyticsSource } from '../types/session';
 import type { MirrorImage } from '../utils/im-mirror';
 import type { ModelAliases } from '../utils/model-aliases';
-import type { DispatchGuard } from '../session-core/turn-queue';
+import type {
+  DispatchGuard,
+  TurnOwner,
+  TurnTerminalObserver,
+} from '../session-core/turn-queue';
 
 export type BuiltinSessionState = 'idle' | 'starting' | 'running' | 'error';
 
@@ -157,7 +161,8 @@ export type MessageQueueItem = {
   analyticsOrigin?: SessionOrigin;
   providerAnalytics?: TurnProviderAnalytics;
   inboxMeta?: InboxTurnMeta;
-  injectedTurnId?: string;
+  turnOwner?: TurnOwner;
+  onTerminal?: TurnTerminalObserver;
   beforeDispatch?: DispatchGuard;
   /** User history/UI side effects held until a dispatch guard accepts. */
   deferredUserSurface?: DeferredUserSurface;
@@ -206,13 +211,6 @@ export type BuiltinTurnUsage = {
   modelUsage?: MessageUsage['modelUsage'];
 };
 
-export type BuiltinInjectedTurnOutcome = {
-  status: 'complete' | 'stopped' | 'error';
-  text: string;
-  assistantMessagePresent: boolean;
-  error?: string;
-};
-
 export type BuiltinLifecycleSnapshot = {
   querySession: Query | null;
   isProcessing: boolean;
@@ -245,7 +243,6 @@ export type BuiltinConfigSnapshot = {
 
 export type BuiltinTurnStartContext = {
   startedAt: number;
-  injectedTurnId?: string;
   inboxMeta?: InboxTurnMeta;
   providerAnalytics?: TurnProviderAnalytics;
   images?: ImagePayload[];

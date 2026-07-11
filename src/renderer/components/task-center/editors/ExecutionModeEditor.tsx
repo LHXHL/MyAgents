@@ -1,5 +1,5 @@
 // ExecutionModeEditor — shared UI for picking how a task runs:
-//   • mode: once / scheduled / recurring / loop
+//   • mode: once / scheduled / recurring
 //   • scheduled → datetime-local (→ task.dispatchAt)
 //   • recurring → CronExpressionInput with 5-chip picker:
 //       固定周期 (intervalMinutes) | 每天 | 工作日 | 每周 | 每月
@@ -17,7 +17,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Calendar, Clock, Play, Repeat, Timer } from 'lucide-react';
+import { Calendar, Clock, Play, Timer } from 'lucide-react';
 
 import type { TaskExecutionMode, TaskRunMode } from '@/../shared/types/task';
 import CronExpressionInput from '@/components/scheduled-tasks/CronExpressionInput';
@@ -66,12 +66,6 @@ const EXECUTION_TABS: Array<{
     labelKey: 'execution.modes.recurring.label',
     icon: Timer,
     descriptionKey: 'execution.modes.recurring.description',
-  },
-  {
-    value: 'loop',
-    labelKey: 'execution.modes.loop.label',
-    icon: Repeat,
-    descriptionKey: 'execution.modes.loop.description',
   },
 ];
 

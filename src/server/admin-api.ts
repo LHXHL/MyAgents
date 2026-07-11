@@ -60,7 +60,6 @@ import { readLoopbackJson } from './utils/loopback-response';
 import { ADMIN_LOOPBACK_TIMEOUT_MS, managementApi } from './utils/management-api-client';
 import { getCuseDiagnostics } from './utils/cuse-diagnostics';
 import { getSessionEngine } from './session-engine';
-import { getGoalTurnAuthority } from './session-engine/goal-turn-authority';
 
 // Long-running sidecar operations need their own budget. Anchored to the
 // sidecar's internal `FETCH_TIMEOUT_MS` (300s for tarball download) plus a
@@ -1940,7 +1939,7 @@ Options for 'create-direct':
   --taskMdContent      Inline task.md body (use --taskMdFile instead when
                        content spans multiple lines / has backticks / quotes).
                        Exactly one of --taskMdFile / --taskMdContent must be set.
-  --executionMode      'once' | 'scheduled' | 'recurring' | 'loop' (default: once)
+    --executionMode      'once' | 'scheduled' | 'recurring' (default: once)
   --runMode            'single-session' | 'new-session'
   --tags               Comma-separated tag list
   --sourceThoughtId    Link back to the originating thought
@@ -2642,17 +2641,16 @@ export async function handleGoalUpdate(payload: {
   }
   const ctx = currentGoalContext();
   if (ctx.error || !ctx.sessionId) return { success: false, error: ctx.error };
-  const authority = getGoalTurnAuthority(ctx.sessionId);
-  if (!authority) {
+  const turn = getSessionEngine().getCurrentTurnIdentity();
+  if (!turn || turn.owner.kind !== 'goal') {
     return { success: false, error: 'Goal terminal update requires the active Goal turn authority' };
   }
   const reason = payload.reason?.trim() || (status === 'complete' ? 'Goal achieved' : 'Goal blocked');
   const resp = await managementApi('/api/goal/update', 'POST', {
     sessionId: ctx.sessionId,
     workspacePath: ctx.workspacePath,
-    goalId: authority.goalId,
-    ...(authority.leaseId ? { leaseId: authority.leaseId } : {}),
-    ...(authority.admissionId ? { admissionId: authority.admissionId } : {}),
+    goalId: turn.owner.id,
+    queueId: turn.queueId,
     status,
     reason,
   });
@@ -3071,11 +3069,6 @@ export function handleCronExit(payload: { reason?: string }): AdminResponse {
     reason,
     timestamp: new Date().toISOString(),
   };
-  broadcast('cron:task-exit-requested', {
-    taskId: request.taskId,
-    reason: request.reason,
-    timestamp: request.timestamp,
-  });
   return {
     success: true,
     data: { taskId: request.taskId, reason: request.reason },

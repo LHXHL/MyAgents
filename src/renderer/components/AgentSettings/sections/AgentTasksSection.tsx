@@ -2,7 +2,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AgentConfig } from '../../../../shared/types/agent';
-import { getWorkspaceCronTasks, deleteCronTask, startCronTask, stopCronTask, startCronScheduler } from '@/api/cronTaskClient';
+import { getWorkspaceCronTasks, deleteCronTask, startCronTask, stopCronTask } from '@/api/cronTaskClient';
 import type { CronTask } from '@/types/cronTask';
 import { useToast } from '@/components/Toast';
 import CronTaskDetailPanel from '@/components/CronTaskDetailPanel';
@@ -95,7 +95,6 @@ export default function AgentTasksSection({ agent }: AgentTasksSectionProps) {
   const handleResume = useCallback(async (taskId: string) => {
     try {
       await startCronTask(taskId);
-      await startCronScheduler(taskId);
       if (!isMountedRef.current) return;
       setSelectedTask(null);
       toastRef.current.success(t('agentSettings.tasks.resumed'));

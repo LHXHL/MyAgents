@@ -3,10 +3,10 @@ import { describe, expect, it } from 'vitest';
 import {
   FLOATING_BALL_CONTEXT_TAG,
   GOAL_CONTEXT_TAG,
-  GOAL_OBJECTIVE_UPDATED_TAG,
+  GOAL_CONTINUATION_TAG,
   SPACE_ISSUE_CONTEXT_TAG,
   buildGoalContextReminder,
-  buildGoalObjectiveUpdatedReminder,
+  buildGoalContinuationReminder,
   buildFloatingBallContextReminder,
   parseLeadingSystemReminder,
   stripLeadingSystemReminder,
@@ -150,20 +150,32 @@ describe('systemReminder', () => {
     expect(stripLeadingSystemReminder(raw)).toBe('Please also run lint');
   });
 
-  it('builds Goal objective update reminders as pure hidden payloads', () => {
-    const raw = buildGoalObjectiveUpdatedReminder({
-      objective: 'New objective',
-      goalId: 'goal_123',
+  it('keeps automatic Goal continuations hidden', () => {
+    const raw = buildGoalContinuationReminder({
+      objective: 'Build the workspace overview',
+      goalId: 'goal_first_turn',
       goalStatus: 'active',
-      turnNumber: 5,
+      turnNumber: 1,
     });
-    const parsed = parseLeadingSystemReminder(raw);
 
-    expect(parsed.kind).toBe(GOAL_OBJECTIVE_UPDATED_TAG);
-    expect(parsed.body).toContain('The active MyAgents Goal objective was edited by the user.');
-    expect(parsed.body).toContain('New objective');
+    const parsed = parseLeadingSystemReminder(raw);
     expect(parsed.visibleText).toBe('');
     expect(stripLeadingSystemReminder(raw)).toBe('');
+  });
+
+  it('keeps the first Goal continuation payload while exposing its user query', () => {
+    const raw = buildGoalContinuationReminder({
+      objective: 'Build the workspace overview',
+      goalId: 'goal_first_turn',
+      goalStatus: 'active',
+      turnNumber: 1,
+      visibleUserMessage: 'Build the workspace overview',
+    });
+
+    const parsed = parseLeadingSystemReminder(raw);
+    expect(parsed.kind).toBe(GOAL_CONTINUATION_TAG);
+    expect(parsed.visibleText).toBe('Build the workspace overview');
+    expect(stripLeadingSystemReminder(raw)).toBe('Build the workspace overview');
   });
 
   it('removes every autonomous terminal command when Goal exit is disabled', () => {

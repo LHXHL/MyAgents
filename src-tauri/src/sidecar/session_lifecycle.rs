@@ -1,5 +1,58 @@
 use super::*;
 
+pub(crate) struct SessionLifecycleGuard {
+    _guards: Vec<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+type SessionLifecycleMutex = tokio::sync::Mutex<()>;
+type SessionLifecycleRegistry =
+    tokio::sync::Mutex<HashMap<String, std::sync::Weak<SessionLifecycleMutex>>>;
+
+static SESSION_LIFECYCLE_LOCKS: std::sync::OnceLock<SessionLifecycleRegistry> =
+    std::sync::OnceLock::new();
+
+pub(crate) async fn acquire_session_lifecycle(session_ids: &[&str]) -> SessionLifecycleGuard {
+    let mut identities = session_ids
+        .iter()
+        .map(|session_id| session_id.trim())
+        .filter(|session_id| !session_id.is_empty())
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    identities.sort();
+    identities.dedup();
+
+    let registry = SESSION_LIFECYCLE_LOCKS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
+    let locks = {
+        let mut registry = registry.lock().await;
+        registry.retain(|_, lock| lock.strong_count() > 0);
+        identities
+            .into_iter()
+            .map(|session_id| {
+                if let Some(lock) = registry.get(&session_id).and_then(std::sync::Weak::upgrade) {
+                    return lock;
+                }
+                let lock = Arc::new(SessionLifecycleMutex::new(()));
+                registry.insert(session_id, Arc::downgrade(&lock));
+                lock
+            })
+            .collect::<Vec<_>>()
+    };
+
+    let mut guards = Vec::with_capacity(locks.len());
+    for lock in locks {
+        guards.push(lock.lock_owned().await);
+    }
+    SessionLifecycleGuard { _guards: guards }
+}
+
+pub(crate) async fn has_persisted_session_owner(session_id: &str) -> Result<bool, String> {
+    Ok(crate::session_goal::get_session_goal_manager()
+        .has_session_identity_protection(session_id)
+        .await
+        .map_err(|error| error.to_string())?
+        || crate::task_scheduler::has_persistent_task_for_session(session_id).await)
+}
+
 // ============= Session-Centric Sidecar API (v0.1.11) =============
 
 /// Result returned from ensure_session_sidecar
@@ -624,7 +677,7 @@ fn create_new_session_sidecar<R: Runtime>(
     //
     // Priority rules, split by owner type:
     //
-    //   Tab / CronTask / BackgroundCompletion (desktop-style):
+    //   Tab / Task / Goal / BackgroundCompletion (desktop-style):
     //     runtime_override → session metadata → agent config
     //
     //     Session metadata is authoritative so an ongoing conversation can't
@@ -986,8 +1039,6 @@ pub fn release_session_sidecar(
 
     if removed {
         if stopped {
-            // Clean up generation counter when sidecar is permanently removed
-            manager_guard.clear_generation(session_id);
             ulog_info!(
                 "[sidecar] Released owner {:?} from session {}, Sidecar stopped (last owner)",
                 owner,
@@ -1053,7 +1104,7 @@ pub async fn cmd_ensure_session_sidecar(
 ) -> Result<EnsureSidecarResult, String> {
     let owner = match ownerType.as_str() {
         "tab" => SidecarOwner::Tab(ownerId),
-        "cron_task" => SidecarOwner::CronTask(ownerId),
+        "task" => SidecarOwner::Task(ownerId),
         "im_bot" | "agent" => SidecarOwner::Agent(ownerId),
         _ => return Err(format!("Invalid owner type: {}", ownerType)),
     };
@@ -1089,12 +1140,6 @@ pub fn cmd_release_session_sidecar(
     ownerType: String,
     ownerId: String,
 ) -> Result<bool, String> {
-    if ownerType == "cron_task" {
-        return state
-            .lock()
-            .map(|mut manager| manager.release_cron_session(&sessionId, &ownerId))
-            .map_err(|error| error.to_string());
-    }
     let owner = match ownerType.as_str() {
         "tab" => SidecarOwner::Tab(ownerId),
         "background_completion" => SidecarOwner::BackgroundCompletion(ownerId),
@@ -1144,16 +1189,10 @@ pub async fn cmd_upgrade_session_id(
     oldSessionId: String,
     newSessionId: String,
 ) -> Result<bool, String> {
-    // Hold the persisted scheduler read lock across the Sidecar key mutation.
-    // Goal/Cron creation needs the write lock, so owner creation cannot land
-    // between the protection check and rename.
-    let scheduler = crate::cron_task::get_cron_task_manager();
-    let tasks = scheduler.tasks.read().await;
-    let has_persisted_owner = tasks.values().any(|task| {
-        crate::cron_task::manager::task_holds_persistent_session(task, &oldSessionId)
-            || crate::cron_task::manager::task_holds_persistent_session(task, &newSessionId)
-    });
-    if has_persisted_owner {
+    let _lifecycle = acquire_session_lifecycle(&[&oldSessionId, &newSessionId]).await;
+    if has_persisted_session_owner(&oldSessionId).await?
+        || has_persisted_session_owner(&newSessionId).await?
+    {
         return Ok(false);
     }
     let mut manager = state.lock().map_err(|e| e.to_string())?;
@@ -1164,8 +1203,8 @@ pub async fn cmd_upgrade_session_id(
 }
 
 /// Check whether a session identity must remain stable after a Tab detaches.
-/// Includes both live background owners and an unfinished Goal whose scheduler
-/// has not attached its CronTask owner yet.
+/// Includes both live background owners and durable Task/Goal state whose
+/// physical Sidecar owner may still be attaching or recovering.
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn cmd_session_has_persistent_owners(
@@ -1178,14 +1217,16 @@ pub async fn cmd_session_has_persistent_owners(
         manager.session_has_persistent_owners(&sessionId)
     };
     Ok(has_live_owner
-        || crate::cron_task::get_cron_task_manager()
-            .has_persistent_task_for_session(&sessionId)
-            .await)
+        || crate::task_scheduler::has_persistent_task_for_session(&sessionId).await
+        || crate::session_goal::get_session_goal_manager()
+            .has_session_identity_protection(&sessionId)
+            .await
+            .map_err(|error| error.to_string())?)
 }
 
 /// Delete a transcript only while no persistent scheduler or Sidecar owner can
-/// claim the session. Both owner locks stay held across the local DELETE, so a
-/// Goal/Cron/Agent cannot appear between validation and mutation.
+/// claim the session. The per-Session lifecycle guard stays held across the
+/// local DELETE, so a Task/Goal/Agent cannot appear between validation and mutation.
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn cmd_delete_session_if_unowned(
@@ -1195,20 +1236,13 @@ pub async fn cmd_delete_session_if_unowned(
     if sessionId.trim().is_empty() || sessionId.contains('/') {
         return Err("Invalid session ID".to_string());
     }
-
-    let scheduler = crate::cron_task::get_cron_task_manager();
-    let tasks = scheduler.tasks.clone().read_owned().await;
+    let _lifecycle = acquire_session_lifecycle(&[&sessionId]).await;
+    if has_persisted_session_owner(&sessionId).await? {
+        return Ok(false);
+    }
     let sidecars = state.inner().clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        let _tasks_guard = tasks;
-        if _tasks_guard
-            .values()
-            .any(|task| crate::cron_task::manager::task_holds_persistent_session(task, &sessionId))
-        {
-            return Ok(false);
-        }
-
         let mut manager = sidecars.lock().map_err(|error| error.to_string())?;
         if manager.session_has_owners(&sessionId) {
             return Ok(false);
@@ -1238,7 +1272,7 @@ pub async fn cmd_delete_session_if_unowned(
     .map_err(|error| format!("Session deletion task failed: {error:?}"))?
 }
 
-/// Release a Tab owner and update the activation under the same owner locks.
+/// Release a Tab owner and update the activation under the Session lifecycle guard.
 /// This prevents a newly-created Goal/Agent owner from landing between a
 /// renderer-side presence check and activation mutation.
 #[tauri::command]
@@ -1248,11 +1282,49 @@ pub async fn cmd_release_tab_session(
     sessionId: String,
     tabId: String,
 ) -> Result<bool, String> {
-    let scheduler = crate::cron_task::get_cron_task_manager();
-    let tasks = scheduler.tasks.read().await;
+    let _lifecycle = acquire_session_lifecycle(&[&sessionId]).await;
+    let has_persisted_owner = has_persisted_session_owner(&sessionId).await?;
     let mut manager = state.lock().map_err(|error| error.to_string())?;
-    let has_persisted_scheduler_owner = tasks
-        .values()
-        .any(|task| crate::cron_task::manager::task_holds_persistent_session(task, &sessionId));
-    Ok(manager.release_tab_session(&sessionId, &tabId, has_persisted_scheduler_owner))
+    Ok(manager.release_tab_session(&sessionId, &tabId, has_persisted_owner))
+}
+
+#[cfg(test)]
+mod session_lifecycle_tests {
+    use super::acquire_session_lifecycle;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn lifecycle_lock_serializes_one_session_without_blocking_another() {
+        let suffix = uuid::Uuid::new_v4();
+        let first_session = format!("lifecycle-first-{suffix}");
+        let other_session = format!("lifecycle-other-{suffix}");
+        let first_guard = acquire_session_lifecycle(&[&first_session]).await;
+
+        let (same_tx, same_rx) = tokio::sync::oneshot::channel();
+        let same_session = first_session.clone();
+        let same_task = tauri::async_runtime::spawn(async move {
+            let _guard = acquire_session_lifecycle(&[&same_session]).await;
+            let _ = same_tx.send(());
+        });
+        assert!(tokio::time::timeout(Duration::from_millis(50), same_rx)
+            .await
+            .is_err());
+
+        let (other_tx, other_rx) = tokio::sync::oneshot::channel();
+        let other_task = tauri::async_runtime::spawn(async move {
+            let _guard = acquire_session_lifecycle(&[&other_session]).await;
+            let _ = other_tx.send(());
+        });
+        tokio::time::timeout(Duration::from_secs(1), other_rx)
+            .await
+            .expect("another session must not be blocked")
+            .expect("other-session sender must stay alive");
+
+        drop(first_guard);
+        tokio::time::timeout(Duration::from_secs(1), same_task)
+            .await
+            .expect("same-session waiter must proceed after release")
+            .expect("same-session task must complete");
+        other_task.await.expect("other-session task must complete");
+    }
 }

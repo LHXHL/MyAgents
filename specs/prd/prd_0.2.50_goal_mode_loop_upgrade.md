@@ -2,18 +2,18 @@
 type: prd
 status: implemented
 created: 2026-07-09
-updated: 2026-07-10
+updated: 2026-07-12
 scope: "把现有 Ralph Loop / `/loop` 正式升级为 Goal / 目标模式：外显改成会话内长期目标，内部首版继续复用现有 `CronSchedule::Loop` + `single_session` 自动续跑链路；但产品架构必须校准为 session-first：Goal 是 MyAgents session 的一等状态，UI `/goal`、AI `myagents goal create`、IM/Agent Channel 里的明确目标模式请求必须创建同一个 current-session Goal，并让桌面打开该 session 时恢复同一条 Goal 横条。不引入 token budget，不重做独立 Goal runtime，不自动创建 Task Center task。"
 issue: 用户需求讨论收敛
 research: "specs/research/codex-cli-goal-command-research.md"
-review: "implemented-docs-aligned（2026-07-10：已完成 session-first Goal facade、CLI/UI/IM 等价入口、session hydrate、goal:changed 事件、current-session 输出路由保留、ordinary Cron surface 隔离，并同步更新长期架构文档）"
+review: "产品需求已实现；首版 CronTask backing 的内部方案已由同版本 prd_0.2.50_goal_task_cron_architecture_convergence.md 取代。"
 ---
 
 # Goal 模式升级 PRD
 
 > 执行须知（给空 session 的你）：本 PRD 自带需求 context，但不替代项目文档。实现前必须主动读 `specs/ARCHITECTURE.md`、`specs/tech_docs/session_architecture.md`、`specs/tech_docs/multi_agent_runtime.md`、`specs/tech_docs/task_center.md`、`specs/tech_docs/task_provider_routing.md`、`specs/tech_docs/system_reminder_protocol.md`、`specs/tech_docs/cli_architecture.md`、`specs/DESIGN.md`，以及关联研究报告 `specs/research/codex-cli-goal-command-research.md`。本文引用源码用符号名和文件路径，不给行号；实现时请用 `rg` 重新定位真实位置。
 
-当前状态（2026-07-10）：本 PRD 已实现。长期架构事实已同步到 `ARCHITECTURE.md`、`session_architecture.md`、`system_reminder_protocol.md`、`cli_architecture.md`、`task_center.md`、`task_provider_routing.md`、`im_integration_architecture.md`。后续改 Goal Mode 时，应以这些 tech docs 作为 ground truth，并把本 PRD 当作需求和验收背景。
+当前状态（2026-07-12）：本 PRD 的 Goal 产品语义与交互已经实现；本文中“复用 CronTask/Loop backing”的首版内部方案已被 `prd_0.2.50_goal_task_cron_architecture_convergence.md` 取代。Goal 当前由 `SessionGoalManager` / `session_goals.json` 独立持有，续跑不再依赖 CronTask。后续以长期 tech docs 和收口 PRD 作为架构 ground truth，本文只保留产品需求与历史决策背景。
 
 ## 背景与产品定位
 

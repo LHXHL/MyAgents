@@ -130,7 +130,17 @@ import {
   setLazySessionMaterializationAllowed,
   setPendingDesktopMaterialization,
 } from './builtin-session/materialization';
-import { decideQueueAdmission, findQueueLocation, resolveChatQueueResponseMode, shouldClearAdmissionTicketOnAbort, shouldStartTurnBoundaryItem, type QueueAdmissionAction } from './session-core/turn-queue';
+import {
+  decideQueueAdmission,
+  findQueueLocation,
+  resolveChatQueueResponseMode,
+  shouldClearAdmissionTicketOnAbort,
+  shouldStartTurnBoundaryItem,
+  type QueueAdmissionAction,
+  type TurnIdentity,
+  type TurnOwner,
+  type TurnTerminalObserver,
+} from './session-core/turn-queue';
 import { getMcpAuthorityForScenario, mcpConfigFingerprint } from './session-core/mcp-sync-policy';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
 import type { ImagePayload, ResolvedImagePayload } from './runtimes/types';
@@ -190,6 +200,9 @@ import {
   waitForMessage as lifecycleWaitForMessage,
 } from './builtin-session/lifecycle';
 import {
+  beginPromotedItem,
+  cancelPromotedItem,
+  clearPromotedItem,
   clearInFlightSlot as queueClearInFlightSlot,
   clearPendingMidTurn,
   dequeueMessage,
@@ -198,11 +211,14 @@ import {
   getCommittingTurnAdmissionQueueId,
   getInFlightMetadata,
   getInFlightQueueId,
+  isPromotedItemCanceled,
   getMessageQueue,
   getPendingMidTurnQueue,
+  getPromotedTurnIdentity,
   getQueueStatus as queueGetQueueStatus,
   getTurnAdmissionTicket,
   getTurnBoundaryQueue,
+  hasQueuedTurnByOwner as queueHasQueuedTurnByOwner,
   hasQueuedOrInFlightWork as queueHasQueuedOrInFlightWork,
   moveQueuedItemToFront,
   pushMessage,
@@ -220,7 +236,6 @@ import {
   setForceTurnBoundaryQueueId,
   setInFlightQueueItem,
   setInterruptingInFlightQueueId,
-  setPromotedItemInFlight,
   setTurnAdmissionTicket,
   shiftPendingMidTurn,
   spliceTurnBoundary,
@@ -228,16 +243,13 @@ import {
 } from './builtin-session/queue';
 import {
   appendCurrentTurnTextBlock,
-  clearInjectedTurnOutcomes,
   clearCurrentTurnTextBlocks,
   clearPendingRequests as turnClearPendingRequests,
-  consumeInjectedTurnOutcome as turnConsumeInjectedTurnOutcome,
+  getCurrentTurnIdentity as getBuiltinCurrentTurnIdentity,
   getCurrentTurnSourceItem,
   getCurrentTurnInboxMeta,
-  discardInjectedTurnOutcomeWithOptions as turnDiscardInjectedTurnOutcome,
   getPendingRequestIds,
   incrementCurrentTurnToolCount,
-  isCurrentInjectedTurn as turnIsCurrentInjectedTurn,
   markAssistantMessageError,
   markCurrentTurnHasOutput,
   popPendingRequest as turnPopPendingRequest,
@@ -251,7 +263,6 @@ import {
   setCurrentTurnAnalyticsSource,
   setCurrentTurnCompactResult,
   setCurrentTurnInboxMeta,
-  setCurrentTurnInjectedTurnId,
   setCurrentTurnImTerminalEmitted,
   setCurrentTurnProviderAnalytics,
   setCurrentTurnSourceItem,
@@ -262,6 +273,7 @@ import {
   setSubstantiveActivity,
   terminalCleanup,
   turnState,
+  waitForCurrentTurnTerminalObserver,
 } from './builtin-session/turn';
 import {
   applyAgentDefinitionsUpdate as configApplyAgentDefinitionsUpdate,
@@ -322,7 +334,6 @@ import {
 import { createBuiltinTurnLifecycle, type BuiltinSdkResultMessage } from './builtin-session/turn-lifecycle';
 import type {
   BuiltinRestartReason as RestartReason,
-  BuiltinInjectedTurnOutcome,
   DeferredUserSurface,
   InFlightMetadata,
   MessageQueueItem,
@@ -1901,7 +1912,8 @@ function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {
   })) {
     releaseTurnAdmissionTicket();
   }
-  setPromotedItemInFlight(false);
+  cancelPromotedItem();
+  clearPromotedItem();
   // Subprocess is about to die — rescue pending items so the recovery session
   // re-delivers them instead of losing them with the dead stdin buffer.
   rescuePendingToQueue();
@@ -1938,7 +1950,6 @@ function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {
       console.error('[inbox] abort-path reply pushback failed:', err),
     );
   }
-  setCurrentTurnInjectedTurnId(undefined);
   if (notifyPendingRequests) {
     void import('./inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
       deliverSessionWatchEvents(sessionId, {
@@ -2045,7 +2056,6 @@ const builtinToolTraceStarts = new Map<string, number>();
 // Accumulator for assistant text blocks within the current turn. Session send
 // only reads it when an inbox binding exists, while session watch reads it for
 // ordinary user/cron/IM turns too. Reset at turn start.
-export type { BuiltinInjectedTurnOutcome } from './builtin-session/types';
 
 // ─── Watchdog Auto Resume (watchdog-driven session resume) ────────────────
 //
@@ -5433,8 +5443,8 @@ export function buildClaudeSessionEnv(
   // and can timeout in restricted network environments (e.g. China).
   env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
   // Disable SDK built-in cron tools (CronCreate/CronDelete/CronList).
-  // MyAgents has its own persistent cron system (im-cron MCP tool → Rust CronTaskManager)
-  // that survives session restarts, supports IM delivery, and uses wall-clock scheduling.
+  // MyAgents has its own persistent scheduled Task system (im-cron compatibility
+  // tool → Rust TaskStore/TaskSchedulerController) with IM delivery and wall-clock scheduling.
   // The SDK's cron is session-scoped/in-memory, would conflict and confuse users.
   env.CLAUDE_CODE_DISABLE_CRON = '1';
   // Disable SDK auto-loading of claude.ai proxy MCP servers.
@@ -6519,9 +6529,6 @@ function recoverInvalidResumeAnchorError(rawError: string): boolean {
   const replayItem = buildResumeAnchorReplayItem(getCurrentTurnSourceItem());
   abortPersistentSession({ notifyPendingRequests: false });
   if (replayItem) {
-    if (replayItem.injectedTurnId) {
-      setCurrentTurnInjectedTurnId(undefined);
-    }
     unshiftMessage(replayItem);
     console.log(`[agent] Requeued current turn ${replayItem.id} after SDK resumeSessionAt result recovery`);
   } else {
@@ -6887,19 +6894,12 @@ export function getLastBuiltinAssistantText(): string {
   return '';
 }
 
-export function consumeInjectedTurnOutcome(injectedTurnId: string): BuiltinInjectedTurnOutcome | undefined {
-  return turnConsumeInjectedTurnOutcome(injectedTurnId);
+export function getCurrentTurnIdentity(): TurnIdentity | null {
+  return getBuiltinCurrentTurnIdentity() ?? getPromotedTurnIdentity();
 }
 
-export function discardInjectedTurnOutcome(
-  injectedTurnId: string,
-  options?: { retainForLateTerminal?: boolean },
-): void {
-  turnDiscardInjectedTurnOutcome(injectedTurnId, options);
-}
-
-export function isCurrentInjectedTurn(injectedTurnId: string): boolean {
-  return turnIsCurrentInjectedTurn(injectedTurnId);
+export function hasQueuedTurnByOwner(owner: TurnOwner): boolean {
+  return queueHasQueuedTurnByOwner(owner);
 }
 
 export function getSystemInitInfo(): SystemInitInfo | null {
@@ -6956,7 +6956,6 @@ function clearMessageState(): void {
   imTextBlockIndices.clear();
 
   strippedToolResultIds.clear();
-  clearInjectedTurnOutcomes();
   setAssistantMessagePresent(false);
   clearCurrentSessionUuids();
   clearLiveSessionUuids();
@@ -7363,7 +7362,7 @@ export async function initializeAgent(
         await repairOwnedProviderRouteIfNeeded(initMeta, resolved.providerRoute);
       }
       const restoreOwnedBuiltinConfig = Boolean(initMeta?.configSnapshotAt) && !isExternalRuntime(getCurrentRuntimeType());
-      // Only self-resolve MCP for background authorities (IM/Cron/agent-channel)
+      // Only self-resolve MCP for background authorities (IM/Task/agent-channel)
       // with an initial prompt. Tab sessions must NOT self-resolve: the
       // frontend's /api/mcp/set is authoritative, and self-resolve produces
       // slightly different field structures (env/args) that trigger a fingerprint
@@ -7373,7 +7372,7 @@ export async function initializeAgent(
         console.log(`[agent] self-resolved ${resolved.mcpServers.length} MCP server(s): ${resolved.mcpServers.map((s: { id: string }) => s.id).join(', ')}`);
       }
       if (restoreOwnedBuiltinConfig) {
-        // Owned desktop/cron sessions carry a frozen snapshot. Restore must
+        // Owned desktop/Task sessions carry a frozen snapshot. Restore must
         // replace the previous session's in-memory config, not fill only empty
         // slots; otherwise a resumed session can inherit another session's
         // provider/model/effort until the renderer pushes config.
@@ -7952,7 +7951,9 @@ export async function enqueueUserMessage(
   analyticsOrigin?: SessionOrigin,
   options?: {
     fromDesktopChatSend?: boolean;
-    injectedTurnId?: string;
+    queueId?: string;
+    turnOwner?: TurnOwner;
+    onTerminal?: TurnTerminalObserver;
     allowLazySessionMaterialization?: boolean;
     sessionBirthOrigin?: SessionOrigin;
     queueResponseModeOverride?: 'realtime' | 'turn';
@@ -7987,7 +7988,7 @@ export async function enqueueUserMessage(
     throw new Error(`[agent] refusing first message for unindexed existing session ${sessionId}; session metadata disappeared before first user turn`);
   }
 
-  const queueId = randomUUID();
+  const queueId = options?.queueId ?? randomUUID();
   let settleDispatchAcceptance: ((result: { accepted: boolean; error?: string }) => void) | undefined;
   const dispatchAcceptance = options?.beforeDispatch
     ? new Promise<{ accepted: boolean; error?: string }>((resolve) => {
@@ -8107,10 +8108,10 @@ export async function enqueueUserMessage(
   }
 
   // Provider env semantics (pit-of-success pattern — safe default for all callers):
-  //   undefined        → "no change, keep current provider" (IM/Cron/Heartbeat/internal callers)
+  //   undefined        → "no change, keep current provider" (IM/Task/Heartbeat/internal callers)
   //   'subscription'   → "switch to Anthropic subscription" (only from desktop)
   //   ProviderEnv obj  → "use this specific provider" (desktop or Rust with explicit provider)
-  // This prevents IM/Cron callers from accidentally triggering subscription switch
+  // This prevents IM/Task callers from accidentally triggering subscription switch
   // when they simply don't have provider info to forward (the original "Not logged in" bug).
   const effectiveProviderEnv: ProviderEnv | undefined = providerEnv === undefined
     ? configState.currentProviderEnv                                         // undefined → keep current (safe default)
@@ -8589,7 +8590,8 @@ export async function enqueueUserMessage(
       analyticsOrigin,
       providerAnalytics: turnProviderAnalytics,
       inboxMeta,
-      injectedTurnId: options?.injectedTurnId,
+      turnOwner: options?.turnOwner,
+      onTerminal: options?.onTerminal,
       beforeDispatch: options?.beforeDispatch,
       settleDispatchAcceptance,
     };
@@ -8730,7 +8732,8 @@ export async function enqueueUserMessage(
     analyticsOrigin,
     providerAnalytics: turnProviderAnalytics,
     inboxMeta,
-    injectedTurnId: options?.injectedTurnId,
+    turnOwner: options?.turnOwner,
+    onTerminal: options?.onTerminal,
     beforeDispatch: options?.beforeDispatch,
     deferredUserSurface: options?.beforeDispatch ? directUserSurface : undefined,
     settleDispatchAcceptance,
@@ -9166,8 +9169,37 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
     }
   }
 
+  const promotedText = cancelPromotedItem(queueId);
+  if (promotedText !== null) {
+    console.log(`[agent] Queue item ${queueId} cancellation requested during runtime promotion`);
+    return { status: 'cancelled', cancelledText: promotedText };
+  }
+
   console.log(`[agent] Queue item ${queueId} not found — already consumed or never existed`);
   return { status: 'not_found' };
+}
+
+export async function cancelQueuedTurnsByOwner(owner: TurnOwner): Promise<number> {
+  const matches = (candidate: TurnOwner | undefined) =>
+    candidate?.kind === owner.kind && candidate.id === owner.id;
+  const queueIds = new Set<string>();
+  for (const item of getMessageQueue()) {
+    if (matches(item.turnOwner)) queueIds.add(item.id);
+  }
+  for (const item of getPendingMidTurnQueue()) {
+    if (matches(item.sourceItem.turnOwner)) queueIds.add(item.queueId);
+  }
+  for (const item of getTurnBoundaryQueue()) {
+    if (matches(item.sourceItem?.turnOwner)) queueIds.add(item.queueId);
+  }
+  const promoted = getPromotedTurnIdentity();
+  if (promoted && matches(promoted.owner)) queueIds.add(promoted.queueId);
+
+  let canceled = 0;
+  for (const queueId of queueIds) {
+    if ((await cancelQueueItem(queueId)).status === 'cancelled') canceled += 1;
+  }
+  return canceled;
 }
 
 /**
@@ -12434,12 +12466,21 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
   console.log('[messageGenerator] Started (persistent mode, mid-turn injection enabled)');
 
   while (true) {
+    // A domain-owned turn is not finished until its durable terminal observer
+    // has settled. Keep the next queue item in the queue until that boundary.
+    await waitForCurrentTurnTerminalObserver();
     // 等待队列中的消息（事件驱动，无轮询）
     const item = await waitForMessage();
     if (!item) {
       console.log('[messageGenerator] Received null — exiting (abort or session end)');
       return; // generator return → SDK endInput() → stdin EOF → subprocess 退出
     }
+    beginPromotedItem({
+      queueId: item.id,
+      messageText: item.messageText,
+      turnOwner: item.turnOwner,
+      cancelDispatch: item.beforeDispatch?.cancel,
+    });
     if (item.beforeDispatch) {
       let guardResult: Awaited<ReturnType<NonNullable<typeof item.beforeDispatch>>>;
       try {
@@ -12453,7 +12494,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       if (!guardResult.accepted) {
         releaseTurnAdmissionTicket(item.id);
         if (getInFlightQueueId() === item.id) clearInFlightSlot();
-        setPromotedItemInFlight(false);
+        clearPromotedItem(item.id);
         item.settleDispatchAcceptance?.({ accepted: false, error: guardResult.error });
         item.resolve();
         broadcast('queue:cancelled', { queueId: item.id });
@@ -12464,11 +12505,33 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         schedulePostTerminalQueueDrain('recovery');
         continue;
       }
+      if (isPromotedItemCanceled(item.id)) {
+        releaseTurnAdmissionTicket(item.id);
+        if (getInFlightQueueId() === item.id) clearInFlightSlot();
+        clearPromotedItem(item.id);
+        item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+        item.resolve();
+        broadcast('queue:cancelled', { queueId: item.id });
+        schedulePostTerminalQueueDrain('recovery');
+        continue;
+      }
       if (item.deferredUserSurface) {
         await surfaceBuiltinUserMessage(item.deferredUserSurface);
         item.deferredUserSurface = undefined;
       }
-      item.settleDispatchAcceptance?.({ accepted: true });
+    }
+    if (!item.wasQueued) {
+      await prepareSessionPlansForUserTurn({ clearStale: true });
+    }
+    if (isPromotedItemCanceled(item.id)) {
+      releaseTurnAdmissionTicket(item.id);
+      if (getInFlightQueueId() === item.id) clearInFlightSlot();
+      clearPromotedItem(item.id);
+      item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+      item.resolve();
+      broadcast('queue:cancelled', { queueId: item.id });
+      schedulePostTerminalQueueDrain('recovery');
+      continue;
     }
     releaseTurnAdmissionTicket(item.id);
 
@@ -12553,7 +12616,6 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     setCurrentTurnAnalyticsOrigin(item.analyticsOrigin ?? null);
     setCurrentTurnProviderAnalytics(item.providerAnalytics ?? buildTurnProviderAnalytics(configState.currentProviderEnv));
     setAssistantMessagePresent(false);
-    setCurrentTurnInjectedTurnId(item.injectedTurnId);
     setCurrentTurnSourceItem(item);
 
     isStreamingMessage = true;
@@ -12574,9 +12636,8 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       );
     }
 
-    if (!item.wasQueued) {
-      await prepareSessionPlansForUserTurn({ clearStale: true });
-    }
+    item.settleDispatchAcceptance?.({ accepted: true });
+    clearPromotedItem(item.id);
 
     // Modality re-check at dequeue (see prior comment in pre-fix file).
     const yieldedMessage = stripUnsupportedModalityBlocks(item.message, configState.currentModel);
@@ -12594,6 +12655,6 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       uuid: item.id as `${string}-${string}-${string}-${string}-${string}`,
     };
     item.resolve();
-    setPromotedItemInFlight(false);
+    clearPromotedItem(item.id);
   }
 }

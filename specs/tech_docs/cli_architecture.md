@@ -95,7 +95,7 @@ Groups:
   skill     管理 Skills（list/info/add/remove/enable/disable/sync）
   tool      用户注册 CLI 工具注册表（实验室开关开启后可用）
   vision    官方图片理解 CLI 工具（readme/analyze；由设置页工具箱开关和读图模型配置门控）
-  cron      管理定时任务（list/add/start/stop/remove/update/runs/status）
+  cron      管理定时 Task 的兼容命令面（list/add/start/stop/remove/update/run-now/runs/status）
   goal      管理当前 session Goal Mode（get/create/update）
   task      管理任务中心任务（list/get/create-direct/create-from-alignment/run/rerun/...）
   thought   管理任务中心想法（list/create）
@@ -177,9 +177,20 @@ myagents agent list --active|--archived           # 按工作区归档状态筛�
 - Goal create/update 按当前 Sidecar session 解析 `sessionId + workspacePath`；不能跨 session 创建 Goal，也不能覆盖同 session 未完成 Goal。
 - `update` 只接受 `complete` / `blocked`。pause/resume/cancel 由用户或系统路径控制。
 - `aiCanExit=false` 时 Management API 从服务端拒绝模型 complete/blocked；不能只依赖 prompt 隐藏命令。
-- CLI 创建保留空 permission → runtime 最大权限的无人值守语义；model/provider/runtime/reasoning/MCP 不写入 Goal task，由当前 session 在每轮继续拥有。
+- CLI 创建保留空 permission → runtime 最大权限的无人值守语义；model/provider/runtime/reasoning/MCP 不写入 Goal state，由当前 session 在每轮继续拥有。
 - 普通 Cron surface 不创建或管理 Goal。`myagents cron add --schedule '{"kind":"loop"}'` 会被拒绝；Goal 创建统一走 `myagents goal create --objective-file ...`。objective/reason 是 file-only 输入，不接受 inline 或 positional 文本。
 - current-session Goal 不附带 `CronDelivery`；IM / Agent Channel session 依赖当前 session 输出路由。
+
+### Cron 兼容命令（0.2.50）
+
+`myagents cron` 保留既有用户命令名和 JSON shape，但不再创建 `CronTask`。所有 add/list/update/start/stop/remove/run-now 都由 Rust compatibility facade 直接读写 `TaskStore`，时间触发由 `TaskSchedulerController` 管理；`cron_tasks.json` 只作为启动迁移的只读历史格式。
+
+标准 Cron list/get 也只投影 TaskStore。迁移失败的旧行不混入可操作列表，只通过桌面内部 `cmd_get_unmigrated_legacy_cron_tasks` 供只读 Legacy 面板诊断；deleted Task 保留 legacy id tombstone。
+
+- `start` 提交 Task `Running` 并 arm timer，不立即执行。
+- `run-now` 可执行 Stopped Task，不启用 scheduler，也不移动下一次 scheduled anchor。
+- `Loop` 被拒绝；持续工作使用 current-session Goal。
+- `/api/admin/cron/*` 是兼容路由名，不代表独立 Cron domain/store。
 
 ### Runtime 自诊断（PRD 0.2.16）
 
@@ -340,7 +351,7 @@ CLI → Admin API → atomicModifyConfig() → 写 config.json（磁盘优先）
 
 ### 管理 API 转发（`/api/task/*` / `/api/cron/*` 等）
 
-部分能力（Task / CronTask / Plugin）在 Rust Management API 而非 Node.js。Admin handler 作为薄转发层，并通过 `wrapMgmtResponse()` / `mgmtError()` 保证：
+部分能力（Task / Cron compatibility / Plugin）在 Rust Management API 而非 Node.js。Admin handler 作为薄转发层，并通过 `wrapMgmtResponse()` / `mgmtError()` 保证：
 - 成功响应剥掉 Rust `ok` 字段、包成 Admin `{ success: true, data }`
 - 失败响应原样透传 `recoveryHint`（例如 Management API 不可达时 Admin handler 注入 `→ Run: myagents status` 指引）
 

@@ -17,7 +17,28 @@ export type DispatchGuardResult = {
   code?: string;
 };
 
-export type DispatchGuard = () => Promise<DispatchGuardResult>;
+export type DispatchGuard = (() => Promise<DispatchGuardResult>) & {
+  cancel?: () => void;
+};
+
+export type TurnOwner = {
+  kind: 'goal' | 'task';
+  id: string;
+};
+
+export type TurnIdentity = {
+  queueId: string;
+  owner: TurnOwner;
+};
+
+export type TurnTerminalOutcome = {
+  status: 'complete' | 'stopped' | 'error';
+  text: string;
+  assistantMessagePresent: boolean;
+  error?: string;
+};
+
+export type TurnTerminalObserver = (outcome: TurnTerminalOutcome) => void | Promise<void>;
 
 export function shouldApplyChatQueueResponseMode(
   fromDesktopChatSend: boolean | undefined,

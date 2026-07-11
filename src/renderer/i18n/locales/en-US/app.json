@@ -219,8 +219,7 @@
       "cronTask": "Scheduled task",
       "floatingContext": "Floating context",
       "spaceIssue": "Space issue",
-      "goalMode": "Goal Mode",
-      "goalUpdate": "Goal Update"
+      "goalMode": "Goal Mode"
     },
     "systemInfo": "System info",
     "expand": "Expand"
@@ -460,6 +459,9 @@
       "spaceSlugCopied": "Space slug copied",
       "spaceUpdated": "Space updated",
       "issueStatusUpdated": "Issue status updated",
+      "issueGoalUpdated": "Issue goal updated",
+      "issueAssigneeUpdated": "Assignee updated",
+      "issueAssigneeCancelled": "Assignment cancelled and Issue reopened",
       "attachmentsUploaded": "Uploaded {{count}} attachment(s)",
       "attachmentDownloaded": "Downloaded to {{path}}",
       "noAgentWorkspaces": "No Agent workspaces available",

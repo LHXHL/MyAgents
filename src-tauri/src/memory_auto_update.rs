@@ -4,22 +4,17 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
 
+use crate::config_io::with_config_lock;
+use crate::cron_task::normalize_path;
+use crate::im::types::{HeartbeatConfig, MemoryAutoUpdateConfig};
+use crate::sidecar::{self, ManagedSidecarManager, SidecarOwner};
+use crate::utils::bom::strip_bom;
+use crate::{ulog_debug, ulog_info, ulog_warn};
 use chrono::{DateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::Mutex;
-use uuid::Uuid;
-
-use crate::config_io::with_config_lock;
-use crate::cron_task::{
-    get_cron_task_manager, normalize_path, CronSchedule, CronTask, CronTaskConfig, EndConditions,
-    RecurringWindow, RunMode, TaskStatus,
-};
-use crate::im::types::{HeartbeatConfig, MemoryAutoUpdateConfig};
-use crate::sidecar::{self, ManagedSidecarManager, SidecarOwner};
-use crate::utils::bom::strip_bom;
-use crate::{ulog_debug, ulog_info, ulog_warn};
 
 pub const SCAN_CADENCE_MINUTES: u32 = 30;
 const IDLE_COOLDOWN_MINUTES: i64 = 30;
@@ -27,7 +22,7 @@ const SESSION_SCAN_LOOKBACK_HOURS: i64 = 24 * 30;
 const MEMORY_UPDATE_HTTP_TIMEOUT_SECS: u64 = 61 * 60;
 const MANAGED_AUTO_UPDATE_NAME: &str = "Memory Auto-Update";
 const MANAGED_AUTO_UPDATE_PROMPT: &str =
-    "System-managed memory auto-update dispatcher. This CronTask is hidden from ordinary UI.";
+    "System-managed memory auto-update dispatcher. This Task is hidden from ordinary UI.";
 
 static IN_FLIGHT_WORKSPACES: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
@@ -36,7 +31,7 @@ static IN_FLIGHT_WORKSPACES: LazyLock<Mutex<HashSet<String>>> =
 #[serde(rename_all = "camelCase")]
 pub struct ConfigureMemoryAutoUpdateTaskResult {
     pub enabled: bool,
-    pub cron_task_id: Option<String>,
+    pub task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -162,124 +157,200 @@ pub async fn cmd_configure_memory_auto_update_task(
 pub async fn configure_memory_auto_update_task(
     request: ConfigureMemoryAutoUpdateTaskRequest,
 ) -> Result<ConfigureMemoryAutoUpdateTaskResult, String> {
-    let manager = get_cron_task_manager();
-    let mut existing = find_managed_cron_tasks_for_workspace(&request.workspace_path).await;
+    let store =
+        crate::task::get_task_store().ok_or_else(|| "task store not initialized".to_string())?;
+    let mut existing = find_managed_tasks_for_workspace(&request.workspace_path).await;
     existing.sort_by_key(|task| task.created_at);
-
     let keep = existing.first().cloned();
+
     for duplicate in existing.iter().skip(1) {
         ulog_warn!(
-            "[memory-auto-update] deleting duplicate hidden CronTask {} for workspace {}",
+            "[memory-auto-update] deleting duplicate managed Task {} for workspace {}",
             duplicate.id,
             request.workspace_path
         );
-        let _ = manager.delete_task(&duplicate.id).await;
+        let _ = store.delete(&duplicate.id).await;
     }
 
-    let Some(mut config) = request.memory_auto_update.clone().filter(|c| c.enabled) else {
+    let Some(mut config) = request
+        .memory_auto_update
+        .clone()
+        .filter(|config| config.enabled)
+    else {
         if let Some(task) = keep {
-            if task.status == TaskStatus::Running {
-                let _ = manager
-                    .stop_task(&task.id, Some("memory auto-update disabled".to_string()))
+            if task.status == crate::task::TaskStatus::Running {
+                let _ = store
+                    .update_status(crate::task::TaskUpdateStatusInput {
+                        id: task.id.clone(),
+                        status: crate::task::TaskStatus::Stopped,
+                        message: Some("memory auto-update disabled".to_string()),
+                        actor: crate::task::TransitionActor::System,
+                        source: Some(crate::task::TransitionSource::Scheduler),
+                    })
                     .await;
             }
             return Ok(ConfigureMemoryAutoUpdateTaskResult {
                 enabled: false,
-                cron_task_id: Some(task.id),
+                task_id: Some(task.id),
             });
         }
         return Ok(ConfigureMemoryAutoUpdateTaskResult {
             enabled: false,
-            cron_task_id: None,
+            task_id: None,
         });
     };
 
     apply_heartbeat_timezone_fallback(&mut config, request.heartbeat.as_ref());
-
-    let desired_schedule = schedule_for_config(&config);
-    if let Some(task) = keep {
-        let drifted = task.name.as_deref() != Some(MANAGED_AUTO_UPDATE_NAME)
-            || task.prompt != MANAGED_AUTO_UPDATE_PROMPT
-            || task.interval_minutes != SCAN_CADENCE_MINUTES
-            || !schedule_policy_matches(task.schedule.as_ref(), &desired_schedule)
-            || task.notify_enabled
-            || task.run_mode != RunMode::SingleSession
-            || task.managed_kind.as_deref()
+    let desired_window = recurring_window(&config);
+    let task = if let Some(existing) = keep {
+        let start_at = if existing.recurring_window.as_ref() == Some(&desired_window)
+            && existing
+                .start_at
+                .as_deref()
+                .is_some_and(|value| DateTime::parse_from_rfc3339(value).is_ok())
+        {
+            existing.start_at.clone().unwrap_or_default()
+        } else {
+            next_scan_start_at(&config).to_rfc3339()
+        };
+        let drifted = existing.name != MANAGED_AUTO_UPDATE_NAME
+            || existing.execution_mode != crate::task::TaskExecutionMode::Recurring
+            || existing.run_mode != Some(crate::task::TaskRunMode::SingleSession)
+            || existing.interval_minutes != Some(SCAN_CADENCE_MINUTES)
+            || existing.cron_expression.is_some()
+            || existing.start_at.as_deref() != Some(start_at.as_str())
+            || existing.recurring_window.as_ref() != Some(&desired_window)
+            || existing
+                .notification
+                .as_ref()
+                .is_some_and(|value| value.desktop)
+            || existing.managed_kind.as_deref()
                 != Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH);
 
-        let task = if drifted {
-            let updated = manager
-                .update_task_fields(
-                    &task.id,
-                    serde_json::json!({
-                        "name": MANAGED_AUTO_UPDATE_NAME,
-                        "prompt": MANAGED_AUTO_UPDATE_PROMPT,
-                        "intervalMinutes": SCAN_CADENCE_MINUTES,
-                        "schedule": desired_schedule,
-                        "notifyEnabled": false,
+        if drifted {
+            if existing.status == crate::task::TaskStatus::Running {
+                store
+                    .update_status(crate::task::TaskUpdateStatusInput {
+                        id: existing.id.clone(),
+                        status: crate::task::TaskStatus::Stopped,
+                        message: Some("memory auto-update settings changed; re-arming".to_string()),
+                        actor: crate::task::TransitionActor::System,
+                        source: Some(crate::task::TransitionSource::Scheduler),
+                    })
+                    .await?;
+            }
+            store
+                .update(crate::task::TaskUpdateInput {
+                    id: existing.id,
+                    name: Some(MANAGED_AUTO_UPDATE_NAME.to_string()),
+                    executor: None,
+                    description: Some("System-managed memory auto-update dispatcher.".to_string()),
+                    execution_mode: Some(crate::task::TaskExecutionMode::Recurring),
+                    run_mode: Some(crate::task::TaskRunMode::SingleSession),
+                    end_conditions: Some(crate::task::TaskEndConditions::default()),
+                    interval_minutes: Some(SCAN_CADENCE_MINUTES),
+                    cron_expression: Some(String::new()),
+                    cron_timezone: Some(String::new()),
+                    start_at: Some(start_at),
+                    recurring_window: Some(desired_window),
+                    dispatch_at: None,
+                    model: None,
+                    provider_id: None,
+                    clear_provider_override: true,
+                    permission_mode: Some(String::new()),
+                    preselected_session_id: Some(String::new()),
+                    runtime: None,
+                    runtime_config: None,
+                    clear_runtime_override: true,
+                    mcp_enabled_servers: None,
+                    clear_mcp_override: true,
+                    tags: Some(vec!["system".to_string(), "memory".to_string()]),
+                    notification: Some(crate::task::NotificationConfig {
+                        desktop: false,
+                        bot_channel_id: None,
+                        bot_thread: None,
+                        events: Some(vec![]),
                     }),
-                )
-                .await?;
-            manager.get_task(&task.id).await.unwrap_or(updated)
+                    prompt: Some(MANAGED_AUTO_UPDATE_PROMPT.to_string()),
+                })
+                .await?
         } else {
-            task
-        };
-
-        if task.status != TaskStatus::Running {
-            manager.start_task(&task.id).await?;
+            existing
         }
-        manager.start_task_scheduler(&task.id).await?;
-        return Ok(ConfigureMemoryAutoUpdateTaskResult {
-            enabled: true,
-            cron_task_id: Some(task.id),
-        });
-    }
+    } else {
+        store
+            .create_system_managed_direct(crate::task::TaskCreateDirectInput {
+                name: MANAGED_AUTO_UPDATE_NAME.to_string(),
+                executor: crate::task::TaskExecutor::Agent,
+                description: Some("System-managed memory auto-update dispatcher.".to_string()),
+                workspace_id: request.agent_id.clone(),
+                workspace_path: request.workspace_path.clone(),
+                task_md_content: MANAGED_AUTO_UPDATE_PROMPT.to_string(),
+                execution_mode: crate::task::TaskExecutionMode::Recurring,
+                run_mode: Some(crate::task::TaskRunMode::SingleSession),
+                end_conditions: Some(crate::task::TaskEndConditions::default()),
+                interval_minutes: Some(SCAN_CADENCE_MINUTES),
+                cron_expression: None,
+                cron_timezone: None,
+                start_at: Some(next_scan_start_at(&config).to_rfc3339()),
+                recurring_window: Some(desired_window),
+                dispatch_at: None,
+                model: None,
+                provider_id: None,
+                permission_mode: None,
+                preselected_session_id: None,
+                runtime: None,
+                runtime_config: None,
+                mcp_enabled_servers: None,
+                managed_kind: Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH.to_string()),
+                source_thought_id: None,
+                tags: vec!["system".to_string(), "memory".to_string()],
+                notification: Some(crate::task::NotificationConfig {
+                    desktop: false,
+                    bot_channel_id: None,
+                    bot_thread: None,
+                    events: Some(vec![]),
+                }),
+            })
+            .await?
+    };
 
-    let task = manager
-        .create_task(CronTaskConfig {
-            workspace_path: request.workspace_path.clone(),
-            session_id: Uuid::new_v4().to_string(),
-            prompt: MANAGED_AUTO_UPDATE_PROMPT.to_string(),
-            interval_minutes: SCAN_CADENCE_MINUTES,
-            end_conditions: EndConditions::default(),
-            run_mode: RunMode::SingleSession,
-            notify_enabled: false,
-            tab_id: None,
-            permission_mode: String::new(),
-            model: None,
-            provider_env: None,
-            provider_id: None,
-            provider_intent: Default::default(),
-            runtime: None,
-            runtime_config: None,
-            mcp_enabled_servers: None,
-            managed_kind: Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH.to_string()),
-            source_bot_id: None,
-            delivery: None,
-            schedule: Some(desired_schedule),
-            name: Some(MANAGED_AUTO_UPDATE_NAME.to_string()),
-            task_id: None,
-            goal_status: None,
-            goal_objective: None,
-            goal_updated_at: None,
-            goal_terminal_reason: None,
-            goal_paused_reason: None,
-        })
-        .await?;
-    manager.start_task(&task.id).await?;
-    manager.start_task_scheduler(&task.id).await?;
-
+    arm_managed_task(store, task.clone()).await?;
     ulog_info!(
-        "[memory-auto-update] created hidden CronTask {} for agent {} workspace {}",
+        "[memory-auto-update] armed managed Task {} for agent {} workspace {}",
         task.id,
         request.agent_id,
         request.workspace_path
     );
-
     Ok(ConfigureMemoryAutoUpdateTaskResult {
         enabled: true,
-        cron_task_id: Some(task.id),
+        task_id: Some(task.id),
     })
+}
+
+async fn arm_managed_task(
+    store: &std::sync::Arc<crate::task::TaskStore>,
+    task: crate::task::Task,
+) -> Result<(), String> {
+    if task.status == crate::task::TaskStatus::Running {
+        return crate::task_scheduler::get_task_scheduler()
+            .start(&task.id)
+            .await;
+    }
+    if task.status != crate::task::TaskStatus::Todo {
+        store
+            .update_status(crate::task::TaskUpdateStatusInput {
+                id: task.id.clone(),
+                status: crate::task::TaskStatus::Todo,
+                message: Some("memory auto-update enabled".to_string()),
+                actor: crate::task::TransitionActor::System,
+                source: Some(crate::task::TransitionSource::Scheduler),
+            })
+            .await?;
+    }
+    crate::management_api::run_task_by_id(&task.id)
+        .await
+        .map(|_| ())
 }
 
 pub async fn reconcile_memory_auto_update_tasks_from_disk() -> Result<(), String> {
@@ -305,41 +376,52 @@ pub async fn reconcile_memory_auto_update_tasks_from_disk() -> Result<(), String
         }
     }
 
-    let manager = get_cron_task_manager();
-    let existing = manager.get_all_tasks().await;
+    let Some(store) = crate::task::get_task_store() else {
+        return Ok(());
+    };
+    let existing = store
+        .list(crate::task::TaskListFilter {
+            include_managed: Some(true),
+            ..Default::default()
+        })
+        .await;
     for task in existing {
         if task.managed_kind.as_deref() != Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH)
+            || enabled_workspaces.contains(&normalize_path(&task.workspace_path))
         {
             continue;
         }
-        let workspace_key = normalize_path(&task.workspace_path);
-        if enabled_workspaces.contains(&workspace_key) {
-            continue;
-        }
-        if let Err(error) =
-            configure_memory_auto_update_task(ConfigureMemoryAutoUpdateTaskRequest {
-                agent_id: "startup-reconcile".to_string(),
-                workspace_path: task.workspace_path.clone(),
-                memory_auto_update: None,
-                heartbeat: None,
-            })
-            .await
-        {
-            ulog_warn!(
-                "[memory-auto-update] startup reconcile failed to stop hidden CronTask {} for workspace {}: {}",
-                task.id,
-                task.workspace_path,
-                error
-            );
-        }
+        configure_memory_auto_update_task(ConfigureMemoryAutoUpdateTaskRequest {
+            agent_id: task.workspace_id.clone(),
+            workspace_path: task.workspace_path.clone(),
+            memory_auto_update: None,
+            heartbeat: None,
+        })
+        .await?;
     }
-
     Ok(())
 }
 
-pub async fn run_managed_cron_batch(
+async fn find_managed_tasks_for_workspace(workspace_path: &str) -> Vec<crate::task::Task> {
+    let Some(store) = crate::task::get_task_store() else {
+        return Vec::new();
+    };
+    store
+        .list(crate::task::TaskListFilter {
+            include_managed: Some(true),
+            ..Default::default()
+        })
+        .await
+        .into_iter()
+        .filter(|task| {
+            task.managed_kind.as_deref() == Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH)
+                && normalize_path(&task.workspace_path) == normalize_path(workspace_path)
+        })
+        .collect()
+}
+pub async fn run_managed_task_batch(
     handle: &AppHandle,
-    task: &CronTask,
+    task: &crate::task::Task,
 ) -> Result<(bool, Option<String>, Option<String>, Option<String>), String> {
     let Some((agent_id, mut config, heartbeat)) =
         load_enabled_memory_auto_update_agent_for_workspace(&task.workspace_path)?
@@ -480,52 +562,8 @@ pub fn format_batch_summary(summary: &MemoryAutoUpdateBatchSummary) -> String {
     )
 }
 
-async fn find_managed_cron_tasks_for_workspace(workspace_path: &str) -> Vec<CronTask> {
-    get_cron_task_manager()
-        .get_tasks_for_workspace(workspace_path)
-        .await
-        .into_iter()
-        .filter(|task| {
-            task.managed_kind.as_deref() == Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH)
-        })
-        .collect()
-}
-
-fn schedule_for_config(config: &MemoryAutoUpdateConfig) -> CronSchedule {
-    CronSchedule::Every {
-        minutes: SCAN_CADENCE_MINUTES,
-        start_at: Some(next_scan_start_at(config).to_rfc3339()),
-        catch_up_window: Some(recurring_window(config)),
-    }
-}
-
-fn schedule_policy_matches(existing: Option<&CronSchedule>, desired: &CronSchedule) -> bool {
-    match (existing, desired) {
-        (
-            Some(CronSchedule::Every {
-                minutes,
-                start_at,
-                catch_up_window,
-            }),
-            CronSchedule::Every {
-                minutes: desired_minutes,
-                catch_up_window: desired_window,
-                ..
-            },
-        ) => {
-            minutes == desired_minutes
-                && catch_up_window == desired_window
-                && start_at
-                    .as_deref()
-                    .is_some_and(|raw| DateTime::parse_from_rfc3339(raw).is_ok())
-        }
-        (Some(existing), desired) => existing == desired,
-        (None, _) => false,
-    }
-}
-
-fn recurring_window(config: &MemoryAutoUpdateConfig) -> RecurringWindow {
-    RecurringWindow {
+fn recurring_window(config: &MemoryAutoUpdateConfig) -> crate::cron_task::RecurringWindow {
+    crate::cron_task::RecurringWindow {
         timezone: config
             .update_window_timezone
             .clone()
@@ -1175,31 +1213,6 @@ mod tests {
             ensure_update_memory_file(&path, ".claude/rules/04-MEMORY.md").expect("ensure file");
 
         assert!(matches!(state, UpdateMemoryFileState::Empty));
-    }
-
-    #[test]
-    fn schedule_policy_match_ignores_transient_start_anchor_but_requires_valid_anchor() {
-        let cfg = base_config();
-        let desired = schedule_for_config(&cfg);
-        let existing = CronSchedule::Every {
-            minutes: SCAN_CADENCE_MINUTES,
-            start_at: Some("2026-07-08T00:00:00Z".to_string()),
-            catch_up_window: Some(recurring_window(&cfg)),
-        };
-        let missing_anchor = CronSchedule::Every {
-            minutes: SCAN_CADENCE_MINUTES,
-            start_at: None,
-            catch_up_window: Some(recurring_window(&cfg)),
-        };
-        let wrong_cadence = CronSchedule::Every {
-            minutes: SCAN_CADENCE_MINUTES + 1,
-            start_at: Some("2026-07-08T00:00:00Z".to_string()),
-            catch_up_window: Some(recurring_window(&cfg)),
-        };
-
-        assert!(schedule_policy_matches(Some(&existing), &desired));
-        assert!(!schedule_policy_matches(Some(&missing_anchor), &desired));
-        assert!(!schedule_policy_matches(Some(&wrong_cadence), &desired));
     }
 
     #[test]

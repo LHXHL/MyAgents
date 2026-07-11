@@ -1,10 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import {
   cancelQueueItem,
+  cancelQueuedTurnsByOwner,
   cancelImRequest as cancelBuiltinImRequest,
   applyMcpOverrideAndAwaitReady,
-  consumeInjectedTurnOutcome,
-  discardInjectedTurnOutcome,
   enqueueUserMessage,
   forkSession,
   forceExecuteQueueItem,
@@ -16,6 +15,8 @@ import {
   getMessages,
   getPendingInteractiveRequests,
   getQueueStatus,
+  getCurrentTurnIdentity as getBuiltinCurrentTurnIdentity,
+  hasQueuedTurnByOwner as hasBuiltinQueuedTurnByOwner,
   getSessionId,
   getSessionModel,
   getSessionPermissionMode,
@@ -63,31 +64,28 @@ import type {
   SessionEngineReplayMessage,
   SessionEngine,
 } from './types';
-import { cancelPendingGoalDispatches } from './goal-turn-authority';
 import { decideBuiltinInjectedTurnResult } from '../session-core/turn-result-policy';
+import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 import { getSessionData } from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
 import { shrinkReplayContentForClient } from '../utils/session-message-preview';
 import type { SessionMessage } from '../types/session';
 
-function delay(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function waitForInjectedTurnOutcome(
-  injectedTurnId: string,
-  timeoutMs: number,
-  pollMs: number,
-): Promise<ReturnType<typeof consumeInjectedTurnOutcome>> {
-  const deadline = Date.now() + Math.max(0, timeoutMs);
-  while (Date.now() <= deadline) {
-    const outcome = consumeInjectedTurnOutcome(injectedTurnId);
-    if (outcome) return outcome;
-    const remaining = deadline - Date.now();
-    if (remaining <= 0) break;
-    await delay(Math.min(pollMs, remaining));
-  }
-  return undefined;
+function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  if (timeoutMs <= 0) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    promise.then(
+      value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      error => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 function providerEnvForRouteRequest(request: {
@@ -298,6 +296,14 @@ export function createBuiltinSessionEngine(): SessionEngine {
       };
     },
 
+    getCurrentTurnIdentity() {
+      return getBuiltinCurrentTurnIdentity();
+    },
+
+    hasQueuedTurnOwnedBy(owner) {
+      return hasBuiltinQueuedTurnByOwner(owner);
+    },
+
     async sendDesktopMessage(request: DesktopMessageRequest): Promise<DesktopAdmissionResult> {
       await setInteractionScenario(request.scenario);
       if (request.backgroundAgentPermissionMode) {
@@ -322,6 +328,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
         {
           fromDesktopChatSend: true,
           sessionBirthOrigin: request.birthOrigin,
+          queueId: request.queueId,
+          turnOwner: request.turnOwner,
+          onTerminal: request.onTerminal,
+          ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
           beforeDispatch: request.beforeDispatch,
         },
       );
@@ -358,6 +368,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
         request.analyticsOrigin,
         {
           allowLazySessionMaterialization: request.metadataBirthPending === true,
+          queueId: request.queueId,
+          turnOwner: request.turnOwner,
+          onTerminal: request.onTerminal,
+          ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
           beforeDispatch: request.beforeDispatch,
         },
       );
@@ -391,6 +405,9 @@ export function createBuiltinSessionEngine(): SessionEngine {
         request.analyticsOrigin,
         {
           ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
+          queueId: request.queueId,
+          turnOwner: request.turnOwner,
+          onTerminal: request.onTerminal,
           beforeDispatch: request.beforeDispatch,
         },
       );
@@ -436,9 +453,15 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     async runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult> {
+      const deadline = Date.now() + request.timeoutMs;
       await setInteractionScenario(request.scenario);
       getAndClearLastAgentError();
-      const injectedTurnId = randomUUID();
+      const queueId = request.queueId ?? randomUUID();
+      let observedOutcome: TurnTerminalOutcome | undefined;
+      let resolveTerminal!: (outcome: TurnTerminalOutcome) => void;
+      const terminal = new Promise<TurnTerminalOutcome>((resolve) => {
+        resolveTerminal = resolve;
+      });
       const routed = providerEnvForRouteRequest(request);
       if (routed.error) {
         return { success: false, enqueued: false, error: routed.error, status: routed.status };
@@ -456,36 +479,55 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         request.analyticsOrigin,
         {
-          injectedTurnId,
-          ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
+          queueId,
+          turnOwner: request.turnOwner,
+          onTerminal: async (outcome) => {
+            observedOutcome = outcome;
+            try {
+              await request.onTerminal?.(outcome);
+            } finally {
+              resolveTerminal(outcome);
+            }
+          },
+          queueResponseModeOverride: 'turn',
           ...(request.beforeDispatch ? { beforeDispatch: request.beforeDispatch } : {}),
         },
       );
       if (enqueueResult.error) {
         return { success: false, enqueued: false, error: enqueueResult.error, status: 503 };
       }
-      const waitStartedAt = Date.now();
-      const completed = await waitForSessionIdle(request.timeoutMs, request.pollMs ?? 1000);
-      if (!completed) {
-        let retainForLateTerminal = true;
-        if (enqueueResult.queued && enqueueResult.queueId) {
-          const cancelResult = await cancelQueueItem(enqueueResult.queueId);
-          retainForLateTerminal = cancelResult.status !== 'cancelled';
+      const outcome = await waitForDeadline(terminal, Math.max(0, deadline - Date.now()));
+      if (!outcome) {
+        const cancelResult = await cancelQueueItem(queueId);
+        if (observedOutcome) {
+          const settledOutcome = await terminal;
+          return {
+            ...decideBuiltinInjectedTurnResult({ idleCompleted: true, outcome: settledOutcome }),
+            enqueued: true,
+          };
         }
-        discardInjectedTurnOutcome(injectedTurnId, { retainForLateTerminal });
+        if (
+          cancelResult.status !== 'cancelled'
+          && getBuiltinCurrentTurnIdentity()?.queueId === queueId
+        ) {
+          await interruptCurrentResponse('timeout');
+        }
         return { ...decideBuiltinInjectedTurnResult({ idleCompleted: false }), enqueued: true };
       }
-      const outcome = consumeInjectedTurnOutcome(injectedTurnId)
-        ?? await waitForInjectedTurnOutcome(
-          injectedTurnId,
-          Math.max(0, request.timeoutMs - (Date.now() - waitStartedAt)),
-          request.pollMs ?? 1000,
-        );
       return { ...decideBuiltinInjectedTurnResult({ idleCompleted: true, outcome }), enqueued: true };
     },
 
     async stopTurn() {
-      cancelPendingGoalDispatches();
+      const stopped = await interruptCurrentResponse();
+      return stopped ? { success: true } : { success: true, alreadyStopped: true };
+    },
+
+    async stopOwnedTurn(owner) {
+      const canceled = await cancelQueuedTurnsByOwner(owner);
+      const current = getBuiltinCurrentTurnIdentity();
+      if (!current || current.owner.kind !== owner.kind || current.owner.id !== owner.id) {
+        return { success: true, alreadyStopped: canceled === 0 };
+      }
       const stopped = await interruptCurrentResponse();
       return stopped ? { success: true } : { success: true, alreadyStopped: true };
     },

@@ -33,7 +33,7 @@ import {
   hasCurrentTurnImTerminalEmitted,
   hasCurrentTurnOutput,
   markCurrentTurnHasOutput,
-  recordInjectedTurnOutcome,
+  notifyCurrentTurnTerminal,
   replaceCurrentTurnUsage,
   sawCompactBoundary,
   setCurrentTurnImTerminalEmitted,
@@ -177,7 +177,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
 
   const completeTurn = (): void => {
     deps.setStreamingMessage(false);
-    recordInjectedTurnOutcome('complete');
+    notifyCurrentTurnTerminal('complete');
     let confirmedQueueTurnKeepStreaming = false;
 
     const inFlightQueueId = getInFlightQueueId();
@@ -264,7 +264,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
 
   const stopTurn = (): void => {
     deps.setStreamingMessage(false);
-    recordInjectedTurnOutcome('stopped', 'Execution stopped');
+    notifyCurrentTurnTerminal('stopped', 'Execution stopped');
     const stoppedTrace = deps.snapshotTrace();
     deps.emitTrace('final', {
       status: 'error',
@@ -287,7 +287,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
 
   const failTurn = (error: string, localizedError?: string): void => {
     deps.setStreamingMessage(false);
-    recordInjectedTurnOutcome('error', localizedError ?? error);
+    notifyCurrentTurnTerminal('error', localizedError ?? error);
     const errorTrace = deps.snapshotTrace();
     deps.emitTrace('final', {
       status: 'error',
@@ -487,7 +487,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       console.log('[agent] SDK assistant message error recovered by successful result:', lastAssistantMessageError);
     }
     if (resultMessage.is_error && !isAbortResult) {
-      recordInjectedTurnOutcome('error', resultErrorText || resultText || 'turn ended with error');
+      notifyCurrentTurnTerminal('error', resultErrorText || resultText || 'turn ended with error');
     }
     deps.emitTrace('final', {
       status: resultMessage.is_error || (emptySuccessfulResult && !successfulCompactControlTurn) ? 'error' : 'ok',

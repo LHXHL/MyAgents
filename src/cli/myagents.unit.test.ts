@@ -265,6 +265,19 @@ describe('myagents CLI cron time handling', () => {
     });
   });
 
+  it('rejects retired loop schedules from ordinary cron commands', () => {
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(() => normalizeScheduleFlag('{"kind":"loop"}')).toThrow('process.exit(2)');
+    } finally {
+      exit.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   it('requires explicit offset or Z for one-shot dispatchAt strings', () => {
     expect(parseDispatchAtValue('2026-06-01T09:00:00+08:00')).toBe(Date.parse('2026-06-01T09:00:00+08:00'));
     expect(parseDispatchAtValue('2026-06-01T01:00:00Z')).toBe(Date.parse('2026-06-01T01:00:00Z'));

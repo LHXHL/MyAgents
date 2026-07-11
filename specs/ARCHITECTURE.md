@@ -47,8 +47,8 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                              Rust Layer                                      │
 │  ┌────────────────┐ ┌──────────────────┐ ┌─────────────────────────────┐    │
-│  │ SidecarManager │ │ ManagedAgents +  │ │ CronTaskManager / TaskStore │    │
-│  │ Session-1:1   │ │ ManagedImBots    │ │ ThoughtStore / SearchEngine │    │
+│  │ SidecarManager │ │ ManagedAgents +  │ │ TaskStore + TaskScheduler   │    │
+│  │ Session-1:1   │ │ ManagedImBots    │ │ SessionGoal / SearchEngine  │    │
 │  │ Owner Model   │ │ (Channels)       │ │ (Tantivy + jieba)           │    │
 │  └───────┬────────┘ └────────┬─────────┘ └─────────────────────────────┘    │
 │          │                   │                                              │
@@ -82,7 +82,7 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-每个 Sidecar 服务一个 Session。Tab / CronTask / BackgroundCompletion / Agent 四种 Owner 共享同一 Sidecar，全部释放才停止进程。
+每个 Sidecar 服务一个 Session。Tab / Task / Goal / BackgroundCompletion / Agent owner 共享同一 Sidecar，全部释放才停止进程。
 
 ---
 
@@ -97,12 +97,13 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 | **Sidecar = Agent 实例** | 一个 Sidecar 进程 = 一个 Claude Agent SDK 实例 |
 | **Session : Sidecar = 1 : 1** | 每个 Session 最多一个 Sidecar，严格对应 |
 | **后端优先，前端辅助** | Sidecar 可独立运行（定时任务、Agent Channel），无需前端 Tab |
-| **Owner 模型** | Tab、CronTask、BackgroundCompletion、Agent 四种 Owner 是 Sidecar 的"使用者"。所有 Owner 释放后 Sidecar 才停止 |
+| **Owner 模型** | Tab、Task、Goal、BackgroundCompletion、Agent 是 Sidecar 的使用者。所有 Owner 释放后 Sidecar 才停止 |
 
 ```rust
 pub enum SidecarOwner {
     Tab(String),                   // Tab ID
-    CronTask(String),              // CronTask ID
+    Task(String),                  // Task ID
+    Goal(String),                  // Session Goal ID
     BackgroundCompletion(String),  // Session ID（AI 后台完成保活）
     Agent(String),                 // session_key（Agent Channel 消息处理）
 }
@@ -145,30 +146,28 @@ pub enum SidecarOwner {
 
 **MCP 配置权威来源分离：**
 - Tab 会话的 MCP 由前端 `/api/mcp/set` 配置（`initializeAgent` 中 MUST NOT self-resolve MCP）
-- IM / Cron 会话的 MCP 由 self-resolve 从磁盘读取
+- IM 与尚未 materialize 的 backend-created Task Session 可从磁盘初始化；已有 Session 始终沿用自己的 MCP authority
 - 混用会导致 fingerprint 差异 → abort → 30s 重启循环
 
 ### Goal 模式（Session 一等状态）
 
 Goal 模式是当前 MyAgents session 的长程工作状态：用户通过 `/goal`，或 AI 在明确 User 要求后调用 `myagents goal create --objective-file ...`，都会让**同一个 current session** 进入 Goal Mode。Goal 不属于某个 React hook，也不属于普通 Cron surface；桌面、私聊 IM、私有 Agent Channel 打开同一 session 时应看到同一条 Goal 横条。
 
-当前实现复用 `CronTaskManager`、`CronSchedule::Loop`、`RunMode::SingleSession` 做 backing store 和 scheduler，但产品 identity 只看显式 `goalStatus`，不能从 `goalObjective` 或 `schedule.kind === 'loop'` 推断。renderer 创建 draft 用显式 `taskKind: 'cron' | 'goal'` 选择 API；旧 Loop 不迁移，普通 Cron/Task Center loop-shaped 执行不是 Goal。
+`SessionGoalManager` 是唯一业务 owner，持久化到 `~/.myagents/session_goals.json`，以 `sessionId` 查询当前 Goal。Goal 不创建 Task/CronTask，不持有 tab/model/provider/runtime/reasoning/MCP/delivery 快照；这些配置始终由 Session 拥有，只有 permission 是每轮执行 policy。创建前必须 materialize 真实 Session identity，Rust 拒绝 `pending-*`。
 
-Goal 的状态变更通过 Goal facade 进入：Tauri `cmd_create_goal_task` / `cmd_get_goal_task` / `cmd_get_session_goal_task`，Rust Management API `/api/goal/*`，以及 CLI/Admin `myagents goal get|create|update`。`src/server/session-engine/goal-orchestrator.ts` 是桌面/IM user ingress、scheduler claim 和 objective update 的统一 Sidecar owner。user ingress 查询 Goal 时只有 Management 明确返回 `goal:null` 才能按普通消息发送；transport 失败、`ok:false` 或畸形非空 payload 一律 fail closed。user turn 先在 Rust reserve，排到 Runtime promotion 时 claim，transport 接受后 finalize 为 Dispatched，真实 idle 后持续幂等重试 release，成功或确认 authority 已不存在前不清除 Node authority；ack reject、finalize 异常和 idle 查询异常也进入同一个补偿 lifecycle，不得提前丢 Node authority。同 session 的 lookup+reserve 在 Sidecar 内串行。`goalRevision` 覆盖全部持久状态变化，用于 UI 单调排序；`goalControlRevision` 只在显式 pause/resume、objective、terminal 等控制语义变化时递增，用户 query 触发的 paused→active 保持 pause 后的同一 control epoch。user query 只有 objective 和 control revision 都同代时才能容忍 admission lifecycle 带来的 `goalRevision` churn，既不误拒绝并发输入，也不能用 Stop 前的旧快照重新拉起 Goal。scheduler 只在 Rust 本地准备 candidate，Sidecar 等 idle 且队列清空后才在 Runtime 发送前原子 claim。paused→active 与轮次计数都在相应 Rust 事务中完成。
+Goal concurrency 只保留三类真实 identity/fence：Runtime queue item 的 `queueId` 是 Turn 唯一身份；`sidecarGeneration` 阻止旧进程回写 replacement Sidecar；Goal `id` 阻止旧 incarnation 回写新 Goal。Node queue 拥有尚未 promotion 的消息，Rust 只在 Runtime promotion boundary 原子写一个 `currentTurn { queueId, kind, turnNumber, sidecarGeneration }`，不复制 pending admission queue，也不维护 Goal 专用 injected turn ID/Node authority map。
 
-Goal continuation 强制等待 turn boundary，不能并入正在运行的 user turn。除 permission 外，Goal 不保存或回放 task-level tab/model/provider/runtime/reasoning/MCP/source-bot/delivery 快照；Rust Goal create boundary 会统一清除这些 session-owned 字段，冷启动 Sidecar 从 session metadata 恢复 runtime identity，SessionEngine 从该 session 恢复其余配置。UI Goal 保留创建时显式 permission，CLI Goal 的空 permission 按 runtime 最大权限解释。Goal 创建前 renderer 必须先把 `pending-*` materialize 为真实 session identity；Rust create boundary 拒绝 pending identity，不存在 Goal 专用 post-hoc rebind/CAS。普通 Cron 的 session/tab update surface 必须拒绝 Goal。
+`revision` 对所有持久变化单调递增，供 UI/event 拒绝旧投影；`controlRevision` 只在 pause/resume/objective/terminal 等控制语义变化时递增，用于使 Stop 前准备的 continuation 失效。`src/server/session-engine/goal-orchestrator.ts` 在 builtin/external adapter 的实际 dispatch boundary claim，真实 terminal 后 finalize；Management 异常、stale revision/generation 或 claim reject 均 fail closed。
 
-renderer 分别用 `useSessionGoal` 和 `useCronTask` 投影 Goal 与普通 Cron，事件不能互相覆盖；但 Rust create/start boundary 禁止同一 session 的 unfinished Goal 与 running ordinary `single_session` Cron 并存，避免两套自动化争用同一个 SessionEngine 配置。Goal 视觉状态可以优先展示，但 `useSessionSurfaces` 的 Cron surface 只消费普通 Cron。两个 hook 都不是状态 owner，切 Tab/卸载不能取消 Rust 已接受的 Goal；只有用户显式取消尚未完成的 create 才允许 terminalize 晚到结果。
+自动 continuation 是 `goalId -> one-shot JoinHandle`，只在 active、无 current Turn、无待投递 outbox 时存在；paused/terminal Goal 不轮询。实际发送统一走 `/goal/execute-sync` 和 SessionEngine facade。Goal owner token 在 Turn 真正 claim 时懒加入现有 Sidecar，pause/terminal/finalize 后对称释放；它不是独立进程或独立 Sidecar。
 
-objective edit 在没有普通排队消息时执行 stop/wait → revision CAS → 再次 stop/wait/re-read；active Goal 用受 admission guard 的新 turn 重启，paused Goal 只持久化。若存在普通排队消息则返回冲突，绝不代用户删除。Stop/Cancel 先写 Rust Pause/Terminal，再统一调用 `SessionEngine.stopTurn()`；adapter 的 stop boundary 同时 cancel 正在 Rust round-trip 中的 pending dispatch guard，晚到的成功 claim 必须 revoke/release 后 fail closed。user admission 不使用 wall-clock TTL；正常 settlement、Pause/Terminal 或承载进程的 Sidecar stop 才释放 authority。每个持久 lease/admission 绑定 Rust Sidecar 的单调 generation；reserve/claim、accepted finalize 和 model terminal commit 都在 task 写锁内验证 request generation、authority generation 与 current Sidecar generation 一致。stop event 只撤销对应 generation，持久化失败持续重试，broadcast Lagged 时按 `live_sidecar_set()` 对账，旧进程事件不能清除 replacement Sidecar 的新 authority；aborted/release/revoke 属于补偿清理，不要求旧 generation 仍 current。
+桌面 Goal 先以 Paused 持久化并等待首条用户 turn；首条 claim 通过普通用户发送路径原子激活。`GOAL_CONTINUATION` hidden envelope 后保留原 objective visible tail，因此用户气泡、Goal badge 与实时 streaming 都存在；切换 Session 或发送失败不会产生 Active 空 Goal。后续自动 continuation 纯隐藏；Goal 运行中用户 query 使用 `GOAL_CONTEXT` + visible query，并由现有 Runtime queue 排序。所有 continuation 强制 turn boundary，不能 steer/merge 到正在运行的 Turn。
 
-终态转换由 Rust `CronTaskManager` 在同一写锁下执行 disk-first first-writer-wins CAS：Model 只能写 complete/blocked 且受 `aiCanExit` 硬闸；User 只能写 canceled；System 可因连续故障进入 terminal。首次 Applied 转换发事件与通知；若终态来自当前 model turn，CronTask owner 保留到该 scheduler lease 或 user admission 真正 idle/finalize 后再释放，避免杀掉模型自己的 Sidecar。
+Pause/Cancel 先 disk-first 写 Goal 状态，再调用唯一 `SessionEngine.stopTurn(queueId)`；旧 queue/generation 的晚到结果无法恢复 Goal。Model 只能提交 complete/blocked，且 `aiCanExit=false` 在 Rust 终态事务中硬拒绝；User 只能 cancel，System 可按 end condition/连续失败终止。终态 first-writer-wins，先提交权威状态再做事件、通知和 owner 释放。
 
-IM/Agent Channel 自动续跑结果不使用 `CronDelivery`，只在 Sidecar 明确标记 `agent-channel` origin 时写入持久 outbox。每个 Goal 只有一个后台 replay worker；无 channel binding 不算 ACK，启动恢复和运行时都会持续重试。语义是 **at-least-once**：同一 lease 使用稳定 delivery id 防止健康进程内重复入队，但 push 成功后、删除 outbox 前崩溃仍可能重复发送。群聊 `NO_REPLY` 保持静默。
+IM/Agent Channel continuation 沿用 Session 原输出路由，不使用 Task/Cron delivery。仅 Agent Channel 结果进入 Goal 持久 outbox；稳定 delivery id + 单 replay worker 提供 at-least-once，push 成功到删除 outbox 之间崩溃仍可能重复。群聊 `NO_REPLY` 保持静默。
 
-Goal 的 `CronTask` execution state 是权威；`cron_runs/*.jsonl` 是 finalize 成功后的 best-effort 查询投影。先提交权威状态再 append history，避免被撤销 turn 污染历史；两步之间进程崩溃时允许该轮 history 缺行，不能用 JSONL 反推 Goal 状态。
-
-current-session Goal continuation 保留 session 原始 interaction scenario / 输出路由：desktop 仍写当前桌面 session，IM / Agent Channel 仍回原 channel。`CronDelivery` 是普通 Cron 结果投送能力，不是 current-session Goal 的 owner。detached/new-session Goal 尚未实现。
+Goal 与 Task 相互独立，可以关联同一 Session：Task 负责定时投递一个 Turn，Goal 负责 Session 长程状态，实际顺序由同一 Runtime queue 决定。本期没有 Task->Goal 编排；需要组合时，Task prompt 可让 AI 在该 Session 调 `myagents goal create`。
 
 ### Rust 代理层
 
@@ -229,9 +228,9 @@ Tab2 apiPost() ──► getSessionPort(session_456) ──► Rust proxy ──
 
 | 前缀 | 职责 | 调用方 |
 |------|------|--------|
-| `/api/cron/*`（9 条） | CronTask CRUD + 调度控制 | CLI、`im-cron-tool.ts` |
+| `/api/cron/*` | Scheduled Task 兼容 CRUD + 调度控制 | CLI、`im-cron-tool.ts` |
 | `/api/task/*`（13 条） | Task Center 任务 CRUD + run/rerun + doc 读写 | CLI、`admin-api.ts` |
-| `/api/mcp/remove-references` | Task/Cron 中删除 custom MCP identity 的持久引用 | `admin-api.ts` MCP remove cascade |
+| `/api/mcp/remove-references` | Task 中删除 custom MCP identity 的持久引用 | `admin-api.ts` MCP remove cascade |
 | `/api/thought/*`（2 条） | 想法 create / list | CLI、`admin-api.ts` |
 | `/api/im/*` + `/api/im-bridge/*` | IM Bot 唤醒 + 媒体下发 + Plugin Bridge 回调 | Node.js / 社区插件 Bridge |
 | `/api/plugin/*`（3 条） | OpenClaw 插件 CRUD | CLI |
@@ -259,7 +258,7 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 | `spawn.rs` | Node/script 定位、`normalize_external_path`、spawn diagnostic、kill helper |
 | `health.rs` | TCP health / readiness / reusable sidecar HTTP health check |
 | `cleanup.rs` | startup stale-process cleanup barrier、global port file、child cleanup patterns |
-| `cron_execute.rs` | Rust → Node `/cron/execute` payload/response bridge |
+| `cron_execute.rs` | Rust → Node Task `/cron/execute-sync` 与 Goal `/goal/execute-sync` bridge |
 | `runtime_identity.rs` | session/agent runtime identity resolve 与 restore guard |
 | `background.rs` | background completion lifecycle |
 | `proxy.rs` / `commands.rs` / `legacy.rs` / `shutdown.rs` / `stdio.rs` | proxy propagation、IPC glue、legacy global sidecar、shutdown、stderr classification |
@@ -334,23 +333,24 @@ type InteractionScenario =
 
 ### 5. 定时任务系统
 
-**Rust 层**（`src-tauri/src/cron_task.rs` facade + `src-tauri/src/cron_task/*`）：
-- `manager.rs` 的 `CronTaskManager` 单例管理任务 CRUD、tokio 调度循环、崩溃恢复
-- `types.rs` 定义 `CronTask` / `CronSchedule` / run mode / delivery / provider intent
-- `execution.rs` 拥有 `execute_task_directly`，负责 ensure sidecar、构造执行 payload、结束条件与 stop
-- `commands.rs` 是 Tauri command glue
-- `store.rs` 原子写入 `~/.myagents/cron_tasks.json`
-- `run_records.rs` 管理 `~/.myagents/cron_runs/<taskId>.jsonl`
-- `schedule.rs` 提供 wall-clock polling（`sleep_until_wallclock`），系统休眠后能正确唤醒
-- `delivery.rs` / `init_recovery.rs` / `validation.rs` 分别拥有 IM delivery、启动恢复、字段与路径校验
+0.2.50 起，Task 是所有新定时自动化的唯一持久权威：
+
+- `task.rs`：`tasks.jsonl`、状态机、schedule/runtime/notification schema 与原子 mutation。
+- `task_scheduler.rs`：唯一 timer handle map + 瞬时 execution authority map（普通 queueId/cancel/session）；从 Running Task 重建，支持 wall-clock sleep、scheduled tick 与 manual `run-now`。
+- `task_execution.rs`：Session 选择、`SidecarOwner::Task`、Task prompt 与同步执行 use case。
+- `cron_task/*`：兼容 DTO、校验、delivery/run history 与旧文件只读 facade；没有 writer/scheduler/execution owner。
+- `legacy_upgrade.rs`：在 Task scheduler 启动前把普通 At/Every/Cron、旧 Task projection 与 managed row 幂等迁移为 Task；Loop/开发期 Goal row 不迁移。
+
+`Running` 表示 scheduler enabled，`currentlyExecuting` 来自瞬时 execution map。timer handle 与执行 Turn 分离；Stop 撤销精确 queue authority，SessionEngine stop 确认后才释放 Task owner，执行结果提交与 cancel 使用同一临界区。`run-now` 可执行 Stopped Task 但不启用 scheduler；`lastScheduledAt` 独立于 `lastExecutedAt`，手动执行不会移动 recurring timer。
 
 **Node.js 层**（`src/server/tools/im-cron-tool.ts`）：
 - `im-cron` MCP server —— **所有 Session 可用**（不仅 IM Bot）
-- 始终信任（`canUseTool` auto-allow），`list` / `status` 按工作区过滤
+- 用户可见命令名保持 Cron 兼容，但 CRUD/start/stop/run-now 全部落 TaskStore
+- `/cron/execute-sync` 只是历史 wire name，domain owner 是 Task，并统一经过 SessionEngine selector
 
-新增 `CronTask` 字段 MUST 带 `#[serde(default)]`。
+标准 Cron get/list/mutation facade 也只读 TaskStore；未迁移旧行仅由显式只读 Legacy 诊断命令提供给历史面板。deleted Task 是 legacy id tombstone，不会让旧行复活。
 
-**Goal 边界：** Goal Mode 的 backing 数据也存在 `cron_tasks.json`，但普通 cron create/list/start/stop/delete/update/run-now surface 必须过滤或拒绝 Goal task。`CronTaskManager::create_task` 在写锁内校验新 Goal shape 和同 session 唯一 unfinished Goal；Management/Tauri 不做非原子重复预检。Goal mutation 使用结构化错误码，协议层不得解析错误文案前缀。Goal 创建统一走 `/goal` 或 `myagents goal create --objective-file ...`；`myagents cron add --schedule '{"kind":"loop"}'` 不再是用户入口。Loop scheduler 的连续失败计数、退避和 10 次终止阈值只有一份 policy，模型逻辑失败与 transport error 共享该决策。
+Legacy `CronTask` 字段若为读盘兼容新增仍 MUST 带 `#[serde(default)]`，但禁止新增写盘路径。完整边界见 `tech_docs/task_center.md` 与 `tech_docs/task_provider_routing.md`。
 
 ### 6. Agent 架构 (`src-tauri/src/im/`)
 
@@ -413,7 +413,7 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 
 **模型别名映射：** 子 Agent 指定 `model: "sonnet"` / `"fable"` 时，SDK 通过 `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_FABLE_MODEL` 解析为供应商模型。四个别名变量：`ANTHROPIC_DEFAULT_{FABLE,SONNET,OPUS,HAIKU}_MODEL`。
 
-**Provider Self-Resolve：** IM/Cron Session 的 Provider 和 Model 从磁盘自 resolve，不依赖前端 `/api/provider/set`。owned builtin session 的 canonical 身份是 `providerRoute`（providerId + model），请求时再从当前配置 materialize `ProviderEnv`；旧数据解析链兼容 `providerRoute → legacy providerId/model → providerEnvJson fallback → agent/default`，不得把 apiKey/baseUrl 作为新 snapshot 身份写回。
+**Provider Self-Resolve：** IM 与尚未 materialize 的 backend-created Task Session 可从磁盘初始化 Provider/Model，不依赖前端 `/api/provider/set`；已有 Task Session 保留自己的配置 authority。owned builtin session 的 canonical 身份是 `providerRoute`（providerId + model），请求时再从当前配置 materialize `ProviderEnv`；旧数据解析链兼容 `providerRoute → legacy providerId/model → providerEnvJson fallback → agent/default`，不得把 apiKey/baseUrl 作为新 snapshot 身份写回。
 
 **受管订阅凭据：** `xai-sub` 仍属于 builtin + OpenAI Responses Bridge，不是外部 Runtime。其 `ProviderEnv` 只携带非 secret 的 `credentialSource:{kind:'managed-oauth',providerId:'xai-sub'}`；Rust 应用级 `GrokAuthManager` 是 rotating refresh token 的唯一 owner。Bridge 每个上游请求都通过带 Sidecar generation/session 校验的 localhost Management API 解析当前 bearer，且 Rust 区分 `execution`（必须已验证）与 lineage-bound `verification` 用途；401 最多强制 refresh 并重试原请求一次，403/429 不清登录态。renderer、AppConfig、session 与静态 ProviderEnv 都不得持有 bearer，受管 bearer 的目的地址必须由 server canonicalize 到官方 xAI Responses endpoint。
 
@@ -490,16 +490,16 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 |------|------|------|
 | 1 | 新 Tab + 新 Session | 创建新 Sidecar |
 | 2 | 新 Tab + 其他 Tab 正在用的 Session | 跳转到已有 Tab |
-| 3 | 同 Tab 切换到定时任务 Session | 跳转 / 连接到 CronTask Sidecar |
+| 3 | 同 Tab 切换到后台 Task/Goal Session | 跳转 / 连接到现有 Session Sidecar |
 | 4 | 同 Tab 切换到无人使用的 Session | **Handover**：Sidecar 资源复用 |
 
-**编排收敛**（PRD 0.2.6）：所有切换入口（`handleSwitchSession` / `handleLaunchProject` / `OPEN_SESSION_IN_NEW_TAB`）MUST 通过纯函数 `src/renderer/utils/sessionOpenPlan.ts::planSessionOpen()` 拿到统一 plan 类型（`jump-to-tab` / `open-new-tab` / `attach-existing-sidecar` / `switch-current-tab`）再执行。**plan 内 cron-attach 必须排在 runtime-mismatch 检查前**——否则 cron-owned session 会被路由到 new-tab 路径丢失 task_id 激活。
+**编排收敛**（PRD 0.2.6）：所有切换入口（`handleSwitchSession` / `handleLaunchProject` / `OPEN_SESSION_IN_NEW_TAB`）MUST 通过纯函数 `src/renderer/utils/sessionOpenPlan.ts::planSessionOpen()` 拿到统一 plan 类型（`jump-to-tab` / `open-new-tab` / `attach-existing-sidecar` / `switch-current-tab`）再执行。已有后台 owner 的 attach 必须排在 runtime-mismatch 检查前，否则 Session 会被错误 fork 并丢失后台 activation。部分字段名仍保留 `cron` 作为 wire compatibility。
 
 **Cross-runtime 检测**：比较**目标 session.runtime vs 当前 Tab 已加载 session.runtime**（agent template 仅在没有当前 session 时 fallback）。Agent.runtime 可从 Tab 已冻结的 session.runtime 漂移，旧实现以 agent 为基准会让漂移触发不必要的 fork。
 
 **Loading 安全**：`TabProvider.loadSession()` MUST `await /sessions/switch` 成功后再替换 history；失败时保留可见 messages、回滚 `currentSessionIdRef`，让 UI 与后端始终一致。
 
-**Live config 采纳**：Tab 加入活跃 IM/Cron Sidecar 时，`/api/session/config` 返回 sidecar 的 runtime + external-runtime model + permissionMode，Tab 采纳 live config 而非 push 自己的；Chat 用 sticky `adoptedSessionRef` 防止 sessionMeta hydration 覆盖已采纳的值。
+**Live config 采纳**：Tab 加入活跃 IM/Task/Goal Sidecar 时，`/api/session/config` 返回 sidecar 的 runtime + external-runtime model + permissionMode，Tab 采纳 live config 而非 push 自己的；Chat 用 sticky `adoptedSessionRef` 防止 sessionMeta hydration 覆盖已采纳的值。
 
 **分层 Config Snapshot：** Session 创建时按 Owner 类型选择 config 快照策略：
 
@@ -601,7 +601,7 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 
 **关键设计：**
 - Task 状态机 + 审计链（每次状态变更原子写入 `statusHistory`）
-- Task ↔ CronTask 反向指针：Task 不自己跑，登记 `CronTask { task_id }`，调度器 tick 时动态构造 Prompt（用户中途编辑 task.md 立即生效）
+- TaskStore 是 schedule/status/config 唯一权威；TaskScheduler 直接触发并在每次 tick 动态读取 `task.md`
 - AI 讨论路径：想法卡 →「AI 讨论」打开新 Tab + 注入 `task-alignment` Skill → 完成后 `myagents task create-from-alignment`
 - 状态变更广播 Tauri event `task:status-changed`（非 SSE），所有打开的任务中心 Tab 实时同步
 
@@ -769,7 +769,7 @@ Cloud Space 把官方/团队空间接入桌面端，目前仍是开发中/半成
 | `file-response` | Node | 流式 HTTP 文件响应 |
 | Builtin MCP META/INSTANCE 懒加载 | Node | 防冷启动每次付 ~1s SDK+zod 税 |
 | Snapshot helpers | Node | owned vs live-follow 命名分裂 |
-| Legacy CronTask CAS upgrade | Rust | 幂等迁移（防并发重复创建） |
+| Legacy Cron → Task startup migration | Rust | 后端启动期幂等迁移，旧 store 保持只读 |
 | `saveToolAttachment` + `path-safety.ts` | Node | 任意工具图片产物统一落盘 + symlink-safe 路径校验 + SSRF 防护 |
 | `awaitInFlightSaves` + `rebuildAttachmentRegistry` | Node | 异步 attachment 落盘的 turn-boundary 守卫 + session resume 重 register |
 | `workspacePath` / `workspacePathsEqual` | shared (renderer) | 工作区路径跨存储标识比较（Rust `normalize_path` 的 TS 端口，防 Win 斜杠/盘符误判） |
@@ -784,17 +784,17 @@ Cloud Space 把官方/团队空间接入桌面端，目前仍是开发中/半成
 |------|------|
 | 打开/切换 Session | `ensureSessionSidecar(sessionId, workspace, ownerType, ownerId)` |
 | 关闭/切换桌面 Tab | `releaseTabSession(sessionId, tabId)`；Rust 在 scheduler + Sidecar owner 锁内同时释放 Tab owner 并保留或撤销 activation |
-| 定时任务启动 | `ensureSessionSidecar(sessionId, workspace, 'cron', taskId)`；activation 合并 task binding，保留同 session 的 Tab binding |
-| 定时任务结束 | `releaseSessionSidecar(sessionId, 'cron', taskId)`；Rust 同锁释放 owner 与 task projection，Tab/BG/Agent owner 存在时不 deactivate |
-| Goal 自动续跑 | 复用 CronTask owner，但 continuation 保留 session 原始 desktop / IM / Agent Channel 输出路由 |
-| Goal 终态 | terminal 后停止 scheduler、释放 CronTask owner、广播 `goal:changed` |
+| 定时 Task 启动 | `run_task_by_id` 提交 Running 并 arm `TaskSchedulerController` |
+| Task Turn 执行/结束 | lazy `SidecarOwner::Task(taskId)`；terminal/stop/delete 取消 Turn、移除 timer、对称释放 owner |
+| Goal 自动续跑 | active Goal 使用一个 one-shot continuation handle；Runtime promotion 时 lazy `SidecarOwner::Goal(goalId)` |
+| Goal Pause/终态 | 先提交 SessionGoal 状态，再 stop queue Turn、移除 continuation、释放 Goal owner、广播 `goal:changed` |
 | IM 消息到达 | `ensureSessionSidecar(sessionId, workspace, 'agent', sessionKey)` |
 | IM Session 空闲超时 | `releaseSessionSidecar(sessionId, 'agent', sessionKey)` |
 | 终端打开 | `cmd_terminal_create(workspace, rows, cols, port, id)` |
 | 终端关闭 / Tab 关闭 | `cmd_terminal_close(terminalId)` |
 | 浏览器打开 | `cmd_browser_create(tabId, url, x, y, width, height)` |
 | 浏览器关闭 / Tab 关闭 | `cmd_browser_close(tabId)` |
-| 任务立即执行 / 重新派发 | `task::run` → 登记 `CronTask { task_id }` + 触发调度 |
+| 任务立即执行 / 重新派发 | `task::run` / `cron run-now` → 直接触发 Task execution use case；不创建 CronTask |
 | Task 软删除 | `TaskStore::delete` → 写 `→ deleted` 伪状态 + 联动清理 thought |
 | 应用退出 | `stopAllSidecars()` + `close_all_terminals()` + `close_all_browsers()` |
 
@@ -891,7 +891,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 应用启动和每个 Sidecar 创建时输出 `[boot]` 单行自检信息：
 ```
-[boot] v=0.2.0 build=release os=macos-aarch64 provider=deepseek mcp=2 agents=3 channels=5 cron=12 proxy=false dir=/Users/xxx/.myagents
+[boot] v=0.2.50 build=release os=macos-aarch64 provider=deepseek mcp=2 agents=3 channels=5 scheduled_tasks=12 proxy=false dir=/Users/xxx/.myagents
 [boot] pid=12345 port=31415 workspace=/path session=abc-123 resume=true model=deepseek-chat bridge=yes mcp=playwright,im-cron
 ```
 
@@ -959,7 +959,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 - [Claude Plugin 加载](./tech_docs/plugin_loading.md) — Anthropic Claude Plugin 协议接入（PRD 0.2.17）、SDK Options.plugins、安装管线、与 OpenClaw plugin 的命名隔离
 
 ### 任务中心 / 搜索
-- [任务中心架构](./tech_docs/task_center.md) — 数据模型、状态机、CronTask 反向指针、CLI
+- [任务中心架构](./tech_docs/task_center.md) — TaskStore 权威、直接调度、Legacy Cron 迁移、CLI
 - [Cloud Space 架构](./tech_docs/space_cloud.md) — 开发中的 Space 登录、Issue/Skill、registered agent、IssueDelivery/claim 到 attached-session Task
 - [全文搜索架构](./tech_docs/search_architecture.md) — Tantivy + jieba、session watcher、UTF-16 高亮
 

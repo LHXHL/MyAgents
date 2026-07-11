@@ -1545,7 +1545,7 @@ fn persist_agent_config_read_heal(config_path: &Path, reason: &str) {
 }
 
 /// Read Agent configs from disk. Falls back to reading imBotConfigs and converting.
-pub(super) fn read_agent_configs_from_disk() -> Vec<AgentConfigRust> {
+pub(crate) fn read_agent_configs_from_disk() -> Vec<AgentConfigRust> {
     let home = match dirs::home_dir() {
         Some(h) => h,
         None => return Vec::new(),

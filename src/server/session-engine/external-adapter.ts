@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { broadcast } from '../sse';
 import {
   freezeCurrentSessionMetadataForImDetach,
@@ -9,8 +10,9 @@ import {
 } from '../agent-session';
 import {
   cancelExternalQueueItem,
+  cancelExternalQueuedTurnsByOwner,
   cancelExternalImRequest,
-  didLastTurnSucceed,
+  clearExternalTurnBinding,
   awaitExternalSessionStarting,
   enqueueExternalSendForDesktop,
   forceExecuteExternalQueueItem,
@@ -27,11 +29,14 @@ import {
   getExternalSessionState,
   getExternalSessionWorkspacePath,
   getExternalSystemInitPayload,
+  getExternalCurrentTurnIdentity,
   getLastExternalAssistantText,
   handleExternalProxyConfigChange,
+  hasExternalQueuedTurnByOwner,
   hasExternalRuntimeProcess,
   isExternalSessionActive,
   isExternalSessionStateRestoredFor,
+  isExternalTurnCurrent,
   popLastUserMessageForRetry,
   prewarmExternalSession,
   respondExternalAskUserQuestion,
@@ -54,8 +59,8 @@ import type {
   InjectedTurnResult,
   SessionEngine,
 } from './types';
-import { cancelPendingGoalDispatches } from './goal-turn-authority';
 import { decideExternalInjectedTurnResult } from '../session-core/turn-result-policy';
+import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 import { getEffectiveOfficialToolIdsForSession } from '../utils/admin-config';
 import { getSessionData, updateSessionMetadata } from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
@@ -68,6 +73,28 @@ import {
 } from '../proxy-state';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
+
+function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  if (timeoutMs <= 0) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    promise.then(
+      value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      error => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function stopExternalTarget(): Promise<boolean> {
+  const stopped = await stopExternalSession();
+  return stopped || (!hasExternalRuntimeProcess() && !isExternalSessionActive());
+}
 
 function getRuntimeSessionId(): string {
   return getExternalSessionId() || getCurrentBoundSessionId() || getSessionId();
@@ -237,6 +264,14 @@ export function createExternalSessionEngine(): SessionEngine {
       };
     },
 
+    getCurrentTurnIdentity() {
+      return getExternalCurrentTurnIdentity();
+    },
+
+    hasQueuedTurnOwnedBy(owner) {
+      return hasExternalQueuedTurnByOwner(owner);
+    },
+
     async sendDesktopMessage(request: DesktopMessageRequest): Promise<DesktopAdmissionResult> {
       const sent = enqueueExternalSendForDesktop(
         request.text,
@@ -253,12 +288,17 @@ export function createExternalSessionEngine(): SessionEngine {
           permissionMode: request.permissionMode,
           model: request.model,
           reasoningEffort: request.reasoningEffort,
+          turnBoundaryOnly: request.turnBoundaryOnly,
+          queueId: request.queueId,
+          turnOwner: request.turnOwner,
+          onTerminal: request.onTerminal,
           beforeDispatch: request.beforeDispatch,
         },
       );
       const dispatchAcceptance = sent.dispatch
         .then((result) => {
           if (!result.queued) {
+            if (request.queueId) clearExternalTurnBinding(request.queueId);
             if (result.error) {
               console.error(`[chat] external send failed: ${result.error}`);
               broadcast('chat:agent-error', { message: result.error });
@@ -268,6 +308,7 @@ export function createExternalSessionEngine(): SessionEngine {
           return { accepted: true };
         })
         .catch((err) => {
+          if (request.queueId) clearExternalTurnBinding(request.queueId);
           const message = err instanceof Error ? err.message : String(err);
           console.error(`[chat] external send threw: ${message}`);
           broadcast('chat:agent-error', { message });
@@ -301,10 +342,14 @@ export function createExternalSessionEngine(): SessionEngine {
           requestId: request.requestId,
           metadataBirthPending: request.metadataBirthPending === true,
           analyticsOrigin: request.analyticsOrigin,
+          queueId: request.queueId,
+          turnOwner: request.turnOwner,
+          onTerminal: request.onTerminal,
           beforeDispatch: request.beforeDispatch,
         },
       );
       if (!result.queued) {
+        if (request.queueId) clearExternalTurnBinding(request.queueId);
         return {
           success: false,
           error: result.error ?? 'Failed to send via external runtime',
@@ -332,10 +377,14 @@ export function createExternalSessionEngine(): SessionEngine {
           model: request.model,
           reasoningEffort: request.reasoningEffort,
           analyticsOrigin: request.analyticsOrigin,
+          queueId: request.queueId,
+          turnOwner: request.turnOwner,
+          onTerminal: request.onTerminal,
           ...(request.beforeDispatch ? { beforeDispatch: request.beforeDispatch } : {}),
         },
       );
       if (!result.queued) {
+        if (request.queueId) clearExternalTurnBinding(request.queueId);
         return {
           success: false,
           error: result.error ?? 'Failed to send via external runtime',
@@ -367,7 +416,14 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult> {
-      const result = await sendExternalMessage(
+      const deadline = Date.now() + request.timeoutMs;
+      const queueId = request.queueId ?? `xq-${randomUUID()}`;
+      let observedOutcome: TurnTerminalOutcome | undefined;
+      let resolveTerminal!: (outcome: TurnTerminalOutcome) => void;
+      const terminal = new Promise<TurnTerminalOutcome>((resolve) => {
+        resolveTerminal = resolve;
+      });
+      const sendPromise = sendExternalMessage(
         request.prompt,
         undefined,
         undefined,
@@ -380,10 +436,39 @@ export function createExternalSessionEngine(): SessionEngine {
           model: request.model,
           reasoningEffort: request.reasoningEffort,
           analyticsOrigin: request.analyticsOrigin,
+          queueId,
+          turnOwner: request.turnOwner,
+          onTerminal: async (outcome) => {
+            observedOutcome = outcome;
+            try {
+              await request.onTerminal?.(outcome);
+            } finally {
+              resolveTerminal(outcome);
+            }
+          },
           beforeDispatch: request.beforeDispatch,
         },
       );
+      const result = await waitForDeadline(sendPromise, deadline - Date.now());
+      if (!result) {
+        request.beforeDispatch?.cancel?.();
+        void sendPromise.catch(() => undefined);
+        const dispatchAccepted = isExternalTurnCurrent(queueId);
+        const stopped = !dispatchAccepted || await stopExternalTarget();
+        clearExternalTurnBinding(queueId);
+        return {
+          success: false,
+          enqueued: dispatchAccepted,
+          error: !dispatchAccepted
+            ? 'External runtime turn timed out before dispatch'
+            : stopped
+              ? 'External runtime turn timed out during dispatch'
+              : 'External runtime turn timed out and its process did not stop',
+          status: 408,
+        };
+      }
       if (!result.queued) {
+        clearExternalTurnBinding(queueId);
         return {
           success: false,
           enqueued: false,
@@ -391,27 +476,58 @@ export function createExternalSessionEngine(): SessionEngine {
           status: 503,
         };
       }
-      const completed = await waitForExternalSessionIdle(request.timeoutMs, request.pollMs ?? 1000);
-      if (!completed) {
-        await stopExternalSession();
-        return { ...decideExternalInjectedTurnResult({ idleCompleted: false }), enqueued: true };
+      const outcome = await waitForDeadline(terminal, deadline - Date.now());
+      if (!outcome) {
+        request.beforeDispatch?.cancel?.();
+        if (observedOutcome) {
+          const settledOutcome = await terminal;
+          const decision = decideExternalInjectedTurnResult({
+            idleCompleted: true,
+            turnSucceeded: settledOutcome.status === 'complete',
+            text: settledOutcome.status === 'complete' ? settledOutcome.text : undefined,
+            error: settledOutcome.error,
+          });
+          return { ...decision, enqueued: true };
+        }
+        const stopped = await stopExternalTarget();
+        clearExternalTurnBinding(queueId);
+        return {
+          ...decideExternalInjectedTurnResult({ idleCompleted: false }),
+          enqueued: true,
+          ...(!stopped
+            ? { error: 'External runtime turn timed out and its process did not stop' }
+            : {}),
+        };
       }
-      const turnSucceeded = didLastTurnSucceed();
       const decision = decideExternalInjectedTurnResult({
         idleCompleted: true,
-        turnSucceeded,
-        text: turnSucceeded ? getLastExternalAssistantText() : undefined,
+        turnSucceeded: outcome.status === 'complete',
+        text: outcome.status === 'complete' ? outcome.text : undefined,
+        error: outcome.error,
       });
       return { ...decision, enqueued: true };
     },
 
     async stopTurn() {
-      cancelPendingGoalDispatches();
       if (!isExternalSessionActive()) {
         return { success: true, alreadyStopped: true };
       }
       const stopped = await stopExternalSession();
-      return { success: true, alreadyStopped: !stopped };
+      return stopped
+        ? { success: true, alreadyStopped: false }
+        : { success: false, error: 'External runtime process did not stop' };
+    },
+
+    async stopOwnedTurn(owner) {
+      const canceled = cancelExternalQueuedTurnsByOwner(owner);
+      const current = getExternalCurrentTurnIdentity();
+      if (!current || current.owner.kind !== owner.kind || current.owner.id !== owner.id) {
+        return { success: true, alreadyStopped: canceled === 0 };
+      }
+      const stopped = await stopExternalTarget();
+      return stopped
+        ? { success: true, alreadyStopped: false }
+        : { success: false, error: 'External runtime process did not stop' };
     },
 
     async cancelQueuedMessage(queueId) {

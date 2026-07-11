@@ -14,7 +14,6 @@ export interface LegacyCronRow {
    * bucket logic can route "completed" into `已完成` instead of
    * `待启动`. Derived from `CronTask.exit_reason` being Some(_).
    */
-  hasExited: boolean;
   /** Raw CronTask object — forwarded to LegacyCronOverlay on click. */
   raw: Record<string, unknown>;
   workspacePath: string;

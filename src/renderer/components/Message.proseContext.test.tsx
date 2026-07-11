@@ -44,7 +44,6 @@ import {
     SPACE_ISSUE_CONTEXT_TAG,
     buildGoalContextReminder,
     buildGoalContinuationReminder,
-    buildGoalObjectiveUpdatedReminder,
 } from '../../shared/systemReminder';
 
 function assistantMessage(content: MessageType['content']): MessageType {
@@ -158,12 +157,13 @@ describe('Heartbeat system-reminder user bubble', () => {
 describe('Goal system-reminder user bubble', () => {
     it('renders the first Goal query with the Goal Mode badge', () => {
         const objective = '分析这个项目有什么价值';
-        const content = `${buildGoalContinuationReminder({
+        const content = buildGoalContextReminder({
             objective,
             goalId: 'goal_first',
             goalStatus: 'active',
             turnNumber: 1,
-        })}\n${objective}`;
+            visibleUserMessage: objective,
+        });
 
         const { container } = render(<Message message={userMessage(content)} />);
 
@@ -174,7 +174,7 @@ describe('Goal system-reminder user bubble', () => {
     });
 
     it('does not render pure hidden Goal reminders as user bubbles', () => {
-        const content = buildGoalObjectiveUpdatedReminder({
+        const content = buildGoalContinuationReminder({
             objective: 'hidden updated objective',
             goalId: 'goal_123',
             goalStatus: 'active',

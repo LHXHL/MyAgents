@@ -33,7 +33,7 @@ CLAUDE.md 的 Pit-of-Success 红线总表是这些模块的**速查索引**；�
 **结构性其他**
 - [Builtin MCP 懒加载](#builtin-mcp) — META/INSTANCE 两层架构
 - [snapshot helpers](#snapshot-helpers) — owned vs live-follow 命名分裂
-- [legacy CronTask CAS upgrade](#legacy-cas) — 幂等迁移
+- [legacy Cron startup migration](#legacy-cron-migration) — 后端启动期幂等迁移
 - [workspace_files 路径解析双轨](#workspace-files) — 写侧 lexical / 读侧 canonical
 - [`workspacePath` 工作区路径标识比较](#workspace-path-identity) — 跨存储路径相等判定（防 Win 斜杠/盘符误判）
 - [Client-action 斜杠命令](#client-action-slash) — 渲染层 UI 动作命令，名字保留、勿进文本插入 builtin 清单
@@ -210,7 +210,7 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 <a id="withfilelock"></a>
 ## `withFileLock` / `with_file_lock` (Pattern 2, v0.2.0)
 
-**Problem.** 单写者文件（`cron_tasks.json` / `sessions/*.jsonl` / `mcp-oauth state`）裸 append 或 read-modify-write，应用内多 owner 并发触发 race；之前用 `Atomics.wait` 同步 busy-wait 阻塞 event loop。
+**Problem.** 单写者文件（`tasks.jsonl` / `session_goals.json` / `sessions/*.jsonl` / `mcp-oauth state`）裸 append 或 read-modify-write，应用内多 owner 并发触发 race；之前用 `Atomics.wait` 同步 busy-wait 阻塞 event loop。
 
 **Surface.**
 - Node `withFileLock(targetPath, fn, { staleMs })` (`src/server/utils/file-lock.ts`)：async；抛 `FileBusyError`
@@ -488,19 +488,21 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 
 ---
 
-<a id="legacy-cas"></a>
-## Legacy CronTask CAS Upgrade (`legacy_upgrade.rs`)
+<a id="legacy-cron-migration"></a>
+## Legacy Cron Startup Migration (`legacy_upgrade.rs`)
 
-**Problem.** 早期版本的独立 CronTask 在首次加载时被检测为 "legacy"，自动升级成带 Task 的结构。多 Sidecar 启动时并发跑同一升级路径 → 重复创建 Task。
+**Problem.** 0.2.50 前 `cron_tasks.json` 同时承载裸 Cron、Task projection、managed job 与 Loop。新架构只有 Task scheduler；如果 renderer 或多个 Sidecar 各自迁移，会产生重复 Task、启动顺序竞态或双 scheduler。
 
-**Surface.** `set_task_id(cron_id, new_task_id, require_null=true)` CAS（compare-and-swap）。
+**Surface.** Rust app setup 中的 `migrate_legacy_crons_on_startup()`，在唯一 `TaskStore` 初始化后、`TaskSchedulerController.initialize()` 前运行。legacy manager 只保存一次性 validated snapshot，不写旧文件。
 
 **Invariants enforced.**
-- 幂等：已升级过的 cron 会被 CAS short-circuit 跳过
-- Rollback：Task 创建成功但 CAS 失败 → 回滚 Task；CAS 成功后 Rename 失败 → CAS 回滚 + Task 删除
-- 状态保留：running cron → Running task、已自然结束 → Done、用户手动停的 → Stopped；audit 记 `actor=System, source=Migration`
+- 幂等：沿用 legacy id；已存在同 id 且 provenance 匹配时只合并不会倒退的 execution/session 状态
+- 单 scheduler：迁移完成后才恢复 Running Task，旧 Cron 永不启动
+- 分类明确：At/Every/Cron 迁移；Task-linked/managed row 收口到既有/managed Task；Loop 与开发期 Goal row 跳过
+- 安全路由：credential env 不复制；无法安全恢复 provider/workspace 时创建 Blocked Task
+- 损坏保护：legacy/Task store 任一校验失败都保持只读，禁止部分 map 覆盖原始字节
 
-**Don't.** "先创建 Task 再写 cron.task_id"——并发时会重复。MUST 用 CAS。
+**Don't.** 在 renderer mount、Sidecar 启动或 Cron facade mutation 中迁移；也不要写 `cron.task_id` backpointer 或额外 migration ledger。
 
 ---
 

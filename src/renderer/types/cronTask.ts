@@ -8,7 +8,7 @@ import type { ManagedTaskKind } from '../../shared/types/task';
 export type CronRunMode = 'single_session' | 'new_session';
 
 /**
- * Explicit provider routing intent for a cron task (PRD #119, 2026-05).
+ * Read/write compatibility intent for the historical Cron command shape.
  *
  * Mirrors `cron_task::ProviderIntent` in Rust. Resolves the ambiguity in
  * pre-#119 cron tasks where `providerEnv === undefined` could mean either
@@ -16,11 +16,8 @@ export type CronRunMode = 'single_session' | 'new_session';
  * paths always set this explicitly; legacy persisted tasks deserialize as
  * `'followAgent'` via serde default.
  *
- * Sidecar handler (`/cron/execute(-sync)`) branches on intent:
- *   - `followAgent` — snapshot resolution at execute time (pre-#119 default)
- *   - `subscription` — force `providerEnv = undefined`, ignore agent
- *   - `explicit`     — force `providerEnv = task's payload.providerEnv`,
- *                      ignore agent
+ * New Task persistence uses `providerId + model`; `explicit` snapshots are
+ * rejected. The enum remains so old records and subscription callers decode.
  */
 export type CronProviderIntent = 'followAgent' | 'subscription' | 'explicit';
 
@@ -30,29 +27,8 @@ export type CronProviderIntent = 'followAgent' | 'subscription' | 'explicit';
  */
 export type CronTaskStatus = 'running' | 'stopped';
 
-export type GoalStatus = 'active' | 'paused' | 'complete' | 'blocked' | 'canceled';
-
 /** Renderer-only creation surface identity. Schedule shape is persistence detail. */
 export type ScheduledTaskKind = 'cron' | 'goal';
-
-export type GoalPausedReason = 'user_stop';
-
-export interface GoalTurnLease {
-  id: string;
-  turnNumber: number;
-  state: 'pending' | 'claimed';
-  sidecarGeneration?: number;
-  createdAt: string;
-}
-
-export interface GoalUserAdmission {
-  id: string;
-  revision: number;
-  turnNumber: number;
-  state: 'pending' | 'claimed' | 'dispatched';
-  sidecarGeneration?: number;
-  createdAt: string;
-}
 
 /**
  * End conditions for a cron task
@@ -141,46 +117,6 @@ export interface CronTask {
   internalSessionId?: string;
   /** Last activity timestamp — updated on create, start, stop, execute */
   updatedAt?: string;
-  /** Goal Mode lifecycle status for loop tasks. CronTask.status still owns scheduler liveness. */
-  goalStatus?: GoalStatus;
-  /** Persistent objective for an explicitly identified Goal. */
-  goalObjective?: string;
-  /** Last Goal status/objective update timestamp. */
-  goalUpdatedAt?: string;
-  /** Terminal reason for complete/blocked/canceled Goal states. */
-  goalTerminalReason?: string;
-  /** Pause reason for paused Goal tasks. */
-  goalPausedReason?: GoalPausedReason;
-  /** Monotonic Goal state version used to reject stale hydrate/event payloads. */
-  goalRevision?: number;
-  /** Goal objective/lifecycle control epoch; admission bookkeeping does not advance it. */
-  goalControlRevision?: number;
-  /** Durable scheduler authority; UI also projects claimed/dispatched user admissions. */
-  goalTurnLease?: GoalTurnLease;
-  /** Durable queued/claimed desktop, IM, or objective-restart turns. */
-  goalUserAdmissions?: GoalUserAdmission[];
-}
-
-export interface GoalChangedPayload {
-  changeKind:
-    | 'created'
-    | 'execution_complete'
-    | 'paused'
-    | 'resumed'
-    | 'turn_admitted'
-    | 'turn_claimed'
-    | 'turn_revoked'
-    | 'user_admission_reserved'
-    | 'user_admission_claimed'
-    | 'user_admission_released'
-    | 'user_admission_aborted'
-    | 'objective_updated'
-    | 'terminal';
-  taskId: string;
-  sessionId: string;
-  workspacePath: string;
-  goalStatus?: GoalStatus;
-  goal: CronTask;
 }
 
 /**
@@ -209,20 +145,12 @@ export interface CronTaskConfig {
   endConditions: CronEndConditions;
   runMode: CronRunMode;
   notifyEnabled: boolean;
-  tabId?: string;
   permissionMode?: string;
   model?: string;
-  /** PRD 0.2.9 — DEPRECATED for new code; sidecar live-resolves
-   *  `providerId` instead. Retained for back-compat with legacy paths. */
-  providerEnv?: CronTaskProviderEnv;
-  /** PRD 0.2.9 — Per-task provider id; preferred over `providerEnv`.
+  /** Per-task provider id.
    *  Sidecar live-resolves credentials from `~/.myagents/config.json` on
-   *  every tick — no key copies in cron_tasks.json, rotation propagates
-   *  without re-saving the cron. */
+   *  when a new execution Session is initialized — no key copies in TaskStore. */
   providerId?: string;
-  /** PRD #119 / 0.2.9 — Routing intent. New code prefers `providerId` and
-   *  may omit this; sidecar ignores intent when `providerId` is set. */
-  providerIntent?: CronProviderIntent;
   runtime?: RuntimeType;
   runtimeConfig?: RuntimeConfig;
   /** Flexible schedule (overrides intervalMinutes) */
@@ -252,11 +180,6 @@ export interface CronTaskConfig {
    * short-circuits as a no-op (`agent-session.ts:1282`).
   */
   mcpEnabledServers?: string[];
-  goalStatus?: GoalStatus;
-  goalObjective?: string;
-  goalUpdatedAt?: string;
-  goalTerminalReason?: string;
-  goalPausedReason?: GoalPausedReason;
 }
 
 /**
@@ -278,23 +201,6 @@ export interface CronRunRecord {
 /**
  * Payload sent from Rust scheduler to trigger task execution
  */
-export interface CronTaskTriggerPayload {
-  taskId: string;
-  prompt: string;
-  isFirstExecution: boolean;
-  aiCanExit: boolean;
-  workspacePath: string;
-  sessionId: string;
-  runMode: CronRunMode;
-  notifyEnabled: boolean;
-  tabId?: string;
-  goalStatus?: GoalStatus;
-  goalObjective?: string;
-  goalUpdatedAt?: string;
-  goalTerminalReason?: string;
-  goalPausedReason?: GoalPausedReason;
-}
-
 /**
  * Preset interval options (in minutes)
  */

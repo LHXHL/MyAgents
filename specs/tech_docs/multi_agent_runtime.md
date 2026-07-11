@@ -122,7 +122,7 @@ type RuntimeType = 'builtin' | 'claude-code' | 'codex' | 'gemini';
 | `system-cli` | 用户自行安装并登录的本机 CLI | 实验室「更多 Agent Runtime」里选择 Codex / Claude Code / Gemini |
 | `managed-provider` | MyAgents 管理 runtime 二进制、安装状态与登录状态 | Provider 列表里的 `codex-sub`（Codex 订阅） |
 
-`managed-provider` 不受 `config.multiAgentRuntime` 门控；它由自己的 Provider readiness gate 控制：provider gate 开启、managed runtime 已安装到要求版本、managed Codex auth 有效（`chatgpt` 或兼容的 `access-token`），且 provider 未被禁用。Rust `runtime_identity.rs` 在新 session/IM/Cron sidecar 出生时根据 Agent 的 `providerId:'codex-sub'` 与这些 readiness 字段解析出 `runtime='codex'`、`source='managed-provider'`。
+`managed-provider` 不受 `config.multiAgentRuntime` 门控；它由自己的 Provider readiness gate 控制：provider gate 开启、managed runtime 已安装到要求版本、managed Codex auth 有效（`chatgpt` 或兼容的 `access-token`），且 provider 未被禁用。Rust `runtime_identity.rs` 在新 Session、IM 或 Task Sidecar 出生时根据 Agent 的 `providerId:'codex-sub'` 与这些 readiness 字段解析出 `runtime='codex'`、`source='managed-provider'`。
 
 持久化边界：
 
@@ -541,7 +541,7 @@ MyAgents session 身份下，造成历史会话和新会话串写。
 - `AgentRuntime.steerMessage?()` 是可选能力；只有 Codex adapter 实现。`external-session` 只看 capability，不硬编码 runtime 名。
 - `turn/steer` 必须带 `expectedTurnId`（来自 Codex 当前 active turn）和 MyAgents user message id 作为 `clientUserMessageId`。
 - same-turn steering 不应用新的 model / permission / reasoning effort snapshot；这些仍是下一 turn 边界生效，和 builtin busy 时“配置锁定当前 turn”的语义一致。
-- 只作用于桌面 `sendDesktopMessage`；IM / Cron / Inbox / injected turn 保持 turn 级同步语义。
+- 只作用于桌面 `sendDesktopMessage`；IM / Task / Inbox / injected turn 保持 turn 级同步语义。
 
 ### 内容块持久化
 
@@ -565,7 +565,7 @@ External runtime 的 model / permission / reasoning effort 统一走
 正在运行、已有 queued message/config operation、或 turn finalization 仍在落盘,则把
 config patch 放入 `external-session/operation-queue.ts` 维护的 FIFO。turn boundary
 drain 时先应用前导 config ops,再启动下一条 desktop queued message,因此不会打断当前轮,
-也不会让后来的配置倒灌到更早入队的 message。IM / Cron 不走桌面 queue pill,仍在每轮
+也不会让后来的配置倒灌到更早入队的 message。IM / Task 不走桌面 queue pill,仍在每轮
 `ExternalSendContext` 中 self-resolve live config。
 
 Snapshot/source guard 由 `session-core/runtime-config-policy.ts` 统一决定。`/api/runtime/config` 接受 `source`，Rust IM router 的热同步必须传 `source:"im-sync"`；`runtime-config.ts` 在写入 desired model / permission / reasoning effort 之前先过滤 snapshotted desktop-owned session 的 IM 字段，避免 channel config 污染 desired state。桌面 runtime config push 继续使用 `source:"runtime-config"` / `source:"desktop"` 并保持权威。

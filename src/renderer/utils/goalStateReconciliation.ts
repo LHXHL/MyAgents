@@ -1,50 +1,40 @@
-import type { CronTask } from '@/types/cronTask';
+import type { SessionGoal } from '@/types/sessionGoal';
 
-function isTerminal(task: CronTask): boolean {
-  return task.goalStatus === 'complete'
-    || task.goalStatus === 'blocked'
-    || task.goalStatus === 'canceled';
+function isTerminal(goal: SessionGoal): boolean {
+  return goal.status === 'complete'
+    || goal.status === 'blocked'
+    || goal.status === 'canceled';
 }
 
-function stateTime(task: CronTask): number {
-  const parsed = Date.parse(task.goalUpdatedAt ?? task.updatedAt ?? task.createdAt ?? '');
+function stateTime(goal: SessionGoal): number {
+  const parsed = Date.parse(goal.updatedAt ?? goal.createdAt ?? '');
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
 /** Accept only state that cannot move the visible Goal backwards. */
-export function shouldAcceptGoalState(incoming: CronTask, current: CronTask | null): boolean {
-  if (!current || !current.goalStatus) return true;
+export function shouldAcceptGoalState(incoming: SessionGoal, current: SessionGoal | null): boolean {
+  if (!current) return true;
   if (incoming.id !== current.id) {
+    if (isTerminal(incoming) !== isTerminal(current)) return !isTerminal(incoming);
     return stateTime(incoming) >= stateTime(current);
   }
   if (isTerminal(current) && !isTerminal(incoming)) return false;
-
-  const incomingRevision = incoming.goalRevision;
-  const currentRevision = current.goalRevision;
-  if (incomingRevision !== undefined && currentRevision !== undefined) {
-    return incomingRevision >= currentRevision;
-  }
-  return stateTime(incoming) >= stateTime(current);
+  return incoming.revision >= current.revision;
 }
 
-export function projectGoalExecutionState(task: CronTask): {
+export function projectGoalExecutionState(goal: SessionGoal): {
   isExecuting: boolean;
   executionNumber: number | undefined;
 } {
-  const authority = task.goalTurnLease?.state === 'claimed'
-    ? task.goalTurnLease
-    : task.goalUserAdmissions?.find(admission => (
-      admission.state === 'claimed' || admission.state === 'dispatched'
-    ));
   return {
-    isExecuting: Boolean(authority),
-    executionNumber: authority?.turnNumber,
+    isExecuting: goal.isExecuting,
+    executionNumber: goal.executionNumber,
   };
 }
 
 /** Recover only a terminal transition that could have landed before listeners attached. */
 export function isTerminalGoalFromListenerGap(
-  goal: CronTask,
+  goal: SessionGoal,
   listenerStartedAt: number,
   listenersReadyAt: number | null,
 ): boolean {

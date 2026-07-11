@@ -134,8 +134,6 @@ export interface Task {
    */
   workspacePath?: string;
   executionMode: TaskExecutionMode;
-  /** Points into CronTaskManager when executionMode is scheduled/recurring/loop. */
-  cronTaskId?: string;
   /** Product-owned managed task marker; ordinary user tasks leave this unset. */
   managedKind?: ManagedTaskKind;
   runMode?: TaskRunMode;
@@ -193,6 +191,9 @@ export interface Task {
   createdAt: number;
   updatedAt: number;
   lastExecutedAt?: number;
+  /** Timer anchor; manual run-now must not move the recurring schedule. */
+  lastScheduledAt?: number;
+  executionCount?: number;
   /** Append-only audit log of status changes. See PRD §3.2 / §10.2.1. */
   statusHistory: StatusTransition[];
   notification?: NotificationConfig;
@@ -385,15 +386,14 @@ export interface TaskRunStats {
   lastSuccess?: boolean;
   /** Duration of the most recent run (ms). */
   lastDurationMs?: number;
-  /** Underlying CronTask status: 'running' | 'stopped' | … (string because `Debug` serialisation). */
-  cronStatus?: string;
-  cronTaskId?: string;
+  /** Task scheduler status. */
+  schedulerStatus?: string;
   /** Number of SDK sessions this task has spanned. */
   sessionCount: number;
   /** Next scheduled fire (ms since epoch). Parsed server-side from
-   *  `CronTask.next_execution_at` so the frontend avoids cron-parser /
+   *  the Rust Task scheduler so the frontend avoids cron-parser /
    *  timezone math — reflects what Rust will actually run. Absent when
-   *  the task has no active cron binding or the schedule is not
+   *  the task has no active schedule or the schedule is not
    *  recurring / scheduled. */
   nextExecutionAt?: number;
 }

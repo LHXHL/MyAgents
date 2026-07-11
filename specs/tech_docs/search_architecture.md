@@ -9,7 +9,7 @@ MyAgents 的全文搜索由一个 Rust 层单例 `SearchEngine` 提供，构建�
 
 **仅 Tauri 可用**：搜索直接走 Tauri IPC（`invoke('cmd_search_*')`）到 Rust 层，不经 Node.js Sidecar。浏览器开发模式（`start_dev.sh`）没有 fallback — UI 入口在非 Tauri 环境下不出现。
 
-`SearchEngine` 与 `SidecarManager`、`CronTaskManager` 处于同层，作为 Tauri managed state 注入到命令处理器。
+`SearchEngine` 与 `SidecarManager`、`TaskStore` 处于同层，作为 Tauri managed state 注入到命令处理器。
 
 ## 架构总览
 

@@ -13,7 +13,12 @@ import type { ProviderRoute } from '../../shared/providerRoute';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { OfficialToolId } from '../../shared/official-tools';
 import type { SessionOrigin } from '../../shared/session-origin';
-import type { DispatchGuard } from '../session-core/turn-queue';
+import type {
+  DispatchGuard,
+  TurnIdentity,
+  TurnOwner,
+  TurnTerminalObserver,
+} from '../session-core/turn-queue';
 
 export type SessionEngineKind = 'builtin' | 'external';
 
@@ -36,6 +41,11 @@ export type DesktopMessageRequest = {
   analyticsSource?: TurnAnalyticsSource;
   analyticsOrigin?: SessionOrigin;
   birthOrigin?: SessionOrigin;
+  turnBoundaryOnly?: boolean;
+  /** Internal queue identity supplied by a domain owner such as Goal. */
+  queueId?: string;
+  turnOwner?: TurnOwner;
+  onTerminal?: TurnTerminalObserver;
   beforeDispatch?: DispatchGuard;
 };
 
@@ -69,6 +79,10 @@ export type ImMessageRequest = {
   metadataBirthPending?: boolean;
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
   analyticsOrigin?: SessionOrigin;
+  turnBoundaryOnly?: boolean;
+  queueId?: string;
+  turnOwner?: TurnOwner;
+  onTerminal?: TurnTerminalObserver;
   beforeDispatch?: DispatchGuard;
 };
 
@@ -109,6 +123,9 @@ export type BackgroundMessageRequest = {
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
   analyticsOrigin?: SessionOrigin;
   turnBoundaryOnly?: boolean;
+  queueId?: string;
+  turnOwner?: TurnOwner;
+  onTerminal?: TurnTerminalObserver;
   beforeDispatch?: DispatchGuard;
 };
 
@@ -127,9 +144,10 @@ export type InjectedTurnRequest = {
   analyticsOrigin?: SessionOrigin;
   timeoutMs: number;
   pollMs?: number;
-  /** Automatic Goal continuations must never merge into an active user turn. */
-  turnBoundaryOnly?: boolean;
-  /** Final lease/admission check at the runtime promotion boundary. */
+  queueId?: string;
+  turnOwner?: TurnOwner;
+  onTerminal?: TurnTerminalObserver;
+  /** Final authority check at the runtime promotion boundary. */
   beforeDispatch?: DispatchGuard;
 };
 
@@ -272,6 +290,8 @@ export interface SessionEngine {
   getStreamReplaySnapshot(): SessionEngineStreamReplaySnapshot;
   getSessionConfigSnapshot(): SessionEngineConfigSnapshot;
   getCurrentSessionContext(): SessionEngineCurrentContext;
+  getCurrentTurnIdentity(): TurnIdentity | null;
+  hasQueuedTurnOwnedBy(owner: TurnOwner): boolean;
   getHeldImConfigSnapshot(): SessionEngineHeldImConfigSnapshot;
   getLiveSessionOverlay(sessionId: string): SessionEngineLiveOverlay;
   sendDesktopMessage(request: DesktopMessageRequest): Promise<DesktopAdmissionResult>;
@@ -282,6 +302,7 @@ export interface SessionEngine {
   ensureGoalSessionConfig(): Promise<{ success: boolean; error?: string }>;
   runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult>;
   stopTurn(): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }>;
+  stopOwnedTurn(owner: TurnOwner): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }>;
   cancelQueuedMessage(queueId: string): Promise<QueueCancelResult>;
   forceQueuedMessage(queueId: string): Promise<boolean>;
   getQueueStatus(): QueueStatusItem[];

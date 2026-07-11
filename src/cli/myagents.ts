@@ -3794,7 +3794,7 @@ export function normalizeScheduleFlag(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`Error: --schedule looks like JSON but failed to parse: ${msg}`);
-      console.error('  Expected shapes: {"kind":"at","at":"<ISO>"} | {"kind":"every","minutes":<n>} | {"kind":"cron","expr":"<expr>"[,"tz":"<tz>"]} | {"kind":"loop"}');
+      console.error('  Expected shapes: {"kind":"at","at":"<ISO>"} | {"kind":"every","minutes":<n>} | {"kind":"cron","expr":"<expr>"[,"tz":"<tz>"]}');
       process.exit(2);
     }
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -3803,8 +3803,8 @@ export function normalizeScheduleFlag(
     }
     const obj = parsed as Record<string, unknown>;
     const kind = obj.kind;
-    if (kind !== 'at' && kind !== 'every' && kind !== 'cron' && kind !== 'loop') {
-      console.error(`Error: --schedule JSON has invalid "kind": ${JSON.stringify(kind)} (expected one of: at, every, cron, loop)`);
+    if (kind !== 'at' && kind !== 'every' && kind !== 'cron') {
+      console.error(`Error: --schedule JSON has invalid "kind": ${JSON.stringify(kind)} (expected one of: at, every, cron)`);
       process.exit(2);
     }
     // Per-kind required-field validation so missing fields fail at the CLI

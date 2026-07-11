@@ -811,7 +811,6 @@ export default function TabProvider({
     // SSE-only (never-REST-loaded) session still replays normally.
     const restoredSessionIdRef = useRef<string | null>(null);
     // Ref for cron task exit handler (set by useCronTask hook via context)
-    const onCronTaskExitRequestedRef = useRef<((taskId: string, reason: string) => void) | null>(null);
     // Synchronous map: toolUseId → toolName. Updated outside React state updaters
     // to avoid React 18 automatic batching timing issues (state updaters run during
     // render, not during setState call — so reading a local variable set inside an
@@ -2774,19 +2773,6 @@ export default function TabProvider({
                 break;
             }
 
-            // Cron task exit requested by AI via exit_cron_task tool
-            case 'cron:task-exit-requested': {
-                const payload = data as { taskId: string; reason: string; timestamp: string } | null;
-                if (payload?.taskId && payload?.reason) {
-                    console.log(`[TabProvider ${tabId}] Cron task exit requested: taskId=${payload.taskId}, reason=${payload.reason}`);
-                    // Call the handler if registered by useCronTask
-                    if (onCronTaskExitRequestedRef.current) {
-                        onCronTaskExitRequestedRef.current(payload.taskId, payload.reason);
-                    }
-                }
-                break;
-            }
-
             // Subagent event handling for nested tool calls (Task tool)
             case 'chat:subagent-tool-use': {
                 const payload = data as { parentToolUseId: string; tool: ToolUse; usage?: { input_tokens?: number; output_tokens?: number } };
@@ -3711,7 +3697,7 @@ export default function TabProvider({
         // Desktop is the ONLY caller that should trigger provider switches per-message.
         // When no providerEnv is given (subscription mode), send 'subscription' explicitly
         // so enqueueUserMessage knows this is an intentional switch, not "I don't know".
-        // IM/Cron callers omit the field entirely (undefined = "keep current provider").
+        // IM/Task callers omit the field entirely (undefined = "keep current provider").
         const sendPayload = {
             text: trimmed,
             images: imageData,
@@ -3832,7 +3818,7 @@ export default function TabProvider({
     }, [tabId]);
 
     // Stop response with timeout fallback
-    const stopResponse = useCallback(async (): Promise<boolean> => {
+    const stopResponse = useCallback(async (): Promise<{ success: boolean; alreadyStopped: boolean }> => {
         // Clear any existing stop timeout
         if (stopTimeoutRef.current) {
             clearTimeout(stopTimeoutRef.current);
@@ -3856,7 +3842,7 @@ export default function TabProvider({
                         setSessionState(prev => prev === 'stopping' ? 'idle' : prev);
                         clearRuntimePlanTodos();
                     });
-                    return true;
+                    return { success: true, alreadyStopped: true };
                 }
                 // 设置 5 秒超时，如果没有收到 SSE 事件确认则强制恢复 UI
                 stopTimeoutRef.current = setTimeout(() => {
@@ -3869,16 +3855,16 @@ export default function TabProvider({
                     clearRuntimePlanTodos();
                     stopTimeoutRef.current = null;
                 }, 5000);
-                return true;
+                return { success: true, alreadyStopped: false };
             }
             // POST failed (success=false), recover UI
             recoverStreamingUi('stopped');
-            return false;
+            return { success: false, alreadyStopped: false };
         } catch (error) {
             console.error(`[TabProvider ${tabId}] Stop response failed:`, error);
             // 请求失败也强制恢复 UI
             recoverStreamingUi('failed');
-            return false;
+            return { success: false, alreadyStopped: false };
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
     }, [recoverStreamingUi, tabId]);
@@ -4740,8 +4726,6 @@ export default function TabProvider({
         respondExitPlanMode,
         cancelQueuedMessage,
         forceExecuteQueuedMessage,
-        // Cron task exit handler ref (mutable, no need in deps)
-        onCronTaskExitRequested: onCronTaskExitRequestedRef,
     }), [
         tabId, agentDir, currentSessionId, messages, historyMessages, streamingMessage, firstItemIndex, hasMoreBefore, isLoading, isSessionLoading, sessionState, sessionRuntime, sessionRuntimeSource, sessionMeta,
         logs, unifiedLogs, systemInitInfo, sdkSlashCommands, runtimeDiagnostics, agentError, systemStatus, systemNotice, contextUsage, agentPlanTodos, lastTerminalReason, pendingPermission, pendingAskUserQuestion, pendingExitPlanMode, pendingEnterPlanMode, toolCompleteCount, queuedMessages, isConnected,

@@ -71,6 +71,20 @@ describe('external operation queue owner', () => {
     });
   });
 
+  it('reports queued and reserved messages by domain owner', async () => {
+    const queue = await loadFreshQueueOwner();
+    queue.enqueueExternalMessageOperation({
+      text: 'goal clarification',
+      context: context({ turnOwner: { kind: 'goal', id: 'goal-1' } }),
+      runtimeConfig: snapshot(),
+    });
+
+    expect(queue.hasExternalQueuedMessageByOwner({ kind: 'goal', id: 'goal-1' })).toBe(true);
+    expect(queue.hasExternalQueuedMessageByOwner({ kind: 'goal', id: 'goal-2' })).toBe(false);
+    queue.reserveExternalOperationForDrain();
+    expect(queue.hasExternalQueuedMessageByOwner({ kind: 'goal', id: 'goal-1' })).toBe(true);
+  });
+
   it('keeps each queued message bound to its enqueue-time runtime config snapshot', async () => {
     const queue = await loadFreshQueueOwner();
     const firstConfig = snapshot({ model: 'model-a', permissionMode: 'default' });

@@ -198,7 +198,6 @@ System events:
 Cron and launcher scheduling:
 
 - `cron_enable`
-- `cron_start`
 - `cron_stop`
 - `cron_recover`
 - `launcher_cron_stage`

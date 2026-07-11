@@ -124,7 +124,7 @@
 理解以下抽象是改任何功能的前置认知。每条只列名字 + 关键约束。
 
 ### Sidecar Owner 模型
-Sidecar 进程 = Claude Agent SDK 实例；Session : Sidecar = 1 : 1；Tab / CronTask / BackgroundCompletion / Agent 四种 Owner 共享 Sidecar，全部释放才停止。详见 ARCHITECTURE「核心抽象 / 资源管理」。
+Sidecar 进程 = Claude Agent SDK 实例；Session : Sidecar = 1 : 1；Tab / Task / Goal / BackgroundCompletion / Agent 共享 Sidecar，全部释放才停止。Task/Goal 只增加 owner token，不创建独立进程。详见 ARCHITECTURE「核心抽象 / 资源管理」。
 
 ### Tab-Scoped 隔离
 每个 Chat Tab 独立 Sidecar。Tab 内 MUST 用 `useTabState()` 的 `apiGet` / `apiPost`，**禁止**使用全局 `apiPostJson` / `apiGetJson`（会发到 Global Sidecar）。详见 ARCHITECTURE「核心抽象」。
@@ -143,13 +143,13 @@ Sidecar 进程 = Claude Agent SDK 实例；Session : Sidecar = 1 : 1；Tab / Cro
 ### Pre-warm 机制
 MCP / Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**不**触发。持久 Session 中 pre-warm 即最终 session，用户消息通过 `wakeGenerator()` 注入。**任何 `!preWarm` 守卫都可能在持久模式下永远不执行。**
 
-**MCP 配置权威来源分离**：Tab 由前端 `/api/mcp/set` 配，IM/Cron 由 self-resolve 从磁盘读。混用会导致 fingerprint 差异 → abort → 30s 重启循环。
+**MCP 配置权威来源分离**：Tab 由前端 `/api/mcp/set` 配；IM 与未 materialize 的 backend-created Task Session 可从磁盘初始化；已有 Session 始终沿用自己的 MCP authority。混用会导致 fingerprint 差异 → abort → 30s 重启循环。
 
 ### Multi-Agent Runtime
 内置 SDK（builtin）+ 外部 Runtime（Claude Code / Codex / Gemini CLI），门控 `config.multiAgentRuntime`（默认关闭）。**新增"config 同步 / 注入 user 消息 / 等待 turn 完成 / session 读操作"的 sidecar 端点 MUST 走 `src/server/session-engine/` facade**（`selector.ts` 统一选 adapter），禁止手写 `shouldUseExternalRuntime()` 分支——漏分流 = builtin 去 resume 外部会话 → 静默空转 + 假成功。`completed` 必须 gate 在真·turn 成功（external=`didLastTurnSucceed`，builtin=`!getAndClearLastAgentError()`），别只凭 `waitForSessionIdle`。`agent-session.ts` / `runtimes/external-session.ts` 是 public facade 不是 owner state 落点，内核在 `src/server/builtin-session/*` 与 `src/server/runtimes/external-session/*`。详见 `tech_docs/multi_agent_runtime.md`。
 
 ### 定时任务系统
-Rust `CronTaskManager` 统一管理所有定时任务（Chat 定时 / 独立创建 / AI 工具 / IM Cron / Heartbeat）。Cron Tool（`im-cron` MCP）已泛化为**所有 Session 可用**，始终信任。新增 `CronTask` 字段 MUST 带 `#[serde(default)]`。详见 ARCHITECTURE「定时任务系统」。
+Rust `TaskStore` 是所有新定时自动化的唯一权威，`TaskSchedulerController` 直接从 Running Task 重建 timer；Chat/CLI/IM 的 Cron 命令只是兼容 surface，禁止写 `cron_tasks.json`。旧文件只在 backend startup 迁移，Loop 不迁移。Cron Tool（`im-cron` MCP）对所有 Session 可用。详见 ARCHITECTURE「定时任务系统」。
 
 ### Config 持久化（disk-first）
 `AppConfig` 同时存在于磁盘（`config.json`）和 React 状态，可能不同步。写盘 MUST 以磁盘为准（`await loadAppConfig()` 读最新再合并），**禁止**直接用 React `config` 状态写盘。Agent 配置走 Rust `cmd_update_agent_config`，写盘后 MUST 调 `refreshConfig()` 同步 React。

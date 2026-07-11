@@ -1,6 +1,4 @@
-import { buildGoalContinuationReminder } from '../../shared/systemReminder';
-
-export type CronScheduleKind = 'at' | 'every' | 'cron' | 'loop';
+export type CronScheduleKind = 'at' | 'every' | 'cron';
 
 export interface CronReminderInput {
   prompt: string;
@@ -10,10 +8,6 @@ export interface CronReminderInput {
   runMode?: string;
   intervalMinutes?: number;
   executionNumber?: number;
-  isFirstExecution?: boolean;
-  goalObjective?: string;
-  goalStatus?: string;
-  goalUpdatedAt?: string;
 }
 
 function metadataLine(label: string, value: string | number | boolean | undefined): string | null {
@@ -22,18 +16,6 @@ function metadataLine(label: string, value: string | number | boolean | undefine
 }
 
 export function buildCronTaskReminder(input: CronReminderInput): string {
-  if (input.goalStatus) {
-    const objective = input.goalObjective?.trim() || input.prompt;
-    const reminder = buildGoalContinuationReminder({
-      objective,
-      goalId: input.taskId,
-      goalStatus: input.goalStatus,
-      turnNumber: input.executionNumber ?? 1,
-      aiCanExit: input.aiCanExit,
-    });
-    return input.isFirstExecution ? `${reminder}\n${objective}` : reminder;
-  }
-
   const lines = [
     'You are running inside a MyAgents scheduled task execution.',
     'The user-visible text after this reminder is the task prompt for this execution.',

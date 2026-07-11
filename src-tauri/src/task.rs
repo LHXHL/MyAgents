@@ -28,7 +28,7 @@ use uuid::Uuid;
 use crate::cron_task::{
     EndConditions as CronEndConditions, RecurringWindow, RunMode as CronRunMode,
 };
-use crate::{ulog_debug, ulog_info, ulog_warn};
+use crate::{ulog_debug, ulog_error, ulog_info, ulog_warn};
 use tauri::Emitter;
 
 /// Task-layer `RunMode`. Same semantics as `cron_task::RunMode` but emits PRD-
@@ -120,6 +120,12 @@ pub enum TaskStatus {
     Deleted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskExecutionTrigger {
+    Scheduled,
+    Manual,
+}
+
 impl TaskStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -163,8 +169,7 @@ pub enum TransitionSource {
     Scheduler,
     EndCondition,
     Rerun,
-    /// Task was created by the legacy-cron → new-model upgrade path
-    /// (`legacy_upgrade::upgrade_legacy_cron`). Rendered in the status-
+    /// Task was created by the backend Legacy Cron migration. Rendered in the status-
     /// history panel so the user can tell upgrade-originated tasks from
     /// user-authored ones.
     Migration,
@@ -191,6 +196,7 @@ pub enum TaskExecutionMode {
     Once,
     Scheduled,
     Recurring,
+    /// Read-only compatibility value. New creation/update rejects it.
     Loop,
 }
 
@@ -209,19 +215,6 @@ pub enum TaskDispatchOrigin {
     AiAligned,
     #[serde(rename = "attached-session")]
     AttachedSession,
-}
-
-/// Backfill payload for `TaskStore::heal_missing_schedule_fields`. The caller
-/// translates its CronTask representation into this enum so `task.rs` stays
-/// independent of `cron_task::CronSchedule`'s exact shape.
-#[derive(Debug, Clone)]
-pub enum ScheduleBackfill {
-    IntervalMinutes(u32),
-    Cron {
-        expression: String,
-        timezone: Option<String>,
-    },
-    DispatchAt(i64),
 }
 
 // ================ Struct ================
@@ -342,15 +335,12 @@ pub struct Task {
     pub workspace_path: String,
     pub execution_mode: TaskExecutionMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cron_task_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_mode: Option<TaskRunMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_conditions: Option<TaskEndConditions>,
     /// Recurring-mode fixed interval (minutes). Set when
     /// `execution_mode == Recurring` and `cron_expression` is absent. The
-    /// linked CronTask's `interval_minutes` is kept in sync via
-    /// `TaskStore::update`'s projection.
+    /// Task scheduler reads this field directly.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interval_minutes: Option<u32>,
     /// Advanced-mode cron expression (takes precedence over
@@ -361,8 +351,7 @@ pub struct Task {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cron_timezone: Option<String>,
     /// Optional first-fire timestamp for recurring tasks. Stored as RFC3339
-    /// and projected into CronSchedule::Every.start_at; used by managed tasks
-    /// that should arm the scheduler without firing immediately.
+    /// and used by tasks that should arm without firing immediately.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub start_at: Option<String>,
     /// Optional wall-clock window used to catch up missed anchored recurring
@@ -374,9 +363,8 @@ pub struct Task {
     /// which semantically means "when to stop running".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dispatch_at: Option<i64>,
-    /// Per-task model override. When `None`, the linked Agent's default
-    /// model is used. Proxied into `CronTaskConfig.model` at cron-ensure
-    /// time.
+    /// Per-task model override used when the Task creates an execution Session.
+    /// Existing Sessions keep their own model authority.
     ///
     /// PRD 0.2.9 pairing rule (asymmetric, by design): when `provider_id`
     /// is set, `model` MUST also be set (validated by
@@ -388,12 +376,12 @@ pub struct Task {
     /// reachable from the CLI / management API for legacy / advanced use.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// PRD 0.2.9 — Per-task provider id override. When `None` the cron
-    /// follows the workspace agent (legacy snapshot semantics). When set,
+    /// PRD 0.2.9 — Per-task provider id override. When `None` the Task
+    /// follows the workspace agent. When set,
     /// the sidecar live-resolves env on every tick from
     /// `~/.myagents/config.json`, so credential rotation propagates without
     /// a re-save and credential copies never land in `tasks.jsonl` /
-    /// `cron_tasks.json`.
+    /// the legacy Cron store.
     ///
     /// Mutually exclusive with `runtime ∈ {claude-code, codex, gemini}`
     /// (external runtimes manage their own provider) — enforced by
@@ -432,6 +420,12 @@ pub struct Task {
     pub updated_at: i64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_executed_at: Option<i64>,
+    /// Last timer-driven execution. Manual `run-now` updates
+    /// `last_executed_at` for audit/UI but must not move the recurring timer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_scheduled_at: Option<i64>,
+    #[serde(default)]
+    pub execution_count: u32,
     #[serde(default)]
     pub status_history: Vec<StatusTransition>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -912,6 +906,9 @@ pub struct TaskStore {
     /// taskId → Task (full row)
     inner: Arc<RwLock<HashMap<String, Task>>>,
     jsonl_path: PathBuf,
+    /// A malformed store remains read-only so recovery cannot overwrite the
+    /// original bytes with an empty or partial map.
+    load_error: Option<String>,
 }
 
 impl TaskStore {
@@ -923,7 +920,16 @@ impl TaskStore {
         if let Some(parent) = jsonl_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let (initial, needs_rewrite) = Self::load_and_recover(&jsonl_path);
+        let (initial, needs_rewrite, load_error) = match Self::load_and_recover(&jsonl_path) {
+            Ok((tasks, needs_rewrite)) => (tasks, needs_rewrite, None),
+            Err(error) => {
+                ulog_error!(
+                    "[task] store is corrupt and will remain read-only: {}",
+                    error
+                );
+                (HashMap::new(), false, Some(error))
+            }
+        };
         // Write back the recovery results synchronously so a second crash doesn't
         // lose the migration. This runs during app `setup()` before any command is
         // dispatchable, so there is no contention.
@@ -931,156 +937,107 @@ impl TaskStore {
             if let Err(e) = Self::persist_locked(&jsonl_path, &initial) {
                 ulog_warn!("[task] crash-recovery persist failed: {}", e);
             } else {
-                ulog_info!("[task] crash-recovery applied: leftover running/verifying → blocked");
+                ulog_info!("[task] startup recovery updates persisted");
             }
         }
         Self {
             inner: Arc::new(RwLock::new(initial)),
             jsonl_path,
+            load_error,
         }
     }
 
-    fn load_and_recover(path: &Path) -> (HashMap<String, Task>, bool) {
-        let mut map = Self::load_jsonl(path);
+    fn load_and_recover(path: &Path) -> Result<(HashMap<String, Task>, bool), String> {
+        let mut map = Self::load_jsonl(path)?;
         let now = now_ms();
         let mut changed = false;
         for task in map.values_mut() {
+            if task.last_scheduled_at.is_none() && task.last_executed_at.is_some() {
+                task.last_scheduled_at = task.last_executed_at;
+                changed = true;
+            }
             if !matches!(task.status, TaskStatus::Running | TaskStatus::Verifying) {
                 continue;
             }
             let from = task.status;
-            // Crash recovery classification matrix:
-            //
-            //   (status, mode)                         → outcome
-            //   (Running, Recurring | Loop)            → stay Running + self-loop audit
-            //   everything else (Once, Scheduled, or Verifying × any mode)
-            //                                          → Blocked + user intervention
-            //
-            // Rationale for each branch:
-            //
-            // * `Running × Recurring|Loop`: the linked CronTask's schedule
-            //   is still alive; the scheduler will fire at the next planned
-            //   trigger. The Task belongs in the "进行中" bucket (PRD §7.3)
-            //   — not "规划中" (Todo) or "已阻塞" (Blocked). A self-loop
-            //   StatusTransition (from == to == Running) records the
-            //   crash in the history; the UI renders same-from-to rows as
-            //   a single event pill without an arrow.
-            //
-            // * `Verifying × any mode`: Verifying is a hand-off state
-            //   (AI finished; verification is in progress). Demoting
-            //   silently to Running would lose that hand-off and could
-            //   cause the next scheduler tick to re-fire the task,
-            //   burning tokens and producing duplicate side effects. Safer
-            //   to escalate to Blocked so the user explicitly re-verifies
-            //   or rerans.
-            //
-            // * `Running × Once|Scheduled`: their fire window has either
-            //   passed (app died mid-run) or was explicit; they need user
-            //   intervention.
-            let keep_running = matches!(
-                (from, task.execution_mode),
-                (
-                    TaskStatus::Running,
-                    TaskExecutionMode::Recurring | TaskExecutionMode::Loop
-                )
-            );
-            if keep_running {
-                // Status unchanged (already Running); only the
-                // self-loop history entry records the event.
-                //
-                // Deduplication (v0.1.69+): if the most recent transition
-                // is already a crash self-loop (from == to, source=crash),
-                // don't write another one. The rationale:
-                //
-                //   - User closes laptop for lunch → app exits. We already
-                //     wrote "上次运行被应用重启中断" once on the last boot.
-                //   - User reopens laptop → app boots → recovery runs again.
-                //     Without dedup we'd write the identical message again,
-                //     and again, and again — one per suspend/resume cycle.
-                //   - Real-world users saw 20+ identical crash rows for the
-                //     same task across a week of daily laptop use, drowning
-                //     out meaningful state transitions.
-                //
-                // Dedup breaks the moment the scheduler actually fires a
-                // tick: that pushes a non-crash transition (e.g.
-                // running→verifying, or the post-execution running→running
-                // "heartbeat"), and on the next crash we'll write a fresh
-                // crash row — this one carrying real signal ("we were
-                // interrupted AFTER a successful tick since last boot").
-                let last_is_crash_selfloop = task.status_history.last().is_some_and(|t| {
-                    t.source == Some(TransitionSource::Crash) && t.from == Some(t.to)
-                });
-                if !last_is_crash_selfloop {
-                    task.updated_at = now;
-                    task.status_history.push(StatusTransition {
-                        from: Some(from),
-                        to: TaskStatus::Running,
-                        at: now,
-                        actor: TransitionActor::System,
-                        message: Some(
-                            "上次运行被应用重启中断,调度器将在下次计划时间继续触发".to_string(),
-                        ),
-                        source: Some(TransitionSource::Crash),
-                    });
-                    changed = true;
-                }
-                continue;
-            } else {
-                task.status = TaskStatus::Blocked;
+            if from == TaskStatus::Running && task.execution_mode == TaskExecutionMode::Loop {
+                task.status = TaskStatus::Stopped;
                 task.updated_at = now;
                 task.status_history.push(StatusTransition {
                     from: Some(from),
-                    to: TaskStatus::Blocked,
+                    to: TaskStatus::Stopped,
                     at: now,
                     actor: TransitionActor::System,
-                    message: Some("上次运行被应用重启中断,可重新派发以继续".to_string()),
-                    source: Some(TransitionSource::Crash),
+                    message: Some("Legacy Loop tasks are retired".to_string()),
+                    source: Some(TransitionSource::Migration),
                 });
+                changed = true;
+                continue;
             }
+            // Running is the durable "scheduler enabled" state for time-based
+            // Tasks, not proof that a turn was in flight. Preserve recurring
+            // Tasks and one-shots that have not fired; TaskScheduler rebuilds
+            // their only in-memory handle after startup migration.
+            let recover_scheduler = from == TaskStatus::Running
+                && (task.execution_mode == TaskExecutionMode::Recurring
+                    || (task.execution_mode == TaskExecutionMode::Scheduled
+                        && task.execution_count == 0));
+            if recover_scheduler {
+                continue;
+            }
+
+            task.status = TaskStatus::Blocked;
+            task.updated_at = now;
+            task.status_history.push(StatusTransition {
+                from: Some(from),
+                to: TaskStatus::Blocked,
+                at: now,
+                actor: TransitionActor::System,
+                message: Some("上次运行被应用重启中断,可重新派发以继续".to_string()),
+                source: Some(TransitionSource::Crash),
+            });
             changed = true;
         }
-        (map, changed)
+        Ok((map, changed))
     }
 
-    fn load_jsonl(path: &Path) -> HashMap<String, Task> {
+    fn load_jsonl(path: &Path) -> Result<HashMap<String, Task>, String> {
         let mut map: HashMap<String, Task> = HashMap::new();
-        let Ok(file) = fs::File::open(path) else {
-            return map;
+        let file = match fs::File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(map),
+            Err(error) => return Err(format!("read {}: {}", path.display(), error)),
         };
         let reader = BufReader::new(file);
-        let mut ok = 0usize;
-        let mut bad = 0usize;
-        let mut io_err = 0usize;
         for (i, line) in reader.lines().enumerate() {
-            let raw = match line {
-                Ok(l) => l,
-                Err(e) => {
-                    io_err += 1;
-                    ulog_warn!("[task] line {} I/O error, skipped: {}", i + 1, e);
-                    continue;
-                }
-            };
+            let raw = line.map_err(|error| {
+                format!("{} line {} I/O error: {}", path.display(), i + 1, error)
+            })?;
             if raw.trim().is_empty() {
                 continue;
             }
-            match serde_json::from_str::<Task>(&raw) {
-                Ok(t) => {
-                    map.insert(t.id.clone(), t);
-                    ok += 1;
-                }
-                Err(e) => {
-                    bad += 1;
-                    ulog_warn!("[task] line {} malformed, skipped: {}", i + 1, e);
-                }
+            let task = serde_json::from_str::<Task>(&raw).map_err(|error| {
+                format!("{} line {} malformed: {}", path.display(), i + 1, error)
+            })?;
+            if map.insert(task.id.clone(), task).is_some() {
+                return Err(format!(
+                    "{} line {} duplicates an earlier task id",
+                    path.display(),
+                    i + 1
+                ));
             }
         }
-        ulog_info!(
-            "[task] loaded {} task(s) from disk ({} malformed, {} io-err)",
-            ok,
-            bad,
-            io_err
-        );
-        map
+        ulog_info!("[task] loaded {} task(s) from disk", map.len());
+        Ok(map)
+    }
+
+    fn ensure_writable(&self) -> Result<(), String> {
+        match self.load_error.as_deref() {
+            Some(error) => Err(format!(
+                "Task store is read-only because startup validation failed: {error}"
+            )),
+            None => Ok(()),
+        }
     }
 
     /// Atomically rewrite the jsonl file from the provided map.
@@ -1179,6 +1136,9 @@ impl TaskStore {
         created_source: Option<TransitionSource>,
         created_message: &'static str,
     ) -> Result<Task, String> {
+        if input.execution_mode == TaskExecutionMode::Loop {
+            return Err("Loop task mode is retired; use a Session Goal".to_string());
+        }
         // Validate workspace_path + name up front so we don't half-write.
         let workspace_path = canonicalize_workspace_path(&input.workspace_path)?;
         validate_task_name(&input.name)?;
@@ -1212,7 +1172,6 @@ impl TaskStore {
             workspace_id: input.workspace_id,
             workspace_path: workspace_path.clone(),
             execution_mode: input.execution_mode,
-            cron_task_id: None,
             run_mode: input.run_mode,
             end_conditions: input.end_conditions,
             interval_minutes: input.interval_minutes,
@@ -1236,6 +1195,8 @@ impl TaskStore {
             created_at: now,
             updated_at: now,
             last_executed_at: None,
+            last_scheduled_at: None,
+            execution_count: 0,
             status_history: vec![StatusTransition {
                 from: None,
                 to: TaskStatus::Todo,
@@ -1259,6 +1220,7 @@ impl TaskStore {
         // an orphan empty directory with no JSONL row referencing it, which is
         // harmless (never shows up in list()) and can be swept by a background
         // cleanup job later.
+        self.ensure_writable()?;
         let mut inner = self.inner.write().await;
         fs::create_dir_all(&task_dir)
             .map_err(|e| format!("Failed to create task doc dir: {}", e))?;
@@ -1305,8 +1267,7 @@ impl TaskStore {
     }
 
     /// Create a Task at an explicit initial status, bypassing the default
-    /// Todo entry point. Used ONLY by the legacy-cron upgrade path
-    /// (`legacy_upgrade::upgrade_legacy_cron`) — migrations preserve the
+    /// Todo entry point. Used only by backend Legacy Cron migration, which preserves the
     /// cron's lifecycle state (running crons → Running task, naturally
     /// ended crons → Done, user-paused crons → Stopped) so the Task
     /// Center doesn't spuriously mass-categorise every upgraded row as
@@ -1320,10 +1281,22 @@ impl TaskStore {
     /// path).
     pub async fn create_migrated(
         &self,
+        input: TaskCreateDirectInput,
+        initial_status: TaskStatus,
+        message: String,
+    ) -> Result<Task, String> {
+        self.create_migrated_with_id(Uuid::new_v4().to_string(), input, initial_status, message)
+            .await
+    }
+
+    pub async fn create_migrated_with_id(
+        &self,
+        id: String,
         mut input: TaskCreateDirectInput,
         initial_status: TaskStatus,
         message: String,
     ) -> Result<Task, String> {
+        validate_safe_id(&id, "legacy cron id")?;
         validate_task_name(&input.name)?;
         // PRD 0.2.9 — Same pin+validate sequence as create_direct.
         pin_runtime_for_provider_id(&input.provider_id, &mut input.runtime);
@@ -1331,14 +1304,17 @@ impl TaskStore {
         let managed_kind = normalize_managed_kind(input.managed_kind)?;
         if !matches!(
             initial_status,
-            TaskStatus::Todo | TaskStatus::Running | TaskStatus::Done | TaskStatus::Stopped
+            TaskStatus::Todo
+                | TaskStatus::Running
+                | TaskStatus::Done
+                | TaskStatus::Stopped
+                | TaskStatus::Blocked
         ) {
             return Err(format!(
                 "invalid migration target status: {}",
                 initial_status.as_str()
             ));
         }
-        let id = Uuid::new_v4().to_string();
         let now = now_ms();
         let workspace_path = canonicalize_workspace_path(&input.workspace_path)?;
 
@@ -1354,7 +1330,6 @@ impl TaskStore {
             workspace_id: input.workspace_id,
             workspace_path: workspace_path.clone(),
             execution_mode: input.execution_mode,
-            cron_task_id: None,
             run_mode: input.run_mode,
             end_conditions: input.end_conditions,
             interval_minutes: input.interval_minutes,
@@ -1378,6 +1353,8 @@ impl TaskStore {
             created_at: now,
             updated_at: now,
             last_executed_at: None,
+            last_scheduled_at: None,
+            execution_count: 0,
             status_history: vec![StatusTransition {
                 from: None,
                 to: initial_status,
@@ -1396,7 +1373,23 @@ impl TaskStore {
         // Materialize task.md FIRST, commit JSONL LAST (same ordering invariant
         // as create_direct — see fix for C3). Orphan docs dir on JSONL failure is
         // harmless; orphan JSONL row without task.md is an integrity violation.
+        self.ensure_writable()?;
         let mut inner = self.inner.write().await;
+        if let Some(existing) = inner.get(&id) {
+            let migrated = existing
+                .status_history
+                .iter()
+                .any(|transition| transition.source == Some(TransitionSource::Migration));
+            let same_workspace =
+                crate::workspace_path::normalize_workspace_path_identity(&existing.workspace_path)
+                    == crate::workspace_path::normalize_workspace_path_identity(&workspace_path);
+            if migrated && same_workspace {
+                return Ok(existing.clone());
+            }
+            return Err(format!(
+                "Legacy cron id {id} collides with an unrelated Task"
+            ));
+        }
         fs::create_dir_all(&task_dir)
             .map_err(|e| format!("Failed to create task doc dir: {}", e))?;
         let task_md = task_dir.join("task.md");
@@ -1540,7 +1533,6 @@ impl TaskStore {
             workspace_id,
             workspace_path: workspace_path.clone(),
             execution_mode: input.execution_mode,
-            cron_task_id: None,
             run_mode: input.run_mode,
             end_conditions: input.end_conditions,
             interval_minutes: None,
@@ -1570,6 +1562,8 @@ impl TaskStore {
             created_at: now,
             updated_at: now,
             last_executed_at: None,
+            last_scheduled_at: None,
+            execution_count: 0,
             status_history: vec![StatusTransition {
                 from: None,
                 to: TaskStatus::Todo,
@@ -1591,6 +1585,7 @@ impl TaskStore {
         // 2. Move the alignment dir to `~/.myagents/tasks/<newId>/`. If this fails, we unwind
         //    the row from jsonl so the store stays consistent.
         // 3. Swap in-memory state only after both succeed.
+        self.ensure_writable()?;
         let mut inner = self.inner.write().await;
         let mut next = inner.clone();
         next.insert(id.clone(), t.clone());
@@ -1680,7 +1675,6 @@ impl TaskStore {
             workspace_id: input.workspace_id,
             workspace_path: workspace_path.clone(),
             execution_mode: TaskExecutionMode::Once,
-            cron_task_id: None,
             run_mode: None,
             end_conditions: None,
             interval_minutes: None,
@@ -1704,6 +1698,8 @@ impl TaskStore {
             created_at: now,
             updated_at: now,
             last_executed_at: Some(now),
+            last_scheduled_at: None,
+            execution_count: 0,
             status_history: vec![created_transition, attached_transition],
             notification: input.notification,
             dispatch_origin: TaskDispatchOrigin::AttachedSession,
@@ -1712,6 +1708,7 @@ impl TaskStore {
             deleted_at: None,
         };
 
+        self.ensure_writable()?;
         let mut inner = self.inner.write().await;
         fs::create_dir_all(&task_dir)
             .map_err(|e| format!("Failed to create task doc dir: {}", e))?;
@@ -1801,6 +1798,7 @@ impl TaskStore {
     ///
     /// On success `updated_at` is bumped so listings re-sort.
     pub async fn write_doc(&self, id: &str, filename: &str, content: &str) -> Result<(), String> {
+        self.ensure_writable()?;
         let mut inner = self.inner.write().await;
         let existing = inner
             .get(id)
@@ -1855,6 +1853,7 @@ impl TaskStore {
     }
 
     pub async fn remove_mcp_server_references(&self, server_id: &str) -> Result<usize, String> {
+        self.ensure_writable()?;
         let mut inner = self.inner.write().await;
         let mut next = inner.clone();
         let mut updated = 0usize;
@@ -1883,7 +1882,10 @@ impl TaskStore {
     // ---- Update fields ----
 
     pub async fn update(&self, input: TaskUpdateInput) -> Result<Task, String> {
+        self.ensure_writable()?;
         let mut inner = self.inner.write().await;
+        let interval_updated = input.interval_minutes.is_some();
+        let cron_expression_updated = input.cron_expression.is_some();
         let existing = inner
             .get(&input.id)
             .ok_or_else(|| String::from(TaskOpError::not_found(&input.id)))?
@@ -1893,6 +1895,9 @@ impl TaskStore {
         }
         if matches!(existing.status, TaskStatus::Running | TaskStatus::Verifying) {
             return Err(String::from(TaskOpError::update_rejected_while_running()));
+        }
+        if input.execution_mode == Some(TaskExecutionMode::Loop) {
+            return Err("Loop task mode is retired; use a Session Goal".to_string());
         }
         // PRD 0.2.9 invariant 3 — reject contradictory clear-vs-set inputs at
         // the input layer (rather than silently letting the merge order
@@ -1939,6 +1944,14 @@ impl TaskStore {
         }
         if let Some(v) = input.cron_timezone {
             updated.cron_timezone = if v.trim().is_empty() { None } else { Some(v) };
+        }
+        if interval_updated && !cron_expression_updated {
+            updated.cron_expression = None;
+            updated.cron_timezone = None;
+        } else if cron_expression_updated && updated.cron_expression.is_some() {
+            updated.interval_minutes = None;
+            updated.start_at = None;
+            updated.recurring_window = None;
         }
         if let Some(v) = input.start_at {
             updated.start_at = if v.trim().is_empty() { None } else { Some(v) };
@@ -2009,7 +2022,7 @@ impl TaskStore {
         // Mode-transition hygiene: `run_mode` / `end_conditions` / the
         // schedule-detail fields are only meaningful for certain execution
         // modes. When the user flips `execution_mode → Once`, lingering
-        // recurring/scheduled fields would pollute `ensure_cron_for_task`.
+        // recurring/scheduled fields would leave an invalid Task schedule.
         // `TaskUpdateInput` uses `Option<T>` so the client can't express
         // "clear me", so we clear server-side the moment the mode no longer
         // needs them.
@@ -2082,258 +2095,11 @@ impl TaskStore {
             write_atomic_text(&dir.join("task.md"), prompt)?;
         }
 
-        // Detect what the caller actually changed so we can decide how to
-        // propagate to the linked CronTask (PRD §11.2):
-        //   * "kind" change (execution_mode) → detach + rebuild next run
-        //   * field-only change (interval / cron / model / permission /
-        //     end_conditions / run_mode / notification) → project via
-        //     `update_task_fields` so `executionCount` and `cron_runs/*.jsonl`
-        //     history are preserved.
-        let kind_changed = existing.execution_mode != updated.execution_mode;
-        let schedule_detail_changed = existing.run_mode != updated.run_mode
-            || existing.end_conditions != updated.end_conditions
-            || existing.interval_minutes != updated.interval_minutes
-            || existing.cron_expression != updated.cron_expression
-            || existing.cron_timezone != updated.cron_timezone
-            || existing.start_at != updated.start_at
-            || existing.recurring_window != updated.recurring_window
-            || existing.dispatch_at != updated.dispatch_at;
-        let exec_overrides_changed = existing.model != updated.model
-            || existing.provider_id != updated.provider_id
-            || existing.permission_mode != updated.permission_mode
-            || existing.mcp_enabled_servers != updated.mcp_enabled_servers
-            // PRD #131 / Codex-review #1 — runtime + runtime_config edits
-            // also need to project to the linked CronTask. Without these in
-            // the change-detection set, switching a recurring task from
-            // builtin to Codex (or changing runtimeConfig.model) updated
-            // the Task row but the CronTask kept executing with the stale
-            // runtime forever.
-            || existing.runtime != updated.runtime
-            || existing.runtime_config != updated.runtime_config;
-        let notification_changed = existing.notification != updated.notification;
-        let name_or_prompt_changed = existing.name != updated.name || input.prompt.is_some();
-
-        let invalidated_cron_id = if kind_changed {
-            let taken = updated.cron_task_id.take();
-            if taken.is_some() {
-                ulog_info!(
-                    "[task] execution-mode changed for {} → detaching CronTask {:?}",
-                    updated.id,
-                    taken
-                );
-            }
-            taken
-        } else {
-            None
-        };
-
         let mut next = inner.clone();
         next.insert(updated.id.clone(), updated.clone());
         Self::persist_locked(&self.jsonl_path, &next)?;
         *inner = next;
         drop(inner);
-
-        // Best-effort CronTask cleanup — the orphaned CronTask (if any) is
-        // removed from the scheduler AFTER persist so a crash between the two
-        // steps is safe: on reboot the Task shows no back-pointer and the
-        // scheduler will simply stop firing the orphaned CronTask once its
-        // endConditions trigger (or user removes it from the cron panel).
-        if let Some(cron_id) = invalidated_cron_id {
-            let manager = crate::cron_task::get_cron_task_manager();
-            if let Err(e) = manager.delete_task(&cron_id).await {
-                ulog_warn!(
-                    "[task] failed to delete orphaned CronTask {}: {}",
-                    cron_id,
-                    e
-                );
-            }
-        } else if let Some(cron_id) = updated.cron_task_id.clone() {
-            // Project the surviving CronTask — preserve executionCount /
-            // lastExecutedAt / linked Session. Only forward fields that
-            // actually changed so we don't stomp unrelated CronTask knobs.
-            if schedule_detail_changed
-                || exec_overrides_changed
-                || notification_changed
-                || name_or_prompt_changed
-            {
-                let mut patch = serde_json::Map::new();
-                if existing.name != updated.name {
-                    patch.insert(
-                        "name".to_string(),
-                        serde_json::Value::String(updated.name.clone()),
-                    );
-                }
-                if let Some(ref prompt_body) = input.prompt {
-                    // Mirror the task.md body into the CronTask for legacy
-                    // read paths (IM delivery, cron prompt fallback). Use the
-                    // in-memory value we just wrote — re-reading from disk
-                    // would be both redundant and silently hide transient
-                    // I/O failures mid-update.
-                    patch.insert(
-                        "prompt".to_string(),
-                        serde_json::Value::String(prompt_body.clone()),
-                    );
-                }
-                if schedule_detail_changed {
-                    // Only project when we can resolve a concrete schedule.
-                    // Scheduled with no dispatch_at → None; skip the projection
-                    // so we don't corrupt the CronTask with a stale schedule
-                    // (the user will get a "需要执行时间" error at next run).
-                    if let Some(schedule) = crate::management_api::schedule_from_task(&updated) {
-                        patch.insert(
-                            "schedule".to_string(),
-                            serde_json::to_value(&schedule).unwrap_or(serde_json::Value::Null),
-                        );
-                    }
-                    if let Some(ec) = updated.end_conditions.clone() {
-                        let cron_ec: crate::cron_task::EndConditions = ec.into();
-                        patch.insert(
-                            "endConditions".to_string(),
-                            serde_json::to_value(&cron_ec).unwrap_or(serde_json::Value::Null),
-                        );
-                    }
-                }
-                if existing.model != updated.model {
-                    patch.insert(
-                        "model".to_string(),
-                        updated
-                            .model
-                            .clone()
-                            .map(serde_json::Value::String)
-                            .unwrap_or(serde_json::Value::Null),
-                    );
-                }
-                if existing.provider_id != updated.provider_id {
-                    // PRD 0.2.9 — Project the per-task provider id into the
-                    // linked CronTask so the next dispatch tick uses the
-                    // up-to-date provider. `null` clears (= follow Agent),
-                    // a string sets it. Sidecar live-resolves env from this
-                    // provider id at every tick — no env snapshot lands here.
-                    patch.insert(
-                        "providerId".to_string(),
-                        updated
-                            .provider_id
-                            .clone()
-                            .map(serde_json::Value::String)
-                            .unwrap_or(serde_json::Value::Null),
-                    );
-                }
-                if existing.permission_mode != updated.permission_mode {
-                    // PRD 0.2.4 §需求 4 (4b): unset = runtime maximum
-                    // permission, NOT "auto". Unattended task dispatch
-                    // would otherwise block on the first tool call.
-                    // For the SDK builtin runtime the legacy fallback
-                    // "auto" was wrong; we now project to the explicit
-                    // bypass-permissions sentinel which the cron exec
-                    // path translates into the right runtime-specific
-                    // value. (See `/cron/execute-sync` permission
-                    // resolution in `src/server/index.ts`.)
-                    patch.insert(
-                        "permissionMode".to_string(),
-                        serde_json::Value::String(
-                            updated
-                                .permission_mode
-                                .clone()
-                                .unwrap_or_else(|| "fullAgency".to_string()),
-                        ),
-                    );
-                }
-                if existing.mcp_enabled_servers != updated.mcp_enabled_servers {
-                    // PRD 0.2.4 §需求 4 — push MCP override to the linked
-                    // CronTask so the next dispatch tick carries it forward.
-                    // null clears (= follow workspace), an array sets it.
-                    patch.insert(
-                        "mcpEnabledServers".to_string(),
-                        match updated.mcp_enabled_servers.as_ref() {
-                            Some(list) => serde_json::Value::Array(
-                                list.iter()
-                                    .map(|s| serde_json::Value::String(s.clone()))
-                                    .collect(),
-                            ),
-                            None => serde_json::Value::Null,
-                        },
-                    );
-                }
-                // PRD #131 / Codex-review #1 — same projection contract for
-                // `runtime` / `runtimeConfig`. null clears (= follow Agent),
-                // a value sets it. Without these, switching the runtime in
-                // a recurring task's editor left the linked CronTask with
-                // the original runtime forever.
-                if existing.runtime != updated.runtime {
-                    patch.insert(
-                        "runtime".to_string(),
-                        updated
-                            .runtime
-                            .clone()
-                            .map(serde_json::Value::String)
-                            .unwrap_or(serde_json::Value::Null),
-                    );
-                }
-                if existing.runtime_config != updated.runtime_config {
-                    patch.insert(
-                        "runtimeConfig".to_string(),
-                        updated
-                            .runtime_config
-                            .clone()
-                            .unwrap_or(serde_json::Value::Null),
-                    );
-                }
-                if notification_changed {
-                    let enabled = updated
-                        .notification
-                        .as_ref()
-                        .map(|n| n.desktop)
-                        .unwrap_or(true);
-                    patch.insert(
-                        "notifyEnabled".to_string(),
-                        serde_json::Value::Bool(enabled),
-                    );
-
-                    // IM delivery routing — mirror Task.notification
-                    // .botChannelId into CronTask.delivery so the
-                    // scheduler tick reaches the right bot. Kept in
-                    // lockstep with `ensure_cron_for_task` above; when
-                    // the bot channel is cleared, we explicitly push
-                    // `"clearDelivery": true` so `update_task_fields`
-                    // tears down the stale delivery instead of keeping
-                    // the old routing around.
-                    let bot_channel_id = updated
-                        .notification
-                        .as_ref()
-                        .and_then(|n| n.bot_channel_id.as_deref())
-                        .filter(|s| !s.is_empty());
-                    if let Some(bot_id) = bot_channel_id {
-                        let chat_id = updated
-                            .notification
-                            .as_ref()
-                            .and_then(|n| n.bot_thread.as_deref())
-                            .filter(|s| !s.is_empty())
-                            .unwrap_or("_auto_")
-                            .to_string();
-                        patch.insert(
-                            "delivery".to_string(),
-                            serde_json::json!({
-                                "botId": bot_id,
-                                "chatId": chat_id,
-                                "platform": "task-center",
-                            }),
-                        );
-                    } else {
-                        patch.insert("clearDelivery".to_string(), serde_json::Value::Bool(true));
-                    }
-                }
-
-                if !patch.is_empty() {
-                    let manager = crate::cron_task::get_cron_task_manager();
-                    if let Err(e) = manager
-                        .update_task_fields(&cron_id, serde_json::Value::Object(patch))
-                        .await
-                    {
-                        ulog_warn!("[task] CronTask {} projection failed: {}", cron_id, e);
-                    }
-                }
-            }
-        }
 
         Ok(updated)
     }
@@ -2364,6 +2130,7 @@ impl TaskStore {
             )));
         }
 
+        self.ensure_writable()?;
         let mut inner = self.inner.write().await;
         let existing = inner
             .get(&input.id)
@@ -2395,10 +2162,6 @@ impl TaskStore {
         let mut updated = existing;
         updated.status = to;
         updated.updated_at = now;
-        if to == TaskStatus::Running {
-            updated.last_executed_at = Some(now);
-        }
-
         let transition = StatusTransition {
             from: Some(from),
             to,
@@ -2426,23 +2189,13 @@ impl TaskStore {
             source.map(|s| s.as_str())
         );
 
-        // CC review C3 — when the Task reaches a terminal/idle state while a
-        // linked CronTask is still scheduled, stop the CronTask so its next
-        // tick doesn't re-dispatch a stopped/blocked task. Fires for:
-        //   - stopped / blocked / archived (user / agent / system decided to halt)
-        //   - done when NOT a recurring/loop that's still within endConditions
-        //     (conservative: if the Task says done, user considers it finished
-        //     → stop the scheduler, they can `rerun` to re-arm)
         if matches!(
             to,
             TaskStatus::Stopped | TaskStatus::Blocked | TaskStatus::Archived | TaskStatus::Done
         ) {
-            if let Some(cron_id) = updated.cron_task_id.clone() {
-                let manager = crate::cron_task::get_cron_task_manager();
-                let _ = manager
-                    .stop_task(&cron_id, Some(format!("task → {}", to.as_str())))
-                    .await;
-            }
+            crate::task_scheduler::get_task_scheduler()
+                .stop(&updated.id)
+                .await;
         }
 
         // NB: progress.md is intentionally NOT touched here. It's the
@@ -2478,84 +2231,10 @@ impl TaskStore {
         Ok((updated, transition))
     }
 
-    // ---- Convenience: append session / update progress / cron link ----
-
-    /// Post-boot safety net (PRD §9.3.3): heal recurring/scheduled tasks whose
-    /// schedule fields were lost but whose linked CronTask still carries the
-    /// authoritative schedule. Triggered from `initialize_cron_manager` after
-    /// both stores are loaded.
-    ///
-    /// We only fill missing fields — never overwrite an existing value. Once /
-    /// Loop tasks have nothing to heal (no user-visible schedule detail).
-    ///
-    /// Returns the list of task IDs that were healed, for logging.
-    pub async fn heal_missing_schedule_fields(
-        &self,
-        lookup: impl Fn(&str) -> Option<ScheduleBackfill>,
-    ) -> Vec<String> {
-        let mut inner = self.inner.write().await;
-        let mut next = inner.clone();
-        let mut healed: Vec<String> = Vec::new();
-        let now = now_ms();
-        for (id, task) in inner.iter() {
-            if task.deleted {
-                continue;
-            }
-            let needs_heal = match task.execution_mode {
-                TaskExecutionMode::Recurring => {
-                    task.cron_expression.is_none() && task.interval_minutes.is_none()
-                }
-                TaskExecutionMode::Scheduled => task.dispatch_at.is_none(),
-                TaskExecutionMode::Once | TaskExecutionMode::Loop => false,
-            };
-            if !needs_heal {
-                continue;
-            }
-            let Some(cron_id) = task.cron_task_id.as_deref() else {
-                continue;
-            };
-            let Some(backfill) = lookup(cron_id) else {
-                continue;
-            };
-            let mut updated = task.clone();
-            match (&task.execution_mode, backfill) {
-                (TaskExecutionMode::Recurring, ScheduleBackfill::IntervalMinutes(m)) => {
-                    updated.interval_minutes = Some(m);
-                }
-                (
-                    TaskExecutionMode::Recurring,
-                    ScheduleBackfill::Cron {
-                        expression,
-                        timezone,
-                    },
-                ) => {
-                    updated.cron_expression = Some(expression);
-                    updated.cron_timezone = timezone;
-                }
-                (TaskExecutionMode::Scheduled, ScheduleBackfill::DispatchAt(ts)) => {
-                    updated.dispatch_at = Some(ts);
-                }
-                // Mode / backfill mismatch (e.g. linked CronTask is Loop but
-                // Task says Recurring) — skip silently; a later user edit
-                // will reconcile.
-                _ => continue,
-            }
-            updated.updated_at = now;
-            next.insert(id.clone(), updated);
-            healed.push(id.clone());
-        }
-        if healed.is_empty() {
-            return healed;
-        }
-        if let Err(e) = Self::persist_locked(&self.jsonl_path, &next) {
-            ulog_warn!("[task] heal persist failed: {}", e);
-            return Vec::new();
-        }
-        *inner = next;
-        healed
-    }
+    // ---- Execution bookkeeping ----
 
     pub async fn append_session(&self, id: &str, session_id: &str) -> Result<Task, String> {
+        self.ensure_writable()?;
         let mut inner = self.inner.write().await;
         let existing = inner
             .get(id)
@@ -2593,18 +2272,108 @@ impl TaskStore {
         Ok(updated)
     }
 
-    pub async fn set_cron_task_id(
+    pub async fn set_execution_session(
         &self,
         id: &str,
-        cron_id: Option<String>,
+        session_id: String,
     ) -> Result<Task, String> {
+        self.ensure_writable()?;
         let mut inner = self.inner.write().await;
         let existing = inner
             .get(id)
             .ok_or_else(|| String::from(TaskOpError::not_found(id)))?
             .clone();
         let mut updated = existing;
-        updated.cron_task_id = cron_id;
+        updated.preselected_session_id = Some(session_id.clone());
+        if !updated.session_ids.iter().any(|value| value == &session_id) {
+            updated.session_ids.push(session_id);
+        }
+        updated.updated_at = now_ms();
+        let mut next = inner.clone();
+        next.insert(updated.id.clone(), updated.clone());
+        Self::persist_locked(&self.jsonl_path, &next)?;
+        *inner = next;
+        Ok(updated)
+    }
+
+    /// Commit one completed scheduler attempt to the Task authority. Run
+    /// details remain in the existing JSONL history keyed by the same Task id.
+    pub async fn record_execution_if_status(
+        &self,
+        id: &str,
+        trigger: TaskExecutionTrigger,
+        expected_status: TaskStatus,
+    ) -> Result<Option<Task>, String> {
+        self.ensure_writable()?;
+        let mut inner = self.inner.write().await;
+        let existing = inner
+            .get(id)
+            .ok_or_else(|| String::from(TaskOpError::not_found(id)))?
+            .clone();
+        if existing.status != expected_status || existing.deleted {
+            return Ok(None);
+        }
+        let mut updated = existing;
+        let executed_at = now_ms();
+        updated.execution_count = updated.execution_count.saturating_add(1);
+        updated.last_executed_at = Some(executed_at);
+        if trigger == TaskExecutionTrigger::Scheduled {
+            updated.last_scheduled_at = Some(executed_at);
+        }
+        updated.updated_at = executed_at;
+
+        let mut next = inner.clone();
+        next.insert(updated.id.clone(), updated.clone());
+        Self::persist_locked(&self.jsonl_path, &next)?;
+        *inner = next;
+        drop(inner);
+
+        emit_task_event(
+            "task:execution-complete",
+            serde_json::json!({
+                "taskId": updated.id,
+                "executionCount": updated.execution_count,
+                "lastExecutedAt": updated.last_executed_at,
+            }),
+        );
+        Ok(Some(updated))
+    }
+
+    pub async fn import_legacy_execution_state(
+        &self,
+        id: &str,
+        execution_count: u32,
+        last_executed_at: Option<i64>,
+        session_id: Option<&str>,
+    ) -> Result<Task, String> {
+        self.ensure_writable()?;
+        let mut inner = self.inner.write().await;
+        let existing = inner
+            .get(id)
+            .ok_or_else(|| String::from(TaskOpError::not_found(id)))?
+            .clone();
+        let mut updated = existing.clone();
+        updated.execution_count = updated.execution_count.max(execution_count);
+        updated.last_executed_at = match (updated.last_executed_at, last_executed_at) {
+            (Some(current), Some(legacy)) => Some(current.max(legacy)),
+            (current, legacy) => current.or(legacy),
+        };
+        updated.last_scheduled_at = match (updated.last_scheduled_at, last_executed_at) {
+            (Some(current), Some(legacy)) => Some(current.max(legacy)),
+            (current, legacy) => current.or(legacy),
+        };
+        let mut changed = updated.execution_count != existing.execution_count
+            || updated.last_executed_at != existing.last_executed_at
+            || updated.last_scheduled_at != existing.last_scheduled_at;
+        if let Some(session_id) = session_id.filter(|value| !value.is_empty()) {
+            if !updated.session_ids.iter().any(|value| value == session_id) {
+                updated.session_ids.push(session_id.to_string());
+                changed = true;
+            }
+        }
+        if !changed {
+            return Ok(existing);
+        }
         updated.updated_at = now_ms();
         let mut next = inner.clone();
         next.insert(updated.id.clone(), updated.clone());
@@ -2616,9 +2385,7 @@ impl TaskStore {
     // ---- Archive / Delete ----
 
     /// User-only archive entry. Emits `Done → Archived` with actor=user.
-    /// `update_status` already tears down the linked CronTask on terminal
-    /// states (CC review C3), so archived recurring/loop tasks won't keep
-    /// firing after archival.
+    /// `update_status` tears down the Task scheduler on terminal states.
     pub async fn archive(&self, id: &str, message: Option<String>) -> Result<Task, String> {
         let (task, _) = self
             .update_status(TaskUpdateStatusInput {
@@ -2634,11 +2401,12 @@ impl TaskStore {
 
     /// Soft-delete. Writes a proper synthetic `→ Deleted` pseudo-transition to
     /// `statusHistory` (PRD §10.2.2), sets `status=Deleted`, flips the
-    /// `deleted` flag, and **tears down the linked CronTask** so the scheduler
-    /// stops firing against a ghost Task (CC review C1). Downstream auditors
+    /// `deleted` flag, and tears down the Task scheduler so it cannot fire
+    /// against a deleted Task. Downstream auditors
     /// can filter `statusHistory` on `to == Deleted` to find all removed tasks.
     /// Physical cleanup happens out-of-band (§9.5, 30-day retention).
     pub async fn delete(&self, id: &str) -> Result<(), String> {
+        self.ensure_writable()?;
         let mut inner = self.inner.write().await;
         let existing = inner
             .get(id)
@@ -2662,26 +2430,13 @@ impl TaskStore {
         updated.deleted = true;
         updated.deleted_at = Some(now);
         updated.updated_at = now;
-        updated.cron_task_id = None;
         let mut next = inner.clone();
         next.insert(updated.id.clone(), updated);
         Self::persist_locked(&self.jsonl_path, &next)?;
         *inner = next;
         drop(inner);
 
-        // Tear down any scheduler entries linked to this task so a recurring /
-        // loop task soft-deleted by the user doesn't keep burning tokens.
-        let manager = crate::cron_task::get_cron_task_manager();
-        if let Ok(n) = manager.delete_by_task_id(id).await {
-            if n > 0 {
-                ulog_info!(
-                    "[task] soft-deleted id={} + removed {} linked CronTask(s)",
-                    id,
-                    n
-                );
-                return Ok(());
-            }
-        }
+        crate::task_scheduler::get_task_scheduler().stop(id).await;
         ulog_info!("[task] soft-deleted id={}", id);
         Ok(())
     }
@@ -2764,9 +2519,8 @@ fn validate_task_name(name: &str) -> Result<(), String> {
 
 /// PRD 0.2.9 — Validate the per-task provider routing invariants.
 ///
-/// Three invariants enforced uniformly across all Task / CronTask write
-/// paths (`create_direct`, `create_from_alignment`, `update`,
-/// `create_migrated`, plus `CronTaskManager::create_task`):
+/// Three invariants enforced uniformly across Task write paths, including
+/// compatibility ingress and Legacy Cron migration:
 ///
 ///   1. **Pairing**: `provider_id.is_some()` ⇒ `model.is_some()`. Picking
 ///      a provider without a model silently routes the chosen provider's
@@ -2948,89 +2702,6 @@ fn move_alignment_dir(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// PRD §11 bridge — when the CronTask scheduler concludes a Task-linked cron
-/// (endConditions / AI exit / one-shot completion), transition the linked
-/// Task to `done` with the right actor/source. Called from cron_task.rs
-/// completion paths. Safe to invoke even when no Task is linked (no-op).
-///
-/// Error paths (watchdog / SDK crash) are handled separately; this helper only
-/// runs for the "good exit" flow.
-pub async fn mark_cron_completion_if_linked(cron_task_id: &str, exit_reason: Option<&str>) {
-    // Look up the CronTask → find its Task back-pointer.
-    let ta_id = {
-        let manager = crate::cron_task::get_cron_task_manager();
-        let Some(ct) = manager.get_task(cron_task_id).await else {
-            return;
-        };
-        let Some(ta_id) = ct.task_id.clone() else {
-            return;
-        };
-        ta_id
-    };
-
-    let Some(store) = get_task_store() else {
-        return;
-    };
-    let Some(task) = store.get(&ta_id).await else {
-        return;
-    };
-
-    // Only fire for tasks still in "active" states — don't re-transition a
-    // task the user already marked done/blocked/stopped via the UI.
-    if !matches!(task.status, TaskStatus::Running | TaskStatus::Verifying) {
-        return;
-    }
-
-    // Classify the exit reason (PRD §9.1 + §12.2 caller-inference):
-    //   - `None` or "completed" / "executions" / "deadline" → endCondition → done
-    //   - explicit string from ExitCronTask tool (AI) → agent/cli → done
-    let (message, actor, source) = match exit_reason {
-        None => (
-            "cron endCondition fired".to_string(),
-            TransitionActor::System,
-            TransitionSource::EndCondition,
-        ),
-        Some(reason) => {
-            let low = reason.to_lowercase();
-            if low.contains("one-shot")
-                || low.contains("max executions")
-                || low.contains("deadline")
-                || low.contains("endcondition")
-            {
-                (
-                    reason.to_string(),
-                    TransitionActor::System,
-                    TransitionSource::EndCondition,
-                )
-            } else {
-                // AI-requested exit via ExitCronTask tool.
-                (
-                    reason.to_string(),
-                    TransitionActor::Agent,
-                    TransitionSource::Cli,
-                )
-            }
-        }
-    };
-
-    if let Err(e) = store
-        .update_status(TaskUpdateStatusInput {
-            id: ta_id.clone(),
-            status: TaskStatus::Done,
-            message: Some(message),
-            actor,
-            source: Some(source),
-        })
-        .await
-    {
-        ulog_warn!(
-            "[task] cron-linked completion for {}: update_status failed: {}",
-            ta_id,
-            e
-        );
-    }
-}
-
 /// Construct the first-message prompt for a dispatch tick (PRD §9.3.1).
 ///
 /// - `dispatchOrigin='direct'`   → `执行任务：<task.md 正文>`
@@ -3038,9 +2709,7 @@ pub async fn mark_cron_completion_if_linked(cron_task_id: &str, exit_reason: Opt
 ///    reads `~/.myagents/tasks/<id>/{task,verify,progress,alignment}.md` on its own)
 ///
 /// Returns `None` if the store isn't initialized or the task doesn't exist.
-/// Returns `Some(Err(...))` for unrecoverable I/O (missing task.md on a
-/// direct-path task). Callers fall back to the CronTask's stored `prompt`
-/// on `None` so legacy tasks (no `task_id` back-pointer) keep working.
+/// Returns `Some(Err(...))` for unrecoverable I/O such as a missing task.md.
 pub async fn build_dispatch_prompt(task_id: &str) -> Option<Result<String, String>> {
     let store = get_task_store()?;
     let task = store.get(task_id).await?;
@@ -3577,10 +3246,8 @@ pub async fn cmd_task_open_docs_dir(
     Ok(())
 }
 
-/// Aggregate runtime telemetry for a Task, composed from:
-///   * the Task row itself (`last_executed_at`, `session_ids.len()`)
-///   * the linked CronTask (`execution_count`, scheduler status)
-///   * the tail of `cron_runs/<id>.jsonl` (most recent success flag)
+/// Aggregate runtime telemetry from the Task authority and its run-history
+/// projection. No scheduler state is persisted separately.
 ///
 /// The renderer uses this in the detail overlay's "运行统计" section
 /// without having to stitch three data sources together.
@@ -3591,14 +3258,10 @@ pub struct TaskRunStats {
     pub last_executed_at: Option<i64>,
     pub last_success: Option<bool>,
     pub last_duration_ms: Option<i64>,
-    pub cron_status: Option<String>,
-    pub cron_task_id: Option<String>,
+    pub scheduler_status: Option<String>,
     pub session_count: usize,
-    /// Next scheduled fire time (ms since epoch). Parsed from the enriched
-    /// CronTask's `next_execution_at` RFC3339 string — bypasses the
-    /// frontend's `cron-parser` / timezone arithmetic so the overlay's
-    /// "下次触发" readout matches what the Rust scheduler will actually
-    /// run, avoiding tz / DST drift.
+    /// Next scheduled fire time (ms since epoch), computed by the same Rust
+    /// resolver used by the live Task scheduler.
     pub next_execution_at: Option<i64>,
 }
 
@@ -3613,47 +3276,22 @@ pub async fn cmd_task_get_run_stats(
         .ok_or_else(|| String::from(TaskOpError::not_found(&id)))?;
 
     let mut stats = TaskRunStats {
-        execution_count: 0,
+        execution_count: task.execution_count,
         last_executed_at: task.last_executed_at,
         last_success: None,
         last_duration_ms: None,
-        cron_status: None,
-        cron_task_id: task.cron_task_id.clone(),
+        scheduler_status: Some(task.status.as_str().to_string()),
         session_count: task.session_ids.len(),
-        next_execution_at: None,
+        next_execution_at: crate::task_scheduler::next_execution_at(&task)
+            .ok()
+            .flatten()
+            .map(|value| value.timestamp_millis()),
     };
 
-    if let Some(cron_id) = task.cron_task_id.as_deref() {
-        let manager = crate::cron_task::get_cron_task_manager();
-        if let Some(ct) = manager.get_task(cron_id).await {
-            stats.execution_count = ct.execution_count;
-            stats.cron_status = Some(format!("{:?}", ct.status).to_lowercase());
-            if let Some(ts) = ct.last_executed_at {
-                // Prefer the CronTask's timestamp (it's updated every tick);
-                // the Task's `last_executed_at` only refreshes on status
-                // transitions.
-                stats.last_executed_at = Some(ts.timestamp_millis());
-            }
-            // Forward the Rust-computed next fire (parsed from the
-            // enriched `next_execution_at` RFC3339 string) so the
-            // frontend doesn't need cron-parser + tz math. `get_task`
-            // already ran `enrich_task` which populated this field.
-            if let Some(s) = ct.next_execution_at.as_deref() {
-                if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(s) {
-                    stats.next_execution_at = Some(dt.timestamp_millis());
-                }
-            }
-        }
-
-        // Delegate to `cron_task::read_cron_runs`, which owns the JSONL
-        // file layout — keeps `task.rs` out of CronTask's private storage
-        // schema and reuses the existing reverse-tail reader (already
-        // used by `cmd_get_cron_runs`).
-        let runs = crate::cron_task::read_cron_runs(cron_id, 1);
-        if let Some(last) = runs.last() {
-            stats.last_success = Some(last.ok);
-            stats.last_duration_ms = Some(last.duration_ms as i64);
-        }
+    let runs = crate::cron_task::read_cron_runs(&task.id, 1);
+    if let Some(last) = runs.last() {
+        stats.last_success = Some(last.ok);
+        stats.last_duration_ms = Some(last.duration_ms as i64);
     }
 
     Ok(stats)
@@ -3844,6 +3482,142 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn corrupt_store_is_all_or_nothing_and_read_only() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let data = dir.path().join("data");
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&ws).unwrap();
+        let path = data.join("tasks.jsonl");
+        std::fs::write(&path, b"{not-json}\n").unwrap();
+
+        let store = TaskStore::new(data);
+
+        assert!(store.list(TaskListFilter::default()).await.is_empty());
+        let error = store
+            .create_direct(sample_direct_input(&ws))
+            .await
+            .expect_err("corrupt stores must reject mutation");
+        assert!(error.contains("read-only"), "got: {error}");
+        assert_eq!(std::fs::read(&path).unwrap(), b"{not-json}\n");
+    }
+
+    #[tokio::test]
+    async fn legacy_import_never_regresses_newer_task_progress() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let task = store
+            .create_migrated_with_id(
+                "legacy-progress".to_string(),
+                sample_direct_input(&ws),
+                TaskStatus::Stopped,
+                "migrated".to_string(),
+            )
+            .await
+            .unwrap();
+        let imported = store
+            .import_legacy_execution_state(&task.id, 5, Some(100), Some("legacy-session"))
+            .await
+            .unwrap();
+        assert_eq!(imported.execution_count, 5);
+
+        let current = store
+            .record_execution_if_status(
+                &task.id,
+                TaskExecutionTrigger::Scheduled,
+                TaskStatus::Stopped,
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let after_restart = store
+            .import_legacy_execution_state(&task.id, 2, Some(50), Some("legacy-session"))
+            .await
+            .unwrap();
+
+        assert_eq!(after_restart.execution_count, current.execution_count);
+        assert_eq!(after_restart.last_executed_at, current.last_executed_at);
+    }
+
+    #[tokio::test]
+    async fn manual_execution_does_not_move_the_scheduler_anchor() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let task = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+
+        let scheduled = store
+            .record_execution_if_status(&task.id, TaskExecutionTrigger::Scheduled, task.status)
+            .await
+            .unwrap()
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let manual = store
+            .record_execution_if_status(&task.id, TaskExecutionTrigger::Manual, task.status)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(manual.last_scheduled_at, scheduled.last_scheduled_at);
+        assert!(manual.last_executed_at >= scheduled.last_executed_at);
+    }
+
+    #[tokio::test]
+    async fn stale_execution_cannot_commit_after_status_changes() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let task = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+        store
+            .update_status(status_input(
+                &task.id,
+                TaskStatus::Running,
+                TransitionActor::System,
+                Some(TransitionSource::Scheduler),
+            ))
+            .await
+            .unwrap();
+
+        let committed = store
+            .record_execution_if_status(&task.id, TaskExecutionTrigger::Scheduled, TaskStatus::Todo)
+            .await
+            .unwrap();
+
+        assert!(committed.is_none());
+        assert_eq!(store.get(&task.id).await.unwrap().execution_count, 0);
+    }
+
+    #[tokio::test]
+    async fn migration_rejects_an_unrelated_task_id_collision() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let ordinary = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+
+        let error = store
+            .create_migrated_with_id(
+                ordinary.id,
+                sample_direct_input(&ws),
+                TaskStatus::Stopped,
+                "migrated".to_string(),
+            )
+            .await
+            .expect_err("migration must not adopt an unrelated Task");
+
+        assert!(error.contains("collides"), "got: {error}");
+    }
+
+    #[tokio::test]
     async fn create_attached_binds_current_session_without_cron() {
         ensure_test_docs_root();
         let dir = tempdir().unwrap();
@@ -3873,7 +3647,6 @@ mod tests {
 
         assert_eq!(created.status, TaskStatus::Running);
         assert_eq!(created.dispatch_origin, TaskDispatchOrigin::AttachedSession);
-        assert_eq!(created.cron_task_id, None);
         assert_eq!(created.session_ids, vec!["session-123".to_string()]);
         assert_eq!(created.status_history.len(), 2);
         assert_eq!(created.status_history[0].from, None);
@@ -3918,7 +3691,7 @@ mod tests {
         assert_eq!(t.status, TaskStatus::Running);
         assert_eq!(tr.from, Some(TaskStatus::Todo));
         assert_eq!(t.status_history.len(), 2);
-        assert!(t.last_executed_at.is_some());
+        assert!(t.last_executed_at.is_none());
 
         // running → verifying (agent/cli)
         let (t, _) = store
@@ -4366,6 +4139,49 @@ mod tests {
             rb.status_history.last().unwrap().source,
             Some(TransitionSource::Crash)
         );
+    }
+
+    #[tokio::test]
+    async fn startup_preserves_enabled_time_schedules_for_scheduler_recovery() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store_dir = dir.path().join("data");
+        let store = TaskStore::new(store_dir.clone());
+
+        let mut recurring_input = sample_direct_input(&ws);
+        recurring_input.execution_mode = TaskExecutionMode::Recurring;
+        recurring_input.interval_minutes = Some(60);
+        let recurring = store.create_direct(recurring_input).await.unwrap();
+
+        let mut scheduled_input = sample_direct_input(&ws);
+        scheduled_input.execution_mode = TaskExecutionMode::Scheduled;
+        scheduled_input.dispatch_at = Some(now_ms() + 60_000);
+        let scheduled = store.create_direct(scheduled_input).await.unwrap();
+
+        for id in [&recurring.id, &scheduled.id] {
+            store
+                .update_status(status_input(
+                    id,
+                    TaskStatus::Running,
+                    TransitionActor::System,
+                    Some(TransitionSource::Scheduler),
+                ))
+                .await
+                .unwrap();
+        }
+        let recurring_history_len = recurring.status_history.len() + 1;
+        let scheduled_history_len = scheduled.status_history.len() + 1;
+        drop(store);
+
+        let recovered = TaskStore::new(store_dir);
+        let recurring = recovered.get(&recurring.id).await.unwrap();
+        let scheduled = recovered.get(&scheduled.id).await.unwrap();
+        assert_eq!(recurring.status, TaskStatus::Running);
+        assert_eq!(scheduled.status, TaskStatus::Running);
+        assert_eq!(recurring.status_history.len(), recurring_history_len);
+        assert_eq!(scheduled.status_history.len(), scheduled_history_len);
     }
 
     #[tokio::test]

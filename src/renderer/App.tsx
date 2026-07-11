@@ -67,7 +67,6 @@ import { runAfterNextPaint } from '@/utils/afterPaint';
 import { perfMark } from '@/utils/perfMark';
 import { RENDERER_PERF_PHASE } from '../shared/perfTrace';
 import type { ImageAttachment } from '@/components/SimpleChatInput';
-import { getTabCronTask, updateCronTaskTab } from '@/api/cronTaskClient';
 import { type CronRecoverySummaryPayload, type CronTaskRecoveredPayload, CRON_EVENTS } from '@/types/cronEvents';
 import { isBrowserDevMode, isTauriEnvironment } from '@/utils/browserMock';
 import { apiGetJson } from '@/api/apiFetch';
@@ -1444,11 +1443,6 @@ export default function App() {
         // If background completion is active, Sidecar continues running (BG owner keeps it alive)
         if (tabSessionId) {
           try {
-            // Update cron task tab association if exists
-            const cronTask = await getTabCronTask(tabId);
-            if (cronTask && cronTask.status === 'running') {
-              await updateCronTaskTab(cronTask.id, undefined);
-            }
             const stopped = await releaseTabSession(tabSessionId, tabId);
             console.log(`[App] Tab ${tabId} released session ${tabSessionId}, sidecar stopped: ${stopped}`);
           } catch (error) {
@@ -2737,15 +2731,9 @@ export default function App() {
     await stopSseProxy(activeTabId);
 
     // Step 3: Release Tab's ownership of the Session Sidecar
-    // If BackgroundCompletion or CronTask also owns it, Sidecar continues running
+    // If BackgroundCompletion or Task also owns it, Sidecar continues running
     if (currentTab?.sessionId) {
       try {
-        // Check if this Tab has an active cron task to update associations
-        const cronTask = await getTabCronTask(activeTabId);
-        if (cronTask && cronTask.status === 'running') {
-          // Clear tab association in cron task
-          await updateCronTaskTab(cronTask.id, undefined);
-        }
         const stopped = await releaseTabSession(currentTab.sessionId, activeTabId);
         console.log(`[App] Tab ${activeTabId} released session ${currentTab.sessionId}, sidecar stopped: ${stopped}`);
       } catch (error) {
@@ -3203,42 +3191,6 @@ export default function App() {
     return () => window.removeEventListener(CUSTOM_EVENTS.OPEN_SPACE, handleOpenSpace);
   }, [handleOpenSpace]);
 
-  // One-shot legacy CronTask → Task sweep at app startup (PRD §11.4,
-  // v0.1.69 UX round). The Launcher's 「我的任务」 tab reads new-model
-  // Task[] — users who never open the Task Center page would see an
-  // empty list even though they have legacy crons on disk. Running the
-  // upgrade sweep here (not inside TaskListPanel's mount) guarantees
-  // the data is ready before the Launcher is user-visible.
-  //
-  // Guards:
-  //   - taskCenterAvailable() — Tauri-only, silent no-op in browser dev
-  //   - configProjects.length > 0 — eligibility check needs workspace
-  //     resolution; Config loads async, so we wait for projects to
-  //     populate before sweeping
-  //   - useRef one-shot — only run once per session; refocusing the
-  //     window or a user navigating won't re-trigger the work
-  const startupSweepDoneRef = useRef(false);
-  useEffect(() => {
-    if (startupSweepDoneRef.current) return;
-    if (configProjects.length === 0) return;
-    startupSweepDoneRef.current = true;
-    void (async () => {
-      try {
-        const { sweepAppStartupLegacyCrons } = await import(
-          '@/components/task-center/legacyUpgrade'
-        );
-        const stats = await sweepAppStartupLegacyCrons(configProjects);
-        if (stats.upgraded > 0) {
-          console.info(
-            `[legacy-sweep] upgraded ${stats.upgraded} legacy cron(s) at startup ` +
-              `(skipped ${stats.skippedIneligible} ineligible, ${stats.failed} failed)`,
-          );
-        }
-      } catch (err) {
-        console.warn('[legacy-sweep] startup sweep crashed:', err);
-      }
-    })();
-  }, [configProjects]);
 
   // PRD §8.3 — "AI 讨论" flow. Open a new Chat tab, auto-dispatch the
   // `/task-alignment` skill with the thought content + instructions to call
@@ -3726,11 +3678,6 @@ export default function App() {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- callbacks stabilized via refs, configAdd/patchProject are stable useCallbacks
   }, [configAddProject, configPatchProject, t]);
-
-  // Note: CRON_TASK_STOPPED event listener removed
-  // With Session-centric Sidecar (Owner model), stopping a cron task only releases
-  // the CronTask owner. If Tab still owns the Sidecar, it continues running.
-  // No SSE reconnection or Sidecar restart is needed.
 
   // Stable callback for Settings onSectionChange — avoids inline arrow creating new ref every render
   const handleSettingsSectionChange = useCallback(() => {

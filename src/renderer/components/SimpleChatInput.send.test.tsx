@@ -73,7 +73,7 @@ describe('SimpleChatInput send paths', () => {
     expect(onSend).toHaveBeenCalledWith('chat hello', undefined);
   });
 
-  it('gives the Goal projection visual priority without requiring Cron state to be removed', async () => {
+  it('shows Goal and scheduled Task state independently', async () => {
     await i18n.changeLanguage('en-US');
     renderInput({
       cronTask: {
@@ -83,21 +83,48 @@ describe('SimpleChatInput send paths', () => {
         executionCount: 2,
         runMode: 'single_session',
       },
-      goalTask: {
-        status: 'running',
-        intervalMinutes: 5,
-        schedule: { kind: 'loop' },
-        goalStatus: 'active',
-        goalObjective: 'Ship the architecture closure',
-        executionCount: 1,
-        runMode: 'single_session',
+      sessionGoal: {
+        id: 'goal-1',
+        workspacePath: '/tmp/workspace',
+        sessionId: 'session-1',
+        objective: 'Ship the architecture closure',
+        status: 'active',
+        endConditions: { aiCanExit: true },
+        notifyEnabled: true,
+        permissionMode: '',
+        turnCount: 1,
+        createdAt: '2026-07-10T10:00:00.000Z',
+        updatedAt: '2026-07-10T10:00:00.000Z',
+        revision: 1,
+        controlRevision: 1,
+        isExecuting: false,
       },
       onCronStop: vi.fn(),
+      onGoalCancel: vi.fn(),
     });
 
     expect(screen.getByText('Round 1 · Ship the architecture closure')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Cancel goal' })).toBeInTheDocument();
-    expect(screen.queryByText('Scheduled task running')).not.toBeInTheDocument();
+    expect(screen.getByText('Scheduled task running')).toBeInTheDocument();
+  });
+
+  it('keeps a Goal draft independent from an active scheduled task', async () => {
+    await i18n.changeLanguage('en-US');
+    renderInput({
+      cronTask: {
+        status: 'running',
+        intervalMinutes: 30,
+        schedule: { kind: 'every', minutes: 30 },
+        executionCount: 2,
+        runMode: 'single_session',
+      },
+      goalDraftActive: true,
+      onCronStop: vi.fn(),
+      onGoalDraftCancel: vi.fn(),
+    });
+
+    expect(screen.getByText('Goal Mode')).toBeInTheDocument();
+    expect(screen.getByText('Scheduled task running')).toBeInTheDocument();
   });
 
   it('honors parent provider availability for subscription sessions with local account evidence', async () => {

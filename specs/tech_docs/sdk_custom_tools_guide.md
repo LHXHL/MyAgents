@@ -8,58 +8,47 @@ Claude Agent SDK 提供了 `createSdkMcpServer` 和 `tool` 函数，允许开发
 
 ## 当前工具清单
 
-项目中共有 3 个自定义 SDK 工具，分别服务于定时任务、IM 定时调度和 IM 媒体发送场景。
+当前常驻注册表只包含用户可启用的 `gemini-image` 与 `edge-tts`；IM Bridge
+还会按渠道动态创建自己的 SDK MCP。历史上的 `cron-tools`、`im-cron`、
+`im-media` 已在 0.2.11 退役，能力统一由 `myagents` CLI 提供，不能重新注册成
+SDK MCP。
 
 | MCP Server | Tool Name | 完整调用名 | 文件 | 注册条件 |
 |------------|-----------|-----------|------|---------|
-| `cron-tools` | `exit_cron_task` | `mcp__cron-tools__exit_cron_task` | `src/server/tools/cron-tools.ts` | 定时任务执行上下文 (`cronContext.taskId`) |
-| `im-cron` | `cron` | `mcp__im-cron__cron` | `src/server/tools/im-cron-tool.ts` | IM Bot 上下文 + `MYAGENTS_MANAGEMENT_PORT` |
-| `im-media` | `send_media` | `mcp__im-media__send_media` | `src/server/tools/im-media-tool.ts` | IM Bot 上下文 + `MYAGENTS_MANAGEMENT_PORT` |
+| `gemini-image` | image tools | `mcp__gemini-image__*` | `src/server/tools/gemini-image-tool.ts` | 用户启用 |
+| `edge-tts` | speech tools | `mcp__edge-tts__*` | `src/server/tools/edge-tts-tool.ts` | 用户启用 |
+| IM Bridge dynamic server | channel tools | 动态 | `src/server/tools/im-bridge-tools.ts` | 对应 IM Bridge 渠道启用 |
 
 ### 工具注册位置
 
-所有工具在 `src/server/agent-session.ts` 的 `buildSdkMcpServers()` 函数中按条件注册，并在 `startStreamingSession()` 创建 `query()` 时传入 SDK：
+静态内置工具由 `src/server/tools/builtin-mcp-meta.ts` 登记轻量 META，
+`buildSdkMcpServers()` 只在真正需要时通过 registry 加载实例。SDK 与 zod 必须留在
+各工具 factory 的动态 import 内，不能在模块顶层 value-import。
 
 ```typescript
-function buildSdkMcpServers() {
-  const result = {};
-
-  // 1. Cron 任务执行时注册
-  const cronContext = getCronTaskContext();
-  if (cronContext.taskId) {
-    result['cron-tools'] = cronToolsServer;
-  }
-
-  // 2. IM Bot 上下文 + Management API 可用时注册
-  const imCronCtx = getImCronContext();
-  if (imCronCtx && process.env.MYAGENTS_MANAGEMENT_PORT) {
-    result['im-cron'] = imCronToolServer;
-  }
-
-  // 3. IM Bot 上下文 + Management API 可用时注册
-  const imMediaCtx = getImMediaContext();
-  if (imMediaCtx && process.env.MYAGENTS_MANAGEMENT_PORT) {
-    result['im-media'] = imMediaToolServer;
-  }
-
-  // + 用户配置的外部 MCP 服务器...
-  return result;
-}
+registerBuiltinMcpMeta({
+  id: 'example-tool',
+  load: async () => {
+    const module = await import('./example-tool');
+    return { server: await module.createExampleServer() };
+  },
+});
 ```
 
 ---
 
-## Tool 1: exit_cron_task
+## 已退役：exit_cron_task MCP
 
-> 允许 AI 在定时任务执行期间主动结束任务。
+`exit_cron_task` 不再是 SDK MCP。Task 执行时仍使用
+`src/server/tools/cron-tools.ts` 保存最小的 per-session Task 上下文，但模型出口是
+`myagents cron exit --reason ...`。该命令只记录当前 Turn 的退出请求，不直接修改
+Task 状态。
 
 ### 基本信息
 
 | 属性 | 值 |
 |------|---|
-| **Server** | `cron-tools` |
-| **Tool Name** | `exit_cron_task` |
-| **完整调用名** | `mcp__cron-tools__exit_cron_task` |
+| **入口** | `myagents cron exit --reason ...` |
 | **文件** | `src/server/tools/cron-tools.ts` |
 | **可用场景** | 仅在定时任务执行期间，且任务创建者启用了"允许 AI 退出" |
 
@@ -95,18 +84,20 @@ clearCronTaskContext(sessionId?)                  // 任务 terminal cleanup 后
 ### 执行流程
 
 ```
-AI 调用 exit_cron_task(reason)
+AI 调用 myagents cron exit --reason ...
   → 验证 cronContext.taskId 存在
   → 验证 cronContext.canExit = true
-  → broadcast('cron:task-exit-requested', { taskId, reason })
-  → 前端接收事件 → 通过 Tauri IPC 停止定时任务
+  → Sidecar 记录当前 Session 的 exit request
+  → /cron/execute-sync 在 Turn 结束时消费 request
+  → Rust Task scheduler 在唯一终态事务中提交 Done
 ```
 
 ---
 
-## Tool 2: cron
+## 已退役：im-cron MCP
 
-> IM Bot 中的定时任务管理工具，支持创建、列表、更新、删除、手动触发等操作。
+历史能力说明，仅用于理解旧会话和日志；当前 IM 定时任务调用
+`myagents cron` CLI，最终写入 TaskStore。
 
 ### 基本信息
 
@@ -181,15 +172,16 @@ AI 调用 cron(action, ...)
   → Node.js handler (im-cron-tool.ts)
   → fetch http://127.0.0.1:{MANAGEMENT_PORT}/api/cron/{action}
   → Rust Management API handler (management_api.rs)
-  → CronTaskManager 操作
+  → Cron compatibility facade → TaskStore / TaskSchedulerController
   → 返回结果给 AI
 ```
 
 ---
 
-## Tool 3: send_media
+## 已退役：im-media MCP
 
-> IM Bot 中的媒体发送工具，AI 主动调用以向当前聊天发送文件、图片等。
+历史能力说明，仅用于理解旧会话和日志；当前媒体发送统一调用
+`myagents im send-media` CLI。
 
 ### 基本信息
 
@@ -353,10 +345,8 @@ return {
 mcp__{server-name}__{tool-name}
 ```
 
-例如：
-- 服务器名：`cron-tools`，工具名：`exit_cron_task` → `mcp__cron-tools__exit_cron_task`
-- 服务器名：`im-cron`，工具名：`cron` → `mcp__im-cron__cron`
-- 服务器名：`im-media`，工具名：`send_media` → `mcp__im-media__send_media`
+例如：服务器名 `my-tools`、工具名 `my_action` 对应
+`mcp__my-tools__my_action`。
 
 这个命名格式用于：
 - `allowedTools` 配置
@@ -425,7 +415,9 @@ querySession = query({
 
 ## 上下文管理模式
 
-三个工具都使用**模块级变量 + setter/getter** 模式管理运行时上下文：
+确有 Turn-scoped 上下文的动态工具可以使用**模块级变量 + setter/getter** 模式，
+但上下文必须随 queue item 在 promotion 时绑定、terminal 时清理，不能在请求入队时
+提前覆盖当前 Turn：
 
 ```typescript
 // 模块级状态
@@ -436,11 +428,8 @@ export function getContext(): SomeContext | null { return context; }
 export function clearContext(): void { context = null; }
 ```
 
-**上下文设置时机**：
-- `exit_cron_task`：定时任务执行前由 `agent-session.ts` 调用 `setCronTaskContext()`，执行后由 `builtin-session/turn-lifecycle.ts` 的 terminal cleanup 自动调用 `clearCronTaskContext()`
-- `cron` 和 `send_media`：每次 IM 消息到达时在 `index.ts` 的 `/api/im/enqueue` handler 中设置（`setImCronContext()` 和 `setImMediaContext()`）
-
-**注意**：IM 工具的上下文是在消息到达时覆写的模块级单例。在多群聊并发场景下存在理论上的竞态风险（与 im-cron 相同的已知模式）。
+历史 `cron-tools` / `im-cron` / `im-media` 的请求级单例模式已经退役；不要把它们
+作为新工具的架构样板。
 
 ## 工具权限控制
 
@@ -475,7 +464,7 @@ canUseTool: async (toolName, input, options) => {
 query({
   options: {
     allowedTools: [
-      'mcp__cron-tools__exit_cron_task',  // 允许特定工具
+      'mcp__my-tools__my_action',         // 允许特定工具
       'mcp__my-tools__*',                  // 允许服务器下所有工具
     ]
   }
@@ -560,7 +549,7 @@ async (args) => {
 2. **检查工具调用**：在 `canUseTool` 回调中记录工具调用
 3. **验证参数**：在工具处理函数开头记录收到的参数
 4. **SSE 事件跟踪**：监听 `chat:tool-use` 事件查看工具调用详情
-5. **IM 工具调试**：查看 `~/.myagents/logs/unified-{today}.log`，搜索 `[im-cron]` `[im-media]` `[cron-tools]`
+5. **内置工具调试**：查看 `~/.myagents/logs/unified-{today}.log`，搜索对应 MCP server id
 
 ## 相关文档
 

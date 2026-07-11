@@ -282,6 +282,7 @@
       "cancelGoalConfirmTitle": "Cancel the current goal?",
       "cancelGoalConfirmMessage": "The goal will become canceled and automatic continuation will stop. Existing conversation history and work results are kept.",
       "cancelGoalFailed": "Could not cancel the goal. Please try again.",
+      "pauseGoalFailed": "The goal was paused, but the current response could not be confirmed stopped. Try Stop again.",
       "dismissStoppedTitle": "Close and restore task content to the input box",
       "dismissGoalTitle": "Dismiss goal status",
       "stopButton": "Stop"
@@ -397,32 +398,21 @@
     },
     "legacy": {
       "untitled": "Untitled scheduled task",
-      "deleteConfirm": "Delete legacy scheduled task \"{{name}}\"? This cannot be undone.",
-      "upgradeConfirm": "Upgrade \"{{name}}\" to the new task model?\n\nAfter upgrading:\n• A source thought is created automatically (content = original prompt)\n• The new task inherits the current schedule, end conditions, notifications, and runtime config\n• The existing schedule keeps running and run history is preserved\n• Next time it opens in the new task detail view with editing, audit history, and acceptance criteria",
       "badge": "Legacy scheduled task",
-      "description": "This scheduled task was created before v0.1.69 and does not include Task Center alignment documents.",
+      "description": "This old-format record could not be migrated to a Task. It is read-only and will not be scheduled.",
       "closeTitle": "Close (Cmd+W)",
-      "pause": "Pause",
-      "start": "Start",
-      "upgrade": "Upgrade to new task",
-      "delete": "Delete",
-      "status": "Status",
-      "running": "Running",
-      "paused": "Paused",
+      "status": "Recorded status",
+      "running": "Was running",
+      "paused": "Was stopped",
       "workspace": "Workspace",
       "schedule": "Schedule",
       "created": "Created",
       "originalPrompt": "Original prompt",
-      "footer": "Legacy tasks keep their existing scheduling behavior. Run history is still available in the chat tab's scheduled-task panel. Click \"Upgrade to new task\" above to get the full task detail view with editable prompt, schedule, notifications, audit history, and acceptance criteria. The existing schedule is not interrupted.",
+      "footer": "Ordinary schedules that can be migrated enter the Task system automatically at startup. This view preserves only unmigrated source records; the app does not restore timers from the old Cron file.",
       "scheduleFallback": "Fixed interval",
       "scheduleEvery": "Every {{minutes}} minutes",
       "scheduleOnce": "{{time}} once",
       "scheduleCron": "Cron expression: {{expr}}"
-    },
-    "legacyUpgrade": {
-      "missingCronTaskId": "Missing CronTask id. Cannot upgrade.",
-      "missingWorkspacePath": "Missing workspace path. Cannot upgrade.",
-      "workspaceNotFound": "Workspace not found: {{workspacePath}}. Add this workspace on the launcher first, then retry the upgrade."
     }
   },
   "advanced": {
@@ -636,6 +626,7 @@
       "once": "One-time",
       "recurring": "Recurring",
       "scheduled": "Scheduled",
+      "legacyLoop": "Legacy loop",
       "legacy": "Legacy",
       "legacyTask": "Legacy task"
     },

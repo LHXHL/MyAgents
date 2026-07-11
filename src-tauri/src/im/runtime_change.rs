@@ -548,6 +548,7 @@ pub async fn freeze_and_rotate_for_runtime_change(
     let mut frozen_via_sidecar = 0usize;
     let mut frozen_via_fallback = 0usize;
     let mut skipped_missing_unindexed = 0usize;
+    let mut skipped_persistent_owner = 0usize;
     let mut rotated = 0usize;
     let mut notified = 0usize;
     let mut notification_targets = 0usize;
@@ -577,6 +578,28 @@ pub async fn freeze_and_rotate_for_runtime_change(
                 let old_session_id = prior.session_id.clone();
                 let port = prior.sidecar_port;
                 let chat_id = prior.source_id.clone();
+                let _lifecycle =
+                    crate::sidecar::acquire_session_lifecycle(&[&old_session_id]).await;
+                match crate::sidecar::has_persisted_session_owner(&old_session_id).await {
+                    Ok(false) => {}
+                    Ok(true) => {
+                        skipped_persistent_owner += 1;
+                        ulog_info!(
+                            "[runtime-change] preserving session {} while it has a persistent Goal/task owner",
+                            short_id(&old_session_id)
+                        );
+                        continue;
+                    }
+                    Err(error) => {
+                        skipped_persistent_owner += 1;
+                        ulog_warn!(
+                            "[runtime-change] preserving session {} because owner lookup failed: {}",
+                            short_id(&old_session_id),
+                            error
+                        );
+                        continue;
+                    }
+                }
 
                 // ----- 1. Freeze old session (HTTP if alive AND client built;
                 //         file-lock fallback otherwise). The two paths must be
@@ -803,7 +826,7 @@ pub async fn freeze_and_rotate_for_runtime_change(
 
     if total_bindings > 0 {
         ulog_info!(
-            "[runtime-change] agent={} {} → {}: bindings={} frozen(sidecar={}, fallback={}) skipped_missing_unindexed={} rotated={} notification_targets={} notified={} deduped_notifications={}",
+            "[runtime-change] agent={} {} → {}: bindings={} frozen(sidecar={}, fallback={}) skipped_missing_unindexed={} skipped_persistent_owner={} rotated={} notification_targets={} notified={} deduped_notifications={}",
             agent.agent_id,
             old_runtime,
             new_runtime,
@@ -811,6 +834,7 @@ pub async fn freeze_and_rotate_for_runtime_change(
             frozen_via_sidecar,
             frozen_via_fallback,
             skipped_missing_unindexed,
+            skipped_persistent_owner,
             rotated,
             notification_targets,
             notified,

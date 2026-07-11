@@ -1,91 +1,38 @@
-//! Legacy CronTask → new-model Task upgrade primitive (PRD §11.4).
+//! Read-only Legacy CronTask -> Task migration.
 //!
-//! v0.1.68 CronTasks don't have a `task_id` back-pointer and so surface in
-//! the Task Center as "遗留" rows. This module turns them into proper
-//! new-model Tasks, preserving schedule / prompt / workspace / end
-//! conditions / runtime config — the existing CronTask keeps running, we
-//! just wire both-sided back-pointers.
-//!
-//! Design notes:
-//!
-//! 1. **No synthetic Thought.** Earlier iterations auto-created a Thought
-//!    whose content was the cron's prompt, on the theory that every Task
-//!    must have a `sourceThoughtId`. In practice this polluted the user's
-//!    thought stream with one "synthetic" entry per upgraded cron. The v1
-//!    invariant ("every NEW Task has a sourceThoughtId") doesn't need to
-//!    apply to migrations: a legacy cron has no thought and there was
-//!    never a moment at which one would have been captured. We leave
-//!    `source_thought_id = None` on migrated tasks.
-//!
-//! 2. **Preserve lifecycle state.** Crons have two statuses (Running /
-//!    Stopped), but a stopped cron means any of three things — user
-//!    paused, end conditions fired, AI self-exited. `exit_reason` tells
-//!    them apart. We map:
-//!      - Running                           → Task::Running
-//!      - Stopped + exit_reason set         → Task::Done
-//!      - Stopped without exit_reason       → Task::Stopped
-//!    This is what `TaskStore::create_migrated` is for — the regular
-//!    `create_direct` always starts Todo, which lies about already-
-//!    completed crons by dumping them into 待启动.
-//!
-//! 3. **Rust-native field conversions.** The whole reason this lives in
-//!    Rust (not TypeScript) is to let the type system catch serde-shape
-//!    drift between `cron_task::*` and `task::*` at `cargo check` time.
-//!    Every conversion helper below is a `match` on a strongly-typed
-//!    enum; add a variant on either side and the compiler refuses to
-//!    build.
-//!
-//! 4. **Atomic rollback.** The whole pipeline lives inside a single
-//!    `async fn`. `cron_manager.set_task_id` uses `require_null=true`,
-//!    so two concurrent upgrades on the same cron can't both "win" —
-//!    the loser sees `ALREADY_LINKED` and we undo the partial Task we
-//!    just created.
+//! The old JSON file remains a diagnostic backup. Live scheduling starts only
+//! from TaskStore after this migration completes.
 
 use crate::cron_task;
 use crate::task;
-use crate::thought;
-use crate::ulog_info;
+use crate::{ulog_info, ulog_warn};
 
-/// Map a CronTask's `RunMode` to the Task-side enum.
-fn run_mode_from_cron(rm: &cron_task::RunMode) -> task::TaskRunMode {
-    match rm {
+fn run_mode_from_cron(mode: &cron_task::RunMode) -> task::TaskRunMode {
+    match mode {
         cron_task::RunMode::SingleSession => task::TaskRunMode::SingleSession,
         cron_task::RunMode::NewSession => task::TaskRunMode::NewSession,
     }
 }
 
-/// Map a CronTask's `EndConditions` (deadline as `DateTime<Utc>`) to the
-/// Task-side shape (deadline as `i64` ms-epoch).
-fn end_conditions_from_cron(ec: &cron_task::EndConditions) -> task::TaskEndConditions {
+fn end_conditions_from_cron(conditions: &cron_task::EndConditions) -> task::TaskEndConditions {
     task::TaskEndConditions {
-        deadline: ec.deadline.map(|dt| dt.timestamp_millis()),
-        max_executions: ec.max_executions,
-        ai_can_exit: ec.ai_can_exit,
+        deadline: conditions.deadline.map(|value| value.timestamp_millis()),
+        max_executions: conditions.max_executions,
+        ai_can_exit: conditions.ai_can_exit,
     }
 }
 
-/// Derive the Task's `execution_mode` from the cron's schedule kind.
-fn execution_mode_from_cron_schedule(
-    schedule: &Option<cron_task::CronSchedule>,
-) -> task::TaskExecutionMode {
-    match schedule {
-        Some(cron_task::CronSchedule::At { .. }) => task::TaskExecutionMode::Scheduled,
-        Some(cron_task::CronSchedule::Loop) => task::TaskExecutionMode::Loop,
-        _ => task::TaskExecutionMode::Recurring,
-    }
-}
-
-/// Build a Task-side `NotificationConfig` from the cron's (flat) notification
-/// fields. `CronDelivery.platform` has no Task-side counterpart — the channel
-/// id carries the platform implicitly via the bot registry.
-fn notification_from_cron(
-    notify_enabled: bool,
-    delivery: &Option<cron_task::CronDelivery>,
-) -> task::NotificationConfig {
+fn notification_from_cron(cron: &cron_task::CronTask) -> task::NotificationConfig {
     task::NotificationConfig {
-        desktop: notify_enabled,
-        bot_channel_id: delivery.as_ref().map(|d| d.bot_id.clone()),
-        bot_thread: delivery.as_ref().map(|d| d.chat_id.clone()),
+        desktop: cron.notify_enabled,
+        bot_channel_id: cron
+            .delivery
+            .as_ref()
+            .map(|delivery| delivery.bot_id.clone()),
+        bot_thread: cron
+            .delivery
+            .as_ref()
+            .map(|delivery| delivery.chat_id.clone()),
         events: Some(vec![
             "done".to_string(),
             "blocked".to_string(),
@@ -94,216 +41,364 @@ fn notification_from_cron(
     }
 }
 
-/// Compute the Task status that best represents the cron's current
-/// lifecycle state. See the module doc for mapping rules.
-fn initial_status_from_cron(cron: &cron_task::CronTask) -> task::TaskStatus {
+fn normal_status(cron: &cron_task::CronTask) -> task::TaskStatus {
+    if matches!(cron.schedule, Some(cron_task::CronSchedule::At { .. })) && cron.execution_count > 0
+    {
+        return task::TaskStatus::Done;
+    }
     match cron.status {
         cron_task::TaskStatus::Running => task::TaskStatus::Running,
-        cron_task::TaskStatus::Stopped => {
-            if cron.exit_reason.is_some() {
-                task::TaskStatus::Done
-            } else {
-                task::TaskStatus::Stopped
-            }
+        cron_task::TaskStatus::Stopped if cron.exit_reason.is_some() => task::TaskStatus::Done,
+        cron_task::TaskStatus::Stopped => task::TaskStatus::Stopped,
+    }
+}
+
+fn truncate_chars(value: &str, max: usize) -> String {
+    if value.chars().count() <= max {
+        return value.to_string();
+    }
+    let prefix: String = value.chars().take(max.saturating_sub(1)).collect();
+    format!("{prefix}…")
+}
+
+fn task_name(cron: &cron_task::CronTask) -> String {
+    if let Some(name) = cron
+        .name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        return truncate_chars(name, 120);
+    }
+    truncate_chars(
+        cron.prompt
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("未命名定时任务")
+            .trim(),
+        60,
+    )
+}
+
+fn workspace_id_for(
+    cron: &cron_task::CronTask,
+    agents: &[crate::im::types::AgentConfigRust],
+) -> Option<String> {
+    let target = crate::workspace_path::normalize_workspace_path_identity(&cron.workspace_path);
+    agents
+        .iter()
+        .find(|agent| {
+            crate::workspace_path::normalize_workspace_path_identity(&agent.workspace_path)
+                == target
+        })
+        .map(|agent| agent.id.clone())
+}
+
+fn migration_input(
+    cron: &cron_task::CronTask,
+    workspace_id: String,
+) -> (task::TaskCreateDirectInput, task::TaskStatus, String) {
+    let run_mode = run_mode_from_cron(&cron.run_mode);
+    let mut blocked_reason = None;
+    let uses_external_runtime = cron
+        .runtime
+        .as_deref()
+        .is_some_and(|runtime| runtime != "builtin");
+    let provider_id = if uses_external_runtime {
+        // External runtimes own their provider configuration. Historical
+        // builtin provider fields were never part of that execution route.
+        None
+    } else if cron.provider_env.is_some() {
+        blocked_reason = Some(
+            "Legacy provider credentials were not copied; select a provider before rerun"
+                .to_string(),
+        );
+        None
+    } else if cron.provider_id.is_some() && cron.model.is_none() {
+        blocked_reason = Some(
+            "Legacy provider routing has no model; select a provider and model before rerun"
+                .to_string(),
+        );
+        None
+    } else if cron.provider_intent == cron_task::ProviderIntent::Subscription {
+        if cron.model.is_some() {
+            Some("anthropic-sub".to_string())
+        } else {
+            blocked_reason = Some(
+                "Legacy subscription routing has no model; select a model before rerun".to_string(),
+            );
+            None
         }
-    }
-}
-
-fn migration_message_for(status: task::TaskStatus, cron: &cron_task::CronTask) -> String {
-    match status {
-        task::TaskStatus::Running => "migrated from legacy cron (running)".to_string(),
-        task::TaskStatus::Done => cron
-            .exit_reason
-            .as_deref()
-            .map(|r| format!("migrated from legacy cron (done: {})", r))
-            .unwrap_or_else(|| "migrated from legacy cron (done)".to_string()),
-        task::TaskStatus::Stopped => "migrated from legacy cron (paused)".to_string(),
-        _ => "migrated from legacy cron".to_string(),
-    }
-}
-
-fn derive_task_name(cron: &cron_task::CronTask) -> String {
-    if let Some(name) = cron.name.as_deref() {
-        let trimmed = name.trim();
-        if !trimmed.is_empty() {
-            return truncate_chars(trimmed, 120);
-        }
-    }
-    let first_line = cron
-        .prompt
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .unwrap_or("未命名定时任务")
-        .trim();
-    truncate_chars(first_line, 60)
-}
-
-fn truncate_chars(s: &str, max: usize) -> String {
-    let count = s.chars().count();
-    if count <= max {
-        return s.to_string();
-    }
-    let keep: String = s.chars().take(max.saturating_sub(1)).collect();
-    format!("{}…", keep)
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UpgradeResult {
-    pub task: task::Task,
-}
-
-/// Upgrade one legacy CronTask to a new-model Task.
-///
-/// The renderer resolves `workspace_path → workspace_id` from its config
-/// and passes the id in (Rust doesn't have a cross-process view of the
-/// projects list). Everything else — schedule mapping, status derivation,
-/// rollback — happens server-side under a single `async fn`.
-///
-/// `thought_store` is kept in the signature so future revisions can use
-/// it (e.g. if we add user-opt-in "also create a thought on upgrade"
-/// behavior), but the default migration does NOT create a Thought.
-pub async fn upgrade_legacy_cron(
-    task_store: &task::TaskStore,
-    _thought_store: &thought::ThoughtStore,
-    cron_task_id: &str,
-    workspace_id: &str,
-) -> Result<UpgradeResult, String> {
-    let manager = cron_task::get_cron_task_manager();
-    let cron = manager
-        .get_task(cron_task_id)
-        .await
-        .ok_or_else(|| format!("CronTask not found: {}", cron_task_id))?;
-
-    if let Some(existing_task_id) = &cron.task_id {
-        return Err(format!(
-            "ALREADY_LINKED: CronTask {} is already linked to Task {}",
-            cron_task_id, existing_task_id
-        ));
-    }
-
-    let prompt = cron.prompt.trim();
-    if prompt.is_empty() {
-        return Err("CronTask has an empty prompt; refusing to upgrade".to_string());
-    }
-
-    // Build input from strongly-typed Rust conversions — no JSON round-
-    // trip means field drift between cron_task::* and task::* becomes a
-    // compile error in the helpers above, not a runtime serde failure.
-    let execution_mode = execution_mode_from_cron_schedule(&cron.schedule);
-    let run_mode = Some(run_mode_from_cron(&cron.run_mode));
-    let end_conditions = Some(end_conditions_from_cron(&cron.end_conditions));
-    let notification = Some(notification_from_cron(cron.notify_enabled, &cron.delivery));
-    let initial_status = initial_status_from_cron(&cron);
-
-    // Carry scheduling detail from the CronTask so the migrated Task
-    // survives a schedule-shape edit without losing the user's interval /
-    // cron expression / dispatch time.
-    let (interval_minutes, cron_expression, cron_timezone, dispatch_at) = match &cron.schedule {
-        Some(cron_task::CronSchedule::Every { minutes, .. }) => (Some(*minutes), None, None, None),
-        Some(cron_task::CronSchedule::Cron { expr, tz }) => {
-            (None, Some(expr.clone()), tz.clone(), None)
-        }
-        Some(cron_task::CronSchedule::At { at }) => {
-            let ms = chrono::DateTime::parse_from_rfc3339(at)
-                .ok()
-                .map(|dt| dt.timestamp_millis());
-            (None, None, None, ms)
-        }
-        Some(cron_task::CronSchedule::Loop) | None => (None, None, None, None),
+    } else {
+        cron.provider_id.clone()
     };
 
-    let input = task::TaskCreateDirectInput {
-        name: derive_task_name(&cron),
-        executor: task::TaskExecutor::Agent,
-        description: None,
-        workspace_id: workspace_id.to_string(),
-        workspace_path: cron.workspace_path.clone(),
-        task_md_content: cron.prompt.clone(),
+    let (
         execution_mode,
-        run_mode,
-        end_conditions,
         interval_minutes,
         cron_expression,
         cron_timezone,
-        start_at: None,
-        recurring_window: None,
+        start_at,
+        window,
         dispatch_at,
-        model: cron.model.clone(),
-        // PRD 0.2.9 — Legacy crons store credential snapshots in
-        // `provider_env` rather than the new `provider_id` indirection. We
-        // intentionally drop them here: the upgraded Task will resolve the
-        // provider via the agent workspace at execute time (FollowAgent
-        // semantics), which preserves "what the user thinks runs" without
-        // copying secrets into the new tasks.jsonl.
-        provider_id: None,
-        permission_mode: Some(cron.permission_mode.clone()),
-        preselected_session_id: Some(cron.session_id.clone()),
-        runtime: cron.runtime.clone(),
-        runtime_config: cron.runtime_config.clone(),
-        // Legacy crons predate the per-task MCP override (PRD 0.2.4 §需求 4)
-        // — `None` means "follow Agent workspace MCP enable list".
-        mcp_enabled_servers: None,
-        managed_kind: None,
-        // Legacy crons have no source Thought and we don't mint one —
-        // synthetic thoughts pollute the user's thought stream without
-        // carrying any of the "captured a raw idea" meaning the field
-        // is supposed to represent.
-        source_thought_id: None,
-        tags: vec![],
-        notification,
+    ) = match cron.schedule.as_ref() {
+        Some(cron_task::CronSchedule::At { at }) => (
+            task::TaskExecutionMode::Scheduled,
+            None,
+            None,
+            None,
+            None,
+            None,
+            chrono::DateTime::parse_from_rfc3339(at)
+                .ok()
+                .map(|value| value.timestamp_millis()),
+        ),
+        Some(cron_task::CronSchedule::Cron { expr, tz }) => (
+            task::TaskExecutionMode::Recurring,
+            None,
+            Some(expr.clone()),
+            tz.clone(),
+            None,
+            None,
+            None,
+        ),
+        Some(cron_task::CronSchedule::Every {
+            minutes,
+            start_at,
+            catch_up_window,
+        }) => (
+            task::TaskExecutionMode::Recurring,
+            Some(*minutes),
+            None,
+            None,
+            start_at.clone(),
+            catch_up_window.clone(),
+            None,
+        ),
+        Some(cron_task::CronSchedule::Loop) => unreachable!("Loop rows are filtered"),
+        None => (
+            task::TaskExecutionMode::Recurring,
+            Some(cron.interval_minutes.max(5)),
+            None,
+            None,
+            None,
+            None,
+            None,
+        ),
     };
 
-    // Create the Task with the status that matches the cron's current
-    // lifecycle state — not the default Todo.
-    let task = task_store
-        .create_migrated(
-            input,
-            initial_status,
-            migration_message_for(initial_status, &cron),
-        )
-        .await
-        .map_err(|e| format!("create migrated task: {}", e))?;
+    let status = blocked_reason
+        .as_ref()
+        .map(|_| task::TaskStatus::Blocked)
+        .unwrap_or_else(|| normal_status(cron));
+    let message = blocked_reason.unwrap_or_else(|| match status {
+        task::TaskStatus::Running => "migrated from legacy cron (running)".to_string(),
+        task::TaskStatus::Done => format!(
+            "migrated from legacy cron (done{})",
+            cron.exit_reason
+                .as_deref()
+                .map(|reason| format!(": {reason}"))
+                .unwrap_or_default()
+        ),
+        task::TaskStatus::Stopped => "migrated from legacy cron (stopped)".to_string(),
+        _ => "migrated from legacy cron".to_string(),
+    });
 
-    // Forward pointer Task → CronTask.
-    if let Err(e) = task_store
-        .set_cron_task_id(&task.id, Some(cron_task_id.to_string()))
-        .await
-    {
-        let _ = task_store.delete(&task.id).await;
-        return Err(format!("set Task.cron_task_id: {}", e));
-    }
-
-    // Back pointer CronTask → Task, with link-if-null guard. When two
-    // upgrade flows race on the same cron, the loser sees
-    // `ALREADY_LINKED` here and we roll back the partial Task we just
-    // created.
-    if let Err(e) = manager
-        .set_task_id(cron_task_id, Some(task.id.clone()), true)
-        .await
-    {
-        let _ = task_store.set_cron_task_id(&task.id, None).await;
-        let _ = task_store.delete(&task.id).await;
-        return Err(format!("set CronTask.task_id: {}", e));
-    }
-
-    ulog_info!(
-        "[legacy-upgrade] cron {} → task {} (status {})",
-        cron_task_id,
-        task.id,
-        initial_status.as_str()
-    );
-
-    Ok(UpgradeResult { task })
+    (
+        task::TaskCreateDirectInput {
+            name: task_name(cron),
+            executor: task::TaskExecutor::Agent,
+            description: None,
+            workspace_id,
+            workspace_path: cron.workspace_path.clone(),
+            task_md_content: cron.prompt.clone(),
+            execution_mode,
+            run_mode: Some(run_mode),
+            end_conditions: Some(end_conditions_from_cron(&cron.end_conditions)),
+            interval_minutes,
+            cron_expression,
+            cron_timezone,
+            start_at,
+            recurring_window: window,
+            dispatch_at,
+            model: cron.model.clone(),
+            provider_id,
+            permission_mode: (!cron.permission_mode.is_empty())
+                .then(|| cron.permission_mode.clone()),
+            preselected_session_id: (run_mode == task::TaskRunMode::SingleSession)
+                .then(|| cron.session_id.trim().to_string())
+                .filter(|value| !value.is_empty()),
+            runtime: cron.runtime.clone(),
+            runtime_config: cron.runtime_config.clone(),
+            mcp_enabled_servers: cron.mcp_enabled_servers.clone(),
+            managed_kind: cron.managed_kind.clone(),
+            source_thought_id: None,
+            tags: cron
+                .source_bot_id
+                .as_ref()
+                .map(|id| vec![format!("bot:{id}")])
+                .unwrap_or_default(),
+            notification: Some(notification_from_cron(cron)),
+        },
+        status,
+        message,
+    )
 }
 
-/// Tauri command — thin wrapper around `upgrade_legacy_cron`.
-#[tauri::command]
-pub async fn cmd_task_upgrade_legacy_cron(
-    task_state: tauri::State<'_, task::ManagedTaskStore>,
-    thought_state: tauri::State<'_, thought::ManagedThoughtStore>,
-    cron_task_id: String,
-    workspace_id: String,
-) -> Result<UpgradeResult, String> {
-    upgrade_legacy_cron(&task_state, &thought_state, &cron_task_id, &workspace_id).await
+async fn migrate_one(
+    store: &task::TaskStore,
+    cron: &cron_task::CronTask,
+    workspace_id: Option<String>,
+) -> Result<task::Task, String> {
+    if matches!(cron.schedule, Some(cron_task::CronSchedule::Loop)) {
+        return Err("Legacy Loop tasks are retired and are not migrated".to_string());
+    }
+
+    let target_id = cron
+        .legacy_task_id
+        .clone()
+        .unwrap_or_else(|| cron.id.clone());
+    if let Some(existing) = store.get(&target_id).await {
+        let was_migrated = existing
+            .status_history
+            .iter()
+            .any(|transition| transition.source == Some(task::TransitionSource::Migration));
+        if existing.deleted && (cron.legacy_task_id.is_some() || was_migrated) {
+            return Ok(existing);
+        }
+        if cron.legacy_task_id.is_some() {
+            let migrated = store
+                .import_legacy_execution_state(
+                    &existing.id,
+                    cron.execution_count,
+                    cron.last_executed_at.map(|value| value.timestamp_millis()),
+                    Some(&cron.session_id),
+                )
+                .await?;
+            if let Err(error) =
+                crate::cron_task::run_records::migrate_cron_run_history(&cron.id, &migrated.id)
+                    .await
+            {
+                ulog_warn!(
+                    "[legacy-cron] run history migration failed {} -> {}: {}",
+                    cron.id,
+                    migrated.id,
+                    error
+                );
+            }
+            return Ok(migrated);
+        }
+    }
+
+    let missing_workspace = workspace_id.is_none();
+    let workspace_id = workspace_id.unwrap_or_else(|| format!("legacy-{}", cron.id));
+    let (input, mut status, mut message) = migration_input(cron, workspace_id);
+    if missing_workspace {
+        status = task::TaskStatus::Blocked;
+        message = "Legacy Cron workspace is no longer registered; select a workspace before rerun"
+            .to_string();
+    }
+    let task = store
+        .create_migrated_with_id(target_id, input, status, message)
+        .await?;
+    let task = store
+        .import_legacy_execution_state(
+            &task.id,
+            cron.execution_count,
+            cron.last_executed_at.map(|value| value.timestamp_millis()),
+            Some(&cron.session_id),
+        )
+        .await?;
+    if let Err(error) =
+        crate::cron_task::run_records::migrate_cron_run_history(&cron.id, &task.id).await
+    {
+        ulog_warn!(
+            "[legacy-cron] run history migration failed {} -> {}: {}",
+            cron.id,
+            task.id,
+            error
+        );
+    }
+    Ok(task)
+}
+
+pub async fn migrate_legacy_crons_on_startup() -> Result<(), String> {
+    let store = task::get_task_store().ok_or_else(|| "task store not initialized".to_string())?;
+    let manager = cron_task::get_cron_task_manager();
+    if let Some(error) = manager.legacy_load_error() {
+        return Err(format!("legacy Cron store failed validation: {error}"));
+    }
+    let agents = crate::im::read_agent_configs_from_disk();
+    let rows = manager.get_legacy_tasks().await;
+    let mut migrated = 0usize;
+    let mut failures = Vec::new();
+
+    for cron in rows {
+        if matches!(cron.schedule, Some(cron_task::CronSchedule::Loop)) {
+            ulog_info!("[legacy-cron] retired Loop row {}", cron.id);
+            continue;
+        }
+        let workspace_id = workspace_id_for(&cron, &agents);
+        match migrate_one(store, &cron, workspace_id).await {
+            Ok(_) => migrated += 1,
+            Err(error) => {
+                ulog_warn!("[legacy-cron] failed to migrate {}: {}", cron.id, error);
+                failures.push(format!("{}: {}", cron.id, error));
+            }
+        }
+    }
+
+    if migrated > 0 {
+        ulog_info!("[legacy-cron] migrated {} row(s) into TaskStore", migrated);
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} legacy Cron row(s) remain read-only after migration failure: {}",
+            failures.len(),
+            failures.join("; ")
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn legacy_at(execution_count: u32) -> cron_task::CronTask {
+        serde_json::from_value(serde_json::json!({
+            "id": "legacy-at",
+            "workspacePath": "/tmp/workspace",
+            "sessionId": "session-1",
+            "prompt": "run once",
+            "intervalMinutes": 60,
+            "status": "running",
+            "executionCount": execution_count,
+            "createdAt": "2026-01-01T00:00:00Z",
+            "updatedAt": "2026-01-01T00:00:00Z",
+            "schedule": { "kind": "at", "at": "2026-01-02T00:00:00Z" }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn previously_executed_one_shot_migrates_terminal() {
+        assert_eq!(normal_status(&legacy_at(1)), task::TaskStatus::Done);
+    }
+
+    #[test]
+    fn pending_one_shot_remains_running_for_scheduler_recovery() {
+        assert_eq!(normal_status(&legacy_at(0)), task::TaskStatus::Running);
+    }
+
+    #[test]
+    fn migration_preserves_source_bot_identity() {
+        let mut cron = legacy_at(0);
+        cron.source_bot_id = Some("bot-1".to_string());
+
+        let (input, _, _) = migration_input(&cron, "workspace-1".to_string());
+
+        assert_eq!(input.tags, vec!["bot:bot-1"]);
+    }
 }

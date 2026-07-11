@@ -299,15 +299,15 @@ pub struct SessionRouter {
 群聊： im:telegram:group:{group_id}
 ```
 
-**Sidecar 所有权**：IM Bot 使用 `SidecarOwner::ImBot(session_key)` 作为 Sidecar 的 owner，与 `Tab`、`CronTask`、`BackgroundCompletion` 并列。当所有 owner 释放时 Sidecar 自动停止。`ensure_session_sidecar()` 和 `release_session_sidecar()` 统一管理生命周期。
+**Sidecar 所有权**：IM Bot 使用 `SidecarOwner::ImBot(session_key)` 作为 Sidecar owner，与 `Tab`、`Task`、`Goal`、`BackgroundCompletion` 并列。当所有 owner 释放时 Sidecar 自动停止。`ensure_session_sidecar()` 和 `release_session_sidecar()` 统一管理生命周期。
 
 ### 2.6.1 IM / Agent Channel 中的 Goal Mode
 
 Goal Mode 是 current-session 状态，因此 IM / Agent Channel 里由 AI 调 `myagents goal create --objective-file ...` 创建的 Goal，仍属于当前 peer session：
 
 - 创建入口和桌面 `/goal` 等价，最终走 Goal facade / `/api/goal/create`，而不是普通 Cron create。
-- 后续自动续跑复用 backing `CronTask` scheduler，但 `/cron/execute-sync` 会把 current-session Goal 的 interaction scenario 恢复为原 IM / Agent Channel scenario。
-- ordinary user ingress 由 SessionEngine Goal orchestrator 统一注入 Goal context；Rust reserve 后，adapter 在真实 Runtime promotion 前 claim，transport 接受后 finalize，idle 后 release，避免 renderer/渠道各自维护 Goal 逻辑。
+- 后续自动续跑由 `SessionGoalManager` 的 one-shot continuation 驱动，经 `/goal/execute-sync` 恢复原 IM / Agent Channel interaction scenario；不创建 Task/CronTask。
+- ordinary user ingress 由 SessionEngine Goal orchestrator 统一注入 Goal context；现有 queue item 到达真实 Runtime promotion 时由 adapter 原子 claim，terminal 后 finalize，避免 renderer/渠道各自维护 Goal 逻辑。
 - 自动 continuation 仅在 Sidecar 明确返回 `goalChannelDeliveryExpected=true`（turn origin 为 `agent-channel`）时把成功文本写入持久 outbox，不创建或读取 `CronDelivery`。每个 Goal 的唯一 replay worker 按 `sessionId -> peer session` binding 投递；没有 binding 不 ACK，并在运行中/启动恢复后持续重试。
 - Channel 投递是 at-least-once：稳定 delivery id 防止同一 lease 在健康进程内重复入队，但 push 成功后、outbox 删除前崩溃会在恢复后重发。群聊结果为 `<NO_REPLY>` / `NO_REPLY` 时保持静默。
 - 桌面端从历史打开同一个 IM / Agent Channel session 时，应通过 `sessionId + workspacePath` hydrate active/paused Goal 横条。
@@ -1054,7 +1054,7 @@ IM Bot 升级为 Agent 实体，Channel 为可插拔连接。新旧 Tauri Comman
 - `desktop` — 桌面客户端对话
 - `im` — 内置 IM Bot（Telegram/飞书/钉钉）
 - `agent-channel` — Agent Channel（OpenClaw 插件，platform 为任意字符串）
-- `cron` — 定时任务
+- `cron` — Scheduled Task 执行（场景枚举名保留 wire compatibility）
 
 Agent Channel 与 IM Bot 的区别：`platform` 字段为 `string` 而非固定枚举，支持任意社区插件平台。
 

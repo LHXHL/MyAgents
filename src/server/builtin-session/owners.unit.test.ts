@@ -34,19 +34,18 @@ import {
 } from './queue';
 import {
   beginTurn,
-  clearCurrentTurnTextBlocks,
   clearPendingRequests,
-  consumeInjectedTurnOutcome,
-  discardInjectedTurnOutcome,
-  discardInjectedTurnOutcomeWithOptions,
+  getCurrentTurnIdentity,
   getCurrentTurnText,
   getPendingRequestIds,
+  notifyCurrentTurnTerminal,
   pushPendingRequest,
-  recordInjectedTurnOutcome,
   removePendingRequest,
   resetTurnForTest,
+  setCurrentTurnSourceItem,
   snapshotTurn,
   terminalCleanup,
+  waitForCurrentTurnTerminalObserver,
   appendCurrentTurnTextBlock,
   setAssistantMessagePresent,
 } from './turn';
@@ -197,29 +196,59 @@ describe('builtin-session owners', () => {
     expect(snapshotQueue().messageQueue.map(item => item.id)).toEqual(['q2', 'q1']);
   });
 
-  it('turn owner keeps pending request FIFO and injected outcomes turn-local', () => {
+  it('turn owner keeps pending request FIFO and notifies the current queue item once', () => {
     pushPendingRequest('r1');
     pushPendingRequest('r2');
     expect(getPendingRequestIds()).toEqual(['r1', 'r2']);
     expect(removePendingRequest('r2')).toBe(true);
     expect(clearPendingRequests()).toEqual(['r1']);
 
-    beginTurn({ startedAt: 100, injectedTurnId: 'turn-a' });
+    const onTerminal = vi.fn();
+    const item = queueItem('turn-a');
+    item.turnOwner = { kind: 'goal', id: 'goal-1' };
+    item.onTerminal = onTerminal;
+    beginTurn({ startedAt: 100 });
+    setCurrentTurnSourceItem(item);
     appendCurrentTurnTextBlock('hello');
     setAssistantMessagePresent(true);
-    recordInjectedTurnOutcome('complete');
-    expect(consumeInjectedTurnOutcome('turn-a')).toEqual({
+    expect(getCurrentTurnIdentity()).toEqual({
+      queueId: 'turn-a',
+      owner: { kind: 'goal', id: 'goal-1' },
+    });
+    notifyCurrentTurnTerminal('complete');
+    expect(onTerminal).toHaveBeenCalledWith({
       status: 'complete',
       text: 'hello',
       assistantMessagePresent: true,
     });
-    expect(consumeInjectedTurnOutcome('turn-a')).toBeUndefined();
+    notifyCurrentTurnTerminal('complete');
+    expect(onTerminal).toHaveBeenCalledTimes(1);
   });
 
-  it('turn owner discards late injected outcomes and owns terminal cleanup', () => {
+  it('keeps the terminal boundary closed until an async observer settles', async () => {
+    let release!: () => void;
+    const item = queueItem('turn-a');
+    item.onTerminal = () => new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    setCurrentTurnSourceItem(item);
+
+    notifyCurrentTurnTerminal('complete');
+    let settled = false;
+    void waitForCurrentTurnTerminalObserver().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    release();
+    await waitForCurrentTurnTerminalObserver();
+    expect(settled).toBe(true);
+  });
+
+  it('turn owner keeps terminal inbox cleanup local to the active turn', () => {
     beginTurn({
       startedAt: 100,
-      injectedTurnId: 'turn-b',
       inboxMeta: {
         fromSessionId: 's1',
         fromLabel: 'source',
@@ -229,34 +258,12 @@ describe('builtin-session owners', () => {
       },
     });
     appendCurrentTurnTextBlock('late');
-    discardInjectedTurnOutcome('turn-b');
-    recordInjectedTurnOutcome('complete');
-    expect(consumeInjectedTurnOutcome('turn-b')).toBeUndefined();
 
     expect(getCurrentTurnText()).toBe('late');
     const cleanup = terminalCleanup();
     expect(cleanup.replyText).toBe('late');
     expect(cleanup.inboxMeta?.fromSessionId).toBe('s1');
     expect(snapshotTurn().currentTurnTextBlocks).toEqual([]);
-  });
-
-  it('turn owner can optionally release a discarded injected turn marker', () => {
-    beginTurn({ startedAt: 100, injectedTurnId: 'turn-retained' });
-    appendCurrentTurnTextBlock('retained');
-    discardInjectedTurnOutcomeWithOptions('turn-retained');
-    recordInjectedTurnOutcome('complete');
-    expect(consumeInjectedTurnOutcome('turn-retained')).toBeUndefined();
-    clearCurrentTurnTextBlocks();
-
-    beginTurn({ startedAt: 200, injectedTurnId: 'turn-released' });
-    appendCurrentTurnTextBlock('released');
-    discardInjectedTurnOutcomeWithOptions('turn-released', { retainForLateTerminal: false });
-    recordInjectedTurnOutcome('complete');
-    expect(consumeInjectedTurnOutcome('turn-released')).toEqual({
-      status: 'complete',
-      text: 'released',
-      assistantMessagePresent: false,
-    });
   });
 
   it('config owner drains deferred restarts and consumes provider boundary once', () => {

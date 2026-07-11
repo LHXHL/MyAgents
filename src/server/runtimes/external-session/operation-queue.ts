@@ -3,6 +3,7 @@ import type { ExternalRuntimeConfigPatch, ExternalRuntimeConfigSnapshot } from '
 import { canDrainExternalQueue, shouldQueueExternalSend } from '../external-queue-policy';
 import { mergeRuntimeConfigPatches } from '../../session-core/runtime-config-policy';
 import type { ChatQueueResponseMode } from '../../../shared/config-types';
+import type { TurnOwner } from '../../session-core/turn-queue';
 import type {
   ExternalConfigSource,
   ExternalQueuedConfigOperation,
@@ -98,6 +99,7 @@ export function enqueueExternalMessageOperation(input: {
   images?: ImagePayload[];
   context: ExternalSendContext;
   runtimeConfig: ExternalRuntimeConfigSnapshot;
+  queueId?: string;
 }): {
   queued: true;
   queueId: string;
@@ -106,7 +108,7 @@ export function enqueueExternalMessageOperation(input: {
   if (queuedExternalMessageCount() >= EXTERNAL_MAX_QUEUE_SIZE) {
     return { queued: false, error: '排队消息已达上限，请稍后再发' };
   }
-  const queueId = nextExternalQueueId();
+  const queueId = input.queueId ?? nextExternalQueueId();
   let settleDispatchAcceptance!: (result: { queued: boolean; error?: string }) => void;
   const dispatchAcceptance = new Promise<{ queued: boolean; error?: string }>((resolve) => {
     settleDispatchAcceptance = resolve;
@@ -116,7 +118,7 @@ export function enqueueExternalMessageOperation(input: {
     queueId,
     text: input.text,
     images: input.images,
-    context: input.context,
+    context: { ...input.context, queueId },
     runtimeConfig: input.runtimeConfig,
     dispatchAcceptance,
     settleDispatchAcceptance,
@@ -162,6 +164,42 @@ export function clearExternalQueueWithCancellation(): string[] {
   externalDesktopSendTail = Promise.resolve();
   externalOperationGeneration += 1;
   return cancelledQueueIds;
+}
+
+export function cancelExternalQueuedMessagesByOwner(owner: TurnOwner): string[] {
+  const matches = (item: ExternalQueuedMessageOperation) =>
+    item.context.turnOwner?.kind === owner.kind
+      && item.context.turnOwner.id === owner.id;
+  const canceled: string[] = [];
+  for (let index = externalOperationQueue.length - 1; index >= 0; index -= 1) {
+    const item = externalOperationQueue[index];
+    if (item.kind !== 'message' || !matches(item)) continue;
+    externalOperationQueue.splice(index, 1);
+    item.context.beforeDispatch?.cancel?.();
+    item.settleDispatchAcceptance({ queued: false });
+    canceled.push(item.queueId);
+  }
+  if (externalReservedDrainOperation?.kind === 'message' && matches(externalReservedDrainOperation)) {
+    const item = externalReservedDrainOperation;
+    externalReservedDrainOperation = null;
+    externalOperationDrainInFlight = false;
+    item.context.beforeDispatch?.cancel?.();
+    item.settleDispatchAcceptance({ queued: false });
+    canceled.push(item.queueId);
+  }
+  return canceled;
+}
+
+export function hasExternalQueuedMessageByOwner(owner: TurnOwner): boolean {
+  const matches = (item: ExternalQueuedMessageOperation) =>
+    item.context.turnOwner?.kind === owner.kind
+      && item.context.turnOwner.id === owner.id;
+  return externalOperationQueue.some(
+    (item) => item.kind === 'message' && matches(item),
+  ) || (
+    externalReservedDrainOperation?.kind === 'message'
+    && matches(externalReservedDrainOperation)
+  );
 }
 
 export function consumeLeadingExternalConfigOps(): { patch: ExternalRuntimeConfigPatch; source: ExternalConfigSource } | null {

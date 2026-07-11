@@ -11,7 +11,7 @@ use tauri::{AppHandle, Runtime};
 use tokio::sync::{mpsc, watch, Mutex, RwLock};
 
 use crate::sidecar::ManagedSidecarManager;
-use crate::{ulog_debug, ulog_info, ulog_warn};
+use crate::{ulog_debug, ulog_error, ulog_info, ulog_warn};
 
 use super::adapter::push_text_preferring_stream;
 use super::health::{self, HealthManager};
@@ -453,14 +453,26 @@ impl HeartbeatRunner {
             .map(|s| s.to_string());
 
         {
-            let drift_result = {
+            let drift_result = match {
                 let mut router_guard = router.lock().await;
-                router_guard.check_and_reset_on_runtime_identity_drift(
-                    &session_key,
-                    &current_runtime,
-                    current_runtime_source.as_deref(),
-                    sidecar_manager,
-                )
+                router_guard
+                    .check_and_reset_on_runtime_identity_drift(
+                        &session_key,
+                        &current_runtime,
+                        current_runtime_source.as_deref(),
+                        sidecar_manager,
+                    )
+                    .await
+            } {
+                Ok(result) => result,
+                Err(error) => {
+                    ulog_error!(
+                        "[heartbeat] Could not reconcile Session identity for {}: {}",
+                        session_key,
+                        error
+                    );
+                    return false;
+                }
             };
             if let Some((old_id, new_id)) = drift_result {
                 ulog_info!(

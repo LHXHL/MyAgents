@@ -118,12 +118,14 @@ import {
   cancelExternalQueuedMessage,
   chainExternalDesktopSend,
   clearExternalQueueWithCancellation as clearExternalQueueOwnerWithCancellation,
+  cancelExternalQueuedMessagesByOwner,
   consumeLeadingExternalConfigOps,
   enqueueExternalConfigOperation,
   enqueueExternalMessageOperation,
   getExternalOperationGeneration,
   getExternalOperationQueueLength,
   getExternalQueueStatusSnapshot,
+  hasExternalQueuedMessageByOwner,
   hasExternalQueuedOperations,
   hasQueuedExternalConfigOperation,
   isCurrentExternalOperationGeneration,
@@ -184,17 +186,22 @@ import {
   clearExternalTurnStartTime,
   didExternalLastTurnSucceed,
   finishExternalTurnPromotion,
+  bindExternalTurn,
+  getExternalTurnTerminalGeneration,
   getExternalCurrentTurnContextUsage,
   getExternalCurrentTurnEstimatedInputTokens,
   getExternalCurrentTurnUsage,
   getExternalTurnStartTime,
   isExternalTurnCompleted,
   isExternalTurnFinalizationInFlight,
+  isExternalTurnGenerationCurrent,
   isExternalTurnPromotionCurrent,
   isExternalTurnPromotionInFlight,
   markExternalSessionComplete,
   markExternalTurnComplete,
   markExternalTurnStarted,
+  notifyExternalTurnOutcome,
+  notifyExternalTurnStopped,
   resetExternalTurnAccumulators,
   resetExternalTurnLifecycleState,
   setExternalCurrentTurnContextUsage,
@@ -204,8 +211,16 @@ import {
   setExternalTurnCompleted,
   trackExternalTurnFinalization,
   updateExternalCurrentTurnUsageModel,
+  waitForExternalTurnTerminalObserver,
   waitExternalTurnFinalization,
   type ExternalTurnPromotionToken,
+} from './external-session/turn-lifecycle';
+export {
+  clearExternalTurnBinding,
+  getExternalCurrentTurnIdentity,
+  getExternalTurnTerminalGeneration,
+  isExternalTurnCurrent,
+  waitExternalTurnFinalization,
 } from './external-session/turn-lifecycle';
 import {
   activateExternalPendingThinking,
@@ -2405,8 +2420,14 @@ export async function sendExternalMessage(
     }
   }
 
+  await waitForExternalTurnTerminalObserver();
+
   const dispatchPromotion = context?.beforeDispatch
-    ? beginExternalTurnPromotion()
+    ? beginExternalTurnPromotion({
+        queueId: context.queueId,
+        owner: context.turnOwner,
+        cancelDispatch: context.beforeDispatch.cancel,
+      })
     : null;
   if (context?.beforeDispatch && !dispatchPromotion) {
     earlyBroadcastedUserMsg = null;
@@ -2428,6 +2449,9 @@ export async function sendExternalMessage(
       context?.sessionId ?? getExternalLifecycleSessionId(),
       earlyUserMsg,
     ));
+  }
+  if (context?.queueId) {
+    bindExternalTurn(context.queueId, context.turnOwner, context.onTerminal);
   }
   onDispatchAccepted?.();
 
@@ -2776,10 +2800,9 @@ export function enqueueExternalSendForDesktop(
   canForceExecute?: boolean;
   dispatch: Promise<{ queued: boolean; error?: string }>;
 } {
-  const queueResponseMode = resolveChatQueueResponseMode(
-    loadAdminConfig().chatQueueResponseMode,
-    true,
-  );
+  const queueResponseMode = context.turnBoundaryOnly
+    ? 'turn'
+    : resolveChatQueueResponseMode(loadAdminConfig().chatQueueResponseMode, true);
   const canSteerActiveTurn = getExternalActiveSteerPair() !== null;
   // Mid-turn defer: turn-level external runtimes hold this as a queue pill
   // instead of starting a 2nd turn. Codex app-server can append to the active
@@ -2798,6 +2821,7 @@ export function enqueueExternalSendForDesktop(
       images,
       context: applySnapshotToExternalSendContext(context, runtimeConfig),
       runtimeConfig,
+      queueId: context.queueId,
     });
     if (!queued.queued) {
       return { queued: false, dispatch: Promise.resolve({ queued: false, error: queued.error }) };
@@ -2822,7 +2846,7 @@ export function enqueueExternalSendForDesktop(
   }
 
   if (queueResponseMode === 'realtime' && canSteerActiveTurn) {
-    const queueId = nextExternalQueueId();
+    const queueId = context.queueId ?? nextExternalQueueId();
     const userMsg: SessionMessage = {
       id: nextExternalUserMessageId(),
       role: 'user',
@@ -2844,7 +2868,7 @@ export function enqueueExternalSendForDesktop(
         queueId,
         text,
         images,
-        context,
+        context: { ...context, queueId },
         userMsg,
       }),
       generation,
@@ -2879,7 +2903,10 @@ export function enqueueExternalSendForDesktop(
   }
 
   const runtimeConfig = captureExternalRuntimeConfigSnapshot(model, permissionMode, context);
-  const sendContext = applySnapshotToExternalSendContext(context, runtimeConfig);
+  const sendContext = applySnapshotToExternalSendContext(
+    { ...context, queueId: context.queueId ?? nextExternalQueueId() },
+    runtimeConfig,
+  );
   const generation = getExternalOperationGeneration();
   const dispatch = chainExternalDesktopSend(
     () => sendExternalMessage(
@@ -3042,6 +3069,20 @@ export function cancelExternalQueueItem(queueId: string): string | null {
   return text;
 }
 
+export function cancelExternalQueuedTurnsByOwner(
+  owner: import('../session-core/turn-queue').TurnOwner,
+): number {
+  const queueIds = cancelExternalQueuedMessagesByOwner(owner);
+  for (const queueId of queueIds) broadcast('queue:cancelled', { queueId });
+  return queueIds.length;
+}
+
+export function hasExternalQueuedTurnByOwner(
+  owner: import('../session-core/turn-queue').TurnOwner,
+): boolean {
+  return hasExternalQueuedMessageByOwner(owner);
+}
+
 /** Current external queue (for /chat/queue/status). Mirrors builtin getQueueStatus shape. */
 export function getExternalQueueStatus(): Array<{ id: string; messagePreview: string }> {
   return getExternalQueueStatusSnapshot();
@@ -3164,8 +3205,8 @@ export async function cancelExternalImRequest(
 ): Promise<{ aborted: boolean; mode: 'running' | 'queued' | 'unknown' }> {
   if (getExternalActiveRequestId() === requestId && isExternalSessionActive()) {
     console.log(`[external-session] cancelExternalImRequest requestId=${requestId} mode=running`);
-    await stopExternalSession();
-    return { aborted: true, mode: 'running' };
+    const stopped = await stopExternalSession();
+    return { aborted: stopped, mode: stopped ? 'running' : 'unknown' };
   }
   return { aborted: false, mode: 'unknown' };
 }
@@ -3205,6 +3246,7 @@ export async function stopExternalSession(options?: {
       clearPendingRealtimeSteeredUserMessagesWithCancellation();
     }
     setExternalSessionState('idle');
+    notifyExternalTurnStopped('');
     if (!isConfigRestart) broadcast('chat:message-stopped', null);
     return true;
   }
@@ -3224,19 +3266,11 @@ export async function stopExternalSession(options?: {
   // and its error banner is suppressed. Set before the await — the exit handler
   // can fire its session_complete during stopSession().
   markExternalUserRequestedStop();
+  let gracefulError: unknown;
   try {
     await active.runtime.stopSession(active.process);
-    emitPerfTrace({
-      trace: 'runtime',
-      phase: 'stop_done',
-      durationMs: elapsedMs(stopStarted),
-      runtime: runtimeType,
-      sessionId: getExternalLifecycleSessionId() || undefined,
-      status: 'ok',
-      detail: { pid },
-    });
-    return true;
   } catch (err) {
+    gracefulError = err;
     console.error('[external-session] Error stopping session:', err);
     emitPerfTrace({
       trace: 'runtime',
@@ -3247,9 +3281,12 @@ export async function stopExternalSession(options?: {
       status: 'error',
       detail: { pid, error: err instanceof Error ? err.message : String(err) },
     });
-    // Pattern 1 P0-1 fix #11: previously fell through to a single
-    // SIGTERM-default kill that could hang indefinitely. Now bound the
-    // shutdown via killWithEscalation: 2s graceful → 1s hard → orphan log.
+  }
+
+  let confirmedStopped = active.process.exited;
+  if (!confirmedStopped) {
+    // Runtime stop either failed or returned before the process exited. Bound
+    // the fallback via killWithEscalation: 2s graceful -> 1s hard -> orphan.
     const proc = active.process;
     const killResult = await killWithEscalation(
       {
@@ -3288,55 +3325,64 @@ export async function stopExternalSession(options?: {
         killElapsedMs: killResult.elapsedMs,
       },
     });
-    return true;
-  } finally {
-    clearExternalActiveRuntimeProcess();
-    activeExternalEnvPolicy = undefined;
-    // Any pre-warm that raced with a stop is no longer relevant. Keeping the
-    // flag around would leak 'prewarm' into a subsequent session's session_init
-    // broadcast. _doStartExternalSession resets this per-call too, but some
-    // paths can call stopExternalSession without a follow-up start — explicit
-    // reset here keeps the state machine consistent regardless of what runs next.
-    clearExternalPrewarmingSession();
-    clearExternalPermissionSuggestions();  // Prevent stale suggestions leaking across sessions
-    drainPendingInteractiveRequestsAsExpired('stop');  // PRD #131 — clear stale modals before wiping map
-    clearExternalAskUserQuestions();  // Stale AskUserQuestion requestIds would misroute to new session
-    clearExternalInteractiveRequests();
-    setExternalSystemInitPayload(null);
-    if (!isConfigRestart) {
-      // Pattern B: notify IM bus subscribers (prevents orphaned SSE streams on user-stop) + clear active ID.
-      // Pattern C: also unregister from request registry.
-      fireExternalImCallback('error', 'Session stopped');
-      finalizeExternalActiveRequest('failed');
-      // PRD 0.2.18 — clear inbox meta on hard stop (user clicked stop / runtime
-      // killed mid-turn). Push session_aborted reply so caller doesn't hang.
-      deliverExternalWatchError({
-        sessionId: getExternalLifecycleSessionId(),
-        text: currentExternalTurnTextSnapshot(),
-        errorCode: 'session_aborted',
-        errorMessage: 'external runtime session was stopped before turn completed',
-      });
-      clearExternalInboxMetaOnRejection({
-        sessionId: getExternalLifecycleSessionId(),
-        errorCode: 'session_aborted',
-        errorMessage: 'external runtime session was stopped before turn completed',
-      });
-    }
-    // Drop queued desktop messages on a hard stop (user clicked Stop) — otherwise the pills
-    // orphan and, with state now 'idle' + queueLength>0, the next send queues behind stale
-    // items that nothing will ever drain (no turn is running) → the session wedges.
-    if (!preserveQueue) {
-      clearExternalQueueWithCancellation();
-    } else {
-      clearPendingRealtimeSteeredUserMessagesWithCancellation();
-    }
-    setExternalSessionState('idle');
-    emitExternalTurnTrace('final', {
-      status: isConfigRestart ? 'ok' : 'error',
-      detail: { source: 'stop_external_session', reason },
-    });
-    clearExternalTurnTrace();
+    confirmedStopped = killResult.exited;
   }
+
+  if (!confirmedStopped) {
+    console.error(
+      `[external-session] Runtime process ${pid} is still alive after stop escalation`,
+      gracefulError,
+    );
+    return false;
+  }
+
+  emitPerfTrace({
+    trace: 'runtime',
+    phase: 'stop_done',
+    durationMs: elapsedMs(stopStarted),
+    runtime: runtimeType,
+    sessionId: getExternalLifecycleSessionId() || undefined,
+    status: 'ok',
+    detail: { pid },
+  });
+  notifyExternalTurnStopped(currentExternalTurnTextSnapshot());
+  clearExternalActiveRuntimeProcess();
+  activeExternalEnvPolicy = undefined;
+  // Any pre-warm that raced with a stop is no longer relevant. Keeping the
+  // flag around would leak 'prewarm' into a subsequent session's session_init.
+  clearExternalPrewarmingSession();
+  clearExternalPermissionSuggestions();
+  drainPendingInteractiveRequestsAsExpired('stop');
+  clearExternalAskUserQuestions();
+  clearExternalInteractiveRequests();
+  setExternalSystemInitPayload(null);
+  if (!isConfigRestart) {
+    fireExternalImCallback('error', 'Session stopped');
+    finalizeExternalActiveRequest('failed');
+    deliverExternalWatchError({
+      sessionId: getExternalLifecycleSessionId(),
+      text: currentExternalTurnTextSnapshot(),
+      errorCode: 'session_aborted',
+      errorMessage: 'external runtime session was stopped before turn completed',
+    });
+    clearExternalInboxMetaOnRejection({
+      sessionId: getExternalLifecycleSessionId(),
+      errorCode: 'session_aborted',
+      errorMessage: 'external runtime session was stopped before turn completed',
+    });
+  }
+  if (!preserveQueue) {
+    clearExternalQueueWithCancellation();
+  } else {
+    clearPendingRealtimeSteeredUserMessagesWithCancellation();
+  }
+  setExternalSessionState('idle');
+  emitExternalTurnTrace('final', {
+    status: isConfigRestart ? 'ok' : 'error',
+    detail: { source: 'stop_external_session', reason },
+  });
+  clearExternalTurnTrace();
+  return true;
 }
 
 /** True only while a real external-runtime turn is in flight. */
@@ -3623,7 +3669,7 @@ export function getRuntimePermissionModes(runtimeType: RuntimeType): unknown[] {
 
 /** Flush accumulated content blocks, persist to SessionStore, and broadcast completion.
  * Called by both turn_complete (Codex) and session_complete (CC) to avoid duplication. */
-async function persistTurnResult(): Promise<void> {
+async function persistTurnResult(terminalGeneration: number): Promise<void> {
   // Defense-in-depth: the `session_complete` handler reads `persistInFlight`
   // to decide whether to fire `setExternalSessionState('idle')` synchronously.
   // When persistInFlight=true, idle is deferred to this function. If we throw
@@ -3644,6 +3690,7 @@ async function persistTurnResult(): Promise<void> {
   // or losing the reply entirely (cross-review CC BLOCKER #1 + Codex Critical
   // #1 / Scenario 1+11).
   const { inboxMeta: turnInboxMeta, attachmentHints: turnAttachmentHints } = snapshotExternalTurnReplyState();
+  const turnSucceededAtTerminal = didExternalLastTurnSucceed();
   // PRD 0.2.32 — snapshot THIS turn's context usage at the SAME synchronous entry
   // as turnInboxMeta above, NOT after the `await awaitInFlightSaves()` further down.
   // turn_complete fires persistTurnResult fire-and-forget and flips turnCompleted;
@@ -3750,7 +3797,9 @@ async function persistTurnResult(): Promise<void> {
     });
 
     if (persistFailed) {
-      setExternalLastTurnSucceeded(false);
+      if (isExternalTurnGenerationCurrent(terminalGeneration)) {
+        setExternalLastTurnSucceeded(false);
+      }
       const message = persistFailureReason
         ? `Failed to persist external runtime turn: ${persistFailureReason}`
         : 'Failed to persist external runtime turn';
@@ -3799,10 +3848,18 @@ async function persistTurnResult(): Promise<void> {
     // Fired through the `turn-hooks` leaf slot (dependency inversion) — see
     // turn-hooks.ts. Non-blocking + best-effort. External runtimes use CLI-owned
     // auth, so no providerEnv is passed.
-    if (didExternalLastTurnSucceed() && lifecycleSessionId) {
+    if (turnSucceededAtTerminal && !persistFailed && lifecycleSessionId) {
       firePostTurnTitleHook(lifecycleSessionId, runtimeType, getExternalRuntimeDesiredModel() || undefined, undefined);
     }
+  } catch (error) {
+    persistFailed = true;
+    persistFailureReason = error instanceof Error ? error.message : String(error);
+    if (isExternalTurnGenerationCurrent(terminalGeneration)) {
+      setExternalLastTurnSucceeded(false);
+    }
+    throw error;
   } finally {
+    const finalizedTurnSucceeded = turnSucceededAtTerminal && !persistFailed;
     // PRD 0.2.18 Session Inbox — reply pushback for external runtime.
     // Use the meta/hints snapshotted at entry (NOT module-level slots, which
     // may have been overwritten by a concurrent sendExternalMessage during
@@ -3811,7 +3868,7 @@ async function persistTurnResult(): Promise<void> {
       // Use captured-before-reset text (PRD 0.2.18 cross-review fix). If reset
       // didn't actually fire (early throw path), fall back to currentAssistantText.
       const replyText = capturedReplyText || getExternalAssistantText().trim();
-      const replyError = didExternalLastTurnSucceed()
+      const replyError = finalizedTurnSucceeded
         ? undefined
         : {
             code: 'turn_failed',
@@ -3831,7 +3888,7 @@ async function persistTurnResult(): Promise<void> {
     const lifecycleSessionId = getExternalLifecycleSessionId();
     if (lifecycleSessionId) {
       const watchText = capturedReplyText || getExternalAssistantText().trim();
-      const watchError = didExternalLastTurnSucceed()
+      const watchError = finalizedTurnSucceeded
         ? undefined
         : {
             code: 'turn_failed',
@@ -3848,16 +3905,22 @@ async function persistTurnResult(): Promise<void> {
       );
     }
 
+    notifyExternalTurnOutcome(terminalGeneration, {
+      success: finalizedTurnSucceeded,
+      text: capturedReplyText || getExternalAssistantText().trim(),
+      ...(persistFailureReason ? { error: persistFailureReason } : {}),
+    });
+
     // Always reach idle, even if the body above threw. The
     // session_complete handler counts on us to drain the deferred idle.
     setExternalSessionState('idle');
-    if (didExternalLastTurnSucceed()) {
+    if (finalizedTurnSucceeded) {
       fireExternalImCallback('complete', '');
     } else {
       fireExternalImCallback('error', persistFailureReason ?? 'external runtime turn did not complete successfully');
     }
     // Pattern B/C: turn complete — clear active trace ID + unregister from registry.
-    finalizeExternalActiveRequest(didExternalLastTurnSucceed() ? 'completed' : 'failed');
+    finalizeExternalActiveRequest(finalizedTurnSucceeded ? 'completed' : 'failed');
     if (pendingExternalProxyRestart) {
       pendingExternalProxyRestart = false;
       pendingExternalProxyRestartOriginalKey = null;
@@ -4419,12 +4482,21 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       // accepted turn/steer input. If an older app-server does not, promote the
       // pending pill at the turn boundary rather than leaving it orphaned.
       surfaceAllPendingRealtimeSteeredUserMessages();
+      const terminalGenerationBefore = getExternalTurnTerminalGeneration();
       const turnPlan = markExternalTurnComplete(event, {
         intentionalStopInProgress: getExternalUserRequestedStop(),
       });
+      const terminalGeneration = getExternalTurnTerminalGeneration();
 
       if (turnPlan.kind !== 'persist-success') {
         const message = turnPlan.message;
+        if (terminalGeneration > terminalGenerationBefore) {
+          notifyExternalTurnOutcome(terminalGeneration, {
+            success: false,
+            text: currentExternalTurnTextSnapshot(),
+            error: message,
+          });
+        }
         console.warn(
           `[external-session] turn_complete: non-success status=${event.status ?? 'unknown'}, elapsed=${getExternalTurnStartTime() ? Date.now() - getExternalTurnStartTime() : 0}ms, message=${message}`,
         );
@@ -4488,7 +4560,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       console.log(`[external-session] turn_complete: text=${getExternalAssistantText().length}chars, blocks=${getExternalContentBlockCount()}, elapsed=${getExternalTurnStartTime() ? Date.now() - getExternalTurnStartTime() : 0}ms`);
       // Fire-and-forget: handleUnifiedEvent is a sync stream callback; persistTurnResult is async.
       // Tracked by turnFinalization so idle-waiters / the next turn wait for the flush.
-      trackExternalTurnFinalization(persistTurnResult().catch((err) => console.error('[external-session] persistTurnResult (turn_complete) failed:', err)));
+      trackExternalTurnFinalization(persistTurnResult(terminalGeneration).catch((err) => console.error('[external-session] persistTurnResult (turn_complete) failed:', err)));
       break;
     }
 
@@ -4511,10 +4583,12 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       // Set this BEFORE the if/else so the error branch also honours the
       // in-flight contract.
       let persistInFlight = isExternalTurnFinalizationInFlight();
+      const terminalGenerationBefore = getExternalTurnTerminalGeneration();
       const sessionPlan = markExternalSessionComplete(event, {
         hasAssistantText: !!getExternalAssistantText().trim(),
         consumeUserRequestedStop: consumeExternalUserRequestedStop,
       });
+      const terminalGeneration = getExternalTurnTerminalGeneration();
       if (sessionPlan.kind === 'ignore-prewarm-exit') {
         console.log(`[external-session] Ignoring pre-warm exit (subtype=${event.subtype}) — no user turn was in flight; next send will start fresh`);
       } else if (sessionPlan.kind === 'success') {
@@ -4538,7 +4612,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
           });
           // Fire-and-forget: handleUnifiedEvent is a sync stream callback; persistTurnResult is async.
           // Tracked by turnFinalization so idle-waiters / the next turn wait for the flush.
-          trackExternalTurnFinalization(persistTurnResult().catch((err) => console.error('[external-session] persistTurnResult (session_complete) failed:', err)));
+          trackExternalTurnFinalization(persistTurnResult(terminalGeneration).catch((err) => console.error('[external-session] persistTurnResult (session_complete) failed:', err)));
           persistInFlight = true;
         }
         // else: turn_complete already fired persistTurnResult — persistInFlight
@@ -4547,6 +4621,13 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         // idle.
       } else {
         const errorMessage = sessionPlan.message;
+        if (terminalGeneration > terminalGenerationBefore && !persistInFlight) {
+          notifyExternalTurnOutcome(terminalGeneration, {
+            success: false,
+            text: currentExternalTurnTextSnapshot(),
+            error: errorMessage,
+          });
+        }
         if (sessionPlan.kind === 'ignore-idle') {
           console.log(`[external-session] Ignoring idle-exit "${errorMessage}" — process was between turns; next message will auto-resume`);
         } else if (sessionPlan.kind === 'suppress-user-stop') {

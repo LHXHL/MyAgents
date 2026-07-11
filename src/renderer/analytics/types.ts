@@ -209,7 +209,6 @@ export type EventName =
   | 'update_install'
   // 心跳循环
   | 'cron_enable'
-  | 'cron_start'
   | 'cron_stop'
   | 'cron_recover'
   | 'launcher_cron_stage'

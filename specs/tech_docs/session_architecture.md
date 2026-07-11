@@ -56,7 +56,7 @@ interface SessionStats {
 
 `providerRoute` 是 owned builtin snapshot 的 canonical provider/model 身份。它只持久化 `{kind, providerId, model}`，不持久化 `baseUrl`、`apiKey`、`authType`、`modelAliases` 等运行时 env。真正发起请求时，Sidecar 用 `providerRoute` + 当前磁盘配置 materialize 出 `ProviderEnv`；subscription route materialize 为 `'subscription'` sentinel，API route 必须能从当前配置解析出 API key，否则本次发送失败并提示用户修复配置。
 
-`providerEnvJson` 已降级为 read-only legacy fallback：只有没有 concrete `providerRoute` 的旧 session 才会读取它。新写入路径（Tab snapshot、session freeze、IM detach、cron new-session snapshot）必须写 `providerRoute` 并清空/省略 `providerEnvJson`，避免把密钥、baseUrl 或 alias 冻结进历史会话。第一轮把 legacy/no-snapshot session promote 成 owned snapshot 时，baseline + 显式 patch 必须基于最新 metadata 写入，避免并发 config edit 用旧 baseline 覆盖已提交字段。
+`providerEnvJson` 已降级为 read-only legacy fallback：只有没有 concrete `providerRoute` 的旧 session 才会读取它。新写入路径（Tab snapshot、session freeze、IM detach、Task new-session initialization）必须写 `providerRoute` 并清空/省略 `providerEnvJson`，避免把密钥、baseUrl 或 alias 冻结进历史会话。第一轮把 legacy/no-snapshot session promote 成 owned snapshot 时，baseline + 显式 patch 必须基于最新 metadata 写入，避免并发 config edit 用旧 baseline 覆盖已提交字段。
 
 旧 `model + configSnapshotAt` 但缺 provider 身份的 session 只做确定性自修复：在“声明了该 model 且本地有凭据/账号证据”的 provider 集合里匹配。API provider 的凭据证据是非空 `apiKeys[providerId]`；Anthropic subscription 的账号证据是 verify status valid、或记录过 `accountEmail`、或记录过 `verifiedAt`。修复不检查 provider enabled，也不实时校验 token/余额。唯一候选则静默写回 `providerRoute`；多个或没有候选时，前端模型选择器进入“需重新选择模型”的状态，发送会被拦截，用户感知是需要手动重新选一次模型，而不是消息无响应或错路由。
 
@@ -149,7 +149,7 @@ delivery，不改变 `myagents session send/watch` 的通用事件协议。`syst
 
 隔离边界：
 
-- 只有 `/chat/send` 调 `enqueueUserMessage(..., { fromDesktopChatSend: true })` 时读取该设置；IM / Cron / Inbox drain / external runtime 继续走原有实时语义。
+- 只有 `/chat/send` 调 `enqueueUserMessage(..., { fromDesktopChatSend: true })` 时读取该设置；IM / Task / Inbox drain / external runtime 继续走原有实时语义。
 - `turnBoundaryQueue` 不直接复用 `messageQueue` 的 mid-turn 投递语义；它只在 clean turn boundary 由 `startNextTurnQueuedItem()` 启动，避免轮次模式污染实时模式。
 - 一旦 `turnBoundaryQueue` 或 turn-mode admission ticket 已存在，后续同 session 的桌面 `/chat/send` 忙时发送必须继续排到 turn boundary；非桌面来源不读取该 UI 设置，保持各自既有队列语义。
 - abort / stop / crash recovery 必须同时清理或恢复 `messageQueue`、`pendingMidTurnQueue`、`turnBoundaryQueue` 和 admission ticket，避免只处理旧队列造成 orphan query。
@@ -158,64 +158,106 @@ delivery，不改变 `myagents session send/watch` 的通用事件协议。`syst
 
 ### Goal Mode Session State（0.2.50）
 
-Goal Mode 是 current-session 长程目标状态。它不作为字段嵌入 `SessionMetadata`，而是用带显式 Goal 字段的 backing `CronTask` 表达：
+Goal 是 current Session 的独立持久状态，物理存储为 `~/.myagents/session_goals.json`，不嵌入 `SessionMetadata`，也不复用 Task/Cron：
 
 ```typescript
 type GoalStatus = 'active' | 'paused' | 'complete' | 'blocked' | 'canceled';
 
-interface GoalView {
-    id: string;                 // backing CronTask id
-    sessionId: string;
-    workspacePath: string;
-    objective: string;
-    status: GoalStatus;
-    turnCount: number;          // backing executionCount
-    updatedAt?: string;
-    terminalReason?: string;
+interface SessionGoalView {
+  id: string;              // current Goal incarnation fence
+  sessionId: string;       // product lookup key
+  workspacePath: string;
+  objective: string;
+  status: GoalStatus;
+  turnCount: number;
+  revision: number;
+  controlRevision: number;
+  isExecuting: boolean;
+  terminalReason?: string;
 }
 ```
 
-权威边界：
+#### 权威边界
 
-- Goal 属于 session，不属于某个 Tab、输入框 draft 或普通 CronTask surface。
-- UI `/goal` 正式创建、AI 调 `myagents goal create --objective-file ...`、私聊 IM / 私有 Agent Channel 里 AI 调 CLI 创建，都会写入当前 session 的同一个 Goal。
-- backing store 继续复用 `CronTaskManager` / `CronSchedule::Loop` / `RunMode::SingleSession`；但持久任务是否是 Goal 只看显式 `goalStatus`，renderer 创建 surface 只看 draft 的显式 `taskKind: 'cron' | 'goal'`，不能从 `goalObjective` 或 loop schedule 形状推断。旧 Loop 不迁移。
-- 同一 session 同时只允许一个 unfinished Goal。已有 active/paused Goal 时再次 create 必须失败，而不是覆盖。
-- `myagents goal update` 只允许模型写 `complete` / `blocked`。`paused` 来自用户 Stop 当前 turn，`canceled` 来自用户取消，恢复来自用户 query 或显式继续。
-- desktop/IM user ingress 统一经过 `session-engine/goal-orchestrator.ts`。Goal lookup 是 fail-closed 判别联合：只有 `ok:true, goal:null` 是“无 Goal”；Management 不可达、`ok:false`、或畸形非空 Goal 都返回 503 且不调用 engine。同 session 的 Goal lookup+reserve 串行：Rust 先持久化 Pending admission；builtin/external queue 真正 promotion 时调用 `beforeDispatch` 原子 claim；external path 在 guard accepted 前不 surface user bubble、不写 transcript/SessionStore、不标记 turn running，accepted 后由 turn-lifecycle promotion token 持有跨 await 的 Stop 权限，最终 transport 前复核 token。guarded fresh/resume 必须先用空 `initialMessage` 建立并注册 Runtime process，复核 token 后再显式 `sendMessage`，不能让 `startSession` 在不可取消的启动握手中隐式消费 prompt。transport 接受后 finalize 为 Dispatched，Runtime idle 后持续幂等重试 release，成功或确认 admission 已不存在前保留 Node authority。ack reject、finalize 失败、`waitIdle` 抛错都经过同一个 settlement/compensation lifecycle；settlement 只执行一次，durable release 未确认前不能清 Node authority。每个持久 lease/admission 携带创建它的 Rust Sidecar generation，Sidecar 进程通过 `X-MyAgents-Sidecar-Generation` 声明身份；reserve/claim、accepted finalize 与 model terminal commit 都在同一 task 写锁内验证 request generation、authority generation、SidecarManager current generation 三者一致。aborted/release/revoke 是旧进程也必须能执行的补偿清理，只按 authority id/generation 撤销，不要求 generation 仍 current。stop event 按 `(sessionId, generation)` 选择性撤销并持续重试到写盘成功；broadcast Lagged 时在 task→sidecar 锁序下对照 `live_sidecar_set()` 清理 orphan，旧 generation 的迟到事件不会误删 replacement authority。admission 不设置 wall-clock TTL：正常 settlement、用户 Pause/Terminal、Sidecar stop 和应用启动恢复是仅有的 authority 回收边界。paused→active 和 `executionCount` 只在 accepted finalization 提交。多条 user admission 各有独立 authority，按队列顺序释放；user query 的 stale `goalRevision` 只有在 objective 与 `goalControlRevision` 都未变化时才视为同一 semantic epoch，避免 admission churn 假 409，同时阻止 Stop 前旧快照恢复 Goal。
-- scheduler admission 是两阶段协议：Rust scheduler 只生成不落盘的 candidate；Sidecar 等待真实 turn idle 且 user queue 清空；builtin/external adapter 在实际 Runtime 发送边界调用 `/api/goal/scheduler/claim`。external persistent process 的 liveness 不等于 turn busy：Codex/Gemini pre-warm 进程存活但 `sessionState='idle'` 时必须立即通过 idle gate，同时保留进程供首轮复用。revision、pause、objective、terminal 或 user admission 任一先获胜都会让 claim fail closed，且失败不得留下 bubble/history/伪 running 状态。
-- Goal 创建后的第一轮 `GOAL_CONTINUATION` reminder 在 envelope 后附加原始 objective 作为 visible tail，用户看到原 query + Goal badge，模型仍收到完整 hidden Goal context；第二轮起的自动 continuation 保持纯隐藏，不生成伪 user bubble。是否首轮只看 Rust scheduler 传入的 `isFirstExecution`，不能从当前有无历史或 Goal `executionNumber` 猜测。
-- renderer Pause/Cancel 先写 Rust Goal 状态，再调用唯一的 `SessionEngine.stopTurn()`；builtin/external adapter 在该 boundary 统一 cancel pending dispatch guard、停止 Runtime。对晚到的成功 scheduler claim 调 revoke、对 user claim 调 release，然后拒绝 dispatch；不再维护独立 `/api/goal/dispatch/cancel` 协议。
-- Goal 自动 continuation 必须设置 `turnBoundaryOnly`，不能 steer/merge 进当前 user turn。objective edit 不走 realtime steering：有普通排队消息时返回 `queue_conflict` 并保留消息；否则 stop/wait、revision CAS、再次 stop/wait/re-read，active Goal 用 `objective_restart` admission 启新 turn，paused Goal只持久化。
-- Goal 的 tab/model/provider/runtime/reasoning/MCP/source-bot/delivery 由 session 当前状态或原 channel binding 拥有，不从 CronTask creation snapshot 恢复。Rust `create_goal_task` 统一清除这些字段；冷 Sidecar 依赖 session metadata 选 runtime，builtin MCP 仅在当前进程尚未 materialize MCP 时从 session snapshot 恢复。permission 是唯一保留的 creation-surface execution policy：UI 使用当前显式值，CLI 空值解析为 runtime 最大权限。同 session 的 unfinished Goal 与 running ordinary `single_session` Cron 在 Rust create/start boundary 互斥，不能并发改写同一个 SessionEngine 配置。
-- Rust terminal transition 是 actor-aware、disk-first、first-writer-wins：Model 只能 complete/blocked 且 `aiCanExit=false` 时硬拒绝；User 只能 canceled；System failure protector 可 terminal。首次 Applied transition 广播事件并发 notification；model terminal 保留当前 scheduler lease 或 user admission，等 turn finalize/idle 后才释放 owner。
-- `goal:changed` 携带单调 `goalRevision`；renderer 拒绝旧 hydrate/event，并在 listener 注册空窗后按时间戳补查 terminal，迟到 active payload 不能回滚终态。Management API 另返回 `goalControlRevision` 作为 objective/显式 lifecycle 控制代次；admission/lease/outbox bookkeeping 以及 user query 触发的 paused→active 不推进该字段。
-- IM/Agent Channel 自动 continuation 的成功文本按 session binding 回原 channel，不经过 `CronDelivery`。仅 `agent-channel` origin 进入持久 outbox；唯一 replay worker 对无 binding/临时错误持续重试，启动时恢复 `Sending` 为 `Pending`。这是 at-least-once，不是 exactly-once：push 成功到 outbox 删除之间崩溃可能重复。群聊 `NO_REPLY` 不发送。
-- Goal execution state 以 `cron_tasks.json` 中 lease finalization 结果为权威；`cron_runs/*.jsonl` 只是 finalize `applied=true` 后写入的 best-effort history projection。状态提交与 JSONL append 之间崩溃可能缺少一条 history，但绝不能先写 stale/撤销 turn，也不能从 history 反推 Goal 状态。
-- 新 Tab 首轮创建 Goal 前必须先通过 session-engine materialize 得到真实 sessionId，再用该 identity 创建 Goal。整个 materialize→create 过程由 renderer 的同一个 pending token 管理，用户 Stop/切换 session 会取消晚到 create；Rust `create_goal_task` 直接拒绝 `pending-*`。Goal 不做 post-hoc identity rebind，普通 Cron session/tab update 也必须拒绝 Goal。
+- `SessionGoalManager` 是 Goal 唯一业务 owner。同一 Session 最多一个 unfinished Goal；已终态 Goal 可被下一次 create 替换。
+- Goal 不持有 taskId、Cron schedule、tab、runtime/model/provider/reasoning/MCP 或普通 delivery。Session 继续拥有运行配置，Goal 只保存 permission turn policy。
+- UI `/goal`、当前 Session 内的 `myagents goal create`、私聊 IM/Agent Channel 都写同一 Goal。创建前必须 materialize 真实 Session id；Rust 拒绝 `pending-*`，没有 post-hoc rebind。
+- Goal 与 Task 可以关联同一 Session。二者不互相引用，实际 Turn 顺序由现有 Runtime queue 决定。
 
-Facade 与事件：
+#### Turn authority
 
-- Tauri command：`cmd_create_goal_task`、`cmd_get_goal_task`、`cmd_get_session_goal_task`。
-- Rust Management API：`/api/goal/get|create|update|objective`、`/api/goal/admit[/claim|/finalize|/release]`、`/api/goal/scheduler/claim|revoke`。
-- CLI/Admin API：`myagents goal get|list`、`create --objective-file <path>`、`update --status complete|blocked`。
-- create、admission reserve/claim/finalize/release、pause/resume、objective update、scheduler claim/finalize 和 terminal 都广播 `goal:changed`；payload 至少包含 `sessionId`、`workspacePath`、`goal`、`changeKind` 与单调 `goalRevision`。
+Node queue 是所有待发送消息的唯一队列。Rust 不再持久化 pending admissions；只有 queue item 到达 builtin/external Runtime promotion boundary 时，才原子 claim：
 
-Renderer hydrate：
+```text
+currentTurn = {
+  queueId,              // 现有 Runtime queue item id，唯一 Turn identity
+  kind,                 // user_query | continuation
+  turnNumber,
+  sidecarGeneration
+}
+```
 
-- Tab birth / session switch / history restore 时，renderer 按当前 `sessionId + workspacePath` 查询 Goal。
-- renderer 用 `useSessionGoal` 投影 Goal、用 `useCronTask` 投影普通 Cron；两个 hook 只消费各自事件，不能互相覆盖。Rust 保证同一 session 不同时运行 unfinished Goal 与 ordinary `single_session` Cron；顶栏 Cron surface 不能把 Goal 当普通定时任务。
-- 桌面 Tab 关闭/切换统一调用 Rust `cmd_release_tab_session`，在 scheduler task read lock 与 Sidecar owner lock 内完成 Tab owner 释放和 activation 归置。Cron/Goal 加入已被 Tab 拥有的 Sidecar 时只给现有 activation 合并 `taskId`，不能覆盖 `tabId`；Cron owner 释放也由 SidecarManager 同锁清 task projection，剩余 Tab/BG/Agent owner 存在时保留 activation。session 删除统一调用 `cmd_delete_session_if_unowned`，同一锁边界内按 owner/entry（包括 dead-but-restartable Sidecar）拒绝仍被 Goal/Cron/Sidecar 持有的 transcript，不能用 liveness/readiness 替代 ownership。renderer 不再做 check→release/deactivate 或 DELETE→deactivate 的二阶段拼接。
-- 只主动恢复 `active` / `paused` Goal 横条。
-- `complete` / `blocked` / `canceled` 只通过当前打开 Tab 的实时 `goal:changed` 展示；用户关闭后不在历史恢复时重新复活。
+没有 Goal 专用 injected turn id、第二套 outcome cache或 Node authority map。
 
-Turn 与输出路由：
+- `sidecarGeneration` 拒绝旧 Sidecar 对 replacement 进程的迟到回写；模型终态在持有 Goal 写锁的 `commit` 闭包内同时核对 current turn 与当前 generation，和 Goal 状态变更共享一个线性化边界。
+- Goal `id` 拒绝旧 incarnation 回写新 Goal。
+- `revision` 对所有持久变化递增，renderer 用它拒绝乱序 hydrate/event。
+- `controlRevision` 只在 pause/resume/objective/terminal 等控制变化时递增，使 Stop 前准备的 continuation 失效；普通 bookkeeping 不制造新 control epoch。
+- `goal-orchestrator.ts` 只在真实 dispatch boundary claim，并在真实 terminal 后 finalize。Management/claim/adapter 失败全部 fail closed，不留下伪 bubble、history 或 running 状态。
 
-- Goal continuation 通过 `/cron/execute-sync` 复用 scheduler，但不是普通 cron automation turn。
-- current-session Goal continuation 必须保留 session 原始 interaction scenario / 输出路由：desktop 回桌面 transcript，IM / Agent Channel 回原 channel。
-- current-session Goal 不使用 `CronDelivery` 作为 owner；delivery 是普通 Cron 结果投送或未来 detached/new-session Goal 才需要讨论的能力。
-- 用户点击 Stop 只停止当前 AI turn 并把 Goal 置为 `paused`；scheduler 不再自动续跑，但 CronTask owner 不释放。
-- terminal 状态才停止 scheduler、释放 CronTask owner、发送终态通知。
+user query 对 paused Goal 的成功 claim 会原子恢复为 active。automatic continuation 对 paused Goal 必须拒绝。
+
+#### Continuation 与 Sidecar
+
+Goal scheduler 只有 `goalId -> one-shot JoinHandle`。active Goal 在上一轮 finalize 后按成功/失败 backoff 安排一次；paused/terminal/currentTurn/outbox pending 时不轮询。
+
+`SidecarOwner::Goal(goalId)` 在 Turn claim 时懒附着到当前 Session Sidecar；它只是 owner token，不创建独立进程。Pause/terminal/finalize 后按当前 Turn/outbox 状态对称释放。关闭 Tab 只释放 Tab owner，Goal owner/continuation 仍可让同一 Session 在后台继续。
+
+发送统一经过 `/goal/execute-sync` 与 `src/server/session-engine/` selector，builtin/external adapter 共享 queue identity、stop 与 terminal contract。
+
+#### 用户消息与展示
+
+- 桌面 Goal 创建先持久化为 Paused（等待首条用户 turn）；首条 claim 在现有 queue admission 边界原子激活。创建期间切换 Session 或 `/chat/send` 失败只留下可恢复的 Paused Goal，不会把 query 发到新 Session，也不会留下 Active 空转状态。
+- Goal 首轮 query：`GOAL_CONTINUATION` hidden envelope + 原 objective visible tail。模型看到完整 Goal context，用户看到自己的原文、Goal badge 与正常实时 streaming。
+- 第二轮起自动 continuation：同一 tag，但没有 visible tail，纯隐藏，不产生伪 user bubble。
+- Goal 中用户普通 query：`GOAL_CONTEXT` hidden envelope + visible query。
+- 所有 automatic continuation 都是 turn-boundary-only，不能 steer/merge 到当前 Turn。
+
+Renderer 的 `useSessionGoal` 只是 `goal:changed` + hydrate 投影。Tab birth/session switch/history restore 按 `sessionId + workspacePath` 查询；active/paused 恢复横条，terminal 只在实时变化时展示，不在历史打开时复活。
+
+#### Pause、Cancel 与终态
+
+Pause/Cancel 的顺序固定：
+
+```text
+disk-first commit Goal control state
+-> SessionEngine.stopTurn(queueId)
+-> stale queue/generation late result is rejected
+-> cancel one-shot continuation
+-> release Goal owner when no current Turn/outbox remains
+```
+
+Model 只能提交 complete/blocked；`aiCanExit=false` 在 Rust terminal transaction 硬拒绝，不只依赖提示词。User 只能 canceled，System 可因 end condition 或连续 10 次执行失败进入终态。终态 first-writer-wins。
+
+Objective edit 使用 revision CAS；Node SessionEngine 作为 pending queue owner，有普通排队消息时返回 conflict，不代用户删除队列。active Goal 仅在旧 Turn 精确停止成功后启动新 continuation；停止无法确认时使用既有 Paused 状态收敛，paused Goal 只更新持久状态。
+
+#### Channel outbox
+
+desktop/IM/Agent Channel 保留 Session 原 interaction scenario 和输出路由。Goal 不使用 `CronDelivery`。仅 Agent Channel continuation 成功文本进入 Goal outbox：
+
+- stable delivery id + 单 replay worker；
+- 无有效 binding 不 ACK；
+- 启动与运行时持续恢复；
+- at-least-once，push 成功到删除 outbox 之间崩溃可能重复；
+- `NO_REPLY` 保持静默。
+
+#### Facade
+
+- Tauri：`cmd_create_session_goal`、`cmd_get_session_goal`、`cmd_pause_session_goal`、`cmd_resume_session_goal`、`cmd_mark_session_goal_terminal`。
+- Rust Management API：`/api/goal/get|create|objective|update`、`/api/goal/turn/claim|finalize|abort|pause`。
+- Node sync execution：`/goal/execute-sync`。
+- CLI/Admin：`myagents goal get|list|create|update`。
+- 事件：所有 committed Goal mutation 广播带单调 revision 的 `goal:changed`。
 
 ### Builtin Session Owner Split（Phase6 / Phase7）
 
@@ -503,7 +545,7 @@ MyAgents 自身的存储服务于不同的业务场景：
 
 ### SSE 断连 **不是** 取消权威（load-bearing 不变量）
 
-关 Tab / 网络波动导致 `/chat/stream` 断连，**绝不能**用来取消进行中的 turn。turn 的生命周期归 Rust 的 **Sidecar Owner 模型**（Tab / CronTask / BackgroundCompletion / Agent 四种 owner），不归前端 SSE 连接：
+关 Tab / 网络波动导致 `/chat/stream` 断连，**绝不能**用来取消进行中的 turn。turn 的生命周期归 Rust 的 **Sidecar Owner 模型**（Tab / Task / Goal / BackgroundCompletion / Agent），不归前端 SSE 连接：
 
 - 零 client 时的 `broadcast()` 是 no-op，turn 照常在 sidecar 跑完并持久化；重连后由 `chat:message-replay` 补发。
 - 真正卡死的 turn 由 10 分钟 inactivity watchdog 收口（见 `agent-session.ts` / `external-session.ts`，原语 `utils/inactivity-watchdog.ts`）。
@@ -647,19 +689,19 @@ Tab 级 SSE 连接只能保证“事件来自这个 Tab 当前连着的 sidecar 
 Tab 翻成 chat 时，Chat 要决定**如何与该 session 的 sidecar 对齐配置**（MCP / agents / model / permission / 插件 / 外部 runtime prewarm）。这是 `Tab.sidecarConfigDisposition` 三态（`src/renderer/types/tab.ts`，**必填**——编译器强制每个 Tab 构造点选择）：
 
 - **`push`** — 把本 tab 的配置推给 sidecar（新起的 sidecar）。
-- **`adopt`** — 采纳已在跑的 sidecar 的现有配置、**不推**（接管 IM / cron / background 占用的 sidecar）。
+- **`adopt`** — 采纳已在跑的 sidecar 的现有配置、**不推**（接管 IM / Task / Goal / background 占用的 sidecar）。
 - **`pending`** — 还不知道：tab 在 sidecar ensure **之前**就 instant-flip 到了 chat（即时进入）。此态下 Chat **既不推也不采纳**，等裁决。
 
 **唯一裁决者**：`ensureSessionSidecar` 返回的 `result.isNew`（在 Rust manager 锁内决定）是 `pending → push|adopt` 的**唯一**来源（`App.handleLaunchProject` 的 ensure 后一步，instant 与非 instant 两条路径都跑）。前端 `getSessionPort` 仅作"绘制时机提示"，**不参与配置正确性**——即便它竞态/出错，最坏只是翻页时机偏差，绝不会推错配置。
 
-**为什么是三态（#300/#301 实战）**：旧的 `joinedExistingSidecar?: boolean` 有个表达不出的第三态（`undefined → ?? false → push`），instant-flip 时被迫用 `getSessionPort` 预测 → 并发 Rust creator（cron / IM / 崩溃重启）在"检查"与"ensure"之间起了 sidecar → ensure 接管活的 sidecar，而 Chat 把配置推上去 → **config-stomp + MCP 指纹 abort + 30s 重启循环**（TOCTOU）。三态把"还没定"变成一等公民。
+**为什么是三态（#300/#301 实战）**：旧的 `joinedExistingSidecar?: boolean` 有个表达不出的第三态（`undefined → ?? false → push`），instant-flip 时被迫用 `getSessionPort` 预测 → 并发 Rust creator（Task / Goal / IM / 崩溃重启）在"检查"与"ensure"之间起了 sidecar → ensure 接管活的 sidecar，而 Chat 把配置推上去 → **config-stomp + MCP 指纹 abort + 30s 重启循环**（TOCTOU）。三态把"还没定"变成一等公民。
 
 **红线（Pit of Success，改 Chat 配置同步 / 新增 session 打开路径前必读）**：
 - Chat 里**任何**"mount 期把配置推给 sidecar"的 effect MUST 门控 `configDispositionRef.current === 'push'`（`pending`/`adopt` 跳过）。漏一个 = 静默 config-stomp。
 - **依赖不对称**：推送 effect 依赖布尔 `configPending`（`pending→push` 重跑，`adopt→push` 不重放）；采纳 effect 依赖 `isAdopt`（`pending→adopt` 触发一次）。写反 = 漏推或重复采纳。
 - 用户**主动**改配置（`persistTabConfigChange`）走 **defer-while-pending**（仅 `pending` 时延迟推送、磁盘照写；`push`/`adopt` 都推——用户意图）。
 - instant-flip 的 `pending` tab **不得携带 `initialMessage`**（否则 autoSend 的未门控推送会在 pending 时触发）。
-- "在新标签打开已有 session" MUST 走 cron 感知的 `spawnTabForExistingSession`（`preserveCronActivation: plan.type === 'attach-existing-sidecar'`，用 `updateSessionTab` 保留 cron 的 `task_id`）；**别** pre-seed 一个带 sessionId 的 tab 再 handleLaunchProject——那会让 planner 走 jump-to-tab → Scenario 4 的 deactivate/reactivate 抹掉 cron 归属。
+- "在新标签打开已有 session" MUST 走 background-owner 感知的 `spawnTabForExistingSession`（`preserveCronActivation` 是兼容字段名，`updateSessionTab` 保留 Task activation）；**别** pre-seed 一个带 sessionId 的 tab 再 handleLaunchProject——那会让 planner 走 jump-to-tab → Scenario 4 的 deactivate/reactivate 抹掉后台归属。
 - 启动失败的 catch MUST 把 instant-flip 的 `pending` tab 重置为终态 `push`（否则永远卡 `pending`，既不推也不采纳）。
 
 即时进入还包含 `ChatBootOverlay` 的"AI 启动中"毛玻璃蒙层（翻页瞬时出现、就绪时淡出衔接），它同时是 App 的 lazy-Chat Suspense fallback。`getSessionPort` 之所以只能是提示：见上方「唯一裁决者」。
@@ -690,12 +732,12 @@ reasoning effort setter 不再是“直接 stop 进程”的 process-global 操�
 - turn boundary drain 先应用前导 config ops,再启动下一条 message。
 - Codex / Claude Code 使用 next-turn state；Gemini 的 `session/set_model` /
   `session/set_mode` 也只在 boundary 调用,保持“当前轮不受影响”的产品语义。
-- IM / Cron 仍通过每轮 `ExternalSendContext` live resolve 配置,不是桌面 queue pill。
+- IM 仍通过每轮 `ExternalSendContext` live resolve；Task 只在新 Session 初始化时使用 Task config，已有 Session 继承自己的配置。
 - `/api/runtime/config` 是 source-aware：Rust IM router 热同步传 `source:"im-sync"`；桌面 push 走 `runtime-config` / `desktop`。`updateExternalRuntimeConfig()` 必须先调用 `runtime-config-policy` 过滤 snapshotted session 不应接收的字段，再写 `lastModel` / `lastPermissionMode` / `lastReasoningEffort`，禁止“先污染 desired state 再跳过 restart”。
 
 **红线**：
 - provider/permission 两端点"仅 Rust-IM-router 可调"是**注释级契约**——渲染器/桌面侧**禁止**新增对这两个端点的调用；在快照会话上它们会被静默吞掉（守卫处 `console.warn` 可见）。桌面要改 provider/permission：provider 走 chat-send payload（enqueue 每轮 inline 解析），permission 走既有 `/api/permission-mode` 桌面路径。
-- 纯 IM / cron 会话（无快照）不受守卫影响，保持 live-follow——新增守卫时不得破坏这条（回归测试 `session-config-snapshot-guard.test.ts` 锁定三 setter × 三场景）。
+- 纯 IM / 尚未 materialize 的 backend-created Task Session 不受守卫影响；已有快照 Session 必须保持 snapshot authority（回归测试 `session-config-snapshot-guard.test.ts` 锁定三 setter × 三场景）。
 - 合法的 per-turn channel 配置应用走 `enqueueUserMessage` inline 解析（"snapshot wins" 已内建），**不经过**这些 setter。
 
 ---
@@ -705,7 +747,7 @@ reasoning effort setter 不再是“直接 stop 进程”的 process-global 操�
 | 文件 | 职责 |
 |------|------|
 | `src/renderer/types/tab.ts` | `Tab.sidecarConfigDisposition` 三态 + `buildChatFlipPatch`（必填 disposition） |
-| `src/renderer/App.tsx` | `handleLaunchProject`（instant-flip + 单一 post-ensure resolver）、各 Tab 构造点 disposition 映射、`spawnTabForExistingSession`（cron-preserve） |
+| `src/renderer/App.tsx` | `handleLaunchProject`（instant-flip + 单一 post-ensure resolver）、各 Tab 构造点 disposition 映射、`spawnTabForExistingSession`（background-owner preserve） |
 | `src/renderer/pages/Chat.tsx` | 9 个 disposition 门控的配置同步 effect + `persistTabConfigChange` defer-while-pending |
 | `src/renderer/components/ChatBootOverlay.tsx` | "AI 启动中"蒙层 + 淡出过渡 |
 | `src/server/types/session.ts` | `SessionMetadata` 类型定义、`createSessionMetadata()` |

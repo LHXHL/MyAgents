@@ -3,7 +3,6 @@ import {
   FLOATING_BALL_CONTEXT_TAG,
   GOAL_CONTEXT_TAG,
   GOAL_CONTINUATION_TAG,
-  GOAL_OBJECTIVE_UPDATED_TAG,
   parseLeadingSystemReminder,
 } from './systemReminder';
 
@@ -40,7 +39,6 @@ export function stripSystemWrapper(raw: string): string {
     const isPureGoalReminder = !reminder.visibleText && (
       reminder.kind === GOAL_CONTINUATION_TAG
       || reminder.kind === GOAL_CONTEXT_TAG
-      || reminder.kind === GOAL_OBJECTIVE_UPDATED_TAG
     );
     if (isPureGoalReminder) return '';
     if (!reminder.visibleText && reminder.kind === FLOATING_BALL_CONTEXT_TAG) return '';

@@ -4,8 +4,8 @@
 // (`cron-tools` with `exit_cron_task`). The MCP was retired in v0.2.11 in
 // favour of the universal `myagents cron exit` CLI command + system prompt
 // guidance (see system-prompt-cli-tools.ts SECTION_CRON_EXIT). The CLI
-// handler lives in admin-api.ts::handleCronExit and emits the same
-// `cron:task-exit-requested` SSE event the old tool did.
+// handler lives in admin-api.ts::handleCronExit. Rust consumes the request in
+// the synchronous Task result and commits the terminal Task state.
 //
 // What this file still owns: the per-session cron context map. Both the
 // permission gate (agent-session.ts) and the CLI exit handler read it to

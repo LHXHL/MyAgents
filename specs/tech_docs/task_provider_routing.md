@@ -1,197 +1,139 @@
-# Task Provider Routing — 三层架构
+# Task Provider Routing
 
-> 状态：v0.2.9 落地；v0.2.41 补齐 Task/Cron MCP override 三态与 custom MCP identity 删除级联
-> 关联：PRD 0.2.9（issue #130 + 配套架构整顿），PRD #119（CronTask provider intent），PRD 0.2.41（MCP remove cascade）
+> 状态：0.2.50。Task 是唯一持久化权威；Cron 名称只保留兼容 API/CLI。本文定义 Task、Session 与 Provider 配置各自拥有哪一段生命周期。
 
-## 1. 产品语义
+## 1. 三个配置 Scope
 
-```
-Agent 工作区  =  配置模板（live, 可修改）
-                providerId, model, runtime, permission, MCP
+```text
+Agent/workspace config
+  live template for future Sessions
 
-Tab Session  =  快照（frozen on create）
-                创建 Tab 时拍 Agent 当前状态；后续改 Agent 不影响这个 Tab
+Session config
+  one runtime conversation's durable identity/config
 
-Task 执行    =  每次 tick 派生 session（live re-derive）
-                default：用 Agent 当前状态
-                override：task 自己的字段（providerId / model / ...）
-```
-
-**关键差异**：Tab Session 是 frozen-on-create，Task 是 live-on-tick。这两种"快照"语义共存，分别匹配两种用户心智。
-
-**术语边界**：本页的"配置模板"指 Agent 工作区里的运行配置（provider / model / runtime / permission / MCP），不是 Launcher 的工作区文件模板。`WorkspaceTemplate.agentDefaults` 只在新建 builtin project 或补齐历史 project 的 `AgentConfig` 时作为 seed；一旦 Tab 创建，仍按本页规则冻结快照，后续模板默认值变化不会反向改已存在的 Tab Session。
-
-**会话边界**：Task / Cron 持久层仍只存 `providerId + model` intent，不存 credential。执行层如果创建/冻结 builtin session snapshot，必须把 intent 写成 `ProviderRoute`（`{providerId, model}` 的 canonical 会话身份），并让 Sidecar 每次发送时从当前配置 materialize `ProviderEnv`；不得把 `provider_env` / `providerEnvJson` 作为新的 durable identity 写回。
-
-**Goal 边界**：Goal Mode 只复用 `CronTask` backing store 与 loop scheduler，不复用普通 Task/Cron 的配置快照。Goal 是 current-session 工作状态；model/provider/runtime/reasoning/MCP 由当前 session 拥有，Goal create boundary 会清空 backing task 上这些 override，只有 permission policy 由创建入口保留。Goal create/update 走 `/api/goal/*` / `myagents goal ...`，普通 Cron create/list/update/run-now surface 不能创建或管理 Goal。
-
-## 2. 三层职责
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 1：持久层 (tasks.jsonl + cron_tasks.json)              │
-│   只存 providerId（intent），不存 credential                 │
-└─────────────────────────────────────────────────────────────┘
-                          ↓
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 2：调度层 (Rust ensure_cron_for_task / payload 透传)   │
-│   只做"透传 + schema validation"，不解析 provider 配置       │
-└─────────────────────────────────────────────────────────────┘
-                          ↓
-┌─────────────────────────────────────────────────────────────┐
-│ Layer 3：执行层 (TS sidecar /cron/execute(-sync))           │
-│   每次 tick 调 resolveProviderEnv(providerId)               │
-│   从 ~/.myagents/config.json (live) 拿 apiKey/aliases       │
-│   provider 不存在或缺 credential → 拒绝 + 标 Blocked        │
-└─────────────────────────────────────────────────────────────┘
+Task config
+  initialization policy for a new execution Session
+  + permission policy for each Task turn
 ```
 
-## 3. 数据形态对照
+核心规则：
 
-| 字段 | Task (`tasks.jsonl`) | CronTask (`cron_tasks.json`) | 备注 |
-|------|----------------------|------------------------------|------|
-| `providerId` | ✅ 新写入路径 | ✅ 新写入路径 | PRD 0.2.9 — 唯一持久化的 provider intent |
-| `model` | ✅ | ✅ | `providerId` 设置时 MUST 配对 |
-| `mcpEnabledServers` / `mcp_enabled_servers` | ✅ 三态 override | ✅ 三态 override | `None`/缺字段 = follow Agent；`[]` = explicit no MCP；`[ids]` = explicit override |
-| `provider_env` | ❌ 不存 | 🟡 read-only deprecated（`#[serde(default, skip_serializing)]`：load 老数据，但永远不再写盘） | apiKey / baseUrl / authType / modelAliases — 一旦下次 save_to_disk 就消失 |
-| `provider_intent` | ❌ 不存 | 🟡 仍写入，但语义降级 | 当 `providerId == None` 时仍输出 `FollowAgent` / `Subscription` / `Explicit`（兼容老 cron 路径）；当 `providerId` 存在时 sidecar 忽略 intent，按 provider.type 在线决定 |
+1. **已有 Session 只有一份配置权威。** Task 投递到已有/preselected Session 时，runtime、provider、model、reasoning 与 MCP 全部继承 Session 当前状态。
+2. **Task override 只初始化新 Session。** `new-session` 每次创建时使用；`single-session` 只在其专属 Session 首次 materialize 时使用。
+3. **不做 task-turn snapshot/restore。** 临时覆盖再恢复会与用户/Goal/其他 owner 并发写同一 Session，属于错误 scope。
+4. **permission 是每轮执行 policy。** 它不改写 Session runtime identity；空值按对应 runtime 最大权限解析。
+5. **Goal 不读取 Task routing。** Goal 属于当前 Session，始终跟随该 Session。
 
-## 4. Sidecar 解析（核心）
+## 2. 持久化边界
 
-`/cron/execute(-sync)` 收到 payload 时按以下优先级解析：
+TaskStore 可以保存：
 
-```ts
-if (payload.providerId) {
-  // ✅ PRD 0.2.9 主路径 — 每 tick live resolve
-  effectiveProviderEnv = resolveCronProviderRouting(payload.providerId);
-  // → ResolvedProviderEnv | 'subscription' sentinel
-  // → 失败抛错 → 400 → Rust 标 Task Blocked
-}
-else if (intent === 'followAgent') {
-  // 🟡 旧路径：从 session metadata snapshot 解析
-}
-else if (intent === 'subscription') {
-  // 🟡 旧路径：直接清空（PRD 0.2.9 R1：必须传 'subscription' sentinel）
-  effectiveProviderEnv = 'subscription';
-}
-else if (intent === 'explicit') {
-  // 🟡 旧路径：用 payload.providerEnv（已 frozen 的）
-  effectiveProviderEnv = payload.providerEnv;
-}
+- `runtime` / `runtimeConfig`
+- builtin 的 `providerId + model`
+- `permissionMode`
+- `mcpEnabledServers` 三态 override
+
+TaskStore 不保存：
+
+- apiKey、baseUrl、auth token 或 materialized `ProviderEnv`
+- Session 当前 provider/runtime/MCP 的副本
+- Goal 配置
+
+`providerId` 是 durable intent。真正 credential 在创建新 builtin Session 时由 Sidecar 从最新 `config.json` live resolve，因此 key rotation 不要求重存 Task。
+
+### Provider/runtime 不变式
+
+`validate_task_provider_routing()` 在所有 create/update/migration 入口统一守门：
+
+| 条件 | 结果 |
+|---|---|
+| `providerId` 存在但 `model` 缺失 | 拒绝 |
+| external runtime 与 builtin `providerId` 同时存在 | 拒绝 |
+| `providerId` 存在、runtime 缺失 | pin 为 `builtin` |
+| legacy credential env | 不复制；迁移 Task 标为 Blocked 并要求重选 |
+
+External runtime 自己拥有 provider，Task 只可保存该 runtime 支持的 model/config。
+
+### MCP 三态
+
+| 值 | 新 Session 初始化语义 |
+|---|---|
+| 字段缺失 / `None` | 跟随 Agent/workspace effective MCP |
+| `[]` | 显式无 MCP |
+| `[id...]` | 只启用指定 MCP |
+
+删除 custom MCP identity 时，只删除列表里的该 id；列表变空仍保存 `[]`。只有显式 `clearMcpOverride` 才回到 follow Agent。
+
+## 3. 执行流程
+
+```text
+TaskScheduler reads current Task
+-> task_execution resolves target Session
+-> existing Session: keep Session config
+   new Session: initialize from Task/Agent policy
+-> ensure SidecarOwner::Task
+-> Rust POST /cron/execute-sync (compatibility transport name)
+-> SessionEngine selector chooses builtin/external adapter
+-> enqueue one Task turn with per-turn permission
+-> wait for real terminal result
+-> persist Task outcome/history
+-> release Task owner on terminal/stop/delete
 ```
 
-`resolveCronProviderRouting(providerId)`：
-- provider 不存在 → 抛错（"provider 已删除"）
-- `provider.type === 'subscription'` → 返回 `'subscription'` sentinel
-- api-type 但缺 apiKey → 抛错（"缺少 API Key"）
-- api-type 有 apiKey → 调用 `resolveProviderEnv()` 返回完整 env（含 authType / modelAliases）
+`/cron/execute-sync` 是历史 wire name，不是 CronTask domain owner。Payload 不再传 `providerEnv`、`providerIntent` 或 Task-Cron backpointer。
 
-## 5. `'subscription'` Sentinel
+对已有 Session，Node 如果无法切换到 payload 指定的 Session，必须 fail closed；禁止退回“当前碰巧打开的 Session”继续执行。
 
-`enqueueUserMessage` 的第五参数语义（agent-session.ts:5375-5383）：
+## 4. 新 Session 初始化
 
-| 值 | 语义 |
-|----|------|
-| `undefined` | "保持当前 provider"（pit-of-success 默认） |
-| `'subscription'` | "切回订阅"（清空 currentProviderEnv） |
-| `ProviderEnv` 对象 | "用这个 specific provider" |
+创建 execution Session 时按以下来源解析：
 
-**PRD 0.2.9 R1 修复**：cron handler 之前的 subscription 分支传 `undefined`，结果"保持上一次 provider"。修复后传字面 `'subscription'`，行为正确。
+1. Task 显式 runtime/provider/model/MCP override。
+2. 缺失项跟随 Agent/workspace 当前配置。
+3. builtin `providerId` 在 Sidecar 从当前 config materialize credential。
+4. 生成 Session metadata/config snapshot，之后由 Session 自己拥有。
 
-**给 sidecar 调用方的硬规则**：要切回订阅 MUST 传 `'subscription'` 字符串字面量。
+从这一刻开始，Agent 或 Task 配置的后续修改不会隐式改写该 Session。若用户编辑专属 single-session Task 配置，调用方应通过既有 Session 配置路径显式更新其基线；不能在每个 tick 重放 Task snapshot。
 
-## 6. Schema Validation (Rust 强制)
+## 5. 已有 Session 与 Goal
 
-`validate_task_provider_routing` 在 Task 持久层守门：
+Task 和 Goal 可同时关联同一 Session，因为它们职责不同：
 
-| 不变式 | 拒绝条件 |
-|--------|----------|
-| 配对 | `providerId.is_some() && model.is_none()` |
-| 跨-runtime 互斥 | `runtime ∈ {claude-code, codex, gemini} && providerId.is_some()` |
+- Task 只负责在时间点投递一个 Turn。
+- Goal 只负责 Session 的长期目标状态与 continuation。
+- Runtime queue 负责实际 Turn 排序；双方不得各自维护并行消息队列。
 
-应用点：`create_direct` / `create_from_alignment` / `update`（用合并后的状态校验）/ `create_migrated`。
+若未来要“Task 启动后自动进入 Goal”，本期架构已经支持最简单的组合：Task prompt 让 AI 在目标 Session 调 `myagents goal create`。Task Store、Task Scheduler 与 Goal Store 无需新增彼此引用。
 
-## 6.1 MCP override 三态与删除语义
+## 6. Legacy 迁移
 
-Task / Cron 的 MCP override 不是 provider routing，但共享同一组持久配置边界：
+普通 legacy Cron 在 backend startup 迁移到 TaskStore：
 
-| 存储值 | 语义 |
-|--------|------|
-| `None` / 字段缺失 | 跟随 Agent / workspace 的 effective MCP |
-| `Some([])` / `[]` | 显式不用任何 MCP |
-| `Some([id...])` / `[id...]` | 只启用这些 MCP id |
+- `providerId + model` 可验证时保留。
+- subscription 只有 model 完整时映射为 builtin subscription identity。
+- external runtime 丢弃无意义的 builtin provider 字段。
+- frozen `provider_env` 不复制，Task 进入 Blocked。
+- MCP 三态、runtime config、permission、Session 策略尽量保留。
 
-删除 custom MCP identity 时，Admin API 先通过 Management API 让 Rust owner 清 Task/Cron 引用，再删除 AppConfig definition。若某个 Task/Cron override 原本只包含被删除 id，清理后必须保存为空数组 `[]`，不能折叠回 `None`；否则用户删除一个 MCP 后，任务会突然继承 Agent 的其它 MCP。手动编辑时，`clearMcpOverride` 才表示恢复 follow Agent，且不能和 `mcpEnabledServers` 同时传。
+迁移后旧 `cron_tasks.json` 只读，执行路径不再解析 legacy `ProviderIntent`。
 
-## 7. UI 入口（TaskAdvancedConfigEditor）
+## 7. 禁止项
 
-**Builtin runtime 分支**：
-- `useAvailableProviders()` 拿所有有 credential 的 provider
-- Grouped popup：`provider.name → provider.models[]`
-- 选择 model 时配对写 `(providerId, model)`
-- "跟随 Agent" 选项 → 设置 `clearProviderOverride: true` flag（原子清空）
+| 禁止 | 原因 | 正确路径 |
+|---|---|---|
+| Task/Cron store 持久化 credential env | 泄密且 key rotation 失效 | 只存 identity，创建 Session 时 live resolve |
+| 每个 tick 覆盖已有 Session config | 多 owner 竞态、用户设置被回滚 | 已有 Session 继承自身配置 |
+| Task 同时持有 external runtime 与 builtin provider | 路由语义冲突 | Rust validator 拒绝 |
+| 把 `/cron/execute-sync` wire name 当成 CronTask owner | 复活双权威 | domain owner 始终是 Task |
+| Goal 复制 Task provider/runtime/MCP | Goal 不是 TaskRun | 读取当前 Session |
 
-**External runtime 分支**：
-- `runtimeModels`（CC_MODELS / codexModels / geminiModels）
-- 写入 `runtimeConfig.model`（不写 `model` 字段）
+## 8. 关键文件
 
-**切 runtime 时**：renderer 自动清不兼容字段（builtin → external 清 providerId+model；反之清 runtimeConfig.model）
-
-**Stale provider UX**：picker 区分两种失效状态：
-- providerId 仍在 config 但缺 apiKey → 闭按钮显示 ⚠ 角标，picker 内额外卡片提示去配置 key
-- providerId 已从 config 删除 → picker 内警告"provider 已删除，请重选"
-
-## 8. 用户视角的行为表
-
-| 场景 | 0.2.9 行为 |
-|------|-----------|
-| 编辑 task 选 OpenAI / GPT-4o，保存 | `tasks.jsonl` 有 `"providerId":"openai-..."`，无 apiKey |
-| 设置里改 OpenAI 的 apiKey | 下一次 task tick 立即用新 key（不需要 re-save task） |
-| 设置里删 OpenAI provider | 下一次 task tick 失败 → Task 标 Blocked，error 提示用户重选 |
-| 切 task runtime 到 codex | UI 自动清 providerId+model；切回 builtin 自动清 runtimeConfig.model |
-| 给 task 选了 provider 但没选 model | Rust 拒绝保存（pairing rule） |
-| 老 task（0.2.8 之前的，无 providerId）| FollowAgent 路径，行为不变 |
-| 老 cron 仍带 frozen provider_env | 反序列化兼容；启动日志计数；Explicit intent 路径继续 work；用户编辑 task 一次自动迁移 |
-
-## 9. 与 PRD #119 的关系
-
-PRD #119 在 CronTask 层引入 `ProviderIntent { FollowAgent, Subscription, Explicit }`。
-
-PRD 0.2.9 在此之上：
-1. 把 intent 从"用户面持久化字段"降级为"sidecar 内部派生量"。用户只选 providerId；当 providerId 存在时 sidecar 完全忽略 intent，自己按 provider.type 现场判定 subscription/explicit。
-2. 把 `provider_env`（frozen）从"双向持久化"改为"只读 legacy"：`#[serde(default, skip_serializing)]` —— 仍能反序列化老数据让 in-memory CronTask 跑，但下一次 `save_to_disk` 就永远消失。
-3. 把解析逻辑从 ensure 时（schedule）移到 tick 时（execute）。
-
-**老 cron 兼容的精确边界**：当 cron 没有 `providerId`（pre-0.2.9 数据），sidecar 仍然按 #119 的 intent 分支走（`FollowAgent` / `Subscription` / `Explicit`），其中 `Explicit` 还会读 in-memory 的 legacy `provider_env`。但只要用户编辑这条 cron 一次，`save_to_disk` 触发，legacy `provider_env` 就从磁盘上消失，下一次启动就只剩 `provider_intent` 字段。最终态是用户在 UI 里重新挑一次 provider，老 cron 也迁移到 providerId-only。
-
-## 10. Pit-of-Success 红线
-
-| 禁止 | 后果 | 正确做法 |
-|------|------|---------|
-| 在 Task 持久层存 apiKey / baseUrl 等 credential | 安全 + 维护成本（rotation 不生效） | 只存 providerId，sidecar live resolve |
-| 在 sidecar /cron/execute 的 subscription 分支传 `undefined` 给 enqueueUserMessage | 实际"保持当前 provider"，跨 provider 切换静默错路由 | 传字面 `'subscription'` |
-| 让 task 同时持有 builtin `providerId` 和 `runtime ∈ external` | sidecar 把 model 误传给 codex CLI 等 | Rust validator 拒绝；UI 切 runtime 时自动清 |
-| 写 `providerId` 不写 `model`（或反之） | 半残状态 → 跨 provider 静默错路由 | UI 配对写；Rust validator 拒绝 |
-| 在 Rust 重写 resolveProviderEnv | 与 TS sidecar 的版本 drift（authType / modelAliases / fallback aliases） | 单一权威源在 sidecar；Rust 只透传 providerId |
-
-## 11. 排查指南
-
-- **task 用错了 provider**：grep unified log `[cron] execute providerId=X resolved=Y` — 确认 sidecar 解析的就是 X
-- **subscription 切换没生效**：grep `[cron] execute-sync intent=subscription` 或 `providerId=... resolved=subscription` — 确认走了 'subscription' sentinel 路径
-- **provider 删除后老 cron 还跑**：grep `[CronTask] N legacy task(s) still carry frozen provider_env` —— 编辑该 task 一次即可迁移
-- **rotation 未生效**：检查 task 是否仍带 `providerEnv`（旧路径），无则下一 tick 必用新 key
-
-## 12. 相关文件
-
-- `src-tauri/src/task.rs` — Task 持久层 + validation
-- `src-tauri/src/cron_task.rs` — CronTask facade / public re-exports
-- `src-tauri/src/cron_task/store.rs` — CronTask 持久层
-- `src-tauri/src/cron_task/execution.rs` — `execute_task_directly`
-- `src-tauri/src/management_api.rs` — ensure_cron_for_task / /api/cron/create
-- `src-tauri/src/sidecar/cron_execute.rs` — `CronExecutePayload` / Rust → Node `/cron/execute` bridge
-- `src/server/index.ts` — /cron/execute(-sync) handlers + resolveCronProviderRouting helper
-- `src/server/utils/admin-config.ts` — resolveProviderEnv（sidecar 唯一 resolver）
-- `src/server/agent-session.ts` — enqueueUserMessage 'subscription' sentinel 语义
-- `src/renderer/components/task-center/editors/TaskAdvancedConfigEditor.tsx` — UI grouped picker
-- `src/server/tools/im-cron-tool.ts` — IM cron tool（已收敛 providerId-only）
-- `src/renderer/pages/Launcher.tsx` / `src/renderer/pages/Chat.tsx` — 收敛 cron 创建路径
+- `src-tauri/src/task.rs`：持久 schema、validation、mutation
+- `src-tauri/src/task_scheduler.rs`：timer 与 run trigger
+- `src-tauri/src/task_execution.rs`：Session/Sidecar execution use case
+- `src-tauri/src/sidecar/cron_execute.rs`：Rust -> Node sync transport
+- `src/server/index.ts`：`/cron/execute-sync`
+- `src/server/session-engine/`：builtin/external selector 与 adapter
+- `src/server/utils/admin-config.ts`：provider config resolver
+- `src/renderer/components/task-center/editors/TaskAdvancedConfigEditor.tsx`：UI 配对编辑
