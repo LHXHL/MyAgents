@@ -4,6 +4,7 @@
 
 use axum::{
     extract::{DefaultBodyLimit, Query},
+    http::HeaderMap,
     routing::{get, post},
     Json, Router,
 };
@@ -12,8 +13,8 @@ use std::sync::OnceLock;
 use tokio::net::TcpListener;
 
 use crate::cron_task::{
-    self, CronDelivery, CronSchedule, CronTask, CronTaskConfig, GoalStatus, ProviderIntent,
-    TaskProviderEnv,
+    self, CronDelivery, CronSchedule, CronTask, CronTaskConfig, GoalMutationError, GoalStatus,
+    ProviderIntent, TaskProviderEnv,
 };
 use crate::im::adapter::{ImAdapter, ImStreamAdapter};
 use crate::im::bridge;
@@ -63,9 +64,23 @@ pub fn set_sidecar_state(state: crate::sidecar::ManagedSidecarManager) {
     let _ = SIDECAR_STATE.set(state);
 }
 
-#[allow(dead_code)]
 fn get_sidecar_state() -> Option<&'static crate::sidecar::ManagedSidecarManager> {
     SIDECAR_STATE.get()
+}
+
+fn request_sidecar_generation(headers: &HeaderMap) -> Result<u64, Json<serde_json::Value>> {
+    let generation = headers
+        .get("x-myagents-sidecar-generation")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0);
+    generation.ok_or_else(|| {
+        Json(serde_json::json!({
+            "ok": false,
+            "code": "invalid_request",
+            "error": "A valid Sidecar generation is required",
+        }))
+    })
 }
 
 /// Start the internal management API server on a random port
@@ -883,11 +898,12 @@ fn is_goal_task(task: &CronTask) -> bool {
     task.is_goal()
 }
 
-fn goal_to_json(task: CronTask) -> serde_json::Value {
+fn goal_to_json(task: &CronTask) -> serde_json::Value {
     serde_json::json!({
         "id": task.id,
-        "objective": task.goal_objective.unwrap_or_default(),
+        "objective": task.goal_objective.as_deref().unwrap_or_default(),
         "status": task.goal_status
+            .as_ref()
             .and_then(|status| serde_json::to_value(status).ok()),
         "turnCount": task.execution_count,
         "revision": task.goal_revision,
@@ -898,38 +914,59 @@ fn goal_to_json(task: CronTask) -> serde_json::Value {
         "updatedAt": task.goal_updated_at
             .map(|dt| dt.to_rfc3339())
             .unwrap_or_else(|| task.updated_at.to_rfc3339()),
-        "terminalReason": task.goal_terminal_reason.or(task.exit_reason),
+        "terminalReason": task.goal_terminal_reason.as_deref().or(task.exit_reason.as_deref()),
         "sessionId": task.session_id,
         "workspacePath": task.workspace_path,
     })
 }
 
-fn goal_error_code(error: &str) -> &'static str {
-    for code in [
-        "stale_revision",
-        "stale_admission",
-        "stale_lease",
-        "lease_conflict",
-        "terminal",
-        "goal_changed",
-    ] {
-        if error.starts_with(code) {
-            return code;
-        }
-    }
-    "goal_error"
+fn goal_scheduler_lease_to_json(
+    goal_id: &str,
+    goal_revision: u64,
+    lease: &cron_task::GoalTurnLease,
+) -> serde_json::Value {
+    serde_json::json!({
+        "id": lease.id,
+        "goalId": goal_id,
+        "revision": goal_revision,
+        "turnNumber": lease.turn_number,
+    })
 }
 
-fn goal_error_json(error: String, goal: Option<CronTask>) -> Json<serde_json::Value> {
+fn goal_error_json(error: GoalMutationError, goal: Option<CronTask>) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "ok": false,
-        "code": goal_error_code(&error),
-        "error": error,
-        "goal": goal.map(goal_to_json),
+        "code": error.code(),
+        "error": error.to_string(),
+        "goal": goal.as_ref().map(goal_to_json),
     }))
 }
 
-async fn goal_admit_handler(Json(req): Json<GoalAdmitRequest>) -> Json<serde_json::Value> {
+async fn validate_goal_identity(
+    manager: &cron_task::CronTaskManager,
+    session_id: &str,
+    workspace_path: Option<&str>,
+    goal_id: &str,
+) -> Result<CronTask, GoalMutationError> {
+    let Some(goal) = manager.get_task(goal_id).await else {
+        return Err(GoalMutationError::goal_changed("Goal identity changed"));
+    };
+    let workspace_matches = match workspace_path {
+        Some(workspace) => {
+            cron_task::normalize_path(&goal.workspace_path) == cron_task::normalize_path(workspace)
+        }
+        None => true,
+    };
+    if !goal.is_goal() || goal.session_id != session_id || !workspace_matches {
+        return Err(GoalMutationError::goal_changed("Goal identity changed"));
+    }
+    Ok(goal)
+}
+
+async fn goal_admit_handler(
+    headers: HeaderMap,
+    Json(req): Json<GoalAdmitRequest>,
+) -> Json<serde_json::Value> {
     let session_id = req.session_id.trim();
     let goal_id = req.goal_id.trim();
     let admission_id = req.admission_id.trim();
@@ -955,33 +992,47 @@ async fn goal_admit_handler(Json(req): Json<GoalAdmitRequest>) -> Json<serde_jso
     let Some(goal) = find_current_goal(manager, session_id, req.workspace_path.as_deref()).await
     else {
         return goal_error_json(
-            "terminal: No active Goal in current session".to_string(),
+            GoalMutationError::terminal("No active Goal in current session"),
             None,
         );
     };
     if goal.id != goal_id {
         return goal_error_json(
-            "goal_changed: Goal identity changed before turn admission".to_string(),
+            GoalMutationError::goal_changed("Goal identity changed before turn admission"),
             Some(goal),
         );
     }
+    let sidecar_generation = match request_sidecar_generation(&headers) {
+        Ok(generation) => generation,
+        Err(response) => return response,
+    };
+    let Some(sidecars) = get_sidecar_state() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "code": "management_unavailable",
+            "error": "Sidecar manager is not initialized",
+        }));
+    };
     match manager
-        .reserve_goal_user_admission_at_objective(
+        .reserve_goal_user_admission_from_sidecar(
             goal_id,
             admission_id,
             req.expected_revision,
             admission_kind,
             req.expected_objective.as_deref(),
             req.expected_control_revision,
+            session_id,
+            sidecar_generation,
+            sidecars,
         )
         .await
     {
-        Ok((goal, admission, preempted_lease_id)) => Json(serde_json::json!({
+        Ok((goal, admission)) => Json(serde_json::json!({
             "ok": true,
-            "goal": goal_to_json(goal),
-            "preemptedLeaseId": preempted_lease_id,
+            "goal": goal_to_json(&goal),
             "reservation": {
                 "id": admission.id,
+                "goalId": goal.id,
                 "revision": admission.revision,
                 "turnNumber": admission.turn_number,
             },
@@ -991,28 +1042,47 @@ async fn goal_admit_handler(Json(req): Json<GoalAdmitRequest>) -> Json<serde_jso
 }
 
 async fn goal_admit_claim_handler(
+    headers: HeaderMap,
     Json(req): Json<GoalAdmissionIdentityRequest>,
 ) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
-    let current = manager.get_task(&req.goal_id).await;
-    if current.as_ref().is_none_or(|goal| {
-        goal.session_id != req.session_id
-            || req.workspace_path.as_deref().is_some_and(|workspace| {
-                cron_task::normalize_path(&goal.workspace_path)
-                    != cron_task::normalize_path(workspace)
-            })
-    }) {
-        return goal_error_json("goal_changed: Goal identity changed".to_string(), current);
+    if let Err(error) = validate_goal_identity(
+        manager,
+        &req.session_id,
+        req.workspace_path.as_deref(),
+        &req.goal_id,
+    )
+    .await
+    {
+        return goal_error_json(error, manager.get_task(&req.goal_id).await);
     }
+    let sidecar_generation = match request_sidecar_generation(&headers) {
+        Ok(generation) => generation,
+        Err(response) => return response,
+    };
+    let Some(sidecars) = get_sidecar_state() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "code": "management_unavailable",
+            "error": "Sidecar manager is not initialized",
+        }));
+    };
     match manager
-        .claim_goal_user_admission(&req.goal_id, &req.admission_id)
+        .claim_goal_user_admission_from_sidecar(
+            &req.goal_id,
+            &req.admission_id,
+            &req.session_id,
+            sidecar_generation,
+            sidecars,
+        )
         .await
     {
         Ok((goal, admission)) => Json(serde_json::json!({
             "ok": true,
-            "goal": goal_to_json(goal),
+            "goal": goal_to_json(&goal),
             "reservation": {
                 "id": admission.id,
+                "goalId": goal.id,
                 "revision": admission.revision,
                 "turnNumber": admission.turn_number,
             },
@@ -1022,6 +1092,7 @@ async fn goal_admit_claim_handler(
 }
 
 async fn goal_admit_finalize_handler(
+    headers: HeaderMap,
     Json(req): Json<GoalAdmitFinalizeRequest>,
 ) -> Json<serde_json::Value> {
     let session_id = req.session_id.trim();
@@ -1046,23 +1117,41 @@ async fn goal_admit_finalize_handler(
         }));
     }
     let manager = cron_task::get_cron_task_manager();
-    let current = manager.get_task(goal_id).await;
-    if current.as_ref().is_none_or(|goal| {
-        goal.session_id != session_id
-            || req.workspace_path.as_deref().is_some_and(|workspace| {
-                cron_task::normalize_path(&goal.workspace_path)
-                    != cron_task::normalize_path(workspace)
-            })
-    }) {
-        return goal_error_json("goal_changed: Goal identity changed".to_string(), current);
-    }
-    match manager
-        .finalize_goal_user_admission(goal_id, admission_id, accepted)
-        .await
+    if let Err(error) =
+        validate_goal_identity(manager, session_id, req.workspace_path.as_deref(), goal_id).await
     {
+        return goal_error_json(error, manager.get_task(goal_id).await);
+    }
+    let result = if accepted {
+        let sidecar_generation = match request_sidecar_generation(&headers) {
+            Ok(generation) => generation,
+            Err(response) => return response,
+        };
+        let Some(sidecars) = get_sidecar_state() else {
+            return Json(serde_json::json!({
+                "ok": false,
+                "code": "management_unavailable",
+                "error": "Sidecar manager is not initialized",
+            }));
+        };
+        manager
+            .accept_goal_user_admission_from_sidecar(
+                goal_id,
+                admission_id,
+                session_id,
+                sidecar_generation,
+                sidecars,
+            )
+            .await
+    } else {
+        manager
+            .abort_goal_user_admission(goal_id, admission_id)
+            .await
+    };
+    match result {
         Ok((goal, resumed)) => Json(serde_json::json!({
             "ok": true,
-            "goal": goal_to_json(goal),
+            "goal": goal_to_json(&goal),
             "resumed": resumed,
         })),
         Err(error) => goal_error_json(error, manager.get_task(goal_id).await),
@@ -1073,44 +1162,73 @@ async fn goal_admit_release_handler(
     Json(req): Json<GoalAdmissionIdentityRequest>,
 ) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
-    let current = manager.get_task(&req.goal_id).await;
-    if current.as_ref().is_none_or(|goal| {
-        goal.session_id != req.session_id
-            || req.workspace_path.as_deref().is_some_and(|workspace| {
-                cron_task::normalize_path(&goal.workspace_path)
-                    != cron_task::normalize_path(workspace)
-            })
-    }) {
-        return goal_error_json("goal_changed: Goal identity changed".to_string(), current);
+    if let Err(error) = validate_goal_identity(
+        manager,
+        &req.session_id,
+        req.workspace_path.as_deref(),
+        &req.goal_id,
+    )
+    .await
+    {
+        return goal_error_json(error, manager.get_task(&req.goal_id).await);
     }
     match manager
         .release_goal_user_admission(&req.goal_id, &req.admission_id)
         .await
     {
-        Ok(goal) => Json(serde_json::json!({ "ok": true, "goal": goal_to_json(goal) })),
+        Ok(goal) => Json(serde_json::json!({ "ok": true, "goal": goal_to_json(&goal) })),
         Err(error) => goal_error_json(error, manager.get_task(&req.goal_id).await),
     }
 }
 
 async fn goal_scheduler_claim_handler(
+    headers: HeaderMap,
     Json(req): Json<GoalSchedulerClaimRequest>,
 ) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
-    let current = manager.get_task(&req.goal_id).await;
-    if current.as_ref().is_none_or(|goal| {
-        goal.session_id != req.session_id
-            || req.workspace_path.as_deref().is_some_and(|workspace| {
-                cron_task::normalize_path(&goal.workspace_path)
-                    != cron_task::normalize_path(workspace)
-            })
-    }) {
-        return goal_error_json("goal_changed: Goal identity changed".to_string(), current);
+    if let Err(error) = validate_goal_identity(
+        manager,
+        &req.session_id,
+        req.workspace_path.as_deref(),
+        &req.goal_id,
+    )
+    .await
+    {
+        return goal_error_json(error, manager.get_task(&req.goal_id).await);
     }
+    let sidecar_generation = match request_sidecar_generation(&headers) {
+        Ok(generation) => generation,
+        Err(response) => return response,
+    };
+    let Some(sidecars) = get_sidecar_state() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "code": "management_unavailable",
+            "error": "Sidecar manager is not initialized",
+        }));
+    };
     match manager
-        .claim_goal_scheduler_turn(&req.goal_id, &req.lease_id, req.expected_revision)
+        .claim_goal_scheduler_turn_from_sidecar(
+            &req.goal_id,
+            &req.lease_id,
+            req.expected_revision,
+            &req.session_id,
+            sidecar_generation,
+            sidecars,
+        )
         .await
     {
-        Ok(goal) => Json(serde_json::json!({ "ok": true, "goal": goal_to_json(goal) })),
+        Ok(goal) => {
+            let lease = goal
+                .goal_turn_lease
+                .as_ref()
+                .expect("successful scheduler claim must persist its lease");
+            Json(serde_json::json!({
+                "ok": true,
+                "goal": goal_to_json(&goal),
+                "lease": goal_scheduler_lease_to_json(&goal.id, goal.goal_revision, lease),
+            }))
+        }
         Err(error) => goal_error_json(error, manager.get_task(&req.goal_id).await),
     }
 }
@@ -1119,21 +1237,21 @@ async fn goal_scheduler_revoke_handler(
     Json(req): Json<GoalSchedulerIdentityRequest>,
 ) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
-    let current = manager.get_task(&req.goal_id).await;
-    if current.as_ref().is_none_or(|goal| {
-        goal.session_id != req.session_id
-            || req.workspace_path.as_deref().is_some_and(|workspace| {
-                cron_task::normalize_path(&goal.workspace_path)
-                    != cron_task::normalize_path(workspace)
-            })
-    }) {
-        return goal_error_json("goal_changed: Goal identity changed".to_string(), current);
+    if let Err(error) = validate_goal_identity(
+        manager,
+        &req.session_id,
+        req.workspace_path.as_deref(),
+        &req.goal_id,
+    )
+    .await
+    {
+        return goal_error_json(error, manager.get_task(&req.goal_id).await);
     }
     match manager
         .revoke_goal_scheduler_lease(&req.goal_id, &req.lease_id)
         .await
     {
-        Ok(goal) => Json(serde_json::json!({ "ok": true, "goal": goal_to_json(goal) })),
+        Ok(goal) => Json(serde_json::json!({ "ok": true, "goal": goal_to_json(&goal) })),
         Err(error) => goal_error_json(error, manager.get_task(&req.goal_id).await),
     }
 }
@@ -1157,7 +1275,7 @@ async fn goal_objective_handler(Json(req): Json<GoalObjectiveRequest>) -> Json<s
     };
     if goal.id != goal_id {
         return goal_error_json(
-            "goal_changed: Goal identity changed before objective update".to_string(),
+            GoalMutationError::goal_changed("Goal identity changed before objective update"),
             Some(goal),
         );
     }
@@ -1165,10 +1283,9 @@ async fn goal_objective_handler(Json(req): Json<GoalObjectiveRequest>) -> Json<s
         .update_goal_objective_cas(&goal.id, objective.to_string(), Some(req.expected_revision))
         .await
     {
-        Ok((goal, invalidated_lease_id)) => Json(serde_json::json!({
+        Ok(goal) => Json(serde_json::json!({
             "ok": true,
-            "goal": goal_to_json(goal),
-            "invalidatedLeaseId": invalidated_lease_id,
+            "goal": goal_to_json(&goal),
         })),
         Err(error) => goal_error_json(error, manager.get_task(&goal.id).await),
     }
@@ -1200,7 +1317,7 @@ async fn goal_get_handler(Query(params): Query<GoalSessionQuery>) -> Json<serde_
     .await;
     Json(serde_json::json!({
         "ok": true,
-        "goal": goal.map(goal_to_json),
+        "goal": goal.as_ref().map(goal_to_json),
     }))
 }
 
@@ -1219,13 +1336,6 @@ async fn goal_create_handler(Json(req): Json<GoalCreateRequest>) -> Json<serde_j
     }
 
     let manager = cron_task::get_cron_task_manager();
-    if let Some(existing) = find_current_goal(manager, session_id, Some(workspace_path)).await {
-        return Json(serde_json::json!({
-            "ok": false,
-            "error": "Current session already has an unfinished Goal",
-            "goal": goal_to_json(existing),
-        }));
-    }
 
     let now = chrono::Utc::now();
     let config = CronTaskConfig {
@@ -1265,13 +1375,19 @@ async fn goal_create_handler(Json(req): Json<GoalCreateRequest>) -> Json<serde_j
     match manager.create_goal_task(config).await {
         Ok(task) => Json(serde_json::json!({
             "ok": true,
-            "goal": goal_to_json(task),
+            "goal": goal_to_json(&task),
         })),
-        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
+        Err(error) => {
+            let current = find_current_goal(manager, session_id, Some(workspace_path)).await;
+            goal_error_json(error, current)
+        }
     }
 }
 
-async fn goal_update_handler(Json(req): Json<GoalUpdateRequest>) -> Json<serde_json::Value> {
+async fn goal_update_handler(
+    headers: HeaderMap,
+    Json(req): Json<GoalUpdateRequest>,
+) -> Json<serde_json::Value> {
     let session_id = req.session_id.trim();
     let goal_id = req.goal_id.trim();
     if session_id.is_empty() || goal_id.is_empty() {
@@ -1301,30 +1417,43 @@ async fn goal_update_handler(Json(req): Json<GoalUpdateRequest>) -> Json<serde_j
     };
     if goal.id != goal_id {
         return goal_error_json(
-            "goal_changed: Goal identity changed before terminal update".to_string(),
+            GoalMutationError::goal_changed("Goal identity changed before terminal update"),
             Some(goal),
         );
     }
     let authority_id = req.lease_id.as_deref().or(req.admission_id.as_deref());
     let Some(authority_id) = authority_id else {
         return goal_error_json(
-            "stale_lease: Goal terminal update requires current turn authority".to_string(),
+            GoalMutationError::stale_lease("Goal terminal update requires current turn authority"),
             Some(goal),
         );
     };
+    let sidecar_generation = match request_sidecar_generation(&headers) {
+        Ok(generation) => generation,
+        Err(response) => return response,
+    };
+    let Some(sidecars) = get_sidecar_state() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "code": "management_unavailable",
+            "error": "Sidecar manager is not initialized",
+        }));
+    };
     match manager
-        .transition_goal_terminal_authorized(
+        .transition_goal_terminal_authorized_from_sidecar(
             &goal.id,
             status,
             req.reason,
-            cron_task::GoalTerminalActor::Model,
             authority_id,
+            session_id,
+            sidecar_generation,
+            sidecars,
         )
         .await
     {
         Ok(outcome) => Json(serde_json::json!({
             "ok": true,
-            "goal": goal_to_json(outcome.task().clone()),
+            "goal": goal_to_json(outcome.task()),
         })),
         Err(error) => goal_error_json(error, manager.get_task(&goal.id).await),
     }
@@ -3356,6 +3485,47 @@ async fn session_watch_handler(
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn goal_error_response_uses_structured_code() {
+        let Json(response) = goal_error_json(
+            GoalMutationError::stale_revision("expected 4, current 5"),
+            None,
+        );
+
+        assert_eq!(
+            response.get("code").and_then(Value::as_str),
+            Some("stale_revision")
+        );
+        assert_eq!(
+            response.get("error").and_then(Value::as_str),
+            Some("stale_revision: expected 4, current 5")
+        );
+    }
+
+    #[test]
+    fn scheduler_claim_response_uses_the_claimed_lease_turn_number() {
+        let lease = cron_task::GoalTurnLease {
+            id: "lease-next-turn".to_string(),
+            turn_number: 7,
+            state: cron_task::GoalTurnLeaseState::Claimed,
+            sidecar_generation: 3,
+            created_at: chrono::Utc::now(),
+        };
+
+        let projected = goal_scheduler_lease_to_json("goal-1", 12, &lease);
+
+        assert_eq!(
+            projected.get("id").and_then(Value::as_str),
+            Some("lease-next-turn")
+        );
+        assert_eq!(
+            projected.get("goalId").and_then(Value::as_str),
+            Some("goal-1")
+        );
+        assert_eq!(projected.get("revision").and_then(Value::as_u64), Some(12));
+        assert_eq!(projected.get("turnNumber").and_then(Value::as_u64), Some(7));
+    }
 
     #[test]
     fn schedule_from_task_preserves_recurring_start_at() {

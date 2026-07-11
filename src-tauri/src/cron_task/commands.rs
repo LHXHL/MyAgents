@@ -1,3 +1,4 @@
+use super::validation::has_explicit_goal_create_fields;
 use super::*;
 
 const MANAGED_CRON_TASK_ERROR: &str =
@@ -13,6 +14,29 @@ fn is_managed_cron_task(task: &CronTask) -> bool {
 
 fn is_goal_task(task: &CronTask) -> bool {
     task.is_goal()
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UserSchedulerLifecycleSnapshot {
+    running_task_count: usize,
+    protected_session_ids: Vec<String>,
+}
+
+pub(super) fn validate_ordinary_cron_create_config(config: &CronTaskConfig) -> Result<(), String> {
+    if config
+        .managed_kind
+        .as_deref()
+        .is_some_and(|kind| !kind.trim().is_empty())
+    {
+        return Err(MANAGED_CRON_TASK_ERROR.to_string());
+    }
+    if matches!(config.schedule, Some(CronSchedule::Loop))
+        || has_explicit_goal_create_fields(config)
+    {
+        return Err(GOAL_CRON_TASK_ERROR.to_string());
+    }
+    Ok(())
 }
 
 async fn get_ordinary_cron_task(
@@ -48,16 +72,7 @@ async fn get_goal_task(manager: &CronTaskManager, task_id: &str) -> Result<CronT
 /// Create a new cron task
 #[tauri::command]
 pub async fn cmd_create_cron_task(config: CronTaskConfig) -> Result<CronTask, String> {
-    if config
-        .managed_kind
-        .as_deref()
-        .is_some_and(|kind| !kind.trim().is_empty())
-    {
-        return Err(MANAGED_CRON_TASK_ERROR.to_string());
-    }
-    if matches!(config.schedule, Some(CronSchedule::Loop)) {
-        return Err(GOAL_CRON_TASK_ERROR.to_string());
-    }
+    validate_ordinary_cron_create_config(&config)?;
     let manager = get_cron_task_manager();
     manager.create_task(config).await
 }
@@ -65,7 +80,10 @@ pub async fn cmd_create_cron_task(config: CronTaskConfig) -> Result<CronTask, St
 #[tauri::command]
 pub async fn cmd_create_goal_task(config: CronTaskConfig) -> Result<CronTask, String> {
     let manager = get_cron_task_manager();
-    manager.create_goal_task(config).await
+    manager
+        .create_goal_task(config)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -134,27 +152,19 @@ pub async fn cmd_stop_cron_task(
 #[tauri::command]
 pub async fn cmd_pause_goal_task(task_id: String) -> Result<CronTask, String> {
     let manager = get_cron_task_manager();
-    get_goal_task(manager, &task_id).await?;
     manager
         .pause_goal_task(&task_id, GoalPausedReason::UserStop)
         .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub async fn cmd_resume_goal_task(task_id: String) -> Result<CronTask, String> {
     let manager = get_cron_task_manager();
-    get_goal_task(manager, &task_id).await?;
-    manager.resume_goal_task(&task_id).await
-}
-
-#[tauri::command]
-pub async fn cmd_update_goal_objective(
-    task_id: String,
-    objective: String,
-) -> Result<CronTask, String> {
-    let manager = get_cron_task_manager();
-    get_goal_task(manager, &task_id).await?;
-    manager.update_goal_objective(&task_id, objective).await
+    manager
+        .resume_goal_task(&task_id)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -164,8 +174,10 @@ pub async fn cmd_mark_goal_terminal(
     reason: Option<String>,
 ) -> Result<CronTask, String> {
     let manager = get_cron_task_manager();
-    get_goal_task(manager, &task_id).await?;
-    manager.mark_goal_terminal(&task_id, status, reason).await
+    manager
+        .mark_goal_terminal(&task_id, status, reason)
+        .await
+        .map_err(|error| error.to_string())
 }
 
 /// Delete a cron task
@@ -203,6 +215,20 @@ pub async fn cmd_get_cron_tasks() -> Result<Vec<CronTask>, String> {
         .collect())
 }
 
+/// Lifecycle and destructive-action guard for user-owned schedulers.
+/// Unlike the ordinary Cron projection, this deliberately includes Goals.
+#[tauri::command]
+pub async fn cmd_get_user_scheduler_lifecycle_snapshot(
+) -> Result<UserSchedulerLifecycleSnapshot, String> {
+    let (running_task_count, protected_session_ids) = get_cron_task_manager()
+        .user_scheduler_lifecycle_snapshot()
+        .await;
+    Ok(UserSchedulerLifecycleSnapshot {
+        running_task_count,
+        protected_session_ids,
+    })
+}
+
 /// Get cron tasks for a workspace
 #[tauri::command]
 pub async fn cmd_get_workspace_cron_tasks(workspace_path: String) -> Result<Vec<CronTask>, String> {
@@ -220,10 +246,7 @@ pub async fn cmd_get_workspace_cron_tasks(workspace_path: String) -> Result<Vec<
 #[allow(non_snake_case)]
 pub async fn cmd_get_session_cron_task(sessionId: String) -> Result<Option<CronTask>, String> {
     let manager = get_cron_task_manager();
-    Ok(manager
-        .get_active_task_for_session(&sessionId)
-        .await
-        .filter(|task| !is_managed_cron_task(task) && !is_goal_task(task)))
+    Ok(manager.get_active_task_for_session(&sessionId).await)
 }
 
 /// Get active cron task for a tab (running only)
@@ -231,10 +254,7 @@ pub async fn cmd_get_session_cron_task(sessionId: String) -> Result<Option<CronT
 #[allow(non_snake_case)]
 pub async fn cmd_get_tab_cron_task(tabId: String) -> Result<Option<CronTask>, String> {
     let manager = get_cron_task_manager();
-    Ok(manager
-        .get_active_task_for_tab(&tabId)
-        .await
-        .filter(|task| !is_managed_cron_task(task) && !is_goal_task(task)))
+    Ok(manager.get_active_task_for_tab(&tabId).await)
 }
 
 /// Record task execution (called by Sidecar after execution completes)
@@ -251,6 +271,7 @@ pub async fn cmd_update_cron_task_tab(
     tab_id: Option<String>,
 ) -> Result<CronTask, String> {
     let manager = get_cron_task_manager();
+    get_ordinary_cron_task(manager, &task_id).await?;
     manager.update_task_tab(&task_id, tab_id).await
 }
 
@@ -261,6 +282,7 @@ pub async fn cmd_update_cron_task_session(
     session_id: String,
 ) -> Result<CronTask, String> {
     let manager = get_cron_task_manager();
+    get_ordinary_cron_task(manager, &task_id).await?;
     manager.update_task_session(&task_id, session_id).await
 }
 
@@ -313,7 +335,6 @@ pub async fn cmd_start_cron_scheduler(
         let workspace_path = task.workspace_path.clone();
         let owner = SidecarOwner::CronTask(task_id.clone());
         let task_id_for_log = task_id.clone();
-        let tab_id = task.tab_id.clone();
 
         ulog_info!(
             "[CronTask] Calling ensure_session_sidecar for session: {}",
@@ -345,13 +366,11 @@ pub async fn cmd_start_cron_scheduler(
 
                 // Activate session (for legacy session tracking)
                 if let Ok(mut sidecar_manager) = sidecar_state.lock() {
-                    sidecar_manager.activate_session(
+                    sidecar_manager.activate_cron_session(
                         task.session_id.clone(),
-                        tab_id,
-                        Some(task_id_for_log),
+                        task_id_for_log,
                         result.port,
                         task.workspace_path.clone(),
-                        true, // is_cron_task = true
                     );
                 }
             }

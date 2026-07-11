@@ -4,6 +4,7 @@ import { readLoopbackJson } from './loopback-response';
 export const ADMIN_LOOPBACK_TIMEOUT_MS = 10_000;
 
 const MGMT_PORT = process.env.MYAGENTS_MANAGEMENT_PORT;
+const SIDECAR_GENERATION = process.env.MYAGENTS_SIDECAR_GENERATION;
 
 export async function managementApi(
   path: string,
@@ -23,7 +24,12 @@ export async function managementApi(
   const url = `http://127.0.0.1:${MGMT_PORT}${path}`;
   const options: RequestInit = {
     method,
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...(SIDECAR_GENERATION
+        ? { 'X-MyAgents-Sidecar-Generation': SIDECAR_GENERATION }
+        : {}),
+    },
   };
   if (body && method === 'POST') {
     options.body = JSON.stringify(body);
@@ -35,6 +41,7 @@ export async function managementApi(
     const msg = err instanceof Error ? err.message : String(err);
     return {
       ok: false,
+      code: method === 'POST' ? 'transport_outcome_unknown' : 'management_unavailable',
       error: `Management API unreachable: ${msg}`,
       recoveryHint: {
         recoveryCommand: 'myagents status',

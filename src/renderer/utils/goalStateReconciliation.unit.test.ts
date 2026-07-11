@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { CronTask } from '@/types/cronTask';
 import {
   isTerminalGoalFromListenerGap,
+  projectGoalExecutionState,
   shouldAcceptGoalState,
 } from './goalStateReconciliation';
 
@@ -50,6 +51,19 @@ describe('Goal state reconciliation', () => {
     }))).toBe(true);
   });
 
+  it('accepts a newer terminal Goal over a stale active Goal with another id', () => {
+    expect(shouldAcceptGoalState(goal({
+      id: 'goal-2',
+      status: 'stopped',
+      goalStatus: 'complete',
+      goalUpdatedAt: '2026-07-10T11:00:00.000Z',
+    }), goal({
+      id: 'goal-1',
+      goalStatus: 'active',
+      goalUpdatedAt: '2026-07-10T10:30:00.000Z',
+    }))).toBe(true);
+  });
+
   it('recovers terminal state only from the listener registration gap', () => {
     const terminal = goal({
       status: 'stopped',
@@ -68,5 +82,35 @@ describe('Goal state reconciliation', () => {
     )).toBe(false);
     expect(isTerminalGoalFromListenerGap(goal({ goalUpdatedAt: '2026-07-10T10:00:05.000Z' }), 0, Infinity))
       .toBe(false);
+  });
+
+  it('derives execution only from durable claimed authorities', () => {
+    expect(projectGoalExecutionState(goal({
+      goalTurnLease: {
+        id: 'lease-pending',
+        turnNumber: 2,
+        state: 'pending',
+        createdAt: '2026-07-10T10:00:00.000Z',
+      },
+    }))).toEqual({ isExecuting: false, executionNumber: undefined });
+
+    expect(projectGoalExecutionState(goal({
+      goalTurnLease: {
+        id: 'lease-claimed',
+        turnNumber: 2,
+        state: 'claimed',
+        createdAt: '2026-07-10T10:00:00.000Z',
+      },
+    }))).toEqual({ isExecuting: true, executionNumber: 2 });
+
+    expect(projectGoalExecutionState(goal({
+      goalUserAdmissions: [{
+        id: 'user-turn',
+        revision: 4,
+        turnNumber: 3,
+        state: 'dispatched',
+        createdAt: '2026-07-10T10:00:00.000Z',
+      }],
+    }))).toEqual({ isExecuting: true, executionNumber: 3 });
   });
 });

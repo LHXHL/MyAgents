@@ -16,7 +16,7 @@ describe('planSessionOpen', () => {
       currentRuntime: 'builtin',
       targetRuntime: 'codex',
       targetActivation: null,
-      currentTabCronRunning: false,
+      currentSessionHasPersistentOwners: false,
     })).toEqual({ type: 'jump-to-tab', tabId: 'tab-a' });
   });
 
@@ -28,7 +28,7 @@ describe('planSessionOpen', () => {
       currentRuntime: 'claude-code',
       targetRuntime: 'codex',
       targetActivation: null,
-      currentTabCronRunning: false,
+      currentSessionHasPersistentOwners: false,
     })).toEqual({
       type: 'open-new-tab',
       reason: 'runtime-mismatch',
@@ -47,7 +47,7 @@ describe('planSessionOpen', () => {
       currentRuntimeIdentity: { runtime: 'codex', runtimeSource: 'system-cli' },
       targetRuntimeIdentity: { runtime: 'codex', runtimeSource: 'managed-provider' },
       targetActivation: null,
-      currentTabCronRunning: false,
+      currentSessionHasPersistentOwners: false,
     })).toEqual({
       type: 'open-new-tab',
       reason: 'runtime-mismatch',
@@ -66,7 +66,7 @@ describe('planSessionOpen', () => {
       currentRuntimeIdentity: { runtime: 'builtin' },
       targetRuntimeIdentity: { runtime: 'codex', runtimeSource: 'managed-provider' },
       targetActivation: null,
-      currentTabCronRunning: false,
+      currentSessionHasPersistentOwners: false,
     })).toEqual({
       type: 'open-new-tab',
       reason: 'runtime-mismatch',
@@ -84,7 +84,7 @@ describe('planSessionOpen', () => {
       currentRuntimeIdentity: { runtime: 'codex', runtimeSource: 'managed-provider' },
       targetRuntimeIdentity: { runtime: 'codex', runtimeSource: 'managed-provider' },
       targetActivation: null,
-      currentTabCronRunning: false,
+      currentSessionHasPersistentOwners: false,
     })).toEqual({ type: 'switch-current-tab' });
   });
 
@@ -96,7 +96,7 @@ describe('planSessionOpen', () => {
       currentRuntime: 'codex',
       targetRuntime: 'codex',
       targetActivation: { tab_id: null, task_id: 'task-1' },
-      currentTabCronRunning: true,
+      currentSessionHasPersistentOwners: true,
     })).toEqual({ type: 'attach-existing-sidecar', taskId: 'task-1' });
   });
 
@@ -111,7 +111,7 @@ describe('planSessionOpen', () => {
       currentRuntime: 'builtin',
       targetRuntime: 'codex',
       targetActivation: { tab_id: null, task_id: 'task-1' },
-      currentTabCronRunning: false,
+      currentSessionHasPersistentOwners: false,
     })).toEqual({ type: 'attach-existing-sidecar', taskId: 'task-1' });
   });
 
@@ -126,11 +126,11 @@ describe('planSessionOpen', () => {
       currentRuntime: 'builtin',
       targetRuntime: 'codex',
       targetActivation: null,
-      currentTabCronRunning: false,
+      currentSessionHasPersistentOwners: false,
     })).toEqual({ type: 'switch-current-tab' });
   });
 
-  test('opens a new tab when current tab is running its own cron', () => {
+  test('opens a new tab when an idle current session still has a persistent owner', () => {
     expect(planSessionOpen({
       tabs: [{ id: 'tab-a', sessionId: 'session-a' }],
       targetSessionId: 'session-b',
@@ -138,8 +138,8 @@ describe('planSessionOpen', () => {
       currentRuntime: 'builtin',
       targetRuntime: 'builtin',
       targetActivation: null,
-      currentTabCronRunning: true,
-    })).toEqual({ type: 'open-new-tab', reason: 'current-cron-running' });
+      currentSessionHasPersistentOwners: true,
+    })).toEqual({ type: 'open-new-tab', reason: 'current-persistent-owner' });
   });
 
   test('falls through to switch-current-tab for an idle target with no special owners', () => {
@@ -150,7 +150,7 @@ describe('planSessionOpen', () => {
       currentRuntime: 'builtin',
       targetRuntime: 'builtin',
       targetActivation: null,
-      currentTabCronRunning: false,
+      currentSessionHasPersistentOwners: false,
     })).toEqual({ type: 'switch-current-tab' });
   });
 });

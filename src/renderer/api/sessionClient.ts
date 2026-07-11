@@ -4,8 +4,7 @@
 
 import { apiFetch, apiGetJson, apiPostJson } from './apiFetch';
 import {
-    deactivateSession,
-    hasSessionSidecarOrThrow,
+    deleteSessionIfUnowned,
     isTauri,
 } from './tauriClient';
 import type { ContextUsage } from '../../shared/types/context-usage';
@@ -249,20 +248,11 @@ export async function getSessionDetails(sessionId: string): Promise<SessionData 
 export async function deleteSession(sessionId: string): Promise<boolean> {
     try {
         if (isTauri()) {
-            if (await hasSessionSidecarOrThrow(sessionId)) {
-                console.warn(
-                    `[sessionClient] Refusing to delete live session ${sessionId}; caller must move/release owners first.`,
-                );
-                return false;
-            }
+            return await deleteSessionIfUnowned(sessionId);
         }
 
         const response = await apiFetch(`/sessions/${sessionId}`, { method: 'DELETE' });
         if (!response.ok) return false;
-
-        if (isTauri()) {
-            await deactivateSession(sessionId);
-        }
         return true;
     } catch {
         return false;

@@ -60,9 +60,34 @@ describe('CronTaskStatusBar Goal states', () => {
         goalObjective="Finish the release"
         executionCount={3}
         onStop={vi.fn()}
+        onResume={vi.fn()}
       />,
     );
 
     expect(screen.getByRole('button', { name: 'Cancel goal' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument();
+  });
+
+  it('does not infer Goal identity from a legacy Loop schedule', () => {
+    const { rerender } = render(
+      <CronTaskStatusBar
+        mode="draft"
+        taskKind="cron"
+        intervalMinutes={5}
+        schedule={{ kind: 'loop' }}
+      />,
+    );
+    expect(screen.getByText('Scheduled mode')).toBeInTheDocument();
+    expect(screen.queryByText('Goal Mode')).not.toBeInTheDocument();
+
+    rerender(
+      <CronTaskStatusBar
+        mode="draft"
+        taskKind="goal"
+        intervalMinutes={5}
+        schedule={{ kind: 'loop' }}
+      />,
+    );
+    expect(screen.getByText('Goal Mode')).toBeInTheDocument();
   });
 });

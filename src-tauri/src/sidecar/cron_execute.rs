@@ -276,13 +276,11 @@ pub async fn execute_cron_task<R: Runtime>(
             e.to_string()
         })?;
 
-        manager_guard.activate_session(
+        manager_guard.activate_cron_session(
             session_id.clone(),
-            None,                          // No tab_id for cron tasks
-            Some(payload.task_id.clone()), // Store task_id for Tab connection
+            payload.task_id.clone(),
             port,
             workspace_path.to_string(),
-            true, // is_cron_task = true
         );
 
         let _ = app_handle.emit(

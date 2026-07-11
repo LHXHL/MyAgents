@@ -48,6 +48,78 @@ pub(crate) fn normalize_path(path: &str) -> String {
     normalized
 }
 
+/// Validate the persisted shape of a newly-created Goal task.
+///
+/// This runs only on the create path. Historical records continue to load as
+/// they were written, while every new explicit Goal is guaranteed to be a
+/// current-session Goal rather than a mixed Cron/Task-Center record.
+pub(super) fn has_explicit_goal_create_fields(config: &CronTaskConfig) -> bool {
+    config.goal_status.is_some()
+        || config.goal_objective.is_some()
+        || config.goal_updated_at.is_some()
+        || config.goal_terminal_reason.is_some()
+        || config.goal_paused_reason.is_some()
+}
+
+pub(super) fn validate_new_task_goal_shape(config: &CronTaskConfig) -> Result<(), String> {
+    let Some(status) = config.goal_status.as_ref() else {
+        if has_explicit_goal_create_fields(config) {
+            return Err(
+                "Goal metadata requires an explicit goalStatus on new CronTasks".to_string(),
+            );
+        }
+        return Ok(());
+    };
+
+    if status != &GoalStatus::Active {
+        return Err("New Goal tasks must start with goalStatus=active".to_string());
+    }
+    if !matches!(config.schedule, Some(CronSchedule::Loop)) {
+        return Err("Goal tasks require schedule.kind=loop".to_string());
+    }
+    if config.run_mode != RunMode::SingleSession {
+        return Err("Goal tasks require runMode=single_session".to_string());
+    }
+    if config.session_id.trim().is_empty() || config.workspace_path.trim().is_empty() {
+        return Err("Goal tasks require sessionId and workspacePath".to_string());
+    }
+    if config.session_id.starts_with("pending-") {
+        return Err("Goal tasks require a materialized sessionId".to_string());
+    }
+    let objective = config
+        .goal_objective
+        .as_deref()
+        .map(str::trim)
+        .filter(|objective| !objective.is_empty())
+        .ok_or_else(|| "Goal tasks require a non-empty goalObjective".to_string())?;
+    if config.prompt.trim() != objective {
+        return Err("Goal prompt and goalObjective must match".to_string());
+    }
+    if config.goal_terminal_reason.is_some() || config.goal_paused_reason.is_some() {
+        return Err("New active Goals cannot have terminal or paused reasons".to_string());
+    }
+    if config.managed_kind.is_some() || config.task_id.is_some() {
+        return Err("Goal tasks cannot also be managed Task Center projections".to_string());
+    }
+    if config.tab_id.is_some()
+        || config.model.is_some()
+        || config.provider_env.is_some()
+        || config.provider_id.is_some()
+        || config.provider_intent != ProviderIntent::FollowAgent
+        || config.runtime.is_some()
+        || config.runtime_config.is_some()
+        || config.mcp_enabled_servers.is_some()
+        || config.source_bot_id.is_some()
+        || config.delivery.is_some()
+    {
+        return Err(
+            "Goal session configuration must be inherited from the current session".to_string(),
+        );
+    }
+
+    Ok(())
+}
+
 /// Validate a cron expression (and optional timezone) at data-boundary time
 /// so bad input is rejected when saved, not silently swallowed at next fire
 /// (which would leave the scheduler dead and the task status "running" with

@@ -4,8 +4,7 @@ const mocks = vi.hoisted(() => ({
     apiFetch: vi.fn(),
     apiGetJson: vi.fn(),
     apiPostJson: vi.fn(),
-    deactivateSession: vi.fn(),
-    hasSessionSidecarOrThrow: vi.fn(),
+    deleteSessionIfUnowned: vi.fn(),
     invoke: vi.fn(),
     isTauri: vi.fn(),
 }));
@@ -17,8 +16,7 @@ vi.mock('../apiFetch', () => ({
 }));
 
 vi.mock('../tauriClient', () => ({
-    deactivateSession: mocks.deactivateSession,
-    hasSessionSidecarOrThrow: mocks.hasSessionSidecarOrThrow,
+    deleteSessionIfUnowned: mocks.deleteSessionIfUnowned,
     isTauri: mocks.isTauri,
 }));
 
@@ -29,39 +27,32 @@ vi.mock('@tauri-apps/api/core', () => ({
 import { deleteSession, getSessions } from '../sessionClient';
 
 const okResponse = () => new Response(JSON.stringify({ success: true }), { status: 200 });
-const notFoundResponse = () => new Response(JSON.stringify({ success: false }), { status: 404 });
 
 describe('deleteSession', () => {
     beforeEach(() => {
         vi.clearAllMocks();
         mocks.isTauri.mockReturnValue(true);
-        mocks.hasSessionSidecarOrThrow.mockResolvedValue(false);
-        mocks.deactivateSession.mockResolvedValue(undefined);
+        mocks.deleteSessionIfUnowned.mockResolvedValue(true);
         mocks.apiFetch.mockResolvedValue(okResponse());
     });
 
-    it('deletes storage only after confirming the session has no live sidecar', async () => {
+    it('delegates desktop deletion to the atomic Rust owner boundary', async () => {
         await expect(deleteSession('session-1')).resolves.toBe(true);
 
-        expect(mocks.hasSessionSidecarOrThrow).toHaveBeenCalledWith('session-1');
-        expect(mocks.apiFetch).toHaveBeenCalledWith('/sessions/session-1', { method: 'DELETE' });
-        expect(mocks.deactivateSession).toHaveBeenCalledWith('session-1');
-        expect(mocks.hasSessionSidecarOrThrow.mock.invocationCallOrder[0]).toBeLessThan(
-            mocks.apiFetch.mock.invocationCallOrder[0],
-        );
+        expect(mocks.deleteSessionIfUnowned).toHaveBeenCalledWith('session-1');
+        expect(mocks.apiFetch).not.toHaveBeenCalled();
     });
 
     it('refuses to delete storage while any sidecar owner is still alive', async () => {
-        mocks.hasSessionSidecarOrThrow.mockResolvedValue(true);
+        mocks.deleteSessionIfUnowned.mockResolvedValue(false);
 
         await expect(deleteSession('session-live')).resolves.toBe(false);
 
         expect(mocks.apiFetch).not.toHaveBeenCalled();
-        expect(mocks.deactivateSession).not.toHaveBeenCalled();
     });
 
     it('does not release any owner as a side effect of storage deletion', async () => {
-        mocks.hasSessionSidecarOrThrow.mockResolvedValue(true);
+        mocks.deleteSessionIfUnowned.mockResolvedValue(false);
 
         await expect(deleteSession('session-owned')).resolves.toBe(false);
 
@@ -70,29 +61,29 @@ describe('deleteSession', () => {
 
     it('keeps browser development mode deletion working without Rust sidecar checks', async () => {
         mocks.isTauri.mockReturnValue(false);
-        mocks.hasSessionSidecarOrThrow.mockResolvedValue(true);
+        mocks.deleteSessionIfUnowned.mockResolvedValue(false);
 
         await expect(deleteSession('session-browser')).resolves.toBe(true);
 
-        expect(mocks.hasSessionSidecarOrThrow).not.toHaveBeenCalled();
+        expect(mocks.deleteSessionIfUnowned).not.toHaveBeenCalled();
         expect(mocks.apiFetch).toHaveBeenCalledWith('/sessions/session-browser', { method: 'DELETE' });
     });
 
     it('fails closed when sidecar presence cannot be verified', async () => {
-        mocks.hasSessionSidecarOrThrow.mockRejectedValue(new Error('ipc unavailable'));
+        mocks.deleteSessionIfUnowned.mockResolvedValue(false);
 
         await expect(deleteSession('session-unknown')).resolves.toBe(false);
 
         expect(mocks.apiFetch).not.toHaveBeenCalled();
-        expect(mocks.deactivateSession).not.toHaveBeenCalled();
+        expect(mocks.deleteSessionIfUnowned).toHaveBeenCalledWith('session-unknown');
     });
 
-    it('returns false when the delete endpoint rejects the deletion', async () => {
-        mocks.apiFetch.mockResolvedValue(notFoundResponse());
+    it('returns false when the atomic desktop deletion rejects the deletion', async () => {
+        mocks.deleteSessionIfUnowned.mockResolvedValue(false);
 
         await expect(deleteSession('missing-session')).resolves.toBe(false);
 
-        expect(mocks.deactivateSession).not.toHaveBeenCalled();
+        expect(mocks.deleteSessionIfUnowned).toHaveBeenCalledWith('missing-session');
     });
 });
 

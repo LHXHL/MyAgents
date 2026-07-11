@@ -23,8 +23,8 @@ use tokio::time::Duration;
 use uuid::Uuid;
 
 use crate::sidecar::{
-    ensure_session_sidecar, execute_cron_task, release_session_sidecar, CronExecutePayload,
-    ManagedSidecarManager, ProviderEnv, SidecarOwner,
+    ensure_session_sidecar, execute_cron_task, CronExecutePayload, ManagedSidecarManager,
+    ProviderEnv, SidecarOwner,
 };
 use crate::utils::bom::strip_bom;
 use crate::{ulog_debug, ulog_error, ulog_info, ulog_warn};
@@ -45,11 +45,11 @@ pub use commands::{
     cmd_create_cron_task, cmd_create_goal_task, cmd_delete_cron_task, cmd_get_cron_runs,
     cmd_get_cron_task, cmd_get_cron_tasks, cmd_get_goal_task, cmd_get_session_cron_task,
     cmd_get_session_goal_task, cmd_get_tab_cron_task, cmd_get_tasks_to_recover,
-    cmd_get_workspace_cron_tasks, cmd_is_task_executing, cmd_mark_goal_terminal,
-    cmd_mark_task_complete, cmd_mark_task_executing, cmd_pause_goal_task,
+    cmd_get_user_scheduler_lifecycle_snapshot, cmd_get_workspace_cron_tasks, cmd_is_task_executing,
+    cmd_mark_goal_terminal, cmd_mark_task_complete, cmd_mark_task_executing, cmd_pause_goal_task,
     cmd_record_cron_execution, cmd_resume_goal_task, cmd_start_cron_scheduler, cmd_start_cron_task,
     cmd_stop_cron_task, cmd_update_cron_task_fields, cmd_update_cron_task_session,
-    cmd_update_cron_task_tab, cmd_update_goal_objective,
+    cmd_update_cron_task_tab,
 };
 use delivery::deliver_cron_result_to_bot;
 pub use delivery::{deliver_task_notification_to_bot, deliver_task_notification_to_bot_checked};
@@ -73,9 +73,10 @@ use types::default_permission_mode;
 use types::CronTaskStore;
 pub use types::{
     CronDelivery, CronSchedule, CronTask, CronTaskConfig, EndConditions, GoalDeliveryOutboxItem,
-    GoalDeliveryState, GoalPausedReason, GoalStatus, GoalTerminalActor, GoalTerminalOutcome,
-    GoalTurnLease, GoalTurnLeaseState, GoalUserAdmission, GoalUserAdmissionKind,
-    GoalUserAdmissionState, ProviderIntent, RecurringWindow, RunMode, TaskProviderEnv, TaskStatus,
+    GoalDeliveryState, GoalMutationError, GoalMutationErrorCode, GoalPausedReason, GoalStatus,
+    GoalTerminalActor, GoalTerminalOutcome, GoalTurnLease, GoalTurnLeaseState, GoalUserAdmission,
+    GoalUserAdmissionKind, GoalUserAdmissionState, ProviderIntent, RecurringWindow, RunMode,
+    TaskProviderEnv, TaskStatus,
 };
 pub(crate) use validation::normalize_path;
 pub use validation::validate_cron_expression;
@@ -133,6 +134,7 @@ mod cron_dialect_tests {
             goal_turn_lease: None,
             goal_user_admissions: Vec::new(),
             goal_delivery_outbox: Vec::new(),
+            goal_consecutive_failures: 0,
         }
     }
 
@@ -444,6 +446,34 @@ mod cron_dialect_tests {
     }
 
     #[test]
+    fn ordinary_cron_create_rejects_every_explicit_goal_field() {
+        let mut config = sample_cron_config("/tmp/goal-workspace", "session-a");
+        config.schedule = Some(CronSchedule::Every {
+            minutes: 10,
+            start_at: None,
+            catch_up_window: None,
+        });
+        config.goal_status = Some(GoalStatus::Active);
+        assert!(commands::validate_ordinary_cron_create_config(&config).is_err());
+
+        let mut config = sample_cron_config("/tmp/goal-workspace", "session-a");
+        config.goal_objective = Some("orphaned objective".to_string());
+        assert!(commands::validate_ordinary_cron_create_config(&config).is_err());
+
+        let mut config = sample_cron_config("/tmp/goal-workspace", "session-a");
+        config.goal_updated_at = Some(Utc::now());
+        assert!(commands::validate_ordinary_cron_create_config(&config).is_err());
+
+        let mut config = sample_cron_config("/tmp/goal-workspace", "session-a");
+        config.goal_terminal_reason = Some("orphaned terminal reason".to_string());
+        assert!(commands::validate_ordinary_cron_create_config(&config).is_err());
+
+        let mut config = sample_cron_config("/tmp/goal-workspace", "session-a");
+        config.goal_paused_reason = Some(GoalPausedReason::UserStop);
+        assert!(commands::validate_ordinary_cron_create_config(&config).is_err());
+    }
+
+    #[test]
     fn goal_admission_event_distinguishes_resume_from_active_turn() {
         assert_eq!(manager::goal_admission_change_kind(false), "turn_admitted");
         assert_eq!(manager::goal_admission_change_kind(true), "resumed");
@@ -469,6 +499,7 @@ mod cron_dialect_tests {
             id: "claimed-before-crash".to_string(),
             turn_number: 1,
             state: GoalTurnLeaseState::Claimed,
+            sidecar_generation: 7,
             created_at: now,
         });
         task.goal_user_admissions.push(GoalUserAdmission {
@@ -476,8 +507,8 @@ mod cron_dialect_tests {
             revision: task.goal_revision,
             turn_number: 2,
             state: GoalUserAdmissionState::Dispatched,
+            sidecar_generation: 7,
             created_at: now,
-            state_updated_at: Some(now),
         });
         task.goal_delivery_outbox.push(GoalDeliveryOutboxItem {
             id: "goal_delivery_claimed-before-crash".to_string(),
@@ -508,6 +539,65 @@ mod cron_dialect_tests {
         assert_eq!(recovered.goal_control_revision, initial_control_revision);
     }
 
+    #[test]
+    fn startup_recovery_normalizes_explicit_goal_scheduler_status() {
+        let active = sample_goal_task(
+            "goal-active-stopped",
+            TaskStatus::Stopped,
+            GoalStatus::Active,
+        );
+        let complete = sample_goal_task(
+            "goal-complete-running",
+            TaskStatus::Running,
+            GoalStatus::Complete,
+        );
+        let mut tasks =
+            HashMap::from([(active.id.clone(), active), (complete.id.clone(), complete)]);
+
+        assert_eq!(
+            CronTaskManager::recover_goal_leases_and_outbox(&mut tasks),
+            2
+        );
+        assert_eq!(tasks["goal-active-stopped"].status, TaskStatus::Running);
+        assert_eq!(tasks["goal-complete-running"].status, TaskStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn goal_and_ordinary_single_session_automation_are_mutually_exclusive() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let ordinary = sample_task("ordinary-running", "/tmp/goal-workspace");
+        let manager = test_manager_with_storage(
+            HashMap::from([(ordinary.id.clone(), ordinary)]),
+            storage_path,
+        );
+        let mut goal = sample_cron_config("/tmp/goal-workspace", "session");
+        goal.schedule = Some(CronSchedule::Loop);
+        goal.goal_status = Some(GoalStatus::Active);
+        goal.goal_objective = Some(goal.prompt.clone());
+        goal.goal_updated_at = Some(Utc::now());
+
+        manager
+            .create_task_with_initial_status(goal, TaskStatus::Running)
+            .await
+            .expect_err("running ordinary automation blocks Goal creation");
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let goal = sample_goal_task("goal-paused", TaskStatus::Running, GoalStatus::Paused);
+        let manager =
+            test_manager_with_storage(HashMap::from([(goal.id.clone(), goal)]), storage_path);
+        let ordinary = manager
+            .create_task(sample_cron_config("/tmp/goal-workspace", "session"))
+            .await
+            .expect("stopped ordinary automation may be configured");
+
+        manager
+            .start_task(&ordinary.id)
+            .await
+            .expect_err("unfinished Goal blocks ordinary automation start");
+    }
+
     #[tokio::test]
     async fn goal_turn_authorities_are_two_phase_and_user_can_queue_behind_auto_turn() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -529,14 +619,14 @@ mod cron_dialect_tests {
             .claim_goal_scheduler_turn("goal-admit", &prepared.lease.id, 1)
             .await
             .expect("idle-boundary claim commits the auto turn");
-        assert_eq!(claimed.execution_count, 1);
+        assert_eq!(claimed.execution_count, 0);
         assert_eq!(claimed.goal_revision, 2);
         assert_eq!(
             claimed.goal_turn_lease.as_ref().map(|lease| &lease.state),
             Some(&GoalTurnLeaseState::Claimed)
         );
 
-        let (reserved, admission, _) = manager
+        let (reserved, admission) = manager
             .reserve_goal_user_admission(
                 "goal-admit",
                 "user-1",
@@ -545,7 +635,7 @@ mod cron_dialect_tests {
             )
             .await
             .expect("one user turn may queue behind a claimed auto turn");
-        assert_eq!(reserved.execution_count, 1);
+        assert_eq!(reserved.execution_count, 0);
         assert_eq!(admission.turn_number, 2);
         assert_eq!(admission.state, GoalUserAdmissionState::Pending);
         assert!(reserved.goal_turn_lease.is_some());
@@ -599,7 +689,7 @@ mod cron_dialect_tests {
             .await
             .is_err());
 
-        let (_, admission, _) = manager
+        let (_, admission) = manager
             .reserve_goal_user_admission(
                 "goal-admit",
                 "user-resume",
@@ -650,7 +740,7 @@ mod cron_dialect_tests {
             )
             .await
             .expect_err("aiCanExit=false rejects model terminal transition");
-        assert!(model_error.contains("does not allow AI"));
+        assert!(model_error.to_string().contains("does not allow AI"));
 
         let applied = manager
             .transition_goal_terminal(
@@ -730,7 +820,7 @@ mod cron_dialect_tests {
         let manager =
             test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
 
-        let (_, reserved, _) = manager
+        let (_, reserved) = manager
             .reserve_goal_user_admission(
                 "goal-user-complete",
                 "user-completion-turn",
@@ -791,7 +881,7 @@ mod cron_dialect_tests {
             .claim_goal_scheduler_turn("goal-stale-turn", &prepared.lease.id, 1)
             .await
             .expect("claim auto turn");
-        let (updated, invalidated) = manager
+        let updated = manager
             .update_goal_objective_cas(
                 "goal-stale-turn",
                 "new objective".to_string(),
@@ -799,7 +889,6 @@ mod cron_dialect_tests {
             )
             .await
             .expect("objective update wins");
-        assert_eq!(invalidated.as_deref(), Some(prepared.lease.id.as_str()));
         assert_eq!(updated.goal_objective.as_deref(), Some("new objective"));
 
         let terminal_error = manager
@@ -812,7 +901,7 @@ mod cron_dialect_tests {
             )
             .await
             .expect_err("old turn cannot terminalize the new objective");
-        assert!(terminal_error.starts_with("stale_lease"));
+        assert_eq!(terminal_error.code(), "stale_lease");
 
         let finalized = manager
             .finalize_goal_scheduler_turn(
@@ -834,36 +923,178 @@ mod cron_dialect_tests {
     }
 
     #[tokio::test]
-    async fn expired_user_reservation_does_not_block_scheduler_claim() {
+    async fn sidecar_stop_revokes_turn_authority_without_a_wall_clock_timeout() {
         let temp = tempfile::tempdir().expect("tempdir");
         let storage_path = temp.path().join("cron_tasks.json");
-        let mut task = sample_goal_task(
-            "goal-expired-admission",
-            TaskStatus::Running,
-            GoalStatus::Active,
-        );
-        let expired_at = Utc::now() - chrono::Duration::minutes(66);
-        task.goal_user_admissions.push(GoalUserAdmission {
-            id: "abandoned-user-turn".to_string(),
-            revision: task.goal_revision,
+        let mut task =
+            sample_goal_task("goal-sidecar-stop", TaskStatus::Running, GoalStatus::Active);
+        let created_at = Utc::now() - chrono::Duration::hours(4);
+        task.goal_turn_lease = Some(GoalTurnLease {
+            id: "stopped-sidecar-lease".to_string(),
             turn_number: 1,
+            state: GoalTurnLeaseState::Claimed,
+            sidecar_generation: 9,
+            created_at,
+        });
+        task.goal_user_admissions.push(GoalUserAdmission {
+            id: "stopped-sidecar-user-turn".to_string(),
+            revision: task.goal_revision,
+            turn_number: 2,
             state: GoalUserAdmissionState::Pending,
-            created_at: expired_at,
-            state_updated_at: Some(expired_at),
+            sidecar_generation: 9,
+            created_at,
         });
         let manager =
             test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
 
-        let prepared = manager
-            .admit_goal_scheduler_turn("goal-expired-admission", 1)
+        let revoked = manager
+            .revoke_goal_turn_authorities_for_sidecar("session", 9)
             .await
-            .expect("expired reservation does not block candidate preparation");
-        let claimed = manager
-            .claim_goal_scheduler_turn("goal-expired-admission", &prepared.lease.id, 1)
+            .expect("sidecar lifecycle revocation persists");
+        assert_eq!(revoked, 1);
+        let stored = manager
+            .get_task("goal-sidecar-stop")
             .await
-            .expect("atomic claim reaps expired reservation");
-        assert!(claimed.goal_user_admissions.is_empty());
-        assert_eq!(claimed.execution_count, 1);
+            .expect("Goal remains stored");
+        assert!(stored.goal_turn_lease.is_none());
+        assert!(stored.goal_user_admissions.is_empty());
+        assert_eq!(stored.execution_count, 0);
+    }
+
+    #[tokio::test]
+    async fn stale_sidecar_stop_preserves_replacement_generation_authority() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let mut task =
+            sample_goal_task("goal-sidecar-aba", TaskStatus::Running, GoalStatus::Active);
+        task.goal_turn_lease = Some(GoalTurnLease {
+            id: "old-generation".to_string(),
+            turn_number: 1,
+            state: GoalTurnLeaseState::Claimed,
+            sidecar_generation: 9,
+            created_at: Utc::now(),
+        });
+        task.goal_user_admissions.push(GoalUserAdmission {
+            id: "replacement-generation".to_string(),
+            revision: task.goal_revision,
+            turn_number: 2,
+            state: GoalUserAdmissionState::Pending,
+            sidecar_generation: 10,
+            created_at: Utc::now(),
+        });
+        let manager =
+            test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
+
+        assert_eq!(
+            manager
+                .revoke_goal_turn_authorities_for_sidecar("session", 9)
+                .await
+                .expect("old generation revoke persists"),
+            1
+        );
+        let stored = manager
+            .get_task("goal-sidecar-aba")
+            .await
+            .expect("Goal remains stored");
+        assert!(stored.goal_turn_lease.is_none());
+        assert_eq!(stored.goal_user_admissions.len(), 1);
+        assert_eq!(stored.goal_user_admissions[0].sidecar_generation, 10);
+
+        let no_live_sidecars =
+            Arc::new(std::sync::Mutex::new(crate::sidecar::SidecarManager::new()));
+        assert_eq!(
+            manager
+                .reconcile_goal_turn_authorities_with_live_sidecars(&no_live_sidecars)
+                .await
+                .expect("lag reconciliation persists"),
+            1
+        );
+        assert!(manager
+            .get_task("goal-sidecar-aba")
+            .await
+            .expect("Goal remains stored")
+            .goal_user_admissions
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn stale_sidecar_cannot_finalize_or_terminalize_goal_authority() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let mut task = sample_goal_task(
+            "goal-stale-sidecar-commit",
+            TaskStatus::Running,
+            GoalStatus::Paused,
+        );
+        task.goal_paused_reason = Some(GoalPausedReason::UserStop);
+        task.goal_user_admissions.push(GoalUserAdmission {
+            id: "stale-user-authority".to_string(),
+            revision: task.goal_revision,
+            turn_number: 1,
+            state: GoalUserAdmissionState::Claimed,
+            sidecar_generation: 9,
+            created_at: Utc::now(),
+        });
+        let manager = test_manager_with_storage(
+            HashMap::from([(task.id.clone(), task)]),
+            storage_path.clone(),
+        );
+        let no_current_sidecar =
+            Arc::new(std::sync::Mutex::new(crate::sidecar::SidecarManager::new()));
+
+        let finalize_error = manager
+            .accept_goal_user_admission_from_sidecar(
+                "goal-stale-sidecar-commit",
+                "stale-user-authority",
+                "session",
+                9,
+                &no_current_sidecar,
+            )
+            .await
+            .expect_err("stopped Sidecar cannot resume or count a turn");
+        assert_eq!(finalize_error.code(), "stale_admission");
+        let stored = manager
+            .get_task("goal-stale-sidecar-commit")
+            .await
+            .expect("Goal remains stored");
+        assert_eq!(stored.goal_status, Some(GoalStatus::Paused));
+        assert_eq!(stored.execution_count, 0);
+
+        let mut task = sample_goal_task(
+            "goal-stale-sidecar-terminal",
+            TaskStatus::Running,
+            GoalStatus::Active,
+        );
+        task.goal_turn_lease = Some(GoalTurnLease {
+            id: "stale-scheduler-authority".to_string(),
+            turn_number: 1,
+            state: GoalTurnLeaseState::Claimed,
+            sidecar_generation: 9,
+            created_at: Utc::now(),
+        });
+        let terminal_manager = test_manager_with_storage(
+            HashMap::from([(task.id.clone(), task)]),
+            temp.path().join("terminal_tasks.json"),
+        );
+        let terminal_error = terminal_manager
+            .transition_goal_terminal_authorized_from_sidecar(
+                "goal-stale-sidecar-terminal",
+                GoalStatus::Complete,
+                Some("stale completion".to_string()),
+                "stale-scheduler-authority",
+                "session",
+                9,
+                &no_current_sidecar,
+            )
+            .await
+            .expect_err("stopped Sidecar cannot terminalize a Goal");
+        assert_eq!(terminal_error.code(), "stale_lease");
+        let stored = terminal_manager
+            .get_task("goal-stale-sidecar-terminal")
+            .await
+            .expect("Goal remains stored");
+        assert_eq!(stored.goal_status, Some(GoalStatus::Active));
+        assert_eq!(stored.status, TaskStatus::Running);
     }
 
     #[tokio::test]
@@ -887,7 +1118,7 @@ mod cron_dialect_tests {
             .finalize_goal_user_admission("goal-user-gate", "user-gate", true)
             .await
             .expect_err("transport acceptance cannot bypass predispatch claim");
-        assert!(error.starts_with("stale_admission"));
+        assert_eq!(error.code(), "stale_admission");
 
         manager
             .claim_goal_user_admission("goal-user-gate", "user-gate")
@@ -901,7 +1132,7 @@ mod cron_dialect_tests {
             .finalize_goal_user_admission("goal-user-gate", "user-gate", true)
             .await
             .expect_err("stale transport completion cannot resume paused Goal");
-        assert!(stale.starts_with("stale_admission"));
+        assert_eq!(stale.code(), "stale_admission");
         let stored = manager
             .get_task("goal-user-gate")
             .await
@@ -918,7 +1149,7 @@ mod cron_dialect_tests {
         let manager =
             test_manager_with_storage(HashMap::from([(task.id.clone(), task)]), storage_path);
 
-        let (after_first, first, _) = manager
+        let (after_first, first) = manager
             .reserve_goal_user_admission(
                 "goal-user-queue",
                 "user-first",
@@ -927,7 +1158,7 @@ mod cron_dialect_tests {
             )
             .await
             .expect("reserve first user query");
-        let (_, second, _) = manager
+        let (_, second) = manager
             .reserve_goal_user_admission_at_objective(
                 "goal-user-queue",
                 "user-second",
@@ -1013,9 +1244,9 @@ mod cron_dialect_tests {
             )
             .await
             .expect_err("pre-pause query snapshot must not resume the Goal");
-        assert!(stale.starts_with("stale_revision"));
+        assert_eq!(stale.code(), "stale_revision");
 
-        let (reserved, _, _) = manager
+        let (reserved, _) = manager
             .reserve_goal_user_admission_at_objective(
                 "goal-control-epoch",
                 "fresh-after-pause",
@@ -1039,7 +1270,7 @@ mod cron_dialect_tests {
         assert_eq!(resumed.goal_status, Some(GoalStatus::Active));
         assert_eq!(resumed.goal_control_revision, paused.goal_control_revision);
 
-        let (second, _, _) = manager
+        let (second, _) = manager
             .reserve_goal_user_admission_at_objective(
                 "goal-control-epoch",
                 "also-fresh-after-pause",
@@ -1082,7 +1313,7 @@ mod cron_dialect_tests {
             )
             .await
             .expect_err("objective restart must not duplicate a claimed continuation");
-        assert!(error.starts_with("lease_conflict"));
+        assert_eq!(error.code(), "lease_conflict");
 
         manager
             .reserve_goal_user_admission(

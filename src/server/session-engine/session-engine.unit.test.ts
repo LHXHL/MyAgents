@@ -257,6 +257,7 @@ import {
   getSessionEngine,
   stopActiveTurn,
 } from './selector';
+import { beginGoalDispatchGuard } from './goal-turn-authority';
 
 const desktopScenario = { type: 'desktop' } as const;
 
@@ -532,12 +533,15 @@ describe('session-engine selector and adapters', () => {
   it('keeps stop fallback on builtin when external runtime is selected but inactive', async () => {
     mocks.state.useExternal = true;
     mocks.state.externalActive = false;
+    const pendingGoalDispatch = beginGoalDispatchGuard('sid', 'lease-pending');
 
     const result = await stopActiveTurn();
 
     expect(result).toEqual({ success: true, alreadyStopped: true });
+    expect(pendingGoalDispatch.isCanceled()).toBe(true);
     expect(mocks.stopExternalSession).not.toHaveBeenCalled();
     expect(mocks.interruptCurrentResponse).toHaveBeenCalledTimes(1);
+    pendingGoalDispatch.settle();
   });
 
   it('cancels a queued builtin injected turn when the synchronous wait times out', async () => {

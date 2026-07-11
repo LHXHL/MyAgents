@@ -40,7 +40,7 @@ export type SessionOpenPlan =
   | { type: 'jump-to-tab'; tabId: string }
   | {
     type: 'open-new-tab';
-    reason: 'runtime-mismatch' | 'current-cron-running';
+    reason: 'runtime-mismatch' | 'current-persistent-owner';
     targetRuntime?: RuntimeType;
     currentRuntime?: RuntimeType;
     targetRuntimeSource?: RuntimeSource;
@@ -58,7 +58,7 @@ export interface SessionOpenPlanInput {
   currentRuntimeIdentity?: SessionRuntimeIdentity;
   targetRuntimeIdentity?: SessionRuntimeIdentity;
   targetActivation?: SessionOpenActivationState | null;
-  currentTabCronRunning: boolean;
+  currentSessionHasPersistentOwners: boolean;
 }
 
 function normalizeIdentity(
@@ -155,8 +155,8 @@ export function planSessionOpen(input: SessionOpenPlanInput): SessionOpenPlan {
     };
   }
 
-  if (input.currentTabCronRunning) {
-    return { type: 'open-new-tab', reason: 'current-cron-running' };
+  if (input.currentSessionHasPersistentOwners) {
+    return { type: 'open-new-tab', reason: 'current-persistent-owner' };
   }
 
   return { type: 'switch-current-tab' };

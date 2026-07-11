@@ -309,6 +309,7 @@ export default memo(function BrandSection({
             // simple cadence dial).
             const cron = stagedCron
                 ? {
+                      taskKind: stagedCron.taskKind,
                       schedule:
                           stagedCron.schedule ??
                           ({ kind: 'every', minutes: stagedCron.intervalMinutes } as const),
@@ -337,6 +338,7 @@ export default memo(function BrandSection({
         () =>
             stagedCron
                 ? {
+                      taskKind: stagedCron.taskKind,
                       intervalMinutes: stagedCron.intervalMinutes,
                       schedule: stagedCron.schedule,
                   }

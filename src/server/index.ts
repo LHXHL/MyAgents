@@ -698,8 +698,7 @@ import {
   getSessionEngine,
   stopActiveTurn,
 } from './session-engine';
-import { goalOrchestrator } from './session-engine/goal-orchestrator';
-import { cancelPendingGoalDispatches } from './session-engine/goal-turn-authority';
+import { goalOrchestrator } from './session-engine';
 import { handleSessionEngineQueueRoute } from './routes/session-engine-queue';
 import { handleSessionEngineRuntimeRoute } from './routes/session-engine-runtime';
 import { handleSessionReadRoute } from './routes/session-read';
@@ -714,6 +713,7 @@ import {
   coerceModelForRuntime,
   coercePermissionModeForRuntime,
   resolveCronPermissionMode,
+  resolveScheduledTurnPermissionMode,
   getMaxPermissionForRuntime,
 } from '../shared/types/runtime';
 import { coerceReasoningEffortForRuntime } from '../shared/reasoningEffort';
@@ -2568,11 +2568,6 @@ async function main() {
         }
       }
 
-      if (pathname === '/api/goal/dispatch/cancel' && request.method === 'POST') {
-        cancelPendingGoalDispatches();
-        return jsonResponse({ success: true });
-      }
-
       // ─── Runtime API endpoints (v0.1.59) ───
 
       if (pathname === '/api/runtime/type' && request.method === 'GET') {
@@ -3129,6 +3124,10 @@ async function main() {
         const effectiveRunMode = runMode ?? 'single_session';
         const isCurrentSessionGoal =
           effectiveRunMode === 'single_session' && Boolean(payload.goalStatus);
+        const goalFailurePayload = (failure: { success: false; error: string; code?: string }) => {
+          const activeSessionId = isCurrentSessionGoal ? getSessionId() : undefined;
+          return activeSessionId ? { ...failure, sessionId: activeSessionId } : failure;
+        };
         const { agentDir } = getAgentState();
         const managedCodexReady = isManagedCodexProviderReady(loadConfig());
 
@@ -3345,9 +3344,9 @@ async function main() {
         let effectiveRuntimeConfig = payload.runtimeConfig;
 
         if (isCurrentSessionGoal) {
-          // Goal execution follows the active Session. Do not even resolve
-          // task-captured routing here: a provider removed after Goal creation
-          // must not fail a turn that has since switched to another provider.
+          // Goal follows the already-materialized SessionEngine config. Rust
+          // prevents another single-session automation from mutating that
+          // process while the Goal is unfinished.
           effectiveModel = undefined;
           effectiveProviderEnv = undefined;
           effectiveProviderRoute = undefined;
@@ -3567,7 +3566,7 @@ async function main() {
         } catch (e) {
           console.error('[cron] execute-sync: error setting interaction scenario', e);
           clearCronTaskContext(effectiveSessionId);
-          return jsonResponse({ success: false, error: `System prompt error: ${e}` }, 500);
+          return jsonResponse(goalFailurePayload({ success: false, error: `System prompt error: ${e}` }), 500);
         }
 
         try {
@@ -3599,7 +3598,8 @@ async function main() {
           // literally. See src/shared/types/runtime.ts::resolveCronPermissionMode.
           const engine = getSessionEngine();
           const cronRuntimeType: RuntimeType = engine.kind === 'external' ? getActiveRuntimeType() : 'builtin';
-          const effectivePermissionMode = resolveCronPermissionMode(
+          const effectivePermissionMode = resolveScheduledTurnPermissionMode(
+            isCurrentSessionGoal ? 'goal' : 'cron',
             payload.permissionMode,
             effectiveRuntimeConfig?.permissionMode,
             cronRuntimeType,
@@ -3610,7 +3610,10 @@ async function main() {
             if (!ensured.success) {
               clearCronTaskContext(effectiveSessionId);
               resetInteractionScenario();
-              return jsonResponse({ success: false, error: ensured.error ?? 'Failed to restore Goal session configuration' }, 503);
+              return jsonResponse(goalFailurePayload({
+                success: false,
+                error: ensured.error ?? 'Failed to restore Goal session configuration',
+              }), 503);
             }
           } else if (engine.kind === 'builtin') {
             // PRD 0.2.4 §需求 4 — reconcile MCP set + run the turn under
@@ -3702,11 +3705,11 @@ async function main() {
             if (!payload.goalLeaseId || payload.goalExpectedRevision === undefined) {
               clearCronTaskContext(effectiveSessionId);
               resetInteractionScenario();
-              return jsonResponse({
+              return jsonResponse(goalFailurePayload({
                 success: false,
                 error: 'Goal scheduler payload is missing goalLeaseId or goalExpectedRevision.',
                 code: 'stale_lease',
-              }, 409);
+              }), 409);
             }
             const claimedRun = await goalOrchestrator.runClaimedSchedulerTurn(
               engine,
@@ -3724,11 +3727,11 @@ async function main() {
             if (!claimedRun.success) {
               clearCronTaskContext(effectiveSessionId);
               resetInteractionScenario();
-              return jsonResponse({
+              return jsonResponse(goalFailurePayload({
                 success: false,
                 error: claimedRun.error,
                 ...(claimedRun.code ? { code: claimedRun.code } : {}),
-              }, claimedRun.status);
+              }), claimedRun.status);
             }
             turnResult = claimedRun.value;
           } else {
@@ -3739,7 +3742,7 @@ async function main() {
             clearCronTaskContext(effectiveSessionId);
             resetInteractionScenario();
             return jsonResponse(
-              { success: false, error: turnResult.error ?? 'Execution failed' },
+              goalFailurePayload({ success: false, error: turnResult.error ?? 'Execution failed' }),
               turnResult.status ?? 503,
             );
           }
@@ -3800,7 +3803,7 @@ async function main() {
           resetInteractionScenario();
           const errorMessage = error instanceof Error ? error.message : 'Unknown error';
           console.error(`[cron] execute-sync taskId=${taskId} error:`, error);
-          const errorResponse = { success: false, error: errorMessage };
+          const errorResponse = goalFailurePayload({ success: false, error: errorMessage });
           console.log(`[cron] execute-sync taskId=${taskId} returning error response:`, JSON.stringify(errorResponse));
           return jsonResponse(errorResponse, 500);
         }

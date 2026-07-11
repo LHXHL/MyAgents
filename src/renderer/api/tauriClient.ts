@@ -1411,15 +1411,59 @@ export async function upgradeSessionId(
 }
 
 /**
- * Check if a session's Sidecar has persistent background owners (CronTask or ImBot)
- * that will keep it alive after a Tab releases its ownership.
+ * Check whether a session identity must stay stable after a Tab releases it.
+ * Rust includes live persistent owners and persisted running scheduler tasks
+ * before their first Sidecar tick.
  */
 export async function sessionHasPersistentOwners(sessionId: string): Promise<boolean> {
     if (!isTauri()) return false;
     try {
         return await invoke<boolean>('cmd_session_has_persistent_owners', { sessionId });
-    } catch {
+    } catch (error) {
+        // This query protects session identity from hot-swap. Unknown owner
+        // state must keep the current Sidecar key stable rather than risk
+        // renaming a Cron/Goal/IM-owned process into another session.
+        console.error(`[tauriClient] Failed to query persistent owners for ${sessionId}:`, error);
+        return true;
+    }
+}
+
+/** Atomically reject deletion when a scheduler or live Sidecar owns the session. */
+export async function deleteSessionIfUnowned(sessionId: string): Promise<boolean> {
+    if (!isTauri()) return false;
+    try {
+        return await invoke<boolean>('cmd_delete_session_if_unowned', { sessionId });
+    } catch (error) {
+        console.error(`[tauriClient] Failed to delete session ${sessionId}:`, error);
         return false;
+    }
+}
+
+/** Atomically release a Tab owner and preserve/deactivate scheduler activation. */
+export async function releaseTabSession(
+    sessionId: string,
+    tabId: string,
+): Promise<boolean> {
+    if (!isTauri()) return false;
+    return await invoke<boolean>('cmd_release_tab_session', { sessionId, tabId });
+}
+
+export interface UserSchedulerLifecycleSnapshot {
+    runningTaskCount: number;
+    protectedSessionIds: string[];
+}
+
+/**
+ * Lifecycle truth for user-owned schedulers. Includes Goal and ordinary Cron,
+ * while excluding hidden managed jobs from user exit/delete affordances.
+ */
+export async function getUserSchedulerLifecycleSnapshot(): Promise<UserSchedulerLifecycleSnapshot> {
+    if (!isTauri()) return { runningTaskCount: 0, protectedSessionIds: [] };
+    try {
+        return await invoke<UserSchedulerLifecycleSnapshot>('cmd_get_user_scheduler_lifecycle_snapshot');
+    } catch (error) {
+        console.error('[tauriClient] Failed to query user scheduler lifecycle:', error);
+        throw error;
     }
 }
 

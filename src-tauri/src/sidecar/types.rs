@@ -456,6 +456,133 @@ mod lifecycle_contract_tests {
     }
 
     #[test]
+    fn stale_tab_release_does_not_clear_a_new_tab_activation() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+        manager.activate_session(
+            "session-a".to_string(),
+            Some("tab-a".to_string()),
+            None,
+            31418,
+            "/tmp/workspace".to_string(),
+            false,
+        );
+
+        assert!(!manager.release_tab_session("session-a", "stale-tab", false));
+        assert_eq!(
+            manager
+                .session_activations
+                .get("session-a")
+                .and_then(|activation| activation.tab_id.as_deref()),
+            Some("tab-a")
+        );
+        assert!(manager.session_has_tab_owner("session-a"));
+    }
+
+    #[test]
+    fn background_completion_keeps_identity_active_after_tab_release() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("session sidecar")
+            .owners
+            .insert(SidecarOwner::BackgroundCompletion("session-a".to_string()));
+        manager.activate_session(
+            "session-a".to_string(),
+            Some("tab-a".to_string()),
+            None,
+            31418,
+            "/tmp/workspace".to_string(),
+            false,
+        );
+
+        assert!(!manager.release_tab_session("session-a", "tab-a", false));
+        assert!(manager.session_has_persistent_owners("session-a"));
+        assert_eq!(
+            manager
+                .session_activations
+                .get("session-a")
+                .and_then(|activation| activation.tab_id.as_deref()),
+            None
+        );
+    }
+
+    #[test]
+    fn cron_projection_preserves_tab_binding_and_release_restores_tab_projection() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("session sidecar")
+            .owners
+            .insert(SidecarOwner::CronTask("goal-a".to_string()));
+        manager.activate_session(
+            "session-a".to_string(),
+            Some("tab-a".to_string()),
+            None,
+            31418,
+            "/tmp/workspace".to_string(),
+            false,
+        );
+        let generation = manager.current_generation("session-a");
+
+        manager.activate_cron_session(
+            "session-a".to_string(),
+            "goal-a".to_string(),
+            31418,
+            "/tmp/workspace".to_string(),
+        );
+        let shared = manager
+            .session_activations
+            .get("session-a")
+            .expect("shared activation");
+        assert_eq!(shared.tab_id.as_deref(), Some("tab-a"));
+        assert_eq!(shared.task_id.as_deref(), Some("goal-a"));
+        assert!(!shared.is_cron_task);
+
+        assert!(!manager.release_cron_session("session-a", "goal-a"));
+        let tab_only = manager
+            .session_activations
+            .get("session-a")
+            .expect("tab activation remains");
+        assert_eq!(tab_only.tab_id.as_deref(), Some("tab-a"));
+        assert_eq!(tab_only.task_id, None);
+        assert!(!tab_only.is_cron_task);
+        assert_eq!(manager.current_generation("session-a"), generation);
+    }
+
+    #[test]
+    fn last_cron_release_clears_activation_and_generation() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
+        manager
+            .get_session_sidecar_mut("session-a")
+            .expect("session sidecar")
+            .owners = owners(vec![SidecarOwner::CronTask("goal-a".to_string())]);
+        manager.activate_cron_session(
+            "session-a".to_string(),
+            "goal-a".to_string(),
+            31418,
+            "/tmp/workspace".to_string(),
+        );
+
+        assert!(manager.release_cron_session("session-a", "goal-a"));
+        assert!(!manager.sidecars.contains_key("session-a"));
+        assert!(!manager.session_activations.contains_key("session-a"));
+        assert_eq!(manager.current_generation("session-a"), 0);
+    }
+
+    #[test]
+    fn dead_sidecar_with_owners_still_protects_session_identity() {
+        let mut manager = SidecarManager::new();
+        insert_test_sidecar(&mut manager, "session-a", SidecarState::Dead);
+
+        assert!(!manager.has_session_sidecar("session-a"));
+        assert!(manager.session_has_owners("session-a"));
+    }
+
+    #[test]
     fn generation_for_requires_current_sidecar_entry() {
         let mut manager = SidecarManager::new();
         insert_test_sidecar(&mut manager, "session-a", SidecarState::Healthy);
@@ -556,11 +683,11 @@ impl SessionSidecar {
         self.owners.insert(owner)
     }
 
-    /// Remove an owner from this Sidecar
-    /// Returns true if this was the last owner (Sidecar should be stopped)
-    pub fn remove_owner(&mut self, owner: &SidecarOwner) -> bool {
-        self.owners.remove(owner);
-        self.owners.is_empty()
+    /// Remove an owner from this Sidecar.
+    /// Returns `(removed, last_owner_removed)` so stale cleanup is a true no-op.
+    pub fn remove_owner(&mut self, owner: &SidecarOwner) -> (bool, bool) {
+        let removed = self.owners.remove(owner);
+        (removed, removed && self.owners.is_empty())
     }
 }
 

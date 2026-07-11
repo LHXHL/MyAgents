@@ -73,6 +73,33 @@ describe('SimpleChatInput send paths', () => {
     expect(onSend).toHaveBeenCalledWith('chat hello', undefined);
   });
 
+  it('gives the Goal projection visual priority without requiring Cron state to be removed', async () => {
+    await i18n.changeLanguage('en-US');
+    renderInput({
+      cronTask: {
+        status: 'running',
+        intervalMinutes: 30,
+        schedule: { kind: 'every', minutes: 30 },
+        executionCount: 2,
+        runMode: 'single_session',
+      },
+      goalTask: {
+        status: 'running',
+        intervalMinutes: 5,
+        schedule: { kind: 'loop' },
+        goalStatus: 'active',
+        goalObjective: 'Ship the architecture closure',
+        executionCount: 1,
+        runMode: 'single_session',
+      },
+      onCronStop: vi.fn(),
+    });
+
+    expect(screen.getByText('Round 1 · Ship the architecture closure')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel goal' })).toBeInTheDocument();
+    expect(screen.queryByText('Scheduled task running')).not.toBeInTheDocument();
+  });
+
   it('honors parent provider availability for subscription sessions with local account evidence', async () => {
     const user = userEvent.setup();
     const subscriptionProvider = {

@@ -386,8 +386,8 @@ pub fn run() {
             cron_task::commands::cmd_get_tasks_to_recover,
             cron_task::commands::cmd_pause_goal_task,
             cron_task::commands::cmd_resume_goal_task,
-            cron_task::commands::cmd_update_goal_objective,
             cron_task::commands::cmd_mark_goal_terminal,
+            cron_task::commands::cmd_get_user_scheduler_lifecycle_snapshot,
             // Cron scheduler commands
             cron_task::commands::cmd_start_cron_scheduler,
             cron_task::commands::cmd_mark_task_executing,
@@ -412,6 +412,8 @@ pub fn run() {
             sidecar::session_lifecycle::cmd_get_session_generation,
             sidecar::session_lifecycle::cmd_upgrade_session_id,
             sidecar::session_lifecycle::cmd_session_has_persistent_owners,
+            sidecar::session_lifecycle::cmd_delete_session_if_unowned,
+            sidecar::session_lifecycle::cmd_release_tab_session,
             sidecar::runtime_identity::cmd_can_restore_session,
             // Background session completion
             sidecar::background::cmd_start_background_completion,

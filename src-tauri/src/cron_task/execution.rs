@@ -86,15 +86,17 @@ async fn rotate_new_session_id(handle: &AppHandle, task: &CronTask) -> Result<St
     let old_session_id = task.session_id.clone();
 
     if let Some(sidecar_state) = handle.try_state::<ManagedSidecarManager>() {
-        let owner = SidecarOwner::CronTask(task.id.clone());
-        if let Err(e) = release_session_sidecar(&sidecar_state, &old_session_id, &owner) {
-            // Non-fatal: release failure just means the sidecar may linger
-            // until another owner releases it or the app exits.
-            ulog_warn!(
-                "[CronTask] rotate_new_session_id: release old session {} failed: {} (non-fatal)",
-                old_session_id,
-                e
-            );
+        match sidecar_state.lock() {
+            Ok(mut manager) => {
+                manager.release_cron_session(&old_session_id, &task.id);
+            }
+            Err(error) => {
+                ulog_warn!(
+                    "[CronTask] rotate_new_session_id: release old session {} failed: {} (non-fatal)",
+                    old_session_id,
+                    error
+                );
+            }
         }
     }
 
@@ -290,7 +292,7 @@ pub(super) async fn execute_task_directly(
     // Build execution payload
     // execution_number is 1-based (first execution = 1)
     let execution_number = if task.is_goal() {
-        task.execution_count
+        task.goal_turn_number_for_dispatch()
     } else {
         task.execution_count + 1
     };
@@ -600,6 +602,7 @@ pub(super) async fn execute_task_directly(
                     )
                     .await
                     .map(|outcome| outcome.task().clone())
+                    .map_err(|error| error.to_string())
             } else {
                 manager.stop_task(&task.id, terminal_reason).await
             };
@@ -627,7 +630,7 @@ pub(super) async fn execute_task_directly(
     ))
 }
 
-/// Stop a task, unregister CronTask user, and deactivate its session (internal helper)
+/// Stop a task and release its CronTask owner/projection (internal helper).
 /// Used by scheduler when end conditions are met or AI requests exit
 /// With Session-centric Sidecar (Owner model), this releases CronTask's ownership.
 pub(super) async fn stop_task_internal(
@@ -652,8 +655,10 @@ pub(super) async fn stop_task_internal(
 
     // Release CronTask's ownership of the Session Sidecar
     if let Some(sidecar_state) = handle.try_state::<ManagedSidecarManager>() {
-        let owner = SidecarOwner::CronTask(task_id.to_string());
-        match release_session_sidecar(&sidecar_state, &session_id, &owner) {
+        match sidecar_state
+            .lock()
+            .map(|mut manager| manager.release_cron_session(&session_id, task_id))
+        {
             Ok(stopped) => {
                 if stopped {
                     ulog_info!(
@@ -677,16 +682,6 @@ pub(super) async fn stop_task_internal(
                     e
                 );
             }
-        }
-
-        // Deactivate session (for legacy session tracking)
-        if let Ok(mut manager) = sidecar_state.lock() {
-            manager.deactivate_session(&session_id);
-            ulog_info!(
-                "[CronTask] Deactivated session {} for stopped task {}",
-                session_id,
-                task_id
-            );
         }
     }
 

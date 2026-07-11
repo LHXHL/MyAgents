@@ -32,7 +32,27 @@ export type CronTaskStatus = 'running' | 'stopped';
 
 export type GoalStatus = 'active' | 'paused' | 'complete' | 'blocked' | 'canceled';
 
+/** Renderer-only creation surface identity. Schedule shape is persistence detail. */
+export type ScheduledTaskKind = 'cron' | 'goal';
+
 export type GoalPausedReason = 'user_stop';
+
+export interface GoalTurnLease {
+  id: string;
+  turnNumber: number;
+  state: 'pending' | 'claimed';
+  sidecarGeneration?: number;
+  createdAt: string;
+}
+
+export interface GoalUserAdmission {
+  id: string;
+  revision: number;
+  turnNumber: number;
+  state: 'pending' | 'claimed' | 'dispatched';
+  sidecarGeneration?: number;
+  createdAt: string;
+}
 
 /**
  * End conditions for a cron task
@@ -135,6 +155,10 @@ export interface CronTask {
   goalRevision?: number;
   /** Goal objective/lifecycle control epoch; admission bookkeeping does not advance it. */
   goalControlRevision?: number;
+  /** Durable scheduler authority; UI also projects claimed/dispatched user admissions. */
+  goalTurnLease?: GoalTurnLease;
+  /** Durable queued/claimed desktop, IM, or objective-restart turns. */
+  goalUserAdmissions?: GoalUserAdmission[];
 }
 
 export interface GoalChangedPayload {
@@ -144,6 +168,12 @@ export interface GoalChangedPayload {
     | 'paused'
     | 'resumed'
     | 'turn_admitted'
+    | 'turn_claimed'
+    | 'turn_revoked'
+    | 'user_admission_reserved'
+    | 'user_admission_claimed'
+    | 'user_admission_released'
+    | 'user_admission_aborted'
     | 'objective_updated'
     | 'terminal';
   taskId: string;

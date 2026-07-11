@@ -751,3 +751,16 @@ export function resolveCronPermissionMode(
   }
   return getMaxPermissionForRuntime(runtime);
 }
+
+export function resolveScheduledTurnPermissionMode(
+  taskKind: 'cron' | 'goal',
+  payloadMode: string | null | undefined,
+  sessionSnapshotMode: string | null | undefined,
+  runtime: RuntimeType,
+): string {
+  return resolveCronPermissionMode(
+    payloadMode,
+    taskKind === 'goal' ? undefined : sessionSnapshotMode,
+    runtime,
+  );
+}

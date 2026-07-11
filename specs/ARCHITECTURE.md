@@ -152,13 +152,15 @@ pub enum SidecarOwner {
 
 Goal 模式是当前 MyAgents session 的长程工作状态：用户通过 `/goal`，或 AI 在明确 User 要求后调用 `myagents goal create --objective-file ...`，都会让**同一个 current session** 进入 Goal Mode。Goal 不属于某个 React hook，也不属于普通 Cron surface；桌面、私聊 IM、私有 Agent Channel 打开同一 session 时应看到同一条 Goal 横条。
 
-当前实现复用 `CronTaskManager`、`CronSchedule::Loop`、`RunMode::SingleSession` 做 backing store 和 scheduler，但产品 identity 只看显式 `goalStatus`，不能从 `goalObjective` 或 `schedule.kind === 'loop'` 推断。旧 Loop 不迁移，普通 Cron/Task Center loop-shaped 执行不是 Goal。
+当前实现复用 `CronTaskManager`、`CronSchedule::Loop`、`RunMode::SingleSession` 做 backing store 和 scheduler，但产品 identity 只看显式 `goalStatus`，不能从 `goalObjective` 或 `schedule.kind === 'loop'` 推断。renderer 创建 draft 用显式 `taskKind: 'cron' | 'goal'` 选择 API；旧 Loop 不迁移，普通 Cron/Task Center loop-shaped 执行不是 Goal。
 
-Goal 的状态变更通过 Goal facade 进入：Tauri `cmd_create_goal_task` / `cmd_get_goal_task` / `cmd_get_session_goal_task`，Rust Management API `/api/goal/*`，以及 CLI/Admin `myagents goal get|create|update`。`src/server/session-engine/goal-orchestrator.ts` 是桌面/IM user ingress、scheduler claim 和 objective update 的统一 Sidecar owner。user turn 先在 Rust reserve，排到 Runtime promotion 时 claim，transport 接受后 finalize 为 Dispatched，真实 idle 后持续幂等重试 release，成功或确认 authority 已不存在前不清除 Node authority；同 session 的 lookup+reserve 在 Sidecar 内串行。`goalRevision` 覆盖全部持久状态变化，用于 UI 单调排序；`goalControlRevision` 只在显式 pause/resume、objective、terminal 等控制语义变化时递增，用户 query 触发的 paused→active 保持 pause 后的同一 control epoch。user query 只有 objective 和 control revision 都同代时才能容忍 admission lifecycle 带来的 `goalRevision` churn，既不误拒绝并发输入，也不能用 Stop 前的旧快照重新拉起 Goal。scheduler 只在 Rust 本地准备 candidate，Sidecar 等 idle 且队列清空后才在 Runtime 发送前原子 claim。paused→active 与轮次计数都在相应 Rust 事务中完成。
+Goal 的状态变更通过 Goal facade 进入：Tauri `cmd_create_goal_task` / `cmd_get_goal_task` / `cmd_get_session_goal_task`，Rust Management API `/api/goal/*`，以及 CLI/Admin `myagents goal get|create|update`。`src/server/session-engine/goal-orchestrator.ts` 是桌面/IM user ingress、scheduler claim 和 objective update 的统一 Sidecar owner。user ingress 查询 Goal 时只有 Management 明确返回 `goal:null` 才能按普通消息发送；transport 失败、`ok:false` 或畸形非空 payload 一律 fail closed。user turn 先在 Rust reserve，排到 Runtime promotion 时 claim，transport 接受后 finalize 为 Dispatched，真实 idle 后持续幂等重试 release，成功或确认 authority 已不存在前不清除 Node authority；ack reject、finalize 异常和 idle 查询异常也进入同一个补偿 lifecycle，不得提前丢 Node authority。同 session 的 lookup+reserve 在 Sidecar 内串行。`goalRevision` 覆盖全部持久状态变化，用于 UI 单调排序；`goalControlRevision` 只在显式 pause/resume、objective、terminal 等控制语义变化时递增，用户 query 触发的 paused→active 保持 pause 后的同一 control epoch。user query 只有 objective 和 control revision 都同代时才能容忍 admission lifecycle 带来的 `goalRevision` churn，既不误拒绝并发输入，也不能用 Stop 前的旧快照重新拉起 Goal。scheduler 只在 Rust 本地准备 candidate，Sidecar 等 idle 且队列清空后才在 Runtime 发送前原子 claim。paused→active 与轮次计数都在相应 Rust 事务中完成。
 
-Goal continuation 强制等待 turn boundary，不能并入正在运行的 user turn。除 permission 外，Goal 不保存或回放 task-level model/provider/runtime/reasoning/MCP 快照；冷启动 Sidecar 从 session metadata 恢复 runtime identity，SessionEngine 从该 session 恢复其余配置。UI Goal 保留创建时显式 permission，CLI Goal 的空 permission 按 runtime 最大权限解释。
+Goal continuation 强制等待 turn boundary，不能并入正在运行的 user turn。除 permission 外，Goal 不保存或回放 task-level tab/model/provider/runtime/reasoning/MCP/source-bot/delivery 快照；Rust Goal create boundary 会统一清除这些 session-owned 字段，冷启动 Sidecar 从 session metadata 恢复 runtime identity，SessionEngine 从该 session 恢复其余配置。UI Goal 保留创建时显式 permission，CLI Goal 的空 permission 按 runtime 最大权限解释。Goal 创建前 renderer 必须先把 `pending-*` materialize 为真实 session identity；Rust create boundary 拒绝 pending identity，不存在 Goal 专用 post-hoc rebind/CAS。普通 Cron 的 session/tab update surface 必须拒绝 Goal。
 
-objective edit 在没有普通排队消息时执行 stop/wait → revision CAS → 再次 stop/wait/re-read；active Goal 用受 admission guard 的新 turn 重启，paused Goal 只持久化。若存在普通排队消息则返回冲突，绝不代用户删除。Stop/Cancel 先持久撤销 Goal authority，再停止 Runtime；Sidecar stop 会同步 cancel 正在 Rust round-trip 中的 pending dispatch guard，晚到的成功 claim 必须 revoke/release 后 fail closed。
+renderer 分别用 `useSessionGoal` 和 `useCronTask` 投影 Goal 与普通 Cron，事件不能互相覆盖；但 Rust create/start boundary 禁止同一 session 的 unfinished Goal 与 running ordinary `single_session` Cron 并存，避免两套自动化争用同一个 SessionEngine 配置。Goal 视觉状态可以优先展示，但 `useSessionSurfaces` 的 Cron surface 只消费普通 Cron。两个 hook 都不是状态 owner，切 Tab/卸载不能取消 Rust 已接受的 Goal；只有用户显式取消尚未完成的 create 才允许 terminalize 晚到结果。
+
+objective edit 在没有普通排队消息时执行 stop/wait → revision CAS → 再次 stop/wait/re-read；active Goal 用受 admission guard 的新 turn 重启，paused Goal 只持久化。若存在普通排队消息则返回冲突，绝不代用户删除。Stop/Cancel 先写 Rust Pause/Terminal，再统一调用 `SessionEngine.stopTurn()`；adapter 的 stop boundary 同时 cancel 正在 Rust round-trip 中的 pending dispatch guard，晚到的成功 claim 必须 revoke/release 后 fail closed。user admission 不使用 wall-clock TTL；正常 settlement、Pause/Terminal 或承载进程的 Sidecar stop 才释放 authority。每个持久 lease/admission 绑定 Rust Sidecar 的单调 generation；reserve/claim、accepted finalize 和 model terminal commit 都在 task 写锁内验证 request generation、authority generation 与 current Sidecar generation 一致。stop event 只撤销对应 generation，持久化失败持续重试，broadcast Lagged 时按 `live_sidecar_set()` 对账，旧进程事件不能清除 replacement Sidecar 的新 authority；aborted/release/revoke 属于补偿清理，不要求旧 generation 仍 current。
 
 终态转换由 Rust `CronTaskManager` 在同一写锁下执行 disk-first first-writer-wins CAS：Model 只能写 complete/blocked 且受 `aiCanExit` 硬闸；User 只能写 canceled；System 可因连续故障进入 terminal。首次 Applied 转换发事件与通知；若终态来自当前 model turn，CronTask owner 保留到该 scheduler lease 或 user admission 真正 idle/finalize 后再释放，避免杀掉模型自己的 Sidecar。
 
@@ -268,9 +270,11 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 |------|------|
 | `cmd_ensure_session_sidecar` | 确保 Session 有运行中的 Sidecar |
 | `cmd_release_session_sidecar` | 释放 Owner 对 Sidecar 的使用 |
+| `cmd_release_tab_session` | 在 scheduler/Sidecar owner 同一锁序下释放桌面 Tab owner 并归置 activation |
+| `cmd_delete_session_if_unowned` | 在同一 owner 锁边界内拒绝删除仍被 Sidecar 或持久 scheduler 拥有的 Session；检查 ownership/entry，不用 process liveness 代替 |
 | `cmd_get_session_port` | 获取 Session 的 Sidecar 端口 |
 | `cmd_activate_session` / `cmd_deactivate_session` | Session 激活管理 |
-| `cmd_upgrade_session_id` | Session ID 升级（场景 4 handover） |
+| `cmd_upgrade_session_id` | Session ID 升级（场景 4 handover）；old/new 任一 identity 被持久 owner 占用时拒绝 rename |
 | `cmd_start_global_sidecar` | 启动 Global Sidecar |
 | `cmd_stop_all_sidecars` | 应用退出清理 |
 
@@ -346,7 +350,7 @@ type InteractionScenario =
 
 新增 `CronTask` 字段 MUST 带 `#[serde(default)]`。
 
-**Goal 边界：** Goal Mode 的 backing 数据也存在 `cron_tasks.json`，但普通 cron create/list/start/stop/delete/update/run-now surface 必须过滤或拒绝 Goal task。Goal 创建统一走 `/goal` 或 `myagents goal create --objective-file ...`；`myagents cron add --schedule '{"kind":"loop"}'` 不再是用户入口。
+**Goal 边界：** Goal Mode 的 backing 数据也存在 `cron_tasks.json`，但普通 cron create/list/start/stop/delete/update/run-now surface 必须过滤或拒绝 Goal task。`CronTaskManager::create_task` 在写锁内校验新 Goal shape 和同 session 唯一 unfinished Goal；Management/Tauri 不做非原子重复预检。Goal mutation 使用结构化错误码，协议层不得解析错误文案前缀。Goal 创建统一走 `/goal` 或 `myagents goal create --objective-file ...`；`myagents cron add --schedule '{"kind":"loop"}'` 不再是用户入口。Loop scheduler 的连续失败计数、退避和 10 次终止阈值只有一份 policy，模型逻辑失败与 transport error 共享该决策。
 
 ### 6. Agent 架构 (`src-tauri/src/im/`)
 
@@ -775,9 +779,9 @@ Cloud Space 把官方/团队空间接入桌面端，目前仍是开发中/半成
 | 事件 | 操作 |
 |------|------|
 | 打开/切换 Session | `ensureSessionSidecar(sessionId, workspace, ownerType, ownerId)` |
-| 关闭 Tab | `releaseSessionSidecar(sessionId, 'tab', tabId)` |
-| 定时任务启动 | `ensureSessionSidecar(sessionId, workspace, 'cron', taskId)` |
-| 定时任务结束 | `releaseSessionSidecar(sessionId, 'cron', taskId)` |
+| 关闭/切换桌面 Tab | `releaseTabSession(sessionId, tabId)`；Rust 在 scheduler + Sidecar owner 锁内同时释放 Tab owner 并保留或撤销 activation |
+| 定时任务启动 | `ensureSessionSidecar(sessionId, workspace, 'cron', taskId)`；activation 合并 task binding，保留同 session 的 Tab binding |
+| 定时任务结束 | `releaseSessionSidecar(sessionId, 'cron', taskId)`；Rust 同锁释放 owner 与 task projection，Tab/BG/Agent owner 存在时不 deactivate |
 | Goal 自动续跑 | 复用 CronTask owner，但 continuation 保留 session 原始 desktop / IM / Agent Channel 输出路由 |
 | Goal 终态 | terminal 后停止 scheduler、释放 CronTask owner、广播 `goal:changed` |
 | IM 消息到达 | `ensureSessionSidecar(sessionId, workspace, 'agent', sessionKey)` |

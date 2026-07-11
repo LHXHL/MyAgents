@@ -10,12 +10,40 @@ pub async fn initialize_cron_manager(handle: AppHandle) {
     manager.set_app_handle(handle.clone()).await;
     ulog_info!("[CronTask] Manager initialized with app handle");
 
-    // PRD 0.2.5 R3 — persist the in-memory migration done at construction
-    // time (see CronTaskManager::new + migrate_in_memory_legacy_auto_permission_mode).
-    // Eagerly saving here means the migration is durable even if the app
-    // crashes before the next mutation. Idempotent: if no tasks needed
-    // migration, this is just a no-op rewrite of the same content.
-    persist_legacy_auto_migration(manager).await;
+    let sidecars = handle.state::<ManagedSidecarManager>().inner().clone();
+    match sidecars.lock() {
+        Ok(guard) => {
+            let mut sidecar_stops = guard.subscribe_stop_events();
+            let sidecars_for_reconcile = sidecars.clone();
+            tauri::async_runtime::spawn(async move {
+                loop {
+                    match sidecar_stops.recv().await {
+                        Ok((session_id, generation)) => {
+                            revoke_stopped_sidecar_authority_until_durable(&session_id, generation)
+                                .await;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(count)) => {
+                            ulog_warn!(
+                                "[CronTask] Sidecar lifecycle listener lagged by {} event(s); reconciling durable Goal authorities",
+                                count
+                            );
+                            reconcile_goal_authorities_until_durable(&sidecars_for_reconcile).await;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
+        }
+        Err(error) => ulog_error!(
+            "[CronTask] Failed to subscribe to Sidecar lifecycle: {}",
+            error
+        ),
+    }
+
+    // CronTaskManager::new performs synchronous normalization before any API
+    // can observe the store (legacy permission cleanup + Goal authority
+    // recovery). Persist that single startup snapshot before schedulers attach.
+    persist_startup_normalization(manager).await;
     replay_goal_delivery_outboxes(manager).await;
 
     // Safety-net heal: recurring/scheduled Tasks whose schedule fields
@@ -45,31 +73,77 @@ pub async fn initialize_cron_manager(handle: AppHandle) {
     ulog_info!("[CronTask] Emitted cron:manager-ready event");
 }
 
+async fn revoke_stopped_sidecar_authority_until_durable(session_id: &str, generation: u64) {
+    let manager = get_cron_task_manager();
+    loop {
+        match manager
+            .revoke_goal_turn_authorities_for_sidecar(session_id, generation)
+            .await
+        {
+            Ok(0) => return,
+            Ok(count) => {
+                ulog_info!(
+                    "[CronTask] Revoked Goal turn authority for {} task(s) after Sidecar {} generation {} stopped",
+                    count,
+                    session_id,
+                    generation
+                );
+                return;
+            }
+            Err(error) => ulog_error!(
+                "[CronTask] Goal authority revoke is not durable after Sidecar {} generation {} stopped: {}; retrying",
+                session_id,
+                generation,
+                error
+            ),
+        }
+        if *manager.shutdown.read().await {
+            return;
+        }
+        tokio::time::sleep(super::manager::goal_durable_retry_delay()).await;
+    }
+}
+
+async fn reconcile_goal_authorities_until_durable(sidecars: &ManagedSidecarManager) {
+    let manager = get_cron_task_manager();
+    loop {
+        match manager
+            .reconcile_goal_turn_authorities_with_live_sidecars(sidecars)
+            .await
+        {
+            Ok(0) => return,
+            Ok(count) => {
+                ulog_info!(
+                    "[CronTask] Reconciled {} Goal authority task(s) after Sidecar event lag",
+                    count
+                );
+                return;
+            }
+            Err(error) => ulog_error!(
+                "[CronTask] Goal authority reconciliation is not durable: {}; retrying",
+                error
+            ),
+        }
+        if *manager.shutdown.read().await {
+            return;
+        }
+        tokio::time::sleep(super::manager::goal_durable_retry_delay()).await;
+    }
+}
+
 async fn replay_goal_delivery_outboxes(manager: &'static CronTaskManager) {
     for task_id in manager.goal_delivery_outbox_task_ids().await {
         manager.ensure_goal_delivery_replay(&task_id).await;
     }
 }
 
-/// PRD 0.2.5 R3 — persist the legacy permissionMode='auto' migration that
-/// already ran in-memory at `CronTaskManager::new()` (see
-/// `migrate_in_memory_legacy_auto_permission_mode`).
-///
-/// Why split: the in-memory mutation must happen before any async caller
-/// can read tasks (management API serves concurrently with cron init).
-/// The disk persist requires async I/O, so it runs here in the async
-/// init path. Idempotent — if no tasks needed migration, save_to_disk
-/// rewrites the same content. Safe across restarts.
-async fn persist_legacy_auto_migration(manager: &CronTaskManager) {
-    // Detect whether any in-memory state actually needs persisting (i.e.,
-    // whether the construction-time pass migrated anything). We can't tell
-    // directly from the manager — but we can compare against the current
-    // disk snapshot to decide if a save is needed. Simpler: just save
-    // unconditionally. atomic_save_tasks is cheap (single file rewrite),
-    // and idempotent persistence is fine.
+/// Persist construction-time normalization before recovery starts schedulers.
+/// The synchronous pass must run in `CronTaskManager::new()` so Management API
+/// readers never see stale authority; its async disk write belongs here.
+async fn persist_startup_normalization(manager: &CronTaskManager) {
     if let Err(e) = manager.save_to_disk().await {
         ulog_warn!(
-            "[CronTask] R3 migration persist failed (in-memory state still \
+            "[CronTask] Startup normalization persist failed (in-memory state still \
              correct; next mutation will persist): {}",
             e
         );
@@ -239,7 +313,6 @@ async fn try_recover_single_task(handle: &AppHandle, task: &CronTask) -> Result<
     let session_id = task.session_id.clone();
     let workspace_path = task.workspace_path.clone();
     let task_id = task.id.clone();
-    let tab_id = task.tab_id.clone();
     let owner = SidecarOwner::CronTask(task_id.clone());
 
     // Run blocking sidecar operations in a dedicated thread pool
@@ -269,13 +342,11 @@ async fn try_recover_single_task(handle: &AppHandle, task: &CronTask) -> Result<
             .lock()
             .map_err(|e| format!("Failed to lock SidecarManager: {}", e))?;
 
-        manager.activate_session(
+        manager.activate_cron_session(
             task.session_id.clone(),
-            tab_id,
-            Some(task_id),
+            task_id,
             result.port,
             task.workspace_path.clone(),
-            true, // is_cron_task = true
         );
         ulog_info!(
             "[CronTask] Session {} activated for task {}",

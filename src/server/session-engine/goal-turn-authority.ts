@@ -1,14 +1,16 @@
-export type GoalTurnAuthority = {
+type GoalTurnAuthorityBase = {
   sessionId: string;
   goalId: string;
-  leaseId?: string;
-  admissionId?: string;
 };
+
+export type GoalTurnAuthority = GoalTurnAuthorityBase & (
+  | { leaseId: string; admissionId?: never }
+  | { admissionId: string; leaseId?: never }
+);
 
 const activeAuthorities = new Map<string, GoalTurnAuthority[]>();
 
 type PendingGoalDispatch = {
-  id: string;
   canceled: boolean;
 };
 
@@ -20,7 +22,7 @@ export type GoalDispatchGuardToken = {
 };
 
 export function beginGoalDispatchGuard(sessionId: string, authorityId: string): GoalDispatchGuardToken {
-  const pending: PendingGoalDispatch = { id: authorityId, canceled: false };
+  const pending: PendingGoalDispatch = { canceled: false };
   const sessionPending = pendingDispatches.get(sessionId) ?? new Map<string, PendingGoalDispatch>();
   sessionPending.set(authorityId, pending);
   pendingDispatches.set(sessionId, sessionPending);
@@ -48,9 +50,9 @@ export function getGoalTurnAuthority(sessionId: string): GoalTurnAuthority | nul
 export function setGoalTurnAuthority(authority: GoalTurnAuthority): void {
   const authorityId = authority.leaseId ?? authority.admissionId;
   const existing = activeAuthorities.get(authority.sessionId) ?? [];
-  const next = authorityId
-    ? existing.filter(item => item.leaseId !== authorityId && item.admissionId !== authorityId)
-    : existing;
+  const next = existing.filter(
+    item => item.leaseId !== authorityId && item.admissionId !== authorityId,
+  );
   next.push(authority);
   activeAuthorities.set(authority.sessionId, next);
 }
@@ -62,17 +64,5 @@ export function clearGoalTurnAuthority(sessionId: string, authorityId: string): 
     activeAuthorities.delete(sessionId);
   } else {
     activeAuthorities.set(sessionId, next);
-  }
-}
-
-export async function withGoalTurnAuthority<T>(
-  authority: GoalTurnAuthority,
-  run: () => Promise<T>,
-): Promise<T> {
-  setGoalTurnAuthority(authority);
-  try {
-    return await run();
-  } finally {
-    clearGoalTurnAuthority(authority.sessionId, authority.leaseId ?? authority.admissionId ?? '');
   }
 }

@@ -27,6 +27,27 @@ function goal(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function reservation(id: unknown, revision = 7, turnNumber = 3) {
+  return { id, goalId: "goal-1", revision, turnNumber };
+}
+
+function claimedAdmission(goalValue: unknown, id: unknown, revision = 7, turnNumber = 3) {
+  return {
+    ok: true,
+    goal: goalValue,
+    reservation: reservation(id, revision, turnNumber),
+  };
+}
+
+function claimedSchedulerTurn(leaseId: string, overrides: Record<string, unknown> = {}) {
+  const claimedGoal = goal({ revision: 8, turnCount: 2, ...overrides });
+  return {
+    ok: true,
+    goal: claimedGoal,
+    lease: reservation(leaseId, 8, 3),
+  };
+}
+
 function desktopRequest(text = "Please also run lint"): DesktopMessageRequest {
   return {
     text,
@@ -73,18 +94,24 @@ function managementClient(goalValue: unknown = goal()) {
         return { ok: true, goal: currentGoal };
       }
       if (path === "/api/goal/admit") {
+        if (currentGoal && typeof currentGoal === "object") {
+          const record = currentGoal as Record<string, unknown>;
+          currentGoal = {
+            ...record,
+            revision: Number(record.revision ?? 0) + 1,
+          };
+        }
+        const revision = Number((currentGoal as Record<string, unknown>)?.revision ?? 0);
         return {
           ok: true,
           goal: currentGoal,
-          reservation: {
-            id: body?.admissionId,
-            revision: 7,
-            turnNumber: 3,
-          },
+          reservation: reservation(body?.admissionId, revision),
         };
       }
-      if (path === "/api/goal/admit/claim")
-        return { ok: true, goal: currentGoal };
+      if (path === "/api/goal/admit/claim") {
+        const revision = Number((currentGoal as Record<string, unknown>)?.revision ?? 0);
+        return claimedAdmission(currentGoal, body?.admissionId, revision);
+      }
       if (path === "/api/goal/admit/finalize")
         return { ok: true, goal: currentGoal };
       if (path === "/api/goal/admit/release")
@@ -180,12 +207,12 @@ describe("Goal session orchestration", () => {
           admissionId = String(body?.admissionId ?? "");
           return {
             ok: true,
-            goal: goal(),
-            reservation: { id: admissionId, revision: 7, turnNumber: 3 },
+            goal: goal({ revision: 8 }),
+            reservation: reservation(admissionId, 8),
           };
         }
         if (path === "/api/goal/admit/claim")
-          return { ok: true, goal: goal() };
+          return claimedAdmission(goal({ revision: 8 }), body?.admissionId, 8);
         if (path === "/api/goal/admit/finalize")
           return { ok: true, goal: goal() };
         if (path === "/api/goal/admit/release") {
@@ -244,6 +271,106 @@ describe("Goal session orchestration", () => {
       error: "Another user admission exists",
     });
     expect(sendDesktopMessage).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when authoritative Goal lookup fails", async () => {
+    const client = vi.fn(async (path: string) => {
+      if (path.startsWith("/api/goal/get?")) {
+        return { ok: false, error: "Goal store is temporarily unavailable" };
+      }
+      return { ok: false, error: `unexpected path ${path}` };
+    });
+    const sendDesktopMessage = vi.fn();
+
+    const result = await createGoalOrchestrator(client).sendDesktopMessage(
+      { sendDesktopMessage, ...turnLifecycle() },
+      desktopRequest(),
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      status: 503,
+      error: "Goal store is temporarily unavailable",
+    });
+    expect(sendDesktopMessage).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when authoritative Goal lookup returns a malformed Goal", async () => {
+    const client = vi.fn(async (path: string) => {
+      if (path.startsWith("/api/goal/get?")) {
+        return {
+          ok: true,
+          goal: { id: "goal-1", status: "active" },
+        };
+      }
+      return { ok: false, error: `unexpected path ${path}` };
+    });
+    const sendDesktopMessage = vi.fn();
+
+    const result = await createGoalOrchestrator(client).sendDesktopMessage(
+      { sendDesktopMessage, ...turnLifecycle() },
+      desktopRequest(),
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      status: 503,
+      error: "Management API returned an invalid Goal",
+    });
+    expect(sendDesktopMessage).not.toHaveBeenCalled();
+  });
+
+  it("fails closed for a malformed terminal Goal instead of dispatching ordinary chat", async () => {
+    const client = vi.fn(async (path: string) => {
+      if (path.startsWith("/api/goal/get?")) {
+        return {
+          ok: true,
+          goal: { id: "goal-1", objective: "Ship", status: "complete" },
+        };
+      }
+      return { ok: false, error: `unexpected path ${path}` };
+    });
+    const sendDesktopMessage = vi.fn();
+
+    const result = await createGoalOrchestrator(client).sendDesktopMessage(
+      { sendDesktopMessage, ...turnLifecycle() },
+      desktopRequest(),
+    );
+
+    expect(result).toMatchObject({ success: false, status: 503 });
+    expect(sendDesktopMessage).not.toHaveBeenCalled();
+  });
+
+  it("accepts an authoritative Goal whose Windows workspace separators are equivalent", async () => {
+    const client = managementClient(goal({ workspacePath: "C:/Workspace/Agent" }));
+    const sendDesktopMessage = vi.fn(async () => ({ success: true }));
+
+    const result = await createGoalOrchestrator(client).sendDesktopMessage(
+      { sendDesktopMessage, ...turnLifecycle() },
+      { ...desktopRequest(), workspacePath: "C:\\Workspace\\Agent" },
+    );
+
+    expect(result.success).toBe(true);
+    expect(sendDesktopMessage).toHaveBeenCalledOnce();
+  });
+
+  it("fails closed for IM when authoritative Goal lookup throws", async () => {
+    const client = vi.fn(async () => {
+      throw new Error("management connection reset");
+    });
+    const enqueueImMessage = vi.fn();
+
+    const result = await createGoalOrchestrator(client).enqueueImMessage(
+      { enqueueImMessage, ...turnLifecycle() },
+      imRequest(),
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      status: 503,
+      error: "management connection reset",
+    });
+    expect(enqueueImMessage).not.toHaveBeenCalled();
   });
 
   it("claims at actual promotion when a user query waits behind a claimed auto turn", async () => {
@@ -335,6 +462,426 @@ describe("Goal session orchestration", () => {
     expect(client.mock.calls[3]?.[2]).toMatchObject({ outcome: "aborted" });
   });
 
+  it("aborts an IM admission when dispatch acknowledgement rejects", async () => {
+    const client = managementClient();
+    let resolveIdle!: (value: boolean) => void;
+    const idleGate = new Promise<boolean>((resolve) => {
+      resolveIdle = resolve;
+    });
+    const lifecycle = turnLifecycle();
+    lifecycle.waitIdle.mockReturnValue(idleGate);
+    const enqueueImMessage = vi.fn(async (request: ImMessageRequest) => {
+      await request.beforeDispatch?.();
+      return {
+        success: true,
+        queued: true,
+        dispatchAcceptance: Promise.reject(new Error("ack channel closed")),
+      };
+    });
+
+    const result = await createGoalOrchestrator(client).enqueueImMessage(
+      { enqueueImMessage, ...lifecycle },
+      imRequest(),
+    );
+
+    expect(result).toEqual({ success: true, queued: true });
+    const finalizeCalls = client.mock.calls.filter(
+      (call) => call[0] === "/api/goal/admit/finalize",
+    );
+    expect(finalizeCalls).toHaveLength(1);
+    expect(finalizeCalls[0]?.[2]).toMatchObject({ outcome: "aborted" });
+    expect(lifecycle.stopTurn).toHaveBeenCalledOnce();
+    expect(client.mock.calls.map((call) => call[0])).not.toContain(
+      "/api/goal/admit/release",
+    );
+    expect(getGoalTurnAuthority("session-1")).toMatchObject({
+      admissionId: expect.any(String),
+    });
+
+    resolveIdle(true);
+    await vi.waitFor(() =>
+      expect(client.mock.calls.map((call) => call[0])).toContain(
+        "/api/goal/admit/release",
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(getGoalTurnAuthority("session-1")).toBeNull(),
+    );
+  });
+
+  it("keeps accepted authority until idle when stale finalization cannot stop the turn", async () => {
+    let resolveIdle!: (value: boolean) => void;
+    const idleGate = new Promise<boolean>((resolve) => {
+      resolveIdle = resolve;
+    });
+    const client = vi.fn(
+      async (
+        path: string,
+        _method?: string,
+        body?: Record<string, unknown>,
+      ) => {
+        if (path.startsWith("/api/goal/get?")) return { ok: true, goal: goal() };
+        if (path === "/api/goal/admit") {
+          return {
+            ok: true,
+            goal: goal({ revision: 8 }),
+            reservation: reservation(body?.admissionId, 8),
+          };
+        }
+        if (path === "/api/goal/admit/claim") {
+          return claimedAdmission(goal({ revision: 8 }), body?.admissionId, 8);
+        }
+        if (path === "/api/goal/admit/finalize") {
+          return { ok: false, code: "goal_changed", error: "Goal became terminal" };
+        }
+        if (path === "/api/goal/admit/release") {
+          return { ok: false, code: "stale_admission", error: "already gone" };
+        }
+        return { ok: false, error: `unexpected path ${path}` };
+      },
+    );
+    const lifecycle = {
+      stopTurn: vi.fn(async () => ({ success: false, error: "runtime unavailable" })),
+      waitIdle: vi.fn(() => idleGate),
+    };
+    const sendDesktopMessage = vi.fn(async (request: DesktopMessageRequest) => {
+      await request.beforeDispatch?.();
+      return { success: true, queued: true };
+    });
+
+    await createGoalOrchestrator(client).sendDesktopMessage(
+      { sendDesktopMessage, ...lifecycle },
+      desktopRequest(),
+    );
+
+    expect(lifecycle.stopTurn).toHaveBeenCalledOnce();
+    expect(getGoalTurnAuthority("session-1")).toMatchObject({
+      admissionId: expect.any(String),
+    });
+    expect(client.mock.calls.map((call) => call[0])).not.toContain(
+      "/api/goal/admit/release",
+    );
+
+    resolveIdle(true);
+    await vi.waitFor(() =>
+      expect(client.mock.calls.map((call) => call[0])).toContain(
+        "/api/goal/admit/release",
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(getGoalTurnAuthority("session-1")).toBeNull(),
+    );
+  });
+
+  it("retains authority until aborted admission cleanup is durably released", async () => {
+    let admissionId = "";
+    let resolveRelease!: () => void;
+    const releaseGate = new Promise<void>((resolve) => {
+      resolveRelease = resolve;
+    });
+    const client = vi.fn(
+      async (
+        path: string,
+        _method?: string,
+        body?: Record<string, unknown>,
+      ) => {
+        if (path.startsWith("/api/goal/get?")) return { ok: true, goal: goal() };
+        if (path === "/api/goal/admit") {
+          admissionId = String(body?.admissionId ?? "");
+          return {
+            ok: true,
+            goal: goal({ revision: 8 }),
+            reservation: reservation(admissionId, 8),
+          };
+        }
+        if (path === "/api/goal/admit/claim") {
+          return claimedAdmission(goal({ revision: 8 }), body?.admissionId, 8);
+        }
+        if (path === "/api/goal/admit/finalize") {
+          return { ok: false, error: "temporary finalize failure" };
+        }
+        if (path === "/api/goal/admit/release") {
+          await releaseGate;
+          return { ok: true, goal: goal() };
+        }
+        return { ok: false, error: `unexpected path ${path}` };
+      },
+    );
+    const sendDesktopMessage = vi.fn(async (request: DesktopMessageRequest) => {
+      await request.beforeDispatch?.();
+      return {
+        success: true,
+        queued: true,
+        dispatchAcceptance: Promise.resolve({ accepted: false }),
+      };
+    });
+
+    await createGoalOrchestrator(client).sendDesktopMessage(
+      { sendDesktopMessage, ...turnLifecycle() },
+      desktopRequest(),
+    );
+    await vi.waitFor(() =>
+      expect(client.mock.calls.map((call) => call[0])).toContain(
+        "/api/goal/admit/release",
+      ),
+    );
+    expect(getGoalTurnAuthority("session-1")).toMatchObject({ admissionId });
+
+    resolveRelease();
+    await vi.waitFor(() =>
+      expect(getGoalTurnAuthority("session-1")).toBeNull(),
+    );
+  });
+
+  it("retries an idle check failure without dropping accepted admission authority", async () => {
+    const client = managementClient();
+    const lifecycle = turnLifecycle();
+    lifecycle.waitIdle
+      .mockRejectedValueOnce(new Error("runtime state unavailable"))
+      .mockResolvedValueOnce(true);
+    const sendDesktopMessage = vi.fn(async (request: DesktopMessageRequest) => {
+      await request.beforeDispatch?.();
+      return { success: true, queued: true };
+    });
+
+    await createGoalOrchestrator(client).sendDesktopMessage(
+      { sendDesktopMessage, ...lifecycle },
+      desktopRequest(),
+    );
+
+    await vi.waitFor(() => expect(lifecycle.waitIdle).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(client.mock.calls.map((call) => call[0])).toContain(
+        "/api/goal/admit/release",
+      ),
+    );
+    expect(getGoalTurnAuthority("session-1")).toBeNull();
+  });
+
+  it("does not reverse-finalize when accepted settlement itself fails", async () => {
+    const outcomes: unknown[] = [];
+    const client = vi.fn(
+      async (
+        path: string,
+        _method?: string,
+        body?: Record<string, unknown>,
+      ) => {
+        if (path.startsWith("/api/goal/get?")) return { ok: true, goal: goal() };
+        if (path === "/api/goal/admit") {
+          return {
+            ok: true,
+            goal: goal({ revision: 8 }),
+            reservation: reservation(body?.admissionId, 8),
+          };
+        }
+        if (path === "/api/goal/admit/claim") {
+          return claimedAdmission(goal({ revision: 8 }), body?.admissionId, 8);
+        }
+        if (path === "/api/goal/admit/finalize") {
+          outcomes.push(body?.outcome);
+          throw new Error("finalize transport failed");
+        }
+        if (path === "/api/goal/admit/release") return { ok: true, goal: goal() };
+        return { ok: false, error: `unexpected path ${path}` };
+      },
+    );
+    const lifecycle = turnLifecycle();
+    const sendDesktopMessage = vi.fn(async (request: DesktopMessageRequest) => {
+      await request.beforeDispatch?.();
+      return {
+        success: true,
+        queued: true,
+        dispatchAcceptance: Promise.resolve({ accepted: true }),
+      };
+    });
+
+    await createGoalOrchestrator(client).sendDesktopMessage(
+      { sendDesktopMessage, ...lifecycle },
+      desktopRequest(),
+    );
+
+    await vi.waitFor(() => expect(outcomes).toEqual(["accepted"]));
+    expect(lifecycle.stopTurn).toHaveBeenCalledOnce();
+    await vi.waitFor(() =>
+      expect(client.mock.calls.map((call) => call[0])).toContain(
+        "/api/goal/admit/release",
+      ),
+    );
+  });
+
+  it("fails closed and releases when user claim returns malformed success", async () => {
+    const client = vi.fn(
+      async (
+        path: string,
+        _method?: string,
+        body?: Record<string, unknown>,
+      ) => {
+        if (path.startsWith("/api/goal/get?")) return { ok: true, goal: goal() };
+        if (path === "/api/goal/admit") {
+          return {
+            ok: true,
+            goal: goal(),
+            reservation: reservation(body?.admissionId),
+          };
+        }
+        if (path === "/api/goal/admit/claim") return { ok: true };
+        if (path === "/api/goal/admit/release") return { ok: true, goal: goal() };
+        if (path === "/api/goal/admit/finalize") {
+          return { ok: false, code: "stale_admission", error: "already released" };
+        }
+        return { ok: false, error: `unexpected path ${path}` };
+      },
+    );
+    const runtimeDispatch = vi.fn();
+    const sendDesktopMessage = vi.fn(async (request: DesktopMessageRequest) => {
+      const guarded = await request.beforeDispatch?.();
+      if (guarded?.accepted) runtimeDispatch();
+      return guarded?.accepted
+        ? { success: true, queued: true }
+        : { success: false, error: guarded?.error };
+    });
+
+    const result = await createGoalOrchestrator(client).sendDesktopMessage(
+      { sendDesktopMessage, ...turnLifecycle() },
+      desktopRequest(),
+    );
+
+    expect(result.success).toBe(false);
+    expect(runtimeDispatch).not.toHaveBeenCalled();
+    expect(client.mock.calls.map((call) => call[0])).toContain(
+      "/api/goal/admit/release",
+    );
+    expect(getGoalTurnAuthority("session-1")).toBeNull();
+  });
+
+  it("fails closed and releases when reservation revision disagrees with Goal", async () => {
+    const client = vi.fn(async (path: string, _method?: string, body?: Record<string, unknown>) => {
+      if (path.startsWith("/api/goal/get?")) return { ok: true, goal: goal() };
+      if (path === "/api/goal/admit") {
+        return {
+          ok: true,
+          goal: goal({ revision: 8 }),
+          reservation: reservation(body?.admissionId, 7),
+        };
+      }
+      if (path === "/api/goal/admit/release") return { ok: true, goal: goal() };
+      return { ok: false, error: `unexpected path ${path}` };
+    });
+    const sendDesktopMessage = vi.fn();
+
+    const result = await createGoalOrchestrator(client).sendDesktopMessage(
+      { sendDesktopMessage, ...turnLifecycle() },
+      desktopRequest(),
+    );
+
+    expect(result.success).toBe(false);
+    expect(sendDesktopMessage).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(client.mock.calls.map((call) => call[0])).toContain("/api/goal/admit/release"),
+    );
+  });
+
+  it("stops an accepted turn when finalize returns another Goal identity", async () => {
+    const client = vi.fn(async (path: string, _method?: string, body?: Record<string, unknown>) => {
+      if (path.startsWith("/api/goal/get?")) return { ok: true, goal: goal() };
+      if (path === "/api/goal/admit") {
+        return {
+          ok: true,
+          goal: goal({ revision: 8 }),
+          reservation: reservation(body?.admissionId, 8),
+        };
+      }
+      if (path === "/api/goal/admit/claim") {
+        return claimedAdmission(goal({ revision: 8 }), body?.admissionId, 8);
+      }
+      if (path === "/api/goal/admit/finalize") {
+        return { ok: true, goal: goal({ id: "other-goal" }) };
+      }
+      if (path === "/api/goal/admit/release") return { ok: true, goal: goal() };
+      return { ok: false, error: `unexpected path ${path}` };
+    });
+    const lifecycle = turnLifecycle();
+    const enqueueImMessage = vi.fn(async (request: ImMessageRequest) => {
+      await request.beforeDispatch?.();
+      return { success: true, queued: true };
+    });
+
+    await createGoalOrchestrator(client).enqueueImMessage(
+      { enqueueImMessage, ...lifecycle },
+      imRequest(),
+    );
+
+    expect(lifecycle.stopTurn).toHaveBeenCalledOnce();
+    await vi.waitFor(() =>
+      expect(client.mock.calls.map((call) => call[0])).toContain("/api/goal/admit/release"),
+    );
+  });
+
+  it("retries release after Stop wins a delayed user claim", async () => {
+    let resolveClaim!: (value: Record<string, unknown>) => void;
+    const claimGate = new Promise<Record<string, unknown>>((resolve) => {
+      resolveClaim = resolve;
+    });
+    let releaseCalls = 0;
+    const client = vi.fn(
+      async (
+        path: string,
+        _method?: string,
+        body?: Record<string, unknown>,
+      ) => {
+        if (path.startsWith("/api/goal/get?")) return { ok: true, goal: goal() };
+        if (path === "/api/goal/admit") {
+          return {
+            ok: true,
+            goal: goal(),
+            reservation: reservation(body?.admissionId),
+          };
+        }
+        if (path === "/api/goal/admit/claim") return claimGate;
+        if (path === "/api/goal/admit/release") {
+          releaseCalls += 1;
+          return releaseCalls === 1
+            ? { ok: false, error: "temporary release failure" }
+            : { ok: true, goal: goal() };
+        }
+        if (path === "/api/goal/admit/finalize") {
+          return { ok: false, code: "stale_admission", error: "already released" };
+        }
+        return { ok: false, error: `unexpected path ${path}` };
+      },
+    );
+    const runtimeDispatch = vi.fn();
+    const sendPromise = createGoalOrchestrator(client).sendDesktopMessage(
+      {
+        sendDesktopMessage: vi.fn(async (request: DesktopMessageRequest) => {
+          const guarded = await request.beforeDispatch?.();
+          if (guarded?.accepted) runtimeDispatch();
+          return guarded?.accepted
+            ? { success: true, queued: true }
+            : { success: false, error: guarded?.error };
+        }),
+        ...turnLifecycle(),
+      },
+      desktopRequest(),
+    );
+    await vi.waitFor(() =>
+      expect(client.mock.calls.map((call) => call[0])).toContain(
+        "/api/goal/admit/claim",
+      ),
+    );
+
+    cancelPendingGoalDispatches();
+    const admissionId = client.mock.calls.find(
+      (call) => call[0] === "/api/goal/admit",
+    )?.[2]?.admissionId;
+    resolveClaim(claimedAdmission(goal(), admissionId));
+
+    await expect(sendPromise).resolves.toMatchObject({ success: false });
+    await vi.waitFor(() => expect(releaseCalls).toBe(2));
+    expect(runtimeDispatch).not.toHaveBeenCalled();
+    expect(getGoalTurnAuthority("session-1")).toBeNull();
+  });
+
   it("keeps slash commands untouched and skips Goal admission", async () => {
     const client = managementClient();
     const sendDesktopMessage = vi.fn(async (request: DesktopMessageRequest) => {
@@ -386,7 +933,7 @@ describe("Goal session orchestration", () => {
     let revision = 7;
     const reservations = new Map<
       string,
-      { id: string; revision: number; turnNumber: number }
+      { id: string; goalId: string; revision: number; turnNumber: number }
     >();
     const reserveRevisions: number[] = [];
     const currentGoal = () => goal({ revision });
@@ -414,6 +961,7 @@ describe("Goal session orchestration", () => {
           revision += 1;
           const reservation = {
             id: String(body?.admissionId),
+            goalId: "goal-1",
             revision,
             turnNumber: reservations.size + 3,
           };
@@ -482,7 +1030,7 @@ describe("Goal scheduler claim boundary", () => {
           expectedRevision: 7,
         });
         order.push("claim");
-        return { ok: true, goal: goal() };
+        return claimedSchedulerTurn("lease-1");
       },
     );
     const engine = {
@@ -559,14 +1107,57 @@ describe("Goal scheduler claim boundary", () => {
     expect(runtimeDispatch).not.toHaveBeenCalled();
   });
 
+  it("fails closed and revokes when scheduler claim returns malformed success", async () => {
+    const client = vi.fn(async (path: string) => {
+      if (path === "/api/goal/scheduler/claim") return { ok: true };
+      if (path === "/api/goal/scheduler/revoke") return { ok: true };
+      return { ok: false, error: `unexpected path ${path}` };
+    });
+    const runtimeDispatch = vi.fn();
+
+    const result = await createGoalOrchestrator(client).runClaimedSchedulerTurn(
+      { waitIdle: vi.fn(async () => true), getQueueStatus: vi.fn(() => []) },
+      {
+        sessionId: "session-1",
+        workspacePath: "/workspace",
+        goalId: "goal-1",
+        leaseId: "lease-malformed",
+        expectedRevision: 7,
+        timeoutMs: 1_000,
+      },
+      async (beforeDispatch) => {
+        const guarded = await beforeDispatch();
+        if (guarded.accepted) runtimeDispatch();
+        return guarded;
+      },
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      code: "invalid_goal_payload",
+      status: 502,
+    });
+    expect(client.mock.calls.map((call) => call[0])).toEqual([
+      "/api/goal/scheduler/claim",
+      "/api/goal/scheduler/revoke",
+    ]);
+    expect(runtimeDispatch).not.toHaveBeenCalled();
+    expect(getGoalTurnAuthority("session-1")).toBeNull();
+  });
+
   it("revokes a delayed successful claim when Stop cancels the pending guard", async () => {
     let resolveClaim!: (value: Record<string, unknown>) => void;
     const claimResponse = new Promise<Record<string, unknown>>((resolve) => {
       resolveClaim = resolve;
     });
+    let revokeCalls = 0;
     const client = vi.fn(async (path: string) => {
       if (path === "/api/goal/scheduler/claim") return claimResponse;
       if (path === "/api/goal/scheduler/revoke") {
+        revokeCalls += 1;
+        if (revokeCalls === 1) {
+          return { ok: false, error: "temporary revoke failure" };
+        }
         return { ok: true, goal: goal({ status: "paused", revision: 8 }) };
       }
       return { ok: false, error: `unexpected path ${path}` };
@@ -597,7 +1188,7 @@ describe("Goal scheduler claim boundary", () => {
     );
 
     cancelPendingGoalDispatches();
-    resolveClaim({ ok: true, goal: goal({ revision: 8 }) });
+    resolveClaim(claimedSchedulerTurn("lease-delayed"));
 
     await expect(run).resolves.toMatchObject({
       success: false,
@@ -605,6 +1196,7 @@ describe("Goal scheduler claim boundary", () => {
     });
     expect(client.mock.calls.map((call) => call[0])).toEqual([
       "/api/goal/scheduler/claim",
+      "/api/goal/scheduler/revoke",
       "/api/goal/scheduler/revoke",
     ]);
     expect(runtimeDispatch).not.toHaveBeenCalled();
@@ -614,7 +1206,7 @@ describe("Goal scheduler claim boundary", () => {
     const order: string[] = [];
     const client = vi.fn(async () => {
       order.push("claim");
-      return { ok: true, goal: goal() };
+      return claimedSchedulerTurn("lease-1");
     });
     const engine = {
       waitIdle: vi.fn(async () => {
@@ -672,6 +1264,34 @@ describe("Goal objective updates", () => {
       ),
     };
   }
+
+  it("fails closed with an unavailable status when the authoritative lookup fails", async () => {
+    const client = vi.fn(async () => ({
+      ok: false,
+      code: "goal_store_unavailable",
+      error: "Goal store is temporarily unavailable",
+    }));
+    const engine = objectiveEngine({ busy: false });
+
+    const result = await createGoalOrchestrator(client).updateObjective(
+      engine,
+      {
+        sessionId: "session-1",
+        workspacePath: "/workspace",
+        objective: "Updated",
+        turnRequest: { scenario },
+      },
+    );
+
+    expect(result).toEqual({
+      success: false,
+      error: "Goal store is temporarily unavailable",
+      code: "goal_store_unavailable",
+      status: 503,
+    });
+    expect(engine.stopTurn).not.toHaveBeenCalled();
+    expect(engine.enqueueBackgroundMessage).not.toHaveBeenCalled();
+  });
 
   it("persists only while paused", async () => {
     const client = managementClient(
@@ -767,18 +1387,13 @@ describe("Goal objective updates", () => {
           return {
             ok: true,
             goal: current,
-            reservation: {
-              id: body?.admissionId,
-              revision: updated.revision,
-              turnNumber: 3,
-            },
+            reservation: reservation(body?.admissionId, updated.revision),
           };
         }
-        if (
-          path === "/api/goal/admit/claim" ||
-          path === "/api/goal/admit/finalize" ||
-          path === "/api/goal/admit/release"
-        ) {
+        if (path === "/api/goal/admit/claim") {
+          return claimedAdmission(current, body?.admissionId, updated.revision);
+        }
+        if (path === "/api/goal/admit/finalize" || path === "/api/goal/admit/release") {
           return { ok: true, goal: current };
         }
         return { ok: false, error: `unexpected path ${path}` };
@@ -878,6 +1493,44 @@ describe("Goal objective updates", () => {
     );
   });
 
+  it("aborts an objective restart when dispatch acknowledgement rejects", async () => {
+    const client = managementClient(goal({ objective: "Updated" }));
+    const engine = objectiveEngine({ busy: true });
+    engine.enqueueBackgroundMessage.mockImplementationOnce(
+      async (request: BackgroundMessageRequest) => {
+        await request.beforeDispatch?.();
+        return {
+          success: true,
+          queued: true,
+          dispatchAcceptance: Promise.reject(new Error("ack channel closed")),
+        };
+      },
+    );
+
+    const result = await createGoalOrchestrator(client).updateObjective(
+      engine,
+      {
+        sessionId: "session-1",
+        workspacePath: "/workspace",
+        objective: "Updated",
+        turnRequest: { scenario },
+      },
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      status: 503,
+      error: "ack channel closed",
+    });
+    const finalizeCalls = client.mock.calls.filter(
+      (call) => call[0] === "/api/goal/admit/finalize",
+    );
+    expect(finalizeCalls).toHaveLength(1);
+    expect(finalizeCalls[0]?.[2]).toMatchObject({ outcome: "aborted" });
+    expect(engine.stopTurn).toHaveBeenCalledTimes(3);
+    expect(getGoalTurnAuthority("session-1")).toBeNull();
+  });
+
   it("rejects a restart when the Goal changes after the objective CAS", async () => {
     const before = goal({ objective: "Old", revision: 7 });
     const updated = goal({ objective: "Updated", revision: 8 });
@@ -938,14 +1591,12 @@ describe("Goal objective updates", () => {
           return {
             ok: true,
             goal: active,
-            reservation: {
-              id: body?.admissionId,
-              revision: 8,
-              turnNumber: 3,
-            },
+            reservation: reservation(body?.admissionId, 8),
           };
         }
-        if (path === "/api/goal/admit/claim") return { ok: true, goal: active };
+        if (path === "/api/goal/admit/claim") {
+          return claimedAdmission(active, body?.admissionId, 8);
+        }
         if (path === "/api/goal/admit/finalize") {
           return {
             ok: false,
@@ -1066,11 +1717,12 @@ describe("Goal objective updates", () => {
           return {
             ok: true,
             goal: updated,
-            reservation: { id: body?.admissionId, revision: 9, turnNumber: 3 },
+            reservation: reservation(body?.admissionId, 9),
           };
         }
-        if (path === "/api/goal/admit/claim")
-          return { ok: true, goal: updated };
+        if (path === "/api/goal/admit/claim") {
+          return claimedAdmission(updated, body?.admissionId, 9);
+        }
         if (path === "/api/goal/admit/finalize")
           return { ok: true, goal: updated };
         if (path === "/api/goal/admit/release")

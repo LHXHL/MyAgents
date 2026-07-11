@@ -396,7 +396,7 @@
       "tokenStats": "Session token usage",
       "contextUsage": "Context token details",
       "bindBot": "Bind chat bot",
-      "cronDeleteTooltip": "Stop the scheduled task before deleting this chat",
+      "cronDeleteTooltip": "Stop or cancel the active Goal or scheduled task before deleting this chat",
       "delete": "Delete chat",
       "bound": "Bound",
       "switchToOther": "Switch to another",
@@ -440,7 +440,7 @@
       "unfavorite": "Unfavorite",
       "exportMarkdown": "Export as Markdown",
       "viewStats": "View stats",
-      "cronDeleteTooltip": "Stop the scheduled task before deleting this chat",
+      "cronDeleteTooltip": "Stop or cancel the active Goal or scheduled task before deleting this chat",
       "delete": "Delete chat",
       "deleteDialog": {
         "title": "Delete chat",

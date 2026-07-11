@@ -7,6 +7,7 @@ import {
   buildGoalObjectiveUpdatedReminder,
   parseLeadingSystemReminder,
 } from "../../shared/systemReminder";
+import { workspacePathsEqual } from "../../shared/workspacePath";
 import { managementApi } from "../utils/management-api-client";
 import {
   beginGoalDispatchGuard,
@@ -51,12 +52,18 @@ type PreparedGoalIngress = {
   shouldAdmit: boolean;
 };
 
+type PreparedGoalIngressResult =
+  | { success: true; prepared: PreparedGoalIngress }
+  | { success: false; error: string; code?: string };
+
 type GoalAdmissionReservation = {
   id: string;
   goalId: string;
   revision: number;
   turnNumber: number;
 };
+
+type GoalAdmissionIdentity = Pick<GoalAdmissionReservation, "id" | "goalId">;
 
 export type GoalObjectiveDelivery = "persisted" | "restarted";
 
@@ -86,6 +93,7 @@ type GoalAdmissionResult = {
   reservation?: GoalAdmissionReservation;
   error?: string;
   code?: string;
+  requiresCompensation?: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -98,9 +106,25 @@ function normalizeGoal(value: unknown): SessionGoal | null {
   const objective =
     typeof value.objective === "string" ? value.objective.trim() : "";
   const status = value.status;
+  const turnCount = value.turnCount;
+  const revision = value.revision;
+  const controlRevision = value.controlRevision;
+  const sessionId =
+    typeof value.sessionId === "string" ? value.sessionId.trim() : "";
+  const workspacePath =
+    typeof value.workspacePath === "string" ? value.workspacePath.trim() : "";
   if (
     !id ||
     !objective ||
+    !Number.isInteger(turnCount) ||
+    (turnCount as number) < 0 ||
+    !Number.isInteger(revision) ||
+    (revision as number) < 0 ||
+    !Number.isInteger(controlRevision) ||
+    (controlRevision as number) < 0 ||
+    typeof value.aiCanExit !== "boolean" ||
+    !sessionId ||
+    !workspacePath ||
     (status !== "active" &&
       status !== "paused" &&
       status !== "complete" &&
@@ -113,24 +137,12 @@ function normalizeGoal(value: unknown): SessionGoal | null {
     id,
     objective,
     status,
-    turnCount:
-      typeof value.turnCount === "number" && Number.isFinite(value.turnCount)
-        ? Math.max(0, Math.floor(value.turnCount))
-        : 0,
-    revision:
-      typeof value.revision === "number" && Number.isFinite(value.revision)
-        ? Math.max(0, Math.floor(value.revision))
-        : 0,
-    controlRevision:
-      typeof value.controlRevision === "number" &&
-      Number.isFinite(value.controlRevision)
-        ? Math.max(0, Math.floor(value.controlRevision))
-        : 0,
-    // Old Goal records predate the explicit field and allowed autonomous exit.
-    aiCanExit: value.aiCanExit !== false,
-    sessionId: typeof value.sessionId === "string" ? value.sessionId : "",
-    workspacePath:
-      typeof value.workspacePath === "string" ? value.workspacePath : "",
+    turnCount: turnCount as number,
+    revision: revision as number,
+    controlRevision: controlRevision as number,
+    aiCanExit: value.aiCanExit,
+    sessionId,
+    workspacePath,
     updatedAt:
       typeof value.updatedAt === "string" ? value.updatedAt : undefined,
   };
@@ -138,25 +150,41 @@ function normalizeGoal(value: unknown): SessionGoal | null {
 
 function normalizeReservation(
   value: unknown,
-  expectedGoalId: string,
 ): GoalAdmissionReservation | null {
   if (!isRecord(value)) return null;
   const id = typeof value.id === "string" ? value.id.trim() : "";
   const goalId =
-    typeof value.goalId === "string" ? value.goalId.trim() : expectedGoalId;
-  if (!id || !goalId) return null;
+    typeof value.goalId === "string" ? value.goalId.trim() : "";
+  if (
+    !id ||
+    !goalId ||
+    !Number.isInteger(value.revision) ||
+    (value.revision as number) < 0 ||
+    !Number.isInteger(value.turnNumber) ||
+    (value.turnNumber as number) < 1
+  ) {
+    return null;
+  }
   return {
     id,
     goalId,
-    revision:
-      typeof value.revision === "number" && Number.isFinite(value.revision)
-        ? Math.max(0, Math.floor(value.revision))
-        : 0,
-    turnNumber:
-      typeof value.turnNumber === "number" && Number.isFinite(value.turnNumber)
-        ? Math.max(1, Math.floor(value.turnNumber))
-        : 1,
+    revision: value.revision as number,
+    turnNumber: value.turnNumber as number,
   };
+}
+
+function goalMatchesIdentity(
+  goal: SessionGoal | null,
+  goalId: string,
+  sessionId: string,
+  workspacePath: string,
+): goal is SessionGoal {
+  return Boolean(
+    goal
+      && goal.id === goalId
+      && goal.sessionId === sessionId
+      && workspacePathsEqual(goal.workspacePath, workspacePath),
+  );
 }
 
 function isUnfinishedGoal(goal: SessionGoal | null): goal is SessionGoal {
@@ -178,7 +206,17 @@ async function lookupSessionGoal(
   workspacePath: string,
 ): Promise<GoalLookupResult> {
   const query = new URLSearchParams({ sessionId, workspacePath });
-  const response = await client(`/api/goal/get?${query.toString()}`);
+  let response: Record<string, unknown>;
+  try {
+    response = await client(`/api/goal/get?${query.toString()}`);
+  } catch (error) {
+    return {
+      success: false,
+      goal: null,
+      error: error instanceof Error ? error.message : String(error),
+      code: "goal_lookup_unavailable",
+    };
+  }
   if (response.ok !== true) {
     return {
       success: false,
@@ -187,22 +225,21 @@ async function lookupSessionGoal(
       code: typeof response.code === "string" ? response.code : undefined,
     };
   }
-  return { success: true, goal: normalizeGoal(response.goal) };
-}
-
-async function getSessionGoal(
-  client: ManagementClient,
-  sessionId: string,
-  workspacePath: string,
-): Promise<SessionGoal | null> {
-  const result = await lookupSessionGoal(client, sessionId, workspacePath);
-  if (!result.success) {
-    console.warn(
-      `[goal] state lookup failed for session ${sessionId}: ${result.error ?? "unknown error"}`,
-    );
-    return null;
+  if (response.goal == null) return { success: true, goal: null };
+  const goal = normalizeGoal(response.goal);
+  if (
+    !goal ||
+    goal.sessionId !== sessionId ||
+    !workspacePathsEqual(goal.workspacePath, workspacePath)
+  ) {
+    return {
+      success: false,
+      goal: null,
+      error: "Management API returned an invalid Goal",
+      code: "invalid_goal_payload",
+    };
   }
-  return isUnfinishedGoal(result.goal) ? result.goal : null;
+  return { success: true, goal };
 }
 
 async function prepareGoalIngress(
@@ -210,21 +247,43 @@ async function prepareGoalIngress(
   sessionId: string,
   workspacePath: string,
   text: string,
-): Promise<PreparedGoalIngress> {
+): Promise<PreparedGoalIngressResult> {
   if (isSlashCommand(text) || isGoalControlReminder(text)) {
-    return { text, goal: null, shouldAdmit: false };
+    return {
+      success: true,
+      prepared: { text, goal: null, shouldAdmit: false },
+    };
   }
-  const goal = await getSessionGoal(client, sessionId, workspacePath);
-  if (!goal) return { text, goal: null, shouldAdmit: false };
+  const lookup = await lookupSessionGoal(client, sessionId, workspacePath);
+  if (!lookup.success) {
+    console.warn(
+      `[goal] state lookup failed for session ${sessionId}: ${lookup.error ?? "unknown error"}`,
+    );
+    return {
+      success: false,
+      error: lookup.error ?? "Goal state lookup failed",
+      code: lookup.code,
+    };
+  }
+  const goal = isUnfinishedGoal(lookup.goal) ? lookup.goal : null;
+  if (!goal) {
+    return {
+      success: true,
+      prepared: { text, goal: null, shouldAdmit: false },
+    };
+  }
 
   const parsed = parseLeadingSystemReminder(text);
   if (parsed.hasReminder && parsed.kind === GOAL_CONTEXT_TAG) {
     // Compatibility while older renderer builds still prepare Goal context.
     // Rebuild from the reservation snapshot so stale renderer state cannot leak.
-    return { text: parsed.visibleText, goal, shouldAdmit: true };
+    return {
+      success: true,
+      prepared: { text: parsed.visibleText, goal, shouldAdmit: true },
+    };
   }
 
-  return { text, goal, shouldAdmit: true };
+  return { success: true, prepared: { text, goal, shouldAdmit: true } };
 }
 
 async function reserveGoalAdmission(
@@ -236,21 +295,54 @@ async function reserveGoalAdmission(
 ): Promise<GoalAdmissionResult> {
   if (!prepared.shouldAdmit || !prepared.goal) return { success: true };
   const admissionId = randomUUID();
-  const response = await client("/api/goal/admit", "POST", {
-    sessionId,
-    workspacePath,
+  const admissionIdentity: GoalAdmissionIdentity = {
+    id: admissionId,
     goalId: prepared.goal.id,
-    expectedRevision: prepared.goal.revision,
-    expectedObjective: prepared.goal.objective,
-    expectedControlRevision: prepared.goal.controlRevision,
-    admissionId,
-    admissionKind,
-  });
+  };
+  let response: Record<string, unknown>;
+  try {
+    response = await client("/api/goal/admit", "POST", {
+      sessionId,
+      workspacePath,
+      goalId: prepared.goal.id,
+      expectedRevision: prepared.goal.revision,
+      expectedObjective: prepared.goal.objective,
+      expectedControlRevision: prepared.goal.controlRevision,
+      admissionId,
+      admissionKind,
+    });
+  } catch (error) {
+    detachAdmissionLifecycle(
+      releaseGoalAdmissionUntilSettled(
+        client,
+        sessionId,
+        workspacePath,
+        admissionIdentity,
+      ),
+      admissionId,
+    );
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      code: "transport_outcome_unknown",
+    };
+  }
   if (response.ok !== true) {
     const error = String(response.error ?? "Goal admission reservation failed");
     console.warn(
       `[goal] admission reservation failed for ${prepared.goal.id}: ${error}`,
     );
+    if (isTransportOutcomeUnknown(response.code)) {
+      detachAdmissionLifecycle(
+        releaseGoalAdmissionUntilSettled(
+          client,
+          sessionId,
+          workspacePath,
+          admissionIdentity,
+        ),
+        admissionId,
+      );
+    }
     return {
       success: false,
       goal: normalizeGoal(response.goal) ?? undefined,
@@ -259,16 +351,24 @@ async function reserveGoalAdmission(
     };
   }
   const goal = normalizeGoal(response.goal);
-  const reservation = normalizeReservation(
-    response.reservation ?? response.admission,
-    goal?.id ?? "",
-  );
+  const reservation = normalizeReservation(response.reservation ?? response.admission);
   if (
-    !goal ||
+    !goalMatchesIdentity(goal, prepared.goal.id, sessionId, workspacePath) ||
+    !isUnfinishedGoal(goal) ||
     !reservation ||
     reservation.id !== admissionId ||
-    reservation.goalId !== goal.id
+    reservation.goalId !== goal.id ||
+    reservation.revision !== goal.revision
   ) {
+    detachAdmissionLifecycle(
+      releaseGoalAdmissionUntilSettled(
+        client,
+        sessionId,
+        workspacePath,
+        admissionIdentity,
+      ),
+      admissionId,
+    );
     return {
       success: false,
       error: "Management API returned an invalid Goal admission reservation",
@@ -306,10 +406,11 @@ async function finalizeGoalAdmission(
     };
   }
   const goal = normalizeGoal(response.goal);
-  if (!goal)
+  if (!goalMatchesIdentity(goal, reservation.goalId, sessionId, workspacePath))
     return {
       success: false,
       error: "Management API returned an invalid finalized Goal",
+      code: "invalid_goal_payload",
     };
   return { success: true, goal };
 }
@@ -320,25 +421,141 @@ async function claimGoalAdmission(
   workspacePath: string,
   reservation: GoalAdmissionReservation,
 ): Promise<GoalAdmissionResult> {
-  const response = await client("/api/goal/admit/claim", "POST", {
-    sessionId,
-    workspacePath,
-    goalId: reservation.goalId,
-    admissionId: reservation.id,
-  });
+  let response: Record<string, unknown>;
+  try {
+    response = await client("/api/goal/admit/claim", "POST", {
+      sessionId,
+      workspacePath,
+      goalId: reservation.goalId,
+      admissionId: reservation.id,
+    });
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+      code: "claim_outcome_unknown",
+      requiresCompensation: true,
+    };
+  }
   if (response.ok !== true) {
     return {
       success: false,
       goal: normalizeGoal(response.goal) ?? undefined,
       error: String(response.error ?? "Goal admission claim failed"),
       code: typeof response.code === "string" ? response.code : undefined,
+      requiresCompensation: isTransportOutcomeUnknown(response.code),
+    };
+  }
+  const goal = normalizeGoal(response.goal);
+  const claimedReservation = normalizeReservation(response.reservation);
+  if (
+    !goalMatchesIdentity(goal, reservation.goalId, sessionId, workspacePath) ||
+    !isUnfinishedGoal(goal) ||
+    !claimedReservation ||
+    claimedReservation.id !== reservation.id ||
+    claimedReservation.goalId !== reservation.goalId ||
+    claimedReservation.revision !== reservation.revision ||
+    claimedReservation.turnNumber !== reservation.turnNumber
+  ) {
+    return {
+      success: false,
+      error: "Management API returned an invalid claimed Goal",
+      code: "invalid_goal_payload",
+      requiresCompensation: true,
     };
   }
   return {
     success: true,
-    goal: normalizeGoal(response.goal) ?? undefined,
+    goal,
     reservation,
   };
+}
+
+function isAdmissionAlreadyGone(code: string | undefined): boolean {
+  return code === "goal_changed" || code === "stale_admission";
+}
+
+function isTransportOutcomeUnknown(code: unknown): boolean {
+  return code === "transport_outcome_unknown";
+}
+
+function admissionRetryDelay(retryIndex: number): number {
+  const retryDelaysMs = [100, 500, 2_000, 10_000, 30_000];
+  return retryDelaysMs[Math.min(retryIndex, retryDelaysMs.length - 1)];
+}
+
+async function waitForRetry(delayMs: number): Promise<void> {
+  await new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, delayMs);
+    timer.unref?.();
+  });
+}
+
+async function retryManagementMutationUntilSettled(
+  client: ManagementClient,
+  path: string,
+  body: Record<string, unknown>,
+  label: string,
+  isAlreadySettled: (code: string | undefined) => boolean,
+): Promise<void> {
+  let retryIndex = 0;
+  while (true) {
+    try {
+      const response = await client(path, "POST", body);
+      const code = typeof response.code === "string" ? response.code : undefined;
+      if (response.ok === true || isAlreadySettled(code)) return;
+      console.warn(
+        `[goal] ${label} failed; retrying: ${String(response.error ?? "unknown error")}`,
+      );
+    } catch (error) {
+      console.warn(`[goal] ${label} request failed; retrying: ${String(error)}`);
+    }
+    await waitForRetry(admissionRetryDelay(retryIndex));
+    retryIndex += 1;
+  }
+}
+
+async function releaseGoalAdmissionUntilSettled(
+  client: ManagementClient,
+  sessionId: string,
+  workspacePath: string,
+  reservation: GoalAdmissionIdentity,
+): Promise<void> {
+  await retryManagementMutationUntilSettled(
+    client,
+    "/api/goal/admit/release",
+    {
+      sessionId,
+      workspacePath,
+      goalId: reservation.goalId,
+      admissionId: reservation.id,
+    },
+    `admission release for ${reservation.goalId}`,
+    isAdmissionAlreadyGone,
+  );
+  clearGoalTurnAuthority(sessionId, reservation.id);
+}
+
+function isSchedulerLeaseAlreadyGone(code: string | undefined): boolean {
+  return code === "goal_changed" || code === "stale_lease" || code === "terminal";
+}
+
+async function revokeGoalSchedulerLeaseUntilSettled(
+  client: ManagementClient,
+  request: {
+    sessionId: string;
+    workspacePath: string;
+    goalId: string;
+    leaseId: string;
+  },
+): Promise<void> {
+  await retryManagementMutationUntilSettled(
+    client,
+    "/api/goal/scheduler/revoke",
+    request,
+    `scheduler lease revoke for ${request.goalId}`,
+    isSchedulerLeaseAlreadyGone,
+  );
 }
 
 async function releaseGoalAdmissionAfterTurn(
@@ -346,51 +563,31 @@ async function releaseGoalAdmissionAfterTurn(
   engine: Pick<SessionEngine, "waitIdle">,
   sessionId: string,
   workspacePath: string,
-  reservation: GoalAdmissionReservation,
+  reservation: GoalAdmissionIdentity,
 ): Promise<void> {
-  try {
-    // A user turn has no product-level one-hour deadline. Keep the admission
-    // authoritative until the runtime actually reaches a boundary instead of
-    // silently releasing a still-running long turn after an arbitrary timeout.
-    while (!(await engine.waitIdle(3_600_000, 100))) {
+  // A user turn has no product-level one-hour deadline. Keep both durable and
+  // in-process authority until the runtime actually reaches a boundary.
+  let waitRetryIndex = 0;
+  while (true) {
+    try {
+      if (await engine.waitIdle(3_600_000, 100)) break;
       console.warn(
         `[goal] admission ${reservation.id} is still running after one hour; continuing to wait`,
       );
+    } catch (error) {
+      console.warn(
+        `[goal] admission ${reservation.id} idle check failed; retrying: ${String(error)}`,
+      );
+      await waitForRetry(admissionRetryDelay(waitRetryIndex));
+      waitRetryIndex += 1;
     }
-    let retryIndex = 0;
-    const retryDelaysMs = [100, 500, 2_000, 10_000, 30_000];
-    while (true) {
-      try {
-        const response = await client("/api/goal/admit/release", "POST", {
-          sessionId,
-          workspacePath,
-          goalId: reservation.goalId,
-          admissionId: reservation.id,
-        });
-        if (response.ok === true) break;
-        const code = typeof response.code === "string" ? response.code : "";
-        if (code === "goal_changed" || code === "stale_admission") {
-          break;
-        }
-        console.warn(
-          `[goal] admission release failed for ${reservation.goalId}; retrying: ${String(response.error ?? "unknown error")}`,
-        );
-      } catch (error) {
-        console.warn(
-          `[goal] admission release request failed for ${reservation.goalId}; retrying: ${String(error)}`,
-        );
-      }
-      const delayMs =
-        retryDelaysMs[Math.min(retryIndex, retryDelaysMs.length - 1)];
-      retryIndex += 1;
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, delayMs);
-        timer.unref?.();
-      });
-    }
-  } finally {
-    clearGoalTurnAuthority(sessionId, reservation.id);
   }
+  await releaseGoalAdmissionUntilSettled(
+    client,
+    sessionId,
+    workspacePath,
+    reservation,
+  );
 }
 
 function createAdmissionDispatchGuard(
@@ -409,15 +606,29 @@ function createAdmissionDispatchGuard(
         reservation,
       );
       if (!claimed.success) {
+        if (claimed.requiresCompensation) {
+          detachAdmissionLifecycle(
+            releaseGoalAdmissionUntilSettled(
+              client,
+              sessionId,
+              workspacePath,
+              reservation,
+            ),
+            reservation.id,
+          );
+        }
         return { accepted: false, error: claimed.error, code: claimed.code };
       }
       if (dispatch.isCanceled()) {
-        await client("/api/goal/admit/release", "POST", {
-          sessionId,
-          workspacePath,
-          goalId: reservation.goalId,
-          admissionId: reservation.id,
-        });
+        detachAdmissionLifecycle(
+          releaseGoalAdmissionUntilSettled(
+            client,
+            sessionId,
+            workspacePath,
+            reservation,
+          ),
+          reservation.id,
+        );
         return {
           accepted: false,
           error: "Goal dispatch was canceled before runtime promotion",
@@ -453,25 +664,207 @@ function buildReservedGoalContext(
   });
 }
 
+type DispatchAcknowledgement = { accepted: boolean; error?: string };
+type ResolvedDispatchAcknowledgement = {
+  outcome: "accepted" | "rejected" | "unknown";
+  error?: string;
+};
+
+type GoalAdmissionSettlement = {
+  accepted: boolean;
+  committed: boolean;
+  goal?: SessionGoal;
+  error?: string;
+  code?: string;
+};
+
+async function resolveDispatchAcknowledgement(
+  acknowledgement: Promise<DispatchAcknowledgement> | undefined,
+): Promise<ResolvedDispatchAcknowledgement> {
+  if (!acknowledgement) return { outcome: "accepted" };
+  try {
+    const resolved = await acknowledgement;
+    return {
+      outcome: resolved.accepted ? "accepted" : "rejected",
+      error: resolved.error,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(`[goal] dispatch acknowledgement failed: ${message}`);
+    return { outcome: "unknown", error: message };
+  }
+}
+
+function detachAdmissionLifecycle(lifecycle: Promise<void>, reservationId: string): void {
+  void lifecycle.catch((error) => {
+    // The cleanup loop handles transport failures internally. This catch is a
+    // last-resort guard for programmer/runtime errors; authority intentionally
+    // remains installed so a later Stop or process restart still fails closed.
+    console.error(
+      `[goal] admission ${reservationId} cleanup stopped unexpectedly: ${String(error)}`,
+    );
+  });
+}
+
+async function abortGoalAdmission(
+  client: ManagementClient,
+  engine: Pick<SessionEngine, "waitIdle"> | null,
+  sessionId: string,
+  workspacePath: string,
+  reservation: GoalAdmissionReservation,
+  waitForIdle: boolean = false,
+): Promise<void> {
+  let finalized: GoalAdmissionResult;
+  try {
+    finalized = await finalizeGoalAdmission(
+      client,
+      sessionId,
+      workspacePath,
+      reservation,
+      "aborted",
+    );
+  } catch (error) {
+    finalized = {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+  if (!waitForIdle && (finalized.success || isAdmissionAlreadyGone(finalized.code))) {
+    clearGoalTurnAuthority(sessionId, reservation.id);
+    return;
+  }
+  if (waitForIdle && engine) {
+    detachAdmissionLifecycle(
+      releaseGoalAdmissionAfterTurn(
+        client,
+        engine,
+        sessionId,
+        workspacePath,
+        reservation,
+      ),
+      reservation.id,
+    );
+    return;
+  }
+  detachAdmissionLifecycle(
+    releaseGoalAdmissionUntilSettled(
+      client,
+      sessionId,
+      workspacePath,
+      reservation,
+    ),
+    reservation.id,
+  );
+}
+
+async function settleGoalAdmission(
+  client: ManagementClient,
+  engine: Pick<SessionEngine, "stopTurn" | "waitIdle">,
+  sessionId: string,
+  workspacePath: string,
+  reservation: GoalAdmissionReservation,
+  acknowledgement: ResolvedDispatchAcknowledgement,
+): Promise<GoalAdmissionSettlement> {
+  if (acknowledgement.outcome !== "accepted") {
+    if (acknowledgement.outcome === "unknown") {
+      try {
+        const stopped = await engine.stopTurn();
+        if (!stopped.success) {
+          console.warn(
+            `[goal] failed to stop admission ${reservation.id} after unknown dispatch acknowledgement: ${stopped.error ?? "unknown error"}`,
+          );
+        }
+      } catch (error) {
+        console.warn(
+          `[goal] failed to stop admission ${reservation.id} after unknown dispatch acknowledgement: ${String(error)}`,
+        );
+      }
+    }
+    await abortGoalAdmission(
+      client,
+      acknowledgement.outcome === "unknown" ? engine : null,
+      sessionId,
+      workspacePath,
+      reservation,
+      acknowledgement.outcome === "unknown",
+    );
+    return {
+      accepted: false,
+      committed: false,
+      error: acknowledgement.error,
+    };
+  }
+
+  let finalized: GoalAdmissionResult;
+  try {
+    finalized = await finalizeGoalAdmission(
+      client,
+      sessionId,
+      workspacePath,
+      reservation,
+      "accepted",
+    );
+  } catch (error) {
+    finalized = {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  if (!finalized.success) {
+    try {
+      const stopped = await engine.stopTurn();
+      if (!stopped.success) {
+        console.warn(
+          `[goal] failed to stop uncommitted admission ${reservation.id}: ${stopped.error ?? "unknown error"}`,
+        );
+      }
+    } catch (error) {
+      console.warn(
+        `[goal] failed to stop uncommitted admission ${reservation.id}: ${String(error)}`,
+      );
+    }
+  }
+
+  // Transport accepted the turn. Even when durable finalization reports the
+  // admission already gone, keep in-process authority until the runtime is
+  // actually idle; durable absence does not prove the accepted turn stopped.
+  detachAdmissionLifecycle(
+    releaseGoalAdmissionAfterTurn(
+      client,
+      engine,
+      sessionId,
+      workspacePath,
+      reservation,
+    ),
+    reservation.id,
+  );
+
+  return {
+    accepted: true,
+    committed: finalized.success,
+    goal: finalized.goal,
+    error: finalized.error,
+    code: finalized.code,
+  };
+}
+
 export function createGoalOrchestrator(
   client: ManagementClient = managementApi,
 ) {
-  const admissionQueueBySession = new Map<string, Promise<unknown>>();
+  // A Sidecar owns one session; one chain serializes its lookup+reserve/CAS mutations.
+  let admissionMutationQueue: Promise<unknown> = Promise.resolve();
 
   const withAdmissionLock = async <T>(
-    sessionId: string,
     operation: () => Promise<T>,
   ): Promise<T> => {
-    const previous =
-      admissionQueueBySession.get(sessionId) ?? Promise.resolve();
+    const previous = admissionMutationQueue;
     const current = previous.catch(() => undefined).then(operation);
-    admissionQueueBySession.set(sessionId, current);
+    admissionMutationQueue = current;
     try {
       return await current;
     } finally {
-      if (admissionQueueBySession.get(sessionId) === current) {
-        admissionQueueBySession.delete(sessionId);
-      }
+      if (admissionMutationQueue === current) admissionMutationQueue = Promise.resolve();
     }
   };
 
@@ -480,17 +873,19 @@ export function createGoalOrchestrator(
     workspacePath: string,
     text: string,
   ) =>
-    withAdmissionLock(sessionId, async () => {
-      const prepared = await prepareGoalIngress(
+    withAdmissionLock(async () => {
+      const preparation = await prepareGoalIngress(
         client,
         sessionId,
         workspacePath,
         text,
       );
+      if (!preparation.success) return preparation;
+      const prepared = preparation.prepared;
       const admission = prepared.shouldAdmit
         ? await reserveGoalAdmission(client, prepared, sessionId, workspacePath)
         : { success: true };
-      return { prepared, admission };
+      return { success: true as const, prepared, admission };
     });
 
   return {
@@ -533,14 +928,33 @@ export function createGoalOrchestrator(
           request.leaseId,
         );
         try {
-          const response = await client("/api/goal/scheduler/claim", "POST", {
+          const claimIdentity = {
             sessionId: request.sessionId,
             workspacePath: request.workspacePath,
             goalId: request.goalId,
             leaseId: request.leaseId,
-            expectedRevision: request.expectedRevision,
-          });
+          };
+          let response: Record<string, unknown>;
+          try {
+            response = await client("/api/goal/scheduler/claim", "POST", {
+              ...claimIdentity,
+              expectedRevision: request.expectedRevision,
+            });
+          } catch (error) {
+            await revokeGoalSchedulerLeaseUntilSettled(client, claimIdentity);
+            claimFailure = {
+              success: false,
+              error: error instanceof Error ? error.message : String(error),
+              code: "claim_outcome_unknown",
+              status: 503,
+            };
+            return { accepted: false, error: claimFailure.error, code: claimFailure.code };
+          }
           if (response.ok !== true) {
+            const outcomeUnknown = isTransportOutcomeUnknown(response.code);
+            if (outcomeUnknown) {
+              await revokeGoalSchedulerLeaseUntilSettled(client, claimIdentity);
+            }
             claimFailure = {
               success: false,
               error: String(
@@ -548,7 +962,7 @@ export function createGoalOrchestrator(
               ),
               code:
                 typeof response.code === "string" ? response.code : undefined,
-              status: 409,
+              status: outcomeUnknown ? 503 : 409,
             };
             return {
               accepted: false,
@@ -556,13 +970,33 @@ export function createGoalOrchestrator(
               code: claimFailure.code,
             };
           }
+          const claimedGoal = normalizeGoal(response.goal);
+          const claimedLease = normalizeReservation(response.lease);
+          if (
+            !goalMatchesIdentity(
+              claimedGoal,
+              request.goalId,
+              request.sessionId,
+              request.workspacePath,
+            ) ||
+            claimedGoal.status !== "active" ||
+            !claimedLease ||
+            claimedLease.id !== request.leaseId ||
+            claimedLease.goalId !== request.goalId ||
+            claimedLease.revision !== claimedGoal.revision ||
+            claimedLease.turnNumber !== claimedGoal.turnCount + 1
+          ) {
+            await revokeGoalSchedulerLeaseUntilSettled(client, claimIdentity);
+            claimFailure = {
+              success: false,
+              error: "Management API returned an invalid scheduler claim",
+              code: "invalid_goal_payload",
+              status: 502,
+            };
+            return { accepted: false, error: claimFailure.error, code: claimFailure.code };
+          }
           if (dispatch.isCanceled()) {
-            await client("/api/goal/scheduler/revoke", "POST", {
-              sessionId: request.sessionId,
-              workspacePath: request.workspacePath,
-              goalId: request.goalId,
-              leaseId: request.leaseId,
-            });
+            await revokeGoalSchedulerLeaseUntilSettled(client, claimIdentity);
             claimFailure = {
               success: false,
               error: "Goal scheduler dispatch was canceled before runtime promotion",
@@ -601,11 +1035,19 @@ export function createGoalOrchestrator(
       >,
       request: DesktopMessageRequest,
     ): Promise<DesktopAdmissionResult> {
-      const { prepared, admission } = await prepareIngressAdmission(
+      const ingress = await prepareIngressAdmission(
         request.sessionId,
         request.workspacePath,
         request.text,
       );
+      if (!ingress.success) {
+        return {
+          success: false,
+          error: ingress.error,
+          status: 503,
+        };
+      }
+      const { prepared, admission } = ingress;
       if (
         prepared.shouldAdmit &&
         (!admission.success || !admission.reservation)
@@ -636,65 +1078,51 @@ export function createGoalOrchestrator(
         });
       } catch (error) {
         if (admission.reservation) {
-          await finalizeGoalAdmission(
+          await settleGoalAdmission(
             client,
+            engine,
             request.sessionId,
             request.workspacePath,
             admission.reservation,
-            "aborted",
+            {
+              outcome: "unknown",
+              error: error instanceof Error ? error.message : String(error),
+            },
           );
-          clearGoalTurnAuthority(request.sessionId, admission.reservation.id);
         }
         throw error;
       }
       const { dispatchAcceptance, ...publicResult } = result;
       if (!admission.reservation) return publicResult;
       if (!result.success || result.error) {
-        await finalizeGoalAdmission(
+        await abortGoalAdmission(
           client,
+          null,
           request.sessionId,
           request.workspacePath,
           admission.reservation,
-          "aborted",
         );
-        clearGoalTurnAuthority(request.sessionId, admission.reservation.id);
         return publicResult;
       }
 
-      const settle = async (accepted: boolean) => {
-        const finalized = await finalizeGoalAdmission(
-          client,
-          request.sessionId,
-          request.workspacePath,
-          admission.reservation!,
-          accepted ? "accepted" : "aborted",
-        );
-        if (accepted && !finalized.success) {
-          await engine.stopTurn();
-        }
-        if (accepted) {
-          void releaseGoalAdmissionAfterTurn(
+      const settlement = resolveDispatchAcknowledgement(dispatchAcceptance).then(
+        (acknowledgement) =>
+          settleGoalAdmission(
             client,
             engine,
             request.sessionId,
             request.workspacePath,
             admission.reservation!,
-          );
-        } else {
-          clearGoalTurnAuthority(request.sessionId, admission.reservation!.id);
-        }
-      };
+            acknowledgement,
+          ),
+      );
       if (dispatchAcceptance) {
-        void dispatchAcceptance
-          .then((result) => settle(result.accepted))
-          .catch(async (error) => {
-            console.warn(
-              `[goal] dispatch acknowledgement failed: ${error instanceof Error ? error.message : String(error)}`,
-            );
-            await settle(false);
-          });
+        detachAdmissionLifecycle(
+          settlement.then(() => undefined),
+          admission.reservation.id,
+        );
       } else {
-        await settle(true);
+        await settlement;
       }
       return publicResult;
     },
@@ -703,11 +1131,19 @@ export function createGoalOrchestrator(
       engine: Pick<SessionEngine, "enqueueImMessage" | "stopTurn" | "waitIdle">,
       request: ImMessageRequest,
     ): Promise<ImAdmissionResult> {
-      const { prepared, admission } = await prepareIngressAdmission(
+      const ingress = await prepareIngressAdmission(
         request.sessionId,
         request.workspacePath,
         request.message,
       );
+      if (!ingress.success) {
+        return {
+          success: false,
+          error: ingress.error,
+          status: 503,
+        };
+      }
+      const { prepared, admission } = ingress;
       if (
         prepared.shouldAdmit &&
         (!admission.success || !admission.reservation)
@@ -738,44 +1174,33 @@ export function createGoalOrchestrator(
         });
       } catch (error) {
         if (admission.reservation) {
-          await finalizeGoalAdmission(
-            client,
-            request.sessionId,
-            request.workspacePath,
-            admission.reservation,
-            "aborted",
-          );
-          clearGoalTurnAuthority(request.sessionId, admission.reservation.id);
-        }
-        throw error;
-      }
-      if (admission.reservation) {
-        const dispatchAccepted =
-          result.success && !result.error
-            ? await (result.dispatchAcceptance ??
-                Promise.resolve({ accepted: true }))
-            : { accepted: false };
-        const finalized = await finalizeGoalAdmission(
-          client,
-          request.sessionId,
-          request.workspacePath,
-          admission.reservation,
-          dispatchAccepted.accepted ? "accepted" : "aborted",
-        );
-        if (dispatchAccepted.accepted && !finalized.success) {
-          await engine.stopTurn();
-        }
-        if (dispatchAccepted.accepted) {
-          void releaseGoalAdmissionAfterTurn(
+          await settleGoalAdmission(
             client,
             engine,
             request.sessionId,
             request.workspacePath,
             admission.reservation,
+            {
+              outcome: "unknown",
+              error: error instanceof Error ? error.message : String(error),
+            },
           );
-        } else {
-          clearGoalTurnAuthority(request.sessionId, admission.reservation.id);
         }
+        throw error;
+      }
+      if (admission.reservation) {
+        const acknowledgement =
+          result.success && !result.error
+            ? await resolveDispatchAcknowledgement(result.dispatchAcceptance)
+            : { outcome: "rejected" as const, error: result.error };
+        await settleGoalAdmission(
+          client,
+          engine,
+          request.sessionId,
+          request.workspacePath,
+          admission.reservation,
+          acknowledgement,
+        );
       }
       const { dispatchAcceptance: _dispatchAcceptance, ...publicResult } =
         result;
@@ -801,18 +1226,26 @@ export function createGoalOrchestrator(
         >;
       },
     ): Promise<GoalObjectiveUpdateResult> {
-      return withAdmissionLock(request.sessionId, async () => {
+      return withAdmissionLock(async () => {
         const initial = await lookupSessionGoal(
           client,
           request.sessionId,
           request.workspacePath,
         );
-        if (!initial.success || !isUnfinishedGoal(initial.goal)) {
+        if (!initial.success) {
+          return {
+            success: false,
+            error: initial.error ?? "Goal state lookup failed",
+            code: initial.code,
+            status: 503,
+          };
+        }
+        if (!isUnfinishedGoal(initial.goal)) {
           return {
             success: false,
             goal: initial.goal ?? undefined,
-            error: initial.error ?? "No active Goal in current session",
-            code: initial.code ?? "goal_changed",
+            error: "No active Goal in current session",
+            code: "goal_changed",
             status: 409,
           };
         }
@@ -853,8 +1286,16 @@ export function createGoalOrchestrator(
           request.sessionId,
           request.workspacePath,
         );
+        if (!current.success) {
+          return {
+            success: false,
+            goal: initial.goal,
+            error: current.error ?? "Goal state lookup failed",
+            code: current.code,
+            status: 503,
+          };
+        }
         if (
-          !current.success ||
           !isUnfinishedGoal(current.goal) ||
           current.goal.id !== initial.goal.id ||
           current.goal.objective !== initial.goal.objective
@@ -870,23 +1311,72 @@ export function createGoalOrchestrator(
           };
         }
 
-        const response = await client("/api/goal/objective", "POST", {
-          sessionId: request.sessionId,
-          workspacePath: request.workspacePath,
-          objective: request.objective,
-          goalId: current.goal.id,
-          expectedRevision: current.goal.revision,
-        });
-        if (response.ok !== true) {
-          return {
-            success: false,
-            goal: normalizeGoal(response.goal) ?? undefined,
-            error: String(response.error ?? "Failed to update Goal objective"),
-            code: typeof response.code === "string" ? response.code : undefined,
-            status: 409,
+        let response: Record<string, unknown>;
+        try {
+          response = await client("/api/goal/objective", "POST", {
+            sessionId: request.sessionId,
+            workspacePath: request.workspacePath,
+            objective: request.objective,
+            goalId: current.goal.id,
+            expectedRevision: current.goal.revision,
+          });
+        } catch (error) {
+          response = {
+            ok: false,
+            code: "transport_outcome_unknown",
+            error: error instanceof Error ? error.message : String(error),
           };
         }
-        const goal = normalizeGoal(response.goal);
+        let goal: SessionGoal | null;
+        if (response.ok !== true) {
+          if (!isTransportOutcomeUnknown(response.code)) {
+            return {
+              success: false,
+              goal: normalizeGoal(response.goal) ?? undefined,
+              error: String(response.error ?? "Failed to update Goal objective"),
+              code: typeof response.code === "string" ? response.code : undefined,
+              status: 409,
+            };
+          }
+          // The CAS may have committed before the response was lost. Stop any
+          // stale-objective turn first, then resolve the outcome from Rust.
+          const stopped = await engine.stopTurn();
+          if (!stopped.success) {
+            return {
+              success: false,
+              goal: current.goal,
+              error: stopped.error ?? "Objective update outcome is unknown and the stale turn could not be stopped",
+              code: "transport_outcome_unknown",
+              status: 503,
+            };
+          }
+          if (!(await engine.waitIdle(30_000, 100))) {
+            return {
+              success: false,
+              goal: current.goal,
+              error: "Objective update outcome is unknown and the stale turn did not stop in time",
+              code: "transport_outcome_unknown",
+              status: 408,
+            };
+          }
+          const resolved = await lookupSessionGoal(
+            client,
+            request.sessionId,
+            request.workspacePath,
+          );
+          if (!resolved.success || !resolved.goal) {
+            return {
+              success: false,
+              goal: current.goal,
+              error: resolved.error ?? "Could not resolve objective update outcome",
+              code: resolved.code ?? "transport_outcome_unknown",
+              status: 503,
+            };
+          }
+          goal = resolved.goal;
+        } else {
+          goal = normalizeGoal(response.goal);
+        }
         if (!goal) {
           return {
             success: false,
@@ -937,8 +1427,16 @@ export function createGoalOrchestrator(
           request.sessionId,
           request.workspacePath,
         );
+        if (!settled.success) {
+          return {
+            success: false,
+            goal,
+            error: settled.error ?? "Goal state lookup failed",
+            code: settled.code,
+            status: 503,
+          };
+        }
         if (
-          !settled.success ||
           !isUnfinishedGoal(settled.goal) ||
           settled.goal.id !== goal.id ||
           settled.goal.objective !== goal.objective
@@ -1010,73 +1508,58 @@ export function createGoalOrchestrator(
         try {
           restarted = await engine.enqueueBackgroundMessage(turnRequest);
         } catch (error) {
-          await finalizeGoalAdmission(
-            client,
-            request.sessionId,
-            request.workspacePath,
-            admission.reservation,
-            "aborted",
-          );
-          clearGoalTurnAuthority(request.sessionId, admission.reservation.id);
-          throw error;
-        }
-        const dispatchAccepted =
-          restarted.success && !restarted.error
-            ? await (restarted.dispatchAcceptance ??
-                Promise.resolve({ accepted: true }))
-            : { accepted: false };
-        if (!restarted.success || !dispatchAccepted.accepted) {
-          await finalizeGoalAdmission(
-            client,
-            request.sessionId,
-            request.workspacePath,
-            admission.reservation,
-            "aborted",
-          );
-          clearGoalTurnAuthority(request.sessionId, admission.reservation.id);
-          return {
-            success: false,
-            goal: admission.goal,
-            error:
-              restarted.error ??
-              "Failed to restart Goal with the updated objective",
-            status: restarted.status ?? 503,
-          };
-        }
-        const committed = await finalizeGoalAdmission(
-          client,
-          request.sessionId,
-          request.workspacePath,
-          admission.reservation,
-          "accepted",
-        );
-        if (!committed.success) {
-          await engine.stopTurn();
-          void releaseGoalAdmissionAfterTurn(
+          await settleGoalAdmission(
             client,
             engine,
             request.sessionId,
             request.workspacePath,
             admission.reservation,
+            {
+              outcome: "unknown",
+              error: error instanceof Error ? error.message : String(error),
+            },
           );
-          return {
-            success: false,
-            goal: committed.goal ?? admission.goal,
-            error:
-              committed.error ??
-              "Goal changed after objective restart admission",
-            code: committed.code ?? "stale_revision",
-            status: 409,
-          };
+          throw error;
         }
-        void releaseGoalAdmissionAfterTurn(
+        const acknowledgement =
+          restarted.success && !restarted.error
+            ? await resolveDispatchAcknowledgement(restarted.dispatchAcceptance)
+            : { outcome: "rejected" as const, error: restarted.error };
+        const settlement = await settleGoalAdmission(
           client,
           engine,
           request.sessionId,
           request.workspacePath,
           admission.reservation,
+          acknowledgement,
         );
-        return { success: true, goal: committed.goal, delivery: "restarted" };
+        if (!restarted.success || !settlement.accepted) {
+          return {
+            success: false,
+            goal: admission.goal,
+            error:
+              restarted.error ??
+              settlement.error ??
+              "Failed to restart Goal with the updated objective",
+            status: restarted.status ?? 503,
+          };
+        }
+        if (!settlement.committed) {
+          return {
+            success: false,
+            goal: settlement.goal ?? admission.goal,
+            error:
+              settlement.error ??
+              "Goal changed after objective restart admission",
+            code: settlement.code ?? "stale_revision",
+            status: 409,
+          };
+        }
+        return {
+          success: true,
+          goal: settlement.goal,
+          delivery: "restarted",
+        };
       });
     },
   };

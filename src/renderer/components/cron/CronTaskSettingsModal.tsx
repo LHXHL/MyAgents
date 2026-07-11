@@ -5,7 +5,7 @@ import { useState, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useCloseLayer } from '@/hooks/useCloseLayer';
-import type { CronEndConditions, CronRunMode, CronTaskConfig, CronSchedule } from '@/types/cronTask';
+import type { CronEndConditions, CronRunMode, CronTaskConfig, CronSchedule, ScheduledTaskKind } from '@/types/cronTask';
 import { MIN_CRON_INTERVAL } from '@/types/cronTask';
 import ScheduleTypeTabs from '@/components/scheduled-tasks/ScheduleTypeTabs';
 import CustomSelect from '@/components/CustomSelect';
@@ -65,12 +65,14 @@ export type ExecutionTarget = 'current_session' | 'new_task';
 
 /** Extended config returned by onConfirm — includes executionTarget and schedule */
 export type CronSettingsResult = Omit<CronTaskConfig, 'workspacePath' | 'sessionId' | 'tabId'> & {
+  taskKind: ScheduledTaskKind;
   executionTarget: ExecutionTarget;
 };
 
 /** Configuration that can be passed to restore previous settings or preset a
  *  fresh open (e.g. `/goal` opens the modal preset to Goal mode). */
 export type CronInitialConfig = {
+  taskKind: ScheduledTaskKind;
   prompt: string;
   intervalMinutes: number;
   endConditions: CronEndConditions;
@@ -105,6 +107,7 @@ function CronTaskSettingsForm({
   workspacePath,
 }: Omit<CronTaskSettingsModalProps, 'isOpen'>) {
   const { t } = useTranslation('task');
+  const [taskKind, setTaskKind] = useState<ScheduledTaskKind>(initialConfig?.taskKind ?? 'cron');
   // Execution target: current session (legacy behavior) or new standalone task
   const [executionTarget, setExecutionTarget] = useState<ExecutionTarget>(initialConfig?.executionTarget ?? 'current_session');
 
@@ -112,8 +115,9 @@ function CronTaskSettingsForm({
   const [schedule, setSchedule] = useState<CronSchedule | null>(initialConfig?.schedule ?? null);
   const [intervalMinutes, setIntervalMinutes] = useState(initialConfig?.intervalMinutes ?? 30);
 
-  // Run mode: Loop forces single_session; otherwise current_session→single, new_task→new
-  const runMode: CronRunMode = schedule?.kind === 'loop' ? 'single_session' : (executionTarget === 'current_session' ? 'single_session' : 'new_session');
+  const runMode: CronRunMode = taskKind === 'goal'
+    ? 'single_session'
+    : (executionTarget === 'current_session' ? 'single_session' : 'new_session');
 
   const [notifyEnabled, setNotifyEnabled] = useState(initialConfig?.notifyEnabled ?? true);
   const [deliveryBotId, setDeliveryBotId] = useState(initialConfig?.delivery?.botId ?? '');
@@ -153,11 +157,12 @@ function CronTaskSettingsForm({
   const [aiCanExit, setAiCanExit] = useState(endCondInit.aiCanExit);
 
   const isAtSchedule = schedule?.kind === 'at';
-  const isLoopSchedule = schedule?.kind === 'loop';
+  const isGoalMode = taskKind === 'goal';
 
   const handleScheduleChange = useCallback((s: CronSchedule | null, m: number) => {
     setSchedule(s);
     setIntervalMinutes(m);
+    setTaskKind(s?.kind === 'loop' ? 'goal' : 'cron');
     if (s?.kind === 'loop') setAiCanExit(true);
   }, []);
 
@@ -206,6 +211,7 @@ function CronTaskSettingsForm({
 
     const delivery = (notifyEnabled && deliveryBotId) ? resolveDelivery(deliveryBotId) : undefined;
     onConfirm({
+      taskKind,
       prompt: (initialPrompt ?? '').trim(),
       intervalMinutes: schedule?.kind === 'every' ? schedule.minutes : intervalMinutes,
       endConditions,
@@ -215,7 +221,7 @@ function CronTaskSettingsForm({
       schedule: schedule ?? undefined,
       delivery,
     });
-  }, [isValid, initialPrompt, schedule, intervalMinutes, runMode, notifyEnabled, deliveryBotId, resolveDelivery, endMode, aiCanExit, useDeadline, deadline, useMaxExecutions, maxExecutions, executionTarget, isAtSchedule, onConfirm]);
+  }, [isValid, taskKind, initialPrompt, schedule, intervalMinutes, runMode, notifyEnabled, deliveryBotId, resolveDelivery, endMode, aiCanExit, useDeadline, deadline, useMaxExecutions, maxExecutions, executionTarget, isAtSchedule, onConfirm]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -226,7 +232,7 @@ function CronTaskSettingsForm({
         <div className="flex shrink-0 items-center justify-between px-6 py-4">
           <div className="flex items-center gap-2.5">
             <Clock className="h-4 w-4 text-[var(--accent)]" />
-            <h2 className="text-lg font-semibold text-[var(--ink)]">{t(isLoopSchedule ? 'cron.settingsModal.goalTitle' : 'cron.settingsModal.title')}</h2>
+            <h2 className="text-lg font-semibold text-[var(--ink)]">{t(isGoalMode ? 'cron.settingsModal.goalTitle' : 'cron.settingsModal.title')}</h2>
           </div>
           <button onClick={onClose} className="rounded-lg p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
             <X className="h-4 w-4" />
@@ -241,7 +247,7 @@ function CronTaskSettingsForm({
             <ScheduleTypeTabs value={schedule} intervalMinutes={intervalMinutes} onChange={handleScheduleChange} />
           </div>
 
-          {!isLoopSchedule && (
+          {!isGoalMode && (
             <>
               <div className="border-t border-[var(--line)]" />
 
@@ -331,7 +337,7 @@ function CronTaskSettingsForm({
             <SectionHeader icon={Bell}>{t('cron.settingsModal.notifications')}</SectionHeader>
             <div className="mt-3 space-y-3">
               <div className="flex items-center justify-between rounded-lg border border-[var(--line)] bg-[var(--paper)] px-4 py-3">
-                <span className="text-sm text-[var(--ink)]">{t(isLoopSchedule ? 'cron.settingsModal.goalNotifyOnStop' : 'cron.settingsModal.notifyOnCompletion')}</span>
+                <span className="text-sm text-[var(--ink)]">{t(isGoalMode ? 'cron.settingsModal.goalNotifyOnStop' : 'cron.settingsModal.notifyOnCompletion')}</span>
                 <ToggleSwitch enabled={notifyEnabled} onChange={setNotifyEnabled} />
               </div>
               {notifyEnabled && hasChannels && (

@@ -456,7 +456,8 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 // Codex Critical #2). Leave teardown to whoever truly owns it.
                 let should_stop = if joined_owner_added {
                     if let Some(sidecar) = manager_guard.sidecars.get_mut(session_id) {
-                        sidecar.port == port && sidecar.remove_owner(&owner)
+                        let (removed, last_owner_removed) = sidecar.remove_owner(&owner);
+                        sidecar.port == port && removed && last_owner_removed
                     } else {
                         false
                     }
@@ -701,6 +702,11 @@ fn create_new_session_sidecar<R: Runtime>(
     if let Some(runtime_source) = resolved_identity.runtime_source_for_env() {
         cmd.env("MYAGENTS_RUNTIME_SOURCE", runtime_source);
     }
+    let sidecar_generation = manager_guard.next_generation(session_id);
+    cmd.env(
+        "MYAGENTS_SIDECAR_GENERATION",
+        sidecar_generation.to_string(),
+    );
     let runtime_for_trace = resolved_identity.runtime.clone();
     let runtime_source_for_trace = resolved_identity.runtime_source_label().to_string();
 
@@ -726,6 +732,7 @@ fn create_new_session_sidecar<R: Runtime>(
             .detail("owner", format!("{:?}", owner)),
     );
     let mut child = cmd.spawn().map_err(|e| {
+        manager_guard.clear_generation(session_id);
         ulog_error!("[sidecar] Failed to spawn SessionSidecar: {}", e);
         emit_perf_trace(
             PerfTrace::new(PerfTraceName::SidecarBoot, "spawn_failed")
@@ -794,6 +801,7 @@ fn create_new_session_sidecar<R: Runtime>(
     // Check if the process already exited (non-blocking poll). No pre-sleep;
     // the health-loop's alive_check catches any crash this probe misses.
     if let Ok(Some(status)) = child.try_wait() {
+        manager_guard.clear_generation(session_id);
         thread::sleep(Duration::from_millis(100));
         ulog_error!(
             "[sidecar] SessionSidecar exited immediately with status: {:?}",
@@ -831,7 +839,7 @@ fn create_new_session_sidecar<R: Runtime>(
             .map(str::to_string),
     };
 
-    manager_guard.insert_sidecar(session_id, sidecar);
+    manager_guard.insert_sidecar_at_generation(session_id, sidecar_generation, sidecar);
 
     // Drop lock before waiting for health
     drop(manager_guard);
@@ -1081,9 +1089,14 @@ pub fn cmd_release_session_sidecar(
     ownerType: String,
     ownerId: String,
 ) -> Result<bool, String> {
+    if ownerType == "cron_task" {
+        return state
+            .lock()
+            .map(|mut manager| manager.release_cron_session(&sessionId, &ownerId))
+            .map_err(|error| error.to_string());
+    }
     let owner = match ownerType.as_str() {
         "tab" => SidecarOwner::Tab(ownerId),
-        "cron_task" => SidecarOwner::CronTask(ownerId),
         "background_completion" => SidecarOwner::BackgroundCompletion(ownerId),
         "im_bot" | "agent" => SidecarOwner::Agent(ownerId),
         _ => return Err(format!("Invalid owner type: {}", ownerType)),
@@ -1126,23 +1139,120 @@ pub fn cmd_get_session_generation(
 /// This updates HashMap keys without stopping the Sidecar.
 #[tauri::command]
 #[allow(non_snake_case)]
-pub fn cmd_upgrade_session_id(
+pub async fn cmd_upgrade_session_id(
     state: tauri::State<'_, ManagedSidecarManager>,
     oldSessionId: String,
     newSessionId: String,
 ) -> Result<bool, String> {
+    // Hold the persisted scheduler read lock across the Sidecar key mutation.
+    // Goal/Cron creation needs the write lock, so owner creation cannot land
+    // between the protection check and rename.
+    let scheduler = crate::cron_task::get_cron_task_manager();
+    let tasks = scheduler.tasks.read().await;
+    let has_persisted_owner = tasks.values().any(|task| {
+        crate::cron_task::manager::task_holds_persistent_session(task, &oldSessionId)
+            || crate::cron_task::manager::task_holds_persistent_session(task, &newSessionId)
+    });
+    if has_persisted_owner {
+        return Ok(false);
+    }
     let mut manager = state.lock().map_err(|e| e.to_string())?;
+    if manager.session_has_persistent_owners(&oldSessionId) {
+        return Ok(false);
+    }
     Ok(manager.upgrade_session_id(&oldSessionId, &newSessionId))
 }
 
-/// Check if a session's Sidecar has persistent background owners (CronTask or Agent)
-/// Used by frontend to decide whether closing a tab needs confirmation.
+/// Check whether a session identity must remain stable after a Tab detaches.
+/// Includes both live background owners and an unfinished Goal whose scheduler
+/// has not attached its CronTask owner yet.
 #[tauri::command]
 #[allow(non_snake_case)]
-pub fn cmd_session_has_persistent_owners(
+pub async fn cmd_session_has_persistent_owners(
     state: tauri::State<'_, ManagedSidecarManager>,
     sessionId: String,
-) -> bool {
-    let manager = state.lock().unwrap_or_else(|e| e.into_inner());
-    manager.session_has_persistent_owners(&sessionId)
+) -> Result<bool, String> {
+    let sidecars = state.inner().clone();
+    let has_live_owner = {
+        let manager = sidecars.lock().unwrap_or_else(|e| e.into_inner());
+        manager.session_has_persistent_owners(&sessionId)
+    };
+    Ok(has_live_owner
+        || crate::cron_task::get_cron_task_manager()
+            .has_persistent_task_for_session(&sessionId)
+            .await)
+}
+
+/// Delete a transcript only while no persistent scheduler or Sidecar owner can
+/// claim the session. Both owner locks stay held across the local DELETE, so a
+/// Goal/Cron/Agent cannot appear between validation and mutation.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_delete_session_if_unowned(
+    state: tauri::State<'_, ManagedSidecarManager>,
+    sessionId: String,
+) -> Result<bool, String> {
+    if sessionId.trim().is_empty() || sessionId.contains('/') {
+        return Err("Invalid session ID".to_string());
+    }
+
+    let scheduler = crate::cron_task::get_cron_task_manager();
+    let tasks = scheduler.tasks.clone().read_owned().await;
+    let sidecars = state.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let _tasks_guard = tasks;
+        if _tasks_guard
+            .values()
+            .any(|task| crate::cron_task::manager::task_holds_persistent_session(task, &sessionId))
+        {
+            return Ok(false);
+        }
+
+        let mut manager = sidecars.lock().map_err(|error| error.to_string())?;
+        if manager.session_has_owners(&sessionId) {
+            return Ok(false);
+        }
+        let instance = manager
+            .get_instance_mut(GLOBAL_SIDECAR_ID)
+            .ok_or_else(|| "Global Sidecar is not running".to_string())?;
+        if !instance.is_running() {
+            return Err("Global Sidecar is not running".to_string());
+        }
+        let port = instance.port;
+        let client = crate::local_http::blocking_builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|error| format!("Failed to create local HTTP client: {error}"))?;
+        let response = client
+            .delete(format!("http://127.0.0.1:{port}/sessions/{sessionId}"))
+            .send()
+            .map_err(|error| format!("Failed to delete session: {error}"))?;
+        if !response.status().is_success() {
+            return Ok(false);
+        }
+        manager.deactivate_session(&sessionId);
+        Ok(true)
+    })
+    .await
+    .map_err(|error| format!("Session deletion task failed: {error:?}"))?
+}
+
+/// Release a Tab owner and update the activation under the same owner locks.
+/// This prevents a newly-created Goal/Agent owner from landing between a
+/// renderer-side presence check and activation mutation.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_release_tab_session(
+    state: tauri::State<'_, ManagedSidecarManager>,
+    sessionId: String,
+    tabId: String,
+) -> Result<bool, String> {
+    let scheduler = crate::cron_task::get_cron_task_manager();
+    let tasks = scheduler.tasks.read().await;
+    let mut manager = state.lock().map_err(|error| error.to_string())?;
+    let has_persisted_scheduler_owner = tasks
+        .values()
+        .any(|task| crate::cron_task::manager::task_holds_persistent_session(task, &sessionId));
+    Ok(manager.release_tab_session(&sessionId, &tabId, has_persisted_scheduler_owner))
 }

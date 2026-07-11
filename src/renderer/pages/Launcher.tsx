@@ -706,7 +706,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         // Failure → fall through to the regular tab-launch path so the user
         // doesn't lose their input — same recovery contract Chat.tsx
         // autoSend uses.
-        if (cron && cron.executionTarget === 'new_task') {
+        if (cron?.taskKind === 'cron' && cron.executionTarget === 'new_task') {
             try {
                 const standaloneSessionId = `cron-standalone-${crypto.randomUUID()}`;
                 // PRD 0.2.9 — Collapsed-writer path. Send `providerId` only

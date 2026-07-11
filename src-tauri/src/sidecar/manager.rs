@@ -482,8 +482,21 @@ impl SidecarManager {
 
     /// Insert a sidecar and auto-increment its generation counter.
     /// This ensures every creation is tracked for lock-gap race detection.
+    #[cfg(test)]
     pub(super) fn insert_sidecar(&mut self, session_id: &str, sidecar: SessionSidecar) {
         self.next_generation(session_id);
+        self.sidecars.insert(session_id.to_string(), sidecar);
+    }
+
+    /// Insert a Sidecar after its generation was reserved before spawn so the
+    /// child process can carry the same identity in Management API requests.
+    pub(super) fn insert_sidecar_at_generation(
+        &mut self,
+        session_id: &str,
+        generation: u64,
+        sidecar: SessionSidecar,
+    ) {
+        debug_assert_eq!(self.current_generation(session_id), generation);
         self.sidecars.insert(session_id.to_string(), sidecar);
     }
 
@@ -621,17 +634,21 @@ impl SidecarManager {
     /// If this was the last owner, the Sidecar is removed (and killed via Drop)
     /// Returns (was_removed, sidecar_was_stopped)
     pub fn remove_session_owner(&mut self, session_id: &str, owner: &SidecarOwner) -> (bool, bool) {
-        let should_stop = if let Some(sidecar) = self.sidecars.get_mut(session_id) {
+        let (removed, should_stop) = if let Some(sidecar) = self.sidecars.get_mut(session_id) {
             ulog_info!(
                 "[sidecar] Removing owner {:?} from session {} (port {})",
                 owner,
                 session_id,
                 sidecar.port
             );
-            sidecar.remove_owner(owner) // Returns true if this was the last owner
+            sidecar.remove_owner(owner)
         } else {
             return (false, false);
         };
+
+        if !removed {
+            return (false, false);
+        }
 
         if should_stop {
             ulog_info!(
@@ -645,6 +662,81 @@ impl SidecarManager {
         }
     }
 
+    pub fn release_tab_session(
+        &mut self,
+        session_id: &str,
+        tab_id: &str,
+        has_persisted_scheduler_owner: bool,
+    ) -> bool {
+        let (owner_removed, sidecar_stopped) =
+            self.remove_session_owner(session_id, &SidecarOwner::Tab(tab_id.to_string()));
+        if !owner_removed {
+            return false;
+        }
+
+        if sidecar_stopped {
+            self.clear_generation(session_id);
+        }
+
+        if self.session_has_persistent_owners(session_id) || has_persisted_scheduler_owner {
+            self.update_session_tab(session_id, None);
+        } else {
+            self.deactivate_session(session_id);
+        }
+        sidecar_stopped
+    }
+
+    /// Project a CronTask owner into the existing session activation without
+    /// discarding a Tab binding for the same Sidecar.
+    pub fn activate_cron_session(
+        &mut self,
+        session_id: String,
+        task_id: String,
+        port: u16,
+        workspace_path: String,
+    ) {
+        if let Some(activation) = self.session_activations.get_mut(&session_id) {
+            activation.task_id = Some(task_id);
+            activation.port = port;
+            activation.workspace_path = workspace_path;
+            activation.is_cron_task = activation.tab_id.is_none();
+            return;
+        }
+
+        self.activate_session(session_id, None, Some(task_id), port, workspace_path, true);
+    }
+
+    /// Release a CronTask owner and update its activation projection under the
+    /// same manager lock. Remaining Tab/background/agent owners keep the
+    /// session identity active.
+    pub fn release_cron_session(&mut self, session_id: &str, task_id: &str) -> bool {
+        let (owner_removed, sidecar_stopped) =
+            self.remove_session_owner(session_id, &SidecarOwner::CronTask(task_id.to_string()));
+        if !owner_removed {
+            return false;
+        }
+
+        if sidecar_stopped {
+            self.clear_generation(session_id);
+            self.deactivate_session(session_id);
+            return true;
+        }
+
+        let remaining_task_id = self.sidecars.get(session_id).and_then(|sidecar| {
+            sidecar.owners.iter().find_map(|owner| match owner {
+                SidecarOwner::CronTask(id) => Some(id.clone()),
+                _ => None,
+            })
+        });
+        if let Some(activation) = self.session_activations.get_mut(session_id) {
+            if activation.task_id.as_deref() == Some(task_id) {
+                activation.task_id = remaining_task_id;
+            }
+            activation.is_cron_task = activation.tab_id.is_none() && activation.task_id.is_some();
+        }
+        false
+    }
+
     /// Upgrade a session ID (e.g., from "pending-xxx" to real session ID)
     /// This updates the key in both sidecars and session_activations HashMaps
     /// without stopping the Sidecar.
@@ -656,6 +748,36 @@ impl SidecarManager {
             old_session_id,
             new_session_id
         );
+
+        if old_session_id == new_session_id {
+            return self.sidecars.contains_key(new_session_id)
+                || self.session_activations.contains_key(new_session_id);
+        }
+
+        let old_exists = self.sidecars.contains_key(old_session_id)
+            || self.session_activations.contains_key(old_session_id);
+        let new_exists = self.sidecars.contains_key(new_session_id)
+            || self.session_activations.contains_key(new_session_id);
+        match (old_exists, new_exists) {
+            (false, true) => {
+                ulog_debug!(
+                    "[sidecar] Session ID upgrade already applied: {} -> {}",
+                    old_session_id,
+                    new_session_id
+                );
+                return true;
+            }
+            (true, true) => {
+                ulog_error!(
+                    "[sidecar] Refusing session ID upgrade because both identities exist: {} -> {}",
+                    old_session_id,
+                    new_session_id
+                );
+                return false;
+            }
+            (false, false) => return false,
+            (true, false) => {}
+        }
 
         let mut upgraded = false;
 
@@ -722,15 +844,20 @@ impl SidecarManager {
         upgraded
     }
 
-    /// Check if a session's Sidecar has persistent background owners (CronTask or Agent)
-    /// that will keep it alive after a Tab releases its ownership.
+    /// Check if a session's Sidecar has an owner whose work remains bound to
+    /// this session identity after a desktop Tab detaches.
     pub fn session_has_persistent_owners(&self, session_id: &str) -> bool {
         self.sidecars
             .get(session_id)
             .map(|s| {
-                s.owners
-                    .iter()
-                    .any(|o| matches!(o, SidecarOwner::CronTask(_) | SidecarOwner::Agent(_)))
+                s.owners.iter().any(|o| {
+                    matches!(
+                        o,
+                        SidecarOwner::CronTask(_)
+                            | SidecarOwner::BackgroundCompletion(_)
+                            | SidecarOwner::Agent(_)
+                    )
+                })
             })
             .unwrap_or(false)
     }
@@ -745,6 +872,14 @@ impl SidecarManager {
             .get(session_id)
             .map(|s| s.owners.iter().any(|o| matches!(o, SidecarOwner::Tab(_))))
             .unwrap_or(false)
+    }
+
+    /// Ownership is independent of process liveness: a dead Sidecar entry with
+    /// owners is restartable and still protects the session transcript.
+    pub fn session_has_owners(&self, session_id: &str) -> bool {
+        self.sidecars
+            .get(session_id)
+            .is_some_and(|sidecar| !sidecar.owners.is_empty())
     }
 }
 
@@ -796,6 +931,41 @@ pub type ManagedSidecar = ManagedSidecarManager;
 /// Legacy function: create_sidecar_state -> create_sidecar_manager
 pub fn create_sidecar_state() -> ManagedSidecar {
     create_sidecar_manager()
+}
+
+#[cfg(test)]
+mod session_identity_upgrade_tests {
+    use super::*;
+
+    #[test]
+    fn session_identity_upgrade_is_idempotent_and_conflict_safe() {
+        let mut manager = SidecarManager::new();
+        manager.activate_session(
+            "pending-1".to_string(),
+            Some("tab-1".to_string()),
+            Some("goal-1".to_string()),
+            31001,
+            "/tmp/workspace".to_string(),
+            true,
+        );
+
+        assert!(manager.upgrade_session_id("pending-1", "session-real"));
+        assert!(manager.upgrade_session_id("pending-1", "session-real"));
+        assert!(manager.session_activations.contains_key("session-real"));
+        assert!(!manager.session_activations.contains_key("pending-1"));
+
+        manager.activate_session(
+            "pending-1".to_string(),
+            Some("tab-2".to_string()),
+            Some("goal-2".to_string()),
+            31002,
+            "/tmp/workspace".to_string(),
+            true,
+        );
+        assert!(!manager.upgrade_session_id("pending-1", "session-real"));
+        assert!(manager.session_activations.contains_key("session-real"));
+        assert!(manager.session_activations.contains_key("pending-1"));
+    }
 }
 
 /// Legacy SidecarConfig with required agent_dir

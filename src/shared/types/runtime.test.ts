@@ -8,6 +8,7 @@ import {
   permissionModeLooksLikeRuntime,
   normalizeRuntime,
   resolveCronPermissionMode,
+  resolveScheduledTurnPermissionMode,
   resolveEffectiveRuntime,
   VALID_RUNTIMES,
   type RuntimeType,
@@ -179,5 +180,19 @@ describe('resolveCronPermissionMode', () => {
   test('skips stale payload mode before falling back to runtimeConfig mode', () => {
     expect(resolveCronPermissionMode('auto', 'full-auto', 'codex')).toBe('full-auto');
     expect(resolveCronPermissionMode('fullAgency', 'autoEdit', 'gemini')).toBe('autoEdit');
+  });
+});
+
+describe('resolveScheduledTurnPermissionMode', () => {
+  test('elevates an unset CLI Goal to the builtin runtime maximum', () => {
+    expect(resolveScheduledTurnPermissionMode('goal', '', 'auto', 'builtin')).toBe('fullAgency');
+  });
+
+  test('elevates an unset CLI Goal to the external runtime maximum', () => {
+    expect(resolveScheduledTurnPermissionMode('goal', '', 'full-auto', 'codex')).toBe('no-restrictions');
+  });
+
+  test('preserves the session snapshot fallback for ordinary Cron', () => {
+    expect(resolveScheduledTurnPermissionMode('cron', '', 'auto', 'builtin')).toBe('auto');
   });
 });

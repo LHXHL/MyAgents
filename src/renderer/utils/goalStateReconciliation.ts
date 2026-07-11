@@ -15,7 +15,6 @@ function stateTime(task: CronTask): number {
 export function shouldAcceptGoalState(incoming: CronTask, current: CronTask | null): boolean {
   if (!current || !current.goalStatus) return true;
   if (incoming.id !== current.id) {
-    if (isTerminal(incoming) && !isTerminal(current)) return false;
     return stateTime(incoming) >= stateTime(current);
   }
   if (isTerminal(current) && !isTerminal(incoming)) return false;
@@ -26,6 +25,21 @@ export function shouldAcceptGoalState(incoming: CronTask, current: CronTask | nu
     return incomingRevision >= currentRevision;
   }
   return stateTime(incoming) >= stateTime(current);
+}
+
+export function projectGoalExecutionState(task: CronTask): {
+  isExecuting: boolean;
+  executionNumber: number | undefined;
+} {
+  const authority = task.goalTurnLease?.state === 'claimed'
+    ? task.goalTurnLease
+    : task.goalUserAdmissions?.find(admission => (
+      admission.state === 'claimed' || admission.state === 'dispatched'
+    ));
+  return {
+    isExecuting: Boolean(authority),
+    executionNumber: authority?.turnNumber,
+  };
 }
 
 /** Recover only a terminal transition that could have landed before listeners attached. */

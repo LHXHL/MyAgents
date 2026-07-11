@@ -6,6 +6,7 @@ export {
   getSessionRuntimeType,
   stopActiveTurn,
 } from './selector';
+export { goalOrchestrator } from './goal-orchestrator';
 export type {
   DesktopAdmissionResult,
   DesktopMessageRequest,

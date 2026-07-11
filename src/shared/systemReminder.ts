@@ -192,7 +192,6 @@ function goalTerminalGuidance(input: GoalReminderInput): string[] {
     'Blocked audit:',
     '- Do not mark the Goal blocked the first time a blocker appears.',
     '- Only use status "blocked" when the same blocking condition has repeated for at least three consecutive Goal turns, counting the original/user-triggered turn and any automatic Goal continuations.',
-    '- If the user resumes a Goal that was previously marked "blocked", treat the resumed run as a fresh blocked audit. If the same blocking condition then repeats for at least three consecutive resumed Goal turns, mark the Goal blocked again.',
     '- Use status "blocked" only when you are truly at an impasse and cannot make meaningful progress without user input or an external-state change.',
     '- Once the blocked threshold is satisfied, do not keep reporting that you are still blocked while leaving the Goal active; mark it blocked.',
     '- Never use status "blocked" merely because the work is hard, slow, uncertain, incomplete, or would benefit from clarification.',

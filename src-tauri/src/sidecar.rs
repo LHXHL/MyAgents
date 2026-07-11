@@ -95,10 +95,10 @@ pub use runtime_identity::{
 };
 #[allow(unused_imports)]
 pub use session_lifecycle::{
-    cmd_ensure_session_sidecar, cmd_get_session_generation, cmd_get_session_port,
-    cmd_has_session_sidecar, cmd_release_session_sidecar, cmd_session_has_persistent_owners,
-    cmd_upgrade_session_id, ensure_session_sidecar,
-    ensure_session_sidecar_with_runtime_identity_override,
+    cmd_delete_session_if_unowned, cmd_ensure_session_sidecar, cmd_get_session_generation,
+    cmd_get_session_port, cmd_has_session_sidecar, cmd_release_session_sidecar,
+    cmd_release_tab_session, cmd_session_has_persistent_owners, cmd_upgrade_session_id,
+    ensure_session_sidecar, ensure_session_sidecar_with_runtime_identity_override,
     ensure_session_sidecar_with_runtime_override, get_session_generation, get_session_sidecar_port,
     has_session_sidecar, release_session_sidecar, EnsureSidecarResult,
 };

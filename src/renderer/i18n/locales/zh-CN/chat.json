@@ -396,7 +396,7 @@
       "tokenStats": "会话 Token 消耗统计",
       "contextUsage": "上下文 Token 使用详情",
       "bindBot": "绑定聊天机器人",
-      "cronDeleteTooltip": "请先停止循环任务后再删除",
+      "cronDeleteTooltip": "请先停止或取消当前目标/定时任务后再删除",
       "delete": "删除对话",
       "bound": "已绑定",
       "switchToOther": "切换到其他",
@@ -440,7 +440,7 @@
       "unfavorite": "取消收藏",
       "exportMarkdown": "导出为 md 文件",
       "viewStats": "查看统计",
-      "cronDeleteTooltip": "请先停止循环任务后再删除",
+      "cronDeleteTooltip": "请先停止或取消当前目标/定时任务后再删除",
       "delete": "删除对话",
       "deleteDialog": {
         "title": "删除对话",

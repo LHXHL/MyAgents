@@ -1,3 +1,4 @@
+use super::validation::validate_new_task_goal_shape;
 use super::*;
 
 fn is_goal_task(task: &CronTask) -> bool {
@@ -6,6 +7,22 @@ fn is_goal_task(task: &CronTask) -> bool {
 
 fn is_goal_terminal(status: &GoalStatus) -> bool {
     status.is_terminal()
+}
+
+fn task_uses_session_automation(task: &CronTask, session_id: &str) -> bool {
+    (task.session_id == session_id || task.internal_session_id.as_deref() == Some(session_id))
+        && task.run_mode == RunMode::SingleSession
+}
+
+pub(crate) fn task_holds_persistent_session(task: &CronTask, session_id: &str) -> bool {
+    let unfinished_goal = task.is_goal()
+        && matches!(
+            task.goal_status,
+            Some(GoalStatus::Active | GoalStatus::Paused)
+        );
+    let owns_session =
+        task.session_id == session_id || task.internal_session_id.as_deref() == Some(session_id);
+    owns_session && (task.status == TaskStatus::Running || unfinished_goal)
 }
 
 fn goal_status_wire(status: &GoalStatus) -> &'static str {
@@ -42,20 +59,69 @@ pub(super) fn goal_admission_change_kind(resumed: bool) -> &'static str {
     }
 }
 
-// Scheduler execution has a hard 60-minute wait. Keep a small grace period so
-// a valid user query queued behind the longest allowed turn cannot expire just
-// before queue promotion, while crashed Sidecar reservations still self-heal.
-const GOAL_USER_ADMISSION_TTL: Duration = Duration::from_secs(65 * 60);
-
-fn goal_user_admission_is_expired(admission: &GoalUserAdmission, now: DateTime<Utc>) -> bool {
-    let state_started_at = admission.state_updated_at.unwrap_or(admission.created_at);
-    now.signed_duration_since(state_started_at)
-        .to_std()
-        .is_ok_and(|age| age >= GOAL_USER_ADMISSION_TTL)
+fn invalidate_goal_turn_lease(task: &mut CronTask) {
+    task.goal_turn_lease = None;
 }
 
-fn invalidate_goal_turn_lease(task: &mut CronTask) -> Option<String> {
-    task.goal_turn_lease.take().map(|lease| lease.id)
+fn goal_sidecar_generation_is_current(
+    sidecars: &ManagedSidecarManager,
+    session_id: &str,
+    expected_generation: u64,
+) -> Result<bool, GoalMutationError> {
+    let current = sidecars
+        .lock()
+        .map_err(|error| GoalMutationError::goal(format!("Sidecar lock poisoned: {error}")))?
+        .generation_for(session_id);
+    Ok(current == Some(expected_generation))
+}
+
+fn prepare_goal_create_config(
+    mut config: CronTaskConfig,
+) -> Result<CronTaskConfig, GoalMutationError> {
+    let objective = config.prompt.trim().to_string();
+    if objective.is_empty() {
+        return Err(GoalMutationError::goal("Goal objective is required"));
+    }
+    if config.session_id.trim().is_empty() {
+        return Err(GoalMutationError::goal("sessionId is required"));
+    }
+    if config.session_id.starts_with("pending-") {
+        return Err(GoalMutationError::goal(
+            "Goal requires a materialized session identity",
+        ));
+    }
+    if config.workspace_path.trim().is_empty() {
+        return Err(GoalMutationError::goal("workspacePath is required"));
+    }
+
+    let now = Utc::now();
+    config.prompt = objective.clone();
+    config.interval_minutes = config.interval_minutes.max(5);
+    config.run_mode = RunMode::SingleSession;
+    config.schedule = Some(CronSchedule::Loop);
+    config.goal_status = Some(GoalStatus::Active);
+    config.goal_objective = Some(objective);
+    config.goal_updated_at = Some(now);
+    config.goal_terminal_reason = None;
+    config.goal_paused_reason = None;
+
+    // Goal execution always follows the current session. Permission and end
+    // policy remain explicit creation-surface choices; every other execution
+    // snapshot belongs to the session owner and must not be persisted here.
+    config.tab_id = None;
+    config.model = None;
+    config.provider_env = None;
+    config.provider_id = None;
+    config.provider_intent = ProviderIntent::FollowAgent;
+    config.runtime = None;
+    config.runtime_config = None;
+    config.mcp_enabled_servers = None;
+    config.managed_kind = None;
+    config.source_bot_id = None;
+    config.delivery = None;
+    config.task_id = None;
+
+    Ok(config)
 }
 
 fn build_cron_run_record(
@@ -83,6 +149,140 @@ fn build_cron_run_record(
         duration_ms,
         content,
         error,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LoopFailureDecision {
+    RetryAfter(u64),
+    Stop,
+}
+
+#[derive(Debug, Clone)]
+struct GoalTurnFinalizationRequest {
+    success: bool,
+    error: Option<String>,
+    duration_ms: u64,
+    internal_session_id: Option<String>,
+    output_text: Option<String>,
+    channel_delivery_expected: bool,
+}
+
+#[cfg(not(test))]
+pub(super) fn goal_durable_retry_delay() -> Duration {
+    Duration::from_secs(3)
+}
+
+#[cfg(test)]
+pub(super) fn goal_durable_retry_delay() -> Duration {
+    Duration::from_millis(10)
+}
+
+async fn finalize_goal_turn_until_durable(
+    manager: &CronTaskManager,
+    shutdown: &Arc<RwLock<bool>>,
+    task_id: &str,
+    lease_id: &str,
+    request: &GoalTurnFinalizationRequest,
+) -> Option<GoalTurnFinalization> {
+    loop {
+        match manager
+            .finalize_goal_scheduler_turn(
+                task_id,
+                lease_id,
+                request.success,
+                request.error.clone(),
+                request.duration_ms,
+                request.internal_session_id.clone(),
+                request.output_text.clone(),
+                request.channel_delivery_expected,
+            )
+            .await
+        {
+            Ok(finalization) => return Some(finalization),
+            Err(error) => {
+                ulog_error!(
+                    "[CronTask] Goal turn finalization is not durable for task {} lease {}: {}; retrying",
+                    task_id,
+                    lease_id,
+                    error
+                );
+            }
+        }
+        if *shutdown.read().await {
+            return None;
+        }
+        tokio::time::sleep(goal_durable_retry_delay()).await;
+    }
+}
+
+fn loop_failure_decision(consecutive_failures: u32) -> LoopFailureDecision {
+    if consecutive_failures >= 10 {
+        return LoopFailureDecision::Stop;
+    }
+    LoopFailureDecision::RetryAfter(match consecutive_failures {
+        1 => 3,
+        2 => 10,
+        3 => 30,
+        4 => 60,
+        5 => 120,
+        _ => 300,
+    })
+}
+
+#[cfg(test)]
+fn register_loop_failure(consecutive_failures: &mut u32) -> LoopFailureDecision {
+    *consecutive_failures += 1;
+    loop_failure_decision(*consecutive_failures)
+}
+
+async fn stop_loop_after_failure_limit(
+    handle: &AppHandle,
+    tasks: &Arc<RwLock<HashMap<String, CronTask>>>,
+    shutdown: &Arc<RwLock<bool>>,
+    task_id: &str,
+    is_goal: bool,
+    failure_kind: &str,
+) {
+    let reason = if is_goal {
+        "Goal Mode: 10 consecutive failures"
+    } else {
+        "Loop task: 10 consecutive failures"
+    };
+    ulog_error!(
+        "[CronTask] Task {} {} ({}), stopping",
+        task_id,
+        reason,
+        failure_kind
+    );
+    let reason = Some(reason.to_string());
+    if is_goal {
+        loop {
+            match get_cron_task_manager()
+                .transition_goal_terminal(
+                    task_id,
+                    GoalStatus::Blocked,
+                    reason.clone(),
+                    GoalTerminalActor::System,
+                )
+                .await
+            {
+                Ok(_) => return,
+                Err(error) => {
+                    ulog_error!(
+                        "[CronTask] Goal {} failure protector could not persist blocked state; retrying: {}",
+                        task_id,
+                        error
+                    );
+                }
+            }
+            let retry_at = Utc::now() + chrono::Duration::seconds(3);
+            if !sleep_until_wallclock(retry_at, shutdown, task_id).await {
+                return;
+            }
+        }
+    } else {
+        stop_task_internal(handle, tasks, task_id, reason).await;
     }
 }
 
@@ -174,7 +374,7 @@ impl CronTaskManager {
         }
         if migrated > 0 {
             ulog_info!(
-                "[CronTask] Migrated {} task(s) in-memory: permissionMode='auto' → '' (v0.2.5 R3); will persist on next save",
+                "[CronTask] Migrated {} task(s) in-memory: permissionMode='auto' → '' (v0.2.5 R3); startup initialization will persist",
                 migrated
             );
         }
@@ -192,6 +392,15 @@ impl CronTaskManager {
         let mut recovered = 0;
         for task in tasks.values_mut().filter(|task| task.is_goal()) {
             let mut task_recovered = 0;
+            let normalized_status = if task.goal_status.as_ref().is_some_and(is_goal_terminal) {
+                TaskStatus::Stopped
+            } else {
+                TaskStatus::Running
+            };
+            if task.status != normalized_status {
+                task.status = normalized_status;
+                task_recovered += 1;
+            }
             if task.goal_turn_lease.take().is_some() {
                 task_recovered += 1;
             }
@@ -211,6 +420,115 @@ impl CronTaskManager {
             }
         }
         recovered
+    }
+
+    async fn commit_goal_authority_revocations(
+        &self,
+        mut tasks: tokio::sync::RwLockWriteGuard<'_, HashMap<String, CronTask>>,
+        next: HashMap<String, CronTask>,
+        updated: Vec<CronTask>,
+    ) -> Result<usize, String> {
+        if updated.is_empty() {
+            return Ok(0);
+        }
+        atomic_save_task_snapshot(
+            &self.storage_path,
+            next.values().cloned().collect::<Vec<_>>(),
+        )
+        .await?;
+        *tasks = next;
+        drop(tasks);
+        for task in &updated {
+            self.emit_goal_changed(task, "turn_revoked").await;
+        }
+        Ok(updated.len())
+    }
+
+    /// A claimed turn belongs to one concrete Sidecar process generation.
+    /// A delayed stop for an older generation must not revoke replacement work.
+    pub async fn revoke_goal_turn_authorities_for_sidecar(
+        &self,
+        session_id: &str,
+        sidecar_generation: u64,
+    ) -> Result<usize, String> {
+        let tasks = self.tasks.write().await;
+        let mut next = tasks.clone();
+        let mut updated = Vec::new();
+        let now = Utc::now();
+        for task in next.values_mut().filter(|task| {
+            task.is_goal()
+                && (task.session_id == session_id
+                    || task.internal_session_id.as_deref() == Some(session_id))
+                && (task.goal_turn_lease.as_ref().is_some_and(|lease| {
+                    lease.sidecar_generation == 0 || lease.sidecar_generation == sidecar_generation
+                }) || task.goal_user_admissions.iter().any(|admission| {
+                    admission.sidecar_generation == 0
+                        || admission.sidecar_generation == sidecar_generation
+                }))
+        }) {
+            if task.goal_turn_lease.as_ref().is_some_and(|lease| {
+                lease.sidecar_generation == 0 || lease.sidecar_generation == sidecar_generation
+            }) {
+                task.goal_turn_lease = None;
+            }
+            task.goal_user_admissions.retain(|admission| {
+                admission.sidecar_generation != 0
+                    && admission.sidecar_generation != sidecar_generation
+            });
+            task.goal_updated_at = Some(now);
+            task.updated_at = now;
+            task.bump_goal_revision();
+            updated.push(task.clone());
+        }
+        self.commit_goal_authority_revocations(tasks, next, updated)
+            .await
+    }
+
+    /// Recover from skipped Sidecar stop broadcasts by comparing each durable
+    /// authority's process generation with the current Sidecar registry.
+    /// Lock order is task store -> Sidecar manager, matching the project owner
+    /// hierarchy and preventing a new authority from appearing between the
+    /// live snapshot and the durable mutation.
+    pub async fn reconcile_goal_turn_authorities_with_live_sidecars(
+        &self,
+        sidecars: &ManagedSidecarManager,
+    ) -> Result<usize, String> {
+        let tasks = self.tasks.write().await;
+        let live = sidecars
+            .lock()
+            .map_err(|error| format!("Sidecar lock poisoned: {error}"))?
+            .live_sidecar_set();
+        let mut next = tasks.clone();
+        let mut updated = Vec::new();
+        let now = Utc::now();
+        for task in next.values_mut().filter(|task| task.is_goal()) {
+            let generation_is_live = |generation: u64| {
+                generation != 0
+                    && (live.contains(&(task.session_id.clone(), generation))
+                        || task.internal_session_id.as_ref().is_some_and(|session_id| {
+                            live.contains(&(session_id.clone(), generation))
+                        }))
+            };
+            let lease_revoked = task
+                .goal_turn_lease
+                .as_ref()
+                .is_some_and(|lease| !generation_is_live(lease.sidecar_generation));
+            if lease_revoked {
+                task.goal_turn_lease = None;
+            }
+            let previous_admission_count = task.goal_user_admissions.len();
+            task.goal_user_admissions
+                .retain(|admission| generation_is_live(admission.sidecar_generation));
+            if !lease_revoked && task.goal_user_admissions.len() == previous_admission_count {
+                continue;
+            }
+            task.goal_updated_at = Some(now);
+            task.updated_at = now;
+            task.bump_goal_revision();
+            updated.push(task.clone());
+        }
+        self.commit_goal_authority_revocations(tasks, next, updated)
+            .await
     }
 
     /// PRD 0.2.5 cross-review I4 — sync, in-memory portion of the legacy
@@ -716,7 +1034,7 @@ impl CronTaskManager {
                         "[CronTask] Task {} reached end condition, completing",
                         task_id_owned
                     );
-                    // Complete task and deactivate session
+                    // Complete task and release its CronTask owner/projection.
                     if is_goal {
                         let _ = get_cron_task_manager()
                             .transition_goal_terminal(
@@ -802,10 +1120,7 @@ impl CronTaskManager {
                 };
 
                 let execution_number = if is_goal {
-                    task.goal_turn_lease
-                        .as_ref()
-                        .map(|lease| lease.turn_number)
-                        .unwrap_or_else(|| task.execution_count.saturating_add(1))
+                    task.goal_turn_number_for_dispatch()
                 } else {
                     task.execution_count + 1
                 };
@@ -867,6 +1182,7 @@ impl CronTaskManager {
                     }
                 };
                 let duration_ms = exec_start.elapsed().as_millis() as u64;
+                let mut loop_retry_delay_secs = None;
 
                 // Detect graceful terminal-state short-circuit (H2 sentinel).
                 // Pulled out of the match below so every side-effect arm can
@@ -956,41 +1272,33 @@ impl CronTaskManager {
                             let lease_id = goal_lease_id
                                 .as_deref()
                                 .expect("Goal dispatch must have a claimed lease");
-                            let finalization = get_cron_task_manager()
-                                .finalize_goal_scheduler_turn(
-                                    &task_id_owned,
-                                    lease_id,
-                                    success,
-                                    None,
-                                    duration_ms,
-                                    internal_sid.clone(),
-                                    output_text.clone(),
-                                    goal_channel_delivery_expected,
-                                )
-                                .await;
-                            let finalization = match finalization {
-                                Ok(finalization) if finalization.applied => finalization,
-                                Ok(_) => {
-                                    let _ = get_cron_task_manager()
-                                        .revoke_goal_scheduler_lease(&task_id_owned, lease_id)
-                                        .await;
-                                    ulog_info!(
-                                        "[CronTask] Discarding stale Goal completion/output for task {} lease {}",
-                                        task_id_owned,
-                                        lease_id
-                                    );
-                                    continue;
-                                }
-                                Err(error) => {
-                                    ulog_error!(
-                                        "[CronTask] Failed to finalize Goal turn {} lease {}: {}",
-                                        task_id_owned,
-                                        lease_id,
-                                        error
-                                    );
-                                    continue;
-                                }
+                            let finalization_request = GoalTurnFinalizationRequest {
+                                success,
+                                error: None,
+                                duration_ms,
+                                internal_session_id: internal_sid.clone(),
+                                output_text: output_text.clone(),
+                                channel_delivery_expected: goal_channel_delivery_expected,
                             };
+                            let Some(finalization) = finalize_goal_turn_until_durable(
+                                get_cron_task_manager(),
+                                &shutdown,
+                                &task_id_owned,
+                                lease_id,
+                                &finalization_request,
+                            )
+                            .await
+                            else {
+                                break;
+                            };
+                            if !finalization.applied {
+                                ulog_info!(
+                                    "[CronTask] Discarding stale Goal completion/output for task {} lease {}",
+                                    task_id_owned,
+                                    lease_id
+                                );
+                                continue;
+                            }
                             let run_record = build_cron_run_record(
                                 success,
                                 duration_ms,
@@ -1029,46 +1337,37 @@ impl CronTaskManager {
                         // Goal Mode loop: reset failure counter on success, increment on logical failure
                         if is_loop {
                             if success {
-                                loop_consecutive_failures = 0;
-                            } else {
-                                loop_consecutive_failures += 1;
-                                if loop_consecutive_failures >= 10 {
-                                    let reason = if is_goal {
-                                        "Goal Mode: 10 consecutive failures"
-                                    } else {
-                                        "Loop task: 10 consecutive failures"
-                                    };
-                                    ulog_error!(
-                                        "[CronTask] Task {} {} (logical), stopping",
-                                        task_id_owned,
-                                        reason
-                                    );
-                                    let reason = Some(reason.to_string());
-                                    if is_goal {
-                                        let _ = get_cron_task_manager()
-                                            .transition_goal_terminal(
-                                                &task_id_owned,
-                                                GoalStatus::Blocked,
-                                                reason,
-                                                GoalTerminalActor::System,
-                                            )
-                                            .await;
-                                    } else {
-                                        stop_task_internal(&handle, &tasks, &task_id_owned, reason)
-                                            .await;
-                                    }
-                                    break;
+                                if !is_goal {
+                                    loop_consecutive_failures = 0;
                                 }
-                                let backoff_secs = match loop_consecutive_failures {
-                                    1 => 3,
-                                    2 => 10,
-                                    3 => 30,
-                                    4 => 60,
-                                    5 => 120,
-                                    _ => 300,
-                                };
-                                ulog_warn!("[CronTask] Task {} Goal Mode: logical failure #{}, backoff {}s",
-                                    task_id_owned, loop_consecutive_failures, backoff_secs);
+                            } else {
+                                let failure_count = updated_goal_task
+                                    .as_ref()
+                                    .map(|task| task.goal_consecutive_failures)
+                                    .unwrap_or_else(|| {
+                                        loop_consecutive_failures =
+                                            loop_consecutive_failures.saturating_add(1);
+                                        loop_consecutive_failures
+                                    });
+                                match loop_failure_decision(failure_count) {
+                                    LoopFailureDecision::Stop => {
+                                        stop_loop_after_failure_limit(
+                                            &handle,
+                                            &tasks,
+                                            &shutdown,
+                                            &task_id_owned,
+                                            is_goal,
+                                            "logical",
+                                        )
+                                        .await;
+                                        break;
+                                    }
+                                    LoopFailureDecision::RetryAfter(delay_secs) => {
+                                        loop_retry_delay_secs = Some(delay_secs);
+                                        ulog_warn!("[CronTask] Task {} Loop logical failure #{}, backoff {}s",
+                                            task_id_owned, failure_count, delay_secs);
+                                    }
+                                }
                             }
                         }
 
@@ -1085,20 +1384,6 @@ impl CronTaskManager {
                                 "internalSessionId": internal_sid
                             }),
                         );
-                        if let Some(ref goal_task) = updated_goal_task {
-                            let _ = handle.emit(
-                                "goal:changed",
-                                serde_json::json!({
-                                    "changeKind": "execution_complete",
-                                    "taskId": goal_task.id,
-                                    "sessionId": goal_task.session_id,
-                                    "workspacePath": goal_task.workspace_path,
-                                    "goalStatus": goal_task.goal_status.as_ref().map(goal_status_wire),
-                                    "goal": goal_task,
-                                }),
-                            );
-                        }
-
                         if goal_delivery_enqueued {
                             get_cron_task_manager()
                                 .ensure_goal_delivery_replay(&task_id_owned)
@@ -1212,22 +1497,25 @@ impl CronTaskManager {
                         if is_goal {
                             if let Some(lease_id) = goal_lease_id.as_deref() {
                                 let manager = get_cron_task_manager();
-                                let finalized = manager
-                                    .finalize_goal_scheduler_turn(
-                                        &task_id_owned,
-                                        lease_id,
-                                        false,
-                                        Some(e.clone()),
-                                        duration_ms,
-                                        None,
-                                        None,
-                                        false,
-                                    )
-                                    .await;
-                                if finalized.as_ref().is_ok_and(|result| !result.applied) {
-                                    let _ = manager
-                                        .revoke_goal_scheduler_lease(&task_id_owned, lease_id)
-                                        .await;
+                                let request = GoalTurnFinalizationRequest {
+                                    success: false,
+                                    error: Some(e.clone()),
+                                    duration_ms,
+                                    internal_session_id: None,
+                                    output_text: None,
+                                    channel_delivery_expected: false,
+                                };
+                                if finalize_goal_turn_until_durable(
+                                    manager,
+                                    &shutdown,
+                                    &task_id_owned,
+                                    lease_id,
+                                    &request,
+                                )
+                                .await
+                                .is_none()
+                                {
+                                    break;
                                 }
                             }
                         }
@@ -1247,24 +1535,31 @@ impl CronTaskManager {
                     }
                     Err(e) => {
                         ulog_error!("[CronTask] Task {} execution failed: {}", task_id_owned, e);
+                        let mut persisted_goal_failure_count = None;
                         if is_goal {
                             let lease_id = goal_lease_id
                                 .as_deref()
                                 .expect("Goal dispatch must have a claimed lease");
-                            match get_cron_task_manager()
-                                .finalize_goal_scheduler_turn(
-                                    &task_id_owned,
-                                    lease_id,
-                                    false,
-                                    Some(e.clone()),
-                                    duration_ms,
-                                    None,
-                                    None,
-                                    false,
-                                )
-                                .await
+                            let request = GoalTurnFinalizationRequest {
+                                success: false,
+                                error: Some(e.clone()),
+                                duration_ms,
+                                internal_session_id: None,
+                                output_text: None,
+                                channel_delivery_expected: false,
+                            };
+                            match finalize_goal_turn_until_durable(
+                                get_cron_task_manager(),
+                                &shutdown,
+                                &task_id_owned,
+                                lease_id,
+                                &request,
+                            )
+                            .await
                             {
-                                Ok(finalization) if finalization.applied => {
+                                Some(finalization) if finalization.applied => {
+                                    persisted_goal_failure_count =
+                                        Some(finalization.task.goal_consecutive_failures);
                                     let run_record = build_cron_run_record(
                                         false,
                                         duration_ms,
@@ -1274,10 +1569,7 @@ impl CronTaskManager {
                                     record_run_if_task_alive(&tasks, &task_id_owned, &run_record)
                                         .await;
                                 }
-                                Ok(_) => {
-                                    let _ = get_cron_task_manager()
-                                        .revoke_goal_scheduler_lease(&task_id_owned, lease_id)
-                                        .await;
+                                Some(_) => {
                                     ulog_info!(
                                         "[CronTask] Discarding stale Goal failure for task {} lease {}",
                                         task_id_owned,
@@ -1285,15 +1577,7 @@ impl CronTaskManager {
                                     );
                                     continue;
                                 }
-                                Err(error) => {
-                                    ulog_error!(
-                                        "[CronTask] Failed to finalize Goal failure {} lease {}: {}",
-                                        task_id_owned,
-                                        lease_id,
-                                        error
-                                    );
-                                    continue;
-                                }
+                                None => break,
                             }
                         } else {
                             // Update last_error + denormalized last-run summary
@@ -1316,58 +1600,33 @@ impl CronTaskManager {
 
                         // Goal Mode loop: exponential backoff on failure (3→10→30→60→120→300s, max 10 consecutive)
                         if is_loop {
-                            loop_consecutive_failures += 1;
-                            if loop_consecutive_failures >= 10 {
-                                let reason = if is_goal {
-                                    "Goal Mode: 10 consecutive failures"
-                                } else {
-                                    "Loop task: 10 consecutive failures"
-                                };
-                                ulog_error!(
-                                    "[CronTask] Task {} {}, stopping",
-                                    task_id_owned,
-                                    reason
-                                );
-                                let reason = Some(reason.to_string());
-                                if is_goal {
-                                    let _ = get_cron_task_manager()
-                                        .transition_goal_terminal(
-                                            &task_id_owned,
-                                            GoalStatus::Blocked,
-                                            reason,
-                                            GoalTerminalActor::System,
-                                        )
-                                        .await;
-                                } else {
-                                    stop_task_internal(&handle, &tasks, &task_id_owned, reason)
-                                        .await;
+                            let failure_count = persisted_goal_failure_count.unwrap_or_else(|| {
+                                loop_consecutive_failures =
+                                    loop_consecutive_failures.saturating_add(1);
+                                loop_consecutive_failures
+                            });
+                            match loop_failure_decision(failure_count) {
+                                LoopFailureDecision::Stop => {
+                                    stop_loop_after_failure_limit(
+                                        &handle,
+                                        &tasks,
+                                        &shutdown,
+                                        &task_id_owned,
+                                        is_goal,
+                                        "transport",
+                                    )
+                                    .await;
+                                    break;
                                 }
-                                break;
-                            }
-                            let backoff_secs = match loop_consecutive_failures {
-                                1 => 3,
-                                2 => 10,
-                                3 => 30,
-                                4 => 60,
-                                5 => 120,
-                                _ => 300,
-                            };
-                            ulog_warn!(
-                                "[CronTask] Task {} Goal Mode: failure #{}, backoff {}s",
-                                task_id_owned,
-                                loop_consecutive_failures,
-                                backoff_secs
-                            );
-                            let backoff_target =
-                                Utc::now() + chrono::Duration::seconds(backoff_secs as i64);
-                            if !sleep_until_wallclock(backoff_target, &shutdown, &task_id_owned)
-                                .await
-                            {
-                                ulog_info!(
-                                    "[CronTask] Task {} shutdown during Loop backoff",
-                                    task_id_owned
-                                );
-                                break;
+                                LoopFailureDecision::RetryAfter(delay_secs) => {
+                                    loop_retry_delay_secs = Some(delay_secs);
+                                    ulog_warn!(
+                                        "[CronTask] Task {} Loop transport failure #{}, backoff {}s",
+                                        task_id_owned,
+                                        failure_count,
+                                        delay_secs
+                                    );
+                                }
                             }
                         }
                         // Continue to next interval (don't break on error)
@@ -1379,13 +1638,17 @@ impl CronTaskManager {
                     ulog_warn!("[CronTask] Failed to save task state: {}", e);
                 }
 
-                // Goal Mode: skip time-based scheduling, re-execute after 3s buffer
+                // Loop scheduling is shared by Goal and historical/internal Loop
+                // tasks. Retryable failures use the policy backoff; successful
+                // turns retain the short continuation buffer.
                 if is_loop {
+                    let delay_secs = loop_retry_delay_secs.unwrap_or(3);
                     ulog_info!(
-                        "[CronTask] Task {} Goal Mode: next execution in 3 seconds",
-                        task_id_owned
+                        "[CronTask] Task {} Loop: next execution in {} seconds",
+                        task_id_owned,
+                        delay_secs
                     );
-                    let buffer_target = Utc::now() + chrono::Duration::seconds(3);
+                    let buffer_target = Utc::now() + chrono::Duration::seconds(delay_secs as i64);
                     if !sleep_until_wallclock(buffer_target, &shutdown, &task_id_owned).await {
                         ulog_info!(
                             "[CronTask] Task {} shutdown during Loop buffer",
@@ -1570,17 +1833,17 @@ impl CronTaskManager {
         &self,
         task_id: &str,
         mutate: F,
-    ) -> Result<(CronTask, bool), String>
+    ) -> Result<(CronTask, bool), GoalMutationError>
     where
-        F: FnOnce(&mut CronTask) -> Result<bool, String>,
+        F: FnOnce(&mut CronTask) -> Result<bool, GoalMutationError>,
     {
         let mut tasks = self.tasks.write().await;
         let mut next = tasks.clone();
         let task = next
             .get_mut(task_id)
-            .ok_or_else(|| format!("Task not found: {}", task_id))?;
+            .ok_or_else(|| GoalMutationError::goal(format!("Task not found: {}", task_id)))?;
         if !task.is_goal() {
-            return Err("Task is not a Goal Mode task".to_string());
+            return Err(GoalMutationError::goal("Task is not a Goal Mode task"));
         }
         let changed = mutate(task)?;
         let updated = task.clone();
@@ -1879,8 +2142,11 @@ impl CronTaskManager {
         })
     }
 
-    /// Create a new cron task (does not start it)
-    pub async fn create_task(&self, mut config: CronTaskConfig) -> Result<CronTask, String> {
+    pub(super) async fn create_task_with_initial_status(
+        &self,
+        mut config: CronTaskConfig,
+        initial_status: TaskStatus,
+    ) -> Result<CronTask, String> {
         // Validate minimum interval (5 minutes, matches frontend MIN_CRON_INTERVAL)
         if config.interval_minutes < 5 {
             return Err("Interval must be at least 5 minutes".to_string());
@@ -1908,15 +2174,31 @@ impl CronTaskManager {
             }
         }
 
-        let managed_kind = match config.managed_kind {
+        let managed_kind = match config.managed_kind.as_deref() {
             Some(kind) if kind.trim().is_empty() => None,
-            Some(kind) if crate::task::is_supported_managed_kind(&kind) => Some(kind),
+            Some(kind) if crate::task::is_supported_managed_kind(kind) => Some(kind.to_string()),
             Some(kind) => return Err(format!("unsupported managedKind: {}", kind)),
             None => None,
         };
-        let random_id = Uuid::new_v4().to_string().replace('-', "");
         let is_goal_config = config.goal_status.is_some();
+        let mut tasks = self.tasks.write().await;
+        if is_goal_config && !config.goal_status.as_ref().is_some_and(is_goal_terminal) {
+            let has_conflicting_automation = tasks.values().any(|existing| {
+                task_uses_session_automation(existing, &config.session_id)
+                    && ((is_goal_task(existing)
+                        && !existing.goal_status.as_ref().is_some_and(is_goal_terminal))
+                        || (!is_goal_task(existing) && existing.status == TaskStatus::Running))
+            });
+            if has_conflicting_automation {
+                return Err(
+                    "Current session already has an unfinished Goal or running single-session automation"
+                        .to_string(),
+                );
+            }
+        }
+        validate_new_task_goal_shape(&config)?;
 
+        let random_id = Uuid::new_v4().to_string().replace('-', "");
         let task = CronTask {
             id: format!("cron_{}", &random_id[..12]),
             workspace_path: config.workspace_path,
@@ -1925,7 +2207,7 @@ impl CronTaskManager {
             interval_minutes: config.interval_minutes,
             end_conditions: config.end_conditions,
             run_mode: config.run_mode,
-            status: TaskStatus::Stopped, // Start stopped, caller must explicitly start
+            status: initial_status,
             execution_count: 0,
             created_at: Utc::now(),
             last_executed_at: None,
@@ -1951,7 +2233,7 @@ impl CronTaskManager {
             next_execution_at: None,   // Enriched at read time
             internal_session_id: None, // Set after first execution
             updated_at: Utc::now(),
-            task_id: config.task_id.clone(),
+            task_id: config.task_id,
             goal_status: config.goal_status,
             goal_objective: config.goal_objective,
             goal_updated_at: config.goal_updated_at,
@@ -1962,21 +2244,9 @@ impl CronTaskManager {
             goal_turn_lease: None,
             goal_user_admissions: Vec::new(),
             goal_delivery_outbox: Vec::new(),
+            goal_consecutive_failures: 0,
         };
 
-        let mut tasks = self.tasks.write().await;
-        if is_goal_task(&task) && !task.goal_status.as_ref().is_some_and(is_goal_terminal) {
-            let workspace = normalize_path(&task.workspace_path);
-            let has_unfinished_goal = tasks.values().any(|existing| {
-                existing.session_id == task.session_id
-                    && normalize_path(&existing.workspace_path) == workspace
-                    && is_goal_task(existing)
-                    && !existing.goal_status.as_ref().is_some_and(is_goal_terminal)
-            });
-            if has_unfinished_goal {
-                return Err("Current session already has an unfinished Goal".to_string());
-            }
-        }
         let mut next = tasks.clone();
         next.insert(task.id.clone(), task.clone());
         atomic_save_task_snapshot(
@@ -1988,6 +2258,12 @@ impl CronTaskManager {
         ulog_info!("[CronTask] Created task: {}", task.id);
 
         Ok(task)
+    }
+
+    /// Create a new cron task (does not start it).
+    pub async fn create_task(&self, config: CronTaskConfig) -> Result<CronTask, String> {
+        self.create_task_with_initial_status(config, TaskStatus::Stopped)
+            .await
     }
 
     /// Get a task by ID (enriched with next_execution_at)
@@ -2088,9 +2364,60 @@ impl CronTaskManager {
         let tasks = self.tasks.read().await;
         tasks
             .values()
+            .filter(|task| {
+                !task.is_goal()
+                    && !task
+                        .managed_kind
+                        .as_deref()
+                        .is_some_and(crate::task::is_supported_managed_kind)
+            })
             .find(|t| t.session_id == session_id && t.status == TaskStatus::Running)
             .cloned()
             .map(enrich_task)
+    }
+
+    /// Lifecycle-only query. Running schedulers and unfinished Goals keep their
+    /// session identity stable even before a live CronTask owner attaches.
+    pub async fn has_persistent_task_for_session(&self, session_id: &str) -> bool {
+        self.tasks
+            .read()
+            .await
+            .values()
+            .any(|task| task_holds_persistent_session(task, session_id))
+    }
+
+    /// User-facing lifecycle snapshot. Internal managed jobs are intentionally
+    /// excluded so they do not make every app exit require confirmation.
+    pub async fn user_scheduler_lifecycle_snapshot(&self) -> (usize, Vec<String>) {
+        let tasks = self.tasks.read().await;
+        let mut running_task_count = 0;
+        let mut protected_session_ids = HashSet::new();
+        for task in tasks.values() {
+            if task
+                .managed_kind
+                .as_deref()
+                .is_some_and(crate::task::is_supported_managed_kind)
+            {
+                continue;
+            }
+            let unfinished_goal = task.is_goal()
+                && matches!(
+                    task.goal_status,
+                    Some(GoalStatus::Active | GoalStatus::Paused)
+                );
+            if task.status == TaskStatus::Running && task.goal_status != Some(GoalStatus::Paused) {
+                running_task_count += 1;
+            }
+            if task.status == TaskStatus::Running || unfinished_goal {
+                protected_session_ids.insert(task.session_id.clone());
+                if let Some(session_id) = task.internal_session_id.as_ref() {
+                    protected_session_ids.insert(session_id.clone());
+                }
+            }
+        }
+        let mut protected_session_ids: Vec<String> = protected_session_ids.into_iter().collect();
+        protected_session_ids.sort();
+        (running_task_count, protected_session_ids)
     }
 
     /// Get the latest Goal Mode task for a session.
@@ -2135,56 +2462,33 @@ impl CronTaskManager {
         let tasks = self.tasks.read().await;
         tasks
             .values()
+            .filter(|task| {
+                !task.is_goal()
+                    && !task
+                        .managed_kind
+                        .as_deref()
+                        .is_some_and(crate::task::is_supported_managed_kind)
+            })
             .find(|t| t.tab_id.as_deref() == Some(tab_id) && t.status == TaskStatus::Running)
             .cloned()
             .map(enrich_task)
     }
 
     /// Create, start, and schedule a current-session Goal Mode task.
-    pub async fn create_goal_task(&self, mut config: CronTaskConfig) -> Result<CronTask, String> {
-        let objective = config.prompt.trim().to_string();
-        if objective.is_empty() {
-            return Err("Goal objective is required".to_string());
-        }
-        if config.session_id.trim().is_empty() {
-            return Err("sessionId is required".to_string());
-        }
-        if config.workspace_path.trim().is_empty() {
-            return Err("workspacePath is required".to_string());
-        }
-        if self
-            .get_goal_for_session(&config.session_id, Some(&config.workspace_path), false)
-            .await
-            .is_some()
-        {
-            return Err("Current session already has an unfinished Goal".to_string());
-        }
+    pub async fn create_goal_task(
+        &self,
+        config: CronTaskConfig,
+    ) -> Result<CronTask, GoalMutationError> {
+        let config = prepare_goal_create_config(config)?;
 
-        let now = Utc::now();
-        config.prompt = objective.clone();
-        config.interval_minutes = config.interval_minutes.max(5);
-        config.run_mode = RunMode::SingleSession;
-        config.schedule = Some(CronSchedule::Loop);
-        config.goal_status = Some(GoalStatus::Active);
-        config.goal_objective = Some(objective);
-        config.goal_updated_at = Some(now);
-        config.goal_terminal_reason = None;
-        config.goal_paused_reason = None;
-        config.delivery = None;
-
-        let created = self.create_task(config).await?;
-        let started = match self.start_task(&created.id).await {
-            Ok(task) => task,
-            Err(error) => {
-                let _ = self.delete_task(&created.id).await;
-                return Err(error);
-            }
-        };
-        if let Err(error) = self.start_task_scheduler(&started.id).await {
-            let _ = self.delete_task(&started.id).await;
-            return Err(error);
-        }
-        let task = self.get_task(&started.id).await.unwrap_or(started);
+        // A Goal has no valid persisted "active but stopped" intermediate
+        // state. Commit it Running in the same disk-first transaction as the
+        // uniqueness check; scheduler attachment is recoverable lifecycle work.
+        let created = self
+            .create_task_with_initial_status(config, TaskStatus::Running)
+            .await?;
+        self.start_task_scheduler(&created.id).await?;
+        let task = self.get_task(&created.id).await.unwrap_or(created);
         self.emit_goal_changed(&task, "created").await;
         Ok(task)
     }
@@ -2525,16 +2829,37 @@ impl CronTaskManager {
     /// Can start a task in Stopped status (e.g., after creation or after previous stop)
     pub async fn start_task(&self, task_id: &str) -> Result<CronTask, String> {
         let mut tasks = self.tasks.write().await;
+        let target = tasks
+            .get(task_id)
+            .ok_or_else(|| format!("Task not found: {}", task_id))?;
+
+        if target.status == TaskStatus::Running {
+            return Err("Task is already running".to_string());
+        }
+        if is_goal_task(target) && target.goal_status.as_ref().is_some_and(is_goal_terminal) {
+            return Err("Terminal Goal cannot be restarted".to_string());
+        }
+        if target.run_mode == RunMode::SingleSession
+            && tasks.values().any(|existing| {
+                existing.id != task_id
+                    && task_uses_session_automation(existing, &target.session_id)
+                    && ((is_goal_task(target)
+                        && existing.status == TaskStatus::Running
+                        && !is_goal_task(existing))
+                        || (!is_goal_task(target)
+                            && is_goal_task(existing)
+                            && !existing.goal_status.as_ref().is_some_and(is_goal_terminal)))
+            })
+        {
+            return Err(
+                "Current session already has an unfinished Goal or running single-session automation"
+                    .to_string(),
+            );
+        }
+
         let task = tasks
             .get_mut(task_id)
             .ok_or_else(|| format!("Task not found: {}", task_id))?;
-
-        if task.status == TaskStatus::Running {
-            return Err("Task is already running".to_string());
-        }
-        if is_goal_task(task) && task.goal_status.as_ref().is_some_and(is_goal_terminal) {
-            return Err("Terminal Goal cannot be restarted".to_string());
-        }
 
         task.status = TaskStatus::Running;
         task.updated_at = Utc::now();
@@ -2549,7 +2874,7 @@ impl CronTaskManager {
     }
 
     /// Stop a task (with optional exit reason)
-    /// Also deactivates the associated session and unregisters the CronTask user
+    /// Also releases the associated CronTask owner/projection.
     /// exit_reason can be set when AI calls ExitCronTask tool or end conditions are met
     pub async fn stop_task(
         &self,
@@ -2578,9 +2903,6 @@ impl CronTaskManager {
         self.stop_cron_task_sidecar_internal(&session_id, task_id)
             .await;
 
-        // Deactivate session via app handle
-        self.deactivate_session_internal(&session_id).await;
-
         self.save_to_disk().await?;
 
         // Emit stopped event for frontend listeners (e.g., RecentTasks badge refresh)
@@ -2608,16 +2930,19 @@ impl CronTaskManager {
         &self,
         task_id: &str,
         reason: GoalPausedReason,
-    ) -> Result<CronTask, String> {
+    ) -> Result<CronTask, GoalMutationError> {
         let (updated, changed) = self
             .commit_goal_mutation(task_id, move |task| {
                 if task.status != TaskStatus::Running {
-                    return Err("Goal is not running".to_string());
+                    return Err(GoalMutationError::goal("Goal is not running"));
                 }
                 if task.goal_status.as_ref().is_some_and(is_goal_terminal) {
-                    return Err("Goal is already terminal".to_string());
+                    return Err(GoalMutationError::goal("Goal is already terminal"));
                 }
-                if task.goal_status == Some(GoalStatus::Paused) {
+                if task.goal_status == Some(GoalStatus::Paused)
+                    && task.goal_turn_lease.is_none()
+                    && task.goal_user_admissions.is_empty()
+                {
                     return Ok(false);
                 }
                 let now = Utc::now();
@@ -2646,11 +2971,11 @@ impl CronTaskManager {
         Ok(enrich_task(updated))
     }
 
-    pub async fn resume_goal_task(&self, task_id: &str) -> Result<CronTask, String> {
+    pub async fn resume_goal_task(&self, task_id: &str) -> Result<CronTask, GoalMutationError> {
         let (updated, changed) = self
             .commit_goal_mutation(task_id, |task| {
                 if task.goal_status.as_ref().is_some_and(is_goal_terminal) {
-                    return Err("Goal is already terminal".to_string());
+                    return Err(GoalMutationError::goal("Goal is already terminal"));
                 }
                 if task.status == TaskStatus::Running
                     && task.goal_status == Some(GoalStatus::Active)
@@ -2684,7 +3009,10 @@ impl CronTaskManager {
                     Ok(true)
                 })
                 .await;
-            return Err(format!("Failed to resume Goal scheduler: {}", error));
+            return Err(GoalMutationError::goal(format!(
+                "Failed to resume Goal scheduler: {}",
+                error
+            )));
         }
         let handle = self.app_handle.read().await.clone();
         if let Some(ref handle) = handle {
@@ -2697,52 +3025,42 @@ impl CronTaskManager {
         Ok(enrich_task(updated))
     }
 
-    pub async fn update_goal_objective(
-        &self,
-        task_id: &str,
-        objective: String,
-    ) -> Result<CronTask, String> {
-        self.update_goal_objective_cas(task_id, objective, None)
-            .await
-            .map(|(task, _)| task)
-    }
-
     pub async fn update_goal_objective_cas(
         &self,
         task_id: &str,
         objective: String,
         expected_revision: Option<u64>,
-    ) -> Result<(CronTask, Option<String>), String> {
+    ) -> Result<CronTask, GoalMutationError> {
         let objective = objective.trim().to_string();
         if objective.is_empty() {
-            return Err("Goal objective is required".to_string());
+            return Err(GoalMutationError::goal("Goal objective is required"));
         }
         let mut tasks = self.tasks.write().await;
         let mut next = tasks.clone();
         let task = next
             .get_mut(task_id)
-            .ok_or_else(|| format!("Task not found: {}", task_id))?;
+            .ok_or_else(|| GoalMutationError::goal(format!("Task not found: {}", task_id)))?;
         if !task.is_goal() {
-            return Err("Task is not a Goal Mode task".to_string());
+            return Err(GoalMutationError::goal("Task is not a Goal Mode task"));
         }
         if task.goal_status.as_ref().is_some_and(is_goal_terminal) {
-            return Err("terminal: Cannot edit a terminal Goal".to_string());
+            return Err(GoalMutationError::terminal("Cannot edit a terminal Goal"));
         }
         if expected_revision.is_some_and(|revision| revision != task.goal_revision) {
-            return Err(format!(
-                "stale_revision: expected {}, current {}",
+            return Err(GoalMutationError::stale_revision(format!(
+                "expected {}, current {}",
                 expected_revision.unwrap_or_default(),
                 task.goal_revision
-            ));
+            )));
         }
         let has_authority_to_invalidate =
             task.goal_turn_lease.is_some() || !task.goal_user_admissions.is_empty();
         if task.goal_objective.as_deref() == Some(objective.as_str())
             && !has_authority_to_invalidate
         {
-            return Ok((enrich_task(task.clone()), None));
+            return Ok(enrich_task(task.clone()));
         }
-        let invalidated_lease_id = invalidate_goal_turn_lease(task);
+        invalidate_goal_turn_lease(task);
         task.goal_user_admissions.clear();
         let now = Utc::now();
         task.prompt = objective.clone();
@@ -2767,18 +3085,19 @@ impl CronTaskManager {
             );
         }
         self.emit_goal_changed(&updated, "objective_updated").await;
-        Ok((enrich_task(updated), invalidated_lease_id))
+        Ok(enrich_task(updated))
     }
 
     /// Reserve a desktop/IM user turn before dispatch. The accepted/aborted
     /// finalizer is intentionally separate from the scheduler lease lifecycle.
+    #[cfg(test)]
     pub async fn reserve_goal_user_admission(
         &self,
         task_id: &str,
         admission_id: &str,
         expected_revision: u64,
         admission_kind: GoalUserAdmissionKind,
-    ) -> Result<(CronTask, GoalUserAdmission, Option<String>), String> {
+    ) -> Result<(CronTask, GoalUserAdmission), GoalMutationError> {
         self.reserve_goal_user_admission_at_objective(
             task_id,
             admission_id,
@@ -2790,6 +3109,7 @@ impl CronTaskManager {
         .await
     }
 
+    #[cfg(test)]
     pub async fn reserve_goal_user_admission_at_objective(
         &self,
         task_id: &str,
@@ -2798,30 +3118,90 @@ impl CronTaskManager {
         admission_kind: GoalUserAdmissionKind,
         expected_objective: Option<&str>,
         expected_control_revision: Option<u64>,
-    ) -> Result<(CronTask, GoalUserAdmission, Option<String>), String> {
+    ) -> Result<(CronTask, GoalUserAdmission), GoalMutationError> {
+        self.reserve_goal_user_admission_inner(
+            task_id,
+            admission_id,
+            expected_revision,
+            admission_kind,
+            expected_objective,
+            expected_control_revision,
+            0,
+            None,
+        )
+        .await
+    }
+
+    pub async fn reserve_goal_user_admission_from_sidecar(
+        &self,
+        task_id: &str,
+        admission_id: &str,
+        expected_revision: u64,
+        admission_kind: GoalUserAdmissionKind,
+        expected_objective: Option<&str>,
+        expected_control_revision: Option<u64>,
+        session_id: &str,
+        sidecar_generation: u64,
+        sidecars: &ManagedSidecarManager,
+    ) -> Result<(CronTask, GoalUserAdmission), GoalMutationError> {
+        self.reserve_goal_user_admission_inner(
+            task_id,
+            admission_id,
+            expected_revision,
+            admission_kind,
+            expected_objective,
+            expected_control_revision,
+            sidecar_generation,
+            Some((sidecars, session_id)),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn reserve_goal_user_admission_inner(
+        &self,
+        task_id: &str,
+        admission_id: &str,
+        expected_revision: u64,
+        admission_kind: GoalUserAdmissionKind,
+        expected_objective: Option<&str>,
+        expected_control_revision: Option<u64>,
+        sidecar_generation: u64,
+        sidecar_binding: Option<(&ManagedSidecarManager, &str)>,
+    ) -> Result<(CronTask, GoalUserAdmission), GoalMutationError> {
         let mut tasks = self.tasks.write().await;
         let mut next = tasks.clone();
         let task = next
             .get_mut(task_id)
-            .ok_or_else(|| format!("Task not found: {}", task_id))?;
+            .ok_or_else(|| GoalMutationError::goal(format!("Task not found: {}", task_id)))?;
         if !task.is_goal() {
-            return Err("Task is not a Goal Mode task".to_string());
+            return Err(GoalMutationError::goal("Task is not a Goal Mode task"));
         }
         if task.status != TaskStatus::Running {
-            return Err("Goal is not running".to_string());
+            return Err(GoalMutationError::goal("Goal is not running"));
         }
         if task.goal_status.as_ref().is_some_and(is_goal_terminal) {
-            return Err("terminal: Goal is already terminal".to_string());
+            return Err(GoalMutationError::terminal("Goal is already terminal"));
+        }
+        if let Some((sidecars, session_id)) = sidecar_binding {
+            if !goal_sidecar_generation_is_current(sidecars, session_id, sidecar_generation)? {
+                return Err(GoalMutationError::stale_admission(format!(
+                    "Sidecar generation {sidecar_generation} is no longer current"
+                )));
+            }
         }
         let now = Utc::now();
-        task.goal_user_admissions
-            .retain(|admission| !goal_user_admission_is_expired(admission, now));
         if let Some(existing) = task
             .goal_user_admissions
             .iter()
             .find(|admission| admission.id == admission_id)
         {
-            return Ok((enrich_task(task.clone()), existing.clone(), None));
+            if existing.sidecar_generation != sidecar_generation {
+                return Err(GoalMutationError::stale_admission(
+                    "user Goal admission belongs to a previous Sidecar",
+                ));
+            }
+            return Ok((enrich_task(task.clone()), existing.clone()));
         }
         let same_user_query_epoch = admission_kind == GoalUserAdmissionKind::UserQuery
             && expected_objective
@@ -2829,10 +3209,10 @@ impl CronTaskManager {
                 .is_some_and(|objective| task.goal_objective.as_deref() == Some(objective))
             && expected_control_revision == Some(task.goal_control_revision);
         if task.goal_revision != expected_revision && !same_user_query_epoch {
-            return Err(format!(
-                "stale_revision: expected {}, current {}",
+            return Err(GoalMutationError::stale_revision(format!(
+                "expected {}, current {}",
                 expected_revision, task.goal_revision
-            ));
+            )));
         }
         if admission_kind == GoalUserAdmissionKind::ObjectiveRestart
             && task
@@ -2840,15 +3220,15 @@ impl CronTaskManager {
                 .as_ref()
                 .is_some_and(|lease| lease.state == GoalTurnLeaseState::Claimed)
         {
-            return Err(
-                "lease_conflict: scheduler turn claimed before objective restart".to_string(),
-            );
+            return Err(GoalMutationError::lease_conflict(
+                "scheduler turn claimed before objective restart",
+            ));
         }
-        let preempted_lease_id = None;
         let turn_number = task
             .goal_user_admissions
             .iter()
             .map(|admission| admission.turn_number)
+            .chain(task.goal_turn_lease.iter().map(|lease| lease.turn_number))
             .fold(task.execution_count, u32::max)
             .saturating_add(1);
         task.goal_updated_at = Some(now);
@@ -2859,8 +3239,8 @@ impl CronTaskManager {
             revision: task.goal_revision,
             turn_number,
             state: GoalUserAdmissionState::Pending,
+            sidecar_generation,
             created_at: now,
-            state_updated_at: Some(now),
         };
         task.goal_user_admissions.push(admission.clone());
         let updated = task.clone();
@@ -2874,24 +3254,57 @@ impl CronTaskManager {
 
         self.emit_goal_changed(&updated, "user_admission_reserved")
             .await;
-        if preempted_lease_id.is_some() {
-            self.emit_goal_changed(&updated, "turn_revoked").await;
-        }
-        Ok((enrich_task(updated), admission, preempted_lease_id))
+        Ok((enrich_task(updated), admission))
     }
 
+    #[cfg(test)]
     pub async fn claim_goal_user_admission(
         &self,
         task_id: &str,
         admission_id: &str,
-    ) -> Result<(CronTask, GoalUserAdmission), String> {
+    ) -> Result<(CronTask, GoalUserAdmission), GoalMutationError> {
+        self.claim_goal_user_admission_inner(task_id, admission_id, 0, None)
+            .await
+    }
+
+    pub async fn claim_goal_user_admission_from_sidecar(
+        &self,
+        task_id: &str,
+        admission_id: &str,
+        session_id: &str,
+        sidecar_generation: u64,
+        sidecars: &ManagedSidecarManager,
+    ) -> Result<(CronTask, GoalUserAdmission), GoalMutationError> {
+        self.claim_goal_user_admission_inner(
+            task_id,
+            admission_id,
+            sidecar_generation,
+            Some((sidecars, session_id)),
+        )
+        .await
+    }
+
+    async fn claim_goal_user_admission_inner(
+        &self,
+        task_id: &str,
+        admission_id: &str,
+        sidecar_generation: u64,
+        sidecar_binding: Option<(&ManagedSidecarManager, &str)>,
+    ) -> Result<(CronTask, GoalUserAdmission), GoalMutationError> {
         let mut tasks = self.tasks.write().await;
         let mut next = tasks.clone();
         let task = next
             .get_mut(task_id)
-            .ok_or_else(|| format!("Task not found: {}", task_id))?;
+            .ok_or_else(|| GoalMutationError::goal(format!("Task not found: {}", task_id)))?;
         if !task.is_goal() {
-            return Err("Task is not a Goal Mode task".to_string());
+            return Err(GoalMutationError::goal("Task is not a Goal Mode task"));
+        }
+        if let Some((sidecars, session_id)) = sidecar_binding {
+            if !goal_sidecar_generation_is_current(sidecars, session_id, sidecar_generation)? {
+                return Err(GoalMutationError::stale_admission(format!(
+                    "Sidecar generation {sidecar_generation} is no longer current"
+                )));
+            }
         }
         let now = Utc::now();
         let Some(index) = task
@@ -2899,33 +3312,36 @@ impl CronTaskManager {
             .iter()
             .position(|admission| admission.id == admission_id)
         else {
-            return Err("stale_admission: user Goal admission is no longer current".to_string());
+            return Err(GoalMutationError::stale_admission(
+                "user Goal admission is no longer current",
+            ));
         };
         let admission = task.goal_user_admissions[index].clone();
-        if goal_user_admission_is_expired(&admission, now) {
-            task.goal_user_admissions.remove(index);
-            task.goal_updated_at = Some(now);
-            task.updated_at = now;
-            task.bump_goal_revision();
-            atomic_save_task_snapshot(
-                &self.storage_path,
-                next.values().cloned().collect::<Vec<_>>(),
+        if admission.sidecar_generation != sidecar_generation {
+            return Err(GoalMutationError::stale_admission(
+                "user Goal admission belongs to a previous Sidecar",
+            ));
+        }
+        if task.goal_user_admissions[..index].iter().any(|earlier| {
+            matches!(
+                earlier.state,
+                GoalUserAdmissionState::Pending | GoalUserAdmissionState::Claimed
             )
-            .await?;
-            *tasks = next;
-            return Err("stale_admission: user Goal admission expired before dispatch".to_string());
+        }) {
+            return Err(GoalMutationError::lease_conflict(
+                "an earlier user Goal admission must dispatch first",
+            ));
         }
         if task.status != TaskStatus::Running
             || task.goal_status.as_ref().is_some_and(is_goal_terminal)
         {
-            return Err("terminal: Goal is no longer active".to_string());
+            return Err(GoalMutationError::terminal("Goal is no longer active"));
         }
         if admission.state != GoalUserAdmissionState::Pending {
             return Ok((enrich_task(task.clone()), admission));
         }
         let current = &mut task.goal_user_admissions[index];
         current.state = GoalUserAdmissionState::Claimed;
-        current.state_updated_at = Some(now);
         let claimed = current.clone();
         task.goal_updated_at = Some(now);
         task.updated_at = now;
@@ -2943,19 +3359,59 @@ impl CronTaskManager {
         Ok((enrich_task(updated), claimed))
     }
 
+    #[cfg(test)]
     pub async fn finalize_goal_user_admission(
         &self,
         task_id: &str,
         admission_id: &str,
         accepted: bool,
-    ) -> Result<(CronTask, bool), String> {
+    ) -> Result<(CronTask, bool), GoalMutationError> {
+        self.finalize_goal_user_admission_inner(task_id, admission_id, accepted, 0, None)
+            .await
+    }
+
+    pub async fn abort_goal_user_admission(
+        &self,
+        task_id: &str,
+        admission_id: &str,
+    ) -> Result<(CronTask, bool), GoalMutationError> {
+        self.finalize_goal_user_admission_inner(task_id, admission_id, false, 0, None)
+            .await
+    }
+
+    pub async fn accept_goal_user_admission_from_sidecar(
+        &self,
+        task_id: &str,
+        admission_id: &str,
+        session_id: &str,
+        sidecar_generation: u64,
+        sidecars: &ManagedSidecarManager,
+    ) -> Result<(CronTask, bool), GoalMutationError> {
+        self.finalize_goal_user_admission_inner(
+            task_id,
+            admission_id,
+            true,
+            sidecar_generation,
+            Some((sidecars, session_id)),
+        )
+        .await
+    }
+
+    async fn finalize_goal_user_admission_inner(
+        &self,
+        task_id: &str,
+        admission_id: &str,
+        accepted: bool,
+        sidecar_generation: u64,
+        sidecar_binding: Option<(&ManagedSidecarManager, &str)>,
+    ) -> Result<(CronTask, bool), GoalMutationError> {
         let mut tasks = self.tasks.write().await;
         let mut next = tasks.clone();
         let task = next
             .get_mut(task_id)
-            .ok_or_else(|| format!("Task not found: {}", task_id))?;
+            .ok_or_else(|| GoalMutationError::goal(format!("Task not found: {}", task_id)))?;
         if !task.is_goal() {
-            return Err("Task is not a Goal Mode task".to_string());
+            return Err(GoalMutationError::goal("Task is not a Goal Mode task"));
         }
         let admission = task
             .goal_user_admissions
@@ -2963,18 +3419,33 @@ impl CronTaskManager {
             .find(|admission| admission.id == admission_id)
             .cloned()
             .ok_or_else(|| {
-                "stale_admission: user Goal admission is no longer current".to_string()
+                GoalMutationError::stale_admission("user Goal admission is no longer current")
             })?;
+        if accepted {
+            if let Some((sidecars, session_id)) = sidecar_binding {
+                if admission.sidecar_generation != sidecar_generation
+                    || !goal_sidecar_generation_is_current(
+                        sidecars,
+                        session_id,
+                        sidecar_generation,
+                    )?
+                {
+                    return Err(GoalMutationError::stale_admission(
+                        "user Goal admission belongs to a previous Sidecar",
+                    ));
+                }
+            }
+        }
         if task.status != TaskStatus::Running
             || task.goal_status.as_ref().is_some_and(is_goal_terminal)
         {
-            return Err("terminal: Goal is no longer active".to_string());
+            return Err(GoalMutationError::terminal("Goal is no longer active"));
         }
 
         if accepted && admission.state == GoalUserAdmissionState::Pending {
-            return Err(
-                "stale_admission: user Goal admission was not claimed before dispatch".to_string(),
-            );
+            return Err(GoalMutationError::stale_admission(
+                "user Goal admission was not claimed before dispatch",
+            ));
         }
         if accepted && admission.state == GoalUserAdmissionState::Dispatched {
             return Ok((enrich_task(task.clone()), false));
@@ -2992,7 +3463,6 @@ impl CronTaskManager {
                 .find(|current| current.id == admission_id)
                 .expect("admission checked above");
             current.state = GoalUserAdmissionState::Dispatched;
-            current.state_updated_at = Some(Utc::now());
         } else {
             task.goal_user_admissions
                 .retain(|current| current.id != admission_id);
@@ -3023,7 +3493,7 @@ impl CronTaskManager {
         &self,
         task_id: &str,
         admission_id: &str,
-    ) -> Result<CronTask, String> {
+    ) -> Result<CronTask, GoalMutationError> {
         let admission_id = admission_id.to_string();
         let (updated, changed) = self
             .commit_goal_mutation(task_id, move |task| {
@@ -3055,7 +3525,6 @@ impl CronTaskManager {
         {
             self.stop_cron_task_sidecar_internal(&updated.session_id, task_id)
                 .await;
-            self.deactivate_session_internal(&updated.session_id).await;
         }
         Ok(enrich_task(updated))
     }
@@ -3068,44 +3537,50 @@ impl CronTaskManager {
         &self,
         task_id: &str,
         expected_revision: u64,
-    ) -> Result<GoalSchedulerAdmission, String> {
+    ) -> Result<GoalSchedulerAdmission, GoalMutationError> {
         let tasks = self.tasks.read().await;
         let task = tasks
             .get(task_id)
-            .ok_or_else(|| format!("Task not found: {}", task_id))?;
+            .ok_or_else(|| GoalMutationError::goal(format!("Task not found: {}", task_id)))?;
         if !task.is_goal() {
-            return Err("Task is not a Goal Mode task".to_string());
+            return Err(GoalMutationError::goal("Task is not a Goal Mode task"));
         }
         if task.status != TaskStatus::Running
             || task.goal_status.as_ref().is_some_and(is_goal_terminal)
         {
-            return Err("terminal: Goal is not active".to_string());
+            return Err(GoalMutationError::terminal("Goal is not active"));
         }
         if task.goal_status == Some(GoalStatus::Paused) {
-            return Err("Goal is paused".to_string());
+            return Err(GoalMutationError::goal("Goal is paused"));
         }
         if task.goal_revision != expected_revision {
-            return Err(format!(
-                "stale_revision: expected {}, current {}",
+            return Err(GoalMutationError::stale_revision(format!(
+                "expected {}, current {}",
                 expected_revision, task.goal_revision
-            ));
+            )));
         }
         let now = Utc::now();
-        if task
-            .goal_user_admissions
-            .iter()
-            .any(|admission| !goal_user_admission_is_expired(admission, now))
-        {
-            return Err("lease_conflict: user Goal admission is pending".to_string());
+        if !task.goal_user_admissions.is_empty() {
+            return Err(GoalMutationError::lease_conflict(
+                "user Goal admission is pending",
+            ));
         }
         if task.goal_turn_lease.is_some() {
-            return Err("lease_conflict: Goal already has a scheduler turn lease".to_string());
+            return Err(GoalMutationError::lease_conflict(
+                "Goal already has a scheduler turn lease",
+            ));
+        }
+        if !task.goal_delivery_outbox.is_empty() {
+            return Err(GoalMutationError::lease_conflict(
+                "Goal channel delivery must drain before automatic continuation",
+            ));
         }
 
         let lease = GoalTurnLease {
             id: format!("goal_lease_{}", Uuid::new_v4().simple()),
             turn_number: task.execution_count.saturating_add(1),
             state: GoalTurnLeaseState::Pending,
+            sidecar_generation: 0,
             created_at: now,
         };
         let mut prepared = task.clone();
@@ -3117,48 +3592,92 @@ impl CronTaskManager {
         })
     }
 
+    #[cfg(test)]
     pub async fn claim_goal_scheduler_turn(
         &self,
         task_id: &str,
         lease_id: &str,
         expected_revision: u64,
-    ) -> Result<CronTask, String> {
+    ) -> Result<CronTask, GoalMutationError> {
+        self.claim_goal_scheduler_turn_inner(task_id, lease_id, expected_revision, 0, None)
+            .await
+    }
+
+    pub async fn claim_goal_scheduler_turn_from_sidecar(
+        &self,
+        task_id: &str,
+        lease_id: &str,
+        expected_revision: u64,
+        session_id: &str,
+        sidecar_generation: u64,
+        sidecars: &ManagedSidecarManager,
+    ) -> Result<CronTask, GoalMutationError> {
+        self.claim_goal_scheduler_turn_inner(
+            task_id,
+            lease_id,
+            expected_revision,
+            sidecar_generation,
+            Some((sidecars, session_id)),
+        )
+        .await
+    }
+
+    async fn claim_goal_scheduler_turn_inner(
+        &self,
+        task_id: &str,
+        lease_id: &str,
+        expected_revision: u64,
+        sidecar_generation: u64,
+        sidecar_binding: Option<(&ManagedSidecarManager, &str)>,
+    ) -> Result<CronTask, GoalMutationError> {
         let mut tasks = self.tasks.write().await;
         let mut next = tasks.clone();
         let task = next
             .get_mut(task_id)
-            .ok_or_else(|| format!("Task not found: {}", task_id))?;
+            .ok_or_else(|| GoalMutationError::goal(format!("Task not found: {}", task_id)))?;
         if !task.is_goal() {
-            return Err("Task is not a Goal Mode task".to_string());
+            return Err(GoalMutationError::goal("Task is not a Goal Mode task"));
+        }
+        if let Some((sidecars, session_id)) = sidecar_binding {
+            if !goal_sidecar_generation_is_current(sidecars, session_id, sidecar_generation)? {
+                return Err(GoalMutationError::stale_lease(format!(
+                    "Sidecar generation {sidecar_generation} is no longer current"
+                )));
+            }
         }
         if let Some(existing) = task.goal_turn_lease.as_ref() {
-            if existing.id == lease_id && existing.state == GoalTurnLeaseState::Claimed {
+            if existing.id == lease_id
+                && existing.state == GoalTurnLeaseState::Claimed
+                && existing.sidecar_generation == sidecar_generation
+            {
                 return Ok(enrich_task(task.clone()));
             }
-            return Err("lease_conflict: Goal already has a claimed scheduler turn".to_string());
-        }
-        if task.status != TaskStatus::Running || task.goal_status != Some(GoalStatus::Active) {
-            return Err("terminal: Goal is not active".to_string());
-        }
-        if task.goal_revision != expected_revision {
-            return Err(format!(
-                "stale_revision: expected {}, current {}",
-                expected_revision, task.goal_revision
+            return Err(GoalMutationError::lease_conflict(
+                "Goal already has a claimed scheduler turn",
             ));
         }
+        if task.status != TaskStatus::Running || task.goal_status != Some(GoalStatus::Active) {
+            return Err(GoalMutationError::terminal("Goal is not active"));
+        }
+        if task.goal_revision != expected_revision {
+            return Err(GoalMutationError::stale_revision(format!(
+                "expected {}, current {}",
+                expected_revision, task.goal_revision
+            )));
+        }
         let now = Utc::now();
-        task.goal_user_admissions
-            .retain(|admission| !goal_user_admission_is_expired(admission, now));
         if !task.goal_user_admissions.is_empty() {
-            return Err("lease_conflict: user Goal admission is pending".to_string());
+            return Err(GoalMutationError::lease_conflict(
+                "user Goal admission is pending",
+            ));
         }
         let lease = GoalTurnLease {
             id: lease_id.to_string(),
             turn_number: task.execution_count.saturating_add(1),
             state: GoalTurnLeaseState::Claimed,
+            sidecar_generation,
             created_at: now,
         };
-        task.execution_count = lease.turn_number;
         task.goal_turn_lease = Some(lease);
         task.goal_updated_at = Some(now);
         task.updated_at = now;
@@ -3179,7 +3698,7 @@ impl CronTaskManager {
         &self,
         task_id: &str,
         lease_id: &str,
-    ) -> Result<CronTask, String> {
+    ) -> Result<CronTask, GoalMutationError> {
         let lease_id = lease_id.to_string();
         let (updated, changed) = self
             .commit_goal_mutation(task_id, move |task| {
@@ -3215,14 +3734,14 @@ impl CronTaskManager {
         internal_session_id: Option<String>,
         output_text: Option<String>,
         channel_delivery_expected: bool,
-    ) -> Result<GoalTurnFinalization, String> {
+    ) -> Result<GoalTurnFinalization, GoalMutationError> {
         let mut tasks = self.tasks.write().await;
         let mut next = tasks.clone();
         let task = next
-            .get_mut(task_id)
-            .ok_or_else(|| format!("Task not found: {}", task_id))?;
+            .get(task_id)
+            .ok_or_else(|| GoalMutationError::goal(format!("Task not found: {}", task_id)))?;
         if !task.is_goal() {
-            return Err("Task is not a Goal Mode task".to_string());
+            return Err(GoalMutationError::goal("Task is not a Goal Mode task"));
         }
         let lease_matches = task.goal_turn_lease.as_ref().is_some_and(|lease| {
             lease.id == lease_id && lease.state == GoalTurnLeaseState::Claimed
@@ -3235,12 +3754,26 @@ impl CronTaskManager {
             });
         }
 
+        let finalized_turn_number = task
+            .goal_turn_lease
+            .as_ref()
+            .expect("matching Goal lease checked before finalization")
+            .turn_number;
         let now = Utc::now();
+        let task = next
+            .get_mut(task_id)
+            .expect("Goal task checked before finalization");
         task.goal_turn_lease = None;
+        task.execution_count = task.execution_count.max(finalized_turn_number);
         task.last_executed_at = Some(now);
         task.last_run_ok = Some(success);
         task.last_run_duration_ms = Some(duration_ms);
         task.last_error = if success { None } else { error.clone() };
+        task.goal_consecutive_failures = if success {
+            0
+        } else {
+            task.goal_consecutive_failures.saturating_add(1)
+        };
         if let Some(session_id) = internal_session_id {
             task.internal_session_id = Some(session_id);
         }
@@ -3288,8 +3821,9 @@ impl CronTaskManager {
         if release_terminal_owner {
             self.stop_cron_task_sidecar_internal(&session_id, task_id)
                 .await;
-            self.deactivate_session_internal(&session_id).await;
         }
+
+        self.emit_goal_changed(&updated, "execution_complete").await;
 
         Ok(GoalTurnFinalization {
             task: enrich_task(updated),
@@ -3308,9 +3842,10 @@ impl CronTaskManager {
             let Some(item) = task.goal_delivery_outbox.first_mut() else {
                 return Ok(true);
             };
-            if item.state == GoalDeliveryState::Sending {
-                return Ok(false);
-            }
+            // `Sending` is a crash marker, not a lock. This method has a
+            // single replayer owner per Goal; retrying may duplicate a push
+            // that succeeded before its commit failed, which is the intended
+            // at-least-once contract and avoids a permanent in-process stall.
             item.state = GoalDeliveryState::Sending;
             item.attempts = item.attempts.saturating_add(1);
             item.last_error = None;
@@ -3364,7 +3899,8 @@ impl CronTaskManager {
                 task.bump_goal_revision();
                 Ok(true)
             })
-            .await?;
+            .await
+            .map_err(|error| error.to_string())?;
         Ok(updated.goal_delivery_outbox.is_empty())
     }
 
@@ -3455,7 +3991,7 @@ impl CronTaskManager {
         task_id: &str,
         status: GoalStatus,
         reason: Option<String>,
-    ) -> Result<CronTask, String> {
+    ) -> Result<CronTask, GoalMutationError> {
         let outcome = self
             .transition_goal_terminal(task_id, status, reason, GoalTerminalActor::User)
             .await?;
@@ -3468,11 +4004,17 @@ impl CronTaskManager {
         status: GoalStatus,
         reason: Option<String>,
         actor: GoalTerminalActor,
-    ) -> Result<GoalTerminalOutcome, String> {
-        self.transition_goal_terminal_inner(task_id, status, reason, actor, None)
+    ) -> Result<GoalTerminalOutcome, GoalMutationError> {
+        if actor == GoalTerminalActor::Model {
+            return Err(GoalMutationError::stale_lease(
+                "model terminal update requires Sidecar-bound authority",
+            ));
+        }
+        self.transition_goal_terminal_inner(task_id, status, reason, actor, None, None)
             .await
     }
 
+    #[cfg(test)]
     pub async fn transition_goal_terminal_authorized(
         &self,
         task_id: &str,
@@ -3480,9 +4022,37 @@ impl CronTaskManager {
         reason: Option<String>,
         actor: GoalTerminalActor,
         authority_id: &str,
-    ) -> Result<GoalTerminalOutcome, String> {
-        self.transition_goal_terminal_inner(task_id, status, reason, actor, Some(authority_id))
-            .await
+    ) -> Result<GoalTerminalOutcome, GoalMutationError> {
+        self.transition_goal_terminal_inner(
+            task_id,
+            status,
+            reason,
+            actor,
+            Some(authority_id),
+            None,
+        )
+        .await
+    }
+
+    pub async fn transition_goal_terminal_authorized_from_sidecar(
+        &self,
+        task_id: &str,
+        status: GoalStatus,
+        reason: Option<String>,
+        authority_id: &str,
+        session_id: &str,
+        sidecar_generation: u64,
+        sidecars: &ManagedSidecarManager,
+    ) -> Result<GoalTerminalOutcome, GoalMutationError> {
+        self.transition_goal_terminal_inner(
+            task_id,
+            status,
+            reason,
+            GoalTerminalActor::Model,
+            Some(authority_id),
+            Some((sidecars, session_id, sidecar_generation)),
+        )
+        .await
     }
 
     async fn transition_goal_terminal_inner(
@@ -3492,18 +4062,25 @@ impl CronTaskManager {
         reason: Option<String>,
         actor: GoalTerminalActor,
         authority_id: Option<&str>,
-    ) -> Result<GoalTerminalOutcome, String> {
+        sidecar_binding: Option<(&ManagedSidecarManager, &str, u64)>,
+    ) -> Result<GoalTerminalOutcome, GoalMutationError> {
         if !is_goal_terminal(&status) {
-            return Err("Goal terminal status must be complete, blocked, or canceled".to_string());
+            return Err(GoalMutationError::goal(
+                "Goal terminal status must be complete, blocked, or canceled",
+            ));
         }
         match actor {
             GoalTerminalActor::Model
                 if !matches!(status, GoalStatus::Complete | GoalStatus::Blocked) =>
             {
-                return Err("Model may only mark a Goal complete or blocked".to_string());
+                return Err(GoalMutationError::goal(
+                    "Model may only mark a Goal complete or blocked",
+                ));
             }
             GoalTerminalActor::User if status != GoalStatus::Canceled => {
-                return Err("User Goal control may only cancel the Goal".to_string());
+                return Err(GoalMutationError::goal(
+                    "User Goal control may only cancel the Goal",
+                ));
             }
             _ => {}
         }
@@ -3512,9 +4089,9 @@ impl CronTaskManager {
         let mut next = tasks.clone();
         let task = next
             .get_mut(task_id)
-            .ok_or_else(|| format!("Task not found: {}", task_id))?;
+            .ok_or_else(|| GoalMutationError::goal(format!("Task not found: {}", task_id)))?;
         if !task.is_goal() {
-            return Err("Task is not a Goal Mode task".to_string());
+            return Err(GoalMutationError::goal("Task is not a Goal Mode task"));
         }
         if task.goal_status.as_ref().is_some_and(is_goal_terminal) {
             return Ok(GoalTerminalOutcome::AlreadyTerminal(enrich_task(
@@ -3535,16 +4112,45 @@ impl CronTaskManager {
                     )
             })
         });
+        if actor == GoalTerminalActor::Model {
+            if let Some((sidecars, session_id, sidecar_generation)) = sidecar_binding {
+                let authority_generation = if authority_matches_scheduler {
+                    task.goal_turn_lease
+                        .as_ref()
+                        .map(|lease| lease.sidecar_generation)
+                } else if authority_matches_user {
+                    task.goal_user_admissions
+                        .iter()
+                        .find(|admission| admission.id == authority_id.unwrap_or_default())
+                        .map(|admission| admission.sidecar_generation)
+                } else {
+                    None
+                };
+                if authority_generation != Some(sidecar_generation)
+                    || !goal_sidecar_generation_is_current(
+                        sidecars,
+                        session_id,
+                        sidecar_generation,
+                    )?
+                {
+                    return Err(GoalMutationError::stale_lease(
+                        "Goal turn authority belongs to a previous Sidecar",
+                    ));
+                }
+            }
+        }
         if actor == GoalTerminalActor::Model
             && !authority_matches_scheduler
             && !authority_matches_user
         {
-            return Err(
-                "stale_lease: Goal turn authority is missing or no longer current".to_string(),
-            );
+            return Err(GoalMutationError::stale_lease(
+                "Goal turn authority is missing or no longer current",
+            ));
         }
         if actor == GoalTerminalActor::Model && !task.end_conditions.ai_can_exit {
-            return Err("This Goal does not allow AI to end it".to_string());
+            return Err(GoalMutationError::goal(
+                "This Goal does not allow AI to end it",
+            ));
         }
 
         let session_id = task.session_id.clone();
@@ -3582,7 +4188,6 @@ impl CronTaskManager {
         if !defer_owner_release {
             self.stop_cron_task_sidecar_internal(&session_id, task_id)
                 .await;
-            self.deactivate_session_internal(&session_id).await;
         }
 
         let handle = self.app_handle.read().await.clone();
@@ -3602,38 +4207,6 @@ impl CronTaskManager {
         Ok(GoalTerminalOutcome::Applied(enrich_task(updated)))
     }
 
-    /// Internal helper to deactivate a session via SidecarManager
-    async fn deactivate_session_internal(&self, session_id: &str) {
-        let handle_opt = self.app_handle.read().await;
-        if let Some(ref handle) = *handle_opt {
-            if let Some(sidecar_state) = handle.try_state::<ManagedSidecarManager>() {
-                match sidecar_state.lock() {
-                    Ok(mut manager) => {
-                        manager.deactivate_session(session_id);
-                        ulog_debug!("[CronTask] Deactivated session: {}", session_id);
-                    }
-                    Err(e) => {
-                        ulog_error!(
-                            "[CronTask] Cannot deactivate session {}: lock poisoned: {}",
-                            session_id,
-                            e
-                        );
-                    }
-                }
-            } else {
-                ulog_warn!(
-                    "[CronTask] Cannot deactivate session {}: SidecarManager state not found",
-                    session_id
-                );
-            }
-        } else {
-            ulog_warn!(
-                "[CronTask] Cannot deactivate session {}: app handle not available",
-                session_id
-            );
-        }
-    }
-
     /// Internal helper to release CronTask's ownership of the Session Sidecar
     /// With Session-centric Sidecar (Owner model), this only releases the CronTask owner.
     /// If Tab still owns the Sidecar, it continues running.
@@ -3641,8 +4214,10 @@ impl CronTaskManager {
         let handle_opt = self.app_handle.read().await;
         if let Some(ref handle) = *handle_opt {
             if let Some(sidecar_state) = handle.try_state::<ManagedSidecarManager>() {
-                let owner = SidecarOwner::CronTask(task_id.to_string());
-                match release_session_sidecar(&sidecar_state, session_id, &owner) {
+                let result = sidecar_state
+                    .lock()
+                    .map(|mut manager| manager.release_cron_session(session_id, task_id));
+                match result {
                     Ok(stopped) => {
                         if stopped {
                             ulog_info!(
@@ -3651,7 +4226,7 @@ impl CronTaskManager {
                             );
                         } else {
                             ulog_info!(
-                                "[CronTask] Released CronTask {} from session {}, Sidecar continues (Tab still owns it)",
+                                "[CronTask] Released CronTask {} from session {}, Sidecar continues under another owner",
                                 task_id, session_id
                             );
                         }
@@ -3680,7 +4255,7 @@ impl CronTaskManager {
     }
 
     /// Delete a task
-    /// Also releases CronTask's Sidecar ownership and deactivates session if task was running
+    /// Also releases CronTask's Sidecar ownership/projection if it was running.
     pub async fn delete_task(&self, task_id: &str) -> Result<(), String> {
         let mut tasks = self.tasks.write().await;
         let task = tasks
@@ -3691,11 +4266,10 @@ impl CronTaskManager {
         let was_running = task.status == TaskStatus::Running;
         drop(tasks);
 
-        // Release CronTask's Sidecar ownership and deactivate session if task was running
+        // Release CronTask's Sidecar ownership/projection if it was running.
         if was_running {
             self.stop_cron_task_sidecar_internal(&session_id, task_id)
                 .await;
-            self.deactivate_session_internal(&session_id).await;
         }
 
         self.save_to_disk().await?;
@@ -3882,4 +4456,734 @@ static CRON_TASK_MANAGER: std::sync::OnceLock<CronTaskManager> = std::sync::Once
 /// Get the global CronTaskManager instance
 pub fn get_cron_task_manager() -> &'static CronTaskManager {
     CRON_TASK_MANAGER.get_or_init(CronTaskManager::new)
+}
+
+#[cfg(test)]
+mod architecture_boundary_tests {
+    use super::*;
+
+    fn config(workspace: &str, session: &str, prompt: &str) -> CronTaskConfig {
+        CronTaskConfig {
+            workspace_path: workspace.to_string(),
+            session_id: session.to_string(),
+            prompt: prompt.to_string(),
+            interval_minutes: 5,
+            end_conditions: EndConditions::default(),
+            run_mode: RunMode::SingleSession,
+            notify_enabled: true,
+            tab_id: None,
+            permission_mode: String::new(),
+            model: None,
+            provider_env: None,
+            provider_id: None,
+            provider_intent: ProviderIntent::FollowAgent,
+            runtime: None,
+            runtime_config: None,
+            mcp_enabled_servers: None,
+            managed_kind: None,
+            source_bot_id: None,
+            delivery: None,
+            schedule: None,
+            name: None,
+            task_id: None,
+            goal_status: None,
+            goal_objective: None,
+            goal_updated_at: None,
+            goal_terminal_reason: None,
+            goal_paused_reason: None,
+        }
+    }
+
+    fn manager(storage_path: PathBuf) -> CronTaskManager {
+        CronTaskManager {
+            tasks: Arc::new(RwLock::new(HashMap::new())),
+            storage_path,
+            shutdown: Arc::new(RwLock::new(false)),
+            executing_tasks: Arc::new(RwLock::new(HashSet::new())),
+            active_schedulers: Arc::new(RwLock::new(HashSet::new())),
+            scheduler_handles: Arc::new(RwLock::new(HashMap::new())),
+            goal_delivery_replayers: Arc::new(RwLock::new(HashSet::new())),
+            app_handle: Arc::new(RwLock::new(None)),
+        }
+    }
+
+    #[test]
+    fn goal_creation_inherits_session_configuration_but_preserves_policy() {
+        let mut input = config("/tmp/goal", "session-goal", "  finish this  ");
+        input.end_conditions = EndConditions {
+            deadline: None,
+            max_executions: Some(7),
+            ai_can_exit: false,
+        };
+        input.notify_enabled = false;
+        input.permission_mode = "fullAgency".to_string();
+        input.tab_id = Some("tab-stale".to_string());
+        input.model = Some("model-stale".to_string());
+        input.provider_env = Some(TaskProviderEnv::default());
+        input.provider_id = Some("provider-stale".to_string());
+        input.provider_intent = ProviderIntent::Explicit;
+        input.runtime = Some("codex".to_string());
+        input.runtime_config = Some(serde_json::json!({ "stale": true }));
+        input.mcp_enabled_servers = Some(vec!["stale-mcp".to_string()]);
+        input.managed_kind = Some(crate::task::MANAGED_KIND_MEMORY_GARDENER.to_string());
+        input.source_bot_id = Some("bot-stale".to_string());
+        input.delivery = Some(CronDelivery {
+            bot_id: "bot-stale".to_string(),
+            chat_id: "chat-stale".to_string(),
+            platform: "test".to_string(),
+        });
+        input.task_id = Some("task-stale".to_string());
+
+        let prepared = prepare_goal_create_config(input).expect("prepare Goal config");
+
+        assert_eq!(prepared.prompt, "finish this");
+        assert_eq!(prepared.goal_objective.as_deref(), Some("finish this"));
+        assert_eq!(prepared.permission_mode, "fullAgency");
+        assert_eq!(prepared.end_conditions.max_executions, Some(7));
+        assert!(!prepared.end_conditions.ai_can_exit);
+        assert!(!prepared.notify_enabled);
+        assert_eq!(prepared.run_mode, RunMode::SingleSession);
+        assert_eq!(prepared.schedule, Some(CronSchedule::Loop));
+        assert_eq!(prepared.goal_status, Some(GoalStatus::Active));
+        assert!(prepared.tab_id.is_none());
+        assert!(prepared.model.is_none());
+        assert!(prepared.provider_env.is_none());
+        assert!(prepared.provider_id.is_none());
+        assert_eq!(prepared.provider_intent, ProviderIntent::FollowAgent);
+        assert!(prepared.runtime.is_none());
+        assert!(prepared.runtime_config.is_none());
+        assert!(prepared.mcp_enabled_servers.is_none());
+        assert!(prepared.managed_kind.is_none());
+        assert!(prepared.source_bot_id.is_none());
+        assert!(prepared.delivery.is_none());
+        assert!(prepared.task_id.is_none());
+    }
+
+    #[test]
+    fn loop_failure_policy_has_one_backoff_sequence_and_terminal_threshold() {
+        let mut failures = 0;
+        let decisions = (0..9)
+            .map(|_| register_loop_failure(&mut failures))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            decisions,
+            vec![
+                LoopFailureDecision::RetryAfter(3),
+                LoopFailureDecision::RetryAfter(10),
+                LoopFailureDecision::RetryAfter(30),
+                LoopFailureDecision::RetryAfter(60),
+                LoopFailureDecision::RetryAfter(120),
+                LoopFailureDecision::RetryAfter(300),
+                LoopFailureDecision::RetryAfter(300),
+                LoopFailureDecision::RetryAfter(300),
+                LoopFailureDecision::RetryAfter(300),
+            ]
+        );
+        assert_eq!(
+            register_loop_failure(&mut failures),
+            LoopFailureDecision::Stop
+        );
+    }
+
+    #[tokio::test]
+    async fn ordinary_lookup_filters_goal_and_managed_before_selecting() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = manager(temp.path().join("cron_tasks.json"));
+
+        let mut goal_config = config("/tmp/goal", "shared-session", "goal objective");
+        goal_config.schedule = Some(CronSchedule::Loop);
+        goal_config.goal_status = Some(GoalStatus::Active);
+        goal_config.goal_objective = Some("goal objective".to_string());
+        goal_config.goal_updated_at = Some(Utc::now());
+        let goal = manager.create_task(goal_config).await.expect("create Goal");
+        {
+            let mut tasks = manager.tasks.write().await;
+            let stored = tasks.get_mut(&goal.id).expect("stored Goal");
+            stored.status = TaskStatus::Running;
+            // Historical Goal rows may still carry a pre-session-owned tab id.
+            stored.tab_id = Some("shared-tab".to_string());
+        }
+        assert!(manager
+            .get_active_task_for_session("shared-session")
+            .await
+            .is_none());
+        assert!(manager
+            .get_active_task_for_tab("shared-tab")
+            .await
+            .is_none());
+
+        let mut managed = config("/tmp/goal", "managed-session", "managed");
+        managed.tab_id = Some("managed-tab".to_string());
+        managed.managed_kind = Some(crate::task::MANAGED_KIND_MEMORY_GARDENER.to_string());
+        let managed = manager
+            .create_task(managed)
+            .await
+            .expect("create managed task");
+        manager
+            .start_task(&managed.id)
+            .await
+            .expect("start managed task");
+        assert!(manager
+            .get_active_task_for_session("managed-session")
+            .await
+            .is_none());
+        assert!(manager
+            .get_active_task_for_tab("managed-tab")
+            .await
+            .is_none());
+
+        let mut ordinary = config("/tmp/goal", "ordinary-session", "ordinary");
+        ordinary.tab_id = Some("shared-tab".to_string());
+        let ordinary = manager
+            .create_task(ordinary)
+            .await
+            .expect("create ordinary task");
+        manager
+            .start_task(&ordinary.id)
+            .await
+            .expect("start ordinary task");
+        assert_eq!(
+            manager
+                .get_active_task_for_session("ordinary-session")
+                .await
+                .map(|task| task.id),
+            Some(ordinary.id.clone())
+        );
+        assert_eq!(
+            manager
+                .get_active_task_for_tab("shared-tab")
+                .await
+                .map(|task| task.id),
+            Some(ordinary.id)
+        );
+        assert!(
+            manager
+                .has_persistent_task_for_session("shared-session")
+                .await
+        );
+        assert!(
+            manager
+                .has_persistent_task_for_session("managed-session")
+                .await
+        );
+        let (running_count, protected_sessions) = manager.user_scheduler_lifecycle_snapshot().await;
+        assert_eq!(running_count, 2, "Goal + ordinary Cron, excluding managed");
+        assert_eq!(
+            protected_sessions,
+            vec!["ordinary-session".to_string(), "shared-session".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn paused_goal_keeps_session_protected_without_counting_as_running() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = manager(temp.path().join("cron_tasks.json"));
+        let mut goal = config("/tmp/paused-goal", "paused-session", "resume later");
+        goal.schedule = Some(CronSchedule::Loop);
+        goal.goal_status = Some(GoalStatus::Active);
+        goal.goal_objective = Some("resume later".to_string());
+        goal.goal_updated_at = Some(Utc::now());
+        let created = manager
+            .create_task_with_initial_status(goal, TaskStatus::Running)
+            .await
+            .expect("create paused Goal");
+        manager
+            .pause_goal_task(&created.id, GoalPausedReason::UserStop)
+            .await
+            .expect("pause Goal");
+
+        assert!(
+            manager
+                .has_persistent_task_for_session("paused-session")
+                .await
+        );
+        let (running_count, protected_sessions) = manager.user_scheduler_lifecycle_snapshot().await;
+        assert_eq!(running_count, 0);
+        assert_eq!(protected_sessions, vec!["paused-session".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn goal_create_transaction_persists_a_visible_recoverable_shape() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = manager(temp.path().join("cron_tasks.json"));
+        let mut goal = config("/tmp/goal-create", "goal-session", "finish release");
+        goal.schedule = Some(CronSchedule::Loop);
+        goal.goal_status = Some(GoalStatus::Active);
+        goal.goal_objective = Some("finish release".to_string());
+        goal.goal_updated_at = Some(Utc::now());
+
+        let created = manager
+            .create_task_with_initial_status(goal.clone(), TaskStatus::Running)
+            .await
+            .expect("commit running Goal");
+        assert_eq!(created.status, TaskStatus::Running);
+        assert!(manager
+            .get_goal_for_session("goal-session", Some("/tmp/goal-create"), false)
+            .await
+            .is_some());
+
+        let mut duplicate_config = goal;
+        duplicate_config.workspace_path = "/tmp/different-workspace".to_string();
+        let duplicate = manager
+            .create_task_with_initial_status(duplicate_config, TaskStatus::Running)
+            .await
+            .expect_err("unfinished Goal remains unique across workspace mismatches");
+        assert!(duplicate.contains("unfinished Goal"));
+
+        let persisted: CronTaskStore = serde_json::from_str(
+            &std::fs::read_to_string(&manager.storage_path).expect("read persisted Goal"),
+        )
+        .expect("parse persisted Goal");
+        let stored = persisted
+            .tasks
+            .into_iter()
+            .find(|task| task.id == created.id)
+            .expect("stored Goal");
+        assert_eq!(stored.status, TaskStatus::Running);
+        assert_eq!(stored.goal_status, Some(GoalStatus::Active));
+    }
+
+    #[tokio::test]
+    async fn paused_stop_revokes_claimed_user_admission_before_late_accept() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = manager(temp.path().join("cron_tasks.json"));
+        let mut config = config("/tmp/goal-stop", "session-stop", "finish release");
+        config.schedule = Some(CronSchedule::Loop);
+        config.goal_status = Some(GoalStatus::Active);
+        config.goal_objective = Some("finish release".to_string());
+        config.goal_updated_at = Some(Utc::now());
+        let goal = manager.create_task(config).await.expect("create Goal");
+        let running = manager.start_task(&goal.id).await.expect("start Goal");
+        let paused = manager
+            .pause_goal_task(&goal.id, GoalPausedReason::UserStop)
+            .await
+            .expect("initial pause");
+        let (reserved, admission) = manager
+            .reserve_goal_user_admission_at_objective(
+                &goal.id,
+                "user-1",
+                paused.goal_revision,
+                GoalUserAdmissionKind::UserQuery,
+                paused.goal_objective.as_deref(),
+                Some(paused.goal_control_revision),
+            )
+            .await
+            .expect("reserve paused Goal query");
+        manager
+            .claim_goal_user_admission(&goal.id, &admission.id)
+            .await
+            .expect("claim paused Goal query");
+
+        let stopped_again = manager
+            .pause_goal_task(&goal.id, GoalPausedReason::UserStop)
+            .await
+            .expect("Stop revokes claimed authority");
+        assert_eq!(stopped_again.goal_status, Some(GoalStatus::Paused));
+        assert!(stopped_again.goal_user_admissions.is_empty());
+        assert!(stopped_again.goal_control_revision > reserved.goal_control_revision);
+        assert!(manager
+            .finalize_goal_user_admission(&goal.id, &admission.id, true)
+            .await
+            .is_err());
+        assert_eq!(
+            manager
+                .get_task(&goal.id)
+                .await
+                .expect("Goal remains")
+                .goal_status,
+            Some(GoalStatus::Paused)
+        );
+        assert_eq!(running.status, TaskStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn user_admissions_claim_in_reservation_order() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = manager(temp.path().join("cron_tasks.json"));
+        let mut config = config("/tmp/goal-order", "session-order", "finish release");
+        config.schedule = Some(CronSchedule::Loop);
+        config.goal_status = Some(GoalStatus::Active);
+        config.goal_objective = Some("finish release".to_string());
+        config.goal_updated_at = Some(Utc::now());
+        let goal = manager.create_task(config).await.expect("create Goal");
+        let running = manager.start_task(&goal.id).await.expect("start Goal");
+        let (_, first) = manager
+            .reserve_goal_user_admission_at_objective(
+                &goal.id,
+                "first",
+                running.goal_revision,
+                GoalUserAdmissionKind::UserQuery,
+                running.goal_objective.as_deref(),
+                Some(running.goal_control_revision),
+            )
+            .await
+            .expect("reserve first");
+        let latest = manager.get_task(&goal.id).await.expect("latest Goal");
+        let (_, second) = manager
+            .reserve_goal_user_admission_at_objective(
+                &goal.id,
+                "second",
+                latest.goal_revision,
+                GoalUserAdmissionKind::UserQuery,
+                latest.goal_objective.as_deref(),
+                Some(latest.goal_control_revision),
+            )
+            .await
+            .expect("reserve second");
+
+        let error = manager
+            .claim_goal_user_admission(&goal.id, &second.id)
+            .await
+            .expect_err("second cannot overtake first");
+        assert_eq!(error.code(), "lease_conflict");
+        manager
+            .claim_goal_user_admission(&goal.id, &first.id)
+            .await
+            .expect("first claims normally");
+    }
+
+    #[tokio::test]
+    async fn queued_user_turn_follows_inflight_scheduler_turn_number() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = manager(temp.path().join("cron_tasks.json"));
+        let mut config = config("/tmp/goal-turns", "session-turns", "finish release");
+        config.schedule = Some(CronSchedule::Loop);
+        config.goal_status = Some(GoalStatus::Active);
+        config.goal_objective = Some("finish release".to_string());
+        config.goal_updated_at = Some(Utc::now());
+        let goal = manager.create_task(config).await.expect("create Goal");
+        let running = manager.start_task(&goal.id).await.expect("start Goal");
+        let candidate = manager
+            .admit_goal_scheduler_turn(&goal.id, running.goal_revision)
+            .await
+            .expect("admit scheduler");
+        let claimed = manager
+            .claim_goal_scheduler_turn(&goal.id, &candidate.lease.id, candidate.expected_revision)
+            .await
+            .expect("claim scheduler");
+        assert_eq!(claimed.execution_count, 0, "claim does not consume a turn");
+        let (_, user) = manager
+            .reserve_goal_user_admission_at_objective(
+                &goal.id,
+                "queued-user",
+                claimed.goal_revision,
+                GoalUserAdmissionKind::UserQuery,
+                claimed.goal_objective.as_deref(),
+                Some(claimed.goal_control_revision),
+            )
+            .await
+            .expect("queue user behind scheduler");
+        assert_eq!(candidate.lease.turn_number, 1);
+        assert_eq!(user.turn_number, 2);
+    }
+
+    #[tokio::test]
+    async fn durable_finalization_retries_same_lease_after_storage_recovers() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = manager(temp.path().join("cron_tasks.json"));
+        let mut config = config("/tmp/goal-finalize", "session-finalize", "finish release");
+        config.schedule = Some(CronSchedule::Loop);
+        config.goal_status = Some(GoalStatus::Active);
+        config.goal_objective = Some("finish release".to_string());
+        config.goal_updated_at = Some(Utc::now());
+        let goal = manager.create_task(config).await.expect("create Goal");
+        manager.start_task(&goal.id).await.expect("start Goal");
+        let current = manager.get_task(&goal.id).await.expect("running Goal");
+        let candidate = manager
+            .admit_goal_scheduler_turn(&goal.id, current.goal_revision)
+            .await
+            .expect("admit scheduler");
+        manager
+            .claim_goal_scheduler_turn(&goal.id, &candidate.lease.id, candidate.expected_revision)
+            .await
+            .expect("claim scheduler");
+
+        std::fs::remove_file(&manager.storage_path).expect("remove storage");
+        std::fs::create_dir(&manager.storage_path).expect("block storage path");
+        let storage_path = manager.storage_path.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            std::fs::remove_dir(storage_path).expect("restore storage path");
+        });
+        let request = GoalTurnFinalizationRequest {
+            success: true,
+            error: None,
+            duration_ms: 25,
+            internal_session_id: Some("session-finalize".to_string()),
+            output_text: Some("done".to_string()),
+            channel_delivery_expected: false,
+        };
+        let finalized = finalize_goal_turn_until_durable(
+            &manager,
+            &manager.shutdown,
+            &goal.id,
+            &candidate.lease.id,
+            &request,
+        )
+        .await
+        .expect("storage recovery finalizes same lease");
+        assert!(finalized.applied);
+        assert!(finalized.task.goal_turn_lease.is_none());
+        assert_eq!(finalized.task.execution_count, 1);
+    }
+
+    #[tokio::test]
+    async fn sending_outbox_item_retries_in_same_process() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = manager(temp.path().join("cron_tasks.json"));
+        let mut config = config("/tmp/goal-outbox", "session-outbox", "finish release");
+        config.schedule = Some(CronSchedule::Loop);
+        config.goal_status = Some(GoalStatus::Active);
+        config.goal_objective = Some("finish release".to_string());
+        config.goal_updated_at = Some(Utc::now());
+        let goal = manager.create_task(config).await.expect("create Goal");
+        {
+            let mut tasks = manager.tasks.write().await;
+            tasks
+                .get_mut(&goal.id)
+                .expect("stored Goal")
+                .goal_delivery_outbox
+                .push(GoalDeliveryOutboxItem {
+                    id: "delivery-1".to_string(),
+                    lease_id: "lease-1".to_string(),
+                    session_id: "session-outbox".to_string(),
+                    text: "result".to_string(),
+                    state: GoalDeliveryState::Sending,
+                    attempts: 0,
+                    created_at: Utc::now(),
+                    last_error: None,
+                });
+        }
+        manager
+            .save_to_disk()
+            .await
+            .expect("persist Sending marker");
+
+        assert!(!manager
+            .flush_goal_delivery_outbox_once(&goal.id)
+            .await
+            .expect("same-process retry"));
+        let item = manager
+            .get_task(&goal.id)
+            .await
+            .expect("Goal")
+            .goal_delivery_outbox
+            .into_iter()
+            .next()
+            .expect("pending delivery");
+        assert_eq!(item.state, GoalDeliveryState::Pending);
+        assert_eq!(item.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn pending_delivery_blocks_the_next_automatic_goal_turn() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = manager(temp.path().join("cron_tasks.json"));
+        let mut config = config(
+            "/tmp/goal-outbox-gate",
+            "session-outbox-gate",
+            "finish release",
+        );
+        config.schedule = Some(CronSchedule::Loop);
+        config.goal_status = Some(GoalStatus::Active);
+        config.goal_objective = Some("finish release".to_string());
+        config.goal_updated_at = Some(Utc::now());
+        let goal = manager
+            .create_task_with_initial_status(config, TaskStatus::Running)
+            .await
+            .expect("create Goal");
+        {
+            let mut tasks = manager.tasks.write().await;
+            tasks
+                .get_mut(&goal.id)
+                .expect("Goal")
+                .goal_delivery_outbox
+                .push(GoalDeliveryOutboxItem {
+                    id: "delivery-pending".to_string(),
+                    lease_id: "lease-finished".to_string(),
+                    session_id: "session-outbox-gate".to_string(),
+                    text: "result".to_string(),
+                    state: GoalDeliveryState::Pending,
+                    attempts: 0,
+                    created_at: Utc::now(),
+                    last_error: None,
+                });
+        }
+        let revision = manager
+            .get_task(&goal.id)
+            .await
+            .expect("Goal")
+            .goal_revision;
+
+        let error = manager
+            .admit_goal_scheduler_turn(&goal.id, revision)
+            .await
+            .expect_err("automatic continuation waits for channel delivery");
+        assert_eq!(error.code(), "lease_conflict");
+    }
+
+    #[tokio::test]
+    async fn goal_failure_count_is_durable_and_success_resets_it() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let storage_path = temp.path().join("cron_tasks.json");
+        let manager = manager(storage_path.clone());
+        let mut config = config("/tmp/goal-failures", "session-failures", "finish release");
+        config.schedule = Some(CronSchedule::Loop);
+        config.goal_status = Some(GoalStatus::Active);
+        config.goal_objective = Some("finish release".to_string());
+        config.goal_updated_at = Some(Utc::now());
+        let goal = manager
+            .create_task_with_initial_status(config, TaskStatus::Running)
+            .await
+            .expect("create Goal");
+
+        let candidate = manager
+            .admit_goal_scheduler_turn(&goal.id, goal.goal_revision)
+            .await
+            .expect("admit failed turn");
+        manager
+            .claim_goal_scheduler_turn(&goal.id, &candidate.lease.id, candidate.expected_revision)
+            .await
+            .expect("claim failed turn");
+        let failed = manager
+            .finalize_goal_scheduler_turn(
+                &goal.id,
+                &candidate.lease.id,
+                false,
+                Some("runtime failed".to_string()),
+                10,
+                None,
+                None,
+                false,
+            )
+            .await
+            .expect("finalize failed turn");
+        assert_eq!(failed.task.goal_consecutive_failures, 1);
+        let reloaded = CronTaskManager::load_tasks_from_file(&storage_path);
+        assert_eq!(reloaded[&goal.id].goal_consecutive_failures, 1);
+
+        let candidate = manager
+            .admit_goal_scheduler_turn(&goal.id, failed.task.goal_revision)
+            .await
+            .expect("admit successful turn");
+        manager
+            .claim_goal_scheduler_turn(&goal.id, &candidate.lease.id, candidate.expected_revision)
+            .await
+            .expect("claim successful turn");
+        let succeeded = manager
+            .finalize_goal_scheduler_turn(
+                &goal.id,
+                &candidate.lease.id,
+                true,
+                None,
+                10,
+                None,
+                None,
+                false,
+            )
+            .await
+            .expect("finalize successful turn");
+        assert_eq!(succeeded.task.goal_consecutive_failures, 0);
+        let reloaded = CronTaskManager::load_tasks_from_file(&storage_path);
+        assert_eq!(reloaded[&goal.id].goal_consecutive_failures, 0);
+    }
+
+    #[tokio::test]
+    async fn create_task_rejects_orphan_and_mixed_goal_shapes_but_keeps_internal_loop() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = manager(temp.path().join("cron_tasks.json"));
+
+        let mut orphan = config("/tmp/goal-shape", "session-orphan", "ordinary");
+        orphan.goal_objective = Some("orphan objective".to_string());
+        let orphan_error = manager
+            .create_task(orphan)
+            .await
+            .expect_err("Goal metadata without explicit identity must fail");
+        assert!(orphan_error.contains("explicit goalStatus"));
+
+        let mut mixed = config("/tmp/goal-shape", "session-mixed", "objective");
+        mixed.schedule = Some(CronSchedule::Every {
+            minutes: 5,
+            start_at: None,
+            catch_up_window: None,
+        });
+        mixed.goal_status = Some(GoalStatus::Active);
+        mixed.goal_objective = Some("objective".to_string());
+        mixed.goal_updated_at = Some(Utc::now());
+        let mixed_error = manager
+            .create_task(mixed)
+            .await
+            .expect_err("Goal identity with an ordinary schedule must fail");
+        assert!(mixed_error.contains("schedule.kind=loop"));
+
+        let mut internal_loop = config("/tmp/goal-shape", "session-loop", "internal loop");
+        internal_loop.schedule = Some(CronSchedule::Loop);
+        let internal_loop = manager
+            .create_task(internal_loop)
+            .await
+            .expect("loop shape without goalStatus remains an internal ordinary task");
+        assert!(!internal_loop.is_goal());
+    }
+
+    #[tokio::test]
+    async fn goal_creation_rejects_pending_session_identity() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = manager(temp.path().join("cron_tasks.json"));
+        let mut pending = config("/tmp/goal-rebind", "pending-tab-1", "finish release");
+        pending.schedule = Some(CronSchedule::Loop);
+        pending.goal_status = Some(GoalStatus::Active);
+        pending.goal_objective = Some("finish release".to_string());
+        pending.goal_updated_at = Some(Utc::now());
+        let error = manager
+            .create_task(pending)
+            .await
+            .expect_err("pending Goal identity must be materialized first");
+        assert!(error.contains("materialized sessionId"));
+        assert!(manager.get_all_tasks().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn terminal_persist_failure_keeps_goal_active_for_protector_retry() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let manager = manager(temp.path().join("cron_tasks.json"));
+        let mut config = config("/tmp/goal-protector", "session-1", "finish release");
+        config.schedule = Some(CronSchedule::Loop);
+        config.goal_status = Some(GoalStatus::Active);
+        config.goal_objective = Some("finish release".to_string());
+        config.goal_updated_at = Some(Utc::now());
+        let goal = manager.create_task(config).await.expect("create Goal");
+        manager.start_task(&goal.id).await.expect("start Goal");
+
+        std::fs::remove_file(&manager.storage_path).expect("remove storage file");
+        std::fs::create_dir(&manager.storage_path).expect("replace storage with directory");
+        manager
+            .transition_goal_terminal(
+                &goal.id,
+                GoalStatus::Blocked,
+                Some("failure protector".to_string()),
+                GoalTerminalActor::System,
+            )
+            .await
+            .expect_err("disk failure must reject terminal transition");
+        let still_active = manager
+            .get_task(&goal.id)
+            .await
+            .expect("Goal remains loaded");
+        assert_eq!(still_active.goal_status, Some(GoalStatus::Active));
+        assert_ne!(still_active.status, TaskStatus::Stopped);
+
+        std::fs::remove_dir(&manager.storage_path).expect("remove blocking directory");
+        manager
+            .transition_goal_terminal(
+                &goal.id,
+                GoalStatus::Blocked,
+                Some("failure protector".to_string()),
+                GoalTerminalActor::System,
+            )
+            .await
+            .expect("protector retry persists terminal state");
+        let blocked = manager.get_task(&goal.id).await.expect("blocked Goal");
+        assert_eq!(blocked.goal_status, Some(GoalStatus::Blocked));
+        assert_eq!(blocked.status, TaskStatus::Stopped);
+    }
 }

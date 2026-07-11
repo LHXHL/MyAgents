@@ -1,5 +1,110 @@
 use super::*;
 
+/// Stable machine-readable classification for Goal mutation failures.
+///
+/// The Management API serializes this value directly. Human-readable error
+/// text remains intentionally separate so callers never need to recover
+/// protocol state by parsing a message prefix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalMutationErrorCode {
+    StaleRevision,
+    StaleAdmission,
+    StaleLease,
+    LeaseConflict,
+    Terminal,
+    GoalChanged,
+    GoalError,
+}
+
+impl GoalMutationErrorCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StaleRevision => "stale_revision",
+            Self::StaleAdmission => "stale_admission",
+            Self::StaleLease => "stale_lease",
+            Self::LeaseConflict => "lease_conflict",
+            Self::Terminal => "terminal",
+            Self::GoalChanged => "goal_changed",
+            Self::GoalError => "goal_error",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoalMutationError {
+    code: GoalMutationErrorCode,
+    message: String,
+}
+
+impl GoalMutationError {
+    pub fn new(code: GoalMutationErrorCode, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+        }
+    }
+
+    pub fn coded(code: GoalMutationErrorCode, detail: impl AsRef<str>) -> Self {
+        Self::new(code, detail.as_ref())
+    }
+
+    pub fn code(&self) -> &'static str {
+        self.code.as_str()
+    }
+
+    pub fn goal(message: impl Into<String>) -> Self {
+        Self::new(GoalMutationErrorCode::GoalError, message)
+    }
+
+    pub fn stale_revision(detail: impl AsRef<str>) -> Self {
+        Self::coded(GoalMutationErrorCode::StaleRevision, detail)
+    }
+
+    pub fn stale_admission(detail: impl AsRef<str>) -> Self {
+        Self::coded(GoalMutationErrorCode::StaleAdmission, detail)
+    }
+
+    pub fn stale_lease(detail: impl AsRef<str>) -> Self {
+        Self::coded(GoalMutationErrorCode::StaleLease, detail)
+    }
+
+    pub fn lease_conflict(detail: impl AsRef<str>) -> Self {
+        Self::coded(GoalMutationErrorCode::LeaseConflict, detail)
+    }
+
+    pub fn terminal(detail: impl AsRef<str>) -> Self {
+        Self::coded(GoalMutationErrorCode::Terminal, detail)
+    }
+
+    pub fn goal_changed(detail: impl AsRef<str>) -> Self {
+        Self::coded(GoalMutationErrorCode::GoalChanged, detail)
+    }
+}
+
+impl std::fmt::Display for GoalMutationError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.code == GoalMutationErrorCode::GoalError {
+            formatter.write_str(&self.message)
+        } else {
+            write!(formatter, "{}: {}", self.code.as_str(), self.message)
+        }
+    }
+}
+
+impl std::error::Error for GoalMutationError {}
+
+impl From<String> for GoalMutationError {
+    fn from(message: String) -> Self {
+        Self::goal(message)
+    }
+}
+
+impl From<&str> for GoalMutationError {
+    fn from(message: &str) -> Self {
+        Self::goal(message)
+    }
+}
+
 /// Run mode for cron tasks
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
@@ -73,6 +178,9 @@ pub struct GoalTurnLease {
     pub id: String,
     pub turn_number: u32,
     pub state: GoalTurnLeaseState,
+    /// Unique Rust Sidecar process generation that owns this authority.
+    #[serde(default)]
+    pub sidecar_generation: u64,
     pub created_at: DateTime<Utc>,
 }
 
@@ -99,9 +207,10 @@ pub struct GoalUserAdmission {
     pub turn_number: u32,
     #[serde(default)]
     pub state: GoalUserAdmissionState,
+    /// Unique Rust Sidecar process generation that admitted this turn.
+    #[serde(default)]
+    pub sidecar_generation: u64,
     pub created_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub state_updated_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -432,6 +541,9 @@ pub struct CronTask {
     /// Durable at-least-once IM delivery queue, deduplicated by scheduler lease.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub goal_delivery_outbox: Vec<GoalDeliveryOutboxItem>,
+    /// Durable consecutive turn failures for Goal backoff/terminal policy.
+    #[serde(default)]
+    pub goal_consecutive_failures: u32,
 }
 
 impl CronTask {
@@ -451,6 +563,16 @@ impl CronTask {
         if self.is_goal() {
             self.goal_control_revision = self.goal_control_revision.saturating_add(1);
         }
+    }
+
+    /// One source of truth for the Goal turn being dispatched. A prepared or
+    /// claimed lease owns its number; otherwise the next durable completion
+    /// follows `execution_count`.
+    pub fn goal_turn_number_for_dispatch(&self) -> u32 {
+        self.goal_turn_lease
+            .as_ref()
+            .map(|lease| lease.turn_number)
+            .unwrap_or_else(|| self.execution_count.saturating_add(1))
     }
 }
 

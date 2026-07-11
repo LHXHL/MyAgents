@@ -7,7 +7,6 @@ import {
 } from '../runtimes/external-session';
 import { createBuiltinSessionEngine } from './builtin-adapter';
 import { createExternalSessionEngine } from './external-adapter';
-import { cancelPendingGoalDispatches } from './goal-turn-authority';
 import type { SessionEngine, SessionEngineKind } from './types';
 
 const builtinEngine = createBuiltinSessionEngine();
@@ -32,15 +31,9 @@ export function getSessionRuntimeType(): ReturnType<typeof getActiveRuntimeType>
  * external adapter does not become a mixed owner.
  */
 export async function stopActiveTurn(): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }> {
-  // A queue item may already be removed from the visible queue while its
-  // pre-dispatch Goal claim is still round-tripping through Rust. Cancel the
-  // guard before checking runtime liveness so a late successful claim cannot
-  // dispatch after Pause/Cancel has already revoked it.
-  cancelPendingGoalDispatches();
   if (shouldUseExternalRuntime()) {
-    if (isExternalSessionActive()) {
-      return externalEngine.stopTurn();
-    }
+    const externalResult = await externalEngine.stopTurn();
+    if (!externalResult.success || !externalResult.alreadyStopped) return externalResult;
     const stopped = await interruptCurrentResponse();
     return stopped ? { success: true } : { success: true, alreadyStopped: true };
   }

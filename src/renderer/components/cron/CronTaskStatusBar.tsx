@@ -1,9 +1,9 @@
 // Cron Task Status Bar - non-blocking composer status for armed/running/stopped cron tasks.
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
-import { Flag, Settings2, Square, Timer, X } from 'lucide-react';
+import { Flag, Play, Settings2, Square, Timer, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import type { CronSchedule, GoalStatus } from '@/types/cronTask';
+import type { CronSchedule, GoalStatus, ScheduledTaskKind } from '@/types/cronTask';
 import { isSupportedLocale } from '@/../shared/i18n';
 import {
   formatCronCountdown,
@@ -17,6 +17,7 @@ interface CronTaskStatusBarProps {
   mode?: CronTaskStatusBarMode;
   intervalMinutes: number;
   schedule?: CronSchedule | null;
+  taskKind?: ScheduledTaskKind;
   executionCount?: number;
   maxExecutions?: number;
   nextExecutionAt?: string | null;
@@ -28,6 +29,7 @@ interface CronTaskStatusBarProps {
   onSettings?: () => void;
   onCancel?: () => void;
   onStop?: () => void;
+  onResume?: () => void;
   onDismissStopped?: () => void;
 }
 
@@ -35,6 +37,7 @@ export default function CronTaskStatusBar({
   mode = 'draft',
   intervalMinutes,
   schedule,
+  taskKind = 'cron',
   executionCount = 0,
   maxExecutions,
   nextExecutionAt,
@@ -46,12 +49,13 @@ export default function CronTaskStatusBar({
   onSettings,
   onCancel,
   onStop,
+  onResume,
   onDismissStopped,
 }: CronTaskStatusBarProps) {
   const { t, i18n } = useTranslation('task');
   const locale = isSupportedLocale(i18n.language) ? i18n.language : 'zh-CN';
   const [now, setNow] = useState(() => Date.now());
-  const isGoalMode = Boolean(goalStatus) || (mode === 'draft' && schedule?.kind === 'loop');
+  const isGoalMode = Boolean(goalStatus) || (mode === 'draft' && taskKind === 'goal');
   const isGoalPaused = goalStatus === 'paused';
   const isGoalTerminal = goalStatus === 'complete' || goalStatus === 'blocked' || goalStatus === 'canceled';
   const isActive = (mode === 'running' || mode === 'executing') && !isGoalTerminal;
@@ -109,6 +113,9 @@ export default function CronTaskStatusBar({
   const goalRoundText = mode === 'executing'
     ? t('cron.statusBar.roundExecuting', { count: goalRound })
     : t('cron.statusBar.roundRunning', { count: Math.max(1, executionCount) });
+  const scheduleText = taskKind === 'cron' && schedule?.kind === 'loop'
+    ? t('cron.statusBar.legacyLoopSchedule')
+    : formatCronScheduleForStatusBar(schedule, intervalMinutes, t, locale);
   const detail = isGoalMode
     ? goalTerminalReason?.trim()
       || (isGoalPaused
@@ -119,7 +126,7 @@ export default function CronTaskStatusBar({
     : mode === 'stopped'
     ? t('cron.statusBar.stoppedDetail')
     : [
-        formatCronScheduleForStatusBar(schedule, intervalMinutes, t, locale),
+        scheduleText,
         mode === 'executing'
           ? t('cron.statusBar.roundExecuting', { count: executionNumber ?? executionCount + 1 })
           : countdown,
@@ -181,6 +188,17 @@ export default function CronTaskStatusBar({
             title={t('cron.statusBar.cancelTitle')}
           >
             <X className="h-4 w-4" />
+          </button>
+        )}
+        {isGoalPaused && onResume && (
+          <button
+            type="button"
+            onClick={onResume}
+            className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-[var(--goal-status-color)] transition hover:bg-[var(--heartbeat-bg)]"
+            title={t('cron.statusBar.resumeGoalTitle')}
+          >
+            <Play className="h-3.5 w-3.5" />
+            {t('cron.statusBar.resumeGoalButton')}
           </button>
         )}
         {canStop && onStop && (

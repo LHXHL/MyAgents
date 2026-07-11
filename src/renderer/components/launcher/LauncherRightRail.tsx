@@ -140,7 +140,7 @@ export default memo(function LauncherRightRail({
     const loadMoreRef = useRef<HTMLDivElement | null>(null);
     const {
         sessions,
-        cronTasks,
+        protectedSchedulerSessionIds,
         sessionTagsMap,
         isSessionsLoading: isHistoryLoading,
         error,
@@ -250,10 +250,7 @@ export default memo(function LauncherRightRail({
         [filteredSessions, visibleHistoryCount],
     );
 
-    const cronProtectedSessionIds = useMemo(
-        () => new Set(cronTasks.filter(task => task.status === 'running').map(task => task.sessionId)),
-        [cronTasks],
-    );
+    const cronProtectedSessionIds = protectedSchedulerSessionIds;
 
     useEffect(() => {
         const root = scrollRootRef.current;

@@ -135,9 +135,12 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   cronModeEnabled = false,
   cronConfig,
   cronTask,
+  goalTask,
   stoppedCronTask,
   cronIsExecuting = false,
   cronExecutionNumber,
+  goalIsExecuting = false,
+  goalExecutionNumber,
   composerConfigLockedReason,
   onCronButtonClick,
   onCronSettings,
@@ -145,6 +148,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   onCronStop,
   onCronDismissStopped,
   onGoalEdit,
+  onGoalResume,
   onSlashAction,
   sdkSlashCommands = [],
   mode = 'chat',
@@ -1226,19 +1230,24 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     // eslint-disable-next-line react-hooks/exhaustive-deps -- textareaRef is stable
   }, [cyclePermissionMode, undoStack, fileService, showSlashMenu, filteredSlashCommands, slashSearchQuery, selectedSlashIndex, slashPosition, showFileSearch, fileSearchResults, selectedFileIndex, inputValue, atPosition, fileSearchQuery, images.length, handleSend, handleSkillSelect, handleSlashSelect, mentionTab, thoughtResults]);
 
-  const showDraftCronBar = cronModeEnabled && !cronTask && !!cronConfig;
-  const terminalGoalTask = !isLauncherMode
-    && cronTask?.status === 'stopped'
-    && isGoalBarTask(cronTask)
-    && (cronTask.goalStatus === 'complete' || cronTask.goalStatus === 'blocked' || cronTask.goalStatus === 'canceled')
+  const visibleGoalTask = !isLauncherMode && isGoalBarTask(goalTask) ? goalTask : null;
+  const terminalGoalTask = visibleGoalTask
+    && (visibleGoalTask.goalStatus === 'complete' || visibleGoalTask.goalStatus === 'blocked' || visibleGoalTask.goalStatus === 'canceled')
+    ? visibleGoalTask
+    : null;
+  const activeGoalTask = visibleGoalTask && !terminalGoalTask ? visibleGoalTask : null;
+  const showDraftCronBar = cronModeEnabled && !cronTask && !!cronConfig && !visibleGoalTask;
+  const ordinaryActiveCronTask = !visibleGoalTask && !isLauncherMode && cronTask?.status === 'running' && cronTask.runMode !== 'new_session'
     ? cronTask
     : null;
-  const activeCronTask = !isLauncherMode && cronTask?.status === 'running' && cronTask.runMode !== 'new_session'
-    ? cronTask
+  const activeCronTask = activeGoalTask ?? ordinaryActiveCronTask;
+  const visibleStoppedCronTask = !isLauncherMode
+    ? (terminalGoalTask ?? (!visibleGoalTask ? stoppedCronTask : null))
     : null;
-  const visibleStoppedCronTask = !isLauncherMode ? (stoppedCronTask ?? terminalGoalTask) : null;
   const activeTaskIsGoal = isGoalBarTask(activeCronTask);
   const visibleStoppedTaskIsGoal = isGoalBarTask(visibleStoppedCronTask);
+  const visibleTaskIsExecuting = activeTaskIsGoal ? goalIsExecuting : cronIsExecuting;
+  const visibleExecutionNumber = activeTaskIsGoal ? goalExecutionNumber : cronExecutionNumber;
   const hasCronBar = showDraftCronBar || !!activeCronTask || !!visibleStoppedCronTask;
 
   return (
@@ -1302,6 +1311,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
         {showDraftCronBar && cronConfig && (
           <CronTaskStatusBar
             mode="draft"
+            taskKind={cronConfig.taskKind}
             intervalMinutes={cronConfig.intervalMinutes}
             schedule={cronConfig.schedule}
             onSettings={() => onCronSettings?.()}
@@ -1310,7 +1320,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
         )}
         {activeCronTask && (
           <CronTaskStatusBar
-            mode={cronIsExecuting ? 'executing' : 'running'}
+            mode={visibleTaskIsExecuting ? 'executing' : 'running'}
             intervalMinutes={activeCronTask.intervalMinutes}
             schedule={activeCronTask.schedule}
             goalStatus={activeCronTask.goalStatus}
@@ -1319,8 +1329,9 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
             executionCount={activeCronTask.executionCount}
             maxExecutions={activeCronTask.endConditions?.maxExecutions}
             nextExecutionAt={activeCronTask.nextExecutionAt}
-            executionNumber={cronExecutionNumber}
+            executionNumber={visibleExecutionNumber}
             onGoalObjectiveClick={activeTaskIsGoal ? onGoalEdit : undefined}
+            onResume={activeTaskIsGoal ? onGoalResume : undefined}
             onStop={() => onCronStop?.()}
           />
         )}
