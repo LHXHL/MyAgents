@@ -52,7 +52,7 @@
 | Pit-of-Success helper 细节 / 新增 helper | `tech_docs/pit_of_success.md` |
 | Sidecar 启动性能 / 冷启动退化排查 | `tech_docs/sidecar_cold_start.md` |
 | 任务中心 / Task Store / Thought Store | `tech_docs/task_center.md` |
-| Cloud Space / Space Issue / Space Skill / registered agent（开发中） | `tech_docs/space_cloud.md` |
+| Cloud Space / Space Issue / Space Skill / registered agent（开发中） | `tech_docs/space_cloud.md`；改云端 API / 鉴权 / 数据 / quota 时还 MUST 读同级仓库 `../MyAgents_space/specs/ARCHITECTURE.md` |
 | IM Bot / Telegram / Dingtalk / 飞书 | `tech_docs/im_integration_architecture.md` |
 | Plugin Bridge / OpenClaw / SDK shim | `tech_docs/plugin_bridge_architecture.md` |
 | Claude Code / Codex / Gemini Runtime | `tech_docs/multi_agent_runtime.md` |

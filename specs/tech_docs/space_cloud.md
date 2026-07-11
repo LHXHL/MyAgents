@@ -6,6 +6,24 @@ Cloud Space 是桌面端连接 MyAgents 官方/团队空间的客户端能力，
 
 它不是 AI Runtime，也不属于 Session Sidecar：登录、Issue/Skill/Agent 注册、附件上传下载、IssueDelivery 拉取都由 Rust Tauri command 拥有；React 只负责 UI 编排；CLI 通过 management API 暴露 issue/attachment/claim 子集给 Agent 自动化使用。
 
+## 文档归属与兼容基线
+
+Cloud Space 横跨两个独立版本、独立发布的仓库，不能把其中一边的文档当成全部真相：
+
+| 范围 | 权威位置 |
+| --- | --- |
+| Desktop build gate、Rust HTTP/session、`device_id`、本地 token/状态、connector、UI、CLI、Task/Session 执行 | `hAcKlyc/MyAgents`：本文 + `specs/ARCHITECTURE.md`「MyAgents Cloud Space」 |
+| Cloud API、身份/权限、领域模型、D1/R2/KV ownership、Account plan/quota、运营与发布 | `hAcKlyc/MyAgents_space`：`specs/ARCHITECTURE.md` + `specs/RELEASE.md` |
+
+本地平级 checkout 中，云端架构文档地址是 `../MyAgents_space/specs/ARCHITECTURE.md`。截至 2026-07-12，最近一次联合校验基线为：
+
+- Desktop：`package.json` 为 `0.2.50` 开发线；Space 客户端行为基线 commit `4594dd8`。检查时最近的 Desktop release tag 仍是 `v0.2.49`，因此这里描述的是下一开发版本，不代表已发布客户端。
+- Cloud：`MyAgents_space` release `v0.1.1` / commit `1201e7c`；其 `dev/0.1.2` 从该版本起步，尚无新契约差异。
+
+已知差异：Desktop `0.2.50` 的 types/connector 已能前向解析 `claim_followup`、`targetSessionId`，mock 也实现了定向回原 claim session；Space `v0.1.1` 的 `issue_deliveries` 仍全部依附 Goal subscription，poll payload 不返回这两个字段。生产评论更新当前仍走 subscription fanout，所以客户端必须把 follow-up 模式视为 forward-compatible 能力，不能视为 `v0.1.1` 已上线契约。
+
+这个组合是兼容记录，不是版本绑定。当前 API 没有 URL version prefix；双方通过 additive response、缺省字段 fallback 和 rollout 兼容旧调用方。修改 API 字段、错误码、状态机、permission、poll/presence 或兼容策略时，必须同步更新 Space serializer/tests/架构文档与本仓 types/wrapper/tests/本文。只改 Desktop UI 或本地执行且云端契约不变时，不要把客户端细节复制进云端文档；只改 Worker 内部实现且无契约变化时也不要求改本文。
+
 ## 构建门控
 
 Space 是 build-time capability：
@@ -131,7 +149,7 @@ Cloud Worker 用 `users.name_source` / `avatar_source` 区分登录资料、MyAg
 
 ## IssueDelivery / Claim 处理
 
-Registered Agent 可从 Space 拉取 IssueDelivery，并将其作为轻量通知注入到本地 AI session。Issue claim 在产品语义上是 Issue 的唯一经办人/接手人，不是脱离 Issue 的独立任务或锁 owner；产品生命周期仍由 Issue 自身的 `state` 表达。`issue_claims.status` 是云端执行层的 operational 状态：`active` 用于唯一经办人、follow-up 投递和 poll 快路径，`completed` / `cancelled` 用于结束或释放该经办关系。
+Registered Agent 可从 Space 拉取 IssueDelivery，并将其作为轻量通知注入到本地 AI session。Issue claim 在产品语义上是 Issue 的唯一经办人/接手人，不是脱离 Issue 的独立任务或锁 owner；产品生命周期仍由 Issue 自身的 `state` 表达。`issue_claims.status` 是云端执行层的 operational 状态：`active` 用于唯一经办人和 poll 快路径，`completed` / `cancelled` 用于结束或释放该经办关系。定向 follow-up 是客户端已预留、云端 `v0.1.1` 尚未实现的后续契约。
 
 1. `cmd_space_register_agent` 在云端创建 registered agent，并写入本地映射。
 2. Rust 启动时调用 `start_space_connector()` 创建进程内 connector。connector 按本地 runnable registered agents 维护每个 agent 的 `next_due_at`、`empty_streak`、`last_interval_secs`；`cmd_space_wake_connector` 只是唤醒 connector，`cmd_space_process_deliveries_once` 仅保留为手动强制处理入口。
@@ -147,12 +165,12 @@ Delivery connector 的轮询节奏由云端提示 + 本地执行机制共同决�
 - connector 读取当前 `baseUrl + user + device` 下全部 active 本地 Agent，不受 Renderer 当前选中 Space 限制；当前 Space 只属于导航/页面状态。每轮 delivery **GET 成功**即保留 poll-success 事实，后续 delivery 解析、session 注入或 ACK 失败不能把活跃客户端误判为离线。
 - 某设备组至少一次 poll 成功后，现有 connector owner 按 `(baseUrl, ownerUserId, deviceId)` 从组内选稳定 token，至多每 60 秒尝试一次 device-presence touch。失败尝试同样进入 60 秒节流，并在下一轮优先换用组内其他 token；一个设备有多个 Agent 也只写一次。不新增 loop，delivery GET 继续纯读。
 
-Delivery 分两类：
+客户端模型区分两种 Delivery mode，但当前云端版本只发出第一种：
 
-- `subscription`：普通 Goal 订阅通知，用于让 Agent 发现 `todo` Issue。客户端按 Registered Agent 的 Issue 订阅策略选择 session：连续对话复用 `delivery_session_id`，新对话使用 `issue_session_ids[issueId]`。
-- `claim_followup`：已 claim Issue 的后续评论消息。云端必须携带 `targetSessionId = claim.localSessionId`，客户端必须优先投递到该 session，确保同一 Issue 的连续处理回到原本地上下文。
+- `subscription`（Space `v0.1.1` 当前行为）：普通 Goal 订阅通知，用于让 Agent 发现 `todo` Issue。客户端按 Registered Agent 的 Issue 订阅策略选择 session：连续对话复用 `delivery_session_id`，新对话使用 `issue_session_ids[issueId]`。
+- `claim_followup`（Desktop `0.2.50` forward-compatible 行为）：未来云端发出时必须携带 `targetSessionId = claim.localSessionId`，客户端优先投递到该 session，确保同一 Issue 的连续处理回到原本地上下文。缺字段的 `v0.1.1` payload 不得被客户端猜成 follow-up。
 
-评论同步规则：
+Space `v0.1.1` 的评论更新仍按 subscription fanout，不保证回到 active claim 的 `localSessionId`。未来云端实现 `claim_followup` 时，目标契约是：
 
 - 如果 Issue 的经办人是 Registered Agent，且评论作者不是该经办人，则生成 `claim_followup` delivery。
 - 经办人自己评论或完成 Issue 时，不把这条评论回推给自己，避免自循环。
