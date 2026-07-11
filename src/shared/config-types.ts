@@ -170,6 +170,21 @@ export const SUBSCRIPTION_PROVIDER_ID = 'anthropic-sub';
 /** Runtime-backed Codex subscription provider ID. */
 export const CODEX_SUBSCRIPTION_PROVIDER_ID = 'codex-sub';
 
+/** Host-managed Grok subscription provider ID. */
+export const XAI_SUBSCRIPTION_PROVIDER_ID = 'xai-sub';
+export const XAI_SUBSCRIPTION_API_BASE_URL = 'https://api.x.ai/v1';
+
+export type BuiltinSubscriptionProviderId =
+  | typeof SUBSCRIPTION_PROVIDER_ID
+  | typeof XAI_SUBSCRIPTION_PROVIDER_ID;
+
+export function isBuiltinSubscriptionProviderId(
+  providerId: string | null | undefined,
+): providerId is BuiltinSubscriptionProviderId {
+  return providerId === SUBSCRIPTION_PROVIDER_ID
+    || providerId === XAI_SUBSCRIPTION_PROVIDER_ID;
+}
+
 type ProviderOrderable = {
   id: string;
   enabled?: unknown;
@@ -177,6 +192,7 @@ type ProviderOrderable = {
 
 const MISSING_PROVIDER_INSERT_AFTER: Record<string, string> = {
   [CODEX_SUBSCRIPTION_PROVIDER_ID]: SUBSCRIPTION_PROVIDER_ID,
+  [XAI_SUBSCRIPTION_PROVIDER_ID]: CODEX_SUBSCRIPTION_PROVIDER_ID,
 };
 
 export function normalizeProviderOrder(providerIds: string[], providerOrder?: string[]): string[] {
@@ -193,7 +209,11 @@ export function normalizeProviderOrder(providerIds: string[], providerOrder?: st
   for (const id of providerIds) {
     if (seen.has(id)) continue;
     seen.add(id);
-    const insertAfter = MISSING_PROVIDER_INSERT_AFTER[id];
+    const insertAfter = id === XAI_SUBSCRIPTION_PROVIDER_ID
+      ? (ordered.includes(CODEX_SUBSCRIPTION_PROVIDER_ID)
+        ? CODEX_SUBSCRIPTION_PROVIDER_ID
+        : SUBSCRIPTION_PROVIDER_ID)
+      : MISSING_PROVIDER_INSERT_AFTER[id];
     const insertAfterIndex = insertAfter ? ordered.indexOf(insertAfter) : -1;
     if (insertAfterIndex >= 0) {
       ordered.splice(insertAfterIndex + 1, 0, id);
@@ -308,6 +328,24 @@ export type ProviderExecution =
     };
 
 /**
+ * Credential owner for subscription-shaped Providers.
+ *
+ * This is deliberately independent from `Provider.type`: subscription is a
+ * product/billing identity, while this policy states who owns the credential
+ * lifecycle and therefore how builtin execution materializes it.
+ */
+export type SubscriptionAuthPolicy =
+  | { kind: 'sdk-native' }
+  | { kind: 'host-managed-oauth' }
+  | { kind: 'runtime-managed' };
+
+/** Non-secret reference carried by builtin ProviderEnv for host-owned OAuth. */
+export type ManagedProviderCredential = {
+  kind: 'managed-oauth';
+  providerId: typeof XAI_SUBSCRIPTION_PROVIDER_ID;
+};
+
+/**
  * Service provider configuration
  */
 export interface Provider {
@@ -318,6 +356,7 @@ export interface Provider {
   cloudProvider: string;    // 云服务商: '模型官方', '云服务商', etc.
   type: 'subscription' | 'api';
   execution?: ProviderExecution; // undefined == { kind: 'builtin' }
+  subscriptionAuth?: SubscriptionAuthPolicy;
   primaryModel: string;     // 默认模型 API 代码
   isBuiltin: boolean;
   enabled?: boolean;        // Runtime-derived: false when globally disabled by the user
@@ -1026,6 +1065,7 @@ export const MANAGED_CODEX_PROVIDER: Provider = {
   vendor: 'OpenAI',
   cloudProvider: 'ChatGPT Subscription',
   type: 'subscription',
+  subscriptionAuth: { kind: 'runtime-managed' },
   execution: { kind: 'runtime-backed', runtime: 'codex', source: 'managed-provider' },
   primaryModel: '',
   isBuiltin: true,
@@ -1196,11 +1236,45 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'Anthropic',
     cloudProvider: '官方',
     type: 'subscription',
+    subscriptionAuth: { kind: 'sdk-native' },
     primaryModel: 'claude-sonnet-5',
     isBuiltin: true,
     config: {},
     modelAliases: { ...ANTHROPIC_ALIASES },
     models: ANTHROPIC_MODELS,
+  },
+  {
+    id: XAI_SUBSCRIPTION_PROVIDER_ID,
+    name: 'Grok（订阅）',
+    subtitle: '使用 Grok 订阅账户额度',
+    vendor: 'xAI',
+    cloudProvider: '官方',
+    type: 'subscription',
+    subscriptionAuth: { kind: 'host-managed-oauth' },
+    execution: { kind: 'builtin' },
+    primaryModel: 'grok-4.5',
+    isBuiltin: true,
+    apiProtocol: 'openai',
+    upstreamFormat: 'responses',
+    modelListUrl: `${XAI_SUBSCRIPTION_API_BASE_URL}/models`,
+    config: {
+      baseUrl: XAI_SUBSCRIPTION_API_BASE_URL,
+    },
+    modelAliases: {
+      fable: 'grok-4.5',
+      sonnet: 'grok-4.5',
+      opus: 'grok-4.5',
+      haiku: 'grok-composer-2.5-fast',
+    },
+    models: [
+      { model: 'grok-4.5', modelName: 'Grok 4.5', modelSeries: 'grok', contextLength: 500_000, inputModalities: ['text', 'image'], outputModalities: ['text'], source: 'preset' },
+      { model: 'grok-build-0.1', modelName: 'Grok Build 0.1', modelSeries: 'grok', contextLength: 256_000, inputModalities: ['text'], outputModalities: ['text'], source: 'preset' },
+      { model: 'grok-composer-2.5-fast', modelName: 'Grok Composer 2.5 Fast', modelSeries: 'grok', contextLength: 200_000, inputModalities: ['text'], outputModalities: ['text'], source: 'preset' },
+      { model: 'grok-4.3', modelName: 'Grok 4.3', modelSeries: 'grok', contextLength: 1_000_000, inputModalities: ['text', 'image'], outputModalities: ['text'], source: 'preset' },
+      { model: 'grok-4.20-0309-reasoning', modelName: 'Grok 4.20 Reasoning', modelSeries: 'grok', contextLength: 1_000_000, inputModalities: ['text'], outputModalities: ['text'], source: 'preset' },
+      { model: 'grok-4.20-0309-non-reasoning', modelName: 'Grok 4.20 Non-reasoning', modelSeries: 'grok', contextLength: 1_000_000, inputModalities: ['text'], outputModalities: ['text'], source: 'preset' },
+      { model: 'grok-4.20-multi-agent-0309', modelName: 'Grok 4.20 Multi-Agent', modelSeries: 'grok', contextLength: 1_000_000, inputModalities: ['text'], outputModalities: ['text'], source: 'preset' },
+    ],
   },
   {
     id: 'anthropic-api',

@@ -64,6 +64,7 @@ import {
   setProcessProxyConfig,
 } from './proxy-state';
 import { buildMcpSubprocessEnv } from './session-core/mcp-env-policy';
+import { resolveManagedOAuthCredential, type ManagedOAuthPurpose } from './utils/management-api-client';
 // Phase E (PRD 0.2.7): the sidecar file watcher (`file-watcher.ts` →
 // SSE `workspace:files-changed`) is removed. The renderer subscribes to
 // the Rust workspace_files watcher (Tauri event
@@ -105,7 +106,7 @@ import {
   type SessionMaterializationScenario,
 } from './utils/session-materialization';
 import { isManagedCodexProviderReady } from './utils/managed-codex-readiness';
-import { findAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig } from './utils/admin-config';
+import { canonicalizeManagedProviderEnv, findAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig } from './utils/admin-config';
 import type { AgentConfig } from '../shared/types/agent';
 import { broadcast } from './sse';
 import {
@@ -236,6 +237,7 @@ import {
   discardInjectedTurnOutcomeWithOptions as turnDiscardInjectedTurnOutcome,
   getPendingRequestIds,
   incrementCurrentTurnToolCount,
+  isCurrentInjectedTurn as turnIsCurrentInjectedTurn,
   markAssistantMessageError,
   markCurrentTurnHasOutput,
   popPendingRequest as turnPopPendingRequest,
@@ -1330,24 +1332,65 @@ let activeSessionBridgeToken: string | null = null;
  * active session, derived live from `configState.currentProviderEnv` + `configState.currentModel`.
  * Called per-request by the bridge registry resolver — keep it cheap.
  */
-function resolveActiveSessionUpstreamConfig(): UpstreamBridgeConfig {
+async function resolveActiveSessionUpstreamConfig(request?: Request): Promise<UpstreamBridgeConfig> {
   // configState.currentProviderEnv may be undefined (subscription / Anthropic-direct)
   // when the session bridge is registered; that's a registration error
   // upstream of us. Defensive: empty-string baseUrl + no model → bridge
   // handler will fail the upstream call with a clear error.
-  const aliases = resolveSessionModelAliases(configState.currentProviderEnv?.modelAliases, configState.currentModel);
+  const activeProviderEnv = configState.currentProviderEnv
+    ? canonicalizeManagedProviderEnv(configState.currentProviderEnv)
+    : undefined;
+  const aliases = resolveSessionModelAliases(activeProviderEnv?.modelAliases, configState.currentModel);
+  const credentialSource = activeProviderEnv?.credentialSource;
+  const managedCredential = credentialSource
+    ? await resolveManagedOAuthCredential(
+        credentialSource.providerId,
+        { reason: 'request' },
+        request?.signal,
+      )
+    : undefined;
   return {
-    providerId: configState.currentProviderEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
-    baseUrl: configState.currentProviderEnv?.baseUrl ?? '',
-    apiKey: configState.currentProviderEnv?.apiKey ?? '',
+    providerId: activeProviderEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
+    baseUrl: activeProviderEnv?.baseUrl ?? '',
+    apiKey: managedCredential?.accessToken ?? activeProviderEnv?.apiKey ?? '',
+    credentialVersion: managedCredential?.credentialVersion,
+    recoverAuth: credentialSource
+      ? async (rejectedCredentialVersion) => {
+          const recovered = await resolveManagedOAuthCredential(
+            credentialSource.providerId,
+            { reason: 'auth_recovery', rejectedCredentialVersion },
+            request?.signal,
+          );
+          if (!recovered) throw new Error('Managed OAuth recovery returned no credential');
+          return { apiKey: recovered.accessToken, credentialVersion: recovered.credentialVersion };
+        }
+      : undefined,
+    rejectCredential: credentialSource
+      ? async (credentialVersion) => {
+          await resolveManagedOAuthCredential(
+            credentialSource.providerId,
+            { reason: 'reject', rejectedCredentialVersion: credentialVersion },
+            request?.signal,
+          );
+        }
+      : undefined,
+    reportOutcome: credentialSource
+      ? async (credentialVersion, httpStatus) => {
+          await resolveManagedOAuthCredential(
+            credentialSource.providerId,
+            { reason: 'report', rejectedCredentialVersion: credentialVersion, httpStatus },
+            request?.signal,
+          );
+        }
+      : undefined,
     // When aliases exist, don't set model as blanket override — sub-agents
     // need distinct models routed via modelMapping. Without aliases, force
     // ALL request models to configState.currentModel (the historical behavior).
     model: aliases ? undefined : (configState.currentModel || undefined),
     modelAliases: aliases,
-    maxOutputTokens: configState.currentProviderEnv?.maxOutputTokens,
-    maxOutputTokensParamName: configState.currentProviderEnv?.maxOutputTokensParamName,
-    upstreamFormat: configState.currentProviderEnv?.upstreamFormat,
+    maxOutputTokens: activeProviderEnv?.maxOutputTokens,
+    maxOutputTokensParamName: activeProviderEnv?.maxOutputTokensParamName,
+    upstreamFormat: activeProviderEnv?.upstreamFormat,
     // #324 — read live so a mid-session effort change applies to the very
     // next upstream request without any subprocess restart.
     reasoningEffort: configState.currentReasoningEffort,
@@ -1430,25 +1473,66 @@ export function startOneShotBridge(
   providerEnv: ProviderEnv,
   modelOverride: string | undefined,
   description: string,
+  managedPurpose: ManagedOAuthPurpose = { purpose: 'execution' },
 ): { token: string; release: () => void } {
   if (providerEnv.apiProtocol !== 'openai') {
     throw new Error('startOneShotBridge called with non-OpenAI provider — caller should not need a bridge');
   }
+  providerEnv = canonicalizeManagedProviderEnv(providerEnv);
   const token = randomUUID();
   const aliases = resolveSessionModelAliases(providerEnv.modelAliases, modelOverride);
-  const snapshot: UpstreamBridgeConfig = {
+  const snapshot: Omit<UpstreamBridgeConfig, 'apiKey' | 'credentialVersion' | 'recoverAuth' | 'rejectCredential' | 'reportOutcome'> = {
     providerId: providerEnv.providerId ?? '',
     baseUrl: providerEnv.baseUrl ?? '',
-    apiKey: providerEnv.apiKey ?? '',
     model: aliases ? undefined : (modelOverride || undefined),
     modelAliases: aliases,
     maxOutputTokens: providerEnv.maxOutputTokens,
     maxOutputTokensParamName: providerEnv.maxOutputTokensParamName,
     upstreamFormat: providerEnv.upstreamFormat,
   };
-  // Static resolver — one-shot config doesn't change over the call's
-  // lifetime, so the closure captures the snapshot directly.
-  registerBridgeInRegistry(token, () => snapshot, description);
+  // Static routing snapshot; managed bearer resolution remains request-scoped.
+  registerBridgeInRegistry(token, async (request) => {
+    const credentialSource = providerEnv.credentialSource;
+    if (!credentialSource) {
+      return { ...snapshot, apiKey: providerEnv.apiKey ?? '' };
+    }
+    const credential = await resolveManagedOAuthCredential(
+      credentialSource.providerId,
+      { reason: 'request' },
+      request?.signal,
+      managedPurpose,
+    );
+    if (!credential) throw new Error('Managed OAuth resolver returned no credential');
+    return {
+      ...snapshot,
+      apiKey: credential.accessToken,
+      credentialVersion: credential.credentialVersion,
+      recoverAuth: async (rejectedCredentialVersion) => {
+        const recovered = await resolveManagedOAuthCredential(
+          credentialSource.providerId,
+          { reason: 'auth_recovery', rejectedCredentialVersion },
+          request?.signal,
+          managedPurpose,
+        );
+        if (!recovered) throw new Error('Managed OAuth recovery returned no credential');
+        return { apiKey: recovered.accessToken, credentialVersion: recovered.credentialVersion };
+      },
+      rejectCredential: async (credentialVersion) => {
+        await resolveManagedOAuthCredential(
+          credentialSource.providerId,
+          { reason: 'reject', rejectedCredentialVersion: credentialVersion },
+          request?.signal,
+        );
+      },
+      reportOutcome: async (credentialVersion, httpStatus) => {
+        await resolveManagedOAuthCredential(
+          credentialSource.providerId,
+          { reason: 'report', rejectedCredentialVersion: credentialVersion, httpStatus },
+          request?.signal,
+        );
+      },
+    };
+  }, description);
   return {
     token,
     release: () => unregisterBridgeInRegistry(token),
@@ -2362,7 +2446,7 @@ let cronDispatchQueue: Promise<unknown> = Promise.resolve();
  * to atomically execute a cron tick — session switch, MCP reconcile,
  * prompt enqueue, idle wait — without interleaving with another tick.
  */
-export async function withCronDispatchLock<T>(fn: () => Promise<T>): Promise<T> {
+export async function withScheduledTurnDispatchLock<T>(fn: () => Promise<T>): Promise<T> {
   const next = cronDispatchQueue.catch(() => undefined).then(() => fn());
   // Track the chain as `Promise<unknown>` so the queue type stays uniform
   // across heterogeneous T's; the typed result still flows back via `next`.
@@ -2377,7 +2461,7 @@ export async function withCronDispatchLock<T>(fn: () => Promise<T>): Promise<T> 
 
 /**
  * Apply an MCP set synchronously and ensure a fresh SDK session is live —
- * used inside `withCronDispatchLock` when the cron path needs to switch
+ * used inside `withScheduledTurnDispatchLock` when a scheduled path needs to switch
  * MCP for this task (or reconcile back to workspace defaults from a prior
  * task's override).
  *
@@ -2406,7 +2490,7 @@ export async function withCronDispatchLock<T>(fn: () => Promise<T>): Promise<T> 
  *   - When no session was running, leaves the stored config in place and
  *     lets the next `enqueueUserMessage` start a session as usual.
  *
- * Caller MUST hold `withCronDispatchLock` — this helper does not
+ * Caller MUST hold `withScheduledTurnDispatchLock` — this helper does not
  * serialise itself; concurrent calls would race on `lifecycleState.query`.
  */
 export async function applyMcpOverrideAndAwaitReady(servers: McpServerDefinition[]): Promise<void> {
@@ -5568,7 +5652,9 @@ export function buildClaudeSessionEnv(
     // SDK requests go to sidecar's /bridge/<token>/v1/messages route, which
     // translates to OpenAI format and forwards to the per-token upstream.
     env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${sidecarPort}/bridge/${bridgeToken}`;
-    env.ANTHROPIC_API_KEY = effectiveProviderEnv.apiKey ?? '';
+    env.ANTHROPIC_API_KEY = effectiveProviderEnv.credentialSource
+      ? 'myagents-managed-oauth'
+      : (effectiveProviderEnv.apiKey ?? '');
     delete env.ANTHROPIC_AUTH_TOKEN;
     // CRITICAL: Strip proxy env vars from subprocess environment.
     // The Claude Code CLI's MA6() unconditionally sets fetchOptions.proxy for the Anthropic
@@ -6812,6 +6898,10 @@ export function discardInjectedTurnOutcome(
   turnDiscardInjectedTurnOutcome(injectedTurnId, options);
 }
 
+export function isCurrentInjectedTurn(injectedTurnId: string): boolean {
+  return turnIsCurrentInjectedTurn(injectedTurnId);
+}
+
 export function getSystemInitInfo(): SystemInitInfo | null {
   return lifecycleState.systemInitInfo;
 }
@@ -7628,7 +7718,7 @@ async function applySessionConfig(newModel?: string, newPermissionMode?: Permiss
 
 export type EnqueueResult = {
   queued: boolean;   // true if message was queued (not immediately processed)
-  queueId?: string;  // queue item ID, present when queued=true
+  queueId?: string;  // stable queue/turn ID when the message was accepted
   /**
    * (v0.2.12) When queued=true, indicates whether this item became the
    * in-flight one (yielded immediately to CLI subprocess) or stayed in
@@ -8667,7 +8757,7 @@ export async function enqueueUserMessage(
     wakeGenerator(queueItem);
   }
 
-  return { queued: false, dispatchAcceptance };
+  return { queued: false, queueId, dispatchAcceptance };
   } finally {
     if (reservedTurnBoundaryItem && !reservedTurnBoundaryItem.ready) {
       const reservationIdx = getTurnBoundaryQueue().indexOf(reservedTurnBoundaryItem);

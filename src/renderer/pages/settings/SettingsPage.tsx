@@ -21,10 +21,14 @@ import { WorkspaceSelectDialog } from '@/components/AgentSettings';
 import ProxyScopeDialog from '@/components/ProxyScopeDialog';
 import WorkspaceConfigPanel from '@/components/WorkspaceConfigPanel';
 import ModelManagementPanel from '@/components/ModelManagementPanel';
+import GrokSubscriptionProvider from '@/components/GrokSubscriptionProvider';
+import SubscriptionProviderCardContent from '@/components/SubscriptionProviderCardContent';
+import { discoverGrokModels } from '@/config/services/grokSubscriptionService';
 import UsageStatsPanel from '@/components/UsageStatsPanel';
 import {
     getEffectiveModelAliases,
     CODEX_SUBSCRIPTION_PROVIDER_ID,
+    XAI_SUBSCRIPTION_PROVIDER_ID,
     normalizeDisabledProviderIds,
     normalizeProviderOrder,
     splitProviderModelInput,
@@ -3073,12 +3077,10 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                     : tSettings('providers.subscription.notLoggedIn');
 
         return (
-            <div className="space-y-3">
-                <p className="text-sm text-[var(--ink-muted)]">
-                    {tSettings('providers.subscription.description')}
-                </p>
-                <div className="flex items-center justify-between gap-3">
-                    <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
+            <SubscriptionProviderCardContent
+                description={tSettings('providers.subscription.description')}
+                status={
+                    <>
                         {isLoggedIn ? (
                             <>
                                 <span className="truncate font-mono text-xs text-[var(--ink-muted)]">
@@ -3111,8 +3113,10 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                 )}
                             </>
                         )}
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
+                    </>
+                }
+                actions={
+                    <>
                         {subscriptionStatus?.available && (
                             <button
                                 type="button"
@@ -3137,19 +3141,23 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                 {tSettings('providers.login')}
                             </button>
                         )}
-                    </div>
-                </div>
-                {isVerifyInvalid && subscriptionStatus?.verifyError && (
-                    <p className="break-words text-xs text-[var(--error)]">
-                        {subscriptionStatus.verifyError}
-                    </p>
-                )}
-                {subscriptionLoginState.status === 'error' && subscriptionLoginState.error && (
-                    <p className="break-words text-xs text-[var(--error)]">
-                        {subscriptionLoginState.error}
-                    </p>
-                )}
-            </div>
+                    </>
+                }
+                error={
+                    <>
+                        {isVerifyInvalid && subscriptionStatus?.verifyError && (
+                            <p className="break-words text-xs text-[var(--error)]">
+                                {subscriptionStatus.verifyError}
+                            </p>
+                        )}
+                        {subscriptionLoginState.status === 'error' && subscriptionLoginState.error && (
+                            <p className="break-words text-xs text-[var(--error)]">
+                                {subscriptionLoginState.error}
+                            </p>
+                        )}
+                    </>
+                }
+            />
         );
     };
 
@@ -4016,7 +4024,14 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
 
                                     {/* Subscription type - show status */}
                                     {provider.type === 'subscription' && (
-                                        renderSubscriptionProviderContent()
+                                        provider.id === XAI_SUBSCRIPTION_PROVIDER_ID
+                                            ? <GrokSubscriptionProvider
+                                                onAuthChanged={async () => {
+                                                    await refreshConfig();
+                                                    await refreshProviders();
+                                                }}
+                                            />
+                                            : renderSubscriptionProviderContent()
                                     )}
                                     </div>
                             ))}
@@ -7700,6 +7715,14 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                     onUpdateCustomProvider={updateCustomProvider}
                     onSetPrimaryModel={savePrimaryModel}
                     onRefresh={async () => { await refreshConfig(); await refreshProviders(); }}
+                    discoveryAction={managingProvider.id === XAI_SUBSCRIPTION_PROVIDER_ID
+                        && providerVerifyStatus[XAI_SUBSCRIPTION_PROVIDER_ID]?.status === 'valid'
+                        ? discoverGrokModels
+                        : undefined}
+                    discoveryUnavailableMessage={managingProvider.id === XAI_SUBSCRIPTION_PROVIDER_ID
+                        && providerVerifyStatus[XAI_SUBSCRIPTION_PROVIDER_ID]?.status !== 'valid'
+                        ? tSettings('providers.grok.loginToDiscover')
+                        : undefined}
                 />
             )}
 

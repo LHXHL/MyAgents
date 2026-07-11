@@ -4,7 +4,7 @@
 
 use axum::{
     extract::{DefaultBodyLimit, Query},
-    http::HeaderMap,
+    http::{header::CACHE_CONTROL, HeaderMap, HeaderValue},
     routing::{get, post},
     Json, Router,
 };
@@ -207,6 +207,9 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/inbox/deliver", post(inbox_deliver_handler))
         // Session Event watch registration (PRD 0.2.37)
         .route("/api/session/watch", post(session_watch_handler))
+        // Secret-bearing internal route. Identity is validated against the
+        // live Session:Sidecar generation; responses are never cacheable.
+        .route("/api/grok/bearer", post(grok_bearer_handler))
         // Bridge messages carry base64-encoded media attachments (images/files).
         // Default axum 2MB limit is too small — raise to 50MB for this API.
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024));
@@ -219,6 +222,142 @@ pub async fn start_management_api() -> Result<u16, String> {
 
     ulog_info!("[management-api] Started on http://127.0.0.1:{}", port);
     Ok(port)
+}
+
+fn no_store_json(value: serde_json::Value) -> (HeaderMap, Json<serde_json::Value>) {
+    let mut headers = HeaderMap::new();
+    headers.insert(CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    (headers, Json(value))
+}
+
+fn sidecar_identity_matches(current_generation: Option<u64>, requested_generation: u64) -> bool {
+    current_generation == Some(requested_generation)
+}
+
+async fn grok_bearer_handler(
+    headers: HeaderMap,
+    Json(req): Json<crate::grok_auth::types::ManagementBearerRequest>,
+) -> (HeaderMap, Json<serde_json::Value>) {
+    let session_id = req.session_id.trim();
+    if session_id.is_empty() {
+        return no_store_json(serde_json::json!({
+            "ok": false,
+            "code": "invalid_request",
+            "error": "sessionId is required",
+        }));
+    }
+    let generation = match request_sidecar_generation(&headers) {
+        Ok(generation) => generation,
+        Err(Json(value)) => return no_store_json(value),
+    };
+    let Some(sidecars) = get_sidecar_state() else {
+        return no_store_json(serde_json::json!({
+            "ok": false,
+            "code": "management_unavailable",
+            "error": "Sidecar manager is not initialized",
+        }));
+    };
+    let current_generation = sidecars
+        .lock()
+        .ok()
+        .and_then(|manager| manager.generation_for(session_id));
+    let is_current = sidecar_identity_matches(current_generation, generation);
+    if !is_current {
+        return no_store_json(serde_json::json!({
+            "ok": false,
+            "code": "stale_sidecar",
+            "error": "Sidecar identity is no longer current",
+        }));
+    }
+
+    let bearer_purpose = match req.purpose.as_deref().unwrap_or("execution") {
+        "execution" => Ok(crate::grok_auth::types::ResolveBearerPurpose::Execution),
+        "verification" => req
+            .expected_lineage
+            .as_ref()
+            .filter(|lineage| !lineage.trim().is_empty())
+            .map(
+                |lineage| crate::grok_auth::types::ResolveBearerPurpose::Verification {
+                    expected_lineage: lineage.clone(),
+                },
+            )
+            .ok_or_else(|| {
+                crate::grok_auth::types::GrokAuthError::new(
+                    crate::grok_auth::types::GrokAuthErrorCode::InvalidResponse,
+                    "expectedLineage is required for verification",
+                )
+            }),
+        _ => Err(crate::grok_auth::types::GrokAuthError::new(
+            crate::grok_auth::types::GrokAuthErrorCode::InvalidResponse,
+            "Unsupported Grok bearer purpose",
+        )),
+    };
+
+    let result = match req.reason.as_deref().unwrap_or("request") {
+        "request" => match bearer_purpose.clone() {
+            Ok(purpose) => crate::grok_auth::resolve_bearer_for_sidecar(
+                crate::grok_auth::types::ResolveBearerReason::Request,
+                None,
+                purpose,
+            )
+            .await
+            .map(Some),
+            Err(error) => Err(error),
+        },
+        "auth_recovery" => match req.rejected_credential_version {
+            Some(version) => match bearer_purpose {
+                Ok(purpose) => crate::grok_auth::resolve_bearer_for_sidecar(
+                    crate::grok_auth::types::ResolveBearerReason::AuthRecovery,
+                    Some(version),
+                    purpose,
+                )
+                .await
+                .map(Some),
+                Err(error) => Err(error),
+            },
+            None => Err(crate::grok_auth::types::GrokAuthError::new(
+                crate::grok_auth::types::GrokAuthErrorCode::InvalidResponse,
+                "rejectedCredentialVersion is required",
+            )),
+        },
+        "reject" => match req.rejected_credential_version {
+            Some(version) => crate::grok_auth::reject_credential_for_sidecar(version)
+                .await
+                .map(|()| None),
+            None => Err(crate::grok_auth::types::GrokAuthError::new(
+                crate::grok_auth::types::GrokAuthErrorCode::InvalidResponse,
+                "rejectedCredentialVersion is required",
+            )),
+        },
+        "report" => match (req.rejected_credential_version, req.http_status) {
+            (Some(version), Some(status)) => {
+                crate::grok_auth::record_upstream_outcome_for_sidecar(version, status)
+                    .await
+                    .map(|()| None)
+            }
+            _ => Err(crate::grok_auth::types::GrokAuthError::new(
+                crate::grok_auth::types::GrokAuthErrorCode::InvalidResponse,
+                "rejectedCredentialVersion and httpStatus are required",
+            )),
+        },
+        _ => Err(crate::grok_auth::types::GrokAuthError::new(
+            crate::grok_auth::types::GrokAuthErrorCode::InvalidResponse,
+            "Unsupported Grok bearer resolution reason",
+        )),
+    };
+
+    match result {
+        Ok(Some(resolved)) => no_store_json(serde_json::json!({
+            "ok": true,
+            "accessToken": resolved.access_token,
+            "credentialVersion": resolved.credential_version,
+        })),
+        Ok(None) => no_store_json(serde_json::json!({ "ok": true })),
+        Err(error) => no_store_json(serde_json::json!({
+            "ok": false,
+            "error": error,
+        })),
+    }
 }
 
 // ===== Request / Response types =====
@@ -3485,6 +3624,24 @@ async fn session_watch_handler(
 mod tests {
     use super::*;
     use serde_json::Value;
+
+    #[test]
+    fn grok_bearer_requires_the_current_sidecar_generation() {
+        assert!(sidecar_identity_matches(Some(7), 7));
+        assert!(!sidecar_identity_matches(Some(7), 6));
+        assert!(!sidecar_identity_matches(None, 7));
+    }
+
+    #[test]
+    fn grok_bearer_responses_are_never_cacheable() {
+        let (headers, _) = no_store_json(serde_json::json!({ "ok": true }));
+        assert_eq!(
+            headers
+                .get(CACHE_CONTROL)
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+    }
 
     #[test]
     fn goal_error_response_uses_structured_code() {

@@ -47,6 +47,14 @@ describe('reasoningEffortChoices — per-surface vocabularies', () => {
   it('builtin + OpenAI protocol → cross-provider union incl. minimal/max', () => {
     expect(reasoningEffortChoices('builtin', 'openai')).toEqual(OPENAI_EFFORT_LEVELS);
   });
+  it('uses model-specific Grok vocabularies and hides unverified model knobs', () => {
+    expect(reasoningEffortChoices('builtin', 'openai', 'xai-sub', 'grok-4.5'))
+      .toEqual(['low', 'medium', 'high']);
+    expect(reasoningEffortChoices('builtin', 'openai', 'xai-sub', 'grok-4.3'))
+      .toEqual(['none', 'low', 'medium', 'high']);
+    expect(reasoningEffortChoices('builtin', 'openai', 'xai-sub', 'grok-build-0.1'))
+      .toBeNull();
+  });
   it('claude-code → SDK levels (matches `claude --effort` vocabulary)', () => {
     expect(reasoningEffortChoices('claude-code')).toEqual(SDK_EFFORT_LEVELS);
   });

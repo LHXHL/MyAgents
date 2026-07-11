@@ -364,7 +364,12 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const effortCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // null = this surface has no reasoning-effort knob (Gemini / unknown) → row hidden.
   const effortChoices = onReasoningEffortChange
-    ? reasoningEffortChoices(isExternalRuntime ? (runtime ?? 'builtin') : 'builtin', provider?.apiProtocol)
+    ? reasoningEffortChoices(
+        isExternalRuntime ? (runtime ?? 'builtin') : 'builtin',
+        provider?.apiProtocol,
+        provider?.id,
+        selectedModel ?? provider?.primaryModel,
+      )
     : null;
   const openEffortSubmenu = useCallback(() => {
     if (effortCloseTimerRef.current) {

@@ -224,7 +224,7 @@ import { isPendingSessionId } from '../shared/constants';
 import { parseAgentFrontmatter, parseFullAgentContent, serializeAgentContent } from '../shared/agentCommands';
 import { scanAgents, readWorkspaceConfig, writeWorkspaceConfig, loadEnabledAgents, readAgentMeta, writeAgentMeta, findAgent } from './agents/agent-loader';
 import type { AgentFrontmatter, AgentMeta, AgentWorkspaceConfig } from '../shared/agentTypes';
-import { CODEX_SUBSCRIPTION_PROVIDER_ID, SUBSCRIPTION_PROVIDER_ID, type McpServerDefinition, type BackgroundAgentPermissionMode } from '../shared/config-types';
+import { CODEX_SUBSCRIPTION_PROVIDER_ID, SUBSCRIPTION_PROVIDER_ID, XAI_SUBSCRIPTION_PROVIDER_ID, type McpServerDefinition, type BackgroundAgentPermissionMode } from '../shared/config-types';
 import { ensureDirSync, ensureDir, isDirEntry } from './utils/fs-utils';
 import {
   setCronTaskContext,
@@ -992,7 +992,7 @@ function resolveCronProviderRouting(
     );
   }
   if (provider.type === 'subscription') {
-    return 'subscription';
+    return (resolveProviderEnv(providerId) as ProviderEnv | undefined) ?? 'subscription';
   }
   const env = resolveProviderEnv(providerId);
   if (!env) {
@@ -2039,12 +2039,12 @@ async function main() {
       ]);
       const handler = createBridgeHandler({
           workspacePath: agentDir || undefined,
-          getUpstreamConfig: (request) => {
+          getUpstreamConfig: async (request) => {
             const token = extractBridgeTokenFromUrl(request.url);
             if (!token) {
               throw new Error('Bridge request missing token in URL path');
             }
-            const cfg = lookupBridge(token);
+            const cfg = await lookupBridge(token, request);
             if (!cfg) {
               throw new Error(`Unknown bridge token: ${token}`);
             }
@@ -2067,6 +2067,10 @@ async function main() {
               providerId: cfg.providerId,
               baseUrl: cfg.baseUrl,
               apiKey: cfg.apiKey,
+              credentialVersion: cfg.credentialVersion,
+              recoverAuth: cfg.recoverAuth,
+              rejectCredential: cfg.rejectCredential,
+              reportOutcome: cfg.reportOutcome,
               model: cfg.model,
               maxOutputTokens: cfg.maxOutputTokens,
               maxOutputTokensParamName: cfg.maxOutputTokensParamName,
@@ -2917,9 +2921,7 @@ async function main() {
                   effectiveProviderRoute = resolved.providerRoute;
                   effectiveModel = resolved.providerRoute.model;
                   try {
-                    effectiveProviderEnv = resolved.providerRoute.kind === 'subscription'
-                      ? 'subscription'
-                      : resolveCronProviderRouting(resolved.providerRoute.providerId);
+                    effectiveProviderEnv = resolveCronProviderRouting(resolved.providerRoute.providerId);
                   } catch (e) {
                     const errMsg = e instanceof Error ? e.message : String(e);
                     console.error(`[cron] execute followAgent: providerRoute resolution failed for '${resolved.providerRoute.providerId}': ${errMsg}`);
@@ -3391,9 +3393,7 @@ async function main() {
                 effectiveProviderRoute = resolved.providerRoute;
                 effectiveModel = resolved.providerRoute.model;
                 try {
-                  effectiveProviderEnv = resolved.providerRoute.kind === 'subscription'
-                    ? 'subscription'
-                    : resolveCronProviderRouting(resolved.providerRoute.providerId);
+                  effectiveProviderEnv = resolveCronProviderRouting(resolved.providerRoute.providerId);
                 } catch (e) {
                   const errMsg = e instanceof Error ? e.message : String(e);
                   console.error(`[cron] execute-sync followAgent: providerRoute resolution failed for '${resolved.providerRoute.providerId}': ${errMsg}`);
@@ -4860,6 +4860,42 @@ async function main() {
             { success: false, error: error instanceof Error ? error.message : 'Verification failed' },
             500
           );
+        }
+      }
+
+      // POST /api/grok/verify — same one-shot SDK + Responses Bridge path as
+      // normal chat, with a non-secret managed OAuth ProviderEnv.
+      if (pathname === '/api/grok/verify' && request.method === 'POST') {
+        try {
+          const payload = await request.json() as { model?: string; verificationLineage?: string };
+          const providerEnv = resolveProviderEnv(XAI_SUBSCRIPTION_PROVIDER_ID) as ProviderEnv | undefined;
+          if (!providerEnv?.credentialSource || !providerEnv.baseUrl) {
+            return jsonResponse({ success: false, error: 'Grok subscription provider is unavailable.' }, 409);
+          }
+          const model = payload.model?.trim() || 'grok-4.5';
+          const verificationLineage = payload.verificationLineage?.trim();
+          if (!verificationLineage) {
+            return jsonResponse({ success: false, error: 'Grok verification lineage is required.' }, 400);
+          }
+          const result = await verifyProviderViaSdk(
+            XAI_SUBSCRIPTION_PROVIDER_ID,
+            providerEnv.baseUrl,
+            '',
+            providerEnv.authType ?? 'both',
+            model,
+            'openai',
+            providerEnv.maxOutputTokens,
+            providerEnv.maxOutputTokensParamName,
+            'responses',
+            providerEnv.credentialSource,
+            { expectedLineage: verificationLineage },
+          );
+          return jsonResponse(result);
+        } catch (error) {
+          return jsonResponse({
+            success: false,
+            error: error instanceof Error ? error.message : 'Grok verification failed',
+          }, 500);
         }
       }
 
@@ -9731,9 +9767,9 @@ description: >
       // We still require a valid token so untokened callers can't probe.
       const bridgeCountMatch = pathname.match(/^\/bridge\/([^/]+)\/v1\/messages\/count_tokens$/);
       if (bridgeCountMatch && request.method === 'POST') {
-        const { lookupBridge } = await import('./openai-bridge/bridge-registry');
+        const { hasBridge } = await import('./openai-bridge/bridge-registry');
         const token = bridgeCountMatch[1];
-        if (!lookupBridge(token)) {
+        if (!hasBridge(token)) {
           return jsonResponse(
             { type: 'error', error: { type: 'invalid_request_error', message: `Unknown bridge token: ${token}` } },
             400,

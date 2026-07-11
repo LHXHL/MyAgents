@@ -123,6 +123,8 @@ async function verifyViaSdk(
      * (fast-success case) doesn't outlive the call.
      */
     diagnostic?: (signal: AbortSignal) => Promise<ProbeOutcome | undefined>;
+    /** Managed subscription activation requires the SDK's terminal success. */
+    requireTerminalResult?: boolean;
   },
 ): Promise<{ success: boolean; error?: string; detail?: string; failureKind?: SubscriptionVerifyFailureKind }> {
   const TIMEOUT_MS = 30000;
@@ -285,7 +287,7 @@ async function verifyViaSdk(
         // a response — the API key is valid. Return success immediately.
         if (message.type === 'stream_event') {
           const streamMsg = message as { event?: { type?: string } };
-          if (streamMsg.event?.type === 'message_start') {
+          if (streamMsg.event?.type === 'message_start' && !opts.requireTerminalResult) {
             const elapsed = Date.now() - startTime;
             console.log(`[${logPrefix}] verification successful (${elapsed}ms)`);
             return { success: true };
@@ -308,9 +310,12 @@ async function verifyViaSdk(
             if (!firstAuthError) firstAuthError = parsed;
             return { success: false, ...parsed };
           }
-          const elapsed = Date.now() - startTime;
-          console.log(`[${logPrefix}] verification successful (${elapsed}ms)`);
-          return { success: true };
+          if (!opts.requireTerminalResult) {
+            const elapsed = Date.now() - startTime;
+            console.log(`[${logPrefix}] verification successful (${elapsed}ms)`);
+            return { success: true };
+          }
+          continue;
         }
 
         if (message.type === 'result') {
@@ -378,6 +383,8 @@ export async function verifyProviderViaSdk(
   maxOutputTokens?: number,
   maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens',
   upstreamFormat?: 'chat_completions' | 'responses',
+  credentialSource?: import('../shared/config-types').ManagedProviderCredential,
+  managedVerification?: { expectedLineage: string },
 ): Promise<{ success: boolean; error?: string; detail?: string }> {
   console.log(`[provider/verify] Starting SDK verification for ${baseUrl}, model=${model ?? 'default'}, authType=${authType}, apiProtocol=${apiProtocol ?? 'anthropic'}, maxOutputTokens=${maxOutputTokens ?? 'none'}`);
   // PRD #124: register a per-call bridge token so the verify subprocess
@@ -395,7 +402,17 @@ export async function verifyProviderViaSdk(
     maxOutputTokens,
     maxOutputTokensParamName,
     upstreamFormat,
+    credentialSource,
   };
+  const startVerificationBridge: typeof startOneShotBridge = (env, bridgeModel, description) =>
+    startOneShotBridge(
+      env,
+      bridgeModel,
+      description,
+      managedVerification
+        ? { purpose: 'verification', expectedLineage: managedVerification.expectedLineage }
+        : { purpose: 'execution' },
+    );
   // Layer 1 (PRD 0.2.30) — OpenAI providers only: an AUTHORITATIVE probe through
   // the same one-shot bridge. It reads the bridge-translated upstream status and
   // short-circuits ONLY on a shape-independent definite failure (401/403/404/429
@@ -409,7 +426,7 @@ export async function verifyProviderViaSdk(
       providerEnv,
       model,
       sidecarPort: getSidecarPort(),
-      startOneShotBridge,
+      startOneShotBridge: startVerificationBridge,
     });
     const shortCircuit = probe.status !== undefined
       && classifyOpenAiProbeStatus(probe.status) === 'definite-fail';
@@ -431,7 +448,7 @@ export async function verifyProviderViaSdk(
   // Only OpenAI-protocol providers route through the bridge. Anthropic-protocol
   // providers (and subscription) hit their baseUrl directly — no token needed.
   const bridge = apiProtocol === 'openai'
-    ? startOneShotBridge(providerEnv, model, `provider-verify:${baseUrl}`)
+    ? startVerificationBridge(providerEnv, model, `provider-verify:${baseUrl}`)
     : null;
   try {
     // Pass `model` as the override so CLAUDE_CODE_AUTO_COMPACT_WINDOW is
@@ -466,6 +483,7 @@ export async function verifyProviderViaSdk(
       diagnostic: apiProtocol === 'openai'
         ? undefined
         : (signal) => probeAnthropicProviderDirect({ providerEnv, model, getProxyForProviderUrl, signal }),
+      requireTerminalResult: credentialSource?.kind === 'managed-oauth',
     });
   } finally {
     bridge?.release();

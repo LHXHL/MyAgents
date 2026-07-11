@@ -287,6 +287,12 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
   // #324 — agent-level 推理强度 default (builtin; no project fallback — the
   // agent is the only storage for this field).
   const effectiveReasoningEffort = agent?.reasoningEffort ?? 'default';
+  const effectiveReasoningEffortChoices = reasoningEffortChoices(
+    'builtin',
+    selectedProvider?.apiProtocol,
+    selectedProvider?.id,
+    effectiveModel ?? undefined,
+  );
 
   const effectiveMcpServers = agent?.mcpEnabledServers ?? project?.mcpEnabledServers;
   const enabledMcpNames = availableMcpServers
@@ -576,7 +582,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
       )}
 
       {/* #324 推理强度 — hidden when external runtime (configured via chat toolbar there) */}
-      {currentRuntime === 'builtin' && (
+      {currentRuntime === 'builtin' && effectiveReasoningEffortChoices !== null && (
       <div className="relative flex items-center gap-3">
         <label className="w-16 shrink-0 text-sm text-[var(--ink-muted)]">{t('agentSettings.basics.reasoningEffort')}</label>
         <button
@@ -591,7 +597,7 @@ export default function WorkspaceBasicsSection({ project, agent, agentDir }: Wor
           <>
             <div className="fixed inset-0 z-40" onMouseDown={(e) => { if (e.target === e.currentTarget) setOpenPopup(null); }} />
             <div className="absolute left-20 top-0 z-50 w-[280px] rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-2 shadow-lg">
-              {['default', ...(reasoningEffortChoices('builtin', selectedProvider?.apiProtocol) ?? [])].map(level => (
+              {['default', ...(effectiveReasoningEffortChoices ?? [])].map(level => (
                 <button
                   key={level}
                   className={`flex w-full items-center justify-between rounded-lg px-3 py-2 text-left transition-colors ${

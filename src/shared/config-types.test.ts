@@ -8,6 +8,7 @@ import {
   MANAGED_CODEX_REQUIRED_RUNTIME,
   PRESET_PROVIDERS,
   SUBSCRIPTION_PROVIDER_ID,
+  XAI_SUBSCRIPTION_PROVIDER_ID,
   applyManagedCodexProviderReadiness,
   getEffectiveModelAliases,
   getManagedCodexProviderReadiness,
@@ -55,6 +56,26 @@ describe('normalizeProviderOrder', () => {
       'deepseek',
       CODEX_SUBSCRIPTION_PROVIDER_ID,
       SUBSCRIPTION_PROVIDER_ID,
+      'anthropic-api',
+    ]);
+  });
+
+  it('places Grok after Codex when present and after Anthropic otherwise', () => {
+    expect(normalizeProviderOrder(
+      [SUBSCRIPTION_PROVIDER_ID, CODEX_SUBSCRIPTION_PROVIDER_ID, XAI_SUBSCRIPTION_PROVIDER_ID, 'anthropic-api'],
+      [SUBSCRIPTION_PROVIDER_ID, 'anthropic-api'],
+    )).toEqual([
+      SUBSCRIPTION_PROVIDER_ID,
+      CODEX_SUBSCRIPTION_PROVIDER_ID,
+      XAI_SUBSCRIPTION_PROVIDER_ID,
+      'anthropic-api',
+    ]);
+    expect(normalizeProviderOrder(
+      [SUBSCRIPTION_PROVIDER_ID, XAI_SUBSCRIPTION_PROVIDER_ID, 'anthropic-api'],
+      [SUBSCRIPTION_PROVIDER_ID, 'anthropic-api'],
+    )).toEqual([
+      SUBSCRIPTION_PROVIDER_ID,
+      XAI_SUBSCRIPTION_PROVIDER_ID,
       'anthropic-api',
     ]);
   });
@@ -375,9 +396,10 @@ describe('Managed Codex provider readiness', () => {
   it('inserts the provider after Anthropic subscription in the default catalogue', () => {
     const catalog = withManagedCodexProviderCatalog(PRESET_PROVIDERS, DEFAULT_CONFIG);
 
-    expect(catalog.slice(0, 3).map(provider => provider.id)).toEqual([
+    expect(catalog.slice(0, 4).map(provider => provider.id)).toEqual([
       SUBSCRIPTION_PROVIDER_ID,
       CODEX_SUBSCRIPTION_PROVIDER_ID,
+      XAI_SUBSCRIPTION_PROVIDER_ID,
       'anthropic-api',
     ]);
   });

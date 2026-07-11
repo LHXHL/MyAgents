@@ -12,6 +12,7 @@ pub mod device_identity;
 pub mod floating_ball;
 pub mod floating_ball_pets;
 mod global_shortcut;
+pub mod grok_auth;
 pub mod i18n;
 pub mod im;
 pub mod inbox;
@@ -351,6 +352,13 @@ pub fn run() {
             managed_codex::cmd_managed_codex_login_status,
             managed_codex::cmd_managed_codex_login,
             managed_codex::cmd_managed_codex_logout,
+            grok_auth::cmd_grok_auth_status,
+            grok_auth::cmd_grok_login_start,
+            grok_auth::cmd_grok_login_status,
+            grok_auth::cmd_grok_login_cancel,
+            grok_auth::cmd_grok_verify_account,
+            grok_auth::cmd_grok_fetch_models,
+            grok_auth::cmd_grok_logout,
             // Workspace template commands
             commands::cmd_create_workspace_from_template,
             commands::cmd_create_workspace_from_bundled_template,
@@ -661,6 +669,7 @@ pub fn run() {
             // calls (extremely early startup) fall back to a synchronous
             // append protected by a mutex.
             logger::init_buffered_writer();
+            tauri::async_runtime::spawn(grok_auth::reconcile_provider_projection());
             let space_sidecar_state = app.state::<sidecar::ManagedSidecarManager>().inner().clone();
             space_cloud::start_space_connector(app.handle().clone(), space_sidecar_state);
 

@@ -34,6 +34,27 @@ export const OPENAI_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'
 /** Codex app-server `turn/start.effort` — model-advertised values; gpt-5.x
  *  family supports minimal..xhigh (no 'max' tier as of codex 0.136). */
 export const CODEX_EFFORT_LEVELS = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+const GROK_45_EFFORT_LEVELS = ['low', 'medium', 'high'] as const;
+const GROK_43_EFFORT_LEVELS = ['none', 'low', 'medium', 'high'] as const;
+
+export function providerReasoningEffortChoices(
+  providerId: string | undefined,
+  model: string | undefined,
+): readonly string[] | null | undefined {
+  if (providerId !== 'xai-sub') return undefined;
+  if (model === 'grok-4.5') return GROK_45_EFFORT_LEVELS;
+  if (model === 'grok-4.3') return GROK_43_EFFORT_LEVELS;
+  return null;
+}
+
+export function isProviderReasoningEffortSupported(
+  providerId: string | undefined,
+  model: string | undefined,
+  effort: string,
+): boolean {
+  const choices = providerReasoningEffortChoices(providerId, model);
+  return choices === undefined || choices?.includes(effort) === true;
+}
 
 /**
  * Normalize a persisted/wire setting to the internal representation:
@@ -60,10 +81,15 @@ export function isSdkEffortLevel(value: string | undefined): value is SdkEffortL
 export function reasoningEffortChoices(
   runtime: string,
   apiProtocol?: 'anthropic' | 'openai',
+  providerId?: string,
+  model?: string,
 ): readonly string[] | null {
   switch (runtime) {
-    case 'builtin':
+    case 'builtin': {
+      const providerChoices = providerReasoningEffortChoices(providerId, model);
+      if (providerChoices !== undefined) return providerChoices;
       return apiProtocol === 'openai' ? OPENAI_EFFORT_LEVELS : SDK_EFFORT_LEVELS;
+    }
     case 'claude-code':
       return SDK_EFFORT_LEVELS;
     case 'codex':
@@ -114,4 +140,5 @@ export const REASONING_EFFORT_DESCRIPTIONS: Record<string, string> = {
   high: '较深',
   xhigh: '深度',
   max: '最深',
+  none: '关闭',
 };

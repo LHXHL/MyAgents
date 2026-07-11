@@ -77,7 +77,7 @@ function resolveModelListUrl(provider: Provider): string | null {
 // ============= Parsing =============
 
 /** Parse raw API response into DiscoveredModel[] — auto-detects format */
-function parseModelsResponse(body: unknown): DiscoveredModel[] {
+export function parseModelsResponse(body: unknown): DiscoveredModel[] {
   if (!body || typeof body !== 'object') return [];
   const obj = body as Record<string, unknown>;
 
@@ -90,7 +90,7 @@ function parseModelsResponse(body: unknown): DiscoveredModel[] {
   // Format B: Anthropic — { data: [...], has_more } where items have type: "model"
   else if (Array.isArray(obj.data)) {
     const first = (obj.data as Record<string, unknown>[])[0];
-    if (first && first.type === 'model') {
+    if (first && (first.type === 'model' || typeof first.id === 'string')) {
       rawModels = obj.data;
     }
   }

@@ -51,7 +51,23 @@ if (currentProviderEnv?.baseUrl) {
 - `providerId === 'anthropic-sub'`：删除/不设置 `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST`，让 native Claude Code 自主管理 OAuth。
 - 其它 API provider：继续设置 `CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST=1`，阻止 `~/.claude.json` / settings-sourced provider env（cc-switch、Claude Code Router 等）静默劫持 MyAgents 的 provider 路由。
 
-不要给订阅 query 传 `getOAuthToken`，也不要新增 MyAgents 私有的 subscription token adapter；否则会和本机 Claude Code CLI/桌面端抢 OAuth refresh / Keychain 生命周期。
+不要给 **Anthropic 订阅** query 传 `getOAuthToken`，也不要为 `anthropic-sub` 新增 MyAgents 私有 token adapter；否则会和本机 Claude Code CLI/桌面端抢 OAuth refresh / Keychain 生命周期。
+
+### 2.2 Grok 订阅的 OAuth owner 是 Rust 应用单例
+
+`xai-sub` 与 `anthropic-sub` 都是 subscription ProviderRoute，但它们不是同一种 credential policy：
+
+- `anthropic-sub`：`sdk-native`，Claude Code native 自己拥有凭据，materialize 为 `'subscription'` sentinel。
+- `xai-sub`：`host-managed-oauth`，Rust `GrokAuthManager` 是 canonical grant、refresh rotation、quarantine 与 logout 的唯一 owner；materialize 为 builtin OpenAI Responses `ProviderEnv`，其中只有非 secret 的 `credentialSource:{kind:'managed-oauth',providerId:'xai-sub'}`。
+- `codex-sub`：`runtime-managed`，由 Managed Codex Runtime 执行，不进入 builtin ProviderEnv。
+
+Grok bearer 的边界：
+
+1. Rust 独立存储 `~/.myagents/credentials/grok-oauth.json`，用文件锁、fresh-read、原子替换与平台权限加固管理 rotating refresh token。
+2. Sidecar 不缓存 bearer。Bridge 的 async registry resolver 在每次上游请求前，经 localhost Management API 获取当前 access token；请求带 `MYAGENTS_SESSION_ID` 与 `X-MyAgents-Sidecar-Generation`，Rust 只接受当前 live Sidecar identity。
+3. Bridge 遇到首个 401 才请求一次强制 refresh，并以字节等价的 request body 重试；第二个 401 quarantine 对应 credential version。403/429 只记录 entitlement/rate 状态，绝不 refresh 或删除 grant。
+4. renderer 只调用 Tauri auth/model commands，永远拿不到 bearer。模型目录复用 `ModelManagementPanel`，由宿主 `discoveryAction` 调 Rust `/v1/models`，再进入共享 OpenAI model-list parser。
+5. OAuth 成功不等于“已验证”。验证 Sidecar 使用带 expected grant lineage 的 `verification` bearer purpose；只有 builtin SDK 经现有 Responses Bridge 收到 terminal success 后，Tauri verification owner 才按同一 lineage 提交 `providerVerifyStatus[xai-sub]=valid`。普通 Bridge 2xx 不写验证状态；`execution` purpose 只允许已 valid（或既有 valid 后的 rate/network 临时态）的 grant。
 
 ### 3. API Key 存储与读取
 
@@ -113,7 +129,8 @@ interface Provider {
 │ session-engine/builtin-adapter.ts                            │
 │  - 校验 ProviderRoute 与本次 model 一致                     │
 │  - 调 admin-config materialize ProviderEnv                  │
-│  - subscription route → 'subscription' sentinel              │
+│  - sdk-native subscription → 'subscription' sentinel          │
+│  - host-managed subscription → managed ProviderEnv            │
 └──────────────────────────┬──────────────────────────────────┘
                            │
                            ▼
@@ -122,15 +139,15 @@ interface Provider {
 │  - 存储运行时 currentProviderEnv（非持久身份）              │
 │  - buildClaudeSessionEnv() 设置环境变量                      │
 │  - anthropic-sub 跳过 CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST   │
-│  - 非订阅 provider 保持 host-managed env sealing             │
+│  - xai-sub / API provider 保持 host-managed env sealing      │
 │  - SDK query() 使用这些环境变量                             │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ### ProviderRoute vs ProviderEnv
 
-- `ProviderRoute` 是会话持久身份，只保存 provider/model：`{kind:'provider', providerId, model}` 或 `{kind:'subscription', providerId:'anthropic-sub', model}`。
-- `ProviderEnv` 是请求运行时派生物，包含 `baseUrl`、`apiKey`、`authType`、`modelAliases`；只能从当前配置即时 materialize，不能作为新会话身份写回 `sessions.json`。
+- `ProviderRoute` 是会话持久身份，只保存 provider/model：`{kind:'provider', providerId, model}` 或 `{kind:'subscription', providerId:'anthropic-sub'|'xai-sub', model}`。
+- `ProviderEnv` 是请求运行时派生物，包含 `baseUrl`、`apiKey`、`authType`、`modelAliases` 或非 secret `credentialSource`；只能从当前配置即时 materialize，不能作为新会话身份写回 `sessions.json`。`credentialSource` 是 owner 引用，不是 bearer 快照。
 - `providerEnvJson` 只读兼容旧数据：没有 `providerRoute` 的历史 session 才允许 fallback 读取。新写入路径必须写 `providerRoute`，并省略/清空 `providerEnvJson`。
 - `model + configSnapshotAt` 旧 session 缺 provider 时，只在“声明该 model 且本地有凭据/账号证据”的 provider 中修复。API provider 看非空 API key；Anthropic subscription 看 valid 状态、`accountEmail` 或 `verifiedAt` 任一存在。多个候选或没有候选时，不猜默认 provider，要求用户在模型选择器重新选择。
 
@@ -264,26 +281,27 @@ Anthropic 官方 API 会在 thinking block 中嵌入签名，resume session 时�
 
 ---
 
-## ⚠️ 关键陷阱：订阅模式的 providerEnv
+## ⚠️ 关键陷阱：不能把所有 subscription 都当成空 providerEnv
 
 ### 原则
 
-- 会话配置状态里，`currentProviderEnv = undefined`：表示 builtin Anthropic 订阅（官方默认 endpoint + Claude Code native OAuth store）
-- `providerEnv = { baseUrl, apiKey }`：使用第三方 API
+- 会话配置状态里，`currentProviderEnv = undefined`：只表示 builtin Anthropic 订阅（官方默认 endpoint + Claude Code native OAuth store）。
+- `providerEnv = { baseUrl, apiKey }`：普通第三方 API。
+- `providerEnv = { baseUrl, credentialSource:{kind:'managed-oauth',...} }`：host-managed subscription；静态对象不含 token。
 
-前端构建 `providerEnv` 时，**订阅模式不发送 providerEnv**：
+不要再在调用点用 `provider.type !== 'subscription'` 猜 materialization。统一把 `ProviderRoute` 交给 `session-engine` / `materializeProviderRouteEnv()`；只有 `anthropic-sub` 返回 sentinel：
 
 ```typescript
-const providerEnv = currentProvider && currentProvider.type !== 'subscription'
-  ? { baseUrl: ..., apiKey: ..., authType: ... }
-  : undefined;
+const resolved = route.kind === 'subscription' && route.providerId === SUBSCRIPTION_PROVIDER_ID
+  ? 'subscription'
+  : await materializeProviderRouteEnv(route);
 ```
 
 后端检测订阅切换：
 
 ```typescript
 // 从 API 模式切换到订阅模式
-const switchingToSubscription = !providerEnv && currentProviderEnv;
+const switchingToAnthropicSubscription = resolved === 'subscription' && currentProviderEnv;
 ```
 
 ### One-shot SDK 子进程

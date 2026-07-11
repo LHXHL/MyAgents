@@ -140,7 +140,10 @@ const mocks = vi.hoisted(() => {
         ? [...overrideIds]
         : (sessionMeta?.enabledOfficialToolIds ? [...sessionMeta.enabledOfficialToolIds] : [])
     )),
-    materializeProviderRouteEnv: vi.fn(() => undefined),
+    materializeProviderRouteEnv: vi.fn<() => unknown>(() => undefined),
+    resolveSubscriptionAuthKind: vi.fn((providerId: string) => (
+      providerId === 'xai-sub' ? 'host-managed-oauth' : 'sdk-native'
+    )),
     loadConfig: vi.fn(() => ({ chatQueueResponseMode: 'realtime' })),
     resolveWorkspaceConfig: vi.fn(() => ({ mcpServers: [{ id: 'snapshot-mcp' }] })),
   };
@@ -239,6 +242,7 @@ vi.mock('../utils/admin-config', () => ({
   getEffectiveOfficialToolIdsForSession: mocks.getEffectiveOfficialToolIdsForSession,
   loadConfig: mocks.loadConfig,
   materializeProviderRouteEnv: mocks.materializeProviderRouteEnv,
+  resolveSubscriptionAuthKind: mocks.resolveSubscriptionAuthKind,
   resolveWorkspaceConfig: mocks.resolveWorkspaceConfig,
 }));
 
@@ -313,6 +317,46 @@ describe('session-engine selector and adapters', () => {
         beforeDispatch: undefined,
       },
     );
+  });
+
+  it('materializes Grok subscription routes as managed builtin ProviderEnv', async () => {
+    const managedEnv = {
+      providerId: 'xai-sub',
+      baseUrl: 'https://api.x.ai/v1',
+      apiProtocol: 'openai' as const,
+      upstreamFormat: 'responses' as const,
+      credentialSource: { kind: 'managed-oauth' as const, providerId: 'xai-sub' as const },
+    };
+    mocks.materializeProviderRouteEnv.mockReturnValueOnce(managedEnv);
+
+    const result = await getSessionEngine().sendDesktopMessage({
+      text: 'hello Grok',
+      model: 'grok-4.5',
+      providerRoute: { kind: 'subscription', providerId: 'xai-sub', model: 'grok-4.5' },
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: desktopScenario,
+    });
+
+    expect(result.success).toBe(true);
+    expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[4]).toEqual(managedEnv);
+  });
+
+  it('keeps Anthropic subscription routes on the native subscription sentinel', async () => {
+    await getSessionEngine().sendDesktopMessage({
+      text: 'hello Claude',
+      model: 'claude-sonnet-5',
+      providerRoute: {
+        kind: 'subscription',
+        providerId: 'anthropic-sub',
+        model: 'claude-sonnet-5',
+      },
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: desktopScenario,
+    });
+
+    expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[4]).toBe('subscription');
   });
 
   it('passes Goal dispatch guards into builtin queue ownership and exposes its acknowledgement', async () => {

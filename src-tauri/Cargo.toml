@@ -47,7 +47,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
-reqwest = { version = "0.13.1", features = ["stream", "json", "blocking", "multipart", "socks"] }
+reqwest = { version = "0.13.1", features = ["stream", "json", "blocking", "multipart", "socks", "form"] }
 futures-util = "0.3.31"
 tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 chrono = { version = "0.4", features = ["serde"] }

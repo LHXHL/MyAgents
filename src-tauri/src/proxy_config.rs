@@ -427,6 +427,42 @@ pub fn build_client_with_proxy_for_provider(
         .map_err(|e| format!("[proxy_config] Failed to build HTTP client: {}", e))
 }
 
+/// Blocking twin of [`build_client_with_proxy_for_provider`].
+///
+/// OAuth refresh is intentionally executed while the cross-process credential
+/// file lock is held so a rotating refresh token has exactly one consumer.
+/// `with_file_lock` runs that closure on a blocking worker; this helper keeps
+/// the same provider-scoped proxy semantics without open-coding proxy policy in
+/// the Grok auth owner.
+pub fn build_blocking_client_with_proxy_for_provider(
+    builder: reqwest::blocking::ClientBuilder,
+    provider_id: &str,
+) -> Result<reqwest::blocking::Client, String> {
+    let final_builder = if let Some(proxy_settings) = read_proxy_settings_for_provider(provider_id)
+    {
+        let proxy_url = get_proxy_url(&proxy_settings)?;
+        ulog_info!(
+            "[proxy_config] Using proxy for blocking provider requests provider={}: {}",
+            provider_id,
+            proxy_url
+        );
+        let proxy = reqwest::Proxy::all(&proxy_url)
+            .map_err(|e| format!("[proxy_config] Failed to create proxy: {}", e))?
+            .no_proxy(reqwest::NoProxy::from_string(LOCALHOST_NO_PROXY));
+        builder.proxy(proxy)
+    } else {
+        ulog_info!(
+            "[proxy_config] No MyAgents proxy configured for blocking provider {}, inheriting system network behavior",
+            provider_id
+        );
+        builder
+    };
+
+    final_builder
+        .build()
+        .map_err(|e| format!("[proxy_config] Failed to build blocking HTTP client: {}", e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

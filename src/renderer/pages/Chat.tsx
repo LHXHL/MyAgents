@@ -3545,12 +3545,17 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     if (isExternalRuntime || !currentProvider) return;
     if (configDispositionRef.current !== 'push') return;
     if (reasoningEffort === 'default') return;
-    const choices = reasoningEffortChoices('builtin', currentProvider.apiProtocol);
+    const choices = reasoningEffortChoices(
+      'builtin',
+      currentProvider.apiProtocol,
+      currentProvider.id,
+      selectedModel,
+    );
     if (choices && !choices.includes(reasoningEffort)) {
       void handleReasoningEffortChange('default');
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed to protocol-relevant provider fields
-  }, [isExternalRuntime, currentProvider?.id, currentProvider?.apiProtocol, reasoningEffort, handleReasoningEffortChange]);
+  }, [isExternalRuntime, currentProvider?.id, currentProvider?.apiProtocol, selectedModel, reasoningEffort, handleReasoningEffortChange]);
 
   // Handle permission mode change — same dual-write policy as handleModelChange.
   const handlePermissionModeChange = useCallback(async (mode: PermissionMode) => {

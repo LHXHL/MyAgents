@@ -10,6 +10,7 @@ export async function managementApi(
   path: string,
   method: 'GET' | 'POST' = 'GET',
   body?: Record<string, unknown>,
+  requestOptions?: { timeoutMs?: number; parentSignal?: AbortSignal },
 ): Promise<Record<string, unknown>> {
   if (!MGMT_PORT) {
     return {
@@ -35,7 +36,10 @@ export async function managementApi(
     options.body = JSON.stringify(body);
   }
   try {
-    const resp = await cancellableFetch(url, options, { timeoutMs: ADMIN_LOOPBACK_TIMEOUT_MS });
+    const resp = await cancellableFetch(url, options, {
+      timeoutMs: requestOptions?.timeoutMs ?? ADMIN_LOOPBACK_TIMEOUT_MS,
+      parentSignal: requestOptions?.parentSignal,
+    });
     return await readLoopbackJson(resp, 'Management API');
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -49,4 +53,74 @@ export async function managementApi(
       },
     };
   }
+}
+
+export type ManagedOAuthResolveIntent =
+  | { reason: 'request' }
+  | { reason: 'auth_recovery'; rejectedCredentialVersion: number }
+  | { reason: 'reject'; rejectedCredentialVersion: number }
+  | { reason: 'report'; rejectedCredentialVersion: number; httpStatus: number };
+
+export type ManagedOAuthCredential = {
+  accessToken: string;
+  credentialVersion: number;
+};
+
+export type ManagedOAuthPurpose =
+  | { purpose: 'execution' }
+  | { purpose: 'verification'; expectedLineage: string };
+
+const MANAGED_OAUTH_TIMEOUT_MS = 90_000;
+
+function managementErrorMessage(result: Record<string, unknown>): string {
+  const error = result.error;
+  if (typeof error === 'string') return error;
+  if (error && typeof error === 'object') {
+    const message = (error as Record<string, unknown>).message;
+    if (typeof message === 'string') return message;
+  }
+  return 'Managed OAuth credential is unavailable';
+}
+
+export async function resolveManagedOAuthCredential(
+  providerId: string,
+  intent: ManagedOAuthResolveIntent,
+  parentSignal?: AbortSignal,
+  purpose: ManagedOAuthPurpose = { purpose: 'execution' },
+): Promise<ManagedOAuthCredential | undefined> {
+  if (providerId !== 'xai-sub') {
+    throw new Error(`Unsupported managed OAuth provider: ${providerId}`);
+  }
+  const sessionId = process.env.MYAGENTS_SESSION_ID?.trim();
+  if (!sessionId) {
+    throw new Error('Managed OAuth requires a session-scoped Sidecar identity');
+  }
+  const result = await managementApi(
+    '/api/grok/bearer',
+    'POST',
+    {
+      sessionId,
+      reason: intent.reason,
+      ...purpose,
+      ...('rejectedCredentialVersion' in intent
+        ? { rejectedCredentialVersion: intent.rejectedCredentialVersion }
+        : {}),
+      ...('httpStatus' in intent ? { httpStatus: intent.httpStatus } : {}),
+    },
+    { timeoutMs: MANAGED_OAUTH_TIMEOUT_MS, parentSignal },
+  );
+  if (result.ok !== true) {
+    throw new Error(managementErrorMessage(result));
+  }
+  if (intent.reason === 'reject' || intent.reason === 'report') return undefined;
+  if (typeof result.accessToken !== 'string' || !result.accessToken) {
+    throw new Error('Managed OAuth response did not include an access token');
+  }
+  if (typeof result.credentialVersion !== 'number' || result.credentialVersion <= 0) {
+    throw new Error('Managed OAuth response did not include a credential version');
+  }
+  return {
+    accessToken: result.accessToken,
+    credentialVersion: result.credentialVersion,
+  };
 }

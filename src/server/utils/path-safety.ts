@@ -37,7 +37,16 @@ const SYSTEM_BLACKLIST: readonly string[] =
       ? [...POSIX_SYSTEM_DIRS, ...MACOS_PRIVATE_DIRS]
       : POSIX_SYSTEM_DIRS;
 
-const CREDENTIAL_SUBDIRS: readonly string[] = ['.ssh', '.gnupg', '.aws', '.kube', '.docker', '.config/op', '.myagents/codex'];
+const CREDENTIAL_SUBDIRS: readonly string[] = [
+  '.ssh',
+  '.gnupg',
+  '.aws',
+  '.kube',
+  '.docker',
+  '.config/op',
+  '.myagents/codex',
+  '.myagents/credentials',
+];
 
 const MAC_SENSITIVE_SUBDIRS: readonly string[] = [
   'Library/Keychains',

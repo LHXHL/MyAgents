@@ -1,6 +1,7 @@
 import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type {
   BackgroundAgentPermissionMode,
+  ManagedProviderCredential,
   PermissionMode as SharedPermissionMode,
 } from '../../shared/config-types';
 import type { ToolDisplayPayload } from '../../shared/toolDisplay/filePatch';
@@ -33,6 +34,8 @@ export type ProviderEnv = {
   upstreamFormat?: 'chat_completions' | 'responses';
   /** Model alias mapping: SDK sub-agents use "fable"/"sonnet"/"opus"/"haiku" -> actual provider model IDs */
   modelAliases?: ModelAliases;
+  /** Non-secret owner reference. Bearers are resolved by the Bridge per request. */
+  credentialSource?: ManagedProviderCredential;
 };
 
 export type ToolUseState = {

@@ -400,6 +400,8 @@ export function providerEnvEqual(a: ProviderEnv | undefined, b: ProviderEnv | un
     && a.maxOutputTokens === b.maxOutputTokens
     && a.maxOutputTokensParamName === b.maxOutputTokensParamName
     && a.upstreamFormat === b.upstreamFormat
+    && a.credentialSource?.kind === b.credentialSource?.kind
+    && a.credentialSource?.providerId === b.credentialSource?.providerId
     && a.modelAliases?.fable === b.modelAliases?.fable
     && a.modelAliases?.sonnet === b.modelAliases?.sonnet
     && a.modelAliases?.opus === b.modelAliases?.opus

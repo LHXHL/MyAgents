@@ -23,8 +23,8 @@ import { getHomeDirOrNull } from './platform';
 import { stripBom } from '../../shared/utils';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { promoteAgentMcpJsonToGlobal } from '../../shared/mcpConfig';
-import type { McpServerDefinition, PermissionMode, ProviderVerifyStatus } from '../../shared/config-types';
-import { applyProviderEnablementAndOrder, CODEX_SUBSCRIPTION_PROVIDER_ID, completeModelAliases, isProviderEnabled, PRESET_MCP_SERVERS, PRESET_PROVIDERS } from '../../shared/config-types';
+import type { ManagedProviderCredential, McpServerDefinition, PermissionMode, ProviderVerifyStatus, SubscriptionAuthPolicy } from '../../shared/config-types';
+import { applyProviderEnablementAndOrder, CODEX_SUBSCRIPTION_PROVIDER_ID, completeModelAliases, isProviderEnabled, PRESET_MCP_SERVERS, PRESET_PROVIDERS, XAI_SUBSCRIPTION_API_BASE_URL, XAI_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import { isRuntimeBackedProvider, managedCodexProviderPermissionToRuntimePermission } from '../../shared/providerExecution';
 import type { AgentConfig, ChannelConfig } from '../../shared/types/agent';
 import {
@@ -750,6 +750,16 @@ export interface ResolvedProviderEnv {
   maxOutputTokensParamName?: 'max_tokens' | 'max_completion_tokens' | 'max_output_tokens';
   upstreamFormat?: 'chat_completions' | 'responses';
   modelAliases?: { fable?: string; sonnet?: string; opus?: string; haiku?: string };
+  credentialSource?: ManagedProviderCredential;
+}
+
+export function resolveSubscriptionAuthKind(
+  providerId: string,
+  config?: AdminAppConfig,
+): SubscriptionAuthPolicy['kind'] | undefined {
+  const provider = findEffectiveProvider(providerId, config ?? loadConfig());
+  const auth = provider?.subscriptionAuth as SubscriptionAuthPolicy | undefined;
+  return provider?.type === 'subscription' ? auth?.kind : undefined;
 }
 
 /**
@@ -769,15 +779,23 @@ export function resolveProviderEnv(
   if (!provider) return undefined;
   if (!isProviderEnabled(provider)) return undefined;
 
-  // Subscription providers don't use providerEnv (SDK uses built-in OAuth)
-  if (provider.type === 'subscription') return undefined;
+  // Anthropic subscription remains SDK-native. Grok subscription is builtin
+  // too, but its OAuth grant is owned by Rust and referenced here without a
+  // bearer so the Bridge can resolve it per request.
+  const subscriptionAuth = provider.subscriptionAuth as SubscriptionAuthPolicy | undefined;
+  const subscriptionAuthKind = provider.type === 'subscription'
+    ? subscriptionAuth?.kind
+    : undefined;
+  const isManagedOauth = subscriptionAuthKind === 'host-managed-oauth';
+  if (provider.type === 'subscription' && !isManagedOauth) return undefined;
+  if (isManagedOauth && providerId !== XAI_SUBSCRIPTION_PROVIDER_ID) return undefined;
 
   // Get API key from config. PRD 0.2.9 — also reject whitespace-only keys
   // (Codex review): a value like `"  "` is truthy and would silently be
   // sent to the upstream as the Authorization header, producing an opaque
   // 401 instead of an actionable "no API key" error.
-  const apiKey = (c.providerApiKeys ?? {})[providerId];
-  if (!apiKey || !apiKey.trim()) return undefined;
+  const apiKey = isManagedOauth ? undefined : (c.providerApiKeys ?? {})[providerId];
+  if (!isManagedOauth && (!apiKey || !apiKey.trim())) return undefined;
 
   // Extract provider config fields (same shape as frontend Chat.tsx builds)
   const providerConfig = (provider.config ?? {}) as Record<string, unknown>;
@@ -785,8 +803,11 @@ export function resolveProviderEnv(
     providerId,
     providerName: typeof provider.name === 'string' ? provider.name : providerId,
     baseUrl: providerConfig.baseUrl ? String(providerConfig.baseUrl) : undefined,
-    apiKey,
+    ...(apiKey ? { apiKey } : {}),
     authType: (provider.authType as ResolvedProviderEnv['authType']) ?? 'both',
+    ...(isManagedOauth
+      ? { credentialSource: { kind: 'managed-oauth', providerId: XAI_SUBSCRIPTION_PROVIDER_ID } as const }
+      : {}),
   };
   if (provider.apiProtocol) result.apiProtocol = provider.apiProtocol as ResolvedProviderEnv['apiProtocol'];
   if (provider.maxOutputTokens) result.maxOutputTokens = Number(provider.maxOutputTokens);
@@ -820,8 +841,35 @@ export function materializeProviderRouteEnv(
   config?: AdminAppConfig,
 ): ResolvedProviderEnv | undefined {
   if (!isConcreteProviderRoute(route)) return undefined;
-  if (route.kind === 'subscription') return undefined;
+  if (route.kind === 'subscription'
+      && resolveSubscriptionAuthKind(route.providerId, config) !== 'host-managed-oauth') return undefined;
   return resolveProviderEnv(route.providerId, config);
+}
+
+/** Managed OAuth owns both the bearer and its destination. */
+export function canonicalizeManagedProviderEnv(
+  providerEnv: ResolvedProviderEnv,
+): ResolvedProviderEnv {
+  const source = providerEnv.credentialSource;
+  if (!source) return providerEnv;
+  if (source.kind !== 'managed-oauth'
+      || source.providerId !== XAI_SUBSCRIPTION_PROVIDER_ID
+      || providerEnv.providerId !== XAI_SUBSCRIPTION_PROVIDER_ID) {
+    throw new Error('Unsupported managed OAuth provider identity');
+  }
+  return {
+    providerId: XAI_SUBSCRIPTION_PROVIDER_ID,
+    providerName: providerEnv.providerName,
+    baseUrl: XAI_SUBSCRIPTION_API_BASE_URL,
+    authType: 'both',
+    apiProtocol: 'openai',
+    upstreamFormat: 'responses',
+    modelAliases: providerEnv.modelAliases,
+    credentialSource: {
+      kind: 'managed-oauth',
+      providerId: XAI_SUBSCRIPTION_PROVIDER_ID,
+    },
+  };
 }
 
 function resolveOwnedBuiltinProviderRoute(args: {

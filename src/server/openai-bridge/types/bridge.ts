@@ -34,6 +34,17 @@ export interface UpstreamConfig {
   baseUrl: string;
   /** Override API Key (optional, defaults to x-api-key from request header) */
   apiKey?: string;
+  /** Request-scoped managed bearer generation. Opaque and never logged. */
+  credentialVersion?: number;
+  /** Resolve one replacement bearer after an upstream 401. */
+  recoverAuth?: (rejectedCredentialVersion: number) => Promise<{
+    apiKey: string;
+    credentialVersion: number;
+  }>;
+  /** Quarantine a bearer after the single recovery attempt also returns 401. */
+  rejectCredential?: (credentialVersion: number) => Promise<void>;
+  /** Project a non-secret upstream outcome back to the credential owner. */
+  reportOutcome?: (credentialVersion: number, httpStatus: number) => Promise<void>;
   /** Override model name (optional, higher priority than modelMapping) */
   model?: string;
   /** Per-request max output tokens cap (takes priority over BridgeConfig.maxOutputTokens) */

@@ -1654,6 +1654,7 @@ const CREDENTIAL_SUBDIRS: &[&str] = &[
     ".docker",
     ".config/op",
     ".myagents/codex",
+    ".myagents/credentials",
 ];
 #[cfg(target_os = "macos")]
 const MAC_SENSITIVE_SUBDIRS: &[&str] = &[

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Provider } from './config-types';
-import { SUBSCRIPTION_PROVIDER_ID } from './config-types';
+import { SUBSCRIPTION_PROVIDER_ID, XAI_SUBSCRIPTION_PROVIDER_ID } from './config-types';
 import {
   getCredentialConfiguredProviderCandidates,
   hasProviderRouteCredential,
@@ -73,6 +73,33 @@ describe('provider route credential candidates', () => {
         },
       },
     })).toBe(true);
+  });
+
+  it('treats verified Grok OAuth projection as a concrete subscription credential', () => {
+    const sub = provider(XAI_SUBSCRIPTION_PROVIDER_ID, ['grok-4.5'], 'subscription');
+    expect(hasProviderRouteCredential(sub, {
+      verifyStatus: {
+        [XAI_SUBSCRIPTION_PROVIDER_ID]: {
+          status: 'valid',
+          verifiedAt: '2026-07-11T00:00:00.000Z',
+        },
+      },
+    })).toBe(true);
+    expect(isConcreteProviderRoute({
+      kind: 'subscription',
+      providerId: XAI_SUBSCRIPTION_PROVIDER_ID,
+      model: 'grok-4.5',
+    })).toBe(true);
+    expect(hasProviderRouteCredential(sub, {
+      verifyStatus: {
+        [XAI_SUBSCRIPTION_PROVIDER_ID]: {
+          status: 'invalid',
+          verifiedAt: '2026-07-11T00:00:00.000Z',
+          accountEmail: 'user@example.com',
+          invalidReason: 'entitlement_required',
+        },
+      },
+    })).toBe(false);
   });
 
   it('auto repairs only when the credential-configured candidate is unique', () => {
