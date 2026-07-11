@@ -74,6 +74,12 @@ struct MockSkillRecord {
 }
 
 #[derive(Clone)]
+struct MockDevicePresence {
+    last_online_at: String,
+    online_until: String,
+}
+
+#[derive(Clone)]
 struct MockState {
     user: Value,
     tags: Vec<Value>,
@@ -84,6 +90,7 @@ struct MockState {
     claims: HashMap<String, Value>,
     skills: Vec<MockSkillRecord>,
     agents: Vec<LocalRegisteredAgent>,
+    device_presence: HashMap<String, MockDevicePresence>,
     dispatches: Vec<Value>,
     deliveries: Vec<Value>,
     events: Vec<Value>,
@@ -146,6 +153,7 @@ pub fn session() -> SpaceSession {
         session_token: "mock-session-token".to_string(),
         expires_at: None,
         user,
+        account_plan: mock_account_plan(),
         space: mock_space(),
         membership: mock_membership(),
         spaces: vec![mock_space_list_item()],
@@ -504,6 +512,15 @@ pub fn process_deliveries_once() -> SpaceProcessDeliveryResult {
             processed += 1;
         }
     }
+    let presence_agents = state
+        .agents
+        .iter()
+        .filter(|agent| agent.status == "active" && agent.device_id.is_some())
+        .cloned()
+        .collect::<Vec<_>>();
+    for agent in presence_agents {
+        record_mock_device_presence(&mut state, &agent);
+    }
     SpaceProcessDeliveryResult {
         processed,
         delivered: processed,
@@ -674,6 +691,7 @@ pub fn update_profile(input: SpaceUpdateProfileInput) -> Result<SpaceSessionPubl
         session_token: "mock-session-token".to_string(),
         expires_at: None,
         user: state.user.clone(),
+        account_plan: mock_account_plan(),
         space: mock_space(),
         membership: mock_membership(),
         spaces: vec![mock_space_list_item()],
@@ -1099,6 +1117,24 @@ fn handle_api_data_request(
                 .collect::<Vec<_>>();
             Ok(json!({ "items": items }))
         }
+        ("POST", ["api", "registered-agents", "me", "device-presence"]) => {
+            let agent_id = require_registered_agent_actor(&actor)?;
+            let agent = state
+                .agents
+                .iter()
+                .find(|agent| agent.id == agent_id)
+                .cloned()
+                .ok_or_else(|| "Registered Agent not found".to_string())?;
+            if agent.device_id.is_none() {
+                return Err("Registered Agent has no device binding".to_string());
+            }
+            let presence = record_mock_device_presence(&mut state, &agent);
+            Ok(json!({
+                "observedAt": presence.last_online_at,
+                "onlineUntil": presence.online_until,
+                "leaseSeconds": 390
+            }))
+        }
         ("POST", ["api", "devices", "upsert"]) => upsert_device(body),
         ("GET", ["api", "spaces", "official", "registered-agents"]) => {
             let items = state
@@ -1106,6 +1142,8 @@ fn handle_api_data_request(
                 .iter()
                 .map(|agent| {
                     let public: LocalRegisteredAgentPublic = agent.clone().into();
+                    let presence = mock_device_presence_for_agent(&state, agent);
+                    let online = agent.status == "active" && presence.is_some();
                     json!({
                         "id": agent.id,
                         "spaceId": agent.space_id,
@@ -1122,6 +1160,9 @@ fn handle_api_data_request(
                         "goalMd": agent.goal_md.clone(),
                         "issueSubscriptionRunMode": agent.issue_subscription_run_mode,
                         "status": agent.status,
+                        "presence": if online { "online" } else { "offline" },
+                        "lastOnlineAt": presence.map(|value| value.last_online_at.as_str()),
+                        "onlineUntil": presence.map(|value| value.online_until.as_str()),
                         "createdAt": agent.created_at,
                         "updatedAt": agent.updated_at,
                         "subscriptions": agent.goal_id.as_ref().map(|goal_id| vec![json!({
@@ -1216,6 +1257,42 @@ fn require_registered_agent_actor(actor: &MockActor) -> Result<String, String> {
         return Ok(actor.actor_id.clone());
     }
     Err("Registered Agent token required".to_string())
+}
+
+fn mock_device_presence_key(agent: &LocalRegisteredAgent) -> Option<String> {
+    let owner_user_id = agent.owner_user_id.as_deref()?.trim();
+    let device_id = agent.device_id.as_deref()?.trim();
+    if owner_user_id.is_empty() || device_id.is_empty() {
+        return None;
+    }
+    Some(format!("{}::{}", owner_user_id, device_id))
+}
+
+fn record_mock_device_presence(
+    state: &mut MockState,
+    agent: &LocalRegisteredAgent,
+) -> MockDevicePresence {
+    let observed_at = chrono::Utc::now();
+    let presence = MockDevicePresence {
+        last_online_at: observed_at.to_rfc3339(),
+        online_until: (observed_at + chrono::Duration::seconds(390)).to_rfc3339(),
+    };
+    if let Some(key) = mock_device_presence_key(agent) {
+        state.device_presence.insert(key, presence.clone());
+    }
+    presence
+}
+
+fn mock_device_presence_for_agent<'a>(
+    state: &'a MockState,
+    agent: &LocalRegisteredAgent,
+) -> Option<&'a MockDevicePresence> {
+    let key = mock_device_presence_key(agent)?;
+    state.device_presence.get(&key).filter(|presence| {
+        chrono::DateTime::parse_from_rfc3339(&presence.online_until)
+            .map(|until| until.timestamp_millis() > chrono::Utc::now().timestamp_millis())
+            .unwrap_or(false)
+    })
 }
 
 fn state() -> &'static Mutex<MockState> {
@@ -1679,6 +1756,13 @@ fn initial_state() -> MockState {
             "dsp_mock_001",
             "2026-06-24T09:45:00.000Z",
         ),
+        mock_event(
+            "evt_mock_005",
+            "space.plan_changed",
+            "space",
+            MOCK_SPACE_ID,
+            "2026-07-11T09:00:00.000Z",
+        ),
     ];
 
     MockState {
@@ -1691,6 +1775,7 @@ fn initial_state() -> MockState {
         claims: HashMap::new(),
         skills,
         agents,
+        device_presence: HashMap::new(),
         dispatches,
         deliveries,
         events,
@@ -1747,6 +1832,13 @@ fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
         .get("includeArchived")
         .map(|value| value == "true")
         .unwrap_or(false);
+    let related_to_me = query.get("related").map(String::as_str) == Some("me");
+    let owned_agent_ids = state
+        .agents
+        .iter()
+        .filter(|agent| agent.owner_user_id.as_deref() == Some(MOCK_OWNER_USER_ID))
+        .map(|agent| agent.id.as_str())
+        .collect::<HashSet<_>>();
     let cursor = query
         .get("cursor")
         .and_then(|value| value.parse::<usize>().ok())
@@ -1835,7 +1927,38 @@ fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
                     _ => true,
                 })
                 .unwrap_or(true);
-            matches_q && matches_tag && matches_status && matches_goal && matches_human_only
+            let issue_id = issue.get("id").and_then(Value::as_str).unwrap_or("");
+            let creator_id = issue
+                .get("creator")
+                .and_then(|value| value.get("id"))
+                .and_then(Value::as_str);
+            let has_related_comment =
+                state
+                    .comments
+                    .get(issue_id)
+                    .into_iter()
+                    .flatten()
+                    .any(|comment| {
+                        let author_id = comment.pointer("/author/id").and_then(Value::as_str);
+                        author_id == Some(MOCK_OWNER_USER_ID)
+                            || author_id.is_some_and(|id| owned_agent_ids.contains(id))
+                    });
+            let has_related_claim = state.claims.get(issue_id).is_some_and(|claim| {
+                let actor_id = claim.get("actorId").and_then(Value::as_str);
+                actor_id == Some(MOCK_OWNER_USER_ID)
+                    || actor_id.is_some_and(|id| owned_agent_ids.contains(id))
+            });
+            let matches_related = !related_to_me
+                || creator_id == Some(MOCK_OWNER_USER_ID)
+                || creator_id.is_some_and(|id| owned_agent_ids.contains(id))
+                || has_related_comment
+                || has_related_claim;
+            matches_q
+                && matches_tag
+                && matches_status
+                && matches_goal
+                && matches_human_only
+                && matches_related
         })
         .cloned()
         .map(|issue| issue_with_claim(state, issue))
@@ -3640,6 +3763,8 @@ fn mock_event(
 }
 
 fn mock_space() -> Value {
+    // The official Space is quota-bypassed by contract. A mock user's account-level
+    // Pro badge therefore intentionally does not change this Space projection.
     json!({
         "id": MOCK_SPACE_ID,
         "slug": "official",
@@ -3648,8 +3773,38 @@ fn mock_space() -> Value {
         "rootGoalId": MOCK_ROOT_GOAL_ID,
         "spaceKind": "official",
         "planTier": "free",
+        "effectivePlanTier": "free",
+        "planExpiresAt": null,
+        "limits": mock_limits(),
+        "quotaBypassed": true,
         "avatarUrl": null,
         "avatarSizeBytes": 0
+    })
+}
+
+fn mock_account_plan() -> Value {
+    if std::env::var("MYAGENTS_SPACE_MOCK_PLAN")
+        .map(|value| value.eq_ignore_ascii_case("pro"))
+        .unwrap_or(false)
+    {
+        return json!({
+            "effectiveTier": "pro",
+            "evaluatedAt": "2026-07-11T00:00:00.000Z",
+            "membership": {
+                "planTier": "pro",
+                "status": "active",
+                "startsAt": "2026-07-01T00:00:00.000Z",
+                "expiresAt": "2026-10-11T00:00:00.000Z",
+                "revokedAt": null,
+                "source": "mock",
+                "version": 1
+            }
+        });
+    }
+    json!({
+        "effectiveTier": "free",
+        "evaluatedAt": "2026-07-11T00:00:00.000Z",
+        "membership": null
     })
 }
 
@@ -3685,6 +3840,9 @@ fn mock_space_list_item() -> Value {
         "rootGoalId": MOCK_ROOT_GOAL_ID,
         "spaceKind": "official",
         "planTier": "free",
+        "effectivePlanTier": "free",
+        "planExpiresAt": null,
+        "quotaBypassed": true,
         "avatarUrl": null,
         "avatarSizeBytes": 0,
         "membership": mock_membership(),
@@ -3704,6 +3862,7 @@ fn mock_membership() -> Value {
 fn mock_me(state: &MockState) -> Value {
     json!({
         "user": state.user.clone(),
+        "accountPlan": mock_account_plan(),
         "space": mock_space(),
         "membership": mock_membership(),
         "spaces": [mock_space_list_item()]
@@ -3811,6 +3970,149 @@ mod tests {
             .and_then(Value::as_u64)
             .unwrap_or(0)
             > 0));
+    }
+
+    #[test]
+    fn mock_contract_projects_account_plan_related_filter_and_presence() {
+        let _mock = enable_for_test();
+        let me = api_data_request("GET", "/api/me", None).expect("me should load");
+        assert_eq!(
+            me.pointer("/accountPlan/effectiveTier")
+                .and_then(Value::as_str),
+            Some("free")
+        );
+
+        let unrelated = api_data_request(
+            "GET",
+            "/api/spaces/official/issues?q=%E6%8A%8A%20Issue%20%E7%AE%A1%E7%90%86&related=me",
+            None,
+        )
+        .expect("related issues should load");
+        assert_eq!(
+            unrelated
+                .pointer("/items")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+
+        let related = api_data_request(
+            "GET",
+            "/api/spaces/official/issues?q=Space%20tab&related=me",
+            None,
+        )
+        .expect("Agent-comment relationship should load");
+        assert_eq!(
+            related.pointer("/items/0/id").and_then(Value::as_str),
+            Some("iss_mock_002")
+        );
+
+        let (token, agent_id, disabled_token) = {
+            let state = state().lock().expect("mock state poisoned");
+            let agent = state
+                .agents
+                .iter()
+                .find(|agent| agent.status == "active" && agent.device_id.is_some())
+                .expect("active device-bound agent");
+            let disabled_token = state
+                .agents
+                .iter()
+                .find(|agent| agent.status != "active" && agent.device_id.is_some())
+                .expect("disabled device-bound agent")
+                .token
+                .clone();
+            (agent.token.clone(), agent.id.clone(), disabled_token)
+        };
+        let agents_before_touch =
+            api_data_request("GET", "/api/spaces/official/registered-agents", None)
+                .expect("registered agents should load before touch");
+        let projected_before_touch = agents_before_touch
+            .pointer("/items")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| item.get("id").and_then(Value::as_str) == Some(agent_id.as_str()))
+            })
+            .expect("projected agent before touch");
+        assert_eq!(
+            projected_before_touch
+                .get("presence")
+                .and_then(Value::as_str),
+            Some("offline")
+        );
+        assert!(api_data_request_with_token(
+            "POST",
+            "/api/registered-agents/me/device-presence",
+            Some(&disabled_token),
+            Some(json!({})),
+        )
+        .is_err());
+        let touched = api_data_request_with_token(
+            "POST",
+            "/api/registered-agents/me/device-presence",
+            Some(&token),
+            Some(json!({})),
+        )
+        .expect("presence touch should succeed");
+        assert!(touched.get("onlineUntil").and_then(Value::as_str).is_some());
+
+        let agents = api_data_request("GET", "/api/spaces/official/registered-agents", None)
+            .expect("registered agents should load");
+        let projected = agents
+            .pointer("/items")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| item.get("id").and_then(Value::as_str) == Some(agent_id.as_str()))
+            })
+            .expect("projected agent");
+        assert_eq!(
+            projected.get("presence").and_then(Value::as_str),
+            Some("online")
+        );
+        assert!(projected
+            .get("lastOnlineAt")
+            .and_then(Value::as_str)
+            .is_some());
+
+        {
+            let mut state = state().lock().expect("mock state poisoned");
+            let agent = state
+                .agents
+                .iter()
+                .find(|agent| agent.id == agent_id)
+                .cloned()
+                .expect("touched agent");
+            let key = mock_device_presence_key(&agent).expect("presence key");
+            state.device_presence.insert(
+                key,
+                MockDevicePresence {
+                    last_online_at: (chrono::Utc::now() - chrono::Duration::seconds(2))
+                        .to_rfc3339(),
+                    online_until: (chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339(),
+                },
+            );
+        }
+        let agents_after_expiry =
+            api_data_request("GET", "/api/spaces/official/registered-agents", None)
+                .expect("registered agents should load after expiry");
+        let projected_after_expiry = agents_after_expiry
+            .pointer("/items")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items
+                    .iter()
+                    .find(|item| item.get("id").and_then(Value::as_str) == Some(agent_id.as_str()))
+            })
+            .expect("projected agent after expiry");
+        assert_eq!(
+            projected_after_expiry
+                .get("presence")
+                .and_then(Value::as_str),
+            Some("offline")
+        );
     }
 
     #[test]

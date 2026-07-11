@@ -44,9 +44,11 @@ Phase 2 为本地验证和自动化测试新增了显式 mock mode：
 - Worker `wrangler.jsonc` 开启 Smart Placement、Observability、Rate Limiting binding 与 scheduled prune。`src/services/prune.ts` 定期清理已结束的 `issue_deliveries` 以及历史 `space_events` / `issue_updates`；保留期与批大小由 `SPACE_DELIVERY_RETENTION_DAYS`、`SPACE_EVENT_RETENTION_DAYS`、`SPACE_PRUNE_BATCH_SIZE`、`SPACE_PRUNE_MAX_BATCHES` 控制。
 - Desktop OAuth handoff 必须由 D1 `desktop_login_sessions` 拥有，不能用 Cloudflare KV。浏览器 callback 写入 `done` 后，桌面端 poll 需要跨浏览器/客户端边缘节点立即读到同一状态；KV 的最终一致传播窗口会把“浏览器已成功”放大成约 1 分钟的客户端等待。
 - Space 业务统计事实由 `MyAgents_space` 拥有：只读 admin endpoints 位于 `/api/admin/dashboard/*`，通过 `SPACE_ADMIN_API_KEY` bearer secret 做 Worker-to-Worker 鉴权，供 `MyAgents_web` admin proxy 消费。`MyAgents_web` 不直接绑定或查询 Space D1；它只负责 Web admin auth、缓存、UI 以及客户端 analytics `space_*` 事件查询。
+- Space 运营写能力位于 `/api/admin/operations/*`，使用独立 `SPACE_OPERATIONS_API_KEY`，由 `myagents.io/admin` 的同源 server proxy 注入可信 operator email。账号 Pro grant/regrant/extend/revoke、只读权益矩阵与 append-only audit 都由 Space Worker 拥有；Website 不复制会员或 quota 判定。
 - `agg_space_global_day` 是 Space 全局规模趋势 snapshot 表，由 scheduled cron 写入；`GET /api/admin/dashboard/overview` 必须保持读路径，不在请求中 materialize/重写历史 snapshot。当天 current metrics 可作为 response 内存 partial point 合并，不能把读请求变成 rollup owner。
 - delivery fanout/backfill 只能先用固定查询选出订阅/Issue，再由 JS 生成 delivery id 后 batch `INSERT OR IGNORE`。不要为了每个订阅或每个 Issue 发散成 N 次查询，也不要把 delivery id 生成塞回 SQL 表达式。
 - `/api/registered-agents/me/deliveries` 是读路径：根据 token 识别 registered agent，读取 pending delivery，附带 `poll` 提示；它不更新 device `last_seen`，也不在 poll 中写入心跳。
+- connector 在线状态使用独立 `POST /api/registered-agents/me/device-presence`。服务端只能从 active registered-agent token 派生 owner/device，body 不接受自报身份；touch 更新 `user_devices.connector_last_seen_at/connector_online_until`，不写 `space_events`。
 - `src/services/pollPolicy.ts` 是服务端 poll 策略数字的唯一 owner。客户端传 `emptyStreak`，服务端根据 returned count、空轮询次数、active claim 与可选 `SPACE_POLL_*` 环境变量返回 `poll.nextAfterSeconds` / `reason`。客户端只负责 clamp、jitter、错误退避与执行，不复制策略阈值。
 - active claim 快路径依赖 `issue_claims(actor_type, actor_id, status)` 索引；如果 claim 查询语义变化，必须同步检查迁移与 poll policy。
 
@@ -61,7 +63,8 @@ Space 不创建第二套“云端 device id”。本地端点身份的唯一值�
 云端需要一个 `user_devices` 概念/表，主键语义为 `(userId, deviceId)`：
 
 - 必备字段：`userId`、`deviceId`。
-- 设备摘要字段：`deviceName`、`platform`、`osVersion`、`appVersion`、`status`、`lastSeenAt`。
+- 设备摘要字段：`deviceName`、`platform`、`osVersion`、`appVersion`、`status`、`lastSeenAt`。其中普通 `lastSeenAt` 只表示账号/设备活动，不得解释为 connector 在线。
+- connector presence 字段：`connectorLastSeenAt`、`connectorOnlineUntil`。Registered Agent projection 只返回服务端判定的 `presence: online|offline`、`lastOnlineAt`、`onlineUntil`；Renderer 不复制 lease 数字或自行用时钟重算 online。
 - 登录/授权完成后，客户端尝试调用 `/api/devices/upsert` 写入当前 `user_devices` 记录；为兼容桌面端与云端部署顺序，该调用失败不阻塞 Space 登录。客户端 auth poll / session read 路径必须把该 upsert 作为后台 best-effort，不能同步 await 到 UI 登录完成之前。
 - `cmd_space_register_agent` / `cmd_space_update_registered_agent` payload 同时携带 `deviceId`、`deviceName`、`platform`、`osVersion`、`appVersion`，服务端必须在 registered-agent mutation 中同步维护 `user_devices`，不能只依赖 bootstrap upsert。
 
@@ -70,6 +73,7 @@ Registered Agent 是“执行实体”，不是设备本身：
 - 归属字段：`ownerUserId` + `deviceId`。同一设备可以为同一 user 在不同 Space / workspace 上登记多个 Registered Agent。
 - 本地工作区绑定字段：`localWorkspaceId`、`localAgentId`、`workspacePath`、`workspaceLabel`。这些字段描述的是该设备上的本地 Agent 工作区，只能在登记它的那台设备上修改。
 - 展示字段：registered-agent list/detail 必须返回 `deviceId` 与 `device` 摘要，renderer 用它展示“本地电脑 / 平台 / 系统版本 / 客户端版本 / last seen”。
+- 在线 owner 是维护 harness 的 MyAgents 客户端/设备，不是单个 Agent 工作区。同一 owner+device 下的 active Agent 继承同一 presence；disabled 始终优先显示“已停用”。
 - Local 判定只能用 `ownerUserId === current session user id && deviceId === current ~/.myagents/device_id`。禁止用 `clientId`、hostname、是否存在本地缓存记录来推断 local。
 
 Registered Agent 执行请求是 token-only capability：
@@ -85,7 +89,7 @@ Space 本地状态由 Rust `space_data_dir()` 按当前环境选择：
 
 - production 保持兼容路径 `~/.myagents/space/{session.json,registered_agents.json,delivery_log.json}`。
 - staging 使用 `~/.myagents/space/staging/{session.json,registered_agents.json,delivery_log.json}`。
-- `session.json` — 云端 session token 与用户/space/membership 摘要；Rust 对外只返回 redacted public view。
+- `session.json` — 云端 session token 与用户/accountPlan/space/membership 摘要；Rust 对外只返回 redacted public view。
 - `registered_agents.json` — 本机注册到 Space 的 Agent 映射，包含本地 workspace path、`ownerUserId`、`deviceId`、设备摘要、订阅状态与云端 token。
 - `delivery_log.json` — 已投递 IssueDelivery 到本地 session 的映射，用于幂等与 delivered 标记。
 
@@ -140,6 +144,8 @@ Delivery connector 的轮询节奏由云端提示 + 本地执行机制共同决�
 - 每次 poll 带上当前 agent 的 `emptyStreak`。服务端返回 `poll.nextAfterSeconds` 与 `poll.reason`；老服务端缺少 `poll` 时客户端回退到 60s。
 - Rust 对服务端提示 clamp 到 30s-600s，并按 agent key 与 empty streak 加稳定 jitter；poll 失败时按上次间隔指数退避，最大 300s。
 - `cmd_space_wake_connector` 用于 Space 页面激活、registered agent 创建/更新等“可能有新工作”的边界。Renderer 不自己 poll/process delivery，也不持有 registered-agent token。
+- connector 读取当前 `baseUrl + user + device` 下全部 active 本地 Agent，不受 Renderer 当前选中 Space 限制；当前 Space 只属于导航/页面状态。每轮 delivery **GET 成功**即保留 poll-success 事实，后续 delivery 解析、session 注入或 ACK 失败不能把活跃客户端误判为离线。
+- 某设备组至少一次 poll 成功后，现有 connector owner 按 `(baseUrl, ownerUserId, deviceId)` 从组内选稳定 token，至多每 60 秒尝试一次 device-presence touch。失败尝试同样进入 60 秒节流，并在下一轮优先换用组内其他 token；一个设备有多个 Agent 也只写一次。不新增 loop，delivery GET 继续纯读。
 
 Delivery 分两类：
 
@@ -161,10 +167,27 @@ Space Issue 的用户可见编号由云端拥有，不从 opaque `issue.id` 推�
 
 所有 issue list/detail、IssueDelivery 和 mock 数据都必须携带该编号。Renderer 展示 `#<number>` 时只消费 API 返回的 `number` / 兼容字段 `issueNumber`；Rust delivery 注入和 attached task 命名也使用该编号，缺失时只能降级为内部 `issueId`，不能自行解析 id 后缀。
 
+## Issue 关系筛选与最近更新
+
+- `GET /api/spaces/:space/issues?related=me` 是服务端行为关系筛选，与 state/goal/subtree/search/humanOnly 做 AND，并继续使用 `updated_at DESC, id DESC` cursor 分页。
+- “与我相关”覆盖当前用户或其拥有的任一 Registered Agent 创建、评论、曾 claim 的 Issue；claim completed/cancelled、Agent disabled/revoked 都不抹除历史关系。
+- Renderer 必须把 `related` 放进 query cache key，并在当前 Tab 内按 Space ID 保存 toggle，避免切换 Space 后串值。新 query 首次请求期间使用 keep-previous-data；失败时保留最近成功列表并显示 inline error/retry，成功空结果后才能进入空态。
+- Issue cursor 页由基础 query cache 持有；UI 用“加载更多”把 `nextCursor` 页追加并按 ID 去重，不得只展示首个 50 条。Issue/Skill 集合展示 `updatedAt`；本机 mutation 可立即按 updatedAt 重排，event cursor 收到远端更新时只显示 inline refresh banner。远端 detail revalidate 只能原位补数据，不能提前重排、移除或插入列表行。
+
+## 账号会员与 Space quota
+
+- Pro 是 account-level 有效期会员；Space 仍是 member/open issue/skill/registered-agent/storage 的 quota 作用域。`billingOwnerUserId` 把账号的有效权益投影到其 owned Spaces，加入他人的 Space 不受当前账号会员影响。
+- `/api/me` / Desktop `SpaceSession` 返回 `accountPlan { effectiveTier, evaluatedAt, membership }`；Space projection 返回 `effectivePlanTier`、`planExpiresAt`、`limits`。旧 Cloud 缺字段时 Desktop 仅按 Free 展示，服务端 quota 始终是权威。
+- 到期判定严格为 `[startsAt, expiresAt)`，无需 cron。到期/撤销后 resolver 立即回到 Free；存量仍可读，只有超额资源的正增量 mutation 被拒绝，删除/归档/释放额度始终允许。
+- `space.plan_changed` 是普通 Space cursor event：当前 Space 收到后失效 session/overview 并 silent revalidate。Overview 的 `limits` 以当前 Space session projection 为单一权威，members payload 只补 usage/兼容旧服务，不能用旧快照遮住 plan event 的新额度。
+- 账户菜单打开且 `accountPlan.evaluatedAt` 超过 60 秒未校验、Pro 到期 timer、App 恢复前台也会补刷新；到期 timer 用服务端 `evaluatedAt → expiresAt` 的相对时长规避本机时钟偏差，并按同一 membership version/expiry 限制重试，不能形成 refresh storm。不新建常驻会员 poll。
+
 ## Agents UI 约束
 
 - Agents 列表是双列卡片；单个 Agent 也保持半宽，布局宽度边界与 Skills 列表一致。
-- 卡片只展示注意力关键项：Agent 名称 + 状态、本地电脑、工作区 Path、订阅目标。没有目标时展示“暂未设定目标”。
+- 卡片只展示注意力关键项：Agent 名称 + `在线/离线/已停用/连接中`、最后在线、本地电脑、工作区 Path、订阅目标。`active` 是管理态，绝不能直接渲染为绿色 online；普通 device lastSeen 与配置 updatedAt 也不能回退成在线时间。
+- active online、active offline、disabled 是首载/手动刷新/重新进入 Agent 页面时的排序组；60 秒 presence revalidate 与 App visibility resume 都只原位更新 badge，不在页面停留期间换位。
+- 用户文案统一为“添加本机 Agent 工作区”；registered agent 只保留在技术说明和字段名称中。
 - 点击卡片打开 overlay 详情，不跳页。详情按“设备信息 / 工作区信息 / 派发设置 / 登记信息”分组。
 - 编辑弹窗中的“本地 Agent 工作区”必须与登记弹窗使用同一工作区选择交互；但只有 current local Agent (`ownerUserId + deviceId` 命中当前端点) 可修改。远端设备登记的 Agent 工作区字段置灰，只能修改名称、订阅目标、订阅范围、订阅执行策略。
 - `clientId` 是 OAuth public client/build 配置，不是设备标识，不应出现在卡片关键位。

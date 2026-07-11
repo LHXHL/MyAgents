@@ -361,6 +361,12 @@
       "settings": "设置",
       "logout": "退出登录"
     },
+    "accountPlan": {
+      "free": "免费账户",
+      "proUntil": "专业版账户 · 有效至 {{date}}",
+      "proDaysRemaining": "专业版账户 · 还剩 {{count}} 天",
+      "expiredAt": "免费账户 · Pro 已于 {{date}} 到期"
+    },
     "spaceActions": {
       "joinTitle": "加入 Space",
       "createTitle": "创建 Space",
@@ -400,16 +406,21 @@
       "upload": "上传",
       "loadingTeam": "加载团队",
       "teamLoadFailed": "团队数据加载失败",
+      "listRefreshFailed": "列表暂时无法更新，请重试。",
+      "updatingResults": "正在更新筛选结果",
+      "loadMore": "加载更多",
       "retry": "重试",
       "noDescription": "No description",
       "selectFile": "Select a file",
       "notSynced": "未同步",
-      "unknown": "未知"
+      "unknown": "未知",
+      "remoteUpdatesAvailable": "有更新，点击刷新"
     },
     "filters": {
       "allGoals": "全部目标",
       "inbox": "收件箱",
-      "activeStatuses": "未完成"
+      "activeStatuses": "未完成",
+      "relatedToMe": "与我相关"
     },
     "issueStatuses": {
       "open": "讨论",
@@ -442,7 +453,7 @@
       "agentRevoked": "Agent 已撤销",
       "agentUpdated": "Registered Agent 已更新",
       "agentAvatarUpdated": "Agent 头像已更新",
-      "agentCreated": "Registered Agent 已创建",
+      "agentCreated": "已添加 Agent 工作区",
       "spaceCreated": "Space 已创建",
       "spaceJoined": "已加入 Space",
       "spaceJoinRequested": "已提交加入申请",
@@ -469,6 +480,7 @@
       "searchIssue": "搜索 Issue",
       "createIssue": "新建 Issue",
       "empty": "暂无匹配 Issue",
+      "emptyRelated": "没有找到与你相关的 Issue",
       "humanOnly": "仅人工",
       "comments": "{{count}} 评论",
       "claimHandler": "经办：{{name}}"
@@ -640,9 +652,9 @@
       "pickRevisionZipTitle": "选择 Skill Revision ZIP"
     },
     "agents": {
-      "register": "登记",
+      "register": "添加本机 Agent 工作区",
       "empty": "暂无 Registered Agents",
-      "registerAgent": "登记 Agent",
+      "registerAgent": "添加本机 Agent 工作区",
       "details": "详情",
       "editAgent": "编辑 Agent {{name}}",
       "edit": "编辑",
@@ -658,6 +670,17 @@
       "lastSync": "上次同步",
       "lastActiveAt": "上次活跃：{{time}}",
       "lastSyncAt": "上次同步：{{time}}",
+      "online": "在线",
+      "offline": "离线",
+      "disabled": "已停用",
+      "connecting": "连接中",
+      "clientOnline": "MyAgents 客户端在线",
+      "lastOnline": "最后在线",
+      "lastOnlineAt": "最后在线：{{time}}",
+      "neverOnline": "尚未在线",
+      "offlineTroubleshooting": "请确认 MyAgents 客户端正在运行并能访问 Space Cloud。",
+      "connectingHint": "正在等待 MyAgents 客户端连接",
+      "presenceMayBeStale": "在线状态可能不是最新，请检查网络后重试。",
       "workspace": "工作区",
       "localAgentWorkspace": "本地 Agent 工作区",
       "goal": "目标",
@@ -674,7 +697,7 @@
       "revokeTitle": "撤销 Registered Agent",
       "revokeMessage": "确定要撤销「{{name}}」吗？撤销后该本地节点的 token 将失效，不能再接收新的派发。",
       "editTitle": "编辑 Agent",
-      "registerTitle": "登记 Agent",
+      "registerTitle": "添加本机 Agent 工作区",
       "officialSpace": "Official Space",
       "name": "名称",
       "workspaceLabel": "工作区标签",
@@ -704,6 +727,7 @@
       "displayNamePlaceholder": "Agent 展示名"
     },
     "settings": {
+      "overLimit": "超额",
       "overview": "Overview",
       "overviewHint": "Space 基本信息与配额",
       "members": "Members",
@@ -733,17 +757,19 @@
       "editOverview": "编辑",
       "editOverviewTitle": "编辑 Space",
       "freeQuota": "Free quota",
-      "resourcesTitle": "空间资源 · {{plan}}会员",
+      "resourcesTitle": "Space 资源 · {{plan}} 套餐",
       "quotaMembers": "Members",
       "quotaOpenIssues": "Open issues",
       "quotaSkills": "Skills",
       "quotaAgents": "Agents",
       "quotaStorage": "Storage",
+      "quotaCountingHint": "成员按已加入席位、Issue 按未完成项、Agent 按未撤销登记计数；超额存量仍可查看和删减，仅限制继续新增。",
       "plan": "Plan",
+      "planValidUntil": "{{plan}} · 有效至 {{date}}",
       "currentRole": "当前身份",
       "joinPolicy": "加入方式",
-      "memberQuotaReached": "成员名额已满，请先移除成员或未来升级套餐。",
-      "agentQuotaReached": "Registered Agent 数量已达到免费套餐上限。",
+      "memberQuotaReached": "成员名额已达到当前套餐上限，请先移除不再需要的成员。",
+      "agentQuotaReached": "Registered Agent 数量已达到当前套餐上限，请先撤销不再使用的 Agent 工作区。",
       "ownerDescription": "可以管理 Space 信息、成员、申请、邀请、Skills、Goals、Issues 与 Registered Agents。Owner 身份不能被 admin 修改或移除。",
       "adminDescription": "可以进入 Settings，管理成员、申请、邀请、Skills、Goals、Issues 与 Registered Agents，但不能改变 owner。",
       "memberDescription": "可以浏览和参与当前 Space 的协作内容，但看不到 Settings 入口，也不能管理成员或登记 Agent。"

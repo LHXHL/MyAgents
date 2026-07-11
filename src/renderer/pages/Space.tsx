@@ -14,6 +14,7 @@ import {
   spaceWakeConnector,
   spaceUpdateSpace,
   type LocalRegisteredAgent,
+  type SpaceIssue,
   type SpaceIssueSubscriptionRunMode,
   type SpaceEvent,
   type SpaceRegisteredAgent,
@@ -32,6 +33,7 @@ import {
   isRegisteredAgentVisibleInList,
   isSpaceAdmin,
   localAgentMatchesCurrentSpaceIdentity,
+  spaceEventsRequireSessionRefresh,
   type IssueQueryParams,
 } from "@/pages/space/spaceHelpers";
 import {
@@ -69,6 +71,7 @@ import { spaceSlugCandidate } from "@/pages/space/spaceSlug";
 const AUTH_POLL_DELAY_MS = 3000;
 const AUTH_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const SPACE_EVENTS_SYNC_INTERVAL_MS = 15_000;
+const AGENT_CONNECTING_WINDOW_MS = 75_000;
 
 type SpaceQuickActionSubmitInput =
   | { mode: "join"; slug: string }
@@ -396,6 +399,9 @@ function registeredAgentToListItem(
       agent.issueSubscriptionRunMode ?? localFallback?.issueSubscriptionRunMode,
     ),
     status: agent.status || localFallback?.status || "active",
+    presence: agent.presence ?? localFallback?.presence ?? "offline",
+    lastOnlineAt: agent.lastOnlineAt ?? localFallback?.lastOnlineAt ?? null,
+    onlineUntil: agent.onlineUntil ?? localFallback?.onlineUntil ?? null,
     createdAt: agent.createdAt || localFallback?.createdAt || "",
     updatedAt: agent.updatedAt || localFallback?.updatedAt || "",
   };
@@ -414,12 +420,20 @@ export default function Space({ isActive }: { isActive: boolean }) {
   } | null>(null);
   const authPollWarningShownRef = useRef(false);
   const authPollWakeRef = useRef<(() => void) | null>(null);
+  const previousModeRef = useRef<ViewMode>("issues");
   const [mode, setMode] = useState<ViewMode>("issues");
   const [issueQ, setIssueQ] = useState("");
   const [selectedGoalId, setSelectedGoalId] = useState("");
   const [selectedStatus, setSelectedStatus] = useState(
     ACTIVE_ISSUE_STATE_FILTER,
   );
+  const [relatedToMeBySpace, setRelatedToMeBySpace] = useState<
+    Record<string, boolean>
+  >({});
+  const [issueRemoteUpdateAvailable, setIssueRemoteUpdateAvailable] =
+    useState(false);
+  const [skillRemoteUpdateAvailable, setSkillRemoteUpdateAvailable] =
+    useState(false);
   const [issueDetailId, setIssueDetailId] = useState<string | null>(null);
   const [createIssueOpen, setCreateIssueOpen] = useState(false);
   const [selectedSkillId, setSelectedSkillId] = useState<string | null>(null);
@@ -432,18 +446,37 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const [spaceDialogError, setSpaceDialogError] =
     useState<SpaceQuickActionError | null>(null);
   const [localDeviceId, setLocalDeviceId] = useState<string | null>(null);
+  const [connectingAgentUntil, setConnectingAgentUntil] = useState<
+    Record<string, number>
+  >({});
 
   const session = spaceData.session;
   const goals = spaceData.goals;
+  const activeCacheSpaceId =
+    spaceData.spaceId ||
+    session?.space?.id ||
+    session?.space?.slug ||
+    DEFAULT_SPACE_ID;
+  const relatedToMe = relatedToMeBySpace[activeCacheSpaceId] ?? false;
+  const setRelatedToMe = useCallback(
+    (next: boolean) => {
+      setRelatedToMeBySpace((current) => ({
+        ...current,
+        [activeCacheSpaceId]: next,
+      }));
+    },
+    [activeCacheSpaceId],
+  );
   const issueQuery = useMemo<IssueQueryParams>(
     () => ({
       q: issueQ,
       goalId: selectedGoalId,
       includeSubtree: Boolean(selectedGoalId),
       state: selectedStatus,
+      related: relatedToMe ? "me" : undefined,
       limit: 50,
     }),
-    [issueQ, selectedGoalId, selectedStatus],
+    [issueQ, relatedToMe, selectedGoalId, selectedStatus],
   );
   const issueQueryRef = useRef(issueQuery);
   const issueQueryKey = useMemo(
@@ -451,7 +484,24 @@ export default function Space({ isActive }: { isActive: boolean }) {
     [issueQuery],
   );
   const issueList = getIssueListState(issueQuery);
-  const issues = issueList.items;
+  const previousSuccessfulIssuesRef = useRef<{
+    spaceId: string;
+    items: SpaceIssue[];
+  }>({ spaceId: "", items: [] });
+  useEffect(() => {
+    if (issueList.lastFetchedAt <= 0) return;
+    previousSuccessfulIssuesRef.current = {
+      spaceId: activeCacheSpaceId,
+      items: issueList.items,
+    };
+  }, [activeCacheSpaceId, issueList.items, issueList.lastFetchedAt]);
+  const showingPreviousIssues =
+    issueList.lastFetchedAt === 0 &&
+    previousSuccessfulIssuesRef.current.spaceId === activeCacheSpaceId &&
+    previousSuccessfulIssuesRef.current.items.length > 0;
+  const issues = showingPreviousIssues
+    ? previousSuccessfulIssuesRef.current.items
+    : issueList.items;
   const issueDetailNavigation = useMemo(() => {
     if (!issueDetailId) {
       return { previousIssueId: null, nextIssueId: null };
@@ -470,27 +520,26 @@ export default function Space({ isActive }: { isActive: boolean }) {
   }, [issueDetailId, issues]);
   const issuesLoading =
     issueList.isLoading ||
-    (spaceData.boot === "ready" && issueList.lastFetchedAt === 0);
+    (spaceData.boot === "ready" &&
+      issueList.lastFetchedAt === 0 &&
+      !issueList.error);
   const skills = spaceData.skills.items;
   const skillsLoading =
     spaceData.skills.isLoading ||
-    (spaceData.boot === "ready" && spaceData.skills.lastFetchedAt === 0);
+    (spaceData.boot === "ready" &&
+      spaceData.skills.lastFetchedAt === 0 &&
+      !spaceData.skills.error);
   const localAgents = spaceData.localAgents.items;
   const registeredAgents = spaceData.registeredAgents.items;
   const currentUserId = session?.user?.id ?? null;
   const admin = isSpaceAdmin(session);
   const activeMode: ViewMode = !admin && mode === "settings" ? "issues" : mode;
-  const activeCacheSpaceId =
-    spaceData.spaceId ||
-    session?.space?.id ||
-    session?.space?.slug ||
-    DEFAULT_SPACE_ID;
   const currentIdentitySpaceId = session?.space?.id || activeCacheSpaceId;
   const spaceCacheKey = useCallback(
     (id: string) => `${activeCacheSpaceId}\n${id}`,
     [activeCacheSpaceId],
   );
-  const agents = useMemo<LocalRegisteredAgent[]>(() => {
+  const baseAgents = useMemo<LocalRegisteredAgent[]>(() => {
     const localById = new Map(localAgents.map((agent) => [agent.id, agent]));
     const cloudItems = registeredAgents.map((agent) =>
       registeredAgentToListItem(
@@ -532,6 +581,50 @@ export default function Space({ isActive }: { isActive: boolean }) {
     registeredAgents,
     session?.baseUrl,
   ]);
+  const agents = useMemo(
+    () =>
+      baseAgents.map((agent) => ({
+        ...agent,
+        connecting:
+          agent.status === "active" &&
+          agent.presence !== "online" &&
+          (connectingAgentUntil[agent.id] ?? 0) > Date.now(),
+      })),
+    [baseAgents, connectingAgentUntil],
+  );
+
+  const markAgentConnecting = useCallback((agentId: string) => {
+    setConnectingAgentUntil((current) => ({
+      ...current,
+      [agentId]: Date.now() + AGENT_CONNECTING_WINDOW_MS,
+    }));
+  }, []);
+
+  useEffect(() => {
+    const now = Date.now();
+    let nextDeadline = Number.POSITIVE_INFINITY;
+    let changed = false;
+    const next: Record<string, number> = {};
+    for (const [agentId, deadline] of Object.entries(connectingAgentUntil)) {
+      const agent = baseAgents.find((item) => item.id === agentId);
+      if (!agent || agent.presence === "online" || deadline <= now) {
+        changed = true;
+        continue;
+      }
+      next[agentId] = deadline;
+      nextDeadline = Math.min(nextDeadline, deadline);
+    }
+    if (changed) setConnectingAgentUntil(next);
+    if (!Number.isFinite(nextDeadline)) return;
+    const timer = window.setTimeout(
+      () =>
+        setConnectingAgentUntil((current) => ({
+          ...current,
+        })),
+      Math.max(0, nextDeadline - now + 25),
+    );
+    return () => window.clearTimeout(timer);
+  }, [baseAgents, connectingAgentUntil]);
 
   useEffect(() => {
     let cancelled = false;
@@ -571,11 +664,27 @@ export default function Space({ isActive }: { isActive: boolean }) {
   }, [issueQuery]);
 
   useEffect(() => {
+    setIssueRemoteUpdateAvailable(false);
+  }, [issueQueryKey, activeCacheSpaceId]);
+
+  useEffect(() => {
+    setSkillRemoteUpdateAvailable(false);
+  }, [activeCacheSpaceId]);
+
+  useEffect(() => {
     if (spaceData.boot !== "ready") return;
+    const reentered = previousModeRef.current !== activeMode;
+    previousModeRef.current = activeMode;
     if (activeMode === "issues") {
       const handle = window.setTimeout(() => {
         actions
-          .refreshIssues(issueQuery, { maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS })
+          .refreshIssues(issueQuery, {
+            force: reentered,
+            maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
+          })
+          .then(() => {
+            if (reentered) setIssueRemoteUpdateAvailable(false);
+          })
           .catch((error) => toast.error(spaceErrorMessage(error)));
       }, 220);
       return () => window.clearTimeout(handle);
@@ -587,7 +696,13 @@ export default function Space({ isActive }: { isActive: boolean }) {
     }
     if (activeMode === "skills") {
       void actions
-        .refreshSkills({ maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS })
+        .refreshSkills({
+          force: reentered,
+          maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
+        })
+        .then(() => {
+          if (reentered) setSkillRemoteUpdateAvailable(false);
+        })
         .catch((error) => toast.error(spaceErrorMessage(error)));
     }
     if (activeMode === "settings") {
@@ -627,10 +742,10 @@ export default function Space({ isActive }: { isActive: boolean }) {
       recordSpaceMetric("space_tab_visible_revalidate_start", {
         count: events.length,
       });
-      let refreshIssueList = false;
-      let refreshSkills = false;
+      let issueRemoteUpdate = false;
+      let skillRemoteUpdate = false;
       let refreshAgents = false;
-      let refreshBoot = false;
+      let refreshBoot = spaceEventsRequireSessionRefresh(events);
       const touchedIssueIds = new Set<string>();
 
       for (const event of events) {
@@ -642,12 +757,12 @@ export default function Space({ isActive }: { isActive: boolean }) {
           type.startsWith("issue.") ||
           type.startsWith("comment.")
         ) {
-          refreshIssueList = true;
+          issueRemoteUpdate = true;
           if (resourceType === "issue" && event.resourceId)
             touchedIssueIds.add(event.resourceId);
         }
         if (resourceType === "skill" || type.startsWith("skill.")) {
-          refreshSkills = true;
+          skillRemoteUpdate = true;
         }
         if (
           resourceType === "registered_agent" ||
@@ -658,11 +773,11 @@ export default function Space({ isActive }: { isActive: boolean }) {
           type.startsWith("subscription.")
         ) {
           refreshAgents = true;
-          if (resourceType === "delivery") refreshIssueList = true;
+          if (resourceType === "delivery") issueRemoteUpdate = true;
         }
         if (resourceType === "goal" || type.startsWith("goal.")) {
           refreshBoot = true;
-          refreshIssueList = true;
+          issueRemoteUpdate = true;
         }
         if (
           resourceType === "space" ||
@@ -678,19 +793,15 @@ export default function Space({ isActive }: { isActive: boolean }) {
         }
       }
 
+      if (issueRemoteUpdate) setIssueRemoteUpdateAvailable(true);
+      if (skillRemoteUpdate) setSkillRemoteUpdateAvailable(true);
+
       const jobs: Array<Promise<void>> = [];
       if (refreshBoot)
         jobs.push(actions.ensureBootstrapped({ force: true, silent: true }));
-      if (refreshIssueList)
-        jobs.push(
-          actions.refreshIssues(issueQueryRef.current, {
-            force: true,
-            silent: true,
-          }),
-        );
       if (
         issueDetailId &&
-        (refreshIssueList || touchedIssueIds.has(issueDetailId))
+        (issueRemoteUpdate || touchedIssueIds.has(issueDetailId))
       ) {
         jobs.push(
           actions.refreshIssueDetail(issueDetailId, {
@@ -699,8 +810,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
           }),
         );
       }
-      if (refreshSkills) {
-        jobs.push(actions.refreshSkills({ force: true, silent: true }));
+      if (skillRemoteUpdate) {
         if (selectedSkillId) {
           jobs.push(
             actions.refreshSkillDetail(selectedSkillId, {
@@ -892,12 +1002,18 @@ export default function Space({ isActive }: { isActive: boolean }) {
   }, []);
 
   const refreshCurrent = useCallback(async () => {
-    if (activeMode === "issues")
+    if (activeMode === "issues") {
       await actions.refreshIssues(issueQuery, { force: true });
+      setIssueRemoteUpdateAvailable(false);
+    }
     if (activeMode === "goals") await actions.refreshGoals({ force: true });
-    if (activeMode === "skills") await actions.refreshSkills({ force: true });
+    if (activeMode === "skills") {
+      await actions.refreshSkills({ force: true });
+      setSkillRemoteUpdateAvailable(false);
+    }
     if (activeMode === "settings") {
       await Promise.all([
+        actions.ensureBootstrapped({ force: true, silent: true }),
         actions.refreshGoals({ force: true }),
         actions.refreshLocalAgents({ force: true }),
         actions.refreshRegisteredAgents({ force: true }),
@@ -1075,6 +1191,9 @@ export default function Space({ isActive }: { isActive: boolean }) {
           onCreateSpace={createSpace}
           onLogout={logout}
           onOpenProfileSettings={() => setProfileSettingsOpen(true)}
+          onRefreshAccountPlan={() =>
+            actions.ensureBootstrapped({ force: true, silent: true })
+          }
         />
         <section className="flex min-w-0 flex-1 flex-col">
           {activeMode === "issues" && (
@@ -1082,15 +1201,26 @@ export default function Space({ isActive }: { isActive: boolean }) {
               admin={admin}
               issues={issues}
               issuesLoading={issuesLoading}
+              issueError={issueList.error}
+              showingPreviousIssues={showingPreviousIssues}
+              hasMore={issueList.hasMore}
               issueQ={issueQ}
               selectedGoalId={selectedGoalId}
               selectedStatus={selectedStatus}
+              relatedToMe={relatedToMe}
               goalOptions={goalOptions}
               activeIssueId={issueDetailId}
+              remoteUpdateAvailable={issueRemoteUpdateAvailable}
               onQueryChange={setIssueQ}
               onGoalChange={setSelectedGoalId}
               onStatusChange={setSelectedStatus}
+              onRelatedToMeChange={setRelatedToMe}
+              onApplyRemoteUpdate={async () => {
+                await actions.refreshIssues(issueQuery, { force: true });
+                setIssueRemoteUpdateAvailable(false);
+              }}
               onRefresh={refreshCurrent}
+              onLoadMore={() => actions.loadMoreIssues(issueQuery)}
               onCreate={() => setCreateIssueOpen(true)}
               onOpenIssue={setIssueDetailId}
             />
@@ -1100,6 +1230,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
               admin={admin}
               skills={skills}
               loading={skillsLoading}
+              error={spaceData.skills.error}
               selectedSkillId={selectedSkillId}
               projects={projects}
               actions={actions}
@@ -1109,8 +1240,13 @@ export default function Space({ isActive }: { isActive: boolean }) {
                   : undefined
               }
               isActive={isActive}
+              remoteUpdateAvailable={skillRemoteUpdateAvailable}
               onSelectSkill={setSelectedSkillId}
               onRefresh={refreshCurrent}
+              onApplyRemoteUpdate={async () => {
+                await actions.refreshSkills({ force: true });
+                setSkillRemoteUpdateAvailable(false);
+              }}
               onUploaded={(id) => setSelectedSkillId(id)}
             />
           )}
@@ -1137,6 +1273,8 @@ export default function Space({ isActive }: { isActive: boolean }) {
               avatarPresets={spaceData.avatarPresets}
               onRefresh={refreshCurrent}
               onRegister={() => setRegisterOpen(true)}
+              isActive={isActive}
+              onAgentConnecting={markAgentConnecting}
               onExit={() => setMode("issues")}
             />
           )}
@@ -1185,7 +1323,8 @@ export default function Space({ isActive }: { isActive: boolean }) {
           goals={goals}
           actions={actions}
           onClose={() => setRegisterOpen(false)}
-          onRegistered={() => {
+          onRegistered={(agent) => {
+            markAgentConnecting(agent.id);
             setRegisterOpen(false);
             void Promise.all([
               actions.refreshLocalAgents({ force: true, silent: true }),

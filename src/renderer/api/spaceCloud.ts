@@ -56,6 +56,11 @@ export interface SpaceInfo {
   createdByUserId?: string | null;
   billingOwnerUserId?: string | null;
   planTier?: string | null;
+  effectivePlanTier?: "free" | "pro" | string | null;
+  planExpiresAt?: string | null;
+  limits?: SpacePlanLimits;
+  usage?: SpaceUsage | null;
+  quotaBypassed?: boolean;
   spaceKind?: "official" | "user" | string | null;
   avatarUrl?: string | null;
   avatarSizeBytes?: number | null;
@@ -86,17 +91,35 @@ export interface SpaceUsage {
   storageBytes: number;
 }
 
+export interface SpaceAccountPlanMembership {
+  planTier: "pro";
+  status: "active" | "expired" | "revoked";
+  startsAt: string;
+  expiresAt: string;
+  revokedAt?: string | null;
+  source: string;
+  version: number;
+}
+
+export interface SpaceAccountPlan {
+  effectiveTier: "free" | "pro";
+  evaluatedAt: string;
+  membership: SpaceAccountPlanMembership | null;
+}
+
 export interface SpaceListItem extends SpaceInfo {
   membership: SpaceMembership;
   canManage?: boolean;
   pendingJoinRequestCount?: number;
   limits?: SpacePlanLimits;
+  usage?: SpaceUsage | null;
 }
 
 export interface SpaceSession {
   baseUrl: string;
   expiresAt?: string | null;
   user: SpaceUser;
+  accountPlan?: SpaceAccountPlan | null;
   space: SpaceInfo;
   membership: SpaceMembership;
   spaces?: SpaceListItem[];
@@ -446,6 +469,10 @@ export interface LocalRegisteredAgent {
   deliverySessionId?: string | null;
   issueSubscriptionRunMode: SpaceIssueSubscriptionRunMode;
   status: string;
+  presence?: "online" | "offline";
+  lastOnlineAt?: string | null;
+  onlineUntil?: string | null;
+  connecting?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -471,6 +498,9 @@ export interface SpaceRegisteredAgent {
   goalMd?: string | null;
   issueSubscriptionRunMode?: SpaceIssueSubscriptionRunMode | null;
   status: string;
+  presence?: "online" | "offline";
+  lastOnlineAt?: string | null;
+  onlineUntil?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -534,9 +564,13 @@ export interface SpaceDeliveryItem {
   } | null;
 }
 
+export type SpaceEventType =
+  | "space.plan_changed"
+  | (string & Record<never, never>);
+
 export interface SpaceEvent {
   id: string;
-  type: string;
+  type: SpaceEventType;
   resourceType?: string | null;
   resourceId?: string | null;
   actorType?: string | null;
@@ -1085,6 +1119,7 @@ export function spaceListIssues(
     goalId?: string | null;
     includeSubtree?: boolean;
     humanOnly?: boolean | null;
+    related?: "me";
     cursor?: string;
     limit?: number;
   },
@@ -1098,6 +1133,7 @@ export function spaceListIssues(
     search.set("includeSubtree", String(params.includeSubtree));
   if (params.humanOnly !== undefined && params.humanOnly !== null)
     search.set("humanOnly", String(params.humanOnly));
+  if (params.related) search.set("related", params.related);
   if (params.cursor) search.set("cursor", params.cursor);
   search.set("limit", String(params.limit ?? 30));
   return spaceApi<{

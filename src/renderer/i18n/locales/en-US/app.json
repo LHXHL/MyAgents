@@ -361,6 +361,12 @@
       "settings": "Settings",
       "logout": "Sign out"
     },
+    "accountPlan": {
+      "free": "Free account",
+      "proUntil": "Pro account · valid until {{date}}",
+      "proDaysRemaining": "Pro account · {{count}} day(s) remaining",
+      "expiredAt": "Free account · Pro expired on {{date}}"
+    },
     "spaceActions": {
       "joinTitle": "Join Space",
       "createTitle": "Create Space",
@@ -400,16 +406,21 @@
       "upload": "Upload",
       "loadingTeam": "Loading team",
       "teamLoadFailed": "Failed to load team data",
+      "listRefreshFailed": "The list could not be updated. Try again.",
+      "updatingResults": "Updating filtered results",
+      "loadMore": "Load more",
       "retry": "Retry",
       "noDescription": "No description",
       "selectFile": "Select a file",
       "notSynced": "Not synced",
-      "unknown": "Unknown"
+      "unknown": "Unknown",
+      "remoteUpdatesAvailable": "Updates available — refresh"
     },
     "filters": {
       "allGoals": "All goals",
       "inbox": "Inbox",
-      "activeStatuses": "Active"
+      "activeStatuses": "Active",
+      "relatedToMe": "Related to me"
     },
     "issueStatuses": {
       "open": "Open",
@@ -442,7 +453,7 @@
       "agentRevoked": "Agent revoked",
       "agentUpdated": "Registered Agent updated",
       "agentAvatarUpdated": "Agent avatar updated",
-      "agentCreated": "Registered Agent created",
+      "agentCreated": "Agent workspace added",
       "spaceCreated": "Space created",
       "spaceJoined": "Joined Space",
       "spaceJoinRequested": "Join request submitted",
@@ -469,6 +480,7 @@
       "searchIssue": "Search issue",
       "createIssue": "New Issue",
       "empty": "No matching issues",
+      "emptyRelated": "No issues related to you",
       "humanOnly": "Human-only",
       "comments": "{{count}} comments",
       "claimHandler": "Handler: {{name}}"
@@ -640,9 +652,9 @@
       "pickRevisionZipTitle": "Choose Skill Revision ZIP"
     },
     "agents": {
-      "register": "Register",
+      "register": "Add local Agent workspace",
       "empty": "No Registered Agents",
-      "registerAgent": "Register Agent",
+      "registerAgent": "Add local Agent workspace",
       "details": "Details",
       "editAgent": "Edit Agent {{name}}",
       "edit": "Edit",
@@ -658,6 +670,17 @@
       "lastSync": "Last sync",
       "lastActiveAt": "Last active: {{time}}",
       "lastSyncAt": "Last sync: {{time}}",
+      "online": "Online",
+      "offline": "Offline",
+      "disabled": "Disabled",
+      "connecting": "Connecting",
+      "clientOnline": "MyAgents client online",
+      "lastOnline": "Last online",
+      "lastOnlineAt": "Last online: {{time}}",
+      "neverOnline": "Never online",
+      "offlineTroubleshooting": "Make sure the MyAgents client is running and can reach Space Cloud.",
+      "connectingHint": "Waiting for the MyAgents client to connect",
+      "presenceMayBeStale": "Online status may be out of date. Check the network and retry.",
       "workspace": "Workspace",
       "localAgentWorkspace": "Local Agent workspace",
       "goal": "Goal",
@@ -674,7 +697,7 @@
       "revokeTitle": "Revoke Registered Agent",
       "revokeMessage": "Revoke \"{{name}}\"? The token for this local node will be invalidated and it will no longer receive new dispatches.",
       "editTitle": "Edit Agent",
-      "registerTitle": "Register Agent",
+      "registerTitle": "Add local Agent workspace",
       "officialSpace": "Official Space",
       "name": "Name",
       "workspaceLabel": "Workspace label",
@@ -704,6 +727,7 @@
       "displayNamePlaceholder": "Agent display name"
     },
     "settings": {
+      "overLimit": "Over",
       "overview": "Overview",
       "overviewHint": "Space profile and quota",
       "members": "Members",
@@ -739,11 +763,13 @@
       "quotaSkills": "Skills",
       "quotaAgents": "Agents",
       "quotaStorage": "Storage",
+      "quotaCountingHint": "Members count joined seats, Issues count unfinished work, and Agents count non-revoked registrations. Existing over-limit data stays readable and removable; only new usage is blocked.",
       "plan": "Plan",
+      "planValidUntil": "{{plan}} · valid until {{date}}",
       "currentRole": "Current role",
       "joinPolicy": "Join policy",
-      "memberQuotaReached": "Member seats are full. Remove a member or upgrade the plan later.",
-      "agentQuotaReached": "Registered Agent quota has reached the free plan limit.",
+      "memberQuotaReached": "Member seats have reached the current plan limit. Remove an unneeded member first.",
+      "agentQuotaReached": "Registered Agents have reached the current plan limit. Revoke an unused Agent workspace first.",
       "ownerDescription": "can manage Space profile, members, requests, invitations, Skills, Goals, Issues, and Registered Agents. Admins cannot change or remove the owner.",
       "adminDescription": "can open Settings, manage members, requests, invitations, Skills, Goals, Issues, and Registered Agents, but cannot change the owner.",
       "memberDescription": "can browse and collaborate in the current Space, but cannot see Settings or manage members or Registered Agents."

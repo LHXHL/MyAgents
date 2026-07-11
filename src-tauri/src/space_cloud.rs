@@ -37,6 +37,7 @@ const SPACE_CONNECTOR_MIN_INTERVAL_SECS: u64 = 30;
 const SPACE_CONNECTOR_MAX_INTERVAL_SECS: u64 = 600;
 const SPACE_CONNECTOR_ERROR_MAX_INTERVAL_SECS: u64 = 300;
 const SPACE_CONNECTOR_JITTER_PERCENT: i64 = 15;
+const SPACE_DEVICE_PRESENCE_TOUCH_INTERVAL_SECS: u64 = 60;
 pub(crate) const MAX_SKILL_ZIP_BYTES: usize = 50 * 1024 * 1024;
 const MAX_SKILL_ZIP_ENTRIES: usize = 512;
 const MAX_SKILL_FILE_BYTES: u64 = 10 * 1024 * 1024;
@@ -59,6 +60,8 @@ pub struct SpaceSession {
     pub session_token: String,
     pub expires_at: Option<String>,
     pub user: Value,
+    #[serde(default)]
+    pub account_plan: Value,
     pub space: Value,
     pub membership: Value,
     #[serde(default)]
@@ -74,6 +77,7 @@ pub struct SpaceSessionPublic {
     pub base_url: String,
     pub expires_at: Option<String>,
     pub user: Value,
+    pub account_plan: Value,
     pub space: Value,
     pub membership: Value,
     pub spaces: Vec<Value>,
@@ -120,6 +124,7 @@ impl From<SpaceSession> for SpaceSessionPublic {
             base_url: session.base_url,
             expires_at: session.expires_at,
             user: session.user,
+            account_plan: session.account_plan,
             space: session.space,
             membership: session.membership,
             spaces: session.spaces,
@@ -253,6 +258,10 @@ pub struct LocalRegisteredAgentPublic {
     pub delivery_session_id: Option<String>,
     pub issue_subscription_run_mode: SpaceIssueSubscriptionRunMode,
     pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub presence: Option<String>,
+    pub last_online_at: Option<String>,
+    pub online_until: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -289,6 +298,9 @@ impl From<LocalRegisteredAgent> for LocalRegisteredAgentPublic {
             delivery_session_id: agent.delivery_session_id,
             issue_subscription_run_mode: agent.issue_subscription_run_mode,
             status: agent.status,
+            presence: None,
+            last_online_at: None,
+            online_until: None,
             created_at: agent.created_at,
             updated_at: agent.updated_at,
         }
@@ -473,6 +485,11 @@ fn local_registered_agent_public_from_cloud(
         .or_else(|| fallback.map(|agent| agent.issue_subscription_run_mode))
         .unwrap_or_default(),
         status: required_value_string(registered, "status")?,
+        presence: Some(
+            optional_value_string(registered, "presence").unwrap_or_else(|| "offline".to_string()),
+        ),
+        last_online_at: optional_value_string(registered, "lastOnlineAt"),
+        online_until: optional_value_string(registered, "onlineUntil"),
         created_at: required_value_string(registered, "createdAt")
             .or_else(|_| Ok::<String, String>(chrono::Utc::now().to_rfc3339()))?,
         updated_at: required_value_string(registered, "updatedAt")
@@ -953,6 +970,12 @@ struct SpaceAgentPollState {
     last_interval_secs: u64,
 }
 
+#[derive(Debug, Clone)]
+struct SpaceDevicePresenceAttemptState {
+    last_attempt_at: Instant,
+    failed_agent_id: Option<String>,
+}
+
 #[derive(Debug)]
 struct SpaceAgentPollJob {
     agent: LocalRegisteredAgent,
@@ -964,6 +987,7 @@ struct SpaceAgentPollJob {
 struct SpaceConnectorSchedule {
     agents: HashMap<String, SpaceAgentPollState>,
     wake_agent_ids: HashSet<String>,
+    device_presence_attempts: HashMap<String, SpaceDevicePresenceAttemptState>,
 }
 
 struct SpaceConnectorRuntime {
@@ -990,11 +1014,31 @@ struct SpacePollHint {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SpaceAgentDeliveryOutcome {
-    processed: usize,
-    delivered: usize,
+struct SpaceAgentPollOutcome {
     returned_count: usize,
     poll_hint: SpacePollHint,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SpaceAgentProcessingOutcome {
+    processed: usize,
+    delivered: usize,
+}
+
+#[derive(Debug, Clone)]
+struct PolledSpaceAgentDeliveries {
+    items: Vec<Value>,
+    returned_count: usize,
+    poll_hint: SpacePollHint,
+}
+
+impl PolledSpaceAgentDeliveries {
+    fn schedule_outcome(&self) -> SpaceAgentPollOutcome {
+        SpaceAgentPollOutcome {
+            returned_count: self.returned_count,
+            poll_hint: self.poll_hint.clone(),
+        }
+    }
 }
 
 #[tauri::command]
@@ -1097,6 +1141,7 @@ pub async fn cmd_space_auth_poll(input: SpaceAuthPollInput) -> Result<Value, Str
                 .and_then(Value::as_str)
                 .map(ToString::to_string),
             user: data.get("user").cloned().unwrap_or(Value::Null),
+            account_plan: data.get("accountPlan").cloned().unwrap_or(Value::Null),
             space: data.get("space").cloned().unwrap_or(Value::Null),
             membership: data.get("membership").cloned().unwrap_or(Value::Null),
             spaces: data
@@ -2312,6 +2357,7 @@ fn reset_space_connector_schedule() {
     if let Ok(mut schedule) = SPACE_CONNECTOR_RUNTIME.schedule.lock() {
         schedule.agents.clear();
         schedule.wake_agent_ids.clear();
+        schedule.device_presence_attempts.clear();
     }
 }
 
@@ -2346,6 +2392,82 @@ fn space_agent_poll_key(scope: &SpaceRuntimeScope, agent: &LocalRegisteredAgent)
     )
 }
 
+fn space_device_presence_key(
+    scope: &SpaceRuntimeScope,
+    agent: &LocalRegisteredAgent,
+) -> Option<String> {
+    let owner_user_id = agent.owner_user_id.as_deref()?.trim();
+    let device_id = agent.device_id.as_deref()?.trim();
+    if owner_user_id.is_empty() || device_id.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "{}::{}::{}",
+        scope.base_url.trim().trim_end_matches('/'),
+        owner_user_id,
+        device_id
+    ))
+}
+
+fn group_presence_agents_by_device(
+    scope: &SpaceRuntimeScope,
+    agents: &[LocalRegisteredAgent],
+) -> BTreeMap<String, Vec<LocalRegisteredAgent>> {
+    let mut agents_by_device = BTreeMap::<String, Vec<LocalRegisteredAgent>>::new();
+    for agent in agents {
+        let Some(presence_key) = space_device_presence_key(scope, agent) else {
+            continue;
+        };
+        agents_by_device
+            .entry(presence_key)
+            .or_default()
+            .push(agent.clone());
+    }
+    for grouped_agents in agents_by_device.values_mut() {
+        grouped_agents.sort_by(|left, right| left.id.cmp(&right.id));
+    }
+    agents_by_device
+}
+
+fn select_device_presence_agent<'a>(
+    agents: &'a [LocalRegisteredAgent],
+    failed_agent_id: Option<&str>,
+) -> Option<&'a LocalRegisteredAgent> {
+    agents
+        .iter()
+        .find(|agent| Some(agent.id.as_str()) != failed_agent_id)
+        .or_else(|| agents.first())
+}
+
+fn device_presence_attempt_due_since(last_attempt: Option<Instant>, now: Instant) -> bool {
+    last_attempt
+        .map(|last_attempt| {
+            now.saturating_duration_since(last_attempt)
+                >= Duration::from_secs(SPACE_DEVICE_PRESENCE_TOUCH_INTERVAL_SECS)
+        })
+        .unwrap_or(true)
+}
+
+fn space_device_presence_attempt_state(key: &str) -> Option<SpaceDevicePresenceAttemptState> {
+    SPACE_CONNECTOR_RUNTIME
+        .schedule
+        .lock()
+        .ok()
+        .and_then(|schedule| schedule.device_presence_attempts.get(key).cloned())
+}
+
+fn record_space_device_presence_attempt(key: &str, now: Instant, failed_agent_id: Option<String>) {
+    if let Ok(mut schedule) = SPACE_CONNECTOR_RUNTIME.schedule.lock() {
+        schedule.device_presence_attempts.insert(
+            key.to_string(),
+            SpaceDevicePresenceAttemptState {
+                last_attempt_at: now,
+                failed_agent_id,
+            },
+        );
+    }
+}
+
 fn initial_space_agent_poll_state(now: Instant) -> SpaceAgentPollState {
     SpaceAgentPollState {
         next_due_at: now,
@@ -2362,9 +2484,13 @@ fn take_due_space_agent_jobs(
     let now = Instant::now();
     let mut current_keys = HashSet::new();
     let mut agent_ids = HashSet::new();
+    let mut device_presence_keys = HashSet::new();
     for agent in &agents {
         current_keys.insert(space_agent_poll_key(scope, agent));
         agent_ids.insert(agent.id.clone());
+        if let Some(key) = space_device_presence_key(scope, agent) {
+            device_presence_keys.insert(key);
+        }
     }
     let Ok(mut schedule) = SPACE_CONNECTOR_RUNTIME.schedule.lock() else {
         return agents
@@ -2380,6 +2506,9 @@ fn take_due_space_agent_jobs(
     schedule
         .wake_agent_ids
         .retain(|agent_id| agent_ids.contains(agent_id));
+    schedule
+        .device_presence_attempts
+        .retain(|key, _| device_presence_keys.contains(key));
     let mut jobs = Vec::new();
     for agent in agents {
         let key = space_agent_poll_key(scope, &agent);
@@ -2399,7 +2528,7 @@ fn take_due_space_agent_jobs(
     jobs
 }
 
-fn record_space_agent_poll_success(key: &str, outcome: &SpaceAgentDeliveryOutcome) {
+fn record_space_agent_poll_success(key: &str, outcome: &SpaceAgentPollOutcome) {
     let now = Instant::now();
     if let Ok(mut schedule) = SPACE_CONNECTOR_RUNTIME.schedule.lock() {
         let previous = schedule
@@ -2443,7 +2572,7 @@ fn record_space_agent_poll_error(key: &str) {
 fn next_success_space_agent_poll_state(
     key: &str,
     previous: &SpaceAgentPollState,
-    outcome: &SpaceAgentDeliveryOutcome,
+    outcome: &SpaceAgentPollOutcome,
     now: Instant,
 ) -> SpaceAgentPollState {
     let empty_streak = if outcome.returned_count > 0 {
@@ -2792,6 +2921,7 @@ async fn process_due_deliveries(
             return Err(error);
         }
     };
+    let presence_agents_by_device = group_presence_agents_by_device(&scope, &agents);
     let jobs = take_due_space_agent_jobs(&scope, agents, force_all);
     if jobs.is_empty() {
         return Ok(SpaceProcessDeliveryResult {
@@ -2803,8 +2933,26 @@ async fn process_due_deliveries(
     let mut processed = 0usize;
     let mut delivered = 0usize;
     let mut errors = Vec::new();
+    let mut successfully_polled_presence_keys = HashSet::<String>::new();
     for job in jobs {
         let mut agent = job.agent;
+        let poll = match poll_agent_deliveries(&scope.base_url, &agent, job.empty_streak).await {
+            Ok(poll) => poll,
+            Err(error) => {
+                record_space_agent_poll_error(&job.key);
+                ulog_warn!(
+                    "[space] delivery poll failed for agent {}: {}",
+                    agent.id,
+                    error
+                );
+                errors.push(format!("{}: {}", agent.display_name, error));
+                continue;
+            }
+        };
+        record_space_agent_poll_success(&job.key, &poll.schedule_outcome());
+        if let Some(presence_key) = space_device_presence_key(&scope, &agent) {
+            successfully_polled_presence_keys.insert(presence_key);
+        }
         match process_agent_deliveries(
             app_handle,
             manager,
@@ -2812,17 +2960,15 @@ async fn process_due_deliveries(
             &mut agent,
             &agents_path,
             &delivery_log_path,
-            job.empty_streak,
+            poll.items,
         )
         .await
         {
             Ok(outcome) => {
-                record_space_agent_poll_success(&job.key, &outcome);
                 processed += outcome.processed;
                 delivered += outcome.delivered;
             }
             Err(error) => {
-                record_space_agent_poll_error(&job.key);
                 ulog_warn!(
                     "[space] delivery processing failed for agent {}: {}",
                     agent.id,
@@ -2832,10 +2978,89 @@ async fn process_due_deliveries(
             }
         }
     }
+    for (presence_key, agents) in presence_agents_by_device {
+        if !successfully_polled_presence_keys.contains(&presence_key) {
+            continue;
+        }
+        let observed_at = Instant::now();
+        let attempt_state = space_device_presence_attempt_state(&presence_key);
+        if !device_presence_attempt_due_since(
+            attempt_state.as_ref().map(|state| state.last_attempt_at),
+            observed_at,
+        ) {
+            continue;
+        }
+        let Some(agent) = select_device_presence_agent(
+            &agents,
+            attempt_state
+                .as_ref()
+                .and_then(|state| state.failed_agent_id.as_deref()),
+        ) else {
+            continue;
+        };
+        match touch_agent_device_presence(&scope.base_url, agent).await {
+            Ok(()) => record_space_device_presence_attempt(&presence_key, observed_at, None),
+            Err(error) => {
+                record_space_device_presence_attempt(
+                    &presence_key,
+                    observed_at,
+                    Some(agent.id.clone()),
+                );
+                ulog_warn!(
+                    "[space] connector presence touch failed for device-bound agent {}: {}",
+                    agent.id,
+                    error
+                );
+            }
+        }
+    }
     Ok(SpaceProcessDeliveryResult {
         processed,
         delivered,
         errors,
+    })
+}
+
+async fn touch_agent_device_presence(
+    base_url: &str,
+    agent: &LocalRegisteredAgent,
+) -> Result<(), String> {
+    authorized_json_data_request(
+        base_url,
+        "/api/registered-agents/me/device-presence",
+        &agent.token,
+        reqwest::Method::POST,
+        Some(Value::Object(Default::default())),
+    )
+    .await
+    .map(|_| ())
+}
+
+async fn poll_agent_deliveries(
+    base_url: &str,
+    agent: &LocalRegisteredAgent,
+    empty_streak: u32,
+) -> Result<PolledSpaceAgentDeliveries, String> {
+    let data = authorized_json_data_request(
+        base_url,
+        &format!(
+            "/api/registered-agents/me/deliveries?status=pending&limit=20&emptyStreak={}",
+            empty_streak
+        ),
+        &agent.token,
+        reqwest::Method::GET,
+        None,
+    )
+    .await?;
+    let items = data
+        .get("items")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    Ok(PolledSpaceAgentDeliveries {
+        returned_count: items.len(),
+        poll_hint: space_poll_hint_from_data(&data),
+        items,
     })
 }
 
@@ -2875,26 +3100,8 @@ async fn process_agent_deliveries(
     agent: &mut LocalRegisteredAgent,
     agents_path: &Path,
     delivery_log_path: &Path,
-    empty_streak: u32,
-) -> Result<SpaceAgentDeliveryOutcome, String> {
-    let data = authorized_json_data_request(
-        base_url,
-        &format!(
-            "/api/registered-agents/me/deliveries?status=pending&limit=20&emptyStreak={}",
-            empty_streak
-        ),
-        &agent.token,
-        reqwest::Method::GET,
-        None,
-    )
-    .await?;
-    let items = data
-        .get("items")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default();
-    let returned_count = items.len();
-    let poll_hint = space_poll_hint_from_data(&data);
+    items: Vec<Value>,
+) -> Result<SpaceAgentProcessingOutcome, String> {
     let mut processed = 0usize;
     let mut delivered = 0usize;
     let mut targeted_pending = Vec::new();
@@ -2963,11 +3170,9 @@ async fn process_agent_deliveries(
     }
 
     if targeted_pending.is_empty() && subscription_pending.is_empty() {
-        return Ok(SpaceAgentDeliveryOutcome {
+        return Ok(SpaceAgentProcessingOutcome {
             processed,
             delivered,
-            returned_count,
-            poll_hint,
         });
     }
 
@@ -3003,11 +3208,9 @@ async fn process_agent_deliveries(
     }
 
     if subscription_pending.is_empty() {
-        return Ok(SpaceAgentDeliveryOutcome {
+        return Ok(SpaceAgentProcessingOutcome {
             processed,
             delivered,
-            returned_count,
-            poll_hint,
         });
     }
 
@@ -3079,11 +3282,9 @@ async fn process_agent_deliveries(
             }
         }
     }
-    Ok(SpaceAgentDeliveryOutcome {
+    Ok(SpaceAgentProcessingOutcome {
         processed,
         delivered,
-        returned_count,
-        poll_hint,
     })
 }
 
@@ -3830,6 +4031,7 @@ fn session_from_me_data(session: &SpaceSession, data: &Value) -> SpaceSession {
             .get("user")
             .cloned()
             .unwrap_or_else(|| session.user.clone()),
+        account_plan: data.get("accountPlan").cloned().unwrap_or(Value::Null),
         space: data
             .get("space")
             .cloned()
@@ -4629,9 +4831,33 @@ fn read_current_runnable_local_agents_for_scope(
         read_current_local_agents_for_base_url(&scope.base_url, &scope.data_dir)?
             .into_iter()
             .filter(|agent| agent.status == "active")
-            .filter(|agent| local_agent_matches_current_identity(agent, &session, &local_device_id))
+            .filter(|agent| {
+                local_agent_matches_connector_identity(agent, &session, &local_device_id)
+            })
             .collect(),
     )
+}
+
+fn local_agent_matches_connector_identity(
+    agent: &LocalRegisteredAgent,
+    session: &SpaceSession,
+    local_device_id: &str,
+) -> bool {
+    let Some(current_user_id) = session_user_id(session) else {
+        return false;
+    };
+    agent
+        .owner_user_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        == Some(current_user_id.as_str())
+        && agent
+            .device_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            == Some(local_device_id)
 }
 
 fn local_agent_matches_current_identity(
@@ -5684,6 +5910,7 @@ mod tests {
             session_token: "session-token".to_string(),
             expires_at: None,
             user: serde_json::json!({ "id": user_id }),
+            account_plan: Value::Null,
             space: serde_json::json!({ "id": "space_test" }),
             membership: serde_json::json!({ "role": "admin" }),
             spaces: Vec::new(),
@@ -5747,9 +5974,7 @@ mod tests {
             empty_streak: 3,
             last_interval_secs: 60,
         };
-        let empty_outcome = SpaceAgentDeliveryOutcome {
-            processed: 0,
-            delivered: 0,
+        let empty_outcome = SpaceAgentPollOutcome {
             returned_count: 0,
             poll_hint: SpacePollHint {
                 next_after_seconds: 180,
@@ -5772,9 +5997,7 @@ mod tests {
             "180s policy should stay within +/-15% jitter, got {empty_delay}s"
         );
 
-        let delivered_outcome = SpaceAgentDeliveryOutcome {
-            processed: 1,
-            delivered: 1,
+        let delivered_outcome = SpaceAgentPollOutcome {
             returned_count: 1,
             poll_hint: SpacePollHint {
                 next_after_seconds: 60,
@@ -5795,9 +6018,7 @@ mod tests {
             "60s policy should stay within +/-15% jitter, got {delivered_delay}s"
         );
 
-        let legacy_outcome = SpaceAgentDeliveryOutcome {
-            processed: 0,
-            delivered: 0,
+        let legacy_outcome = SpaceAgentPollOutcome {
             returned_count: 0,
             poll_hint: SpacePollHint {
                 next_after_seconds: SPACE_CONNECTOR_FALLBACK_INTERVAL_SECS,
@@ -5881,6 +6102,13 @@ mod tests {
                 },
             );
             schedule.wake_agent_ids.insert("rag_stale".to_string());
+            schedule.device_presence_attempts.insert(
+                "https://space.test::usr_stale::device_stale".to_string(),
+                SpaceDevicePresenceAttemptState {
+                    last_attempt_at: now,
+                    failed_agent_id: Some("rag_stale".to_string()),
+                },
+            );
         }
 
         let jobs = take_due_space_agent_jobs(&scope, Vec::new(), false);
@@ -5891,6 +6119,7 @@ mod tests {
             .expect("schedule lock should be available");
         assert!(schedule.agents.is_empty());
         assert!(schedule.wake_agent_ids.is_empty());
+        assert!(schedule.device_presence_attempts.is_empty());
     }
 
     #[test]
@@ -5908,6 +6137,31 @@ mod tests {
 
         assert!(session.spaces.is_empty());
         assert!(session.last_active_space_id.is_none());
+    }
+
+    #[test]
+    fn successful_me_response_without_account_plan_falls_back_to_free() {
+        let mut session = test_space_session("usr_current");
+        session.account_plan = serde_json::json!({
+            "effectiveTier": "pro",
+            "membership": {
+                "planTier": "pro",
+                "status": "active",
+                "expiresAt": "2026-10-11T00:00:00.000Z",
+                "version": 3
+            }
+        });
+
+        let refreshed = session_from_me_data(
+            &session,
+            &serde_json::json!({
+                "user": { "id": "usr_current" },
+                "space": { "id": "space_test" },
+                "membership": { "role": "admin" }
+            }),
+        );
+
+        assert!(refreshed.account_plan.is_null());
     }
 
     fn test_registered_agent(
@@ -5948,6 +6202,60 @@ mod tests {
             created_at: "2026-07-03T00:00:00.000Z".to_string(),
             updated_at: "2026-07-03T00:00:00.000Z".to_string(),
         }
+    }
+
+    #[test]
+    fn connector_groups_agents_by_owner_device_and_rotates_failed_token() {
+        let scope = SpaceRuntimeScope {
+            base_url: "https://space.myagents.test".to_string(),
+            data_dir: PathBuf::new(),
+        };
+        let mut later = test_registered_agent(Some("usr_current"), Some("device_shared"));
+        later.id = "rag_z".to_string();
+        later.token = "token-z".to_string();
+        let mut earlier = later.clone();
+        earlier.id = "rag_a".to_string();
+        earlier.token = "token-a".to_string();
+        let mut other_device = later.clone();
+        other_device.id = "rag_other".to_string();
+        other_device.device_id = Some("device_other".to_string());
+
+        let grouped = group_presence_agents_by_device(
+            &scope,
+            &[later.clone(), earlier.clone(), other_device],
+        );
+
+        assert_eq!(grouped.len(), 2);
+        let shared_key = space_device_presence_key(&scope, &earlier).unwrap();
+        let shared_agents = grouped.get(&shared_key).expect("shared device group");
+        assert_eq!(
+            select_device_presence_agent(shared_agents, None).map(|agent| agent.id.as_str()),
+            Some("rag_a")
+        );
+        assert_eq!(
+            select_device_presence_agent(shared_agents, Some("rag_a"))
+                .map(|agent| agent.id.as_str()),
+            Some("rag_z")
+        );
+        assert_eq!(
+            select_device_presence_agent(shared_agents, Some("rag_z"))
+                .map(|agent| agent.id.as_str()),
+            Some("rag_a")
+        );
+    }
+
+    #[test]
+    fn connector_presence_attempt_is_throttled_for_sixty_seconds() {
+        let touched_at = Instant::now();
+        assert!(device_presence_attempt_due_since(None, touched_at));
+        assert!(!device_presence_attempt_due_since(
+            Some(touched_at),
+            touched_at + Duration::from_secs(59),
+        ));
+        assert!(device_presence_attempt_due_since(
+            Some(touched_at),
+            touched_at + Duration::from_secs(60),
+        ));
     }
 
     fn test_pending_delivery(
@@ -6060,6 +6368,33 @@ mod tests {
         agent.space_id = "space_other".to_string();
         assert!(!local_agent_matches_current_identity(
             &agent,
+            &session,
+            "device_current"
+        ));
+    }
+
+    #[test]
+    fn connector_identity_keeps_current_device_agents_across_spaces() {
+        let session = test_space_session("usr_current");
+        let mut current_space_agent =
+            test_registered_agent(Some("usr_current"), Some("device_current"));
+        let mut other_space_agent = current_space_agent.clone();
+        other_space_agent.space_id = "space_other".to_string();
+
+        assert!(local_agent_matches_connector_identity(
+            &current_space_agent,
+            &session,
+            "device_current"
+        ));
+        assert!(local_agent_matches_connector_identity(
+            &other_space_agent,
+            &session,
+            "device_current"
+        ));
+
+        current_space_agent.owner_user_id = Some("usr_other".to_string());
+        assert!(!local_agent_matches_connector_identity(
+            &current_space_agent,
             &session,
             "device_current"
         ));
@@ -6907,6 +7242,7 @@ mod tests {
             session_token: "session_test".to_string(),
             expires_at: None,
             user: Value::Null,
+            account_plan: Value::Null,
             space: serde_json::json!({
                 "id": "space_fb63fde836254c9c90146c4f5bb142bd",
                 "slug": "official",

@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Activity,
@@ -34,7 +34,11 @@ import DropdownMenu, {
 import type { Project } from "@/config/types";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
 import { spaceErrorMessage } from "@/api/spaceCloud";
-import { issueStatusLabel } from "@/pages/space/spaceHelpers";
+import {
+  issueStatusLabel,
+  registeredAgentAvailability,
+  type AgentAvailability,
+} from "@/pages/space/spaceHelpers";
 import { GoalPathSelectLabel } from "@/pages/space/GoalPathSelectLabel";
 import AvatarPicker, {
   type AvatarPickerSelection,
@@ -45,7 +49,7 @@ import type {
   SpaceAvatarPresetsState,
 } from "@/pages/space/spaceStore";
 import {
-  SPACE_LIST_FRAME_CLASS,
+  SPACE_COLLECTION_FRAME_CLASS,
   SPACE_PRIMARY_TOOL_BUTTON_CLASS,
   SPACE_TWO_COLUMN_GRID_CLASS,
   formatTime,
@@ -97,13 +101,19 @@ function normalizeAgentStateFilter(states?: string[] | null): string[] {
   return normalized.length > 0 ? normalized : [...DEFAULT_AGENT_STATE_FILTER];
 }
 
-function agentStatusClass(status: string): string {
-  const normalized = status.trim().toLowerCase();
-  if (normalized === "active" || normalized === "online")
-    return "bg-[var(--success-bg)] text-[var(--success)]";
-  if (normalized === "revoked")
-    return "bg-[var(--error-bg)] text-[var(--error)]";
-  return "bg-[var(--paper-inset)] text-[var(--ink-muted)]";
+function agentStatusClass(availability: AgentAvailability): string {
+  if (availability === "online")
+    return "border border-[var(--success)]/20 bg-[var(--success-bg)] text-[var(--success)]";
+  if (availability === "connecting")
+    return "border border-[var(--accent-warm)]/20 bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]";
+  return "border border-[var(--line-subtle)] bg-[var(--paper-inset)] text-[var(--ink-muted)]";
+}
+
+function agentStatusLabel(
+  agent: LocalRegisteredAgent,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  return t(`space.agents.${registeredAgentAvailability(agent)}`);
 }
 
 function agentTargetLabel(
@@ -118,14 +128,12 @@ function agentCardTimeLabel(
   agent: LocalRegisteredAgent,
   t: ReturnType<typeof useTranslation>["t"],
 ): string {
-  const lastActive = formatTime(agent.device?.lastSeenAt ?? "");
-  if (lastActive) {
-    return t("space.agents.lastActiveAt", { time: lastActive });
-  }
-  const lastSync = formatTime(agent.updatedAt);
-  return t("space.agents.lastSyncAt", {
-    time: lastSync || t("space.common.notSynced"),
-  });
+  const availability = registeredAgentAvailability(agent);
+  if (availability === "connecting") return t("space.agents.connectingHint");
+  const lastOnline = formatTime(agent.lastOnlineAt ?? "");
+  if (lastOnline) return t("space.agents.lastOnlineAt", { time: lastOnline });
+  if (availability === "online") return t("space.agents.clientOnline");
+  return t("space.agents.neverOnline");
 }
 
 function shortDeviceId(value?: string | null): string {
@@ -202,6 +210,8 @@ export function AgentsWorkspace({
   onRegister,
   registerDisabled = false,
   registerDisabledHint,
+  isActive,
+  onAgentConnecting,
 }: {
   admin: boolean;
   agents: LocalRegisteredAgent[];
@@ -212,6 +222,8 @@ export function AgentsWorkspace({
   onRegister: () => void;
   registerDisabled?: boolean;
   registerDisabledHint?: string;
+  isActive: boolean;
+  onAgentConnecting: (agentId: string) => void;
 }) {
   const { t } = useTranslation("app");
   const toast = useToast();
@@ -223,6 +235,7 @@ export function AgentsWorkspace({
     null,
   );
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [presenceStale, setPresenceStale] = useState(false);
   const selectedAgent =
     agents.find((agent) => agent.id === selectedAgentId) ?? null;
 
@@ -231,6 +244,7 @@ export function AgentsWorkspace({
     setBusyAgentId(agent.id);
     try {
       await actions.updateRegisteredAgent({ id: agent.id, status: nextStatus });
+      if (nextStatus === "active") onAgentConnecting(agent.id);
       toast.success(
         nextStatus === "active"
           ? t("space.toasts.agentEnabled")
@@ -242,6 +256,31 @@ export function AgentsWorkspace({
       setBusyAgentId(null);
     }
   };
+
+  useEffect(() => {
+    if (!isActive) return;
+    let cancelled = false;
+    const refreshPresence = (preserveOrder = true) => {
+      if (document.visibilityState !== "visible") return;
+      void actions
+        .refreshRegisteredAgents({ force: true, silent: preserveOrder })
+        .then(() => {
+          if (!cancelled) setPresenceStale(false);
+        })
+        .catch(() => {
+          if (!cancelled) setPresenceStale(true);
+        });
+    };
+    refreshPresence(false);
+    const handle = window.setInterval(() => refreshPresence(true), 60_000);
+    const refreshWhenVisible = () => refreshPresence(true);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [actions, isActive]);
   const revokeAgent = async () => {
     if (!revokeTarget) return;
     setBusyAgentId(revokeTarget.id);
@@ -258,7 +297,7 @@ export function AgentsWorkspace({
 
   return (
     <>
-      <div className={`${SPACE_LIST_FRAME_CLASS} space-y-3`}>
+      <div className={`${SPACE_COLLECTION_FRAME_CLASS} space-y-3`}>
         <section className="flex min-h-10 items-center gap-3">
           <div className="flex min-w-0 flex-1 items-center gap-2 text-base font-semibold text-[var(--ink-secondary)]">
             <Bot className="h-4 w-4 shrink-0" />
@@ -280,6 +319,11 @@ export function AgentsWorkspace({
             </button>
           )}
         </section>
+        {presenceStale ? (
+          <div className="rounded-xl border border-[var(--warning)]/20 bg-[var(--warning-bg)] px-3 py-2 text-xs font-semibold text-[var(--warning)]">
+            {t("space.agents.presenceMayBeStale")}
+          </div>
+        ) : null}
         {agents.length === 0 ? (
           <div className="grid h-40 place-items-center rounded-[20px] border border-dashed border-[var(--line)] bg-[var(--paper-elevated)]/40 text-sm text-[var(--ink-muted)]">
             <div className="text-center">
@@ -627,23 +671,21 @@ function AgentCard({
   onToggle: () => void;
   onRevoke: () => void;
 }) {
-  const disabled = agent.status === "revoked";
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
-    if (event.target !== event.currentTarget) return;
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    onOpen();
-  };
+  const revoked = agent.status === "revoked";
+  const managementDisabled = agent.status !== "active";
+  const availability = registeredAgentAvailability(agent);
 
   return (
     <article
-      role="button"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={handleKeyDown}
-      className="group cursor-pointer rounded-xl bg-[var(--paper-elevated)] px-3.5 py-3 text-left outline-none transition-shadow hover:shadow-sm focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)]/30"
+      className={`group relative rounded-xl bg-[var(--paper-elevated)] px-3.5 py-3 text-left transition-[box-shadow,opacity,filter] hover:shadow-sm ${managementDisabled ? "opacity-60 saturate-50" : ""}`}
     >
-      <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2.5">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={`${t("space.agents.viewSettings")} · ${agent.displayName}`}
+        className="absolute inset-0 z-0 cursor-pointer rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)]/30"
+      />
+      <div className="pointer-events-none relative z-10 grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2.5">
         <SpaceAvatar
           name={agent.displayName}
           avatarUrl={agent.avatarUrl}
@@ -656,30 +698,37 @@ function AgentCard({
               {agent.displayName}
             </h3>
             <span
-              className={`rounded-md px-2 py-1 text-xs font-semibold ${agentStatusClass(agent.status)}`}
+              className={`rounded-md px-2 py-1 text-xs font-semibold ${agentStatusClass(availability)}`}
             >
-              {agent.status}
+              {agentStatusLabel(agent, t)}
             </span>
           </div>
           <p className="mt-1 truncate text-xs font-medium text-[var(--ink-muted)]">
             {agentCardTimeLabel(agent, t)}
           </p>
+          {availability === "offline" && !agent.lastOnlineAt ? (
+            <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-[var(--ink-subtle)]">
+              {t("space.agents.offlineTroubleshooting")}
+            </p>
+          ) : null}
         </div>
-        {admin && (
-          <AgentCardMenu
-            agent={agent}
-            busy={busy}
-            disabled={disabled}
-            t={t}
-            onOpen={onOpen}
-            onEdit={onEdit}
-            onToggle={onToggle}
-            onRevoke={onRevoke}
-          />
-        )}
+        {admin ? (
+          <div className="pointer-events-auto">
+            <AgentCardMenu
+              agent={agent}
+              busy={busy}
+              disabled={revoked}
+              t={t}
+              onOpen={onOpen}
+              onEdit={onEdit}
+              onToggle={onToggle}
+              onRevoke={onRevoke}
+            />
+          </div>
+        ) : null}
       </div>
 
-      <div className="mt-2.5 grid gap-1.5">
+      <div className="pointer-events-none relative z-10 mt-2.5 grid gap-1.5">
         <AgentCardField
           icon={Computer}
           label={t("space.agents.localComputer")}
@@ -910,6 +959,7 @@ function AgentDetailOverlay({
   const toast = useToast();
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const [avatarBusy, setAvatarBusy] = useState(false);
+  const availability = registeredAgentAvailability(agent);
   useCloseLayer(() => {
     if (avatarPickerOpen || avatarBusy) return false;
     onClose();
@@ -974,9 +1024,9 @@ function AgentDetailOverlay({
                   {agent.displayName}
                 </h2>
                 <span
-                  className={`rounded-md px-2 py-1 text-xs font-semibold ${agentStatusClass(agent.status)}`}
+                  className={`rounded-md px-2 py-1 text-xs font-semibold ${agentStatusClass(availability)}`}
                 >
-                  {agent.status}
+                  {agentStatusLabel(agent, t)}
                 </span>
               </div>
               <p className="mt-1 truncate text-sm font-medium text-[var(--ink-muted)]">
@@ -1030,8 +1080,8 @@ function AgentDetailOverlay({
             />
             <AgentSummaryBlock
               icon={Clock}
-              label={t("space.agents.lastSync")}
-              value={formatTime(agent.updatedAt) || t("space.common.notSynced")}
+              label={t("space.agents.lastOnline")}
+              value={agentCardTimeLabel(agent, t)}
             />
           </section>
 
@@ -1079,9 +1129,9 @@ function AgentDetailOverlay({
                 mono
               />
               <AgentDetailRow
-                label={t("space.agents.deviceLastSeen")}
+                label={t("space.agents.lastOnline")}
                 value={
-                  formatTime(agent.device?.lastSeenAt ?? "") ||
+                  formatTime(agent.lastOnlineAt ?? "") ||
                   t("space.common.notSynced")
                 }
               />
@@ -1368,7 +1418,7 @@ export function RegisterAgentDialog({
   goals: SpaceGoal[];
   actions: SpaceActions;
   onClose: () => void;
-  onRegistered: () => void;
+  onRegistered: (agent: LocalRegisteredAgent) => void;
 }) {
   const { t } = useTranslation("app");
   const toast = useToast();
@@ -1415,7 +1465,7 @@ export function RegisterAgentDialog({
       return;
     setBusy(true);
     try {
-      await actions.registerAgent({
+      const agent = await actions.registerAgent({
         displayName: displayName.trim(),
         workspaceId: project.id,
         workspacePath: project.path,
@@ -1425,7 +1475,7 @@ export function RegisterAgentDialog({
         issueSubscriptionRunMode,
       });
       toast.success(t("space.toasts.agentCreated"));
-      onRegistered();
+      onRegistered(agent);
     } catch (error) {
       toast.error(spaceErrorMessage(error));
     } finally {

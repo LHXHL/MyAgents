@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import {
   ArrowLeft,
@@ -44,7 +51,11 @@ import type {
   SpaceActions,
   SpaceAvatarPresetsState,
 } from "@/pages/space/spaceStore";
-import { SPACE_LIST_FRAME_CLASS } from "@/pages/space/spaceUi";
+import {
+  SPACE_COLLECTION_FRAME_CLASS,
+  SPACE_LIST_FRAME_CLASS,
+  formatDate,
+} from "@/pages/space/spaceUi";
 
 type SettingsSection = "members" | "agents" | "roles";
 const SPACE_SETTINGS_ROOT_FRAME_CLASS = "mx-auto max-w-xl";
@@ -114,14 +125,34 @@ function SummaryMetric({
   );
 }
 
-function ResourceMetric({ label, value }: { label: string; value: string }) {
+function ResourceMetric({
+  label,
+  value,
+  overLimit = false,
+  className = "",
+}: {
+  label: string;
+  value: string;
+  overLimit?: boolean;
+  className?: string;
+}) {
+  const { t } = useTranslation("app");
   return (
-    <div className="flex min-h-10 min-w-0 items-center justify-between gap-3 rounded-xl bg-[var(--paper-elevated)]/55 px-3 py-2">
+    <div
+      className={`flex min-h-10 min-w-0 items-center justify-between gap-3 rounded-xl bg-[var(--paper-elevated)]/55 px-3 py-2 ${className}`}
+    >
       <div className="min-w-0 truncate text-sm font-medium text-[var(--ink-muted)]">
         {label}
       </div>
-      <div className="shrink-0 truncate text-right text-sm font-semibold text-[var(--ink-secondary)]">
-        {value}
+      <div
+        className={`flex shrink-0 items-center gap-2 truncate text-right text-sm font-semibold ${overLimit ? "text-[var(--warning)]" : "text-[var(--ink-secondary)]"}`}
+      >
+        <span>{value}</span>
+        {overLimit ? (
+          <span className="rounded-md bg-[var(--warning-bg)] px-1.5 py-0.5 text-xs font-semibold text-[var(--warning)]">
+            {t("space.settings.overLimit")}
+          </span>
+        ) : null}
       </div>
     </div>
   );
@@ -174,6 +205,8 @@ export function SpaceSettingsWorkspace({
   avatarPresets,
   onRefresh,
   onRegister,
+  isActive,
+  onAgentConnecting,
   onExit,
 }: {
   session: SpaceSession;
@@ -184,6 +217,8 @@ export function SpaceSettingsWorkspace({
   avatarPresets: SpaceAvatarPresetsState;
   onRefresh: () => Promise<void>;
   onRegister: () => void;
+  isActive: boolean;
+  onAgentConnecting: (agentId: string) => void;
   onExit: () => void;
 }) {
   const { t } = useTranslation("app");
@@ -194,6 +229,7 @@ export function SpaceSettingsWorkspace({
     null,
   );
   const [membersLoading, setMembersLoading] = useState(false);
+  const membersRequestSeqRef = useRef(0);
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [name, setName] = useState(session.space.name);
   const [avatarFilePath, setAvatarFilePath] = useState<string | null>(null);
@@ -204,10 +240,27 @@ export function SpaceSettingsWorkspace({
   const pendingCount =
     session.spaces?.find((space) => space.id === session.space.id)
       ?.pendingJoinRequestCount ?? 0;
-  const overviewUsage = membersState?.usage;
+  const activeSpaceProjection = session.spaces?.find(
+    (space) => space.id === session.space.id,
+  );
+  const overviewUsage =
+    membersState?.usage ??
+    session.space.usage ??
+    activeSpaceProjection?.usage ??
+    undefined;
   const overviewLimits =
-    membersState?.limits ??
-    session.spaces?.find((space) => space.id === session.space.id)?.limits;
+    session.space.limits ??
+    activeSpaceProjection?.limits ??
+    membersState?.limits;
+  const spacePlanProjectionKey = [
+    session.space.effectivePlanTier ?? session.space.planTier ?? "free",
+    session.space.planExpiresAt ?? "",
+    session.space.limits?.joinedMembersMax ?? "",
+    session.space.limits?.openIssuesMax ?? "",
+    session.space.limits?.hostedSkillsMax ?? "",
+    session.space.limits?.registeredAgentsMax ?? "",
+    session.space.limits?.storageBytesMax ?? "",
+  ].join(":");
   const memberQuotaReached = Boolean(
     overviewUsage &&
       overviewLimits &&
@@ -227,25 +280,33 @@ export function SpaceSettingsWorkspace({
     setPickingAvatar(false);
   }, [session.space.id, session.space.name, session.space.avatarUrl]);
 
+  const refreshMembers = useCallback(async () => {
+    const requestSeq = ++membersRequestSeqRef.current;
+    setMembersLoading(true);
+    try {
+      const result = await spaceGetMembers(
+        session.space.slug || session.space.id,
+      );
+      if (requestSeq === membersRequestSeqRef.current) setMembersState(result);
+    } finally {
+      if (requestSeq === membersRequestSeqRef.current) setMembersLoading(false);
+    }
+  }, [session.space.id, session.space.slug]);
+
   useEffect(() => {
     if (section !== null && section !== "members" && section !== "agents")
       return;
-    let cancelled = false;
-    setMembersLoading(true);
-    spaceGetMembers(session.space.slug || session.space.id)
-      .then((result) => {
-        if (!cancelled) setMembersState(result);
-      })
-      .catch((error) => {
-        if (!cancelled) toast.error(spaceErrorMessage(error));
-      })
-      .finally(() => {
-        if (!cancelled) setMembersLoading(false);
-      });
+    void refreshMembers().catch((error) =>
+      toast.error(spaceErrorMessage(error)),
+    );
     return () => {
-      cancelled = true;
+      membersRequestSeqRef.current += 1;
     };
-  }, [section, session.space.id, session.space.slug, toast]);
+  }, [refreshMembers, section, spacePlanProjectionKey, toast]);
+
+  const refreshSettings = useCallback(async () => {
+    await Promise.all([onRefresh(), refreshMembers()]);
+  }, [onRefresh, refreshMembers]);
 
   const activeTitle = useMemo(() => {
     if (!section) return t("space.sidebar.settings");
@@ -395,7 +456,11 @@ export function SpaceSettingsWorkspace({
           </div>
           <button
             type="button"
-            onClick={onRefresh}
+            onClick={() =>
+              void refreshSettings().catch((error) =>
+                toast.error(spaceErrorMessage(error)),
+              )
+            }
             className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
             aria-label={t("space.common.refresh")}
             title={t("space.common.refresh")}
@@ -424,6 +489,8 @@ export function SpaceSettingsWorkspace({
         registerDisabledHint={
           agentQuotaReached ? t("space.settings.agentQuotaReached") : undefined
         }
+        isActive={isActive}
+        onAgentConnecting={onAgentConnecting}
       />,
     );
   }
@@ -455,7 +522,7 @@ export function SpaceSettingsWorkspace({
 
   if (section === "members") {
     return renderShell(
-      <div className={`${SPACE_LIST_FRAME_CLASS} space-y-5`}>
+      <div className={`${SPACE_COLLECTION_FRAME_CLASS} space-y-5`}>
         <div className="inline-flex min-h-11 max-w-full flex-wrap items-center gap-2 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper-elevated)]/55 px-3 py-2">
           <span className="min-w-0 text-sm font-medium text-[var(--ink-secondary)]">
             {t("space.settings.joinByShortSlug")}
@@ -672,7 +739,17 @@ export function SpaceSettingsWorkspace({
   const editPreview = avatarPreview ?? spaceAvatarUrl(session.space);
   const storageUsed = overviewUsage?.storageBytes ?? 0;
   const storageMax = overviewLimits?.storageBytesMax ?? 1024 * 1024 * 1024;
-  const plan = planDisplay(session.space.planTier);
+  const plan = planDisplay(
+    session.space.effectivePlanTier ?? session.space.planTier,
+  );
+  const planSummary =
+    (session.space.effectivePlanTier ?? session.space.planTier) === "pro" &&
+    session.space.planExpiresAt
+      ? t("space.settings.planValidUntil", {
+          plan,
+          date: formatDate(session.space.planExpiresAt),
+        })
+      : plan;
   const rootMenuItems = menuItems(pendingCount, t);
 
   return renderShell(
@@ -826,7 +903,10 @@ export function SpaceSettingsWorkspace({
                 label={t("space.settings.currentRole")}
                 value={roleLabel(session.membership.role, t)}
               />
-              <SummaryMetric label={t("space.settings.plan")} value={plan} />
+              <SummaryMetric
+                label={t("space.settings.plan")}
+                value={planSummary}
+              />
             </div>
           </div>
           <div className="border-t border-[var(--line-subtle)] px-5 py-3.5">
@@ -840,12 +920,22 @@ export function SpaceSettingsWorkspace({
                   overviewUsage?.memberSeats,
                   overviewLimits?.joinedMembersMax,
                 )}
+                overLimit={Boolean(
+                  overviewUsage &&
+                    overviewLimits &&
+                    overviewUsage.memberSeats > overviewLimits.joinedMembersMax,
+                )}
               />
               <ResourceMetric
                 label={t("space.settings.quotaOpenIssues")}
                 value={quotaText(
                   overviewUsage?.openIssues,
                   overviewLimits?.openIssuesMax,
+                )}
+                overLimit={Boolean(
+                  overviewUsage &&
+                    overviewLimits &&
+                    overviewUsage.openIssues > overviewLimits.openIssuesMax,
                 )}
               />
               <ResourceMetric
@@ -854,6 +944,11 @@ export function SpaceSettingsWorkspace({
                   overviewUsage?.hostedSkills,
                   overviewLimits?.hostedSkillsMax,
                 )}
+                overLimit={Boolean(
+                  overviewUsage &&
+                    overviewLimits &&
+                    overviewUsage.hostedSkills > overviewLimits.hostedSkillsMax,
+                )}
               />
               <ResourceMetric
                 label={t("space.settings.quotaAgents")}
@@ -861,12 +956,23 @@ export function SpaceSettingsWorkspace({
                   overviewUsage?.registeredAgents,
                   overviewLimits?.registeredAgentsMax,
                 )}
+                overLimit={Boolean(
+                  overviewUsage &&
+                    overviewLimits &&
+                    overviewUsage.registeredAgents >
+                      overviewLimits.registeredAgentsMax,
+                )}
               />
               <ResourceMetric
                 label={t("space.settings.quotaStorage")}
                 value={`${formatBytes(storageUsed)} / ${formatBytes(storageMax)}`}
+                overLimit={storageUsed > storageMax}
+                className="col-span-2"
               />
             </div>
+            <p className="mt-2.5 text-xs leading-relaxed text-[var(--ink-muted)]">
+              {t("space.settings.quotaCountingHint")}
+            </p>
           </div>
         </section>
 
