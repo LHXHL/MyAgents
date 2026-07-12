@@ -10,6 +10,8 @@ import type { LargeValueRef } from '../utils/large-value-store';
 
 export interface InlineImagePayload {
   kind?: 'inline_base64';
+  /** Stable logical attachment identity supplied by renderer surfaces. */
+  id?: string;
   name: string;
   mimeType: string;
   data: string;  // base64 without data URL prefix

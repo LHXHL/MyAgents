@@ -59,6 +59,7 @@ import {
     LIVE_USER_ECHO_REPLAY_KIND,
     type ChatMessageReplayPayload,
 } from '../../shared/chatMessageReplay';
+import { imagePayloadForSend, mergeAttachmentPreviews } from './userImageAttachmentProjection';
 import { parsePartialJson } from '@/utils/parsePartialJson';
 import { enqueuePermissionRequest, peekPermissionRequest, removePermissionRequest } from '@/utils/permissionQueue';
 import { i18n } from '@/i18n';
@@ -124,29 +125,6 @@ function queuedImageInfo(img: ImageAttachment): QueuedImageInfo {
         sizeBytes: imageAttachmentSize(img),
         source: img.source,
         relativePath: img.relativePath,
-    };
-}
-
-function imagePayloadForSend(img: ImageAttachment) {
-    const name = imageAttachmentName(img);
-    const mimeType = imageAttachmentMimeType(img);
-    const sizeBytes = imageAttachmentSize(img);
-    if (img.source === 'attachment_ref' && img.relativePath) {
-        return {
-            kind: 'attachment_ref' as const,
-            id: img.id,
-            name,
-            mimeType,
-            sizeBytes,
-            relativePath: img.relativePath,
-        };
-    }
-    return {
-        kind: 'inline_base64' as const,
-        name,
-        mimeType,
-        sizeBytes,
-        data: img.preview.split(',')[1] ?? '',
     };
 }
 
@@ -237,21 +215,6 @@ function normalizeWireAttachments(
         };
         const previewUrl = att.previewUrl ?? resolveAttachmentUrl(normalized);
         return previewUrl ? { ...normalized, previewUrl } : normalized;
-    });
-}
-
-function mergeAttachmentPreviews(
-    attachments: MessageAttachment[] | undefined,
-    previews: MessageAttachment[] | undefined,
-): MessageAttachment[] | undefined {
-    if (!attachments || attachments.length === 0) return previews;
-    if (!previews || previews.length === 0) return attachments;
-    return attachments.map((att) => {
-        const match = previews.find((preview) =>
-            preview.id === att.id ||
-            (preview.name === att.name && preview.mimeType === att.mimeType)
-        );
-        return match?.previewUrl ? { ...att, previewUrl: match.previewUrl } : att;
     });
 }
 
@@ -3206,10 +3169,18 @@ export default function TabProvider({
                             if (attachments?.length && queuedMsg?.images?.length) {
                                 // Merge: prefer frontend's local blob/data URL, fall back to
                                 // the Tauri custom-protocol URL resolved from relativePath.
-                                attachments = attachments.map((att) => {
-                                    const match = queuedMsg.images!.find(img => img.name === att.name);
-                                    return match?.preview ? { ...att, previewUrl: match.preview } : att;
-                                });
+                                attachments = mergeAttachmentPreviews(
+                                    attachments,
+                                    queuedMsg.images.map((img) => ({
+                                        id: img.id,
+                                        name: img.name,
+                                        size: img.sizeBytes ?? 0,
+                                        mimeType: img.mimeType ?? 'image/png',
+                                        relativePath: img.relativePath,
+                                        previewUrl: img.preview,
+                                        isImage: true,
+                                    })),
+                                );
                             } else if (!attachments?.length && queuedMsg?.images?.length) {
                                 // Fallback: server sent no attachments, use frontend snapshot
                                 attachments = queuedMsg.images.map(img => ({

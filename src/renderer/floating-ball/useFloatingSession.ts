@@ -86,7 +86,7 @@ export interface FbPermReq {
 export interface FbSendOpts {
     quote?: string | null;
     images?: Array<
-        | { kind?: 'inline_base64'; name: string; mimeType: string; data: string; sizeBytes?: number }
+        | { kind?: 'inline_base64'; id?: string; name: string; mimeType: string; data: string; sizeBytes?: number }
         | { kind: 'attachment_ref'; id?: string; name: string; mimeType: string; relativePath: string; sizeBytes?: number }
     >;
     attachments?: FbAttachment[];

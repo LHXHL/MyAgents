@@ -1084,6 +1084,7 @@ export default function CompanionWindow() {
                     }
                     : {
                         kind: 'inline_base64' as const,
+                        id: draft.id,
                         name: draft.name,
                         mimeType: draft.mimeType,
                         sizeBytes: draft.size,

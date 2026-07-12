@@ -38,8 +38,11 @@ export function messageAttachmentsFromImagePayloads(
     }
     if (!isInlineImagePayload(img)) continue;
     const size = assertInlineImageSize(img.name, img.data);
-    const attachmentId = randomUUID();
-    const relativePath = saveAttachment(sessionId, attachmentId, img.name, img.data, img.mimeType);
+    // Keep the renderer's logical identity for live preview reconciliation,
+    // while retaining a server-generated storage name for untrusted ingress.
+    const storageId = randomUUID();
+    const attachmentId = img.id || storageId;
+    const relativePath = saveAttachment(sessionId, storageId, img.name, img.data, img.mimeType);
     attachments.push({
       id: attachmentId,
       name: img.name,
