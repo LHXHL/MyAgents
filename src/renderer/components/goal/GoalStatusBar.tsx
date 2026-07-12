@@ -1,9 +1,17 @@
-import { Flag, Play, X } from 'lucide-react';
+import { Flag, Play, Settings2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import type { SessionGoal } from '@/types/sessionGoal';
+import { formatDuration, formatTokens } from '@/utils/formatTokens';
 
-interface GoalStatusBarProps {
+interface GoalDraftStatusBarProps {
+  mode: 'draft';
+  onSettings?: () => void;
+  onCancel?: () => void;
+}
+
+interface GoalRuntimeStatusBarProps {
+  mode?: 'runtime';
   goal: SessionGoal;
   isExecuting?: boolean;
   executionNumber?: number;
@@ -13,7 +21,50 @@ interface GoalStatusBarProps {
   onDismiss?: () => void;
 }
 
-export default function GoalStatusBar({
+type GoalStatusBarProps = GoalDraftStatusBarProps | GoalRuntimeStatusBarProps;
+
+function GoalDraftStatusBar({ onSettings, onCancel }: GoalDraftStatusBarProps) {
+  const { t } = useTranslation('task');
+
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-t-lg border border-b-0 border-[var(--heartbeat-border)] bg-[var(--heartbeat-bg)] px-3 py-2">
+      <div className="flex min-w-0 items-center gap-2">
+        <Flag className="h-4 w-4 shrink-0 text-[var(--heartbeat)]" />
+        <span className="shrink-0 text-sm font-medium text-[var(--heartbeat)]">
+          {t('cron.statusBar.goalDraftTitle')}
+        </span>
+        <span className="min-w-0 truncate text-sm text-[var(--ink-muted)]">
+          {t('cron.statusBar.goalObjectiveFallback')}
+        </span>
+      </div>
+
+      <div className="flex shrink-0 items-center gap-1">
+        {onSettings && (
+          <button
+            type="button"
+            onClick={onSettings}
+            className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-hover)] hover:text-[var(--heartbeat)]"
+            title={t('cron.statusBar.settingsTitle')}
+          >
+            <Settings2 className="h-4 w-4" />
+          </button>
+        )}
+        {onCancel && (
+          <button
+            type="button"
+            onClick={onCancel}
+            className="rounded-md p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-hover)] hover:text-[var(--heartbeat)]"
+            title={t('cron.statusBar.cancelGoalDraftTitle')}
+          >
+            <X className="h-4 w-4" />
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function GoalRuntimeStatusBar({
   goal,
   isExecuting = false,
   executionNumber,
@@ -21,7 +72,7 @@ export default function GoalStatusBar({
   onResume,
   onCancel,
   onDismiss,
-}: GoalStatusBarProps) {
+}: GoalRuntimeStatusBarProps) {
   const { t } = useTranslation('task');
   const terminal = goal.status === 'complete'
     || goal.status === 'blocked'
@@ -45,12 +96,23 @@ export default function GoalStatusBar({
             ? t('cron.statusBar.loopExecutingTitle')
             : t('cron.statusBar.loopRunningTitle');
   const round = executionNumber ?? goal.turnCount + 1;
-  const detail = goal.terminalReason?.trim()
-    || (goal.status === 'paused'
-      ? t('cron.statusBar.goalPausedDetail')
-      : isExecuting
-        ? t('cron.statusBar.roundExecuting', { count: round })
-        : t('cron.statusBar.roundRunning', { count: Math.max(1, goal.turnCount) }));
+  const terminalSummary = t('cron.statusBar.goalTerminalSummary', {
+    duration: formatDuration(goal.totalDurationMs),
+    tokens: formatTokens(goal.totalTokens),
+  });
+  const detail = terminal && isExecuting
+    ? t('cron.statusBar.goalFinalizingDetail')
+    : terminal
+      ? [goal.status === 'complete' ? null : goal.terminalReason?.trim(), terminalSummary]
+          .filter(Boolean)
+          .join(' · ')
+        || goal.terminalReason?.trim()
+        || t('cron.statusBar.roundRunning', { count: Math.max(1, goal.turnCount) })
+      : goal.status === 'paused'
+        ? t('cron.statusBar.goalPausedDetail')
+        : isExecuting
+          ? t('cron.statusBar.roundExecuting', { count: round })
+          : t('cron.statusBar.roundRunning', { count: Math.max(1, goal.turnCount) });
 
   return (
     <div
@@ -123,4 +185,10 @@ export default function GoalStatusBar({
       </div>
     </div>
   );
+}
+
+export default function GoalStatusBar(props: GoalStatusBarProps) {
+  return props.mode === 'draft'
+    ? <GoalDraftStatusBar {...props} />
+    : <GoalRuntimeStatusBar {...props} />;
 }

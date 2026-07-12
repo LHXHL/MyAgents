@@ -9,26 +9,12 @@ describe('CronTaskStatusBar', () => {
     await i18n.changeLanguage('en-US');
   });
 
-  it('does not infer Goal identity from a legacy Loop schedule', () => {
-    const { rerender } = render(
-      <CronTaskStatusBar
-        mode="draft"
-        taskKind="cron"
-        intervalMinutes={5}
-        schedule={{ kind: 'loop' }}
-      />,
+  it('renders only Cron-owned schedule state', () => {
+    render(
+      <CronTaskStatusBar mode="draft" intervalMinutes={5} />,
     );
     expect(screen.getByText('Scheduled mode')).toBeInTheDocument();
     expect(screen.queryByText('Goal Mode')).not.toBeInTheDocument();
-
-    rerender(
-      <CronTaskStatusBar
-        mode="draft"
-        taskKind="goal"
-        intervalMinutes={5}
-        schedule={{ kind: 'loop' }}
-      />,
-    );
-    expect(screen.getByText('Goal Mode')).toBeInTheDocument();
+    expect(screen.getByText('Run every 5 minutes')).toBeInTheDocument();
   });
 });

@@ -120,6 +120,8 @@ describe('external turn lifecycle owner', () => {
     notifyExternalTurnOutcome(before + 1, {
       success: true,
       text: 'target result',
+      durationMs: 3_500,
+      usage: { inputTokens: 700, outputTokens: 80 },
     });
     notifyExternalTurnOutcome(before + 1, {
       success: true,
@@ -131,6 +133,8 @@ describe('external turn lifecycle owner', () => {
       status: 'complete',
       text: 'target result',
       assistantMessagePresent: true,
+      durationMs: 3_500,
+      usage: { inputTokens: 700, outputTokens: 80 },
     });
     expect(getExternalCurrentTurnIdentity()).toBeNull();
   });
@@ -139,7 +143,10 @@ describe('external turn lifecycle owner', () => {
     const onTerminal = vi.fn();
     bindExternalTurn('queue-stop', { kind: 'goal', id: 'goal-1' }, onTerminal);
 
-    notifyExternalTurnStopped('partial output');
+    notifyExternalTurnStopped('partial output', {
+      durationMs: 1_250,
+      usage: { inputTokens: 90, outputTokens: 10 },
+    });
     notifyExternalTurnStopped('duplicate');
 
     expect(onTerminal).toHaveBeenCalledTimes(1);
@@ -148,6 +155,8 @@ describe('external turn lifecycle owner', () => {
       text: 'partial output',
       assistantMessagePresent: true,
       error: 'Execution stopped',
+      durationMs: 1_250,
+      usage: { inputTokens: 90, outputTokens: 10 },
     });
     expect(getExternalCurrentTurnIdentity()).toBeNull();
   });

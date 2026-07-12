@@ -121,6 +121,8 @@ impl SessionGoalManager {
             turn_count: 0,
             created_at: now,
             updated_at: now,
+            total_duration_ms: 0,
+            total_tokens: 0,
             last_executed_at: None,
             terminal_reason: None,
             revision: 1,
@@ -683,6 +685,8 @@ impl SessionGoalManager {
                 goal.current_turn = None;
                 goal.turn_count = goal.turn_count.max(authority.turn_number);
                 goal.last_executed_at = Some(now);
+                goal.total_duration_ms = goal.total_duration_ms.saturating_add(request.duration_ms);
+                goal.total_tokens = goal.total_tokens.saturating_add(request.consumed_tokens);
                 goal.consecutive_failures = if request.success {
                     0
                 } else {
@@ -1255,6 +1259,11 @@ pub fn get_session_goal_manager() -> &'static SessionGoalManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sidecar::types::{SessionSidecar, SidecarState};
+    use crate::sidecar::SidecarManager;
+    use std::process::Stdio;
+    use std::sync::Mutex;
+    use std::time::Instant;
 
     fn config(session_id: &str, objective: &str) -> SessionGoalConfig {
         SessionGoalConfig {
@@ -1264,6 +1273,58 @@ mod tests {
             end_conditions: Default::default(),
             notify_enabled: false,
             permission_mode: String::new(),
+        }
+    }
+
+    fn live_test_sidecar(session_id: &str, goal_id: &str) -> (ManagedSidecarManager, u64) {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = crate::process_cmd::new("cmd");
+            command.args(["/C", "exit", "0"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = crate::process_cmd::new("true");
+
+        let mut process = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn test sidecar placeholder");
+        process.wait().expect("reap test sidecar placeholder");
+        let mut manager = SidecarManager::new();
+        manager.insert_sidecar(
+            session_id,
+            SessionSidecar {
+                process,
+                port: 31_418,
+                session_id: session_id.to_string(),
+                workspace_path: PathBuf::from("/tmp/workspace"),
+                state: SidecarState::Healthy,
+                owners: HashSet::from([SidecarOwner::Goal(goal_id.to_string())]),
+                created_at: Instant::now(),
+                runtime: None,
+                runtime_source: None,
+            },
+        );
+        let generation = manager
+            .generation_for(session_id)
+            .expect("test sidecar generation");
+        (Arc::new(Mutex::new(manager)), generation)
+    }
+
+    fn successful_finalization(
+        duration_ms: u64,
+        consumed_tokens: u64,
+    ) -> GoalTurnFinalizationRequest {
+        GoalTurnFinalizationRequest {
+            success: true,
+            error: None,
+            output_text: Some("done".to_string()),
+            duration_ms,
+            consumed_tokens,
+            channel_delivery_expected: false,
         }
     }
 
@@ -1331,6 +1392,106 @@ mod tests {
             .await
             .expect_err("the old turn must settle before its Goal is replaced");
         assert_eq!(error.code(), "turn_conflict");
+    }
+
+    #[tokio::test]
+    async fn terminal_turn_metrics_are_accumulated_exactly_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionGoalManager::with_storage_path(dir.path().join("goals.json"));
+        let goal = manager
+            .create_goal(config("session-1", "work"))
+            .await
+            .unwrap();
+        let (sidecars, generation) = live_test_sidecar("session-1", &goal.id);
+        manager
+            .commit(&goal.id, |goal| {
+                goal.status = GoalStatus::Complete;
+                goal.current_turn = Some(GoalTurnAuthority {
+                    queue_id: "queue-1".to_string(),
+                    kind: GoalTurnKind::UserQuery,
+                    turn_number: 1,
+                    sidecar_generation: generation,
+                    created_at: Utc::now(),
+                });
+                goal.bump_revision();
+                goal.bump_control_revision();
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let first = manager
+            .finalize_turn_from_sidecar(
+                &goal.id,
+                "queue-1",
+                successful_finalization(12_345, 678),
+                generation,
+                &sidecars,
+            )
+            .await
+            .unwrap();
+        assert!(first.applied);
+        assert_eq!(first.goal.status, GoalStatus::Complete);
+        assert!(first.goal.current_turn.is_none());
+        assert_eq!(first.goal.total_duration_ms, 12_345);
+        assert_eq!(first.goal.total_tokens, 678);
+
+        let retry = manager
+            .finalize_turn_from_sidecar(
+                &goal.id,
+                "queue-1",
+                successful_finalization(12_345, 678),
+                generation,
+                &sidecars,
+            )
+            .await
+            .unwrap();
+        assert!(!retry.applied);
+        assert_eq!(retry.goal.total_duration_ms, 12_345);
+        assert_eq!(retry.goal.total_tokens, 678);
+    }
+
+    #[tokio::test]
+    async fn stale_sidecar_finalize_clears_authority_without_counting_metrics() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionGoalManager::with_storage_path(dir.path().join("goals.json"));
+        let goal = manager
+            .create_goal(config("session-1", "work"))
+            .await
+            .unwrap();
+        let (sidecars, generation) = live_test_sidecar("session-1", &goal.id);
+        manager
+            .commit(&goal.id, |goal| {
+                goal.status = GoalStatus::Complete;
+                goal.current_turn = Some(GoalTurnAuthority {
+                    queue_id: "queue-stale".to_string(),
+                    kind: GoalTurnKind::Continuation,
+                    turn_number: 1,
+                    sidecar_generation: generation,
+                    created_at: Utc::now(),
+                });
+                goal.bump_revision();
+                goal.bump_control_revision();
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let stale = manager
+            .finalize_turn_from_sidecar(
+                &goal.id,
+                "queue-stale",
+                successful_finalization(9_999, 999),
+                generation.saturating_add(1),
+                &sidecars,
+            )
+            .await
+            .unwrap();
+
+        assert!(!stale.applied);
+        assert!(stale.goal.current_turn.is_none());
+        assert_eq!(stale.goal.total_duration_ms, 0);
+        assert_eq!(stale.goal.total_tokens, 0);
     }
 
     #[tokio::test]

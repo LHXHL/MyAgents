@@ -964,6 +964,10 @@ struct GoalTurnFinalizeRequest {
     error: Option<String>,
     output_text: Option<String>,
     #[serde(default)]
+    duration_ms: u64,
+    #[serde(default)]
+    consumed_tokens: u64,
+    #[serde(default)]
     channel_delivery_expected: bool,
 }
 
@@ -1139,6 +1143,8 @@ async fn goal_turn_finalize_handler(
                 success: req.success,
                 error: req.error,
                 output_text: req.output_text,
+                duration_ms: req.duration_ms,
+                consumed_tokens: req.consumed_tokens,
                 channel_delivery_expected: req.channel_delivery_expected,
             },
             sidecar_generation,

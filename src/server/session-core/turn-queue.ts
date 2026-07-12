@@ -36,6 +36,11 @@ export type TurnTerminalOutcome = {
   text: string;
   assistantMessagePresent: boolean;
   error?: string;
+  durationMs?: number;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+  };
 };
 
 export type TurnTerminalObserver = (outcome: TurnTerminalOutcome) => void | Promise<void>;

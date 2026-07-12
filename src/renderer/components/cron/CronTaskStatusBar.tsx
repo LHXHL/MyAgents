@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Flag, Settings2, Square, Timer, X } from 'lucide-react';
+import { Settings2, Square, Timer, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import type { CronSchedule, ScheduledTaskKind } from '@/types/cronTask';
+import type { CronSchedule } from '@/types/cronTask';
 import { isSupportedLocale } from '@/../shared/i18n';
 import {
   formatCronCountdown,
@@ -16,7 +16,6 @@ interface CronTaskStatusBarProps {
   mode?: CronTaskStatusBarMode;
   intervalMinutes: number;
   schedule?: CronSchedule | null;
-  taskKind?: ScheduledTaskKind;
   executionCount?: number;
   maxExecutions?: number;
   nextExecutionAt?: string | null;
@@ -31,7 +30,6 @@ export default function CronTaskStatusBar({
   mode = 'draft',
   intervalMinutes,
   schedule,
-  taskKind = 'cron',
   executionCount = 0,
   maxExecutions,
   nextExecutionAt,
@@ -45,7 +43,6 @@ export default function CronTaskStatusBar({
   const locale = isSupportedLocale(i18n.language) ? i18n.language : 'zh-CN';
   const [now, setNow] = useState(() => Date.now());
   const active = mode === 'running' || mode === 'executing';
-  const isGoalDraft = mode === 'draft' && taskKind === 'goal';
 
   useEffect(() => {
     if (!active || !nextExecutionAt) return;
@@ -57,9 +54,7 @@ export default function CronTaskStatusBar({
     () => mode === 'running' ? formatCronCountdown(nextExecutionAt, now, t) : null,
     [mode, nextExecutionAt, now, t],
   );
-  const title = isGoalDraft
-    ? t('cron.statusBar.goalDraftTitle')
-    : mode === 'draft'
+  const title = mode === 'draft'
       ? t('cron.statusBar.draftTitle')
       : mode === 'stopped'
         ? t('cron.statusBar.stoppedTitle')
@@ -83,9 +78,7 @@ export default function CronTaskStatusBar({
     <div className="flex items-center justify-between gap-3 rounded-t-lg border border-b-0 border-[var(--heartbeat-border)] bg-[var(--heartbeat-bg)] px-3 py-2">
       <div className="flex min-w-0 items-center gap-2">
         <span className="relative shrink-0">
-          {isGoalDraft
-            ? <Flag className="h-4 w-4 text-[var(--heartbeat)]" />
-            : <Timer className={`h-4 w-4 text-[var(--heartbeat)] ${mode === 'stopped' ? 'opacity-60' : ''}`} />}
+          <Timer className={`h-4 w-4 text-[var(--heartbeat)] ${mode === 'stopped' ? 'opacity-60' : ''}`} />
           {mode === 'executing' && (
             <span className="absolute -right-0.5 -top-0.5 h-2 w-2">
               <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--heartbeat)] opacity-40" />

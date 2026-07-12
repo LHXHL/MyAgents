@@ -124,6 +124,8 @@ describe('Goal orchestrator', () => {
       status: 'complete',
       text: 'done',
       assistantMessagePresent: true,
+      durationMs: 4_200,
+      usage: { inputTokens: 1_200, outputTokens: 300 },
     });
     await flushPromises();
 
@@ -140,6 +142,8 @@ describe('Goal orchestrator', () => {
       queueId: dispatched.queueId,
       success: true,
       outputText: 'done',
+      durationMs: 4_200,
+      consumedTokens: 1_500,
     });
   });
 

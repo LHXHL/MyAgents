@@ -434,7 +434,7 @@ Goal 控制必须是后端单一 use case：
 - Task turn 的 model/provider/runtime/reasoning/MCP snapshot/restore。
 - 旧 Ralph Loop 到 Goal/Task 的迁移。
 - 为未发布 Goal 数据建立版本兼容层。
-- 重做原 0.2.50 Goal 的横条、首轮 user bubble、visible-tail 或流式交互设计。
+- 重做原 0.2.50 Goal 的首轮 user bubble、visible-tail 或流式交互设计；横条仅允许在 Goal owner 内修正错误 Cron 投影并补终态汇总。
 - 仅为了架构改名而重写所有用户可见文案。
 
 未来 Task 想让 Session 进入 Goal 时，首选简单组合：Task Prompt 要求 AI 在当前 Session 调用 `myagents goal create`。因为 Goal create 只依赖当前 Session，这条路径无需 Task 系统预埋任何关系。只有未来明确要求“Task 生命周期必须等待/控制 Goal”时，才另立需求讨论编排模型。

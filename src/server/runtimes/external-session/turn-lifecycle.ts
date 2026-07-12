@@ -36,6 +36,11 @@ export type ExternalTurnOutcome = Readonly<{
   success: boolean;
   text: string;
   error?: string;
+  durationMs?: number;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+  };
 }>;
 
 function notifyBoundTurn(outcome: TurnTerminalOutcome): void {
@@ -64,16 +69,22 @@ export function notifyExternalTurnOutcome(
     status: outcome.success ? 'complete' : 'error',
     text: outcome.text,
     assistantMessagePresent: outcome.text.trim().length > 0,
+    ...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}),
+    ...(outcome.usage ? { usage: outcome.usage } : {}),
     ...(outcome.error ? { error: outcome.error } : {}),
   });
 }
 
-export function notifyExternalTurnStopped(text: string): void {
+export function notifyExternalTurnStopped(
+  text: string,
+  metrics: Pick<ExternalTurnOutcome, 'durationMs' | 'usage'> = {},
+): void {
   notifyBoundTurn({
     status: 'stopped',
     text,
     assistantMessagePresent: text.trim().length > 0,
     error: 'Execution stopped',
+    ...metrics,
   });
 }
 

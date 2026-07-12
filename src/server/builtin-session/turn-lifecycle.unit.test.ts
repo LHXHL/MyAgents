@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendMessage, resetTranscriptForTest, transcriptState } from './transcript';
 import {
+  accumulateCurrentTurnUsage,
   markCurrentTurnHasOutput,
   pushPendingRequest,
   resetTurnForTest,
@@ -140,6 +141,16 @@ describe('turn-lifecycle owner', () => {
     });
     markCurrentTurnHasOutput();
     setCurrentTurnStartTime(90);
+    const onTerminal = vi.fn();
+    setCurrentTurnSourceItem({
+      id: 'goal-turn',
+      message: { role: 'user', content: 'run' },
+      messageText: 'run',
+      wasQueued: false,
+      resolve: vi.fn(),
+      onTerminal,
+    });
+    accumulateCurrentTurnUsage({ inputTokens: 100, outputTokens: 20 });
 
     lifecycle.handleSdkResult(makeResult({
       result: 'hello',
@@ -155,6 +166,10 @@ describe('turn-lifecycle owner', () => {
     expect(transcriptState.messages[0]).toMatchObject({
       usage: { inputTokens: 12, outputTokens: 5, cacheReadTokens: 2 },
     });
+    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'complete',
+      usage: { inputTokens: 12, outputTokens: 5 },
+    }));
     expect(deps.firePostTurnTitleHook).not.toHaveBeenCalled();
 
     persist.resolve();
@@ -362,9 +377,24 @@ describe('turn-lifecycle owner', () => {
   it('finalizes stopped turns with queue cleanup, IM completion, and persistence', () => {
     const { deps } = makeDeps();
     const lifecycle = createBuiltinTurnLifecycle(deps);
+    const onTerminal = vi.fn();
+    setCurrentTurnSourceItem({
+      id: 'goal-turn',
+      message: { role: 'user', content: 'run' },
+      messageText: 'run',
+      wasQueued: false,
+      resolve: vi.fn(),
+      onTerminal,
+    });
+    accumulateCurrentTurnUsage({ inputTokens: 120, outputTokens: 30 });
+    accumulateCurrentTurnUsage({ inputTokens: 80, outputTokens: 20 });
 
     lifecycle.stopTurn();
 
+    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'stopped',
+      usage: { inputTokens: 200, outputTokens: 50 },
+    }));
     expect(deps.schedulePostTerminalQueueDrain).toHaveBeenCalledWith('stopped');
     expect(deps.endTurnAbort).toHaveBeenCalledWith('session-1');
     expect(deps.completeCurrentImRequest).toHaveBeenCalledWith('');

@@ -4160,8 +4160,8 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   }, []);
 
   // Dispatch a client-action slash command from the chat input. `/goal` opens
-  // the cron modal preset to Goal mode; the task content is entered in
-  // the input after confirming (which arms cron mode — see handleSendMessage).
+  // the shared settings modal preset to Goal mode; the objective is entered in
+  // the input after confirming.
   const handleSlashAction = useCallback((name: string) => {
     if (name === 'goal' || name === 'loop') {
       setStoppedCronRecovery(null);
@@ -5803,6 +5803,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
           };
 
           if (config.taskKind === 'goal') {
+            if (!cronState.task) disableCronMode();
             setGoalDraftConfig({
               taskKind: 'goal',
               prompt: '',
@@ -5811,10 +5812,13 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
               permissionMode: enrichedConfig.permissionMode,
               runtime: enrichedConfig.runtime,
             });
-          } else if (cronState.task) {
-            updateRunningConfig(enrichedConfig);
           } else {
-            enableCronMode(enrichedConfig);
+            setGoalDraftConfig(null);
+            if (cronState.task) {
+              updateRunningConfig(enrichedConfig);
+            } else {
+              enableCronMode(enrichedConfig);
+            }
           }
 
           if (config.taskKind === 'cron') {

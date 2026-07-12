@@ -1226,7 +1226,7 @@ function rollbackReservedExternalTurnAfterDrainFailure(): void {
   }
 }
 
-function buildPersistedTurnUsage(): MessageUsage | undefined {
+function consumeExternalTurnUsage(): MessageUsage | undefined {
   const currentTurnUsage = getExternalCurrentTurnUsage();
   const fallbackModel = currentTurnUsage?.model
     || getExternalRuntimeLiveReportedModel()
@@ -1265,6 +1265,37 @@ function buildPersistedTurnUsage(): MessageUsage | undefined {
 function currentExternalTurnTextSnapshot(): string {
   const blockText = getExternalContentBlockText();
   return blockText || getExternalAssistantText().trim();
+}
+
+function consumeExternalTurnMetrics(): {
+  durationMs?: number;
+  usage?: { inputTokens: number; outputTokens: number };
+} {
+  const turnStartTime = getExternalTurnStartTime();
+  const durationMs = turnStartTime ? Math.max(0, Date.now() - turnStartTime) : undefined;
+  const usage = consumeExternalTurnUsage();
+  return {
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(usage ? {
+      usage: {
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+      },
+    } : {}),
+  };
+}
+
+function notifyFailedExternalTurn(
+  terminalGeneration: number,
+  text: string,
+  error: string,
+): void {
+  notifyExternalTurnOutcome(terminalGeneration, {
+    success: false,
+    text,
+    error,
+    ...consumeExternalTurnMetrics(),
+  });
 }
 
 // Mirrors agent-session.ts `isValidAskUserQuestionInput`. Malformed input would crash
@@ -3345,7 +3376,10 @@ export async function stopExternalSession(options?: {
     status: 'ok',
     detail: { pid },
   });
-  notifyExternalTurnStopped(currentExternalTurnTextSnapshot());
+  notifyExternalTurnStopped(
+    currentExternalTurnTextSnapshot(),
+    consumeExternalTurnMetrics(),
+  );
   clearExternalActiveRuntimeProcess();
   activeExternalEnvPolicy = undefined;
   // Any pre-warm that raced with a stop is no longer relevant. Keeping the
@@ -3691,6 +3725,9 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
   // #1 / Scenario 1+11).
   const { inboxMeta: turnInboxMeta, attachmentHints: turnAttachmentHints } = snapshotExternalTurnReplyState();
   const turnSucceededAtTerminal = didExternalLastTurnSucceed();
+  // Terminal usage belongs to this turn. Consume it before the first await so
+  // a degraded next-turn admission cannot reset or replace the mutable slot.
+  const settledTurnUsage = consumeExternalTurnUsage();
   // PRD 0.2.32 — snapshot THIS turn's context usage at the SAME synchronous entry
   // as turnInboxMeta above, NOT after the `await awaitInFlightSaves()` further down.
   // turn_complete fires persistTurnResult fire-and-forget and flips turnCompleted;
@@ -3715,6 +3752,7 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
   const persistTraceStarted = nowMs();
   let persistFailed = false;
   let persistFailureReason: string | undefined;
+  let settledTurnDurationMs: number | undefined;
 
   // PRD 0.2.18 Session Inbox — capture turn text BEFORE resetTurnAccumulators()
   // wipes it (cross-review CC + Architecture: the original impl read
@@ -3726,6 +3764,7 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
   try {
     const turnStartTime = getExternalTurnStartTime();
     const turnDurationMs = turnStartTime ? Date.now() - turnStartTime : undefined;
+    settledTurnDurationMs = turnDurationMs;
     flushAllPending();
 
     // Cross-review 0.2.33 (Codex W1) — snapshot THIS turn's content blocks and
@@ -3747,7 +3786,7 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
     // and the disk JSON keeps the "生成中" placeholder forever.
     await awaitInFlightSaves();
 
-    const usageData = buildPersistedTurnUsage();
+    const usageData = settledTurnUsage;
     const turnToolCount = getExternalTurnContentSnapshotToolCount(turnContentSnapshot);
     const runtimeType = getCurrentRuntimeType();
     const runtimeSource = getCurrentRuntimeSource();
@@ -3908,6 +3947,13 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
     notifyExternalTurnOutcome(terminalGeneration, {
       success: finalizedTurnSucceeded,
       text: capturedReplyText || getExternalAssistantText().trim(),
+      ...(settledTurnDurationMs !== undefined ? { durationMs: settledTurnDurationMs } : {}),
+      ...(settledTurnUsage ? {
+        usage: {
+          inputTokens: settledTurnUsage.inputTokens,
+          outputTokens: settledTurnUsage.outputTokens,
+        },
+      } : {}),
       ...(persistFailureReason ? { error: persistFailureReason } : {}),
     });
 
@@ -4491,11 +4537,11 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       if (turnPlan.kind !== 'persist-success') {
         const message = turnPlan.message;
         if (terminalGeneration > terminalGenerationBefore) {
-          notifyExternalTurnOutcome(terminalGeneration, {
-            success: false,
-            text: currentExternalTurnTextSnapshot(),
-            error: message,
-          });
+          notifyFailedExternalTurn(
+            terminalGeneration,
+            currentExternalTurnTextSnapshot(),
+            message,
+          );
         }
         console.warn(
           `[external-session] turn_complete: non-success status=${event.status ?? 'unknown'}, elapsed=${getExternalTurnStartTime() ? Date.now() - getExternalTurnStartTime() : 0}ms, message=${message}`,
@@ -4622,11 +4668,11 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       } else {
         const errorMessage = sessionPlan.message;
         if (terminalGeneration > terminalGenerationBefore && !persistInFlight) {
-          notifyExternalTurnOutcome(terminalGeneration, {
-            success: false,
-            text: currentExternalTurnTextSnapshot(),
-            error: errorMessage,
-          });
+          notifyFailedExternalTurn(
+            terminalGeneration,
+            currentExternalTurnTextSnapshot(),
+            errorMessage,
+          );
         }
         if (sessionPlan.kind === 'ignore-idle') {
           console.log(`[external-session] Ignoring idle-exit "${errorMessage}" — process was between turns; next message will auto-resume`);

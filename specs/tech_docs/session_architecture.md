@@ -173,6 +173,8 @@ interface SessionGoalView {
   revision: number;
   controlRevision: number;
   isExecuting: boolean;
+  totalDurationMs: number; // 已结算 Goal Turn 的实际执行耗时之和
+  totalTokens: number;     // 已结算 Goal Turn 的 input + output tokens 之和
   terminalReason?: string;
 }
 ```
@@ -238,6 +240,8 @@ disk-first commit Goal control state
 ```
 
 Model 只能提交 complete/blocked；`aiCanExit=false` 在 Rust terminal transaction 硬拒绝，不只依赖提示词。User 只能 canceled，System 可因 end condition 或连续 10 次执行失败进入终态。终态 first-writer-wins。
+
+Turn terminal contract 同时携带该 Turn 已有的 `durationMs` 与 input/output usage。Goal finalize 在清除 Turn 的同一个 `currentTurn.queueId` 权威提交中累加 `totalDurationMs` / `totalTokens`，因此 settlement retry 不会重复计数；模型在 Turn 内先标记 complete/blocked 时，renderer 以 `isExecuting` 显示“正在汇总”，待真实 terminal finalize 后再展示最终总量。统计只覆盖已结算 Goal Turn，不扫描 Session transcript，也不建立 Goal 专用 usage service。
 
 Objective edit 使用 revision CAS；Node SessionEngine 作为 pending queue owner，有普通排队消息时返回 conflict，不代用户删除队列。active Goal 仅在旧 Turn 精确停止成功后启动新 continuation；停止无法确认时使用既有 Paused 状态收敛，paused Goal 只更新持久状态。
 

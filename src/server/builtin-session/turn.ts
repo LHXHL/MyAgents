@@ -204,6 +204,17 @@ export function replaceCurrentTurnUsage(next: BuiltinTurnUsage): void {
   currentTurnUsage = next;
 }
 
+/** Keep a best-available total until the SDK result replaces it with the canonical turn usage. */
+export function accumulateCurrentTurnUsage(next: import('../types/session').MessageUsage): void {
+  currentTurnUsage = {
+    ...currentTurnUsage,
+    inputTokens: currentTurnUsage.inputTokens + next.inputTokens,
+    outputTokens: currentTurnUsage.outputTokens + next.outputTokens,
+    cacheReadTokens: currentTurnUsage.cacheReadTokens + (next.cacheReadTokens ?? 0),
+    cacheCreationTokens: currentTurnUsage.cacheCreationTokens + (next.cacheCreationTokens ?? 0),
+  };
+}
+
 export function getLatestMainAssistantUsage(): import('../types/session').MessageUsage | null {
   return latestMainAssistantUsage;
 }
@@ -429,7 +440,7 @@ export function failCurrentImRequest(emit: ImEmitter, data?: unknown): void {
 
 export function notifyCurrentTurnTerminal(
   status: TurnTerminalOutcome['status'],
-  error?: string,
+  details: { error?: string; durationMs?: number } = {},
 ): void {
   const observer = currentTurnSourceItem?.onTerminal;
   if (!observer) return;
@@ -438,7 +449,16 @@ export function notifyCurrentTurnTerminal(
     status,
     text: getCurrentTurnText(),
     assistantMessagePresent: currentTurnAssistantMessagePresent,
-    ...(error ? { error } : {}),
+    ...(details.durationMs !== undefined
+      ? { durationMs: Math.max(0, details.durationMs) }
+      : currentTurnStartTime !== null
+        ? { durationMs: Math.max(0, Date.now() - currentTurnStartTime) }
+      : {}),
+    usage: {
+      inputTokens: currentTurnUsage.inputTokens,
+      outputTokens: currentTurnUsage.outputTokens,
+    },
+    ...(details.error ? { error: details.error } : {}),
   };
   try {
     terminalObserverBarrier = Promise.resolve(observer(outcome)).catch((observerError) => {

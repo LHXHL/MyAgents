@@ -483,7 +483,7 @@ impl SidecarManager {
     /// Insert a sidecar and auto-increment its generation counter.
     /// This ensures every creation is tracked for lock-gap race detection.
     #[cfg(test)]
-    pub(super) fn insert_sidecar(&mut self, session_id: &str, sidecar: SessionSidecar) {
+    pub(crate) fn insert_sidecar(&mut self, session_id: &str, sidecar: SessionSidecar) {
         self.next_generation(session_id);
         self.sidecars.insert(session_id.to_string(), sidecar);
     }

@@ -15,8 +15,18 @@ import type {
 const broadcastEvents: Array<{ event: string; data: unknown }> = [];
 
 type TurnScript =
-  | { kind: 'success'; text: string; includeTool?: boolean; completeDelayMs?: number }
-  | { kind: 'failure'; error: string }
+  | {
+    kind: 'success';
+    text: string;
+    includeTool?: boolean;
+    completeDelayMs?: number;
+    usage?: { inputTokens: number; outputTokens: number };
+  }
+  | {
+    kind: 'failure';
+    error: string;
+    usage?: { inputTokens: number; outputTokens: number };
+  }
   | { kind: 'permission'; requestId: string; textAfterAllow: string; failDelivery?: boolean };
 
 class FakeRuntimeProcess implements RuntimeProcess {
@@ -141,10 +151,18 @@ class FakeRuntime implements AgentRuntime {
     const script = this.scripts.shift() ?? { kind: 'success', text: `echo:${message}` };
     this.defer(() => {
       if (script.kind === 'success') {
-        this.emitSuccessfulTurn(script.text, Boolean(script.includeTool), script.completeDelayMs);
+        this.emitSuccessfulTurn(
+          script.text,
+          Boolean(script.includeTool),
+          script.completeDelayMs,
+          script.usage,
+        );
         return;
       }
       if (script.kind === 'failure') {
+        if (script.usage) {
+          this.emit({ kind: 'usage', ...script.usage, semantics: 'delta' });
+        }
         this.emit({
           kind: 'turn_complete',
           status: 'failed',
@@ -164,7 +182,12 @@ class FakeRuntime implements AgentRuntime {
     });
   }
 
-  private emitSuccessfulTurn(text: string, includeTool: boolean, completeDelayMs = 0): void {
+  private emitSuccessfulTurn(
+    text: string,
+    includeTool: boolean,
+    completeDelayMs = 0,
+    usage?: { inputTokens: number; outputTokens: number },
+  ): void {
     this.emit({ kind: 'text_delta', text });
     if (includeTool) {
       this.emit({
@@ -177,6 +200,9 @@ class FakeRuntime implements AgentRuntime {
       this.emit({ kind: 'tool_result', toolUseId: 'tool-1', content: 'tool ok' });
     }
     this.emit({ kind: 'text_stop' });
+    if (usage) {
+      this.emit({ kind: 'usage', ...usage, semantics: 'delta' });
+    }
     this.defer(() => {
       this.emit({ kind: 'turn_complete', status: 'success', result: text });
     }, completeDelayMs);
@@ -569,6 +595,63 @@ describe('external SessionEngine with fake runtime', () => {
     });
     expect(result.error).toContain('fake turn failed');
     expect(harness.engine.getLatestAssistantResult().latestResult).not.toContain('fake turn failed');
+  });
+
+  it('forwards external failure metrics to the injected-turn terminal observer', async () => {
+    const harness = await createHarness([
+      {
+        kind: 'failure',
+        error: 'measured failure',
+        usage: { inputTokens: 450, outputTokens: 30 },
+      },
+    ]);
+    const onTerminal = vi.fn();
+
+    await harness.engine.runInjectedTurn({
+      prompt: 'failing measured Goal turn',
+      sessionId: 'session-measured-failure',
+      workspacePath: join(harness.home, 'workspace'),
+      scenario: { type: 'desktop', surface: 'chat' },
+      timeoutMs: 2_000,
+      pollMs: 10,
+      turnOwner: { kind: 'goal', id: 'goal-1' },
+      onTerminal,
+    });
+
+    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'error',
+      durationMs: expect.any(Number),
+      usage: { inputTokens: 450, outputTokens: 30 },
+      error: 'measured failure',
+    }));
+  });
+
+  it('forwards normalized external turn metrics to the injected-turn terminal observer', async () => {
+    const harness = await createHarness([
+      {
+        kind: 'success',
+        text: 'measured answer',
+        usage: { inputTokens: 900, outputTokens: 120 },
+      },
+    ]);
+    const onTerminal = vi.fn();
+
+    await harness.engine.runInjectedTurn({
+      prompt: 'measured Goal turn',
+      sessionId: 'session-measured-goal',
+      workspacePath: join(harness.home, 'workspace'),
+      scenario: { type: 'desktop', surface: 'chat' },
+      timeoutMs: 2_000,
+      pollMs: 10,
+      turnOwner: { kind: 'goal', id: 'goal-1' },
+      onTerminal,
+    });
+
+    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'complete',
+      durationMs: expect.any(Number),
+      usage: { inputTokens: 900, outputTokens: 120 },
+    }));
   });
 
   it('queues a second desktop send until the current external turn reaches a boundary', async () => {

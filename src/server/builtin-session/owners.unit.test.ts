@@ -40,6 +40,7 @@ import {
   getPendingRequestIds,
   notifyCurrentTurnTerminal,
   pushPendingRequest,
+  replaceCurrentTurnUsage,
   removePendingRequest,
   resetTurnForTest,
   setCurrentTurnSourceItem,
@@ -208,6 +209,12 @@ describe('builtin-session owners', () => {
     item.turnOwner = { kind: 'goal', id: 'goal-1' };
     item.onTerminal = onTerminal;
     beginTurn({ startedAt: 100 });
+    replaceCurrentTurnUsage({
+      inputTokens: 120,
+      outputTokens: 30,
+      cacheReadTokens: 0,
+      cacheCreationTokens: 0,
+    });
     setCurrentTurnSourceItem(item);
     appendCurrentTurnTextBlock('hello');
     setAssistantMessagePresent(true);
@@ -215,12 +222,14 @@ describe('builtin-session owners', () => {
       queueId: 'turn-a',
       owner: { kind: 'goal', id: 'goal-1' },
     });
-    notifyCurrentTurnTerminal('complete');
-    expect(onTerminal).toHaveBeenCalledWith({
+    notifyCurrentTurnTerminal('complete', { durationMs: 3_500 });
+    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
       status: 'complete',
       text: 'hello',
       assistantMessagePresent: true,
-    });
+      durationMs: 3_500,
+      usage: { inputTokens: 120, outputTokens: 30 },
+    }));
     notifyCurrentTurnTerminal('complete');
     expect(onTerminal).toHaveBeenCalledTimes(1);
   });

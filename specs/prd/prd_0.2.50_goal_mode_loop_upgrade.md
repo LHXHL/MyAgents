@@ -170,18 +170,20 @@ Goal 开始后，横条显示当前状态和 objective：
 终态建议文案：
 
 ```text
-目标受阻 · {blockedReason}
-目标已完成 · {reason 或 summary}
-目标已取消
+目标受阻 · {blockedReason} · 总耗时 {duration} · 总消耗 {tokens} tokens
+目标已完成 · 总耗时 {duration} · 总消耗 {tokens} tokens
+目标已取消 · 总耗时 {duration} · 总消耗 {tokens} tokens
 ```
 
 终态行为：
 
 - 停止 loop scheduler。
 - 发送通知。
-- 释放 CronTask 对当前 session 的 owner。
+- 释放 Goal 对当前 session Sidecar 的 owner。
 - 横条可短暂保留，允许用户查看 reason / summary，然后关闭。
 - `blocked` 必须通知，因为它需要用户介入。
+- 总耗时是各已结算 Goal Turn 的实际执行耗时之和，不包含暂停、backoff 与通知投递等待。
+- 总消耗口径与现有消息统计一致，为 input + output tokens；不把 cache 字段重复相加。
 
 ### 7. Objective 编辑弹窗
 
@@ -1028,16 +1030,16 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
 
 ### 开发契约
 
-- Goal 的产品 owner 是 MyAgents session。复用 `CronSchedule::Loop`、`single_session`、`CronTaskManager`、现有 cron task owner 生命周期只是实现手段，不允许 UI hook 或普通 CronTask surface 成为事实源。
+- Goal 的产品 owner 是 MyAgents session。`SessionGoalManager`、`session_goals.json` 与 Goal one-shot continuation 是事实源，不复用 CronTask 状态、调度或 owner 生命周期。
 - 必须新增或收敛出 session-level Goal facade：UI `/goal`、CLI `myagents goal create/update/get`、IM/Agent Channel 明确 User 请求都走同一套 session-scoped create/get/update 语义。
-- Goal 新字段挂在 `CronTask` 上，Rust 新增字段必须 `#[serde(default)]`，旧 loop / scheduled / one-shot cron 数据可无损反序列化。
+- Goal 字段只挂在 `SessionGoal` 上；持久字段使用 serde default 保持本地开发期旧 shape 可读。旧 loop 不迁移为 Goal，普通 Cron 数据继续由 CronTask 自己兼容。
 - Goal hidden prompt 统一走 `<system-reminder>`；`GOAL_CONTINUATION` / `GOAL_CONTEXT` / `GOAL_OBJECTIVE_UPDATED` 三个模板按本文固定内容落地。
 - Goal 创建、更新、终态必须广播 `goal:changed` 或等价事件；renderer 必须能按 `sessionId + workspacePath` hydrate Goal 横条。
 - current-session Goal continuation 必须保留 session 的 interaction scenario / output route；IM/Agent Channel Goal 不应退化为普通 cron-only 输出，也不应要求用户选择 delivery。
 - 新增 Goal 注入、停止、运行时 steering 能力必须通过 `src/server/session-engine/` facade，不在 route / admin handler 中手写 builtin、Codex、Gemini、Claude Code 分支。
 - `myagents goal update` 只允许 `complete` / `blocked`；`active` / `paused` / `canceled` 由用户或系统路径控制。
-- Stop 当前 AI turn 只 pause Goal，不 release CronTask owner；terminal 状态才 stop scheduler、释放 owner、发送通知。
-- 普通用户 query 不改写 `goalObjective`；只有 objective 编辑或显式 Goal command 才更新持久 objective。
+- Stop 当前 AI turn 先持久化 pause，再通过 SessionEngine 停止精确 queue turn；无 current turn/outbox 后释放 Goal owner。终态同样在权威提交后释放 Goal owner并按配置通知。
+- 普通用户 query 不改写 Goal objective；只有 objective 编辑或显式 Goal command 才更新持久 objective。
 - Goal 终态通知只在 `complete` / `blocked` / `canceled` / 失败保护等停止状态触发；不保留旧的每轮执行完成通知语义。
 - 本期不改底部输入框「定时」入口，不自动创建 Task Center task，不实现 token budget。
 
@@ -1052,6 +1054,7 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
 - paused Goal 下用户下一条 query 正常发送，并在该 turn 后恢复自动续跑。
 - objective 编辑在无排队用户消息时通过 stop/wait + revision CAS + guarded restart 更新；有排队消息时明确冲突且保留消息。
 - `myagents goal get/create/update` 可用；模型调用 `update --status complete|blocked` 后 Goal terminal、横条更新、通知发送、loop 停止；复杂 reason 通过 `--reason-file` 传入。
+- Goal 最后一轮 terminal finalize 后，终态横条展示跨轮总耗时与总 token；finalize 尚未完成时不展示缺少最后一轮的不完整总量。
 - AI 在桌面 session 调 `myagents goal create` 后，当前 Tab 自动出现横条；从历史打开同一 session 时也能恢复。
 - AI 在 IM/Agent Channel session 调 `myagents goal create` 后，Goal 在当前 channel session 中持续执行；桌面打开该 channel session 历史能看到横条。
 - Cron / Registered Agent 不主动注入 Goal create prompt。
@@ -1059,7 +1062,7 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
 
 ### 反向边界
 
-- 不新增全局 Goal 列表、Goal 详情页、Goal DB、Goal budget、Goal usage accounting。
+- 不新增全局 Goal 列表、Goal 详情页、Goal DB、Goal budget、逐轮 usage 账本或独立统计服务；只在 `SessionGoal` 保存终态横条所需的两个累计总量。
 - 不把普通用户消息登记为 objective update。
 - 不让模型 pause/resume/cancel Goal。
 - 不把 `paused` 实现成 `CronTask.status = Stopped` 或复用释放 owner 的 stop 路径。
@@ -1079,8 +1082,8 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
 
 ### 已完成架构校准清单
 
-- [x] session-level Goal facade：新增 `cmd_create_goal_task`、`cmd_get_goal_task`、`cmd_get_session_goal_task`，Rust Management API 增加 `/api/goal/get|create|update|admit|objective`。
-- [x] backing store 继续复用 `CronTask`，但 Goal identity 只使用显式 `goalStatus` 字段，不再从 `goalObjective` 或 `CronSchedule::Loop + single_session` 形状推断。旧 Loop 不做数据迁移。
+- [x] session-level Goal facade：Tauri 使用 `cmd_create_session_goal` / `cmd_get_session_goal` 等命令，Rust Management API 使用 `/api/goal/get|create|objective|turn/*`。
+- [x] backing store 收口为独立 `SessionGoalManager` / `session_goals.json`；Goal 不再从任何 CronTask shape 推断，旧 Loop 不做 Goal 迁移。
 - [x] `goal:changed` 事件覆盖 create / turn admission / pause / resume / objective update / execution complete / terminal；payload 带 `sessionId`、`workspacePath`、`goal`、`changeKind` 和单调 `goalRevision`。
 - [x] Tab birth / session switch / history restore 主动按 `sessionId + workspacePath` hydrate active / paused Goal；terminal Goal 只通过实时事件更新当前打开的横条，避免历史终态反复复活。
 - [x] UI `/goal` 正式创建切到 Goal facade；draft 横条仍是前端本地状态，发送 objective 后事实源切到 facade 返回的 Goal。
@@ -1095,10 +1098,10 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
 #### 开发契约
 
 - 必赢场景：同一个 session 里，无论 Goal 是用户通过 `/goal` 创建，还是 AI 通过 `myagents goal create` 创建，桌面端都能立即或恢复后看到同一条 Goal 横条；IM/Agent Channel current-session Goal 不退化成普通 cron-only 输出。
-- 复用的既有抽象：`CronSchedule::Loop`、`CronTaskManager`、Management API、`useCronTask`、`SessionEngine.runInjectedTurn`、`InteractionScenario`、IM `/api/im/enqueue` + event bus、`<system-reminder>`。
-- 反向边界：不新增 Goal DB、不做 detached/new-session Goal、不做 delivery 选择、不重写 query queue、不改变底部「定时」入口。
-- 新概念清单：只允许新增 session-level Goal facade / Goal view / `goal:changed` 事件这三个必要概念，用来把产品 owner 从 UI hook/CronTask surface 收敛到 session。
-- 触及红线：新增 `CronTask` Rust 字段必须 serde default；新增 SSE/事件必须注册和过滤；session/runtime 注入必须走 `session-engine` facade；renderer 不直连 sidecar；前端文案走 i18n；颜色/字号使用 DESIGN token。
+- 复用的既有抽象：Management API、SessionEngine queue/adapter、`InteractionScenario`、IM enqueue/event bus、Sidecar owner token 与 `<system-reminder>`。
+- 反向边界：不做 detached/new-session Goal、不做 delivery 选择、不重写 query queue、不改变底部「定时」入口，也不让 Goal 进入 CronTask/Task Center 事实源。
+- 必要新概念：一个 session-scoped `SessionGoal` 聚合及其 manager/store；Turn identity、Runtime queue、Sidecar 与 delivery 继续复用既有抽象。
+- 触及红线：session/runtime 注入必须走 `session-engine` facade；renderer 不直连 sidecar；前端文案走 i18n；颜色/字号使用 DESIGN token。
 
 #### 行动清单
 
@@ -1114,7 +1117,9 @@ Bot 里未来可能需要“当前 session 发起，独立后台 session 执行�
 
 - 暂无。本轮按 PRD 已收敛的 current-session Goal 架构执行；detached/new-session Goal 保持后置。
 
-### 实现记录
+### 历史首轮实现记录（已废弃）
+
+以下内容记录 2026-07-10 的 Cron-backed 中间实现，仅用于解释演进过程，不是当前架构契约。最终实现以 `prd_0.2.50_goal_task_cron_architecture_convergence.md`、`ARCHITECTURE.md` 与 `session_architecture.md` 为准。
 
 - 版本号已升级到 `0.2.50`：`package.json`、`package-lock.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock`。
 - Goal 状态挂在现有 `CronTask` 上：新增 `goalStatus`、`goalObjective`、`goalUpdatedAt`、`goalTerminalReason`、`goalPausedReason`，内部继续复用 `CronSchedule::Loop` + `RunMode::SingleSession`。

@@ -146,7 +146,7 @@ export type BuiltinTurnLifecycleDeps = {
 
 export type BuiltinTurnLifecycle = {
   handleSdkResult: (resultMessage: BuiltinSdkResultMessage) => void;
-  completeTurn: () => void;
+  completeTurn: (durationMs?: number) => void;
   stopTurn: () => void;
   failTurn: (error: string, localizedError?: string) => void;
   getLastTurnEndPersist: () => Promise<unknown>;
@@ -175,9 +175,12 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     }
   };
 
-  const completeTurn = (): void => {
+  const completeTurn = (durationMs?: number): void => {
     deps.setStreamingMessage(false);
-    notifyCurrentTurnTerminal('complete');
+    const turnStartTime = getCurrentTurnStartTime();
+    const settledDurationMs = durationMs
+      ?? (turnStartTime ? Date.now() - turnStartTime : undefined);
+    notifyCurrentTurnTerminal('complete', { durationMs: settledDurationMs });
     let confirmedQueueTurnKeepStreaming = false;
 
     const inFlightQueueId = getInFlightQueueId();
@@ -220,14 +223,12 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     setCurrentTurnImTerminalEmitted(false);
     forceCloseOrphanThinkingBlocks('handleMessageComplete');
 
-    const turnStartTime = getCurrentTurnStartTime();
-    const durationMs = turnStartTime ? Date.now() - turnStartTime : undefined;
     const turnUsage = getCurrentTurnUsage();
     const turnToolCount = getCurrentTurnToolCount();
     stampTurnUsageOnPendingAssistant({
       usage: turnUsage,
       toolCount: turnToolCount,
-      durationMs,
+      durationMs: settledDurationMs,
     });
 
     const persistTrace = deps.snapshotTrace();
@@ -264,7 +265,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
 
   const stopTurn = (): void => {
     deps.setStreamingMessage(false);
-    notifyCurrentTurnTerminal('stopped', 'Execution stopped');
+    notifyCurrentTurnTerminal('stopped', { error: 'Execution stopped' });
     const stoppedTrace = deps.snapshotTrace();
     deps.emitTrace('final', {
       status: 'error',
@@ -287,7 +288,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
 
   const failTurn = (error: string, localizedError?: string): void => {
     deps.setStreamingMessage(false);
-    notifyCurrentTurnTerminal('error', localizedError ?? error);
+    notifyCurrentTurnTerminal('error', { error: localizedError ?? error });
     const errorTrace = deps.snapshotTrace();
     deps.emitTrace('final', {
       status: 'error',
@@ -487,7 +488,10 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       console.log('[agent] SDK assistant message error recovered by successful result:', lastAssistantMessageError);
     }
     if (resultMessage.is_error && !isAbortResult) {
-      notifyCurrentTurnTerminal('error', resultErrorText || resultText || 'turn ended with error');
+      notifyCurrentTurnTerminal('error', {
+        error: resultErrorText || resultText || 'turn ended with error',
+        durationMs,
+      });
     }
     deps.emitTrace('final', {
       status: resultMessage.is_error || (emptySuccessfulResult && !successfulCompactControlTurn) ? 'error' : 'ok',
@@ -587,7 +591,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         duration_ms: durationMs,
       });
 
-      completeTurn();
+      completeTurn(durationMs);
 
       if (shouldTitleCompletedTurn(resultMessage.is_error === true, resultMessage.terminal_reason)) {
         const titleSid = deps.getSessionId();

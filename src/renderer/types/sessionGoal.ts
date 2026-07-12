@@ -27,6 +27,8 @@ export interface SessionGoal {
   turnCount: number;
   createdAt: string;
   updatedAt: string;
+  totalDurationMs: number;
+  totalTokens: number;
   lastExecutedAt?: string;
   terminalReason?: string;
   revision: number;

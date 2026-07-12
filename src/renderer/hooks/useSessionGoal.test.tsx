@@ -27,6 +27,8 @@ const createdGoal: SessionGoal = {
   turnCount: 0,
   createdAt: '2026-07-10T10:00:00.000Z',
   updatedAt: '2026-07-10T10:00:00.000Z',
+  totalDurationMs: 0,
+  totalTokens: 0,
   notifyEnabled: true,
   permissionMode: '',
   revision: 1,

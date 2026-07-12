@@ -336,6 +336,8 @@ function createGoalTurnLifecycle(
 
   const finalize = async (outcome: TurnTerminalOutcome): Promise<void> => {
     if (!claimed) return;
+    const consumedTokens = (outcome.usage?.inputTokens ?? 0)
+      + (outcome.usage?.outputTokens ?? 0);
     settlement ??= settleUntilAcknowledged('/api/goal/turn/finalize', {
         sessionId: input.sessionId,
         workspacePath: input.workspacePath,
@@ -344,6 +346,8 @@ function createGoalTurnLifecycle(
         success: outcome.status === 'complete',
         error: outcome.error,
         outputText: outcome.text,
+        durationMs: Math.max(0, Math.round(outcome.durationMs ?? 0)),
+        consumedTokens: Math.max(0, Math.round(consumedTokens)),
         channelDeliveryExpected: input.channelDeliveryExpected === true,
       }, 'finalized');
     await settlement;

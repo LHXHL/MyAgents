@@ -242,6 +242,7 @@ import {
   unshiftMessage,
 } from './builtin-session/queue';
 import {
+  accumulateCurrentTurnUsage,
   appendCurrentTurnTextBlock,
   clearCurrentTurnTextBlocks,
   clearPendingRequests as turnClearPendingRequests,
@@ -11881,8 +11882,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           broadcast('chat:message-sdk-uuid', { messageId: boundMessageId, sdkUuid: sdkMessage.uuid });
         }
         const assistantMessage = sdkMessage.message;
-        // Main turn token usage is extracted from result message (more reliable across providers)
-        // Here we extract usage only for subagent tool broadcasts (Task tool runtime stats)
+        // The result message remains the canonical turn total. Accumulate assistant
+        // frames as a best-available fallback for hard stop/error paths where no
+        // result arrives; include subagent frames because their usage is part of the turn.
         const rawUsage = (assistantMessage as {
           usage?: {
             input_tokens?: number;
@@ -11893,21 +11895,23 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             cache_creation_input_tokens?: number;
           };
         }).usage;
-        const subagentUsage = rawUsage ? {
-          input_tokens: rawUsage.input_tokens ?? rawUsage.prompt_tokens,
-          output_tokens: rawUsage.output_tokens ?? rawUsage.completion_tokens,
+        const assistantUsage = rawUsage ? {
+          inputTokens: rawUsage.input_tokens ?? rawUsage.prompt_tokens ?? 0,
+          outputTokens: rawUsage.output_tokens ?? rawUsage.completion_tokens ?? 0,
+          cacheReadTokens: rawUsage.cache_read_input_tokens ?? 0,
+          cacheCreationTokens: rawUsage.cache_creation_input_tokens ?? 0,
+        } : undefined;
+        if (assistantUsage) accumulateCurrentTurnUsage(assistantUsage);
+        const subagentUsage = assistantUsage ? {
+          input_tokens: assistantUsage.inputTokens,
+          output_tokens: assistantUsage.outputTokens,
         } : undefined;
 
         // PRD 0.2.32 — context 占用：记录最近一条**主轮**（非子 Agent）assistant message 的 usage。
         // 每次重发整段上下文，所以「最近一条的 input+cache」即「此刻窗口装了多少」。子 Agent
         // 消息（parent_tool_use_id 存在）有独立上下文，不能算进主会话占用。
-        if (!sdkMessage.parent_tool_use_id && rawUsage) {
-            setLatestMainAssistantUsage({
-              inputTokens: rawUsage.input_tokens ?? rawUsage.prompt_tokens ?? 0,
-              outputTokens: rawUsage.output_tokens ?? rawUsage.completion_tokens ?? 0,
-              cacheReadTokens: rawUsage.cache_read_input_tokens ?? 0,
-              cacheCreationTokens: rawUsage.cache_creation_input_tokens ?? 0,
-            });
+        if (!sdkMessage.parent_tool_use_id && assistantUsage) {
+          setLatestMainAssistantUsage(assistantUsage);
         }
 
         if (sdkMessage.parent_tool_use_id && assistantMessage.content) {

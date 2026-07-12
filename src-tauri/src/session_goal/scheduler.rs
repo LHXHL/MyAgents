@@ -171,6 +171,8 @@ async fn run_once(goal_id: &str) -> Option<u64> {
                     success: false,
                     error: error.clone(),
                     output_text: None,
+                    duration_ms: 0,
+                    consumed_tokens: 0,
                     channel_delivery_expected: false,
                 },
                 sidecar_generation,

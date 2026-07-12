@@ -1235,8 +1235,15 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   }, [cyclePermissionMode, undoStack, fileService, showSlashMenu, filteredSlashCommands, slashSearchQuery, selectedSlashIndex, slashPosition, showFileSearch, fileSearchResults, selectedFileIndex, inputValue, atPosition, fileSearchQuery, images.length, handleSend, handleSkillSelect, handleSlashSelect, mentionTab, thoughtResults]);
 
   const visibleGoal = !isLauncherMode ? sessionGoal : null;
-  const showDraftCronBar = cronModeEnabled && !cronTask && !!cronConfig && !visibleGoal;
-  const showDraftGoalBar = !isLauncherMode && goalDraftActive && !visibleGoal;
+  const goalDraftFromCronConfig = cronModeEnabled
+    && !cronTask
+    && cronConfig?.taskKind === 'goal';
+  const showDraftGoalBar = (goalDraftActive || goalDraftFromCronConfig) && !visibleGoal;
+  const showDraftCronBar = cronModeEnabled
+    && !cronTask
+    && cronConfig?.taskKind === 'cron'
+    && !visibleGoal
+    && !showDraftGoalBar;
   const activeCronTask = !isLauncherMode && cronTask?.status === 'running' && cronTask.runMode !== 'new_session'
     ? cronTask
     : null;
@@ -1306,7 +1313,6 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
         {showDraftCronBar && cronConfig && (
           <CronTaskStatusBar
             mode="draft"
-            taskKind={cronConfig.taskKind}
             intervalMinutes={cronConfig.intervalMinutes}
             schedule={cronConfig.schedule}
             onSettings={() => onCronSettings?.()}
@@ -1314,12 +1320,10 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
           />
         )}
         {showDraftGoalBar && (
-          <CronTaskStatusBar
+          <GoalStatusBar
             mode="draft"
-            taskKind="goal"
-            intervalMinutes={0}
-            onSettings={() => onGoalDraftSettings?.()}
-            onCancel={() => onGoalDraftCancel?.()}
+            onSettings={() => goalDraftActive ? onGoalDraftSettings?.() : onCronSettings?.()}
+            onCancel={() => goalDraftActive ? onGoalDraftCancel?.() : onCronCancel?.()}
           />
         )}
         {visibleGoal && (

@@ -194,6 +194,10 @@ pub struct SessionGoal {
     pub turn_count: u32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub total_duration_ms: u64,
+    #[serde(default)]
+    pub total_tokens: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_executed_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -221,6 +225,8 @@ pub struct SessionGoalView {
     pub turn_count: u32,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub total_duration_ms: u64,
+    pub total_tokens: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_executed_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -262,6 +268,8 @@ impl SessionGoal {
             turn_count: self.turn_count,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            total_duration_ms: self.total_duration_ms,
+            total_tokens: self.total_tokens,
             last_executed_at: self.last_executed_at,
             terminal_reason: self.terminal_reason.clone(),
             revision: self.revision,
@@ -292,6 +300,8 @@ pub struct GoalTurnFinalizationRequest {
     pub success: bool,
     pub error: Option<String>,
     pub output_text: Option<String>,
+    pub duration_ms: u64,
+    pub consumed_tokens: u64,
     pub channel_delivery_expected: bool,
 }
 
@@ -311,4 +321,35 @@ impl GoalTerminalOutcome {
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SessionGoal;
+
+    #[test]
+    fn legacy_goal_shape_defaults_terminal_totals_to_zero() {
+        let goal: SessionGoal = serde_json::from_value(serde_json::json!({
+            "id": "goal-1",
+            "workspacePath": "/tmp/workspace",
+            "sessionId": "session-1",
+            "objective": "ship it",
+            "status": "complete",
+            "endConditions": { "aiCanExit": true },
+            "notifyEnabled": true,
+            "permissionMode": "",
+            "turnCount": 2,
+            "createdAt": "2026-07-12T00:00:00Z",
+            "updatedAt": "2026-07-12T00:02:00Z",
+            "revision": 4,
+            "controlRevision": 2,
+            "consecutiveFailures": 0
+        }))
+        .expect("pre-summary Goal data should remain readable");
+
+        assert_eq!(goal.total_duration_ms, 0);
+        assert_eq!(goal.total_tokens, 0);
+        assert_eq!(goal.view().total_duration_ms, 0);
+        assert_eq!(goal.view().total_tokens, 0);
+    }
 }
