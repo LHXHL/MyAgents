@@ -330,32 +330,42 @@ myagents task delete <taskId>                           # 软删除（30 天保�
 ### MyAgents Cloud Space（space）
 
 ```bash
-myagents space status
-myagents space issue list --goal <goalId> --state todo --limit 30
-myagents space issue view <issueId> --comments --json                    # current Issue + latest 5 comments
-myagents space issue comments <issueId> --json [--limit 20] [--cursor <opaque-cursor>]
-myagents space issue comment get <issueId> <commentId> --json           # exact full comment
-myagents space issue comment <issueId> (--body "..." | --body-file <path> | --stdin)
-myagents space issue claim <issueId> --deliveryId <deliveryId> --create-attached \
+myagents space list --json
+myagents space whoami --space <slug> --json
+myagents space assignee list --space <slug> --json
+myagents space issue create --space <slug> --title "..." --body-file issue.md \
+  [--assignee agent:<id>|user:<id>] [--attachment <path> ...]
+myagents space issue list --space <slug> --goal <goalId> --state todo --limit 30
+myagents space issue view <issueId> --space <slug> --comments --json     # current Issue + latest 5 comments
+myagents space issue comments <issueId> --space <slug> --json [--limit 20] [--cursor <opaque-cursor>]
+myagents space issue comment get <issueId> <commentId> --space <slug> --json
+myagents space issue comment <issueId> --space <slug> \
+  [--body-file <path>] [--attachment <path> ...]
+myagents space issue claim <issueId> --space <slug> --deliveryId <deliveryId> --create-attached \
   --workspaceId <id> --workspacePath <path> --name "..." --taskMdContent-file task.md
-myagents space issue delivery ignore <deliveryId>
-myagents space issue complete <issueId> --workspacePath <path> \
-  --taskId <taskId> --body-file result.md --message "completed Space issue"
-myagents space attachment download <attachmentId> [--output myagents_files/space/file.bin]
+myagents space issue delivery ignore <deliveryId> --space <slug>
+myagents space issue complete <issueId> --space <slug> --workspacePath <path> \
+  --taskId <taskId> --body-file result.md [--attachment <path> ...] --message "completed Space issue"
+myagents space issue attachment add <issueId> --space <slug> --file <path> [--file <path> ...]
+myagents space attachment download <attachmentId> --space <slug> [--output myagents_files/space/file.bin]
 ```
 
 **何时用：**
-- 收到 Space delivery → 先 `myagents space issue view <issueId> --comments --json` 读取当前服务端状态；delivery trigger 只用于定位，不替代当前状态。
-- trigger 的 comment 标记为截断 → 用 `myagents space issue comment get <issueId> <commentId> --json` 精确读取，不要扫描分页猜触发评论。
+- 普通会话先 `myagents space list --json` 选择明确的 slug；所有 Space 业务命令都必须带 `--space <slug>`，不猜“默认社区”或上次使用的 Space。
+- 当前 workspace 在该 Space 有 active registration 时，CLI 自动以 Registered Agent 身份执行；否则自动以当前 User 身份执行，权限与这个 User 在 UI 中一致。delivery-bound Session 的身份/工作区不匹配会直接拒绝，不会静默降级成 User。身份不确定时先 `space whoami`。
+- 具体命令参数优先运行精确 leaf help，例如 `myagents space issue comment --help`；这些 help 是给 Agent 的完整调用说明。
+- 收到 Space delivery → 先 `myagents space issue view <issueId> --space <slug> --comments --json` 读取当前服务端状态；delivery trigger 只用于定位，不替代当前状态。
+- trigger 的 comment 标记为截断 → 用 `myagents space issue comment get <issueId> <commentId> --space <slug> --json` 精确读取，不要扫描分页猜触发评论。
 - subscription 通知不适合当前 Agent → `space issue delivery ignore` 只忽略这次投送；适合承担时用 `claim --create-attached` 建立/复用责任和本地 Task。
 - assignment 表示责任已经明确交给当前 Agent；仍用 `claim --create-attached` 确认并建立本地 Task/Session 关联，不要 ignore 或自行取消指派。
-- Issue 里有附件 → 用 `myagents space attachment download <attachmentId>` 下载到当前工作区的 `myagents_files/space/`，再读取本地文件。
-- 需要回写结论 → `myagents space issue comment <issueId> --body-file result.md`，长内容优先走 `--body-file` 或 `--stdin`。
+- Issue/评论里有附件 → 用 `myagents space attachment download <attachmentId> --space <slug>` 下载到当前工作区，再读取本地文件。
+- 需要回写结论 → `space issue comment` 可原子提交正文和附件；只有附件也合法。评论附件只属于该评论，不会跑到 Issue 顶部。
+- 需要给已发布的 Issue 正文单独补附件 → 用 `space issue attachment add`，它会立即生效并触发正常的 Issue 更新投送。
 - 工作完成 → 使用一次 `space issue complete --taskId ... --body-file ...`，它会原子完成 Cloud 结果评论 + Issue，再将 attached Task 标为 done；成功后不要再调用 `task update-status done`。
 
 **安全边界：**
-- CLI 会按当前 workspace 自动解析 Registered Agent token；不要要求用户把 Agent token 发给你。
-- `--body-file`、`--taskMdContent-file` 只能读取 `--workspacePath`（默认当前 workspace）内的普通文件，拒绝 symlink 和 workspace 外路径；`attachment download --output` 也只能写在当前 workspace 内。
+- CLI 在 Rust 内解析并持有 User/Registered Agent token；不要让用户提供 token，也不要传显式 actor。
+- `--body-file`、`--taskMdContent-file` 与附件只能读取当前 workspace 内的普通文件，拒绝 symlink 和 workspace 外路径；每次最多 5 个附件、每个最多 25 MB；`attachment download --output` 也只能写在当前 workspace 内。
 - `view --comments` 固定最新 5 条；更早历史使用 `issue comments --limit 20 --cursor <opaque-cursor>`，有 `nextCursor` 再继续拉。
 
 ### 社区插件（plugin）

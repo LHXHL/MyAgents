@@ -20,11 +20,15 @@ describe('myagents CLI Space issue contracts', () => {
     expect(buildRoute('space', 'issue', ['comment', 'get', 'iss_1', 'comment_1']))
       .toBe('space/issue-comment-get');
     expect(buildRequestBody('space', 'issue', ['comment', 'get', 'iss_1', 'comment_1'], {
+      space: 'official',
       workspacePath: '/workspace',
       agentId: 'rag_1',
     })).toEqual({
       issueId: 'iss_1',
       commentId: 'comment_1',
+      spaceSlug: 'official',
+      sessionId: undefined,
+      workspaceId: undefined,
       agentId: 'rag_1',
       workspacePath: '/workspace',
     });
@@ -32,6 +36,7 @@ describe('myagents CLI Space issue contracts', () => {
 
   it('keeps the Issue detail default comment window at five', () => {
     expect(buildRequestBody('space', 'issue', ['view', 'iss_1'], {
+      space: 'official',
       workspacePath: '/workspace',
     })).toMatchObject({
       issueId: 'iss_1',
@@ -41,6 +46,7 @@ describe('myagents CLI Space issue contracts', () => {
     expect(buildRoute('space', 'issue', ['comments', 'iss_1']))
       .toBe('space/issue-comments');
     expect(buildRequestBody('space', 'issue', ['comments', 'iss_1'], {
+      space: 'official',
       workspacePath: '/workspace',
       cursor: 'opaque-cursor',
     })).toMatchObject({
@@ -69,6 +75,176 @@ describe('myagents CLI Space issue contracts', () => {
     expect(buildSpaceCompleteOperationKey(input)).not.toBe(
       buildSpaceCompleteOperationKey({ ...input, resultComment: 'different result' }),
     );
+  });
+
+  it('builds scoped atomic create/comment requests and the top-level attachment route', () => {
+    expect(buildRequestBody('space', 'issue', ['create'], {
+      space: 'official',
+      workspacePath: '/workspace',
+      title: 'A new issue',
+      body: 'Details',
+      assignee: 'agent:regagent_1',
+      attachment: ['one.png'],
+      file: ['two.log'],
+    })).toMatchObject({
+      spaceSlug: 'official',
+      title: 'A new issue',
+      body: 'Details',
+      assigneeId: 'agent:regagent_1',
+      filePaths: ['one.png', 'two.log'],
+    });
+
+    expect(buildRequestBody('space', 'issue', ['comment', 'iss_1'], {
+      space: 'official',
+      workspacePath: '/workspace',
+      attachment: ['evidence.zip'],
+    })).toMatchObject({
+      issueId: 'iss_1',
+      body: '',
+      filePaths: ['evidence.zip'],
+    });
+
+    expect(buildRoute('space', 'issue', ['attachment', 'add', 'iss_1']))
+      .toBe('space/attachment-add');
+    expect(buildRequestBody('space', 'issue', ['attachment', 'add', 'iss_1'], {
+      space: 'official',
+      workspacePath: '/workspace',
+      file: ['report.pdf'],
+    })).toMatchObject({ issueId: 'iss_1', filePaths: ['report.pdf'] });
+  });
+
+  it('collects both repeatable attachment flag spellings', () => {
+    expect(parseArgs([
+      'space', 'issue', 'comment', 'iss_1',
+      '--space', 'official',
+      '--attachment', 'a.png',
+      '--attachment=b.log',
+      '--file', 'c.zip',
+    ])).toMatchObject({
+      flags: {
+        space: 'official',
+        attachment: ['a.png', 'b.log'],
+        file: ['c.zip'],
+      },
+    });
+  });
+
+  it('does not let a missing attachment value consume the following JSON flag', () => {
+    expect(parseArgs([
+      'space', 'issue', 'create',
+      '--space', 'official',
+      '--title', 'Title',
+      '--body', 'Body',
+      '--attachment',
+      '--json',
+    ])).toMatchObject({
+      flags: {
+        json: true,
+        attachment: [],
+        attachmentValueMissing: true,
+      },
+    });
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    try {
+      const { flags } = parseArgs([
+        '--space', 'official',
+        '--title', 'Title',
+        '--body', 'Body',
+        '--file',
+        '--json',
+      ]);
+      expect(() => buildRequestBody('space', 'issue', ['create'], flags)).toThrow('process.exit(2)');
+      expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({
+        success: false,
+        code: 'FLAG_VALUE_REQUIRED',
+        suggestion: expect.any(String),
+      });
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+      exit.mockRestore();
+    }
+  });
+
+  it('emits a structured recovery contract when a Space slug is missing in JSON mode', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    try {
+      expect(() => buildRequestBody('space', 'issue', ['view', 'iss_1'], {
+        json: true,
+        workspacePath: '/workspace',
+      })).toThrow('process.exit(2)');
+      expect(JSON.parse(String(log.mock.calls[0]?.[0]))).toEqual({
+        success: false,
+        code: 'SPACE_REQUIRED',
+        error: 'This command requires --space <slug>.',
+        suggestion: 'Run `myagents space list --json`, then retry with one returned slug.',
+        suggestedCommand: 'myagents space list --json',
+      });
+    } finally {
+      log.mockRestore();
+      exit.mockRestore();
+    }
+  });
+
+  it('keeps local Space validation machine-readable in JSON mode', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    try {
+      expect(() => buildRequestBody('space', 'issue', ['create'], {
+        json: true,
+        space: 'official',
+        workspacePath: '/workspace',
+        title: 'Missing body',
+        body: '   ',
+      })).toThrow('process.exit(2)');
+      expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({
+        success: false,
+        code: 'ISSUE_BODY_REQUIRED',
+        suggestion: expect.any(String),
+      });
+
+      expect(() => buildRequestBody('space', 'issue', ['attachment', 'add', 'iss_1'], {
+        json: true,
+        space: 'official',
+        workspacePath: '/workspace',
+      })).toThrow('process.exit(2)');
+      expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({
+        success: false,
+        code: 'ATTACHMENT_REQUIRED',
+        suggestion: expect.any(String),
+      });
+
+      expect(() => buildRequestBody('space', 'issue', ['create'], {
+        json: true,
+        space: 'official',
+        workspacePath: '/workspace',
+        title: true,
+        body: 'A title flag without a value must not throw a TypeError.',
+      })).toThrow('process.exit(2)');
+      expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({
+        success: false,
+        code: 'ARGUMENT_REQUIRED',
+        suggestion: expect.any(String),
+      });
+
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+      exit.mockRestore();
+    }
   });
 });
 

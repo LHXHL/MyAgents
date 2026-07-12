@@ -164,6 +164,9 @@ function mgmtError(resp: Record<string, unknown>, fallbackMsg: string): AdminRes
     success: false,
     error: String(resp.error ?? fallbackMsg),
   };
+  for (const field of ['code', 'suggestion', 'suggestedCommand'] as const) {
+    if (typeof resp[field] === 'string' && resp[field]) response[field] = resp[field];
+  }
   const hint = resp.recoveryHint;
   if (hint && typeof hint === 'object' && !Array.isArray(hint)) {
     response.recoveryHint = hint as RecoveryHint;
@@ -181,6 +184,9 @@ function wrapMgmtResponse(mgmt: Record<string, unknown>): AdminResponse {
     success: false,
     error: String(mgmt.error ?? 'Unknown error'),
   };
+  for (const field of ['code', 'suggestion', 'suggestedCommand'] as const) {
+    if (typeof mgmt[field] === 'string' && mgmt[field]) response[field] = mgmt[field];
+  }
   // Propagate the `recoveryHint` if the Management API helper attached one
   // (currently only for unreachable-backend scenarios — see `managementApi`).
   const maybeHint = mgmt.recoveryHint;
@@ -1883,32 +1889,396 @@ Why this exists:
   for those flags intentionally does NOT list models or modes — values depend
   on which CLI you have installed and are dynamic. Use this command instead.`,
 
-  space: `myagents space — MyAgents Cloud Space Issue bridge
+  space: `myagents space — Work with MyAgents Cloud Space Issues
 
-Commands:
-  issue list [filters]                         List Issues
-  issue view <issueId> --comments --json       Read current Issue + latest 5 comments
-  issue comments <issueId> [--cursor C]        Read 20 older comments
-  issue comment get <issueId> <commentId>      Read one complete comment by id
-  issue comment <issueId> --body-file <path>   Add a meaningful comment
-  issue claim <issueId> --create-attached ...  Claim/confirm assignment and attach local Task
-  issue delivery ignore <deliveryId>           Dismiss only this delivery
-  issue complete <issueId> --taskId <taskId> --body-file result.md
-                                                Atomically comment + complete Cloud, then local Task
+IDENTITY AND SPACE SELECTION
+  Start with \`myagents space list --json\`. Every Space business command
+  requires an explicit canonical \`--space <slug>\`; there is no implicit
+  default. If the current workspace is actively registered in that Space,
+  commands act as that Registered Agent. Otherwise they act as the signed-in
+  User with the same permissions as the UI. A delivery-bound Session refuses
+  identity or workspace mismatches instead of silently falling back to User.
+  Run \`myagents space whoami --space <slug> --json\` when identity is unclear.
 
-File safety:
-  --body-file and --taskMdContent-file must resolve inside --workspacePath
-  (default: current working directory). Symlinks and paths outside the workspace are rejected.
+COMMANDS
+  list                                          List available Space slugs
+  whoami --space <slug>                         Resolve the actor for this workspace
+  assignee list --space <slug>                  List valid typed assignee IDs
+  issue create --space <slug> ...               Create an Issue, optionally with files
+  issue list --space <slug> [filters]           List Issues
+  issue view <id> --space <slug> --comments     Read current Issue + latest 5 comments
+  issue comments <id> --space <slug>            Read older comments by cursor
+  issue comment get <id> <commentId> ...        Read one complete comment
+  issue comment <id> --space <slug> ...         Post text and/or files atomically
+  issue attachment add <id> --space <slug> ... Add top-level Issue attachments now
+  issue claim|complete|close|status ...          Change Issue state where permitted
+  attachment download <id> --space <slug>       Download attachment bytes safely
 
-Examples:
-  myagents space issue view iss_123 --comments --json
-  myagents space issue comment get iss_123 comment_456 --json
-  myagents space issue comments iss_123 --cursor <opaque-cursor> --limit 20 --json
-  myagents space issue claim iss_123 --deliveryId delivery_1 --create-attached \
-    --workspaceId project --workspacePath /path/to/project \
-    --name "Space Issue #123" --taskMdContent-file task.md
-  myagents space issue complete iss_123 --workspacePath /path/to/project \
-    --taskId task_123 --body-file result.md --message "completed Space issue"`,
+HELP
+  Run the exact command with --help for its Agent-oriented contract, for example:
+  myagents space issue comment --help`,
+
+  'space/list': `myagents space list — Discover canonical Space slugs
+
+WHEN TO CALL
+  Before any Space operation when the target slug is unknown or stale.
+EFFECT
+  Refreshes memberships from Cloud and returns only slug, name, and role.
+REQUIRED CONTEXT
+  A signed-in MyAgents Space session. This discovery command needs no --space.
+OPTIONS
+  --json  Return {items:[{slug,name,role}]} for reliable selection.
+ACTOR AND PERMISSIONS
+  Runs as the signed-in User and exposes only that User's memberships.
+FILE SAFETY
+  Does not read or upload files.
+OUTPUT
+  Canonical slugs accepted by every other Space command.
+EXAMPLES
+  myagents space list --json
+RECOVERY
+  If the expected Space is absent, verify membership in the Space UI and retry.`,
+
+  'space/whoami': `myagents space whoami — Resolve the effective Space actor
+
+WHEN TO CALL
+  Before a mutation when you are unsure whether this workspace acts as User or Registered Agent.
+EFFECT
+  Resolves and reports the actor, Space, role, and binding source without exposing tokens.
+REQUIRED CONTEXT
+  --space <slug> is required. Run from the intended workspace.
+OPTIONS
+  --workspacePath <path>  Recovery override; current working directory is preferred.
+  --json                  Return structured identity data.
+ACTOR AND PERMISSIONS
+  Active matching registration => Registered Agent; otherwise => signed-in User.
+  Delivery-bound Sessions never fall back across a binding mismatch.
+FILE SAFETY
+  Does not read or upload files.
+OUTPUT
+  Effective actor type/id/name, membership role, and binding source.
+EXAMPLES
+  myagents space whoami --space myagents --json
+RECOVERY
+  Run \`myagents space list --json\` if the slug is rejected; remove duplicate registrations if binding is ambiguous.`,
+
+  'space/assignee/list': `myagents space assignee list — List valid assignee targets
+
+WHEN TO CALL
+  Before creating an Issue with --assignee.
+EFFECT
+  Returns all assignee targets the resolved actor may use; it does not mutate an Issue.
+REQUIRED CONTEXT
+  --space <slug> is required. Run from the intended workspace.
+OPTIONS
+  --json  Recommended; copy one returned assigneeId exactly.
+ACTOR AND PERMISSIONS
+  Results are permission-filtered. IDs are typed as agent:<id> or user:<id>;
+  never substitute a display name because names may collide.
+FILE SAFETY
+  Does not read or upload files.
+OUTPUT
+  items with assigneeId, type, name, isSelf, and Agent owner metadata when applicable.
+EXAMPLES
+  myagents space assignee list --space myagents --json
+RECOVERY
+  Run space whoami if expected candidates are missing; do not invent or strip the ID prefix.`,
+
+  'space/issue/create': `myagents space issue create — Create a Space Issue atomically
+
+WHEN TO CALL
+  When the User or current Agent needs to publish a new request, problem, or work item.
+EFFECT
+  Creates one Issue with its body and optional attachments in one operation. Default is unassigned.
+REQUIRED CONTEXT
+  --space <slug>, --title <text>, and a non-empty --body or --body-file are required.
+OPTIONS
+  --goal <goalId>  Optional Goal. --assignee agent:<id>|user:<id>  Optional typed target.
+  --attachment <path>  Repeatable (alias: --file). --human-only  Mark human-only.
+ACTOR AND PERMISSIONS
+  Uses the automatically resolved User or Registered Agent. Run assignee list before --assignee.
+FILE SAFETY
+  Files must be regular non-symlinks inside the current workspace; max 5 files, 25 MB each.
+OUTPUT
+  The created Issue including top-level attachment metadata.
+EXAMPLES
+  myagents space issue create --space myagents --title "Login fails" --body-file issue.md --attachment screenshot.png --json
+RECOVERY
+  Run space list for the slug, whoami for identity, and assignee list for a rejected assignee ID.`,
+
+  'space/issue/comment': `myagents space issue comment — Post a comment with optional attachments
+
+WHEN TO CALL
+  To add progress, evidence, a reply, or files to an existing Issue.
+EFFECT
+  Creates one comment and binds all supplied files to that comment atomically; files do not enter the top attachment list.
+REQUIRED CONTEXT
+  <issueId> and --space <slug> are required. Provide text, files, or both.
+OPTIONS
+  --body <text> | --body-file <path> | --stdin. --attachment <path> is repeatable (alias: --file).
+ACTOR AND PERMISSIONS
+  Uses the automatically resolved User or Registered Agent and normal Issue comment permissions.
+FILE SAFETY
+  Body/files resolve inside the workspace; attachment symlinks and files over 25 MB are rejected; max 5.
+OUTPUT
+  The created comment with nested attachment metadata.
+EXAMPLES
+  myagents space issue comment iss_123 --space myagents --body-file reply.md --attachment report.pdf --json
+  myagents space issue comment iss_123 --space myagents --attachment evidence.zip --json
+RECOVERY
+  Use issue view to refresh state. If a file is rejected, choose a regular workspace file and retry the whole atomic operation.`,
+
+  'space/issue/comment/get': `myagents space issue comment get — Read one complete comment
+
+WHEN TO CALL
+  When a delivery trigger says a comment is truncated or you need its exact attachment metadata.
+EFFECT
+  Reads one comment by stable ID without changing delivery or Issue state.
+REQUIRED CONTEXT
+  <issueId>, <commentId>, and --space <slug> are required.
+OPTIONS
+  --json  Recommended for body, author, and nested attachments.
+ACTOR AND PERMISSIONS
+  Uses the resolved actor and normal Issue read permission.
+FILE SAFETY
+  Does not download attachment bytes; use space attachment download explicitly.
+OUTPUT
+  One full comment with attachments.
+EXAMPLES
+  myagents space issue comment get iss_123 comment_456 --space myagents --json
+RECOVERY
+  Run issue view to verify current IDs if the Issue or comment is not found.`,
+
+  'space/issue/complete': `myagents space issue complete — Complete an Issue with an optional result comment
+
+WHEN TO CALL
+  Only after the requested work is actually complete.
+EFFECT
+  Atomically completes Cloud state with optional result text/files, then safely marks --taskId done.
+REQUIRED CONTEXT
+  <issueId> and --space <slug> are required. In attached work, pass the local --taskId.
+OPTIONS
+  --body-file <path>; --attachment <path> repeatable (alias: --file); --taskId <id>; --message <text>.
+ACTOR AND PERMISSIONS
+  Uses the resolved actor. The actor must own/hold the active assignment or have permitted completion rights.
+FILE SAFETY
+  Result files must be regular non-symlinks inside the workspace; max 5 files, 25 MB each.
+OUTPUT
+  Cloud completion, stable operation key, and local Task transition result.
+EXAMPLES
+  myagents space issue complete iss_123 --space myagents --taskId task_123 --body-file result.md --attachment artifact.zip --json
+RECOVERY
+  Treat an already-complete response as success. Rerun the same command if only the local Task transition failed.`,
+
+  'space/issue/attachment/add': `myagents space issue attachment add — Add top-level files to a published Issue
+
+WHEN TO CALL
+  To supplement the Issue body itself after publication, not to attach files to a comment.
+EFFECT
+  Uploads files immediately as top-level Issue attachments and emits one Issue update/delivery.
+REQUIRED CONTEXT
+  <issueId>, --space <slug>, and at least one --file <path> are required.
+OPTIONS
+  --file <path>  Repeat up to five times. --json  Return attachment metadata.
+ACTOR AND PERMISSIONS
+  Uses the automatically resolved actor and normal Issue update permissions.
+FILE SAFETY
+  Each file must be a regular non-symlink inside the workspace and no larger than 25 MB.
+OUTPUT
+  Added top-level attachment metadata and updated Issue facts.
+EXAMPLES
+  myagents space issue attachment add iss_123 --space myagents --file report.pdf --file screenshot.png --json
+RECOVERY
+  Use issue comment instead when the files belong to a new comment.`,
+
+  'space/attachment/download': `myagents space attachment download — Download one attachment
+
+WHEN TO CALL
+  After issue/comment metadata gives an attachment id and its bytes are needed.
+EFFECT
+  Downloads the attachment into the workspace without changing Issue state.
+REQUIRED CONTEXT
+  <attachmentId> and --space <slug> are required.
+OPTIONS
+  --output <workspace-relative-path>  Optional safe destination.
+ACTOR AND PERMISSIONS
+  Uses the resolved actor and verifies the attachment belongs to the selected Space.
+FILE SAFETY
+  Output stays inside the workspace; unsafe or escaping paths are rejected.
+OUTPUT
+  Name, relativePath, fullPath, and sizeBytes.
+EXAMPLES
+  myagents space attachment download att_123 --space myagents --output myagents_files/space/report.pdf --json
+RECOVERY
+  Re-read the Issue/comment for a current attachment id; verify --space with space list.`,
+
+  'space/issue/list': `myagents space issue list — List Issues in one explicit Space
+
+WHEN TO CALL
+  To discover current Issue ids or filter work before reading one Issue.
+EFFECT
+  Reads Issues only; it does not claim or mutate them.
+REQUIRED CONTEXT
+  --space <slug> is required.
+OPTIONS
+  --goal <id> --state <state> --query <text> --limit <n> --cursor <cursor> --human-only.
+ACTOR AND PERMISSIONS
+  Uses the resolved User or Registered Agent and returns only visible Issues.
+FILE SAFETY
+  Does not read or write local files.
+OUTPUT
+  A cursor-paged Issue list.
+EXAMPLES
+  myagents space issue list --space myagents --state todo --limit 30 --json
+RECOVERY
+  Run space list for a valid slug; relax filters if no Items match.`,
+
+  'space/issue/get': `myagents space issue view — Read the current server state of one Issue
+
+WHEN TO CALL
+  Before acting on an Issue or after receiving a delivery trigger.
+EFFECT
+  Reads current Issue facts and optionally the latest five comments.
+REQUIRED CONTEXT
+  <issueId> and --space <slug> are required.
+OPTIONS
+  --comments includes the latest five comments; --comments-cursor continues from a known cursor.
+ACTOR AND PERMISSIONS
+  Uses the resolved actor; visibility matches that actor's Space permissions.
+FILE SAFETY
+  Returns attachment metadata only; use attachment download for bytes.
+OUTPUT
+  Issue detail, top-level attachments, latest comments, and claim facts.
+EXAMPLES
+  myagents space issue view iss_123 --space myagents --comments --json
+RECOVERY
+  List Issues again if the id is stale; do not rely on delivery metadata as current state.`,
+
+  'space/issue/comments': `myagents space issue comments — Page older Issue comments
+
+WHEN TO CALL
+  When issue view reports more comments beyond its latest-five window.
+EFFECT
+  Reads a cursor page without mutating the Issue.
+REQUIRED CONTEXT
+  <issueId> and --space <slug> are required.
+OPTIONS
+  --limit <n> and --cursor <opaque-cursor>.
+ACTOR AND PERMISSIONS
+  Uses the resolved actor and the same visibility as issue view.
+FILE SAFETY
+  Returns nested attachment metadata only.
+OUTPUT
+  Comment items plus hasMore/nextCursor.
+EXAMPLES
+  myagents space issue comments iss_123 --space myagents --limit 20 --json
+RECOVERY
+  Re-run issue view to obtain current pagination facts if a cursor is rejected.`,
+
+  'space/issue/status': `myagents space issue status — Change an Issue workflow state
+
+WHEN TO CALL
+  Only when the requested workflow transition is intentional.
+EFFECT
+  Updates Issue state and triggers normal Cloud notification behavior.
+REQUIRED CONTEXT
+  <issueId>, <state>, and --space <slug> are required.
+OPTIONS
+  State is positional or --state; use the exact state accepted by Cloud.
+ACTOR AND PERMISSIONS
+  Uses the resolved actor; Cloud enforces role and ownership rules.
+FILE SAFETY
+  Does not read local files.
+OUTPUT
+  Updated state facts.
+EXAMPLES
+  myagents space issue status iss_123 todo --space myagents --json
+RECOVERY
+  Read the Issue again and choose a permitted transition; do not retry permission failures blindly.`,
+
+  'space/issue/claim': `myagents space issue claim — Claim responsibility for an Issue
+
+WHEN TO CALL
+  When the current Registered Agent will own and process the Issue.
+EFFECT
+  Creates or reuses the Cloud claim; --create-attached also creates and links a local Task.
+REQUIRED CONTEXT
+  <issueId> and --space <slug>; delivery flows should also pass --deliveryId.
+OPTIONS
+  --create-attached plus task metadata links local execution after Cloud claim succeeds.
+ACTOR AND PERMISSIONS
+  Registered Agent claim rules are Cloud-enforced; User claim behavior follows User permissions.
+FILE SAFETY
+  Task markdown files must remain inside the workspace.
+OUTPUT
+  Claim facts and, when requested, the attached Task/session linkage.
+EXAMPLES
+  myagents space issue claim iss_123 --space myagents --deliveryId del_123 --json
+RECOVERY
+  Read the current Issue first; if attached Task creation fails, follow the returned rollback/recovery command.`,
+
+  'space/issue/delivery/ignore': `myagents space issue delivery ignore — Ignore one subscription delivery
+
+WHEN TO CALL
+  When an unassigned subscription delivery is not relevant to this Registered Agent.
+EFFECT
+  Marks only that delivery ignored; it does not hide the Issue from other Agents.
+REQUIRED CONTEXT
+  <deliveryId> and --space <slug> are required.
+OPTIONS
+  --issueId may add an ownership cross-check when known.
+ACTOR AND PERMISSIONS
+  Must run as the Registered Agent targeted by the delivery.
+FILE SAFETY
+  Does not access local files.
+OUTPUT
+  Updated delivery status.
+EXAMPLES
+  myagents space issue delivery ignore del_123 --space myagents --issueId iss_123 --json
+RECOVERY
+  Do not ignore assignment deliveries; read the Issue and claim assigned work instead.`,
+
+  'space/issue/close': `myagents space issue close — Close an Issue without a completion payload
+
+WHEN TO CALL
+  When Cloud workflow rules allow the resolved actor to close the Issue directly.
+EFFECT
+  Transitions the Issue to closed and emits normal updates/deliveries.
+REQUIRED CONTEXT
+  <issueId> and --space <slug> are required.
+OPTIONS
+  No file options; use issue complete for result comments or attachments.
+ACTOR AND PERMISSIONS
+  Cloud enforces creator/admin/owner rules.
+FILE SAFETY
+  Does not read local files.
+OUTPUT
+  Closed Issue facts.
+EXAMPLES
+  myagents space issue close iss_123 --space myagents --json
+RECOVERY
+  Read the Issue and use comment or complete when close is not permitted.`,
+
+  'space/issue/cancel-claim': `myagents space issue cancel-claim — Release the current claim
+
+WHEN TO CALL
+  For explicit rollback/recovery of a claim that should no longer be owned.
+EFFECT
+  Cancels the claim and lets Cloud reopen/refanout according to Issue rules.
+REQUIRED CONTEXT
+  <issueId> and --space <slug> are required.
+OPTIONS
+  --rollback and --expected-notification-version support attached-task recovery.
+ACTOR AND PERMISSIONS
+  Only the owning actor or an authorized Space role may cancel the claim.
+FILE SAFETY
+  Does not access local files.
+OUTPUT
+  Claim cancellation and reopened Issue facts.
+EXAMPLES
+  myagents space issue cancel-claim iss_123 --space myagents --rollback --json
+RECOVERY
+  Re-read the Issue if the notification version changed; never fabricate rollback values.`,
 
   task: `myagents task — Manage Task Center tasks (v0.1.69+)
 
@@ -2228,14 +2598,25 @@ SEE ALSO
 };
 
 export function handleHelp(payload: { path?: string[] }): AdminResponse {
-  const path = payload.path ?? [];
+  const path = (payload.path ?? []).map(part => part.trim()).filter(Boolean);
+  const lookupPath = path[0] === 'space' && path[1] === 'issue' && path[2] === 'view'
+    ? [...path.slice(0, 2), 'get', ...path.slice(3)]
+    : path;
   const group = path[0];
+  let matchedKey: string | undefined;
+  for (let length = lookupPath.length; length > 0; length -= 1) {
+    const candidate = lookupPath.slice(0, length).join('/');
+    if (HELP_TEXTS[candidate]) {
+      matchedKey = candidate;
+      break;
+    }
+  }
 
-  if (group && HELP_TEXTS[group]) {
+  if (matchedKey) {
     if (group === 'tool' && !isCliToolRegistryEnabled()) {
       return { success: true, data: { text: CLI_TOOL_REGISTRY_DISABLED_HELP } };
     }
-    return { success: true, data: { text: HELP_TEXTS[group] } };
+    return { success: true, data: { text: HELP_TEXTS[matchedKey] } };
   }
 
   // Derive the group list from HELP_TEXTS so it can't drift as new commands
@@ -2244,7 +2625,7 @@ export function handleHelp(payload: { path?: string[] }): AdminResponse {
   // turning `myagents im --help` into a misleading "use one of these
   // unrelated groups" message). Append the leaf commands that aren't in
   // HELP_TEXTS but are still valid top-level invocations.
-  const groups = Object.keys(HELP_TEXTS).sort();
+  const groups = [...new Set(Object.keys(HELP_TEXTS).map(key => key.split('/')[0]))].sort();
   const leafCommands = ['status', 'reload', 'version'];
   const header = group
     ? `Unknown command group "${group}".`
@@ -3313,9 +3694,43 @@ WHEN TO CALL
   Do not file FYI remarks, brainstorming, or unsolicited ideas.`;
 
 async function spaceManagementResponse(path: string, payload: Record<string, unknown>, hint?: string): Promise<AdminResponse> {
-  const resp = await managementApi(path, 'POST', payload);
+  const resp = await managementApi(path, 'POST', enrichSpaceWorkspaceContext(payload));
   if (!resp.ok) return mgmtError(resp, 'Space command failed');
   return { success: true, data: resp.data, ...(hint ? { hint } : {}) };
+}
+
+function enrichSpaceWorkspaceContext(payload: Record<string, unknown>): Record<string, unknown> {
+  const requestedPath = typeof payload.workspacePath === 'string' && payload.workspacePath.trim()
+    ? payload.workspacePath.trim()
+    : undefined;
+  const currentPath = getCurrentWorkspacePath();
+  const workspacePath = requestedPath ?? currentPath;
+  if (!workspacePath) return payload;
+  const project = loadProjects().find(item => workspacePathsEqual(item.path, workspacePath));
+  return {
+    ...payload,
+    workspacePath,
+    // An explicit id is identity evidence supplied by the caller. Preserve it
+    // so Rust can fail closed when it disagrees with a delivery-bound Agent;
+    // only enrich legacy/path-only requests that omitted the stable id.
+    workspaceId: payload.workspaceId ?? project?.id,
+  };
+}
+
+export async function handleSpaceList(): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/list', {});
+}
+
+export async function handleSpaceWhoami(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/whoami', payload);
+}
+
+export async function handleSpaceAssigneeList(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/assignee-list', payload);
+}
+
+export async function handleSpaceIssueCreate(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/issue-create', payload, 'Issue created in MyAgents Space.');
 }
 
 export async function handleSpaceIssueGet(payload: Record<string, unknown>): Promise<AdminResponse> {
@@ -3368,6 +3783,14 @@ export async function handleSpaceClaimLocalTask(payload: Record<string, unknown>
 
 export async function handleSpaceAttachmentDownload(payload: Record<string, unknown>): Promise<AdminResponse> {
   return spaceManagementResponse('/api/space/attachment-download', payload);
+}
+
+export async function handleSpaceAttachmentAdd(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/attachment-add', payload, 'Issue attachments added.');
+}
+
+export async function handleSpaceAttachmentInspect(payload: Record<string, unknown>): Promise<AdminResponse> {
+  return spaceManagementResponse('/api/space/attachment-inspect', payload);
 }
 
 export function handleReadme(payload: { topic?: string; modules?: string[] }): AdminResponse {

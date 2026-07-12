@@ -315,12 +315,22 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 | `/api/admin/plugin/*` | OpenClaw 插件安装/卸载/列表 |
 | `/api/admin/im/*` | IM runtime actions（send-media） |
 | `/api/admin/session/*` | Session 间事件通信：`send` 投递新工作/通知，`watch` 监听目标当前工作完成 |
+| `/api/admin/space/*` | Cloud Space：显式 slug、whoami/assignee、Issue 操作、comment/top attachment、claim/complete/download |
 | `/api/admin/widget/*` | Generative UI widget 资料 |
 | `/api/admin/config/*` | 通用配置读写 |
 | `/api/admin/status` | 应用运行状态 |
 | `/api/admin/version` | 版本号 |
 | `/api/admin/reload` | 热重载配置 |
 | `/api/admin/help` | 命令帮助文本（子命令 help 来自这里） |
+
+### Cloud Space CLI 身份与错误边界（0.2.50）
+
+- `space list` 是唯一不要求 `--space` 的发现命令；其它 Space 业务命令必须显式 canonical slug，不维护隐式默认 Space。
+- CLI 只解析参数，不接受 `--actor` 或 token。Sidecar Admin API 以当前 workspace path 查 `projects.json` 并补 stable `workspaceId`；Rust `SpaceCliContext` 刷新 `/api/me` 后，以 `(spaceId, workspaceId, session binding)` 解析 actor。现代登记以 workspace id 为权威，path 只兼容缺 id 的 legacy row。
+- delivery Session 除 `registered_agents.json` 外还以 `delivery_log.json` 作为独立绑定证据；绑定 Agent 丢失、失效、跨 Space/device/workspace 或重复时 fail closed，绝不降级为 User。普通未登记 workspace 才使用当前 User session token，与 UI 同权执行。
+- Rust Management API 统一返回 `{ok:false,code,error,suggestion,suggestedCommand?}`；Node Admin API 原样保留，CLI human mode 渲染 `Error:`/`Suggestion:`，`--json` stdout 只输出一个可解析对象且本地参数/文件错误也走同一契约。
+- `myagents <exact leaf> --help` 是 Agent 的工具说明。每个 Space leaf 独立描述 WHEN TO CALL、EFFECT、REQUIRED CONTEXT、OPTIONS、ACTOR AND PERMISSIONS、FILE SAFETY、OUTPUT、EXAMPLES、RECOVERY，不能回落到泛化 group help。
+- repeatable `--attachment`/`--file` 只传路径；Rust 一次 bounded/no-follow 读取后同时拥有 multipart bytes 与 complete idempotency hash，Node 不读取附件内容。
 
 ### Session send/watch 协议边界
 

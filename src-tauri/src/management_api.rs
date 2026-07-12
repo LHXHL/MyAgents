@@ -170,6 +170,13 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route("/api/task/write-doc", post(task_write_doc_handler))
         .route("/api/thought/list", get(thought_list_handler))
         .route("/api/thought/create", post(thought_create_handler))
+        .route("/api/space/list", post(space_list_handler))
+        .route("/api/space/whoami", post(space_whoami_handler))
+        .route(
+            "/api/space/assignee-list",
+            post(space_assignee_list_handler),
+        )
+        .route("/api/space/issue-create", post(space_issue_create_handler))
         .route("/api/space/issue-list", post(space_issue_list_handler))
         .route("/api/space/issue-get", post(space_issue_get_handler))
         .route(
@@ -206,6 +213,14 @@ pub async fn start_management_api() -> Result<u16, String> {
         .route(
             "/api/space/attachment-download",
             post(space_attachment_download_handler),
+        )
+        .route(
+            "/api/space/attachment-add",
+            post(space_attachment_add_handler),
+        )
+        .route(
+            "/api/space/attachment-inspect",
+            post(space_attachment_inspect_handler),
         )
         // Session Inbox cross-sidecar delivery (PRD 0.2.18)
         .route("/api/inbox/deliver", post(inbox_deliver_handler))
@@ -2578,11 +2593,122 @@ async fn thought_create_handler(
     }
 }
 
+fn space_cli_error(error: String) -> serde_json::Value {
+    let (code, message) = error
+        .split_once(": ")
+        .filter(|(candidate, _)| {
+            !candidate.is_empty()
+                && candidate.chars().all(|character| {
+                    character.is_ascii_uppercase() || character == '_' || character.is_ascii_digit()
+                })
+        })
+        .map(|(code, message)| (code.to_string(), message.to_string()))
+        .unwrap_or_else(|| ("SPACE_COMMAND_FAILED".to_string(), error));
+    let (suggestion, suggested_command) = match code.as_str() {
+        "SPACE_REQUIRED" | "SPACE_NOT_AVAILABLE" => (
+            Some("Run `myagents space list --json`, then retry with one returned slug."),
+            Some("myagents space list --json"),
+        ),
+        "ASSIGNEE_ID_INVALID" => (
+            Some("List valid typed assignee IDs for the selected Space, then retry with one returned assigneeId."),
+            None,
+        ),
+        "ATTACHMENT_REQUIRED" => (
+            Some("Add one or more workspace files with repeated --file flags."),
+            None,
+        ),
+        "COMMENT_CONTENT_REQUIRED" => (
+            Some("Add --body-file <path>, one or more --attachment <path> flags, or both."),
+            None,
+        ),
+        "ATTACHMENT_COUNT_EXCEEDED" => (
+            Some("Send at most five files in one command."),
+            None,
+        ),
+        "ATTACHMENT_TOO_LARGE" => (
+            Some("Choose a file no larger than 25 MB, then retry."),
+            None,
+        ),
+        "ATTACHMENT_OUTSIDE_WORKSPACE"
+        | "ATTACHMENT_SYMLINK_REJECTED"
+        | "ATTACHMENT_NOT_FILE"
+        | "ATTACHMENT_NOT_FOUND"
+        | "ATTACHMENT_PATH_INVALID" => (
+            Some("Choose a regular, non-symlink file inside the current workspace, then retry."),
+            None,
+        ),
+        "WORKSPACE_REQUIRED" => (
+            Some("Run the command from the intended workspace or pass --workspacePath <path>."),
+            None,
+        ),
+        "SPACE_AGENT_BINDING_AMBIGUOUS" | "SPACE_AGENT_WORKSPACE_AMBIGUOUS" => (
+            Some("Remove duplicate Registered Agent bindings in Space settings, then run space whoami again."),
+            None,
+        ),
+        "SPACE_AGENT_BINDING_INVALID" | "SPACE_CONTEXT_INVALID" | "SPACE_CONTEXT_MISMATCH" => (
+            Some("Verify the selected Space and current identity with `myagents space whoami --space <slug> --json`."),
+            None,
+        ),
+        code if code.contains("PERMISSION")
+            || code.contains("FORBIDDEN")
+            || code == "NOT_AUTHORIZED" => (
+            Some("Verify the effective actor with space whoami; retry only with a User or Registered Agent that has permission for this action."),
+            None,
+        ),
+        code if code.contains("NOT_FOUND") => (
+            Some("Re-read the current Space or Issue state, copy a current stable ID, and retry."),
+            None,
+        ),
+        code if code.contains("QUOTA") || code.contains("LIMIT") => (
+            Some("Reduce the requested payload or free Space capacity before retrying."),
+            None,
+        ),
+        _ => (
+            Some("Run the exact command with --help, verify the current Space state, and retry only after correcting the reported error."),
+            None,
+        ),
+    };
+    let mut payload = serde_json::json!({
+        "ok": false,
+        "code": code,
+        "error": message,
+    });
+    if let Some(suggestion) = suggestion {
+        payload["suggestion"] = serde_json::Value::String(suggestion.to_string());
+    }
+    if let Some(command) = suggested_command {
+        payload["suggestedCommand"] = serde_json::Value::String(command.to_string());
+    }
+    payload
+}
+
 fn space_result(result: Result<serde_json::Value, String>) -> Json<serde_json::Value> {
     match result {
         Ok(data) => Json(serde_json::json!({ "ok": true, "data": data })),
-        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
+        Err(error) => Json(space_cli_error(error)),
     }
+}
+
+async fn space_list_handler() -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_space_list().await)
+}
+
+async fn space_whoami_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliContextInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_whoami(input).await)
+}
+
+async fn space_assignee_list_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliContextInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_assignee_list(input).await)
+}
+
+async fn space_issue_create_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliIssueCreateInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_issue_create(input).await)
 }
 
 async fn space_issue_get_handler(
@@ -2664,6 +2790,18 @@ async fn space_attachment_download_handler(
         Ok(data) => Json(serde_json::json!({ "ok": true, "data": data })),
         Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
     }
+}
+
+async fn space_attachment_add_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliAttachmentAddInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_attachment_add(input).await)
+}
+
+async fn space_attachment_inspect_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliAttachmentAddInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_attachment_inspect(input).await)
 }
 
 // ========================================================================
@@ -3243,6 +3381,28 @@ mod tests {
     }
 
     #[test]
+    fn space_cli_error_separates_failure_fact_from_recovery_direction() {
+        let response =
+            space_cli_error("SPACE_REQUIRED: This command requires --space <slug>.".to_string());
+        assert_eq!(
+            response.get("code").and_then(Value::as_str),
+            Some("SPACE_REQUIRED")
+        );
+        assert_eq!(
+            response.get("error").and_then(Value::as_str),
+            Some("This command requires --space <slug>.")
+        );
+        assert_eq!(
+            response.get("suggestedCommand").and_then(Value::as_str),
+            Some("myagents space list --json")
+        );
+        assert!(response
+            .get("suggestion")
+            .and_then(Value::as_str)
+            .is_some_and(|value| value.starts_with("Run `myagents space list")));
+    }
+
+    #[test]
     fn cron_stop_response_preserves_authoritative_blocked_status() {
         let task: crate::task::Task = serde_json::from_value(serde_json::json!({
             "id": "blocked-task",
@@ -3277,13 +3437,21 @@ mod tests {
     #[tokio::test]
     async fn space_issue_comment_handler_wraps_mock_comment_result() {
         let _mock = crate::space_cloud_mock::enable_for_test();
+        let workspace_path = std::env::current_dir()
+            .expect("current workspace")
+            .to_string_lossy()
+            .to_string();
 
         let Json(comment_result) =
             space_issue_comment_handler(Json(crate::space_cloud::SpaceCliIssueCommentInput {
                 issue_id: "iss_mock_004".to_string(),
                 body: "management api comment".to_string(),
-                agent_id: Some("rag_mock_frontend".to_string()),
-                workspace_path: None,
+                space_slug: "official".to_string(),
+                file_paths: Vec::new(),
+                session_id: None,
+                workspace_id: None,
+                agent_id: None,
+                workspace_path: Some(workspace_path.clone()),
             }))
             .await;
 
@@ -3306,8 +3474,11 @@ mod tests {
             crate::space_cloud::SpaceCliIssueCommentGetInput {
                 issue_id: "iss_mock_004".to_string(),
                 comment_id,
-                agent_id: Some("rag_mock_frontend".to_string()),
-                workspace_path: None,
+                space_slug: "official".to_string(),
+                session_id: None,
+                workspace_id: None,
+                agent_id: None,
+                workspace_path: Some(workspace_path.clone()),
             },
         ))
         .await;
@@ -3321,8 +3492,11 @@ mod tests {
         let Json(detail_result) =
             space_issue_get_handler(Json(crate::space_cloud::SpaceCliIssueGetInput {
                 issue_id: "iss_mock_004".to_string(),
-                agent_id: Some("rag_mock_frontend".to_string()),
-                workspace_path: None,
+                space_slug: "official".to_string(),
+                session_id: None,
+                workspace_id: None,
+                agent_id: None,
+                workspace_path: Some(workspace_path),
                 comments_cursor: None,
                 comments_limit: Some(5),
             }))

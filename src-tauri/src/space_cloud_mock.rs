@@ -545,6 +545,20 @@ pub fn process_deliveries_once() -> SpaceProcessDeliveryResult {
 }
 
 pub fn upload_issue_attachments(input: SpaceUploadIssueAttachmentsInput) -> Result<Value, String> {
+    upload_issue_attachments_with_actor(input, None)
+}
+
+pub fn upload_issue_attachments_as_registered_agent(
+    input: SpaceUploadIssueAttachmentsInput,
+    registered_agent_id: &str,
+) -> Result<Value, String> {
+    upload_issue_attachments_with_actor(input, Some(registered_agent_id))
+}
+
+fn upload_issue_attachments_with_actor(
+    input: SpaceUploadIssueAttachmentsInput,
+    registered_agent_id: Option<&str>,
+) -> Result<Value, String> {
     if input.issue_id.trim().is_empty() {
         return Err("issueId is required".to_string());
     }
@@ -609,8 +623,76 @@ pub fn upload_issue_attachments(input: SpaceUploadIssueAttachmentsInput) -> Resu
         .entry(issue_id.clone())
         .or_default()
         .extend(new_attachments.clone());
+    cancel_pending_issue_deliveries(&mut state, &issue_id);
+    increment_issue_notification_version(&mut state, &issue_id);
     refresh_issue_counts(&mut state, &issue_id);
+    let issue = state
+        .issues
+        .iter()
+        .find(|issue| issue.get("id").and_then(Value::as_str) == Some(issue_id.as_str()))
+        .cloned()
+        .ok_or_else(|| format!("Issue not found: {}", issue_id))?;
+    let first_new_delivery = state.deliveries.len();
+    route_mock_issue_deliveries(
+        &mut state,
+        &issue,
+        "issue.attachments_added",
+        registered_agent_id,
+    )?;
+    let actor = registered_agent_id
+        .map(|id| json!({ "type": "registered_agent", "id": id, "name": "Mock Agent" }))
+        .unwrap_or_else(|| json!({ "type": "user", "id": MOCK_OWNER_USER_ID, "name": "Ethan" }));
+    for item in state.deliveries.iter_mut().skip(first_new_delivery) {
+        if let Some(delivery) = item.get_mut("delivery").and_then(Value::as_object_mut) {
+            delivery.insert(
+                "updateSummary".to_string(),
+                json!("Attachments added to Issue"),
+            );
+            delivery.insert(
+                "trigger".to_string(),
+                json!({
+                    "updateId": format!("update_attachments_{}", issue_id),
+                    "type": "issue.attachments_added",
+                    "actor": actor,
+                    "attachments": new_attachments,
+                    "createdAt": "2026-07-12T10:02:00.000Z"
+                }),
+            );
+        }
+    }
+    let event_id = state.next_id("evt");
+    state.events.push(json!({
+        "id": event_id,
+        "type": "issue.attachments_added",
+        "resourceType": "issue",
+        "resourceId": issue_id,
+        "actorType": actor.get("type").cloned().unwrap_or_else(|| json!("user")),
+        "actorId": actor.get("id").cloned().unwrap_or_else(|| json!(MOCK_OWNER_USER_ID)),
+        "targetRegisteredAgentId": null,
+        "payload": { "attachments": new_attachments },
+        "createdAt": "2026-07-12T10:02:00.000Z"
+    }));
     Ok(json!({ "attachments": new_attachments }))
+}
+
+fn materialize_mock_attachment_metadata(state: &mut MockState, raw: &[Value]) -> Vec<Value> {
+    raw.iter()
+        .take(MAX_ATTACHMENT_UPLOAD_COUNT)
+        .map(|item| {
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .map(safe_local_filename)
+                .unwrap_or_else(|| "attachment".to_string());
+            json!({
+                "id": state.next_id("att"),
+                "name": name,
+                "sizeBytes": item.get("sizeBytes").and_then(Value::as_u64).unwrap_or(0),
+                "mimeType": item.get("mimeType").and_then(Value::as_str).unwrap_or("application/octet-stream"),
+                "createdAt": "2026-06-24T09:36:00.000Z"
+            })
+        })
+        .collect()
 }
 
 pub fn update_profile(input: SpaceUpdateProfileInput) -> Result<SpaceSessionPublic, String> {
@@ -1053,8 +1135,11 @@ fn handle_api_data_request(
         ("PATCH", ["api", "goals", goal_id]) => update_goal(&mut state, goal_id, body),
         ("POST", ["api", "goals", goal_id, "archive"]) => archive_goal(&mut state, goal_id),
         ("POST", ["api", "spaces", "official", "tags"]) => create_tag(&mut state, body),
+        ("GET", ["api", "spaces", "official", "assignee-candidates"]) => {
+            Ok(mock_assignee_candidates(&state, &actor))
+        }
         ("GET", ["api", "spaces", "official", "issues"]) => Ok(list_issues(&state, &query)),
-        ("POST", ["api", "spaces", "official", "issues"]) => create_issue(&mut state, body),
+        ("POST", ["api", "spaces", "official", "issues"]) => create_issue(&mut state, body, &actor),
         ("GET", ["api", "issues", issue_id]) => issue_detail(&state, issue_id, &query),
         ("GET", ["api", "issues", issue_id, "comments"]) => {
             issue_comments_page(&state, issue_id, &query)
@@ -1692,12 +1777,16 @@ fn initial_state() -> MockState {
         ));
     }
 
+    let current_workspace = std::env::current_dir()
+        .unwrap_or_else(|_| PathBuf::from("."))
+        .to_string_lossy()
+        .to_string();
     let mut agents = vec![
         agent(
             "rag_mock_frontend",
             "Frontend Polisher",
             "active",
-            "/Users/ethan/Projects/MyAgents",
+            &current_workspace,
             "MyAgents",
             "Handle UI polish, screenshots, and design-system regressions.",
         ),
@@ -1705,7 +1794,7 @@ fn initial_state() -> MockState {
             "rag_mock_release",
             "Release Steward",
             "online",
-            "/Users/ethan/Projects/MyAgents",
+            &current_workspace,
             "MyAgents Release",
             "Prepare release tasks and verify changelog completeness.",
         ),
@@ -2021,8 +2110,17 @@ fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
     })
 }
 
-fn create_issue(state: &mut MockState, body: Option<Value>) -> Result<Value, String> {
+fn create_issue(
+    state: &mut MockState,
+    body: Option<Value>,
+    request_actor: &MockActor,
+) -> Result<Value, String> {
     let body = body.unwrap_or(Value::Null);
+    let raw_attachments = body
+        .get("attachments")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
     let title = body
         .get("title")
         .and_then(Value::as_str)
@@ -2074,6 +2172,20 @@ fn create_issue(state: &mut MockState, body: Option<Value>) -> Result<Value, Str
         .and_then(Value::as_str)
         .unwrap_or("Ethan");
     let user_avatar = state.user.get("avatarUrl").cloned().unwrap_or(Value::Null);
+    let (creator_id, creator_type, creator_name, creator_avatar) = if request_actor.authenticated {
+        (
+            request_actor.actor_id.as_str(),
+            request_actor.actor_type.as_str(),
+            request_actor.actor_name.as_str(),
+            if request_actor.actor_type == "user" {
+                user_avatar.clone()
+            } else {
+                Value::Null
+            },
+        )
+    } else {
+        (user_id, "user", user_name, user_avatar.clone())
+    };
     let assignee = match body.get("assignee").filter(|value| !value.is_null()) {
         None => Value::Null,
         Some(requested) => {
@@ -2117,7 +2229,7 @@ fn create_issue(state: &mut MockState, body: Option<Value>) -> Result<Value, Str
             }
         }
     };
-    let issue = json!({
+    let mut issue = json!({
         "id": id,
         "number": number,
         "spaceId": MOCK_SPACE_ID,
@@ -2128,8 +2240,8 @@ fn create_issue(state: &mut MockState, body: Option<Value>) -> Result<Value, Str
         "state": "open",
         "humanOnly": body.get("humanOnly").and_then(Value::as_bool).unwrap_or(false),
         "status": "open",
-        "creator": { "id": user_id, "type": "user", "name": user_name, "avatarUrl": user_avatar.clone() },
-        "author": { "id": user_id, "type": "user", "name": user_name, "avatarUrl": user_avatar },
+        "creator": { "id": creator_id, "type": creator_type, "name": creator_name, "avatarUrl": creator_avatar.clone() },
+        "author": { "id": creator_id, "type": creator_type, "name": creator_name, "avatarUrl": creator_avatar },
         "assignee": assignee,
         "notificationVersion": 1,
         "goalPathLabel": goal_path_label,
@@ -2139,11 +2251,41 @@ fn create_issue(state: &mut MockState, body: Option<Value>) -> Result<Value, Str
         "createdAt": "2026-06-24T09:38:00.000Z",
         "updatedAt": "2026-06-24T09:38:00.000Z"
     });
+    let issue_attachments = materialize_mock_attachment_metadata(state, &raw_attachments);
+    issue["attachmentCount"] = json!(issue_attachments.len());
     state.comments.insert(id.clone(), Vec::new());
-    state.attachments.insert(id, Vec::new());
+    state.attachments.insert(id, issue_attachments.clone());
     state.issues.insert(0, issue.clone());
     route_mock_issue_deliveries(state, &issue, "issue.created", None)?;
-    Ok(json!({ "issue": issue }))
+    Ok(json!({ "issue": issue, "attachments": issue_attachments }))
+}
+
+fn mock_assignee_candidates(state: &MockState, actor: &MockActor) -> Value {
+    let mut agents = state
+        .agents
+        .iter()
+        .filter(|agent| agent.status == "active")
+        .map(|agent| {
+            json!({
+                "assigneeId": format!("agent:{}", agent.id),
+                "type": "registered_agent",
+                "name": agent.display_name,
+                "avatarUrl": agent.avatar_url,
+                "isSelf": actor.actor_type == "registered_agent" && actor.actor_id == agent.id,
+                "owner": { "id": MOCK_OWNER_USER_ID, "name": state.user.get("name").cloned().unwrap_or(Value::Null) }
+            })
+        })
+        .collect::<Vec<_>>();
+    agents.sort_by_key(|item| !item.get("isSelf").and_then(Value::as_bool).unwrap_or(false));
+    agents.push(json!({
+        "assigneeId": format!("user:{}", MOCK_OWNER_USER_ID),
+        "type": "user",
+        "name": state.user.get("name").cloned().unwrap_or(Value::Null),
+        "avatarUrl": state.user.get("avatarUrl").cloned().unwrap_or(Value::Null),
+        "isSelf": actor.actor_type == "user" && actor.actor_id == MOCK_OWNER_USER_ID,
+        "role": "owner"
+    }));
+    json!({ "items": agents })
 }
 
 fn list_events(state: &MockState, query: &HashMap<String, String>) -> Value {
@@ -2712,9 +2854,16 @@ fn comment_issue(
         .and_then(Value::as_str)
         .map(str::trim)
         .unwrap_or("");
-    if text.is_empty() {
-        return Err("Comment body is required".to_string());
+    let raw_attachments = body
+        .as_ref()
+        .and_then(|value| value.get("attachments"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if text.is_empty() && raw_attachments.is_empty() {
+        return Err("Comment text or at least one attachment is required".to_string());
     }
+    let comment_attachments = materialize_mock_attachment_metadata(state, &raw_attachments);
     let override_author_type = body
         .as_ref()
         .and_then(|value| value.get("authorType"))
@@ -2752,6 +2901,7 @@ fn comment_issue(
         "id": state.next_id("cmt"),
         "author": { "id": author_id, "type": author_type, "name": author_name, "avatarUrl": author_avatar },
         "body": text,
+        "attachments": comment_attachments,
         "createdAt": "2026-06-24T09:39:00.000Z"
     });
     state
@@ -2794,6 +2944,7 @@ fn comment_issue(
                     "comment": {
                         "id": comment["id"],
                         "body": text,
+                        "attachments": comment["attachments"],
                         "createdAt": comment["createdAt"]
                     },
                     "createdAt": comment["createdAt"]
@@ -2869,7 +3020,14 @@ fn complete_issue(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToString::to_string);
-    let comment_id = if let Some(result_comment) = result_comment {
+    let raw_attachments = body
+        .as_ref()
+        .and_then(|value| value.get("attachments"))
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let result_attachments = materialize_mock_attachment_metadata(state, &raw_attachments);
+    let comment_id = if result_comment.is_some() || !result_attachments.is_empty() {
         let comment_id = state.next_id("cmt");
         let comment = json!({
             "id": comment_id,
@@ -2879,7 +3037,8 @@ fn complete_issue(
                 "name": request_actor.actor_name,
                 "avatarUrl": null
             },
-            "body": result_comment,
+            "body": result_comment.unwrap_or_default(),
+            "attachments": result_attachments,
             "createdAt": "2026-06-24T09:40:00.000Z"
         });
         state
@@ -3831,7 +3990,24 @@ fn update_agent_api(
 
 fn refresh_issue_counts(state: &mut MockState, issue_id: &str) {
     let comment_count = state.comments.get(issue_id).map(Vec::len).unwrap_or(0);
-    let attachment_count = state.attachments.get(issue_id).map(Vec::len).unwrap_or(0);
+    let comment_attachment_count = state
+        .comments
+        .get(issue_id)
+        .map(|comments| {
+            comments
+                .iter()
+                .map(|comment| {
+                    comment
+                        .get("attachments")
+                        .and_then(Value::as_array)
+                        .map(Vec::len)
+                        .unwrap_or(0)
+                })
+                .sum::<usize>()
+        })
+        .unwrap_or(0);
+    let attachment_count =
+        state.attachments.get(issue_id).map(Vec::len).unwrap_or(0) + comment_attachment_count;
     if let Some(index) = find_issue_index(&state.issues, issue_id) {
         if let Some(issue) = state.issues[index].as_object_mut() {
             issue.insert("commentCount".to_string(), json!(comment_count));

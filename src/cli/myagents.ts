@@ -30,11 +30,16 @@ let BASE = '';
 
 const rawArgs = process.argv.slice(2);
 
+function isSpaceJsonInvocation(): boolean {
+  return (rawArgs[0] === 'space' || rawArgs[0] === 'issue')
+    && rawArgs.some(arg => arg === '--json' || arg.startsWith('--json='));
+}
+
 /** Parse CLI arguments into structured flags and positional args */
 export function parseArgs(args: string[]): { positional: string[]; flags: Record<string, unknown> } {
   const positional: string[] = [];
   const flags: Record<string, unknown> = {};
-  const repeatable = new Set(['args', 'env', 'headers', 'models', 'model-names', 'image']);
+  const repeatable = new Set(['args', 'env', 'headers', 'models', 'model-names', 'image', 'file', 'attachment']);
 
   // PRD 0.2.18 cross-review fix (Codex): added short-flag → long-flag mapping
   // so `myagents session send <sid> -p "..."` works as documented in PRD §3.1
@@ -77,6 +82,7 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
         key === 'stdin' ||
         key === 'active' ||
         key === 'archived' ||
+        key === 'human-only' ||
         key === 'create-attached' ||
         key === 'rollback'
       ) {
@@ -100,9 +106,11 @@ export function parseArgs(args: string[]): { positional: string[]; flags: Record
           continue;
         }
         const value = args[i + 1];
-        if (value === undefined) {
+        const requiresOrdinaryPathValue = key === 'file' || key === 'attachment';
+        if (value === undefined || (requiresOrdinaryPathValue && value.startsWith('--'))) {
           // No value — normalize to empty array (not boolean) to keep type consistent
           if (!flags[cKey]) flags[cKey] = [];
+          if (requiresOrdinaryPathValue) flags[`${cKey}ValueMissing`] = true;
           i++;
           continue;
         }
@@ -300,20 +308,22 @@ Examples:
   myagents task create-attached --name "Space Issue #123" \\
       --workspaceId proj --workspacePath /path/to/proj \\
       --taskMdContent-file task.md --source space-issue --sourceIssueId iss_123
-  myagents space issue list --goal <goalId> --state todo --limit 30
-  myagents space issue view <issueId> --comments --json
-  myagents space issue claim <issueId> --deliveryId <deliveryId>
-  myagents space issue claim <issueId> --deliveryId <deliveryId> --create-attached \\
+  myagents space list --json
+  myagents space whoami --space <slug> --json
+  myagents space issue list --space <slug> --goal <goalId> --state todo --limit 30
+  myagents space issue view <issueId> --space <slug> --comments --json
+  myagents space issue claim <issueId> --space <slug> --deliveryId <deliveryId>
+  myagents space issue claim <issueId> --space <slug> --deliveryId <deliveryId> --create-attached \\
       --workspaceId proj --workspacePath /path/to/proj \\
       --name "Space Issue #123" --taskMdContent-file task.md
-  myagents space issue comment <issueId> --body-file result.md
-  myagents space issue comment get <issueId> <commentId> --json
-  myagents space issue complete <issueId> --taskId <taskId> --body-file result.md \\
+  myagents space issue comment <issueId> --space <slug> --body-file result.md --attachment report.pdf
+  myagents space issue comment get <issueId> <commentId> --space <slug> --json
+  myagents space issue complete <issueId> --space <slug> --taskId <taskId> --body-file result.md \\
       --message "completed Space issue"
-  myagents space issue delivery ignore <deliveryId>
-  myagents space issue complete <issueId>
-  myagents space issue close <issueId>
-  myagents space attachment download <attachmentId> --output myagents_files/space/file.bin
+  myagents space issue delivery ignore <deliveryId> --space <slug>
+  myagents space issue attachment add <issueId> --space <slug> --file report.pdf
+  myagents space issue close <issueId> --space <slug>
+  myagents space attachment download <attachmentId> --space <slug> --output myagents_files/space/file.bin
   myagents thought list
   myagents plugin list
   myagents cc-plugin list
@@ -352,6 +362,15 @@ async function callApi(route: string, body: Record<string, unknown> = {}): Promi
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.includes('ECONNREFUSED') || msg.includes('fetch failed')) {
+      if (isSpaceJsonInvocation()) {
+        console.log(JSON.stringify({
+          success: false,
+          code: 'MYAGENTS_UNAVAILABLE',
+          error: 'Cannot connect to the MyAgents app.',
+          suggestion: 'Start MyAgents and retry the same Space command.',
+        }, null, 2));
+        process.exit(3);
+      }
       console.error('Error: Cannot connect to MyAgents. Is the app running?');
       if (process.env.CODEX_SANDBOX || process.env.CODEX_SANDBOX_NETWORK_DISABLED === '1') {
         console.error('  This command appears to be running inside the Codex sandbox.');
@@ -375,6 +394,10 @@ function printResult(group: string, action: string, result: Record<string, unkno
 
   if (!result.success) {
     console.error(`Error: ${result.error}`);
+    if (typeof result.suggestion === 'string' && result.suggestion.trim()) {
+      console.error(`Suggestion: ${result.suggestion}`);
+      return;
+    }
     // Structured recovery hint (v0.1.69+): print `→ Run: <command>   <message>`
     // below the error line in human mode so a downstream AI reader has a
     // concrete next step, not just a rejection. JSON mode preserves the full
@@ -791,6 +814,9 @@ function printSpaceClaimAttachedResult(data: Record<string, unknown>): void {
     ? task.workspacePath.trim()
     : '';
   const workspaceArg = workspacePath ? ` --workspacePath ${shellQuoteArg(workspacePath)}` : '';
+  const spaceArg = typeof data.spaceSlug === 'string' && data.spaceSlug.trim()
+    ? ` --space ${shellQuoteArg(data.spaceSlug.trim())}`
+    : '';
 
   console.log('\u2713 Issue claimed and attached task created');
   if (issueId) console.log(`  issue_id:  ${issueId}`);
@@ -799,9 +825,9 @@ function printSpaceClaimAttachedResult(data: Record<string, unknown>): void {
   if (sessionId) console.log(`  session:   ${sessionId}`);
   if (taskId) console.log(`  inspect:   myagents task get ${taskId}`);
   if (issueId && taskId) {
-    console.log(`  finish:    myagents space issue complete ${shellQuoteArg(issueId)}${workspaceArg} --taskId ${shellQuoteArg(taskId)} --body-file result.md --message "completed Space issue"`);
+    console.log(`  finish:    myagents space issue complete ${shellQuoteArg(issueId)}${spaceArg}${workspaceArg} --taskId ${shellQuoteArg(taskId)} --body-file result.md --message "completed Space issue"`);
   } else if (issueId) {
-    console.log(`  complete:  myagents space issue complete ${shellQuoteArg(issueId)}${workspaceArg}`);
+    console.log(`  complete:  myagents space issue complete ${shellQuoteArg(issueId)}${spaceArg}${workspaceArg}`);
   }
 }
 
@@ -1951,6 +1977,13 @@ async function main(): Promise<void> {
   // Resolve port: --port flag overrides env
   PORT = (flags.port as string) || PORT;
   if (!PORT) {
+    if (groupIsSpaceCommand(positional[0]) && jsonMode) {
+      return exitAgentCliError(flags, {
+        code: 'MYAGENTS_PORT_REQUIRED',
+        error: 'The MyAgents local API port is unavailable.',
+        suggestion: 'Run this command from an active MyAgents Session or start the app and retry.',
+      }, 3);
+    }
     console.error('Error: MYAGENTS_PORT not set. This CLI runs within the MyAgents app.');
     process.exit(3);
   }
@@ -2089,6 +2122,10 @@ async function main(): Promise<void> {
   if (result && !result.success) process.exit(1);
 }
 
+function groupIsSpaceCommand(group: string | undefined): boolean {
+  return group === 'space' || group === 'issue';
+}
+
 export function buildRoute(group: string, action: string, rest: string[]): string {
   // `diagnose runtime <type>` sugar maps to `runtime/diagnose` so handlers
   // and admin routes stay singular (issue #194).
@@ -2139,6 +2176,7 @@ export function buildRoute(group: string, action: string, rest: string[]): strin
   }
   if (group === 'space' && action === 'issue') {
     const issueAction = rest[0] || 'get';
+    if (issueAction === 'create') return 'space/issue-create';
     if (issueAction === 'list') return 'space/issue-list';
     if (issueAction === 'get' || issueAction === 'view') return 'space/issue-get';
     if (issueAction === 'comments') return 'space/issue-comments';
@@ -2147,9 +2185,15 @@ export function buildRoute(group: string, action: string, rest: string[]): strin
     if (issueAction === 'status') return 'space/issue-status';
     if (issueAction === 'claim') return 'space/issue-claim';
     if (issueAction === 'delivery' && rest[1] === 'ignore') return 'space/issue-delivery-ignore';
+    if (issueAction === 'attachment' && rest[1] === 'add') return 'space/attachment-add';
     if (issueAction === 'close') return 'space/issue-close';
     if (issueAction === 'complete') return 'space/issue-complete';
     if (issueAction === 'cancel-claim') return 'space/issue-cancel-claim';
+  }
+  if (group === 'space' && action === 'list') return 'space/list';
+  if (group === 'space' && action === 'whoami') return 'space/whoami';
+  if (group === 'space' && action === 'assignee' && (rest[0] || 'list') === 'list') {
+    return 'space/assignee-list';
   }
   if (group === 'space' && action === 'claim') {
     const claimAction = rest[0] || '';
@@ -2158,6 +2202,8 @@ export function buildRoute(group: string, action: string, rest: string[]): strin
   if (group === 'space' && action === 'attachment') {
     const attachmentAction = rest[0] || 'download';
     if (attachmentAction === 'download') return 'space/attachment-download';
+    if (attachmentAction === 'add') return 'space/attachment-add';
+    if (attachmentAction === 'inspect') return 'space/attachment-inspect';
   }
   return `${group}/${action}`;
 }
@@ -2169,6 +2215,107 @@ function resolveSpaceWorkspacePath(flags: Record<string, unknown>): string {
       ? flags.workspace
       : undefined;
   return explicit && explicit.trim() ? explicit : process.cwd();
+}
+
+type AgentCliError = {
+  code: string;
+  error: string;
+  suggestion?: string;
+  suggestedCommand?: string;
+};
+
+function exitAgentCliError(
+  flags: Record<string, unknown>,
+  error: AgentCliError,
+  exitCode = 2,
+): never {
+  if (flags.json) {
+    console.log(JSON.stringify({ success: false, ...error }, null, 2));
+  } else {
+    console.error(`Error: ${error.error}`);
+    if (error.suggestion) console.error(`Suggestion: ${error.suggestion}`);
+  }
+  process.exit(exitCode);
+}
+
+function requireSpaceSlug(flags: Record<string, unknown>): string {
+  const value = typeof flags.space === 'string' ? flags.space.trim() : '';
+  if (value) return value;
+  return exitAgentCliError(flags, {
+    code: 'SPACE_REQUIRED',
+    error: 'This command requires --space <slug>.',
+    suggestion: 'Run `myagents space list --json`, then retry with one returned slug.',
+    suggestedCommand: 'myagents space list --json',
+  });
+}
+
+function requireSpacePositional(
+  flags: Record<string, unknown>,
+  value: unknown,
+  argName: string,
+  command: string,
+  flagAlternative?: string,
+): string {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  if (normalized) return normalized;
+  return exitAgentCliError(flags, {
+    code: 'ARGUMENT_REQUIRED',
+    error: `${command} requires <${argName}>.`,
+    suggestion: `Run \`myagents ${command} --help\` and retry with <${argName}>${flagAlternative ? ` or --${flagAlternative} <${argName}>` : ''}.`,
+    suggestedCommand: `myagents ${command} --help`,
+  });
+}
+
+function optionalSpaceStringFlag(
+  flags: Record<string, unknown>,
+  value: unknown,
+  flagName: string,
+  command: string,
+): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  return exitSpaceInputError(
+    flags,
+    'FLAG_VALUE_REQUIRED',
+    `${command} requires --${flagName} <value>.`,
+    `Run \`myagents ${command} --help\`, then retry with a non-empty --${flagName} value.`,
+  );
+}
+
+function exitSpaceInputError(
+  flags: Record<string, unknown>,
+  code: string,
+  error: string,
+  suggestion: string,
+): never {
+  return exitAgentCliError(flags, { code, error, suggestion });
+}
+
+function spaceCommandContext(flags: Record<string, unknown>, workspacePath: string): Record<string, unknown> {
+  return {
+    spaceSlug: requireSpaceSlug(flags),
+    sessionId: process.env.MYAGENTS_SESSION_ID,
+    workspaceId: flags.workspaceId,
+    workspacePath,
+    agentId: flags.agentId,
+  };
+}
+
+function spaceAttachmentPaths(flags: Record<string, unknown>): string[] {
+  const missingFlag = flags.attachmentValueMissing ? 'attachment' : flags.fileValueMissing ? 'file' : undefined;
+  const paths = [
+    ...((flags.attachment as string[] | undefined) ?? []),
+    ...((flags.file as string[] | undefined) ?? []),
+  ];
+  if (missingFlag || paths.some(path => typeof path !== 'string' || !path.trim())) {
+    return exitSpaceInputError(
+      flags,
+      'FLAG_VALUE_REQUIRED',
+      `Space attachment input requires --${missingFlag ?? 'file'} <path>.`,
+      'Pass a non-empty workspace file path after every --file or --attachment flag.',
+    );
+  }
+  return paths;
 }
 
 function optionalNumberFlag(value: unknown): number | undefined {
@@ -2240,14 +2387,29 @@ function readTextFileFlag(path: string, flagName: string, workspacePath?: string
 
 function resolveSpaceCommentBody(flags: Record<string, unknown>, workspacePath: string): string {
   if (typeof flags.body === 'string') return flags.body;
-  if (typeof flags.bodyFile === 'string') return readTextFileFlag(flags.bodyFile, 'body-file', workspacePath);
+  if (typeof flags.bodyFile === 'string') {
+    try {
+      return readWorkspaceTextFile(flags.bodyFile, workspacePath);
+    } catch (error) {
+      return exitSpaceInputError(
+        flags,
+        'BODY_FILE_INVALID',
+        `Failed to read --body-file "${flags.bodyFile}": ${error instanceof Error ? error.message : String(error)}.`,
+        'Choose a regular, non-symlink text file inside the current workspace.',
+      );
+    }
+  }
   if (flags.stdin) {
     try {
       const fs = require('fs') as typeof import('fs');
       return fs.readFileSync(0, 'utf-8');
     } catch (err) {
-      console.error(`Error: failed to read stdin: ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
+      return exitSpaceInputError(
+        flags,
+        'STDIN_READ_FAILED',
+        `Failed to read stdin: ${err instanceof Error ? err.message : String(err)}.`,
+        'Retry with --body-file <workspace-relative-path>.',
+      );
     }
   }
   return '';
@@ -2273,6 +2435,7 @@ function hasSpaceCommentBodyFlags(flags: Record<string, unknown>): boolean {
 function shouldFinalizeSpaceIssue(flags: Record<string, unknown>): boolean {
   return (
     hasSpaceCommentBodyFlags(flags)
+    || spaceAttachmentPaths(flags).length > 0
     || flags.taskId !== undefined
     || flags.localTaskId !== undefined
     || flags.taskStatus !== undefined
@@ -2288,11 +2451,6 @@ function requireNonEmptyStringFlag(
   if (typeof value === 'string' && value.trim()) return value.trim();
   console.error(`Error: ${command} requires --${flagName} <value>.`);
   process.exit(2);
-}
-
-function optionalNonEmptyStringFlag(value: unknown, flagName: string): string | undefined {
-  assertStringFlag(value, flagName);
-  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
@@ -2322,13 +2480,47 @@ function extractTaskData(data: unknown): Record<string, unknown> {
   return objectValue(envelope.task) ?? objectValue(nested?.task) ?? nested ?? envelope;
 }
 
-function parseCommaTags(value: unknown): string[] | undefined {
+function parseSpaceCommaTags(flags: Record<string, unknown>, value: unknown): string[] | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== 'string') {
-    console.error('Error: --tags must be a comma-separated string');
-    process.exit(2);
+    return exitSpaceInputError(
+      flags,
+      'FLAG_VALUE_REQUIRED',
+      'space issue claim --create-attached requires --tags <comma-separated-values>.',
+      'Pass a comma-separated string after --tags, or omit the flag.',
+    );
   }
   return value.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+function validateSpaceAttachedNotificationFlags(flags: Record<string, unknown>): void {
+  const stringFlags = [
+    ['notificationBotChannelId', 'notificationBotChannelId'],
+    ['notificationBotThread', 'notificationBotThread'],
+    ['notificationEvents', 'notificationEvents'],
+  ] as const;
+  for (const [key, display] of stringFlags) {
+    const value = flags[key];
+    if (value !== undefined && (typeof value !== 'string' || !value.trim())) {
+      exitSpaceInputError(
+        flags,
+        'FLAG_VALUE_REQUIRED',
+        `space issue claim --create-attached requires --${display} <value>.`,
+        `Pass a non-empty value after --${display}, or omit the flag.`,
+      );
+    }
+  }
+  if (typeof flags.notificationEvents === 'string') {
+    const events = flags.notificationEvents.split(',').map(value => value.trim()).filter(Boolean);
+    if (events.length === 0) {
+      exitSpaceInputError(
+        flags,
+        'NOTIFICATION_EVENTS_INVALID',
+        '--notificationEvents must contain at least one event.',
+        'Pass events such as done,blocked,endCondition, or omit the flag.',
+      );
+    }
+  }
 }
 
 function buildAttachedTaskBodyForSpaceClaim(
@@ -2339,36 +2531,41 @@ function buildAttachedTaskBodyForSpaceClaim(
 ): Record<string, unknown> {
   const source = (flags.source as string | undefined) ?? 'space-issue';
   if (source !== 'space-issue') {
-    console.error(`Error: space issue claim --create-attached currently supports only --source "space-issue" (got "${source}")`);
-    process.exit(2);
+    return exitSpaceInputError(
+      flags,
+      'SOURCE_INVALID',
+      `space issue claim --create-attached supports only --source "space-issue"; received "${source}".`,
+      'Remove --source or set it to "space-issue".',
+    );
   }
 
-  const issueId = requireNonEmptyStringFlag(
-    claimBody.issueId,
-    'issueId',
-    'space issue claim --create-attached',
-  );
-  const workspaceId = requireNonEmptyStringFlag(
-    flags.workspaceId,
-    'workspaceId',
-    'space issue claim --create-attached',
-  );
-  const workspacePath = optionalNonEmptyStringFlag(flags.workspacePath, 'workspacePath')
+  const issueId = requireSpacePositional(flags, claimBody.issueId as string | undefined, 'issueId', 'space issue claim');
+  const workspaceId = requireSpacePositional(flags, flags.workspaceId as string | undefined, 'workspaceId', 'space issue claim --create-attached');
+  const workspacePath = optionalSpaceStringFlag(flags, flags.workspacePath, 'workspacePath', 'space issue claim --create-attached')
     ?? stringValue(claimBody, 'workspacePath')
     ?? process.cwd();
-  const taskMdContent = resolveTaskMdContent(flags, workspacePath);
+  const taskMdContent = resolveTaskMdContent(
+    flags,
+    workspacePath,
+    (error, exitCode) => exitAgentCliError(flags, error, exitCode),
+  );
   if (typeof taskMdContent !== 'string' || !taskMdContent.trim()) {
-    console.error('Error: space issue claim --create-attached requires --taskMdFile, --taskMdContentFile, or --taskMdContent');
-    process.exit(2);
+    return exitSpaceInputError(
+      flags,
+      'TASK_CONTENT_REQUIRED',
+      'space issue claim --create-attached requires task markdown content.',
+      'Pass --taskMdFile, --taskMdContentFile, or --taskMdContent.',
+    );
   }
 
-  const explicitName = optionalNonEmptyStringFlag(flags.name, 'name');
-  const executor = optionalNonEmptyStringFlag(flags.executor, 'executor') ?? 'agent';
-  const description = optionalNonEmptyStringFlag(flags.description, 'description');
-  const sourceSpaceId = optionalNonEmptyStringFlag(flags.sourceSpaceId, 'sourceSpaceId')
+  const explicitName = optionalSpaceStringFlag(flags, flags.name, 'name', 'space issue claim --create-attached');
+  const executor = optionalSpaceStringFlag(flags, flags.executor, 'executor', 'space issue claim --create-attached') ?? 'agent';
+  const description = optionalSpaceStringFlag(flags, flags.description, 'description', 'space issue claim --create-attached');
+  const sourceSpaceId = optionalSpaceStringFlag(flags, flags.sourceSpaceId, 'sourceSpaceId', 'space issue claim --create-attached')
     ?? stringValue(claim, 'spaceId');
   const deliveryId = stringValue(claimBody, 'deliveryId')
-    ?? optionalNonEmptyStringFlag(flags.sourceDeliveryId, 'sourceDeliveryId');
+    ?? optionalSpaceStringFlag(flags, flags.sourceDeliveryId, 'sourceDeliveryId', 'space issue claim --create-attached');
+  validateSpaceAttachedNotificationFlags(flags);
 
   return {
     name: explicitName ?? `Space Issue ${issueId}`,
@@ -2383,7 +2580,7 @@ function buildAttachedTaskBodyForSpaceClaim(
     sourceIssueId: issueId,
     sourceClaimId: stringValue(claim, 'id', 'claimId'),
     sourceDeliveryId: deliveryId,
-    tags: parseCommaTags(flags.tags),
+    tags: parseSpaceCommaTags(flags, flags.tags),
     notification: buildNotificationFromFlags(flags),
   };
 }
@@ -2397,6 +2594,9 @@ export function buildClaimCancelBody(
   const origin = stringValue(claim, 'origin') ?? 'self_claim';
   return {
     issueId: claimBody.issueId,
+    ...(claimBody.spaceSlug !== undefined ? { spaceSlug: claimBody.spaceSlug } : {}),
+    ...(claimBody.sessionId !== undefined ? { sessionId: claimBody.sessionId } : {}),
+    ...(claimBody.workspaceId !== undefined ? { workspaceId: claimBody.workspaceId } : {}),
     agentId: claimBody.agentId,
     workspacePath: claimBody.workspacePath,
     rollback: true,
@@ -2410,9 +2610,15 @@ export function buildSpaceCompleteOperationKey(input: {
   issueId: string;
   taskOrSessionId: string;
   resultComment?: string;
+  fileContentHashes?: string[];
 }): string {
   const crypto = require('crypto') as typeof import('crypto');
-  const basis = [input.issueId, input.taskOrSessionId, input.resultComment ?? ''].join('\0');
+  const basis = [
+    input.issueId,
+    input.taskOrSessionId,
+    input.resultComment ?? '',
+    ...(input.fileContentHashes ?? []),
+  ].join('\0');
   return `desktop-complete-${crypto.createHash('sha256').update(basis).digest('hex')}`;
 }
 
@@ -2447,7 +2653,11 @@ function failedAttachedClaimResult(
 ): Record<string, unknown> {
   return {
     success: false,
+    code: 'ATTACHED_TASK_TRANSACTION_FAILED',
     error: `${message} ${rollbackSuffix(rollback)}`,
+    suggestion: rollback.success
+      ? 'Inspect the Issue claim and local Task state before retrying; the cloud claim was rolled back.'
+      : 'Inspect both the cloud claim and local Task state, then repair the failed rollback before retrying.',
     data: {
       claim: claimResult.data,
       rollback,
@@ -2465,8 +2675,12 @@ async function claimSpaceIssueWithAttachedTask(
       ? flags.currentSessionId.trim()
       : process.env.MYAGENTS_SESSION_ID;
   if (!currentSessionId) {
-    console.error('Error: space issue claim --create-attached requires MYAGENTS_SESSION_ID. Run it from inside a MyAgents AI session.');
-    process.exit(2);
+    return exitSpaceInputError(
+      flags,
+      'SESSION_REQUIRED',
+      'space issue claim --create-attached requires an active MyAgents Session.',
+      'Run this command inside the MyAgents AI Session that will own the attached Task.',
+    );
   }
 
   const taskBody = buildAttachedTaskBodyForSpaceClaim(claimBody, {}, flags, currentSessionId);
@@ -2495,6 +2709,7 @@ async function claimSpaceIssueWithAttachedTask(
       success: true,
       data: {
         issueId: claimBody.issueId,
+        spaceSlug: claimBody.spaceSlug,
         claim,
         task: { id: existingTaskId },
         localSessionId: existingSessionId,
@@ -2506,7 +2721,9 @@ async function claimSpaceIssueWithAttachedTask(
   if (existingTaskId || existingSessionId) {
     return {
       success: false,
+      code: 'ATTACHED_TASK_LINK_INCOMPLETE',
       error: 'The cloud claim has an incomplete local Task/Session link. Refusing to create a duplicate Task; repair the existing link first.',
+      suggestion: 'Inspect the claim and its local Task/Session references, repair the incomplete link, then retry without creating a duplicate Task.',
       data: { issueId: claimBody.issueId, claim },
     };
   }
@@ -2535,6 +2752,9 @@ async function claimSpaceIssueWithAttachedTask(
   }
 
   const localTaskResult = await callApi('space/claim-local-task', {
+    spaceSlug: claimBody.spaceSlug,
+    sessionId: claimBody.sessionId,
+    workspaceId: claimBody.workspaceId,
     claimId,
     localTaskId: taskId,
     localSessionId: currentSessionId,
@@ -2568,6 +2788,7 @@ async function claimSpaceIssueWithAttachedTask(
     success: true,
     data: {
       issueId: claimBody.issueId,
+      spaceSlug: claimBody.spaceSlug,
       claim,
       taskCreate: taskResult.data,
       task,
@@ -2580,10 +2801,10 @@ async function claimSpaceIssueWithAttachedTask(
 
 function resolveSpaceCompleteTaskId(flags: Record<string, unknown>): string | undefined {
   if (flags.taskId !== undefined) {
-    return requireNonEmptyStringFlag(flags.taskId, 'taskId', 'space issue complete');
+    return requireSpacePositional(flags, flags.taskId as string | undefined, 'taskId', 'space issue complete');
   }
   if (flags.localTaskId !== undefined) {
-    return requireNonEmptyStringFlag(flags.localTaskId, 'localTaskId', 'space issue complete');
+    return requireSpacePositional(flags, flags.localTaskId as string | undefined, 'localTaskId', 'space issue complete');
   }
   return undefined;
 }
@@ -2592,31 +2813,43 @@ async function completeSpaceIssueWithLocalFollowup(
   completeBody: Record<string, unknown>,
   flags: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const issueId = requireNonEmptyStringFlag(
-    completeBody.issueId,
-    'issueId',
-    'space issue complete',
-  );
+  const issueId = requireSpacePositional(flags, completeBody.issueId as string | undefined, 'issueId', 'space issue complete');
   const workspacePath = stringValue(completeBody, 'workspacePath') ?? process.cwd();
   const taskId = resolveSpaceCompleteTaskId(flags);
   if (flags.taskStatus !== undefined && !taskId) {
-    console.error('Error: space issue complete --taskStatus requires --taskId <taskId>.');
-    process.exit(2);
+    return exitSpaceInputError(
+      flags,
+      'TASK_ID_REQUIRED',
+      'space issue complete --taskStatus requires --taskId <taskId>.',
+      'Pass the attached Task id or omit --taskStatus.',
+    );
   }
-  const requestedTaskStatus = optionalNonEmptyStringFlag(flags.taskStatus, 'taskStatus');
+  const requestedTaskStatus = optionalSpaceStringFlag(flags, flags.taskStatus, 'taskStatus', 'space issue complete');
   if (requestedTaskStatus && requestedTaskStatus !== 'done') {
-    console.error('Error: space issue complete can only update the local task to done. For blocked/stopped work, update the task separately and cancel the claim.');
-    process.exit(2);
+    return exitSpaceInputError(
+      flags,
+      'TASK_STATUS_INVALID',
+      'space issue complete can only update the local Task to done.',
+      'For blocked or stopped work, update the Task separately and cancel the Issue claim.',
+    );
   }
   const taskStatus = taskId ? 'done' : undefined;
-  const message = optionalNonEmptyStringFlag(flags.message, 'message');
+  const message = optionalSpaceStringFlag(flags, flags.message, 'message', 'space issue complete');
 
   let resultComment: string | undefined;
+  const attachmentPaths = spaceAttachmentPaths(flags);
   if (hasSpaceCommentBodyFlags(flags)) {
     resultComment = resolveSpaceCommentBody(flags, workspacePath);
     if (!resultComment.trim()) {
-      console.error('Error: space issue complete comment body is empty. Use --body, --body-file, or omit comment flags.');
-      process.exit(2);
+      if (attachmentPaths.length > 0) {
+        resultComment = undefined;
+      } else {
+        return exitAgentCliError(flags, {
+          code: 'COMMENT_CONTENT_REQUIRED',
+          error: 'The completion comment body is empty.',
+          suggestion: 'Add non-empty --body-file content, add --attachment <path>, or omit comment flags.',
+        });
+      }
     }
   }
 
@@ -2628,7 +2861,9 @@ async function completeSpaceIssueWithLocalFollowup(
     if (!taskRead.success) {
       return {
         success: false,
+        code: 'LOCAL_TASK_READ_FAILED',
         error: `Cannot complete the Space Issue because attached Task ${taskId} could not be read: ${String(taskRead.error ?? 'unknown error')}.`,
+        suggestion: `Run \`myagents task get ${shellQuoteArg(taskId)} --json\` to verify the Task id, then retry without changing the cloud Issue.`,
         data: { issueId, taskId, taskRead },
       };
     }
@@ -2637,7 +2872,9 @@ async function completeSpaceIssueWithLocalFollowup(
     if (!taskAlreadyDone && existingTaskStatus !== 'running' && existingTaskStatus !== 'verifying') {
       return {
         success: false,
+        code: 'LOCAL_TASK_STATE_INVALID',
         error: `Cannot complete the Space Issue while attached Task ${taskId} is ${existingTaskStatus ?? 'in an unknown state'}. Move the Task to running or verifying first; the cloud Issue was not changed.`,
+        suggestion: `Move Task ${taskId} to running or verifying, then retry this exact Space completion command.`,
         data: { issueId, taskId, taskStatus: existingTaskStatus, taskRead },
       };
     }
@@ -2652,11 +2889,15 @@ async function completeSpaceIssueWithLocalFollowup(
     ...completeBody,
     resultComment,
     operationKey,
+    operationKeySubject: taskId ?? process.env.MYAGENTS_SESSION_ID ?? 'no-local-task',
   });
   if (!completeResult.success) {
     return {
       success: false,
+      code: stringValue(completeResult, 'code') ?? 'SPACE_ISSUE_COMPLETE_FAILED',
       error: String(completeResult.error ?? 'Issue completion failed'),
+      suggestion: stringValue(completeResult, 'suggestion')
+        ?? 'Inspect the Issue with `myagents space issue view <issueId> --space <slug> --json`, then retry only after resolving the reported cloud conflict.',
       data: {
         issueId,
         issueComplete: completeResult,
@@ -2679,9 +2920,11 @@ async function completeSpaceIssueWithLocalFollowup(
       if (!taskAlreadyDone) {
         return {
           success: false,
+          code: 'LOCAL_TASK_UPDATE_FAILED',
           error: `Issue completed but local task status update failed: ${String(taskResult.error ?? 'unknown error')}.`,
+          suggestion: `Rerun the recovery command to finish the local Task transition; the cloud Issue is already complete.`,
           recoveryHint: {
-            recoveryCommand: `myagents space issue complete ${shellQuoteArg(issueId)} --workspacePath ${shellQuoteArg(workspacePath)} --taskId ${shellQuoteArg(taskId)} --message "completed Space issue"`,
+            recoveryCommand: `myagents space issue complete ${shellQuoteArg(issueId)} --space ${shellQuoteArg(String(completeBody.spaceSlug))} --workspacePath ${shellQuoteArg(workspacePath)} --taskId ${shellQuoteArg(taskId)} --message "completed Space issue"`,
             message: 'Cloud Issue is already complete; rerun the Space completion command so it can finish the local Task transition safely.',
           },
           data: {
@@ -2702,7 +2945,7 @@ async function completeSpaceIssueWithLocalFollowup(
     data: {
       issueId,
       issueComplete: completeResult.data,
-      operationKey,
+      operationKey: stringValue(objectValue(completeResult.data), 'operationKey') ?? operationKey,
       taskId,
       taskStatus,
       taskAlreadyDone,
@@ -2825,11 +3068,43 @@ export function buildRequestBody(
 
   if (group === 'space') {
     const workspacePath = resolveSpaceWorkspacePath(flags);
+    if (action === 'list') return {};
+    const context = spaceCommandContext(flags, workspacePath);
+    if (action === 'whoami') return context;
+    if (action === 'assignee' && (rest[0] || 'list') === 'list') return context;
     if (action === 'issue') {
       const issueAction = rest[0] || 'get';
       const issueId = rest[1] || flags.issueId;
+      if (issueAction === 'create') {
+        const title = requireSpacePositional(
+          flags,
+          flags.title as string | undefined,
+          'title',
+          'space issue create',
+          'title',
+        );
+        const body = resolveSpaceCommentBody(flags, workspacePath);
+        if (!body.trim()) {
+          return exitSpaceInputError(
+            flags,
+            'ISSUE_BODY_REQUIRED',
+            'space issue create requires a non-empty body.',
+            'Use --body-file <workspace-relative-path> for reliable multi-line content.',
+          );
+        }
+        return {
+          ...context,
+          title,
+          body,
+          goalId: flags.goalId ?? flags.goal,
+          assigneeId: flags.assignee,
+          humanOnly: truthyCliFlag(flags.humanOnly),
+          filePaths: spaceAttachmentPaths(flags),
+        };
+      }
       if (issueAction === 'list') {
         return {
+          ...context,
           goalId: flags.goalId ?? flags.goal,
           state: flags.state ?? flags.status,
           includeSubtree: flags.includeSubtree,
@@ -2837,132 +3112,154 @@ export function buildRequestBody(
           query: flags.query ?? flags.q,
           cursor: flags.cursor,
           limit: optionalNumberFlag(flags.limit),
-          agentId: flags.agentId,
-          workspacePath,
         };
       }
       if (issueAction === 'comments') {
-        const requiredIssueId = requirePositional(
+        const requiredIssueId = requireSpacePositional(
+          flags,
           issueId as string | undefined,
           'issueId',
           'space issue comments',
           'issueId',
         );
         return {
+          ...context,
           issueId: requiredIssueId,
-          agentId: flags.agentId,
-          workspacePath,
           cursor: flags.cursor,
           limit: optionalNumberFlag(flags.limit) ?? 20,
         };
       }
       if (issueAction === 'get' || issueAction === 'view') {
-        const requiredIssueId = requirePositional(
+        const requiredIssueId = requireSpacePositional(
+          flags,
           issueId as string | undefined,
           'issueId',
           `space issue ${issueAction}`,
           'issueId',
         );
         return {
+          ...context,
           issueId: requiredIssueId,
-          agentId: flags.agentId,
-          workspacePath,
           commentsLimit: optionalNumberFlag(flags.commentsLimit) ?? (flags.comments ? 5 : undefined),
           commentsCursor: flags.commentsCursor ?? flags.cursor,
         };
       }
       if (issueAction === 'comment') {
         if (rest[1] === 'get') {
-          const requiredIssueId = requirePositional(
+          const requiredIssueId = requireSpacePositional(
+            flags,
             (rest[2] || flags.issueId) as string | undefined,
             'issueId',
             'space issue comment get',
             'issueId',
           );
-          const requiredCommentId = requirePositional(
+          const requiredCommentId = requireSpacePositional(
+            flags,
             (rest[3] || flags.commentId) as string | undefined,
             'commentId',
             'space issue comment get',
             'commentId',
           );
           return {
+            ...context,
             issueId: requiredIssueId,
             commentId: requiredCommentId,
-            agentId: flags.agentId,
-            workspacePath,
           };
         }
-        const requiredIssueId = requirePositional(
+        const requiredIssueId = requireSpacePositional(
+          flags,
           issueId as string | undefined,
           'issueId',
           'space issue comment',
           'issueId',
         );
         return {
+          ...context,
           issueId: requiredIssueId,
           body: resolveSpaceCommentBody(flags, workspacePath),
-          agentId: flags.agentId,
-          workspacePath,
+          filePaths: spaceAttachmentPaths(flags),
         };
       }
       if (issueAction === 'status') {
-        const requiredIssueId = requirePositional(
+        const requiredIssueId = requireSpacePositional(
+          flags,
           issueId as string | undefined,
           'issueId',
           'space issue status',
           'issueId',
         );
         const state = rest[2] || flags.state || flags.status;
-        const requiredState = requirePositional(
+        const requiredState = requireSpacePositional(
+          flags,
           state as string | undefined,
           'state',
           'space issue status',
           'state',
         );
         return {
+          ...context,
           issueId: requiredIssueId,
           state: requiredState,
-          agentId: flags.agentId,
-          workspacePath,
         };
       }
       if (issueAction === 'claim') {
-        const requiredIssueId = requirePositional(
+        const requiredIssueId = requireSpacePositional(
+          flags,
           issueId as string | undefined,
           'issueId',
           'space issue claim',
           'issueId',
         );
         return {
+          ...context,
           issueId: requiredIssueId,
           deliveryId: flags.deliveryId,
-          agentId: flags.agentId,
-          workspacePath,
         };
       }
       if (issueAction === 'delivery' && rest[1] === 'ignore') {
         const deliveryId = rest[2] || flags.deliveryId;
-        const requiredDeliveryId = requirePositional(
+        const requiredDeliveryId = requireSpacePositional(
+          flags,
           deliveryId as string | undefined,
           'deliveryId',
           'space issue delivery ignore',
           'deliveryId',
         );
         return {
+          ...context,
           issueId: flags.issueId,
           deliveryId: requiredDeliveryId,
-          agentId: flags.agentId,
-          workspacePath,
         };
       }
+      if (issueAction === 'attachment' && rest[1] === 'add') {
+        const requiredIssueId = requireSpacePositional(
+          flags,
+          (rest[2] || flags.issueId) as string | undefined,
+          'issueId',
+          'space issue attachment add',
+          'issueId',
+        );
+        const filePaths = spaceAttachmentPaths(flags);
+        if (filePaths.length === 0) {
+          return exitSpaceInputError(
+            flags,
+            'ATTACHMENT_REQUIRED',
+            'space issue attachment add requires --file <path>.',
+            'Add one or more workspace files with repeated --file flags.',
+          );
+        }
+        return { ...context, issueId: requiredIssueId, filePaths };
+      }
       if (issueAction === 'close' || issueAction === 'complete' || issueAction === 'cancel-claim') {
-        const requiredIssueId = requirePositional(
+        const requiredIssueId = requireSpacePositional(
+          flags,
           issueId as string | undefined,
           'issueId',
           `space issue ${issueAction}`,
           'issueId',
         );
         return {
+          ...context,
           issueId: requiredIssueId,
           ...(issueAction === 'cancel-claim'
             ? {
@@ -2970,50 +3267,75 @@ export function buildRequestBody(
                 expectedNotificationVersion: optionalNumberFlag(flags.expectedNotificationVersion),
               }
             : {}),
-          agentId: flags.agentId,
-          workspacePath,
+          filePaths: issueAction === 'complete'
+            ? spaceAttachmentPaths(flags)
+            : [],
         };
       }
     }
     if (action === 'claim') {
       const claimAction = rest[0] || '';
       if (claimAction === 'local-task') {
-        const claimId = requirePositional(
+        const claimId = requireSpacePositional(
+          flags,
           (rest[1] || flags.claimId) as string | undefined,
           'claimId',
           'space claim local-task',
           'claimId',
         );
-        const localTaskId = requirePositional(
+        const localTaskId = requireSpacePositional(
+          flags,
           flags.localTaskId as string | undefined,
           'localTaskId',
           'space claim local-task',
           'localTaskId',
         );
-        const localSessionId = requirePositional(
+        const localSessionId = requireSpacePositional(
+          flags,
           (flags.localSessionId ?? process.env.MYAGENTS_SESSION_ID) as string | undefined,
           'localSessionId',
           'space claim local-task',
           'localSessionId',
         );
         return {
+          ...context,
           claimId,
           localTaskId,
           localSessionId,
-          agentId: flags.agentId,
-          workspacePath,
         };
       }
     }
     if (action === 'attachment') {
       const attachmentAction = rest[0] || 'download';
       if (attachmentAction === 'download') {
+        const attachmentId = requireSpacePositional(
+          flags,
+          (rest[1] || flags.attachmentId) as string | undefined,
+          'attachmentId',
+          'space attachment download',
+          'attachmentId',
+        );
         return {
-          attachmentId: rest[1] || flags.attachmentId,
+          ...context,
+          attachmentId,
           issueId: flags.issueId,
           output: flags.output,
-          agentId: flags.agentId,
-          workspacePath,
+        };
+      }
+      if (attachmentAction === 'add' || attachmentAction === 'inspect') {
+        const filePaths = spaceAttachmentPaths(flags);
+        if (filePaths.length === 0) {
+          return exitSpaceInputError(
+            flags,
+            'ATTACHMENT_REQUIRED',
+            `space attachment ${attachmentAction} requires --file <path>.`,
+            'Add one or more workspace files with repeated --file flags.',
+          );
+        }
+        return {
+          ...context,
+          issueId: rest[1] || flags.issueId || '',
+          filePaths,
         };
       }
     }
@@ -3022,21 +3344,26 @@ export function buildRequestBody(
 
   if (group === 'issue') {
     const workspacePath = resolveSpaceWorkspacePath(flags);
+    const context = spaceCommandContext(flags, workspacePath);
     if (action === 'comment' || action === 'comments' || action === 'status') {
-      console.error(`Error: myagents issue only reads an issue. Use "myagents space issue ${action} ..." for this operation.`);
-      process.exit(1);
+      return exitSpaceInputError(
+        flags,
+        'COMMAND_MOVED',
+        `myagents issue only reads an Issue; "${action}" is not supported by this alias.`,
+        `Use myagents space issue ${action} ... with an explicit --space <slug>.`,
+      );
     }
     const positionalIssueId = action === 'list' || action === 'get' ? rest[0] : action;
-    const issueId = requirePositional(
+    const issueId = requireSpacePositional(
+      flags,
       (positionalIssueId ?? flags.issueId) as string | undefined,
       'issueId',
       'issue',
       'issueId',
     );
     return {
+      ...context,
       issueId,
-      agentId: flags.agentId,
-      workspacePath,
       commentsLimit: optionalNumberFlag(flags.commentsLimit),
       commentsCursor: flags.commentsCursor ?? flags.cursor,
     };
@@ -3885,12 +4212,22 @@ const TASK_MD_MAX_BYTES = 1024 * 1024;
 function resolveTaskMdContent(
   flags: Record<string, unknown>,
   workspacePath?: string,
+  structuredExit?: (error: AgentCliError, exitCode: number) => never,
 ): string | undefined {
+  const fail = (error: AgentCliError, exitCode: number): never => {
+    if (structuredExit) return structuredExit(error, exitCode);
+    console.error(`Error: ${error.error}`);
+    if (error.suggestion) console.error(`Suggestion: ${error.suggestion}`);
+    process.exit(exitCode);
+  };
   const filePath = flags.taskMdFile ?? flags.taskMdContentFile;
   if (filePath !== undefined && filePath !== '') {
     if (typeof filePath !== 'string') {
-      console.error('Error: --taskMdFile/--taskMdContentFile must be a file path string');
-      process.exit(2);
+      return fail({
+        code: 'TASK_CONTENT_FILE_INVALID',
+        error: '--taskMdFile/--taskMdContentFile requires a file path string.',
+        suggestion: 'Pass a regular text file path inside the current workspace.',
+      }, 2);
     }
     try {
       if (workspacePath) {
@@ -3901,18 +4238,27 @@ function resolveTaskMdContent(
       const fs = require('fs') as typeof import('fs');
       const stat = fs.statSync(filePath);
       if (stat.size > TASK_MD_MAX_BYTES) {
-        console.error(`Error: --taskMdFile "${filePath}" is ${stat.size} bytes, exceeds ${TASK_MD_MAX_BYTES} (1 MB) limit`);
-        process.exit(1);
+        return fail({
+          code: 'TASK_CONTENT_TOO_LARGE',
+          error: `--taskMdFile "${filePath}" is ${stat.size} bytes and exceeds the ${TASK_MD_MAX_BYTES} byte limit.`,
+          suggestion: 'Reduce the Task markdown to 1 MB or less, then retry.',
+        }, 1);
       }
       const raw = fs.readFileSync(filePath, 'utf-8');
       if (raw.includes('\0')) {
-        console.error(`Error: --taskMdFile "${filePath}" contains NUL bytes (is this a binary file?)`);
-        process.exit(1);
+        return fail({
+          code: 'TASK_CONTENT_FILE_INVALID',
+          error: `--taskMdFile "${filePath}" contains NUL bytes and is not valid Task markdown.`,
+          suggestion: 'Choose a UTF-8 text file, then retry.',
+        }, 1);
       }
       return raw;
     } catch (err) {
-      console.error(`Error: failed to read --taskMdFile "${filePath}": ${err instanceof Error ? err.message : String(err)}`);
-      process.exit(1);
+      return fail({
+        code: 'TASK_CONTENT_FILE_INVALID',
+        error: `Failed to read --taskMdFile "${filePath}": ${err instanceof Error ? err.message : String(err)}.`,
+        suggestion: 'Choose a regular, non-symlink text file inside the current workspace.',
+      }, 1);
     }
   }
   const contentFlag = flags.taskMdContent;
@@ -3922,8 +4268,11 @@ function resolveTaskMdContent(
     // would otherwise choke silently.
     const byteLen = Buffer.byteLength(contentFlag, 'utf-8');
     if (byteLen > TASK_MD_MAX_BYTES) {
-      console.error(`Error: --taskMdContent is ${byteLen} bytes, exceeds ${TASK_MD_MAX_BYTES} (1 MB) limit. Use --taskMdFile for large content.`);
-      process.exit(1);
+      return fail({
+        code: 'TASK_CONTENT_TOO_LARGE',
+        error: `--taskMdContent is ${byteLen} bytes and exceeds the ${TASK_MD_MAX_BYTES} byte limit.`,
+        suggestion: 'Reduce the Task markdown to 1 MB or less, then retry.',
+      }, 1);
     }
     return contentFlag;
   }
@@ -4146,7 +4495,18 @@ function parseIntervalMinutesFlag(raw: unknown): number | undefined {
 
 if (!process.env.VITEST) {
   main().catch(err => {
-    console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+    const message = err instanceof Error ? err.message : String(err);
+    if (isSpaceJsonInvocation()) {
+      console.log(JSON.stringify({
+        success: false,
+        code: 'SPACE_CLI_ERROR',
+        error: message,
+        suggestion: 'Check the command leaf help and retry with explicit, non-empty flag values.',
+        suggestedCommand: `myagents ${rawArgs.slice(0, 4).filter(arg => !arg.startsWith('-')).join(' ')} --help`,
+      }, null, 2));
+    } else {
+      console.error(`Error: ${message}`);
+    }
     process.exit(1);
   });
 }

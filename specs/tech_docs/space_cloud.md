@@ -17,8 +17,8 @@ Cloud Space 横跨两个独立版本、独立发布的仓库，不能把其中�
 
 本地平级 checkout 中，云端架构文档地址是 `../MyAgents_space/specs/ARCHITECTURE.md`。截至 2026-07-12，最近一次联合校验基线为：
 
-- Desktop：`package.json` 为 `0.2.50` 开发线；Space 客户端行为基线 commit `9c4baea5`。检查时最近的 Desktop release tag 仍是 `v0.2.49`，因此这里描述的是下一开发版本，不代表已发布客户端。
-- Cloud：`MyAgents_space` `0.1.2` release line / commit `3e22d18`，已包含 assignee、三类 delivery、trigger/cloud instruction、评论分页与 complete 幂等复合动作；生产精确版本始终以 Cloud `/health` 返回的 Git tag 与 Worker Version ID 为准。
+- Desktop：`package.json` 为 `0.2.50` 开发线；本节覆盖评论附件、本地 draft inspect、显式多 Space CLI 与自动 User/Registered Agent actor resolver。检查时最近的 Desktop release tag 仍是 `v0.2.49`，因此这里描述的是下一开发版本，不代表已发布客户端。
+- Cloud：`MyAgents_space` 未发布开发 commit `082405911bcac2278501975d6cbfa642d19b01c9`，已包含 comment-owned attachments、JSON/multipart 原子 create/comment/complete、direct top attachment update/delivery、typed assignee candidates、Space context assertion 与 role-downgrade revoke；它尚未进入远端/生产 `0.1.2`，生产精确版本始终以 Cloud `/health` 返回的 Git tag 与 Worker Version ID 为准。
 
 发布兼容：Cloud 先 additive 部署；请求 `X-MyAgents-Client-Version < 0.2.50` 时只返回旧 subscription projection，assignment/follow-up 保持云端 pending，不得降级为 subscription。Desktop `0.2.50` 才消费 `deliveryKind/cloudInstruction/trigger/assignee`。旧 pending subscription 缺 `deliveryKind` 时，客户端只走显式 legacy fallback；字段存在但 kind 未知时 fail closed 并留待升级处理。
 
@@ -52,7 +52,7 @@ Phase 2 为本地验证和自动化测试新增了显式 mock mode：
 | Rust         | `src-tauri/src/space_cloud.rs`                                | Space session、HTTP proxy、registered agents、IssueDelivery poll/process、claim wrapper、Skill zip、附件上传下载                                                                                                                                                                                                                   |
 | Renderer API | `src/renderer/api/spaceCloud.ts`                              | Tauri invoke typed wrapper；不直接 `fetch` Space 服务                                                                                                                                                                                                                                                                              |
 | Renderer UI  | `src/renderer/pages/Space.tsx` + `src/renderer/pages/space/*` | Space shell 与 Issues / Skills / Agents 三个 workspace，登录轮询、创建/评论/Goal 订阅、Skill 安装、本地缓存                                                                                                                                                                                                                        |
-| CLI          | `src/cli/myagents.ts` + Management API                        | Agent 可调用的 Space issue list/view/comments/comment get/comment/claim/ignore/complete/cancel、claim local-task 与 attachment download；claim saga 按 `origin` 约束回滚，complete 用 `operationKey` 原子完成结果评论 + Cloud Issue，再幂等收口本地 Task |
+| CLI          | `src/cli/myagents.ts` + Sidecar Admin API + Rust Management API | 每个业务命令显式 `--space <slug>`；Sidecar 从当前 project 补 stable workspace id，Rust 单点解析 User/Registered Agent actor 和 token。支持 list/whoami/assignee、Issue create/read/comment/claim/complete、top attachment add/download；CLI 不接受显式 actor/token |
 
 ## Cloud Worker 容量与一致性不变量
 
@@ -127,9 +127,10 @@ Legacy 兼容规则：
 
 - 所有 Space HTTP 请求由 Rust `reqwest` 发起；renderer 不持有 session token。认证、JSON、multipart、raw download、generic renderer proxy、delivery poll/ACK/presence 全部复用 `with_space_client_context_headers`，统一带 public client id、客户端版本、device id、platform、OS version、`Accept-Language` 与 `User-Agent`。设备事实来自进程内缓存的 `current_device_identity()`，不能由各调用方自行拼接。
 - 用户可控 workspace 路径进入 Rust 后必须通过 `validate_workspace_root`。
-- 写入 workspace 的附件下载走 `resolve_inside_workspace`，只能落在目标 workspace 内。
+- 写入 workspace 的附件下载由 Rust 流式累计限制 25MB，完整接收成功后才提交文件；父目录逐段 no-follow、临时文件 `create_new`。Unix 用目录句柄内 `renameat`；Windows 对每一级目录使用 `CreateFileW(FILE_FLAG_OPEN_REPARSE_POINT)` 并在整次写入期间保留不共享 delete 的 handle，temp 写入也禁止 delete sharing，最终用 `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`。因此重复下载可以安全覆盖，junction 也不能在检查后把写入重定向到 workspace 外。
 - Skill zip 安装有总大小、单文件大小、entry 数限制，并防 Zip-Slip；安装目标只允许 global 或当前 project。
-- 附件上传有单次数量和大小限制，读取前校验路径与文件大小。
+- GUI 选择附件先调用 Rust `cmd_space_inspect_attachment_drafts`，返回本地 `{path,name,sizeBytes,mimeType}`；评论/创建草稿不预上传。提交时 Rust 再用同一底层 bounded/no-follow reader 读取，Cloud 只在 JSON 或 multipart 整体成功时绑定正文/评论。
+- CLI 附件只允许当前 workspace 内普通文件；数量先于读取限制为 5，单文件读取过程限制 25MB。complete 的 operation key 由 Rust 基于实际 multipart bytes 派生，Node 不预读/预哈希文件。
 
 ## 用户 Profile / 头像
 

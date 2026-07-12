@@ -151,6 +151,90 @@ describe('admin-api help registry', () => {
     expect(text).toContain('Unknown command group "definitely-not-a-command"');
     expect(text).toContain('vision');
   });
+
+  it('uses the longest Space command path so leaf help is an executable Agent contract', async () => {
+    const { handleHelp } = await import('./admin-api');
+
+    const result = handleHelp({ path: ['space', 'issue', 'attachment', 'add'] });
+    const text = (result.data as { text?: string } | undefined)?.text ?? '';
+
+    expect(result.success).toBe(true);
+    expect(text).toContain('myagents space issue attachment add');
+    expect(text).toContain('WHEN TO CALL');
+    expect(text).toContain('ACTOR AND PERMISSIONS');
+    expect(text).toContain('FILE SAFETY');
+    expect(text).toContain('--space <slug>');
+    expect(text).not.toContain('myagents space — Work with');
+  });
+
+  it('provides an independent Agent contract for every Space Issue leaf', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const leaves = [
+      ['space', 'issue', 'list'],
+      ['space', 'issue', 'view'],
+      ['space', 'issue', 'comments'],
+      ['space', 'issue', 'status'],
+      ['space', 'issue', 'claim'],
+      ['space', 'issue', 'delivery', 'ignore'],
+      ['space', 'issue', 'close'],
+      ['space', 'issue', 'cancel-claim'],
+    ];
+    for (const path of leaves) {
+      const result = handleHelp({ path });
+      const text = (result.data as { text?: string } | undefined)?.text ?? '';
+      expect(text, path.join(' ')).toContain('WHEN TO CALL');
+      expect(text, path.join(' ')).toContain('RECOVERY');
+      expect(text, path.join(' ')).not.toContain('myagents space — Work with');
+    }
+  });
+});
+
+describe('admin-api Space workspace identity', () => {
+  it('enriches Space commands with the stable project id for the requested workspace', async () => {
+    const workspace = join(scratch, 'workspace');
+    mkdirSync(workspace);
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-stable-id',
+      name: 'Workspace',
+      path: workspace,
+    }]);
+    agentSessionMocks.agentDir = workspace;
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, data: { actor: {} } });
+    const { handleSpaceWhoami } = await import('./admin-api');
+
+    await handleSpaceWhoami({ spaceSlug: 'official', workspacePath: workspace });
+
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith('/api/space/whoami', 'POST', {
+      spaceSlug: 'official',
+      workspacePath: workspace,
+      workspaceId: 'project-stable-id',
+    });
+  });
+
+  it('preserves an explicit workspace id so identity mismatches fail closed downstream', async () => {
+    const workspace = join(scratch, 'workspace-explicit');
+    mkdirSync(workspace);
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-stable-id',
+      name: 'Workspace',
+      path: workspace,
+    }]);
+    agentSessionMocks.agentDir = workspace;
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, data: { actor: {} } });
+    const { handleSpaceWhoami } = await import('./admin-api');
+
+    await handleSpaceWhoami({
+      spaceSlug: 'official',
+      workspacePath: workspace,
+      workspaceId: 'explicit-mismatching-id',
+    });
+
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith('/api/space/whoami', 'POST', {
+      spaceSlug: 'official',
+      workspacePath: workspace,
+      workspaceId: 'explicit-mismatching-id',
+    });
+  });
 });
 
 describe('admin-api goal', () => {

@@ -946,7 +946,7 @@ pub fn cmd_copy_folder_to_templates(
 
 // ============= Admin Agent Sync =============
 
-const ADMIN_AGENT_VERSION: &str = "22";
+const ADMIN_AGENT_VERSION: &str = "23";
 
 /// Helper-bundled paths (relative to `~/.myagents/`) that previous versions
 /// shipped but that have since been retired.
@@ -1044,7 +1044,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 
 // ============= CLI Sync =============
 
-const CLI_VERSION: &str = "35";
+const CLI_VERSION: &str = "36";
 
 /// Sync the CLI script from bundled resources to ~/.myagents/bin/.
 /// Version-gated: only runs when CLI_VERSION changes.
@@ -1206,7 +1206,7 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "31";
+const SYSTEM_SKILLS_VERSION: &str = "32";
 
 /// Skills that ship with the app and MUST stay at the bundled version —
 /// the app's flows depend on them, users are not meant to customise.
@@ -1506,7 +1506,7 @@ fn merge_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 mod system_skills_tests {
     use super::{
         all_installed_system_skills_complete, is_skill_blocked_on_platform, skill_dir_is_complete,
-        sync_one_system_skill, SystemSkillSync, SYSTEM_SKILLS,
+        sync_one_system_skill, SystemSkillSync, SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
     };
     use std::fs;
 
@@ -1525,6 +1525,15 @@ mod system_skills_tests {
         assert!(!skill_dir_is_complete(&dir), "empty dir is not a skill");
         fs::write(dir.join("SKILL.md"), "x").unwrap();
         assert!(skill_dir_is_complete(&dir), "dir with SKILL.md is a skill");
+    }
+
+    #[test]
+    fn v32_refreshes_the_space_cli_contract() {
+        assert_eq!(SYSTEM_SKILLS_VERSION, "32");
+        let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
+        assert!(bundled.contains("myagents space list --json"));
+        assert!(bundled.contains("myagents space whoami --space <slug> --json"));
+        assert!(bundled.contains("所有 Space 业务命令都必须带 `--space <slug>`"));
     }
 
     #[test]

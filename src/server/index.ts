@@ -1876,6 +1876,10 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'thought/create') return await api.handleThoughtCreate(payload as Parameters<typeof api.handleThoughtCreate>[0]);
 
   // MyAgents Cloud Space — Registered Agent CLI bridge.
+  if (route === 'space/list') return await api.handleSpaceList();
+  if (route === 'space/whoami') return await api.handleSpaceWhoami(payload as Parameters<typeof api.handleSpaceWhoami>[0]);
+  if (route === 'space/assignee-list') return await api.handleSpaceAssigneeList(payload as Parameters<typeof api.handleSpaceAssigneeList>[0]);
+  if (route === 'space/issue-create') return await api.handleSpaceIssueCreate(payload as Parameters<typeof api.handleSpaceIssueCreate>[0]);
   if (route === 'space/issue-list') return await api.handleSpaceIssueList(payload as Parameters<typeof api.handleSpaceIssueList>[0]);
   if (route === 'space/issue-get') return await api.handleSpaceIssueGet(payload as Parameters<typeof api.handleSpaceIssueGet>[0]);
   if (route === 'space/issue-comment') return await api.handleSpaceIssueComment(payload as Parameters<typeof api.handleSpaceIssueComment>[0]);
@@ -1889,6 +1893,8 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'space/issue-cancel-claim') return await api.handleSpaceIssueCancelClaim(payload as Parameters<typeof api.handleSpaceIssueCancelClaim>[0]);
   if (route === 'space/claim-local-task') return await api.handleSpaceClaimLocalTask(payload as Parameters<typeof api.handleSpaceClaimLocalTask>[0]);
   if (route === 'space/attachment-download') return await api.handleSpaceAttachmentDownload(payload as Parameters<typeof api.handleSpaceAttachmentDownload>[0]);
+  if (route === 'space/attachment-add') return await api.handleSpaceAttachmentAdd(payload as Parameters<typeof api.handleSpaceAttachmentAdd>[0]);
+  if (route === 'space/attachment-inspect') return await api.handleSpaceAttachmentInspect(payload as Parameters<typeof api.handleSpaceAttachmentInspect>[0]);
 
   // Session Inbox (PRD 0.2.18) — `myagents session send`
   if (route === 'session/send') {

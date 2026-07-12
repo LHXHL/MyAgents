@@ -629,6 +629,9 @@ pub fn run() {
             space_cloud::cmd_space_list_local_skills,
             space_cloud::cmd_space_upload_skill,
             space_cloud::cmd_space_upload_issue_attachments,
+            space_cloud::cmd_space_inspect_attachment_drafts,
+            space_cloud::cmd_space_create_issue_with_attachments,
+            space_cloud::cmd_space_comment_issue_with_attachments,
             space_cloud::cmd_space_download_attachment,
             space_cloud::cmd_space_download_skill_zip,
             // PRD 0.2.35 — global "always-on" wake-lock toggle
