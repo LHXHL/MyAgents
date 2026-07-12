@@ -17,8 +17,8 @@ Cloud Space 横跨两个独立版本、独立发布的仓库，不能把其中�
 
 本地平级 checkout 中，云端架构文档地址是 `../MyAgents_space/specs/ARCHITECTURE.md`。截至 2026-07-12，最近一次联合校验基线为：
 
-- Desktop：`package.json` 为 `0.2.50` 开发线；Space 客户端行为基线 commit `4594dd8`。检查时最近的 Desktop release tag 仍是 `v0.2.49`，因此这里描述的是下一开发版本，不代表已发布客户端。
-- Cloud：`MyAgents_space` `dev/0.1.2` / commit `3e22d18`，已包含 assignee、三类 delivery、trigger/cloud instruction、评论分页与 complete 幂等复合动作；仍待随 Cloud 独立发布流程上线。
+- Desktop：`package.json` 为 `0.2.50` 开发线；Space 客户端行为基线 commit `9c4baea5`。检查时最近的 Desktop release tag 仍是 `v0.2.49`，因此这里描述的是下一开发版本，不代表已发布客户端。
+- Cloud：`MyAgents_space` `0.1.2` release line / commit `3e22d18`，已包含 assignee、三类 delivery、trigger/cloud instruction、评论分页与 complete 幂等复合动作；生产精确版本始终以 Cloud `/health` 返回的 Git tag 与 Worker Version ID 为准。
 
 发布兼容：Cloud 先 additive 部署；请求 `X-MyAgents-Client-Version < 0.2.50` 时只返回旧 subscription projection，assignment/follow-up 保持云端 pending，不得降级为 subscription。Desktop `0.2.50` 才消费 `deliveryKind/cloudInstruction/trigger/assignee`。旧 pending subscription 缺 `deliveryKind` 时，客户端只走显式 legacy fallback；字段存在但 kind 未知时 fail closed 并留待升级处理。
 
