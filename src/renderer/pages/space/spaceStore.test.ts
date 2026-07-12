@@ -310,30 +310,30 @@ describe("spaceStore boot", () => {
         },
       },
     });
-    const stagingSession: SpaceSession = {
+    const devSession: SpaceSession = {
       ...fakeSession,
-      baseUrl: "https://space-staging.myagents.test",
+      baseUrl: "https://space-dev.myagents.test",
     };
     apiMocks.spaceGetCapability.mockResolvedValueOnce({
       available: true,
-      baseUrl: stagingSession.baseUrl,
+      baseUrl: devSession.baseUrl,
       publicClientId: null,
       reason: null,
-      environments: ["production", "staging"],
-      activeEnvironment: "staging",
+      environments: ["production", "dev"],
+      activeEnvironment: "dev",
     });
-    apiMocks.spaceGetSession.mockResolvedValueOnce(stagingSession);
+    apiMocks.spaceGetSession.mockResolvedValueOnce(devSession);
     apiMocks.spaceGetOfficial.mockResolvedValueOnce({
-      space: stagingSession.space,
-      membership: stagingSession.membership,
+      space: devSession.space,
+      membership: devSession.membership,
       goals: [],
     });
 
     await actions.ensureBootstrapped({ force: true, silent: true });
 
     const snapshot = getSnapshot();
-    expect(snapshot.serviceBaseUrl).toBe(stagingSession.baseUrl);
-    expect(snapshot.session?.baseUrl).toBe(stagingSession.baseUrl);
+    expect(snapshot.serviceBaseUrl).toBe(devSession.baseUrl);
+    expect(snapshot.session?.baseUrl).toBe(devSession.baseUrl);
     expect(snapshot.spaceId).toBe("official");
     expect(snapshot.issuesByKey).toEqual({});
     expect(snapshot.skillDetails).toEqual({});
@@ -354,22 +354,22 @@ describe("spaceStore boot", () => {
     apiMocks.spaceListIssues.mockReturnValueOnce(pendingIssues.promise);
 
     const staleRefresh = actions.refreshIssues({ limit: 50 }, { force: true });
-    const stagingSession: SpaceSession = {
+    const devSession: SpaceSession = {
       ...fakeSession,
-      baseUrl: "https://space-staging.myagents.test",
+      baseUrl: "https://space-dev.myagents.test",
     };
     apiMocks.spaceGetCapability.mockResolvedValueOnce({
       available: true,
-      baseUrl: stagingSession.baseUrl,
+      baseUrl: devSession.baseUrl,
       publicClientId: null,
       reason: null,
-      environments: ["production", "staging"],
-      activeEnvironment: "staging",
+      environments: ["production", "dev"],
+      activeEnvironment: "dev",
     });
-    apiMocks.spaceGetSession.mockResolvedValueOnce(stagingSession);
+    apiMocks.spaceGetSession.mockResolvedValueOnce(devSession);
     apiMocks.spaceGetOfficial.mockResolvedValueOnce({
-      space: stagingSession.space,
-      membership: stagingSession.membership,
+      space: devSession.space,
+      membership: devSession.membership,
       goals: [],
     });
 
@@ -382,7 +382,7 @@ describe("spaceStore boot", () => {
     await staleRefresh;
 
     const snapshot = getSnapshot();
-    expect(snapshot.serviceBaseUrl).toBe(stagingSession.baseUrl);
+    expect(snapshot.serviceBaseUrl).toBe(devSession.baseUrl);
     expect(snapshot.issuesByKey).toEqual({});
   });
 

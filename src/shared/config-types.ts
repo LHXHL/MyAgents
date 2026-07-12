@@ -718,7 +718,7 @@ export interface ProxySettings {
 export const DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS = 365;
 
 export type ChatQueueResponseMode = 'realtime' | 'turn';
-export type SpaceEnvironment = 'production' | 'staging';
+export type SpaceEnvironment = 'production' | 'dev';
 
 export function normalizeChatQueueResponseMode(value: unknown): ChatQueueResponseMode {
   return value === 'turn' ? 'turn' : 'realtime';
@@ -784,7 +784,7 @@ export interface AppConfig {
   /** 开发者总门控：团队 Space（MyAgents Space / Cloud Space）。默认关。
    *  功能未完成前隐藏标题栏入口与已恢复的团队 tab。 */
   teamSpaceEnabled?: boolean;
-  /** 开发者：Cloud Space 服务环境。release 构建没有 staging origin 时会被 Rust 忽略。 */
+  /** 开发者：Cloud Space 服务环境。release 构建没有 Dev origin 时会被 Rust 忽略。 */
   spaceEnvironment?: SpaceEnvironment;
   /** 悬浮球本体显隐开关；由桌面宠物设置页顶部开关控制。默认关。 */
   floatingBallEnabled?: boolean;

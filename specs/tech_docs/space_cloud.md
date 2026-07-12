@@ -18,7 +18,7 @@ Cloud Space 横跨两个独立版本、独立发布的仓库，不能把其中�
 本地平级 checkout 中，云端架构文档地址是 `../MyAgents_space/specs/ARCHITECTURE.md`。截至 2026-07-12，最近一次联合校验基线为：
 
 - Desktop：`package.json` 为 `0.2.50` 开发线；本节覆盖评论附件、本地 draft inspect、显式多 Space CLI 与自动 User/Registered Agent actor resolver。检查时最近的 Desktop release tag 仍是 `v0.2.49`，因此这里描述的是下一开发版本，不代表已发布客户端。
-- Cloud：`MyAgents_space` 未发布开发 commit `082405911bcac2278501975d6cbfa642d19b01c9`，已包含 comment-owned attachments、JSON/multipart 原子 create/comment/complete、direct top attachment update/delivery、typed assignee candidates、Space context assertion 与 role-downgrade revoke；它尚未进入远端/生产 `0.1.2`，生产精确版本始终以 Cloud `/health` 返回的 Git tag 与 Worker Version ID 为准。
+- Cloud：`MyAgents_space 0.1.3` Dev 候选已包含 comment-owned attachments、JSON/multipart 原子 create/comment/complete、direct top attachment update/delivery、typed assignee candidates、Space context assertion、role-downgrade revoke 与 Production/Dev 环境隔离。候选精确 Git/Worker 身份以 `origin/dev`、Development workflow 与 Dev `/health` 共同证明；它尚未进入生产 `0.1.2`，生产精确版本始终以 Production `/health` 返回的 Git tag 与 Worker Version ID 为准。
 
 发布兼容：Cloud 先 additive 部署；请求 `X-MyAgents-Client-Version < 0.2.50` 时只返回旧 subscription projection，assignment/follow-up 保持云端 pending，不得降级为 subscription。Desktop `0.2.50` 才消费 `deliveryKind/cloudInstruction/trigger/assignee`。旧 pending subscription 缺 `deliveryKind` 时，客户端只走显式 legacy fallback；字段存在但 kind 未知时 fail closed 并留待升级处理。
 
@@ -30,9 +30,9 @@ Space 是 build-time capability：
 
 - `src-tauri/build.rs` 读取环境变量或仓库根 `.env`，仅转发 `MYAGENTS_SPACE_*` 白名单。
 - `MYAGENTS_SPACE_ENABLED=true` 时必须提供 HTTPS 且不带 path/credential 的 `MYAGENTS_SPACE_BASE_URL`；build/runtime 校验会移除 query/fragment 并注入规范化后的 origin。
-- debug 构建可以额外烘焙 `MYAGENTS_SPACE_STAGING_BASE_URL`。release profile 会在 `build.rs` 中无条件丢弃 staging origin，因此生产二进制不能暴露 staging 服务开关。
+- debug 构建可以额外烘焙 `MYAGENTS_SPACE_DEV_BASE_URL`。release profile 会在 `build.rs` 中无条件丢弃 Dev origin，因此生产二进制不能暴露 Dev 服务开关。
 - `cmd_space_get_capability` 返回 `{available, baseUrl, publicClientId, reason, environments, activeEnvironment}`，只代表构建能力与 Rust 当前选中的 build-time origin；前端还必须叠加 `config.teamSpaceEnabled === true`（默认关闭）才展示开发中的 Team Space 入口。
-- `config.spaceEnvironment` 只能在烘焙的 `production` / `staging` origin 之间二选一，默认 `production`。Renderer 不提供自由 URL 输入；所有云端请求仍从 Rust `space_build_capability()` / `space_base_url()` 单一咽喉读取当前 origin。
+- `config.spaceEnvironment` 只能写入烘焙的 `production` / `dev` origin，默认 `production`。旧值 `staging` 只作为读取兼容 alias：debug 构建包含 Dev origin 时映射到 `dev`，release 构建仍回落 Production。Renderer 不提供自由 URL 输入；所有云端请求仍从 Rust `space_build_capability()` / `space_base_url()` 单一咽喉读取当前 origin。
 - 缺少能力时，Space UI 不应降级为硬编码 URL；所有云端请求必须经 Rust 能力检查。
 
 ### Dev/Test mock data mode
@@ -106,7 +106,7 @@ Registered Agent 执行请求是 token-only capability：
 Space 本地状态由 Rust `space_data_dir()` 按当前环境选择：
 
 - production 保持兼容路径 `~/.myagents/space/{session.json,registered_agents.json,delivery_log.json}`。
-- staging 使用 `~/.myagents/space/staging/{session.json,registered_agents.json,delivery_log.json}`。
+- Dev 使用 `~/.myagents/space/dev/{session.json,registered_agents.json,delivery_log.json}`；旧 `space/staging` 数据不自动复制或删除，用户在全新 Dev 环境重新登录。
 - `session.json` — 云端 session token 与用户/accountPlan/space/membership 摘要；Rust 对外只返回 redacted public view。
 - `registered_agents.json` — 本机注册到 Space 的 Agent 映射，包含本地 workspace path、`ownerUserId`、`deviceId`、设备摘要、订阅状态与云端 token。
 - `delivery_log.json` — 已投递 IssueDelivery 到本地 session 的映射，用于幂等与 delivered 标记。
@@ -115,7 +115,7 @@ Space 本地状态由 Rust `space_data_dir()` 按当前环境选择：
 
 全局 Skill 安装路径不属于 Space 服务环境状态，始终是 `~/.myagents/skills`；不能从环境化后的 `space_data_dir()` 反推。
 
-Renderer `spaceStore` 的缓存身份必须至少包含服务 origin。production/staging 都可能使用 `official` slug，切换环境时即使 slug 不变也必须清掉 issue/skill/agent/event 缓存，避免旧环境数据被拿来驱动新环境 API。
+Renderer `spaceStore` 的缓存身份必须至少包含服务 origin。production/Dev 都可能使用 `official` slug，切换环境时即使 slug 不变也必须清掉 issue/skill/agent/event 缓存，避免旧环境数据被拿来驱动新环境 API。
 
 Legacy 兼容规则：
 

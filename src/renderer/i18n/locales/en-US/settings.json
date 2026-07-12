@@ -1867,7 +1867,7 @@
       "spaceEnvironmentSaveFailed": "Failed to switch Space environment: {{message}}",
       "spaceEnvironment": {
         "production": "Production",
-        "staging": "Staging"
+        "dev": "Dev"
       },
       "splitViewTitle": "Split View Preview (Experimental)",
       "splitViewDescription": "Open file previews in a right-side split view instead of a modal.",

@@ -7,7 +7,7 @@ use std::{
 const SPACE_BUILD_ENV_KEYS: &[&str] = &[
     "MYAGENTS_SPACE_ENABLED",
     "MYAGENTS_SPACE_BASE_URL",
-    "MYAGENTS_SPACE_STAGING_BASE_URL",
+    "MYAGENTS_SPACE_DEV_BASE_URL",
     "MYAGENTS_SPACE_PUBLIC_CLIENT_ID",
     "MYAGENTS_SPACE_CLIENT_ID",
 ];
@@ -119,14 +119,16 @@ fn expose_space_build_env() {
         .collect::<HashMap<_, _>>();
 
     if env::var("PROFILE").as_deref() == Ok("release") {
-        resolved_env.remove("MYAGENTS_SPACE_STAGING_BASE_URL");
-    }
-    if resolved_env
-        .get("MYAGENTS_SPACE_STAGING_BASE_URL")
+        // An inherited process env is visible to `option_env!` even when it is
+        // absent from our resolved map. Emit an explicit empty value so a
+        // release rustc invocation cannot accidentally bake in the Dev origin.
+        resolved_env.insert("MYAGENTS_SPACE_DEV_BASE_URL".to_string(), String::new());
+    } else if resolved_env
+        .get("MYAGENTS_SPACE_DEV_BASE_URL")
         .map(|value| value.trim().is_empty())
         .unwrap_or(false)
     {
-        resolved_env.remove("MYAGENTS_SPACE_STAGING_BASE_URL");
+        resolved_env.remove("MYAGENTS_SPACE_DEV_BASE_URL");
     }
 
     normalize_space_build_env(&mut resolved_env);
@@ -221,17 +223,17 @@ fn normalize_space_build_env(values: &mut HashMap<String, String>) {
         Err(error) => panic!("Invalid Space build configuration: {error}"),
     }
 
-    if let Some(staging_url) = values
-        .get("MYAGENTS_SPACE_STAGING_BASE_URL")
+    if let Some(dev_url) = values
+        .get("MYAGENTS_SPACE_DEV_BASE_URL")
         .map(String::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
-        match normalize_space_base_url("MYAGENTS_SPACE_STAGING_BASE_URL", staging_url) {
+        match normalize_space_base_url("MYAGENTS_SPACE_DEV_BASE_URL", dev_url) {
             Ok(normalized) => {
-                values.insert("MYAGENTS_SPACE_STAGING_BASE_URL".to_string(), normalized);
+                values.insert("MYAGENTS_SPACE_DEV_BASE_URL".to_string(), normalized);
             }
-            Err(error) => panic!("Invalid Space staging build configuration: {error}"),
+            Err(error) => panic!("Invalid Space Dev build configuration: {error}"),
         }
     }
 }

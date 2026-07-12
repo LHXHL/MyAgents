@@ -714,16 +714,16 @@ trusted root `~/.myagents/generated/tool-attachments/<sid>/<tid>/<file>`（base6
 
 Cloud Space 把官方/团队空间接入桌面端，目前仍是开发中/半成品能力，不作为已发布用户能力写入 CHANGELOG 或 GitHub Release notes。
 
-**架构真相分工与版本：** 本仓库只维护 Desktop 客户端 owner（Rust connector、本地身份/状态、UI、CLI 与 Task/Session 执行），详细状态见 `specs/tech_docs/space_cloud.md`；Cloud Worker 的 API、鉴权、领域模型、D1/R2、一致性、quota 与运营能力由同级 `hAcKlyc/MyAgents_space` 仓库的 `specs/ARCHITECTURE.md` 维护。本地平级 checkout 路径为 `../MyAgents_space/specs/ARCHITECTURE.md`。两仓独立发版，不按版本号锁步；截至 2026-07-12 最近实现对照基线为 Desktop `0.2.50` 开发线 ↔ Space Cloud 未发布开发 commit `082405911bcac2278501975d6cbfa642d19b01c9`，已实现 comment-owned attachments、原子 multipart create/comment/complete、direct attachment update/delivery、持久 assignee、`subscription | assignment | claim_followup` 三类 Delivery、trigger/cloud instruction 与客户端兼容门控。该 commit 尚不代表生产 `0.1.2`；生产精确版本始终以 Space `/health` 返回为准。具体 rollout 差异见 `specs/tech_docs/space_cloud.md`「文档归属与兼容基线」。若契约变化必须同步更新两边实现、测试、文档和兼容基线。
+**架构真相分工与版本：** 本仓库只维护 Desktop 客户端 owner（Rust connector、本地身份/状态、UI、CLI 与 Task/Session 执行），详细状态见 `specs/tech_docs/space_cloud.md`；Cloud Worker 的 API、鉴权、领域模型、D1/R2、一致性、quota 与运营能力由同级 `hAcKlyc/MyAgents_space` 仓库的 `specs/ARCHITECTURE.md` 维护。本地平级 checkout 路径为 `../MyAgents_space/specs/ARCHITECTURE.md`。两仓独立发版，不按版本号锁步；截至 2026-07-12 最近实现对照基线为 Desktop `0.2.50` 开发线 ↔ Space Cloud `0.1.3` Dev 候选，已实现 comment-owned attachments、原子 multipart create/comment/complete、direct attachment update/delivery、持久 assignee、`subscription | assignment | claim_followup` 三类 Delivery、trigger/cloud instruction、客户端兼容门控与 Production/Dev 环境隔离。候选精确 Git/Worker 身份以 `origin/dev`、Development workflow 与 Dev `/health` 的共同结果为准；它不代表生产 `0.1.2`，生产精确版本始终以 Production `/health` 返回为准。具体 rollout 差异见 `specs/tech_docs/space_cloud.md`「文档归属与兼容基线」。若契约变化必须同步更新两边实现、测试、文档和兼容基线。
 
 **核心边界：**
 
 - Space 不是 AI Runtime / Session Sidecar。云端登录、HTTP 请求、附件/Skill IO、registered-agent IssueDelivery poll/process 都由 Rust Tauri command 拥有。
 - Renderer 只通过 `src/renderer/api/spaceCloud.ts` 调 Tauri invoke，不直连 Space 服务，也不持有 session token。
-- build-time capability 由 `src-tauri/build.rs` 注入 `MYAGENTS_SPACE_*`，`cmd_space_get_capability` 只裁决构建能力与当前 build-time origin；开发中入口还受 `config.teamSpaceEnabled` 默认关闭门控。debug 构建可烘焙 `MYAGENTS_SPACE_STAGING_BASE_URL`，release profile 机制性丢弃 staging origin。
-- `config.spaceEnvironment` 只在烘焙的 `production` / `staging` origin 之间二选一，Renderer 不提供自由 URL 输入。
-- 本地状态 production 在 `~/.myagents/space/{session.json,registered_agents.json,delivery_log.json}`，staging 在 `~/.myagents/space/staging/{...}`；二者不进入 SessionStore。全局 Skill 安装仍是 `~/.myagents/skills`，不随 Space 环境切换。
-- Space renderer cache identity 包含服务 origin；切换 production/staging 时即使 space slug 同为 `official` 也必须清缓存。
+- build-time capability 由 `src-tauri/build.rs` 注入 `MYAGENTS_SPACE_*`，`cmd_space_get_capability` 只裁决构建能力与当前 build-time origin；开发中入口还受 `config.teamSpaceEnabled` 默认关闭门控。debug 构建可烘焙 `MYAGENTS_SPACE_DEV_BASE_URL`，release profile 机制性丢弃 Dev origin。
+- `config.spaceEnvironment` 只在烘焙的 `production` / `dev` origin 之间二选一，Renderer 不提供自由 URL 输入。旧配置值 `staging` 仅在 debug 构建包含 Dev origin 时读取为 `dev`；新写入永远使用 `dev`，release 构建一律回落 Production。
+- 本地状态 production 在 `~/.myagents/space/{session.json,registered_agents.json,delivery_log.json}`，Dev 在 `~/.myagents/space/dev/{...}`；二者不进入 SessionStore，旧 `space/staging` 不自动迁移。全局 Skill 安装仍是 `~/.myagents/skills`，不随 Space 环境切换。
+- Space renderer cache identity 包含服务 origin；切换 production/Dev 时即使 space slug 同为 `official` 也必须清缓存。
 - 本地端点身份统一由 `~/.myagents/device_id` 表达，Rust owner 是 `src-tauri/src/device_identity.rs`。Analytics 的 `device_id` 与 Space 的 `deviceId` 消费同一个值，不再派生第二套云端 device id。
 - 云端概念是 `user_devices(userId, deviceId)`，用于记录某个登录用户在某个本地端点上的设备名、平台、系统版本、客户端版本与 last seen。客户端登录/授权后会尝试 upsert；registered-agent 注册/编辑 payload 也携带这些字段供服务端落表。
 - Registered Agent 是执行实体，归属于 `(ownerUserId, deviceId)`，并关联该设备上的本地 Agent 工作区。只有 `ownerUserId === current session user` 且 `deviceId === current local device_id` 的 Agent 才是当前设备可编辑/可执行的 local Agent。

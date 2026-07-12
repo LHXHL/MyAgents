@@ -1867,7 +1867,7 @@
       "spaceEnvironmentSaveFailed": "切换 Space 环境失败：{{message}}",
       "spaceEnvironment": {
         "production": "生产",
-        "staging": "Staging"
+        "dev": "Dev"
       },
       "splitViewTitle": "分屏预览（实验性）",
       "splitViewDescription": "点击文件在右侧分屏打开预览，而非弹窗。",

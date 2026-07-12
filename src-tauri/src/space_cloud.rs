@@ -27,7 +27,7 @@ use crate::{ulog_info, ulog_warn};
 
 const SPACE_ENABLED_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_ENABLED");
 const SPACE_BASE_URL_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_BASE_URL");
-const SPACE_STAGING_BASE_URL_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_STAGING_BASE_URL");
+const SPACE_DEV_BASE_URL_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_DEV_BASE_URL");
 const SPACE_PUBLIC_CLIENT_ID_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_PUBLIC_CLIENT_ID");
 const SPACE_LEGACY_CLIENT_ID_ENV: Option<&str> = option_env!("MYAGENTS_SPACE_CLIENT_ID");
 const SPACE_PUBLIC_CLIENT_ID_HEADER: &str = "X-MyAgents-Space-Client-Id";
@@ -180,7 +180,7 @@ pub struct SpaceBuildCapability {
 #[serde(rename_all = "camelCase")]
 pub enum SpaceEnvironment {
     Production,
-    Staging,
+    Dev,
 }
 
 #[derive(Debug, Clone)]
@@ -193,7 +193,7 @@ impl SpaceEnvironment {
     fn config_value(self) -> &'static str {
         match self {
             Self::Production => "production",
-            Self::Staging => "staging",
+            Self::Dev => "dev",
         }
     }
 }
@@ -5251,16 +5251,27 @@ fn validate_configured_space_base_url(key: &str, raw: &str) -> Result<String, St
     Ok(normalized.to_string().trim_end_matches('/').to_string())
 }
 
-fn configured_staging_base_url() -> Result<Option<String>, String> {
-    SPACE_STAGING_BASE_URL_ENV
-        .map(|value| validate_configured_space_base_url("MYAGENTS_SPACE_STAGING_BASE_URL", value))
+fn configured_dev_base_url() -> Result<Option<String>, String> {
+    SPACE_DEV_BASE_URL_ENV
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| validate_configured_space_base_url("MYAGENTS_SPACE_DEV_BASE_URL", value))
         .transpose()
 }
 
-fn configured_space_environment(staging_available: bool) -> SpaceEnvironment {
-    if !staging_available {
+fn resolve_configured_space_environment(
+    configured_value: Option<&str>,
+    dev_available: bool,
+) -> SpaceEnvironment {
+    if !dev_available {
         return SpaceEnvironment::Production;
     }
+    match configured_value {
+        Some("dev" | "staging") => SpaceEnvironment::Dev,
+        _ => SpaceEnvironment::Production,
+    }
+}
+
+fn configured_space_environment(dev_available: bool) -> SpaceEnvironment {
     let Some(dir) = crate::app_dirs::myagents_data_dir() else {
         return SpaceEnvironment::Production;
     };
@@ -5270,10 +5281,10 @@ fn configured_space_environment(staging_available: bool) -> SpaceEnvironment {
     let Ok(config) = serde_json::from_str::<Value>(crate::utils::bom::strip_bom(&content)) else {
         return SpaceEnvironment::Production;
     };
-    match config.get("spaceEnvironment").and_then(Value::as_str) {
-        Some("staging") => SpaceEnvironment::Staging,
-        _ => SpaceEnvironment::Production,
-    }
+    resolve_configured_space_environment(
+        config.get("spaceEnvironment").and_then(Value::as_str),
+        dev_available,
+    )
 }
 
 pub fn space_build_capability() -> SpaceBuildCapability {
@@ -5325,7 +5336,7 @@ pub fn space_build_capability() -> SpaceBuildCapability {
             };
         }
     };
-    let staging_base_url = match configured_staging_base_url() {
+    let dev_base_url = match configured_dev_base_url() {
         Ok(value) => value,
         Err(error) => {
             return SpaceBuildCapability {
@@ -5339,13 +5350,13 @@ pub fn space_build_capability() -> SpaceBuildCapability {
         }
     };
     let mut environments = vec![SpaceEnvironment::Production];
-    if staging_base_url.is_some() {
-        environments.push(SpaceEnvironment::Staging);
+    if dev_base_url.is_some() {
+        environments.push(SpaceEnvironment::Dev);
     }
-    let active_environment = configured_space_environment(staging_base_url.is_some());
+    let active_environment = configured_space_environment(dev_base_url.is_some());
     let active_base_url = match active_environment {
         SpaceEnvironment::Production => base_url,
-        SpaceEnvironment::Staging => staging_base_url.unwrap_or(base_url),
+        SpaceEnvironment::Dev => dev_base_url.unwrap_or(base_url),
     };
     SpaceBuildCapability {
         available: true,
@@ -6077,14 +6088,19 @@ fn space_runtime_scope() -> Result<SpaceRuntimeScope, String> {
 }
 
 fn space_data_dir_for_environment(environment: SpaceEnvironment) -> Result<PathBuf, String> {
-    let mut dir = crate::app_dirs::myagents_data_dir()
+    let root = crate::app_dirs::myagents_data_dir()
         .ok_or_else(|| "Home dir not found".to_string())?
         .join("space");
-    if environment == SpaceEnvironment::Staging {
-        dir = dir.join(SpaceEnvironment::Staging.config_value());
-    }
+    let dir = space_data_dir_path_for_environment(root, environment);
     fs::create_dir_all(&dir).map_err(|e| format!("Failed to create Space data dir: {}", e))?;
     Ok(dir)
+}
+
+fn space_data_dir_path_for_environment(root: PathBuf, environment: SpaceEnvironment) -> PathBuf {
+    match environment {
+        SpaceEnvironment::Production => root,
+        SpaceEnvironment::Dev => root.join(environment.config_value()),
+    }
 }
 
 fn space_data_dir() -> Result<PathBuf, String> {
@@ -7692,6 +7708,62 @@ fn url_component(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn space_environment_serializes_only_current_public_values() {
+        assert_eq!(
+            serde_json::to_value(SpaceEnvironment::Production).expect("serialize production"),
+            serde_json::json!("production")
+        );
+        assert_eq!(
+            serde_json::to_value(SpaceEnvironment::Dev).expect("serialize Dev"),
+            serde_json::json!("dev")
+        );
+    }
+
+    #[test]
+    fn legacy_staging_config_maps_to_dev_only_when_dev_is_baked_in() {
+        for configured in [Some("dev"), Some("staging")] {
+            assert_eq!(
+                resolve_configured_space_environment(configured, true),
+                SpaceEnvironment::Dev
+            );
+            assert_eq!(
+                resolve_configured_space_environment(configured, false),
+                SpaceEnvironment::Production
+            );
+        }
+        assert_eq!(
+            resolve_configured_space_environment(Some("unknown"), true),
+            SpaceEnvironment::Production
+        );
+        assert_eq!(
+            resolve_configured_space_environment(None, true),
+            SpaceEnvironment::Production
+        );
+    }
+
+    #[test]
+    fn dev_state_uses_an_isolated_data_directory() {
+        let root = PathBuf::from("space-root");
+        assert_eq!(
+            space_data_dir_path_for_environment(root.clone(), SpaceEnvironment::Production),
+            root
+        );
+        assert_eq!(
+            space_data_dir_path_for_environment(root.clone(), SpaceEnvironment::Dev),
+            root.join("dev")
+        );
+    }
+
+    #[cfg(not(debug_assertions))]
+    #[test]
+    fn release_build_discards_dev_origin() {
+        assert!(SPACE_DEV_BASE_URL_ENV.is_none_or(|value| value.trim().is_empty()));
+        assert!(!space_build_capability()
+            .environments
+            .contains(&SpaceEnvironment::Dev));
+    }
 
     fn test_space_session(user_id: &str) -> SpaceSession {
         SpaceSession {
