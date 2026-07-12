@@ -23,6 +23,9 @@ export type TaskStatus =
   | 'archived'
   | 'deleted';
 
+/** Transient state of one concrete scheduler turn; never persisted. */
+export type TaskExecutionState = 'running' | 'stopping' | 'stop_failed';
+
 /** Statuses accepted by the CLI `task update-status`. `archived` is user-only (see §9.1). */
 export type CliSettableStatus = 'running' | 'verifying' | 'done' | 'blocked' | 'stopped';
 
@@ -205,6 +208,10 @@ export interface Task {
   deleted?: boolean;
   /** Set when `deleted = true`. Used for retention cleanup. */
   deletedAt?: number;
+  /** Current concrete turn state. Separate from persisted scheduling status. */
+  executionState?: TaskExecutionState;
+  /** Stop confirmation failure for the current concrete turn. */
+  executionError?: string;
   /** Absolute paths to the four task markdown docs. Populated by
    *  `cmd_task_get` / `/api/task/get` at read time (not persisted) — the
    *  consumer (CLI, AI, UI) reads the files directly via Read/Edit/Write

@@ -781,6 +781,7 @@
       "descriptionSuffix": "and run memory maintenance on active sessions.",
       "createdFile": "Created UPDATE_MEMORY.md",
       "fileError": "Cannot read or write UPDATE_MEMORY.md. Check the workspace path.",
+      "taskReconcileFailed": "Memory update settings could not be fully applied: {{message}}",
       "interval": "Update interval",
       "intervalHours": "{{count}} hours",
       "window": "Update window",

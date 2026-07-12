@@ -239,12 +239,10 @@ pub fn cmd_can_restore_session(sessionId: String, agentDir: String) -> bool {
 
 /// v0.1.69 T13: Runtime invariant check on Sidecar reuse.
 ///
-/// Under the v0.1.69 layered-snapshot model, a session's `runtime` is part of
-/// its immutable identity (stamped at creation in sessions.json). The Sidecar
-/// was spawned with MYAGENTS_RUNTIME derived from the owner-aware priority
-/// chain. These two MUST stay aligned for the lifetime of the Sidecar — a
-/// cross-runtime session switch opens a new Tab (Scenario 1.5 / T12), it
-/// doesn't swap the runtime under a live Sidecar.
+/// The expected identity is resolved once per ensure attempt from the
+/// owner-aware priority chain. For an existing Session that includes immutable
+/// Session metadata; for a metadata creator it uses the requested override or
+/// Agent default. Reuse and spawn MUST consume that same identity snapshot.
 ///
 /// If we detect a mismatch on a reuse path, it indicates either:
 ///   (a) T12's new-tab gate missed a case
@@ -258,25 +256,19 @@ pub fn cmd_can_restore_session(sessionId: String, agentDir: String) -> bool {
 /// session identity.
 pub(super) fn validate_sidecar_runtime_invariant(
     session_id: &str,
+    expected_identity: &RuntimeIdentity,
     sidecar_runtime: Option<&str>,
     sidecar_runtime_source: Option<&str>,
     site: &str,
 ) -> Result<(), String> {
-    let sidecar_rt = sidecar_runtime.unwrap_or("builtin");
+    let sidecar_rt = normalize_runtime_name(sidecar_runtime);
     let sidecar_source = normalize_runtime_source_name(sidecar_rt, sidecar_runtime_source);
-    let session_identity = resolve_session_runtime_identity_full(session_id);
-    let session_rt_str = session_identity
-        .as_ref()
-        .map(|identity| identity.runtime.as_str())
-        .unwrap_or("builtin");
-    let session_source = session_identity
-        .as_ref()
-        .map(|identity| identity.runtime_source_label())
-        .unwrap_or("builtin");
-    if sidecar_rt != session_rt_str || sidecar_source != session_source {
+    let expected_runtime = expected_identity.runtime.as_str();
+    let expected_source = expected_identity.runtime_source_label();
+    if sidecar_rt != expected_runtime || sidecar_source != expected_source {
         let message = format!(
-            "session={} site={} sidecar_runtime={} sidecar_runtime_source={} session_runtime={} session_runtime_source={}",
-            session_id, site, sidecar_rt, sidecar_source, session_rt_str, session_source
+            "session={} site={} sidecar_runtime={} sidecar_runtime_source={} expected_runtime={} expected_runtime_source={}",
+            session_id, site, sidecar_rt, sidecar_source, expected_runtime, expected_source
         );
         ulog_error!(
             "[sidecar][runtime-drift-on-reuse] {} — rejecting reuse",

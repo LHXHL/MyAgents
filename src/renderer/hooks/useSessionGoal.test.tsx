@@ -7,14 +7,16 @@ import { useSessionGoal } from './useSessionGoal';
 const api = vi.hoisted(() => ({
   createSessionGoal: vi.fn(),
   markSessionGoalTerminal: vi.fn(),
+  pauseSessionGoal: vi.fn(),
+  resumeSessionGoal: vi.fn(),
 }));
 
 vi.mock('@/api/sessionGoalClient', () => ({
   createSessionGoal: api.createSessionGoal,
   getSessionGoal: vi.fn(),
   markSessionGoalTerminal: api.markSessionGoalTerminal,
-  pauseSessionGoal: vi.fn(),
-  resumeSessionGoal: vi.fn(),
+  pauseSessionGoal: api.pauseSessionGoal,
+  resumeSessionGoal: api.resumeSessionGoal,
 }));
 
 const createdGoal: SessionGoal = {
@@ -41,6 +43,8 @@ describe('useSessionGoal creation surface', () => {
     vi.clearAllMocks();
     api.createSessionGoal.mockResolvedValue(createdGoal);
     api.markSessionGoalTerminal.mockResolvedValue({ ...createdGoal, status: 'canceled' });
+    api.pauseSessionGoal.mockResolvedValue({ ...createdGoal, status: 'paused', revision: 2 });
+    api.resumeSessionGoal.mockResolvedValue({ ...createdGoal, status: 'active', revision: 2 });
   });
 
   it('creates only through an explicit Goal draft and keeps the returned projection', async () => {
@@ -209,5 +213,109 @@ describe('useSessionGoal creation surface', () => {
     expect(result.current.state.goal).toBeNull();
     expect(result.current.state.isStarting).toBe(false);
     expect(api.markSessionGoalTerminal).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['pause', 'active', api.pauseSessionGoal],
+    ['resume', 'paused', api.resumeSessionGoal],
+  ] as const)('does not project a late %s response into a different Session', async (
+    operation,
+    initialStatus,
+    operationMock,
+  ) => {
+    const goalA = { ...createdGoal, status: initialStatus } as SessionGoal;
+    const goalB = {
+      ...createdGoal,
+      id: 'goal-2',
+      sessionId: 'session-2',
+      objective: 'ship session two',
+    };
+    api.createSessionGoal.mockResolvedValueOnce(goalA).mockResolvedValueOnce(goalB);
+    let resolveOperation!: (goal: SessionGoal) => void;
+    operationMock.mockImplementationOnce(() => new Promise(resolve => {
+      resolveOperation = resolve;
+    }));
+    const { result, rerender } = renderHook(({ sessionId }) => useSessionGoal({
+      workspacePath: '/tmp/workspace',
+      sessionId,
+    }), { initialProps: { sessionId: 'session-1' } });
+
+    await act(async () => {
+      await result.current.start({
+        taskKind: 'goal',
+        prompt: goalA.objective,
+        endConditions: { aiCanExit: true },
+        notifyEnabled: true,
+      });
+    });
+    let operationPromise!: Promise<SessionGoal | null>;
+    act(() => {
+      operationPromise = operation === 'pause'
+        ? result.current.pause()
+        : result.current.resume();
+    });
+    act(() => rerender({ sessionId: 'session-2' }));
+    await act(async () => {
+      await result.current.start({
+        taskKind: 'goal',
+        prompt: goalB.objective,
+        endConditions: { aiCanExit: true },
+        notifyEnabled: true,
+      });
+    });
+
+    await act(async () => {
+      resolveOperation({ ...goalA, status: operation === 'pause' ? 'paused' : 'active', revision: 2 });
+      await operationPromise;
+    });
+
+    expect(result.current.state.goal?.id).toBe('goal-2');
+    expect(result.current.state.goal?.sessionId).toBe('session-2');
+  });
+
+  it('does not clear a new Session Goal when an old cancel response arrives late', async () => {
+    const goalB = {
+      ...createdGoal,
+      id: 'goal-2',
+      sessionId: 'session-2',
+      objective: 'ship session two',
+    };
+    api.createSessionGoal.mockResolvedValueOnce(createdGoal).mockResolvedValueOnce(goalB);
+    let resolveCancel!: (goal: SessionGoal) => void;
+    api.markSessionGoalTerminal.mockImplementationOnce(() => new Promise(resolve => {
+      resolveCancel = resolve;
+    }));
+    const { result, rerender } = renderHook(({ sessionId }) => useSessionGoal({
+      workspacePath: '/tmp/workspace',
+      sessionId,
+    }), { initialProps: { sessionId: 'session-1' } });
+
+    await act(async () => {
+      await result.current.start({
+        taskKind: 'goal',
+        prompt: createdGoal.objective,
+        endConditions: { aiCanExit: true },
+        notifyEnabled: true,
+      });
+    });
+    let cancelPromise!: ReturnType<typeof result.current.cancel>;
+    act(() => { cancelPromise = result.current.cancel(); });
+    act(() => rerender({ sessionId: 'session-2' }));
+    await act(async () => {
+      await result.current.start({
+        taskKind: 'goal',
+        prompt: goalB.objective,
+        endConditions: { aiCanExit: true },
+        notifyEnabled: true,
+      });
+    });
+
+    await act(async () => {
+      resolveCancel({ ...createdGoal, status: 'canceled', revision: 2 });
+      await cancelPromise;
+    });
+
+    expect(result.current.state.goal?.id).toBe('goal-2');
+    expect(result.current.state.goal?.sessionId).toBe('session-2');
   });
 });

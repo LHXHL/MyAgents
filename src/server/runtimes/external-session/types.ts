@@ -104,6 +104,13 @@ export interface ExternalConfigApplyResult {
   error?: string;
 }
 
+export type ExternalSendResult = {
+  queued: boolean;
+  error?: string;
+  /** The runtime may have consumed the turn and its process could not be stopped. */
+  terminationUnconfirmed?: boolean;
+};
+
 export interface ExternalQueuedMessageOperation {
   kind: 'message';
   queueId: string;
@@ -111,8 +118,8 @@ export interface ExternalQueuedMessageOperation {
   images?: ImagePayload[];
   context: ExternalSendContext;
   runtimeConfig: ExternalRuntimeConfigSnapshot;
-  dispatchAcceptance: Promise<{ queued: boolean; error?: string }>;
-  settleDispatchAcceptance: (result: { queued: boolean; error?: string }) => void;
+  dispatchAcceptance: Promise<ExternalSendResult>;
+  settleDispatchAcceptance: (result: ExternalSendResult) => void;
 }
 
 export interface ExternalQueuedConfigOperation {

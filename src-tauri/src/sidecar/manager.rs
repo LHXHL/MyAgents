@@ -613,8 +613,6 @@ impl SidecarManager {
 
     /// Add an owner to a Session's Sidecar
     /// Returns true if owner was added, false if session doesn't exist
-    /// Reserved for future use (e.g., explicit owner management)
-    #[allow(dead_code)]
     pub fn add_session_owner(&mut self, session_id: &str, owner: SidecarOwner) -> bool {
         if let Some(sidecar) = self.sidecars.get_mut(session_id) {
             ulog_info!(

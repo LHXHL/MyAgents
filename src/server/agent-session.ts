@@ -201,6 +201,7 @@ import {
 } from './builtin-session/lifecycle';
 import {
   beginPromotedItem,
+  cancelTurnAdmissionTicket,
   cancelPromotedItem,
   clearPromotedItem,
   clearInFlightSlot as queueClearInFlightSlot,
@@ -217,6 +218,7 @@ import {
   getPromotedTurnIdentity,
   getQueueStatus as queueGetQueueStatus,
   getTurnAdmissionTicket,
+  getTurnAdmissionIdentity,
   getTurnBoundaryQueue,
   hasQueuedTurnByOwner as queueHasQueuedTurnByOwner,
   hasQueuedOrInFlightWork as queueHasQueuedOrInFlightWork,
@@ -253,6 +255,7 @@ import {
   incrementCurrentTurnToolCount,
   markAssistantMessageError,
   markCurrentTurnHasOutput,
+  notifyQueuedTurnStopped,
   popPendingRequest as turnPopPendingRequest,
   pushPendingRequest as turnPushPendingRequest,
   removePendingRequest as turnRemovePendingRequest,
@@ -1913,7 +1916,10 @@ function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {
   })) {
     releaseTurnAdmissionTicket();
   }
-  cancelPromotedItem();
+  const promotedItem = cancelPromotedItem();
+  if (promotedItem) {
+    void notifyQueuedTurnStopped(promotedItem, 'Session aborted before queue dispatch');
+  }
   clearPromotedItem();
   // Subprocess is about to die — rescue pending items so the recovery session
   // re-delivers them instead of losing them with the dead stdin buffer.
@@ -6896,7 +6902,9 @@ export function getLastBuiltinAssistantText(): string {
 }
 
 export function getCurrentTurnIdentity(): TurnIdentity | null {
-  return getBuiltinCurrentTurnIdentity() ?? getPromotedTurnIdentity();
+  return getBuiltinCurrentTurnIdentity()
+    ?? getPromotedTurnIdentity()
+    ?? getTurnAdmissionIdentity();
 }
 
 export function hasQueuedTurnByOwner(owner: TurnOwner): boolean {
@@ -6946,8 +6954,13 @@ function clearMessageState(): void {
   // abortPersistentSession) has already moved these into queueState.messageQueue and
   // drainQueueWithCancellation handled them — so this is a defensive cleanup
   // for paths that hit clearMessageState without going through abort first.
-  for (const pending of getPendingMidTurnQueue()) {
+  const pendingItems = [...getPendingMidTurnQueue()];
+  for (const pending of pendingItems) {
     pushInboxAbortReplyForQueuedItem(pending.sourceItem, 'message_dropped_on_clear');
+    pending.sourceItem.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+    void notifyQueuedTurnStopped(pending.sourceItem, 'Session state was cleared before queue dispatch');
+    pending.sourceItem.resolve();
+    broadcast('queue:cancelled', { queueId: pending.queueId });
   }
   clearPendingMidTurn();
   streamIndexToToolId.clear();
@@ -7011,6 +7024,7 @@ function drainQueueWithCancellation(): void {
     pushInboxAbortReplyForQueuedItem(item, 'message_dropped_on_reset');
     releaseTurnAdmissionTicket(item.id);
     item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+    void notifyQueuedTurnStopped(item, 'Session reset before queue dispatch');
     item.resolve();
     broadcast('queue:cancelled', { queueId: item.id });
   }
@@ -7018,6 +7032,7 @@ function drainQueueWithCancellation(): void {
     if (item.sourceItem) {
       pushInboxAbortReplyForQueuedItem(item.sourceItem, 'message_dropped_on_reset');
       item.sourceItem.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+      void notifyQueuedTurnStopped(item.sourceItem, 'Session reset before queue dispatch');
       item.sourceItem.resolve();
     }
     if (item.queueId === getForceTurnBoundaryQueueId()) {
@@ -8008,8 +8023,20 @@ export async function enqueueUserMessage(
     || providerRetryPending
     || hasQueuedOrInFlightWork()
     || queueState.promotedItemInFlight;
+  let admissionTicket: import('./builtin-session/types').TurnAdmissionTicket | null = null;
   if (queueResponseMode === 'turn' && !initialAdmissionBusy) {
-    setTurnAdmissionTicket({ queueId, requestId, createdAt: Date.now() });
+    admissionTicket = {
+      queueId,
+      requestId,
+      createdAt: Date.now(),
+      messageText: trimmed,
+      turnOwner: options?.turnOwner,
+      onTerminal: options?.onTerminal,
+      beforeDispatch: options?.beforeDispatch,
+      settleDispatchAcceptance,
+      canceled: false,
+    };
+    setTurnAdmissionTicket(admissionTicket);
     setCommittingTurnAdmissionQueueId(queueId);
   }
   let keepTurnAdmissionTicketUntilGenerator = false;
@@ -8060,6 +8087,9 @@ export async function enqueueUserMessage(
     reasoningEffort,
     'next-enqueue',
   );
+  if (admissionTicket?.canceled) {
+    return { queued: false, error: 'Queue item was cancelled before dispatch' };
+  }
   const holdForWatchdogRecovery = scheduledWatchdogAutoResumeSessions.has(sessionIdSnapshot)
     || getMessageQueue().some(item => item.messageText === WATCHDOG_RESUME_REMINDER);
 
@@ -8266,6 +8296,10 @@ export async function enqueueUserMessage(
     }
   }
 
+  if (admissionTicket?.canceled) {
+    return { queued: false, error: 'Queue item was cancelled before dispatch' };
+  }
+
   // Persist session to SessionStore on first message
   if (!hasInitialPrompt) {
     hasInitialPrompt = true;
@@ -8327,6 +8361,10 @@ export async function enqueueUserMessage(
     }
   }
 
+  if (admissionTicket?.canceled) {
+    return { queued: false, error: 'Queue item was cancelled before dispatch' };
+  }
+
   console.log(`[agent] enqueue user message len=${trimmed.length} images=${images?.length ?? 0} mode=${configState.currentPermissionMode}`);
 
   // Transition from pre-warm to active session.
@@ -8356,6 +8394,9 @@ export async function enqueueUserMessage(
     clearTimeout(lifecycleState.preWarmTimer);
     setPreWarmTimer(null);
   }
+  if (admissionTicket?.canceled) {
+    return { queued: false, error: 'Queue item was cancelled before dispatch' };
+  }
   // (issue #174 — refined per cross-bugfix 2026-05-10)
   //
   // 'starting' = SDK subprocess still booting → UI shows "AI 启动中（首次启动
@@ -8376,6 +8417,18 @@ export async function enqueueUserMessage(
   setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
 
   const MAX_QUEUE_SIZE = 10;
+  const takeAdmissionCallbacks = () => {
+    const callbacks = {
+      onTerminal: admissionTicket?.onTerminal ?? options?.onTerminal,
+      settleDispatchAcceptance: admissionTicket?.settleDispatchAcceptance
+        ?? settleDispatchAcceptance,
+    };
+    if (admissionTicket) {
+      admissionTicket.onTerminal = undefined;
+      admissionTicket.settleDispatchAcceptance = undefined;
+    }
+    return callbacks;
+  };
   if (isSessionBusy && !holdForWatchdogRecovery) {
     if (queuedWorkCount() >= MAX_QUEUE_SIZE) {
       return { queued: false, error: `Queue full (max ${MAX_QUEUE_SIZE})` };
@@ -8576,8 +8629,12 @@ export async function enqueueUserMessage(
         hasInFlight: getInFlightQueueId() !== null,
         hasScopedTurnBoundaryQueued: options?.fromDesktopChatSend === true
           && (getTurnBoundaryQueue().length > 0 || getTurnAdmissionTicket() !== null),
-      }));
+    }));
     const queueDeliveryMode: QueueDeliveryMode = admissionAction === 'turn-boundary' ? 'turn' : 'realtime';
+    if (admissionTicket?.canceled) {
+      return { queued: false, error: 'Queue item was cancelled before dispatch' };
+    }
+    const admissionCallbacks = takeAdmissionCallbacks();
     const queueItem: MessageQueueItem = {
       id: queueId,
       message: { role: 'user', content: contentBlocks },
@@ -8592,9 +8649,9 @@ export async function enqueueUserMessage(
       providerAnalytics: turnProviderAnalytics,
       inboxMeta,
       turnOwner: options?.turnOwner,
-      onTerminal: options?.onTerminal,
+      onTerminal: admissionCallbacks.onTerminal,
       beforeDispatch: options?.beforeDispatch,
-      settleDispatchAcceptance,
+      settleDispatchAcceptance: admissionCallbacks.settleDispatchAcceptance,
     };
 
     // (v0.2.12 mid-turn injection) Lockstep yield. Only one queued message
@@ -8720,6 +8777,10 @@ export async function enqueueUserMessage(
     await surfaceBuiltinUserMessage(directUserSurface);
   }
 
+  if (admissionTicket?.canceled) {
+    return { queued: false, error: 'Queue item was cancelled before dispatch' };
+  }
+  const admissionCallbacks = takeAdmissionCallbacks();
   const queueItem: MessageQueueItem = {
     id: queueId,
     message: { role: 'user', content: contentBlocks },
@@ -8734,10 +8795,10 @@ export async function enqueueUserMessage(
     providerAnalytics: turnProviderAnalytics,
     inboxMeta,
     turnOwner: options?.turnOwner,
-    onTerminal: options?.onTerminal,
+    onTerminal: admissionCallbacks.onTerminal,
     beforeDispatch: options?.beforeDispatch,
     deferredUserSurface: options?.beforeDispatch ? directUserSurface : undefined,
-    settleDispatchAcceptance,
+    settleDispatchAcceptance: admissionCallbacks.settleDispatchAcceptance,
   };
 
   if (!isSessionActive()) {
@@ -9036,6 +9097,7 @@ export async function cancelImRequest(
   const removed = removeQueuedItemByRequestId(requestId);
   if (removed.location === 'message' && removed.item) {
     removed.item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+    await notifyQueuedTurnStopped(removed.item);
     removed.item.resolve();
     broadcast('queue:cancelled', { queueId: removed.item.id });
     console.log(`[agent] cancelImRequest requestId=${requestId} mode=queued`);
@@ -9043,6 +9105,7 @@ export async function cancelImRequest(
   }
   if (removed.location === 'pending-mid-turn' && removed.pending) {
     removed.pending.sourceItem.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+    await notifyQueuedTurnStopped(removed.pending.sourceItem);
     removed.pending.sourceItem.resolve();
     broadcast('queue:cancelled', { queueId: removed.pending.queueId });
     console.log(`[agent] cancelImRequest requestId=${requestId} mode=pending-mid-turn (never yielded to CLI)`);
@@ -9050,6 +9113,7 @@ export async function cancelImRequest(
   }
   if (removed.location === 'turn-boundary' && removed.turnBoundary) {
     removed.turnBoundary.sourceItem?.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+    if (removed.turnBoundary.sourceItem) await notifyQueuedTurnStopped(removed.turnBoundary.sourceItem);
     removed.turnBoundary.sourceItem?.resolve();
     if (removed.turnBoundary.queueId === getForceTurnBoundaryQueueId()) {
       setForceTurnBoundaryQueueId(null);
@@ -9071,6 +9135,8 @@ export async function cancelImRequest(
     const cancelResult = await cancelSdkAsyncMessage(queueId);
     const settlement = decideInFlightCancelSettlement(cancelResult);
     if (settlement.cancelled) {
+      const sourceItem = getCurrentTurnSourceItem();
+      if (sourceItem?.id === queueId) await notifyQueuedTurnStopped(sourceItem);
       if (settlement.removePendingRequest) removePendingRequest(requestId);
       if (settlement.clearSlot) clearInFlightSlot();
       if (settlement.broadcastCancelled) broadcast('queue:cancelled', { queueId });
@@ -9109,12 +9175,14 @@ export type QueueCancelResult =
  *     cancel_async_message; it succeeds only before SDK dequeues execution.
  */
 export async function cancelQueueItem(queueId: string): Promise<QueueCancelResult> {
+  const admission = cancelTurnAdmissionTicket(queueId);
   const removed = removeQueuedItemByQueueId(queueId);
 
   switch (removed.location) {
     case 'message': {
       const item = removed.item!;
       item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+      await notifyQueuedTurnStopped(item);
       item.resolve();
       broadcast('queue:cancelled', { queueId });
       console.log(`[agent] Queue item ${queueId} cancelled from queueState.messageQueue (wasQueued=${item.wasQueued})`);
@@ -9123,6 +9191,7 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
     case 'pending-mid-turn': {
       const pending = removed.pending!;
       pending.sourceItem.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+      await notifyQueuedTurnStopped(pending.sourceItem);
       pending.sourceItem.resolve();
       broadcast('queue:cancelled', { queueId });
       console.log(`[agent] Queue item ${queueId} cancelled from queueState.pendingMidTurnQueue (never yielded to CLI)`);
@@ -9137,6 +9206,7 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
     case 'turn-boundary': {
       const turnBoundary = removed.turnBoundary!;
       turnBoundary.sourceItem?.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+      if (turnBoundary.sourceItem) await notifyQueuedTurnStopped(turnBoundary.sourceItem);
       turnBoundary.sourceItem?.resolve();
       if (turnBoundary.queueId === getForceTurnBoundaryQueueId()) {
         setForceTurnBoundaryQueueId(null);
@@ -9154,6 +9224,8 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
       const settlement = decideInFlightCancelSettlement(cancelResult);
       if (settlement.cancelled) {
         const cancelledText = meta?.messageText ?? '';
+        const sourceItem = getCurrentTurnSourceItem();
+        if (sourceItem?.id === queueId) await notifyQueuedTurnStopped(sourceItem);
         if (settlement.removePendingRequest) removePendingRequest(meta?.requestId);
         if (settlement.clearSlot) clearInFlightSlot();
         if (settlement.broadcastCancelled) broadcast('queue:cancelled', { queueId });
@@ -9170,10 +9242,22 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
     }
   }
 
-  const promotedText = cancelPromotedItem(queueId);
-  if (promotedText !== null) {
+  if (admission) {
+    admission.settleDispatchAcceptance?.({
+      accepted: false,
+      error: 'Queue item was cancelled',
+    });
+    await notifyQueuedTurnStopped(admission);
+    broadcast('queue:cancelled', { queueId });
+    console.log(`[agent] Queue item ${queueId} cancelled during builtin turn admission`);
+    return { status: 'cancelled', cancelledText: admission.messageText };
+  }
+
+  const promotedItem = cancelPromotedItem(queueId);
+  if (promotedItem !== null) {
+    await notifyQueuedTurnStopped(promotedItem);
     console.log(`[agent] Queue item ${queueId} cancellation requested during runtime promotion`);
-    return { status: 'cancelled', cancelledText: promotedText };
+    return { status: 'cancelled', cancelledText: promotedItem.messageText };
   }
 
   console.log(`[agent] Queue item ${queueId} not found — already consumed or never existed`);
@@ -9195,6 +9279,8 @@ export async function cancelQueuedTurnsByOwner(owner: TurnOwner): Promise<number
   }
   const promoted = getPromotedTurnIdentity();
   if (promoted && matches(promoted.owner)) queueIds.add(promoted.queueId);
+  const admission = getTurnAdmissionIdentity();
+  if (admission && matches(admission.owner)) queueIds.add(admission.queueId);
 
   let canceled = 0;
   for (const queueId of queueIds) {
@@ -12479,12 +12565,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       console.log('[messageGenerator] Received null — exiting (abort or session end)');
       return; // generator return → SDK endInput() → stdin EOF → subprocess 退出
     }
-    beginPromotedItem({
-      queueId: item.id,
-      messageText: item.messageText,
-      turnOwner: item.turnOwner,
-      cancelDispatch: item.beforeDispatch?.cancel,
-    });
+    beginPromotedItem(item);
     if (item.beforeDispatch) {
       let guardResult: Awaited<ReturnType<NonNullable<typeof item.beforeDispatch>>>;
       try {
@@ -12500,6 +12581,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         if (getInFlightQueueId() === item.id) clearInFlightSlot();
         clearPromotedItem(item.id);
         item.settleDispatchAcceptance?.({ accepted: false, error: guardResult.error });
+        await notifyQueuedTurnStopped(item, guardResult.error ?? 'Queue item was rejected before dispatch');
         item.resolve();
         broadcast('queue:cancelled', { queueId: item.id });
         console.warn(`[goal] pre-dispatch gate rejected builtin queue item ${item.id}: ${guardResult.error ?? guardResult.code ?? 'stale admission'}`);
@@ -12514,6 +12596,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         if (getInFlightQueueId() === item.id) clearInFlightSlot();
         clearPromotedItem(item.id);
         item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+        await notifyQueuedTurnStopped(item);
         item.resolve();
         broadcast('queue:cancelled', { queueId: item.id });
         schedulePostTerminalQueueDrain('recovery');
@@ -12532,6 +12615,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       if (getInFlightQueueId() === item.id) clearInFlightSlot();
       clearPromotedItem(item.id);
       item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+      await notifyQueuedTurnStopped(item);
       item.resolve();
       broadcast('queue:cancelled', { queueId: item.id });
       schedulePostTerminalQueueDrain('recovery');

@@ -216,11 +216,8 @@ async fn stop_job_for_update(
     task: &task::Task,
     reason: &str,
 ) -> Result<(), String> {
-    crate::task_scheduler::get_task_scheduler()
-        .stop(&task.id)
-        .await;
     if matches!(task.status, TaskStatus::Running | TaskStatus::Verifying) {
-        let _ = store
+        store
             .update_status(TaskUpdateStatusInput {
                 id: task.id.clone(),
                 status: TaskStatus::Stopped,
@@ -228,6 +225,13 @@ async fn stop_job_for_update(
                 actor: TransitionActor::System,
                 source: Some(TransitionSource::Scheduler),
             })
+            .await?;
+    } else if crate::task_scheduler::get_task_scheduler()
+        .is_executing(&task.id)
+        .await
+    {
+        crate::task_scheduler::get_task_scheduler()
+            .stop(&task.id)
             .await?;
     }
     Ok(())

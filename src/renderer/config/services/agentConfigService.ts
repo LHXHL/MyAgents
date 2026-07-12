@@ -428,6 +428,7 @@ export function resolveAgentRuntimeMcpServersJson(
 export async function patchAgentConfig(
   agentId: string,
   patch: Partial<Omit<AgentConfig, 'id'>>,
+  options: { memoryAutoUpdateReconcileFailure?: 'defer' | 'throw' } = {},
 ): Promise<AgentConfig | undefined> {
   if (patch.enabled === true) {
     const currentConfig = await loadAppConfig();
@@ -527,8 +528,14 @@ export async function patchAgentConfig(
     if ('memoryAutoUpdate' in patch) {
       try {
         await configureMemoryAutoUpdateTaskForAgent(updated);
-      } catch (e) {
-        console.warn('[agentConfigService] Memory auto-update task reconcile failed:', e);
+      } catch (error) {
+        if (options.memoryAutoUpdateReconcileFailure === 'throw') {
+          throw error;
+        }
+        // Composite operations such as enabling an Agent already committed
+        // their primary disk intent. Startup reconciliation converges the
+        // managed Task without turning that primary operation into a failure.
+        console.warn('[agentConfigService] Memory auto-update Task reconciliation deferred:', error);
       }
     }
   }
@@ -669,8 +676,10 @@ export async function addAgentConfig(agent: AgentConfig): Promise<void> {
   if (agent.memoryAutoUpdate?.enabled) {
     try {
       await configureMemoryAutoUpdateTaskForAgent(agent);
-    } catch (e) {
-      console.warn('[agentConfigService] Memory auto-update task provisioning failed:', e);
+    } catch (error) {
+      // Agent creation is already durable. Startup reconciliation owns
+      // convergence; throwing here would make callers create a duplicate Agent.
+      console.warn('[agentConfigService] Memory auto-update task provisioning deferred:', error);
     }
   }
 }
@@ -778,8 +787,10 @@ export async function removeAgentConfig(agentId: string): Promise<void> {
   if (removedAgent?.workspacePath) {
     try {
       await disableMemoryAutoUpdateTaskForAgent(removedAgent);
-    } catch (e) {
-      console.warn('[agentConfigService] Memory auto-update task cleanup failed:', e);
+    } catch (error) {
+      // Agent removal is already durable. Startup reconciliation removes the
+      // now-orphaned managed Task without turning removal into partial failure.
+      console.warn('[agentConfigService] Memory auto-update task cleanup deferred:', error);
     }
   }
 }

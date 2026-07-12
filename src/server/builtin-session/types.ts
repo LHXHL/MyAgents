@@ -190,6 +190,12 @@ export type TurnAdmissionTicket = {
   queueId: string;
   requestId?: string;
   createdAt: number;
+  messageText: string;
+  turnOwner?: TurnOwner;
+  onTerminal?: TurnTerminalObserver;
+  beforeDispatch?: DispatchGuard;
+  settleDispatchAcceptance?: (result: { accepted: boolean; error?: string }) => void;
+  canceled: boolean;
 };
 
 export type InFlightMetadata = {

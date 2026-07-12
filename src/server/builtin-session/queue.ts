@@ -20,10 +20,7 @@ const turnBoundaryQueue: TurnBoundaryQueueItem[] = [];
 let turnAdmissionTicket: TurnAdmissionTicket | null = null;
 let committingTurnAdmissionQueueId: string | null = null;
 let promotedItem: {
-  queueId: string;
-  messageText: string;
-  turnOwner?: TurnOwner;
-  cancelDispatch?: () => void;
+  sourceItem: MessageQueueItem;
   canceled: boolean;
 } | null = null;
 let inFlightToCliId: string | null = null;
@@ -120,7 +117,8 @@ export function hasQueuedTurnByOwner(owner: TurnOwner): boolean {
   return messageQueue.some(item => matches(item.turnOwner))
     || pendingMidTurnQueue.some(item => matches(item.sourceItem.turnOwner))
     || turnBoundaryQueue.some(item => matches(item.sourceItem?.turnOwner))
-    || matches(promotedItem?.turnOwner);
+    || matches(promotedItem?.sourceItem.turnOwner)
+    || matches(turnAdmissionTicket?.turnOwner);
 }
 
 export function getMutablePendingMidTurnQueueForOwner(): PendingMidTurnQueueItem[] {
@@ -186,6 +184,25 @@ export function getTurnAdmissionTicket(): TurnAdmissionTicket | null {
   return turnAdmissionTicket;
 }
 
+export function cancelTurnAdmissionTicket(queueId?: string): TurnAdmissionTicket | null {
+  if (!turnAdmissionTicket || (queueId && turnAdmissionTicket.queueId !== queueId)) return null;
+  const canceled = turnAdmissionTicket;
+  canceled.canceled = true;
+  canceled.beforeDispatch?.cancel?.();
+  turnAdmissionTicket = null;
+  if (committingTurnAdmissionQueueId === canceled.queueId) {
+    committingTurnAdmissionQueueId = null;
+  }
+  return canceled;
+}
+
+export function getTurnAdmissionIdentity(): TurnIdentity | null {
+  const ticket = turnAdmissionTicket;
+  return ticket?.turnOwner
+    ? { queueId: ticket.queueId, owner: ticket.turnOwner }
+    : null;
+}
+
 export function setCommittingTurnAdmissionQueueId(queueId: string | null): void {
   committingTurnAdmissionQueueId = queueId;
 }
@@ -212,34 +229,29 @@ export function isPromotedItemInFlight(): boolean {
   return promotedItem !== null;
 }
 
-export function beginPromotedItem(item: {
-  queueId: string;
-  messageText: string;
-  turnOwner?: TurnOwner;
-  cancelDispatch?: () => void;
-}): void {
-  promotedItem = { ...item, canceled: false };
+export function beginPromotedItem(sourceItem: MessageQueueItem): void {
+  promotedItem = { sourceItem, canceled: false };
 }
 
-export function cancelPromotedItem(queueId?: string): string | null {
-  if (!promotedItem || (queueId && promotedItem.queueId !== queueId)) return null;
+export function cancelPromotedItem(queueId?: string): MessageQueueItem | null {
+  if (!promotedItem || (queueId && promotedItem.sourceItem.id !== queueId)) return null;
   promotedItem.canceled = true;
-  promotedItem.cancelDispatch?.();
-  return promotedItem.messageText;
+  promotedItem.sourceItem.beforeDispatch?.cancel?.();
+  return promotedItem.sourceItem;
 }
 
 export function isPromotedItemCanceled(queueId: string): boolean {
-  return promotedItem?.queueId === queueId && promotedItem.canceled;
+  return promotedItem?.sourceItem.id === queueId && promotedItem.canceled;
 }
 
 export function clearPromotedItem(queueId?: string): void {
-  if (!promotedItem || (queueId && promotedItem.queueId !== queueId)) return;
+  if (!promotedItem || (queueId && promotedItem.sourceItem.id !== queueId)) return;
   promotedItem = null;
 }
 
 export function getPromotedTurnIdentity(): TurnIdentity | null {
-  return promotedItem?.turnOwner
-    ? { queueId: promotedItem.queueId, owner: promotedItem.turnOwner }
+  return promotedItem?.sourceItem.turnOwner
+    ? { queueId: promotedItem.sourceItem.id, owner: promotedItem.sourceItem.turnOwner }
     : null;
 }
 

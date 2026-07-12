@@ -87,6 +87,7 @@
     "deleteConfirm": "Delete task \"{{name}}\"? This cannot be undone.",
     "upgraded": "\"{{name}}\" was upgraded to the new task model",
     "created": "\"{{name}}\" was created",
+    "sessionRecreated": "The original session was deleted; this run was rebound to a new session",
     "unnamedLegacyTask": "Untitled scheduled task",
     "viewCard": "Card view",
     "viewList": "List view",
@@ -114,9 +115,11 @@
       "edit": "Edit",
       "openDetail": "Open details",
       "rerun": "Rerun",
+      "retryStop": "Retry stop",
       "run": "Run",
       "runNow": "Run now",
-      "stop": "Stop"
+      "stop": "Stop",
+      "stopping": "Stopping…"
     }
   },
   "dispatch": {
@@ -513,6 +516,7 @@
     "closeTitle": "Close (Esc / Cmd+W)",
     "runNow": "Run now",
     "stop": "Stop",
+    "retryStop": "Retry stop",
     "rerun": "Rerun",
     "edit": "Edit",
     "editLockedTitle": "Task is running or verifying and cannot be edited (PRD §9.4)",
@@ -642,6 +646,11 @@
       "stopped": "Paused",
       "todo": "Queued",
       "verifying": "Verifying"
+    },
+    "execution": {
+      "running": "Executing",
+      "stopping": "Stopping",
+      "stop_failed": "Stop unconfirmed"
     },
     "origin": {
       "directLabel": "Direct dispatch",

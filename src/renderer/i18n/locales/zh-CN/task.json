@@ -87,6 +87,7 @@
     "deleteConfirm": "确认删除任务「{{name}}」？此操作不可恢复。",
     "upgraded": "「{{name}}」已升级为新版任务",
     "created": "「{{name}}」已创建",
+    "sessionRecreated": "原会话已删除，本次已改用新会话重新派发",
     "unnamedLegacyTask": "未命名定时任务",
     "viewCard": "卡片视图",
     "viewList": "列表视图",
@@ -114,9 +115,11 @@
       "edit": "编辑",
       "openDetail": "打开详情",
       "rerun": "重新派发",
+      "retryStop": "重试中止",
       "run": "执行",
       "runNow": "立即执行",
-      "stop": "中止"
+      "stop": "中止",
+      "stopping": "停止中…"
     }
   },
   "dispatch": {
@@ -513,6 +516,7 @@
     "closeTitle": "关闭 (Esc / Cmd+W)",
     "runNow": "立即执行",
     "stop": "中止",
+    "retryStop": "重试中止",
     "rerun": "重新派发",
     "edit": "编辑",
     "editLockedTitle": "任务运行 / 验证中，不可编辑（PRD §9.4）",
@@ -642,6 +646,11 @@
       "stopped": "已暂停",
       "todo": "待启动",
       "verifying": "验收中"
+    },
+    "execution": {
+      "running": "正在执行",
+      "stopping": "停止中",
+      "stop_failed": "停止未确认"
     },
     "origin": {
       "directLabel": "直接派发",

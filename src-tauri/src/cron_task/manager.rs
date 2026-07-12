@@ -117,21 +117,28 @@ impl CronTaskManager {
     }
 
     pub async fn start_task(&self, id: &str) -> Result<CronTask, String> {
+        let task_control = crate::task_scheduler::acquire_task_control(id).await;
         let store = task_store()?;
         let mut task = store
             .get(id)
             .await
             .ok_or_else(|| format!("Task not found: {id}"))?;
         if task.status == crate::task::TaskStatus::Running {
-            if let Err(error) = crate::task_scheduler::get_task_scheduler().start(id).await {
+            if let Err(error) = crate::task_scheduler::get_task_scheduler()
+                .start_with_control_held(id, &task_control)
+                .await
+            {
                 let _ = store
-                    .update_status(crate::task::TaskUpdateStatusInput {
-                        id: id.to_string(),
-                        status: crate::task::TaskStatus::Blocked,
-                        message: Some(format!("scheduler start failed: {error}")),
-                        actor: crate::task::TransitionActor::System,
-                        source: Some(crate::task::TransitionSource::Scheduler),
-                    })
+                    .update_status_with_task_control_held(
+                        crate::task::TaskUpdateStatusInput {
+                            id: id.to_string(),
+                            status: crate::task::TaskStatus::Blocked,
+                            message: Some(format!("scheduler start failed: {error}")),
+                            actor: crate::task::TransitionActor::System,
+                            source: Some(crate::task::TransitionSource::Scheduler),
+                        },
+                        &task_control,
+                    )
                     .await;
                 return Err(error);
             }
@@ -139,21 +146,26 @@ impl CronTaskManager {
         }
         if task.status != crate::task::TaskStatus::Todo {
             task = store
-                .update_status(crate::task::TaskUpdateStatusInput {
-                    id: id.to_string(),
-                    status: crate::task::TaskStatus::Todo,
-                    message: Some("scheduled task restarted".to_string()),
-                    actor: crate::task::TransitionActor::System,
-                    source: Some(crate::task::TransitionSource::Scheduler),
-                })
+                .update_status_with_task_control_held(
+                    crate::task::TaskUpdateStatusInput {
+                        id: id.to_string(),
+                        status: crate::task::TaskStatus::Todo,
+                        message: Some("scheduled task restarted".to_string()),
+                        actor: crate::task::TransitionActor::System,
+                        source: Some(crate::task::TransitionSource::Scheduler),
+                    },
+                    &task_control,
+                )
                 .await?
                 .0;
         }
-        let task = crate::management_api::run_task_by_id(&task.id).await?;
+        let task =
+            crate::management_api::run_task_by_id_with_control(&task.id, &task_control).await?;
         Ok(task_to_cron(&task))
     }
 
     pub async fn stop_task(&self, id: &str, reason: Option<String>) -> Result<CronTask, String> {
+        let task_control = crate::task_scheduler::acquire_task_control(id).await;
         let store = task_store()?;
         let task = store
             .get(id)
@@ -164,18 +176,23 @@ impl CronTaskManager {
                 .is_executing(id)
                 .await
             {
-                crate::task_scheduler::get_task_scheduler().stop(id).await;
+                crate::task_scheduler::get_task_scheduler()
+                    .stop_with_control_held(id, &task_control)
+                    .await?;
             }
             return Ok(task_to_cron(&task));
         }
         let task = store
-            .update_status(crate::task::TaskUpdateStatusInput {
-                id: id.to_string(),
-                status: crate::task::TaskStatus::Stopped,
-                message: reason,
-                actor: crate::task::TransitionActor::User,
-                source: Some(crate::task::TransitionSource::Ui),
-            })
+            .update_status_with_task_control_held(
+                crate::task::TaskUpdateStatusInput {
+                    id: id.to_string(),
+                    status: crate::task::TaskStatus::Stopped,
+                    message: reason,
+                    actor: crate::task::TransitionActor::User,
+                    source: Some(crate::task::TransitionSource::Ui),
+                },
+                &task_control,
+            )
             .await?
             .0;
         Ok(task_to_cron(&task))
@@ -190,6 +207,7 @@ impl CronTaskManager {
         id: &str,
         patch: serde_json::Value,
     ) -> Result<CronTask, String> {
+        let task_control = crate::task_scheduler::acquire_task_control(id).await;
         let store = task_store()?;
         let mut task = store
             .get(id)
@@ -198,30 +216,38 @@ impl CronTaskManager {
         let was_running = task.status == crate::task::TaskStatus::Running;
         if was_running {
             task = store
-                .update_status(crate::task::TaskUpdateStatusInput {
-                    id: id.to_string(),
-                    status: crate::task::TaskStatus::Stopped,
-                    message: Some("scheduled task settings changed".to_string()),
-                    actor: crate::task::TransitionActor::System,
-                    source: Some(crate::task::TransitionSource::Scheduler),
-                })
+                .update_status_with_task_control_held(
+                    crate::task::TaskUpdateStatusInput {
+                        id: id.to_string(),
+                        status: crate::task::TaskStatus::Stopped,
+                        message: Some("scheduled task settings changed".to_string()),
+                        actor: crate::task::TransitionActor::System,
+                        source: Some(crate::task::TransitionSource::Scheduler),
+                    },
+                    &task_control,
+                )
                 .await?
                 .0;
         }
         let input = task_update_from_cron_patch(&task, patch)?;
-        task = store.update(input).await?;
+        task = store
+            .update_with_task_control_held(input, &task_control)
+            .await?;
         if was_running {
             task = store
-                .update_status(crate::task::TaskUpdateStatusInput {
-                    id: id.to_string(),
-                    status: crate::task::TaskStatus::Todo,
-                    message: Some("scheduled task settings saved".to_string()),
-                    actor: crate::task::TransitionActor::System,
-                    source: Some(crate::task::TransitionSource::Scheduler),
-                })
+                .update_status_with_task_control_held(
+                    crate::task::TaskUpdateStatusInput {
+                        id: id.to_string(),
+                        status: crate::task::TaskStatus::Todo,
+                        message: Some("scheduled task settings saved".to_string()),
+                        actor: crate::task::TransitionActor::System,
+                        source: Some(crate::task::TransitionSource::Scheduler),
+                    },
+                    &task_control,
+                )
                 .await?
                 .0;
-            let _ = crate::management_api::run_task_by_id(id).await?;
+            let _ = crate::management_api::run_task_by_id_with_control(id, &task_control).await?;
             task = store.get(id).await.unwrap_or(task);
         }
         Ok(task_to_cron(&task))

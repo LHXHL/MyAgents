@@ -75,5 +75,9 @@ describe('SESSION_ENGINE_ROUTE_CONTRACTS', () => {
     expect(findSessionEngineRouteContract('/api/runtime/permission-response', 'POST')?.engineMethod).toBe(
       'respondPermission',
     );
+    expect(findSessionEngineRouteContract('/task/stop', 'POST')).toMatchObject({
+      engineMethod: 'stopOwnedTurnByQueueId',
+      requiredFields: ['taskId', 'queueId'],
+    });
   });
 });

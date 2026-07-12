@@ -58,8 +58,18 @@ class FakeRuntime implements AgentRuntime {
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
   private startGate: Promise<void> | null = null;
   private releaseStartGate: (() => void) | null = null;
+  private rejectDispatchAck: boolean;
+  private rejectStop: boolean;
 
-  constructor(private readonly scripts: TurnScript[], options: { realtimeSteering?: boolean; rejectSteer?: boolean; deferStart?: boolean } = {}) {
+  constructor(private readonly scripts: TurnScript[], options: {
+    realtimeSteering?: boolean;
+    rejectSteer?: boolean;
+    deferStart?: boolean;
+    rejectDispatchAck?: boolean;
+    rejectStop?: boolean;
+  } = {}) {
+    this.rejectDispatchAck = options.rejectDispatchAck === true;
+    this.rejectStop = options.rejectStop === true;
     if (options.realtimeSteering) {
       this.steerMessage = async (_process, message, _images, steerOptions) => {
         this.steeredMessages.push({ message, clientUserMessageId: steerOptions?.clientUserMessageId });
@@ -80,6 +90,10 @@ class FakeRuntime implements AgentRuntime {
   releaseStart(): void {
     this.releaseStartGate?.();
     this.releaseStartGate = null;
+  }
+
+  allowStop(): void {
+    this.rejectStop = false;
   }
 
   emitUserMessageAccepted(clientUserMessageId?: string): void {
@@ -115,6 +129,10 @@ class FakeRuntime implements AgentRuntime {
   }
 
   async sendMessage(_process: RuntimeProcess, message: string): Promise<void> {
+    if (this.rejectDispatchAck) {
+      this.sentMessages.push(message);
+      throw new Error('fake dispatch acknowledgement lost');
+    }
     this.playTurn(message);
   }
 
@@ -137,6 +155,7 @@ class FakeRuntime implements AgentRuntime {
   }
 
   async stopSession(process: RuntimeProcess): Promise<void> {
+    if (this.rejectStop) throw new Error('fake stop did not terminate process');
     process.kill();
   }
 
@@ -237,7 +256,13 @@ let previousRuntime: string | undefined;
 
 async function createHarness(
   scripts: TurnScript[],
-  options: { realtimeSteering?: boolean; rejectSteer?: boolean; deferStart?: boolean; config?: Record<string, unknown> } = {},
+  options: {
+    realtimeSteering?: boolean;
+    rejectSteer?: boolean;
+    deferStart?: boolean;
+    unconfirmedDispatchStop?: boolean;
+    config?: Record<string, unknown>;
+  } = {},
 ): Promise<Harness> {
   vi.resetModules();
   const home = mkdtempSync(join(tmpdir(), 'myagents-external-mock-'));
@@ -256,7 +281,19 @@ async function createHarness(
     realtimeSteering: options.realtimeSteering,
     rejectSteer: options.rejectSteer,
     deferStart: options.deferStart,
+    rejectDispatchAck: options.unconfirmedDispatchStop,
+    rejectStop: options.unconfirmedDispatchStop,
   });
+  if (options.unconfirmedDispatchStop) {
+    vi.doMock('./utils/kill-with-escalation', () => ({
+      killWithEscalation: vi.fn(async () => ({
+        exited: false,
+        signalUsed: 'hard' as const,
+        orphanRisk: true,
+        elapsedMs: 0,
+      })),
+    }));
+  }
   vi.doMock('./factory', () => ({
     getCurrentRuntimeSource: () => 'system-cli',
     getCurrentRuntimeType: () => 'codex',
@@ -319,6 +356,7 @@ afterEach(async () => {
   restoreEnv();
   vi.doUnmock('./factory');
   vi.doUnmock('../sse');
+  vi.doUnmock('./utils/kill-with-escalation');
 });
 
 function desktopRequest(sessionId: string, workspacePath: string, text: string): DesktopMessageRequest {
@@ -485,14 +523,104 @@ describe('external SessionEngine with fake runtime', () => {
 
     expect(harness.runtime.startSessionInitialMessages).toEqual([undefined]);
     expect(harness.engine.isBusy()).toBe(true);
-    await expect(harness.engine.stopTurn()).resolves.toEqual({ success: true, alreadyStopped: false });
+    const stop = harness.engine.stopTurn();
     harness.runtime.releaseStart();
+    await expect(stop).resolves.toEqual({ success: true, alreadyStopped: false });
 
     await expect(run).resolves.toMatchObject({ success: false, enqueued: false });
     expect(beforeDispatch).toHaveBeenCalledOnce();
     expect(harness.runtime.sentMessages).toEqual([]);
     expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(false);
     expect(harness.externalSession.getExternalSessionState()).toBe('idle');
+  });
+
+  it('does not confirm Stop when a canceled fresh startup process cannot be terminated', async () => {
+    const harness = await createHarness([], {
+      deferStart: true,
+      unconfirmedDispatchStop: true,
+    });
+    const sessionId = 'session-fresh-start-stop-unconfirmed';
+    const workspacePath = join(harness.home, 'workspace');
+    const queueId = 'task-fresh-start-stop-unconfirmed';
+    const owner = { kind: 'task' as const, id: 'task-start-stop-unconfirmed' };
+
+    const run = harness.engine.runInjectedTurn({
+      prompt: 'must remain addressable until termination is confirmed',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'cron', taskId: owner.id, intervalMinutes: 15, aiCanExit: false },
+      timeoutMs: 1_000,
+      pollMs: 10,
+      queueId,
+      turnOwner: owner,
+      beforeDispatch: async () => ({ accepted: true }),
+    });
+    await waitFor(
+      () => harness.runtime.startSessionInitialMessages.length === 1,
+      'guarded runtime startup before failed Stop',
+    );
+
+    const stop = harness.engine.stopTurn();
+    harness.runtime.releaseStart();
+    await expect(stop).resolves.toEqual({
+      success: false,
+      error: 'External runtime process did not stop',
+    });
+    await expect(run).resolves.toMatchObject({
+      success: false,
+      enqueued: true,
+      terminationUnconfirmed: true,
+    });
+    expect(harness.externalSession.getExternalCurrentTurnIdentity()).toEqual({ queueId, owner });
+
+    harness.runtime.allowStop();
+    await expect(harness.engine.stopOwnedTurn(owner)).resolves.toEqual({
+      success: true,
+      alreadyStopped: false,
+    });
+    expect(harness.externalSession.getExternalCurrentTurnIdentity()).toBeNull();
+  });
+
+  it('preserves and drains later external work when exact Stop cancels guarded startup', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'later turn completed' },
+    ], { deferStart: true });
+    const sessionId = 'session-exact-stop-preserve-queue';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const taskRun = harness.engine.runInjectedTurn({
+      prompt: 'task turn canceled during startup',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'cron', taskId: 'task-1', intervalMinutes: 15, aiCanExit: false },
+      timeoutMs: 1_000,
+      pollMs: 10,
+      queueId: 'task-turn-1',
+      turnOwner: { kind: 'task', id: 'task-1' },
+      beforeDispatch: async () => ({ accepted: true }),
+    });
+    await waitFor(
+      () => harness.runtime.startSessionInitialMessages.length === 1,
+      'guarded Task runtime startup',
+    );
+
+    const later = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'later desktop turn'),
+    );
+    expect(later.queued).toBe(true);
+    const stop = harness.engine.stopTurn({ preserveQueue: true });
+    harness.runtime.releaseStart();
+    await expect(stop).resolves.toEqual({
+      success: true,
+      alreadyStopped: false,
+    });
+
+    await expect(taskRun).resolves.toMatchObject({ success: false, enqueued: false });
+    await waitFor(
+      () => harness.runtime.sentMessages.includes('later desktop turn'),
+      'preserved external queue drain',
+    );
+    expect(harness.runtime.sentMessages).toEqual(['later desktop turn']);
   });
 
   it('does not dispatch a pre-warmed Goal turn when Stop wins after guard acceptance', async () => {
@@ -532,6 +660,55 @@ describe('external SessionEngine with fake runtime', () => {
         && (item.data as { message?: { content?: string } }).message?.content === 'accepted but stopped Goal turn'
     ))).toBe(false);
     expect(harness.externalSession.getExternalSessionState()).toBe('idle');
+  });
+
+  it.each([
+    { path: 'fresh start', prewarm: false },
+    { path: 'active pre-warmed process', prewarm: true },
+  ])('retains exact ownership after a lost dispatch acknowledgement on $path', async ({ prewarm }) => {
+    const harness = await createHarness([], { unconfirmedDispatchStop: true });
+    const sessionId = `session-dispatch-ambiguous-${prewarm ? 'prewarm' : 'fresh'}`;
+    const workspacePath = join(harness.home, 'workspace');
+    const queueId = `task-dispatch-ambiguous-${prewarm ? 'prewarm' : 'fresh'}`;
+    const owner = { kind: 'task' as const, id: 'task-dispatch-ambiguous' };
+
+    if (prewarm) {
+      await harness.externalSession.prewarmExternalSession({
+        sessionId,
+        workspacePath,
+        scenario: { type: 'desktop' },
+      });
+    }
+
+    const result = await harness.engine.runInjectedTurn({
+      prompt: 'possibly consumed task turn',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'cron', taskId: owner.id, intervalMinutes: 15, aiCanExit: false },
+      timeoutMs: 1_000,
+      pollMs: 10,
+      queueId,
+      turnOwner: owner,
+      beforeDispatch: async () => ({ accepted: true }),
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      enqueued: true,
+      terminationUnconfirmed: true,
+      status: 503,
+    });
+    expect(harness.runtime.sentMessages).toEqual(['possibly consumed task turn']);
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
+    expect(harness.externalSession.getExternalCurrentTurnIdentity()).toEqual({ queueId, owner });
+
+    harness.runtime.allowStop();
+    await expect(harness.engine.stopOwnedTurn(owner)).resolves.toEqual({
+      success: true,
+      alreadyStopped: false,
+    });
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(false);
+    expect(harness.externalSession.getExternalCurrentTurnIdentity()).toBeNull();
   });
 
   it('persists a normal external turn and exposes live overlay plus latest result', async () => {

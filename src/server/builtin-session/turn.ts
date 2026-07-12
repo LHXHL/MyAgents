@@ -44,6 +44,35 @@ let currentTurnImTerminalEmitted = false;
 let currentTurnSourceItem: MessageQueueItem | null = null;
 let terminalObserverBarrier: Promise<void> = Promise.resolve();
 
+function notifyTurnItemTerminal(
+  item: Pick<MessageQueueItem, 'onTerminal'>,
+  outcome: TurnTerminalOutcome,
+): Promise<void> {
+  const observer = item.onTerminal;
+  if (!observer) return Promise.resolve();
+  item.onTerminal = undefined;
+  try {
+    return Promise.resolve(observer(outcome)).catch((observerError) => {
+      console.error('[agent] turn terminal observer failed:', observerError);
+    });
+  } catch (observerError) {
+    console.error('[agent] turn terminal observer failed:', observerError);
+    return Promise.resolve();
+  }
+}
+
+export function notifyQueuedTurnStopped(
+  item: Pick<MessageQueueItem, 'onTerminal'>,
+  error = 'Queue item was cancelled before dispatch',
+): Promise<void> {
+  return notifyTurnItemTerminal(item, {
+    status: 'stopped',
+    text: '',
+    assistantMessagePresent: false,
+    error,
+  });
+}
+
 export const turnState = {
   get currentTurnUsage(): BuiltinTurnUsage {
     return currentTurnUsage;
@@ -442,9 +471,8 @@ export function notifyCurrentTurnTerminal(
   status: TurnTerminalOutcome['status'],
   details: { error?: string; durationMs?: number } = {},
 ): void {
-  const observer = currentTurnSourceItem?.onTerminal;
-  if (!observer) return;
-  currentTurnSourceItem!.onTerminal = undefined;
+  const item = currentTurnSourceItem;
+  if (!item?.onTerminal) return;
   const outcome: TurnTerminalOutcome = {
     status,
     text: getCurrentTurnText(),
@@ -460,13 +488,7 @@ export function notifyCurrentTurnTerminal(
     },
     ...(details.error ? { error: details.error } : {}),
   };
-  try {
-    terminalObserverBarrier = Promise.resolve(observer(outcome)).catch((observerError) => {
-      console.error('[agent] turn terminal observer failed:', observerError);
-    });
-  } catch (observerError) {
-    console.error('[agent] turn terminal observer failed:', observerError);
-  }
+  terminalObserverBarrier = notifyTurnItemTerminal(item, outcome);
 }
 
 export function waitForCurrentTurnTerminalObserver(): Promise<void> {

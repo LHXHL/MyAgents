@@ -154,6 +154,8 @@ export type InjectedTurnRequest = {
 export type InjectedTurnResult = {
   success: boolean;
   enqueued?: boolean;
+  /** The turn may still be alive and must remain addressable by its exact queue identity. */
+  terminationUnconfirmed?: boolean;
   assistantMessagePresent?: boolean;
   text?: string;
   error?: string;
@@ -301,7 +303,7 @@ export interface SessionEngine {
   enqueueInboxMessage(request: InboxMessageRequest): Promise<{ queued: boolean; error?: string }>;
   ensureGoalSessionConfig(): Promise<{ success: boolean; error?: string }>;
   runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult>;
-  stopTurn(): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }>;
+  stopTurn(options?: { preserveQueue?: boolean }): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }>;
   stopOwnedTurn(owner: TurnOwner): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }>;
   cancelQueuedMessage(queueId: string): Promise<QueueCancelResult>;
   forceQueuedMessage(queueId: string): Promise<boolean>;

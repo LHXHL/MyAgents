@@ -122,16 +122,27 @@ export function resetExternalTurnLifecycleState(): void {
   currentTurnEstimatedInputTokens = 0;
   activeTurnSequence = 0;
   turnPromotionGeneration += 1;
+  activeTurnPromotion?.abort();
+  activeTurnPromotion?.settle({ status: 'not-dispatched' });
   activeTurnPromotion = null;
   currentTurnBinding = null;
 }
 
-export type ExternalTurnPromotionToken = Readonly<{
-  generation: number;
-  queueId?: string;
-  owner?: TurnOwner;
-  cancelDispatch?: () => void;
-}>;
+export type ExternalTurnPromotionToken = {
+  readonly generation: number;
+  readonly queueId?: string;
+  readonly owner?: TurnOwner;
+  readonly cancelDispatch?: () => void;
+  readonly signal: AbortSignal;
+  readonly abort: () => void;
+  readonly settled: Promise<ExternalTurnPromotionSettlement>;
+  readonly settle: (settlement: ExternalTurnPromotionSettlement) => boolean;
+  preserveQueueOnCancel: boolean;
+};
+
+export type ExternalTurnPromotionSettlement = {
+  status: 'not-dispatched' | 'dispatched' | 'terminated' | 'termination-unconfirmed';
+};
 
 export function beginExternalTurnPromotion(input?: {
   queueId?: string;
@@ -139,7 +150,26 @@ export function beginExternalTurnPromotion(input?: {
   cancelDispatch?: () => void;
 }): ExternalTurnPromotionToken | null {
   if (activeTurnPromotion) return null;
-  const token = { generation: ++turnPromotionGeneration, ...input };
+  const controller = new AbortController();
+  let settled = false;
+  let resolveSettlement!: (settlement: ExternalTurnPromotionSettlement) => void;
+  const settlement = new Promise<ExternalTurnPromotionSettlement>((resolve) => {
+    resolveSettlement = resolve;
+  });
+  const token = {
+    generation: ++turnPromotionGeneration,
+    ...input,
+    signal: controller.signal,
+    abort: () => controller.abort(),
+    settled: settlement,
+    settle: (outcome: ExternalTurnPromotionSettlement) => {
+      if (settled) return false;
+      settled = true;
+      resolveSettlement(outcome);
+      return true;
+    },
+    preserveQueueOnCancel: false,
+  };
   activeTurnPromotion = token;
   return token;
 }
@@ -148,16 +178,49 @@ export function isExternalTurnPromotionCurrent(token: ExternalTurnPromotionToken
   return activeTurnPromotion?.generation === token.generation;
 }
 
-export function finishExternalTurnPromotion(token: ExternalTurnPromotionToken): void {
+export function finishExternalTurnPromotion(
+  token: ExternalTurnPromotionToken,
+  settlement: ExternalTurnPromotionSettlement = { status: 'not-dispatched' },
+): void {
+  if (!token.settle(settlement)) return;
   if (isExternalTurnPromotionCurrent(token)) activeTurnPromotion = null;
+  if (
+    (settlement.status === 'not-dispatched' || settlement.status === 'terminated')
+    && token.queueId
+    && currentTurnBinding?.queueId === token.queueId
+  ) {
+    currentTurnBinding = null;
+  }
 }
 
-export function cancelExternalTurnPromotion(): boolean {
-  if (!activeTurnPromotion) return false;
-  activeTurnPromotion.cancelDispatch?.();
+export function cancelExternalTurnPromotion(
+  options?: { preserveQueue?: boolean },
+): ExternalTurnPromotionToken | null {
+  if (!activeTurnPromotion) return null;
+  const canceled = activeTurnPromotion;
+  canceled.preserveQueueOnCancel = options?.preserveQueue === true;
+  canceled.cancelDispatch?.();
+  canceled.abort();
   turnPromotionGeneration += 1;
   activeTurnPromotion = null;
-  return true;
+  return canceled;
+}
+
+export function cancelExternalTurnPromotionByQueueId(
+  queueId: string,
+  options?: { preserveQueue?: boolean },
+): ExternalTurnPromotionToken | null {
+  if (activeTurnPromotion?.queueId !== queueId) return null;
+  return cancelExternalTurnPromotion(options);
+}
+
+export function cancelExternalTurnPromotionByOwner(
+  owner: TurnOwner,
+  options?: { preserveQueue?: boolean },
+): ExternalTurnPromotionToken | null {
+  const promotedOwner = activeTurnPromotion?.owner;
+  if (promotedOwner?.kind !== owner.kind || promotedOwner.id !== owner.id) return null;
+  return cancelExternalTurnPromotion(options);
 }
 
 export function isExternalTurnPromotionInFlight(): boolean {

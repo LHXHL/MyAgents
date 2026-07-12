@@ -94,7 +94,9 @@ use runtime_identity::{
 pub use runtime_identity::{
     resolve_session_runtime_identity, resolve_session_runtime_identity_full,
 };
-pub(crate) use session_lifecycle::{acquire_session_lifecycle, has_persisted_session_owner};
+pub(crate) use session_lifecycle::{
+    acquire_session_lifecycle, has_persisted_session_owner, SessionLifecycleGuard,
+};
 #[allow(unused_imports)]
 pub use session_lifecycle::{
     cmd_delete_session_if_unowned, cmd_ensure_session_sidecar, cmd_get_session_generation,

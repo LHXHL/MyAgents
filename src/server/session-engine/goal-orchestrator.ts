@@ -488,7 +488,7 @@ export function createGoalOrchestrator(client: ManagementClient = managementApi)
         onTerminal: lifecycle.onTerminal,
         beforeDispatch: lifecycle.beforeDispatch,
       });
-      if (!result.success) await lifecycle.abort();
+      if (!result.success && !result.terminationUnconfirmed) await lifecycle.abort();
       return result;
     },
 

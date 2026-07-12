@@ -2215,6 +2215,16 @@ async fn task_list_handler(Query(q): Query<TaskListQuery>) -> Json<serde_json::V
         include_managed: None,
     };
     let tasks = store.list(filter).await;
+    let executions = crate::task_scheduler::get_task_scheduler()
+        .execution_projections_snapshot()
+        .await;
+    let tasks = tasks
+        .into_iter()
+        .map(|task| {
+            let execution = executions.get(&task.id).cloned();
+            task::TaskProjection::new(task, execution)
+        })
+        .collect::<Vec<_>>();
     Json(serde_json::json!({ "ok": true, "tasks": tasks }))
 }
 
@@ -2268,7 +2278,18 @@ async fn task_get_handler(Query(q): Query<TaskGetQuery>) -> Json<serde_json::Val
                     }));
                 }
             };
-            Json(serde_json::json!({ "ok": true, "task": task::TaskWithDocs { task: t, docs } }))
+            let execution = crate::task_scheduler::get_task_scheduler()
+                .execution_projection(&t.id)
+                .await;
+            Json(serde_json::json!({
+                "ok": true,
+                "task": task::TaskWithDocs {
+                    task: t,
+                    docs,
+                    execution_state: execution.as_ref().map(|value| value.state),
+                    execution_error: execution.and_then(|value| value.error),
+                }
+            }))
         }
         Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
     }
@@ -2344,9 +2365,17 @@ async fn task_update_handler(Json(input): Json<task::TaskUpdateInput>) -> Json<s
                     alignment_md: None,
                 },
             };
+            let execution = crate::task_scheduler::get_task_scheduler()
+                .execution_projection(&task.id)
+                .await;
             Json(serde_json::json!({
                 "ok": true,
-                "task": task::TaskWithDocs { task, docs },
+                "task": task::TaskWithDocs {
+                    task,
+                    docs,
+                    execution_state: execution.as_ref().map(|value| value.state),
+                    execution_error: execution.and_then(|value| value.error),
+                },
             }))
         }
         Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
@@ -2440,17 +2469,31 @@ async fn task_update_status_handler(
             "error": "task store not initialized"
         }));
     };
-    if let Err(error) = store.get_ordinary(&req.id).await {
-        return Json(serde_json::json!({ "ok": false, "error": error }));
+    let task_control = crate::task_scheduler::acquire_task_control(&req.id).await;
+    let current = match store.get_ordinary(&req.id).await {
+        Ok(task) => task,
+        Err(error) => return Json(serde_json::json!({ "ok": false, "error": error })),
+    };
+    if task::is_terminal_execution_stop_request(current.status, req.status) {
+        return match crate::task_scheduler::get_task_scheduler()
+            .stop_with_control_held(&current.id, &task_control)
+            .await
+        {
+            Ok(()) => Json(serde_json::json!({ "ok": true, "task": current })),
+            Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
+        };
     }
     match store
-        .update_status(task::TaskUpdateStatusInput {
-            id: req.id,
-            status: req.status,
-            message: req.message,
-            actor: req.actor,
-            source: req.source.or(Some(task::TransitionSource::Cli)),
-        })
+        .update_status_with_task_control_held(
+            task::TaskUpdateStatusInput {
+                id: req.id,
+                status: req.status,
+                message: req.message,
+                actor: req.actor,
+                source: req.source.or(Some(task::TransitionSource::Cli)),
+            },
+            &task_control,
+        )
         .await
     {
         Ok((task, transition)) => Json(serde_json::json!({
@@ -2855,6 +2898,18 @@ async fn task_run_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_json:
 }
 
 pub(crate) async fn run_task_by_id(id: &str) -> Result<task::Task, String> {
+    let task_control = crate::task_scheduler::try_acquire_task_control(id)
+        .await
+        .ok_or_else(|| {
+            format!("task {id} is stopping or changing scheduler state; retry after it settles")
+        })?;
+    run_task_by_id_with_control(id, &task_control).await
+}
+
+pub(crate) async fn run_task_by_id_with_control(
+    id: &str,
+    task_control: &crate::task_scheduler::TaskControlGuard,
+) -> Result<task::Task, String> {
     let Some(task_store) = task::get_task_store() else {
         return Err("task store not initialized".to_string());
     };
@@ -2869,29 +2924,44 @@ pub(crate) async fn run_task_by_id(id: &str) -> Result<task::Task, String> {
             ta.id
         ));
     }
+    if let Some(execution) = crate::task_scheduler::get_task_scheduler()
+        .execution_projection(id)
+        .await
+    {
+        return Err(format!(
+            "task {id} still has an unresolved {} execution; stop it before rerunning",
+            execution.state.as_str()
+        ));
+    }
 
     crate::task_scheduler::validate_task_schedule(&ta)?;
     let (task, _) = task_store
-        .update_status(task::TaskUpdateStatusInput {
-            id: ta.id.clone(),
-            status: task::TaskStatus::Running,
-            message: Some("dispatched".to_string()),
-            actor: task::TransitionActor::System,
-            source: Some(task::TransitionSource::Scheduler),
-        })
+        .update_status_with_task_control_held(
+            task::TaskUpdateStatusInput {
+                id: ta.id.clone(),
+                status: task::TaskStatus::Running,
+                message: Some("dispatched".to_string()),
+                actor: task::TransitionActor::System,
+                source: Some(task::TransitionSource::Scheduler),
+            },
+            task_control,
+        )
         .await?;
     if let Err(error) = crate::task_scheduler::get_task_scheduler()
-        .start(&task.id)
+        .start_with_control_held(&task.id, task_control)
         .await
     {
         let _ = task_store
-            .update_status(task::TaskUpdateStatusInput {
-                id: task.id.clone(),
-                status: task::TaskStatus::Blocked,
-                message: Some(format!("scheduler start failed: {error}")),
-                actor: task::TransitionActor::System,
-                source: Some(task::TransitionSource::Scheduler),
-            })
+            .update_status_with_task_control_held(
+                task::TaskUpdateStatusInput {
+                    id: task.id.clone(),
+                    status: task::TaskStatus::Blocked,
+                    message: Some(format!("scheduler start failed: {error}")),
+                    actor: task::TransitionActor::System,
+                    source: Some(task::TransitionSource::Scheduler),
+                },
+                task_control,
+            )
             .await;
         return Err(error);
     }
@@ -2905,6 +2975,12 @@ pub(crate) async fn run_task_by_id(id: &str) -> Result<task::Task, String> {
 async fn task_rerun_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_json::Value> {
     let Some(task_store) = task::get_task_store() else {
         return Json(serde_json::json!({ "ok": false, "error": "task store not initialized" }));
+    };
+    let Some(task_control) = crate::task_scheduler::try_acquire_task_control(&req.id).await else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": format!("task {} is stopping or changing scheduler state; retry after it settles", req.id)
+        }));
     };
     let ta = match task_store.get_ordinary(&req.id).await {
         Ok(task) => task,
@@ -2926,14 +3002,27 @@ async fn task_rerun_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_jso
 
     // Step 1: reset → todo with source=rerun (PRD §10.2.1 caller-inference
     // table row "rerun").
+    if let Some(execution) = crate::task_scheduler::get_task_scheduler()
+        .execution_projection(&ta.id)
+        .await
+    {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": format!("task {} still has an unresolved {} execution; retry stop before rerunning", ta.id, execution.state.as_str())
+        }));
+    }
+
     if let Err(e) = task_store
-        .update_status(task::TaskUpdateStatusInput {
-            id: ta.id.clone(),
-            status: task::TaskStatus::Todo,
-            message: Some("rerun requested".to_string()),
-            actor: task::TransitionActor::System,
-            source: Some(task::TransitionSource::Rerun),
-        })
+        .update_status_with_task_control_held(
+            task::TaskUpdateStatusInput {
+                id: ta.id.clone(),
+                status: task::TaskStatus::Todo,
+                message: Some("rerun requested".to_string()),
+                actor: task::TransitionActor::System,
+                source: Some(task::TransitionSource::Rerun),
+            },
+            &task_control,
+        )
         .await
     {
         return Json(serde_json::json!({ "ok": false, "error": format!("reset failed: {}", e) }));
@@ -2941,8 +3030,10 @@ async fn task_rerun_handler(Json(req): Json<TaskIdApiRequest>) -> Json<serde_jso
 
     // Step 2: defer to the same path as `task/run`. Re-fetch to pick up the
     // fresh `todo` status.
-    let req_next = TaskIdApiRequest { id: ta.id.clone() };
-    task_run_handler(Json(req_next)).await
+    match run_task_by_id_with_control(&ta.id, &task_control).await {
+        Ok(task) => Json(serde_json::json!({ "ok": true, "task": task })),
+        Err(error) => Json(serde_json::json!({ "ok": false, "error": error })),
+    }
 }
 
 #[derive(Debug, Deserialize)]

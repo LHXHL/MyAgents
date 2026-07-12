@@ -260,6 +260,45 @@ describe('Goal orchestrator', () => {
     });
   });
 
+  it('keeps a claimed Goal turn authoritative when runtime termination is unconfirmed', async () => {
+    const client = clientWithGoal();
+    const runInjectedTurn = vi.fn(async (request: InjectedTurnRequest) => {
+      expect(await request.beforeDispatch?.()).toEqual({ accepted: true });
+      return {
+        success: false,
+        enqueued: true,
+        status: 408,
+        error: 'runtime process did not stop',
+        terminationUnconfirmed: true,
+      };
+    });
+
+    const result = await createGoalOrchestrator(client).runScheduledTurn(
+      { runInjectedTurn },
+      {
+        goal: goal(),
+        queueId: 'goal-orphan-turn',
+        expectedControlRevision: 3,
+        channelDeliveryExpected: false,
+        turn: {
+          prompt: '<system-reminder>continue</system-reminder>',
+          sessionId: 'session-1',
+          workspacePath: '/workspace',
+          scenario: { type: 'desktop', surface: 'chat' },
+          timeoutMs: 10_000,
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      success: false,
+      terminationUnconfirmed: true,
+    });
+    expect(client.mock.calls.some(([path]) => path === '/api/goal/turn/claim')).toBe(true);
+    expect(client.mock.calls.some(([path]) => path === '/api/goal/turn/abort')).toBe(false);
+    expect(client.mock.calls.some(([path]) => path === '/api/goal/turn/finalize')).toBe(false);
+  });
+
   it('replays an idempotent claim after a lost response', async () => {
     const client = clientWithGoal();
     let claimAttempts = 0;

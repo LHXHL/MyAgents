@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SessionMetadata } from '@/api/sessionClient';
@@ -6,7 +6,9 @@ import type { Task } from '@/../shared/types/task';
 
 import { DispatchTaskDialog } from './DispatchTaskDialog';
 import { TaskSessionsList } from './TaskSessionsList';
+import { TaskStatusBadge } from './TaskStatusBadge';
 import { TaskCardItem } from './views/TaskCardItem';
+import { TaskItemActions } from './views/TaskItemActions';
 
 const taskApiMocks = vi.hoisted(() => ({
   getSessions: vi.fn(),
@@ -122,6 +124,45 @@ describe('Task Center UX refinements', () => {
     );
 
     expect(screen.queryByText(/上次运行被应用重启中断/)).not.toBeInTheDocument();
+  });
+
+  it('projects a failed stop separately from the persisted stopped status', () => {
+    render(<TaskStatusBadge status="stopped" executionState="stop_failed" />);
+
+    expect(screen.getByText('停止未确认')).toBeInTheDocument();
+  });
+
+  it('offers retry-stop but no generic rerun for terminal attached work', () => {
+    const retryStop = vi.fn();
+    const { rerender } = render(
+      <TaskItemActions
+        variant="task"
+        status="stopped"
+        executionState="stop_failed"
+        canRerun={false}
+        onStop={retryStop}
+        onOpenDetail={vi.fn()}
+        onEdit={vi.fn()}
+        onDelete={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTitle(/更多操作|More actions/));
+    expect(screen.queryByText('删除')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByText('重试中止'));
+    expect(retryStop).toHaveBeenCalledOnce();
+
+    rerender(
+      <TaskItemActions
+        variant="task"
+        status="done"
+        canRerun={false}
+        onRerun={vi.fn()}
+        onOpenDetail={vi.fn()}
+        onEdit={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTitle(/更多操作|More actions/));
+    expect(screen.queryByText('重新派发')).not.toBeInTheDocument();
   });
 
   it('uses launcher session title fallback and keeps execution timestamps on one line', async () => {

@@ -16,6 +16,7 @@ pub mod grok_auth;
 pub mod i18n;
 pub mod im;
 pub mod inbox;
+mod keyed_lifecycle;
 pub mod legacy_upgrade;
 mod litellm_cache;
 pub mod local_http;

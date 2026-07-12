@@ -1,48 +1,16 @@
 use super::*;
 
-pub(crate) struct SessionLifecycleGuard {
-    _guards: Vec<tokio::sync::OwnedMutexGuard<()>>,
-}
+pub(crate) type SessionLifecycleGuard = crate::keyed_lifecycle::KeyedLifecycleGuard;
 
-type SessionLifecycleMutex = tokio::sync::Mutex<()>;
-type SessionLifecycleRegistry =
-    tokio::sync::Mutex<HashMap<String, std::sync::Weak<SessionLifecycleMutex>>>;
-
-static SESSION_LIFECYCLE_LOCKS: std::sync::OnceLock<SessionLifecycleRegistry> =
-    std::sync::OnceLock::new();
+static SESSION_LIFECYCLE_LOCKS: std::sync::OnceLock<
+    crate::keyed_lifecycle::KeyedLifecycleRegistry,
+> = std::sync::OnceLock::new();
 
 pub(crate) async fn acquire_session_lifecycle(session_ids: &[&str]) -> SessionLifecycleGuard {
-    let mut identities = session_ids
-        .iter()
-        .map(|session_id| session_id.trim())
-        .filter(|session_id| !session_id.is_empty())
-        .map(str::to_string)
-        .collect::<Vec<_>>();
-    identities.sort();
-    identities.dedup();
-
-    let registry = SESSION_LIFECYCLE_LOCKS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()));
-    let locks = {
-        let mut registry = registry.lock().await;
-        registry.retain(|_, lock| lock.strong_count() > 0);
-        identities
-            .into_iter()
-            .map(|session_id| {
-                if let Some(lock) = registry.get(&session_id).and_then(std::sync::Weak::upgrade) {
-                    return lock;
-                }
-                let lock = Arc::new(SessionLifecycleMutex::new(()));
-                registry.insert(session_id, Arc::downgrade(&lock));
-                lock
-            })
-            .collect::<Vec<_>>()
-    };
-
-    let mut guards = Vec::with_capacity(locks.len());
-    for lock in locks {
-        guards.push(lock.lock_owned().await);
-    }
-    SessionLifecycleGuard { _guards: guards }
+    SESSION_LIFECYCLE_LOCKS
+        .get_or_init(crate::keyed_lifecycle::KeyedLifecycleRegistry::new)
+        .acquire(session_ids)
+        .await
 }
 
 pub(crate) async fn has_persisted_session_owner(session_id: &str) -> Result<bool, String> {
@@ -149,6 +117,79 @@ pub fn ensure_session_sidecar_with_runtime_identity_override<R: Runtime>(
     )
 }
 
+fn resolve_runtime_identity_for_owner(
+    owner: &SidecarOwner,
+    runtime_override: Option<&str>,
+    runtime_source_override: Option<&str>,
+    session_runtime_identity: Option<RuntimeIdentity>,
+    agent_runtime_identity: Option<RuntimeIdentity>,
+) -> RuntimeIdentity {
+    let session_runtime = session_runtime_identity
+        .as_ref()
+        .map(|identity| identity.runtime.clone());
+    let agent_runtime = agent_runtime_identity
+        .as_ref()
+        .map(|identity| identity.runtime.clone());
+    let resolved_runtime = resolve_runtime_for_owner(
+        runtime_override.map(str::to_string),
+        owner,
+        session_runtime,
+        agent_runtime,
+    );
+    let resolved_runtime_name = normalize_runtime_name(resolved_runtime.as_deref()).to_string();
+    let resolved_runtime_source = if resolved_runtime_name == "builtin" {
+        None
+    } else if runtime_override.is_some() {
+        Some(runtime_source_override.unwrap_or("system-cli"))
+    } else if session_runtime_identity
+        .as_ref()
+        .map(|identity| identity.runtime.as_str())
+        == Some(resolved_runtime_name.as_str())
+        && !owner_prefers_live_agent_runtime(owner)
+    {
+        session_runtime_identity
+            .as_ref()
+            .and_then(|identity| identity.runtime_source.as_deref())
+    } else if agent_runtime_identity
+        .as_ref()
+        .map(|identity| identity.runtime.as_str())
+        == Some(resolved_runtime_name.as_str())
+    {
+        agent_runtime_identity
+            .as_ref()
+            .and_then(|identity| identity.runtime_source.as_deref())
+    } else {
+        Some("system-cli")
+    };
+    RuntimeIdentity::new(Some(&resolved_runtime_name), resolved_runtime_source)
+}
+
+fn resolve_expected_runtime_identity(
+    session_id: &str,
+    workspace_path: &std::path::Path,
+    owner: &SidecarOwner,
+    runtime_override: Option<&str>,
+    runtime_source_override: Option<&str>,
+) -> RuntimeIdentity {
+    // Existing Session metadata is authoritative for desktop-style owners.
+    // A metadata creator has no Session row yet, so it follows the exact same
+    // override -> Agent resolution that the spawn path uses. Live IM owners
+    // intentionally ignore Session metadata and follow the Agent default.
+    let session_runtime_identity = if owner_prefers_live_agent_runtime(owner) {
+        None
+    } else {
+        resolve_session_runtime_identity_full(session_id)
+    };
+    let agent_runtime_identity = resolve_agent_runtime_identity_from_config(workspace_path);
+    resolve_runtime_identity_for_owner(
+        owner,
+        runtime_override,
+        runtime_source_override,
+        session_runtime_identity,
+        agent_runtime_identity,
+    )
+}
+
 fn ensure_session_sidecar_attempt<R: Runtime>(
     app_handle: &AppHandle<R>,
     manager: &ManagedSidecarManager,
@@ -173,8 +214,14 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
     );
     let ensure_started = trace_start();
     let owner_for_trace = format!("{:?}", owner);
-    let requested_runtime_for_trace =
-        normalize_runtime_name(runtime_override.as_deref()).to_string();
+    let expected_runtime_identity = resolve_expected_runtime_identity(
+        session_id,
+        workspace_path,
+        &owner,
+        runtime_override.as_deref(),
+        runtime_source_override.as_deref(),
+    );
+    let requested_runtime_for_trace = expected_runtime_identity.runtime.clone();
     emit_perf_trace(
         PerfTrace::new(PerfTraceName::SidecarBoot, "ensure_start")
             .session_id(Some(session_id))
@@ -243,6 +290,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
             } else if sidecar.is_reusable() {
                 if validate_sidecar_runtime_invariant(
                     session_id,
+                    &expected_runtime_identity,
                     sidecar.runtime.as_deref(),
                     sidecar.runtime_source.as_deref(),
                     "reuse-healthy-precheck",
@@ -272,6 +320,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 );
                 if validate_sidecar_runtime_invariant(
                     session_id,
+                    &expected_runtime_identity,
                     sidecar.runtime.as_deref(),
                     sidecar.runtime_source.as_deref(),
                     "reuse-starting",
@@ -378,6 +427,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                     );
                     if validate_sidecar_runtime_invariant(
                         session_id,
+                        &expected_runtime_identity,
                         sidecar.runtime.as_deref(),
                         sidecar.runtime_source.as_deref(),
                         "reuse-replacement",
@@ -415,6 +465,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                     );
                     if validate_sidecar_runtime_invariant(
                         session_id,
+                        &expected_runtime_identity,
                         sidecar.runtime.as_deref(),
                         sidecar.runtime_source.as_deref(),
                         "reuse-http-healthy",
@@ -454,6 +505,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                     );
                     if validate_sidecar_runtime_invariant(
                         session_id,
+                        &expected_runtime_identity,
                         sidecar.runtime.as_deref(),
                         sidecar.runtime_source.as_deref(),
                         "reuse-starting-ready",
@@ -543,6 +595,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
             manager_guard,
             runtime_override.as_deref(),
             runtime_source_override.as_deref(),
+            &expected_runtime_identity,
             attempt,
         );
         if let Ok(ensure_result) = &result {
@@ -569,6 +622,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
         manager_guard,
         runtime_override.as_deref(),
         runtime_source_override.as_deref(),
+        &expected_runtime_identity,
         attempt,
     );
     if let Ok(ensure_result) = &result {
@@ -596,6 +650,7 @@ fn create_new_session_sidecar<R: Runtime>(
     mut manager_guard: std::sync::MutexGuard<'_, SidecarManager>,
     runtime_override: Option<&str>,
     runtime_source_override: Option<&str>,
+    resolved_identity: &RuntimeIdentity,
     attempt: u32,
 ) -> Result<EnsureSidecarResult, String> {
     let boot_started = trace_start();
@@ -673,82 +728,9 @@ fn create_new_session_sidecar<R: Runtime>(
         cmd.env("MYAGENTS_MANAGEMENT_PORT", mgmt_port.to_string());
     }
 
-    // Inject runtime type for Agent Runtime selection (v0.1.59, v0.1.62, v0.1.66).
-    //
-    // Priority rules, split by owner type:
-    //
-    //   Tab / Task / Goal / BackgroundCompletion (desktop-style):
-    //     runtime_override → session metadata → agent config
-    //
-    //     Session metadata is authoritative so an ongoing conversation can't
-    //     switch runtimes mid-stream just because the user tweaked the agent's
-    //     default in Settings. This is the v0.1.62 session-stability guarantee.
-    //
-    //   Live Agent peer owners (IM / agent-channel session keys):
-    //     runtime_override → agent config (NO session fallback)
-    //
-    //     The IM peer session map is keyed on (agent, channel, user), so the
-    //     user never sees individual session IDs — their mental model is "I'm
-    //     talking to my agent". When they change the agent's runtime in
-    //     Settings, they expect the next IM message to use the new runtime
-    //     regardless of which session_id the peer map happens to point at.
-    //
-    //     Critically, we must NOT fall back to session metadata for live IM
-    //     peer owners: `resolve_agent_runtime_from_config` returns None when
-    //     the agent is builtin, and falling through to session_runtime would
-    //     silently re-resurrect a previously-used external runtime (e.g.
-    //     gemini→builtin switch), defeating the whole point of the IM drift
-    //     semantics. A None result here means "spawn as builtin (no env var)"
-    //     which is exactly correct — the user explicitly asked for builtin.
-    //
-    //   Maintenance Agent owners (for example memory_update:{agent}:{session})
-    //     target a concrete historical session_id, not an opaque peer binding,
-    //     so they follow the desktop-style session metadata rule.
-    let session_runtime_identity = if owner_prefers_live_agent_runtime(&owner) {
-        None
-    } else {
-        resolve_session_runtime_identity_full(session_id)
-    };
-    let session_runtime = session_runtime_identity
-        .as_ref()
-        .map(|identity| identity.runtime.clone());
-    let agent_runtime_identity = resolve_agent_runtime_identity_from_config(workspace_path);
-    let agent_runtime = agent_runtime_identity
-        .as_ref()
-        .map(|identity| identity.runtime.clone());
-    let resolved_runtime = resolve_runtime_for_owner(
-        runtime_override.map(str::to_string),
-        &owner,
-        session_runtime,
-        agent_runtime,
-    );
-    let resolved_runtime_name = normalize_runtime_name(resolved_runtime.as_deref()).to_string();
-    let resolved_runtime_source = if resolved_runtime_name == "builtin" {
-        None
-    } else if runtime_override.is_some() {
-        Some(runtime_source_override.unwrap_or("system-cli"))
-    } else if session_runtime_identity
-        .as_ref()
-        .map(|identity| identity.runtime.as_str())
-        == Some(resolved_runtime_name.as_str())
-        && !owner_prefers_live_agent_runtime(&owner)
-    {
-        session_runtime_identity
-            .as_ref()
-            .and_then(|identity| identity.runtime_source.as_deref())
-    } else if agent_runtime_identity
-        .as_ref()
-        .map(|identity| identity.runtime.as_str())
-        == Some(resolved_runtime_name.as_str())
-    {
-        agent_runtime_identity
-            .as_ref()
-            .and_then(|identity| identity.runtime_source.as_deref())
-    } else {
-        Some("system-cli")
-    };
-    let resolved_identity =
-        RuntimeIdentity::new(Some(&resolved_runtime_name), resolved_runtime_source);
+    // Reuse validation and process spawn consume the same identity snapshot for
+    // this ensure attempt. In particular, missing Session metadata is not an
+    // implicit builtin identity for a metadata creator.
     if let Some(runtime) = resolved_identity.runtime_for_env() {
         cmd.env("MYAGENTS_RUNTIME", runtime);
     }
@@ -1236,6 +1218,15 @@ pub async fn cmd_delete_session_if_unowned(
     if sessionId.trim().is_empty() || sessionId.contains('/') {
         return Err("Invalid session ID".to_string());
     }
+    // Fast negative for the common active Task/Goal case. A fresh Session
+    // creator may retain the lifecycle guard until metadata birth; waiting on
+    // that guard before looking at the already-published durable/transient
+    // owner would make a delete click hang for the entire AI turn. This is
+    // only a UX shortcut: the same predicate is checked again under the guard
+    // below, which remains the correctness boundary for false -> true races.
+    if has_persisted_session_owner(&sessionId).await? {
+        return Ok(false);
+    }
     let _lifecycle = acquire_session_lifecycle(&[&sessionId]).await;
     if has_persisted_session_owner(&sessionId).await? {
         return Ok(false);
@@ -1290,8 +1281,69 @@ pub async fn cmd_release_tab_session(
 
 #[cfg(test)]
 mod session_lifecycle_tests {
-    use super::acquire_session_lifecycle;
+    use super::{
+        acquire_session_lifecycle, resolve_runtime_identity_for_owner,
+        validate_sidecar_runtime_invariant, RuntimeIdentity, SidecarOwner,
+    };
     use std::time::Duration;
+
+    #[test]
+    fn metadata_creator_uses_agent_runtime_for_external_reuse_and_spawn() {
+        let expected = resolve_runtime_identity_for_owner(
+            &SidecarOwner::Task("task-a".to_string()),
+            None,
+            None,
+            None,
+            Some(RuntimeIdentity::new(
+                Some("codex"),
+                Some("managed-provider"),
+            )),
+        );
+
+        assert_eq!(expected.runtime, "codex");
+        assert_eq!(expected.runtime_source.as_deref(), Some("managed-provider"));
+        assert!(validate_sidecar_runtime_invariant(
+            "metadata-creator",
+            &expected,
+            Some("codex"),
+            Some("managed-provider"),
+            "test-healthy-reuse",
+        )
+        .is_ok());
+        assert!(validate_sidecar_runtime_invariant(
+            "metadata-creator",
+            &expected,
+            Some("codex"),
+            Some("managed-provider"),
+            "test-starting-reuse",
+        )
+        .is_ok());
+        assert!(validate_sidecar_runtime_invariant(
+            "metadata-creator",
+            &expected,
+            None,
+            None,
+            "test-wrong-builtin-reuse",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn metadata_creator_runtime_override_wins_before_metadata_birth() {
+        let expected = resolve_runtime_identity_for_owner(
+            &SidecarOwner::Task("task-a".to_string()),
+            Some("gemini"),
+            Some("system-cli"),
+            None,
+            Some(RuntimeIdentity::new(
+                Some("codex"),
+                Some("managed-provider"),
+            )),
+        );
+
+        assert_eq!(expected.runtime, "gemini");
+        assert_eq!(expected.runtime_source.as_deref(), Some("system-cli"));
+    }
 
     #[tokio::test]
     async fn lifecycle_lock_serializes_one_session_without_blocking_another() {

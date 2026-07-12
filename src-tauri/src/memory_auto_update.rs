@@ -26,6 +26,8 @@ const MANAGED_AUTO_UPDATE_PROMPT: &str =
 
 static IN_FLIGHT_WORKSPACES: LazyLock<Mutex<HashSet<String>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
+static CONFIGURE_LIFECYCLES: LazyLock<crate::keyed_lifecycle::KeyedLifecycleRegistry> =
+    LazyLock::new(crate::keyed_lifecycle::KeyedLifecycleRegistry::new);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -58,6 +60,14 @@ pub struct MemoryAutoUpdateBatchSummary {
     pub skipped_duplicate: u32,
     pub failed: u32,
     pub completed_at: String,
+    #[serde(skip)]
+    pub termination_unconfirmed: bool,
+}
+
+pub struct ManagedMemoryAutoUpdateOutcome {
+    pub success: bool,
+    pub termination_unconfirmed: bool,
+    pub output_text: String,
 }
 
 #[derive(Debug)]
@@ -104,6 +114,8 @@ struct SessionCandidate {
 enum SessionUpdateOutcome {
     Updated,
     Busy,
+    Canceled,
+    TerminationUnconfirmed(String),
     Failed(String),
 }
 
@@ -114,9 +126,12 @@ enum UpdateMemoryFileState {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct MemoryUpdateResponse {
     status: String,
     reason: Option<String>,
+    #[serde(default)]
+    termination_unconfirmed: bool,
 }
 
 #[derive(Debug)]
@@ -124,6 +139,40 @@ enum MemoryUpdateSidecarTarget {
     Ready(u16),
     BoundButNotReady,
     Missing,
+}
+
+struct MemoryUpdateSidecarOwnerGuard {
+    manager: ManagedSidecarManager,
+    session_id: String,
+    owner: SidecarOwner,
+    release_on_drop: bool,
+}
+
+impl MemoryUpdateSidecarOwnerGuard {
+    fn retain_for_task_stop(&mut self) {
+        self.release_on_drop = false;
+    }
+
+    fn confirm_turn_settled(&mut self) {
+        self.release_on_drop = true;
+    }
+}
+
+impl Drop for MemoryUpdateSidecarOwnerGuard {
+    fn drop(&mut self) {
+        if !self.release_on_drop {
+            return;
+        }
+        if let Err(error) =
+            sidecar::release_session_sidecar(&self.manager, &self.session_id, &self.owner)
+        {
+            ulog_warn!(
+                "[memory-auto-update] failed to release Sidecar owner session={}: {}",
+                self.session_id,
+                error
+            );
+        }
+    }
 }
 
 struct WorkspaceInflightGuard {
@@ -147,6 +196,34 @@ impl WorkspaceInflightGuard {
     }
 }
 
+fn authoritative_configure_request(
+    requested: ConfigureMemoryAutoUpdateTaskRequest,
+    disk_agents: Vec<DiskMemoryAutoUpdateAgent>,
+) -> ConfigureMemoryAutoUpdateTaskRequest {
+    let workspace_identity = normalize_path(&requested.workspace_path);
+    disk_agents
+        .into_iter()
+        .find(|agent| normalize_path(&agent.request.workspace_path) == workspace_identity)
+        .map(|agent| agent.request)
+        .unwrap_or(ConfigureMemoryAutoUpdateTaskRequest {
+            agent_id: requested.agent_id,
+            workspace_path: requested.workspace_path,
+            memory_auto_update: None,
+            heartbeat: None,
+        })
+}
+
+async fn load_authoritative_configure_request(
+    requested: ConfigureMemoryAutoUpdateTaskRequest,
+) -> Result<ConfigureMemoryAutoUpdateTaskRequest, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        load_disk_memory_auto_update_agents()
+            .map(|agents| authoritative_configure_request(requested, agents))
+    })
+    .await
+    .map_err(|error| format!("memory auto-update config read task failed: {error}"))?
+}
+
 #[tauri::command]
 pub async fn cmd_configure_memory_auto_update_task(
     request: ConfigureMemoryAutoUpdateTaskRequest,
@@ -157,6 +234,12 @@ pub async fn cmd_configure_memory_auto_update_task(
 pub async fn configure_memory_auto_update_task(
     request: ConfigureMemoryAutoUpdateTaskRequest,
 ) -> Result<ConfigureMemoryAutoUpdateTaskResult, String> {
+    // The hidden Task is unique per workspace, so creation, drift repair, and
+    // disable must share one transaction boundary. Per-Task control cannot
+    // serialize the initial create because no Task id exists yet.
+    let workspace_identity = normalize_path(&request.workspace_path);
+    let _configure_lifecycle = CONFIGURE_LIFECYCLES.acquire(&[&workspace_identity]).await;
+    let request = load_authoritative_configure_request(request).await?;
     let store =
         crate::task::get_task_store().ok_or_else(|| "task store not initialized".to_string())?;
     let mut existing = find_managed_tasks_for_workspace(&request.workspace_path).await;
@@ -169,7 +252,20 @@ pub async fn configure_memory_auto_update_task(
             duplicate.id,
             request.workspace_path
         );
-        let _ = store.delete(&duplicate.id).await;
+        stop_managed_task(store, duplicate, "duplicate managed Task cleanup")
+            .await
+            .map_err(|error| {
+                format!(
+                    "failed to stop duplicate managed Task {}: {}",
+                    duplicate.id, error
+                )
+            })?;
+        store.delete(&duplicate.id).await.map_err(|error| {
+            format!(
+                "failed to delete duplicate managed Task {}: {}",
+                duplicate.id, error
+            )
+        })?;
     }
 
     let Some(mut config) = request
@@ -178,17 +274,7 @@ pub async fn configure_memory_auto_update_task(
         .filter(|config| config.enabled)
     else {
         if let Some(task) = keep {
-            if task.status == crate::task::TaskStatus::Running {
-                let _ = store
-                    .update_status(crate::task::TaskUpdateStatusInput {
-                        id: task.id.clone(),
-                        status: crate::task::TaskStatus::Stopped,
-                        message: Some("memory auto-update disabled".to_string()),
-                        actor: crate::task::TransitionActor::System,
-                        source: Some(crate::task::TransitionSource::Scheduler),
-                    })
-                    .await;
-            }
+            stop_managed_task(store, &task, "memory auto-update disabled").await?;
             return Ok(ConfigureMemoryAutoUpdateTaskResult {
                 enabled: false,
                 task_id: Some(task.id),
@@ -228,17 +314,12 @@ pub async fn configure_memory_auto_update_task(
                 != Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH);
 
         if drifted {
-            if existing.status == crate::task::TaskStatus::Running {
-                store
-                    .update_status(crate::task::TaskUpdateStatusInput {
-                        id: existing.id.clone(),
-                        status: crate::task::TaskStatus::Stopped,
-                        message: Some("memory auto-update settings changed; re-arming".to_string()),
-                        actor: crate::task::TransitionActor::System,
-                        source: Some(crate::task::TransitionSource::Scheduler),
-                    })
-                    .await?;
-            }
+            stop_managed_task(
+                store,
+                &existing,
+                "memory auto-update settings changed; re-arming",
+            )
+            .await?;
             store
                 .update(crate::task::TaskUpdateInput {
                     id: existing.id,
@@ -332,10 +413,22 @@ async fn arm_managed_task(
     store: &std::sync::Arc<crate::task::TaskStore>,
     task: crate::task::Task,
 ) -> Result<(), String> {
+    let scheduler = crate::task_scheduler::get_task_scheduler();
+    if let Some(execution) = scheduler.execution_projection(&task.id).await {
+        if execution.state == crate::task_scheduler::TaskExecutionState::Running
+            && task.status == crate::task::TaskStatus::Running
+        {
+            return Ok(());
+        }
+        if execution.state != crate::task_scheduler::TaskExecutionState::Running {
+            scheduler.stop(&task.id).await?;
+        }
+    }
     if task.status == crate::task::TaskStatus::Running {
-        return crate::task_scheduler::get_task_scheduler()
-            .start(&task.id)
-            .await;
+        return scheduler.start(&task.id).await;
+    }
+    if scheduler.is_executing(&task.id).await {
+        scheduler.stop(&task.id).await?;
     }
     if task.status != crate::task::TaskStatus::Todo {
         store
@@ -351,6 +444,35 @@ async fn arm_managed_task(
     crate::management_api::run_task_by_id(&task.id)
         .await
         .map(|_| ())
+}
+
+async fn stop_managed_task(
+    store: &std::sync::Arc<crate::task::TaskStore>,
+    task: &crate::task::Task,
+    message: &str,
+) -> Result<(), String> {
+    if matches!(
+        task.status,
+        crate::task::TaskStatus::Running | crate::task::TaskStatus::Verifying
+    ) {
+        store
+            .update_status(crate::task::TaskUpdateStatusInput {
+                id: task.id.clone(),
+                status: crate::task::TaskStatus::Stopped,
+                message: Some(message.to_string()),
+                actor: crate::task::TransitionActor::System,
+                source: Some(crate::task::TransitionSource::Scheduler),
+            })
+            .await?;
+    } else if crate::task_scheduler::get_task_scheduler()
+        .is_executing(&task.id)
+        .await
+    {
+        crate::task_scheduler::get_task_scheduler()
+            .stop(&task.id)
+            .await?;
+    }
+    Ok(())
 }
 
 pub async fn reconcile_memory_auto_update_tasks_from_disk() -> Result<(), String> {
@@ -422,7 +544,8 @@ async fn find_managed_tasks_for_workspace(workspace_path: &str) -> Vec<crate::ta
 pub async fn run_managed_task_batch(
     handle: &AppHandle,
     task: &crate::task::Task,
-) -> Result<(bool, Option<String>, Option<String>, Option<String>), String> {
+    queue_id: &str,
+) -> Result<ManagedMemoryAutoUpdateOutcome, String> {
     let Some((agent_id, mut config, heartbeat)) =
         load_enabled_memory_auto_update_agent_for_workspace(&task.workspace_path)?
     else {
@@ -430,7 +553,11 @@ pub async fn run_managed_task_batch(
             "Memory auto-update hidden batch skipped for {}: memoryAutoUpdate is not explicitly enabled.",
             task.workspace_path
         );
-        return Ok((true, None, Some(text), None));
+        return Ok(ManagedMemoryAutoUpdateOutcome {
+            success: true,
+            termination_unconfirmed: false,
+            output_text: text,
+        });
     };
     apply_heartbeat_timezone_fallback(&mut config, heartbeat.as_ref());
 
@@ -439,7 +566,11 @@ pub async fn run_managed_task_batch(
             "Memory auto-update hidden batch skipped for {}: outside update window {}-{}.",
             task.workspace_path, config.update_window_start, config.update_window_end
         );
-        return Ok((true, None, Some(text), None));
+        return Ok(ManagedMemoryAutoUpdateOutcome {
+            success: true,
+            termination_unconfirmed: false,
+            output_text: text,
+        });
     }
 
     let sidecar_state = handle
@@ -451,10 +582,16 @@ pub async fn run_managed_task_batch(
         &task.workspace_path,
         &config,
         &sidecar_state,
+        &task.id,
+        queue_id,
     )
     .await;
     let ok = summary.failed == 0;
-    Ok((ok, None, Some(format_batch_summary(&summary)), None))
+    Ok(ManagedMemoryAutoUpdateOutcome {
+        success: ok,
+        termination_unconfirmed: summary.termination_unconfirmed,
+        output_text: format_batch_summary(&summary),
+    })
 }
 
 pub async fn run_batch<R: Runtime>(
@@ -463,6 +600,8 @@ pub async fn run_batch<R: Runtime>(
     workspace_path: &str,
     config: &MemoryAutoUpdateConfig,
     sidecar_manager: &ManagedSidecarManager,
+    task_id: &str,
+    queue_id: &str,
 ) -> MemoryAutoUpdateBatchSummary {
     let mut summary = MemoryAutoUpdateBatchSummary {
         completed_at: Utc::now().to_rfc3339(),
@@ -473,6 +612,12 @@ pub async fn run_batch<R: Runtime>(
         summary.skipped_duplicate = 1;
         return summary;
     };
+
+    let scheduler = crate::task_scheduler::get_task_scheduler();
+    if !scheduler.authorize_dispatch(task_id, queue_id).await {
+        inflight.release().await;
+        return summary;
+    }
 
     match prepare_update_memory_file(workspace_path) {
         Ok(UpdateMemoryFileState::Ready) => {}
@@ -502,13 +647,34 @@ pub async fn run_batch<R: Runtime>(
     let http_client =
         crate::local_http::json_client(Duration::from_secs(MEMORY_UPDATE_HTTP_TIMEOUT_SECS));
     for candidate in candidates {
+        // Session deletion takes this same lifecycle before consulting live
+        // Task execution ownership. Recheck metadata under the fence, then
+        // publish the exact execution binding before releasing it: deletion
+        // either wins first (and this stale candidate is skipped) or observes
+        // the live batch and cannot remove the Session mid-update.
+        let session_lifecycle = crate::sidecar::acquire_session_lifecycle(&[&candidate.id]).await;
+        if crate::sidecar::runtime_identity::resolve_session_runtime_identity_full(&candidate.id)
+            .is_none()
+        {
+            drop(session_lifecycle);
+            continue;
+        }
+        if !scheduler
+            .bind_execution_session(task_id, queue_id, &candidate.id)
+            .await
+        {
+            drop(session_lifecycle);
+            break;
+        }
+        drop(session_lifecycle);
         match update_single_session(
             &candidate.id,
-            agent_id,
             workspace_path,
             sidecar_manager,
             app_handle,
             &http_client,
+            task_id,
+            queue_id,
         )
         .await
         {
@@ -525,6 +691,17 @@ pub async fn run_batch<R: Runtime>(
                     "[memory-auto-update] session {} busy; will retry on next scan",
                     candidate.id
                 );
+            }
+            SessionUpdateOutcome::Canceled => break,
+            SessionUpdateOutcome::TerminationUnconfirmed(error) => {
+                summary.failed += 1;
+                summary.termination_unconfirmed = true;
+                ulog_warn!(
+                    "[memory-auto-update] session {} termination unconfirmed: {}",
+                    candidate.id,
+                    error
+                );
+                break;
             }
             SessionUpdateOutcome::Failed(error) => {
                 summary.failed += 1;
@@ -774,23 +951,27 @@ fn analyze_session_jsonl_content(content: &str) -> SessionJsonlAnalysis {
     let mut last_update_idx: Option<usize> = None;
     let mut last_memory_update_at: Option<DateTime<Utc>> = None;
     let mut last_human_user_at: Option<DateTime<Utc>> = None;
+    let mut pending_memory_update: Option<(usize, Option<DateTime<Utc>>)> = None;
 
     for (idx, msg) in lines.iter().enumerate() {
-        if msg.role.as_deref() != Some("user") {
-            continue;
-        }
         let text = msg.content.as_ref().map(message_text).unwrap_or_default();
         let ts = message_timestamp(msg);
-        if is_memory_update_marker(&text) {
-            last_update_idx = Some(idx);
-            last_memory_update_at = ts;
-            continue;
-        }
-        if is_system_injected_user_text(&text) {
-            continue;
-        }
-        if let Some(ts) = ts {
-            last_human_user_at = Some(ts);
+        match msg.role.as_deref() {
+            Some("user") if is_memory_update_marker(&text) => {
+                pending_memory_update = Some((idx, ts));
+            }
+            Some("user") if !is_system_injected_user_text(&text) => {
+                if let Some(ts) = ts {
+                    last_human_user_at = Some(ts);
+                }
+            }
+            Some("assistant") if text.trim() == "MEMORY_UPDATE_OK" => {
+                if let Some((prompt_idx, prompt_at)) = pending_memory_update.take() {
+                    last_update_idx = Some(prompt_idx);
+                    last_memory_update_at = ts.or(prompt_at);
+                }
+            }
+            _ => {}
         }
     }
 
@@ -816,14 +997,14 @@ fn analyze_session_jsonl_content(content: &str) -> SessionJsonlAnalysis {
 
 async fn update_single_session<R: Runtime>(
     session_id: &str,
-    agent_id: &str,
     workspace_path: &str,
     sidecar_manager: &ManagedSidecarManager,
     app_handle: &AppHandle<R>,
     http_client: &reqwest::Client,
+    task_id: &str,
+    queue_id: &str,
 ) -> SessionUpdateOutcome {
-    let memory_update_key = format!("memory_update:{}:{}", agent_id, session_id);
-    let owner = SidecarOwner::Agent(memory_update_key);
+    let owner = SidecarOwner::Task(task_id.to_string());
 
     let target = {
         let mut mgr = match sidecar_manager.lock() {
@@ -831,6 +1012,11 @@ async fn update_single_session<R: Runtime>(
             Err(error) => return SessionUpdateOutcome::Failed(format!("lock: {}", error)),
         };
         if let Some(port) = mgr.get_session_port(session_id) {
+            if !mgr.add_session_owner(session_id, owner.clone()) {
+                return SessionUpdateOutcome::Failed(
+                    "ready Sidecar disappeared before memory-update owner attach".to_string(),
+                );
+            }
             MemoryUpdateSidecarTarget::Ready(port)
         } else if mgr.generation_for(session_id).is_some() {
             MemoryUpdateSidecarTarget::BoundButNotReady
@@ -839,8 +1025,11 @@ async fn update_single_session<R: Runtime>(
         }
     };
 
-    let (port, was_temp) = match target {
-        MemoryUpdateSidecarTarget::Ready(port) => (port, false),
+    // Both Ready and Missing paths own the Sidecar before the HTTP request.
+    // `ensure_session_sidecar` attaches the supplied owner even if another
+    // caller wins creation after the Missing observation.
+    let port = match target {
+        MemoryUpdateSidecarTarget::Ready(port) => port,
         MemoryUpdateSidecarTarget::BoundButNotReady => return SessionUpdateOutcome::Busy,
         MemoryUpdateSidecarTarget::Missing => {
             let ah = app_handle.clone();
@@ -857,32 +1046,62 @@ async fn update_single_session<R: Runtime>(
             .and_then(|r| r.map_err(|e| format!("ensure_sidecar: {}", e)));
 
             match started {
-                Ok(result) => (result.port, true),
+                Ok(result) => result.port,
                 Err(error) => return SessionUpdateOutcome::Failed(error),
             }
         }
     };
 
-    let update_result = post_memory_update(http_client, port).await;
+    let mut owner_guard = MemoryUpdateSidecarOwnerGuard {
+        manager: sidecar_manager.clone(),
+        session_id: session_id.to_string(),
+        owner,
+        release_on_drop: true,
+    };
 
-    if was_temp {
-        let _ = sidecar::release_session_sidecar(sidecar_manager, session_id, &owner);
+    if !crate::task_scheduler::get_task_scheduler()
+        .authorize_dispatch(task_id, queue_id)
+        .await
+    {
+        return SessionUpdateOutcome::Canceled;
     }
 
-    update_result
+    // From this point the HTTP request may reach the runtime even if this
+    // worker is canceled or panics. Keep the Task owner by default; only a
+    // concrete response that proves the turn settled may release it.
+    owner_guard.retain_for_task_stop();
+    let outcome = post_memory_update(http_client, port, session_id, task_id, queue_id).await;
+    if !matches!(outcome, SessionUpdateOutcome::TerminationUnconfirmed(_)) {
+        owner_guard.confirm_turn_settled();
+    }
+    outcome
 }
 
-async fn post_memory_update(http_client: &reqwest::Client, port: u16) -> SessionUpdateOutcome {
+async fn post_memory_update(
+    http_client: &reqwest::Client,
+    port: u16,
+    session_id: &str,
+    task_id: &str,
+    queue_id: &str,
+) -> SessionUpdateOutcome {
     let url = format!("http://127.0.0.1:{}/api/memory/update", port);
     let response = match http_client
         .post(&url)
-        .json(&serde_json::json!({ "source": "auto" }))
+        .json(&serde_json::json!({
+            "source": "auto",
+            "sessionId": session_id,
+            "taskId": task_id,
+            "queueId": queue_id,
+        }))
         .send()
         .await
     {
         Ok(response) => response,
         Err(error) => {
-            return SessionUpdateOutcome::Failed(format!("HTTP request failed: {}", error));
+            return SessionUpdateOutcome::TerminationUnconfirmed(format!(
+                "HTTP request failed after dispatch: {}",
+                error
+            ));
         }
     };
     let status = response.status();
@@ -890,12 +1109,18 @@ async fn post_memory_update(http_client: &reqwest::Client, port: u16) -> Session
     let body = match parsed {
         Ok(body) => body,
         Err(error) => {
-            return SessionUpdateOutcome::Failed(format!(
-                "Failed to parse response (status {}): {}",
+            return SessionUpdateOutcome::TerminationUnconfirmed(format!(
+                "Failed to read memory update response after dispatch (status {}): {}",
                 status, error
             ));
         }
     };
+    if body.termination_unconfirmed {
+        return SessionUpdateOutcome::TerminationUnconfirmed(
+            body.reason
+                .unwrap_or_else(|| "runtime turn may still be alive".to_string()),
+        );
+    }
     match body.status.as_str() {
         "completed" => SessionUpdateOutcome::Updated,
         "skipped" if body.reason.as_deref() == Some("session_busy") => SessionUpdateOutcome::Busy,
@@ -1150,6 +1375,27 @@ fn is_system_injected_user_text(text: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn spawn_owner_guard_test_child() -> std::process::Child {
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = crate::process_cmd::new("powershell");
+            command.args(["-NoProfile", "-Command", "Start-Sleep -Seconds 60"]);
+            command
+        };
+        #[cfg(not(windows))]
+        let mut command = {
+            let mut command = crate::process_cmd::new("sleep");
+            command.arg("60");
+            command
+        };
+        command
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("spawn owner guard test child")
+    }
+
     fn base_config() -> MemoryAutoUpdateConfig {
         MemoryAutoUpdateConfig {
             enabled: true,
@@ -1164,10 +1410,21 @@ mod tests {
     }
 
     #[test]
+    fn memory_update_response_decodes_termination_ambiguity_from_node_wire_shape() {
+        let response: MemoryUpdateResponse = serde_json::from_value(serde_json::json!({
+            "status": "timeout",
+            "terminationUnconfirmed": true
+        }))
+        .expect("decode memory update response");
+
+        assert!(response.termination_unconfirmed);
+    }
+
+    #[test]
     fn jsonl_analysis_counts_queries_after_memory_marker() {
         let content = r#"{"role":"user","content":"before","timestamp":"2026-01-01T00:00:00.000Z"}
 {"role":"user","content":"<MEMORY_UPDATE> update","timestamp":"2026-01-01T01:00:00.000Z"}
-{"role":"assistant","content":"done","timestamp":"2026-01-01T01:01:00.000Z"}
+{"role":"assistant","content":"MEMORY_UPDATE_OK","timestamp":"2026-01-01T01:01:00.000Z"}
 {"role":"user","content":"q1","timestamp":"2026-01-01T02:00:00.000Z"}
 {"role":"user","content":"<HEARTBEAT> hidden","timestamp":"2026-01-01T02:05:00.000Z"}
 {"role":"user","content":[{"type":"text","text":"q2"}],"timestamp":"2026-01-01T03:00:00.000Z"}"#;
@@ -1180,11 +1437,180 @@ mod tests {
                 .last_memory_update_at
                 .expect("memory marker")
                 .to_rfc3339(),
-            "2026-01-01T01:00:00+00:00"
+            "2026-01-01T01:01:00+00:00"
         );
         assert_eq!(
             analysis.last_human_user_at.expect("last user").to_rfc3339(),
             "2026-01-01T03:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn failed_memory_marker_does_not_reset_success_or_query_count() {
+        let content = r#"{"role":"user","content":"<MEMORY_UPDATE> first","timestamp":"2026-01-01T01:00:00.000Z"}
+{"role":"assistant","content":"MEMORY_UPDATE_OK","timestamp":"2026-01-01T01:01:00.000Z"}
+{"role":"user","content":"q1","timestamp":"2026-01-01T02:00:00.000Z"}
+{"role":"user","content":"<MEMORY_UPDATE> retry","timestamp":"2026-01-01T03:00:00.000Z"}
+{"role":"assistant","content":"provider failed","timestamp":"2026-01-01T03:01:00.000Z"}
+{"role":"user","content":"q2","timestamp":"2026-01-01T04:00:00.000Z"}"#;
+
+        let analysis = analyze_session_jsonl_content(content);
+
+        assert_eq!(analysis.query_count, 2);
+        assert_eq!(
+            analysis
+                .last_memory_update_at
+                .expect("last successful memory update")
+                .to_rfc3339(),
+            "2026-01-01T01:01:00+00:00"
+        );
+    }
+
+    #[test]
+    fn orphaned_memory_marker_does_not_create_a_cooldown() {
+        let content = r#"{"role":"user","content":"q1","timestamp":"2026-01-01T01:00:00.000Z"}
+{"role":"user","content":"<MEMORY_UPDATE> orphan","timestamp":"2026-01-01T02:00:00.000Z"}
+{"role":"user","content":"q2","timestamp":"2026-01-01T03:00:00.000Z"}"#;
+
+        let analysis = analyze_session_jsonl_content(content);
+
+        assert_eq!(analysis.query_count, 2);
+        assert!(analysis.last_memory_update_at.is_none());
+    }
+
+    #[test]
+    fn memory_update_owner_keeps_ready_sidecar_alive_after_tab_detaches() {
+        let session_id = "memory-owner-session";
+        let tab_owner = SidecarOwner::Tab("tab-a".to_string());
+        let memory_owner = SidecarOwner::Task("memory-task".to_string());
+        let manager = crate::sidecar::create_sidecar_manager();
+        {
+            let mut sidecars = manager.lock().expect("sidecar manager lock");
+            sidecars.insert_sidecar(
+                session_id,
+                crate::sidecar::SessionSidecar {
+                    process: spawn_owner_guard_test_child(),
+                    port: 31419,
+                    session_id: session_id.to_string(),
+                    workspace_path: PathBuf::from("/tmp/workspace"),
+                    state: crate::sidecar::SidecarState::Healthy,
+                    owners: HashSet::from([tab_owner.clone()]),
+                    created_at: std::time::Instant::now(),
+                    runtime: None,
+                    runtime_source: None,
+                },
+            );
+            assert!(sidecars.add_session_owner(session_id, memory_owner.clone()));
+        }
+
+        let owner_guard = MemoryUpdateSidecarOwnerGuard {
+            manager: manager.clone(),
+            session_id: session_id.to_string(),
+            owner: memory_owner,
+            release_on_drop: true,
+        };
+        {
+            let mut sidecars = manager.lock().expect("sidecar manager lock");
+            assert_eq!(
+                sidecars.remove_session_owner(session_id, &tab_owner),
+                (true, false),
+                "the memory-update owner must keep the Sidecar alive"
+            );
+            assert!(sidecars.session_has_owners(session_id));
+        }
+
+        drop(owner_guard);
+        assert!(
+            !manager
+                .lock()
+                .expect("sidecar manager lock")
+                .session_has_owners(session_id),
+            "RAII release must remove the temporary owner and stop the ownerless Sidecar"
+        );
+    }
+
+    #[test]
+    fn unconfirmed_memory_turn_retains_task_owner_for_retry_stop() {
+        let session_id = "memory-owner-unconfirmed";
+        let task_owner = SidecarOwner::Task("memory-task-unconfirmed".to_string());
+        let manager = crate::sidecar::create_sidecar_manager();
+        {
+            let mut sidecars = manager.lock().expect("sidecar manager lock");
+            sidecars.insert_sidecar(
+                session_id,
+                crate::sidecar::SessionSidecar {
+                    process: spawn_owner_guard_test_child(),
+                    port: 31420,
+                    session_id: session_id.to_string(),
+                    workspace_path: PathBuf::from("/tmp/workspace"),
+                    state: crate::sidecar::SidecarState::Healthy,
+                    owners: HashSet::from([task_owner.clone()]),
+                    created_at: std::time::Instant::now(),
+                    runtime: None,
+                    runtime_source: None,
+                },
+            );
+        }
+
+        let mut owner_guard = MemoryUpdateSidecarOwnerGuard {
+            manager: manager.clone(),
+            session_id: session_id.to_string(),
+            owner: task_owner.clone(),
+            release_on_drop: true,
+        };
+        owner_guard.retain_for_task_stop();
+        drop(owner_guard);
+
+        assert!(
+            manager
+                .lock()
+                .expect("sidecar manager lock")
+                .session_has_owners(session_id),
+            "an ambiguous turn must keep its Task owner until exact stop"
+        );
+        crate::sidecar::release_session_sidecar(&manager, session_id, &task_owner)
+            .expect("retry stop releases retained owner");
+    }
+
+    #[test]
+    fn confirmed_memory_turn_releases_a_dispatch_retained_owner() {
+        let session_id = "memory-owner-confirmed";
+        let task_owner = SidecarOwner::Task("memory-task-confirmed".to_string());
+        let manager = crate::sidecar::create_sidecar_manager();
+        {
+            let mut sidecars = manager.lock().expect("sidecar manager lock");
+            sidecars.insert_sidecar(
+                session_id,
+                crate::sidecar::SessionSidecar {
+                    process: spawn_owner_guard_test_child(),
+                    port: 31421,
+                    session_id: session_id.to_string(),
+                    workspace_path: PathBuf::from("/tmp/workspace"),
+                    state: crate::sidecar::SidecarState::Healthy,
+                    owners: HashSet::from([task_owner.clone()]),
+                    created_at: std::time::Instant::now(),
+                    runtime: None,
+                    runtime_source: None,
+                },
+            );
+        }
+
+        let mut owner_guard = MemoryUpdateSidecarOwnerGuard {
+            manager: manager.clone(),
+            session_id: session_id.to_string(),
+            owner: task_owner,
+            release_on_drop: true,
+        };
+        owner_guard.retain_for_task_stop();
+        owner_guard.confirm_turn_settled();
+        drop(owner_guard);
+
+        assert!(
+            !manager
+                .lock()
+                .expect("sidecar manager lock")
+                .session_has_owners(session_id),
+            "a confirmed terminal outcome must restore ordinary RAII release"
         );
     }
 
@@ -1273,5 +1699,58 @@ mod tests {
                 .enabled,
             false
         );
+    }
+
+    #[test]
+    fn configure_request_uses_latest_disk_authority_not_arrival_order() {
+        let disabled_disk = collect_disk_memory_auto_update_agents(&serde_json::json!({
+            "agents": [{
+                "id": "agent-current",
+                "workspacePath": "/tmp/workspace",
+                "memoryAutoUpdate": {
+                    "enabled": false,
+                    "intervalHours": 24,
+                    "queryThreshold": 3,
+                    "updateWindowStart": "00:00",
+                    "updateWindowEnd": "07:00"
+                }
+            }]
+        }));
+        let stale_enable = ConfigureMemoryAutoUpdateTaskRequest {
+            agent_id: "agent-stale".to_string(),
+            workspace_path: "/tmp/workspace".to_string(),
+            memory_auto_update: Some(base_config()),
+            heartbeat: None,
+        };
+
+        let resolved = authoritative_configure_request(stale_enable, disabled_disk);
+
+        assert_eq!(resolved.agent_id, "agent-current");
+        assert!(!resolved.memory_auto_update.unwrap().enabled);
+
+        let enabled_disk = collect_disk_memory_auto_update_agents(&serde_json::json!({
+            "agents": [{
+                "id": "agent-current",
+                "workspacePath": "/tmp/workspace",
+                "memoryAutoUpdate": {
+                    "enabled": true,
+                    "intervalHours": 24,
+                    "queryThreshold": 3,
+                    "updateWindowStart": "00:00",
+                    "updateWindowEnd": "07:00"
+                }
+            }]
+        }));
+        let stale_disable = ConfigureMemoryAutoUpdateTaskRequest {
+            agent_id: "agent-stale".to_string(),
+            workspace_path: "/tmp/workspace".to_string(),
+            memory_auto_update: None,
+            heartbeat: None,
+        };
+
+        let resolved = authoritative_configure_request(stale_disable, enabled_disk);
+
+        assert_eq!(resolved.agent_id, "agent-current");
+        assert!(resolved.memory_auto_update.unwrap().enabled);
     }
 }

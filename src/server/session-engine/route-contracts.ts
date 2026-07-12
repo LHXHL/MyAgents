@@ -106,11 +106,11 @@ export const SESSION_ENGINE_ROUTE_CONTRACTS: SessionEngineRouteContract[] = [
   {
     path: '/task/stop',
     method: 'POST',
-    engineMethod: 'stopOwnedTurn',
-    requiredFields: ['taskId'],
+    engineMethod: 'stopOwnedTurnByQueueId',
+    requiredFields: ['taskId', 'queueId'],
     responseKeys: ['success', 'alreadyStopped', 'error'],
     failureStatuses: [400, 500],
-    behavior: 'Stops the current or queued turn owned by the Task without affecting other Session work.',
+    behavior: 'Stops only the exact current or queued Task turn without affecting a later run or other Session work.',
   },
   {
     path: '/goal/execute-sync',
@@ -155,7 +155,7 @@ export const SESSION_ENGINE_ROUTE_CONTRACTS: SessionEngineRouteContract[] = [
     requiredFields: ['source'],
     responseKeys: ['status', 'reason'],
     failureStatuses: [200, 500],
-    behavior: 'Injects memory maintenance through the active engine and gates completion on true turn success; timeout/turn_failed are body-level status values on HTTP 200.',
+    behavior: 'Injects memory maintenance through the active engine and gates completion on true turn success; managed auto-update carries exact Task queue ownership for authorization and stop, while timeout/turn_failed remain body-level status values on HTTP 200.',
   },
   {
     path: '/api/inbox/drain',

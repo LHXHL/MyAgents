@@ -183,6 +183,8 @@ import type { SessionOrigin } from '../../shared/session-origin';
 import {
   beginExternalTurnPromotion,
   cancelExternalTurnPromotion,
+  cancelExternalTurnPromotionByOwner,
+  cancelExternalTurnPromotionByQueueId,
   clearExternalTurnStartTime,
   didExternalLastTurnSucceed,
   finishExternalTurnPromotion,
@@ -312,6 +314,7 @@ import type {
   ExternalMetadataTurnPath,
   ExternalPendingInteractiveRequest,
   ExternalSendContext,
+  ExternalSendResult,
   ExternalSessionState,
   ExternalTurnUsage,
   PendingExternalSessionBirth,
@@ -327,6 +330,7 @@ export type {
   ExternalQueuedConfigOperation,
   ExternalQueuedMessageOperation,
   ExternalSendContext,
+  ExternalSendResult,
   ExternalSessionState,
   ExternalTurnOperation,
   ExternalTurnUsage,
@@ -2215,27 +2219,44 @@ async function _doStartExternalSession(options: {
     startedProcess = process;
     setExternalActiveProcess(process);
     if (options.dispatchPromotion && !isExternalTurnPromotionCurrent(options.dispatchPromotion)) {
-      await stopExternalSession();
       throw new ExternalTurnPromotionCanceledError();
     }
     if (options.dispatchPromotion && options.initialMessage) {
       assertExternalTurnPromotionCurrent(options.dispatchPromotion);
       await runtime.sendMessage(process, options.initialMessage, options.initialImages);
     }
-    if (options.dispatchPromotion) finishExternalTurnPromotion(options.dispatchPromotion);
+    if (options.dispatchPromotion) {
+      finishExternalTurnPromotion(options.dispatchPromotion, { status: 'dispatched' });
+    }
     console.log(`[external-session] ${runtimeType} process started, pid=${process.pid}`);
   } catch (err) {
-    if (options.dispatchPromotion) finishExternalTurnPromotion(options.dispatchPromotion);
     if (startedProcess && !startedProcess.exited && getExternalActiveProcess() === startedProcess) {
-      try {
-        await runtime.stopSession(startedProcess);
-      } catch (stopError) {
-        console.warn(`[external-session] Failed to stop ${runtimeType} after guarded start failure:`, stopError);
+      const stopped = await stopExternalSession({
+        preserveQueue: err instanceof ExternalTurnPromotionCanceledError
+          ? options.dispatchPromotion?.preserveQueueOnCancel === true
+          : true,
+      });
+      if (!stopped && hasExternalRuntimeProcess()) {
+        console.error(`[external-session] Failed to confirm ${runtimeType} termination after guarded start failure`);
+        if (options.dispatchPromotion) {
+          finishExternalTurnPromotion(options.dispatchPromotion, {
+            status: 'termination-unconfirmed',
+          });
+        }
+        throw new ExternalDispatchTerminationUnconfirmedError(err);
       }
     }
-    clearExternalActiveRuntimeProcess();
-    activeExternalEnvPolicy = undefined;
-    clearWatchdog();
+    const activeAfterFailure = getExternalActiveProcess();
+    if (!activeAfterFailure || activeAfterFailure.exited) {
+      clearExternalActiveRuntimeProcess();
+      activeExternalEnvPolicy = undefined;
+      clearWatchdog();
+    }
+    if (options.dispatchPromotion) {
+      finishExternalTurnPromotion(options.dispatchPromotion, {
+        status: startedProcess ? 'terminated' : 'not-dispatched',
+      });
+    }
     const message = err instanceof Error ? err.message : String(err);
     if (!(err instanceof ExternalTurnPromotionCanceledError)) {
       console.error(`[external-session] Failed to start ${runtimeType}:`, message);
@@ -2319,9 +2340,39 @@ class ExternalTurnPromotionCanceledError extends Error {
   }
 }
 
+class ExternalDispatchTerminationUnconfirmedError extends Error {
+  constructor(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    super(`${message}; external runtime process termination could not be confirmed`);
+    this.name = 'ExternalDispatchTerminationUnconfirmedError';
+  }
+}
+
 function assertExternalTurnPromotionCurrent(token: ExternalTurnPromotionToken | null): void {
   if (token && !isExternalTurnPromotionCurrent(token)) {
     throw new ExternalTurnPromotionCanceledError();
+  }
+}
+
+async function awaitDuringExternalTurnPromotion<T>(
+  promise: Promise<T>,
+  token: ExternalTurnPromotionToken | null,
+): Promise<{ canceled: true } | { canceled: false; value: T }> {
+  if (!token) return { canceled: false, value: await promise };
+  if (token.signal.aborted) return { canceled: true };
+
+  let onAbort!: () => void;
+  const canceled = new Promise<{ canceled: true }>((resolve) => {
+    onAbort = () => resolve({ canceled: true });
+    token.signal.addEventListener('abort', onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([
+      promise.then(value => ({ canceled: false as const, value })),
+      canceled,
+    ]);
+  } finally {
+    token.signal.removeEventListener('abort', onAbort);
   }
 }
 
@@ -2333,7 +2384,7 @@ export async function sendExternalMessage(
   context?: ExternalSendContext,
   preBroadcasted?: SessionMessage,
   onDispatchAccepted?: () => void,
-): Promise<{ queued: boolean; error?: string }> {
+): Promise<ExternalSendResult> {
   const hasInputImages = images && images.length > 0;
   if (hasInputImages && !context?.sessionId) {
     return { queued: false, error: '图片附件缺少会话上下文，无法发送' };
@@ -2398,13 +2449,37 @@ export async function sendExternalMessage(
   }
   earlyBroadcastedUserMsg = earlyUserMsg;
 
+  // The promotion is the pre-dispatch identity for guarded Task/Goal turns.
+  // Bind it before any lifecycle/busy wait so an exact queueId stop can cancel
+  // this pending send without stopping the unrelated turn currently running.
+  const dispatchPromotion = context?.beforeDispatch
+    ? beginExternalTurnPromotion({
+        queueId: context.queueId,
+        owner: context.turnOwner,
+        cancelDispatch: context.beforeDispatch.cancel,
+      })
+    : null;
+  if (context?.beforeDispatch && !dispatchPromotion) {
+    earlyBroadcastedUserMsg = null;
+    return { queued: false, error: 'external_busy: another turn is being promoted' };
+  }
+  const canceledBeforeDispatch = (): { queued: false } => {
+    if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
+    earlyBroadcastedUserMsg = null;
+    return { queued: false };
+  };
+
   // If a pre-warm (or other concurrent start) is still bringing the process
   // up, wait for it to finish before deciding which case to take. Without
   // this await, a user-send racing an in-flight pre-warm would see
   // `isRunning=true` but `activeProcess=null` — falling into Case 2's resume
   // path, which calls startExternalSession again, which then hits the
   // `if (isRunning) return` early-exit and silently drops the user's message.
-  await awaitExternalLifecycleStarting();
+  const lifecycleReady = await awaitDuringExternalTurnPromotion(
+    awaitExternalLifecycleStarting(),
+    dispatchPromotion,
+  );
+  if (lifecycleReady.canceled) return canceledBeforeDispatch();
 
   // Serialize against any in-flight turn. Persistent-process runtimes (Codex
   // app-server, Gemini --acp) accept one turn at a time — dispatching a
@@ -2420,8 +2495,14 @@ export async function sendExternalMessage(
   // queue-style error so the caller can surface it to the user.
   const busyProcess = getExternalActiveProcess();
   if (!isExternalTurnCompleted() && getExternalTurnStartTime() !== 0 && busyProcess && !busyProcess.exited) {
-    const settled = await waitForExternalSessionIdle(5 * 60 * 1000, 100);
+    const idleWait = await awaitDuringExternalTurnPromotion(
+      waitForExternalSessionIdle(5 * 60 * 1000, 100),
+      dispatchPromotion,
+    );
+    if (idleWait.canceled) return canceledBeforeDispatch();
+    const settled = idleWait.value;
     if (!settled) {
+      if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
       earlyBroadcastedUserMsg = null;
       // PRD 0.2.18 — busy reject BEFORE binding meta, so no leak risk here.
       // Caller (if inbox) gets a single signal via queued:false → drain handler
@@ -2445,34 +2526,36 @@ export async function sendExternalMessage(
   // still owns, so the worst case is a stale-ordering write, not message
   // loss (cross-review 0.2.33, Codex W1 closed the content-blocks gap).
   if (isExternalTurnFinalizationInFlight()) {
-    const settled = await waitExternalTurnFinalization(60_000);
+    const finalizationWait = await awaitDuringExternalTurnPromotion(
+      waitExternalTurnFinalization(60_000),
+      dispatchPromotion,
+    );
+    if (finalizationWait.canceled) return canceledBeforeDispatch();
+    const settled = finalizationWait.value;
     if (!settled) {
       console.warn('[external-session] previous turn finalization still in flight after 60s — proceeding with send (degraded ordering)');
     }
   }
 
-  await waitForExternalTurnTerminalObserver();
+  const terminalObserverWait = await awaitDuringExternalTurnPromotion(
+    waitForExternalTurnTerminalObserver(),
+    dispatchPromotion,
+  );
+  if (terminalObserverWait.canceled) return canceledBeforeDispatch();
 
-  const dispatchPromotion = context?.beforeDispatch
-    ? beginExternalTurnPromotion({
-        queueId: context.queueId,
-        owner: context.turnOwner,
-        cancelDispatch: context.beforeDispatch.cancel,
-      })
-    : null;
-  if (context?.beforeDispatch && !dispatchPromotion) {
-    earlyBroadcastedUserMsg = null;
-    return { queued: false, error: 'external_busy: another turn is being promoted' };
-  }
-  const guarded = await evaluateExternalDispatchGuard(context?.beforeDispatch);
+  const guardWait = await awaitDuringExternalTurnPromotion(
+    evaluateExternalDispatchGuard(context?.beforeDispatch),
+    dispatchPromotion,
+  );
+  if (guardWait.canceled) return canceledBeforeDispatch();
+  const guarded = guardWait.value;
   if (!guarded.accepted) {
     if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
     earlyBroadcastedUserMsg = null;
     return { queued: false, error: guarded.error };
   }
   if (dispatchPromotion && !isExternalTurnPromotionCurrent(dispatchPromotion)) {
-    earlyBroadcastedUserMsg = null;
-    return { queued: false };
+    return canceledBeforeDispatch();
   }
   if (dispatchPromotion) setExternalSessionState('running');
   if (surfaceUserMessageAfterGuard) {
@@ -2523,6 +2606,7 @@ export async function sendExternalMessage(
   // Case 1: No previous session — start fresh
   if (!getExternalRuntimeSessionId() && !isExternalLifecycleRunning()) {
     if (!context) {
+      if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
       clearExternalInboxMetaOnRejection({
         sessionId: getExternalLifecycleSessionId(),
         errorCode: 'no_context',
@@ -2552,6 +2636,9 @@ export async function sendExternalMessage(
       if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
       earlyBroadcastedUserMsg = null;  // Defensive: prevent stale msg leaking to next send
       if (err instanceof ExternalTurnPromotionCanceledError) return { queued: false };
+      if (err instanceof ExternalDispatchTerminationUnconfirmedError) {
+        return { queued: false, error: err.message, terminationUnconfirmed: true };
+      }
       const msg = err instanceof Error ? err.message : String(err);
       clearExternalInboxMetaOnRejection({
         sessionId: getExternalLifecycleSessionId(),
@@ -2597,6 +2684,9 @@ export async function sendExternalMessage(
       if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
       earlyBroadcastedUserMsg = null;  // Defensive: prevent stale msg leaking to next send
       if (err instanceof ExternalTurnPromotionCanceledError) return { queued: false };
+      if (err instanceof ExternalDispatchTerminationUnconfirmedError) {
+        return { queued: false, error: err.message, terminationUnconfirmed: true };
+      }
       const msg = err instanceof Error ? err.message : String(err);
       clearExternalInboxMetaOnRejection({
         sessionId: getExternalLifecycleSessionId(),
@@ -2620,6 +2710,7 @@ export async function sendExternalMessage(
     if (dispatchPromotion) setExternalSessionState('idle');
     return { queued: false, error: 'No active runtime' };
   }
+  let runtimeDispatchStarted = false;
   try {
     assertExternalTurnPromotionCurrent(dispatchPromotion);
     // Record user message for persistence. Reuse early-broadcast message if available
@@ -2703,13 +2794,38 @@ export async function sendExternalMessage(
 
     assertExternalTurnPromotionCurrent(dispatchPromotion);
     setExternalSessionState('running');
+    runtimeDispatchStarted = true;
     await activeRuntime.sendMessage(activeProcess, text, hasImages ? resolvedImages : undefined);
-    if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
+    if (dispatchPromotion) {
+      finishExternalTurnPromotion(dispatchPromotion, { status: 'dispatched' });
+    }
     return { queued: true };
   } catch (err) {
-    if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
-    if (err instanceof ExternalTurnPromotionCanceledError) return { queued: false };
+    if (err instanceof ExternalTurnPromotionCanceledError) {
+      if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
+      return { queued: false };
+    }
     const msg = err instanceof Error ? err.message : String(err);
+    if (runtimeDispatchStarted) {
+      const stopped = await stopExternalSession({ preserveQueue: true });
+      if (!stopped && hasExternalRuntimeProcess()) {
+        if (dispatchPromotion) {
+          finishExternalTurnPromotion(dispatchPromotion, {
+            status: 'termination-unconfirmed',
+          });
+        }
+        return {
+          queued: false,
+          error: `${msg}; external runtime process termination could not be confirmed`,
+          terminationUnconfirmed: true,
+        };
+      }
+      if (dispatchPromotion) {
+        finishExternalTurnPromotion(dispatchPromotion, { status: 'terminated' });
+      }
+    } else if (dispatchPromotion) {
+      finishExternalTurnPromotion(dispatchPromotion);
+    }
     clearExternalInboxMetaOnRejection({
       sessionId: getExternalLifecycleSessionId(),
       errorCode: 'send_failed',
@@ -2829,7 +2945,7 @@ export function enqueueExternalSendForDesktop(
   deliveryMode?: 'realtime' | 'turn';
   canCancel?: boolean;
   canForceExecute?: boolean;
-  dispatch: Promise<{ queued: boolean; error?: string }>;
+  dispatch: Promise<ExternalSendResult>;
 } {
   const queueResponseMode = context.turnBoundaryOnly
     ? 'turn'
@@ -3041,7 +3157,7 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
       );
       if (!isCurrentExternalOperationGeneration(drainGeneration)) return;
       settleExternalMessageOperation(item, result ?? { queued: false });
-      if (result && !result.queued) {
+      if (result && !result.queued && !result.terminationUnconfirmed) {
         rollbackReservedExternalTurnAfterDrainFailure();
         broadcast('queue:cancelled', { queueId: item.queueId });
       }
@@ -3092,20 +3208,34 @@ export async function forceExecuteExternalQueueItem(queueId: string): Promise<bo
   return true;
 }
 
-/** Cancel a queued external item (the pill ✕). Returns the removed text, or null if not found. */
-export function cancelExternalQueueItem(queueId: string): string | null {
+export type ExternalQueueCancellation = {
+  cancelledText: string;
+  promotion?: ExternalTurnPromotionToken;
+};
+
+/** Cancel a queued external item (the pill ✕). Returns its settlement when startup is in flight. */
+export function cancelExternalQueueItem(queueId: string): ExternalQueueCancellation | null {
   const text = cancelExternalQueuedMessage(queueId);
-  if (text === null) return null;
+  if (text === null) {
+    const promotion = cancelExternalTurnPromotionByQueueId(queueId, { preserveQueue: true });
+    if (!promotion) return null;
+    broadcast('queue:cancelled', { queueId });
+    return { cancelledText: '', promotion };
+  }
   broadcast('queue:cancelled', { queueId });
-  return text;
+  return { cancelledText: text };
 }
 
 export function cancelExternalQueuedTurnsByOwner(
   owner: import('../session-core/turn-queue').TurnOwner,
-): number {
+): { count: number; promotion?: ExternalTurnPromotionToken } {
   const queueIds = cancelExternalQueuedMessagesByOwner(owner);
+  const promotion = cancelExternalTurnPromotionByOwner(owner, { preserveQueue: true });
   for (const queueId of queueIds) broadcast('queue:cancelled', { queueId });
-  return queueIds.length;
+  return {
+    count: queueIds.length + (promotion ? 1 : 0),
+    ...(promotion ? { promotion } : {}),
+  };
 }
 
 export function hasExternalQueuedTurnByOwner(
@@ -3252,13 +3382,21 @@ export async function stopExternalSession(options?: {
   preserveQueue?: boolean;
 }): Promise<boolean> {
   clearWatchdog();
-  const canceledPromotion = cancelExternalTurnPromotion();
+  const preserveQueue = options?.preserveQueue === true;
+  const canceledPromotion = cancelExternalTurnPromotion({ preserveQueue });
   const active = getExternalActivePair();
   const reason = options?.reason ?? 'user';
   const isConfigRestart = reason === 'config-restart';
-  const preserveQueue = options?.preserveQueue === true;
   if (!active) {
     if (!canceledPromotion) return false;
+    const settlement = await canceledPromotion.settled;
+    if (settlement.status === 'termination-unconfirmed') return false;
+    if (settlement.status === 'terminated') return true;
+    if (settlement.status === 'dispatched') {
+      return getExternalActivePair()
+        ? stopExternalSession(options)
+        : true;
+    }
     earlyBroadcastedUserMsg = null;
     clearExternalActiveRuntimeProcess();
     activeExternalEnvPolicy = undefined;
@@ -3279,6 +3417,9 @@ export async function stopExternalSession(options?: {
     setExternalSessionState('idle');
     notifyExternalTurnStopped('');
     if (!isConfigRestart) broadcast('chat:message-stopped', null);
+    if (preserveQueue && !isConfigRestart) {
+      setTimeout(drainExternalQueueAfterTurn, 0);
+    }
     return true;
   }
   const stopStarted = nowMs();
@@ -3411,6 +3552,9 @@ export async function stopExternalSession(options?: {
     clearPendingRealtimeSteeredUserMessagesWithCancellation();
   }
   setExternalSessionState('idle');
+  if (preserveQueue && !isConfigRestart) {
+    setTimeout(drainExternalQueueAfterTurn, 0);
+  }
   emitExternalTurnTrace('final', {
     status: isConfigRestart ? 'ok' : 'error',
     detail: { source: 'stop_external_session', reason },

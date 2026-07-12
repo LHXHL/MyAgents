@@ -4,8 +4,8 @@ use tauri::Manager;
 
 use super::manager::failure_backoff;
 use super::{
-    execution, get_session_goal_manager, GoalStatus, GoalTerminalActor,
-    GoalTurnFinalizationRequest, SessionGoalManager,
+    execution, get_session_goal_manager, GoalStatus, GoalTurnFinalizationRequest,
+    SessionGoalManager,
 };
 use crate::{ulog_error, ulog_info, ulog_warn};
 
@@ -78,12 +78,7 @@ async fn run_once(goal_id: &str) -> Option<u64> {
             .is_some_and(|max| goal.turn_count >= max)
     {
         if let Err(error) = manager
-            .transition_terminal(
-                goal_id,
-                GoalStatus::Canceled,
-                Some("Goal end condition reached".to_string()),
-                GoalTerminalActor::System,
-            )
+            .cancel_goal_and_stop(goal_id, Some("Goal end condition reached".to_string()))
             .await
         {
             ulog_error!(
@@ -132,6 +127,22 @@ async fn run_once(goal_id: &str) -> Option<u64> {
     };
 
     let response = execution::execute(&app_handle, &request).await;
+    if response
+        .as_ref()
+        .is_ok_and(|response| response.termination_unconfirmed)
+    {
+        if let Err(error) = manager
+            .confirm_current_turn_stopped(goal_id, &queue_id)
+            .await
+        {
+            ulog_error!(
+                "[Goal] Turn {} termination is unconfirmed; preserving exact authority: {}",
+                queue_id,
+                error
+            );
+            return None;
+        }
+    }
     let latest = manager.get(goal_id).await.ok().flatten();
     if latest.as_ref().is_some_and(|goal| {
         goal.turn_count >= turn_number

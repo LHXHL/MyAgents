@@ -106,12 +106,27 @@ export function TaskDetailOverlay({
   // paths are fine (they're called by the parent or the toast portal),
   // but local setBusy / setSyncing / setTask need protection.
   const isMountedRef = useRef(true);
+  const taskFetchGenerationRef = useRef(0);
   useEffect(() => {
     isMountedRef.current = true;
     return () => {
       isMountedRef.current = false;
     };
   }, []);
+
+  const fetchLatestTask = useCallback(async () => {
+    const generation = ++taskFetchGenerationRef.current;
+    const fresh = await taskGet(task.id);
+    if (
+      !fresh
+      || !isMountedRef.current
+      || generation !== taskFetchGenerationRef.current
+    ) {
+      return null;
+    }
+    setTask(fresh);
+    return fresh;
+  }, [task.id]);
 
   useCloseLayer(() => {
     onClose();
@@ -175,21 +190,14 @@ export function TaskDetailOverlay({
 
   // Refetch on mount so we show the latest statusHistory (in case UI was out of sync).
   useEffect(() => {
-    let cancelled = false;
     void (async () => {
       try {
-        const fresh = await taskGet(task.id);
-        if (cancelled || !isMountedRef.current) return;
-        if (fresh) setTask(fresh);
+        await fetchLatestTask();
       } catch {
         /* silent — use `initial` */
       }
     })();
-    return () => {
-      cancelled = true;
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- we only want this on mount
-  }, []);
+  }, [fetchLatestTask]);
 
   // Live-update on external transitions (CLI / scheduler / other window).
   // Listen to both `task:status-changed` (state transitions) and
@@ -202,23 +210,27 @@ export function TaskDetailOverlay({
       if (ac.signal.aborted || !isMountedRef.current) return;
       if (taskId !== task.id) return;
       try {
-        const fresh = await taskGet(task.id);
+        const fresh = await fetchLatestTask();
         if (ac.signal.aborted || !isMountedRef.current) return;
         if (fresh) {
-          setTask(fresh);
           setReloadToken((n) => n + 1);
         }
       } catch {
         /* silent */
       }
     };
-    for (const evt of ['task:status-changed', 'task:session-appended']) {
+    for (const evt of [
+      'task:status-changed',
+      'task:session-appended',
+      'task:session-rebound',
+      'cron:execution-state-changed',
+    ]) {
       void listenWithCleanup<{ taskId?: string }>(evt, (e) => {
         void reloadIfMatches(e.payload?.taskId);
       }, ac.signal);
     }
     return () => ac.abort();
-  }, [task.id]);
+  }, [fetchLatestTask, task.id]);
 
   const runStatus = useCallback(
     async (next: Task['status']) => {
@@ -247,9 +259,8 @@ export function TaskDetailOverlay({
       // The Rust endpoint transitions us to `running` via update_status; our
       // SSE listener upstairs handles the refresh, but also refetch here so
       // the overlay updates instantly.
-      const fresh = await taskGet(task.id);
+      const fresh = await fetchLatestTask();
       if (fresh) {
-        setTask(fresh);
         onChanged?.(fresh);
       }
     } catch (e) {
@@ -257,16 +268,15 @@ export function TaskDetailOverlay({
     } finally {
       setBusy(false);
     }
-  }, [task.id, onChanged]);
+  }, [task.id, onChanged, fetchLatestTask]);
 
   const dispatchRerun = useCallback(async () => {
     setBusy(true);
     setErr(null);
     try {
       await taskRerun(task.id);
-      const fresh = await taskGet(task.id);
+      const fresh = await fetchLatestTask();
       if (fresh) {
-        setTask(fresh);
         onChanged?.(fresh);
       }
     } catch (e) {
@@ -274,7 +284,7 @@ export function TaskDetailOverlay({
     } finally {
       setBusy(false);
     }
-  }, [task.id, onChanged]);
+  }, [task.id, onChanged, fetchLatestTask]);
 
   const doArchive = useCallback(async () => {
     setBusy(true);
@@ -309,7 +319,7 @@ export function TaskDetailOverlay({
     }
   }, [task.id, onChanged, onClose]);
 
-  const locked = task.status === 'running' || task.status === 'verifying';
+  const locked = task.status === 'running' || task.status === 'verifying' || !!task.executionState;
 
   const enterEdit = useCallback(
     (target: FocusDoc | null = null) => {
@@ -388,7 +398,7 @@ export function TaskDetailOverlay({
                 </span>
               ) : (
                 <>
-                  <TaskStatusBadge status={task.status} />
+                  <TaskStatusBadge status={task.status} executionState={task.executionState} />
                   {/* DispatchOriginBadge: v0.1.69 review — hide the
                       default "直接派发" which applies to 99% of tasks.
                       Only render when origin adds information
@@ -437,10 +447,12 @@ export function TaskDetailOverlay({
                 onClick={dispatchRun}
               />
             )}
-            {(task.status === 'running' || task.status === 'verifying') && (
+            {((task.status === 'running' || task.status === 'verifying') ||
+              task.executionState === 'running' ||
+              task.executionState === 'stop_failed') && task.executionState !== 'stopping' && (
               <ActionBtn
                 icon={<Square className="h-3.5 w-3.5" />}
-                label={t('detail.stop')}
+                label={task.executionState === 'stop_failed' ? t('detail.retryStop') : t('detail.stop')}
                 variant="danger"
                 disabled={busy}
                 onClick={() => runStatus('stopped')}
@@ -449,7 +461,9 @@ export function TaskDetailOverlay({
             {(task.status === 'blocked' ||
               task.status === 'stopped' ||
               task.status === 'done' ||
-              task.status === 'archived') && (
+              task.status === 'archived') &&
+              task.dispatchOrigin !== 'attached-session' &&
+              !task.executionState && (
               <ActionBtn
                 icon={<RotateCcw className="h-3.5 w-3.5" />}
                 label={t('detail.rerun')}
@@ -474,7 +488,7 @@ export function TaskDetailOverlay({
               onMarkDone={() => runStatus('done')}
               onArchive={doArchive}
               onSyncToAgent={() => setShowSyncConfirm(true)}
-              onDelete={() => setShowDeleteConfirm(true)}
+              onDelete={task.executionState ? undefined : () => setShowDeleteConfirm(true)}
             />
           </div>
         )}
@@ -582,7 +596,7 @@ function OverflowMenu({
   onMarkDone: () => void;
   onArchive: () => void;
   onSyncToAgent: () => void;
-  onDelete: () => void;
+  onDelete?: () => void;
 }) {
   const { t } = useTranslation('task');
   const canMarkDone = status === 'verifying';
@@ -613,18 +627,17 @@ function OverflowMenu({
     });
   }
 
+  const destructive: DropdownMenuItem[] = onDelete
+    ? [{
+        icon: <Trash2 className="h-3.5 w-3.5" />,
+        label: t('common.delete'),
+        onClick: onDelete,
+        danger: true,
+      }]
+    : [];
   const sections: DropdownMenuSection[] = [
     { items: secondary },
-    {
-      items: [
-        {
-          icon: <Trash2 className="h-3.5 w-3.5" />,
-          label: t('common.delete'),
-          onClick: onDelete,
-          danger: true,
-        },
-      ],
-    },
+    { items: destructive },
   ];
 
   return (

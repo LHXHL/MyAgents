@@ -32,7 +32,7 @@
 // independent visual dimensions: left = "what kind of task", right =
 // "where is it in its lifecycle".
 
-import type { TaskStatus } from '@/../shared/types/task';
+import type { TaskExecutionState, TaskStatus } from '@/../shared/types/task';
 import { useTranslation } from 'react-i18next';
 
 interface StatusStyle {
@@ -70,13 +70,33 @@ const STATUS_STYLE: Record<TaskStatus, StatusStyle> = {
 
 interface Props {
   status: TaskStatus;
+  executionState?: TaskExecutionState;
   compact?: boolean;
 }
 
-export function TaskStatusBadge({ status, compact }: Props) {
+const EXECUTION_STYLE: Record<TaskExecutionState, StatusStyle> = {
+  running: {
+    bg: 'bg-[var(--success-bg)]',
+    fg: 'text-[var(--success)]',
+    dot: 'bg-[var(--success)]',
+  },
+  stopping: {
+    bg: 'bg-[var(--warning-bg)]',
+    fg: 'text-[var(--warning)]',
+    dot: 'bg-[var(--warning)]',
+  },
+  stop_failed: {
+    bg: 'bg-[var(--error-bg)]',
+    fg: 'text-[var(--error)]',
+  },
+};
+
+export function TaskStatusBadge({ status, executionState, compact }: Props) {
   const { t } = useTranslation('task');
-  const style = STATUS_STYLE[status];
-  const label = t(`badges.status.${status}`);
+  const style = executionState ? EXECUTION_STYLE[executionState] : STATUS_STYLE[status];
+  const label = executionState
+    ? t(`badges.execution.${executionState}`)
+    : t(`badges.status.${status}`);
   const size = 'text-xs'; // compact 与常规已同档（Part 1 合并 10→11→12 的遗留三元塌缩）
   // Fixed height + leading-none so TaskStatusBadge and TaskCategoryBadge
   // render at identical pixel sizes side-by-side. TaskCategoryBadge

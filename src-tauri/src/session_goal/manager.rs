@@ -253,11 +253,10 @@ impl SessionGoalManager {
                 if goal.is_terminal() {
                     return Err(GoalMutationError::terminal("Goal is already terminal"));
                 }
-                if goal.status == GoalStatus::Paused && goal.current_turn.is_none() {
+                if goal.status == GoalStatus::Paused {
                     return Ok(());
                 }
                 goal.status = GoalStatus::Paused;
-                goal.current_turn = None;
                 goal.updated_at = now;
                 goal.bump_revision();
                 goal.bump_control_revision();
@@ -281,25 +280,23 @@ impl SessionGoalManager {
             .ok_or_else(|| GoalMutationError::goal_changed("Goal identity changed"))?;
         let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[&current.session_id]).await;
         let goal = self.pause_goal(goal_id).await?;
-        match self.stop_goal_turn(&goal, None).await {
-            Ok(()) => {
-                if let Err(error) = self.release_goal_owner(&goal).await {
-                    ulog_warn!(
-                        "[Goal] paused Goal {} but owner release failed: {}",
-                        goal.id,
-                        error
-                    );
-                }
-            }
-            Err(error) => {
-                ulog_warn!(
-                    "[Goal] paused Goal {} but runtime stop was not confirmed: {}",
-                    goal.id,
-                    error
-                );
-            }
-        }
-        Ok(goal)
+        let Some(queue_id) = goal.current_turn.as_ref().map(|turn| turn.queue_id.clone()) else {
+            self.stop_goal_turn(&goal, None).await.map_err(|error| {
+                GoalMutationError::goal(format!(
+                    "Goal paused, but pending runtime work was not stopped: {error}"
+                ))
+            })?;
+            let _ = self.release_goal_owner(&goal).await;
+            return Ok(goal);
+        };
+        self.stop_goal_turn(&goal, Some(&queue_id))
+            .await
+            .map_err(|error| {
+                GoalMutationError::goal(format!(
+                    "Goal paused, but exact runtime stop was not confirmed: {error}"
+                ))
+            })?;
+        self.abort_turn(goal_id, &queue_id).await
     }
 
     pub async fn pause_turn_from_sidecar(
@@ -326,19 +323,22 @@ impl SessionGoalManager {
                 if goal.is_terminal() {
                     return Ok(true);
                 }
-                if goal.status == GoalStatus::Paused && goal.current_turn.is_none() {
+                if goal.status == GoalStatus::Paused {
                     return Ok(false);
                 }
-                let owns_turn = goal.current_turn.as_ref().is_some_and(|turn| {
-                    turn.queue_id == queue_id && turn.sidecar_generation == sidecar_generation
-                });
+                let owns_turn =
+                    goal.current_turn
+                        .as_ref()
+                        .map_or(goal.status == GoalStatus::Active, |turn| {
+                            turn.queue_id == queue_id
+                                && turn.sidecar_generation == sidecar_generation
+                        });
                 if !owns_turn {
                     return Err(GoalMutationError::stale_turn(
                         "Pause does not own the current Goal turn",
                     ));
                 }
                 goal.status = GoalStatus::Paused;
-                goal.current_turn = None;
                 goal.updated_at = now;
                 goal.bump_revision();
                 goal.bump_control_revision();
@@ -352,23 +352,48 @@ impl SessionGoalManager {
         if changed {
             self.emit_changed(&updated).await;
         }
-        self.release_goal_owner(&updated).await.map_err(|error| {
-            GoalMutationError::goal(format!(
-                "Goal paused, but its owner was not released: {error}"
-            ))
-        })?;
         Ok(updated)
     }
 
     pub async fn resume_goal(&self, goal_id: &str) -> Result<SessionGoal, GoalMutationError> {
+        let current = self
+            .get(goal_id)
+            .await?
+            .ok_or_else(|| GoalMutationError::goal_changed("Goal identity changed"))?;
+        if current.is_terminal() {
+            return Err(GoalMutationError::terminal("Goal is already terminal"));
+        }
+        if current.current_turn.is_some() {
+            return Err(GoalMutationError::turn_conflict(
+                "Goal turn stop is not confirmed; retry Stop before resuming",
+            ));
+        }
+        if current.status == GoalStatus::Active {
+            self.ensure_continuation(goal_id, 0).await;
+            return Ok(current);
+        }
+        let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[&current.session_id]).await;
+        self.stop_goal_turn(&current, None).await.map_err(|error| {
+            GoalMutationError::goal(format!(
+                "Pending Goal work was not stopped; retry Resume: {error}"
+            ))
+        })?;
+        let _ = self.release_goal_owner(&current).await;
+
+        let expected_control_revision = current.control_revision;
         let now = Utc::now();
         let (updated, _, changed) = self
             .commit(goal_id, move |goal| {
                 if goal.is_terminal() {
                     return Err(GoalMutationError::terminal("Goal is already terminal"));
                 }
-                if goal.status == GoalStatus::Active {
-                    return Ok(());
+                if goal.control_revision != expected_control_revision
+                    || goal.status != GoalStatus::Paused
+                    || goal.current_turn.is_some()
+                {
+                    return Err(GoalMutationError::stale_revision(
+                        "Goal changed while pending work was being stopped",
+                    ));
                 }
                 goal.status = GoalStatus::Active;
                 goal.updated_at = now;
@@ -399,10 +424,6 @@ impl SessionGoalManager {
             .await?
             .ok_or_else(|| GoalMutationError::goal_changed("Goal identity changed"))?;
         let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[&current.session_id]).await;
-        let previous_queue_id = current
-            .current_turn
-            .as_ref()
-            .map(|turn| turn.queue_id.clone());
         let now = Utc::now();
         let (mut updated, _, changed) = self
             .commit(goal_id, move |goal| {
@@ -420,13 +441,19 @@ impl SessionGoalManager {
                     return Ok(());
                 }
                 goal.objective = objective.clone();
-                goal.current_turn = None;
                 goal.updated_at = now;
                 goal.bump_revision();
                 goal.bump_control_revision();
                 Ok(())
             })
             .await?;
+        // The lifecycle lock may have queued behind a Node claim. Use the
+        // commit snapshot, not the pre-lock read, as the exact authority to
+        // stop and abort.
+        let previous_queue_id = updated
+            .current_turn
+            .as_ref()
+            .map(|turn| turn.queue_id.clone());
         if changed {
             self.cancel_continuation(goal_id).await;
             self.emit_changed(&updated).await;
@@ -434,10 +461,16 @@ impl SessionGoalManager {
                 let stop_result = if let Some(queue_id) = previous_queue_id.as_deref() {
                     self.stop_goal_turn(&updated, Some(queue_id)).await
                 } else {
-                    Ok(())
+                    self.stop_goal_turn(&updated, None).await
                 };
                 match stop_result {
-                    Ok(()) => self.ensure_continuation(goal_id, 0).await,
+                    Ok(()) => {
+                        if let Some(queue_id) = previous_queue_id.as_deref() {
+                            updated = self.abort_turn(goal_id, queue_id).await?;
+                        } else {
+                            self.ensure_continuation(goal_id, 0).await;
+                        }
+                    }
                     Err(error) => {
                         updated = self.pause_goal(goal_id).await?;
                         ulog_warn!(
@@ -564,7 +597,9 @@ impl SessionGoalManager {
         // admission that failed before claim. An active Goal must never be
         // left without either a current turn or a continuation worker.
         if updated.status == GoalStatus::Active {
-            self.ensure_continuation(goal_id, 0).await;
+            super::scheduler::request_continuation(goal_id.to_string(), 0);
+        } else if updated.current_turn.is_none() {
+            let _ = self.release_goal_owner(&updated).await;
         }
         Ok(updated)
     }
@@ -682,6 +717,16 @@ impl SessionGoalManager {
                     goal.bump_revision();
                     return Ok((false, false, false, true));
                 }
+                // A user/system control action has already won. The runtime
+                // terminal callback is now only an acknowledgement that the
+                // exact queue item ended; it must not count the stopped turn
+                // or emit delivery side effects against the newer control epoch.
+                if matches!(goal.status, GoalStatus::Paused | GoalStatus::Canceled) {
+                    goal.current_turn = None;
+                    goal.updated_at = now;
+                    goal.bump_revision();
+                    return Ok((false, false, false, false));
+                }
                 goal.current_turn = None;
                 goal.turn_count = goal.turn_count.max(authority.turn_number);
                 goal.last_executed_at = Some(now);
@@ -791,25 +836,23 @@ impl SessionGoalManager {
         if !should_stop {
             return Ok(goal);
         }
-        match self.stop_goal_turn(&goal, None).await {
-            Ok(()) => {
-                if let Err(error) = self.release_goal_owner(&goal).await {
-                    ulog_warn!(
-                        "[Goal] canceled Goal {} but owner release failed: {}",
-                        goal.id,
-                        error
-                    );
-                }
-            }
-            Err(error) => {
-                ulog_warn!(
-                    "[Goal] canceled Goal {} but runtime stop was not confirmed: {}",
-                    goal.id,
-                    error
-                );
-            }
-        }
-        Ok(goal)
+        let Some(queue_id) = goal.current_turn.as_ref().map(|turn| turn.queue_id.clone()) else {
+            self.stop_goal_turn(&goal, None).await.map_err(|error| {
+                GoalMutationError::goal(format!(
+                    "Goal canceled, but pending runtime work was not stopped: {error}"
+                ))
+            })?;
+            let _ = self.release_goal_owner(&goal).await;
+            return Ok(goal);
+        };
+        self.stop_goal_turn(&goal, Some(&queue_id))
+            .await
+            .map_err(|error| {
+                GoalMutationError::goal(format!(
+                    "Goal canceled, but exact runtime stop was not confirmed: {error}"
+                ))
+            })?;
+        self.abort_turn(goal_id, &queue_id).await
     }
 
     pub(super) async fn transition_terminal(
@@ -905,8 +948,6 @@ impl SessionGoalManager {
                             "This Goal does not allow AI to end it",
                         ));
                     }
-                } else {
-                    goal.current_turn = None;
                 }
                 goal.status = status.clone();
                 goal.terminal_reason = reason_for_mutation.clone();
@@ -923,7 +964,7 @@ impl SessionGoalManager {
         if changed {
             self.emit_changed(&updated).await;
         }
-        if actor != GoalTerminalActor::Model {
+        if actor != GoalTerminalActor::Model && updated.current_turn.is_none() {
             let _ = self.release_goal_owner(&updated).await;
         }
         self.send_terminal_notification(&updated).await;
@@ -968,6 +1009,18 @@ impl SessionGoalManager {
             .await
             .map_err(|error| format!("read /goal/stop response: {error}"))?;
         validate_stop_confirmation(status, &body)
+    }
+
+    pub(super) async fn confirm_current_turn_stopped(
+        &self,
+        goal_id: &str,
+        queue_id: &str,
+    ) -> Result<(), String> {
+        let Some(goal) = self.get(goal_id).await.map_err(|error| error.to_string())? else {
+            return Ok(());
+        };
+        validate_goal_stop_identity(&goal, queue_id)?;
+        self.stop_goal_turn(&goal, Some(queue_id)).await
     }
 
     async fn send_terminal_notification(&self, goal: &SessionGoal) {
@@ -1244,6 +1297,17 @@ fn validate_stop_confirmation(status: reqwest::StatusCode, body: &str) -> Result
         .to_string())
 }
 
+fn validate_goal_stop_identity(goal: &SessionGoal, queue_id: &str) -> Result<(), String> {
+    if goal
+        .current_turn
+        .as_ref()
+        .is_some_and(|current| current.queue_id != queue_id)
+    {
+        return Err("Goal turn identity changed before stop confirmation".to_string());
+    }
+    Ok(())
+}
+
 impl Default for SessionGoalManager {
     fn default() -> Self {
         Self::new()
@@ -1507,6 +1571,197 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn pause_keeps_exact_turn_authority_until_stop_settlement() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionGoalManager::with_storage_path(dir.path().join("goals.json"));
+        let goal = manager
+            .create_goal(config("session-1", "work"))
+            .await
+            .unwrap();
+        manager
+            .commit(&goal.id, |goal| {
+                goal.current_turn = Some(GoalTurnAuthority {
+                    queue_id: "queue-1".to_string(),
+                    kind: GoalTurnKind::UserQuery,
+                    turn_number: 1,
+                    sidecar_generation: 1,
+                    created_at: Utc::now(),
+                });
+                goal.bump_revision();
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let paused = manager.pause_goal(&goal.id).await.unwrap();
+        assert_eq!(paused.status, GoalStatus::Paused);
+        assert_eq!(
+            paused
+                .current_turn
+                .as_ref()
+                .map(|turn| turn.queue_id.as_str()),
+            Some("queue-1")
+        );
+        assert_eq!(
+            manager
+                .resume_goal(&goal.id)
+                .await
+                .expect_err("unsettled turn must block resume")
+                .code(),
+            "turn_conflict"
+        );
+
+        let settled = manager.abort_turn(&goal.id, "queue-1").await.unwrap();
+        assert!(settled.current_turn.is_none());
+    }
+
+    #[tokio::test]
+    async fn sidecar_stop_can_pause_a_preclaim_promotion() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionGoalManager::with_storage_path(dir.path().join("goals.json"));
+        let goal = manager
+            .create_goal(config("session-1", "work"))
+            .await
+            .unwrap();
+        let (sidecars, generation) = live_test_sidecar("session-1", &goal.id);
+
+        let paused = manager
+            .pause_turn_from_sidecar(
+                &goal.id,
+                "preclaim-queue",
+                "session-1",
+                generation,
+                &sidecars,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(paused.status, GoalStatus::Paused);
+        assert!(paused.current_turn.is_none());
+        assert!(paused.control_revision > goal.control_revision);
+    }
+
+    #[tokio::test]
+    async fn preclaim_termination_uses_the_exact_queue_stop_identity() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionGoalManager::with_storage_path(dir.path().join("goals.json"));
+        let goal = manager
+            .create_goal(config("session-1", "work"))
+            .await
+            .unwrap();
+
+        assert!(goal.current_turn.is_none());
+        assert!(validate_goal_stop_identity(&goal, "preclaim-queue").is_ok());
+
+        let mut conflicting = goal;
+        conflicting.current_turn = Some(GoalTurnAuthority {
+            queue_id: "newer-queue".to_string(),
+            kind: GoalTurnKind::Continuation,
+            turn_number: 1,
+            sidecar_generation: 1,
+            created_at: Utc::now(),
+        });
+        assert!(validate_goal_stop_identity(&conflicting, "preclaim-queue").is_err());
+    }
+
+    #[tokio::test]
+    async fn user_cancel_keeps_exact_turn_authority_until_stop_settlement() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionGoalManager::with_storage_path(dir.path().join("goals.json"));
+        let goal = manager
+            .create_goal(config("session-1", "work"))
+            .await
+            .unwrap();
+        manager
+            .commit(&goal.id, |goal| {
+                goal.current_turn = Some(GoalTurnAuthority {
+                    queue_id: "queue-1".to_string(),
+                    kind: GoalTurnKind::UserQuery,
+                    turn_number: 1,
+                    sidecar_generation: 1,
+                    created_at: Utc::now(),
+                });
+                goal.bump_revision();
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let canceled = manager
+            .transition_terminal(
+                &goal.id,
+                GoalStatus::Canceled,
+                Some("user stop".to_string()),
+                GoalTerminalActor::User,
+            )
+            .await
+            .unwrap()
+            .goal()
+            .clone();
+        assert_eq!(canceled.status, GoalStatus::Canceled);
+        assert_eq!(
+            canceled
+                .current_turn
+                .as_ref()
+                .map(|turn| turn.queue_id.as_str()),
+            Some("queue-1")
+        );
+
+        let settled = manager.abort_turn(&goal.id, "queue-1").await.unwrap();
+        assert!(settled.current_turn.is_none());
+    }
+
+    #[tokio::test]
+    async fn paused_turn_terminal_callback_only_settles_authority() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionGoalManager::with_storage_path(dir.path().join("goals.json"));
+        let goal = manager
+            .create_goal(config("session-1", "work"))
+            .await
+            .unwrap();
+        let (sidecars, generation) = live_test_sidecar("session-1", &goal.id);
+        manager
+            .commit(&goal.id, |goal| {
+                goal.status = GoalStatus::Paused;
+                goal.current_turn = Some(GoalTurnAuthority {
+                    queue_id: "queue-1".to_string(),
+                    kind: GoalTurnKind::UserQuery,
+                    turn_number: 1,
+                    sidecar_generation: generation,
+                    created_at: Utc::now(),
+                });
+                goal.bump_revision();
+                goal.bump_control_revision();
+                Ok(())
+            })
+            .await
+            .unwrap();
+
+        let settled = manager
+            .finalize_turn_from_sidecar(
+                &goal.id,
+                "queue-1",
+                GoalTurnFinalizationRequest {
+                    success: false,
+                    error: Some("Execution stopped".to_string()),
+                    output_text: None,
+                    duration_ms: 123,
+                    consumed_tokens: 456,
+                    channel_delivery_expected: false,
+                },
+                generation,
+                &sidecars,
+            )
+            .await
+            .unwrap();
+        assert!(!settled.applied);
+        assert!(settled.goal.current_turn.is_none());
+        assert_eq!(settled.goal.turn_count, 0);
+        assert_eq!(settled.goal.total_duration_ms, 0);
+        assert_eq!(settled.goal.total_tokens, 0);
+    }
+
+    #[tokio::test]
     async fn desktop_goal_waits_paused_for_its_first_user_turn() {
         let dir = tempfile::tempdir().unwrap();
         let manager = SessionGoalManager::with_storage_path(dir.path().join("goals.json"));
@@ -1589,7 +1844,13 @@ mod tests {
 
         assert_eq!(updated.objective, "new objective");
         assert_eq!(updated.status, GoalStatus::Paused);
-        assert!(updated.current_turn.is_none());
+        assert_eq!(
+            updated
+                .current_turn
+                .as_ref()
+                .map(|turn| turn.queue_id.as_str()),
+            Some("queue-1")
+        );
     }
 
     #[test]

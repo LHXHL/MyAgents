@@ -506,13 +506,19 @@ export function createBuiltinSessionEngine(): SessionEngine {
             enqueued: true,
           };
         }
-        if (
-          cancelResult.status !== 'cancelled'
-          && getBuiltinCurrentTurnIdentity()?.queueId === queueId
-        ) {
-          await interruptCurrentResponse('timeout');
+        let terminationUnconfirmed = false;
+        if (cancelResult.status !== 'cancelled') {
+          if (getBuiltinCurrentTurnIdentity()?.queueId === queueId) {
+            terminationUnconfirmed = !await interruptCurrentResponse('timeout');
+          } else if (cancelResult.status !== 'not_found') {
+            terminationUnconfirmed = true;
+          }
         }
-        return { ...decideBuiltinInjectedTurnResult({ idleCompleted: false }), enqueued: true };
+        return {
+          ...decideBuiltinInjectedTurnResult({ idleCompleted: false }),
+          enqueued: true,
+          ...(terminationUnconfirmed ? { terminationUnconfirmed: true } : {}),
+        };
       }
       return { ...decideBuiltinInjectedTurnResult({ idleCompleted: true, outcome }), enqueued: true };
     },

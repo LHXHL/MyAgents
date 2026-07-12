@@ -17,7 +17,7 @@ const FilePreviewModal = lazy(() => import('../../FilePreviewModal'));
 
 interface AgentMemoryUpdateSectionProps {
   agent: AgentConfig;
-  onAgentChanged: () => void;
+  onAgentChanged: () => void | Promise<void>;
 }
 
 const INTERVAL_OPTIONS = [24, 48, 72] as const;
@@ -35,11 +35,20 @@ export default function AgentMemoryUpdateSection({ agent, onAgentChanged }: Agen
 
   const updateConfig = useCallback(async (patch: Partial<MemoryAutoUpdateConfig>) => {
     const current = agent.memoryAutoUpdate ?? { ...DEFAULT_MEMORY_AUTO_UPDATE_CONFIG, enabled: false };
-    await patchAgentConfig(agent.id, {
-      memoryAutoUpdate: { ...current, ...patch },
-    });
-    onAgentChanged();
-  }, [agent.id, agent.memoryAutoUpdate, onAgentChanged]);
+    try {
+      await patchAgentConfig(agent.id, {
+        memoryAutoUpdate: { ...current, ...patch },
+      }, {
+        memoryAutoUpdateReconcileFailure: 'throw',
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error('[AgentMemoryUpdateSection] Memory update settings were not fully applied:', error);
+      toastRef.current.error(t('agentSettings.memory.taskReconcileFailed', { message }));
+    } finally {
+      await onAgentChanged();
+    }
+  }, [agent.id, agent.memoryAutoUpdate, onAgentChanged, t]);
 
   // Resolve file path (cross-platform separator)
   const filePath = `${agent.workspacePath}${agent.workspacePath.includes('\\') ? '\\' : '/'}UPDATE_MEMORY.md`;

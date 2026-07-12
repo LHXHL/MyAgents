@@ -192,17 +192,26 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
   }, [intentAutofocus, intentNonce]);
 
 
-  // SSE: listen for task:status-changed events fired by Rust `update_status`
+  // Lifecycle projections are transient, so every Task mutation event refetches
+  // the authoritative Task + execution snapshot.
   // and refetch so every open TaskCenter tab stays in sync with the source of
   // truth. Guarded on Tauri because `listen` is a Tauri-only import.
   useEffect(() => {
     if (!taskCenterAvailable()) return;
     const ac = new AbortController();
-    void listenWithCleanup('task:status-changed', () => {
+    for (const event of ['task:status-changed', 'cron:execution-state-changed']) {
+      void listenWithCleanup(event, () => {
+        void reload();
+      }, ac.signal);
+    }
+    void listenWithCleanup<{ taskId?: string }>('task:session-rebound', (event) => {
       void reload();
+      if (event.payload?.taskId) {
+        toastRef.current.success(t('tasks.sessionRecreated'));
+      }
     }, ac.signal);
     return () => ac.abort();
-  }, [reload]);
+  }, [reload, t]);
 
   // ── Per-task action handlers. Shared by card and list views via callbacks.
   // Each one toggles `pendingIds[id]` around the RPC so only that one card
@@ -432,7 +441,7 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
           highlighted={highlightTaskId === t.id}
           busy={pendingIds.has(t.id)}
           onOpen={() => openTaskDetail(t)}
-          onEdit={() => openTaskForEdit(t)}
+          onEdit={t.executionState ? undefined : () => openTaskForEdit(t)}
           onRun={() => handleRun(t)}
           onStop={() => handleStop(t)}
           onRerun={() => handleRerun(t)}
@@ -459,7 +468,7 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
           highlighted={highlightTaskId === t.id}
           busy={pendingIds.has(t.id)}
           onOpen={() => openTaskDetail(t)}
-          onEdit={() => openTaskForEdit(t)}
+          onEdit={t.executionState ? undefined : () => openTaskForEdit(t)}
           onRun={() => handleRun(t)}
           onStop={() => handleStop(t)}
           onRerun={() => handleRerun(t)}

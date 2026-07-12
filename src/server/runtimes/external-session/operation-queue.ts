@@ -9,6 +9,7 @@ import type {
   ExternalQueuedConfigOperation,
   ExternalQueuedMessageOperation,
   ExternalSendContext,
+  ExternalSendResult,
   ExternalSessionState,
   ExternalTurnOperation,
 } from './types';
@@ -103,14 +104,14 @@ export function enqueueExternalMessageOperation(input: {
 }): {
   queued: true;
   queueId: string;
-  dispatchAcceptance: Promise<{ queued: boolean; error?: string }>;
+  dispatchAcceptance: Promise<ExternalSendResult>;
 } | { queued: false; error: string } {
   if (queuedExternalMessageCount() >= EXTERNAL_MAX_QUEUE_SIZE) {
     return { queued: false, error: '排队消息已达上限，请稍后再发' };
   }
   const queueId = input.queueId ?? nextExternalQueueId();
-  let settleDispatchAcceptance!: (result: { queued: boolean; error?: string }) => void;
-  const dispatchAcceptance = new Promise<{ queued: boolean; error?: string }>((resolve) => {
+  let settleDispatchAcceptance!: (result: ExternalSendResult) => void;
+  const dispatchAcceptance = new Promise<ExternalSendResult>((resolve) => {
     settleDispatchAcceptance = resolve;
   });
   externalOperationQueue.push({
@@ -253,7 +254,7 @@ export function cancelExternalQueuedMessage(queueId: string): string | null {
 
 export function settleExternalMessageOperation(
   item: ExternalQueuedMessageOperation,
-  result: { queued: boolean; error?: string },
+  result: ExternalSendResult,
 ): void {
   item.settleDispatchAcceptance(result);
 }

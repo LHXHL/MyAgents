@@ -8,8 +8,8 @@ use tokio::sync::RwLock;
 
 use crate::cron_task::CronRunRecord;
 use crate::task::{
-    Task, TaskExecutionMode, TaskExecutionTrigger, TaskListFilter, TaskStatus,
-    TaskUpdateStatusInput, TransitionActor, TransitionSource,
+    task_protects_session_identity, Task, TaskExecutionMode, TaskExecutionTrigger, TaskListFilter,
+    TaskStatus, TaskUpdateStatusInput, TransitionActor, TransitionSource,
 };
 use crate::{ulog_error, ulog_info, ulog_warn};
 
@@ -24,9 +24,66 @@ struct ActiveTaskExecution {
     queue_id: String,
     canceled: bool,
     session_id: Option<String>,
+    state: TaskExecutionState,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskExecutionState {
+    Running,
+    Stopping,
+    StopFailed,
+}
+
+impl TaskExecutionState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Stopping => "stopping",
+            Self::StopFailed => "stop_failed",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskExecutionProjection {
+    pub state: TaskExecutionState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+struct ReservedExecutionSession {
+    session_id: String,
+    initialize_session: bool,
+    // Session metadata birth must finish before a second Task sharing this
+    // identity can enter the adopt path. The guard is released as soon as the
+    // authoritative SessionStore row appears, not held for the whole AI turn.
+    birth_lifecycle: crate::sidecar::SessionLifecycleGuard,
 }
 
 type ActiveExecutions = Arc<RwLock<HashMap<String, ActiveTaskExecution>>>;
+
+pub(crate) type TaskControlGuard = crate::keyed_lifecycle::KeyedLifecycleGuard;
+
+static TASK_CONTROL_LIFECYCLES: std::sync::OnceLock<
+    crate::keyed_lifecycle::KeyedLifecycleRegistry,
+> = std::sync::OnceLock::new();
+
+pub(crate) async fn acquire_task_control(task_id: &str) -> TaskControlGuard {
+    TASK_CONTROL_LIFECYCLES
+        .get_or_init(crate::keyed_lifecycle::KeyedLifecycleRegistry::new)
+        .acquire(&[task_id])
+        .await
+}
+
+pub(crate) async fn try_acquire_task_control(task_id: &str) -> Option<TaskControlGuard> {
+    TASK_CONTROL_LIFECYCLES
+        .get_or_init(crate::keyed_lifecycle::KeyedLifecycleRegistry::new)
+        .try_acquire(task_id)
+        .await
+}
 
 impl TaskSchedulerController {
     fn new() -> Self {
@@ -77,6 +134,15 @@ impl TaskSchedulerController {
     }
 
     pub async fn start(&self, task_id: &str) -> Result<(), String> {
+        let control = acquire_task_control(task_id).await;
+        self.start_with_control_held(task_id, &control).await
+    }
+
+    pub(crate) async fn start_with_control_held(
+        &self,
+        task_id: &str,
+        _control: &TaskControlGuard,
+    ) -> Result<(), String> {
         let store = crate::task::get_task_store()
             .ok_or_else(|| "task store not initialized".to_string())?;
         let task = store
@@ -89,11 +155,31 @@ impl TaskSchedulerController {
         validate_task_schedule(&task)?;
 
         let mut handles = self.handles.write().await;
+        let execution = self.execution_projection(task_id).await;
+        if execution.as_ref().is_some_and(|execution| {
+            matches!(
+                execution.state,
+                TaskExecutionState::Stopping | TaskExecutionState::StopFailed
+            )
+        }) {
+            let state = execution.expect("checked above").state;
+            return Err(format!(
+                "task {task_id} has an unresolved {} execution",
+                state.as_str()
+            ));
+        }
+
         if let Some(existing) = handles.get(task_id) {
             if !existing.inner().is_finished() {
                 return Ok(());
             }
             handles.remove(task_id);
+        }
+        if let Some(execution) = execution {
+            return Err(format!(
+                "task {task_id} has an unresolved {} execution",
+                execution.state.as_str()
+            ));
         }
 
         let task_id_owned = task_id.to_string();
@@ -119,35 +205,88 @@ impl TaskSchedulerController {
         Ok(())
     }
 
-    pub async fn stop(&self, task_id: &str) {
-        self.cancel_execution(task_id).await;
-        let active_session = self.execution_session(task_id).await;
+    pub async fn stop(&self, task_id: &str) -> Result<(), String> {
+        let control = acquire_task_control(task_id).await;
+        self.stop_with_control_held(task_id, &control).await
+    }
+
+    pub(crate) async fn stop_with_control_held(
+        &self,
+        task_id: &str,
+        _control: &TaskControlGuard,
+    ) -> Result<(), String> {
+        let active = {
+            let mut executions = self.executions.write().await;
+            executions.get_mut(task_id).map(|execution| {
+                execution.canceled = true;
+                execution.state = TaskExecutionState::Stopping;
+                execution.error = None;
+                (execution.queue_id.clone(), execution.session_id.clone())
+            })
+        };
+        if active.is_some() {
+            self.emit_execution_state(task_id).await;
+        }
         let scheduler_handle = self.handles.write().await.remove(task_id);
+        // The timer loop must stop immediately. Its claimed execution is a
+        // detached worker and is stopped below by exact queue identity.
+        if let Some(handle) = scheduler_handle {
+            handle.abort();
+        }
         let task = match crate::task::get_task_store() {
             Some(store) => store.get(task_id).await,
             None => None,
         };
         let app_handle = self.app_handle.read().await.clone();
-        if let (Some(handle), Some(task)) = (app_handle.as_ref(), task) {
-            match crate::task_execution::stop_task_turn(handle, &task, active_session.as_deref())
-                .await
-            {
-                Ok(()) => crate::task_execution::release_task_sessions(
+        let stop_result = match (&active, app_handle.as_ref(), task.as_ref()) {
+            (Some((queue_id, active_session)), Some(handle), Some(task)) => {
+                crate::task_execution::stop_task_turn(
                     handle,
-                    &task,
+                    task,
                     active_session.as_deref(),
-                ),
-                Err(error) => ulog_error!(
-                    "[task-scheduler] task={} runtime stop was not confirmed: {}",
-                    task_id,
-                    error
-                ),
+                    queue_id,
+                )
+                .await
+                .map(|()| {
+                    crate::task_execution::release_task_sessions(
+                        handle,
+                        task,
+                        active_session.as_deref(),
+                    );
+                })
             }
+            (Some(_), None, _) => Err("Task scheduler app handle is unavailable".to_string()),
+            (Some(_), _, None) => Err(format!("task not found while stopping: {task_id}")),
+            (None, Some(handle), Some(task)) => {
+                crate::task_execution::release_task_sessions(handle, task, None);
+                Ok(())
+            }
+            (None, _, _) => Ok(()),
+        };
+
+        if let Err(error) = stop_result {
+            let message = format!(
+                "Task schedule is stopped, but the current turn could not be confirmed stopped: {error}"
+            );
+            let mut executions = self.executions.write().await;
+            if let Some((queue_id, _)) = active.as_ref() {
+                if let Some(execution) = executions
+                    .get_mut(task_id)
+                    .filter(|execution| execution.queue_id == *queue_id)
+                {
+                    execution.state = TaskExecutionState::StopFailed;
+                    execution.error = Some(message.clone());
+                }
+            }
+            drop(executions);
+            self.emit_execution_state(task_id).await;
+            ulog_error!("[task-scheduler] task={} {}", task_id, message);
+            return Err(message);
         }
-        // The handle owns only the timer loop. A claimed execution runs in its
-        // own task and unwinds through the normal outcome path after stopTurn.
-        if let Some(handle) = scheduler_handle {
-            handle.abort();
+
+        if let Some((queue_id, _)) = active {
+            release_execution(&self.executions, task_id, &queue_id).await;
+            self.emit_execution_state(task_id).await;
         }
         if let Some(handle) = app_handle {
             let _ = handle.emit(
@@ -155,9 +294,15 @@ impl TaskSchedulerController {
                 serde_json::json!({ "taskId": task_id }),
             );
         }
+        Ok(())
     }
 
     pub async fn trigger_now(&self, task_id: &str) -> Result<String, String> {
+        let control = try_acquire_task_control(task_id).await.ok_or_else(|| {
+            format!(
+                "task {task_id} is stopping or changing scheduler state; retry after it settles"
+            )
+        })?;
         let store = crate::task::get_task_store()
             .ok_or_else(|| "task store not initialized".to_string())?;
         let task = store
@@ -177,7 +322,7 @@ impl TaskSchedulerController {
             return Err("task scheduler app handle is unavailable".to_string());
         }
         let queue_id = claim_execution(&self.executions, task_id).await?;
-        let session_id = match reserve_claimed_execution_session(
+        let reserved_session = match reserve_claimed_execution_session(
             &self.executions,
             store,
             &task,
@@ -185,7 +330,7 @@ impl TaskSchedulerController {
         )
         .await
         {
-            Ok(Some(session_id)) => session_id,
+            Ok(Some(reserved_session)) => reserved_session,
             Ok(None) => {
                 release_execution(&self.executions, task_id, &queue_id).await;
                 return Err(format!("task {task_id} does not execute in a Session"));
@@ -195,19 +340,27 @@ impl TaskSchedulerController {
                 return Err(error);
             }
         };
+        self.emit_execution_state(task_id).await;
 
         let executions = Arc::clone(&self.executions);
         let app_handle = Arc::clone(&self.app_handle);
         let task_id = task.id;
-        let reserved_session_id = session_id.clone();
+        let session_id = reserved_session.session_id.clone();
+        drop(control);
         tauri::async_runtime::spawn(async move {
+            let claim = ExecutionClaimGuard::new(
+                Arc::clone(&executions),
+                Arc::clone(&app_handle),
+                task_id.clone(),
+                queue_id.clone(),
+            );
             if let Err(error) = run_one_claimed(
                 &task_id,
                 &queue_id,
                 &executions,
                 &app_handle,
                 TaskExecutionTrigger::Manual,
-                Some(reserved_session_id),
+                Some(reserved_session),
             )
             .await
             {
@@ -217,7 +370,7 @@ impl TaskSchedulerController {
                     error
                 );
             }
-            release_execution(&executions, &task_id, &queue_id).await;
+            claim.settle().await;
         });
         Ok(session_id)
     }
@@ -230,22 +383,79 @@ impl TaskSchedulerController {
         self.executions.read().await.keys().cloned().collect()
     }
 
-    pub async fn authorize_dispatch(&self, task_id: &str, queue_id: &str) -> bool {
-        execution_is_authorized(&self.executions, task_id, queue_id).await
-    }
-
-    async fn execution_session(&self, task_id: &str) -> Option<String> {
+    pub async fn execution_projection(&self, task_id: &str) -> Option<TaskExecutionProjection> {
         self.executions
             .read()
             .await
             .get(task_id)
-            .and_then(|execution| execution.session_id.clone())
+            .map(|execution| TaskExecutionProjection {
+                state: execution.state,
+                error: execution.error.clone(),
+            })
     }
 
+    pub async fn execution_projections_snapshot(&self) -> HashMap<String, TaskExecutionProjection> {
+        self.executions
+            .read()
+            .await
+            .iter()
+            .map(|(task_id, execution)| {
+                (
+                    task_id.clone(),
+                    TaskExecutionProjection {
+                        state: execution.state,
+                        error: execution.error.clone(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn claim_execution_for_test(&self, task_id: &str) -> Result<String, String> {
+        claim_execution(&self.executions, task_id).await
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn release_execution_for_test(&self, task_id: &str, queue_id: &str) {
+        release_execution(&self.executions, task_id, queue_id).await;
+    }
+
+    pub async fn authorize_dispatch(&self, task_id: &str, queue_id: &str) -> bool {
+        execution_is_authorized(&self.executions, task_id, queue_id).await
+    }
+
+    /// Publish the concrete Session currently used by a local managed Task
+    /// batch. Exact queue authority gates the write, so a stop that wins first
+    /// prevents later Session dispatch; once published, `/task/stop` can target
+    /// the active SessionEngine turn.
+    pub(crate) async fn bind_execution_session(
+        &self,
+        task_id: &str,
+        queue_id: &str,
+        session_id: &str,
+    ) -> bool {
+        let mut active = self.executions.write().await;
+        let Some(execution) = active.get_mut(task_id) else {
+            return false;
+        };
+        if execution.queue_id != queue_id || execution.canceled {
+            return false;
+        }
+        execution.session_id = Some(session_id.to_string());
+        true
+    }
+
+    #[cfg(test)]
     async fn cancel_execution(&self, task_id: &str) {
         if let Some(execution) = self.executions.write().await.get_mut(task_id) {
             execution.canceled = true;
+            execution.state = TaskExecutionState::Stopping;
         }
+    }
+
+    async fn emit_execution_state(&self, task_id: &str) {
+        emit_execution_state_event(&self.executions, &self.app_handle, task_id).await;
     }
 }
 
@@ -261,6 +471,8 @@ async fn claim_execution(executions: &ActiveExecutions, task_id: &str) -> Result
             queue_id: queue_id.clone(),
             canceled: false,
             session_id: None,
+            state: TaskExecutionState::Running,
+            error: None,
         },
     );
     Ok(queue_id)
@@ -283,11 +495,52 @@ async fn reserve_claimed_execution_session(
     store: &crate::task::TaskStore,
     task: &Task,
     queue_id: &str,
-) -> Result<Option<String>, String> {
+) -> Result<Option<ReservedExecutionSession>, String> {
     if !crate::task_execution::uses_session_engine(task) {
         return Ok(None);
     }
-    let session_id = crate::task_execution::select_execution_session(task);
+    let selected_session_id = crate::task_execution::select_execution_session(task);
+    // Deletion takes this same guard before checking durable/transient owners.
+    // Hold it from the moment the execution publishes its Session identity,
+    // through the durable Task binding and any required Session metadata
+    // birth. `execute_task_with_reservation` releases it at that exact point.
+    let selected_lifecycle =
+        crate::sidecar::acquire_session_lifecycle(&[&selected_session_id]).await;
+    let selected_materialized = session_metadata_exists(&selected_session_id).await;
+    let selected_was_bound = crate::task::task_bound_session_ids(task)
+        .iter()
+        .any(|session_id| session_id == &selected_session_id);
+
+    let (session_id, lifecycle, initialize_session) =
+        if selected_was_bound && !selected_materialized {
+            // A persisted binding whose SessionStore row was deleted is
+            // historical identity, not permission to resurrect that UUID.
+            // Rebind to a fresh identity while both old and new lifecycles are
+            // fenced. The fresh UUID cannot already be visible to another
+            // owner, so nested acquisition cannot invert an existing lock
+            // order.
+            let replacement_session_id = uuid::Uuid::new_v4().to_string();
+            let replacement_lifecycle =
+                crate::sidecar::acquire_session_lifecycle(&[&replacement_session_id]).await;
+            store
+                .set_execution_session_with_lifecycle_held(
+                    &task.id,
+                    replacement_session_id.clone(),
+                    Some(&selected_session_id),
+                )
+                .await?;
+            drop(selected_lifecycle);
+            (replacement_session_id, replacement_lifecycle, true)
+        } else {
+            store
+                .append_session_with_lifecycle_held(&task.id, &selected_session_id)
+                .await?;
+            (
+                selected_session_id,
+                selected_lifecycle,
+                !selected_materialized,
+            )
+        };
     {
         let mut active = executions.write().await;
         let Some(execution) = active.get_mut(&task.id) else {
@@ -298,8 +551,75 @@ async fn reserve_claimed_execution_session(
         }
         execution.session_id = Some(session_id.clone());
     }
-    store.append_session(&task.id, &session_id).await?;
-    Ok(Some(session_id))
+    Ok(Some(ReservedExecutionSession {
+        session_id,
+        initialize_session,
+        birth_lifecycle: lifecycle,
+    }))
+}
+
+async fn session_metadata_exists(session_id: &str) -> bool {
+    let session_id = session_id.to_string();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::sidecar::runtime_identity::resolve_session_runtime_identity_full(&session_id)
+            .is_some()
+    })
+    .await
+    .unwrap_or(false)
+}
+
+async fn wait_for_session_materialization(session_id: &str) {
+    loop {
+        if session_metadata_exists(session_id).await {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+async fn execute_task_with_reservation(
+    handle: &AppHandle,
+    task: &Task,
+    queue_id: &str,
+    reservation: Option<ReservedExecutionSession>,
+) -> Result<crate::task_execution::TaskExecutionOutcome, String> {
+    let (session_id, initialize_session, birth_lifecycle) = match reservation {
+        Some(reservation) => (
+            Some(reservation.session_id),
+            reservation.initialize_session,
+            Some(reservation.birth_lifecycle),
+        ),
+        None => (None, false, None),
+    };
+    let mut execution = Box::pin(crate::task_execution::execute_task(
+        handle,
+        task,
+        queue_id,
+        session_id.clone(),
+        initialize_session,
+    ));
+    let Some(birth_lifecycle) = birth_lifecycle else {
+        return execution.await;
+    };
+    let session_id = session_id.expect("Session reservation carries an id");
+    let mut materialization = Box::pin(wait_for_session_materialization(&session_id));
+
+    tokio::select! {
+        result = &mut execution => {
+            // Failure before metadata birth releases the creator lease. The
+            // Task execution path also drops an unmaterialized Sidecar owner,
+            // so the next reservation can become a new creator.
+            drop(birth_lifecycle);
+            result
+        }
+        () = &mut materialization => {
+            // Metadata is now the durable birth signal. Release before the
+            // potentially hour-long AI turn so same-Session tools (notably
+            // create-attached) never deadlock on the identity lifecycle.
+            drop(birth_lifecycle);
+            execution.await
+        }
+    }
 }
 
 async fn release_execution(executions: &ActiveExecutions, task_id: &str, queue_id: &str) {
@@ -309,6 +629,125 @@ async fn release_execution(executions: &ActiveExecutions, task_id: &str, queue_i
         .is_some_and(|execution| execution.queue_id == queue_id)
     {
         active.remove(task_id);
+    }
+}
+
+async fn retain_unconfirmed_execution(
+    executions: &ActiveExecutions,
+    task_id: &str,
+    queue_id: &str,
+    error: String,
+) {
+    let mut active = executions.write().await;
+    if let Some(execution) = active
+        .get_mut(task_id)
+        .filter(|execution| execution.queue_id == queue_id)
+    {
+        execution.canceled = true;
+        execution.state = TaskExecutionState::StopFailed;
+        execution.error = Some(error);
+    }
+}
+
+async fn emit_execution_state_event(
+    executions: &ActiveExecutions,
+    app_handle: &RwLock<Option<AppHandle>>,
+    task_id: &str,
+) {
+    let projection =
+        executions
+            .read()
+            .await
+            .get(task_id)
+            .map(|execution| TaskExecutionProjection {
+                state: execution.state,
+                error: execution.error.clone(),
+            });
+    if let Some(handle) = app_handle.read().await.as_ref() {
+        let _ = handle.emit(
+            "cron:execution-state-changed",
+            serde_json::json!({
+                "taskId": task_id,
+                "state": projection.as_ref().map(|value| value.state),
+                "error": projection.and_then(|value| value.error),
+            }),
+        );
+    }
+}
+
+struct ExecutionClaimGuard {
+    executions: ActiveExecutions,
+    app_handle: Arc<RwLock<Option<AppHandle>>>,
+    task_id: String,
+    queue_id: String,
+    settled: bool,
+}
+
+impl ExecutionClaimGuard {
+    fn new(
+        executions: ActiveExecutions,
+        app_handle: Arc<RwLock<Option<AppHandle>>>,
+        task_id: String,
+        queue_id: String,
+    ) -> Self {
+        Self {
+            executions,
+            app_handle,
+            task_id,
+            queue_id,
+            settled: false,
+        }
+    }
+
+    async fn settle(mut self) {
+        let mut active = self.executions.write().await;
+        let keep_for_stop_confirmation = active
+            .get(&self.task_id)
+            .filter(|execution| execution.queue_id == self.queue_id)
+            .is_some_and(|execution| {
+                matches!(
+                    execution.state,
+                    TaskExecutionState::Stopping | TaskExecutionState::StopFailed
+                )
+            });
+        if !keep_for_stop_confirmation
+            && active
+                .get(&self.task_id)
+                .is_some_and(|execution| execution.queue_id == self.queue_id)
+        {
+            active.remove(&self.task_id);
+        }
+        drop(active);
+        emit_execution_state_event(&self.executions, &self.app_handle, &self.task_id).await;
+        self.settled = true;
+    }
+}
+
+impl Drop for ExecutionClaimGuard {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        let executions = Arc::clone(&self.executions);
+        let app_handle = Arc::clone(&self.app_handle);
+        let task_id = self.task_id.clone();
+        let queue_id = self.queue_id.clone();
+        tauri::async_runtime::spawn(async move {
+            let mut active = executions.write().await;
+            if let Some(execution) = active
+                .get_mut(&task_id)
+                .filter(|execution| execution.queue_id == queue_id)
+            {
+                execution.canceled = true;
+                execution.state = TaskExecutionState::StopFailed;
+                execution.error = Some(
+                    "Task execution worker ended before lifecycle settlement; stop it before rerunning"
+                        .to_string(),
+                );
+            }
+            drop(active);
+            emit_execution_state_event(&executions, &app_handle, &task_id).await;
+        });
     }
 }
 
@@ -368,6 +807,7 @@ async fn run_one(
     executions: &ActiveExecutions,
     app_handle: &Arc<RwLock<Option<AppHandle>>>,
 ) -> Result<RunDisposition, String> {
+    let control = acquire_task_control(task_id).await;
     let Some(store) = crate::task::get_task_store() else {
         return Err("task store not initialized".to_string());
     };
@@ -386,22 +826,38 @@ async fn run_one(
             return Ok(RunDisposition::Continue);
         }
     };
+    let reserved_session =
+        match reserve_claimed_execution_session(executions, store, &task, &queue_id).await {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                release_execution(executions, task_id, &queue_id).await;
+                return Err(error);
+            }
+        };
+    emit_execution_state_event(executions, app_handle, task_id).await;
+    drop(control);
 
     let task_id_owned = task_id.to_string();
     let queue_id_owned = queue_id.clone();
     let executions = Arc::clone(executions);
     let app_handle = Arc::clone(app_handle);
     let worker = tauri::async_runtime::spawn(async move {
+        let claim = ExecutionClaimGuard::new(
+            Arc::clone(&executions),
+            Arc::clone(&app_handle),
+            task_id_owned.clone(),
+            queue_id_owned.clone(),
+        );
         let result = run_one_claimed(
             &task_id_owned,
             &queue_id_owned,
             &executions,
             &app_handle,
             TaskExecutionTrigger::Scheduled,
-            None,
+            reserved_session,
         )
         .await;
-        release_execution(&executions, &task_id_owned, &queue_id_owned).await;
+        claim.settle().await;
         result
     });
     worker
@@ -415,7 +871,7 @@ async fn run_one_claimed(
     executions: &ActiveExecutions,
     app_handle: &RwLock<Option<AppHandle>>,
     trigger: TaskExecutionTrigger,
-    reserved_session_id: Option<String>,
+    reserved_session: Option<ReservedExecutionSession>,
 ) -> Result<RunDisposition, String> {
     if !execution_is_authorized(executions, task_id, queue_id).await {
         return Ok(RunDisposition::Stop);
@@ -449,13 +905,7 @@ async fn run_one_claimed(
     .await;
     let execution = match handle.as_ref() {
         Ok(handle) => {
-            let session_id = match reserved_session_id {
-                Some(session_id) => Some(session_id),
-                None => {
-                    reserve_claimed_execution_session(executions, store, &task, queue_id).await?
-                }
-            };
-            crate::task_execution::execute_task(handle, &task, queue_id, session_id).await
+            execute_task_with_reservation(handle, &task, queue_id, reserved_session).await
         }
         Err(error) => Err(error.clone()),
     };
@@ -483,10 +933,28 @@ async fn run_one_claimed(
         ),
     };
 
-    // Cancellation and outcome commit share the same execution slot. The
-    // TaskStore compare-and-commit then linearizes an explicit status change
-    // against this exact run, so a stopped worker cannot mutate a restarted
-    // schedule or report its control cancellation as a runtime failure.
+    if let Some(outcome) = outcome
+        .as_ref()
+        .filter(|outcome| outcome.termination_unconfirmed)
+    {
+        retain_unconfirmed_execution(
+            executions,
+            task_id,
+            queue_id,
+            outcome.error.clone().unwrap_or_else(|| {
+                "Task turn termination was not confirmed; retry stop before rerunning".to_string()
+            }),
+        )
+        .await;
+        emit_execution_state_event(executions, app_handle, task_id).await;
+    }
+
+    // The outcome commit and every externally visible consequence share the
+    // same per-Task control epoch as Stop/Rerun. If control won first, the
+    // exact queue check below rejects this worker. If this worker won first,
+    // Stop/Rerun waits until history, notifications, and any terminal status
+    // transition all belong to this generation before creating the next one.
+    let task_control = acquire_task_control(task_id).await;
     let active = executions.read().await;
     let authorized = active
         .get(task_id)
@@ -503,9 +971,10 @@ async fn run_one_claimed(
         Err(error) => {
             drop(active);
             if trigger == TaskExecutionTrigger::Scheduled {
-                block_task(
+                block_task_with_control_held(
                     &task,
                     format!("Task execution commit failed; scheduler stopped: {error}"),
+                    &task_control,
                 )
                 .await;
             }
@@ -552,22 +1021,9 @@ async fn run_one_claimed(
     }
 
     if trigger == TaskExecutionTrigger::Manual {
-        if let Some(reason) = outcome
-            .as_ref()
-            .and_then(|value| value.ai_exit_reason.as_deref())
-        {
-            finish_task(&updated, reason, TransitionSource::EndCondition).await;
-            return Ok(RunDisposition::Stop);
-        }
-        if end_condition_reached(&updated) {
-            finish_task(
-                &updated,
-                "Task end condition reached",
-                TransitionSource::EndCondition,
-            )
-            .await;
-            return Ok(RunDisposition::Stop);
-        }
+        // Run-now is an observational execution of the existing schedule.
+        // Its AI exit/end-condition result must not terminalize a recurring
+        // Task or change whether the scheduler remains armed.
         return Ok(RunDisposition::Continue);
     }
 
@@ -576,12 +1032,13 @@ async fn run_one_claimed(
             && (error.contains("not found in config") || error.contains("has no API Key"))
     });
     if provider_failure || outcome.is_none() {
-        block_task(
+        block_task_with_control_held(
             &updated,
             record
                 .error
                 .clone()
                 .unwrap_or_else(|| "Task execution failed".to_string()),
+            &task_control,
         )
         .await;
         return Ok(RunDisposition::Stop);
@@ -594,19 +1051,26 @@ async fn run_one_claimed(
             TaskExecutionMode::Once | TaskExecutionMode::Scheduled
         )
     {
-        block_task(
+        block_task_with_control_held(
             &updated,
             outcome
                 .error
                 .clone()
                 .unwrap_or_else(|| "Task execution failed".to_string()),
+            &task_control,
         )
         .await;
         return Ok(RunDisposition::Stop);
     }
 
     if let Some(reason) = outcome.ai_exit_reason {
-        finish_task(&updated, &reason, TransitionSource::EndCondition).await;
+        finish_task_with_control_held(
+            &updated,
+            &reason,
+            TransitionSource::EndCondition,
+            &task_control,
+        )
+        .await;
         return Ok(RunDisposition::Stop);
     }
     if matches!(
@@ -614,10 +1078,11 @@ async fn run_one_claimed(
         TaskExecutionMode::Once | TaskExecutionMode::Scheduled
     ) || end_condition_reached(&updated)
     {
-        finish_task(
+        finish_task_with_control_held(
             &updated,
             "Task execution completed",
             TransitionSource::EndCondition,
+            &task_control,
         )
         .await;
         return Ok(RunDisposition::Stop);
@@ -651,6 +1116,29 @@ async fn finish_task(task: &Task, message: &str, source: TransitionSource) {
         .await;
 }
 
+async fn finish_task_with_control_held(
+    task: &Task,
+    message: &str,
+    source: TransitionSource,
+    task_control: &TaskControlGuard,
+) {
+    let Some(store) = crate::task::get_task_store() else {
+        return;
+    };
+    let _ = store
+        .update_status_with_task_control_held(
+            TaskUpdateStatusInput {
+                id: task.id.clone(),
+                status: TaskStatus::Done,
+                message: Some(message.to_string()),
+                actor: TransitionActor::System,
+                source: Some(source),
+            },
+            task_control,
+        )
+        .await;
+}
+
 async fn block_task(task: &Task, message: String) {
     let Some(store) = crate::task::get_task_store() else {
         return;
@@ -663,6 +1151,28 @@ async fn block_task(task: &Task, message: String) {
             actor: TransitionActor::System,
             source: Some(TransitionSource::Scheduler),
         })
+        .await;
+}
+
+async fn block_task_with_control_held(
+    task: &Task,
+    message: String,
+    task_control: &TaskControlGuard,
+) {
+    let Some(store) = crate::task::get_task_store() else {
+        return;
+    };
+    let _ = store
+        .update_status_with_task_control_held(
+            TaskUpdateStatusInput {
+                id: task.id.clone(),
+                status: TaskStatus::Blocked,
+                message: Some(message),
+                actor: TransitionActor::System,
+                source: Some(TransitionSource::Scheduler),
+            },
+            task_control,
+        )
         .await;
 }
 
@@ -788,22 +1298,31 @@ pub fn get_task_scheduler() -> &'static TaskSchedulerController {
 }
 
 pub async fn has_persistent_task_for_session(session_id: &str) -> bool {
+    if active_execution_protects_session(&get_task_scheduler().executions, session_id).await {
+        return true;
+    }
     let Some(store) = crate::task::get_task_store() else {
         return false;
     };
     store
         .list(TaskListFilter {
-            status: Some(crate::task::StatusFilter::One(TaskStatus::Running)),
             include_managed: Some(true),
             ..Default::default()
         })
         .await
         .into_iter()
-        .any(|task| {
-            task.run_mode == Some(crate::task::TaskRunMode::SingleSession)
-                && (task.preselected_session_id.as_deref() == Some(session_id)
-                    || task.session_ids.iter().any(|value| value == session_id))
-        })
+        .any(|task| task_protects_session_identity(&task, session_id))
+}
+
+async fn active_execution_protects_session(
+    executions: &ActiveExecutions,
+    session_id: &str,
+) -> bool {
+    executions
+        .read()
+        .await
+        .values()
+        .any(|execution| execution.session_id.as_deref() == Some(session_id))
 }
 
 #[cfg(test)]
@@ -836,6 +1355,69 @@ mod tests {
 
         release_execution(&controller.executions, "task-1", &queue_id).await;
         assert!(!controller.is_executing("task-1").await);
+    }
+
+    #[tokio::test]
+    async fn stale_execution_generation_cannot_authorize_after_rerun_claims() {
+        let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
+        let first_queue = claim_execution(&executions, "task-rerun").await.unwrap();
+        release_execution(&executions, "task-rerun", &first_queue).await;
+        let second_queue = claim_execution(&executions, "task-rerun").await.unwrap();
+
+        assert_ne!(first_queue, second_queue);
+        assert!(!execution_is_authorized(&executions, "task-rerun", &first_queue).await);
+        assert!(execution_is_authorized(&executions, "task-rerun", &second_queue).await);
+
+        release_execution(&executions, "task-rerun", &second_queue).await;
+    }
+
+    #[tokio::test]
+    async fn managed_batch_session_binding_requires_the_exact_live_claim() {
+        let controller = TaskSchedulerController::new();
+        let queue_id = claim_execution(&controller.executions, "managed-task")
+            .await
+            .unwrap();
+
+        assert!(
+            controller
+                .bind_execution_session("managed-task", &queue_id, "session-a")
+                .await
+        );
+        assert_eq!(
+            controller
+                .executions
+                .read()
+                .await
+                .get("managed-task")
+                .and_then(|execution| execution.session_id.as_deref()),
+            Some("session-a")
+        );
+        assert!(
+            !controller
+                .bind_execution_session("managed-task", "stale-queue", "session-b")
+                .await
+        );
+        controller.cancel_execution("managed-task").await;
+        assert!(
+            !controller
+                .bind_execution_session("managed-task", &queue_id, "session-b")
+                .await
+        );
+
+        release_execution(&controller.executions, "managed-task", &queue_id).await;
+    }
+
+    #[tokio::test]
+    async fn task_control_serializes_only_the_same_task() {
+        let first_task = format!("task-control-first-{}", uuid::Uuid::new_v4());
+        let other_task = format!("task-control-other-{}", uuid::Uuid::new_v4());
+        let guard = acquire_task_control(&first_task).await;
+
+        assert!(try_acquire_task_control(&first_task).await.is_none());
+        assert!(try_acquire_task_control(&other_task).await.is_some());
+
+        drop(guard);
+        assert!(try_acquire_task_control(&first_task).await.is_some());
     }
 
     #[tokio::test]
@@ -875,13 +1457,81 @@ mod tests {
             .get(&task.id)
             .and_then(|execution| execution.session_id.clone());
         let persisted = store.get(&task.id).await.unwrap();
-        assert_ne!(returned_session, "previous-run");
-        assert_eq!(bound_session.as_deref(), Some(returned_session.as_str()));
+        assert_ne!(returned_session.session_id, "previous-run");
+        assert_eq!(
+            bound_session.as_deref(),
+            Some(returned_session.session_id.as_str())
+        );
         assert_eq!(
             persisted.session_ids.last().map(String::as_str),
-            Some(returned_session.as_str())
+            Some(returned_session.session_id.as_str())
         );
 
+        drop(returned_session);
+        release_execution(&executions, &task.id, &queue_id).await;
+    }
+
+    #[tokio::test]
+    async fn reservation_holds_session_lifecycle_through_dispatch_boundary() {
+        let session_id = format!("shared-session-{}", uuid::Uuid::new_v4());
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": "task-shared-session",
+            "name": "shared session",
+            "executor": "agent",
+            "workspaceId": "workspace",
+            "workspacePath": "/tmp/workspace",
+            "executionMode": "recurring",
+            "runMode": "single-session",
+            "preselectedSessionId": session_id.clone(),
+            "intervalMinutes": 60,
+            "sessionIds": [],
+            "status": "running",
+            "tags": [],
+            "createdAt": 1,
+            "updatedAt": 1,
+            "statusHistory": [],
+            "dispatchOrigin": "direct"
+        }))
+        .unwrap();
+        let (_dir, store) = store_with_task(&task);
+        let task = store.get(&task.id).await.unwrap();
+        let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
+        let queue_id = claim_execution(&executions, &task.id).await.unwrap();
+        let reservation = reserve_claimed_execution_session(&executions, &store, &task, &queue_id)
+            .await
+            .unwrap()
+            .expect("ordinary Task execution must reserve a Session");
+        assert_ne!(reservation.session_id, session_id);
+        assert!(reservation.initialize_session);
+        let rebound = store.get(&task.id).await.unwrap();
+        assert_eq!(
+            rebound.preselected_session_id.as_deref(),
+            Some(reservation.session_id.as_str())
+        );
+        assert!(!rebound.session_ids.iter().any(|value| value == &session_id));
+        assert!(rebound
+            .session_ids
+            .iter()
+            .any(|value| value == &reservation.session_id));
+
+        let (acquired_tx, acquired_rx) = tokio::sync::oneshot::channel();
+        let session_for_waiter = reservation.session_id.clone();
+        let waiter = tauri::async_runtime::spawn(async move {
+            let _guard = crate::sidecar::acquire_session_lifecycle(&[&session_for_waiter]).await;
+            let _ = acquired_tx.send(());
+        });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), acquired_rx)
+                .await
+                .is_err(),
+            "a Starting joiner must remain behind the creator's metadata-birth boundary"
+        );
+
+        drop(reservation);
+        tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
+            .await
+            .expect("joiner should resume after creator dispatch")
+            .expect("joiner task should not panic");
         release_execution(&executions, &task.id, &queue_id).await;
     }
 
@@ -921,11 +1571,190 @@ mod tests {
             .get(&task.id)
             .and_then(|execution| execution.session_id.clone());
         let persisted = store.get(&task.id).await.unwrap();
-        assert_eq!(reserved, None);
+        assert!(reserved.is_none());
         assert_eq!(bound_session, None);
         assert!(persisted.session_ids.is_empty());
 
         release_execution(&executions, &task.id, &queue_id).await;
+    }
+
+    #[tokio::test]
+    async fn active_execution_protects_its_reserved_session_until_release() {
+        let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
+        executions.write().await.insert(
+            "task-1".to_string(),
+            ActiveTaskExecution {
+                queue_id: "queue-1".to_string(),
+                canceled: false,
+                session_id: Some("session-1".to_string()),
+                state: TaskExecutionState::Running,
+                error: None,
+            },
+        );
+
+        assert!(active_execution_protects_session(&executions, "session-1").await);
+        release_execution(&executions, "task-1", "queue-1").await;
+        assert!(!active_execution_protects_session(&executions, "session-1").await);
+    }
+
+    #[tokio::test]
+    async fn abandoned_worker_claim_becomes_visible_stop_failure() {
+        let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
+        let app_handle = Arc::new(RwLock::new(None));
+        let queue_id = claim_execution(&executions, "task-abandoned")
+            .await
+            .unwrap();
+        let claim = ExecutionClaimGuard::new(
+            Arc::clone(&executions),
+            app_handle,
+            "task-abandoned".to_string(),
+            queue_id,
+        );
+
+        drop(claim);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                let state = executions
+                    .read()
+                    .await
+                    .get("task-abandoned")
+                    .map(|execution| execution.state);
+                if state == Some(TaskExecutionState::StopFailed) {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Drop cleanup should surface an unsettled worker");
+    }
+
+    #[tokio::test]
+    async fn worker_settlement_does_not_clear_an_unconfirmed_stop() {
+        let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
+        let app_handle = Arc::new(RwLock::new(None));
+        let queue_id = claim_execution(&executions, "task-stop-failed")
+            .await
+            .unwrap();
+        {
+            let mut active = executions.write().await;
+            let execution = active.get_mut("task-stop-failed").unwrap();
+            execution.canceled = true;
+            execution.state = TaskExecutionState::StopFailed;
+            execution.error = Some("stop not confirmed".to_string());
+        }
+        let claim = ExecutionClaimGuard::new(
+            Arc::clone(&executions),
+            app_handle,
+            "task-stop-failed".to_string(),
+            queue_id.clone(),
+        );
+
+        claim.settle().await;
+
+        let active = executions.read().await;
+        let execution = active.get("task-stop-failed").unwrap();
+        assert_eq!(execution.queue_id, queue_id);
+        assert_eq!(execution.state, TaskExecutionState::StopFailed);
+    }
+
+    #[tokio::test]
+    async fn runtime_termination_ambiguity_keeps_the_exact_execution_retryable() {
+        let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
+        let app_handle = Arc::new(RwLock::new(None));
+        let queue_id = claim_execution(&executions, "task-orphan").await.unwrap();
+        retain_unconfirmed_execution(
+            &executions,
+            "task-orphan",
+            &queue_id,
+            "runtime process may still be alive".to_string(),
+        )
+        .await;
+        let claim = ExecutionClaimGuard::new(
+            Arc::clone(&executions),
+            app_handle,
+            "task-orphan".to_string(),
+            queue_id.clone(),
+        );
+
+        claim.settle().await;
+
+        let active = executions.read().await;
+        let execution = active.get("task-orphan").unwrap();
+        assert_eq!(execution.queue_id, queue_id);
+        assert!(execution.canceled);
+        assert_eq!(execution.state, TaskExecutionState::StopFailed);
+        assert_eq!(
+            execution.error.as_deref(),
+            Some("runtime process may still be alive")
+        );
+    }
+
+    #[test]
+    fn attached_task_protects_its_session_until_terminal_completion() {
+        let mut task: Task = serde_json::from_value(serde_json::json!({
+            "id": "attached-task",
+            "name": "Space issue",
+            "executor": "agent",
+            "workspaceId": "workspace",
+            "workspacePath": "/tmp/workspace",
+            "executionMode": "once",
+            "sessionIds": ["session-1"],
+            "status": "running",
+            "tags": [],
+            "createdAt": 1,
+            "updatedAt": 1,
+            "statusHistory": [],
+            "dispatchOrigin": "attached-session"
+        }))
+        .unwrap();
+
+        for status in [
+            TaskStatus::Todo,
+            TaskStatus::Running,
+            TaskStatus::Verifying,
+            TaskStatus::Blocked,
+            TaskStatus::Stopped,
+        ] {
+            task.status = status;
+            assert!(task_protects_session_identity(&task, "session-1"));
+        }
+        for status in [TaskStatus::Done, TaskStatus::Archived, TaskStatus::Deleted] {
+            task.status = status;
+            assert!(!task_protects_session_identity(&task, "session-1"));
+        }
+        task.status = TaskStatus::Running;
+        task.deleted = true;
+        assert!(!task_protects_session_identity(&task, "session-1"));
+    }
+
+    #[test]
+    fn only_running_direct_single_session_tasks_protect_idle_identity() {
+        let mut task: Task = serde_json::from_value(serde_json::json!({
+            "id": "direct-task",
+            "name": "Direct",
+            "executor": "agent",
+            "workspaceId": "workspace",
+            "workspacePath": "/tmp/workspace",
+            "executionMode": "recurring",
+            "runMode": "single-session",
+            "preselectedSessionId": "session-1",
+            "sessionIds": [],
+            "status": "running",
+            "tags": [],
+            "createdAt": 1,
+            "updatedAt": 1,
+            "statusHistory": [],
+            "dispatchOrigin": "direct"
+        }))
+        .unwrap();
+
+        assert!(task_protects_session_identity(&task, "session-1"));
+        task.status = TaskStatus::Stopped;
+        assert!(!task_protects_session_identity(&task, "session-1"));
+        task.status = TaskStatus::Running;
+        task.run_mode = Some(crate::task::TaskRunMode::NewSession);
+        assert!(!task_protects_session_identity(&task, "session-1"));
     }
 
     #[test]

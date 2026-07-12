@@ -39,6 +39,7 @@ import {
   getCurrentTurnText,
   getPendingRequestIds,
   notifyCurrentTurnTerminal,
+  notifyQueuedTurnStopped,
   pushPendingRequest,
   replaceCurrentTurnUsage,
   removePendingRequest,
@@ -174,7 +175,12 @@ describe('builtin-session owners', () => {
     pushMessage(queueItem('q1'));
     pushPendingMidTurn(pendingItem('q2'));
     pushTurnBoundary({ queueId: 'q3', ready: true, messageText: 'turn' });
-    setTurnAdmissionTicket({ queueId: 'q3', createdAt: 1 });
+    setTurnAdmissionTicket({
+      queueId: 'q3',
+      createdAt: 1,
+      messageText: 'third',
+      canceled: false,
+    });
 
     expect(rescuePendingMidTurnToMessageFront()).toBe(1);
     expect(snapshotQueue().messageQueue.map(item => item.id)).toEqual(['q2', 'q1']);
@@ -252,6 +258,37 @@ describe('builtin-session owners', () => {
 
     release();
     await waitForCurrentTurnTerminalObserver();
+    expect(settled).toBe(true);
+  });
+
+  it('settles a pre-dispatch cancellation exactly once and awaits its observer', async () => {
+    let release!: () => void;
+    const onTerminal = vi.fn(() => new Promise<void>((resolve) => {
+      release = resolve;
+    }));
+    const item = queueItem('queued-goal');
+    item.onTerminal = onTerminal;
+
+    let settled = false;
+    const first = notifyQueuedTurnStopped(item).then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+
+    expect(settled).toBe(false);
+    expect(onTerminal).toHaveBeenCalledOnce();
+    expect(onTerminal).toHaveBeenCalledWith({
+      status: 'stopped',
+      text: '',
+      assistantMessagePresent: false,
+      error: 'Queue item was cancelled before dispatch',
+    });
+
+    await notifyQueuedTurnStopped(item);
+    expect(onTerminal).toHaveBeenCalledOnce();
+
+    release();
+    await first;
     expect(settled).toBe(true);
   });
 

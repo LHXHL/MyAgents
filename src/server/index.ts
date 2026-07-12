@@ -648,6 +648,7 @@ import {
 } from './SessionStore';
 import { decodeProviderEnvSnapshot, findAgentByWorkspacePath, findProvider, getAllMcpServers, getEffectiveMcpServers, getEnabledMcpServerIds, isProviderDisabled, loadConfig, resolveImProviderRouting, resolveProviderEnv, resolveWorkspaceConfig } from './utils/admin-config';
 import { snapshotForOwnedSession } from './utils/session-snapshot';
+import { bindOwnedSnapshotToRuntimeIdentity } from './utils/session-materialization';
 import {
   isManagedCodexProviderReady,
   managedCodexNotReadyMessage,
@@ -875,13 +876,13 @@ function getRuntimeConfigSource(
   return source === 'managed-provider' || source === 'system-cli' ? source : undefined;
 }
 
-function runtimeBackedProviderIdentityFromCronPayload(
+function runtimeBackedProviderIdentityFromCronRuntime(
   runtime: RuntimeType,
-  runtimeConfig?: RuntimeConfig | null,
+  runtimeSource: RuntimeSource | undefined,
+  modelValue: string | null | undefined,
 ): RuntimeBackedProviderIdentity | undefined {
-  const source = getRuntimeConfigSource(runtimeConfig);
-  const model = runtimeConfig?.model?.trim();
-  if (runtime !== 'codex' || source !== 'managed-provider' || !model) return undefined;
+  const model = modelValue?.trim();
+  if (runtime !== 'codex' || runtimeSource !== 'managed-provider' || !model) return undefined;
   return {
     kind: 'runtime-backed-provider',
     providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
@@ -1662,6 +1663,14 @@ async function handleGoalExecuteSync(request: Request): Promise<Response> {
         },
       });
       if (!result.success) {
+        if (result.terminationUnconfirmed) {
+          return jsonResponse({
+            success: false,
+            error: result.error ?? 'Goal execution termination was not confirmed',
+            terminationUnconfirmed: true,
+            sessionId: getSessionId(),
+          }, result.status ?? 503);
+        }
         return failure(result.error ?? 'Goal execution failed', result.status ?? 503);
       }
 
@@ -2689,11 +2698,15 @@ async function main() {
         try {
           const payload = (await request.json()) as { goalId?: string; queueId?: string };
           const goalId = payload.goalId?.trim() ?? '';
+          const queueId = payload.queueId?.trim() ?? '';
           if (!goalId) {
             return jsonResponse({ success: false, error: 'goalId is required' }, 400);
           }
-          const queueId = payload.queueId?.trim() ?? '';
           const owner = { kind: 'goal' as const, id: goalId };
+          // A claimed turn always carries queueId and must stop exactly.
+          // Missing queueId is reserved for durable pre-claim cancellation:
+          // cancel owner-scoped queue/promotion work without touching an
+          // unrelated active turn in the shared Session.
           const result = queueId
             ? await stopOwnedTurnByQueueId(owner, queueId)
             : await stopOwnedTurn(owner);
@@ -2708,12 +2721,13 @@ async function main() {
 
       if (pathname === '/task/stop' && request.method === 'POST') {
         try {
-          const payload = (await request.json()) as { taskId?: string };
+          const payload = (await request.json()) as { taskId?: string; queueId?: string };
           const taskId = payload.taskId?.trim() ?? '';
-          if (!taskId) {
-            return jsonResponse({ success: false, error: 'taskId is required' }, 400);
+          const queueId = payload.queueId?.trim() ?? '';
+          if (!taskId || !queueId) {
+            return jsonResponse({ success: false, error: 'taskId and queueId are required' }, 400);
           }
-          const result = await stopOwnedTurn({ kind: 'task', id: taskId });
+          const result = await stopOwnedTurnByQueueId({ kind: 'task', id: taskId }, queueId);
           return jsonResponse(result, result.success ? 200 : 500);
         } catch (error) {
           return jsonResponse({
@@ -2981,26 +2995,35 @@ async function main() {
 
         let effectiveSessionId = sessionId;
 
-        if (payload.initializeSession || effectiveRunMode === 'new_session') {
+        // Rust chooses the concrete Session id and owns metadata birth under
+        // the per-Session lifecycle. `initializeSession` therefore describes
+        // SessionStore identity, not whether this Node Sidecar process happened
+        // to be created for the current request. A Tab may already keep the
+        // Sidecar alive while this Task still legitimately creates metadata.
+        if (payload.initializeSession) {
           // Create a fresh session for each execution (no memory of previous runs).
           // v0.1.69: Cron new_task ticks are structurally 'owned' — every tick reads the
           // current Agent and freezes a snapshot into the new SessionMetadata. Per-tick
           // freshness keeps "live-follow" semantics for cron without inventing a third
           // owner kind in resolveSessionConfig (PRD D4 footnote).
           const taskAgent = findAgentByWorkspacePath(agentDir) as AgentConfig | undefined;
-          const payloadRuntime = payload.runtime;
-          const overrideRuntime = payloadRuntime ?? getActiveRuntimeType();
-          const overrideRuntimeType = VALID_RUNTIMES.includes(overrideRuntime as RuntimeType)
-            ? overrideRuntime as RuntimeType
-            : 'builtin';
-          const overrideRuntimeSource = getRuntimeConfigSource(payload.runtimeConfig ?? null);
-          const taskSnapshot: Partial<SessionMetadata> = taskAgent
+          const engine = getSessionEngine();
+          const liveRuntimeIdentity = engine.getRuntimeIdentity();
+          const liveConfigSnapshot = engine.getSessionConfigSnapshot();
+          const overrideRuntimeType = liveRuntimeIdentity.runtime;
+          const overrideRuntimeSource = overrideRuntimeType === 'builtin'
+            ? undefined
+            : (liveRuntimeIdentity.runtimeSource ?? 'system-cli');
+          const agentSnapshot: Partial<SessionMetadata> = taskAgent
             ? snapshotForOwnedSession(taskAgent, {
-                ...(payloadRuntime ? { runtimeOverride: overrideRuntimeType } : {}),
-                ...(payloadRuntime && overrideRuntimeSource ? { runtimeSourceOverride: overrideRuntimeSource } : {}),
-                managedCodexProviderReady: managedCodexReady,
+                runtimeOverride: overrideRuntimeType,
+                ...(overrideRuntimeSource ? { runtimeSourceOverride: overrideRuntimeSource } : {}),
+                managedCodexProviderReady: overrideRuntimeSource === 'managed-provider'
+                  ? true
+                  : managedCodexReady,
               })
-            : { runtime: overrideRuntime };
+            : {};
+          const taskSnapshot = bindOwnedSnapshotToRuntimeIdentity(agentSnapshot, liveRuntimeIdentity);
           taskSnapshot.origin = cronTurnOrigin;
           // `cronTaskId` is the existing SessionMetadata wire key. Its value is
           // now the Task id; TaskStore remains the only scheduling authority.
@@ -3009,21 +3032,12 @@ async function main() {
           if (systemMaintenanceKind) {
             taskSnapshot.systemMaintenanceKind = systemMaintenanceKind;
           }
-          if (overrideRuntimeType !== 'builtin' && overrideRuntimeSource) {
-            taskSnapshot.runtimeSource = overrideRuntimeSource;
-          }
-          const runtimeBackedIdentity = runtimeBackedProviderIdentityFromCronPayload(
+          const runtimeBackedIdentity = runtimeBackedProviderIdentityFromCronRuntime(
             overrideRuntimeType,
-            payload.runtimeConfig ?? null,
+            overrideRuntimeSource,
+            payload.runtimeConfig?.model ?? liveConfigSnapshot.model,
           );
           if (runtimeBackedIdentity) {
-            if (!managedCodexReady) {
-              const errMsg = managedCodexNotReadyMessage('cron task execution');
-              console.error(`[cron] execute-sync managed Codex not ready: ${errMsg}`);
-              clearCronTaskContext(sessionId);
-              resetInteractionScenario();
-              return jsonResponse({ success: false, error: errMsg }, 400);
-            }
             taskSnapshot.providerExecutionIdentity = runtimeBackedIdentity;
             taskSnapshot.providerId = runtimeBackedIdentity.providerId;
             taskSnapshot.providerRoute = undefined;
@@ -3081,7 +3095,7 @@ async function main() {
           // an active AI response and clearing the message queue.
           const currentSessionId = getSessionId();
           if (currentSessionId === sessionId) {
-            console.log(`[cron] execute-sync taskId=${taskId} single_session mode: already in session ${sessionId}, skipping switch`);
+            console.log(`[cron] execute-sync taskId=${taskId} existing session: already in ${sessionId}, skipping switch`);
           } else {
             console.log(`[cron] execute-sync taskId=${taskId} attempting to switch to session ${sessionId}`);
             const switched = await switchToSession(sessionId);
@@ -3092,7 +3106,7 @@ async function main() {
                 error: `Failed to switch to required Task session ${sessionId}`,
               }, 409);
             } else {
-              console.log(`[cron] execute-sync taskId=${taskId} single_session mode: switched to session ${sessionId}`);
+              console.log(`[cron] execute-sync taskId=${taskId} existing session: switched to ${sessionId}`);
             }
           }
           const existing = getSessionMetadata(sessionId);
@@ -3358,7 +3372,11 @@ async function main() {
             console.warn(`[cron] execute-sync taskId=${taskId} failed via ${engine.kind}: ${turnResult.error ?? 'Unknown error'}`);
             clearCronTaskContext(effectiveSessionId);
             resetInteractionScenario();
-            return jsonResponse({ success: false, error: turnResult.error ?? 'Execution failed' }, turnResult.status ?? 503);
+            return jsonResponse({
+              success: false,
+              error: turnResult.error ?? 'Execution failed',
+              ...(turnResult.terminationUnconfirmed ? { terminationUnconfirmed: true } : {}),
+            }, turnResult.status ?? 503);
           }
 
           textContent = turnResult.text ?? '';
@@ -9115,8 +9133,22 @@ description: >
       // POST /api/memory/update — Trigger memory update in current session (v0.1.43)
       if (pathname === '/api/memory/update' && request.method === 'POST') {
         try {
-          const payload = await request.json() as { source: 'auto' | 'manual' };
+          const payload = await request.json() as {
+            source: 'auto' | 'manual';
+            sessionId?: string;
+            taskId?: string;
+            queueId?: string;
+          };
           const isAuto = payload.source === 'auto';
+          const managementSessionId = payload.sessionId?.trim() ?? '';
+          const taskId = payload.taskId?.trim() ?? '';
+          const queueId = payload.queueId?.trim() ?? '';
+          if (isAuto && (!managementSessionId || !taskId || !queueId)) {
+            return jsonResponse(
+              { status: 'error', reason: 'Auto memory update requires sessionId, taskId, and queueId' },
+              400,
+            );
+          }
 
           // (issue #190 v0.2.15) Busy gate — refuse auto-injection when the
           // session is actively working. The Rust-side `lastActiveAt` cooldown
@@ -9154,7 +9186,8 @@ description: >
             hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
           });
 
-          const prompt = `<system-reminder>\n<MEMORY_UPDATE>\n${promptContent}\n\nCurrent time: ${now}\n\n完成所有记忆维护操作后（包括文件读写和 git 操作），仅回复 MEMORY_UPDATE_OK，不要输出其他内容。\n</MEMORY_UPDATE>\n</system-reminder>`;
+          const completionMarker = 'MEMORY_UPDATE_OK';
+          const prompt = `<system-reminder>\n<MEMORY_UPDATE>\n${promptContent}\n\nCurrent time: ${now}\n\n完成所有记忆维护操作后（包括文件读写和 git 操作），仅回复 ${completionMarker}，不要输出其他内容。\n</MEMORY_UPDATE>\n</system-reminder>`;
 
           // Inject + run the <MEMORY_UPDATE> turn on the session's ACTUAL runtime.
           // Memory update is unattended, so it always runs at the runtime's max agency
@@ -9173,9 +9206,10 @@ description: >
           // token context, reading log/topic files, writing updates, git commit+push).
           const MEMORY_UPDATE_TIMEOUT_MS = 3600000;
           const runtimeType = engine.kind === 'external' ? getActiveRuntimeType() : 'builtin';
+          const runtimeSessionId = getRuntimeSessionIdForRequest();
           const turnResult = await engine.runInjectedTurn({
             prompt,
-            sessionId: getRuntimeSessionIdForRequest(),
+            sessionId: runtimeSessionId,
             workspacePath: currentAgentDir,
             scenario: { type: 'desktop' },
             permissionMode: engine.kind === 'external'
@@ -9186,16 +9220,24 @@ description: >
             analyticsOrigin: { kind: 'automation', surface: 'memory_update' },
             timeoutMs: MEMORY_UPDATE_TIMEOUT_MS,
             pollMs: 1000,
+            ...(isAuto ? {
+              queueId,
+              turnOwner: { kind: 'task' as const, id: taskId },
+              beforeDispatch: createTaskDispatchGuard(taskId, queueId, managementSessionId),
+            } : {}),
           });
           if (!turnResult.success && turnResult.status === 408) {
             console.warn('[memory-update] AI memory update timed out (60 min)');
-            return jsonResponse({ status: 'timeout' });
+            return jsonResponse({
+              status: 'timeout',
+              ...(turnResult.terminationUnconfirmed ? { terminationUnconfirmed: true } : {}),
+            });
           }
           if (!turnResult.success && !turnResult.enqueued) {
             console.warn(`[memory-update] ${engine.kind} enqueue rejected: ${turnResult.error}`);
             return jsonResponse({ status: 'error', reason: turnResult.error ?? `${engine.kind}_enqueue_failed` }, 500);
           }
-          const turnOk = turnResult.success;
+          const turnOk = turnResult.success && turnResult.text?.trim() === completionMarker;
 
           // Gate `completed` on the turn actually succeeding. Previously this reported
           // success purely from waitForSessionIdle returning, so a turn that errored out
@@ -9205,8 +9247,15 @@ description: >
             console.log(`[memory-update] AI completed memory update (source=${payload.source}, runtime=${runtimeType})`);
             return jsonResponse({ status: 'completed' });
           }
-          console.warn('[memory-update] AI memory update turn failed (no assistant output / agent error)');
-          return jsonResponse({ status: 'error', reason: 'turn_failed' });
+          const failureReason = turnResult.success
+            ? 'completion_marker_missing'
+            : 'turn_failed';
+          console.warn(`[memory-update] AI memory update turn failed (${failureReason})`);
+          return jsonResponse({
+            status: 'error',
+            reason: failureReason,
+            ...(turnResult.terminationUnconfirmed ? { terminationUnconfirmed: true } : {}),
+          });
         } catch (error) {
           console.error('[memory-update] Error:', error);
           return jsonResponse(

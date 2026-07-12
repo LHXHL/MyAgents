@@ -564,6 +564,9 @@ function registerTauriListeners(): void {
         debounced('cron', refreshCronTasksNow, 500);
         debounced('sessions', refreshSessionsNow, 500);
     }, ac.signal);
+    void listenWithCleanup('cron:execution-state-changed', () => {
+        debounced('tasks', refreshTasksNow, 100);
+    }, ac.signal);
     void listenWithCleanup('cron:scheduler-started', () => {
         debounced('cron', refreshCronTasksNow, 500);
         debounced('sessions', refreshSessionsNow, 500);
@@ -576,6 +579,10 @@ function registerTauriListeners(): void {
         debounced('sessions', refreshSessionsNow, 1000);
     }, ac.signal);
     void listenWithCleanup('task:status-changed', () => debounced('tasks', refreshTasksNow, 500), ac.signal);
+    void listenWithCleanup('task:session-rebound', () => {
+        debounced('tasks', refreshTasksNow, 100);
+        debounced('sessions', refreshSessionsNow, 100);
+    }, ac.signal);
 
     cleanupTauriListeners = () => {
         ac.abort();

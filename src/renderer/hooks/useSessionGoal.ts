@@ -108,6 +108,15 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
     });
   }, [setState]);
 
+  const stillProjectsGoal = useCallback((requested: SessionGoal, returned: SessionGoal): boolean => {
+    if (!mountedRef.current || returned.id !== requested.id) return false;
+    const currentOwner = optionsRef.current;
+    const projected = stateRef.current.goal;
+    return projected?.id === requested.id
+      && isSameGoalOwner(requested, currentOwner)
+      && isSameGoalOwner(returned, currentOwner);
+  }, [stateRef]);
+
   const cancelPendingStart = useCallback(() => {
     if (pendingStartRef.current) pendingStartRef.current.canceled = true;
     setState(prev => prev.isStarting ? { ...prev, isStarting: false } : prev);
@@ -199,26 +208,26 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
     if (!current || isTerminalGoal(current)) return null;
     try {
       const goal = await pauseSessionGoal(current.id);
-      acceptSnapshot(goal);
+      if (stillProjectsGoal(current, goal)) acceptSnapshot(goal);
       return goal;
     } catch (error) {
       console.error('[useSessionGoal] Failed to pause Goal:', error);
       return null;
     }
-  }, [acceptSnapshot, stateRef]);
+  }, [acceptSnapshot, stateRef, stillProjectsGoal]);
 
   const resume = useCallback(async (): Promise<SessionGoal | null> => {
     const current = stateRef.current.goal;
     if (!current || current.status !== 'paused') return null;
     try {
       const goal = await resumeSessionGoal(current.id);
-      acceptSnapshot(goal);
+      if (stillProjectsGoal(current, goal)) acceptSnapshot(goal);
       return goal;
     } catch (error) {
       console.error('[useSessionGoal] Failed to resume Goal:', error);
       return null;
     }
-  }, [acceptSnapshot, stateRef]);
+  }, [acceptSnapshot, stateRef, stillProjectsGoal]);
 
   const cancel = useCallback(async (reason = 'Canceled by user'): Promise<SessionGoalStopResult | null> => {
     const current = stateRef.current.goal;
@@ -226,9 +235,9 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
     try {
       const goal = await markSessionGoalTerminal(current.id, 'canceled', reason);
       if (goal.status === 'canceled') {
-        dismissedIdsRef.current.add(goal.id);
-        setState(initialState);
-      } else {
+        if (goal.id === current.id) dismissedIdsRef.current.add(goal.id);
+        if (stillProjectsGoal(current, goal)) setState(initialState);
+      } else if (stillProjectsGoal(current, goal)) {
         acceptSnapshot(goal);
       }
       return { goal, prompt: current.objective || null };
@@ -236,7 +245,7 @@ export function useSessionGoal(options: UseSessionGoalOptions) {
       console.error('[useSessionGoal] Failed to cancel Goal:', error);
       return null;
     }
-  }, [acceptSnapshot, setState, stateRef]);
+  }, [acceptSnapshot, setState, stateRef, stillProjectsGoal]);
 
   const dismiss = useCallback(() => {
     const current = stateRef.current.goal;

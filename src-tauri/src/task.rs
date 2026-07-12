@@ -439,6 +439,46 @@ pub struct Task {
     pub deleted_at: Option<i64>,
 }
 
+pub(crate) fn task_bound_session_ids(task: &Task) -> Vec<String> {
+    let mut session_ids = task.session_ids.clone();
+    if let Some(session_id) = task.preselected_session_id.as_ref() {
+        session_ids.push(session_id.clone());
+    }
+    session_ids.retain(|session_id| !session_id.trim().is_empty());
+    session_ids.sort();
+    session_ids.dedup();
+    session_ids
+}
+
+pub(crate) fn task_protected_session_ids(task: &Task) -> Vec<String> {
+    if task.deleted {
+        return Vec::new();
+    }
+    let protects_identity = if task.dispatch_origin == TaskDispatchOrigin::AttachedSession {
+        matches!(
+            task.status,
+            TaskStatus::Todo
+                | TaskStatus::Running
+                | TaskStatus::Verifying
+                | TaskStatus::Blocked
+                | TaskStatus::Stopped
+        )
+    } else {
+        task.status == TaskStatus::Running && task.run_mode == Some(TaskRunMode::SingleSession)
+    };
+    if protects_identity {
+        task_bound_session_ids(task)
+    } else {
+        Vec::new()
+    }
+}
+
+pub(crate) fn task_protects_session_identity(task: &Task, session_id: &str) -> bool {
+    task_protected_session_ids(task)
+        .iter()
+        .any(|value| value == session_id)
+}
+
 /// Absolute paths to a task's markdown documents. Returned by `cmd_task_get`
 /// as a sibling of `Task` so the CLI / AI can read & edit the docs directly
 /// via standard file-system tools (Read / Edit / Write) without having to
@@ -495,10 +535,39 @@ pub fn build_task_docs(task_id: &str) -> Result<TaskDocs, String> {
 /// backwards-compatible (all prior Task fields appear at the top level);
 /// only `docs` is new. Consumers that don't know about `docs` ignore it.
 #[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskWithDocs {
     #[serde(flatten)]
     pub task: Task,
     pub docs: TaskDocs,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_state: Option<crate::task_scheduler::TaskExecutionState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskProjection {
+    #[serde(flatten)]
+    pub task: Task,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_state: Option<crate::task_scheduler::TaskExecutionState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub execution_error: Option<String>,
+}
+
+impl TaskProjection {
+    pub(crate) fn new(
+        task: Task,
+        execution: Option<crate::task_scheduler::TaskExecutionProjection>,
+    ) -> Self {
+        Self {
+            task,
+            execution_state: execution.as_ref().map(|value| value.state),
+            execution_error: execution.and_then(|value| value.error),
+        }
+    }
 }
 
 // ================ Input DTOs ================
@@ -900,6 +969,18 @@ pub fn is_transition_legal(from: TaskStatus, to: TaskStatus) -> bool {
     )
 }
 
+/// A stop request against an already terminal schedule is idempotent control
+/// of its concrete turn, not a second durable status transition. This keeps
+/// the original terminal reason (`blocked` / `done` / `archived`) while still
+/// providing retry-stop when exact turn confirmation previously failed.
+pub(crate) fn is_terminal_execution_stop_request(from: TaskStatus, to: TaskStatus) -> bool {
+    to == TaskStatus::Stopped
+        && matches!(
+            from,
+            TaskStatus::Blocked | TaskStatus::Stopped | TaskStatus::Done | TaskStatus::Archived
+        )
+}
+
 // ================ Store ================
 
 pub struct TaskStore {
@@ -944,6 +1025,51 @@ impl TaskStore {
             inner: Arc::new(RwLock::new(initial)),
             jsonl_path,
             load_error,
+        }
+    }
+
+    /// Acquire every Session lifecycle that the projected Task state will
+    /// protect, then re-read under the TaskStore write lock. Retrying when the
+    /// projection changes gives all durable binding mutations one lock order:
+    /// Session lifecycle -> TaskStore. Session deletion uses the same order.
+    async fn lock_for_session_protection<'a, F>(
+        &'a self,
+        id: &str,
+        protected_after: F,
+    ) -> Result<
+        (
+            tokio::sync::RwLockWriteGuard<'a, HashMap<String, Task>>,
+            crate::sidecar::SessionLifecycleGuard,
+        ),
+        String,
+    >
+    where
+        F: Fn(&Task) -> Vec<String>,
+    {
+        loop {
+            // Do not await lifecycle while holding TaskStore: deletion takes
+            // lifecycle first and then reads TaskStore.
+            let expected_session_ids = {
+                let inner = self.inner.read().await;
+                let task = inner
+                    .get(id)
+                    .ok_or_else(|| String::from(TaskOpError::not_found(id)))?;
+                protected_after(task)
+            };
+            let session_refs = expected_session_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            let lifecycle = crate::sidecar::acquire_session_lifecycle(&session_refs).await;
+            let inner = self.inner.write().await;
+            let current = inner
+                .get(id)
+                .ok_or_else(|| String::from(TaskOpError::not_found(id)))?;
+            if protected_after(current) == expected_session_ids {
+                return Ok((inner, lifecycle));
+            }
+            drop(inner);
+            drop(lifecycle);
         }
     }
 
@@ -1373,6 +1499,13 @@ impl TaskStore {
         // Materialize task.md FIRST, commit JSONL LAST (same ordering invariant
         // as create_direct — see fix for C3). Orphan docs dir on JSONL failure is
         // harmless; orphan JSONL row without task.md is an integrity violation.
+        let protected_session_ids = task_protected_session_ids(&t);
+        let protected_session_refs = protected_session_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let session_lifecycle =
+            crate::sidecar::acquire_session_lifecycle(&protected_session_refs).await;
         self.ensure_writable()?;
         let mut inner = self.inner.write().await;
         if let Some(existing) = inner.get(&id) {
@@ -1411,6 +1544,7 @@ impl TaskStore {
         }
         *inner = next;
         drop(inner);
+        drop(session_lifecycle);
         ulog_info!(
             "[task] created migrated id={} name={} status={}",
             id,
@@ -1625,6 +1759,21 @@ impl TaskStore {
     }
 
     pub async fn create_attached(&self, input: TaskCreateAttachedInput) -> Result<Task, String> {
+        self.create_attached_with_session_probe(input, |session_id| {
+            crate::sidecar::runtime_identity::resolve_session_runtime_identity_full(session_id)
+                .is_some()
+        })
+        .await
+    }
+
+    async fn create_attached_with_session_probe<F>(
+        &self,
+        input: TaskCreateAttachedInput,
+        session_exists: F,
+    ) -> Result<Task, String>
+    where
+        F: FnOnce(&str) -> bool,
+    {
         let workspace_path = canonicalize_workspace_path(&input.workspace_path)?;
         validate_task_name(&input.name)?;
         validate_safe_id(&input.current_session_id, "currentSessionId")?;
@@ -1708,6 +1857,17 @@ impl TaskStore {
             deleted_at: None,
         };
 
+        // Session deletion uses this same guard before checking Task/Goal/live
+        // owners. Hold it until the attached Task's docs, JSONL row, and
+        // in-memory authority all expose the binding atomically.
+        let lifecycle =
+            crate::sidecar::acquire_session_lifecycle(&[&input.current_session_id]).await;
+        if !session_exists(&input.current_session_id) {
+            return Err(
+                "the attached Session no longer exists; reopen or reclaim the Space work before creating a Task"
+                    .to_string(),
+            );
+        }
         self.ensure_writable()?;
         let mut inner = self.inner.write().await;
         fs::create_dir_all(&task_dir)
@@ -1731,6 +1891,7 @@ impl TaskStore {
         }
         *inner = next;
         drop(inner);
+        drop(lifecycle);
 
         ulog_info!(
             "[task] created attached id={} name={} session={}",
@@ -1882,8 +2043,38 @@ impl TaskStore {
     // ---- Update fields ----
 
     pub async fn update(&self, input: TaskUpdateInput) -> Result<Task, String> {
+        let task_control = crate::task_scheduler::acquire_task_control(&input.id).await;
+        self.update_with_task_control_held(input, &task_control)
+            .await
+    }
+
+    pub(crate) async fn update_with_task_control_held(
+        &self,
+        input: TaskUpdateInput,
+        _task_control: &crate::task_scheduler::TaskControlGuard,
+    ) -> Result<Task, String> {
+        if crate::task_scheduler::get_task_scheduler()
+            .execution_projection(&input.id)
+            .await
+            .is_some()
+        {
+            return Err("cannot edit a Task while its current execution is unresolved".to_string());
+        }
         self.ensure_writable()?;
-        let mut inner = self.inner.write().await;
+        let projected_preselected_session_id = input.preselected_session_id.clone();
+        let (mut inner, session_lifecycle) = self
+            .lock_for_session_protection(&input.id, move |task| {
+                let mut projected = task.clone();
+                if let Some(value) = projected_preselected_session_id.as_ref() {
+                    projected.preselected_session_id = if value.trim().is_empty() {
+                        None
+                    } else {
+                        Some(value.clone())
+                    };
+                }
+                task_protected_session_ids(&projected)
+            })
+            .await?;
         let interval_updated = input.interval_minutes.is_some();
         let cron_expression_updated = input.cron_expression.is_some();
         let existing = inner
@@ -2100,6 +2291,7 @@ impl TaskStore {
         Self::persist_locked(&self.jsonl_path, &next)?;
         *inner = next;
         drop(inner);
+        drop(session_lifecycle);
 
         Ok(updated)
     }
@@ -2122,6 +2314,16 @@ impl TaskStore {
         &self,
         input: TaskUpdateStatusInput,
     ) -> Result<(Task, StatusTransition), String> {
+        let task_control = crate::task_scheduler::acquire_task_control(&input.id).await;
+        self.update_status_with_task_control_held(input, &task_control)
+            .await
+    }
+
+    pub(crate) async fn update_status_with_task_control_held(
+        &self,
+        input: TaskUpdateStatusInput,
+        task_control: &crate::task_scheduler::TaskControlGuard,
+    ) -> Result<(Task, StatusTransition), String> {
         // `Deleted` is reserved for `delete()`.
         if input.status == TaskStatus::Deleted {
             return Err(String::from(TaskOpError::invalid_transition(
@@ -2131,7 +2333,14 @@ impl TaskStore {
         }
 
         self.ensure_writable()?;
-        let mut inner = self.inner.write().await;
+        let target_status = input.status;
+        let (mut inner, session_lifecycle) = self
+            .lock_for_session_protection(&input.id, move |task| {
+                let mut projected = task.clone();
+                projected.status = target_status;
+                task_protected_session_ids(&projected)
+            })
+            .await?;
         let existing = inner
             .get(&input.id)
             .ok_or_else(|| String::from(TaskOpError::not_found(&input.id)))?
@@ -2157,6 +2366,13 @@ impl TaskStore {
         if actor == TransitionActor::Agent && source != Some(TransitionSource::Cli) {
             return Err(String::from(TaskOpError::agent_source_must_be_cli()));
         }
+        if existing.dispatch_origin == TaskDispatchOrigin::AttachedSession && to == TaskStatus::Todo
+        {
+            return Err(
+                "attached-session Tasks cannot be rerun; reopen or reclaim the Space work to create a new attached Task"
+                    .to_string(),
+            );
+        }
 
         let now = now_ms();
         let mut updated = existing;
@@ -2179,6 +2395,9 @@ impl TaskStore {
         // Drop the write lock before firing side-effects so listeners that
         // refetch via `get()` don't contend with us.
         drop(inner);
+        // The committed row is now visible to the deletion predicate, so its
+        // durable protection set takes over from the mutation guard.
+        drop(session_lifecycle);
 
         ulog_info!(
             "[task] status {}: {} → {} (actor={}, source={:?})",
@@ -2189,14 +2408,17 @@ impl TaskStore {
             source.map(|s| s.as_str())
         );
 
-        if matches!(
+        let stop_error = if matches!(
             to,
             TaskStatus::Stopped | TaskStatus::Blocked | TaskStatus::Archived | TaskStatus::Done
         ) {
             crate::task_scheduler::get_task_scheduler()
-                .stop(&updated.id)
-                .await;
-        }
+                .stop_with_control_held(&updated.id, task_control)
+                .await
+                .err()
+        } else {
+            None
+        };
 
         // NB: progress.md is intentionally NOT touched here. It's the
         // AI's own workspace document — `/task-alignment` creates it
@@ -2228,46 +2450,97 @@ impl TaskStore {
             }),
         );
 
+        if let Some(error) = stop_error {
+            return Err(error);
+        }
+
         Ok((updated, transition))
     }
 
     // ---- Execution bookkeeping ----
 
-    pub async fn append_session(&self, id: &str, session_id: &str) -> Result<Task, String> {
-        self.ensure_writable()?;
-        let mut inner = self.inner.write().await;
+    fn append_session_locked(
+        &self,
+        inner: &mut HashMap<String, Task>,
+        id: &str,
+        session_id: &str,
+    ) -> Result<(Task, bool), String> {
         let existing = inner
             .get(id)
             .ok_or_else(|| String::from(TaskOpError::not_found(id)))?
             .clone();
         let mut updated = existing;
-        let mut changed = false;
-        if !updated.session_ids.iter().any(|s| s == session_id) {
-            updated.session_ids.push(session_id.to_string());
-            updated.updated_at = now_ms();
-            let mut next = inner.clone();
-            next.insert(updated.id.clone(), updated.clone());
-            Self::persist_locked(&self.jsonl_path, &next)?;
-            *inner = next;
-            changed = true;
+        if updated.session_ids.iter().any(|value| value == session_id) {
+            return Ok((updated, false));
         }
+        updated.session_ids.push(session_id.to_string());
+        updated.updated_at = now_ms();
+        let mut next = inner.clone();
+        next.insert(updated.id.clone(), updated.clone());
+        Self::persist_locked(&self.jsonl_path, &next)?;
+        *inner = next;
+        Ok((updated, true))
+    }
+
+    fn emit_session_appended(updated: &Task, session_id: &str) {
+        emit_task_event(
+            "task:session-appended",
+            serde_json::json!({
+                "taskId": updated.id,
+                "sessionId": session_id,
+            }),
+        );
+    }
+
+    pub async fn append_session(&self, id: &str, session_id: &str) -> Result<Task, String> {
+        self.ensure_writable()?;
+        let projected_session_id = session_id.to_string();
+        let (mut inner, session_lifecycle) = self
+            .lock_for_session_protection(id, move |task| {
+                let mut projected = task.clone();
+                if !projected
+                    .session_ids
+                    .iter()
+                    .any(|value| value == &projected_session_id)
+                {
+                    projected.session_ids.push(projected_session_id.clone());
+                }
+                task_protected_session_ids(&projected)
+            })
+            .await?;
+        let result = self.append_session_locked(&mut inner, id, session_id);
         // Drop the write lock before emitting — listeners may call back
         // into TaskStore (e.g. overlay refetch) and we don't want a
         // re-entrant deadlock.
         drop(inner);
+        drop(session_lifecycle);
+        let (updated, changed) = result?;
         if changed {
             // Surfaces newly-linked sessions to TaskDetailOverlay while it's
             // already open. Without this the "任务执行" section under-reports
             // until the user closes and reopens the overlay (review HIGH
             // finding: a pre-existing silent mutation that became visible
             // after promoting TaskSessionsList to the second block).
-            emit_task_event(
-                "task:session-appended",
-                serde_json::json!({
-                    "taskId": updated.id,
-                    "sessionId": session_id,
-                }),
-            );
+            Self::emit_session_appended(&updated, session_id);
+        }
+        Ok(updated)
+    }
+
+    /// Commit a Session binding while the caller retains that Session's
+    /// lifecycle guard. Scheduler reservation uses this to publish transient
+    /// execution ownership and durable TaskStore binding under one guard.
+    pub(crate) async fn append_session_with_lifecycle_held(
+        &self,
+        id: &str,
+        session_id: &str,
+    ) -> Result<Task, String> {
+        self.ensure_writable()?;
+        let mut inner = self.inner.write().await;
+        let result = self.append_session_locked(&mut inner, id, session_id);
+        drop(inner);
+        let (updated, changed) = result?;
+        if changed {
+            Self::emit_session_appended(&updated, session_id);
         }
         Ok(updated)
     }
@@ -2278,21 +2551,84 @@ impl TaskStore {
         session_id: String,
     ) -> Result<Task, String> {
         self.ensure_writable()?;
-        let mut inner = self.inner.write().await;
+        let projected_session_id = session_id.clone();
+        let (mut inner, session_lifecycle) = self
+            .lock_for_session_protection(id, move |task| {
+                let mut projected = task.clone();
+                projected.preselected_session_id = Some(projected_session_id.clone());
+                if !projected
+                    .session_ids
+                    .iter()
+                    .any(|value| value == &projected_session_id)
+                {
+                    projected.session_ids.push(projected_session_id.clone());
+                }
+                task_protected_session_ids(&projected)
+            })
+            .await?;
+        let result = self.set_execution_session_locked(&mut inner, id, &session_id);
+        drop(inner);
+        drop(session_lifecycle);
+        let (updated, appended) = result?;
+        if appended {
+            Self::emit_session_appended(&updated, &session_id);
+        }
+        Ok(updated)
+    }
+
+    fn set_execution_session_locked(
+        &self,
+        inner: &mut HashMap<String, Task>,
+        id: &str,
+        session_id: &str,
+    ) -> Result<(Task, bool), String> {
         let existing = inner
             .get(id)
             .ok_or_else(|| String::from(TaskOpError::not_found(id)))?
             .clone();
         let mut updated = existing;
-        updated.preselected_session_id = Some(session_id.clone());
-        if !updated.session_ids.iter().any(|value| value == &session_id) {
-            updated.session_ids.push(session_id);
+        let appended = !updated.session_ids.iter().any(|value| value == session_id);
+        updated.preselected_session_id = Some(session_id.to_string());
+        if appended {
+            updated.session_ids.push(session_id.to_string());
         }
         updated.updated_at = now_ms();
         let mut next = inner.clone();
         next.insert(updated.id.clone(), updated.clone());
         Self::persist_locked(&self.jsonl_path, &next)?;
         *inner = next;
+        Ok((updated, appended))
+    }
+
+    /// Rebind a scheduler-selected Session while the caller owns both the old
+    /// and replacement Session lifecycles. Existing `session_ids` history is
+    /// preserved; a never-materialized preselection is not fabricated into a
+    /// completed-run history entry.
+    pub(crate) async fn set_execution_session_with_lifecycle_held(
+        &self,
+        id: &str,
+        session_id: String,
+        replaced_session_id: Option<&str>,
+    ) -> Result<Task, String> {
+        self.ensure_writable()?;
+        let mut inner = self.inner.write().await;
+        let result = self.set_execution_session_locked(&mut inner, id, &session_id);
+        drop(inner);
+        let (updated, appended) = result?;
+        if appended {
+            Self::emit_session_appended(&updated, &session_id);
+        }
+        if let Some(replaced_session_id) = replaced_session_id {
+            emit_task_event(
+                "task:session-rebound",
+                serde_json::json!({
+                    "taskId": updated.id,
+                    "replacedSessionId": replaced_session_id,
+                    "sessionId": session_id,
+                    "reason": "session_missing",
+                }),
+            );
+        }
         Ok(updated)
     }
 
@@ -2347,7 +2683,24 @@ impl TaskStore {
         session_id: Option<&str>,
     ) -> Result<Task, String> {
         self.ensure_writable()?;
-        let mut inner = self.inner.write().await;
+        let projected_session_id = session_id
+            .filter(|value| !value.is_empty())
+            .map(str::to_string);
+        let (mut inner, session_lifecycle) = self
+            .lock_for_session_protection(id, move |task| {
+                let mut projected = task.clone();
+                if let Some(session_id) = projected_session_id.as_ref() {
+                    if !projected
+                        .session_ids
+                        .iter()
+                        .any(|value| value == session_id)
+                    {
+                        projected.session_ids.push(session_id.clone());
+                    }
+                }
+                task_protected_session_ids(&projected)
+            })
+            .await?;
         let existing = inner
             .get(id)
             .ok_or_else(|| String::from(TaskOpError::not_found(id)))?
@@ -2372,6 +2725,8 @@ impl TaskStore {
             }
         }
         if !changed {
+            drop(inner);
+            drop(session_lifecycle);
             return Ok(existing);
         }
         updated.updated_at = now_ms();
@@ -2379,6 +2734,8 @@ impl TaskStore {
         next.insert(updated.id.clone(), updated.clone());
         Self::persist_locked(&self.jsonl_path, &next)?;
         *inner = next;
+        drop(inner);
+        drop(session_lifecycle);
         Ok(updated)
     }
 
@@ -2406,6 +2763,21 @@ impl TaskStore {
     /// can filter `statusHistory` on `to == Deleted` to find all removed tasks.
     /// Physical cleanup happens out-of-band (§9.5, 30-day retention).
     pub async fn delete(&self, id: &str) -> Result<(), String> {
+        let task_control = crate::task_scheduler::acquire_task_control(id).await;
+        // A deleted Task disappears from ordinary list/get surfaces. Hiding it
+        // while an exact turn is still running (or its stop is unconfirmed)
+        // would also hide the only retry-stop entry point. Task control keeps
+        // this check linear with every new claim: stop the concrete turn first,
+        // then delete the now-quiescent Task.
+        if let Some(execution) = crate::task_scheduler::get_task_scheduler()
+            .execution_projection(id)
+            .await
+        {
+            return Err(format!(
+                "task {id} still has an unresolved {} execution; stop it before deleting",
+                execution.state.as_str()
+            ));
+        }
         self.ensure_writable()?;
         let mut inner = self.inner.write().await;
         let existing = inner
@@ -2436,9 +2808,11 @@ impl TaskStore {
         *inner = next;
         drop(inner);
 
-        crate::task_scheduler::get_task_scheduler().stop(id).await;
+        let stop_result = crate::task_scheduler::get_task_scheduler()
+            .stop_with_control_held(id, &task_control)
+            .await;
         ulog_info!("[task] soft-deleted id={}", id);
-        Ok(())
+        stop_result
     }
 }
 
@@ -3007,10 +3381,20 @@ pub async fn cmd_task_create_attached(
 pub async fn cmd_task_list(
     state: tauri::State<'_, ManagedTaskStore>,
     filter: Option<TaskListFilter>,
-) -> Result<Vec<Task>, String> {
+) -> Result<Vec<TaskProjection>, String> {
     let mut filter = filter.unwrap_or_default();
     filter.include_managed = None;
-    Ok(state.list(filter).await)
+    let tasks = state.list(filter).await;
+    let executions = crate::task_scheduler::get_task_scheduler()
+        .execution_projections_snapshot()
+        .await;
+    Ok(tasks
+        .into_iter()
+        .map(|task| {
+            let execution = executions.get(&task.id).cloned();
+            TaskProjection::new(task, execution)
+        })
+        .collect())
 }
 
 #[tauri::command]
@@ -3024,7 +3408,15 @@ pub async fn cmd_task_get(
         Err(error) => return Err(error),
     };
     let docs = build_task_docs(&task.id)?;
-    Ok(Some(TaskWithDocs { task, docs }))
+    let execution = crate::task_scheduler::get_task_scheduler()
+        .execution_projection(&task.id)
+        .await;
+    Ok(Some(TaskWithDocs {
+        task,
+        docs,
+        execution_state: execution.as_ref().map(|value| value.state),
+        execution_error: execution.and_then(|value| value.error),
+    }))
 }
 
 #[tauri::command]
@@ -3041,18 +3433,28 @@ pub async fn cmd_task_update_status(
     state: tauri::State<'_, ManagedTaskStore>,
     input: UiTaskUpdateStatusInput,
 ) -> Result<Task, String> {
-    state.get_ordinary(&input.id).await?;
+    let task_control = crate::task_scheduler::acquire_task_control(&input.id).await;
+    let current = state.get_ordinary(&input.id).await?;
+    if is_terminal_execution_stop_request(current.status, input.status) {
+        crate::task_scheduler::get_task_scheduler()
+            .stop_with_control_held(&current.id, &task_control)
+            .await?;
+        return Ok(current);
+    }
     // Trust boundary: UI callers are stamped as user/ui here. The internal
     // `update_status` API remains available for scheduler / watchdog / crash /
     // endCondition / rerun paths with their own actor/source context.
     state
-        .update_status(TaskUpdateStatusInput {
-            id: input.id,
-            status: input.status,
-            message: input.message,
-            actor: TransitionActor::User,
-            source: Some(TransitionSource::Ui),
-        })
+        .update_status_with_task_control_held(
+            TaskUpdateStatusInput {
+                id: input.id,
+                status: input.status,
+                message: input.message,
+                actor: TransitionActor::User,
+                source: Some(TransitionSource::Ui),
+            },
+            &task_control,
+        )
         .await
         .map(|(t, _)| t)
 }
@@ -3321,7 +3723,8 @@ pub fn task_doc_filename(doc: &str) -> Result<&'static str, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::OnceLock;
+    use std::future::Future;
+    use std::sync::{Arc, OnceLock};
     use tempfile::tempdir;
 
     /// Shared task-docs root for the entire test binary. Initialised
@@ -3392,6 +3795,89 @@ mod tests {
         }
     }
 
+    fn empty_update_input(id: &str) -> TaskUpdateInput {
+        TaskUpdateInput {
+            id: id.to_string(),
+            name: None,
+            executor: None,
+            description: None,
+            execution_mode: None,
+            run_mode: None,
+            end_conditions: None,
+            interval_minutes: None,
+            cron_expression: None,
+            cron_timezone: None,
+            start_at: None,
+            recurring_window: None,
+            dispatch_at: None,
+            model: None,
+            provider_id: None,
+            clear_provider_override: false,
+            permission_mode: None,
+            preselected_session_id: None,
+            runtime: None,
+            runtime_config: None,
+            clear_runtime_override: false,
+            mcp_enabled_servers: None,
+            clear_mcp_override: false,
+            tags: None,
+            notification: None,
+            prompt: None,
+        }
+    }
+
+    async fn assert_waits_for_session_lifecycle<T, F>(session_id: &str, operation: F) -> T
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T, String>> + Send + 'static,
+    {
+        let guard = crate::sidecar::acquire_session_lifecycle(&[session_id]).await;
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let mut task = tauri::async_runtime::spawn(async move {
+            let _ = started_tx.send(());
+            operation.await
+        });
+        started_rx.await.expect("mutation task should start");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut task)
+                .await
+                .is_err(),
+            "mutation must wait while deletion owns the Session lifecycle"
+        );
+        drop(guard);
+        tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .expect("mutation should resume after lifecycle release")
+            .expect("mutation task should not panic")
+            .expect("mutation should succeed")
+    }
+
+    async fn assert_waits_for_task_control<T, F>(task_id: &str, operation: F) -> T
+    where
+        T: Send + 'static,
+        F: Future<Output = Result<T, String>> + Send + 'static,
+    {
+        let guard = crate::task_scheduler::acquire_task_control(task_id).await;
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let mut task = tauri::async_runtime::spawn(async move {
+            let _ = started_tx.send(());
+            operation.await
+        });
+        started_rx.await.expect("Task mutation should start");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(50), &mut task)
+                .await
+                .is_err(),
+            "Task mutation must wait for the same Task control lifecycle"
+        );
+        drop(guard);
+        tokio::time::timeout(std::time::Duration::from_secs(2), task)
+            .await
+            .expect("Task mutation should resume after control release")
+            .expect("Task mutation should not panic")
+            .expect("Task mutation should succeed")
+    }
+
     #[tokio::test]
     async fn ordinary_create_rejects_managed_kind() {
         ensure_test_docs_root();
@@ -3453,6 +3939,16 @@ mod tests {
         assert!(!is_transition_legal(Blocked, Archived)); // must reset first
         assert!(!is_transition_legal(Stopped, Archived));
         assert!(!is_transition_legal(Running, Archived));
+    }
+
+    #[test]
+    fn stop_request_preserves_existing_terminal_reason() {
+        use TaskStatus::*;
+        for status in [Blocked, Stopped, Done, Archived] {
+            assert!(is_terminal_execution_stop_request(status, Stopped));
+        }
+        assert!(!is_terminal_execution_stop_request(Running, Stopped));
+        assert!(!is_terminal_execution_stop_request(Done, Todo));
     }
 
     #[tokio::test]
@@ -3544,6 +4040,67 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn running_legacy_create_waits_for_bound_session_lifecycle() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = Arc::new(TaskStore::new(dir.path().join("data")));
+        let mut input = sample_direct_input(&ws);
+        input.run_mode = Some(TaskRunMode::SingleSession);
+        input.preselected_session_id = Some("legacy-create-session".to_string());
+        let store_for_create = Arc::clone(&store);
+        let id = format!("legacy-create-{}", uuid::Uuid::new_v4());
+
+        let created = assert_waits_for_session_lifecycle("legacy-create-session", async move {
+            store_for_create
+                .create_migrated_with_id(id, input, TaskStatus::Running, "migrated".to_string())
+                .await
+        })
+        .await;
+        assert_eq!(created.status, TaskStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn legacy_session_import_waits_before_extending_protected_binding() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = Arc::new(TaskStore::new(dir.path().join("data")));
+        let mut input = sample_direct_input(&ws);
+        input.run_mode = Some(TaskRunMode::SingleSession);
+        input.preselected_session_id = Some("legacy-primary-session".to_string());
+        let task = store
+            .create_migrated_with_id(
+                format!("legacy-import-{}", uuid::Uuid::new_v4()),
+                input,
+                TaskStatus::Running,
+                "migrated".to_string(),
+            )
+            .await
+            .unwrap();
+        let store_for_import = Arc::clone(&store);
+        let task_id = task.id.clone();
+
+        let imported = assert_waits_for_session_lifecycle("legacy-import-session", async move {
+            store_for_import
+                .import_legacy_execution_state(
+                    &task_id,
+                    1,
+                    Some(100),
+                    Some("legacy-import-session"),
+                )
+                .await
+        })
+        .await;
+        assert!(imported
+            .session_ids
+            .iter()
+            .any(|session_id| session_id == "legacy-import-session"));
+    }
+
+    #[tokio::test]
     async fn manual_execution_does_not_move_the_scheduler_anchor() {
         ensure_test_docs_root();
         let dir = tempdir().unwrap();
@@ -3626,22 +4183,25 @@ mod tests {
         let store = TaskStore::new(dir.path().join("data"));
 
         let created = store
-            .create_attached(TaskCreateAttachedInput {
-                name: "Space Issue #123".to_string(),
-                executor: TaskExecutor::Agent,
-                description: Some("MyAgents Space Issue iss_123".to_string()),
-                workspace_id: "ws-myagents".to_string(),
-                workspace_path: ws.to_string_lossy().into_owned(),
-                task_md_content: "处理 Space Issue".to_string(),
-                current_session_id: "session-123".to_string(),
-                source: TaskCreateAttachedSource::SpaceIssue,
-                source_space_id: Some("official".to_string()),
-                source_issue_id: "iss_123".to_string(),
-                source_claim_id: Some("claim_123".to_string()),
-                source_delivery_id: Some("delivery_123".to_string()),
-                tags: vec![],
-                notification: None,
-            })
+            .create_attached_with_session_probe(
+                TaskCreateAttachedInput {
+                    name: "Space Issue #123".to_string(),
+                    executor: TaskExecutor::Agent,
+                    description: Some("MyAgents Space Issue iss_123".to_string()),
+                    workspace_id: "ws-myagents".to_string(),
+                    workspace_path: ws.to_string_lossy().into_owned(),
+                    task_md_content: "处理 Space Issue".to_string(),
+                    current_session_id: "session-123".to_string(),
+                    source: TaskCreateAttachedSource::SpaceIssue,
+                    source_space_id: Some("official".to_string()),
+                    source_issue_id: "iss_123".to_string(),
+                    source_claim_id: Some("claim_123".to_string()),
+                    source_delivery_id: Some("delivery_123".to_string()),
+                    tags: vec![],
+                    notification: None,
+                },
+                |_| true,
+            )
             .await
             .unwrap();
 
@@ -3665,6 +4225,280 @@ mod tests {
         assert_eq!(std::fs::read_to_string(&md).unwrap(), "处理 Space Issue");
         let dispatch_err = compose_dispatch_prompt(&created).unwrap_err();
         assert!(dispatch_err.contains("attached-session"));
+    }
+
+    #[tokio::test]
+    async fn create_attached_rejects_a_session_deleted_before_binding() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+
+        let error = store
+            .create_attached_with_session_probe(
+                TaskCreateAttachedInput {
+                    name: "Space Issue #deleted".to_string(),
+                    executor: TaskExecutor::Agent,
+                    description: None,
+                    workspace_id: "ws-myagents".to_string(),
+                    workspace_path: ws.to_string_lossy().into_owned(),
+                    task_md_content: "处理 Space Issue".to_string(),
+                    current_session_id: "deleted-attached-session".to_string(),
+                    source: TaskCreateAttachedSource::SpaceIssue,
+                    source_space_id: Some("official".to_string()),
+                    source_issue_id: "iss_deleted".to_string(),
+                    source_claim_id: Some("claim_deleted".to_string()),
+                    source_delivery_id: None,
+                    tags: vec![],
+                    notification: None,
+                },
+                |_| false,
+            )
+            .await
+            .expect_err("deletion that wins the lifecycle must prevent attachment");
+        assert!(error.contains("no longer exists"), "got: {error}");
+        assert!(store.list(TaskListFilter::default()).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn running_transition_waits_for_bound_session_lifecycle() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = Arc::new(TaskStore::new(dir.path().join("data")));
+        let mut input = sample_direct_input(&ws);
+        input.run_mode = Some(TaskRunMode::SingleSession);
+        input.preselected_session_id = Some("session-locked".to_string());
+        let created = store.create_direct(input).await.unwrap();
+        let store_for_transition = Arc::clone(&store);
+        let task_id = created.id.clone();
+        let (updated, _) = assert_waits_for_session_lifecycle("session-locked", async move {
+            store_for_transition
+                .update_status(status_input(
+                    &task_id,
+                    TaskStatus::Running,
+                    TransitionActor::System,
+                    Some(TransitionSource::Scheduler),
+                ))
+                .await
+        })
+        .await;
+        assert_eq!(updated.status, TaskStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn terminal_transition_and_runtime_stop_share_task_control() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = Arc::new(TaskStore::new(dir.path().join("data")));
+        let created = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+        store
+            .update_status(status_input(
+                &created.id,
+                TaskStatus::Running,
+                TransitionActor::System,
+                Some(TransitionSource::Scheduler),
+            ))
+            .await
+            .unwrap();
+        let store_for_stop = Arc::clone(&store);
+        let task_id = created.id.clone();
+        let task_id_for_operation = task_id.clone();
+
+        let (stopped, _) = assert_waits_for_task_control(&task_id, async move {
+            store_for_stop
+                .update_status(status_input(
+                    &task_id_for_operation,
+                    TaskStatus::Stopped,
+                    TransitionActor::User,
+                    Some(TransitionSource::Ui),
+                ))
+                .await
+        })
+        .await;
+        assert_eq!(stopped.status, TaskStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn attached_terminal_task_cannot_be_rerun() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = Arc::new(TaskStore::new(dir.path().join("data")));
+        let created = store
+            .create_attached_with_session_probe(
+                TaskCreateAttachedInput {
+                    name: "Space Issue #lifecycle".to_string(),
+                    executor: TaskExecutor::Agent,
+                    description: None,
+                    workspace_id: "ws-myagents".to_string(),
+                    workspace_path: ws.to_string_lossy().into_owned(),
+                    task_md_content: "处理 Space Issue".to_string(),
+                    current_session_id: "attached-session-locked".to_string(),
+                    source: TaskCreateAttachedSource::SpaceIssue,
+                    source_space_id: Some("official".to_string()),
+                    source_issue_id: "iss_lifecycle".to_string(),
+                    source_claim_id: Some("claim_lifecycle".to_string()),
+                    source_delivery_id: None,
+                    tags: vec![],
+                    notification: None,
+                },
+                |_| true,
+            )
+            .await
+            .unwrap();
+        store
+            .update_status(status_input(
+                &created.id,
+                TaskStatus::Done,
+                TransitionActor::System,
+                Some(TransitionSource::EndCondition),
+            ))
+            .await
+            .unwrap();
+
+        let error = store
+            .update_status(status_input(
+                &created.id,
+                TaskStatus::Todo,
+                TransitionActor::System,
+                Some(TransitionSource::Rerun),
+            ))
+            .await
+            .expect_err("Attached Space work must be reclaimed into a new Task");
+        assert!(error.contains("cannot be rerun"), "got: {error}");
+        assert_eq!(
+            store.get(&created.id).await.unwrap().status,
+            TaskStatus::Done
+        );
+    }
+
+    #[tokio::test]
+    async fn public_append_waits_before_adding_a_protected_session_binding() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = Arc::new(TaskStore::new(dir.path().join("data")));
+        let mut input = sample_direct_input(&ws);
+        input.run_mode = Some(TaskRunMode::SingleSession);
+        input.preselected_session_id = Some("primary-session".to_string());
+        let created = store.create_direct(input).await.unwrap();
+        store
+            .update_status(status_input(
+                &created.id,
+                TaskStatus::Running,
+                TransitionActor::System,
+                Some(TransitionSource::Scheduler),
+            ))
+            .await
+            .unwrap();
+
+        let store_for_append = Arc::clone(&store);
+        let task_id = created.id.clone();
+        let updated = assert_waits_for_session_lifecycle("appended-session", async move {
+            store_for_append
+                .append_session(&task_id, "appended-session")
+                .await
+        })
+        .await;
+        assert!(updated
+            .session_ids
+            .iter()
+            .any(|id| id == "appended-session"));
+    }
+
+    #[tokio::test]
+    async fn set_execution_session_waits_before_rebinding_a_protected_task() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = Arc::new(TaskStore::new(dir.path().join("data")));
+        let mut input = sample_direct_input(&ws);
+        input.run_mode = Some(TaskRunMode::SingleSession);
+        input.preselected_session_id = Some("primary-session".to_string());
+        let created = store.create_direct(input).await.unwrap();
+        store
+            .update_status(status_input(
+                &created.id,
+                TaskStatus::Running,
+                TransitionActor::System,
+                Some(TransitionSource::Scheduler),
+            ))
+            .await
+            .unwrap();
+
+        let store_for_rebind = Arc::clone(&store);
+        let task_id = created.id.clone();
+        let updated = assert_waits_for_session_lifecycle("replacement-session", async move {
+            store_for_rebind
+                .set_execution_session(&task_id, "replacement-session".to_string())
+                .await
+        })
+        .await;
+        assert_eq!(
+            updated.preselected_session_id.as_deref(),
+            Some("replacement-session")
+        );
+    }
+
+    #[tokio::test]
+    async fn attached_field_update_waits_before_adding_a_protected_binding() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = Arc::new(TaskStore::new(dir.path().join("data")));
+        let created = store
+            .create_attached_with_session_probe(
+                TaskCreateAttachedInput {
+                    name: "Space Issue #field-update".to_string(),
+                    executor: TaskExecutor::Agent,
+                    description: None,
+                    workspace_id: "ws-myagents".to_string(),
+                    workspace_path: ws.to_string_lossy().into_owned(),
+                    task_md_content: "处理 Space Issue".to_string(),
+                    current_session_id: "attached-primary".to_string(),
+                    source: TaskCreateAttachedSource::SpaceIssue,
+                    source_space_id: Some("official".to_string()),
+                    source_issue_id: "iss_field_update".to_string(),
+                    source_claim_id: Some("claim_field_update".to_string()),
+                    source_delivery_id: None,
+                    tags: vec![],
+                    notification: None,
+                },
+                |_| true,
+            )
+            .await
+            .unwrap();
+        store
+            .update_status(status_input(
+                &created.id,
+                TaskStatus::Stopped,
+                TransitionActor::User,
+                Some(TransitionSource::Ui),
+            ))
+            .await
+            .unwrap();
+
+        let store_for_update = Arc::clone(&store);
+        let task_id = created.id.clone();
+        let mut update = empty_update_input(&task_id);
+        update.preselected_session_id = Some("attached-secondary".to_string());
+        let updated = assert_waits_for_session_lifecycle("attached-secondary", async move {
+            store_for_update.update(update).await
+        })
+        .await;
+        assert_eq!(
+            updated.preselected_session_id.as_deref(),
+            Some("attached-secondary")
+        );
     }
 
     #[tokio::test]
@@ -3928,6 +4762,30 @@ mod tests {
 
         // second delete is a no-op
         store.delete(&created.id).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn delete_rejects_until_the_exact_execution_is_settled() {
+        ensure_test_docs_root();
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("workspace");
+        std::fs::create_dir_all(&ws).unwrap();
+        let store = TaskStore::new(dir.path().join("data"));
+        let created = store.create_direct(sample_direct_input(&ws)).await.unwrap();
+        let scheduler = crate::task_scheduler::get_task_scheduler();
+        let queue_id = scheduler
+            .claim_execution_for_test(&created.id)
+            .await
+            .unwrap();
+
+        let result = store.delete(&created.id).await;
+        scheduler
+            .release_execution_for_test(&created.id, &queue_id)
+            .await;
+
+        let error = result.expect_err("an unresolved turn must remain visible for retry-stop");
+        assert!(error.contains("stop it before deleting"), "got: {error}");
+        assert!(!store.get(&created.id).await.unwrap().deleted);
     }
 
     #[test]
@@ -4208,6 +5066,44 @@ mod tests {
         );
         let r = TaskRunMode::SingleSession;
         assert_eq!(serde_json::to_string(&r).unwrap(), "\"single-session\"");
+    }
+
+    #[test]
+    fn execution_projection_serializes_as_transient_camel_case_fields() {
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": "task-projection",
+            "name": "projection",
+            "executor": "agent",
+            "workspaceId": "workspace",
+            "workspacePath": "/tmp/workspace",
+            "executionMode": "once",
+            "sessionIds": [],
+            "status": "stopped",
+            "tags": [],
+            "createdAt": 1,
+            "updatedAt": 1,
+            "statusHistory": [],
+            "dispatchOrigin": "direct"
+        }))
+        .unwrap();
+        let projection = TaskProjection::new(
+            task,
+            Some(crate::task_scheduler::TaskExecutionProjection {
+                state: crate::task_scheduler::TaskExecutionState::StopFailed,
+                error: Some("stop failed".to_string()),
+            }),
+        );
+
+        let value = serde_json::to_value(projection).unwrap();
+        assert_eq!(
+            value.get("executionState"),
+            Some(&serde_json::json!("stop_failed"))
+        );
+        assert_eq!(
+            value.get("executionError"),
+            Some(&serde_json::json!("stop failed"))
+        );
+        assert!(value.get("execution_state").is_none());
     }
 
     #[tokio::test]

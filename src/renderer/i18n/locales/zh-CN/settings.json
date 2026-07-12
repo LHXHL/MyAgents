@@ -781,6 +781,7 @@
       "descriptionSuffix": "中的指令，对各活跃 session 执行记忆维护。",
       "createdFile": "已创建 UPDATE_MEMORY.md",
       "fileError": "无法读写 UPDATE_MEMORY.md，请检查工作区路径",
+      "taskReconcileFailed": "自动记忆设置未能完整应用：{{message}}",
       "interval": "更新间隔",
       "intervalHours": "{{count}} 小时",
       "window": "更新时间窗口",

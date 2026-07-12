@@ -90,13 +90,15 @@ export function TaskCardItem(props: TaskCardItemProps) {
           ever grows a third element or when the row gets wrapped in
           another flex context during a refactor. */}
       <div className="flex w-full items-center gap-1.5">
-        <TaskStatusBadge status={status} />
+        <TaskStatusBadge status={status} executionState={task?.executionState} />
         <TaskCategoryBadge mode={category} legacy={isLegacy} />
         <div className="ml-auto flex shrink-0 items-center gap-1">
           <ViewSessionButton task={task} />
           <TaskItemActions
             variant={isLegacy ? 'legacy' : 'task'}
             status={status}
+            executionState={task?.executionState}
+            canRerun={task?.dispatchOrigin !== 'attached-session'}
             busy={busy}
             onRun={onRun}
             onStop={onStop}

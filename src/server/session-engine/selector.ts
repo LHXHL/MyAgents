@@ -49,7 +49,23 @@ export async function stopActiveTurn(): Promise<{ success: boolean; alreadyStopp
     if (paused.ok !== true) {
       return { success: false, error: String(paused.error ?? 'Failed to pause active Goal') };
     }
-    return stopOwnedTurn(turn.owner);
+    const pausedGoalStatus = paused.goal && typeof paused.goal === 'object'
+      ? (paused.goal as { status?: unknown }).status
+      : undefined;
+    if (pausedGoalStatus === 'complete' || pausedGoalStatus === 'blocked') {
+      return { success: true, alreadyStopped: true };
+    }
+    const stopped = await stopOwnedTurnByQueueId(turn.owner, turn.queueId);
+    if (!stopped.success) return stopped;
+    const settled = await managementApi('/api/goal/turn/abort', 'POST', {
+      sessionId: context.sessionId,
+      workspacePath: context.workspacePath,
+      goalId: turn.owner.id,
+      queueId: turn.queueId,
+    });
+    return settled.ok === true
+      ? stopped
+      : { success: false, error: String(settled.error ?? 'Failed to settle paused Goal turn') };
   }
   if (shouldUseExternalRuntime()) {
     const externalResult = await externalEngine.stopTurn();
@@ -74,15 +90,36 @@ export async function stopOwnedTurnByQueueId(
 ): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }> {
   const engine = getSessionEngine();
   const canceled = await engine.cancelQueuedMessage(queueId);
+  if (canceled.status === 'cancelled') {
+    return { success: true };
+  }
   const current = engine.getCurrentTurnIdentity();
   if (
     current?.queueId === queueId
     && current.owner.kind === owner.kind
     && current.owner.id === owner.id
   ) {
-    return engine.stopTurn();
+    const stopped = await engine.stopTurn({ preserveQueue: true });
+    if (stopped.success && stopped.alreadyStopped) {
+      return {
+        success: false,
+        error: 'Exact turn stop was not confirmed: the current runtime turn did not stop',
+      };
+    }
+    return stopped;
   }
-  return { success: true, alreadyStopped: canceled.status !== 'cancelled' };
+  if (canceled.status === 'not_found') {
+    return { success: true, alreadyStopped: true };
+  }
+  const reason = canceled.status === 'not_cancelled'
+    ? 'the runtime already accepted the queued turn and did not cancel it'
+    : canceled.status === 'unavailable'
+      ? 'queue cancellation is unavailable for this session'
+      : 'queue cancellation failed';
+  return {
+    success: false,
+    error: `Exact turn stop was not confirmed: ${reason}`,
+  };
 }
 
 /**

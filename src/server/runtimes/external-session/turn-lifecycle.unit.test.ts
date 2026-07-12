@@ -53,7 +53,7 @@ describe('external turn lifecycle owner', () => {
     expect(plan.kind).toBe('suppress-user-stop');
   });
 
-  it('invalidates a guarded turn promotion exactly once on Stop', () => {
+  it('invalidates a guarded turn promotion exactly once on Stop', async () => {
     const cancelDispatch = vi.fn();
     const promotion = beginExternalTurnPromotion({
       queueId: 'goal-turn',
@@ -69,14 +69,32 @@ describe('external turn lifecycle owner', () => {
       owner: { kind: 'goal', id: 'goal-1' },
     });
 
-    expect(cancelExternalTurnPromotion()).toBe(true);
+    expect(cancelExternalTurnPromotion({ preserveQueue: true })).toBe(promotion);
     expect(cancelDispatch).toHaveBeenCalledOnce();
-    expect(cancelExternalTurnPromotion()).toBe(false);
+    expect(promotion?.signal.aborted).toBe(true);
+    expect(promotion?.preserveQueueOnCancel).toBe(true);
+    expect(cancelExternalTurnPromotion()).toBeNull();
     expect(isExternalTurnPromotionCurrent(promotion!)).toBe(false);
     expect(isExternalTurnPromotionInFlight()).toBe(false);
 
     finishExternalTurnPromotion(promotion!);
+    await expect(promotion?.settled).resolves.toEqual({ status: 'not-dispatched' });
     expect(isExternalTurnPromotionInFlight()).toBe(false);
+  });
+
+  it('keeps only ambiguous or dispatched promotion bindings addressable', async () => {
+    const owner = { kind: 'task' as const, id: 'task-1' };
+    const canceled = beginExternalTurnPromotion({ queueId: 'queue-canceled', owner })!;
+    bindExternalTurn('queue-canceled', owner);
+    finishExternalTurnPromotion(canceled, { status: 'not-dispatched' });
+    await expect(canceled.settled).resolves.toEqual({ status: 'not-dispatched' });
+    expect(getExternalCurrentTurnIdentity()).toBeNull();
+
+    const ambiguous = beginExternalTurnPromotion({ queueId: 'queue-ambiguous', owner })!;
+    bindExternalTurn('queue-ambiguous', owner);
+    finishExternalTurnPromotion(ambiguous, { status: 'termination-unconfirmed' });
+    await expect(ambiguous.settled).resolves.toEqual({ status: 'termination-unconfirmed' });
+    expect(getExternalCurrentTurnIdentity()).toEqual({ queueId: 'queue-ambiguous', owner });
   });
 
   it('assigns one monotonic terminal generation to each runtime turn', () => {

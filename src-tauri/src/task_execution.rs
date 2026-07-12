@@ -14,6 +14,7 @@ use crate::{ulog_error, ulog_warn};
 #[derive(Debug)]
 pub struct TaskExecutionOutcome {
     pub success: bool,
+    pub termination_unconfirmed: bool,
     pub error: Option<String>,
     pub ai_exit_reason: Option<String>,
     pub output_text: Option<String>,
@@ -55,8 +56,10 @@ fn schedule_kind(task: &Task) -> Option<String> {
     }
 }
 
-fn retain_owner_between_runs(task: &Task) -> bool {
-    run_mode(task) == TaskRunMode::SingleSession && task.status == TaskStatus::Running
+fn retain_owner_between_runs(task: &Task, session_materialized: bool) -> bool {
+    session_materialized
+        && run_mode(task) == TaskRunMode::SingleSession
+        && task.status == TaskStatus::Running
 }
 
 fn release_task_owner(sidecar: &ManagedSidecarManager, task_id: &str, session_id: &str) {
@@ -79,18 +82,22 @@ pub async fn execute_task(
     task: &Task,
     queue_id: &str,
     session_id: Option<String>,
+    initialize_session: bool,
 ) -> Result<TaskExecutionOutcome, String> {
     let started = Instant::now();
 
     if task.managed_kind.as_deref() == Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH) {
-        let (success, ai_exit_reason, output_text, session_id) =
-            crate::memory_auto_update::run_managed_task_batch(handle, task).await?;
+        let batch =
+            crate::memory_auto_update::run_managed_task_batch(handle, task, queue_id).await?;
         return Ok(TaskExecutionOutcome {
-            success,
-            error: None,
-            ai_exit_reason,
-            output_text,
-            session_id,
+            success: batch.success,
+            termination_unconfirmed: batch.termination_unconfirmed,
+            error: batch
+                .termination_unconfirmed
+                .then(|| "Memory update turn termination was not confirmed".to_string()),
+            ai_exit_reason: None,
+            output_text: Some(batch.output_text),
+            session_id: None,
             duration_ms: started.elapsed().as_millis() as u64,
         });
     }
@@ -115,14 +122,6 @@ pub async fn execute_task(
     let prompt = crate::task::build_dispatch_prompt(&task.id)
         .await
         .ok_or_else(|| format!("task {} disappeared before dispatch", task.id))??;
-    let initialize_session =
-        !(crate::sidecar::runtime_identity::resolve_session_runtime_identity_full(&session_id)
-            .is_some()
-            || sidecar
-                .lock()
-                .ok()
-                .is_some_and(|mut manager| manager.has_session_sidecar(&session_id)));
-
     let effective_run_mode = run_mode(task);
     let payload = CronExecutePayload {
         task_id: task.id.clone(),
@@ -158,17 +157,30 @@ pub async fn execute_task(
     };
 
     let result = execute_cron_task(handle, &sidecar, &task.workspace_path, payload).await;
+    // A creator can fail before /cron/execute-sync materializes SessionStore
+    // metadata. Keeping its Sidecar owner in that state would make every
+    // subsequent shared-session Task an `isNew=false` adopter of an unindexed
+    // identity. Release the owner so the next reservation can become the new
+    // creator. Existing/materialized sessions retain the normal single-session
+    // owner across ticks.
+    let termination_unconfirmed = result
+        .as_ref()
+        .map(|response| response.termination_unconfirmed)
+        .unwrap_or(false);
+    let session_materialized =
+        crate::sidecar::runtime_identity::resolve_session_runtime_identity_full(&session_id)
+            .is_some();
     let execution_is_current = crate::task_scheduler::get_task_scheduler()
         .authorize_dispatch(&task.id, queue_id)
         .await;
-    let retain_owner = execution_is_current
-        && match crate::task::get_task_store() {
-            Some(store) => store
-                .get(&task.id)
-                .await
-                .is_some_and(|current| retain_owner_between_runs(&current)),
-            None => false,
-        };
+    let retain_owner = termination_unconfirmed
+        || (execution_is_current
+            && match crate::task::get_task_store() {
+                Some(store) => store.get(&task.id).await.is_some_and(|current| {
+                    retain_owner_between_runs(&current, session_materialized)
+                }),
+                None => false,
+            });
     if !retain_owner {
         release_task_owner(&sidecar, &task.id, &session_id);
     }
@@ -183,6 +195,7 @@ pub async fn execute_task(
     })?;
     Ok(TaskExecutionOutcome {
         success: response.success,
+        termination_unconfirmed: response.termination_unconfirmed,
         error: response.error,
         ai_exit_reason: response
             .ai_requested_exit
@@ -299,6 +312,7 @@ pub async fn stop_task_turn(
     handle: &AppHandle,
     task: &Task,
     active_session_id: Option<&str>,
+    queue_id: &str,
 ) -> Result<(), String> {
     let Some(session_id) = active_session_id else {
         return Ok(());
@@ -319,7 +333,7 @@ pub async fn stop_task_turn(
     };
     let response = client
         .post(format!("http://127.0.0.1:{port}/task/stop"))
-        .json(&serde_json::json!({ "taskId": task.id }))
+        .json(&serde_json::json!({ "taskId": task.id, "queueId": queue_id }))
         .send()
         .await
         .map_err(|error| format!("request /task/stop: {error}"))?;
@@ -406,10 +420,14 @@ mod tests {
     fn stopped_single_session_run_does_not_retain_task_owner() {
         let mut task = single_session_task("session-1");
         task.status = TaskStatus::Stopped;
-        assert!(!retain_owner_between_runs(&task));
+        assert!(!retain_owner_between_runs(&task, true));
 
         task.status = TaskStatus::Running;
-        assert!(retain_owner_between_runs(&task));
+        assert!(retain_owner_between_runs(&task, true));
+        assert!(
+            !retain_owner_between_runs(&task, false),
+            "an unmaterialized creator must release its owner so the next Task can retry birth"
+        );
     }
 
     #[test]

@@ -92,7 +92,7 @@ function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T |
 }
 
 async function stopExternalTarget(): Promise<boolean> {
-  const stopped = await stopExternalSession();
+  const stopped = await stopExternalSession({ preserveQueue: true });
   return stopped || (!hasExternalRuntimeProcess() && !isExternalSessionActive());
 }
 
@@ -298,12 +298,16 @@ export function createExternalSessionEngine(): SessionEngine {
       const dispatchAcceptance = sent.dispatch
         .then((result) => {
           if (!result.queued) {
-            if (request.queueId) clearExternalTurnBinding(request.queueId);
+            if (request.queueId && !result.terminationUnconfirmed) {
+              clearExternalTurnBinding(request.queueId);
+            }
             if (result.error) {
               console.error(`[chat] external send failed: ${result.error}`);
               broadcast('chat:agent-error', { message: result.error });
             }
-            return { accepted: false, ...(result.error ? { error: result.error } : {}) };
+            return result.terminationUnconfirmed
+              ? { accepted: true }
+              : { accepted: false, ...(result.error ? { error: result.error } : {}) };
           }
           return { accepted: true };
         })
@@ -349,6 +353,9 @@ export function createExternalSessionEngine(): SessionEngine {
         },
       );
       if (!result.queued) {
+        if (result.terminationUnconfirmed) {
+          return { success: true, queued: true };
+        }
         if (request.queueId) clearExternalTurnBinding(request.queueId);
         return {
           success: false,
@@ -384,6 +391,9 @@ export function createExternalSessionEngine(): SessionEngine {
         },
       );
       if (!result.queued) {
+        if (result.terminationUnconfirmed) {
+          return { success: true, queued: true };
+        }
         if (request.queueId) clearExternalTurnBinding(request.queueId);
         return {
           success: false,
@@ -455,10 +465,11 @@ export function createExternalSessionEngine(): SessionEngine {
         void sendPromise.catch(() => undefined);
         const dispatchAccepted = isExternalTurnCurrent(queueId);
         const stopped = !dispatchAccepted || await stopExternalTarget();
-        clearExternalTurnBinding(queueId);
+        if (stopped) clearExternalTurnBinding(queueId);
         return {
           success: false,
           enqueued: dispatchAccepted,
+          ...(!stopped ? { terminationUnconfirmed: true } : {}),
           error: !dispatchAccepted
             ? 'External runtime turn timed out before dispatch'
             : stopped
@@ -468,6 +479,15 @@ export function createExternalSessionEngine(): SessionEngine {
         };
       }
       if (!result.queued) {
+        if (result.terminationUnconfirmed) {
+          return {
+            success: false,
+            enqueued: true,
+            terminationUnconfirmed: true,
+            error: result.error ?? 'External runtime dispatch acknowledgement failed and its process did not stop',
+            status: 503,
+          };
+        }
         clearExternalTurnBinding(queueId);
         return {
           success: false,
@@ -490,10 +510,11 @@ export function createExternalSessionEngine(): SessionEngine {
           return { ...decision, enqueued: true };
         }
         const stopped = await stopExternalTarget();
-        clearExternalTurnBinding(queueId);
+        if (stopped) clearExternalTurnBinding(queueId);
         return {
           ...decideExternalInjectedTurnResult({ idleCompleted: false }),
           enqueued: true,
+          ...(!stopped ? { terminationUnconfirmed: true } : {}),
           ...(!stopped
             ? { error: 'External runtime turn timed out and its process did not stop' }
             : {}),
@@ -508,11 +529,13 @@ export function createExternalSessionEngine(): SessionEngine {
       return { ...decision, enqueued: true };
     },
 
-    async stopTurn() {
+    async stopTurn(options) {
       if (!isExternalSessionActive()) {
         return { success: true, alreadyStopped: true };
       }
-      const stopped = await stopExternalSession();
+      const stopped = options?.preserveQueue
+        ? await stopExternalTarget()
+        : await stopExternalSession();
       return stopped
         ? { success: true, alreadyStopped: false }
         : { success: false, error: 'External runtime process did not stop' };
@@ -520,9 +543,19 @@ export function createExternalSessionEngine(): SessionEngine {
 
     async stopOwnedTurn(owner) {
       const canceled = cancelExternalQueuedTurnsByOwner(owner);
+      const promotionSettlement = await canceled.promotion?.settled;
+      if (promotionSettlement?.status === 'termination-unconfirmed') {
+        return { success: false, error: 'External runtime process did not stop' };
+      }
+      if (
+        promotionSettlement?.status === 'not-dispatched'
+        || promotionSettlement?.status === 'terminated'
+      ) {
+        return { success: true, alreadyStopped: false };
+      }
       const current = getExternalCurrentTurnIdentity();
       if (!current || current.owner.kind !== owner.kind || current.owner.id !== owner.id) {
-        return { success: true, alreadyStopped: canceled === 0 };
+        return { success: true, alreadyStopped: canceled.count === 0 };
       }
       const stopped = await stopExternalTarget();
       return stopped
@@ -531,10 +564,17 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async cancelQueuedMessage(queueId) {
-      const cancelledText = cancelExternalQueueItem(queueId);
-      return cancelledText === null
-        ? { status: 'not_found' as const }
-        : { status: 'cancelled' as const, cancelledText };
+      const cancellation = cancelExternalQueueItem(queueId);
+      if (!cancellation) return { status: 'not_found' as const };
+      const settlement = await cancellation.promotion?.settled;
+      if (
+        settlement
+        && (settlement.status === 'termination-unconfirmed' || settlement.status === 'dispatched')
+        && isExternalTurnCurrent(queueId)
+      ) {
+        return { status: 'not_cancelled' as const };
+      }
+      return { status: 'cancelled' as const, cancelledText: cancellation.cancelledText };
     },
 
     forceQueuedMessage(queueId) {
