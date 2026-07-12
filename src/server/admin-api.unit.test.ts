@@ -226,6 +226,43 @@ describe('admin-api goal', () => {
 });
 
 describe('admin-api cron create', () => {
+  it('leaves execution routing unset when the caller did not request a Task override', async () => {
+    const workspacePath = '/tmp/myagents-managed-codex-workspace';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      defaultProviderId: 'anthropic-sub',
+      agents: [{
+        id: 'agent-managed-codex',
+        name: 'Managed Codex',
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        runtime: 'builtin',
+      }],
+    });
+    const { handleCronCreate } = await import('./admin-api');
+
+    const result = await handleCronCreate({
+      name: 'follow-agent',
+      message: 'Do work',
+      workspacePath,
+      intervalMinutes: 5,
+      dryRun: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.preview).toMatchObject({
+      name: 'follow-agent',
+      message: 'Do work',
+      workspacePath,
+      intervalMinutes: 5,
+    });
+    expect(result.preview).not.toHaveProperty('providerId');
+    expect(result.preview).not.toHaveProperty('model');
+    expect(result.preview).not.toHaveProperty('runtime');
+    expect(result.preview).not.toHaveProperty('runtimeConfig');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
   it('rejects loop schedules before ordinary cron creation reaches Rust', async () => {
     const { handleCronCreate } = await import('./admin-api');
 

@@ -237,16 +237,12 @@ impl CronTaskManager {
     }
 
     pub async fn trigger_now(&self, id: &str) -> Result<TriggerNowInfo, String> {
-        let task = task_store()?
-            .get(id)
-            .await
-            .ok_or_else(|| format!("Task not found: {id}"))?;
-        crate::task_scheduler::get_task_scheduler()
+        let session_id = crate::task_scheduler::get_task_scheduler()
             .trigger_now(id)
             .await?;
         Ok(TriggerNowInfo {
             task_id: id.to_string(),
-            session_id: task_session_id(&task),
+            session_id,
             dispatched_at: Utc::now().to_rfc3339(),
         })
     }

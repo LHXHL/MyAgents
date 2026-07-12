@@ -1792,29 +1792,42 @@ async fn send_media_handler(Json(req): Json<SendMediaRequest>) -> Json<serde_jso
 
 // ===== Cron Stop handler =====
 
-async fn stop_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<ApiResponse> {
+fn cron_stop_success_response(task: &crate::task::Task) -> serde_json::Value {
+    serde_json::json!({
+        "ok": true,
+        "taskId": task.id,
+        "status": task.status.as_str(),
+    })
+}
+
+async fn stop_cron_handler(Json(req): Json<TaskIdRequest>) -> Json<serde_json::Value> {
     let manager = cron_task::get_cron_task_manager();
     if let Err(e) = get_ordinary_cron_task(manager, &req.task_id).await {
         if e == MANAGED_CRON_TASK_ERROR {
-            return Json(managed_api_response());
+            return Json(managed_json_response());
         }
-        return Json(ApiResponse {
-            ok: false,
-            error: Some(e),
-        });
+        return Json(serde_json::json!({ "ok": false, "error": e }));
     }
     match manager
         .stop_task(&req.task_id, Some("Stopped via admin CLI".to_string()))
         .await
     {
-        Ok(_) => Json(ApiResponse {
-            ok: true,
-            error: None,
-        }),
-        Err(e) => Json(ApiResponse {
-            ok: false,
-            error: Some(e),
-        }),
+        Ok(_) => {
+            let Some(store) = crate::task::get_task_store() else {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": "task store not initialized",
+                }));
+            };
+            let Some(task) = store.get(&req.task_id).await else {
+                return Json(serde_json::json!({
+                    "ok": false,
+                    "error": format!("Task not found: {}", req.task_id),
+                }));
+            };
+            Json(cron_stop_success_response(&task))
+        }
+        Err(e) => Json(serde_json::json!({ "ok": false, "error": e })),
     }
 }
 
@@ -3226,6 +3239,38 @@ mod tests {
         assert_eq!(
             response.get("error").and_then(Value::as_str),
             Some("stale_revision: expected 4, current 5")
+        );
+    }
+
+    #[test]
+    fn cron_stop_response_preserves_authoritative_blocked_status() {
+        let task: crate::task::Task = serde_json::from_value(serde_json::json!({
+            "id": "blocked-task",
+            "name": "blocked task",
+            "executor": "agent",
+            "workspaceId": "workspace",
+            "workspacePath": "/tmp/workspace",
+            "executionMode": "recurring",
+            "intervalMinutes": 60,
+            "sessionIds": [],
+            "status": "blocked",
+            "tags": [],
+            "createdAt": 1,
+            "updatedAt": 1,
+            "statusHistory": [],
+            "dispatchOrigin": "direct"
+        }))
+        .unwrap();
+
+        let response = cron_stop_success_response(&task);
+
+        assert_eq!(
+            response.get("taskId").and_then(Value::as_str),
+            Some("blocked-task")
+        );
+        assert_eq!(
+            response.get("status").and_then(Value::as_str),
+            Some("blocked")
         );
     }
 

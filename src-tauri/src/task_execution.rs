@@ -25,7 +25,7 @@ fn run_mode(task: &Task) -> TaskRunMode {
     task.run_mode.unwrap_or(TaskRunMode::NewSession)
 }
 
-fn execution_session(task: &Task, session_exists: impl Fn(&str) -> bool) -> (String, bool) {
+pub(crate) fn select_execution_session(task: &Task) -> String {
     if run_mode(task) == TaskRunMode::SingleSession {
         if let Some(session_id) = task
             .preselected_session_id
@@ -33,13 +33,17 @@ fn execution_session(task: &Task, session_exists: impl Fn(&str) -> bool) -> (Str
             .map(str::trim)
             .filter(|value| !value.is_empty())
         {
-            return (session_id.to_string(), !session_exists(session_id));
+            return session_id.to_string();
         }
         if let Some(session_id) = task.session_ids.first() {
-            return (session_id.clone(), !session_exists(session_id));
+            return session_id.clone();
         }
     }
-    (Uuid::new_v4().to_string(), true)
+    Uuid::new_v4().to_string()
+}
+
+pub(crate) fn uses_session_engine(task: &Task) -> bool {
+    task.managed_kind.as_deref() != Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH)
 }
 
 fn schedule_kind(task: &Task) -> Option<String> {
@@ -74,6 +78,7 @@ pub async fn execute_task(
     handle: &AppHandle,
     task: &Task,
     queue_id: &str,
+    session_id: Option<String>,
 ) -> Result<TaskExecutionOutcome, String> {
     let started = Instant::now();
 
@@ -89,6 +94,9 @@ pub async fn execute_task(
             duration_ms: started.elapsed().as_millis() as u64,
         });
     }
+
+    let session_id =
+        session_id.ok_or_else(|| format!("task {} requires an execution Session", task.id))?;
 
     if matches!(
         task.managed_kind.as_deref(),
@@ -107,26 +115,13 @@ pub async fn execute_task(
     let prompt = crate::task::build_dispatch_prompt(&task.id)
         .await
         .ok_or_else(|| format!("task {} disappeared before dispatch", task.id))??;
-    let (session_id, initialize_session) = execution_session(task, |session_id| {
-        crate::sidecar::runtime_identity::resolve_session_runtime_identity_full(session_id)
+    let initialize_session =
+        !(crate::sidecar::runtime_identity::resolve_session_runtime_identity_full(&session_id)
             .is_some()
             || sidecar
                 .lock()
                 .ok()
-                .is_some_and(|mut manager| manager.has_session_sidecar(session_id))
-    });
-
-    if !crate::task_scheduler::get_task_scheduler()
-        .bind_execution_session(&task.id, queue_id, &session_id)
-        .await
-    {
-        return Err("Task execution was canceled before Session dispatch".to_string());
-    }
-
-    crate::task::get_task_store()
-        .ok_or_else(|| "task store not initialized".to_string())?
-        .append_session(&task.id, &session_id)
-        .await?;
+                .is_some_and(|mut manager| manager.has_session_sidecar(&session_id)));
 
     let effective_run_mode = run_mode(task);
     let payload = CronExecutePayload {
@@ -377,19 +372,34 @@ mod tests {
     }
 
     #[test]
-    fn existing_single_session_inherits_its_runtime_configuration() {
-        let (session_id, initialize) =
-            execution_session(&single_session_task("session-1"), |_| true);
+    fn single_session_execution_reuses_its_preselected_session() {
+        let session_id = select_execution_session(&single_session_task("session-1"));
         assert_eq!(session_id, "session-1");
-        assert!(!initialize);
     }
 
     #[test]
-    fn dedicated_single_session_is_initialized_on_first_execution() {
-        let (session_id, initialize) =
-            execution_session(&single_session_task("session-1"), |_| false);
-        assert_eq!(session_id, "session-1");
-        assert!(initialize);
+    fn new_session_execution_never_reuses_a_previous_run_session() {
+        let mut task = single_session_task("unused");
+        task.run_mode = Some(TaskRunMode::NewSession);
+        task.preselected_session_id = None;
+        task.session_ids = vec!["run-1".to_string(), "run-2".to_string()];
+
+        let selected = select_execution_session(&task);
+
+        assert_ne!(selected, "run-1");
+        assert_ne!(selected, "run-2");
+        assert!(Uuid::parse_str(&selected).is_ok());
+    }
+
+    #[test]
+    fn managed_batch_does_not_use_the_session_engine() {
+        let mut task = single_session_task("unused");
+        task.managed_kind = Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH.to_string());
+
+        assert!(!uses_session_engine(&task));
+
+        task.managed_kind = None;
+        assert!(uses_session_engine(&task));
     }
 
     #[test]

@@ -157,7 +157,7 @@ impl TaskSchedulerController {
         }
     }
 
-    pub async fn trigger_now(&self, task_id: &str) -> Result<(), String> {
+    pub async fn trigger_now(&self, task_id: &str) -> Result<String, String> {
         let store = crate::task::get_task_store()
             .ok_or_else(|| "task store not initialized".to_string())?;
         let task = store
@@ -177,10 +177,29 @@ impl TaskSchedulerController {
             return Err("task scheduler app handle is unavailable".to_string());
         }
         let queue_id = claim_execution(&self.executions, task_id).await?;
+        let session_id = match reserve_claimed_execution_session(
+            &self.executions,
+            store,
+            &task,
+            &queue_id,
+        )
+        .await
+        {
+            Ok(Some(session_id)) => session_id,
+            Ok(None) => {
+                release_execution(&self.executions, task_id, &queue_id).await;
+                return Err(format!("task {task_id} does not execute in a Session"));
+            }
+            Err(error) => {
+                release_execution(&self.executions, task_id, &queue_id).await;
+                return Err(error);
+            }
+        };
 
         let executions = Arc::clone(&self.executions);
         let app_handle = Arc::clone(&self.app_handle);
         let task_id = task.id;
+        let reserved_session_id = session_id.clone();
         tauri::async_runtime::spawn(async move {
             if let Err(error) = run_one_claimed(
                 &task_id,
@@ -188,6 +207,7 @@ impl TaskSchedulerController {
                 &executions,
                 &app_handle,
                 TaskExecutionTrigger::Manual,
+                Some(reserved_session_id),
             )
             .await
             {
@@ -199,7 +219,7 @@ impl TaskSchedulerController {
             }
             release_execution(&executions, &task_id, &queue_id).await;
         });
-        Ok(())
+        Ok(session_id)
     }
 
     pub async fn is_executing(&self, task_id: &str) -> bool {
@@ -212,23 +232,6 @@ impl TaskSchedulerController {
 
     pub async fn authorize_dispatch(&self, task_id: &str, queue_id: &str) -> bool {
         execution_is_authorized(&self.executions, task_id, queue_id).await
-    }
-
-    pub async fn bind_execution_session(
-        &self,
-        task_id: &str,
-        queue_id: &str,
-        session_id: &str,
-    ) -> bool {
-        let mut active = self.executions.write().await;
-        let Some(execution) = active.get_mut(task_id) else {
-            return false;
-        };
-        if execution.queue_id != queue_id || execution.canceled {
-            return false;
-        }
-        execution.session_id = Some(session_id.to_string());
-        true
     }
 
     async fn execution_session(&self, task_id: &str) -> Option<String> {
@@ -273,6 +276,30 @@ async fn execution_is_authorized(
         .await
         .get(task_id)
         .is_some_and(|active| active.queue_id == queue_id && !active.canceled)
+}
+
+async fn reserve_claimed_execution_session(
+    executions: &ActiveExecutions,
+    store: &crate::task::TaskStore,
+    task: &Task,
+    queue_id: &str,
+) -> Result<Option<String>, String> {
+    if !crate::task_execution::uses_session_engine(task) {
+        return Ok(None);
+    }
+    let session_id = crate::task_execution::select_execution_session(task);
+    {
+        let mut active = executions.write().await;
+        let Some(execution) = active.get_mut(&task.id) else {
+            return Err("Task execution was canceled before Session dispatch".to_string());
+        };
+        if execution.queue_id != queue_id || execution.canceled {
+            return Err("Task execution was canceled before Session dispatch".to_string());
+        }
+        execution.session_id = Some(session_id.clone());
+    }
+    store.append_session(&task.id, &session_id).await?;
+    Ok(Some(session_id))
 }
 
 async fn release_execution(executions: &ActiveExecutions, task_id: &str, queue_id: &str) {
@@ -371,6 +398,7 @@ async fn run_one(
             &executions,
             &app_handle,
             TaskExecutionTrigger::Scheduled,
+            None,
         )
         .await;
         release_execution(&executions, &task_id_owned, &queue_id_owned).await;
@@ -387,6 +415,7 @@ async fn run_one_claimed(
     executions: &ActiveExecutions,
     app_handle: &RwLock<Option<AppHandle>>,
     trigger: TaskExecutionTrigger,
+    reserved_session_id: Option<String>,
 ) -> Result<RunDisposition, String> {
     if !execution_is_authorized(executions, task_id, queue_id).await {
         return Ok(RunDisposition::Stop);
@@ -402,7 +431,6 @@ async fn run_one_claimed(
     {
         return Ok(RunDisposition::Stop);
     }
-
     let started = Instant::now();
     let handle = app_handle
         .read()
@@ -420,7 +448,15 @@ async fn run_one_claimed(
     )
     .await;
     let execution = match handle.as_ref() {
-        Ok(handle) => crate::task_execution::execute_task(handle, &task, queue_id).await,
+        Ok(handle) => {
+            let session_id = match reserved_session_id {
+                Some(session_id) => Some(session_id),
+                None => {
+                    reserve_claimed_execution_session(executions, store, &task, queue_id).await?
+                }
+            };
+            crate::task_execution::execute_task(handle, &task, queue_id, session_id).await
+        }
         Err(error) => Err(error.clone()),
     };
 
@@ -774,6 +810,19 @@ pub async fn has_persistent_task_for_session(session_id: &str) -> bool {
 mod tests {
     use super::*;
 
+    fn store_with_task(task: &Task) -> (tempfile::TempDir, crate::task::TaskStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let data_dir = dir.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(
+            data_dir.join("tasks.jsonl"),
+            format!("{}\n", serde_json::to_string(task).unwrap()),
+        )
+        .unwrap();
+        let store = crate::task::TaskStore::new(data_dir);
+        (dir, store)
+    }
+
     #[tokio::test]
     async fn stop_fences_a_claimed_execution_before_runtime_dispatch() {
         let controller = TaskSchedulerController::new();
@@ -787,6 +836,96 @@ mod tests {
 
         release_execution(&controller.executions, "task-1", &queue_id).await;
         assert!(!controller.is_executing("task-1").await);
+    }
+
+    #[tokio::test]
+    async fn run_now_reservation_returns_the_session_bound_and_persisted_for_this_run() {
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": "task-run-now",
+            "name": "run now",
+            "executor": "agent",
+            "workspaceId": "workspace",
+            "workspacePath": "/tmp/workspace",
+            "executionMode": "recurring",
+            "runMode": "new-session",
+            "intervalMinutes": 60,
+            "sessionIds": ["previous-run"],
+            "status": "stopped",
+            "tags": [],
+            "createdAt": 1,
+            "updatedAt": 1,
+            "statusHistory": [],
+            "dispatchOrigin": "direct"
+        }))
+        .unwrap();
+        let (_dir, store) = store_with_task(&task);
+        let task = store.get("task-run-now").await.unwrap();
+        let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
+        let queue_id = claim_execution(&executions, &task.id).await.unwrap();
+
+        let returned_session =
+            reserve_claimed_execution_session(&executions, &store, &task, &queue_id)
+                .await
+                .unwrap()
+                .expect("ordinary Task execution must reserve a Session");
+
+        let bound_session = executions
+            .read()
+            .await
+            .get(&task.id)
+            .and_then(|execution| execution.session_id.clone());
+        let persisted = store.get(&task.id).await.unwrap();
+        assert_ne!(returned_session, "previous-run");
+        assert_eq!(bound_session.as_deref(), Some(returned_session.as_str()));
+        assert_eq!(
+            persisted.session_ids.last().map(String::as_str),
+            Some(returned_session.as_str())
+        );
+
+        release_execution(&executions, &task.id, &queue_id).await;
+    }
+
+    #[tokio::test]
+    async fn managed_batch_reservation_does_not_bind_or_persist_a_session() {
+        let task: Task = serde_json::from_value(serde_json::json!({
+            "id": "managed-batch",
+            "name": "memory batch",
+            "executor": "agent",
+            "workspaceId": "workspace",
+            "workspacePath": "/tmp/workspace",
+            "executionMode": "recurring",
+            "runMode": "new-session",
+            "intervalMinutes": 60,
+            "managedKind": "memory_auto_update_batch",
+            "sessionIds": [],
+            "status": "stopped",
+            "tags": [],
+            "createdAt": 1,
+            "updatedAt": 1,
+            "statusHistory": [],
+            "dispatchOrigin": "direct"
+        }))
+        .unwrap();
+        let (_dir, store) = store_with_task(&task);
+        let task = store.get("managed-batch").await.unwrap();
+        let executions: ActiveExecutions = Arc::new(RwLock::new(HashMap::new()));
+        let queue_id = claim_execution(&executions, &task.id).await.unwrap();
+
+        let reserved = reserve_claimed_execution_session(&executions, &store, &task, &queue_id)
+            .await
+            .unwrap();
+
+        let bound_session = executions
+            .read()
+            .await
+            .get(&task.id)
+            .and_then(|execution| execution.session_id.clone());
+        let persisted = store.get(&task.id).await.unwrap();
+        assert_eq!(reserved, None);
+        assert_eq!(bound_session, None);
+        assert!(persisted.session_ids.is_empty());
+
+        release_execution(&executions, &task.id, &queue_id).await;
     }
 
     #[test]

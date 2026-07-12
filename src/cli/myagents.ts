@@ -467,6 +467,17 @@ function printResult(group: string, action: string, result: Record<string, unkno
     console.log(`  runs:    myagents cron runs ${data.taskId ?? '<id>'} --limit 1`);
     return;
   }
+  if (group === 'cron' && action === 'stop') {
+    const data = result.data as Record<string, unknown> | undefined;
+    const taskId = data?.taskId ?? '(unknown)';
+    const status = data?.status ?? 'unknown';
+    console.log(`✓ Task ${taskId} is not running`);
+    console.log(`  status: ${status}`);
+    if (status === 'blocked') {
+      console.log(`  restart: myagents cron start ${taskId}`);
+    }
+    return;
+  }
   if (group === 'cron' && action === 'update') {
     // Issue #115 — echo the computed next fire time + tz so users see
     // exactly when their schedule edit will fire next. Avoids the
@@ -3803,6 +3814,11 @@ export function normalizeScheduleFlag(
     }
     const obj = parsed as Record<string, unknown>;
     const kind = obj.kind;
+    if (kind === 'loop') {
+      console.error('Error: Cron Loop has retired. Use Goal Mode instead:');
+      console.error('  myagents goal create --objective-file <path>');
+      process.exit(2);
+    }
     if (kind !== 'at' && kind !== 'every' && kind !== 'cron') {
       console.error(`Error: --schedule JSON has invalid "kind": ${JSON.stringify(kind)} (expected one of: at, every, cron)`);
       process.exit(2);
@@ -3840,7 +3856,6 @@ export function normalizeScheduleFlag(
         process.exit(2);
       }
     }
-    // 'loop' has no required fields.
     return withDefaultCronTimezone(obj);
   }
   // Non-JSON input → treat as a standard cron expression.

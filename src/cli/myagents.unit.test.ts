@@ -272,6 +272,8 @@ describe('myagents CLI cron time handling', () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     try {
       expect(() => normalizeScheduleFlag('{"kind":"loop"}')).toThrow('process.exit(2)');
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('Goal Mode'));
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('myagents goal create --objective-file'));
     } finally {
       exit.mockRestore();
       error.mockRestore();
