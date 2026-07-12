@@ -1334,9 +1334,6 @@ pub async fn cmd_start_agent_channel(
             )),
             permission_mode: Arc::new(RwLock::new(agent_channel_permission_mode.clone())),
             mcp_servers_json: Arc::new(RwLock::new(agentConfig.mcp_servers_json.clone())),
-            runtime: Arc::new(RwLock::new(normalize_runtime_type(
-                agentConfig.runtime.as_deref(),
-            ))),
             runtime_config: Arc::new(RwLock::new(agentConfig.runtime_config.clone())),
             memory_evolution_config: None,
         });
@@ -1829,28 +1826,6 @@ pub async fn cmd_update_agent_config(
     agentId: String,
     patch: AgentConfigPatch,
 ) -> Result<(), String> {
-    fn normalized_runtime_source_label(runtime: &str, source: Option<&str>) -> &'static str {
-        if !is_external_runtime_type(runtime) {
-            "builtin"
-        } else if source == Some("managed-provider") {
-            "managed-provider"
-        } else {
-            "system-cli"
-        }
-    }
-
-    fn runtime_identity_label(runtime: &str, source: Option<&str>) -> String {
-        if is_external_runtime_type(runtime) {
-            format!(
-                "{}/{}",
-                runtime,
-                normalized_runtime_source_label(runtime, source)
-            )
-        } else {
-            runtime.to_string()
-        }
-    }
-
     // Hot-reload running instance if present (runtime only — disk persistence
     // is handled by the TypeScript patchAgentConfig service)
     let mut memory_auto_update_reconcile: Option<
@@ -1858,131 +1833,142 @@ pub async fn cmd_update_agent_config(
     > = None;
     let mut agents_guard = agentState.lock().await;
     if let Some(agent) = agents_guard.get_mut(&agentId) {
-        // ── Snapshot capture for runtime-change session detach ──
-        // Detect whether this patch will change the agent's runtime, and if
-        // so, capture the agent's CURRENT in-memory config IMMEDIATELY —
-        // before the next four `if let Some(...)` blocks mutate
-        // `current_model` / `current_provider_env` / `permission_mode` /
-        // `mcp_servers_json`. The snapshot must reflect the OLD state so
-        // that detached IM sessions remember what they were running on.
-        // (review-by-codex F1 — earlier rev captured snapshot inside the
-        // runtime branch AFTER those four had been replaced, completely
-        // defeating the feature.)
-        let old_runtime_for_change = agent.runtime.read().await.clone();
-        let old_runtime_config_for_change = agent.runtime_config.read().await.clone();
-        let old_runtime_source_for_change =
-            runtime_config_string(old_runtime_config_for_change.as_ref(), "source");
-        let old_runtime_source_label = normalized_runtime_source_label(
-            &old_runtime_for_change,
-            old_runtime_source_for_change.as_deref(),
-        );
-        let current_model_for_change = agent.current_model.read().await.clone();
-        let current_permission_mode_for_change = agent.permission_mode.read().await.clone();
-        let next_provider_id_for_change = match patch.provider_id.as_ref() {
-            Some(Some(provider_id)) if !provider_id.is_empty() => Some(provider_id.clone()),
-            Some(_) => None,
-            None => agent.config.provider_id.clone(),
-        };
-        let next_model_for_change = patch
-            .model
-            .clone()
-            .or_else(|| current_model_for_change.clone());
-        let raw_next_runtime_for_change = patch
-            .runtime
-            .as_ref()
-            .map(|r| normalize_runtime_type(Some(r.as_str())))
-            .unwrap_or_else(|| old_runtime_for_change.clone());
-        let next_runtime_config_input = patch
-            .runtime_config
-            .clone()
-            .unwrap_or_else(|| old_runtime_config_for_change.clone());
-        let (projected_runtime_for_change, projected_runtime_config_for_change) =
-            types::project_runtime_for_provider(
-                next_provider_id_for_change.as_deref(),
-                next_model_for_change.as_deref(),
-                Some(raw_next_runtime_for_change),
-                next_runtime_config_input,
-            );
-        let new_runtime_for_change =
-            normalize_runtime_type(projected_runtime_for_change.as_deref());
-        let new_runtime_source_for_change =
-            runtime_config_string(projected_runtime_config_for_change.as_ref(), "source");
-        let new_runtime_source_label = normalized_runtime_source_label(
-            &new_runtime_for_change,
-            new_runtime_source_for_change.as_deref(),
-        );
-        let runtime_identity_changed = old_runtime_for_change != new_runtime_for_change
-            || old_runtime_source_label != new_runtime_source_label;
+        // Disk is the config authority. Renderer writes are serialized, while
+        // invokes may arrive out of order. Serialize hot-state updates first,
+        // then read disk: a newer write's invoke must run after this lock and
+        // will re-read that newer Agent + ChannelOverrides, so stale invokes
+        // cannot become the final in-memory state.
+        let updated_agent = read_agent_configs_from_disk()
+            .into_iter()
+            .find(|candidate| candidate.id == agentId)
+            .ok_or_else(|| format!("Agent {} not found in persisted config", agentId))?;
         let runtime_identity_patch_present = patch.runtime.is_some()
             || patch.runtime_config.is_some()
             || patch.provider_id.is_some()
-            || patch.model.is_some();
-        let next_permission_mode_for_change = patch
-            .permission_mode
-            .clone()
-            .unwrap_or_else(|| current_permission_mode_for_change.clone());
-        let projected_permission_mode_for_change = types::project_permission_for_provider(
-            next_provider_id_for_change.as_deref(),
-            next_permission_mode_for_change,
-        );
+            || patch.model.is_some()
+            || patch.channels.is_some();
         let should_refresh_channel_permission = patch.permission_mode.is_some()
             || patch.provider_id.is_some()
             || patch.model.is_some()
             || patch.runtime.is_some()
             || patch.runtime_config.is_some()
             || patch.channels.is_some();
-        let mut projected_agent_config = agent.config.clone();
-        projected_agent_config.provider_id = next_provider_id_for_change.clone();
-        projected_agent_config.model = next_model_for_change.clone();
-        projected_agent_config.permission_mode = projected_permission_mode_for_change.clone();
-        projected_agent_config.runtime = Some(new_runtime_for_change.clone());
-        projected_agent_config.runtime_config = projected_runtime_config_for_change.clone();
-        if let Some(ref channels) = patch.channels {
-            projected_agent_config.channels = channels.clone();
-        }
-        let pre_change_snapshot = if runtime_identity_changed {
-            Some(runtime_change::build_snapshot_from_agent_state(agent).await)
-        } else {
-            None
-        };
+        let should_refresh_effective_channel = runtime_identity_patch_present
+            || patch.provider_env_json.is_some()
+            || patch.permission_mode.is_some();
 
-        if patch.provider_id.is_some() {
-            agent.config.provider_id = next_provider_id_for_change.clone();
-        }
-        if let Some(ref model) = patch.model {
-            agent.config.model = Some(model.clone());
-            *agent.current_model.write().await = Some(model.clone());
-            for (_ch_id, ch_inst) in &agent.channels {
-                *ch_inst.bot_instance.current_model.write().await = Some(model.clone());
-            }
-        }
-        if let Some(ref env_json_patch) = patch.provider_env_json {
-            agent.config.provider_env_json = env_json_patch.clone();
-            let parsed: Option<serde_json::Value> =
-                env_json_patch.as_deref().and_then(|env_json| {
-                    if env_json.is_empty() {
-                        None
-                    } else {
-                        serde_json::from_str(env_json).ok()
-                    }
-                });
-            *agent.current_provider_env.write().await = parsed.clone();
-            for (_ch_id, ch_inst) in &agent.channels {
-                *ch_inst.bot_instance.current_provider_env.write().await = parsed.clone();
-            }
-        }
-        if should_refresh_channel_permission {
-            agent.config.permission_mode = projected_permission_mode_for_change.clone();
-            *agent.permission_mode.write().await = projected_permission_mode_for_change.clone();
-            for (ch_id, ch_inst) in &agent.channels {
-                let channel_permission = projected_agent_config
+        // A raw Agent default is provider-facing configuration, not an
+        // execution identity. Derive both sides at the Channel owner: old from
+        // its live hot state, new from the full config that was just persisted.
+        let mut channel_updates = Vec::new();
+        if should_refresh_effective_channel {
+            for (channel_id, channel_instance) in &agent.channels {
+                let Some(channel_config) = updated_agent
                     .channels
                     .iter()
-                    .find(|c| c.id.as_str() == ch_id.as_str())
-                    .map(|c| c.effective_permission_mode(&projected_agent_config))
-                    .unwrap_or_else(|| projected_permission_mode_for_change.clone());
-                *ch_inst.bot_instance.permission_mode.write().await = channel_permission;
+                    .find(|channel| channel.id == *channel_id)
+                else {
+                    ulog_warn!(
+                        "[agent] Running channel {} missing from updated config for agent {}; keeping its live runtime",
+                        channel_id,
+                        agentId
+                    );
+                    continue;
+                };
+                let next_config = channel_config.to_im_config(&updated_agent);
+                let old_runtime = channel_instance.bot_instance.runtime.read().await.clone();
+                let old_runtime_config = channel_instance
+                    .bot_instance
+                    .runtime_config
+                    .read()
+                    .await
+                    .clone();
+                let old_identity = types::ImRuntimeIdentity::from_runtime_config(
+                    &old_runtime,
+                    old_runtime_config.as_ref(),
+                );
+                let new_identity = next_config.runtime_identity();
+                let old_provider_id =
+                    agent
+                        .config
+                        .channels
+                        .iter()
+                        .find(|channel| channel.id == *channel_id)
+                        .map(|channel| channel.to_im_config(&agent.config).provider_id)
+                        .unwrap_or_else(|| {
+                            agent.config.provider_id.clone().or_else(|| {
+                                channel_instance.bot_instance.config.provider_id.clone()
+                            })
+                        });
+                let snapshot = if old_identity != new_identity {
+                    Some(
+                        runtime_change::build_snapshot_from_channel_state(
+                            &channel_instance.bot_instance.runtime,
+                            &channel_instance.bot_instance.current_model,
+                            &channel_instance.bot_instance.permission_mode,
+                            &channel_instance.bot_instance.mcp_servers_json,
+                            &channel_instance.bot_instance.runtime_config,
+                            old_provider_id,
+                            &channel_instance.bot_instance.current_provider_env,
+                        )
+                        .await,
+                    )
+                } else {
+                    None
+                };
+                channel_updates.push((
+                    channel_id.clone(),
+                    next_config,
+                    old_identity,
+                    new_identity,
+                    snapshot,
+                ));
             }
+        }
+
+        // Rotate only the Channels whose effective execution identity changed,
+        // and freeze their old live config before replacing any hot state.
+        for (channel_id, _, old_identity, new_identity, snapshot) in &mut channel_updates {
+            let Some(snapshot) = snapshot.take() else {
+                continue;
+            };
+            let Some(channel_instance) = agent.channels.get(channel_id) else {
+                continue;
+            };
+            runtime_change::freeze_and_rotate_for_runtime_change(
+                &agentId,
+                channel_id,
+                &channel_instance.bot_instance,
+                &old_identity.label(),
+                &new_identity.label(),
+                &sidecarManager,
+                snapshot,
+            )
+            .await;
+        }
+
+        if patch.provider_id.is_some() {
+            agent.config.provider_id = updated_agent.provider_id.clone();
+        }
+        if patch.model.is_some() {
+            agent.config.model = updated_agent.model.clone();
+            *agent.current_model.write().await = updated_agent.model.clone();
+        }
+        if patch.provider_env_json.is_some() {
+            agent.config.provider_env_json = updated_agent.provider_env_json.clone();
+            *agent.current_provider_env.write().await = updated_agent
+                .provider_env_json
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .and_then(|value| serde_json::from_str(value).ok());
+        }
+        if should_refresh_channel_permission {
+            let agent_permission = types::project_permission_for_provider(
+                updated_agent.provider_id.as_deref(),
+                updated_agent.permission_mode.clone(),
+            );
+            agent.config.permission_mode = agent_permission.clone();
+            *agent.permission_mode.write().await = agent_permission;
         }
         if let Some(ref mcp) = patch.mcp_servers_json {
             *agent.mcp_servers_json.write().await = Some(mcp.clone());
@@ -1991,65 +1977,37 @@ pub async fn cmd_update_agent_config(
             }
         }
         if runtime_identity_patch_present {
-            // ── Runtime-change session detach (v0.2.14 dogfood fix) ──
-            // Cross-runtime session resume is structurally broken (SDK rejects
-            // "Session ID is already in use", provider env drift, T12 gate
-            // chooses not to kill). RuntimeSource is part of that identity:
-            // `codex/system-cli` and `codex/managed-provider` have different
-            // owners/auth stores, so they must fork just like different
-            // runtimes. When the identity changes and the agent has bot
-            // bindings, freeze each bound session with the OLD config
-            // (captured at function entry above into `pre_change_snapshot`) and
-            // rotate to a fresh session_id so the next IM message starts
-            // cleanly on the new identity.
-            //
-            // We use `pre_change_snapshot` rather than re-reading agent state
-            // because `current_model` / `current_provider_env` / `permission_mode`
-            // / `mcp_servers_json` may have been mutated by the patches above —
-            // the OLD agent config is no longer recoverable from agent state
-            // by the time we get here. (review-by-codex F1.)
-            //
-            // No-op when the runtime identity didn't actually change or when
-            // the agent has zero peer_sessions across all channels (covered
-            // inside the orchestrator's loop).
-            if let Some(snapshot) = pre_change_snapshot {
-                let old_identity_label = runtime_identity_label(
-                    &old_runtime_for_change,
-                    old_runtime_source_for_change.as_deref(),
-                );
-                let new_identity_label = runtime_identity_label(
-                    &new_runtime_for_change,
-                    new_runtime_source_for_change.as_deref(),
-                );
-                runtime_change::freeze_and_rotate_for_runtime_change(
-                    agent,
-                    &old_identity_label,
-                    &new_identity_label,
-                    &sidecarManager,
-                    snapshot,
-                )
-                .await;
-            }
-
-            *agent.runtime.write().await = new_runtime_for_change.clone();
-            *agent.runtime_config.write().await = projected_runtime_config_for_change.clone();
-            for (_ch_id, ch_inst) in &agent.channels {
-                *ch_inst.bot_instance.runtime.write().await = new_runtime_for_change.clone();
-                *ch_inst.bot_instance.runtime_config.write().await =
-                    projected_runtime_config_for_change.clone();
-                if runtime_identity_changed {
-                    // Runtime identity swap requires Sidecar restart
-                    // (different subprocess or different runtime owner).
-                    // Preserve peer_session bindings so handover and IM
-                    // message routing keep working — `release_all` would wipe
-                    // them and silently break later operations on this channel.
-                    ch_inst
-                        .bot_instance
-                        .router
-                        .lock()
-                        .await
-                        .release_all_sidecars_preserve_bindings(&sidecarManager);
-                }
+            agent.config.runtime = updated_agent.runtime.clone();
+            agent.config.runtime_config = updated_agent.runtime_config.clone();
+            *agent.runtime_config.write().await = updated_agent.runtime_config.clone();
+        }
+        for (channel_id, next_config, old_identity, new_identity, _) in channel_updates {
+            let Some(channel_instance) = agent.channels.get(&channel_id) else {
+                continue;
+            };
+            *channel_instance.bot_instance.current_model.write().await = next_config.model.clone();
+            *channel_instance
+                .bot_instance
+                .current_provider_env
+                .write()
+                .await = next_config
+                .provider_env_json
+                .as_deref()
+                .filter(|value| !value.is_empty())
+                .and_then(|value| serde_json::from_str(value).ok());
+            *channel_instance.bot_instance.permission_mode.write().await =
+                next_config.permission_mode.clone();
+            *channel_instance.bot_instance.runtime.write().await = new_identity.runtime.clone();
+            *channel_instance.bot_instance.runtime_config.write().await =
+                next_config.runtime_config.clone();
+            if old_identity != new_identity {
+                // Runtime identity swap requires a different subprocess owner.
+                channel_instance
+                    .bot_instance
+                    .router
+                    .lock()
+                    .await
+                    .release_all_sidecars_preserve_bindings(&sidecarManager);
             }
         }
         // Hot-reload heartbeat config
@@ -2118,25 +2076,25 @@ pub async fn cmd_update_agent_config(
         }
 
         // Push config changes to all active Sidecar ports (same as legacy update_bot_config_internal)
-        let parsed_provider_env: Option<serde_json::Value> =
-            patch.provider_env_json.as_ref().and_then(|env_patch| {
-                env_patch.as_deref().and_then(|s| {
-                    if s.is_empty() {
-                        None
-                    } else {
-                        serde_json::from_str(s).ok()
-                    }
-                })
-            });
         for (_ch_id, ch_inst) in &agent.channels {
             let router = ch_inst.bot_instance.router.lock().await;
             let runtime = ch_inst.bot_instance.runtime.read().await.clone();
             let runtime_config = ch_inst.bot_instance.runtime_config.read().await.clone();
+            let current_model = ch_inst.bot_instance.current_model.read().await.clone();
+            let current_provider_env = ch_inst
+                .bot_instance
+                .current_provider_env
+                .read()
+                .await
+                .clone();
             let ports = router.active_sidecar_ports();
             if !ports.is_empty() {
-                if patch.provider_env_json.is_some() {
+                if patch.provider_env_json.is_some()
+                    || patch.provider_id.is_some()
+                    || patch.channels.is_some()
+                {
                     for port in &ports {
-                        if let Some(ref penv) = parsed_provider_env {
+                        if let Some(ref provider_env) = current_provider_env {
                             router
                                 .sync_ai_config(
                                     *port,
@@ -2144,7 +2102,7 @@ pub async fn cmd_update_agent_config(
                                     runtime_config.as_ref(),
                                     None,
                                     None,
-                                    Some(penv),
+                                    Some(provider_env),
                                 )
                                 .await;
                         } else {
@@ -2182,14 +2140,15 @@ pub async fn cmd_update_agent_config(
                         }
                     }
                 }
-                if patch.model.is_some() {
+                if patch.model.is_some() || patch.provider_id.is_some() || patch.channels.is_some()
+                {
                     for port in &ports {
                         router
                             .sync_ai_config(
                                 *port,
                                 &runtime,
                                 runtime_config.as_ref(),
-                                patch.model.as_deref(),
+                                current_model.as_deref(),
                                 None,
                                 None,
                             )
@@ -2222,6 +2181,7 @@ pub async fn cmd_update_agent_config(
                     && (patch.runtime_config.is_some()
                         || patch.provider_id.is_some()
                         || patch.runtime.is_some()
+                        || patch.channels.is_some()
                         || (patch.model.is_some()
                             && runtime_config_string(runtime_config.as_ref(), "source")
                                 .as_deref()

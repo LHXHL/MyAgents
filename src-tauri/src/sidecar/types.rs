@@ -293,7 +293,8 @@ mod lifecycle_contract_tests {
             { "id": "missing-runtime" },
             { "id": "builtin-runtime", "runtime": "builtin" },
             { "id": "codex-runtime", "runtime": "codex" },
-            { "id": "managed-codex-runtime", "runtime": "codex", "runtimeSource": "managed-provider" }
+            { "id": "managed-codex-runtime", "runtime": "codex", "runtimeSource": "managed-provider" },
+            { "id": "malformed-managed-runtime", "runtime": "builtin", "runtimeSource": "managed-provider" }
         ])
         .to_string();
 
@@ -318,6 +319,13 @@ mod lifecycle_contract_tests {
         );
         assert_eq!(
             resolve_session_runtime_identity_full_from_json("managed-codex-runtime", &content),
+            Some(RuntimeIdentity {
+                runtime: "codex".to_string(),
+                runtime_source: Some("managed-provider".to_string()),
+            })
+        );
+        assert_eq!(
+            resolve_session_runtime_identity_full_from_json("malformed-managed-runtime", &content),
             Some(RuntimeIdentity {
                 runtime: "codex".to_string(),
                 runtime_source: Some("managed-provider".to_string()),

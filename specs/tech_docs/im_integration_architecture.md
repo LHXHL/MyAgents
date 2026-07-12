@@ -239,6 +239,8 @@ Per-Message Task:
 
 IM / Agent Channel 属于 live-follow owner，但 peer session 仍必须绑定执行 runtime identity。Router 在普通消息、heartbeat、`/model` 命令唤醒 Sidecar 前比较 desired identity 与 persisted / live sidecar identity；只要 `runtime` 或 `runtimeSource` 任一变化，就 reset peer session 并释放旧 Sidecar，随后新建会话。`codex/system-cli`（外部 Codex CLI）与 `codex/managed-provider`（Codex 订阅 Provider）必须视为不同身份；`codex-sub` 选择路径要把 `RuntimeConfig.source:'managed-provider'` 传入 drift check，不能只传 `runtime:'codex'`。
 
+配置热更新也必须在同一个 owner / scope 比较 identity：旧值取每个运行中 `ImBotInstance` 的有效 runtime，新的值由完整的落盘后 `AgentConfig + ChannelOverrides` 重新投影；只轮转有效 identity 真正变化的 Channel。`AgentConfig.runtime/runtimeConfig` 是 provider-facing 的原始默认值（managed Codex 可合法保存为 `builtin`），不能和 Channel 的投影结果直接比较，也不能在 `AgentInstance` 上缓存成“有效 runtime”。同一 managed Provider 内仅切换模型不轮转 session。
+
 ### 2.5 Telegram Adapter
 
 ```rust

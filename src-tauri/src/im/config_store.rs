@@ -2058,9 +2058,6 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                                     mcp_servers_json: Arc::new(RwLock::new(
                                         agent_config.mcp_servers_json.clone(),
                                     )),
-                                    runtime: Arc::new(RwLock::new(normalize_runtime_type(
-                                        agent_config.runtime.as_deref(),
-                                    ))),
                                     runtime_config: Arc::new(RwLock::new(
                                         agent_config.runtime_config.clone(),
                                     )),
@@ -2556,9 +2553,6 @@ pub async fn monitor_agent_channels(
                                 mcp_servers_json: Arc::new(RwLock::new(
                                     agent_cfg.mcp_servers_json.clone(),
                                 )),
-                                runtime: Arc::new(RwLock::new(normalize_runtime_type(
-                                    agent_cfg.runtime.as_deref(),
-                                ))),
                                 runtime_config: Arc::new(RwLock::new(
                                     agent_cfg.runtime_config.clone(),
                                 )),

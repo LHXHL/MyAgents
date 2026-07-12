@@ -523,7 +523,7 @@ export async function patchAgentConfig(
     const effectivePatch = shouldUpdateProviderEnv
       ? { ...patch, providerEnvJson: resolvedProviderEnvJson ?? undefined }
       : patch;
-    await syncAgentRuntime(agentId, effectivePatch, updated, resolvedMcpJson);
+    await syncAgentRuntime(agentId, effectivePatch, resolvedMcpJson);
     if ('memoryAutoUpdate' in patch) {
       try {
         await configureMemoryAutoUpdateTaskForAgent(updated);
@@ -587,7 +587,6 @@ export async function enableAgentAndStartChannels(
 async function syncAgentRuntime(
   agentId: string,
   patch: Partial<Omit<AgentConfig, 'id'>>,
-  _updatedAgent: AgentConfig,
   preResolvedMcpJson?: string,
 ): Promise<void> {
   const { isTauriEnvironment } = await import('@/utils/browserMock');

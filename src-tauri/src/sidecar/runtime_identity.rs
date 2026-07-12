@@ -16,7 +16,14 @@ pub struct RuntimeIdentity {
 
 impl RuntimeIdentity {
     pub fn new(runtime: Option<&str>, runtime_source: Option<&str>) -> Self {
-        let runtime = normalize_runtime_name(runtime).to_string();
+        // managed-provider is the product-owned Codex runtime source. Older
+        // metadata may contain the impossible builtin/managed-provider pair;
+        // canonicalize before any spawn/reuse decision reads it.
+        let runtime = if runtime_source == Some("managed-provider") {
+            "codex".to_string()
+        } else {
+            normalize_runtime_name(runtime).to_string()
+        };
         let normalized_source = normalize_runtime_source_name(&runtime, runtime_source);
         Self {
             runtime,

@@ -970,7 +970,7 @@ pub struct AgentInstance {
     pub current_provider_env: Arc<tokio::sync::RwLock<Option<serde_json::Value>>>,
     pub permission_mode: Arc<tokio::sync::RwLock<String>>,
     pub mcp_servers_json: Arc<tokio::sync::RwLock<Option<String>>>,
-    pub runtime: Arc<tokio::sync::RwLock<String>>,
+    // Raw Agent default. Effective runtime identity belongs to each Channel.
     pub runtime_config: Arc<tokio::sync::RwLock<Option<serde_json::Value>>>,
     // Long-term memory evolution (v0.2.49)
     pub memory_evolution_config:

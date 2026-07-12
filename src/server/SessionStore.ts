@@ -28,6 +28,7 @@ import { ensureDirSync } from './utils/fs-utils';
 import { withFileLock } from './utils/file-lock';
 import { countNonEmptyJsonlLines } from './utils/jsonl-line-count';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
+import { normalizeSessionRuntimeIdentity } from './utils/session-runtime-identity';
 
 const MYAGENTS_DIR = join(homedir(), '.myagents');
 const SESSIONS_FILE = join(MYAGENTS_DIR, 'sessions.json');
@@ -196,7 +197,7 @@ function parseSessionsIndex(content: string): SessionMetadata[] {
         throw new CorruptSessionsIndexError(`sessions.json entry at index ${malformedIndex} is not valid SessionMetadata.`);
     }
 
-    return parsed as SessionMetadata[];
+    return (parsed as SessionMetadata[]).map(normalizeSessionRuntimeIdentity);
 }
 
 function extractCompleteSessionMetadataObjects(content: string): SessionMetadata[] {
@@ -259,13 +260,15 @@ function recoverSessionsIndexFromContent(content: string): SessionMetadata[] {
     try {
         const parsed = JSON.parse(stripBom(content)) as unknown;
         if (Array.isArray(parsed)) {
-            return dedupeSessionMetadata(parsed.filter(isSessionMetadataLike));
+            return dedupeSessionMetadata(parsed.filter(isSessionMetadataLike).map(normalizeSessionRuntimeIdentity));
         }
     } catch {
         // Fall through to structural scan for truncated or partially written JSON.
     }
 
-    return dedupeSessionMetadata(extractCompleteSessionMetadataObjects(content));
+    return dedupeSessionMetadata(
+        extractCompleteSessionMetadataObjects(content).map(normalizeSessionRuntimeIdentity),
+    );
 }
 
 function readTmpSessionsIndexStrict(): SessionMetadata[] | null {
