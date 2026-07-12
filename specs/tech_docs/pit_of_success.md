@@ -520,6 +520,8 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 | `validate_workspace_root(path)` | 工作区根校验：必须是绝对路径 + 存在 + 通过 `commands::validate_file_path` 黑名单 | 所有 cmd 入口（读+写）|
 | `resolve_inside_workspace(root, rel)` | **写侧** 路径解析：lexical resolve `..`/`.` + `starts_with(root)` 校验。允许目标不存在（write/create cmd 必须） | `crud`、`gitignore`、`transfer`、`save_file` 等创建/重命名场景 |
 | `resolve_existing_inside_workspace(root, rel)` | **读侧** 路径解析：先调 lexical 版本，再 `fs::canonicalize` 把整条 symlink 链解开，最终路径必须 `starts_with(canonicalize(root))`。不存在 → 返回 `File not found` | `read_preview`、`download`、`save_file`（require existing）、`check_paths`、`claude_md` |
+| `read_workspace_file_no_follow(root, rel, max)` | workspace 附件的强 no-follow 有界读：Unix 用目录 fd + `openat(O_NOFOLLOW)`；Windows 用 `NtCreateFile(ObjectAttributes.RootDirectory=parentHandle, FILE_OPEN_REPARSE_POINT)` 逐级相对打开目录与 leaf | Space CLI workspace attachments |
+| `open_regular_file_no_follow(path, label)` | 显式用户选择本地文件的统一 leaf opener，拒绝 symlink / Windows reparse leaf | Space GUI attachments、avatar、Skill package |
 | `validate_external_read_path(abs)` | 绝对路径外部读校验（drag-drop / launcher 工作区根）：lexical blacklist；路径**存在**时再 `fs::canonicalize` 复查一遍 blacklist（0.2.33 cross-review：中间 symlink 组件 `lure → ~/.ssh` 可穿透纯 lexical 检查）；不存在时仅 lexical 放行（slash.rs 要校验尚未创建的新工作区根）。返回 **lexical** 路径，保住调用方的 leaf-symlink 拒绝语义 | `slash`（workspace 根）、`transfer::copy_paths`、`files_b64::read_files_b64` |
 | `validate_item_name(name)` | 文件名校验：禁止空 / 路径分隔符 / 控制符 / Windows 保留名（含 trailing dot/space）| `crud::new_file/folder/rename` |
 | `sanitize_filename(name)` | 修复型清洗：把非法字符替换为 `_`，用于"用户上传文件名带 `<`/`?`"等 | `files_b64::write_unique_file` |
@@ -532,6 +534,7 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 - **读侧 symlink 逃逸防护**：`resolve_existing_inside_workspace` canonicalize 双侧（path + workspace_root），通过 `starts_with` 拦截 `evil_link → /etc/passwd`。读 `read_preview`/`download`/`save_file` 必须用此 helper；只用 lexical 版会被穿透。
 - **destructive 写用 `fs::symlink_metadata`**：`crud.rs::slot_occupied`、`transfer.rs::slot_occupied` 都是 `fs::symlink_metadata(p).is_ok()`，**不**是 `Path::exists()`——断链 symlink 必须报告为占用，否则后续 `fs::write` / `fs::rename` 会写穿或报莫名错误。
 - **bounded read 防 TOCTOU**：所有读取大文件命令（`read_preview` 512KB cap、`download` 25MB、`files_b64::read_one_image_as_b64` 10MB）用 `File::open + take(MAX+1).read_to_end` 模式——不是 `fs::read_to_string` / `fs::read`。元数据 `len()` 与实际读取之间文件可能被攻击者扩张，bounded read 是唯一可靠防御。
+- **validate 与 open 必须是一体的**：workspace attachment 不得退回 `metadata/canonicalize → File::open(path)`；Windows 的 share flags 不约束 `FILE_WRITE_ATTRIBUTES`，攻击者仍可把空目录原地设为 junction。必须由 `read_workspace_file_no_follow` 从已验证 parent handle 做 handle-relative child open/create，leaf 与 temp/final rename 也不得重新解析可变路径。
 
 **Don't.**
 - 写侧 cmd 用 `Path::exists()` 探"占位"——断链 symlink 会让你以为路径空。MUST 用 `slot_occupied` helper（`fs::symlink_metadata(p).is_ok()`）。

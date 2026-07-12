@@ -127,9 +127,9 @@ Legacy 兼容规则：
 
 - 所有 Space HTTP 请求由 Rust `reqwest` 发起；renderer 不持有 session token。认证、JSON、multipart、raw download、generic renderer proxy、delivery poll/ACK/presence 全部复用 `with_space_client_context_headers`，统一带 public client id、客户端版本、device id、platform、OS version、`Accept-Language` 与 `User-Agent`。设备事实来自进程内缓存的 `current_device_identity()`，不能由各调用方自行拼接。
 - 用户可控 workspace 路径进入 Rust 后必须通过 `validate_workspace_root`。
-- 写入 workspace 的附件下载由 Rust 流式累计限制 25MB，完整接收成功后才提交文件；父目录逐段 no-follow、临时文件 `create_new`。Unix 用目录句柄内 `renameat`；Windows 对每一级目录使用 `CreateFileW(FILE_FLAG_OPEN_REPARSE_POINT)` 并在整次写入期间保留不共享 delete 的 handle，temp 写入也禁止 delete sharing，最终用 `MoveFileExW(REPLACE_EXISTING | WRITE_THROUGH)`。因此重复下载可以安全覆盖，junction 也不能在检查后把写入重定向到 workspace 外。
+- 写入 workspace 的附件下载由 Rust 流式累计限制 25MB，完整接收成功后才提交文件；父目录逐段 no-follow、临时文件 exclusive create。Unix 用目录句柄内 `openat/renameat`；Windows 用 `NtCreateFile(RootDirectory=parentHandle, FILE_OPEN_REPARSE_POINT)` 逐级相对打开/创建目录与 temp，最终通过带同一 `RootDirectory` 的 `SetFileInformationByHandle(FileRenameInfo)` 覆盖目标。因此 namespace 被替换或目录原地变成 junction 都不能重定向 IO，重复下载仍可安全覆盖。
 - Skill zip 安装有总大小、单文件大小、entry 数限制，并防 Zip-Slip；安装目标只允许 global 或当前 project。
-- GUI 选择附件先调用 Rust `cmd_space_inspect_attachment_drafts`，返回本地 `{path,name,sizeBytes,mimeType}`；评论/创建草稿不预上传。提交时 Rust 再用同一底层 bounded/no-follow reader 读取，Cloud 只在 JSON 或 multipart 整体成功时绑定正文/评论。
+- GUI 选择附件先调用 Rust `cmd_space_inspect_attachment_drafts`，返回本地 `{path,name,sizeBytes,mimeType}`；评论/创建草稿不预上传。提交时 Rust 再用同一底层 bounded/no-follow reader 读取：Windows workspace 路径逐级用 parent handle 相对解析，leaf 以 `FILE_OPEN_REPARSE_POINT` 打开并拒绝 reparse，避免 inspect/submit 间、validate/open 间的替换或原地 reparse；显式本地文件也复用统一 leaf opener。Cloud 只在 JSON 或 multipart 整体成功时绑定正文/评论。
 - CLI 附件只允许当前 workspace 内普通文件；数量先于读取限制为 5，单文件读取过程限制 25MB。complete 的 operation key 由 Rust 基于实际 multipart bytes 派生，Node 不预读/预哈希文件。
 
 ## 用户 Profile / 头像

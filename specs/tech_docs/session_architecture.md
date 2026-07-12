@@ -205,7 +205,7 @@ currentTurn = {
 - Goal `id` 拒绝旧 incarnation 回写新 Goal。
 - `revision` 对所有持久变化递增，renderer 用它拒绝乱序 hydrate/event。
 - `controlRevision` 只在 pause/resume/objective/terminal 等控制变化时递增，使 Stop 前准备的 continuation 失效；普通 bookkeeping 不制造新 control epoch。
-- `goal-orchestrator.ts` 只在真实 dispatch boundary claim，并在真实 terminal 后 finalize。Management/claim/adapter 失败全部 fail closed，不留下伪 bubble、history 或 running 状态。
+- `goal-orchestrator.ts` 只在真实 dispatch boundary claim，并在真实 terminal 后 finalize。builtin direct turn 在长 await 前发布 admission ticket，取消可立即按 owner/queueId 寻址；图片处理等最后一个 await 后、queue item 构造与 callbacks 转移前必须再次确认 ticket 未取消。Management/claim/adapter 失败全部 fail closed，不留下伪 bubble、history 或 running 状态。
 
 user query 对 paused Goal 的成功 claim 会原子恢复为 active。automatic continuation 对 paused Goal 必须拒绝。
 
@@ -213,7 +213,7 @@ user query 对 paused Goal 的成功 claim 会原子恢复为 active。automatic
 
 Goal scheduler 只有 `goalId -> one-shot JoinHandle`。active Goal 在上一轮 finalize 后按成功/失败 backoff 安排一次；paused/terminal/currentTurn/outbox pending 时不轮询。
 
-`SidecarOwner::Goal(goalId)` 在 Turn claim 时懒附着到当前 Session Sidecar；它只是 owner token，不创建独立进程。Pause/terminal/finalize 后按当前 Turn/outbox 状态对称释放。关闭 Tab 只释放 Tab owner，Goal owner/continuation 仍可让同一 Session 在后台继续。
+automatic continuation 在调用 Node `/goal/execute-sync` 前先附着 `SidecarOwner::Goal(goalId)`；用户 query 最晚在 Turn claim 时附着。它只是 owner token，不创建独立进程。Pause/Cancel/terminal 先提交 durable control 状态，再按 owner + queueId 精确 stop；只有 promotion/transport/进程终止得到确认后才清 `currentTurn` 并释放 owner。Rust 尚无 currentTurn 的 preclaim transport failure 也必须把已知 queueId 发给 Node stop，不能当作 already stopped。关闭 Tab 只释放 Tab owner，Goal owner/continuation 仍可让同一 Session 在后台继续。
 
 发送统一经过 `/goal/execute-sync` 与 `src/server/session-engine/` selector，builtin/external adapter 共享 queue identity、stop 与 terminal contract。
 
@@ -225,7 +225,7 @@ Goal scheduler 只有 `goalId -> one-shot JoinHandle`。active Goal 在上一轮
 - Goal 中用户普通 query：`GOAL_CONTEXT` hidden envelope + visible query。
 - 所有 automatic continuation 都是 turn-boundary-only，不能 steer/merge 到当前 Turn。
 
-Renderer 的 `useSessionGoal` 只是 `goal:changed` + hydrate 投影。Tab birth/session switch/history restore 按 `sessionId + workspacePath` 查询；active/paused 恢复横条，terminal 只在实时变化时展示，不在历史打开时复活。
+Renderer 的 `useSessionGoal` 只是 `goal:changed` + hydrate 投影。Tab birth/session switch/history restore 按 `sessionId + workspacePath` 查询；active/paused 恢复横条，terminal 只在实时变化时展示，不在历史打开时复活。pause/resume/cancel 的异步返回必须同时核对 `goalId + sessionId + normalize(workspacePath) + current projection`；切换 owner 或同 Session 的新 Goal incarnation 后，旧响应只能被丢弃。
 
 #### Pause、Cancel 与终态
 
@@ -233,11 +233,15 @@ Pause/Cancel 的顺序固定：
 
 ```text
 disk-first commit Goal control state
--> SessionEngine.stopTurn(queueId)
+-> durable currentTurn / 已知 runtime queueId：SessionEngine.stopOwnedTurnByQueueId(owner, queueId)
+-> 尚无 currentTurn 的普通 Pause/Cancel：owner-scoped cancel（只取消该 Goal admission/promotion）
+-> wait promotion / transport / process termination confirmation
 -> stale queue/generation late result is rejected
 -> cancel one-shot continuation
 -> release Goal owner when no current Turn/outbox remains
 ```
+
+外部 Runtime 的 dispatch RPC/stdio write 一旦开始，throw 只表示 acknowledgement 不可得，不证明 prompt 未被消费。即使 Rust 尚无 `currentTurn`，transport ambiguity 也必须用本次已知 queueId 精确 stop；若进程仍可能存活，返回 `terminationUnconfirmed` 并保留 queue binding、`currentTurn`（若已 claim）与 Sidecar owner。fresh/resume promotion 的 Stop 同样要等待 startup settlement，不能以“token 已取消”提前确认。objective 更新使用 lifecycle-lock 内 commit 后的 `currentTurn.queueId` 作为 stop/abort authority，禁止使用锁前 snapshot。
 
 Model 只能提交 complete/blocked；`aiCanExit=false` 在 Rust terminal transaction 硬拒绝，不只依赖提示词。User 只能 canceled，System 可因 end condition 或连续 10 次执行失败进入终态。终态 first-writer-wins。
 
@@ -736,7 +740,7 @@ reasoning effort setter 不再是“直接 stop 进程”的 process-global 操�
 - turn boundary drain 先应用前导 config ops,再启动下一条 message。
 - Codex / Claude Code 使用 next-turn state；Gemini 的 `session/set_model` /
   `session/set_mode` 也只在 boundary 调用,保持“当前轮不受影响”的产品语义。
-- IM 仍通过每轮 `ExternalSendContext` live resolve；Task 只在新 Session 初始化时使用 Task config，已有 Session 继承自己的配置。
+- IM 仍通过每轮 `ExternalSendContext` live resolve；Task 只在新 Session 初始化时使用 Task config，已有 Session 继承自己的配置。Task 的 initialize/adopt 由 scheduler reservation 在 per-Session lifecycle 内读取持久 Session metadata 决定，不能绑定到 Sidecar 进程的 `EnsureSidecarResult.isNew`：Tab 可已保活同一 Sidecar，而 Task 仍是合法 metadata creator。adopt payload 在 Rust 构造时即不携带 model/provider/runtime/MCP 初始化字段。reservation 从发布 Session id 起持有 lifecycle guard，并并行等待权威 `SessionStore` metadata 出生；一旦 materialize 立即释放（不得持满整轮，否则同 Session 工具会反向死锁），保证 shared-session joiner 不会抢在 creator 前 adopt。若 turn 先失败且 metadata 仍未出生，creator 释放 guard 与 Sidecar owner，下一次 reservation 重新取得 creator 权；进程是否仍被其它 owner 保活不参与该裁决。
 - `/api/runtime/config` 是 source-aware：Rust IM router 热同步传 `source:"im-sync"`；桌面 push 走 `runtime-config` / `desktop`。`updateExternalRuntimeConfig()` 必须先调用 `runtime-config-policy` 过滤 snapshotted session 不应接收的字段，再写 `lastModel` / `lastPermissionMode` / `lastReasoningEffort`，禁止“先污染 desired state 再跳过 restart”。
 
 **红线**：

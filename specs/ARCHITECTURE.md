@@ -159,11 +159,13 @@ Goal concurrency 只保留三类真实 identity/fence：Runtime queue item 的 `
 
 `revision` 对所有持久变化单调递增，供 UI/event 拒绝旧投影；`controlRevision` 只在 pause/resume/objective/terminal 等控制语义变化时递增，用于使 Stop 前准备的 continuation 失效。`src/server/session-engine/goal-orchestrator.ts` 在 builtin/external adapter 的实际 dispatch boundary claim，真实 terminal 后 finalize；Management 异常、stale revision/generation 或 claim reject 均 fail closed。
 
-自动 continuation 是 `goalId -> one-shot JoinHandle`，只在 active、无 current Turn、无待投递 outbox 时存在；paused/terminal Goal 不轮询。实际发送统一走 `/goal/execute-sync` 和 SessionEngine facade。Goal owner token 在 Turn 真正 claim 时懒加入现有 Sidecar，pause/terminal/finalize 后对称释放；它不是独立进程或独立 Sidecar。
+Renderer 发出的 Goal mutation 还必须通过 owner/projection fence 才能落回当前 UI：返回值的 `goalId + sessionId + normalize(workspacePath)` 必须仍匹配请求 owner，且当前 projection 仍是同一 Goal。切换 Session、同 Session 新建 Goal incarnation，或 cancel 后的迟到 pause/resume/cancel 响应都不得覆盖新投影。
+
+自动 continuation 是 `goalId -> one-shot JoinHandle`，只在 active、无 current Turn、无待投递 outbox 时存在；paused/terminal Goal 不轮询。实际发送统一走 `/goal/execute-sync` 和 SessionEngine facade。自动 continuation 在进入 Node dispatch 前先附着 `SidecarOwner::Goal(goalId)`，用户 query 最晚在 Turn claim 时附着；它只是现有 Sidecar 的 owner token，不创建独立进程。
 
 桌面 Goal 先以 Paused 持久化并等待首条用户 turn；首条 claim 通过普通用户发送路径原子激活。`GOAL_CONTINUATION` hidden envelope 后保留原 objective visible tail，因此用户气泡、Goal badge 与实时 streaming 都存在；切换 Session 或发送失败不会产生 Active 空 Goal。后续自动 continuation 纯隐藏；Goal 运行中用户 query 使用 `GOAL_CONTEXT` + visible query，并由现有 Runtime queue 排序。所有 continuation 强制 turn boundary，不能 steer/merge 到正在运行的 Turn。
 
-Pause/Cancel 先 disk-first 写 Goal 状态，再调用唯一 `SessionEngine.stopTurn(queueId)`；旧 queue/generation 的晚到结果无法恢复 Goal。Model 只能提交 complete/blocked，且 `aiCanExit=false` 在 Rust 终态事务中硬拒绝；User 只能 cancel，System 可按 end condition/连续失败终止。终态 first-writer-wins，先提交权威状态再做事件、通知和 owner 释放。
+Pause/Cancel 先 disk-first 写 Goal 状态：已有 durable `currentTurn` 时用 owner + `queueId` 精确停止，普通 preclaim 则 owner-scoped 取消该 Goal 的 admission/promotion；若 transport failure 已知本次 queueId，即使 Rust 尚无 `currentTurn` 也走 exact stop。只有 stop 得到确认后才清 `currentTurn` / 释放 Goal owner；transport 或进程终止不确定时保留 authority/owner，供同一 queueId 重试。旧 queue/generation 的晚到结果无法恢复 Goal。Model 只能提交 complete/blocked，且 `aiCanExit=false` 在 Rust 终态事务中硬拒绝；User 只能 cancel，System 可按 end condition/连续失败终止。终态 first-writer-wins，先提交权威状态再做事件、通知和 owner 释放。
 
 每个已结算 Goal Turn 复用 Runtime terminal 已有的 `durationMs` 与 input/output usage，经 `goal-orchestrator` 随同同一个 `queueId` finalize；`SessionGoalManager` 在清除 `currentTurn` 的原子提交里累加 `totalDurationMs` 与 `totalTokens`。这两个字段只用于终态横条汇总，口径分别是各 Turn 实际执行耗时之和与 input + output tokens 之和；不从 Session 历史反推，不包含暂停/通知等待，也不是 token/time budget 或独立 usage 账本。
 
@@ -343,7 +345,7 @@ type InteractionScenario =
 - `cron_task/*`：兼容 DTO、校验、delivery/run history 与旧文件只读 facade；没有 writer/scheduler/execution owner。
 - `legacy_upgrade.rs`：在 Task scheduler 启动前把普通 At/Every/Cron、旧 Task projection 与 managed row 幂等迁移为 Task；Loop/开发期 Goal row 不迁移。
 
-`Running` 表示 scheduler enabled，`currentlyExecuting` 来自瞬时 execution map。timer handle 与执行 Turn 分离；Stop 撤销精确 queue authority，SessionEngine stop 确认后才释放 Task owner，执行结果提交与 cancel 使用同一临界区。`run-now` 可执行 Stopped Task 但不启用 scheduler；`lastScheduledAt` 独立于 `lastExecutedAt`，手动执行不会移动 recurring timer。
+`Running` 表示 scheduler enabled，`currentlyExecuting` 来自瞬时 execution map。timer handle 与执行 Turn 分离；Stop 撤销精确 queue authority，SessionEngine stop 确认后才释放 Task owner；执行授权、TaskStore outcome、history、UI event、delivery 与 terminal side effect 共用同一 Task-control 临界区，旧 queue 不能越过新一轮 birth。`run-now` 可执行 Stopped Task但不启用 scheduler；`lastScheduledAt` 独立于 `lastExecutedAt`，手动执行不会移动 recurring timer。
 
 **Node.js 层**（`src/server/tools/im-cron-tool.ts`）：
 - `im-cron` MCP server —— **所有 Session 可用**（不仅 IM Bot）
@@ -604,6 +606,8 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 **关键设计：**
 - Task 状态机 + 审计链（每次状态变更原子写入 `statusHistory`）
 - TaskStore 是 schedule/status/config 唯一权威；TaskScheduler 直接触发并在每次 tick 动态读取 `task.md`
+- Task/Session identity protection 由 per-Session lifecycle guard 串行化：任何 durable mutation（含 legacy migration）只要让 Task 进入受保护状态或新增受保护 Session binding，都与 Session 删除遵循 `lifecycle → TaskStore` 锁序；scheduler active execution 覆盖 Session id 已 claim、Sidecar `Task` owner 尚未附着的窗口，birth guard 只保留到权威 Session metadata 出现（不持满整轮），shared-session joiner 不得提前 adopt。metadata creator 由该 reservation 决定，不绑定 Sidecar `isNew`；被删除的 fixed Session 换新 UUID，不复活旧 identity
+- 同一 Task 的 status、timer、execution claim 与 stop side effect 由 keyed Task-control lifecycle 串行化；stop 使用现有 `queueId` 精确停止当前 Turn。持久 `Running/Stopped` 只表达 scheduler intent，具体 Turn 以非持久 `running/stopping/stop_failed` 投影；stop 未确认时禁止 rerun。Attached Space Task 的终态不能 generic rerun，必须由新的 claim/reopen 创建新 Attached Task
 - AI 讨论路径：想法卡 →「AI 讨论」打开新 Tab + 注入 `task-alignment` Skill → 完成后 `myagents task create-from-alignment`
 - 状态变更广播 Tauri event `task:status-changed`（非 SSE），所有打开的任务中心 Tab 实时同步
 
@@ -623,7 +627,7 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 
 | 子模块 | 职责 | 暴露的 cmd |
 |------|------|-----------|
-| `path_safety` | 唯一路径解析 chokepoint：`validate_workspace_root`、`resolve_inside_workspace`（lexical，写侧）、`resolve_existing_inside_workspace`（canonicalize，读侧）、`validate_item_name`（含 Windows reserved name + trailing dot/space）、`sanitize_filename` | — |
+| `path_safety` | 唯一路径解析/安全打开 chokepoint：lexical/canonical resolve、`read_workspace_file_no_follow`、`open_regular_file_no_follow`、文件名校验与 sanitize | — |
 | `tree` | 工作区目录树初始化 + 懒展开 | `cmd_workspace_dir_tree` / `cmd_workspace_dir_expand` |
 | `read_preview` | 文本文件预览（≤512KB，bounded read 防 TOCTOU 增长） | `cmd_workspace_read_preview` |
 | `download` | 二进制下载（≤25MB，base64 IPC） | `cmd_workspace_download_file` |
@@ -642,9 +646,10 @@ installer.ts         — 扫描 SKILL.md / marketplace.json → InstallAnalysis
 
 **关键约束：**
 
-- **路径解析**：写侧 lexical（路径可不存在），读侧 canonical（防 `evil_link → /etc/passwd` 符号链逃逸）。两套 helper 命名带 "_existing_" 后缀区分。
+- **路径解析**：写侧 lexical（路径可不存在），读侧 canonical（防 `evil_link → /etc/passwd` 符号链逃逸）。任意绝对路径还要 canonicalize 最近存在的 ancestor 后重跑系统/credential blacklist；Windows security identity 独立归一化 `\\?\UNC\server\share` 与 `\\?\C:`，不能复用面向 Node/cmd 的前缀剥离 helper。两套 workspace helper 命名带 "_existing_" 后缀区分。
 - **symlink-safe 写**：`crud.rs::slot_occupied` / `transfer.rs::slot_occupied` 用 `fs::symlink_metadata` 不是 `Path::exists()`（断链 symlink 会被后者误报为空，CLAUDE.md v0.2.5 红线）。
 - **bounded read**：所有读取大文件命令用 `File::open + take(MAX+1).read_to_end`（不是 `fs::read_to_string`），防 TOCTOU 文件增长被 OOM。
+- **no-follow attachment read**：workspace upload 统一走 `read_workspace_file_no_follow`。Unix 相对 root fd 用 `openat(O_NOFOLLOW)`；Windows 从已验证目录 handle 用 `NtCreateFile(RootDirectory=parent, FILE_OPEN_REPARSE_POINT)` 逐级打开 child/leaf，namespace 被替换或原地 reparse 都不会改变 IO 锚点。显式本地文件 leaf 复用 `open_regular_file_no_follow`。
 - **用户图片附件 owner**：视觉附件 ref 的第一段必须等于当前 session id（新会话用 `pending-<tabId>`），Sidecar 解析 `attachment_ref` 时再次校验 owner + 10MB 上限。Launcher 不创建 draft owner，直接使用 App 同一条 pending session id。
 - **watcher token**：`watch_start` 返回 `{token, eventKey}` 而非按路径派生 key — 进程内 monotonic counter + per-process nonce，跨进程 token 不复用。锁顺序固定 REGISTRY → TOKENS（防未来死锁）。
 - **CORS 不涉及**：所有命令走 Tauri invoke，不挂 HTTP 端口。
@@ -731,7 +736,7 @@ Cloud Space 把官方/团队空间接入桌面端，目前仍是开发中/半成
 - Registered Agent delivery 处理由 Rust 长驻 connector 拥有：每个 agent 维护内存级 due time / empty streak，云端返回 `poll` 提示，本地负责 clamp、jitter、错误退避与 delivery 注入。Renderer 只能唤醒 connector，不自己 poll/process delivery，也不持有 registered-agent token。
 - Space CLI 是三层薄壳：Node CLI 解析显式 slug/参数，Sidecar Admin API 补当前 project stable workspace id，Rust `SpaceCliContext` 单点拥有 membership 刷新、User/Registered Agent token 选择与 delivery binding fail-closed。现代登记不得退回 path 选身份；path 只兼容没有 workspace id 的 legacy row。
 - Issue 正文附件与评论附件共用 Cloud `issue_attachments`，以 nullable `comment_id` 决定归属。Renderer 文件选择只形成 Rust inspect 后的本地 metadata draft；创建/评论/完成在一次 JSON 或 multipart mutation 内提交。已发布 Issue 顶部“上传”仍是独立即时 mutation，并产生正常 update/delivery。
-- Space 附件字节 IO 由 Rust owner：上传最多 5 个/单个 25MB、workspace CLI no-follow containment；下载流式累计 25MB且只在完整成功后以 no-follow parent + exclusive temp + rename 落盘。二进制不进入 Renderer state、Delivery 或 Session prompt。
+- Space 附件字节 IO 由 Rust owner：上传最多 5 个/单个 25MB、workspace CLI no-follow containment；Windows child/leaf/temp 全部相对已验证目录 handle 打开，最终覆盖也用 `RootDirectory` handle-relative rename，阻断目录替换与原地 reparse。下载流式累计 25MB且只在完整成功后提交。二进制不进入 Renderer state、Delivery 或 Session prompt。
 - Cloud Worker 侧的容量与一致性策略属于 `MyAgents_space` 服务端：D1 访问走 bookmark-aware facade，delivery poll 是读路径，poll 数字由服务端策略 owner 返回，prune/rate limit/placement 由 Worker 配置与服务端代码承担。
 
 详见 `tech_docs/space_cloud.md`；云端 counterpart 详见 `hAcKlyc/MyAgents_space/specs/ARCHITECTURE.md`。
@@ -791,8 +796,9 @@ Cloud Space 把官方/团队空间接入桌面端，目前仍是开发中/半成
 | 关闭/切换桌面 Tab | `releaseTabSession(sessionId, tabId)`；Rust 在 scheduler + Sidecar owner 锁内同时释放 Tab owner 并保留或撤销 activation |
 | 定时 Task 启动 | `run_task_by_id` 提交 Running 并 arm `TaskSchedulerController` |
 | Task Turn 执行/结束 | lazy `SidecarOwner::Task(taskId)`；terminal/stop/delete 取消 Turn、移除 timer、对称释放 owner |
-| Goal 自动续跑 | active Goal 使用一个 one-shot continuation handle；Runtime promotion 时 lazy `SidecarOwner::Goal(goalId)` |
-| Goal Pause/终态 | 先提交 SessionGoal 状态，再 stop queue Turn、移除 continuation、释放 Goal owner、广播 `goal:changed` |
+| Memory Auto-Update | 作为隐藏 managed Task 使用 `SidecarOwner::Task(taskId)`；复用 Ready Sidecar 也先 retain，只有执行完成或进程终止已确认才由 RAII 释放，`terminationUnconfirmed` 时保留给精确 Stop |
+| Goal 自动续跑 | active Goal 使用一个 one-shot continuation handle；进入 Node dispatch 前附着 `SidecarOwner::Goal(goalId)`，用户 query 最晚在 Runtime claim 时附着 |
+| Goal Pause/终态 | 先提交 SessionGoal 状态，再精确 stop queue Turn；确认后才清 authority / 释放 Goal owner并广播 `goal:changed`，不确定时保留 |
 | IM 消息到达 | `ensureSessionSidecar(sessionId, workspace, 'agent', sessionKey)` |
 | IM Session 空闲超时 | `releaseSessionSidecar(sessionId, 'agent', sessionKey)` |
 | 终端打开 | `cmd_terminal_create(workspace, rows, cols, port, id)` |
