@@ -98,3 +98,7 @@ specs/assets/avatar-candidates/**/manifest.json
 
 # Default workspace (cloned by setup.sh)
 /mino/
+
+# Dev 
+.claude/plans/myagents/
+myagents_files/
