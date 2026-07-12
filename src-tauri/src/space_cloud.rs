@@ -20,8 +20,8 @@ use crate::sidecar::{
     get_tab_server_url, start_global_sidecar, ManagedSidecarManager, GLOBAL_SIDECAR_ID,
 };
 use crate::workspace_files::path_safety::{
-    atomic_write_file, read_workspace_file_no_follow, resolve_inside_workspace,
-    validate_workspace_root, write_workspace_file_no_follow,
+    atomic_write_file, open_regular_file_no_follow, read_workspace_file_no_follow,
+    resolve_inside_workspace, validate_workspace_root, write_workspace_file_no_follow,
 };
 use crate::{ulog_info, ulog_warn};
 
@@ -5718,16 +5718,7 @@ fn read_avatar_file_bytes(
     _validated_metadata: &fs::Metadata,
     max_bytes: u64,
 ) -> Result<Vec<u8>, String> {
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let file = options
-        .open(file_path)
-        .map_err(|e| format!("Failed to open avatar image: {}", e))?;
+    let file = open_regular_file_no_follow(file_path, "avatar image")?;
     let opened_metadata = file
         .metadata()
         .map_err(|e| format!("Failed to inspect opened avatar image: {}", e))?;
@@ -7138,16 +7129,7 @@ fn open_local_file_no_follow(
         return Err(format!("{} exceeds {} bytes", label, max_bytes));
     }
 
-    let mut options = fs::OpenOptions::new();
-    options.read(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(libc::O_NOFOLLOW);
-    }
-    let file = options
-        .open(path)
-        .map_err(|e| format!("Failed to open {}: {}", label, e))?;
+    let file = open_regular_file_no_follow(path, label)?;
     let opened_metadata = file
         .metadata()
         .map_err(|e| format!("Failed to inspect opened {}: {}", label, e))?;
@@ -7218,7 +7200,7 @@ fn build_skill_upload_package(raw_path: &str) -> Result<SkillUploadPackage, Stri
                 return Err(format!("Skill zip exceeds {} bytes", MAX_SKILL_ZIP_BYTES));
             }
             let bytes =
-                fs::read(&file_path).map_err(|e| format!("Failed to read skill package: {}", e))?;
+                read_local_file_no_follow(&file_path, MAX_SKILL_ZIP_BYTES as u64, "Skill package")?;
             validate_skill_zip_bytes(&bytes)?;
             let filename = file_path
                 .file_name()

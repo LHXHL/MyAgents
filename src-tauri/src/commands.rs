@@ -1681,8 +1681,109 @@ const WIN_SENSITIVE_SUBDIRS: &[&str] = &["AppData/Local/Microsoft"];
 ///
 /// `pub(crate)` so workspace_files::path_safety can reuse the exact same blacklist —
 /// duplicating it would be a pit-of-failure (two places to update for new credential dirs).
+#[cfg(any(windows, test))]
+fn normalize_windows_security_path(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    let windows = raw.replace('/', r"\");
+    let folded = windows.to_lowercase();
+    if folded.starts_with(r"\\?\unc\") {
+        return PathBuf::from(format!(r"\\{}", &windows[8..]));
+    }
+    if folded.starts_with(r"\\?\") {
+        return PathBuf::from(&windows[4..]);
+    }
+    path.to_path_buf()
+}
+
+pub(crate) fn normalize_security_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        return normalize_windows_security_path(&path);
+    }
+    #[cfg(not(windows))]
+    {
+        path
+    }
+}
+
+#[cfg(any(windows, test))]
+fn normalize_windows_path_identity(path: &Path) -> String {
+    normalize_windows_security_path(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_lowercase()
+}
+
+fn path_starts_with_identity(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let candidate = normalize_windows_path_identity(path);
+        let root = normalize_windows_path_identity(root);
+        return candidate == root
+            || candidate
+                .strip_prefix(&root)
+                .is_some_and(|rest| rest.starts_with('/'));
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(root)
+    }
+}
+
+fn reject_blacklisted_path(resolved: &Path) -> Result<(), String> {
+    let home = dirs::home_dir().unwrap_or_default();
+
+    for dir in FORBIDDEN_SYSTEM_DIRS {
+        if path_starts_with_identity(resolved, Path::new(dir)) {
+            return Err("Access denied: protected system directory".to_string());
+        }
+    }
+
+    if !home.as_os_str().is_empty() {
+        for name in CREDENTIAL_SUBDIRS {
+            if path_starts_with_identity(resolved, &home.join(name)) {
+                return Err("Access denied: protected credential directory".to_string());
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        for name in MAC_SENSITIVE_SUBDIRS {
+            if path_starts_with_identity(resolved, &home.join(name)) {
+                return Err("Access denied: protected system directory".to_string());
+            }
+        }
+
+        #[cfg(windows)]
+        for name in WIN_SENSITIVE_SUBDIRS {
+            if path_starts_with_identity(resolved, &home.join(name)) {
+                return Err("Access denied: protected system directory".to_string());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_nearest_existing_path_identity(path: &Path) -> Option<PathBuf> {
+    let mut ancestor = path.to_path_buf();
+    let mut suffix = Vec::new();
+    loop {
+        if let Ok(canonical) = fs::canonicalize(&ancestor) {
+            let mut resolved = normalize_security_path(canonical);
+            for component in suffix.iter().rev() {
+                resolved.push(component);
+            }
+            return Some(resolved);
+        }
+        let name = ancestor.file_name()?.to_os_string();
+        suffix.push(name);
+        ancestor = ancestor.parent()?.to_path_buf();
+    }
+}
+
 pub(crate) fn validate_file_path(raw_path: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(raw_path);
+    let path = normalize_security_path(PathBuf::from(raw_path));
 
     if !path.is_absolute() {
         return Err("Path must be absolute".to_string());
@@ -1700,37 +1801,9 @@ pub(crate) fn validate_file_path(raw_path: &str) -> Result<PathBuf, String> {
         }
     }
 
-    let home = dirs::home_dir().unwrap_or_default();
-
-    // System directories blacklist (FORBIDDEN_SYSTEM_DIRS is cfg-gated above).
-    for dir in FORBIDDEN_SYSTEM_DIRS {
-        if resolved.starts_with(dir) {
-            return Err("Access denied: protected system directory".to_string());
-        }
-    }
-
-    // Credential / key store directories
-    if !home.as_os_str().is_empty() {
-        for name in CREDENTIAL_SUBDIRS {
-            if resolved.starts_with(home.join(name)) {
-                return Err("Access denied: protected credential directory".to_string());
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        for name in MAC_SENSITIVE_SUBDIRS {
-            // `name` contains a "/"; PathBuf::join treats it as a separator.
-            if resolved.starts_with(home.join(name)) {
-                return Err("Access denied: protected system directory".to_string());
-            }
-        }
-
-        #[cfg(windows)]
-        for name in WIN_SENSITIVE_SUBDIRS {
-            if resolved.starts_with(home.join(name)) {
-                return Err("Access denied: protected system directory".to_string());
-            }
-        }
+    reject_blacklisted_path(&resolved)?;
+    if let Some(real_identity) = resolve_nearest_existing_path_identity(&resolved) {
+        reject_blacklisted_path(&real_identity)?;
     }
 
     Ok(resolved)
@@ -1738,7 +1811,7 @@ pub(crate) fn validate_file_path(raw_path: &str) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod path_safety_crosscheck_tests {
-    use super::{CREDENTIAL_SUBDIRS, FORBIDDEN_SYSTEM_DIRS};
+    use super::{normalize_windows_path_identity, CREDENTIAL_SUBDIRS, FORBIDDEN_SYSTEM_DIRS};
     use serde_json::Value;
 
     // Rust side of the Node↔Rust blacklist cross-check (PRD 0.2.15 §7.2). Asserts
@@ -1782,6 +1855,44 @@ mod path_safety_crosscheck_tests {
             .map(|s| s.to_string())
             .collect();
         assert_eq!(owned, expected);
+    }
+
+    #[test]
+    fn windows_path_identity_strips_verbatim_prefix_and_folds_case() {
+        assert_eq!(
+            normalize_windows_path_identity(std::path::Path::new(r"\\?\c:\WINDOWS\System32\")),
+            "c:/windows/system32"
+        );
+        assert_eq!(
+            normalize_windows_path_identity(std::path::Path::new(
+                r"\\?\UNC\Server\Share\Users\Alice\.ssh\id_ed25519"
+            )),
+            "//server/share/users/alice/.ssh/id_ed25519"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blacklist_rechecks_symlinked_existing_ancestor_identity() {
+        let parent =
+            crate::workspace_files::test_support::make_test_workspace("commands_path_alias");
+        let alias = parent.join("system-alias");
+        std::os::unix::fs::symlink("/etc", &alias).unwrap();
+
+        assert!(super::validate_file_path(&alias.join("passwd").to_string_lossy()).is_err());
+        assert!(
+            super::validate_file_path(&alias.join("not-created-yet").to_string_lossy()).is_err()
+        );
+
+        let _ = std::fs::remove_file(alias);
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_blacklist_rejects_case_and_verbatim_aliases() {
+        assert!(super::validate_file_path(r"c:\windows\System32").is_err());
+        assert!(super::validate_file_path(r"\\?\C:\WINDOWS\System32").is_err());
     }
 
     #[cfg(target_os = "macos")]

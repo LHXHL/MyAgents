@@ -63,7 +63,14 @@ pub fn validate_workspace_root(workspace_path: &str) -> WfResult<PathBuf> {
             workspace_path
         ));
     }
-    Ok(resolved)
+    let canonical = fs::canonicalize(&resolved)
+        .map_err(|e| format!("Workspace root canonicalize failed: {}", e))?;
+    let canonical = crate::commands::normalize_security_path(canonical);
+    let canonical_str = canonical
+        .to_str()
+        .ok_or_else(|| "Workspace path is not valid UTF-8".to_string())?;
+    system_blacklist_check(canonical_str)?;
+    Ok(canonical)
 }
 
 /// Resolve a `relative` path inside `workspace_root`. The relative segment may
@@ -375,6 +382,44 @@ fn read_prefix(target: &Path, max_bytes: usize) -> Result<Vec<u8>, String> {
     Ok(current)
 }
 
+/// Open one explicit regular file without following a symlink/reparse-point
+/// leaf. Workspace-contained reads need the stronger relative parent walk in
+/// `read_workspace_file_no_follow`; this helper is the shared leaf primitive
+/// for user-selected local files such as avatars and Skill packages.
+pub fn open_regular_file_no_follow(path: &Path, label: &str) -> WfResult<fs::File> {
+    let file = open_regular_file_no_follow_platform(path, label)?;
+    let metadata = file
+        .metadata()
+        .map_err(|e| format!("Failed to inspect opened {}: {}", label, e))?;
+    if !metadata.is_file() {
+        return Err(format!("{} path must be a regular file", label));
+    }
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_regular_file_no_follow_platform(path: &Path, label: &str) -> WfResult<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut options = fs::OpenOptions::new();
+    options
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
+    options
+        .open(path)
+        .map_err(|e| format!("Failed to open {}: {}", label, e))
+}
+
+#[cfg(windows)]
+fn open_regular_file_no_follow_platform(path: &Path, label: &str) -> WfResult<fs::File> {
+    open_windows_regular_file_handle(path, label)
+}
+
+#[cfg(all(not(unix), not(windows)))]
+fn open_regular_file_no_follow_platform(path: &Path, label: &str) -> WfResult<fs::File> {
+    fs::File::open(path).map_err(|e| format!("Failed to open {}: {}", label, e))
+}
+
 /// Read a regular file beneath `workspace_root` without following any path
 /// component while it is opened. The returned bytes are bounded during the
 /// read, so a file that grows after inspection cannot exhaust memory or cross
@@ -410,7 +455,10 @@ pub fn read_workspace_file_no_follow(
 
     #[cfg(unix)]
     let mut file = open_relative_file_no_follow(&canonical_root, relative, false)?;
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    let (mut file, opened_parent) =
+        open_windows_workspace_file_no_follow(&canonical_root, relative)?;
+    #[cfg(all(not(unix), not(windows)))]
     let mut file = {
         let metadata = fs::symlink_metadata(&canonical)
             .map_err(|e| format!("Failed to inspect attachment: {}", e))?;
@@ -436,12 +484,19 @@ pub fn read_workspace_file_no_follow(
     if bytes.len() as u64 > max_bytes {
         return Err(format!("Attachment exceeds {} bytes", max_bytes));
     }
+    #[cfg(windows)]
+    verify_windows_workspace_parent(
+        &canonical_root,
+        relative.parent().unwrap_or_else(|| Path::new("")),
+        &opened_parent,
+    )?;
     Ok((canonical, bytes))
 }
 
 /// Atomically write bytes beneath `workspace_root`. Parent components are
-/// opened/created without following symlinks on Unix, the temp file uses
-/// O_EXCL, and the final rename is relative to the verified parent handle.
+/// opened/created relative to verified directory handles without following
+/// symlinks/reparse points; the temp file is exclusive and the final rename
+/// is relative to the same parent handle on both Unix and Windows.
 pub fn write_workspace_file_no_follow(
     workspace_root: &Path,
     relative: &str,
@@ -776,48 +831,15 @@ fn verify_portable_destination_parent(
 }
 
 #[cfg(windows)]
-fn replace_portable_file(source: &Path, destination: &Path) -> std::io::Result<()> {
-    use std::iter::once;
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{
-        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
-    };
-
-    let source_wide = source
-        .as_os_str()
-        .encode_wide()
-        .chain(once(0))
-        .collect::<Vec<_>>();
-    let destination_wide = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(once(0))
-        .collect::<Vec<_>>();
-    let moved = unsafe {
-        MoveFileExW(
-            source_wide.as_ptr(),
-            destination_wide.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
-    if moved == 0 {
-        Err(std::io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(windows)]
-fn open_windows_locked_directory(path: &Path) -> WfResult<fs::File> {
+fn open_windows_root_directory(path: &Path) -> WfResult<fs::File> {
     use std::iter::once;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows_sys::Win32::Storage::FileSystem::{
-        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
-        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
-        FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        OPEN_EXISTING,
+        CreateFileW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY,
+        FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE,
+        OPEN_EXISTING, SYNCHRONIZE,
     };
 
     let wide = path
@@ -828,8 +850,8 @@ fn open_windows_locked_directory(path: &Path) -> WfResult<fs::File> {
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
-            FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             std::ptr::null(),
             OPEN_EXISTING,
             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
@@ -838,18 +860,149 @@ fn open_windows_locked_directory(path: &Path) -> WfResult<fs::File> {
     };
     if handle == INVALID_HANDLE_VALUE {
         return Err(format!(
-            "Failed to lock destination directory: {}",
+            "Failed to open workspace root directory: {}",
             std::io::Error::last_os_error()
         ));
     }
     let file = unsafe { fs::File::from_raw_handle(handle as _) };
+    validate_windows_directory_handle(&file)?;
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn windows_ntstatus_error(status: windows_sys::Win32::Foundation::NTSTATUS) -> std::io::Error {
+    let code = unsafe { windows_sys::Win32::Foundation::RtlNtStatusToDosError(status) };
+    std::io::Error::from_raw_os_error(code as i32)
+}
+
+#[cfg(windows)]
+fn open_windows_relative_handle(
+    parent: &fs::File,
+    name: &std::ffi::OsStr,
+    desired_access: u32,
+    share_access: u32,
+    create_disposition: u32,
+    create_options: u32,
+    file_attributes: u32,
+) -> std::io::Result<fs::File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle};
+    use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+    use windows_sys::Wdk::Storage::FileSystem::NtCreateFile;
+    use windows_sys::Win32::Foundation::{HANDLE, UNICODE_STRING};
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let mut wide = name.encode_wide().collect::<Vec<_>>();
+    let byte_len = wide
+        .len()
+        .checked_mul(std::mem::size_of::<u16>())
+        .filter(|length| *length <= u16::MAX as usize)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Windows path component is too long",
+            )
+        })?;
+    if wide.is_empty() || wide.iter().any(|value| *value == 0) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Windows path component is empty or contains NUL",
+        ));
+    }
+    let unicode = UNICODE_STRING {
+        Length: byte_len as u16,
+        MaximumLength: byte_len as u16,
+        Buffer: wide.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle() as HANDLE,
+        ObjectName: &unicode,
+        // OBJ_CASE_INSENSITIVE. Windows file opens are ordinarily
+        // case-insensitive; preserving that contract avoids a surprising
+        // divergence from CreateFileW while still anchoring resolution to the
+        // verified parent handle.
+        Attributes: 0x40,
+        SecurityDescriptor: std::ptr::null(),
+        SecurityQualityOfService: std::ptr::null(),
+    };
+    let mut io_status: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+    let mut handle: HANDLE = std::ptr::null_mut();
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            desired_access,
+            &attributes,
+            &mut io_status,
+            std::ptr::null(),
+            file_attributes,
+            share_access,
+            create_disposition,
+            create_options,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if status < 0 {
+        return Err(windows_ntstatus_error(status));
+    }
+    if handle.is_null() {
+        return Err(std::io::Error::other(
+            "NtCreateFile succeeded without returning a handle",
+        ));
+    }
+    Ok(unsafe { fs::File::from_raw_handle(handle as _) })
+}
+
+#[cfg(windows)]
+fn validate_windows_handle_component(name: &std::ffi::OsStr) -> WfResult<()> {
+    let text = name
+        .to_str()
+        .ok_or_else(|| "Windows path component is not valid Unicode".to_string())?;
+    if text.is_empty() || matches!(text, "." | "..") {
+        return Err("Unsafe Windows path component".to_string());
+    }
+    if text
+        .chars()
+        .any(|value| matches!(value, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'))
+        || text
+            .chars()
+            .any(|value| (value as u32) < 0x20 || value == '\x7f')
+        || text.ends_with('.')
+        || text.ends_with(' ')
+        || is_windows_reserved_name(text)
+    {
+        return Err(format!("Unsafe Windows path component: {}", text));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_handle_information(
+    file: &fs::File,
+) -> WfResult<windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
     let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
-    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) } == 0 {
         return Err(format!(
-            "Failed to inspect locked destination directory: {}",
+            "Failed to inspect opened workspace path: {}",
             std::io::Error::last_os_error()
         ));
     }
+    Ok(info)
+}
+
+#[cfg(windows)]
+fn validate_windows_directory_handle(file: &fs::File) -> WfResult<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+
+    let info = windows_handle_information(file)?;
     if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
         || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
     {
@@ -858,62 +1011,219 @@ fn open_windows_locked_directory(path: &Path) -> WfResult<fs::File> {
                 .to_string(),
         );
     }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn validate_windows_regular_file_handle(file: &fs::File, label: &str) -> WfResult<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+
+    let info = windows_handle_information(file)?;
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0
+    {
+        return Err(format!(
+            "{} path must be a regular, non-reparse file",
+            label
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn open_windows_regular_file_handle(path: &Path, label: &str) -> WfResult<fs::File> {
+    use std::iter::once;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    };
+
+    let wide = path
+        .as_os_str()
+        .encode_wide()
+        .chain(once(0))
+        .collect::<Vec<_>>();
+    let handle = unsafe {
+        CreateFileW(
+            wide.as_ptr(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_OPEN_REPARSE_POINT,
+            std::ptr::null_mut(),
+        )
+    };
+    if handle == INVALID_HANDLE_VALUE {
+        return Err(format!(
+            "Failed to open {}: {}",
+            label,
+            std::io::Error::last_os_error()
+        ));
+    }
+    let file = unsafe { fs::File::from_raw_handle(handle as _) };
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    if unsafe { GetFileInformationByHandle(handle, &mut info) } == 0 {
+        return Err(format!(
+            "Failed to inspect opened {}: {}",
+            label,
+            std::io::Error::last_os_error()
+        ));
+    }
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0
+    {
+        return Err(format!(
+            "{} path must be a regular, non-reparse file",
+            label
+        ));
+    }
     Ok(file)
 }
 
 #[cfg(windows)]
-fn resolve_windows_destination_parent(
+fn resolve_windows_workspace_parent(
     root: &Path,
     relative_parent: &Path,
-) -> WfResult<(PathBuf, Vec<fs::File>)> {
-    // Every retained handle omits FILE_SHARE_DELETE. Windows therefore cannot
-    // rename/delete that directory while the write is in flight, closing the
-    // validate-then-junction-swap window that path-only checks leave open.
-    let mut locked = vec![open_windows_locked_directory(root)?];
-    let mut current = root.to_path_buf();
+    create_missing: bool,
+) -> WfResult<fs::File> {
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_CREATE, FILE_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TRAVERSE, SYNCHRONIZE,
+    };
+
+    // RootDirectory makes every lookup relative to the already-open parent
+    // file object. A concurrent path rename, delete/recreate, or in-place
+    // reparse mutation can change the *name* in the namespace, but cannot
+    // redirect the child open to a different directory object.
+    let mut current = open_windows_root_directory(root)?;
     for component in relative_parent.components() {
         let Component::Normal(name) = component else {
             return Err("Unsafe workspace path component".to_string());
         };
-        let candidate = current.join(name);
-        match fs::symlink_metadata(&candidate) {
-            Ok(metadata) => {
-                if metadata.file_type().is_symlink() || !metadata.is_dir() {
-                    return Err(
-                        "Destination parent must contain only regular directories".to_string()
-                    );
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                // `current` is held without delete sharing, so this path cannot
-                // be redirected to a different parent between check and create.
-                match fs::create_dir(&candidate) {
-                    Ok(()) => {}
-                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        validate_windows_handle_component(name)?;
+        let open = || {
+            open_windows_relative_handle(
+                &current,
+                name,
+                FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                FILE_OPEN,
+                FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                FILE_ATTRIBUTE_DIRECTORY,
+            )
+        };
+        let child = match open() {
+            Ok(child) => child,
+            Err(error) if create_missing && error.kind() == std::io::ErrorKind::NotFound => {
+                match open_windows_relative_handle(
+                    &current,
+                    name,
+                    FILE_LIST_DIRECTORY | FILE_TRAVERSE | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    FILE_CREATE,
+                    FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+                    FILE_ATTRIBUTE_DIRECTORY,
+                ) {
+                    Ok(child) => child,
+                    // Another writer may have created the same component.
+                    // Re-open with FILE_OPEN_REPARSE_POINT so a junction that
+                    // won the race is inspected and rejected, never followed.
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => open()
+                        .map_err(|error| {
+                            format!("Failed to open destination directory: {}", error)
+                        })?,
                     Err(error) => {
                         return Err(format!("Failed to create destination directory: {}", error));
                     }
                 }
             }
             Err(error) => {
-                return Err(format!(
-                    "Failed to inspect destination directory: {}",
-                    error
-                ));
+                return Err(format!("Failed to open destination directory: {}", error));
             }
-        }
-        let handle = open_windows_locked_directory(&candidate)?;
-        let canonical_candidate = fs::canonicalize(&candidate)
-            .map_err(|e| format!("Failed to resolve destination parent: {}", e))?;
-        if !canonical_candidate.starts_with(root) {
-            return Err("Destination path escapes workspace via junction".to_string());
-        }
-        locked.push(handle);
-        current = candidate;
+        };
+        validate_windows_directory_handle(&child)?;
+        current = child;
     }
-    let canonical = fs::canonicalize(&current)
-        .map_err(|e| format!("Failed to resolve destination parent: {}", e))?;
-    Ok((canonical, locked))
+    Ok(current)
+}
+
+#[cfg(windows)]
+fn windows_handle_identity(file: &fs::File) -> WfResult<(u32, u32, u32)> {
+    let info = windows_handle_information(file)?;
+    Ok((
+        info.dwVolumeSerialNumber,
+        info.nFileIndexHigh,
+        info.nFileIndexLow,
+    ))
+}
+
+#[cfg(windows)]
+fn verify_windows_workspace_parent(
+    root: &Path,
+    relative_parent: &Path,
+    opened_parent: &fs::File,
+) -> WfResult<()> {
+    let current = resolve_windows_workspace_parent(root, relative_parent, false)?;
+    if windows_handle_identity(&current)? != windows_handle_identity(opened_parent)? {
+        return Err("Destination parent changed while accessing workspace file".to_string());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn open_windows_workspace_file_no_follow(
+    root: &Path,
+    relative: &Path,
+) -> WfResult<(fs::File, fs::File)> {
+    open_windows_workspace_file_no_follow_impl(root, relative, || {})
+}
+
+#[cfg(windows)]
+fn open_windows_workspace_file_no_follow_impl<F: FnOnce()>(
+    root: &Path,
+    relative: &Path,
+    after_parent_opened: F,
+) -> WfResult<(fs::File, fs::File)> {
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_NORMAL, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
+    };
+
+    let leaf = relative
+        .file_name()
+        .ok_or_else(|| "Attachment filename is invalid".to_string())?;
+    let relative_parent = relative.parent().unwrap_or_else(|| Path::new(""));
+    let parent = resolve_windows_workspace_parent(root, relative_parent, false)?;
+    // Test hook models namespace replacement after the trusted parent file
+    // object is open. The leaf open below is relative to `parent`, so it never
+    // re-resolves the attacker-controlled path.
+    after_parent_opened();
+    let file = open_windows_relative_handle(
+        &parent,
+        leaf,
+        FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        FILE_ATTRIBUTE_NORMAL,
+    )
+    .map_err(|error| format!("Failed to open attachment: {}", error))?;
+    validate_windows_regular_file_handle(&file, "attachment")?;
+    Ok((file, parent))
 }
 
 #[cfg(all(not(unix), not(windows)))]
@@ -922,61 +1232,185 @@ fn replace_portable_file(source: &Path, destination: &Path) -> std::io::Result<(
 }
 
 #[cfg(windows)]
+fn delete_windows_file_by_handle(file: &fs::File) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileDispositionInfo, SetFileInformationByHandle, FILE_DISPOSITION_INFO,
+    };
+
+    let disposition = FILE_DISPOSITION_INFO { DeleteFile: 1 };
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle() as _,
+            FileDispositionInfo,
+            &disposition as *const _ as *const _,
+            std::mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn rename_windows_file_relative(
+    file: &fs::File,
+    parent: &fs::File,
+    target_name: &std::ffi::OsStr,
+) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO,
+    };
+
+    let target_wide = target_name.encode_wide().collect::<Vec<_>>();
+    let target_bytes = target_wide
+        .len()
+        .checked_mul(std::mem::size_of::<u16>())
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Windows target filename is too long",
+            )
+        })?;
+    let header_bytes = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+    let variable_buffer_bytes = header_bytes.checked_add(target_bytes).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Windows rename buffer is too large",
+        )
+    })?;
+    // FILE_RENAME_INFO's trailing FileName member is declared as WCHAR[1].
+    // A one-code-unit target therefore still needs the structure's trailing
+    // alignment padding, even though FileNameLength contains only the real
+    // filename bytes.
+    let buffer_bytes = variable_buffer_bytes.max(std::mem::size_of::<FILE_RENAME_INFO>());
+    if buffer_bytes > u32::MAX as usize {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Windows rename buffer is too large",
+        ));
+    }
+
+    // FILE_RENAME_INFO ends with a variable-length WCHAR array. Allocate in
+    // machine words so the header cast keeps its required HANDLE alignment.
+    let word = std::mem::size_of::<usize>();
+    let mut storage = vec![0usize; buffer_bytes.div_ceil(word)];
+    let info = storage.as_mut_ptr() as *mut FILE_RENAME_INFO;
+    unsafe {
+        (*info).Anonymous.ReplaceIfExists = 1;
+        (*info).RootDirectory = parent.as_raw_handle() as _;
+        (*info).FileNameLength = target_bytes as u32;
+        std::ptr::copy_nonoverlapping(
+            target_wide.as_ptr(),
+            (*info).FileName.as_mut_ptr(),
+            target_wide.len(),
+        );
+    }
+    if unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle() as _,
+            FileRenameInfo,
+            info as *const _,
+            buffer_bytes as u32,
+        )
+    } == 0
+    {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
 fn write_relative_file_no_follow_portable(
     root: &Path,
     relative: &Path,
     bytes: &[u8],
 ) -> WfResult<()> {
-    use std::os::windows::fs::OpenOptionsExt;
-    use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+    write_relative_file_no_follow_windows_impl(root, relative, bytes, || {})
+}
 
-    let target = root.join(relative);
-    let lexical_parent = target
-        .parent()
-        .ok_or_else(|| "Destination parent is invalid".to_string())?;
-    let relative_parent = lexical_parent
-        .strip_prefix(root)
-        .map_err(|_| "Destination parent escapes workspace root".to_string())?;
-    let (canonical_parent, _locked_directories) =
-        resolve_windows_destination_parent(root, relative_parent)?;
-    let canonical_target = canonical_parent.join(target.file_name().expect("leaf validated"));
-    if let Ok(metadata) = fs::symlink_metadata(&canonical_target) {
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
-            return Err("Destination must be a regular, non-symlink file".to_string());
+#[cfg(windows)]
+fn write_relative_file_no_follow_windows_impl<F: FnOnce()>(
+    root: &Path,
+    relative: &Path,
+    bytes: &[u8],
+    after_parent_opened: F,
+) -> WfResult<()> {
+    use windows_sys::Wdk::Storage::FileSystem::{
+        FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+        FILE_SYNCHRONOUS_IO_NONALERT, FILE_WRITE_THROUGH,
+    };
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_ATTRIBUTE_NORMAL, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, FILE_WRITE_DATA, SYNCHRONIZE,
+    };
+
+    let relative_parent = relative.parent().unwrap_or_else(|| Path::new(""));
+    let leaf = relative
+        .file_name()
+        .ok_or_else(|| "Destination filename is invalid".to_string())?;
+    validate_windows_handle_component(leaf)?;
+    let parent = resolve_windows_workspace_parent(root, relative_parent, true)?;
+    after_parent_opened();
+    verify_windows_workspace_parent(root, relative_parent, &parent)?;
+
+    match open_windows_relative_handle(
+        &parent,
+        leaf,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        FILE_ATTRIBUTE_NORMAL,
+    ) {
+        Ok(existing) => validate_windows_regular_file_handle(&existing, "destination")?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!("Failed to inspect destination: {}", error));
         }
     }
+
     for nonce in 0..100u32 {
-        let temp = canonical_parent.join(format!(
+        let temp_name = format!(
             ".{}.myagents-{}-{}.tmp",
-            target
-                .file_name()
-                .expect("leaf validated")
-                .to_string_lossy(),
+            leaf.to_string_lossy(),
             std::process::id(),
             nonce
-        ));
-        let mut options = fs::OpenOptions::new();
-        options
-            .write(true)
-            .create_new(true)
-            // Omitting FILE_SHARE_DELETE keeps the newly created file from
-            // being moved outside the locked workspace while bytes are written.
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE);
-        let mut file = match options.open(&temp) {
+        );
+        let mut file = match open_windows_relative_handle(
+            &parent,
+            std::ffi::OsStr::new(&temp_name),
+            FILE_WRITE_DATA | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
+            FILE_SHARE_READ,
+            FILE_CREATE,
+            FILE_NON_DIRECTORY_FILE
+                | FILE_OPEN_REPARSE_POINT
+                | FILE_SYNCHRONOUS_IO_NONALERT
+                | FILE_WRITE_THROUGH,
+            FILE_ATTRIBUTE_NORMAL,
+        ) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(error) => return Err(format!("Failed to create attachment temp file: {}", error)),
         };
         if let Err(error) = file.write_all(bytes).and_then(|_| file.sync_all()) {
-            drop(file);
-            let _ = fs::remove_file(&temp);
+            let _ = delete_windows_file_by_handle(&file);
             return Err(format!("Failed to write attachment: {}", error));
         }
-        drop(file);
-        if let Err(error) = replace_portable_file(&temp, &canonical_target) {
-            let _ = fs::remove_file(&temp);
+        if let Err(error) = verify_windows_workspace_parent(root, relative_parent, &parent) {
+            let _ = delete_windows_file_by_handle(&file);
+            return Err(error);
+        }
+        if let Err(error) = rename_windows_file_relative(&file, &parent, leaf) {
+            let _ = delete_windows_file_by_handle(&file);
             return Err(format!("Failed to finalize attachment: {}", error));
         }
+        file.sync_all()
+            .map_err(|error| format!("Failed to flush finalized attachment: {}", error))?;
+        verify_windows_workspace_parent(root, relative_parent, &parent)?;
         return Ok(());
     }
     Err("Failed to allocate attachment temp file".to_string())
@@ -1097,6 +1531,19 @@ mod tests {
         #[cfg(windows)]
         let blacklisted = "C:\\Windows";
         assert!(validate_workspace_root(blacklisted).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rejects_workspace_root_symlink_to_blacklisted_directory() {
+        let parent = make_tmp_workspace();
+        let linked_root = parent.join("linked-root");
+        std::os::unix::fs::symlink("/etc", &linked_root).unwrap();
+
+        assert!(validate_workspace_root(linked_root.to_str().unwrap()).is_err());
+
+        let _ = fs::remove_file(&linked_root);
+        let _ = fs::remove_dir_all(&parent);
     }
 
     #[test]
@@ -1321,8 +1768,7 @@ mod tests {
         use std::os::unix::fs::symlink;
         let ws = make_tmp_workspace();
         // Target outside the workspace.
-        let outside_dir = std::env::temp_dir().join(format!("ws_outside_{}", std::process::id()));
-        fs::create_dir_all(&outside_dir).unwrap();
+        let outside_dir = make_test_workspace("path_safety_outside");
         let outside_file = outside_dir.join("secret.txt");
         fs::write(&outside_file, "secret").unwrap();
         // Symlink inside ws → outside file.
@@ -1433,6 +1879,16 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn no_follow_workspace_writer_supports_one_code_unit_filename() {
+        let ws = make_tmp_workspace();
+        write_workspace_file_no_follow(&ws, "a", b"first").unwrap();
+        write_workspace_file_no_follow(&ws, "a", b"second").unwrap();
+        assert_eq!(fs::read(ws.join("a")).unwrap(), b"second");
+        let _ = fs::remove_dir_all(&ws);
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn no_follow_workspace_writer_rejects_windows_junction_ancestors() {
         let ws = make_tmp_workspace();
         let outside = std::env::temp_dir().join(format!(
@@ -1446,6 +1902,99 @@ mod tests {
         assert!(write_workspace_file_no_follow(&ws, "linked/result.txt", b"blocked").is_err());
         assert!(!outside.join("result.txt").exists());
         let _ = junction::delete(ws.join("linked"));
+        let _ = fs::remove_dir_all(&ws);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn no_follow_workspace_reader_rejects_windows_junction_ancestors() {
+        let ws = make_tmp_workspace();
+        let outside = std::env::temp_dir().join(format!(
+            "space_attachment_windows_read_junction_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret.txt"), "outside").unwrap();
+        junction::create(&outside, ws.join("linked")).unwrap();
+
+        assert!(read_workspace_file_no_follow(&ws, "linked/secret.txt", 1024).is_err());
+        let _ = junction::delete(ws.join("linked"));
+        let _ = fs::remove_dir_all(&ws);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn no_follow_workspace_reader_opens_leaf_relative_to_verified_parent() {
+        let ws = make_tmp_workspace();
+        let safe = ws.join("safe");
+        let moved = ws.join("safe-original");
+        let outside = std::env::temp_dir().join(format!(
+            "space_attachment_windows_swap_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&safe).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(safe.join("value.txt"), "inside").unwrap();
+        fs::write(outside.join("value.txt"), "outside").unwrap();
+
+        let canonical_ws = fs::canonicalize(&ws).unwrap();
+        let (mut file, opened_parent) = open_windows_workspace_file_no_follow_impl(
+            &fs::canonicalize(&ws).unwrap(),
+            Path::new("safe/value.txt"),
+            || {
+                fs::rename(&safe, &moved).unwrap();
+                junction::create(&outside, &safe).unwrap();
+            },
+        )
+        .unwrap();
+        let mut content = String::new();
+        file.read_to_string(&mut content).unwrap();
+        assert_eq!(content, "inside");
+        assert!(
+            verify_windows_workspace_parent(&canonical_ws, Path::new("safe"), &opened_parent)
+                .is_err(),
+            "namespace replacement must be detected even though the anchored read stays safe"
+        );
+
+        drop(file);
+        drop(opened_parent);
+        let _ = junction::delete(&safe);
+        let _ = fs::remove_dir_all(&ws);
+        let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn no_follow_workspace_writer_rejects_parent_replacement_after_open() {
+        let ws = make_tmp_workspace();
+        let safe = ws.join("safe");
+        let moved = ws.join("safe-original");
+        let outside = std::env::temp_dir().join(format!(
+            "space_attachment_windows_write_swap_{}_{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(&safe).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+
+        let result = write_relative_file_no_follow_windows_impl(
+            &fs::canonicalize(&ws).unwrap(),
+            Path::new("safe/result.txt"),
+            b"blocked",
+            || {
+                fs::rename(&safe, &moved).unwrap();
+                junction::create(&outside, &safe).unwrap();
+            },
+        );
+
+        assert!(result.is_err());
+        assert!(!outside.join("result.txt").exists());
+        assert!(!moved.join("result.txt").exists());
+        let _ = junction::delete(&safe);
         let _ = fs::remove_dir_all(&ws);
         let _ = fs::remove_dir_all(&outside);
     }
@@ -1491,7 +2040,7 @@ mod tests {
         use std::os::unix::fs::symlink;
         let ws = make_tmp_workspace();
         // Stand in for `~/.myagents/skills/`.
-        let managed = std::env::temp_dir().join(format!("managed_skills_{}", std::process::id()));
+        let managed = make_test_workspace("path_safety_managed");
         let managed_skill = managed.join("baoyu-imagine");
         fs::create_dir_all(&managed_skill).unwrap();
         let real_md = managed_skill.join("SKILL.md");
