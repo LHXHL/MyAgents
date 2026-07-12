@@ -593,6 +593,7 @@ describe("spaceStore issue refresh", () => {
               avatarUrl: null,
             },
             body: "same user comment",
+            attachments: [],
             createdAt: "2026-06-24T01:00:00.000Z",
           },
         ],
@@ -703,6 +704,26 @@ describe("spaceStore issue refresh", () => {
     expect(
       getIssueListState({ limit: 50 }).items.map((issue) => issue.id),
     ).toEqual(["iss_456", "iss_123"]);
+  });
+
+  it("passes issue draft attachments into the atomic create mutation", async () => {
+    __setSpaceStoreStateForTest({ boot: "ready", session: fakeSession });
+    const newIssue = { ...fakeIssue, id: "iss_atomic", attachmentCount: 2 };
+    apiMocks.spaceCreateIssue.mockResolvedValueOnce({ issue: newIssue });
+
+    await actions.createIssue({
+      title: "Atomic issue",
+      body: "Body",
+      filePaths: ["/workspace/one.png", "/workspace/two.log"],
+    });
+
+    expect(apiMocks.spaceCreateIssue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        filePaths: ["/workspace/one.png", "/workspace/two.log"],
+      }),
+      "official",
+    );
+    expect(apiMocks.spaceUploadIssueAttachments).not.toHaveBeenCalled();
   });
 
   it("does not inject created issues into cached lists with non-matching filters", async () => {
@@ -900,15 +921,27 @@ describe("spaceStore issue refresh", () => {
       id: "cmt_123",
       author: { id: "user-1", type: "user" },
       body: "效果咋样呢？",
+      attachments: [{
+        id: "att_comment_1",
+        name: "trace.log",
+        sizeBytes: 2048,
+        createdAt: "2026-06-24T02:00:00.000Z",
+      }],
       createdAt: "2026-06-24T02:00:00.000Z",
     };
     apiMocks.spaceCommentIssue.mockResolvedValueOnce({ comment });
 
-    await actions.commentIssue("iss_123", "效果咋样呢？");
+    await actions.commentIssue("iss_123", "效果咋样呢？", ["/workspace/trace.log"]);
 
     const detail = getSnapshot().issueDetails[scoped("iss_123")]?.detail;
     expect(detail?.comments.items).toEqual([comment]);
     expect(detail?.issue.commentCount).toBe(1);
+    expect(detail?.issue.attachmentCount).toBe(1);
+    expect(apiMocks.spaceCommentIssue).toHaveBeenCalledWith(
+      "iss_123",
+      "效果咋样呢？",
+      ["/workspace/trace.log"],
+    );
     expect(getIssueListState({ limit: 50 }).items[0]?.commentCount).toBe(1);
   });
 
@@ -941,6 +974,7 @@ describe("spaceStore issue refresh", () => {
       id: "cmt_new",
       author: { id: "user-1", type: "user" },
       body: "newest",
+      attachments: [],
       createdAt: "2026-06-24T02:00:00.000Z",
     };
     __setSpaceStoreStateForTest({
@@ -1300,6 +1334,7 @@ describe("spaceStore profile actions", () => {
               avatarUrl: null,
             },
             body: "Profile-linked comment.",
+            attachments: [],
             createdAt: "2026-06-24T01:00:00.000Z",
           },
         ],

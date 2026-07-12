@@ -500,7 +500,8 @@
       "unselectedGoal": "未选择",
       "humanOnly": "仅人工",
       "continuous": "持续创建",
-      "pickAttachmentsTitle": "选择 Issue 附件"
+      "pickAttachmentsTitle": "选择 Issue 附件",
+      "attachmentLimit": "每个 Issue 最多添加 5 个附件"
     },
     "goals": {
       "title": "目标",
@@ -569,6 +570,9 @@
       "emptyComments": "暂无评论。可以直接在底部补充信息。",
       "commentPlaceholder": "说说你的想法",
       "uploadAttachmentAria": "上传附件",
+      "pickCommentAttachmentsTitle": "选择评论附件",
+      "removeCommentAttachment": "移除评论附件 {{name}}",
+      "commentAttachmentLimit": "每条评论最多添加 5 个附件",
       "sendComment": "发送评论",
       "taskCard": "Issue 任务信息",
       "creator": "创建人",

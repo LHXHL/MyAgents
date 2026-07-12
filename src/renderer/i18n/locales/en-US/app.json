@@ -500,7 +500,8 @@
       "unselectedGoal": "Not selected",
       "humanOnly": "Human-only",
       "continuous": "Keep creating",
-      "pickAttachmentsTitle": "Choose issue attachments"
+      "pickAttachmentsTitle": "Choose issue attachments",
+      "attachmentLimit": "An Issue can include up to 5 attachments"
     },
     "goals": {
       "title": "Goals",
@@ -569,6 +570,9 @@
       "emptyComments": "No comments yet. Add more context at the bottom.",
       "commentPlaceholder": "Share your thoughts",
       "uploadAttachmentAria": "Upload attachment",
+      "pickCommentAttachmentsTitle": "Choose comment attachments",
+      "removeCommentAttachment": "Remove comment attachment {{name}}",
+      "commentAttachmentLimit": "A comment can include up to 5 attachments",
       "sendComment": "Send comment",
       "taskCard": "Issue task information",
       "creator": "Creator",

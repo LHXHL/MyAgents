@@ -236,6 +236,7 @@ export interface SpaceActions {
     goalId?: string | null;
     humanOnly?: boolean;
     assignee?: { type: "user" | "registered_agent"; id: string } | null;
+    filePaths?: string[];
   }) => Promise<SpaceIssue>;
   updateIssue: (input: {
     issueId: string;
@@ -260,7 +261,7 @@ export interface SpaceActions {
     fileName?: string;
     output?: string;
   }) => Promise<SpaceDownloadAttachmentResult>;
-  commentIssue: (issueId: string, body: string) => Promise<void>;
+  commentIssue: (issueId: string, body: string, filePaths?: string[]) => Promise<void>;
   setIssueState: (issueId: string, state: string) => Promise<void>;
   closeOwnIssue: (issueId: string) => Promise<void>;
   closeIssue: (issueId: string) => Promise<void>;
@@ -1920,9 +1921,9 @@ export const actions: SpaceActions = {
 
   downloadIssueAttachment: (input) => spaceDownloadIssueAttachment(input),
 
-  commentIssue: (issueId, body) =>
+  commentIssue: (issueId, body, filePaths = []) =>
     withSpaceMutationMetric("issue.comment", async () => {
-      const result = await spaceCommentIssue(issueId, body);
+      const result = await spaceCommentIssue(issueId, body, filePaths);
       const user = state.session?.user ?? null;
       const comment = user
         ? {
@@ -1941,6 +1942,8 @@ export const actions: SpaceActions = {
           updatedAt: comment.createdAt,
           commentCount:
             (detail.issue.commentCount ?? detail.comments.items.length) + 1,
+          attachmentCount:
+            (detail.issue.attachmentCount ?? 0) + (comment.attachments?.length ?? 0),
         },
       }));
       const currentIssue =

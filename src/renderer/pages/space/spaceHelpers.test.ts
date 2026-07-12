@@ -83,14 +83,15 @@ describe("space issue helpers", () => {
   it("builds the issue command prompt around the short CLI alias", () => {
     const prompt = buildIssueCommandPrompt({
       spaceName: "MyAgents社区",
+      spaceSlug: "official",
       issueId: "iss_123",
     });
 
     expect(prompt).toContain("这是来自「MyAgents社区」团队空间的 issue");
     expect(prompt).toContain("请先读取该 issue");
-    expect(prompt).toContain("myagents space issue view iss_123 --comments");
-    expect(prompt).toContain("myagents space issue claim iss_123");
-    expect(prompt).toContain("myagents issue iss_123 --json");
+    expect(prompt).toContain("myagents space issue view iss_123 --space official --comments");
+    expect(prompt).toContain("myagents space issue claim iss_123 --space official");
+    expect(prompt).toContain("myagents issue iss_123 --space official --json");
   });
 
   it("exposes status options by permission", () => {

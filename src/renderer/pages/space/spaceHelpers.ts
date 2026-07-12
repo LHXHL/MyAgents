@@ -284,6 +284,7 @@ export function claimHandlerTypeKey(
 
 export function buildIssueCommandPrompt(args: {
   spaceName: string;
+  spaceSlug: string;
   issueId: string;
 }): string {
   return [
@@ -294,15 +295,15 @@ export function buildIssueCommandPrompt(args: {
     `Issue ID: ${args.issueId}`,
     "",
     "命令：",
-    `myagents space issue view ${args.issueId} --comments`,
+    `myagents space issue view ${args.issueId} --space ${args.spaceSlug} --comments`,
     "",
     "处理时可按需使用：",
-    `myagents space issue comment ${args.issueId} --body "<和用户确认后的处理记录>"`,
-    `myagents space issue claim ${args.issueId}`,
-    `myagents space issue complete ${args.issueId}`,
+    `myagents space issue comment ${args.issueId} --space ${args.spaceSlug} --body "<和用户确认后的处理记录>"`,
+    `myagents space issue claim ${args.issueId} --space ${args.spaceSlug}`,
+    `myagents space issue complete ${args.issueId} --space ${args.spaceSlug}`,
     "",
     "兼容命令：",
-    `myagents issue ${args.issueId} --json`,
+    `myagents issue ${args.issueId} --space ${args.spaceSlug} --json`,
   ].join("\n");
 }
 

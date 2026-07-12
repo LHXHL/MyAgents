@@ -246,6 +246,7 @@ export interface SpaceIssueComment {
   id: string;
   author: SpaceIdentitySummary & { type: "user" | "registered_agent" | "system" };
   body: string;
+  attachments: SpaceAttachment[];
   createdAt: string;
 }
 
@@ -255,6 +256,13 @@ export interface SpaceAttachment {
   sizeBytes: number;
   mimeType?: string | null;
   createdAt: string;
+}
+
+export interface SpaceAttachmentDraft {
+  path: string;
+  name: string;
+  sizeBytes: number;
+  mimeType: string;
 }
 
 export interface SpaceDownloadAttachmentResult {
@@ -303,6 +311,24 @@ export interface SpaceIssueDetail {
   };
   attachments: SpaceAttachment[];
   claim?: SpaceIssueClaim | null;
+}
+
+function normalizeSpaceIssueComment(comment: SpaceIssueComment): SpaceIssueComment {
+  return {
+    ...comment,
+    attachments: Array.isArray(comment.attachments) ? comment.attachments : [],
+  };
+}
+
+function normalizeSpaceIssueDetail(detail: SpaceIssueDetail): SpaceIssueDetail {
+  return {
+    ...detail,
+    attachments: Array.isArray(detail.attachments) ? detail.attachments : [],
+    comments: {
+      ...detail.comments,
+      items: (detail.comments?.items ?? []).map(normalizeSpaceIssueComment),
+    },
+  };
 }
 
 export interface SpaceSkill {
@@ -916,6 +942,23 @@ async function spaceApi<T>(
   return result.data as T;
 }
 
+async function spaceMutationInvoke<T>(
+  command: string,
+  input: Record<string, unknown>,
+  context: SpaceErrorContext,
+): Promise<T> {
+  try {
+    return await inv<T>(command, { input });
+  } catch (error) {
+    const normalized = normalizeSpaceError(error, context);
+    console.warn("[Space] mutation transport failed", {
+      command,
+      error: normalized.debugMessage,
+    });
+    throw spaceUserFacingError(normalized.userMessage);
+  }
+}
+
 export function spaceGetSession(): Promise<SpaceSession | null> {
   return inv("cmd_space_get_session");
 }
@@ -1187,13 +1230,22 @@ export function spaceCreateIssue(
     parentIssueId?: string | null;
     humanOnly?: boolean;
     assignee?: { type: "user" | "registered_agent"; id: string } | null;
+    filePaths?: string[];
   },
   spaceId = DEFAULT_SPACE_ID,
 ) {
-  return spaceApi<{ issue: SpaceIssue }>(
-    "POST",
-    `/api/spaces/${spacePath(spaceId)}/issues`,
-    input,
+  return spaceMutationInvoke<{ issue: SpaceIssue; attachments?: SpaceAttachment[] }>(
+    "cmd_space_create_issue_with_attachments",
+    { ...input, spaceId, filePaths: input.filePaths ?? [] },
+    { method: "POST", path: `/api/spaces/${spacePath(spaceId)}/issues` },
+  );
+}
+
+export function spaceInspectAttachmentDrafts(filePaths: string[]) {
+  return spaceMutationInvoke<SpaceAttachmentDraft[]>(
+    "cmd_space_inspect_attachment_drafts",
+    { filePaths },
+    { method: "LOCAL", path: "/space/attachment-drafts/inspect" },
   );
 }
 
@@ -1214,31 +1266,37 @@ export function spaceUpdateIssue(input: {
   );
 }
 
-export function spaceGetIssue(id: string) {
-  return spaceApi<SpaceIssueDetail>(
+export async function spaceGetIssue(id: string) {
+  const detail = await spaceApi<SpaceIssueDetail>(
     "GET",
     `/api/issues/${encodeURIComponent(id)}`,
   );
+  return normalizeSpaceIssueDetail(detail);
 }
 
-export function spaceListIssueComments(
+export async function spaceListIssueComments(
   id: string,
   input: { cursor?: string | null; limit?: number } = {},
 ) {
   const search = new URLSearchParams({ limit: String(input.limit ?? 20) });
   if (input.cursor) search.set("cursor", input.cursor);
-  return spaceApi<SpaceIssueDetail["comments"]>(
+  const comments = await spaceApi<SpaceIssueDetail["comments"]>(
     "GET",
     `/api/issues/${encodeURIComponent(id)}/comments?${search.toString()}`,
   );
+  return {
+    ...comments,
+    items: (comments.items ?? []).map(normalizeSpaceIssueComment),
+  };
 }
 
-export function spaceCommentIssue(id: string, body: string) {
-  return spaceApi<{ comment: SpaceIssueComment }>(
-    "POST",
-    `/api/issues/${encodeURIComponent(id)}/comments`,
-    { body },
+export async function spaceCommentIssue(id: string, body: string, filePaths: string[] = []) {
+  const result = await spaceMutationInvoke<{ comment: SpaceIssueComment }>(
+    "cmd_space_comment_issue_with_attachments",
+    { issueId: id, body, filePaths },
+    { method: "POST", path: `/api/issues/${encodeURIComponent(id)}/comments` },
   );
+  return { comment: normalizeSpaceIssueComment(result.comment) };
 }
 
 export function spaceSetIssueState(id: string, state: string) {

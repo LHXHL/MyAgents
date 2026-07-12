@@ -10,11 +10,9 @@ import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { GoalPathSelectLabel } from '@/pages/space/GoalPathSelectLabel';
 import type { IssueQueryParams } from '@/pages/space/spaceHelpers';
 import { SPACE_VISIBLE_REFRESH_TTL_MS, type SpaceActions } from '@/pages/space/spaceStore';
+import { IssueAttachmentDraftList } from './IssueAttachmentDraftList';
 import { IssueAssigneePicker, type AssigneeChoice } from './IssueAssigneePicker';
-
-function basename(path: string): string {
-  return path.split(/[\\/]/).pop() || path;
-}
+import { useSpaceAttachmentDrafts } from './useSpaceAttachmentDrafts';
 
 export function CreateIssueDialog({
   goals,
@@ -41,7 +39,7 @@ export function CreateIssueDialog({
   const [body, setBody] = useState('');
   const [goalId, setGoalId] = useState(issueQuery.goalId ?? '');
   const [assignee, setAssignee] = useState<SpaceIdentitySummary | null>(null);
-  const [filePaths, setFilePaths] = useState<string[]>([]);
+  const attachmentDrafts = useSpaceAttachmentDrafts(() => toast.error(t('space.createIssue.attachmentLimit')));
   const [continuous, setContinuous] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   useCloseLayer(() => {
@@ -83,41 +81,37 @@ export function CreateIssueDialog({
       const { open } = await import('@tauri-apps/plugin-dialog');
       const selected = await open({ multiple: true, directory: false, title: t('space.createIssue.pickAttachmentsTitle') });
       const next = Array.isArray(selected) ? selected : selected ? [selected] : [];
-      if (next.length > 0) {
-        setFilePaths((current) => Array.from(new Set([...current, ...next])));
-      }
+      if (next.length > 0) await attachmentDrafts.addPaths(next);
     } catch (error) {
       toast.error(spaceErrorMessage(error));
     }
   };
 
   const submit = async () => {
-    if (submittingRef.current) return;
+    if (submittingRef.current || attachmentDrafts.pending) return;
     if (!title.trim() || !body.trim()) return;
     submittingRef.current = true;
     setSubmitting(true);
     try {
-      const issue = await actions.createIssue({
+      await actions.createIssue({
         title: title.trim(),
         body: body.trim(),
         goalId: goalId || null,
         assignee: assignee?.type === 'user' || assignee?.type === 'registered_agent'
           ? { type: assignee.type, id: assignee.id }
           : null,
+        filePaths: attachmentDrafts.filePaths,
       });
-      if (filePaths.length > 0) {
-        await actions.uploadIssueAttachments(issue.id, filePaths);
-      }
       toast.success(
-        filePaths.length > 0
-          ? t('space.toasts.issueCreatedWithAttachments', { count: filePaths.length })
+        attachmentDrafts.filePaths.length > 0
+          ? t('space.toasts.issueCreatedWithAttachments', { count: attachmentDrafts.filePaths.length })
           : t('space.toasts.issueCreated'),
       );
       await actions.refreshIssues(issueQuery, { maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS, force: true, silent: true });
       if (continuous) {
         setTitle('');
         setBody('');
-        setFilePaths([]);
+        attachmentDrafts.clear();
         setAssignee(null);
         window.setTimeout(() => titleInputRef.current?.focus(), 0);
         onCreated(true);
@@ -174,32 +168,21 @@ export function CreateIssueDialog({
             className="h-full min-h-0 w-full resize-none border-0 bg-transparent p-0 text-base leading-7 text-[var(--ink-secondary)] outline-none placeholder:text-[var(--ink-muted)]/60"
             placeholder={t('space.createIssue.bodyPlaceholder')}
           />
-          {filePaths.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {filePaths.map((path) => (
-                <span key={path} className="inline-flex items-center gap-1 rounded-full bg-[var(--paper-inset)] px-2 py-1 text-xs text-[var(--ink-secondary)]">
-                  <Paperclip className="h-3.5 w-3.5" />
-                  {basename(path)}
-                  <button
-                    type="button"
-                    onClick={() => setFilePaths((current) => current.filter((item) => item !== path))}
-                    className="ml-0.5 grid h-4 w-4 place-items-center rounded-full text-[var(--ink-muted)] hover:bg-[var(--paper-elevated)] hover:text-[var(--ink)]"
-                    aria-label={t('space.createIssue.removeFile', { name: basename(path) })}
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                </span>
-              ))}
-            </div>
-          )}
+          <IssueAttachmentDraftList
+            drafts={attachmentDrafts.drafts}
+            onRemove={attachmentDrafts.remove}
+            removeLabel={(name) => t('space.createIssue.removeFile', { name })}
+            className="border-y border-[var(--line-subtle)] bg-[var(--paper-inset)]/35 px-2 py-1"
+          />
         </div>
 
         <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-4 max-lg:grid-cols-1">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <button
               type="button"
+              disabled={submitting || attachmentDrafts.pending}
               onClick={() => void pickFiles()}
-              className="inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--paper-elevated)]/80 px-3 text-sm font-semibold text-[var(--ink-muted)] shadow-sm transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+              className="inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] bg-[var(--paper-elevated)]/80 px-3 text-sm font-semibold text-[var(--ink-muted)] shadow-sm transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-70"
               aria-label={t('space.createIssue.addAttachment')}
             >
               <Paperclip className="h-4 w-4" />
@@ -245,7 +228,7 @@ export function CreateIssueDialog({
             </button>
             <button
               type="submit"
-              disabled={submitting || !title.trim() || !body.trim()}
+              disabled={submitting || attachmentDrafts.pending || !title.trim() || !body.trim()}
               className="flex h-11 items-center gap-2 rounded-full bg-[var(--button-primary-bg)] px-6 text-sm font-semibold text-[var(--button-primary-text)] shadow-sm transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
             >
               {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : null}

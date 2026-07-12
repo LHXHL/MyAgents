@@ -18,14 +18,16 @@ import {
   type SpaceIssueDetailState,
 } from '@/pages/space/spaceStore';
 import { formatBytes, formatTime } from '@/pages/space/spaceUi';
+import { IssueAttachmentDraftList } from './IssueAttachmentDraftList';
 import { IssueTaskCard } from './IssueTaskCard';
+import { useSpaceAttachmentDrafts } from './useSpaceAttachmentDrafts';
 
 function basename(path: string): string {
   return path.split(/[/\\]/).pop() || path;
 }
 
-function buildAttachmentDownloadCommand(attachmentId: string): string {
-  return `myagents space attachment download ${attachmentId}`;
+function buildAttachmentDownloadCommand(attachmentId: string, spaceSlug: string): string {
+  return `myagents space attachment download ${attachmentId} --space ${spaceSlug}`;
 }
 
 function IssueMarkdown({ children }: { children: string }) {
@@ -66,6 +68,9 @@ export function IssueDetailDrawer({
   const { t } = useTranslation('app');
   const toast = useToast();
   const [comment, setComment] = useState('');
+  const commentAttachments = useSpaceAttachmentDrafts(() => toast.error(t('space.detail.commentAttachmentLimit')));
+  const clearCommentAttachments = commentAttachments.clear;
+  const [commentFilesPicking, setCommentFilesPicking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [editingIssue, setEditingIssue] = useState(false);
   const [draftTitle, setDraftTitle] = useState('');
@@ -80,6 +85,8 @@ export function IssueDetailDrawer({
   const [commentsLoading, setCommentsLoading] = useState(false);
   const editTitleRef = useRef<HTMLInputElement | null>(null);
   const downloadMenuRef = useRef<HTMLSpanElement | null>(null);
+  const downloadMenuFirstItemRef = useRef<HTMLButtonElement | null>(null);
+  const downloadMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const scrollRef = useRef<HTMLElement | null>(null);
   const activeIssueIdRef = useRef(issueId);
   activeIssueIdRef.current = issueId;
@@ -97,6 +104,11 @@ export function IssueDetailDrawer({
     onClose();
     return true;
   }, 230);
+  useCloseLayer(() => {
+    if (!downloadTargetAttachmentId) return false;
+    setDownloadTargetAttachmentId(null);
+    return true;
+  }, 240);
 
   useEffect(() => {
     void actions.refreshIssueDetail(issueId, { maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS }).catch((error) => toast.error(spaceErrorMessage(error)));
@@ -108,7 +120,9 @@ export function IssueDetailDrawer({
     setEditingIssue(false);
     setDraftTitle('');
     setDraftBody('');
-  }, [issueId]);
+    setComment('');
+    clearCommentAttachments();
+  }, [clearCommentAttachments, issueId]);
 
   useEffect(() => {
     if (!detailIssueId || editingIssue) return;
@@ -128,6 +142,12 @@ export function IssueDetailDrawer({
     document.addEventListener('mousedown', handlePointerDown);
     return () => document.removeEventListener('mousedown', handlePointerDown);
   }, [downloadTargetAttachmentId]);
+
+  useEffect(() => {
+    if (downloadTargetAttachmentId && projects.length > 1) {
+      window.setTimeout(() => downloadMenuFirstItemRef.current?.focus(), 0);
+    }
+  }, [downloadTargetAttachmentId, projects.length]);
 
   const changeStatus = async (option: { value: string; kind: 'set-status' | 'close-own' }) => {
     if (!detail) return;
@@ -207,17 +227,40 @@ export function IssueDetailDrawer({
   };
 
   const sendComment = async () => {
-    if (!comment.trim()) return;
+    if (commentAttachments.pending || (!comment.trim() && commentAttachments.filePaths.length === 0)) return;
+    const requestedIssueId = issueId;
+    const submittedComment = comment;
+    const submittedFilePaths = commentAttachments.filePaths;
     setBusy(true);
     try {
-      await actions.commentIssue(issueId, comment.trim());
-      setComment('');
-      await actions.refreshIssueDetail(issueId, { force: true, silent: true });
+      await actions.commentIssue(requestedIssueId, submittedComment.trim(), submittedFilePaths);
+      if (activeIssueIdRef.current === requestedIssueId) {
+        setComment(current => current === submittedComment ? '' : current);
+        commentAttachments.replace(current => (
+          current.map(item => item.path).join('\0') === submittedFilePaths.join('\0') ? [] : current
+        ));
+      }
+      await actions.refreshIssueDetail(requestedIssueId, { force: true, silent: true });
       onChanged();
     } catch (error) {
       toast.error(spaceErrorMessage(error));
     } finally {
       setBusy(false);
+    }
+  };
+
+  const pickCommentFiles = async () => {
+    setCommentFilesPicking(true);
+    try {
+      const { open } = await import('@tauri-apps/plugin-dialog');
+      const selected = await open({ multiple: true, directory: false, title: t('space.detail.pickCommentAttachmentsTitle') });
+      const next = Array.isArray(selected) ? selected : selected ? [selected] : [];
+      if (next.length === 0) return;
+      await commentAttachments.addPaths(next);
+    } catch (error) {
+      toast.error(spaceErrorMessage(error));
+    } finally {
+      setCommentFilesPicking(false);
     }
   };
 
@@ -262,7 +305,7 @@ export function IssueDetailDrawer({
     }
   };
 
-  const requestAttachmentDownload = (attachment: SpaceAttachment) => {
+  const requestAttachmentDownload = (attachment: SpaceAttachment, trigger?: HTMLButtonElement) => {
     if (projects.length === 0) {
       toast.error(t('space.toasts.noAgentWorkspaces'));
       return;
@@ -271,12 +314,13 @@ export function IssueDetailDrawer({
       void downloadAttachment(attachment, projects[0].path);
       return;
     }
+    downloadMenuTriggerRef.current = trigger ?? null;
     setDownloadTargetAttachmentId((current) => (current === attachment.id ? null : attachment.id));
   };
 
   const copyAttachmentCommand = async (attachment: SpaceAttachment) => {
     try {
-      await copyPlainText(buildAttachmentDownloadCommand(attachment.id));
+      await copyPlainText(buildAttachmentDownloadCommand(attachment.id, session.space.slug));
       toast.success(t('space.toasts.attachmentCommandCopied'));
     } catch (error) {
       toast.error(spaceErrorMessage(error));
@@ -296,7 +340,11 @@ export function IssueDetailDrawer({
 
   const copyIssueCommand = async () => {
     try {
-      await copyPlainText(buildIssueCommandPrompt({ spaceName: session.space.name, issueId }));
+      await copyPlainText(buildIssueCommandPrompt({
+        spaceName: session.space.name,
+        spaceSlug: session.space.slug,
+        issueId,
+      }));
       toast.success(t('space.toasts.issueCommandCopied'));
     } catch (error) {
       toast.error(spaceErrorMessage(error));
@@ -365,6 +413,86 @@ export function IssueDetailDrawer({
       ],
     },
   ];
+
+  const renderAttachmentRow = (attachment: SpaceAttachment) => (
+    <div
+      key={attachment.id}
+      className="group grid min-h-9 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-1.5 text-sm text-[var(--ink-secondary)]"
+    >
+      <span className="flex min-w-0 items-baseline gap-2">
+        <span className="truncate font-medium text-[var(--ink-secondary)]">{attachment.name}</span>
+        <small className="shrink-0 text-xs text-[var(--ink-subtle)]">{formatBytes(attachment.sizeBytes)}</small>
+      </span>
+      <span
+        ref={downloadTargetAttachmentId === attachment.id ? downloadMenuRef : undefined}
+        className="relative flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+      >
+        <button
+          type="button"
+          disabled={downloadingAttachmentId !== null}
+          onClick={(event) => requestAttachmentDownload(attachment, event.currentTarget)}
+          className="grid h-7 w-7 place-items-center rounded-lg text-[var(--ink-muted)] outline-none transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)] disabled:cursor-not-allowed disabled:opacity-55"
+          aria-label={t('space.detail.downloadAttachment', { name: attachment.name })}
+          aria-haspopup={projects.length > 1 ? 'menu' : undefined}
+          aria-expanded={projects.length > 1 ? downloadTargetAttachmentId === attachment.id : undefined}
+          aria-controls={projects.length > 1 ? `attachment-download-menu-${attachment.id}` : undefined}
+          title={projects.length > 1 ? t('space.detail.chooseDownloadWorkspace') : t('space.detail.downloadAttachment', { name: attachment.name })}
+        >
+          {downloadingAttachmentId === attachment.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
+        </button>
+        {downloadTargetAttachmentId === attachment.id && projects.length > 1 && (
+          <div
+            id={`attachment-download-menu-${attachment.id}`}
+            role="menu"
+            aria-label={t('space.detail.downloadToAgentWorkspace')}
+            onKeyDown={(event) => {
+              if (event.key !== 'Escape') return;
+              event.preventDefault();
+              event.stopPropagation();
+              setDownloadTargetAttachmentId(null);
+              window.setTimeout(() => downloadMenuTriggerRef.current?.focus(), 0);
+            }}
+            className="absolute right-0 top-full z-30 mt-2 w-56 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-1.5 shadow-lg"
+          >
+            <div className="px-2 pb-1 text-xs font-semibold text-[var(--ink-muted)]">{t('space.detail.downloadToAgentWorkspace')}</div>
+            {projects.map((project, index) => (
+              <button
+                key={project.path}
+                ref={index === 0 ? downloadMenuFirstItemRef : undefined}
+                type="button"
+                role="menuitem"
+                disabled={downloadingAttachmentId !== null}
+                onClick={() => void downloadAttachment(attachment, project.path)}
+                className="block h-9 w-full truncate rounded-lg px-2.5 text-left text-sm font-semibold text-[var(--ink-secondary)] outline-none transition-colors hover:bg-[var(--hover-bg)] focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)] disabled:cursor-wait disabled:opacity-60"
+              >
+                {project.displayName || project.name || basename(project.path)}
+              </button>
+            ))}
+          </div>
+        )}
+        <button
+          type="button"
+          onClick={() => void copyAttachmentCommand(attachment)}
+          className="grid h-7 w-7 place-items-center rounded-lg text-[var(--ink-muted)] outline-none transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)]"
+          aria-label={t('space.detail.copyAttachmentCommand', { name: attachment.name })}
+          title={t('space.detail.copyCliDownloadCommand')}
+        >
+          <Copy className="h-3.5 w-3.5" />
+        </button>
+        {downloadedAttachmentPaths[attachment.id] && (
+          <button
+            type="button"
+            onClick={() => void copyDownloadedAttachmentPath(attachment)}
+            className="grid h-7 w-7 place-items-center rounded-lg text-[var(--ink-muted)] outline-none transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)]"
+            aria-label={t('space.detail.copyAttachmentPath', { name: attachment.name })}
+            title={t('space.detail.copyLocalPath')}
+          >
+            <FileText className="h-3.5 w-3.5" />
+          </button>
+        )}
+      </span>
+    </div>
+  );
 
   return (
     <OverlayBackdrop onClose={onClose} className="z-[230] items-stretch justify-end bg-black/20 backdrop-blur-sm">
@@ -513,65 +641,7 @@ export function IssueDetailDrawer({
                     <div className="py-2 text-sm text-[var(--ink-muted)]">{t('space.detail.emptyAttachments')}</div>
                   ) : (
                     <div className="divide-y divide-dashed divide-[var(--line-subtle)]">
-                      {detail.attachments.map((attachment) => (
-                        <div key={attachment.id} className="grid min-h-10 grid-cols-[18px_minmax(0,1fr)_auto] items-center gap-2.5 py-1.5 text-sm text-[var(--ink-secondary)]">
-                          <Paperclip className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
-                          <span className="min-w-0">
-                            <span className="block truncate">{attachment.name}</span>
-                            <small className="block text-xs leading-4 text-[var(--ink-subtle)]">{formatBytes(attachment.sizeBytes)}</small>
-                          </span>
-                          <span
-                            ref={downloadTargetAttachmentId === attachment.id ? downloadMenuRef : undefined}
-                            className="relative flex items-center gap-1"
-                          >
-                            <button
-                              type="button"
-                              disabled={downloadingAttachmentId !== null}
-                              onClick={() => requestAttachmentDownload(attachment)}
-                              className="grid h-7 w-7 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-55"
-                              aria-label={t('space.detail.downloadAttachment', { name: attachment.name })}
-                              title={projects.length > 1 ? t('space.detail.chooseDownloadWorkspace') : t('space.detail.downloadAttachment', { name: attachment.name })}
-                            >
-                              {downloadingAttachmentId === attachment.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Download className="h-3.5 w-3.5" />}
-                            </button>
-                            {downloadTargetAttachmentId === attachment.id && projects.length > 1 && (
-                              <div className="absolute right-0 top-full z-30 mt-2 w-56 rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-1.5 shadow-lg">
-                                <div className="px-2 pb-1 text-xs font-semibold text-[var(--ink-muted)]">{t('space.detail.downloadToAgentWorkspace')}</div>
-                                {projects.map((project) => (
-                                  <button
-                                    key={project.path}
-                                    type="button"
-                                    disabled={downloadingAttachmentId !== null}
-                                    onClick={() => void downloadAttachment(attachment, project.path)}
-                                    className="block h-9 w-full truncate rounded-lg px-2.5 text-left text-sm font-semibold text-[var(--ink-secondary)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-wait disabled:opacity-60"
-                                  >
-                                    {project.displayName || project.name || basename(project.path)}
-                                  </button>
-                                ))}
-                              </div>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => void copyAttachmentCommand(attachment)}
-                              className="grid h-7 w-7 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                              aria-label={t('space.detail.copyAttachmentCommand', { name: attachment.name })}
-                              title={t('space.detail.copyCliDownloadCommand')}
-                            >
-                              <Copy className="h-3.5 w-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              disabled={!downloadedAttachmentPaths[attachment.id]}
-                              onClick={() => void copyDownloadedAttachmentPath(attachment)}
-                              className="grid h-7 w-7 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-45"
-                              aria-label={t('space.detail.copyAttachmentPath', { name: attachment.name })}
-                              title={t('space.detail.copyLocalPath')}
-                            >
-                              <FileText className="h-3.5 w-3.5" />
-                            </button>
-                          </span>
-                        </div>
-                      ))}
+                      {detail.attachments.map(renderAttachmentRow)}
                     </div>
                   )}
                 </section>
@@ -631,13 +701,24 @@ export function IssueDetailDrawer({
                           />
                           <span>{formatTime(item.createdAt)}</span>
                         </div>
-                        <IssueMarkdown>{item.body}</IssueMarkdown>
+                        {item.body.trim() && <IssueMarkdown>{item.body}</IssueMarkdown>}
+                        {(item.attachments?.length ?? 0) > 0 && (
+                          <div className={`${item.body.trim() ? 'mt-3' : ''} divide-y divide-[var(--line-subtle)] border-y border-[var(--line-subtle)]`}>
+                            {(item.attachments ?? []).map(renderAttachmentRow)}
+                          </div>
+                        )}
                       </article>
                     ))
                   )}
                 </div>
 
                 <div className="mt-6 overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)]/70 shadow-sm">
+                  <IssueAttachmentDraftList
+                    drafts={commentAttachments.drafts}
+                    onRemove={commentAttachments.remove}
+                    removeLabel={(name) => t('space.detail.removeCommentAttachment', { name })}
+                    className="border-b border-[var(--line-subtle)] bg-[var(--paper-inset)]/45 px-4 py-1"
+                  />
                   <textarea
                     value={comment}
                     onChange={(event) => setComment(event.target.value)}
@@ -647,17 +728,17 @@ export function IssueDetailDrawer({
                   <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2 px-2.5 pb-2.5">
                     <button
                       type="button"
-                      disabled={attachmentUploading}
-                      onClick={() => void uploadAttachments()}
+                      disabled={commentFilesPicking || commentAttachments.pending || busy || commentAttachments.filePaths.length >= 5}
+                      onClick={() => void pickCommentFiles()}
                       className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-70"
                       aria-label={t('space.detail.uploadAttachmentAria')}
                     >
-                      {attachmentUploading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
+                      {commentFilesPicking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
                     </button>
                     <span />
                     <button
                       type="button"
-                      disabled={busy || !comment.trim()}
+                      disabled={busy || commentAttachments.pending || (!comment.trim() && commentAttachments.filePaths.length === 0)}
                       onClick={() => void sendComment()}
                       className="grid h-9 w-9 place-items-center rounded-xl bg-[var(--button-primary-bg)] text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
                       aria-label={t('space.detail.sendComment')}
