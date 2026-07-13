@@ -1206,7 +1206,7 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "32";
+const SYSTEM_SKILLS_VERSION: &str = "33";
 
 /// Skills that ship with the app and MUST stay at the bundled version —
 /// the app's flows depend on them, users are not meant to customise.
@@ -1241,9 +1241,10 @@ const SYSTEM_SKILLS: &[&str] = &[
     // contract must track the registry's server-side validation (800-char
     // description cap, reserved names) in lockstep.
     "tool-creator",
-    // v27: MyAgents Evo long-term memory maintenance skills. These are
-    // managed task targets, so their bundled contract must stay in lockstep
-    // with the Agent Settings Evo scheduler and rule-substrate templates.
+    // v33: MyAgents memory maintenance skills. These are managed flow
+    // targets, so their bundled contracts must stay in lockstep with the
+    // hidden scheduler, injected-turn prompt, and rule-substrate templates.
+    "myagents-memory-update",
     "myagents-memory-gardener",
     "myagents-memory-molt",
     // v29: prompt-writer promoted from utility → system skill. It is pure
@@ -1283,9 +1284,65 @@ fn is_skill_blocked_on_platform(skill_folder: &str) -> bool {
 /// body moves off-thread, not just the copy loop.
 #[tauri::command]
 pub async fn cmd_sync_system_skills<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || sync_system_skills_blocking(app_handle))
+    sync_system_skills_for_startup(app_handle).await
+}
+
+/// Force-sync and then verify the complete versioned system-skill snapshot.
+///
+/// This is shared by the renderer command and Rust startup automation so
+/// hidden maintenance tasks never depend on ConfigProvider having mounted.
+pub(crate) async fn sync_system_skills_for_startup<R: Runtime>(
+    app_handle: AppHandle<R>,
+) -> Result<bool, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = sync_system_skills_blocking(app_handle)?;
+        ensure_system_skills_installation_current()?;
+        Ok(changed)
+    })
+    .await
+    .map_err(|e| format!("system-skills sync task failed: {}", e))?
+}
+
+/// Cheap dispatch-time fence for flows that hard-depend on system skills.
+/// Startup performs the real sync; this check turns a packaging or disk
+/// failure into a recorded task failure instead of letting the model improvise
+/// without the official workflow.
+pub(crate) async fn ensure_system_skills_current() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(ensure_system_skills_installation_current)
         .await
-        .map_err(|e| format!("system-skills sync task failed: {}", e))?
+        .map_err(|e| format!("system-skills readiness task failed: {}", e))?
+}
+
+fn ensure_system_skills_installation_current() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("Home dir not found")?;
+    ensure_system_skills_installation_current_at(&home.join(".myagents"))
+}
+
+fn ensure_system_skills_installation_current_at(myagents_dir: &Path) -> Result<(), String> {
+    let version_path = myagents_dir.join(".system-skills-version");
+    let installed_version = fs::read_to_string(&version_path).map_err(|e| {
+        format!(
+            "system skills are not ready: failed to read {}: {}",
+            version_path.display(),
+            e
+        )
+    })?;
+    if installed_version.trim() != SYSTEM_SKILLS_VERSION {
+        return Err(format!(
+            "system skills are not ready: installed version {:?}, expected {}",
+            installed_version.trim(),
+            SYSTEM_SKILLS_VERSION
+        ));
+    }
+
+    let skills_dir = myagents_dir.join("skills");
+    if !all_installed_system_skills_complete(&skills_dir) {
+        return Err(format!(
+            "system skills are not ready: one or more required SKILL.md files are missing under {}",
+            skills_dir.display()
+        ));
+    }
+    Ok(())
 }
 
 fn sync_system_skills_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String> {
@@ -1505,8 +1562,9 @@ fn merge_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod system_skills_tests {
     use super::{
-        all_installed_system_skills_complete, is_skill_blocked_on_platform, skill_dir_is_complete,
-        sync_one_system_skill, SystemSkillSync, SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
+        all_installed_system_skills_complete, ensure_system_skills_installation_current_at,
+        is_skill_blocked_on_platform, skill_dir_is_complete, sync_one_system_skill,
+        SystemSkillSync, SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
     };
     use std::fs;
 
@@ -1528,12 +1586,108 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v32_refreshes_the_space_cli_contract() {
-        assert_eq!(SYSTEM_SKILLS_VERSION, "32");
+    fn v33_refreshes_memory_maintenance_and_space_cli_contracts() {
+        assert_eq!(SYSTEM_SKILLS_VERSION, "33");
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
         assert!(bundled.contains("myagents space list --json"));
         assert!(bundled.contains("myagents space whoami --space <slug> --json"));
         assert!(bundled.contains("所有 Space 业务命令都必须带 `--space <slug>`"));
+
+        let memory_update = include_str!("../../bundled-skills/myagents-memory-update/SKILL.md");
+        assert!(memory_update.contains("仅当指令明确写出完整名称 `myagents-memory-update` 时使用"));
+        assert!(memory_update.contains("commit 并成功 push"));
+        assert!(SYSTEM_SKILLS.contains(&"myagents-memory-update"));
+    }
+
+    #[test]
+    fn rust_and_node_system_skill_lists_match() {
+        let node = include_str!("../../src/server/index.ts");
+        let body = node
+            .split_once("const SYSTEM_SKILLS: readonly string[] = [")
+            .expect("Node SYSTEM_SKILLS declaration")
+            .1
+            .split_once("];")
+            .expect("Node SYSTEM_SKILLS terminator")
+            .0;
+        let node_skills: Vec<&str> = body
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let rest = line.strip_prefix('\'')?;
+                rest.split_once('\'').map(|(name, _)| name)
+            })
+            .collect();
+
+        assert_eq!(node_skills, SYSTEM_SKILLS);
+    }
+
+    #[test]
+    fn all_memory_skill_descriptions_require_the_exact_full_name() {
+        for (name, content) in [
+            (
+                "myagents-memory-update",
+                include_str!("../../bundled-skills/myagents-memory-update/SKILL.md"),
+            ),
+            (
+                "myagents-memory-gardener",
+                include_str!("../../bundled-skills/myagents-memory-gardener/SKILL.md"),
+            ),
+            (
+                "myagents-memory-molt",
+                include_str!("../../bundled-skills/myagents-memory-molt/SKILL.md"),
+            ),
+        ] {
+            assert!(
+                content.contains(&format!("仅当指令明确写出完整名称 `{name}` 时使用")),
+                "{name} must use the exact-name-only trigger contract"
+            );
+        }
+    }
+
+    #[test]
+    fn automation_startup_sync_precedes_task_scheduler_recovery() {
+        let source = include_str!("cron_task/init_recovery.rs");
+        let sync = source
+            .find("sync_system_skills_for_startup")
+            .expect("startup system-skill sync");
+        let scheduler = source
+            .find("get_task_scheduler()")
+            .expect("task scheduler recovery");
+        assert!(sync < scheduler);
+    }
+
+    #[test]
+    fn dispatch_readiness_requires_current_version_and_complete_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let myagents_dir = tmp.path();
+        let skills_dir = myagents_dir.join("skills");
+        for name in SYSTEM_SKILLS {
+            if is_skill_blocked_on_platform(name) {
+                continue;
+            }
+            let dir = skills_dir.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("SKILL.md"), "x").unwrap();
+        }
+
+        fs::write(
+            myagents_dir.join(".system-skills-version"),
+            SYSTEM_SKILLS_VERSION,
+        )
+        .unwrap();
+        ensure_system_skills_installation_current_at(myagents_dir)
+            .expect("current complete snapshot is ready");
+
+        fs::write(myagents_dir.join(".system-skills-version"), "32").unwrap();
+        assert!(ensure_system_skills_installation_current_at(myagents_dir).is_err());
+
+        fs::write(
+            myagents_dir.join(".system-skills-version"),
+            SYSTEM_SKILLS_VERSION,
+        )
+        .unwrap();
+        fs::remove_file(skills_dir.join("myagents-memory-update").join("SKILL.md")).unwrap();
+        assert!(ensure_system_skills_installation_current_at(myagents_dir).is_err());
     }
 
     #[test]

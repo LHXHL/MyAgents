@@ -86,6 +86,17 @@ pub async fn execute_task(
 ) -> Result<TaskExecutionOutcome, String> {
     let started = Instant::now();
 
+    if matches!(
+        task.managed_kind.as_deref(),
+        Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH)
+            | Some(crate::task::MANAGED_KIND_MEMORY_GARDENER)
+            | Some(crate::task::MANAGED_KIND_MEMORY_MOLT)
+    ) {
+        crate::commands::ensure_system_skills_current()
+            .await
+            .map_err(|error| format!("memory maintenance system skill unavailable: {error}"))?;
+    }
+
     if task.managed_kind.as_deref() == Some(crate::task::MANAGED_KIND_MEMORY_AUTO_UPDATE_BATCH) {
         let batch =
             crate::memory_auto_update::run_managed_task_batch(handle, task, queue_id).await?;

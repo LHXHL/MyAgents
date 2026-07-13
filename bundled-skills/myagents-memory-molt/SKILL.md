@@ -1,8 +1,8 @@
 ---
 name: myagents-memory-molt
 description: >
-  MyAgents 记忆系统 Skill ，用于基于长期记忆对 Agent 的底层工作原则做阶段性复盘和进化，
-  让行为保持连续但能随项目经验成长。
+  仅当指令明确写出完整名称 `myagents-memory-molt` 时使用；基于长期记忆对 Agent 的
+  底层工作原则做阶段性复盘和进化，让行为保持连续但能随项目经验成长。
 ---
 
 # MyAgents Memory Molt
