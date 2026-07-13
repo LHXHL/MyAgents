@@ -479,6 +479,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         request.analyticsOrigin,
         {
+          allowLazySessionMaterialization: request.metadataBirthPending === true,
           queueId,
           turnOwner: request.turnOwner,
           onTerminal: async (outcome) => {

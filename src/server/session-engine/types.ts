@@ -134,6 +134,7 @@ export type InjectedTurnRequest = {
   sessionId: string;
   workspacePath: string;
   scenario: InteractionScenario;
+  metadataBirthPending?: boolean;
   permissionMode?: string;
   model?: string;
   reasoningEffort?: string;

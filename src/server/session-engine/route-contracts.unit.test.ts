@@ -79,5 +79,10 @@ describe('SESSION_ENGINE_ROUTE_CONTRACTS', () => {
       engineMethod: 'stopOwnedTurnByQueueId',
       requiredFields: ['taskId', 'queueId'],
     });
+    expect(findSessionEngineRouteContract('/api/im/heartbeat', 'POST')).toMatchObject({
+      engineMethod: 'runInjectedTurn',
+      responseKeys: expect.arrayContaining(['messageEnqueued']),
+      behavior: expect.stringContaining('metadataBirthPending'),
+    });
   });
 });

@@ -751,6 +751,58 @@ describe('external SessionEngine with fake runtime', () => {
     }));
   });
 
+  it('materializes a birth-pending Agent Channel session through an injected turn', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'cron relay ready' },
+    ]);
+    const sessionId = 'session-agent-channel-birth-pending';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const result = await harness.engine.runInjectedTurn({
+      prompt: 'relay cron completion',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+      metadataBirthPending: true,
+      timeoutMs: 2_000,
+      pollMs: 10,
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      enqueued: true,
+      text: 'cron relay ready',
+    });
+    expect(harness.runtime.sentMessages).toEqual(['relay cron completion']);
+    expect(harness.sessionStore.getSessionData(sessionId)).toMatchObject({
+      id: sessionId,
+      agentDir: workspacePath,
+    });
+  });
+
+  it('keeps missing Agent Channel metadata fail-closed without Router birth authority', async () => {
+    const harness = await createHarness([]);
+    const sessionId = 'session-agent-channel-without-birth';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const result = await harness.engine.runInjectedTurn({
+      prompt: 'must not recreate deleted session',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+      timeoutMs: 2_000,
+      pollMs: 10,
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      enqueued: false,
+      error: expect.stringContaining('Refusing to create missing metadata'),
+    });
+    expect(harness.runtime.sentMessages).toEqual([]);
+    expect(harness.sessionStore.getSessionData(sessionId)).toBeNull();
+  });
+
   it('does not report failed injected turns as successful', async () => {
     const harness = await createHarness([
       { kind: 'failure', error: 'fake turn failed' },

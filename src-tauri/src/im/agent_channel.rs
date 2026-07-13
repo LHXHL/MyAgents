@@ -2431,16 +2431,21 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                                 .await;
                                 match result {
                                     Ok(_) => {
-                                        {
+                                        let birth_consumed = {
                                             let mut router_guard = task_router.lock().await;
-                                            router_guard.mark_metadata_birth_consumed(&session_key);
+                                            router_guard.mark_metadata_birth_consumed_if_session(
+                                                &session_key,
+                                                &sidecar_session_id_initial,
+                                            )
+                                        };
+                                        if birth_consumed {
+                                            let _ = health::persist_router_active_sessions(
+                                                &task_health,
+                                                &task_router,
+                                                "buffer-replay-birth-consumed",
+                                            )
+                                            .await;
                                         }
-                                        let _ = health::persist_router_active_sessions(
-                                            &task_health,
-                                            &task_router,
-                                            "buffer-replay-birth-consumed",
-                                        )
-                                        .await;
                                         ulog_info!(
                                             "[im] Replayed buffered requestId={} session_key={}",
                                             buf_request_id, session_key,
@@ -2568,16 +2573,21 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                         .await
                         {
                             Ok(_session_hint) => {
-                                {
+                                let birth_consumed = {
                                     let mut router_guard = task_router.lock().await;
-                                    router_guard.mark_metadata_birth_consumed(&session_key);
+                                    router_guard.mark_metadata_birth_consumed_if_session(
+                                        &session_key,
+                                        &sidecar_session_id_initial,
+                                    )
+                                };
+                                if birth_consumed {
+                                    let _ = health::persist_router_active_sessions(
+                                        &task_health,
+                                        &task_router,
+                                        "message-birth-consumed",
+                                    )
+                                    .await;
                                 }
-                                let _ = health::persist_router_active_sessions(
-                                    &task_health,
-                                    &task_router,
-                                    "message-birth-consumed",
-                                )
-                                .await;
                                 ulog_info!(
                                     "[im] Enqueued requestId={} session_key={}",
                                     request_id, session_key,

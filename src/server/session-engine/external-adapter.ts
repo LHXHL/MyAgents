@@ -445,6 +445,7 @@ export function createExternalSessionEngine(): SessionEngine {
           permissionMode: request.permissionMode,
           model: request.model,
           reasoningEffort: request.reasoningEffort,
+          metadataBirthPending: request.metadataBirthPending === true,
           analyticsOrigin: request.analyticsOrigin,
           queueId,
           turnOwner: request.turnOwner,

@@ -1087,13 +1087,23 @@ impl SessionRouter {
             .unwrap_or(false)
     }
 
-    /// The sidecar accepted the first enqueue for this peer binding. Metadata is
-    /// now expected to exist; future missing metadata means deletion/corruption.
-    pub fn mark_metadata_birth_consumed(&mut self, session_key: &str) {
-        if let Some(ps) = self.peer_sessions.get_mut(session_key) {
-            ps.metadata_birth_pending = false;
-            ps.metadata_indexed = true;
+    /// The sidecar accepted the first enqueue for this exact peer-session
+    /// incarnation. The expected id fences delayed ACKs from an older binding:
+    /// `session_key` is stable across runtime/model rotations, `session_id` is not.
+    pub fn mark_metadata_birth_consumed_if_session(
+        &mut self,
+        session_key: &str,
+        expected_session_id: &str,
+    ) -> bool {
+        let Some(ps) = self.peer_sessions.get_mut(session_key) else {
+            return false;
+        };
+        if ps.session_id != expected_session_id || !ps.metadata_birth_pending {
+            return false;
         }
+        ps.metadata_birth_pending = false;
+        ps.metadata_indexed = true;
+        true
     }
 
     // ===== Surface handover helpers (PRD 0.2.14) =====
@@ -1822,7 +1832,7 @@ mod tests {
                 .metadata_indexed
         );
 
-        router.mark_metadata_birth_consumed(session_key);
+        assert!(router.mark_metadata_birth_consumed_if_session(session_key, "new-session"));
         assert!(!router.metadata_birth_pending(session_key));
         assert!(
             router
@@ -1830,6 +1840,40 @@ mod tests {
                 .expect("peer session exists")
                 .metadata_indexed
         );
+    }
+
+    #[test]
+    fn stale_session_ack_cannot_consume_new_binding_birth_authority() {
+        let session_key = "agent:a:feishu:private:user";
+        let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+        let old_info = EnsureSidecarInfo {
+            session_key: session_key.to_string(),
+            session_id: "session-a".to_string(),
+            workspace: PathBuf::from("/tmp/workspace"),
+            prev_count: 0,
+            metadata_birth_pending: true,
+            metadata_indexed: false,
+            runtime_override: None,
+            runtime_source_override: None,
+        };
+        let new_info = EnsureSidecarInfo {
+            session_id: "session-b".to_string(),
+            ..old_info.clone()
+        };
+
+        router.commit_ensure_sidecar(session_key, &old_info, 1234);
+        router.commit_ensure_sidecar(session_key, &new_info, 5678);
+
+        assert!(!router.mark_metadata_birth_consumed_if_session(session_key, "session-a"));
+        let current = router
+            .peer_session_snapshot(session_key)
+            .expect("new binding should remain present");
+        assert_eq!(current.session_id, "session-b");
+        assert!(current.metadata_birth_pending);
+        assert!(!current.metadata_indexed);
+
+        assert!(router.mark_metadata_birth_consumed_if_session(session_key, "session-b"));
+        assert!(!router.metadata_birth_pending(session_key));
     }
 
     #[test]

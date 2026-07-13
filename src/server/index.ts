@@ -8840,7 +8840,7 @@ async function main() {
             );
             cronEvents = [];
           }
-          return jsonResponse(resp, code);
+          return jsonResponse({ ...resp, messageEnqueued }, code);
         };
 
         try {
@@ -8853,6 +8853,7 @@ async function main() {
             runtime?: RuntimeType;
             runtimeConfig?: RuntimeConfig;
             hostInteraction?: unknown;
+            metadataBirthPending?: boolean;
             // v0.2.4: Rust-side authoritative cron events. When non-empty, this
             // payload is the truth source and REPLACES any cron events in the
             // sidecar's in-memory `systemEventQueue` (Rust survives sidecar
@@ -8875,7 +8876,7 @@ async function main() {
           };
 
           if (!payload.prompt) {
-            return jsonResponse({ status: 'silent', reason: 'empty' });
+            return respondAfterDrain({ status: 'silent', reason: 'empty' });
           }
 
           // --- Gate: Read HEARTBEAT.md from workspace root ---
@@ -8997,7 +8998,7 @@ description: >
             && bodyCronEvents.length === 0
           ) {
             console.log('[im/heartbeat] Skipped: HEARTBEAT.md is empty and no pending events');
-            return jsonResponse({ status: 'silent', reason: 'empty_heartbeat_md' });
+            return respondAfterDrain({ status: 'silent', reason: 'empty_heartbeat_md' });
           }
 
           let enrichedPrompt: string;
@@ -9053,6 +9054,7 @@ description: >
               sourceType: payload.source?.includes('group') ? 'group' : 'private',
               hostInteraction: normalizeHostInteractionCapability(payload.hostInteraction),
             },
+            metadataBirthPending: payload.metadataBirthPending === true,
             permissionMode: engine.kind === 'external'
               ? getRuntimeConfigPermissionMode(runtimeConfig, activeRuntime)
               : 'fullAgency',
@@ -9124,7 +9126,11 @@ description: >
           }
           console.error('[im/heartbeat] Error:', error);
           return jsonResponse(
-            { status: 'error', text: error instanceof Error ? error.message : 'Heartbeat error' },
+            {
+              status: 'error',
+              text: error instanceof Error ? error.message : 'Heartbeat error',
+              messageEnqueued,
+            },
             500,
           );
         }

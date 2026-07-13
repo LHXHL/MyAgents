@@ -144,9 +144,9 @@ export const SESSION_ENGINE_ROUTE_CONTRACTS: SessionEngineRouteContract[] = [
     method: 'POST',
     engineMethod: 'runInjectedTurn',
     requiredFields: ['prompt', 'source', 'sourceId'],
-    responseKeys: ['status', 'text', 'reason'],
+    responseKeys: ['status', 'text', 'reason', 'messageEnqueued'],
     failureStatuses: [200, 500],
-    behavior: 'Runs a synchronous heartbeat turn and lets the route own event drain/requeue semantics; runtime failures are body-level status values on HTTP 200 unless parsing/handler throws.',
+    behavior: 'Runs a synchronous heartbeat turn, forwards Router-owned metadataBirthPending, exposes the engine enqueue acknowledgement as messageEnqueued, and lets the route own event drain/requeue semantics; runtime failures are body-level status values on HTTP 200 unless parsing/handler throws.',
   },
   {
     path: '/api/memory/update',

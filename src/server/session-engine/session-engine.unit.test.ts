@@ -1002,6 +1002,28 @@ describe('session-engine selector and adapters', () => {
       .toBeLessThan(mocks.enqueueUserMessage.mock.invocationCallOrder[0]);
   });
 
+  it.each([
+    { metadataBirthPending: true, expected: true },
+    { metadataBirthPending: undefined, expected: false },
+  ])(
+    'maps builtin injected-turn birth authority to lazy materialization: $expected',
+    async ({ metadataBirthPending, expected }) => {
+      await getSessionEngine().runInjectedTurn({
+        prompt: 'heartbeat',
+        sessionId: 'sid',
+        workspacePath: '/workspace',
+        scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+        metadataBirthPending,
+        permissionMode: 'fullAgency',
+        timeoutMs: 1000,
+      });
+
+      expect(mocks.enqueueUserMessage.mock.calls[0][11]).toMatchObject({
+        allowLazySessionMaterialization: expected,
+      });
+    },
+  );
+
   it('uses the queue item terminal observer instead of global message history', async () => {
     mocks.enqueueUserMessage.mockImplementationOnce(async (...args: unknown[]) => {
       const options = args[11] as {
@@ -1208,6 +1230,38 @@ describe('session-engine selector and adapters', () => {
       }),
     );
   });
+
+  it.each([
+    { metadataBirthPending: true, expected: true },
+    { metadataBirthPending: undefined, expected: false },
+  ])(
+    'maps external injected-turn birth authority to runtime materialization: $expected',
+    async ({ metadataBirthPending, expected }) => {
+      mocks.state.useExternal = true;
+
+      await getSessionEngine().runInjectedTurn({
+        prompt: 'heartbeat',
+        sessionId: 'sid',
+        workspacePath: '/workspace',
+        scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+        metadataBirthPending,
+        permissionMode: 'no-restrictions',
+        timeoutMs: 1000,
+      });
+
+      expect(mocks.sendExternalMessage).toHaveBeenCalledWith(
+        'heartbeat',
+        undefined,
+        undefined,
+        undefined,
+        expect.objectContaining({
+          sessionId: 'sid',
+          workspacePath: '/workspace',
+          metadataBirthPending: expected,
+        }),
+      );
+    },
+  );
 
   it('updates official tool ids through the builtin engine owner', async () => {
     const result = await getSessionEngine().updateOfficialToolIds(['image-understanding']);

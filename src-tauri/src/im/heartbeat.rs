@@ -24,11 +24,16 @@ use super::{AnyAdapter, PeerLocks};
 
 /// Response from sidecar /api/im/heartbeat endpoint
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct HeartbeatResponse {
     status: String, // "silent" | "content" | "error"
     text: Option<String>,
     #[allow(dead_code)]
     reason: Option<String>,
+    /// True only when SessionEngine accepted the injected turn. A birth-pending
+    /// peer can consume its one-time materialization authority at this boundary.
+    #[serde(default)]
+    message_enqueued: bool,
 }
 
 fn cron_event_matches_session(event: &PendingCronEvent, session_key: &str) -> bool {
@@ -69,6 +74,9 @@ struct HeartbeatRequest {
     runtime: String,
     runtime_config: Option<serde_json::Value>,
     host_interaction: HostInteractionCapability,
+    /// SessionRouter-owned authority for materializing a Rust-minted peer
+    /// session that has not reached SessionStore yet.
+    metadata_birth_pending: bool,
     /// Pending cron events held by Rust as the authoritative payload (v0.2.4).
     /// When non-empty, the sidecar handler MUST use these instead of (or in
     /// addition to) the in-memory `systemEventQueue` — sidecar-side queue is
@@ -633,6 +641,33 @@ impl HeartbeatRunner {
             );
         }
 
+        // Capture the exact binding that owns this request. `session_key` is
+        // stable across runtime/model rotation, so it cannot fence a delayed ACK.
+        let binding = {
+            let router_guard = router.lock().await;
+            router_guard.peer_session_snapshot(&session_key)
+        };
+        let Some(binding) = binding else {
+            ulog_warn!(
+                "[heartbeat] Peer binding disappeared before dispatch for {}",
+                session_key
+            );
+            *self.executing.lock().await = false;
+            return false;
+        };
+        if binding.sidecar_port != port {
+            ulog_warn!(
+                "[heartbeat] Peer binding rotated before dispatch for {} (ensured_port={}, current_port={})",
+                session_key,
+                port,
+                binding.sidecar_port
+            );
+            *self.executing.lock().await = false;
+            return false;
+        }
+        let expected_session_id = binding.session_id;
+        let metadata_birth_pending = binding.metadata_birth_pending;
+
         // Call sidecar heartbeat endpoint (peer_lock is held — no concurrent IM chat possible)
         let request = HeartbeatRequest {
             prompt,
@@ -643,6 +678,7 @@ impl HeartbeatRunner {
             runtime: current_runtime.clone(),
             runtime_config: self.runtime_config.read().await.clone(),
             host_interaction: self.host_interaction.clone(),
+            metadata_birth_pending,
             pending_cron_events: pending_snapshot.clone(),
         };
 
@@ -700,6 +736,36 @@ impl HeartbeatRunner {
                 return false;
             }
         };
+
+        // Match ordinary IM enqueue semantics: consume the Router-owned birth
+        // authority only after SessionEngine confirms that it accepted the
+        // first turn. AI relay or outbound push may still fail independently.
+        if metadata_birth_pending && result.message_enqueued {
+            let birth_consumed = {
+                let mut router_guard = router.lock().await;
+                router_guard
+                    .mark_metadata_birth_consumed_if_session(&session_key, &expected_session_id)
+            };
+            if birth_consumed {
+                let _ = health::persist_router_active_sessions(
+                    health,
+                    router,
+                    "heartbeat-birth-consumed",
+                )
+                .await;
+                ulog_info!(
+                    "[heartbeat] Consumed metadata birth after Sidecar accepted turn for {} ({})",
+                    session_key,
+                    expected_session_id
+                );
+            } else {
+                ulog_warn!(
+                    "[heartbeat] Ignored metadata birth ACK for stale session {} ({})",
+                    session_key,
+                    expected_session_id
+                );
+            }
+        }
 
         // Did this cycle successfully ack a cron event? Set inside the "content"
         // arm when push to IM succeeded AND the snapshotted event was cleared
@@ -955,5 +1021,41 @@ mod tests {
             count_pending_cron_events_for_session(&pending, "im:feishu:private:b"),
             2,
         );
+    }
+
+    #[test]
+    fn heartbeat_request_serializes_metadata_birth_authority() {
+        let request = HeartbeatRequest {
+            prompt: "heartbeat".to_string(),
+            source: "feishu_private".to_string(),
+            source_id: "peer-1".to_string(),
+            ack_max_chars: 300,
+            is_high_priority: true,
+            runtime: "codex".to_string(),
+            runtime_config: None,
+            host_interaction: HostInteractionCapability::none(),
+            metadata_birth_pending: true,
+            pending_cron_events: Vec::new(),
+        };
+
+        let payload = serde_json::to_value(request).expect("heartbeat request should serialize");
+
+        assert_eq!(payload["metadataBirthPending"].as_bool(), Some(true));
+    }
+
+    #[test]
+    fn heartbeat_response_deserializes_enqueue_ack_with_safe_default() {
+        let accepted: HeartbeatResponse = serde_json::from_value(serde_json::json!({
+            "status": "error",
+            "messageEnqueued": true,
+        }))
+        .expect("heartbeat response with enqueue ack should deserialize");
+        let legacy: HeartbeatResponse = serde_json::from_value(serde_json::json!({
+            "status": "silent",
+        }))
+        .expect("legacy heartbeat response should deserialize");
+
+        assert!(accepted.message_enqueued);
+        assert!(!legacy.message_enqueued);
     }
 }
