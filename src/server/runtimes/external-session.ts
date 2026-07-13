@@ -453,6 +453,7 @@ function surfaceRealtimeSteeredUserMessage(entry: PendingRealtimeSteeredUserMess
   pushExternalSessionMessage(entry.userMsg);
   void persistExternalUserMessageAppend(
     entry.sessionId,
+    entry.userMsg.id,
     '[external-session] Failed to persist accepted realtime steered user message',
   ).catch((err) => {
     console.error('[external-session] failed to persist accepted realtime steered user message:', err);
@@ -853,7 +854,11 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
       metadataBirthPending: params.metadataBirthPending,
       birthOrigin: params.birthOrigin,
     });
-    await persistExternalUserMessageAppend(params.sessionId, params.failureContext);
+    await persistExternalUserMessageAppend(
+      params.sessionId,
+      params.userMsg.id,
+      params.failureContext,
+    );
   } catch (err) {
     rollbackPreDispatchUserTurn(params.userMsg, err instanceof Error ? err.message : String(err));
     throw err;

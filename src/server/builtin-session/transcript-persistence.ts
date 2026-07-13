@@ -4,7 +4,10 @@ import {
   type SaveSessionMessagesResult,
 } from '../SessionStore';
 import type { SessionMessage } from '../types/session';
-import { resolveLastRealUserMessagePreview } from '../utils/session-message-preview';
+import {
+  isHumanUserMessage,
+  resolveLastRealUserMessagePreview,
+} from '../utils/session-message-preview';
 import { deriveReloadResumeAnchor } from '../utils/rewind-anchor';
 import { findTurnUsageStampIndex } from '../utils/sdk-turn-outcome';
 import { seedBridgeThoughtSignatures } from '../bridge-cache';
@@ -150,6 +153,9 @@ export async function persistTranscriptNow(options: {
 
   const tail = transcriptState.messages.slice(transcriptState.lastPersistedIndex, boundedTargetCount);
   const tailMapped = tail.map(messageWireToSessionMessage);
+  const tailContainsHumanInput = tailMapped.some(
+    message => message.role === 'user' && isHumanUserMessage(message),
+  );
   const sessionMessages = transcriptState.persistedSessionMessageCache
     .slice(0, transcriptState.lastPersistedIndex)
     .concat(tailMapped);
@@ -165,10 +171,10 @@ export async function persistTranscriptNow(options: {
   }
   setLastPersistedIndex(boundedTargetCount);
 
-  const { found: foundRealUserMessage, preview: lastMessagePreview } =
+  const { preview: lastMessagePreview } =
     resolveLastRealUserMessagePreview(sessionMessages);
   await updateSessionMetadata(options.sessionId, {
-    ...(foundRealUserMessage ? { lastActiveAt: new Date().toISOString() } : {}),
+    ...(tailContainsHumanInput ? { lastActiveAt: new Date().toISOString() } : {}),
     lastMessagePreview,
   });
 }

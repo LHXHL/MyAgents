@@ -9,6 +9,7 @@ use crate::cron_task::normalize_path;
 use crate::im::types::{HeartbeatConfig, MemoryAutoUpdateConfig};
 use crate::sidecar::{self, ManagedSidecarManager, SidecarOwner};
 use crate::utils::bom::strip_bom;
+use crate::utils::system_reminder::{leading_system_reminder_kind, strip_leading_system_reminder};
 use crate::{ulog_info, ulog_warn};
 use chrono::{DateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
@@ -18,7 +19,7 @@ use tokio::sync::Mutex;
 
 pub const SCAN_CADENCE_MINUTES: u32 = 30;
 const IDLE_COOLDOWN_MINUTES: i64 = 30;
-const SESSION_SCAN_LOOKBACK_HOURS: i64 = 24 * 30;
+const ACTIVE_SESSION_LOOKBACK_DAYS: i64 = 7;
 const MEMORY_UPDATE_HTTP_TIMEOUT_SECS: u64 = 61 * 60;
 const MANAGED_AUTO_UPDATE_NAME: &str = "Memory Auto-Update";
 const MANAGED_AUTO_UPDATE_PROMPT: &str =
@@ -55,6 +56,7 @@ pub struct MemoryAutoUpdateBatchSummary {
     pub updated: u32,
     pub skipped_recent_input: u32,
     pub skipped_busy: u32,
+    pub skipped_inactive: u32,
     pub skipped_no_threshold: u32,
     pub skipped_min_interval: u32,
     pub skipped_duplicate: u32,
@@ -96,6 +98,8 @@ struct MessageLine {
     timestamp: Option<String>,
     #[serde(default, alias = "created_at")]
     created_at: Option<String>,
+    #[serde(default)]
+    attachments: Option<Value>,
 }
 
 #[derive(Debug, Default)]
@@ -708,13 +712,14 @@ pub async fn run_batch<R: Runtime>(
 
 pub fn format_batch_summary(summary: &MemoryAutoUpdateBatchSummary) -> String {
     format!(
-        "Memory auto-update batch completed at {}. checked={}, eligible={}, updated={}, skippedRecentInput={}, skippedBusy={}, skippedNoThreshold={}, skippedMinInterval={}, skippedDuplicate={}, failed={}",
+        "Memory auto-update batch completed at {}. checked={}, eligible={}, updated={}, skippedRecentInput={}, skippedBusy={}, skippedInactive={}, skippedNoThreshold={}, skippedMinInterval={}, skippedDuplicate={}, failed={}",
         summary.completed_at,
         summary.checked_sessions,
         summary.eligible_sessions,
         summary.updated,
         summary.skipped_recent_input,
         summary.skipped_busy,
+        summary.skipped_inactive,
         summary.skipped_no_threshold,
         summary.skipped_min_interval,
         summary.skipped_duplicate,
@@ -864,8 +869,7 @@ fn collect_candidates(
 
     let normalized_workspace = normalize_path(workspace_path);
     let now = Utc::now();
-    let lookback_hours = SESSION_SCAN_LOOKBACK_HOURS.max(config.interval_hours as i64);
-    let lookback_cutoff = now - chrono::Duration::hours(lookback_hours);
+    let active_session_cutoff = now - chrono::Duration::days(ACTIVE_SESSION_LOOKBACK_DAYS);
     let idle_cutoff = now - chrono::Duration::minutes(IDLE_COOLDOWN_MINUTES);
     let min_interval_cutoff = now - chrono::Duration::hours(config.interval_hours as i64);
     let mut candidates = Vec::new();
@@ -877,16 +881,28 @@ fn collect_candidates(
         if normalize_path(agent_dir) != normalized_workspace {
             continue;
         }
-        let last_active_at = session
-            .last_active_at
-            .as_deref()
-            .and_then(parse_datetime_utc);
-        if last_active_at.is_some_and(|dt| dt < lookback_cutoff) {
-            continue;
-        }
         summary.checked_sessions += 1;
 
+        // sessions.json is only a coarse I/O prefilter. A recent value cannot
+        // make a session eligible because automatic turns may have polluted
+        // it; eligibility is always decided from the last human JSONL row.
+        // Missing/malformed metadata fails open. A recent JSONL mtime also
+        // fails open, covering a durable append whose metadata write failed.
+        let jsonl_modified_at = session_jsonl_modified_at(&myagents_dir, &session.id);
+        if !should_scan_session_history(
+            session.last_active_at.as_deref(),
+            jsonl_modified_at,
+            active_session_cutoff,
+        ) {
+            summary.skipped_inactive += 1;
+            continue;
+        }
+
         let analysis = analyze_session_jsonl(&myagents_dir, &session.id);
+        if !is_within_active_session_lookback(&analysis, now) {
+            summary.skipped_inactive += 1;
+            continue;
+        }
         if analysis
             .last_memory_update_at
             .is_some_and(|dt| dt > min_interval_cutoff)
@@ -899,8 +915,10 @@ fn collect_candidates(
             continue;
         }
 
-        let idle_reference = analysis.last_human_user_at.or(last_active_at);
-        if idle_reference.is_some_and(|dt| dt > idle_cutoff) {
+        if analysis
+            .last_human_user_at
+            .is_some_and(|dt| dt > idle_cutoff)
+        {
             summary.skipped_recent_input += 1;
             continue;
         }
@@ -912,14 +930,25 @@ fn collect_candidates(
 }
 
 fn analyze_session_jsonl(myagents_dir: &Path, session_id: &str) -> SessionJsonlAnalysis {
-    let jsonl_path = myagents_dir
-        .join("sessions")
-        .join(format!("{}.jsonl", session_id));
+    let jsonl_path = session_jsonl_path(myagents_dir, session_id);
     let content = match std::fs::read_to_string(&jsonl_path) {
         Ok(content) => content,
         Err(_) => return SessionJsonlAnalysis::default(),
     };
     analyze_session_jsonl_content(&content)
+}
+
+fn session_jsonl_path(myagents_dir: &Path, session_id: &str) -> PathBuf {
+    myagents_dir
+        .join("sessions")
+        .join(format!("{}.jsonl", session_id))
+}
+
+fn session_jsonl_modified_at(myagents_dir: &Path, session_id: &str) -> Option<DateTime<Utc>> {
+    std::fs::metadata(session_jsonl_path(myagents_dir, session_id))
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .map(DateTime::<Utc>::from)
 }
 
 fn analyze_session_jsonl_content(content: &str) -> SessionJsonlAnalysis {
@@ -930,27 +959,22 @@ fn analyze_session_jsonl_content(content: &str) -> SessionJsonlAnalysis {
     let mut last_update_idx: Option<usize> = None;
     let mut last_memory_update_at: Option<DateTime<Utc>> = None;
     let mut last_human_user_at: Option<DateTime<Utc>> = None;
-    let mut pending_memory_update: Option<(usize, Option<DateTime<Utc>>)> = None;
 
     for (idx, msg) in lines.iter().enumerate() {
+        if msg.role.as_deref() != Some("user") {
+            continue;
+        }
         let text = msg.content.as_ref().map(message_text).unwrap_or_default();
         let ts = message_timestamp(msg);
-        match msg.role.as_deref() {
-            Some("user") if is_memory_update_marker(&text) => {
-                pending_memory_update = Some((idx, ts));
+        if is_memory_update_marker(&text) {
+            last_update_idx = Some(idx);
+            last_memory_update_at = ts;
+            continue;
+        }
+        if is_human_user_message(msg, &text) {
+            if let Some(ts) = ts {
+                last_human_user_at = Some(ts);
             }
-            Some("user") if !is_system_injected_user_text(&text) => {
-                if let Some(ts) = ts {
-                    last_human_user_at = Some(ts);
-                }
-            }
-            Some("assistant") if text.trim() == "MEMORY_UPDATE_OK" => {
-                if let Some((prompt_idx, prompt_at)) = pending_memory_update.take() {
-                    last_update_idx = Some(prompt_idx);
-                    last_memory_update_at = ts.or(prompt_at);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -961,7 +985,7 @@ fn analyze_session_jsonl_content(content: &str) -> SessionJsonlAnalysis {
             continue;
         }
         let text = msg.content.as_ref().map(message_text).unwrap_or_default();
-        if is_system_injected_user_text(&text) {
+        if !is_human_user_message(msg, &text) {
             continue;
         }
         query_count += 1;
@@ -971,6 +995,25 @@ fn analyze_session_jsonl_content(content: &str) -> SessionJsonlAnalysis {
         query_count,
         last_human_user_at,
         last_memory_update_at,
+    }
+}
+
+fn is_within_active_session_lookback(analysis: &SessionJsonlAnalysis, now: DateTime<Utc>) -> bool {
+    let cutoff = now - chrono::Duration::days(ACTIVE_SESSION_LOOKBACK_DAYS);
+    analysis
+        .last_human_user_at
+        .is_some_and(|timestamp| timestamp >= cutoff)
+}
+
+fn should_scan_session_history(
+    metadata_last_active_at: Option<&str>,
+    jsonl_modified_at: Option<DateTime<Utc>>,
+    cutoff: DateTime<Utc>,
+) -> bool {
+    match metadata_last_active_at.and_then(parse_datetime_utc) {
+        None => true,
+        Some(timestamp) if timestamp >= cutoff => true,
+        Some(_) => jsonl_modified_at.is_some_and(|timestamp| timestamp >= cutoff),
     }
 }
 
@@ -1274,14 +1317,51 @@ fn message_text(value: &Value) -> String {
 }
 
 fn is_memory_update_marker(text: &str) -> bool {
-    text.contains("<MEMORY_UPDATE>") || text.contains("/UPDATE_MEMORY")
+    leading_system_reminder_kind(text) == Some("MEMORY_UPDATE")
+        || text.trim_start().starts_with("<MEMORY_UPDATE>")
+        || text.trim_start().starts_with("/UPDATE_MEMORY")
 }
 
-fn is_system_injected_user_text(text: &str) -> bool {
+fn is_automatic_user_text(text: &str) -> bool {
+    let leading_kind = leading_system_reminder_kind(text);
+    let trimmed = text.trim_start();
     is_memory_update_marker(text)
-        || text.contains("<HEARTBEAT>")
-        || text.contains("<CRON_TASK>")
-        || text.contains("<system-reminder>")
+        || matches!(
+            leading_kind,
+            Some("HEARTBEAT" | "CRON_TASK" | "myagents-space-issue")
+        )
+        || trimmed.starts_with("<HEARTBEAT>")
+        || trimmed.starts_with("<CRON_TASK>")
+        || trimmed.starts_with("<local-command-stdout>")
+        || trimmed.starts_with("<inbox-message")
+        || trimmed.starts_with("<inbox-reply")
+        || trimmed.starts_with("<cron-task-context")
+        || trimmed.starts_with("<myagents-session-event")
+        || trimmed.starts_with("<task-notification>")
+}
+
+fn human_user_text(text: &str) -> Option<String> {
+    if is_automatic_user_text(text) {
+        return None;
+    }
+
+    let visible = strip_leading_system_reminder(text);
+    (!visible.trim().is_empty()).then_some(visible)
+}
+
+fn is_human_user_message(message: &MessageLine, text: &str) -> bool {
+    if is_automatic_user_text(text) {
+        return false;
+    }
+    human_user_text(text).is_some()
+        || message
+            .attachments
+            .as_ref()
+            .is_some_and(|attachments| match attachments {
+                Value::Array(items) => !items.is_empty(),
+                Value::Null => false,
+                _ => true,
+            })
 }
 
 #[cfg(test)]
@@ -1335,10 +1415,10 @@ mod tests {
     }
 
     #[test]
-    fn jsonl_analysis_counts_queries_after_memory_marker() {
+    fn jsonl_analysis_resets_queries_when_memory_update_is_dispatched() {
         let content = r#"{"role":"user","content":"before","timestamp":"2026-01-01T00:00:00.000Z"}
 {"role":"user","content":"<MEMORY_UPDATE> update","timestamp":"2026-01-01T01:00:00.000Z"}
-{"role":"assistant","content":"MEMORY_UPDATE_OK","timestamp":"2026-01-01T01:01:00.000Z"}
+{"role":"assistant","content":"provider failed","timestamp":"2026-01-01T01:01:00.000Z"}
 {"role":"user","content":"q1","timestamp":"2026-01-01T02:00:00.000Z"}
 {"role":"user","content":"<HEARTBEAT> hidden","timestamp":"2026-01-01T02:05:00.000Z"}
 {"role":"user","content":[{"type":"text","text":"q2"}],"timestamp":"2026-01-01T03:00:00.000Z"}"#;
@@ -1351,7 +1431,7 @@ mod tests {
                 .last_memory_update_at
                 .expect("memory marker")
                 .to_rfc3339(),
-            "2026-01-01T01:01:00+00:00"
+            "2026-01-01T01:00:00+00:00"
         );
         assert_eq!(
             analysis.last_human_user_at.expect("last user").to_rfc3339(),
@@ -1360,7 +1440,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_memory_marker_does_not_reset_success_or_query_count() {
+    fn latest_memory_dispatch_throttles_even_when_the_turn_fails() {
         let content = r#"{"role":"user","content":"<MEMORY_UPDATE> first","timestamp":"2026-01-01T01:00:00.000Z"}
 {"role":"assistant","content":"MEMORY_UPDATE_OK","timestamp":"2026-01-01T01:01:00.000Z"}
 {"role":"user","content":"q1","timestamp":"2026-01-01T02:00:00.000Z"}
@@ -1370,26 +1450,156 @@ mod tests {
 
         let analysis = analyze_session_jsonl_content(content);
 
-        assert_eq!(analysis.query_count, 2);
+        assert_eq!(analysis.query_count, 1);
         assert_eq!(
             analysis
                 .last_memory_update_at
-                .expect("last successful memory update")
+                .expect("last dispatched memory update")
                 .to_rfc3339(),
-            "2026-01-01T01:01:00+00:00"
+            "2026-01-01T03:00:00+00:00"
         );
     }
 
     #[test]
-    fn orphaned_memory_marker_does_not_create_a_cooldown() {
+    fn dispatched_memory_marker_creates_cooldown_without_an_assistant_reply() {
         let content = r#"{"role":"user","content":"q1","timestamp":"2026-01-01T01:00:00.000Z"}
 {"role":"user","content":"<MEMORY_UPDATE> orphan","timestamp":"2026-01-01T02:00:00.000Z"}
 {"role":"user","content":"q2","timestamp":"2026-01-01T03:00:00.000Z"}"#;
 
         let analysis = analyze_session_jsonl_content(content);
 
+        assert_eq!(analysis.query_count, 1);
+        assert_eq!(
+            analysis
+                .last_memory_update_at
+                .expect("memory dispatch marker")
+                .to_rfc3339(),
+            "2026-01-01T02:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn jsonl_analysis_uses_visible_goal_queries_but_ignores_automatic_turns() {
+        let content = r#"{"role":"user","content":"<system-reminder><GOAL_CONTINUATION>hidden</GOAL_CONTINUATION></system-reminder>first goal query","timestamp":"2026-01-01T01:00:00.000Z"}
+{"role":"user","content":"<system-reminder><GOAL_CONTINUATION>hidden</GOAL_CONTINUATION></system-reminder>","timestamp":"2026-01-01T02:00:00.000Z"}
+{"role":"user","content":"<system-reminder><CRON_TASK>hidden</CRON_TASK></system-reminder>scheduled prompt","timestamp":"2026-01-01T03:00:00.000Z"}
+{"role":"user","content":"<system-reminder><GOAL_CONTEXT>hidden</GOAL_CONTEXT></system-reminder>follow-up","timestamp":"2026-01-01T04:00:00.000Z"}"#;
+
+        let analysis = analyze_session_jsonl_content(content);
+
         assert_eq!(analysis.query_count, 2);
-        assert!(analysis.last_memory_update_at.is_none());
+        assert_eq!(
+            analysis
+                .last_human_user_at
+                .expect("visible goal query")
+                .to_rfc3339(),
+            "2026-01-01T04:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn jsonl_analysis_counts_attachment_only_human_input() {
+        let content = r#"{"role":"user","content":"<system-reminder><MEMORY_UPDATE>maintain</MEMORY_UPDATE></system-reminder>","timestamp":"2026-01-01T00:00:00.000Z"}
+{"role":"user","content":"","attachments":[{"path":"image.png"}],"timestamp":"2026-01-01T01:00:00.000Z"}
+{"role":"user","content":"<system-reminder><CRON_TASK>scheduled</CRON_TASK></system-reminder>","attachments":[{"path":"maintenance.txt"}],"timestamp":"2026-01-01T02:00:00.000Z"}"#;
+
+        let analysis = analyze_session_jsonl_content(content);
+
+        assert_eq!(analysis.query_count, 1);
+        assert_eq!(
+            analysis
+                .last_human_user_at
+                .expect("attachment-only human input")
+                .to_rfc3339(),
+            "2026-01-01T01:00:00+00:00"
+        );
+    }
+
+    #[test]
+    fn marker_detection_is_protocol_anchored_but_keeps_legacy_prefixes() {
+        assert!(is_memory_update_marker(
+            "<system-reminder><MEMORY_UPDATE>maintain</MEMORY_UPDATE></system-reminder>"
+        ));
+        assert!(is_memory_update_marker("  /UPDATE_MEMORY maintain"));
+        assert!(is_memory_update_marker(
+            "<MEMORY_UPDATE>legacy</MEMORY_UPDATE>"
+        ));
+        assert!(!is_memory_update_marker(
+            "请解释为什么日志里出现 /UPDATE_MEMORY"
+        ));
+        assert!(human_user_text("请解释 <CRON_TASK> 标签").is_some());
+        assert!(is_automatic_user_text(
+            "<local-command-stdout>cost output</local-command-stdout>"
+        ));
+        assert!(is_automatic_user_text(
+            "<myagents-session-event type=\"watch.completed\">result</myagents-session-event>"
+        ));
+        assert!(is_automatic_user_text(
+            "<system-reminder><myagents-space-issue>issue</myagents-space-issue></system-reminder>"
+        ));
+        assert!(human_user_text("请解释 <inbox-message> 标签").is_some());
+    }
+
+    #[test]
+    fn active_session_lookback_requires_human_input_within_seven_days() {
+        let now = parse_datetime_utc("2026-01-08T12:00:00.000Z").unwrap();
+        let exactly_seven_days = SessionJsonlAnalysis {
+            last_human_user_at: parse_datetime_utc("2026-01-01T12:00:00.000Z"),
+            ..Default::default()
+        };
+        let too_old = SessionJsonlAnalysis {
+            last_human_user_at: parse_datetime_utc("2026-01-01T11:59:59.999Z"),
+            ..Default::default()
+        };
+
+        assert!(is_within_active_session_lookback(&exactly_seven_days, now));
+        assert!(!is_within_active_session_lookback(&too_old, now));
+        assert!(!is_within_active_session_lookback(
+            &SessionJsonlAnalysis::default(),
+            now,
+        ));
+    }
+
+    #[test]
+    fn metadata_is_only_a_coarse_prefilter_and_jsonl_remains_authority() {
+        let now = parse_datetime_utc("2026-01-08T12:00:00.000Z").unwrap();
+        let cutoff = now - chrono::Duration::days(ACTIVE_SESSION_LOOKBACK_DAYS);
+
+        assert!(!should_scan_session_history(
+            Some("2026-01-01T11:59:59.999Z"),
+            Some(parse_datetime_utc("2026-01-01T11:59:59.999Z").unwrap()),
+            cutoff,
+        ));
+        assert!(should_scan_session_history(None, None, cutoff));
+        assert!(should_scan_session_history(
+            Some("not-a-date"),
+            None,
+            cutoff
+        ));
+
+        // If the metadata write failed after a durable transcript append, the
+        // fresh JSONL mtime keeps the authoritative history reachable.
+        assert!(should_scan_session_history(
+            Some("2025-12-01T00:00:00.000Z"),
+            Some(parse_datetime_utc("2026-01-08T11:00:00.000Z").unwrap()),
+            cutoff,
+        ));
+
+        // A maintenance turn may make metadata look fresh. The stale human
+        // JSONL timestamp must still reject the session after it is opened.
+        assert!(should_scan_session_history(
+            Some("2026-01-08T11:00:00.000Z"),
+            None,
+            cutoff,
+        ));
+        let stale_human_history = SessionJsonlAnalysis {
+            last_human_user_at: parse_datetime_utc("2025-12-01T00:00:00.000Z"),
+            ..Default::default()
+        };
+        assert!(!is_within_active_session_lookback(
+            &stale_human_history,
+            now,
+        ));
     }
 
     #[test]

@@ -54,6 +54,8 @@ interface SessionStats {
 
 `configSnapshotAt` 是配置权威边界：存在时，session snapshot 拥有当前会话配置；缺字段不是“自动读 Agent 默认值”的许可。Agent/Project 只作为新 session 模板、legacy/no-snapshot 兼容源、以及 IM 无 Tab owner live-follow 源。
 
+`lastActiveAt` 表示最近一次用户参与，不是“最后一次 transcript 写入”。Transcript persistence 只能在本次新增的 user row 确认为真人消息时推进它；assistant 结果、`<MEMORY_UPDATE>`、Heartbeat、Cron、session event、local-command output 等自动 turn 仍可持久化消息、usage、context 和 preview，但不得刷新 Session 活跃时间。带可见 user tail 的 Goal/浮球消息以及 attachment-only user message 仍属于真人输入。用户显式编辑 title/model/permission/provider 等 Session 设置也属于参与行为，可由 metadata PATCH 推进排序时间。读取方若需要严格的“最近真人 query”业务判定，应以 JSONL 的真人 user timestamp 为权威；`lastActiveAt` 只适合历史排序或 I/O 粗筛。
+
 `providerRoute` 是 owned builtin snapshot 的 canonical provider/model 身份。它只持久化 `{kind, providerId, model}`，不持久化 `baseUrl`、`apiKey`、`authType`、`modelAliases` 等运行时 env。真正发起请求时，Sidecar 用 `providerRoute` + 当前磁盘配置 materialize 出 `ProviderEnv`；subscription route materialize 为 `'subscription'` sentinel，API route 必须能从当前配置解析出 API key，否则本次发送失败并提示用户修复配置。
 
 `providerEnvJson` 已降级为 read-only legacy fallback：只有没有 concrete `providerRoute` 的旧 session 才会读取它。新写入路径（Tab snapshot、session freeze、IM detach、Task new-session initialization）必须写 `providerRoute` 并清空/省略 `providerEnvJson`，避免把密钥、baseUrl 或 alias 冻结进历史会话。第一轮把 legacy/no-snapshot session promote 成 owned snapshot 时，baseline + 显式 patch 必须基于最新 metadata 写入，避免并发 config edit 用旧 baseline 覆盖已提交字段。

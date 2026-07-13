@@ -118,6 +118,71 @@ describe('transcript-persistence owner', () => {
     expect(snapshot.currentSessionUuids.has('a1')).toBe(true);
   });
 
+  it('does not refresh session recency when the newly persisted turn is maintenance-only', async () => {
+    loadTranscriptFromSessionMessages([
+      { id: '0', role: 'user', content: 'old human question', timestamp: '2026-01-01T00:00:00.000Z' },
+      { id: '1', role: 'assistant', content: 'old answer', timestamp: '2026-01-01T00:01:00.000Z' },
+    ]);
+    appendMessage({
+      id: '2',
+      role: 'user',
+      content: '<system-reminder><MEMORY_UPDATE>maintain</MEMORY_UPDATE></system-reminder>',
+      timestamp: '2026-01-08T00:00:00.000Z',
+    });
+    appendMessage({
+      id: '3',
+      role: 'assistant',
+      content: 'MEMORY_UPDATE_OK',
+      timestamp: '2026-01-08T00:01:00.000Z',
+    });
+    vi.mocked(saveSessionMessages).mockResolvedValueOnce(okSave(4));
+
+    await persistTranscriptNow({ sessionId: 'session-1' });
+
+    expect(updateSessionMetadata).toHaveBeenCalledWith('session-1', {
+      lastMessagePreview: 'old human question',
+    });
+  });
+
+  it('refreshes session recency when the newly persisted tail contains human input', async () => {
+    appendMessage({
+      id: '0',
+      role: 'user',
+      content: 'new human question',
+      timestamp: '2026-01-08T00:00:00.000Z',
+    });
+
+    await persistTranscriptNow({ sessionId: 'session-1' });
+
+    expect(updateSessionMetadata).toHaveBeenCalledWith('session-1', {
+      lastActiveAt: expect.any(String),
+      lastMessagePreview: 'new human question',
+    });
+  });
+
+  it('refreshes session recency for attachment-only human input', async () => {
+    appendMessage({
+      id: '0',
+      role: 'user',
+      content: '',
+      timestamp: '2026-01-08T00:00:00.000Z',
+      attachments: [{
+        id: 'image-1',
+        name: 'image.png',
+        size: 1,
+        mimeType: 'image/png',
+        relativePath: 'image.png',
+      }],
+    });
+
+    await persistTranscriptNow({ sessionId: 'session-1' });
+
+    expect(updateSessionMetadata).toHaveBeenCalledWith('session-1', {
+      lastActiveAt: expect.any(String),
+      lastMessagePreview: undefined,
+    });
+  });
+
   it('stamps turn usage onto the trailing unpersisted assistant only once', () => {
     appendMessage({
       id: '0',
