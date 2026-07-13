@@ -467,25 +467,6 @@ pub async fn check_update_on_startup(app: AppHandle) {
                     version
                 ),
             );
-            // Only notify frontend when download is complete
-            let info = UpdateReadyInfo {
-                version: version.clone(),
-            };
-            logger::info(
-                &app,
-                "[Updater] Emitting 'updater:ready-to-restart' event to frontend...",
-            );
-            match app.emit("updater:ready-to-restart", info) {
-                Ok(_) => {
-                    logger::info(
-                        &app,
-                        format!("[Updater] Event emitted successfully for v{}", version),
-                    );
-                }
-                Err(e) => {
-                    logger::error(&app, format!("[Updater] Failed to emit ready event: {}", e));
-                }
-            }
         }
         Ok(None) => {
             logger::info(
@@ -697,6 +678,7 @@ async fn check_and_download_silently(app: &AppHandle) -> Result<Option<String>, 
                 );
                 // Disk == version; safe to align cache.
                 cache_update(update.clone());
+                emit_update_ready(app, &version);
                 return Ok(Some(version));
             }
         }
@@ -788,7 +770,28 @@ async fn check_and_download_silently(app: &AppHandle) -> Result<Option<String>, 
     // Track this version as the latest downloaded (latest-wins protocol)
     *DOWNLOADED_VERSION.lock().unwrap_or_else(|e| e.into_inner()) = Some(version.clone());
 
+    // The function that emits download-started also owns its terminal event.
+    // This matters for callers such as the pending-update cache warmup, which
+    // intentionally ignore the return value and previously left the renderer
+    // stuck in `preparing` after a successful replacement download.
+    emit_update_ready(app, &version);
+
     Ok(Some(version))
+}
+
+fn emit_update_ready(app: &AppHandle, version: &str) {
+    logger::info(
+        app,
+        format!("[Updater] Update v{} is ready; notifying frontend", version),
+    );
+    if let Err(e) = app.emit(
+        "updater:ready-to-restart",
+        UpdateReadyInfo {
+            version: version.to_string(),
+        },
+    ) {
+        logger::error(app, format!("[Updater] Failed to emit ready event: {}", e));
+    }
 }
 
 /// Command: Manual check and silent download (for periodic checks from frontend)
@@ -803,13 +806,6 @@ pub async fn check_and_download_update(app: AppHandle) -> Result<bool, String> {
                 &app,
                 format!("[Updater] Update v{} downloaded and ready", version),
             );
-            // Notify frontend
-            let info = UpdateReadyInfo {
-                version: version.clone(),
-            };
-            if let Err(e) = app.emit("updater:ready-to-restart", info) {
-                logger::error(&app, format!("[Updater] Failed to emit event: {}", e));
-            }
             Ok(true)
         }
         Ok(None) => Ok(false),
