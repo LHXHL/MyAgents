@@ -9,6 +9,7 @@ const harness = vi.hoisted(() => ({
   actions: {
     switchSpace: vi.fn().mockResolvedValue(undefined),
     refreshIssues: vi.fn().mockResolvedValue(undefined),
+    refreshGoals: vi.fn().mockResolvedValue(undefined),
     refreshSkills: vi.fn().mockResolvedValue(undefined),
     refreshRegisteredAgents: vi.fn().mockResolvedValue(undefined),
     syncEvents: vi.fn().mockResolvedValue([]),
@@ -143,6 +144,7 @@ describe("Space switching", () => {
     vi.useFakeTimers();
     harness.actions.switchSpace.mockReset().mockResolvedValue(undefined);
     harness.actions.refreshIssues.mockClear();
+    harness.actions.refreshGoals.mockClear();
     harness.actions.refreshSkills.mockClear();
     harness.actions.refreshRegisteredAgents.mockClear();
     harness.actions.syncEvents.mockClear();
@@ -160,6 +162,7 @@ describe("Space switching", () => {
       await vi.advanceTimersByTimeAsync(250);
     });
     expect(harness.actions.refreshIssues).toHaveBeenCalledTimes(1);
+    expect(harness.actions.refreshGoals).toHaveBeenCalledTimes(1);
 
     harness.data = snapshot("myagents");
     view.rerender(<Space isActive />);
@@ -168,6 +171,7 @@ describe("Space switching", () => {
       await vi.advanceTimersByTimeAsync(250);
     });
     expect(harness.actions.refreshIssues).toHaveBeenCalledTimes(2);
+    expect(harness.actions.refreshGoals).toHaveBeenCalledTimes(2);
   });
 
   it("commits the target tab before Space persistence finishes", async () => {

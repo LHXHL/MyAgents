@@ -695,6 +695,9 @@ export default function Space({ isActive }: { isActive: boolean }) {
             force: reentered,
             maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
           }),
+          actions.refreshGoals({
+            maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS,
+          }),
         ];
         if (admin) {
           refreshes.push(

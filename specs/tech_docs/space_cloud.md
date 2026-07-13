@@ -126,7 +126,7 @@ Space 头像是产品/组织身份，所有尺寸统一使用 APP icon 式圆角
 
 Space 侧栏中的多个 Space 是同级导航实体，必须按服务端列表顺序渲染为一级手风琴项；每项都可在本地展开 Issues / Goals / Skills，以及按该 Space membership 权限展示的 Settings，且同时最多展开一个。展开/折叠只修改 Renderer UI 状态，不请求接口，也不改变当前 Space；只有点击某个子导航时才原子切换到对应 Space 与页面。其它 Space 不得嵌入当前 Space 的展开容器伪装成子级。
 
-Space 页面各 workspace 的数据加载必须显式以 active Space identity 为依赖，不能依赖 boot loading→ready 的视觉状态跃迁来间接触发；静默切换保持页面可见时，目标 Space 的 Issues / Skills / Settings 仍必须主动加载并收口自己的 loading 状态。
+Space 页面各 workspace 的数据加载必须显式以 active Space identity 为依赖，不能依赖 boot loading→ready 的视觉状态跃迁来间接触发；静默切换保持页面可见时，目标 Space 的 Issues / Goals / Skills / Settings 仍必须主动加载并收口自己的 loading 状态。各 collection 的 freshness 必须由该 collection 在当前 active Space 投影内独立持有；不得复用 session/bootstrap 的刷新时间，否则切换时清空 collection 后会被旧 owner 的 boot freshness 错误拦截。
 
 Space 侧栏的加入方式副标题必须通过 i18n 显式映射领域值：`open_join` 显示“开放加入”，`approval_required` 显示“需审核加入”；未知值显示本地化兜底文案，禁止把原始技术 token 转空格后直接暴露给用户。
 

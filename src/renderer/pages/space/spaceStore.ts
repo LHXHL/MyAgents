@@ -165,6 +165,7 @@ interface StoreState {
   session: SpaceSession | null;
   spaceId: string | null;
   goals: SpaceGoal[];
+  goalsLastFetchedAt: number;
   bootError: string | null;
   bootLastFetchedAt: number;
   issuesByKey: Record<string, SpaceIssueListState>;
@@ -348,6 +349,7 @@ const initialState = (): StoreState => ({
   session: null,
   spaceId: null,
   goals: [],
+  goalsLastFetchedAt: 0,
   bootError: null,
   bootLastFetchedAt: 0,
   issuesByKey: {},
@@ -1195,6 +1197,7 @@ export const actions: SpaceActions = {
           },
           spaceId: nextSpaceId,
           goals: official.goals ?? [],
+          goalsLastFetchedAt: Date.now(),
           bootError: null,
           bootLastFetchedAt: Date.now(),
         });
@@ -1404,7 +1407,7 @@ export const actions: SpaceActions = {
 
   refreshGoals: async (options: RefreshOptions = {}) => {
     if (!ensureReady()) return;
-    if (!options.force && isFresh(state.bootLastFetchedAt, options.maxAgeMs))
+    if (!options.force && isFresh(state.goalsLastFetchedAt, options.maxAgeMs))
       return;
     return runRequest("goals", options.force, async () => {
       const requestSeq = startRequest("goals");
@@ -1413,7 +1416,7 @@ export const actions: SpaceActions = {
         if (!isLatest("goals", requestSeq)) return;
         setState({
           goals: result.items,
-          bootLastFetchedAt: Date.now(),
+          goalsLastFetchedAt: Date.now(),
           bootError: null,
         });
       } catch (error) {

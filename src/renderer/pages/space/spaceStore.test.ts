@@ -475,6 +475,47 @@ describe("spaceStore boot", () => {
     expect(apiMocks.spaceGetOfficial).not.toHaveBeenCalled();
   });
 
+  it("refreshes goals for the newly projected Space even when bootstrap is fresh", async () => {
+    const teamSpace = {
+      ...fakeSession.space,
+      id: "space-2",
+      slug: "team",
+      name: "Team Space",
+    };
+    const teamMembership = { id: "membership-2", role: "member" as const };
+    const teamRootGoal = {
+      ...fakeGoal,
+      id: "goal-team-root",
+      spaceId: teamSpace.id,
+      path: "/goal-team-root/",
+      title: teamSpace.name,
+      goalPathLabel: teamSpace.name,
+    };
+    const bootFetchedAt = Date.now() - 1_000;
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      bootLastFetchedAt: bootFetchedAt,
+      session: {
+        ...fakeSession,
+        spaces: [
+          { ...fakeSession.space, membership: fakeSession.membership },
+          { ...teamSpace, membership: teamMembership },
+        ],
+      },
+      spaceId: "official",
+      goals: [fakeGoal],
+    });
+    apiMocks.spaceListGoals.mockResolvedValueOnce({ items: [teamRootGoal] });
+
+    await actions.switchSpace("team");
+    await actions.refreshGoals({ maxAgeMs: 30_000 });
+
+    expect(apiMocks.spaceListGoals).toHaveBeenCalledWith({}, "team");
+    expect(getSnapshot().goals).toEqual([teamRootGoal]);
+    expect(getSnapshot().bootLastFetchedAt).toBe(bootFetchedAt);
+    expect(getSnapshot().goalsLastFetchedAt).toBeGreaterThan(bootFetchedAt);
+  });
+
   it("keeps the latest local navigation when persistence fails", async () => {
     const teamSpace = {
       ...fakeSession.space,
