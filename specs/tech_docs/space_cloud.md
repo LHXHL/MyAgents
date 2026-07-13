@@ -15,10 +15,11 @@ Cloud Space 横跨两个独立版本、独立发布的仓库，不能把其中�
 | Desktop build gate、Rust HTTP/session、`device_id`、本地 token/状态、connector、UI、CLI、Task/Session 执行 | `hAcKlyc/MyAgents`：本文 + `specs/ARCHITECTURE.md`「MyAgents Cloud Space」 |
 | Cloud API、身份/权限、领域模型、D1/R2/KV ownership、Account plan/quota、运营与发布 | `hAcKlyc/MyAgents_space`：`specs/ARCHITECTURE.md` + `specs/RELEASE.md` |
 
-本地平级 checkout 中，云端架构文档地址是 `../MyAgents_space/specs/ARCHITECTURE.md`。截至 2026-07-12，最近一次联合校验基线为：
+本地平级 checkout 中，云端架构文档地址是 `../MyAgents_space/specs/ARCHITECTURE.md`。截至 2026-07-13，最近一次联合校验基线为：
 
 - Desktop：`package.json` 为 `0.2.50` 开发线；本节覆盖评论附件、本地 draft inspect、显式多 Space CLI 与自动 User/Registered Agent actor resolver。检查时最近的 Desktop release tag 仍是 `v0.2.49`，因此这里描述的是下一开发版本，不代表已发布客户端。
-- Cloud：`MyAgents_space 0.1.3` Dev 候选已包含 comment-owned attachments、JSON/multipart 原子 create/comment/complete、direct top attachment update/delivery、typed assignee candidates、Space context assertion、role-downgrade revoke 与 Production/Dev 环境隔离。候选精确 Git/Worker 身份以 `origin/dev`、Development workflow 与 Dev `/health` 共同证明；它尚未进入生产 `0.1.2`，生产精确版本始终以 Production `/health` 返回的 Git tag 与 Worker Version ID 为准。
+- Cloud Production：`MyAgents_space v0.1.3` 的 tag 与 `origin/main` 均指向 `d39f29789fe4f932218c2ca30f38e80f5c6d753c`，Production `/health` 返回 `main-d39f29789fe4f932218c2ca30f38e80f5c6d753c`。该版本已包含 comment-owned attachments、JSON/multipart 原子 create/comment/complete、direct top attachment update/delivery、typed assignee candidates、Space context assertion、role-downgrade revoke 与 Production/Dev 环境隔离。
+- Cloud Dev：`origin/dev` 为 `70709badc3455595b3386deddee5049c08b17227`，Dev `/health` 返回 `dev-70709badc3455595b3386deddee5049c08b17227`；相对 `v0.1.3` 只新增 release pipeline 的 Production tag 身份修正。上述 SHA 是日期化校验记录，实时部署真相仍以对应环境 `/health` 返回的 Git tag 与 Worker Version ID 为准。
 
 发布兼容：Cloud 先 additive 部署；请求 `X-MyAgents-Client-Version < 0.2.50` 时只返回旧 subscription projection，assignment/follow-up 保持云端 pending，不得降级为 subscription。Desktop `0.2.50` 才消费 `deliveryKind/cloudInstruction/trigger/assignee`。旧 pending subscription 缺 `deliveryKind` 时，客户端只走显式 legacy fallback；字段存在但 kind 未知时 fail closed 并留待升级处理。
 
