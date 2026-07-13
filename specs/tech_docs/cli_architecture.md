@@ -159,7 +159,7 @@ myagents agent list --active|--archived           # 按工作区归档状态筛�
 
 这三条命令的存在让 `task create-direct --runtime X --model Y --permissionMode Z` 的值空间对 AI 完全自解释 —— `--help` 里只列 flag，值通过 `runtime describe` 查，避免 `--help` 文案与实际可用值漂移。
 
-### Goal Mode 命令（0.2.50）
+### Goal Mode 命令（0.3.0）
 
 `myagents goal --help` 是 Goal Mode 的内置 skill 文档。系统提示词只告诉模型在明确 User 要求“Goal Mode / Goal Loop / 目标模式 / 设立目标 / 持续执行直到完成”时先运行 help，再按 help 使用子命令；不要把 help 全量塞进主 system prompt。
 
@@ -181,7 +181,7 @@ myagents agent list --active|--archived           # 按工作区归档状态筛�
 - 普通 Cron surface 不创建或管理 Goal。`myagents cron add --schedule '{"kind":"loop"}'` 会被拒绝；Goal 创建统一走 `myagents goal create --objective-file ...`。objective/reason 是 file-only 输入，不接受 inline 或 positional 文本。
 - current-session Goal 不附带 `CronDelivery`；IM / Agent Channel session 依赖当前 session 输出路由。
 
-### Cron 兼容命令（0.2.50）
+### Cron 兼容命令（0.3.0）
 
 `myagents cron` 保留既有用户命令名和 JSON shape，但不再创建 `CronTask`。所有 add/list/update/start/stop/remove/run-now 都由 Rust compatibility facade 直接读写 `TaskStore`，时间触发由 `TaskSchedulerController` 管理；`cron_tasks.json` 只作为启动迁移的只读历史格式。
 
@@ -323,7 +323,7 @@ Admin API 注册在 Sidecar 的 `/api/admin/*` 路由下，提供与 GUI 对等�
 | `/api/admin/reload` | 热重载配置 |
 | `/api/admin/help` | 命令帮助文本（子命令 help 来自这里） |
 
-### Cloud Space CLI 身份与错误边界（0.2.50）
+### Cloud Space CLI 身份与错误边界（0.3.0）
 
 - `space list` 是唯一不要求 `--space` 的发现命令；其它 Space 业务命令必须显式 canonical slug，不维护隐式默认 Space。
 - CLI 只解析参数，不接受 `--actor` 或 token。Sidecar Admin API 以当前 workspace path 查 `projects.json` 并补 stable `workspaceId`；Rust `SpaceCliContext` 刷新 `/api/me` 后，以 `(spaceId, workspaceId, session binding)` 解析 actor。现代登记以 workspace id 为权威，path 只兼容缺 id 的 legacy row。

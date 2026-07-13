@@ -1836,7 +1836,7 @@
     "developerQuote": "You have an idea. And it's done.",
     "labTitle": "Lab",
     "teamSpaceTitle": "Team Space",
-    "teamSpaceDescription": "Team Space will support shared Skills for multiple people and Agents, with team collaboration on Issues organized around a goal tree.",
+    "teamSpaceDescription": "Team Space lets people and Agents share Skills and collaborate on Issues organized around a goal tree.",
     "teamSpaceLoading": "Reading Team Space build status...",
     "teamSpaceUnavailable": "This build does not include the Team Space service.",
     "teamSpaceUnavailableWithReason": "This build does not include the Team Space service. ({{reason}})",

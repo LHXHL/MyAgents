@@ -494,7 +494,7 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 <a id="legacy-cron-migration"></a>
 ## Legacy Cron Startup Migration (`legacy_upgrade.rs`)
 
-**Problem.** 0.2.50 前 `cron_tasks.json` 同时承载裸 Cron、Task projection、managed job 与 Loop。新架构只有 Task scheduler；如果 renderer 或多个 Sidecar 各自迁移，会产生重复 Task、启动顺序竞态或双 scheduler。
+**Problem.** 0.3.0 前 `cron_tasks.json` 同时承载裸 Cron、Task projection、managed job 与 Loop。新架构只有 Task scheduler；如果 renderer 或多个 Sidecar 各自迁移，会产生重复 Task、启动顺序竞态或双 scheduler。
 
 **Surface.** Rust app setup 中的 `migrate_legacy_crons_on_startup()`，在唯一 `TaskStore` 初始化后、`TaskSchedulerController.initialize()` 前运行。legacy manager 只保存一次性 validated snapshot，不写旧文件。
 

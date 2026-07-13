@@ -337,7 +337,7 @@ type InteractionScenario =
 
 ### 5. 定时任务系统
 
-0.2.50 起，Task 是所有新定时自动化的唯一持久权威：
+0.3.0 起，Task 是所有新定时自动化的唯一持久权威：
 
 - `task.rs`：`tasks.jsonl`、状态机、schedule/runtime/notification schema 与原子 mutation。
 - `task_scheduler.rs`：唯一 timer handle map + 瞬时 execution authority map（普通 queueId/cancel/session）；从 Running Task 重建，支持 wall-clock sleep、scheduled tick 与 manual `run-now`。
@@ -717,17 +717,17 @@ trusted root `~/.myagents/generated/tool-attachments/<sid>/<tid>/<file>`（base6
 
 ---
 
-### 19. MyAgents Cloud Space（开发中，`src-tauri/src/space_cloud.rs` + `src/renderer/pages/Space.tsx`）
+### 19. MyAgents Cloud Space（实验室，`src-tauri/src/space_cloud.rs` + `src/renderer/pages/Space.tsx`）
 
-Cloud Space 把官方/团队空间接入桌面端，目前仍是开发中/半成品能力，不作为已发布用户能力写入 CHANGELOG 或 GitHub Release notes。
+Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能力正式随客户端发布，用户需在「设置 → 关于&反馈 → 实验室」显式开启；它不是默认稳定入口，但应作为实验室功能写入 CHANGELOG 与 GitHub Release notes。
 
-**架构真相分工与版本：** 本仓库只维护 Desktop 客户端 owner（Rust connector、本地身份/状态、UI、CLI 与 Task/Session 执行），详细状态见 `specs/tech_docs/space_cloud.md`；Cloud Worker 的 API、鉴权、领域模型、D1/R2、一致性、quota 与运营能力由同级 `hAcKlyc/MyAgents_space` 仓库的 `specs/ARCHITECTURE.md` 维护。本地平级 checkout 路径为 `../MyAgents_space/specs/ARCHITECTURE.md`。两仓独立发版，不按版本号锁步；截至 2026-07-13 最近联合校验基线为 Desktop `0.2.50` 开发线 ↔ Space Cloud Production `v0.1.3`（`origin/main@d39f29789fe4f932218c2ca30f38e80f5c6d753c`，Production `/health` 为 `main-d39f29789fe4f932218c2ca30f38e80f5c6d753c`）及其 Dev 后续修正（`origin/dev@70709badc3455595b3386deddee5049c08b17227`，Dev `/health` 为 `dev-70709badc3455595b3386deddee5049c08b17227`）。`v0.1.3` 已包含 comment-owned attachments、原子 multipart create/comment/complete、direct attachment update/delivery、持久 assignee、`subscription | assignment | claim_followup` 三类 Delivery、trigger/cloud instruction、客户端兼容门控与 Production/Dev 环境隔离；Dev 领先提交只修正 release pipeline 的 Production tag 身份。此处 Git 与 `/health` 身份是日期化校验记录，实时部署真相仍以对应环境 `/health` 返回为准。具体 rollout 差异见 `specs/tech_docs/space_cloud.md`「文档归属与兼容基线」。若契约变化必须同步更新两边实现、测试、文档和兼容基线。
+**架构真相分工与版本：** 本仓库只维护 Desktop 客户端 owner（Rust connector、本地身份/状态、UI、CLI 与 Task/Session 执行），详细状态见 `specs/tech_docs/space_cloud.md`；Cloud Worker 的 API、鉴权、领域模型、D1/R2、一致性、quota 与运营能力由同级 `hAcKlyc/MyAgents_space` 仓库的 `specs/ARCHITECTURE.md` 维护。本地平级 checkout 路径为 `../MyAgents_space/specs/ARCHITECTURE.md`。两仓独立发版，不按版本号锁步；截至 2026-07-14 最近联合校验基线为 Desktop `0.3.0` 发布线 ↔ Space Cloud `v0.1.4`（`origin/main` / `origin/dev` / tag 均为 `97ac3b89c11b2dedef2448475d852809c533e858`，Production `/health` 为 `main-97ac3b89c11b2dedef2448475d852809c533e858`，Dev `/health` 为 `dev-97ac3b89c11b2dedef2448475d852809c533e858`）。该版本包含 comment-owned attachments、原子 multipart create/comment/complete、direct attachment update/delivery、持久 assignee、`subscription | assignment | claim_followup` 三类 Delivery、trigger/cloud instruction、客户端兼容门控、Production/Dev 环境隔离，以及 account plan / per-Space entitlement / nullable quota limits。此处 Git 与 `/health` 身份是日期化校验记录，实时部署真相仍以对应环境 `/health` 返回为准。具体 rollout 差异见 `specs/tech_docs/space_cloud.md`「文档归属与兼容基线」。若契约变化必须同步更新两边实现、测试、文档和兼容基线。
 
 **核心边界：**
 
 - Space 不是 AI Runtime / Session Sidecar。云端登录、HTTP 请求、附件/Skill IO、registered-agent IssueDelivery poll/process 都由 Rust Tauri command 拥有。
 - Renderer 只通过 `src/renderer/api/spaceCloud.ts` 调 Tauri invoke，不直连 Space 服务，也不持有 session token。
-- build-time capability 由 `src-tauri/build.rs` 注入 `MYAGENTS_SPACE_*`，`cmd_space_get_capability` 只裁决构建能力与当前 build-time origin；开发中入口还受 `config.teamSpaceEnabled` 默认关闭门控。debug 构建可烘焙 `MYAGENTS_SPACE_DEV_BASE_URL`，release profile 机制性丢弃 Dev origin。
+- build-time capability 由 `src-tauri/build.rs` 注入 `MYAGENTS_SPACE_*`，`cmd_space_get_capability` 只裁决构建能力与当前 build-time origin；实验室入口还受 `config.teamSpaceEnabled` 默认关闭门控。debug 构建可烘焙 `MYAGENTS_SPACE_DEV_BASE_URL`，release profile 机制性丢弃 Dev origin。
 - `config.spaceEnvironment` 只在烘焙的 `production` / `dev` origin 之间二选一，Renderer 不提供自由 URL 输入。旧配置值 `staging` 仅在 debug 构建包含 Dev origin 时读取为 `dev`；新写入永远使用 `dev`，release 构建一律回落 Production。
 - 本地状态 production 在 `~/.myagents/space/{session.json,registered_agents.json,delivery_log.json}`，Dev 在 `~/.myagents/space/dev/{...}`；二者不进入 SessionStore，旧 `space/staging` 不自动迁移。全局 Skill 安装仍是 `~/.myagents/skills`，不随 Space 环境切换。
 - Space renderer cache identity 包含服务 origin；切换 production/Dev 时即使 space slug 同为 `official` 也必须清缓存。
@@ -904,7 +904,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 应用启动和每个 Sidecar 创建时输出 `[boot]` 单行自检信息：
 ```
-[boot] v=0.2.50 build=release os=macos-aarch64 provider=deepseek mcp=2 agents=3 channels=5 scheduled_tasks=12 proxy=false dir=/Users/xxx/.myagents
+[boot] v=0.3.0 build=release os=macos-aarch64 provider=deepseek mcp=2 agents=3 channels=5 scheduled_tasks=12 proxy=false dir=/Users/xxx/.myagents
 [boot] pid=12345 port=31415 workspace=/path session=abc-123 resume=true model=deepseek-chat bridge=yes mcp=playwright,im-cron
 ```
 
@@ -973,7 +973,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 ### 任务中心 / 搜索
 - [任务中心架构](./tech_docs/task_center.md) — TaskStore 权威、直接调度、Legacy Cron 迁移、CLI
-- [Cloud Space 架构](./tech_docs/space_cloud.md) — 开发中的 Space 登录、Issue/Skill、registered agent、IssueDelivery/claim 到 attached-session Task
+- [Cloud Space 架构](./tech_docs/space_cloud.md) — 实验室 Space 登录、Issue/Skill、registered agent、IssueDelivery/claim 到 attached-session Task
 - [全文搜索架构](./tech_docs/search_architecture.md) — Tantivy + jieba、session watcher、UTF-16 高亮
 
 ### SDK 集成

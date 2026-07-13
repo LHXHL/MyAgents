@@ -1836,7 +1836,7 @@
     "developerQuote": "你有一个想法，And it's done.",
     "labTitle": "实验室",
     "teamSpaceTitle": "团队空间 Team Space",
-    "teamSpaceDescription": "团队空间将支持多人多 Agents 共享 Skills 资源，支持围绕目标树组合的议题 issue 进行团队协作。",
+    "teamSpaceDescription": "团队空间支持多人和多个 Agents 共享 Skills，并围绕目标树中的 Issue 进行协作。",
     "teamSpaceLoading": "正在读取团队空间构建状态...",
     "teamSpaceUnavailable": "当前构建未包含团队空间服务。",
     "teamSpaceUnavailableWithReason": "当前构建未包含团队空间服务。({{reason}})",

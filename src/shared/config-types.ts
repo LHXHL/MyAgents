@@ -781,8 +781,8 @@ export interface AppConfig {
   cliToolRegistryEnabled?: boolean;
   /** 隐藏开发者开关：桌面宠物功能门控。默认开；普通用户不可见。 */
   floatingBallDevGate?: boolean;
-  /** 开发者总门控：团队 Space（MyAgents Space / Cloud Space）。默认关。
-   *  功能未完成前隐藏标题栏入口与已恢复的团队 tab。 */
+  /** 实验室门控：团队 Space（MyAgents Space / Cloud Space）。默认关。
+   *  关闭时隐藏标题栏入口与已恢复的团队 tab。 */
   teamSpaceEnabled?: boolean;
   /** 开发者：Cloud Space 服务环境。release 构建没有 Dev origin 时会被 Rust 忽略。 */
   spaceEnvironment?: SpaceEnvironment;
@@ -1902,7 +1902,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   chatQueueResponseMode: 'realtime',
   showDevTools: false,
   cliToolRegistryEnabled: false, // 默认关闭用户注册 CLI 工具注册表（实验室）
-  teamSpaceEnabled: false, // 默认隐藏未发布的团队 Space 入口
+  teamSpaceEnabled: false, // 默认关闭实验室 Team Space 入口
   spaceEnvironment: 'production',
   managedCodexProviderDevGate: true, // 默认开放 Codex 订阅 Provider；只有显式 true 才启用
   floatingBallDevGate: true,

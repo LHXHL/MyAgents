@@ -2,7 +2,7 @@
 
 ## 定位
 
-Cloud Space 是桌面端连接 MyAgents 官方/团队空间的客户端能力，目前仍处于开发中/半成品状态，不作为已发布用户能力写入 CHANGELOG 或 GitHub Release notes。
+Cloud Space 是桌面端连接 MyAgents 官方/团队空间的客户端能力。0.3.0 起作为实验室功能随客户端发布，默认关闭，用户需在「设置 → 关于&反馈 → 实验室」显式开启；它应写入 CHANGELOG 与 GitHub Release notes，但不视为默认稳定入口。
 
 它不是 AI Runtime，也不属于 Session Sidecar：登录、Issue/Skill/Agent 注册、附件上传下载、IssueDelivery 拉取都由 Rust Tauri command 拥有；React 只负责 UI 编排；CLI 通过 management API 暴露 issue/attachment/claim 子集给 Agent 自动化使用。
 
@@ -15,13 +15,13 @@ Cloud Space 横跨两个独立版本、独立发布的仓库，不能把其中�
 | Desktop build gate、Rust HTTP/session、`device_id`、本地 token/状态、connector、UI、CLI、Task/Session 执行 | `hAcKlyc/MyAgents`：本文 + `specs/ARCHITECTURE.md`「MyAgents Cloud Space」 |
 | Cloud API、身份/权限、领域模型、D1/R2/KV ownership、Account plan/quota、运营与发布 | `hAcKlyc/MyAgents_space`：`specs/ARCHITECTURE.md` + `specs/RELEASE.md` |
 
-本地平级 checkout 中，云端架构文档地址是 `../MyAgents_space/specs/ARCHITECTURE.md`。截至 2026-07-13，最近一次联合校验基线为：
+本地平级 checkout 中，云端架构文档地址是 `../MyAgents_space/specs/ARCHITECTURE.md`。截至 2026-07-14，最近一次联合校验基线为：
 
-- Desktop：`package.json` 为 `0.3.0` 开发线；本节覆盖评论附件、本地 draft inspect、显式多 Space CLI 与自动 User/Registered Agent actor resolver。检查时最近的 Desktop release tag 仍是 `v0.2.49`，因此这里描述的是下一开发版本，不代表已发布客户端。
-- Cloud Production：`MyAgents_space v0.1.3` 的 tag 与 `origin/main` 均指向 `d39f29789fe4f932218c2ca30f38e80f5c6d753c`，Production `/health` 返回 `main-d39f29789fe4f932218c2ca30f38e80f5c6d753c`。该版本已包含 comment-owned attachments、JSON/multipart 原子 create/comment/complete、direct top attachment update/delivery、typed assignee candidates、Space context assertion、role-downgrade revoke 与 Production/Dev 环境隔离。
-- Cloud Dev：`origin/dev` 为 `70709badc3455595b3386deddee5049c08b17227`，Dev `/health` 返回 `dev-70709badc3455595b3386deddee5049c08b17227`；相对 `v0.1.3` 只新增 release pipeline 的 Production tag 身份修正。上述 SHA 是日期化校验记录，实时部署真相仍以对应环境 `/health` 返回的 Git tag 与 Worker Version ID 为准。
+- Desktop：`v0.3.0` 发布线；本节覆盖评论附件、本地 draft inspect、显式多 Space CLI 与自动 User/Registered Agent actor resolver。上一 Desktop release tag 为 `v0.2.49`。
+- Cloud Production：`MyAgents_space v0.1.4` tag 与 `origin/main` 均指向 `97ac3b89c11b2dedef2448475d852809c533e858`，Production `/health` 返回 `main-97ac3b89c11b2dedef2448475d852809c533e858`。该版本包含 comment-owned attachments、JSON/multipart 原子 create/comment/complete、direct top attachment update/delivery、typed assignee candidates、Space context assertion、role-downgrade revoke、Production/Dev 环境隔离，以及 account plan / per-Space entitlement / nullable quota limits。
+- Cloud Dev：`origin/dev` 同样为 `97ac3b89c11b2dedef2448475d852809c533e858`，Dev `/health` 返回 `dev-97ac3b89c11b2dedef2448475d852809c533e858`，当前与 Production commit 对齐。上述 SHA 是日期化校验记录，实时部署真相仍以对应环境 `/health` 返回的 Git tag 与 Worker Version ID 为准。
 
-发布兼容：Cloud 先 additive 部署；请求 `X-MyAgents-Client-Version < 0.2.50` 时只返回旧 subscription projection，assignment/follow-up 保持云端 pending，不得降级为 subscription。Desktop `0.2.50` 才消费 `deliveryKind/cloudInstruction/trigger/assignee`。旧 pending subscription 缺 `deliveryKind` 时，客户端只走显式 legacy fallback；字段存在但 kind 未知时 fail closed 并留待升级处理。
+发布兼容：Cloud 先 additive 部署；预发布阶段确定的协议门槛保持为 `X-MyAgents-Client-Version < 0.2.50`，低于门槛时只返回旧 subscription projection，assignment/follow-up 保持云端 pending，不得降级为 subscription。首个公开消费 `deliveryKind/cloudInstruction/trigger/assignee` 的 Desktop 版本是 `0.3.0`。旧 pending subscription 缺 `deliveryKind` 时，客户端只走显式 legacy fallback；字段存在但 kind 未知时 fail closed 并留待升级处理。
 
 这个组合是兼容记录，不是版本绑定。当前 API 没有 URL version prefix；双方通过 additive response、缺省字段 fallback 和 rollout 兼容旧调用方。修改 API 字段、错误码、状态机、permission、poll/presence 或兼容策略时，必须同步更新 Space serializer/tests/架构文档与本仓 types/wrapper/tests/本文。只改 Desktop UI 或本地执行且云端契约不变时，不要把客户端细节复制进云端文档；只改 Worker 内部实现且无契约变化时也不要求改本文。
 
@@ -32,7 +32,7 @@ Space 是 build-time capability：
 - `src-tauri/build.rs` 读取环境变量或仓库根 `.env`，仅转发 `MYAGENTS_SPACE_*` 白名单。
 - `MYAGENTS_SPACE_ENABLED=true` 时必须提供 HTTPS 且不带 path/credential 的 `MYAGENTS_SPACE_BASE_URL`；build/runtime 校验会移除 query/fragment 并注入规范化后的 origin。
 - debug 构建可以额外烘焙 `MYAGENTS_SPACE_DEV_BASE_URL`。release profile 会在 `build.rs` 中无条件丢弃 Dev origin，因此生产二进制不能暴露 Dev 服务开关。
-- `cmd_space_get_capability` 返回 `{available, baseUrl, publicClientId, reason, environments, activeEnvironment}`，只代表构建能力与 Rust 当前选中的 build-time origin；前端还必须叠加 `config.teamSpaceEnabled === true`（默认关闭）才展示开发中的 Team Space 入口。
+- `cmd_space_get_capability` 返回 `{available, baseUrl, publicClientId, reason, environments, activeEnvironment}`，只代表构建能力与 Rust 当前选中的 build-time origin；前端还必须叠加 `config.teamSpaceEnabled === true`（默认关闭）才展示实验室 Team Space 入口。
 - `config.spaceEnvironment` 只能写入烘焙的 `production` / `dev` origin，默认 `production`。旧值 `staging` 只作为读取兼容 alias：debug 构建包含 Dev origin 时映射到 `dev`，release 构建仍回落 Production。Renderer 不提供自由 URL 输入；所有云端请求仍从 Rust `space_build_capability()` / `space_base_url()` 单一咽喉读取当前 origin。
 - 缺少能力时，Space UI 不应降级为硬编码 URL；所有云端请求必须经 Rust 能力检查。
 
@@ -214,7 +214,7 @@ Space Issue 的用户可见编号由云端拥有，不从 opaque `issue.id` 推�
 
 - Pro 是 account-level 有效期会员；Space 仍是 member/open issue/skill/registered-agent/storage 的 quota 作用域。`billingOwnerUserId` 把账号的有效权益动态投影到该账号全部没有独立 override 的 owned Spaces，加入他人的 Space 不受当前账号会员影响。Cloud 不把 Pro 冗余写进某一个“最后创建”的 Space。
 - 官方或特殊 Space 可由 Operations 持有独立 `entitlement { source, key, displayName, expiresAt, version }` 与五项 authoritative limits，不再以 `quotaBypassed` 形成展示/执行双轨。每个 Space-scoped limit 都是 `number | null`：`null` 明确表示不限制，`undefined` 只表示旧 Cloud/缺字段，不能当成 unlimited。
-- `/api/me` / Desktop `SpaceSession` 返回 `accountPlan { effectiveTier, evaluatedAt, membership }`；Space projection 返回 `effectivePlanTier`、`planExpiresAt`、`entitlement`、`limits`。Desktop `>=0.2.50` 消费 nullable limits 和 Cloud 展示名；Cloud 对更旧/无版本客户端继续投影可解析的 Free 数字且不下发 entitlement，避免滚动发布期间旧类型崩溃。
+- `/api/me` / Desktop `SpaceSession` 返回 `accountPlan { effectiveTier, evaluatedAt, membership }`；Space projection 返回 `effectivePlanTier`、`planExpiresAt`、`entitlement`、`limits`。Desktop `0.3.0` 消费 nullable limits 和 Cloud 展示名；Cloud 兼容判定仍使用预发布阶段确定的 `>=0.2.50` 协议门槛，对更旧/无版本客户端继续投影可解析的 Free 数字且不下发 entitlement，避免滚动发布期间旧类型崩溃。
 - Settings 的 Plan 与“SPACE 资源 · … 套餐”标题都优先使用 `entitlement.displayName`；有限值显示本地化 `usage / limit`，`null` 显示 `usage / 不限制`（英文 `Unlimited`），且无限资源不得触发 over-limit 或禁用 Members/Agents 操作。期限优先使用 `entitlement.expiresAt`；独立 entitlement 的 null 期限不能误回退到 owner 账号 Pro 期限。
 - 到期判定严格为 `[startsAt, expiresAt)`，无需 cron。到期/撤销后 resolver 立即回到 Free；存量仍可读，只有超额资源的正增量 mutation 被拒绝，删除/归档/释放额度始终允许。
 - `space.plan_changed` 是普通 Space cursor event：当前 Space 收到后失效 session/overview 并 silent revalidate。Overview 的 `limits` 以当前 Space session projection 为单一权威，members payload 只补 usage/兼容旧服务，不能用旧快照遮住 plan event 的新额度。

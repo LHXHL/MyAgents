@@ -158,7 +158,7 @@ delivery，不改变 `myagents session send/watch` 的通用事件协议。`syst
 
 规则 owner：`src/server/session-core/turn-queue.ts`。副作用 state owner：`src/server/builtin-session/queue.ts`。`agent-session.ts` facade 负责把 enqueue / cancel / force / terminal orchestration 接到 SDK、SSE、IM reply 等副作用，但 queue 数组、in-flight slot、turn admission ticket 不再作为 facade 顶层裸状态维护。admission、cancel location、force-start reordering、abort ticket 清理必须继续调用 `turn-queue` policy。
 
-### Goal Mode Session State（0.2.50）
+### Goal Mode Session State（0.3.0）
 
 Goal 是 current Session 的独立持久状态，物理存储为 `~/.myagents/session_goals.json`，不嵌入 `SessionMetadata`，也不复用 Task/Cron：
 

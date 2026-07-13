@@ -1,6 +1,6 @@
 # Task Provider Routing
 
-> 状态：0.2.50。Task 是唯一持久化权威；Cron 名称只保留兼容 API/CLI。本文定义 Task、Session 与 Provider 配置各自拥有哪一段生命周期。
+> 状态：0.3.0。Task 是唯一持久化权威；Cron 名称只保留兼容 API/CLI。本文定义 Task、Session 与 Provider 配置各自拥有哪一段生命周期。
 
 ## 1. 三个配置 Scope
 
