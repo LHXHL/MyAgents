@@ -101,7 +101,7 @@ export const SESSION_ENGINE_ROUTE_CONTRACTS: SessionEngineRouteContract[] = [
     requiredFields: ['taskId', 'prompt'],
     responseKeys: ['success', 'aiRequestedExit', 'exitReason', 'outputText', 'sessionId', 'error'],
     failureStatuses: [400, 408, 500, 503],
-    behavior: 'Runs a synchronous cron turn and gates completion on the active engine success signal.',
+    behavior: 'Runs a synchronous cron turn and gates completion on the active engine success signal; managed memory jobs also require their exact official system skill at the Runtime dispatch boundary.',
   },
   {
     path: '/task/stop',
@@ -155,7 +155,7 @@ export const SESSION_ENGINE_ROUTE_CONTRACTS: SessionEngineRouteContract[] = [
     requiredFields: ['source'],
     responseKeys: ['status', 'reason'],
     failureStatuses: [200, 500],
-    behavior: 'Injects memory maintenance through the active engine and gates completion on true turn success; managed auto-update carries exact Task queue ownership for authorization and stop, while timeout/turn_failed remain body-level status values on HTTP 200.',
+    behavior: 'Injects memory maintenance through the active engine and gates completion on true turn success; manual and automatic turns both require the exact official myagents-memory-update skill at the Runtime dispatch boundary, managed auto-update carries exact Task queue ownership for authorization and stop, and timeout/turn_failed remain body-level status values on HTTP 200.',
   },
   {
     path: '/api/inbox/drain',

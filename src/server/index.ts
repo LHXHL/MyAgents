@@ -80,6 +80,10 @@ import {
   type CommandFrontmatter
 } from '../shared/slashCommands';
 import { sanitizeFolderName, isWindowsReservedName } from '../shared/utils';
+import {
+  isRequiredMemorySystemSkill,
+  type RequiredMemorySystemSkill,
+} from '../shared/systemSkills';
 import { resolveSkillUrl, type ResolvedSkillSource } from './skills/url-resolver';
 import { fetchSkillZip, TarballFetchError } from './skills/tarball-fetcher';
 import { analyseTree, buildInstallPayload, writeSkillFiles, type SkillCandidate } from './skills/installer';
@@ -239,6 +243,7 @@ import {
   buildMemoryUpdateReminder,
   MEMORY_UPDATE_COMPLETION_MARKER,
 } from './utils/memory-update-reminder';
+import { assertOfficialSystemSkillExposed } from './utils/system-skill-readiness';
 import { managementApi } from './utils/management-api-client';
 import { buildGoalContinuationReminder } from '../shared/systemReminder';
 import { setImCronContext } from './tools/im-cron-tool';
@@ -631,6 +636,7 @@ import {
   getSessionModel,
   getSessionProviderEnv,
   syncProjectUserConfig,
+  requireCurrentBuiltinSkill,
   initSocksBridgeFromEnv,
   getHistoricalSessionMessages,
   ensureSdkMcpInSync,
@@ -1093,6 +1099,61 @@ function createTaskDispatchGuard(
   return guard;
 }
 
+function requiredMemorySystemSkill(managedKind: string | undefined): RequiredMemorySystemSkill | undefined {
+  switch (managedKind) {
+    case 'memory_auto_update_batch': return 'myagents-memory-update';
+    case 'memory_gardener': return 'myagents-memory-gardener';
+    case 'memory_molt': return 'myagents-memory-molt';
+    default: return undefined;
+  }
+}
+
+/**
+ * Compose task authorization with the actual Runtime-exposure prerequisite.
+ * This runs at the turn-queue dispatch boundary, after earlier work drains
+ * but before any model sees the managed prompt.
+ */
+function createRequiredSystemSkillDispatchGuard(
+  skillName: RequiredMemorySystemSkill,
+  workspacePath: string,
+  preceding?: import('./session-core/turn-queue').DispatchGuard,
+): import('./session-core/turn-queue').DispatchGuard {
+  let canceled = false;
+  const guard: import('./session-core/turn-queue').DispatchGuard = async () => {
+    if (canceled) {
+      return { accepted: false, code: 'system_skill_dispatch_canceled', error: 'System skill dispatch was canceled' };
+    }
+    if (preceding) {
+      const prior = await preceding();
+      if (!prior.accepted) return prior;
+    }
+    if (canceled) {
+      return { accepted: false, code: 'system_skill_dispatch_canceled', error: 'System skill dispatch was canceled' };
+    }
+    try {
+      assertOfficialSystemSkillExposed({ workspacePath, skillName });
+      if (getSessionEngine().kind === 'builtin') {
+        await requireCurrentBuiltinSkill(skillName);
+      }
+      if (canceled) {
+        return { accepted: false, code: 'system_skill_dispatch_canceled', error: 'System skill dispatch was canceled' };
+      }
+      return { accepted: true };
+    } catch (error) {
+      return {
+        accepted: false,
+        code: 'required_system_skill_unavailable',
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+  guard.cancel = () => {
+    canceled = true;
+    preceding?.cancel?.();
+  };
+  return guard;
+}
+
 type GoalExecutePayload = {
   goalId: string;
   objective: string;
@@ -1176,7 +1237,14 @@ function readSkillsConfig(): SkillsConfig {
       const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
       return {
         seeded: Array.isArray(raw?.seeded) ? raw.seeded : defaults.seeded,
-        disabled: Array.isArray(raw?.disabled) ? raw.disabled : defaults.disabled,
+        // Managed memory workflows depend on these official contracts. Heal
+        // historical disabled entries at read time so they remain exposed;
+        // the toggle route also rejects future disable attempts.
+        disabled: Array.isArray(raw?.disabled)
+          ? raw.disabled.filter((name: unknown): name is string => (
+              typeof name === 'string' && !isRequiredMemorySystemSkill(name)
+            ))
+          : defaults.disabled,
         generation: typeof raw?.generation === 'number' ? raw.generation : 0,
       };
     }
@@ -3367,11 +3435,15 @@ async function main() {
             timeoutMs: 3_600_000,
             pollMs: 1000,
           } satisfies import('./session-engine').InjectedTurnRequest;
+          const taskDispatchGuard = createTaskDispatchGuard(taskId, queueId, sessionId);
+          const requiredSkill = requiredMemorySystemSkill(payload.managedKind);
           const turnResult = await engine.runInjectedTurn({
             ...injectedTurn,
             queueId,
             turnOwner: { kind: 'task', id: taskId },
-            beforeDispatch: createTaskDispatchGuard(taskId, queueId, sessionId),
+            beforeDispatch: requiredSkill
+              ? createRequiredSystemSkillDispatchGuard(requiredSkill, agentDir, taskDispatchGuard)
+              : taskDispatchGuard,
           });
           if (!turnResult.success) {
             console.warn(`[cron] execute-sync taskId=${taskId} failed via ${engine.kind}: ${turnResult.error ?? 'Unknown error'}`);
@@ -5748,7 +5820,10 @@ async function main() {
                   path: skillMdPath,
                   folderName: folder.name,
                   author,
-                  enabled: scopeType === 'project' ? true : !skillsConfigForList.disabled.includes(folder.name),
+                  enabled: scopeType === 'project'
+                    ? true
+                    : isRequiredMemorySystemSkill(folder.name)
+                      || !skillsConfigForList.disabled.includes(folder.name),
                 });
               }
             } catch (scanError) {
@@ -5781,6 +5856,12 @@ async function main() {
           const { folderName, enabled } = await request.json() as { folderName: string; enabled: boolean };
           if (!folderName || typeof folderName !== 'string') {
             return jsonResponse({ success: false, error: 'Invalid folderName' }, 400);
+          }
+          if (!enabled && isRequiredMemorySystemSkill(folderName)) {
+            return jsonResponse({
+              success: false,
+              error: `${folderName} is required by MyAgents managed memory workflows and cannot be disabled`,
+            }, 409);
           }
           const config = readSkillsConfig();
           if (enabled) {
@@ -9220,6 +9301,9 @@ description: >
           const MEMORY_UPDATE_TIMEOUT_MS = 3600000;
           const runtimeType = engine.kind === 'external' ? getActiveRuntimeType() : 'builtin';
           const runtimeSessionId = getRuntimeSessionIdForRequest();
+          const taskDispatchGuard = isAuto
+            ? createTaskDispatchGuard(taskId, queueId, managementSessionId)
+            : undefined;
           const turnResult = await engine.runInjectedTurn({
             prompt,
             sessionId: runtimeSessionId,
@@ -9233,10 +9317,14 @@ description: >
             analyticsOrigin: { kind: 'automation', surface: 'memory_update' },
             timeoutMs: MEMORY_UPDATE_TIMEOUT_MS,
             pollMs: 1000,
+            beforeDispatch: createRequiredSystemSkillDispatchGuard(
+              'myagents-memory-update',
+              currentAgentDir,
+              taskDispatchGuard,
+            ),
             ...(isAuto ? {
               queueId,
               turnOwner: { kind: 'task' as const, id: taskId },
-              beforeDispatch: createTaskDispatchGuard(taskId, queueId, managementSessionId),
             } : {}),
           });
           if (!turnResult.success && turnResult.status === 408) {

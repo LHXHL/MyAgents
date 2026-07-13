@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::io::{ErrorKind, Write};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 use std::time::Duration;
@@ -833,11 +833,8 @@ fn collect_disk_memory_auto_update_agents(config: &Value) -> Vec<DiskMemoryAutoU
 }
 
 fn prepare_update_memory_file(workspace_path: &str) -> Result<(), String> {
-    crate::workspace_files::memory_rules::ensure_memory_rule_substrate_for_workspace(
-        workspace_path,
-    )?;
-    let update_md_path = resolve_update_memory_path(workspace_path)?;
-    ensure_update_memory_file(&update_md_path)
+    crate::workspace_files::memory_rules::ensure_update_memory_file_for_workspace(workspace_path)
+        .map(|_| ())
 }
 
 fn collect_candidates(
@@ -1245,51 +1242,6 @@ fn parse_hhmm(s: &str) -> Option<u32> {
     Some(h * 60 + m)
 }
 
-fn resolve_update_memory_path(workspace_path: &str) -> Result<PathBuf, String> {
-    let workspace_root =
-        crate::workspace_files::path_safety::validate_workspace_root(workspace_path)?;
-    crate::workspace_files::path_safety::resolve_inside_workspace(
-        &workspace_root,
-        "UPDATE_MEMORY.md",
-    )
-}
-
-fn ensure_update_memory_file(path: &Path) -> Result<(), String> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) => {
-            if metadata.file_type().is_symlink() {
-                return Err("UPDATE_MEMORY.md is a symlink; refusing to read it".to_string());
-            }
-            if metadata.is_dir() {
-                return Err("UPDATE_MEMORY.md is a directory".to_string());
-            }
-            // Reading validates that the existing user-owned file is usable.
-            // Its body may intentionally be empty: that means no workspace-
-            // specific instructions, not that Memory Update is disabled.
-            std::fs::read_to_string(path).map_err(|e| format!("read failed: {}", e))?;
-            Ok(())
-        }
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            let mut file = match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(path)
-            {
-                Ok(file) => file,
-                Err(open_err) if open_err.kind() == ErrorKind::AlreadyExists => {
-                    return ensure_update_memory_file(path);
-                }
-                Err(open_err) => return Err(format!("create failed: {}", open_err)),
-            };
-            let content = crate::workspace_files::memory_rules::default_update_memory_content();
-            file.write_all(content.as_bytes())
-                .map_err(|write_err| format!("write failed: {}", write_err))?;
-            Ok(())
-        }
-        Err(e) => Err(format!("metadata failed: {}", e)),
-    }
-}
-
 fn message_timestamp(message: &MessageLine) -> Option<DateTime<Utc>> {
     message
         .timestamp
@@ -1335,6 +1287,7 @@ fn is_system_injected_user_text(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::workspace_files::memory_rules::ensure_update_memory_file_at as ensure_update_memory_file;
 
     fn spawn_owner_guard_test_child() -> std::process::Child {
         #[cfg(windows)]

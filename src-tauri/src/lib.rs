@@ -539,6 +539,7 @@ pub fn run() {
             workspace_files::transfer::cmd_workspace_copy_internal,
             workspace_files::gitignore::cmd_workspace_add_gitignore,
             workspace_files::memory_rules::cmd_ensure_memory_rule_substrate,
+            workspace_files::memory_rules::cmd_ensure_update_memory_file,
             workspace_files::search::cmd_workspace_search_files_fuzzy,
             workspace_files::delete::cmd_workspace_delete,
             workspace_files::slash::cmd_list_slash_commands,

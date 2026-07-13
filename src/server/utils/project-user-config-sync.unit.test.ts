@@ -76,6 +76,20 @@ describe('project-user-config-sync', () => {
     expect(existsSync(linkPath)).toBe(false);
   });
 
+  it('keeps managed memory system skills exposed even if legacy config disabled them', () => {
+    const { home, workspace } = makeEnv();
+    writeUserSkill(home, 'myagents-memory-update');
+    writeFileSync(
+      join(home, '.myagents', 'skills-config.json'),
+      JSON.stringify({ disabled: ['myagents-memory-update'] }),
+    );
+
+    syncProjectUserConfigFiles(workspace, { cliToolRegistryEnabled: true });
+
+    const linkPath = join(workspace, '.claude', 'skills', 'myagents-memory-update');
+    expect(lstatSync(linkPath).isSymbolicLink()).toBe(true);
+  });
+
   it('does not overwrite real project skill directories', () => {
     const { home, workspace } = makeEnv();
     writeUserSkill(home, 'review-helper');

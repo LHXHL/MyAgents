@@ -84,5 +84,11 @@ describe('SESSION_ENGINE_ROUTE_CONTRACTS', () => {
       responseKeys: expect.arrayContaining(['messageEnqueued']),
       behavior: expect.stringContaining('metadataBirthPending'),
     });
+    expect(findSessionEngineRouteContract('/api/memory/update', 'POST')?.behavior).toContain(
+      'manual and automatic turns both require the exact official myagents-memory-update skill',
+    );
+    expect(findSessionEngineRouteContract('/cron/execute-sync', 'POST')?.behavior).toContain(
+      'managed memory jobs also require their exact official system skill',
+    );
   });
 });

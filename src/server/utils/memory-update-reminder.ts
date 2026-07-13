@@ -1,3 +1,5 @@
+import { escapeSystemReminderText } from '../../shared/systemReminder';
+
 export const MEMORY_UPDATE_COMPLETION_MARKER = 'MEMORY_UPDATE_OK';
 
 export interface MemoryUpdateReminderInput {
@@ -13,6 +15,9 @@ export interface MemoryUpdateReminderInput {
  * system skill remains the workflow authority.
  */
 export function buildMemoryUpdateReminder(input: MemoryUpdateReminderInput): string {
+  const workspaceMemoryInstructions = escapeSystemReminderText(input.workspaceMemoryInstructions);
+  const currentTime = escapeSystemReminderText(input.currentTime);
+
   return [
     '<system-reminder>',
     '<MEMORY_UPDATE>',
@@ -20,12 +25,12 @@ export function buildMemoryUpdateReminder(input: MemoryUpdateReminderInput): str
     '',
     '以下是当前工作区自定义的维护要求：',
     '<workspace-memory-instructions>',
-    input.workspaceMemoryInstructions,
+    workspaceMemoryInstructions,
     '</workspace-memory-instructions>',
     '',
     '只处理当前 Session 的工作记忆、相关工作区产物及其直接造成的修正。',
     '',
-    `Current time: ${input.currentTime}`,
+    `Current time: ${currentTime}`,
     '',
     `完成后仅回复 ${MEMORY_UPDATE_COMPLETION_MARKER}。`,
     '</MEMORY_UPDATE>',

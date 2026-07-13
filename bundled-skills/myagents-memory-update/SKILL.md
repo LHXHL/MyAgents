@@ -1,8 +1,8 @@
 ---
 name: myagents-memory-update
 description: >
-  仅当指令明确写出完整名称 `myagents-memory-update` 时使用；深度回顾当前 Session，
-  整理相关工作区产物，并将关键信息沉淀到工作区记忆。
+  仅当系统或用户明确指定完整名称 `myagents-memory-update` 时使用；
+  不要根据任务语义或相似表述自行触发。
 ---
 
 # MyAgents Memory Update

@@ -1208,6 +1208,12 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 
 const SYSTEM_SKILLS_VERSION: &str = "33";
 
+/// One process-wide transaction owner for the versioned system-skill
+/// snapshot. Startup automation and ConfigProvider may request convergence at
+/// the same time; both must join this lock before any remove/copy/version
+/// operation so a Runtime can never scan a half-replaced directory tree.
+static SYSTEM_SKILLS_SYNC_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+
 /// Skills that ship with the app and MUST stay at the bundled version —
 /// the app's flows depend on them, users are not meant to customise.
 /// Keep in sync with the exclusion list in Bun's `seedBundledSkills()`.
@@ -1294,6 +1300,8 @@ pub async fn cmd_sync_system_skills<R: Runtime>(app_handle: AppHandle<R>) -> Res
 pub(crate) async fn sync_system_skills_for_startup<R: Runtime>(
     app_handle: AppHandle<R>,
 ) -> Result<bool, String> {
+    let sync_lock = SYSTEM_SKILLS_SYNC_LOCK.get_or_init(|| tokio::sync::Mutex::new(()));
+    let _transaction = sync_lock.lock().await;
     tauri::async_runtime::spawn_blocking(move || {
         let changed = sync_system_skills_blocking(app_handle)?;
         ensure_system_skills_installation_current()?;
@@ -1301,16 +1309,6 @@ pub(crate) async fn sync_system_skills_for_startup<R: Runtime>(
     })
     .await
     .map_err(|e| format!("system-skills sync task failed: {}", e))?
-}
-
-/// Cheap dispatch-time fence for flows that hard-depend on system skills.
-/// Startup performs the real sync; this check turns a packaging or disk
-/// failure into a recorded task failure instead of letting the model improvise
-/// without the official workflow.
-pub(crate) async fn ensure_system_skills_current() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(ensure_system_skills_installation_current)
-        .await
-        .map_err(|e| format!("system-skills readiness task failed: {}", e))?
 }
 
 fn ensure_system_skills_installation_current() -> Result<(), String> {
@@ -1594,7 +1592,9 @@ mod system_skills_tests {
         assert!(bundled.contains("所有 Space 业务命令都必须带 `--space <slug>`"));
 
         let memory_update = include_str!("../../bundled-skills/myagents-memory-update/SKILL.md");
-        assert!(memory_update.contains("仅当指令明确写出完整名称 `myagents-memory-update` 时使用"));
+        assert!(memory_update
+            .contains("仅当系统或用户明确指定完整名称 `myagents-memory-update` 时使用"));
+        assert!(memory_update.contains("不要根据任务语义或相似表述自行触发"));
         assert!(memory_update.contains("commit 并成功 push"));
         assert!(SYSTEM_SKILLS.contains(&"myagents-memory-update"));
     }
@@ -1619,6 +1619,12 @@ mod system_skills_tests {
             .collect();
 
         assert_eq!(node_skills, SYSTEM_SKILLS);
+
+        let shared_contract = include_str!("../../src/shared/systemSkills.ts");
+        assert!(shared_contract.contains(&format!(
+            "export const SYSTEM_SKILLS_VERSION = '{}';",
+            SYSTEM_SKILLS_VERSION
+        )));
     }
 
     #[test]
@@ -1638,8 +1644,12 @@ mod system_skills_tests {
             ),
         ] {
             assert!(
-                content.contains(&format!("仅当指令明确写出完整名称 `{name}` 时使用")),
+                content.contains(&format!("仅当系统或用户明确指定完整名称 `{name}` 时使用")),
                 "{name} must use the exact-name-only trigger contract"
+            );
+            assert!(
+                content.contains("不要根据任务语义或相似表述自行触发"),
+                "{name} must reject semantic or similar-phrase auto-triggering"
             );
         }
     }
@@ -1657,7 +1667,7 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn dispatch_readiness_requires_current_version_and_complete_snapshot() {
+    fn sync_readiness_requires_current_version_and_complete_snapshot() {
         let tmp = tempfile::tempdir().unwrap();
         let myagents_dir = tmp.path();
         let skills_dir = myagents_dir.join("skills");

@@ -5,8 +5,6 @@ import { ChevronDown } from 'lucide-react';
 import type { AgentConfig } from '../../../../shared/types/agent';
 import type { MemoryAutoUpdateConfig } from '../../../../shared/types/im';
 import { DEFAULT_MEMORY_AUTO_UPDATE_CONFIG } from '../../../../shared/types/im';
-import DEFAULT_UPDATE_MEMORY_CONTENT from '../../../../shared/default-update-memory.md?raw';
-import type { MemoryRuleSubstrateResult } from '../../../../shared/memory-rules';
 import { patchAgentConfig } from '@/config/services/agentConfigService';
 import { useToast } from '@/components/Toast';
 
@@ -50,16 +48,17 @@ export default function AgentMemoryUpdateSection({ agent, onAgentChanged }: Agen
   // Resolve file path (cross-platform separator)
   const filePath = `${agent.workspacePath}${agent.workspacePath.includes('\\') ? '\\' : '/'}UPDATE_MEMORY.md`;
 
-  const ensureRuleSubstrate = useCallback(async (): Promise<MemoryRuleSubstrateResult | null> => {
+  const ensureRuleSubstrate = useCallback(async (): Promise<boolean> => {
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      return await invoke<MemoryRuleSubstrateResult>('cmd_ensure_memory_rule_substrate', {
+      await invoke('cmd_ensure_memory_rule_substrate', {
         workspacePath: agent.workspacePath,
       });
+      return true;
     } catch (e) {
       console.warn('[AgentMemoryUpdateSection] Memory rule substrate ensure failed:', e);
       toastRef.current.error(t('agentSettings.memory.fileError'));
-      return null;
+      return false;
     }
   }, [agent.workspacePath, t]);
 
@@ -67,21 +66,19 @@ export default function AgentMemoryUpdateSection({ agent, onAgentChanged }: Agen
   const ensureFile = useCallback(async (): Promise<{ ok: boolean; content: string }> => {
     try {
       const { invoke } = await import('@tauri-apps/api/core');
-      const substrate = await ensureRuleSubstrate();
-      if (!substrate) return { ok: false, content: '' };
-      const existing = await invoke<string | null>('cmd_read_workspace_file', { path: filePath });
-      if (existing !== null) return { ok: true, content: existing };
-      // File doesn't exist — create with default content
-      const content = DEFAULT_UPDATE_MEMORY_CONTENT;
-      await invoke('cmd_write_workspace_file', { path: filePath, content });
-      toastRef.current.success(t('agentSettings.memory.createdFile'));
-      return { ok: true, content };
+      const result = await invoke<{ content: string; created: boolean }>('cmd_ensure_update_memory_file', {
+        workspacePath: agent.workspacePath,
+      });
+      if (result.created) {
+        toastRef.current.success(t('agentSettings.memory.createdFile'));
+      }
+      return { ok: true, content: result.content };
     } catch (e) {
       console.warn('[AgentMemoryUpdateSection] File operation failed:', e);
       toastRef.current.error(t('agentSettings.memory.fileError'));
       return { ok: false, content: '' };
     }
-  }, [ensureRuleSubstrate, filePath, t]);
+  }, [agent.workspacePath, t]);
 
   const handleToggle = useCallback(async () => {
     const newEnabled = !(config?.enabled ?? false);

@@ -1,8 +1,8 @@
 ---
 name: myagents-memory-gardener
 description: >
-  仅当指令明确写出完整名称 `myagents-memory-gardener` 时使用；整理和浓缩项目长期记忆，
-  移除过期或重复内容，保留仍然重要的事实、偏好、约定和决策。
+  仅当系统或用户明确指定完整名称 `myagents-memory-gardener` 时使用；
+  不要根据任务语义或相似表述自行触发。
 ---
 
 # MyAgents Memory Gardener

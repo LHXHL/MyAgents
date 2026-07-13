@@ -504,6 +504,22 @@ export function syncProjectUserConfig(
 }
 
 /**
+ * Reload the live builtin SDK skill registry and prove that a product-owned
+ * workflow contract is actually available to this Session. If no initialized
+ * SDK query exists yet, its next subprocess start will scan the already-
+ * verified project link before the first turn.
+ */
+export async function requireCurrentBuiltinSkill(skillName: string): Promise<void> {
+  const query = lifecycleState.query;
+  if (!query || !lifecycleState.sdkControlReady) return;
+
+  const refreshed = await query.reloadSkills();
+  if (!refreshed.skills.some(skill => skill.name === skillName)) {
+    throw new Error(`builtin Runtime did not load required system skill ${skillName}`);
+  }
+}
+
+/**
  * Fire-and-forget mid-session skill rescan (SDK 0.3.169+ reloadSkills control
  * request). Failure degrades to the pre-0.2.34 behavior — skills refresh on
  * the next session — so it never blocks the CRUD response that triggered the
