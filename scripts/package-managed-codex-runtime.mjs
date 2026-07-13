@@ -39,6 +39,7 @@ const PLATFORMS = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const RUNTIME_SET_RE = /^codex-[0-9A-Za-z._-]+$/;
 const DEFAULT_MACOS_CODEX_TEAM_ID = '2DC432GLL2';
 const DEFAULT_MACOS_CODEX_SIGNING_IDENTITY = 'Developer ID Application: OpenAI OpCo, LLC (2DC432GLL2)';
+const DEFAULT_WINDOWS_CODEX_PUBLISHER = 'OpenAI OpCo, LLC';
 
 function readRuntimeLock() {
   const lock = JSON.parse(readFileSync(RUNTIME_LOCK_SOURCE, 'utf8'));
@@ -355,19 +356,12 @@ function signingSpecForPlatform(platform, allowUnsigned) {
     };
   }
   if (platform === 'win32-x64') {
-    const certificateSha256 = process.env.MANAGED_CODEX_WINDOWS_CERT_SHA256?.trim();
-    const publisher = process.env.MANAGED_CODEX_WINDOWS_PUBLISHER?.trim();
-    if (!certificateSha256) {
-      if (allowUnsigned) return undefined;
-      return {
-        type: 'authenticode',
-        ...(publisher ? { publisher } : {}),
-      };
-    }
+    if (allowUnsigned) return undefined;
+    const publisher = process.env.MANAGED_CODEX_WINDOWS_PUBLISHER?.trim()
+      || DEFAULT_WINDOWS_CODEX_PUBLISHER;
     return {
       type: 'authenticode',
-      ...(publisher ? { publisher } : {}),
-      certificateSha256: normalizeSha256(certificateSha256, 'MANAGED_CODEX_WINDOWS_CERT_SHA256'),
+      publisher,
     };
   }
   throw new Error(`Unsupported Managed Codex platform: ${platform}`);
@@ -449,15 +443,7 @@ function verifyWindowsSigning(executablePath, signing) {
     throw new Error(`Authenticode status for ${executablePath} is ${parsed.status}: ${parsed.statusMessage ?? ''}`);
   }
   const actualSha = normalizeSha256(parsed.sha256, 'Authenticode signer certificate SHA-256');
-  if (!signing.certificateSha256) {
-    throw new Error([
-      'MANAGED_CODEX_WINDOWS_CERT_SHA256 is required for Managed Codex Windows artifact metadata.',
-      `Current codex.exe Authenticode subject: ${parsed.subject ?? '<none>'}`,
-      `Current codex.exe signer certificate SHA-256: ${actualSha}`,
-      'After confirming this signer is expected, add MANAGED_CODEX_WINDOWS_CERT_SHA256 to .env and rerun.',
-    ].join('\n'));
-  }
-  if (actualSha !== signing.certificateSha256) {
+  if (signing.certificateSha256 && actualSha !== signing.certificateSha256) {
     throw new Error(`Authenticode cert SHA-256 mismatch: expected ${signing.certificateSha256}, got ${actualSha}`);
   }
   if (signing.publisher && !String(parsed.subject ?? '').toLowerCase().includes(signing.publisher.toLowerCase())) {
@@ -468,6 +454,24 @@ function verifyWindowsSigning(executablePath, signing) {
     type: 'authenticode',
     publisher: parsed.subject ?? null,
     certificateSha256: actualSha,
+  };
+}
+
+function verifyWindowsUnsignedHelper(executablePath) {
+  if (process.platform !== 'win32') {
+    return { checked: false, reason: 'not-windows-host' };
+  }
+  const parsed = readWindowsAuthenticode(executablePath);
+  if (parsed.status !== 'NotSigned') {
+    throw new Error(
+      `Managed Codex unsigned Windows helper policy expected NotSigned for ${executablePath}, ` +
+      `got ${parsed.status}: ${parsed.statusMessage ?? ''}`,
+    );
+  }
+  return {
+    checked: true,
+    type: 'unsigned-helper',
+    status: parsed.status,
   };
 }
 
@@ -518,6 +522,23 @@ function macNativePathPolicy(platform) {
     helperPaths: new Set([
       `vendor/${vendorTriple}/codex-path/rg`,
       `vendor/${vendorTriple}/codex-resources/zsh/bin/zsh`,
+    ]),
+  };
+}
+
+function windowsNativePathPolicy() {
+  const vendorTriple = 'x86_64-pc-windows-msvc';
+  const codexPath = `vendor/${vendorTriple}/bin/codex.exe`;
+  return {
+    codexPath,
+    openAiSignedPaths: new Set([
+      codexPath,
+      `vendor/${vendorTriple}/bin/codex-code-mode-host.exe`,
+      `vendor/${vendorTriple}/codex-resources/codex-command-runner.exe`,
+      `vendor/${vendorTriple}/codex-resources/codex-windows-sandbox-setup.exe`,
+    ]),
+    unsignedHelperPaths: new Set([
+      `vendor/${vendorTriple}/codex-path/rg.exe`,
     ]),
   };
 }
@@ -623,6 +644,18 @@ function verifyPackageNativeSigning(
       );
     }
   }
+  if (platform === 'win32-x64') {
+    const policy = windowsNativePathPolicy();
+    const expectedPaths = new Set([...policy.openAiSignedPaths, ...policy.unsignedHelperPaths]);
+    if (
+      nativePaths.length !== expectedPaths.size
+      || nativePaths.some(relativePath => !expectedPaths.has(relativePath))
+    ) {
+      throw new Error(
+        `Managed Codex ${platform} native file set changed: ${nativePaths.join(', ')}`,
+      );
+    }
+  }
   return nativePaths.map((relativePath) => {
     let nativeSigning = signing;
     if (platform.startsWith('darwin-')) {
@@ -639,6 +672,29 @@ function verifyPackageNativeSigning(
         if (!nativeSigning) {
           throw new Error(`Managed Codex ${platform} helper was not prepared: ${relativePath}`);
         }
+      } else {
+        throw new Error(
+          `Managed Codex ${platform} contains an unrecognized native helper: ${relativePath}`,
+        );
+      }
+    } else if (platform === 'win32-x64') {
+      const policy = windowsNativePathPolicy();
+      if (executableRelativePath !== policy.codexPath) {
+        throw new Error(
+          `Managed Codex ${platform} executable moved from its pinned path: ${executableRelativePath}`,
+        );
+      }
+      if (policy.openAiSignedPaths.has(relativePath)) {
+        nativeSigning = signing;
+      } else if (policy.unsignedHelperPaths.has(relativePath)) {
+        const verification = verifyWindowsUnsignedHelper(join(packageDir, relativePath));
+        if (verification.checked !== true) {
+          throw new Error(
+            `Managed Codex ${platform} unsigned helper was not verified for ${relativePath}: ` +
+            `${verification.reason ?? 'unknown'}`,
+          );
+        }
+        return { relativePath, ...verification };
       } else {
         throw new Error(
           `Managed Codex ${platform} contains an unrecognized native helper: ${relativePath}`,

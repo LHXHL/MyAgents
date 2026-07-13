@@ -206,6 +206,7 @@ src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/
 | `R2_ACCOUNT_ID` | Cloudflare Account ID |
 | `CF_ZONE_ID` | Cloudflare Zone ID (可选，用于清除 CDN 缓存) |
 | `CF_API_TOKEN` | Cloudflare API Token (可选) |
+| `MANAGED_CODEX_WINDOWS_PUBLISHER` | 可选，Windows Authenticode publisher 断言；默认 `OpenAI OpCo, LLC` |
 
 ---
 
