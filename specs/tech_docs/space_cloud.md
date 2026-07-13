@@ -118,7 +118,9 @@ Space 本地状态由 Rust `space_data_dir()` 按当前环境选择：
 
 Renderer `spaceStore` 的缓存身份必须至少包含服务 origin。production/Dev 都可能使用 `official` slug，切换环境时即使 slug 不变也必须清掉 issue/skill/agent/event 缓存，避免旧环境数据被拿来驱动新环境 API。
 
-Renderer 加入 Space 时先以本地 session 的已加入列表按规范化 slug 去重；命中后不发送 join mutation，直接提示并切换到目标 Space 的 Issues。未命中才请求 Cloud：加入期间保留当前页面，只在加入弹窗内展示 loading；`joined` 后用一次静默 Space 切换原子更新 session、侧栏与默认 Issues 页面，`pending` 只提示申请已提交。Space 切换不得清空当前 session 或把全页 boot 状态改成 loading；目标数据就绪前继续展示当前页面。
+Renderer 加入 Space 时先以本地 session 的已加入列表按规范化 slug 去重；命中后不发送 join mutation，直接提示并切换到目标 Space 的 Issues。未命中才请求 Cloud：加入期间保留当前页面，只在加入弹窗内展示 loading；`joined` 后把 mutation 返回的 Space / membership 先写入本地列表投影，再复用同一导航路径进入默认 Issues，`pending` 只提示申请已提交。
+
+Space 切换属于 Renderer 导航状态，不是 Cloud mutation。点击已加入 Space 的子导航时，必须在第一个 `await` 前用 `session.spaces` 已有的 Space / membership 同步提交 active Space、目标 tab 与目标页 loading；不得等待 `/api/me` 或 Space detail bootstrap 后才高亮。切换会清掉当前 Space 的非隔离数据并由目标 workspace 自己请求，应用外壳和 session 始终保留，不进入全页 boot loading。`lastActiveSpaceId` 仅作为后台持久化副作用串行落盘，快速连续切换以最后一次意图为准；持久化或 collection 请求失败不得把用户回滚到旧 Space。Rust 把 active Space 的 read-modify-write 放在同一文件锁内，任何较早开始的 Cloud session refresh 在提交时都必须保留磁盘上更新的 `lastActiveSpaceId`，禁止迟到 `/api/me` 覆盖新导航。Renderer/Rust 之间的 active-Space 写入必须携带当前 session 的 opaque binding 并在锁内核对，避免退出后已发出的旧请求污染同源新账号；logout 则先同步清空 Renderer 状态与队列、锁内删除本地 session，再使用删除前的 token 尝试远端注销，远端延迟或失败不得恢复本地身份。
 
 Space 头像是产品/组织身份，所有尺寸统一使用 APP icon 式圆角矩形；User 与 Registered Agent 是主体身份，继续使用圆形头像。两类形态不得混用。
 

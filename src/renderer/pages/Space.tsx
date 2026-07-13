@@ -23,6 +23,7 @@ import {
   type LocalRegisteredAgent,
   type SpaceIssue,
   type SpaceIssueSubscriptionRunMode,
+  type SpaceListItem,
   type SpaceEvent,
   type SpaceRegisteredAgent,
   type SpaceUserDeviceSummary,
@@ -1041,17 +1042,20 @@ export default function Space({ isActive }: { isActive: boolean }) {
   }, [actions, issueQuery, activeMode, t, toast]);
 
   const enterSpace = useCallback(
-    async (spaceId: string, nextMode: ViewMode) => {
-      await actions.switchSpace(spaceId);
+    async (spaceId: string, nextMode: ViewMode, target?: SpaceListItem) => {
+      const switching = actions.switchSpace(spaceId, target);
       setIssueDetailId(null);
       setSelectedSkillId(null);
+      setSelectedGoalId("");
       setMode(nextMode);
+      await switching;
     },
     [actions],
   );
 
   const enterSpaceIssues = useCallback(
-    (spaceId: string) => enterSpace(spaceId, "issues"),
+    (spaceId: string, target?: SpaceListItem) =>
+      enterSpace(spaceId, "issues", target),
     [enterSpace],
   );
 
@@ -1080,6 +1084,18 @@ export default function Space({ isActive }: { isActive: boolean }) {
     async (input: SpaceQuickActionSubmitInput) => {
       if (!spaceDialogMode || input.mode !== spaceDialogMode) return;
       setSpaceDialogError(null);
+      const enterMutatedSpace = async (
+        route: string,
+        target?: SpaceListItem,
+      ) => {
+        try {
+          await enterSpaceIssues(route, target);
+        } catch (error) {
+          // The Cloud mutation already succeeded and the target Space is visible.
+          // A local last-active persistence failure must not turn success into failure.
+          toast.warning(spaceErrorMessage(error));
+        }
+      };
 
       if (input.mode === "join") {
         const joinedSpace = findJoinedSpaceBySlug(session, input.slug);
@@ -1090,11 +1106,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
               name: joinedSpace.name,
             }),
           );
-          try {
-            await enterSpaceIssues(joinedSpace.slug || joinedSpace.id);
-          } catch (error) {
-            toast.error(spaceErrorMessage(error));
-          }
+          await enterMutatedSpace(joinedSpace.slug || joinedSpace.id);
           return;
         }
       }
@@ -1106,7 +1118,12 @@ export default function Space({ isActive }: { isActive: boolean }) {
             spaceJoinSpace({ slug: input.slug }),
           );
           if (result.status === "joined") {
-            await enterSpaceIssues(result.space.slug || result.space.id);
+            await enterMutatedSpace(
+              result.space.slug || result.space.id,
+              result.membership
+                ? { ...result.space, membership: result.membership }
+                : undefined,
+            );
           }
           toast.success(
             result.status === "pending"
@@ -1132,7 +1149,11 @@ export default function Space({ isActive }: { isActive: boolean }) {
               toast.warning(spaceErrorMessage(error));
             }
           }
-          await enterSpaceIssues(result.space.slug || result.space.id);
+          await enterMutatedSpace(result.space.slug || result.space.id, {
+            ...result.space,
+            membership: result.membership,
+            limits: result.limits ?? result.space.limits,
+          });
           toast.success(t("space.toasts.spaceCreated"));
         }
         setSpaceDialogMode(null);

@@ -51,6 +51,7 @@ import {
   type SpaceIdentitySummary,
   type SpaceIssueDetail,
   type SpaceIssueSubscriptionRunMode,
+  type SpaceListItem,
   type SpaceRegisteredAgent,
   type SpaceSession,
   type SpaceSkill,
@@ -191,7 +192,7 @@ interface RefreshOptions {
 
 export interface SpaceActions {
   ensureBootstrapped: (options?: RefreshOptions) => Promise<void>;
-  switchSpace: (spaceId: string) => Promise<void>;
+  switchSpace: (spaceId: string, target?: SpaceListItem) => Promise<void>;
   refreshIssues: (
     params: IssueQueryParams,
     options?: RefreshOptions,
@@ -393,6 +394,8 @@ let state: StoreState = initialState();
 const listeners = new Set<() => void>();
 let snapshot!: SpaceDataSnapshot;
 let bootPromise: Promise<void> | null = null;
+let activeSpacePersistenceQueue: Promise<void> = Promise.resolve();
+let activeSpacePersistenceBinding: string | null = null;
 let seq = 0;
 const latestSeqByKey = new Map<string, number>();
 const inFlightRequests = new Map<string, Promise<void>>();
@@ -476,6 +479,90 @@ function spaceRouteSegment(space?: SpaceSession["space"] | null): string {
 
 function activeSpaceId(): string {
   return state.spaceId || spaceRouteSegment(state.session?.space);
+}
+
+function spaceMatchesRoute(
+  space: SpaceSession["space"],
+  route: string,
+): boolean {
+  return space.id === route || space.slug === route;
+}
+
+function resolveSpaceSwitchTarget(
+  route: string,
+  explicitTarget?: SpaceListItem,
+): SpaceListItem | null {
+  if (explicitTarget && spaceMatchesRoute(explicitTarget, route)) {
+    return explicitTarget;
+  }
+  return (
+    state.session?.spaces?.find((space) => spaceMatchesRoute(space, route)) ??
+    null
+  );
+}
+
+function upsertSessionSpace(
+  spaces: SpaceListItem[] | undefined,
+  target: SpaceListItem,
+): SpaceListItem[] {
+  const current = spaces ?? [];
+  const index = current.findIndex(
+    (space) => space.id === target.id || space.slug === target.slug,
+  );
+  if (index < 0) return [...current, target];
+  return current.map((space, itemIndex) =>
+    itemIndex === index ? target : space,
+  );
+}
+
+function spaceInfoFromListItem(target: SpaceListItem): SpaceSession["space"] {
+  const { membership, canManage, pendingJoinRequestCount, ...space } = target;
+  void membership;
+  void canManage;
+  void pendingJoinRequestCount;
+  return space;
+}
+
+function projectActiveSpace(route: string, target: SpaceListItem): void {
+  const session = state.session;
+  if (!session) return;
+  const serviceBaseUrl = state.serviceBaseUrl || session.baseUrl.trim() || null;
+  const bootLastFetchedAt = state.bootLastFetchedAt;
+  invalidatePendingRequests();
+  state = {
+    ...initialState(),
+    boot: "ready",
+    serviceBaseUrl,
+    session: {
+      ...session,
+      space: spaceInfoFromListItem(target),
+      membership: target.membership,
+      spaces: upsertSessionSpace(session.spaces, target),
+      lastActiveSpaceId: route,
+    },
+    spaceId: spaceRouteSegment(target),
+    bootLastFetchedAt,
+  };
+  emit();
+  setSpaceAnalyticsContext({
+    spaceKind: target.spaceKind ?? null,
+    role: target.membership.role,
+  });
+}
+
+function persistActiveSpace(
+  route: string,
+  sessionBindingId: string,
+): Promise<void> {
+  if (activeSpacePersistenceBinding !== sessionBindingId) {
+    activeSpacePersistenceBinding = sessionBindingId;
+    activeSpacePersistenceQueue = Promise.resolve();
+  }
+  const persistence = activeSpacePersistenceQueue.then(async () => {
+    await spaceSetActiveSpace(route, sessionBindingId);
+  });
+  activeSpacePersistenceQueue = persistence.catch(() => undefined);
+  return persistence;
 }
 
 function scopedKey(key: string): string {
@@ -1157,16 +1244,35 @@ export const actions: SpaceActions = {
     return bootPromise;
   },
 
-  switchSpace: async (spaceId: string) => {
+  switchSpace: async (spaceId: string, explicitTarget?: SpaceListItem) => {
     const trimmed = spaceId.trim();
     if (!trimmed || trimmed === activeSpaceId()) return;
-    await spaceSetActiveSpace(trimmed);
-    invalidatePendingRequests();
-    await actions.ensureBootstrapped({
-      force: true,
-      silent: true,
-      trackOpen: false,
-    });
+    const target = resolveSpaceSwitchTarget(trimmed, explicitTarget);
+    const sessionBindingId = state.session?.sessionBindingId?.trim();
+    if (target) {
+      projectActiveSpace(trimmed, target);
+    } else {
+      invalidatePendingRequests();
+    }
+    const switchSeq = startRequest("space-switch");
+    try {
+      if (!sessionBindingId) {
+        throw new Error("Space session identity is unavailable");
+      }
+      await persistActiveSpace(trimmed, sessionBindingId);
+    } catch (error) {
+      if (!isLatest("space-switch", switchSeq)) return;
+      throw error;
+    }
+    if (!isLatest("space-switch", switchSeq)) return;
+    if (!target) {
+      await actions.ensureBootstrapped({
+        force: true,
+        silent: true,
+        trackOpen: false,
+      });
+      if (!isLatest("space-switch", switchSeq)) return;
+    }
     trackSpaceSwitch();
   },
 
@@ -2310,8 +2416,10 @@ export const actions: SpaceActions = {
 
   logout: async () => {
     invalidatePendingRequests();
-    await spaceLogout();
+    activeSpacePersistenceBinding = null;
+    activeSpacePersistenceQueue = Promise.resolve();
     setState({ ...initialState(), boot: "signedOut" });
+    await spaceLogout();
   },
 };
 
@@ -2362,6 +2470,8 @@ export function __resetSpaceStoreForTest(): void {
   state = initialState();
   listeners.clear();
   bootPromise = null;
+  activeSpacePersistenceQueue = Promise.resolve();
+  activeSpacePersistenceBinding = null;
   seq = 0;
   latestSeqByKey.clear();
   inFlightRequests.clear();

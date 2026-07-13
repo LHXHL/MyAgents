@@ -117,6 +117,7 @@ pub struct SpaceSession {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SpaceSessionPublic {
+    pub session_binding_id: String,
     pub base_url: String,
     pub expires_at: Option<String>,
     pub user: Value,
@@ -200,7 +201,9 @@ impl SpaceEnvironment {
 
 impl From<SpaceSession> for SpaceSessionPublic {
     fn from(session: SpaceSession) -> Self {
+        let session_binding_id = space_session_binding_id(&session);
         Self {
+            session_binding_id,
             base_url: session.base_url,
             expires_at: session.expires_at,
             user: session.user,
@@ -634,6 +637,7 @@ pub struct SpaceCommentIssueWithAttachmentsInput {
 #[serde(rename_all = "camelCase")]
 pub struct SpaceSetActiveSpaceInput {
     pub space_id: String,
+    pub expected_session_binding_id: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1331,8 +1335,8 @@ pub async fn cmd_space_get_session() -> Result<Option<SpaceSessionPublic>, Strin
     spawn_space_user_device_upsert(session.clone(), identity);
     match refresh_session_from_cloud(&session).await {
         Ok(refreshed) => {
-            write_private_json(&session_path()?, &refreshed)?;
-            Ok(Some(refreshed.into()))
+            let committed = commit_refreshed_session(refreshed).await?;
+            Ok(Some(committed.into()))
         }
         Err(error) => {
             ulog_warn!(
@@ -1355,14 +1359,21 @@ pub async fn cmd_space_set_active_space(
         return Ok(Some(session.into()));
     }
     ensure_space_available()?;
-    let Some(mut session) = read_current_session()? else {
-        return Ok(None);
-    };
-    let trimmed = input.space_id.trim();
-    session.last_active_space_id = (!trimmed.is_empty()).then(|| trimmed.to_string());
-    session.updated_at = chrono::Utc::now().to_rfc3339();
-    write_private_json(&session_path()?, &session)?;
-    Ok(Some(session.into()))
+    let configured_base_url = space_base_url()?;
+    let path = session_path()?;
+    let active_space_id = input.space_id.trim().to_string();
+    let expected_session_binding_id = input.expected_session_binding_id;
+    let session = tauri::async_runtime::spawn_blocking(move || {
+        set_active_space_in_session_file(
+            &path,
+            &configured_base_url,
+            &expected_session_binding_id,
+            &active_space_id,
+        )
+    })
+    .await
+    .map_err(|error| format!("set active Space task failed: {error:?}"))??;
+    Ok(session.map(Into::into))
 }
 
 #[tauri::command]
@@ -1458,33 +1469,41 @@ pub async fn cmd_space_logout() -> Result<(), String> {
         return Ok(());
     }
     let capability = space_build_capability();
+    let path = session_path()?;
+    let session_at_start =
+        tauri::async_runtime::spawn_blocking(move || take_session_for_logout(&path))
+            .await
+            .map_err(|error| format!("remove Space session task failed: {error:?}"))??;
     let session_to_revoke = capability
         .available
         .then(|| capability_base_url(&capability).ok())
         .flatten()
         .and_then(|configured_base_url| {
-            read_session()
-                .ok()
-                .flatten()
+            session_at_start
+                .clone()
                 .filter(|session| space_base_urls_equal(&session.base_url, &configured_base_url))
         });
 
     if let Some(session) = session_to_revoke {
-        let client = http_client()?;
-        let _ = with_space_client_context_headers(
-            client
-                .post(api_url(&session.base_url, "/api/logout")?)
-                .header(AUTHORIZATION, format!("Bearer {}", session.session_token)),
-            &capability,
-        )
-        .send()
-        .await;
-    }
-    let path = session_path()?;
-    match fs::remove_file(path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(format!("Failed to remove Space session: {}", e)),
+        match (http_client(), api_url(&session.base_url, "/api/logout")) {
+            (Ok(client), Ok(url)) => {
+                let _ = with_space_client_context_headers(
+                    client
+                        .post(url)
+                        .header(AUTHORIZATION, format!("Bearer {}", session.session_token)),
+                    &capability,
+                )
+                .send()
+                .await;
+            }
+            (client, url) => {
+                ulog_warn!(
+                    "[space] local logout completed but remote revoke could not start: client={:?} url={:?}",
+                    client.err(),
+                    url.err()
+                );
+            }
+        }
     }
     Ok(())
 }
@@ -1507,8 +1526,7 @@ pub async fn cmd_space_update_profile(
     )
     .await?;
     let refreshed = session_from_me_data(&session, &data);
-    write_private_json(&session_path()?, &refreshed)?;
-    Ok(refreshed.into())
+    Ok(commit_refreshed_session(refreshed).await?.into())
 }
 
 #[tauri::command]
@@ -1552,8 +1570,7 @@ pub async fn cmd_space_update_space(
     )
     .await?;
     let refreshed = refresh_session_from_cloud(&session).await?;
-    write_private_json(&session_path()?, &refreshed)?;
-    Ok(refreshed.into())
+    Ok(commit_refreshed_session(refreshed).await?.into())
 }
 
 #[tauri::command]
@@ -6328,7 +6345,7 @@ async fn refresh_cli_session() -> Result<SpaceSession, String> {
     let session = require_session()?;
     let refreshed = refresh_session_from_cloud(&session).await?;
     if !crate::space_cloud_mock::is_enabled() {
-        write_private_json(&session_path()?, &refreshed)?;
+        return commit_refreshed_session(refreshed).await;
     }
     Ok(refreshed)
 }
@@ -6836,9 +6853,9 @@ fn read_delivery_log_unlocked(path: &Path) -> Result<SpaceDeliveryLogFile, Strin
     }
 }
 
-fn with_json_file_lock<F>(path: &Path, mutator: F) -> Result<(), String>
+fn with_json_file_lock<F, T>(path: &Path, mutator: F) -> Result<T, String>
 where
-    F: FnOnce() -> Result<(), String> + Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
 {
     let lock = path.with_extension("lock");
     crate::utils::file_lock::with_file_lock_blocking(
@@ -6850,6 +6867,87 @@ where
         },
     )
     .map_err(String::from)
+}
+
+fn space_session_binding_id(session: &SpaceSession) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(session.base_url.trim().trim_end_matches('/').as_bytes());
+    hasher.update([0]);
+    hasher.update(session.session_token.as_bytes());
+    hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn set_active_space_in_session_file(
+    path: &Path,
+    configured_base_url: &str,
+    expected_session_binding_id: &str,
+    active_space_id: &str,
+) -> Result<Option<SpaceSession>, String> {
+    let path = path.to_path_buf();
+    let configured_base_url = configured_base_url.to_string();
+    let expected_session_binding_id = expected_session_binding_id.to_string();
+    let active_space_id = active_space_id.to_string();
+    with_json_file_lock(&path.clone(), move || {
+        let Some(mut session) = read_session_from_path(&path)? else {
+            return Ok(None);
+        };
+        if !space_base_urls_equal(&session.base_url, &configured_base_url)
+            || space_session_binding_id(&session) != expected_session_binding_id
+        {
+            return Err("Space session changed before active Space was saved".to_string());
+        }
+        session.last_active_space_id = (!active_space_id.is_empty()).then_some(active_space_id);
+        session.updated_at = chrono::Utc::now().to_rfc3339();
+        write_private_json_unlocked(&path, &session)?;
+        Ok(Some(session))
+    })
+}
+
+fn take_session_for_logout(path: &Path) -> Result<Option<SpaceSession>, String> {
+    let path = path.to_path_buf();
+    with_json_file_lock(&path.clone(), move || {
+        let Some(session) = read_session_from_path(&path)? else {
+            return Ok(None);
+        };
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(Some(session)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!("Failed to remove Space session: {error}")),
+        }
+    })
+}
+
+fn commit_refreshed_session_blocking(
+    path: &Path,
+    mut refreshed: SpaceSession,
+) -> Result<SpaceSession, String> {
+    let path = path.to_path_buf();
+    with_json_file_lock(&path.clone(), move || {
+        let Some(current) = read_session_from_path(&path)? else {
+            return Err("Space session changed while refresh was in flight".to_string());
+        };
+        if !space_base_urls_equal(&current.base_url, &refreshed.base_url)
+            || current.session_token != refreshed.session_token
+        {
+            return Err("Space session changed while refresh was in flight".to_string());
+        }
+        refreshed.last_active_space_id = current.last_active_space_id;
+        write_private_json_unlocked(&path, &refreshed)?;
+        Ok(refreshed)
+    })
+}
+
+async fn commit_refreshed_session(refreshed: SpaceSession) -> Result<SpaceSession, String> {
+    let path = session_path()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        commit_refreshed_session_blocking(&path, refreshed)
+    })
+    .await
+    .map_err(|error| format!("commit refreshed Space session task failed: {error:?}"))?
 }
 
 fn write_private_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
@@ -8005,6 +8103,84 @@ mod tests {
         );
 
         assert!(refreshed.account_plan.is_null());
+    }
+
+    #[test]
+    fn refreshed_session_commit_preserves_the_latest_local_active_space() {
+        let dir = tempfile::tempdir().expect("session tempdir");
+        let path = session_path_in_dir(dir.path());
+        let mut current = test_space_session("usr_current");
+        current.last_active_space_id = Some("team".to_string());
+        write_private_json(&path, &current).expect("write current session");
+
+        let mut stale_refresh = current.clone();
+        stale_refresh.last_active_space_id = Some("official".to_string());
+        stale_refresh.updated_at = "2026-07-13T00:00:00.000Z".to_string();
+
+        let committed = commit_refreshed_session_blocking(&path, stale_refresh)
+            .expect("commit refreshed session");
+        let stored = read_session_from_path(&path)
+            .expect("read committed session")
+            .expect("session should remain present");
+
+        assert_eq!(committed.last_active_space_id.as_deref(), Some("team"));
+        assert_eq!(stored.last_active_space_id.as_deref(), Some("team"));
+    }
+
+    #[test]
+    fn active_space_write_rejects_a_replaced_session() {
+        let dir = tempfile::tempdir().expect("session tempdir");
+        let path = session_path_in_dir(dir.path());
+        let old_session = test_space_session("usr_old");
+        let old_binding = space_session_binding_id(&old_session);
+        let mut new_session = test_space_session("usr_new");
+        new_session.session_token = "new-session-token".to_string();
+        write_private_json(&path, &new_session).expect("write new session");
+
+        let error =
+            set_active_space_in_session_file(&path, &new_session.base_url, &old_binding, "team")
+                .expect_err("old session must not update the replacement session");
+        let stored = read_session_from_path(&path)
+            .expect("read replacement session")
+            .expect("replacement session should remain present");
+
+        assert!(error.contains("session changed"));
+        assert_eq!(stored.session_token, "new-session-token");
+        assert!(stored.last_active_space_id.is_none());
+    }
+
+    #[test]
+    fn logout_takes_the_local_session_before_remote_revoke() {
+        let dir = tempfile::tempdir().expect("session tempdir");
+        let path = session_path_in_dir(dir.path());
+        let session = test_space_session("usr_current");
+        write_private_json(&path, &session).expect("write current session");
+
+        let removed = take_session_for_logout(&path)
+            .expect("logout should take the current session")
+            .expect("session should be returned for remote revoke");
+
+        assert_eq!(removed.session_token, session.session_token);
+        assert!(read_session_from_path(&path)
+            .expect("read removed session")
+            .is_none());
+    }
+
+    #[test]
+    fn local_logout_prevents_an_in_flight_refresh_from_recreating_the_session() {
+        let dir = tempfile::tempdir().expect("session tempdir");
+        let path = session_path_in_dir(dir.path());
+        let session = test_space_session("usr_current");
+        write_private_json(&path, &session).expect("write current session");
+
+        take_session_for_logout(&path).expect("logout should remove current session");
+        let error = commit_refreshed_session_blocking(&path, session)
+            .expect_err("refresh must not recreate a logged-out session");
+
+        assert!(error.contains("session changed"));
+        assert!(read_session_from_path(&path)
+            .expect("read removed session")
+            .is_none());
     }
 
     #[test]

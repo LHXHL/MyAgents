@@ -117,6 +117,7 @@ import {
 } from "./spaceStore";
 
 const fakeSession: SpaceSession = {
+  sessionBindingId: "binding-old",
   baseUrl: "https://space.myagents.test",
   user: { id: "user-1", email: "user@example.com" },
   space: {
@@ -238,6 +239,7 @@ beforeEach(() => {
     activeEnvironment: "production",
   });
   apiMocks.spaceSetActiveSpace.mockResolvedValue(undefined);
+  apiMocks.spaceLogout.mockResolvedValue(undefined);
 });
 
 describe("spaceStore snapshot", () => {
@@ -419,12 +421,15 @@ describe("spaceStore boot", () => {
     await actions.switchSpace("team");
 
     const events = analyticsMocks.track.mock.calls.map((call) => call[0]);
-    expect(apiMocks.spaceSetActiveSpace).toHaveBeenCalledWith("team");
+    expect(apiMocks.spaceSetActiveSpace).toHaveBeenCalledWith(
+      "team",
+      "binding-old",
+    );
     expect(events.filter((event) => event === "space_open")).toHaveLength(1);
     expect(events.filter((event) => event === "space_switch")).toHaveLength(1);
   });
 
-  it("keeps the current Space visible while a switch is loading", async () => {
+  it("projects a listed Space immediately without waiting for Cloud bootstrap", async () => {
     const teamSpace = {
       ...fakeSession.space,
       id: "space-2",
@@ -437,32 +442,216 @@ describe("spaceStore boot", () => {
       space: teamSpace,
       membership: { id: "membership-2", role: "member" },
     };
-    const pendingSession = deferred<SpaceSession>();
+    const listedSession: SpaceSession = {
+      ...fakeSession,
+      spaces: [
+        { ...fakeSession.space, membership: fakeSession.membership },
+        { ...teamSpace, membership: teamSession.membership },
+      ],
+    };
+    const pendingPersistence = deferred<SpaceSession | null>();
     __setSpaceStoreStateForTest({
       boot: "ready",
-      session: fakeSession,
+      session: listedSession,
       spaceId: "official",
     });
-    apiMocks.spaceGetSession.mockReturnValueOnce(pendingSession.promise);
-    apiMocks.spaceGetOfficial.mockResolvedValueOnce({
-      space: teamSpace,
-      membership: teamSession.membership,
-      goals: [],
-    });
-
-    const switching = actions.switchSpace("team");
-    await vi.waitFor(() =>
-      expect(apiMocks.spaceGetSession).toHaveBeenCalledTimes(1),
+    apiMocks.spaceSetActiveSpace.mockReturnValueOnce(
+      pendingPersistence.promise,
     );
 
-    expect(getSnapshot().boot).toBe("ready");
-    expect(getSnapshot().session?.space.slug).toBe("official");
+    const switching = actions.switchSpace("team");
 
-    pendingSession.resolve(teamSession);
+    expect(getSnapshot().boot).toBe("ready");
+    expect(getSnapshot().session?.space.slug).toBe("team");
+    expect(getSnapshot().spaceId).toBe("team");
+    expect(apiMocks.spaceGetSession).not.toHaveBeenCalled();
+
+    pendingPersistence.resolve(teamSession);
     await switching;
 
     expect(getSnapshot().boot).toBe("ready");
     expect(getSnapshot().session?.space.slug).toBe("team");
+    expect(apiMocks.spaceGetSession).not.toHaveBeenCalled();
+    expect(apiMocks.spaceGetOfficial).not.toHaveBeenCalled();
+  });
+
+  it("keeps the latest local navigation when persistence fails", async () => {
+    const teamSpace = {
+      ...fakeSession.space,
+      id: "space-2",
+      slug: "team",
+      name: "Team Space",
+    };
+    const teamMembership = { id: "membership-2", role: "member" as const };
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: {
+        ...fakeSession,
+        spaces: [
+          { ...fakeSession.space, membership: fakeSession.membership },
+          { ...teamSpace, membership: teamMembership },
+        ],
+      },
+      spaceId: "official",
+    });
+    apiMocks.spaceSetActiveSpace.mockRejectedValueOnce(
+      new Error("disk unavailable"),
+    );
+
+    const switching = actions.switchSpace("team");
+
+    expect(getSnapshot().session?.space.slug).toBe("team");
+    await expect(switching).rejects.toThrow("disk unavailable");
+    expect(getSnapshot().session?.space.slug).toBe("team");
+  });
+
+  it("adds a newly joined Space from the mutation projection without bootstrap", async () => {
+    const joinedSpace = {
+      ...fakeSession.space,
+      id: "space-joined",
+      slug: "joined",
+      name: "Joined Space",
+      membership: { id: "membership-joined", role: "member" as const },
+    };
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: {
+        ...fakeSession,
+        spaces: [{ ...fakeSession.space, membership: fakeSession.membership }],
+      },
+      spaceId: "official",
+    });
+
+    await actions.switchSpace("joined", joinedSpace);
+
+    expect(getSnapshot().session?.space.slug).toBe("joined");
+    expect(getSnapshot().session?.spaces?.map((space) => space.slug)).toEqual([
+      "official",
+      "joined",
+    ]);
+    expect(apiMocks.spaceGetSession).not.toHaveBeenCalled();
+    expect(apiMocks.spaceGetOfficial).not.toHaveBeenCalled();
+  });
+
+  it("serializes persistence while the latest Space intent wins immediately", async () => {
+    const teamSpace = {
+      ...fakeSession.space,
+      id: "space-2",
+      slug: "team",
+      name: "Team Space",
+    };
+    const otherSpace = {
+      ...fakeSession.space,
+      id: "space-3",
+      slug: "other",
+      name: "Other Space",
+    };
+    const teamMembership = { id: "membership-2", role: "member" as const };
+    const otherMembership = { id: "membership-3", role: "member" as const };
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: {
+        ...fakeSession,
+        spaces: [
+          { ...fakeSession.space, membership: fakeSession.membership },
+          { ...teamSpace, membership: teamMembership },
+          { ...otherSpace, membership: otherMembership },
+        ],
+      },
+      spaceId: "official",
+    });
+    const teamPersistence = deferred<SpaceSession | null>();
+    apiMocks.spaceSetActiveSpace
+      .mockReturnValueOnce(teamPersistence.promise)
+      .mockResolvedValueOnce(null);
+
+    const switchToTeam = actions.switchSpace("team");
+    const switchToOther = actions.switchSpace("other");
+    await Promise.resolve();
+
+    expect(getSnapshot().session?.space.slug).toBe("other");
+    expect(apiMocks.spaceSetActiveSpace).toHaveBeenCalledTimes(1);
+    expect(apiMocks.spaceSetActiveSpace).toHaveBeenLastCalledWith(
+      "team",
+      "binding-old",
+    );
+
+    teamPersistence.resolve(null);
+    await switchToTeam;
+    await switchToOther;
+
+    expect(apiMocks.spaceSetActiveSpace).toHaveBeenCalledTimes(2);
+    expect(apiMocks.spaceSetActiveSpace).toHaveBeenLastCalledWith(
+      "other",
+      "binding-old",
+    );
+    expect(getSnapshot().session?.space.slug).toBe("other");
+  });
+
+  it("does not let an old-account persistence queue block the new account", async () => {
+    const teamSpace = {
+      ...fakeSession.space,
+      id: "space-team",
+      slug: "team",
+      name: "Team Space",
+      membership: { id: "membership-team", role: "member" as const },
+    };
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: {
+        ...fakeSession,
+        spaces: [
+          { ...fakeSession.space, membership: fakeSession.membership },
+          teamSpace,
+        ],
+      },
+      spaceId: "official",
+    });
+    const oldPersistence = deferred<SpaceSession | null>();
+    apiMocks.spaceSetActiveSpace
+      .mockReturnValueOnce(oldPersistence.promise)
+      .mockResolvedValueOnce(null);
+
+    const oldSwitch = actions.switchSpace("team");
+    await vi.waitFor(() =>
+      expect(apiMocks.spaceSetActiveSpace).toHaveBeenCalledWith(
+        "team",
+        "binding-old",
+      ),
+    );
+
+    const logout = actions.logout();
+    expect(getSnapshot().boot).toBe("signedOut");
+    await logout;
+
+    const newSession: SpaceSession = {
+      ...fakeSession,
+      sessionBindingId: "binding-new",
+      user: { id: "user-2", email: "other@example.com" },
+      spaces: [
+        { ...fakeSession.space, membership: fakeSession.membership },
+        teamSpace,
+      ],
+    };
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: newSession,
+      spaceId: "official",
+    });
+
+    const newSwitch = actions.switchSpace("team");
+    await vi.waitFor(() =>
+      expect(apiMocks.spaceSetActiveSpace).toHaveBeenCalledWith(
+        "team",
+        "binding-new",
+      ),
+    );
+    expect(apiMocks.spaceSetActiveSpace).toHaveBeenCalledTimes(2);
+
+    oldPersistence.resolve(null);
+    await oldSwitch;
+    await newSwitch;
+    expect(getSnapshot().session?.user.id).toBe("user-2");
   });
 });
 

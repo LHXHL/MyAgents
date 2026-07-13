@@ -7,6 +7,7 @@ import Space from "@/pages/Space";
 const harness = vi.hoisted(() => ({
   data: null as unknown as Record<string, unknown>,
   actions: {
+    switchSpace: vi.fn().mockResolvedValue(undefined),
     refreshIssues: vi.fn().mockResolvedValue(undefined),
     refreshSkills: vi.fn().mockResolvedValue(undefined),
     refreshRegisteredAgents: vi.fn().mockResolvedValue(undefined),
@@ -57,12 +58,17 @@ vi.mock("@/pages/space/SpaceChrome", () => ({
   SpaceLogin: () => <div>login</div>,
   SpaceSidebar: ({
     onSpaceTabChange,
+    onSpaceSwitch,
   }: {
     onSpaceTabChange: (mode: string) => void;
+    onSpaceSwitch: (spaceId: string, mode: string) => void;
   }) => (
     <aside>
       <button type="button" onClick={() => onSpaceTabChange("skills")}>
         show skills
+      </button>
+      <button type="button" onClick={() => onSpaceSwitch("team", "skills")}>
+        show team skills
       </button>
     </aside>
   ),
@@ -135,6 +141,7 @@ function snapshot(spaceId: string, baseUrl = "https://space.myagents.test") {
 describe("Space switching", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    harness.actions.switchSpace.mockReset().mockResolvedValue(undefined);
     harness.actions.refreshIssues.mockClear();
     harness.actions.refreshSkills.mockClear();
     harness.actions.refreshRegisteredAgents.mockClear();
@@ -161,6 +168,22 @@ describe("Space switching", () => {
       await vi.advanceTimersByTimeAsync(250);
     });
     expect(harness.actions.refreshIssues).toHaveBeenCalledTimes(2);
+  });
+
+  it("commits the target tab before Space persistence finishes", async () => {
+    const switching = deferred<void>();
+    harness.actions.switchSpace.mockReturnValueOnce(switching.promise);
+    render(<Space isActive />);
+
+    fireEvent.click(screen.getByRole("button", { name: "show team skills" }));
+
+    expect(harness.actions.switchSpace).toHaveBeenCalledWith("team", undefined);
+    expect(screen.getByRole("main")).toHaveTextContent("skills");
+
+    await act(async () => {
+      switching.resolve();
+      await switching.promise;
+    });
   });
 
   it("reloads the selected non-Issue workspace for the new Space", async () => {
@@ -193,3 +216,13 @@ describe("Space switching", () => {
     expect(harness.actions.refreshIssues).toHaveBeenCalledTimes(2);
   });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}

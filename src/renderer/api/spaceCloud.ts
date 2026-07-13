@@ -121,6 +121,7 @@ export interface SpaceListItem extends SpaceInfo {
 }
 
 export interface SpaceSession {
+  sessionBindingId?: string;
   baseUrl: string;
   expiresAt?: string | null;
   user: SpaceUser;
@@ -965,8 +966,11 @@ export function spaceGetSession(): Promise<SpaceSession | null> {
 
 export function spaceSetActiveSpace(
   spaceId: string,
+  expectedSessionBindingId: string,
 ): Promise<SpaceSession | null> {
-  return inv("cmd_space_set_active_space", { input: { spaceId } });
+  return inv("cmd_space_set_active_space", {
+    input: { spaceId, expectedSessionBindingId },
+  });
 }
 
 export function spaceGetCapability(): Promise<SpaceBuildCapability> {
