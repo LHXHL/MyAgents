@@ -1,4 +1,4 @@
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
@@ -180,10 +180,11 @@ pub fn quarantine_corrupt_store(path: &Path) {
     let _ = fs::rename(path, quarantine);
 }
 
-fn fsync_parent(parent: &Path) -> Result<(), GrokAuthError> {
+fn fsync_parent(_parent: &Path) -> Result<(), GrokAuthError> {
     #[cfg(unix)]
     {
-        let dir = File::open(parent).map_err(|_| {
+        let parent = _parent;
+        let dir = fs::File::open(parent).map_err(|_| {
             GrokAuthError::new(GrokAuthErrorCode::Internal, "无法同步 Grok 凭据目录")
         })?;
         dir.sync_all().map_err(|_| {
