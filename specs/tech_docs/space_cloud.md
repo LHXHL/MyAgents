@@ -17,7 +17,7 @@ Cloud Space 横跨两个独立版本、独立发布的仓库，不能把其中�
 
 本地平级 checkout 中，云端架构文档地址是 `../MyAgents_space/specs/ARCHITECTURE.md`。截至 2026-07-13，最近一次联合校验基线为：
 
-- Desktop：`package.json` 为 `0.2.50` 开发线；本节覆盖评论附件、本地 draft inspect、显式多 Space CLI 与自动 User/Registered Agent actor resolver。检查时最近的 Desktop release tag 仍是 `v0.2.49`，因此这里描述的是下一开发版本，不代表已发布客户端。
+- Desktop：`package.json` 为 `0.3.0` 开发线；本节覆盖评论附件、本地 draft inspect、显式多 Space CLI 与自动 User/Registered Agent actor resolver。检查时最近的 Desktop release tag 仍是 `v0.2.49`，因此这里描述的是下一开发版本，不代表已发布客户端。
 - Cloud Production：`MyAgents_space v0.1.3` 的 tag 与 `origin/main` 均指向 `d39f29789fe4f932218c2ca30f38e80f5c6d753c`，Production `/health` 返回 `main-d39f29789fe4f932218c2ca30f38e80f5c6d753c`。该版本已包含 comment-owned attachments、JSON/multipart 原子 create/comment/complete、direct top attachment update/delivery、typed assignee candidates、Space context assertion、role-downgrade revoke 与 Production/Dev 环境隔离。
 - Cloud Dev：`origin/dev` 为 `70709badc3455595b3386deddee5049c08b17227`，Dev `/health` 返回 `dev-70709badc3455595b3386deddee5049c08b17227`；相对 `v0.1.3` 只新增 release pipeline 的 Production tag 身份修正。上述 SHA 是日期化校验记录，实时部署真相仍以对应环境 `/health` 返回的 Git tag 与 Worker Version ID 为准。
 

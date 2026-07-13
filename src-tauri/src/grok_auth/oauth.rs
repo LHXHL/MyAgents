@@ -13,6 +13,7 @@ use super::types::{
 };
 
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
+const GROK_OAUTH_USER_AGENT: &str = concat!("MyAgents/", env!("CARGO_PKG_VERSION"), " Grok OAuth");
 
 #[derive(Debug, Deserialize)]
 struct DiscoveryDocument {
@@ -79,7 +80,7 @@ fn async_oauth_client_builder() -> reqwest::ClientBuilder {
     reqwest::Client::builder()
         .timeout(HTTP_TIMEOUT)
         .redirect(Policy::none())
-        .user_agent("MyAgents/0.2.50 Grok OAuth")
+        .user_agent(GROK_OAUTH_USER_AGENT)
 }
 
 pub fn build_blocking_client() -> Result<reqwest::blocking::Client, GrokAuthError> {
@@ -87,7 +88,7 @@ pub fn build_blocking_client() -> Result<reqwest::blocking::Client, GrokAuthErro
     let builder = reqwest::blocking::Client::builder()
         .timeout(HTTP_TIMEOUT)
         .redirect(Policy::none())
-        .user_agent("MyAgents/0.2.50 Grok OAuth");
+        .user_agent(GROK_OAUTH_USER_AGENT);
     crate::proxy_config::build_blocking_client_with_proxy_for_provider(
         builder,
         XAI_SUBSCRIPTION_PROVIDER_ID,
