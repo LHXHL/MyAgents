@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] - 2026-07-14
+
+> MyAgents 0.3.0 是一次重要版本升级：新增可持续推进长期目标的 Goal Mode，并把 Team Space 作为实验室功能正式开放；同时加入 Grok 订阅登录、统一任务与定时自动化、长期记忆维护升级，以及更顺滑的 Managed Codex Runtime 更新体验。
+
+### Added
+
+- **Goal Mode 长期目标模式**：在 Chat 或 Launcher 使用 `/goal` 即可让当前会话围绕一个目标持续工作，支持暂停、恢复、取消、完成与阻塞状态，并在状态栏汇总执行轮次、耗时和 Token；同一目标也能延续到对应的 IM / Agent Channel 会话。
+- **Team Space 进入实验室功能**：可在「设置 → 关于&反馈 → 实验室」开启 Team Space，体验团队成员协作、分层 Goal、Issue 指派与认领、评论和附件、共享 Skill、Registered Agent 工作流，以及 Space 套餐与配额展示。
+- **Grok 订阅 Provider**：新增 Grok 订阅登录入口，可通过 xAI OAuth 使用订阅额度，并在设置中完成登录、验证和注销，无需把访问令牌写入普通 Provider 配置。
+
+### Changed
+
+- **任务与定时自动化统一**：Task Center 现在是任务身份、调度和执行状态的统一来源；原有 Cron 命令继续可用，立即执行不会改变周期任务的下一次计划时间。旧 At / Every / Cron 定时任务会在升级后自动迁移；旧 Loop 不会自动转换为 Goal，需在对应会话中使用 `/goal` 重新创建。
+- **长期记忆维护更自然**：记忆整理、进化和自动更新改为隐藏的系统维护任务，并通过官方 Memory Update Skill 执行；普通任务列表更清爽，已有工作区也不再强制依赖自定义更新规则文件。
+- **Managed Codex Runtime 无感升级**：新版本下载期间继续使用已验证的 Runtime，不会中断活跃会话；设置页会展示检查、下载和可用状态，并增强代理网络与 Windows 签名轮换下的安装恢复能力。
+- **Space 协作流程更完整**：增加头像预设、云端套餐权益、Issue 经办人和跟进投送、附件草稿归属、Skill 来源与文件树，并优化成员邀请、Agent 设置、工作区切换和云端连接轮询。
+
+### Fixed
+
+- **会话与外部 Runtime 更稳定**：修复 SDK resume anchor 过期、预热 Session 首轮发送、Codex 恢复回合、连续发送气泡、注入任务结果和自动标题等问题，减少历史会话串写、空转或错误显示已完成的情况。
+- **自动化停止与投送更可靠**：Goal、Task、Cron 和 IM heartbeat 会按精确会话与执行轮次完成停止、恢复和结果投送，降低旧执行结果覆盖新任务或消息投错 Channel 的风险。
+- **工作区文件与附件更安全**：文件访问和 Space 附件写入会锚定已验证的目录句柄，抵御符号链接、目录替换和 Windows reparse point 引发的越界访问。
+- **Chat 与工作区浏览细节修复**：多张粘贴图片会保持各自预览；工作区树在预览布局中保持可见，并新增折叠控制、完整文件名提示和更合适的响应式断点。
+
+---
+
 ## [0.2.49] - 2026-07-07
 
 > 本版扩展 Agent 长期记忆、Team Space 协作和 IM 渠道交互：Agent 可定期整理/进化长期记忆；Space 增加个人资料、成员设置、Skill 发布历史和 Issue 投送体验；飞书等渠道可以用原生卡片向用户追问。OpenAI 兼容桥、会话草稿可见性、后台子 Agent 状态和 Skill 安装安全性也做了稳定性修复。
