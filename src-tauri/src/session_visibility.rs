@@ -5,6 +5,10 @@ use std::path::Path;
 use serde_json::Value;
 
 const CODEX_SUBSCRIPTION_PROVIDER_ID: &str = "codex-sub";
+const SYSTEM_MAINTENANCE_SESSION_KINDS: &[&str] = &[
+    crate::task::MANAGED_KIND_MEMORY_GARDENER,
+    crate::task::MANAGED_KIND_MEMORY_MOLT,
+];
 
 pub fn is_prepared_session(session: &Value) -> bool {
     session
@@ -14,7 +18,17 @@ pub fn is_prepared_session(session: &Value) -> bool {
 }
 
 pub fn is_history_visible_session(session: &Value, sessions_dir: &Path) -> bool {
-    !is_prepared_session(session) && !is_legacy_pre_query_managed_codex_draft(session, sessions_dir)
+    !is_prepared_session(session)
+        && !is_system_maintenance_session(session)
+        && !is_legacy_pre_query_managed_codex_draft(session, sessions_dir)
+}
+
+pub fn is_system_maintenance_session(session: &Value) -> bool {
+    session
+        .get("systemMaintenanceKind")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .is_some_and(|kind| SYSTEM_MAINTENANCE_SESSION_KINDS.contains(&kind))
 }
 
 pub fn is_legacy_pre_query_managed_codex_draft(session: &Value, sessions_dir: &Path) -> bool {
@@ -243,6 +257,48 @@ mod tests {
         fs::write(temp.path().join("managed-empty.jsonl"), [0xff, 0xfe]).unwrap();
         assert!(is_history_visible_session(
             &legacy_managed_codex_session(),
+            temp.path(),
+        ));
+    }
+
+    #[test]
+    fn hides_system_maintenance_sessions() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(!is_history_visible_session(
+            &json!({
+                "id": "maintenance",
+                "origin": { "kind": "automation", "surface": "cron" },
+                "systemMaintenanceKind": "memory_gardener"
+            }),
+            temp.path(),
+        ));
+        assert!(!is_history_visible_session(
+            &json!({
+                "id": "maintenance",
+                "origin": { "kind": "automation", "surface": "cron" },
+                "systemMaintenanceKind": "memory_molt"
+            }),
+            temp.path(),
+        ));
+    }
+
+    #[test]
+    fn keeps_ordinary_automation_sessions_visible() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(is_history_visible_session(
+            &json!({
+                "id": "ordinary-cron",
+                "origin": { "kind": "automation", "surface": "cron" },
+                "cronTaskId": "task-1"
+            }),
+            temp.path(),
+        ));
+        assert!(is_history_visible_session(
+            &json!({
+                "id": "auto-update-target",
+                "origin": { "kind": "automation", "surface": "memory_update" },
+                "systemMaintenanceKind": "memory_auto_update_batch"
+            }),
             temp.path(),
         ));
     }

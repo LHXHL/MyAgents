@@ -1,4 +1,6 @@
 use super::*;
+use std::sync::Arc;
+use tauri::Manager;
 
 /// Task Center adapter (v0.1.69) — deliver a Task status notification to an IM
 /// Bot via the existing cron delivery pipeline. The caller supplies the bot
@@ -83,9 +85,13 @@ pub async fn deliver_task_notification_to_bot_checked(
 }
 
 async fn resolve_cron_task_workspace(task_id: &str) -> Option<String> {
-    let manager = get_cron_task_manager();
-    let tasks = manager.tasks.read().await;
-    tasks.get(task_id).map(|task| task.workspace_path.clone())
+    if let Some(task) = crate::task::get_task_store()?.get(task_id).await {
+        return Some(task.workspace_path);
+    }
+    get_cron_task_manager()
+        .get_legacy_task(task_id)
+        .await
+        .map(|task| task.workspace_path)
 }
 
 async fn find_agent_id_for_delivery(
@@ -193,7 +199,7 @@ async fn wake_heartbeat_for_cron(
 /// (The legacy POST `/api/im/system-event` + sidecar `systemEventQueue` path
 /// is no longer used for cron events. Sidecar still accepts that endpoint for
 /// other event kinds — body field takes precedence when both are present.)
-pub(super) async fn deliver_cron_result_to_bot(
+pub(crate) async fn deliver_cron_result_to_bot(
     handle: &AppHandle,
     delivery: &CronDelivery,
     task_id: &str,
@@ -339,20 +345,15 @@ pub(super) async fn deliver_cron_result_to_bot(
 /// `run_session_id` parameter) precisely because looking it up here would
 /// race with rotate. The label has no such concern.
 ///
-/// CronTaskManager is a process-singleton accessed via the global OnceLock
-/// helper (see `get_cron_task_manager()` + `static CRON_TASK_MANAGER`).
-/// It is NOT registered with Tauri's managed-state container, so an earlier
-/// `handle.try_state::<CronTaskManager>()` would silently return `None`
-/// on every call (issue #225: every cron→IM heartbeat went out without
-/// the `Source session id:` follow-up line + `<inbox-message>` wrap,
-/// blocking the `myagents session send` flow this feature exists for).
+/// TaskStore is authoritative for migrated/new tasks. The singleton legacy
+/// facade is consulted only when a read-only historical row has no Task.
 async fn resolve_cron_inbox_label(task_id: &str) -> Option<String> {
-    let manager = get_cron_task_manager();
-    let tasks = manager.tasks.read().await;
-    let task = tasks.get(task_id)?;
+    if let Some(task) = crate::task::get_task_store()?.get(task_id).await {
+        return Some(format!("Task: {}", task.name));
+    }
+    let task = get_cron_task_manager().get_legacy_task(task_id).await?;
     Some(
         task.name
-            .clone()
             .map(|n| format!("Cron: {n}"))
             .unwrap_or_else(|| format!("Cron task {}", &task_id[..task_id.len().min(8)])),
     )

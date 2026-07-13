@@ -1,5 +1,10 @@
 import { isLikelyErrorTitle } from './titleFilters';
-import { FLOATING_BALL_CONTEXT_TAG, parseLeadingSystemReminder } from './systemReminder';
+import {
+  FLOATING_BALL_CONTEXT_TAG,
+  GOAL_CONTEXT_TAG,
+  GOAL_CONTINUATION_TAG,
+  parseLeadingSystemReminder,
+} from './systemReminder';
 
 /**
  * Canonical session-title derivation, shared by the sidecar (storage layer,
@@ -31,6 +36,11 @@ export function stripSystemWrapper(raw: string): string {
   const reminder = parseLeadingSystemReminder(text);
   const isCronReminder = reminder.hasReminder && reminder.kind === 'CRON_TASK';
   if (reminder.hasReminder) {
+    const isPureGoalReminder = !reminder.visibleText && (
+      reminder.kind === GOAL_CONTINUATION_TAG
+      || reminder.kind === GOAL_CONTEXT_TAG
+    );
+    if (isPureGoalReminder) return '';
     if (!reminder.visibleText && reminder.kind === FLOATING_BALL_CONTEXT_TAG) return '';
     text = reminder.visibleText || reminder.body;
   }
@@ -104,8 +114,12 @@ export const AUTO_TITLE_MIN_ROUNDS = 2;
  */
 export const TITLE_GEN_MESSAGE_LIMIT = 20;
 
-/** Bounded retries: stop after this many *generation* attempts for one session. */
-export const MAX_TITLE_GEN_ATTEMPTS = 5;
+/**
+ * Bounded retries: stop after this many *generation* attempts for one session.
+ * Keep this above the historical 0.2.49 cap (5) so sessions that exhausted the
+ * old, too-fragile title path get a post-upgrade retry window.
+ */
+export const MAX_TITLE_GEN_ATTEMPTS = 10;
 
 export interface TitleRound {
   user: string;

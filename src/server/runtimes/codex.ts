@@ -25,7 +25,7 @@ import type { InteractionScenario } from '../system-prompt';
 import { shouldDisallowAskUserQuestion } from '../host-interaction';
 import { mapCodexTokenUsage, type CodexThreadTokenUsage } from './codex-token-usage';
 import { stripAnsi } from './env-utils';
-import { resolveCodexCommandContext } from './codex-command-context';
+import { resolveCodexCommandContext, type CodexCommandContext } from './codex-command-context';
 import { ensureDirSync } from '../utils/fs-utils';
 import { getBundledCusePath } from '../utils/runtime';
 import { killWithEscalation } from './utils/kill-with-escalation';
@@ -467,6 +467,13 @@ function arrayValue(value: unknown): unknown[] {
 
 function objectValue(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
+}
+
+function codexUserMessageClientId(item: Record<string, unknown>): string | undefined {
+  return stringValue(item.clientId)
+    ?? stringValue(item.client_id)
+    ?? stringValue(item.clientUserMessageId)
+    ?? stringValue(item.client_user_message_id);
 }
 
 function codexTraceId(params: Record<string, unknown>, fallbackItemId?: string, suffix?: string): string | undefined {
@@ -1227,7 +1234,10 @@ function isSubAgentScopedEvent(
 const modelCache = new Map<string, { models: RuntimeModelInfo[]; timestamp: number }>();
 const MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
-function modelCacheKey(runtimeSource: RuntimeSource): string {
+export function codexModelCacheKey(runtimeSource: RuntimeSource, context: CodexCommandContext): string {
+  if (runtimeSource === 'managed-provider') {
+    return `${runtimeSource}:${context.version ?? 'unknown'}:${context.commandPath}`;
+  }
   return runtimeSource;
 }
 
@@ -2038,7 +2048,14 @@ export class CodexRuntime implements AgentRuntime {
 
   async queryModels(options: { runtimeSource?: RuntimeSource } = {}): Promise<RuntimeModelInfo[]> {
     const runtimeSource = options.runtimeSource ?? 'system-cli';
-    const cacheKey = modelCacheKey(runtimeSource);
+    let context: CodexCommandContext;
+    try {
+      context = resolveCodexCommandContext({ source: runtimeSource });
+    } catch (err) {
+      console.error(`[codex] Failed to resolve model runtime for source=${runtimeSource}:`, err);
+      return [];
+    }
+    const cacheKey = codexModelCacheKey(runtimeSource, context);
     // Return cached if fresh
     const cached = modelCache.get(cacheKey);
     if (cached && Date.now() - cached.timestamp < MODEL_CACHE_TTL_MS) {
@@ -2046,7 +2063,7 @@ export class CodexRuntime implements AgentRuntime {
     }
 
     try {
-      const models = await this.queryModelsViaAppServer(runtimeSource);
+      const models = await this.queryModelsViaAppServer(runtimeSource, context);
       modelCache.set(cacheKey, { models, timestamp: Date.now() });
       return models;
     } catch (err) {
@@ -2056,9 +2073,11 @@ export class CodexRuntime implements AgentRuntime {
     }
   }
 
-  private async queryModelsViaAppServer(runtimeSource: RuntimeSource): Promise<RuntimeModelInfo[]> {
+  private async queryModelsViaAppServer(
+    runtimeSource: RuntimeSource,
+    context: CodexCommandContext,
+  ): Promise<RuntimeModelInfo[]> {
     // Spawn a temporary app-server to query model/list
-    const context = resolveCodexCommandContext({ source: runtimeSource });
     const codexEnv = context.env;
     const proc = spawn(buildCodexAppServerArgs({
       commandPath: context.commandPath,
@@ -2293,6 +2312,10 @@ export class CodexRuntime implements AgentRuntime {
             }
             if ((item.type === 'mcpToolCall' || item.type === 'dynamicToolCall') && item.tool) detail += ` tool=${item.tool}`;
             if (item.type === 'agentMessage' && typeof item.text === 'string') detail += ` text=${(item.text as string).length}chars`;
+            if (item.type === 'userMessage') {
+              const clientId = codexUserMessageClientId(item) ?? codexUserMessageClientId(p ?? {});
+              if (clientId) detail += ` client=${clientId.slice(0, 16)}`;
+            }
             // Exit code / error for completed items
             if (method === 'item/completed') {
               if (item.exitCode != null) detail += ` exit=${item.exitCode}`;
@@ -2790,11 +2813,18 @@ export class CodexRuntime implements AgentRuntime {
         return { kind: 'session_complete', result: '', subtype: 'success' };
 
       // ── Turn lifecycle ──
-      case 'turn/started':
+      case 'turn/started': {
+        const turnId = stringValue(p.turnId)
+          ?? stringValue(objectValue(p.turn).id);
+        if (turnId) {
+          codexProc.currentTurnId = turnId;
+        }
         return [
+          { kind: 'turn_started' },
           { kind: 'status_change', state: 'running' },
           { kind: 'agent_plan_update', todos: [] },
         ];
+      }
 
       case 'turn/completed': {
         const turn = p.turn;
@@ -2862,6 +2892,7 @@ export class CodexRuntime implements AgentRuntime {
           commandActions?: unknown[];
           source?: string; namespace?: string | null;
           senderThreadId?: string; receiverThreadIds?: string[]; prompt?: string; model?: string; status?: string;
+          clientUserMessageId?: string; client_user_message_id?: string; clientId?: string; client_id?: string;
         } | undefined;
         if (!item) return null;
         switch (item.type) {
@@ -2972,9 +3003,13 @@ export class CodexRuntime implements AgentRuntime {
           case 'reasoning':
             return { kind: 'thinking_start', index: 0, traceId: codexTraceId(p, item.id, 'reasoning') };
           case 'agentMessage':
-          case 'userMessage':
           case 'contextCompaction':
             return null;
+          case 'userMessage':
+            return {
+              kind: 'user_message_accepted',
+              clientUserMessageId: codexUserMessageClientId(item) ?? codexUserMessageClientId(p),
+            };
           case 'enteredReviewMode':
           case 'exitedReviewMode':
           case 'hookPrompt':

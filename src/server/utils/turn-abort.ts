@@ -17,7 +17,7 @@
  *   - `AbortController` already has well-defined fan-out semantics. A module
  *     registry keyed by `sessionId` gives every tool fetch the same primitive.
  *   - Sidecar is single-threaded and one Sidecar serves a small fixed number
- *     of sessions (Tab / IM / Cron / Background). A flat Map is sufficient.
+ *     of sessions (Tab / IM / Task / Goal / Background). A flat Map is sufficient.
  *
  * Why not the SDK `Options.abortController`:
  *   - That controller is *session*-scoped: aborting it terminates the entire
@@ -64,7 +64,7 @@ const turnAbortBySession = new Map<string, TurnAbortState>();
 /**
  * Stack of session ids in begin-order. The top of the stack is the
  * "current" turn for `getCurrentTurnSignal()`. We use a stack rather than a
- * single slot because IM/Cron sessions on the same Sidecar can theoretically
+ * single slot because IM/Task sessions on the same Sidecar can theoretically
  * begin a turn while a Tab turn is still active in some race configurations;
  * the stack lets `getCurrentTurnSignal()` always return the most recently
  * begun, not-yet-ended turn.

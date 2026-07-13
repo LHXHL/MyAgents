@@ -57,6 +57,7 @@ function taskCenterData(
     return {
         sessions,
         cronTasks: [],
+        protectedSchedulerSessionIds: new Set<string>(),
         tasks: [],
         sessionTagsMap: new Map(),
         cronBotInfoMap: new Map(),

@@ -39,10 +39,25 @@ pub fn read_disabled_list(myagents_root: &Path) -> Vec<String> {
     }
     match fs::read_to_string(&path) {
         Ok(content) => serde_json::from_str::<SkillsConfig>(&content)
-            .map(|c| c.disabled)
+            .map(|c| {
+                c.disabled
+                    .into_iter()
+                    .filter(|name| !is_required_memory_system_skill(name))
+                    .collect()
+            })
             .unwrap_or_default(),
         Err(_) => Vec::new(),
     }
+}
+
+/// Product-owned workflow contracts cannot be disabled like ordinary user
+/// skills; doing so would leave an enabled automation without its executable
+/// method and invite model improvisation.
+pub fn is_required_memory_system_skill(name: &str) -> bool {
+    matches!(
+        name,
+        "myagents-memory-update" | "myagents-memory-gardener" | "myagents-memory-molt"
+    )
 }
 
 /// Read the experimental user-registered CLI tool registry gate from
@@ -58,5 +73,27 @@ pub fn read_cli_tool_registry_enabled(myagents_root: &Path) -> bool {
             .map(|c| c.cli_tool_registry_enabled)
             .unwrap_or(false),
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn required_memory_system_skills_are_not_reported_as_disabled() {
+        let root = tempfile::tempdir().expect("tempdir");
+        fs::write(
+            root.path().join("skills-config.json"),
+            r#"{"disabled":["myagents-memory-update","ordinary-skill"]}"#,
+        )
+        .expect("write skills config");
+
+        assert_eq!(
+            read_disabled_list(root.path()),
+            vec!["ordinary-skill".to_string()]
+        );
+        assert!(is_required_memory_system_skill("myagents-memory-gardener"));
+        assert!(is_required_memory_system_skill("myagents-memory-molt"));
     }
 }

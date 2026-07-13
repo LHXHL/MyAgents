@@ -34,7 +34,7 @@ interface CustomTitleBarProps {
     updatePreparing?: boolean;
     /** Callback when user clicks "Restart to Update" */
     onRestartAndUpdate?: () => void;
-    /** Whether the unfinished Team Space surface is exposed in the title bar. */
+    /** Whether the experimental Team Space surface is exposed in the title bar. */
     teamSpaceEnabled?: boolean;
     /** Number of restorable conversations from the previous session (Issue
      *  #309). `> 0` shows the "恢复对话" pill; surfaced by App only when the last

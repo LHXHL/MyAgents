@@ -5,7 +5,7 @@ import { useState, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { useCloseLayer } from '@/hooks/useCloseLayer';
-import type { CronEndConditions, CronRunMode, CronTaskConfig, CronSchedule } from '@/types/cronTask';
+import type { CronEndConditions, CronRunMode, CronTaskConfig, CronSchedule, ScheduledTaskKind } from '@/types/cronTask';
 import { MIN_CRON_INTERVAL } from '@/types/cronTask';
 import ScheduleTypeTabs from '@/components/scheduled-tasks/ScheduleTypeTabs';
 import CustomSelect from '@/components/CustomSelect';
@@ -65,12 +65,14 @@ export type ExecutionTarget = 'current_session' | 'new_task';
 
 /** Extended config returned by onConfirm — includes executionTarget and schedule */
 export type CronSettingsResult = Omit<CronTaskConfig, 'workspacePath' | 'sessionId' | 'tabId'> & {
+  taskKind: ScheduledTaskKind;
   executionTarget: ExecutionTarget;
 };
 
 /** Configuration that can be passed to restore previous settings or preset a
- *  fresh open (e.g. `/loop` opens the modal preset to infinite-loop mode). */
+ *  fresh open (e.g. `/goal` opens the modal preset to Goal mode). */
 export type CronInitialConfig = {
+  taskKind: ScheduledTaskKind;
   prompt: string;
   intervalMinutes: number;
   endConditions: CronEndConditions;
@@ -79,6 +81,19 @@ export type CronInitialConfig = {
   schedule?: CronSchedule;
   executionTarget?: ExecutionTarget;
   delivery?: import('@/types/cronTask').CronDelivery;
+};
+
+/** Shared preset for the `/goal` client action in Chat and Launcher.
+ *  The objective is entered in the composer after this modal is confirmed. */
+export const GOAL_SLASH_PRESET: CronInitialConfig = {
+  taskKind: 'goal',
+  prompt: '',
+  intervalMinutes: 30,
+  endConditions: { aiCanExit: true },
+  runMode: 'single_session',
+  notifyEnabled: true,
+  schedule: { kind: 'loop' },
+  executionTarget: 'current_session',
 };
 
 interface CronTaskSettingsModalProps {
@@ -105,6 +120,7 @@ function CronTaskSettingsForm({
   workspacePath,
 }: Omit<CronTaskSettingsModalProps, 'isOpen'>) {
   const { t } = useTranslation('task');
+  const [taskKind, setTaskKind] = useState<ScheduledTaskKind>(initialConfig?.taskKind ?? 'cron');
   // Execution target: current session (legacy behavior) or new standalone task
   const [executionTarget, setExecutionTarget] = useState<ExecutionTarget>(initialConfig?.executionTarget ?? 'current_session');
 
@@ -112,8 +128,9 @@ function CronTaskSettingsForm({
   const [schedule, setSchedule] = useState<CronSchedule | null>(initialConfig?.schedule ?? null);
   const [intervalMinutes, setIntervalMinutes] = useState(initialConfig?.intervalMinutes ?? 30);
 
-  // Run mode: Loop forces single_session; otherwise current_session→single, new_task→new
-  const runMode: CronRunMode = schedule?.kind === 'loop' ? 'single_session' : (executionTarget === 'current_session' ? 'single_session' : 'new_session');
+  const runMode: CronRunMode = taskKind === 'goal'
+    ? 'single_session'
+    : (executionTarget === 'current_session' ? 'single_session' : 'new_session');
 
   const [notifyEnabled, setNotifyEnabled] = useState(initialConfig?.notifyEnabled ?? true);
   const [deliveryBotId, setDeliveryBotId] = useState(initialConfig?.delivery?.botId ?? '');
@@ -153,11 +170,13 @@ function CronTaskSettingsForm({
   const [aiCanExit, setAiCanExit] = useState(endCondInit.aiCanExit);
 
   const isAtSchedule = schedule?.kind === 'at';
-  const isLoopSchedule = schedule?.kind === 'loop';
+  const isGoalMode = taskKind === 'goal';
 
   const handleScheduleChange = useCallback((s: CronSchedule | null, m: number) => {
     setSchedule(s);
     setIntervalMinutes(m);
+    setTaskKind(s?.kind === 'loop' ? 'goal' : 'cron');
+    if (s?.kind === 'loop') setAiCanExit(true);
   }, []);
 
   // Validation
@@ -205,6 +224,7 @@ function CronTaskSettingsForm({
 
     const delivery = (notifyEnabled && deliveryBotId) ? resolveDelivery(deliveryBotId) : undefined;
     onConfirm({
+      taskKind,
       prompt: (initialPrompt ?? '').trim(),
       intervalMinutes: schedule?.kind === 'every' ? schedule.minutes : intervalMinutes,
       endConditions,
@@ -214,7 +234,7 @@ function CronTaskSettingsForm({
       schedule: schedule ?? undefined,
       delivery,
     });
-  }, [isValid, initialPrompt, schedule, intervalMinutes, runMode, notifyEnabled, deliveryBotId, resolveDelivery, endMode, aiCanExit, useDeadline, deadline, useMaxExecutions, maxExecutions, executionTarget, isAtSchedule, onConfirm]);
+  }, [isValid, taskKind, initialPrompt, schedule, intervalMinutes, runMode, notifyEnabled, deliveryBotId, resolveDelivery, endMode, aiCanExit, useDeadline, deadline, useMaxExecutions, maxExecutions, executionTarget, isAtSchedule, onConfirm]);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -225,7 +245,7 @@ function CronTaskSettingsForm({
         <div className="flex shrink-0 items-center justify-between px-6 py-4">
           <div className="flex items-center gap-2.5">
             <Clock className="h-4 w-4 text-[var(--accent)]" />
-            <h2 className="text-lg font-semibold text-[var(--ink)]">{t('cron.settingsModal.title')}</h2>
+            <h2 className="text-lg font-semibold text-[var(--ink)]">{t(isGoalMode ? 'cron.settingsModal.goalTitle' : 'cron.settingsModal.title')}</h2>
           </div>
           <button onClick={onClose} className="rounded-lg p-1.5 text-[var(--ink-muted)] transition hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]">
             <X className="h-4 w-4" />
@@ -235,37 +255,32 @@ function CronTaskSettingsForm({
         {/* Body */}
         <div className="flex-1 overflow-y-auto px-6 pb-6 space-y-6">
 
-          {/* ── 执行模式 ── */}
-          <div>
-            <SectionHeader icon={MessageSquare}>{t('cron.settingsModal.executionMode')}</SectionHeader>
-            <div className="mt-3">
-              {isLoopSchedule ? (
-                <p className="text-sm text-[var(--ink-muted)]">{t('cron.settingsModal.loopModeDescription')}</p>
-              ) : (
-              <div className="flex gap-2">
-                <PillButton selected={executionTarget === 'current_session'} onClick={() => setExecutionTarget('current_session')}>{t('cron.settingsModal.currentSession')}</PillButton>
-                <PillButton selected={executionTarget === 'new_task'} onClick={() => setExecutionTarget('new_task')}>{t('cron.settingsModal.newTask')}</PillButton>
-              </div>
-              )}
-              {!isLoopSchedule && (
-              <p className="mt-1.5 text-sm text-[var(--ink-muted)]">
-                {executionTarget === 'current_session'
-                  ? t('cron.settingsModal.currentSessionDescription')
-                  : t('cron.settingsModal.newTaskDescription')}
-              </p>
-              )}
-            </div>
-          </div>
-
-          <div className="border-t border-[var(--line)]" />
-
           {/* ── 执行计划 ── */}
           <div>
-            <SectionHeader icon={Clock}>{t('cron.settingsModal.schedule')}</SectionHeader>
-            <div className="mt-3">
-              <ScheduleTypeTabs value={schedule} intervalMinutes={intervalMinutes} onChange={handleScheduleChange} />
-            </div>
+            <ScheduleTypeTabs value={schedule} intervalMinutes={intervalMinutes} onChange={handleScheduleChange} />
           </div>
+
+          {!isGoalMode && (
+            <>
+              <div className="border-t border-[var(--line)]" />
+
+              {/* ── 执行模式 ── */}
+              <div>
+                <SectionHeader icon={MessageSquare}>{t('cron.settingsModal.executionMode')}</SectionHeader>
+                <div className="mt-3">
+                  <div className="flex gap-2">
+                    <PillButton selected={executionTarget === 'current_session'} onClick={() => setExecutionTarget('current_session')}>{t('cron.settingsModal.currentSession')}</PillButton>
+                    <PillButton selected={executionTarget === 'new_task'} onClick={() => setExecutionTarget('new_task')}>{t('cron.settingsModal.newTask')}</PillButton>
+                  </div>
+                  <p className="mt-1.5 text-sm text-[var(--ink-muted)]">
+                    {executionTarget === 'current_session'
+                      ? t('cron.settingsModal.currentSessionDescription')
+                      : t('cron.settingsModal.newTaskDescription')}
+                  </p>
+                </div>
+              </div>
+            </>
+          )}
 
           <div className="border-t border-[var(--line)]" />
 
@@ -335,7 +350,7 @@ function CronTaskSettingsForm({
             <SectionHeader icon={Bell}>{t('cron.settingsModal.notifications')}</SectionHeader>
             <div className="mt-3 space-y-3">
               <div className="flex items-center justify-between rounded-lg border border-[var(--line)] bg-[var(--paper)] px-4 py-3">
-                <span className="text-sm text-[var(--ink)]">{t('cron.settingsModal.notifyOnCompletion')}</span>
+                <span className="text-sm text-[var(--ink)]">{t(isGoalMode ? 'cron.settingsModal.goalNotifyOnStop' : 'cron.settingsModal.notifyOnCompletion')}</span>
                 <ToggleSwitch enabled={notifyEnabled} onChange={setNotifyEnabled} />
               </div>
               {notifyEnabled && hasChannels && (

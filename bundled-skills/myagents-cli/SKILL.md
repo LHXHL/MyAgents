@@ -2,13 +2,14 @@
 name: myagents-cli
 description: >-
   你正在 MyAgents 这款 AI 产品里运行——MyAgents 自带一套"产品能力"（定时任务、任务中心、想法收集、MCP 工具接入、
-  模型 Provider、IM Bot 渠道、社区插件、Skills 安装、MyAgents Cloud Space、Generative UI Widget 等），全部通过内置 `myagents` CLI 暴露给你。
+  模型 Provider、IM Bot 渠道、社区插件、Skills 安装、MyAgents Cloud Space、Generative UI Widget、Goal 目标模式等），全部通过内置 `myagents` CLI 暴露给你。
   当用户的需求**落在 MyAgents 产品能力的射程内**，就加载并使用这个 skill，用 CLI 主动帮用户把事情做掉，
   而不是让用户去 GUI 点击。
   典型触发场景：用户说"每天 X 点帮我 Y"（→ cron）、"记一下这个想法"（→ thought）、"派发成任务"（→ task）、
   "接个 X 工具进来"（→ mcp）、"配 X 模型/Provider"（→ model）、"在飞书/钉钉/Telegram 里跟我聊"（→ agent channel）、
   "装个 X 插件 / 装个 X skill"（→ plugin / skill）、"处理 Space Issue / 下载附件 / 回复 Issue"（→ space）、
-  "把图发到 IM 里"（→ im send-media）、"用已配置的读图模型理解图片"（→ vision analyze）、"做个图表/仪表盘"
+  "把图发到 IM 里"（→ im send-media）、"用已配置的读图模型理解图片"（→ vision analyze）、"持续执行直到目标完成"（→ goal）、
+  "做个图表/仪表盘"
   （→ widget readme）、"看下我有啥任务/定时/Runtime/版本"（→ list / status / version）、"改下应用设置"（→ config）。
   即使用户没说"用 MyAgents 做"几个字，只要意图能映射到上述能力之一，就该走这个 skill。
   反向边界：纯业务任务（写代码、查资料、读文件）不归这里；用户自己会话里给 AI 排任务用 im-cron MCP，不是这里。
@@ -17,7 +18,7 @@ author: MyAgents
 
 # myagents-cli — MyAgents 产品能力的 CLI 入口
 
-你正运行在 MyAgents 产品内。MyAgents 不只是一个 chat UI，它是一套带状态的 Agent 平台：定时任务、任务中心、IM Bot、MCP、Provider、插件、Skill、Cloud Space、Widget——这些都是产品能力，由内置 `myagents` CLI 一站暴露给你。
+你正运行在 MyAgents 产品内。MyAgents 不只是一个 chat UI，它是一套带状态的 Agent 平台：Goal 目标模式、定时任务、任务中心、IM Bot、MCP、Provider、插件、Skill、Cloud Space、Widget——这些都是产品能力，由内置 `myagents` CLI 一站暴露给你。
 
 **这个 skill 不只是"管理工具"，它是 MyAgents 产品能力的执行入口**。用户表达的需求只要能映射到产品能力，就该用 CLI 主动帮用户做掉，而不是给用户一堆操作步骤让他自己去 Settings 点。这份文档列出全部能力以及"什么时候应该用哪条命令"。
 
@@ -257,6 +258,24 @@ myagents cron readme                                    # 拉 cron 工具的完�
 - "上次执行成功了吗" → `cron runs <taskId>`
 - `cron exit` / `cron readme` 是 AI 在自己 cron 任务运行中用的——给用户管 cron 用前面那一串
 
+### Goal 目标模式（goal）
+
+Goal 是当前会话内的持续执行模式：宿主会在每轮完成后自动发起下一轮，直到 AI 主动标记完成/受阻，或用户在 UI 中取消。它复用当前 session 上下文，不是独立任务中心任务。
+
+```bash
+myagents goal get                                      # 查看当前 session 的 Goal
+myagents goal create --objective-file myagents_files/goal-objective.txt   # 为当前 session 创建并启动 Goal
+myagents goal update --status complete                 # AI 判断目标完成时主动退出
+myagents goal update --status blocked                  # AI 判断无法继续时主动退出
+```
+
+**何时用：**
+- 用户明确要求进入 Goal 时，先用标准文件工具把 objective 写入 workspace 内的文本文件，再传 `--objective-file`；不要把用户文本拼入 Shell 命令。
+- 当前会话进入 Goal 后，你完成了用户目标 → `goal update --status complete`
+- 你连续尝试后确认缺关键输入/外部状态，无法继续推进 → `goal update --status blocked`
+- 用户问"现在目标是什么/状态如何" → `goal get`
+- 不要用 `goal update` 表示用户取消；取消由 UI/宿主控制。
+
 ### 任务中心（task / thought）
 
 ```bash
@@ -311,25 +330,43 @@ myagents task delete <taskId>                           # 软删除（30 天保�
 ### MyAgents Cloud Space（space）
 
 ```bash
-myagents space status
-myagents issue <issueId> --json [--comments-limit 5] [--comments-cursor <cursor>]
-myagents space issue get <issueId> --json [--comments-limit 5] [--comments-cursor <cursor>]
-myagents space issue comments <issueId> --json [--limit 20] [--cursor <cursor>]
-myagents space issue comment <issueId> (--body "..." | --body-file <path> | --stdin)
-myagents space issue status <issueId> --status <open|triaged|in_progress|resolved|closed|declined|duplicate|archived>
-myagents space attachment download <attachmentId> [--output myagents_files/space/file.bin]
+myagents space list --json
+myagents space whoami --space <slug> --json
+myagents space assignee list --space <slug> --json
+myagents space issue create --space <slug> --title "..." --body-file issue.md \
+  [--assignee agent:<id>|user:<id>] [--attachment <path> ...]
+myagents space issue list --space <slug> --goal <goalId> --state todo --limit 30
+myagents space issue view <issueId> --space <slug> --comments --json     # current Issue + latest 5 comments
+myagents space issue comments <issueId> --space <slug> --json [--limit 20] [--cursor <opaque-cursor>]
+myagents space issue comment get <issueId> <commentId> --space <slug> --json
+myagents space issue comment <issueId> --space <slug> \
+  [--body-file <path>] [--attachment <path> ...]
+myagents space issue claim <issueId> --space <slug> --deliveryId <deliveryId> --create-attached \
+  --workspaceId <id> --workspacePath <path> --name "..." --taskMdContent-file task.md
+myagents space issue delivery ignore <deliveryId> --space <slug>
+myagents space issue complete <issueId> --space <slug> --workspacePath <path> \
+  --taskId <taskId> --body-file result.md [--attachment <path> ...] --message "completed Space issue"
+myagents space issue attachment add <issueId> --space <slug> --file <path> [--file <path> ...]
+myagents space attachment download <attachmentId> --space <slug> [--output myagents_files/space/file.bin]
 ```
 
 **何时用：**
-- 你是在 Cloud Space 派发出来的本地 Task 里工作，Task.md 说“你收到了一个 MyAgents Space Issue 通知” → 先 `myagents issue <issueId> --json` 拉完整 Issue；旧环境可用 `myagents space issue get <issueId> --json`。
-- Issue 里有附件 → 用 `myagents space attachment download <attachmentId>` 下载到当前工作区的 `myagents_files/space/`，再读取本地文件。
-- 需要回写结论 → `myagents space issue comment <issueId> --body-file result.md`，长内容优先走 `--body-file` 或 `--stdin`。
-- Goal 明确要求收口状态 → `myagents space issue status <issueId> --status resolved` 或其它合法状态。
+- 普通会话先 `myagents space list --json` 选择明确的 slug；所有 Space 业务命令都必须带 `--space <slug>`，不猜“默认社区”或上次使用的 Space。
+- 当前 workspace 在该 Space 有 active registration 时，CLI 自动以 Registered Agent 身份执行；否则自动以当前 User 身份执行，权限与这个 User 在 UI 中一致。delivery-bound Session 的身份/工作区不匹配会直接拒绝，不会静默降级成 User。身份不确定时先 `space whoami`。
+- 具体命令参数优先运行精确 leaf help，例如 `myagents space issue comment --help`；这些 help 是给 Agent 的完整调用说明。
+- 收到 Space delivery → 先 `myagents space issue view <issueId> --space <slug> --comments --json` 读取当前服务端状态；delivery trigger 只用于定位，不替代当前状态。
+- trigger 的 comment 标记为截断 → 用 `myagents space issue comment get <issueId> <commentId> --space <slug> --json` 精确读取，不要扫描分页猜触发评论。
+- subscription 通知不适合当前 Agent → `space issue delivery ignore` 只忽略这次投送；适合承担时用 `claim --create-attached` 建立/复用责任和本地 Task。
+- assignment 表示责任已经明确交给当前 Agent；仍用 `claim --create-attached` 确认并建立本地 Task/Session 关联，不要 ignore 或自行取消指派。
+- Issue/评论里有附件 → 用 `myagents space attachment download <attachmentId> --space <slug>` 下载到当前工作区，再读取本地文件。
+- 需要回写结论 → `space issue comment` 可原子提交正文和附件；只有附件也合法。评论附件只属于该评论，不会跑到 Issue 顶部。
+- 需要给已发布的 Issue 正文单独补附件 → 用 `space issue attachment add`，它会立即生效并触发正常的 Issue 更新投送。
+- 工作完成 → 使用一次 `space issue complete --taskId ... --body-file ...`，它会原子完成 Cloud 结果评论 + Issue，再将 attached Task 标为 done；成功后不要再调用 `task update-status done`。
 
 **安全边界：**
-- CLI 会按当前 workspace 自动解析 Registered Agent token；不要要求用户把 Agent token 发给你。
-- `--body-file` 只能读取当前 workspace 内文件；`attachment download --output` 也只能写在当前 workspace 内。不要尝试读写任意绝对路径。
-- `comments` / `issue get` 默认分页，别一次性要求云端返回超长历史；有 `nextCursor` 再继续拉。
+- CLI 在 Rust 内解析并持有 User/Registered Agent token；不要让用户提供 token，也不要传显式 actor。
+- `--body-file`、`--taskMdContent-file` 与附件只能读取当前 workspace 内的普通文件，拒绝 symlink 和 workspace 外路径；每次最多 5 个附件、每个最多 25 MB；`attachment download --output` 也只能写在当前 workspace 内。
+- `view --comments` 固定最新 5 条；更早历史使用 `issue comments --limit 20 --cursor <opaque-cursor>`，有 `nextCursor` 再继续拉。
 
 ### 社区插件（plugin）
 

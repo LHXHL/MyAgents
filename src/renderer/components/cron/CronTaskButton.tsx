@@ -1,4 +1,4 @@
-// Cron Task Button - Heart pulse button to enable heartbeat loop mode
+// Composer schedule/goal button.
 import { Timer } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 

@@ -40,7 +40,11 @@ vi.mock('@/analytics', () => ({ track: vi.fn() }));
 
 import Message from '@/components/Message';
 import type { Message as MessageType } from '@/types/chat';
-import { SPACE_ISSUE_CONTEXT_TAG } from '../../shared/systemReminder';
+import {
+    SPACE_ISSUE_CONTEXT_TAG,
+    buildGoalContextReminder,
+    buildGoalContinuationReminder,
+} from '../../shared/systemReminder';
 
 function assistantMessage(content: MessageType['content']): MessageType {
     return {
@@ -107,7 +111,7 @@ describe('Space issue system-reminder user bubble', () => {
         expect(container).not.toHaveTextContent('hidden issue facts');
     });
 
-    it('does not fall back to hidden payload when visible text is missing', () => {
+    it('does not render a bubble when visible text is missing', () => {
         const content = [
             '<system-reminder>',
             `<${SPACE_ISSUE_CONTEXT_TAG}>`,
@@ -121,7 +125,7 @@ describe('Space issue system-reminder user bubble', () => {
 
         const { container } = render(<Message message={userMessage(content)} />);
 
-        expect(container).toHaveTextContent('Space issue');
+        expect(container.querySelector('[data-role="user"]')).toBeNull();
         expect(container).not.toHaveTextContent('hidden issue instructions');
         expect(container).not.toHaveTextContent('hidden issue facts');
     });
@@ -147,5 +151,56 @@ describe('Heartbeat system-reminder user bubble', () => {
         expect(container).not.toHaveTextContent('hidden relay instruction');
         expect(container).not.toHaveTextContent('hidden task metadata');
         expect(container).not.toHaveTextContent('hidden task result');
+    });
+});
+
+describe('Goal system-reminder user bubble', () => {
+    it('renders the first Goal query with the Goal Mode badge', () => {
+        const objective = '分析这个项目有什么价值';
+        const content = buildGoalContextReminder({
+            objective,
+            goalId: 'goal_first',
+            goalStatus: 'active',
+            turnNumber: 1,
+            visibleUserMessage: objective,
+        });
+
+        const { container } = render(<Message message={userMessage(content)} />);
+
+        expect(container.querySelector('[data-role="user"]')).not.toBeNull();
+        expect(container).toHaveTextContent(/Goal Mode|目标模式/);
+        expect(container).toHaveTextContent(objective);
+        expect(container).not.toHaveTextContent('Continue working toward the active MyAgents Goal');
+    });
+
+    it('does not render pure hidden Goal reminders as user bubbles', () => {
+        const content = buildGoalContinuationReminder({
+            objective: 'hidden updated objective',
+            goalId: 'goal_123',
+            goalStatus: 'active',
+            turnNumber: 2,
+        });
+
+        const { container } = render(<Message message={userMessage(content)} />);
+
+        expect(container.querySelector('[data-role="user"]')).toBeNull();
+        expect(container).not.toHaveTextContent('hidden updated objective');
+    });
+
+    it('renders Goal context visible tail with the Goal Mode badge only', () => {
+        const content = buildGoalContextReminder({
+            objective: 'hidden objective',
+            goalId: 'goal_123',
+            goalStatus: 'paused',
+            turnNumber: 3,
+            visibleUserMessage: 'Please run tests before continuing',
+        });
+
+        const { container } = render(<Message message={userMessage(content)} />);
+
+        expect(container).toHaveTextContent(/Goal Mode|目标模式/);
+        expect(container).toHaveTextContent('Please run tests before continuing');
+        expect(container).not.toHaveTextContent('hidden objective');
+        expect(container).not.toHaveTextContent('Continue the active Goal');
     });
 });

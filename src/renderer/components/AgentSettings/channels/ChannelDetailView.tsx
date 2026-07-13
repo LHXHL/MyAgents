@@ -15,7 +15,7 @@ import { isTauriEnvironment } from '@/utils/browserMock';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import { useToast } from '@/components/Toast';
 import { useConfig } from '@/hooks/useConfig';
-import { CODEX_SUBSCRIPTION_PROVIDER_ID, getEffectiveModelAliases, getProviderModels, isProviderEnabled } from '@/config/types';
+import { CODEX_SUBSCRIPTION_PROVIDER_ID, XAI_SUBSCRIPTION_PROVIDER_ID, getEffectiveModelAliases, getProviderModels, isProviderEnabled } from '@/config/types';
 import { isProviderAvailable } from '@/config/services/providerService';
 import { patchAgentConfig, invokeStartAgentChannel, stopAndDisableAgentChannel, startAndEnableAgentChannel, channelHasCredentials } from '@/config/services/agentConfigService';
 import {
@@ -422,7 +422,9 @@ export default function ChannelDetailView({
         const options = [{ value: '', label: t('agentSettings.channelDetail.defaultInheritAgent') }];
         for (const p of providers) {
             if (!isProviderEnabled(p)) continue;
-            if (p.type === 'subscription' && p.id !== CODEX_SUBSCRIPTION_PROVIDER_ID) continue;
+            if (p.type === 'subscription'
+                && p.id !== CODEX_SUBSCRIPTION_PROVIDER_ID
+                && p.id !== XAI_SUBSCRIPTION_PROVIDER_ID) continue;
             if (isProviderAvailable(p, apiKeys, providerVerifyStatus)) {
                 options.push({ value: p.id, label: p.name });
             }

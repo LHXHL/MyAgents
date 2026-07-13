@@ -191,7 +191,7 @@ export interface TabContextValue extends TabState {
 
     // Chat actions
     sendMessage: (text: string, images?: ImageAttachment[], permissionMode?: PermissionMode, model?: string, providerEnv?: ChatProviderEnv, isCron?: boolean, reasoningEffort?: string, providerRoute?: ProviderRoute) => Promise<boolean>;
-    stopResponse: () => Promise<boolean>;
+    stopResponse: () => Promise<{ success: boolean; alreadyStopped: boolean }>;
     loadSession: (sessionId: string, options?: { skipLoadingReset?: boolean }) => Promise<boolean>;
     /** Prepend the next page of older messages. Safe to call repeatedly — guarded internally. */
     loadOlderMessages: (options?: LoadOlderMessagesOptions) => Promise<void>;
@@ -240,7 +240,6 @@ export interface TabContextValue extends TabState {
     forceExecuteQueuedMessage: (queueId: string) => Promise<boolean>;
 
     // Cron task exit event handler (set by useCronTask hook)
-    onCronTaskExitRequested: React.MutableRefObject<((taskId: string, reason: string) => void) | null>;
 }
 
 /**
@@ -291,7 +290,7 @@ const defaultContextValue: TabContextValue = {
     setSystemNotice: () => { },
     setSessionMeta: () => { },
     sendMessage: async () => false,
-    stopResponse: async () => false,
+    stopResponse: async () => ({ success: false, alreadyStopped: true }),
     loadSession: async () => false,
     loadOlderMessages: async () => { },
     resetSession: async () => false,
@@ -305,7 +304,6 @@ const defaultContextValue: TabContextValue = {
     respondExitPlanMode: async () => false,
     cancelQueuedMessage: async () => null,
     forceExecuteQueuedMessage: async () => false,
-    onCronTaskExitRequested: { current: null },
 };
 
 /**

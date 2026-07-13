@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
     isRestoredSession,
+    shouldAcceptLiveTurnEvent,
     shouldSkipHistoryReplay,
     shouldClearHistoryOnInit,
     appendUniqueMessageById,
@@ -37,7 +38,7 @@ describe('shouldSkipHistoryReplay', () => {
 
     it('does NOT skip a LIVE echo (freshly-sent user bubble) on a REST-restored session', () => {
         // #0608 Codex-review blocker: chat:message-replay is overloaded — a newly
-        // sent user/command bubble echoes on the SAME event with no replayKind. It
+        // sent user/command bubble echoes on the SAME event as a live-user-echo. It
         // is the authoritative render path for the bubble and MUST NOT be suppressed,
         // else new messages vanish from the UI after a restore.
         expect(
@@ -93,10 +94,24 @@ describe('shouldSkipHistoryReplay', () => {
                 isNewSession: true,
                 isLoadingSession: false,
                 isColdHistoryReplay: false,
+                isCurrentSessionLiveEcho: false,
                 restoredSessionId: null,
                 currentSessionId: SID,
             }),
         ).toBe(true);
+    });
+
+    it('accepts the current session live-user echo as the new-turn boundary', () => {
+        expect(
+            shouldSkipHistoryReplay({
+                isNewSession: true,
+                isLoadingSession: false,
+                isColdHistoryReplay: false,
+                isCurrentSessionLiveEcho: true,
+                restoredSessionId: null,
+                currentSessionId: SID,
+            }),
+        ).toBe(false);
     });
 
     it('skips reset-birth cold-history without suppressing the live user echo', () => {
@@ -121,6 +136,34 @@ describe('shouldSkipHistoryReplay', () => {
                 currentSessionId: SID,
             }),
         ).toBe(false);
+    });
+});
+
+describe('shouldAcceptLiveTurnEvent', () => {
+    it('accepts a session-stamped event only for the current Tab session', () => {
+        expect(shouldAcceptLiveTurnEvent({
+            isNewSession: true,
+            payloadSessionId: SID,
+            isCurrentSessionScope: true,
+        })).toBe(true);
+        expect(shouldAcceptLiveTurnEvent({
+            isNewSession: false,
+            payloadSessionId: OTHER,
+            isCurrentSessionScope: false,
+        })).toBe(false);
+    });
+
+    it('keeps legacy unmarked events out of a new-session birth window', () => {
+        expect(shouldAcceptLiveTurnEvent({
+            isNewSession: true,
+            payloadSessionId: null,
+            isCurrentSessionScope: false,
+        })).toBe(false);
+        expect(shouldAcceptLiveTurnEvent({
+            isNewSession: false,
+            payloadSessionId: null,
+            isCurrentSessionScope: false,
+        })).toBe(true);
     });
 });
 

@@ -73,6 +73,99 @@ describe('SimpleChatInput send paths', () => {
     expect(onSend).toHaveBeenCalledWith('chat hello', undefined);
   });
 
+  it('shows Goal and scheduled Task state independently', async () => {
+    await i18n.changeLanguage('en-US');
+    renderInput({
+      cronTask: {
+        status: 'running',
+        intervalMinutes: 30,
+        schedule: { kind: 'every', minutes: 30 },
+        executionCount: 2,
+        runMode: 'single_session',
+      },
+      sessionGoal: {
+        id: 'goal-1',
+        workspacePath: '/tmp/workspace',
+        sessionId: 'session-1',
+        objective: 'Ship the architecture closure',
+        status: 'active',
+        endConditions: { aiCanExit: true },
+        notifyEnabled: true,
+        permissionMode: '',
+        turnCount: 1,
+        createdAt: '2026-07-10T10:00:00.000Z',
+        updatedAt: '2026-07-10T10:00:00.000Z',
+        totalDurationMs: 0,
+        totalTokens: 0,
+        revision: 1,
+        controlRevision: 1,
+        isExecuting: false,
+      },
+      onCronStop: vi.fn(),
+      onGoalCancel: vi.fn(),
+    });
+
+    expect(screen.getByText('Round 1 · Ship the architecture closure')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Cancel goal' })).toBeInTheDocument();
+    expect(screen.getByText('Scheduled task running')).toBeInTheDocument();
+  });
+
+  it('keeps a Goal draft independent from an active scheduled task', async () => {
+    await i18n.changeLanguage('en-US');
+    renderInput({
+      cronTask: {
+        status: 'running',
+        intervalMinutes: 30,
+        schedule: { kind: 'every', minutes: 30 },
+        executionCount: 2,
+        runMode: 'single_session',
+      },
+      goalDraftActive: true,
+      onCronStop: vi.fn(),
+      onGoalDraftCancel: vi.fn(),
+    });
+
+    expect(screen.getByText('Goal Mode')).toBeInTheDocument();
+    expect(screen.getByText('Enter your goal in the input box, then send it to keep working until completion')).toBeInTheDocument();
+    expect(screen.queryByText(/Run every 0 minutes/)).not.toBeInTheDocument();
+    expect(screen.getByText('Scheduled task running')).toBeInTheDocument();
+  });
+
+  it('projects a Launcher-staged Goal through Goal chrome instead of Cron schedule text', async () => {
+    await i18n.changeLanguage('en-US');
+    renderInput({
+      mode: 'launcher',
+      cronModeEnabled: true,
+      cronConfig: {
+        taskKind: 'goal',
+        intervalMinutes: 0,
+        schedule: { kind: 'loop' },
+      },
+      onCronSettings: vi.fn(),
+      onCronCancel: vi.fn(),
+    });
+
+    expect(screen.getByText('Goal Mode')).toBeInTheDocument();
+    expect(screen.getByText('Enter your goal in the input box, then send it to keep working until completion')).toBeInTheDocument();
+    expect(screen.queryByText('Legacy loop')).not.toBeInTheDocument();
+  });
+
+  it('gives a Goal draft sole ownership of the composer draft bar', async () => {
+    await i18n.changeLanguage('en-US');
+    renderInput({
+      goalDraftActive: true,
+      cronModeEnabled: true,
+      cronConfig: {
+        taskKind: 'cron',
+        intervalMinutes: 30,
+        schedule: { kind: 'every', minutes: 30 },
+      },
+    });
+
+    expect(screen.getByText('Goal Mode')).toBeInTheDocument();
+    expect(screen.queryByText('Run every 30 minutes')).not.toBeInTheDocument();
+  });
+
   it('honors parent provider availability for subscription sessions with local account evidence', async () => {
     const user = userEvent.setup();
     const subscriptionProvider = {

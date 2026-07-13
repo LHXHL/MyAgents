@@ -823,19 +823,9 @@ pub async fn forward_terminal_events_to_renderer(
     app_handle: AppHandle,
     manager: ManagedSidecarManager,
     shutdown: Arc<std::sync::atomic::AtomicBool>,
+    mut rx: tokio::sync::broadcast::Receiver<(String, u64)>,
 ) {
     use std::sync::atomic::Ordering::Relaxed;
-
-    let mut rx = match manager.lock() {
-        Ok(g) => g.subscribe_terminal_events(),
-        Err(e) => {
-            ulog_error!(
-                "[sidecar] terminal-event forwarder failed to subscribe: {}",
-                e
-            );
-            return;
-        }
-    };
 
     ulog_info!("[sidecar] Terminal-event forwarder started");
 

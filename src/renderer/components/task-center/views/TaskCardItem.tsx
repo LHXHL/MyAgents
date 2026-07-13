@@ -10,7 +10,7 @@
 // category chip on the left already carry the "state" and "kind" axes;
 // a third indicator in the form of a color stripe would triple-count
 // the same signal. Legacy-cron identity collapses into the category
-// chip as "心跳循环 · 遗留" / "周期 · 遗留" etc., so the grid no longer
+// chip as "目标模式 · 遗留" / "周期 · 遗留" etc., so the grid no longer
 // needs a separate "遗留" pill — see <TaskCategoryBadge legacy />.
 
 import { useEffect, useState } from 'react';
@@ -35,8 +35,7 @@ export interface TaskCardItemProps {
   highlighted?: boolean;
   busy?: boolean;
   onOpen: () => void;
-  /** Menu "编辑" action — opens the detail overlay in edit mode. Not
-   *  wired for legacy rows (their schedule lives in the old cron UI). */
+  /** Menu "编辑" action — opens the detail overlay in edit mode. */
   onEdit?: () => void;
   onRun?: () => void;
   onStop?: () => void;
@@ -49,14 +48,14 @@ export function TaskCardItem(props: TaskCardItemProps) {
   const { t, i18n } = useTranslation('task');
   const locale = isSupportedLocale(i18n.language) ? i18n.language : 'zh-CN';
   const isLegacy = !!legacy && !task;
-  const status = deriveTaskRowStatus(task ?? null, legacy?.status === 'running');
+  const status = deriveTaskRowStatus(task ?? null);
   const name = task?.name ?? legacy?.name ?? '—';
   const updatedAt = task?.updatedAt ?? legacy?.updatedAt ?? 0;
   const category = task ? task.executionMode : inferLegacyCategory(legacy);
 
-  // Loop + recurring tasks surface "第 N 轮" / "已执行 N 次" — both pull
-  // from CronTask.execution_count. RunStats is a per-card fetch because
-  // the count lives on the linked CronTask, not on the Task row itself.
+  // Loop + recurring tasks surface "第 N 轮" / "已执行 N 次" from Task
+  // execution history. RunStats remains a per-card fetch to keep the panel
+  // model small.
   // One Tauri round-trip per card; negligible for dashboards < 50 cards
   // and localises the read (no panel-level Map to keep in sync).
   const [runStats, setRunStats] = useState<TaskRunStats | null>(null);
@@ -91,13 +90,15 @@ export function TaskCardItem(props: TaskCardItemProps) {
           ever grows a third element or when the row gets wrapped in
           another flex context during a refactor. */}
       <div className="flex w-full items-center gap-1.5">
-        <TaskStatusBadge status={status} />
+        <TaskStatusBadge status={status} executionState={task?.executionState} />
         <TaskCategoryBadge mode={category} legacy={isLegacy} />
         <div className="ml-auto flex shrink-0 items-center gap-1">
           <ViewSessionButton task={task} />
           <TaskItemActions
             variant={isLegacy ? 'legacy' : 'task'}
             status={status}
+            executionState={task?.executionState}
+            canRerun={task?.dispatchOrigin !== 'attached-session'}
             busy={busy}
             onRun={onRun}
             onStop={onStop}
@@ -139,7 +140,7 @@ export function TaskCardItem(props: TaskCardItemProps) {
  * Content varies per category:
  *
  *   once       workspace · 一次性 · <updatedAt-relative>
- *   loop       workspace · 心跳循环 · 第 N 轮
+ *   loop       workspace · 目标模式 · 第 N 轮
  *   scheduled  workspace · <formatted dispatch time>
  *   recurring  workspace · <interval or cron> [· 已执行 N 次]
  *

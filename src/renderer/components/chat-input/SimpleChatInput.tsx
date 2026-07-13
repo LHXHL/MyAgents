@@ -12,9 +12,10 @@ import { type PermissionMode, PERMISSION_MODES, type Provider, type ProviderVeri
 import { useConfigData } from '@/config/useConfigData';
 import { resolveEnterKeyAction, sendKeyHint } from '@/utils/chatSendKey';
 import SlashCommandMenu, { type SlashCommand, filterAndSortCommands, mergeSlashCommands } from '../SlashCommandMenu';
-import { isClientActionCommand, withClientActionCommands } from '@/utils/slashActions';
+import { isClientActionCommand, resolveClientActionName, withClientActionCommands } from '@/utils/slashActions';
 import QueuedMessagesPanel from '../QueuedMessageBubble';
 import CronTaskStatusBar from '../cron/CronTaskStatusBar';
+import GoalStatusBar from '../goal/GoalStatusBar';
 import { useUndoStack } from '@/hooks/useUndoStack';
 import { CUSTOM_EVENTS } from '../../../shared/constants';
 import { reasoningEffortChoices, REASONING_EFFORT_DESCRIPTIONS, REASONING_EFFORT_DEFAULT } from '../../../shared/reasoningEffort';
@@ -68,7 +69,6 @@ function getCurrentModelLabel(
   if (!modelId) return fallbackLabel;
   return provider ? getModelDisplayName(provider, modelId) : modelId;
 }
-
 
 // File search result type
 interface FileSearchResult {
@@ -128,16 +128,26 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   onWorkspaceRefresh,
   cronModeEnabled = false,
   cronConfig,
+  goalDraftActive = false,
   cronTask,
+  sessionGoal,
   stoppedCronTask,
   cronIsExecuting = false,
   cronExecutionNumber,
+  goalIsExecuting = false,
+  goalExecutionNumber,
   composerConfigLockedReason,
   onCronButtonClick,
   onCronSettings,
   onCronCancel,
+  onGoalDraftSettings,
+  onGoalDraftCancel,
   onCronStop,
   onCronDismissStopped,
+  onGoalEdit,
+  onGoalResume,
+  onGoalCancel,
+  onGoalDismiss,
   onSlashAction,
   sdkSlashCommands = [],
   mode = 'chat',
@@ -353,7 +363,12 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const effortCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // null = this surface has no reasoning-effort knob (Gemini / unknown) → row hidden.
   const effortChoices = onReasoningEffortChange
-    ? reasoningEffortChoices(isExternalRuntime ? (runtime ?? 'builtin') : 'builtin', provider?.apiProtocol)
+    ? reasoningEffortChoices(
+        isExternalRuntime ? (runtime ?? 'builtin') : 'builtin',
+        provider?.apiProtocol,
+        provider?.id,
+        selectedModel ?? provider?.primaryModel,
+      )
     : null;
   const openEffortSubmenu = useCallback(() => {
     if (effortCloseTimerRef.current) {
@@ -925,6 +940,17 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
 
     const text = inputValue.trim();
     if (!text && images.length === 0) return;
+    if (onSlashAction && images.length === 0 && text.startsWith('/')) {
+      const actionName = resolveClientActionName(text);
+      if (actionName) {
+        if (showConfigLockedReason()) return;
+        setInputValue('');
+        setShowSlashMenu(false);
+        setSlashPosition(null);
+        onSlashAction(actionName);
+        return;
+      }
+    }
 
     // Prevent double-fire (rapid Enter + click, or concurrent async sends).
     // Must run BEFORE consuming `bypassRepetitionRef` so a confirm-during-
@@ -981,21 +1007,21 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     } finally {
       sendingRef.current = false;
     }
-  }, [onSend, images, inputValue, provider, currentModelId, isExternalRuntime, setImages, t]);
+  }, [onSend, images, inputValue, provider, currentModelId, isExternalRuntime, setImages, t, onSlashAction, showConfigLockedReason]);
 
   // Handle keyboard navigation in file search and slash menu
   // Handler for selecting a slash command — shared by the click path
   // (`onSelect`) and the keyboard path (Enter/Tab in `handleKeyDown`). Defined
   // above `handleKeyDown` so the latter can reference it without a TDZ.
   //
-  // Client-action builtins (e.g. /loop) strip the typed `/fragment` and
-  // dispatch a renderer-side action via `onSlashAction` instead of inserting
-  // text — the action (opening the loop panel) owns what happens next, and the
+// Client-action builtins (e.g. /goal) strip the typed `/fragment` and
+// dispatch a renderer-side action via `onSlashAction` instead of inserting
+// text — the action (opening the Goal panel) owns what happens next, and the
   // task content is entered into the input afterwards. Everything else inserts
   // `/name ` as before.
   const handleSlashSelect = useCallback((cmd: SlashCommand) => {
     if (slashPosition === null) return;
-    if (onSlashAction && isClientActionCommand(cmd) && cmd.name === 'loop' && showConfigLockedReason()) {
+    if (onSlashAction && isClientActionCommand(cmd) && showConfigLockedReason()) {
       setShowSlashMenu(false);
       setSlashPosition(null);
       return;
@@ -1007,7 +1033,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
       setInputValue(`${before}${after}`);
       setShowSlashMenu(false);
       setSlashPosition(null);
-      onSlashAction(cmd.name);
+      onSlashAction(resolveClientActionName(cmd.name) ?? cmd.name);
       return;
     }
 
@@ -1105,7 +1131,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
         const selected = filteredSlashCommands[selectedSlashIndex];
         if (selected) {
           // Single dispatch point shared with the click path — also handles
-          // client-action commands (e.g. /loop) vs plain text insertion.
+          // client-action commands (e.g. /goal) vs plain text insertion.
           handleSlashSelect(selected);
         }
         return;
@@ -1208,12 +1234,23 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
     // eslint-disable-next-line react-hooks/exhaustive-deps -- textareaRef is stable
   }, [cyclePermissionMode, undoStack, fileService, showSlashMenu, filteredSlashCommands, slashSearchQuery, selectedSlashIndex, slashPosition, showFileSearch, fileSearchResults, selectedFileIndex, inputValue, atPosition, fileSearchQuery, images.length, handleSend, handleSkillSelect, handleSlashSelect, mentionTab, thoughtResults]);
 
-  const showDraftCronBar = cronModeEnabled && !cronTask && !!cronConfig;
+  const visibleGoal = !isLauncherMode ? sessionGoal : null;
+  const goalDraftFromCronConfig = cronModeEnabled
+    && !cronTask
+    && cronConfig?.taskKind === 'goal';
+  const showDraftGoalBar = (goalDraftActive || goalDraftFromCronConfig) && !visibleGoal;
+  const showDraftCronBar = cronModeEnabled
+    && !cronTask
+    && cronConfig?.taskKind === 'cron'
+    && !visibleGoal
+    && !showDraftGoalBar;
   const activeCronTask = !isLauncherMode && cronTask?.status === 'running' && cronTask.runMode !== 'new_session'
     ? cronTask
     : null;
-  const visibleStoppedCronTask = !isLauncherMode ? stoppedCronTask : null;
-  const hasCronBar = showDraftCronBar || !!activeCronTask || !!visibleStoppedCronTask;
+  const visibleStoppedCronTask = !isLauncherMode
+    ? stoppedCronTask
+    : null;
+  const hasStatusBar = showDraftGoalBar || showDraftCronBar || !!visibleGoal || !!activeCronTask || !!visibleStoppedCronTask;
 
   return (
     <>
@@ -1282,6 +1319,24 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
             onCancel={() => onCronCancel?.()}
           />
         )}
+        {showDraftGoalBar && (
+          <GoalStatusBar
+            mode="draft"
+            onSettings={() => goalDraftActive ? onGoalDraftSettings?.() : onCronSettings?.()}
+            onCancel={() => goalDraftActive ? onGoalDraftCancel?.() : onCronCancel?.()}
+          />
+        )}
+        {visibleGoal && (
+          <GoalStatusBar
+            goal={visibleGoal}
+            isExecuting={goalIsExecuting}
+            executionNumber={goalExecutionNumber}
+            onEdit={onGoalEdit}
+            onResume={onGoalResume}
+            onCancel={onGoalCancel}
+            onDismiss={onGoalDismiss}
+          />
+        )}
         {activeCronTask && (
           <CronTaskStatusBar
             mode={cronIsExecuting ? 'executing' : 'running'}
@@ -1306,7 +1361,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
         )}
 
         <div className={`relative border border-[var(--line)] bg-[var(--paper-elevated)] shadow-md ${
-          hasCronBar
+          hasStatusBar
             ? 'rounded-b-2xl rounded-t-none border-t-0'  // StatusBar visible: no top rounded, no top border
             : 'rounded-2xl'  // Normal: fully rounded
         }`}>
@@ -2019,7 +2074,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
               </Popover>
               </>
 
-              {/* Heartbeat Loop Button — PRD 0.2.7 D1: launcher exposes this
+              {/* Goal/Schedule Button — PRD 0.2.7 D1: launcher exposes this
                *  too. The handler stages cron config on launcher; actual
                *  cmd_create_cron_task runs after handoff to chat. */}
               {onCronButtonClick && (

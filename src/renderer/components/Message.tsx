@@ -19,7 +19,13 @@ import { parseBackgroundTaskNotificationContent } from '@/utils/backgroundTaskSt
 import { useImagePreview } from '@/context/ImagePreviewContext';
 import type { ContentBlock, Message as MessageType } from '@/types/chat';
 import { SOURCE_LABELS, type MessageSource } from '../../shared/types/im';
-import { FLOATING_BALL_CONTEXT_TAG, SPACE_ISSUE_CONTEXT_TAG, parseLeadingSystemReminder } from '../../shared/systemReminder';
+import {
+  FLOATING_BALL_CONTEXT_TAG,
+  GOAL_CONTEXT_TAG,
+  GOAL_CONTINUATION_TAG,
+  SPACE_ISSUE_CONTEXT_TAG,
+  parseLeadingSystemReminder,
+} from '../../shared/systemReminder';
 
 interface MessageProps {
   message: MessageType;
@@ -251,6 +257,7 @@ function systemTagLabel(kind: string, t: (key: string) => string): string | null
   if (kind === 'CRON_TASK') return t('message.systemTags.cronTask');
   if (kind === FLOATING_BALL_CONTEXT_TAG) return t('message.systemTags.floatingContext');
   if (kind === SPACE_ISSUE_CONTEXT_TAG) return t('message.systemTags.spaceIssue');
+  if (kind === GOAL_CONTINUATION_TAG || kind === GOAL_CONTEXT_TAG) return t('message.systemTags.goalMode');
   return null;
 }
 
@@ -340,25 +347,27 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
     let systemTag: string | null = null;
     if (reminder.kind) systemTag = systemTagLabel(reminder.kind, t);
 
+    const hasAttachments = Boolean(message.attachments?.length);
+
+    // Pure hidden reminders are transport/control messages, not user chat.
+    // If a visible tail exists, render only that tail plus a small badge.
+    if (reminder.hasReminder && !reminder.visibleText.trim() && !hasAttachments) {
+      return null;
+    }
+
     // Strip system injection tags that wrap delivered content. These HTML-like tags trigger
     // Markdown's HTML block mode, breaking \n rendering and Markdown syntax.
-    const displaySource = reminder.hasReminder
-      && (
-        reminder.visibleText
-        || reminder.kind === FLOATING_BALL_CONTEXT_TAG
-        || reminder.kind === SPACE_ISSUE_CONTEXT_TAG
-      )
-      ? reminder.visibleText
-      : rawUserContent;
+    const displaySource = reminder.hasReminder ? reminder.visibleText : rawUserContent;
     const userContent = displaySource
       .replace(/<\/?system-reminder>/g, '')
       .replace(/<\/?HEARTBEAT>/g, '')
       .replace(/<\/?MEMORY_UPDATE>/g, '')
       .replace(/<\/?CRON_TASK>/g, '')
       .replace(/<\/?FLOATING_BALL_CONTEXT>/g, '')
+      .replace(/<\/?GOAL_CONTINUATION>/g, '')
+      .replace(/<\/?GOAL_CONTEXT>/g, '')
       .replace(/<\/?myagents-space-issue>/g, '')
       .trim();
-    const hasAttachments = Boolean(message.attachments?.length);
     const attachmentItems =
       message.attachments?.map((attachment) => ({
         id: attachment.id,

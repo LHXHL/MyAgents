@@ -4,7 +4,9 @@ import type { Provider } from './config-types';
 import {
   CODEX_SUBSCRIPTION_PROVIDER_ID,
   MANAGED_CODEX_PROVIDER,
+  PRESET_PROVIDERS,
   SUBSCRIPTION_PROVIDER_ID,
+  XAI_SUBSCRIPTION_PROVIDER_ID,
 } from './config-types';
 import {
   agentDefaultsForRuntimeBackedProvider,
@@ -114,6 +116,19 @@ describe('provider execution identity', () => {
         kind: 'subscription',
         providerId: SUBSCRIPTION_PROVIDER_ID,
         model: 'claude-sonnet-4-6',
+      },
+    });
+  });
+
+  it('keeps Grok subscription on the builtin ProviderRoute path', () => {
+    const grok = PRESET_PROVIDERS.find(provider => provider.id === XAI_SUBSCRIPTION_PROVIDER_ID);
+    if (!grok) throw new Error('missing Grok preset');
+    expect(toProviderExecutionIntent(grok, 'grok-4.5')).toEqual({
+      kind: 'builtin-provider',
+      route: {
+        kind: 'subscription',
+        providerId: XAI_SUBSCRIPTION_PROVIDER_ID,
+        model: 'grok-4.5',
       },
     });
   });

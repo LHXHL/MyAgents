@@ -8,7 +8,7 @@ import type { ManagedTaskKind } from '../../shared/types/task';
 export type CronRunMode = 'single_session' | 'new_session';
 
 /**
- * Explicit provider routing intent for a cron task (PRD #119, 2026-05).
+ * Read/write compatibility intent for the historical Cron command shape.
  *
  * Mirrors `cron_task::ProviderIntent` in Rust. Resolves the ambiguity in
  * pre-#119 cron tasks where `providerEnv === undefined` could mean either
@@ -16,11 +16,8 @@ export type CronRunMode = 'single_session' | 'new_session';
  * paths always set this explicitly; legacy persisted tasks deserialize as
  * `'followAgent'` via serde default.
  *
- * Sidecar handler (`/cron/execute(-sync)`) branches on intent:
- *   - `followAgent` — snapshot resolution at execute time (pre-#119 default)
- *   - `subscription` — force `providerEnv = undefined`, ignore agent
- *   - `explicit`     — force `providerEnv = task's payload.providerEnv`,
- *                      ignore agent
+ * New Task persistence uses `providerId + model`; `explicit` snapshots are
+ * rejected. The enum remains so old records and subscription callers decode.
  */
 export type CronProviderIntent = 'followAgent' | 'subscription' | 'explicit';
 
@@ -29,6 +26,9 @@ export type CronProviderIntent = 'followAgent' | 'subscription' | 'explicit';
  * Stopped includes: manual stop, end conditions met, AI exit
  */
 export type CronTaskStatus = 'running' | 'stopped';
+
+/** Renderer-only creation surface identity. Schedule shape is persistence detail. */
+export type ScheduledTaskKind = 'cron' | 'goal';
 
 /**
  * End conditions for a cron task
@@ -145,20 +145,12 @@ export interface CronTaskConfig {
   endConditions: CronEndConditions;
   runMode: CronRunMode;
   notifyEnabled: boolean;
-  tabId?: string;
   permissionMode?: string;
   model?: string;
-  /** PRD 0.2.9 — DEPRECATED for new code; sidecar live-resolves
-   *  `providerId` instead. Retained for back-compat with legacy paths. */
-  providerEnv?: CronTaskProviderEnv;
-  /** PRD 0.2.9 — Per-task provider id; preferred over `providerEnv`.
+  /** Per-task provider id.
    *  Sidecar live-resolves credentials from `~/.myagents/config.json` on
-   *  every tick — no key copies in cron_tasks.json, rotation propagates
-   *  without re-saving the cron. */
+   *  when a new execution Session is initialized — no key copies in TaskStore. */
   providerId?: string;
-  /** PRD #119 / 0.2.9 — Routing intent. New code prefers `providerId` and
-   *  may omit this; sidecar ignores intent when `providerId` is set. */
-  providerIntent?: CronProviderIntent;
   runtime?: RuntimeType;
   runtimeConfig?: RuntimeConfig;
   /** Flexible schedule (overrides intervalMinutes) */
@@ -186,7 +178,7 @@ export interface CronTaskConfig {
    * task.mcpEnabledServers makes the override branch fire with the exact
    * same set the pre-warm already loaded, so `applyMcpOverrideAndAwaitReady`
    * short-circuits as a no-op (`agent-session.ts:1282`).
-   */
+  */
   mcpEnabledServers?: string[];
 }
 
@@ -209,18 +201,6 @@ export interface CronRunRecord {
 /**
  * Payload sent from Rust scheduler to trigger task execution
  */
-export interface CronTaskTriggerPayload {
-  taskId: string;
-  prompt: string;
-  isFirstExecution: boolean;
-  aiCanExit: boolean;
-  workspacePath: string;
-  sessionId: string;
-  runMode: CronRunMode;
-  notifyEnabled: boolean;
-  tabId?: string;
-}
-
 /**
  * Preset interval options (in minutes)
  */
@@ -300,7 +280,7 @@ export function formatScheduleDescription(task: CronTask): string {
       case 'cron':
         return formatCronExpression(task.schedule.expr);
       case 'loop':
-        return 'Ralph Loop 无限循环';
+        return '目标模式';
     }
   }
   return `每 ${formatCronInterval(task.intervalMinutes)}`;

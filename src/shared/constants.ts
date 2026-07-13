@@ -115,7 +115,4 @@ export const CUSTOM_EVENTS = {
      */
     OPEN_IN_BROWSER_PANEL: 'open-in-browser-panel',
     // CONFIG_CHANGED removed — ConfigProvider shares state via Context, no DOM event bridge needed
-    // Note: CRON_TASK_STOPPED event removed
-    // With Session-centric Sidecar (Owner model), stopping a cron task only releases
-    // the CronTask owner. If Tab still owns the Sidecar, it continues running.
 } as const;

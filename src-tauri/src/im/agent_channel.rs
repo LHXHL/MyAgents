@@ -243,7 +243,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
         };
         // Restore peer→session mapping from previous run's im_state.json
         let prev_sessions = health.get_state().await.active_sessions;
-        r.restore_sessions(&prev_sessions);
+        r.restore_sessions(&prev_sessions).await;
         Arc::new(Mutex::new(r))
     };
 
@@ -2115,7 +2115,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                         {
                             // task_runtime is already a String cloned above at the top of
                             // this spawn (runtime_for_loop.read().await.clone()).
-                            let drift_result = {
+                            let drift_result = match {
                                 let mut router_guard = task_router.lock().await;
                                 router_guard
                                     .check_and_reset_on_runtime_identity_drift(
@@ -2124,6 +2124,17 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                                         task_runtime_source.as_deref(),
                                         &task_manager,
                                     )
+                                    .await
+                            } {
+                                Ok(result) => result,
+                                Err(error) => {
+                                    ulog_error!(
+                                        "[im] Could not reconcile Session identity for {}: {}",
+                                        session_key,
+                                        error
+                                    );
+                                    return;
+                                }
                             };
                             if let Some((_old_id, new_id)) = drift_result {
                                 let _ = health::persist_router_active_sessions(
@@ -2253,7 +2264,20 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                                         let mut router_g = router.lock().await;
                                         router_g.record_response(&session_key, outcome.session_id.as_deref());
                                         if let Some(new_sid) = outcome.session_id.as_deref() {
-                                            router_g.upgrade_peer_session_id(&session_key, new_sid, &manager);
+                                            if let Err(error) = router_g
+                                                .upgrade_peer_session_id(
+                                                    &session_key,
+                                                    new_sid,
+                                                    &manager,
+                                                )
+                                                .await
+                                            {
+                                                ulog_warn!(
+                                                    "[im] Could not upgrade Session identity for {}: {}",
+                                                    session_key,
+                                                    error
+                                                );
+                                            }
                                         }
                                     }
                                     health.set_last_message_at(chrono::Utc::now().to_rfc3339()).await;
@@ -2407,16 +2431,21 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                                 .await;
                                 match result {
                                     Ok(_) => {
-                                        {
+                                        let birth_consumed = {
                                             let mut router_guard = task_router.lock().await;
-                                            router_guard.mark_metadata_birth_consumed(&session_key);
+                                            router_guard.mark_metadata_birth_consumed_if_session(
+                                                &session_key,
+                                                &sidecar_session_id_initial,
+                                            )
+                                        };
+                                        if birth_consumed {
+                                            let _ = health::persist_router_active_sessions(
+                                                &task_health,
+                                                &task_router,
+                                                "buffer-replay-birth-consumed",
+                                            )
+                                            .await;
                                         }
-                                        let _ = health::persist_router_active_sessions(
-                                            &task_health,
-                                            &task_router,
-                                            "buffer-replay-birth-consumed",
-                                        )
-                                        .await;
                                         ulog_info!(
                                             "[im] Replayed buffered requestId={} session_key={}",
                                             buf_request_id, session_key,
@@ -2544,16 +2573,21 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                         .await
                         {
                             Ok(_session_hint) => {
-                                {
+                                let birth_consumed = {
                                     let mut router_guard = task_router.lock().await;
-                                    router_guard.mark_metadata_birth_consumed(&session_key);
+                                    router_guard.mark_metadata_birth_consumed_if_session(
+                                        &session_key,
+                                        &sidecar_session_id_initial,
+                                    )
+                                };
+                                if birth_consumed {
+                                    let _ = health::persist_router_active_sessions(
+                                        &task_health,
+                                        &task_router,
+                                        "message-birth-consumed",
+                                    )
+                                    .await;
                                 }
-                                let _ = health::persist_router_active_sessions(
-                                    &task_health,
-                                    &task_router,
-                                    "message-birth-consumed",
-                                )
-                                .await;
                                 ulog_info!(
                                     "[im] Enqueued requestId={} session_key={}",
                                     request_id, session_key,
@@ -2850,20 +2884,18 @@ pub(super) async fn create_bot_instance<R: Runtime>(
         // clone of the sender (used for self-cascade when more cron events
         // remain after a single-event run_once cycle).
         let (wake_tx, wake_rx) = mpsc::channel::<types::HeartbeatWake>(64);
-        let (runner, config_arc, _mau_config_arc, _mau_running_arc) =
-            heartbeat::HeartbeatRunner::new(
-                hb_config,
-                hb_bot_label,
-                Arc::clone(&current_model),
-                Arc::clone(&current_provider_env),
-                Arc::clone(&mcp_servers_json),
-                Arc::clone(&runtime),
-                Arc::clone(&runtime_config),
-                types::HostInteractionCapability::for_platform(&config.platform),
-                None, // Memory auto-update: not used for per-channel heartbeat (Agent-level only)
-                Arc::clone(&pending_cron_events),
-                wake_tx.clone(),
-            );
+        let (runner, config_arc) = heartbeat::HeartbeatRunner::new(
+            hb_config,
+            hb_bot_label,
+            Arc::clone(&current_model),
+            Arc::clone(&current_provider_env),
+            Arc::clone(&mcp_servers_json),
+            Arc::clone(&runtime),
+            Arc::clone(&runtime_config),
+            types::HostInteractionCapability::for_platform(&config.platform),
+            Arc::clone(&pending_cron_events),
+            wake_tx.clone(),
+        );
 
         let hb_shutdown_rx = shutdown_rx.clone();
         let hb_router = Arc::clone(&router);

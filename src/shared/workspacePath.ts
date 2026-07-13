@@ -1,6 +1,6 @@
 // Canonical workspace-path identity — the single TS-side comparator for
 // "do these two paths denote the same workspace?" (renderer AND sidecar;
-// the Rust side is `src-tauri/src/cron_task.rs::normalize_path`).
+// the Rust side is `src-tauri/src/workspace_path.rs`).
 //
 // Why this exists (#320): the persisted stores legitimately disagree on
 // separator style. `projects.json` keeps the raw path from the Windows native
@@ -11,18 +11,17 @@
 // workspace path (the Rust upgrade copies the cron's forward-slash path straight
 // into the new Task, so the divergence propagates forward).
 //
-// Rust already treats the two forms as one workspace: `CronTaskManager::
-// get_tasks_for_workspace` groups tasks via `normalize_path`
-// (`src-tauri/src/cron_task.rs`). This module is the byte-for-byte TS port of
-// that function, so the renderer resolves "which Project owns this path" with
-// the SAME identity Rust used to group the tasks — the two sides agree by
+// Rust already treats the two forms as one workspace through
+// `normalize_workspace_path_identity`. This module is its TS counterpart, so
+// the renderer resolves "which Project owns this path" with the same identity —
+// the two sides agree by
 // construction instead of by remembering to `.replace(/\\/g,'/')` at each call
 // site (a safety step that, per the project's pit-of-success rule, WILL be
 // forgotten somewhere — exactly how #320 happened).
 
 /**
  * Canonical lexical identity for a workspace path. Mirrors the Rust
- * `normalize_path` in `src-tauri/src/cron_task.rs` (see its `normalize_path_*`
+ * `normalize_workspace_path_identity` in `src-tauri/src/workspace_path.rs`
  * unit tests for the authoritative cases).
  *
  * Semantics:

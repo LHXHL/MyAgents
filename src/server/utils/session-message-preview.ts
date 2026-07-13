@@ -1,5 +1,9 @@
 import type { SessionMessage } from '../types/session';
-import { FLOATING_BALL_CONTEXT_TAG, parseLeadingSystemReminder } from '../../shared/systemReminder';
+import {
+  FLOATING_BALL_CONTEXT_TAG,
+  SPACE_ISSUE_CONTEXT_TAG,
+  parseLeadingSystemReminder,
+} from '../../shared/systemReminder';
 
 export const CLIENT_MESSAGE_INLINE_MAX_BYTES = 256 * 1024;
 const PREVIEW_HEAD_BYTES = 24 * 1024;
@@ -151,6 +155,40 @@ function stripSystemReminderPrefix(text: string): string | null {
     .map((line) => line.trim())
     .find(Boolean)
     ?? null;
+}
+
+/**
+ * Whether a persisted user row represents fresh human input for session
+ * recency. Scheduled and maintenance turns are never human activity, even when
+ * their prompt is intentionally visible in the transcript. User-originated
+ * reminders count when they carry a visible tail or a real attachment.
+ */
+export function isHumanUserMessage(
+  message: Pick<SessionMessage, 'content' | 'attachments'>,
+): boolean {
+  const reminder = parseLeadingSystemReminder(message.content);
+  const trimmed = message.content.trimStart();
+  if (
+    reminder.kind === 'MEMORY_UPDATE'
+    || reminder.kind === 'HEARTBEAT'
+    || reminder.kind === 'CRON_TASK'
+    || reminder.kind === SPACE_ISSUE_CONTEXT_TAG
+    || trimmed.startsWith('<MEMORY_UPDATE>')
+    || trimmed.startsWith('/UPDATE_MEMORY')
+    || trimmed.startsWith('<HEARTBEAT>')
+    || trimmed.startsWith('<CRON_TASK>')
+    || trimmed.startsWith('<local-command-stdout>')
+    || trimmed.startsWith('<inbox-message')
+    || trimmed.startsWith('<inbox-reply')
+    || trimmed.startsWith('<cron-task-context')
+    || trimmed.startsWith('<myagents-session-event')
+    || trimmed.startsWith('<task-notification>')
+  ) return false;
+
+  const hasVisibleText = reminder.hasReminder
+    ? reminder.visibleText.trim().length > 0
+    : message.content.trim().length > 0;
+  return hasVisibleText || Boolean(message.attachments?.length);
 }
 
 export function resolveLastRealUserMessagePreview(

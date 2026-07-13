@@ -72,8 +72,8 @@ export interface SessionMenuButtonProps {
     boundChannel: ChannelSurface | null;
     /** All online channels for this workspace's Agent — drives the bot submenu. */
     availableChannels: BotChannelCandidate[];
-    /** True when a cron task is the running owner — delete must be blocked. */
-    cronProtected: boolean;
+    /** True while a Goal or user scheduler owns this session. */
+    schedulerProtected: boolean;
     /** Current favorite state from sessionMeta. */
     favorite: boolean;
     /** False when the title editor isn't mounted (placeholder titles like
@@ -107,7 +107,7 @@ export default function SessionMenuButton({
     workspacePath,
     boundChannel,
     availableChannels,
-    cronProtected,
+    schedulerProtected,
     favorite,
     canRename,
     onOpenRename,
@@ -216,10 +216,10 @@ export default function SessionMenuButton({
     }, [onShowContext, closeAll]);
 
     const handleDeleteClick = useCallback(() => {
-        if (cronProtected) return;
+        if (schedulerProtected) return;
         closeAll();
         setPendingDelete(true);
-    }, [cronProtected, closeAll]);
+    }, [schedulerProtected, closeAll]);
 
     const handleConfirmDelete = useCallback(async () => {
         setPendingDelete(false);
@@ -392,7 +392,7 @@ export default function SessionMenuButton({
                  *  disabled button, so when the row is cron-protected we
                  *  put the tooltip on a wrapping span (which still receives
                  *  hover) and keep the button purely disabled. */}
-                {cronProtected ? (
+                {schedulerProtected ? (
                     <span className="block" title={t('shell.sessionMenu.cronDeleteTooltip')}>
                         <MenuItem
                             icon={<Trash2 className="h-3.5 w-3.5" />}

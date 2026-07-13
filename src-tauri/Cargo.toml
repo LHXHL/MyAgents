@@ -1,18 +1,16 @@
 [package]
 name = "myagents"
-version = "0.2.49"
+version = "0.3.0"
 description = "MyAgents - Desktop Claude Code for everyone"
 authors = ["MyAgents Team <myagents.io@gmail.com>"]
 license = "Apache-2.0"
 repository = "https://github.com/hAcKlyc/MyAgents"
 homepage = "https://myagents.io"
 edition = "2021"
-# MSRV note: 1.81 documents `std::fs::rename` as atomic replace-on-existing
-# across all platforms (Windows uses MoveFileExW(REPLACE_EXISTING) under the
-# hood). Pre-1.81 toolchains keep the historical Windows behavior of failing
-# when the destination exists, which corrupts every tmp+rename path in this
-# crate (config.json, cron tasks, Task Center storage, IM bot state, …).
-# Tauri 2.9 already requires ≥ 1.78, so this bump only formalizes reality.
+# MSRV note: Tauri 2.9 already requires ≥ 1.78. Keep 1.81 explicit so every
+# build uses the same modern std surface; Windows paths that must replace an
+# existing file use an explicit MoveFileExW(REPLACE_EXISTING) helper because
+# `std::fs::rename` does not provide portable replace semantics.
 rust-version = "1.81"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -24,6 +22,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2.5.3", features = [] }
 url = "2"
+serde_json = "1.0"
 
 [dependencies]
 serde_json = "1.0"
@@ -46,7 +45,7 @@ tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-global-shortcut = "2"
-reqwest = { version = "0.13.1", features = ["stream", "json", "blocking", "multipart", "socks"] }
+reqwest = { version = "0.13.1", features = ["stream", "json", "blocking", "multipart", "socks", "form"] }
 futures-util = "0.3.31"
 tokio = { version = "1.49.0", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 chrono = { version = "0.4", features = ["serde"] }
@@ -72,7 +71,7 @@ tantivy-jieba = "0.11"
 notify-debouncer-full = "0.6"
 sysinfo = { version = "0.33", default-features = false, features = ["system"] }
 trash = "5.2.3"
-image = { version = "0.25.10", default-features = false, features = ["png", "webp"] }
+image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 sha2 = "0.10"
 zip = { version = "2.4.2", default-features = false, features = ["deflate-zlib"] }
 
@@ -117,10 +116,16 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWi
 # - pid-liveness/start-time probes via PROCESS_QUERY_LIMITED_INFORMATION
 # - floating-ball tool-window styles, no-activate behavior, focus restoration
 # - wake-lock power requests below
+# - handle-relative workspace IO via NtCreateFile(ObjectAttributes.RootDirectory)
 # Minimal feature set — version 0.59 is already pulled transitively, so no new lock entry.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = [
+    "Wdk_Foundation",
+    "Wdk_Storage_FileSystem",
     "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
     "Win32_System_Threading",
     "Win32_UI_WindowsAndMessaging",
     # `wake_lock::windows::PlatformImpl` calls `PowerCreateRequest` +

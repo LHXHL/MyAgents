@@ -2,9 +2,28 @@
 
 ## 定位
 
-Cloud Space 是桌面端连接 MyAgents 官方/团队空间的客户端能力，目前仍处于开发中/半成品状态，不作为已发布用户能力写入 CHANGELOG 或 GitHub Release notes。
+Cloud Space 是桌面端连接 MyAgents 官方/团队空间的客户端能力。0.3.0 起作为实验室功能随客户端发布，默认关闭，用户需在「设置 → 关于&反馈 → 实验室」显式开启；它应写入 CHANGELOG 与 GitHub Release notes，但不视为默认稳定入口。
 
 它不是 AI Runtime，也不属于 Session Sidecar：登录、Issue/Skill/Agent 注册、附件上传下载、IssueDelivery 拉取都由 Rust Tauri command 拥有；React 只负责 UI 编排；CLI 通过 management API 暴露 issue/attachment/claim 子集给 Agent 自动化使用。
+
+## 文档归属与兼容基线
+
+Cloud Space 横跨两个独立版本、独立发布的仓库，不能把其中一边的文档当成全部真相：
+
+| 范围 | 权威位置 |
+| --- | --- |
+| Desktop build gate、Rust HTTP/session、`device_id`、本地 token/状态、connector、UI、CLI、Task/Session 执行 | `hAcKlyc/MyAgents`：本文 + `specs/ARCHITECTURE.md`「MyAgents Cloud Space」 |
+| Cloud API、身份/权限、领域模型、D1/R2/KV ownership、Account plan/quota、运营与发布 | `hAcKlyc/MyAgents_space`：`specs/ARCHITECTURE.md` + `specs/RELEASE.md` |
+
+本地平级 checkout 中，云端架构文档地址是 `../MyAgents_space/specs/ARCHITECTURE.md`。截至 2026-07-14，最近一次联合校验基线为：
+
+- Desktop：`v0.3.0` 发布线；本节覆盖评论附件、本地 draft inspect、显式多 Space CLI 与自动 User/Registered Agent actor resolver。上一 Desktop release tag 为 `v0.2.49`。
+- Cloud Production：`MyAgents_space v0.1.4` tag 与 `origin/main` 均指向 `97ac3b89c11b2dedef2448475d852809c533e858`，Production `/health` 返回 `main-97ac3b89c11b2dedef2448475d852809c533e858`。该版本包含 comment-owned attachments、JSON/multipart 原子 create/comment/complete、direct top attachment update/delivery、typed assignee candidates、Space context assertion、role-downgrade revoke、Production/Dev 环境隔离，以及 account plan / per-Space entitlement / nullable quota limits。
+- Cloud Dev：`origin/dev` 同样为 `97ac3b89c11b2dedef2448475d852809c533e858`，Dev `/health` 返回 `dev-97ac3b89c11b2dedef2448475d852809c533e858`，当前与 Production commit 对齐。上述 SHA 是日期化校验记录，实时部署真相仍以对应环境 `/health` 返回的 Git tag 与 Worker Version ID 为准。
+
+发布兼容：Cloud 先 additive 部署；预发布阶段确定的协议门槛保持为 `X-MyAgents-Client-Version < 0.2.50`，低于门槛时只返回旧 subscription projection，assignment/follow-up 保持云端 pending，不得降级为 subscription。首个公开消费 `deliveryKind/cloudInstruction/trigger/assignee` 的 Desktop 版本是 `0.3.0`。旧 pending subscription 缺 `deliveryKind` 时，客户端只走显式 legacy fallback；字段存在但 kind 未知时 fail closed 并留待升级处理。
+
+这个组合是兼容记录，不是版本绑定。当前 API 没有 URL version prefix；双方通过 additive response、缺省字段 fallback 和 rollout 兼容旧调用方。修改 API 字段、错误码、状态机、permission、poll/presence 或兼容策略时，必须同步更新 Space serializer/tests/架构文档与本仓 types/wrapper/tests/本文。只改 Desktop UI 或本地执行且云端契约不变时，不要把客户端细节复制进云端文档；只改 Worker 内部实现且无契约变化时也不要求改本文。
 
 ## 构建门控
 
@@ -12,7 +31,9 @@ Space 是 build-time capability：
 
 - `src-tauri/build.rs` 读取环境变量或仓库根 `.env`，仅转发 `MYAGENTS_SPACE_*` 白名单。
 - `MYAGENTS_SPACE_ENABLED=true` 时必须提供 HTTPS 且不带 path/credential 的 `MYAGENTS_SPACE_BASE_URL`；build/runtime 校验会移除 query/fragment 并注入规范化后的 origin。
-- `cmd_space_get_capability` 返回 `{available, baseUrl, publicClientId, reason}`，只代表构建能力；前端还必须叠加 `config.teamSpaceEnabled === true`（默认关闭）才展示开发中的 Team Space 入口。
+- debug 构建可以额外烘焙 `MYAGENTS_SPACE_DEV_BASE_URL`。release profile 会在 `build.rs` 中无条件丢弃 Dev origin，因此生产二进制不能暴露 Dev 服务开关。
+- `cmd_space_get_capability` 返回 `{available, baseUrl, publicClientId, reason, environments, activeEnvironment}`，只代表构建能力与 Rust 当前选中的 build-time origin；前端还必须叠加 `config.teamSpaceEnabled === true`（默认关闭）才展示实验室 Team Space 入口。
+- `config.spaceEnvironment` 只能写入烘焙的 `production` / `dev` origin，默认 `production`。旧值 `staging` 只作为读取兼容 alias：debug 构建包含 Dev origin 时映射到 `dev`，release 构建仍回落 Production。Renderer 不提供自由 URL 输入；所有云端请求仍从 Rust `space_build_capability()` / `space_base_url()` 单一咽喉读取当前 origin。
 - 缺少能力时，Space UI 不应降级为硬编码 URL；所有云端请求必须经 Rust 能力检查。
 
 ### Dev/Test mock data mode
@@ -32,7 +53,23 @@ Phase 2 为本地验证和自动化测试新增了显式 mock mode：
 | Rust         | `src-tauri/src/space_cloud.rs`                                | Space session、HTTP proxy、registered agents、IssueDelivery poll/process、claim wrapper、Skill zip、附件上传下载                                                                                                                                                                                                                   |
 | Renderer API | `src/renderer/api/spaceCloud.ts`                              | Tauri invoke typed wrapper；不直接 `fetch` Space 服务                                                                                                                                                                                                                                                                              |
 | Renderer UI  | `src/renderer/pages/Space.tsx` + `src/renderer/pages/space/*` | Space shell 与 Issues / Skills / Agents 三个 workspace，登录轮询、创建/评论/Goal 订阅、Skill 安装、本地缓存                                                                                                                                                                                                                        |
-| CLI          | `src/cli/myagents.ts` + Management API                        | Agent 可调用的 Space issue list/view/comment/claim/ignore/complete/cancel、claim local-task 与 attachment download 操作；`space issue claim --create-attached` 负责编排 claim -> attached Task -> local task ref，`space issue complete --taskId ... --body-file ...` 负责编排 result comment -> cloud complete -> local task done |
+| CLI          | `src/cli/myagents.ts` + Sidecar Admin API + Rust Management API | 每个业务命令显式 `--space <slug>`；Sidecar 从当前 project 补 stable workspace id，Rust 单点解析 User/Registered Agent actor 和 token。支持 list/whoami/assignee、Issue create/read/comment/claim/complete、top attachment add/download；CLI 不接受显式 actor/token |
+
+## Cloud Worker 容量与一致性不变量
+
+`MyAgents_space` 是 Cloud Space 的服务端 counterpart；桌面端只消费它暴露的 API，不在客户端重建服务端策略。
+
+- D1 访问统一走 `src/services/db.ts::db(...)` / `createPrimaryDb(...)` facade。请求路径使用 D1 Sessions API 维护 bookmark，并通过 `x-d1-bookmark` header 回传；`first/all/raw` 只对瞬态读错误做一次短重试，`run/batch` 写路径不做自动重试，避免重复写入。
+- Worker `wrangler.jsonc` 开启 Smart Placement、Observability、Rate Limiting binding 与 scheduled prune。`src/services/prune.ts` 定期清理已结束的 `issue_deliveries` 以及历史 `space_events` / `issue_updates`；保留期与批大小由 `SPACE_DELIVERY_RETENTION_DAYS`、`SPACE_EVENT_RETENTION_DAYS`、`SPACE_PRUNE_BATCH_SIZE`、`SPACE_PRUNE_MAX_BATCHES` 控制。
+- Desktop OAuth handoff 必须由 D1 `desktop_login_sessions` 拥有，不能用 Cloudflare KV。浏览器 callback 写入 `done` 后，桌面端 poll 需要跨浏览器/客户端边缘节点立即读到同一状态；KV 的最终一致传播窗口会把“浏览器已成功”放大成约 1 分钟的客户端等待。
+- Space 业务统计事实由 `MyAgents_space` 拥有：只读 admin endpoints 位于 `/api/admin/dashboard/*`，通过 `SPACE_ADMIN_API_KEY` bearer secret 做 Worker-to-Worker 鉴权，供 `MyAgents_web` admin proxy 消费。`MyAgents_web` 不直接绑定或查询 Space D1；它只负责 Web admin auth、缓存、UI 以及客户端 analytics `space_*` 事件查询。
+- Space 运营写能力位于 `/api/admin/operations/*`，使用独立 `SPACE_OPERATIONS_API_KEY`，由 `myagents.io/admin` 的同源 server proxy 注入可信 operator email。账号 Pro grant/regrant/extend/revoke、独立 Space entitlement set/remove、只读权益矩阵与 append-only audit 都由 Space Worker 拥有；Website 不复制会员或 quota 判定。
+- `agg_space_global_day` 是 Space 全局规模趋势 snapshot 表，由 scheduled cron 写入；`GET /api/admin/dashboard/overview` 必须保持读路径，不在请求中 materialize/重写历史 snapshot。当天 current metrics 可作为 response 内存 partial point 合并，不能把读请求变成 rollup owner。
+- delivery fanout/backfill 只能先用固定查询选出订阅/Issue，再由 JS 生成 delivery id 后 batch `INSERT OR IGNORE`。不要为了每个订阅或每个 Issue 发散成 N 次查询，也不要把 delivery id 生成塞回 SQL 表达式。
+- `/api/registered-agents/me/deliveries` 是读路径：根据 token 识别 registered agent，读取 pending delivery，附带 `poll` 提示；它不更新 device `last_seen`，也不在 poll 中写入心跳。
+- connector 在线状态使用独立 `POST /api/registered-agents/me/device-presence`。服务端只能从 active registered-agent token 派生 owner/device，body 不接受自报身份；touch 更新 `user_devices.connector_last_seen_at/connector_online_until`，不写 `space_events`。
+- `src/services/pollPolicy.ts` 是服务端 poll 策略数字的唯一 owner。客户端传 `emptyStreak`，服务端根据 returned count、空轮询次数、active claim 与可选 `SPACE_POLL_*` 环境变量返回 `poll.nextAfterSeconds` / `reason`。客户端只负责 clamp、jitter、错误退避与执行，不复制策略阈值。
+- active claim 快路径依赖 `issue_claims(actor_type, actor_id, status)` 索引；如果 claim 查询语义变化，必须同步检查迁移与 poll policy。
 
 ## Device / Registered Agent 身份模型
 
@@ -45,8 +82,9 @@ Space 不创建第二套“云端 device id”。本地端点身份的唯一值�
 云端需要一个 `user_devices` 概念/表，主键语义为 `(userId, deviceId)`：
 
 - 必备字段：`userId`、`deviceId`。
-- 设备摘要字段：`deviceName`、`platform`、`osVersion`、`appVersion`、`status`、`lastSeenAt`。
-- 登录/授权完成后，客户端尝试调用 `/api/devices/upsert` 写入当前 `user_devices` 记录；为兼容桌面端与云端部署顺序，该调用失败不阻塞 Space 登录。
+- 设备摘要字段：`deviceName`、`platform`、`osVersion`、`appVersion`、`status`、`lastSeenAt`。其中普通 `lastSeenAt` 只表示账号/设备活动，不得解释为 connector 在线。
+- connector presence 字段：`connectorLastSeenAt`、`connectorOnlineUntil`。Registered Agent projection 只返回服务端判定的 `presence: online|offline`、`lastOnlineAt`、`onlineUntil`；Renderer 不复制 lease 数字或自行用时钟重算 online。
+- 登录/授权完成后，客户端尝试调用 `/api/devices/upsert` 写入当前 `user_devices` 记录；为兼容桌面端与云端部署顺序，该调用失败不阻塞 Space 登录。客户端 auth poll / session read 路径必须把该 upsert 作为后台 best-effort，不能同步 await 到 UI 登录完成之前。
 - `cmd_space_register_agent` / `cmd_space_update_registered_agent` payload 同时携带 `deviceId`、`deviceName`、`platform`、`osVersion`、`appVersion`，服务端必须在 registered-agent mutation 中同步维护 `user_devices`，不能只依赖 bootstrap upsert。
 
 Registered Agent 是“执行实体”，不是设备本身：
@@ -54,6 +92,7 @@ Registered Agent 是“执行实体”，不是设备本身：
 - 归属字段：`ownerUserId` + `deviceId`。同一设备可以为同一 user 在不同 Space / workspace 上登记多个 Registered Agent。
 - 本地工作区绑定字段：`localWorkspaceId`、`localAgentId`、`workspacePath`、`workspaceLabel`。这些字段描述的是该设备上的本地 Agent 工作区，只能在登记它的那台设备上修改。
 - 展示字段：registered-agent list/detail 必须返回 `deviceId` 与 `device` 摘要，renderer 用它展示“本地电脑 / 平台 / 系统版本 / 客户端版本 / last seen”。
+- 在线 owner 是维护 harness 的 MyAgents 客户端/设备，不是单个 Agent 工作区。同一 owner+device 下的 active Agent 继承同一 presence；disabled 始终优先显示“已停用”。
 - Local 判定只能用 `ownerUserId === current session user id && deviceId === current ~/.myagents/device_id`。禁止用 `clientId`、hostname、是否存在本地缓存记录来推断 local。
 
 Registered Agent 执行请求是 token-only capability：
@@ -65,13 +104,31 @@ Registered Agent 执行请求是 token-only capability：
 
 ## 本地状态
 
-Space 本地状态保存在 `~/.myagents/space/` 下：
+Space 本地状态由 Rust `space_data_dir()` 按当前环境选择：
 
-- `session.json` — 云端 session token 与用户/space/membership 摘要；Rust 对外只返回 redacted public view。
+- production 保持兼容路径 `~/.myagents/space/{session.json,registered_agents.json,delivery_log.json}`。
+- Dev 使用 `~/.myagents/space/dev/{session.json,registered_agents.json,delivery_log.json}`；旧 `space/staging` 数据不自动复制或删除，用户在全新 Dev 环境重新登录。
+- `session.json` — 云端 session token 与用户/accountPlan/space/membership 摘要；Rust 对外只返回 redacted public view。
 - `registered_agents.json` — 本机注册到 Space 的 Agent 映射，包含本地 workspace path、`ownerUserId`、`deviceId`、设备摘要、订阅状态与云端 token。
 - `delivery_log.json` — 已投递 IssueDelivery 到本地 session 的映射，用于幂等与 delivered 标记。
 
 这些文件属于桌面客户端状态，不进入 SessionStore，也不由 Sidecar 管理。
+
+全局 Skill 安装路径不属于 Space 服务环境状态，始终是 `~/.myagents/skills`；不能从环境化后的 `space_data_dir()` 反推。
+
+Renderer `spaceStore` 的缓存身份必须至少包含服务 origin。production/Dev 都可能使用 `official` slug，切换环境时即使 slug 不变也必须清掉 issue/skill/agent/event 缓存，避免旧环境数据被拿来驱动新环境 API。
+
+Renderer 加入 Space 时先以本地 session 的已加入列表按规范化 slug 去重；命中后不发送 join mutation，直接提示并切换到目标 Space 的 Issues。未命中才请求 Cloud：加入期间保留当前页面，只在加入弹窗内展示 loading；`joined` 后把 mutation 返回的 Space / membership 先写入本地列表投影，再复用同一导航路径进入默认 Issues，`pending` 只提示申请已提交。
+
+Space 切换属于 Renderer 导航状态，不是 Cloud mutation。点击已加入 Space 的子导航时，必须在第一个 `await` 前用 `session.spaces` 已有的 Space / membership 同步提交 active Space、目标 tab 与目标页 loading；不得等待 `/api/me` 或 Space detail bootstrap 后才高亮。切换会清掉当前 Space 的非隔离数据并由目标 workspace 自己请求，应用外壳和 session 始终保留，不进入全页 boot loading。`lastActiveSpaceId` 仅作为后台持久化副作用串行落盘，快速连续切换以最后一次意图为准；持久化或 collection 请求失败不得把用户回滚到旧 Space。Rust 把 active Space 的 read-modify-write 放在同一文件锁内，任何较早开始的 Cloud session refresh 在提交时都必须保留磁盘上更新的 `lastActiveSpaceId`，禁止迟到 `/api/me` 覆盖新导航。Renderer/Rust 之间的 active-Space 写入必须携带当前 session 的 opaque binding 并在锁内核对，避免退出后已发出的旧请求污染同源新账号；logout 则先同步清空 Renderer 状态与队列、锁内删除本地 session，再使用删除前的 token 尝试远端注销，远端延迟或失败不得恢复本地身份。
+
+Space 头像是产品/组织身份，所有尺寸统一使用 APP icon 式圆角矩形；User 与 Registered Agent 是主体身份，继续使用圆形头像。两类形态不得混用。
+
+Space 侧栏中的多个 Space 是同级导航实体，必须按服务端列表顺序渲染为一级手风琴项；每项都可在本地展开 Issues / Goals / Skills，以及按该 Space membership 权限展示的 Settings，且同时最多展开一个。展开/折叠只修改 Renderer UI 状态，不请求接口，也不改变当前 Space；只有点击某个子导航时才原子切换到对应 Space 与页面。其它 Space 不得嵌入当前 Space 的展开容器伪装成子级。
+
+Space 页面各 workspace 的数据加载必须显式以 active Space identity 为依赖，不能依赖 boot loading→ready 的视觉状态跃迁来间接触发；静默切换保持页面可见时，目标 Space 的 Issues / Goals / Skills / Settings 仍必须主动加载并收口自己的 loading 状态。各 collection 的 freshness 必须由该 collection 在当前 active Space 投影内独立持有；不得复用 session/bootstrap 的刷新时间，否则切换时清空 collection 后会被旧 owner 的 boot freshness 错误拦截。
+
+Space 侧栏的加入方式副标题必须通过 i18n 显式映射领域值：`open_join` 显示“开放加入”，`approval_required` 显示“需审核加入”；未知值显示本地化兜底文案，禁止把原始技术 token 转空格后直接暴露给用户。
 
 Legacy 兼容规则：
 
@@ -81,21 +138,24 @@ Legacy 兼容规则：
 
 ## 网络与安全
 
-- 所有 Space HTTP 请求由 Rust `reqwest` 发起，并带 build-time public client id header；renderer 不持有 session token。
+- 所有 Space HTTP 请求由 Rust `reqwest` 发起；renderer 不持有 session token。认证、JSON、multipart、raw download、generic renderer proxy、delivery poll/ACK/presence 全部复用 `with_space_client_context_headers`，统一带 public client id、客户端版本、device id、platform、OS version、`Accept-Language` 与 `User-Agent`。设备事实来自进程内缓存的 `current_device_identity()`，不能由各调用方自行拼接。
 - 用户可控 workspace 路径进入 Rust 后必须通过 `validate_workspace_root`。
-- 写入 workspace 的附件下载走 `resolve_inside_workspace`，只能落在目标 workspace 内。
+- 写入 workspace 的附件下载由 Rust 流式累计限制 25MB，完整接收成功后才提交文件；父目录逐段 no-follow、临时文件 exclusive create。Unix 用目录句柄内 `openat/renameat`；Windows 用 `NtCreateFile(RootDirectory=parentHandle, FILE_OPEN_REPARSE_POINT)` 逐级相对打开/创建目录与 temp，最终通过带同一 `RootDirectory` 的 `SetFileInformationByHandle(FileRenameInfo)` 覆盖目标。因此 namespace 被替换或目录原地变成 junction 都不能重定向 IO，重复下载仍可安全覆盖。
 - Skill zip 安装有总大小、单文件大小、entry 数限制，并防 Zip-Slip；安装目标只允许 global 或当前 project。
-- 附件上传有单次数量和大小限制，读取前校验路径与文件大小。
+- GUI 选择附件先调用 Rust `cmd_space_inspect_attachment_drafts`，返回本地 `{path,name,sizeBytes,mimeType}`；评论/创建草稿不预上传。提交时 Rust 再用同一底层 bounded/no-follow reader 读取：Windows workspace 路径逐级用 parent handle 相对解析，leaf 以 `FILE_OPEN_REPARSE_POINT` 打开并拒绝 reparse，避免 inspect/submit 间、validate/open 间的替换或原地 reparse；显式本地文件也复用统一 leaf opener。Cloud 只在 JSON 或 multipart 整体成功时绑定正文/评论。
+- CLI 附件只允许当前 workspace 内普通文件；数量先于读取限制为 5，单文件读取过程限制 25MB。complete 的 operation key 由 Rust 基于实际 multipart bytes 派生，Node 不预读/预哈希文件。
 
 ## 用户 Profile / 头像
 
 登录用户资料是云端 `users` 的 account-level 数据；本地 `~/.myagents/space/session.json` 只缓存 redacted 摘要。桌面端更新昵称/头像必须走 `cmd_space_update_profile`，由 Rust 读取本地图片、做 symlink/大小/扩展名校验并 multipart 调用 Cloud Worker `/api/me/profile`。Renderer 只能通过 `src/renderer/api/spaceCloud.ts` wrapper 和 `spaceStore` 更新本地 UI 缓存，不能直接 fetch Worker 或持有 session token。
 
-Cloud Worker 用 `users.name_source` / `avatar_source` 区分 Google 默认资料与用户自定义资料：
+Cloud Worker 用 `users.name_source` / `avatar_source` 区分登录资料、MyAgents 预设头像和用户上传头像：
 
 - `name_source='google'` 时，Google 重登可以刷新 `users.name`；`name_source='user'` 时不得覆盖。
-- `avatar_source='google'` 时，Google 重登可以刷新 `users.avatar_url`；`avatar_source='r2'` 时不得覆盖。
-- 头像上传写入 `ASSETS` R2 bucket 的 `avatars/users/<userId>/<sha256>.<ext>`，并把 `users.avatar_url` 写成公开 R2 URL。
+- Google / OAuth `picture` 不进入产品头像展示体系；无用户上传时，Cloud Worker 持久化 `avatar_source='preset'` + `avatar_preset_id`，并在序列化时由 `R2_PUBLIC_BASE_URL` 投影成 `avatars/presets/{people|agents}/v1/<presetId>/{64|128|256}.webp`。
+- `avatar_source='r2'` 表示用户或 Registered Agent 在 MyAgents 内部上传的头像，Google 重登不得覆盖。
+- 用户头像上传写入 `ASSETS` R2 bucket 的 `avatars/users/<userId>/<sha256>.<ext>`；Registered Agent 头像上传写入 `avatars/registered-agents/<registeredAgentId>/<sha256>.<ext>` 并计入 Space storage quota。
+- 头像 legacy 修复不能放在 `getAuth` / `getAgentAuth` / poll/list 读路径里做 lazy mutation；迁移、OAuth upsert、Agent 注册/头像更新是头像字段写入 owner，读路径只做 R2 URL 投影。
 
 头像 URL 明确不走 Worker 附件下载 route。部署侧必须给 `myagents-space-assets` / `ASSETS` bucket 启用 public `r2.dev` URL 或绑定自定义域名，并在 `MyAgents_space` Worker 环境配置 `R2_PUBLIC_BASE_URL`。缺少该配置时头像上传应 fail closed；不要回退到 Worker 代理图片流量。
 
@@ -103,27 +163,39 @@ Cloud Worker 用 `users.name_source` / `avatar_source` 区分 Google 默认资�
 
 ## IssueDelivery / Claim 处理
 
-Registered Agent 可从 Space 拉取 IssueDelivery，并将其作为轻量通知注入到本地 AI session。Issue claim 在产品语义上是 Issue 的唯一经办人/接手人，不是一个带 `active/completed/cancelled` 生命周期的锁；生命周期由 Issue 自身的 `state` 表达。
+Registered Agent 从 Space 拉取 IssueDelivery，并将其作为轻量通知注入本地 AI session。`Issue.assignee` 是持久责任真相源，可以是真人、Registered Agent 或空，且独立于 Issue `state`；`issue_claims` 只记录 Agent/用户执行层的 operational claim 与本地 Task/Session 连接。完成/关闭保留 assignee，显式取消指派才会清空 assignee、取消 active claim、回到 `todo` 并重新按订阅规则发现。
 
 1. `cmd_space_register_agent` 在云端创建 registered agent，并写入本地映射。
-2. `cmd_space_poll_deliveries` / `cmd_space_process_deliveries_once` 拉取待处理 delivery。
-3. Rust 通过 session inbox 注入 `space.issue_delivery` metadata 和固定处理指令，写 `delivery_log.json`，再调用 `cmd_space_mark_delivery_delivered` 对云端确认。最终进入 AI session 的 user message 由 Rust 渲染为 `<system-reminder><myagents-space-issue><myagents-space-event ...>` 结构：`system-reminder` 隐藏内部 payload，`myagents-space-issue` 供前端展示 `Space issue` badge，`myagents-space-event` 内部拆成 `<issue-instruction>` / `<runtime-context>` / 一个或多个 `<issue>`。`<issue-instruction>` 是简版 skill，统一要求 Agent 使用 `myagents space issue` CLI；`<issue>` 只放事实数据，不重复 action 命令。`system-reminder` 的通用展示协议见 `system_reminder_protocol.md`。
-4. AI session 决定处理时调用 `myagents space issue claim <issueId> --deliveryId <deliveryId> --create-attached ...`。CLI 会先 claim，再创建 attached-session Task，再回写 `claim.localTaskId/localSessionId`；若本地 Task 创建或回写失败，CLI 立即调用 `cancel-claim` 让 Issue 回到 `todo`。
-5. AI session 完成执行时优先调用 `myagents space issue complete <issueId> --taskId <taskId> --body-file result.md --message "..."`，由 CLI 顺序完成 result comment、云端 Issue state 更新、本地 Task 状态更新。`complete` 不清空 claim；`done + claim` 表示该 Issue 已由该经办人处理完成。
+2. Rust 启动时调用 `start_space_connector()` 创建进程内 connector。connector 按本地 runnable registered agents 维护每个 agent 的 `next_due_at`、`empty_streak`、`last_interval_secs`；`cmd_space_wake_connector` 只是唤醒 connector，`cmd_space_process_deliveries_once` 仅保留为手动强制处理入口。
+3. Rust 严格解析 delivery snapshot，再通过 session inbox 注入 `space.issue_delivery`。最终 user message 仍由 Rust 渲染为 `<system-reminder><myagents-space-issue><myagents-space-event ...>`：`<cloud-issue-instruction>` 是创建 delivery 时固化的云端业务规则；`<local-execution-instruction>` 是当前客户端真实 CLI/workspace/Task 方法；`<trigger>` 与 Issue facts 一起放在对应 `<issue>` 内。Cloud/user 文本必须做长度约束和 XML escape。`system_reminder_protocol.md` 负责通用隐藏展示协议。
+4. subscription 只有 instruction id/text 相同才可 batch；assignment 永远单 Issue turn，并按 Agent 初始 session 策略选择；claim-followup 必须带 `targetSessionId` 并回到原 local Session。未知新 kind 不可猜成 subscription。
+5. AI 建立本地执行上下文时调用 `claim --create-attached`。Cloud 返回的 active claim 若已有 `localTaskId/localSessionId`，CLI 直接复用；否则 claim -> create attached Task -> bind。失败回滚必须看 claim `origin`：`self_claim` 带 claimed notification version 做 CAS，可撤回本次 assignee；`assignment_confirmation` 只撤 operational claim，绝不能清掉管理员指派。
+6. 完成命令把 `resultComment` 与稳定 `operationKey` 一次发送给 Cloud；Cloud 原子写结果评论、Issue done、claim completed、update/event/delivery。Cloud 成功后 CLI 才更新本地 Task，更新前先读 Task：已经 done 即成功，不发 `done -> done`。成功输出明确提醒不要再次调用 `task update-status`。
 
-Delivery 分两类：
+Delivery connector 的轮询节奏由云端提示 + 本地执行机制共同决定：
 
-- `subscription`：普通 Goal 订阅通知，用于让 Agent 发现 `todo` Issue。客户端按 Registered Agent 的 Issue 订阅策略选择 session：连续对话复用 `delivery_session_id`，新对话使用 `issue_session_ids[issueId]`。
-- `claim_followup`：已 claim Issue 的后续评论消息。云端必须携带 `targetSessionId = claim.localSessionId`，客户端必须优先投递到该 session，确保同一 Issue 的连续处理回到原本地上下文。
+- 每次 poll 带上当前 agent 的 `emptyStreak`。服务端返回 `poll.nextAfterSeconds` 与 `poll.reason`；老服务端缺少 `poll` 时客户端回退到 60s。
+- Rust 对服务端提示 clamp 到 30s-600s，并按 agent key 与 empty streak 加稳定 jitter；poll 失败时按上次间隔指数退避，最大 300s。
+- `cmd_space_wake_connector` 用于 Space 页面激活、registered agent 创建/更新等“可能有新工作”的边界。Renderer 不自己 poll/process delivery，也不持有 registered-agent token。
+- connector 读取当前 `baseUrl + user + device` 下全部 active 本地 Agent，不受 Renderer 当前选中 Space 限制；当前 Space 只属于导航/页面状态。每轮 delivery **GET 成功**即保留 poll-success 事实，后续 delivery 解析、session 注入或 ACK 失败不能把活跃客户端误判为离线。
+- 某设备组至少一次 poll 成功后，现有 connector owner 按 `(baseUrl, ownerUserId, deviceId)` 从组内选稳定 token，至多每 60 秒尝试一次 device-presence touch。失败尝试同样进入 60 秒节流，并在下一轮优先换用组内其他 token；一个设备有多个 Agent 也只写一次。不新增 loop，delivery GET 继续纯读。
 
-评论同步规则：
+客户端模型区分三种 Delivery mode：
 
-- 如果 Issue 的经办人是 Registered Agent，且评论作者不是该经办人，则生成 `claim_followup` delivery。
-- 经办人自己评论或完成 Issue 时，不把这条评论回推给自己，避免自循环。
-- 没有 claim 经办人时，评论更新回到普通 subscription delivery 规则。
-- `cancel-claim` 清空 Issue 经办人，并让 Issue 回到 `todo`；后续更新不再投给原经办人。
+- `subscription`：仅在 assignee 为空且 Goal path + `stateFilter` 命中时广播，是发现通知，不授予责任。
+- `assignment`：人工创建/改派给 Registered Agent 时定向生成，无视该 Agent 是否订阅 Goal；不能与 subscription 混批。
+- `claim_followup`：assignee Agent 责任内由其它身份产生的后续 update，定向 `claim.localSessionId`；Agent 自己触发的 update 不回投。
+
+delivery 只是投送事实，不是 claim/assignee；多个 Agent 可以感知同一未指派 Issue，但只有一个 assignee。用户主动指派真人时不向 Agent 发送；主动指派 Agent 时只给该 Agent。delivery 被客户端成功注入并 ACK 后云端从 pending 消费队列移除，历史行仍保留 delivered 状态用于审计。
 
 该链路保持“云端关注/认领、客户端执行”的边界：云端不直接访问本地文件系统或 Sidecar；本地执行仍走 MyAgents 的 Task/Session 体系。兼容命令 `cmd_space_poll_dispatches` / `cmd_space_process_dispatches_once` 仅作为旧调用方别名保留，语义已映射到 delivery。
+
+## Issue 详情任务卡与评论窗口
+
+- 详情页顶部元信息只保留 Issue 编号、创建者与创建时间。正文/附件之后、评论之前是一张两列两行任务卡，第一行展示创建人、Goal，第二行展示状态、经办人；Owner/Admin 可在卡内改 Goal、状态和任意有效经办人。
+- 经办人 picker 的默认列表是 active Registered Agents，其后是当前 Space/user 本机最近选择过的真人；搜索时统一搜索 Agent + Space members。Member 只暴露认领自己/释放自己，Cloud 权限仍是最终边界。
+- picker 当前选择行右侧 X 经过 ConfirmDialog 执行“取消指派”复合动作。详情值区域点击整个人名打开 picker，Agent tag 在这里不承担 owner tooltip；创建者和评论作者是只读身份，灰色 `Agent` tag 可点击显示 Agent owner 的 Space 名称。
+- Issue detail 固定返回最新 5 条评论且按时间正序展示。更早评论通过 `GET /api/issues/:id/comments?cursor=...&limit=20` prepend，按 comment id 去重并补偿外层 scroll height 保持阅读锚点。delivery trigger 指定评论时，CLI 用 `space issue comment get <issueId> <commentId>` 精确读取，不扫描分页。
 
 ## Issue 编号模型
 
@@ -131,10 +203,29 @@ Space Issue 的用户可见编号由云端拥有，不从 opaque `issue.id` 推�
 
 所有 issue list/detail、IssueDelivery 和 mock 数据都必须携带该编号。Renderer 展示 `#<number>` 时只消费 API 返回的 `number` / 兼容字段 `issueNumber`；Rust delivery 注入和 attached task 命名也使用该编号，缺失时只能降级为内部 `issueId`，不能自行解析 id 后缀。
 
+## Issue 关系筛选与最近更新
+
+- `GET /api/spaces/:space/issues?related=me` 是服务端行为关系筛选，与 state/goal/subtree/search/humanOnly 做 AND，并继续使用 `updated_at DESC, id DESC` cursor 分页。
+- “与我相关”覆盖当前用户或其拥有的任一 Registered Agent 创建、评论、曾 claim 的 Issue；claim completed/cancelled、Agent disabled/revoked 都不抹除历史关系。
+- Renderer 必须把 `related` 放进 query cache key，并在当前 Tab 内按 Space ID 保存 toggle，避免切换 Space 后串值。新 query 首次请求期间使用 keep-previous-data；失败时保留最近成功列表并显示 inline error/retry，成功空结果后才能进入空态。
+- Issue cursor 页由基础 query cache 持有；UI 用“加载更多”把 `nextCursor` 页追加并按 ID 去重，不得只展示首个 50 条。Issue/Skill 集合展示 `updatedAt`；本机 mutation 可立即按 updatedAt 重排。event cursor 收到 Issue / 评论 / Goal / delivery 远端更新时，Renderer 对当前筛选 query 强制 silent revalidate：请求期间保留已有列表，成功后原子替换并按最新 `updatedAt` 顺序展示，失败仍保留最近成功数据并暴露 inline error/retry。远端 detail revalidate 只更新 detail cache，不得直接 patch 列表行或提前重排。
+
+## 账号会员与 Space quota
+
+- Pro 是 account-level 有效期会员；Space 仍是 member/open issue/skill/registered-agent/storage 的 quota 作用域。`billingOwnerUserId` 把账号的有效权益动态投影到该账号全部没有独立 override 的 owned Spaces，加入他人的 Space 不受当前账号会员影响。Cloud 不把 Pro 冗余写进某一个“最后创建”的 Space。
+- 官方或特殊 Space 可由 Operations 持有独立 `entitlement { source, key, displayName, expiresAt, version }` 与五项 authoritative limits，不再以 `quotaBypassed` 形成展示/执行双轨。每个 Space-scoped limit 都是 `number | null`：`null` 明确表示不限制，`undefined` 只表示旧 Cloud/缺字段，不能当成 unlimited。
+- `/api/me` / Desktop `SpaceSession` 返回 `accountPlan { effectiveTier, evaluatedAt, membership }`；Space projection 返回 `effectivePlanTier`、`planExpiresAt`、`entitlement`、`limits`。Desktop `0.3.0` 消费 nullable limits 和 Cloud 展示名；Cloud 兼容判定仍使用预发布阶段确定的 `>=0.2.50` 协议门槛，对更旧/无版本客户端继续投影可解析的 Free 数字且不下发 entitlement，避免滚动发布期间旧类型崩溃。
+- Settings 的 Plan 与“SPACE 资源 · … 套餐”标题都优先使用 `entitlement.displayName`；有限值显示本地化 `usage / limit`，`null` 显示 `usage / 不限制`（英文 `Unlimited`），且无限资源不得触发 over-limit 或禁用 Members/Agents 操作。期限优先使用 `entitlement.expiresAt`；独立 entitlement 的 null 期限不能误回退到 owner 账号 Pro 期限。
+- 到期判定严格为 `[startsAt, expiresAt)`，无需 cron。到期/撤销后 resolver 立即回到 Free；存量仍可读，只有超额资源的正增量 mutation 被拒绝，删除/归档/释放额度始终允许。
+- `space.plan_changed` 是普通 Space cursor event：当前 Space 收到后失效 session/overview 并 silent revalidate。Overview 的 `limits` 以当前 Space session projection 为单一权威，members payload 只补 usage/兼容旧服务，不能用旧快照遮住 plan event 的新额度。
+- 账户菜单打开且 `accountPlan.evaluatedAt` 超过 60 秒未校验、Pro 到期 timer、App 恢复前台也会补刷新；到期 timer 用服务端 `evaluatedAt → expiresAt` 的相对时长规避本机时钟偏差，并按同一 membership version/expiry 限制重试，不能形成 refresh storm。不新建常驻会员 poll。
+
 ## Agents UI 约束
 
 - Agents 列表是双列卡片；单个 Agent 也保持半宽，布局宽度边界与 Skills 列表一致。
-- 卡片只展示注意力关键项：Agent 名称 + 状态、本地电脑、工作区 Path、订阅目标。没有目标时展示“暂未设定目标”。
+- 卡片只展示注意力关键项：Agent 名称 + `在线/离线/已停用/连接中`、最后在线、本地电脑、工作区 Path、订阅目标。`active` 是管理态，绝不能直接渲染为绿色 online；普通 device lastSeen 与配置 updatedAt 也不能回退成在线时间。
+- active online、active offline、disabled 是首载/手动刷新/重新进入 Agent 页面时的排序组；60 秒 presence revalidate 与 App visibility resume 都只原位更新 badge，不在页面停留期间换位。
+- 用户文案统一为“添加本机 Agent 工作区”；registered agent 只保留在技术说明和字段名称中。
 - 点击卡片打开 overlay 详情，不跳页。详情按“设备信息 / 工作区信息 / 派发设置 / 登记信息”分组。
 - 编辑弹窗中的“本地 Agent 工作区”必须与登记弹窗使用同一工作区选择交互；但只有 current local Agent (`ownerUserId + deviceId` 命中当前端点) 可修改。远端设备登记的 Agent 工作区字段置灰，只能修改名称、订阅目标、订阅范围、订阅执行策略。
 - `clientId` 是 OAuth public client/build 配置，不是设备标识，不应出现在卡片关键位。

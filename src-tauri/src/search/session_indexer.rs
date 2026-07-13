@@ -9,6 +9,7 @@ use std::sync::Mutex as StdMutex;
 use crate::perf_trace::{elapsed_ms, emit_perf_trace, trace_start, PerfTrace, PerfTraceName};
 use crate::ulog_warn;
 use crate::utils::bom::strip_bom;
+use crate::utils::system_reminder::strip_leading_system_reminder;
 
 use tantivy::collector::TopDocs;
 use tantivy::query::QueryParser;
@@ -18,9 +19,6 @@ use super::schema::{self, SessionFields, SCHEMA_VERSION};
 use super::searcher::{SessionSearchHit, SessionSearchResult};
 use super::tokenizer;
 use super::util::{byte_to_utf16, ceil_char_boundary, floor_char_boundary};
-
-const SYSTEM_REMINDER_OPEN: &str = "<system-reminder>";
-const SYSTEM_REMINDER_CLOSE: &str = "</system-reminder>";
 
 /// Manages the Tantivy index for session history search.
 ///
@@ -935,7 +933,7 @@ fn extract_text_content(msg: &serde_json::Value) -> String {
         }
         // Plain user message string. Hidden system-reminder payload is model
         // context, not user-visible/searchable history.
-        return strip_leading_system_reminder_for_search(s);
+        return strip_leading_system_reminder(s);
     }
 
     // Legacy / raw array content.
@@ -949,20 +947,6 @@ fn extract_text_content(msg: &serde_json::Value) -> String {
     }
 
     String::new()
-}
-
-fn strip_leading_system_reminder_for_search(raw: &str) -> String {
-    let text = raw.trim_start();
-    if !text.starts_with(SYSTEM_REMINDER_OPEN) {
-        return raw.to_string();
-    }
-
-    let Some(close_idx) = text.find(SYSTEM_REMINDER_CLOSE) else {
-        return String::new();
-    };
-    text[close_idx + SYSTEM_REMINDER_CLOSE.len()..]
-        .trim()
-        .to_string()
 }
 
 /// Get a text field value from a Tantivy document.

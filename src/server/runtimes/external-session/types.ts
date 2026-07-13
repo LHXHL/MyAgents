@@ -9,6 +9,11 @@ import type { MessageUsage, TurnAnalyticsSource } from '../../types/session';
 import type { SystemInitInfo } from '../../../shared/types/system';
 import type { ToolDisplayPayload } from '../../../shared/toolDisplay/filePatch';
 import type { SessionOrigin } from '../../../shared/session-origin';
+import type {
+  DispatchGuard,
+  TurnOwner,
+  TurnTerminalObserver,
+} from '../../session-core/turn-queue';
 
 export interface PersistContentBlock {
   type: 'text' | 'tool_use' | 'thinking';
@@ -99,6 +104,13 @@ export interface ExternalConfigApplyResult {
   error?: string;
 }
 
+export type ExternalSendResult = {
+  queued: boolean;
+  error?: string;
+  /** The runtime may have consumed the turn and its process could not be stopped. */
+  terminationUnconfirmed?: boolean;
+};
+
 export interface ExternalQueuedMessageOperation {
   kind: 'message';
   queueId: string;
@@ -106,6 +118,8 @@ export interface ExternalQueuedMessageOperation {
   images?: ImagePayload[];
   context: ExternalSendContext;
   runtimeConfig: ExternalRuntimeConfigSnapshot;
+  dispatchAcceptance: Promise<ExternalSendResult>;
+  settleDispatchAcceptance: (result: ExternalSendResult) => void;
 }
 
 export interface ExternalQueuedConfigOperation {
@@ -157,6 +171,11 @@ export interface ExternalSendContext {
   metadataBirthPending?: boolean;
   /** PRD 0.2.18 Session Inbox metadata for cross-session messages. */
   inboxMeta?: import('../../inbox/types').InboxTurnMeta;
+  turnBoundaryOnly?: boolean;
+  queueId?: string;
+  turnOwner?: TurnOwner;
+  onTerminal?: TurnTerminalObserver;
+  beforeDispatch?: DispatchGuard;
 }
 
 export interface ExternalSystemInitPayload {

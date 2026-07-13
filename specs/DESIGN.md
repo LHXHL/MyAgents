@@ -1,7 +1,7 @@
 # MyAgents Design Guide
 
-> **Version**: 2.5.7
-> **Last Updated**: 2026-06-20
+> **Version**: 2.5.9
+> **Last Updated**: 2026-07-08
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
 
@@ -609,7 +609,7 @@ Item 选中: 文字 var(--accent-warm)
 
 | Token | 值 | 说明 |
 |-------|------|------|
-| `--breakpoint-mobile` | 768px | 移动端/桌面端分界 |
+| `--breakpoint-mobile` | 640px | 移动端/桌面端分界 |
 
 ### 7.2 容器宽度
 
@@ -1318,6 +1318,7 @@ Hover 操作:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.5.9 | 2026-07-08 | **移动端断点收窄**：`--breakpoint-mobile` 从 768px 调整为 640px；桌面中等宽度和 split preview 默认 50% 场景更倾向保留工作区 inline，真正窄屏才切 overlay / stacked 布局 |
 | 2.5.8 | 2026-06-20 | **Launcher 历史筛选与收藏规范**：历史标题行筛选器明确为「全部 / 我的收藏 / 工作区」三类历史筛选，不再仅是工作区筛选；历史行更多菜单纳入「收藏对话 / 取消收藏」，收藏状态持久化到 session metadata |
 | 2.5.7 | 2026-06-20 | **Launcher right rail final menu polish**：工作区卡片 hover 操作改为无 tooltip 的「更多」icon，点击打开与右键一致的菜单；工作区菜单新增「打开所在文件夹」；历史行右键在 mouseDown 阶段即时打开同一份更多菜单并禁用文本选中；历史时间列去掉时钟 icon 并扩到 w-16；right rail 底部增加同色渐隐遮罩 |
 | 2.5.6 | 2026-06-20 | **Launcher right rail menu / tooltip / collapsed count 修正**：历史行更多菜单改为列表级互斥状态，避免连续点击多个 row 后重复菜单叠加；工作区卡片 hover 层级提升，保证 Agent 设置 tooltip 不被相邻内容压住；默认折叠展示改为 6 个工作区（3 行 x 2 列），超过 6 个才显示展开按钮；历史 sticky header 不再用横向负 margin 铺到滚动条区域 |

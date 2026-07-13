@@ -12,12 +12,14 @@ describe('SESSION_ENGINE_ROUTE_CONTRACTS', () => {
       'POST /chat/reset',
       'POST /chat/rewind',
       'POST /chat/external-retry',
+      'POST /api/goal/objective',
       'GET /chat/stream',
       'POST /chat/queue/cancel',
       'POST /chat/queue/force',
       'GET /chat/queue/status',
-      'POST /cron/execute',
       'POST /cron/execute-sync',
+      'POST /goal/execute-sync',
+      'POST /task/stop',
       'POST /api/im/enqueue',
       'POST /api/im/cancel',
       'POST /api/im/heartbeat',
@@ -72,6 +74,21 @@ describe('SESSION_ENGINE_ROUTE_CONTRACTS', () => {
     );
     expect(findSessionEngineRouteContract('/api/runtime/permission-response', 'POST')?.engineMethod).toBe(
       'respondPermission',
+    );
+    expect(findSessionEngineRouteContract('/task/stop', 'POST')).toMatchObject({
+      engineMethod: 'stopOwnedTurnByQueueId',
+      requiredFields: ['taskId', 'queueId'],
+    });
+    expect(findSessionEngineRouteContract('/api/im/heartbeat', 'POST')).toMatchObject({
+      engineMethod: 'runInjectedTurn',
+      responseKeys: expect.arrayContaining(['messageEnqueued']),
+      behavior: expect.stringContaining('metadataBirthPending'),
+    });
+    expect(findSessionEngineRouteContract('/api/memory/update', 'POST')?.behavior).toContain(
+      'manual and automatic turns both require the exact official myagents-memory-update skill',
+    );
+    expect(findSessionEngineRouteContract('/cron/execute-sync', 'POST')?.behavior).toContain(
+      'managed memory jobs also require their exact official system skill',
     );
   });
 });

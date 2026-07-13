@@ -46,7 +46,7 @@ pub struct EndConditions {
     pub ai_can_exit: bool,
 }
 
-/// Provider environment for task execution
+/// Read-only credential shape found in historical `cron_tasks.json` rows.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskProviderEnv {
@@ -64,52 +64,19 @@ pub struct TaskProviderEnv {
     pub upstream_format: Option<String>,
 }
 
-/// Explicit provider routing intent for a cron task (PRD #119, 2026-05).
-///
-/// Pre-#119, cron tasks could not unambiguously express their routing
-/// intent: `provider_env: None` could mean "follow the workspace agent"
-/// (legacy default) OR "explicitly use Anthropic subscription". The
-/// sidecar handler had to guess — and silently picked "follow agent",
-/// which caused subscription-intent crons to inherit a third-party
-/// `providerEnvJson` from the agent snapshot when the user later changed
-/// the agent's provider. The mirror failure (third-party intent silently
-/// overridden by agent snapshot) was the original report.
-///
-/// This enum makes intent first-class:
-///
-///   - `FollowAgent` — pre-#119 default. Snapshot resolution at execute
-///     time; agent changes between ticks affect this cron. Legacy tasks
-///     deserialize into this variant via serde default.
-///
-///   - `Subscription` — cron explicitly runs on Anthropic subscription
-///     auth, regardless of what the agent looks like at execute time.
-///     `provider_env` is ignored.
-///
-///   - `Explicit` — cron runs on the captured `provider_env` regardless
-///     of agent changes. `provider_env` MUST be `Some(...)` when this
-///     variant is used.
-///
-/// Behavior at execute time (sidecar `/cron/execute(-sync)`): the handler
-/// branches on intent and either follows the snapshot path (`FollowAgent`)
-/// or short-circuits to the task's own values (`Subscription` /
-/// `Explicit`). See `src/server/index.ts` for the resolution code.
+/// Historical provider intent. Startup migration maps safe identity into
+/// TaskStore; frozen Explicit credentials are never copied. The compatibility
+/// create facade accepts Subscription as a provider identity sentinel and
+/// rejects Explicit snapshots.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub enum ProviderIntent {
-    /// Snapshot-based: follow the workspace agent at execute time. Legacy
-    /// default for crons created before #119 — present in this variant
-    /// because serde fills missing fields with `Default::default()`.
+    /// Legacy default for rows created before provider identity was explicit.
     #[default]
     FollowAgent,
     /// Explicitly use Anthropic subscription. Ignores `provider_env`.
     Subscription,
-    /// Explicitly use the captured `provider_env`. Snapshot is bypassed.
-    /// Caller MUST ensure `provider_env` is `Some(...)` when this variant
-    /// is selected; an `Explicit` intent with `provider_env: None` is a
-    /// malformed task — the sidecar handler fails the request with
-    /// HTTP 400 rather than silently degrading to subscription, which
-    /// could still produce the model+endpoint mismatch this enum was
-    /// introduced to prevent.
+    /// Historical frozen credential intent; new writes reject it.
     Explicit,
 }
 
@@ -151,12 +118,11 @@ pub enum CronSchedule {
     },
     /// Cron expression with optional timezone
     Cron { expr: String, tz: Option<String> },
-    /// Ralph Loop: completion-triggered re-execution (no time-based scheduling)
-    /// AI finishes → 3s buffer → execute again. Exponential backoff on failure.
+    /// Read-only legacy Ralph Loop marker. New Task/Goal creation rejects it.
     Loop,
 }
 
-/// A scheduled cron task
+/// Read-only legacy row and compatibility response DTO for a scheduled Task.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CronTask {
@@ -191,35 +157,14 @@ pub struct CronTask {
     pub model: Option<String>,
     /// Provider environment (API key, base URL).
     ///
-    /// PRD 0.2.9 — DEPRECATED. Read-only legacy field: deserialization
-    /// honored so 0.2.8 `cron_tasks.json` still loads and the in-memory
-    /// CronTask still routes correctly via the `Explicit` intent path. But
-    /// `skip_serializing` ensures we **never write this back to disk** —
-    /// so on the next `save_to_disk()` (any field edit) the credential
-    /// copy disappears and the cron either runs subscription/follow or the
-    /// user re-picks a provider. PRD 0.2.9 R2 invariant: zero credential
-    /// copies in `~/.myagents/cron_tasks.json`.
+    /// Historical credential payload. Deserialized for migration diagnostics,
+    /// never serialized or copied into TaskStore.
     #[serde(default, skip_serializing)]
     pub provider_env: Option<TaskProviderEnv>,
-    /// PRD 0.2.9 — Per-task provider id (live-resolution intent).
-    ///
-    /// Replaces `provider_env` as the canonical persistence shape. When set,
-    /// the sidecar calls `resolveProviderEnv(providerId)` at every tick from
-    /// `~/.myagents/config.json`, so:
-    ///   * API key rotation propagates instantly (no need to re-save tasks)
-    ///   * Provider deletion fails the next tick with a clear error
-    ///   * No credential copies in `cron_tasks.json`
-    ///
-    /// `None` retains the FollowAgent / legacy snapshot semantics. See
-    /// `tech_docs/task_provider_routing.md`.
+    /// Provider identity carried by legacy rows or projected from TaskStore.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
-    /// Routing intent for this cron — see `ProviderIntent` for full design.
-    /// Defaults to `FollowAgent` (legacy snapshot behavior) so pre-#119 tasks
-    /// keep their existing semantics across upgrade.
-    /// PRD 0.2.9 — when `provider_id` is set, the sidecar ignores this field
-    /// (live-resolution path takes precedence). Retained so 0.2.8 cron tasks
-    /// still resolve correctly.
+    /// Historical routing intent; ignored by Task execution after migration.
     #[serde(default)]
     pub provider_intent: ProviderIntent,
     /// Agent runtime snapshot for external Runtime tasks.
@@ -273,15 +218,13 @@ pub struct CronTask {
     /// Used by frontend to sort tasks by most recent activity.
     #[serde(default = "chrono::Utc::now")]
     pub updated_at: DateTime<Utc>,
-    /// Reverse pointer into the Task Center (v0.1.69, PRD §11.2). When set,
-    /// this CronTask was created by a Task dispatch; each firing looks up the
-    /// `Task.dispatchOrigin` + `task.md` to build the prompt dynamically
-    /// (PRD §9.3.1) instead of using the `prompt` field as a frozen string.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
+    /// Read-only marker found on historical Task projection rows. It is used
+    /// only during startup migration and is never written again.
+    #[serde(default, rename = "taskId", skip_serializing)]
+    pub legacy_task_id: Option<String>,
 }
 
-/// Configuration for creating a new cron task
+/// Compatibility input for creating a scheduled Task through old Cron surfaces.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CronTaskConfig {
@@ -301,22 +244,15 @@ pub struct CronTaskConfig {
     pub permission_mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
-    /// PRD 0.2.9 — DEPRECATED. New callers SHOULD pass `provider_id` instead;
-    /// retained for the legacy IM-Bot / heartbeat paths that still build a
-    /// frozen env at schedule time. See `provider_id` below.
+    /// Old clients may still send this field; the compatibility facade rejects
+    /// it so credentials cannot enter TaskStore.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_env: Option<TaskProviderEnv>,
-    /// PRD 0.2.9 — Per-task provider id (live-resolution intent). Preferred
-    /// over `provider_env` for all new callers. `None` keeps FollowAgent /
-    /// legacy snapshot semantics.
+    /// Provider identity used to initialize a new execution Session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_id: Option<String>,
-    /// Provider routing intent (PRD #119). Callers without explicit intent —
-    /// legacy IM Bot path, Task Center dispatch — leave this as
-    /// `FollowAgent` (the serde default) and keep snapshot semantics.
-    /// Frontend cron creation paths set this to `Subscription` or `Explicit`
-    /// based on what the user picked when scheduling.
-    /// PRD 0.2.9 — when `provider_id` is set, the sidecar ignores this field.
+    /// Old-client compatibility. Subscription maps to `anthropic-sub`;
+    /// Explicit is rejected; provider_id takes precedence for FollowAgent.
     #[serde(default)]
     pub provider_intent: ProviderIntent,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -339,10 +275,6 @@ pub struct CronTaskConfig {
     pub schedule: Option<CronSchedule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
-    /// Reverse pointer into Task Center (v0.1.69, PRD §11.2). Set when the
-    /// CronTask is dispatched by a Task Center task.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
 }
 
 fn default_true() -> bool {
@@ -364,11 +296,4 @@ impl Default for RunMode {
     fn default() -> Self {
         Self::SingleSession
     }
-}
-
-/// Persistent storage for cron tasks
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub(super) struct CronTaskStore {
-    #[serde(default)]
-    pub(super) tasks: Vec<CronTask>,
 }

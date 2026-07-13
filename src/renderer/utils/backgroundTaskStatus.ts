@@ -48,6 +48,8 @@ const statuses = new Map<string, string>();                     // taskId → st
 const descriptions = new Map<string, string>();                 // taskId → description
 const toolUseIdToTaskId = new Map<string, string>();            // toolUseId → taskId
 const taskIdToToolUseId = new Map<string, string>();            // taskId → toolUseId
+const taskStartedAt = new Map<string, number>();                 // taskId → first observed start time
+const taskTypes = new Map<string, string>();                     // taskId → SDK task_type
 
 // Insertion-ordered set of taskIds that have reached a terminal state.
 // Map preserves insertion order — treating it as an LRU by deleting+re-adding on touch.
@@ -77,8 +79,21 @@ function linkTaskToolUse(taskId: string, toolUseId: string): void {
 
 /** Register the toolUseId↔taskId mapping (called when chat:task-started arrives).
  *  Also reconciles any orphan terminal status stored for this taskId. */
-export function registerBackgroundTask(taskId: string, toolUseId: string): void {
+export function registerBackgroundTask(
+    taskId: string,
+    toolUseId: string,
+    meta?: { description?: string; taskType?: string },
+): void {
     linkTaskToolUse(taskId, toolUseId);
+    if (!taskStartedAt.has(taskId)) {
+        taskStartedAt.set(taskId, Date.now());
+    }
+    if (meta?.description) {
+        descriptions.set(taskId, meta.description);
+    }
+    if (meta?.taskType) {
+        taskTypes.set(taskId, meta.taskType);
+    }
 
     // Reconcile: if a terminal notification arrived earlier with no toolUseId,
     // promote it to a proper status now and dispatch once so listeners catch up.
@@ -86,7 +101,11 @@ export function registerBackgroundTask(taskId: string, toolUseId: string): void 
     if (orphan) {
         orphanByTaskId.delete(taskId);
         applyStatus(taskId, orphan.status, toolUseId);
+        return;
     }
+    window.dispatchEvent(new CustomEvent(EVENT_NAME, {
+        detail: { taskId, toolUseId, status: 'started' },
+    }));
 }
 
 // ─── Status updates ───
@@ -168,6 +187,8 @@ function enforceTerminalCap(): void {
         terminalOrder.delete(oldestTaskId);
         statuses.delete(oldestTaskId);
         descriptions.delete(oldestTaskId);
+        taskStartedAt.delete(oldestTaskId);
+        taskTypes.delete(oldestTaskId);
         const tuid = taskIdToToolUseId.get(oldestTaskId);
         taskIdToToolUseId.delete(oldestTaskId);
         if (tuid) toolUseIdToTaskId.delete(tuid);
@@ -241,6 +262,11 @@ export function hydrateBackgroundTaskStatusesFromHistory(messages: Message[]): v
         if (record.description) {
             setBackgroundTaskDescription(record.taskId, record.description);
         }
+        // Persisted rows without toolUseId cannot prove which Task tool they
+        // complete after a renderer reload. Do not keep re-parking them as
+        // live orphans on every messages change; the server-side history row
+        // still preserves the audit text.
+        if (!record.toolUseId) continue;
         setBackgroundTaskStatus(record.taskId, record.status, record.toolUseId);
     }
 }
@@ -268,12 +294,40 @@ export function isBackgroundTaskRegistered(toolUseId: string): boolean {
     return toolUseIdToTaskId.has(toolUseId);
 }
 
+export interface ActiveBackgroundTask {
+    taskId: string;
+    toolUseId: string;
+    description?: string;
+    taskType?: string;
+    startedAt: number;
+    status?: string;
+}
+
+export function getActiveBackgroundTasks(): ActiveBackgroundTask[] {
+    const out: ActiveBackgroundTask[] = [];
+    for (const [taskId, toolUseId] of taskIdToToolUseId) {
+        const status = statuses.get(taskId);
+        if (isTerminalStatus(status)) continue;
+        out.push({
+            taskId,
+            toolUseId,
+            description: descriptions.get(taskId),
+            taskType: taskTypes.get(taskId),
+            startedAt: taskStartedAt.get(taskId) ?? Date.now(),
+            status,
+        });
+    }
+    return out;
+}
+
 /** Clear all entries — call on session reset to prevent unbounded growth. */
 export function clearAllBackgroundTaskStatuses(): void {
     statuses.clear();
     descriptions.clear();
     toolUseIdToTaskId.clear();
     taskIdToToolUseId.clear();
+    taskStartedAt.clear();
+    taskTypes.clear();
     terminalOrder.clear();
     orphanByTaskId.clear();
 }

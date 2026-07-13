@@ -64,6 +64,17 @@ export interface UpstreamBridgeConfig {
   providerId: string;
   baseUrl: string;
   apiKey: string;
+  /** Opaque generation for a request-scoped managed bearer. Never logged. */
+  credentialVersion?: number;
+  /** Resolve one replacement bearer after a 401. */
+  recoverAuth?: (rejectedCredentialVersion: number) => Promise<{
+    apiKey: string;
+    credentialVersion: number;
+  }>;
+  /** Quarantine the credential after the recovery retry also returns 401. */
+  rejectCredential?: (credentialVersion: number) => Promise<void>;
+  /** Project a non-secret upstream outcome back to the credential owner. */
+  reportOutcome?: (credentialVersion: number, httpStatus: number) => Promise<void>;
   /** Active model for this bridge. May change over time for session bridges. */
   model: string | undefined;
   /** Model aliases (sub-agent routing). May change for session bridges. */
@@ -83,7 +94,7 @@ export interface UpstreamBridgeConfig {
 
 interface Entry {
   /** Called per-request to resolve current config. */
-  resolve: () => UpstreamBridgeConfig;
+  resolve: (request?: Request) => UpstreamBridgeConfig | Promise<UpstreamBridgeConfig>;
   /** Wall-clock time at registration; used by orphan watchdog. */
   registeredAt: number;
   /** Free-form description for diagnostics (e.g., 'verify:moonshot', 'session:abc-123'). */
@@ -108,7 +119,7 @@ const registry = new Map<string, Entry>();
  */
 export function registerBridge(
   token: string,
-  resolve: () => UpstreamBridgeConfig,
+  resolve: (request?: Request) => UpstreamBridgeConfig | Promise<UpstreamBridgeConfig>,
   description: string,
 ): void {
   const existing = registry.get(token);
@@ -139,10 +150,18 @@ export function unregisterBridge(token: string): void {
  * caller can surface it (a misbehaving resolver is a bug to log loudly,
  * not silently swallow).
  */
-export function lookupBridge(token: string): UpstreamBridgeConfig | undefined {
+export async function lookupBridge(
+  token: string,
+  request?: Request,
+): Promise<UpstreamBridgeConfig | undefined> {
   const entry = registry.get(token);
   if (!entry) return undefined;
-  return entry.resolve();
+  return await entry.resolve(request);
+}
+
+/** Existence-only check. Must never trigger managed credential resolution. */
+export function hasBridge(token: string): boolean {
+  return registry.has(token);
 }
 
 export function disablePromptCacheKey(token: string): void {

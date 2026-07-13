@@ -1,6 +1,7 @@
 import type { Query, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type {
   BackgroundAgentPermissionMode,
+  ManagedProviderCredential,
   PermissionMode as SharedPermissionMode,
 } from '../../shared/config-types';
 import type { ToolDisplayPayload } from '../../shared/toolDisplay/filePatch';
@@ -13,6 +14,11 @@ import type { ImagePayload } from '../runtimes/types';
 import type { MessageUsage, SessionSource, TurnAnalyticsSource } from '../types/session';
 import type { MirrorImage } from '../utils/im-mirror';
 import type { ModelAliases } from '../utils/model-aliases';
+import type {
+  DispatchGuard,
+  TurnOwner,
+  TurnTerminalObserver,
+} from '../session-core/turn-queue';
 
 export type BuiltinSessionState = 'idle' | 'starting' | 'running' | 'error';
 
@@ -32,6 +38,8 @@ export type ProviderEnv = {
   upstreamFormat?: 'chat_completions' | 'responses';
   /** Model alias mapping: SDK sub-agents use "fable"/"sonnet"/"opus"/"haiku" -> actual provider model IDs */
   modelAliases?: ModelAliases;
+  /** Non-secret owner reference. Bearers are resolved by the Bridge per request. */
+  credentialSource?: ManagedProviderCredential;
 };
 
 export type ToolUseState = {
@@ -106,6 +114,17 @@ export type MessageWire = {
   durationMs?: number;
 };
 
+type DeferredUserSurfaceBase = {
+  message: MessageWire;
+  sessionBirthOrigin?: SessionOrigin;
+  mirrorImages?: MirrorImage[];
+};
+
+export type DeferredUserSurface = DeferredUserSurfaceBase & (
+  | { event: 'message-replay' }
+  | { event: 'queue-started'; queueId: string; midTurnBreak?: boolean }
+);
+
 export type BuiltinRestartReason =
   | 'mcp'
   | 'agents'
@@ -142,7 +161,12 @@ export type MessageQueueItem = {
   analyticsOrigin?: SessionOrigin;
   providerAnalytics?: TurnProviderAnalytics;
   inboxMeta?: InboxTurnMeta;
-  injectedTurnId?: string;
+  turnOwner?: TurnOwner;
+  onTerminal?: TurnTerminalObserver;
+  beforeDispatch?: DispatchGuard;
+  /** User history/UI side effects held until a dispatch guard accepts. */
+  deferredUserSurface?: DeferredUserSurface;
+  settleDispatchAcceptance?: (result: { accepted: boolean; error?: string }) => void;
   transientProviderRetry?: {
     rootQueueId: string;
     attempt: number;
@@ -166,6 +190,12 @@ export type TurnAdmissionTicket = {
   queueId: string;
   requestId?: string;
   createdAt: number;
+  messageText: string;
+  turnOwner?: TurnOwner;
+  onTerminal?: TurnTerminalObserver;
+  beforeDispatch?: DispatchGuard;
+  settleDispatchAcceptance?: (result: { accepted: boolean; error?: string }) => void;
+  canceled: boolean;
 };
 
 export type InFlightMetadata = {
@@ -185,13 +215,6 @@ export type BuiltinTurnUsage = {
   cacheCreationTokens: number;
   model?: string;
   modelUsage?: MessageUsage['modelUsage'];
-};
-
-export type BuiltinInjectedTurnOutcome = {
-  status: 'complete' | 'stopped' | 'error';
-  text: string;
-  assistantMessagePresent: boolean;
-  error?: string;
 };
 
 export type BuiltinLifecycleSnapshot = {
@@ -226,7 +249,6 @@ export type BuiltinConfigSnapshot = {
 
 export type BuiltinTurnStartContext = {
   startedAt: number;
-  injectedTurnId?: string;
   inboxMeta?: InboxTurnMeta;
   providerAnalytics?: TurnProviderAnalytics;
   images?: ImagePayload[];

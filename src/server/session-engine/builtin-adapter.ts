@@ -1,9 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import {
   cancelQueueItem,
+  cancelQueuedTurnsByOwner,
   cancelImRequest as cancelBuiltinImRequest,
-  consumeInjectedTurnOutcome,
-  discardInjectedTurnOutcome,
+  applyMcpOverrideAndAwaitReady,
   enqueueUserMessage,
   forkSession,
   forceExecuteQueueItem,
@@ -15,6 +15,8 @@ import {
   getMessages,
   getPendingInteractiveRequests,
   getQueueStatus,
+  getCurrentTurnIdentity as getBuiltinCurrentTurnIdentity,
+  hasQueuedTurnByOwner as hasBuiltinQueuedTurnByOwner,
   getSessionId,
   getSessionModel,
   getSessionPermissionMode,
@@ -51,7 +53,7 @@ import type { MessageWire, PermissionMode, ProviderEnv } from '../agent-session'
 import type { AgentDefinition } from '@anthropic-ai/claude-agent-sdk';
 import type { CancelReason } from '../utils/cancellation';
 import { createConcreteProviderRoute, isConcreteProviderRoute, type ProviderRoute } from '../../shared/providerRoute';
-import { getEffectiveOfficialToolIdsForSession, materializeProviderRouteEnv } from '../utils/admin-config';
+import { getEffectiveOfficialToolIdsForSession, materializeProviderRouteEnv, resolveSubscriptionAuthKind, resolveWorkspaceConfig } from '../utils/admin-config';
 import type {
   DesktopAdmissionResult,
   DesktopMessageRequest,
@@ -63,10 +65,28 @@ import type {
   SessionEngine,
 } from './types';
 import { decideBuiltinInjectedTurnResult } from '../session-core/turn-result-policy';
+import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 import { getSessionData } from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
 import { shrinkReplayContentForClient } from '../utils/session-message-preview';
 import type { SessionMessage } from '../types/session';
+
+function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
+  if (timeoutMs <= 0) return Promise.resolve(null);
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => resolve(null), timeoutMs);
+    promise.then(
+      value => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      error => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
 
 function providerEnvForRouteRequest(request: {
   providerRoute?: ProviderRoute;
@@ -91,7 +111,17 @@ function providerEnvForRouteRequest(request: {
     };
   }
   if (request.providerRoute.kind === 'subscription') {
-    return { providerEnv: 'subscription', model: request.providerRoute.model };
+    const authKind = resolveSubscriptionAuthKind(request.providerRoute.providerId);
+    if (authKind === 'sdk-native') {
+      return { providerEnv: 'subscription', model: request.providerRoute.model };
+    }
+    if (authKind !== 'host-managed-oauth') {
+      return {
+        providerEnv: undefined,
+        error: `Subscription provider '${request.providerRoute.providerId}' cannot execute in builtin runtime`,
+        status: 409,
+      };
+    }
   }
   const providerEnv = materializeProviderRouteEnv(request.providerRoute);
   if (!providerEnv) {
@@ -266,6 +296,14 @@ export function createBuiltinSessionEngine(): SessionEngine {
       };
     },
 
+    getCurrentTurnIdentity() {
+      return getBuiltinCurrentTurnIdentity();
+    },
+
+    hasQueuedTurnOwnedBy(owner) {
+      return hasBuiltinQueuedTurnByOwner(owner);
+    },
+
     async sendDesktopMessage(request: DesktopMessageRequest): Promise<DesktopAdmissionResult> {
       await setInteractionScenario(request.scenario);
       if (request.backgroundAgentPermissionMode) {
@@ -290,6 +328,11 @@ export function createBuiltinSessionEngine(): SessionEngine {
         {
           fromDesktopChatSend: true,
           sessionBirthOrigin: request.birthOrigin,
+          queueId: request.queueId,
+          turnOwner: request.turnOwner,
+          onTerminal: request.onTerminal,
+          ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
+          beforeDispatch: request.beforeDispatch,
         },
       );
       if (result.error) {
@@ -301,6 +344,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         queueId: result.queueId,
         isInFlight: result.isInFlight,
         deliveryMode: result.deliveryMode,
+        dispatchAcceptance: result.dispatchAcceptance,
       };
     },
 
@@ -322,12 +366,19 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         undefined,
         request.analyticsOrigin,
-        { allowLazySessionMaterialization: request.metadataBirthPending === true },
+        {
+          allowLazySessionMaterialization: request.metadataBirthPending === true,
+          queueId: request.queueId,
+          turnOwner: request.turnOwner,
+          onTerminal: request.onTerminal,
+          ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
+          beforeDispatch: request.beforeDispatch,
+        },
       );
       if (result.error) {
         return { success: false, error: result.error, status: 503 };
       }
-      return { success: true, queued: result.queued };
+      return { success: true, queued: result.queued, dispatchAcceptance: result.dispatchAcceptance };
     },
 
     cancelImRequest(requestId, reason) {
@@ -352,11 +403,18 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         undefined,
         request.analyticsOrigin,
+        {
+          ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
+          queueId: request.queueId,
+          turnOwner: request.turnOwner,
+          onTerminal: request.onTerminal,
+          beforeDispatch: request.beforeDispatch,
+        },
       );
       if (result.error) {
         return { success: false, error: result.error, status: 503 };
       }
-      return { success: true, queued: result.queued };
+      return { success: true, queued: result.queued, dispatchAcceptance: result.dispatchAcceptance };
     },
 
     async enqueueInboxMessage(request) {
@@ -378,10 +436,32 @@ export function createBuiltinSessionEngine(): SessionEngine {
       );
     },
 
+    async ensureGoalSessionConfig() {
+      if (getMcpServers() !== null) return { success: true };
+      const sessionId = getSessionId();
+      const workspacePath = getBuiltinWorkspacePath();
+      if (!workspacePath) {
+        return { success: false, error: 'Goal session has no workspace path' };
+      }
+      const resolved = resolveWorkspaceConfig(
+        workspacePath,
+        sessionId ? getSessionData(sessionId) : null,
+        { includeMcp: true },
+      );
+      await applyMcpOverrideAndAwaitReady(resolved.mcpServers);
+      return { success: true };
+    },
+
     async runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult> {
+      const deadline = Date.now() + request.timeoutMs;
       await setInteractionScenario(request.scenario);
       getAndClearLastAgentError();
-      const injectedTurnId = randomUUID();
+      const queueId = request.queueId ?? randomUUID();
+      let observedOutcome: TurnTerminalOutcome | undefined;
+      let resolveTerminal!: (outcome: TurnTerminalOutcome) => void;
+      const terminal = new Promise<TurnTerminalOutcome>((resolve) => {
+        resolveTerminal = resolve;
+      });
       const routed = providerEnvForRouteRequest(request);
       if (routed.error) {
         return { success: false, enqueued: false, error: routed.error, status: routed.status };
@@ -398,26 +478,63 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         undefined,
         request.analyticsOrigin,
-        { injectedTurnId },
+        {
+          allowLazySessionMaterialization: request.metadataBirthPending === true,
+          queueId,
+          turnOwner: request.turnOwner,
+          onTerminal: async (outcome) => {
+            observedOutcome = outcome;
+            try {
+              await request.onTerminal?.(outcome);
+            } finally {
+              resolveTerminal(outcome);
+            }
+          },
+          queueResponseModeOverride: 'turn',
+          ...(request.beforeDispatch ? { beforeDispatch: request.beforeDispatch } : {}),
+        },
       );
       if (enqueueResult.error) {
         return { success: false, enqueued: false, error: enqueueResult.error, status: 503 };
       }
-      const completed = await waitForSessionIdle(request.timeoutMs, request.pollMs ?? 1000);
-      if (!completed) {
-        let retainForLateTerminal = true;
-        if (enqueueResult.queued && enqueueResult.queueId) {
-          const cancelResult = await cancelQueueItem(enqueueResult.queueId);
-          retainForLateTerminal = cancelResult.status !== 'cancelled';
+      const outcome = await waitForDeadline(terminal, Math.max(0, deadline - Date.now()));
+      if (!outcome) {
+        const cancelResult = await cancelQueueItem(queueId);
+        if (observedOutcome) {
+          const settledOutcome = await terminal;
+          return {
+            ...decideBuiltinInjectedTurnResult({ idleCompleted: true, outcome: settledOutcome }),
+            enqueued: true,
+          };
         }
-        discardInjectedTurnOutcome(injectedTurnId, { retainForLateTerminal });
-        return { ...decideBuiltinInjectedTurnResult({ idleCompleted: false }), enqueued: true };
+        let terminationUnconfirmed = false;
+        if (cancelResult.status !== 'cancelled') {
+          if (getBuiltinCurrentTurnIdentity()?.queueId === queueId) {
+            terminationUnconfirmed = !await interruptCurrentResponse('timeout');
+          } else if (cancelResult.status !== 'not_found') {
+            terminationUnconfirmed = true;
+          }
+        }
+        return {
+          ...decideBuiltinInjectedTurnResult({ idleCompleted: false }),
+          enqueued: true,
+          ...(terminationUnconfirmed ? { terminationUnconfirmed: true } : {}),
+        };
       }
-      const outcome = consumeInjectedTurnOutcome(injectedTurnId);
       return { ...decideBuiltinInjectedTurnResult({ idleCompleted: true, outcome }), enqueued: true };
     },
 
     async stopTurn() {
+      const stopped = await interruptCurrentResponse();
+      return stopped ? { success: true } : { success: true, alreadyStopped: true };
+    },
+
+    async stopOwnedTurn(owner) {
+      const canceled = await cancelQueuedTurnsByOwner(owner);
+      const current = getBuiltinCurrentTurnIdentity();
+      if (!current || current.owner.kind !== owner.kind || current.owner.id !== owner.id) {
+        return { success: true, alreadyStopped: canceled === 0 };
+      }
       const stopped = await interruptCurrentResponse();
       return stopped ? { success: true } : { success: true, alreadyStopped: true };
     },

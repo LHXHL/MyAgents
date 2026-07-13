@@ -1,6 +1,7 @@
 //! Generic cross-process file lock helper (Pattern 5 — single-writer invariant).
 //!
-//! Mirrors `src/server/utils/file-lock.ts`. The lock primitive is atomic
+//! Uses the same owner-token and atomic-tombstone protocol as
+//! `src/server/utils/file-lock.ts`. The lock primitive is atomic
 //! `create_dir`; an `owner` file inside the lockdir holds the 3-tuple
 //! `<runtime>:<pid>:<startMs>` (`rust:<pid>:<startMs>` here, `node:<pid>:<startMs>`
 //! from Node) so other processes can probe both liveness and pid-reuse for
@@ -9,11 +10,13 @@
 //! the actual blocking work to `tokio::task::spawn_blocking` so the async
 //! runtime worker stays free.
 //!
-//! Stale-recovery rules (matching the Node helper):
-//! - lockdir age > `stale_ms` AND owner pid is no longer alive (unix:
-//!   `nix::sys::signal::kill(pid, None)` returns ESRCH) → forcibly remove.
+//! Rust stale-recovery rules:
+//! - lockdir age > `stale_ms` AND owner pid is confirmed no longer alive
+//!   (unix: `nix::sys::signal::kill(pid, None)` returns ESRCH) → forcibly remove.
 //! - 3-tuple owner with start_time mismatching the live pid's actual start
 //!   time → pid was recycled by an unrelated process → break.
+//! - A positively live pid is never age-broken; unavailable liveness/start-time
+//!   evidence is treated conservatively and preserves the lock.
 //! - Owner format `renderer:<ts>` has no observable pid; we fall through to
 //!   age-only break.
 
@@ -95,21 +98,20 @@ fn is_pid_alive(pid: i32) -> Option<bool> {
 
 #[cfg(target_os = "windows")]
 fn is_pid_alive(pid: i32) -> Option<bool> {
-    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Foundation::{
+        CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, ERROR_NOT_FOUND,
+    };
     use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     if pid <= 0 {
         return None;
     }
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid as u32) };
     if handle.is_null() {
-        // Could be ESRCH-equivalent (gone) or access-denied. We can't cleanly
-        // distinguish without GetLastError; treat null as "not observable as
-        // alive" so callers fall through to the start-time/age path. In
-        // practice, a recently-dead pid yields ERROR_INVALID_PARAMETER and a
-        // privileged-but-live pid yields ERROR_ACCESS_DENIED — but with
-        // PROCESS_QUERY_LIMITED_INFORMATION the latter is rare for our own
-        // user's processes.
-        return Some(false);
+        let error = unsafe { GetLastError() };
+        return match error {
+            ERROR_INVALID_PARAMETER | ERROR_NOT_FOUND => Some(false),
+            _ => None,
+        };
     }
     unsafe { CloseHandle(handle) };
     Some(true)
@@ -364,6 +366,21 @@ fn break_lock_safely(lock_path: &Path) -> bool {
     }
 }
 
+fn has_confirmed_stale_pid_owner(
+    liveness: Option<bool>,
+    declared_start: Option<u64>,
+    observed_start: Option<u64>,
+) -> bool {
+    match liveness {
+        Some(false) => true,
+        Some(true) => matches!(
+            (declared_start, observed_start),
+            (Some(declared), Some(observed)) if declared.abs_diff(observed) > 2_000
+        ),
+        None => false,
+    }
+}
+
 /// Try to break a stale lockdir if its owner pid is dead and age > `stale`.
 /// Returns `true` if we removed it (caller should retry mkdir immediately).
 fn try_break_stale_lock(lock_path: &Path, stale: Duration) -> bool {
@@ -405,43 +422,26 @@ fn try_break_stale_lock(lock_path: &Path, stale: Duration) -> bool {
             if let Ok(pid) = pid_str.parse::<i32>() {
                 let declared_start: Option<u64> = parts.get(1).and_then(|s| s.parse().ok());
 
-                match is_pid_alive(pid) {
-                    Some(true) => {
-                        // Pid alive — verify start_time if declared.
-                        if let Some(declared) = declared_start {
-                            if let Some(live) = get_pid_start_time_ms(pid) {
-                                let skew = if live >= declared {
-                                    live - declared
-                                } else {
-                                    declared - live
-                                };
-                                // Allow ~2s skew (mirrors Node helper).
-                                if skew > 2000 {
-                                    ulog_warn!(
-                                        "[file-lock] pid {} reused (declaredStart={} liveStart={} skew={}ms); breaking lock {}",
-                                        pid, declared, live, skew, lock_path.display()
-                                    );
-                                    // Fall through to break_lock_safely below.
-                                } else {
-                                    // start_time matches → owner genuinely alive.
-                                    return false;
-                                }
-                            } else {
-                                // Live start_time unknown on this platform → fall through to age-only.
-                                if age <= Duration::from_secs(60) {
-                                    return false;
-                                }
-                                // Age >60s: break despite live pid (cross-platform parity with Node).
-                            }
-                        } else {
-                            // No declared start_time (legacy 2-tuple) → age-only override.
-                            if age <= Duration::from_secs(60) {
-                                return false;
-                            }
-                        }
-                    }
-                    Some(false) => { /* dead — proceed to break */ }
-                    None => return false, // unknown — be conservative
+                let liveness = is_pid_alive(pid);
+                let observed_start = if liveness == Some(true) && declared_start.is_some() {
+                    get_pid_start_time_ms(pid)
+                } else {
+                    None
+                };
+                if !has_confirmed_stale_pid_owner(liveness, declared_start, observed_start) {
+                    return false;
+                }
+                if liveness == Some(true) {
+                    let declared = declared_start.expect("confirmed reuse requires declared start");
+                    let observed = observed_start.expect("confirmed reuse requires observed start");
+                    ulog_warn!(
+                        "[file-lock] pid {} reused (declaredStart={} liveStart={} skew={}ms); breaking lock {}",
+                        pid,
+                        declared,
+                        observed,
+                        declared.abs_diff(observed),
+                        lock_path.display()
+                    );
                 }
             }
         }
@@ -559,4 +559,35 @@ where
                 format!("file-lock join error: {}", join_err),
             ))
         })?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::has_confirmed_stale_pid_owner;
+
+    #[test]
+    fn live_or_unobservable_pid_owner_is_never_age_broken() {
+        assert!(!has_confirmed_stale_pid_owner(Some(true), None, None));
+        assert!(!has_confirmed_stale_pid_owner(
+            Some(true),
+            Some(1_000),
+            None,
+        ));
+        assert!(!has_confirmed_stale_pid_owner(None, Some(1_000), None));
+        assert!(!has_confirmed_stale_pid_owner(
+            Some(true),
+            Some(1_000),
+            Some(2_999),
+        ));
+    }
+
+    #[test]
+    fn only_dead_or_reused_pid_is_confirmed_stale() {
+        assert!(has_confirmed_stale_pid_owner(Some(false), None, None));
+        assert!(has_confirmed_stale_pid_owner(
+            Some(true),
+            Some(1_000),
+            Some(3_001),
+        ));
+    }
 }

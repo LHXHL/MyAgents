@@ -21,6 +21,19 @@ export function snapshotForMaterializedSession(
     : snapshotForOwnedSession(agent, options);
 }
 
+export function bindOwnedSnapshotToRuntimeIdentity(
+  snapshot: Partial<SessionMetadata>,
+  identity: { runtime: RuntimeType; runtimeSource?: RuntimeSource },
+): Partial<SessionMetadata> {
+  return {
+    ...snapshot,
+    runtime: identity.runtime,
+    runtimeSource: identity.runtime === 'builtin'
+      ? undefined
+      : (identity.runtimeSource ?? 'system-cli'),
+  };
+}
+
 export function createMaterializedSessionMetadata(params: {
   agentDir: string;
   sessionId: string;

@@ -52,7 +52,7 @@
 | Pit-of-Success helper 细节 / 新增 helper | `tech_docs/pit_of_success.md` |
 | Sidecar 启动性能 / 冷启动退化排查 | `tech_docs/sidecar_cold_start.md` |
 | 任务中心 / Task Store / Thought Store | `tech_docs/task_center.md` |
-| Cloud Space / Space Issue / Space Skill / registered agent（开发中） | `tech_docs/space_cloud.md` |
+| Cloud Space / Space Issue / Space Skill / registered agent（实验室） | `tech_docs/space_cloud.md`；改云端 API / 鉴权 / 数据 / quota 时还 MUST 读同级仓库 `../MyAgents_space/specs/ARCHITECTURE.md` |
 | IM Bot / Telegram / Dingtalk / 飞书 | `tech_docs/im_integration_architecture.md` |
 | Plugin Bridge / OpenClaw / SDK shim | `tech_docs/plugin_bridge_architecture.md` |
 | Claude Code / Codex / Gemini Runtime | `tech_docs/multi_agent_runtime.md` |
@@ -124,7 +124,7 @@
 理解以下抽象是改任何功能的前置认知。每条只列名字 + 关键约束。
 
 ### Sidecar Owner 模型
-Sidecar 进程 = Claude Agent SDK 实例；Session : Sidecar = 1 : 1；Tab / CronTask / BackgroundCompletion / Agent 四种 Owner 共享 Sidecar，全部释放才停止。详见 ARCHITECTURE「核心抽象 / 资源管理」。
+Sidecar 进程 = Claude Agent SDK 实例；Session : Sidecar = 1 : 1；Tab / Task / Goal / BackgroundCompletion / Agent 共享 Sidecar，全部释放才停止。Task/Goal 只增加 owner token，不创建独立进程。详见 ARCHITECTURE「核心抽象 / 资源管理」。
 
 ### Tab-Scoped 隔离
 每个 Chat Tab 独立 Sidecar。Tab 内 MUST 用 `useTabState()` 的 `apiGet` / `apiPost`，**禁止**使用全局 `apiPostJson` / `apiGetJson`（会发到 Global Sidecar）。详见 ARCHITECTURE「核心抽象」。
@@ -143,13 +143,13 @@ Sidecar 进程 = Claude Agent SDK 实例；Session : Sidecar = 1 : 1；Tab / Cro
 ### Pre-warm 机制
 MCP / Agents 同步触发 `schedulePreWarm()`（500ms 防抖），Model 同步**不**触发。持久 Session 中 pre-warm 即最终 session，用户消息通过 `wakeGenerator()` 注入。**任何 `!preWarm` 守卫都可能在持久模式下永远不执行。**
 
-**MCP 配置权威来源分离**：Tab 由前端 `/api/mcp/set` 配，IM/Cron 由 self-resolve 从磁盘读。混用会导致 fingerprint 差异 → abort → 30s 重启循环。
+**MCP 配置权威来源分离**：Tab 由前端 `/api/mcp/set` 配；IM 与未 materialize 的 backend-created Task Session 可从磁盘初始化；已有 Session 始终沿用自己的 MCP authority。混用会导致 fingerprint 差异 → abort → 30s 重启循环。
 
 ### Multi-Agent Runtime
 内置 SDK（builtin）+ 外部 Runtime（Claude Code / Codex / Gemini CLI），门控 `config.multiAgentRuntime`（默认关闭）。**新增"config 同步 / 注入 user 消息 / 等待 turn 完成 / session 读操作"的 sidecar 端点 MUST 走 `src/server/session-engine/` facade**（`selector.ts` 统一选 adapter），禁止手写 `shouldUseExternalRuntime()` 分支——漏分流 = builtin 去 resume 外部会话 → 静默空转 + 假成功。`completed` 必须 gate 在真·turn 成功（external=`didLastTurnSucceed`，builtin=`!getAndClearLastAgentError()`），别只凭 `waitForSessionIdle`。`agent-session.ts` / `runtimes/external-session.ts` 是 public facade 不是 owner state 落点，内核在 `src/server/builtin-session/*` 与 `src/server/runtimes/external-session/*`。详见 `tech_docs/multi_agent_runtime.md`。
 
 ### 定时任务系统
-Rust `CronTaskManager` 统一管理所有定时任务（Chat 定时 / 独立创建 / AI 工具 / IM Cron / Heartbeat）。Cron Tool（`im-cron` MCP）已泛化为**所有 Session 可用**，始终信任。新增 `CronTask` 字段 MUST 带 `#[serde(default)]`。详见 ARCHITECTURE「定时任务系统」。
+Rust `TaskStore` 是所有新定时自动化的唯一权威，`TaskSchedulerController` 直接从 Running Task 重建 timer；Chat/CLI/IM 的 Cron 命令只是兼容 surface，禁止写 `cron_tasks.json`。旧文件只在 backend startup 迁移，Loop 不迁移。Cron Tool（`im-cron` MCP）对所有 Session 可用。详见 ARCHITECTURE「定时任务系统」。
 
 ### Config 持久化（disk-first）
 `AppConfig` 同时存在于磁盘（`config.json`）和 React 状态，可能不同步。写盘 MUST 以磁盘为准（`await loadAppConfig()` 读最新再合并），**禁止**直接用 React `config` 状态写盘。Agent 配置走 Rust `cmd_update_agent_config`，写盘后 MUST 调 `refreshConfig()` 同步 React。
@@ -216,7 +216,7 @@ Rust `CronTaskManager` 统一管理所有定时任务（Chat 定时 / 独立创�
 | 前端任意 px 字号（`text-[13px]`）或已删档位类名（`text-2xs/2sm/md`） | 字阶漂移（幽灵字阶曾 ~700 处，PRD 0.2.34 清零）；死类名无 @theme token，编译不报错但**静默失效** | 终局七档 `text-xs/sm/base/lg/xl/2xl/3xl`（12/14/16/18/20/22/28；**2xl=22、3xl=28 与官方不同**）。档位职责与离阶豁免见 DESIGN.md §2.2 | eslint (`src/renderer/**`) |
 | 表单原生 `<select>` | 系统下拉框跨平台不一致 + 不可主题化 → 破坏 DESIGN.md 视觉一致性 | `<CustomSelect>` 组件 | eslint |
 | 新增手写 SDK shim 不加入 `_handwritten.json` | `generate:sdk-shims` 下次覆盖手写 | 同步加入 `sdk-shim/plugin-sdk/_handwritten.json` | — (协调性变更) |
-| model id 直接喂 SDK ingress（`query({model})`、agents model、`setModel()`、`ANTHROPIC_DEFAULT_*_MODEL` env）不过 `applyContextWindowSuffix` | >200K 窗口模型退回 SDK 200K fallback：auto-compact ~187K 触发、附件按 200K 截（1M 档与 512K/262K 中间档同病，#335） | `applyContextWindowSuffix(model)`（`@/server/utils/model-capabilities`）。**反向**：bridge / cron / 用户可见处必须用未 wrap 原始 id。wrap 策略、sonnet-4-6 例外、registry 裸 key 规则见 `pit_of_success.md`「applyContextWindowSuffix」 | — (靠 review 兜底) |
+| model id 直接喂 SDK ingress（`query({model})`、agents model、`setModel()`、`ANTHROPIC_DEFAULT_*_MODEL` env）不过 context-window suffix helper | >200K 窗口模型退回 SDK 200K fallback；同 model id 被多 Provider 复用时，flat lookup 还会继承错误窗口 | 已知 provider 的 ingress 用 `applyProviderContextWindowSuffix(model, providerId)`；provider 不可知时才用 `applyContextWindowSuffix(model)`（`@/server/utils/model-capabilities`）。**反向**：bridge / cron / 用户可见处必须用未 wrap 原始 id。详见 `pit_of_success.md`「Context-window suffix helpers」 | — (靠 review 兜底) |
 | 工具产物富媒体走 `tool_result.content` 字符串或为单点工具写专门 React 组件 | 换 Runtime 后图片不渲染（v0.2.15 实战）；大 base64 撞 256KB SSE 红线；每个产图工具都要新组件 | 协议层一等公民 `tool_result.attachments: ToolAttachment[]` + `saveToolAttachment(...)`，前端统一 `ToolAttachmentGallery`。详见 `tech_docs/tool_attachment_pipeline.md` | — (设计层模式) |
 | 攻击者可控路径以 `canonicalizeSymlinks: false` 校验后引用为 attachment | symlink 逃逸：lexical 检查放行 `evil_link → /etc/passwd`，endpoint 流回敏感字节 | 读侧 `canonicalizeSymlinks: true`（默认）+ 拒绝 symlink leaf + `isAllowedExternalAttachmentPrefix` allow-list。详见 `tech_docs/tool_attachment_pipeline.md` §4 | — (语义检查，靠 review) |
 | prompt 可控的 URL 直接下载，不限 scheme / 不挡私网 | SSRF：`http://169.254.169.254`（云 metadata）/ loopback 把 sidecar 当跳板 | 照 `tool-attachments.ts::downloadAndSaveUrl` 校验（https-only + 拒私网/link-local + `redirect:'error'`）。详见 `tech_docs/tool_attachment_pipeline.md` §4 | — (调用方语义) |
@@ -265,7 +265,7 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --locked --all-targets -- -D c
 
 ## Managed Codex Runtime 资源发布
 
-独立于桌面 App 的可执行资源，**不随** `publish_release.sh` / `publish_windows.ps1` 上传；仅当客户端锁定新 `REQUIRED_RUNTIME_SET` / `REQUIRED_VERSION`（权威来源 `src-tauri/src/managed_codex.rs`，别从 App 版本推导）或补发缺失平台时，用根目录 `./publish_managed_codex_runtime.sh -y`（macOS）/ `publish_managed_codex_runtime.ps1 -Yes`（Windows）单独发布。非交互必须显式 `-y`/`-Yes`；默认禁止覆盖已存在的同平台 manifest（`--force-republish` 仅在确认远端内容错误时用）；**Windows 资源必须在 Windows 发布端验证 `codex.exe` 的 Authenticode 签名，不得在 macOS 上绕过**。平台矩阵 / R2 前缀等细节见 `specs/guides/build_and_release_guide.md`。
+独立于桌面 App 的可执行资源，**不随** `publish_release.sh` / `publish_windows.ps1` 上传；客户端 runtime 版本的唯一权威是 `src/shared/managed-codex-runtime.json::version`，runtime set 固定派生为 `codex-<version>`（别从 App 版本推导）。升级时只改这一个值，再用根目录 `./publish_managed_codex_runtime.sh -y`（macOS）/ `publish_managed_codex_runtime.ps1 -Yes`（Windows）分别发布；官方发布入口不接受版本 / set 覆盖，Rust、TypeScript 与打包器都从锁文件派生。非交互必须显式 `-y`/`-Yes`；默认禁止覆盖已存在的同平台 manifest（`--force-republish` 仅在确认远端内容错误时用）；**Windows 资源必须在 Windows 发布端验证所有原生可执行文件的 Authenticode 签名，不得在 macOS 上绕过**。客户端升级期间，已验证旧 runtime 继续承载既有 Sidecar；下载完成只切换后续新 Sidecar 的默认版本，禁止为了升级 abort / 热重启活跃 Session。平台矩阵 / R2 前缀等细节见 `specs/guides/build_and_release_guide.md`。
 
 ## Rust 工具链纪律
 
@@ -293,6 +293,7 @@ Rust 工具链由仓库根目录 `rust-toolchain.toml` 固定，开发机和 CI 
 
 - **提交前 MUST**：`npm run typecheck` + `npm run test:unit`（秒级；若动了 `.test.tsx`/组件再加 `npm run test:dom`；若动了后端 session/runtime/IO/security 再加 `npm run test:classification` + `npm run test:integration`），检查当前分支（`git branch --show-current`）
 - **并发 writer 纪律（本仓库常态）**：working tree 可能被并行 session / 用户同时改，会话开始的 git 快照是**冻结的**、不反映实时树。提交前 MUST 重跑 `git status`；**禁止 `git add -A` / `git add .`**——显式列出只属于你的文件；对改过的文件用 `git diff -- <file>` 确认没混入别人的 hunk（混了就别整文件 stage，隔离自己的 hunk 或先协调）；验证后**尽快提交**（拖延会被并发 `commit -a` 把混合文件卷走）。**禁止** `checkout HEAD -- <file>` / amend 共享 commit 去"清理"——会毁掉对方未提交工作，改用追加 commit。whole-tree `npm run lint` / `typecheck` 可能因别人未提交代码报错，用 `npx eslint <你的文件>` 自查
+- **ignored 草稿目录纪律**：`.gitignore` 是提交边界，不是提醒。**禁止 `git add -f` / `git add --force`** 把 ignored 文件塞进提交，除非用户在本次消息里明确要求"强制纳入 git"。`specs/prd/`、`specs/research/` 是本地 PRD / 研究草稿区，默认只落盘、不提交；若误提交，立刻用 `git rm --cached <path>` 移出 tracking，并保留本地文件
 - **发布前验"已提交态"而非工作树**：并发 writer 可能提交了组件改动、却把配套测试 fix 留在工作区 → **已提交分支是红的，但你本地 `npm test` 因工作区 fix 而绿**（0.2.29 实战：`SimpleChatInput` 的 `useConfigData` 改动已提交、其测试 mock 未提交 → 已提交态 `useConfigData must be used within <ConfigProvider>`）。合 main / 打 tag 前 MUST 先 `git stash` 掉无关工作区文件（或确认 `git status` 干净）再跑易红测试；load-bearing 的未提交 fix 就显式提交进发布准备，别 ship 红分支
 - **分支策略**：`dev/x.x.x` 开发 → 合并到 `main`。MUST NOT 在 main 直接提交
 - **合并到 main**：需 typecheck + lint 通过 + 用户明确确认

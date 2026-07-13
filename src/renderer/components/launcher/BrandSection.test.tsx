@@ -9,13 +9,33 @@ import { i18n } from '@/i18n';
 import BrandSection from './BrandSection';
 
 vi.mock('@/components/SimpleChatInput', () => ({
-  default: forwardRef<HTMLTextAreaElement>(function SimpleChatInputMock() {
-    return <div data-testid="launcher-input">input</div>;
+  default: forwardRef<HTMLTextAreaElement, { onSlashAction?: (name: string) => void }>(function SimpleChatInputMock(
+    { onSlashAction },
+    _ref,
+  ) {
+    return (
+      <div data-testid="launcher-input">
+        input
+        <button type="button" onClick={() => onSlashAction?.('goal')}>open goal</button>
+      </div>
+    );
   }),
 }));
 
 vi.mock('@/components/cron/CronTaskSettingsModal', () => ({
-  default: () => null,
+  GOAL_SLASH_PRESET: {
+    taskKind: 'goal',
+    prompt: '',
+    intervalMinutes: 30,
+    endConditions: { aiCanExit: true },
+    runMode: 'single_session',
+    notifyEnabled: true,
+    schedule: { kind: 'loop' },
+    executionTarget: 'current_session',
+  },
+  default: ({ isOpen, initialConfig }: { isOpen: boolean; initialConfig?: { taskKind?: string } }) => (
+    isOpen ? <div data-testid="cron-settings" data-task-kind={initialConfig?.taskKind} /> : null
+  ),
 }));
 
 vi.mock('./LauncherInputContextRow', () => ({
@@ -98,6 +118,14 @@ describe('BrandSection', () => {
     fireEvent.click(screen.getByRole('button', { name: /配置模型供应商/ }));
 
     expect(onGoToSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the Goal preset from the launcher slash action', () => {
+    renderBrandSection();
+
+    fireEvent.click(screen.getByRole('button', { name: 'open goal' }));
+
+    expect(screen.getByTestId('cron-settings')).toHaveAttribute('data-task-kind', 'goal');
   });
 
   it('renders the no-provider CTA in English when the UI language is English', async () => {

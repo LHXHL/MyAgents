@@ -3,11 +3,8 @@
 # upload runtime resources.
 
 param(
-    [string]$RuntimeSet = "",
-    [string]$CodexVersion = "",
     [string]$Platforms = "",
     [string]$OutDir = "",
-    [switch]$SkipPackage,
     [switch]$ForceRepublish,
     [switch]$Yes,
     [switch]$NoPurge,
@@ -20,7 +17,7 @@ $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectDir
 
 $EnvFile = Join-Path $ProjectDir ".env"
-$RustCodexFile = Join-Path $ProjectDir "src-tauri\src\managed_codex.rs"
+$RuntimeLockFile = Join-Path $ProjectDir "src\shared\managed-codex-runtime.json"
 $R2Bucket = "myagents-releases"
 $DownloadBaseUrl = "https://download.myagents.io"
 if (-not $OutDir) {
@@ -30,15 +27,20 @@ elseif (-not [System.IO.Path]::IsPathRooted($OutDir)) {
     $OutDir = Join-Path $ProjectDir $OutDir
 }
 
-function Read-RustConst {
-    param([string]$Name)
-    $source = Get-Content $RustCodexFile -Raw
-    $pattern = '^const ' + [regex]::Escape($Name) + ':.*= "([^"]+)";'
-    $match = [regex]::Match($source, $pattern, [System.Text.RegularExpressions.RegexOptions]::Multiline)
-    if (-not $match.Success) {
-        throw "Could not read $Name from $RustCodexFile"
+function Read-RuntimeLock {
+    if (-not (Test-Path -LiteralPath $RuntimeLockFile)) {
+        throw "Managed Codex runtime lock not found: $RuntimeLockFile"
     }
-    return $match.Groups[1].Value
+    $lock = Get-Content -LiteralPath $RuntimeLockFile -Raw | ConvertFrom-Json
+    $versionProperty = $lock.PSObject.Properties['version']
+    if (-not $versionProperty -or -not ($versionProperty.Value -is [string])) {
+        throw "Managed Codex runtime lock requires a string version: $RuntimeLockFile"
+    }
+    $version = [string]$versionProperty.Value
+    if ($version.Trim() -ne $version -or $version -notmatch '^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$') {
+        throw "Managed Codex runtime lock requires a canonical semver version: $RuntimeLockFile"
+    }
+    return @{ Version = $version; RuntimeSet = "codex-$version" }
 }
 
 function Assert-RuntimeSetSlug {
@@ -79,12 +81,9 @@ function Get-RclonePath {
     return $rclone.Source
 }
 
-if (-not $RuntimeSet) {
-    $RuntimeSet = Read-RustConst "REQUIRED_RUNTIME_SET"
-}
-if (-not $CodexVersion) {
-    $CodexVersion = Read-RustConst "REQUIRED_VERSION"
-}
+$runtimeLock = Read-RuntimeLock
+$RuntimeSet = $runtimeLock.RuntimeSet
+$CodexVersion = $runtimeLock.Version
 Assert-RuntimeSetSlug $RuntimeSet
 
 $RuntimeDir = Join-Path (Join-Path $OutDir "sets") $RuntimeSet
@@ -115,24 +114,17 @@ if (-not $node) {
 }
 Write-Host "[OK] Dependencies ready" -ForegroundColor Green
 
-if (-not $SkipPackage) {
-    Write-Host "[3/6] Package runtime..." -ForegroundColor Blue
-    $packageArgs = @(
-        (Join-Path $ProjectDir "scripts\package-managed-codex-runtime.mjs"),
-        "--runtime-set", $RuntimeSet,
-        "--codex-version", $CodexVersion,
-        "--out", $OutDir
-    )
-    if ($Platforms) {
-        $packageArgs += @("--platforms", $Platforms)
-    }
-    & node @packageArgs
-    if ($LASTEXITCODE -ne 0) {
-        throw "Managed Codex runtime packaging failed"
-    }
+Write-Host "[3/6] Package runtime..." -ForegroundColor Blue
+$packageArgs = @(
+    (Join-Path $ProjectDir "scripts\package-managed-codex-runtime.mjs"),
+    "--out", $OutDir
+)
+if ($Platforms) {
+    $packageArgs += @("--platforms", $Platforms)
 }
-else {
-    Write-Host "[3/6] Skip package, use existing directory..." -ForegroundColor Blue
+& node @packageArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "Managed Codex runtime packaging failed"
 }
 
 if (-not (Test-Path $RuntimeDir)) {

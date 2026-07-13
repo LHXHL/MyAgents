@@ -34,12 +34,27 @@ export function isRestoredSession(
 }
 
 /**
+ * Live turn events may be emitted by a server owner that bypasses the
+ * renderer's send path. A stamped event is accepted only for the currently
+ * attached session. Legacy unmarked events remain compatible with established
+ * sessions, but cannot end a new-session stale-event window.
+ */
+export function shouldAcceptLiveTurnEvent(p: {
+    isNewSession: boolean;
+    payloadSessionId: string | null;
+    isCurrentSessionScope: boolean;
+}): boolean {
+    if (p.payloadSessionId) return p.isCurrentSessionScope;
+    return !p.isNewSession;
+}
+
+/**
  * Whether an SSE `chat:message-replay` event should be skipped.
  *
  * `chat:message-replay` is OVERLOADED (Codex review of #0608): the SSE-connect
  * backfill replays the whole in-memory transcript with `replayKind:
- * 'cold-history'`, but the SAME event also carries LIVE echoes of a freshly-sent
- * user / command bubble (no `replayKind`). Only the cold-history backfill yields
+ * 'cold-history'`, but the SAME event also carries session-stamped LIVE echoes
+ * of a freshly-sent user / command bubble. Only the cold-history backfill yields
  * to a REST-restored session — REST owns the ordered, paginated history, and
  * re-delivering the in-memory set on top of a partial REST page reorders /
  * truncates it. A LIVE echo must ALWAYS render, otherwise a new user message
@@ -48,17 +63,20 @@ export function isRestoredSession(
  * Reset-session birth has one extra transient: `/chat/reset` can synchronize
  * the renderer/Rust to the freshly minted backend id before the later
  * `chat:system-init` confirms it. During that window, cold-history replay must
- * still stay out of the empty new tab, but live echoes must render.
+ * still stay out of the empty new tab. A live echo may end the birth guard only
+ * after its source session matches the Tab's current SSE/session identity.
  */
 export function shouldSkipHistoryReplay(p: {
     isNewSession: boolean;
     isLoadingSession: boolean;
     isColdHistoryReplay: boolean;
+    isCurrentSessionLiveEcho?: boolean;
     isResetBirthPending?: boolean;
     restoredSessionId: string | null;
     currentSessionId: string | null;
 }): boolean {
-    if (p.isNewSession || p.isLoadingSession) return true;
+    if (p.isLoadingSession) return true;
+    if (p.isNewSession && !p.isCurrentSessionLiveEcho) return true;
     if (p.isColdHistoryReplay && p.isResetBirthPending) return true;
     return (
         p.isColdHistoryReplay &&

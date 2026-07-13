@@ -11,6 +11,40 @@ export type QueueAdmissionAction =
 
 export type QueueLocation = 'message' | 'pending-mid-turn' | 'turn-boundary' | 'in-flight';
 
+export type DispatchGuardResult = {
+  accepted: boolean;
+  error?: string;
+  code?: string;
+};
+
+export type DispatchGuard = (() => Promise<DispatchGuardResult>) & {
+  cancel?: () => void;
+};
+
+export type TurnOwner = {
+  kind: 'goal' | 'task';
+  id: string;
+};
+
+export type TurnIdentity = {
+  queueId: string;
+  owner: TurnOwner;
+};
+
+export type TurnTerminalOutcome = {
+  status: 'complete' | 'stopped' | 'error';
+  text: string;
+  assistantMessagePresent: boolean;
+  error?: string;
+  durationMs?: number;
+  usage?: {
+    inputTokens: number;
+    outputTokens: number;
+  };
+};
+
+export type TurnTerminalObserver = (outcome: TurnTerminalOutcome) => void | Promise<void>;
+
 export function shouldApplyChatQueueResponseMode(
   fromDesktopChatSend: boolean | undefined,
 ): boolean {

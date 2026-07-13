@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
     getLiveSessionOverlay: vi.fn<() => Record<string, unknown>>(() => ({ isActive: false })),
   },
   getSessionData: vi.fn(),
+  isHistoryVisibleSession: vi.fn(() => true),
   pendingSessionWatchCount: vi.fn(() => 1),
   registerPendingSessionWatch: vi.fn(),
 }));
@@ -18,6 +19,7 @@ vi.mock('../session-engine', () => ({
 
 vi.mock('../SessionStore', () => ({
   getSessionData: mocks.getSessionData,
+  isHistoryVisibleSession: mocks.isHistoryVisibleSession,
 }));
 
 vi.mock('../inbox/watch-registry', () => ({
@@ -44,6 +46,7 @@ describe('handleSessionReadRoute', () => {
     mocks.engine.getLatestAssistantResult.mockReturnValue({ sessionId: 'sid', latestResult: 'latest answer' });
     mocks.engine.getLiveSessionOverlay.mockReturnValue({ isActive: false });
     mocks.getSessionData.mockReturnValue(null);
+    mocks.isHistoryVisibleSession.mockReturnValue(true);
     mocks.pendingSessionWatchCount.mockReturnValue(1);
   });
 
@@ -158,6 +161,64 @@ describe('handleSessionReadRoute', () => {
     expect((body.session as { messages: Array<{ id: string }> }).messages.map(message => message.id)).toEqual(['m1', 'm2']);
     expect(body.session).toMatchObject({
       liveStreamingMessage: { id: 'live', content: 'typing' },
+    });
+  });
+
+  it('returns not found for hidden system maintenance sessions', async () => {
+    mocks.getSessionData.mockReturnValue({
+      id: 'sid',
+      providerEnvJson: undefined,
+      messages: [],
+    });
+    mocks.isHistoryVisibleSession.mockReturnValue(false);
+
+    const response = await handleSessionReadRoute(
+      '/sessions/sid',
+      new Request('http://local/sessions/sid'),
+      new URL('http://local/sessions/sid'),
+    );
+
+    expect(response?.status).toBe(404);
+    expect(await readJson(response as Response)).toEqual({
+      success: false,
+      error: 'Session not found.',
+    });
+  });
+
+  it('allows the active prepared session to load while it stays hidden from history', async () => {
+    mocks.getSessionData.mockReturnValue({
+      id: 'sid',
+      runtime: 'codex',
+      runtimeSource: 'managed-provider',
+      materializationState: 'prepared',
+      providerEnvJson: undefined,
+      messages: [],
+    });
+    mocks.isHistoryVisibleSession.mockReturnValue(false);
+    mocks.engine.getLiveSessionOverlay.mockReturnValue({
+      isActive: true,
+      runtime: 'codex',
+      liveSessionState: 'idle',
+    });
+
+    const response = await handleSessionReadRoute(
+      '/sessions/sid',
+      new Request('http://local/sessions/sid?limit=80'),
+      new URL('http://local/sessions/sid?limit=80'),
+    );
+
+    const body = await readJson(response as Response);
+    expect(response?.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.session).toMatchObject({
+      id: 'sid',
+      runtime: 'codex',
+      runtimeSource: 'managed-provider',
+      materializationState: 'prepared',
+      liveSessionState: 'idle',
+      totalCount: 0,
+      hasMoreBefore: false,
+      messages: [],
     });
   });
 

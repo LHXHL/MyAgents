@@ -8,7 +8,7 @@
 //! tokenization. Exposed to the frontend via Tauri IPC commands (`cmd_search_*`).
 //!
 //! Architecture: singleton `SearchEngine` managed as Tauri state, same tier as
-//! `SidecarManager` and `CronTaskManager`.
+//! `SidecarManager` and `TaskStore`.
 
 mod file_indexer;
 mod schema;

@@ -5,6 +5,7 @@ import type { RuntimeModelInfo, RuntimeSource, RuntimeType } from './types/runti
 import type { UiLanguage } from './i18n';
 import type { OfficialToolId, OfficialToolSettings } from './official-tools';
 import type { SubscriptionVerifyFailureKind } from './subscription';
+import managedCodexRuntimeLock from './managed-codex-runtime.json';
 
 /**
  * Permission mode for agent behavior
@@ -169,6 +170,21 @@ export const SUBSCRIPTION_PROVIDER_ID = 'anthropic-sub';
 /** Runtime-backed Codex subscription provider ID. */
 export const CODEX_SUBSCRIPTION_PROVIDER_ID = 'codex-sub';
 
+/** Host-managed Grok subscription provider ID. */
+export const XAI_SUBSCRIPTION_PROVIDER_ID = 'xai-sub';
+export const XAI_SUBSCRIPTION_API_BASE_URL = 'https://api.x.ai/v1';
+
+export type BuiltinSubscriptionProviderId =
+  | typeof SUBSCRIPTION_PROVIDER_ID
+  | typeof XAI_SUBSCRIPTION_PROVIDER_ID;
+
+export function isBuiltinSubscriptionProviderId(
+  providerId: string | null | undefined,
+): providerId is BuiltinSubscriptionProviderId {
+  return providerId === SUBSCRIPTION_PROVIDER_ID
+    || providerId === XAI_SUBSCRIPTION_PROVIDER_ID;
+}
+
 type ProviderOrderable = {
   id: string;
   enabled?: unknown;
@@ -176,6 +192,7 @@ type ProviderOrderable = {
 
 const MISSING_PROVIDER_INSERT_AFTER: Record<string, string> = {
   [CODEX_SUBSCRIPTION_PROVIDER_ID]: SUBSCRIPTION_PROVIDER_ID,
+  [XAI_SUBSCRIPTION_PROVIDER_ID]: CODEX_SUBSCRIPTION_PROVIDER_ID,
 };
 
 export function normalizeProviderOrder(providerIds: string[], providerOrder?: string[]): string[] {
@@ -192,7 +209,11 @@ export function normalizeProviderOrder(providerIds: string[], providerOrder?: st
   for (const id of providerIds) {
     if (seen.has(id)) continue;
     seen.add(id);
-    const insertAfter = MISSING_PROVIDER_INSERT_AFTER[id];
+    const insertAfter = id === XAI_SUBSCRIPTION_PROVIDER_ID
+      ? (ordered.includes(CODEX_SUBSCRIPTION_PROVIDER_ID)
+        ? CODEX_SUBSCRIPTION_PROVIDER_ID
+        : SUBSCRIPTION_PROVIDER_ID)
+      : MISSING_PROVIDER_INSERT_AFTER[id];
     const insertAfterIndex = insertAfter ? ordered.indexOf(insertAfter) : -1;
     if (insertAfterIndex >= 0) {
       ordered.splice(insertAfterIndex + 1, 0, id);
@@ -307,6 +328,24 @@ export type ProviderExecution =
     };
 
 /**
+ * Credential owner for subscription-shaped Providers.
+ *
+ * This is deliberately independent from `Provider.type`: subscription is a
+ * product/billing identity, while this policy states who owns the credential
+ * lifecycle and therefore how builtin execution materializes it.
+ */
+export type SubscriptionAuthPolicy =
+  | { kind: 'sdk-native' }
+  | { kind: 'host-managed-oauth' }
+  | { kind: 'runtime-managed' };
+
+/** Non-secret reference carried by builtin ProviderEnv for host-owned OAuth. */
+export type ManagedProviderCredential = {
+  kind: 'managed-oauth';
+  providerId: typeof XAI_SUBSCRIPTION_PROVIDER_ID;
+};
+
+/**
  * Service provider configuration
  */
 export interface Provider {
@@ -317,6 +356,7 @@ export interface Provider {
   cloudProvider: string;    // 云服务商: '模型官方', '云服务商', etc.
   type: 'subscription' | 'api';
   execution?: ProviderExecution; // undefined == { kind: 'builtin' }
+  subscriptionAuth?: SubscriptionAuthPolicy;
   primaryModel: string;     // 默认模型 API 代码
   isBuiltin: boolean;
   enabled?: boolean;        // Runtime-derived: false when globally disabled by the user
@@ -578,6 +618,8 @@ export type ManagedCodexInstallStatus =
 
 export interface ManagedCodexRuntimeInstallState {
   status: ManagedCodexInstallStatus;
+  /** A previously verified runtime is available for new Sidecars, even while an update is pending. */
+  usable?: boolean;
   requiredVersion?: string;
   installedVersion?: string;
   platform?: string;
@@ -597,11 +639,23 @@ export interface ManagedCodexAuthState {
   error?: string;
 }
 
+const MANAGED_CODEX_VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+export function isCanonicalManagedCodexRuntimeVersion(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.trim() === value
+    && MANAGED_CODEX_VERSION_RE.test(value);
+}
+const managedCodexVersion = managedCodexRuntimeLock.version;
+if (!isCanonicalManagedCodexRuntimeVersion(managedCodexVersion)) {
+  throw new Error('managed-codex-runtime.json requires a canonical semver version');
+}
+const managedCodexRuntimeSet = `codex-${managedCodexVersion}` as const;
+
 export const MANAGED_CODEX_REQUIRED_RUNTIME = {
   component: 'codex',
-  version: '0.142.2',
-  runtimeSet: 'codex-0.142.2',
-  manifestBaseUrl: 'https://download.myagents.io/runtimes/codex/sets/codex-0.142.2',
+  version: managedCodexVersion,
+  runtimeSet: managedCodexRuntimeSet,
+  manifestBaseUrl: `https://download.myagents.io/runtimes/codex/sets/${managedCodexRuntimeSet}`,
   manifestPublicKeyId: 'myagents-runtime-manifest-ed25519-2026-06',
 } as const;
 
@@ -664,6 +718,7 @@ export interface ProxySettings {
 export const DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS = 365;
 
 export type ChatQueueResponseMode = 'realtime' | 'turn';
+export type SpaceEnvironment = 'production' | 'dev';
 
 export function normalizeChatQueueResponseMode(value: unknown): ChatQueueResponseMode {
   return value === 'turn' ? 'turn' : 'realtime';
@@ -715,7 +770,7 @@ export interface AppConfig {
    *  （builtin SDK async queue；Codex app-server turn/steer）；
    *  'turn' = busy 时留在 turn-boundary queue，上一轮结束后再作为下一轮发送。
    *  不支持实时 steering 的 external runtime 自动 fallback 到 'turn' 行为。
-   *  仅桌面交互发送读取；IM/Cron/Inbox 等非桌面来源保持既有语义。 */
+   *  仅桌面交互发送读取；IM/Task/Inbox 等非桌面来源保持既有语义。 */
   chatQueueResponseMode?: ChatQueueResponseMode;
   showDevTools: boolean; // 显示开发者工具 (Logs/System Info)
   multiAgentRuntime?: boolean; // 多 Agent Runtime 模式（开发者，默认关闭）
@@ -726,9 +781,11 @@ export interface AppConfig {
   cliToolRegistryEnabled?: boolean;
   /** 隐藏开发者开关：桌面宠物功能门控。默认开；普通用户不可见。 */
   floatingBallDevGate?: boolean;
-  /** 开发者总门控：团队 Space（MyAgents Space / Cloud Space）。默认关。
-   *  功能未完成前隐藏标题栏入口与已恢复的团队 tab。 */
+  /** 实验室门控：团队 Space（MyAgents Space / Cloud Space）。默认关。
+   *  关闭时隐藏标题栏入口与已恢复的团队 tab。 */
   teamSpaceEnabled?: boolean;
+  /** 开发者：Cloud Space 服务环境。release 构建没有 Dev origin 时会被 Rust 忽略。 */
+  spaceEnvironment?: SpaceEnvironment;
   /** 悬浮球本体显隐开关；由桌面宠物设置页顶部开关控制。默认关。 */
   floatingBallEnabled?: boolean;
   /** 悬浮球本体外观。缺省视同 'pet'（PRD 0.2.34 floating_ball_pet_mode Phase 1）。 */
@@ -1008,6 +1065,7 @@ export const MANAGED_CODEX_PROVIDER: Provider = {
   vendor: 'OpenAI',
   cloudProvider: 'ChatGPT Subscription',
   type: 'subscription',
+  subscriptionAuth: { kind: 'runtime-managed' },
   execution: { kind: 'runtime-backed', runtime: 'codex', source: 'managed-provider' },
   primaryModel: '',
   isBuiltin: true,
@@ -1048,6 +1106,32 @@ export function isManagedCodexProviderGateEnabled(
   return config.managedCodexProviderDevGate === true;
 }
 
+export function shouldAutoUpdateManagedCodexRuntime(
+  config: Pick<AppConfig, 'managedCodexProviderDevGate' | 'managedCodexRuntimeInstall'>,
+): boolean {
+  if (!isManagedCodexProviderGateEnabled(config)) return false;
+  const install = config.managedCodexRuntimeInstall;
+  if (!install?.installedVersion) return false;
+  if (
+    install.status === 'downloading'
+    || install.status === 'checking'
+    || install.status === 'update-required'
+    || install.status === 'error'
+  ) {
+    return true;
+  }
+  if (install.status === 'installed') {
+    return install.installedVersion !== MANAGED_CODEX_REQUIRED_RUNTIME.version;
+  }
+  return false;
+}
+
+export function isManagedCodexRuntimeUsable(
+  state: ManagedCodexRuntimeInstallState | undefined,
+): boolean {
+  return state?.usable === true;
+}
+
 export function isManagedCodexRequiredRuntimeInstalled(
   state: ManagedCodexRuntimeInstallState | undefined,
 ): boolean {
@@ -1078,7 +1162,7 @@ export function getManagedCodexProviderReadiness(
   }
 
   const install = config.managedCodexRuntimeInstall;
-  if (!isManagedCodexRequiredRuntimeInstalled(install)) {
+  if (!isManagedCodexRuntimeUsable(install)) {
     let reason: ManagedCodexProviderReadinessReason = 'runtime-not-installed';
     if (install?.status === 'downloading' || install?.status === 'checking') {
       reason = 'runtime-downloading';
@@ -1152,11 +1236,40 @@ export const PRESET_PROVIDERS: Provider[] = [
     vendor: 'Anthropic',
     cloudProvider: '官方',
     type: 'subscription',
+    subscriptionAuth: { kind: 'sdk-native' },
     primaryModel: 'claude-sonnet-5',
     isBuiltin: true,
     config: {},
     modelAliases: { ...ANTHROPIC_ALIASES },
     models: ANTHROPIC_MODELS,
+  },
+  {
+    id: XAI_SUBSCRIPTION_PROVIDER_ID,
+    name: 'Grok（订阅）',
+    subtitle: '使用 Grok 订阅账户额度',
+    vendor: 'xAI',
+    cloudProvider: '官方',
+    type: 'subscription',
+    subscriptionAuth: { kind: 'host-managed-oauth' },
+    execution: { kind: 'builtin' },
+    primaryModel: 'grok-4.5',
+    isBuiltin: true,
+    apiProtocol: 'openai',
+    upstreamFormat: 'responses',
+    modelListUrl: `${XAI_SUBSCRIPTION_API_BASE_URL}/models`,
+    config: {
+      baseUrl: XAI_SUBSCRIPTION_API_BASE_URL,
+    },
+    modelAliases: {
+      fable: 'grok-4.5',
+      sonnet: 'grok-4.5',
+      opus: 'grok-4.5',
+      haiku: 'grok-composer-2.5-fast',
+    },
+    models: [
+      { model: 'grok-4.5', modelName: 'Grok 4.5', modelSeries: 'grok', contextLength: 500_000, inputModalities: ['text', 'image'], outputModalities: ['text'], source: 'preset' },
+      { model: 'grok-composer-2.5-fast', modelName: 'Grok Composer 2.5 Fast', modelSeries: 'grok', contextLength: 200_000, inputModalities: ['text'], outputModalities: ['text'], source: 'preset' },
+    ],
   },
   {
     id: 'anthropic-api',
@@ -1789,7 +1902,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   chatQueueResponseMode: 'realtime',
   showDevTools: false,
   cliToolRegistryEnabled: false, // 默认关闭用户注册 CLI 工具注册表（实验室）
-  teamSpaceEnabled: false, // 默认隐藏未发布的团队 Space 入口
+  teamSpaceEnabled: false, // 默认关闭实验室 Team Space 入口
+  spaceEnvironment: 'production',
   managedCodexProviderDevGate: true, // 默认开放 Codex 订阅 Provider；只有显式 true 才启用
   floatingBallDevGate: true,
   floatingBallEnabled: false,

@@ -21,10 +21,14 @@ import { WorkspaceSelectDialog } from '@/components/AgentSettings';
 import ProxyScopeDialog from '@/components/ProxyScopeDialog';
 import WorkspaceConfigPanel from '@/components/WorkspaceConfigPanel';
 import ModelManagementPanel from '@/components/ModelManagementPanel';
+import GrokSubscriptionProvider from '@/components/GrokSubscriptionProvider';
+import SubscriptionProviderCardContent from '@/components/SubscriptionProviderCardContent';
+import { discoverGrokModels } from '@/config/services/grokSubscriptionService';
 import UsageStatsPanel from '@/components/UsageStatsPanel';
 import {
     getEffectiveModelAliases,
     CODEX_SUBSCRIPTION_PROVIDER_ID,
+    XAI_SUBSCRIPTION_PROVIDER_ID,
     normalizeDisabledProviderIds,
     normalizeProviderOrder,
     splitProviderModelInput,
@@ -44,8 +48,10 @@ import {
     normalizeChatQueueResponseMode,
     getManagedCodexProviderReadiness,
     isManagedCodexProviderGateEnabled,
+    type ManagedCodexRuntimeInstallState,
     type ChatQueueResponseMode,
     type ProxyProtocol,
+    type SpaceEnvironment,
 } from '@/config/types';
 import {
     getAllMcpServers,
@@ -62,6 +68,8 @@ import {
 } from '@/config/configService';
 import { useConfig } from '@/hooks/useConfig';
 import { useSpaceBuildCapability } from '@/hooks/useSpaceBuildCapability';
+import { SpaceEnvironmentSwitch } from './components/SpaceEnvironmentSwitch';
+import { actions as spaceActions } from '@/pages/space/spaceStore';
 import { useHelperAgentModelDefaults } from '@/hooks/useHelperAgentModelDefaults';
 import { useAutostart } from '@/hooks/useAutostart';
 import { getBuildVersions } from '@/utils/debug';
@@ -113,6 +121,11 @@ import {
     type CustomProviderForm,
     type ProviderEditForm,
 } from './providerForms';
+import {
+    getManagedCodexRuntimePresentation,
+    getManagedCodexUpdateRefreshAction,
+    type ManagedCodexRuntimeBusyAction,
+} from './managedCodexRuntimePresentation';
 import type {
     NetworkProbeResult,
     ProviderVerifyError,
@@ -244,8 +257,10 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         savePrimaryModel,
         saveProviderModelAliases,
         refreshConfig,
+        managedCodexRuntimeUpdateInFlight,
+        requestManagedCodexRuntimeUpdate,
     } = useConfig();
-    const spaceBuildCapability = useSpaceBuildCapability();
+    const spaceBuildCapability = useSpaceBuildCapability(config.spaceEnvironment);
     const toast = useToast();
     const { t: tSettings } = useTranslation('settings');
     const { t: tCommon } = useTranslation('common');
@@ -266,11 +281,29 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         { value: 'zh-CN', label: tCommon('language.zhCN') },
         { value: 'en-US', label: tCommon('language.enUS') },
     ], [tCommon]);
+    const availableSpaceEnvironments = useMemo(
+        () => new Set(spaceBuildCapability.environments ?? ['production']),
+        [spaceBuildCapability.environments],
+    );
+    const activeSpaceEnvironment: SpaceEnvironment =
+        spaceBuildCapability.activeEnvironment === 'dev' && availableSpaceEnvironments.has('dev')
+            ? 'dev'
+            : 'production';
+    const updateSpaceEnvironment = useCallback((environment: SpaceEnvironment) => {
+        if (!availableSpaceEnvironments.has(environment)) return;
+        void (async () => {
+            await updateConfig({ spaceEnvironment: environment });
+            await spaceActions.ensureBootstrapped({ force: true, silent: true });
+        })().catch((error) => {
+            const message = error instanceof Error ? error.message : String(error);
+            toast.error(tSettings('about.developer.spaceEnvironmentSaveFailed', { message }));
+        });
+    }, [availableSpaceEnvironments, tSettings, toast, updateConfig]);
     const [claudeTranscriptCleanupDaysDraft, setClaudeTranscriptCleanupDaysDraft] = useState(
         String(DEFAULT_CLAUDE_TRANSCRIPT_CLEANUP_PERIOD_DAYS),
     );
     const [floatingBallGateBusy, setFloatingBallGateBusy] = useState(false);
-    const [managedCodexBusy, setManagedCodexBusy] = useState<null | 'status' | 'download' | 'login' | 'logout'>(null);
+    const [managedCodexBusy, setManagedCodexBusy] = useState<ManagedCodexRuntimeBusyAction>(null);
     const managedCodexBusyRef = useRef<typeof managedCodexBusy>(null);
     managedCodexBusyRef.current = managedCodexBusy;
     const [managedCodexDetailsOpen, setManagedCodexDetailsOpen] = useState(false);
@@ -2660,39 +2693,110 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         refreshConfig,
     ]);
 
-    const runManagedCodexCommand = useCallback(async (
-        action: 'download' | 'login' | 'logout',
-        command: 'cmd_managed_codex_download' | 'cmd_managed_codex_login' | 'cmd_managed_codex_logout',
-    ) => {
+    const runManagedCodexDownload = useCallback(async (announceUpdate = false) => {
         if (!isTauriEnvironment()) {
             toast.error(tSettings('providers.codexToast.unsupportedManagement'));
             return;
         }
-        if (managedCodexBusy) return;
-        setManagedCodexBusy(action);
+        if (managedCodexRuntimeUpdateInFlight) {
+            if (announceUpdate) {
+                toast.info(tSettings('providers.codexToast.runtimeUpdating'));
+            }
+            return;
+        }
+        const currentBusy = managedCodexBusyRef.current;
+        if (currentBusy && currentBusy !== 'status') return;
+        managedCodexBusyRef.current = 'download';
+        setManagedCodexBusy('download');
+        if (announceUpdate) {
+            toast.info(tSettings('providers.codexToast.runtimeUpdating'));
+        }
         try {
-            await invoke(command);
+            await requestManagedCodexRuntimeUpdate();
+            toast.success(tSettings('providers.codexToast.runtimeReady'));
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            toast.error(tSettings('providers.codexToast.downloadFailed', { message }));
+        } finally {
+            if (managedCodexBusyRef.current === 'download') {
+                managedCodexBusyRef.current = null;
+            }
+            setManagedCodexBusy(prev => prev === 'download' ? null : prev);
+        }
+    }, [managedCodexRuntimeUpdateInFlight, requestManagedCodexRuntimeUpdate, tSettings, toast]);
+
+    const logoutManagedCodex = useCallback(async () => {
+        if (!isTauriEnvironment()) {
+            toast.error(tSettings('providers.codexToast.unsupportedManagement'));
+            return;
+        }
+        if (managedCodexRuntimeUpdateInFlight || managedCodexBusyRef.current !== null) return;
+        managedCodexBusyRef.current = 'logout';
+        setManagedCodexBusy('logout');
+        try {
+            await invoke('cmd_managed_codex_logout');
             await refreshConfig();
-            if (action === 'download') toast.success(tSettings('providers.codexToast.runtimeReady'));
-            if (action === 'login') toast.success(tSettings('providers.codexToast.loginUpdated'));
-            if (action === 'logout') toast.success(tSettings('providers.codexToast.loggedOut'));
+            toast.success(tSettings('providers.codexToast.loggedOut'));
         } catch (error) {
             await refreshConfig().catch(() => {});
             const message = error instanceof Error ? error.message : String(error);
-            if (action === 'download') toast.error(tSettings('providers.codexToast.downloadFailed', { message }));
-            if (action === 'login') toast.error(tSettings('providers.codexToast.loginFailed', { message }));
-            if (action === 'logout') toast.error(tSettings('providers.codexToast.logoutFailed', { message }));
+            toast.error(tSettings('providers.codexToast.logoutFailed', { message }));
         } finally {
-            setManagedCodexBusy(null);
+            if (managedCodexBusyRef.current === 'logout') {
+                managedCodexBusyRef.current = null;
+            }
+            setManagedCodexBusy(prev => prev === 'logout' ? null : prev);
         }
-    }, [managedCodexBusy, refreshConfig, tSettings, toast]);
+    }, [managedCodexRuntimeUpdateInFlight, refreshConfig, tSettings, toast]);
+
+    const checkManagedCodexUpdate = useCallback(async () => {
+        if (!isTauriEnvironment()) {
+            toast.error(tSettings('providers.codexToast.unsupportedManagement'));
+            return;
+        }
+        if (managedCodexRuntimeUpdateInFlight || managedCodexBusyRef.current === 'download') {
+            toast.info(tSettings('providers.codexToast.runtimeUpdating'));
+            return;
+        }
+        if (managedCodexBusyRef.current !== null) return;
+
+        managedCodexBusyRef.current = 'status';
+        setManagedCodexBusy('status');
+        try {
+            const status = await invoke<{ runtimeInstall: ManagedCodexRuntimeInstallState }>(
+                'cmd_managed_codex_check_update',
+            );
+            await refreshConfig();
+            const refreshAction = getManagedCodexUpdateRefreshAction(
+                status.runtimeInstall,
+            );
+            if (refreshAction === 'no-update') {
+                toast.info(tSettings('providers.codexToast.noRuntimeUpdate'));
+                return;
+            }
+            if (refreshAction === 'already-updating') {
+                toast.info(tSettings('providers.codexToast.runtimeUpdating'));
+                return;
+            }
+            await runManagedCodexDownload(true);
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            toast.error(tSettings('providers.codexToast.updateCheckFailed', { message }));
+        } finally {
+            if (managedCodexBusyRef.current === 'status') {
+                managedCodexBusyRef.current = null;
+            }
+            setManagedCodexBusy(prev => prev === 'status' ? null : prev);
+        }
+    }, [managedCodexRuntimeUpdateInFlight, refreshConfig, runManagedCodexDownload, tSettings, toast]);
 
     const startManagedCodexLogin = useCallback(async () => {
         if (!isTauriEnvironment()) {
             toast.error(tSettings('providers.codexToast.unsupportedLogin'));
             return;
         }
-        if (managedCodexBusyRef.current === 'download') return;
+        if (managedCodexRuntimeUpdateInFlight || managedCodexBusyRef.current !== null) return;
+        managedCodexBusyRef.current = 'login';
         setManagedCodexLoginDialogOpen(true);
         setManagedCodexBusy('login');
         try {
@@ -2715,9 +2819,12 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             });
             toast.error(tSettings('providers.codexToast.loginFailed', { message }));
         } finally {
+            if (managedCodexBusyRef.current === 'login') {
+                managedCodexBusyRef.current = null;
+            }
             setManagedCodexBusy(prev => prev === 'login' ? null : prev);
         }
-    }, [refreshConfig, tSettings, toast]);
+    }, [managedCodexRuntimeUpdateInFlight, refreshConfig, tSettings, toast]);
 
     const refreshManagedCodexLoginState = useCallback(async () => {
         if (!isTauriEnvironment()) return;
@@ -2971,12 +3078,10 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                     : tSettings('providers.subscription.notLoggedIn');
 
         return (
-            <div className="space-y-3">
-                <p className="text-sm text-[var(--ink-muted)]">
-                    {tSettings('providers.subscription.description')}
-                </p>
-                <div className="flex items-center justify-between gap-3">
-                    <div className="flex min-w-0 flex-wrap items-center gap-2 text-xs">
+            <SubscriptionProviderCardContent
+                description={tSettings('providers.subscription.description')}
+                status={
+                    <>
                         {isLoggedIn ? (
                             <>
                                 <span className="truncate font-mono text-xs text-[var(--ink-muted)]">
@@ -3009,8 +3114,10 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                 )}
                             </>
                         )}
-                    </div>
-                    <div className="flex shrink-0 items-center gap-2">
+                    </>
+                }
+                actions={
+                    <>
                         {subscriptionStatus?.available && (
                             <button
                                 type="button"
@@ -3035,19 +3142,23 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                 {tSettings('providers.login')}
                             </button>
                         )}
-                    </div>
-                </div>
-                {isVerifyInvalid && subscriptionStatus?.verifyError && (
-                    <p className="break-words text-xs text-[var(--error)]">
-                        {subscriptionStatus.verifyError}
-                    </p>
-                )}
-                {subscriptionLoginState.status === 'error' && subscriptionLoginState.error && (
-                    <p className="break-words text-xs text-[var(--error)]">
-                        {subscriptionLoginState.error}
-                    </p>
-                )}
-            </div>
+                    </>
+                }
+                error={
+                    <>
+                        {isVerifyInvalid && subscriptionStatus?.verifyError && (
+                            <p className="break-words text-xs text-[var(--error)]">
+                                {subscriptionStatus.verifyError}
+                            </p>
+                        )}
+                        {subscriptionLoginState.status === 'error' && subscriptionLoginState.error && (
+                            <p className="break-words text-xs text-[var(--error)]">
+                                {subscriptionLoginState.error}
+                            </p>
+                        )}
+                    </>
+                }
+            />
         );
     };
 
@@ -3055,16 +3166,26 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         const install = config.managedCodexRuntimeInstall;
         const auth = config.managedCodexAuth;
         const installStatus = install?.status;
+        const {
+            runtimeUsable,
+            isUpdatingRuntime,
+            showDownloadRow,
+        } = getManagedCodexRuntimePresentation(
+            install,
+            managedCodexBusy,
+            managedCodexRuntimeUpdateInFlight,
+        );
         const authStatus = auth?.status;
-        const isDownloadingRuntime = managedCodexBusy === 'download'
+        const isDownloadingRuntime = managedCodexRuntimeUpdateInFlight
+            || managedCodexBusy === 'download'
             || installStatus === 'downloading'
             || managedCodexReadiness.reason === 'runtime-downloading';
         const isCommandBusy = managedCodexBusy !== null;
-        const busy = isCommandBusy || isDownloadingRuntime;
-        const needsDownload = managedCodexReadiness.reason === 'runtime-not-installed'
-            || managedCodexReadiness.reason === 'runtime-error'
-            || managedCodexReadiness.reason === 'runtime-update-required';
-        const showDownloadRow = needsDownload || isDownloadingRuntime;
+        const busy = managedCodexRuntimeUpdateInFlight || isCommandBusy || isDownloadingRuntime;
+        const hasVersionDrift = Boolean(
+            install?.installedVersion
+            && install.installedVersion !== managedCodexReadiness.requiredVersion,
+        );
         const needsLogin = managedCodexReadiness.reason === 'auth-missing'
             || managedCodexReadiness.reason === 'auth-invalid'
             || managedCodexReadiness.reason === 'auth-error'
@@ -3075,7 +3196,10 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             : null;
         const downloadButtonLabel = isDownloadingRuntime
             ? (progressPercent == null ? tSettings('providers.managedCodex.downloading') : `${progressPercent}%`)
-            : installStatus === 'update-required' ? tSettings('providers.managedCodex.update') : tSettings('providers.managedCodex.download');
+            : (installStatus === 'update-required' || installStatus === 'error' || hasVersionDrift)
+                ? tSettings('providers.managedCodex.update')
+                : tSettings('providers.managedCodex.download');
+        const runtimeRowLabel = tSettings('providers.managedCodex.downloadRuntime');
         const modelLine = provider.models
             .map(model => model.modelName || model.model)
             .join(', ');
@@ -3087,7 +3211,8 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             : authStatus === 'error' || authStatus === 'invalid'
                 ? tSettings('providers.managedCodex.verifyFailed')
                 : tSettings('providers.managedCodex.notLoggedIn');
-        const runtimeError = install?.error && (managedCodexReadiness.reason === 'runtime-error'
+        const runtimeError = install?.error && (installStatus === 'error'
+            || managedCodexReadiness.reason === 'runtime-error'
             || managedCodexReadiness.reason === 'runtime-update-required')
             ? install.error
             : null;
@@ -3104,6 +3229,11 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             <span className="shrink-0 rounded bg-[var(--paper-inset)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
                                 {tSettings('providers.official')}
                             </span>
+                            {isUpdatingRuntime && (
+                                <span className="shrink-0 text-xs font-medium text-[var(--success)]">
+                                    {tSettings('providers.managedCodex.updating')}
+                                </span>
+                            )}
                         </div>
                         <p className="mt-1 truncate text-xs text-[var(--ink-muted)]">
                             {modelLine}
@@ -3121,19 +3251,19 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                     )}
                 </div>
 
-                {showDownloadRow ? (
+                {showDownloadRow && (
                     <div className="space-y-2">
                         <div className="flex items-center justify-between gap-3 rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2.5">
                             <div className="flex min-w-0 items-center gap-2">
                                 <Download className="h-4 w-4 shrink-0 text-[var(--accent)]" />
                                 <span className="truncate text-sm font-semibold text-[var(--ink)]">
-                                    {tSettings('providers.managedCodex.downloadRuntime')}
+                                    {runtimeRowLabel}
                                 </span>
                             </div>
                             <button
                                 type="button"
                                 disabled={busy}
-                                onClick={() => runManagedCodexCommand('download', 'cmd_managed_codex_download')}
+                                onClick={() => void runManagedCodexDownload()}
                                 className="flex min-w-16 items-center justify-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
                             >
                                 {isDownloadingRuntime && progressPercent == null && (
@@ -3146,7 +3276,8 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             <p className="text-xs text-[var(--error)]">{runtimeError}</p>
                         )}
                     </div>
-                ) : (
+                )}
+                {runtimeUsable && (
                     <div className="space-y-3">
                         <p className="text-sm text-[var(--ink-muted)]">
                             {tSettings('providers.managedCodex.description')}
@@ -3194,6 +3325,18 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                 </button>
                             )}
                         </div>
+                        {installStatus === 'error' && install?.installedVersion && (
+                            <div className="space-y-1">
+                                <p className="text-xs font-medium text-[var(--error)]">
+                                    {tSettings('providers.managedCodex.updateFailedWithCurrent', {
+                                        current: install.installedVersion,
+                                    })}
+                                </p>
+                                {runtimeError && (
+                                    <p className="break-words text-xs text-[var(--error)]">{runtimeError}</p>
+                                )}
+                            </div>
+                        )}
                     </div>
                 )}
             </div>
@@ -3205,6 +3348,11 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         const install = config.managedCodexRuntimeInstall;
         const auth = config.managedCodexAuth;
         const runtimeVersion = install?.installedVersion ?? managedCodexReadiness.requiredVersion;
+        const { runtimeUsable, isUpdatingRuntime } = getManagedCodexRuntimePresentation(
+            install,
+            managedCodexBusy,
+            managedCodexRuntimeUpdateInFlight,
+        );
         const authStatus = auth?.status;
         const isLoggedIn = authStatus === 'valid';
         const loginInProgress = managedCodexBusy === 'login' || authStatus === 'logging-in';
@@ -3250,15 +3398,29 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             <div className="flex items-start justify-between gap-4">
                                 <div className="min-w-0">
                                     <p className="text-sm font-medium text-[var(--ink)]">{tSettings('providers.managedCodex.runtime')}</p>
-                                    <p className="mt-1 text-sm font-semibold text-[var(--ink)]">v{runtimeVersion}</p>
+                                    <div className="mt-1 flex items-center gap-2">
+                                        <p className="text-sm font-semibold text-[var(--ink)]">v{runtimeVersion}</p>
+                                        {isUpdatingRuntime && (
+                                            <span className="shrink-0 text-xs font-medium text-[var(--success)]">
+                                                {tSettings('providers.managedCodex.updating')}
+                                            </span>
+                                        )}
+                                    </div>
                                     <p className="mt-1 truncate text-xs text-[var(--ink-muted)]">
                                         {install?.platform ?? tSettings('providers.managedCodex.currentPlatform')}
                                     </p>
+                                    {runtimeUsable && install?.status === 'error' && install.installedVersion && (
+                                        <p className="mt-2 text-xs font-medium text-[var(--error)]">
+                                            {tSettings('providers.managedCodex.updateFailedWithCurrent', {
+                                                current: install.installedVersion,
+                                            })}
+                                        </p>
+                                    )}
                                 </div>
                                 <button
                                     type="button"
-                                    disabled={managedCodexBusy === 'status'}
-                                    onClick={() => void refreshManagedCodexStatus()}
+                                    disabled={managedCodexBusy !== null}
+                                    onClick={() => void checkManagedCodexUpdate()}
                                     className="flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-wait disabled:opacity-60"
                                 >
                                     <RefreshCw className={`h-3.5 w-3.5 ${managedCodexBusy === 'status' ? 'animate-spin' : ''}`} />
@@ -3283,8 +3445,8 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                 {isLoggedIn ? (
                                     <button
                                         type="button"
-                                        disabled={managedCodexBusy === 'logout'}
-                                        onClick={() => runManagedCodexCommand('logout', 'cmd_managed_codex_logout')}
+                                        disabled={managedCodexRuntimeUpdateInFlight || managedCodexBusy !== null}
+                                        onClick={() => void logoutManagedCodex()}
                                         className="flex shrink-0 items-center gap-1.5 rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-medium text-[var(--ink)] transition-colors hover:bg-[var(--paper-inset)] disabled:cursor-wait disabled:opacity-60"
                                     >
                                         {managedCodexBusy === 'logout'
@@ -3295,7 +3457,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                 ) : (
                                     <button
                                         type="button"
-                                        disabled={managedCodexBusy === 'login'}
+                                        disabled={managedCodexRuntimeUpdateInFlight || managedCodexBusy !== null}
                                         onClick={() => void startManagedCodexLogin()}
                                         className="flex shrink-0 items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-60"
                                     >
@@ -3863,7 +4025,14 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
 
                                     {/* Subscription type - show status */}
                                     {provider.type === 'subscription' && (
-                                        renderSubscriptionProviderContent()
+                                        provider.id === XAI_SUBSCRIPTION_PROVIDER_ID
+                                            ? <GrokSubscriptionProvider
+                                                onAuthChanged={async () => {
+                                                    await refreshConfig();
+                                                    await refreshProviders();
+                                                }}
+                                            />
+                                            : renderSubscriptionProviderContent()
                                     )}
                                     </div>
                             ))}
@@ -4719,6 +4888,38 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
 
                                 <div className="mt-4 flex items-center justify-between">
                                     <div className="flex-1 pr-4">
+                                        <p className="text-sm font-medium text-[var(--ink)]">{tSettings('about.teamSpaceTitle')}</p>
+                                        <p className="text-xs text-[var(--ink-muted)]">
+                                            {tSettings('about.teamSpaceDescription')}
+                                        </p>
+                                        {(spaceBuildCapability.isLoading || !spaceBuildCapability.available) && (
+                                            <p className="mt-1 text-xs text-[var(--ink-subtle)]">
+                                                {spaceBuildCapability.isLoading
+                                                    ? tSettings('about.teamSpaceLoading')
+                                                    : tSettings(spaceBuildCapability.reason ? 'about.teamSpaceUnavailableWithReason' : 'about.teamSpaceUnavailable', { reason: spaceBuildCapability.reason })}
+                                            </p>
+                                        )}
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (spaceBuildCapability.isLoading || !spaceBuildCapability.available) return;
+                                            updateConfig({ teamSpaceEnabled: config.teamSpaceEnabled !== true });
+                                        }}
+                                        disabled={spaceBuildCapability.isLoading || !spaceBuildCapability.available}
+                                        aria-pressed={config.teamSpaceEnabled === true && spaceBuildCapability.available}
+                                        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${config.teamSpaceEnabled === true && spaceBuildCapability.available ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
+                                            }`}
+                                    >
+                                        <span
+                                            className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${config.teamSpaceEnabled === true && spaceBuildCapability.available ? 'translate-x-5' : 'translate-x-0'
+                                                }`}
+                                        />
+                                    </button>
+                                </div>
+
+                                <div className="mt-4 flex items-center justify-between border-t border-[var(--line)] pt-4">
+                                    <div className="flex-1 pr-4">
                                         <p className="text-sm font-medium text-[var(--ink)]">{tSettings('about.runtimeTitle')}</p>
                                         <p className="text-xs text-[var(--ink-muted)]">
                                             {tSettings('about.runtimeDescription')}
@@ -4918,36 +5119,13 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                             </div>
                                         </div>
 
-                                        {/* Team Space Gate */}
-                                        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
-                                            <div className="flex items-center justify-between">
-                                                <div className="flex-1 pr-4">
-                                                    <h3 className="text-sm font-medium text-[var(--ink)]">{tSettings('about.developer.teamTitle')}</h3>
-                                                    <p className="mt-1 text-xs text-[var(--ink-muted)]">
-                                                        {spaceBuildCapability.isLoading
-                                                            ? tSettings('about.developer.teamLoading')
-                                                            : spaceBuildCapability.available
-                                                            ? tSettings('about.developer.teamAvailable')
-                                                            : tSettings(spaceBuildCapability.reason ? 'about.developer.teamUnavailableWithReason' : 'about.developer.teamUnavailable', { reason: spaceBuildCapability.reason })}
-                                                    </p>
-                                                </div>
-                                                <button
-                                                    onClick={() => {
-                                                        if (spaceBuildCapability.isLoading || !spaceBuildCapability.available) return;
-                                                        updateConfig({ teamSpaceEnabled: config.teamSpaceEnabled !== true });
-                                                    }}
-                                                    disabled={spaceBuildCapability.isLoading || !spaceBuildCapability.available}
-                                                    aria-pressed={config.teamSpaceEnabled === true && spaceBuildCapability.available}
-                                                    className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${config.teamSpaceEnabled === true && spaceBuildCapability.available ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
-                                                        }`}
-                                                >
-                                                    <span
-                                                        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${config.teamSpaceEnabled === true && spaceBuildCapability.available ? 'translate-x-5' : 'translate-x-0'
-                                                            }`}
-                                                    />
-                                                </button>
-                                            </div>
-                                        </div>
+                                        {spaceBuildCapability.available && availableSpaceEnvironments.has('dev') && (
+                                            <SpaceEnvironmentSwitch
+                                                activeEnvironment={activeSpaceEnvironment}
+                                                origin={spaceBuildCapability.baseUrl ?? ''}
+                                                onChange={updateSpaceEnvironment}
+                                            />
+                                        )}
 
                                         {/* Split View Toggle */}
                                         <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
@@ -7513,6 +7691,14 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                     onUpdateCustomProvider={updateCustomProvider}
                     onSetPrimaryModel={savePrimaryModel}
                     onRefresh={async () => { await refreshConfig(); await refreshProviders(); }}
+                    discoveryAction={managingProvider.id === XAI_SUBSCRIPTION_PROVIDER_ID
+                        && providerVerifyStatus[XAI_SUBSCRIPTION_PROVIDER_ID]?.status === 'valid'
+                        ? discoverGrokModels
+                        : undefined}
+                    discoveryUnavailableMessage={managingProvider.id === XAI_SUBSCRIPTION_PROVIDER_ID
+                        && providerVerifyStatus[XAI_SUBSCRIPTION_PROVIDER_ID]?.status !== 'valid'
+                        ? tSettings('providers.grok.loginToDiscover')
+                        : undefined}
                 />
             )}
 

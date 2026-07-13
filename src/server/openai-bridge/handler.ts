@@ -26,9 +26,19 @@ import {
   getProxyForProviderUrl,
   getProxyForUrl as resolveGlobalProxyForUrl,
 } from '../proxy-state';
+import { isProviderReasoningEffortSupported } from '../../shared/reasoningEffort';
 
 const DEFAULT_TIMEOUT = 300_000; // 5 minutes
 const THOUGHT_SIG_CACHE_MAX = 500; // Max cached thought_signatures to prevent unbounded growth
+
+export function shouldSendProviderReasoningEffort(
+  providerId: string,
+  model: string,
+  effort: string | undefined,
+): boolean {
+  if (!effort) return false;
+  return isProviderReasoningEffortSupported(providerId, model, effort);
+}
 
 /**
  * Sentinel forwarded through the Chat Completions parse→translate pipeline when
@@ -319,7 +329,8 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
       return jsonError(500, 'api_error', 'Bridge configuration error');
     }
 
-    const effectiveApiKey = upstream.apiKey || apiKey;
+    let effectiveApiKey = upstream.apiKey || apiKey;
+    let activeCredentialVersion = upstream.credentialVersion;
     const baseUrl = upstream.baseUrl.replace(/\/+$/, ''); // trim trailing slashes
     const isResponses = upstream.upstreamFormat === 'responses';
 
@@ -347,6 +358,19 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
           reasoningEffort: upstream.reasoningEffort,
           promptCacheKey,
         });
+    const translatedModel = (translatedReq as { model: string }).model;
+    if (upstream.reasoningEffort
+        && !shouldSendProviderReasoningEffort(
+          upstream.providerId,
+          translatedModel,
+          upstream.reasoningEffort,
+        )) {
+      if (isResponses) {
+        delete (translatedReq as ResponsesRequest).reasoning;
+      } else {
+        delete (translatedReq as OpenAIRequest & { reasoning_effort?: string }).reasoning_effort;
+      }
+    }
 
     // 4a. Normalize thought_signatures on tool_calls (Gemini thinking models).
     // Gemini requires thought_signature on tool_calls in conversation history.
@@ -433,7 +457,10 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
       }
     };
 
-    const fetchUpstreamAttempt = async (requestBody: string): Promise<UpstreamAttemptResult> => {
+    const fetchUpstreamAttempt = async (
+      requestBody: string,
+      bearer: string,
+    ): Promise<UpstreamAttemptResult> => {
       // Pattern 1: the AbortController's lifetime spans the entire stream, not
       // just headers arrival. On retry, each attempt owns its own controller and
       // downstream-abort listener so cleanup stays exact.
@@ -464,7 +491,7 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${effectiveApiKey}`,
+            'Authorization': `Bearer ${bearer}`,
           },
           body: requestBody,
           signal: controller.signal,
@@ -506,46 +533,87 @@ export function createBridgeHandler(config: BridgeConfig): BridgeHandler {
       }
     };
 
-    let attemptResult = await fetchUpstreamAttempt(JSON.stringify(translatedReq));
-    if (!attemptResult.ok) return attemptResult.response;
-    let { upstreamResp, controller, headersTimer, onDownstreamAbort } = attemptResult.attempt;
+    let requestBody = JSON.stringify(translatedReq);
+    let authRecoveryAttempted = false;
+    let promptCacheRetryAttempted = false;
+    const finalAttempt = await (async (): Promise<UpstreamAttemptResult> => {
+      while (true) {
+        const attemptResult = await fetchUpstreamAttempt(requestBody, effectiveApiKey);
+        if (!attemptResult.ok) return attemptResult;
+        const attempt = attemptResult.attempt;
+        if (attempt.upstreamResp.ok) return { ok: true, attempt };
 
-    // 6. Handle upstream errors
-    if (!upstreamResp.ok) {
-      let errBody = await upstreamResp.text();
-      cleanupAttempt({ upstreamResp, controller, headersTimer, onDownstreamAbort });
+        const status = attempt.upstreamResp.status;
+        const errBody = await attempt.upstreamResp.text();
+        cleanupAttempt(attempt);
 
-      const canRetryWithoutPromptCacheKey =
-        Boolean((translatedReq as { prompt_cache_key?: string }).prompt_cache_key)
-        && Boolean(upstream.cacheAffinity?.disablePromptCacheKey)
-        && isUnsupportedPromptCacheKeyError(upstreamResp.status, errBody);
-
-      if (canRetryWithoutPromptCacheKey) {
-        upstream.cacheAffinity?.disablePromptCacheKey?.();
-        log(`[bridge] ${upstreamFormat} prompt_cache_key unsupported for provider=${upstream.providerId} endpoint=${hashForLog(upstreamUrl)}; disabled for this bridge`);
-
-        attemptResult = await fetchUpstreamAttempt(stringifyWithoutPromptCacheKey(translatedReq));
-        if (!attemptResult.ok) return attemptResult.response;
-        ({ upstreamResp, controller, headersTimer, onDownstreamAbort } = attemptResult.attempt);
-        if (!upstreamResp.ok) {
-          errBody = await upstreamResp.text();
-          cleanupAttempt({ upstreamResp, controller, headersTimer, onDownstreamAbort });
+        if (status === 401
+            && upstream.recoverAuth
+            && activeCredentialVersion !== undefined
+            && !authRecoveryAttempted) {
+          authRecoveryAttempted = true;
+          try {
+            const recovered = await upstream.recoverAuth(activeCredentialVersion);
+            effectiveApiKey = recovered.apiKey;
+            activeCredentialVersion = recovered.credentialVersion;
+            continue;
+          } catch {
+            return {
+              ok: false,
+              response: jsonError(
+                401,
+                'authentication_error',
+                'Managed provider login is unavailable; sign in again.',
+              ),
+            };
+          }
         }
-      }
 
-      if (!upstreamResp.ok) {
+        if (status === 401 && authRecoveryAttempted && activeCredentialVersion !== undefined) {
+          try {
+            await upstream.rejectCredential?.(activeCredentialVersion);
+          } catch {
+            log('[bridge] Failed to quarantine rejected managed credential');
+          }
+        }
+
+        const canRetryWithoutPromptCacheKey =
+          !promptCacheRetryAttempted
+          && Boolean((translatedReq as { prompt_cache_key?: string }).prompt_cache_key)
+          && Boolean(upstream.cacheAffinity?.disablePromptCacheKey)
+          && isUnsupportedPromptCacheKeyError(status, errBody);
+        if (canRetryWithoutPromptCacheKey) {
+          promptCacheRetryAttempted = true;
+          upstream.cacheAffinity?.disablePromptCacheKey?.();
+          requestBody = stringifyWithoutPromptCacheKey(translatedReq);
+          log(`[bridge] ${upstreamFormat} prompt_cache_key unsupported for provider=${upstream.providerId} endpoint=${hashForLog(upstreamUrl)}; disabled for this bridge`);
+          continue;
+        }
+
         const safeErrBody = sanitizeUpstreamErrorBody(errBody);
-        log(`[bridge] Upstream error ${upstreamResp.status}: ${safeErrBody.slice(0, 300)}`);
-        const { status, body } = translateError(upstreamResp.status, safeErrBody);
-        if (status !== upstreamResp.status) {
-          log(`[bridge] Remapped ${upstreamResp.status} → ${status} (${body.error.type})`);
+        if (activeCredentialVersion !== undefined) {
+          try {
+            await upstream.reportOutcome?.(activeCredentialVersion, status);
+          } catch {
+            log('[bridge] Failed to project managed provider error status');
+          }
         }
-        return new Response(JSON.stringify(body), {
-          status,
-          headers: { 'Content-Type': 'application/json' },
-        });
+        log(`[bridge] Upstream error ${status}: ${safeErrBody.slice(0, 300)}`);
+        const translated = translateError(status, safeErrBody);
+        if (translated.status !== status) {
+          log(`[bridge] Remapped ${status} → ${translated.status} (${translated.body.error.type})`);
+        }
+        return {
+          ok: false,
+          response: new Response(JSON.stringify(translated.body), {
+            status: translated.status,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        };
       }
-    }
+    })();
+    if (!finalAttempt.ok) return finalAttempt.response;
+    const { upstreamResp, controller, headersTimer, onDownstreamAbort } = finalAttempt.attempt;
 
     // Headers arrived → cancel the headers timeout (we now switch to per-read
     // idle timeout inside the stream handler). The controller stays live for

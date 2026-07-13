@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   isAutomationHistoryOrigin,
+  isSystemMaintenanceSession,
   originAnalyticsFields,
   originFromDesktopSurface,
   originFromMaterializationScenario,
@@ -61,6 +62,16 @@ describe('session-origin', () => {
     expect(isAutomationHistoryOrigin(undefined, { cronTaskId: 'task-1' })).toBe(true);
     expect(isAutomationHistoryOrigin(undefined, { source: 'cron' })).toBe(true);
     expect(isAutomationHistoryOrigin(undefined, { source: 'desktop' })).toBe(false);
+  });
+
+  it('hides only explicitly marked system maintenance sessions', () => {
+    expect(isSystemMaintenanceSession({ systemMaintenanceKind: 'memory_gardener' })).toBe(true);
+    expect(isSystemMaintenanceSession({ systemMaintenanceKind: 'memory_molt' })).toBe(true);
+    expect(isSystemMaintenanceSession({
+      origin: { kind: 'automation', surface: 'cron' },
+      cronTaskId: 'ordinary-cron',
+    })).toBe(false);
+    expect(isSystemMaintenanceSession({ systemMaintenanceKind: 'memory_auto_update_batch' })).toBe(false);
   });
 
   it('derives old session metadata conservatively', () => {

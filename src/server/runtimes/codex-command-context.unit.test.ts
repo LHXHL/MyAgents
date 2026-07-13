@@ -18,6 +18,18 @@ function platformKey(): string | null {
   return null;
 }
 
+function verifiedInstalledMetadata(platform: string, version = MANAGED_CODEX_REQUIRED_RUNTIME.version) {
+  return {
+    version,
+    platform,
+    manifestSignature: 'verified-manifest-signature',
+    artifactSignatureVerified: true,
+    platformSignature: process.platform === 'win32'
+      ? { type: 'authenticode', certificateSha256: 'ab'.repeat(32) }
+      : { type: 'codesign', teamId: '2DC432GLL2' },
+  };
+}
+
 describe('codex command context', () => {
   let tempHome: string | null = null;
 
@@ -63,6 +75,11 @@ describe('codex command context', () => {
     mkdirSync(installDir, { recursive: true });
     const binary = join(installDir, process.platform === 'win32' ? 'codex.exe' : 'codex');
     writeFileSync(binary, '');
+    const root = join(tempHome, '.myagents', 'runtimes', 'codex');
+    writeFileSync(join(root, 'installed.json'), JSON.stringify({
+      ...verifiedInstalledMetadata(platform),
+      executableRelativePath: process.platform === 'win32' ? 'codex.exe' : 'codex',
+    }));
 
     const context = resolveCodexCommandContext({ source: 'managed-provider' });
 
@@ -95,14 +112,61 @@ describe('codex command context', () => {
     const binary = join(nestedDir, process.platform === 'win32' ? 'codex.exe' : 'codex');
     writeFileSync(binary, '');
     writeFileSync(join(root, 'installed.json'), JSON.stringify({
-      version: MANAGED_CODEX_REQUIRED_RUNTIME.version,
-      platform,
+      ...verifiedInstalledMetadata(platform),
       executableRelativePath: process.platform === 'win32' ? 'package/bin/codex.exe' : 'package/bin/codex',
     }));
 
     const context = resolveCodexCommandContext({ source: 'managed-provider' });
 
     expect(context.commandPath).toBe(binary);
+  });
+
+  it('keeps a verified stale runtime available until a new Sidecar starts after update', () => {
+    const platform = platformKey();
+    if (!platform) return;
+
+    tempHome = mkdtempSync(join(tmpdir(), 'myagents-managed-codex-'));
+    vi.stubEnv('HOME', tempHome);
+    vi.stubEnv('USERPROFILE', tempHome);
+
+    const staleVersion = '0.0.0-previous';
+    const root = join(tempHome, '.myagents', 'runtimes', 'codex');
+    const installDir = join(root, staleVersion, platform);
+    mkdirSync(installDir, { recursive: true });
+    const binary = join(installDir, process.platform === 'win32' ? 'codex.exe' : 'codex');
+    writeFileSync(binary, '');
+    writeFileSync(join(root, 'installed.json'), JSON.stringify({
+      ...verifiedInstalledMetadata(platform, staleVersion),
+      executableRelativePath: process.platform === 'win32' ? 'codex.exe' : 'codex',
+    }));
+
+    const context = resolveCodexCommandContext({ source: 'managed-provider' });
+
+    expect(context.commandPath).toBe(binary);
+    expect(context.version).toBe(staleVersion);
+  });
+
+  it('does not launch an unverified stale runtime', () => {
+    const platform = platformKey();
+    if (!platform) return;
+
+    tempHome = mkdtempSync(join(tmpdir(), 'myagents-managed-codex-'));
+    vi.stubEnv('HOME', tempHome);
+    vi.stubEnv('USERPROFILE', tempHome);
+
+    const staleVersion = '0.0.0-unverified';
+    const root = join(tempHome, '.myagents', 'runtimes', 'codex');
+    const installDir = join(root, staleVersion, platform);
+    mkdirSync(installDir, { recursive: true });
+    writeFileSync(join(installDir, process.platform === 'win32' ? 'codex.exe' : 'codex'), '');
+    writeFileSync(join(root, 'installed.json'), JSON.stringify({
+      version: staleVersion,
+      platform,
+      executableRelativePath: process.platform === 'win32' ? 'codex.exe' : 'codex',
+    }));
+
+    expect(() => resolveCodexCommandContext({ source: 'managed-provider' }))
+      .toThrow(/not installed/i);
   });
 
   it.runIf(process.platform === 'win32')('accepts legacy Windows separators in managed installed metadata', () => {
@@ -120,8 +184,7 @@ describe('codex command context', () => {
     const binary = join(nestedDir, 'codex.exe');
     writeFileSync(binary, '');
     writeFileSync(join(root, 'installed.json'), JSON.stringify({
-      version: MANAGED_CODEX_REQUIRED_RUNTIME.version,
-      platform,
+      ...verifiedInstalledMetadata(platform),
       executableRelativePath: 'vendor\\x86_64-pc-windows-msvc\\bin\\codex.exe',
     }));
 
@@ -142,9 +205,30 @@ describe('codex command context', () => {
     const installDir = join(root, MANAGED_CODEX_REQUIRED_RUNTIME.version, platform);
     mkdirSync(installDir, { recursive: true });
     writeFileSync(join(root, 'installed.json'), JSON.stringify({
-      version: MANAGED_CODEX_REQUIRED_RUNTIME.version,
-      platform,
+      ...verifiedInstalledMetadata(platform),
       executableRelativePath: '..\\codex.exe',
+    }));
+
+    expect(() => resolveCodexCommandContext({ source: 'managed-provider' }))
+      .toThrow(/not installed/i);
+  });
+
+  it('rejects traversal in the installed runtime version', () => {
+    const platform = platformKey();
+    if (!platform) return;
+
+    tempHome = mkdtempSync(join(tmpdir(), 'myagents-managed-codex-'));
+    vi.stubEnv('HOME', tempHome);
+    vi.stubEnv('USERPROFILE', tempHome);
+
+    const root = join(tempHome, '.myagents', 'runtimes', 'codex');
+    const escapedDir = join(root, '..', platform);
+    mkdirSync(escapedDir, { recursive: true });
+    mkdirSync(root, { recursive: true });
+    writeFileSync(join(escapedDir, process.platform === 'win32' ? 'codex.exe' : 'codex'), '');
+    writeFileSync(join(root, 'installed.json'), JSON.stringify({
+      ...verifiedInstalledMetadata(platform, '..'),
+      executableRelativePath: process.platform === 'win32' ? 'codex.exe' : 'codex',
     }));
 
     expect(() => resolveCodexCommandContext({ source: 'managed-provider' }))

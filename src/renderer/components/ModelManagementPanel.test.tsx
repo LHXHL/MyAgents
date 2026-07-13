@@ -35,6 +35,8 @@ function renderPanel(overrides: Partial<{
   provider: Provider;
   onUpdateCustomProvider: (provider: Provider) => Promise<void>;
   onRefresh: () => Promise<void>;
+  discoveryAction: () => Promise<Array<{ id: string; displayName?: string }>>;
+  discoveryUnavailableMessage: string;
 }> = {}) {
   const onUpdateCustomProvider = overrides.onUpdateCustomProvider ?? vi.fn(async () => undefined);
   const onRefresh = overrides.onRefresh ?? vi.fn(async () => undefined);
@@ -49,6 +51,8 @@ function renderPanel(overrides: Partial<{
       onUpdateCustomProvider={onUpdateCustomProvider}
       onSetPrimaryModel={vi.fn(async () => undefined)}
       onRefresh={onRefresh}
+      discoveryAction={overrides.discoveryAction}
+      discoveryUnavailableMessage={overrides.discoveryUnavailableMessage}
     />,
   );
 
@@ -127,5 +131,30 @@ describe('ModelManagementPanel custom model add flow', () => {
       })],
     }));
     expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ModelManagementPanel managed discovery', () => {
+  beforeEach(async () => {
+    document.body.innerHTML = '';
+    await i18n.changeLanguage('en-US');
+  });
+
+  it('discovers models through a host-managed action without an API key', async () => {
+    const discoveryAction = vi.fn(async () => [
+      { id: 'grok-next', displayName: 'Grok Next' },
+    ]);
+
+    renderPanel({ discoveryAction });
+
+    await waitFor(() => expect(discoveryAction).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText('Grok Next')).toBeInTheDocument();
+    expect(screen.queryByText('Configure an API Key first')).not.toBeInTheDocument();
+  });
+
+  it('shows an actionable managed-auth message instead of asking for an API key', () => {
+    renderPanel({ discoveryUnavailableMessage: 'Log in to Grok first' });
+    expect(screen.getByText('Log in to Grok first')).toBeInTheDocument();
+    expect(screen.queryByText('Configure an API Key first')).not.toBeInTheDocument();
   });
 });

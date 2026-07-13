@@ -11,7 +11,7 @@
 // by definition, so a task that lands in `auto` mode would block at the
 // first tool call waiting for confirmation that nobody is around to give.
 // The cron execute path has long hardcoded `'fullAgency'` for this reason
-// (see `src/server/index.ts` `/cron/execute`); the field surfaced here is
+// (see `src/server/index.ts` `/cron/execute-sync`); the field surfaced here is
 // the user-facing escape hatch when they want a stricter mode.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';

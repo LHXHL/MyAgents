@@ -59,7 +59,8 @@ pub use commands::{
 };
 #[allow(unused_imports)]
 pub use cron_execute::{
-    cmd_execute_cron_task, execute_cron_task, CronExecutePayload, CronExecuteResponse, ProviderEnv,
+    ensure_goal_sidecar_owner, execute_cron_task, execute_goal_turn, CronExecutePayload,
+    CronExecuteResponse, GoalExecutePayload, GoalExecuteResponse,
 };
 use health::{check_sidecar_http_health, wait_for_health, wait_for_readiness};
 pub use instances::{
@@ -93,12 +94,15 @@ use runtime_identity::{
 pub use runtime_identity::{
     resolve_session_runtime_identity, resolve_session_runtime_identity_full,
 };
+pub(crate) use session_lifecycle::{
+    acquire_session_lifecycle, has_persisted_session_owner, SessionLifecycleGuard,
+};
 #[allow(unused_imports)]
 pub use session_lifecycle::{
-    cmd_ensure_session_sidecar, cmd_get_session_generation, cmd_get_session_port,
-    cmd_has_session_sidecar, cmd_release_session_sidecar, cmd_session_has_persistent_owners,
-    cmd_upgrade_session_id, ensure_session_sidecar,
-    ensure_session_sidecar_with_runtime_identity_override,
+    cmd_delete_session_if_unowned, cmd_ensure_session_sidecar, cmd_get_session_generation,
+    cmd_get_session_port, cmd_has_session_sidecar, cmd_release_session_sidecar,
+    cmd_release_tab_session, cmd_session_has_persistent_owners, cmd_upgrade_session_id,
+    ensure_session_sidecar, ensure_session_sidecar_with_runtime_identity_override,
     ensure_session_sidecar_with_runtime_override, get_session_generation, get_session_sidecar_port,
     has_session_sidecar, release_session_sidecar, EnsureSidecarResult,
 };

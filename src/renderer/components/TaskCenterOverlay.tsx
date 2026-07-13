@@ -62,7 +62,7 @@ export default memo(function TaskCenterOverlay({
 }: TaskCenterOverlayProps) {
     const { t } = useTranslation('app');
     useCloseLayer(() => { onClose(); return true; }, 40);
-    const { sessions, cronTasks, sessionTagsMap, refresh, actions } = taskCenterData;
+    const { sessions, protectedSchedulerSessionIds, sessionTagsMap, refresh, actions } = taskCenterData;
     const toast = useToast();
 
     // Search state
@@ -208,10 +208,7 @@ export default memo(function TaskCenterOverlay({
         }
     }, [directSessionMatch, onOpenTask]);
 
-    const cronProtectedSessionIds = useMemo(
-        () => new Set(cronTasks.filter(t => t.status === 'running').map(t => t.sessionId)),
-        [cronTasks]
-    );
+    const cronProtectedSessionIds = protectedSchedulerSessionIds;
 
     const handleDeleteClick = useCallback((e: React.MouseEvent, session: SessionMetadata) => {
         e.stopPropagation();

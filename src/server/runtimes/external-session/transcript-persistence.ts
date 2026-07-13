@@ -4,7 +4,10 @@ import {
   updateSessionMetadata,
   type SaveSessionMessagesResult,
 } from '../../SessionStore';
-import { resolveLastRealUserMessagePreview } from '../../utils/session-message-preview';
+import {
+  isHumanUserMessage,
+  resolveLastRealUserMessagePreview,
+} from '../../utils/session-message-preview';
 import type { ContextUsage } from '../../../shared/types/context-usage';
 import type { PersistContentBlock } from './types';
 
@@ -135,10 +138,29 @@ function assertExternalSessionMessagesPersisted(
 
 export async function persistExternalUserMessageAppend(
   sessionId: string,
+  userMessageId: string,
   failureContext: string,
 ): Promise<void> {
+  const persistedUserMessage = allSessionMessages.find(
+    message => message.id === userMessageId && message.role === 'user',
+  );
+  const containsHumanInput = persistedUserMessage
+    ? isHumanUserMessage(persistedUserMessage)
+    : false;
+  const { preview: lastMessagePreview } = resolveLastRealUserMessagePreview(allSessionMessages);
   const saveResult = await saveSessionMessages(sessionId, allSessionMessages, { allowShrink: false });
   assertExternalSessionMessagesPersisted(saveResult, failureContext);
+
+  try {
+    await updateSessionMetadata(sessionId, {
+      ...(containsHumanInput ? { lastActiveAt: new Date().toISOString() } : {}),
+      lastMessagePreview,
+    });
+  } catch (error) {
+    // The transcript is already durable and may already be entering the
+    // runtime. A metadata-only failure must not roll back or duplicate it.
+    console.warn('[external-session] failed to update user activity metadata:', error);
+  }
 }
 
 export async function removeAndPersistExternalSessionMessage(
@@ -240,10 +262,9 @@ export async function appendAndPersistExternalAssistantTurn(
       };
     }
 
-    const { found: foundRealUserMessage, preview: lastMessagePreview } =
+    const { preview: lastMessagePreview } =
       resolveLastRealUserMessagePreview(allSessionMessages);
     await updateSessionMetadata(input.sessionId, {
-      ...(foundRealUserMessage ? { lastActiveAt: new Date().toISOString() } : {}),
       lastMessagePreview,
       runtimeUsageTotals: lastPersistedRuntimeUsageTotals ?? undefined,
       ...(input.contextUsage ? { lastContextUsage: input.contextUsage } : {}),

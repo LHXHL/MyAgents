@@ -252,7 +252,7 @@ pub async fn deliver_with_resume(
 
     // Deliver — and ALWAYS release the transient owner afterwards (guarantees
     // the resumed sidecar doesn't stay alive forever if no real owner attached
-    // during the brief window). Real owners (Tab/CronTask/Agent/BackgroundCompletion)
+    // during the brief window). Real owners (Tab/Task/Goal/Agent/BackgroundCompletion)
     // that arrive during the resume window keep the sidecar alive — release_owner
     // is idempotent per-owner-id.
     let outcome = deliver_inbox_message(manager, message).await;

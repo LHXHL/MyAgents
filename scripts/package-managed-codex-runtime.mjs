@@ -4,10 +4,14 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
+  closeSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -19,19 +23,31 @@ import {
   formatCommandFailure,
   resolveSpawnInvocation,
 } from './package-managed-codex-spawn.js';
+import {
+  isCanonicalCodexVersion,
+  resolveManagedCodexPackageIdentity,
+  shouldSignManagedCodexPackage,
+} from './package-managed-codex-policy.js';
 
-const RUST_CODEX_SOURCE = new URL('../src-tauri/src/managed_codex.rs', import.meta.url);
-const DEFAULT_CODEX_VERSION = readRustConst('REQUIRED_VERSION');
-const DEFAULT_RUNTIME_SET = readRustConst('REQUIRED_RUNTIME_SET');
+const RUNTIME_LOCK_SOURCE = new URL('../src/shared/managed-codex-runtime.json', import.meta.url);
+const DEFAULT_RUNTIME_LOCK = readRuntimeLock();
+const DEFAULT_CODEX_VERSION = DEFAULT_RUNTIME_LOCK.version;
 const DEFAULT_BASE_URL = 'https://download.myagents.io/runtimes/codex/sets';
+const OFFICIAL_NPM_REGISTRY = 'https://registry.npmjs.org';
+const DEFAULT_NPM_DOWNLOAD_REGISTRY = 'https://registry.npmmirror.com';
 const PLATFORMS = ['darwin-arm64', 'darwin-x64', 'win32-x64'];
 const RUNTIME_SET_RE = /^codex-[0-9A-Za-z._-]+$/;
+const DEFAULT_MACOS_CODEX_TEAM_ID = '2DC432GLL2';
+const DEFAULT_MACOS_CODEX_SIGNING_IDENTITY = 'Developer ID Application: OpenAI OpCo, LLC (2DC432GLL2)';
+const DEFAULT_WINDOWS_CODEX_PUBLISHER = 'OpenAI OpCo, LLC';
 
-function readRustConst(name) {
-  const source = readFileSync(RUST_CODEX_SOURCE, 'utf8');
-  const match = source.match(new RegExp(`^const ${name}:.*= "([^"]+)";`, 'm'));
-  if (!match) throw new Error(`Could not read ${name} from ${RUST_CODEX_SOURCE.pathname}`);
-  return match[1];
+function readRuntimeLock() {
+  const lock = JSON.parse(readFileSync(RUNTIME_LOCK_SOURCE, 'utf8'));
+  const version = lock.version;
+  if (!isCanonicalCodexVersion(version)) {
+    throw new Error(`Managed Codex runtime lock requires a canonical semver version: ${RUNTIME_LOCK_SOURCE.pathname}`);
+  }
+  return { version };
 }
 
 function defaultPlatformsForHost() {
@@ -43,7 +59,6 @@ function defaultPlatformsForHost() {
 function parseArgs(argv) {
   const args = {
     codexVersion: DEFAULT_CODEX_VERSION,
-    runtimeSet: DEFAULT_RUNTIME_SET,
     outDir: resolve('dist/managed-codex'),
     baseUrl: DEFAULT_BASE_URL,
     allowUnsigned: false,
@@ -59,7 +74,6 @@ function parseArgs(argv) {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === '--codex-version') args.codexVersion = readValue(i++, arg);
-    else if (arg === '--runtime-set') args.runtimeSet = readValue(i++, arg);
     else if (arg === '--out') args.outDir = resolve(readValue(i++, arg));
     else if (arg === '--base-url') args.baseUrl = readValue(i++, arg).replace(/\/$/, '');
     else if (arg === '--platforms') args.platforms = readValue(i++, arg).split(',').map(p => p.trim()).filter(Boolean);
@@ -68,6 +82,13 @@ function parseArgs(argv) {
       throw new Error(`Unknown argument: ${arg}`);
     }
   }
+  const identity = resolveManagedCodexPackageIdentity({
+    lockedVersion: DEFAULT_CODEX_VERSION,
+    requestedVersion: args.codexVersion,
+    allowUnsigned: args.allowUnsigned,
+  });
+  args.codexVersion = identity.codexVersion;
+  args.runtimeSet = identity.runtimeSet;
   args.platforms ??= defaultPlatformsForHost();
   if (!RUNTIME_SET_RE.test(args.runtimeSet)) {
     throw new Error(`Invalid runtime set: ${args.runtimeSet}`);
@@ -168,7 +189,13 @@ function listPackageFiles(packageDir) {
 
 function npmDistMetadata(spec) {
   try {
-    const raw = run('npm', ['view', spec, 'dist', '--json']);
+    const raw = run('npm', [
+      'view',
+      spec,
+      'dist',
+      '--json',
+      `--registry=${OFFICIAL_NPM_REGISTRY}`,
+    ]);
     return JSON.parse(raw);
   } catch (err) {
     console.warn(`[managed-codex] warning: failed to read npm dist metadata for ${spec}: ${err.message}`);
@@ -180,23 +207,48 @@ function downloadTarball(url, outPath, spec) {
   if (!url) {
     throw new Error(`npm dist metadata did not include tarball URL for ${spec}`);
   }
-  console.log(`[managed-codex] download ${url}`);
-  run('curl', [
-    '--fail',
-    '--location',
-    '--http1.1',
-    '--silent',
-    '--show-error',
-    '--retry',
-    '3',
-    '--connect-timeout',
-    '30',
-    '--max-time',
-    '600',
-    '--output',
-    outPath,
-    url,
-  ]);
+  console.log(`[managed-codex] fetch npm package ${spec}`);
+  rmSync(outPath, { force: true });
+  const packArgs = [
+    'pack',
+    spec,
+    '--ignore-scripts',
+    '--json',
+    '--pack-destination',
+    dirname(outPath),
+  ];
+  const registry = process.env.MANAGED_CODEX_NPM_DOWNLOAD_REGISTRY?.trim()
+    || DEFAULT_NPM_DOWNLOAD_REGISTRY;
+  let offline = tryRun('npm', [...packArgs, '--offline']);
+  if (!offline.ok && registry !== OFFICIAL_NPM_REGISTRY) {
+    offline = tryRun('npm', [...packArgs, '--offline', `--registry=${registry}`]);
+  }
+  let packedOutput;
+  if (offline.ok) {
+    console.log(`[managed-codex] npm cache hit ${spec}`);
+    packedOutput = offline.stdout;
+  } else {
+    console.log(`[managed-codex] npm cache miss; download via ${registry}`);
+    try {
+      packedOutput = run('npm', [...packArgs, `--registry=${registry}`]);
+    } catch (mirrorError) {
+      if (registry === OFFICIAL_NPM_REGISTRY) throw mirrorError;
+      console.warn(`[managed-codex] mirror download failed; retry official npm registry`);
+      packedOutput = run('npm', [...packArgs, `--registry=${OFFICIAL_NPM_REGISTRY}`]);
+    }
+  }
+  const packed = JSON.parse(packedOutput);
+  const filename = Array.isArray(packed) ? packed[0]?.filename : undefined;
+  if (!filename || basename(filename) !== filename) {
+    throw new Error(`npm pack did not return a safe tarball filename for ${spec}`);
+  }
+  const packedPath = join(dirname(outPath), filename);
+  if (!existsSync(packedPath)) {
+    throw new Error(`npm pack did not create ${packedPath}`);
+  }
+  if (resolve(packedPath) !== resolve(outPath)) {
+    renameSync(packedPath, outPath);
+  }
   if (!existsSync(outPath)) {
     throw new Error(`Downloaded npm tarball missing: ${outPath}`);
   }
@@ -269,9 +321,9 @@ function zipPackage(packageDir, zipPath) {
 }
 
 function signFile(filePath, allowUnsigned, label) {
+  if (!shouldSignManagedCodexPackage({ allowUnsigned })) return '';
   const key = process.env.TAURI_SIGNING_PRIVATE_KEY;
   if (!key) {
-    if (allowUnsigned) return '';
     throw new Error(`TAURI_SIGNING_PRIVATE_KEY is required to sign Managed Codex ${label}`);
   }
   const keyPath = join(tmpdir(), `myagents-managed-codex-key-${randomUUID()}`);
@@ -294,28 +346,22 @@ function signFile(filePath, allowUnsigned, label) {
 
 function signingSpecForPlatform(platform, allowUnsigned) {
   if (platform.startsWith('darwin-')) {
-    const teamId = process.env.MANAGED_CODEX_MACOS_TEAM_ID?.trim();
-    const signingIdentity = process.env.MANAGED_CODEX_MACOS_SIGNING_IDENTITY?.trim();
+    const teamId = process.env.MANAGED_CODEX_MACOS_TEAM_ID?.trim() || DEFAULT_MACOS_CODEX_TEAM_ID;
+    const signingIdentity = process.env.MANAGED_CODEX_MACOS_SIGNING_IDENTITY?.trim()
+      || DEFAULT_MACOS_CODEX_SIGNING_IDENTITY;
     return {
       type: 'codesign',
-      ...(teamId ? { teamId } : {}),
-      ...(signingIdentity ? { signingIdentity } : {}),
+      teamId,
+      signingIdentity,
     };
   }
   if (platform === 'win32-x64') {
-    const certificateSha256 = process.env.MANAGED_CODEX_WINDOWS_CERT_SHA256?.trim();
-    const publisher = process.env.MANAGED_CODEX_WINDOWS_PUBLISHER?.trim();
-    if (!certificateSha256) {
-      if (allowUnsigned) return undefined;
-      return {
-        type: 'authenticode',
-        ...(publisher ? { publisher } : {}),
-      };
-    }
+    if (allowUnsigned) return undefined;
+    const publisher = process.env.MANAGED_CODEX_WINDOWS_PUBLISHER?.trim()
+      || DEFAULT_WINDOWS_CODEX_PUBLISHER;
     return {
       type: 'authenticode',
-      ...(publisher ? { publisher } : {}),
-      certificateSha256: normalizeSha256(certificateSha256, 'MANAGED_CODEX_WINDOWS_CERT_SHA256'),
+      publisher,
     };
   }
   throw new Error(`Unsupported Managed Codex platform: ${platform}`);
@@ -363,17 +409,24 @@ function verifyMacSigning(executablePath, signing) {
   }
   const combined = `${details.stdout}\n${details.stderr}`;
   const teamId = combined.match(/^TeamIdentifier=(.+)$/m)?.[1]?.trim();
+  const authorities = [...combined.matchAll(/^Authority=(.+)$/gm)].map(match => match[1].trim());
   if (!teamId) {
     throw new Error(`codesign details did not include TeamIdentifier for ${executablePath}`);
   }
   if (signing.teamId && teamId !== signing.teamId) {
     throw new Error(`codesign Team ID mismatch for ${executablePath}: expected ${signing.teamId}, got ${teamId || '<none>'}`);
   }
+  if (signing.signingIdentity && !authorities.includes(signing.signingIdentity)) {
+    throw new Error(
+      `codesign identity mismatch for ${executablePath}: expected ${signing.signingIdentity}, `
+      + `got ${authorities[0] || '<none>'}`,
+    );
+  }
   return {
     checked: true,
     type: 'codesign',
     teamId,
-    signingIdentity: signing.signingIdentity,
+    signingIdentity: authorities[0] || signing.signingIdentity,
   };
 }
 
@@ -390,15 +443,7 @@ function verifyWindowsSigning(executablePath, signing) {
     throw new Error(`Authenticode status for ${executablePath} is ${parsed.status}: ${parsed.statusMessage ?? ''}`);
   }
   const actualSha = normalizeSha256(parsed.sha256, 'Authenticode signer certificate SHA-256');
-  if (!signing.certificateSha256) {
-    throw new Error([
-      'MANAGED_CODEX_WINDOWS_CERT_SHA256 is required for Managed Codex Windows artifact metadata.',
-      `Current codex.exe Authenticode subject: ${parsed.subject ?? '<none>'}`,
-      `Current codex.exe signer certificate SHA-256: ${actualSha}`,
-      'After confirming this signer is expected, add MANAGED_CODEX_WINDOWS_CERT_SHA256 to .env and rerun.',
-    ].join('\n'));
-  }
-  if (actualSha !== signing.certificateSha256) {
+  if (signing.certificateSha256 && actualSha !== signing.certificateSha256) {
     throw new Error(`Authenticode cert SHA-256 mismatch: expected ${signing.certificateSha256}, got ${actualSha}`);
   }
   if (signing.publisher && !String(parsed.subject ?? '').toLowerCase().includes(signing.publisher.toLowerCase())) {
@@ -412,6 +457,24 @@ function verifyWindowsSigning(executablePath, signing) {
   };
 }
 
+function verifyWindowsUnsignedHelper(executablePath) {
+  if (process.platform !== 'win32') {
+    return { checked: false, reason: 'not-windows-host' };
+  }
+  const parsed = readWindowsAuthenticode(executablePath);
+  if (parsed.status !== 'NotSigned') {
+    throw new Error(
+      `Managed Codex unsigned Windows helper policy expected NotSigned for ${executablePath}, ` +
+      `got ${parsed.status}: ${parsed.statusMessage ?? ''}`,
+    );
+  }
+  return {
+    checked: true,
+    type: 'unsigned-helper',
+    status: parsed.status,
+  };
+}
+
 function verifyPlatformSigning(platform, executablePath, signing) {
   if (!signing) {
     return { checked: false, reason: 'unsigned-development-artifact' };
@@ -419,6 +482,234 @@ function verifyPlatformSigning(platform, executablePath, signing) {
   if (platform.startsWith('darwin-')) return verifyMacSigning(executablePath, signing);
   if (platform === 'win32-x64') return verifyWindowsSigning(executablePath, signing);
   throw new Error(`Unsupported Managed Codex platform: ${platform}`);
+}
+
+function isNativeExecutableForPlatform(path, platform) {
+  const header = Buffer.alloc(4);
+  const fd = openSync(path, 'r');
+  try {
+    if (readSync(fd, header, 0, header.length, 0) < 2) return false;
+  } finally {
+    closeSync(fd);
+  }
+  if (platform === 'win32-x64') {
+    return header[0] === 0x4d && header[1] === 0x5a;
+  }
+  const magic = header.readUInt32BE(0);
+  return new Set([
+    0xfeedface,
+    0xcefaedfe,
+    0xfeedfacf,
+    0xcffaedfe,
+    0xcafebabe,
+    0xbebafeca,
+    0xcafebabf,
+    0xbfbafeca,
+  ]).has(magic);
+}
+
+function macNativePathPolicy(platform) {
+  const vendorTriple = platform === 'darwin-arm64'
+    ? 'aarch64-apple-darwin'
+    : 'x86_64-apple-darwin';
+  const codexPath = `vendor/${vendorTriple}/bin/codex`;
+  return {
+    codexPath,
+    openAiSignedPaths: new Set([
+      codexPath,
+      `vendor/${vendorTriple}/bin/codex-code-mode-host`,
+    ]),
+    helperPaths: new Set([
+      `vendor/${vendorTriple}/codex-path/rg`,
+      `vendor/${vendorTriple}/codex-resources/zsh/bin/zsh`,
+    ]),
+  };
+}
+
+function windowsNativePathPolicy() {
+  const vendorTriple = 'x86_64-pc-windows-msvc';
+  const codexPath = `vendor/${vendorTriple}/bin/codex.exe`;
+  return {
+    codexPath,
+    openAiSignedPaths: new Set([
+      codexPath,
+      `vendor/${vendorTriple}/bin/codex-code-mode-host.exe`,
+      `vendor/${vendorTriple}/codex-resources/codex-command-runner.exe`,
+      `vendor/${vendorTriple}/codex-resources/codex-windows-sandbox-setup.exe`,
+    ]),
+    unsignedHelperPaths: new Set([
+      `vendor/${vendorTriple}/codex-path/rg.exe`,
+    ]),
+  };
+}
+
+function teamIdFromSigningIdentity(identity) {
+  const teamId = identity.match(/\(([A-Z0-9]{10})\)\s*$/)?.[1];
+  if (!teamId) {
+    throw new Error(`Cannot derive Apple Team ID from signing identity: ${identity}`);
+  }
+  return teamId;
+}
+
+function prepareMacHelperSigning(platform, packageDir, allowUnsigned) {
+  if (!platform.startsWith('darwin-')) {
+    return { helperSigningByPath: new Map(), preparations: [] };
+  }
+  if (process.platform !== 'darwin') {
+    return { helperSigningByPath: new Map(), preparations: [] };
+  }
+
+  const { helperPaths } = macNativePathPolicy(platform);
+  const helperSigningByPath = new Map();
+  const preparations = [];
+  for (const relativePath of helperPaths) {
+    const helperPath = join(packageDir, relativePath);
+    if (!existsSync(helperPath)) {
+      throw new Error(`Managed Codex ${platform} missing pinned native helper: ${relativePath}`);
+    }
+
+    try {
+      const verification = verifyMacSigning(helperPath, { type: 'codesign', teamId: 'not set' });
+      helperSigningByPath.set(relativePath, { type: 'codesign', teamId: 'not set' });
+      preparations.push({
+        relativePath,
+        action: 'preserved-upstream-ad-hoc-signature',
+        teamId: verification.teamId,
+      });
+      continue;
+    } catch (verificationError) {
+      const details = tryRun('/usr/bin/codesign', ['-dv', '--verbose=4', helperPath]);
+      const detailOutput = `${details.stdout}\n${details.stderr}`;
+      if (!detailOutput.includes('code object is not signed at all')) {
+        throw verificationError;
+      }
+    }
+
+    const identity = allowUnsigned
+      ? '-'
+      : (process.env.MANAGED_CODEX_MACOS_HELPER_SIGNING_IDENTITY?.trim()
+        || process.env.APPLE_SIGNING_IDENTITY?.trim());
+    if (!identity) {
+      throw new Error(
+        `APPLE_SIGNING_IDENTITY is required to sign unsigned Managed Codex ${platform} helpers`,
+      );
+    }
+    const signArgs = ['--force', '--sign', identity];
+    if (identity !== '-') signArgs.push('--timestamp', '--options', 'runtime');
+    signArgs.push(helperPath);
+    run('/usr/bin/codesign', signArgs, { stdio: 'inherit' });
+
+    const expectedSigning = identity === '-'
+      ? { type: 'codesign', teamId: 'not set' }
+      : {
+          type: 'codesign',
+          teamId: teamIdFromSigningIdentity(identity),
+          signingIdentity: identity,
+        };
+    const verification = verifyMacSigning(helperPath, expectedSigning);
+    helperSigningByPath.set(relativePath, expectedSigning);
+    preparations.push({
+      relativePath,
+      action: identity === '-' ? 'added-local-ad-hoc-signature' : 'added-myagents-developer-id-signature',
+      teamId: verification.teamId,
+      signingIdentity: verification.signingIdentity,
+    });
+  }
+  return { helperSigningByPath, preparations };
+}
+
+function verifyPackageNativeSigning(
+  platform,
+  packageDir,
+  fileAllowlist,
+  executableRelativePath,
+  signing,
+  helperSigningByPath,
+) {
+  const nativePaths = fileAllowlist.filter(relativePath => (
+    isNativeExecutableForPlatform(join(packageDir, relativePath), platform)
+  ));
+  if (nativePaths.length === 0) {
+    throw new Error(`Managed Codex ${platform} package has no native executables to verify`);
+  }
+  if (platform.startsWith('darwin-')) {
+    const policy = macNativePathPolicy(platform);
+    const expectedPaths = new Set([...policy.openAiSignedPaths, ...policy.helperPaths]);
+    if (
+      nativePaths.length !== expectedPaths.size
+      || nativePaths.some(relativePath => !expectedPaths.has(relativePath))
+    ) {
+      throw new Error(
+        `Managed Codex ${platform} native file set changed: ${nativePaths.join(', ')}`,
+      );
+    }
+  }
+  if (platform === 'win32-x64') {
+    const policy = windowsNativePathPolicy();
+    const expectedPaths = new Set([...policy.openAiSignedPaths, ...policy.unsignedHelperPaths]);
+    if (
+      nativePaths.length !== expectedPaths.size
+      || nativePaths.some(relativePath => !expectedPaths.has(relativePath))
+    ) {
+      throw new Error(
+        `Managed Codex ${platform} native file set changed: ${nativePaths.join(', ')}`,
+      );
+    }
+  }
+  return nativePaths.map((relativePath) => {
+    let nativeSigning = signing;
+    if (platform.startsWith('darwin-')) {
+      const policy = macNativePathPolicy(platform);
+      if (executableRelativePath !== policy.codexPath) {
+        throw new Error(
+          `Managed Codex ${platform} executable moved from its pinned path: ${executableRelativePath}`,
+        );
+      }
+      if (policy.openAiSignedPaths.has(relativePath)) {
+        nativeSigning = signing;
+      } else if (policy.helperPaths.has(relativePath)) {
+        nativeSigning = helperSigningByPath.get(relativePath);
+        if (!nativeSigning) {
+          throw new Error(`Managed Codex ${platform} helper was not prepared: ${relativePath}`);
+        }
+      } else {
+        throw new Error(
+          `Managed Codex ${platform} contains an unrecognized native helper: ${relativePath}`,
+        );
+      }
+    } else if (platform === 'win32-x64') {
+      const policy = windowsNativePathPolicy();
+      if (executableRelativePath !== policy.codexPath) {
+        throw new Error(
+          `Managed Codex ${platform} executable moved from its pinned path: ${executableRelativePath}`,
+        );
+      }
+      if (policy.openAiSignedPaths.has(relativePath)) {
+        nativeSigning = signing;
+      } else if (policy.unsignedHelperPaths.has(relativePath)) {
+        const verification = verifyWindowsUnsignedHelper(join(packageDir, relativePath));
+        if (verification.checked !== true) {
+          throw new Error(
+            `Managed Codex ${platform} unsigned helper was not verified for ${relativePath}: ` +
+            `${verification.reason ?? 'unknown'}`,
+          );
+        }
+        return { relativePath, ...verification };
+      } else {
+        throw new Error(
+          `Managed Codex ${platform} contains an unrecognized native helper: ${relativePath}`,
+        );
+      }
+    }
+    const verification = verifyPlatformSigning(platform, join(packageDir, relativePath), nativeSigning);
+    if (nativeSigning && verification.checked !== true) {
+      throw new Error(
+        `Managed Codex ${platform} native signing was not verified for ${relativePath}: ` +
+        `${verification.reason ?? 'unknown'}`,
+      );
+    }
+    return { relativePath, ...verification };
+  });
 }
 
 function main() {
@@ -440,9 +731,23 @@ function main() {
       if (!fileAllowlist.includes(executableRelativePath)) {
         throw new Error(`Managed Codex fileAllowlist does not contain executable ${executableRelativePath}`);
       }
-      const executablePath = join(packageDir, executableRelativePath);
       const signing = signingSpecForPlatform(platform, args.allowUnsigned);
-      const signingVerification = verifyPlatformSigning(platform, executablePath, signing);
+      const helperSigning = prepareMacHelperSigning(platform, packageDir, args.allowUnsigned);
+      const nativeSigningVerifications = verifyPackageNativeSigning(
+        platform,
+        packageDir,
+        fileAllowlist,
+        executableRelativePath,
+        signing,
+        helperSigning.helperSigningByPath,
+      );
+      const executableNativeVerification = nativeSigningVerifications.find(
+        verification => verification.relativePath === executableRelativePath,
+      );
+      if (!executableNativeVerification) {
+        throw new Error(`Managed Codex declared executable is not a native binary: ${executableRelativePath}`);
+      }
+      const { relativePath: _relativePath, ...signingVerification } = executableNativeVerification;
       if (!args.allowUnsigned && signingVerification.checked !== true) {
         throw new Error(
           `Managed Codex ${platform} platform signing was not verified on this release host: ${signingVerification.reason ?? 'unknown'}`,
@@ -493,6 +798,8 @@ function main() {
           signature,
           ...archiveStats,
           signingVerification,
+          nativeSigningVerifications,
+          nativeSigningPreparations: helperSigning.preparations,
         },
       };
       const manifest = {

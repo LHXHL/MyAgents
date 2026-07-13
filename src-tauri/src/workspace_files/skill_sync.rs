@@ -33,7 +33,9 @@ use std::path::Path;
 use crate::{ulog_debug, ulog_warn};
 
 use super::platform_blocks::is_skill_blocked_on_platform;
-use super::skills_config::{read_cli_tool_registry_enabled, read_disabled_list};
+use super::skills_config::{
+    is_required_memory_system_skill, read_cli_tool_registry_enabled, read_disabled_list,
+};
 
 /// Idempotent: symlink user-level skills + commands into `<workspace>/.claude/`.
 ///
@@ -114,7 +116,7 @@ fn sync_skills_subtree(workspace: &Path, myagents_root: &Path) {
         managed.insert(folder_name.clone());
         let link_path = project_skills.join(&folder_name);
 
-        if disabled.contains(&folder_name)
+        if (disabled.contains(&folder_name) && !is_required_memory_system_skill(&folder_name))
             || (!cli_tool_registry_enabled && folder_name == "tool-creator")
         {
             // Disabled: remove our symlink if present; never remove real dirs.

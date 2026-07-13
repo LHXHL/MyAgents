@@ -62,7 +62,7 @@ describe('spaceCloud API errors', () => {
 
   it('normalizes issue comment business errors from the Space envelope', async () => {
     const { spaceCommentIssue } = await loadSpaceCloud();
-    mocks.invoke.mockResolvedValueOnce({ success: false, error: 'permission denied' });
+    mocks.invoke.mockRejectedValueOnce('permission denied');
 
     await expect(spaceCommentIssue('iss_123', 'hello')).rejects.toThrow('评论发送失败：permission denied');
   });
@@ -76,7 +76,7 @@ describe('spaceCloud API errors', () => {
       requestId: 'req_123',
       recoveryHint: { message: 'Login with Google from MyAgents Cloud Space.' },
     };
-    mocks.invoke.mockResolvedValueOnce(envelope);
+    mocks.invoke.mockRejectedValueOnce(envelope);
 
     await expect(spaceCommentIssue('iss_123', 'hello')).rejects.toThrow('评论发送失败：请重新登录 MyAgents 社区');
 
@@ -114,8 +114,55 @@ describe('spaceCloud API errors', () => {
       body: 'hello',
       createdAt: '2026-06-24T00:00:00.000Z',
     };
-    mocks.invoke.mockResolvedValueOnce({ success: true, data: { comment } });
+    mocks.invoke.mockResolvedValueOnce({ comment });
 
-    await expect(spaceCommentIssue('iss_123', 'hello')).resolves.toEqual({ comment });
+    await expect(spaceCommentIssue('iss_123', 'hello')).resolves.toEqual({
+      comment: { ...comment, attachments: [] },
+    });
+  });
+
+  it('sends create and comment files through atomic Rust mutation commands', async () => {
+    const { spaceCommentIssue, spaceCreateIssue } = await loadSpaceCloud();
+    mocks.invoke
+      .mockResolvedValueOnce({ issue: { id: 'iss_1' } })
+      .mockResolvedValueOnce({
+        comment: {
+          id: 'cmt_1',
+          author: { id: 'user-1', type: 'user' },
+          body: '',
+          attachments: [{ id: 'att_1', name: 'trace.log', sizeBytes: 4, createdAt: '2026-07-12T00:00:00Z' }],
+          createdAt: '2026-07-12T00:00:00Z',
+        },
+      });
+
+    await spaceCreateIssue({ title: 'Issue', body: 'Body', filePaths: ['/tmp/a.png'] }, 'official');
+    await spaceCommentIssue('iss_1', '', ['/tmp/trace.log']);
+
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, 'cmd_space_create_issue_with_attachments', {
+      input: expect.objectContaining({ spaceId: 'official', filePaths: ['/tmp/a.png'] }),
+    });
+    expect(mocks.invoke).toHaveBeenNthCalledWith(2, 'cmd_space_comment_issue_with_attachments', {
+      input: { issueId: 'iss_1', body: '', filePaths: ['/tmp/trace.log'] },
+    });
+  });
+
+  it('normalizes legacy comment attachment fields without merging them into top attachments', async () => {
+    const { spaceGetIssue } = await loadSpaceCloud();
+    mocks.invoke.mockResolvedValueOnce({
+      success: true,
+      data: {
+        issue: { id: 'iss_1' },
+        attachments: [{ id: 'att_top', name: 'top.pdf', sizeBytes: 1, createdAt: '2026-07-12T00:00:00Z' }],
+        comments: {
+          items: [{ id: 'cmt_1', author: { id: 'u-1', type: 'user' }, body: 'legacy', createdAt: '2026-07-12T00:00:00Z' }],
+          hasMore: false,
+          limit: 5,
+        },
+      },
+    });
+
+    const detail = await spaceGetIssue('iss_1');
+    expect(detail.attachments.map(item => item.id)).toEqual(['att_top']);
+    expect(detail.comments.items[0]?.attachments).toEqual([]);
   });
 });

@@ -51,6 +51,7 @@ Multi-Agent Runtime 允许用户选择不同的 AI Runtime 驱动 Agent 会话�
 - `sendDesktopMessage()`：保持 `/chat/send` 的 admission 语义；external runtime 继续立即返回并后台串行 dispatch，避免 Rust proxy 120s 上限。
 - `enqueueImMessage()`：保持 IM requestId-aware admission；不等待 assistant turn 完成。
 - `runInjectedTurn()`：用于 cron sync、heartbeat、memory update 等同步注入 turn；等待 turn finalization，并用各 runtime 的真成功信号判定结果。
+- `stopOwnedTurnByQueueId()`：按 domain owner + `queueId` 精确停止 Task/Goal turn。普通 queued item 被明确移除即可成功；若已进入 promotion，则必须等其结算，`not-dispatched | terminated` 才算成功，`dispatched` 且仍是 current turn 时继续精确 stop，`termination-unconfirmed` 返回失败并保留 exact binding。停止 current external turn 使用 `preserveQueue`，不得清掉后续无关 operation。
 - read/config methods：`getRuntimeIdentity()`、`getLiveSessionState()`、`getLatestAssistantResult()`、`getStreamReplaySnapshot()`、`getSessionConfigSnapshot()`、`getLiveSessionOverlay()` 统一承接 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/api/session/config` 等读取面。
 - operation methods：`rewindToUserMessage()`、`retryLastExternalUserMessage()`、`forkAtAssistantMessage()`、`switchToExistingSession()`、`resetForNewDesktopSession()`、`resetForNewImSession()` 把会话操作留在 adapter 内部处理；unsupported runtime 由 adapter 返回能力错误，而不是 route 层手写分支。
 - queue/config/permission methods：把 route 层从 `agent-session.ts` / `external-session.ts` 的直接分流中解耦；`/api/mcp/set`、`/api/agents/set`、`/api/provider/set`、`/api/interaction-scenario/set` 对 external runtime 显式 skip，不在 route 层静默判断。
@@ -122,7 +123,9 @@ type RuntimeType = 'builtin' | 'claude-code' | 'codex' | 'gemini';
 | `system-cli` | 用户自行安装并登录的本机 CLI | 实验室「更多 Agent Runtime」里选择 Codex / Claude Code / Gemini |
 | `managed-provider` | MyAgents 管理 runtime 二进制、安装状态与登录状态 | Provider 列表里的 `codex-sub`（Codex 订阅） |
 
-`managed-provider` 不受 `config.multiAgentRuntime` 门控；它由自己的 Provider readiness gate 控制：provider gate 开启、managed runtime 已安装到要求版本、managed Codex auth 有效（`chatgpt` 或兼容的 `access-token`），且 provider 未被禁用。Rust `runtime_identity.rs` 在新 session/IM/Cron sidecar 出生时根据 Agent 的 `providerId:'codex-sub'` 与这些 readiness 字段解析出 `runtime='codex'`、`source='managed-provider'`。
+`managed-provider` 不受 `config.multiAgentRuntime` 门控；它由自己的 Provider readiness gate 控制：provider gate 开启、managed runtime 已安装到要求版本、managed Codex auth 有效（`chatgpt` 或兼容的 `access-token`），且 provider 未被禁用。Rust `runtime_identity.rs` 在新 Session、IM 或 Task Sidecar 出生时根据 Agent 的 `providerId:'codex-sub'` 与这些 readiness 字段解析出 `runtime='codex'`、`source='managed-provider'`。
+
+每次 Rust Sidecar ensure attempt 只解析一次 owner-aware `RuntimeIdentity(runtime + runtimeSource)`；同一次 attempt 的既有进程复用校验与新进程 spawn 必须消费这个同一快照，不能在两者之间重读 Session/Agent 配置。Task 首次 materialize metadata 时，Node 以 live `SessionEngine.getRuntimeIdentity()` 和同一时刻的 live config snapshot 绑定实际进程身份，避免 Rust payload 与 Node 进程发生 TOCTOU 漂移。
 
 持久化边界：
 
@@ -541,7 +544,7 @@ MyAgents session 身份下，造成历史会话和新会话串写。
 - `AgentRuntime.steerMessage?()` 是可选能力；只有 Codex adapter 实现。`external-session` 只看 capability，不硬编码 runtime 名。
 - `turn/steer` 必须带 `expectedTurnId`（来自 Codex 当前 active turn）和 MyAgents user message id 作为 `clientUserMessageId`。
 - same-turn steering 不应用新的 model / permission / reasoning effort snapshot；这些仍是下一 turn 边界生效，和 builtin busy 时“配置锁定当前 turn”的语义一致。
-- 只作用于桌面 `sendDesktopMessage`；IM / Cron / Inbox / injected turn 保持 turn 级同步语义。
+- 只作用于桌面 `sendDesktopMessage`；IM / Task / Inbox / injected turn 保持 turn 级同步语义。
 
 ### 内容块持久化
 
@@ -565,7 +568,7 @@ External runtime 的 model / permission / reasoning effort 统一走
 正在运行、已有 queued message/config operation、或 turn finalization 仍在落盘,则把
 config patch 放入 `external-session/operation-queue.ts` 维护的 FIFO。turn boundary
 drain 时先应用前导 config ops,再启动下一条 desktop queued message,因此不会打断当前轮,
-也不会让后来的配置倒灌到更早入队的 message。IM / Cron 不走桌面 queue pill,仍在每轮
+也不会让后来的配置倒灌到更早入队的 message。IM / Task 不走桌面 queue pill,仍在每轮
 `ExternalSendContext` 中 self-resolve live config。
 
 Snapshot/source guard 由 `session-core/runtime-config-policy.ts` 统一决定。`/api/runtime/config` 接受 `source`，Rust IM router 的热同步必须传 `source:"im-sync"`；`runtime-config.ts` 在写入 desired model / permission / reasoning effort 之前先过滤 snapshotted desktop-owned session 的 IM 字段，避免 channel config 污染 desired state。桌面 runtime config push 继续使用 `source:"runtime-config"` / `source:"desktop"` 并保持权威。
@@ -595,11 +598,13 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 
 | 项 | pre-warm | 正常 start |
 |----|----------|-----------|
-| `initialMessage` | 省略 | 含用户消息 |
+| `initialMessage` | 省略 | 普通 turn 含用户消息；带 `beforeDispatch` 的 guarded fresh/resume 先省略，进程归属建立后再 `sendMessage` |
 | Session state | 保持 `idle`(UI 不显示 spinner) | 切 `running` |
 | 看门狗 | **不启动**(10 分钟进程空等是合法的) | 启动 |
 | Session metadata 落盘 | 推迟 | 创建时写入 |
 | 失败处理 | **静默**(log-only,不 toast) | broadcast `chat:agent-error` |
+
+`sessionState` / `SessionEngine.isBusy()` / `waitIdle()` 表达的是 **turn activity**，不是 process liveness。Codex/Gemini 预热后进程与 stdin/thread owner 仍存活，但只要 `sessionState='idle'` 就必须对 Goal scheduler、memory update、retry 等上层调用方报告 idle；需要 stop/reset process 的 session boundary 使用 `hasExternalRuntimeProcess()`，不能重新用 busy 判据代替。
 
 **守卫**:
 - **双层重复守卫**:`isExternalSessionActive() || isRunning || startingPromise` 任一成立即视为已暖,直接返回。
@@ -616,11 +621,12 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 
 ### 并发与序列化
 
-`sendExternalMessage` 在分派 Case 1/2/3 之前有两道 gate:
+`sendExternalMessage` 在分派 Case 1/2/3 之前有四道 gate:
 
 1. **Start 并发 gate**:`await startingPromise` 等待任何在飞的 `startExternalSession`(包括 pre-warm)完成。否则用户消息可能在 `isRunning=true && activeProcess=null` 的中间态被错分到 Case 2,触发 "session already running" 静默丢弃。
 2. **Turn 序列化 gate**:`!turnCompleted && currentTurnStartTime !== 0 && activeProcess` → `waitForExternalSessionIdle(5 分钟, 100ms)`。持久进程运行时(Codex/Gemini)一次只接一个 turn,并发 `turn/start` / stdin 写入会出现 drop 或交错输出。崩溃恢复路径通过 `resetTurnAccumulators()` 把 `currentTurnStartTime` 归零,此 gate 不会误触。例外只存在于桌面 realtime + Codex `turn/steer`:它不走 `sendExternalMessage` 新 turn 路径,而是由 `enqueueExternalSendForDesktop` 调 optional `runtime.steerMessage()` 追加到当前 turn。
 3. **Turn finalization gate**(`TurnFinalizationGate`,`external-turn-finalization.ts`,实例由 `external-session/turn-lifecycle.ts` 持有):`turnCompleted` 翻 true 时 fire-and-forget 的 `persistTurnResult()` 可能仍在 await 窗口内(assistant 消息尚未 push 进 transcript owner/落盘)。旧实现里 `turnCompleted` 一旗三义("terminal 事件已发"/"可接下一轮"/"回复可读"),导致 cron/IM 读到上一轮回复、背靠背 send 冲掉未持久化的内容块。gate track 每个 finalization promise;send 侧 `settled(60s)` 有界等待后才绑定本轮 meta,降级放行时依赖 `persistTurnResult` 的**同步入口快照纪律**(inboxMeta/hints/contextUsage/contentBlocks/assistantText 全部在首个 await 前捕获)+ identity 守卫的 reset,最坏只乱序不丢消息。Phase8 后：terminal success/failure/prewarm/idle/user-stop plan 由 `turn-lifecycle.ts` 分类；content snapshot 由 `content-blocks.ts` 生成；user/assistant append、retry truncate、last assistant read、SessionStore save 由 `transcript-persistence.ts` 拥有；IM registry 与 inbox/watch error delivery 由 `interactive.ts` 拥有。
+4. **Goal/Task dispatch gate**：带 `beforeDispatch` 的 scheduler/user turn 在 external facade 的 promotion 边界原子 claim。guard accepted 前不得 surface bubble、写 transcript/SessionStore、启动 watchdog 或标记 running；新 turn 开始 guard 时由 `turn-lifecycle.ts` 建立 promotion token，所以 `isBusy` / `waitIdle` 不会把 claim 窗口误判 idle。accepted 后 token 贯穿 metadata/persistence/config 等 await，并在最终 transport 前复核。Stop 原子 invalidate token，但 cancel token 本身不是停止确认：caller 必须等待 promotion 结算为 `not-dispatched | dispatched | terminated | termination-unconfirmed`；fresh/resume startup 尚未返回 process 时也要等 `_doStartExternalSession` 完成。`not-dispatched` 保留 shared prewarm process，`dispatched` 继续精确 stop，只有 `terminated` / 已确认未派送才可释放 owner；`termination-unconfirmed` 保留 process + queue binding。fresh/resume 不能把 prompt 作为 `startSession(initialMessage)` 的隐式副作用交给尚未归属的进程：必须先用空 `initialMessage` 完成 start/resume、注册 active process、复核 token，再显式调用 `runtime.sendMessage`。一旦调用 runtime transport，任何 throw 都可能只是 ack 丢失；必须尝试 stop，未确认终止时不得把它降格为普通 send failure或清 binding。pre-warm Case 3、turn queue drain、realtime steer fallback 同样走该 token；active realtime steer 已由当前 running turn 持有 Stop owner，guard 后不跨 await 直接调用 transport。guard reject 只取消待派送项，不得留下一个本地“假 turn”。
 
 ### 安全机制
 
@@ -629,6 +635,7 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 | **并发守卫** | `startingPromise` 序列化并发 `startExternalSession` 调用 |
 | **Turn 序列化** | 持久进程 runtime 下,新消息等待上一个 in-flight turn 结束再派送 |
 | **Turn finalization** | `TurnFinalizationGate`:idle 判定与下一轮派送等待 fire-and-forget 的 `persistTurnResult` settle,防读到上轮回复/冲掉未持久化消息(见上方 gate 3) |
+| **Process/turn 分离** | `sessionState`/`isBusy`/`waitIdle` 只表达 turn；`hasExternalRuntimeProcess` 单独表达 persistent process liveness，pre-warm idle 不阻塞自动回合 |
 | **看门狗** | **Per-turn**(不是 per-process):pre-warm idle 不计时,turn 启动才启动计时器。10 分钟无活动 → kill |
 | **Stale text 防护** | `lastTurnSucceeded` 标志,cron/heartbeat 路径检查,防止崩溃后返回上一轮旧回复 |
 | **用户消息即时落盘** | 发送后立即通过 `transcript-persistence.ts::persistExternalUserMessageAppend()` 写入 SessionStore,崩溃不丢用户消息;owner 检查 `saveSessionMessages()` 返回值,`unindexed-create-refused` 视为发送失败而不是 log-only |

@@ -48,8 +48,7 @@ const mocks = vi.hoisted(() => {
     getGlobalServerUrl: vi.fn(async () => 'http://127.0.0.1:31415'),
     ensureSessionSidecar: vi.fn(async () => ({ port: 31417, isNew: true })),
     activateSession: vi.fn(async () => undefined),
-    releaseSessionSidecar: vi.fn(async () => false),
-    deactivateSession: vi.fn(async () => undefined),
+    releaseTabSession: vi.fn(async () => false),
     getSessionPort: vi.fn(async () => null),
     startBackgroundCompletion: vi.fn(async () => ({ started: false })),
     setAppActiveCorrelation: vi.fn(),
@@ -87,9 +86,8 @@ vi.mock('@/api/tauriClient', () => ({
   getSessionActivation: vi.fn(async () => null),
   updateSessionTab: vi.fn(async () => undefined),
   ensureSessionSidecar: mocks.ensureSessionSidecar,
-  releaseSessionSidecar: mocks.releaseSessionSidecar,
+  releaseTabSession: mocks.releaseTabSession,
   activateSession: mocks.activateSession,
-  deactivateSession: mocks.deactivateSession,
   upgradeSessionId: vi.fn(async () => true),
   getSessionPort: mocks.getSessionPort,
   hasSessionSidecar: vi.fn(async () => true),
@@ -99,6 +97,8 @@ vi.mock('@/api/tauriClient', () => ({
   cancelBackgroundCompletion: vi.fn(async () => undefined),
   updateGlobalServerUrl: vi.fn(),
   canRestoreSession: vi.fn(async () => true),
+  getUserSchedulerLifecycleSnapshot: vi.fn(async () => ({ runningTaskCount: 0, protectedSessionIds: [] })),
+  sessionHasPersistentOwners: vi.fn(async () => false),
 }));
 
 vi.mock('@/api/apiFetch', () => ({
@@ -526,12 +526,10 @@ describe('App helper launch', () => {
         'tab',
         expect.stringMatching(/^tab-/),
       );
-      expect(mocks.releaseSessionSidecar).toHaveBeenCalledWith(
+      expect(mocks.releaseTabSession).toHaveBeenCalledWith(
         'fork-session',
-        'tab',
         expect.stringMatching(/^tab-/),
       );
-      expect(mocks.deactivateSession).toHaveBeenCalledWith('fork-session');
     } finally {
       errorSpy.mockRestore();
     }

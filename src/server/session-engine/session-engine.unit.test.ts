@@ -5,37 +5,49 @@ const mocks = vi.hoisted(() => {
     useExternal: false,
     externalActive: false,
     externalProcessAlive: false,
+    builtinTurnIdentity: null as { queueId: string; owner: { kind: 'goal' | 'task'; id: string } } | null,
+    externalTurnIdentity: null as { queueId: string; owner: { kind: 'goal' | 'task'; id: string } } | null,
+    externalCurrentQueueId: null as string | null,
     pendingExternalAsk: false,
   };
 
   return {
     state,
     broadcast: vi.fn(),
+    applyMcpOverrideAndAwaitReady: vi.fn(async () => undefined),
     cancelBuiltinImRequest: vi.fn(async () => ({ aborted: false, mode: 'unknown' as const })),
     cancelQueueItem: vi.fn<() => Promise<
       | { status: 'cancelled'; cancelledText: string }
       | { status: 'not_found' | 'not_cancelled' | 'unavailable' | 'error' }
     >>(async () => ({ status: 'not_found' as const })),
-    consumeInjectedTurnOutcome: vi.fn<(injectedTurnId: string) => {
-      status: 'complete' | 'stopped' | 'error';
-      assistantMessagePresent: boolean;
-      text: string;
-      error?: string;
-    }>(() => ({
-      status: 'complete' as const,
-      assistantMessagePresent: true,
-      text: 'builtin answer',
-    })),
-    discardInjectedTurnOutcome: vi.fn(),
+    cancelQueuedTurnsByOwner: vi.fn(async () => 0),
     enqueueUserMessage: vi.fn<(...args: unknown[]) => Promise<{
       queued: boolean;
       queueId?: string;
       isInFlight?: boolean;
       deliveryMode?: 'queue' | 'realtime' | 'turn';
       error?: string;
-    }>>(async () => ({ queued: true, queueId: 'q1', isInFlight: false, deliveryMode: 'queue' as const })),
+      dispatchAcceptance?: Promise<{ accepted: boolean; error?: string }>;
+    }>>(async (...args: unknown[]) => {
+      const options = args[11] as {
+        queueId?: string;
+        onTerminal?: (outcome: { status: 'complete'; assistantMessagePresent: boolean; text: string }) => void;
+      } | undefined;
+      queueMicrotask(() => options?.onTerminal?.({
+        status: 'complete',
+        assistantMessagePresent: true,
+        text: 'builtin answer',
+      }));
+      return {
+        queued: true,
+        queueId: options?.queueId ?? 'q1',
+        isInFlight: false,
+        deliveryMode: 'queue' as const,
+      };
+    }),
     forceExecuteQueueItem: vi.fn(async () => true),
     getAndClearLastAgentError: vi.fn<() => string | null>(() => null),
+    getCurrentTurnIdentity: vi.fn(() => state.builtinTurnIdentity),
     getAgentState: vi.fn<() => Record<string, unknown>>(() => ({ sessionState: 'idle', agentDir: '/workspace' })),
     getAgents: vi.fn(() => ({ helper: { name: 'helper' } })),
     getLastBuiltinAssistantText: vi.fn(() => 'builtin latest'),
@@ -76,7 +88,17 @@ const mocks = vi.hoisted(() => {
     waitForSessionIdle: vi.fn(async () => true),
     awaitExternalSessionStarting: vi.fn(async () => undefined),
     cancelExternalImRequest: vi.fn(async () => ({ aborted: false, mode: 'unknown' as const })),
-    cancelExternalQueueItem: vi.fn(() => null),
+    cancelExternalQueueItem: vi.fn<(queueId: string) => {
+      cancelledText: string;
+      promotion?: { settled: Promise<{ status: 'not-dispatched' | 'dispatched' | 'terminated' | 'termination-unconfirmed' }> };
+    } | null>(() => null),
+    cancelExternalQueuedTurnsByOwner: vi.fn<() => {
+      count: number;
+      promotion?: { settled: Promise<{ status: 'not-dispatched' | 'dispatched' | 'terminated' | 'termination-unconfirmed' }> };
+    }>(() => ({ count: 0 })),
+    clearExternalTurnBinding: vi.fn((queueId: string) => {
+      if (state.externalCurrentQueueId === queueId) state.externalCurrentQueueId = null;
+    }),
     didLastTurnSucceed: vi.fn(() => true),
     enqueueExternalSendForDesktop: vi.fn(() => ({
       queued: true,
@@ -88,6 +110,7 @@ const mocks = vi.hoisted(() => {
     getActiveRuntimeType: vi.fn(() => 'codex'),
     getCurrentBoundSessionId: vi.fn<() => string | null>(() => null),
     getExternalLiveAssistantMessage: vi.fn<() => { id: string; role: 'user' | 'assistant'; content: string; timestamp: string } | null>(() => null),
+    getExternalCurrentTurnIdentity: vi.fn(() => state.externalTurnIdentity),
     getExternalQueueStatus: vi.fn(() => [{ id: 'xq1', messagePreview: 'hello' }]),
     getExternalPendingInteractiveRequests: vi.fn(() => []),
     getExternalSessionId: vi.fn(() => 'external-session'),
@@ -102,12 +125,37 @@ const mocks = vi.hoisted(() => {
     hasPendingExternalAskUserQuestion: vi.fn((requestId: string) => Boolean(requestId) && state.pendingExternalAsk),
     isExternalSessionActive: vi.fn(() => state.externalActive),
     isExternalSessionStateRestoredFor: vi.fn(() => true),
+    isExternalTurnCurrent: vi.fn((queueId: string) => state.externalCurrentQueueId === queueId),
     popLastUserMessageForRetry: vi.fn(async () => ({ success: true, content: 'retry' })),
     prewarmExternalSession: vi.fn(async () => ({ prewarmed: true })),
     respondExternalAskUserQuestion: vi.fn(async () => true),
     respondExternalPermission: vi.fn(async () => true),
     restoreExternalSessionState: vi.fn(),
-    sendExternalMessage: vi.fn(async () => ({ queued: true })),
+    sendExternalMessage: vi.fn<(...args: unknown[]) => Promise<{
+      queued: boolean;
+      error?: string;
+      terminationUnconfirmed?: boolean;
+    }>>(async (...args: unknown[]) => {
+      const context = args[4] as {
+        queueId?: string;
+        turnOwner?: { kind: 'goal' | 'task'; id: string };
+        onTerminal?: (outcome: { status: 'complete'; assistantMessagePresent: boolean; text: string }) => void;
+      } | undefined;
+      state.externalCurrentQueueId = context?.queueId ?? null;
+      state.externalTurnIdentity = context?.queueId && context.turnOwner
+        ? { queueId: context.queueId, owner: context.turnOwner }
+        : null;
+      queueMicrotask(() => {
+        context?.onTerminal?.({
+          status: 'complete',
+          assistantMessagePresent: true,
+          text: 'external answer',
+        });
+        state.externalCurrentQueueId = null;
+        state.externalTurnIdentity = null;
+      });
+      return { queued: true };
+    }),
     setExternalModel: vi.fn(async () => ({ success: true })),
     setExternalPermissionMode: vi.fn(async () => ({ success: true })),
     setExternalReasoningEffort: vi.fn(async () => ({ success: true })),
@@ -115,6 +163,7 @@ const mocks = vi.hoisted(() => {
     stopExternalSession: vi.fn(async () => true),
     updateExternalRuntimeConfig: vi.fn(async () => ({ success: true })),
     waitForExternalSessionIdle: vi.fn(async () => true),
+    waitExternalTurnFinalization: vi.fn(async () => true),
     getSessionData: vi.fn((sessionId: string) => ({
       id: sessionId,
       agentDir: '/workspace',
@@ -138,18 +187,27 @@ const mocks = vi.hoisted(() => {
         ? [...overrideIds]
         : (sessionMeta?.enabledOfficialToolIds ? [...sessionMeta.enabledOfficialToolIds] : [])
     )),
-    materializeProviderRouteEnv: vi.fn(() => undefined),
+    materializeProviderRouteEnv: vi.fn<() => unknown>(() => undefined),
+    managementApi: vi.fn<(...args: unknown[]) => Promise<Record<string, unknown>>>(
+      async () => ({ ok: true }),
+    ),
+    resolveSubscriptionAuthKind: vi.fn((providerId: string) => (
+      providerId === 'xai-sub' ? 'host-managed-oauth' : 'sdk-native'
+    )),
+    loadConfig: vi.fn(() => ({ chatQueueResponseMode: 'realtime' })),
+    resolveWorkspaceConfig: vi.fn(() => ({ mcpServers: [{ id: 'snapshot-mcp' }] })),
   };
 });
 
 vi.mock('../agent-session', () => ({
+  applyMcpOverrideAndAwaitReady: mocks.applyMcpOverrideAndAwaitReady,
   cancelImRequest: mocks.cancelBuiltinImRequest,
   cancelQueueItem: mocks.cancelQueueItem,
-  consumeInjectedTurnOutcome: mocks.consumeInjectedTurnOutcome,
-  discardInjectedTurnOutcome: mocks.discardInjectedTurnOutcome,
+  cancelQueuedTurnsByOwner: mocks.cancelQueuedTurnsByOwner,
   enqueueUserMessage: mocks.enqueueUserMessage,
   forceExecuteQueueItem: mocks.forceExecuteQueueItem,
   getAndClearLastAgentError: mocks.getAndClearLastAgentError,
+  getCurrentTurnIdentity: mocks.getCurrentTurnIdentity,
   getAgentState: mocks.getAgentState,
   getAgents: mocks.getAgents,
   getLastBuiltinAssistantText: mocks.getLastBuiltinAssistantText,
@@ -194,12 +252,15 @@ vi.mock('../runtimes/external-session', () => ({
   awaitExternalSessionStarting: mocks.awaitExternalSessionStarting,
   cancelExternalImRequest: mocks.cancelExternalImRequest,
   cancelExternalQueueItem: mocks.cancelExternalQueueItem,
+  cancelExternalQueuedTurnsByOwner: mocks.cancelExternalQueuedTurnsByOwner,
+  clearExternalTurnBinding: mocks.clearExternalTurnBinding,
   didLastTurnSucceed: mocks.didLastTurnSucceed,
   enqueueExternalSendForDesktop: mocks.enqueueExternalSendForDesktop,
   forceExecuteExternalQueueItem: mocks.forceExecuteExternalQueueItem,
   getActiveRuntimeSource: mocks.getActiveRuntimeSource,
   getActiveRuntimeType: mocks.getActiveRuntimeType,
   getCurrentBoundSessionId: mocks.getCurrentBoundSessionId,
+  getExternalCurrentTurnIdentity: mocks.getExternalCurrentTurnIdentity,
   getExternalLiveAssistantMessage: mocks.getExternalLiveAssistantMessage,
   getExternalPendingInteractiveRequests: mocks.getExternalPendingInteractiveRequests,
   getExternalQueueStatus: mocks.getExternalQueueStatus,
@@ -215,6 +276,7 @@ vi.mock('../runtimes/external-session', () => ({
   hasPendingExternalAskUserQuestion: mocks.hasPendingExternalAskUserQuestion,
   isExternalSessionActive: mocks.isExternalSessionActive,
   isExternalSessionStateRestoredFor: mocks.isExternalSessionStateRestoredFor,
+  isExternalTurnCurrent: mocks.isExternalTurnCurrent,
   popLastUserMessageForRetry: mocks.popLastUserMessageForRetry,
   prewarmExternalSession: mocks.prewarmExternalSession,
   respondExternalAskUserQuestion: mocks.respondExternalAskUserQuestion,
@@ -228,11 +290,19 @@ vi.mock('../runtimes/external-session', () => ({
   stopExternalSession: mocks.stopExternalSession,
   updateExternalRuntimeConfig: mocks.updateExternalRuntimeConfig,
   waitForExternalSessionIdle: mocks.waitForExternalSessionIdle,
+  waitExternalTurnFinalization: mocks.waitExternalTurnFinalization,
 }));
 
 vi.mock('../utils/admin-config', () => ({
   getEffectiveOfficialToolIdsForSession: mocks.getEffectiveOfficialToolIdsForSession,
+  loadConfig: mocks.loadConfig,
   materializeProviderRouteEnv: mocks.materializeProviderRouteEnv,
+  resolveSubscriptionAuthKind: mocks.resolveSubscriptionAuthKind,
+  resolveWorkspaceConfig: mocks.resolveWorkspaceConfig,
+}));
+
+vi.mock('../utils/management-api-client', () => ({
+  managementApi: mocks.managementApi,
 }));
 
 vi.mock('../SessionStore', () => ({
@@ -249,6 +319,8 @@ import {
   getPermissionResponseEngine,
   getSessionEngine,
   stopActiveTurn,
+  stopOwnedTurn,
+  stopOwnedTurnByQueueId,
 } from './selector';
 
 const desktopScenario = { type: 'desktop' } as const;
@@ -259,6 +331,9 @@ describe('session-engine selector and adapters', () => {
     mocks.state.useExternal = false;
     mocks.state.externalActive = false;
     mocks.state.externalProcessAlive = false;
+    mocks.state.builtinTurnIdentity = null;
+    mocks.state.externalTurnIdentity = null;
+    mocks.state.externalCurrentQueueId = null;
     mocks.state.pendingExternalAsk = false;
     mocks.isExternalSessionStateRestoredFor.mockReturnValue(true);
   });
@@ -302,8 +377,70 @@ describe('session-engine selector and adapters', () => {
       {
         fromDesktopChatSend: true,
         sessionBirthOrigin: { kind: 'desktop', surface: 'launcher_input' },
+        beforeDispatch: undefined,
       },
     );
+  });
+
+  it('materializes Grok subscription routes as managed builtin ProviderEnv', async () => {
+    const managedEnv = {
+      providerId: 'xai-sub',
+      baseUrl: 'https://api.x.ai/v1',
+      apiProtocol: 'openai' as const,
+      upstreamFormat: 'responses' as const,
+      credentialSource: { kind: 'managed-oauth' as const, providerId: 'xai-sub' as const },
+    };
+    mocks.materializeProviderRouteEnv.mockReturnValueOnce(managedEnv);
+
+    const result = await getSessionEngine().sendDesktopMessage({
+      text: 'hello Grok',
+      model: 'grok-4.5',
+      providerRoute: { kind: 'subscription', providerId: 'xai-sub', model: 'grok-4.5' },
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: desktopScenario,
+    });
+
+    expect(result.success).toBe(true);
+    expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[4]).toEqual(managedEnv);
+  });
+
+  it('keeps Anthropic subscription routes on the native subscription sentinel', async () => {
+    await getSessionEngine().sendDesktopMessage({
+      text: 'hello Claude',
+      model: 'claude-sonnet-5',
+      providerRoute: {
+        kind: 'subscription',
+        providerId: 'anthropic-sub',
+        model: 'claude-sonnet-5',
+      },
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: desktopScenario,
+    });
+
+    expect(mocks.enqueueUserMessage.mock.calls.at(-1)?.[4]).toBe('subscription');
+  });
+
+  it('passes Goal dispatch guards into builtin queue ownership and exposes its acknowledgement', async () => {
+    const beforeDispatch = vi.fn(async () => ({ accepted: true }));
+    const dispatchAcceptance = Promise.resolve({ accepted: true });
+    mocks.enqueueUserMessage.mockResolvedValueOnce({
+      queued: true,
+      queueId: 'q-goal',
+      dispatchAcceptance,
+    });
+
+    const result = await getSessionEngine().sendDesktopMessage({
+      text: 'guarded Goal turn',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: desktopScenario,
+      beforeDispatch,
+    });
+
+    expect(mocks.enqueueUserMessage.mock.calls[0]?.[11]).toMatchObject({ beforeDispatch });
+    expect(result.dispatchAcceptance).toBe(dispatchAcceptance);
   });
 
   it('exposes builtin read and config surfaces without route-level helpers', () => {
@@ -418,7 +555,7 @@ describe('session-engine selector and adapters', () => {
     });
   });
 
-  it('returns external desktop admission before dispatch finishes and broadcasts dispatch failures', async () => {
+  it('returns external desktop acceptance before dispatch finishes and broadcasts dispatch failures', async () => {
     mocks.state.useExternal = true;
     let resolveDispatch!: (result: { queued: boolean; error?: string }) => void;
     const dispatch = new Promise<{ queued: boolean; error?: string }>((resolve) => {
@@ -440,7 +577,8 @@ describe('session-engine selector and adapters', () => {
       scenario: desktopScenario,
     });
 
-    expect(result).toEqual({ success: true, queued: true, queueId: 'xq-runtime' });
+    expect(result).toMatchObject({ success: true, queued: true, queueId: 'xq-runtime' });
+    expect(result.dispatchAcceptance).toBeInstanceOf(Promise);
     expect(mocks.enqueueExternalSendForDesktop).toHaveBeenCalledWith(
       'hello external',
       [],
@@ -467,6 +605,38 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.broadcast).toHaveBeenCalledWith('chat:agent-error', { message: 'runtime failed' });
   });
 
+  it('exposes external dispatch acceptance without delaying desktop response', async () => {
+    mocks.state.useExternal = true;
+    let resolveDispatch!: (result: { queued: boolean; error?: string }) => void;
+    const dispatch = new Promise<{ queued: boolean; error?: string }>((resolve) => {
+      resolveDispatch = resolve;
+    });
+    mocks.enqueueExternalSendForDesktop.mockReturnValueOnce({
+      queued: true,
+      queueId: 'xq-goal',
+      dispatch,
+    });
+
+    const result = await getSessionEngine().sendDesktopMessage({
+      text: 'continue Goal',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: desktopScenario,
+    });
+
+    expect(result).toMatchObject({ success: true, queued: true, queueId: 'xq-goal' });
+    expect(result.dispatchAcceptance).toBeInstanceOf(Promise);
+
+    resolveDispatch({ queued: false, error: 'runtime rejected Goal turn' });
+    await expect(result.dispatchAcceptance).resolves.toEqual({
+      accepted: false,
+      error: 'runtime rejected Goal turn',
+    });
+    expect(mocks.broadcast).toHaveBeenCalledWith('chat:agent-error', {
+      message: 'runtime rejected Goal turn',
+    });
+  });
+
   it('keeps stop fallback on builtin when external runtime is selected but inactive', async () => {
     mocks.state.useExternal = true;
     mocks.state.externalActive = false;
@@ -477,6 +647,217 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.stopExternalSession).not.toHaveBeenCalled();
     expect(mocks.interruptCurrentResponse).toHaveBeenCalledTimes(1);
   });
+
+  it('reports a failed external process stop instead of clearing it as stopped', async () => {
+    mocks.state.useExternal = true;
+    mocks.state.externalActive = true;
+    mocks.stopExternalSession.mockResolvedValueOnce(false);
+
+    await expect(stopActiveTurn()).resolves.toEqual({
+      success: false,
+      error: 'External runtime process did not stop',
+    });
+    expect(mocks.interruptCurrentResponse).not.toHaveBeenCalled();
+  });
+
+  it('persists Goal pause before stopping the active builtin Goal turn', async () => {
+    mocks.state.builtinTurnIdentity = {
+      queueId: 'goal-turn-1',
+      owner: { kind: 'goal', id: 'goal-1' },
+    };
+    mocks.interruptCurrentResponse.mockResolvedValueOnce(true);
+
+    await expect(stopActiveTurn()).resolves.toEqual({ success: true });
+
+    expect(mocks.managementApi).toHaveBeenCalledWith('/api/goal/turn/pause', 'POST', {
+      sessionId: 'builtin-session',
+      workspacePath: '/workspace',
+      goalId: 'goal-1',
+      queueId: 'goal-turn-1',
+    });
+    expect(mocks.managementApi).toHaveBeenCalledWith('/api/goal/turn/abort', 'POST', {
+      sessionId: 'builtin-session',
+      workspacePath: '/workspace',
+      goalId: 'goal-1',
+      queueId: 'goal-turn-1',
+    });
+    expect(mocks.interruptCurrentResponse).toHaveBeenCalledOnce();
+    expect(mocks.managementApi.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.interruptCurrentResponse.mock.invocationCallOrder[0]);
+    expect(mocks.interruptCurrentResponse.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.managementApi.mock.invocationCallOrder[1]);
+  });
+
+  it('does not stop a Goal turn when its durable pause is rejected', async () => {
+    mocks.state.builtinTurnIdentity = {
+      queueId: 'goal-turn-1',
+      owner: { kind: 'goal', id: 'goal-1' },
+    };
+    mocks.managementApi.mockResolvedValueOnce({ ok: false, error: 'stale turn' });
+
+    await expect(stopActiveTurn()).resolves.toEqual({
+      success: false,
+      error: 'stale turn',
+    });
+
+    expect(mocks.interruptCurrentResponse).not.toHaveBeenCalled();
+  });
+
+  it.each(['complete', 'blocked'] as const)(
+    'does not interrupt a Model-winning %s Goal turn',
+    async (status) => {
+      mocks.state.builtinTurnIdentity = {
+        queueId: 'goal-turn-1',
+        owner: { kind: 'goal', id: 'goal-1' },
+      };
+      mocks.managementApi.mockResolvedValueOnce({ ok: true, goal: { status } });
+
+      await expect(stopActiveTurn()).resolves.toEqual({
+        success: true,
+        alreadyStopped: true,
+      });
+
+      expect(mocks.cancelQueueItem).not.toHaveBeenCalled();
+      expect(mocks.interruptCurrentResponse).not.toHaveBeenCalled();
+      expect(mocks.managementApi).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('keeps paused Goal authority when the exact runtime stop is not confirmed', async () => {
+    mocks.state.builtinTurnIdentity = {
+      queueId: 'goal-turn-1',
+      owner: { kind: 'goal', id: 'goal-1' },
+    };
+    mocks.interruptCurrentResponse.mockResolvedValueOnce(false);
+
+    await expect(stopActiveTurn()).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining('Exact turn stop was not confirmed'),
+    });
+
+    expect(mocks.managementApi).toHaveBeenCalledTimes(1);
+    expect(mocks.managementApi).not.toHaveBeenCalledWith(
+      '/api/goal/turn/abort',
+      expect.anything(),
+      expect.anything(),
+    );
+  });
+
+  it('cancels an external pre-claim Goal promotion without stopping the busy turn ahead of it', async () => {
+    mocks.state.useExternal = true;
+    mocks.state.externalActive = true;
+    mocks.state.externalTurnIdentity = {
+      queueId: 'goal-promotion',
+      owner: { kind: 'goal', id: 'goal-1' },
+    };
+    mocks.cancelExternalQueueItem.mockReturnValueOnce({
+      cancelledText: '',
+      promotion: { settled: Promise.resolve({ status: 'not-dispatched' }) },
+    });
+
+    await expect(stopActiveTurn()).resolves.toEqual({ success: true });
+
+    expect(mocks.cancelExternalQueueItem).toHaveBeenCalledWith('goal-promotion');
+    expect(mocks.stopExternalSession).not.toHaveBeenCalled();
+    expect(mocks.managementApi).toHaveBeenLastCalledWith('/api/goal/turn/abort', 'POST', {
+      sessionId: 'external-session',
+      workspacePath: '/workspace',
+      goalId: 'goal-1',
+      queueId: 'goal-promotion',
+    });
+  });
+
+  it('keeps a shared pre-warmed process when owner cancellation settles before dispatch', async () => {
+    mocks.state.useExternal = true;
+    mocks.state.externalActive = true;
+    mocks.state.externalTurnIdentity = {
+      queueId: 'goal-prewarm-promotion',
+      owner: { kind: 'goal', id: 'goal-1' },
+    };
+    mocks.cancelExternalQueuedTurnsByOwner.mockReturnValueOnce({
+      count: 1,
+      promotion: { settled: Promise.resolve({ status: 'not-dispatched' }) },
+    });
+
+    await expect(stopOwnedTurn({ kind: 'goal', id: 'goal-1' })).resolves.toEqual({
+      success: true,
+      alreadyStopped: false,
+    });
+
+    expect(mocks.stopExternalSession).not.toHaveBeenCalled();
+  });
+
+  it('stops only the exact Goal queue item during objective replacement', async () => {
+    mocks.state.builtinTurnIdentity = {
+      queueId: 'goal-old-turn',
+      owner: { kind: 'goal', id: 'goal-1' },
+    };
+    mocks.cancelQueueItem.mockResolvedValueOnce({ status: 'not_found' });
+    mocks.interruptCurrentResponse.mockResolvedValueOnce(true);
+
+    await expect(stopOwnedTurnByQueueId(
+      { kind: 'goal', id: 'goal-1' },
+      'goal-old-turn',
+    )).resolves.toEqual({ success: true });
+
+    expect(mocks.cancelQueueItem).toHaveBeenCalledWith('goal-old-turn');
+    expect(mocks.interruptCurrentResponse).toHaveBeenCalledOnce();
+    expect(mocks.cancelQueuedTurnsByOwner).not.toHaveBeenCalled();
+  });
+
+  it('does not let a stale Task stop interrupt a newer queue generation', async () => {
+    mocks.state.builtinTurnIdentity = {
+      queueId: 'task-new-turn',
+      owner: { kind: 'task', id: 'task-1' },
+    };
+    mocks.cancelQueueItem.mockResolvedValueOnce({ status: 'not_found' });
+
+    await expect(stopOwnedTurnByQueueId(
+      { kind: 'task', id: 'task-1' },
+      'task-old-turn',
+    )).resolves.toEqual({ success: true, alreadyStopped: true });
+
+    expect(mocks.cancelQueueItem).toHaveBeenCalledWith('task-old-turn');
+    expect(mocks.interruptCurrentResponse).not.toHaveBeenCalled();
+    expect(mocks.cancelQueuedTurnsByOwner).not.toHaveBeenCalled();
+  });
+
+  it('preserves later external queue work when stopping the exact current Task turn', async () => {
+    mocks.state.useExternal = true;
+    mocks.state.externalActive = true;
+    mocks.state.externalTurnIdentity = {
+      queueId: 'task-current-turn',
+      owner: { kind: 'task', id: 'task-1' },
+    };
+    mocks.cancelExternalQueueItem.mockReturnValueOnce(null);
+    mocks.stopExternalSession.mockResolvedValueOnce(true);
+
+    await expect(stopOwnedTurnByQueueId(
+      { kind: 'task', id: 'task-1' },
+      'task-current-turn',
+    )).resolves.toEqual({ success: true, alreadyStopped: false });
+
+    expect(mocks.stopExternalSession).toHaveBeenCalledWith({ preserveQueue: true });
+  });
+
+  it.each(['not_cancelled', 'unavailable', 'error'] as const)(
+    'does not confirm a queued Task stop when cancellation returns %s',
+    async (status) => {
+      mocks.state.builtinTurnIdentity = null;
+      mocks.cancelQueueItem.mockResolvedValueOnce({ status });
+
+      await expect(stopOwnedTurnByQueueId(
+        { kind: 'task', id: 'task-1' },
+        'task-in-flight-to-sdk',
+      )).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining('Exact turn stop was not confirmed'),
+      });
+
+      expect(mocks.cancelQueueItem).toHaveBeenCalledWith('task-in-flight-to-sdk');
+      expect(mocks.interruptCurrentResponse).not.toHaveBeenCalled();
+    },
+  );
 
   it('cancels a queued builtin injected turn when the synchronous wait times out', async () => {
     mocks.enqueueUserMessage.mockResolvedValueOnce({
@@ -489,16 +870,15 @@ describe('session-engine selector and adapters', () => {
       status: 'cancelled',
       cancelledText: 'run cron',
     });
-    mocks.waitForSessionIdle.mockResolvedValueOnce(false);
-
     const result = await getSessionEngine().runInjectedTurn({
       prompt: 'run cron',
       sessionId: 'sid',
       workspacePath: '/workspace',
       scenario: { type: 'cron', taskId: 'task-1', intervalMinutes: 15, aiCanExit: false },
       permissionMode: 'fullAgency',
-      timeoutMs: 1000,
-      pollMs: 50,
+      timeoutMs: 1,
+      pollMs: 1,
+      queueId: 'q-timeout',
     });
 
     expect(result).toMatchObject({
@@ -508,10 +888,99 @@ describe('session-engine selector and adapters', () => {
       error: 'Execution timed out',
     });
     expect(mocks.cancelQueueItem).toHaveBeenCalledWith('q-timeout');
-    expect(mocks.discardInjectedTurnOutcome).toHaveBeenCalledWith(
-      expect.any(String),
-      { retainForLateTerminal: false },
-    );
+    expect(mocks.interruptCurrentResponse).not.toHaveBeenCalled();
+  });
+
+  it('interrupts an active builtin injected turn when its deadline expires', async () => {
+    mocks.enqueueUserMessage.mockResolvedValueOnce({
+      queued: false,
+      queueId: 'q-active',
+      isInFlight: true,
+      deliveryMode: 'realtime',
+    });
+    mocks.state.builtinTurnIdentity = {
+      queueId: 'q-active',
+      owner: { kind: 'goal', id: 'goal-1' },
+    };
+    mocks.interruptCurrentResponse.mockResolvedValueOnce(true);
+
+    const result = await getSessionEngine().runInjectedTurn({
+      prompt: 'continue goal',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+      timeoutMs: 1,
+      pollMs: 1,
+      queueId: 'q-active',
+      turnOwner: { kind: 'goal', id: 'goal-1' },
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      enqueued: true,
+      status: 408,
+      error: 'Execution timed out',
+    });
+    expect(mocks.interruptCurrentResponse).toHaveBeenCalledWith('timeout');
+  });
+
+  it('reports an unconfirmed builtin termination when the exact turn cannot be interrupted', async () => {
+    mocks.enqueueUserMessage.mockResolvedValueOnce({
+      queued: false,
+      queueId: 'q-orphan',
+      isInFlight: true,
+      deliveryMode: 'realtime',
+    });
+    mocks.state.builtinTurnIdentity = {
+      queueId: 'q-orphan',
+      owner: { kind: 'task', id: 'task-1' },
+    };
+    mocks.interruptCurrentResponse.mockResolvedValueOnce(false);
+
+    const result = await getSessionEngine().runInjectedTurn({
+      prompt: 'scheduled turn',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+      timeoutMs: 1,
+      pollMs: 1,
+      queueId: 'q-orphan',
+      turnOwner: { kind: 'task', id: 'task-1' },
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      status: 408,
+      terminationUnconfirmed: true,
+    });
+    expect(mocks.interruptCurrentResponse).toHaveBeenCalledWith('timeout');
+  });
+
+  it('does not interrupt an unrelated builtin turn after the injected turn loses the idle race', async () => {
+    mocks.enqueueUserMessage.mockResolvedValueOnce({
+      queued: false,
+      queueId: 'q-finished',
+      isInFlight: true,
+      deliveryMode: 'realtime',
+    });
+    mocks.cancelQueueItem.mockResolvedValueOnce({ status: 'not_found' });
+
+    const result = await getSessionEngine().runInjectedTurn({
+      prompt: 'scheduled turn',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+      timeoutMs: 1,
+      pollMs: 1,
+      queueId: 'q-finished',
+    });
+
+    expect(result).toMatchObject({ success: false, status: 408 });
+    expect(mocks.cancelQueueItem).toHaveBeenCalledWith('q-finished');
+    expect(mocks.interruptCurrentResponse).not.toHaveBeenCalled();
   });
 
   it('clears stale builtin agent errors before starting an injected turn', async () => {
@@ -533,13 +1002,41 @@ describe('session-engine selector and adapters', () => {
       .toBeLessThan(mocks.enqueueUserMessage.mock.invocationCallOrder[0]);
   });
 
-  it('uses the turn-local injected outcome instead of global message history', async () => {
-    mocks.consumeInjectedTurnOutcome.mockReturnValueOnce({
-      status: 'complete',
-      assistantMessagePresent: true,
-      text: '',
-    });
+  it.each([
+    { metadataBirthPending: true, expected: true },
+    { metadataBirthPending: undefined, expected: false },
+  ])(
+    'maps builtin injected-turn birth authority to lazy materialization: $expected',
+    async ({ metadataBirthPending, expected }) => {
+      await getSessionEngine().runInjectedTurn({
+        prompt: 'heartbeat',
+        sessionId: 'sid',
+        workspacePath: '/workspace',
+        scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+        metadataBirthPending,
+        permissionMode: 'fullAgency',
+        timeoutMs: 1000,
+      });
 
+      expect(mocks.enqueueUserMessage.mock.calls[0][11]).toMatchObject({
+        allowLazySessionMaterialization: expected,
+      });
+    },
+  );
+
+  it('uses the queue item terminal observer instead of global message history', async () => {
+    mocks.enqueueUserMessage.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[11] as {
+        queueId: string;
+        onTerminal: (outcome: { status: 'complete'; assistantMessagePresent: boolean; text: string }) => void;
+      };
+      queueMicrotask(() => options.onTerminal({
+        status: 'complete',
+        assistantMessagePresent: true,
+        text: '',
+      }));
+      return { queued: true, queueId: options.queueId };
+    });
     const result = await getSessionEngine().runInjectedTurn({
       prompt: 'memory update',
       sessionId: 'sid',
@@ -556,20 +1053,72 @@ describe('session-engine selector and adapters', () => {
       assistantMessagePresent: true,
       text: '',
     });
-    expect(mocks.consumeInjectedTurnOutcome).toHaveBeenCalledTimes(1);
-    const injectedTurnId = mocks.consumeInjectedTurnOutcome.mock.calls[0][0];
-    expect(typeof injectedTurnId).toBe('string');
-    expect(mocks.enqueueUserMessage.mock.calls[0][11]).toEqual({ injectedTurnId });
+    expect(mocks.enqueueUserMessage.mock.calls[0][11]).toMatchObject({
+      queueId: expect.any(String),
+      onTerminal: expect.any(Function),
+    });
   });
 
-  it('propagates turn-local injected errors without reading stale assistant text', async () => {
-    mocks.consumeInjectedTurnOutcome.mockReturnValueOnce({
-      status: 'error',
-      assistantMessagePresent: false,
-      text: '',
-      error: 'turn failed',
+  it('forces every synchronous injected turn onto a turn boundary', async () => {
+    const result = await getSessionEngine().runInjectedTurn({
+      prompt: 'continue goal',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+      timeoutMs: 1000,
+      pollMs: 1,
+      queueId: 'goal-queue',
+      turnOwner: { kind: 'goal', id: 'goal-1' },
     });
 
+    expect(result.success).toBe(true);
+    expect(mocks.enqueueUserMessage.mock.calls[0][11]).toMatchObject({
+      queueId: 'goal-queue',
+      turnOwner: { kind: 'goal', id: 'goal-1' },
+      onTerminal: expect.any(Function),
+      queueResponseModeOverride: 'turn',
+    });
+  });
+
+  it('restores Goal MCP from the session snapshot only when the active set is uninitialized', async () => {
+    mocks.getMcpServers.mockReturnValueOnce(null as never);
+
+    const result = await getSessionEngine().ensureGoalSessionConfig();
+
+    expect(result).toEqual({ success: true });
+    expect(mocks.resolveWorkspaceConfig).toHaveBeenCalledWith(
+      '/workspace',
+      expect.objectContaining({ id: 'builtin-session' }),
+      { includeMcp: true },
+    );
+    expect(mocks.applyMcpOverrideAndAwaitReady).toHaveBeenCalledWith([{ id: 'snapshot-mcp' }]);
+  });
+
+  it('preserves an initialized empty Goal MCP set', async () => {
+    mocks.getMcpServers.mockReturnValueOnce([]);
+
+    const result = await getSessionEngine().ensureGoalSessionConfig();
+
+    expect(result).toEqual({ success: true });
+    expect(mocks.resolveWorkspaceConfig).not.toHaveBeenCalled();
+    expect(mocks.applyMcpOverrideAndAwaitReady).not.toHaveBeenCalled();
+  });
+
+  it('propagates a builtin queue item terminal error without reading stale history', async () => {
+    mocks.enqueueUserMessage.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[11] as {
+        queueId: string;
+        onTerminal: (outcome: { status: 'error'; assistantMessagePresent: false; text: string; error: string }) => void;
+      };
+      queueMicrotask(() => options.onTerminal({
+        status: 'error',
+        assistantMessagePresent: false,
+        text: '',
+        error: 'turn failed',
+      }));
+      return { queued: true, queueId: options.queueId };
+    });
     const result = await getSessionEngine().runInjectedTurn({
       prompt: 'memory update',
       sessionId: 'sid',
@@ -588,11 +1137,20 @@ describe('session-engine selector and adapters', () => {
     });
   });
 
-  it('gates external injected turns on the runtime success signal after idle', async () => {
+  it('gates external injected turns on their turn-local outcome', async () => {
     mocks.state.useExternal = true;
-    mocks.sendExternalMessage.mockResolvedValueOnce({ queued: true });
-    mocks.waitForExternalSessionIdle.mockResolvedValueOnce(true);
-    mocks.didLastTurnSucceed.mockReturnValueOnce(false);
+    mocks.sendExternalMessage.mockImplementationOnce(async (...args: unknown[]) => {
+      const context = args[4] as {
+        onTerminal: (outcome: { status: 'error'; assistantMessagePresent: false; text: string; error: string }) => void;
+      };
+      queueMicrotask(() => context.onTerminal({
+        status: 'error',
+        assistantMessagePresent: false,
+        text: '',
+        error: 'target turn failed',
+      }));
+      return { queued: true };
+    });
 
     const result = await getSessionEngine().runInjectedTurn({
       prompt: 'update memory',
@@ -608,8 +1166,33 @@ describe('session-engine selector and adapters', () => {
       success: false,
       enqueued: true,
       status: 503,
-      error: 'External runtime turn failed',
+      error: 'target turn failed',
     });
+    expect(mocks.getLastExternalAssistantText).not.toHaveBeenCalled();
+    expect(mocks.didLastTurnSucceed).not.toHaveBeenCalled();
+  });
+
+  it('does not attribute a subsequent external global snapshot to the queue turn', async () => {
+    mocks.state.useExternal = true;
+    mocks.didLastTurnSucceed.mockReturnValueOnce(false);
+    mocks.getLastExternalAssistantText.mockReturnValueOnce('later user turn answer');
+
+    const result = await getSessionEngine().runInjectedTurn({
+      prompt: 'update memory',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      permissionMode: 'no-restrictions',
+      timeoutMs: 1000,
+      pollMs: 1,
+    });
+
+    expect(result).toMatchObject({
+      success: true,
+      enqueued: true,
+      text: 'external answer',
+    });
+    expect(mocks.didLastTurnSucceed).not.toHaveBeenCalled();
     expect(mocks.getLastExternalAssistantText).not.toHaveBeenCalled();
   });
 
@@ -647,6 +1230,38 @@ describe('session-engine selector and adapters', () => {
       }),
     );
   });
+
+  it.each([
+    { metadataBirthPending: true, expected: true },
+    { metadataBirthPending: undefined, expected: false },
+  ])(
+    'maps external injected-turn birth authority to runtime materialization: $expected',
+    async ({ metadataBirthPending, expected }) => {
+      mocks.state.useExternal = true;
+
+      await getSessionEngine().runInjectedTurn({
+        prompt: 'heartbeat',
+        sessionId: 'sid',
+        workspacePath: '/workspace',
+        scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+        metadataBirthPending,
+        permissionMode: 'no-restrictions',
+        timeoutMs: 1000,
+      });
+
+      expect(mocks.sendExternalMessage).toHaveBeenCalledWith(
+        'heartbeat',
+        undefined,
+        undefined,
+        undefined,
+        expect.objectContaining({
+          sessionId: 'sid',
+          workspacePath: '/workspace',
+          metadataBirthPending: expected,
+        }),
+      );
+    },
+  );
 
   it('updates official tool ids through the builtin engine owner', async () => {
     const result = await getSessionEngine().updateOfficialToolIds(['image-understanding']);
@@ -700,8 +1315,11 @@ describe('session-engine selector and adapters', () => {
 
   it('stops the external runtime when an injected turn times out', async () => {
     mocks.state.useExternal = true;
-    mocks.sendExternalMessage.mockResolvedValueOnce({ queued: true });
-    mocks.waitForExternalSessionIdle.mockResolvedValueOnce(false);
+    mocks.sendExternalMessage.mockImplementationOnce(async (...args: unknown[]) => {
+      const onDispatchAccepted = args[6] as (() => void) | undefined;
+      onDispatchAccepted?.();
+      return { queued: true };
+    });
 
     const result = await getSessionEngine().runInjectedTurn({
       prompt: 'heartbeat',
@@ -709,8 +1327,8 @@ describe('session-engine selector and adapters', () => {
       workspacePath: '/workspace',
       scenario: { type: 'desktop' },
       permissionMode: 'no-restrictions',
-      timeoutMs: 1000,
-      pollMs: 50,
+      timeoutMs: 20,
+      pollMs: 1,
     });
 
     expect(result).toMatchObject({
@@ -721,6 +1339,162 @@ describe('session-engine selector and adapters', () => {
     });
     expect(mocks.stopExternalSession).toHaveBeenCalledTimes(1);
     expect(mocks.didLastTurnSucceed).not.toHaveBeenCalled();
+  });
+
+  it('cancels an external Goal guard without stopping an unrelated turn when setup times out', async () => {
+    mocks.state.useExternal = true;
+    mocks.state.externalActive = true;
+    mocks.sendExternalMessage.mockImplementationOnce(
+      () => new Promise(() => undefined),
+    );
+    const beforeDispatch = Object.assign(vi.fn(), { cancel: vi.fn() });
+
+    const result = await getSessionEngine().runInjectedTurn({
+      prompt: 'goal continuation',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: {
+        type: 'cron',
+        taskId: 'goal-1',
+        intervalMinutes: 0,
+        aiCanExit: true,
+      },
+      permissionMode: 'no-restrictions',
+      timeoutMs: 1,
+      pollMs: 1,
+      beforeDispatch,
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      enqueued: false,
+      status: 408,
+      error: 'External runtime turn timed out before dispatch',
+    });
+    expect(beforeDispatch.cancel).toHaveBeenCalledTimes(1);
+    expect(mocks.stopExternalSession).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { phase: 'dispatch acceptance', stallSend: true },
+    { phase: 'terminal outcome', stallSend: false },
+  ])('keeps the exact external Task binding when $phase times out and stop is unconfirmed', async ({ stallSend }) => {
+    mocks.state.useExternal = true;
+    mocks.state.externalActive = true;
+    mocks.stopExternalSession
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+    mocks.sendExternalMessage.mockImplementationOnce((...args: unknown[]) => {
+      const context = args[4] as {
+        queueId: string;
+        turnOwner: { kind: 'task'; id: string };
+      };
+      mocks.state.externalCurrentQueueId = context.queueId;
+      mocks.state.externalTurnIdentity = {
+        queueId: context.queueId,
+        owner: context.turnOwner,
+      };
+      return stallSend
+        ? new Promise(() => undefined)
+        : Promise.resolve({ queued: true });
+    });
+
+    const result = await getSessionEngine().runInjectedTurn({
+      prompt: 'memory update',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      permissionMode: 'no-restrictions',
+      timeoutMs: 1,
+      pollMs: 1,
+      queueId: 'task-orphan-turn',
+      turnOwner: { kind: 'task', id: 'task-1' },
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      enqueued: true,
+      status: 408,
+      terminationUnconfirmed: true,
+      error: 'External runtime turn timed out and its process did not stop',
+    });
+    expect(mocks.clearExternalTurnBinding).not.toHaveBeenCalled();
+
+    await expect(stopOwnedTurnByQueueId(
+      { kind: 'task', id: 'task-1' },
+      'task-orphan-turn',
+    )).resolves.toEqual({ success: true, alreadyStopped: false });
+    expect(mocks.stopExternalSession).toHaveBeenNthCalledWith(1, { preserveQueue: true });
+    expect(mocks.stopExternalSession).toHaveBeenNthCalledWith(2, { preserveQueue: true });
+  });
+
+  it('keeps the exact external Task binding when dispatch acknowledgement is lost and stop is unconfirmed', async () => {
+    mocks.state.useExternal = true;
+    mocks.state.externalActive = true;
+    mocks.sendExternalMessage.mockImplementationOnce(async (...args: unknown[]) => {
+      const context = args[4] as {
+        queueId: string;
+        turnOwner: { kind: 'task'; id: string };
+      };
+      mocks.state.externalCurrentQueueId = context.queueId;
+      mocks.state.externalTurnIdentity = {
+        queueId: context.queueId,
+        owner: context.turnOwner,
+      };
+      return {
+        queued: false,
+        error: 'dispatch acknowledgement lost; process termination unconfirmed',
+        terminationUnconfirmed: true,
+      };
+    });
+
+    const result = await getSessionEngine().runInjectedTurn({
+      prompt: 'task turn',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      permissionMode: 'no-restrictions',
+      timeoutMs: 100,
+      pollMs: 1,
+      queueId: 'task-dispatch-ambiguous',
+      turnOwner: { kind: 'task', id: 'task-1' },
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      enqueued: true,
+      terminationUnconfirmed: true,
+      status: 503,
+    });
+    expect(mocks.clearExternalTurnBinding).not.toHaveBeenCalled();
+
+    await expect(stopOwnedTurnByQueueId(
+      { kind: 'task', id: 'task-1' },
+      'task-dispatch-ambiguous',
+    )).resolves.toEqual({ success: true, alreadyStopped: false });
+    expect(mocks.stopExternalSession).toHaveBeenCalledWith({ preserveQueue: true });
+  });
+
+  it('conservatively accepts an external Goal IM turn whose dispatch may already be running', async () => {
+    mocks.state.useExternal = true;
+    mocks.sendExternalMessage.mockResolvedValueOnce({
+      queued: false,
+      error: 'dispatch acknowledgement lost; process termination unconfirmed',
+      terminationUnconfirmed: true,
+    });
+
+    const result = await getSessionEngine().enqueueImMessage({
+      message: 'goal user turn',
+      requestId: 'req-ambiguous',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+      queueId: 'goal-dispatch-ambiguous',
+      turnOwner: { kind: 'goal', id: 'goal-1' },
+    });
+
+    expect(result).toEqual({ success: true, queued: true });
+    expect(mocks.clearExternalTurnBinding).not.toHaveBeenCalled();
   });
 
   it('serializes external desktop reset against an in-flight runtime start', async () => {

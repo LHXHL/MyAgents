@@ -18,7 +18,7 @@
 // All field mutations flow into a local `draft` state; the save handler diffs
 // against the initial Task and sends only the changed fields through
 // `cmd_task_update` (PRD §9.4 — schedule-shape changes also detach the
-// backing CronTask, handled in Rust). Cancel discards the draft and rolls
+// live Task scheduler, handled in Rust). Cancel discards the draft and rolls
 // back to read-only view; if the draft is dirty, a ConfirmDialog gates the
 // discard so accidental Esc / 取消 doesn't lose work.
 

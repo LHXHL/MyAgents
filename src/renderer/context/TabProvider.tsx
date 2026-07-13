@@ -37,7 +37,7 @@ import type { AskUserQuestionRequest, AskUserQuestion } from '../../shared/types
 import type { ExitPlanModeRequest, EnterPlanModeRequest, ExitPlanModeAllowedPrompt } from '../../shared/types/planMode';
 import { CUSTOM_EVENTS, isPendingSessionId } from '../../shared/constants';
 import { TabContext, TabApiContext, TabActiveContext, type AdoptMigratedSessionOptions, type LoadOlderMessagesOptions, type SessionState, type SystemNotice, type TabContextValue, type TabApiContextValue } from './TabContext';
-import { appendUniqueMessageById, upsertMessageById, updateMessageById, shouldSkipHistoryReplay, shouldClearHistoryOnInit } from './sessionRestoreGuards';
+import { appendUniqueMessageById, upsertMessageById, updateMessageById, shouldAcceptLiveTurnEvent, shouldSkipHistoryReplay, shouldClearHistoryOnInit } from './sessionRestoreGuards';
 import {
     decideSystemInitSessionId,
     decidePersistedContextUsageSeed,
@@ -53,6 +53,13 @@ import type { TerminalReason } from '../../shared/terminalReason';
 import type { SlashCommand } from '../../shared/slashCommands';
 import type { LogEntry } from '@/types/log';
 import type { ProviderRoute } from '../../shared/providerRoute';
+import { stripLeadingSystemReminder } from '../../shared/systemReminder';
+import {
+    COLD_HISTORY_REPLAY_KIND,
+    LIVE_USER_ECHO_REPLAY_KIND,
+    type ChatMessageReplayPayload,
+} from '../../shared/chatMessageReplay';
+import { imagePayloadForSend, mergeAttachmentPreviews } from './userImageAttachmentProjection';
 import { parsePartialJson } from '@/utils/parsePartialJson';
 import { enqueuePermissionRequest, peekPermissionRequest, removePermissionRequest } from '@/utils/permissionQueue';
 import { i18n } from '@/i18n';
@@ -84,6 +91,11 @@ function appText(key: string, options?: Record<string, unknown>): string {
     return String(i18n.t(`app:${key}`, options));
 }
 
+function queueDisplayText(raw: string): string {
+    const visible = stripLeadingSystemReminder(raw).trim();
+    return visible || appText('tabProvider.hiddenSystemMessage');
+}
+
 function analyticsRuntimeSource(
     runtime: RuntimeType,
     runtimeSource: RuntimeSource | null | undefined,
@@ -113,29 +125,6 @@ function queuedImageInfo(img: ImageAttachment): QueuedImageInfo {
         sizeBytes: imageAttachmentSize(img),
         source: img.source,
         relativePath: img.relativePath,
-    };
-}
-
-function imagePayloadForSend(img: ImageAttachment) {
-    const name = imageAttachmentName(img);
-    const mimeType = imageAttachmentMimeType(img);
-    const sizeBytes = imageAttachmentSize(img);
-    if (img.source === 'attachment_ref' && img.relativePath) {
-        return {
-            kind: 'attachment_ref' as const,
-            id: img.id,
-            name,
-            mimeType,
-            sizeBytes,
-            relativePath: img.relativePath,
-        };
-    }
-    return {
-        kind: 'inline_base64' as const,
-        name,
-        mimeType,
-        sizeBytes,
-        data: img.preview.split(',')[1] ?? '',
     };
 }
 
@@ -226,21 +215,6 @@ function normalizeWireAttachments(
         };
         const previewUrl = att.previewUrl ?? resolveAttachmentUrl(normalized);
         return previewUrl ? { ...normalized, previewUrl } : normalized;
-    });
-}
-
-function mergeAttachmentPreviews(
-    attachments: MessageAttachment[] | undefined,
-    previews: MessageAttachment[] | undefined,
-): MessageAttachment[] | undefined {
-    if (!attachments || attachments.length === 0) return previews;
-    if (!previews || previews.length === 0) return attachments;
-    return attachments.map((att) => {
-        const match = previews.find((preview) =>
-            preview.id === att.id ||
-            (preview.name === att.name && preview.mimeType === att.mimeType)
-        );
-        return match?.previewUrl ? { ...att, previewUrl: match.previewUrl } : att;
     });
 }
 
@@ -800,7 +774,6 @@ export default function TabProvider({
     // SSE-only (never-REST-loaded) session still replays normally.
     const restoredSessionIdRef = useRef<string | null>(null);
     // Ref for cron task exit handler (set by useCronTask hook via context)
-    const onCronTaskExitRequestedRef = useRef<((taskId: string, reason: string) => void) | null>(null);
     // Synchronous map: toolUseId → toolName. Updated outside React state updaters
     // to avoid React 18 automatic batching timing issues (state updaters run during
     // render, not during setState call — so reading a local variable set inside an
@@ -1624,20 +1597,39 @@ export default function TabProvider({
             }
 
             case 'chat:message-replay': {
-                const payload = data as { message: WireSessionMessage; replayKind?: 'cold-history' } | null;
+                const payload = data as ChatMessageReplayPayload<WireSessionMessage> | null;
                 if (!payload?.message) break;
                 const msg = payload.message;
                 // `chat:message-replay` is OVERLOADED: the SSE-connect backfill carries
                 // replayKind:'cold-history' (the whole in-memory transcript), while a
-                // freshly-sent user / command bubble arrives on the SAME event with no
-                // replayKind (a LIVE echo — the chat bubble's authoritative render path,
-                // see agent-session.ts). Skip when a new session is being born or
+                // freshly-sent user / command bubble arrives on the SAME event tagged
+                // replayKind:'live-user-echo' with its source session id (the chat
+                // bubble's authoritative render path, see agent-session.ts). Skip when
+                // a new session is being born or
                 // loadSession is in flight (both guard the cold-history race); ADDITIONALLY
                 // skip COLD-HISTORY for a REST-restored session (REST owns the ordered,
                 // paginated history — older pages come via ?before=). A LIVE echo must
                 // ALWAYS render, else a new user message vanishes after a restore (#0608
                 // Codex review).
-                const isColdHistoryReplay = payload.replayKind === 'cold-history';
+                const isColdHistoryReplay = payload.replayKind === COLD_HISTORY_REPLAY_KIND;
+                const currentIdForReplay = currentSessionIdRef.current;
+                const connectedIdForReplay = connectedSseSessionIdRef.current;
+                const isExplicitLiveEcho = payload.replayKind === LIVE_USER_ECHO_REPLAY_KIND;
+                const isCurrentSessionLiveEcho = Boolean(payload.sessionId)
+                    && shouldAcceptSessionScopedSseSnapshot({
+                        connectedSessionId: connectedIdForReplay,
+                        currentSessionId: currentIdForReplay,
+                        payloadSessionId: payload.sessionId,
+                        isConnectedSessionPending: connectedIdForReplay ? isPendingSessionId(connectedIdForReplay) : false,
+                        isCurrentSessionPending: currentIdForReplay ? isPendingSessionId(currentIdForReplay) : false,
+                    });
+                if (isExplicitLiveEcho && !shouldAcceptLiveTurnEvent({
+                    isNewSession: isNewSessionRef.current,
+                    payloadSessionId: payload.sessionId ?? null,
+                    isCurrentSessionScope: isCurrentSessionLiveEcho,
+                })) {
+                    break;
+                }
                 const isResetBirthReplayPending =
                     resetBirthPendingRef.current &&
                     (
@@ -1648,11 +1640,20 @@ export default function TabProvider({
                     isNewSession: isNewSessionRef.current,
                     isLoadingSession: isLoadingSessionRef.current,
                     isColdHistoryReplay,
+                    isCurrentSessionLiveEcho,
                     isResetBirthPending: isResetBirthReplayPending,
                     restoredSessionId: restoredSessionIdRef.current,
                     currentSessionId: currentSessionIdRef.current,
                 })) {
                     break;
+                }
+                if (isNewSessionRef.current && isCurrentSessionLiveEcho) {
+                    // A session-stamped live user echo is the ordered boundary
+                    // between any stale pre-reset events and the new turn. Goal
+                    // and other server-initiated turns do not call the renderer's
+                    // sendMessage(), so this protocol event owns ending the stale
+                    // birth window for those paths.
+                    isNewSessionRef.current = false;
                 }
                 if (seenIdsRef.current.has(msg.id)) break;
                 seenIdsRef.current.add(msg.id);
@@ -2735,19 +2736,6 @@ export default function TabProvider({
                 break;
             }
 
-            // Cron task exit requested by AI via exit_cron_task tool
-            case 'cron:task-exit-requested': {
-                const payload = data as { taskId: string; reason: string; timestamp: string } | null;
-                if (payload?.taskId && payload?.reason) {
-                    console.log(`[TabProvider ${tabId}] Cron task exit requested: taskId=${payload.taskId}, reason=${payload.reason}`);
-                    // Call the handler if registered by useCronTask
-                    if (onCronTaskExitRequestedRef.current) {
-                        onCronTaskExitRequestedRef.current(payload.taskId, payload.reason);
-                    }
-                }
-                break;
-            }
-
             // Subagent event handling for nested tool calls (Task tool)
             case 'chat:subagent-tool-use': {
                 const payload = data as { parentToolUseId: string; tool: ToolUse; usage?: { input_tokens?: number; output_tokens?: number } };
@@ -2999,7 +2987,7 @@ export default function TabProvider({
             // Background task lifecycle (SDK Task tool)
             case 'chat:task-started': {
                 console.log(`[TabProvider ${tabId}] ${eventName}:`, data);
-                const startPayload = data as { taskId?: string; toolUseId?: string; description?: string };
+                const startPayload = data as { taskId?: string; toolUseId?: string; description?: string; taskType?: string };
                 if (startPayload.taskId && startPayload.description) {
                     setBackgroundTaskDescription(startPayload.taskId, startPayload.description);
                 }
@@ -3007,7 +2995,10 @@ export default function TabProvider({
                 // (which only know their tool.id = toolUseId) can look up status
                 // from task-notification events (which only carry taskId).
                 if (startPayload.taskId && startPayload.toolUseId) {
-                    registerBackgroundTask(startPayload.taskId, startPayload.toolUseId);
+                    registerBackgroundTask(startPayload.taskId, startPayload.toolUseId, {
+                        description: startPayload.description,
+                        taskType: startPayload.taskType,
+                    });
                 } else if (startPayload.taskId && !startPayload.toolUseId) {
                     console.warn(`[TabProvider ${tabId}] chat:task-started missing toolUseId for task ${startPayload.taskId} — background task status matching will degrade`);
                 }
@@ -3066,23 +3057,38 @@ export default function TabProvider({
                 // `isInFlight` indicates the backend has already yielded this item
                 // to the SDK CLI. It remains conditionally cancellable via the
                 // SDK control plane until replay/dequeue confirmation arrives.
-                const payload = data as { queueId: string; messageText: string; isInFlight?: boolean; deliveryMode?: 'realtime' | 'turn' } | null;
+                const payload = data as {
+                    queueId: string;
+                    messageText: string;
+                    isInFlight?: boolean;
+                    deliveryMode?: 'realtime' | 'turn';
+                    canCancel?: boolean;
+                    canForceExecute?: boolean;
+                } | null;
                 if (payload?.queueId) {
+                    const visibleMessageText = queueDisplayText(payload.messageText);
                     console.log(`[TabProvider] queue:added queueId=${payload.queueId} isInFlight=${!!payload.isInFlight}`);
                     setQueuedMessages(prev => {
                         // Exact queueId match — already added by .then(); update isInFlight if it changed.
                         const existingIdx = prev.findIndex(q => q.queueId === payload.queueId);
                         if (existingIdx !== -1) {
                             const nextDeliveryMode = payload.deliveryMode ?? prev[existingIdx].deliveryMode;
+                            const nextCanCancel = payload.canCancel ?? prev[existingIdx].canCancel;
+                            const nextCanForceExecute = payload.canForceExecute ?? prev[existingIdx].canForceExecute;
                             if (
                                 prev[existingIdx].isInFlight === !!payload.isInFlight
                                 && prev[existingIdx].deliveryMode === nextDeliveryMode
+                                && prev[existingIdx].canCancel === nextCanCancel
+                                && prev[existingIdx].canForceExecute === nextCanForceExecute
                             ) return prev;
                             const next = [...prev];
                             next[existingIdx] = {
                                 ...prev[existingIdx],
+                                text: visibleMessageText,
                                 isInFlight: !!payload.isInFlight,
                                 deliveryMode: nextDeliveryMode,
+                                canCancel: nextCanCancel,
+                                canForceExecute: nextCanForceExecute,
                             };
                             return next;
                         }
@@ -3090,10 +3096,12 @@ export default function TabProvider({
                         if (prev.some(q => q.queueId.startsWith('opt-'))) return prev;
                         return [...prev, {
                             queueId: payload.queueId,
-                            text: payload.messageText,
+                            text: visibleMessageText,
                             timestamp: Date.now(),
                             isInFlight: !!payload.isInFlight,
                             deliveryMode: payload.deliveryMode,
+                            canCancel: payload.canCancel,
+                            canForceExecute: payload.canForceExecute,
                         }];
                     });
                 }
@@ -3108,6 +3116,7 @@ export default function TabProvider({
                 // injection point so the user message appears at the correct chronological position.
                 const payload = data as {
                     queueId: string;
+                    sessionId?: string;
                     midTurnBreak?: boolean;
                     userMessage?: {
                         id: string;
@@ -3118,6 +3127,26 @@ export default function TabProvider({
                     };
                 } | null;
                 if (payload?.queueId) {
+                    const currentIdForQueueStart = currentSessionIdRef.current;
+                    const connectedIdForQueueStart = connectedSseSessionIdRef.current;
+                    const isCurrentSessionQueueStart = Boolean(payload.sessionId)
+                        && shouldAcceptSessionScopedSseSnapshot({
+                            connectedSessionId: connectedIdForQueueStart,
+                            currentSessionId: currentIdForQueueStart,
+                            payloadSessionId: payload.sessionId,
+                            isConnectedSessionPending: connectedIdForQueueStart ? isPendingSessionId(connectedIdForQueueStart) : false,
+                            isCurrentSessionPending: currentIdForQueueStart ? isPendingSessionId(currentIdForQueueStart) : false,
+                        });
+                    if (!shouldAcceptLiveTurnEvent({
+                        isNewSession: isNewSessionRef.current,
+                        payloadSessionId: payload.sessionId ?? null,
+                        isCurrentSessionScope: isCurrentSessionQueueStart,
+                    })) {
+                        break;
+                    }
+                    if (isNewSessionRef.current && isCurrentSessionQueueStart) {
+                        isNewSessionRef.current = false;
+                    }
                     // Track started IDs to prevent sendMessage .then() from re-adding
                     startedQueueIdsRef.current.add(payload.queueId);
                     console.log(`[TabProvider] queue:started queueId=${payload.queueId} midTurnBreak=${!!payload.midTurnBreak} streaming=${isStreamingRef.current}`);
@@ -3140,10 +3169,18 @@ export default function TabProvider({
                             if (attachments?.length && queuedMsg?.images?.length) {
                                 // Merge: prefer frontend's local blob/data URL, fall back to
                                 // the Tauri custom-protocol URL resolved from relativePath.
-                                attachments = attachments.map((att) => {
-                                    const match = queuedMsg.images!.find(img => img.name === att.name);
-                                    return match?.preview ? { ...att, previewUrl: match.preview } : att;
-                                });
+                                attachments = mergeAttachmentPreviews(
+                                    attachments,
+                                    queuedMsg.images.map((img) => ({
+                                        id: img.id,
+                                        name: img.name,
+                                        size: img.sizeBytes ?? 0,
+                                        mimeType: img.mimeType ?? 'image/png',
+                                        relativePath: img.relativePath,
+                                        previewUrl: img.preview,
+                                        isImage: true,
+                                    })),
+                                );
                             } else if (!attachments?.length && queuedMsg?.images?.length) {
                                 // Fallback: server sent no attachments, use frontend snapshot
                                 attachments = queuedMsg.images.map(img => ({
@@ -3566,6 +3603,7 @@ export default function TabProvider({
     ): Promise<boolean> => {
         const trimmed = text.trim();
         if (!trimmed && (!images || images.length === 0)) return false;
+        const visibleQueueText = queueDisplayText(trimmed);
 
         // Detect skill/slash command: /command at start of message (for analytics)
         const skillMatch = trimmed.match(/^\/([a-zA-Z][a-zA-Z0-9_-]*)/);
@@ -3616,9 +3654,11 @@ export default function TabProvider({
         if (localQueueId) {
             setQueuedMessages(prev => [...prev, {
                 queueId: localQueueId,
-                text: trimmed,
+                text: visibleQueueText,
                 images: images?.map(queuedImageInfo),
                 timestamp: Date.now(),
+                canCancel: false,
+                canForceExecute: false,
             }]);
         }
 
@@ -3628,7 +3668,7 @@ export default function TabProvider({
         // Desktop is the ONLY caller that should trigger provider switches per-message.
         // When no providerEnv is given (subscription mode), send 'subscription' explicitly
         // so enqueueUserMessage knows this is an intentional switch, not "I don't know".
-        // IM/Cron callers omit the field entirely (undefined = "keep current provider").
+        // IM/Task callers omit the field entirely (undefined = "keep current provider").
         const sendPayload = {
             text: trimmed,
             images: imageData,
@@ -3653,6 +3693,8 @@ export default function TabProvider({
             queueId?: string;
             isInFlight?: boolean;
             deliveryMode?: 'realtime' | 'turn';
+            canCancel?: boolean;
+            canForceExecute?: boolean;
         }>('/chat/send', sendPayload).then((response) => {
             if (response.success) {
                 trackTabEvent('message_send', {
@@ -3684,6 +3726,8 @@ export default function TabProvider({
                                     queueId: realQueueId,
                                     isInFlight: !!response.isInFlight,
                                     deliveryMode: response.deliveryMode,
+                                    canCancel: response.canCancel,
+                                    canForceExecute: response.canForceExecute,
                                     images: images?.map(queuedImageInfo),
                                 }
                                 : q
@@ -3697,6 +3741,8 @@ export default function TabProvider({
                                     ? {
                                         ...q,
                                         deliveryMode: response.deliveryMode ?? q.deliveryMode,
+                                        canCancel: response.canCancel ?? q.canCancel,
+                                        canForceExecute: response.canForceExecute ?? q.canForceExecute,
                                         images: images?.length ? images.map(queuedImageInfo) : q.images,
                                     }
                                     : q
@@ -3704,11 +3750,13 @@ export default function TabProvider({
                             }
                             return [...prev, {
                                 queueId: realQueueId,
-                                text: trimmed,
+                                text: visibleQueueText,
                                 images: images?.map(queuedImageInfo),
                                 timestamp: Date.now(),
                                 isInFlight: !!response.isInFlight,
                                 deliveryMode: response.deliveryMode,
+                                canCancel: response.canCancel,
+                                canForceExecute: response.canForceExecute,
                             }];
                         });
                     }
@@ -3741,7 +3789,7 @@ export default function TabProvider({
     }, [tabId]);
 
     // Stop response with timeout fallback
-    const stopResponse = useCallback(async (): Promise<boolean> => {
+    const stopResponse = useCallback(async (): Promise<{ success: boolean; alreadyStopped: boolean }> => {
         // Clear any existing stop timeout
         if (stopTimeoutRef.current) {
             clearTimeout(stopTimeoutRef.current);
@@ -3765,7 +3813,7 @@ export default function TabProvider({
                         setSessionState(prev => prev === 'stopping' ? 'idle' : prev);
                         clearRuntimePlanTodos();
                     });
-                    return true;
+                    return { success: true, alreadyStopped: true };
                 }
                 // 设置 5 秒超时，如果没有收到 SSE 事件确认则强制恢复 UI
                 stopTimeoutRef.current = setTimeout(() => {
@@ -3778,16 +3826,16 @@ export default function TabProvider({
                     clearRuntimePlanTodos();
                     stopTimeoutRef.current = null;
                 }, 5000);
-                return true;
+                return { success: true, alreadyStopped: false };
             }
             // POST failed (success=false), recover UI
             recoverStreamingUi('stopped');
-            return false;
+            return { success: false, alreadyStopped: false };
         } catch (error) {
             console.error(`[TabProvider ${tabId}] Stop response failed:`, error);
             // 请求失败也强制恢复 UI
             recoverStreamingUi('failed');
-            return false;
+            return { success: false, alreadyStopped: false };
         }
         // eslint-disable-next-line react-hooks/exhaustive-deps -- postJson is stable
     }, [recoverStreamingUi, tabId]);
@@ -4649,8 +4697,6 @@ export default function TabProvider({
         respondExitPlanMode,
         cancelQueuedMessage,
         forceExecuteQueuedMessage,
-        // Cron task exit handler ref (mutable, no need in deps)
-        onCronTaskExitRequested: onCronTaskExitRequestedRef,
     }), [
         tabId, agentDir, currentSessionId, messages, historyMessages, streamingMessage, firstItemIndex, hasMoreBefore, isLoading, isSessionLoading, sessionState, sessionRuntime, sessionRuntimeSource, sessionMeta,
         logs, unifiedLogs, systemInitInfo, sdkSlashCommands, runtimeDiagnostics, agentError, systemStatus, systemNotice, contextUsage, agentPlanTodos, lastTerminalReason, pendingPermission, pendingAskUserQuestion, pendingExitPlanMode, pendingEnterPlanMode, toolCompleteCount, queuedMessages, isConnected,

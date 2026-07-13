@@ -10,7 +10,7 @@ import {
   MAX_TITLE_GEN_ATTEMPTS,
   type TitleRoundMessage,
 } from './sessionTitle';
-import { buildFloatingBallContextReminder } from './systemReminder';
+import { buildFloatingBallContextReminder, buildGoalContinuationReminder } from './systemReminder';
 
 describe('stripSystemWrapper', () => {
   it('returns plain text unchanged', () => {
@@ -78,6 +78,19 @@ describe('stripSystemWrapper', () => {
     })}\n\n解释这段选中文字`;
     expect(stripSystemWrapper(raw)).toBe('解释这段选中文字');
     expect(stripSystemWrapper(buildFloatingBallContextReminder({ screenshotAttached: true }))).toBe('');
+  });
+
+  it('does not derive a title from a pure hidden Goal reminder', () => {
+    const reminder = buildGoalContinuationReminder({
+      objective: '分析这个项目有什么价值',
+      goalId: 'goal_title',
+      goalStatus: 'active',
+      turnNumber: 2,
+      aiCanExit: true,
+    });
+
+    expect(stripSystemWrapper(reminder)).toBe('');
+    expect(deriveSessionTitle(reminder)).toBe('');
   });
 });
 
@@ -222,6 +235,10 @@ describe('shouldAttemptAutoTitle', () => {
   it('stops after the retry cap is exhausted', () => {
     expect(shouldAttemptAutoTitle({ userMessageCount: 5, titleGenAttempts: MAX_TITLE_GEN_ATTEMPTS })).toBe(false);
     expect(shouldAttemptAutoTitle({ userMessageCount: 5, titleGenAttempts: MAX_TITLE_GEN_ATTEMPTS - 1 })).toBe(true);
+  });
+
+  it('allows sessions that exhausted the old 0.2.49 five-attempt cap to retry', () => {
+    expect(shouldAttemptAutoTitle({ userMessageCount: 5, titleGenAttempts: 5 })).toBe(true);
   });
 });
 

@@ -8,20 +8,21 @@
 // new shape folds everything into the menu so the card's top-right has a
 // single, stable target (`…`) regardless of status.
 //
-// Legacy-cron rows reuse the same component; they surface only 打开详情
-// and 删除 since their other lifecycle operations live in the separate
-// LegacyCronOverlay.
+// Historical Cron rows reuse the same component and surface only read-only
+// detail.
 
 import { Pencil, Play, RotateCcw, Square, Trash2 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { DropdownMenu, type DropdownMenuItem, type DropdownMenuSection } from '@/components/ui/DropdownMenu';
-import type { Task, TaskStatus } from '@/../shared/types/task';
+import type { Task, TaskExecutionState, TaskStatus } from '@/../shared/types/task';
 
 export interface TaskItemActionsProps {
   variant: 'task' | 'legacy';
   /** Live status — native task value, or derived for legacy. */
   status: TaskStatus;
+  executionState?: TaskExecutionState;
+  canRerun?: boolean;
   /** Busy flag locks all actions during a pending async op. */
   busy?: boolean;
   /** Fired by the primary action (▶ for todo, ■ for running, ↻ for rerun). */
@@ -42,6 +43,8 @@ export interface TaskItemActionsProps {
 export function TaskItemActions({
   variant,
   status,
+  executionState,
+  canRerun = true,
   busy,
   onRun,
   onStop,
@@ -54,7 +57,7 @@ export function TaskItemActions({
   const primary =
     variant === 'legacy'
       ? null
-      : primaryActionFor(status, { onRun, onStop, onRerun }, t);
+      : primaryActionFor(status, executionState, canRerun, { onRun, onStop, onRerun }, t);
 
   // Menu ordering (v0.1.69):
   //   1. 编辑 (task variant) — clicking the card already opens the detail
@@ -88,7 +91,7 @@ export function TaskItemActions({
     });
   }
 
-  const destructiveGroup: DropdownMenuItem[] = onDelete
+  const destructiveGroup: DropdownMenuItem[] = onDelete && !executionState
     ? [
         {
           icon: <Trash2 className="h-3.5 w-3.5" />,
@@ -117,9 +120,37 @@ interface PrimaryAction {
 
 function primaryActionFor(
   status: TaskStatus,
+  executionState: TaskExecutionState | undefined,
+  canRerun: boolean,
   handlers: Pick<TaskItemActionsProps, 'onRun' | 'onStop' | 'onRerun'>,
   t: (key: string) => string,
 ): PrimaryAction | null {
+  if (executionState === 'stopping') {
+    return {
+      icon: <Square className="h-3.5 w-3.5" />,
+      title: t('tasks.actions.stopping'),
+      menuClassName: 'text-[var(--warning)]',
+      handler: undefined,
+    };
+  }
+  if (executionState === 'stop_failed') {
+    return {
+      icon: <Square className="h-3.5 w-3.5" />,
+      title: t('tasks.actions.retryStop'),
+      menuClassName:
+        'text-[var(--error)] hover:bg-[var(--error-bg)]',
+      handler: handlers.onStop,
+    };
+  }
+  if (executionState === 'running') {
+    return {
+      icon: <Square className="h-3.5 w-3.5" />,
+      title: t('tasks.actions.stop'),
+      menuClassName:
+        'text-[var(--ink-secondary)] hover:bg-[var(--error-bg)] hover:text-[var(--error)]',
+      handler: handlers.onStop,
+    };
+  }
   switch (status) {
     case 'todo':
       return {
@@ -141,6 +172,7 @@ function primaryActionFor(
     case 'blocked':
     case 'stopped':
     case 'done':
+      if (!canRerun) return null;
       return {
         icon: <RotateCcw className="h-3.5 w-3.5" />,
         title: t('tasks.actions.rerun'),
@@ -153,8 +185,8 @@ function primaryActionFor(
   }
 }
 
-/** Derive a TaskStatus-compatible value from a native Task or a legacy cron. */
-export function deriveTaskRowStatus(task: Task | null, legacyRunning?: boolean): TaskStatus {
+/** Historical Cron rows are read-only and therefore render as archived. */
+export function deriveTaskRowStatus(task: Task | null): TaskStatus {
   if (task) return task.status;
-  return legacyRunning ? 'running' : 'stopped';
+  return 'archived';
 }

@@ -1,9 +1,9 @@
 /**
- * ScheduleTypeTabs — Three schedule type tabs (周期触发 / 仅一次 / 无限循环)
+ * ScheduleTypeTabs — Three schedule type tabs (目标模式 / 周期触发 / 仅一次)
  * Each tab renders its own configuration area.
  *
  * v0.1.69 refactor: the previous four tabs (固定间隔 / 定时执行 /
- * 仅一次 / 无限循环) collapsed the first two into one "周期触发" tab
+ * 仅一次 / 目标模式) collapsed the first two into one "周期触发" tab
  * powered by `CronExpressionInput` with its 5-chip picker (固定周期 +
  * 每天 / 工作日 / 每周 / 每月). Both "every N minutes" and calendar-
  * aligned cron schedules now live under the same UI — the old tab
@@ -17,7 +17,7 @@
  */
 
 import { useState, useCallback, useMemo, useEffect } from 'react';
-import { Clock, Calendar, Repeat } from 'lucide-react';
+import { Clock, Calendar, Flag } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { CronSchedule } from '@/types/cronTask';
 import CronExpressionInput from './CronExpressionInput';
@@ -44,9 +44,9 @@ interface ScheduleTypeTabsProps {
 }
 
 const TABS: { kind: ScheduleKind; labelKey: string; icon: typeof Clock }[] = [
+  { kind: 'loop', labelKey: 'cron.scheduleTabs.loop', icon: Flag },
   { kind: 'recurring', labelKey: 'cron.scheduleTabs.recurring', icon: Clock },
   { kind: 'at', labelKey: 'cron.scheduleTabs.once', icon: Calendar },
-  { kind: 'loop', labelKey: 'cron.scheduleTabs.loop', icon: Repeat },
 ];
 
 /** Map the incoming `CronSchedule` to the surface-level tab. `every` and
@@ -216,9 +216,13 @@ export default function ScheduleTypeTabs({ value, intervalMinutes, onChange, err
         {activeKind === 'loop' && (
           <div className="rounded-lg border border-[var(--line)] bg-[var(--paper)] px-4 py-3">
             <p className="text-sm font-medium text-[var(--ink)]">{t('cron.scheduleTabs.loopTitle')}</p>
-            <p className="mt-1.5 text-xs leading-relaxed text-[var(--ink-muted)]">
-              {t('cron.scheduleTabs.loopDescription')}
-            </p>
+            <div className="mt-1.5 space-y-1.5 text-sm leading-relaxed text-[var(--ink-muted)]">
+              {t('cron.scheduleTabs.loopDescription')
+                .split('\n\n')
+                .map(paragraph => (
+                  <p key={paragraph}>{paragraph}</p>
+                ))}
+            </div>
           </div>
         )}
 

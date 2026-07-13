@@ -68,6 +68,7 @@
   "tabProvider": {
     "compactSuccess": "上下文已压缩",
     "compactFailed": "上下文压缩失败",
+    "hiddenSystemMessage": "系统消息",
     "sendFailed": "发送失败",
     "networkError": "网络错误",
     "networkDisconnected": "网络连接中断，请重试"
@@ -217,7 +218,8 @@
       "heartbeat": "心跳感知",
       "cronTask": "定时任务",
       "floatingContext": "悬浮上下文",
-      "spaceIssue": "Space issue"
+      "spaceIssue": "Space issue",
+      "goalMode": "目标模式"
     },
     "systemInfo": "系统信息",
     "expand": "展开"
@@ -348,15 +350,26 @@
       "returnHint": "授权完成后会自动回到 MyAgents。"
     },
     "sidebar": {
-      "issues": "Issues",
-      "goals": "Goals",
-      "skills": "Skills",
+      "issues": "议题 Issue",
+      "goals": "目标 Goals",
+      "skills": "技能 Skills",
       "agents": "Agents",
-      "joinSpace": "加入 Space",
-      "createSpace": "创建 Space",
+      "joinSpace": "加入空间",
+      "createSpace": "创建空间",
       "signedInWithGoogle": "已通过 Google 登录",
       "settings": "设置",
       "logout": "退出登录"
+    },
+    "joinPolicies": {
+      "open": "开放加入",
+      "approvalRequired": "需审核加入",
+      "unknown": "未知加入方式"
+    },
+    "accountPlan": {
+      "free": "免费账户",
+      "proUntil": "专业版账户 · 有效至 {{date}}",
+      "proDaysRemaining": "专业版账户 · 还剩 {{count}} 天",
+      "expiredAt": "免费账户 · Pro 已于 {{date}} 到期"
     },
     "spaceActions": {
       "joinTitle": "加入 Space",
@@ -364,6 +377,8 @@
       "name": "Space 名称",
       "slug": "Space slug",
       "slugConflict": "这个 Space slug 已被占用，请换一个",
+      "joining": "正在加入 Space",
+      "creating": "正在创建 Space",
       "chooseAvatar": "选择头像"
     },
     "profile": {
@@ -381,6 +396,14 @@
       "save": "保存",
       "saving": "保存中"
     },
+    "avatarPicker": {
+      "peopleTitle": "选择头像",
+      "agentsTitle": "选择 Agent 头像",
+      "upload": "上传图片",
+      "uploadTitle": "选择头像图片",
+      "preset": "预设头像",
+      "loading": "头像加载中"
+    },
     "common": {
       "refresh": "刷新",
       "create": "创建",
@@ -389,16 +412,21 @@
       "upload": "上传",
       "loadingTeam": "加载团队",
       "teamLoadFailed": "团队数据加载失败",
+      "listRefreshFailed": "列表暂时无法更新，请重试。",
+      "updatingResults": "正在更新筛选结果",
+      "loadMore": "加载更多",
       "retry": "重试",
       "noDescription": "No description",
       "selectFile": "Select a file",
       "notSynced": "未同步",
-      "unknown": "未知"
+      "unknown": "未知",
+      "remoteUpdatesAvailable": "有更新，点击刷新"
     },
     "filters": {
       "allGoals": "全部目标",
       "inbox": "收件箱",
-      "activeStatuses": "未完成"
+      "activeStatuses": "未完成",
+      "relatedToMe": "与我相关"
     },
     "issueStatuses": {
       "open": "讨论",
@@ -430,13 +458,18 @@
       "agentDisabled": "Agent 已禁用",
       "agentRevoked": "Agent 已撤销",
       "agentUpdated": "Registered Agent 已更新",
-      "agentCreated": "Registered Agent 已创建",
+      "agentAvatarUpdated": "Agent 头像已更新",
+      "agentCreated": "已添加 Agent 工作区",
       "spaceCreated": "Space 已创建",
       "spaceJoined": "已加入 Space",
+      "spaceAlreadyJoined": "您已加入「{{name}}」",
       "spaceJoinRequested": "已提交加入申请",
       "spaceSlugCopied": "已复制 Space slug",
       "spaceUpdated": "Space 已更新",
       "issueStatusUpdated": "Issue 状态已更新",
+      "issueGoalUpdated": "Issue 目标已更新",
+      "issueAssigneeUpdated": "经办人已更新",
+      "issueAssigneeCancelled": "已取消指派并重新开放 Issue",
       "attachmentsUploaded": "已上传 {{count}} 个附件",
       "attachmentDownloaded": "已下载到 {{path}}",
       "noAgentWorkspaces": "暂无可用 Agent 工作区",
@@ -457,6 +490,7 @@
       "searchIssue": "搜索 Issue",
       "createIssue": "新建 Issue",
       "empty": "暂无匹配 Issue",
+      "emptyRelated": "没有找到与你相关的 Issue",
       "humanOnly": "仅人工",
       "comments": "{{count}} 评论",
       "claimHandler": "经办：{{name}}"
@@ -474,7 +508,8 @@
       "unselectedGoal": "未选择",
       "humanOnly": "仅人工",
       "continuous": "持续创建",
-      "pickAttachmentsTitle": "选择 Issue 附件"
+      "pickAttachmentsTitle": "选择 Issue 附件",
+      "attachmentLimit": "每个 Issue 最多添加 5 个附件"
     },
     "goals": {
       "title": "目标",
@@ -543,7 +578,30 @@
       "emptyComments": "暂无评论。可以直接在底部补充信息。",
       "commentPlaceholder": "说说你的想法",
       "uploadAttachmentAria": "上传附件",
-      "sendComment": "发送评论"
+      "pickCommentAttachmentsTitle": "选择评论附件",
+      "removeCommentAttachment": "移除评论附件 {{name}}",
+      "commentAttachmentLimit": "每条评论最多添加 5 个附件",
+      "sendComment": "发送评论",
+      "taskCard": "Issue 任务信息",
+      "creator": "创建人",
+      "goal": "目标",
+      "noGoal": "未设置",
+      "issueState": "状态",
+      "assignee": "经办人",
+      "unassigned": "待认领",
+      "assigneeSearch": "搜索 Agent 或 Space 成员",
+      "currentAssignee": "当前选择",
+      "loadingAssignees": "加载经办人",
+      "noAssignees": "没有匹配的经办人",
+      "cancelAssignee": "取消指派",
+      "cancelAssigneeTitle": "取消当前指派？",
+      "cancelAssigneeMessage": "取消后 Issue 将重新开放认领，状态会重置为待处理，并重新按订阅规则通知。",
+      "cancelAssigneeConfirm": "取消指派",
+      "clearAssigneeTitle": "清空当前选择？",
+      "clearAssigneeMessage": "清空后，新 Issue 创建时将保持待认领。",
+      "clearAssigneeConfirm": "清空选择",
+      "agentOwner": "拥有者：{{name}}",
+      "loadOlderComments": "加载更早评论"
     },
     "skills": {
       "upload": "上传",
@@ -561,6 +619,8 @@
       "sourceFolder": "文件夹",
       "sourceFileOrFolder": "文件 / 文件夹",
       "sourceUrl": "链接导入",
+      "source": "来源",
+      "sourceRawZip": "压缩包",
       "noLocalSkills": "暂无可发布的本机 Skill",
       "noMatchingLocalSkills": "没有匹配的本机 Skill",
       "localSearchPlaceholder": "搜索 Skill 名称",
@@ -626,9 +686,10 @@
       "pickRevisionZipTitle": "选择 Skill Revision ZIP"
     },
     "agents": {
-      "register": "登记",
+      "register": "添加本机 Agent 工作区",
       "empty": "暂无 Registered Agents",
-      "registerAgent": "登记 Agent",
+      "registerAgent": "添加本机 Agent 工作区",
+      "details": "详情",
       "editAgent": "编辑 Agent {{name}}",
       "edit": "编辑",
       "enableAgent": "启用 Agent {{name}}",
@@ -637,11 +698,23 @@
       "disable": "禁用",
       "revokeAgent": "撤销 Agent {{name}}",
       "revoke": "撤销",
+      "changeAvatar": "更换 Agent 头像",
       "viewSettings": "查看登记设置",
       "status": "状态",
       "lastSync": "上次同步",
       "lastActiveAt": "上次活跃：{{time}}",
       "lastSyncAt": "上次同步：{{time}}",
+      "online": "在线",
+      "offline": "离线",
+      "disabled": "已停用",
+      "connecting": "连接中",
+      "clientOnline": "MyAgents 客户端在线",
+      "lastOnline": "最后在线",
+      "lastOnlineAt": "最后在线：{{time}}",
+      "neverOnline": "尚未在线",
+      "offlineTroubleshooting": "请确认 MyAgents 客户端正在运行并能访问 Space Cloud。",
+      "connectingHint": "正在等待 MyAgents 客户端连接",
+      "presenceMayBeStale": "在线状态可能不是最新，请检查网络后重试。",
       "workspace": "工作区",
       "localAgentWorkspace": "本地 Agent 工作区",
       "goal": "目标",
@@ -658,7 +731,7 @@
       "revokeTitle": "撤销 Registered Agent",
       "revokeMessage": "确定要撤销「{{name}}」吗？撤销后该本地节点的 token 将失效，不能再接收新的派发。",
       "editTitle": "编辑 Agent",
-      "registerTitle": "登记 Agent",
+      "registerTitle": "添加本机 Agent 工作区",
       "officialSpace": "Official Space",
       "name": "名称",
       "workspaceLabel": "工作区标签",
@@ -688,10 +761,12 @@
       "displayNamePlaceholder": "Agent 展示名"
     },
     "settings": {
+      "overLimit": "超额",
+      "unlimited": "不限制",
       "overview": "Overview",
       "overviewHint": "Space 基本信息与配额",
       "members": "Members",
-      "membersHint": "成员、邀请与申请",
+      "membersHint": "成员与申请",
       "agents": "Agents",
       "agentsHint": "登记 Agent 与订阅目标",
       "roles": "Roles & Permissions",
@@ -702,6 +777,7 @@
       "inviteEmailPlaceholder": "输入用户的 Google 邮箱",
       "inviteRoleLabel": "选择用户身份",
       "addMember": "添加",
+      "joinByShortSlug": "邀请用户使用短链加入 MyAgents：",
       "loadingMembers": "加载中...",
       "joinRequests": "申请加入",
       "pendingInvitations": "待接受邀请",
@@ -716,17 +792,20 @@
       "editOverview": "编辑",
       "editOverviewTitle": "编辑 Space",
       "freeQuota": "Free quota",
-      "resourcesTitle": "空间资源 · {{plan}}会员",
+      "resourcesTitle": "Space 资源 · {{plan}}",
+      "planLabel": "{{plan}} 套餐",
       "quotaMembers": "Members",
       "quotaOpenIssues": "Open issues",
       "quotaSkills": "Skills",
       "quotaAgents": "Agents",
       "quotaStorage": "Storage",
+      "quotaCountingHint": "成员按已加入席位、Issue 按未完成项、Agent 按未撤销登记计数；超额存量仍可查看和删减，仅限制继续新增。",
       "plan": "Plan",
+      "planValidUntil": "{{plan}} · 有效至 {{date}}",
       "currentRole": "当前身份",
       "joinPolicy": "加入方式",
-      "memberQuotaReached": "成员名额已满，请先移除成员或未来升级套餐。",
-      "agentQuotaReached": "Registered Agent 数量已达到免费套餐上限。",
+      "memberQuotaReached": "成员名额已达到当前套餐上限，请先移除不再需要的成员。",
+      "agentQuotaReached": "Registered Agent 数量已达到当前套餐上限，请先撤销不再使用的 Agent 工作区。",
       "ownerDescription": "可以管理 Space 信息、成员、申请、邀请、Skills、Goals、Issues 与 Registered Agents。Owner 身份不能被 admin 修改或移除。",
       "adminDescription": "可以进入 Settings，管理成员、申请、邀请、Skills、Goals、Issues 与 Registered Agents，但不能改变 owner。",
       "memberDescription": "可以浏览和参与当前 Space 的协作内容，但看不到 Settings 入口，也不能管理成员或登记 Agent。"

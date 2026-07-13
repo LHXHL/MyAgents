@@ -3,12 +3,13 @@
  *
  * Each section teaches the AI about a MyAgents-specific capability surfaced
  * through the `myagents` CLI rather than as an MCP tool. The brief lives here;
- * the AI fetches full docs on demand via `myagents <topic> readme`.
+ * the AI fetches full docs on demand via each command's discovery surface
+ * (`myagents <topic> readme` where available, otherwise `myagents <topic> --help`).
  *
  * Two scopes
  * ----------
  * - `buildCliToolsAppend(scenario)` — MyAgents-CLI capability hints
- *   (cron CRUD, cron self-exit, IM media send, thought capture). Universal
+ *   (cron CRUD, cron self-exit, Goal Mode, IM media send, thought capture). Universal
  *   across runtimes (builtin Claude Agent SDK + Codex / Gemini / Claude Code
  *   CLI) since v0.2.11 dropped the corresponding in-process MCP servers
  *   (`cron-tools`, `im-cron`, `im-media`) and unified on the CLI. Gated by
@@ -51,12 +52,19 @@ Quick reference (full docs: run \`myagents cron readme\`):
       # Long / multiline / quoted prompts — write to a file first (using your
       # normal file-writing tool) and pass --prompt-file. This avoids shell
       # escape problems with quotes, newlines, and backticks.
+  myagents cron add --name X --prompt "..." --schedule "0 9 * * *"
+      # Wall-clock schedules like "daily at 09:00" default to this machine's
+      # IANA timezone. Use JSON with "tz" only for a different timezone or UTC.
+  myagents cron add --name X --prompt "..." --schedule '{"kind":"cron","expr":"0 9 * * *","tz":"America/New_York"}'
+      # Explicit non-local timezone example.
   myagents cron runs <taskId> --limit 5    # inspect recent executions
   myagents cron remove <taskId>            # delete a task
 
 Pass \`--json\` on any command for machine-parseable output. Non-zero exit means
 the command failed; read stderr for the reason. Before running any command,
-always call \`myagents cron readme\` once if you haven't yet this session.
+always call \`myagents cron readme\` once if you haven't yet this session. When
+auditing schedules, inspect schedule.expr + schedule.tz; lastExecutedAt is an
+execution instant, not the user's configured wall-clock time.
 </myagents-cli-cron>`;
 
 const SECTION_CRON_EXIT = `<myagents-cli-cron-exit>
@@ -70,6 +78,30 @@ This marks the task complete and stops future executions. Only use this when
 you're sure — the user set up a schedule for a reason. Do NOT use it to bail
 out of transient errors; retry instead.
 </myagents-cli-cron-exit>`;
+
+const SECTION_GOAL = `<myagents-cli-goal>
+MyAgents Goal Mode lets the current MyAgents session keep working toward one
+long-running objective across turns. Use it only when the User explicitly asks
+to start / enter / use Goal Mode, Goal Loop, 目标模式, 设立目标, or to keep a
+goal running continuously until completion.
+
+Do NOT infer Goal Mode from an ordinary complex request. Do not create a Goal
+just because a task is long, hard, or multi-step. The user must explicitly ask
+for this mode.
+
+Before using any Goal command in a session, run:
+  myagents goal --help
+
+That help explains when to call:
+  myagents goal get
+  myagents goal create --objective-file myagents_files/goal-objective.txt
+  myagents goal update --status complete
+  myagents goal update --status blocked
+
+Goal objectives are arbitrary user-provided text. Write them to a file with
+your normal file-writing tool and use --objective-file; never interpolate an
+objective directly into a shell command.
+</myagents-cli-goal>`;
 
 const SECTION_IM_MEDIA = `<myagents-cli-im-media>
 You are running inside an IM Bot / Agent Channel session. To send a file
@@ -202,6 +234,7 @@ export function buildSessionInboxSection(_scenario: InteractionScenario): string
  * Conditional stacking:
  *   - cron CRUD         always (every scenario can benefit from scheduling)
  *   - cron self-exit    only when scenario.type === 'cron' && aiCanExit
+ *   - Goal Mode         only in private user-facing scenarios (desktop / IM / agent-channel)
  *   - IM media          only in 'im' / 'agent-channel' scenarios
  *   - thought capture   in 'desktop' / 'im' / 'agent-channel' scenarios.
  *                       Excluded from cron because cron runs headless against
@@ -223,6 +256,15 @@ export function buildCliToolsAppend(
 
   // cron — universal
   parts.push(SECTION_CRON);
+
+  // Goal Mode — user-facing private channels only. Do not expose it in headless
+  // cron or semi-open registered-agent issue workflows.
+  const isPrivateUserChannel =
+    (scenario.type === 'im' || scenario.type === 'agent-channel') &&
+    scenario.sourceType === 'private';
+  if (scenario.type === 'desktop' || isPrivateUserChannel) {
+    parts.push(SECTION_GOAL);
+  }
 
   // cron self-exit — only inside a cron run that allows it
   if (scenario.type === 'cron' && scenario.aiCanExit) {

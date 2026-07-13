@@ -9,25 +9,24 @@ const cmd = (name: string, source: SlashCommand['source']): SlashCommand => ({
 });
 
 describe('filterAndSortCommands', () => {
-  it('ranks builtins before user skills/commands with no query, even when alphabetically later', () => {
+  it('ranks /goal first, then other builtins, then user skills/commands', () => {
     const input = [
       cmd('apple-notes', 'skill'),
       cmd('compact', 'builtin'),
       cmd('bird', 'custom'),
-      cmd('loop', 'builtin'),
+      cmd('goal', 'builtin'),
     ];
     const out = filterAndSortCommands(input, '');
-    // builtins first (alphabetical within tier), then the rest
-    expect(out.map((c) => c.name)).toEqual(['compact', 'loop', 'apple-notes', 'bird']);
+    expect(out.map((c) => c.name)).toEqual(['goal', 'compact', 'apple-notes', 'bird']);
   });
 
-  it('surfaces the builtin /loop above a user skill that also matches "lo"', () => {
+  it('surfaces the builtin /goal when the user types its /loop alias', () => {
     const input = [
       cmd('local-skill', 'skill'),
-      cmd('loop', 'builtin'),
+      { ...cmd('goal', 'builtin'), aliases: ['loop'] },
     ];
     const out = filterAndSortCommands(input, 'lo');
-    expect(out[0].name).toBe('loop');
+    expect(out[0].name).toBe('goal');
   });
 
   it('keeps prefix-match-first ordering within the builtin tier', () => {
@@ -43,9 +42,9 @@ describe('filterAndSortCommands', () => {
   });
 
   it('filters out non-matching commands', () => {
-    const input = [cmd('loop', 'builtin'), cmd('apple', 'skill')];
+    const input = [{ ...cmd('goal', 'builtin'), aliases: ['loop'] }, cmd('apple', 'skill')];
     const out = filterAndSortCommands(input, 'loop');
-    expect(out.map((c) => c.name)).toEqual(['loop']);
+    expect(out.map((c) => c.name)).toEqual(['goal']);
   });
 
   it('matches on description too, but builtins still rank first', () => {

@@ -2,8 +2,7 @@
 // for the preview overlay's SummaryCard.
 //
 // Why this lives here (not inlined in the overlay):
-//   * cronstrue + cron-parser are async-imported (same pattern as
-//     `CronExpressionInput`) so the bundle doesn't eagerly load them
+//   * cronstrue is async-imported so the bundle doesn't eagerly load it
 //     for screens that never open the overlay.
 //   * Every execution mode returns the same shape, so the consumer
 //     just renders `title` (big) + optional `next` (small) without
@@ -11,8 +10,8 @@
 //   * Tests can target this util directly.
 //
 // Design goal: answer the question "when will this fire next?" in one
-// glance. For recurring/cron tasks that means translating cron →
-// Chinese + computing the next trigger time + a rough countdown.
+// glance. Human-readable descriptions are local presentation; the next
+// trigger instant always comes from the Rust Task scheduler.
 
 import type { Task, TaskExecutionMode } from '@/../shared/types/task';
 import { currentSupportedLocale, formatAbsoluteDateTime } from '@/i18n/format';
@@ -32,14 +31,9 @@ export interface ScheduleSummary {
 }
 
 /**
- * Build a render-ready summary for the given task. Async because
- * cronstrue and cron-parser are dynamically imported (same as
- * CronExpressionInput), keeping them out of the non-overlay bundle.
- *
- * `nextExecutionAtMs` — if the Rust scheduler already knows when the
- * next fire is (via `CronTask.next_execution_at`), the caller can
- * bypass the frontend computation by passing it in. Otherwise we
- * fall back to `cron-parser` / `intervalMinutes + lastExecutedAt`.
+ * Build a render-ready summary for the given task. `nextExecutionAtMs` is
+ * optional because stats can be unavailable, but the renderer never derives
+ * a replacement schedule instant.
  */
 export async function summarizeSchedule(
   task: Task,
@@ -55,10 +49,10 @@ export async function summarizeSchedule(
   if (mode === 'loop') {
     return {
       mode,
-      title: locale === 'zh-CN' ? '心跳循环' : 'Heartbeat loop',
+      title: locale === 'zh-CN' ? '目标模式' : 'Goal Mode',
       next: locale === 'zh-CN'
-        ? '连续触发(无定时),完成即下一轮'
-        : 'Runs continuously; the next round starts after completion',
+        ? '连续执行，完成当前轮后进入下一轮'
+        : 'Runs continuously; the next round starts after the current one finishes',
     };
   }
 
@@ -94,14 +88,14 @@ export async function summarizeSchedule(
         return {
           mode,
           title: formatInterval(mins, locale),
-          next: formatIntervalNext(mins, task.lastExecutedAt ?? null, nextExecutionAtMs, locale),
+          next: formatKnownNext(nextExecutionAtMs, locale),
         };
       }
       return { mode, title: locale === 'zh-CN' ? '周期 · 未设置' : 'Recurring · Not set' };
     }
     const tz = task.cronTimezone?.trim() || undefined;
     const title = await describeCron(expr, locale);
-    const next = await computeNextCronFire(expr, tz, nextExecutionAtMs, locale);
+    const next = formatKnownNext(nextExecutionAtMs, locale);
     return {
       mode,
       title: title ?? (locale === 'zh-CN' ? `周期 · ${expr}` : `Recurring · ${expr}`),
@@ -113,7 +107,7 @@ export async function summarizeSchedule(
   if (task.intervalMinutes) {
     const mins = task.intervalMinutes;
     const title = formatInterval(mins, locale);
-    const next = formatIntervalNext(mins, task.lastExecutedAt ?? null, nextExecutionAtMs, locale);
+    const next = formatKnownNext(nextExecutionAtMs, locale);
     return { mode, title, next };
   }
 
@@ -181,39 +175,14 @@ async function describeCron(expr: string, locale: SupportedLocale): Promise<stri
   }
 }
 
-async function computeNextCronFire(
-  expr: string,
-  tz: string | undefined,
-  nextExecutionAtMs?: number | null,
-  locale: SupportedLocale = 'zh-CN',
-): Promise<string | undefined> {
-  // Rust scheduler already told us → prefer that, avoids tz drift
-  // between cron-parser and the backend.
-  if (typeof nextExecutionAtMs === 'number' && nextExecutionAtMs > 0) {
-    return formatNextAbs(nextExecutionAtMs, locale);
-  }
-  try {
-    const mod = await import('cron-parser');
-    const interval = mod.CronExpressionParser.parse(expr, tz ? { tz } : undefined);
-    const at = interval.next().toDate().getTime();
-    return formatNextAbs(at, locale);
-  } catch {
-    return undefined;
-  }
-}
-
-function formatIntervalNext(
-  mins: number,
-  lastExecutedAtMs: number | null,
+function formatKnownNext(
   nextExecutionAtMs?: number | null,
   locale: SupportedLocale = 'zh-CN',
 ): string | undefined {
   if (typeof nextExecutionAtMs === 'number' && nextExecutionAtMs > 0) {
     return formatNextAbs(nextExecutionAtMs, locale);
   }
-  if (!lastExecutedAtMs) return undefined;
-  const at = lastExecutedAtMs + mins * 60_000;
-  return formatNextAbs(at, locale);
+  return undefined;
 }
 
 function formatNextAbs(ms: number, locale: SupportedLocale): string {

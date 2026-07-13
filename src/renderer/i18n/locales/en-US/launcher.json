@@ -68,7 +68,7 @@
     "unfavorite": "Remove from favorites",
     "viewStats": "View stats",
     "delete": "Delete",
-    "stopCronBeforeDelete": "Stop the scheduled task before deleting this chat"
+    "stopCronBeforeDelete": "Stop or cancel the active Goal or scheduled task before deleting this chat"
   },
   "workspaceCard": {
     "more": "More",

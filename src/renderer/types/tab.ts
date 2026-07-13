@@ -2,7 +2,7 @@
 
 import type { ImageAttachment } from '@/components/SimpleChatInput';
 import type { PermissionMode } from '@/config/types';
-import type { CronSchedule, CronEndConditions, CronDelivery } from '@/types/cronTask';
+import type { CronSchedule, CronEndConditions, CronDelivery, ScheduledTaskKind } from '@/types/cronTask';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { OfficialToolId } from '../../shared/official-tools';
 
@@ -12,6 +12,8 @@ import type { OfficialToolId } from '../../shared/official-tools';
  *  only stages these values; the actual `cmd_create_cron_task` happens after
  *  handoff so a user closing the launcher mid-edit doesn't leave orphan crons. */
 export interface InitialMessageCron {
+    /** Explicit creation surface; never infer Goal identity from schedule shape. */
+    taskKind: ScheduledTaskKind;
     /** Schedule (e.g. `every 30m`, cron expression, one-shot at). */
     schedule: CronSchedule;
     /** Whether each tick uses the same session or spawns a fresh one. */
@@ -27,8 +29,8 @@ export interface InitialMessageCron {
     /** UI-level distinction between "run inline in the current chat" and
      *  "spawn a standalone background task". Mirrors `runMode` semantically
      *  but is what the modal's edit form needs to round-trip correctly:
-     *  the modal computes `runMode` from this (modulo `schedule.kind ===
-     *  'loop'` which forces `single_session`), so when re-opening the
+     *  the modal computes `runMode` from this (Goal forces `single_session`),
+     *  so when re-opening the
      *  editor without this field we'd default to `current_session` and
      *  silently rewrite a "新开对话" task as "当前对话".
      *

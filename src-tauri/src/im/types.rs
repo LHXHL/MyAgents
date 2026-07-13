@@ -5,6 +5,8 @@ use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::time::Instant;
 
+use super::normalize_runtime_type;
+
 const CODEX_SUBSCRIPTION_PROVIDER_ID: &str = "codex-sub";
 
 /// Partial update patch for IM Bot config.
@@ -400,6 +402,56 @@ pub struct ImConfig {
     pub openclaw_plugin_config: Option<serde_json::Value>,
     #[serde(default)]
     pub openclaw_enabled_tool_groups: Option<Vec<String>>,
+}
+
+/// Canonical execution identity of one running IM Channel.
+///
+/// Agent defaults intentionally keep runtime-backed Providers in their
+/// provider-facing raw shape (`runtime=builtin`, no runtime source). Only an
+/// effective `ImConfig` owns the projected runtime identity used by the
+/// Channel process and its sessions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ImRuntimeIdentity {
+    pub runtime: String,
+    pub runtime_source: Option<String>,
+}
+
+impl ImRuntimeIdentity {
+    pub fn from_runtime_config(runtime: &str, runtime_config: Option<&serde_json::Value>) -> Self {
+        let runtime = normalize_runtime_type(Some(runtime));
+        let runtime_source = if runtime == "builtin" {
+            None
+        } else {
+            Some(
+                runtime_config
+                    .and_then(|value| value.get("source"))
+                    .and_then(|value| value.as_str())
+                    .filter(|source| *source == "managed-provider")
+                    .unwrap_or("system-cli")
+                    .to_string(),
+            )
+        };
+        Self {
+            runtime,
+            runtime_source,
+        }
+    }
+
+    pub fn label(&self) -> String {
+        match self.runtime_source.as_deref() {
+            Some(source) => format!("{}/{}", self.runtime, source),
+            None => self.runtime.clone(),
+        }
+    }
+}
+
+impl ImConfig {
+    pub(crate) fn runtime_identity(&self) -> ImRuntimeIdentity {
+        ImRuntimeIdentity::from_runtime_config(
+            self.runtime.as_deref().unwrap_or("builtin"),
+            self.runtime_config.as_ref(),
+        )
+    }
 }
 
 fn default_platform() -> ImPlatform {
@@ -1609,6 +1661,55 @@ mod tests {
             .as_ref()
             .and_then(|v| v.get("additionalArgs"))
             .is_none());
+    }
+
+    #[test]
+    fn managed_codex_model_change_keeps_channel_runtime_identity() {
+        let mut before = base_agent();
+        before.provider_id = Some(CODEX_SUBSCRIPTION_PROVIDER_ID.to_string());
+        before.model = Some("gpt-5.5".to_string());
+        before.runtime = Some("builtin".to_string());
+        before.runtime_config = Some(serde_json::json!({
+            "permissionMode": "no-restrictions"
+        }));
+        let channel = base_channel();
+        let old_identity = channel.to_im_config(&before).runtime_identity();
+
+        let mut after = before.clone();
+        after.model = Some("gpt-5.6-sol".to_string());
+        let new_identity = channel.to_im_config(&after).runtime_identity();
+
+        assert_eq!(
+            old_identity,
+            ImRuntimeIdentity {
+                runtime: "codex".to_string(),
+                runtime_source: Some("managed-provider".to_string()),
+            }
+        );
+        assert_eq!(new_identity, old_identity);
+    }
+
+    #[test]
+    fn agent_default_change_does_not_rotate_channel_with_own_runtime_override() {
+        let mut before = base_agent();
+        before.provider_id = Some(CODEX_SUBSCRIPTION_PROVIDER_ID.to_string());
+        before.model = Some("gpt-5.5".to_string());
+        let mut channel = base_channel();
+        channel.overrides = Some(ChannelOverrides {
+            provider_id: Some("openrouter".to_string()),
+            model: Some("anthropic/claude-sonnet-4.6".to_string()),
+            runtime: Some("builtin".to_string()),
+            ..Default::default()
+        });
+        let old_identity = channel.to_im_config(&before).runtime_identity();
+
+        let mut after = before.clone();
+        after.provider_id = Some("openrouter".to_string());
+        after.model = Some("anthropic/claude-opus-4.6".to_string());
+        let new_identity = channel.to_im_config(&after).runtime_identity();
+
+        assert_eq!(old_identity.runtime, "builtin");
+        assert_eq!(new_identity, old_identity);
     }
 
     #[test]

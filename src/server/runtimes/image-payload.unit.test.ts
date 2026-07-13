@@ -10,7 +10,8 @@ vi.mock('../SessionStore', () => ({
   saveAttachment: vi.fn(),
 }));
 
-import { rehomeImagePayloadsForSession, resolveImagePayload } from './image-payload';
+import { messageAttachmentsFromImagePayloads, rehomeImagePayloadsForSession, resolveImagePayload } from './image-payload';
+import { saveAttachment } from '../SessionStore';
 import type { ImagePayload } from './types';
 
 describe('image payload attachment refs', () => {
@@ -57,5 +58,47 @@ describe('image payload attachment refs', () => {
 
     expect(() => rehomeImagePayloadsForSession('session-a', 'session-b', images))
       .toThrow('Image attachment belongs to a different non-pending session');
+  });
+
+  it('preserves distinct client identities for same-name inline images', () => {
+    const attachments = messageAttachmentsFromImagePayloads('session-a', [
+      {
+        kind: 'inline_base64',
+        id: 'local-image-1',
+        name: 'image.png',
+        mimeType: 'image/png',
+        data: Buffer.from('first').toString('base64'),
+      },
+      {
+        kind: 'inline_base64',
+        id: 'local-image-2',
+        name: 'image.png',
+        mimeType: 'image/png',
+        data: Buffer.from('second').toString('base64'),
+      },
+    ]);
+
+    expect(attachments.map((attachment) => attachment.id)).toEqual([
+      'local-image-1',
+      'local-image-2',
+    ]);
+    const storageIds = vi.mocked(saveAttachment).mock.calls.slice(-2).map((call) => call[1]);
+    expect(storageIds).toHaveLength(2);
+    expect(new Set(storageIds).size).toBe(2);
+    expect(storageIds).not.toContain('local-image-1');
+    expect(storageIds).not.toContain('local-image-2');
+  });
+
+  it('uses the server storage identity for legacy inline payloads without an id', () => {
+    const [attachment] = messageAttachmentsFromImagePayloads('session-a', [{
+      kind: 'inline_base64',
+      name: 'image.png',
+      mimeType: 'image/png',
+      data: Buffer.from('legacy').toString('base64'),
+    }]);
+    const storageId = vi.mocked(saveAttachment).mock.calls.at(-1)?.[1];
+
+    expect(storageId).toBeTruthy();
+    expect(attachment?.id).toBe(storageId);
   });
 });

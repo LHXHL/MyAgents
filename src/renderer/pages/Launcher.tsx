@@ -1,7 +1,7 @@
 /**
  * Launcher - Main entry page for MyAgents
  * Two-column layout: Brand section (left 60%) + Workspaces (right 40%)
- * Responsive: stacks vertically below 768px
+ * Responsive: stacks vertically below 640px
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
@@ -14,7 +14,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { track } from '@/analytics';
 import type { EntryIntent, HistoryEntrySource, Surface } from '@/analytics';
 import { type ImageAttachment } from '@/components/SimpleChatInput';
-import { projectCronExecutionOverrides } from '@/utils/cronExecutionProjection';
+import { projectTaskExecutionOverrides } from '@/utils/taskProviderProjection';
 import { coerceRuntimeBirthPermissionMode } from '../../shared/runtimeBirthFields';
 import { useToast } from '@/components/Toast';
 import { UnifiedLogsPanel } from '@/components/UnifiedLogsPanel';
@@ -40,7 +40,7 @@ import {
 import { patchAgentConfig, getAgentById, disableAgentAndStopChannels, enableAgentAndStartChannels } from '@/config/services/agentConfigService';
 import { archiveProject, unarchiveProject } from '@/config/services/projectService';
 import { persistInputOptionChange } from '@/api/persistInputOption';
-import { createCronTask, startCronTask, startCronScheduler } from '@/api/cronTaskClient';
+import { createCronTask, startCronTask } from '@/api/cronTaskClient';
 import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetections, RuntimeConfig } from '../../shared/types/runtime';
 import { CC_MODELS, CC_PERMISSION_MODES, CODEX_PERMISSION_MODES, GEMINI_PERMISSION_MODES, buildRuntimeChangePatch } from '../../shared/types/runtime';
 import {
@@ -701,19 +701,16 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         // Path:
         //   1. createCronTask with a freshly-minted standalone session id
         //      (matches `cron-standalone-<uuid>` convention from Chat.tsx)
-        //   2. startCronTask (status=running) + startCronScheduler
+        //   2. startCronTask (persists running and arms the scheduler)
         //   3. toast + clear loading; stay on launcher
         // Failure → fall through to the regular tab-launch path so the user
         // doesn't lose their input — same recovery contract Chat.tsx
         // autoSend uses.
-        if (cron && cron.executionTarget === 'new_task') {
+        if (cron?.taskKind === 'cron' && cron.executionTarget === 'new_task') {
             try {
                 const standaloneSessionId = `cron-standalone-${crypto.randomUUID()}`;
-                // PRD 0.2.9 — Collapsed-writer path. Send `providerId` only
-                // and let the sidecar live-resolve the env (apiKey, baseUrl,
-                // authType, modelAliases, ...) on every tick. This avoids
-                // duplicating credentials into ~/.myagents/cron_tasks.json
-                // and makes API key rotation propagate without user action.
+                // Send provider identity only. TaskStore never persists
+                // credential env; a new execution Session resolves it live.
                 //
                 // External runtimes don't carry a providerId (they manage
                 // their own provider via their CLI). When the runtime is
@@ -723,7 +720,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                     !isExternalRuntime && launcherProvider
                         ? launcherProvider.id
                         : undefined;
-                const cronExecution = projectCronExecutionOverrides({
+                const cronExecution = projectTaskExecutionOverrides({
                     providers,
                     runtime: launcherRuntime,
                     providerId: launcherProviderId,
@@ -748,26 +745,13 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                     permissionMode: cronPermissionMode,
                     model: cronExecution.model,
                     providerId: cronExecution.providerId,
-                    // PRD 0.2.9 — When `providerId` is set the sidecar ignores
-                    // intent (live-resolve takes precedence). We still send
-                    // `subscription` for the no-providerId subscription case
-                    // so legacy /cron/execute paths handle it correctly until
-                    // all callers move to providerId-only.
-                    providerIntent: cronExecution.providerIntent,
                     runtime: cronExecution.runtime,
                     runtimeConfig: cronExecution.runtimeConfig,
-                    // Snapshot the launcher's MCP selection so the cron task's
-                    // own override branch fires at execute-sync time. The
-                    // perf shortcut in /cron/execute-sync (preferring
-                    // currentMcpServers shape) only helps the in-Chat handoff
-                    // path where /api/mcp/set has run; standalone-cron from
-                    // launcher has no Tab pre-warm, so first fire still
-                    // self-resolves. Field is still recorded for parity with
-                    // the Chat.tsx new_task path (Chat.tsx:2033).
+                    // A standalone Task has no existing Session, so the
+                    // launcher's MCP selection initializes its first Session.
                     mcpEnabledServers: launcherWorkspaceMcpEnabled,
                 });
                 await startCronTask(created.id);
-                await startCronScheduler(created.id);
                 track('launcher_cron_create_standalone', {
                     interval_minutes: cron.intervalMinutes,
                     schedule_kind: cron.schedule.kind,

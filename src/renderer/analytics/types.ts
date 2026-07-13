@@ -193,12 +193,22 @@ export type EventName =
   | 'tts_play'
   | 'task_center_open'
   | 'bug_report_submit'
+  // MyAgents Space
+  | 'space_open'
+  | 'space_auth_start'
+  | 'space_auth_complete'
+  | 'space_switch'
+  | 'space_issue_mutation'
+  | 'space_goal_mutation'
+  | 'space_skill_mutation'
+  | 'space_registered_agent_mutation'
+  | 'space_member_mutation'
+  | 'space_settings_mutation'
   // 系统事件
   | 'update_check'
   | 'update_install'
   // 心跳循环
   | 'cron_enable'
-  | 'cron_start'
   | 'cron_stop'
   | 'cron_recover'
   | 'launcher_cron_stage'

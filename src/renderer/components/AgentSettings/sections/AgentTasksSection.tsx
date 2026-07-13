@@ -2,13 +2,14 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { AgentConfig } from '../../../../shared/types/agent';
-import { getWorkspaceCronTasks, deleteCronTask, startCronTask, stopCronTask, startCronScheduler } from '@/api/cronTaskClient';
+import { getWorkspaceCronTasks, deleteCronTask, startCronTask, stopCronTask } from '@/api/cronTaskClient';
 import type { CronTask } from '@/types/cronTask';
 import { useToast } from '@/components/Toast';
 import CronTaskDetailPanel from '@/components/CronTaskDetailPanel';
 import { currentSupportedLocale, formatPastRelativeTime } from '@/i18n/format';
 import { formatCronIntervalLabel, formatCronStatusText } from '@/utils/cronTaskI18n';
 import { humanizeCron } from '@/utils/taskCenterUtils';
+import { isManagedScheduledJob } from '../../../../shared/managedScheduledJob';
 import type { SupportedLocale } from '../../../../shared/i18n';
 import type { TFunction } from 'i18next';
 
@@ -94,7 +95,6 @@ export default function AgentTasksSection({ agent }: AgentTasksSectionProps) {
   const handleResume = useCallback(async (taskId: string) => {
     try {
       await startCronTask(taskId);
-      await startCronScheduler(taskId);
       if (!isMountedRef.current) return;
       setSelectedTask(null);
       toastRef.current.success(t('agentSettings.tasks.resumed'));
@@ -133,7 +133,7 @@ export default function AgentTasksSection({ agent }: AgentTasksSectionProps) {
   // Only show active (running) tasks, sorted by date descending (newest first)
   const activeTasks = useMemo(() =>
     tasks
-      .filter(t => t.status === 'running' && !t.managedKind)
+      .filter(t => t.status === 'running' && !isManagedScheduledJob(t))
       .sort((a, b) => {
         const dateA = new Date(a.updatedAt ?? a.createdAt).getTime();
         const dateB = new Date(b.updatedAt ?? b.createdAt).getTime();

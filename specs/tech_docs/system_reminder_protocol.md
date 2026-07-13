@@ -47,8 +47,11 @@
 4. `system-reminder` 内部 payload 会进入模型上下文；在有 `visibleText` 的标准
    mixed message 中，用户气泡和 Session 搜索索引都只使用 `visibleText`。
 5. 同一条消息只应有一个 leading `system-reminder` envelope；解析器只消费第一段。
-6. 如果希望用户气泡隐藏 payload，必须提供 visible tail，或为该 `kind` 补专门的
-   纯隐藏展示语义。不要假设所有纯 reminder 都会自动隐藏。
+6. 如果没有 `visibleText` 且没有用户附件，前端应把整条 user bubble 视为纯隐藏
+   reminder，不渲染气泡正文。Goal 自动续跑、objective update 等“只给模型看”的
+   注入依赖这个语义。
+7. 如果没有 `visibleText` 但带附件，保留附件气泡与 badge，避免误吞真实用户可见
+   附件。
 
 Cron 结果投送到 IM session 的推荐结构：
 
@@ -94,11 +97,9 @@ instruction、cron output 都只给模型看。
 - 如果有 leading `<system-reminder>`，先解析 `kind` 和 `visibleText`。
 - `kind` 命中 `systemTagLabel()` 时，在用户气泡上显示对应 badge。
 - 当存在 `visibleText` 时，气泡正文只展示 `visibleText`。
-- `FLOATING_BALL_CONTEXT` / `myagents-space-issue` 即使没有 `visibleText`，也会隐藏
-  payload，避免把入口上下文直接展示给用户。
-- 其他没有 `visibleText` 的纯 reminder 会走 raw fallback：前端剥掉若干协议 tag
-  后仍可能展示 body。新增场景若不想展示 body，不要使用无 visible tail 的纯
-  reminder，除非同时修改并测试前端展示逻辑。
+- 当不存在 `visibleText` 且没有附件时，整条 user bubble 不渲染；hidden payload
+  不得走 raw fallback 泄漏到 UI。
+- 当不存在 `visibleText` 但有附件时，保留附件气泡和 badge，hidden payload 仍不展示。
 - 未被 `systemTagLabel()` 识别的 `kind` 不会自动有 badge；新增 badge tag 必须显式
   更新前端映射和测试。
 
@@ -110,6 +111,8 @@ instruction、cron output 都只给模型看。
 | `CRON_TASK` | Cron task / 定时任务 | Cron task 执行 prompt |
 | `FLOATING_BALL_CONTEXT` | Floating context / 浮球上下文 | 浮球消息上下文注入 |
 | `myagents-space-issue` | Space issue | Space IssueDelivery |
+| `GOAL_CONTINUATION` | 目标模式 | Goal 自动续跑 / Goal 第一轮启动 |
+| `GOAL_CONTEXT` | 目标模式 | Goal 运行中用户普通 query 的 hidden context |
 
 `MEMORY_UPDATE` 当前是内部纯隐藏场景，不属于有 badge 的可复用展示协议。若要让它
 或新 tag 出现在用户气泡上，先补 `systemTagLabel()`、文案资源和渲染测试。
@@ -120,16 +123,21 @@ instruction、cron output 都只给模型看。
 
 | 入口 | Builder / 位置 | 结构 |
 |------|----------------|------|
-| Cron task 执行 | `src/server/utils/cron-reminder.ts::buildCronTaskReminder` | `<system-reminder><CRON_TASK>...</CRON_TASK></system-reminder>` + 原 task prompt |
+| Scheduled Task 执行 | `src/server/utils/cron-reminder.ts::buildCronTaskReminder` | `<system-reminder><CRON_TASK>...</CRON_TASK></system-reminder>` + 原 task prompt；tag/wire name 为历史兼容 |
+| Goal 第一轮启动 | `src/shared/systemReminder.ts::buildGoalContinuationReminder`，调用方 `src/server/session-engine/goal-orchestrator.ts::goalContext` | `<system-reminder><GOAL_CONTINUATION>...</GOAL_CONTINUATION></system-reminder>` + 原始 Goal query visible tail；用户气泡显示原文与 Goal badge |
+| Goal 自动续跑 | 同一 builder，调用方 `/goal/execute-sync` | `<system-reminder><GOAL_CONTINUATION>...</GOAL_CONTINUATION></system-reminder>`，第二轮起纯隐藏 |
+| Goal 普通 query context | `src/shared/systemReminder.ts::buildGoalContextReminder`，调用方 Goal-aware chat enqueue 路径 | `<system-reminder><GOAL_CONTEXT>...</GOAL_CONTEXT></system-reminder>` + 用户 visible query |
 | 浮球消息 | `src/shared/systemReminder.ts::buildFloatingBallContextReminder`，调用方 `src/renderer/floating-ball/useFloatingSession.ts` | `<system-reminder><FLOATING_BALL_CONTEXT>...</FLOATING_BALL_CONTEXT></system-reminder>` + 用户文本 |
-| Space IssueDelivery | `src-tauri/src/space_cloud.rs::build_space_issue_delivery_message_for_locale` | `<system-reminder><myagents-space-issue>...</myagents-space-issue></system-reminder>` + 本地化可见提示 |
+| Space IssueDelivery | `src-tauri/src/space_cloud.rs::build_space_issue_delivery_message_for_locale` | `<system-reminder><myagents-space-issue><myagents-space-event><issue-instruction><cloud-issue-instruction>…</cloud-issue-instruction><local-execution-instruction>…</local-execution-instruction></issue-instruction>…</myagents-space-event></myagents-space-issue></system-reminder>` + 本地化可见提示 |
 | Cron 结果投送 IM session | `src/server/utils/cron-event-relay.ts::buildCronEventRelayMessage` | `<system-reminder><HEARTBEAT>...</HEARTBEAT></system-reminder>` + `[System]收到来自系统投送的信息` |
 
 相关但不是完整复用模板的入口：
 
+Space 的双 instruction 是该业务域内部的 trust boundary，不改变通用 reminder wire protocol：Cloud 只固化 assignee/delivery/状态等业务意图，Desktop 只描述当前 CLI/workspace/Task 执行方法；trigger 与 Issue 用户文本属于 facts，必须 XML escape，不能进入 instruction。Renderer 仍只消费外层 `myagents-space-issue` badge 与 reminder 后的 visible tail。
+
 - `src/server/index.ts` 普通 heartbeat：纯
   `<system-reminder><HEARTBEAT>...</HEARTBEAT></system-reminder>`，没有 visible tail；
-  如果进入可见 transcript，当前 `Message` raw fallback 可能展示 tag-stripped body。
+  如果进入可见 transcript，按纯隐藏 reminder 处理，不展示用户气泡正文。
 - `src/server/index.ts` memory update：纯
   `<system-reminder><MEMORY_UPDATE>...</MEMORY_UPDATE></system-reminder>`，内部维护用途；
   不要把它当成可复用用户气泡模板。

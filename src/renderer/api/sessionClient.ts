@@ -4,8 +4,7 @@
 
 import { apiFetch, apiGetJson, apiPostJson } from './apiFetch';
 import {
-    deactivateSession,
-    hasSessionSidecarOrThrow,
+    deleteSessionIfUnowned,
     isTauri,
 } from './tauriClient';
 import type { ContextUsage } from '../../shared/types/context-usage';
@@ -14,6 +13,10 @@ import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecuti
 import type { RuntimeSource } from '../../shared/types/runtime';
 import type { OfficialToolId } from '../../shared/official-tools';
 import type { SessionOrigin } from '../../shared/session-origin';
+import {
+    isSystemMaintenanceSession,
+    type SystemMaintenanceSessionKind,
+} from '../../shared/managedScheduledJob';
 
 export interface SessionStats {
     messageCount: number;
@@ -50,6 +53,8 @@ export interface SessionMetadata {
     stats?: SessionStats;
     /** Associated cron task ID (if this session is used by a scheduled task) */
     cronTaskId?: string;
+    /** Product-owned hidden maintenance marker. Ordinary automation sessions leave this unset. */
+    systemMaintenanceKind?: SystemMaintenanceSessionKind;
     /**
      * Legacy channel/source metadata. Kept for compatibility with old sessions
      * and IM channel identifiers; use `origin` for product/statistics origin.
@@ -148,7 +153,9 @@ export interface SessionDetailedStats {
 }
 
 function sortSessionsByLastActive(data: SessionMetadata[]): SessionMetadata[] {
-    return [...data].sort((a, b) => new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime());
+    return [...data]
+        .filter((session) => !isSystemMaintenanceSession(session))
+        .sort((a, b) => new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime());
 }
 
 /**
@@ -241,20 +248,11 @@ export async function getSessionDetails(sessionId: string): Promise<SessionData 
 export async function deleteSession(sessionId: string): Promise<boolean> {
     try {
         if (isTauri()) {
-            if (await hasSessionSidecarOrThrow(sessionId)) {
-                console.warn(
-                    `[sessionClient] Refusing to delete live session ${sessionId}; caller must move/release owners first.`,
-                );
-                return false;
-            }
+            return await deleteSessionIfUnowned(sessionId);
         }
 
         const response = await apiFetch(`/sessions/${sessionId}`, { method: 'DELETE' });
         if (!response.ok) return false;
-
-        if (isTauri()) {
-            await deactivateSession(sessionId);
-        }
         return true;
     } catch {
         return false;

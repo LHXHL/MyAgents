@@ -8,7 +8,7 @@ describe('buildCronTaskReminder', () => {
       taskId: 'cron_123',
       prompt: 'Goal: polish the wiki',
       aiCanExit: true,
-      scheduleKind: 'loop',
+      scheduleKind: 'cron',
       runMode: 'single_session',
       executionNumber: 2,
       intervalMinutes: 30,
@@ -21,7 +21,7 @@ describe('buildCronTaskReminder', () => {
       'The user-visible text after this reminder is the task prompt for this execution.',
       '',
       'cronTaskId: cron_123',
-      'scheduleKind: loop',
+      'scheduleKind: cron',
       'runMode: single_session',
       'executionNumber: 2',
       'intervalMinutes: 30',
@@ -47,4 +47,5 @@ describe('buildCronTaskReminder', () => {
     expect(wrapped).toContain('allowExit: false');
     expect(wrapped).not.toContain('myagents cron exit');
   });
+
 });

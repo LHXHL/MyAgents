@@ -14,7 +14,7 @@ import { getScriptDir, getBundledNodeDir, getSystemNodeDirs, getBundledRuntimePa
 import { getCrossPlatformEnv } from './utils/platform';
 import { ensureDirSync } from './utils/fs-utils';
 import { getMyAgentsNpmGlobalBinDir, getMyAgentsNpmGlobalPrefix, scrubMyAgentsNpmPrefixEnv } from './utils/npm-prefix-env';
-import { applyContextWindowSuffix, lookupModelContextLength, lookupProviderModelContextLength, modelSupportsModality } from './utils/model-capabilities';
+import { applyProviderContextWindowSuffix, lookupProviderModelContextLength, modelSupportsModality } from './utils/model-capabilities';
 import { modelAliasEnvChangesForModel, resolveSessionModelAliases } from './utils/model-aliases';
 import { resolveEffectiveResumeAt } from './utils/rewind-anchor';
 import { buildForkUuidRemap, remapStoredSdkUuids } from './utils/fork-remap';
@@ -26,6 +26,13 @@ import {
 import { shouldBlockToolInPlanMode, planModeDenyMessage, isPlanModeInEffect, PLAN_MODE_READONLY_TOOLS, PLAN_MODE_HOST_INTERACTION_TOOLS, applyPermissionModeSelection, computePlanExitState, computeRestoredPlanState } from './utils/plan-mode-gate';
 import { planRetraction } from './utils/message-retraction';
 import type { TransientProviderTextRetryDecision } from './session-core/turn-result-policy';
+import {
+  buildResumeAnchorReplayItem,
+  extractSdkMissingResumeMessageUuid,
+  isSdkMissingResumeMessageError,
+  shouldSuppressRecoveredResumeAnchorError,
+  type InvalidResumeAnchorKind,
+} from './session-core/resume-error-recovery';
 import { diagnoseSdkSubprocessFailure } from './utils/sdk-subprocess-diagnostics';
 import { InactivityWatchdog } from './utils/inactivity-watchdog';
 import {
@@ -54,9 +61,10 @@ import {
   applyProviderProxyPolicyToEnv,
   getProviderProxyScopeKey,
   initSocksBridgeFromCurrentEnv,
-  PROXY_NO_PROXY_VAL,
   setProcessProxyConfig,
 } from './proxy-state';
+import { buildMcpSubprocessEnv } from './session-core/mcp-env-policy';
+import { resolveManagedOAuthCredential, type ManagedOAuthPurpose } from './utils/management-api-client';
 // Phase E (PRD 0.2.7): the sidecar file watcher (`file-watcher.ts` →
 // SSE `workspace:files-changed`) is removed. The renderer subscribes to
 // the Rust workspace_files watcher (Tauri event
@@ -71,6 +79,7 @@ import {
 } from '../shared/toolDisplay/filePatch';
 import { parsePartialJson } from '../shared/parsePartialJson';
 import { deriveSessionTitle } from '../shared/sessionTitle';
+import { createLiveUserMessageReplay } from '../shared/chatMessageReplay';
 import { isPendingSessionId } from '../shared/constants';
 import { workspacePathsEqual } from '../shared/workspacePath';
 import { normalizeReasoningEffort, isSdkEffortLevel } from '../shared/reasoningEffort';
@@ -97,7 +106,7 @@ import {
   type SessionMaterializationScenario,
 } from './utils/session-materialization';
 import { isManagedCodexProviderReady } from './utils/managed-codex-readiness';
-import { findAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig } from './utils/admin-config';
+import { canonicalizeManagedProviderEnv, findAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig } from './utils/admin-config';
 import type { AgentConfig } from '../shared/types/agent';
 import { broadcast } from './sse';
 import {
@@ -121,7 +130,17 @@ import {
   setLazySessionMaterializationAllowed,
   setPendingDesktopMaterialization,
 } from './builtin-session/materialization';
-import { decideQueueAdmission, findQueueLocation, resolveChatQueueResponseMode, shouldClearAdmissionTicketOnAbort, shouldStartTurnBoundaryItem, type QueueAdmissionAction } from './session-core/turn-queue';
+import {
+  decideQueueAdmission,
+  findQueueLocation,
+  resolveChatQueueResponseMode,
+  shouldClearAdmissionTicketOnAbort,
+  shouldStartTurnBoundaryItem,
+  type QueueAdmissionAction,
+  type TurnIdentity,
+  type TurnOwner,
+  type TurnTerminalObserver,
+} from './session-core/turn-queue';
 import { getMcpAuthorityForScenario, mcpConfigFingerprint } from './session-core/mcp-sync-policy';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
 import type { ImagePayload, ResolvedImagePayload } from './runtimes/types';
@@ -143,6 +162,7 @@ import { imEventBus, type ImEventType } from './utils/im-event-bus';
 import { imRequestRegistry } from './utils/im-request-registry';
 import { mirrorIfChannelBound, type MirrorImage } from './utils/im-mirror';
 import { normalizeClaudeTranscriptCleanupPeriodDays, SUBSCRIPTION_PROVIDER_ID, type ProxySettings } from '../shared/config-types';
+import { stripLeadingSystemReminder } from '../shared/systemReminder';
 import { createConcreteProviderRoute, isConcreteProviderRoute } from '../shared/providerRoute';
 import type {
   ContentBlock,
@@ -180,6 +200,10 @@ import {
   waitForMessage as lifecycleWaitForMessage,
 } from './builtin-session/lifecycle';
 import {
+  beginPromotedItem,
+  cancelTurnAdmissionTicket,
+  cancelPromotedItem,
+  clearPromotedItem,
   clearInFlightSlot as queueClearInFlightSlot,
   clearPendingMidTurn,
   dequeueMessage,
@@ -188,11 +212,15 @@ import {
   getCommittingTurnAdmissionQueueId,
   getInFlightMetadata,
   getInFlightQueueId,
+  isPromotedItemCanceled,
   getMessageQueue,
   getPendingMidTurnQueue,
+  getPromotedTurnIdentity,
   getQueueStatus as queueGetQueueStatus,
   getTurnAdmissionTicket,
+  getTurnAdmissionIdentity,
   getTurnBoundaryQueue,
+  hasQueuedTurnByOwner as queueHasQueuedTurnByOwner,
   hasQueuedOrInFlightWork as queueHasQueuedOrInFlightWork,
   moveQueuedItemToFront,
   pushMessage,
@@ -210,25 +238,24 @@ import {
   setForceTurnBoundaryQueueId,
   setInFlightQueueItem,
   setInterruptingInFlightQueueId,
-  setPromotedItemInFlight,
   setTurnAdmissionTicket,
   shiftPendingMidTurn,
   spliceTurnBoundary,
   unshiftMessage,
 } from './builtin-session/queue';
 import {
+  accumulateCurrentTurnUsage,
   appendCurrentTurnTextBlock,
-  clearInjectedTurnOutcomes,
   clearCurrentTurnTextBlocks,
   clearPendingRequests as turnClearPendingRequests,
-  consumeInjectedTurnOutcome as turnConsumeInjectedTurnOutcome,
+  getCurrentTurnIdentity as getBuiltinCurrentTurnIdentity,
   getCurrentTurnSourceItem,
   getCurrentTurnInboxMeta,
-  discardInjectedTurnOutcomeWithOptions as turnDiscardInjectedTurnOutcome,
   getPendingRequestIds,
   incrementCurrentTurnToolCount,
   markAssistantMessageError,
   markCurrentTurnHasOutput,
+  notifyQueuedTurnStopped,
   popPendingRequest as turnPopPendingRequest,
   pushPendingRequest as turnPushPendingRequest,
   removePendingRequest as turnRemovePendingRequest,
@@ -240,7 +267,6 @@ import {
   setCurrentTurnAnalyticsSource,
   setCurrentTurnCompactResult,
   setCurrentTurnInboxMeta,
-  setCurrentTurnInjectedTurnId,
   setCurrentTurnImTerminalEmitted,
   setCurrentTurnProviderAnalytics,
   setCurrentTurnSourceItem,
@@ -251,6 +277,7 @@ import {
   setSubstantiveActivity,
   terminalCleanup,
   turnState,
+  waitForCurrentTurnTerminalObserver,
 } from './builtin-session/turn';
 import {
   applyAgentDefinitionsUpdate as configApplyAgentDefinitionsUpdate,
@@ -311,7 +338,7 @@ import {
 import { createBuiltinTurnLifecycle, type BuiltinSdkResultMessage } from './builtin-session/turn-lifecycle';
 import type {
   BuiltinRestartReason as RestartReason,
-  BuiltinInjectedTurnOutcome,
+  DeferredUserSurface,
   InFlightMetadata,
   MessageQueueItem,
   QueueDeliveryMode,
@@ -474,6 +501,22 @@ export function syncProjectUserConfig(
   // first, SDK rescan second. No-ops when no SDK session is alive (session
   // startup path) or when the synced dir isn't this session's workspace.
   reloadSessionSkillsAfterSync(projectDir);
+}
+
+/**
+ * Reload the live builtin SDK skill registry and prove that a product-owned
+ * workflow contract is actually available to this Session. If no initialized
+ * SDK query exists yet, its next subprocess start will scan the already-
+ * verified project link before the first turn.
+ */
+export async function requireCurrentBuiltinSkill(skillName: string): Promise<void> {
+  const query = lifecycleState.query;
+  if (!query || !lifecycleState.sdkControlReady) return;
+
+  const refreshed = await query.reloadSkills();
+  if (!refreshed.skills.some(skill => skill.name === skillName)) {
+    throw new Error(`builtin Runtime did not load required system skill ${skillName}`);
+  }
 }
 
 /**
@@ -827,15 +870,55 @@ function fireDesktopUserMirror(content: string, images: MirrorImage[] | undefine
   // Only fire if there's a chance an IM channel is bound. Rust silently
   // no-ops if not, but skipping the round-trip when content is trivially
   // empty avoids needless network chatter.
-  if (!content && (!images || images.length === 0)) return;
+  let visibleContent = content;
+  // Hidden reminders may be stacked (for example Goal context wrapping a
+  // floating-ball reminder). Never leak those control payloads into a bound
+  // IM channel; peel every leading envelope and mirror only the visible tail.
+  for (let i = 0; i < 8; i += 1) {
+    const stripped = stripLeadingSystemReminder(visibleContent);
+    if (stripped === visibleContent) break;
+    visibleContent = stripped;
+  }
+  if (!visibleContent && (!images || images.length === 0)) return;
   currentTurnMirrorEnabled = true;
   currentTurnMirrorSessionId = sessionId;
   void mirrorIfChannelBound({
     sessionId,
     role: 'user',
-    text: content,
+    text: visibleContent,
     images,
   });
+}
+
+async function surfaceBuiltinUserMessage(surface: DeferredUserSurface): Promise<void> {
+  appendMessage(surface.message);
+  if (surface.event === 'message-replay') {
+    broadcast('chat:message-replay', createLiveUserMessageReplay(sessionId, surface.message));
+  } else {
+    broadcast('queue:started', {
+      queueId: surface.queueId,
+      sessionId,
+      ...(surface.midTurnBreak ? { midTurnBreak: true } : {}),
+      userMessage: {
+        id: surface.message.id,
+        role: surface.message.role,
+        content: surface.message.content,
+        timestamp: surface.message.timestamp,
+        attachments: surface.message.attachments,
+      },
+    });
+  }
+
+  const messageText = typeof surface.message.content === 'string' ? surface.message.content : '';
+  await persistMessagesToStorageAndCommitPreparedFirstUserTurn(
+    messageText,
+    surface.sessionBirthOrigin,
+  );
+  if (surface.message.metadata?.source === 'desktop') {
+    fireDesktopUserMirror(messageText, surface.mirrorImages);
+  } else {
+    clearMirrorState();
+  }
 }
 
 type SurfaceInFlightOptions = {
@@ -885,6 +968,7 @@ async function surfaceInFlightQueueItem(
   console.log(`[agent] In-flight queue item ${queueId} surfaced via queue:started (${options.reason})`);
   broadcast('queue:started', {
     queueId,
+    sessionId,
     ...(options.midTurnBreak ? { midTurnBreak: true } : {}),
     userMessage: {
       id: userMessage.id,
@@ -1279,24 +1363,65 @@ let activeSessionBridgeToken: string | null = null;
  * active session, derived live from `configState.currentProviderEnv` + `configState.currentModel`.
  * Called per-request by the bridge registry resolver — keep it cheap.
  */
-function resolveActiveSessionUpstreamConfig(): UpstreamBridgeConfig {
+async function resolveActiveSessionUpstreamConfig(request?: Request): Promise<UpstreamBridgeConfig> {
   // configState.currentProviderEnv may be undefined (subscription / Anthropic-direct)
   // when the session bridge is registered; that's a registration error
   // upstream of us. Defensive: empty-string baseUrl + no model → bridge
   // handler will fail the upstream call with a clear error.
-  const aliases = resolveSessionModelAliases(configState.currentProviderEnv?.modelAliases, configState.currentModel);
+  const activeProviderEnv = configState.currentProviderEnv
+    ? canonicalizeManagedProviderEnv(configState.currentProviderEnv)
+    : undefined;
+  const aliases = resolveSessionModelAliases(activeProviderEnv?.modelAliases, configState.currentModel);
+  const credentialSource = activeProviderEnv?.credentialSource;
+  const managedCredential = credentialSource
+    ? await resolveManagedOAuthCredential(
+        credentialSource.providerId,
+        { reason: 'request' },
+        request?.signal,
+      )
+    : undefined;
   return {
-    providerId: configState.currentProviderEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
-    baseUrl: configState.currentProviderEnv?.baseUrl ?? '',
-    apiKey: configState.currentProviderEnv?.apiKey ?? '',
+    providerId: activeProviderEnv?.providerId ?? SUBSCRIPTION_PROVIDER_ID,
+    baseUrl: activeProviderEnv?.baseUrl ?? '',
+    apiKey: managedCredential?.accessToken ?? activeProviderEnv?.apiKey ?? '',
+    credentialVersion: managedCredential?.credentialVersion,
+    recoverAuth: credentialSource
+      ? async (rejectedCredentialVersion) => {
+          const recovered = await resolveManagedOAuthCredential(
+            credentialSource.providerId,
+            { reason: 'auth_recovery', rejectedCredentialVersion },
+            request?.signal,
+          );
+          if (!recovered) throw new Error('Managed OAuth recovery returned no credential');
+          return { apiKey: recovered.accessToken, credentialVersion: recovered.credentialVersion };
+        }
+      : undefined,
+    rejectCredential: credentialSource
+      ? async (credentialVersion) => {
+          await resolveManagedOAuthCredential(
+            credentialSource.providerId,
+            { reason: 'reject', rejectedCredentialVersion: credentialVersion },
+            request?.signal,
+          );
+        }
+      : undefined,
+    reportOutcome: credentialSource
+      ? async (credentialVersion, httpStatus) => {
+          await resolveManagedOAuthCredential(
+            credentialSource.providerId,
+            { reason: 'report', rejectedCredentialVersion: credentialVersion, httpStatus },
+            request?.signal,
+          );
+        }
+      : undefined,
     // When aliases exist, don't set model as blanket override — sub-agents
     // need distinct models routed via modelMapping. Without aliases, force
     // ALL request models to configState.currentModel (the historical behavior).
     model: aliases ? undefined : (configState.currentModel || undefined),
     modelAliases: aliases,
-    maxOutputTokens: configState.currentProviderEnv?.maxOutputTokens,
-    maxOutputTokensParamName: configState.currentProviderEnv?.maxOutputTokensParamName,
-    upstreamFormat: configState.currentProviderEnv?.upstreamFormat,
+    maxOutputTokens: activeProviderEnv?.maxOutputTokens,
+    maxOutputTokensParamName: activeProviderEnv?.maxOutputTokensParamName,
+    upstreamFormat: activeProviderEnv?.upstreamFormat,
     // #324 — read live so a mid-session effort change applies to the very
     // next upstream request without any subprocess restart.
     reasoningEffort: configState.currentReasoningEffort,
@@ -1379,25 +1504,66 @@ export function startOneShotBridge(
   providerEnv: ProviderEnv,
   modelOverride: string | undefined,
   description: string,
+  managedPurpose: ManagedOAuthPurpose = { purpose: 'execution' },
 ): { token: string; release: () => void } {
   if (providerEnv.apiProtocol !== 'openai') {
     throw new Error('startOneShotBridge called with non-OpenAI provider — caller should not need a bridge');
   }
+  providerEnv = canonicalizeManagedProviderEnv(providerEnv);
   const token = randomUUID();
   const aliases = resolveSessionModelAliases(providerEnv.modelAliases, modelOverride);
-  const snapshot: UpstreamBridgeConfig = {
+  const snapshot: Omit<UpstreamBridgeConfig, 'apiKey' | 'credentialVersion' | 'recoverAuth' | 'rejectCredential' | 'reportOutcome'> = {
     providerId: providerEnv.providerId ?? '',
     baseUrl: providerEnv.baseUrl ?? '',
-    apiKey: providerEnv.apiKey ?? '',
     model: aliases ? undefined : (modelOverride || undefined),
     modelAliases: aliases,
     maxOutputTokens: providerEnv.maxOutputTokens,
     maxOutputTokensParamName: providerEnv.maxOutputTokensParamName,
     upstreamFormat: providerEnv.upstreamFormat,
   };
-  // Static resolver — one-shot config doesn't change over the call's
-  // lifetime, so the closure captures the snapshot directly.
-  registerBridgeInRegistry(token, () => snapshot, description);
+  // Static routing snapshot; managed bearer resolution remains request-scoped.
+  registerBridgeInRegistry(token, async (request) => {
+    const credentialSource = providerEnv.credentialSource;
+    if (!credentialSource) {
+      return { ...snapshot, apiKey: providerEnv.apiKey ?? '' };
+    }
+    const credential = await resolveManagedOAuthCredential(
+      credentialSource.providerId,
+      { reason: 'request' },
+      request?.signal,
+      managedPurpose,
+    );
+    if (!credential) throw new Error('Managed OAuth resolver returned no credential');
+    return {
+      ...snapshot,
+      apiKey: credential.accessToken,
+      credentialVersion: credential.credentialVersion,
+      recoverAuth: async (rejectedCredentialVersion) => {
+        const recovered = await resolveManagedOAuthCredential(
+          credentialSource.providerId,
+          { reason: 'auth_recovery', rejectedCredentialVersion },
+          request?.signal,
+          managedPurpose,
+        );
+        if (!recovered) throw new Error('Managed OAuth recovery returned no credential');
+        return { apiKey: recovered.accessToken, credentialVersion: recovered.credentialVersion };
+      },
+      rejectCredential: async (credentialVersion) => {
+        await resolveManagedOAuthCredential(
+          credentialSource.providerId,
+          { reason: 'reject', rejectedCredentialVersion: credentialVersion },
+          request?.signal,
+        );
+      },
+      reportOutcome: async (credentialVersion, httpStatus) => {
+        await resolveManagedOAuthCredential(
+          credentialSource.providerId,
+          { reason: 'report', rejectedCredentialVersion: credentialVersion, httpStatus },
+          request?.signal,
+        );
+      },
+    };
+  }, description);
   return {
     token,
     release: () => unregisterBridgeInRegistry(token),
@@ -1642,26 +1808,18 @@ function startNextTurnQueuedItem(
     attachments: item.attachments,
     metadata: item.source ? { source: item.source } : undefined,
   };
-  appendMessage(userMessage);
-  void persistMessagesToStorageAndCommitPreparedFirstUserTurn(item.messageText)
-    .catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
-
-  if (item.source === 'desktop') {
-    fireDesktopUserMirror(item.messageText, item.mirrorImages);
-  } else {
-    clearMirrorState();
-  }
-
-  broadcast('queue:started', {
+  const surface: DeferredUserSurface = {
+    event: 'queue-started',
     queueId: item.queueId,
-    userMessage: {
-      id: userMessage.id,
-      role: userMessage.role,
-      content: userMessage.content,
-      timestamp: userMessage.timestamp,
-      attachments: userMessage.attachments,
-    },
-  });
+    message: userMessage,
+    mirrorImages: item.mirrorImages,
+  };
+  if (item.sourceItem.beforeDispatch) {
+    item.sourceItem.deferredUserSurface = surface;
+  } else {
+    void surfaceBuiltinUserMessage(surface)
+      .catch(err => console.error('[agent] failed to surface turn-boundary user message:', err));
+  }
 
   console.log(`[agent] Starting turn-boundary queued message: queueId=${item.queueId} reason=${reason} remaining=${getTurnBoundaryQueue().length}`);
   setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
@@ -1751,7 +1909,8 @@ function maybeSurfaceInFlightAtAssistantTurnStart(reason: string): void {
 }
 
 /** 中止持久 session：唤醒所有被阻塞的 Promise */
-function abortPersistentSession(): void {
+function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {}): void {
+  const notifyPendingRequests = options.notifyPendingRequests ?? true;
   clearTransientProviderRetryTimer('abort');
   // Log warning if browser was used but storage state wasn't saved
   // (The system prompt instructs the AI to save, but this is the fallback detection)
@@ -1773,18 +1932,26 @@ function abortPersistentSession(): void {
   })) {
     releaseTurnAdmissionTicket();
   }
-  setPromotedItemInFlight(false);
+  const promotedItem = cancelPromotedItem();
+  if (promotedItem) {
+    void notifyQueuedTurnStopped(promotedItem, 'Session aborted before queue dispatch');
+  }
+  clearPromotedItem();
   // Subprocess is about to die — rescue pending items so the recovery session
   // re-delivers them instead of losing them with the dead stdin buffer.
   rescuePendingToQueue();
   // Pattern B/C/G: notify IM bus subscribers + tear down ALL pending registry
   // entries (whole-session abort affects every in-flight request, not just head).
-  // Emit an 'error' for each pending requestId so each subscriber's reply slot
-  // closes — emitImEvent only tags head, so iterate manually.
-  for (const reqId of getPendingRequestIds()) {
-    imEventBus.emit(reqId, 'error', '会话已中断，请重新发送');
-    imRequestRegistry.setStatus(reqId, 'failed');
-    imRequestRegistry.unregister(reqId);
+  // Emit an 'error' for each requestId so each subscriber's reply slot closes —
+  // emitImEvent only tags head, so iterate manually. Internal self-healing
+  // restarts may suppress this notification when the turn lifecycle will own
+  // terminal cleanup and no user-visible abort should be emitted.
+  if (notifyPendingRequests) {
+    for (const reqId of getPendingRequestIds()) {
+      imEventBus.emit(reqId, 'error', '会话已中断，请重新发送');
+      imRequestRegistry.setStatus(reqId, 'failed');
+      imRequestRegistry.unregister(reqId);
+    }
   }
   clearPendingRequests();
   // PRD 0.2.18 Session Inbox — if abort happens while an inbox-message turn is
@@ -1792,7 +1959,7 @@ function abortPersistentSession(): void {
   // wait forever. Fire-and-forget. Read + clear immediately to avoid the
   // recovery session inheriting this binding.
   const { inboxMeta: replyMeta, replyText: abortedReplyText } = terminalCleanup();
-  if (replyMeta) {
+  if (notifyPendingRequests && replyMeta) {
     const abortedSessionId = sessionId;
     void import('./inbox/reply-deliver').then(({ deliverInboxReply }) =>
       deliverInboxReply(abortedSessionId, replyMeta, {
@@ -1806,18 +1973,19 @@ function abortPersistentSession(): void {
       console.error('[inbox] abort-path reply pushback failed:', err),
     );
   }
-  setCurrentTurnInjectedTurnId(undefined);
-  void import('./inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
-    deliverSessionWatchEvents(sessionId, {
-      text: abortedReplyText,
-      error: {
-        code: 'session_aborted',
-        message: 'target session was aborted before the turn completed',
-      },
-    }),
-  ).catch((err) =>
-    console.error('[session-watch] abort-path watch push failed:', err),
-  );
+  if (notifyPendingRequests) {
+    void import('./inbox/watch-deliver').then(({ deliverSessionWatchEvents }) =>
+      deliverSessionWatchEvents(sessionId, {
+        text: abortedReplyText,
+        error: {
+          code: 'session_aborted',
+          message: 'target session was aborted before the turn completed',
+        },
+      }),
+    ).catch((err) =>
+      console.error('[session-watch] abort-path watch push failed:', err),
+    );
+  }
   // 唤醒被阻塞的 generator（waitForMessage）
   forceWakeGeneratorWithNull();
   // 强制 subprocess 产出消息/错误，解除 for-await 阻塞
@@ -1911,7 +2079,6 @@ const builtinToolTraceStarts = new Map<string, number>();
 // Accumulator for assistant text blocks within the current turn. Session send
 // only reads it when an inbox binding exists, while session watch reads it for
 // ordinary user/cron/IM turns too. Reset at turn start.
-export type { BuiltinInjectedTurnOutcome } from './builtin-session/types';
 
 // ─── Watchdog Auto Resume (watchdog-driven session resume) ────────────────
 //
@@ -1997,8 +2164,9 @@ async function broadcastBuiltinContextUsage(): Promise<void> {
   // `resetTurnUsage()` 可能把 `turnState.currentTurnUsage.model`/`sessionId` 改掉，给本轮的 broadcast/
   // 持久化盖错头。`turnState.latestMainAssistantUsage` 在函数入口同步读，已经天然是快照。
   const occupiedFromPerCall = resolveContextOccupancyTokens(turnState.latestMainAssistantUsage);
+  const currentProviderId = getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID;
   const providerScopedLookup = (model?: string | null) =>
-    lookupProviderModelContextLength(model, configState.currentProviderEnv?.providerId);
+    lookupProviderModelContextLength(model, currentProviderId);
   const snapshotModel = chooseBuiltinContextUsageModel({
     sdkResultModel: turnState.currentTurnUsage.model,
     configuredModel: configState.currentModel,
@@ -2311,7 +2479,7 @@ let cronDispatchQueue: Promise<unknown> = Promise.resolve();
  * to atomically execute a cron tick — session switch, MCP reconcile,
  * prompt enqueue, idle wait — without interleaving with another tick.
  */
-export async function withCronDispatchLock<T>(fn: () => Promise<T>): Promise<T> {
+export async function withScheduledTurnDispatchLock<T>(fn: () => Promise<T>): Promise<T> {
   const next = cronDispatchQueue.catch(() => undefined).then(() => fn());
   // Track the chain as `Promise<unknown>` so the queue type stays uniform
   // across heterogeneous T's; the typed result still flows back via `next`.
@@ -2326,7 +2494,7 @@ export async function withCronDispatchLock<T>(fn: () => Promise<T>): Promise<T> 
 
 /**
  * Apply an MCP set synchronously and ensure a fresh SDK session is live —
- * used inside `withCronDispatchLock` when the cron path needs to switch
+ * used inside `withScheduledTurnDispatchLock` when a scheduled path needs to switch
  * MCP for this task (or reconcile back to workspace defaults from a prior
  * task's override).
  *
@@ -2355,7 +2523,7 @@ export async function withCronDispatchLock<T>(fn: () => Promise<T>): Promise<T> 
  *   - When no session was running, leaves the stored config in place and
  *     lets the next `enqueueUserMessage` start a session as usual.
  *
- * Caller MUST hold `withCronDispatchLock` — this helper does not
+ * Caller MUST hold `withScheduledTurnDispatchLock` — this helper does not
  * serialise itself; concurrent calls would race on `lifecycleState.query`.
  */
 export async function applyMcpOverrideAndAwaitReady(servers: McpServerDefinition[]): Promise<void> {
@@ -2636,7 +2804,8 @@ let pendingSetModelPromise: Promise<void> | null = null;
 function dispatchSetModelToSdk(model: string): Promise<void> {
   if (!lifecycleState.query) return Promise.resolve();
   const session = lifecycleState.query;
-  const wrapped = applyContextWindowSuffix(model);
+  const providerId = getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID;
+  const wrapped = applyProviderContextWindowSuffix(model, providerId);
   const promise = session.setModel(wrapped).catch(err => {
     console.error('[agent] failed to apply model to running session:', err);
   });
@@ -2722,8 +2891,9 @@ export function setSessionModel(model: string, opts?: { imConfigSync?: boolean }
   // respawn. Schedule a deferred restart so the fresh env reflects the new
   // model's real window. Same rationale as the `provider` reason in
   // `setSessionProviderEnv` — env-baked knobs need a respawn.
-  const oldCtx = lookupModelContextLength(oldModel);
-  const newCtx = lookupModelContextLength(model);
+  const providerId = getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID;
+  const oldCtx = lookupProviderModelContextLength(oldModel, providerId);
+  const newCtx = lookupProviderModelContextLength(model, providerId);
   if (oldCtx !== newCtx) {
     if (lifecycleState.query) {
       console.log(`[agent] model window changed (${oldCtx ?? 'SDK-default'} → ${newCtx ?? 'SDK-default'}) → schedule deferred restart to reinject CLAUDE_CODE_AUTO_COMPACT_WINDOW`);
@@ -3330,38 +3500,10 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
       }
 
       // Build MCP config with proxy env inherited from parent Sidecar.
-      // MCP subprocesses (ddg-search, edge-tts, etc.) need outbound proxy to reach
-      // external APIs when the user has VPN/proxy configured. Previous approach stripped
-      // ALL proxy vars to protect Playwright's localhost WebSocket — but that broke every
-      // MCP that needs internet access under proxy.
-      //
-      // New strategy (mirrors Rust proxy_config::apply_to_subprocess):
-      // - Inherit parent's proxy vars (HTTP_PROXY, HTTPS_PROXY) so outbound works
-      // - ALWAYS inject NO_PROXY to protect localhost (Playwright ws, Chrome DevTools)
-      // - User-defined server.env has highest priority (can override proxy)
-      const mcpEnv: Record<string, string> = {};
-
-      // Inherit proxy env from parent sidecar (if set)
-      for (const proxyVar of [
-        'HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy',
-        'ALL_PROXY', 'all_proxy',
-      ]) {
-        const val = process.env[proxyVar];
-        if (val) mcpEnv[proxyVar] = val;
-      }
-      // ALWAYS inject NO_PROXY to protect localhost — prevents proxy from intercepting
-      // MCP localhost WebSocket connections (e.g., playwright-core ↔ Chrome DevTools)
-      mcpEnv.NO_PROXY = PROXY_NO_PROXY_VAL;
-      mcpEnv.no_proxy = PROXY_NO_PROXY_VAL;
-
-      // Copy user-defined env vars for this server (can override outbound proxy vars)
-      if (server.env && Object.keys(server.env).length > 0) {
-        Object.assign(mcpEnv, server.env);
-      }
-      // Re-enforce NO_PROXY after user env merge — user env must NOT defeat localhost protection.
-      // Outbound proxy (HTTP_PROXY) can be overridden by user, but NO_PROXY is non-negotiable.
-      mcpEnv.NO_PROXY = PROXY_NO_PROXY_VAL;
-      mcpEnv.no_proxy = PROXY_NO_PROXY_VAL;
+      // MCP subprocesses need outbound proxy inheritance, while localhost still
+      // needs NO_PROXY protection. Per-server env has final authority so users
+      // can work around downstream proxy parser bugs for a specific MCP.
+      const mcpEnv = buildMcpSubprocessEnv(process.env, server.env);
 
       // Playwright MCP: two user-selectable modes (configured in Settings UI):
       // - Isolated (--isolated): concurrent browser sessions, storage-state for login
@@ -5324,8 +5466,8 @@ export function buildClaudeSessionEnv(
   // and can timeout in restricted network environments (e.g. China).
   env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = '1';
   // Disable SDK built-in cron tools (CronCreate/CronDelete/CronList).
-  // MyAgents has its own persistent cron system (im-cron MCP tool → Rust CronTaskManager)
-  // that survives session restarts, supports IM delivery, and uses wall-clock scheduling.
+  // MyAgents has its own persistent scheduled Task system (im-cron compatibility
+  // tool → Rust TaskStore/TaskSchedulerController) with IM delivery and wall-clock scheduling.
   // The SDK's cron is session-scoped/in-memory, would conflict and confuse users.
   env.CLAUDE_CODE_DISABLE_CRON = '1';
   // Disable SDK auto-loading of claude.ai proxy MCP servers.
@@ -5454,10 +5596,10 @@ export function buildClaudeSessionEnv(
     // SDK /model picker (modelOptions.ts:85) and would surface the suffix to
     // users. SDK strips [1m] before the wire (normalizeModelStringForAPI),
     // so the upstream API never sees it.
-    const fableWrapped = applyContextWindowSuffix(aliases.fable);
-    const sonnetWrapped = applyContextWindowSuffix(aliases.sonnet);
-    const opusWrapped = applyContextWindowSuffix(aliases.opus);
-    const haikuWrapped = applyContextWindowSuffix(aliases.haiku);
+    const fableWrapped = applyProviderContextWindowSuffix(aliases.fable, effectiveProviderId);
+    const sonnetWrapped = applyProviderContextWindowSuffix(aliases.sonnet, effectiveProviderId);
+    const opusWrapped = applyProviderContextWindowSuffix(aliases.opus, effectiveProviderId);
+    const haikuWrapped = applyProviderContextWindowSuffix(aliases.haiku, effectiveProviderId);
     if (aliases.fable) {
       env.ANTHROPIC_DEFAULT_FABLE_MODEL = fableWrapped!;
       env.ANTHROPIC_DEFAULT_FABLE_MODEL_NAME = aliases.fable;
@@ -5487,8 +5629,9 @@ export function buildClaudeSessionEnv(
   // compaction. SDK exposes `CLAUDE_CODE_AUTO_COMPACT_WINDOW` env which caps
   // the window via `Math.min(contextWindow, envCap)` (autoCompact.ts:40-46).
   //
-  // We look the resolved model up in the flat custom+discovered+preset
-  // registry (see utils/model-capabilities.ts). The resolution order prefers
+  // We look the resolved model up in the active provider's model registry
+  // first, then fall back to the flat custom+discovered+preset registry
+  // (see utils/model-capabilities.ts). The resolution order prefers
   // `modelOverride` (one-shot callers that spawn against a different
   // provider/model) over `configState.currentModel` (active Tab session state) — see the
   // function JSDoc for the rationale.
@@ -5505,7 +5648,7 @@ export function buildClaudeSessionEnv(
   // case (primary model hits its own 128K ceiling) is what this fixes;
   // sub-agents on a smaller window would be further over-capped, not
   // under-capped.
-  const modelContextLength = lookupModelContextLength(resolvedModel);
+  const modelContextLength = lookupProviderModelContextLength(resolvedModel, effectiveProviderId);
   if (modelContextLength && modelContextLength > 0) {
     env.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(modelContextLength);
     console.log(`[env] CLAUDE_CODE_AUTO_COMPACT_WINDOW=${modelContextLength} (model=${resolvedModel ?? '(unknown)'})`);
@@ -5542,7 +5685,9 @@ export function buildClaudeSessionEnv(
     // SDK requests go to sidecar's /bridge/<token>/v1/messages route, which
     // translates to OpenAI format and forwards to the per-token upstream.
     env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${sidecarPort}/bridge/${bridgeToken}`;
-    env.ANTHROPIC_API_KEY = effectiveProviderEnv.apiKey ?? '';
+    env.ANTHROPIC_API_KEY = effectiveProviderEnv.credentialSource
+      ? 'myagents-managed-oauth'
+      : (effectiveProviderEnv.apiKey ?? '');
     delete env.ANTHROPIC_AUTH_TOKEN;
     // CRITICAL: Strip proxy env vars from subprocess environment.
     // The Claude Code CLI's MA6() unconditionally sets fetchOptions.proxy for the Anthropic
@@ -6327,6 +6472,7 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   setLastAgentError: (error) => { lastAgentError = error; },
   buildTurnProviderAnalytics,
   probeForkPersistenceIfReady,
+  recoverInvalidResumeAnchorError,
   handleTerminalRecovery,
   applyDeferredRestartIfNeeded,
 });
@@ -6359,6 +6505,61 @@ function probeForkPersistenceIfReady(resultMessage: BuiltinSdkResultMessage): vo
     .catch(e => {
       console.log(`[agent] forkFrom persistence probe inconclusive, keeping flag: ${(e as Error)?.message ?? e}`);
     });
+}
+
+function recoverInvalidResumeAnchorError(rawError: string): boolean {
+  if (!isSdkMissingResumeMessageError(rawError)) return false;
+
+  const rejectedUuid = extractSdkMissingResumeMessageUuid(rawError);
+  const recoveredAnchors: InvalidResumeAnchorKind[] = [];
+
+  if (pendingResumeSessionAt && (!rejectedUuid || pendingResumeSessionAt === rejectedUuid)) {
+    console.warn(`[agent] SDK result rejected rewind resumeSessionAt ${pendingResumeSessionAt} — clearing anchor`);
+    deleteCurrentSessionUuid(pendingResumeSessionAt);
+    pendingResumeSessionAt = undefined;
+    recoveredAnchors.push('rewind');
+  }
+
+  if (transcriptState.pendingReloadAnchor && (!rejectedUuid || transcriptState.pendingReloadAnchor === rejectedUuid)) {
+    console.warn(`[agent] SDK result rejected reloadAnchor ${transcriptState.pendingReloadAnchor} — clearing anchor`);
+    deleteCurrentSessionUuid(transcriptState.pendingReloadAnchor);
+    setPendingReloadAnchor(undefined);
+    recoveredAnchors.push('reload');
+  } else if (rejectedUuid && transcriptState.currentSessionUuids.has(rejectedUuid)) {
+    // Result-shaped SDK errors can arrive after system_init already consumed
+    // pendingReloadAnchor. The rejected UUID is still unsafe as a future anchor.
+    console.warn(`[agent] SDK result rejected known session uuid ${rejectedUuid} — evicting from resume anchor cache`);
+    deleteCurrentSessionUuid(rejectedUuid);
+    recoveredAnchors.push('reload');
+  }
+
+  const failedForkMeta = getSessionMetadata(sessionId);
+  if (failedForkMeta?.forkFrom?.messageUuid && (!rejectedUuid || failedForkMeta.forkFrom.messageUuid === rejectedUuid)) {
+    const rejectedForkUuid = failedForkMeta.forkFrom.messageUuid;
+    console.warn(`[agent] SDK result rejected fork anchor ${rejectedForkUuid} — clearing persisted fork anchor`);
+    delete failedForkMeta.forkFrom.messageUuid;
+    saveSessionMetadata(failedForkMeta).catch(e =>
+      console.warn('[agent] forkFrom.messageUuid clear failed after SDK result error:', e),
+    );
+    deleteCurrentSessionUuid(rejectedForkUuid);
+    recoveredAnchors.push('fork');
+  }
+
+  if (!shouldSuppressRecoveredResumeAnchorError({ errorMessage: rawError, recoveredAnchors })) {
+    return false;
+  }
+
+  const replayItem = buildResumeAnchorReplayItem(getCurrentTurnSourceItem());
+  abortPersistentSession({ notifyPendingRequests: false });
+  if (replayItem) {
+    unshiftMessage(replayItem);
+    console.log(`[agent] Requeued current turn ${replayItem.id} after SDK resumeSessionAt result recovery`);
+  } else {
+    console.warn('[agent] SDK resumeSessionAt result recovery had no current turn source to requeue');
+  }
+  schedulePreWarm();
+  console.log(`[agent] Recovering from SDK resumeSessionAt result error after clearing ${recoveredAnchors.join(',')} anchor(s)`);
+  return true;
 }
 
 function handleTerminalRecovery(reason: 'image' | 'stale' | undefined): void {
@@ -6716,15 +6917,14 @@ export function getLastBuiltinAssistantText(): string {
   return '';
 }
 
-export function consumeInjectedTurnOutcome(injectedTurnId: string): BuiltinInjectedTurnOutcome | undefined {
-  return turnConsumeInjectedTurnOutcome(injectedTurnId);
+export function getCurrentTurnIdentity(): TurnIdentity | null {
+  return getBuiltinCurrentTurnIdentity()
+    ?? getPromotedTurnIdentity()
+    ?? getTurnAdmissionIdentity();
 }
 
-export function discardInjectedTurnOutcome(
-  injectedTurnId: string,
-  options?: { retainForLateTerminal?: boolean },
-): void {
-  turnDiscardInjectedTurnOutcome(injectedTurnId, options);
+export function hasQueuedTurnByOwner(owner: TurnOwner): boolean {
+  return queueHasQueuedTurnByOwner(owner);
 }
 
 export function getSystemInitInfo(): SystemInitInfo | null {
@@ -6770,8 +6970,13 @@ function clearMessageState(): void {
   // abortPersistentSession) has already moved these into queueState.messageQueue and
   // drainQueueWithCancellation handled them — so this is a defensive cleanup
   // for paths that hit clearMessageState without going through abort first.
-  for (const pending of getPendingMidTurnQueue()) {
+  const pendingItems = [...getPendingMidTurnQueue()];
+  for (const pending of pendingItems) {
     pushInboxAbortReplyForQueuedItem(pending.sourceItem, 'message_dropped_on_clear');
+    pending.sourceItem.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+    void notifyQueuedTurnStopped(pending.sourceItem, 'Session state was cleared before queue dispatch');
+    pending.sourceItem.resolve();
+    broadcast('queue:cancelled', { queueId: pending.queueId });
   }
   clearPendingMidTurn();
   streamIndexToToolId.clear();
@@ -6781,7 +6986,6 @@ function clearMessageState(): void {
   imTextBlockIndices.clear();
 
   strippedToolResultIds.clear();
-  clearInjectedTurnOutcomes();
   setAssistantMessagePresent(false);
   clearCurrentSessionUuids();
   clearLiveSessionUuids();
@@ -6835,12 +7039,16 @@ function drainQueueWithCancellation(): void {
   for (const item of drained.messages) {
     pushInboxAbortReplyForQueuedItem(item, 'message_dropped_on_reset');
     releaseTurnAdmissionTicket(item.id);
+    item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+    void notifyQueuedTurnStopped(item, 'Session reset before queue dispatch');
     item.resolve();
     broadcast('queue:cancelled', { queueId: item.id });
   }
   for (const item of drained.turnBoundary) {
     if (item.sourceItem) {
       pushInboxAbortReplyForQueuedItem(item.sourceItem, 'message_dropped_on_reset');
+      item.sourceItem.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+      void notifyQueuedTurnStopped(item.sourceItem, 'Session reset before queue dispatch');
       item.sourceItem.resolve();
     }
     if (item.queueId === getForceTurnBoundaryQueueId()) {
@@ -7186,7 +7394,7 @@ export async function initializeAgent(
         await repairOwnedProviderRouteIfNeeded(initMeta, resolved.providerRoute);
       }
       const restoreOwnedBuiltinConfig = Boolean(initMeta?.configSnapshotAt) && !isExternalRuntime(getCurrentRuntimeType());
-      // Only self-resolve MCP for background authorities (IM/Cron/agent-channel)
+      // Only self-resolve MCP for background authorities (IM/Task/agent-channel)
       // with an initial prompt. Tab sessions must NOT self-resolve: the
       // frontend's /api/mcp/set is authoritative, and self-resolve produces
       // slightly different field structures (env/args) that trigger a fingerprint
@@ -7196,7 +7404,7 @@ export async function initializeAgent(
         console.log(`[agent] self-resolved ${resolved.mcpServers.length} MCP server(s): ${resolved.mcpServers.map((s: { id: string }) => s.id).join(', ')}`);
       }
       if (restoreOwnedBuiltinConfig) {
-        // Owned desktop/cron sessions carry a frozen snapshot. Restore must
+        // Owned desktop/Task sessions carry a frozen snapshot. Restore must
         // replace the previous session's in-memory config, not fill only empty
         // slots; otherwise a resumed session can inherit another session's
         // provider/model/effort until the renderer pushes config.
@@ -7541,7 +7749,7 @@ async function applySessionConfig(newModel?: string, newPermissionMode?: Permiss
 
 export type EnqueueResult = {
   queued: boolean;   // true if message was queued (not immediately processed)
-  queueId?: string;  // queue item ID, present when queued=true
+  queueId?: string;  // stable queue/turn ID when the message was accepted
   /**
    * (v0.2.12) When queued=true, indicates whether this item became the
    * in-flight one (yielded immediately to CLI subprocess) or stayed in
@@ -7553,6 +7761,7 @@ export type EnqueueResult = {
   isInFlight?: boolean;
   deliveryMode?: QueueDeliveryMode;
   error?: string;    // present when queue is full or other rejection
+  dispatchAcceptance?: Promise<{ accepted: boolean; error?: string }>;
 };
 
 async function enqueueWatchdogResumeReminderAtQueueFront(
@@ -7569,7 +7778,7 @@ async function enqueueWatchdogResumeReminderAtQueueFront(
     timestamp: new Date().toISOString(),
   };
   appendMessage(userMessage);
-  broadcast('chat:message-replay', { message: userMessage });
+  broadcast('chat:message-replay', createLiveUserMessageReplay(sessionId, userMessage));
   await persistMessagesToStorage();
 
   // Cross-review (#0.2.29) — a `switchToSession` can land inside the await
@@ -7774,9 +7983,13 @@ export async function enqueueUserMessage(
   analyticsOrigin?: SessionOrigin,
   options?: {
     fromDesktopChatSend?: boolean;
-    injectedTurnId?: string;
+    queueId?: string;
+    turnOwner?: TurnOwner;
+    onTerminal?: TurnTerminalObserver;
     allowLazySessionMaterialization?: boolean;
     sessionBirthOrigin?: SessionOrigin;
+    queueResponseModeOverride?: 'realtime' | 'turn';
+    beforeDispatch?: import('./session-core/turn-queue').DispatchGuard;
   },
 ): Promise<EnqueueResult> {
   // 等待进行中的 resetSession/switchToSession 完成，防止消息投递到已死的 generator
@@ -7807,9 +8020,15 @@ export async function enqueueUserMessage(
     throw new Error(`[agent] refusing first message for unindexed existing session ${sessionId}; session metadata disappeared before first user turn`);
   }
 
-  const queueId = randomUUID();
+  const queueId = options?.queueId ?? randomUUID();
+  let settleDispatchAcceptance: ((result: { accepted: boolean; error?: string }) => void) | undefined;
+  const dispatchAcceptance = options?.beforeDispatch
+    ? new Promise<{ accepted: boolean; error?: string }>((resolve) => {
+        settleDispatchAcceptance = resolve;
+      })
+    : undefined;
   const effectiveQueueSource = metadata?.source ?? currentScenario.type;
-  const queueResponseMode = resolveChatQueueResponseMode(
+  const queueResponseMode = options?.queueResponseModeOverride ?? resolveChatQueueResponseMode(
     loadAdminConfig().chatQueueResponseMode,
     options?.fromDesktopChatSend,
   );
@@ -7820,8 +8039,20 @@ export async function enqueueUserMessage(
     || providerRetryPending
     || hasQueuedOrInFlightWork()
     || queueState.promotedItemInFlight;
+  let admissionTicket: import('./builtin-session/types').TurnAdmissionTicket | null = null;
   if (queueResponseMode === 'turn' && !initialAdmissionBusy) {
-    setTurnAdmissionTicket({ queueId, requestId, createdAt: Date.now() });
+    admissionTicket = {
+      queueId,
+      requestId,
+      createdAt: Date.now(),
+      messageText: trimmed,
+      turnOwner: options?.turnOwner,
+      onTerminal: options?.onTerminal,
+      beforeDispatch: options?.beforeDispatch,
+      settleDispatchAcceptance,
+      canceled: false,
+    };
+    setTurnAdmissionTicket(admissionTicket);
     setCommittingTurnAdmissionQueueId(queueId);
   }
   let keepTurnAdmissionTicketUntilGenerator = false;
@@ -7872,6 +8103,9 @@ export async function enqueueUserMessage(
     reasoningEffort,
     'next-enqueue',
   );
+  if (admissionTicket?.canceled) {
+    return { queued: false, error: 'Queue item was cancelled before dispatch' };
+  }
   const holdForWatchdogRecovery = scheduledWatchdogAutoResumeSessions.has(sessionIdSnapshot)
     || getMessageQueue().some(item => item.messageText === WATCHDOG_RESUME_REMINDER);
 
@@ -7921,10 +8155,10 @@ export async function enqueueUserMessage(
   }
 
   // Provider env semantics (pit-of-success pattern — safe default for all callers):
-  //   undefined        → "no change, keep current provider" (IM/Cron/Heartbeat/internal callers)
+  //   undefined        → "no change, keep current provider" (IM/Task/Heartbeat/internal callers)
   //   'subscription'   → "switch to Anthropic subscription" (only from desktop)
   //   ProviderEnv obj  → "use this specific provider" (desktop or Rust with explicit provider)
-  // This prevents IM/Cron callers from accidentally triggering subscription switch
+  // This prevents IM/Task callers from accidentally triggering subscription switch
   // when they simply don't have provider info to forward (the original "Not logged in" bug).
   const effectiveProviderEnv: ProviderEnv | undefined = providerEnv === undefined
     ? configState.currentProviderEnv                                         // undefined → keep current (safe default)
@@ -8078,6 +8312,10 @@ export async function enqueueUserMessage(
     }
   }
 
+  if (admissionTicket?.canceled) {
+    return { queued: false, error: 'Queue item was cancelled before dispatch' };
+  }
+
   // Persist session to SessionStore on first message
   if (!hasInitialPrompt) {
     hasInitialPrompt = true;
@@ -8139,6 +8377,10 @@ export async function enqueueUserMessage(
     }
   }
 
+  if (admissionTicket?.canceled) {
+    return { queued: false, error: 'Queue item was cancelled before dispatch' };
+  }
+
   console.log(`[agent] enqueue user message len=${trimmed.length} images=${images?.length ?? 0} mode=${configState.currentPermissionMode}`);
 
   // Transition from pre-warm to active session.
@@ -8168,6 +8410,9 @@ export async function enqueueUserMessage(
     clearTimeout(lifecycleState.preWarmTimer);
     setPreWarmTimer(null);
   }
+  if (admissionTicket?.canceled) {
+    return { queued: false, error: 'Queue item was cancelled before dispatch' };
+  }
   // (issue #174 — refined per cross-bugfix 2026-05-10)
   //
   // 'starting' = SDK subprocess still booting → UI shows "AI 启动中（首次启动
@@ -8188,6 +8433,18 @@ export async function enqueueUserMessage(
   setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
 
   const MAX_QUEUE_SIZE = 10;
+  const takeAdmissionCallbacks = () => {
+    const callbacks = {
+      onTerminal: admissionTicket?.onTerminal ?? options?.onTerminal,
+      settleDispatchAcceptance: admissionTicket?.settleDispatchAcceptance
+        ?? settleDispatchAcceptance,
+    };
+    if (admissionTicket) {
+      admissionTicket.onTerminal = undefined;
+      admissionTicket.settleDispatchAcceptance = undefined;
+    }
+    return callbacks;
+  };
   if (isSessionBusy && !holdForWatchdogRecovery) {
     if (queuedWorkCount() >= MAX_QUEUE_SIZE) {
       return { queued: false, error: `Queue full (max ${MAX_QUEUE_SIZE})` };
@@ -8388,8 +8645,12 @@ export async function enqueueUserMessage(
         hasInFlight: getInFlightQueueId() !== null,
         hasScopedTurnBoundaryQueued: options?.fromDesktopChatSend === true
           && (getTurnBoundaryQueue().length > 0 || getTurnAdmissionTicket() !== null),
-      }));
+    }));
     const queueDeliveryMode: QueueDeliveryMode = admissionAction === 'turn-boundary' ? 'turn' : 'realtime';
+    if (admissionTicket?.canceled) {
+      return { queued: false, error: 'Queue item was cancelled before dispatch' };
+    }
+    const admissionCallbacks = takeAdmissionCallbacks();
     const queueItem: MessageQueueItem = {
       id: queueId,
       message: { role: 'user', content: contentBlocks },
@@ -8403,7 +8664,10 @@ export async function enqueueUserMessage(
       analyticsOrigin,
       providerAnalytics: turnProviderAnalytics,
       inboxMeta,
-      injectedTurnId: options?.injectedTurnId,
+      turnOwner: options?.turnOwner,
+      onTerminal: admissionCallbacks.onTerminal,
+      beforeDispatch: options?.beforeDispatch,
+      settleDispatchAcceptance: admissionCallbacks.settleDispatchAcceptance,
     };
 
     // (v0.2.12 mid-turn injection) Lockstep yield. Only one queued message
@@ -8418,7 +8682,8 @@ export async function enqueueUserMessage(
       const turnItem = reservedTurnBoundaryItem;
       if (turnItem && !getTurnBoundaryQueue().includes(turnItem)) {
         console.log(`[agent] Turn-boundary queue item ${queueId} was cancelled before preparation completed`);
-        return { queued: false };
+        settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled before dispatch' });
+        return { queued: false, error: 'Queue item was cancelled before dispatch' };
       }
       const readyTurnItem = turnItem ?? {
         queueId,
@@ -8495,16 +8760,21 @@ export async function enqueueUserMessage(
     // (v0.2.12) queueState.inFlightToCliId === queueId only when this enqueue took the
     // immediate-yield path. Frontend uses this to set the optimistic pill's
     // isInFlight flag from the very first paint, before the SSE round-trip.
-    return { queued: true, queueId, isInFlight: getInFlightQueueId() === queueId, deliveryMode: queueDeliveryMode };
+    return {
+      queued: true,
+      queueId,
+      isInFlight: getInFlightQueueId() === queueId,
+      deliveryMode: queueDeliveryMode,
+      dispatchAcceptance,
+    };
   }
 
-  // Direct send path: push user message to transcriptState.messages[] and broadcast immediately.
-  // NOTE (issue #173): this is the SOLE writer to transcriptState.messages[] for direct-send.
-  // The messageGenerator's `!item.wasQueued` branch intentionally does NOT
-  // push again — see the matching comment block there. Re-introducing a push
-  // anywhere downstream of this site duplicates the user bubble in the UI
-  // (different transcriptState.messageSequence id breaks frontend dedup) and writes two
-  // SessionStore entries.
+  // Direct send path. Guarded Goal turns hold every user history/UI side effect
+  // until the admission claim succeeds in the generator; ordinary messages keep
+  // the immediate bubble path.
+  // NOTE (issue #173): surfaceBuiltinUserMessage is the sole writer for this
+  // direct-send message. It runs here for ordinary turns or once after the
+  // generator accepts a guarded turn; never do both.
   const userMessage: MessageWire = {
     id: allocateMessageId(),
     role: 'user',
@@ -8513,23 +8783,20 @@ export async function enqueueUserMessage(
     attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
     metadata,
   };
-  appendMessage(userMessage);
-  broadcast('chat:message-replay', { message: userMessage });
-
-  // Persist transcriptState.messages to disk after adding user message
-  await persistMessagesToStorageAndCommitPreparedFirstUserTurn(trimmed, options?.sessionBirthOrigin);
-
-  // PRD 0.2.14 — desktop → IM mirror (direct-send path, single push site).
-  // Q1·C: mirror the full user text + PNG/JPG attachments. Rust silently
-  // no-ops if no channel binding exists for this session.
-  if (metadata?.source === 'desktop') {
-    fireDesktopUserMirror(trimmed, toMirrorImages(resolvedImages));
-  } else {
-    // New non-desktop turn — make sure stale mirror state from a prior
-    // desktop turn doesn't bleed into this AI response.
-    clearMirrorState();
+  const directUserSurface: DeferredUserSurface = {
+    event: 'message-replay',
+    message: userMessage,
+    sessionBirthOrigin: options?.sessionBirthOrigin,
+    mirrorImages: toMirrorImages(resolvedImages),
+  };
+  if (!options?.beforeDispatch) {
+    await surfaceBuiltinUserMessage(directUserSurface);
   }
 
+  if (admissionTicket?.canceled) {
+    return { queued: false, error: 'Queue item was cancelled before dispatch' };
+  }
+  const admissionCallbacks = takeAdmissionCallbacks();
   const queueItem: MessageQueueItem = {
     id: queueId,
     message: { role: 'user', content: contentBlocks },
@@ -8543,7 +8810,11 @@ export async function enqueueUserMessage(
     analyticsOrigin,
     providerAnalytics: turnProviderAnalytics,
     inboxMeta,
-    injectedTurnId: options?.injectedTurnId,
+    turnOwner: options?.turnOwner,
+    onTerminal: admissionCallbacks.onTerminal,
+    beforeDispatch: options?.beforeDispatch,
+    deferredUserSurface: options?.beforeDispatch ? directUserSurface : undefined,
+    settleDispatchAcceptance: admissionCallbacks.settleDispatchAcceptance,
   };
 
   if (!isSessionActive()) {
@@ -8567,7 +8838,7 @@ export async function enqueueUserMessage(
     wakeGenerator(queueItem);
   }
 
-  return { queued: false };
+  return { queued: false, queueId, dispatchAcceptance };
   } finally {
     if (reservedTurnBoundaryItem && !reservedTurnBoundaryItem.ready) {
       const reservationIdx = getTurnBoundaryQueue().indexOf(reservedTurnBoundaryItem);
@@ -8841,18 +9112,24 @@ export async function cancelImRequest(
 ): Promise<{ aborted: boolean; mode: 'running' | 'queued' | 'unknown' }> {
   const removed = removeQueuedItemByRequestId(requestId);
   if (removed.location === 'message' && removed.item) {
+    removed.item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+    await notifyQueuedTurnStopped(removed.item);
     removed.item.resolve();
     broadcast('queue:cancelled', { queueId: removed.item.id });
     console.log(`[agent] cancelImRequest requestId=${requestId} mode=queued`);
     return { aborted: true, mode: 'queued' };
   }
   if (removed.location === 'pending-mid-turn' && removed.pending) {
+    removed.pending.sourceItem.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+    await notifyQueuedTurnStopped(removed.pending.sourceItem);
     removed.pending.sourceItem.resolve();
     broadcast('queue:cancelled', { queueId: removed.pending.queueId });
     console.log(`[agent] cancelImRequest requestId=${requestId} mode=pending-mid-turn (never yielded to CLI)`);
     return { aborted: true, mode: 'queued' };
   }
   if (removed.location === 'turn-boundary' && removed.turnBoundary) {
+    removed.turnBoundary.sourceItem?.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+    if (removed.turnBoundary.sourceItem) await notifyQueuedTurnStopped(removed.turnBoundary.sourceItem);
     removed.turnBoundary.sourceItem?.resolve();
     if (removed.turnBoundary.queueId === getForceTurnBoundaryQueueId()) {
       setForceTurnBoundaryQueueId(null);
@@ -8874,6 +9151,8 @@ export async function cancelImRequest(
     const cancelResult = await cancelSdkAsyncMessage(queueId);
     const settlement = decideInFlightCancelSettlement(cancelResult);
     if (settlement.cancelled) {
+      const sourceItem = getCurrentTurnSourceItem();
+      if (sourceItem?.id === queueId) await notifyQueuedTurnStopped(sourceItem);
       if (settlement.removePendingRequest) removePendingRequest(requestId);
       if (settlement.clearSlot) clearInFlightSlot();
       if (settlement.broadcastCancelled) broadcast('queue:cancelled', { queueId });
@@ -8912,11 +9191,14 @@ export type QueueCancelResult =
  *     cancel_async_message; it succeeds only before SDK dequeues execution.
  */
 export async function cancelQueueItem(queueId: string): Promise<QueueCancelResult> {
+  const admission = cancelTurnAdmissionTicket(queueId);
   const removed = removeQueuedItemByQueueId(queueId);
 
   switch (removed.location) {
     case 'message': {
       const item = removed.item!;
+      item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+      await notifyQueuedTurnStopped(item);
       item.resolve();
       broadcast('queue:cancelled', { queueId });
       console.log(`[agent] Queue item ${queueId} cancelled from queueState.messageQueue (wasQueued=${item.wasQueued})`);
@@ -8924,6 +9206,8 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
     }
     case 'pending-mid-turn': {
       const pending = removed.pending!;
+      pending.sourceItem.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+      await notifyQueuedTurnStopped(pending.sourceItem);
       pending.sourceItem.resolve();
       broadcast('queue:cancelled', { queueId });
       console.log(`[agent] Queue item ${queueId} cancelled from queueState.pendingMidTurnQueue (never yielded to CLI)`);
@@ -8937,6 +9221,8 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
     }
     case 'turn-boundary': {
       const turnBoundary = removed.turnBoundary!;
+      turnBoundary.sourceItem?.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+      if (turnBoundary.sourceItem) await notifyQueuedTurnStopped(turnBoundary.sourceItem);
       turnBoundary.sourceItem?.resolve();
       if (turnBoundary.queueId === getForceTurnBoundaryQueueId()) {
         setForceTurnBoundaryQueueId(null);
@@ -8954,6 +9240,8 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
       const settlement = decideInFlightCancelSettlement(cancelResult);
       if (settlement.cancelled) {
         const cancelledText = meta?.messageText ?? '';
+        const sourceItem = getCurrentTurnSourceItem();
+        if (sourceItem?.id === queueId) await notifyQueuedTurnStopped(sourceItem);
         if (settlement.removePendingRequest) removePendingRequest(meta?.requestId);
         if (settlement.clearSlot) clearInFlightSlot();
         if (settlement.broadcastCancelled) broadcast('queue:cancelled', { queueId });
@@ -8970,8 +9258,51 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
     }
   }
 
+  if (admission) {
+    admission.settleDispatchAcceptance?.({
+      accepted: false,
+      error: 'Queue item was cancelled',
+    });
+    await notifyQueuedTurnStopped(admission);
+    broadcast('queue:cancelled', { queueId });
+    console.log(`[agent] Queue item ${queueId} cancelled during builtin turn admission`);
+    return { status: 'cancelled', cancelledText: admission.messageText };
+  }
+
+  const promotedItem = cancelPromotedItem(queueId);
+  if (promotedItem !== null) {
+    await notifyQueuedTurnStopped(promotedItem);
+    console.log(`[agent] Queue item ${queueId} cancellation requested during runtime promotion`);
+    return { status: 'cancelled', cancelledText: promotedItem.messageText };
+  }
+
   console.log(`[agent] Queue item ${queueId} not found — already consumed or never existed`);
   return { status: 'not_found' };
+}
+
+export async function cancelQueuedTurnsByOwner(owner: TurnOwner): Promise<number> {
+  const matches = (candidate: TurnOwner | undefined) =>
+    candidate?.kind === owner.kind && candidate.id === owner.id;
+  const queueIds = new Set<string>();
+  for (const item of getMessageQueue()) {
+    if (matches(item.turnOwner)) queueIds.add(item.id);
+  }
+  for (const item of getPendingMidTurnQueue()) {
+    if (matches(item.sourceItem.turnOwner)) queueIds.add(item.queueId);
+  }
+  for (const item of getTurnBoundaryQueue()) {
+    if (matches(item.sourceItem?.turnOwner)) queueIds.add(item.queueId);
+  }
+  const promoted = getPromotedTurnIdentity();
+  if (promoted && matches(promoted.owner)) queueIds.add(promoted.queueId);
+  const admission = getTurnAdmissionIdentity();
+  if (admission && matches(admission.owner)) queueIds.add(admission.queueId);
+
+  let canceled = 0;
+  for (const queueId of queueIds) {
+    if ((await cancelQueueItem(queueId)).status === 'cancelled') canceled += 1;
+  }
+  return canceled;
 }
 
 /**
@@ -9862,14 +10193,14 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       // via setPermissionMode('bypassPermissions'). Without this flag at query creation time,
       // the SDK silently ignores the mode switch and keeps calling canUseTool.
       allowDangerouslySkipPermissions: true,
-      // applyContextWindowSuffix appends [1m] when the registered contextLength
-      // exceeds the SDK 200K default (#335) — without it, SDK
+      // applyProviderContextWindowSuffix appends [1m] when the active provider's
+      // registered contextLength exceeds the SDK 200K default (#335) — without it, SDK
       // getContextWindowForModel() falls back to 200K for non-Anthropic models
       // and /context, auto-compact, attachment trimming all use the wrong
       // ceiling; CLAUDE_CODE_AUTO_COMPACT_WINDOW then pulls the effective
       // window back to the registry value. SDK strips the suffix back out
       // before the wire (normalizeModelStringForAPI in model.ts:616).
-      model: applyContextWindowSuffix(configState.currentModel),
+      model: applyProviderContextWindowSuffix(configState.currentModel, getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID),
       pathToClaudeCodeExecutable: resolveClaudeCodeCli(),
       env,
       stderr: (message: string) => {
@@ -9958,7 +10289,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           : []),
       ],
       // Sub-agents: inject custom agent definitions if configured
-      // Each sub-agent's `model` runs through applyContextWindowSuffix so a sub-agent
+      // Each sub-agent's `model` runs through applyProviderContextWindowSuffix so a sub-agent
       // pinned to a 1M model gets the [1m] tag independently of the main session's
       // model (the parent could be on a 200K model, the sub-agent on a 1M one,
       // or vice versa). The original configState.currentAgentDefinitions is left untouched
@@ -9968,7 +10299,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             agents: Object.fromEntries(
               Object.entries(configState.currentAgentDefinitions).map(([name, a]) => [
                 name,
-                a.model ? { ...a, model: applyContextWindowSuffix(a.model) } : a,
+                a.model ? { ...a, model: applyProviderContextWindowSuffix(a.model, getSessionProviderId() ?? SUBSCRIPTION_PROVIDER_ID) } : a,
               ])
             ),
           }
@@ -11554,7 +11885,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               timestamp: new Date().toISOString(),
             };
             appendMessage(localCommandMessage);
-            broadcast('chat:message-replay', { message: localCommandMessage });
+            broadcast('chat:message-replay', createLiveUserMessageReplay(sessionId, localCommandMessage));
             await persistMessagesToStorage();
           }
 
@@ -11653,8 +11984,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           broadcast('chat:message-sdk-uuid', { messageId: boundMessageId, sdkUuid: sdkMessage.uuid });
         }
         const assistantMessage = sdkMessage.message;
-        // Main turn token usage is extracted from result message (more reliable across providers)
-        // Here we extract usage only for subagent tool broadcasts (Task tool runtime stats)
+        // The result message remains the canonical turn total. Accumulate assistant
+        // frames as a best-available fallback for hard stop/error paths where no
+        // result arrives; include subagent frames because their usage is part of the turn.
         const rawUsage = (assistantMessage as {
           usage?: {
             input_tokens?: number;
@@ -11665,21 +11997,23 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             cache_creation_input_tokens?: number;
           };
         }).usage;
-        const subagentUsage = rawUsage ? {
-          input_tokens: rawUsage.input_tokens ?? rawUsage.prompt_tokens,
-          output_tokens: rawUsage.output_tokens ?? rawUsage.completion_tokens,
+        const assistantUsage = rawUsage ? {
+          inputTokens: rawUsage.input_tokens ?? rawUsage.prompt_tokens ?? 0,
+          outputTokens: rawUsage.output_tokens ?? rawUsage.completion_tokens ?? 0,
+          cacheReadTokens: rawUsage.cache_read_input_tokens ?? 0,
+          cacheCreationTokens: rawUsage.cache_creation_input_tokens ?? 0,
+        } : undefined;
+        if (assistantUsage) accumulateCurrentTurnUsage(assistantUsage);
+        const subagentUsage = assistantUsage ? {
+          input_tokens: assistantUsage.inputTokens,
+          output_tokens: assistantUsage.outputTokens,
         } : undefined;
 
         // PRD 0.2.32 — context 占用：记录最近一条**主轮**（非子 Agent）assistant message 的 usage。
         // 每次重发整段上下文，所以「最近一条的 input+cache」即「此刻窗口装了多少」。子 Agent
         // 消息（parent_tool_use_id 存在）有独立上下文，不能算进主会话占用。
-        if (!sdkMessage.parent_tool_use_id && rawUsage) {
-            setLatestMainAssistantUsage({
-              inputTokens: rawUsage.input_tokens ?? rawUsage.prompt_tokens ?? 0,
-              outputTokens: rawUsage.output_tokens ?? rawUsage.completion_tokens ?? 0,
-              cacheReadTokens: rawUsage.cache_read_input_tokens ?? 0,
-              cacheCreationTokens: rawUsage.cache_creation_input_tokens ?? 0,
-            });
+        if (!sdkMessage.parent_tool_use_id && assistantUsage) {
+          setLatestMainAssistantUsage(assistantUsage);
         }
 
         if (sdkMessage.parent_tool_use_id && assistantMessage.content) {
@@ -11846,6 +12180,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     const errorStack = error instanceof Error ? error.stack : String(error);
     console.error('[agent] session error:', errorMessage);
     console.error('[agent] session error stack:', errorStack);
+    const recoveredInvalidResumeAnchors: InvalidResumeAnchorKind[] = [];
 
     // "Session ID already in use" recovery: SDK session dir exists on disk but our
     // in-memory metadata was lost (fresh Bun process after crash/restart).
@@ -11875,7 +12210,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // effectiveResumeAt prefers rewindResumeAt ?? forkResumeAt (see line ~7776), so
     // when both are set the rewind UUID is the one actually sent to the SDK. Capture
     // that here so the fork branch below can avoid clearing an innocent fork anchor.
-    const rewindAnchorWasSent = errorMessage.includes('No message found with message.uuid')
+    const rewindAnchorWasSent = isSdkMissingResumeMessageError(errorMessage)
       && pendingResumeSessionAt !== undefined;
 
     // Rewind-mode "No message found" recovery (issue #189). Fires when the session
@@ -11888,7 +12223,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // is true) — neither anchor clears and every retry resends the same UUID (the #220
     // loop class, fresh-fork sub-case). Clearing an in-memory anchor is safe in any
     // registration state, so allow it whenever pendingResumeSessionAt is set.
-    if (errorMessage.includes('No message found with message.uuid')
+    if (isSdkMissingResumeMessageError(errorMessage)
       && (sessionRegistered || pendingResumeSessionAt !== undefined)) {
       const rejectedUuid = pendingResumeSessionAt;
       pendingResumeSessionAt = undefined;
@@ -11902,6 +12237,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       if (rejectedUuid) {
         console.warn(`[agent] resumeSessionAt UUID rejected by SDK — clearing rewind anchor, retry will resume with full history`);
         deleteCurrentSessionUuid(rejectedUuid);
+        recoveredInvalidResumeAnchors.push('rewind');
       }
       // Don't modify sessionRegistered — session exists, just the UUID is invalid.
       // Don't return — let pre-warm retry (finally block) handle recovery.
@@ -11918,12 +12254,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // `sentReloadAnchor`, not the module var, so a late catch from an aborted start can't
     // evict against a newer session. Retry resumes with full history (window-B reconcile
     // skipped this round; self-heals once the user continues and a newer leaf is written).
-    if (errorMessage.includes('No message found with message.uuid') && sentReloadAnchor) {
+    if (isSdkMissingResumeMessageError(errorMessage) && sentReloadAnchor) {
       console.warn(`[agent] reloadAnchor UUID ${sentReloadAnchor} rejected by SDK — evicting from transcriptState.currentSessionUuids so retry resumes with full history (no re-derive loop)`);
       deleteCurrentSessionUuid(sentReloadAnchor);
       // Clear the load-captured anchor only if it's still THIS query's — a newer load/start
       // may have already replaced it; don't wipe a newer session's pending anchor.
       if (transcriptState.pendingReloadAnchor === sentReloadAnchor) setPendingReloadAnchor(undefined);
+      recoveredInvalidResumeAnchors.push('reload');
     }
 
     // Fork-mode "No message found" recovery (issue #220). The durable anchor here lives
@@ -11943,7 +12280,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // UI shows (UI has the N copied transcriptState.messages; SDK has all source transcriptState.messages). Same
     // degradation philosophy as the rewind branch's "resume with full history". Better
     // than a fail-loop or losing the fork entirely.
-    if (errorMessage.includes('No message found with message.uuid') && !rewindAnchorWasSent) {
+    if (isSdkMissingResumeMessageError(errorMessage) && !rewindAnchorWasSent) {
       const failedForkMeta = getSessionMetadata(sessionId);
       if (failedForkMeta?.forkFrom?.messageUuid) {
         const rejectedForkUuid = failedForkMeta.forkFrom.messageUuid;
@@ -11958,8 +12295,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           console.warn(`[agent] forkFrom.messageUuid clear: disk persist failed (next retry will re-read stale UUID and re-enter this recovery): ${(saveErr as Error)?.message ?? saveErr}`);
         }
         deleteCurrentSessionUuid(rejectedForkUuid);
+        recoveredInvalidResumeAnchors.push('fork');
       }
     }
+    const suppressRecoveredResumeAnchorError = shouldSuppressRecoveredResumeAnchorError({
+      errorMessage,
+      recoveredAnchors: recoveredInvalidResumeAnchors,
+    });
 
     // "No conversation found" recovery: our metadata has sessionRegistered=true but
     // the SDK session directory is gone (e.g., IM Bot restart after previous Sidecar
@@ -12008,7 +12350,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // during an active abort is by definition our doing, not a provider/infra
     // issue to surface. Error is still logged above (line 6611–6612) for
     // debugging, just not broadcast.
-    if (!lifecycleState.preWarming && !lifecycleState.abortRequested) {
+    if (suppressRecoveredResumeAnchorError) {
+      console.log(`[agent] Suppressing recoverable SDK resumeSessionAt error after clearing ${recoveredInvalidResumeAnchors.join(',')} anchor(s); recovery pre-warm will retry with bare resume`);
+    } else if (!lifecycleState.preWarming && !lifecycleState.abortRequested) {
       broadcast('chat:message-error', userFacingError);
       handleMessageError(errorMessage, sdkSubprocessDiagnostic?.imMessage);
       setSessionState('error');
@@ -12228,11 +12572,70 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
   console.log('[messageGenerator] Started (persistent mode, mid-turn injection enabled)');
 
   while (true) {
+    // A domain-owned turn is not finished until its durable terminal observer
+    // has settled. Keep the next queue item in the queue until that boundary.
+    await waitForCurrentTurnTerminalObserver();
     // 等待队列中的消息（事件驱动，无轮询）
     const item = await waitForMessage();
     if (!item) {
       console.log('[messageGenerator] Received null — exiting (abort or session end)');
       return; // generator return → SDK endInput() → stdin EOF → subprocess 退出
+    }
+    beginPromotedItem(item);
+    if (item.beforeDispatch) {
+      let guardResult: Awaited<ReturnType<NonNullable<typeof item.beforeDispatch>>>;
+      try {
+        guardResult = await item.beforeDispatch();
+      } catch (error) {
+        guardResult = {
+          accepted: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      if (!guardResult.accepted) {
+        releaseTurnAdmissionTicket(item.id);
+        if (getInFlightQueueId() === item.id) clearInFlightSlot();
+        clearPromotedItem(item.id);
+        item.settleDispatchAcceptance?.({ accepted: false, error: guardResult.error });
+        await notifyQueuedTurnStopped(item, guardResult.error ?? 'Queue item was rejected before dispatch');
+        item.resolve();
+        broadcast('queue:cancelled', { queueId: item.id });
+        console.warn(`[goal] pre-dispatch gate rejected builtin queue item ${item.id}: ${guardResult.error ?? guardResult.code ?? 'stale admission'}`);
+        if (!hasQueuedOrInFlightWork() && !isTurnInFlight()) {
+          setSessionState('idle');
+        }
+        schedulePostTerminalQueueDrain('recovery');
+        continue;
+      }
+      if (isPromotedItemCanceled(item.id)) {
+        releaseTurnAdmissionTicket(item.id);
+        if (getInFlightQueueId() === item.id) clearInFlightSlot();
+        clearPromotedItem(item.id);
+        item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+        await notifyQueuedTurnStopped(item);
+        item.resolve();
+        broadcast('queue:cancelled', { queueId: item.id });
+        schedulePostTerminalQueueDrain('recovery');
+        continue;
+      }
+      if (item.deferredUserSurface) {
+        await surfaceBuiltinUserMessage(item.deferredUserSurface);
+        item.deferredUserSurface = undefined;
+      }
+    }
+    if (!item.wasQueued) {
+      await prepareSessionPlansForUserTurn({ clearStale: true });
+    }
+    if (isPromotedItemCanceled(item.id)) {
+      releaseTurnAdmissionTicket(item.id);
+      if (getInFlightQueueId() === item.id) clearInFlightSlot();
+      clearPromotedItem(item.id);
+      item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
+      await notifyQueuedTurnStopped(item);
+      item.resolve();
+      broadcast('queue:cancelled', { queueId: item.id });
+      schedulePostTerminalQueueDrain('recovery');
+      continue;
     }
     releaseTurnAdmissionTicket(item.id);
 
@@ -12255,9 +12658,9 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       console.log(`[agent] pre-warm → active (from queued message), sessionRegistered=${sessionRegistered}`);
     }
 
-    // Direct-send items (wasQueued=false): enqueueUserMessage already pushed
-    // the user message to transcriptState.messages[], persisted it, and broadcast
-    // chat:message-replay. Generator MUST NOT push again — doing so allocates
+    // Direct-send items (wasQueued=false): enqueueUserMessage already surfaced
+    // the ordinary user message; guarded items were surfaced once immediately
+    // after the accepted gate above. Generator MUST NOT push again — doing so allocates
     // a second `transcriptState.messageSequence++` id and writes a second SessionStore entry
     // (issue #173). Generator's job here is purely turn-scoped state setup so
     // the upcoming yield's response is properly tracked.
@@ -12317,7 +12720,6 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     setCurrentTurnAnalyticsOrigin(item.analyticsOrigin ?? null);
     setCurrentTurnProviderAnalytics(item.providerAnalytics ?? buildTurnProviderAnalytics(configState.currentProviderEnv));
     setAssistantMessagePresent(false);
-    setCurrentTurnInjectedTurnId(item.injectedTurnId);
     setCurrentTurnSourceItem(item);
 
     isStreamingMessage = true;
@@ -12338,9 +12740,8 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       );
     }
 
-    if (!item.wasQueued) {
-      await prepareSessionPlansForUserTurn({ clearStale: true });
-    }
+    item.settleDispatchAcceptance?.({ accepted: true });
+    clearPromotedItem(item.id);
 
     // Modality re-check at dequeue (see prior comment in pre-fix file).
     const yieldedMessage = stripUnsupportedModalityBlocks(item.message, configState.currentModel);
@@ -12358,6 +12759,6 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       uuid: item.id as `${string}-${string}-${string}-${string}-${string}`,
     };
     item.resolve();
-    setPromotedItemInFlight(false);
+    clearPromotedItem(item.id);
   }
 }

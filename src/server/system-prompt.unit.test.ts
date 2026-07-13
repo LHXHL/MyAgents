@@ -12,3 +12,12 @@ describe('buildSystemPromptAppend floating-ball surface', () => {
     expect(prompt).toContain('Keep responses concise');
   });
 });
+
+describe('buildSystemPromptAppend registered Agent events', () => {
+  it('defers event business intent to the delivery-specific cloud instruction', () => {
+    const prompt = buildSystemPromptAppend({ type: 'registeredAgent', platform: 'space' });
+    expect(prompt).toContain('<cloud-issue-instruction>');
+    expect(prompt).toContain('<local-execution-instruction>');
+    expect(prompt).not.toContain('再决定 ignore、claim 或继续工作');
+  });
+});

@@ -16,7 +16,7 @@ import {
   hashAgentNameSync,
 } from '@/analytics';
 import type { AssistantEntry, EntryIntent, HistoryEntrySource, PendingSessionBirthContext, Surface } from '@/analytics';
-import { stopTabSidecar, startGlobalSidecar, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, getSessionActivation, updateSessionTab, ensureSessionSidecar, releaseSessionSidecar, activateSession, deactivateSession, upgradeSessionId, getSessionPort, hasSessionSidecar, getSessionGeneration, stopSseProxy, startBackgroundCompletion, cancelBackgroundCompletion, updateGlobalServerUrl, canRestoreSession, setAppActiveCorrelation } from '@/api/tauriClient';
+import { stopTabSidecar, startGlobalSidecar, initGlobalSidecarReadyPromise, markGlobalSidecarReady, getGlobalServerUrl, getSessionActivation, updateSessionTab, ensureSessionSidecar, releaseTabSession, activateSession, upgradeSessionId, getSessionPort, hasSessionSidecar, getSessionGeneration, stopSseProxy, startBackgroundCompletion, cancelBackgroundCompletion, updateGlobalServerUrl, canRestoreSession, getUserSchedulerLifecycleSnapshot, sessionHasPersistentOwners, setAppActiveCorrelation } from '@/api/tauriClient';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import BugReportOverlay from '@/components/BugReportOverlay';
 import CustomTitleBar from '@/components/CustomTitleBar';
@@ -67,7 +67,6 @@ import { runAfterNextPaint } from '@/utils/afterPaint';
 import { perfMark } from '@/utils/perfMark';
 import { RENDERER_PERF_PHASE } from '../shared/perfTrace';
 import type { ImageAttachment } from '@/components/SimpleChatInput';
-import { getAllCronTasks, getTabCronTask, updateCronTaskTab } from '@/api/cronTaskClient';
 import { type CronRecoverySummaryPayload, type CronTaskRecoveredPayload, CRON_EVENTS } from '@/types/cronEvents';
 import { isBrowserDevMode, isTauriEnvironment } from '@/utils/browserMock';
 import { apiGetJson } from '@/api/apiFetch';
@@ -422,7 +421,7 @@ export default function App() {
   // App config for tray behavior (shared via ConfigProvider — no CONFIG_CHANGED event needed)
   // Also get projects + CRUD actions for bug report (ensureSelfAwarenessWorkspace needs them)
   const { config, isLoading: configLoading, providers: appProviders, apiKeys: appApiKeys, providerVerifyStatus: appProviderVerifyStatus, projects: configProjects, addProject: configAddProject, patchProject: configPatchProject } = useConfig();
-  const spaceBuildCapability = useSpaceBuildCapability();
+  const spaceBuildCapability = useSpaceBuildCapability(config.spaceEnvironment);
   const teamSpaceAvailable = spaceBuildCapability.available && config.teamSpaceEnabled === true;
 
   // Helper Agent's persisted model defaults — used by BugReportOverlay for
@@ -1444,19 +1443,8 @@ export default function App() {
         // If background completion is active, Sidecar continues running (BG owner keeps it alive)
         if (tabSessionId) {
           try {
-            // Update cron task tab association if exists
-            const cronTask = await getTabCronTask(tabId);
-            if (cronTask && cronTask.status === 'running') {
-              await updateCronTaskTab(cronTask.id, undefined);
-            }
-
-            const stopped = await releaseSessionSidecar(tabSessionId, 'tab', tabId);
+            const stopped = await releaseTabSession(tabSessionId, tabId);
             console.log(`[App] Tab ${tabId} released session ${tabSessionId}, sidecar stopped: ${stopped}`);
-
-            // Clean up session activation
-            if (!cronTask || cronTask.status !== 'running') {
-              await deactivateSession(tabSessionId);
-            }
           } catch (error) {
             console.error(`[App] Error releasing session sidecar for tab ${tabId}:`, error);
             // Fallback to legacy stopTabSidecar
@@ -1654,12 +1642,14 @@ export default function App() {
           targetRuntimeIdentity,
           resolvedCurrentRuntimeIdentity,
           activation,
-          currentTabCronTask,
+          currentSessionHasPersistentOwners,
         ] = await Promise.all([
           resolveSessionRuntimeIdentityForOpen(sessionId, targetAgentRuntime, cfg?.multiAgentRuntime),
           resolveSessionRuntimeIdentityForOpen(activeTab?.sessionId, currentAgentRuntime, cfg?.multiAgentRuntime),
           getSessionActivation(sessionId),
-          getTabCronTask(activeTabId),
+          activeTab?.sessionId
+            ? sessionHasPersistentOwners(activeTab.sessionId)
+            : Promise.resolve(false),
         ]);
         const targetRuntime = targetRuntimeIdentity.runtime;
         const resolvedCurrentRuntime = resolvedCurrentRuntimeIdentity.runtime;
@@ -1683,7 +1673,7 @@ export default function App() {
           currentRuntimeIdentity: activeTab?.sessionId ? resolvedCurrentRuntimeIdentity : targetRuntimeIdentity,
           targetRuntimeIdentity,
           targetActivation: activation,
-          currentTabCronRunning: currentTabCronTask?.status === 'running',
+          currentSessionHasPersistentOwners,
         });
         console.log(`[App] handleLaunchProject: session-open plan=${plan.type}${plan.type === 'open-new-tab' ? ` reason=${plan.reason}` : ''}, target=${sessionId}`);
 
@@ -1746,8 +1736,7 @@ export default function App() {
           const oldSessionId = tabsRef.current.find(t => t.id === targetTabId)?.sessionId;
           if (oldSessionId && oldSessionId !== sessionId) {
             await stopSseProxy(targetTabId);
-            await releaseSessionSidecar(oldSessionId, 'tab', targetTabId);
-            await deactivateSession(oldSessionId);
+            await releaseTabSession(oldSessionId, targetTabId);
           }
 
           setTabs((prev) =>
@@ -1774,19 +1763,21 @@ export default function App() {
         }
       } else {
         // ========================================
-        // New session: current Tab has running cron task → open in a new tab
+        // New session: current Session has a persistent owner → open in a new tab
         // ========================================
-        // Only a tab WITH a session can own a running cron task. A launcher /
-        // fresh tab (no sessionId) can't — so skip the getTabCronTask IPC for it.
+        // Only a tab WITH a session can have a persistent owner. A launcher /
+        // fresh tab (no sessionId) can't — so skip the owner IPC for it.
         // That await is load-bearing for instant-nav: awaiting it yields to React,
         // which paints the workspace card's loading spinner BEFORE the flushSync
         // flip runs — so even with flushSync the user sees a brief card spinner.
         // Skipping it for the launcher case keeps the whole pre-flip path
         // synchronous → the flip lands in the same click tick → no spinner.
-        const currentTabCronTask = activeTab?.sessionId ? await getTabCronTask(activeTabId) : null;
-        console.log(`[App][launch] cron-check ${activeTab?.sessionId ? `status=${currentTabCronTask?.status ?? 'none'}` : 'skipped(no-session)'}`);
-        if (currentTabCronTask && currentTabCronTask.status === 'running') {
-          console.log(`[App] Scenario 3: Current tab ${activeTabId} has running cron task ${currentTabCronTask.id}, creating new tab`);
+        const currentSessionHasPersistentOwners = activeTab?.sessionId
+          ? await sessionHasPersistentOwners(activeTab.sessionId)
+          : false;
+        console.log(`[App][launch] persistent-owner-check ${activeTab?.sessionId ? `present=${currentSessionHasPersistentOwners}` : 'skipped(no-session)'}`);
+        if (currentSessionHasPersistentOwners) {
+          console.log(`[App] Scenario 3: Current session ${activeTab?.sessionId} has persistent owners, creating new tab`);
 
           if (tabsRef.current.length >= MAX_TABS) {
             setTabErrors((prev) => ({ ...prev, [activeTabId]: t('appChrome.maxTabsReached') }));
@@ -1820,8 +1811,7 @@ export default function App() {
         // - If BG started: Sidecar stays alive via BG owner
         // - If idle: Sidecar stops (no more owners)
         await stopSseProxy(targetTabId);
-        await releaseSessionSidecar(oldSessionForLaunch, 'tab', targetTabId);
-        await deactivateSession(oldSessionForLaunch);
+        await releaseTabSession(oldSessionForLaunch, targetTabId);
       }
 
       const configForLaunchBirth = configRef.current;
@@ -2200,8 +2190,7 @@ export default function App() {
       ownerAcquired = true;
       console.log(`[App] Fork tab ${newTab.id} sidecar ensured: port=${result.port}`);
       if (!tabsRef.current.some(t => t.id === newTab.id)) {
-        await releaseSessionSidecar(newSessionId, 'tab', newTab.id).catch(() => {});
-        await deactivateSession(newSessionId).catch(() => {});
+        await releaseTabSession(newSessionId, newTab.id).catch(() => {});
         return false;
       }
       await activateSession(newSessionId, newTab.id, null, result.port, forkAgentDir, false);
@@ -2211,8 +2200,7 @@ export default function App() {
       console.error('[App] Failed to start sidecar for forked session:', error);
       setTabs(prev => prev.filter(t => t.id !== newTab.id));
       if (ownerAcquired) {
-        await releaseSessionSidecar(newSessionId, 'tab', newTab.id).catch(() => {});
-        await deactivateSession(newSessionId).catch(() => {});
+        await releaseTabSession(newSessionId, newTab.id).catch(() => {});
       }
       return false;
     } finally {
@@ -2268,7 +2256,7 @@ export default function App() {
       // (the close handler's release may have raced ahead and found none) and
       // bail before any activation/state commit.
       if (!tabsRef.current.some(t => t.id === newTab.id)) {
-        await releaseSessionSidecar(sessionId, 'tab', newTab.id).catch(() => {});
+        await releaseTabSession(sessionId, newTab.id).catch(() => {});
         return false;
       }
       if (opts?.preserveCronActivation) {
@@ -2294,7 +2282,7 @@ export default function App() {
       // phantom owner that keeps the (possibly otherwise-ownerless) sidecar
       // alive forever.
       if (ownerAcquired) {
-        await releaseSessionSidecar(sessionId, 'tab', newTab.id).catch(() => {});
+        await releaseTabSession(sessionId, newTab.id).catch(() => {});
       }
       return false;
     } finally {
@@ -2339,7 +2327,7 @@ export default function App() {
         targetSessionId: sessionId,
         multiAgentRuntime: false,
         targetActivation: activation,
-        currentTabCronRunning: false,
+        currentSessionHasPersistentOwners: false,
       });
       if (plan.type === 'jump-to-tab') {
         console.log(`[App] handleOpenSessionInNewTab: Session ${sessionId} already in tab ${plan.tabId}, jumping to it`);
@@ -2380,7 +2368,7 @@ export default function App() {
       targetSessionId: sessionId,
       multiAgentRuntime: false,
       targetActivation: null,
-      currentTabCronRunning: false,
+      currentSessionHasPersistentOwners: false,
     });
     if (jumpPlan.type === 'jump-to-tab') {
       console.log(`[App] handleSwitchSession Scenario 1: Session ${sessionId} already in tab ${jumpPlan.tabId}, jumping to it`);
@@ -2397,12 +2385,14 @@ export default function App() {
       targetRuntimeIdentity,
       resolvedCurrentRuntimeIdentity,
       activation,
-      currentTabCronTask,
+      currentSessionHasPersistentOwners,
     ] = await Promise.all([
       resolveSessionRuntimeIdentityForOpen(sessionId, currentAgentRuntime, cfg?.multiAgentRuntime),
       resolveSessionRuntimeIdentityForOpen(currentTab?.sessionId, currentAgentRuntime, cfg?.multiAgentRuntime),
       getSessionActivation(sessionId),
-      getTabCronTask(tabId),
+      currentTab?.sessionId
+        ? sessionHasPersistentOwners(currentTab.sessionId)
+        : Promise.resolve(false),
     ]);
     const targetRuntime = targetRuntimeIdentity.runtime;
     const resolvedCurrentRuntime = resolvedCurrentRuntimeIdentity.runtime;
@@ -2421,7 +2411,7 @@ export default function App() {
       currentRuntimeIdentity: currentTab?.sessionId ? resolvedCurrentRuntimeIdentity : targetRuntimeIdentity,
       targetRuntimeIdentity,
       targetActivation: activation,
-      currentTabCronRunning: currentTabCronTask?.status === 'running',
+      currentSessionHasPersistentOwners,
     });
     const canHotSwapCurrentSidecar = canHotSwapSessionSidecar({
       currentRuntime,
@@ -2477,14 +2467,14 @@ export default function App() {
         // Step 2: Stop SSE proxy FIRST before releasing old session (avoids EOF errors)
         if (oldSessionId) {
           await stopSseProxy(tabId);
-          const stopped = await releaseSessionSidecar(oldSessionId, 'tab', tabId);
+          const stopped = await releaseTabSession(oldSessionId, tabId);
           console.log(`[App] Released old session ${oldSessionId}, sidecar stopped: ${stopped}`);
         }
 
         // Step 3: Update UI state (TabProvider will reconnect SSE to new Sidecar)
         //
         // Race-defensive: same reasoning as Scenario 4's setTabs — the
-        // `await releaseSessionSidecar(oldSessionId, …)` above may trigger a
+        // `await releaseTabSession(oldSessionId, …)` above may trigger a
         // `session:sidecar-terminal` whose listener resets this tab to
         // launcher view before our setTabs runs. Explicit `view: 'chat'`,
         // `agentDir`, and `title` make this setTabs the authoritative final
@@ -2510,9 +2500,9 @@ export default function App() {
       return;
     }
 
-    // Scenario 3: Current Tab has running cron task → Create new Tab + new Sidecar
-    if (plan.type === 'open-new-tab' && plan.reason === 'current-cron-running') {
-      console.log(`[App] handleSwitchSession Scenario 3: Current tab ${tabId} has cron task, creating new tab`);
+    // Scenario 3: Current Session has a persistent owner → Create new Tab + new Sidecar
+    if (plan.type === 'open-new-tab' && plan.reason === 'current-persistent-owner') {
+      console.log(`[App] handleSwitchSession Scenario 3: Current session ${currentTab?.sessionId} has persistent owners, creating new tab`);
 
       // Check max tabs limit
       if (tabsRef.current.length >= MAX_TABS) {
@@ -2608,8 +2598,7 @@ export default function App() {
           // AI is running → old Sidecar stays alive via BG owner, create new Sidecar for target
           console.log(`[App] AI running on ${oldSessionId}, starting background completion`);
           await stopSseProxy(tabId);
-          await releaseSessionSidecar(oldSessionId, 'tab', tabId);
-          await deactivateSession(oldSessionId);
+          await releaseTabSession(oldSessionId, tabId);
 
           // Create/reuse Sidecar for the target session
           const result = await ensureSessionSidecar(sessionId, currentTabForScenario4.agentDir, 'tab', tabId);
@@ -2625,8 +2614,7 @@ export default function App() {
             // Target session has existing sidecar → release current, reconnect to existing
             console.log(`[App] Target session ${sessionId} has existing sidecar, reconnecting`);
             await stopSseProxy(tabId);
-            await releaseSessionSidecar(oldSessionId, 'tab', tabId);
-            await deactivateSession(oldSessionId);
+            await releaseTabSession(oldSessionId, tabId);
             const result = await ensureSessionSidecar(sessionId, currentTabForScenario4.agentDir, 'tab', tabId);
             await activateSession(sessionId, tabId, null, result.port, currentTabForScenario4.agentDir, false);
             joinedExisting = !result.isNew;
@@ -2639,8 +2627,7 @@ export default function App() {
             // and the append-only transcript from the target session.
             console.log(`[App] External runtime session switch (${resolvedCurrentRuntime} -> ${targetRuntime}); replacing sidecar instead of upgradeSessionId`);
             await stopSseProxy(tabId);
-            await releaseSessionSidecar(oldSessionId, 'tab', tabId);
-            await deactivateSession(oldSessionId);
+            await releaseTabSession(oldSessionId, tabId);
             const result = await ensureSessionSidecar(sessionId, tabAgentDir, 'tab', tabId);
             await activateSession(sessionId, tabId, null, result.port, tabAgentDir, false);
             joinedExisting = !result.isNew;
@@ -2649,7 +2636,6 @@ export default function App() {
             const upgraded = await upgradeSessionId(oldSessionId, sessionId);
 
             if (upgraded) {
-              await deactivateSession(oldSessionId);
               const port = await getSessionPort(sessionId);
               if (port !== null) {
                 await activateSession(sessionId, tabId, null, port, currentTabForScenario4.agentDir, false);
@@ -2663,7 +2649,7 @@ export default function App() {
               }
             } else {
               console.log(`[App] Sidecar upgrade failed, creating new Sidecar for session ${sessionId}`);
-              await deactivateSession(oldSessionId);
+              await releaseTabSession(oldSessionId, tabId);
               const result = await ensureSessionSidecar(sessionId, currentTabForScenario4.agentDir, 'tab', tabId);
               await activateSession(sessionId, tabId, null, result.port, currentTabForScenario4.agentDir, false);
               joinedExisting = !result.isNew;
@@ -2687,7 +2673,7 @@ export default function App() {
       // Update UI state - TabProvider will detect sessionId change and call loadSession()
       //
       // Race-defensive set: explicitly carry `view: 'chat'`, `agentDir`, and
-      // `title` because the `await releaseSessionSidecar(oldSessionId, …)`
+      // `title` because the `await releaseTabSession(oldSessionId, …)`
       // above may have caused Rust to drop the old sidecar (when the Tab
       // was its last owner — common for IM-bot sessions opened in a desktop
       // tab whose heartbeat owner has already moved on). That drop fires
@@ -2745,27 +2731,11 @@ export default function App() {
     await stopSseProxy(activeTabId);
 
     // Step 3: Release Tab's ownership of the Session Sidecar
-    // If BackgroundCompletion or CronTask also owns it, Sidecar continues running
+    // If BackgroundCompletion or Task also owns it, Sidecar continues running
     if (currentTab?.sessionId) {
       try {
-        // Check if this Tab has an active cron task to update associations
-        const cronTask = await getTabCronTask(activeTabId);
-        if (cronTask && cronTask.status === 'running') {
-          // Clear tab association in cron task
-          await updateCronTaskTab(cronTask.id, undefined);
-          // Update session activation to remove tab_id but keep task_id
-          await updateSessionTab(currentTab.sessionId, undefined);
-        }
-
-        // Release Tab's ownership - Sidecar stops only if no other owners
-        const stopped = await releaseSessionSidecar(currentTab.sessionId, 'tab', activeTabId);
+        const stopped = await releaseTabSession(currentTab.sessionId, activeTabId);
         console.log(`[App] Tab ${activeTabId} released session ${currentTab.sessionId}, sidecar stopped: ${stopped}`);
-
-        // Clean up session activation (Tab no longer owns this session)
-        // If cron task is active, updateSessionTab above already handled it
-        if (!cronTask || cronTask.status !== 'running') {
-          await deactivateSession(currentTab.sessionId);
-        }
       } catch (error) {
         console.error(`[App] Error releasing session sidecar for tab ${activeTabId}:`, error);
         // Fallback to legacy stopTabSidecar
@@ -2807,8 +2777,7 @@ export default function App() {
 
     try {
       await stopSseProxy(tabId);
-      await releaseSessionSidecar(oldSessionId, 'tab', tabId);
-      await deactivateSession(oldSessionId);
+      await releaseTabSession(oldSessionId, tabId);
 
       // PRD 0.2.19 cross-review fix (B4): mark the upcoming session_new as
       // 'new_chat_button' provenance. handleNewSession is the AI-running variant
@@ -2898,13 +2867,12 @@ export default function App() {
 
   // Release a sidecar owner we acquired during a restore activation that was
   // then abandoned (tab closed/switched mid-flight) or that threw partway.
-  // Idempotent — releaseSessionSidecar/deactivateSession no-op for an unknown
-  // owner, so it's safe even if the owner was never registered or already
+  // Idempotent — releaseTabSession no-ops for an unknown owner/session, so it
+  // is safe even if the owner was never registered or already
   // released by performCloseTab.
   const releaseAbandonedRestore = useCallback(async (sessionId: string, tabId: string) => {
     try {
-      await releaseSessionSidecar(sessionId, 'tab', tabId);
-      await deactivateSession(sessionId);
+      await releaseTabSession(sessionId, tabId);
     } catch (err) {
       console.error(`[App] Error releasing abandoned restore for ${sessionId}:`, err);
     }
@@ -3223,42 +3191,6 @@ export default function App() {
     return () => window.removeEventListener(CUSTOM_EVENTS.OPEN_SPACE, handleOpenSpace);
   }, [handleOpenSpace]);
 
-  // One-shot legacy CronTask → Task sweep at app startup (PRD §11.4,
-  // v0.1.69 UX round). The Launcher's 「我的任务」 tab reads new-model
-  // Task[] — users who never open the Task Center page would see an
-  // empty list even though they have legacy crons on disk. Running the
-  // upgrade sweep here (not inside TaskListPanel's mount) guarantees
-  // the data is ready before the Launcher is user-visible.
-  //
-  // Guards:
-  //   - taskCenterAvailable() — Tauri-only, silent no-op in browser dev
-  //   - configProjects.length > 0 — eligibility check needs workspace
-  //     resolution; Config loads async, so we wait for projects to
-  //     populate before sweeping
-  //   - useRef one-shot — only run once per session; refocusing the
-  //     window or a user navigating won't re-trigger the work
-  const startupSweepDoneRef = useRef(false);
-  useEffect(() => {
-    if (startupSweepDoneRef.current) return;
-    if (configProjects.length === 0) return;
-    startupSweepDoneRef.current = true;
-    void (async () => {
-      try {
-        const { sweepAppStartupLegacyCrons } = await import(
-          '@/components/task-center/legacyUpgrade'
-        );
-        const stats = await sweepAppStartupLegacyCrons(configProjects);
-        if (stats.upgraded > 0) {
-          console.info(
-            `[legacy-sweep] upgraded ${stats.upgraded} legacy cron(s) at startup ` +
-              `(skipped ${stats.skippedIneligible} ineligible, ${stats.failed} failed)`,
-          );
-        }
-      } catch (err) {
-        console.warn('[legacy-sweep] startup sweep crashed:', err);
-      }
-    })();
-  }, [configProjects]);
 
   // PRD §8.3 — "AI 讨论" flow. Open a new Chat tab, auto-dispatch the
   // `/task-alignment` skill with the thought content + instructions to call
@@ -3511,7 +3443,7 @@ export default function App() {
         targetSessionId: sessionId,
         multiAgentRuntime: false,
         targetActivation: activation,
-        currentTabCronRunning: false,
+        currentSessionHasPersistentOwners: false,
       });
       if (plan.type === 'jump-to-tab') {
         // Already open → switch to it (don't duplicate, don't block on MAX_TABS).
@@ -3747,11 +3679,6 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps -- callbacks stabilized via refs, configAdd/patchProject are stable useCallbacks
   }, [configAddProject, configPatchProject, t]);
 
-  // Note: CRON_TASK_STOPPED event listener removed
-  // With Session-centric Sidecar (Owner model), stopping a cron task only releases
-  // the CronTask owner. If Tab still owns the Sidecar, it continues running.
-  // No SSE reconnection or Sidecar restart is needed.
-
   // Stable callback for Settings onSectionChange — avoids inline arrow creating new ref every render
   const handleSettingsSectionChange = useCallback(() => {
     setSettingsInitialSection(undefined);
@@ -3770,22 +3697,27 @@ export default function App() {
     },
     onWindowFocused: handleWindowFocused,
     onExitRequested: async () => {
-      // Check for running cron tasks
+      // User-owned scheduler lifecycle is authoritative here. Ordinary Cron
+      // lists intentionally exclude Goal and cannot protect app exit.
       try {
-        const tasks = await getAllCronTasks();
-        const runningTasks = tasks.filter(t => t.status === 'running');
+        const lifecycle = await getUserSchedulerLifecycleSnapshot();
 
-        if (runningTasks.length > 0) {
+        if (lifecycle.runningTaskCount > 0) {
           // Show confirmation dialog
           return new Promise<boolean>((resolve) => {
             setExitConfirmState({
-              runningTaskCount: runningTasks.length,
+              runningTaskCount: lifecycle.runningTaskCount,
               resolve,
             });
           });
         }
       } catch (error) {
-        console.error('[App] Failed to check cron tasks:', error);
+        // Exit is destructive to in-flight output. Unknown lifecycle state is
+        // fail-closed and asks for confirmation instead of silently quitting.
+        console.error('[App] Failed to check scheduler lifecycle:', error);
+        return new Promise<boolean>((resolve) => {
+          setExitConfirmState({ runningTaskCount: 1, resolve });
+        });
       }
 
       // No running tasks, allow exit

@@ -188,36 +188,11 @@ export function taskOpenDocsDir(id: string): Promise<void> {
 
 /**
  * Aggregate runtime telemetry for the detail overlay — execution count,
- * last-run result, linked CronTask scheduler status. Composed server-side
- * from `TaskStore` + `CronTaskManager` + `cron_runs/<cronId>.jsonl`.
+ * last-run result and next trigger. Composed from TaskStore and the run
+ * history keyed by the same Task id.
  */
 export function taskGetRunStats(id: string): Promise<TaskRunStats> {
   return inv('cmd_task_get_run_stats', { id });
-}
-
-/**
- * Upgrade one legacy CronTask (no `task_id` back-pointer) to a new-model
- * Task in a single atomic Rust call. The primitive handles schedule /
- * end-condition / run-mode type conversions, lifecycle-preserving status
- * mapping (running → Running, naturally-ended → Done, user-paused →
- * Stopped), both back-pointers, and rollback on any step failure — see
- * `src-tauri/src/legacy_upgrade.rs`.
- *
- * Migrated Tasks have `sourceThoughtId = None` — legacy crons have no
- * backing Thought and auto-minting one would pollute the user's thought
- * stream with synthetic rows.
- */
-export interface TaskUpgradeLegacyResult {
-  task: Task;
-}
-export function taskUpgradeLegacyCron(
-  cronTaskId: string,
-  workspaceId: string,
-): Promise<TaskUpgradeLegacyResult> {
-  return inv('cmd_task_upgrade_legacy_cron', {
-    cronTaskId,
-    workspaceId,
-  });
 }
 
 // ============================================================

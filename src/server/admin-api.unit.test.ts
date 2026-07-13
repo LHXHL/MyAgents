@@ -17,6 +17,18 @@ const managementApiMocks = vi.hoisted(() => ({
   managementApi: vi.fn(async (): Promise<Record<string, unknown>> => ({ ok: true, taskUpdated: 0, cronUpdated: 0 })),
 }));
 
+const sessionEngineMocks = vi.hoisted(() => {
+  const state = {
+    context: { sessionId: null as string | null, workspacePath: null as string | null },
+    turnIdentity: null as { queueId: string; owner: { kind: 'goal' | 'task'; id: string } } | null,
+  };
+  return {
+    state,
+    getCurrentSessionContext: vi.fn(() => state.context),
+    getCurrentTurnIdentity: vi.fn(() => state.turnIdentity),
+  };
+});
+
 vi.mock('./agent-session', () => ({
   SDK_RESERVED_MCP_NAMES: new Set<string>(),
   getAgentState: () => ({ agentDir: agentSessionMocks.agentDir }),
@@ -35,6 +47,13 @@ vi.mock('./sse', () => ({
 vi.mock('./utils/management-api-client', () => ({
   ADMIN_LOOPBACK_TIMEOUT_MS: 10_000,
   managementApi: managementApiMocks.managementApi,
+}));
+
+vi.mock('./session-engine', () => ({
+  getSessionEngine: () => ({
+    getCurrentSessionContext: sessionEngineMocks.getCurrentSessionContext,
+    getCurrentTurnIdentity: sessionEngineMocks.getCurrentTurnIdentity,
+  }),
 }));
 
 let scratch: string;
@@ -65,6 +84,10 @@ beforeEach(() => {
   agentSessionMocks.setMcpServers.mockClear();
   managementApiMocks.managementApi.mockClear();
   managementApiMocks.managementApi.mockResolvedValue({ ok: true, taskUpdated: 0, cronUpdated: 0 });
+  sessionEngineMocks.state.context = { sessionId: null, workspacePath: null };
+  sessionEngineMocks.state.turnIdentity = null;
+  sessionEngineMocks.getCurrentSessionContext.mockClear();
+  sessionEngineMocks.getCurrentTurnIdentity.mockClear();
 });
 
 afterEach(() => {
@@ -88,6 +111,36 @@ describe('admin-api help registry', () => {
     expect(text).not.toContain('Unknown command group');
   });
 
+  it('documents Goal Mode for myagents goal --help', async () => {
+    const { handleHelp } = await import('./admin-api');
+
+    const result = handleHelp({ path: ['goal'] });
+    const text = (result.data as { text?: string } | undefined)?.text ?? '';
+
+    expect(result.success).toBe(true);
+    expect(text).toContain('myagents goal');
+    expect(text).toContain('Goal Mode');
+    expect(text).toContain('create --objective');
+    expect(text).toContain('update --status complete');
+    expect(text).toContain('Do not infer Goal Mode');
+    expect(text).not.toContain('Unknown command group');
+  });
+
+  it('does not advertise loop schedule creation from ordinary cron help', async () => {
+    const { handleHelp } = await import('./admin-api');
+
+    const shortHelp = handleHelp({ path: ['cron'] });
+    const readme = handleHelp({ path: ['cron', 'readme'] });
+    const shortText = (shortHelp.data as { text?: string } | undefined)?.text ?? '';
+    const readmeText = (readme.data as { text?: string } | undefined)?.text ?? '';
+
+    expect(shortHelp.success).toBe(true);
+    expect(readme.success).toBe(true);
+    expect(shortText).not.toContain('{"kind":"loop"}');
+    expect(readmeText).not.toContain('{"kind":"loop"}');
+    expect(handleHelp({ path: ['goal'] }).success).toBe(true);
+  });
+
   it('includes vision in the derived command group list', async () => {
     const { handleHelp } = await import('./admin-api');
 
@@ -97,6 +150,244 @@ describe('admin-api help registry', () => {
     expect(result.success).toBe(true);
     expect(text).toContain('Unknown command group "definitely-not-a-command"');
     expect(text).toContain('vision');
+  });
+
+  it('uses the longest Space command path so leaf help is an executable Agent contract', async () => {
+    const { handleHelp } = await import('./admin-api');
+
+    const result = handleHelp({ path: ['space', 'issue', 'attachment', 'add'] });
+    const text = (result.data as { text?: string } | undefined)?.text ?? '';
+
+    expect(result.success).toBe(true);
+    expect(text).toContain('myagents space issue attachment add');
+    expect(text).toContain('WHEN TO CALL');
+    expect(text).toContain('ACTOR AND PERMISSIONS');
+    expect(text).toContain('FILE SAFETY');
+    expect(text).toContain('--space <slug>');
+    expect(text).not.toContain('myagents space — Work with');
+  });
+
+  it('provides an independent Agent contract for every Space Issue leaf', async () => {
+    const { handleHelp } = await import('./admin-api');
+    const leaves = [
+      ['space', 'issue', 'list'],
+      ['space', 'issue', 'view'],
+      ['space', 'issue', 'comments'],
+      ['space', 'issue', 'status'],
+      ['space', 'issue', 'claim'],
+      ['space', 'issue', 'delivery', 'ignore'],
+      ['space', 'issue', 'close'],
+      ['space', 'issue', 'cancel-claim'],
+    ];
+    for (const path of leaves) {
+      const result = handleHelp({ path });
+      const text = (result.data as { text?: string } | undefined)?.text ?? '';
+      expect(text, path.join(' ')).toContain('WHEN TO CALL');
+      expect(text, path.join(' ')).toContain('RECOVERY');
+      expect(text, path.join(' ')).not.toContain('myagents space — Work with');
+    }
+  });
+});
+
+describe('admin-api Space workspace identity', () => {
+  it('enriches Space commands with the stable project id for the requested workspace', async () => {
+    const workspace = join(scratch, 'workspace');
+    mkdirSync(workspace);
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-stable-id',
+      name: 'Workspace',
+      path: workspace,
+    }]);
+    agentSessionMocks.agentDir = workspace;
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, data: { actor: {} } });
+    const { handleSpaceWhoami } = await import('./admin-api');
+
+    await handleSpaceWhoami({ spaceSlug: 'official', workspacePath: workspace });
+
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith('/api/space/whoami', 'POST', {
+      spaceSlug: 'official',
+      workspacePath: workspace,
+      workspaceId: 'project-stable-id',
+    });
+  });
+
+  it('preserves an explicit workspace id so identity mismatches fail closed downstream', async () => {
+    const workspace = join(scratch, 'workspace-explicit');
+    mkdirSync(workspace);
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-stable-id',
+      name: 'Workspace',
+      path: workspace,
+    }]);
+    agentSessionMocks.agentDir = workspace;
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, data: { actor: {} } });
+    const { handleSpaceWhoami } = await import('./admin-api');
+
+    await handleSpaceWhoami({
+      spaceSlug: 'official',
+      workspacePath: workspace,
+      workspaceId: 'explicit-mismatching-id',
+    });
+
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith('/api/space/whoami', 'POST', {
+      spaceSlug: 'official',
+      workspacePath: workspace,
+      workspaceId: 'explicit-mismatching-id',
+    });
+  });
+});
+
+describe('admin-api goal', () => {
+  it('creates a current-session Goal without Cron delivery ownership', async () => {
+    const { setImCronContext, clearImCronContext } = await import('./tools/im-cron-tool');
+    const { handleGoalCreate } = await import('./admin-api');
+    sessionEngineMocks.state.context = {
+      sessionId: 'session-im-goal',
+      workspacePath: '/tmp/myagents-goal-workspace',
+    };
+    setImCronContext({
+      botId: 'bot-feishu',
+      chatId: 'chat-123',
+      platform: 'feishu',
+      workspacePath: '/tmp/myagents-goal-workspace',
+    });
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      goal: { id: 'goal_1', objective: 'Ship it', status: 'active' },
+    });
+
+    const result = await handleGoalCreate({ objective: 'Ship it' });
+
+    expect(result.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith('/api/goal/create', 'POST', {
+      sessionId: 'session-im-goal',
+      workspacePath: '/tmp/myagents-goal-workspace',
+      objective: 'Ship it',
+    });
+    clearImCronContext();
+  });
+
+  it('forwards the active queue turn when the model terminalizes a Goal', async () => {
+    const { handleGoalUpdate } = await import('./admin-api');
+    sessionEngineMocks.state.context = {
+      sessionId: 'session-goal-turn',
+      workspacePath: '/tmp/myagents-goal-workspace',
+    };
+    sessionEngineMocks.state.turnIdentity = {
+      queueId: 'queue-current',
+      owner: { kind: 'goal', id: 'goal-1' },
+    };
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, goal: { id: 'goal-1' } });
+
+    const result = await handleGoalUpdate({ status: 'complete', reason: 'done' });
+
+    expect(result.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith('/api/goal/update', 'POST', {
+      sessionId: 'session-goal-turn',
+      workspacePath: '/tmp/myagents-goal-workspace',
+      goalId: 'goal-1',
+      queueId: 'queue-current',
+      status: 'complete',
+      reason: 'done',
+    });
+  });
+
+  it('rejects a terminal update without a current Goal-owned queue turn', async () => {
+    const { handleGoalUpdate } = await import('./admin-api');
+    sessionEngineMocks.state.context = {
+      sessionId: 'session-stale-goal-turn',
+      workspacePath: '/tmp/myagents-goal-workspace',
+    };
+
+    const result = await handleGoalUpdate({ status: 'complete', reason: 'stale completion' });
+
+    expect(result).toEqual({
+      success: false,
+      error: 'Goal terminal update requires the active Goal turn authority',
+    });
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+});
+
+describe('admin-api cron create', () => {
+  it('leaves execution routing unset when the caller did not request a Task override', async () => {
+    const workspacePath = '/tmp/myagents-managed-codex-workspace';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      defaultProviderId: 'anthropic-sub',
+      agents: [{
+        id: 'agent-managed-codex',
+        name: 'Managed Codex',
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        runtime: 'builtin',
+      }],
+    });
+    const { handleCronCreate } = await import('./admin-api');
+
+    const result = await handleCronCreate({
+      name: 'follow-agent',
+      message: 'Do work',
+      workspacePath,
+      intervalMinutes: 5,
+      dryRun: true,
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.preview).toMatchObject({
+      name: 'follow-agent',
+      message: 'Do work',
+      workspacePath,
+      intervalMinutes: 5,
+    });
+    expect(result.preview).not.toHaveProperty('providerId');
+    expect(result.preview).not.toHaveProperty('model');
+    expect(result.preview).not.toHaveProperty('runtime');
+    expect(result.preview).not.toHaveProperty('runtimeConfig');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('rejects loop schedules before ordinary cron creation reaches Rust', async () => {
+    const { handleCronCreate } = await import('./admin-api');
+
+    const result = await handleCronCreate({
+      prompt: 'Keep going',
+      schedule: { kind: 'loop' },
+      workspacePath: '/tmp/myagents-goal-workspace',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Use myagents goal create');
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+});
+
+describe('admin-api model add', () => {
+  it('expands custom provider models from repeated and comma-separated CLI inputs', async () => {
+    const { handleModelAdd } = await import('./admin-api');
+
+    const result = handleModelAdd({
+      dryRun: true,
+      provider: {
+        id: 'sensenova',
+        name: 'SensNova',
+        baseUrl: 'https://token.sensenova.cn/v1',
+        apiProtocol: 'openai',
+        authType: 'api_key',
+        models: ['sensenova-6.7-flash-lite, deepseek-v4-flash', 'glm-5.2', 'deepseek-v4-flash'],
+        modelNames: ['Flash Lite', 'DeepSeek Flash', 'GLM 5.2', 'Duplicate Name'],
+        primaryModel: 'deepseek-v4-flash',
+      },
+    });
+
+    expect(result.success).toBe(true);
+    const preview = result.preview as { models: Array<{ model: string; modelName: string }>; primaryModel: string };
+    expect(preview.primaryModel).toBe('deepseek-v4-flash');
+    expect(preview.models).toEqual([
+      { model: 'sensenova-6.7-flash-lite', modelName: 'Flash Lite', modelSeries: 'sensenova' },
+      { model: 'deepseek-v4-flash', modelName: 'DeepSeek Flash', modelSeries: 'sensenova' },
+      { model: 'glm-5.2', modelName: 'GLM 5.2', modelSeries: 'sensenova' },
+    ]);
   });
 });
 

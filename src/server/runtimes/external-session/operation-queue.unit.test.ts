@@ -71,6 +71,20 @@ describe('external operation queue owner', () => {
     });
   });
 
+  it('reports queued and reserved messages by domain owner', async () => {
+    const queue = await loadFreshQueueOwner();
+    queue.enqueueExternalMessageOperation({
+      text: 'goal clarification',
+      context: context({ turnOwner: { kind: 'goal', id: 'goal-1' } }),
+      runtimeConfig: snapshot(),
+    });
+
+    expect(queue.hasExternalQueuedMessageByOwner({ kind: 'goal', id: 'goal-1' })).toBe(true);
+    expect(queue.hasExternalQueuedMessageByOwner({ kind: 'goal', id: 'goal-2' })).toBe(false);
+    queue.reserveExternalOperationForDrain();
+    expect(queue.hasExternalQueuedMessageByOwner({ kind: 'goal', id: 'goal-1' })).toBe(true);
+  });
+
   it('keeps each queued message bound to its enqueue-time runtime config snapshot', async () => {
     const queue = await loadFreshQueueOwner();
     const firstConfig = snapshot({ model: 'model-a', permissionMode: 'default' });
@@ -211,6 +225,40 @@ describe('external operation queue owner', () => {
 
     expect(queue.clearExternalQueueWithCancellation()).toEqual([first.queueId]);
     queue.releaseExternalDrainReservation(reserved);
+  });
+
+  it('settles queued dispatch acceptance only when the drained operation is accepted', async () => {
+    const queue = await loadFreshQueueOwner();
+    const queued = queue.enqueueExternalMessageOperation({
+      text: 'wait for drain',
+      context: context(),
+      runtimeConfig: snapshot(),
+    });
+    if (!queued.queued) throw new Error('test queue setup failed');
+
+    let settled = false;
+    void queued.dispatchAcceptance.then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    const reserved = queue.reserveExternalOperationForDrain();
+    if (!reserved || reserved.kind !== 'message') throw new Error('expected queued message');
+    queue.settleExternalMessageOperation(reserved, { queued: true });
+
+    await expect(queued.dispatchAcceptance).resolves.toEqual({ queued: true });
+  });
+
+  it('settles queued dispatch acceptance as rejected when the queue item is cancelled', async () => {
+    const queue = await loadFreshQueueOwner();
+    const queued = queue.enqueueExternalMessageOperation({
+      text: 'cancel me',
+      context: context(),
+      runtimeConfig: snapshot(),
+    });
+    if (!queued.queued) throw new Error('test queue setup failed');
+
+    expect(queue.cancelExternalQueuedMessage(queued.queueId)).toBe('cancel me');
+    await expect(queued.dispatchAcceptance).resolves.toEqual({ queued: false });
   });
 
   it('resets stale desktop send tails without running old queued closures', async () => {

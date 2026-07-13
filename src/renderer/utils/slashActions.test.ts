@@ -3,8 +3,10 @@ import type { SlashCommand } from '../../shared/slashCommands';
 import {
   CLIENT_ACTION_SLASH_COMMANDS,
   isClientActionCommand,
+  resolveClientActionName,
   withClientActionCommands,
 } from './slashActions';
+import { i18n } from '@/i18n';
 
 const cmd = (name: string, source: SlashCommand['source']): SlashCommand => ({
   name,
@@ -14,10 +16,12 @@ const cmd = (name: string, source: SlashCommand['source']): SlashCommand => ({
 
 describe('isClientActionCommand', () => {
   it('is true only for builtin client-action commands', () => {
+    expect(isClientActionCommand(cmd('goal', 'builtin'))).toBe(true);
     expect(isClientActionCommand(cmd('loop', 'builtin'))).toBe(true);
   });
 
   it('is false for a non-builtin source with the same name (no hijack of a user skill)', () => {
+    expect(isClientActionCommand(cmd('goal', 'skill'))).toBe(false);
     expect(isClientActionCommand(cmd('loop', 'skill'))).toBe(false);
     expect(isClientActionCommand(cmd('loop', 'custom'))).toBe(false);
     expect(isClientActionCommand(cmd('loop', 'sdk'))).toBe(false);
@@ -28,29 +32,57 @@ describe('isClientActionCommand', () => {
   });
 });
 
+describe('resolveClientActionName', () => {
+  it('resolves /loop as a compatibility alias for /goal', () => {
+    expect(resolveClientActionName('/goal')).toBe('goal');
+    expect(resolveClientActionName('/loop')).toBe('goal');
+  });
+
+  it('returns null for ordinary commands', () => {
+    expect(resolveClientActionName('/compact')).toBeNull();
+  });
+});
+
 describe('withClientActionCommands', () => {
   const base = [cmd('alpha', 'skill'), cmd('compact', 'builtin')];
 
   it('returns the list untouched when disabled (no handler wired)', () => {
     const result = withClientActionCommands(base, false);
     expect(result).toBe(base); // same reference — no allocation
+    expect(result.some((c) => c.name === 'goal')).toBe(false);
     expect(result.some((c) => c.name === 'loop')).toBe(false);
   });
 
   it('appends client-action commands when enabled', () => {
     const result = withClientActionCommands(base, true);
-    expect(result.filter((c) => c.name === 'loop')).toHaveLength(1);
-    expect(result.find((c) => c.name === 'loop')?.source).toBe('builtin');
+    expect(result.filter((c) => c.name === 'goal')).toHaveLength(1);
+    expect(result.filter((c) => c.name === 'loop')).toHaveLength(0);
+    expect(result.find((c) => c.name === 'goal')?.source).toBe('builtin');
+    expect(result.find((c) => c.name === 'goal')?.aliases).toContain('loop');
+  });
+
+  it('uses the localized /goal description', async () => {
+    const previousLanguage = i18n.language;
+    await i18n.changeLanguage('zh-CN');
+
+    try {
+      const result = withClientActionCommands(base, true);
+      expect(result.find((c) => c.name === 'goal')?.description)
+        .toBe('目标模式：持续执行直到目标全部达成');
+    } finally {
+      await i18n.changeLanguage(previousLanguage);
+    }
   });
 
   it('reserves client-action names: the product command preempts a same-named user skill', () => {
-    const withUserLoop = [...base, cmd('loop', 'skill')];
-    const result = withClientActionCommands(withUserLoop, true);
-    // Exactly one /loop, and it is the builtin client-action (not the user skill)
-    // — so selecting it opens the panel instead of inserting text.
-    expect(result.filter((c) => c.name === 'loop')).toHaveLength(1);
-    expect(result.find((c) => c.name === 'loop')?.source).toBe('builtin');
-    expect(isClientActionCommand(result.find((c) => c.name === 'loop')!)).toBe(true);
+    const withUserCommands = [...base, cmd('goal', 'skill'), cmd('loop', 'skill')];
+    const result = withClientActionCommands(withUserCommands, true);
+    // /goal is visible; /loop is reserved as a hidden alias, so a user skill
+    // cannot shadow the old command name.
+    expect(result.filter((c) => c.name === 'goal')).toHaveLength(1);
+    expect(result.filter((c) => c.name === 'loop')).toHaveLength(0);
+    expect(result.find((c) => c.name === 'goal')?.source).toBe('builtin');
+    expect(isClientActionCommand(result.find((c) => c.name === 'goal')!)).toBe(true);
   });
 
   it('every client-action command is itself a client action', () => {

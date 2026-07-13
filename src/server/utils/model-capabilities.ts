@@ -584,6 +584,27 @@ export function applyContextWindowSuffix(model: string | undefined | null): stri
 }
 
 /**
+ * Provider-scoped variant for SDK ingress points whose active provider is
+ * known. This keeps official provider presets authoritative for their own
+ * sessions while still allowing custom providers to reuse a bundled model id
+ * with a different context window.
+ */
+export function applyProviderContextWindowSuffix(
+  model: string | undefined | null,
+  providerId: string | undefined | null,
+): string | undefined {
+  if (!model) return undefined;
+  const bare = stripModelSuffix(model);
+  if (!bare) return undefined;
+  if (/\[1m\]/i.test(model)) return model;
+  const ctx = lookupProviderModelContextLength(bare, providerId);
+  if (typeof ctx === 'number' && ctx > CONTEXT_WINDOW_UNLOCK_THRESHOLD) {
+    return `${bare}[1m]`;
+  }
+  return bare;
+}
+
+/**
  * Whether the model accepts a given input modality.
  *
  * Returns `true` for unknown / unregistered models — the optimistic default

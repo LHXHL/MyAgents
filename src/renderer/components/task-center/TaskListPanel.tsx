@@ -6,9 +6,7 @@
 // list view (quick scan / filter). The choice is persisted in localStorage
 // so returning users see their last-picked view.
 //
-// Legacy cron tasks (CronTasks with no `task_id` back-pointer) are "上浮" here
-// alongside native tasks (PRD §11.4) — they render with a 「遗留」 badge and
-// their "remain in source chat tab" management pattern.
+// Unmigrated historical Cron rows remain visible as read-only diagnostics.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { CheckSquare, Plus } from 'lucide-react';
@@ -29,9 +27,9 @@ import { useConfig } from '@/hooks/useConfig';
 import { listenWithCleanup } from '@/utils/tauriListen';
 import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import { isProjectActiveForUser } from '@/config/types';
+import { isManagedScheduledJob } from '@/../shared/managedScheduledJob';
 import type { Task, TaskStatus } from '@/../shared/types/task';
 import { normalizeWorkspacePathIdentity, workspacePathsEqual } from '@/../shared/workspacePath';
-import { canAutoUpgrade, isBenignAlreadyLinked, upgradeLegacyCron, type LegacyCronRaw } from './legacyUpgrade';
 import { DispatchTaskDialog } from './DispatchTaskDialog';
 import { LegacyCronOverlay } from './LegacyCronOverlay';
 import { TaskDetailOverlay } from './TaskDetailOverlay';
@@ -98,15 +96,8 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
     toastRef.current = toast;
   }, [toast]);
   const { projects } = useConfig();
-  const projectsRef = useRef(projects);
-  useEffect(() => {
-    projectsRef.current = projects;
-  }, [projects]);
-  // Serialize reload() calls — belt-and-braces alongside the server-side
-  // `cmd_cron_set_task_id` link-if-null guard. Prevents the auto-upgrade
-  // sweep from interleaving with itself when SSE events and refreshKey
-  // bumps arrive back-to-back. A trailing `pending` flag catches reloads
-  // that land during an in-flight run so we never miss a state change.
+  // Serialize reload() calls. A trailing pending flag catches state changes
+  // that arrive while the current read is in flight.
   const reloadInflightRef = useRef(false);
   const reloadPendingRef = useRef(false);
 
@@ -154,36 +145,8 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
         taskList({}),
         fetchLegacyCronTasks(t('tasks.unnamedLegacyTask')),
       ]);
-      // Silent auto-upgrade (PRD §11.4 / §16.2). Any legacy row that has
-      // the prerequisites (prompt + resolvable workspace) is upgraded in
-      // place before we commit state. Rows that fail eligibility remain
-      // in the legacy list and can still be upgraded manually via the
-      // `LegacyCronOverlay` button (where we surface the actual error).
-      //
-      // The operation is idempotent — once a cron has `task_id` set,
-      // `fetchLegacyCronTasks` filters it out, so re-running this does
-      // nothing on subsequent reloads.
-      const { upgradedTasks, remainingLegacy, failedCount, firstError } =
-        await autoUpgradeEligible(legacyList, projectsRef.current);
-      const mergedNative = upgradedTasks.length
-        ? [...upgradedTasks, ...nativeList]
-        : nativeList;
-      setTasks(mergedNative.filter((task) => !task.managedKind));
-      setLegacy(remainingLegacy);
-      if (upgradedTasks.length > 0) {
-        toastRef.current.success(
-          t('tasks.autoUpgradeSuccess', { count: upgradedTasks.length }),
-        );
-      }
-      // Surface auto-upgrade failures so the user understands why the
-      // legacy badge is still there. Detail goes to the console; the
-      // toast trims to the first error (at most one per reload).
-      if (failedCount > 0) {
-        toastRef.current.error(
-          t('tasks.autoUpgradeFailed', { count: failedCount, message: firstError ?? t('common.unknownError') }),
-          8000,
-        );
-      }
+      setTasks(nativeList.filter((task) => !isManagedScheduledJob(task)));
+      setLegacy(legacyList);
     } catch (err) {
       console.error('[TaskListPanel] load failed', err);
       setTasks([]);
@@ -210,19 +173,6 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
     void reload();
   }, [reload, refreshKey]);
 
-  // Projects are loaded asynchronously by `useConfig()` — when Task Center
-  // mounts before config is ready, `projects=[]` and the auto-upgrade sweep
-  // finds nothing eligible. Re-kick reload the moment config transitions
-  // from empty → populated so eligible legacy rows get upgraded without
-  // having to wait for an unrelated SSE event.
-  const hadProjectsRef = useRef(projects.length > 0);
-  useEffect(() => {
-    if (!hadProjectsRef.current && projects.length > 0) {
-      hadProjectsRef.current = true;
-      void reload();
-    }
-  }, [projects.length, reload]);
-
   // Focus the search input when the parent forwards a `{ autofocusSearch:
   // true }` intent. Triggered by the Launcher "我的任务" tab's search
   // icon — it opens this tab and wants the user to start typing without
@@ -242,17 +192,26 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
   }, [intentAutofocus, intentNonce]);
 
 
-  // SSE: listen for task:status-changed events fired by Rust `update_status`
+  // Lifecycle projections are transient, so every Task mutation event refetches
+  // the authoritative Task + execution snapshot.
   // and refetch so every open TaskCenter tab stays in sync with the source of
   // truth. Guarded on Tauri because `listen` is a Tauri-only import.
   useEffect(() => {
     if (!taskCenterAvailable()) return;
     const ac = new AbortController();
-    void listenWithCleanup('task:status-changed', () => {
+    for (const event of ['task:status-changed', 'cron:execution-state-changed']) {
+      void listenWithCleanup(event, () => {
+        void reload();
+      }, ac.signal);
+    }
+    void listenWithCleanup<{ taskId?: string }>('task:session-rebound', (event) => {
       void reload();
+      if (event.payload?.taskId) {
+        toastRef.current.success(t('tasks.sessionRecreated'));
+      }
     }, ac.signal);
     return () => ac.abort();
-  }, [reload]);
+  }, [reload, t]);
 
   // ── Per-task action handlers. Shared by card and list views via callbacks.
   // Each one toggles `pendingIds[id]` around the RPC so only that one card
@@ -367,23 +326,13 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
       finished: [],
     };
     for (const c of filtered) {
-      // Legacy → new-model status mapping. We use `hasExited` (derived
-      // from `CronTask.exit_reason`) to distinguish "ended naturally"
-      // from "user paused" — the scheduler sets exit_reason when end
-      // conditions trigger or the AI calls ExitCronTask, so this is a
-      // reliable signal that the cron is done, not just idle.
-      //   • running              → `running`  (active bucket)
-      //   • stopped + exited     → `done`     (finished bucket)
-      //   • stopped (no reason)  → `stopped`  (pending bucket — user
-      //                                        can restart from here)
+      // Historical Cron rows are never live scheduler authorities. Keep them
+      // in the finished bucket regardless of the status recorded in the old
+      // file; the detail view still shows that original status verbatim.
       const status: TaskStatus =
         c.kind === 'task'
           ? c.task.status
-          : c.legacy.status === 'running'
-            ? 'running'
-            : c.legacy.hasExited
-              ? 'done'
-              : 'stopped';
+          : 'archived';
       for (const [name, statuses] of Object.entries(BUCKET_STATUSES) as Array<
         [Bucket, typeof BUCKET_STATUSES[Bucket]]
       >) {
@@ -492,7 +441,7 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
           highlighted={highlightTaskId === t.id}
           busy={pendingIds.has(t.id)}
           onOpen={() => openTaskDetail(t)}
-          onEdit={() => openTaskForEdit(t)}
+          onEdit={t.executionState ? undefined : () => openTaskForEdit(t)}
           onRun={() => handleRun(t)}
           onStop={() => handleStop(t)}
           onRerun={() => handleRerun(t)}
@@ -519,7 +468,7 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
           highlighted={highlightTaskId === t.id}
           busy={pendingIds.has(t.id)}
           onOpen={() => openTaskDetail(t)}
-          onEdit={() => openTaskForEdit(t)}
+          onEdit={t.executionState ? undefined : () => openTaskForEdit(t)}
           onRun={() => handleRun(t)}
           onStop={() => handleStop(t)}
           onRerun={() => handleRerun(t)}
@@ -669,23 +618,6 @@ export function TaskListPanel({ highlightTaskId, refreshKey, pendingIntent }: Pr
         <LegacyCronOverlay
           legacy={selectedLegacy.raw}
           onClose={() => setSelectedLegacy(null)}
-          onChanged={() => {
-            void reload();
-          }}
-          onUpgraded={(upgradedTask) => {
-            // PRD §11.4 — after upgrade the legacy back-pointer is set, so
-            // next reload filters it out of the legacy list. Switch the open
-            // overlay to the new TaskDetailOverlay for continuity.
-            setSelectedLegacy(null);
-            setTasks((prev) => {
-              const idx = prev.findIndex((x) => x.id === upgradedTask.id);
-              if (idx === -1) return [upgradedTask, ...prev];
-              return prev.map((x) => (x.id === upgradedTask.id ? upgradedTask : x));
-            });
-            setSelectedTask(upgradedTask);
-            toastRef.current.success(t('tasks.upgraded', { name: upgradedTask.name }));
-            void reload();
-          }}
         />
       )}
 
@@ -729,21 +661,17 @@ function BucketHeader({ label, count }: { label: string; count: number }) {
 }
 
 /**
- * Pull every CronTask across workspaces and surface the ones that don't have
- * a Task Center back-pointer (PRD §11.4 legacy upsurface). Returns `[]` when
- * the Tauri environment isn't ready or the CLI round-trip fails — we don't
- * want a transient error to blank out the whole task list.
+ * The backend returns only historical rows without Task authority. Returns
+ * `[]` when the Tauri environment is unavailable or the read fails.
  */
 async function fetchLegacyCronTasks(unnamedLegacyTaskLabel: string): Promise<LegacyCronRow[]> {
   if (!taskCenterAvailable()) return [];
   try {
     const { invoke } = await import('@tauri-apps/api/core');
     const all = (await invoke<Record<string, unknown>[]>(
-      'cmd_get_cron_tasks',
+      'cmd_get_unmigrated_legacy_cron_tasks',
     )) as Array<Record<string, unknown>>;
-    return all
-      .filter((t) => !t.taskId && !t.task_id && !getRawManagedKind(t))
-      .map<LegacyCronRow>((t) => {
+    return all.map<LegacyCronRow>((t) => {
         const status = (t.status as string | undefined) === 'running' ? 'running' : 'stopped';
         const updatedAt =
           typeof t.updatedAt === 'string'
@@ -751,86 +679,19 @@ async function fetchLegacyCronTasks(unnamedLegacyTaskLabel: string): Promise<Leg
             : typeof t.createdAt === 'string'
               ? Date.parse(t.createdAt)
               : 0;
-        // `exit_reason` is populated by the scheduler when end-conditions
-        // trigger or the AI calls ExitCronTask — the signal we use to say
-        // "this cron is done, not paused". Defend against snake/camel as
-        // other raw fields do.
-        const exitReason =
-          (t.exitReason as string | null | undefined) ??
-          (t.exit_reason as string | null | undefined);
         return {
           id: String(t.id ?? ''),
           name: String(t.name ?? t.prompt ?? unnamedLegacyTaskLabel).slice(0, 80),
           status,
-          hasExited: status === 'stopped' && !!exitReason,
           raw: t,
           workspacePath: String(t.workspacePath ?? ''),
           updatedAt: Number.isFinite(updatedAt) ? updatedAt : 0,
         };
-      });
+    });
   } catch (err) {
     console.warn('[TaskListPanel] fetchLegacyCronTasks failed', err);
     return [];
   }
-}
-
-function getRawManagedKind(row: Record<string, unknown>): string {
-  const value = row.managedKind ?? row.managed_kind;
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-/**
- * Sweep a freshly-fetched legacy list and upgrade every eligible row to
- * a new-model Task. Uses the same `upgradeLegacyCron` flow as the manual
- * button in `LegacyCronOverlay` so the behaviour is identical — only the
- * trigger differs. Rows that fail eligibility (no prompt, unknown
- * workspace, etc.) stay in the legacy list untouched; the user can still
- * upgrade them manually or dismiss them via the existing delete path.
- *
- * Errors are logged but do not abort the sweep — one bad row shouldn't
- * leave the rest unmigrated.
- */
-async function autoUpgradeEligible(
-  legacy: LegacyCronRow[],
-  projects: import('@/config/types').Project[],
-): Promise<{
-  upgradedTasks: Task[];
-  remainingLegacy: LegacyCronRow[];
-  failedCount: number;
-  firstError: string | null;
-}> {
-  const upgradedTasks: Task[] = [];
-  const remainingLegacy: LegacyCronRow[] = [];
-  let failedCount = 0;
-  let firstError: string | null = null;
-  for (const row of legacy) {
-    const raw = row.raw as LegacyCronRaw;
-    if (!canAutoUpgrade(raw, projects)) {
-      // Not counted as "failed" — these are known-ineligible (missing
-      // prompt / unresolvable workspace) and the user sees them in the
-      // legacy list with the manual upgrade button.
-      remainingLegacy.push(row);
-      continue;
-    }
-    try {
-      const { task } = await upgradeLegacyCron(raw, projects);
-      upgradedTasks.push(task);
-    } catch (err) {
-      if (isBenignAlreadyLinked(err)) {
-        // App-startup sweep won the race — this row is now migrated,
-        // just not by us. Drop it from `remainingLegacy` so it no
-        // longer renders the "遗留" badge; next `reload()` fetches the
-        // freshly-upgraded Task via the non-legacy path. No failure
-        // toast. (v0.1.69 cross-review W1)
-        continue;
-      }
-      console.warn('[TaskListPanel] auto-upgrade failed for', row.id, err);
-      remainingLegacy.push(row);
-      failedCount += 1;
-      if (!firstError) firstError = String(err);
-    }
-  }
-  return { upgradedTasks, remainingLegacy, failedCount, firstError };
 }
 
 export default TaskListPanel;

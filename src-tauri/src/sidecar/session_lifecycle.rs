@@ -1,5 +1,26 @@
 use super::*;
 
+pub(crate) type SessionLifecycleGuard = crate::keyed_lifecycle::KeyedLifecycleGuard;
+
+static SESSION_LIFECYCLE_LOCKS: std::sync::OnceLock<
+    crate::keyed_lifecycle::KeyedLifecycleRegistry,
+> = std::sync::OnceLock::new();
+
+pub(crate) async fn acquire_session_lifecycle(session_ids: &[&str]) -> SessionLifecycleGuard {
+    SESSION_LIFECYCLE_LOCKS
+        .get_or_init(crate::keyed_lifecycle::KeyedLifecycleRegistry::new)
+        .acquire(session_ids)
+        .await
+}
+
+pub(crate) async fn has_persisted_session_owner(session_id: &str) -> Result<bool, String> {
+    Ok(crate::session_goal::get_session_goal_manager()
+        .has_session_identity_protection(session_id)
+        .await
+        .map_err(|error| error.to_string())?
+        || crate::task_scheduler::has_persistent_task_for_session(session_id).await)
+}
+
 // ============= Session-Centric Sidecar API (v0.1.11) =============
 
 /// Result returned from ensure_session_sidecar
@@ -96,6 +117,79 @@ pub fn ensure_session_sidecar_with_runtime_identity_override<R: Runtime>(
     )
 }
 
+fn resolve_runtime_identity_for_owner(
+    owner: &SidecarOwner,
+    runtime_override: Option<&str>,
+    runtime_source_override: Option<&str>,
+    session_runtime_identity: Option<RuntimeIdentity>,
+    agent_runtime_identity: Option<RuntimeIdentity>,
+) -> RuntimeIdentity {
+    let session_runtime = session_runtime_identity
+        .as_ref()
+        .map(|identity| identity.runtime.clone());
+    let agent_runtime = agent_runtime_identity
+        .as_ref()
+        .map(|identity| identity.runtime.clone());
+    let resolved_runtime = resolve_runtime_for_owner(
+        runtime_override.map(str::to_string),
+        owner,
+        session_runtime,
+        agent_runtime,
+    );
+    let resolved_runtime_name = normalize_runtime_name(resolved_runtime.as_deref()).to_string();
+    let resolved_runtime_source = if resolved_runtime_name == "builtin" {
+        None
+    } else if runtime_override.is_some() {
+        Some(runtime_source_override.unwrap_or("system-cli"))
+    } else if session_runtime_identity
+        .as_ref()
+        .map(|identity| identity.runtime.as_str())
+        == Some(resolved_runtime_name.as_str())
+        && !owner_prefers_live_agent_runtime(owner)
+    {
+        session_runtime_identity
+            .as_ref()
+            .and_then(|identity| identity.runtime_source.as_deref())
+    } else if agent_runtime_identity
+        .as_ref()
+        .map(|identity| identity.runtime.as_str())
+        == Some(resolved_runtime_name.as_str())
+    {
+        agent_runtime_identity
+            .as_ref()
+            .and_then(|identity| identity.runtime_source.as_deref())
+    } else {
+        Some("system-cli")
+    };
+    RuntimeIdentity::new(Some(&resolved_runtime_name), resolved_runtime_source)
+}
+
+fn resolve_expected_runtime_identity(
+    session_id: &str,
+    workspace_path: &std::path::Path,
+    owner: &SidecarOwner,
+    runtime_override: Option<&str>,
+    runtime_source_override: Option<&str>,
+) -> RuntimeIdentity {
+    // Existing Session metadata is authoritative for desktop-style owners.
+    // A metadata creator has no Session row yet, so it follows the exact same
+    // override -> Agent resolution that the spawn path uses. Live IM owners
+    // intentionally ignore Session metadata and follow the Agent default.
+    let session_runtime_identity = if owner_prefers_live_agent_runtime(owner) {
+        None
+    } else {
+        resolve_session_runtime_identity_full(session_id)
+    };
+    let agent_runtime_identity = resolve_agent_runtime_identity_from_config(workspace_path);
+    resolve_runtime_identity_for_owner(
+        owner,
+        runtime_override,
+        runtime_source_override,
+        session_runtime_identity,
+        agent_runtime_identity,
+    )
+}
+
 fn ensure_session_sidecar_attempt<R: Runtime>(
     app_handle: &AppHandle<R>,
     manager: &ManagedSidecarManager,
@@ -120,8 +214,14 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
     );
     let ensure_started = trace_start();
     let owner_for_trace = format!("{:?}", owner);
-    let requested_runtime_for_trace =
-        normalize_runtime_name(runtime_override.as_deref()).to_string();
+    let expected_runtime_identity = resolve_expected_runtime_identity(
+        session_id,
+        workspace_path,
+        &owner,
+        runtime_override.as_deref(),
+        runtime_source_override.as_deref(),
+    );
+    let requested_runtime_for_trace = expected_runtime_identity.runtime.clone();
     emit_perf_trace(
         PerfTrace::new(PerfTraceName::SidecarBoot, "ensure_start")
             .session_id(Some(session_id))
@@ -164,9 +264,9 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
     //     spawn path below uses the owner-aware priority chain to pick the
     //     correct runtime from agent config.
     //
-    //   - memory_update.rs direct callers: they target an existing session_id
+    //   - memory auto-update callers: they target an existing session_id
     //     that may be shared with a desktop Tab. Killing the Sidecar here
-    //     would orphan the Tab's SSE stream. Better to let memory_update
+    //     would orphan the Tab's SSE stream. Better to let memory_auto_update
     //     reuse the existing (possibly stale-runtime) Sidecar — memory file
     //     updates are runtime-agnostic so a mismatched runtime doesn't
     //     actually break anything.
@@ -190,6 +290,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
             } else if sidecar.is_reusable() {
                 if validate_sidecar_runtime_invariant(
                     session_id,
+                    &expected_runtime_identity,
                     sidecar.runtime.as_deref(),
                     sidecar.runtime_source.as_deref(),
                     "reuse-healthy-precheck",
@@ -219,6 +320,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 );
                 if validate_sidecar_runtime_invariant(
                     session_id,
+                    &expected_runtime_identity,
                     sidecar.runtime.as_deref(),
                     sidecar.runtime_source.as_deref(),
                     "reuse-starting",
@@ -325,6 +427,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                     );
                     if validate_sidecar_runtime_invariant(
                         session_id,
+                        &expected_runtime_identity,
                         sidecar.runtime.as_deref(),
                         sidecar.runtime_source.as_deref(),
                         "reuse-replacement",
@@ -362,6 +465,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                     );
                     if validate_sidecar_runtime_invariant(
                         session_id,
+                        &expected_runtime_identity,
                         sidecar.runtime.as_deref(),
                         sidecar.runtime_source.as_deref(),
                         "reuse-http-healthy",
@@ -401,6 +505,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                     );
                     if validate_sidecar_runtime_invariant(
                         session_id,
+                        &expected_runtime_identity,
                         sidecar.runtime.as_deref(),
                         sidecar.runtime_source.as_deref(),
                         "reuse-starting-ready",
@@ -456,7 +561,8 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
                 // Codex Critical #2). Leave teardown to whoever truly owns it.
                 let should_stop = if joined_owner_added {
                     if let Some(sidecar) = manager_guard.sidecars.get_mut(session_id) {
-                        sidecar.port == port && sidecar.remove_owner(&owner)
+                        let (removed, last_owner_removed) = sidecar.remove_owner(&owner);
+                        sidecar.port == port && removed && last_owner_removed
                     } else {
                         false
                     }
@@ -489,6 +595,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
             manager_guard,
             runtime_override.as_deref(),
             runtime_source_override.as_deref(),
+            &expected_runtime_identity,
             attempt,
         );
         if let Ok(ensure_result) = &result {
@@ -515,6 +622,7 @@ fn ensure_session_sidecar_attempt<R: Runtime>(
         manager_guard,
         runtime_override.as_deref(),
         runtime_source_override.as_deref(),
+        &expected_runtime_identity,
         attempt,
     );
     if let Ok(ensure_result) = &result {
@@ -542,6 +650,7 @@ fn create_new_session_sidecar<R: Runtime>(
     mut manager_guard: std::sync::MutexGuard<'_, SidecarManager>,
     runtime_override: Option<&str>,
     runtime_source_override: Option<&str>,
+    resolved_identity: &RuntimeIdentity,
     attempt: u32,
 ) -> Result<EnsureSidecarResult, String> {
     let boot_started = trace_start();
@@ -619,88 +728,20 @@ fn create_new_session_sidecar<R: Runtime>(
         cmd.env("MYAGENTS_MANAGEMENT_PORT", mgmt_port.to_string());
     }
 
-    // Inject runtime type for Agent Runtime selection (v0.1.59, v0.1.62, v0.1.66).
-    //
-    // Priority rules, split by owner type:
-    //
-    //   Tab / CronTask / BackgroundCompletion (desktop-style):
-    //     runtime_override → session metadata → agent config
-    //
-    //     Session metadata is authoritative so an ongoing conversation can't
-    //     switch runtimes mid-stream just because the user tweaked the agent's
-    //     default in Settings. This is the v0.1.62 session-stability guarantee.
-    //
-    //   Live Agent peer owners (IM / agent-channel session keys):
-    //     runtime_override → agent config (NO session fallback)
-    //
-    //     The IM peer session map is keyed on (agent, channel, user), so the
-    //     user never sees individual session IDs — their mental model is "I'm
-    //     talking to my agent". When they change the agent's runtime in
-    //     Settings, they expect the next IM message to use the new runtime
-    //     regardless of which session_id the peer map happens to point at.
-    //
-    //     Critically, we must NOT fall back to session metadata for live IM
-    //     peer owners: `resolve_agent_runtime_from_config` returns None when
-    //     the agent is builtin, and falling through to session_runtime would
-    //     silently re-resurrect a previously-used external runtime (e.g.
-    //     gemini→builtin switch), defeating the whole point of the IM drift
-    //     semantics. A None result here means "spawn as builtin (no env var)"
-    //     which is exactly correct — the user explicitly asked for builtin.
-    //
-    //   Maintenance Agent owners (for example memory_update:{agent}:{session})
-    //     target a concrete historical session_id, not an opaque peer binding,
-    //     so they follow the desktop-style session metadata rule.
-    let session_runtime_identity = if owner_prefers_live_agent_runtime(&owner) {
-        None
-    } else {
-        resolve_session_runtime_identity_full(session_id)
-    };
-    let session_runtime = session_runtime_identity
-        .as_ref()
-        .map(|identity| identity.runtime.clone());
-    let agent_runtime_identity = resolve_agent_runtime_identity_from_config(workspace_path);
-    let agent_runtime = agent_runtime_identity
-        .as_ref()
-        .map(|identity| identity.runtime.clone());
-    let resolved_runtime = resolve_runtime_for_owner(
-        runtime_override.map(str::to_string),
-        &owner,
-        session_runtime,
-        agent_runtime,
-    );
-    let resolved_runtime_name = normalize_runtime_name(resolved_runtime.as_deref()).to_string();
-    let resolved_runtime_source = if resolved_runtime_name == "builtin" {
-        None
-    } else if runtime_override.is_some() {
-        Some(runtime_source_override.unwrap_or("system-cli"))
-    } else if session_runtime_identity
-        .as_ref()
-        .map(|identity| identity.runtime.as_str())
-        == Some(resolved_runtime_name.as_str())
-        && !owner_prefers_live_agent_runtime(&owner)
-    {
-        session_runtime_identity
-            .as_ref()
-            .and_then(|identity| identity.runtime_source.as_deref())
-    } else if agent_runtime_identity
-        .as_ref()
-        .map(|identity| identity.runtime.as_str())
-        == Some(resolved_runtime_name.as_str())
-    {
-        agent_runtime_identity
-            .as_ref()
-            .and_then(|identity| identity.runtime_source.as_deref())
-    } else {
-        Some("system-cli")
-    };
-    let resolved_identity =
-        RuntimeIdentity::new(Some(&resolved_runtime_name), resolved_runtime_source);
+    // Reuse validation and process spawn consume the same identity snapshot for
+    // this ensure attempt. In particular, missing Session metadata is not an
+    // implicit builtin identity for a metadata creator.
     if let Some(runtime) = resolved_identity.runtime_for_env() {
         cmd.env("MYAGENTS_RUNTIME", runtime);
     }
     if let Some(runtime_source) = resolved_identity.runtime_source_for_env() {
         cmd.env("MYAGENTS_RUNTIME_SOURCE", runtime_source);
     }
+    let sidecar_generation = manager_guard.next_generation(session_id);
+    cmd.env(
+        "MYAGENTS_SIDECAR_GENERATION",
+        sidecar_generation.to_string(),
+    );
     let runtime_for_trace = resolved_identity.runtime.clone();
     let runtime_source_for_trace = resolved_identity.runtime_source_label().to_string();
 
@@ -726,6 +767,7 @@ fn create_new_session_sidecar<R: Runtime>(
             .detail("owner", format!("{:?}", owner)),
     );
     let mut child = cmd.spawn().map_err(|e| {
+        manager_guard.clear_generation(session_id);
         ulog_error!("[sidecar] Failed to spawn SessionSidecar: {}", e);
         emit_perf_trace(
             PerfTrace::new(PerfTraceName::SidecarBoot, "spawn_failed")
@@ -794,6 +836,7 @@ fn create_new_session_sidecar<R: Runtime>(
     // Check if the process already exited (non-blocking poll). No pre-sleep;
     // the health-loop's alive_check catches any crash this probe misses.
     if let Ok(Some(status)) = child.try_wait() {
+        manager_guard.clear_generation(session_id);
         thread::sleep(Duration::from_millis(100));
         ulog_error!(
             "[sidecar] SessionSidecar exited immediately with status: {:?}",
@@ -831,7 +874,7 @@ fn create_new_session_sidecar<R: Runtime>(
             .map(str::to_string),
     };
 
-    manager_guard.insert_sidecar(session_id, sidecar);
+    manager_guard.insert_sidecar_at_generation(session_id, sidecar_generation, sidecar);
 
     // Drop lock before waiting for health
     drop(manager_guard);
@@ -978,8 +1021,6 @@ pub fn release_session_sidecar(
 
     if removed {
         if stopped {
-            // Clean up generation counter when sidecar is permanently removed
-            manager_guard.clear_generation(session_id);
             ulog_info!(
                 "[sidecar] Released owner {:?} from session {}, Sidecar stopped (last owner)",
                 owner,
@@ -1045,7 +1086,7 @@ pub async fn cmd_ensure_session_sidecar(
 ) -> Result<EnsureSidecarResult, String> {
     let owner = match ownerType.as_str() {
         "tab" => SidecarOwner::Tab(ownerId),
-        "cron_task" => SidecarOwner::CronTask(ownerId),
+        "task" => SidecarOwner::Task(ownerId),
         "im_bot" | "agent" => SidecarOwner::Agent(ownerId),
         _ => return Err(format!("Invalid owner type: {}", ownerType)),
     };
@@ -1083,7 +1124,6 @@ pub fn cmd_release_session_sidecar(
 ) -> Result<bool, String> {
     let owner = match ownerType.as_str() {
         "tab" => SidecarOwner::Tab(ownerId),
-        "cron_task" => SidecarOwner::CronTask(ownerId),
         "background_completion" => SidecarOwner::BackgroundCompletion(ownerId),
         "im_bot" | "agent" => SidecarOwner::Agent(ownerId),
         _ => return Err(format!("Invalid owner type: {}", ownerType)),
@@ -1126,23 +1166,217 @@ pub fn cmd_get_session_generation(
 /// This updates HashMap keys without stopping the Sidecar.
 #[tauri::command]
 #[allow(non_snake_case)]
-pub fn cmd_upgrade_session_id(
+pub async fn cmd_upgrade_session_id(
     state: tauri::State<'_, ManagedSidecarManager>,
     oldSessionId: String,
     newSessionId: String,
 ) -> Result<bool, String> {
+    let _lifecycle = acquire_session_lifecycle(&[&oldSessionId, &newSessionId]).await;
+    if has_persisted_session_owner(&oldSessionId).await?
+        || has_persisted_session_owner(&newSessionId).await?
+    {
+        return Ok(false);
+    }
     let mut manager = state.lock().map_err(|e| e.to_string())?;
+    if manager.session_has_persistent_owners(&oldSessionId) {
+        return Ok(false);
+    }
     Ok(manager.upgrade_session_id(&oldSessionId, &newSessionId))
 }
 
-/// Check if a session's Sidecar has persistent background owners (CronTask or Agent)
-/// Used by frontend to decide whether closing a tab needs confirmation.
+/// Check whether a session identity must remain stable after a Tab detaches.
+/// Includes both live background owners and durable Task/Goal state whose
+/// physical Sidecar owner may still be attaching or recovering.
 #[tauri::command]
 #[allow(non_snake_case)]
-pub fn cmd_session_has_persistent_owners(
+pub async fn cmd_session_has_persistent_owners(
     state: tauri::State<'_, ManagedSidecarManager>,
     sessionId: String,
-) -> bool {
-    let manager = state.lock().unwrap_or_else(|e| e.into_inner());
-    manager.session_has_persistent_owners(&sessionId)
+) -> Result<bool, String> {
+    let sidecars = state.inner().clone();
+    let has_live_owner = {
+        let manager = sidecars.lock().unwrap_or_else(|e| e.into_inner());
+        manager.session_has_persistent_owners(&sessionId)
+    };
+    Ok(has_live_owner
+        || crate::task_scheduler::has_persistent_task_for_session(&sessionId).await
+        || crate::session_goal::get_session_goal_manager()
+            .has_session_identity_protection(&sessionId)
+            .await
+            .map_err(|error| error.to_string())?)
+}
+
+/// Delete a transcript only while no persistent scheduler or Sidecar owner can
+/// claim the session. The per-Session lifecycle guard stays held across the
+/// local DELETE, so a Task/Goal/Agent cannot appear between validation and mutation.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_delete_session_if_unowned(
+    state: tauri::State<'_, ManagedSidecarManager>,
+    sessionId: String,
+) -> Result<bool, String> {
+    if sessionId.trim().is_empty() || sessionId.contains('/') {
+        return Err("Invalid session ID".to_string());
+    }
+    // Fast negative for the common active Task/Goal case. A fresh Session
+    // creator may retain the lifecycle guard until metadata birth; waiting on
+    // that guard before looking at the already-published durable/transient
+    // owner would make a delete click hang for the entire AI turn. This is
+    // only a UX shortcut: the same predicate is checked again under the guard
+    // below, which remains the correctness boundary for false -> true races.
+    if has_persisted_session_owner(&sessionId).await? {
+        return Ok(false);
+    }
+    let _lifecycle = acquire_session_lifecycle(&[&sessionId]).await;
+    if has_persisted_session_owner(&sessionId).await? {
+        return Ok(false);
+    }
+    let sidecars = state.inner().clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut manager = sidecars.lock().map_err(|error| error.to_string())?;
+        if manager.session_has_owners(&sessionId) {
+            return Ok(false);
+        }
+        let instance = manager
+            .get_instance_mut(GLOBAL_SIDECAR_ID)
+            .ok_or_else(|| "Global Sidecar is not running".to_string())?;
+        if !instance.is_running() {
+            return Err("Global Sidecar is not running".to_string());
+        }
+        let port = instance.port;
+        let client = crate::local_http::blocking_builder()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|error| format!("Failed to create local HTTP client: {error}"))?;
+        let response = client
+            .delete(format!("http://127.0.0.1:{port}/sessions/{sessionId}"))
+            .send()
+            .map_err(|error| format!("Failed to delete session: {error}"))?;
+        if !response.status().is_success() {
+            return Ok(false);
+        }
+        manager.deactivate_session(&sessionId);
+        Ok(true)
+    })
+    .await
+    .map_err(|error| format!("Session deletion task failed: {error:?}"))?
+}
+
+/// Release a Tab owner and update the activation under the Session lifecycle guard.
+/// This prevents a newly-created Goal/Agent owner from landing between a
+/// renderer-side presence check and activation mutation.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn cmd_release_tab_session(
+    state: tauri::State<'_, ManagedSidecarManager>,
+    sessionId: String,
+    tabId: String,
+) -> Result<bool, String> {
+    let _lifecycle = acquire_session_lifecycle(&[&sessionId]).await;
+    let has_persisted_owner = has_persisted_session_owner(&sessionId).await?;
+    let mut manager = state.lock().map_err(|error| error.to_string())?;
+    Ok(manager.release_tab_session(&sessionId, &tabId, has_persisted_owner))
+}
+
+#[cfg(test)]
+mod session_lifecycle_tests {
+    use super::{
+        acquire_session_lifecycle, resolve_runtime_identity_for_owner,
+        validate_sidecar_runtime_invariant, RuntimeIdentity, SidecarOwner,
+    };
+    use std::time::Duration;
+
+    #[test]
+    fn metadata_creator_uses_agent_runtime_for_external_reuse_and_spawn() {
+        let expected = resolve_runtime_identity_for_owner(
+            &SidecarOwner::Task("task-a".to_string()),
+            None,
+            None,
+            None,
+            Some(RuntimeIdentity::new(
+                Some("codex"),
+                Some("managed-provider"),
+            )),
+        );
+
+        assert_eq!(expected.runtime, "codex");
+        assert_eq!(expected.runtime_source.as_deref(), Some("managed-provider"));
+        assert!(validate_sidecar_runtime_invariant(
+            "metadata-creator",
+            &expected,
+            Some("codex"),
+            Some("managed-provider"),
+            "test-healthy-reuse",
+        )
+        .is_ok());
+        assert!(validate_sidecar_runtime_invariant(
+            "metadata-creator",
+            &expected,
+            Some("codex"),
+            Some("managed-provider"),
+            "test-starting-reuse",
+        )
+        .is_ok());
+        assert!(validate_sidecar_runtime_invariant(
+            "metadata-creator",
+            &expected,
+            None,
+            None,
+            "test-wrong-builtin-reuse",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn metadata_creator_runtime_override_wins_before_metadata_birth() {
+        let expected = resolve_runtime_identity_for_owner(
+            &SidecarOwner::Task("task-a".to_string()),
+            Some("gemini"),
+            Some("system-cli"),
+            None,
+            Some(RuntimeIdentity::new(
+                Some("codex"),
+                Some("managed-provider"),
+            )),
+        );
+
+        assert_eq!(expected.runtime, "gemini");
+        assert_eq!(expected.runtime_source.as_deref(), Some("system-cli"));
+    }
+
+    #[tokio::test]
+    async fn lifecycle_lock_serializes_one_session_without_blocking_another() {
+        let suffix = uuid::Uuid::new_v4();
+        let first_session = format!("lifecycle-first-{suffix}");
+        let other_session = format!("lifecycle-other-{suffix}");
+        let first_guard = acquire_session_lifecycle(&[&first_session]).await;
+
+        let (same_tx, same_rx) = tokio::sync::oneshot::channel();
+        let same_session = first_session.clone();
+        let same_task = tauri::async_runtime::spawn(async move {
+            let _guard = acquire_session_lifecycle(&[&same_session]).await;
+            let _ = same_tx.send(());
+        });
+        assert!(tokio::time::timeout(Duration::from_millis(50), same_rx)
+            .await
+            .is_err());
+
+        let (other_tx, other_rx) = tokio::sync::oneshot::channel();
+        let other_task = tauri::async_runtime::spawn(async move {
+            let _guard = acquire_session_lifecycle(&[&other_session]).await;
+            let _ = other_tx.send(());
+        });
+        tokio::time::timeout(Duration::from_secs(1), other_rx)
+            .await
+            .expect("another session must not be blocked")
+            .expect("other-session sender must stay alive");
+
+        drop(first_guard);
+        tokio::time::timeout(Duration::from_secs(1), same_task)
+            .await
+            .expect("same-session waiter must proceed after release")
+            .expect("same-session task must complete");
+        other_task.await.expect("other-session task must complete");
+    }
 }

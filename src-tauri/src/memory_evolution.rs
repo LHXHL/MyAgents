@@ -1,4 +1,7 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::im::types::{HeartbeatConfig, MemoryAutoUpdateConfig};
 use crate::task::{
@@ -76,6 +79,7 @@ pub async fn cmd_configure_memory_evolution_tasks(
     if !request.enabled {
         stop_existing_job(store, &request.workspace_path, &gardener).await?;
         stop_existing_job(store, &request.workspace_path, &molt).await?;
+        backfill_and_log_system_maintenance_session_markers(&request.workspace_path).await;
         return Ok(ConfigureMemoryEvolutionTasksResult {
             enabled: false,
             gardener_task_id: None,
@@ -85,6 +89,7 @@ pub async fn cmd_configure_memory_evolution_tasks(
 
     let gardener_task_id = ensure_job_running(store, &request, &gardener).await?;
     let molt_task_id = ensure_job_running(store, &request, &molt).await?;
+    backfill_and_log_system_maintenance_session_markers(&request.workspace_path).await;
 
     crate::ulog_info!(
         "[memory-evolution] ensured managed tasks for agent {}: gardener={}, molt={}",
@@ -98,6 +103,26 @@ pub async fn cmd_configure_memory_evolution_tasks(
         gardener_task_id: Some(gardener_task_id),
         molt_task_id: Some(molt_task_id),
     })
+}
+
+async fn backfill_and_log_system_maintenance_session_markers(workspace_path: &str) {
+    match backfill_system_maintenance_session_markers(workspace_path).await {
+        Ok(count) if count > 0 => {
+            crate::ulog_info!(
+                "[memory-evolution] backfilled {} system maintenance session marker(s) for {}",
+                count,
+                workspace_path
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            crate::ulog_warn!(
+                "[memory-evolution] failed to backfill system maintenance session markers for {}: {}",
+                workspace_path,
+                error
+            );
+        }
+    }
 }
 
 fn job_spec(
@@ -127,7 +152,7 @@ async fn ensure_job_running(
         Some(task) => reconcile_existing_job(store, request, spec, task).await?,
         None => {
             store
-                .create_direct(TaskCreateDirectInput {
+                .create_system_managed_direct(TaskCreateDirectInput {
                     name: spec.name.to_string(),
                     executor: TaskExecutor::Agent,
                     description: Some(
@@ -191,12 +216,8 @@ async fn stop_job_for_update(
     task: &task::Task,
     reason: &str,
 ) -> Result<(), String> {
-    if let Some(cron_id) = task.cron_task_id.as_deref() {
-        let manager = crate::cron_task::get_cron_task_manager();
-        let _ = manager.stop_task(cron_id, Some(reason.to_string())).await;
-    }
     if matches!(task.status, TaskStatus::Running | TaskStatus::Verifying) {
-        let _ = store
+        store
             .update_status(TaskUpdateStatusInput {
                 id: task.id.clone(),
                 status: TaskStatus::Stopped,
@@ -204,6 +225,13 @@ async fn stop_job_for_update(
                 actor: TransitionActor::System,
                 source: Some(TransitionSource::Scheduler),
             })
+            .await?;
+    } else if crate::task_scheduler::get_task_scheduler()
+        .is_executing(&task.id)
+        .await
+    {
+        crate::task_scheduler::get_task_scheduler()
+            .stop(&task.id)
             .await?;
     }
     Ok(())
@@ -322,36 +350,117 @@ async fn reconcile_existing_job(
         .await
 }
 
+async fn backfill_system_maintenance_session_markers(
+    workspace_path: &str,
+) -> Result<usize, String> {
+    let Some(store) = task::get_task_store() else {
+        return Ok(0);
+    };
+    let managed_by_cron_id: HashMap<String, String> = store
+        .list(task::TaskListFilter {
+            include_managed: Some(true),
+            ..Default::default()
+        })
+        .await
+        .into_iter()
+        .filter(|task| {
+            crate::workspace_path::normalize_workspace_path_identity(&task.workspace_path)
+                == crate::workspace_path::normalize_workspace_path_identity(workspace_path)
+        })
+        .filter_map(|task| {
+            let kind = match task.managed_kind.as_deref() {
+                Some(task::MANAGED_KIND_MEMORY_GARDENER) => task::MANAGED_KIND_MEMORY_GARDENER,
+                Some(task::MANAGED_KIND_MEMORY_MOLT) => task::MANAGED_KIND_MEMORY_MOLT,
+                _ => return None,
+            };
+            Some((task.id, kind.to_string()))
+        })
+        .collect();
+    if managed_by_cron_id.is_empty() {
+        return Ok(0);
+    }
+
+    let myagents_dir = crate::app_dirs::myagents_data_dir()
+        .ok_or_else(|| "无法定位 MyAgents 数据目录".to_string())?;
+    let sessions_path = myagents_dir.join("sessions.json");
+    let tmp_path = myagents_dir.join("sessions.json.tmp");
+    let lock_path = myagents_dir.join("sessions.lock");
+
+    let result = crate::utils::file_lock::with_file_lock(
+        &lock_path,
+        crate::utils::file_lock::FileLockOptions::default(),
+        move || -> Result<usize, crate::utils::file_lock::FileLockError> {
+            let content = match std::fs::read_to_string(&sessions_path) {
+                Ok(content) => content,
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+                Err(err) => return Err(crate::utils::file_lock::FileLockError::Io(err)),
+            };
+            let mut sessions: Value = serde_json::from_str(crate::utils::bom::strip_bom(&content))
+                .map_err(|err| {
+                    crate::utils::file_lock::FileLockError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("parse sessions.json: {}", err),
+                    ))
+                })?;
+            let arr = sessions.as_array_mut().ok_or_else(|| {
+                crate::utils::file_lock::FileLockError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "sessions.json must contain a SessionMetadata array",
+                ))
+            })?;
+
+            let mut changed = 0usize;
+            for session in arr.iter_mut() {
+                let Some(cron_id) = session.get("cronTaskId").and_then(Value::as_str) else {
+                    continue;
+                };
+                let Some(kind) = managed_by_cron_id.get(cron_id) else {
+                    continue;
+                };
+                let Some(obj) = session.as_object_mut() else {
+                    continue;
+                };
+                if obj.get("systemMaintenanceKind").and_then(Value::as_str) == Some(kind.as_str()) {
+                    continue;
+                }
+                obj.insert(
+                    "systemMaintenanceKind".to_string(),
+                    Value::String(kind.clone()),
+                );
+                changed += 1;
+            }
+
+            if changed == 0 {
+                return Ok(0);
+            }
+
+            let new_content = serde_json::to_string_pretty(&sessions).map_err(|err| {
+                crate::utils::file_lock::FileLockError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("serialize sessions.json: {}", err),
+                ))
+            })?;
+            std::fs::write(&tmp_path, new_content)
+                .map_err(crate::utils::file_lock::FileLockError::Io)?;
+            std::fs::rename(&tmp_path, &sessions_path)
+                .map_err(crate::utils::file_lock::FileLockError::Io)?;
+            Ok(changed)
+        },
+    )
+    .await;
+
+    result.map_err(|err| format!("sessions metadata lock/write failed: {}", err))
+}
+
 async fn arm_task_for_scheduler(
     store: &std::sync::Arc<task::TaskStore>,
     task: task::Task,
 ) -> Result<String, String> {
     if task.status == TaskStatus::Running {
-        if let Some(cron_id) = task.cron_task_id.as_deref() {
-            let manager = crate::cron_task::get_cron_task_manager();
-            if let Some(cron) = manager.get_task(cron_id).await {
-                if cron.status != crate::cron_task::TaskStatus::Running {
-                    manager
-                        .start_task(cron_id)
-                        .await
-                        .map_err(|e| format!("start_task: {}", e))?;
-                }
-                manager
-                    .start_task_scheduler(cron_id)
-                    .await
-                    .map_err(|e| format!("start_task_scheduler: {}", e))?;
-                return Ok(task.id);
-            }
-        }
-        store
-            .update_status(TaskUpdateStatusInput {
-                id: task.id.clone(),
-                status: TaskStatus::Stopped,
-                message: Some("memory evolution scheduler missing; re-arming".to_string()),
-                actor: TransitionActor::System,
-                source: Some(TransitionSource::Scheduler),
-            })
+        crate::task_scheduler::get_task_scheduler()
+            .start(&task.id)
             .await?;
+        return Ok(task.id);
     }
 
     let current = store
@@ -371,7 +480,7 @@ async fn arm_task_for_scheduler(
             .await?;
     }
 
-    let (task, _cron_id) = crate::management_api::run_task_by_id(&task.id).await?;
+    let task = crate::management_api::run_task_by_id(&task.id).await?;
     Ok(task.id)
 }
 

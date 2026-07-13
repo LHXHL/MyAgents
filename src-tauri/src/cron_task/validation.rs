@@ -1,52 +1,6 @@
 use super::*;
 
-/// Normalize a path for comparison across persisted and caller-supplied forms.
-/// Cron tasks may be stored with POSIX separators while Windows callers query
-/// with backslashes, so compare on a stable lexical identity instead of the raw
-/// string. This intentionally does not canonicalize: workspaces may not exist
-/// when listing historical tasks.
-///
-/// pub(crate): this is the canonical Rust workspace-path identity (the TS port
-/// lives in src/shared/workspacePath.ts — keep both in sync). Other modules
-/// (im::handover, im::memory_update) MUST reuse it instead of hand-rolling
-/// `.replace('\\', "/")`, which misses drive-letter case folding and
-/// trailing-slash trimming (#320 family).
-pub(crate) fn normalize_path(path: &str) -> String {
-    let windows_style = (path.len() >= 2 && path.as_bytes()[1] == b':')
-        || path.starts_with("\\\\")
-        || path.starts_with("//");
-    let mut normalized = if windows_style {
-        path.replace('\\', "/")
-    } else {
-        path.to_string()
-    };
-    if normalized.is_empty() {
-        return normalized;
-    }
-
-    let bytes = normalized.as_bytes();
-    let min_len = if bytes.len() >= 3 && bytes[1] == b':' && bytes[2] == b'/' {
-        3 // Windows drive root: C:/
-    } else if normalized.starts_with("//") {
-        2 // UNC/network root prefix
-    } else if normalized.starts_with('/') {
-        1 // POSIX root
-    } else {
-        0
-    };
-
-    while normalized.len() > min_len && normalized.ends_with('/') {
-        normalized.pop();
-    }
-
-    let is_windows_identity =
-        (normalized.len() >= 2 && normalized.as_bytes()[1] == b':') || normalized.starts_with("//");
-    if is_windows_identity {
-        normalized = normalized.to_lowercase();
-    }
-
-    normalized
-}
+pub(crate) use crate::workspace_path::normalize_workspace_path_identity as normalize_path;
 
 /// Validate a cron expression (and optional timezone) at data-boundary time
 /// so bad input is rejected when saved, not silently swallowed at next fire
@@ -197,7 +151,7 @@ pub(super) fn translate_unix_dow_to_crate_dow(dow: &str) -> String {
 /// assuming the caller is using the cron crate's native dialect (Quartz-style,
 /// 1=Sun). We don't translate DOW for those — power users typing 6/7 fields
 /// know what they're doing.
-pub(super) fn next_cron_fire_time(expr: &str, tz: Option<&str>) -> Result<DateTime<Utc>, String> {
+pub(crate) fn next_cron_fire_time(expr: &str, tz: Option<&str>) -> Result<DateTime<Utc>, String> {
     let expr7 = {
         let fields: Vec<&str> = expr.trim().split_whitespace().collect();
         match fields.len() {

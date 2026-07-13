@@ -1,10 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendMessage, resetTranscriptForTest, transcriptState } from './transcript';
 import {
+  accumulateCurrentTurnUsage,
   markCurrentTurnHasOutput,
   pushPendingRequest,
   resetTurnForTest,
   setCurrentTurnCompactResult,
+  setCurrentTurnSourceItem,
   setCurrentTurnStartTime,
   setCurrentTurnToolCount,
   setSawCompactBoundary,
@@ -110,6 +112,7 @@ function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
       provider_api_protocol: null,
     }),
     probeForkPersistenceIfReady: vi.fn(),
+    recoverInvalidResumeAnchorError: vi.fn(() => false),
     handleTerminalRecovery: vi.fn(),
     applyDeferredRestartIfNeeded: vi.fn(),
     ...overrides,
@@ -138,6 +141,16 @@ describe('turn-lifecycle owner', () => {
     });
     markCurrentTurnHasOutput();
     setCurrentTurnStartTime(90);
+    const onTerminal = vi.fn();
+    setCurrentTurnSourceItem({
+      id: 'goal-turn',
+      message: { role: 'user', content: 'run' },
+      messageText: 'run',
+      wasQueued: false,
+      resolve: vi.fn(),
+      onTerminal,
+    });
+    accumulateCurrentTurnUsage({ inputTokens: 100, outputTokens: 20 });
 
     lifecycle.handleSdkResult(makeResult({
       result: 'hello',
@@ -153,6 +166,10 @@ describe('turn-lifecycle owner', () => {
     expect(transcriptState.messages[0]).toMatchObject({
       usage: { inputTokens: 12, outputTokens: 5, cacheReadTokens: 2 },
     });
+    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'complete',
+      usage: { inputTokens: 12, outputTokens: 5 },
+    }));
     expect(deps.firePostTurnTitleHook).not.toHaveBeenCalled();
 
     persist.resolve();
@@ -200,6 +217,54 @@ describe('turn-lifecycle owner', () => {
 
     expect(deps.failCurrentImRequest).not.toHaveBeenCalled();
     expect(deps.completeCurrentImRequest).toHaveBeenCalledWith('');
+  });
+
+  it('recovers SDK missing resume anchor result errors without surfacing a user error', () => {
+    const { deps, broadcasts } = makeDeps({
+      recoverInvalidResumeAnchorError: vi.fn(() => true),
+    });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+
+    lifecycle.handleSdkResult(makeResult({
+      subtype: 'error_during_execution',
+      is_error: true,
+      result: 'Claude Code returned an error result: No message found with message.uuid of: 75c9051f-a071-4243-bc25-92cfc396e2db',
+      terminal_reason: 'error',
+    }));
+
+    expect(deps.recoverInvalidResumeAnchorError).toHaveBeenCalledWith(
+      'Claude Code returned an error result: No message found with message.uuid of: 75c9051f-a071-4243-bc25-92cfc396e2db',
+    );
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:agent-error');
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-error');
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
+    expect(deps.persistTranscript).not.toHaveBeenCalled();
+    expect(deps.abortTurnAbort).toHaveBeenCalledWith('session-1', 'error');
+  });
+
+  it('does not notify the queue turn for recoverable resume anchor errors', () => {
+    const { deps } = makeDeps({
+      recoverInvalidResumeAnchorError: vi.fn(() => true),
+    });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    const onTerminal = vi.fn();
+    setCurrentTurnSourceItem({
+      id: 'queue-replay',
+      message: { role: 'user', content: 'retry' },
+      messageText: 'retry',
+      wasQueued: false,
+      resolve: vi.fn(),
+      onTerminal,
+    });
+
+    lifecycle.handleSdkResult(makeResult({
+      subtype: 'error_during_execution',
+      is_error: true,
+      result: 'No message found with message.uuid of: 75c9051f-a071-4243-bc25-92cfc396e2db',
+      terminal_reason: 'error',
+    }));
+
+    expect(onTerminal).not.toHaveBeenCalled();
   });
 
   it('does not title a completed turn when turn-end persistence fails', async () => {
@@ -312,9 +377,24 @@ describe('turn-lifecycle owner', () => {
   it('finalizes stopped turns with queue cleanup, IM completion, and persistence', () => {
     const { deps } = makeDeps();
     const lifecycle = createBuiltinTurnLifecycle(deps);
+    const onTerminal = vi.fn();
+    setCurrentTurnSourceItem({
+      id: 'goal-turn',
+      message: { role: 'user', content: 'run' },
+      messageText: 'run',
+      wasQueued: false,
+      resolve: vi.fn(),
+      onTerminal,
+    });
+    accumulateCurrentTurnUsage({ inputTokens: 120, outputTokens: 30 });
+    accumulateCurrentTurnUsage({ inputTokens: 80, outputTokens: 20 });
 
     lifecycle.stopTurn();
 
+    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'stopped',
+      usage: { inputTokens: 200, outputTokens: 50 },
+    }));
     expect(deps.schedulePostTerminalQueueDrain).toHaveBeenCalledWith('stopped');
     expect(deps.endTurnAbort).toHaveBeenCalledWith('session-1');
     expect(deps.completeCurrentImRequest).toHaveBeenCalledWith('');

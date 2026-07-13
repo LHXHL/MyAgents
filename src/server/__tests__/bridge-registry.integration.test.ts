@@ -24,6 +24,7 @@ import {
   registerBridge,
   unregisterBridge,
   lookupBridge,
+  hasBridge,
   listBridges,
   disablePromptCacheKey,
   isPromptCacheKeyDisabled,
@@ -44,24 +45,24 @@ const baseConfig = {
 };
 
 describe('bridge-registry — single-tenant', () => {
-  it('(a) register + lookup returns the config', () => {
+  it('(a) register + lookup returns the config', async () => {
     registerBridge('tok-A', () => ({ ...baseConfig }), 'session:test');
-    const cfg = lookupBridge('tok-A');
+    const cfg = await lookupBridge('tok-A');
     expect(cfg).toBeDefined();
     expect(cfg!.baseUrl).toBe('https://api.example.com');
     expect(cfg!.apiKey).toBe('sk-secret-1234');
     expect(cfg!.model).toBe('test-model');
   });
 
-  it('(b) unregister removes the entry', () => {
+  it('(b) unregister removes the entry', async () => {
     registerBridge('tok-A', () => ({ ...baseConfig }), 'session:test');
-    expect(lookupBridge('tok-A')).toBeDefined();
+    expect(await lookupBridge('tok-A')).toBeDefined();
     unregisterBridge('tok-A');
-    expect(lookupBridge('tok-A')).toBeUndefined();
+    expect(await lookupBridge('tok-A')).toBeUndefined();
   });
 
-  it('(c) unknown token returns undefined', () => {
-    expect(lookupBridge('nonexistent')).toBeUndefined();
+  it('(c) unknown token returns undefined', async () => {
+    expect(await lookupBridge('nonexistent')).toBeUndefined();
   });
 
   it('unregister of non-existent token is a no-op (idempotent)', () => {
@@ -70,7 +71,7 @@ describe('bridge-registry — single-tenant', () => {
 });
 
 describe('bridge-registry — multi-tenant isolation (#124 core)', () => {
-  it('(d) two concurrent bridges with different upstreams do NOT mix', () => {
+  it('(d) two concurrent bridges with different upstreams do NOT mix', async () => {
     registerBridge('tok-chat', () => ({
       ...baseConfig,
       baseUrl: 'https://chat-provider.com',
@@ -87,8 +88,8 @@ describe('bridge-registry — multi-tenant isolation (#124 core)', () => {
       model: 'verify-model',
     }), 'verify:moonshot');
 
-    const chat = lookupBridge('tok-chat')!;
-    const verify = lookupBridge('tok-verify')!;
+    const chat = (await lookupBridge('tok-chat'))!;
+    const verify = (await lookupBridge('tok-verify'))!;
 
     // The whole point: each token resolves to ITS config, not the other's.
     expect(chat.baseUrl).toBe('https://chat-provider.com');
@@ -100,12 +101,12 @@ describe('bridge-registry — multi-tenant isolation (#124 core)', () => {
 
     // Unregister one — the other survives untouched.
     unregisterBridge('tok-verify');
-    expect(lookupBridge('tok-chat')).toBeDefined();
-    expect(lookupBridge('tok-chat')!.baseUrl).toBe('https://chat-provider.com');
-    expect(lookupBridge('tok-verify')).toBeUndefined();
+    expect(await lookupBridge('tok-chat')).toBeDefined();
+    expect((await lookupBridge('tok-chat'))!.baseUrl).toBe('https://chat-provider.com');
+    expect(await lookupBridge('tok-verify')).toBeUndefined();
   });
 
-  it('(d) parallel verify simulations: dozens of tokens coexist without interference', () => {
+  it('(d) parallel verify simulations: dozens of tokens coexist without interference', async () => {
     const N = 20;
     for (let i = 0; i < N; i++) {
       registerBridge(`tok-${i}`, () => ({
@@ -119,7 +120,7 @@ describe('bridge-registry — multi-tenant isolation (#124 core)', () => {
 
     // Every token resolves to its own config.
     for (let i = 0; i < N; i++) {
-      const cfg = lookupBridge(`tok-${i}`)!;
+      const cfg = (await lookupBridge(`tok-${i}`))!;
       expect(cfg.baseUrl).toBe(`https://provider-${i}.com`);
       expect(cfg.providerId).toBe(`provider-${i}`);
       expect(cfg.apiKey).toBe(`sk-${i}`);
@@ -129,30 +130,41 @@ describe('bridge-registry — multi-tenant isolation (#124 core)', () => {
 });
 
 describe('bridge-registry — resolver semantics', () => {
-  it('(e) re-registering same token replaces the resolver (intentional)', () => {
+  it('(e) re-registering same token replaces the resolver (intentional)', async () => {
     registerBridge('tok-X', () => ({ ...baseConfig, model: 'first' }), 'first');
-    expect(lookupBridge('tok-X')!.model).toBe('first');
+    expect((await lookupBridge('tok-X'))!.model).toBe('first');
 
     registerBridge('tok-X', () => ({ ...baseConfig, model: 'second' }), 'second');
-    expect(lookupBridge('tok-X')!.model).toBe('second');
+    expect((await lookupBridge('tok-X'))!.model).toBe('second');
   });
 
-  it('(f) dynamic resolver reflects live state without re-registration', () => {
+  it('(f) dynamic resolver reflects live state without re-registration', async () => {
     let currentModel = 'initial';
     registerBridge('tok-dyn', () => ({
       ...baseConfig,
       model: currentModel,
     }), 'session:dynamic');
 
-    expect(lookupBridge('tok-dyn')!.model).toBe('initial');
+    expect((await lookupBridge('tok-dyn'))!.model).toBe('initial');
 
     // Change the source variable — same token, new resolved value.
     currentModel = 'updated';
-    expect(lookupBridge('tok-dyn')!.model).toBe('updated');
+    expect((await lookupBridge('tok-dyn'))!.model).toBe('updated');
 
     // Still works after another lookup roundtrip.
     currentModel = 'updated-again';
-    expect(lookupBridge('tok-dyn')!.model).toBe('updated-again');
+    expect((await lookupBridge('tok-dyn'))!.model).toBe('updated-again');
+  });
+
+  it('existence checks never invoke an async credential resolver', () => {
+    let resolutions = 0;
+    registerBridge('tok-managed', async () => {
+      resolutions += 1;
+      return { ...baseConfig };
+    }, 'session:managed');
+
+    expect(hasBridge('tok-managed')).toBe(true);
+    expect(resolutions).toBe(0);
   });
 });
 
@@ -183,7 +195,7 @@ describe('bridge-registry — diagnostics', () => {
 });
 
 describe('bridge-registry — prompt_cache_key downgrade state', () => {
-  it('keeps the unsupported-field downgrade on same-token re-register and clears it on unregister', () => {
+  it('keeps the unsupported-field downgrade on same-token re-register and clears it on unregister', async () => {
     registerBridge('tok-cache', () => ({ ...baseConfig }), 'session:cache');
     expect(isPromptCacheKeyDisabled('tok-cache')).toBe(false);
 
@@ -191,7 +203,7 @@ describe('bridge-registry — prompt_cache_key downgrade state', () => {
     expect(isPromptCacheKeyDisabled('tok-cache')).toBe(true);
 
     registerBridge('tok-cache', () => ({ ...baseConfig, model: 'new-model' }), 'session:cache-restart');
-    expect(lookupBridge('tok-cache')!.model).toBe('new-model');
+    expect((await lookupBridge('tok-cache'))!.model).toBe('new-model');
     expect(isPromptCacheKeyDisabled('tok-cache')).toBe(true);
 
     unregisterBridge('tok-cache');
@@ -200,13 +212,13 @@ describe('bridge-registry — prompt_cache_key downgrade state', () => {
 });
 
 describe('bridge-registry — error propagation', () => {
-  it('lookup returns undefined cleanly when resolver throws — wait, no, it propagates', () => {
+  it('lookup returns undefined cleanly when resolver throws — wait, no, it propagates', async () => {
     // Per the contract in bridge-registry.ts: a misbehaving resolver is a
     // bug to surface, not silently swallow. Lookup should let the throw out.
     registerBridge('tok-throws', () => {
       throw new Error('resolver broken');
     }, 'broken-test');
 
-    expect(() => lookupBridge('tok-throws')).toThrow('resolver broken');
+    await expect(lookupBridge('tok-throws')).rejects.toThrow('resolver broken');
   });
 });

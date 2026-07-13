@@ -8,6 +8,7 @@ import type { AnthropicRequest } from './types/anthropic';
 type SeenRequest = {
   path: string;
   body: Record<string, unknown>;
+  authorization?: string;
 };
 
 type FakeUpstream = {
@@ -81,7 +82,11 @@ async function startFakeUpstream(
   const server: Server = createServer(async (req, res) => {
     try {
       const body = await readJson(req);
-      seen.push({ path: req.url ?? '/', body });
+      seen.push({
+        path: req.url ?? '/',
+        body,
+        authorization: req.headers.authorization,
+      });
       const response = respond(body, seen);
       writeJson(res, response.status, response.body);
     } catch (err) {
@@ -369,5 +374,107 @@ describe('OpenAI bridge Chat Completions prompt_cache_key', () => {
     expect(joinedLogs).not.toContain('raw-session-id');
     expect(joinedLogs).not.toContain('sk-test');
     expect(joinedLogs).not.toContain(JSON.stringify(fake.seen[0].body));
+  });
+});
+
+describe('OpenAI bridge managed OAuth recovery', () => {
+  let fake: FakeUpstream | undefined;
+
+  afterEach(async () => {
+    await fake?.close();
+    fake = undefined;
+  });
+
+  it('refreshes and retries the byte-equivalent request exactly once after 401', async () => {
+    fake = await startFakeUpstream((_body, seen) => seen.length === 1
+      ? { status: 401, body: { error: { message: 'expired' } } }
+      : { status: 200, body: okResponsesBody });
+    let recoverCalls = 0;
+    let rejectCalls = 0;
+    const reported: Array<[number, number]> = [];
+    const upstream: UpstreamConfig = {
+      providerId: 'xai-sub',
+      baseUrl: fake.baseUrl,
+      apiKey: 'old-access',
+      credentialVersion: 1,
+      model: 'grok-4.5',
+      upstreamFormat: 'responses',
+      recoverAuth: async (rejected) => {
+        recoverCalls += 1;
+        expect(rejected).toBe(1);
+        return { apiKey: 'new-access', credentialVersion: 2 };
+      },
+      rejectCredential: async () => { rejectCalls += 1; },
+      reportOutcome: async (version, status) => { reported.push([version, status]); },
+    };
+
+    const response = await callBridge(upstream);
+
+    expect(response.status).toBe(200);
+    expect(recoverCalls).toBe(1);
+    expect(rejectCalls).toBe(0);
+    expect(reported).toEqual([]);
+    expect(fake.seen).toHaveLength(2);
+    expect(fake.seen[0].authorization).toBe('Bearer old-access');
+    expect(fake.seen[1].authorization).toBe('Bearer new-access');
+    expect(fake.seen[1].body).toEqual(fake.seen[0].body);
+  });
+
+  it('quarantines after the recovery retry is also 401 and never retries a third time', async () => {
+    fake = await startFakeUpstream(() => ({
+      status: 401,
+      body: { error: { message: 'still expired' } },
+    }));
+    const rejected: number[] = [];
+    const reported: Array<[number, number]> = [];
+    const upstream: UpstreamConfig = {
+      providerId: 'xai-sub',
+      baseUrl: fake.baseUrl,
+      apiKey: 'old-access',
+      credentialVersion: 7,
+      model: 'grok-4.5',
+      upstreamFormat: 'responses',
+      recoverAuth: async () => ({ apiKey: 'new-access', credentialVersion: 8 }),
+      rejectCredential: async (version) => { rejected.push(version); },
+      reportOutcome: async (version, status) => { reported.push([version, status]); },
+    };
+
+    const response = await callBridge(upstream);
+
+    expect(response.status).toBe(401);
+    expect(fake.seen).toHaveLength(2);
+    expect(rejected).toEqual([8]);
+    expect(reported).toEqual([[8, 401]]);
+  });
+
+  it.each([403, 429])('does not refresh on upstream HTTP %s', async (status) => {
+    fake = await startFakeUpstream(() => ({
+      status,
+      body: { error: { message: 'not an auth-refresh signal' } },
+    }));
+    let recoverCalls = 0;
+    const reported: Array<[number, number]> = [];
+    const upstream: UpstreamConfig = {
+      providerId: 'xai-sub',
+      baseUrl: fake.baseUrl,
+      apiKey: 'access',
+      credentialVersion: 1,
+      model: 'grok-4.5',
+      upstreamFormat: 'responses',
+      recoverAuth: async () => {
+        recoverCalls += 1;
+        return { apiKey: 'unexpected', credentialVersion: 2 };
+      },
+      reportOutcome: async (version, reportedStatus) => {
+        reported.push([version, reportedStatus]);
+      },
+    };
+
+    const response = await callBridge(upstream);
+
+    expect(response.status).toBe(status);
+    expect(recoverCalls).toBe(0);
+    expect(reported).toEqual([[1, status]]);
+    expect(fake.seen).toHaveLength(1);
   });
 });

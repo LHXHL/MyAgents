@@ -1,4 +1,4 @@
-export type CronScheduleKind = 'at' | 'every' | 'cron' | 'loop';
+export type CronScheduleKind = 'at' | 'every' | 'cron';
 
 export interface CronReminderInput {
   prompt: string;

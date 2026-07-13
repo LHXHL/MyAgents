@@ -28,7 +28,7 @@ import {
   type AdminAppConfig,
 } from '../utils/admin-config';
 import { processImage } from '../utils/imageResize';
-import { applyContextWindowSuffix } from '../utils/model-capabilities';
+import { applyProviderContextWindowSuffix } from '../utils/model-capabilities';
 import type { ResolvedImagePayload } from '../runtimes/types';
 import type { SessionMetadata } from '../types/session';
 
@@ -487,7 +487,7 @@ async function runVisionQueryInner(args: {
       persistSession: false,
       mcpServers: {},
       tools: [],
-      model: applyContextWindowSuffix(args.model),
+      model: applyProviderContextWindowSuffix(args.model, args.providerId),
       abortController,
     },
   });

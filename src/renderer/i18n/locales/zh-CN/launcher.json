@@ -68,7 +68,7 @@
     "unfavorite": "取消收藏",
     "viewStats": "查看统计",
     "delete": "删除",
-    "stopCronBeforeDelete": "请先停止定时任务后再删除"
+    "stopCronBeforeDelete": "请先停止或取消当前目标/定时任务后再删除"
   },
   "workspaceCard": {
     "more": "更多",

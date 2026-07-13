@@ -4,6 +4,7 @@ import { useDroppable } from "@dnd-kit/core";
 import { useTranslation } from "react-i18next";
 
 import { STICKY_DROP_PREFIX } from "./dropTarget";
+import { OverflowNameTooltip } from "./OverflowNameTooltip";
 import type { StickyAncestor } from "./treeTypes";
 
 interface WorkspaceTreeStickyAncestorsProps {
@@ -101,7 +102,10 @@ const StickyAncestorRow = memo(function StickyAncestorRow({
         <ChevronRight className="h-3 w-3 rotate-90 transition-transform" />
       </button>
       <FolderOpen className="h-3.5 w-3.5 flex-shrink-0 text-[var(--accent-warm)]/70" />
-      <span className="min-w-0 flex-1 truncate text-left">{ancestor.name}</span>
+      <OverflowNameTooltip
+        label={ancestor.name}
+        className="min-w-0 flex-1 truncate text-left"
+      />
     </div>
   );
 });

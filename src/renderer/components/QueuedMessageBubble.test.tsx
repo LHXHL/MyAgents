@@ -55,4 +55,27 @@ describe('QueuedMessagesPanel', () => {
     expect(screen.queryByText('已发送')).not.toBeInTheDocument();
     expect(screen.queryByText('排队')).not.toBeInTheDocument();
   });
+
+  it('hides queue action buttons when runtime queue controls are unavailable', () => {
+    render(
+      <QueuedMessagesPanel
+        messages={[{
+          queueId: 'xq-codex-steer',
+          text: '继续输入会咋样',
+          timestamp: Date.now(),
+          isInFlight: true,
+          deliveryMode: 'realtime',
+          canCancel: false,
+          canForceExecute: false,
+        }]}
+        onCancel={vi.fn()}
+        onForceExecute={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('继续输入会咋样')).toBeInTheDocument();
+    expect(screen.queryByTitle('立即发送')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('撤回发送')).not.toBeInTheDocument();
+    expect(screen.queryByTitle('取消排队')).not.toBeInTheDocument();
+  });
 });

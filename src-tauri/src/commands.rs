@@ -946,7 +946,7 @@ pub fn cmd_copy_folder_to_templates(
 
 // ============= Admin Agent Sync =============
 
-const ADMIN_AGENT_VERSION: &str = "22";
+const ADMIN_AGENT_VERSION: &str = "23";
 
 /// Helper-bundled paths (relative to `~/.myagents/`) that previous versions
 /// shipped but that have since been retired.
@@ -1044,7 +1044,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 
 // ============= CLI Sync =============
 
-const CLI_VERSION: &str = "30";
+const CLI_VERSION: &str = "36";
 
 /// Sync the CLI script from bundled resources to ~/.myagents/bin/.
 /// Version-gated: only runs when CLI_VERSION changes.
@@ -1206,7 +1206,13 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "29";
+const SYSTEM_SKILLS_VERSION: &str = "33";
+
+/// One process-wide transaction owner for the versioned system-skill
+/// snapshot. Startup automation and ConfigProvider may request convergence at
+/// the same time; both must join this lock before any remove/copy/version
+/// operation so a Runtime can never scan a half-replaced directory tree.
+static SYSTEM_SKILLS_SYNC_LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
 
 /// Skills that ship with the app and MUST stay at the bundled version —
 /// the app's flows depend on them, users are not meant to customise.
@@ -1241,9 +1247,10 @@ const SYSTEM_SKILLS: &[&str] = &[
     // contract must track the registry's server-side validation (800-char
     // description cap, reserved names) in lockstep.
     "tool-creator",
-    // v27: MyAgents Evo long-term memory maintenance skills. These are
-    // managed task targets, so their bundled contract must stay in lockstep
-    // with the Agent Settings Evo scheduler and rule-substrate templates.
+    // v33: MyAgents memory maintenance skills. These are managed flow
+    // targets, so their bundled contracts must stay in lockstep with the
+    // hidden scheduler, injected-turn prompt, and rule-substrate templates.
+    "myagents-memory-update",
     "myagents-memory-gardener",
     "myagents-memory-molt",
     // v29: prompt-writer promoted from utility → system skill. It is pure
@@ -1283,9 +1290,57 @@ fn is_skill_blocked_on_platform(skill_folder: &str) -> bool {
 /// body moves off-thread, not just the copy loop.
 #[tauri::command]
 pub async fn cmd_sync_system_skills<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String> {
-    tauri::async_runtime::spawn_blocking(move || sync_system_skills_blocking(app_handle))
-        .await
-        .map_err(|e| format!("system-skills sync task failed: {}", e))?
+    sync_system_skills_for_startup(app_handle).await
+}
+
+/// Force-sync and then verify the complete versioned system-skill snapshot.
+///
+/// This is shared by the renderer command and Rust startup automation so
+/// hidden maintenance tasks never depend on ConfigProvider having mounted.
+pub(crate) async fn sync_system_skills_for_startup<R: Runtime>(
+    app_handle: AppHandle<R>,
+) -> Result<bool, String> {
+    let sync_lock = SYSTEM_SKILLS_SYNC_LOCK.get_or_init(|| tokio::sync::Mutex::new(()));
+    let _transaction = sync_lock.lock().await;
+    tauri::async_runtime::spawn_blocking(move || {
+        let changed = sync_system_skills_blocking(app_handle)?;
+        ensure_system_skills_installation_current()?;
+        Ok(changed)
+    })
+    .await
+    .map_err(|e| format!("system-skills sync task failed: {}", e))?
+}
+
+fn ensure_system_skills_installation_current() -> Result<(), String> {
+    let home = dirs::home_dir().ok_or("Home dir not found")?;
+    ensure_system_skills_installation_current_at(&home.join(".myagents"))
+}
+
+fn ensure_system_skills_installation_current_at(myagents_dir: &Path) -> Result<(), String> {
+    let version_path = myagents_dir.join(".system-skills-version");
+    let installed_version = fs::read_to_string(&version_path).map_err(|e| {
+        format!(
+            "system skills are not ready: failed to read {}: {}",
+            version_path.display(),
+            e
+        )
+    })?;
+    if installed_version.trim() != SYSTEM_SKILLS_VERSION {
+        return Err(format!(
+            "system skills are not ready: installed version {:?}, expected {}",
+            installed_version.trim(),
+            SYSTEM_SKILLS_VERSION
+        ));
+    }
+
+    let skills_dir = myagents_dir.join("skills");
+    if !all_installed_system_skills_complete(&skills_dir) {
+        return Err(format!(
+            "system skills are not ready: one or more required SKILL.md files are missing under {}",
+            skills_dir.display()
+        ));
+    }
+    Ok(())
 }
 
 fn sync_system_skills_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String> {
@@ -1505,8 +1560,9 @@ fn merge_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod system_skills_tests {
     use super::{
-        all_installed_system_skills_complete, is_skill_blocked_on_platform, skill_dir_is_complete,
-        sync_one_system_skill, SystemSkillSync, SYSTEM_SKILLS,
+        all_installed_system_skills_complete, ensure_system_skills_installation_current_at,
+        is_skill_blocked_on_platform, skill_dir_is_complete, sync_one_system_skill,
+        SystemSkillSync, SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
     };
     use std::fs;
 
@@ -1525,6 +1581,123 @@ mod system_skills_tests {
         assert!(!skill_dir_is_complete(&dir), "empty dir is not a skill");
         fs::write(dir.join("SKILL.md"), "x").unwrap();
         assert!(skill_dir_is_complete(&dir), "dir with SKILL.md is a skill");
+    }
+
+    #[test]
+    fn v33_refreshes_memory_maintenance_and_space_cli_contracts() {
+        assert_eq!(SYSTEM_SKILLS_VERSION, "33");
+        let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
+        assert!(bundled.contains("myagents space list --json"));
+        assert!(bundled.contains("myagents space whoami --space <slug> --json"));
+        assert!(bundled.contains("所有 Space 业务命令都必须带 `--space <slug>`"));
+
+        let memory_update = include_str!("../../bundled-skills/myagents-memory-update/SKILL.md");
+        assert!(memory_update
+            .contains("仅当系统或用户明确指定完整名称 `myagents-memory-update` 时使用"));
+        assert!(memory_update.contains("不要根据任务语义或相似表述自行触发"));
+        assert!(memory_update.contains("commit 并成功 push"));
+        assert!(SYSTEM_SKILLS.contains(&"myagents-memory-update"));
+    }
+
+    #[test]
+    fn rust_and_node_system_skill_lists_match() {
+        let node = include_str!("../../src/server/index.ts");
+        let body = node
+            .split_once("const SYSTEM_SKILLS: readonly string[] = [")
+            .expect("Node SYSTEM_SKILLS declaration")
+            .1
+            .split_once("];")
+            .expect("Node SYSTEM_SKILLS terminator")
+            .0;
+        let node_skills: Vec<&str> = body
+            .lines()
+            .filter_map(|line| {
+                let line = line.trim();
+                let rest = line.strip_prefix('\'')?;
+                rest.split_once('\'').map(|(name, _)| name)
+            })
+            .collect();
+
+        assert_eq!(node_skills, SYSTEM_SKILLS);
+
+        let shared_contract = include_str!("../../src/shared/systemSkills.ts");
+        assert!(shared_contract.contains(&format!(
+            "export const SYSTEM_SKILLS_VERSION = '{}';",
+            SYSTEM_SKILLS_VERSION
+        )));
+    }
+
+    #[test]
+    fn all_memory_skill_descriptions_require_the_exact_full_name() {
+        for (name, content) in [
+            (
+                "myagents-memory-update",
+                include_str!("../../bundled-skills/myagents-memory-update/SKILL.md"),
+            ),
+            (
+                "myagents-memory-gardener",
+                include_str!("../../bundled-skills/myagents-memory-gardener/SKILL.md"),
+            ),
+            (
+                "myagents-memory-molt",
+                include_str!("../../bundled-skills/myagents-memory-molt/SKILL.md"),
+            ),
+        ] {
+            assert!(
+                content.contains(&format!("仅当系统或用户明确指定完整名称 `{name}` 时使用")),
+                "{name} must use the exact-name-only trigger contract"
+            );
+            assert!(
+                content.contains("不要根据任务语义或相似表述自行触发"),
+                "{name} must reject semantic or similar-phrase auto-triggering"
+            );
+        }
+    }
+
+    #[test]
+    fn automation_startup_sync_precedes_task_scheduler_recovery() {
+        let source = include_str!("cron_task/init_recovery.rs");
+        let sync = source
+            .find("sync_system_skills_for_startup")
+            .expect("startup system-skill sync");
+        let scheduler = source
+            .find("get_task_scheduler()")
+            .expect("task scheduler recovery");
+        assert!(sync < scheduler);
+    }
+
+    #[test]
+    fn sync_readiness_requires_current_version_and_complete_snapshot() {
+        let tmp = tempfile::tempdir().unwrap();
+        let myagents_dir = tmp.path();
+        let skills_dir = myagents_dir.join("skills");
+        for name in SYSTEM_SKILLS {
+            if is_skill_blocked_on_platform(name) {
+                continue;
+            }
+            let dir = skills_dir.join(name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("SKILL.md"), "x").unwrap();
+        }
+
+        fs::write(
+            myagents_dir.join(".system-skills-version"),
+            SYSTEM_SKILLS_VERSION,
+        )
+        .unwrap();
+        ensure_system_skills_installation_current_at(myagents_dir)
+            .expect("current complete snapshot is ready");
+
+        fs::write(myagents_dir.join(".system-skills-version"), "32").unwrap();
+        assert!(ensure_system_skills_installation_current_at(myagents_dir).is_err());
+
+        fs::write(
+            myagents_dir.join(".system-skills-version"),
+            SYSTEM_SKILLS_VERSION,
+        )
+        .unwrap();
+        fs::remove_file(skills_dir.join("myagents-memory-update").join("SKILL.md")).unwrap();
+        assert!(ensure_system_skills_installation_current_at(myagents_dir).is_err());
     }
 
     #[test]
@@ -1654,6 +1827,7 @@ const CREDENTIAL_SUBDIRS: &[&str] = &[
     ".docker",
     ".config/op",
     ".myagents/codex",
+    ".myagents/credentials",
 ];
 #[cfg(target_os = "macos")]
 const MAC_SENSITIVE_SUBDIRS: &[&str] = &[
@@ -1671,8 +1845,109 @@ const WIN_SENSITIVE_SUBDIRS: &[&str] = &["AppData/Local/Microsoft"];
 ///
 /// `pub(crate)` so workspace_files::path_safety can reuse the exact same blacklist —
 /// duplicating it would be a pit-of-failure (two places to update for new credential dirs).
+#[cfg(any(windows, test))]
+fn normalize_windows_security_path(path: &Path) -> PathBuf {
+    let raw = path.to_string_lossy();
+    let windows = raw.replace('/', r"\");
+    let folded = windows.to_lowercase();
+    if folded.starts_with(r"\\?\unc\") {
+        return PathBuf::from(format!(r"\\{}", &windows[8..]));
+    }
+    if folded.starts_with(r"\\?\") {
+        return PathBuf::from(&windows[4..]);
+    }
+    path.to_path_buf()
+}
+
+pub(crate) fn normalize_security_path(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        return normalize_windows_security_path(&path);
+    }
+    #[cfg(not(windows))]
+    {
+        path
+    }
+}
+
+#[cfg(any(windows, test))]
+fn normalize_windows_path_identity(path: &Path) -> String {
+    normalize_windows_security_path(path)
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_lowercase()
+}
+
+fn path_starts_with_identity(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let candidate = normalize_windows_path_identity(path);
+        let root = normalize_windows_path_identity(root);
+        return candidate == root
+            || candidate
+                .strip_prefix(&root)
+                .is_some_and(|rest| rest.starts_with('/'));
+    }
+    #[cfg(not(windows))]
+    {
+        path.starts_with(root)
+    }
+}
+
+fn reject_blacklisted_path(resolved: &Path) -> Result<(), String> {
+    let home = dirs::home_dir().unwrap_or_default();
+
+    for dir in FORBIDDEN_SYSTEM_DIRS {
+        if path_starts_with_identity(resolved, Path::new(dir)) {
+            return Err("Access denied: protected system directory".to_string());
+        }
+    }
+
+    if !home.as_os_str().is_empty() {
+        for name in CREDENTIAL_SUBDIRS {
+            if path_starts_with_identity(resolved, &home.join(name)) {
+                return Err("Access denied: protected credential directory".to_string());
+            }
+        }
+
+        #[cfg(target_os = "macos")]
+        for name in MAC_SENSITIVE_SUBDIRS {
+            if path_starts_with_identity(resolved, &home.join(name)) {
+                return Err("Access denied: protected system directory".to_string());
+            }
+        }
+
+        #[cfg(windows)]
+        for name in WIN_SENSITIVE_SUBDIRS {
+            if path_starts_with_identity(resolved, &home.join(name)) {
+                return Err("Access denied: protected system directory".to_string());
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn resolve_nearest_existing_path_identity(path: &Path) -> Option<PathBuf> {
+    let mut ancestor = path.to_path_buf();
+    let mut suffix = Vec::new();
+    loop {
+        if let Ok(canonical) = fs::canonicalize(&ancestor) {
+            let mut resolved = normalize_security_path(canonical);
+            for component in suffix.iter().rev() {
+                resolved.push(component);
+            }
+            return Some(resolved);
+        }
+        let name = ancestor.file_name()?.to_os_string();
+        suffix.push(name);
+        ancestor = ancestor.parent()?.to_path_buf();
+    }
+}
+
 pub(crate) fn validate_file_path(raw_path: &str) -> Result<PathBuf, String> {
-    let path = PathBuf::from(raw_path);
+    let path = normalize_security_path(PathBuf::from(raw_path));
 
     if !path.is_absolute() {
         return Err("Path must be absolute".to_string());
@@ -1690,37 +1965,9 @@ pub(crate) fn validate_file_path(raw_path: &str) -> Result<PathBuf, String> {
         }
     }
 
-    let home = dirs::home_dir().unwrap_or_default();
-
-    // System directories blacklist (FORBIDDEN_SYSTEM_DIRS is cfg-gated above).
-    for dir in FORBIDDEN_SYSTEM_DIRS {
-        if resolved.starts_with(dir) {
-            return Err("Access denied: protected system directory".to_string());
-        }
-    }
-
-    // Credential / key store directories
-    if !home.as_os_str().is_empty() {
-        for name in CREDENTIAL_SUBDIRS {
-            if resolved.starts_with(home.join(name)) {
-                return Err("Access denied: protected credential directory".to_string());
-            }
-        }
-
-        #[cfg(target_os = "macos")]
-        for name in MAC_SENSITIVE_SUBDIRS {
-            // `name` contains a "/"; PathBuf::join treats it as a separator.
-            if resolved.starts_with(home.join(name)) {
-                return Err("Access denied: protected system directory".to_string());
-            }
-        }
-
-        #[cfg(windows)]
-        for name in WIN_SENSITIVE_SUBDIRS {
-            if resolved.starts_with(home.join(name)) {
-                return Err("Access denied: protected system directory".to_string());
-            }
-        }
+    reject_blacklisted_path(&resolved)?;
+    if let Some(real_identity) = resolve_nearest_existing_path_identity(&resolved) {
+        reject_blacklisted_path(&real_identity)?;
     }
 
     Ok(resolved)
@@ -1728,7 +1975,7 @@ pub(crate) fn validate_file_path(raw_path: &str) -> Result<PathBuf, String> {
 
 #[cfg(test)]
 mod path_safety_crosscheck_tests {
-    use super::{CREDENTIAL_SUBDIRS, FORBIDDEN_SYSTEM_DIRS};
+    use super::{normalize_windows_path_identity, CREDENTIAL_SUBDIRS, FORBIDDEN_SYSTEM_DIRS};
     use serde_json::Value;
 
     // Rust side of the Node↔Rust blacklist cross-check (PRD 0.2.15 §7.2). Asserts
@@ -1772,6 +2019,44 @@ mod path_safety_crosscheck_tests {
             .map(|s| s.to_string())
             .collect();
         assert_eq!(owned, expected);
+    }
+
+    #[test]
+    fn windows_path_identity_strips_verbatim_prefix_and_folds_case() {
+        assert_eq!(
+            normalize_windows_path_identity(std::path::Path::new(r"\\?\c:\WINDOWS\System32\")),
+            "c:/windows/system32"
+        );
+        assert_eq!(
+            normalize_windows_path_identity(std::path::Path::new(
+                r"\\?\UNC\Server\Share\Users\Alice\.ssh\id_ed25519"
+            )),
+            "//server/share/users/alice/.ssh/id_ed25519"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn blacklist_rechecks_symlinked_existing_ancestor_identity() {
+        let parent =
+            crate::workspace_files::test_support::make_test_workspace("commands_path_alias");
+        let alias = parent.join("system-alias");
+        std::os::unix::fs::symlink("/etc", &alias).unwrap();
+
+        assert!(super::validate_file_path(&alias.join("passwd").to_string_lossy()).is_err());
+        assert!(
+            super::validate_file_path(&alias.join("not-created-yet").to_string_lossy()).is_err()
+        );
+
+        let _ = std::fs::remove_file(alias);
+        let _ = std::fs::remove_dir_all(parent);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_blacklist_rejects_case_and_verbatim_aliases() {
+        assert!(super::validate_file_path(r"c:\windows\System32").is_err());
+        assert!(super::validate_file_path(r"\\?\C:\WINDOWS\System32").is_err());
     }
 
     #[cfg(target_os = "macos")]

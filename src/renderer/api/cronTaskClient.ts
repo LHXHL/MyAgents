@@ -1,5 +1,5 @@
-// API client for cron task management
-// Communicates with Rust CronTaskManager via Tauri commands
+// Compatibility client for scheduled Tasks. Command names remain `cron`, but
+// Rust writes TaskStore and arms TaskSchedulerController.
 
 import { isTauriEnvironment } from '@/utils/browserMock';
 import type { CronTask, CronTaskConfig, CronRunRecord, CronSchedule, CronEndConditions, CronDelivery } from '@/types/cronTask';
@@ -50,7 +50,7 @@ async function invokeCommandWithFallback<T>(
   return invoke(cmd, args);
 }
 
-// ============= Cron Task CRUD Operations =============
+// ============= Scheduled Task compatibility operations =============
 
 /** Create a new cron task */
 export const createCronTask = (config: CronTaskConfig): Promise<CronTask> =>
@@ -84,56 +84,15 @@ export const getWorkspaceCronTasks = (workspacePath: string): Promise<CronTask[]
 export const getSessionCronTask = (sessionId: string): Promise<CronTask | null> =>
   invokeCommandWithFallback('cmd_get_session_cron_task', { sessionId }, null);
 
-/** Get active cron task for a tab (running only) */
-export const getTabCronTask = (tabId: string): Promise<CronTask | null> =>
-  invokeCommandWithFallback('cmd_get_tab_cron_task', { tabId }, null);
-
-// ============= Cron Task Execution Tracking =============
-
-/** Record task execution (called after Sidecar executes task) */
-export const recordCronExecution = (taskId: string): Promise<CronTask> =>
-  invokeCommand('cmd_record_cron_execution', { taskId });
-
-/** Update task's tab association */
-export const updateCronTaskTab = (taskId: string, tabId?: string): Promise<CronTask> =>
-  invokeCommand('cmd_update_cron_task_tab', { taskId, tabId });
-
 /** Update task's session ID (called when session is created after task creation) */
 export const updateCronTaskSession = (taskId: string, sessionId: string): Promise<CronTask> =>
   invokeCommand('cmd_update_cron_task_session', { taskId, sessionId });
-
-/** Get tasks that need recovery (tasks that were running before app restart) */
-export const getTasksToRecover = (): Promise<CronTask[]> =>
-  invokeCommandWithFallback('cmd_get_tasks_to_recover', undefined, []);
 
 // ============= Background Session Queries =============
 
 /** Get session IDs that have active background completions */
 export const getBackgroundSessions = (): Promise<string[]> =>
   invokeCommandWithFallback('cmd_get_background_sessions', undefined, []);
-
-// ============= Cron Scheduler Control =============
-
-/** Start the scheduler for a task (called after task is started) */
-export const startCronScheduler = async (taskId: string): Promise<void> => {
-  console.log('[cronTaskClient] startCronScheduler called for task:', taskId);
-  try {
-    const result = await invokeCommand<void>('cmd_start_cron_scheduler', { taskId });
-    console.log('[cronTaskClient] startCronScheduler completed for task:', taskId);
-    return result;
-  } catch (error) {
-    console.error('[cronTaskClient] startCronScheduler failed for task:', taskId, error);
-    throw error;
-  }
-};
-
-/** Mark a task as currently executing (called when execution starts) */
-export const markTaskExecuting = (taskId: string): Promise<void> =>
-  invokeCommand('cmd_mark_task_executing', { taskId });
-
-/** Mark a task as no longer executing (called when execution completes) */
-export const markTaskComplete = (taskId: string): Promise<void> =>
-  invokeCommand('cmd_mark_task_complete', { taskId });
 
 /** Check if a task is currently executing */
 export const isTaskExecuting = (taskId: string): Promise<boolean> =>

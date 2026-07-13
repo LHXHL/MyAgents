@@ -1545,7 +1545,7 @@ fn persist_agent_config_read_heal(config_path: &Path, reason: &str) {
 }
 
 /// Read Agent configs from disk. Falls back to reading imBotConfigs and converting.
-pub(super) fn read_agent_configs_from_disk() -> Vec<AgentConfigRust> {
+pub(crate) fn read_agent_configs_from_disk() -> Vec<AgentConfigRust> {
     let home = match dirs::home_dir() {
         Some(h) => h,
         None => return Vec::new(),
@@ -2058,14 +2058,9 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                                     mcp_servers_json: Arc::new(RwLock::new(
                                         agent_config.mcp_servers_json.clone(),
                                     )),
-                                    runtime: Arc::new(RwLock::new(normalize_runtime_type(
-                                        agent_config.runtime.as_deref(),
-                                    ))),
                                     runtime_config: Arc::new(RwLock::new(
                                         agent_config.runtime_config.clone(),
                                     )),
-                                    memory_update_config: None,
-                                    memory_update_running: None,
                                     memory_evolution_config: None,
                                 });
                             // Set agent_link so the processing loop can update lastActiveChannel
@@ -2104,34 +2099,7 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                 let (wake_tx, mut wake_rx) = mpsc::channel::<types::WakeReason>(64);
                 let hb_config_arc = Arc::new(RwLock::new(hb_config));
                 let hb_config_for_loop = Arc::clone(&hb_config_arc);
-                // Memory auto-update arcs (v0.1.43)
-                let mau_config_arc = Arc::new(RwLock::new(agent_config.memory_auto_update.clone()));
-                let mau_running_arc = Arc::new(std::sync::atomic::AtomicBool::new(false));
                 let evo_config_arc = Arc::new(RwLock::new(agent_config.memory_evolution.clone()));
-                let mau_config_for_loop = Arc::clone(&mau_config_arc);
-                let mau_running_for_loop = Arc::clone(&mau_running_arc);
-                let mau_workspace = agent_config.workspace_path.clone();
-                let mau_agent_id = agent_config.id.clone();
-                let mau_sidecar_mgr = Arc::clone(&*sidecar_manager);
-                let mau_app_handle = app_handle.clone();
-                // Clone agent-level AI config Arcs from AgentInstance
-                let (mau_model, mau_provider_env, mau_mcp_json) = {
-                    let agents_guard = agent_state.lock().await;
-                    if let Some(inst) = agents_guard.get(&agent_config.id) {
-                        (
-                            Arc::clone(&inst.current_model),
-                            Arc::clone(&inst.current_provider_env),
-                            Arc::clone(&inst.mcp_servers_json),
-                        )
-                    } else {
-                        // Agent instance not found (shouldn't happen), use defaults
-                        (
-                            Arc::new(RwLock::new(agent_config.model.clone())),
-                            Arc::new(RwLock::new(None)),
-                            Arc::new(RwLock::new(agent_config.mcp_servers_json.clone())),
-                        )
-                    }
-                };
 
                 let hb_handle = tauri::async_runtime::spawn(async move {
                     use heartbeat::is_in_active_hours;
@@ -2182,28 +2150,6 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
 
                         let is_high_priority = reason.is_high_priority();
 
-                        // Memory auto-update check (v0.1.43) — runs independently of heartbeat enabled
-                        // Placed BEFORE heartbeat gate so memory update works even when heartbeat is off
-                        {
-                            let hb_tz = {
-                                let cfg = hb_config_for_loop.read().await;
-                                cfg.active_hours.as_ref().map(|ah| ah.timezone.clone())
-                            };
-                            memory_update::check_and_spawn(
-                                &mau_agent_id,
-                                &mau_workspace,
-                                &mau_config_for_loop,
-                                &mau_running_for_loop,
-                                &mau_sidecar_mgr,
-                                &mau_app_handle,
-                                &mau_model,
-                                &mau_provider_env,
-                                &mau_mcp_json,
-                                hb_tz.as_deref(),
-                            )
-                            .await;
-                        }
-
                         // Gate: heartbeat enabled check
                         let config = hb_config_for_loop.read().await.clone();
                         if !config.enabled {
@@ -2246,8 +2192,6 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                     agent_instance.heartbeat_handle = Some(hb_handle);
                     agent_instance.heartbeat_wake_tx = Some(wake_tx);
                     agent_instance.heartbeat_config = Some(hb_config_arc);
-                    agent_instance.memory_update_config = Some(mau_config_arc);
-                    agent_instance.memory_update_running = Some(mau_running_arc);
                     agent_instance.memory_evolution_config = Some(evo_config_arc);
                     ulog_info!(
                         "[agent] Agent-level heartbeat started for {}",
@@ -2261,9 +2205,9 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
 }
 
 async fn ensure_agent_level_runners_started<R: Runtime>(
-    app_handle: AppHandle<R>,
+    _app_handle: AppHandle<R>,
     agent_state: ManagedAgents,
-    sidecar_manager: ManagedSidecarManager,
+    _sidecar_manager: ManagedSidecarManager,
     agent_config: AgentConfigRust,
 ) {
     let should_start = {
@@ -2285,31 +2229,7 @@ async fn ensure_agent_level_runners_started<R: Runtime>(
     let hb_config_arc = Arc::new(RwLock::new(hb_config));
     let hb_config_for_loop = Arc::clone(&hb_config_arc);
 
-    let mau_config_arc = Arc::new(RwLock::new(agent_config.memory_auto_update.clone()));
-    let mau_running_arc = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let evo_config_arc = Arc::new(RwLock::new(agent_config.memory_evolution.clone()));
-    let mau_config_for_loop = Arc::clone(&mau_config_arc);
-    let mau_running_for_loop = Arc::clone(&mau_running_arc);
-    let mau_workspace = agent_config.workspace_path.clone();
-    let mau_agent_id = agent_config.id.clone();
-    let mau_sidecar_mgr = Arc::clone(&sidecar_manager);
-    let mau_app_handle = app_handle.clone();
-    let (mau_model, mau_provider_env, mau_mcp_json) = {
-        let agents_guard = agent_state.lock().await;
-        if let Some(inst) = agents_guard.get(&agent_config.id) {
-            (
-                Arc::clone(&inst.current_model),
-                Arc::clone(&inst.current_provider_env),
-                Arc::clone(&inst.mcp_servers_json),
-            )
-        } else {
-            (
-                Arc::new(RwLock::new(agent_config.model.clone())),
-                Arc::new(RwLock::new(None)),
-                Arc::new(RwLock::new(agent_config.mcp_servers_json.clone())),
-            )
-        }
-    };
 
     let hb_handle = tauri::async_runtime::spawn(async move {
         use heartbeat::is_in_active_hours;
@@ -2357,26 +2277,6 @@ async fn ensure_agent_level_runners_started<R: Runtime>(
 
             let is_high_priority = reason.is_high_priority();
 
-            {
-                let hb_tz = {
-                    let cfg = hb_config_for_loop.read().await;
-                    cfg.active_hours.as_ref().map(|ah| ah.timezone.clone())
-                };
-                memory_update::check_and_spawn(
-                    &mau_agent_id,
-                    &mau_workspace,
-                    &mau_config_for_loop,
-                    &mau_running_for_loop,
-                    &mau_sidecar_mgr,
-                    &mau_app_handle,
-                    &mau_model,
-                    &mau_provider_env,
-                    &mau_mcp_json,
-                    hb_tz.as_deref(),
-                )
-                .await;
-            }
-
             let config = hb_config_for_loop.read().await.clone();
             if !config.enabled {
                 ulog_debug!("[agent-heartbeat] Skipped: disabled");
@@ -2410,8 +2310,6 @@ async fn ensure_agent_level_runners_started<R: Runtime>(
             agent_instance.heartbeat_handle = Some(hb_handle);
             agent_instance.heartbeat_wake_tx = Some(wake_tx);
             agent_instance.heartbeat_config = Some(hb_config_arc);
-            agent_instance.memory_update_config = Some(mau_config_arc);
-            agent_instance.memory_update_running = Some(mau_running_arc);
             agent_instance.memory_evolution_config = Some(evo_config_arc);
             ulog_info!(
                 "[agent] Agent-level heartbeat started for {}",
@@ -2655,14 +2553,9 @@ pub async fn monitor_agent_channels(
                                 mcp_servers_json: Arc::new(RwLock::new(
                                     agent_cfg.mcp_servers_json.clone(),
                                 )),
-                                runtime: Arc::new(RwLock::new(normalize_runtime_type(
-                                    agent_cfg.runtime.as_deref(),
-                                ))),
                                 runtime_config: Arc::new(RwLock::new(
                                     agent_cfg.runtime_config.clone(),
                                 )),
-                                memory_update_config: None,
-                                memory_update_running: None,
                                 memory_evolution_config: None,
                             });
                     let link = AgentChannelLink {

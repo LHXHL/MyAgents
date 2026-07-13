@@ -33,7 +33,7 @@ import {
 } from '@/api/sessionClient';
 import { getAllCronTasks, getBackgroundSessions } from '@/api/cronTaskClient';
 import { taskCenterAvailable, taskList } from '@/api/taskCenter';
-import { deactivateSession } from '@/api/tauriClient';
+import { getUserSchedulerLifecycleSnapshot } from '@/api/tauriClient';
 import { loadAppConfig } from '@/config/configService';
 import { i18n } from '@/i18n';
 import { isTauriEnvironment } from '@/utils/browserMock';
@@ -42,6 +42,7 @@ import { extractPlatformDisplay } from '@/utils/taskCenterUtils';
 import { perfMark } from '@/utils/perfMark';
 import { RENDERER_PERF_PHASE } from '../../shared/perfTrace';
 import { CUSTOM_EVENTS } from '../../shared/constants';
+import { isManagedScheduledJob } from '../../shared/managedScheduledJob';
 import type { CronTask } from '@/types/cronTask';
 import type { Task } from '../../shared/types/task';
 
@@ -62,6 +63,7 @@ export type SessionTag =
 export interface TaskCenterData {
     sessions: SessionMetadata[];
     cronTasks: CronTask[];
+    protectedSchedulerSessionIds: ReadonlySet<string>;
     tasks: Task[];
     sessionTagsMap: Map<string, SessionTag[]>;
     cronBotInfoMap: Map<string, { name: string; platform: string }>;
@@ -141,6 +143,7 @@ export function computeSessionTagsMap(
     const cronSessionIds = new Set<string>();
     const bgSessionIds = new Set<string>(backgroundSessionIds);
     for (const t of cronTasks) {
+        if (isManagedScheduledJob(t)) continue;
         if (t.status !== 'running') continue;
         const sid = t.internalSessionId || t.sessionId;
         if (t.schedule?.kind === 'at') bgSessionIds.add(sid);
@@ -174,7 +177,12 @@ export function computeCronBotInfoMap(agents: AgentConfig[]): Map<string, { name
 /** `taskList` is Tauri-only; browser dev mode returns [] silently. */
 async function fetchTaskList(): Promise<Task[]> {
     if (!taskCenterAvailable()) return []; // non-Tauri / unavailable → legitimately empty
-    return taskList({}); // in Tauri: let failures REJECT so callers preserve the prior slice (not blank it)
+    const tasks = await taskList({});
+    return tasks.filter((task) => !isManagedScheduledJob(task)); // in Tauri: let failures REJECT so callers preserve the prior slice (not blank it)
+}
+
+function filterManagedCronTasks(data: CronTask[]): CronTask[] {
+    return data.filter((task) => !isManagedScheduledJob(task));
 }
 
 // ===== Store internals =====
@@ -182,6 +190,7 @@ async function fetchTaskList(): Promise<Task[]> {
 interface StoreState {
     sessions: SessionMetadata[];
     cronTasks: CronTask[];
+    protectedSchedulerSessionIds: string[];
     tasks: Task[];
     backgroundSessionIds: string[];
     agentStatuses: AgentStatusMap;
@@ -196,6 +205,7 @@ interface StoreState {
 let state: StoreState = {
     sessions: [],
     cronTasks: [],
+    protectedSchedulerSessionIds: [],
     tasks: [],
     backgroundSessionIds: [],
     agentStatuses: {},
@@ -285,6 +295,7 @@ function buildSnapshot(): TaskCenterData {
     return {
         sessions: state.sessions,
         cronTasks: state.cronTasks,
+        protectedSchedulerSessionIds: new Set(state.protectedSchedulerSessionIds),
         tasks: state.tasks,
         sessionTagsMap: mapsCache.sessionTagsMap,
         cronBotInfoMap: mapsCache.cronBotInfoMap,
@@ -358,7 +369,7 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
         // rejects the whole fetch → retry/error (an initial total failure must
         // not become a silent empty state). The other sources are best-effort:
         // a PARTIAL failure preserves the prior slice (`ok.*` false → skipped).
-        const ok = { cron: true, tasks: true, bg: true, agents: true, status: true };
+        const ok = { cron: true, lifecycle: true, tasks: true, bg: true, agents: true, status: true };
         const sessionsPromise = getSessions().then((sessionsData) => {
             if (gen !== lifecycleGen) return sessionsData;
             if (!isLatest('all', requestSeq) || !isLatest('sessions', requestSeq)) return sessionsData;
@@ -378,9 +389,13 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
                 .catch(() => { ok.status = false; return state.agentStatuses; })
             : Promise.resolve({} as AgentStatusMap);
 
-        const [sessionsData, cronData, newTasks, bgSessions, agentStatusResult, appConfig] = await Promise.all([
+        const [sessionsData, cronData, schedulerLifecycle, newTasks, bgSessions, agentStatusResult, appConfig] = await Promise.all([
             sessionsPromise,
-            getAllCronTasks().catch(() => { ok.cron = false; return state.cronTasks; }),
+            getAllCronTasks().then(filterManagedCronTasks).catch(() => { ok.cron = false; return state.cronTasks; }),
+            getUserSchedulerLifecycleSnapshot().catch(() => {
+                ok.lifecycle = false;
+                return { runningTaskCount: 0, protectedSessionIds: state.protectedSchedulerSessionIds };
+            }),
             fetchTaskList().catch(() => { ok.tasks = false; return state.tasks; }),
             getBackgroundSessions().catch(() => { ok.bg = false; return state.backgroundSessionIds; }),
             agentStatusPromise,
@@ -403,7 +418,10 @@ async function fetchData(retryCount = 0, silent = false): Promise<void> {
         const patch: Partial<StoreState> = {};
         if (isLatest('sessions', requestSeq)) patch.sessions = sortSessionsByLastActive(filterTombstoned(sessionsData, deletedSessionIds));
         if (isLatest('sessions', requestSeq)) patch.isSessionsLoading = false;
-        if (ok.cron && isLatest('cronTasks', requestSeq)) patch.cronTasks = cronData;
+        if (ok.cron && isLatest('cronTasks', requestSeq)) patch.cronTasks = filterManagedCronTasks(cronData);
+        if (ok.lifecycle && isLatest('cronTasks', requestSeq)) {
+            patch.protectedSchedulerSessionIds = schedulerLifecycle.protectedSessionIds;
+        }
         if (ok.tasks && isLatest('tasks', requestSeq)) patch.tasks = newTasks;
         if (ok.bg && isLatest('backgroundSessions', requestSeq)) patch.backgroundSessionIds = bgSessions;
         if (ok.status && isLatest('agentStatuses', requestSeq)) patch.agentStatuses = agentStatusResult;
@@ -442,7 +460,15 @@ function refreshSessionsNow(): void {
 }
 function refreshCronTasksNow(): void {
     const s = startRequest('cronTasks');
-    getAllCronTasks().then((data) => { if (isLatest('cronTasks', s)) setState({ cronTasks: data }); })
+    Promise.all([getAllCronTasks(), getUserSchedulerLifecycleSnapshot()])
+        .then(([data, lifecycle]) => {
+            if (isLatest('cronTasks', s)) {
+                setState({
+                    cronTasks: filterManagedCronTasks(data),
+                    protectedSchedulerSessionIds: lifecycle.protectedSessionIds,
+                });
+            }
+        })
         .catch((err) => console.warn('[taskCenterStore] refresh cron failed:', err));
 }
 function refreshTasksNow(): void {
@@ -490,11 +516,6 @@ export const actions: TaskCenterActions = {
         if (!success) return false;
         deletedSessionIds.add(sessionId); // tombstone — survives across all subscribers
         setState({ sessions: state.sessions.filter((s) => s.id !== sessionId) });
-        try {
-            await deactivateSession(sessionId);
-        } catch (err) {
-            console.warn('[taskCenterStore] Failed to deactivate deleted session:', err);
-        }
         refresh('sessions', { force: true, reason: 'delete-session', silent: true });
         return true;
     },
@@ -543,17 +564,25 @@ function registerTauriListeners(): void {
         debounced('cron', refreshCronTasksNow, 500);
         debounced('sessions', refreshSessionsNow, 500);
     }, ac.signal);
+    void listenWithCleanup('cron:execution-state-changed', () => {
+        debounced('tasks', refreshTasksNow, 100);
+    }, ac.signal);
     void listenWithCleanup('cron:scheduler-started', () => {
         debounced('cron', refreshCronTasksNow, 500);
         debounced('sessions', refreshSessionsNow, 500);
     }, ac.signal);
     void listenWithCleanup('cron:task-deleted', () => debounced('cron', refreshCronTasksNow, 500), ac.signal);
     void listenWithCleanup('cron:task-updated', () => debounced('cron', refreshCronTasksNow, 500), ac.signal);
+    void listenWithCleanup('goal:changed', () => debounced('cron', refreshCronTasksNow, 200), ac.signal);
     void listenWithCleanup('agent:status-changed', () => {
         debounced('agent', refreshAgentStatusNow, 1000);
         debounced('sessions', refreshSessionsNow, 1000);
     }, ac.signal);
     void listenWithCleanup('task:status-changed', () => debounced('tasks', refreshTasksNow, 500), ac.signal);
+    void listenWithCleanup('task:session-rebound', () => {
+        debounced('tasks', refreshTasksNow, 100);
+        debounced('sessions', refreshSessionsNow, 100);
+    }, ac.signal);
 
     cleanupTauriListeners = () => {
         ac.abort();
@@ -599,7 +628,7 @@ export function getSnapshot(): TaskCenterData {
 
 /** Test-only: reset all module state between cases. */
 export function __resetTaskCenterStoreForTest(): void {
-    state = { sessions: [], cronTasks: [], tasks: [], backgroundSessionIds: [], agentStatuses: {}, agents: [], floatingBallSessionId: null, isLoading: true, isSessionsLoading: true, error: null };
+    state = { sessions: [], cronTasks: [], protectedSchedulerSessionIds: [], tasks: [], backgroundSessionIds: [], agentStatuses: {}, agents: [], floatingBallSessionId: null, isLoading: true, isSessionsLoading: true, error: null };
     listeners.clear();
     deletedSessionIds.clear();
     favoriteMutations.clear();

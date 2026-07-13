@@ -35,7 +35,7 @@ export function TaskListRow(props: TaskListRowProps) {
   const { i18n } = useTranslation('task');
   const locale = isSupportedLocale(i18n.language) ? i18n.language : 'zh-CN';
   const isLegacy = !!legacy && !task;
-  const status = deriveTaskRowStatus(task ?? null, legacy?.status === 'running');
+  const status = deriveTaskRowStatus(task ?? null);
   const name = task?.name ?? legacy?.name ?? '—';
   const workspace = legacy?.workspacePath
     ? shortenPath(legacy.workspacePath)
@@ -58,7 +58,7 @@ export function TaskListRow(props: TaskListRowProps) {
           always starts at the same x-offset regardless of which chips
           are present. */}
       <div className="flex shrink-0 items-center gap-1.5">
-        <TaskStatusBadge status={status} compact />
+        <TaskStatusBadge status={status} executionState={task?.executionState} compact />
         <TaskCategoryBadge mode={category} legacy={isLegacy} compact />
       </div>
       <span className="min-w-0 flex-1 truncate text-sm text-[var(--ink)]">
@@ -76,6 +76,8 @@ export function TaskListRow(props: TaskListRowProps) {
       <TaskItemActions
         variant={isLegacy ? 'legacy' : 'task'}
         status={status}
+        executionState={task?.executionState}
+        canRerun={task?.dispatchOrigin !== 'attached-session'}
         busy={busy}
         onRun={onRun}
         onStop={onStop}

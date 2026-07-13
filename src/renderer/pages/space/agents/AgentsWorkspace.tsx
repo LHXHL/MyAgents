@@ -1,17 +1,18 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Activity,
   Bot,
+  Camera,
   Check,
   Clock,
   Computer,
+  Eye,
   FolderOpen,
   Loader2,
   Plus,
   Power,
   PowerOff,
-  RefreshCw,
   Settings,
   Target,
   Trash2,
@@ -27,16 +28,29 @@ import CustomSelect, { type SelectOption } from "@/components/CustomSelect";
 import ConfirmDialog from "@/components/ConfirmDialog";
 import OverlayBackdrop from "@/components/OverlayBackdrop";
 import { useToast } from "@/components/Toast";
+import DropdownMenu, {
+  type DropdownMenuSection,
+} from "@/components/ui/DropdownMenu";
 import type { Project } from "@/config/types";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
 import { spaceErrorMessage } from "@/api/spaceCloud";
-import { issueStatusLabel } from "@/pages/space/spaceHelpers";
-import { GoalPathSelectLabel } from "@/pages/space/GoalPathSelectLabel";
-import type { SpaceActions } from "@/pages/space/spaceStore";
 import {
-  SPACE_LIST_FRAME_CLASS,
+  issueStatusLabel,
+  registeredAgentAvailability,
+  type AgentAvailability,
+} from "@/pages/space/spaceHelpers";
+import { GoalPathSelectLabel } from "@/pages/space/GoalPathSelectLabel";
+import AvatarPicker, {
+  type AvatarPickerSelection,
+} from "@/pages/space/AvatarPicker";
+import { SpaceAvatar } from "@/pages/space/SpaceAvatar";
+import type {
+  SpaceActions,
+  SpaceAvatarPresetsState,
+} from "@/pages/space/spaceStore";
+import {
+  SPACE_COLLECTION_FRAME_CLASS,
   SPACE_PRIMARY_TOOL_BUTTON_CLASS,
-  SPACE_REFRESH_TOOL_BUTTON_CLASS,
   SPACE_TWO_COLUMN_GRID_CLASS,
   formatTime,
 } from "@/pages/space/spaceUi";
@@ -87,13 +101,19 @@ function normalizeAgentStateFilter(states?: string[] | null): string[] {
   return normalized.length > 0 ? normalized : [...DEFAULT_AGENT_STATE_FILTER];
 }
 
-function agentStatusClass(status: string): string {
-  const normalized = status.trim().toLowerCase();
-  if (normalized === "active" || normalized === "online")
-    return "bg-[var(--success-bg)] text-[var(--success)]";
-  if (normalized === "revoked")
-    return "bg-[var(--error-bg)] text-[var(--error)]";
-  return "bg-[var(--paper-inset)] text-[var(--ink-muted)]";
+function agentStatusClass(availability: AgentAvailability): string {
+  if (availability === "online")
+    return "border border-[var(--success)]/20 bg-[var(--success-bg)] text-[var(--success)]";
+  if (availability === "connecting")
+    return "border border-[var(--accent-warm)]/20 bg-[var(--accent-warm-subtle)] text-[var(--accent-warm)]";
+  return "border border-[var(--line-subtle)] bg-[var(--paper-inset)] text-[var(--ink-muted)]";
+}
+
+function agentStatusLabel(
+  agent: LocalRegisteredAgent,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  return t(`space.agents.${registeredAgentAvailability(agent)}`);
 }
 
 function agentTargetLabel(
@@ -108,14 +128,12 @@ function agentCardTimeLabel(
   agent: LocalRegisteredAgent,
   t: ReturnType<typeof useTranslation>["t"],
 ): string {
-  const lastActive = formatTime(agent.device?.lastSeenAt ?? "");
-  if (lastActive) {
-    return t("space.agents.lastActiveAt", { time: lastActive });
-  }
-  const lastSync = formatTime(agent.updatedAt);
-  return t("space.agents.lastSyncAt", {
-    time: lastSync || t("space.common.notSynced"),
-  });
+  const availability = registeredAgentAvailability(agent);
+  if (availability === "connecting") return t("space.agents.connectingHint");
+  const lastOnline = formatTime(agent.lastOnlineAt ?? "");
+  if (lastOnline) return t("space.agents.lastOnlineAt", { time: lastOnline });
+  if (availability === "online") return t("space.agents.clientOnline");
+  return t("space.agents.neverOnline");
 }
 
 function shortDeviceId(value?: string | null): string {
@@ -188,20 +206,24 @@ export function AgentsWorkspace({
   goals,
   projects,
   actions,
-  onRefresh,
+  avatarPresets,
   onRegister,
   registerDisabled = false,
   registerDisabledHint,
+  isActive,
+  onAgentConnecting,
 }: {
   admin: boolean;
   agents: LocalRegisteredAgent[];
   goals: SpaceGoal[];
   projects: Project[];
   actions: SpaceActions;
-  onRefresh: () => Promise<void>;
+  avatarPresets: SpaceAvatarPresetsState;
   onRegister: () => void;
   registerDisabled?: boolean;
   registerDisabledHint?: string;
+  isActive: boolean;
+  onAgentConnecting: (agentId: string) => void;
 }) {
   const { t } = useTranslation("app");
   const toast = useToast();
@@ -213,6 +235,7 @@ export function AgentsWorkspace({
     null,
   );
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [presenceStale, setPresenceStale] = useState(false);
   const selectedAgent =
     agents.find((agent) => agent.id === selectedAgentId) ?? null;
 
@@ -221,6 +244,7 @@ export function AgentsWorkspace({
     setBusyAgentId(agent.id);
     try {
       await actions.updateRegisteredAgent({ id: agent.id, status: nextStatus });
+      if (nextStatus === "active") onAgentConnecting(agent.id);
       toast.success(
         nextStatus === "active"
           ? t("space.toasts.agentEnabled")
@@ -232,6 +256,31 @@ export function AgentsWorkspace({
       setBusyAgentId(null);
     }
   };
+
+  useEffect(() => {
+    if (!isActive) return;
+    let cancelled = false;
+    const refreshPresence = (preserveOrder = true) => {
+      if (document.visibilityState !== "visible") return;
+      void actions
+        .refreshRegisteredAgents({ force: true, silent: preserveOrder })
+        .then(() => {
+          if (!cancelled) setPresenceStale(false);
+        })
+        .catch(() => {
+          if (!cancelled) setPresenceStale(true);
+        });
+    };
+    refreshPresence(false);
+    const handle = window.setInterval(() => refreshPresence(true), 60_000);
+    const refreshWhenVisible = () => refreshPresence(true);
+    document.addEventListener("visibilitychange", refreshWhenVisible);
+    return () => {
+      cancelled = true;
+      window.clearInterval(handle);
+      document.removeEventListener("visibilitychange", refreshWhenVisible);
+    };
+  }, [actions, isActive]);
   const revokeAgent = async () => {
     if (!revokeTarget) return;
     setBusyAgentId(revokeTarget.id);
@@ -248,81 +297,69 @@ export function AgentsWorkspace({
 
   return (
     <>
-      <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]">
-        <section className="flex min-h-12 items-center gap-2.5 border-b border-[var(--line)] bg-[var(--paper-elevated)]/60 px-5 py-1.5 backdrop-blur-md">
-          <div className="flex min-w-0 flex-1 items-center gap-2 text-sm font-semibold text-[var(--ink-secondary)]">
+      <div className={`${SPACE_COLLECTION_FRAME_CLASS} space-y-3`}>
+        <section className="flex min-h-10 items-center gap-3">
+          <div className="flex min-w-0 flex-1 items-center gap-2 text-base font-semibold text-[var(--ink-secondary)]">
             <Bot className="h-4 w-4 shrink-0" />
-            <span>Agents</span>
+            <h2 className="truncate">Agents</h2>
             <span className="rounded-md bg-[var(--paper-inset)] px-2 py-0.5 text-xs font-semibold text-[var(--ink-muted)]">
               {agents.length}
             </span>
           </div>
-          <div className="flex shrink-0 items-center gap-2.5">
-            {admin && (
-              <button
-                type="button"
-                onClick={onRegister}
-                disabled={registerDisabled}
-                title={registerDisabledHint}
-                className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}
-              >
-                <Plus className="h-4 w-4" />
-                {t("space.agents.register")}
-              </button>
-            )}
+          {admin && (
             <button
               type="button"
-              onClick={() => void onRefresh()}
-              className={SPACE_REFRESH_TOOL_BUTTON_CLASS}
-              aria-label={t("space.common.refresh")}
-              title={t("space.common.refresh")}
+              onClick={onRegister}
+              disabled={registerDisabled}
+              title={registerDisabledHint}
+              className={SPACE_PRIMARY_TOOL_BUTTON_CLASS}
             >
-              <RefreshCw className="h-4 w-4" />
+              <Plus className="h-4 w-4" />
+              {t("space.agents.register")}
             </button>
-          </div>
-        </section>
-        <main className="min-h-0 overflow-y-auto px-6 pb-8 pt-3">
-          {agents.length === 0 ? (
-            <div
-              className={`${SPACE_LIST_FRAME_CLASS} grid h-40 place-items-center rounded-[20px] border border-dashed border-[var(--line)] bg-[var(--paper-elevated)]/40 text-sm text-[var(--ink-muted)]`}
-            >
-              <div className="text-center">
-                <Bot className="mx-auto mb-3 h-8 w-8 text-[var(--ink-muted)]" />
-                <p>{t("space.agents.empty")}</p>
-                {admin && (
-                  <button
-                    type="button"
-                    onClick={onRegister}
-                    disabled={registerDisabled}
-                    title={registerDisabledHint}
-                    className="mt-3 inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60"
-                  >
-                    <Plus className="h-4 w-4" />
-                    {t("space.agents.registerAgent")}
-                  </button>
-                )}
-              </div>
-            </div>
-          ) : (
-            <div
-              className={`${SPACE_LIST_FRAME_CLASS} ${SPACE_TWO_COLUMN_GRID_CLASS}`}
-            >
-              {agents.map((agent) => (
-                <AgentCard
-                  key={agent.id}
-                  agent={agent}
-                  admin={admin}
-                  busy={busyAgentId === agent.id}
-                  t={t}
-                  onOpen={() => setSelectedAgentId(agent.id)}
-                  onEdit={() => setEditingAgent(agent)}
-                  onToggle={() => void toggleAgentStatus(agent)}
-                  onRevoke={() => setRevokeTarget(agent)}
-                />
-              ))}
-            </div>
           )}
-        </main>
+        </section>
+        {presenceStale ? (
+          <div className="rounded-xl border border-[var(--warning)]/20 bg-[var(--warning-bg)] px-3 py-2 text-xs font-semibold text-[var(--warning)]">
+            {t("space.agents.presenceMayBeStale")}
+          </div>
+        ) : null}
+        {agents.length === 0 ? (
+          <div className="grid h-40 place-items-center rounded-[20px] border border-dashed border-[var(--line)] bg-[var(--paper-elevated)]/40 text-sm text-[var(--ink-muted)]">
+            <div className="text-center">
+              <Bot className="mx-auto mb-3 h-8 w-8 text-[var(--ink-muted)]" />
+              <p>{t("space.agents.empty")}</p>
+              {admin && (
+                <button
+                  type="button"
+                  onClick={onRegister}
+                  disabled={registerDisabled}
+                  title={registerDisabledHint}
+                  className="mt-3 inline-flex h-9 items-center gap-2 rounded-xl bg-[var(--button-secondary-bg)] px-3 text-sm font-semibold text-[var(--button-secondary-text)] transition-colors hover:bg-[var(--button-secondary-bg-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <Plus className="h-4 w-4" />
+                  {t("space.agents.registerAgent")}
+                </button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className={SPACE_TWO_COLUMN_GRID_CLASS}>
+            {agents.map((agent) => (
+              <AgentCard
+                key={agent.id}
+                agent={agent}
+                admin={admin}
+                busy={busyAgentId === agent.id}
+                t={t}
+                onOpen={() => setSelectedAgentId(agent.id)}
+                onEdit={() => setEditingAgent(agent)}
+                onToggle={() => void toggleAgentStatus(agent)}
+                onRevoke={() => setRevokeTarget(agent)}
+              />
+            ))}
+          </div>
+        )}
       </div>
       {selectedAgent && (
         <AgentDetailOverlay
@@ -330,6 +367,8 @@ export function AgentsWorkspace({
           admin={admin}
           busy={busyAgentId === selectedAgent.id}
           t={t}
+          actions={actions}
+          avatarPresets={avatarPresets}
           onClose={() => setSelectedAgentId(null)}
           onEdit={() => setEditingAgent(selectedAgent)}
           onToggle={() => void toggleAgentStatus(selectedAgent)}
@@ -632,52 +671,64 @@ function AgentCard({
   onToggle: () => void;
   onRevoke: () => void;
 }) {
-  const disabled = agent.status === "revoked";
-  const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
-    if (event.target !== event.currentTarget) return;
-    if (event.key !== "Enter" && event.key !== " ") return;
-    event.preventDefault();
-    onOpen();
-  };
+  const revoked = agent.status === "revoked";
+  const managementDisabled = agent.status !== "active";
+  const availability = registeredAgentAvailability(agent);
 
   return (
     <article
-      role="button"
-      tabIndex={0}
-      onClick={onOpen}
-      onKeyDown={handleKeyDown}
-      className="group cursor-pointer rounded-xl bg-[var(--paper-elevated)] px-3.5 py-3 text-left outline-none transition-shadow hover:shadow-sm focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)]/30"
+      className={`group relative rounded-xl bg-[var(--paper-elevated)] px-3.5 py-3 text-left transition-[box-shadow,opacity,filter] hover:shadow-sm ${managementDisabled ? "opacity-60 saturate-50" : ""}`}
     >
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2.5">
+      <button
+        type="button"
+        onClick={onOpen}
+        aria-label={`${t("space.agents.viewSettings")} · ${agent.displayName}`}
+        className="absolute inset-0 z-0 cursor-pointer rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)]/30"
+      />
+      <div className="pointer-events-none relative z-10 grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-2.5">
+        <SpaceAvatar
+          name={agent.displayName}
+          avatarUrl={agent.avatarUrl}
+          type="registered_agent"
+          size={36}
+        />
         <div className="min-w-0">
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <h3 className="min-w-0 truncate text-base font-semibold text-[var(--ink)]">
               {agent.displayName}
             </h3>
             <span
-              className={`rounded-md px-2 py-1 text-xs font-semibold ${agentStatusClass(agent.status)}`}
+              className={`rounded-md px-2 py-1 text-xs font-semibold ${agentStatusClass(availability)}`}
             >
-              {agent.status}
+              {agentStatusLabel(agent, t)}
             </span>
           </div>
           <p className="mt-1 truncate text-xs font-medium text-[var(--ink-muted)]">
             {agentCardTimeLabel(agent, t)}
           </p>
+          {availability === "offline" && !agent.lastOnlineAt ? (
+            <p className="mt-1 line-clamp-2 text-xs leading-relaxed text-[var(--ink-subtle)]">
+              {t("space.agents.offlineTroubleshooting")}
+            </p>
+          ) : null}
         </div>
-        {admin && (
-          <AgentActionButtons
-            agent={agent}
-            busy={busy}
-            disabled={disabled}
-            t={t}
-            onEdit={onEdit}
-            onToggle={onToggle}
-            onRevoke={onRevoke}
-          />
-        )}
+        {admin ? (
+          <div className="pointer-events-auto">
+            <AgentCardMenu
+              agent={agent}
+              busy={busy}
+              disabled={revoked}
+              t={t}
+              onOpen={onOpen}
+              onEdit={onEdit}
+              onToggle={onToggle}
+              onRevoke={onRevoke}
+            />
+          </div>
+        ) : null}
       </div>
 
-      <div className="mt-3 grid gap-2">
+      <div className="pointer-events-none relative z-10 mt-2.5 grid gap-1.5">
         <AgentCardField
           icon={Computer}
           label={t("space.agents.localComputer")}
@@ -698,6 +749,81 @@ function AgentCard({
         />
       </div>
     </article>
+  );
+}
+
+function AgentCardMenu({
+  agent,
+  busy,
+  disabled,
+  t,
+  onOpen,
+  onEdit,
+  onToggle,
+  onRevoke,
+}: {
+  agent: LocalRegisteredAgent;
+  busy: boolean;
+  disabled: boolean;
+  t: ReturnType<typeof useTranslation>["t"];
+  onOpen: () => void;
+  onEdit: () => void;
+  onToggle: () => void;
+  onRevoke: () => void;
+}) {
+  const actionDisabled = busy || disabled;
+  const toggleLabel =
+    agent.status === "disabled"
+      ? t("space.agents.enable")
+      : t("space.agents.disable");
+  const sections: DropdownMenuSection[] = [
+    {
+      items: [
+        {
+          icon: <Eye className="h-3.5 w-3.5" />,
+          label: t("space.agents.details"),
+          onClick: onOpen,
+        },
+      ],
+    },
+    {
+      items: [
+        {
+          icon: <Settings className="h-3.5 w-3.5" />,
+          label: t("space.agents.edit"),
+          onClick: onEdit,
+          disabled: actionDisabled,
+        },
+        {
+          icon: busy ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : agent.status === "disabled" ? (
+            <Power className="h-3.5 w-3.5" />
+          ) : (
+            <PowerOff className="h-3.5 w-3.5" />
+          ),
+          label: toggleLabel,
+          onClick: onToggle,
+          disabled: actionDisabled,
+        },
+        {
+          icon: <Trash2 className="h-3.5 w-3.5" />,
+          label: t("space.agents.revoke"),
+          onClick: onRevoke,
+          disabled: actionDisabled,
+          danger: true,
+        },
+      ],
+    },
+  ];
+
+  return (
+    <DropdownMenu
+      sections={sections}
+      size="md"
+      minWidth={160}
+      title={t("dropdown.moreActions")}
+    />
   );
 }
 
@@ -792,14 +918,14 @@ function AgentCardField({
   muted?: boolean;
 }) {
   return (
-    <div className="grid grid-cols-[14px_92px_minmax(0,1fr)] items-center gap-2 rounded-lg bg-[var(--paper)]/35 px-2 py-1.5">
+    <div className="grid grid-cols-[14px_92px_minmax(0,1fr)] items-center gap-2 rounded-md bg-[var(--paper)]/35 px-2 py-1 text-xs leading-5">
       <Icon className="h-3.5 w-3.5 text-[var(--ink-subtle)]" />
-      <span className="truncate text-xs font-normal text-[var(--ink-subtle)]">
+      <span className="truncate font-normal text-[var(--ink-subtle)]">
         {label}
       </span>
       <span
         title={title ?? value}
-        className={`truncate text-sm font-normal ${mono ? "font-mono" : ""} ${muted ? "text-[var(--ink-subtle)]" : "text-[var(--ink-muted)]"}`}
+        className={`truncate font-normal ${mono ? "font-mono" : ""} ${muted ? "text-[var(--ink-subtle)]" : "text-[var(--ink-muted)]"}`}
       >
         {value}
       </span>
@@ -812,6 +938,8 @@ function AgentDetailOverlay({
   admin,
   busy,
   t,
+  actions,
+  avatarPresets,
   onClose,
   onEdit,
   onToggle,
@@ -821,33 +949,84 @@ function AgentDetailOverlay({
   admin: boolean;
   busy: boolean;
   t: ReturnType<typeof useTranslation>["t"];
+  actions: SpaceActions;
+  avatarPresets: SpaceAvatarPresetsState;
   onClose: () => void;
   onEdit: () => void;
   onToggle: () => void;
   onRevoke: () => void;
 }) {
+  const toast = useToast();
+  const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
+  const [avatarBusy, setAvatarBusy] = useState(false);
+  const availability = registeredAgentAvailability(agent);
   useCloseLayer(() => {
+    if (avatarPickerOpen || avatarBusy) return false;
     onClose();
     return true;
   }, 230);
 
+  const selectAvatar = async (selection: AvatarPickerSelection) => {
+    if (avatarBusy) return;
+    setAvatarBusy(true);
+    try {
+      await actions.updateRegisteredAgentAvatar(
+        selection.type === "upload"
+          ? { id: agent.id, avatarFilePath: selection.avatarFilePath }
+          : { id: agent.id, avatarPresetId: selection.presetId },
+      );
+      toast.success(t("space.toasts.agentAvatarUpdated"));
+      setAvatarPickerOpen(false);
+    } catch (error) {
+      toast.error(spaceErrorMessage(error));
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
+
   return (
     <OverlayBackdrop
-      onClose={onClose}
+      onClose={avatarBusy || avatarPickerOpen ? undefined : onClose}
       className="z-[230] items-stretch justify-end bg-black/20 backdrop-blur-sm"
     >
       <aside className="h-full w-[min(72vw,900px)] overflow-y-auto border-l border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl max-lg:w-[min(92vw,820px)]">
         <header className="sticky top-0 z-10 border-b border-[var(--line-subtle)] bg-[var(--paper-elevated)]/95 px-7 py-5 backdrop-blur-md">
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
+          <div className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-3">
+            <button
+              type="button"
+              disabled={
+                !admin || busy || avatarBusy || agent.status === "revoked"
+              }
+              onClick={() => setAvatarPickerOpen(true)}
+              className="group relative grid h-14 w-14 place-items-center rounded-full outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)] disabled:cursor-not-allowed disabled:opacity-70"
+              aria-label={t("space.agents.changeAvatar")}
+              title={t("space.agents.changeAvatar")}
+            >
+              <SpaceAvatar
+                name={agent.displayName}
+                avatarUrl={agent.avatarUrl}
+                type="registered_agent"
+                size={56}
+              />
+              {admin && agent.status !== "revoked" && (
+                <span className="absolute inset-0 grid place-items-center rounded-full bg-[var(--ink)]/45 text-[var(--paper)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                  {avatarBusy ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Camera className="h-4 w-4" />
+                  )}
+                </span>
+              )}
+            </button>
             <div className="min-w-0">
               <div className="flex min-w-0 flex-wrap items-center gap-2">
                 <h2 className="truncate text-xl font-semibold leading-tight text-[var(--ink)]">
                   {agent.displayName}
                 </h2>
                 <span
-                  className={`rounded-md px-2 py-1 text-xs font-semibold ${agentStatusClass(agent.status)}`}
+                  className={`rounded-md px-2 py-1 text-xs font-semibold ${agentStatusClass(availability)}`}
                 >
-                  {agent.status}
+                  {agentStatusLabel(agent, t)}
                 </span>
               </div>
               <p className="mt-1 truncate text-sm font-medium text-[var(--ink-muted)]">
@@ -901,8 +1080,8 @@ function AgentDetailOverlay({
             />
             <AgentSummaryBlock
               icon={Clock}
-              label={t("space.agents.lastSync")}
-              value={formatTime(agent.updatedAt) || t("space.common.notSynced")}
+              label={t("space.agents.lastOnline")}
+              value={agentCardTimeLabel(agent, t)}
             />
           </section>
 
@@ -950,9 +1129,9 @@ function AgentDetailOverlay({
                 mono
               />
               <AgentDetailRow
-                label={t("space.agents.deviceLastSeen")}
+                label={t("space.agents.lastOnline")}
                 value={
-                  formatTime(agent.device?.lastSeenAt ?? "") ||
+                  formatTime(agent.lastOnlineAt ?? "") ||
                   t("space.common.notSynced")
                 }
               />
@@ -1037,6 +1216,22 @@ function AgentDetailOverlay({
           </section>
         </div>
       </aside>
+      {avatarPickerOpen && (
+        <AvatarPicker
+          kind="agents"
+          presets={avatarPresets.agents}
+          selectedPresetId={agent.avatarPresetId ?? null}
+          currentAvatarUrl={agent.avatarUrl ?? null}
+          loading={avatarPresets.isLoading}
+          error={avatarPresets.error}
+          disabled={avatarBusy}
+          onLoad={() =>
+            void actions.loadAvatarPresets({ maxAgeMs: 5 * 60_000 })
+          }
+          onSelect={(selection) => void selectAvatar(selection)}
+          onClose={() => setAvatarPickerOpen(false)}
+        />
+      )}
     </OverlayBackdrop>
   );
 }
@@ -1223,7 +1418,7 @@ export function RegisterAgentDialog({
   goals: SpaceGoal[];
   actions: SpaceActions;
   onClose: () => void;
-  onRegistered: () => void;
+  onRegistered: (agent: LocalRegisteredAgent) => void;
 }) {
   const { t } = useTranslation("app");
   const toast = useToast();
@@ -1270,7 +1465,7 @@ export function RegisterAgentDialog({
       return;
     setBusy(true);
     try {
-      await actions.registerAgent({
+      const agent = await actions.registerAgent({
         displayName: displayName.trim(),
         workspaceId: project.id,
         workspacePath: project.path,
@@ -1280,7 +1475,7 @@ export function RegisterAgentDialog({
         issueSubscriptionRunMode,
       });
       toast.success(t("space.toasts.agentCreated"));
-      onRegistered();
+      onRegistered(agent);
     } catch (error) {
       toast.error(spaceErrorMessage(error));
     } finally {

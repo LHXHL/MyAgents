@@ -39,7 +39,7 @@ function renderMenu(overrides: Partial<ComponentProps<typeof SessionMenuButton>>
         workspacePath="/Users/zhihu/Documents/project/MyAgents"
         boundChannel={null}
         availableChannels={[]}
-        cronProtected={false}
+        schedulerProtected={false}
         favorite={false}
         canRename
         onOpenRename={vi.fn()}

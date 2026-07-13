@@ -11,6 +11,8 @@ const LOADING_SPACE_CAPABILITY: SpaceBuildCapabilityState = {
   baseUrl: null,
   publicClientId: null,
   reason: null,
+  environments: ['production'],
+  activeEnvironment: 'production',
   isLoading: true,
 };
 
@@ -19,10 +21,12 @@ const UNAVAILABLE_SPACE_CAPABILITY: SpaceBuildCapabilityState = {
   baseUrl: null,
   publicClientId: null,
   reason: 'Team Space requires a Tauri build with MYAGENTS_SPACE_ENABLED=true',
+  environments: ['production'],
+  activeEnvironment: 'production',
   isLoading: false,
 };
 
-export function useSpaceBuildCapability(): SpaceBuildCapabilityState {
+export function useSpaceBuildCapability(spaceEnvironment?: string | null): SpaceBuildCapabilityState {
   const [capability, setCapability] = useState<SpaceBuildCapabilityState>(() => (
     isTauriEnvironment() ? LOADING_SPACE_CAPABILITY : UNAVAILABLE_SPACE_CAPABILITY
   ));
@@ -37,7 +41,14 @@ export function useSpaceBuildCapability(): SpaceBuildCapabilityState {
 
     spaceGetCapability()
       .then((next) => {
-        if (!cancelled) setCapability({ ...next, isLoading: false });
+        if (!cancelled) {
+          setCapability({
+            ...next,
+            environments: next.environments?.length ? next.environments : ['production'],
+            activeEnvironment: next.activeEnvironment ?? 'production',
+            isLoading: false,
+          });
+        }
       })
       .catch((error) => {
         if (cancelled) return;
@@ -50,7 +61,7 @@ export function useSpaceBuildCapability(): SpaceBuildCapabilityState {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [spaceEnvironment]);
 
   return capability;
 }

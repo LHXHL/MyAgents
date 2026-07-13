@@ -192,10 +192,10 @@ src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/
 **用途**：单独发布 Windows 平台的 Managed Codex Runtime 资源。它上传同一个 runtime set 下的 `win32-x64` manifest/artifact，和 macOS 的 `publish_managed_codex_runtime.sh` 共同补齐跨平台 runtime set。
 
 ```powershell
-.\publish_managed_codex_runtime.ps1 -RuntimeSet codex-0.142.2
+.\publish_managed_codex_runtime.ps1 -Yes
 ```
 
-默认读取 `src-tauri\src\managed_codex.rs` 中锁定的 `REQUIRED_RUNTIME_SET` 与 `REQUIRED_VERSION`。脚本会拒绝覆盖已存在的同平台 manifest；确实需要重发时显式加 `-ForceRepublish`。
+默认读取唯一权威锁 `src\shared\managed-codex-runtime.json::version`，并固定派生 `runtimeSet = codex-<version>`；升级时只改这个值，Rust、TypeScript、打包器和两端发布脚本都会自动派生相同版本，正式发布入口不接受版本 / set 覆盖。脚本会拒绝覆盖已存在的同平台 manifest；确实需要重发时显式加 `-ForceRepublish`。客户端按版本目录安装，旧 Sidecar 继续使用旧 exe，新 Sidecar 才切新版，因此不会尝试覆盖 Windows 正在运行的 `codex.exe`。
 
 **环境变量**：
 
@@ -206,6 +206,7 @@ src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/
 | `R2_ACCOUNT_ID` | Cloudflare Account ID |
 | `CF_ZONE_ID` | Cloudflare Zone ID (可选，用于清除 CDN 缓存) |
 | `CF_API_TOKEN` | Cloudflare API Token (可选) |
+| `MANAGED_CODEX_WINDOWS_PUBLISHER` | 可选，Windows Authenticode publisher 断言；默认 `OpenAI OpCo, LLC` |
 
 ---
 

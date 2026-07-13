@@ -8,7 +8,7 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ENV_FILE="${PROJECT_DIR}/.env"
-RUST_CODEX_FILE="${PROJECT_DIR}/src-tauri/src/managed_codex.rs"
+RUNTIME_LOCK_FILE="${PROJECT_DIR}/src/shared/managed-codex-runtime.json"
 R2_BUCKET="myagents-releases"
 DOWNLOAD_BASE_URL="https://download.myagents.io"
 DEFAULT_OUT_DIR="${PROJECT_DIR}/dist/managed-codex"
@@ -20,11 +20,8 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m'
 
-RUNTIME_SET=""
-CODEX_VERSION=""
 PLATFORMS=""
 OUT_DIR="$DEFAULT_OUT_DIR"
-SKIP_PACKAGE=0
 YES=0
 NO_PURGE=0
 NO_VERIFY=0
@@ -39,11 +36,8 @@ Packages and uploads Managed Codex runtime artifacts to:
   ${DOWNLOAD_BASE_URL}/runtimes/codex/sets/<runtime-set>/
 
 Options:
-  --runtime-set SET          Runtime resource set to publish. Default: REQUIRED_RUNTIME_SET from managed_codex.rs.
-  --codex-version VERSION    Codex runtime version. Default: REQUIRED_VERSION from managed_codex.rs.
   --platforms LIST           Comma-separated platforms, e.g. darwin-arm64,darwin-x64,win32-x64.
   --out DIR                  Packaging output root. Default: dist/managed-codex.
-  --skip-package             Upload an already-generated dist/managed-codex/sets/<runtime-set> directory.
   --force-republish          Allow overwriting an existing runtime set path.
   -y, --yes                  Skip interactive confirmation.
   --no-purge                 Skip Cloudflare CDN purge.
@@ -70,9 +64,21 @@ Optional release assertions:
 EOF
 }
 
-read_rust_const() {
-    local const_name="$1"
-    sed -n "s/^const ${const_name}:.*= \"\\([^\"]*\\)\";.*/\\1/p" "$RUST_CODEX_FILE" | head -1
+read_runtime_lock_version() {
+    node - "$RUNTIME_LOCK_FILE" <<'NODE'
+const { readFileSync } = require('node:fs');
+const [lockPath] = process.argv.slice(2);
+const lock = JSON.parse(readFileSync(lockPath, 'utf8'));
+const version = lock.version;
+if (
+  typeof version !== 'string'
+  || version.trim() !== version
+  || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)
+) {
+  throw new Error(`Managed Codex runtime lock requires a canonical semver version: ${lockPath}`);
+}
+process.stdout.write(version);
+NODE
 }
 
 require_command() {
@@ -112,16 +118,6 @@ trap cleanup EXIT INT TERM
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --runtime-set)
-            require_option_value "$1" "${2:-}"
-            RUNTIME_SET="${2:-}"
-            shift 2
-            ;;
-        --codex-version)
-            require_option_value "$1" "${2:-}"
-            CODEX_VERSION="${2:-}"
-            shift 2
-            ;;
         --platforms)
             require_option_value "$1" "${2:-}"
             PLATFORMS="${2:-}"
@@ -135,10 +131,6 @@ while [ "$#" -gt 0 ]; do
             fi
             OUT_DIR="${OUT_DIR%/}"
             shift 2
-            ;;
-        --skip-package)
-            SKIP_PACKAGE=1
-            shift
             ;;
         --force-republish)
             FORCE_REPUBLISH=1
@@ -168,11 +160,12 @@ while [ "$#" -gt 0 ]; do
     esac
 done
 
-RUNTIME_SET="${RUNTIME_SET:-$(read_rust_const REQUIRED_RUNTIME_SET)}"
-CODEX_VERSION="${CODEX_VERSION:-$(read_rust_const REQUIRED_VERSION)}"
+require_command node "请先安装 Node.js。"
+CODEX_VERSION="$(read_runtime_lock_version)"
+RUNTIME_SET="codex-${CODEX_VERSION}"
 
 if [ -z "$RUNTIME_SET" ] || [ -z "$CODEX_VERSION" ]; then
-    echo -e "${RED}错误: 无法从 ${RUST_CODEX_FILE} 读取 Managed Codex 版本${NC}"
+    echo -e "${RED}错误: 无法从 ${RUNTIME_LOCK_FILE} 读取 Managed Codex 版本${NC}"
     exit 1
 fi
 validate_runtime_set_slug "$RUNTIME_SET"
@@ -218,21 +211,15 @@ require_command curl "请先安装 curl。"
 echo -e "${GREEN}✓ 依赖已就绪${NC}"
 echo ""
 
-if [ "$SKIP_PACKAGE" -eq 0 ]; then
-    echo -e "${BLUE}[3/6] 打包 Managed Codex runtime...${NC}"
-    PACKAGE_ARGS=(
-        "${PROJECT_DIR}/scripts/package-managed-codex-runtime.mjs"
-        --runtime-set "$RUNTIME_SET"
-        --codex-version "$CODEX_VERSION"
-        --out "$OUT_DIR"
-    )
-    if [ -n "$PLATFORMS" ]; then
-        PACKAGE_ARGS+=(--platforms "$PLATFORMS")
-    fi
-    node "${PACKAGE_ARGS[@]}"
-else
-    echo -e "${BLUE}[3/6] 跳过打包，使用现有目录...${NC}"
+echo -e "${BLUE}[3/6] 打包 Managed Codex runtime...${NC}"
+PACKAGE_ARGS=(
+    "${PROJECT_DIR}/scripts/package-managed-codex-runtime.mjs"
+    --out "$OUT_DIR"
+)
+if [ -n "$PLATFORMS" ]; then
+    PACKAGE_ARGS+=(--platforms "$PLATFORMS")
 fi
+node "${PACKAGE_ARGS[@]}"
 
 if [ ! -d "$RUNTIME_DIR" ]; then
     echo -e "${RED}错误: runtime 目录不存在: ${RUNTIME_DIR}${NC}"

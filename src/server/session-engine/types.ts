@@ -13,6 +13,12 @@ import type { ProviderRoute } from '../../shared/providerRoute';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { OfficialToolId } from '../../shared/official-tools';
 import type { SessionOrigin } from '../../shared/session-origin';
+import type {
+  DispatchGuard,
+  TurnIdentity,
+  TurnOwner,
+  TurnTerminalObserver,
+} from '../session-core/turn-queue';
 
 export type SessionEngineKind = 'builtin' | 'external';
 
@@ -35,6 +41,12 @@ export type DesktopMessageRequest = {
   analyticsSource?: TurnAnalyticsSource;
   analyticsOrigin?: SessionOrigin;
   birthOrigin?: SessionOrigin;
+  turnBoundaryOnly?: boolean;
+  /** Internal queue identity supplied by a domain owner such as Goal. */
+  queueId?: string;
+  turnOwner?: TurnOwner;
+  onTerminal?: TurnTerminalObserver;
+  beforeDispatch?: DispatchGuard;
 };
 
 export type DesktopAdmissionResult = {
@@ -43,8 +55,12 @@ export type DesktopAdmissionResult = {
   queueId?: string;
   isInFlight?: boolean;
   deliveryMode?: EnqueueResult['deliveryMode'];
+  canCancel?: boolean;
+  canForceExecute?: boolean;
   error?: string;
   status?: number;
+  /** Internal dispatch acknowledgement; HTTP serializers must not expose it. */
+  dispatchAcceptance?: Promise<{ accepted: boolean; error?: string }>;
 };
 
 export type ImMessageRequest = {
@@ -63,6 +79,11 @@ export type ImMessageRequest = {
   metadataBirthPending?: boolean;
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
   analyticsOrigin?: SessionOrigin;
+  turnBoundaryOnly?: boolean;
+  queueId?: string;
+  turnOwner?: TurnOwner;
+  onTerminal?: TurnTerminalObserver;
+  beforeDispatch?: DispatchGuard;
 };
 
 export type ImAdmissionResult = {
@@ -70,6 +91,7 @@ export type ImAdmissionResult = {
   queued?: boolean;
   error?: string;
   status?: number;
+  dispatchAcceptance?: Promise<{ accepted: boolean; error?: string }>;
 };
 
 export type ImCancelResult = {
@@ -100,6 +122,11 @@ export type BackgroundMessageRequest = {
   reasoningEffort?: string;
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
   analyticsOrigin?: SessionOrigin;
+  turnBoundaryOnly?: boolean;
+  queueId?: string;
+  turnOwner?: TurnOwner;
+  onTerminal?: TurnTerminalObserver;
+  beforeDispatch?: DispatchGuard;
 };
 
 export type InjectedTurnRequest = {
@@ -107,6 +134,7 @@ export type InjectedTurnRequest = {
   sessionId: string;
   workspacePath: string;
   scenario: InteractionScenario;
+  metadataBirthPending?: boolean;
   permissionMode?: string;
   model?: string;
   reasoningEffort?: string;
@@ -117,11 +145,18 @@ export type InjectedTurnRequest = {
   analyticsOrigin?: SessionOrigin;
   timeoutMs: number;
   pollMs?: number;
+  queueId?: string;
+  turnOwner?: TurnOwner;
+  onTerminal?: TurnTerminalObserver;
+  /** Final authority check at the runtime promotion boundary. */
+  beforeDispatch?: DispatchGuard;
 };
 
 export type InjectedTurnResult = {
   success: boolean;
   enqueued?: boolean;
+  /** The turn may still be alive and must remain addressable by its exact queue identity. */
+  terminationUnconfirmed?: boolean;
   assistantMessagePresent?: boolean;
   text?: string;
   error?: string;
@@ -258,6 +293,8 @@ export interface SessionEngine {
   getStreamReplaySnapshot(): SessionEngineStreamReplaySnapshot;
   getSessionConfigSnapshot(): SessionEngineConfigSnapshot;
   getCurrentSessionContext(): SessionEngineCurrentContext;
+  getCurrentTurnIdentity(): TurnIdentity | null;
+  hasQueuedTurnOwnedBy(owner: TurnOwner): boolean;
   getHeldImConfigSnapshot(): SessionEngineHeldImConfigSnapshot;
   getLiveSessionOverlay(sessionId: string): SessionEngineLiveOverlay;
   sendDesktopMessage(request: DesktopMessageRequest): Promise<DesktopAdmissionResult>;
@@ -265,8 +302,10 @@ export interface SessionEngine {
   cancelImRequest(requestId: string, reason?: string): Promise<ImCancelResult>;
   enqueueBackgroundMessage(request: BackgroundMessageRequest): Promise<ImAdmissionResult>;
   enqueueInboxMessage(request: InboxMessageRequest): Promise<{ queued: boolean; error?: string }>;
+  ensureGoalSessionConfig(): Promise<{ success: boolean; error?: string }>;
   runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult>;
-  stopTurn(): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }>;
+  stopTurn(options?: { preserveQueue?: boolean }): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }>;
+  stopOwnedTurn(owner: TurnOwner): Promise<{ success: boolean; alreadyStopped?: boolean; error?: string }>;
   cancelQueuedMessage(queueId: string): Promise<QueueCancelResult>;
   forceQueuedMessage(queueId: string): Promise<boolean>;
   getQueueStatus(): QueueStatusItem[];

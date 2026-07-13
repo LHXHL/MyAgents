@@ -10,6 +10,8 @@ import type { LargeValueRef } from '../utils/large-value-store';
 
 export interface InlineImagePayload {
   kind?: 'inline_base64';
+  /** Stable logical attachment identity supplied by renderer surfaces. */
+  id?: string;
   name: string;
   mimeType: string;
   data: string;  // base64 without data URL prefix
@@ -214,6 +216,9 @@ export type UnifiedEvent =
     attachment: ToolAttachment;
   }
 
+  // === Turn lifecycle ===
+  | { kind: 'turn_started' }
+
   // === Permission delegation ===
   | {
     kind: 'permission_request';
@@ -276,6 +281,13 @@ export type UnifiedEvent =
 
   // === Message replay (for session resume) ===
   | { kind: 'message_replay'; message: { id: string; role: string; content: unknown; timestamp?: string } }
+
+  // === Live user message echo ===
+  // Codex emits this when a turn/steer input is actually admitted into the
+  // active turn. The session layer uses it to promote a realtime queue pill to
+  // a visible user bubble; the turn/steer RPC response alone is only transport
+  // acknowledgement.
+  | { kind: 'user_message_accepted'; clientUserMessageId?: string }
 
   // === Passthrough for unrecognized events ===
   | { kind: 'raw'; data: unknown };

@@ -1,13 +1,8 @@
-// Cron Task Manager for MyAgents
-// Manages scheduled task execution with persistence and recovery
-// Includes Rust-layer scheduler that directly executes tasks via Sidecar
-//
-// Key responsibilities:
-// - Task lifecycle management (create, start, pause, stop, complete)
-// - Interval-based scheduling with overlap prevention
-// - Session activation/deactivation coordination with SidecarManager
-// - Persistence to ~/.myagents/cron_tasks.json with auto-recovery on startup
+// Compatibility types and commands for the retired CronTask persistence model.
+// New scheduled automation is persisted and executed as Task.
 
+use crate::utils::bom::strip_bom;
+use crate::{ulog_error, ulog_info, ulog_warn};
 use chrono::{DateTime, Utc};
 use cron::Schedule as CronExprSchedule;
 use serde::{Deserialize, Serialize};
@@ -16,56 +11,29 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
-use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager};
-use tokio::sync::RwLock;
-use tokio::time::Duration;
-use uuid::Uuid;
-
-use crate::sidecar::{
-    ensure_session_sidecar, execute_cron_task, release_session_sidecar, CronExecutePayload,
-    ManagedSidecarManager, ProviderEnv, SidecarOwner,
-};
-use crate::utils::bom::strip_bom;
-use crate::{ulog_debug, ulog_error, ulog_info, ulog_warn};
+use tauri::{AppHandle, Emitter};
 
 pub(crate) mod commands;
 pub(crate) mod delivery;
-pub(crate) mod execution;
 pub(crate) mod init_recovery;
 pub(crate) mod manager;
 pub(crate) mod run_records;
 pub(crate) mod schedule;
-pub(crate) mod store;
 pub(crate) mod types;
 pub(crate) mod validation;
 
 #[allow(unused_imports)]
 pub use commands::{
     cmd_create_cron_task, cmd_delete_cron_task, cmd_get_cron_runs, cmd_get_cron_task,
-    cmd_get_cron_tasks, cmd_get_session_cron_task, cmd_get_tab_cron_task, cmd_get_tasks_to_recover,
-    cmd_get_workspace_cron_tasks, cmd_is_task_executing, cmd_mark_task_complete,
-    cmd_mark_task_executing, cmd_record_cron_execution, cmd_start_cron_scheduler,
-    cmd_start_cron_task, cmd_stop_cron_task, cmd_update_cron_task_fields,
-    cmd_update_cron_task_session, cmd_update_cron_task_tab,
+    cmd_get_cron_tasks, cmd_get_session_cron_task, cmd_get_unmigrated_legacy_cron_tasks,
+    cmd_get_workspace_cron_tasks, cmd_is_task_executing, cmd_start_cron_task, cmd_stop_cron_task,
+    cmd_update_cron_task_fields, cmd_update_cron_task_session,
 };
-use delivery::deliver_cron_result_to_bot;
+pub(crate) use delivery::deliver_cron_result_to_bot;
 pub use delivery::{deliver_task_notification_to_bot, deliver_task_notification_to_bot_checked};
-use execution::{check_end_conditions_static, execute_task_directly, stop_task_internal};
 pub use init_recovery::initialize_cron_manager;
 pub use manager::{get_cron_task_manager, CronTaskManager};
-pub use run_records::{
-    read_cron_runs, record_cron_run, CronRecoveryFailedTask, CronRecoverySummaryPayload,
-    CronRunRecord, CronTaskRecoveredPayload, CronTaskStatusChangedPayload, CronTaskTriggerPayload,
-    TriggerNowInfo,
-};
-use run_records::{run_record_path, TERMINAL_STOP_SENTINEL};
-pub use schedule::enrich_for_summary;
-use schedule::{enrich_task, resolve_missed_interval_target, sleep_until_wallclock};
-use store::{atomic_save_task_snapshot, atomic_save_tasks};
-#[cfg(test)]
-use types::default_permission_mode;
-use types::CronTaskStore;
+pub use run_records::{read_cron_runs, record_cron_run, CronRunRecord, TriggerNowInfo};
 pub use types::{
     CronDelivery, CronSchedule, CronTask, CronTaskConfig, EndConditions, ProviderIntent,
     RecurringWindow, RunMode, TaskProviderEnv, TaskStatus,
@@ -78,60 +46,6 @@ use validation::{next_cron_fire_time, translate_unix_dow_to_crate_dow};
 #[cfg(test)]
 mod cron_dialect_tests {
     use super::*;
-
-    fn sample_task(id: &str, workspace_path: &str) -> CronTask {
-        let now = Utc::now();
-        CronTask {
-            id: id.to_string(),
-            workspace_path: workspace_path.to_string(),
-            session_id: "session".to_string(),
-            prompt: "prompt".to_string(),
-            interval_minutes: 60,
-            end_conditions: EndConditions::default(),
-            run_mode: RunMode::SingleSession,
-            status: TaskStatus::Running,
-            execution_count: 0,
-            created_at: now,
-            last_executed_at: None,
-            notify_enabled: true,
-            tab_id: None,
-            exit_reason: None,
-            permission_mode: default_permission_mode(),
-            model: None,
-            provider_env: None,
-            provider_id: None,
-            provider_intent: ProviderIntent::FollowAgent,
-            runtime: None,
-            runtime_config: None,
-            mcp_enabled_servers: None,
-            managed_kind: None,
-            last_error: None,
-            last_run_ok: None,
-            last_run_duration_ms: None,
-            source_bot_id: None,
-            delivery: None,
-            schedule: None,
-            name: None,
-            next_execution_at: None,
-            internal_session_id: None,
-            updated_at: now,
-            task_id: None,
-        }
-    }
-
-    fn test_manager_with_task(task: CronTask) -> CronTaskManager {
-        let mut tasks = HashMap::new();
-        tasks.insert(task.id.clone(), task);
-        CronTaskManager {
-            tasks: Arc::new(RwLock::new(tasks)),
-            storage_path: PathBuf::from("unused"),
-            shutdown: Arc::new(RwLock::new(false)),
-            executing_tasks: Arc::new(RwLock::new(HashSet::new())),
-            active_schedulers: Arc::new(RwLock::new(HashSet::new())),
-            scheduler_handles: Arc::new(RwLock::new(HashMap::new())),
-            app_handle: Arc::new(RwLock::new(None)),
-        }
-    }
 
     #[test]
     fn normalize_path_matches_windows_separator_variants() {
@@ -153,19 +67,6 @@ mod cron_dialect_tests {
     fn normalize_path_keeps_posix_literal_backslashes() {
         assert_ne!(normalize_path(r"/tmp/a\b"), normalize_path("/tmp/a/b"));
         assert_eq!(normalize_path(r"/tmp/a\b/"), r"/tmp/a\b");
-    }
-
-    #[tokio::test]
-    async fn get_tasks_for_workspace_matches_backslash_query_to_forward_slash_storage() {
-        let task = sample_task("task-1", "C:/Users/me/project");
-        let manager = test_manager_with_task(task);
-
-        let tasks = manager
-            .get_tasks_for_workspace(r"C:\Users\me\project\")
-            .await;
-
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].id, "task-1");
     }
 
     /// Fingerprint cases for `translate_unix_dow_to_crate_dow` — encodes the

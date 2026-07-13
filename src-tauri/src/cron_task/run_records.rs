@@ -4,20 +4,6 @@ use super::*;
 
 const MAX_RUN_RECORDS: usize = 500;
 
-/// Sentinel prefix used by `execute_task_directly` to flag an `Err` that is
-/// NOT an execution failure but a deliberate "linked Task is in terminal
-/// state, we've already called `stop_task`" short-circuit (v0.1.69 H2
-/// cross-review follow-up).
-///
-/// The outer scheduler loop detects this prefix and skips:
-///   1. writing a failure record to `cron_runs/<id>.jsonl`
-///   2. setting `task.last_error`
-///   3. emitting `cron:execution-error`
-/// — without it, the graceful terminal-state stop would still surface to the
-/// UI as a failed tick, giving the user a misleading "最近一次失败" badge
-/// seconds before the task's real status flips to Stopped.
-pub(super) const TERMINAL_STOP_SENTINEL: &str = "__TERMINAL_STOP__:";
-
 /// A single execution record for a cron task
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -56,28 +42,91 @@ pub(super) fn run_record_path(task_id: &str) -> PathBuf {
 
 /// Append a run record to ~/.myagents/cron_runs/<taskId>.jsonl
 /// Truncates to MAX_RUN_RECORDS if exceeded.
-pub fn record_cron_run(task_id: &str, record: &CronRunRecord) -> Result<(), String> {
+pub async fn record_cron_run(task_id: &str, record: &CronRunRecord) -> Result<(), String> {
     let path = run_record_path(task_id);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| format!("Failed to create cron_runs dir: {}", e))?;
-    }
-
     let line = serde_json::to_string(record)
         .map_err(|e| format!("Failed to serialize run record: {}", e))?
         + "\n";
+    let lock_path = path.with_extension("jsonl.lock");
+    crate::utils::file_lock::with_file_lock(
+        &lock_path,
+        crate::utils::file_lock::FileLockOptions::default(),
+        move || {
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).map_err(crate::utils::file_lock::FileLockError::Io)?;
+            }
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&path)
+                .map_err(crate::utils::file_lock::FileLockError::Io)?;
+            file.write_all(line.as_bytes())
+                .map_err(crate::utils::file_lock::FileLockError::Io)?;
+            truncate_run_file_if_needed(&path, MAX_RUN_RECORDS);
+            Ok(())
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())
+}
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .map_err(|e| format!("Failed to open run record file: {}", e))?;
-
-    file.write_all(line.as_bytes())
-        .map_err(|e| format!("Failed to write run record: {}", e))?;
-
-    // Truncate if over limit
-    truncate_run_file_if_needed(&path, MAX_RUN_RECORDS);
-    Ok(())
+/// Merge run history from a historical Cron projection into its Task id.
+/// The legacy file remains untouched as a diagnostic backup.
+pub(crate) async fn migrate_cron_run_history(legacy_id: &str, task_id: &str) -> Result<(), String> {
+    if legacy_id == task_id {
+        return Ok(());
+    }
+    let source = run_record_path(legacy_id);
+    if !source.exists() {
+        return Ok(());
+    }
+    let target = run_record_path(task_id);
+    let lock_path = target.with_extension("jsonl.lock");
+    crate::utils::file_lock::with_file_lock(
+        &lock_path,
+        crate::utils::file_lock::FileLockOptions::default(),
+        move || {
+            let mut records = Vec::new();
+            for path in [&target, &source] {
+                let Ok(content) = fs::read_to_string(path) else {
+                    continue;
+                };
+                records.extend(
+                    content
+                        .lines()
+                        .filter_map(|line| serde_json::from_str::<CronRunRecord>(line).ok()),
+                );
+            }
+            records.sort_by_key(|record| record.ts);
+            let mut seen = HashSet::new();
+            records.retain(|record| {
+                serde_json::to_string(record)
+                    .map(|value| seen.insert(value))
+                    .unwrap_or(false)
+            });
+            if records.len() > MAX_RUN_RECORDS {
+                records.drain(..records.len() - MAX_RUN_RECORDS);
+            }
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).map_err(crate::utils::file_lock::FileLockError::Io)?;
+            }
+            let content = records
+                .into_iter()
+                .map(|record| serde_json::to_string(&record))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| {
+                    crate::utils::file_lock::FileLockError::Io(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        error,
+                    ))
+                })?
+                .join("\n");
+            fs::write(&target, format!("{content}\n"))
+                .map_err(crate::utils::file_lock::FileLockError::Io)
+        },
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 /// Read the most recent `limit` run records (returned in chronological order)
@@ -119,67 +168,4 @@ fn truncate_run_file_if_needed(path: &PathBuf, max: usize) {
     let kept: Vec<&str> = lines[lines.len() - max..].to_vec();
     let new_content = kept.join("\n") + "\n";
     let _ = fs::write(path, new_content);
-}
-
-/// Event payload for cron task execution trigger
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CronTaskTriggerPayload {
-    pub task_id: String,
-    pub prompt: String,
-    pub is_first_execution: bool,
-    pub ai_can_exit: bool,
-    pub workspace_path: String,
-    pub session_id: String,
-    pub run_mode: RunMode,
-    pub notify_enabled: bool,
-    pub tab_id: Option<String>,
-}
-
-// ============ Recovery Event Types (方案 A: Rust 统一恢复) ============
-
-/// Event payload for a single task recovery success
-/// Emitted as "cron:task-recovered" for each successfully recovered task
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CronTaskRecoveredPayload {
-    pub task_id: String,
-    pub session_id: String,
-    pub workspace_path: String,
-    pub port: u16,
-    pub status: String,
-    pub execution_count: u32,
-    pub interval_minutes: u32,
-}
-
-/// Event payload for task status changes
-/// Emitted as "cron:task-status-changed" when task status changes
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CronTaskStatusChangedPayload {
-    pub task_id: String,
-    pub session_id: String,
-    pub old_status: String,
-    pub new_status: String,
-    pub reason: Option<String>,
-}
-
-/// Event payload for recovery summary
-/// Emitted as "cron:recovery-summary" after all recovery attempts complete
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CronRecoverySummaryPayload {
-    pub total_tasks: u32,
-    pub recovered_count: u32,
-    pub failed_count: u32,
-    pub failed_tasks: Vec<CronRecoveryFailedTask>,
-}
-
-/// Info about a single failed recovery
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CronRecoveryFailedTask {
-    pub task_id: String,
-    pub workspace_path: String,
-    pub error: String,
 }

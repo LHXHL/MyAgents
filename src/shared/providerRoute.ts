@@ -1,5 +1,10 @@
 import type { Provider, ProviderVerifyStatus } from './config-types';
-import { SUBSCRIPTION_PROVIDER_ID, isProviderEnabled } from './config-types';
+import {
+  isBuiltinSubscriptionProviderId,
+  isProviderEnabled,
+  XAI_SUBSCRIPTION_PROVIDER_ID,
+  type BuiltinSubscriptionProviderId,
+} from './config-types';
 
 export type ProviderRoute =
   | {
@@ -9,7 +14,7 @@ export type ProviderRoute =
     }
   | {
       kind: 'subscription';
-      providerId: typeof SUBSCRIPTION_PROVIDER_ID;
+      providerId: BuiltinSubscriptionProviderId;
       model: string;
     }
   | {
@@ -52,8 +57,11 @@ export function hasProviderRouteCredential(
   credentials: ProviderRouteCredentialState,
 ): boolean {
   if (provider.type === 'subscription') {
-    if (provider.id !== SUBSCRIPTION_PROVIDER_ID) return false;
+    if (!isBuiltinSubscriptionProviderId(provider.id)) return false;
     const status = credentials.verifyStatus?.[provider.id];
+    if (provider.id === XAI_SUBSCRIPTION_PROVIDER_ID) {
+      return status?.status === 'valid';
+    }
     return (
       status?.status === 'valid'
       || !!nonEmpty(status?.accountEmail)
@@ -78,8 +86,8 @@ export function getCredentialConfiguredProviderCandidates<T extends ProviderForR
 }
 
 function concreteRoute(provider: ProviderForRoute, model: string): ProviderRoute {
-  if (provider.type === 'subscription' && provider.id === SUBSCRIPTION_PROVIDER_ID) {
-    return { kind: 'subscription', providerId: SUBSCRIPTION_PROVIDER_ID, model };
+  if (provider.type === 'subscription' && isBuiltinSubscriptionProviderId(provider.id)) {
+    return { kind: 'subscription', providerId: provider.id, model };
   }
   return { kind: 'provider', providerId: provider.id, model };
 }
@@ -136,7 +144,7 @@ export function isConcreteProviderRoute(
     return !!nonEmpty(route.providerId) && !!nonEmpty(route.model);
   }
   if (route.kind === 'subscription') {
-    return route.providerId === SUBSCRIPTION_PROVIDER_ID && !!nonEmpty(route.model);
+    return isBuiltinSubscriptionProviderId(route.providerId) && !!nonEmpty(route.model);
   }
   return false;
 }
@@ -148,8 +156,8 @@ export function providerRouteMirrorProviderId(
 }
 
 export function createConcreteProviderRoute(providerId: string, model: string): ProviderRoute {
-  if (providerId === SUBSCRIPTION_PROVIDER_ID) {
-    return { kind: 'subscription', providerId: SUBSCRIPTION_PROVIDER_ID, model };
+  if (isBuiltinSubscriptionProviderId(providerId)) {
+    return { kind: 'subscription', providerId, model };
   }
   return { kind: 'provider', providerId, model };
 }

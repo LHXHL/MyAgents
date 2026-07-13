@@ -3,6 +3,13 @@ import type { AppConfig, McpServerDefinition, Project, WorkspaceTemplate, Worksp
 import { getEffectiveModelAliases, isProjectArchived, PRESET_TEMPLATES } from '../types';
 import type { AgentConfig, ChannelConfig, ChannelOverrides } from '../../../shared/types/agent';
 import type { ImBotConfig } from '../../../shared/types/im';
+import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../../shared/config-types';
+import {
+  createRuntimeBackedProviderIdentity,
+  runtimeBackedProviderPermissionMode,
+  runtimeConfigForRuntimeBackedProvider,
+} from '../../../shared/providerExecution';
+import type { RuntimeConfig, RuntimeType } from '../../../shared/types/runtime';
 import { atomicModifyConfig, loadAppConfig } from './appConfigService';
 import { loadProjects } from './projectService';
 import { getAllMcpServersFromConfig } from './mcpService';
@@ -421,6 +428,7 @@ export function resolveAgentRuntimeMcpServersJson(
 export async function patchAgentConfig(
   agentId: string,
   patch: Partial<Omit<AgentConfig, 'id'>>,
+  options: { memoryAutoUpdateReconcileFailure?: 'defer' | 'throw' } = {},
 ): Promise<AgentConfig | undefined> {
   if (patch.enabled === true) {
     const currentConfig = await loadAppConfig();
@@ -516,7 +524,20 @@ export async function patchAgentConfig(
     const effectivePatch = shouldUpdateProviderEnv
       ? { ...patch, providerEnvJson: resolvedProviderEnvJson ?? undefined }
       : patch;
-    await syncAgentRuntime(agentId, effectivePatch, updated, resolvedMcpJson);
+    await syncAgentRuntime(agentId, effectivePatch, resolvedMcpJson);
+    if ('memoryAutoUpdate' in patch) {
+      try {
+        await configureMemoryAutoUpdateTaskForAgent(updated);
+      } catch (error) {
+        if (options.memoryAutoUpdateReconcileFailure === 'throw') {
+          throw error;
+        }
+        // Composite operations such as enabling an Agent already committed
+        // their primary disk intent. Startup reconciliation converges the
+        // managed Task without turning that primary operation into a failure.
+        console.warn('[agentConfigService] Memory auto-update Task reconciliation deferred:', error);
+      }
+    }
   }
 
   return updated;
@@ -573,7 +594,6 @@ export async function enableAgentAndStartChannels(
 async function syncAgentRuntime(
   agentId: string,
   patch: Partial<Omit<AgentConfig, 'id'>>,
-  _updatedAgent: AgentConfig,
   preResolvedMcpJson?: string,
 ): Promise<void> {
   const { isTauriEnvironment } = await import('@/utils/browserMock');
@@ -653,6 +673,77 @@ export async function addAgentConfig(agent: AgentConfig): Promise<void> {
       agents,
     };
   });
+  if (agent.memoryAutoUpdate?.enabled) {
+    try {
+      await configureMemoryAutoUpdateTaskForAgent(agent);
+    } catch (error) {
+      // Agent creation is already durable. Startup reconciliation owns
+      // convergence; throwing here would make callers create a duplicate Agent.
+      console.warn('[agentConfigService] Memory auto-update task provisioning deferred:', error);
+    }
+  }
+}
+
+export async function configureMemoryAutoUpdateTaskForAgent(
+  agent: AgentConfig,
+): Promise<void> {
+  const { isTauriEnvironment } = await import('@/utils/browserMock');
+  if (!isTauriEnvironment()) return;
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cmd_configure_memory_auto_update_task', {
+    request: {
+      agentId: agent.id,
+      workspacePath: agent.workspacePath,
+      memoryAutoUpdate: agent.memoryAutoUpdate,
+      heartbeat: agent.heartbeat,
+    },
+  });
+}
+
+async function disableMemoryAutoUpdateTaskForAgent(
+  agent: Pick<AgentConfig, 'id' | 'workspacePath' | 'heartbeat'>,
+): Promise<void> {
+  const { isTauriEnvironment } = await import('@/utils/browserMock');
+  if (!isTauriEnvironment()) return;
+
+  const { invoke } = await import('@tauri-apps/api/core');
+  await invoke('cmd_configure_memory_auto_update_task', {
+    request: {
+      agentId: agent.id,
+      workspacePath: agent.workspacePath,
+      memoryAutoUpdate: undefined,
+      heartbeat: agent.heartbeat,
+    },
+  });
+}
+
+export function projectMemoryEvolutionTaskRuntimeForAgent(
+  agent: Pick<AgentConfig, 'providerId' | 'model' | 'permissionMode' | 'runtime' | 'runtimeConfig'>,
+): { runtime?: RuntimeType; runtimeConfig?: RuntimeConfig } {
+  const model = typeof agent.model === 'string' ? agent.model.trim() : '';
+  if (agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID && model) {
+    const identity = createRuntimeBackedProviderIdentity({
+      providerId: CODEX_SUBSCRIPTION_PROVIDER_ID,
+      model,
+    });
+    const runtimeConfig = runtimeConfigForRuntimeBackedProvider(identity, agent.runtimeConfig);
+    const permissionMode = agent.runtimeConfig?.permissionMode
+      ?? runtimeBackedProviderPermissionMode(identity, agent.permissionMode);
+    return {
+      runtime: identity.runtime,
+      runtimeConfig: {
+        ...runtimeConfig,
+        ...(permissionMode ? { permissionMode } : {}),
+        ...(agent.runtimeConfig?.reasoningEffort ? { reasoningEffort: agent.runtimeConfig.reasoningEffort } : {}),
+      },
+    };
+  }
+
+  return {
+    runtime: agent.runtime,
+    runtimeConfig: agent.runtimeConfig,
+  };
 }
 
 export async function configureMemoryEvolutionTasksForAgent(
@@ -664,13 +755,14 @@ export async function configureMemoryEvolutionTasksForAgent(
   if (!isTauriEnvironment()) return;
 
   const { invoke } = await import('@tauri-apps/api/core');
+  const runtimeProjection = projectMemoryEvolutionTaskRuntimeForAgent(agent);
   await invoke('cmd_configure_memory_evolution_tasks', {
     request: {
       agentId: agent.id,
       workspaceId,
       workspacePath: agent.workspacePath,
-      runtime: agent.runtime,
-      runtimeConfig: agent.runtimeConfig,
+      runtime: runtimeProjection.runtime,
+      runtimeConfig: runtimeProjection.runtimeConfig,
       mcpEnabledServers: agent.mcpEnabledServers,
       memoryAutoUpdate: agent.memoryAutoUpdate,
       heartbeat: agent.heartbeat,
@@ -683,13 +775,24 @@ export async function configureMemoryEvolutionTasksForAgent(
  * Remove an agent config from disk.
  */
 export async function removeAgentConfig(agentId: string): Promise<void> {
+  let removedAgent: AgentConfig | undefined;
   await atomicModifyConfig(config => {
+    removedAgent = (config.agents || []).find(a => a.id === agentId);
     const agents = (config.agents || []).filter(a => a.id !== agentId);
     return {
       ...config,
       agents,
     };
   });
+  if (removedAgent?.workspacePath) {
+    try {
+      await disableMemoryAutoUpdateTaskForAgent(removedAgent);
+    } catch (error) {
+      // Agent removal is already durable. Startup reconciliation removes the
+      // now-orphaned managed Task without turning removal into partial failure.
+      console.warn('[agentConfigService] Memory auto-update task cleanup deferred:', error);
+    }
+  }
 }
 
 // ============= Runtime Helpers =============

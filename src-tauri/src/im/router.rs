@@ -354,7 +354,22 @@ impl SessionRouter {
         session_key: &str,
         manager: &ManagedSidecarManager,
     ) -> EnsureSidecarPrep {
-        self.reconcile_peer_session_metadata_before_use(session_key, manager);
+        if let Some(session_id) = self
+            .peer_sessions
+            .get(session_key)
+            .map(|peer| peer.session_id.clone())
+        {
+            let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[&session_id]).await;
+            match crate::sidecar::has_persisted_session_owner(&session_id).await {
+                Ok(false) => self.reconcile_peer_session_metadata_before_use(session_key, manager),
+                Ok(true) => {}
+                Err(error) => ulog_warn!(
+                    "[im-router] Skipping Session identity reconciliation for {}: {}",
+                    session_id,
+                    error
+                ),
+            }
+        }
 
         // Check existing peer session
         if let Some(ps) = self.peer_sessions.get(session_key) {
@@ -565,20 +580,39 @@ impl SessionRouter {
     /// Upgrade a peer's session_id when the Bun sidecar internally created a new session
     /// (e.g., provider switch third-party → Anthropic). Also upgrades the Sidecar Manager key.
     /// Returns true if the session_id was actually changed.
-    pub fn upgrade_peer_session_id(
+    pub async fn upgrade_peer_session_id(
         &mut self,
         session_key: &str,
         new_session_id: &str,
         manager: &ManagedSidecarManager,
-    ) -> bool {
+    ) -> Result<bool, String> {
+        let Some(old_id) = self
+            .peer_sessions
+            .get(session_key)
+            .map(|peer| peer.session_id.clone())
+        else {
+            return Ok(false);
+        };
+        if old_id == new_session_id {
+            return Ok(false);
+        }
+        let _lifecycle =
+            crate::sidecar::acquire_session_lifecycle(&[&old_id, new_session_id]).await;
+        if crate::sidecar::has_persisted_session_owner(&old_id).await?
+            || crate::sidecar::has_persisted_session_owner(new_session_id).await?
+        {
+            return Ok(false);
+        }
+        let upgraded = manager
+            .lock()
+            .map_err(|error| error.to_string())?
+            .upgrade_session_id(&old_id, new_session_id);
+        if !upgraded {
+            return Ok(false);
+        }
         if let Some(ps) = self.peer_sessions.get_mut(session_key) {
-            if ps.session_id == new_session_id {
-                return false; // no change
-            }
-            let old_id = ps.session_id.clone();
-            {
-                let mut mgr = manager.lock().unwrap();
-                mgr.upgrade_session_id(&old_id, new_session_id);
+            if ps.session_id != old_id {
+                return Ok(false);
             }
             ps.session_id = new_session_id.to_string();
             ps.metadata_birth_pending = false;
@@ -589,9 +623,9 @@ impl SessionRouter {
                 new_session_id,
                 session_key,
             );
-            true
+            Ok(true)
         } else {
-            false
+            Ok(false)
         }
     }
 
@@ -649,31 +683,45 @@ impl SessionRouter {
     /// `desired_runtime` is the agent's CURRENT runtime as resolved from
     /// config (typically via `normalize_runtime_type(agent_config.runtime)`).
     /// Valid values: `"builtin"`, `"claude-code"`, `"codex"`, `"gemini"`.
-    pub fn check_and_reset_on_runtime_drift(
+    pub async fn check_and_reset_on_runtime_drift(
         &mut self,
         session_key: &str,
         desired_runtime: &str,
         manager: &ManagedSidecarManager,
-    ) -> Option<(String, String)> {
+    ) -> Result<Option<(String, String)>, String> {
         self.check_and_reset_on_runtime_identity_drift(session_key, desired_runtime, None, manager)
+            .await
     }
 
-    pub fn check_and_reset_on_runtime_identity_drift(
+    pub async fn check_and_reset_on_runtime_identity_drift(
         &mut self,
         session_key: &str,
         desired_runtime: &str,
         desired_runtime_source: Option<&str>,
         manager: &ManagedSidecarManager,
-    ) -> Option<(String, String)> {
-        self.check_and_reset_on_runtime_identity_drift_with_resolver(
-            session_key,
-            desired_runtime,
-            desired_runtime_source,
-            manager,
-            |session_id| {
-                resolve_session_runtime_identity_full(session_id)
-                    .map(|identity| (identity.runtime, identity.runtime_source))
-            },
+    ) -> Result<Option<(String, String)>, String> {
+        let Some(session_id) = self
+            .peer_sessions
+            .get(session_key)
+            .map(|peer| peer.session_id.clone())
+        else {
+            return Ok(None);
+        };
+        let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[&session_id]).await;
+        if crate::sidecar::has_persisted_session_owner(&session_id).await? {
+            return Ok(None);
+        }
+        Ok(
+            self.check_and_reset_on_runtime_identity_drift_with_resolver(
+                session_key,
+                desired_runtime,
+                desired_runtime_source,
+                manager,
+                |session_id| {
+                    resolve_session_runtime_identity_full(session_id)
+                        .map(|identity| (identity.runtime, identity.runtime_source))
+                },
+            ),
         )
     }
 
@@ -780,6 +828,19 @@ impl SessionRouter {
         manager: &ManagedSidecarManager,
         fallback_snapshot: Option<&OwnedSessionSnapshot>,
     ) -> Result<String, String> {
+        let prior_session_id = self
+            .peer_sessions
+            .get(session_key)
+            .map(|peer| peer.session_id.clone());
+        let _lifecycle = if let Some(session_id) = prior_session_id.as_deref() {
+            let guard = crate::sidecar::acquire_session_lifecycle(&[session_id]).await;
+            if crate::sidecar::has_persisted_session_owner(session_id).await? {
+                return Err("Cannot reset a Session with a persistent Goal or task".to_string());
+            }
+            Some(guard)
+        } else {
+            None
+        };
         self.reconcile_peer_session_metadata_before_use(session_key, manager);
 
         if let Some(ps) = self.peer_sessions.get(session_key) {
@@ -864,9 +925,15 @@ impl SessionRouter {
 
                 // Upgrade Sidecar Manager key: old_session_id → new_session_id
                 // So ensure_sidecar can find the running Sidecar by the new key
-                {
-                    let mut mgr = manager.lock().unwrap();
-                    mgr.upgrade_session_id(&old_session_id, &new_session_id);
+                let upgraded = manager
+                    .lock()
+                    .map_err(|error| error.to_string())?
+                    .upgrade_session_id(&old_session_id, &new_session_id);
+                if !upgraded {
+                    return Err(format!(
+                        "Sidecar refused Session identity reset: {} -> {}",
+                        old_session_id, new_session_id
+                    ));
                 }
 
                 // Update peer session
@@ -1020,13 +1087,23 @@ impl SessionRouter {
             .unwrap_or(false)
     }
 
-    /// The sidecar accepted the first enqueue for this peer binding. Metadata is
-    /// now expected to exist; future missing metadata means deletion/corruption.
-    pub fn mark_metadata_birth_consumed(&mut self, session_key: &str) {
-        if let Some(ps) = self.peer_sessions.get_mut(session_key) {
-            ps.metadata_birth_pending = false;
-            ps.metadata_indexed = true;
+    /// The sidecar accepted the first enqueue for this exact peer-session
+    /// incarnation. The expected id fences delayed ACKs from an older binding:
+    /// `session_key` is stable across runtime/model rotations, `session_id` is not.
+    pub fn mark_metadata_birth_consumed_if_session(
+        &mut self,
+        session_key: &str,
+        expected_session_id: &str,
+    ) -> bool {
+        let Some(ps) = self.peer_sessions.get_mut(session_key) else {
+            return false;
+        };
+        if ps.session_id != expected_session_id || !ps.metadata_birth_pending {
+            return false;
         }
+        ps.metadata_birth_pending = false;
+        ps.metadata_indexed = true;
+        true
     }
 
     // ===== Surface handover helpers (PRD 0.2.14) =====
@@ -1141,8 +1218,35 @@ impl SessionRouter {
     ///
     /// Workspace is always set to the current `default_workspace` (from settings),
     /// NOT the persisted value. This ensures workspace changes take effect on restart.
-    pub fn restore_sessions(&mut self, sessions: &[super::types::ImActiveSession]) {
-        self.restore_sessions_with_metadata_lookup(sessions, |sid| {
+    pub async fn restore_sessions(&mut self, sessions: &[super::types::ImActiveSession]) {
+        let session_ids = sessions
+            .iter()
+            .map(|session| session.session_id.as_str())
+            .collect::<Vec<_>>();
+        let _lifecycle = crate::sidecar::acquire_session_lifecycle(&session_ids).await;
+        let mut sessions = sessions.to_vec();
+        for session in &mut sessions {
+            match crate::sidecar::has_persisted_session_owner(&session.session_id).await {
+                Ok(true) => {
+                    // Missing SessionStore metadata normally rotates a stale IM binding.
+                    // A durable Goal/task owns this identity, so keep it birth-pending
+                    // until its owner has reconciled instead of silently forking it.
+                    session.metadata_birth_pending = true;
+                    session.metadata_indexed = false;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    session.metadata_birth_pending = true;
+                    session.metadata_indexed = false;
+                    ulog_warn!(
+                        "[im-router] Preserving restored Session identity {} because owner lookup failed: {}",
+                        short_id(&session.session_id),
+                        error
+                    );
+                }
+            }
+        }
+        self.restore_sessions_with_metadata_lookup(&sessions, |sid| {
             resolve_session_runtime_identity_full(sid).is_some()
         });
     }
@@ -1728,7 +1832,7 @@ mod tests {
                 .metadata_indexed
         );
 
-        router.mark_metadata_birth_consumed(session_key);
+        assert!(router.mark_metadata_birth_consumed_if_session(session_key, "new-session"));
         assert!(!router.metadata_birth_pending(session_key));
         assert!(
             router
@@ -1736,6 +1840,40 @@ mod tests {
                 .expect("peer session exists")
                 .metadata_indexed
         );
+    }
+
+    #[test]
+    fn stale_session_ack_cannot_consume_new_binding_birth_authority() {
+        let session_key = "agent:a:feishu:private:user";
+        let mut router = SessionRouter::new(PathBuf::from("/tmp/workspace"));
+        let old_info = EnsureSidecarInfo {
+            session_key: session_key.to_string(),
+            session_id: "session-a".to_string(),
+            workspace: PathBuf::from("/tmp/workspace"),
+            prev_count: 0,
+            metadata_birth_pending: true,
+            metadata_indexed: false,
+            runtime_override: None,
+            runtime_source_override: None,
+        };
+        let new_info = EnsureSidecarInfo {
+            session_id: "session-b".to_string(),
+            ..old_info.clone()
+        };
+
+        router.commit_ensure_sidecar(session_key, &old_info, 1234);
+        router.commit_ensure_sidecar(session_key, &new_info, 5678);
+
+        assert!(!router.mark_metadata_birth_consumed_if_session(session_key, "session-a"));
+        let current = router
+            .peer_session_snapshot(session_key)
+            .expect("new binding should remain present");
+        assert_eq!(current.session_id, "session-b");
+        assert!(current.metadata_birth_pending);
+        assert!(!current.metadata_indexed);
+
+        assert!(router.mark_metadata_birth_consumed_if_session(session_key, "session-b"));
+        assert!(!router.metadata_birth_pending(session_key));
     }
 
     #[test]

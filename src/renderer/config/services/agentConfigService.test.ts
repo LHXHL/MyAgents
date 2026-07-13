@@ -9,6 +9,7 @@ import {
   resolveAgentRuntimeMcpServersJson,
   resolveAgentMcpSelectionForConfig,
   resolveAgentDefaultsForProject,
+  projectMemoryEvolutionTaskRuntimeForAgent,
 } from './agentConfigService';
 
 function project(overrides: Partial<Project> = {}): Project {
@@ -171,6 +172,43 @@ describe('agentConfigService template Agent defaults', () => {
     expect(cfg.agents![0].enabled).toBe(false);
     expect(cfg.agents![0].heartbeat).toBeUndefined();
     expect(projects[0].isAgent).toBeUndefined();
+  });
+});
+
+describe('projectMemoryEvolutionTaskRuntimeForAgent', () => {
+  it('projects Codex subscription Agents to the managed Codex runtime identity', () => {
+    expect(projectMemoryEvolutionTaskRuntimeForAgent({
+      providerId: 'codex-sub',
+      model: ' gpt-5.5 ',
+      permissionMode: 'fullAgency',
+      runtime: 'builtin',
+      runtimeConfig: {
+        envPolicy: { proxy: 'terminal' },
+        reasoningEffort: 'xhigh',
+      },
+    })).toEqual({
+      runtime: 'codex',
+      runtimeConfig: {
+        source: 'managed-provider',
+        model: 'gpt-5.5',
+        envPolicy: { proxy: 'terminal' },
+        permissionMode: 'no-restrictions',
+        reasoningEffort: 'xhigh',
+      },
+    });
+  });
+
+  it('keeps ordinary Agent runtime settings unchanged', () => {
+    expect(projectMemoryEvolutionTaskRuntimeForAgent({
+      providerId: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      permissionMode: 'auto',
+      runtime: 'builtin',
+      runtimeConfig: { envPolicy: { proxy: 'myagents' } },
+    })).toEqual({
+      runtime: 'builtin',
+      runtimeConfig: { envPolicy: { proxy: 'myagents' } },
+    });
   });
 });
 

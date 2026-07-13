@@ -919,7 +919,7 @@ mod tests {
     // reject the lure before any spawn happens.
     #[cfg(unix)]
     #[test]
-    fn workspace_open_blocks_symlink_to_credential() {
+    fn workspace_open_blocks_symlink_to_protected_path() {
         use crate::workspace_files::path_safety::resolve_existing_inside_workspace;
         use std::os::unix::fs::symlink;
 
@@ -947,10 +947,12 @@ mod tests {
         );
         // Be specific about the failure mode so a future refactor that
         // accidentally short-circuits to "File not found" or similar still
-        // catches the security regression.
+        // catches the security regression. The shared path gate resolves the
+        // symlink before this workspace-only gate, so /etc is rejected by the
+        // system blacklist first.
         let err = res.unwrap_err();
         assert!(
-            err.contains("escapes workspace") || err.contains("escape"),
+            err.contains("protected system directory"),
             "unexpected error message: {}",
             err
         );

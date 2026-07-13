@@ -10,7 +10,6 @@ const SOUL_TEMPLATE: &str = include_str!("../../../src/shared/default-soul.md");
 const USER_TEMPLATE: &str = include_str!("../../../src/shared/default-user.md");
 const MEMORY_TEMPLATE: &str = include_str!("../../../src/shared/default-memory.md");
 const UPDATE_MEMORY_TEMPLATE: &str = include_str!("../../../src/shared/default-update-memory.md");
-const MEMORY_RULE_PLACEHOLDER: &str = "{{MEMORY_RULE_PATH}}";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,14 +27,21 @@ pub struct MemoryRuleSubstrateResult {
     pub memory: MemoryRuleFileState,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateMemoryFileResult {
+    pub content: String,
+    pub created: bool,
+}
+
 struct RuleSpec {
     numbered: &'static str,
     plain: &'static str,
     template: &'static str,
 }
 
-pub fn render_default_update_memory_content(memory_rule_relative_path: &str) -> String {
-    UPDATE_MEMORY_TEMPLATE.replace(MEMORY_RULE_PLACEHOLDER, memory_rule_relative_path)
+pub fn default_update_memory_content() -> &'static str {
+    UPDATE_MEMORY_TEMPLATE
 }
 
 pub fn ensure_memory_rule_substrate_for_workspace(
@@ -91,6 +97,69 @@ pub async fn cmd_ensure_memory_rule_substrate(
     })
     .await
     .map_err(|e| format!("ensure memory rule substrate task failed: {}", e))?
+}
+
+pub fn ensure_update_memory_file_for_workspace(
+    workspace_path: &str,
+) -> Result<UpdateMemoryFileResult, String> {
+    ensure_memory_rule_substrate_for_workspace(workspace_path)?;
+    let workspace_root = validate_workspace_root(workspace_path)?;
+    let path = resolve_inside_workspace(&workspace_root, "UPDATE_MEMORY.md")?;
+    ensure_update_memory_file_at(&path)
+}
+
+/// Atomically create the optional workspace override, or return the exact
+/// existing user-owned content without rewriting it.
+pub(crate) fn ensure_update_memory_file_at(path: &Path) -> Result<UpdateMemoryFileResult, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err("UPDATE_MEMORY.md is a symlink; refusing to read it".to_string());
+            }
+            if metadata.is_dir() {
+                return Err("UPDATE_MEMORY.md is a directory".to_string());
+            }
+            let content = fs::read_to_string(path).map_err(|e| format!("read failed: {}", e))?;
+            Ok(UpdateMemoryFileResult {
+                content,
+                created: false,
+            })
+        }
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            let mut file = match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)
+            {
+                Ok(file) => file,
+                Err(open_err) if open_err.kind() == ErrorKind::AlreadyExists => {
+                    return ensure_update_memory_file_at(path);
+                }
+                Err(open_err) => return Err(format!("create failed: {}", open_err)),
+            };
+            let content = default_update_memory_content().to_string();
+            file.write_all(content.as_bytes())
+                .map_err(|write_err| format!("write failed: {}", write_err))?;
+            file.sync_all()
+                .map_err(|sync_err| format!("sync failed: {}", sync_err))?;
+            Ok(UpdateMemoryFileResult {
+                content,
+                created: true,
+            })
+        }
+        Err(e) => Err(format!("metadata failed: {}", e)),
+    }
+}
+
+#[tauri::command]
+pub async fn cmd_ensure_update_memory_file(
+    workspace_path: String,
+) -> Result<UpdateMemoryFileResult, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        ensure_update_memory_file_for_workspace(&workspace_path)
+    })
+    .await
+    .map_err(|e| format!("ensure UPDATE_MEMORY.md task failed: {}", e))?
 }
 
 fn ensure_plain_dir(path: &Path, label: &str) -> Result<(), String> {
@@ -214,10 +283,40 @@ mod tests {
     }
 
     #[test]
-    fn render_update_memory_content_uses_actual_memory_rule_path() {
-        let rendered = render_default_update_memory_content(".claude/rules/MEMORY.md");
+    fn default_update_memory_content_has_frontmatter_and_empty_body() {
+        let content = default_update_memory_content();
+        let closing = content
+            .find("\n---")
+            .expect("default UPDATE_MEMORY.md closing frontmatter");
+        let body = &content[closing + "\n---".len()..];
 
-        assert!(rendered.contains("`.claude/rules/MEMORY.md`"));
-        assert!(!rendered.contains(MEMORY_RULE_PLACEHOLDER));
+        assert!(content.contains("myagents-memory-update"));
+        assert!(body.trim().is_empty());
+        assert!(!content.contains("{{MEMORY_RULE_PATH}}"));
+    }
+
+    #[test]
+    fn workspace_update_file_ensure_is_create_once_and_preserve_existing() {
+        let dir = make_test_workspace("memory_update_file_ensure");
+        let workspace = dir.to_string_lossy();
+
+        let created =
+            ensure_update_memory_file_for_workspace(&workspace).expect("create update file");
+        assert!(created.created);
+        assert_eq!(created.content, default_update_memory_content());
+
+        let custom =
+            "---\ndescription: custom\n---\nKeep project decisions in memory/topics/product.md.\n";
+        fs::write(dir.join("UPDATE_MEMORY.md"), custom).expect("replace with user content");
+        let existing =
+            ensure_update_memory_file_for_workspace(&workspace).expect("read update file");
+        assert!(!existing.created);
+        assert_eq!(existing.content, custom);
+        assert_eq!(
+            fs::read_to_string(dir.join("UPDATE_MEMORY.md")).unwrap(),
+            custom
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

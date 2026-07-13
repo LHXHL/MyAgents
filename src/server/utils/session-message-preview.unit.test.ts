@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   CLIENT_MESSAGE_INLINE_MAX_BYTES,
+  isHumanUserMessage,
   resolveLastRealUserMessagePreview,
   shrinkSessionMessageForClient,
   shrinkReplayContentForClient,
@@ -19,6 +20,42 @@ function msg(content: string): SessionMessage {
 }
 
 describe('session-message-preview', () => {
+  it('distinguishes human-visible queries from maintenance and scheduled turns', () => {
+    const isHuman = (content: string, attachments?: SessionMessage['attachments']) => (
+      isHumanUserMessage({ content, attachments })
+    );
+
+    expect(isHuman('普通用户消息')).toBe(true);
+    expect(isHuman(
+      '<system-reminder><MEMORY_UPDATE>maintain</MEMORY_UPDATE></system-reminder>',
+    )).toBe(false);
+    expect(isHuman(
+      '<system-reminder><CRON_TASK>scheduled</CRON_TASK></system-reminder>task prompt',
+    )).toBe(false);
+    expect(isHuman(
+      '<system-reminder><GOAL_CONTINUATION>continue</GOAL_CONTINUATION></system-reminder>',
+    )).toBe(false);
+    expect(isHuman(
+      '<system-reminder><GOAL_CONTEXT>context</GOAL_CONTEXT></system-reminder>用户追问',
+    )).toBe(true);
+    expect(isHuman('请解释为什么会出现 /UPDATE_MEMORY')).toBe(true);
+    expect(isHuman('请解释 <CRON_TASK> 标签')).toBe(true);
+    expect(isHuman('<local-command-stdout>cost output</local-command-stdout>')).toBe(false);
+    expect(isHuman(
+      '<myagents-session-event type="watch.completed">result</myagents-session-event>',
+    )).toBe(false);
+    expect(isHuman(
+      '<system-reminder><myagents-space-issue>issue</myagents-space-issue></system-reminder>',
+    )).toBe(false);
+    expect(isHuman('请解释 <inbox-message> 标签')).toBe(true);
+    expect(isHuman('', [{
+      id: 'image-1',
+      name: 'image.png',
+      mimeType: 'image/png',
+      path: 'image.png',
+    }])).toBe(true);
+  });
+
   it('keeps normal history messages unchanged by reference', () => {
     const input = msg('short message');
     expect(shrinkSessionMessageForClient(input)).toBe(input);

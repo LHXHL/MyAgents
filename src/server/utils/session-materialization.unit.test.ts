@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { AgentConfig } from '../../shared/types/agent';
 import {
+  bindOwnedSnapshotToRuntimeIdentity,
   createMaterializedSessionMetadata,
   isLiveFollowScenario,
 } from './session-materialization';
@@ -26,6 +27,21 @@ function makeAgent(overrides: Partial<AgentConfig> = {}): AgentConfig {
 }
 
 describe('createMaterializedSessionMetadata', () => {
+  it('binds owned metadata to the live Sidecar identity after Agent config drifts', () => {
+    const staleAgentSnapshot = {
+      runtime: 'builtin' as const,
+      model: 'claude-sonnet-4-6',
+    };
+
+    expect(bindOwnedSnapshotToRuntimeIdentity(staleAgentSnapshot, {
+      runtime: 'codex',
+      runtimeSource: 'managed-provider',
+    })).toMatchObject({
+      runtime: 'codex',
+      runtimeSource: 'managed-provider',
+    });
+  });
+
   it('materializes published IM reset ids as live-follow sessions', () => {
     const meta = createMaterializedSessionMetadata({
       agentDir: '/tmp/workspace',

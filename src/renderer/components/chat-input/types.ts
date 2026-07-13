@@ -7,6 +7,8 @@ import type {
   ProviderVerifyStatus,
 } from '@/config/types';
 import type { QueuedMessageInfo } from '@/types/queue';
+import type { CronRunMode, CronSchedule, ScheduledTaskKind } from '@/types/cronTask';
+import type { SessionGoal } from '@/types/sessionGoal';
 import type { SlashCommand } from '../SlashCommandMenu';
 import type { OfficialToolDefinition, OfficialToolId } from '../../../shared/official-tools';
 import type {
@@ -25,6 +27,18 @@ export interface ImageAttachment {
   mimeType?: string;
   sizeBytes?: number;
   relativePath?: string;
+}
+
+interface ScheduledTaskBarProjection {
+  status?: 'running' | 'paused' | 'stopped' | 'completed';
+  intervalMinutes: number;
+  schedule?: CronSchedule;
+  executionCount: number;
+  lastExecutedAt?: string;
+  nextExecutionAt?: string;
+  prompt?: string;
+  endConditions?: { maxExecutions?: number };
+  runMode?: CronRunMode;
 }
 
 export interface SimpleChatInputProps {
@@ -81,42 +95,31 @@ export interface SimpleChatInputProps {
   onWorkspaceRefresh?: () => void;
   cronModeEnabled?: boolean;
   cronConfig?: {
+    taskKind: ScheduledTaskKind;
     intervalMinutes: number;
-    schedule?: import('@/types/cronTask').CronSchedule;
+    schedule?: CronSchedule;
   } | null;
-  cronTask?: {
-    status: 'running' | 'paused' | 'stopped' | 'completed';
-    intervalMinutes: number;
-    schedule?: import('@/types/cronTask').CronSchedule;
-    executionCount: number;
-    lastExecutedAt?: string;
-    nextExecutionAt?: string;
-    prompt?: string;
-    endConditions?: {
-      maxExecutions?: number;
-    };
-    runMode?: import('@/types/cronTask').CronRunMode;
-  } | null;
-  stoppedCronTask?: {
-    status?: 'stopped';
-    intervalMinutes: number;
-    schedule?: import('@/types/cronTask').CronSchedule;
-    executionCount: number;
-    nextExecutionAt?: string;
-    prompt?: string;
-    endConditions?: {
-      maxExecutions?: number;
-    };
-    runMode?: import('@/types/cronTask').CronRunMode;
-  } | null;
+  goalDraftActive?: boolean;
+  cronTask?: ScheduledTaskBarProjection | null;
+  /** Current Session Goal. */
+  sessionGoal?: SessionGoal | null;
+  stoppedCronTask?: ScheduledTaskBarProjection | null;
   cronIsExecuting?: boolean;
   cronExecutionNumber?: number;
+  goalIsExecuting?: boolean;
+  goalExecutionNumber?: number;
   composerConfigLockedReason?: string;
   onCronButtonClick?: () => void;
   onCronSettings?: () => void;
   onCronCancel?: () => void;
+  onGoalDraftSettings?: () => void;
+  onGoalDraftCancel?: () => void;
   onCronStop?: () => void;
   onCronDismissStopped?: () => void;
+  onGoalEdit?: () => void;
+  onGoalResume?: () => void;
+  onGoalCancel?: () => void;
+  onGoalDismiss?: () => void;
   onSlashAction?: (name: string) => void;
   sdkSlashCommands?: SlashCommand[];
   mode?: 'chat' | 'launcher';

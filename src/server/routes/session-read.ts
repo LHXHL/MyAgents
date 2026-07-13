@@ -1,5 +1,5 @@
 import { getSessionEngine } from '../session-engine';
-import { getSessionData } from '../SessionStore';
+import { getSessionData, isHistoryVisibleSession } from '../SessionStore';
 import { pendingSessionWatchCount, registerPendingSessionWatch } from '../inbox/watch-registry';
 import {
   shrinkSessionMessageForClient,
@@ -142,6 +142,11 @@ function handleSessionDetails(sessionId: string, url: URL): Response {
         },
       });
     }
+    return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+  }
+  const isActivePreparedSession =
+    overlay.isActive && session.materializationState === 'prepared';
+  if (!isHistoryVisibleSession(session) && !isActivePreparedSession) {
     return jsonResponse({ success: false, error: 'Session not found.' }, 404);
   }
 

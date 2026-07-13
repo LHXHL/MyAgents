@@ -131,7 +131,8 @@
       "context": "Show or manage the current context",
       "cost": "View token usage and cost",
       "init": "Initialize project config (.CLAUDE.md)",
-      "loop": "Run a task continuously (Ralph Loop)",
+      "goal": "Goal Mode: keep working until complete",
+      "loop": "Goal Mode alias for /goal",
       "pr-comments": "Generate Pull Request comments",
       "release-notes": "Generate release notes from recent commits",
       "review": "Review code",
@@ -168,6 +169,16 @@
       "confirm": "Send anyway",
       "cancel": "Cancel"
     }
+  },
+  "goalEdit": {
+    "title": "Edit Goal",
+    "subtitle": "Updating notifies the current chat to use the new objective",
+    "placeholder": "Enter the new goal...",
+    "update": "Update",
+    "updating": "Updating...",
+    "updated": "Goal updated",
+    "updateFailed": "Failed to update goal",
+    "empty": "Goal cannot be empty"
   },
   "floatingBall": {
     "ballState": {
@@ -385,7 +396,7 @@
       "tokenStats": "Session token usage",
       "contextUsage": "Context token details",
       "bindBot": "Bind chat bot",
-      "cronDeleteTooltip": "Stop the scheduled task before deleting this chat",
+      "cronDeleteTooltip": "Stop or cancel the active Goal or scheduled task before deleting this chat",
       "delete": "Delete chat",
       "bound": "Bound",
       "switchToOther": "Switch to another",
@@ -429,7 +440,7 @@
       "unfavorite": "Unfavorite",
       "exportMarkdown": "Export as Markdown",
       "viewStats": "View stats",
-      "cronDeleteTooltip": "Stop the scheduled task before deleting this chat",
+      "cronDeleteTooltip": "Stop or cancel the active Goal or scheduled task before deleting this chat",
       "delete": "Delete chat",
       "deleteDialog": {
         "title": "Delete chat",
@@ -832,6 +843,7 @@
     },
     "toasts": {
       "composerLockedByCron": "A scheduled task is running in this chat. Stop the task before changing this setting.",
+      "composerLockedByGoal": "Goal Mode is active in this chat. Stop the goal before changing this setting.",
       "providerUnavailable": "The Provider pinned to this chat, \"{{providerId}}\", is unavailable because its API key is missing or it has been disabled. Add the key in Settings, or switch Provider in the model picker before sending.",
       "snapshotProviderIncomplete": "This historical chat is missing Provider information. Select the model again in the model picker first.",
       "previewWorkspaceUnavailable": "Cannot open preview because the workspace file service is unavailable.",

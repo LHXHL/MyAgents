@@ -1,6 +1,6 @@
-import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { delimiter, resolve } from 'path';
+import { delimiter, join, resolve } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
@@ -228,6 +228,41 @@ describe('Claude SDK context window env', () => {
     expect(env.CLAUDE_CODE_DISABLE_1M_CONTEXT).toBe('');
     expect(env.CLAUDE_CODE_ENABLE_1M_CONTEXT).toBe('1');
     expect(env.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('200000');
+  });
+
+  it('keeps Anthropic subscription 4.6 at 200K when another provider discovers the same model id as 1M (#444)', () => {
+    const prevHome = process.env.HOME;
+    const tempHome = mkdtempSync(join(tmpdir(), 'myagents-env-home-'));
+    try {
+      mkdirSync(join(tempHome, '.myagents'), { recursive: true });
+      writeFileSync(
+        join(tempHome, '.myagents', 'config.json'),
+        JSON.stringify({
+          presetCustomModels: {
+            'custom-dragon': [{ model: 'claude-opus-4-6', contextLength: 1_000_000 }],
+          },
+        }),
+      );
+      vi.stubEnv('HOME', tempHome);
+
+      const subscriptionEnv = buildClaudeSessionEnv(
+        { providerId: SUBSCRIPTION_PROVIDER_ID },
+        'claude-opus-4-6',
+        { providerId: SUBSCRIPTION_PROVIDER_ID },
+      );
+      const customEnv = buildClaudeSessionEnv(
+        { providerId: 'custom-dragon', baseUrl: 'https://dragon.example', apiKey: 'test-key' },
+        'claude-opus-4-6',
+        { providerId: 'custom-dragon' },
+      );
+
+      expect(subscriptionEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('200000');
+      expect(customEnv.CLAUDE_CODE_AUTO_COMPACT_WINDOW).toBe('1000000');
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME;
+      else process.env.HOME = prevHome;
+      rmSync(tempHome, { recursive: true, force: true });
+    }
   });
 
   it('keeps Opus 4.7 / 4.8 on the default 1M window', () => {

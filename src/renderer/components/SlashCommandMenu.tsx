@@ -7,6 +7,8 @@
 import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import { isClientActionCommand } from '@/utils/slashActions';
+
 // Import SlashCommand type from shared module to avoid duplication
 import type { SlashCommand } from '../../shared/slashCommands';
 
@@ -88,33 +90,42 @@ export default function SlashCommandMenu({
 
 // Helper function to filter and sort commands (used by SimpleChatInput)
 //
-// Built-in/system commands (`source: 'builtin'`, e.g. /loop, /compact) always
-// rank above user skills & commands so the app's own capabilities surface
-// first. Within a tier the existing order is preserved (alphabetical with no
-// query; prefix-match-then-alphabetical when filtering).
+// Renderer client actions (currently `/goal`) rank first, followed by other
+// built-in/system commands, then user skills & commands. Within a tier the
+// existing order is preserved (alphabetical with no query;
+// prefix-match-then-alphabetical when filtering).
 export function filterAndSortCommands(commands: SlashCommand[], query: string): SlashCommand[] {
     const q = query.toLowerCase();
-    const tier = (c: SlashCommand) => (c.source === 'builtin' ? 0 : 1);
+    const tier = (c: SlashCommand) => (
+        isClientActionCommand(c) ? 0 : (c.source === 'builtin' ? 1 : 2)
+    );
+    const matches = (cmd: SlashCommand) => {
+        const name = cmd.name.toLowerCase();
+        const description = cmd.description.toLowerCase();
+        const aliases = cmd.aliases ?? [];
+        return name.includes(q) ||
+            description.includes(q) ||
+            aliases.some((alias) => alias.toLowerCase().includes(q));
+    };
 
     if (!q) {
-        // No query: builtins first, then alphabetical within each tier
+        // No query: client actions first, then alphabetical within each tier.
         return [...commands].sort((a, b) => tier(a) - tier(b) || a.name.localeCompare(b.name));
     }
 
     return commands
-        .filter(cmd =>
-            cmd.name.toLowerCase().includes(q) ||
-            cmd.description.toLowerCase().includes(q)
-        )
+        .filter(matches)
         .sort((a, b) => {
-            // Builtins first, regardless of match quality
+            // Higher product tier first, regardless of match quality.
             const tierDiff = tier(a) - tier(b);
             if (tierDiff !== 0) return tierDiff;
 
             const aName = a.name.toLowerCase();
             const bName = b.name.toLowerCase();
-            const aStartsWith = aName.startsWith(q);
-            const bStartsWith = bName.startsWith(q);
+            const aAliasStartsWith = a.aliases?.some((alias) => alias.toLowerCase().startsWith(q)) ?? false;
+            const bAliasStartsWith = b.aliases?.some((alias) => alias.toLowerCase().startsWith(q)) ?? false;
+            const aStartsWith = aName.startsWith(q) || aAliasStartsWith;
+            const bStartsWith = bName.startsWith(q) || bAliasStartsWith;
 
             // Prefix match comes first
             if (aStartsWith && !bStartsWith) return -1;

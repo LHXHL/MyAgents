@@ -5,7 +5,10 @@ export {
   getSessionEngineKind,
   getSessionRuntimeType,
   stopActiveTurn,
+  stopOwnedTurn,
+  stopOwnedTurnByQueueId,
 } from './selector';
+export { goalOrchestrator } from './goal-orchestrator';
 export type {
   DesktopAdmissionResult,
   DesktopMessageRequest,
@@ -16,7 +19,7 @@ export type {
   InboxMessageRequest,
   InjectedTurnRequest,
   InjectedTurnResult,
-  RuntimeConfigPatch,
   SessionEngine,
+  RuntimeConfigPatch,
   SessionEngineKind,
 } from './types';

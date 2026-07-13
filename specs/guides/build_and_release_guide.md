@@ -181,25 +181,27 @@ myagents-releases/
 
 **用途**：单独打包并上传 MyAgents 托管的 Codex Runtime 到 R2。它是开发 / 发版准备阶段的资源发布入口，不属于桌面 App 的 `publish_release.sh` / `publish_windows.ps1` 流程。
 
-桌面 App 客户端会锁定一个固定的 runtime set manifest 地址，例如 `runtimes/codex/sets/codex-0.142.2/...`。多个 App 版本可以复用同一个 runtime set；只有决定升级内置 Codex runtime 时，才上传新的 runtime set 并在客户端代码里改 manifest base URL。脚本默认会检查远端 manifest，发现同一个 runtime set 已存在时拒绝覆盖；只有显式传 `--force-republish` 才允许重发同一路径。
+桌面 App 客户端会锁定一个固定的 runtime set manifest 地址，例如 `runtimes/codex/sets/<runtime-set>/...`。多个 App 版本可以复用同一个 runtime set；只有决定升级内置 Codex runtime 时，才修改唯一权威锁 `src/shared/managed-codex-runtime.json::version` 并上传新的 runtime set。`runtimeSet` 固定派生为 `codex-<version>`；Rust、TypeScript、打包器与两端发布脚本都从该值派生，不再手工同步版本。正式发布入口不接受 version / runtime set 覆盖，防止不同平台向同一个 immutable set 上传不同 Codex 版本。脚本默认会检查远端 manifest，发现同一个 runtime set 已存在时拒绝覆盖；只有显式传 `--force-republish` 才允许重发同一路径。
 
 **运行方式**：
 ```bash
 ./publish_managed_codex_runtime.sh
 ```
 
-默认读取 `src-tauri/src/managed_codex.rs` 中锁定的 `REQUIRED_RUNTIME_SET` 与 `REQUIRED_VERSION`，而不是读取 `tauri.conf.json` 的桌面应用版本。因此当前运行中的 Managed Codex 请求 `sets/codex-0.142.2` 时，可直接补发对应目录：
+默认读取 `src/shared/managed-codex-runtime.json`，而不是读取 `tauri.conf.json` 的桌面应用版本。正常升级或补发都无需传版本参数：
 
 ```bash
-./publish_managed_codex_runtime.sh --runtime-set codex-0.142.2
+./publish_managed_codex_runtime.sh -y
 ```
 
-脚本复用 `.env` 凭证、R2 bucket、`download.myagents.io` 域名、Cloudflare purge 和上传后 HTTP 验证。正式上传仍要求 `scripts/package-managed-codex-runtime.mjs` 完成 manifest/artifact 签名校验；开发用 unsigned 包只应使用 `npm run package:managed-codex` 本地生成，不应上传到正式 R2 路径。
+脚本复用 `.env` 凭证、R2 bucket、`download.myagents.io` 域名、Cloudflare purge 和上传后 HTTP 验证。正式上传仍要求 `scripts/package-managed-codex-runtime.mjs` 完成 manifest/artifact 校验；它会逐个枚举 Mach-O / PE，固定 native 文件集合，并校验上游签名。macOS 主 `codex` 与 `codex-code-mode-host` 必须保持 OpenAI Team/Developer ID；Windows 的 OpenAI 原生二进制必须通过 Authenticode 且 publisher 默认为 `OpenAI OpCo, LLC`，实际 signer certificate SHA-256 只写入 `release-audit-v1.json`，不作为每个版本都要人工更新的发布锁。仅对固定路径且确认为完全未签名的 helper 走例外：macOS 的 `rg` / `zsh` 正式打包会用 `.env` 中的 `APPLE_SIGNING_IDENTITY` 补签并复验，Windows 的 `codex-path/rg.exe` 保持上游未签名状态并写入 audit。开发用 unsigned 包只应使用 `npm run package:managed-codex` 本地生成，不应上传到正式 R2 路径。
+
+客户端升级采用版本目录 + Sidecar 启动边界切换：已验证安装的旧 runtime 在 `update-required`、后台下载或下载失败期间仍可使用；运行中的 Codex `app-server` 固定其启动时的绝对 binary path，不会因下载完成被 abort 或热替换。新 artifact 安装完成后只原子更新后续进程的安装指针，新建 / 自然重启的 Sidecar 使用新版，既有 Sidecar 继续使用旧版直到 owner 自然释放。macOS 与 Windows 产品时序相同，Windows 也因此无需覆盖运行中的 `codex.exe`。
 
 Runtime set 是按平台分片补发的：macOS 主机默认发布 `darwin-arm64,darwin-x64`，Windows 主机使用 `publish_managed_codex_runtime.ps1` 发布 `win32-x64`。两边上传到同一个 `sets/<runtime-set>/` 前缀，默认只允许新增缺失平台；如果同平台 manifest 已存在会拒绝覆盖。
 
 ```powershell
-.\publish_managed_codex_runtime.ps1 -RuntimeSet codex-0.142.2
+.\publish_managed_codex_runtime.ps1 -Yes
 ```
 
 ---

@@ -42,6 +42,8 @@ interface ModelManagementPanelProps {
   onUpdateCustomProvider?: (provider: Provider) => Promise<void>;
   onSetPrimaryModel: (providerId: string, modelId: string) => Promise<void>;
   onRefresh: () => Promise<void>;
+  discoveryAction?: () => Promise<DiscoveredModel[]>;
+  discoveryUnavailableMessage?: string;
 }
 
 export default function ModelManagementPanel({
@@ -53,6 +55,8 @@ export default function ModelManagementPanel({
   onUpdateCustomProvider,
   onSetPrimaryModel,
   onRefresh,
+  discoveryAction,
+  discoveryUnavailableMessage,
 }: ModelManagementPanelProps) {
   const { t } = useTranslation('settings');
   // ===== Discovery state =====
@@ -99,7 +103,7 @@ export default function ModelManagementPanel({
   useCloseLayer(() => { onClose(); return true; }, 200);
 
   // ===== Discovery fetch =====
-  const canDiscover = !!apiKey && supportsModelDiscovery(provider);
+  const canDiscover = discoveryAction !== undefined || (!!apiKey && supportsModelDiscovery(provider));
 
   const bundledModelsById = useMemo(
     () => new Map(
@@ -124,18 +128,27 @@ export default function ModelManagementPanel({
     setDiscoveryError(null);
     const thisId = ++fetchIdRef.current;
     try {
-      const result = await fetchProviderModels(provider, apiKey);
+      const result = discoveryAction
+        ? await discoveryAction()
+        : await fetchProviderModels(provider, apiKey);
       if (!isMountedRef.current || thisId !== fetchIdRef.current) return;
       setDiscoveredModels(result);
     } catch (e) {
       if (!isMountedRef.current || thisId !== fetchIdRef.current) return;
-      setDiscoveryError(e instanceof Error ? e.message : String(e));
+      const structuredMessage = e && typeof e === 'object' && 'message' in e
+        ? (e as { message?: unknown }).message
+        : undefined;
+      setDiscoveryError(
+        typeof structuredMessage === 'string'
+          ? structuredMessage
+          : e instanceof Error ? e.message : String(e),
+      );
     } finally {
       if (isMountedRef.current && thisId === fetchIdRef.current) {
         setDiscoveryLoading(false);
       }
     }
-  }, [provider, apiKey, canDiscover]);
+  }, [provider, apiKey, canDiscover, discoveryAction]);
 
   useEffect(() => { doFetch(); }, [doFetch]);
 
@@ -511,10 +524,13 @@ export default function ModelManagementPanel({
             )}
 
             {/* States */}
-            {!canDiscover && !apiKey && (
+            {!canDiscover && discoveryUnavailableMessage && (
+              <p className="py-6 text-center text-sm text-[var(--ink-muted)]">{discoveryUnavailableMessage}</p>
+            )}
+            {!canDiscover && !discoveryUnavailableMessage && !apiKey && !discoveryAction && (
               <p className="py-6 text-center text-sm text-[var(--ink-muted)]">{t('providers.models.needApiKey')}</p>
             )}
-            {!canDiscover && apiKey && (
+            {!canDiscover && !discoveryUnavailableMessage && (apiKey || discoveryAction) && (
               <p className="py-6 text-center text-sm text-[var(--ink-muted)]">{t('providers.models.notSupported')}</p>
             )}
 

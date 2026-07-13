@@ -1,12 +1,12 @@
 import type { ImEventType } from '../utils/im-event-bus';
 import type {
-  BuiltinInjectedTurnOutcome,
   BuiltinTurnStartContext,
   BuiltinTurnUsage,
   MessageQueueItem,
   TurnProviderAnalytics,
 } from './types';
 import type { SessionOrigin } from '../../shared/session-origin';
+import type { TurnIdentity, TurnTerminalOutcome } from '../session-core/turn-queue';
 
 type ImEmitter = (type: ImEventType, data?: unknown) => void;
 
@@ -41,10 +41,37 @@ let currentTurnInboxMeta: import('../inbox/types').InboxTurnMeta | undefined = u
 const currentTurnTextBlocks: string[] = [];
 const pendingRequestIds: string[] = [];
 let currentTurnImTerminalEmitted = false;
-const injectedTurnOutcomes = new Map<string, BuiltinInjectedTurnOutcome>();
-const discardedInjectedTurnIds = new Set<string>();
-let currentTurnInjectedTurnId: string | undefined = undefined;
 let currentTurnSourceItem: MessageQueueItem | null = null;
+let terminalObserverBarrier: Promise<void> = Promise.resolve();
+
+function notifyTurnItemTerminal(
+  item: Pick<MessageQueueItem, 'onTerminal'>,
+  outcome: TurnTerminalOutcome,
+): Promise<void> {
+  const observer = item.onTerminal;
+  if (!observer) return Promise.resolve();
+  item.onTerminal = undefined;
+  try {
+    return Promise.resolve(observer(outcome)).catch((observerError) => {
+      console.error('[agent] turn terminal observer failed:', observerError);
+    });
+  } catch (observerError) {
+    console.error('[agent] turn terminal observer failed:', observerError);
+    return Promise.resolve();
+  }
+}
+
+export function notifyQueuedTurnStopped(
+  item: Pick<MessageQueueItem, 'onTerminal'>,
+  error = 'Queue item was cancelled before dispatch',
+): Promise<void> {
+  return notifyTurnItemTerminal(item, {
+    status: 'stopped',
+    text: '',
+    assistantMessagePresent: false,
+    error,
+  });
+}
 
 export const turnState = {
   get currentTurnUsage(): BuiltinTurnUsage {
@@ -163,14 +190,6 @@ export const turnState = {
   set currentTurnImTerminalEmitted(value: boolean) {
     currentTurnImTerminalEmitted = value;
   },
-  injectedTurnOutcomes,
-  discardedInjectedTurnIds,
-  get currentTurnInjectedTurnId(): string | undefined {
-    return currentTurnInjectedTurnId;
-  },
-  set currentTurnInjectedTurnId(value: string | undefined) {
-    currentTurnInjectedTurnId = value;
-  },
   get currentTurnSourceItem(): MessageQueueItem | null {
     return currentTurnSourceItem;
   },
@@ -181,7 +200,6 @@ export const turnState = {
 
 export function beginTurn(context: BuiltinTurnStartContext): void {
   currentTurnStartTime = context.startedAt;
-  currentTurnInjectedTurnId = context.injectedTurnId;
   currentTurnInboxMeta = context.inboxMeta;
   currentTurnProviderAnalytics = context.providerAnalytics ?? null;
 }
@@ -204,7 +222,6 @@ export function resetTurnUsage(): void {
   turnHadSubstantiveActivity = false;
   currentTurnImTerminalEmitted = false;
   currentTurnTextBlocks.length = 0;
-  currentTurnInjectedTurnId = undefined;
   currentTurnSourceItem = null;
 }
 
@@ -214,6 +231,17 @@ export function getCurrentTurnUsage(): BuiltinTurnUsage {
 
 export function replaceCurrentTurnUsage(next: BuiltinTurnUsage): void {
   currentTurnUsage = next;
+}
+
+/** Keep a best-available total until the SDK result replaces it with the canonical turn usage. */
+export function accumulateCurrentTurnUsage(next: import('../types/session').MessageUsage): void {
+  currentTurnUsage = {
+    ...currentTurnUsage,
+    inputTokens: currentTurnUsage.inputTokens + next.inputTokens,
+    outputTokens: currentTurnUsage.outputTokens + next.outputTokens,
+    cacheReadTokens: currentTurnUsage.cacheReadTokens + (next.cacheReadTokens ?? 0),
+    cacheCreationTokens: currentTurnUsage.cacheCreationTokens + (next.cacheCreationTokens ?? 0),
+  };
 }
 
 export function getLatestMainAssistantUsage(): import('../types/session').MessageUsage | null {
@@ -439,60 +467,32 @@ export function failCurrentImRequest(emit: ImEmitter, data?: unknown): void {
   emit('error', { requestId, ...(typeof data === 'object' && data ? data : {}) });
 }
 
-export function recordInjectedTurnOutcome(
-  status: BuiltinInjectedTurnOutcome['status'],
-  error?: string,
+export function notifyCurrentTurnTerminal(
+  status: TurnTerminalOutcome['status'],
+  details: { error?: string; durationMs?: number } = {},
 ): void {
-  if (!currentTurnInjectedTurnId) return;
-  if (discardedInjectedTurnIds.delete(currentTurnInjectedTurnId)) {
-    currentTurnInjectedTurnId = undefined;
-    return;
-  }
-  injectedTurnOutcomes.set(currentTurnInjectedTurnId, {
+  const item = currentTurnSourceItem;
+  if (!item?.onTerminal) return;
+  const outcome: TurnTerminalOutcome = {
     status,
     text: getCurrentTurnText(),
     assistantMessagePresent: currentTurnAssistantMessagePresent,
-    ...(error ? { error } : {}),
-  });
-  currentTurnInjectedTurnId = undefined;
+    ...(details.durationMs !== undefined
+      ? { durationMs: Math.max(0, details.durationMs) }
+      : currentTurnStartTime !== null
+        ? { durationMs: Math.max(0, Date.now() - currentTurnStartTime) }
+      : {}),
+    usage: {
+      inputTokens: currentTurnUsage.inputTokens,
+      outputTokens: currentTurnUsage.outputTokens,
+    },
+    ...(details.error ? { error: details.error } : {}),
+  };
+  terminalObserverBarrier = notifyTurnItemTerminal(item, outcome);
 }
 
-export function consumeInjectedTurnOutcome(injectedTurnId: string): BuiltinInjectedTurnOutcome | undefined {
-  discardedInjectedTurnIds.delete(injectedTurnId);
-  const outcome = injectedTurnOutcomes.get(injectedTurnId);
-  injectedTurnOutcomes.delete(injectedTurnId);
-  return outcome;
-}
-
-export function discardInjectedTurnOutcome(injectedTurnId: string): void {
-  discardInjectedTurnOutcomeWithOptions(injectedTurnId);
-}
-
-export function discardInjectedTurnOutcomeWithOptions(
-  injectedTurnId: string,
-  options?: { retainForLateTerminal?: boolean },
-): void {
-  if (!injectedTurnId) return;
-  injectedTurnOutcomes.delete(injectedTurnId);
-  if (options?.retainForLateTerminal === false) {
-    discardedInjectedTurnIds.delete(injectedTurnId);
-  } else {
-    discardedInjectedTurnIds.add(injectedTurnId);
-  }
-}
-
-export function clearInjectedTurnOutcomes(): void {
-  injectedTurnOutcomes.clear();
-  discardedInjectedTurnIds.clear();
-  currentTurnInjectedTurnId = undefined;
-}
-
-export function clearCurrentTurnInjectedTurnId(): void {
-  currentTurnInjectedTurnId = undefined;
-}
-
-export function setCurrentTurnInjectedTurnId(injectedTurnId: string | undefined): void {
-  currentTurnInjectedTurnId = injectedTurnId;
+export function waitForCurrentTurnTerminalObserver(): Promise<void> {
+  return terminalObserverBarrier;
 }
 
 export function getCurrentTurnSourceItem(): MessageQueueItem | null {
@@ -501,6 +501,11 @@ export function getCurrentTurnSourceItem(): MessageQueueItem | null {
 
 export function setCurrentTurnSourceItem(item: MessageQueueItem | null): void {
   currentTurnSourceItem = item;
+}
+
+export function getCurrentTurnIdentity(): TurnIdentity | null {
+  const item = currentTurnSourceItem;
+  return item?.turnOwner ? { queueId: item.id, owner: item.turnOwner } : null;
 }
 
 export function terminalCleanup(): {
@@ -537,9 +542,6 @@ export function snapshotTurn() {
     currentTurnTextBlocks: [...currentTurnTextBlocks],
     pendingRequestIds: [...pendingRequestIds],
     currentTurnImTerminalEmitted,
-    injectedTurnOutcomes: new Map(injectedTurnOutcomes),
-    discardedInjectedTurnIds: new Set(discardedInjectedTurnIds),
-    currentTurnInjectedTurnId,
     currentTurnSourceItem,
   };
 }
@@ -567,5 +569,5 @@ export function resetTurnForTest(): void {
   pendingRequestIds.length = 0;
   currentTurnImTerminalEmitted = false;
   currentTurnSourceItem = null;
-  clearInjectedTurnOutcomes();
+  terminalObserverBarrier = Promise.resolve();
 }

@@ -18,7 +18,7 @@ import { loadAppConfig } from '@/config/configService';
 import { getSessionDisplayText } from '@/utils/sessionDisplay';
 import type { SessionTag } from '@/hooks/useTaskCenterData';
 import { currentSupportedLocale } from '@/i18n/format';
-import { isAutomationHistoryOrigin } from '../../shared/session-origin';
+import { isAutomationHistoryOrigin, isSystemMaintenanceSession } from '../../shared/session-origin';
 
 import ConfirmDialog from './ConfirmDialog';
 import SessionStatsModal from './SessionStatsModal';
@@ -139,12 +139,13 @@ export default function SessionHistoryDropdown({
     // Sorted sessions: tagged first, then by lastActiveAt descending within each group
     const sortedSessions = useMemo(() => {
         if (!sessions) return [];
-        return sessions.filter((session) => (
-            showAutomationSessions || !isAutomationHistoryOrigin(session.origin, {
+        return sessions.filter((session) => {
+            if (isSystemMaintenanceSession(session)) return false;
+            return showAutomationSessions || !isAutomationHistoryOrigin(session.origin, {
                 cronTaskId: session.cronTaskId,
                 source: session.source,
-            })
-        )).sort((a, b) => {
+            });
+        }).sort((a, b) => {
             const aHasTag = sessionTagsMap.has(a.id);
             const bHasTag = sessionTagsMap.has(b.id);
             if (aHasTag !== bHasTag) return aHasTag ? -1 : 1;

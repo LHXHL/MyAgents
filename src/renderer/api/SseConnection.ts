@@ -55,7 +55,6 @@ const JSON_EVENTS = new Set([
     'exit-plan-mode:expired',  // PRD #131 — backend timeout: clear stale UI card
     'enter-plan-mode:request', // EnterPlanMode tool - AI requests plan mode
     'enter-plan-mode:expired', // PRD #131 — backend timeout: clear stale UI card
-    'cron:task-exit-requested', // AI requested cron task exit via exit_cron_task tool
     'chat:task-started',    // Background task (SDK Task tool) started
     'chat:task-notification', // Background task completed/failed/stopped
     'mcp:oauth-expired',    // MCP OAuth token expired (trigger re-auth prompt)
