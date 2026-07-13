@@ -11,6 +11,7 @@ import {
   buildIssueCommandPrompt,
   buildIssueQueryKey,
   compareRegisteredAgentAvailability,
+  findJoinedSpaceBySlug,
   formatAgentSecondaryLabel,
   getIssueStatusOptions,
   issueDisplayNumber,
@@ -20,6 +21,7 @@ import {
   isRegisteredAgentVisibleInList,
   localAgentMatchesCurrentSpaceIdentity,
   registeredAgentAvailability,
+  spaceEventsRequireIssueListRefresh,
   spaceEventsRequireSessionRefresh,
 } from "./spaceHelpers";
 
@@ -55,6 +57,27 @@ const issue = (overrides: Partial<SpaceIssue> = {}): SpaceIssue => ({
 });
 
 describe("space issue helpers", () => {
+  it("finds an already joined Space by normalized slug", () => {
+    const currentSession = session("member");
+    currentSession.spaces = [
+      {
+        id: "space-2",
+        slug: "design-team",
+        name: "Design Team",
+        joinPolicy: "open",
+        membership: { id: "membership-2", role: "member" },
+      },
+    ];
+
+    expect(findJoinedSpaceBySlug(currentSession, "  DESIGN-TEAM ")?.id).toBe(
+      "space-2",
+    );
+    expect(findJoinedSpaceBySlug(currentSession, "OFFICIAL")?.id).toBe(
+      "space-1",
+    );
+    expect(findJoinedSpaceBySlug(currentSession, "unknown")).toBeNull();
+  });
+
   it("builds a stable issue query key from normalized filters", () => {
     expect(
       buildIssueQueryKey({
@@ -80,18 +103,28 @@ describe("space issue helpers", () => {
     expect(ACTIVE_ISSUE_STATE_FILTER.split(",")).not.toContain("closed");
   });
 
-  it("builds the issue command prompt around the short CLI alias", () => {
+  it("builds a concise read-first Issue handoff prompt", () => {
     const prompt = buildIssueCommandPrompt({
       spaceName: "MyAgents社区",
       spaceSlug: "official",
       issueId: "iss_123",
     });
 
-    expect(prompt).toContain("这是来自「MyAgents社区」团队空间的 issue");
-    expect(prompt).toContain("请先读取该 issue");
-    expect(prompt).toContain("myagents space issue view iss_123 --space official --comments");
-    expect(prompt).toContain("myagents space issue claim iss_123 --space official");
-    expect(prompt).toContain("myagents issue iss_123 --space official --json");
+    expect(prompt).toBe([
+      "Instruction: 这是一个来自 MyAgents Space「MyAgents社区」的 Issue。请先通过下方只读命令获取当前上下文（标题、正文、附件元数据和最新评论）；如附件与判断有关，按需下载并读取。读取后，先向用户概括你的理解并提出下一步建议，等待用户确认后再修改代码、执行处理动作或变更 Issue 状态。",
+      "",
+      "- Issue ID: iss_123",
+      "- Space slug: official",
+      "",
+      "阅读 Issue：",
+      "`myagents space issue view iss_123 --space official --comments --json`",
+      "",
+      "查看其他可用操作：",
+      "`myagents space issue --help`",
+    ].join("\n"));
+    expect(prompt).not.toContain("myagents space issue claim");
+    expect(prompt).not.toContain("myagents space issue complete");
+    expect(prompt).not.toContain("myagents issue iss_123");
   });
 
   it("exposes status options by permission", () => {
@@ -259,6 +292,24 @@ describe("space issue helpers", () => {
     expect(
       spaceEventsRequireSessionRefresh([
         { type: "issue.updated", resourceType: "issue" },
+      ]),
+    ).toBe(false);
+  });
+
+  it("silently refreshes the issue list for remote issue-affecting events", () => {
+    for (const event of [
+      { type: "issue.updated", resourceType: "issue" },
+      { type: "comment.created", resourceType: "comment" },
+      { type: "goal.updated", resourceType: "goal" },
+      { type: "delivery.completed", resourceType: "delivery" },
+      { type: "comment.created", resourceType: undefined },
+    ]) {
+      expect(spaceEventsRequireIssueListRefresh([event])).toBe(true);
+    }
+
+    expect(
+      spaceEventsRequireIssueListRefresh([
+        { type: "skill.updated", resourceType: "skill" },
       ]),
     ).toBe(false);
   });

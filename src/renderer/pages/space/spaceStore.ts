@@ -261,7 +261,11 @@ export interface SpaceActions {
     fileName?: string;
     output?: string;
   }) => Promise<SpaceDownloadAttachmentResult>;
-  commentIssue: (issueId: string, body: string, filePaths?: string[]) => Promise<void>;
+  commentIssue: (
+    issueId: string,
+    body: string,
+    filePaths?: string[],
+  ) => Promise<void>;
   setIssueState: (issueId: string, state: string) => Promise<void>;
   closeOwnIssue: (issueId: string) => Promise<void>;
   closeIssue: (issueId: string) => Promise<void>;
@@ -884,7 +888,9 @@ function patchIssueDetailAuthorSummaries(
   };
 }
 
-function registeredAgentSummary(agent: LocalRegisteredAgent): SpaceIdentitySummary {
+function registeredAgentSummary(
+  agent: LocalRegisteredAgent,
+): SpaceIdentitySummary {
   return {
     id: agent.id,
     type: "registered_agent",
@@ -1156,10 +1162,11 @@ export const actions: SpaceActions = {
     if (!trimmed || trimmed === activeSpaceId()) return;
     await spaceSetActiveSpace(trimmed);
     invalidatePendingRequests();
-    const previousBoot = state.boot;
-    state = { ...initialState(), boot: previousBoot };
-    emit();
-    await actions.ensureBootstrapped({ force: true, trackOpen: false });
+    await actions.ensureBootstrapped({
+      force: true,
+      silent: true,
+      trackOpen: false,
+    });
     trackSpaceSwitch();
   },
 
@@ -1831,7 +1838,9 @@ export const actions: SpaceActions = {
         limit: 20,
       });
       patchIssueDetail(issueId, (detail) => {
-        const existingIds = new Set(detail.comments.items.map((item) => item.id));
+        const existingIds = new Set(
+          detail.comments.items.map((item) => item.id),
+        );
         const older = page.items.filter((item) => !existingIds.has(item.id));
         return {
           ...detail,
@@ -1943,7 +1952,8 @@ export const actions: SpaceActions = {
           commentCount:
             (detail.issue.commentCount ?? detail.comments.items.length) + 1,
           attachmentCount:
-            (detail.issue.attachmentCount ?? 0) + (comment.attachments?.length ?? 0),
+            (detail.issue.attachmentCount ?? 0) +
+            (comment.attachments?.length ?? 0),
         },
       }));
       const currentIssue =

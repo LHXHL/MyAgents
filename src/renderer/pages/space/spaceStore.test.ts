@@ -423,6 +423,47 @@ describe("spaceStore boot", () => {
     expect(events.filter((event) => event === "space_open")).toHaveLength(1);
     expect(events.filter((event) => event === "space_switch")).toHaveLength(1);
   });
+
+  it("keeps the current Space visible while a switch is loading", async () => {
+    const teamSpace = {
+      ...fakeSession.space,
+      id: "space-2",
+      slug: "team",
+      name: "Team Space",
+    };
+    const teamSession: SpaceSession = {
+      ...fakeSession,
+      lastActiveSpaceId: "team",
+      space: teamSpace,
+      membership: { id: "membership-2", role: "member" },
+    };
+    const pendingSession = deferred<SpaceSession>();
+    __setSpaceStoreStateForTest({
+      boot: "ready",
+      session: fakeSession,
+      spaceId: "official",
+    });
+    apiMocks.spaceGetSession.mockReturnValueOnce(pendingSession.promise);
+    apiMocks.spaceGetOfficial.mockResolvedValueOnce({
+      space: teamSpace,
+      membership: teamSession.membership,
+      goals: [],
+    });
+
+    const switching = actions.switchSpace("team");
+    await vi.waitFor(() =>
+      expect(apiMocks.spaceGetSession).toHaveBeenCalledTimes(1),
+    );
+
+    expect(getSnapshot().boot).toBe("ready");
+    expect(getSnapshot().session?.space.slug).toBe("official");
+
+    pendingSession.resolve(teamSession);
+    await switching;
+
+    expect(getSnapshot().boot).toBe("ready");
+    expect(getSnapshot().session?.space.slug).toBe("team");
+  });
 });
 
 describe("spaceStore issue refresh", () => {
@@ -921,17 +962,21 @@ describe("spaceStore issue refresh", () => {
       id: "cmt_123",
       author: { id: "user-1", type: "user" },
       body: "效果咋样呢？",
-      attachments: [{
-        id: "att_comment_1",
-        name: "trace.log",
-        sizeBytes: 2048,
-        createdAt: "2026-06-24T02:00:00.000Z",
-      }],
+      attachments: [
+        {
+          id: "att_comment_1",
+          name: "trace.log",
+          sizeBytes: 2048,
+          createdAt: "2026-06-24T02:00:00.000Z",
+        },
+      ],
       createdAt: "2026-06-24T02:00:00.000Z",
     };
     apiMocks.spaceCommentIssue.mockResolvedValueOnce({ comment });
 
-    await actions.commentIssue("iss_123", "效果咋样呢？", ["/workspace/trace.log"]);
+    await actions.commentIssue("iss_123", "效果咋样呢？", [
+      "/workspace/trace.log",
+    ]);
 
     const detail = getSnapshot().issueDetails[scoped("iss_123")]?.detail;
     expect(detail?.comments.items).toEqual([comment]);
@@ -1020,7 +1065,9 @@ describe("spaceStore issue refresh", () => {
       limit: 20,
     });
     expect(
-      getSnapshot().issueDetails[scoped("iss_123")]?.detail?.comments.items.map((item) => item.id),
+      getSnapshot().issueDetails[scoped("iss_123")]?.detail?.comments.items.map(
+        (item) => item.id,
+      ),
     ).toEqual(["cmt_old", "cmt_new"]);
   });
 
@@ -1041,15 +1088,25 @@ describe("spaceStore issue refresh", () => {
       ...fakeIssue,
       assignee: { id: "rag_1", type: "registered_agent", name: "Debugger" },
     };
-    apiMocks.spaceSetIssueAssignee.mockResolvedValueOnce({ issue: assignedIssue });
-    await actions.setIssueAssignee("iss_123", { type: "registered_agent", id: "rag_1" });
-    expect(getSnapshot().issueDetails[scoped("iss_123")]?.detail?.issue.assignee?.id)
-      .toBe("rag_1");
+    apiMocks.spaceSetIssueAssignee.mockResolvedValueOnce({
+      issue: assignedIssue,
+    });
+    await actions.setIssueAssignee("iss_123", {
+      type: "registered_agent",
+      id: "rag_1",
+    });
+    expect(
+      getSnapshot().issueDetails[scoped("iss_123")]?.detail?.issue.assignee?.id,
+    ).toBe("rag_1");
 
     const reopenedIssue = { ...assignedIssue, assignee: null, state: "todo" };
-    apiMocks.spaceCancelIssueAssignee.mockResolvedValueOnce({ issue: reopenedIssue });
+    apiMocks.spaceCancelIssueAssignee.mockResolvedValueOnce({
+      issue: reopenedIssue,
+    });
     await actions.cancelIssueAssignee("iss_123");
-    expect(getSnapshot().issueDetails[scoped("iss_123")]?.detail?.issue.assignee).toBeNull();
+    expect(
+      getSnapshot().issueDetails[scoped("iss_123")]?.detail?.issue.assignee,
+    ).toBeNull();
   });
 
   it("keeps the newest assignee mutation when responses complete out of order", async () => {
@@ -1090,8 +1147,9 @@ describe("spaceStore issue refresh", () => {
     });
     await firstMutation;
 
-    expect(getSnapshot().issueDetails[scoped("iss_123")]?.detail?.issue.assignee?.id)
-      .toBe("rag_new");
+    expect(
+      getSnapshot().issueDetails[scoped("iss_123")]?.detail?.issue.assignee?.id,
+    ).toBe("rag_new");
   });
 
   it("keeps list order stable when a remote detail revalidation has a newer timestamp", async () => {

@@ -60,7 +60,7 @@ export function IssueTaskCard({
   return (
     <section
       aria-label={t('space.detail.taskCard')}
-      className="mt-6 grid grid-cols-4 gap-x-4 gap-y-2 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 shadow-sm max-lg:grid-cols-2 max-sm:grid-cols-1"
+      className="mt-6 grid grid-cols-2 gap-x-6 gap-y-3 rounded-xl border border-[var(--line)] bg-[var(--paper)] px-4 py-3 shadow-sm max-sm:grid-cols-1"
     >
       <TaskFact label={t('space.detail.creator')}>
         <SpaceIdentityLine
@@ -187,8 +187,8 @@ export function IssueTaskCard({
 
 function TaskFact({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex min-w-0 items-center gap-2">
-      <span className="shrink-0 text-xs font-medium text-[var(--ink-subtle)]">{label}</span>
+    <div className="grid min-w-0 grid-cols-[3rem_minmax(0,1fr)] items-center gap-2">
+      <span className="text-xs font-medium text-[var(--ink-subtle)]">{label}</span>
       <span className="min-w-0 text-sm text-[var(--ink)]">{children}</span>
     </div>
   );

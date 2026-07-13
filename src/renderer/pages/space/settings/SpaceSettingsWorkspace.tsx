@@ -45,7 +45,7 @@ import type { Project } from "@/config/types";
 import { useCloseLayer } from "@/hooks/useCloseLayer";
 import { useWorkspaceFileService } from "@/hooks/useWorkspaceFileService";
 import { AgentsWorkspace } from "@/pages/space/agents/AgentsWorkspace";
-import { SpaceAvatar } from "@/pages/space/SpaceAvatar";
+import { SpaceAvatar, SpaceIcon } from "@/pages/space/SpaceAvatar";
 import { withSpaceMutationMetric } from "@/pages/space/spaceMetrics";
 import type {
   SpaceActions,
@@ -784,16 +784,16 @@ export function SpaceSettingsWorkspace({
                   type="button"
                   disabled={busyKey === "overview" || pickingAvatar}
                   onClick={() => void pickAvatar()}
-                  className="group relative grid h-16 w-16 shrink-0 place-items-center rounded-full text-[var(--ink-muted)] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)] disabled:cursor-wait disabled:opacity-70"
+                  className="group relative grid h-16 w-16 shrink-0 place-items-center rounded-[22%] text-[var(--ink-muted)] outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--accent-warm)] disabled:cursor-wait disabled:opacity-70"
                   aria-label={t("space.spaceActions.chooseAvatar")}
                   title={t("space.spaceActions.chooseAvatar")}
                 >
-                  <SpaceAvatar
+                  <SpaceIcon
                     name={name.trim() || session.space.name}
                     avatarUrl={editPreview}
-                    size={52}
+                    size={64}
                   />
-                  <span className="absolute inset-0 grid place-items-center rounded-full bg-[var(--ink)]/45 text-[var(--paper)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
+                  <span className="absolute inset-0 grid place-items-center rounded-[22%] bg-[var(--ink)]/45 text-[var(--paper)] opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100">
                     {pickingAvatar ? (
                       <Loader2 className="h-4 w-4 animate-spin" />
                     ) : (
@@ -868,7 +868,7 @@ export function SpaceSettingsWorkspace({
         <section className="overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)]">
           <div className="px-5 py-4">
             <div className="flex flex-wrap items-center gap-3">
-              <SpaceAvatar
+              <SpaceIcon
                 name={session.space.name}
                 avatarUrl={rootPreview}
                 size={52}

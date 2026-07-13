@@ -1,0 +1,195 @@
+import { act, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import type { SpaceSession } from "@/api/spaceCloud";
+import Space from "@/pages/Space";
+
+const harness = vi.hoisted(() => ({
+  data: null as unknown as Record<string, unknown>,
+  actions: {
+    refreshIssues: vi.fn().mockResolvedValue(undefined),
+    refreshSkills: vi.fn().mockResolvedValue(undefined),
+    refreshRegisteredAgents: vi.fn().mockResolvedValue(undefined),
+    syncEvents: vi.fn().mockResolvedValue([]),
+  },
+  toast: {
+    error: vi.fn(),
+    info: vi.fn(),
+    success: vi.fn(),
+    warning: vi.fn(),
+  },
+}));
+
+vi.mock("@/components/Toast", () => ({
+  useToast: () => harness.toast,
+}));
+
+vi.mock("@/hooks/useConfig", () => ({
+  useConfig: () => ({ projects: [] }),
+}));
+
+vi.mock("@/hooks/useWorkspaceFileService", () => ({
+  useWorkspaceFileService: () => ({ readPathsAsBase64: vi.fn() }),
+}));
+
+vi.mock("@/identity/deviceIdentity", () => ({
+  getDeviceId: () => "device-test",
+  preloadDeviceId: () => Promise.resolve(),
+}));
+
+vi.mock("@/pages/space/useSpaceData", () => ({
+  useSpaceData: () => harness.data,
+}));
+
+vi.mock("@/pages/space/spaceStore", () => ({
+  SPACE_VISIBLE_REFRESH_TTL_MS: 30_000,
+  getIssueListState: () => ({
+    items: [],
+    hasMore: false,
+    nextCursor: null,
+    lastFetchedAt: 0,
+    isLoading: false,
+    error: null,
+  }),
+}));
+
+vi.mock("@/pages/space/SpaceChrome", () => ({
+  SpaceLogin: () => <div>login</div>,
+  SpaceSidebar: ({
+    onSpaceTabChange,
+  }: {
+    onSpaceTabChange: (mode: string) => void;
+  }) => (
+    <aside>
+      <button type="button" onClick={() => onSpaceTabChange("skills")}>
+        show skills
+      </button>
+    </aside>
+  ),
+}));
+
+vi.mock("@/pages/space/issues/IssuesWorkspace", () => ({
+  IssuesWorkspace: () => <main>issues</main>,
+}));
+
+vi.mock("@/pages/space/issues/CreateIssueDialog", () => ({
+  CreateIssueDialog: () => null,
+}));
+
+vi.mock("@/pages/space/issues/IssueDetailDrawer", () => ({
+  IssueDetailDrawer: () => null,
+}));
+
+vi.mock("@/pages/space/skills/SkillsWorkspace", () => ({
+  SkillsWorkspace: () => <main>skills</main>,
+}));
+
+vi.mock("@/api/spaceCloud", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/spaceCloud")>();
+  return {
+    ...actual,
+    spaceWakeConnector: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
+function sessionFor(
+  id: string,
+  slug: string,
+  baseUrl = "https://space.myagents.test",
+): SpaceSession {
+  return {
+    baseUrl,
+    user: { id: "user-1", email: "user@example.com", name: "User" },
+    space: {
+      id,
+      slug,
+      name: slug,
+      joinPolicy: "open_join",
+    },
+    membership: { id: `membership-${id}`, role: "member" },
+    updatedAt: "2026-07-13T00:00:00.000Z",
+  };
+}
+
+function snapshot(spaceId: string, baseUrl = "https://space.myagents.test") {
+  const session = sessionFor(`id-${spaceId}`, spaceId, baseUrl);
+  return {
+    boot: "ready",
+    bootError: null,
+    serviceBaseUrl: session.baseUrl,
+    session,
+    spaceId,
+    goals: [],
+    skills: { items: [], lastFetchedAt: 0, isLoading: false, error: null },
+    localAgents: { items: [], lastFetchedAt: 0, isLoading: false, error: null },
+    registeredAgents: {
+      items: [],
+      lastFetchedAt: 0,
+      isLoading: false,
+      error: null,
+    },
+    actions: harness.actions,
+  };
+}
+
+describe("Space switching", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    harness.actions.refreshIssues.mockClear();
+    harness.actions.refreshSkills.mockClear();
+    harness.actions.refreshRegisteredAgents.mockClear();
+    harness.actions.syncEvents.mockClear();
+    harness.data = snapshot("ma");
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("loads Issues again when the active Space changes without changing boot or filters", async () => {
+    const view = render(<Space isActive />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect(harness.actions.refreshIssues).toHaveBeenCalledTimes(1);
+
+    harness.data = snapshot("myagents");
+    view.rerender(<Space isActive />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect(harness.actions.refreshIssues).toHaveBeenCalledTimes(2);
+  });
+
+  it("reloads the selected non-Issue workspace for the new Space", async () => {
+    const view = render(<Space isActive />);
+    fireEvent.click(screen.getByRole("button", { name: "show skills" }));
+
+    expect(harness.actions.refreshSkills).toHaveBeenCalledTimes(1);
+
+    harness.data = snapshot("myagents");
+    view.rerender(<Space isActive />);
+
+    expect(harness.actions.refreshSkills).toHaveBeenCalledTimes(2);
+  });
+
+  it("reloads the same Space slug when the service origin changes", async () => {
+    harness.data = snapshot("official", "https://space.myagents.test");
+    const view = render(<Space isActive />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect(harness.actions.refreshIssues).toHaveBeenCalledTimes(1);
+
+    harness.data = snapshot("official", "https://space-dev.myagents.test");
+    view.rerender(<Space isActive />);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    expect(harness.actions.refreshIssues).toHaveBeenCalledTimes(2);
+  });
+});

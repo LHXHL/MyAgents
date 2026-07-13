@@ -118,6 +118,16 @@ Space 本地状态由 Rust `space_data_dir()` 按当前环境选择：
 
 Renderer `spaceStore` 的缓存身份必须至少包含服务 origin。production/Dev 都可能使用 `official` slug，切换环境时即使 slug 不变也必须清掉 issue/skill/agent/event 缓存，避免旧环境数据被拿来驱动新环境 API。
 
+Renderer 加入 Space 时先以本地 session 的已加入列表按规范化 slug 去重；命中后不发送 join mutation，直接提示并切换到目标 Space 的 Issues。未命中才请求 Cloud：加入期间保留当前页面，只在加入弹窗内展示 loading；`joined` 后用一次静默 Space 切换原子更新 session、侧栏与默认 Issues 页面，`pending` 只提示申请已提交。Space 切换不得清空当前 session 或把全页 boot 状态改成 loading；目标数据就绪前继续展示当前页面。
+
+Space 头像是产品/组织身份，所有尺寸统一使用 APP icon 式圆角矩形；User 与 Registered Agent 是主体身份，继续使用圆形头像。两类形态不得混用。
+
+Space 侧栏中的多个 Space 是同级导航实体，必须按服务端列表顺序渲染为一级手风琴项；每项都可在本地展开 Issues / Goals / Skills，以及按该 Space membership 权限展示的 Settings，且同时最多展开一个。展开/折叠只修改 Renderer UI 状态，不请求接口，也不改变当前 Space；只有点击某个子导航时才原子切换到对应 Space 与页面。其它 Space 不得嵌入当前 Space 的展开容器伪装成子级。
+
+Space 页面各 workspace 的数据加载必须显式以 active Space identity 为依赖，不能依赖 boot loading→ready 的视觉状态跃迁来间接触发；静默切换保持页面可见时，目标 Space 的 Issues / Skills / Settings 仍必须主动加载并收口自己的 loading 状态。
+
+Space 侧栏的加入方式副标题必须通过 i18n 显式映射领域值：`open_join` 显示“开放加入”，`approval_required` 显示“需审核加入”；未知值显示本地化兜底文案，禁止把原始技术 token 转空格后直接暴露给用户。
+
 Legacy 兼容规则：
 
 - 旧 `registered_agents.json` 缺 `deviceId` 时，Rust 只在该记录已经有 `ownerUserId === current Space session user id` 的情况下补为当前 `~/.myagents/device_id`，并顺带补设备名、platform、OS version、app version。
@@ -180,7 +190,7 @@ delivery 只是投送事实，不是 claim/assignee；多个 Agent 可以感知�
 
 ## Issue 详情任务卡与评论窗口
 
-- 详情页顶部元信息只保留 Issue 编号、创建者与创建时间。正文/附件之后、评论之前是一张低高度任务卡，同一行集中展示创建人、Goal、状态、经办人；Owner/Admin 可在卡内改 Goal、状态和任意有效经办人。
+- 详情页顶部元信息只保留 Issue 编号、创建者与创建时间。正文/附件之后、评论之前是一张两列两行任务卡，第一行展示创建人、Goal，第二行展示状态、经办人；Owner/Admin 可在卡内改 Goal、状态和任意有效经办人。
 - 经办人 picker 的默认列表是 active Registered Agents，其后是当前 Space/user 本机最近选择过的真人；搜索时统一搜索 Agent + Space members。Member 只暴露认领自己/释放自己，Cloud 权限仍是最终边界。
 - picker 当前选择行右侧 X 经过 ConfirmDialog 执行“取消指派”复合动作。详情值区域点击整个人名打开 picker，Agent tag 在这里不承担 owner tooltip；创建者和评论作者是只读身份，灰色 `Agent` tag 可点击显示 Agent owner 的 Space 名称。
 - Issue detail 固定返回最新 5 条评论且按时间正序展示。更早评论通过 `GET /api/issues/:id/comments?cursor=...&limit=20` prepend，按 comment id 去重并补偿外层 scroll height 保持阅读锚点。delivery trigger 指定评论时，CLI 用 `space issue comment get <issueId> <commentId>` 精确读取，不扫描分页。
@@ -196,7 +206,7 @@ Space Issue 的用户可见编号由云端拥有，不从 opaque `issue.id` 推�
 - `GET /api/spaces/:space/issues?related=me` 是服务端行为关系筛选，与 state/goal/subtree/search/humanOnly 做 AND，并继续使用 `updated_at DESC, id DESC` cursor 分页。
 - “与我相关”覆盖当前用户或其拥有的任一 Registered Agent 创建、评论、曾 claim 的 Issue；claim completed/cancelled、Agent disabled/revoked 都不抹除历史关系。
 - Renderer 必须把 `related` 放进 query cache key，并在当前 Tab 内按 Space ID 保存 toggle，避免切换 Space 后串值。新 query 首次请求期间使用 keep-previous-data；失败时保留最近成功列表并显示 inline error/retry，成功空结果后才能进入空态。
-- Issue cursor 页由基础 query cache 持有；UI 用“加载更多”把 `nextCursor` 页追加并按 ID 去重，不得只展示首个 50 条。Issue/Skill 集合展示 `updatedAt`；本机 mutation 可立即按 updatedAt 重排，event cursor 收到远端更新时只显示 inline refresh banner。远端 detail revalidate 只能原位补数据，不能提前重排、移除或插入列表行。
+- Issue cursor 页由基础 query cache 持有；UI 用“加载更多”把 `nextCursor` 页追加并按 ID 去重，不得只展示首个 50 条。Issue/Skill 集合展示 `updatedAt`；本机 mutation 可立即按 updatedAt 重排。event cursor 收到 Issue / 评论 / Goal / delivery 远端更新时，Renderer 对当前筛选 query 强制 silent revalidate：请求期间保留已有列表，成功后原子替换并按最新 `updatedAt` 顺序展示，失败仍保留最近成功数据并暴露 inline error/retry。远端 detail revalidate 只更新 detail cache，不得直接 patch 列表行或提前重排。
 
 ## 账号会员与 Space quota
 

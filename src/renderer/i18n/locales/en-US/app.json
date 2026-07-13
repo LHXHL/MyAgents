@@ -360,6 +360,11 @@
       "settings": "Settings",
       "logout": "Sign out"
     },
+    "joinPolicies": {
+      "open": "Open to join",
+      "approvalRequired": "Approval required",
+      "unknown": "Unknown join policy"
+    },
     "accountPlan": {
       "free": "Free account",
       "proUntil": "Pro account · valid until {{date}}",
@@ -372,6 +377,8 @@
       "name": "Space name",
       "slug": "Space slug",
       "slugConflict": "This Space slug is already taken. Choose another one.",
+      "joining": "Joining Space",
+      "creating": "Creating Space",
       "chooseAvatar": "Choose avatar"
     },
     "profile": {
@@ -455,6 +462,7 @@
       "agentCreated": "Agent workspace added",
       "spaceCreated": "Space created",
       "spaceJoined": "Joined Space",
+      "spaceAlreadyJoined": "You have already joined “{{name}}”",
       "spaceJoinRequested": "Join request submitted",
       "spaceSlugCopied": "Space slug copied",
       "spaceUpdated": "Space updated",

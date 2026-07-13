@@ -44,12 +44,10 @@ export function IssuesWorkspace({
   relatedToMe,
   goalOptions,
   activeIssueId,
-  remoteUpdateAvailable,
   onQueryChange,
   onGoalChange,
   onStatusChange,
   onRelatedToMeChange,
-  onApplyRemoteUpdate,
   onRefresh,
   onLoadMore,
   onCreate,
@@ -67,12 +65,10 @@ export function IssuesWorkspace({
   relatedToMe: boolean;
   goalOptions: SelectOption[];
   activeIssueId: string | null;
-  remoteUpdateAvailable: boolean;
   onQueryChange: (value: string) => void;
   onGoalChange: (value: string) => void;
   onStatusChange: (value: string) => void;
   onRelatedToMeChange: (value: boolean) => void;
-  onApplyRemoteUpdate: () => Promise<void>;
   onRefresh: () => Promise<void>;
   onLoadMore: () => Promise<void>;
   onCreate: () => void;
@@ -133,10 +129,16 @@ export function IssuesWorkspace({
 
   return (
     <div className="grid min-h-0 flex-1 grid-rows-[auto_minmax(0,1fr)]">
-      <section className="flex min-h-12 flex-wrap items-center gap-2 border-b border-[var(--line)] bg-[var(--paper-elevated)]/60 px-5 py-2 backdrop-blur-md">
-        <div className="order-1 flex min-w-0 flex-1 items-center xl:flex-none">
+      <section className="flex min-h-12 min-w-0 flex-nowrap items-center gap-2 border-b border-[var(--line)] bg-[var(--paper-elevated)]/60 px-5 py-2 backdrop-blur-md">
+        <div
+          className={
+            searchActive
+              ? "flex w-72 min-w-24 shrink items-center"
+              : "flex shrink-0 items-center"
+          }
+        >
           {searchActive ? (
-            <label className="relative min-w-0 flex-1 xl:w-72">
+            <label className="relative min-w-0 flex-1">
               <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-[var(--ink-muted)]" />
               <input
                 ref={searchInputRef}
@@ -177,20 +179,20 @@ export function IssuesWorkspace({
             </button>
           )}
         </div>
-        <div className="order-3 flex w-full min-w-0 items-center gap-2 xl:order-2 xl:w-auto xl:flex-1">
+        <div className="flex min-w-0 flex-1 items-center gap-2">
           <CustomSelect
             value={selectedStatus}
             options={statusFilterOptions}
             onChange={onStatusChange}
             size="toolbar"
-            className="w-40 min-w-[136px]"
+            className="w-40 min-w-0 shrink"
           />
           <CustomSelect
             value={selectedGoalId}
             options={goalOptions}
             onChange={onGoalChange}
             size="toolbar"
-            className="min-w-0 flex-1 xl:max-w-[360px]"
+            className="min-w-0 flex-1 max-w-[360px]"
           />
           <button
             type="button"
@@ -206,7 +208,7 @@ export function IssuesWorkspace({
             {t("space.filters.relatedToMe")}
           </button>
         </div>
-        <div className="order-2 ml-auto flex shrink-0 items-center gap-2.5 xl:order-3">
+        <div className="ml-auto flex shrink-0 items-center gap-2.5">
           <button
             type="button"
             onClick={onCreate}
@@ -236,16 +238,6 @@ export function IssuesWorkspace({
           className={SPACE_COLLECTION_FRAME_CLASS}
           aria-label="Issue list"
         >
-          {remoteUpdateAvailable ? (
-            <button
-              type="button"
-              onClick={() => void onApplyRemoteUpdate().catch(() => undefined)}
-              className="mb-2 flex min-h-9 w-full items-center justify-center gap-2 rounded-xl border border-[var(--accent-warm)]/20 bg-[var(--accent-warm-subtle)]/70 px-3 text-sm font-semibold text-[var(--accent-warm)] transition-colors hover:bg-[var(--accent-warm-subtle)]"
-            >
-              <RefreshCw className="h-3.5 w-3.5" />
-              {t("space.common.remoteUpdatesAvailable")}
-            </button>
-          ) : null}
           {issueError && issues.length > 0 ? (
             <div
               role="alert"
@@ -387,7 +379,7 @@ function IssueStreamRow({
       <span className="min-w-0">
         <span className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-center gap-2">
           <span
-            className={`inline-flex h-6 items-center whitespace-nowrap rounded-md px-2 text-xs font-semibold ${statusPillClass(issue.state)}`}
+            className={`inline-flex h-5 items-center whitespace-nowrap rounded-md px-1.5 text-xs font-medium ${statusPillClass(issue.state)}`}
           >
             {issueStatusLabel(issue.state, t)}
           </span>

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Loader2, RefreshCw, X } from "lucide-react";
 
@@ -29,10 +36,11 @@ import { useWorkspaceFileService } from "@/hooks/useWorkspaceFileService";
 import { getDeviceId, preloadDeviceId } from "@/identity/deviceIdentity";
 import {
   ACTIVE_ISSUE_STATE_FILTER,
-  buildIssueQueryKey,
+  findJoinedSpaceBySlug,
   isRegisteredAgentVisibleInList,
   isSpaceAdmin,
   localAgentMatchesCurrentSpaceIdentity,
+  spaceEventsRequireIssueListRefresh,
   spaceEventsRequireSessionRefresh,
   type IssueQueryParams,
 } from "@/pages/space/spaceHelpers";
@@ -54,7 +62,7 @@ import {
   SpaceSidebar,
   type SpaceViewMode as ViewMode,
 } from "@/pages/space/SpaceChrome";
-import { SpaceAvatar } from "@/pages/space/SpaceAvatar";
+import { SpaceIcon } from "@/pages/space/SpaceAvatar";
 import SpaceProfileSettingsDialog from "@/pages/space/SpaceProfileSettingsDialog";
 import {
   nowForSpaceMetric,
@@ -99,7 +107,7 @@ async function readPickedImagePreview(
   return `data:${file.mimeType};base64,${file.data}`;
 }
 
-function SpaceQuickActionDialog({
+export function SpaceQuickActionDialog({
   mode,
   busy,
   error,
@@ -132,6 +140,10 @@ function SpaceQuickActionDialog({
     mode === "join"
       ? t("space.spaceActions.joinTitle")
       : t("space.spaceActions.createTitle");
+  const busyLabel =
+    mode === "join"
+      ? t("space.spaceActions.joining")
+      : t("space.spaceActions.creating");
   const slugError =
     mode === "create" && error?.field === "slug" ? error.message : null;
   const canSubmit =
@@ -150,6 +162,9 @@ function SpaceQuickActionDialog({
       slug: createSlug.trim(),
       avatarFilePath,
     });
+  };
+  const preventCreateOnEnter = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "Enter") event.preventDefault();
   };
   const pickAvatar = async () => {
     try {
@@ -188,47 +203,26 @@ function SpaceQuickActionDialog({
             <X className="h-4 w-4" />
           </button>
         </header>
-        <div className="space-y-3 p-4">
-          {mode === "join" ? (
-            <label className="block text-xs font-semibold text-[var(--ink-muted)]">
-              {t("space.spaceActions.slug")}
-              <input
-                value={joinSlug}
-                autoFocus
-                onChange={(event) => {
-                  onClearError();
-                  setJoinSlug(event.target.value);
-                }}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") submit();
-                }}
-                className="mt-1 h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]"
-              />
-            </label>
-          ) : (
-            <>
-              <div className="flex items-center gap-3">
-                <SpaceAvatar name={name} avatarUrl={avatarPreview} size={44} />
-                <button
-                  type="button"
-                  onClick={pickAvatar}
-                  disabled={busy}
-                  className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-60"
-                >
-                  {t("space.spaceActions.chooseAvatar")}
-                </button>
-              </div>
+        {busy ? (
+          <div
+            className="flex min-h-32 flex-col items-center justify-center gap-3 p-4 text-sm font-medium text-[var(--ink-muted)]"
+            role="status"
+            aria-live="polite"
+          >
+            <Loader2 className="h-5 w-5 animate-spin" />
+            <span>{busyLabel}</span>
+          </div>
+        ) : (
+          <div className="space-y-3 p-4">
+            {mode === "join" ? (
               <label className="block text-xs font-semibold text-[var(--ink-muted)]">
-                {t("space.spaceActions.name")}
+                {t("space.spaceActions.slug")}
                 <input
-                  value={name}
+                  value={joinSlug}
                   autoFocus
                   onChange={(event) => {
-                    const nextName = event.target.value;
                     onClearError();
-                    setName(nextName);
-                    if (!slugEdited)
-                      setCreateSlug(spaceSlugCandidate(nextName));
+                    setJoinSlug(event.target.value);
                   }}
                   onKeyDown={(event) => {
                     if (event.key === "Enter") submit();
@@ -236,42 +230,69 @@ function SpaceQuickActionDialog({
                   className="mt-1 h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]"
                 />
               </label>
-              <label className="block text-xs font-semibold text-[var(--ink-muted)]">
-                {t("space.spaceActions.slug")}
-                <input
-                  value={createSlug}
-                  onChange={(event) => {
-                    onClearError();
-                    setSlugEdited(true);
-                    setCreateSlug(spaceSlugCandidate(event.target.value));
-                  }}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") submit();
-                  }}
-                  aria-invalid={slugError ? true : undefined}
-                  className={`mt-1 h-10 w-full rounded-lg border bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)] ${slugError ? "border-[var(--error)]" : "border-[var(--line)]"}`}
-                />
-                {slugError ? (
-                  <span
-                    className="mt-1 block text-xs font-medium text-[var(--error)]"
-                    role="alert"
+            ) : (
+              <>
+                <div className="flex items-center gap-3">
+                  <SpaceIcon name={name} avatarUrl={avatarPreview} size={44} />
+                  <button
+                    type="button"
+                    onClick={pickAvatar}
+                    disabled={busy}
+                    className="rounded-lg border border-[var(--line)] px-3 py-1.5 text-sm font-semibold text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:opacity-60"
                   >
-                    {slugError}
-                  </span>
-                ) : null}
-              </label>
-            </>
-          )}
-          <button
-            type="button"
-            disabled={!canSubmit || busy}
-            onClick={submit}
-            className="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] disabled:cursor-not-allowed disabled:opacity-60"
-          >
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            {title}
-          </button>
-        </div>
+                    {t("space.spaceActions.chooseAvatar")}
+                  </button>
+                </div>
+                <label className="block text-xs font-semibold text-[var(--ink-muted)]">
+                  {t("space.spaceActions.name")}
+                  <input
+                    value={name}
+                    autoFocus
+                    onChange={(event) => {
+                      const nextName = event.target.value;
+                      onClearError();
+                      setName(nextName);
+                      if (!slugEdited)
+                        setCreateSlug(spaceSlugCandidate(nextName));
+                    }}
+                    onKeyDown={preventCreateOnEnter}
+                    className="mt-1 h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)]"
+                  />
+                </label>
+                <label className="block text-xs font-semibold text-[var(--ink-muted)]">
+                  {t("space.spaceActions.slug")}
+                  <input
+                    value={createSlug}
+                    onChange={(event) => {
+                      onClearError();
+                      setSlugEdited(true);
+                      setCreateSlug(spaceSlugCandidate(event.target.value));
+                    }}
+                    onKeyDown={preventCreateOnEnter}
+                    aria-invalid={slugError ? true : undefined}
+                    className={`mt-1 h-10 w-full rounded-lg border bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none focus:border-[var(--accent-warm)] ${slugError ? "border-[var(--error)]" : "border-[var(--line)]"}`}
+                  />
+                  {slugError ? (
+                    <span
+                      className="mt-1 block text-xs font-medium text-[var(--error)]"
+                      role="alert"
+                    >
+                      {slugError}
+                    </span>
+                  ) : null}
+                </label>
+              </>
+            )}
+            <button
+              type="button"
+              disabled={!canSubmit}
+              onClick={submit}
+              className="flex h-9 w-full items-center justify-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-3 text-sm font-semibold text-[var(--button-primary-text)] disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {title}
+            </button>
+          </div>
+        )}
       </section>
     </OverlayBackdrop>
   );
@@ -430,8 +451,6 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const [relatedToMeBySpace, setRelatedToMeBySpace] = useState<
     Record<string, boolean>
   >({});
-  const [issueRemoteUpdateAvailable, setIssueRemoteUpdateAvailable] =
-    useState(false);
   const [skillRemoteUpdateAvailable, setSkillRemoteUpdateAvailable] =
     useState(false);
   const [issueDetailId, setIssueDetailId] = useState<string | null>(null);
@@ -457,6 +476,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
     session?.space?.id ||
     session?.space?.slug ||
     DEFAULT_SPACE_ID;
+  const activeDataScopeKey = `${spaceData.serviceBaseUrl?.trim() || session?.baseUrl?.trim() || ""}\n${activeCacheSpaceId}`;
   const relatedToMe = relatedToMeBySpace[activeCacheSpaceId] ?? false;
   const setRelatedToMe = useCallback(
     (next: boolean) => {
@@ -479,25 +499,21 @@ export default function Space({ isActive }: { isActive: boolean }) {
     [issueQ, relatedToMe, selectedGoalId, selectedStatus],
   );
   const issueQueryRef = useRef(issueQuery);
-  const issueQueryKey = useMemo(
-    () => buildIssueQueryKey(issueQuery),
-    [issueQuery],
-  );
   const issueList = getIssueListState(issueQuery);
   const previousSuccessfulIssuesRef = useRef<{
-    spaceId: string;
+    scopeKey: string;
     items: SpaceIssue[];
-  }>({ spaceId: "", items: [] });
+  }>({ scopeKey: "", items: [] });
   useEffect(() => {
     if (issueList.lastFetchedAt <= 0) return;
     previousSuccessfulIssuesRef.current = {
-      spaceId: activeCacheSpaceId,
+      scopeKey: activeDataScopeKey,
       items: issueList.items,
     };
-  }, [activeCacheSpaceId, issueList.items, issueList.lastFetchedAt]);
+  }, [activeDataScopeKey, issueList.items, issueList.lastFetchedAt]);
   const showingPreviousIssues =
     issueList.lastFetchedAt === 0 &&
-    previousSuccessfulIssuesRef.current.spaceId === activeCacheSpaceId &&
+    previousSuccessfulIssuesRef.current.scopeKey === activeDataScopeKey &&
     previousSuccessfulIssuesRef.current.items.length > 0;
   const issues = showingPreviousIssues
     ? previousSuccessfulIssuesRef.current.items
@@ -664,12 +680,8 @@ export default function Space({ isActive }: { isActive: boolean }) {
   }, [issueQuery]);
 
   useEffect(() => {
-    setIssueRemoteUpdateAvailable(false);
-  }, [issueQueryKey, activeCacheSpaceId]);
-
-  useEffect(() => {
     setSkillRemoteUpdateAvailable(false);
-  }, [activeCacheSpaceId]);
+  }, [activeDataScopeKey]);
 
   useEffect(() => {
     if (spaceData.boot !== "ready") return;
@@ -691,11 +703,9 @@ export default function Space({ isActive }: { isActive: boolean }) {
             }),
           );
         }
-        Promise.all(refreshes)
-          .then(() => {
-            if (reentered) setIssueRemoteUpdateAvailable(false);
-          })
-          .catch((error) => toast.error(spaceErrorMessage(error)));
+        Promise.all(refreshes).catch((error) =>
+          toast.error(spaceErrorMessage(error)),
+        );
       }, 220);
       return () => window.clearTimeout(handle);
     }
@@ -724,7 +734,15 @@ export default function Space({ isActive }: { isActive: boolean }) {
         }),
       ]).catch((error) => toast.error(spaceErrorMessage(error)));
     }
-  }, [actions, admin, issueQuery, issueQueryKey, activeMode, spaceData.boot, toast]);
+  }, [
+    actions,
+    activeDataScopeKey,
+    admin,
+    issueQuery,
+    activeMode,
+    spaceData.boot,
+    toast,
+  ]);
 
   useEffect(() => {
     if (!isActive || spaceData.boot !== "ready") return;
@@ -752,25 +770,14 @@ export default function Space({ isActive }: { isActive: boolean }) {
       recordSpaceMetric("space_tab_visible_revalidate_start", {
         count: events.length,
       });
-      let issueRemoteUpdate = false;
+      const issueRemoteUpdate = spaceEventsRequireIssueListRefresh(events);
       let skillRemoteUpdate = false;
       let refreshAgents = false;
       let refreshBoot = spaceEventsRequireSessionRefresh(events);
-      const touchedIssueIds = new Set<string>();
 
       for (const event of events) {
         const type = event.type;
         const resourceType = event.resourceType ?? "";
-        if (
-          resourceType === "issue" ||
-          resourceType === "comment" ||
-          type.startsWith("issue.") ||
-          type.startsWith("comment.")
-        ) {
-          issueRemoteUpdate = true;
-          if (resourceType === "issue" && event.resourceId)
-            touchedIssueIds.add(event.resourceId);
-        }
         if (resourceType === "skill" || type.startsWith("skill.")) {
           skillRemoteUpdate = true;
         }
@@ -783,11 +790,9 @@ export default function Space({ isActive }: { isActive: boolean }) {
           type.startsWith("subscription.")
         ) {
           refreshAgents = true;
-          if (resourceType === "delivery") issueRemoteUpdate = true;
         }
         if (resourceType === "goal" || type.startsWith("goal.")) {
           refreshBoot = true;
-          issueRemoteUpdate = true;
         }
         if (
           resourceType === "space" ||
@@ -803,16 +808,20 @@ export default function Space({ isActive }: { isActive: boolean }) {
         }
       }
 
-      if (issueRemoteUpdate) setIssueRemoteUpdateAvailable(true);
       if (skillRemoteUpdate) setSkillRemoteUpdateAvailable(true);
 
       const jobs: Array<Promise<void>> = [];
       if (refreshBoot)
         jobs.push(actions.ensureBootstrapped({ force: true, silent: true }));
-      if (
-        issueDetailId &&
-        (issueRemoteUpdate || touchedIssueIds.has(issueDetailId))
-      ) {
+      if (issueRemoteUpdate) {
+        jobs.push(
+          actions.refreshIssues(issueQueryRef.current, {
+            force: true,
+            silent: true,
+          }),
+        );
+      }
+      if (issueDetailId && issueRemoteUpdate) {
         jobs.push(
           actions.refreshIssueDetail(issueDetailId, {
             force: true,
@@ -1014,7 +1023,6 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const refreshCurrent = useCallback(async () => {
     if (activeMode === "issues") {
       await actions.refreshIssues(issueQuery, { force: true });
-      setIssueRemoteUpdateAvailable(false);
     }
     if (activeMode === "goals") await actions.refreshGoals({ force: true });
     if (activeMode === "skills") {
@@ -1032,18 +1040,30 @@ export default function Space({ isActive }: { isActive: boolean }) {
     toast.success(t("space.toasts.refreshed"));
   }, [actions, issueQuery, activeMode, t, toast]);
 
+  const enterSpace = useCallback(
+    async (spaceId: string, nextMode: ViewMode) => {
+      await actions.switchSpace(spaceId);
+      setIssueDetailId(null);
+      setSelectedSkillId(null);
+      setMode(nextMode);
+    },
+    [actions],
+  );
+
+  const enterSpaceIssues = useCallback(
+    (spaceId: string) => enterSpace(spaceId, "issues"),
+    [enterSpace],
+  );
+
   const switchSpace = useCallback(
-    async (spaceId: string) => {
+    async (spaceId: string, nextMode: ViewMode) => {
       try {
-        await actions.switchSpace(spaceId);
-        setIssueDetailId(null);
-        setSelectedSkillId(null);
-        setMode("issues");
+        await enterSpace(spaceId, nextMode);
       } catch (error) {
         toast.error(spaceErrorMessage(error));
       }
     },
-    [actions, toast],
+    [enterSpace, toast],
   );
 
   const joinSpace = useCallback(() => {
@@ -1059,22 +1079,40 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const submitSpaceDialog = useCallback(
     async (input: SpaceQuickActionSubmitInput) => {
       if (!spaceDialogMode || input.mode !== spaceDialogMode) return;
-      setSpaceDialogBusy(true);
       setSpaceDialogError(null);
+
+      if (input.mode === "join") {
+        const joinedSpace = findJoinedSpaceBySlug(session, input.slug);
+        if (joinedSpace) {
+          setSpaceDialogMode(null);
+          toast.success(
+            t("space.toasts.spaceAlreadyJoined", {
+              name: joinedSpace.name,
+            }),
+          );
+          try {
+            await enterSpaceIssues(joinedSpace.slug || joinedSpace.id);
+          } catch (error) {
+            toast.error(spaceErrorMessage(error));
+          }
+          return;
+        }
+      }
+
+      setSpaceDialogBusy(true);
       try {
         if (input.mode === "join") {
           const result = await withSpaceMutationMetric("member.join", () =>
             spaceJoinSpace({ slug: input.slug }),
           );
+          if (result.status === "joined") {
+            await enterSpaceIssues(result.space.slug || result.space.id);
+          }
           toast.success(
             result.status === "pending"
               ? t("space.toasts.spaceJoinRequested")
               : t("space.toasts.spaceJoined"),
           );
-          await actions.ensureBootstrapped({ force: true });
-          if (result.status === "joined") {
-            await actions.switchSpace(result.space.id || result.space.slug);
-          }
         } else {
           const result = await withSpaceMutationMetric("settings.create", () =>
             spaceCreateSpace({
@@ -1094,9 +1132,8 @@ export default function Space({ isActive }: { isActive: boolean }) {
               toast.warning(spaceErrorMessage(error));
             }
           }
+          await enterSpaceIssues(result.space.slug || result.space.id);
           toast.success(t("space.toasts.spaceCreated"));
-          await actions.ensureBootstrapped({ force: true });
-          await actions.switchSpace(result.space.id || result.space.slug);
         }
         setSpaceDialogMode(null);
       } catch (error) {
@@ -1115,7 +1152,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
         setSpaceDialogBusy(false);
       }
     },
-    [actions, spaceDialogMode, t, toast],
+    [enterSpaceIssues, session, spaceDialogMode, t, toast],
   );
 
   const closeSpaceDialog = useCallback(() => {
@@ -1220,15 +1257,10 @@ export default function Space({ isActive }: { isActive: boolean }) {
               relatedToMe={relatedToMe}
               goalOptions={goalOptions}
               activeIssueId={issueDetailId}
-              remoteUpdateAvailable={issueRemoteUpdateAvailable}
               onQueryChange={setIssueQ}
               onGoalChange={setSelectedGoalId}
               onStatusChange={setSelectedStatus}
               onRelatedToMeChange={setRelatedToMe}
-              onApplyRemoteUpdate={async () => {
-                await actions.refreshIssues(issueQuery, { force: true });
-                setIssueRemoteUpdateAvailable(false);
-              }}
               onRefresh={refreshCurrent}
               onLoadMore={() => actions.loadMoreIssues(issueQuery)}
               onCreate={() => setCreateIssueOpen(true)}

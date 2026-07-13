@@ -24,6 +24,51 @@ describe("IssuesWorkspace", () => {
     await i18n.changeLanguage("en-US");
   });
 
+  it("keeps the issue toolbar on one row and allows its filters to shrink", () => {
+    render(
+      <IssuesWorkspace
+        admin={false}
+        issues={[issue]}
+        issuesLoading={false}
+        issueError={null}
+        showingPreviousIssues={false}
+        hasMore={false}
+        issueQ=""
+        selectedGoalId=""
+        selectedStatus="open,todo,doing"
+        relatedToMe={false}
+        goalOptions={[{ value: "", label: "All goals" }]}
+        activeIssueId={null}
+        onQueryChange={vi.fn()}
+        onGoalChange={vi.fn()}
+        onStatusChange={vi.fn()}
+        onRelatedToMeChange={vi.fn()}
+        onRefresh={vi.fn().mockResolvedValue(undefined)}
+        onLoadMore={vi.fn().mockResolvedValue(undefined)}
+        onCreate={vi.fn()}
+        onOpenIssue={vi.fn()}
+      />,
+    );
+
+    const toolbar = screen
+      .getByRole("button", { name: "Search issue" })
+      .closest("section");
+    expect(toolbar).toHaveClass("flex-nowrap", "min-w-0");
+    expect(toolbar).not.toHaveClass("flex-wrap");
+    expect(
+      screen.queryByText("Updates available — refresh"),
+    ).not.toBeInTheDocument();
+
+    const statusFilter = screen.getByRole("button", { name: "Active" });
+    expect(statusFilter.parentElement).toHaveClass("min-w-0", "shrink");
+    const goalFilter = screen.getByRole("button", { name: "All goals" });
+    expect(goalFilter.parentElement).toHaveClass("min-w-0", "flex-1");
+
+    const statusTag = screen.getByText("Todo");
+    expect(statusTag).toHaveClass("h-5", "px-1.5", "text-xs", "font-medium");
+    expect(statusTag).not.toHaveClass("h-6", "px-2", "font-semibold");
+  });
+
   it("exposes related-to-me as an independent toggle and renders updatedAt", () => {
     const onRelatedToMeChange = vi.fn();
     render(
@@ -40,12 +85,10 @@ describe("IssuesWorkspace", () => {
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
-        remoteUpdateAvailable={false}
         onQueryChange={vi.fn()}
         onGoalChange={vi.fn()}
         onStatusChange={vi.fn()}
         onRelatedToMeChange={onRelatedToMeChange}
-        onApplyRemoteUpdate={vi.fn().mockResolvedValue(undefined)}
         onRefresh={vi.fn().mockResolvedValue(undefined)}
         onLoadMore={vi.fn().mockResolvedValue(undefined)}
         onCreate={vi.fn()}
@@ -65,41 +108,6 @@ describe("IssuesWorkspace", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("offers one inline refresh action for remote updates", () => {
-    const onApplyRemoteUpdate = vi.fn().mockResolvedValue(undefined);
-    render(
-      <IssuesWorkspace
-        admin={false}
-        issues={[issue]}
-        issuesLoading={false}
-        issueError={null}
-        showingPreviousIssues={false}
-        hasMore={false}
-        issueQ=""
-        selectedGoalId=""
-        selectedStatus="open,todo,doing"
-        relatedToMe
-        goalOptions={[{ value: "", label: "All goals" }]}
-        activeIssueId={null}
-        remoteUpdateAvailable
-        onQueryChange={vi.fn()}
-        onGoalChange={vi.fn()}
-        onStatusChange={vi.fn()}
-        onRelatedToMeChange={vi.fn()}
-        onApplyRemoteUpdate={onApplyRemoteUpdate}
-        onRefresh={vi.fn().mockResolvedValue(undefined)}
-        onLoadMore={vi.fn().mockResolvedValue(undefined)}
-        onCreate={vi.fn()}
-        onOpenIssue={vi.fn()}
-      />,
-    );
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Updates available — refresh" }),
-    );
-    expect(onApplyRemoteUpdate).toHaveBeenCalledTimes(1);
-  });
-
   it("loads the next cursor page without replacing the visible rows", () => {
     const onLoadMore = vi.fn().mockResolvedValue(undefined);
     render(
@@ -116,12 +124,10 @@ describe("IssuesWorkspace", () => {
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
-        remoteUpdateAvailable={false}
         onQueryChange={vi.fn()}
         onGoalChange={vi.fn()}
         onStatusChange={vi.fn()}
         onRelatedToMeChange={vi.fn()}
-        onApplyRemoteUpdate={vi.fn().mockResolvedValue(undefined)}
         onRefresh={vi.fn().mockResolvedValue(undefined)}
         onLoadMore={onLoadMore}
         onCreate={vi.fn()}
@@ -151,12 +157,10 @@ describe("IssuesWorkspace", () => {
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
-        remoteUpdateAvailable={false}
         onQueryChange={vi.fn()}
         onGoalChange={vi.fn()}
         onStatusChange={vi.fn()}
         onRelatedToMeChange={vi.fn()}
-        onApplyRemoteUpdate={vi.fn().mockResolvedValue(undefined)}
         onRefresh={onRefresh}
         onLoadMore={vi.fn().mockResolvedValue(undefined)}
         onCreate={vi.fn()}
@@ -191,12 +195,10 @@ describe("IssuesWorkspace", () => {
       relatedToMe: false,
       goalOptions: [{ value: "", label: "All goals" }],
       activeIssueId: null,
-      remoteUpdateAvailable: false,
       onQueryChange: vi.fn(),
       onGoalChange: vi.fn(),
       onStatusChange: vi.fn(),
       onRelatedToMeChange: vi.fn(),
-      onApplyRemoteUpdate: vi.fn().mockResolvedValue(undefined),
       onRefresh,
       onLoadMore,
       onCreate: vi.fn(),

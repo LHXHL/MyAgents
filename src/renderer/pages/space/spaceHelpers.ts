@@ -118,6 +118,38 @@ export function spaceEventsRequireSessionRefresh(
   );
 }
 
+export function spaceEventsRequireIssueListRefresh(
+  events: Array<Pick<SpaceEvent, "type" | "resourceType">>,
+): boolean {
+  return events.some((event) => {
+    const resourceType = event.resourceType ?? "";
+    return (
+      resourceType === "issue" ||
+      resourceType === "comment" ||
+      resourceType === "goal" ||
+      resourceType === "delivery" ||
+      event.type.startsWith("issue.") ||
+      event.type.startsWith("comment.") ||
+      event.type.startsWith("goal.") ||
+      event.type.startsWith("delivery.")
+    );
+  });
+}
+
+export function findJoinedSpaceBySlug(
+  session: SpaceSession | null | undefined,
+  slug: string,
+): SpaceSession["space"] | null {
+  const normalizedSlug = slug.trim().toLowerCase();
+  if (!session || !normalizedSlug) return null;
+
+  return (
+    [session.space, ...(session.spaces ?? [])].find(
+      (space) => space.slug.trim().toLowerCase() === normalizedSlug,
+    ) ?? null
+  );
+}
+
 export function isSpaceAdmin(session: SpaceSession | null): boolean {
   return (
     session?.membership?.role === "owner" ||
@@ -288,22 +320,16 @@ export function buildIssueCommandPrompt(args: {
   issueId: string;
 }): string {
   return [
-    `这是来自「${args.spaceName}」团队空间的 issue。`,
+    `Instruction: 这是一个来自 MyAgents Space「${args.spaceName}」的 Issue。请先通过下方只读命令获取当前上下文（标题、正文、附件元数据和最新评论）；如附件与判断有关，按需下载并读取。读取后，先向用户概括你的理解并提出下一步建议，等待用户确认后再修改代码、执行处理动作或变更 Issue 状态。`,
     "",
-    "请先读取该 issue，理解标题、正文、附件和评论上下文，再与用户讨论并决策下一步动作。不要在未确认前直接开始修改、执行或关闭 issue。",
+    `- Issue ID: ${args.issueId}`,
+    `- Space slug: ${args.spaceSlug}`,
     "",
-    `Issue ID: ${args.issueId}`,
+    "阅读 Issue：",
+    `\`myagents space issue view ${args.issueId} --space ${args.spaceSlug} --comments --json\``,
     "",
-    "命令：",
-    `myagents space issue view ${args.issueId} --space ${args.spaceSlug} --comments`,
-    "",
-    "处理时可按需使用：",
-    `myagents space issue comment ${args.issueId} --space ${args.spaceSlug} --body "<和用户确认后的处理记录>"`,
-    `myagents space issue claim ${args.issueId} --space ${args.spaceSlug}`,
-    `myagents space issue complete ${args.issueId} --space ${args.spaceSlug}`,
-    "",
-    "兼容命令：",
-    `myagents issue ${args.issueId} --space ${args.spaceSlug} --json`,
+    "查看其他可用操作：",
+    "`myagents space issue --help`",
   ].join("\n");
 }
 

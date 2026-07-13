@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -108,12 +108,26 @@ describe('IssueDetailDrawer', () => {
     expect(screen.getByRole('button', { name: '编辑' })).toBeInTheDocument();
     expect(screen.queryByText('Issue 口令')).not.toBeInTheDocument();
     const taskCard = screen.getByRole('region', { name: 'Issue 任务信息' });
+    expect(taskCard).toHaveClass('grid-cols-2');
+    expect(taskCard).not.toHaveClass('grid-cols-4');
+    const taskFacts = Array.from(taskCard.children);
+    expect(within(taskFacts[0] as HTMLElement).getByText('创建人')).toBeInTheDocument();
+    expect(within(taskFacts[1] as HTMLElement).getByText('目标')).toBeInTheDocument();
+    expect(within(taskFacts[2] as HTMLElement).getByText('状态')).toBeInTheDocument();
+    expect(within(taskFacts[3] as HTMLElement).getByText('经办人')).toBeInTheDocument();
+    for (const fact of taskFacts) {
+      expect(fact).toHaveClass('grid-cols-[3rem_minmax(0,1fr)]');
+    }
     expect(within(taskCard).getByText('创建人')).toBeInTheDocument();
     expect(within(taskCard).getByText('Ethan')).toBeInTheDocument();
     expect(within(taskCard).getByText('待认领')).toBeInTheDocument();
 
     const attachmentsHeading = screen.getByRole('heading', { name: /附件/ });
+    expect(attachmentsHeading.querySelector('svg')).not.toBeInTheDocument();
     expect(within(attachmentsHeading.parentElement!).getByRole('button', { name: '上传' })).toBeInTheDocument();
+
+    const commentsHeading = screen.getByRole('heading', { name: /评论/ });
+    expect(commentsHeading.querySelector('svg')).not.toBeInTheDocument();
 
     expect(screen.getByText('bold issue text').tagName).toBe('STRONG');
     expect(screen.getByRole('heading', { name: 'Comment heading' })).toBeInTheDocument();
@@ -222,7 +236,11 @@ describe('IssueDetailDrawer', () => {
 
     const attachmentsHeading = screen.getByRole('heading', { name: /附件/ });
     expect(within(attachmentsHeading.parentElement!.parentElement!).queryByText('trace.log')).not.toBeInTheDocument();
-    expect(screen.getByText('trace.log')).toBeInTheDocument();
+    const commentAttachment = screen.getByText('trace.log');
+    expect(commentAttachment).toBeInTheDocument();
+    const commentAttachmentList = commentAttachment.closest('.divide-y');
+    expect(commentAttachmentList).toHaveClass('border-b');
+    expect(commentAttachmentList).not.toHaveClass('border-y');
 
     await user.click(screen.getByRole('button', { name: '上传附件' }));
     expect(await screen.findByText('evidence.pdf')).toBeInTheDocument();
@@ -234,6 +252,41 @@ describe('IssueDetailDrawer', () => {
       ['/workspace/evidence.pdf'],
     );
     expect(screen.queryByText('evidence.pdf')).not.toBeInTheDocument();
+  });
+
+  it('uses custom composer tips and sends with the fixed modifier shortcut', async () => {
+    const platform = vi.spyOn(window.navigator, 'platform', 'get').mockReturnValue('MacIntel');
+    const user = userEvent.setup();
+    const mockActions = actions();
+    render(
+      <IssueDetailDrawer
+        issueId="iss-1"
+        session={session}
+        projects={[]}
+        goals={[]}
+        registeredAgents={[]}
+        detailState={{ detail, isLoading: false, lastFetchedAt: Date.now(), error: null }}
+        actions={mockActions}
+        onClose={vi.fn()}
+        onChanged={vi.fn()}
+      />,
+    );
+
+    const uploadButton = screen.getByRole('button', { name: '上传附件' });
+    const sendButton = screen.getByRole('button', { name: '发送评论' });
+    expect(uploadButton.parentElement).toHaveTextContent('上传附件');
+    expect(sendButton.parentElement).toHaveTextContent('发送评论');
+    expect(sendButton.parentElement).toHaveTextContent('⌘ + Enter');
+    expect(sendButton).not.toHaveAttribute('title');
+
+    const composer = screen.getByPlaceholderText('说说你的想法');
+    await user.type(composer, 'shortcut comment');
+    fireEvent.keyDown(composer, { key: 'Enter', metaKey: true });
+
+    await waitFor(() => {
+      expect(mockActions.commentIssue).toHaveBeenCalledWith('iss-1', 'shortcut comment', []);
+    });
+    platform.mockRestore();
   });
 
   it('does not clear the next Issue draft when an earlier comment request finishes', async () => {

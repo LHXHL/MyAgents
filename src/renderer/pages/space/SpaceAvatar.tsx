@@ -27,6 +27,7 @@ export function SpaceAvatar({
   avatarUrl,
   size = 24,
   type = 'user',
+  shape = 'circle',
   className = '',
 }: {
   name?: string | null;
@@ -34,16 +35,18 @@ export function SpaceAvatar({
   avatarUrl?: string | null;
   size?: number;
   type?: 'user' | 'registered_agent' | 'system';
+  shape?: 'circle' | 'app-icon';
   className?: string;
 }) {
   const displayName = spaceDisplayName({ name, email });
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
 
   const style = { width: size, height: size };
+  const radiusClass = shape === 'app-icon' ? 'rounded-[22%]' : 'rounded-full';
   const fallbackTextClass = size >= 48 ? 'text-base' : size >= 32 ? 'text-sm' : 'text-xs';
   if (avatarUrl && failedUrl !== avatarUrl) {
     return (
-      <span className={`inline-grid shrink-0 place-items-center overflow-hidden rounded-full bg-[var(--paper-inset)] ${className}`} style={style}>
+      <span className={`inline-grid shrink-0 place-items-center overflow-hidden ${radiusClass} bg-[var(--paper-inset)] ${className}`} style={style}>
         <img
           src={avatarUrl}
           alt=""
@@ -56,7 +59,7 @@ export function SpaceAvatar({
   }
 
   return (
-    <span className={`inline-grid shrink-0 place-items-center rounded-full border border-[var(--line-subtle)] bg-[var(--paper-inset)] ${fallbackTextClass} font-semibold leading-none text-[var(--ink-muted)] ${className}`} style={style}>
+    <span className={`inline-grid shrink-0 place-items-center ${radiusClass} border border-[var(--line-subtle)] bg-[var(--paper-inset)] ${fallbackTextClass} font-semibold leading-none text-[var(--ink-muted)] ${className}`} style={style}>
       {type === 'registered_agent' ? (
         <Bot className="h-3.5 w-3.5" />
       ) : type === 'system' ? (
@@ -65,6 +68,28 @@ export function SpaceAvatar({
         <span>{initialFor(displayName)}</span>
       )}
     </span>
+  );
+}
+
+export function SpaceIcon({
+  name,
+  avatarUrl,
+  size = 24,
+  className = '',
+}: {
+  name?: string | null;
+  avatarUrl?: string | null;
+  size?: number;
+  className?: string;
+}) {
+  return (
+    <SpaceAvatar
+      name={name}
+      avatarUrl={avatarUrl}
+      size={size}
+      shape="app-icon"
+      className={className}
+    />
   );
 }
 

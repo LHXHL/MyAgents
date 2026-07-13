@@ -1,10 +1,11 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronLeft, ChevronRight, Copy, Download, FileText, Loader2, MessageSquare, Paperclip, Pencil, Save, Send, UploadCloud, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Copy, Download, FileText, Loader2, Paperclip, Pencil, Save, Send, UploadCloud, X } from 'lucide-react';
 
 import { spaceErrorMessage, type SpaceAttachment, type SpaceGoal, type SpaceRegisteredAgent, type SpaceSession } from '@/api/spaceCloud';
 import Markdown from '@/components/Markdown';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
+import Tip from '@/components/Tip';
 import { useToast } from '@/components/Toast';
 import DropdownMenu, { type DropdownMenuSection } from '@/components/ui/DropdownMenu';
 import type { Project } from '@/config/types';
@@ -88,6 +89,7 @@ export function IssueDetailDrawer({
   const downloadMenuFirstItemRef = useRef<HTMLButtonElement | null>(null);
   const downloadMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const scrollRef = useRef<HTMLElement | null>(null);
+  const commentSendingRef = useRef(false);
   const activeIssueIdRef = useRef(issueId);
   activeIssueIdRef.current = issueId;
   const detail = detailState?.detail ?? null;
@@ -99,6 +101,18 @@ export function IssueDetailDrawer({
   const detailIssueId = detail?.issue.id;
   const detailIssueTitle = detail?.issue.title;
   const detailIssueBody = detail?.issue.body;
+  const commentHasContent = Boolean(comment.trim() || commentAttachments.filePaths.length > 0);
+  const commentComposerUnavailable = busy || commentAttachments.pending;
+  const canSendComment = !commentComposerUnavailable && commentHasContent;
+  const commentAttachmentPickerDisabled = commentFilesPicking
+    || commentAttachments.pending
+    || busy
+    || commentAttachments.filePaths.length >= 5;
+  // The Issue composer intentionally has a fixed shortcut independent of the
+  // user-configurable AI chat send preference.
+  const commentSendShortcut = navigator.platform.toLowerCase().includes('mac')
+    ? '⌘ + Enter'
+    : 'Ctrl + Enter';
 
   useCloseLayer(() => {
     onClose();
@@ -227,10 +241,11 @@ export function IssueDetailDrawer({
   };
 
   const sendComment = async () => {
-    if (commentAttachments.pending || (!comment.trim() && commentAttachments.filePaths.length === 0)) return;
+    if (!canSendComment || commentSendingRef.current) return;
     const requestedIssueId = issueId;
     const submittedComment = comment;
     const submittedFilePaths = commentAttachments.filePaths;
+    commentSendingRef.current = true;
     setBusy(true);
     try {
       await actions.commentIssue(requestedIssueId, submittedComment.trim(), submittedFilePaths);
@@ -245,8 +260,21 @@ export function IssueDetailDrawer({
     } catch (error) {
       toast.error(spaceErrorMessage(error));
     } finally {
+      commentSendingRef.current = false;
       setBusy(false);
     }
+  };
+
+  const handleCommentKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (
+      event.key !== 'Enter'
+      || (!event.metaKey && !event.ctrlKey)
+      || event.nativeEvent.isComposing
+    ) {
+      return;
+    }
+    event.preventDefault();
+    void sendComment();
   };
 
   const pickCommentFiles = async () => {
@@ -622,7 +650,6 @@ export function IssueDetailDrawer({
                 <section className="mt-7">
                   <div className="mb-2 flex flex-wrap items-center gap-2">
                     <h3 className="flex items-center gap-2 text-sm font-semibold text-[var(--ink-secondary)]">
-                      <Paperclip className="h-4 w-4" />
                       <span>{t('space.detail.attachments')}</span>
                       <span className="text-xs font-semibold text-[var(--ink-subtle)]">{detail.attachments.length}</span>
                     </h3>
@@ -664,7 +691,6 @@ export function IssueDetailDrawer({
 
               <section>
                 <h3 className="mb-5 flex items-center gap-2 text-lg font-semibold text-[var(--ink)]">
-                  <MessageSquare className="h-4 w-4" />
                   <span>{t('space.detail.comments')}</span>
                   <small className="text-xs font-semibold text-[var(--ink-subtle)]">{t('space.detail.commentCount', { count: commentCount })}</small>
                 </h3>
@@ -703,7 +729,7 @@ export function IssueDetailDrawer({
                         </div>
                         {item.body.trim() && <IssueMarkdown>{item.body}</IssueMarkdown>}
                         {(item.attachments?.length ?? 0) > 0 && (
-                          <div className={`${item.body.trim() ? 'mt-3' : ''} divide-y divide-[var(--line-subtle)] border-y border-[var(--line-subtle)]`}>
+                          <div className={`${item.body.trim() ? 'mt-3' : ''} divide-y divide-[var(--line-subtle)] border-b border-[var(--line-subtle)]`}>
                             {(item.attachments ?? []).map(renderAttachmentRow)}
                           </div>
                         )}
@@ -722,30 +748,42 @@ export function IssueDetailDrawer({
                   <textarea
                     value={comment}
                     onChange={(event) => setComment(event.target.value)}
+                    onKeyDown={handleCommentKeyDown}
                     className="min-h-[104px] w-full resize-none border-0 bg-transparent p-4 text-base leading-7 text-[var(--ink)] outline-none placeholder:text-[var(--ink-muted)]"
                     placeholder={t('space.detail.commentPlaceholder')}
                   />
                   <div className="grid grid-cols-[auto_1fr_auto] items-center gap-2 px-2.5 pb-2.5">
-                    <button
-                      type="button"
-                      disabled={commentFilesPicking || commentAttachments.pending || busy || commentAttachments.filePaths.length >= 5}
-                      onClick={() => void pickCommentFiles()}
-                      className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-70"
-                      aria-label={t('space.detail.uploadAttachmentAria')}
+                    <Tip
+                      label={t('space.detail.uploadAttachmentAria')}
+                      disabled={commentAttachmentPickerDisabled}
                     >
-                      {commentFilesPicking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
-                    </button>
+                      <button
+                        type="button"
+                        disabled={commentAttachmentPickerDisabled}
+                        onClick={() => void pickCommentFiles()}
+                        className="grid h-8 w-8 place-items-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] disabled:cursor-wait disabled:opacity-70"
+                        aria-label={t('space.detail.uploadAttachmentAria')}
+                      >
+                        {commentFilesPicking ? <Loader2 className="h-4 w-4 animate-spin" /> : <Paperclip className="h-4 w-4" />}
+                      </button>
+                    </Tip>
                     <span />
-                    <button
-                      type="button"
-                      disabled={busy || commentAttachments.pending || (!comment.trim() && commentAttachments.filePaths.length === 0)}
-                      onClick={() => void sendComment()}
-                      className="grid h-9 w-9 place-items-center rounded-xl bg-[var(--button-primary-bg)] text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
-                      aria-label={t('space.detail.sendComment')}
-                      title={t('space.detail.sendComment')}
+                    <Tip
+                      label={t('space.detail.sendComment')}
+                      shortcut={commentSendShortcut}
+                      align="end"
+                      disabled={commentComposerUnavailable}
                     >
-                      {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
-                    </button>
+                      <button
+                        type="button"
+                        disabled={!canSendComment}
+                        onClick={() => void sendComment()}
+                        className="grid h-9 w-9 place-items-center rounded-xl bg-[var(--button-primary-bg)] text-sm font-semibold text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
+                        aria-label={t('space.detail.sendComment')}
+                      >
+                        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                      </button>
+                    </Tip>
                   </div>
                 </div>
               </section>
