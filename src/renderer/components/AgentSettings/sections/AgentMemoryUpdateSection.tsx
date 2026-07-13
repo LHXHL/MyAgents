@@ -6,10 +6,7 @@ import type { AgentConfig } from '../../../../shared/types/agent';
 import type { MemoryAutoUpdateConfig } from '../../../../shared/types/im';
 import { DEFAULT_MEMORY_AUTO_UPDATE_CONFIG } from '../../../../shared/types/im';
 import DEFAULT_UPDATE_MEMORY_CONTENT from '../../../../shared/default-update-memory.md?raw';
-import {
-  renderDefaultUpdateMemoryContent,
-  type MemoryRuleSubstrateResult,
-} from '../../../../shared/memory-rules';
+import type { MemoryRuleSubstrateResult } from '../../../../shared/memory-rules';
 import { patchAgentConfig } from '@/config/services/agentConfigService';
 import { useToast } from '@/components/Toast';
 
@@ -75,10 +72,7 @@ export default function AgentMemoryUpdateSection({ agent, onAgentChanged }: Agen
       const existing = await invoke<string | null>('cmd_read_workspace_file', { path: filePath });
       if (existing !== null) return { ok: true, content: existing };
       // File doesn't exist — create with default content
-      const content = renderDefaultUpdateMemoryContent(
-        DEFAULT_UPDATE_MEMORY_CONTENT,
-        substrate.memory.relativePath,
-      );
+      const content = DEFAULT_UPDATE_MEMORY_CONTENT;
       await invoke('cmd_write_workspace_file', { path: filePath, content });
       toastRef.current.success(t('agentSettings.memory.createdFile'));
       return { ok: true, content };

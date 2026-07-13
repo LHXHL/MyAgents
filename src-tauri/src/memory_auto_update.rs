@@ -833,12 +833,11 @@ fn collect_disk_memory_auto_update_agents(config: &Value) -> Vec<DiskMemoryAutoU
 }
 
 fn prepare_update_memory_file(workspace_path: &str) -> Result<(), String> {
-    let rule_substrate =
-        crate::workspace_files::memory_rules::ensure_memory_rule_substrate_for_workspace(
-            workspace_path,
-        )?;
+    crate::workspace_files::memory_rules::ensure_memory_rule_substrate_for_workspace(
+        workspace_path,
+    )?;
     let update_md_path = resolve_update_memory_path(workspace_path)?;
-    ensure_update_memory_file(&update_md_path, &rule_substrate.memory.relative_path)
+    ensure_update_memory_file(&update_md_path)
 }
 
 fn collect_candidates(
@@ -1255,7 +1254,7 @@ fn resolve_update_memory_path(workspace_path: &str) -> Result<PathBuf, String> {
     )
 }
 
-fn ensure_update_memory_file(path: &Path, memory_rule_relative_path: &str) -> Result<(), String> {
+fn ensure_update_memory_file(path: &Path) -> Result<(), String> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
@@ -1278,14 +1277,11 @@ fn ensure_update_memory_file(path: &Path, memory_rule_relative_path: &str) -> Re
             {
                 Ok(file) => file,
                 Err(open_err) if open_err.kind() == ErrorKind::AlreadyExists => {
-                    return ensure_update_memory_file(path, memory_rule_relative_path);
+                    return ensure_update_memory_file(path);
                 }
                 Err(open_err) => return Err(format!("create failed: {}", open_err)),
             };
-            let content =
-                crate::workspace_files::memory_rules::render_default_update_memory_content(
-                    memory_rule_relative_path,
-                );
+            let content = crate::workspace_files::memory_rules::default_update_memory_content();
             file.write_all(content.as_bytes())
                 .map_err(|write_err| format!("write failed: {}", write_err))?;
             Ok(())
@@ -1600,7 +1596,7 @@ mod tests {
         let original = "---\ndescription: placeholder\n---\n\n   \n";
         std::fs::write(&path, original).expect("write empty file");
 
-        ensure_update_memory_file(&path, ".claude/rules/04-MEMORY.md").expect("ensure file");
+        ensure_update_memory_file(&path).expect("ensure file");
 
         assert_eq!(std::fs::read_to_string(path).unwrap(), original);
     }
@@ -1611,9 +1607,63 @@ mod tests {
         let path = dir.path().join("UPDATE_MEMORY.md");
         std::fs::write(&path, "").expect("write zero-byte file");
 
-        ensure_update_memory_file(&path, ".claude/rules/04-MEMORY.md").expect("ensure file");
+        ensure_update_memory_file(&path).expect("ensure file");
 
         assert_eq!(std::fs::read_to_string(path).unwrap(), "");
+    }
+
+    #[test]
+    fn ensure_update_memory_file_preserves_existing_custom_instructions() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("UPDATE_MEMORY.md");
+        let original =
+            "---\ndescription: custom\n---\n\nWrite decisions to memory/topics/product.md.\n";
+        std::fs::write(&path, original).expect("write custom file");
+
+        ensure_update_memory_file(&path).expect("ensure file");
+
+        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+    }
+
+    #[test]
+    fn ensure_update_memory_file_creates_frontmatter_only_default() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("UPDATE_MEMORY.md");
+
+        ensure_update_memory_file(&path).expect("ensure file");
+
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            crate::workspace_files::memory_rules::default_update_memory_content()
+        );
+    }
+
+    #[test]
+    fn ensure_update_memory_file_rejects_directory() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("UPDATE_MEMORY.md");
+        std::fs::create_dir(&path).expect("create directory collision");
+
+        let error = ensure_update_memory_file(&path).expect_err("directory must fail closed");
+
+        assert!(error.contains("directory"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_update_memory_file_rejects_symlink() {
+        use std::os::unix::fs::symlink;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("target.md");
+        let path = dir.path().join("UPDATE_MEMORY.md");
+        std::fs::write(&target, "custom").expect("write target");
+        symlink(&target, &path).expect("create symlink");
+
+        let error = ensure_update_memory_file(&path).expect_err("symlink must fail closed");
+
+        assert!(error.contains("symlink"));
+        assert_eq!(std::fs::read_to_string(target).unwrap(), "custom");
     }
 
     #[test]

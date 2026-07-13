@@ -10,7 +10,6 @@ const SOUL_TEMPLATE: &str = include_str!("../../../src/shared/default-soul.md");
 const USER_TEMPLATE: &str = include_str!("../../../src/shared/default-user.md");
 const MEMORY_TEMPLATE: &str = include_str!("../../../src/shared/default-memory.md");
 const UPDATE_MEMORY_TEMPLATE: &str = include_str!("../../../src/shared/default-update-memory.md");
-const MEMORY_RULE_PLACEHOLDER: &str = "{{MEMORY_RULE_PATH}}";
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -34,8 +33,8 @@ struct RuleSpec {
     template: &'static str,
 }
 
-pub fn render_default_update_memory_content(memory_rule_relative_path: &str) -> String {
-    UPDATE_MEMORY_TEMPLATE.replace(MEMORY_RULE_PLACEHOLDER, memory_rule_relative_path)
+pub fn default_update_memory_content() -> &'static str {
+    UPDATE_MEMORY_TEMPLATE
 }
 
 pub fn ensure_memory_rule_substrate_for_workspace(
@@ -214,10 +213,15 @@ mod tests {
     }
 
     #[test]
-    fn render_update_memory_content_uses_actual_memory_rule_path() {
-        let rendered = render_default_update_memory_content(".claude/rules/MEMORY.md");
+    fn default_update_memory_content_has_frontmatter_and_empty_body() {
+        let content = default_update_memory_content();
+        let closing = content
+            .find("\n---")
+            .expect("default UPDATE_MEMORY.md closing frontmatter");
+        let body = &content[closing + "\n---".len()..];
 
-        assert!(rendered.contains("`.claude/rules/MEMORY.md`"));
-        assert!(!rendered.contains(MEMORY_RULE_PLACEHOLDER));
+        assert!(content.contains("myagents-memory-update"));
+        assert!(body.trim().is_empty());
+        assert!(!content.contains("{{MEMORY_RULE_PATH}}"));
     }
 }
