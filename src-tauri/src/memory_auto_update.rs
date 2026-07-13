@@ -9,7 +9,7 @@ use crate::cron_task::normalize_path;
 use crate::im::types::{HeartbeatConfig, MemoryAutoUpdateConfig};
 use crate::sidecar::{self, ManagedSidecarManager, SidecarOwner};
 use crate::utils::bom::strip_bom;
-use crate::{ulog_debug, ulog_info, ulog_warn};
+use crate::{ulog_info, ulog_warn};
 use chrono::{DateTime, Timelike, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -117,12 +117,6 @@ enum SessionUpdateOutcome {
     Canceled,
     TerminationUnconfirmed(String),
     Failed(String),
-}
-
-#[derive(Debug)]
-enum UpdateMemoryFileState {
-    Ready,
-    Empty,
 }
 
 #[derive(Debug, Deserialize)]
@@ -619,26 +613,15 @@ pub async fn run_batch<R: Runtime>(
         return summary;
     }
 
-    match prepare_update_memory_file(workspace_path) {
-        Ok(UpdateMemoryFileState::Ready) => {}
-        Ok(UpdateMemoryFileState::Empty) => {
-            ulog_debug!(
-                "[memory-auto-update] skipped {}: UPDATE_MEMORY.md body is empty",
-                workspace_path
-            );
-            inflight.release().await;
-            return summary;
-        }
-        Err(error) => {
-            ulog_warn!(
-                "[memory-auto-update] failed to prepare UPDATE_MEMORY.md for {}: {}",
-                workspace_path,
-                error
-            );
-            summary.failed = 1;
-            inflight.release().await;
-            return summary;
-        }
+    if let Err(error) = prepare_update_memory_file(workspace_path) {
+        ulog_warn!(
+            "[memory-auto-update] failed to prepare UPDATE_MEMORY.md for {}: {}",
+            workspace_path,
+            error
+        );
+        summary.failed = 1;
+        inflight.release().await;
+        return summary;
     }
 
     let candidates = collect_candidates(workspace_path, config, &mut summary);
@@ -849,7 +832,7 @@ fn collect_disk_memory_auto_update_agents(config: &Value) -> Vec<DiskMemoryAutoU
     result
 }
 
-fn prepare_update_memory_file(workspace_path: &str) -> Result<UpdateMemoryFileState, String> {
+fn prepare_update_memory_file(workspace_path: &str) -> Result<(), String> {
     let rule_substrate =
         crate::workspace_files::memory_rules::ensure_memory_rule_substrate_for_workspace(
             workspace_path,
@@ -1272,10 +1255,7 @@ fn resolve_update_memory_path(workspace_path: &str) -> Result<PathBuf, String> {
     )
 }
 
-fn ensure_update_memory_file(
-    path: &Path,
-    memory_rule_relative_path: &str,
-) -> Result<UpdateMemoryFileState, String> {
+fn ensure_update_memory_file(path: &Path, memory_rule_relative_path: &str) -> Result<(), String> {
     match std::fs::symlink_metadata(path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() {
@@ -1284,13 +1264,11 @@ fn ensure_update_memory_file(
             if metadata.is_dir() {
                 return Err("UPDATE_MEMORY.md is a directory".to_string());
             }
-            let content =
-                std::fs::read_to_string(path).map_err(|e| format!("read failed: {}", e))?;
-            let body = strip_yaml_frontmatter(&content);
-            if body.trim().is_empty() {
-                return Ok(UpdateMemoryFileState::Empty);
-            }
-            Ok(UpdateMemoryFileState::Ready)
+            // Reading validates that the existing user-owned file is usable.
+            // Its body may intentionally be empty: that means no workspace-
+            // specific instructions, not that Memory Update is disabled.
+            std::fs::read_to_string(path).map_err(|e| format!("read failed: {}", e))?;
+            Ok(())
         }
         Err(e) if e.kind() == ErrorKind::NotFound => {
             let mut file = match std::fs::OpenOptions::new()
@@ -1310,22 +1288,9 @@ fn ensure_update_memory_file(
                 );
             file.write_all(content.as_bytes())
                 .map_err(|write_err| format!("write failed: {}", write_err))?;
-            Ok(UpdateMemoryFileState::Ready)
+            Ok(())
         }
         Err(e) => Err(format!("metadata failed: {}", e)),
-    }
-}
-
-fn strip_yaml_frontmatter(content: &str) -> &str {
-    let trimmed = content.trim();
-    if !trimmed.starts_with("---") {
-        return trimmed;
-    }
-    if let Some(end_idx) = trimmed[3..].find("---") {
-        let after = &trimmed[3 + end_idx + 3..];
-        after.trim()
-    } else {
-        trimmed
     }
 }
 
@@ -1629,16 +1594,26 @@ mod tests {
     }
 
     #[test]
-    fn ensure_update_memory_file_reports_empty_body_after_frontmatter() {
+    fn ensure_update_memory_file_accepts_empty_body_after_frontmatter_without_rewriting() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("UPDATE_MEMORY.md");
-        std::fs::write(&path, "---\ndescription: placeholder\n---\n\n   \n")
-            .expect("write empty file");
+        let original = "---\ndescription: placeholder\n---\n\n   \n";
+        std::fs::write(&path, original).expect("write empty file");
 
-        let state =
-            ensure_update_memory_file(&path, ".claude/rules/04-MEMORY.md").expect("ensure file");
+        ensure_update_memory_file(&path, ".claude/rules/04-MEMORY.md").expect("ensure file");
 
-        assert!(matches!(state, UpdateMemoryFileState::Empty));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+    }
+
+    #[test]
+    fn ensure_update_memory_file_accepts_zero_byte_file_without_rewriting() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("UPDATE_MEMORY.md");
+        std::fs::write(&path, "").expect("write zero-byte file");
+
+        ensure_update_memory_file(&path, ".claude/rules/04-MEMORY.md").expect("ensure file");
+
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "");
     }
 
     #[test]

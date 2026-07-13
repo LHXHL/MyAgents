@@ -738,8 +738,8 @@ Memory Auto-Update 继续通过 `SessionEngine.runInjectedTurn()` 路由到目�
 
 - [x] Phase 1：新增并打包 `myagents-memory-update`，收窄三个 memory skill 的 description，更新双端 system skill 清单与版本。
 - [x] Phase 1 验证：system skill 清单对齐、版本/完整性同步、三个 description 的精确触发契约。
-- [ ] Phase 2：新增纯 prompt builder，统一 `/api/memory/update` 注入内容，移除 Node/Rust 空正文 skip。
-- [ ] Phase 2 验证：空/自定义正文 prompt、精确 marker、SessionEngine 路由与 endpoint 行为。
+- [x] Phase 2：新增纯 prompt builder，统一 `/api/memory/update` 注入内容，移除 Node/Rust 空正文 skip。
+- [x] Phase 2 验证：空/自定义正文 prompt、精确 marker、SessionEngine 路由与 endpoint 行为。
 - [ ] Phase 3：将默认 `UPDATE_MEMORY.md` 模板改为 frontmatter-only，移除失效 placeholder plumbing，保留既有文件不覆盖。
 - [ ] Phase 3 验证：缺失文件创建、既有文件不覆盖、零字节/frontmatter-only ready、symlink/目录 fail closed。
 - [ ] Phase 4：运行受影响测试、`test:changed`、typecheck/lint、Rust fmt/clippy/相关测试；完成需求复核与 cross-review。
@@ -753,3 +753,4 @@ Memory Auto-Update 继续通过 `SessionEngine.runInjectedTurn()` 路由到目�
 
 - 2026-07-13：完成 PRD、架构、任务中心、跨 Runtime、隐藏消息协议和现有代码链第一轮 ground truth 对照。确认当前错误点是 Node/Rust 两处将空正文解释为 skip，以及 Memory Update 尚未由官方 system skill 承担；现有“Memory Update 原 Session、Gardener/Molt new-session”的调度路由无需修改。
 - 2026-07-13：完成 Phase 1。新增 force-synced `myagents-memory-update`，三个 memory skill description 改为完整名称精确触发；system skill snapshot 升至 v33，Rust/Node 清单一致。Rust automation startup 在 Task scheduler recovery 前完成同步，三类 hidden memory task dispatch 前再次校验版本与完整性，失败则 fail closed。`cargo test ... system_skills_tests --locked` 10 项通过。
+- 2026-07-13：完成 Phase 2。新增纯函数 `buildMemoryUpdateReminder`，`/api/memory/update` 继续走 SessionEngine，但注入内容改为官方 skill + 窄作用域 + 工作区自定义容器；空容器保留。删除 Node `empty_content` 返回与 Rust `UpdateMemoryFileState::Empty` 整批 skip。验证通过：prompt builder 2 项、Rust memory_auto_update 12 项、TypeScript typecheck。

@@ -235,6 +235,10 @@ import {
   CRON_TASK_EXIT_REASON_PATTERN,
 } from './tools/cron-tools';
 import { buildCronTaskReminder, type CronScheduleKind } from './utils/cron-reminder';
+import {
+  buildMemoryUpdateReminder,
+  MEMORY_UPDATE_COMPLETION_MARKER,
+} from './utils/memory-update-reminder';
 import { managementApi } from './utils/management-api-client';
 import { buildGoalContinuationReminder } from '../shared/systemReminder';
 import { setImCronContext } from './tools/im-cron-tool';
@@ -9182,19 +9186,21 @@ description: >
 
           // Strip YAML frontmatter
           const promptContent = stripYamlFrontmatter(rawContent);
-          if (!promptContent.trim()) {
-            return jsonResponse({ status: 'skipped', reason: 'empty_content' });
-          }
 
-          // Build prompt with <system-reminder> and <MEMORY_UPDATE> tags
+          // Build the hidden official-workflow prompt. Empty UPDATE_MEMORY.md
+          // body means there are no workspace-specific additions; it does not
+          // disable the versioned myagents-memory-update system skill.
           const now = new Date().toLocaleString('en-US', {
             timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
             year: 'numeric', month: '2-digit', day: '2-digit',
             hour: '2-digit', minute: '2-digit', timeZoneName: 'short',
           });
 
-          const completionMarker = 'MEMORY_UPDATE_OK';
-          const prompt = `<system-reminder>\n<MEMORY_UPDATE>\n${promptContent}\n\nCurrent time: ${now}\n\n完成所有记忆维护操作后（包括文件读写和 git 操作），仅回复 ${completionMarker}，不要输出其他内容。\n</MEMORY_UPDATE>\n</system-reminder>`;
+          const completionMarker = MEMORY_UPDATE_COMPLETION_MARKER;
+          const prompt = buildMemoryUpdateReminder({
+            workspaceMemoryInstructions: promptContent,
+            currentTime: now,
+          });
 
           // Inject + run the <MEMORY_UPDATE> turn on the session's ACTUAL runtime.
           // Memory update is unattended, so it always runs at the runtime's max agency
