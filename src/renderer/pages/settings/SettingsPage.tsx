@@ -4888,6 +4888,38 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
 
                                 <div className="mt-4 flex items-center justify-between">
                                     <div className="flex-1 pr-4">
+                                        <p className="text-sm font-medium text-[var(--ink)]">{tSettings('about.teamSpaceTitle')}</p>
+                                        <p className="text-xs text-[var(--ink-muted)]">
+                                            {tSettings('about.teamSpaceDescription')}
+                                        </p>
+                                        {(spaceBuildCapability.isLoading || !spaceBuildCapability.available) && (
+                                            <p className="mt-1 text-xs text-[var(--ink-subtle)]">
+                                                {spaceBuildCapability.isLoading
+                                                    ? tSettings('about.teamSpaceLoading')
+                                                    : tSettings(spaceBuildCapability.reason ? 'about.teamSpaceUnavailableWithReason' : 'about.teamSpaceUnavailable', { reason: spaceBuildCapability.reason })}
+                                            </p>
+                                        )}
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (spaceBuildCapability.isLoading || !spaceBuildCapability.available) return;
+                                            updateConfig({ teamSpaceEnabled: config.teamSpaceEnabled !== true });
+                                        }}
+                                        disabled={spaceBuildCapability.isLoading || !spaceBuildCapability.available}
+                                        aria-pressed={config.teamSpaceEnabled === true && spaceBuildCapability.available}
+                                        className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${config.teamSpaceEnabled === true && spaceBuildCapability.available ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
+                                            }`}
+                                    >
+                                        <span
+                                            className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${config.teamSpaceEnabled === true && spaceBuildCapability.available ? 'translate-x-5' : 'translate-x-0'
+                                                }`}
+                                        />
+                                    </button>
+                                </div>
+
+                                <div className="mt-4 flex items-center justify-between border-t border-[var(--line)] pt-4">
+                                    <div className="flex-1 pr-4">
                                         <p className="text-sm font-medium text-[var(--ink)]">{tSettings('about.runtimeTitle')}</p>
                                         <p className="text-xs text-[var(--ink-muted)]">
                                             {tSettings('about.runtimeDescription')}
@@ -5081,37 +5113,6 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 >
                                                     <span
                                                         className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${managedCodexProviderGateEnabled ? 'translate-x-5' : 'translate-x-0'
-                                                            }`}
-                                                    />
-                                                </button>
-                                            </div>
-                                        </div>
-
-                                        {/* Team Space Gate */}
-                                        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
-                                            <div className="flex items-center justify-between">
-                                                <div className="flex-1 pr-4">
-                                                    <h3 className="text-sm font-medium text-[var(--ink)]">{tSettings('about.developer.teamTitle')}</h3>
-                                                    <p className="mt-1 text-xs text-[var(--ink-muted)]">
-                                                        {spaceBuildCapability.isLoading
-                                                            ? tSettings('about.developer.teamLoading')
-                                                            : spaceBuildCapability.available
-                                                            ? tSettings('about.developer.teamAvailable')
-                                                            : tSettings(spaceBuildCapability.reason ? 'about.developer.teamUnavailableWithReason' : 'about.developer.teamUnavailable', { reason: spaceBuildCapability.reason })}
-                                                    </p>
-                                                </div>
-                                                <button
-                                                    onClick={() => {
-                                                        if (spaceBuildCapability.isLoading || !spaceBuildCapability.available) return;
-                                                        updateConfig({ teamSpaceEnabled: config.teamSpaceEnabled !== true });
-                                                    }}
-                                                    disabled={spaceBuildCapability.isLoading || !spaceBuildCapability.available}
-                                                    aria-pressed={config.teamSpaceEnabled === true && spaceBuildCapability.available}
-                                                    className={`relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${config.teamSpaceEnabled === true && spaceBuildCapability.available ? 'bg-[var(--accent)]' : 'bg-[var(--line-strong)]'
-                                                        }`}
-                                                >
-                                                    <span
-                                                        className={`absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-[var(--toggle-thumb)] shadow transition-transform ${config.teamSpaceEnabled === true && spaceBuildCapability.available ? 'translate-x-5' : 'translate-x-0'
                                                             }`}
                                                     />
                                                 </button>
