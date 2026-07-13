@@ -52,6 +52,12 @@ import type {
   SpaceAvatarPresetsState,
 } from "@/pages/space/spaceStore";
 import {
+  formatQuotaValue,
+  formatStorageQuota,
+  quotaExceeded,
+  quotaReached,
+} from "@/pages/space/settings/spaceEntitlementUi";
+import {
   SPACE_COLLECTION_FRAME_CLASS,
   SPACE_LIST_FRAME_CLASS,
   formatDate,
@@ -77,11 +83,6 @@ function formatBytes(value: number): string {
   if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MiB`;
   if (value >= 1024) return `${(value / 1024).toFixed(1)} KiB`;
   return `${value} B`;
-}
-
-function quotaText(used?: number, max?: number): string {
-  if (typeof used !== "number" || typeof max !== "number") return "-";
-  return `${used} / ${max}`;
 }
 
 function metricValue(value: string | number | null | undefined): string {
@@ -221,7 +222,7 @@ export function SpaceSettingsWorkspace({
   onAgentConnecting: (agentId: string) => void;
   onExit: () => void;
 }) {
-  const { t } = useTranslation("app");
+  const { t, i18n } = useTranslation("app");
   const toast = useToast();
   const fileService = useWorkspaceFileService(null);
   const [section, setSection] = useState<SettingsSection | null>(null);
@@ -255,21 +256,24 @@ export function SpaceSettingsWorkspace({
   const spacePlanProjectionKey = [
     session.space.effectivePlanTier ?? session.space.planTier ?? "free",
     session.space.planExpiresAt ?? "",
-    session.space.limits?.joinedMembersMax ?? "",
-    session.space.limits?.openIssuesMax ?? "",
-    session.space.limits?.hostedSkillsMax ?? "",
-    session.space.limits?.registeredAgentsMax ?? "",
-    session.space.limits?.storageBytesMax ?? "",
+    session.space.entitlement?.source ?? "",
+    session.space.entitlement?.key ?? "",
+    session.space.entitlement?.displayName ?? "",
+    session.space.entitlement?.expiresAt ?? "",
+    session.space.entitlement?.version ?? "",
+    String(session.space.limits?.joinedMembersMax),
+    String(session.space.limits?.openIssuesMax),
+    String(session.space.limits?.hostedSkillsMax),
+    String(session.space.limits?.registeredAgentsMax),
+    String(session.space.limits?.storageBytesMax),
   ].join(":");
-  const memberQuotaReached = Boolean(
-    overviewUsage &&
-      overviewLimits &&
-      overviewUsage.memberSeats >= overviewLimits.joinedMembersMax,
+  const memberQuotaReached = quotaReached(
+    overviewUsage?.memberSeats,
+    overviewLimits?.joinedMembersMax,
   );
-  const agentQuotaReached = Boolean(
-    overviewUsage &&
-      overviewLimits &&
-      overviewUsage.registeredAgents >= overviewLimits.registeredAgentsMax,
+  const agentQuotaReached = quotaReached(
+    overviewUsage?.registeredAgents,
+    overviewLimits?.registeredAgentsMax,
   );
 
   useEffect(() => {
@@ -738,18 +742,24 @@ export function SpaceSettingsWorkspace({
   const rootPreview = spaceAvatarUrl(session.space);
   const editPreview = avatarPreview ?? spaceAvatarUrl(session.space);
   const storageUsed = overviewUsage?.storageBytes ?? 0;
-  const storageMax = overviewLimits?.storageBytesMax ?? 1024 * 1024 * 1024;
-  const plan = planDisplay(
-    session.space.effectivePlanTier ?? session.space.planTier,
-  );
-  const planSummary =
-    (session.space.effectivePlanTier ?? session.space.planTier) === "pro" &&
-    session.space.planExpiresAt
+  const storageMax = overviewLimits?.storageBytesMax;
+  const plan =
+    session.space.entitlement?.displayName ??
+    planDisplay(session.space.effectivePlanTier ?? session.space.planTier);
+  const planExpiresAt = session.space.entitlement
+    ? session.space.entitlement.expiresAt
+    : session.space.planExpiresAt;
+  const planSummary = planExpiresAt
       ? t("space.settings.planValidUntil", {
           plan,
-          date: formatDate(session.space.planExpiresAt),
+          date: formatDate(planExpiresAt),
         })
       : plan;
+  const unlimitedLabel = t("space.settings.unlimited");
+  const resourcePlan =
+    session.space.entitlement?.source === "space_override"
+      ? plan
+      : t("space.settings.planLabel", { plan });
   const rootMenuItems = menuItems(pendingCount, t);
 
   return renderShell(
@@ -911,62 +921,70 @@ export function SpaceSettingsWorkspace({
           </div>
           <div className="border-t border-[var(--line-subtle)] px-5 py-3.5">
             <h3 className="text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]">
-              {t("space.settings.resourcesTitle", { plan })}
+              {t("space.settings.resourcesTitle", { plan: resourcePlan })}
             </h3>
             <div className="mt-2.5 grid grid-cols-2 gap-2">
               <ResourceMetric
                 label={t("space.settings.quotaMembers")}
-                value={quotaText(
+                value={formatQuotaValue(
                   overviewUsage?.memberSeats,
                   overviewLimits?.joinedMembersMax,
+                  unlimitedLabel,
+                  i18n.resolvedLanguage,
                 )}
-                overLimit={Boolean(
-                  overviewUsage &&
-                    overviewLimits &&
-                    overviewUsage.memberSeats > overviewLimits.joinedMembersMax,
+                overLimit={quotaExceeded(
+                  overviewUsage?.memberSeats,
+                  overviewLimits?.joinedMembersMax,
                 )}
               />
               <ResourceMetric
                 label={t("space.settings.quotaOpenIssues")}
-                value={quotaText(
+                value={formatQuotaValue(
                   overviewUsage?.openIssues,
                   overviewLimits?.openIssuesMax,
+                  unlimitedLabel,
+                  i18n.resolvedLanguage,
                 )}
-                overLimit={Boolean(
-                  overviewUsage &&
-                    overviewLimits &&
-                    overviewUsage.openIssues > overviewLimits.openIssuesMax,
+                overLimit={quotaExceeded(
+                  overviewUsage?.openIssues,
+                  overviewLimits?.openIssuesMax,
                 )}
               />
               <ResourceMetric
                 label={t("space.settings.quotaSkills")}
-                value={quotaText(
+                value={formatQuotaValue(
                   overviewUsage?.hostedSkills,
                   overviewLimits?.hostedSkillsMax,
+                  unlimitedLabel,
+                  i18n.resolvedLanguage,
                 )}
-                overLimit={Boolean(
-                  overviewUsage &&
-                    overviewLimits &&
-                    overviewUsage.hostedSkills > overviewLimits.hostedSkillsMax,
+                overLimit={quotaExceeded(
+                  overviewUsage?.hostedSkills,
+                  overviewLimits?.hostedSkillsMax,
                 )}
               />
               <ResourceMetric
                 label={t("space.settings.quotaAgents")}
-                value={quotaText(
+                value={formatQuotaValue(
                   overviewUsage?.registeredAgents,
                   overviewLimits?.registeredAgentsMax,
+                  unlimitedLabel,
+                  i18n.resolvedLanguage,
                 )}
-                overLimit={Boolean(
-                  overviewUsage &&
-                    overviewLimits &&
-                    overviewUsage.registeredAgents >
-                      overviewLimits.registeredAgentsMax,
+                overLimit={quotaExceeded(
+                  overviewUsage?.registeredAgents,
+                  overviewLimits?.registeredAgentsMax,
                 )}
               />
               <ResourceMetric
                 label={t("space.settings.quotaStorage")}
-                value={`${formatBytes(storageUsed)} / ${formatBytes(storageMax)}`}
-                overLimit={storageUsed > storageMax}
+                value={formatStorageQuota(
+                  storageUsed,
+                  storageMax,
+                  unlimitedLabel,
+                  formatBytes,
+                )}
+                overLimit={quotaExceeded(storageUsed, storageMax)}
                 className="col-span-2"
               />
             </div>

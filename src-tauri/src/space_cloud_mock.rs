@@ -4719,8 +4719,6 @@ fn mock_event(
 }
 
 fn mock_space() -> Value {
-    // The official Space is quota-bypassed by contract. A mock user's account-level
-    // Pro badge therefore intentionally does not change this Space projection.
     json!({
         "id": MOCK_SPACE_ID,
         "slug": "official",
@@ -4731,8 +4729,15 @@ fn mock_space() -> Value {
         "planTier": "free",
         "effectivePlanTier": "free",
         "planExpiresAt": null,
+        "entitlement": {
+            "source": "space_override",
+            "key": "official",
+            "displayName": "官方套餐",
+            "expiresAt": null,
+            "version": 1
+        },
         "limits": mock_limits(),
-        "quotaBypassed": true,
+        "quotaBypassed": false,
         "avatarUrl": null,
         "avatarSizeBytes": 0
     })
@@ -4767,11 +4772,11 @@ fn mock_account_plan() -> Value {
 fn mock_limits() -> Value {
     json!({
         "ownedSpacesMax": 1,
-        "joinedMembersMax": 3,
-        "openIssuesMax": 100,
-        "hostedSkillsMax": 50,
-        "registeredAgentsMax": 6,
-        "storageBytesMax": 1024_u64 * 1024 * 1024
+        "joinedMembersMax": null,
+        "openIssuesMax": 10_000,
+        "hostedSkillsMax": 1_000,
+        "registeredAgentsMax": 100,
+        "storageBytesMax": 100_u64 * 1024 * 1024 * 1024
     })
 }
 
@@ -4798,7 +4803,14 @@ fn mock_space_list_item() -> Value {
         "planTier": "free",
         "effectivePlanTier": "free",
         "planExpiresAt": null,
-        "quotaBypassed": true,
+        "entitlement": {
+            "source": "space_override",
+            "key": "official",
+            "displayName": "官方套餐",
+            "expiresAt": null,
+            "version": 1
+        },
+        "quotaBypassed": false,
         "avatarUrl": null,
         "avatarSizeBytes": 0,
         "membership": mock_membership(),

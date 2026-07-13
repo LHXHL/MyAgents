@@ -63,7 +63,7 @@ Phase 2 为本地验证和自动化测试新增了显式 mock mode：
 - Worker `wrangler.jsonc` 开启 Smart Placement、Observability、Rate Limiting binding 与 scheduled prune。`src/services/prune.ts` 定期清理已结束的 `issue_deliveries` 以及历史 `space_events` / `issue_updates`；保留期与批大小由 `SPACE_DELIVERY_RETENTION_DAYS`、`SPACE_EVENT_RETENTION_DAYS`、`SPACE_PRUNE_BATCH_SIZE`、`SPACE_PRUNE_MAX_BATCHES` 控制。
 - Desktop OAuth handoff 必须由 D1 `desktop_login_sessions` 拥有，不能用 Cloudflare KV。浏览器 callback 写入 `done` 后，桌面端 poll 需要跨浏览器/客户端边缘节点立即读到同一状态；KV 的最终一致传播窗口会把“浏览器已成功”放大成约 1 分钟的客户端等待。
 - Space 业务统计事实由 `MyAgents_space` 拥有：只读 admin endpoints 位于 `/api/admin/dashboard/*`，通过 `SPACE_ADMIN_API_KEY` bearer secret 做 Worker-to-Worker 鉴权，供 `MyAgents_web` admin proxy 消费。`MyAgents_web` 不直接绑定或查询 Space D1；它只负责 Web admin auth、缓存、UI 以及客户端 analytics `space_*` 事件查询。
-- Space 运营写能力位于 `/api/admin/operations/*`，使用独立 `SPACE_OPERATIONS_API_KEY`，由 `myagents.io/admin` 的同源 server proxy 注入可信 operator email。账号 Pro grant/regrant/extend/revoke、只读权益矩阵与 append-only audit 都由 Space Worker 拥有；Website 不复制会员或 quota 判定。
+- Space 运营写能力位于 `/api/admin/operations/*`，使用独立 `SPACE_OPERATIONS_API_KEY`，由 `myagents.io/admin` 的同源 server proxy 注入可信 operator email。账号 Pro grant/regrant/extend/revoke、独立 Space entitlement set/remove、只读权益矩阵与 append-only audit 都由 Space Worker 拥有；Website 不复制会员或 quota 判定。
 - `agg_space_global_day` 是 Space 全局规模趋势 snapshot 表，由 scheduled cron 写入；`GET /api/admin/dashboard/overview` 必须保持读路径，不在请求中 materialize/重写历史 snapshot。当天 current metrics 可作为 response 内存 partial point 合并，不能把读请求变成 rollup owner。
 - delivery fanout/backfill 只能先用固定查询选出订阅/Issue，再由 JS 生成 delivery id 后 batch `INSERT OR IGNORE`。不要为了每个订阅或每个 Issue 发散成 N 次查询，也不要把 delivery id 生成塞回 SQL 表达式。
 - `/api/registered-agents/me/deliveries` 是读路径：根据 token 识别 registered agent，读取 pending delivery，附带 `poll` 提示；它不更新 device `last_seen`，也不在 poll 中写入心跳。
@@ -212,8 +212,10 @@ Space Issue 的用户可见编号由云端拥有，不从 opaque `issue.id` 推�
 
 ## 账号会员与 Space quota
 
-- Pro 是 account-level 有效期会员；Space 仍是 member/open issue/skill/registered-agent/storage 的 quota 作用域。`billingOwnerUserId` 把账号的有效权益投影到其 owned Spaces，加入他人的 Space 不受当前账号会员影响。
-- `/api/me` / Desktop `SpaceSession` 返回 `accountPlan { effectiveTier, evaluatedAt, membership }`；Space projection 返回 `effectivePlanTier`、`planExpiresAt`、`limits`。旧 Cloud 缺字段时 Desktop 仅按 Free 展示，服务端 quota 始终是权威。
+- Pro 是 account-level 有效期会员；Space 仍是 member/open issue/skill/registered-agent/storage 的 quota 作用域。`billingOwnerUserId` 把账号的有效权益动态投影到该账号全部没有独立 override 的 owned Spaces，加入他人的 Space 不受当前账号会员影响。Cloud 不把 Pro 冗余写进某一个“最后创建”的 Space。
+- 官方或特殊 Space 可由 Operations 持有独立 `entitlement { source, key, displayName, expiresAt, version }` 与五项 authoritative limits，不再以 `quotaBypassed` 形成展示/执行双轨。每个 Space-scoped limit 都是 `number | null`：`null` 明确表示不限制，`undefined` 只表示旧 Cloud/缺字段，不能当成 unlimited。
+- `/api/me` / Desktop `SpaceSession` 返回 `accountPlan { effectiveTier, evaluatedAt, membership }`；Space projection 返回 `effectivePlanTier`、`planExpiresAt`、`entitlement`、`limits`。Desktop `>=0.2.50` 消费 nullable limits 和 Cloud 展示名；Cloud 对更旧/无版本客户端继续投影可解析的 Free 数字且不下发 entitlement，避免滚动发布期间旧类型崩溃。
+- Settings 的 Plan 与“SPACE 资源 · … 套餐”标题都优先使用 `entitlement.displayName`；有限值显示本地化 `usage / limit`，`null` 显示 `usage / 不限制`（英文 `Unlimited`），且无限资源不得触发 over-limit 或禁用 Members/Agents 操作。期限优先使用 `entitlement.expiresAt`；独立 entitlement 的 null 期限不能误回退到 owner 账号 Pro 期限。
 - 到期判定严格为 `[startsAt, expiresAt)`，无需 cron。到期/撤销后 resolver 立即回到 Free；存量仍可读，只有超额资源的正增量 mutation 被拒绝，删除/归档/释放额度始终允许。
 - `space.plan_changed` 是普通 Space cursor event：当前 Space 收到后失效 session/overview 并 silent revalidate。Overview 的 `limits` 以当前 Space session projection 为单一权威，members payload 只补 usage/兼容旧服务，不能用旧快照遮住 plan event 的新额度。
 - 账户菜单打开且 `accountPlan.evaluatedAt` 超过 60 秒未校验、Pro 到期 timer、App 恢复前台也会补刷新；到期 timer 用服务端 `evaluatedAt → expiresAt` 的相对时长规避本机时钟偏差，并按同一 membership version/expiry 限制重试，不能形成 refresh storm。不新建常驻会员 poll。

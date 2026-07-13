@@ -762,6 +762,7 @@
     },
     "settings": {
       "overLimit": "超额",
+      "unlimited": "不限制",
       "overview": "Overview",
       "overviewHint": "Space 基本信息与配额",
       "members": "Members",
@@ -791,7 +792,8 @@
       "editOverview": "编辑",
       "editOverviewTitle": "编辑 Space",
       "freeQuota": "Free quota",
-      "resourcesTitle": "Space 资源 · {{plan}} 套餐",
+      "resourcesTitle": "Space 资源 · {{plan}}",
+      "planLabel": "{{plan}} 套餐",
       "quotaMembers": "Members",
       "quotaOpenIssues": "Open issues",
       "quotaSkills": "Skills",

@@ -762,6 +762,7 @@
     },
     "settings": {
       "overLimit": "Over",
+      "unlimited": "Unlimited",
       "overview": "Overview",
       "overviewHint": "Space profile and quota",
       "members": "Members",
@@ -791,7 +792,8 @@
       "editOverview": "Edit",
       "editOverviewTitle": "Edit Space",
       "freeQuota": "Free quota",
-      "resourcesTitle": "Space resources · {{plan}} plan",
+      "resourcesTitle": "Space resources · {{plan}}",
+      "planLabel": "{{plan}} plan",
       "quotaMembers": "Members",
       "quotaOpenIssues": "Open issues",
       "quotaSkills": "Skills",

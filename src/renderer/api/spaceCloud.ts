@@ -63,6 +63,7 @@ export interface SpaceInfo {
   planTier?: string | null;
   effectivePlanTier?: "free" | "pro" | string | null;
   planExpiresAt?: string | null;
+  entitlement?: SpaceEntitlement | null;
   limits?: SpacePlanLimits;
   usage?: SpaceUsage | null;
   quotaBypassed?: boolean;
@@ -81,11 +82,19 @@ export interface SpaceMembership {
 
 export interface SpacePlanLimits {
   ownedSpacesMax: number;
-  joinedMembersMax: number;
-  openIssuesMax: number;
-  hostedSkillsMax: number;
-  registeredAgentsMax: number;
-  storageBytesMax: number;
+  joinedMembersMax: number | null;
+  openIssuesMax: number | null;
+  hostedSkillsMax: number | null;
+  registeredAgentsMax: number | null;
+  storageBytesMax: number | null;
+}
+
+export interface SpaceEntitlement {
+  source: "account_plan" | "space_override" | "fallback" | string;
+  key: string;
+  displayName: string;
+  expiresAt: string | null;
+  version: number | null;
 }
 
 export interface SpaceUsage {
