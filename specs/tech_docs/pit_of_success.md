@@ -28,7 +28,7 @@ CLAUDE.md 的 Pit-of-Success 红线总表是这些模块的**速查索引**；�
 - [`fs-utils`](#fs-utils) — 跨平台 mkdir / 目录判定 + 断链 symlink 探针（cpSync C++ 异常）
 - [`subprocess`](#subprocess) — Node 子进程 stream 形态适配
 - [`file-response`](#file-response) — 流式 HTTP 文件响应 + 渲染器直连接口的 CORS/CSP
-- [`applyContextWindowSuffix`](#context-window-suffix) — >200K 模型上下文窗口解锁（`[1m]` wrap + env cap）
+- [Context-window suffix helpers](#context-window-suffix) — >200K 模型上下文窗口解锁（provider-scoped lookup + `[1m]` wrap + env cap）
 
 **结构性其他**
 - [Builtin MCP 懒加载](#builtin-mcp) — META/INSTANCE 两层架构
@@ -409,14 +409,17 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 ---
 
 <a id="context-window-suffix"></a>
-## `applyContextWindowSuffix` (`src/server/utils/model-capabilities.ts`)
+## Context-window suffix helpers (`src/server/utils/model-capabilities.ts`)
 
-**Problem.** SDK 对不认识的 model id 一律按 200K 上下文窗口 fallback。>200K 窗口的模型不经处理就退化：1M 档（claude-opus-4-7 / claude-opus-4-6 / deepseek-v4-pro / gemini-2.5-pro / gpt-5.4 等）和 200K–1M 中间档（minimax-m3 512K / doubao 262K / kimi-k2.5 262K，#335 同病）都会 `/context` 显 200K、auto-compact 在 ~187K 就触发、附件按 200K 截断。`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 只能 `Math.min` 下调不能上调，对 >200K 模型彻底无效。
+**Problem.** SDK 对不认识的 model id 一律按 200K 上下文窗口 fallback。>200K 窗口的模型不经处理就退化：1M 档（claude-opus-4-8 / claude-opus-4-7 / deepseek-v4-pro / gemini-2.5-pro / gpt-5.4 等）和 200K–1M 中间档（minimax-m3 512K / doubao 262K / kimi-k2.5 262K，#335 同病）都会 `/context` 显 200K、auto-compact 在 ~187K 就触发、附件按 200K 截断。`CLAUDE_CODE_AUTO_COMPACT_WINDOW` 只能 `Math.min` 下调不能上调，对 >200K 模型彻底无效。
 
-**Surface.** `applyContextWindowSuffix(model)` — wrap 策略：registry contextLength **>200K 即加 `[1m]` 后缀**（不是只 ≥1M）。SDK 窗口先解锁到 1M，再由 env cap 钳回真实值（有效压缩窗口 = min(1M, registry) − ~33K）。SDK `normalizeModelStringForAPI` 在 wire 上剥 `[1m]`，上游 API 看不到后缀。已知装饰性偏差：SDK `/context` 头条会显 1M，MyAgents 自己的占用圆环显 registry 真值。
+**Surface.** wrap 策略统一为 contextLength **>200K 即加 `[1m]` 后缀**（不是只 ≥1M）。SDK 窗口先解锁到 1M，再由 env cap 钳回真实值（有效压缩窗口 = min(1M, registry) − ~33K）。SDK `normalizeModelStringForAPI` 在 wire 上剥 `[1m]`，上游 API 看不到后缀。已知装饰性偏差：SDK `/context` 头条会显 1M，MyAgents 自己的占用圆环显 registry 真值。
+
+- `applyProviderContextWindowSuffix(model, providerId)`：调用点已知 active provider 时的首选入口。裸 model id 先查该 provider 自己的 model row，没有对应 row 时再 fallback flat registry；调用方显式传入的 `[1m]` 原样保留。
+- `applyContextWindowSuffix(model)`：只有调用点确实不知道 provider 时才用的 flat fallback。
 
 **Invariants enforced.**
-- 所有 SDK ingress 必须过 wrap：`query({ model })`、`query({ agents: { ...{ model } } })`、`querySession.setModel()`、`ANTHROPIC_DEFAULT_{SONNET,OPUS,HAIKU}_MODEL` env。
+- 所有 SDK ingress 必须过 wrap：`query({ model })`、`query({ agents: { ...{ model } } })`、`querySession.setModel()`、`ANTHROPIC_DEFAULT_{FABLE,SONNET,OPUS,HAIKU}_MODEL` env；已知 provider 的入口必须走 provider-scoped helper。
 - **反向同样是红线**：bridge `modelOverride`、`*_MODEL_NAME` env、cron / persisted state、所有用户可见处必须用**未 wrap** 的原始 model id。
 
 **Don't.**

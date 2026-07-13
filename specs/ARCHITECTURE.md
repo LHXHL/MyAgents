@@ -417,6 +417,8 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 
 **模型别名映射：** 子 Agent 指定 `model: "sonnet"` / `"fable"` 时，SDK 通过 `ANTHROPIC_DEFAULT_SONNET_MODEL` / `ANTHROPIC_DEFAULT_FABLE_MODEL` 解析为供应商模型。四个别名变量：`ANTHROPIC_DEFAULT_{FABLE,SONNET,OPUS,HAIKU}_MODEL`。
 
+**Context-window ingress：** 所有进入 Claude Agent SDK 的 model id 都要经过 `model-capabilities.ts` 的 suffix helper；调用点已知 provider 时必须用 `applyProviderContextWindowSuffix(model, providerId)`，只有 provider 不可知时才直接用 flat `applyContextWindowSuffix(model)`。Provider helper 对裸 model id 优先读取 active provider 的 registry row，该 provider 没有对应 row 时才 fallback flat registry；调用方显式传入的 `[1m]` 保持不变。bridge、cron、持久化与用户可见 surface 始终保留裸 model id。
+
 **Provider Self-Resolve：** IM 与尚未 materialize 的 backend-created Task Session 可从磁盘初始化 Provider/Model，不依赖前端 `/api/provider/set`；已有 Task Session 保留自己的配置 authority。owned builtin session 的 canonical 身份是 `providerRoute`（providerId + model），请求时再从当前配置 materialize `ProviderEnv`；旧数据解析链兼容 `providerRoute → legacy providerId/model → providerEnvJson fallback → agent/default`，不得把 apiKey/baseUrl 作为新 snapshot 身份写回。
 
 **受管订阅凭据：** `xai-sub` 仍属于 builtin + OpenAI Responses Bridge，不是外部 Runtime。其 `ProviderEnv` 只携带非 secret 的 `credentialSource:{kind:'managed-oauth',providerId:'xai-sub'}`；Rust 应用级 `GrokAuthManager` 是 rotating refresh token 的唯一 owner。Bridge 每个上游请求都通过带 Sidecar generation/session 校验的 localhost Management API 解析当前 bearer，且 Rust 区分 `execution`（必须已验证）与 lineage-bound `verification` 用途；401 最多强制 refresh 并重试原请求一次，403/429 不清登录态。renderer、AppConfig、session 与静态 ProviderEnv 都不得持有 bearer，受管 bearer 的目的地址必须由 server canonicalize 到官方 xAI Responses endpoint。
