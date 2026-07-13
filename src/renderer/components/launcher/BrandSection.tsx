@@ -13,7 +13,11 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import SimpleChatInput, { type ImageAttachment, type SimpleChatInputHandle } from '@/components/SimpleChatInput';
-import CronTaskSettingsModal, { type CronSettingsResult } from '@/components/cron/CronTaskSettingsModal';
+import CronTaskSettingsModal, {
+    GOAL_SLASH_PRESET,
+    type CronInitialConfig,
+    type CronSettingsResult,
+} from '@/components/cron/CronTaskSettingsModal';
 import LauncherInputContextRow from './LauncherInputContextRow';
 import type { RuntimeDetections } from '../../../shared/types/runtime';
 import ModeSegment, { type InputMode } from '@/components/task-center/ModeSegment';
@@ -161,6 +165,7 @@ export default memo(function BrandSection({
     // Keeps "user closed launcher mid-edit → no orphan cron" the default.
     const [showCronSettings, setShowCronSettings] = useState(false);
     const [stagedCron, setStagedCron] = useState<CronSettingsResult | null>(null);
+    const [cronOpenPreset, setCronOpenPreset] = useState<CronInitialConfig | null>(null);
     // Bumped after each successful thoughtCreate so the Recent Thoughts strip
     // re-fetches and the just-saved note slides in as the first chip.
     const [thoughtRefreshKey, setThoughtRefreshKey] = useState(0);
@@ -346,6 +351,37 @@ export default memo(function BrandSection({
         [stagedCron],
     );
 
+    const handleOpenCronSettings = useCallback(() => {
+        setCronOpenPreset(null);
+        setShowCronSettings(true);
+    }, []);
+
+    const handleCloseCronSettings = useCallback(() => {
+        setShowCronSettings(false);
+        setCronOpenPreset(null);
+    }, []);
+
+    const handleConfirmCronSettings = useCallback((config: CronSettingsResult) => {
+        setStagedCron(config);
+        setShowCronSettings(false);
+        setCronOpenPreset(null);
+        track('launcher_cron_stage', {
+            interval_minutes: config.intervalMinutes,
+            run_mode: config.runMode,
+            execution_target: config.executionTarget,
+        });
+    }, []);
+
+    const handleCancelCronDraft = useCallback(() => {
+        setStagedCron(null);
+    }, []);
+
+    const handleSlashAction = useCallback((name: string) => {
+        if (name !== 'goal' && name !== 'loop') return;
+        setCronOpenPreset(GOAL_SLASH_PRESET);
+        setShowCronSettings(true);
+    }, []);
+
     // Called from ThoughtInput after a successful thoughtCreate. Mirrors the
     // TaskCenter pattern (prepend locally so the tag-candidate count updates
     // immediately) plus the Launcher-specific bits — refresh the Recent
@@ -529,9 +565,10 @@ export default memo(function BrandSection({
                                 /* PRD 0.2.7 cron staging — StatusBar shows iff a config is staged. */
                                 cronModeEnabled={stagedCron !== null}
                                 cronConfig={cronStatusBarConfig}
-                                onCronButtonClick={() => setShowCronSettings(true)}
-                                onCronSettings={() => setShowCronSettings(true)}
-                                onCronCancel={() => setStagedCron(null)}
+                                onCronButtonClick={handleOpenCronSettings}
+                                onCronSettings={handleOpenCronSettings}
+                                onCronCancel={handleCancelCronDraft}
+                                onSlashAction={handleSlashAction}
                                 apiKeys={apiKeys}
                                 providerVerifyStatus={providerVerifyStatus}
                                 workspaceMcpEnabled={workspaceMcpEnabled}
@@ -618,19 +655,11 @@ export default memo(function BrandSection({
              *  the chat tab. */}
             <CronTaskSettingsModal
                 isOpen={showCronSettings}
-                onClose={() => setShowCronSettings(false)}
+                onClose={handleCloseCronSettings}
                 initialPrompt=""
-                initialConfig={stagedCron ?? undefined}
+                initialConfig={cronOpenPreset ?? stagedCron ?? undefined}
                 workspacePath={selectedProject?.path ?? ''}
-                onConfirm={(config) => {
-                    setStagedCron(config);
-                    setShowCronSettings(false);
-                    track('launcher_cron_stage', {
-                        interval_minutes: config.intervalMinutes,
-                        run_mode: config.runMode,
-                        execution_target: config.executionTarget,
-                    });
-                }}
+                onConfirm={handleConfirmCronSettings}
             />
         </section>
     );

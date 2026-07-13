@@ -30,7 +30,11 @@ import TerminalReasonBanner from '@/components/TerminalReasonBanner';
 import RuntimeDiagnosticsBanner from '@/components/RuntimeDiagnosticsBanner';
 import { UnifiedLogsPanel } from '@/components/UnifiedLogsPanel';
 import WorkspaceConfigPanel, { type Tab as WorkspaceTab } from '@/components/WorkspaceConfigPanel';
-import CronTaskSettingsModal from '@/components/cron/CronTaskSettingsModal';
+import CronTaskSettingsModal, {
+  GOAL_SLASH_PRESET,
+  type CronInitialConfig,
+  type CronSettingsResult,
+} from '@/components/cron/CronTaskSettingsModal';
 import { transitionChannelBoundSession } from '@/pages/chatChannelSession';
 import { useTabState, useTabActive } from '@/context/TabContext';
 import { useChatScrollController } from '@/hooks/useChatScrollController';
@@ -59,7 +63,6 @@ import { formatCronScheduleDescription } from '@/utils/cronTaskI18n';
 import CronTaskCard from '@/components/scheduled-tasks/CronTaskCard';
 import CronTaskDetailPanel from '@/components/CronTaskDetailPanel';
 import { projectTaskExecutionOverrides } from '@/utils/taskProviderProjection';
-import type { CronSettingsResult, CronInitialConfig } from '@/components/cron/CronTaskSettingsModal';
 import { isTauriEnvironment } from '@/utils/browserMock';
 import { isDebugMode } from '@/utils/debug';
 import { getChannelTypeLabel } from '@/utils/taskCenterUtils';
@@ -439,20 +442,6 @@ interface ChatProps {
   onFilePreviewIntentConsumed?: (intentId: string) => void;
   sessionNotificationBadgeCounts?: ReadonlyMap<string, number>;
 }
-
-/** Preset for the `/goal` slash command: opens the cron modal in Goal mode
- *  with "allow AI to autonomously end the task" pre-checked.
- *  Mirrors what the user would otherwise pick by hand in the 定时 panel. */
-const GOAL_SLASH_PRESET: CronInitialConfig = {
-  taskKind: 'goal',
-  prompt: '', // unused: the modal reads the prompt from initialPrompt, not here
-  intervalMinutes: 30, // ignored in loop mode; satisfies the type
-  endConditions: { aiCanExit: true },
-  runMode: 'single_session', // loop mode forces single_session
-  notifyEnabled: true,
-  schedule: { kind: 'loop' },
-  executionTarget: 'current_session',
-};
 
 function isCurrentSessionGoal(goal: SessionGoal | null | undefined): goal is SessionGoal {
   return Boolean(goal);

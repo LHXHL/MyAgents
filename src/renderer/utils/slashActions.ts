@@ -33,7 +33,7 @@ const CLIENT_ACTION_NAMES = new Set([
 function getClientActionSlashCommands(): SlashCommand[] {
   return CLIENT_ACTION_SLASH_COMMANDS.map((cmd) => ({
     ...cmd,
-    description: String(i18n.t(`chat:composer.slashCommands.${cmd.name}`, { defaultValue: cmd.description })),
+    description: String(i18n.t(`chat:input.slashCommands.${cmd.name}`, { defaultValue: cmd.description })),
   }));
 }
 

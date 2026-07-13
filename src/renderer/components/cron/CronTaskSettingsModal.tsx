@@ -83,6 +83,19 @@ export type CronInitialConfig = {
   delivery?: import('@/types/cronTask').CronDelivery;
 };
 
+/** Shared preset for the `/goal` client action in Chat and Launcher.
+ *  The objective is entered in the composer after this modal is confirmed. */
+export const GOAL_SLASH_PRESET: CronInitialConfig = {
+  taskKind: 'goal',
+  prompt: '',
+  intervalMinutes: 30,
+  endConditions: { aiCanExit: true },
+  runMode: 'single_session',
+  notifyEnabled: true,
+  schedule: { kind: 'loop' },
+  executionTarget: 'current_session',
+};
+
 interface CronTaskSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;

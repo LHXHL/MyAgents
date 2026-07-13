@@ -6,6 +6,7 @@ import {
   resolveClientActionName,
   withClientActionCommands,
 } from './slashActions';
+import { i18n } from '@/i18n';
 
 const cmd = (name: string, source: SlashCommand['source']): SlashCommand => ({
   name,
@@ -58,6 +59,19 @@ describe('withClientActionCommands', () => {
     expect(result.filter((c) => c.name === 'loop')).toHaveLength(0);
     expect(result.find((c) => c.name === 'goal')?.source).toBe('builtin');
     expect(result.find((c) => c.name === 'goal')?.aliases).toContain('loop');
+  });
+
+  it('uses the localized /goal description', async () => {
+    const previousLanguage = i18n.language;
+    await i18n.changeLanguage('zh-CN');
+
+    try {
+      const result = withClientActionCommands(base, true);
+      expect(result.find((c) => c.name === 'goal')?.description)
+        .toBe('目标模式：持续执行直到目标全部达成');
+    } finally {
+      await i18n.changeLanguage(previousLanguage);
+    }
   });
 
   it('reserves client-action names: the product command preempts a same-named user skill', () => {

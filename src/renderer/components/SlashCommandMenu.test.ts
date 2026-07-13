@@ -9,7 +9,7 @@ const cmd = (name: string, source: SlashCommand['source']): SlashCommand => ({
 });
 
 describe('filterAndSortCommands', () => {
-  it('ranks builtins before user skills/commands with no query, even when alphabetically later', () => {
+  it('ranks /goal first, then other builtins, then user skills/commands', () => {
     const input = [
       cmd('apple-notes', 'skill'),
       cmd('compact', 'builtin'),
@@ -17,8 +17,7 @@ describe('filterAndSortCommands', () => {
       cmd('goal', 'builtin'),
     ];
     const out = filterAndSortCommands(input, '');
-    // builtins first (alphabetical within tier), then the rest
-    expect(out.map((c) => c.name)).toEqual(['compact', 'goal', 'apple-notes', 'bird']);
+    expect(out.map((c) => c.name)).toEqual(['goal', 'compact', 'apple-notes', 'bird']);
   });
 
   it('surfaces the builtin /goal when the user types its /loop alias', () => {
