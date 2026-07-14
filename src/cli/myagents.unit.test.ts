@@ -170,6 +170,31 @@ describe('myagents CLI Space issue contracts', () => {
     }
   });
 
+  it('rejects explicit empty Goal values on create instead of silently creating Inbox', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    try {
+      for (const goalFlags of [{ goal: '' }, { goalId: '' }, { goal: true }]) {
+        expect(() => buildRequestBody('space', 'issue', ['create'], {
+          json: true,
+          space: 'official',
+          title: 'Must not publish',
+          body: 'Explicit empty Goal is invalid.',
+          ...goalFlags,
+        })).toThrow('process.exit(2)');
+        expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({
+          success: false,
+          code: 'FLAG_VALUE_REQUIRED',
+        });
+      }
+    } finally {
+      log.mockRestore();
+      exit.mockRestore();
+    }
+  });
+
   it('validates the update identity before metadata fields', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
@@ -319,6 +344,12 @@ describe('myagents CLI Space issue contracts', () => {
           positional,
           { json: true, dryRun: true, space: 'official' },
         ), positional.join(' ')).toThrow('process.exit(2)');
+        const nestedIssueLeaf = positional[1] === 'issue'
+          && (positional[2] === 'delivery' || positional[2] === 'attachment');
+        const expectedCommand = positional.slice(0, nestedIssueLeaf ? 4 : 3).join(' ');
+        expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({
+          suggestion: expect.stringContaining(`Read myagents ${expectedCommand} --help`),
+        });
       }
       expect(() => rejectUnsupportedSpaceDryRun(
         ['space', 'issue', 'update'],

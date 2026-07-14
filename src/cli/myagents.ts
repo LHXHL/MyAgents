@@ -2239,6 +2239,8 @@ export function rejectUnsupportedSpaceDryRun(
   const otherWrite = (area === 'claim' && action === 'local-task')
     || (area === 'attachment' && ['add', 'download'].includes(action));
   if (!issueMutation && !otherWrite) return;
+  const commandLength = area === 'issue' && ['delivery', 'attachment'].includes(action) ? 4 : 3;
+  const command = positional.slice(0, commandLength).join(' ');
 
   if (area === 'issue' && action === 'update') {
     requireSpacePositional(
@@ -2253,8 +2255,8 @@ export function rejectUnsupportedSpaceDryRun(
   exitSpaceInputError(
     flags,
     'DRY_RUN_UNSUPPORTED',
-    `myagents ${positional.slice(0, 3).join(' ')} does not support --dry-run. No changes were applied.`,
-    `Read myagents ${positional.slice(0, 3).join(' ')} --help; remove --dry-run only when ready to apply the mutation.`,
+    `myagents ${command} does not support --dry-run. No changes were applied.`,
+    `Read myagents ${command} --help; remove --dry-run only when ready to apply the mutation.`,
   );
 }
 
@@ -3270,11 +3272,20 @@ export function buildRequestBody(
             'Use --body-file <workspace-relative-path> for reliable multi-line content.',
           );
         }
+        const hasGoal = flags.goalId !== undefined || flags.goal !== undefined;
+        const goalId = hasGoal
+          ? optionalSpaceStringFlag(
+              flags,
+              flags.goalId ?? flags.goal,
+              'goal',
+              'space issue create',
+            )
+          : undefined;
         return {
           ...context,
           title,
           body,
-          goalId: flags.goalId ?? flags.goal,
+          goalId,
           assigneeId: flags.assignee,
           humanOnly: optionalSpaceBooleanFlag(
             flags,
