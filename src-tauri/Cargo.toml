@@ -115,6 +115,7 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["NSWi
 # Windows platform APIs:
 # - pid-liveness/start-time probes via PROCESS_QUERY_LIMITED_INFORMATION
 # - floating-ball tool-window styles, no-activate behavior, focus restoration
+# - ShellExecuteW URL handoff for default browser opens without cmd.exe metacharacter parsing
 # - wake-lock power requests below
 # - handle-relative workspace IO via NtCreateFile(ObjectAttributes.RootDirectory)
 # Minimal feature set — version 0.59 is already pulled transitively, so no new lock entry.
@@ -127,6 +128,7 @@ windows-sys = { version = "0.59", features = [
     "Win32_Storage_FileSystem",
     "Win32_System_IO",
     "Win32_System_Threading",
+    "Win32_UI_Shell",
     "Win32_UI_WindowsAndMessaging",
     # `wake_lock::windows::PlatformImpl` calls `PowerCreateRequest` +
     # `PowerSetRequest` (PowerRequestSystemRequired | PowerRequestAwayModeRequired)

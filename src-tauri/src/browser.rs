@@ -15,6 +15,9 @@ use tokio::sync::Mutex;
 use crate::{ulog_info, ulog_warn};
 use std::path::Path;
 
+#[cfg(target_os = "windows")]
+use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+
 /// User-Agent for the embedded browser webview.
 ///
 /// The default WebView UA on each platform is missing parts (macOS WKWebView
@@ -111,15 +114,42 @@ pub(crate) fn spawn_external_open(url: &str) {
     #[cfg(target_os = "macos")]
     let res = crate::process_cmd::new("open").arg(url).spawn();
     #[cfg(target_os = "windows")]
-    let res = crate::process_cmd::new("cmd")
-        .args(["/C", "start", "", url])
-        .spawn();
+    let res = shell_execute_open(url);
     #[cfg(target_os = "linux")]
     let res = crate::process_cmd::new("xdg-open").arg(url).spawn();
 
     if let Err(e) = res {
         ulog_info!("[browser] spawn_external_open failed for {}: {}", url, e);
     }
+}
+
+#[cfg(target_os = "windows")]
+fn shell_execute_open(url: &str) -> Result<(), String> {
+    let operation = wide_null_terminated("open");
+    let target = wide_null_terminated(url);
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            target.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            SW_SHOWNORMAL,
+        )
+    };
+    if result as isize > 32 {
+        Ok(())
+    } else {
+        Err(format!(
+            "ShellExecuteW failed with code {}",
+            result as isize
+        ))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn wide_null_terminated(value: &str) -> Vec<u16> {
+    value.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
 /// A webview's container bounds are "degenerate" when width or height is
@@ -656,6 +686,8 @@ pub async fn close_all_browsers(state: &Arc<BrowserManager>, app: &AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::is_degenerate_bounds;
+    #[cfg(target_os = "windows")]
+    use super::wide_null_terminated;
 
     // Issue #290: the renderer can hand us a 0-width container reading while
     // the split panel's width transition is mid-flight. These must be rejected
@@ -674,5 +706,17 @@ mod tests {
     fn real_bounds_are_accepted() {
         assert!(!is_degenerate_bounds(694.0, 662.0));
         assert!(!is_degenerate_bounds(1.0, 1.0));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_external_open_preserves_oauth_query_parameters() {
+        let url = "https://accounts.google.com/o/oauth2/v2/auth?client_id=437924003108-example.apps.googleusercontent.com&response_type=code&scope=openid%20email&redirect_uri=https%3A%2F%2Fspace.myagents.io%2Fapi%2Fauth%2Fgoogle%2Fcallback&state=abc";
+        let encoded = wide_null_terminated(url);
+        assert_eq!(encoded.last().copied(), Some(0));
+        assert_eq!(
+            String::from_utf16(&encoded[..encoded.len() - 1]).unwrap(),
+            url
+        );
     }
 }
