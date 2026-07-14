@@ -378,6 +378,7 @@ describe('session-engine selector and adapters', () => {
         fromDesktopChatSend: true,
         sessionBirthOrigin: { kind: 'desktop', surface: 'launcher_input' },
         beforeDispatch: undefined,
+        onTerminal: undefined,
       },
     );
   });
@@ -492,6 +493,46 @@ describe('session-engine selector and adapters', () => {
       providerEnv: undefined,
       reasoningEffort: 'default',
     });
+
+    mocks.getMessages.mockReturnValueOnce([
+      { id: 'u-live', role: 'user', content: 'accepted', timestamp: '2026-01-01T00:00:03.000Z' },
+      { id: 'a-live', role: 'assistant', content: 'typing', timestamp: '2026-01-01T00:00:04.000Z' },
+    ]);
+    mocks.getStreamingAssistantId.mockReturnValueOnce('a-live');
+    mocks.getAgentState.mockReturnValueOnce({ sessionState: 'running', agentDir: '/workspace' });
+    expect(engine.getLiveSessionOverlay('builtin-session')).toEqual({
+      isActive: true,
+      runtime: 'builtin',
+      inMemoryMessages: [{
+        id: 'u-live',
+        role: 'user',
+        content: 'accepted',
+        timestamp: '2026-01-01T00:00:03.000Z',
+        sdkUuid: undefined,
+        attachments: undefined,
+        metadata: undefined,
+        usage: undefined,
+        toolCount: undefined,
+        durationMs: undefined,
+      }],
+      liveStreamingMessage: expect.objectContaining({ id: 'a-live', content: 'typing' }),
+      liveSessionState: 'running',
+    });
+
+    mocks.getMessages.mockReturnValueOnce([
+      { id: 'a-final', role: 'assistant', content: 'finished', timestamp: '2026-01-01T00:00:05.000Z' },
+      { id: 'u-admitted', role: 'user', content: 'waiting for first chunk', timestamp: '2026-01-01T00:00:06.000Z' },
+    ]);
+    mocks.getStreamingAssistantId.mockReturnValueOnce(null);
+    mocks.getAgentState.mockReturnValueOnce({ sessionState: 'running', agentDir: '/workspace' });
+    expect(engine.getLiveSessionOverlay('builtin-session')).toMatchObject({
+      inMemoryMessages: [
+        expect.objectContaining({ id: 'a-final', content: 'finished' }),
+        expect.objectContaining({ id: 'u-admitted', content: 'waiting for first chunk' }),
+      ],
+      liveStreamingMessage: null,
+      liveSessionState: 'running',
+    });
   });
 
   it('exposes external read, config, and restore surfaces behind the external adapter', () => {
@@ -594,6 +635,10 @@ describe('session-engine selector and adapters', () => {
         permissionMode: 'auto',
         model: 'gpt-5',
         reasoningEffort: undefined,
+        queueId: undefined,
+        turnOwner: undefined,
+        onTerminal: undefined,
+        beforeDispatch: undefined,
       },
     );
     expect(mocks.broadcast).not.toHaveBeenCalled();

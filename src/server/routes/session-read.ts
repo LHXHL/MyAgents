@@ -24,9 +24,13 @@ function mergeActiveOverlayMessages(
   inMemoryMessages: SessionMessage[] | undefined,
 ): SessionMessage[] {
   if (!inMemoryMessages?.length) return diskMessages;
+  const memoryById = new Map(inMemoryMessages.map(message => [message.id, message]));
   const diskIds = new Set(diskMessages.map(message => message.id));
-  const newMessages = inMemoryMessages.filter(message => !diskIds.has(message.id));
-  return newMessages.length > 0 ? [...diskMessages, ...newMessages] : diskMessages;
+  const merged = diskMessages.map(message => memoryById.get(message.id) ?? message);
+  for (const message of inMemoryMessages) {
+    if (!diskIds.has(message.id)) merged.push(message);
+  }
+  return merged;
 }
 
 function paginateMessages(

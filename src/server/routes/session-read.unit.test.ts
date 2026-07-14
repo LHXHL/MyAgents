@@ -138,7 +138,7 @@ describe('handleSessionReadRoute', () => {
       liveSessionState: 'running',
       liveStreamingMessage: { id: 'live', role: 'assistant', content: 'typing', timestamp: '2026-01-01T00:00:01.000Z' },
       inMemoryMessages: [
-        { id: 'm1', role: 'user', content: 'hello', timestamp: '2026-01-01T00:00:00.000Z' },
+        { id: 'm1', role: 'user', content: 'hello from newer memory', timestamp: '2026-01-01T00:00:00.000Z' },
         { id: 'm2', role: 'assistant', content: 'in memory', timestamp: '2026-01-01T00:00:02.000Z' },
       ],
     });
@@ -159,6 +159,8 @@ describe('handleSessionReadRoute', () => {
       hasMoreBefore: false,
     });
     expect((body.session as { messages: Array<{ id: string }> }).messages.map(message => message.id)).toEqual(['m1', 'm2']);
+    expect((body.session as { messages: Array<{ id: string; content: string }> }).messages[0]?.content)
+      .toBe('hello from newer memory');
     expect(body.session).toMatchObject({
       liveStreamingMessage: { id: 'live', content: 'typing' },
     });

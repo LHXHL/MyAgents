@@ -253,6 +253,7 @@ import {
   getCurrentTurnInboxMeta,
   getPendingRequestIds,
   incrementCurrentTurnToolCount,
+  isAssistantMessagePresent,
   markAssistantMessageError,
   markCurrentTurnHasOutput,
   notifyQueuedTurnStopped,
@@ -1619,7 +1620,7 @@ export function isTurnInFlight(): boolean {
 
 /** 当前正在流式传输的 assistant 消息 ID（未在流式传输时返回 null） */
 export function getStreamingAssistantId(): string | null {
-  if (!isStreamingMessage) return null;
+  if (!isStreamingMessage || !isAssistantMessagePresent()) return null;
   return getLastAssistantMessageId();
 }
 

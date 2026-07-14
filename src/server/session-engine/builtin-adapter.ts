@@ -289,10 +289,21 @@ export function createBuiltinSessionEngine(): SessionEngine {
       if (sessionId !== getSessionId()) {
         return { isActive: false };
       }
+      const streamingAssistantId = getStreamingAssistantId();
+      const messages = getMessages();
+      const liveStreamingMessage = streamingAssistantId
+        ? messages.find(message => message.id === streamingAssistantId)
+        : undefined;
       return {
         isActive: true,
         runtime: 'builtin',
-        inMemoryMessages: getMessages().map(messageWireToSessionMessage),
+        inMemoryMessages: messages
+          .filter(message => message.id !== streamingAssistantId)
+          .map(messageWireToSessionMessage),
+        liveStreamingMessage: liveStreamingMessage
+          ? messageWireToSessionMessage(liveStreamingMessage)
+          : null,
+        liveSessionState: getAgentState().sessionState,
       };
     },
 
