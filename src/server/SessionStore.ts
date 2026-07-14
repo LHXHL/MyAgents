@@ -1056,7 +1056,21 @@ export async function updateSessionMetadata(
             // CAS guard failed against the in-lock snapshot — skip the write.
             return;
         }
-        const updated: SessionMetadata = { ...all[idx], ...updates };
+        const current = all[idx];
+        const patch = { ...updates };
+        if (patch.lastActiveAt !== undefined) {
+            const incomingMs = Date.parse(patch.lastActiveAt);
+            const currentMs = Date.parse(current.lastActiveAt);
+            const incomingIsCanonical = Number.isFinite(incomingMs)
+                && new Date(incomingMs).toISOString() === patch.lastActiveAt;
+            if (
+                !incomingIsCanonical
+                || (Number.isFinite(currentMs) && incomingMs < currentMs)
+            ) {
+                patch.lastActiveAt = current.lastActiveAt;
+            }
+        }
+        const updated: SessionMetadata = { ...current, ...patch };
         all[idx] = updated;
         try {
             atomicWriteSessionsFile(JSON.stringify(all, null, 2));

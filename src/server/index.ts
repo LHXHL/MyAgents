@@ -665,7 +665,10 @@ import {
 } from './utils/managed-codex-readiness';
 import { buildSessionSnapshotPatchUpdates } from './utils/session-snapshot-patch';
 import { resolveSessionConfig } from './utils/resolve-session-config';
-import { resolveLastRealUserMessagePreview, shrinkSessionMessagesForClient } from './utils/session-message-preview';
+import {
+  resolveLastVisibleTurnPreview,
+  shrinkSessionMessagesForClient,
+} from './utils/session-message-preview';
 import type { AgentConfig } from '../shared/types/agent';
 import type { SessionMetadata } from './types/session';
 import { createConcreteProviderRoute, isConcreteProviderRoute, type ProviderRoute } from '../shared/providerRoute';
@@ -746,6 +749,7 @@ import {
 } from '../shared/managedScheduledJob';
 import type { InteractionScenario } from './system-prompt';
 import { buildCronEventRelayMessage, neutralizeSystemReminderStructuralTags } from './utils/cron-event-relay';
+import { stripHeartbeatToken } from './utils/heartbeat-response';
 
 type PermissionMode = 'auto' | 'plan' | 'fullAgency' | 'custom';
 
@@ -1786,7 +1790,7 @@ function normalizeSessionListPreview(meta: SessionMetadata): SessionMetadata {
 
   const data = getSessionData(meta.id);
   const resolved = data
-    ? resolveLastRealUserMessagePreview(data.messages)
+    ? resolveLastVisibleTurnPreview(data.messages)
     : { found: false as const };
   if (resolved.found) {
     return { ...meta, lastMessagePreview: resolved.preview };
@@ -2025,36 +2029,6 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'help') return api.handleHelp(payload as Parameters<typeof api.handleHelp>[0]);
 
   return { success: false, error: `Unknown admin route: ${pathname}` };
-}
-
-/**
- * Strip HEARTBEAT_OK token from AI response and determine if it's silent or has content.
- * Supports markdown/HTML wrapping around the token.
- */
-function stripHeartbeatToken(text: string, ackMaxChars: number): { status: string; text?: string; reason?: string } {
-  if (!text || !text.trim()) {
-    return { status: 'silent', reason: 'empty' };
-  }
-
-  // Check if HEARTBEAT_OK appears in the text (case-insensitive)
-  if (!/HEARTBEAT_OK/i.test(text)) {
-    // No token at all — this is real content
-    return { status: 'content', text };
-  }
-
-  // Strip the token (supports markdown bold, code wrapping)
-  const stripped = text
-    .replace(/\*{0,2}HEARTBEAT_OK\*{0,2}/gi, '')
-    .replace(/`HEARTBEAT_OK`/gi, '')
-    .trim();
-
-  // If remaining text is short enough, treat as silent acknowledgment
-  if (stripped.length <= ackMaxChars) {
-    return { status: 'silent', reason: 'heartbeat_ok' };
-  }
-
-  // Remaining text has substance — treat as content (but strip the token)
-  return { status: 'content', text: stripped };
 }
 
 /**

@@ -144,7 +144,7 @@ describe('transcript-persistence owner', () => {
     });
   });
 
-  it('refreshes session recency when the newly persisted tail contains human input', async () => {
+  it('updates preview without owning recency when persisting human input', async () => {
     appendMessage({
       id: '0',
       role: 'user',
@@ -155,12 +155,11 @@ describe('transcript-persistence owner', () => {
     await persistTranscriptNow({ sessionId: 'session-1' });
 
     expect(updateSessionMetadata).toHaveBeenCalledWith('session-1', {
-      lastActiveAt: expect.any(String),
       lastMessagePreview: 'new human question',
     });
   });
 
-  it('refreshes session recency for attachment-only human input', async () => {
+  it('updates preview without owning recency for attachment-only human input', async () => {
     appendMessage({
       id: '0',
       role: 'user',
@@ -178,7 +177,6 @@ describe('transcript-persistence owner', () => {
     await persistTranscriptNow({ sessionId: 'session-1' });
 
     expect(updateSessionMetadata).toHaveBeenCalledWith('session-1', {
-      lastActiveAt: expect.any(String),
       lastMessagePreview: undefined,
     });
   });

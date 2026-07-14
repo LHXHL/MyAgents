@@ -4,10 +4,7 @@ import {
   updateSessionMetadata,
   type SaveSessionMessagesResult,
 } from '../../SessionStore';
-import {
-  isHumanUserMessage,
-  resolveLastRealUserMessagePreview,
-} from '../../utils/session-message-preview';
+import { resolveLastVisibleTurnPreview } from '../../utils/session-message-preview';
 import type { ContextUsage } from '../../../shared/types/context-usage';
 import type { PersistContentBlock } from './types';
 
@@ -138,28 +135,21 @@ function assertExternalSessionMessagesPersisted(
 
 export async function persistExternalUserMessageAppend(
   sessionId: string,
-  userMessageId: string,
+  _userMessageId: string,
   failureContext: string,
 ): Promise<void> {
-  const persistedUserMessage = allSessionMessages.find(
-    message => message.id === userMessageId && message.role === 'user',
-  );
-  const containsHumanInput = persistedUserMessage
-    ? isHumanUserMessage(persistedUserMessage)
-    : false;
-  const { preview: lastMessagePreview } = resolveLastRealUserMessagePreview(allSessionMessages);
+  const { preview: lastMessagePreview } = resolveLastVisibleTurnPreview(allSessionMessages);
   const saveResult = await saveSessionMessages(sessionId, allSessionMessages, { allowShrink: false });
   assertExternalSessionMessagesPersisted(saveResult, failureContext);
 
   try {
     await updateSessionMetadata(sessionId, {
-      ...(containsHumanInput ? { lastActiveAt: new Date().toISOString() } : {}),
       lastMessagePreview,
     });
   } catch (error) {
     // The transcript is already durable and may already be entering the
     // runtime. A metadata-only failure must not roll back or duplicate it.
-    console.warn('[external-session] failed to update user activity metadata:', error);
+    console.warn('[external-session] failed to update user preview metadata:', error);
   }
 }
 
@@ -263,7 +253,7 @@ export async function appendAndPersistExternalAssistantTurn(
     }
 
     const { preview: lastMessagePreview } =
-      resolveLastRealUserMessagePreview(allSessionMessages);
+      resolveLastVisibleTurnPreview(allSessionMessages);
     await updateSessionMetadata(input.sessionId, {
       lastMessagePreview,
       runtimeUsageTotals: lastPersistedRuntimeUsageTotals ?? undefined,

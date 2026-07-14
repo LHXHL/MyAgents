@@ -162,7 +162,12 @@ import { imEventBus, type ImEventType } from './utils/im-event-bus';
 import { imRequestRegistry } from './utils/im-request-registry';
 import { mirrorIfChannelBound, type MirrorImage } from './utils/im-mirror';
 import { normalizeClaudeTranscriptCleanupPeriodDays, SUBSCRIPTION_PROVIDER_ID, type ProxySettings } from '../shared/config-types';
-import { stripLeadingSystemReminder } from '../shared/systemReminder';
+import {
+  LOCAL_COMMAND_OUTPUT_TAG,
+  SYSTEM_REMINDER_CLOSE,
+  SYSTEM_REMINDER_OPEN,
+  stripLeadingSystemReminder,
+} from '../shared/systemReminder';
 import { createConcreteProviderRoute, isConcreteProviderRoute } from '../shared/providerRoute';
 import type {
   ContentBlock,
@@ -11885,7 +11890,14 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             const localCommandMessage: MessageWire = {
               id: allocateMessageId(),
               role: 'user',
-              content: messageContent,
+              content: [
+                SYSTEM_REMINDER_OPEN,
+                `<${LOCAL_COMMAND_OUTPUT_TAG}>`,
+                'Runtime-generated local command output; the visible output follows this reminder.',
+                `</${LOCAL_COMMAND_OUTPUT_TAG}>`,
+                SYSTEM_REMINDER_CLOSE,
+                messageContent,
+              ].join('\n'),
               timestamp: new Date().toISOString(),
             };
             appendMessage(localCommandMessage);

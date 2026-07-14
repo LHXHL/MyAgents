@@ -63,7 +63,7 @@ describe('external transcript persistence owner', () => {
     expect(getExternalSessionMessagesSnapshot()).toEqual([]);
   });
 
-  it('refreshes recency when persisting a human user message', async () => {
+  it('updates preview without owning recency when persisting a human user message', async () => {
     setExternalSessionMessages('session-a', [
       { id: 'old', role: 'assistant', content: 'old answer', timestamp: '2026-01-01T00:00:00.000Z' },
     ]);
@@ -73,12 +73,11 @@ describe('external transcript persistence owner', () => {
     await persistExternalUserMessageAppend('session-a', 'human-query', 'persist human query');
 
     expect(updateSessionMetadata).toHaveBeenCalledWith('session-a', {
-      lastActiveAt: expect.any(String),
       lastMessagePreview: 'human-query',
     });
   });
 
-  it('refreshes recency for an attachment-only human user message', async () => {
+  it('updates preview without owning recency for attachment-only human input', async () => {
     const attachmentOnly: SessionMessage = {
       id: 'image-query',
       role: 'user',
@@ -96,7 +95,6 @@ describe('external transcript persistence owner', () => {
     await persistExternalUserMessageAppend('session-a', 'image-query', 'persist image query');
 
     expect(updateSessionMetadata).toHaveBeenCalledWith('session-a', {
-      lastActiveAt: expect.any(String),
       lastMessagePreview: undefined,
     });
   });
