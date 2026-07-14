@@ -137,20 +137,25 @@ export async function persistExternalUserMessageAppend(
   sessionId: string,
   _userMessageId: string,
   failureContext: string,
-): Promise<void> {
+  lastActiveAt?: string,
+  metadataDisposition: 'update' | 'skip' = 'update',
+): Promise<{ lastMessagePreview?: string }> {
   const { preview: lastMessagePreview } = resolveLastVisibleTurnPreview(allSessionMessages);
   const saveResult = await saveSessionMessages(sessionId, allSessionMessages, { allowShrink: false });
   assertExternalSessionMessagesPersisted(saveResult, failureContext);
 
+  if (metadataDisposition === 'skip') return { lastMessagePreview };
   try {
     await updateSessionMetadata(sessionId, {
       lastMessagePreview,
+      ...(lastActiveAt ? { lastActiveAt } : {}),
     });
   } catch (error) {
     // The transcript is already durable and may already be entering the
     // runtime. A metadata-only failure must not roll back or duplicate it.
     console.warn('[external-session] failed to update user preview metadata:', error);
   }
+  return { lastMessagePreview };
 }
 
 export async function removeAndPersistExternalSessionMessage(
@@ -211,6 +216,7 @@ export interface ExternalAssistantTurnPersistInput {
   usage: MessageUsage | null | undefined;
   toolCount: number;
   contextUsage: ContextUsage | null;
+  lastActiveAt?: string;
 }
 
 export interface ExternalAssistantTurnPersistResult {
@@ -244,6 +250,13 @@ export async function appendAndPersistExternalAssistantTurn(
   try {
     const saveResult = await saveSessionMessages(input.sessionId, allSessionMessages, { allowShrink: false });
     if (!saveResult.ok) {
+      if (input.lastActiveAt) {
+        try {
+          await updateSessionMetadata(input.sessionId, { lastActiveAt: input.lastActiveAt });
+        } catch (error) {
+          console.error('[external-session] failed to persist terminal activity after transcript refusal:', error);
+        }
+      }
       return {
         ok: false,
         failureReason: describeSaveSessionMessagesFailure(saveResult),
@@ -258,6 +271,7 @@ export async function appendAndPersistExternalAssistantTurn(
       lastMessagePreview,
       runtimeUsageTotals: lastPersistedRuntimeUsageTotals ?? undefined,
       ...(input.contextUsage ? { lastContextUsage: input.contextUsage } : {}),
+      ...(input.lastActiveAt ? { lastActiveAt: input.lastActiveAt } : {}),
     });
     return { ok: true, messageCount: allSessionMessages.length, appendedAssistant };
   } catch (err) {

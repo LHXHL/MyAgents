@@ -20,6 +20,7 @@ import type { InFlightMetadata, ProviderEnv, TurnProviderAnalytics } from './typ
 import {
   getCurrentTurnText,
   getCurrentTurnInboxMeta,
+  getCurrentTurnSourceItem,
   getCurrentTurnAnalyticsSource,
   getCurrentTurnAnalyticsOrigin,
   getCurrentTurnCompactResult,
@@ -33,11 +34,12 @@ import {
   hasCurrentTurnImTerminalEmitted,
   hasCurrentTurnOutput,
   markCurrentTurnHasOutput,
-  notifyCurrentTurnTerminal,
+  notifyCurrentTurnTerminalOutcome,
   replaceCurrentTurnUsage,
   sawCompactBoundary,
   setCurrentTurnImTerminalEmitted,
   setCurrentTurnInboxMeta,
+  snapshotCurrentTurnTerminalOutcome,
   clearCurrentTurnTextBlocks,
 } from './turn';
 import { originAnalyticsFields, originFromTurnAttribution } from '../../shared/session-origin';
@@ -51,6 +53,7 @@ import { allocateMessageId, appendMessage, getMessages } from './transcript';
 import {
   stampTurnUsageOnPendingAssistant,
 } from './transcript-persistence';
+import { shouldRecordTerminalActivity } from '../session-core/session-activity-policy';
 
 export type BuiltinTurnTraceSnapshot = {
   turnId: string;
@@ -108,7 +111,7 @@ export type BuiltinTurnLifecycleDeps = {
   clearCronTaskContext: () => void;
   hasQueuedOrInFlightWork: () => boolean;
   setSessionState: (state: 'idle' | 'starting' | 'running' | 'error') => void;
-  persistTranscript: (targetMessageCount?: number) => Promise<void>;
+  persistTranscript: (targetMessageCount?: number, lastActiveAt?: string) => Promise<void>;
   snapshotTrace: () => BuiltinTurnTraceSnapshot | null;
   emitTrace: (
     phase: string,
@@ -146,7 +149,11 @@ export type BuiltinTurnLifecycleDeps = {
 
 export type BuiltinTurnLifecycle = {
   handleSdkResult: (resultMessage: BuiltinSdkResultMessage) => void;
-  completeTurn: (durationMs?: number) => void;
+  completeTurn: (
+    durationMs?: number,
+    terminalError?: string,
+    afterPersist?: () => void,
+  ) => void;
   stopTurn: () => void;
   failTurn: (error: string, localizedError?: string) => void;
   getLastTurnEndPersist: () => Promise<unknown>;
@@ -175,12 +182,22 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     }
   };
 
-  const completeTurn = (durationMs?: number): void => {
+  const terminalActivityAt = (outcome: ReturnType<typeof snapshotCurrentTurnTerminalOutcome>): string | undefined => {
+    const facts = getCurrentTurnSourceItem()?.activityFacts;
+    return facts && shouldRecordTerminalActivity(facts, outcome)
+      ? new Date().toISOString()
+      : undefined;
+  };
+
+  const completeTurn = (
+    durationMs?: number,
+    terminalError?: string,
+    afterPersist?: () => void,
+  ): void => {
     deps.setStreamingMessage(false);
     const turnStartTime = getCurrentTurnStartTime();
     const settledDurationMs = durationMs
       ?? (turnStartTime ? Date.now() - turnStartTime : undefined);
-    notifyCurrentTurnTerminal('complete', { durationMs: settledDurationMs });
     let confirmedQueueTurnKeepStreaming = false;
 
     const inFlightQueueId = getInFlightQueueId();
@@ -216,11 +233,6 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       }
     }
 
-    commonTerminalCleanup('complete');
-    if (!hasCurrentTurnImTerminalEmitted()) {
-      deps.completeCurrentImRequest('');
-    }
-    setCurrentTurnImTerminalEmitted(false);
     forceCloseOrphanThinkingBlocks('handleMessageComplete');
 
     const turnUsage = getCurrentTurnUsage();
@@ -231,11 +243,19 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       durationMs: settledDurationMs,
     });
 
+    const terminalOutcome = snapshotCurrentTurnTerminalOutcome(
+      terminalError ? 'error' : 'complete',
+      {
+        durationMs: settledDurationMs,
+        ...(terminalError ? { error: terminalError } : {}),
+      },
+    );
+
     const persistTrace = deps.snapshotTrace();
     const persistTraceStarted = deps.nowMs();
     const persistTraceToolCount = turnToolCount;
     const persistTraceMessageCount = getMessages().length;
-    lastTurnEndPersist = deps.persistTranscript()
+    lastTurnEndPersist = deps.persistTranscript(undefined, terminalActivityAt(terminalOutcome))
       .then(() => {
         deps.emitTrace('persist_done', {
           durationMs: deps.elapsedMs(persistTraceStarted),
@@ -256,16 +276,29 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         console.error('[agent] persistMessagesToStorage failed:', err);
         throw err;
       });
-    void lastTurnEndPersist.catch(() => undefined);
-
-    if (confirmedQueueTurnKeepStreaming) {
-      deps.setStreamingMessage(true);
+    if (afterPersist) {
+      lastTurnEndPersist = lastTurnEndPersist.then(() => afterPersist());
     }
+    lastTurnEndPersist = lastTurnEndPersist.finally(() => {
+      commonTerminalCleanup('complete');
+      if (!hasCurrentTurnImTerminalEmitted()) {
+        deps.completeCurrentImRequest('');
+      }
+      setCurrentTurnImTerminalEmitted(false);
+      if (confirmedQueueTurnKeepStreaming) {
+        deps.setStreamingMessage(true);
+      }
+    });
+    void lastTurnEndPersist.catch(() => undefined);
+    notifyCurrentTurnTerminalOutcome(terminalOutcome, lastTurnEndPersist);
   };
 
   const stopTurn = (): void => {
     deps.setStreamingMessage(false);
-    notifyCurrentTurnTerminal('stopped', { error: 'Execution stopped' });
+    const terminalOutcome = snapshotCurrentTurnTerminalOutcome('stopped', {
+      error: 'Execution stopped',
+    });
+    const activityAt = terminalActivityAt(terminalOutcome);
     const stoppedTrace = deps.snapshotTrace();
     deps.emitTrace('final', {
       status: 'error',
@@ -282,13 +315,18 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     deps.completeCurrentImRequest('');
     setCurrentTurnImTerminalEmitted(false);
     forceCloseOrphanThinkingBlocks('handleMessageStopped');
-    void deps.persistTranscript().catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
+    lastTurnEndPersist = deps.persistTranscript(undefined, activityAt);
+    void lastTurnEndPersist.catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
+    notifyCurrentTurnTerminalOutcome(terminalOutcome, lastTurnEndPersist);
     deps.clearTrace(stoppedTrace);
   };
 
   const failTurn = (error: string, localizedError?: string): void => {
     deps.setStreamingMessage(false);
-    notifyCurrentTurnTerminal('error', { error: localizedError ?? error });
+    const terminalOutcome = snapshotCurrentTurnTerminalOutcome('error', {
+      error: localizedError ?? error,
+    });
+    const activityAt = terminalActivityAt(terminalOutcome);
     const errorTrace = deps.snapshotTrace();
     deps.emitTrace('final', {
       status: 'error',
@@ -301,12 +339,6 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         deps.preserveInFlightAfterTerminalBoundary(`error targets ${getInterruptingInFlightQueueId() ?? 'none'}`);
       }
     }
-    commonTerminalCleanup('error');
-    if (!hasCurrentTurnImTerminalEmitted()) {
-      deps.failCurrentImRequest(localizedError ?? deps.localizeImError(error));
-    }
-    setCurrentTurnImTerminalEmitted(false);
-
     const isExpectedTermination =
       error.includes('SIGTERM') ||
       error.includes('SIGKILL') ||
@@ -314,19 +346,24 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       error.includes('process terminated') ||
       error.includes('AbortError');
 
-    if (isExpectedTermination) {
+    if (!isExpectedTermination) {
+      appendMessage({
+        id: allocateMessageId(),
+        role: 'assistant',
+        content: `Error: ${error}`,
+        timestamp: new Date().toISOString(),
+      });
+    } else {
       console.log('[agent] Skipping error persistence for expected termination:', error);
-      deps.clearTrace(errorTrace);
-      return;
     }
-
-    appendMessage({
-      id: allocateMessageId(),
-      role: 'assistant',
-      content: `Error: ${error}`,
-      timestamp: new Date().toISOString(),
-    });
-    void deps.persistTranscript().catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
+    lastTurnEndPersist = deps.persistTranscript(undefined, activityAt);
+    void lastTurnEndPersist.catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
+    notifyCurrentTurnTerminalOutcome(terminalOutcome, lastTurnEndPersist);
+    commonTerminalCleanup('error');
+    if (!hasCurrentTurnImTerminalEmitted()) {
+      deps.failCurrentImRequest(localizedError ?? deps.localizeImError(error));
+    }
+    setCurrentTurnImTerminalEmitted(false);
     deps.clearTrace(errorTrace);
   };
 
@@ -487,12 +524,9 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     if (recoveredAssistantMessageError && lastAssistantMessageError) {
       console.log('[agent] SDK assistant message error recovered by successful result:', lastAssistantMessageError);
     }
-    if (resultMessage.is_error && !isAbortResult) {
-      notifyCurrentTurnTerminal('error', {
-        error: resultErrorText || resultText || 'turn ended with error',
-        durationMs,
-      });
-    }
+    const terminalError = resultMessage.is_error && !isAbortResult
+      ? (resultErrorText || resultText || 'turn ended with error')
+      : undefined;
     deps.emitTrace('final', {
       status: resultMessage.is_error || (emptySuccessfulResult && !successfulCompactControlTurn) ? 'error' : 'ok',
       durationMs,
@@ -549,8 +583,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         console.error('[session-watch] empty-result watch push failed:', err),
       );
     } else {
-      console.log('[agent][sdk] Broadcasting chat:message-complete');
-      deps.broadcast('chat:message-complete', {
+      const completionEvent = {
         model: finalTurnUsage.model,
         input_tokens: finalTurnUsage.inputTokens,
         output_tokens: finalTurnUsage.outputTokens,
@@ -562,9 +595,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         assistant_sdk_uuid: lastAssistant?.sdkUuid,
         assistant_message_id: lastAssistant?.id,
         compact_result: successfulCompactControlTurn ? 'success' : undefined,
-      });
-
-      void deps.broadcastBuiltinContextUsage();
+      };
 
       const scenario = deps.getCurrentScenario();
       const turnAnalyticsSource = getCurrentTurnAnalyticsSource() ?? scenario.type;
@@ -591,7 +622,11 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         duration_ms: durationMs,
       });
 
-      completeTurn(durationMs);
+      completeTurn(durationMs, terminalError, () => {
+        console.log('[agent][sdk] Broadcasting chat:message-complete');
+        deps.broadcast('chat:message-complete', completionEvent);
+        void deps.broadcastBuiltinContextUsage();
+      });
 
       if (shouldTitleCompletedTurn(resultMessage.is_error === true, resultMessage.terminal_reason)) {
         const titleSid = deps.getSessionId();

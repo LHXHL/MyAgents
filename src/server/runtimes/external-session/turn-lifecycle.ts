@@ -9,6 +9,7 @@ import type {
   TurnTerminalOutcome,
   TurnTerminalObserver,
 } from '../../session-core/turn-queue';
+import type { SessionActivityTurnFacts } from '../../session-core/session-activity-policy';
 
 let turnCompleted = false;
 let lastTurnSucceeded = false;
@@ -23,6 +24,7 @@ let turnTerminalGeneration = 0;
 let turnPromotionGeneration = 0;
 let activeTurnPromotion: ExternalTurnPromotionToken | null = null;
 let terminalObserverBarrier: Promise<void> = Promise.resolve();
+let currentTurnActivityFacts: SessionActivityTurnFacts | null = null;
 let currentTurnBinding: {
   queueId: string;
   owner?: TurnOwner;
@@ -43,17 +45,28 @@ export type ExternalTurnOutcome = Readonly<{
   };
 }>;
 
-function notifyBoundTurn(outcome: TurnTerminalOutcome): void {
+function notifyBoundTurn(
+  outcome: TurnTerminalOutcome,
+  finalization: Promise<unknown>,
+): void {
   const binding = currentTurnBinding;
   currentTurnBinding = null;
-  if (!binding?.onTerminal) return;
-  try {
-    terminalObserverBarrier = Promise.resolve(binding.onTerminal(outcome)).catch((error) => {
+  const finalized = finalization
+    .catch((error) => {
+      console.error('[external-session] turn finalization failed before terminal observer:', error);
+    });
+  terminalObserverBarrier = Promise.all([terminalObserverBarrier, finalized])
+    .then(async () => {
+      if (!binding?.onTerminal) return;
+      try {
+        await binding.onTerminal(outcome);
+      } catch (error) {
+        console.error('[external-session] turn terminal observer failed:', error);
+      }
+    })
+    .catch((error) => {
       console.error('[external-session] turn terminal observer failed:', error);
     });
-  } catch (error) {
-    console.error('[external-session] turn terminal observer failed:', error);
-  }
 }
 
 export function waitForExternalTurnTerminalObserver(): Promise<void> {
@@ -63,6 +76,7 @@ export function waitForExternalTurnTerminalObserver(): Promise<void> {
 export function notifyExternalTurnOutcome(
   generation: number,
   outcome: Omit<ExternalTurnOutcome, 'generation'>,
+  finalization: Promise<unknown> = Promise.resolve(),
 ): void {
   if (generation <= 0 || !isExternalTurnGenerationCurrent(generation)) return;
   notifyBoundTurn({
@@ -72,12 +86,13 @@ export function notifyExternalTurnOutcome(
     ...(outcome.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}),
     ...(outcome.usage ? { usage: outcome.usage } : {}),
     ...(outcome.error ? { error: outcome.error } : {}),
-  });
+  }, finalization);
 }
 
 export function notifyExternalTurnStopped(
   text: string,
   metrics: Pick<ExternalTurnOutcome, 'durationMs' | 'usage'> = {},
+  finalization: Promise<unknown> = Promise.resolve(),
 ): void {
   notifyBoundTurn({
     status: 'stopped',
@@ -85,7 +100,7 @@ export function notifyExternalTurnStopped(
     assistantMessagePresent: text.trim().length > 0,
     error: 'Execution stopped',
     ...metrics,
-  });
+  }, finalization);
 }
 
 export function bindExternalTurn(
@@ -126,6 +141,20 @@ export function resetExternalTurnLifecycleState(): void {
   activeTurnPromotion?.settle({ status: 'not-dispatched' });
   activeTurnPromotion = null;
   currentTurnBinding = null;
+  currentTurnActivityFacts = null;
+  terminalObserverBarrier = Promise.resolve();
+}
+
+export function setExternalTurnActivityFacts(facts: SessionActivityTurnFacts): void {
+  currentTurnActivityFacts = facts;
+}
+
+export function getExternalTurnActivityFacts(): SessionActivityTurnFacts | null {
+  return currentTurnActivityFacts;
+}
+
+export function clearExternalTurnActivityFacts(facts?: SessionActivityTurnFacts | null): void {
+  if (!facts || currentTurnActivityFacts === facts) currentTurnActivityFacts = null;
 }
 
 export type ExternalTurnPromotionToken = {
@@ -186,6 +215,7 @@ export function finishExternalTurnPromotion(
   if (isExternalTurnPromotionCurrent(token)) activeTurnPromotion = null;
   if (
     (settlement.status === 'not-dispatched' || settlement.status === 'terminated')
+    && !token.signal.aborted
     && token.queueId
     && currentTurnBinding?.queueId === token.queueId
   ) {
@@ -391,7 +421,7 @@ export function markExternalSessionComplete(
   event: Extract<UnifiedEvent, { kind: 'session_complete' }>,
   input: {
     hasAssistantText: boolean;
-    consumeUserRequestedStop: () => boolean;
+    isUserRequestedStop: () => boolean;
   },
 ): ExternalSessionCompletePlan {
   if (!turnCompleted && currentTurnStartTime === 0) {
@@ -412,7 +442,7 @@ export function markExternalSessionComplete(
   const errorAction = decideSessionCompleteErrorAction({
     turnCompleted,
     hasAssistantText: input.hasAssistantText,
-    userRequestedStop: input.consumeUserRequestedStop(),
+    userRequestedStop: input.isUserRequestedStop(),
     finalizationInFlight: turnFinalization.inFlight,
   });
 

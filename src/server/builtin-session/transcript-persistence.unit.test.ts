@@ -159,6 +159,73 @@ describe('transcript-persistence owner', () => {
     });
   });
 
+  it('merges lifecycle activity into the same transcript metadata commit', async () => {
+    appendMessage({
+      id: '0',
+      role: 'user',
+      content: 'accepted turn',
+      timestamp: '2026-07-14T10:00:00.000Z',
+    });
+    const activityAt = '2026-07-14T10:00:01.000Z';
+
+    await persistTranscriptNow({ sessionId: 'session-1', lastActiveAt: activityAt });
+
+    expect(updateSessionMetadata).toHaveBeenCalledWith('session-1', {
+      lastMessagePreview: 'accepted turn',
+      lastActiveAt: activityAt,
+    });
+  });
+
+  it('keeps a durable transcript successful when its metadata patch fails', async () => {
+    appendMessage({
+      id: '0',
+      role: 'user',
+      content: 'guarded turn',
+      timestamp: '2026-07-14T10:00:00.000Z',
+    });
+    vi.mocked(updateSessionMetadata).mockRejectedValueOnce(new Error('metadata unavailable'));
+
+    await expect(persistTranscriptNow({
+      sessionId: 'session-1',
+      lastActiveAt: '2026-07-14T10:00:01.000Z',
+    })).resolves.toBeUndefined();
+
+    expect(saveSessionMessages).toHaveBeenCalledOnce();
+    expect(transcriptState.lastPersistedIndex).toBe(1);
+  });
+
+  it('lets prepared-session materialization own the metadata commit', async () => {
+    appendMessage({
+      id: '0',
+      role: 'user',
+      content: 'first prepared turn',
+      timestamp: '2026-07-14T10:00:00.000Z',
+    });
+
+    await persistTranscriptNow({
+      sessionId: 'session-1',
+      lastActiveAt: '2026-07-14T10:00:01.000Z',
+      metadataDisposition: 'skip',
+    });
+
+    expect(saveSessionMessages).toHaveBeenCalledOnce();
+    expect(updateSessionMetadata).not.toHaveBeenCalled();
+  });
+
+  it('persists terminal activity without rewriting an unchanged transcript', async () => {
+    loadTranscriptFromSessionMessages([
+      { id: '0', role: 'user', content: 'already durable', timestamp: '2026-07-14T10:00:00.000Z' },
+    ]);
+    const terminalAt = '2026-07-14T10:00:02.000Z';
+
+    await persistTranscriptNow({ sessionId: 'session-1', lastActiveAt: terminalAt });
+
+    expect(saveSessionMessages).not.toHaveBeenCalled();
+    expect(updateSessionMetadata).toHaveBeenCalledWith('session-1', {
+      lastActiveAt: terminalAt,
+    });
+  });
+
   it('updates preview without owning recency for attachment-only human input', async () => {
     appendMessage({
       id: '0',

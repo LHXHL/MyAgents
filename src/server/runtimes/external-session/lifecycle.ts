@@ -204,12 +204,6 @@ export function getExternalUserRequestedStop(): boolean {
   return userRequestedExternalStop;
 }
 
-export function consumeExternalUserRequestedStop(): boolean {
-  const value = userRequestedExternalStop;
-  userRequestedExternalStop = false;
-  return value;
-}
-
 export function resetExternalUserRequestedStop(): void {
   userRequestedExternalStop = false;
 }

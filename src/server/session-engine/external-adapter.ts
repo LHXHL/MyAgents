@@ -543,6 +543,18 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     async stopOwnedTurn(owner) {
+      const admitted = getExternalCurrentTurnIdentity();
+      if (
+        admitted
+        && admitted.owner.kind === owner.kind
+        && admitted.owner.id === owner.id
+        && isExternalTurnCurrent(admitted.queueId)
+      ) {
+        const stopped = await stopExternalTarget();
+        return stopped
+          ? { success: true, alreadyStopped: false }
+          : { success: false, error: 'External runtime process did not stop' };
+      }
       const canceled = cancelExternalQueuedTurnsByOwner(owner);
       const promotionSettlement = await canceled.promotion?.settled;
       if (promotionSettlement?.status === 'termination-unconfirmed') {

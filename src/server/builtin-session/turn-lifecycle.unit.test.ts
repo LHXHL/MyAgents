@@ -10,6 +10,7 @@ import {
   setCurrentTurnStartTime,
   setCurrentTurnToolCount,
   setSawCompactBoundary,
+  waitForCurrentTurnTerminalObserver,
 } from './turn';
 import {
   resetQueueForTest,
@@ -61,6 +62,7 @@ function makeResult(overrides: Record<string, unknown> = {}): BuiltinSdkResultMe
 
 function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
   const broadcasts: Array<{ event: string; data: unknown }> = [];
+  const broadcast = vi.fn((event: string, data: unknown) => broadcasts.push({ event, data }));
   const deps: BuiltinTurnLifecycleDeps = {
     getSessionId: () => 'session-1',
     getCurrentScenario: () => ({ type: 'desktop' }),
@@ -94,7 +96,7 @@ function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
     clearTrace: vi.fn(),
     nowMs: () => 100,
     elapsedMs: () => 1,
-    broadcast: (event, data) => broadcasts.push({ event, data }),
+    broadcast,
     broadcastBuiltinContextUsage: vi.fn(async () => undefined),
     getCurrentTransientProviderRetryAttempt: () => 0,
     scheduleTransientProviderRetry: vi.fn(() => false),
@@ -149,6 +151,10 @@ describe('turn-lifecycle owner', () => {
       wasQueued: false,
       resolve: vi.fn(),
       onTerminal,
+      activityFacts: {
+        origin: { kind: 'desktop', surface: 'launcher_input' },
+        inputText: 'run',
+      },
     });
     accumulateCurrentTurnUsage({ inputTokens: 100, outputTokens: 20 });
 
@@ -162,21 +168,29 @@ describe('turn-lifecycle owner', () => {
       },
     }));
 
-    expect(broadcasts.map(item => item.event)).toContain('chat:message-complete');
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
     expect(transcriptState.messages[0]).toMatchObject({
       usage: { inputTokens: 12, outputTokens: 5, cacheReadTokens: 2 },
     });
-    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
-      status: 'complete',
-      usage: { inputTokens: 12, outputTokens: 5 },
-    }));
+    expect(onTerminal).not.toHaveBeenCalled();
     expect(deps.firePostTurnTitleHook).not.toHaveBeenCalled();
+    expect(deps.setSessionState).not.toHaveBeenCalled();
+    expect(deps.persistTranscript).toHaveBeenCalledWith(undefined, expect.any(String));
 
     persist.resolve();
     await persist.promise;
     await lifecycle.getLastTurnEndPersist();
-    await Promise.resolve();
+    await waitForCurrentTurnTerminalObserver();
 
+    expect(broadcasts.map(item => item.event)).toContain('chat:message-complete');
+    const completeCall = vi.mocked(deps.broadcast).mock.calls.findIndex(([event]) => event === 'chat:message-complete');
+    expect(vi.mocked(deps.broadcast).mock.invocationCallOrder[completeCall]).toBeLessThan(
+      vi.mocked(deps.setSessionState).mock.invocationCallOrder[0],
+    );
+    expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
+      status: 'complete',
+      usage: { inputTokens: 12, outputTokens: 5 },
+    }));
     expect(deps.firePostTurnTitleHook).toHaveBeenCalledWith(
       'session-1',
       'builtin',
@@ -200,7 +214,7 @@ describe('turn-lifecycle owner', () => {
     });
   });
 
-  it('suppresses IM error forwarding for aborted SDK diagnostic results', () => {
+  it('suppresses IM error forwarding for aborted SDK diagnostic results', async () => {
     const { deps } = makeDeps({
       getIsInterruptingResponse: () => true,
     });
@@ -214,6 +228,7 @@ describe('turn-lifecycle owner', () => {
       terminal_reason: 'aborted_streaming',
       errors: ['internal abort'],
     }));
+    await lifecycle.getLastTurnEndPersist();
 
     expect(deps.failCurrentImRequest).not.toHaveBeenCalled();
     expect(deps.completeCurrentImRequest).toHaveBeenCalledWith('');
@@ -284,9 +299,10 @@ describe('turn-lifecycle owner', () => {
 
     lifecycle.handleSdkResult(makeResult({ result: 'hello' }));
 
-    expect(broadcasts.map(item => item.event)).toContain('chat:message-complete');
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
     await expect(lifecycle.getLastTurnEndPersist()).rejects.toThrow('durable write failed');
     await Promise.resolve();
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
     expect(deps.firePostTurnTitleHook).not.toHaveBeenCalled();
     expect(deps.emitTrace).toHaveBeenCalledWith(
       'persist_done',
@@ -295,13 +311,14 @@ describe('turn-lifecycle owner', () => {
     );
   });
 
-  it('treats compact control turns as successful even when the SDK result has no visible text', () => {
+  it('treats compact control turns as successful even when the SDK result has no visible text', async () => {
     const { deps, broadcasts } = makeDeps();
     const lifecycle = createBuiltinTurnLifecycle(deps);
     setCurrentTurnCompactResult('success');
     setSawCompactBoundary(true);
 
     lifecycle.handleSdkResult(makeResult());
+    await lifecycle.getLastTurnEndPersist();
 
     expect(broadcasts.map(item => item.event)).toContain('chat:message-complete');
     expect(broadcasts.map(item => item.event)).not.toContain('chat:message-error');
@@ -374,7 +391,7 @@ describe('turn-lifecycle owner', () => {
     });
   });
 
-  it('finalizes stopped turns with queue cleanup, IM completion, and persistence', () => {
+  it('finalizes stopped turns with queue cleanup, IM completion, and persistence', async () => {
     const { deps } = makeDeps();
     const lifecycle = createBuiltinTurnLifecycle(deps);
     const onTerminal = vi.fn();
@@ -385,12 +402,17 @@ describe('turn-lifecycle owner', () => {
       wasQueued: false,
       resolve: vi.fn(),
       onTerminal,
+      activityFacts: {
+        origin: { kind: 'desktop', surface: 'launcher_input' },
+        inputText: 'run',
+      },
     });
     accumulateCurrentTurnUsage({ inputTokens: 120, outputTokens: 30 });
     accumulateCurrentTurnUsage({ inputTokens: 80, outputTokens: 20 });
 
     lifecycle.stopTurn();
 
+    await waitForCurrentTurnTerminalObserver();
     expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
       status: 'stopped',
       usage: { inputTokens: 200, outputTokens: 50 },
@@ -399,13 +421,15 @@ describe('turn-lifecycle owner', () => {
     expect(deps.endTurnAbort).toHaveBeenCalledWith('session-1');
     expect(deps.completeCurrentImRequest).toHaveBeenCalledWith('');
     expect(deps.persistTranscript).toHaveBeenCalledTimes(1);
+    expect(deps.persistTranscript).toHaveBeenCalledWith(undefined, expect.any(String));
   });
 
-  it('persists unexpected errors but skips persistence for expected terminations', () => {
+  it('persists unexpected errors and commits terminal metadata for expected terminations', async () => {
     const { deps } = makeDeps();
     const lifecycle = createBuiltinTurnLifecycle(deps);
 
     lifecycle.failTurn('boom');
+    await waitForCurrentTurnTerminalObserver();
     expect(deps.schedulePostTerminalQueueDrain).toHaveBeenCalledWith('error');
     expect(deps.abortTurnAbort).toHaveBeenCalledWith('session-1', 'error');
     expect(deps.failCurrentImRequest).toHaveBeenCalledWith('localized:boom');
@@ -418,7 +442,8 @@ describe('turn-lifecycle owner', () => {
     resetTranscriptForTest();
     vi.mocked(deps.persistTranscript).mockClear();
     lifecycle.failTurn('AbortError: interrupted');
-    expect(deps.persistTranscript).not.toHaveBeenCalled();
+    await waitForCurrentTurnTerminalObserver();
+    expect(deps.persistTranscript).toHaveBeenCalledWith(undefined, undefined);
     expect(transcriptState.messages).toEqual([]);
   });
 

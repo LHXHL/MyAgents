@@ -19,6 +19,7 @@ import type {
   TurnOwner,
   TurnTerminalObserver,
 } from '../session-core/turn-queue';
+import type { SessionActivityTurnFacts } from '../session-core/session-activity-policy';
 
 export type BuiltinSessionState = 'idle' | 'starting' | 'running' | 'error';
 
@@ -159,11 +160,14 @@ export type MessageQueueItem = {
   requestId?: string;
   analyticsSource?: TurnAnalyticsSource;
   analyticsOrigin?: SessionOrigin;
+  sessionBirthOrigin?: SessionOrigin;
   providerAnalytics?: TurnProviderAnalytics;
   inboxMeta?: InboxTurnMeta;
   turnOwner?: TurnOwner;
   onTerminal?: TurnTerminalObserver;
   beforeDispatch?: DispatchGuard;
+  /** Frozen at the runtime admission seam for terminal activity policy. */
+  activityFacts?: SessionActivityTurnFacts;
   /** User history/UI side effects held until a dispatch guard accepts. */
   deferredUserSurface?: DeferredUserSurface;
   settleDispatchAcceptance?: (result: { accepted: boolean; error?: string }) => void;

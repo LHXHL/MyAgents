@@ -985,6 +985,17 @@ export async function saveSessionMessages(
  * /sessions/:id endpoint can persist model / permissionMode / MCP / provider
  * onto an existing session without replaying the full SessionMetadata blob.
  */
+function monotonicLastActiveAt(current: string, incoming: string): string {
+    const incomingMs = Date.parse(incoming);
+    const currentMs = Date.parse(current);
+    const incomingIsCanonical = Number.isFinite(incomingMs)
+        && new Date(incomingMs).toISOString() === incoming;
+    if (!incomingIsCanonical || (Number.isFinite(currentMs) && incomingMs < currentMs)) {
+        return current;
+    }
+    return incoming;
+}
+
 export async function updateSessionMetadata(
     sessionId: string,
     updates: Partial<Pick<SessionMetadata,
@@ -1059,16 +1070,7 @@ export async function updateSessionMetadata(
         const current = all[idx];
         const patch = { ...updates };
         if (patch.lastActiveAt !== undefined) {
-            const incomingMs = Date.parse(patch.lastActiveAt);
-            const currentMs = Date.parse(current.lastActiveAt);
-            const incomingIsCanonical = Number.isFinite(incomingMs)
-                && new Date(incomingMs).toISOString() === patch.lastActiveAt;
-            if (
-                !incomingIsCanonical
-                || (Number.isFinite(currentMs) && incomingMs < currentMs)
-            ) {
-                patch.lastActiveAt = current.lastActiveAt;
-            }
+            patch.lastActiveAt = monotonicLastActiveAt(current.lastActiveAt, patch.lastActiveAt);
         }
         const updated: SessionMetadata = { ...current, ...patch };
         all[idx] = updated;
@@ -1089,6 +1091,8 @@ export async function commitPreparedSessionForFirstUserTurn(
         title?: string;
         runtimeSessionId?: string;
         origin?: SessionMetadata['origin'];
+        lastActiveAt?: string;
+        lastMessagePreview?: string;
     },
 ): Promise<SessionMetadata | null> {
     ensureStorageDir();
@@ -1117,7 +1121,10 @@ export async function commitPreparedSessionForFirstUserTurn(
         if (current.materializationState === 'prepared') {
             patch.materializationState = undefined;
             patch.materializationSourceSessionId = undefined;
-            patch.lastActiveAt = new Date().toISOString();
+            patch.lastMessagePreview = params.lastMessagePreview;
+            if (params.lastActiveAt) {
+                patch.lastActiveAt = monotonicLastActiveAt(current.lastActiveAt, params.lastActiveAt);
+            }
         }
 
         if (Object.keys(patch).length === 0) {

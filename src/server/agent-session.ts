@@ -97,9 +97,14 @@ import type { OfficialToolId } from '../shared/official-tools';
 import { commitPreparedSessionForFirstUserTurn, deleteSession, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData } from './SessionStore';
 import { firePostTurnTitleHook } from './turn-hooks';
 import { createSessionMetadata, type SessionMetadata, type SessionMessage, type MessageAttachment, type SessionSource, type TurnAnalyticsSource } from './types/session';
-import { originFromMaterializationScenario } from '../shared/session-origin';
+import { originFromMaterializationScenario, originFromTurnAttribution } from '../shared/session-origin';
 import type { SessionOrigin } from '../shared/session-origin';
+import {
+  shouldRecordAdmissionActivity,
+  type SessionActivityTurnFacts,
+} from './session-core/session-activity-policy';
 import { extractAssistantTextFromStoredContent } from './inbox/latest-result';
+import { resolveVisibleUserTurnText } from './utils/session-message-preview';
 import {
   createMaterializedSessionMetadata,
   isLiveFollowScenario,
@@ -896,7 +901,11 @@ function fireDesktopUserMirror(content: string, images: MirrorImage[] | undefine
   });
 }
 
-async function surfaceBuiltinUserMessage(surface: DeferredUserSurface): Promise<void> {
+async function surfaceBuiltinUserMessage(
+  surface: DeferredUserSurface,
+  phase: 'pre-admission' | 'admission',
+  lastActiveAt?: string,
+): Promise<boolean> {
   appendMessage(surface.message);
   if (surface.event === 'message-replay') {
     broadcast('chat:message-replay', createLiveUserMessageReplay(sessionId, surface.message));
@@ -916,15 +925,19 @@ async function surfaceBuiltinUserMessage(surface: DeferredUserSurface): Promise<
   }
 
   const messageText = typeof surface.message.content === 'string' ? surface.message.content : '';
-  await persistMessagesToStorageAndCommitPreparedFirstUserTurn(
+  const activityMerged = await persistMessagesToStorageAndCommitPreparedFirstUserTurn(
     messageText,
     surface.sessionBirthOrigin,
+    transcriptState.messages.length,
+    phase,
+    lastActiveAt,
   );
   if (surface.message.metadata?.source === 'desktop') {
     fireDesktopUserMirror(messageText, surface.mirrorImages);
   } else {
     clearMirrorState();
   }
+  return activityMerged;
 }
 
 type SurfaceInFlightOptions = {
@@ -1823,7 +1836,7 @@ function startNextTurnQueuedItem(
   if (item.sourceItem.beforeDispatch) {
     item.sourceItem.deferredUserSurface = surface;
   } else {
-    void surfaceBuiltinUserMessage(surface)
+    void surfaceBuiltinUserMessage(surface, 'pre-admission')
       .catch(err => console.error('[agent] failed to surface turn-boundary user message:', err));
   }
 
@@ -4361,17 +4374,25 @@ export function getPendingInteractiveRequests(): Array<{
   return result;
 }
 
-async function persistMessagesToStorage(targetMessageCount = transcriptState.messages.length): Promise<void> {
+async function persistMessagesToStorage(
+  targetMessageCount = transcriptState.messages.length,
+  lastActiveAt?: string,
+  metadataDisposition: 'update' | 'skip' = 'update',
+): Promise<void> {
   return scheduleTranscriptPersist({
     sessionId,
     getCurrentSessionId: () => sessionId,
     targetMessageCount,
+    lastActiveAt,
+    metadataDisposition,
   });
 }
 
 async function commitPreparedSessionAfterUserMessagePersist(
   messageText: string,
   origin?: SessionOrigin,
+  lastActiveAt?: string,
+  lastMessagePreview?: string,
 ): Promise<void> {
   const meta = getSessionMetadata(sessionId);
   if (meta?.materializationState !== 'prepared') return;
@@ -4380,6 +4401,8 @@ async function commitPreparedSessionAfterUserMessagePersist(
     messageText,
     title,
     origin,
+    lastActiveAt,
+    lastMessagePreview,
   });
   if (!updated) {
     console.warn(`[agent] prepared metadata commit skipped for ${sessionId}: metadata disappeared after user message persist`);
@@ -4390,13 +4413,30 @@ async function persistMessagesToStorageAndCommitPreparedFirstUserTurn(
   messageText: string,
   origin?: SessionOrigin,
   targetMessageCount = transcriptState.messages.length,
-): Promise<void> {
-  await persistMessagesToStorage(targetMessageCount);
+  phase: 'pre-admission' | 'admission' = 'pre-admission',
+  lastActiveAt?: string,
+): Promise<boolean> {
+  const isPrepared = getSessionMetadata(sessionId)?.materializationState === 'prepared';
+  await persistMessagesToStorage(
+    targetMessageCount,
+    isPrepared ? undefined : lastActiveAt,
+    isPrepared ? 'skip' : 'update',
+  );
+  if (!isPrepared || phase === 'pre-admission') {
+    return !isPrepared && lastActiveAt !== undefined;
+  }
   try {
-    await commitPreparedSessionAfterUserMessagePersist(messageText, origin);
+    const visibleText = resolveVisibleUserTurnText(messageText)?.trim();
+    await commitPreparedSessionAfterUserMessagePersist(
+      messageText,
+      origin,
+      lastActiveAt,
+      visibleText ? visibleText.slice(0, 60) : undefined,
+    );
   } catch (error) {
     console.warn('[agent] prepared metadata commit after user message persist failed:', error);
   }
+  return lastActiveAt !== undefined;
 }
 
 export function getSessionId(): string {
@@ -8796,7 +8836,7 @@ export async function enqueueUserMessage(
     mirrorImages: toMirrorImages(resolvedImages),
   };
   if (!options?.beforeDispatch) {
-    await surfaceBuiltinUserMessage(directUserSurface);
+    await surfaceBuiltinUserMessage(directUserSurface, 'pre-admission');
   }
 
   if (admissionTicket?.canceled) {
@@ -8814,6 +8854,7 @@ export async function enqueueUserMessage(
     requestId,
     analyticsSource: analyticsSource ?? currentScenario.type,
     analyticsOrigin,
+    sessionBirthOrigin: options?.sessionBirthOrigin,
     providerAnalytics: turnProviderAnalytics,
     inboxMeta,
     turnOwner: options?.turnOwner,
@@ -12635,10 +12676,6 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         schedulePostTerminalQueueDrain('recovery');
         continue;
       }
-      if (item.deferredUserSurface) {
-        await surfaceBuiltinUserMessage(item.deferredUserSurface);
-        item.deferredUserSurface = undefined;
-      }
     }
     if (!item.wasQueued) {
       await prepareSessionPlansForUserTurn({ clearStale: true });
@@ -12655,6 +12692,13 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       continue;
     }
     releaseTurnAdmissionTicket(item.id);
+
+    const turnOrigin = item.analyticsOrigin ?? originFromTurnAttribution({
+      source: item.analyticsSource,
+      scenarioType: currentScenario.type,
+      desktopSurface: currentScenario.type === 'desktop' ? currentScenario.surface : undefined,
+      inboxMeta: item.inboxMeta,
+    });
 
     // Transition from pre-warm to active when processing a queued message.
     // Same race-handling as before: if enqueueUserMessage was called during
@@ -12734,12 +12778,64 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     }
     beginBuiltinTurnTrace(traceSource, traceTurnId, item.requestId);
     setCurrentTurnAnalyticsSource(item.analyticsSource ?? currentScenario.type);
-    setCurrentTurnAnalyticsOrigin(item.analyticsOrigin ?? null);
+    setCurrentTurnAnalyticsOrigin(turnOrigin);
     setCurrentTurnProviderAnalytics(item.providerAnalytics ?? buildTurnProviderAnalytics(configState.currentProviderEnv));
     setAssistantMessagePresent(false);
     setCurrentTurnSourceItem(item);
 
+    const activityFacts: SessionActivityTurnFacts = {
+      origin: turnOrigin,
+      inputText: item.messageText,
+      systemMaintenanceKind: getSessionMetadata(sessionId)?.systemMaintenanceKind,
+    };
+    item.activityFacts = activityFacts;
+    item.settleDispatchAcceptance?.({ accepted: true });
+    clearPromotedItem(item.id);
+    // Ownership transfers at admission, before its durable writes. Stop must
+    // therefore see this as the active turn throughout the persistence wait.
     isStreamingMessage = true;
+    const admissionActivityAt = shouldRecordAdmissionActivity(activityFacts)
+      ? new Date().toISOString()
+      : undefined;
+    let admissionActivityMerged = false;
+    if (item.deferredUserSurface) {
+      admissionActivityMerged = await surfaceBuiltinUserMessage(
+        item.deferredUserSurface,
+        'admission',
+        admissionActivityAt,
+      );
+      item.deferredUserSurface = undefined;
+    } else if (getSessionMetadata(sessionId)?.materializationState === 'prepared') {
+      const visibleText = resolveVisibleUserTurnText(item.messageText)?.trim();
+      try {
+        await commitPreparedSessionAfterUserMessagePersist(
+          item.messageText,
+          item.sessionBirthOrigin,
+          admissionActivityAt,
+          visibleText ? visibleText.slice(0, 60) : undefined,
+        );
+      } catch (error) {
+        console.warn('[agent] prepared metadata commit at admission failed:', error);
+      }
+      admissionActivityMerged = admissionActivityAt !== undefined;
+    }
+    if (admissionActivityAt && !admissionActivityMerged) {
+      try {
+        await persistMessagesToStorage(transcriptState.messages.length, admissionActivityAt);
+      } catch (error) {
+        console.error('[agent] admission activity metadata update failed:', error);
+      }
+    }
+    if (
+      lifecycleState.abortRequested
+      || isInterruptingResponse
+      || !isStreamingMessage
+      || getCurrentTurnSourceItem() !== item
+    ) {
+      item.resolve();
+      return;
+    }
+
     // Pattern B+G: push this user message's requestId onto the FIFO queue.
     pushPendingRequest(item.requestId);
 
@@ -12756,9 +12852,6 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         `[inbox] Bound turn inboxMeta from=${currentTurnInboxMeta.fromSessionId} replyBack=${currentTurnInboxMeta.replyBack} msgId=${currentTurnInboxMeta.originalMessageId}`,
       );
     }
-
-    item.settleDispatchAcceptance?.({ accepted: true });
-    clearPromotedItem(item.id);
 
     // Modality re-check at dequeue (see prior comment in pre-fix file).
     const yieldedMessage = stripUnsupportedModalityBlocks(item.message, configState.currentModel);

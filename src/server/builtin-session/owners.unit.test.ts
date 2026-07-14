@@ -203,7 +203,7 @@ describe('builtin-session owners', () => {
     expect(snapshotQueue().messageQueue.map(item => item.id)).toEqual(['q2', 'q1']);
   });
 
-  it('turn owner keeps pending request FIFO and notifies the current queue item once', () => {
+  it('turn owner keeps pending request FIFO and notifies the current queue item once', async () => {
     pushPendingRequest('r1');
     pushPendingRequest('r2');
     expect(getPendingRequestIds()).toEqual(['r1', 'r2']);
@@ -229,6 +229,7 @@ describe('builtin-session owners', () => {
       owner: { kind: 'goal', id: 'goal-1' },
     });
     notifyCurrentTurnTerminal('complete', { durationMs: 3_500 });
+    await waitForCurrentTurnTerminalObserver();
     expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
       status: 'complete',
       text: 'hello',
@@ -237,6 +238,7 @@ describe('builtin-session owners', () => {
       usage: { inputTokens: 120, outputTokens: 30 },
     }));
     notifyCurrentTurnTerminal('complete');
+    await waitForCurrentTurnTerminalObserver();
     expect(onTerminal).toHaveBeenCalledTimes(1);
   });
 
@@ -249,6 +251,7 @@ describe('builtin-session owners', () => {
     setCurrentTurnSourceItem(item);
 
     notifyCurrentTurnTerminal('complete');
+    notifyCurrentTurnTerminal('complete');
     let settled = false;
     void waitForCurrentTurnTerminalObserver().then(() => {
       settled = true;
@@ -256,6 +259,7 @@ describe('builtin-session owners', () => {
     await Promise.resolve();
     expect(settled).toBe(false);
 
+    await vi.waitFor(() => expect(release).toBeTypeOf('function'));
     release();
     await waitForCurrentTurnTerminalObserver();
     expect(settled).toBe(true);

@@ -38,6 +38,8 @@ export type ScheduleTranscriptPersistOptions = {
   sessionId: string;
   getCurrentSessionId: () => string;
   targetMessageCount?: number;
+  lastActiveAt?: string;
+  metadataDisposition?: 'update' | 'skip';
 };
 
 export function stripPlaywrightResults(content: ContentBlock[]): ContentBlock[] {
@@ -119,7 +121,12 @@ export function scheduleTranscriptPersist(options: ScheduleTranscriptPersistOpti
       console.warn(`[agent-session] skipping stale queued persist: scheduled for ${key}, current session is ${options.getCurrentSessionId()}`);
       return;
     }
-    return persistTranscriptNow({ sessionId: key, targetMessageCount });
+    return persistTranscriptNow({
+      sessionId: key,
+      targetMessageCount,
+      lastActiveAt: options.lastActiveAt,
+      metadataDisposition: options.metadataDisposition,
+    });
   });
   transcriptState.persistChainBySession.set(key, next);
   void next.finally(() => {
@@ -133,6 +140,8 @@ export function scheduleTranscriptPersist(options: ScheduleTranscriptPersistOpti
 export async function persistTranscriptNow(options: {
   sessionId: string;
   targetMessageCount?: number;
+  lastActiveAt?: string;
+  metadataDisposition?: 'update' | 'skip';
 }): Promise<void> {
   if (transcriptState.lastPersistedIndex > transcriptState.messages.length) {
     console.warn(`[agent-session] persist cursor (${transcriptState.lastPersistedIndex}) exceeds transcriptState.messages.length (${transcriptState.messages.length}); resetting`);
@@ -145,6 +154,13 @@ export async function persistTranscriptNow(options: {
   const targetMessageCount = options.targetMessageCount ?? transcriptState.messages.length;
   const boundedTargetCount = Math.min(targetMessageCount, transcriptState.messages.length);
   if (transcriptState.lastPersistedIndex >= boundedTargetCount) {
+    if (options.lastActiveAt && options.metadataDisposition !== 'skip') {
+      try {
+        await updateSessionMetadata(options.sessionId, { lastActiveAt: options.lastActiveAt });
+      } catch (error) {
+        console.error('[agent-session] failed to persist transcript metadata:', error);
+      }
+    }
     return;
   }
 
@@ -165,11 +181,17 @@ export async function persistTranscriptNow(options: {
   }
   setLastPersistedIndex(boundedTargetCount);
 
+  if (options.metadataDisposition === 'skip') return;
   const { preview: lastMessagePreview } =
     resolveLastVisibleTurnPreview(sessionMessages);
-  await updateSessionMetadata(options.sessionId, {
-    lastMessagePreview,
-  });
+  try {
+    await updateSessionMetadata(options.sessionId, {
+      ...(options.lastActiveAt ? { lastActiveAt: options.lastActiveAt } : {}),
+      lastMessagePreview,
+    });
+  } catch (error) {
+    console.error('[agent-session] failed to persist transcript metadata:', error);
+  }
 }
 
 export async function saveForkTranscript(sessionId: string, messages: SessionMessage[]): Promise<void> {

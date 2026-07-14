@@ -467,13 +467,11 @@ export function failCurrentImRequest(emit: ImEmitter, data?: unknown): void {
   emit('error', { requestId, ...(typeof data === 'object' && data ? data : {}) });
 }
 
-export function notifyCurrentTurnTerminal(
+export function snapshotCurrentTurnTerminalOutcome(
   status: TurnTerminalOutcome['status'],
   details: { error?: string; durationMs?: number } = {},
-): void {
-  const item = currentTurnSourceItem;
-  if (!item?.onTerminal) return;
-  const outcome: TurnTerminalOutcome = {
+): TurnTerminalOutcome {
+  return {
     status,
     text: getCurrentTurnText(),
     assistantMessagePresent: currentTurnAssistantMessagePresent,
@@ -488,7 +486,30 @@ export function notifyCurrentTurnTerminal(
     },
     ...(details.error ? { error: details.error } : {}),
   };
-  terminalObserverBarrier = notifyTurnItemTerminal(item, outcome);
+}
+
+export function notifyCurrentTurnTerminalOutcome(
+  outcome: TurnTerminalOutcome,
+  finalization: Promise<unknown> = Promise.resolve(),
+): void {
+  const item = currentTurnSourceItem;
+  const finalized = finalization
+    .catch((error) => {
+      console.error('[agent] turn finalization failed before terminal observer:', error);
+    });
+  terminalObserverBarrier = Promise.all([terminalObserverBarrier, finalized])
+    .then(() => item?.onTerminal ? notifyTurnItemTerminal(item, outcome) : undefined);
+}
+
+export function notifyCurrentTurnTerminal(
+  status: TurnTerminalOutcome['status'],
+  details: { error?: string; durationMs?: number } = {},
+  finalization: Promise<unknown> = Promise.resolve(),
+): void {
+  notifyCurrentTurnTerminalOutcome(
+    snapshotCurrentTurnTerminalOutcome(status, details),
+    finalization,
+  );
 }
 
 export function waitForCurrentTurnTerminalObserver(): Promise<void> {
