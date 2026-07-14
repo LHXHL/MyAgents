@@ -1044,7 +1044,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 
 // ============= CLI Sync =============
 
-const CLI_VERSION: &str = "36";
+const CLI_VERSION: &str = "37";
 
 /// Sync the CLI script from bundled resources to ~/.myagents/bin/.
 /// Version-gated: only runs when CLI_VERSION changes.
@@ -1206,7 +1206,7 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "33";
+const SYSTEM_SKILLS_VERSION: &str = "34";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1584,11 +1584,15 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v33_refreshes_memory_maintenance_and_space_cli_contracts() {
-        assert_eq!(SYSTEM_SKILLS_VERSION, "33");
+    fn v34_refreshes_memory_maintenance_and_space_cli_contracts() {
+        assert_eq!(SYSTEM_SKILLS_VERSION, "34");
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
         assert!(bundled.contains("myagents space list --json"));
         assert!(bundled.contains("myagents space whoami --space <slug> --json"));
+        assert!(bundled.contains("myagents space goal list --space <slug> --json"));
+        assert!(bundled.contains("myagents space issue update <issueId>"));
+        assert!(bundled.contains("--clear-goal"));
+        assert!(bundled.contains("只有精确 leaf help 明确声明支持的命令才使用 `--dry-run`"));
         assert!(bundled.contains("所有 Space 业务命令都必须带 `--space <slug>`"));
 
         let memory_update = include_str!("../../bundled-skills/myagents-memory-update/SKILL.md");

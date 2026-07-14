@@ -1965,7 +1965,9 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'space/list') return await api.handleSpaceList();
   if (route === 'space/whoami') return await api.handleSpaceWhoami(payload as Parameters<typeof api.handleSpaceWhoami>[0]);
   if (route === 'space/assignee-list') return await api.handleSpaceAssigneeList(payload as Parameters<typeof api.handleSpaceAssigneeList>[0]);
+  if (route === 'space/goal-list') return await api.handleSpaceGoalList(payload as Parameters<typeof api.handleSpaceGoalList>[0]);
   if (route === 'space/issue-create') return await api.handleSpaceIssueCreate(payload as Parameters<typeof api.handleSpaceIssueCreate>[0]);
+  if (route === 'space/issue-update') return await api.handleSpaceIssueUpdate(payload as Parameters<typeof api.handleSpaceIssueUpdate>[0]);
   if (route === 'space/issue-list') return await api.handleSpaceIssueList(payload as Parameters<typeof api.handleSpaceIssueList>[0]);
   if (route === 'space/issue-get') return await api.handleSpaceIssueGet(payload as Parameters<typeof api.handleSpaceIssueGet>[0]);
   if (route === 'space/issue-comment') return await api.handleSpaceIssueComment(payload as Parameters<typeof api.handleSpaceIssueComment>[0]);
