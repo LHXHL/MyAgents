@@ -808,7 +808,7 @@ export default function TabProvider({
         setPendingEnterPlanMode(null);
         setQueuedMessages([]);
         startedQueueIdsRef.current.clear();
-        clearAllBackgroundTaskStatuses();
+        clearAllBackgroundTaskStatuses(currentSessionIdRef.current);
     }, []);
 
     // Reset pagination state (firstItemIndex + hasMoreBefore + in-flight guard)
@@ -2987,9 +2987,11 @@ export default function TabProvider({
             // Background task lifecycle (SDK Task tool)
             case 'chat:task-started': {
                 console.log(`[TabProvider ${tabId}] ${eventName}:`, data);
-                const startPayload = data as { taskId?: string; toolUseId?: string; description?: string; taskType?: string };
+                const startPayload = data as { taskId?: string; toolUseId?: string; description?: string; taskType?: string; sessionId?: string | null };
+                if (!shouldAcceptInteractiveEvent(startPayload.sessionId)) break;
+                const eventSessionId = startPayload.sessionId ?? connectedSseSessionIdRef.current ?? currentSessionIdRef.current;
                 if (startPayload.taskId && startPayload.description) {
-                    setBackgroundTaskDescription(startPayload.taskId, startPayload.description);
+                    setBackgroundTaskDescription(startPayload.taskId, startPayload.description, eventSessionId);
                 }
                 // Register the toolUseId↔taskId mapping so TaskTool components
                 // (which only know their tool.id = toolUseId) can look up status
@@ -2998,7 +3000,7 @@ export default function TabProvider({
                     registerBackgroundTask(startPayload.taskId, startPayload.toolUseId, {
                         description: startPayload.description,
                         taskType: startPayload.taskType,
-                    });
+                    }, eventSessionId);
                 } else if (startPayload.taskId && !startPayload.toolUseId) {
                     console.warn(`[TabProvider ${tabId}] chat:task-started missing toolUseId for task ${startPayload.taskId} — background task status matching will degrade`);
                 }
@@ -3006,16 +3008,18 @@ export default function TabProvider({
             }
             case 'chat:task-notification': {
                 console.log(`[TabProvider ${tabId}] ${eventName}:`, data);
-                const payload = data as { taskId?: string; toolUseId?: string; status?: string; summary?: string };
+                const payload = data as { taskId?: string; toolUseId?: string; status?: string; summary?: string; sessionId?: string | null };
+                if (!shouldAcceptInteractiveEvent(payload.sessionId)) break;
+                const eventSessionId = payload.sessionId ?? connectedSseSessionIdRef.current ?? currentSessionIdRef.current;
                 if (payload.taskId && payload.status) {
-                    setBackgroundTaskStatus(payload.taskId, payload.status, payload.toolUseId);
+                    setBackgroundTaskStatus(payload.taskId, payload.status, payload.toolUseId, eventSessionId);
                     // Inject a visible notification message into the chat so the user
                     // understands why AI continues responding (prevents "AI talking to itself" UX).
                     // toolUseId 写进 JSON 是给 PRD 0.2.17 Agent Status Panel 用的「持久化完成证据」：
                     // backgroundTaskStatus 模块是 renderer 进程级 Map，Cmd+R / LRU 驱逐后会丢；
                     // 注入到消息历史里能扛住这些场景，让 useAgentStatusState 反查到「这条 BG 任务
                     // 在历史里已经 notified-complete」。
-                    const description = getBackgroundTaskDescription(payload.taskId);
+                    const description = getBackgroundTaskDescription(payload.taskId, eventSessionId);
                     const notificationData = JSON.stringify({
                         taskId: payload.taskId,
                         toolUseId: payload.toolUseId,

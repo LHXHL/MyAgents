@@ -11328,6 +11328,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             description: taskMsg.description,
           });
           broadcast('chat:task-started', {
+            sessionId,
             taskId: taskMsg.task_id,
             toolUseId: taskMsg.tool_use_id,
             description: taskMsg.description,
@@ -11350,6 +11351,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             terminalBroadcastedTaskIds.set(taskMsg.task_id, isRich);
             console.log(`[agent] Background task ${taskMsg.status}${enriching ? ' (enriching prior broadcast)' : ''}: ${taskMsg.task_id} — ${taskMsg.summary}`);
             broadcast('chat:task-notification', {
+              sessionId,
               taskId: taskMsg.task_id,
               toolUseId: taskMsg.tool_use_id,
               status: taskMsg.status,
@@ -11384,6 +11386,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               const normalized = patchStatus === 'killed' ? 'stopped' : patchStatus;
               console.log(`[agent] Background task ${normalized} (via task_updated)${enriching ? ' (enriching prior broadcast)' : ''}: ${taskMsg.task_id} — patch.status=${patchStatus}${errorSummary ? ` error=${errorSummary}` : ''}`);
               broadcast('chat:task-notification', {
+                sessionId,
                 taskId: taskMsg.task_id,
                 // task_updated.patch doesn't carry tool_use_id, so resolve it
                 // from the task_started record. The renderer can also bridge
@@ -12460,6 +12463,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     for (const [taskId, info] of startedBackgroundTasks) {
       console.log(`[agent] Background task orphaned by session teardown → flushing stopped: ${taskId} — ${info.description ?? ''}`);
       broadcast('chat:task-notification', {
+        sessionId,
         taskId,
         toolUseId: info.toolUseId,
         status: 'stopped',
