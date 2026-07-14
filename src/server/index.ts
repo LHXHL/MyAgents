@@ -1346,6 +1346,9 @@ const SYSTEM_SKILLS: readonly string[] = [
   // plugin / widget / im / config) to every AI session in the product.
   // Force-synced because SKILL.md must track CLI changes in lockstep.
   'myagents-cli',
+  // v35: stable product-use knowledge and expected-behaviour contract for
+  // every MyAgents session. Live operations remain in myagents-cli.
+  'myagents-docs',
   // v18: tool-creator — meta-skill for the CLI tool registry (PRD 0.2.36).
   // Teaches AI to author standards-compliant Agent-CLI tools and register
   // them via `myagents tool add`. Force-synced because its contract (eight
