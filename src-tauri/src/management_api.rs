@@ -176,7 +176,9 @@ pub async fn start_management_api() -> Result<u16, String> {
             "/api/space/assignee-list",
             post(space_assignee_list_handler),
         )
+        .route("/api/space/goal-list", post(space_goal_list_handler))
         .route("/api/space/issue-create", post(space_issue_create_handler))
+        .route("/api/space/issue-update", post(space_issue_update_handler))
         .route("/api/space/issue-list", post(space_issue_list_handler))
         .route("/api/space/issue-get", post(space_issue_get_handler))
         .route(
@@ -2656,6 +2658,14 @@ fn space_cli_error(error: String) -> serde_json::Value {
             Some("List valid typed assignee IDs for the selected Space, then retry with one returned assigneeId."),
             None,
         ),
+        "GOAL_NOT_FOUND" | "GOAL_IS_ARCHIVED" | "GOAL_ID_REQUIRED" => (
+            Some("List active Goals for the selected Space and copy a current data.items[].id."),
+            Some("myagents space goal list --space <slug> --json"),
+        ),
+        "ISSUE_MUTATION_CONFLICT" => (
+            Some("Re-read the authoritative Issue, then retry only after reconciling the concurrent change."),
+            Some("myagents space issue view <issueId> --space <slug> --json"),
+        ),
         "ATTACHMENT_REQUIRED" => (
             Some("Add one or more workspace files with repeated --file flags."),
             None,
@@ -2694,9 +2704,17 @@ fn space_cli_error(error: String) -> serde_json::Value {
         ),
         code if code.contains("PERMISSION")
             || code.contains("FORBIDDEN")
-            || code == "NOT_AUTHORIZED" => (
+            || code == "NOT_AUTHORIZED"
+            || code == "NOT_AUTHENTICATED"
+            || code == "SESSION_EXPIRED"
+            || code == "REGISTERED_AGENT_TOKEN_MISSING"
+            || code == "REGISTERED_AGENT_TOKEN_IS_INVALID_OR_REVOKED"
+            || code == "REGISTERED_AGENT_OWNER_MUST_BE_A_SPACE_OWNER_OR_ADMIN"
+            || code == "THIS_ISSUE_IS_HUMAN_ONLY"
+            || code == "THIS_ISSUE_IS_OUTSIDE_THIS_REGISTERED_AGENT_SUBSCRIPTION"
+            || code == "ONLY_OWNER_ADMIN_OR_THE_CREATOR_OF_AN_OPEN_ISSUE_CAN_EDIT_IT" => (
             Some("Verify the effective actor with space whoami; retry only with a User or Registered Agent that has permission for this action."),
-            None,
+            Some("myagents space whoami --space <slug> --json"),
         ),
         code if code.contains("NOT_FOUND") => (
             Some("Re-read the current Space or Issue state, copy a current stable ID, and retry."),
@@ -2748,10 +2766,22 @@ async fn space_assignee_list_handler(
     space_result(crate::space_cloud::space_cli_assignee_list(input).await)
 }
 
+async fn space_goal_list_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliGoalListInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_goal_list(input).await)
+}
+
 async fn space_issue_create_handler(
     Json(input): Json<crate::space_cloud::SpaceCliIssueCreateInput>,
 ) -> Json<serde_json::Value> {
     space_result(crate::space_cloud::space_cli_issue_create(input).await)
+}
+
+async fn space_issue_update_handler(
+    Json(input): Json<crate::space_cloud::SpaceCliIssueUpdateInput>,
+) -> Json<serde_json::Value> {
+    space_result(crate::space_cloud::space_cli_issue_update(input).await)
 }
 
 async fn space_issue_get_handler(
@@ -3491,6 +3521,96 @@ mod tests {
             .get("suggestion")
             .and_then(Value::as_str)
             .is_some_and(|value| value.starts_with("Run `myagents space list")));
+    }
+
+    #[test]
+    fn space_cli_error_routes_goal_conflict_and_permission_recovery() {
+        for code in ["GOAL_NOT_FOUND", "GOAL_IS_ARCHIVED"] {
+            let response = space_cli_error(format!("{code}: Goal cannot be assigned."));
+            assert_eq!(response.get("code").and_then(Value::as_str), Some(code));
+            assert_eq!(
+                response.get("suggestedCommand").and_then(Value::as_str),
+                Some("myagents space goal list --space <slug> --json")
+            );
+            assert!(response
+                .get("suggestion")
+                .and_then(Value::as_str)
+                .is_some_and(|value| value.contains("data.items[].id")));
+        }
+
+        let conflict = space_cli_error(
+            "ISSUE_MUTATION_CONFLICT: Issue changed while applying mutation".to_string(),
+        );
+        assert_eq!(
+            conflict.get("suggestedCommand").and_then(Value::as_str),
+            Some("myagents space issue view <issueId> --space <slug> --json")
+        );
+
+        for code in [
+            "SESSION_EXPIRED",
+            "REGISTERED_AGENT_TOKEN_IS_INVALID_OR_REVOKED",
+            "REGISTERED_AGENT_OWNER_MUST_BE_A_SPACE_OWNER_OR_ADMIN",
+            "THIS_ISSUE_IS_OUTSIDE_THIS_REGISTERED_AGENT_SUBSCRIPTION",
+            "ONLY_OWNER_ADMIN_OR_THE_CREATOR_OF_AN_OPEN_ISSUE_CAN_EDIT_IT",
+        ] {
+            let permission = space_cli_error(format!("{code}: Forbidden"));
+            assert_eq!(permission.get("code").and_then(Value::as_str), Some(code));
+            assert_eq!(
+                permission.get("suggestedCommand").and_then(Value::as_str),
+                Some("myagents space whoami --space <slug> --json")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn management_api_registers_goal_list_and_issue_update_routes() {
+        let _mock = crate::space_cloud_mock::enable_for_test();
+        let workspace = std::env::current_dir().expect("current workspace");
+        let user_workspace =
+            tempfile::tempdir_in(workspace).expect("User workspace inside project");
+        let port = start_management_api()
+            .await
+            .expect("management API should start");
+        let client = crate::local_http::json_client(std::time::Duration::from_secs(5));
+
+        let goals = client
+            .post(format!("http://127.0.0.1:{port}/api/space/goal-list"))
+            .json(&serde_json::json!({
+                "spaceSlug": "official",
+                "includeArchived": false,
+                "workspacePath": user_workspace.path()
+            }))
+            .send()
+            .await
+            .expect("goal-list route request")
+            .json::<Value>()
+            .await
+            .expect("goal-list route response");
+        assert_eq!(goals.get("ok").and_then(Value::as_bool), Some(true));
+        assert!(goals
+            .pointer("/data/items")
+            .and_then(Value::as_array)
+            .is_some_and(|items| !items.is_empty()));
+
+        let updated = client
+            .post(format!("http://127.0.0.1:{port}/api/space/issue-update"))
+            .json(&serde_json::json!({
+                "spaceSlug": "official",
+                "issueId": "iss_mock_001",
+                "title": "Updated through Management API",
+                "workspacePath": user_workspace.path()
+            }))
+            .send()
+            .await
+            .expect("issue-update route request")
+            .json::<Value>()
+            .await
+            .expect("issue-update route response");
+        assert_eq!(updated.get("ok").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            updated.pointer("/data/issue/title").and_then(Value::as_str),
+            Some("Updated through Management API")
+        );
     }
 
     #[test]
