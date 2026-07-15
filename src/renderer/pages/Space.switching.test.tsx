@@ -71,12 +71,34 @@ vi.mock("@/pages/space/SpaceChrome", () => ({
       <button type="button" onClick={() => onSpaceSwitch("team", "skills")}>
         show team skills
       </button>
+      <button type="button" onClick={() => onSpaceSwitch("team", "issues")}>
+        show team issues
+      </button>
     </aside>
   ),
 }));
 
 vi.mock("@/pages/space/issues/IssuesWorkspace", () => ({
-  IssuesWorkspace: () => <main>issues</main>,
+  IssuesWorkspace: ({
+    selectedStatus,
+    onStatusChange,
+  }: {
+    selectedStatus: string;
+    onStatusChange: (value: string) => void;
+  }) => (
+    <main>
+      issues
+      <output aria-label="selected issue status">
+        {selectedStatus || "all"}
+      </output>
+      <button
+        type="button"
+        onClick={() => onStatusChange("open,todo,doing")}
+      >
+        set incomplete
+      </button>
+    </main>
+  ),
 }));
 
 vi.mock("@/pages/space/issues/CreateIssueDialog", () => ({
@@ -163,6 +185,10 @@ describe("Space switching", () => {
     });
     expect(harness.actions.refreshIssues).toHaveBeenCalledTimes(1);
     expect(harness.actions.refreshGoals).toHaveBeenCalledTimes(1);
+    expect(harness.actions.refreshIssues).toHaveBeenLastCalledWith(
+      expect.objectContaining({ state: "" }),
+      expect.any(Object),
+    );
 
     harness.data = snapshot("myagents");
     view.rerender(<Space isActive />);
@@ -188,6 +214,22 @@ describe("Space switching", () => {
       switching.resolve();
       await switching.promise;
     });
+  });
+
+  it("resets the Issue status to all when entering another Space", () => {
+    render(<Space isActive />);
+
+    fireEvent.click(screen.getByRole("button", { name: "set incomplete" }));
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "open,todo,doing",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "show team issues" }));
+
+    expect(harness.actions.switchSpace).toHaveBeenCalledWith("team", undefined);
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "all",
+    );
   });
 
   it("reloads the selected non-Issue workspace for the new Space", async () => {

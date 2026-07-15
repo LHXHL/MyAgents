@@ -421,6 +421,9 @@
       "remoteUpdatesAvailable": "有更新，点击刷新"
     },
     "filters": {
+      "issueStatus": "Issue 状态",
+      "allIssues": "全部",
+      "incompleteIssues": "未完成",
       "allGoals": "全部目标",
       "inbox": "收件箱",
       "activeStatuses": "未完成",

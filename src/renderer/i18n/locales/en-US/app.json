@@ -421,6 +421,9 @@
       "remoteUpdatesAvailable": "Updates available — refresh"
     },
     "filters": {
+      "issueStatus": "Issue status",
+      "allIssues": "All",
+      "incompleteIssues": "Incomplete",
       "allGoals": "All goals",
       "inbox": "Inbox",
       "activeStatuses": "Active",
