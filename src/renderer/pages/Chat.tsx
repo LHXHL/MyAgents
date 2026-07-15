@@ -5060,8 +5060,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
 
           {/* Query Navigator — floating right-side panel for quick session navigation */}
           <QueryNavigator
-            historyMessages={historyMessages}
-            streamingMessage={streamingMessage}
+            messages={chatScrollModel.data}
             scrollContainerRef={scrollerRef as React.RefObject<HTMLDivElement | null>}
             pauseAutoScroll={pauseAutoScroll}
             onNavigateToQuery={handleNavigateToQuery}
@@ -5094,7 +5093,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             onRevealInTree={handleRevealInTree}
           >
             <MessageList
-              historyMessages={historyMessages}
+              messages={chatScrollModel.data}
               streamingMessage={streamingMessage}
               firstItemIndex={chatScrollModel.firstItemIndex}
               heightEstimateSeed={chatScrollModel.heightEstimateSeed}

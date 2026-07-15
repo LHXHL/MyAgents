@@ -82,6 +82,7 @@ import {
     shouldNotifyUser,
 } from '@/services/notificationService';
 import { setBackgroundTaskStatus, setBackgroundTaskDescription, getBackgroundTaskDescription, clearAllBackgroundTaskStatuses, registerBackgroundTask } from '@/utils/backgroundTaskStatus';
+import { countVisibleChatTimelineRows, shiftFirstItemIndexForVisiblePrepend } from '@/utils/chatTimelineRows';
 import {
     EMPTY_LIVE_REVISION_FENCE,
     beginLiveRevisionRestore,
@@ -4364,18 +4365,17 @@ export default function TabProvider({
                 hasMoreBeforeRef.current = nextHasMore;
                 return;
             }
-            options?.beforePrepend?.(freshBeforeCommit.length);
+            options?.beforePrepend?.(countVisibleChatTimelineRows(freshBeforeCommit));
 
-            // Prepend in a single React commit. Decrementing firstItemIndex by
-            // the prepend count is Virtuoso's contract for keeping the visible
-            // scroll position stable — the items the user is looking at retain
-            // their absolute index and stay pinned on screen.
+            // Prepend raw history in a single React commit, but decrement
+            // firstItemIndex only by rows that enter Virtuoso. Hidden persisted
+            // task notifications do not occupy the visual index space.
             setHistoryMessages(prev => {
                 const known = new Set(prev.map(m => m.id));
                 const fresh = older.filter(m => !known.has(m.id));
                 if (fresh.length === 0) return prev;
                 for (const m of fresh) seenIdsRef.current.add(m.id);
-                setFirstItemIndex(idx => idx - fresh.length);
+                setFirstItemIndex(idx => shiftFirstItemIndexForVisiblePrepend(idx, fresh));
                 return [...fresh, ...prev];
             });
             const nextHasMore = resp.session.hasMoreBefore ?? false;
