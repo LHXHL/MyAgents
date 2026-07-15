@@ -588,6 +588,39 @@
         "file": "文件: {{path}}",
         "folder": "文件夹: {{path}}"
       },
+      "filePatch": {
+        "moreActions": "更多文件操作",
+        "unnamedFile": "未命名文件",
+        "operation": {
+          "add": "新建",
+          "update": "修改",
+          "delete": "删除",
+          "move": "移动",
+          "write": "写入",
+          "change": "变更"
+        },
+        "replaceAll": "替换全部",
+        "userModified": "结果已在审批时调整",
+        "noTextChanges": "没有文本变更",
+        "emptyWrittenContent": "写入后的文件内容为空",
+        "detailUnavailable": "变更详情不可用",
+        "previousVersionUnavailable": "结果未提供旧版本",
+        "rawResult": "原始工具结果",
+        "diffAria": "{{file}} 的变更",
+        "addedLine": "新增第 {{line}} 行",
+        "removedLine": "删除第 {{line}} 行",
+        "addedLineUnknown": "新增行",
+        "removedLineUnknown": "删除行",
+        "moveTo": "移动到 {{path}}",
+        "status": {
+          "declined": "已拒绝",
+          "failed": "失败",
+          "stopped": "已停止",
+          "interrupted": "已中断",
+          "running": "运行中",
+          "unknown": "{{status}}"
+        }
+      },
       "image": {
         "noLocalPath": "没有可复制的本地路径",
         "copyPathSuccess": "已复制图片路径",

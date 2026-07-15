@@ -6,6 +6,7 @@ import type { ToolUseSimple } from '@/types/chat';
 
 import EditTool from './EditTool';
 import { getToolSummaryNode } from './toolBadgeConfig';
+import WriteTool from './WriteTool';
 
 function codexEditTool(): ToolUseSimple {
   return {
@@ -19,7 +20,7 @@ function codexEditTool(): ToolUseSimple {
         {
           path: '/tmp/a.md',
           kind: { type: 'update', move_path: null },
-          diff: '@@ -1,2 +1,3 @@\n keep\n-old\n+new\n+extra',
+          diff: '@@ -1,2 +1,3 @@\n keep\n-old\n+new\n+extra\n\\ No newline at end of file',
         },
         {
           path: '/tmp/new.md',
@@ -34,14 +35,14 @@ function codexEditTool(): ToolUseSimple {
 
 describe('EditTool Codex fileChange rendering', () => {
   it('shows the base header while Edit input is still empty', () => {
-    render(<EditTool tool={{
+    const { container } = render(<EditTool tool={{
       id: 'call-empty-edit',
       name: 'Edit',
       input: {},
       streamIndex: 0,
     }} />);
 
-    expect(screen.getByText('Edit')).toBeInTheDocument();
+    expect(container).toBeEmptyDOMElement();
   });
 
   it('falls back to raw result when no file patch display can be resolved', () => {
@@ -54,7 +55,7 @@ describe('EditTool Codex fileChange rendering', () => {
       isError: true,
     }} />);
 
-    expect(screen.getByText('Edit')).toBeInTheDocument();
+    expect(screen.getByText('原始工具结果')).toBeInTheDocument();
     expect(screen.getByText((content) => content.includes('File changed'))).toBeInTheDocument();
   });
 
@@ -89,20 +90,31 @@ describe('EditTool Codex fileChange rendering', () => {
     const { inputJson: _inputJson, parsedInput, ...tool } = codexEditTool();
     render(<EditTool tool={{ ...tool, input: parsedInput as Record<string, unknown> }} />);
 
-    expect(screen.getByText('2 files')).toBeInTheDocument();
-    expect(screen.getAllByText('/tmp/a.md').length).toBeGreaterThan(0);
+    expect(screen.getByRole('heading', { name: 'a.md' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'new.md' })).toBeInTheDocument();
+    expect(screen.queryByText('/tmp/a.md')).not.toBeInTheDocument();
+    expect(screen.getByText('修改')).toBeInTheDocument();
+    expect(screen.getByText('新建')).toBeInTheDocument();
     expect(screen.getByText((content) => content.includes('@@ -1,2 +1,3 @@'))).toBeInTheDocument();
     expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument();
   });
 
   it('renders structured Codex diffs instead of the raw [object Object] result', () => {
-    render(<EditTool tool={codexEditTool()} />);
+    const { container } = render(<EditTool tool={codexEditTool()} />);
 
-    expect(screen.getByText('2 files')).toBeInTheDocument();
-    expect(screen.getAllByText('update')[0]).toBeInTheDocument();
-    expect(screen.getByText('add')).toBeInTheDocument();
-    expect(screen.getAllByText('/tmp/a.md').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('/tmp/new.md').length).toBeGreaterThan(0);
+    expect(screen.getByRole('heading', { name: 'a.md' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'new.md' })).toBeInTheDocument();
+    expect(screen.getByText('修改')).toBeInTheDocument();
+    expect(screen.getByText('新建')).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-diff-kind="add"]').length).toBeGreaterThan(0);
+    expect(container.querySelectorAll('[data-diff-kind="remove"]').length).toBeGreaterThan(0);
+    expect(container.querySelector('[data-diff-column="old-line"]')).toHaveClass('select-none');
+    expect(container.querySelector('[data-diff-column="new-line"]')).toHaveClass('select-none');
+    expect(container.querySelector('[data-diff-column="marker"]')).toHaveClass('select-none');
+    expect(container.querySelector('[data-diff-column="code"]')).toHaveClass('select-text');
+    expect(container.querySelector('[data-diff-kind="hunk"]')).toHaveClass('select-none');
+    expect(container.querySelector('[data-diff-kind="omission"]')).toHaveClass('select-none');
+    expect(container.querySelector('[aria-label="a.md 的变更"]')).toHaveAttribute('tabindex', '0');
     expect(screen.getByText((content) => content.includes('@@ -1,2 +1,3 @@'))).toBeInTheDocument();
     expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument();
   });
@@ -129,10 +141,11 @@ describe('EditTool Codex fileChange rendering', () => {
 
     render(<EditTool tool={tool} />);
 
-    expect(screen.getByText('declined')).toBeInTheDocument();
-    expect(screen.getAllByText('/tmp/old.md').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('/tmp/new.md').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('->').length).toBeGreaterThan(0);
+    expect(screen.getByText('已拒绝')).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'old.md' })).toBeInTheDocument();
+    expect(screen.getByText('new.md')).toBeInTheDocument();
+    expect(screen.getByText('移动')).toBeInTheDocument();
+    expect(screen.getByText('移动到 new.md')).toHaveClass('sr-only');
   });
 });
 
@@ -166,5 +179,92 @@ describe('tool summary input fallback', () => {
 
     const chinese = render(<>{getToolSummaryNode(pluralTool, translateWith(zh))}</>);
     expect(chinese.container.textContent?.trim()).toBe('写入 3 行');
+  });
+});
+
+describe('WriteTool file patch rendering', () => {
+  it('renders input-only Write as neutral written content without inventing additions', () => {
+    const tool: ToolUseSimple = {
+      id: 'call-write-input-only',
+      name: 'Write',
+      input: {
+        file_path: '/tmp/generated.ts',
+        content: 'export const answer = 42;\nexport default answer;',
+      },
+      streamIndex: 0,
+    };
+
+    const { container } = render(<WriteTool tool={tool} />);
+
+    expect(screen.getByRole('heading', { name: 'generated.ts' })).toBeInTheDocument();
+    expect(screen.getByText('写入')).toBeInTheDocument();
+    expect(screen.getByText('写入 2 行')).toBeInTheDocument();
+    expect(screen.getByText('结果未提供旧版本')).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-diff-kind="add"]')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-diff-kind="context"]')).toHaveLength(2);
+  });
+
+  it('renders trusted SDK write output with status metadata and syntax-highlighted rows', () => {
+    const tool: ToolUseSimple = {
+      id: 'call-write-sdk',
+      name: 'Write',
+      input: { file_path: '/tmp/generated.ts', content: 'const answer = 42;' },
+      streamIndex: 0,
+      result: JSON.stringify({
+        type: 'create',
+        filePath: '/tmp/generated.ts',
+        content: 'const answer = 42;',
+        originalFile: null,
+        structuredPatch: [{
+          oldStart: 0,
+          oldLines: 0,
+          newStart: 1,
+          newLines: 1,
+          lines: ['+const answer = 42;'],
+        }],
+        userModified: true,
+      }),
+    };
+
+    const { container } = render(<WriteTool tool={tool} />);
+
+    expect(screen.getByText('新建')).toBeInTheDocument();
+    expect(screen.getByText('结果已在审批时调整')).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-diff-kind="add"]')).toHaveLength(1);
+    expect(container.querySelector('[data-diff-kind="add"] span[style]')).toBeInTheDocument();
+  });
+
+  it('represents an empty input-only Write as a potentially destructive write, not a no-op', () => {
+    render(<WriteTool tool={{
+      id: 'call-write-empty',
+      name: 'Write',
+      input: { file_path: '/tmp/existing.txt', content: '' },
+      streamIndex: 0,
+    }} />);
+
+    expect(screen.getByText('写入 0 行')).toBeInTheDocument();
+    expect(screen.getByText('写入后的文件内容为空')).toBeInTheDocument();
+    expect(screen.queryByText('没有文本变更')).not.toBeInTheDocument();
+  });
+
+  it('keeps section heading relationships unique across separate tool instances', () => {
+    const first = render(<WriteTool tool={{
+      id: 'call-write-first',
+      name: 'Write',
+      input: { file_path: '/tmp/foo bar.ts', content: 'one' },
+      streamIndex: 0,
+    }} />);
+    const second = render(<WriteTool tool={{
+      id: 'call-write-second',
+      name: 'Write',
+      input: { file_path: '/tmp/foo@bar.ts', content: 'two' },
+      streamIndex: 0,
+    }} />);
+
+    const firstSection = first.container.querySelector('section[aria-labelledby]');
+    const secondSection = second.container.querySelector('section[aria-labelledby]');
+    expect(firstSection?.getAttribute('aria-labelledby')).not.toBe(secondSection?.getAttribute('aria-labelledby'));
+    expect(first.container.querySelector(`#${CSS.escape(firstSection?.getAttribute('aria-labelledby') ?? '')}`)).toBeInTheDocument();
+    expect(second.container.querySelector(`#${CSS.escape(secondSection?.getAttribute('aria-labelledby') ?? '')}`)).toBeInTheDocument();
   });
 });

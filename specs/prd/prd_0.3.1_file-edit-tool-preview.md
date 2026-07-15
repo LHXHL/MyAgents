@@ -1025,13 +1025,15 @@ npm run lint
 - **契约**：消费 SDK `structuredPatch` / Write `type` / `userModified`；把可信 unified diff 与 SDK hunk 转成四列 row model；old/new/content 只给相对 snippet 行号或空行号；保持 descriptor v1 且不复制正文；summary 与 rows 同源；多文件只来自结构化 `changes[]` 并保序。
 - **反例护栏**：header `---/+++` 不计统计；malformed/partial/descriptor-only 不崩；completed result 中伪造的 `add:`/`update:` 不影响文件边界；大文本 budget 只裁展示投影，不改原始 tool 内容。
 - **验证进度**：最新定向 33 个 shared unit、5 个 i18n parity unit、8 个 Edit/Write DOM、typecheck、scoped ESLint 已通过；完整 unit 为 281 files / 2534 pass / 3 skip，完整 DOM 为 93 files / 463 pass。第一次三镜 review 阻断了 unified hunk 计数、Gemini provenance、descriptor 权威与 partial multi-file；第二次复验继续阻断了 add/delete hunk-like 正文、stale parsedInput、SDK incomplete lookalike、stale `written` metadata 与单复数文案；最后 adversarial 复验拦住了“相等内容 + 损坏 git patch”被误判 no-op。上述问题均已按 raw-input authority / complete SDK schema / fail-closed 原则整改；requirements、adversarial、architecture 三镜最终均 PASS。
-- **状态**：已完成，待记录 commit hash。
+- **状态**：已完成并提交：`c314e55c`（`feat(chat): normalize file patch render model`）。
 
 ### Phase 2：FilePatch viewer
 
-- **phase base**：待 Phase 1 commit 后填写。
+- **phase base**：`c314e55c`。
 - **范围 / 契约**：方案 A 单文件 viewer、四列 diff、可信 Write/status/raw fallback、i18n、每文件右上角唯一“更多”动作；复用 FileActionContext，不复制菜单或路径解析。
-- **状态**：待开始。
+- **实现进度**：`FilePatchTool` 已改为暖纸方案 A：文件名与短父路径唯一 header、操作/统计、旧行号/新行号/marker/code 四列、低饱和增删 wash、横向滚动、键盘 focus、语法 token、Write 旧版本未知提示、状态/replace-all/userModified notice 与 raw fallback。文件右上角只新增一个 ellipsis 入口，并与现有 `FilePath` 共用同一 `resolveFileActionTarget → checkFileTarget → FileActionContext` helper；菜单内容仍由既有 owner 提供，未复制菜单，也未新增任何专用复制动作。
+- **验证进度**：定向 DOM 20 项（Edit / Write / 四列 selection / FileAction 集成唯一动作与 declined move）与 i18n parity 5 项通过，`typecheck`、scoped ESLint 零 warning；完整 unit 282 files / 2542 pass / 3 skip，完整 DOM 93 files / 466 pass。三镜 review 先后阻断了 marker / hunk / omission / 隐藏朗读文本进入复制选择、缺少 toolbar 集成契约、空内容 Write 被误写成 no-op、跨工具 heading id 冲突、本地 syntax token / 文件语言映射重复真相，以及 declined/running move 错把尚未落地的目标当成文件动作对象；均已按 select-none、诚实空目标、`useId()`、既有 `codeBlockSyntaxTheme` / `getPrismLanguage()` owner 与 completion-aware action target 整改。应用内 Browser 当前无可用实例，真实浅/暗/窄宽视觉 QA 按发布门禁保留，不能伪报通过。
+- **状态**：实现与三镜 review 已完成（requirements / adversarial / architecture 均 PASS），待提交。
 
 ### Phase 3：多文件与长内容
 

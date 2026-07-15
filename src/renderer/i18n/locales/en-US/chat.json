@@ -588,6 +588,39 @@
         "file": "File: {{path}}",
         "folder": "Folder: {{path}}"
       },
+      "filePatch": {
+        "moreActions": "More file actions",
+        "unnamedFile": "Unnamed file",
+        "operation": {
+          "add": "Created",
+          "update": "Modified",
+          "delete": "Deleted",
+          "move": "Moved",
+          "write": "Write",
+          "change": "Changed"
+        },
+        "replaceAll": "Replace all",
+        "userModified": "Result adjusted during approval",
+        "noTextChanges": "No text changes",
+        "emptyWrittenContent": "The written file content is empty",
+        "detailUnavailable": "Change details unavailable",
+        "previousVersionUnavailable": "The result did not provide the previous version",
+        "rawResult": "Raw tool result",
+        "diffAria": "Changes for {{file}}",
+        "addedLine": "Added line {{line}}",
+        "removedLine": "Removed line {{line}}",
+        "addedLineUnknown": "Added line",
+        "removedLineUnknown": "Removed line",
+        "moveTo": "Move to {{path}}",
+        "status": {
+          "declined": "Declined",
+          "failed": "Failed",
+          "stopped": "Stopped",
+          "interrupted": "Interrupted",
+          "running": "Running",
+          "unknown": "{{status}}"
+        }
+      },
       "image": {
         "noLocalPath": "No local path to copy",
         "copyPathSuccess": "Image path copied",
