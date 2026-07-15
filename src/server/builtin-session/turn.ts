@@ -535,6 +535,11 @@ export function getCurrentTurnIdentity(): TurnIdentity | null {
   return item?.turnOwner ? { queueId: item.id, owner: item.turnOwner } : null;
 }
 
+/** Exact accepted runtime queue identity, including ownerless maintenance turns. */
+export function getCurrentTurnQueueId(): string | null {
+  return currentTurnSourceItem?.id ?? null;
+}
+
 export function recordCurrentTurnCompletionTerminal(params: {
   sessionId: string;
   workspacePath: string;

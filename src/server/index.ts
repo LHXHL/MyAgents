@@ -9005,9 +9005,8 @@ description: >
           if (!turnResult.success) {
             return respondAfterDrain({
               status: 'error',
-              text: turnResult.status === 408
-                ? 'Heartbeat timeout'
-                : (turnResult.error ?? 'Heartbeat failed'),
+              text: turnResult.error
+                ?? (turnResult.status === 408 ? 'Heartbeat timeout' : 'Heartbeat failed'),
             });
           }
           if (engine.kind === 'builtin' && turnResult.assistantMessagePresent === false) {
@@ -9172,6 +9171,8 @@ description: >
             console.warn('[memory-update] AI memory update timed out (60 min)');
             return jsonResponse({
               status: 'timeout',
+              reason: turnResult.error ?? 'AI memory update timed out',
+              ...(turnResult.detail ? { detail: turnResult.detail } : {}),
               ...(turnResult.terminationUnconfirmed ? { terminationUnconfirmed: true } : {}),
             });
           }

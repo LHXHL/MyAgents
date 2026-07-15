@@ -459,6 +459,17 @@ describe('turn-lifecycle owner', () => {
     expect(transcriptState.messages).toEqual([]);
   });
 
+  it('drains deferred restart ownership after accepted setup fails before SDK dispatch', async () => {
+    const { deps } = makeDeps();
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+
+    lifecycle.failAdmittedTurnSetup('metadata setup failed');
+
+    await waitForCurrentTurnTerminalObserver();
+    expect(deps.schedulePostTerminalQueueDrain).toHaveBeenCalledWith('error');
+    expect(deps.applyDeferredRestartIfNeeded).toHaveBeenCalledOnce();
+  });
+
   it('surfaces forced in-flight items but preserves natural completions for SDK replay', () => {
     const { deps } = makeDeps({
       getIsInterruptingResponse: () => true,

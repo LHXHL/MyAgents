@@ -5,10 +5,36 @@ import type { BuiltinLifecycleSnapshot, MessageQueueItem } from './types';
 const PRE_WARM_MAX_RETRIES = 3;
 
 let querySession: Query | null = null;
+let queryGeneration = 0;
+let queryMcpRevision = 0;
+let queryMcpReadinessOwner: {
+  query: Query;
+  generation: number;
+  revision: number;
+  fingerprint: string;
+  requiredServerIds: readonly string[];
+  statusRead?: ReturnType<Query['mcpServerStatus']>;
+} | null = null;
+export type QueryMcpMutationResult =
+  | { ok: true }
+  | {
+    ok: false;
+    reason: 'failed' | 'timeout' | 'deferred' | 'query_replaced';
+    error: string;
+  };
+
+let queryMcpMutationOwner: {
+  query: Query;
+  generation: number;
+  promise: Promise<QueryMcpMutationResult>;
+  settle(result: QueryMcpMutationResult): void;
+} | null = null;
 let isProcessing = false;
 let abortRequested = false;
 let sessionTerminationPromise: Promise<void> | null = null;
+let abortCleanupPromise: Promise<void> | null = null;
 let messageResolver: ((item: MessageQueueItem | null) => void) | null = null;
+const queryExitWaiters = new Set<{ query: Query; resolve: () => void }>();
 let isPreWarming = false;
 let preWarmTimer: ReturnType<typeof setTimeout> | null = null;
 let preWarmFailCount = 0;
@@ -17,12 +43,34 @@ let systemInitInfo: SystemInitInfo | null = null;
 let sdkControlReady = false;
 let liveRevision = 0;
 
+function replaceQuerySession(session: Query | null): void {
+  if (querySession === session) return;
+  const previousQuery = querySession;
+  if (queryMcpMutationOwner) {
+    queryMcpMutationOwner.settle({
+      ok: false,
+      reason: 'query_replaced',
+      error: 'Query was replaced during MCP transport mutation',
+    });
+  }
+  querySession = session;
+  queryGeneration += 1;
+  queryMcpReadinessOwner = null;
+  if (previousQuery) {
+    for (const waiter of queryExitWaiters) {
+      if (waiter.query !== previousQuery) continue;
+      queryExitWaiters.delete(waiter);
+      waiter.resolve();
+    }
+  }
+}
+
 export const lifecycleState = {
   get query(): Query | null {
     return querySession;
   },
   set query(session: Query | null) {
-    querySession = session;
+    replaceQuerySession(session);
   },
   get processing(): boolean {
     return isProcessing;
@@ -95,13 +143,135 @@ export function hasQuerySession(): boolean {
 }
 
 export function setQuerySession(session: Query | null): void {
-  querySession = session;
+  replaceQuerySession(session);
 }
 
 export function clearQuerySession(): Query | null {
   const session = querySession;
-  querySession = null;
+  replaceQuerySession(null);
   return session;
+}
+
+export function setQueryMcpReadinessOwner(params: {
+  query: Query;
+  fingerprint: string;
+  requiredServerIds: readonly string[];
+}): boolean {
+  if (querySession !== params.query) return false;
+  queryMcpRevision += 1;
+  queryMcpReadinessOwner = {
+    query: params.query,
+    generation: queryGeneration,
+    revision: queryMcpRevision,
+    fingerprint: params.fingerprint,
+    requiredServerIds: [...params.requiredServerIds].sort(),
+  };
+  return true;
+}
+
+export function clearQueryMcpReadinessOwner(query?: Query): void {
+  if (query && queryMcpReadinessOwner?.query !== query) return;
+  queryMcpReadinessOwner = null;
+}
+
+export function getQueryMcpReadinessOwner(): {
+  query: Query;
+  generation: number;
+  revision: number;
+  fingerprint: string;
+  requiredServerIds: readonly string[];
+} | null {
+  if (!queryMcpReadinessOwner || queryMcpReadinessOwner.query !== querySession) return null;
+  return {
+    ...queryMcpReadinessOwner,
+    requiredServerIds: [...queryMcpReadinessOwner.requiredServerIds],
+  };
+}
+
+/**
+ * One SDK mcp_status control request at a time per Query owner. The SDK API
+ * has no AbortSignal; if one request wedges, retries share it instead of
+ * accumulating pendingControlResponses until Query teardown.
+ */
+export function readQueryMcpStatuses(query: Query): ReturnType<Query['mcpServerStatus']> {
+  const owner = queryMcpReadinessOwner;
+  if (!owner || owner.query !== query || querySession !== query) {
+    return Promise.reject(new Error('MCP readiness owner is no longer current'));
+  }
+  if (owner.statusRead) return owner.statusRead;
+  const read = query.mcpServerStatus();
+  owner.statusRead = read.finally(() => {
+    if (queryMcpReadinessOwner === owner) owner.statusRead = undefined;
+  });
+  return owner.statusRead;
+}
+
+/**
+ * Claim the one live MCP transport mutation allowed for the current Query
+ * generation. The owner is published synchronously before `run` starts, so a
+ * generator promotion in the next microtask can fence on the same promise.
+ */
+export function claimQueryMcpMutation(
+  query: Query,
+  run: () => Promise<QueryMcpMutationResult>,
+): { claimed: boolean; promise: Promise<QueryMcpMutationResult> } {
+  if (querySession !== query) {
+    return {
+      claimed: false,
+      promise: Promise.resolve({
+        ok: false,
+        reason: 'query_replaced',
+        error: 'Query was replaced before MCP transport mutation',
+      }),
+    };
+  }
+  if (queryMcpMutationOwner) {
+    return { claimed: false, promise: queryMcpMutationOwner.promise };
+  }
+
+  let resolvePromise!: (result: QueryMcpMutationResult) => void;
+  const promise = new Promise<QueryMcpMutationResult>((resolve) => {
+    resolvePromise = resolve;
+  });
+  const owner = {
+    query,
+    generation: queryGeneration,
+    promise,
+    settle(result: QueryMcpMutationResult) {
+      if (queryMcpMutationOwner !== owner) return;
+      queryMcpMutationOwner = null;
+      resolvePromise(result);
+    },
+  };
+  queryMcpMutationOwner = owner;
+
+  try {
+    void run().then(
+      result => owner.settle(result),
+      error => owner.settle({
+        ok: false,
+        reason: 'failed',
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+  } catch (error) {
+    owner.settle({
+      ok: false,
+      reason: 'failed',
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  return { claimed: true, promise };
+}
+
+export function getQueryMcpMutation(
+  query: Query | null = querySession,
+): { generation: number; promise: Promise<QueryMcpMutationResult> } | null {
+  if (!query || !queryMcpMutationOwner || queryMcpMutationOwner.query !== query) return null;
+  return {
+    generation: queryMcpMutationOwner.generation,
+    promise: queryMcpMutationOwner.promise,
+  };
 }
 
 export function isSessionProcessing(): boolean {
@@ -118,6 +288,20 @@ export function isAbortRequested(): boolean {
 
 export function requestAbort(): void {
   abortRequested = true;
+  for (const waiter of queryExitWaiters) waiter.resolve();
+  queryExitWaiters.clear();
+}
+
+/**
+ * Wait for the current Query generation to enter its abort path.
+ *
+ * This is deliberately separate from `waitForMessage`: a generator quarantined
+ * behind a required Query rebuild must not be woken by a newly enqueued user
+ * message. Only abort or replacement of that exact Query may release it.
+ */
+export function waitForQueryExit(query: Query): Promise<void> {
+  if (abortRequested || querySession !== query) return Promise.resolve();
+  return new Promise(resolve => { queryExitWaiters.add({ query, resolve }); });
 }
 
 export function clearAbortFlag(): void {
@@ -130,6 +314,29 @@ export function getSessionTerminationPromise(): Promise<void> | null {
 
 export function setSessionTerminationPromise(promise: Promise<void> | null): void {
   sessionTerminationPromise = promise;
+}
+
+/**
+ * Extend the canonical Session-abort barrier with an exact pre-dispatch
+ * rollback. Query termination and domain rollback are independent owners;
+ * reset/switch/restart is complete only after both have settled.
+ */
+export function registerSessionAbortCleanup(cleanup: Promise<void>): void {
+  const previous = abortCleanupPromise;
+  const combined = (previous
+    ? Promise.all([previous, cleanup])
+    : cleanup
+  ).then(() => undefined);
+  abortCleanupPromise = combined;
+  void combined.finally(() => {
+    if (abortCleanupPromise === combined) abortCleanupPromise = null;
+  }).catch(() => undefined);
+}
+
+async function awaitSessionAbortCleanup(): Promise<void> {
+  while (abortCleanupPromise) {
+    await abortCleanupPromise;
+  }
 }
 
 export function isPreWarmInProgress(): boolean {
@@ -251,35 +458,47 @@ export async function awaitSessionTermination(params: {
 } = {}): Promise<void> {
   const timeoutMs = params.timeoutMs ?? 10_000;
   const label = params.label ?? '';
-  if (!sessionTerminationPromise) return;
-  let timerId: ReturnType<typeof setTimeout>;
-  try {
-    await Promise.race([
-      sessionTerminationPromise,
-      new Promise<never>((_, reject) => {
-        timerId = setTimeout(() => reject(new Error(`sessionTermination timeout (${label})`)), timeoutMs);
-      }),
-    ]);
-  } catch (error) {
-    const isTimeout = error instanceof Error && error.message.includes('timeout');
-    console.warn(`[agent] ${label}: sessionTerminationPromise ${isTimeout ? 'timed out' : 'rejected'} after ${timeoutMs}ms, force-cleaning:`, error);
-    const session = clearQuerySession();
-    isProcessing = false;
-    isPreWarming = false;
-    forceWakeGeneratorWithNull();
-    params.onTimeoutForceCleanup?.(session);
-    try { void session?.close(); } catch { /* subprocess may already be dead */ }
-  } finally {
-    clearTimeout(timerId!);
+  const termination = sessionTerminationPromise;
+  if (termination) {
+    let timerId: ReturnType<typeof setTimeout>;
+    try {
+      await Promise.race([
+        termination,
+        new Promise<never>((_, reject) => {
+          timerId = setTimeout(() => reject(new Error(`sessionTermination timeout (${label})`)), timeoutMs);
+        }),
+      ]);
+    } catch (error) {
+      const isTimeout = error instanceof Error && error.message.includes('timeout');
+      console.warn(`[agent] ${label}: sessionTerminationPromise ${isTimeout ? 'timed out' : 'rejected'} after ${timeoutMs}ms, force-cleaning:`, error);
+      const session = clearQuerySession();
+      isProcessing = false;
+      isPreWarming = false;
+      forceWakeGeneratorWithNull();
+      params.onTimeoutForceCleanup?.(session);
+      try { void session?.close(); } catch { /* subprocess may already be dead */ }
+    } finally {
+      clearTimeout(timerId!);
+    }
   }
+  // Do not put the durable domain rollback under the Query's force-cleanup
+  // timeout. A timeout may prove the subprocess dead; it cannot prove that a
+  // Goal/Task reservation was rolled back.
+  await awaitSessionAbortCleanup();
 }
 
 export function snapshotLifecycle(): BuiltinLifecycleSnapshot {
   return {
     querySession,
+    queryGeneration,
+    queryMcpRevision,
+    queryMcpFingerprint: queryMcpReadinessOwner?.fingerprint ?? null,
+    queryMcpServerIds: [...(queryMcpReadinessOwner?.requiredServerIds ?? [])],
+    queryMcpMutationInFlight: queryMcpMutationOwner !== null,
     isProcessing,
     abortRequested,
     sessionTerminationPromise,
+    abortCleanupInFlight: abortCleanupPromise !== null,
     isPreWarming,
     preWarmTimer,
     preWarmFailCount,
@@ -291,10 +510,22 @@ export function snapshotLifecycle(): BuiltinLifecycleSnapshot {
 }
 
 export function resetLifecycleForTest(): void {
+  for (const waiter of queryExitWaiters) waiter.resolve();
+  queryExitWaiters.clear();
+  queryMcpMutationOwner?.settle({
+    ok: false,
+    reason: 'query_replaced',
+    error: 'Lifecycle reset during MCP transport mutation',
+  });
   querySession = null;
+  queryGeneration = 0;
+  queryMcpRevision = 0;
+  queryMcpReadinessOwner = null;
+  queryMcpMutationOwner = null;
   isProcessing = false;
   abortRequested = false;
   sessionTerminationPromise = null;
+  abortCleanupPromise = null;
   clearGeneratorResolver();
   isPreWarming = false;
   preWarmTimer = null;

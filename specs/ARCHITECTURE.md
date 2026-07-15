@@ -445,13 +445,13 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 | `types.ts` | `SessionEngine` 接口：desktop send、IM enqueue、injected turn、queue、runtime config、session read/config/operation 等 route-facing 能力 |
 | `route-contracts.ts` | high-risk route → engine method 的可测试契约清单；route modules 只做 payload/response shaping |
 
-`src/server/session-core/` 是 builtin / external 会话内核共享的 pure policy 层。它不拥有 SDK/CLI 进程、副作用或 SSE，只承载可单测的决策：turn result 判定、meaningful session activity/Heartbeat ack、runtime config snapshot/source guard、desktop/turn-boundary queue admission、MCP authority/fingerprint/restart 决策。
+`src/server/session-core/` 是 builtin / external 会话内核共享的 pure policy 层。它不拥有 SDK/CLI 进程、副作用或 SSE，只承载可单测的决策：turn result 判定、meaningful session activity/Heartbeat ack、runtime config snapshot/source guard、desktop/turn-boundary queue admission、MCP authority/fingerprint/restart 决策，以及 builtin injected turn 的 MCP status 分类、deadline 与 readiness lease 判定。
 
 `src/server/agent-session.ts` 仍是 builtin SDK 的 public facade，供 `session-engine/builtin-adapter.ts` 委托。Phase6 后，主要 mutable state 不再由 facade 顶层变量直接拥有；Phase7 后，最重的 turn terminal 与 transcript persistence 行为也有独立 owner。真实维护入口在 `src/server/builtin-session/`：
 
 | Owner module | 职责 |
 |------|------|
-| `lifecycle.ts` | SDK `Query` 进程、abort flag、termination promise、generator wakeup、pre-warm readiness |
+| `lifecycle.ts` | SDK `Query` 进程、abort flag、termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP readiness/mutation owner |
 | `queue.ts` | realtime queue、mid-turn buffer、turn-boundary queue、in-flight slot、admission ticket |
 | `turn.ts` | current turn usage/output/error state、IM pending request FIFO、injected turn outcome |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 解释、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序 |
@@ -461,6 +461,10 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 | `types.ts` | builtin owner 间共享的结构类型 |
 
 约束：route modules 与 `session-engine/*` 不直接 import `builtin-session/*`；它们只看 `agent-session.ts` facade。`builtin-session/*` 也不 import route 或 SessionEngine。`session-core/*` 继续保持 pure policy，不引入 SDK/SSE/文件系统副作用。`runtime-boundary.unit.test.ts` 会目录级扫描这些边界，并拦截 `agent-session.ts` 对 owner state 的 direct write 回退，以及 turn terminal / transcript persistence 行为回流到 facade；新增写入或 terminal/persist 规则应先在对应 owner 中加命名 API。
+
+**Builtin injected turn 的 MCP 门控：** `Query.initializationResult()` 与 streamed `system_init` 都不代表 MCP 已连接。Cron / Goal / Heartbeat / Memory Update 等无人值守 injected turn 必须以当前 Query 实际安装的 MCP map 为准，通过 `mcpServerStatus()` 等待全部 required server 为 `connected`。`lifecycle.ts` 用 Query identity + generation + 单调 installed-map revision + fingerprint 拥有 readiness lease；Query 替换、同 id 重装和 A→B→A 都会让旧 lease 失效。一次 injected request 只有一个不超过 30 秒的绝对 deadline：先在任何 user row / SessionStore 副作用前预检，再在 promotion boundary 复检并同步验证 lease；最终顺序固定为 MCP ready → domain claim → lease commit → 同步转交 active-turn owner。转交前的失败、超时或取消不进入 SDK dispatch，已取得的 domain claim 必须等待 durable rollback 确认后才发布拒绝；canonical reset/switch/restart 中止 promoted turn 时，同一 rollback 还必须注册进 Session termination barrier，Query 的 10 秒 force-cleanup 不能伪装 domain authority 已回滚。转交后才允许 SessionStore/plan/user-surface 副作用，期间的 stop/timeout 必须识别为已接纳的 active turn，不能回报“未入队”。普通 desktop turn 与 external runtime 不走这条门控。
+
+Live MCP 更新由同一个 Query-generation mutation owner 串行化。mutation claim 与 promotion 通过同一事件循环内的同步 owner 顺序互斥：只要 promoted item、active turn 或 SDK command in-flight 任一先存在，就不 claim mutation、改为 terminal boundary 重建；mutation 先 claim 时，后来的 promotion 必须等待同一 promise。失败/超时会清 readiness owner、锁存 deferred restart，并让旧 generator 隔离等待 Query abort/replacement 后退出；requeue item 只由 replacement generator 重取，不能再次进入旧 Query。`mcpServerStatus()` 控制请求单飞；若其超时，必须重建 Query 清掉 SDK 内无法取消的悬挂请求，不能让后续 injected turn 永久复用同一个 pending promise。
 
 `src/server/runtimes/` 只表示外部 runtime adapter：
 

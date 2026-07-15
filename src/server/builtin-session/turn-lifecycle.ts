@@ -162,6 +162,7 @@ export type BuiltinTurnLifecycle = {
   ) => void;
   stopTurn: () => SessionCompletionTerminal | null;
   failTurn: (error: string, localizedError?: string) => SessionCompletionTerminal | null;
+  failAdmittedTurnSetup: (error: string) => SessionCompletionTerminal | null;
   getLastTurnEndPersist: () => Promise<unknown>;
 };
 
@@ -382,6 +383,16 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     }
     setCurrentTurnImTerminalEmitted(false);
     deps.clearTrace(errorTrace);
+    return completionTerminal;
+  };
+
+  const failAdmittedTurnSetup = (error: string): SessionCompletionTerminal | null => {
+    const completionTerminal = failTurn(error);
+    // This failure happens after active-owner transfer but before an SDK
+    // dispatch/result exists. No outer SDK terminal caller will reach the
+    // normal restart drain, so the lifecycle owner must do it here before a
+    // replacement queue item can run on the stale Query/config snapshot.
+    deps.applyDeferredRestartIfNeeded();
     return completionTerminal;
   };
 
@@ -708,6 +719,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     completeTurn,
     stopTurn,
     failTurn,
+    failAdmittedTurnSetup,
     getLastTurnEndPersist: () => lastTurnEndPersist,
   };
 }

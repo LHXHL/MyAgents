@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => {
     externalActive: false,
     externalProcessAlive: false,
     builtinTurnIdentity: null as { queueId: string; owner: { kind: 'goal' | 'task'; id: string } } | null,
+    builtinDispatchedQueueId: null as string | null,
     externalTurnIdentity: null as { queueId: string; owner: { kind: 'goal' | 'task'; id: string } } | null,
     externalCurrentQueueId: null as string | null,
     pendingExternalAsk: false,
@@ -15,6 +16,42 @@ const mocks = vi.hoisted(() => {
     state,
     broadcast: vi.fn(),
     applyMcpOverrideAndAwaitReady: vi.fn(async () => undefined),
+    recoverQueryAfterMcpStatusTimeout: vi.fn(),
+    awaitRequiredMcpReadyForInjectedTurn: vi.fn<(
+      deadlineAt: number,
+      options?: { signal?: AbortSignal },
+    ) => Promise<
+      | {
+        ready: true;
+        lease: {
+          identity: object;
+          generation: number;
+          revision: number;
+          fingerprint: string;
+          requiredServerIds: readonly string[];
+        };
+      }
+      | {
+        ready: false;
+        failure: {
+          code: 'mcp_timeout' | 'mcp_failed' | 'mcp_auth_required' | 'mcp_disabled' | 'mcp_missing' | 'query_replaced';
+          servers: Array<{
+            id: string;
+            status?: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled';
+            error?: string;
+          }>;
+        };
+      }
+    >>(async () => ({
+      ready: true,
+      lease: {
+        identity: {},
+        generation: 1,
+        revision: 1,
+        fingerprint: 'fs',
+        requiredServerIds: ['fs'],
+      },
+    })),
     cancelBuiltinImRequest: vi.fn(async () => ({ aborted: false, mode: 'unknown' as const })),
     cancelQueueItem: vi.fn<() => Promise<
       | { status: 'cancelled'; cancelledText: string }
@@ -31,23 +68,68 @@ const mocks = vi.hoisted(() => {
     }>>(async (...args: unknown[]) => {
       const options = args[11] as {
         queueId?: string;
-        onTerminal?: (outcome: { status: 'complete'; assistantMessagePresent: boolean; text: string }) => void;
+        beforeUserPersistence?: () => Promise<{ accepted: boolean; error?: string }>;
+        beforeDispatch?: () => Promise<{
+          accepted: boolean;
+          error?: string;
+          validateAtCommit?: () => { accepted: boolean; error?: string };
+        }>;
+        onTerminal?: (outcome: {
+          status: 'complete' | 'stopped';
+          assistantMessagePresent: boolean;
+          text: string;
+          error?: string;
+        }) => void;
       } | undefined;
-      queueMicrotask(() => options?.onTerminal?.({
-        status: 'complete',
-        assistantMessagePresent: true,
-        text: 'builtin answer',
-      }));
+      const persistenceAcceptance = await options?.beforeUserPersistence?.();
+      if (persistenceAcceptance && !persistenceAcceptance.accepted) {
+        return {
+          queued: false,
+          queueId: options?.queueId ?? 'q1',
+          error: persistenceAcceptance.error,
+        };
+      }
+      const dispatchAcceptance = options?.beforeDispatch?.().then(result => (
+        result.accepted && result.validateAtCommit
+          ? result.validateAtCommit()
+          : result
+      ));
+      queueMicrotask(() => {
+        void (async () => {
+          const acceptance = await dispatchAcceptance;
+          if (acceptance && !acceptance.accepted) {
+            options?.onTerminal?.({
+              status: 'stopped',
+              assistantMessagePresent: false,
+              text: '',
+              error: acceptance.error,
+            });
+            return;
+          }
+          options?.onTerminal?.({
+            status: 'complete',
+            assistantMessagePresent: true,
+            text: 'builtin answer',
+          });
+        })();
+      });
       return {
         queued: true,
         queueId: options?.queueId ?? 'q1',
         isInFlight: false,
         deliveryMode: 'queue' as const,
+        dispatchAcceptance,
       };
     }),
     forceExecuteQueueItem: vi.fn(async () => true),
     getAndClearLastAgentError: vi.fn<() => string | null>(() => null),
     getCurrentTurnIdentity: vi.fn(() => state.builtinTurnIdentity),
+    getDispatchedTurnIdentity: vi.fn(() => (
+      state.builtinDispatchedQueueId
+        ? { queueId: state.builtinDispatchedQueueId }
+        : state.builtinTurnIdentity
+    )),
+    isRequiredMcpReadinessLeaseCurrent: vi.fn(() => true),
     getAgentState: vi.fn<() => Record<string, unknown>>(() => ({ sessionState: 'idle', agentDir: '/workspace' })),
     getBuiltinLiveSessionSnapshot: vi.fn<() => Record<string, unknown> | null>(() => null),
     getAgents: vi.fn(() => ({ helper: { name: 'helper' } })),
@@ -203,6 +285,8 @@ const mocks = vi.hoisted(() => {
 
 vi.mock('../agent-session', () => ({
   applyMcpOverrideAndAwaitReady: mocks.applyMcpOverrideAndAwaitReady,
+  recoverQueryAfterMcpStatusTimeout: mocks.recoverQueryAfterMcpStatusTimeout,
+  awaitRequiredMcpReadyForInjectedTurn: mocks.awaitRequiredMcpReadyForInjectedTurn,
   cancelImRequest: mocks.cancelBuiltinImRequest,
   cancelQueueItem: mocks.cancelQueueItem,
   cancelQueuedTurnsByOwner: mocks.cancelQueuedTurnsByOwner,
@@ -210,6 +294,7 @@ vi.mock('../agent-session', () => ({
   forceExecuteQueueItem: mocks.forceExecuteQueueItem,
   getAndClearLastAgentError: mocks.getAndClearLastAgentError,
   getCurrentTurnIdentity: mocks.getCurrentTurnIdentity,
+  getDispatchedTurnIdentity: mocks.getDispatchedTurnIdentity,
   getAgentState: mocks.getAgentState,
   getBuiltinLiveSessionSnapshot: mocks.getBuiltinLiveSessionSnapshot,
   getAgents: mocks.getAgents,
@@ -227,6 +312,7 @@ vi.mock('../agent-session', () => ({
   getSessionReasoningEffort: mocks.getSessionReasoningEffort,
   getStreamingAssistantId: mocks.getStreamingAssistantId,
   getSystemInitInfo: mocks.getSystemInitInfo,
+  isRequiredMcpReadinessLeaseCurrent: mocks.isRequiredMcpReadinessLeaseCurrent,
   handleAskUserQuestionResponse: mocks.handleAskUserQuestionResponse,
   handlePermissionResponse: mocks.handlePermissionResponse,
   interruptCurrentResponse: mocks.interruptCurrentResponse,
@@ -336,9 +422,11 @@ describe('session-engine selector and adapters', () => {
     mocks.state.externalActive = false;
     mocks.state.externalProcessAlive = false;
     mocks.state.builtinTurnIdentity = null;
+    mocks.state.builtinDispatchedQueueId = null;
     mocks.state.externalTurnIdentity = null;
     mocks.state.externalCurrentQueueId = null;
     mocks.state.pendingExternalAsk = false;
+    mocks.isRequiredMcpReadinessLeaseCurrent.mockReturnValue(true);
     mocks.isExternalSessionStateRestoredFor.mockReturnValue(true);
     mocks.getBuiltinLiveSessionSnapshot.mockReturnValue(null);
     mocks.getExternalLiveSessionSnapshot.mockReturnValue(null);
@@ -928,6 +1016,7 @@ describe('session-engine selector and adapters', () => {
       queueId: 'q-timeout',
       isInFlight: false,
       deliveryMode: 'queue',
+      dispatchAcceptance: Promise.resolve({ accepted: true }),
     });
     mocks.cancelQueueItem.mockResolvedValueOnce({
       status: 'cancelled',
@@ -939,7 +1028,7 @@ describe('session-engine selector and adapters', () => {
       workspacePath: '/workspace',
       scenario: { type: 'cron', taskId: 'task-1', intervalMinutes: 15, aiCanExit: false },
       permissionMode: 'fullAgency',
-      timeoutMs: 1,
+      timeoutMs: 20,
       pollMs: 1,
       queueId: 'q-timeout',
     });
@@ -954,12 +1043,95 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.interruptCurrentResponse).not.toHaveBeenCalled();
   });
 
+  it('waits for an in-flight domain claim and durable abort before publishing dispatch-timeout rejection', async () => {
+    let releaseClaim!: () => void;
+    let releaseAbort!: () => void;
+    let markClaimStarted!: () => void;
+    let markAbortStarted!: () => void;
+    const claimStarted = new Promise<void>((resolve) => { markClaimStarted = resolve; });
+    const abortStarted = new Promise<void>((resolve) => { markAbortStarted = resolve; });
+    const claim = new Promise<void>((resolve) => { releaseClaim = resolve; });
+    const abortAcknowledged = new Promise<void>((resolve) => { releaseAbort = resolve; });
+    const domainGuard = Object.assign(
+      vi.fn(async () => {
+        markClaimStarted();
+        await claim;
+        return { accepted: true };
+      }),
+      {
+        cancel: vi.fn(async () => {
+          await claim;
+          markAbortStarted();
+          await abortAcknowledged;
+        }),
+      },
+    );
+    let runtimeGuard!: {
+      cancel?: () => void | Promise<void>;
+    };
+    mocks.enqueueUserMessage.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[11] as {
+        queueId: string;
+        beforeDispatch: (() => Promise<{ accepted: boolean }>) & {
+          cancel?: () => void | Promise<void>;
+        };
+      };
+      runtimeGuard = options.beforeDispatch;
+      return {
+        queued: true,
+        queueId: options.queueId,
+        dispatchAcceptance: options.beforeDispatch(),
+      };
+    });
+    mocks.cancelQueueItem.mockImplementationOnce(async () => {
+      await runtimeGuard.cancel?.();
+      return {
+        status: 'cancelled',
+        cancelledText: 'continue goal',
+      };
+    });
+
+    let resultSettled = false;
+    const pendingResult = getSessionEngine().runInjectedTurn({
+      prompt: 'continue goal',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+      timeoutMs: 20,
+      queueId: 'goal-claim-timeout',
+      beforeDispatch: domainGuard,
+    }).then((result) => {
+      resultSettled = true;
+      return result;
+    });
+
+    await claimStarted;
+    await vi.waitFor(() => expect(domainGuard.cancel).toHaveBeenCalled());
+    expect(resultSettled).toBe(false);
+
+    releaseClaim();
+    await abortStarted;
+    expect(resultSettled).toBe(false);
+
+    releaseAbort();
+    await expect(pendingResult).resolves.toMatchObject({
+      success: false,
+      enqueued: false,
+      status: 408,
+      error: 'Builtin injected turn timed out before dispatch',
+    });
+    expect(domainGuard.cancel).toHaveBeenCalledOnce();
+    expect(mocks.cancelQueueItem).toHaveBeenCalledWith('goal-claim-timeout');
+  });
+
   it('interrupts an active builtin injected turn when its deadline expires', async () => {
     mocks.enqueueUserMessage.mockResolvedValueOnce({
       queued: false,
       queueId: 'q-active',
       isInFlight: true,
       deliveryMode: 'realtime',
+      dispatchAcceptance: Promise.resolve({ accepted: true }),
     });
     mocks.state.builtinTurnIdentity = {
       queueId: 'q-active',
@@ -973,7 +1145,7 @@ describe('session-engine selector and adapters', () => {
       workspacePath: '/workspace',
       scenario: { type: 'desktop' },
       permissionMode: 'fullAgency',
-      timeoutMs: 1,
+      timeoutMs: 20,
       pollMs: 1,
       queueId: 'q-active',
       turnOwner: { kind: 'goal', id: 'goal-1' },
@@ -988,12 +1160,43 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.interruptCurrentResponse).toHaveBeenCalledWith('timeout');
   });
 
+  it('interrupts an ownerless Heartbeat/Memory turn after active admission', async () => {
+    mocks.enqueueUserMessage.mockResolvedValueOnce({
+      queued: false,
+      queueId: 'q-ownerless-active',
+      isInFlight: false,
+      deliveryMode: 'turn',
+      dispatchAcceptance: Promise.resolve({ accepted: true }),
+    });
+    mocks.state.builtinDispatchedQueueId = 'q-ownerless-active';
+    mocks.interruptCurrentResponse.mockResolvedValueOnce(true);
+
+    const result = await getSessionEngine().runInjectedTurn({
+      prompt: 'heartbeat maintenance',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+      timeoutMs: 20,
+      pollMs: 1,
+      queueId: 'q-ownerless-active',
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      enqueued: true,
+      status: 408,
+    });
+    expect(mocks.interruptCurrentResponse).toHaveBeenCalledWith('timeout');
+  });
+
   it('reports an unconfirmed builtin termination when the exact turn cannot be interrupted', async () => {
     mocks.enqueueUserMessage.mockResolvedValueOnce({
       queued: false,
       queueId: 'q-orphan',
       isInFlight: true,
       deliveryMode: 'realtime',
+      dispatchAcceptance: Promise.resolve({ accepted: true }),
     });
     mocks.state.builtinTurnIdentity = {
       queueId: 'q-orphan',
@@ -1007,7 +1210,7 @@ describe('session-engine selector and adapters', () => {
       workspacePath: '/workspace',
       scenario: { type: 'desktop' },
       permissionMode: 'fullAgency',
-      timeoutMs: 1,
+      timeoutMs: 20,
       pollMs: 1,
       queueId: 'q-orphan',
       turnOwner: { kind: 'task', id: 'task-1' },
@@ -1027,6 +1230,7 @@ describe('session-engine selector and adapters', () => {
       queueId: 'q-finished',
       isInFlight: true,
       deliveryMode: 'realtime',
+      dispatchAcceptance: Promise.resolve({ accepted: true }),
     });
     mocks.cancelQueueItem.mockResolvedValueOnce({ status: 'not_found' });
 
@@ -1063,6 +1267,165 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.getAndClearLastAgentError).toHaveBeenCalledTimes(1);
     expect(mocks.getAndClearLastAgentError.mock.invocationCallOrder[0])
       .toBeLessThan(mocks.enqueueUserMessage.mock.invocationCallOrder[0]);
+    expect(mocks.enqueueUserMessage.mock.invocationCallOrder[0])
+      .toBeLessThan(mocks.awaitRequiredMcpReadyForInjectedTurn.mock.invocationCallOrder[0]);
+  });
+
+  it('rebuilds a Query whose single-flight MCP status read timed out', async () => {
+    mocks.awaitRequiredMcpReadyForInjectedTurn.mockResolvedValueOnce({
+      ready: false,
+      failure: {
+        code: 'mcp_timeout',
+        servers: [{ id: 'filesystem', status: 'pending' }],
+      },
+    });
+
+    const result = await getSessionEngine().runInjectedTurn({
+      prompt: 'heartbeat',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+      timeoutMs: 1_000,
+    });
+
+    expect(result).toMatchObject({
+      success: false,
+      enqueued: false,
+      status: 408,
+      detail: { code: 'mcp_timeout' },
+    });
+    expect(mocks.recoverQueryAfterMcpStatusTimeout).toHaveBeenCalledOnce();
+  });
+
+  it('rejects a builtin injected turn at final promotion when its required MCP is not ready', async () => {
+    mocks.awaitRequiredMcpReadyForInjectedTurn
+      .mockResolvedValueOnce({
+        ready: true,
+        lease: {
+          identity: {},
+          generation: 1,
+          revision: 1,
+          fingerprint: 'filesystem',
+          requiredServerIds: ['filesystem'],
+        },
+      })
+      .mockResolvedValueOnce({
+        ready: false,
+        failure: {
+          code: 'mcp_failed',
+          servers: [{ id: 'filesystem', status: 'failed', error: 'stdio exited' }],
+        },
+      });
+    const domainGuard = Object.assign(vi.fn(async () => ({ accepted: true })), {
+      cancel: vi.fn(),
+    });
+
+    const result = await getSessionEngine().runInjectedTurn({
+      prompt: 'run cron',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'cron', taskId: 'task-1', intervalMinutes: 15, aiCanExit: false },
+      permissionMode: 'fullAgency',
+      timeoutMs: 1_000,
+      beforeDispatch: domainGuard,
+    });
+
+    expect(result).toEqual({
+      success: false,
+      enqueued: false,
+      error: 'MCP startup failed: filesystem (failed): stdio exited',
+      status: 503,
+      detail: {
+        code: 'mcp_failed',
+        servers: [{ id: 'filesystem', status: 'failed', error: 'stdio exited' }],
+      },
+    });
+    expect(mocks.enqueueUserMessage).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueUserMessage.mock.calls[0]?.[11]).toEqual(expect.objectContaining({
+      beforeUserPersistence: expect.any(Function),
+      beforeDispatch: expect.any(Function),
+    }));
+    expect(mocks.awaitRequiredMcpReadyForInjectedTurn).toHaveBeenCalledTimes(2);
+    expect(domainGuard).not.toHaveBeenCalled();
+  });
+
+  it('rejects a readiness lease invalidated after async promotion preparation', async () => {
+    mocks.isRequiredMcpReadinessLeaseCurrent.mockReturnValueOnce(false);
+    let releaseRollback!: () => void;
+    const rollback = new Promise<void>((resolve) => { releaseRollback = resolve; });
+    const domainGuard = Object.assign(vi.fn(async () => ({ accepted: true })), {
+      cancel: vi.fn(() => rollback),
+    });
+    mocks.enqueueUserMessage.mockImplementationOnce(async (...args: unknown[]) => {
+      const options = args[11] as {
+        queueId: string;
+        beforeDispatch: () => Promise<{
+          accepted: boolean;
+          validateAtCommit?: () => { accepted: boolean; error?: string };
+        }>;
+      };
+      const acceptance = await options.beforeDispatch();
+      const dispatchAcceptance = (async () => {
+        const committed = acceptance.validateAtCommit?.() ?? acceptance;
+        const rollbackBeforeReject = (committed as {
+          rollbackBeforeReject?: Promise<void>;
+        }).rollbackBeforeReject;
+        if (rollbackBeforeReject) await rollbackBeforeReject;
+        return committed;
+      })();
+      return {
+        queued: true,
+        queueId: options.queueId,
+        dispatchAcceptance,
+      };
+    });
+
+    let resultSettled = false;
+    const pendingResult = getSessionEngine().runInjectedTurn({
+      prompt: 'run cron after provider transition',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'cron', taskId: 'task-1', intervalMinutes: 15, aiCanExit: false },
+      permissionMode: 'fullAgency',
+      timeoutMs: 1_000,
+      beforeDispatch: domainGuard,
+    }).then((result) => {
+      resultSettled = true;
+      return result;
+    });
+
+    await vi.waitFor(() => expect(domainGuard.cancel).toHaveBeenCalledOnce());
+    expect(resultSettled).toBe(false);
+    releaseRollback();
+    const result = await pendingResult;
+
+    expect(result).toMatchObject({
+      success: false,
+      enqueued: false,
+      status: 503,
+      detail: {
+        code: 'query_replaced',
+        servers: [{ id: 'fs' }],
+      },
+    });
+    expect(domainGuard).toHaveBeenCalledOnce();
+  });
+
+  it('leaves external injected turns outside the builtin MCP readiness gate', async () => {
+    mocks.state.useExternal = true;
+
+    await getSessionEngine().runInjectedTurn({
+      prompt: 'heartbeat',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'desktop' },
+      permissionMode: 'no-restrictions',
+      timeoutMs: 1_000,
+    });
+
+    expect(mocks.awaitRequiredMcpReadyForInjectedTurn).not.toHaveBeenCalled();
+    expect(mocks.sendExternalMessage).toHaveBeenCalled();
   });
 
   it.each([
@@ -1091,14 +1454,26 @@ describe('session-engine selector and adapters', () => {
     mocks.enqueueUserMessage.mockImplementationOnce(async (...args: unknown[]) => {
       const options = args[11] as {
         queueId: string;
+        beforeDispatch: () => Promise<{
+          accepted: boolean;
+          validateAtCommit?: () => { accepted: boolean; error?: string };
+        }>;
         onTerminal: (outcome: { status: 'complete'; assistantMessagePresent: boolean; text: string }) => void;
       };
-      queueMicrotask(() => options.onTerminal({
-        status: 'complete',
-        assistantMessagePresent: true,
-        text: '',
-      }));
-      return { queued: true, queueId: options.queueId };
+      const dispatchAcceptance = options.beforeDispatch().then(result => (
+        result.accepted && result.validateAtCommit ? result.validateAtCommit() : result
+      ));
+      queueMicrotask(() => {
+        void dispatchAcceptance.then(acceptance => {
+          if (!acceptance.accepted) return;
+          options.onTerminal({
+            status: 'complete',
+            assistantMessagePresent: true,
+            text: '',
+          });
+        });
+      });
+      return { queued: true, queueId: options.queueId, dispatchAcceptance };
     });
     const result = await getSessionEngine().runInjectedTurn({
       prompt: 'memory update',
@@ -1172,15 +1547,27 @@ describe('session-engine selector and adapters', () => {
     mocks.enqueueUserMessage.mockImplementationOnce(async (...args: unknown[]) => {
       const options = args[11] as {
         queueId: string;
+        beforeDispatch: () => Promise<{
+          accepted: boolean;
+          validateAtCommit?: () => { accepted: boolean; error?: string };
+        }>;
         onTerminal: (outcome: { status: 'error'; assistantMessagePresent: false; text: string; error: string }) => void;
       };
-      queueMicrotask(() => options.onTerminal({
-        status: 'error',
-        assistantMessagePresent: false,
-        text: '',
-        error: 'turn failed',
-      }));
-      return { queued: true, queueId: options.queueId };
+      const dispatchAcceptance = options.beforeDispatch().then(result => (
+        result.accepted && result.validateAtCommit ? result.validateAtCommit() : result
+      ));
+      queueMicrotask(() => {
+        void dispatchAcceptance.then(acceptance => {
+          if (!acceptance.accepted) return;
+          options.onTerminal({
+            status: 'error',
+            assistantMessagePresent: false,
+            text: '',
+            error: 'turn failed',
+          });
+        });
+      });
+      return { queued: true, queueId: options.queueId, dispatchAcceptance };
     });
     const result = await getSessionEngine().runInjectedTurn({
       prompt: 'memory update',

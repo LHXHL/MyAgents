@@ -20,6 +20,7 @@ import type {
   TurnOwner,
   TurnTerminalObserver,
 } from '../session-core/turn-queue';
+import type { McpReadinessFailure } from '../session-core/mcp-readiness';
 
 export type SessionEngineKind = 'builtin' | 'external';
 
@@ -162,6 +163,8 @@ export type InjectedTurnResult = {
   text?: string;
   error?: string;
   status?: number;
+  /** Structured pre-dispatch failure for the builtin Query's required MCP set. */
+  detail?: McpReadinessFailure;
 };
 
 export type QueueStatusItem = { id: string; messagePreview: string };

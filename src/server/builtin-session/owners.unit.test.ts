@@ -1,17 +1,24 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   awaitSessionTermination,
+  claimQueryMcpMutation,
   clearAbortFlag,
   getPreWarmFailCount,
   hasMessageResolver,
   incrementPreWarmFailCount,
   isAbortRequested,
+  getQueryMcpMutation,
+  getQueryMcpReadinessOwner,
   requestAbort,
   resetLifecycleForTest,
   setQuerySession,
+  setQueryMcpReadinessOwner,
+  readQueryMcpStatuses,
+  registerSessionAbortCleanup,
   setSessionProcessing,
   setSessionTerminationPromise,
   snapshotLifecycle,
+  waitForQueryExit,
   waitForMessage,
   wakeGenerator,
 } from './lifecycle';
@@ -36,6 +43,7 @@ import {
   beginTurn,
   clearPendingRequests,
   getCurrentTurnIdentity,
+  getCurrentTurnQueueId,
   getCurrentTurnText,
   getPendingRequestIds,
   notifyCurrentTurnTerminal,
@@ -130,6 +138,22 @@ describe('builtin-session owners', () => {
     expect(isAbortRequested()).toBe(false);
   });
 
+  it('keeps Query-rebuild waiters isolated from messages and releases on owner exit', async () => {
+    const query = { close: vi.fn() } as never;
+    setQuerySession(query);
+    let released = false;
+    const queryExitBarrier = waitForQueryExit(query).then(() => { released = true; });
+
+    wakeGenerator(queueItem('unrelated-message'));
+    await Promise.resolve();
+    expect(released).toBe(false);
+
+    setQuerySession(null);
+    await queryExitBarrier;
+    expect(released).toBe(true);
+    await expect(waitForQueryExit(query)).resolves.toBeUndefined();
+  });
+
   it('lifecycle awaitSessionTermination force-cleans process state on timeout', async () => {
     vi.useFakeTimers();
     const close = vi.fn();
@@ -153,6 +177,123 @@ describe('builtin-session owners', () => {
     expect(close).toHaveBeenCalled();
     expect(cleanup).toHaveBeenCalled();
     vi.useRealTimers();
+  });
+
+  it('keeps Session termination behind the durable pre-dispatch rollback barrier', async () => {
+    let releaseCleanup!: () => void;
+    registerSessionAbortCleanup(new Promise<void>((resolve) => {
+      releaseCleanup = resolve;
+    }));
+    setSessionTerminationPromise(Promise.resolve());
+
+    let settled = false;
+    const termination = awaitSessionTermination({ label: 'durable-rollback' }).then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(snapshotLifecycle().abortCleanupInFlight).toBe(true);
+
+    releaseCleanup();
+    await termination;
+    expect(settled).toBe(true);
+    expect(snapshotLifecycle().abortCleanupInFlight).toBe(false);
+  });
+
+  it('binds the installed MCP map to one Query generation and invalidates it on replacement', () => {
+    const first = { close: vi.fn() } as never;
+    const second = { close: vi.fn() } as never;
+    setQuerySession(first);
+    expect(setQueryMcpReadinessOwner({
+      query: first,
+      fingerprint: 'fs,search',
+      requiredServerIds: ['search', 'fs'],
+    })).toBe(true);
+    expect(getQueryMcpReadinessOwner()).toMatchObject({
+      query: first,
+      generation: 1,
+      revision: 1,
+      fingerprint: 'fs,search',
+      requiredServerIds: ['fs', 'search'],
+    });
+
+    setQuerySession(second);
+    expect(getQueryMcpReadinessOwner()).toBeNull();
+    expect(setQueryMcpReadinessOwner({
+      query: first,
+      fingerprint: 'fs',
+      requiredServerIds: ['fs'],
+    })).toBe(false);
+    expect(snapshotLifecycle().queryGeneration).toBe(2);
+  });
+
+  it('advances the installed MCP revision for same-id replacement on one Query', () => {
+    const query = { close: vi.fn() } as never;
+    setQuerySession(query);
+    setQueryMcpReadinessOwner({ query, fingerprint: 'fs', requiredServerIds: ['fs'] });
+    const first = getQueryMcpReadinessOwner();
+    setQueryMcpReadinessOwner({ query, fingerprint: 'fs', requiredServerIds: ['fs'] });
+    const second = getQueryMcpReadinessOwner();
+
+    expect(second?.revision).toBe((first?.revision ?? 0) + 1);
+    expect(second?.generation).toBe(first?.generation);
+    expect(second?.fingerprint).toBe(first?.fingerprint);
+  });
+
+  it('single-flights MCP status control reads for one Query owner', async () => {
+    let release!: (value: Array<{ name: string; status: 'connected' }>) => void;
+    const mcpServerStatus = vi.fn(() => new Promise<Array<{ name: string; status: 'connected' }>>(
+      resolve => { release = resolve; },
+    ));
+    const query = { close: vi.fn(), mcpServerStatus } as never;
+    setQuerySession(query);
+    setQueryMcpReadinessOwner({
+      query,
+      fingerprint: 'fs',
+      requiredServerIds: ['fs'],
+    });
+
+    const first = readQueryMcpStatuses(query);
+    const second = readQueryMcpStatuses(query);
+    expect(second).toBe(first);
+    expect(mcpServerStatus).toHaveBeenCalledTimes(1);
+
+    release([{ name: 'fs', status: 'connected' }]);
+    await expect(first).resolves.toEqual([{ name: 'fs', status: 'connected' }]);
+    await Promise.resolve();
+
+    void readQueryMcpStatuses(query);
+    expect(mcpServerStatus).toHaveBeenCalledTimes(2);
+  });
+
+  it('owns one MCP transport mutation per Query generation and settles it on replacement', async () => {
+    let release!: () => void;
+    const run = vi.fn(() => new Promise<void>((resolve) => {
+      release = resolve;
+    }).then(() => ({ ok: true as const })));
+    const firstQuery = { close: vi.fn() } as never;
+    const secondQuery = { close: vi.fn() } as never;
+    setQuerySession(firstQuery);
+
+    const first = claimQueryMcpMutation(firstQuery, run);
+    const shared = claimQueryMcpMutation(firstQuery, run);
+
+    expect(first.claimed).toBe(true);
+    expect(shared.claimed).toBe(false);
+    expect(shared.promise).toBe(first.promise);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(getQueryMcpMutation()?.promise).toBe(first.promise);
+
+    setQuerySession(secondQuery);
+    await expect(first.promise).resolves.toMatchObject({
+      ok: false,
+      reason: 'query_replaced',
+    });
+    expect(getQueryMcpMutation()).toBeNull();
+
+    release();
+    await Promise.resolve();
+    expect(getQueryMcpMutation()).toBeNull();
   });
 
   it('queue owner covers queued pending turn-boundary and in-flight locations', () => {
@@ -228,6 +369,7 @@ describe('builtin-session owners', () => {
       queueId: 'turn-a',
       owner: { kind: 'goal', id: 'goal-1' },
     });
+    expect(getCurrentTurnQueueId()).toBe('turn-a');
     notifyCurrentTurnTerminal('complete', { durationMs: 3_500 });
     await waitForCurrentTurnTerminalObserver();
     expect(onTerminal).toHaveBeenCalledWith(expect.objectContaining({
@@ -240,6 +382,15 @@ describe('builtin-session owners', () => {
     notifyCurrentTurnTerminal('complete');
     await waitForCurrentTurnTerminalObserver();
     expect(onTerminal).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps an exact accepted queue id for ownerless maintenance turns', () => {
+    const item = queueItem('ownerless-heartbeat');
+    item.turnOwner = undefined;
+    setCurrentTurnSourceItem(item);
+
+    expect(getCurrentTurnIdentity()).toBeNull();
+    expect(getCurrentTurnQueueId()).toBe('ownerless-heartbeat');
   });
 
   it('keeps the terminal boundary closed until an async observer settles', async () => {

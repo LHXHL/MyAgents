@@ -70,8 +70,10 @@ Claude Agent SDK 有**两个**完全不同含义的"准备好"信号，老代码
 
 | 信号 | 来源 | 真实语义 | 时机 |
 |------|------|---------|------|
-| `Query.initializationResult()` | SDK 内部 `subtype:"initialize"` control_request 的 response | **subprocess 控制面 ready**：tools 加载完、MCP handshake 完成、commands/agents 列表就绪 | spawn 后 ~300ms-3s |
+| `Query.initializationResult()` | SDK 内部 `subtype:"initialize"` control_request 的 response | **subprocess 控制面 ready**：control request 可用、commands/agents 等初始化信息已返回；**不保证每个 MCP 已 connected** | spawn 后 ~300ms-3s |
 | streamed `system_init` (`type:"system",subtype:"init"`) | `QueryEngine.submitMessage()` 在 `fetchSystemPromptParts → processUserInput → recordTranscript → loadAllPlugins` 之后 yield（claude-code:`src/QueryEngine.ts:540`）| **per-turn metadata**：当前 turn 用到的 model / tools / mcp_servers / session_id / permissionMode | 第一条 user message 触发 turn 的中后段 |
+
+SDK 0.3 的 MCP 连接是非阻塞的：`initializationResult()` 已 resolve 或 streamed `system_init` 已列出某个 server 时，该 server 仍可能是 `pending`、`failed`、`needs-auth` 或 `disabled`。因此二者都不能作为 MCP readiness 判据。Cron / Goal / Heartbeat / Memory Update 等无人值守 injected turn 在持久 Query 上调用 `mcpServerStatus()`，按 Query identity + generation + 单调 installed-map revision + 实际 MCP map fingerprint 有界等待；失败必须发生在 user row / SessionStore metadata 持久化和 SDK dispatch 之前。内部可以先建立可取消的 admission ticket / queue reservation，以便 reset、rewind 与并发停止都能寻址，但它不能产生用户可见或持久副作用。Desktop 普通发送仍保持非阻塞，不承担这段等待。
 
 **UI 状态机对应**：
 - `sessionState === 'starting'` → "AI 启动中（首次启动可能较慢）" hint —— **subprocess 还没 ready 才该显示这个**
@@ -85,7 +87,7 @@ Claude Agent SDK 有**两个**完全不同含义的"准备好"信号，老代码
 setSessionState((systemInitInfo || sdkControlReady) ? 'running' : 'starting');
 ```
 
-`sdkControlReady` 是模块级布尔，由 `startStreamingSession()` spawn 完 `query()` 后**fire-and-forget** `querySession.initializationResult()` 触发：promise resolve 时设为 true。所有 session 重置点（`resetSession` / `switchToSession` / 第三方 → Anthropic 切换 / `initializeAgent`）必须**同时**清 `systemInitInfo` 和 `sdkControlReady`。
+`sdkControlReady` 是模块级布尔，由 `startStreamingSession()` spawn 完 `query()` 后**fire-and-forget** `querySession.initializationResult()` 触发：promise resolve 时设为 true。它只服务 UI 的“控制面已启动”提示，不能放行依赖 MCP 的 injected turn。所有 session 重置点（`resetSession` / `switchToSession` / 第三方 → Anthropic 切换 / `initializeAgent`）必须**同时**清 `systemInitInfo` 和 `sdkControlReady`。
 
 **为什么 fire-and-forget 而不是 `await initializationResult()`**：技术上 await 不会死锁（SDK 内部的 `readMessages()` 在 F9 构造时就开始独立 pump 消息进 `pendingControlResponses`，不依赖外层 for-await），但 await 会让 `startStreamingSession` 的整个执行序列化在 control 面初始化之后 —— 没必要。`sdkControlReady` 是纯 UI 副信号，不需要阻塞主流程。
 
