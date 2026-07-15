@@ -5,6 +5,7 @@ import {
   shrinkSessionMessageForClient,
   shrinkSessionMessagesForClient,
 } from '../utils/session-message-preview';
+import { toClientSessionMetadata } from '../utils/session-metadata-wire';
 import type { SessionMessage, SessionMetadata } from '../types/session';
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -12,11 +13,6 @@ function jsonResponse(body: unknown, status = 200): Response {
     status,
     headers: { 'Content-Type': 'application/json' },
   });
-}
-
-function redactSessionMetadata<T extends { providerEnvJson?: string }>(meta: T): T {
-  if (meta.providerEnvJson === undefined) return meta;
-  return { ...meta, providerEnvJson: '[redacted]' };
 }
 
 function mergeActiveOverlayMessages(
@@ -169,7 +165,7 @@ function handleSessionDetails(sessionId: string, url: URL): Response {
     : null;
 
   const sessionWithPreview = {
-    ...redactSessionMetadata(session as SessionMetadata),
+    ...toClientSessionMetadata(session as SessionMetadata),
     liveStreamingMessage,
     snapshotRevision: overlay.snapshotRevision ?? 0,
     liveSessionState: overlay.liveSessionState,

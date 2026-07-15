@@ -827,7 +827,8 @@
       "inputTokens": "输入 Token",
       "outputTokens": "输出 Token",
       "cacheInput": "输入缓存",
-      "messageCount": "对话轮次"
+      "turnCount": "执行轮次",
+      "humanQueryCount": "真人输入"
     },
     "dailyTrend": "每日用量趋势",
     "empty": "暂无数据",
@@ -835,7 +836,8 @@
     "tooltip": {
       "input": "输入: {{tokens}}",
       "output": "输出: {{tokens}}",
-      "messages": "对话: {{count}} 轮"
+      "turns": "执行: {{count}} 轮",
+      "humanQueries": "真人输入: {{count}} 次"
     },
     "legend": {
       "input": "输入",
@@ -893,7 +895,7 @@
     "noResults": "未找到结果",
     "unfavorite": "取消收藏",
     "favorite": "收藏",
-    "messageCount": "{{count}} 条",
+    "turnCount": "{{count}} 轮",
     "viewStats": "查看统计",
     "deleteBlocked": "请先停止定时任务后再删除",
     "deleteBlockedAria": "删除（请先停止定时任务）",

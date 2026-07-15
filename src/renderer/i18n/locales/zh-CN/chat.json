@@ -429,7 +429,7 @@
       "loading": "加载中...",
       "empty": "暂无历史记录",
       "current": "当前",
-      "messageCount": "{{count}} 条消息",
+      "turnCount": "{{count}} 轮",
       "unreadNotifications": "{{count}} 条未读通知",
       "automationVisible": "定时任务对话已显示",
       "automationHidden": "定时任务对话已隐藏",
@@ -466,7 +466,8 @@
         "inputCache": "输入缓存"
       },
       "summary": {
-        "messages": "消息数",
+        "turns": "执行轮次",
+        "humanQueries": "真人输入",
         "totalTokens": "总 Tokens",
         "inputOutput": "输入 {{input}} / 输出 {{output}}",
         "inputCache": "输入缓存",
@@ -477,9 +478,9 @@
         "model": "模型",
         "count": "次数"
       },
-      "messageDetails": {
-        "title": "消息明细",
-        "question": "问题"
+      "turnDetails": {
+        "title": "Turn 用量明细",
+        "trigger": "可见触发"
       }
     },
     "queue": {

@@ -66,7 +66,11 @@ import { basename, dirname, isAbsolute, join, relative, resolve, extname, sep } 
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
-import { addMessageUsageToByModel, type UsageByModel } from './utils/usage-stats';
+import {
+  aggregateGlobalUsageStats,
+  buildSessionDetailedUsageStats,
+} from './utils/usage-stats';
+import { toClientSessionMetadata } from './utils/session-metadata-wire';
 // adm-zip lazy-loaded at its one call site below (/api/skill/upload with zip
 // content) — saves ~30ms of module-init cost when users never upload skills.
 import {
@@ -1769,17 +1773,6 @@ async function handleGoalExecuteSync(request: Request): Promise<Response> {
       resetInteractionScenario();
     }
   });
-}
-
-/**
- * Strip credential-bearing fields from a SessionMetadata before returning to clients.
- * Replaces providerEnvJson with '[redacted]' when present (so the client can still tell
- * a provider override exists without seeing the raw API key). Used by GET /sessions,
- * GET /sessions/:id, and PATCH /sessions/:id response shapes — zero-trust parity.
- */
-function redactSessionMetadata<T extends { providerEnvJson?: string }>(meta: T): T {
-  if (meta.providerEnvJson === undefined) return meta;
-  return { ...meta, providerEnvJson: '[redacted]' };
 }
 
 function isGenericSessionTitle(title: string | undefined): boolean {
@@ -3507,102 +3500,19 @@ async function main() {
 
           const allSessions = getAllSessionMetadata();
 
-          // Filter sessions by time range using lastActiveAt as a coarse pre-filter
           const now = Date.now();
           const rangeDays = range === '7d' ? 7 : range === '30d' ? 30 : 60;
           const cutoff = now - rangeDays * 86400_000;
-
-          const sessions = allSessions.filter(s => new Date(s.lastActiveAt).getTime() >= cutoff);
-
-          // Helper: convert ISO timestamp to local date string "YYYY-MM-DD"
-          const toLocalDate = (isoStr: string): string => {
-            const d = new Date(isoStr);
-            const y = d.getFullYear();
-            const mo = String(d.getMonth() + 1).padStart(2, '0');
-            const day = String(d.getDate()).padStart(2, '0');
-            return `${y}-${mo}-${day}`;
-          };
-
-          // Cutoff as YYYY-MM-DD for cheap string comparison against each message's local
-          // date. Pre-2026-04 the summary numbers came from session-lifetime `s.stats` and
-          // ignored cutoff entirely — that produced "summary says 31.5M tokens, daily chart
-          // says 5M" mismatches because the summary leaked all historical totals from any
-          // recently-active session. Now ALL summary/daily/byModel aggregations are derived
-          // from the same in-range message walk so they stay consistent.
-          const cutoffDateStr = toLocalDate(new Date(cutoff).toISOString());
-
-          const totalSessions = sessions.length;
-          let messageCount = 0;
-          let totalInputTokens = 0;
-          let totalOutputTokens = 0;
-          let totalCacheReadTokens = 0;
-          let totalCacheCreationTokens = 0;
-
-          // Single pass through messages: aggregate summary + daily + byModel together so
-          // they're guaranteed to agree about what falls inside the range.
-          const dailyMap: Record<string, { inputTokens: number; outputTokens: number; messageCount: number }> = {};
-          const byModel: UsageByModel = {};
-
-          for (const s of sessions) {
-            const sessionData = getSessionData(s.id);
-            if (!sessionData) continue;
-
-            let lastUserDate = toLocalDate(s.createdAt); // fallback date for first assistant msg
-
-            for (const msg of sessionData.messages) {
-              // Determine each message's local date so summary and chart agree on cutoff.
-              let msgDate: string;
-              if (msg.role === 'user') {
-                msgDate = msg.timestamp ? toLocalDate(msg.timestamp) : lastUserDate;
-                lastUserDate = msgDate;
-              } else if (msg.role === 'assistant') {
-                msgDate = msg.timestamp ? toLocalDate(msg.timestamp) : lastUserDate;
-              } else {
-                continue;
-              }
-              if (msgDate < cutoffDateStr) continue;
-
-              messageCount++;
-
-              if (msg.role !== 'assistant' || !msg.usage) continue;
-
-              const date = msgDate;
-              totalInputTokens += msg.usage.inputTokens ?? 0;
-              totalOutputTokens += msg.usage.outputTokens ?? 0;
-              totalCacheReadTokens += msg.usage.cacheReadTokens ?? 0;
-              totalCacheCreationTokens += msg.usage.cacheCreationTokens ?? 0;
-
-              // Daily aggregation
-              if (!dailyMap[date]) {
-                dailyMap[date] = { inputTokens: 0, outputTokens: 0, messageCount: 0 };
-              }
-              dailyMap[date].inputTokens += msg.usage.inputTokens ?? 0;
-              dailyMap[date].outputTokens += msg.usage.outputTokens ?? 0;
-              dailyMap[date].messageCount++;
-
-              addMessageUsageToByModel(byModel, msg, s.providerId);
-            }
-          }
-
-          // Sort daily entries chronologically
-          const daily = Object.entries(dailyMap)
-            .map(([date, d]) => ({ date, ...d }))
-            .sort((a, b) => a.date.localeCompare(b.date));
+          const sessions = allSessions.flatMap((session) => {
+            if (!isHistoryVisibleSession(session)) return [];
+            const data = getSessionData(session.id);
+            return data ? [data] : [];
+          });
+          const stats = aggregateGlobalUsageStats(sessions, cutoff);
 
           return jsonResponse({
             success: true,
-            stats: {
-              summary: {
-                totalSessions,
-                messageCount,
-                totalInputTokens,
-                totalOutputTokens,
-                totalCacheReadTokens,
-                totalCacheCreationTokens,
-              },
-              daily,
-              byModel,
-            },
+            stats,
           });
         } catch (error) {
           console.error('[global-stats] Error:', error);
@@ -3622,12 +3532,11 @@ async function main() {
           const sessions = agentDirParam
             ? getSessionsByAgentDir(agentDirParam)
             : getAllSessionMetadata();
-          // Zero-trust: strip providerEnvJson before handing to clients.
-          // Matches PATCH response behavior (see PATCH /sessions/:id).
+          // Apply the shared client projection (credential redaction + wire stats names).
           const safeSessions = sessions
             .filter(isHistoryVisibleSession)
             .map(normalizeSessionListPreview)
-            .map(redactSessionMetadata);
+            .map(toClientSessionMetadata);
           return jsonResponse({ success: true, sessions: safeSessions });
         } catch (error) {
           console.error('[sessions] Error in GET /sessions:', error);
@@ -3798,7 +3707,7 @@ async function main() {
             : undefined;
         }
         const session = await createSession(agentDirValue, baseSnapshot);
-        return jsonResponse({ success: true, session });
+        return jsonResponse({ success: true, session: toClientSessionMetadata(session) });
       }
 
       // GET /sessions/:id/since/:lastMessageId - Incremental tail fetch
@@ -3854,56 +3763,9 @@ async function main() {
           return jsonResponse({ success: false, error: 'Session not found.' }, 404);
         }
 
-        // Group stats by model
-        const byModel: UsageByModel = {};
-
-        // Build message details
-        const messageDetails: Array<{
-          userQuery: string;
-          model?: string;
-          inputTokens: number;
-          outputTokens: number;
-          cacheReadTokens?: number;
-          cacheCreationTokens?: number;
-          toolCount?: number;
-          durationMs?: number;
-        }> = [];
-
-        let currentUserQuery = '';
-        for (const msg of session.messages) {
-          if (msg.role === 'user') {
-            currentUserQuery = typeof msg.content === 'string'
-              ? msg.content.slice(0, 100)
-              : JSON.stringify(msg.content).slice(0, 100);
-          } else if (msg.role === 'assistant' && msg.usage) {
-            addMessageUsageToByModel(byModel, msg, session.providerId);
-
-            // Message details always use aggregate values
-            messageDetails.push({
-              userQuery: currentUserQuery,
-              model: msg.usage.model,
-              inputTokens: msg.usage.inputTokens ?? 0,
-              outputTokens: msg.usage.outputTokens ?? 0,
-              cacheReadTokens: msg.usage.cacheReadTokens,
-              cacheCreationTokens: msg.usage.cacheCreationTokens,
-              toolCount: msg.toolCount,
-              durationMs: msg.durationMs,
-            });
-          }
-        }
-
-        const metadata = getSessionMetadata(sessionId);
         return jsonResponse({
           success: true,
-          stats: {
-            summary: metadata?.stats ?? {
-              messageCount: 0,
-              totalInputTokens: 0,
-              totalOutputTokens: 0,
-            },
-            byModel,
-            messageDetails,
-          },
+          stats: buildSessionDetailedUsageStats(session),
         });
       }
 
@@ -4084,7 +3946,7 @@ async function main() {
 
         // Zero-trust: redact credential-bearing fields from the echo payload.
         // The client already owns what it sent; no need to round-trip secrets.
-        return jsonResponse({ success: true, session: redactSessionMetadata(updated) });
+        return jsonResponse({ success: true, session: toClientSessionMetadata(updated) });
       }
 
       // POST /api/generate-session-title - AI-generate a short session title
@@ -8105,7 +7967,7 @@ async function main() {
             success: true,
             sessionId: result.sessionId,
             metadata: result.metadata
-              ? redactSessionMetadata(result.metadata as { providerEnvJson?: string })
+              ? toClientSessionMetadata(result.metadata as SessionMetadata)
               : undefined,
           });
         } catch (error) {

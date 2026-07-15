@@ -33,9 +33,6 @@ function getQueryText(msg: Message): string {
 /** Extract the real user query from a mixed system-reminder + user message. */
 function getVisibleQueryText(text: string): string {
   const trimmed = text.trim();
-  if (trimmed.includes('<HEARTBEAT>') || trimmed.includes('<MEMORY_UPDATE>')) {
-    return '';
-  }
   const reminder = parseLeadingSystemReminder(trimmed);
   if (reminder.hasReminder) return reminder.visibleText;
   return text;

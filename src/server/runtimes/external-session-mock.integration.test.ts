@@ -411,6 +411,14 @@ async function createHarness(
       broadcast: (event: string, data: unknown) => {
         broadcastEvents.push({ event, data });
       },
+      broadcastLive: (
+        event: string,
+        data: unknown,
+        scope: { nextRevision: () => number },
+      ) => {
+        scope.nextRevision();
+        broadcastEvents.push({ event, data });
+      },
     };
   });
 

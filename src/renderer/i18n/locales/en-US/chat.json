@@ -429,7 +429,7 @@
       "loading": "Loading...",
       "empty": "No history yet",
       "current": "Current",
-      "messageCount": "{{count}} message(s)",
+      "turnCount": "{{count}} turn(s)",
       "unreadNotifications": "{{count}} unread notification(s)",
       "automationVisible": "Scheduled task chats visible",
       "automationHidden": "Scheduled task chats hidden",
@@ -466,7 +466,8 @@
         "inputCache": "Input cache"
       },
       "summary": {
-        "messages": "Messages",
+        "turns": "Turns",
+        "humanQueries": "Human inputs",
         "totalTokens": "Total tokens",
         "inputOutput": "Input {{input}} / output {{output}}",
         "inputCache": "Input cache",
@@ -477,9 +478,9 @@
         "model": "Model",
         "count": "Count"
       },
-      "messageDetails": {
-        "title": "Message details",
-        "question": "Question"
+      "turnDetails": {
+        "title": "Turn usage",
+        "trigger": "Visible trigger"
       }
     },
     "queue": {

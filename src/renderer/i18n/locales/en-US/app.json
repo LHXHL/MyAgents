@@ -827,7 +827,8 @@
       "inputTokens": "Input tokens",
       "outputTokens": "Output tokens",
       "cacheInput": "Input cache",
-      "messageCount": "Turns"
+      "turnCount": "Turns",
+      "humanQueryCount": "Human inputs"
     },
     "dailyTrend": "Daily usage trend",
     "empty": "No data",
@@ -835,7 +836,8 @@
     "tooltip": {
       "input": "Input: {{tokens}}",
       "output": "Output: {{tokens}}",
-      "messages": "Turns: {{count}}"
+      "turns": "Turns: {{count}}",
+      "humanQueries": "Human inputs: {{count}}"
     },
     "legend": {
       "input": "Input",
@@ -893,7 +895,7 @@
     "noResults": "No results",
     "unfavorite": "Remove favorite",
     "favorite": "Favorite",
-    "messageCount": "{{count}} msg",
+    "turnCount": "{{count}} turn(s)",
     "viewStats": "View stats",
     "deleteBlocked": "Stop the scheduled task before deleting",
     "deleteBlockedAria": "Delete (stop the scheduled task first)",

@@ -159,4 +159,25 @@ describe('QueryNavigator', () => {
     expect(container).toHaveTextContent('Third question');
     expect(container).not.toHaveTextContent('hidden issue instructions');
   });
+
+  it('navigates a visible turn even when its hidden reminder is maintenance-shaped', () => {
+    const scrollContainerRef = { current: document.createElement('div') };
+    const mixed = '<system-reminder><HEARTBEAT>hidden schedule state</HEARTBEAT></system-reminder>Visible follow-up';
+
+    const { container } = render(
+      <QueryNavigator
+        historyMessages={[
+          userMessage('u1', 'First question'),
+          userMessage('u2', mixed),
+          userMessage('u3', 'Third question'),
+        ]}
+        streamingMessage={null}
+        scrollContainerRef={scrollContainerRef}
+        pauseAutoScroll={vi.fn()}
+      />,
+    );
+
+    expect(container).toHaveTextContent('Visible follow-up');
+    expect(container).not.toHaveTextContent('hidden schedule state');
+  });
 });

@@ -1,7 +1,7 @@
 /**
  * UsageStatsPanel - Global token usage statistics panel for Settings page
  */
-import { ArrowDownLeft, ArrowUpRight, BarChart2, Database, Loader2, MessageSquare } from 'lucide-react';
+import { ArrowDownLeft, ArrowUpRight, BarChart2, Database, Loader2, MessageSquare, UserRound } from 'lucide-react';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -145,14 +145,19 @@ function SummaryCards({ stats, totalTokens }: { stats: GlobalStats; totalTokens:
             icon: Database,
         },
         {
-            label: t('usageStats.summary.messageCount'),
-            value: String(stats.summary.messageCount),
+            label: t('usageStats.summary.turnCount'),
+            value: String(stats.summary.turnCount),
             icon: MessageSquare,
+        },
+        {
+            label: t('usageStats.summary.humanQueryCount'),
+            value: String(stats.summary.humanQueryCount),
+            icon: UserRound,
         },
     ];
 
     return (
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             {cards.map((card) => (
                 <div
                     key={card.label}
@@ -180,7 +185,8 @@ interface TooltipState {
     date: string;
     inputTokens: number;
     outputTokens: number;
-    messageCount: number;
+    turnCount: number;
+    humanQueryCount: number;
 }
 
 function DailyTrendChart({ daily, totalTokens }: { daily: GlobalStats['daily']; totalTokens: number }) {
@@ -205,7 +211,8 @@ function DailyTrendChart({ daily, totalTokens }: { daily: GlobalStats['daily']; 
             date: day.date,
             inputTokens: day.inputTokens,
             outputTokens: day.outputTokens,
-            messageCount: day.messageCount,
+            turnCount: day.turnCount,
+            humanQueryCount: day.humanQueryCount,
         });
         setHoveredIndex(index);
     }, []);
@@ -344,7 +351,8 @@ function DailyTrendChart({ daily, totalTokens }: { daily: GlobalStats['daily']; 
                         <div className="mt-1 space-y-0.5 text-xs text-[var(--ink-muted)]">
                             <div>{t('usageStats.tooltip.input', { tokens: formatTokens(tooltip.inputTokens) })}</div>
                             <div>{t('usageStats.tooltip.output', { tokens: formatTokens(tooltip.outputTokens) })}</div>
-                            <div>{t('usageStats.tooltip.messages', { count: tooltip.messageCount })}</div>
+                            <div>{t('usageStats.tooltip.turns', { count: tooltip.turnCount })}</div>
+                            <div>{t('usageStats.tooltip.humanQueries', { count: tooltip.humanQueryCount })}</div>
                         </div>
                     </div>
                 )}
