@@ -1102,7 +1102,9 @@ describe('external SessionEngine with fake runtime', () => {
     const sessionId = 'session-normal';
     const workspacePath = join(harness.home, 'workspace');
 
-    await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'hello'));
+    await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'hello'),
+    );
     await waitFor(
       () => harness.engine.getLiveSessionOverlay(sessionId).liveStreamingMessage?.content.includes('first fake answer') ?? false,
       'live assistant overlay',
@@ -1116,6 +1118,14 @@ describe('external SessionEngine with fake runtime', () => {
     expect(harness.engine.getLatestAssistantResult()).toEqual({
       sessionId,
       latestResult: 'first fake answer',
+    });
+    const completionTerminal = harness.engine.getSessionCompletionTerminal();
+    expect(completionTerminal).toMatchObject({
+      sessionId,
+      workspacePath,
+      turnId: expect.any(String),
+      origin: { kind: 'desktop', surface: 'unknown' },
+      status: 'complete',
     });
 
     const persisted = harness.sessionStore.getSessionData(sessionId);
@@ -1131,6 +1141,16 @@ describe('external SessionEngine with fake runtime', () => {
         replayKind: 'live-user-echo',
         sessionId,
         message: expect.objectContaining({ role: 'user', content: 'hello' }),
+      }),
+    }));
+    expect(broadcastEvents).toContainEqual(expect.objectContaining({
+      event: 'chat:message-complete',
+      data: expect.objectContaining({
+        completionTerminal: expect.objectContaining({
+          sessionId,
+          turnId: completionTerminal?.turnId,
+          status: 'complete',
+        }),
       }),
     }));
   });

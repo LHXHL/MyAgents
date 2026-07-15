@@ -11,6 +11,7 @@ import {
   getAgents,
   getAgentState,
   getBuiltinLiveSessionSnapshot,
+  getBuiltinSessionCompletionTerminal,
   getLastBuiltinAssistantText,
   getMcpServers,
   getMessages,
@@ -277,6 +278,10 @@ export function createBuiltinSessionEngine(): SessionEngine {
 
     getCurrentTurnIdentity() {
       return getBuiltinCurrentTurnIdentity();
+    },
+
+    getSessionCompletionTerminal() {
+      return getBuiltinSessionCompletionTerminal();
     },
 
     hasQueuedTurnOwnedBy(owner) {

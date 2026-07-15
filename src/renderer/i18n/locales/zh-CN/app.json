@@ -281,8 +281,6 @@
     "moreActions": "更多操作"
   },
   "notifications": {
-    "messageCompleteTitle": "MyAgents - 任务完成",
-    "messageCompleteBody": "请您查看结果",
     "permissionTitle": "MyAgents - 权限请求",
     "permissionBody": "AI 请求使用工具 - {{toolName}}",
     "askUserTitle": "MyAgents - 需求确认",

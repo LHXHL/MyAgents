@@ -263,6 +263,7 @@ import {
   clearCurrentTurnTextBlocks,
   clearPendingRequests as turnClearPendingRequests,
   getCurrentTurnIdentity as getBuiltinCurrentTurnIdentity,
+  getLastSessionCompletionTerminal,
   getCurrentTurnSourceItem,
   getCurrentTurnInboxMeta,
   getPendingRequestIds,
@@ -294,6 +295,10 @@ import {
   turnState,
   waitForCurrentTurnTerminalObserver,
 } from './builtin-session/turn';
+import {
+  withSessionCompletionTerminal,
+  type SessionCompletionTerminal,
+} from '../shared/sessionCompletion';
 import {
   applyAgentDefinitionsUpdate as configApplyAgentDefinitionsUpdate,
   applyMcpServersUpdate as configApplyMcpServersUpdate,
@@ -6480,6 +6485,7 @@ function handleToolResultComplete(toolUseId: string, content: string, isError?: 
 
 const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   getSessionId: () => sessionId,
+  getWorkspacePath: () => agentDir,
   getCurrentScenario: () => currentScenario,
   getProviderEnv: () => configState.currentProviderEnv,
   getCurrentModel: () => configState.currentModel,
@@ -6541,12 +6547,12 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   applyDeferredRestartIfNeeded,
 });
 
-function handleMessageStopped(): void {
-  builtinTurnLifecycle.stopTurn();
+function handleMessageStopped(): SessionCompletionTerminal | null {
+  return builtinTurnLifecycle.stopTurn();
 }
 
-function handleMessageError(error: string, localizedError?: string): void {
-  builtinTurnLifecycle.failTurn(error, localizedError);
+function handleMessageError(error: string, localizedError?: string): SessionCompletionTerminal | null {
+  return builtinTurnLifecycle.failTurn(error, localizedError);
 }
 
 function probeForkPersistenceIfReady(resultMessage: BuiltinSdkResultMessage): void {
@@ -6985,6 +6991,10 @@ export function getCurrentTurnIdentity(): TurnIdentity | null {
   return getBuiltinCurrentTurnIdentity()
     ?? getPromotedTurnIdentity()
     ?? getTurnAdmissionIdentity();
+}
+
+export function getBuiltinSessionCompletionTerminal(): SessionCompletionTerminal | null {
+  return getLastSessionCompletionTerminal();
 }
 
 export function hasQueuedTurnByOwner(owner: TurnOwner): boolean {
@@ -9024,8 +9034,8 @@ export async function waitForSessionIdle(
 export async function interruptCurrentResponse(reason: CancelReason = 'user'): Promise<boolean> {
   if (transientProviderRetryTimer) {
     clearTransientProviderRetryTimer(`interrupt:${reason}`);
-    handleMessageStopped();
-    broadcast('chat:message-stopped', null);
+    const completionTerminal = handleMessageStopped();
+    broadcast('chat:message-stopped', withSessionCompletionTerminal(null, completionTerminal));
     return true;
   }
 
@@ -9083,8 +9093,8 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
 
   if (!lifecycleState.query) {
     console.log('[agent] No lifecycleState.query but turn is still marked active, resetting state');
-    handleMessageStopped();
-    broadcast('chat:message-stopped', null);
+    const completionTerminal = handleMessageStopped();
+    broadcast('chat:message-stopped', withSessionCompletionTerminal(null, completionTerminal));
     return true;
   }
 
@@ -9172,8 +9182,8 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
     if (forceDrainTurnStarting) {
       forceDrainTurnStarting = false;
     } else {
-      handleMessageStopped();
-      broadcast('chat:message-stopped', null);
+      const completionTerminal = handleMessageStopped();
+      broadcast('chat:message-stopped', withSessionCompletionTerminal(null, completionTerminal));
     }
     return true;
   } finally {
@@ -12462,9 +12472,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     if (suppressRecoveredResumeAnchorError) {
       console.log(`[agent] Suppressing recoverable SDK resumeSessionAt error after clearing ${recoveredInvalidResumeAnchors.join(',')} anchor(s); recovery pre-warm will retry with bare resume`);
     } else if (!lifecycleState.preWarming && !lifecycleState.abortRequested) {
-      handleMessageError(errorMessage, sdkSubprocessDiagnostic?.imMessage);
+      const completionTerminal = handleMessageError(errorMessage, sdkSubprocessDiagnostic?.imMessage);
       setSessionState('error');
-      broadcast('chat:message-error', userFacingError);
+      broadcast(
+        'chat:message-error',
+        withSessionCompletionTerminal(userFacingError, completionTerminal),
+      );
     } else if (lifecycleState.abortRequested) {
       console.log(`[agent] Suppressing SDK error surfaced during abort (expected): ${errorMessage}`);
     }

@@ -20,6 +20,7 @@ import {
   getActiveRuntimeType,
   getCurrentBoundSessionId,
   getExternalLiveSessionSnapshot,
+  getExternalSessionCompletionTerminal,
   getExternalPendingInteractiveRequests,
   getExternalQueueStatus,
   getExternalSessionId,
@@ -249,6 +250,10 @@ export function createExternalSessionEngine(): SessionEngine {
 
     getCurrentTurnIdentity() {
       return getExternalCurrentTurnIdentity();
+    },
+
+    getSessionCompletionTerminal() {
+      return getExternalSessionCompletionTerminal();
     },
 
     hasQueuedTurnOwnedBy(owner) {

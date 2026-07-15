@@ -184,7 +184,11 @@ export async function handleSessionReadRoute(
   url: URL,
 ): Promise<Response | null> {
   if (pathname === '/api/session-state' && request.method === 'GET') {
-    return jsonResponse({ sessionState: getSessionEngine().getLiveSessionState().sessionState });
+    const engine = getSessionEngine();
+    return jsonResponse({
+      sessionState: engine.getLiveSessionState().sessionState,
+      completionTerminal: engine.getSessionCompletionTerminal(),
+    });
   }
 
   if (pathname === '/api/session-latest-result' && request.method === 'GET') {

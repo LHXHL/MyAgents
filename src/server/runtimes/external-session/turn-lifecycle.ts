@@ -10,6 +10,11 @@ import type {
   TurnTerminalObserver,
 } from '../../session-core/turn-queue';
 import type { SessionActivityTurnFacts } from '../../session-core/session-activity-policy';
+import { UNKNOWN_SESSION_ORIGIN } from '../../../shared/session-origin';
+import type {
+  SessionCompletionStatus,
+  SessionCompletionTerminal,
+} from '../../../shared/sessionCompletion';
 
 let turnCompleted = false;
 let lastTurnSucceeded = false;
@@ -25,6 +30,7 @@ let turnPromotionGeneration = 0;
 let activeTurnPromotion: ExternalTurnPromotionToken | null = null;
 let terminalObserverBarrier: Promise<void> = Promise.resolve();
 let currentTurnActivityFacts: SessionActivityTurnFacts | null = null;
+let lastSessionCompletionTerminal: SessionCompletionTerminal | null = null;
 let currentTurnBinding: {
   queueId: string;
   owner?: TurnOwner;
@@ -142,15 +148,39 @@ export function resetExternalTurnLifecycleState(): void {
   activeTurnPromotion = null;
   currentTurnBinding = null;
   currentTurnActivityFacts = null;
+  lastSessionCompletionTerminal = null;
   terminalObserverBarrier = Promise.resolve();
 }
 
 export function setExternalTurnActivityFacts(facts: SessionActivityTurnFacts): void {
   currentTurnActivityFacts = facts;
+  lastSessionCompletionTerminal = null;
 }
 
 export function getExternalTurnActivityFacts(): SessionActivityTurnFacts | null {
   return currentTurnActivityFacts;
+}
+
+export function recordExternalSessionCompletionTerminal(params: {
+  sessionId: string;
+  workspacePath: string;
+  status: SessionCompletionStatus;
+}): SessionCompletionTerminal | null {
+  const binding = currentTurnBinding;
+  if (!binding || !params.sessionId || !params.workspacePath) return null;
+  lastSessionCompletionTerminal = {
+    sessionId: params.sessionId,
+    workspacePath: params.workspacePath,
+    turnId: binding.queueId,
+    ...(binding.owner ? { turnOwner: binding.owner } : {}),
+    origin: currentTurnActivityFacts?.origin ?? UNKNOWN_SESSION_ORIGIN,
+    status: params.status,
+  };
+  return lastSessionCompletionTerminal;
+}
+
+export function getExternalSessionCompletionTerminal(): SessionCompletionTerminal | null {
+  return lastSessionCompletionTerminal;
 }
 
 export function clearExternalTurnActivityFacts(facts?: SessionActivityTurnFacts | null): void {

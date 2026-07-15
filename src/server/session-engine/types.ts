@@ -13,6 +13,7 @@ import type { ProviderRoute } from '../../shared/providerRoute';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { OfficialToolId } from '../../shared/official-tools';
 import type { SessionOrigin } from '../../shared/session-origin';
+import type { SessionCompletionTerminal } from '../../shared/sessionCompletion';
 import type {
   DispatchGuard,
   TurnIdentity,
@@ -296,6 +297,7 @@ export interface SessionEngine {
   getSessionConfigSnapshot(): SessionEngineConfigSnapshot;
   getCurrentSessionContext(): SessionEngineCurrentContext;
   getCurrentTurnIdentity(): TurnIdentity | null;
+  getSessionCompletionTerminal(): SessionCompletionTerminal | null;
   hasQueuedTurnOwnedBy(owner: TurnOwner): boolean;
   getHeldImConfigSnapshot(): SessionEngineHeldImConfigSnapshot;
   getLiveSessionOverlay(sessionId: string): SessionEngineLiveOverlay;

@@ -281,8 +281,6 @@
     "moreActions": "More actions"
   },
   "notifications": {
-    "messageCompleteTitle": "MyAgents - Task complete",
-    "messageCompleteBody": "Please review the result",
     "permissionTitle": "MyAgents - Permission request",
     "permissionBody": "AI requested tool access - {{toolName}}",
     "askUserTitle": "MyAgents - Confirmation needed",

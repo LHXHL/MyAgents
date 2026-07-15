@@ -76,7 +76,6 @@ import { listenWithCleanup } from '@/utils/tauriListen';
 import type { PermissionMode } from '@/config/types';
 import type { QueuedImageInfo, QueuedMessageInfo } from '@/types/queue';
 import {
-    notifyMessageComplete,
     notifyPermissionRequest,
     notifyAskUserQuestion,
     notifyPlanModeRequest,
@@ -2387,9 +2386,6 @@ export default function TabProvider({
                         return next;
                     });
                 }
-
-                // Send system notification if user is not focused on the app
-                notifyMessageComplete(tabId);
 
                 // Mark tab as unread when the result is not immediately visible:
                 // either the user is on another tab, or the app/window is not

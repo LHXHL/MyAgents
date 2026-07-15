@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   engine: {
     getRuntimeIdentity: vi.fn(() => ({ kind: 'builtin', runtime: 'builtin', sessionId: 'sid' })),
     getLiveSessionState: vi.fn(() => ({ sessionState: 'idle', isBusy: false })),
+    getSessionCompletionTerminal: vi.fn<() => Record<string, unknown> | null>(() => null),
     getLatestAssistantResult: vi.fn(() => ({ sessionId: 'sid', latestResult: 'latest answer' })),
     getLiveSessionOverlay: vi.fn<() => Record<string, unknown>>(() => ({ isActive: false })),
   },
@@ -43,6 +44,7 @@ describe('handleSessionReadRoute', () => {
     vi.clearAllMocks();
     mocks.engine.getRuntimeIdentity.mockReturnValue({ kind: 'builtin', runtime: 'builtin', sessionId: 'sid' });
     mocks.engine.getLiveSessionState.mockReturnValue({ sessionState: 'idle', isBusy: false });
+    mocks.engine.getSessionCompletionTerminal.mockReturnValue(null);
     mocks.engine.getLatestAssistantResult.mockReturnValue({ sessionId: 'sid', latestResult: 'latest answer' });
     mocks.engine.getLiveSessionOverlay.mockReturnValue({ isActive: false });
     mocks.getSessionData.mockReturnValue(null);
@@ -51,6 +53,13 @@ describe('handleSessionReadRoute', () => {
   });
 
   it('reads live session state and latest result from the active engine', async () => {
+    mocks.engine.getSessionCompletionTerminal.mockReturnValue({
+      sessionId: 'sid',
+      workspacePath: '/tmp/workspace',
+      turnId: 'turn-1',
+      origin: { kind: 'desktop', surface: 'launcher_input' },
+      status: 'complete',
+    });
     const stateResponse = await handleSessionReadRoute(
       '/api/session-state',
       new Request('http://local/api/session-state'),
@@ -62,7 +71,16 @@ describe('handleSessionReadRoute', () => {
       new URL('http://local/api/session-latest-result'),
     );
 
-    expect(await readJson(stateResponse as Response)).toEqual({ sessionState: 'idle' });
+    expect(await readJson(stateResponse as Response)).toEqual({
+      sessionState: 'idle',
+      completionTerminal: {
+        sessionId: 'sid',
+        workspacePath: '/tmp/workspace',
+        turnId: 'turn-1',
+        origin: { kind: 'desktop', surface: 'launcher_input' },
+        status: 'complete',
+      },
+    });
     expect(await readJson(latestResponse as Response)).toEqual({
       sessionId: 'sid',
       latestResult: 'latest answer',

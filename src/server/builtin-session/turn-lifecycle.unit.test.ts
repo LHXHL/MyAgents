@@ -65,6 +65,7 @@ function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
   const broadcast = vi.fn((event: string, data: unknown) => broadcasts.push({ event, data }));
   const deps: BuiltinTurnLifecycleDeps = {
     getSessionId: () => 'session-1',
+    getWorkspacePath: () => '/tmp/workspace',
     getCurrentScenario: () => ({ type: 'desktop' }),
     getProviderEnv: () => undefined,
     getCurrentModel: () => 'claude-test',
@@ -150,6 +151,7 @@ describe('turn-lifecycle owner', () => {
       messageText: 'run',
       wasQueued: false,
       resolve: vi.fn(),
+      turnOwner: { kind: 'goal', id: 'goal-1' },
       onTerminal,
       activityFacts: {
         origin: { kind: 'desktop', surface: 'launcher_input' },
@@ -183,6 +185,16 @@ describe('turn-lifecycle owner', () => {
     await waitForCurrentTurnTerminalObserver();
 
     expect(broadcasts.map(item => item.event)).toContain('chat:message-complete');
+    expect(broadcasts.find(item => item.event === 'chat:message-complete')?.data).toMatchObject({
+      completionTerminal: {
+        sessionId: 'session-1',
+        workspacePath: '/tmp/workspace',
+        turnId: 'goal-turn',
+        turnOwner: { kind: 'goal', id: 'goal-1' },
+        origin: { kind: 'desktop', surface: 'launcher_input' },
+        status: 'complete',
+      },
+    });
     const completeCall = vi.mocked(deps.broadcast).mock.calls.findIndex(([event]) => event === 'chat:message-complete');
     expect(vi.mocked(deps.broadcast).mock.invocationCallOrder[completeCall]).toBeLessThan(
       vi.mocked(deps.setSessionState).mock.invocationCallOrder[0],

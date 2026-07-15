@@ -5,7 +5,11 @@ import type {
   MessageQueueItem,
   TurnProviderAnalytics,
 } from './types';
-import type { SessionOrigin } from '../../shared/session-origin';
+import { UNKNOWN_SESSION_ORIGIN, type SessionOrigin } from '../../shared/session-origin';
+import type {
+  SessionCompletionStatus,
+  SessionCompletionTerminal,
+} from '../../shared/sessionCompletion';
 import type { TurnIdentity, TurnTerminalOutcome } from '../session-core/turn-queue';
 
 type ImEmitter = (type: ImEventType, data?: unknown) => void;
@@ -42,6 +46,7 @@ const currentTurnTextBlocks: string[] = [];
 const pendingRequestIds: string[] = [];
 let currentTurnImTerminalEmitted = false;
 let currentTurnSourceItem: MessageQueueItem | null = null;
+let lastSessionCompletionTerminal: SessionCompletionTerminal | null = null;
 let terminalObserverBarrier: Promise<void> = Promise.resolve();
 
 function notifyTurnItemTerminal(
@@ -223,6 +228,7 @@ export function resetTurnUsage(): void {
   currentTurnImTerminalEmitted = false;
   currentTurnTextBlocks.length = 0;
   currentTurnSourceItem = null;
+  lastSessionCompletionTerminal = null;
 }
 
 export function getCurrentTurnUsage(): BuiltinTurnUsage {
@@ -529,6 +535,28 @@ export function getCurrentTurnIdentity(): TurnIdentity | null {
   return item?.turnOwner ? { queueId: item.id, owner: item.turnOwner } : null;
 }
 
+export function recordCurrentTurnCompletionTerminal(params: {
+  sessionId: string;
+  workspacePath: string;
+  status: SessionCompletionStatus;
+}): SessionCompletionTerminal | null {
+  const item = currentTurnSourceItem;
+  if (!item || !params.sessionId || !params.workspacePath) return null;
+  lastSessionCompletionTerminal = {
+    sessionId: params.sessionId,
+    workspacePath: params.workspacePath,
+    turnId: item.id,
+    ...(item.turnOwner ? { turnOwner: item.turnOwner } : {}),
+    origin: item.activityFacts?.origin ?? currentTurnAnalyticsOrigin ?? UNKNOWN_SESSION_ORIGIN,
+    status: params.status,
+  };
+  return lastSessionCompletionTerminal;
+}
+
+export function getLastSessionCompletionTerminal(): SessionCompletionTerminal | null {
+  return lastSessionCompletionTerminal;
+}
+
 export function terminalCleanup(): {
   inboxMeta?: import('../inbox/types').InboxTurnMeta;
   replyText: string;
@@ -590,5 +618,6 @@ export function resetTurnForTest(): void {
   pendingRequestIds.length = 0;
   currentTurnImTerminalEmitted = false;
   currentTurnSourceItem = null;
+  lastSessionCompletionTerminal = null;
   terminalObserverBarrier = Promise.resolve();
 }

@@ -43,6 +43,10 @@ import { resolveCodexWorkspaceInstructions } from './workspace-instructions';
 import { RUNTIME_DISPLAY_NAMES, type RuntimeEnvPolicy, type RuntimeSource, type RuntimeType } from '../../shared/types/runtime';
 import { deriveSessionTitle } from '../../shared/sessionTitle';
 import { createLiveUserMessageReplay } from '../../shared/chatMessageReplay';
+import {
+  withSessionCompletionTerminal,
+  type SessionCompletionTerminal,
+} from '../../shared/sessionCompletion';
 import { isPendingSessionId } from '../../shared/constants';
 import {
   resolveChatQueueResponseMode,
@@ -220,6 +224,7 @@ import {
   markExternalTurnStarted,
   notifyExternalTurnOutcome,
   notifyExternalTurnStopped,
+  recordExternalSessionCompletionTerminal,
   resetExternalTurnAccumulators,
   resetExternalTurnLifecycleState,
   setExternalCurrentTurnContextUsage,
@@ -237,6 +242,7 @@ import {
 export {
   clearExternalTurnBinding,
   getExternalCurrentTurnIdentity,
+  getExternalSessionCompletionTerminal,
   getExternalTurnTerminalGeneration,
   isExternalTurnCurrent,
   waitExternalTurnFinalization,
@@ -1321,11 +1327,22 @@ function consumeExternalTurnMetrics(): {
   };
 }
 
+function recordExternalCompletionTerminal(
+  status: 'complete' | 'stopped' | 'error',
+): SessionCompletionTerminal | null {
+  return recordExternalSessionCompletionTerminal({
+    sessionId: getExternalLifecycleSessionId(),
+    workspacePath: getExternalLifecycleWorkspacePath(),
+    status,
+  });
+}
+
 function notifyFailedExternalTurn(
   terminalGeneration: number,
   text: string,
   error: string,
-): void {
+): SessionCompletionTerminal | null {
+  const completionTerminal = recordExternalCompletionTerminal('error');
   const activityFacts = getExternalTurnActivityFacts();
   const finalization = persistExternalTerminalActivity(activityFacts, text)
     .finally(() => clearExternalTurnActivityFacts(activityFacts));
@@ -1336,6 +1353,7 @@ function notifyFailedExternalTurn(
     error,
     ...consumeExternalTurnMetrics(),
   }, finalization);
+  return completionTerminal;
 }
 
 function finalizeAcceptedExternalFailure(message: string): void {
@@ -1373,12 +1391,17 @@ function persistExternalTerminalActivity(
 function finalizeStoppedExternalTurn(
   text: string,
   metrics: ReturnType<typeof consumeExternalTurnMetrics>,
-): void {
+  publishCompletion = true,
+): SessionCompletionTerminal | null {
+  const completionTerminal = publishCompletion
+    ? recordExternalCompletionTerminal('stopped')
+    : null;
   const activityFacts = getExternalTurnActivityFacts();
   const finalization = persistExternalTerminalActivity(activityFacts, text)
     .finally(() => clearExternalTurnActivityFacts(activityFacts));
   trackExternalTurnFinalization(finalization);
   notifyExternalTurnStopped(text, metrics, finalization);
+  return completionTerminal;
 }
 
 // Mirrors agent-session.ts `isValidAskUserQuestionInput`. Malformed input would crash
@@ -3673,8 +3696,13 @@ export async function stopExternalSession(options?: {
       clearPendingRealtimeSteeredUserMessagesWithCancellation();
     }
     setExternalSessionState('idle');
-    finalizeStoppedExternalTurn('', {});
-    if (!isConfigRestart) broadcast('chat:message-stopped', null);
+    const completionTerminal = finalizeStoppedExternalTurn('', {}, !isConfigRestart);
+    if (!isConfigRestart) {
+      broadcast(
+        'chat:message-stopped',
+        withSessionCompletionTerminal(null, completionTerminal),
+      );
+    }
     if (preserveQueue && !isConfigRestart) {
       setTimeout(drainExternalQueueAfterTurn, 0);
     }
@@ -3775,9 +3803,10 @@ export async function stopExternalSession(options?: {
     status: 'ok',
     detail: { pid },
   });
-  finalizeStoppedExternalTurn(
+  const completionTerminal = finalizeStoppedExternalTurn(
     currentExternalTurnTextSnapshot(),
     consumeExternalTurnMetrics(),
+    !isConfigRestart,
   );
   finalizeExternalLiveAssistantInMemory();
   resetTurnAccumulators();
@@ -3810,7 +3839,12 @@ export async function stopExternalSession(options?: {
     clearPendingRealtimeSteeredUserMessagesWithCancellation();
   }
   setExternalSessionState('idle');
-  if (!isConfigRestart) broadcast('chat:message-stopped', null);
+  if (!isConfigRestart) {
+    broadcast(
+      'chat:message-stopped',
+      withSessionCompletionTerminal(null, completionTerminal),
+    );
+  }
   if (preserveQueue && !isConfigRestart) {
     setTimeout(drainExternalQueueAfterTurn, 0);
   }
@@ -4245,6 +4279,9 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
       },
     });
 
+    const completionTerminal = recordExternalCompletionTerminal(
+      turnSucceededAtTerminal && !persistFailed ? 'complete' : 'error',
+    );
     if (persistFailed) {
       if (isExternalTurnGenerationCurrent(terminalGeneration)) {
         setExternalLastTurnSucceeded(false);
@@ -4253,9 +4290,12 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
         ? `Failed to persist external runtime turn: ${persistFailureReason}`
         : 'Failed to persist external runtime turn';
       broadcast('chat:agent-error', { message });
-      broadcast('chat:message-error', message);
+      broadcast(
+        'chat:message-error',
+        withSessionCompletionTerminal(message, completionTerminal),
+      );
     } else {
-      broadcast('chat:message-complete', {
+      broadcast('chat:message-complete', withSessionCompletionTerminal({
         ...(usageData ? {
           model: usageData.model,
           input_tokens: usageData.inputTokens,
@@ -4265,7 +4305,7 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
         } : {}),
         ...(turnToolCount > 0 ? { tool_count: turnToolCount } : {}),
         ...(turnDurationMs ? { duration_ms: turnDurationMs } : {}),
-      });
+      }, completionTerminal));
     }
     // PRD 0.2.19 — session_id joins back to renderer session_new for full funnel.
     // `lastSessionId` is typed `string` and bootstrap-initialized to `''`, so we
@@ -4956,12 +4996,16 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
 
       if (turnPlan.kind !== 'persist-success') {
         const message = turnPlan.message;
+        let completionTerminal: SessionCompletionTerminal | null = null;
         if (terminalGeneration > terminalGenerationBefore && turnPlan.kind === 'failure') {
           const terminalText = currentExternalTurnTextSnapshot();
           if (turnPlan.cleanup === 'stopped') {
-            finalizeStoppedExternalTurn(terminalText, consumeExternalTurnMetrics());
+            completionTerminal = finalizeStoppedExternalTurn(
+              terminalText,
+              consumeExternalTurnMetrics(),
+            );
           } else {
-            notifyFailedExternalTurn(terminalGeneration, terminalText, message);
+            completionTerminal = notifyFailedExternalTurn(terminalGeneration, terminalText, message);
           }
         }
         console.warn(
@@ -4985,7 +5029,10 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         });
         if (cleanup !== 'stopped') {
           broadcast('chat:agent-error', { message });
-          broadcast('chat:message-error', message);
+          broadcast(
+            'chat:message-error',
+            withSessionCompletionTerminal(message, completionTerminal),
+          );
         }
         fireExternalImCallback('error', message);
         finalizeExternalActiveRequest('failed');
@@ -5005,7 +5052,12 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         clearExternalPermissionSuggestions();
         drainPendingInteractiveRequestsAsExpired('error');
         setExternalSessionState('idle');
-        if (cleanup === 'stopped') broadcast('chat:message-stopped', null);
+        if (cleanup === 'stopped') {
+          broadcast(
+            'chat:message-stopped',
+            withSessionCompletionTerminal(null, completionTerminal),
+          );
+        }
         setTimeout(() => drainExternalQueueAfterTurn(), 0);
         clearExternalTurnTrace();
         break;
@@ -5082,12 +5134,13 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         // idle.
       } else {
         const errorMessage = sessionPlan.message;
+        let completionTerminal: SessionCompletionTerminal | null = null;
         if (
           terminalGeneration > terminalGenerationBefore
           && !persistInFlight
           && sessionPlan.kind === 'failure'
         ) {
-          notifyFailedExternalTurn(
+          completionTerminal = notifyFailedExternalTurn(
             terminalGeneration,
             currentExternalTurnTextSnapshot(),
             errorMessage,
@@ -5116,7 +5169,10 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
           });
           if (!isExternalTurnFinalizationInFlight()) finalizeExternalLiveAssistantInMemory();
           broadcast('chat:agent-error', { message: errorMessage });
-          broadcast('chat:message-error', errorMessage);
+          broadcast(
+            'chat:message-error',
+            withSessionCompletionTerminal(errorMessage, completionTerminal),
+          );
           fireExternalImCallback('error', errorMessage);
           deliverExternalWatchError({
             sessionId: getExternalLifecycleSessionId(),
