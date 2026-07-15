@@ -750,10 +750,35 @@
       },
       "bash": {
         "initializing": "Initializing terminal...",
-        "input": "Input",
+        "terminal": "Terminal",
+        "terminalAria": "Terminal execution, status: {{status}}",
+        "transcriptAria": "Terminal execution transcript",
+        "command": "Command",
         "output": "Output",
-        "background": "Background",
-        "running": "Running..."
+        "rawOutput": "Raw output",
+        "stdout": "Standard output",
+        "stderr": "Error output",
+        "waitingForOutput": "Waiting for output...",
+        "noOutput": "No output",
+        "showAll": "Show all",
+        "moreOutput": "More terminal content is hidden",
+        "contentTruncated": "Terminal content is too long; showing the safe inline range",
+        "duration": "Duration {{duration}}",
+        "status": {
+          "initializing": "Initializing",
+          "running": "Running",
+          "completed": "Completed",
+          "failed": "Failed",
+          "stopped": "Stopped",
+          "interrupted": "Interrupted",
+          "timeout": "Timed out",
+          "background": "Running in background"
+        },
+        "format": {
+          "json": "JSON",
+          "diff": "Diff",
+          "plain": "Terminal text"
+        }
       },
       "tts": {
         "querying": "Querying...",
