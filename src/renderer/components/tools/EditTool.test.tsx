@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
+import { i18n } from '@/i18n';
 import type { ToolUseSimple } from '@/types/chat';
 
 import EditTool from './EditTool';
@@ -27,10 +28,6 @@ function codexEditTool(): ToolUseSimple {
         },
       ],
     } as unknown as ToolUseSimple['parsedInput'],
-    inputJson: JSON.stringify({
-      file_path: '/tmp/a.md',
-      changes: [],
-    }),
     result: '[object Object]: /tmp/a.md\n@@ -1,2 +1,3 @@\n-old\n+new',
   };
 }
@@ -140,7 +137,7 @@ describe('EditTool Codex fileChange rendering', () => {
 });
 
 describe('tool summary input fallback', () => {
-  it('uses inputJson for restored Write summaries', () => {
+  it('uses neutral, localized singular and plural labels for input-only Write summaries', () => {
     const writeTool: ToolUseSimple = {
       id: 'call-write',
       name: 'Write',
@@ -148,12 +145,26 @@ describe('tool summary input fallback', () => {
       streamIndex: 0,
       inputJson: JSON.stringify({
         file_path: '/tmp/generated.md',
-        content: 'one\ntwo\nthree',
+        content: 'one',
       }),
     };
+    const en = i18n.getFixedT('en-US', 'chat');
+    const zh = i18n.getFixedT('zh-CN', 'chat');
+    const translateWith = (t: typeof en) => (key: string, options?: Record<string, unknown>) => (
+      String(t(key, options))
+    );
 
-    const { container } = render(<>{getToolSummaryNode(writeTool)}</>);
+    const singular = render(<>{getToolSummaryNode(writeTool, translateWith(en))}</>);
+    expect(singular.container.textContent?.trim()).toBe('Write 1 line');
 
-    expect(container.textContent?.trim()).toBe('+3');
+    const pluralTool = {
+      ...writeTool,
+      inputJson: JSON.stringify({ file_path: '/tmp/generated.md', content: 'one\ntwo\nthree' }),
+    };
+    const plural = render(<>{getToolSummaryNode(pluralTool, translateWith(en))}</>);
+    expect(plural.container.textContent?.trim()).toBe('Write 3 lines');
+
+    const chinese = render(<>{getToolSummaryNode(pluralTool, translateWith(zh))}</>);
+    expect(chinese.container.textContent?.trim()).toBe('写入 3 行');
   });
 });

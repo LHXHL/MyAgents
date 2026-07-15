@@ -657,6 +657,8 @@
         "matches": "{{count}} match(es)",
         "files": "{{count}} file(s)",
         "filesPart": "in {{count}} file(s)",
+        "writeLines_one": "Write {{count}} line",
+        "writeLines_other": "Write {{count}} lines",
         "editImage": "Edit image",
         "generateImage": "Generate image",
         "listVoices": "List voices",

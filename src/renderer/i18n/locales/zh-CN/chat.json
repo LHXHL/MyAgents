@@ -657,6 +657,8 @@
         "matches": "{{count}} 条匹配",
         "files": "{{count}} 个文件",
         "filesPart": "在 {{count}} 个文件中",
+        "writeLines_one": "写入 {{count}} 行",
+        "writeLines_other": "写入 {{count}} 行",
         "editImage": "编辑图片",
         "generateImage": "生成图片",
         "listVoices": "查询语音",
