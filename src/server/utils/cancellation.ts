@@ -26,6 +26,18 @@
  * correlation IDs (sessionId/tabId/turnId/requestId) into the LogEntry.
  */
 
+import { fetch as undiciFetch } from 'undici';
+
+import { getGeneralRequestDispatcher } from '../proxy-state';
+
+type GeneralFetchTransport = (
+  url: string,
+  init: Parameters<typeof undiciFetch>[1],
+) => Promise<unknown>;
+
+const defaultGeneralFetchTransport: GeneralFetchTransport = (url, init) => undiciFetch(url, init);
+let generalFetchTransport = defaultGeneralFetchTransport;
+
 export type CancelReason = 'user' | 'timeout' | 'upstream' | 'shutdown' | 'error';
 
 /**
@@ -258,9 +270,29 @@ export async function cancellableFetch(
   const timeoutMs = opts?.timeoutMs ?? 30_000;
   return withAbortSignal(
     opts?.parentSignal,
-    (signal) => fetch(url, { ...(init ?? {}), signal }),
+    (signal) => fetchWithGeneralProxy(url, { ...(init ?? {}), signal }),
     { timeoutMs },
   );
+}
+
+/** Fetch through the current general network baseline without adding a timeout. */
+export async function fetchWithGeneralProxy(
+  url: string,
+  init?: RequestInit,
+): Promise<Response> {
+  const dispatcher = getGeneralRequestDispatcher();
+  const response = await generalFetchTransport(url, {
+    ...(init ?? {}),
+    dispatcher,
+  } as Parameters<typeof undiciFetch>[1]);
+  return response as unknown as Response;
+}
+
+/** Replace the transport in deterministic tests; production always uses undici. */
+export function _setGeneralFetchTransportForTests(
+  transport?: GeneralFetchTransport,
+): void {
+  generalFetchTransport = transport ?? defaultGeneralFetchTransport;
 }
 
 function makeAbortError(signal?: AbortSignal): Error {

@@ -13,6 +13,7 @@ import { join } from 'path';
 import { getOAuthConfigDir, getServerState, updateServerState, loadStateStore } from './state-store';
 import type { OAuthTokenData, TokenChangeEvent, TokenChangeListener } from './types';
 import { ensureDirSync } from '../utils/fs-utils';
+import { fetchWithGeneralProxy } from '../utils/cancellation';
 
 // ===== Constants =====
 
@@ -162,7 +163,7 @@ async function refreshTokenInner(serverId: string): Promise<OAuthTokenData | nul
         body.set('client_secret', clientSecret);
       }
 
-      const response = await fetch(tokenEndpoint, {
+      const response = await fetchWithGeneralProxy(tokenEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
         body: body.toString(),

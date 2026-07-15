@@ -129,6 +129,298 @@ fn agent_channel_has_start_credentials(
     im_config_has_start_credentials(&im_config)
 }
 
+static GENERAL_PROXY_RECONNECT_GENERATION: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+static GENERAL_PROXY_RECONCILE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Queue transport restarts after the general proxy key changes. Each channel
+/// stays live until its existing ReplyRouter has no active request; then the
+/// standard stop/start lifecycle applies the new process environment. A newer
+/// generation cancels older waiters before they touch channel state.
+pub(crate) async fn schedule_general_proxy_channel_reconnects<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    agent_state: &ManagedAgents,
+    im_state: &ManagedImBots,
+    sidecar_manager: &ManagedSidecarManager,
+) -> u32 {
+    use std::sync::atomic::Ordering;
+
+    let generation = GENERAL_PROXY_RECONNECT_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+    let agent_count = {
+        let agents = agent_state.lock().await;
+        agents
+            .values()
+            .map(|agent| agent.channels.len() as u32)
+            .sum::<u32>()
+    };
+    let legacy_count = im_state.lock().await.len() as u32;
+    let scheduled = agent_count + legacy_count;
+    let app_handle = app_handle.clone();
+    let agent_state = Arc::clone(agent_state);
+    let im_state = Arc::clone(im_state);
+    let sidecar_manager = Arc::clone(sidecar_manager);
+    tauri::async_runtime::spawn(async move {
+        let _reconcile_guard = GENERAL_PROXY_RECONCILE_LOCK.lock().await;
+        if generation != GENERAL_PROXY_RECONNECT_GENERATION.load(Ordering::Acquire) {
+            ulog_info!(
+                "[proxy_config] Skipping superseded IM reconnect generation {}",
+                generation
+            );
+            return;
+        }
+        reconcile_channels_after_general_proxy_change(
+            &app_handle,
+            &agent_state,
+            &im_state,
+            &sidecar_manager,
+            generation,
+        )
+        .await;
+    });
+
+    ulog_info!(
+        "[proxy_config] Scheduled {} IM/Agent transport reconnect(s), generation={}",
+        scheduled,
+        generation
+    );
+    scheduled
+}
+
+pub(super) fn current_agent_channel_start_config(
+    agent_id: &str,
+    channel_id: &str,
+) -> Option<(AgentConfigRust, ChannelConfigRust, ImConfig)> {
+    let agent = read_agent_configs_from_disk()
+        .into_iter()
+        .find(|agent| agent.id == agent_id && agent.enabled)?;
+    if is_agent_workspace_archived(&agent) {
+        return None;
+    }
+    let channel = agent
+        .channels
+        .iter()
+        .find(|channel| channel.id == channel_id && channel.enabled)?
+        .clone();
+    let mut config = channel.to_im_config(&agent);
+    config.heartbeat_config = Some(types::HeartbeatConfig {
+        enabled: false,
+        ..types::HeartbeatConfig::default()
+    });
+    im_config_has_start_credentials(&config).then_some((agent, channel, config))
+}
+
+fn current_agent_channel_config(agent_id: &str, channel_id: &str) -> Option<ImConfig> {
+    current_agent_channel_start_config(agent_id, channel_id).map(|(_, _, config)| config)
+}
+
+fn current_legacy_bot_config(bot_id: &str) -> Option<ImConfig> {
+    read_im_configs_from_disk()
+        .into_iter()
+        .find(|(id, config)| {
+            id == bot_id && config.enabled && im_config_has_start_credentials(config)
+        })
+        .map(|(_, config)| config)
+}
+
+async fn wait_for_channel_idle(
+    consumers: ImConsumers,
+    model_work_gate: Arc<ChannelModelWorkGate>,
+    generation: u64,
+) -> bool {
+    loop {
+        if generation
+            != GENERAL_PROXY_RECONNECT_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+        {
+            return false;
+        }
+        let replies_idle = reply_slots_idle(&consumers).await;
+        if replies_idle && model_work_gate.active() == 0 {
+            if !model_work_gate.try_close() {
+                return false;
+            }
+            let still_current = generation
+                == GENERAL_PROXY_RECONNECT_GENERATION.load(std::sync::atomic::Ordering::Acquire);
+            let replies_still_idle = reply_slots_idle(&consumers).await;
+            if still_current && replies_still_idle && model_work_gate.active() == 0 {
+                return true;
+            }
+            model_work_gate.reopen();
+            if !still_current {
+                return false;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+async fn reply_slots_idle(consumers: &ImConsumers) -> bool {
+    let routers = consumers
+        .lock()
+        .await
+        .values()
+        .map(|handle| Arc::clone(&handle.reply_router))
+        .collect::<Vec<_>>();
+    for router in routers {
+        if router.lock().await.slot_count() > 0 {
+            return false;
+        }
+    }
+    true
+}
+
+async fn reconcile_channels_after_general_proxy_change<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    agent_state: &ManagedAgents,
+    im_state: &ManagedImBots,
+    sidecar_manager: &ManagedSidecarManager,
+    generation: u64,
+) {
+    let agent_keys: Vec<(String, String)> = {
+        let agents = agent_state.lock().await;
+        agents
+            .iter()
+            .flat_map(|(agent_id, agent)| {
+                agent
+                    .channels
+                    .keys()
+                    .map(|channel_id| (agent_id.clone(), channel_id.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
+    let legacy_ids: Vec<String> = im_state.lock().await.keys().cloned().collect();
+    let mut reconnected = 0_u32;
+    let mut failed = 0_u32;
+
+    for (agent_id, channel_id) in agent_keys {
+        if generation
+            != GENERAL_PROXY_RECONNECT_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
+        let Some(_) = current_agent_channel_config(&agent_id, &channel_id) else {
+            continue;
+        };
+        let idle_state = {
+            let agents = agent_state.lock().await;
+            agents
+                .get(&agent_id)
+                .and_then(|agent| agent.channels.get(&channel_id))
+                .map(|channel| {
+                    (
+                        Arc::clone(&channel.bot_instance.im_consumers),
+                        Arc::clone(&channel.bot_instance.model_work_gate),
+                    )
+                })
+        };
+        let Some((consumers, model_work_gate)) = idle_state else {
+            continue;
+        };
+        if !wait_for_channel_idle(consumers, Arc::clone(&model_work_gate), generation).await {
+            return;
+        }
+        // Config may have been disabled/deleted while the active reply drained.
+        let Some(_) = current_agent_channel_config(&agent_id, &channel_id) else {
+            model_work_gate.reopen();
+            ulog_info!(
+                "[proxy_config] Channel {} no longer enabled after reconnect boundary",
+                channel_id
+            );
+            failed += 1;
+            continue;
+        };
+
+        match restart_agent_channel_instance(
+            app_handle,
+            agent_state,
+            sidecar_manager,
+            &agent_id,
+            &channel_id,
+        )
+        .await
+        {
+            Ok(true) => reconnected += 1,
+            Ok(false) => {
+                model_work_gate.reopen();
+            }
+            Err(err) => {
+                // The agent monitor owns retry/recovery from the durable config.
+                failed += 1;
+                ulog_warn!(
+                    "[proxy_config] Channel {} transport reconnect failed; monitor will retry: {}",
+                    channel_id,
+                    err
+                );
+            }
+        }
+    }
+
+    for bot_id in legacy_ids {
+        if generation
+            != GENERAL_PROXY_RECONNECT_GENERATION.load(std::sync::atomic::Ordering::Acquire)
+        {
+            return;
+        }
+        let Some(_) = current_legacy_bot_config(&bot_id) else {
+            continue;
+        };
+        let idle_state = im_state.lock().await.get(&bot_id).map(|instance| {
+            (
+                Arc::clone(&instance.im_consumers),
+                Arc::clone(&instance.model_work_gate),
+            )
+        });
+        let Some((consumers, model_work_gate)) = idle_state else {
+            continue;
+        };
+        if !wait_for_channel_idle(consumers, Arc::clone(&model_work_gate), generation).await {
+            return;
+        }
+        let Some(config) = current_legacy_bot_config(&bot_id) else {
+            model_work_gate.reopen();
+            failed += 1;
+            continue;
+        };
+
+        match start_im_bot(
+            app_handle,
+            im_state,
+            sidecar_manager,
+            bot_id.clone(),
+            config,
+        )
+        .await
+        {
+            Ok(_) => {
+                reconnected += 1;
+            }
+            Err(err) => {
+                failed += 1;
+                ulog_warn!(
+                    "[proxy_config] Legacy channel {} transport reconnect failed: {}",
+                    bot_id,
+                    err
+                );
+            }
+        }
+    }
+
+    ulog_info!(
+        "[proxy_config] IM reconnect generation {} complete: {} reconnected, {} failed",
+        generation,
+        reconnected,
+        failed
+    );
+    let _ = app_handle.emit(
+        "agent:status-changed",
+        json!({
+            "event": "general_proxy_changed",
+            "reconnected": reconnected,
+            "failed": failed,
+        }),
+    );
+}
+
 pub(super) fn should_report_missing_configured_channel(
     agent_cfg: &types::AgentConfigRust,
     channel_cfg: &types::ChannelConfigRust,
@@ -173,6 +465,18 @@ fn find_missing_startable_agent_channels(
 #[cfg(test)]
 mod agent_monitor_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn proxy_restart_waiter_closes_admission_only_at_idle_boundary() {
+        use std::sync::atomic::Ordering;
+
+        let generation = GENERAL_PROXY_RECONNECT_GENERATION.fetch_add(1, Ordering::AcqRel) + 1;
+        let consumers: ImConsumers = Arc::new(Mutex::new(HashMap::new()));
+        let gate = ChannelModelWorkGate::new();
+
+        assert!(wait_for_channel_idle(consumers, Arc::clone(&gate), generation).await);
+        assert!(gate.try_enter().is_none());
+    }
 
     /// Issue #301: a legacy/hand-edited config can persist `providerEnvJson` /
     /// `mcpServersJson` as a raw JSON object instead of a stringified blob, which
@@ -1756,8 +2060,16 @@ pub(crate) struct AgentHeartbeatRoute {
     pub target: types::HeartbeatTarget,
     pub wake_tx: Option<mpsc::Sender<types::HeartbeatWake>>,
     pub pending_cron_events: Arc<Mutex<Vec<types::PendingCronEvent>>>,
+    pub model_work_gate: Arc<ChannelModelWorkGate>,
     pub router: Arc<Mutex<SessionRouter>>,
 }
+
+type HeartbeatRouteResources = (
+    Option<mpsc::Sender<types::HeartbeatWake>>,
+    Arc<Mutex<Vec<types::PendingCronEvent>>>,
+    Arc<ChannelModelWorkGate>,
+    Arc<Mutex<SessionRouter>>,
+);
 
 pub(crate) enum AgentHeartbeatRouteResolution {
     AgentMissing,
@@ -1788,6 +2100,7 @@ pub(crate) async fn resolve_agent_heartbeat_route(
                     Arc::clone(&ch_inst.bot_instance.router),
                     ch_inst.bot_instance.heartbeat_wake_tx.clone(),
                     Arc::clone(&ch_inst.bot_instance.pending_cron_events),
+                    Arc::clone(&ch_inst.bot_instance.model_work_gate),
                 )
             })
             .collect();
@@ -1802,15 +2115,8 @@ pub(crate) async fn resolve_agent_heartbeat_route(
     let last_active_channel_snapshot = last_active_channel_arc.read().await.clone();
 
     let mut candidates = Vec::with_capacity(channel_refs.len());
-    let mut routes: HashMap<
-        String,
-        (
-            Option<mpsc::Sender<types::HeartbeatWake>>,
-            Arc<Mutex<Vec<types::PendingCronEvent>>>,
-            Arc<Mutex<SessionRouter>>,
-        ),
-    > = HashMap::new();
-    for (ch_id, health, router, wake_tx, pending_cron_events) in &channel_refs {
+    let mut routes: HashMap<String, HeartbeatRouteResources> = HashMap::new();
+    for (ch_id, health, router, wake_tx, pending_cron_events, model_work_gate) in &channel_refs {
         let health_state = health.get_state().await;
         let (explicit_private_target, last_active_private_target, latest_private_target) = {
             let router_guard = router.lock().await;
@@ -1844,6 +2150,7 @@ pub(crate) async fn resolve_agent_heartbeat_route(
             (
                 wake_tx.clone(),
                 Arc::clone(pending_cron_events),
+                Arc::clone(model_work_gate),
                 Arc::clone(router),
             ),
         );
@@ -1878,11 +2185,12 @@ pub(crate) async fn resolve_agent_heartbeat_route(
     }
 
     match routes.remove(&target.channel_id) {
-        Some((wake_tx, pending_cron_events, router)) => {
+        Some((wake_tx, pending_cron_events, model_work_gate, router)) => {
             AgentHeartbeatRouteResolution::Target(AgentHeartbeatRoute {
                 target,
                 wake_tx,
                 pending_cron_events,
+                model_work_gate,
                 router,
             })
         }
@@ -1966,132 +2274,133 @@ pub fn schedule_agent_auto_start<R: Runtime>(app_handle: AppHandle<R>) {
                 continue;
             }
 
-            // Shared last_active_channel Arc for this agent (all channels share it)
-            let shared_lac: Arc<RwLock<Option<LastActiveChannel>>> =
-                Arc::new(RwLock::new(agent_config.last_active_channel.clone()));
-            let shared_private_target: Arc<RwLock<Option<types::LastActivePrivateTarget>>> =
-                Arc::new(RwLock::new(agent_config.last_active_private_target.clone()));
-
             let mut started_channel_ids: Vec<String> = Vec::new();
+            let mut started_agent_config: Option<AgentConfigRust> = None;
 
             for channel in &agent_config.channels {
                 if !channel.enabled {
                     continue;
                 }
-                let mut im_config = channel.to_im_config(&agent_config);
-                // Suppress per-channel heartbeat interval — agent-level heartbeat controls timing.
-                im_config.heartbeat_config = Some(types::HeartbeatConfig {
-                    enabled: false,
-                    ..types::HeartbeatConfig::default()
-                });
-
-                let has_credentials = im_config_has_start_credentials(&im_config);
-                if has_credentials {
-                    let agent_channel_permission_mode = im_config.permission_mode.clone();
-                    let bot_id = channel.id.clone();
-                    // Dedup: skip if channel already running (and healthy) in agent state.
-                    // If channel exists but is Error/Stopped, remove it to allow restart.
-                    {
-                        let mut agents_guard = agent_state.lock().await;
-                        if let Some(agent) = agents_guard.get_mut(&agent_config.id) {
-                            if agent.channels.contains_key(&bot_id) {
-                                let is_dead = {
-                                    let ch = agent.channels.get(&bot_id).unwrap();
-                                    let health_state = ch.bot_instance.health.get_state().await;
-                                    matches!(
-                                        health_state.status,
-                                        types::ImStatus::Error | types::ImStatus::Stopped
-                                    )
-                                };
-                                if is_dead {
-                                    ulog_info!("[agent] Channel {} in agent {} is dead, removing for auto-restart", bot_id, agent_config.id);
-                                    agent.channels.remove(&bot_id);
-                                } else {
-                                    ulog_info!("[agent] Channel {} already running in agent {}, skipping auto-start", bot_id, agent_config.id);
-                                    continue;
-                                }
+                let bot_id = channel.id.clone();
+                let lifecycle_lock = agent_channel_lifecycle_lock(&agent_config.id, &bot_id);
+                let _lifecycle_guard = lifecycle_lock.lock().await;
+                let Some((fresh_agent_config, fresh_channel, im_config)) =
+                    current_agent_channel_start_config(&agent_config.id, &bot_id)
+                else {
+                    continue;
+                };
+                let agent_channel_permission_mode = im_config.permission_mode.clone();
+                // Dedup: skip if channel already running (and healthy) in agent state.
+                // If channel exists but is Error/Stopped, remove it to allow restart.
+                {
+                    let mut agents_guard = agent_state.lock().await;
+                    if let Some(agent) = agents_guard.get_mut(&agent_config.id) {
+                        if agent.channels.contains_key(&bot_id) {
+                            let is_dead = {
+                                let ch = agent.channels.get(&bot_id).unwrap();
+                                let health_state = ch.bot_instance.health.get_state().await;
+                                matches!(
+                                    health_state.status,
+                                    types::ImStatus::Error | types::ImStatus::Stopped
+                                )
+                            };
+                            if is_dead {
+                                ulog_info!("[agent] Channel {} in agent {} is dead, removing for auto-restart", bot_id, agent_config.id);
+                                agent.channels.remove(&bot_id);
+                            } else {
+                                ulog_info!("[agent] Channel {} already running in agent {}, skipping auto-start", bot_id, agent_config.id);
+                                continue;
                             }
                         }
                     }
-                    ulog_info!(
-                        "[agent] Auto-starting channel {} of agent {}",
-                        bot_id,
-                        agent_config.id
-                    );
-                    // Create bot instance directly (no transit through ManagedImBots)
-                    match create_bot_instance(
-                        &app_handle,
-                        &sidecar_manager,
-                        bot_id.clone(),
-                        im_config,
-                        Some(agent_config.id.clone()),
-                    )
-                    .await
-                    {
-                        Ok((bot_instance, _bot_status)) => {
-                            ulog_info!("[agent] Auto-start succeeded for channel {}", bot_id);
-                            // Register channel directly in agent state
-                            let mut agents_guard = agent_state.lock().await;
-                            let agent_instance = agents_guard
-                                .entry(agent_config.id.clone())
-                                .or_insert_with(|| AgentInstance {
-                                    agent_id: agent_config.id.clone(),
-                                    config: agent_config.clone(),
-                                    channels: HashMap::new(),
-                                    last_active_channel: Arc::clone(&shared_lac),
-                                    last_active_private_target: Arc::clone(&shared_private_target),
-                                    heartbeat_handle: None,
-                                    heartbeat_wake_tx: None,
-                                    heartbeat_config: None,
-                                    current_model: Arc::new(RwLock::new(
-                                        agent_config.model.clone(),
-                                    )),
-                                    current_provider_env: Arc::new(RwLock::new(
-                                        agent_config
-                                            .provider_env_json
-                                            .as_ref()
-                                            .and_then(|s| serde_json::from_str(s).ok()),
-                                    )),
-                                    permission_mode: Arc::new(RwLock::new(
-                                        agent_channel_permission_mode.clone(),
-                                    )),
-                                    mcp_servers_json: Arc::new(RwLock::new(
-                                        agent_config.mcp_servers_json.clone(),
-                                    )),
-                                    runtime_config: Arc::new(RwLock::new(
-                                        agent_config.runtime_config.clone(),
-                                    )),
-                                    memory_evolution_config: None,
-                                });
-                            // Set agent_link so the processing loop can update lastActiveChannel
-                            let link = AgentChannelLink {
-                                channel_id: channel.id.clone(),
-                                agent_id: agent_config.id.clone(),
-                                last_active_channel: Arc::clone(&shared_lac),
-                                last_active_private_target: Arc::clone(&shared_private_target),
-                                runtime_config: Arc::clone(&agent_instance.runtime_config),
-                            };
-                            *bot_instance.agent_link.write().await = Some(link);
+                }
+                ulog_info!(
+                    "[agent] Auto-starting channel {} of agent {}",
+                    bot_id,
+                    agent_config.id
+                );
+                // Create bot instance directly (no transit through ManagedImBots)
+                match create_bot_instance(
+                    &app_handle,
+                    &sidecar_manager,
+                    bot_id.clone(),
+                    im_config,
+                    Some(agent_config.id.clone()),
+                )
+                .await
+                {
+                    Ok((bot_instance, _bot_status)) => {
+                        ulog_info!("[agent] Auto-start succeeded for channel {}", bot_id);
+                        // Register channel directly in agent state
+                        let mut agents_guard = agent_state.lock().await;
+                        let agent_instance = agents_guard
+                            .entry(agent_config.id.clone())
+                            .or_insert_with(|| AgentInstance {
+                                agent_id: fresh_agent_config.id.clone(),
+                                config: fresh_agent_config.clone(),
+                                channels: HashMap::new(),
+                                last_active_channel: Arc::new(RwLock::new(
+                                    fresh_agent_config.last_active_channel.clone(),
+                                )),
+                                last_active_private_target: Arc::new(RwLock::new(
+                                    fresh_agent_config.last_active_private_target.clone(),
+                                )),
+                                heartbeat_handle: None,
+                                heartbeat_wake_tx: None,
+                                heartbeat_config: None,
+                                current_model: Arc::new(RwLock::new(
+                                    fresh_agent_config.model.clone(),
+                                )),
+                                current_provider_env: Arc::new(RwLock::new(
+                                    fresh_agent_config
+                                        .provider_env_json
+                                        .as_ref()
+                                        .and_then(|s| serde_json::from_str(s).ok()),
+                                )),
+                                permission_mode: Arc::new(RwLock::new(
+                                    agent_channel_permission_mode.clone(),
+                                )),
+                                mcp_servers_json: Arc::new(RwLock::new(
+                                    fresh_agent_config.mcp_servers_json.clone(),
+                                )),
+                                runtime_config: Arc::new(RwLock::new(
+                                    fresh_agent_config.runtime_config.clone(),
+                                )),
+                                memory_evolution_config: None,
+                            });
+                        // Set agent_link so the processing loop can update lastActiveChannel
+                        let link = AgentChannelLink {
+                            channel_id: fresh_channel.id.clone(),
+                            agent_id: fresh_agent_config.id.clone(),
+                            last_active_channel: Arc::clone(&agent_instance.last_active_channel),
+                            last_active_private_target: Arc::clone(
+                                &agent_instance.last_active_private_target,
+                            ),
+                            runtime_config: Arc::clone(&agent_instance.runtime_config),
+                        };
+                        *bot_instance.agent_link.write().await = Some(link);
 
-                            agent_instance.channels.insert(
-                                channel.id.clone(),
-                                ChannelInstance {
-                                    channel_id: channel.id.clone(),
-                                    bot_instance,
-                                },
-                            );
-                            started_channel_ids.push(channel.id.clone());
-                            drop(agents_guard);
-                        }
-                        Err(e) => {
-                            ulog_warn!("[agent] Auto-start failed for channel {}: {}", bot_id, e)
-                        }
+                        agent_instance.channels.insert(
+                            fresh_channel.id.clone(),
+                            ChannelInstance {
+                                channel_id: fresh_channel.id.clone(),
+                                bot_instance,
+                            },
+                        );
+                        started_channel_ids.push(fresh_channel.id.clone());
+                        started_agent_config = Some(fresh_agent_config);
+                        drop(agents_guard);
+                    }
+                    Err(e) => {
+                        ulog_warn!("[agent] Auto-start failed for channel {}: {}", bot_id, e)
                     }
                 }
             }
 
             // Start agent-level heartbeat if configured and at least one channel started
             if !started_channel_ids.is_empty() {
+                let agent_config = started_agent_config
+                    .expect("a successfully started channel records its fresh agent config");
                 let hb_config = agent_config.heartbeat.clone().unwrap_or_default();
                 let agent_id = agent_config.id.clone();
                 let agent_label = agent_config.name.clone();
@@ -2468,14 +2777,32 @@ pub async fn monitor_agent_channels(
                 continue;
             }
 
-            let mut im_config = channel_cfg.to_im_config(agent_cfg);
-            im_config.heartbeat_config = Some(types::HeartbeatConfig {
-                enabled: false,
-                ..types::HeartbeatConfig::default()
-            });
-            if !im_config_has_start_credentials(&im_config) {
-                continue;
+            let lifecycle_lock = agent_channel_lifecycle_lock(agent_id, channel_id);
+            let _lifecycle_guard = lifecycle_lock.lock().await;
+
+            let current_health = {
+                let agents_guard = agent_state.lock().await;
+                agents_guard
+                    .get(agent_id)
+                    .and_then(|agent| agent.channels.get(channel_id))
+                    .map(|channel| Arc::clone(&channel.bot_instance.health))
+            };
+            if let Some(health) = current_health {
+                let status = health.get_state().await.status;
+                if !matches!(status, types::ImStatus::Error | types::ImStatus::Stopped) {
+                    failure_counts.remove(&key);
+                    next_retry.remove(&key);
+                    orphaned.remove(&key);
+                    continue;
+                }
             }
+
+            // Re-read after acquiring the same lifecycle boundary used by
+            // commands and proxy reconciliation. Disabled/deleted channels
+            // must not be resurrected from the monitor's earlier snapshot.
+            let Some(im_config) = current_agent_channel_config(agent_id, channel_id) else {
+                continue;
+            };
             let agent_channel_permission_mode = im_config.permission_mode.clone();
 
             // Remove dead channel — shut down old instance properly first

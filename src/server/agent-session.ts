@@ -60,7 +60,7 @@ import './tools/builtin-mcp-meta';
 import {
   applyProviderProxyPolicyToEnv,
   getProviderProxyScopeKey,
-  initSocksBridgeFromCurrentEnv,
+  initializeProxyStateFromCurrentSettings,
   setProcessProxyConfig,
 } from './proxy-state';
 import { buildMcpSubprocessEnv } from './session-core/mcp-env-policy';
@@ -2545,12 +2545,9 @@ function triggerProxyRestart(): void {
   }
 }
 
-/**
- * Initialize SOCKS5 bridge from inherited environment variables at Sidecar startup.
- * Rust may have set HTTP_PROXY=socks5://... — detect and bridge it before first pre-warm.
- */
+/** Initialize general + provider proxy baselines before the first pre-warm. */
 export async function initSocksBridgeFromEnv(): Promise<void> {
-  await initSocksBridgeFromCurrentEnv();
+  await initializeProxyStateFromCurrentSettings();
 }
 
 /**

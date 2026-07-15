@@ -303,7 +303,13 @@ pub struct SessionRouter {
 
 **Sidecar 所有权**：IM Bot 使用 `SidecarOwner::ImBot(session_key)` 作为 Sidecar owner，与 `Tab`、`Task`、`Goal`、`BackgroundCompletion` 并列。当所有 owner 释放时 Sidecar 自动停止。`ensure_session_sidecar()` 和 `release_session_sidecar()` 统一管理生命周期。
 
-### 2.6.1 IM / Agent Channel 中的 Goal Mode
+### 2.6.1 通用代理变化时的 Channel 重连
+
+Rust IM adapter 与 Plugin Bridge 是通用网络 owner。`generalRequests` 的有效值变化后，Channel model-work gate 覆盖普通 enqueue、ReplyRouter 回复、terminal finalizer、heartbeat turn 与 cron hand-off；到达空闲边界时关闭入口并再次复核 ReplyRouter/active work，然后复用标准 Channel stop/start lifecycle 从磁盘权威配置重建实例。显式命令、启动恢复、健康监控、Channel 热配置同步与代理重连共用按 `{agentId, channelId}` / `{botId}` 定位的 lifecycle lock；所有 start/replacement 都在取得锁后重读磁盘权威配置，避免并发 stop/start 重复创建或 replacement 发布旧配置。切换窗口内的新普通消息会收到稍后重试提示。
+
+这里不复制 `SessionRouter` 或 Sidecar owner，也不引入代理专用进程管理器。pending cron 是 Rust Channel 拥有的未完成投递状态，transport replacement 复用同一个 `Arc`，并向新 heartbeat runner 补发首个 pending event 的定向高优先级 wake；每次成功 ACK 后再按整个 queue 的下一项目标级联，因此同一 Channel 的多个 private target 都能继续排空，旧 wake channel 随 shutdown 消失也不会让事件停滞。标准 shutdown 仍负责持久化 session binding、释放 Sidecar owner，标准 start 再恢复。连续代理修改由 reconciliation mutex 串行，generation fence 只让最新一轮落地；即使某一代快照暂时没有运行中 Channel，也仍排队 waiter，保证更新一代不会被旧 replacement 的临时 remove 窗口吞掉。
+
+### 2.6.2 IM / Agent Channel 中的 Goal Mode
 
 Goal Mode 是 current-session 状态，因此 IM / Agent Channel 里由 AI 调 `myagents goal create --objective-file ...` 创建的 Goal，仍属于当前 peer session：
 

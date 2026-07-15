@@ -75,6 +75,82 @@ pub(crate) struct ImConsumerHandle {
 
 pub(crate) type ImConsumers = Arc<Mutex<HashMap<String, ImConsumerHandle>>>;
 
+/// Admission boundary for model-bound work owned by one IM channel. Proxy
+/// reconnect closes the gate, waits for admitted work plus ReplyRouter slots
+/// to drain, then uses the normal channel lifecycle.
+pub(crate) struct ChannelModelWorkGate {
+    accepting: std::sync::atomic::AtomicBool,
+    active: std::sync::atomic::AtomicUsize,
+}
+
+impl ChannelModelWorkGate {
+    pub(crate) fn new() -> Arc<Self> {
+        Arc::new(Self {
+            accepting: std::sync::atomic::AtomicBool::new(true),
+            active: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    pub(crate) fn try_enter(self: &Arc<Self>) -> Option<ChannelModelWorkGuard> {
+        use std::sync::atomic::Ordering;
+
+        if !self.accepting.load(Ordering::SeqCst) {
+            return None;
+        }
+        self.active.fetch_add(1, Ordering::SeqCst);
+        if self.accepting.load(Ordering::SeqCst) {
+            Some(ChannelModelWorkGuard {
+                gate: Arc::clone(self),
+            })
+        } else {
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            None
+        }
+    }
+
+    /// Transfer work from another tracked owner (for example ReplyRouter) into
+    /// an async finalizer without reopening admission.
+    pub(crate) fn begin_handoff(self: &Arc<Self>) -> ChannelModelWorkGuard {
+        self.active
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        ChannelModelWorkGuard {
+            gate: Arc::clone(self),
+        }
+    }
+
+    pub(crate) fn try_close(&self) -> bool {
+        self.accepting
+            .compare_exchange(
+                true,
+                false,
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+            )
+            .is_ok()
+    }
+
+    pub(crate) fn reopen(&self) {
+        self.accepting
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn active(&self) -> usize {
+        self.active.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+pub(crate) struct ChannelModelWorkGuard {
+    gate: Arc<ChannelModelWorkGate>,
+}
+
+impl Drop for ChannelModelWorkGuard {
+    fn drop(&mut self) {
+        self.gate
+            .active
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 use bridge::BridgeAdapter;
 use buffer::MessageBuffer;
 use dingtalk::DingtalkAdapter;
@@ -865,6 +941,9 @@ pub struct ImBotInstance {
     pub(crate) health: Arc<HealthManager>,
     pub(crate) router: Arc<Mutex<SessionRouter>>,
     pub(crate) im_consumers: ImConsumers,
+    /// Covers enqueue setup, heartbeat turns, cron hand-off, and terminal
+    /// finalization across a proxy-triggered transport restart boundary.
+    pub(crate) model_work_gate: Arc<ChannelModelWorkGate>,
     pub(super) buffer: Arc<Mutex<MessageBuffer>>,
     pub(super) started_at: Instant,
     /// JoinHandle for the message processing loop (awaited during graceful shutdown)

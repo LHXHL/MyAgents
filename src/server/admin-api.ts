@@ -52,7 +52,7 @@ import {
   type ChannelConfigSlim,
   type ProjectSlim,
 } from './utils/admin-config';
-import { cancellableFetch } from './utils/cancellation';
+import { cancellableFetch, fetchWithGeneralProxy } from './utils/cancellation';
 import { ensureShellPath } from './utils/shell';
 import { buildCronScope } from './utils/cron-scope';
 import { readLoopbackJson } from './utils/loopback-response';
@@ -657,13 +657,13 @@ export async function handleMcpTest(payload: { id: string }): Promise<AdminRespo
       };
 
       const resp = server.type === 'http'
-        ? await fetch(server.url!, {
+        ? await fetchWithGeneralProxy(server.url!, {
             method: 'POST',
             headers: { ...headers, 'Content-Type': 'application/json' },
             body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'MyAgents', version: '1.0' } } }),
             signal: controller.signal,
           })
-        : await fetch(server.url!, { method: 'GET', headers, signal: controller.signal });
+        : await fetchWithGeneralProxy(server.url!, { method: 'GET', headers, signal: controller.signal });
 
       clearTimeout(timeout);
 

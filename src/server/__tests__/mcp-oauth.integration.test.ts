@@ -11,9 +11,17 @@ import {
   saveStateStore,
   updateServerState,
 } from '../mcp-oauth/state-store';
+import {
+  _getInheritedProxySnapshotForTests,
+  _resetProxyStateForTests,
+  getCurrentProxySettings,
+} from '../proxy-state';
+import { _setGeneralFetchTransportForTests } from '../utils/cancellation';
 
 const originalConfigDir = process.env.MYAGENTS_CONFIG_DIR;
 const originalFetch = globalThis.fetch;
+const originalProxySettings = getCurrentProxySettings();
+const originalInheritedProxySnapshot = _getInheritedProxySnapshotForTests();
 
 let configDir: string;
 
@@ -33,11 +41,17 @@ describe('mcp oauth', () => {
     process.env.MYAGENTS_CONFIG_DIR = configDir;
     resetStateStoreCacheForTests();
     globalThis.fetch = originalFetch;
+    _setGeneralFetchTransportForTests(
+      async (url, init) => globalThis.fetch(url, init as RequestInit),
+    );
+    _resetProxyStateForTests(null, {});
   });
 
   afterEach(() => {
     resetStateStoreCacheForTests();
     globalThis.fetch = originalFetch;
+    _setGeneralFetchTransportForTests();
+    _resetProxyStateForTests(originalProxySettings, originalInheritedProxySnapshot);
     if (originalConfigDir === undefined) {
       delete process.env.MYAGENTS_CONFIG_DIR;
     } else {

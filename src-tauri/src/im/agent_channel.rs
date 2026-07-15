@@ -1,5 +1,32 @@
 use super::*;
 
+static CHANNEL_LIFECYCLE_LOCKS: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<String, std::sync::Weak<Mutex<()>>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// One serialization boundary per durable channel identity. Weak entries keep
+/// the registry from becoming another lifecycle owner.
+fn lifecycle_lock(key: String) -> Arc<Mutex<()>> {
+    let mut locks = CHANNEL_LIFECYCLE_LOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    locks.retain(|_, lock| lock.strong_count() > 0);
+    if let Some(lock) = locks.get(&key).and_then(std::sync::Weak::upgrade) {
+        return lock;
+    }
+    let lock = Arc::new(Mutex::new(()));
+    locks.insert(key, Arc::downgrade(&lock));
+    lock
+}
+
+pub(super) fn agent_channel_lifecycle_lock(agent_id: &str, channel_id: &str) -> Arc<Mutex<()>> {
+    lifecycle_lock(format!("agent:{agent_id}:channel:{channel_id}"))
+}
+
+pub(super) fn legacy_bot_lifecycle_lock(bot_id: &str) -> Arc<Mutex<()>> {
+    lifecycle_lock(format!("legacy:{bot_id}"))
+}
+
 fn filter_legacy_provider_command_providers(
     mut providers: Vec<serde_json::Value>,
 ) -> Vec<serde_json::Value> {
@@ -176,6 +203,93 @@ pub(super) async fn shutdown_bot_instance(
     Ok(())
 }
 
+/// Restart one Agent channel through the same full shutdown/start path used by
+/// explicit lifecycle commands. Callers decide when the boundary is safe and
+/// provide the authoritative config to use for the replacement.
+pub(super) async fn restart_agent_channel_instance<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    agent_state: &ManagedAgents,
+    sidecar_manager: &ManagedSidecarManager,
+    agent_id: &str,
+    channel_id: &str,
+) -> Result<bool, String> {
+    let lifecycle_lock = agent_channel_lifecycle_lock(agent_id, channel_id);
+    let _lifecycle_guard = lifecycle_lock.lock().await;
+
+    let Some((_, _, config)) =
+        super::config_store::current_agent_channel_start_config(agent_id, channel_id)
+    else {
+        return Ok(false);
+    };
+
+    let old = {
+        let mut agents = agent_state.lock().await;
+        agents
+            .get_mut(agent_id)
+            .and_then(|agent| agent.channels.remove(channel_id))
+    };
+    let Some(old) = old else {
+        return Ok(false);
+    };
+
+    let pending_cron_events = Arc::clone(&old.bot_instance.pending_cron_events);
+
+    if let Err(err) = shutdown_bot_instance(old.bot_instance, sidecar_manager, channel_id).await {
+        // The instance has already been removed and shutdown consumes it. Keep
+        // the established lifecycle behavior: attempt a clean replacement so
+        // the monitor does not have to recover an avoidable missing channel.
+        ulog_warn!(
+            "[agent] Failed to fully shutdown channel {} before restart: {}",
+            channel_id,
+            err
+        );
+    }
+    let (new_instance, _) = create_bot_instance_with_pending_cron_events(
+        app_handle,
+        sidecar_manager,
+        channel_id.to_string(),
+        config,
+        Some(agent_id.to_string()),
+        Some(pending_cron_events),
+    )
+    .await?;
+
+    let link = {
+        let agents = agent_state.lock().await;
+        agents.get(agent_id).map(|agent| AgentChannelLink {
+            channel_id: channel_id.to_string(),
+            agent_id: agent_id.to_string(),
+            last_active_channel: Arc::clone(&agent.last_active_channel),
+            last_active_private_target: Arc::clone(&agent.last_active_private_target),
+            runtime_config: Arc::clone(&agent.runtime_config),
+        })
+    };
+    let Some(link) = link else {
+        shutdown_bot_instance(new_instance, sidecar_manager, channel_id).await?;
+        return Ok(false);
+    };
+    *new_instance.agent_link.write().await = Some(link);
+    let mut agents = agent_state.lock().await;
+    let Some(agent) = agents.get_mut(agent_id) else {
+        drop(agents);
+        shutdown_bot_instance(new_instance, sidecar_manager, channel_id).await?;
+        return Ok(false);
+    };
+    if agent.channels.contains_key(channel_id) {
+        drop(agents);
+        shutdown_bot_instance(new_instance, sidecar_manager, channel_id).await?;
+        return Ok(false);
+    }
+    agent.channels.insert(
+        channel_id.to_string(),
+        ChannelInstance {
+            channel_id: channel_id.to_string(),
+            bot_instance: new_instance,
+        },
+    );
+    Ok(true)
+}
+
 /// Create a bot instance without locking or inserting into any global container.
 /// Core logic extracted from start_im_bot for reuse by agent channel commands.
 /// `agent_id` controls:
@@ -187,6 +301,25 @@ pub(super) async fn create_bot_instance<R: Runtime>(
     bot_id: String,
     config: ImConfig,
     agent_id: Option<String>,
+) -> Result<(ImBotInstance, ImBotStatus), String> {
+    create_bot_instance_with_pending_cron_events(
+        app_handle,
+        sidecar_manager,
+        bot_id,
+        config,
+        agent_id,
+        None,
+    )
+    .await
+}
+
+async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
+    app_handle: &AppHandle<R>,
+    sidecar_manager: &ManagedSidecarManager,
+    bot_id: String,
+    config: ImConfig,
+    agent_id: Option<String>,
+    carried_pending_cron_events: Option<Arc<Mutex<Vec<types::PendingCronEvent>>>>,
 ) -> Result<(ImBotInstance, ImBotStatus), String> {
     let _update_spawn_permit = crate::sidecar::begin_update_spawn_permit()?;
     ulog_info!(
@@ -759,6 +892,8 @@ pub(super) async fn create_bot_instance<R: Runtime>(
     // session reset / Sidecar shutdown.
     let im_consumers: ImConsumers = Arc::new(Mutex::new(HashMap::new()));
     let im_consumers_for_loop = Arc::clone(&im_consumers);
+    let model_work_gate = ChannelModelWorkGate::new();
+    let model_work_gate_for_loop = Arc::clone(&model_work_gate);
 
     // Subscribe to sidecar-stop broadcast and cancel matching consumers in
     // lockstep. Without this, when the IM Agent owner is released and the
@@ -2031,6 +2166,13 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                         }
                     }
 
+                    let Some(active_work_guard) = model_work_gate_for_loop.try_enter() else {
+                        let _ = adapter_for_reply
+                            .send_message(&chat_id, "网络设置正在应用，请稍后重新发送。")
+                            .await;
+                        continue;
+                    };
+
                     // Clone shared state for the spawned task
                     let task_router = Arc::clone(&router_clone);
                     let task_adapter = Arc::clone(&adapter_for_reply);
@@ -2059,8 +2201,10 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                     let task_allowed_users = Arc::clone(&allowed_users_for_loop);
                     // Pattern C: per-peer-session ImEventConsumer + ReplyRouter registry
                     let task_consumers = Arc::clone(&im_consumers_for_loop);
+                    let task_model_work_gate = Arc::clone(&model_work_gate_for_loop);
 
                     in_flight.spawn(async move {
+                        let _active_work_guard = active_work_guard;
                         // Pattern A — Per-Request Identity: assign request_id at the dispatch
                         // boundary so every log line and downstream RPC carries the same trace
                         // ID. Empty default from adapters means "not yet assigned"; generate
@@ -2251,7 +2395,9 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                             let agent_link = Arc::clone(&task_agent_link);
                             let session_key_cap = session_key.clone();
                             let source_type_cap = msg.source_type.clone();
+                            let model_work_gate = Arc::clone(&task_model_work_gate);
                             Arc::new(move |req_id: String, outcome: reply_router::TerminalOutcome| {
+                                let terminal_work_guard = model_work_gate.begin_handoff();
                                 let router = Arc::clone(&router);
                                 let manager = Arc::clone(&manager);
                                 let app = app.clone();
@@ -2260,6 +2406,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                                 let session_key = session_key_cap.clone();
                                 let source_type = source_type_cap.clone();
                                 tauri::async_runtime::spawn(async move {
+                                    let _terminal_work_guard = terminal_work_guard;
                                     {
                                         let mut router_g = router.lock().await;
                                         router_g.record_response(&session_key, outcome.session_id.as_deref());
@@ -2871,8 +3018,8 @@ pub(super) async fn create_bot_instance<R: Runtime>(
     // drained by the heartbeat runner once IM push succeeds. Both sides hold
     // the same Arc — the runner gets a clone below, the bot instance keeps
     // its own clone for cron-deliver lookups.
-    let pending_cron_events: Arc<Mutex<Vec<types::PendingCronEvent>>> =
-        Arc::new(Mutex::new(Vec::new()));
+    let pending_cron_events =
+        carried_pending_cron_events.unwrap_or_else(|| Arc::new(Mutex::new(Vec::new())));
 
     // ===== Heartbeat Runner (v0.1.21) =====
     let (heartbeat_handle, heartbeat_wake_tx, heartbeat_config_arc) = {
@@ -2894,6 +3041,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
             Arc::clone(&runtime_config),
             types::HostInteractionCapability::for_platform(&config.platform),
             Arc::clone(&pending_cron_events),
+            Arc::clone(&model_work_gate),
             wake_tx.clone(),
         );
 
@@ -2923,6 +3071,18 @@ pub(super) async fn create_bot_instance<R: Runtime>(
                 .await;
         });
 
+        // A reconnect carries the pending queue but replaces the old wake
+        // channel. Seed the new runner so queued cron delivery cannot wait for
+        // a disabled interval heartbeat.
+        if let Some(wake) = pending_cron_events
+            .lock()
+            .await
+            .first()
+            .map(heartbeat::wake_for_pending_cron_event)
+        {
+            let _ = wake_tx.try_send(wake);
+        }
+
         ulog_info!("[im] Heartbeat runner spawned for bot {}", bot_id);
         (Some(handle), Some(wake_tx), Some(config_arc))
     };
@@ -2936,6 +3096,7 @@ pub(super) async fn create_bot_instance<R: Runtime>(
         health: Arc::clone(&health),
         router,
         im_consumers,
+        model_work_gate,
         buffer,
         started_at,
         process_handle,
@@ -2983,18 +3144,31 @@ pub async fn start_im_bot<R: Runtime>(
     bot_id: String,
     config: ImConfig,
 ) -> Result<ImBotStatus, String> {
+    let lifecycle_lock = legacy_bot_lifecycle_lock(&bot_id);
+    let _lifecycle_guard = lifecycle_lock.lock().await;
+
     // Gracefully stop existing instance for this bot_id if running
     let existing = {
         let mut im_guard = im_state.lock().await;
         im_guard.remove(&bot_id)
     };
+    let carried_pending_cron_events = existing
+        .as_ref()
+        .map(|instance| Arc::clone(&instance.pending_cron_events));
     if let Some(instance) = existing {
         ulog_info!("[im] Stopping existing IM Bot {} before restart", bot_id);
         let _ = shutdown_bot_instance(instance, sidecar_manager, &bot_id).await;
     }
 
-    let (instance, status) =
-        create_bot_instance(app_handle, sidecar_manager, bot_id.clone(), config, None).await?;
+    let (instance, status) = create_bot_instance_with_pending_cron_events(
+        app_handle,
+        sidecar_manager,
+        bot_id.clone(),
+        config,
+        None,
+        carried_pending_cron_events,
+    )
+    .await?;
 
     let mut im_guard = im_state.lock().await;
     im_guard.insert(bot_id, instance);
@@ -3008,6 +3182,9 @@ pub async fn stop_im_bot(
     sidecar_manager: &ManagedSidecarManager,
     bot_id: &str,
 ) -> Result<(), String> {
+    let lifecycle_lock = legacy_bot_lifecycle_lock(bot_id);
+    let _lifecycle_guard = lifecycle_lock.lock().await;
+
     let instance = {
         let mut im_guard = im_state.lock().await;
         im_guard.remove(bot_id)
@@ -3109,6 +3286,45 @@ pub async fn get_all_bots_status(im_state: &ManagedImBots) -> HashMap<String, Im
 mod tests {
     use super::*;
     use crate::im::types::AskUserQuestionOption;
+
+    #[test]
+    fn proxy_restart_admission_gate_counts_preexisting_enqueue_work() {
+        let gate = ChannelModelWorkGate::new();
+
+        let guard = gate.try_enter().expect("initial work should be admitted");
+        assert_eq!(gate.active(), 1);
+
+        assert!(gate.try_close());
+        assert!(gate.try_enter().is_none());
+        assert_eq!(gate.active(), 1);
+
+        drop(guard);
+        assert_eq!(gate.active(), 0);
+    }
+
+    #[test]
+    fn reconnect_wake_preserves_pending_cron_target() {
+        let wake = heartbeat::wake_for_pending_cron_event(&types::PendingCronEvent {
+            target_session_key: Some("agent:a:private:user-1".to_string()),
+            event: "cron_complete".to_string(),
+            task_id: "task-1".to_string(),
+            content: "finished".to_string(),
+            timestamp: 1,
+            from_session_id: None,
+            from_label: None,
+        });
+
+        assert!(wake.is_high_priority());
+        assert_eq!(
+            wake.target_session_key.as_deref(),
+            Some("agent:a:private:user-1")
+        );
+        assert!(matches!(
+            wake.reason,
+            types::WakeReason::CronComplete { task_id, summary }
+                if task_id == "task-1" && summary == "finished"
+        ));
+    }
 
     fn question(
         id: &str,

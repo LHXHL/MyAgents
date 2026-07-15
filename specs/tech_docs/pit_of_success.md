@@ -103,16 +103,17 @@ CLAUDE.md 的 Pit-of-Success 红线总表是这些模块的**速查索引**；�
 <a id="proxy_config"></a>
 ## `proxy_config` (`src-tauri/src/proxy_config.rs`)
 
-**Problem.** Node.js 20+ 的 `fetch()`（undici）会读取 `HTTP_PROXY` 环境变量。如果 Tauri 子进程从父进程继承了 `HTTP_PROXY`（用户系统配置），Sidecar 内部的 localhost 通信（admin-api、cron-tool、bridge-tools 等）会被系统代理拦截 → 502。
+**Problem.** Node.js global `fetch()` 默认不会可靠消费运行时变化的 `HTTP_PROXY`；但 SDK、子进程和其它 HTTP 库可能读取继承环境。如果把 app overlay、启动时 inherited baseline 与 Provider owner 混成一份 `process.env`，会同时造成通用请求选项失效、Provider 串线，或 localhost 被代理拦截 → 502。
 
-**Surface.** `crate::proxy_config::apply_to_subprocess(&mut cmd)`
+**Surface.** 通用 owner 使用 `crate::proxy_config::apply_to_subprocess(&mut cmd)` / `build_client_with_proxy()`；Provider-owned 使用 `apply_to_subprocess_for_provider()` / `build_client_with_proxy_for_provider()`。通用 decision 统一由 `read_proxy_settings_for_general_requests()` 提供。
 
 **Invariants enforced.**
-- 用户配置代理时注入 `HTTP_PROXY` + `NO_PROXY`（保护 localhost 列表）
-- 用户未配置时不污染子进程环境，但**始终**注入 `NO_PROXY` 保护 localhost
+- 用户配置代理且对应 general/provider owner 被选择时注入 `HTTP_PROXY` + `NO_PROXY`（保护 localhost 列表）
+- 总开关关闭或 owner 未选择时继承系统网络，但**始终**补齐 `NO_PROXY` 保护 localhost
+- Node generic fetch 走 `fetchWithGeneralProxy()`：由 `proxy-state` 在 app overlay / immutable inherited snapshot 间选择 package-pinned dispatcher；不要靠 global fetch 猜 env
 - 与 `local_http` 形成纵深防御——即使 Rust 层忘记 `.no_proxy()`，Node 子进程内的 localhost 通信仍受 `NO_PROXY` 保护
 
-**Don't.** 手动 `cmd.env("HTTP_PROXY", ...)` 或 `cmd.env_remove("HTTP_PROXY")`。
+**Don't.** 手动 `cmd.env("HTTP_PROXY", ...)` / `cmd.env_remove("HTTP_PROXY")`；不要让 Provider-owned 路径调用 generic helper，也不要把 `read_proxy_settings()` 改成 general-aware（否则 general=false 时选中的 Provider 会丢代理）。
 
 完整代理策略详见 `proxy_config.md`。
 

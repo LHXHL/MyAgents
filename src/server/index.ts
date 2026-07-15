@@ -66,6 +66,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, extname, sep } 
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
+import { fetchWithGeneralProxy } from './utils/cancellation';
 import {
   aggregateGlobalUsageStats,
   buildSessionDetailedUsageStats,
@@ -4673,7 +4674,7 @@ async function main() {
 
               if (server.type === 'http') {
                 // Streamable HTTP: send MCP initialize JSON-RPC request
-                response = await fetch(server.url, {
+                response = await fetchWithGeneralProxy(server.url, {
                   method: 'POST',
                   headers: { ...headers, 'Content-Type': 'application/json' },
                   body: JSON.stringify({
@@ -4690,7 +4691,7 @@ async function main() {
                 });
               } else {
                 // SSE: send GET request to check if endpoint is reachable
-                response = await fetch(server.url, {
+                response = await fetchWithGeneralProxy(server.url, {
                   method: 'GET',
                   headers,
                   signal: controller.signal,

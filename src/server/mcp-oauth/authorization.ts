@@ -17,6 +17,7 @@
 import { createHash, randomBytes } from 'crypto';
 import http from 'http';
 import type { AuthorizationConfig, OAuthTokenData, PKCEPair } from './types';
+import { fetchWithGeneralProxy } from '../utils/cancellation';
 
 // ===== Pending Flows =====
 
@@ -95,7 +96,7 @@ async function exchangeCodeForToken(
     body.set('client_secret', clientSecret);
   }
 
-  const response = await fetch(tokenUrl, {
+  const response = await fetchWithGeneralProxy(tokenUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
     body: body.toString(),

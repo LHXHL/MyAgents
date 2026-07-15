@@ -90,19 +90,22 @@ OpenClaw 插件安装目录保持共享（`~/.myagents/openclaw-plugins/<plugin_
 ```
 Bridge index.ts
   ↓
-1. 读 plugin_dir/package.json，扫描 dependencies
-2. 检测 OpenClaw 插件标记（pkg.openclaw 或 keywords 含 'openclaw'）
-3. 读取插件元数据里的协议 Channel ID（优先 `openclaw.plugin.json.channels[0]`，其次 `package.json.openclaw.channel.id`，缺失时才走旧品牌推断）
-4. 全局 axios 超时补丁（10s，防御性兜底"插件在网络差的环境下 hang"）
-5. resolveOpenClawPluginEntry(packageDir) → 解析入口（见下方 §入口解析协议）
-6. import(resolvedEntry) → 获取插件对象（tsx/esm 会自动处理 .ts）
-7. 调用 plugin.register(compatApi)
+1. 从磁盘代理配置初始化 general proxy state（Bridge 不启用 Provider-owned consumer），安装项目锁定版本的 undici globals，并设置 general dispatcher
+2. 读 plugin_dir/package.json，扫描 dependencies
+3. 检测 OpenClaw 插件标记（pkg.openclaw 或 keywords 含 'openclaw'）
+4. 读取插件元数据里的协议 Channel ID（优先 `openclaw.plugin.json.channels[0]`，其次 `package.json.openclaw.channel.id`，缺失时才走旧品牌推断）
+5. 全局 axios 超时补丁（10s，防御性兜底"插件在网络差的环境下 hang"）
+6. resolveOpenClawPluginEntry(packageDir) → 解析入口（见下方 §入口解析协议）
+7. import(resolvedEntry) → 获取插件对象（tsx/esm 会自动处理 .ts）
+8. 调用 plugin.register(compatApi)
    └─ compatApi 提供：registerChannel / config / runtime / registerTool
    └─ 插件注册自己的 Channel 对象（gateway、sendText、editMessage 等）
-8. 解析账号凭证 → isConfigured() 校验
+9. 解析账号凭证 → isConfigured() 校验
    ├─ 通过 → 启动 gateway（startAccount）
    └─ 不通过 + supportsQrLogin → 等待 QR 登录
 ```
+
+代理 bootstrap 必须发生在插件 `import()` 之前。社区插件可能在模块初始化阶段创建 HTTP client 或读取 global dispatcher；如果先加载插件，之后再补 general policy，首批连接会永久绑定旧网络基线。Bridge 的网络 owner 是通用请求，代理范围变化后由 Rust 复用现有 Channel stop/start lifecycle 重建 Bridge 进程。
 
 ### Channel 身份边界
 

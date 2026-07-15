@@ -1,10 +1,28 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createCompatRuntime } from './compat-runtime';
 import { clearAllPendingDispatches, getPendingDispatch, resolvePendingDispatch } from './pending-dispatch';
+import {
+  _getInheritedProxySnapshotForTests,
+  _resetProxyStateForTests,
+  getCurrentProxySettings,
+} from '../proxy-state';
+import { _setGeneralFetchTransportForTests } from '../utils/cancellation';
+
+const originalProxySettings = getCurrentProxySettings();
+const originalInheritedProxySnapshot = _getInheritedProxySnapshotForTests();
 
 describe('plugin bridge compat runtime fallback dispatch', () => {
+  beforeEach(() => {
+    _resetProxyStateForTests(null, {});
+    _setGeneralFetchTransportForTests(
+      async (url, init) => globalThis.fetch(url, init as RequestInit),
+    );
+  });
+
   afterEach(() => {
+    _resetProxyStateForTests(originalProxySettings, originalInheritedProxySnapshot);
+    _setGeneralFetchTransportForTests();
     vi.unstubAllGlobals();
     clearAllPendingDispatches();
   });

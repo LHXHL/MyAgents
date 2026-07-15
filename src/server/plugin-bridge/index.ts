@@ -29,6 +29,14 @@ import {
 } from './openclaw-config';
 import { redactPluginBridgeSecrets } from './secret-redaction';
 import { sanitizeOutboundMediaFilename } from './media-filename';
+import {
+  getGeneralRequestDispatcher,
+  initializeProxyStateFromCurrentSettings,
+} from '../proxy-state';
+import {
+  install as installUndiciGlobals,
+  setGlobalDispatcher,
+} from 'undici';
 import { serve as honoServe } from '@hono/node-server';
 import { readFile, mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { readFileSync } from 'node:fs';
@@ -1313,8 +1321,22 @@ const serverAddr = server.address();
 const listenPort = typeof serverAddr === 'object' && serverAddr ? serverAddr.port : port;
 console.log(`[plugin-bridge] HTTP server listening on port ${listenPort}`);
 
-// Load the plugin
-loadPlugin().catch((err) => {
-  console.error('[plugin-bridge] Failed to load plugin:', err);
-  process.exit(1);
-});
+// Establish the process-wide general proxy baseline (including a local HTTP
+// bridge for SOCKS5) before plugin code opens any external connection. Plugin
+// Bridge owns no model-provider traffic, so provider-only scope must not start
+// or consume the app proxy in this process.
+initializeProxyStateFromCurrentSettings({ providerOwnedConsumers: false })
+  .then(() => {
+    // Community plugins call global fetch directly. Install the package-pinned
+    // implementation before evaluating plugin code, then bind it to the same
+    // general-request baseline used by first-party callers. The Bridge process
+    // is restarted when this scope changes, so this dispatcher is immutable for
+    // the process lifetime.
+    installUndiciGlobals();
+    setGlobalDispatcher(getGeneralRequestDispatcher());
+    return loadPlugin();
+  })
+  .catch((err) => {
+    console.error('[plugin-bridge] Failed to initialize proxy or load plugin:', err);
+    process.exit(1);
+  });
