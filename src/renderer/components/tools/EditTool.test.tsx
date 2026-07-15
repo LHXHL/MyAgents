@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 
 import { i18n } from '@/i18n';
@@ -31,6 +31,11 @@ function codexEditTool(): ToolUseSimple {
     } as unknown as ToolUseSimple['parsedInput'],
     result: '[object Object]: /tmp/a.md\n@@ -1,2 +1,3 @@\n-old\n+new',
   };
+}
+
+function longUnifiedDiff(rowCount: number, prefix: string): string {
+  const rows = Array.from({ length: rowCount }, (_, index) => ` ${prefix}-${index + 1}`);
+  return `@@ -1,${rowCount} +1,${rowCount} @@\n${rows.join('\n')}`;
 }
 
 describe('EditTool Codex fileChange rendering', () => {
@@ -146,6 +151,98 @@ describe('EditTool Codex fileChange rendering', () => {
     expect(screen.getByText('new.md')).toBeInTheDocument();
     expect(screen.getByText('移动')).toBeInTheDocument();
     expect(screen.getByText('移动到 new.md')).toHaveClass('sr-only');
+  });
+
+  it('keeps ordered multi-file groups independent under the shared initial DOM budget', () => {
+    const { container } = render(<EditTool tool={{
+      id: 'call-long-multi-edit',
+      name: 'Edit',
+      input: {
+        file_path: '/tmp/first.ts',
+        changes: [
+          { path: '/tmp/first.ts', kind: { type: 'update' }, diff: longUnifiedDiff(500, 'first') },
+          { path: '/tmp/second.ts', kind: { type: 'update' }, diff: longUnifiedDiff(500, 'second') },
+        ],
+      },
+      streamIndex: 0,
+    }} />);
+
+    const sections = Array.from(container.querySelectorAll<HTMLElement>('[data-file-patch-path]'));
+    expect(sections.map((section) => section.querySelector('h3')?.textContent)).toEqual(['first.ts', 'second.ts']);
+    expect(sections).toHaveLength(2);
+    expect(sections[0].parentElement).toHaveClass('divide-y');
+    expect(sections[0]).not.toHaveClass('shadow-[var(--shadow-xs)]');
+    expect(sections[0].querySelectorAll('[data-diff-row]')).toHaveLength(200);
+    expect(sections[1].querySelectorAll('[data-diff-row]')).toHaveLength(200);
+    expect(sections[0].querySelector('[data-file-patch-actions]')).toHaveClass('w-[calc(100%-2.25rem)]', 'sm:w-auto');
+    expect(container.querySelectorAll('[data-file-patch-show-all]')).toHaveLength(2);
+    expect(screen.getByRole('button', { name: /展示 first\.ts 的全部变更/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /展示 second\.ts 的全部变更/ })).toBeInTheDocument();
+
+    fireEvent.click(within(sections[0]).getByRole('button', { name: /展示 first\.ts 的全部变更/ }));
+
+    expect(sections[0].querySelectorAll('[data-diff-row]')).toHaveLength(501);
+    expect(sections[1].querySelectorAll('[data-diff-row]')).toHaveLength(200);
+    expect(container.querySelectorAll('[data-file-patch-show-all]')).toHaveLength(1);
+  });
+
+  it('uses the shortest distinguishing parent suffix for duplicate basenames', () => {
+    render(<EditTool tool={{
+      id: 'call-duplicate-basenames',
+      name: 'Edit',
+      input: {
+        file_path: '/project/src/a/index.ts',
+        changes: [
+          { path: '/project/src/a/index.ts', kind: { type: 'update' }, diff: '@@ -1 +1 @@\n-old\n+new' },
+          { path: '/project/test/a/index.ts', kind: { type: 'update' }, diff: '@@ -1 +1 @@\n-old\n+new' },
+        ],
+      },
+      streamIndex: 0,
+    }} />);
+
+    expect(screen.getByRole('heading', { name: 'src/a/index.ts' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'test/a/index.ts' })).toBeInTheDocument();
+    expect(screen.getByText('src/a')).toBeInTheDocument();
+    expect(screen.getByText('test/a')).toBeInTheDocument();
+    expect(screen.getByLabelText('src/a/index.ts 的变更')).toBeInTheDocument();
+    expect(screen.getByLabelText('test/a/index.ts 的变更')).toBeInTheDocument();
+  });
+
+  it('falls back to plain code rows when the syntax source crosses the highlight budget', () => {
+    const longLine = ` ${'x'.repeat(320)}`;
+    const diff = `@@ -1,400 +1,400 @@\n${Array.from({ length: 400 }, () => longLine).join('\n')}`;
+    const { container } = render(<EditTool tool={{
+      id: 'call-highlight-budget',
+      name: 'Edit',
+      input: {
+        file_path: '/tmp/large.ts',
+        changes: [{ path: '/tmp/large.ts', kind: { type: 'update' }, diff }],
+      },
+      streamIndex: 0,
+    }} />);
+
+    expect(container.querySelector('[data-syntax-highlighted="false"]')).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-diff-row]')).toHaveLength(400);
+  });
+
+  it('announces the hard row cap and keeps it associated with the expanded viewport', () => {
+    const diff = longUnifiedDiff(5_001, 'hard-cap');
+    const { container } = render(<EditTool tool={{
+      id: 'call-hard-row-cap',
+      name: 'Edit',
+      input: {
+        file_path: '/tmp/hard-cap.ts',
+        changes: [{ path: '/tmp/hard-cap.ts', kind: { type: 'update' }, diff }],
+      },
+      streamIndex: 0,
+    }} />);
+
+    fireEvent.click(screen.getByRole('button', { name: /展示 hard-cap\.ts 的全部变更/ }));
+
+    expect(container.querySelectorAll('[data-diff-row]')).toHaveLength(5_000);
+    const status = screen.getByRole('status');
+    expect(status).toHaveTextContent('内容过长，仅展示前 5000 行');
+    expect(screen.getByLabelText('hard-cap.ts 的变更')).toHaveAttribute('aria-describedby', status.id);
   });
 });
 

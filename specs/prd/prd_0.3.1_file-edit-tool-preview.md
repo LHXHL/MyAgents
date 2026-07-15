@@ -1033,13 +1033,15 @@ npm run lint
 - **范围 / 契约**：方案 A 单文件 viewer、四列 diff、可信 Write/status/raw fallback、i18n、每文件右上角唯一“更多”动作；复用 FileActionContext，不复制菜单或路径解析。
 - **实现进度**：`FilePatchTool` 已改为暖纸方案 A：文件名与短父路径唯一 header、操作/统计、旧行号/新行号/marker/code 四列、低饱和增删 wash、横向滚动、键盘 focus、语法 token、Write 旧版本未知提示、状态/replace-all/userModified notice 与 raw fallback。文件右上角只新增一个 ellipsis 入口，并与现有 `FilePath` 共用同一 `resolveFileActionTarget → checkFileTarget → FileActionContext` helper；菜单内容仍由既有 owner 提供，未复制菜单，也未新增任何专用复制动作。
 - **验证进度**：定向 DOM 20 项（Edit / Write / 四列 selection / FileAction 集成唯一动作与 declined move）与 i18n parity 5 项通过，`typecheck`、scoped ESLint 零 warning；完整 unit 282 files / 2542 pass / 3 skip，完整 DOM 93 files / 466 pass。三镜 review 先后阻断了 marker / hunk / omission / 隐藏朗读文本进入复制选择、缺少 toolbar 集成契约、空内容 Write 被误写成 no-op、跨工具 heading id 冲突、本地 syntax token / 文件语言映射重复真相，以及 declined/running move 错把尚未落地的目标当成文件动作对象；均已按 select-none、诚实空目标、`useId()`、既有 `codeBlockSyntaxTheme` / `getPrismLanguage()` owner 与 completion-aware action target 整改。应用内 Browser 当前无可用实例，真实浅/暗/窄宽视觉 QA 按发布门禁保留，不能伪报通过。
-- **状态**：实现与三镜 review 已完成（requirements / adversarial / architecture 均 PASS），待提交。
+- **状态**：实现与三镜 review 已完成（requirements / adversarial / architecture 均 PASS），已提交：`7e019464`（`feat(chat): redesign file patch preview`）。
 
 ### Phase 3：多文件与长内容
 
-- **phase base**：待 Phase 2 commit 后填写。
+- **phase base**：`7e019464`。
 - **范围 / 契约**：按 `changes[]` 保序纵向分组、每文件一次 header/body/action、独立 400-row 初始预算与单次“展示全部”、full-width 只作用 file patch、窄屏 / dark 收口。
-- **状态**：待开始。
+- **实现进度**：多文件使用一个 outer surface + `divide-y`，各 change 仍是独立 semantic section，但不再各自叠卡片阴影；协议顺序不变，重复 basename 计算最短可辨识父路径。单文件上限 400 rows、单工具初始总量同样限制为 400 并在多文件间公平分配；视口约 384px，按文件一次“展示全部”，其它组状态不变；单文件 hard cap 5,000 rows，超限诚实提示，syntax highlight 在 1,000 rows / 100KB 后回退 plain。ProcessRow 仅对 Edit/Write 去掉既有 `ml-7`，其它 tool 保持缩进；文件 header 在窄宽换行，diff 只在自身横向滚动，全部颜色继续使用明暗主题 token。
+- **验证进度**：定向 DOM 31 项（FilePatch / FileAction / ProcessRow）与 i18n parity 5 项通过，`typecheck`、scoped ESLint 通过；完整 DOM pool 通过。覆盖多文件顺序、400 总初始 DOM、独立 show-all、重复 basename、syntax fallback、5,000-row hard cap、responsive class、file-only full width 与 `aria-expanded`。三镜 review 发现零预算文件组的展开入口、重名文件 viewport / show-all 可访问名称，以及 hard-cap 状态与 viewport 的朗读关联不完整；均已用 reachable min-height、最短可辨识 accessible name、file/count aria-label 与 `role=status + aria-describedby` 修复。应用内 Browser 仍无可用实例，因此 320px / 768px 的 macOS WKWebView 与 Windows WebView2 实机视觉矩阵仍是发布门禁，不伪报完成。
+- **状态**：实现与三镜 review 已完成（requirements / adversarial / architecture 均 PASS），待提交。
 
 ### Phase 4：Bash 单一模拟终端
 
