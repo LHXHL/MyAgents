@@ -451,7 +451,7 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 
 | Owner module | 职责 |
 |------|------|
-| `lifecycle.ts` | SDK `Query` 进程、abort flag、termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP readiness/mutation owner |
+| `lifecycle.ts` | SDK `Query` 进程、abort flag、termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP readiness/mutation owner、exact Query background-task registry |
 | `queue.ts` | realtime queue、mid-turn buffer、turn-boundary queue、in-flight slot、admission ticket |
 | `turn.ts` | current turn usage/output/error state、IM pending request FIFO、injected turn outcome |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 解释、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序 |
@@ -465,6 +465,8 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 **Builtin injected turn 的 MCP 门控：** `Query.initializationResult()` 与 streamed `system_init` 都不代表 MCP 已连接。Cron / Goal / Heartbeat / Memory Update 等无人值守 injected turn 必须以当前 Query 实际安装的 MCP map 为准，通过 `mcpServerStatus()` 等待全部 required server 为 `connected`。`lifecycle.ts` 用 Query identity + generation + 单调 installed-map revision + fingerprint 拥有 readiness lease；Query 替换、同 id 重装和 A→B→A 都会让旧 lease 失效。一次 injected request 只有一个不超过 30 秒的绝对 deadline：先在任何 user row / SessionStore 副作用前预检，再在 promotion boundary 复检并同步验证 lease；最终顺序固定为 MCP ready → domain claim → lease commit → 同步转交 active-turn owner。转交前的失败、超时或取消不进入 SDK dispatch，已取得的 domain claim 必须等待 durable rollback 确认后才发布拒绝；canonical reset/switch/restart 中止 promoted turn 时，同一 rollback 还必须注册进 Session termination barrier，Query 的 10 秒 force-cleanup 不能伪装 domain authority 已回滚。转交后才允许 SessionStore/plan/user-surface 副作用，期间的 stop/timeout 必须识别为已接纳的 active turn，不能回报“未入队”。普通 desktop turn 与 external runtime 不走这条门控。
 
 Live MCP 更新由同一个 Query-generation mutation owner 串行化。mutation claim 与 promotion 通过同一事件循环内的同步 owner 顺序互斥：只要 promoted item、active turn 或 SDK command in-flight 任一先存在，就不 claim mutation、改为 terminal boundary 重建；mutation 先 claim 时，后来的 promotion 必须等待同一 promise。失败/超时会清 readiness owner、锁存 deferred restart，并让旧 generator 隔离等待 Query abort/replacement 后退出；requeue item 只由 replacement generator 重取，不能再次进入旧 Query。`mcpServerStatus()` 控制请求单飞；若其超时，必须重建 Query 清掉 SDK 内无法取消的悬挂请求，不能让后续 injected turn 永久复用同一个 pending promise。
+
+SDK `task_started` 创建的后台 Agent/Bash 仍属于产生它的同一个 Query；foreground result 不代表整个 Query 已空闲。`lifecycle.ts` 按 Query object identity 保存 active task，现有 `applyDeferredRestartIfNeeded()` 与 pre-warm timer 在 registry 非空时保留 deferred reasons、不得 close Query；最后一个既有 terminal 事件再次触发 drain。显式 Stop/Reset/Switch 与真实 teardown 仍可立即终止，finalizer 从 exact registry `take` 残留项并合成 `stopped`。该契约不引入独立 Sidecar、等待 scheduler 或后台任务的第二份产品状态。
 
 `src/server/runtimes/` 只表示外部 runtime adapter：
 

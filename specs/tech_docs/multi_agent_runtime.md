@@ -68,7 +68,7 @@ Phase5 后的约束：`src/server/index.ts` 与 Phase5 迁出的 route modules�
 
 | Owner module | 职责 |
 |---|---|
-| `lifecycle.ts` | SDK `Query` 进程、abort/termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP readiness/mutation owner |
+| `lifecycle.ts` | SDK `Query` 进程、abort/termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP readiness/mutation owner、exact Query background-task registry |
 | `queue.ts` | realtime / mid-turn / turn-boundary queues、in-flight slot、admission ticket |
 | `turn.ts` | current turn usage/output/error、activity facts、completion terminal、pending IM request FIFO、injected turn outcome |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 解释、usage stamping、message-complete/empty-result、IM/inbox/watch/analytics/title hook 顺序 |

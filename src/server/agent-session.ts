@@ -197,7 +197,11 @@ export type {
 export { stripPlaywrightResults } from './builtin-session/transcript-persistence';
 import {
   clearQueryMcpReadinessOwner,
+  completeQueryBackgroundTask,
+  getQueryBackgroundTask,
   getQueryMcpReadinessOwner,
+  hasQueryBackgroundTask,
+  hasQueryBackgroundTasks,
   readQueryMcpStatuses,
   awaitSessionTermination as awaitBuiltinSessionTermination,
   clearAbortFlag,
@@ -212,6 +216,7 @@ import {
   nextBuiltinLiveRevision,
   requestAbort,
   registerSessionAbortCleanup,
+  recordQueryBackgroundTask,
   resetPreWarmFailCount,
   resetBuiltinLiveRevision,
   setPreWarmInProgress,
@@ -223,6 +228,7 @@ import {
   setSessionProcessing,
   setSessionTerminationPromise,
   setSystemInitInfo,
+  takeQueryBackgroundTasks,
   wakeGenerator as lifecycleWakeGenerator,
   waitForQueryExit,
   waitForMessage as lifecycleWaitForMessage,
@@ -3241,6 +3247,7 @@ function schedulePreWarm(): void {
         promotedItemInFlight: queueState.promotedItemInFlight,
         turnInFlight: isTurnInFlight(),
         sdkCommandInFlight: getInFlightQueueId() !== null,
+        backgroundTasksActive: hasQueryBackgroundTasks(lifecycleState.query),
       })) {
         // The terminal path owns this drain. Never let a previously armed
         // pre-warm timer abort an item between promotion and SDK yield.
@@ -6963,6 +6970,7 @@ function applyDeferredRestartIfNeeded(): void {
     promotedItemInFlight: queueState.promotedItemInFlight,
     turnInFlight: isTurnInFlight(),
     sdkCommandInFlight: getInFlightQueueId() !== null,
+    backgroundTasksActive: hasQueryBackgroundTasks(lifecycleState.query),
   })) {
     return;
   }
@@ -10437,10 +10445,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   // newer session has since re-armed the module-level transcriptState.pendingReloadAnchor.
   let sentReloadAnchor: string | undefined;
 
-  // Background sub-agents started in this session but not yet terminal, keyed by
-  // task_id. Entries are removed when a terminal task_notification/task_updated is
-  // broadcast; whatever remains when the subprocess tears down (the finally below)
-  // is flushed as a synthetic `stopped`.
+  // The exact SDK Query owns background-task liveness in lifecycle.ts so
+  // deferred restart policy can see it. Whatever remains when this Query tears
+  // down is transferred back to this finalizer and flushed as `stopped`.
   //
   // WHY: terminal events (task_notification / task_updated) are best-effort. When
   // the owning subprocess dies first — abort, deferred config restart, watchdog
@@ -10451,8 +10458,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   // background sub-agents (16/218 local_agent) stuck this way. The stored
   // toolUseId also backfills the task_updated terminal channel (its patch carries
   // none) so the renderer's persisted history fallback survives a reload.
-  // Declared outside try so the finally can flush it.
-  const startedBackgroundTasks = new Map<string, { toolUseId?: string; description?: string }>();
+  // Declared outside try so hooks, iterator events and finally share the exact
+  // Query identity without falling back to mutable lifecycleState.query.
+  let activeQuery: Query | null = null;
 
   try {
     const sdkPermissionMode = mapToEffectiveSdkPermissionMode(
@@ -11250,7 +11258,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               const toolName = permInput.tool_name;
               // Confirmed background sub-agent iff the SDK gave us an agent_id that
               // matches a currently-running background task (task_id === agent_id).
-              // startedBackgroundTasks is populated from the task_started message on
+              // lifecycle's exact-Query registry is populated from task_started on
               // the iterator channel, while this hook fires on the control channel —
               // two independent paths off the same subprocess. In practice task_started
               // is emitted (and drained) before a sub-agent's first gated tool call, so
@@ -11258,7 +11266,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               // degrades to passthrough → the SDK's own auto-deny — i.e. it can only
               // fail toward *deny* (safe side), never toward a spurious allow, and at
               // most affects a background agent's very first tool call at startup.
-              const isBackgroundAgent = isBackgroundAgentToolRequest(agentId, startedBackgroundTasks);
+              const isBackgroundAgent = isBackgroundAgentToolRequest(agentId, {
+                has: taskId => hasQueryBackgroundTask(activeQuery, taskId),
+              });
               // MCP-enablement recheck for background agents (cross-review #264): the
               // foreground canUseTool path denies tools whose MCP server the user has
               // since disabled (checkMcpToolPermission). The background allow path must
@@ -11329,7 +11339,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       throw new Error('STARTUP_ABORTED_BY_STOP');
     }
 
-    let activeQuery: Query | null = null;
     try {
       activeQuery = query({
         prompt: promptGen,
@@ -11867,19 +11876,23 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           patch?: { status?: string; error?: string; description?: string } };
         if (taskMsg.subtype === 'task_started' && taskMsg.task_id) {
           console.log(`[agent] Background task started: ${taskMsg.task_id} — ${taskMsg.description}`);
-          // Record so the teardown flush + task_updated channel can resolve the
-          // tool_use_id later (see startedBackgroundTasks declaration).
-          startedBackgroundTasks.set(taskMsg.task_id, {
+          // Record against this exact Query so deferred maintenance cannot
+          // confuse foreground result with whole-Query quiescence.
+          const recorded = recordQueryBackgroundTask(activeQuery, taskMsg.task_id, {
             toolUseId: taskMsg.tool_use_id,
             description: taskMsg.description,
           });
-          broadcast('chat:task-started', {
-            sessionId,
-            taskId: taskMsg.task_id,
-            toolUseId: taskMsg.tool_use_id,
-            description: taskMsg.description,
-            taskType: taskMsg.task_type,
-          });
+          if (recorded) {
+            broadcast('chat:task-started', {
+              sessionId,
+              taskId: taskMsg.task_id,
+              toolUseId: taskMsg.tool_use_id,
+              description: taskMsg.description,
+              taskType: taskMsg.task_type,
+            });
+          } else {
+            console.warn(`[agent] Ignoring task_started from superseded Query: ${taskMsg.task_id}`);
+          }
         } else if (taskMsg.subtype === 'task_notification' && taskMsg.task_id) {
           // Rich iff it carries a real summary or an output_file (the
           // notification channel is the one that delivers these).
@@ -11904,8 +11917,13 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               summary: taskMsg.summary,
               outputFile: taskMsg.output_file,
             });
-            // Reached terminal — drop from the pending set so the teardown flush skips it.
-            startedBackgroundTasks.delete(taskMsg.task_id);
+            // Reached terminal — release the exact Query task owner. If the
+            // foreground result already latched a config restart, the last
+            // background task is the missing drain trigger.
+            const completion = completeQueryBackgroundTask(activeQuery, taskMsg.task_id);
+            if (completion.becameQuiescent && lifecycleState.query === activeQuery) {
+              applyDeferredRestartIfNeeded();
+            }
           }
         } else if (taskMsg.subtype === 'task_updated' && taskMsg.task_id) {
           const patchStatus = taskMsg.patch?.status;
@@ -11914,6 +11932,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           // UI in its current state.
           if (patchStatus === 'completed' || patchStatus === 'failed' || patchStatus === 'killed') {
             const errorSummary = taskMsg.patch?.error ?? '';
+            const backgroundTaskInfo = getQueryBackgroundTask(activeQuery, taskMsg.task_id);
             // task_updated only carries an error string as its summary (empty on
             // success) and never an output_file, so it is "rich" only when that
             // error is non-empty.
@@ -11942,13 +11961,16 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 // panel's history fallback after a reload (it keys on toolUseId).
                 // Falls back to undefined (orphan-pool reconciliation) if the
                 // start was never observed in this session.
-                toolUseId: startedBackgroundTasks.get(taskMsg.task_id)?.toolUseId,
+                toolUseId: backgroundTaskInfo?.toolUseId,
                 status: normalized,
                 summary: errorSummary,
                 outputFile: '',
               });
-              // Reached terminal — drop from the pending set so the teardown flush skips it.
-              startedBackgroundTasks.delete(taskMsg.task_id);
+              // Reached terminal — release the exact Query task owner.
+              const completion = completeQueryBackgroundTask(activeQuery, taskMsg.task_id);
+              if (completion.becameQuiescent && lifecycleState.query === activeQuery) {
+                applyDeferredRestartIfNeeded();
+              }
             }
           }
         }
@@ -13027,7 +13049,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // (all its clear-defenses require a terminal event). A late real terminal
     // after this flush is deduped renderer-side by taskId. Empty for pre-warm
     // sessions (no tasks started).
-    for (const [taskId, info] of startedBackgroundTasks) {
+    for (const [taskId, info] of takeQueryBackgroundTasks(activeQuery)) {
       console.log(`[agent] Background task orphaned by session teardown → flushing stopped: ${taskId} — ${info.description ?? ''}`);
       broadcast('chat:task-notification', {
         sessionId,
@@ -13038,8 +13060,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         outputFile: '',
       });
     }
-    startedBackgroundTasks.clear();
-
     // sessionRegistered 已在 system_init handler 中设置，无需重复
 
     // Don't broadcast state changes from pre-warm sessions

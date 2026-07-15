@@ -3,7 +3,11 @@ import {
   awaitSessionTermination,
   claimQueryMcpMutation,
   clearAbortFlag,
+  completeQueryBackgroundTask,
+  getQueryBackgroundTask,
   getPreWarmFailCount,
+  hasQueryBackgroundTask,
+  hasQueryBackgroundTasks,
   hasMessageResolver,
   incrementPreWarmFailCount,
   isAbortRequested,
@@ -14,10 +18,12 @@ import {
   setQuerySession,
   setQueryMcpReadinessOwner,
   readQueryMcpStatuses,
+  recordQueryBackgroundTask,
   registerSessionAbortCleanup,
   setSessionProcessing,
   setSessionTerminationPromise,
   snapshotLifecycle,
+  takeQueryBackgroundTasks,
   waitForQueryExit,
   waitForMessage,
   wakeGenerator,
@@ -152,6 +158,47 @@ describe('builtin-session owners', () => {
     await queryExitBarrier;
     expect(released).toBe(true);
     await expect(waitForQueryExit(query)).resolves.toBeUndefined();
+  });
+
+  it('owns background tasks by exact Query and releases quiescence only on the last terminal', () => {
+    const firstQuery = { close: vi.fn() } as never;
+    const replacementQuery = { close: vi.fn() } as never;
+    setQuerySession(firstQuery);
+    expect(recordQueryBackgroundTask(firstQuery, 'same-task', {
+      toolUseId: 'tool-first',
+      description: 'first',
+    })).toBe(true);
+    expect(recordQueryBackgroundTask(firstQuery, 'second-task', {
+      toolUseId: 'tool-second',
+    })).toBe(true);
+    expect(hasQueryBackgroundTasks(firstQuery)).toBe(true);
+
+    setQuerySession(replacementQuery);
+    expect(recordQueryBackgroundTask(replacementQuery, 'same-task', {
+      toolUseId: 'tool-replacement',
+      description: 'replacement',
+    })).toBe(true);
+    expect(recordQueryBackgroundTask(firstQuery, 'late-task', {})).toBe(false);
+
+    expect(completeQueryBackgroundTask(firstQuery, 'same-task')).toMatchObject({
+      removed: true,
+      becameQuiescent: false,
+      info: { toolUseId: 'tool-first' },
+    });
+    expect(hasQueryBackgroundTask(replacementQuery, 'same-task')).toBe(true);
+    expect(getQueryBackgroundTask(replacementQuery, 'same-task')?.toolUseId).toBe('tool-replacement');
+
+    expect(completeQueryBackgroundTask(firstQuery, 'second-task')).toMatchObject({
+      removed: true,
+      becameQuiescent: true,
+    });
+    expect(hasQueryBackgroundTasks(firstQuery)).toBe(false);
+    expect(hasQueryBackgroundTasks(replacementQuery)).toBe(true);
+
+    expect(takeQueryBackgroundTasks(replacementQuery)).toEqual([
+      ['same-task', { toolUseId: 'tool-replacement', description: 'replacement' }],
+    ]);
+    expect(hasQueryBackgroundTasks(replacementQuery)).toBe(false);
   });
 
   it('lifecycle awaitSessionTermination force-cleans process state on timeout', async () => {

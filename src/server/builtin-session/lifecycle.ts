@@ -29,6 +29,12 @@ let queryMcpMutationOwner: {
   promise: Promise<QueryMcpMutationResult>;
   settle(result: QueryMcpMutationResult): void;
 } | null = null;
+export type QueryBackgroundTaskInfo = {
+  toolUseId?: string;
+  description?: string;
+};
+
+const queryBackgroundTasks = new Map<Query, Map<string, QueryBackgroundTaskInfo>>();
 let isProcessing = false;
 let abortRequested = false;
 let sessionTerminationPromise: Promise<void> | null = null;
@@ -150,6 +156,62 @@ export function clearQuerySession(): Query | null {
   const session = querySession;
   replaceQuerySession(null);
   return session;
+}
+
+/** Record a task only against the exact Query that emitted task_started. */
+export function recordQueryBackgroundTask(
+  query: Query | null,
+  taskId: string,
+  info: QueryBackgroundTaskInfo,
+): boolean {
+  if (!query || querySession !== query) return false;
+  let tasks = queryBackgroundTasks.get(query);
+  if (!tasks) {
+    tasks = new Map();
+    queryBackgroundTasks.set(query, tasks);
+  }
+  tasks.set(taskId, info);
+  return true;
+}
+
+export function hasQueryBackgroundTask(query: Query | null, taskId: string): boolean {
+  return Boolean(query && queryBackgroundTasks.get(query)?.has(taskId));
+}
+
+export function getQueryBackgroundTask(
+  query: Query | null,
+  taskId: string,
+): QueryBackgroundTaskInfo | undefined {
+  return query ? queryBackgroundTasks.get(query)?.get(taskId) : undefined;
+}
+
+export function hasQueryBackgroundTasks(query: Query | null = querySession): boolean {
+  return Boolean(query && (queryBackgroundTasks.get(query)?.size ?? 0) > 0);
+}
+
+export function completeQueryBackgroundTask(
+  query: Query | null,
+  taskId: string,
+): { removed: boolean; becameQuiescent: boolean; info?: QueryBackgroundTaskInfo } {
+  if (!query) return { removed: false, becameQuiescent: false };
+  const tasks = queryBackgroundTasks.get(query);
+  const info = tasks?.get(taskId);
+  if (!tasks || !info) return { removed: false, becameQuiescent: false };
+  tasks.delete(taskId);
+  const becameQuiescent = tasks.size === 0;
+  if (becameQuiescent) queryBackgroundTasks.delete(query);
+  return { removed: true, becameQuiescent, info };
+}
+
+/** Transfer remaining task ownership to the exact Query finalizer. */
+export function takeQueryBackgroundTasks(
+  query: Query | null,
+): Array<[string, QueryBackgroundTaskInfo]> {
+  if (!query) return [];
+  const tasks = queryBackgroundTasks.get(query);
+  if (!tasks) return [];
+  queryBackgroundTasks.delete(query);
+  return [...tasks.entries()];
 }
 
 export function setQueryMcpReadinessOwner(params: {
@@ -522,6 +584,7 @@ export function resetLifecycleForTest(): void {
   queryMcpRevision = 0;
   queryMcpReadinessOwner = null;
   queryMcpMutationOwner = null;
+  queryBackgroundTasks.clear();
   isProcessing = false;
   abortRequested = false;
   sessionTerminationPromise = null;

@@ -275,7 +275,7 @@ desktop/IM/Agent Channel 保留 Session 原 interaction scenario 和输出路由
 
 | Owner | 拥有内容 | 典型写入 / 行为入口 |
 |---|---|---|
-| `lifecycle.ts` | SDK `Query`、processing/abort、termination + pre-dispatch rollback barrier、generator resolver、pre-warm control readiness、Query-scoped MCP readiness/mutation owner | abort/restart/termination/pre-warm/generator wakeup、domain rollback join、MCP owner publication/mutation serialization |
+| `lifecycle.ts` | SDK `Query`、processing/abort、termination + pre-dispatch rollback barrier、generator resolver、pre-warm control readiness、Query-scoped MCP readiness/mutation owner、exact Query background-task registry | abort/restart/termination/pre-warm/generator wakeup、domain rollback join、MCP owner publication/mutation serialization、background task quiescence |
 | `queue.ts` | `messageQueue`、`pendingMidTurnQueue`、`turnBoundaryQueue`、in-flight metadata、admission ticket | enqueue/cancel/force/rescue/drain |
 | `turn.ts` | current turn usage/output/error、pending request FIFO、injected turn outcomes、inbox binding | turn state mutation API |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 语义、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序 | terminal complete/stopped/error、SDK result finalization |
@@ -320,6 +320,12 @@ MCP pre-persistence fence
 `pending` 在 200–500ms 区间有界轮询；`failed`、`needs-auth`、`disabled`、missing、timeout 与 Query replacement 均 fail closed。Domain claim 如果已取得而 lease 随即失效，必须等待 guard rollback acknowledged 后才发布拒绝。commit 前取消或 deadline 到达会同时结算 pre-persistence guard、promotion guard 与 queue item，不能持久化伪 user bubble/first-turn metadata，也不能留下 durable Goal claim；reset/switch/rewind/restart 经 canonical abort 取消 promoted item 时，该 settlement 注册到 lifecycle termination barrier，且不受 Query 10 秒 force-cleanup timeout 代替。owner transfer 后再发生取消则属于已接纳 active turn，必须精确 stop/terminalize，不能回报“未入队”。基础设施 injected turn 不消费并递归注入 `continueAfterAbort` watchdog reminder，避免该隐藏消息绕开同一 readiness transaction。
 
 Live MCP replacement 另有一个 Query-generation mutation owner，并在异步 map build 前同步发布；mutation claim 与 promotion 按同一 event-loop turn 线性化：promotion 先存在时不 claim mutation，mutation 先 claim 时下一 promotion 等待同一 promise。以下三类 dispatch ownership 任一存在时都不允许 mutation：promoted item、active turn、SDK command in-flight。并发 ensure 等待当前 mutation 后重新计算 desired config，不能让较晚 IM context 丢失。失败/超时会清 readiness owner、锁存 deferred restart；等待中的 item 原样 requeue，旧 generator 等 exact Query exit 后结束，只在 replacement Query 上重新 promotion。status control request 超时同样重建 Query，因为 SDK 无法取消该 pending request。
+
+#### Background task 与 deferred restart
+
+SDK background Agent/Bash 不拥有独立 Sidecar；它与父 turn 共用产生它的 builtin Query。`task_started` 因而登记到 `lifecycle.ts` 的 exact Query registry，而不是只留在 `startStreamingSession()` 局部。`applyDeferredRestartIfNeeded()` 与 `schedulePreWarm()` 的既有 drain 点同时检查该 registry：有 active task 时 reasons 保持锁存，不 drain、不 abort；最后一个 `task_updated` / `task_notification` terminal 删除 task 后重试 drain。旧 Query 的 terminal 不能删除 replacement Query 的同名 task。
+
+用户显式 Stop/Reset/Switch、应用退出和真实 Query crash 仍保留终止权；finalizer 对 exact Query 剩余任务发 synthetic `stopped`。这条规则只修 automatic deferred restart 的 quiescence 判断，不为 Cron/config send 新增 waiter，不改变 queue/HTTP lifetime，也不把 startup/watchdog/transcript 等独立竞态并入该 repair radius。
 
 ### External Session Owner Split（Phase8）
 

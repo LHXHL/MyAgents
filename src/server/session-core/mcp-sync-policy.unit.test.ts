@@ -88,6 +88,7 @@ describe('mcp-sync-policy', () => {
     { promotedItemInFlight: true, turnInFlight: false, sdkCommandInFlight: false, expected: true },
     { promotedItemInFlight: false, turnInFlight: true, sdkCommandInFlight: false, expected: true },
     { promotedItemInFlight: false, turnInFlight: false, sdkCommandInFlight: true, expected: true },
+    { promotedItemInFlight: false, turnInFlight: false, sdkCommandInFlight: false, backgroundTasksActive: true, expected: true },
     { promotedItemInFlight: true, turnInFlight: true, sdkCommandInFlight: true, expected: true },
   ])('defers live MCP mutation while Query dispatch ownership is active: $expected', (input) => {
     expect(shouldDeferLiveMcpMutation(input)).toBe(input.expected);

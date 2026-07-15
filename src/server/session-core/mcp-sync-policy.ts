@@ -54,6 +54,10 @@ export function shouldDeferLiveMcpMutation(params: {
   promotedItemInFlight: boolean;
   turnInFlight: boolean;
   sdkCommandInFlight: boolean;
+  backgroundTasksActive?: boolean;
 }): boolean {
-  return params.promotedItemInFlight || params.turnInFlight || params.sdkCommandInFlight;
+  return params.promotedItemInFlight
+    || params.turnInFlight
+    || params.sdkCommandInFlight
+    || params.backgroundTasksActive === true;
 }
