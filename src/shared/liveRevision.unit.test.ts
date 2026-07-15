@@ -8,6 +8,16 @@ describe('live revision event classification', () => {
     expect(participatesInLiveRestore('chat:message-replay', { replayKind: 'live-user-echo' })).toBe(true);
     expect(participatesInLiveRestore('chat:message-replay', { replayKind: 'cold-history' })).toBe(false);
     expect(participatesInLiveRestore('chat:message-error', 'temporary failure')).toBe(false);
+    expect(participatesInLiveRestore('chat:message-error', {
+      message: 'terminal failure',
+      completionTerminal: {
+        sessionId: 'session-a',
+        workspacePath: '/tmp/workspace',
+        turnId: 'turn-a',
+        origin: { kind: 'desktop', surface: 'launcher_input' },
+        status: 'error',
+      },
+    })).toBe(true);
     expect(participatesInLiveRestore('chat:agent-error', { message: 'temporary failure' })).toBe(false);
   });
 

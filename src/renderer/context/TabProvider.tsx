@@ -4074,7 +4074,6 @@ export default function TabProvider({
             if (restoreCompletion.stale) {
                 return false;
             }
-            liveRevisionFenceRef.current = restoreCompletion.fence;
 
             // Convert session messages to Message format
             const loadedMessages: Message[] = response.session.messages.map((msg) => {
@@ -4263,6 +4262,10 @@ export default function TabProvider({
             // title/query fallback policy.
             onTitleChangeRef.current?.(getSessionDisplayText(response.session));
 
+            // Keep the fence closed through the complete REST snapshot commit.
+            // Publishing restoring=false earlier lets a re-entrant/live event
+            // mutate the old projection before these snapshot setters are queued.
+            liveRevisionFenceRef.current = restoreCompletion.fence;
             for (const event of restoreCompletion.replay) {
                 applySseEvent(event.eventName, event.data);
             }

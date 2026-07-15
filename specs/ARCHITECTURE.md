@@ -207,6 +207,10 @@ Node.js SSE Server (`src/server/sse.ts`) 管理客户端连接、heartbeat、广
 新增 SSE 事件 MUST 在 `SseConnection.ts::JSON_EVENTS` 注册白名单，否则前端静默丢弃。
 会更新 Tab 会话快照的 SSE 事件（如 `chat:system-init`、权限/提问/plan-mode request 与 expired）还 MUST 带 `sessionId`，并在 `TabProvider` 通过 `sessionScopedEventGuards.ts` 按当前 SSE connection/session 过滤；否则历史切换或新会话 birth 时会把旧 sidecar 的弹窗/状态灌进当前 Tab。详见 `tech_docs/session_architecture.md`。
 
+恢复 running/starting Session 时，REST `GET /sessions/:id` 是完整历史与 live snapshot 的唯一权威；需要与快照对齐的非幂等 live SSE 事件带 `{ sessionId, liveRevision, payload }`，REST 同时返回 `snapshotRevision`。Renderer 在 REST 期间 buffer，之后只顺序应用 revision 大于快照的连续事件；gap 或 SSE connection generation 变化就重新取快照。revision 只属于当前 Sidecar/session generation 的内存顺序，不持久化 checkpoint。详见 `tech_docs/session_architecture.md`。
+
+普通 Session 的 complete/stopped/error 通知也不归 Tab：builtin/external terminal 产出同一份 turn identity/owner/origin descriptor，Rust SSE proxy 与 `BackgroundCompletion` 只是两个提交入口，`notification.rs` 以 `(sessionId, turnId)` 瞬时 claim 并统一决定 domain 抑制、focus、系统通知、badge 与 deep-link。Renderer 的 terminal handler 只维护消息/UI/unread，不再发送通用完成通知。
+
 ### HTTP API 调用
 
 ```
@@ -441,7 +445,7 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 | `types.ts` | `SessionEngine` 接口：desktop send、IM enqueue、injected turn、queue、runtime config、session read/config/operation 等 route-facing 能力 |
 | `route-contracts.ts` | high-risk route → engine method 的可测试契约清单；route modules 只做 payload/response shaping |
 
-`src/server/session-core/` 是 builtin / external 会话内核共享的 pure policy 层。它不拥有 SDK/CLI 进程、副作用或 SSE，只承载可单测的决策：turn result 判定、runtime config snapshot/source guard、desktop/turn-boundary queue admission、MCP authority/fingerprint/restart 决策。
+`src/server/session-core/` 是 builtin / external 会话内核共享的 pure policy 层。它不拥有 SDK/CLI 进程、副作用或 SSE，只承载可单测的决策：turn result 判定、meaningful session activity/Heartbeat ack、runtime config snapshot/source guard、desktop/turn-boundary queue admission、MCP authority/fingerprint/restart 决策。
 
 `src/server/agent-session.ts` 仍是 builtin SDK 的 public facade，供 `session-engine/builtin-adapter.ts` 委托。Phase6 后，主要 mutable state 不再由 facade 顶层变量直接拥有；Phase7 后，最重的 turn terminal 与 transcript persistence 行为也有独立 owner。真实维护入口在 `src/server/builtin-session/`：
 

@@ -676,8 +676,16 @@ setSystemStatus(null);
 
 - `loadSession` 用**同步**标志 `restoredSessionIdRef`（**不是**异步滞后的 `historyMessagesRef.length`）决定是否 skip replay。在 `setHistoryMessages` 前就放开 loading 标志，会让迟到的 `chat:init` 命中 `!isLoading && length===0` → 清掉刚恢复的 REST 页 + `seenIds` → 内存 replay（可能传输截断）回填**旧**集（#0608 实测：后端发 id 111-190，前端却停在 109）。
 - 冷历史 backfill 打 `replayKind:'cold-history'`；新发 user/command 气泡打 `replayKind:'live-user-echo'` 并携带创建事件时的 `sessionId`。REST-restored session 只 skip cold history；新 session birth 只接受通过当前 session scope 校验的 live echo。决策纯核心 `sessionRestoreGuards.ts`（可单测）。
-- `GET /sessions/:id` 的 active overlay（builtin 内存未持久化消息、external live streaming message、live session state）由 `SessionEngine.getLiveSessionOverlay()` 提供。Route 只做分页、redaction、response shaping，不直接读取 `agent-session.ts` / `external-session.ts`。
+- `GET /sessions/:id` 的 active overlay 由 `SessionEngine.getLiveSessionOverlay()` 提供：磁盘历史先与 finalized in-memory tail 按 message id 合并，当前 streaming assistant 独立返回，同时带 live session state、pending interactive requests 与 `snapshotRevision`。builtin/external public facade 都返回 immutable snapshot；Route 只做分页、redaction、response shaping，不直接读取 runtime owner internal。
+- 需要与快照对齐的非幂等 streaming/turn-boundary/interactive SSE 事件由 `participatesInLiveRestore()` 统一选择并包成 `{ sessionId, liveRevision, payload }`。Sidecar 在暴露 snapshot 前先 flush coalesced chunk，因此 `snapshotRevision` 覆盖快照已包含的全部事件。Renderer 在 REST pending 时 buffer；快照落地后丢弃 `revision <= snapshotRevision`，只按序 replay 连续后缀。发现 gap、没有已采纳基线，或 SSE connection generation 变化时，重新请求 REST snapshot，不用 `loading/seenIds` 猜顺序。
+- `liveRevision` 是当前 Sidecar 绑定 Session 的 generation-local 内存序号，Session identity 切换时归零；它不写 JSONL、不做 checkpoint，也不改变 REST 的历史权威。新 Session 在首次被 REST adopt 前仍可走 SSE-native birth，避免为尚未持久化的会话制造恢复状态机。
 - 诊断"恢复只显示一部分"：读磁盘 `~/.myagents/refs/<id>` 的 spilled body（后端实发的 JSON，可直接 `node` 解析）对比前端显示，先把"后端发了什么 vs 前端显示什么"一刀切开。
+
+### Turn terminal 与通用完成通知
+
+builtin/external 的真实 turn owner 在 complete/stopped/error 时生成同一份 immutable `SessionCompletionTerminal`：`sessionId + workspacePath + turnId + optional turnOwner + origin + status`。descriptor 保存在各 runtime 既有 turn lifecycle state 中；terminal SSE payload 与 `GET /api/session-state` 返回同一事实，route 和 Rust caller 不重建 owner/origin。新 turn admission 或 session reset 会清掉上一份 descriptor。
+
+Rust `notification.rs` 是普通 Session 通用完成通知的唯一业务 owner：Tab-attached 路径由 SSE proxy 提交，headless 路径由 `BackgroundCompletion` 在 active→terminal 后从 `/api/session-state` 提交；两者先经过同一 owner/origin eligibility，再以 `(sessionId, turnId)` 做进程内 exactly-once claim，随后统一执行窗口 focus、通知偏好、系统 toast、badge 与 session/workspace deep-link。Task/Goal owner、Agent Channel、automation/Cron/Task run、Memory 与 Heartbeat 抑制 generic 通知，继续由各自 domain surface 负责；ordinary desktop、registered-agent/Space 与 Session Inbox 可发送 generic 通知。claim 刻意不持久化，不新增 notification ledger。`TabProvider` 只保留 terminal UI 与 unread 状态，不拥有 OS completion toast。
 
 ### 会话快照类 SSE 必须按 session scope 过滤
 

@@ -37,6 +37,7 @@ const LIVE_RESTORE_EVENTS = new Set([
   'chat:messages-retracted',
   'chat:message-complete',
   'chat:message-stopped',
+  'chat:message-error',
   'permission:request',
   'permission:expired',
   'ask-user-question:request',
@@ -50,6 +51,11 @@ const LIVE_RESTORE_EVENTS = new Set([
 
 export function participatesInLiveRestore(event: string, data: unknown): boolean {
   if (!LIVE_RESTORE_EVENTS.has(event)) return false;
+  if (event === 'chat:message-error') {
+    return Boolean(data)
+      && typeof data === 'object'
+      && Boolean((data as { completionTerminal?: unknown }).completionTerminal);
+  }
   if (event === 'enter-plan-mode:request') {
     return !data || typeof data !== 'object' || !(data as { autoApproved?: unknown }).autoApproved;
   }
