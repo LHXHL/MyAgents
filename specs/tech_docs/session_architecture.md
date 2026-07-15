@@ -675,19 +675,31 @@ const sendMessage = async (text) => {
 
 但 Goal scheduler、CLI Goal、Rust direct Cron 等 server-initiated turn 不经过 renderer `sendMessage()`。Runtime 因此必须发送 session-scoped turn 边界：直接消息用 `chat:message-replay { replayKind:'live-user-echo', sessionId, message }`，排队消息实际开始用 `queue:started { sessionId, ... }`。renderer 只有在 `sessionId` 通过当前 SSE/session scope 校验后，才清除 `isNewSessionRef` 并渲染气泡。这样后续 thinking/tool/message chunk 会实时进入当前 turn，同时旧 session 或无身份的迟到事件仍被防护标志拒绝。带 `beforeDispatch` 的 builtin infrastructure turn 在 guard commit 前必须隐藏 `chat:status`、`queue:added`、queue snapshot、append、持久化和上述 turn 边界；commit 时先同步转交 active-turn owner 并确认 dispatch acceptance，再执行异步 SessionStore/user-surface work。这样异步持久化窗口内的 Stop/timeout 仍能精确命中已接纳 turn，不会形成“磁盘已写、调用方却收到未入队”的双重事实。
 
+### Renderer turn activity 的唯一权威
+
+`chat:system-init` 只同步 session birth identity、runtime/config 与 initialization metadata，**不表示 turn 正在运行**。模型、alias、context-window 或 runtime control re-init 都可能在 idle 时产生该事件；由它设置 loading/active 会制造假 Stop UI。
+
+Renderer activity 只来自两种同源快照：
+
+- live SSE `chat:status`：`starting/running` 设置 active + loading，`idle/error` 清理；
+- REST `liveSessionState`：历史恢复/重连时使用相同状态分类，即使首个 assistant chunk 尚未出现也必须标记 active。
+
+`isStreamingRef` 仍只表示“React 已有 streaming message”，不能替代 backend activity；prewarm/system-init 也不能替代 `chat:status`。SSE reconnect 的 `chat:init idle` 仅保留为丢失 terminal 事件后的清理兜底，不从 `chat:init running` 推导新 activity。
+
 ### 9 种结束场景必须重置的状态
 
 | 变量 | 用途 |
 |-----|------|
-| `isLoading` | 流式输出中 |
+| `isLoading` | UI 正在等待/展示 active turn |
 | `sessionState` | 会话状态（`'idle'` / `'running'`） |
 | `systemStatus` | 系统任务状态（如 `'compacting'`） |
 | `isStreamingRef` | 内部流跟踪 |
+| `isSessionActiveRef` | backend status / REST live snapshot 的 turn activity |
 
-每个场景 MUST 重置全部 4 个：
+每个场景 MUST 收敛全部 activity 状态；`isStreamingRef` 与 `isSessionActiveRef` 统一通过 `clearSessionActive()` 清理：
 
 ```typescript
-isStreamingRef.current = false;
+clearSessionActive();
 setIsLoading(false);
 setSessionState('idle');
 setSystemStatus(null);
@@ -699,7 +711,7 @@ setSystemStatus(null);
 | 2 | `chat:message-stopped` | 用户点击停止，后端确认 |
 | 3 | `chat:message-error` | AI 回复出错 |
 | 4 | `chat:init` 同步 | SSE 重连，后端状态为 idle |
-| 5 | `chat:status` 同步 | 后端广播状态变为 idle |
+| 5 | `chat:status` 同步 | 后端广播状态变为 idle/error |
 | 6 | `stopResponse` 超时 | 停止请求 5s 后无 SSE 确认 |
 | 7 | `stopResponse` 失败 | 停止请求网络错误 |
 | 8 | `resetSession` | 用户点击「新对话」 |

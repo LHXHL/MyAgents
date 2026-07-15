@@ -4873,11 +4873,9 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       }
       // Match builtin broadcast shape: { info: {...}, sessionId } — top-level sessionId
       // is read by frontend for session ID sync (TabProvider).
-      // `prewarm` distinguishes a cold-start session_init (fired before any user
-      // turn) from one triggered by the user's first message. The frontend uses
-      // it to decide whether to flip isLoading:true — a pre-warmed process is
-      // alive but idle, and stamping loading state on it would leave the UI
-      // stuck showing a spinner until the user finally sends something.
+      // `prewarm` preserves whether this initialization happened before a user
+      // turn for runtime metadata/diagnostics. Renderer activity is owned by
+      // chat:status and REST liveSessionState, never inferred from system-init.
       const systemInitPayload = buildExternalSystemInitPayload({
         info,
         runtime: getCurrentRuntimeType(),

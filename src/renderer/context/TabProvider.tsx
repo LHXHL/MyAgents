@@ -43,6 +43,7 @@ import { CUSTOM_EVENTS, isPendingSessionId } from '../../shared/constants';
 import { TabContext, TabApiContext, TabActiveContext, type AdoptMigratedSessionOptions, type LoadOlderMessagesOptions, type SessionState, type SystemNotice, type TabContextValue, type TabApiContextValue } from './TabContext';
 import { appendUniqueMessageById, upsertMessageById, updateMessageById, shouldAcceptLiveTurnEvent, shouldSkipHistoryReplay, shouldClearHistoryOnInit } from './sessionRestoreGuards';
 import {
+    classifySessionActivity,
     decideSystemInitSessionId,
     decidePersistedContextUsageSeed,
     shouldAcceptSessionScopedSseSnapshot,
@@ -737,7 +738,7 @@ export default function TabProvider({
     const liveRevisionFenceRef = useRef<LiveRevisionFence>({ ...EMPTY_LIVE_REVISION_FENCE });
     const requestLiveRestoreRef = useRef<(sessionId: string, restoreToken: number) => void>(() => {});
     const isStreamingRef = useRef(false);
-    // Tracks whether the backend session is actively processing (system-init received → idle).
+    // Tracks whether the authoritative backend session state is starting/running.
     // Separate from isStreamingRef which means "a streaming message exists in React state".
     // Used to prevent loadSession from running during pending→real session ID upgrade.
     const isSessionActiveRef = useRef(false);
@@ -748,9 +749,10 @@ export default function TabProvider({
      * WHY THIS EXISTS (pit-of-success):
      * isStreamingRef ("streaming message exists in React") and isSessionActiveRef ("backend is
      * processing") have identical clear-time but different set-time. isStreamingRef is set by the
-     * first message-chunk (via flushSync), while isSessionActiveRef is set by system-init (before
-     * any chunks). They MUST be cleared together — if one is forgotten, either loadSession runs
-     * during active sessions (disrupts streaming) or loadSession is permanently blocked (stale ref).
+     * first message-chunk (via flushSync), while isSessionActiveRef is set by chat:status or the
+     * REST live-session snapshot (before any chunks). They MUST be cleared together — if one is
+     * forgotten, either loadSession runs during active sessions (disrupts streaming) or loadSession
+     * is permanently blocked (stale ref).
      * A single clearSessionActive() makes it impossible to forget.
      *
      * If you add a new "session active" ref in the future, add its cleanup HERE.
@@ -1768,26 +1770,27 @@ export default function TabProvider({
             case 'chat:status': {
                 const payload = data as { sessionState: SessionState } | null;
                 if (payload?.sessionState) {
-                    setSessionState(payload.sessionState);
-                    if (payload.sessionState === 'idle') {
-                        // When backend reports 'idle', unconditionally reset frontend loading state.
+                    const nextSessionState = payload.sessionState;
+                    const activity = classifySessionActivity(nextSessionState);
+                    setSessionState(nextSessionState);
+                    if (activity === 'terminal') {
+                        // Terminal backend state always converges both refs and
+                        // loading, including cached error snapshots on reconnect.
                         clearSessionActive();
                         setIsLoading(false);
                         setSystemStatus(null);
                         clearRuntimePlanTodos();
-                    } else if (
-                        (payload.sessionState === 'running' || payload.sessionState === 'starting')
-                        && !isStreamingRef.current
-                    ) {
+                    } else if (activity === 'active') {
+                        isSessionActiveRef.current = true;
                         // Session is busy (subprocess starting up or actively
-                        // processing) but we haven't received any streaming
-                        // events yet. This happens when a Tab connects
+                        // processing). This can arrive before any streaming
+                        // event when a Tab connects
                         // mid-flight (e.g., IM session in progress) and
                         // receives a replayed chat:status from the SSE
                         // last-value cache, or during the (issue #174)
                         // startup-timeout window where the SDK subprocess is
-                        // alive but system_init hasn't arrived. Set isLoading
-                        // so the UI shows the loading state instead of action
+                        // alive but system_init hasn't arrived. Status owns
+                        // loading so the UI shows it instead of action
                         // buttons; the 'starting' branch lets MessageList
                         // render a distinct "AI 启动中" hint.
                         setIsLoading(true);
@@ -2596,23 +2599,6 @@ export default function TabProvider({
                         if (runtime !== 'builtin') {
                             setSdkSlashCommands([]);
                         }
-                    }
-
-                    // Mark session as active (prevents loadSession from interrupting) and loading.
-                    // Do NOT set isStreamingRef — that must only be set when a streaming message
-                    // is actually created (first message-chunk via flushSync). Setting it here
-                    // without a streaming message causes chunks to skip the creation path.
-                    //
-                    // Pre-warm exception: a pre-warmed external runtime emits session_init when
-                    // the CLI subprocess finishes handshake — no user turn has started. Flipping
-                    // isLoading:true here would strand the UI at "加载智慧模块中..." until the
-                    // user actually sends a message. Skip the loading flip for prewarm payloads;
-                    // when the user actually sends a message the chat:status 'running' event
-                    // (see line 827 branch above) will set isLoading:true, and Case 1/2 paths
-                    // re-emit chat:system-init with prewarm cleared.
-                    if (!payload.prewarm) {
-                        isSessionActiveRef.current = true;
-                        setIsLoading(true);
                     }
 
                     // Auto-sync sessionId when a new session is created (e.g., first message in empty session)
@@ -4183,10 +4169,13 @@ export default function TabProvider({
             revealAccRef.current = 0;
             revealLastRef.current = 0;
             const liveSessionState = response.session.liveSessionState ?? 'idle';
-            const isLiveActive = liveSessionState === 'starting' || liveSessionState === 'running';
+            const isLiveActive = classifySessionActivity(liveSessionState) === 'active';
+            // REST liveSessionState is the reconnect/history-load activity
+            // authority. It must not depend on whether the first assistant
+            // chunk has materialized a streaming message yet.
+            isSessionActiveRef.current = isLiveActive;
             if (liveStreamingMessage && isLiveActive) {
                 isStreamingRef.current = true;
-                isSessionActiveRef.current = true;
                 // Adopted mid-turn stream: bypass the typewriter (reveal instantly) so the
                 // REST-snapshot / live-SSE boundary race is not amplified by buffered text.
                 adoptedStreamRef.current = true;
@@ -4631,7 +4620,7 @@ export default function TabProvider({
             // Case 2b: Session is currently running (e.g., cron task executing) - skip
             // CRITICAL: Do NOT call loadSession while AI is responding, as it would abort the current session!
             // The messages will come through SSE stream naturally.
-            // Use isSessionActiveRef (set by system-init) OR isStreamingRef (set by first chunk).
+            // Use authoritative backend activity OR the first-chunk streaming ref.
             if (isSessionActiveRef.current || isStreamingRef.current) {
                 console.log(`[TabProvider ${tabId}] SessionId upgraded from pending to ${sessionId}, session is active, skipping loadSession`);
                 initialSessionLoadedRef.current = true;  // Mark as loaded to prevent future attempts
