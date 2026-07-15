@@ -6,10 +6,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildCodexFileChangeResultContent,
+  buildCodexCompletedFileChangeInput,
   buildCodexAppServerArgs,
   buildCodexInitializeParams,
   buildCodexSandboxPolicy,
   buildCodexTurnStartParams,
+  buildCodexStartedFileChangeInput,
   CodexRuntime,
   codexModelCacheKey,
   configureCodexSkillExtraRoots,
@@ -454,6 +456,29 @@ describe('Codex app-server protocol helpers', () => {
       },
     ])).toBe('move: /tmp/old.md -> /tmp/new.md');
     expect(buildCodexFileChangeResultContent([])).toBe('File changed');
+  });
+
+  it('keeps started fileChange lightweight and promotes the completed patch as final input', () => {
+    const startedChanges = [{
+      path: '/workspace/a.ts',
+      kind: { type: 'update', move_path: null },
+      diff: '@@ -1 +1 @@\n-old started\n+new started',
+    }];
+    const completedChanges = [{
+      path: '/workspace/a.ts',
+      kind: { type: 'update', move_path: null },
+      diff: '@@ -1 +1 @@\n-old applied\n+new applied',
+    }];
+
+    expect(buildCodexStartedFileChangeInput(startedChanges, '/workspace')).toEqual({
+      file_path: '/workspace/a.ts',
+      cwd: '/workspace',
+    });
+    expect(buildCodexCompletedFileChangeInput(completedChanges, '/workspace')).toEqual({
+      file_path: '/workspace/a.ts',
+      cwd: '/workspace',
+      changes: completedChanges,
+    });
   });
 
   it('ignores malformed fileChange entries before formatting result text', () => {

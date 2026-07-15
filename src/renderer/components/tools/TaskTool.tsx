@@ -5,6 +5,7 @@ import Markdown from '@/components/Markdown';
 import { formatDuration } from '@/components/tools/toolBadgeConfig';
 import { isBackgroundSubagentTool, isSubagentCallRunning, isSubagentContainerRunning } from '@/components/tools/subagentActivity';
 import ToolAttachmentGallery from '@/components/tools/ToolAttachmentGallery';
+import FilePatchTool from '@/components/tools/FilePatchTool';
 import { ExpandableResult } from '@/components/tools/utils';
 import { useTabApiOptional, useTabStateOptional } from '@/context/TabContext';
 import { useBackgroundTaskPolling } from '@/hooks/useBackgroundTaskPolling';
@@ -409,6 +410,7 @@ const SubagentCallItem = memo(function SubagentCallItem({ call }: { call: Subage
   }, [call.inputJson, call.input]);
 
   const isCallRunning = isSubagentCallRunning(call);
+  const isFilePatchCall = call.name === 'Edit' || call.name === 'Write';
 
   return (
     <div className="group flex flex-col gap-2 rounded-lg border border-[var(--line)] bg-[var(--paper)] p-3">
@@ -429,7 +431,23 @@ const SubagentCallItem = memo(function SubagentCallItem({ call }: { call: Subage
 
       {description && <div className="text-xs text-[var(--ink-muted)]">{description}</div>}
 
-      {inputText && (
+      {isFilePatchCall ? (
+        <FilePatchTool
+          tool={{
+            id: call.id,
+            name: call.name,
+            input: call.input,
+            streamIndex: 0,
+            inputJson: call.inputJson,
+            parsedInput: call.parsedInput,
+            result: call.result,
+            resultMeta: call.resultMeta,
+            isLoading: call.isLoading,
+            isError: call.isError,
+            attachments: call.attachments,
+          }}
+        />
+      ) : inputText && (
         <div className="relative overflow-hidden rounded-md bg-[var(--paper-inset)] border border-[var(--line-subtle)]">
           <pre className="max-h-32 overflow-y-auto p-2 font-mono text-xs text-[var(--ink-secondary)] whitespace-pre-wrap break-words">
             {inputText}
@@ -437,7 +455,7 @@ const SubagentCallItem = memo(function SubagentCallItem({ call }: { call: Subage
         </div>
       )}
 
-      {call.result && (
+      {call.result && !isFilePatchCall && (
         <div className="mt-1">
           <div className="mb-1 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]">{t('shell.toolChrome.common.result')}</div>
           <ExpandableResult

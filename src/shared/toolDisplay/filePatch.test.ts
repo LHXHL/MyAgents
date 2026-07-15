@@ -2,10 +2,96 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildFilePatchDisplayDescriptor,
+  FILE_PATCH_MAX_CHARACTER_BUDGET,
+  FILE_PATCH_MAX_FILE_BUDGET,
+  FILE_PATCH_MAX_ROW_BUDGET,
   parseUnifiedDiffRows,
   resolveFilePatchDisplay,
   resolveFilePatchRenderModel,
+  type FilePatchToolLike,
 } from './filePatch';
+
+function deidentifiedUpdateDiff(
+  label: string,
+  hunks: ReadonlyArray<readonly [removed: number, added: number]>,
+): string {
+  let oldStart = 1;
+  let newStart = 1;
+  return hunks.map(([removed, added], hunkIndex) => {
+    const header = `@@ -${oldStart},${removed} +${newStart},${added} @@`;
+    const removedLines = Array.from(
+      { length: removed },
+      (_, lineIndex) => `-${label} old ${hunkIndex + 1}.${lineIndex + 1}`,
+    );
+    const addedLines = Array.from(
+      { length: added },
+      (_, lineIndex) => `+${label} new ${hunkIndex + 1}.${lineIndex + 1}`,
+    );
+    oldStart += Math.max(removed, 1) + 10;
+    newStart += Math.max(added, 1) + 10;
+    return [header, ...removedLines, ...addedLines].join('\n');
+  }).join('\n');
+}
+
+/** Deidentified from Session 2d6ec8dc-7bad-4c6b-a393-2fcdafb5ebff. */
+function codexFourFileSessionFixture(): {
+  startedTool: FilePatchToolLike;
+  appliedChanges: Record<string, { type: 'update'; unifiedDiff: string }>;
+} {
+  const changes = [
+    {
+      path: '/workspace/0612-life-simulator/h5/index.html',
+      kind: { type: 'update', move_path: null },
+      diff: deidentifiedUpdateDiff('index', [[1, 0]]),
+    },
+    {
+      path: '/workspace/0612-life-simulator/h5/src/account.ts',
+      kind: { type: 'update', move_path: null },
+      diff: deidentifiedUpdateDiff('account', [[1, 13], [0, 13], [0, 13]]),
+    },
+    {
+      path: '/workspace/0612-life-simulator/h5/src/analytics.ts',
+      kind: { type: 'update', move_path: null },
+      diff: deidentifiedUpdateDiff('analytics', [[3, 12], [3, 11]]),
+    },
+    {
+      path: '/workspace/0612-life-simulator/h5/src/main.ts',
+      kind: { type: 'update', move_path: null },
+      diff: deidentifiedUpdateDiff('main', [[13, 14]]),
+    },
+  ];
+  return {
+    startedTool: {
+      name: 'Edit',
+      input: { changes },
+      inputJson: JSON.stringify({
+        file_path: '/workspace/0612-life-simulator/h5/index.html',
+        changes,
+      }),
+      resultMeta: { status: 'completed' },
+    },
+    // The actual patch_apply_end object used a different path order. Keeping
+    // this authority separate prevents a descriptor-only tautology.
+    appliedChanges: {
+      '/workspace/0612-life-simulator/h5/src/main.ts': {
+        type: 'update',
+        unifiedDiff: deidentifiedUpdateDiff('main', [[13, 14]]),
+      },
+      '/workspace/0612-life-simulator/h5/src/analytics.ts': {
+        type: 'update',
+        unifiedDiff: deidentifiedUpdateDiff('analytics', [[3, 12], [3, 11]]),
+      },
+      '/workspace/0612-life-simulator/h5/index.html': {
+        type: 'update',
+        unifiedDiff: deidentifiedUpdateDiff('index', [[1, 0]]),
+      },
+      '/workspace/0612-life-simulator/h5/src/account.ts': {
+        type: 'update',
+        unifiedDiff: deidentifiedUpdateDiff('account', [[1, 13], [0, 13], [0, 13]]),
+      },
+    },
+  };
+}
 
 describe('filePatch display protocol', () => {
   it('builds a compact descriptor for builtin Edit without duplicating old/new text', () => {
@@ -354,6 +440,43 @@ describe('filePatch render model', () => {
     expect(model?.changes.some((change) => change.path === 'fake.ts')).toBe(false);
   });
 
+  it('replays the deidentified four-file Codex session in protocol order with exact totals', () => {
+    const fixture = codexFourFileSessionFixture();
+    const model = resolveFilePatchRenderModel(fixture.startedTool);
+
+    expect(model).toMatchObject({
+      source: 'codex',
+      status: 'completed',
+      summary: { files: 4, added: 76, removed: 21 },
+    });
+    expect(model?.changes.map((change) => ({
+      path: change.path?.replace('/workspace/0612-life-simulator/h5/', ''),
+      added: change.added,
+      removed: change.removed,
+      hunks: change.rows.filter((row) => row.kind === 'hunk').length,
+    }))).toEqual([
+      { path: 'index.html', added: 0, removed: 1, hunks: 1 },
+      { path: 'src/account.ts', added: 39, removed: 1, hunks: 3 },
+      { path: 'src/analytics.ts', added: 23, removed: 6, hunks: 2 },
+      { path: 'src/main.ts', added: 14, removed: 13, hunks: 1 },
+    ]);
+
+    const startedByPath = new Map(
+      (fixture.startedTool.input as { changes: Array<{ path: string; diff: string }> })
+        .changes.map((change) => [change.path, change.diff]),
+    );
+    expect(Object.keys(fixture.appliedChanges)).toEqual([
+      '/workspace/0612-life-simulator/h5/src/main.ts',
+      '/workspace/0612-life-simulator/h5/src/analytics.ts',
+      '/workspace/0612-life-simulator/h5/index.html',
+      '/workspace/0612-life-simulator/h5/src/account.ts',
+    ]);
+    expect(Object.entries(fixture.appliedChanges).every(
+      ([path, applied]) => applied.type === 'update'
+        && startedByPath.get(path) === applied.unifiedDiff,
+    )).toBe(true);
+  });
+
   it('treats hunk-like lines in Codex add content as source text', () => {
     const model = resolveFilePatchRenderModel({
       name: 'Edit',
@@ -690,5 +813,174 @@ describe('filePatch render model', () => {
     expect(model?.changes[0]?.rows).toHaveLength(2_500);
     expect(JSON.stringify(tool)).toBe(before);
     expect(tool.input.content).toBe(content);
+  });
+
+  it('bounds Codex files, rows, and characters before materializing renderer data', () => {
+    const manyFiles = Array.from(
+      { length: FILE_PATCH_MAX_FILE_BUDGET + 5 },
+      (_, index) => ({
+        path: `/tmp/file-${index}.ts`,
+        kind: { type: 'add' },
+        diff: `file ${index}`,
+      }),
+    );
+    const fileBounded = resolveFilePatchRenderModel({
+      name: 'Edit',
+      input: { changes: manyFiles },
+    });
+    expect(fileBounded).toMatchObject({
+      hasHiddenContent: true,
+      summary: {
+        files: FILE_PATCH_MAX_FILE_BUDGET + 5,
+        added: FILE_PATCH_MAX_FILE_BUDGET + 5,
+        removed: 0,
+      },
+    });
+    expect(fileBounded?.changes).toHaveLength(FILE_PATCH_MAX_FILE_BUDGET);
+    const descriptor = buildFilePatchDisplayDescriptor({
+      name: 'Edit',
+      input: { changes: manyFiles },
+    });
+    expect(descriptor).toMatchObject({
+      hasHiddenContent: true,
+      summary: {
+        files: FILE_PATCH_MAX_FILE_BUDGET + 5,
+        added: FILE_PATCH_MAX_FILE_BUDGET + 5,
+        removed: 0,
+      },
+    });
+    expect(resolveFilePatchRenderModel({
+      name: 'Edit',
+      display: descriptor ?? undefined,
+    })).toMatchObject({
+      hasHiddenContent: true,
+      summary: {
+        files: FILE_PATCH_MAX_FILE_BUDGET + 5,
+        added: FILE_PATCH_MAX_FILE_BUDGET + 5,
+        removed: 0,
+      },
+    });
+
+    const rowBounded = resolveFilePatchRenderModel({
+      name: 'Edit',
+      input: {
+        changes: [{
+          path: '/tmp/rows.txt',
+          kind: { type: 'add' },
+          diff: 'row\n'.repeat(FILE_PATCH_MAX_ROW_BUDGET + 1),
+        }],
+      },
+    });
+    expect(rowBounded).toMatchObject({
+      hasHiddenContent: true,
+      changes: [{ hasHiddenContent: true }],
+    });
+    expect(rowBounded?.changes[0]?.rows).toHaveLength(FILE_PATCH_MAX_ROW_BUDGET);
+    expect(rowBounded?.summary.added).toBe(FILE_PATCH_MAX_ROW_BUDGET + 1);
+
+    const characterBounded = resolveFilePatchRenderModel({
+      name: 'Edit',
+      input: {
+        changes: [{
+          path: '/tmp/characters.txt',
+          kind: { type: 'add' },
+          diff: 'x'.repeat(FILE_PATCH_MAX_CHARACTER_BUDGET + 1),
+        }],
+      },
+    });
+    expect(characterBounded).toMatchObject({
+      hasHiddenContent: true,
+      changes: [{ rows: [], detailUnavailable: true }],
+    });
+  });
+
+  it('applies the shared row and character bounds to builtin and Gemini projections', () => {
+    const oversizedWrite = resolveFilePatchRenderModel({
+      name: 'Write',
+      input: {
+        file_path: '/tmp/write.txt',
+        content: 'line\n'.repeat(FILE_PATCH_MAX_ROW_BUDGET + 2),
+      },
+    });
+    expect(oversizedWrite).toMatchObject({
+      hasHiddenContent: true,
+      changes: [{ hasHiddenContent: true }],
+    });
+    expect(oversizedWrite?.changes[0]?.written).toBeUndefined();
+    expect(oversizedWrite?.changes[0]?.rows).toHaveLength(FILE_PATCH_MAX_ROW_BUDGET);
+
+    const oversizedGemini = resolveFilePatchRenderModel({
+      name: 'Edit',
+      input: {
+        _displayName: 'replace',
+        _geminiKind: 'edit',
+        file_path: '/tmp/gemini.txt',
+      },
+      result: `--- /tmp/gemini.txt\n+++ /tmp/gemini.txt\n${'+line\n'.repeat(FILE_PATCH_MAX_ROW_BUDGET + 2)}`,
+    });
+    expect(oversizedGemini).toMatchObject({
+      hasHiddenContent: true,
+      summary: { added: FILE_PATCH_MAX_ROW_BUDGET, removed: 0 },
+      changes: [{ hasHiddenContent: true }],
+    });
+    expect(oversizedGemini?.changes[0]?.rows).toHaveLength(FILE_PATCH_MAX_ROW_BUDGET);
+
+    const oversizedInputJson = JSON.stringify({
+      file_path: '/tmp/stale.txt',
+      content: 'x'.repeat(FILE_PATCH_MAX_CHARACTER_BUDGET),
+    });
+    const fallback = resolveFilePatchRenderModel({
+      name: 'Write',
+      inputJson: oversizedInputJson,
+      input: { file_path: '/tmp/fallback.txt', content: 'fallback' },
+    });
+    expect(fallback?.changes[0]?.path).toBe('/tmp/fallback.txt');
+
+    const hugeSingleLine = 'x'.repeat(FILE_PATCH_MAX_CHARACTER_BUDGET * 2);
+    const singleLineWrite = resolveFilePatchRenderModel({
+      name: 'Write',
+      input: { file_path: '/tmp/single.txt', content: hugeSingleLine },
+    });
+    expect(singleLineWrite).toMatchObject({
+      hasHiddenContent: true,
+      changes: [{ rows: [], hasHiddenContent: true }],
+    });
+
+    const singleLineGemini = resolveFilePatchRenderModel({
+      name: 'Edit',
+      input: { _displayName: 'replace', _geminiKind: 'edit' },
+      result: `--- /tmp/single.txt\n+++ /tmp/single.txt\n+${hugeSingleLine}`,
+    });
+    expect(singleLineGemini).toMatchObject({
+      hasHiddenContent: true,
+      changes: [{ rows: [], hasHiddenContent: true }],
+    });
+
+    expect(resolveFilePatchRenderModel({
+      name: 'Edit',
+      input: {
+        file_path: '/tmp/stale.ts',
+        old_string: 'old proposal',
+        new_string: 'stale proposal',
+      },
+      result: JSON.stringify({
+        filePath: '/tmp/stale.ts',
+        originalFile: 'x'.repeat(FILE_PATCH_MAX_CHARACTER_BUDGET),
+        structuredPatch: [],
+      }),
+    })).toBeNull();
+
+    expect(resolveFilePatchRenderModel({
+      name: 'Edit',
+      input: {
+        file_path: '/tmp/spilled.ts',
+        old_string: 'proposal-old',
+        new_string: 'stale-proposal',
+      },
+      result: '{"filePath":"/tmp/spilled.ts","originalFile":"' + 'x'.repeat(8_000),
+      resultMeta: {
+        largeValueRef: { kind: 'ref', id: 'spilled-result' },
+      },
+    })).toBeNull();
   });
 });

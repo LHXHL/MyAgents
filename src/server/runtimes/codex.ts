@@ -490,6 +490,41 @@ export function buildCodexFileChangeResultContent(changes: unknown): string {
     : 'File changed';
 }
 
+export function buildCodexStartedFileChangeInput(
+  changes: unknown,
+  cwd?: string,
+): Record<string, unknown> | undefined {
+  const firstChange = Array.isArray(changes) ? changes[0] : undefined;
+  const firstPath = firstChange
+    && typeof firstChange === 'object'
+    && !Array.isArray(firstChange)
+    && typeof (firstChange as { path?: unknown }).path === 'string'
+    ? (firstChange as { path: string }).path
+    : undefined;
+  const input: Record<string, unknown> = {
+    ...(firstPath ? { file_path: firstPath } : {}),
+    ...(cwd ? { cwd } : {}),
+  };
+  return Object.keys(input).length > 0 ? input : undefined;
+}
+
+export function buildCodexCompletedFileChangeInput(
+  changes: unknown,
+  cwd?: string,
+): Record<string, unknown> | undefined {
+  if (!Array.isArray(changes) || changes.length === 0) return undefined;
+  const normalized = coerceFileChanges(changes);
+  if (
+    normalized.length !== changes.length
+    || normalized.some((change) => !change.path?.trim())
+  ) return undefined;
+  return {
+    file_path: normalized[0].path,
+    ...(cwd ? { cwd } : {}),
+    changes: normalized,
+  };
+}
+
 // ─── Temp image directory for Codex (which requires file paths, not base64) ───
 const TEMP_IMG_DIR = join(
   process.env.HOME || process.env.USERPROFILE || '/tmp',
@@ -2910,16 +2945,11 @@ export class CodexRuntime implements AgentRuntime {
             };
           }
           case 'fileChange': {
-            const firstPath = item.changes?.[0]?.path;
             return {
               kind: 'tool_use_start',
               toolUseId: item.id,
               toolName: 'Edit',
-              input: {
-                ...(firstPath ? { file_path: firstPath } : {}),
-                ...(item.cwd ? { cwd: item.cwd } : {}),
-                ...(item.changes?.length ? { changes: item.changes } : {}),
-              },
+              input: buildCodexStartedFileChangeInput(item.changes, item.cwd),
             };
           }
           case 'mcpToolCall': {
@@ -3082,8 +3112,9 @@ export class CodexRuntime implements AgentRuntime {
             const statusPrefix = item.status && item.status !== 'completed'
               ? `[${item.status}]\n`
               : '';
+            const finalInput = buildCodexCompletedFileChangeInput(item.changes, item.cwd);
             return [
-              { kind: 'tool_use_stop', toolUseId: item.id },
+              { kind: 'tool_use_stop', toolUseId: item.id, ...(finalInput ? { input: finalInput } : {}) },
               {
                 kind: 'tool_result',
                 toolUseId: item.id,

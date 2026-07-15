@@ -601,6 +601,7 @@
         },
         "replaceAll": "Replace all",
         "userModified": "Result adjusted during approval",
+        "boundedPreview": "Large change; showing a bounded preview",
         "noTextChanges": "No text changes",
         "emptyWrittenContent": "The written file content is empty",
         "detailUnavailable": "Change details unavailable",

@@ -70,6 +70,7 @@ import { enqueuePermissionRequest, peekPermissionRequest, removePermissionReques
 import { i18n } from '@/i18n';
 import { subscribeFrontendLogs, setCurrentTabId } from '@/utils/frontendLogger';
 import { getTabServerUrl, proxyFetch, isTauri, getSessionActivation, getSessionPort, ensureSessionSidecar, resetTabServerUrlCache, setActiveCorrelation } from '@/api/tauriClient';
+import { fetchJsonLargeValueRef } from '@/api/largeValueRef';
 import { resolveAttachmentUrl } from '@/utils/attachmentUrl';
 import { isExistingSessionSwitch, isResetSessionBirth, shouldDegradedLoad } from '@/utils/optionResolve';
 import { getSessionDisplayText } from '@/utils/sessionDisplay';
@@ -98,6 +99,29 @@ import {
 // via the /refs/:id endpoint when oversize).
 const TOOL_RESULT_DISPLAY_CAP = 8 * 1024;
 const TOOL_RESULT_TAIL_KEEP = 1024;
+
+function replaceFinalToolInput(
+    message: Message,
+    toolId: string,
+    input: Record<string, unknown>,
+): Message {
+    if (message.role !== 'assistant' || typeof message.content === 'string') return message;
+    const toolIdx = message.content.findIndex(block => isToolBlock(block) && block.tool?.id === toolId);
+    if (toolIdx === -1) return message;
+    const block = message.content[toolIdx];
+    if (!isToolBlock(block) || !block.tool) return message;
+    const updated = [...message.content];
+    updated[toolIdx] = {
+        ...block,
+        tool: {
+            ...block.tool,
+            input,
+            inputJson: undefined,
+            parsedInput: input as ToolInput,
+        },
+    };
+    return { ...message, content: updated };
+}
 
 function appText(key: string, options?: Record<string, unknown>): string {
     return String(i18n.t(`app:${key}`, options));
@@ -308,6 +332,24 @@ function applySubagentCallsUpdate(
         }
     };
     return { ...msg, content: updated };
+}
+
+function replaceFinalSubagentToolInput(
+    message: Message,
+    parentToolUseId: string,
+    toolId: string,
+    input: Record<string, unknown>,
+): Message {
+    return applySubagentCallsUpdate(message, parentToolUseId, (calls) => ({
+        calls: calls.map(call => call.id === toolId
+            ? {
+                ...call,
+                input,
+                inputJson: undefined,
+                parsedInput: input as ToolInput,
+            }
+            : call),
+    })) ?? message;
 }
 
 interface TabProviderProps {
@@ -2130,14 +2172,38 @@ export default function TabProvider({
             }
 
             case 'chat:content-block-stop': {
-                const { index, toolId, type: blockType } = data as { index: number; toolId?: string; type?: string };
+                const { index, toolId, type: blockType, input: finalInput, inputRef } = data as {
+                    index: number;
+                    toolId?: string;
+                    type?: string;
+                    input?: Record<string, unknown>;
+                    inputRef?: unknown;
+                };
                 // Pattern 3 §3.2.2 — drain RAF-batched tool-input deltas for this
                 // tool block before applying the final JSON.parse on the
                 // accumulated inputJson; otherwise the terminal parse races
                 // against pending fragments.
                 if (toolId && pendingToolInputDeltasRef.current.has(toolId)) {
-                    flushPendingToolInputDelta(toolId);
+                    if (!finalInput && !inputRef) flushPendingToolInputDelta(toolId);
                     pendingToolInputDeltasRef.current.delete(toolId);
+                }
+                if (toolId && inputRef) {
+                    const targetSessionId = currentSessionIdRef.current;
+                    void getBaseUrl(tabId, targetSessionId)
+                        .then((baseUrl) => fetchJsonLargeValueRef(
+                            baseUrl,
+                            inputRef,
+                        ))
+                        .then((resolvedInput) => {
+                            if (currentSessionIdRef.current !== targetSessionId) return;
+                            setStreamingMessage(prev => prev
+                                ? replaceFinalToolInput(prev, toolId, resolvedInput)
+                                : prev);
+                            setHistoryMessages(prev => prev.map(
+                                message => replaceFinalToolInput(message, toolId, resolvedInput),
+                            ));
+                        })
+                        .catch((err) => console.error('[TabProvider] Failed to resolve final tool input ref:', err));
                 }
                 setStreamingMessage(prev => {
                     if (!prev || prev.role !== 'assistant') return prev;
@@ -2175,6 +2241,9 @@ export default function TabProvider({
                         : contentArray.findIndex(b => isToolBlock(b) && b.tool?.streamIndex === index);
                     if (toolIdx !== -1) {
                         const block = contentArray[toolIdx];
+                        if (isToolBlock(block) && block.tool && finalInput) {
+                            return replaceFinalToolInput(prev, toolId ?? block.tool.id, finalInput);
+                        }
                         if (isToolBlock(block) && block.tool?.inputJson != null) {
                             let parsedInput: ToolInput | undefined;
                             try {
@@ -2742,16 +2811,57 @@ export default function TabProvider({
 
             // Subagent event handling for nested tool calls (Task tool)
             case 'chat:subagent-tool-use': {
-                const payload = data as { parentToolUseId: string; tool: ToolUse; usage?: { input_tokens?: number; output_tokens?: number } };
+                const payload = data as {
+                    parentToolUseId: string;
+                    tool: ToolUse;
+                    usage?: { input_tokens?: number; output_tokens?: number };
+                    finalInput?: boolean;
+                    inputRef?: unknown;
+                };
+                if (payload.inputRef) {
+                    const targetSessionId = currentSessionIdRef.current;
+                    void getBaseUrl(tabId, targetSessionId)
+                        .then((baseUrl) => fetchJsonLargeValueRef(
+                            baseUrl,
+                            payload.inputRef,
+                        ))
+                        .then((resolvedInput) => {
+                            if (currentSessionIdRef.current !== targetSessionId) return;
+                            setStreamingMessage(prev => prev
+                                ? replaceFinalSubagentToolInput(
+                                    prev,
+                                    payload.parentToolUseId,
+                                    payload.tool.id,
+                                    resolvedInput,
+                                )
+                                : prev);
+                            setHistoryMessages(prev => prev.map(message => replaceFinalSubagentToolInput(
+                                message,
+                                payload.parentToolUseId,
+                                payload.tool.id,
+                                resolvedInput,
+                            )));
+                        })
+                        .catch((err) => console.error('[TabProvider] Failed to resolve final nested tool input ref:', err));
+                    break;
+                }
                 setStreamingMessage(prev => {
                     if (!prev) return prev;
                     return applySubagentCallsUpdate(prev, payload.parentToolUseId, (calls, tool) => {
-                        const inputJson = JSON.stringify(payload.tool.input ?? {}, null, 2);
+                        const inputJson = payload.finalInput
+                            ? undefined
+                            : JSON.stringify(payload.tool.input ?? {}, null, 2);
                         const existingIdx = calls.findIndex(c => c.id === payload.tool.id);
 
                         const updatedCalls: SubagentToolCall[] = existingIdx !== -1
                             ? calls.map(c => c.id === payload.tool.id
-                                ? { ...c, name: payload.tool.name, input: payload.tool.input ?? {}, inputJson, isLoading: true }
+                                ? {
+                                    ...c,
+                                    name: payload.tool.name,
+                                    input: payload.tool.input ?? {},
+                                    inputJson,
+                                    isLoading: payload.finalInput ? c.isLoading : true,
+                                }
                                 : c)
                             : [...calls, { id: payload.tool.id, name: payload.tool.name, input: payload.tool.input ?? {}, inputJson, isLoading: true }];
 
@@ -2824,7 +2934,14 @@ export default function TabProvider({
             }
 
             case 'chat:subagent-tool-result-complete': {
-                const payload = data as { parentToolUseId: string; toolUseId: string; content: string; isError?: boolean; attachments?: import('@/types/chat').ToolAttachment[] };
+                const payload = data as {
+                    parentToolUseId: string;
+                    toolUseId: string;
+                    content: string;
+                    isError?: boolean;
+                    metadata?: ToolUseSimple['resultMeta'];
+                    attachments?: import('@/types/chat').ToolAttachment[];
+                };
                 // Drain pending RAF deltas before terminal payload.
                 const bufKey = `${payload.parentToolUseId}::${payload.toolUseId}`;
                 if (pendingSubagentToolResultDeltasRef.current.has(bufKey)) {
@@ -2836,7 +2953,14 @@ export default function TabProvider({
                     return applySubagentCallsUpdate(prev, payload.parentToolUseId, (calls) => {
                         const updatedCalls = calls.map(call =>
                             call.id === payload.toolUseId
-                                ? { ...call, result: payload.content, isError: payload.isError, isLoading: false, attachments: payload.attachments ?? call.attachments }
+                                ? {
+                                    ...call,
+                                    result: payload.content,
+                                    resultMeta: payload.metadata,
+                                    isError: payload.isError,
+                                    isLoading: false,
+                                    attachments: payload.attachments ?? call.attachments,
+                                }
                                 : call
                         );
                         return { calls: updatedCalls };

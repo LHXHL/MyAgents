@@ -278,6 +278,7 @@ import {
   getExternalTurnContentSnapshotToolCount,
   isExternalTurnContentSnapshotCurrent,
   isExternalPendingThinkingActive,
+  replaceExternalToolUseInput,
   resetExternalContentState,
   resetExternalPendingThinking,
   startExternalSubagentToolUse,
@@ -614,6 +615,7 @@ function resetModuleState(): void {
   resetExternalRuntimeConfigState();
   resetExternalTranscriptState();
   resetExternalContentState();
+  pendingExternalToolInputTransports.clear();
   activeExternalEnvPolicy = undefined;
   pendingExternalProxyRestart = false;
   pendingExternalProxyRestartOriginalKey = null;
@@ -740,6 +742,7 @@ function applySubagentToolResult(
     toolUseId: event.toolUseId,
     content: event.content,
     isError: event.isError,
+    metadata: event.metadata,
     attachments: event.attachments,
   });
   // External runtimes deliver tool results as a single event (no streaming),
@@ -750,6 +753,7 @@ function applySubagentToolResult(
     toolUseId: event.toolUseId,
     content: event.content,
     isError: event.isError ?? false,
+    metadata: event.metadata,
     attachments: event.attachments,
   });
   recordRuntimeActivity();
@@ -4462,6 +4466,78 @@ async function normalizeExternalToolResultForSse(
   };
 }
 
+const EXTERNAL_TOOL_INPUT_INLINE_MAX_BYTES = 192 * 1024;
+const pendingExternalToolInputTransports = new Map<string, Promise<void>>();
+
+function broadcastExternalToolUseStop(
+  event: Extract<UnifiedEvent, { kind: 'tool_use_stop' }>,
+  parentToolUseId: string | undefined,
+  toolName: string | null,
+): void {
+  const broadcastStop = (payload: { input?: Record<string, unknown>; inputRef?: unknown }): void => {
+    if (parentToolUseId && toolName) {
+      broadcast('chat:subagent-tool-use', {
+        parentToolUseId,
+        tool: {
+          id: event.toolUseId,
+          name: toolName,
+          input: payload.input ?? {},
+          streamIndex: 0,
+        },
+        ...(payload.inputRef ? { inputRef: payload.inputRef } : {}),
+        finalInput: true,
+      });
+      return;
+    }
+    if (!parentToolUseId) {
+      broadcast('chat:content-block-stop', {
+        type: 'tool_use',
+        toolId: event.toolUseId,
+        ...payload,
+      });
+    }
+  };
+
+  if (!event.input) {
+    broadcastStop({});
+    return;
+  }
+
+  const serialized = JSON.stringify(event.input);
+  if (Buffer.byteLength(serialized, 'utf-8') <= EXTERNAL_TOOL_INPUT_INLINE_MAX_BYTES) {
+    broadcastStop({ input: event.input });
+    return;
+  }
+
+  const transport = maybeSpill(serialized, {
+    inlineMaxBytes: EXTERNAL_TOOL_INPUT_INLINE_MAX_BYTES,
+    previewBytes: 0,
+    mimetype: 'application/json; charset=utf-8',
+    sessionId: getExternalLifecycleSessionId() || undefined,
+  })
+    .then((spilled) => {
+      if ('inline' in spilled) {
+        broadcastStop({ input: event.input });
+        return;
+      }
+      broadcastStop({ inputRef: spilled });
+    })
+    .catch((err) => {
+      console.error('[external-session] tool input spill failed:', err);
+      // The full input is already persisted server-side. Complete the live
+      // block without re-introducing an oversized SSE payload; history restore
+      // remains authoritative if the local ref could not be written.
+      broadcastStop({});
+    });
+  const tracked = transport.finally(() => {
+    if (pendingExternalToolInputTransports.get(event.toolUseId) === tracked) {
+      pendingExternalToolInputTransports.delete(event.toolUseId);
+    }
+  });
+  pendingExternalToolInputTransports.set(event.toolUseId, tracked);
+  trackInFlightSave(tracked);
+}
+
 function applyExternalToolResult(event: Extract<UnifiedEvent, { kind: 'tool_result' }>): void {
   // Update the matching tool_use block's result + attachments (PRD 0.2.15)
   applyExternalToolResultToContent({
@@ -4499,6 +4575,32 @@ function applyExternalToolResult(event: Extract<UnifiedEvent, { kind: 'tool_resu
     }
   }
   recordRuntimeActivity();
+}
+
+function dispatchExternalToolResult(
+  event: Extract<UnifiedEvent, { kind: 'tool_result' }>,
+): Promise<void> {
+  emitExternalToolEndTrace(event.toolUseId, event.isError);
+  return normalizeExternalToolResultForSse(event)
+    .then((normalized) => {
+      const subParent = getExternalChildToolParent(normalized.toolUseId);
+      if (subParent) applySubagentToolResult(subParent, normalized);
+      else applyExternalToolResult(normalized);
+    })
+    .catch((err) => {
+      console.error('[external-session] tool_result spill failed:', err);
+      const fallback: Extract<UnifiedEvent, { kind: 'tool_result' }> = {
+        ...event,
+        content: event.content.slice(0, 8 * 1024),
+        metadata: {
+          ...(event.metadata ?? {}),
+          status: event.metadata?.status ?? 'large-result-spill-failed',
+        },
+      };
+      const subParent = getExternalChildToolParent(fallback.toolUseId);
+      if (subParent) applySubagentToolResult(subParent, fallback);
+      else applyExternalToolResult(fallback);
+    });
 }
 
 function autoDenyNonInteractiveRequest(event: Extract<UnifiedEvent, { kind: 'permission_request' }>): boolean {
@@ -4656,19 +4758,20 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
     }
 
     case 'tool_use_stop': {
+      const finalToolName = event.input
+        ? replaceExternalToolUseInput(event.toolUseId, event.input)
+        : null;
       // PRD 0.2.27 — sub-agent tool: finalize its nested input, no flat block / stop.
       // Routed by the latched map (consistent with how the start was rendered).
       const parentForStop = getExternalChildToolParent(event.toolUseId);
       if (parentForStop) {
         finalizeSubagentToolInput(parentForStop, event.toolUseId);
+        broadcastExternalToolUseStop(event, parentForStop, finalToolName);
         break;
       }
       // Finalize tool use block from accumulated input
       finalizeExternalToolUseInput(event.toolUseId);
-      broadcast('chat:content-block-stop', {
-        type: 'tool_use',
-        toolId: event.toolUseId,
-      });
+      broadcastExternalToolUseStop(event, undefined, finalToolName);
       break;
     }
 
@@ -4692,33 +4795,16 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       break;
     }
 
-    case 'tool_result':
-      {
-        emitExternalToolEndTrace(event.toolUseId, event.isError);
-        // PRD 0.2.27 — sub-agent tool result nests under its spawn card. Handled
-        // synchronously (no spill/attachments path — matches builtin subagent
-        // results which are plain text). Routed by the latched map.
-        const subParent = getExternalChildToolParent(event.toolUseId);
-        if (subParent) {
-          applySubagentToolResult(subParent, event);
-          break;
-        }
-        const normalized = normalizeExternalToolResultForSse(event)
-          .then(applyExternalToolResult)
-          .catch((err) => {
-            console.error('[external-session] tool_result spill failed:', err);
-            applyExternalToolResult({
-              ...event,
-              content: event.content.slice(0, 8 * 1024),
-              metadata: {
-                ...(event.metadata ?? {}),
-                status: event.metadata?.status ?? 'large-result-spill-failed',
-              },
-            });
-          });
-        trackInFlightSave(normalized);
-      }
+    case 'tool_result': {
+      // Keep the stop→result order when a completion-owned tool input had to
+      // spill before crossing SSE.
+      const pendingInput = pendingExternalToolInputTransports.get(event.toolUseId);
+      const dispatched = pendingInput
+        ? pendingInput.then(() => dispatchExternalToolResult(event))
+        : dispatchExternalToolResult(event);
+      trackInFlightSave(dispatched);
       break;
+    }
 
     case 'tool_attachment_update': {
       // Async fulfillment of a placeholder attachment (PRD 0.2.15 §4.7.1).

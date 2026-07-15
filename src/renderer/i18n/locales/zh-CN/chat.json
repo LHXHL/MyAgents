@@ -601,6 +601,7 @@
         },
         "replaceAll": "替换全部",
         "userModified": "结果已在审批时调整",
+        "boundedPreview": "变更过大，仅展示有界预览",
         "noTextChanges": "没有文本变更",
         "emptyWrittenContent": "写入后的文件内容为空",
         "detailUnavailable": "变更详情不可用",

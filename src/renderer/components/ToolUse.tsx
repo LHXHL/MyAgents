@@ -65,12 +65,13 @@ interface ToolUseProps {
 
 export default function ToolUse({ tool: rawTool }: ToolUseProps) {
   const { t } = useTranslation('chat');
-  // Bash owns its transcript projection, stream parsing, and explicit long-
-  // content budget. Pre-clamping here would corrupt a large SDK JSON wrapper
-  // before stdout/stderr can be separated and create a competing truncation
-  // owner. Other tools retain the legacy generic guard until they migrate to a
-  // specialized bounded projection of their own.
-  const tool = rawTool.name === 'Bash' ? rawTool : clampResult(rawTool, t);
+  // Bash and file-patch tools own specialized, bounded projections. Generic
+  // pre-clamping would corrupt their structured completion wrappers before the
+  // authoritative parser can separate streams or applied file changes.
+  const ownsBoundedProjection = rawTool.name === 'Bash'
+    || rawTool.name === 'Edit'
+    || rawTool.name === 'Write';
+  const tool = ownsBoundedProjection ? rawTool : clampResult(rawTool, t);
   // NOTE: tool.attachments are NOT rendered here. ToolUse lives inside
   // ProcessRow's collapsible body (BlockGroup), so rendering rich-media here
   // buried the player inside the folded tool window (PRD 0.2.30 bug). The

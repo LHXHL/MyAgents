@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -140,6 +140,10 @@ class FakeRuntime implements AgentRuntime {
 
   emitUserMessageAccepted(clientUserMessageId?: string): void {
     this.emit({ kind: 'user_message_accepted', clientUserMessageId });
+  }
+
+  emitForTest(event: Parameters<UnifiedEventCallback>[0]): void {
+    this.emit(event);
   }
 
   async detect() {
@@ -494,6 +498,99 @@ function desktopRequest(sessionId: string, workspacePath: string, text: string):
 }
 
 describe('external SessionEngine with fake runtime', () => {
+  it('spills oversized completed tool input before top-level and nested result events', async () => {
+    const harness = await createHarness([]);
+    const sessionId = 'session-tool-input-spill';
+    const workspacePath = join(harness.home, 'workspace');
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+    });
+    broadcastEvents.length = 0;
+
+    const finalInput = {
+      file_path: '/tmp/large.ts',
+      changes: [{
+        path: '/tmp/large.ts',
+        kind: { type: 'add' },
+        diff: 'x'.repeat(220 * 1024),
+      }],
+    };
+    const nestedResult = `add: /tmp/large.ts\n${'x'.repeat(300 * 1024)}`;
+    harness.runtime.emitForTest({
+      kind: 'tool_use_start',
+      toolUseId: 'top-large',
+      toolName: 'Edit',
+      input: { file_path: '/tmp/large.ts' },
+    });
+    harness.runtime.emitForTest({ kind: 'tool_use_stop', toolUseId: 'top-large', input: finalInput });
+    harness.runtime.emitForTest({ kind: 'tool_result', toolUseId: 'top-large', content: 'top ok' });
+
+    harness.runtime.emitForTest({
+      kind: 'tool_use_start',
+      toolUseId: 'nested-large',
+      toolName: 'Edit',
+      input: { file_path: '/tmp/large.ts' },
+      subAgent: { parentToolUseId: 'parent-tool' },
+    });
+    harness.runtime.emitForTest({ kind: 'tool_use_stop', toolUseId: 'nested-large', input: finalInput });
+    harness.runtime.emitForTest({ kind: 'tool_result', toolUseId: 'nested-large', content: nestedResult });
+
+    await waitFor(
+      () => broadcastEvents.some((item) => item.event === 'chat:tool-result-start')
+        && broadcastEvents.some((item) => item.event === 'chat:subagent-tool-result-complete'),
+      'spilled tool input transports',
+    );
+
+    const topStopIndex = broadcastEvents.findIndex((item) => (
+      item.event === 'chat:content-block-stop'
+      && (item.data as { toolId?: string }).toolId === 'top-large'
+    ));
+    const topResultIndex = broadcastEvents.findIndex((item) => item.event === 'chat:tool-result-start');
+    const nestedStopIndex = broadcastEvents.findIndex((item) => (
+      item.event === 'chat:subagent-tool-use'
+      && (item.data as { finalInput?: boolean }).finalInput === true
+    ));
+    const nestedResultIndex = broadcastEvents.findIndex(
+      (item) => item.event === 'chat:subagent-tool-result-complete',
+    );
+    expect(topStopIndex).toBeGreaterThanOrEqual(0);
+    expect(nestedStopIndex).toBeGreaterThanOrEqual(0);
+    expect(topStopIndex).toBeLessThan(topResultIndex);
+    expect(nestedStopIndex).toBeLessThan(nestedResultIndex);
+
+    const nestedResultPayload = broadcastEvents[nestedResultIndex].data as {
+      content?: string;
+      metadata?: { largeValueRef?: { id?: string; sizeBytes?: number } };
+    };
+    expect(nestedResultPayload.content?.length).toBeLessThanOrEqual(8 * 1024);
+    expect(nestedResultPayload.metadata?.largeValueRef).toMatchObject({
+      sizeBytes: Buffer.byteLength(nestedResult, 'utf-8'),
+    });
+    expect(readFileSync(join(
+      harness.home,
+      '.myagents',
+      'refs',
+      nestedResultPayload.metadata?.largeValueRef?.id ?? '',
+    ), 'utf-8')).toBe(nestedResult);
+
+    for (const index of [topStopIndex, nestedStopIndex]) {
+      const payload = broadcastEvents[index].data as {
+        input?: unknown;
+        inputRef?: { kind?: string; id?: string; preview?: string };
+      };
+      expect(payload.input).toBeUndefined();
+      expect(payload.inputRef).toMatchObject({ kind: 'ref', preview: '' });
+      expect(JSON.stringify(payload).length).toBeLessThan(16 * 1024);
+      const refId = payload.inputRef?.id;
+      expect(refId).toMatch(/^[a-f0-9]{8}$/);
+      expect(JSON.parse(readFileSync(join(harness.home, '.myagents', 'refs', refId!), 'utf-8')))
+        .toEqual(finalInput);
+    }
+  });
+
   it('advances durable activity at external admission and terminal finalization', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'meaningful result', completeDelayMs: 60 },

@@ -121,9 +121,10 @@ export function resolveBashTranscriptModel(tool: ToolUseSimple): BashTranscriptM
   const commandText = rawCommandInspection.hasVisibleContent
     ? rawCommand
     : actionProjection.displayLines.join('\n');
-  const formattedLines = actionProjection.displayLines.length > 0
-    ? actionProjection.displayLines
-    : formatShellCommandForDisplay(commandText);
+  const formattedProjection = actionProjection.displayLines.length > 0
+    ? actionProjection
+    : projectShellCommandForDisplay(commandText);
+  const formattedLines = formattedProjection.displayLines;
   const commandSource = actionProjection.displayLines.length > 0
     ? 'command-actions'
     : formattedLines.length > 1
@@ -149,6 +150,7 @@ export function resolveBashTranscriptModel(tool: ToolUseSimple): BashTranscriptM
         }
       : null,
     hasHiddenCommandContent: actionProjection.hasHiddenContent
+      || formattedProjection.hasHiddenContent
       || (
         actionProjection.displayLines.length === 0
         && rawCommandInspection.hasUnknownContent
@@ -171,11 +173,22 @@ export function resolveBashTranscriptModel(tool: ToolUseSimple): BashTranscriptM
  * unbalanced quotes/nesting, and ambiguous control constructs remain untouched.
  */
 export function formatShellCommandForDisplay(command: string): string[] {
-  if (!command) return [];
-  if (command.length > SHELL_FORMAT_CHARACTER_BUDGET) return [command];
-  if (HEREDOC_PATTERN.test(command)) return [command];
+  return projectShellCommandForDisplay(command).displayLines;
+}
+
+function projectShellCommandForDisplay(
+  command: string,
+): { displayLines: string[]; hasHiddenContent: boolean } {
+  if (!command) return { displayLines: [], hasHiddenContent: false };
+  if (command.length > SHELL_FORMAT_CHARACTER_BUDGET) {
+    return { displayLines: [command], hasHiddenContent: false };
+  }
+  if (HEREDOC_PATTERN.test(command)) {
+    return { displayLines: [command], hasHiddenContent: false };
+  }
 
   const lines: string[] = [];
+  let hasHiddenContent = false;
   let current = '';
   let quote: "'" | '"' | '`' | null = null;
   let escaped = false;
@@ -185,7 +198,11 @@ export function formatShellCommandForDisplay(command: string): string[] {
   let bracketDepth = 0;
 
   const pushBreak = () => {
-    lines.push(current.trimEnd());
+    if (lines.length < BASH_TRANSCRIPT_MAX_LINE_BUDGET) {
+      lines.push(current.trimEnd());
+    } else {
+      hasHiddenContent = true;
+    }
     current = '';
   };
 
@@ -221,7 +238,7 @@ export function formatShellCommandForDisplay(command: string): string[] {
           char === '`'
           || (char === '$' && (next === '(' || next === '{' || next === '['))
         )
-      ) return [command];
+      ) return { displayLines: [command], hasHiddenContent: false };
       current += char;
       if (char === quote) quote = null;
       continue;
@@ -239,7 +256,9 @@ export function formatShellCommandForDisplay(command: string): string[] {
       // Nested shell grammars own their own comment/newline and delimiter
       // semantics. A lightweight display formatter cannot safely decide where
       // the enclosing substitution resumes, so preserve the source whole.
-      if (parenDepth > 0 || braceDepth > 0 || bracketDepth > 0) return [command];
+      if (parenDepth > 0 || braceDepth > 0 || bracketDepth > 0) {
+        return { displayLines: [command], hasHiddenContent: false };
+      }
       inComment = true;
       current += char;
       continue;
@@ -252,11 +271,15 @@ export function formatShellCommandForDisplay(command: string): string[] {
     else if (char === '[') bracketDepth += 1;
     else if (char === ']') bracketDepth -= 1;
 
-    if (parenDepth < 0 || braceDepth < 0 || bracketDepth < 0) return [command];
+    if (parenDepth < 0 || braceDepth < 0 || bracketDepth < 0) {
+      return { displayLines: [command], hasHiddenContent: false };
+    }
 
     const atTopLevel = parenDepth === 0 && braceDepth === 0 && bracketDepth === 0;
     // `>|` is Bash's noclobber override redirection, not a pipeline.
-    if (atTopLevel && char === '|' && previous === '>') return [command];
+    if (atTopLevel && char === '|' && previous === '>') {
+      return { displayLines: [command], hasHiddenContent: false };
+    }
     const twoCharacterOperator = atTopLevel && (
       (char === '&' && next === '&')
       || (char === '|' && next === '|')
@@ -268,7 +291,9 @@ export function formatShellCommandForDisplay(command: string): string[] {
     // `;;`, `;&`, and `;;&` belong to case-clause grammar. Formatting the
     // semicolon alone would visually rewrite the operator, so keep the whole
     // command untouched instead of pretending to parse full Bash grammar.
-    if (atTopLevel && char === ';' && (next === ';' || next === '&')) return [command];
+    if (atTopLevel && char === ';' && (next === ';' || next === '&')) {
+      return { displayLines: [command], hasHiddenContent: false };
+    }
 
     if (twoCharacterOperator) {
       current += `${char}${next}`;
@@ -287,10 +312,19 @@ export function formatShellCommandForDisplay(command: string): string[] {
   }
 
   if (quote || escaped || parenDepth !== 0 || braceDepth !== 0 || bracketDepth !== 0) {
-    return [command];
+    return { displayLines: [command], hasHiddenContent: false };
   }
-  if (current || lines.length === 0) lines.push(current.trimEnd());
-  return lines.filter((line, index) => line.length > 0 || index === lines.length - 1);
+  if (current || lines.length === 0) {
+    if (lines.length < BASH_TRANSCRIPT_MAX_LINE_BUDGET) {
+      lines.push(current.trimEnd());
+    } else if (current) {
+      hasHiddenContent = true;
+    }
+  }
+  return {
+    displayLines: lines.filter((line, index) => line.length > 0 || index === lines.length - 1),
+    hasHiddenContent,
+  };
 }
 
 export function detectBashStreamFormat(text: string): Pick<BashTranscriptStream, 'format' | 'displayText'> {

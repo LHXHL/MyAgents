@@ -52,4 +52,70 @@ describe('ToolUse specialized result ownership', () => {
     expect(container.querySelector('[data-bash-stream="stderr"]')).toHaveTextContent('warning from stderr');
     expect(container.querySelector('[data-bash-stream="combined"]')).not.toBeInTheDocument();
   });
+
+  it('lets Edit parse a >200KB completion instead of showing the stale proposal', () => {
+    const result = JSON.stringify({
+      filePath: '/tmp/large-edit.ts',
+      oldString: 'proposal-old',
+      newString: 'applied-result',
+      originalFile: 'x'.repeat(210_000),
+      structuredPatch: [{
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-proposal-old', '+applied-result'],
+      }],
+      userModified: true,
+      replaceAll: false,
+    });
+    expect(result.length).toBeGreaterThan(200_000);
+
+    const { container } = render(<ToolUse tool={{
+      id: 'large-sdk-edit',
+      name: 'Edit',
+      input: {
+        file_path: '/tmp/large-edit.ts',
+        old_string: 'proposal-old',
+        new_string: 'stale-proposal',
+      },
+      streamIndex: 0,
+      result,
+    }} />);
+
+    expect(container).toHaveTextContent('applied-result');
+    expect(container).not.toHaveTextContent('stale-proposal');
+    expect(container).toHaveTextContent('结果已在审批时调整');
+    expect(container).not.toHaveTextContent('结果过长，已截断');
+  });
+
+  it('does not fall back to stale Edit input when the authoritative result was spilled', () => {
+    const preview = '{"filePath":"/tmp/spilled-edit.ts","originalFile":"' + 'x'.repeat(8_000);
+    const { container } = render(<ToolUse tool={{
+      id: 'spilled-sdk-edit',
+      name: 'Edit',
+      input: {
+        file_path: '/tmp/spilled-edit.ts',
+        old_string: 'proposal-old',
+        new_string: 'stale-proposal',
+      },
+      streamIndex: 0,
+      result: preview,
+      resultMeta: {
+        status: 'completed',
+        largeValueRef: {
+          kind: 'ref',
+          id: 'abcdef1234',
+          sizeBytes: 307_436,
+          mimetype: 'text/plain; charset=utf-8',
+          preview,
+          expiresAt: Date.now() + 60_000,
+        },
+      },
+    }} />);
+
+    expect(container).toHaveTextContent('/tmp/spilled-edit.ts');
+    expect(container).not.toHaveTextContent('stale-proposal');
+    expect(container).toHaveTextContent('变更过大，仅展示有界预览');
+  });
 });

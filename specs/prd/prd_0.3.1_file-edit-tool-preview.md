@@ -1,12 +1,12 @@
 ---
 type: prd
-status: in-progress
+status: implemented
 created: 2026-07-15
-updated: 2026-07-15
+updated: 2026-07-16
 scope: "统一优化 Chat 内 Edit / Write 文件变更与 Bash 命令执行的展开预览：文件变更采用方案 A 纸上校样，Codex 原生多文件按协议顺序纵向分组；Bash 采用单一模拟终端，连贯呈现命令、运行状态、stdout/stderr 与退出元信息。首期不新增复制变更/输出能力，不靠歧义文本猜多文件边界，也不改变工具执行、权限、消息分组、附件管道、工作区 IO 或会话协议。"
 issue: "用户需求：Edit / Write 展开体的代码、增删标记与元信息混在一起；Bash 输入被整段任意折行，输入、输出与状态又拆成两坨纯文本。希望对标 Codex CLI / Desktop 的扫描效率，同时保持 MyAgents 设计系统，并让工具过程本身清楚、可信、好读。"
 research: "specs/playground/file-edit-tool-preview.html"
-review: "pending：文件视觉方向以 playground 方案 A 为定稿，Bash 方向为单一模拟终端；Session 2d6ec8dc-7bad-4c6b-a393-2fcdafb5ebff 已实证单个 Codex Edit input.changes[] 含 4 个有序文件。实现前仍须验证 builtin SDK tool_use_result.structuredPatch、Claude Code/Gemini 实际结果形态，以及 Bash ANSI 输出在各 Runtime 的保真情况。"
+review: "implemented-reviewed：方案 A、单一 Bash 模拟终端与 Codex 单工具多文件纵向分组已交付；requirements / adversarial / architecture 三镜 review 完成。Builtin + Codex 走结构化强验收，Claude Code / Gemini 数据不足时诚实回退；ANSI 无跨 Runtime 保真证据时保持 inert plain text。真实 WKWebView / WebView2 明暗与窄宽视觉矩阵仍是发布门禁。"
 ---
 
 # PRD 0.3.1：Edit / Write / Bash 工具代码与文本预览重构
@@ -194,7 +194,7 @@ ToolUse（按标准 tool name 分派专用 renderer）
    - `FileUpdateChange` 是 `{ path, kind, diff }`；
    - `PatchChangeKind` 支持 add、delete、update，update 可带 `move_path`；
    - `FileChangePatchUpdatedNotification` 同样携带 `changes: Array<FileUpdateChange>`。
-3. `src/server/runtimes/codex.ts` 在 `item/started` 时把整个 `item.changes` 放入归一后的 `Edit.input.changes`，在 `item/completed` 时又用同一数组生成结果；没有把它裁成首文件。
+3. `src/server/runtimes/codex.ts` 在 `item/started` 只发布轻量首路径，避免把可能变化的 started diff 当成最终事实；`item/completed` 通过既有 `tool_use_stop` 边界发布完整 `changes[]`，由现有 external-session 持久化与 renderer stop 事件原子覆盖 started input。没有新增 SSE 事件或 Runtime 专用 UI 协议。
 4. `src/server/__tests__/codex-app-server-protocol.unit.test.ts` 已有双文件 fixture；本机 unified log 也存在单个 `fileChange` 同时记录 2、3、5 个文件的真实事件。
 
 此外，当前 `FilePatchDisplayDescriptor.changes[]`、`summary.files`、`descriptorFromCodexChanges()` 和 `materializeCodexDiff()` 已经是数组模型。用户提供的 Session `2d6ec8dc-7bad-4c6b-a393-2fcdafb5ebff` 又验证了一个真实 `Edit`（tool use id `exec-c2db7ffc-658a-40b5-91a3-70ceb932cbbc`）的 `input.changes[]` 按顺序包含：
@@ -1049,10 +1049,12 @@ npm run lint
 - **范围 / 契约**：单一 terminal surface；`commandActions[]` 优先、quote-aware 安全折行、raw fallback；stdout/stderr 分区；JSON/diff/plain fail-closed；完整状态、长内容、i18n、无复制。
 - **实现进度**：新增 renderer pure leaf `bashTranscript.ts`，把 untouched raw command、presentation-only line breaks、ordered `commandActions[]`、stdout/stderr stream、format 与状态统一投影成 transcript model。安全 formatter 只在 quote / escape / nesting / comment 之外的可信顶层 operator 后断行，heredoc、nested substitution/comment grammar、case compound operator、`>|` 与不平衡输入 fail closed；JSON 只有 native stringify 能证明不改变原文本真值时才 pretty-print，否则保留原字节并只做 syntax token；diff 必须具备可信 hunk/change 证据，ANSI 因无跨 Runtime 保真 fixture 继续作为 inert plain text。SDK wrapper 必须满足当前 `BashOutput` 必填字段且不得含未知字段，否则作为“原始输出”完整保留；external 聚合结果即使 non-zero 也保持 combined，不伪称 stderr。`BashTool` 已改为一个 token 驱动的 terminal surface，内部连续包含 shell/status header、command、独立 stream、empty/running row 与 cwd/duration/PID/exit footer；无 `break-all`、无专用复制动作，background handoff 无输出时也不伪装成持续等待的 PTY。命令与输出共同进入一份导出的 5,000 行 / 512KB hard cap：`commandActions[]` 在 pure model 内即按同一预算投影，model-level `hasHiddenCommandContent` 不依赖可见 command 存在；raw command 同样区分“预算内有可见字符”和“预算外未知内容”，未知只保留 hidden authority、不画空 `$`。视图再公平分配初始 400 行 / 100KB、一次“展示全部”与 Prism 降级；`ToolUse` 不再在 Bash 专用 owner 之前用 legacy 50/200KB clamp 破坏 stream JSON。所有 known-field selection、detector、wrapper/input JSON parse、shell-wrapper/status scan、action inspection、line count 与截断先受 O(1) field check 或全局 byte/prefix budget 约束，不再枚举超大 structured input，也不为 16MB 输入/结果或 500k actions 执行 full `Object.keys/flatMap/join/trim/JSON.parse/split/regex scan`。旧 external history 的 raw `inputJson` 只对非 object-like shell command 启用；以 `{` 开头的 raw 在 JSON 与 Bash brace grammar 之间没有可靠判据，renderer 明确 fail closed、等待 parsed/structured authority，不再维护半套 JSON+Bash parser。正常 Runtime 的结构化 `input.command` 不受影响，brace command 可完整显示。超过严格 wrapper parse budget 的结果不再从正文猜状态，只信既有 `isStopped` / `isError` / `isFailed` / `resultMeta.status` / `exitCode` 权威字段，避免把业务 JSON 冒充执行状态。若后续需要让超大 builtin wrapper 的中断态完全保真，应在上游归一到既有 `ToolResultMeta.status`，不把协议扫描职责下沉到 UI。
 - **验证进度**：pure model 44 项 unit、terminal / ToolUse 24 项 DOM、i18n parity 5 项通过，覆盖 Codex action precedence、quote/subshell/comment/heredoc/compound operator、双引号内 nested command/parameter substitution 与 nested comment fail-closed、stale/partial/object-like raw fail-closed/unambiguous restored raw/structured brace command/oversized input、长空白 prefix 后真实内容与超预算纯空白 hidden-only、structured input 不枚举、5,000-action model hard cap/无可见 command 的 hidden authority/纯空白 action、bounded shell-wrapper detection 及 synthetic EOF lookahead、SDK stdout/stderr/unknown-field/oversize fallback、超大 wrapper 的权威 resultMeta 状态与 external 业务字段不误认、external combined provenance、lossless/bounded JSON/diff/plain、inert ANSI、初始化/运行/完成/失败/停止/中断/超时/后台、background 静态无输出、0ms/metadata、空输出、原始输出、单 surface、无 copy、上游 50KB plain / 200KB JSON clamp 均不破坏 Bash、命令+输出共享预算、multiline action 边界、show-all/hard cap、command/output highlight fallback 与唯一横滚 owner；`typecheck`、scoped ESLint、`git diff --check` 通过。三镜 review 提出的 shell 误拆、nested substitution quote stack/comment、伪 wrapper 丢字段、JSON 数值失真、partial/raw authority、brace/JSON ambiguity、command unbounded Prism/empty prompt、双 truncation owner、footer 第二 scroller、presentation-height 漏算、background PTY 假等待、external stream provenance、pre-window O(full payload)、oversized tail 状态误判/漏判、unbounded input JSON/wrapper regex、synthetic EOF、structured input/action 全量物化与 hidden owner 丢失均已整改；对不可判定的 legacy object-like raw 明确收窄兼容面而非继续扩展 parser。应用内 Browser 无可用实例，真实 WKWebView/WebView2 明暗/窄宽视觉 QA 仍保留为发布门禁。
-- **状态**：实现、定向验证与三镜 review 已完成（requirements / adversarial / architecture 均 PASS），待提交。
+- **状态**：实现、定向验证与三镜 review 已完成（requirements / adversarial / architecture 均 PASS），已提交：`e8ba0ee1`（`feat(chat): redesign bash tool transcript`）。
 
 ### Phase 5：Runtime fixture 与兼容收口
 
-- **phase base**：待 Phase 4 commit 后填写。
+- **phase base**：`e8ba0ee1`。
 - **范围 / 契约**：builtin / Codex 结构化强验收，Claude Code / Gemini 诚实回退；真实去敏 fixture 覆盖恢复、失败和 Codex 多文件一致性；若无法证明 snapshot 等于 applied patch，则关闭多文件增强而非猜测。
-- **状态**：待开始。
+- **实现进度**：核验真实 Session `2d6ec8dc-7bad-4c6b-a393-2fcdafb5ebff` 的 rollout：单个 `fileChange` 完成态成功应用 4 个文件；input 顺序为 `index.html → account.ts → analytics.ts → main.ts`，`patch_apply_end` 对象顺序不同但按 path 比对 diff 完全一致，总计 `+76/-21`。测试使用独立、去敏的 started input 与 applied snapshot，避免用同一 descriptor 自证。Codex started 事件保持 O(1) 轻量，completed 事件在既有 `tool_use_stop` 上提供最终 input；top-level 复用 `chat:content-block-stop`，nested 复用 `chat:subagent-tool-use` upsert，持久化前同样替换 pending input，没有新增事件名、状态 owner 或 React 专属 Runtime 数据。超过 192KiB 的完成 input 复用 server large-value store，并由 renderer 直接读取既有 CORS `/refs/:id`，避免经过 Tauri IPC 再次缓冲；结果正文仍沿用 256KiB spill，top-level / nested 均保留 stop → result 顺序和 nested `resultMeta.largeValueRef`。结构化 Edit/Write 完成结果即使 spill 后只剩 8KiB 预览，也被视为“完成结果权威但正文不可解析”，诚实显示有界 raw preview，绝不回退到陈旧 input 草案。FilePatch renderer 在纯投影层限制 100 files / 5,000 rows / 512KiB，扫描在预算处停止遍历和切片，同时保留真实总文件数、可计算的完整增删统计与有界提示；Bash safe-format 同样在 5,000 segment 前停止物化但继续 fail-closed 校验，raw command 保持不变。
+- **验证进度**：最终定向回归通过：FilePatch shared 31 项、Bash pure model 45 项、Codex protocol 24 项、external content block 4 项、native large-value ref 1 项；Edit / Write / Bash / ToolUse / nested Collab DOM 共 56 项，external mock integration 覆盖 220KiB input 与 300KiB nested result spill。`typecheck`、test classification、scoped ESLint、`git diff --check` 均通过；三镜 requirements / adversarial / architecture 最终均 PASS。完整 DOM pool、web build 与 dependency-cruiser 在前序最终基线通过；完整 unit / 全量 lint 的剩余失败来自工作区内不属于本需求的并发修改，已隔离记录。应用内 Browser 无可用实例，因此真实 macOS WKWebView / Windows WebView2 的明暗、320px / 768px 视觉矩阵仍是发布门禁，不伪报完成。
+- **状态**：已完成，随本阶段最终提交交付。

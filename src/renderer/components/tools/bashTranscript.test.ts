@@ -197,6 +197,15 @@ describe('Bash transcript model', () => {
     expect(model.command?.raw.length).toBeLessThanOrEqual(512 * 1024);
   });
 
+  it('bounds safe-format segments without mutating the raw command', () => {
+    const command = 'x;'.repeat(200_000);
+    const model = resolveBashTranscriptModel(tool({ input: { command } }));
+
+    expect(model.command?.raw).toBe(command);
+    expect(model.command?.displayLines).toHaveLength(5_000);
+    expect(model.hasHiddenCommandContent).toBe(true);
+  });
+
   it('retains hidden command authority when no action was materialized', () => {
     const commandActions = [
       ...Array.from({ length: 5_000 }, () => ({ type: 'unknown' })),

@@ -14,7 +14,10 @@ import type {
   FilePatchRenderChange,
   FilePatchRenderModel,
 } from '../../../shared/toolDisplay/filePatch';
-import { resolveFilePatchRenderModel } from '../../../shared/toolDisplay/filePatch';
+import {
+  FILE_PATCH_MAX_CHARACTER_BUDGET,
+  resolveFilePatchRenderModel,
+} from '../../../shared/toolDisplay/filePatch';
 import { ExpandableResult, FileActionMenuButton } from './utils';
 
 interface FilePatchToolProps {
@@ -62,7 +65,13 @@ export default function FilePatchTool({ tool }: FilePatchToolProps) {
 
   if (!model) {
     if (!tool.result) return null;
-    return <RawFilePatchResult result={tool.result} t={t} />;
+    return (
+      <RawFilePatchResult
+        result={tool.result}
+        hasHiddenContent={tool.resultMeta?.largeValueRef != null}
+        t={t}
+      />
+    );
   }
 
   const moveTargetApplied = !!tool.result
@@ -96,15 +105,29 @@ export default function FilePatchTool({ tool }: FilePatchToolProps) {
   );
 }
 
-function RawFilePatchResult({ result, t }: { result: string; t: ChatTranslator }) {
+function RawFilePatchResult({
+  result,
+  hasHiddenContent: hasSpilledContent,
+  t,
+}: {
+  result: string;
+  hasHiddenContent?: boolean;
+  t: ChatTranslator;
+}) {
+  const hasHiddenContent = hasSpilledContent || result.length > FILE_PATCH_MAX_CHARACTER_BUDGET;
   return (
     <section className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--line)] bg-[var(--paper-elevated)] shadow-[var(--shadow-xs)]">
       <div className="flex items-center gap-2 border-b border-[var(--line-subtle)] px-3 py-2 text-xs font-medium text-[var(--ink-muted)]">
         <Info className="size-3.5" aria-hidden="true" />
         {t('shell.toolChrome.filePatch.rawResult')}
+        {hasHiddenContent && (
+          <span className="ml-auto text-[var(--warning)]">
+            {t('shell.toolChrome.filePatch.boundedPreview')}
+          </span>
+        )}
       </div>
       <ExpandableResult
-        content={result}
+        content={hasHiddenContent ? result.slice(0, FILE_PATCH_MAX_CHARACTER_BUDGET) : result}
         fade="paper-elevated"
         className="px-3 py-2.5 text-[var(--ink-secondary)]"
       />
@@ -126,6 +149,13 @@ function FilePatchNotices({ model, t }: { model: FilePatchRenderModel; t: ChatTr
   }
   if (model.userModified) {
     notices.push({ key: 'user-modified', label: t('shell.toolChrome.filePatch.userModified'), tone: 'info' });
+  }
+  if (model.hasHiddenContent) {
+    notices.push({
+      key: 'bounded-preview',
+      label: t('shell.toolChrome.filePatch.boundedPreview'),
+      tone: 'warning',
+    });
   }
   if (notices.length === 0) return null;
 
@@ -305,7 +335,8 @@ function FilePatchViewport({
   );
   const hiddenRowCount = Math.max(0, change.rows.length - initiallyVisibleRowCount);
   const shouldOfferShowAll = !isExpanded && hiddenRowCount > 0;
-  const isHardTruncated = isExpanded && change.rows.length > MAX_RENDER_ROWS_PER_FILE;
+  const isHardTruncated = isExpanded
+    && (change.rows.length > MAX_RENDER_ROWS_PER_FILE || change.hasHiddenContent === true);
   const language = getPrismLanguage(change.movePath ?? change.path ?? '');
   const canSyntaxHighlight = visibleRows.length <= SYNTAX_HIGHLIGHT_ROW_BUDGET;
   const syntaxSource = canSyntaxHighlight
