@@ -67,6 +67,8 @@ import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
 import { fetchWithGeneralProxy } from './utils/cancellation';
+import { startOAuthMaintenanceForSidecarRole } from './mcp-oauth';
+import { parseSidecarRole, type SidecarRole } from './sidecar-role';
 import {
   aggregateGlobalUsageStats,
   buildSessionDetailedUsageStats,
@@ -1178,7 +1180,14 @@ function systemMaintenanceKindFromCronPayload(payload: CronExecutePayload): Syst
   return normalizeSystemMaintenanceKind(payload.managedKind);
 }
 
-function parseArgs(argv: string[]): { agentDir: string; initialPrompt?: string; port: number; sessionId?: string; noPreWarm?: boolean } {
+function parseArgs(argv: string[]): {
+  agentDir: string;
+  initialPrompt?: string;
+  port: number;
+  sessionId?: string;
+  noPreWarm?: boolean;
+  sidecarRole: SidecarRole;
+} {
   const args = argv.slice(2);
   const getArgValue = (flag: string) => {
     const index = args.indexOf(flag);
@@ -1193,12 +1202,20 @@ function parseArgs(argv: string[]): { agentDir: string; initialPrompt?: string; 
   const port = Number(getArgValue('--port') ?? 3000);
   const sessionId = getArgValue('--session-id') ?? undefined;
   const noPreWarm = args.includes('--no-pre-warm');
+  const sidecarRole = parseSidecarRole(getArgValue('--sidecar-role'));
 
   if (!agentDir) {
     throw new Error('Missing required argument: --agent-dir <path>');
   }
 
-  return { agentDir, initialPrompt, port: Number.isNaN(port) ? 3000 : port, sessionId, noPreWarm };
+  return {
+    agentDir,
+    initialPrompt,
+    port: Number.isNaN(port) ? 3000 : port,
+    sessionId,
+    noPreWarm,
+    sidecarRole,
+  };
 }
 
 /**
@@ -2152,9 +2169,17 @@ function startupBeacon(step: string): void {
 async function main() {
   startupBeacon(`main() entered, pid=${process.pid}, platform=${process.platform}, argv=${process.argv.length} args`);
 
-  const { agentDir, initialPrompt, port, sessionId: initialSessionId, noPreWarm } = parseArgs(process.argv);
+  const {
+    agentDir,
+    initialPrompt,
+    port,
+    sessionId: initialSessionId,
+    noPreWarm,
+    sidecarRole,
+  } = parseArgs(process.argv);
+  process.env.MYAGENTS_SIDECAR_ROLE = sidecarRole;
   const dirDisplay = agentDir.length > 50 ? agentDir.slice(0, 3) + '...' + agentDir.slice(-44) : agentDir;
-  startupBeacon(`args parsed, port=${port}, agentDir=${dirDisplay}`);
+  startupBeacon(`args parsed, port=${port}, role=${sidecarRole}, agentDir=${dirDisplay}`);
 
   let currentAgentDir = await ensureAgentDir(agentDir);
   startupBeacon('ensureAgentDir done');
@@ -9516,6 +9541,8 @@ description: >
       initPhaseStarted = nowMs();
       await initSocksBridgeFromEnv();
       emitDeferredPhaseDone('socks-bridge');
+
+      startOAuthMaintenanceForSidecarRole(sidecarRole);
 
       currentInitPhase = 'sdk-init';
       setDeferredInitPhase(currentInitPhase);

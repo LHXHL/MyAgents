@@ -69,7 +69,7 @@ import { resolveManagedOAuthCredential, type ManagedOAuthPurpose } from './utils
 // SSE `workspace:files-changed`) is removed. The renderer subscribes to
 // the Rust workspace_files watcher (Tauri event
 // `workspace:files-changed:<eventKey>`) instead.
-import { resolveAuthHeaders, onTokenChange, startTokenRefreshScheduler } from './mcp-oauth';
+import { onOAuthCredentialChange, resolveAuthHeaders } from './mcp-oauth';
 // Side-effect imports: each registers itself in the builtin MCP registry
 // gemini-image / edge-tts registered in builtin-mcp-meta.ts.
 
@@ -473,28 +473,26 @@ export const MYAGENTS_CONTEXT_INJECTED_MCP_IDS = [
   'im-bridge-tools',
 ] as const;
 
-// ===== OAuth Token Change Listener =====
-// Register once at module load. Token changes trigger session restart
-// so buildSdkMcpServers() picks up the new/refreshed Authorization headers.
-onTokenChange((serverId, event) => {
+// ===== OAuth credential revision listener =====
+// The Session process observes persisted, non-secret revisions. The Global
+// Sidecar owns proactive refresh; this handler only rebuilds MCP connections
+// that are enabled in this Session.
+onOAuthCredentialChange(({ serverId, status, tokenRevision }) => {
   if (!configState.currentMcpServers?.some(s => s.id === serverId)) return;
 
-  if (event === 'acquired' || event === 'refreshed') {
-    console.log(`[agent] OAuth token ${event} for MCP ${serverId}, deferring restart to pre-warm debounce`);
-    if (lifecycleState.query) scheduleDeferredRestart('oauth');
-    resetPreWarmFailCount();
-    if (!lifecycleState.processing || lifecycleState.preWarming) {
-      schedulePreWarm();
-    }
+  console.log(
+    `[agent] OAuth credential revision=${tokenRevision} status=${status} for MCP ${serverId}, rebuilding connection`,
+  );
+  if (lifecycleState.query) scheduleDeferredRestart('oauth');
+  resetPreWarmFailCount();
+  if (!lifecycleState.processing || lifecycleState.preWarming) {
+    schedulePreWarm();
   }
 
-  if (event === 'expired' || event === 'revoked') {
+  if (status === 'expired' || status === 'missing') {
     broadcast('mcp:oauth-expired', { serverId });
   }
 });
-
-// Start background token refresh scheduler (checks every 60s, proactive refresh)
-startTokenRefreshScheduler();
 
 // Max length for individual string values in SDK message logs.
 // Base64 images can be several MB; truncate to keep logs readable.

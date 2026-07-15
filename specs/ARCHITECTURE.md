@@ -287,6 +287,22 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 
 冷启动性能详见 `tech_docs/sidecar_cold_start.md`。
 
+#### Sidecar process role 与 MCP OAuth credential owner
+
+Rust 启动 Node Sidecar 时必须显式传 `--sidecar-role global|session`；`--no-pre-warm` 只控制启动行为，不能再被用来推断进程职责。两条 Session spawn path（Tab/global path 的非 global 分支与 `session_lifecycle.rs`）都传 `session`，应用级 Global Sidecar 传 `global`。Global 身份只由 canonical `GLOBAL_SIDECAR_ID` 定义：Global ID 必须没有 `agent_dir`，其它 ID 必须带 `agent_dir`；spawn 边界在产生任何副作用前拒绝两种错配，防止绕过 manager singleton 创建第二个 Global owner。
+
+自定义 MCP 的 OAuth state 是应用级共享事实，持久化在 `~/.myagents/mcp_oauth_state.json`：
+
+- Global Sidecar 是唯一 proactive refresh scheduler owner；使用现有 per-server refresh lock 与 state-store write lock，不能让每个 Session 各自启动 scheduler。
+- credential 写入必须经 `setServerToken()` / `clearServerToken()`；refresh response 必须经同一 owner 的 `setServerTokenIfRevision()` 做锁内 CAS，防止网络请求期间发生的 revoke / reauthorize 被旧响应覆盖。token 与非敏感单调 `tokenRevision` 同一原子写入；写盘失败必须向上传播，不能报告 refresh 成功或继续使用未持久化的 rotating token。
+- Session Sidecar 在 `initializeAgent()` 前 baseline 全 store，并用单个 unref observer 监听 `{tokenRevision, presence/status, expiresAt}`；config push 不拥有/推进这条 baseline。事件进入 `agent-session.ts` 后才按本 Session 启用的 MCP 过滤，并复用既有 deferred OAuth restart。
+- Global scheduler 只有一个 deadline timer，并保留有界 store rescan，以发现其它 Session inline refresh/authorization 后写入的更早短 TTL credential；不为此新增 IPC、renderer 中转、第二 scheduler 或文件 watcher。
+- Refresh outcome 必须区分 `refreshed_by_self`、`observed_after_lock` 与 `discarded_after_conflict`：分别表示本进程 POST 成功且提交、未发 POST 而复用其它进程结果、POST 成功但因并发 revoke/reauthorize 被 CAS 丢弃。日志必须同时记录非敏感 `http` / `commit` 维度，不得包含 access token、refresh token 或 Authorization header。
+
+这套 owner 只适用于**自定义 MCP OAuth**。Anthropic/Grok subscription Provider 的 credential owner 规则仍分别由 `tech_docs/third_party_providers.md` 定义，不能混用。
+
+当前边界不宣称 `authorizeServer()` 的 discovery / dynamic registration / manual config preparation 已成为完整事务：callback flow 的 exact identity 与 token durable commit 已闭环，但 pending authorization metadata 与 active credential context 的 mode/URL authority 仍缺少原子提交模型。并发 auto↔manual 或不同 URL preparation 属 PRD H6 HOLD；在定义 winner context 前禁止用零散 `clear manualConfig/registration` 补丁处理。
+
 ### 2. Multi-Tab 前端 (`src/renderer/context/`)
 
 | 组件 | 职责 |

@@ -2,18 +2,29 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const oauth = vi.hoisted(() => {
   let release!: (headers: Record<string, string>) => void;
+  let credentialListener: ((change: {
+    serverId: string;
+    tokenRevision: number;
+    status: 'available' | 'expired' | 'missing';
+  }) => void) | undefined;
   return {
     resolveAuthHeaders: vi.fn(() => new Promise<Record<string, string>>((resolve) => {
       release = resolve;
     })),
     release: (headers: Record<string, string> = {}) => release(headers),
+    onOAuthCredentialChange: vi.fn((listener: typeof credentialListener) => {
+      credentialListener = listener;
+      return () => { credentialListener = undefined; };
+    }),
+    emitCredentialChange: (change: Parameters<NonNullable<typeof credentialListener>>[0]) => {
+      credentialListener?.(change);
+    },
   };
 });
 
 vi.mock('../mcp-oauth', () => ({
   resolveAuthHeaders: oauth.resolveAuthHeaders,
-  onTokenChange: vi.fn(),
-  startTokenRefreshScheduler: vi.fn(),
+  onOAuthCredentialChange: oauth.onOAuthCredentialChange,
 }));
 
 import {
@@ -97,5 +108,52 @@ describe('live Query MCP mutation/promotion ordering', () => {
     expect(setMcpServers).not.toHaveBeenCalled();
     expect(getQueryMcpReadinessOwner()).toBeNull();
     expect(snapshotConfig().deferredRestartReasons).toContain('mcp');
+  });
+
+  it('ignores disabled-server revision events but reads the latest credential when later enabled', async () => {
+    const setMcpServers = vi.fn(async () => ({
+      added: ['later-enabled'],
+      removed: [],
+      errors: {},
+    }));
+    const query = {
+      setMcpServers,
+      interrupt: vi.fn(async () => undefined),
+      close: vi.fn(),
+    } as never;
+    setQuerySession(query);
+    setFrozenSdkMcpFingerprint('old');
+    setQueryMcpReadinessOwner({
+      query,
+      fingerprint: 'old',
+      requiredServerIds: ['old'],
+    });
+
+    oauth.emitCredentialChange({
+      serverId: 'later-enabled',
+      tokenRevision: 2,
+      status: 'available',
+    });
+    expect(snapshotConfig().deferredRestartReasons).toEqual([]);
+
+    setCurrentMcpServers([{
+      id: 'later-enabled',
+      name: 'later-enabled',
+      isBuiltin: false,
+      type: 'http',
+      url: 'https://example.com/mcp',
+      command: '',
+      args: [],
+    }]);
+    const synchronization = ensureSdkMcpInSync();
+    await vi.waitFor(() => expect(oauth.resolveAuthHeaders).toHaveBeenCalledOnce());
+    oauth.release({ Authorization: 'Bearer latest-persisted-token' });
+    await synchronization;
+
+    expect(setMcpServers).toHaveBeenCalledWith({
+      'later-enabled': expect.objectContaining({
+        headers: { Authorization: 'Bearer latest-persisted-token' },
+      }),
+    });
   });
 });
