@@ -23,6 +23,7 @@ let lastRuntimeSessionId = '';
 let externalSessionState: ExternalSessionState = 'idle';
 let externalSystemInitPayload: ExternalSystemInitPayload | null = null;
 let isPrewarmingSession = false;
+let liveRevision = 0;
 
 export function resetExternalLifecycleState(): void {
   activeProcess = null;
@@ -37,6 +38,16 @@ export function resetExternalLifecycleState(): void {
   externalSystemInitPayload = null;
   externalSessionState = 'idle';
   isPrewarmingSession = false;
+  liveRevision = 0;
+}
+
+export function nextExternalLiveRevision(): number {
+  liveRevision += 1;
+  return liveRevision;
+}
+
+export function getExternalLiveRevision(): number {
+  return liveRevision;
 }
 
 export async function awaitExternalLifecycleStarting(): Promise<void> {
@@ -114,6 +125,9 @@ export function bindExternalSessionContext(input: {
   analyticsSource?: TurnAnalyticsSource;
   analyticsOrigin?: SessionOrigin | null;
 }): void {
+  if (lastSessionId !== input.sessionId) {
+    liveRevision = 0;
+  }
   lastSessionId = input.sessionId;
   lastWorkspacePath = input.workspacePath;
   lastScenario = input.scenario;

@@ -216,4 +216,25 @@ describe('SseConnection — listener cleanup invariants', () => {
 
         await conn.disconnect();
     });
+
+    it('unwraps revisioned payloads while preserving connection ordering metadata', async () => {
+        const conn = new SseConnection('test-tab');
+        const handler = vi.fn();
+        conn.setEventHandler(handler);
+        await conn.connect();
+
+        (conn as unknown as { handleSseEvent(eventName: string, data: string): void })
+            .handleSseEvent('chat:message-chunk', JSON.stringify({
+                sessionId: 'session-a',
+                liveRevision: 9,
+                payload: 'hello',
+            }));
+
+        expect(handler).toHaveBeenCalledWith('chat:message-chunk', 'hello', {
+            connectionGeneration: 1,
+            sessionId: 'session-a',
+            liveRevision: 9,
+        });
+        await conn.disconnect();
+    });
 });

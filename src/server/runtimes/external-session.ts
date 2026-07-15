@@ -5,7 +5,8 @@
 // the external CLI handles all SDK interaction, tool execution, and session persistence.
 // We only need to: spawn process, relay events, and handle permission delegation.
 
-import { broadcast } from '../sse';
+import { broadcast as broadcastSse, broadcastLive, flushPendingLiveEvents } from '../sse';
+import { participatesInLiveRestore } from '../../shared/liveRevision';
 import { killWithEscalation } from './utils/kill-with-escalation';
 import { InactivityWatchdog } from '../utils/inactivity-watchdog';
 import { buildSystemPromptAppend } from '../system-prompt';
@@ -153,7 +154,7 @@ import {
 import {
   awaitExternalLifecycleStarting,
   beginExternalLifecycleStart,
-  bindExternalSessionContext,
+  bindExternalSessionContext as bindExternalLifecycleSessionContext,
   buildExternalSystemInitPayload,
   clearExternalActiveRuntimeProcess,
   clearExternalPrewarmingSession,
@@ -171,9 +172,11 @@ import {
   getExternalRuntimeSessionId,
   getExternalSystemInitPayloadSnapshot,
   getExternalUserRequestedStop,
+  getExternalLiveRevision,
   isExternalLifecycleRunning,
   isExternalLifecycleStarting,
   markExternalUserRequestedStop,
+  nextExternalLiveRevision,
   resetExternalUserRequestedStop,
   resetExternalLifecycleState,
   setExternalActiveProcess,
@@ -244,6 +247,7 @@ import {
   appendExternalSubagentTraceDelta as appendExternalSubagentTraceDeltaToContent,
   appendExternalPendingText,
   appendExternalPendingThinkingText,
+  appendExternalToolResultDeltaToContent,
   appendExternalToolInputDelta,
   applyExternalReplayedToolResultToContent,
   applyExternalSubagentAttachmentUpdate,
@@ -292,9 +296,7 @@ import {
 } from './external-session/transcript-persistence';
 import {
   addExternalTurnAttachmentHint,
-  clearExternalAskUserQuestions,
   clearExternalInboxMetaOnRejection,
-  clearExternalInteractiveRequests,
   clearExternalPermissionSuggestions,
   consumeExternalPermissionSuggestions,
   deleteExternalAskUserQuestion,
@@ -554,6 +556,31 @@ function setExternalSessionState(state: ExternalSessionState): void {
   broadcast('chat:status', { sessionState: state });
 }
 
+function bindExternalSessionContext(
+  input: Parameters<typeof bindExternalLifecycleSessionContext>[0],
+): void {
+  if (getExternalLifecycleSessionId() !== input.sessionId) {
+    flushPendingLiveEvents();
+  }
+  bindExternalLifecycleSessionContext(input);
+}
+
+function broadcast(event: string, data: unknown): void {
+  const payloadSessionId = data && typeof data === 'object'
+    && typeof (data as { sessionId?: unknown }).sessionId === 'string'
+    ? (data as { sessionId: string }).sessionId
+    : '';
+  const sessionId = payloadSessionId || getExternalLifecycleSessionId();
+  if (sessionId && participatesInLiveRestore(event, data)) {
+    broadcastLive(event, data, {
+      sessionId,
+      nextRevision: nextExternalLiveRevision,
+    });
+    return;
+  }
+  broadcastSse(event, data);
+}
+
 type ExternalActivePair = NonNullable<ReturnType<typeof getExternalActivePair>>;
 type SteerCapableActivePair = {
   runtime: ExternalActivePair['runtime'] & {
@@ -588,8 +615,6 @@ function resetModuleState(): void {
   currentTurnAnalyticsOrigin = null;
   clearExternalPermissionSuggestions();
   drainPendingInteractiveRequestsAsExpired('reset');
-  clearExternalAskUserQuestions();
-  clearExternalInteractiveRequests();
   resetExternalInteractiveState();
   earlyBroadcastedUserMsg = null;
   pendingExternalSessionBirth = null;
@@ -655,6 +680,9 @@ function drainPendingInteractiveRequestsAsExpired(reason: 'stop' | 'error' | 're
   // channels stay builtin-only. Filtering by entry.type keeps the broadcast
   // honest if a future runtime starts using those interactive types.
   for (const [requestId, entry] of getExternalInteractiveRequestEntries()) {
+    deleteExternalAskUserQuestion(requestId);
+    deleteExternalInteractiveRequest(requestId);
+    consumeExternalPermissionSuggestions(requestId);
     broadcastExternalInteractiveExpired(requestId, entry, reason);
   }
 }
@@ -1764,12 +1792,44 @@ export function getExternalLiveAssistantMessage(): SessionMessage | null {
   if (!content) {
     return null;
   }
+  const turnStartTime = getExternalTurnStartTime() || Date.now();
   return {
-    id: `external-live-${lifecycleSessionId}`,
+    id: `external-live-${lifecycleSessionId}-${turnStartTime}`,
     role: 'assistant',
     content,
-    timestamp: new Date(getExternalTurnStartTime() || Date.now()).toISOString(),
+    timestamp: new Date(turnStartTime).toISOString(),
   };
+}
+
+function finalizeExternalLiveAssistantInMemory(): void {
+  const message = getExternalLiveAssistantMessage();
+  if (!message) return;
+  const existing = getExternalSessionMessagesSnapshot().some(candidate => candidate.id === message.id);
+  if (!existing) pushExternalSessionMessage(message);
+}
+
+export function getExternalLiveSessionSnapshot(targetSessionId: string): {
+  snapshotRevision: number;
+  inMemoryMessages: SessionMessage[];
+  liveStreamingMessage: SessionMessage | null;
+  liveSessionState: ExternalSessionState;
+  pendingInteractiveRequests: ExternalPendingInteractiveRequest[];
+} | null {
+  if (targetSessionId !== getCurrentExternalBoundSessionId()) return null;
+  flushPendingLiveEvents();
+  const inMemoryMessages = getExternalTranscriptSessionId() === targetSessionId
+    ? getExternalSessionMessagesSnapshot()
+    : [];
+  if (earlyBroadcastedUserMsg && !inMemoryMessages.some(message => message.id === earlyBroadcastedUserMsg?.id)) {
+    inMemoryMessages.push(earlyBroadcastedUserMsg);
+  }
+  return structuredClone({
+    snapshotRevision: getExternalLiveRevision(),
+    inMemoryMessages,
+    liveStreamingMessage: getExternalLiveAssistantMessage(),
+    liveSessionState: getExternalLifecycleState(),
+    pendingInteractiveRequests: getExternalInteractiveRequestsSnapshot(),
+  });
 }
 
 /**
@@ -2560,16 +2620,15 @@ export async function sendExternalMessage(
       timestamp: new Date().toISOString(),
       attachments: userAttachments,
     };
-    if (context?.beforeDispatch) {
-      surfaceUserMessageAfterGuard = true;
-    } else {
-      broadcast('chat:message-replay', createLiveUserMessageReplay(
-        context?.sessionId ?? getExternalLifecycleSessionId(),
-        earlyUserMsg,
-      ));
-    }
+    surfaceUserMessageAfterGuard = Boolean(context?.beforeDispatch);
   }
   earlyBroadcastedUserMsg = earlyUserMsg;
+  if (!preBroadcasted && !surfaceUserMessageAfterGuard) {
+    broadcast('chat:message-replay', createLiveUserMessageReplay(
+      context?.sessionId ?? getExternalLifecycleSessionId(),
+      earlyUserMsg,
+    ));
+  }
 
   // The promotion is the pre-dispatch identity for guarded Task/Goal turns.
   // Bind it before any lifecycle/busy wait so an exact queueId stop can cancel
@@ -3242,6 +3301,7 @@ export function enqueueExternalSendForDesktop(
     attachments: sessionMessageAttachmentsFromImages(context.sessionId, images),
   };
   if (!context.beforeDispatch) {
+    earlyBroadcastedUserMsg = userMsg;
     broadcast('chat:message-replay', createLiveUserMessageReplay(context.sessionId, userMsg));
   }
 
@@ -3472,9 +3532,9 @@ export async function respondExternalPermission(
   const suggestions = getExternalPermissionSuggestions(requestId);
   console.log(`[external-session] Permission response: ${decision} for requestId=${requestId}${suggestions?.length ? `, with ${suggestions.length} suggestion(s)` : ''}`);
   await active.runtime.respondPermission(active.process, requestId, decision, reason, suggestions);
-  broadcastExternalInteractiveExpired(requestId, pending, 'resolved');
   consumeExternalPermissionSuggestions(requestId);
   deleteExternalInteractiveRequest(requestId);
+  broadcastExternalInteractiveExpired(requestId, pending, 'resolved');
   return true;
 }
 
@@ -3540,9 +3600,10 @@ export async function respondExternalAskUserQuestion(
     }
     // Delete only after successful delivery — if respondPermission throws
     // (e.g. stdin closed mid-write) the caller can retry.
-    broadcastExternalInteractiveExpired(requestId, getExternalInteractiveRequest(requestId), 'resolved');
+    const interactiveRequest = getExternalInteractiveRequest(requestId);
     deleteExternalAskUserQuestion(requestId);
     deleteExternalInteractiveRequest(requestId);
+    broadcastExternalInteractiveExpired(requestId, interactiveRequest, 'resolved');
     return true;
   } catch (err) {
     console.error(`[external-session] respondPermission failed for requestId=${requestId}:`, err);
@@ -3718,6 +3779,8 @@ export async function stopExternalSession(options?: {
     currentExternalTurnTextSnapshot(),
     consumeExternalTurnMetrics(),
   );
+  finalizeExternalLiveAssistantInMemory();
+  resetTurnAccumulators();
   clearExternalActiveRuntimeProcess();
   activeExternalEnvPolicy = undefined;
   // Any pre-warm that raced with a stop is no longer relevant. Keeping the
@@ -3725,8 +3788,6 @@ export async function stopExternalSession(options?: {
   clearExternalPrewarmingSession();
   clearExternalPermissionSuggestions();
   drainPendingInteractiveRequestsAsExpired('stop');
-  clearExternalAskUserQuestions();
-  clearExternalInteractiveRequests();
   setExternalSystemInitPayload(null);
   if (!isConfigRestart) {
     fireExternalImCallback('error', 'Session stopped');
@@ -3749,6 +3810,7 @@ export async function stopExternalSession(options?: {
     clearPendingRealtimeSteeredUserMessagesWithCancellation();
   }
   setExternalSessionState('idle');
+  if (!isConfigRestart) broadcast('chat:message-stopped', null);
   if (preserveQueue && !isConfigRestart) {
     setTimeout(drainExternalQueueAfterTurn, 0);
   }
@@ -4452,9 +4514,9 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         break;
       }
       emitExternalFirstDeltaTrace(event.text);
-      broadcast('chat:message-chunk', event.text);
       appendExternalAssistantText(event.text);
       appendExternalPendingText(event.text);
+      broadcast('chat:message-chunk', event.text);
       fireExternalImCallback('delta', event.text);
       break;
 
@@ -4572,6 +4634,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
 
     case 'tool_result_delta': {
       const parentForResultDelta = getExternalChildToolParent(event.toolUseId);
+      appendExternalToolResultDeltaToContent(event.toolUseId, event.delta);
       if (parentForResultDelta) {
         broadcast('chat:subagent-tool-result-delta', {
           parentToolUseId: parentForResultDelta,
@@ -4708,10 +4771,10 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
 
     case 'interactive_request_resolved': {
       const pending = getExternalInteractiveRequest(event.requestId);
-      broadcastExternalInteractiveExpired(event.requestId, pending, 'resolved');
       deleteExternalAskUserQuestion(event.requestId);
       deleteExternalInteractiveRequest(event.requestId);
       consumeExternalPermissionSuggestions(event.requestId);
+      broadcastExternalInteractiveExpired(event.requestId, pending, 'resolved');
       recordRuntimeActivity();
       break;
     }
@@ -4906,11 +4969,8 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         );
         if (turnPlan.kind === 'defer-to-stop') {
           console.log('[external-session] turn_complete arrived during intentional stop; deferring idle/drain cleanup to stopExternalSession');
-          broadcast('chat:message-stopped', null);
           clearExternalPermissionSuggestions();
           drainPendingInteractiveRequestsAsExpired('stop');
-          clearExternalAskUserQuestions();
-          clearExternalInteractiveRequests();
           break;
         }
 
@@ -4923,9 +4983,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
             error: message,
           },
         });
-        if (cleanup === 'stopped') {
-          broadcast('chat:message-stopped', null);
-        } else {
+        if (cleanup !== 'stopped') {
           broadcast('chat:agent-error', { message });
           broadcast('chat:message-error', message);
         }
@@ -4942,12 +5000,12 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
           errorCode: 'turn_failed',
           errorMessage: message,
         });
+        finalizeExternalLiveAssistantInMemory();
         resetTurnAccumulators();
         clearExternalPermissionSuggestions();
         drainPendingInteractiveRequestsAsExpired('error');
-        clearExternalAskUserQuestions();
-        clearExternalInteractiveRequests();
         setExternalSessionState('idle');
+        if (cleanup === 'stopped') broadcast('chat:message-stopped', null);
         setTimeout(() => drainExternalQueueAfterTurn(), 0);
         clearExternalTurnTrace();
         break;
@@ -4999,9 +5057,9 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         // without streaming text_delta events. Only broadcast if NO turn completed
         // (turnCompleted means text was already streamed + persisted normally).
         if (event.result && sessionPlan.shouldFinalize && !getExternalAssistantText().trim()) {
-          broadcast('chat:message-chunk', event.result);
           appendExternalAssistantText(event.result);
           appendExternalPendingText(event.result);
+          broadcast('chat:message-chunk', event.result);
         }
         // Only finalize if turn_complete didn't already (Codex emits turn_complete; CC uses session_complete only)
         if (sessionPlan.shouldFinalize) {
@@ -5056,6 +5114,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
             status: 'error',
             detail: { source: 'session_complete', error: errorMessage },
           });
+          if (!isExternalTurnFinalizationInFlight()) finalizeExternalLiveAssistantInMemory();
           broadcast('chat:agent-error', { message: errorMessage });
           broadcast('chat:message-error', errorMessage);
           fireExternalImCallback('error', errorMessage);
@@ -5071,8 +5130,6 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       }
       clearExternalPermissionSuggestions();
       drainPendingInteractiveRequestsAsExpired('error');  // PRD #131 — runtime crash/watchdog kill: clear stale modals
-      clearExternalAskUserQuestions();
-      clearExternalInteractiveRequests();
       setExternalSystemInitPayload(null);
       // Only set idle synchronously when persistTurnResult is NOT going to
       // do it itself. Otherwise we'd race chat:status idle ahead of

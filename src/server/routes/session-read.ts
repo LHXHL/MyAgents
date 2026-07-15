@@ -133,16 +133,24 @@ function handleSessionDetails(sessionId: string, url: URL): Response {
 
   if (!session) {
     if (overlay.isActive) {
+      const { messages, totalCount, hasMoreBefore } = paginateMessages(
+        overlay.inMemoryMessages ?? [],
+        url,
+      );
       return jsonResponse({
         success: true,
         session: {
           id: sessionId,
           runtime: overlay.runtime ?? engine.getRuntimeIdentity().runtime,
-          messages: [],
-          liveStreamingMessage: null,
+          messages: shrinkSessionMessagesForClient(messages),
+          snapshotRevision: overlay.snapshotRevision ?? 0,
+          liveStreamingMessage: overlay.liveStreamingMessage
+            ? shrinkSessionMessageForClient(overlay.liveStreamingMessage)
+            : null,
           liveSessionState: overlay.liveSessionState,
-          totalCount: 0,
-          hasMoreBefore: false,
+          pendingInteractiveRequests: overlay.pendingInteractiveRequests ?? [],
+          totalCount,
+          hasMoreBefore,
         },
       });
     }
@@ -163,7 +171,9 @@ function handleSessionDetails(sessionId: string, url: URL): Response {
   const sessionWithPreview = {
     ...redactSessionMetadata(session as SessionMetadata),
     liveStreamingMessage,
+    snapshotRevision: overlay.snapshotRevision ?? 0,
     liveSessionState: overlay.liveSessionState,
+    pendingInteractiveRequests: overlay.pendingInteractiveRequests ?? [],
     messages: shrinkSessionMessagesForClient(messages),
     totalCount,
     hasMoreBefore,

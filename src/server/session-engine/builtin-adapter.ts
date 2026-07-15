@@ -10,6 +10,7 @@ import {
   getAndClearLastAgentError,
   getAgents,
   getAgentState,
+  getBuiltinLiveSessionSnapshot,
   getLastBuiltinAssistantText,
   getMcpServers,
   getMessages,
@@ -69,7 +70,6 @@ import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 import { getSessionData } from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
 import { shrinkReplayContentForClient } from '../utils/session-message-preview';
-import type { SessionMessage } from '../types/session';
 
 function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   if (timeoutMs <= 0) return Promise.resolve(null);
@@ -150,28 +150,6 @@ function getBuiltinWorkspacePath(): string | null {
   return typeof state.agentDir === 'string' && state.agentDir.length > 0
     ? state.agentDir
     : null;
-}
-
-function messageWireToSessionMessage(message: MessageWire): SessionMessage {
-  return {
-    id: message.id,
-    role: message.role,
-    content: typeof message.content === 'string'
-      ? message.content
-      : JSON.stringify(stripPlaywrightResults(message.content)),
-    timestamp: message.timestamp,
-    sdkUuid: message.sdkUuid,
-    attachments: message.attachments?.map(a => ({
-      id: a.id,
-      name: a.name,
-      mimeType: a.mimeType,
-      path: a.savedPath ?? a.relativePath ?? '',
-    })),
-    metadata: message.metadata,
-    usage: message.usage,
-    toolCount: message.toolCount,
-    durationMs: message.durationMs,
-  };
 }
 
 function messageWireToReplayMessage(message: MessageWire): SessionEngineReplayMessage {
@@ -286,24 +264,14 @@ export function createBuiltinSessionEngine(): SessionEngine {
     },
 
     getLiveSessionOverlay(sessionId: string) {
-      if (sessionId !== getSessionId()) {
+      const snapshot = getBuiltinLiveSessionSnapshot(sessionId);
+      if (!snapshot) {
         return { isActive: false };
       }
-      const streamingAssistantId = getStreamingAssistantId();
-      const messages = getMessages();
-      const liveStreamingMessage = streamingAssistantId
-        ? messages.find(message => message.id === streamingAssistantId)
-        : undefined;
       return {
         isActive: true,
         runtime: 'builtin',
-        inMemoryMessages: messages
-          .filter(message => message.id !== streamingAssistantId)
-          .map(messageWireToSessionMessage),
-        liveStreamingMessage: liveStreamingMessage
-          ? messageWireToSessionMessage(liveStreamingMessage)
-          : null,
-        liveSessionState: getAgentState().sessionState,
+        ...snapshot,
       };
     },
 

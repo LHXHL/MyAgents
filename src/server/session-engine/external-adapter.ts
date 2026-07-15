@@ -19,7 +19,7 @@ import {
   getActiveRuntimeSource,
   getActiveRuntimeType,
   getCurrentBoundSessionId,
-  getExternalLiveAssistantMessage,
+  getExternalLiveSessionSnapshot,
   getExternalPendingInteractiveRequests,
   getExternalQueueStatus,
   getExternalSessionId,
@@ -64,7 +64,6 @@ import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 import { getEffectiveOfficialToolIdsForSession } from '../utils/admin-config';
 import { getSessionData, updateSessionMetadata } from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
-import type { SessionMessage } from '../types/session';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import {
   getProcessProxyEnvKey,
@@ -122,21 +121,6 @@ function normalizeExternalRuntimeSource(
 ): RuntimeSource | undefined {
   if (runtime === 'builtin') return undefined;
   return runtimeSource ?? 'system-cli';
-}
-
-function externalLiveMessageToSessionMessage(message: SessionMessage): SessionMessage {
-  return {
-    id: message.id,
-    role: message.role,
-    content: message.content,
-    timestamp: message.timestamp,
-    sdkUuid: message.sdkUuid,
-    attachments: message.attachments,
-    metadata: message.metadata,
-    usage: message.usage,
-    toolCount: message.toolCount,
-    durationMs: message.durationMs,
-  };
 }
 
 type ExternalFreezeSnapshotPatch = NonNullable<
@@ -252,15 +236,14 @@ export function createExternalSessionEngine(): SessionEngine {
     },
 
     getLiveSessionOverlay(sessionId: string) {
-      if (sessionId !== getRuntimeSessionId()) {
+      const snapshot = getExternalLiveSessionSnapshot(sessionId);
+      if (!snapshot) {
         return { isActive: false };
       }
-      const liveMessage = getExternalLiveAssistantMessage();
       return {
         isActive: true,
         runtime: getActiveRuntimeType(),
-        liveStreamingMessage: liveMessage ? externalLiveMessageToSessionMessage(liveMessage) : null,
-        liveSessionState: getExternalSessionState(),
+        ...snapshot,
       };
     },
 

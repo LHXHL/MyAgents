@@ -265,9 +265,11 @@ export type SessionEngineMaterializePendingResult = {
 export type SessionEngineLiveOverlay = {
   isActive: boolean;
   runtime?: RuntimeType;
+  snapshotRevision?: number;
   liveStreamingMessage?: SessionMessage | null;
   liveSessionState?: string;
   inMemoryMessages?: SessionMessage[];
+  pendingInteractiveRequests?: SessionEnginePendingInteractiveRequest[];
 };
 
 export type CapabilityOperationResult = {

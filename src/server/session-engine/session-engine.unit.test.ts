@@ -49,6 +49,7 @@ const mocks = vi.hoisted(() => {
     getAndClearLastAgentError: vi.fn<() => string | null>(() => null),
     getCurrentTurnIdentity: vi.fn(() => state.builtinTurnIdentity),
     getAgentState: vi.fn<() => Record<string, unknown>>(() => ({ sessionState: 'idle', agentDir: '/workspace' })),
+    getBuiltinLiveSessionSnapshot: vi.fn<() => Record<string, unknown> | null>(() => null),
     getAgents: vi.fn(() => ({ helper: { name: 'helper' } })),
     getLastBuiltinAssistantText: vi.fn(() => 'builtin latest'),
     getMcpServers: vi.fn(() => [{ id: 'fs' }]),
@@ -110,6 +111,7 @@ const mocks = vi.hoisted(() => {
     getActiveRuntimeType: vi.fn(() => 'codex'),
     getCurrentBoundSessionId: vi.fn<() => string | null>(() => null),
     getExternalLiveAssistantMessage: vi.fn<() => { id: string; role: 'user' | 'assistant'; content: string; timestamp: string } | null>(() => null),
+    getExternalLiveSessionSnapshot: vi.fn<() => Record<string, unknown> | null>(() => null),
     getExternalCurrentTurnIdentity: vi.fn(() => state.externalTurnIdentity),
     getExternalQueueStatus: vi.fn(() => [{ id: 'xq1', messagePreview: 'hello' }]),
     getExternalPendingInteractiveRequests: vi.fn(() => []),
@@ -209,6 +211,7 @@ vi.mock('../agent-session', () => ({
   getAndClearLastAgentError: mocks.getAndClearLastAgentError,
   getCurrentTurnIdentity: mocks.getCurrentTurnIdentity,
   getAgentState: mocks.getAgentState,
+  getBuiltinLiveSessionSnapshot: mocks.getBuiltinLiveSessionSnapshot,
   getAgents: mocks.getAgents,
   getLastBuiltinAssistantText: mocks.getLastBuiltinAssistantText,
   getMcpServers: mocks.getMcpServers,
@@ -262,6 +265,7 @@ vi.mock('../runtimes/external-session', () => ({
   getCurrentBoundSessionId: mocks.getCurrentBoundSessionId,
   getExternalCurrentTurnIdentity: mocks.getExternalCurrentTurnIdentity,
   getExternalLiveAssistantMessage: mocks.getExternalLiveAssistantMessage,
+  getExternalLiveSessionSnapshot: mocks.getExternalLiveSessionSnapshot,
   getExternalPendingInteractiveRequests: mocks.getExternalPendingInteractiveRequests,
   getExternalQueueStatus: mocks.getExternalQueueStatus,
   getExternalSessionId: mocks.getExternalSessionId,
@@ -336,6 +340,8 @@ describe('session-engine selector and adapters', () => {
     mocks.state.externalCurrentQueueId = null;
     mocks.state.pendingExternalAsk = false;
     mocks.isExternalSessionStateRestoredFor.mockReturnValue(true);
+    mocks.getBuiltinLiveSessionSnapshot.mockReturnValue(null);
+    mocks.getExternalLiveSessionSnapshot.mockReturnValue(null);
   });
 
   it('routes desktop sends through builtin while preserving desktop metadata', async () => {
@@ -494,37 +500,38 @@ describe('session-engine selector and adapters', () => {
       reasoningEffort: 'default',
     });
 
-    mocks.getMessages.mockReturnValueOnce([
-      { id: 'u-live', role: 'user', content: 'accepted', timestamp: '2026-01-01T00:00:03.000Z' },
-      { id: 'a-live', role: 'assistant', content: 'typing', timestamp: '2026-01-01T00:00:04.000Z' },
-    ]);
-    mocks.getStreamingAssistantId.mockReturnValueOnce('a-live');
-    mocks.getAgentState.mockReturnValueOnce({ sessionState: 'running', agentDir: '/workspace' });
+    mocks.getBuiltinLiveSessionSnapshot.mockReturnValueOnce({
+      snapshotRevision: 7,
+      inMemoryMessages: [{ id: 'u-live', role: 'user', content: 'accepted', timestamp: '2026-01-01T00:00:03.000Z' }],
+      liveStreamingMessage: { id: 'a-live', role: 'assistant', content: 'typing', timestamp: '2026-01-01T00:00:04.000Z' },
+      liveSessionState: 'running',
+      pendingInteractiveRequests: [],
+    });
     expect(engine.getLiveSessionOverlay('builtin-session')).toEqual({
       isActive: true,
       runtime: 'builtin',
+      snapshotRevision: 7,
       inMemoryMessages: [{
         id: 'u-live',
         role: 'user',
         content: 'accepted',
         timestamp: '2026-01-01T00:00:03.000Z',
-        sdkUuid: undefined,
-        attachments: undefined,
-        metadata: undefined,
-        usage: undefined,
-        toolCount: undefined,
-        durationMs: undefined,
       }],
-      liveStreamingMessage: expect.objectContaining({ id: 'a-live', content: 'typing' }),
+      liveStreamingMessage: { id: 'a-live', role: 'assistant', content: 'typing', timestamp: '2026-01-01T00:00:04.000Z' },
       liveSessionState: 'running',
+      pendingInteractiveRequests: [],
     });
 
-    mocks.getMessages.mockReturnValueOnce([
-      { id: 'a-final', role: 'assistant', content: 'finished', timestamp: '2026-01-01T00:00:05.000Z' },
-      { id: 'u-admitted', role: 'user', content: 'waiting for first chunk', timestamp: '2026-01-01T00:00:06.000Z' },
-    ]);
-    mocks.getStreamingAssistantId.mockReturnValueOnce(null);
-    mocks.getAgentState.mockReturnValueOnce({ sessionState: 'running', agentDir: '/workspace' });
+    mocks.getBuiltinLiveSessionSnapshot.mockReturnValueOnce({
+      snapshotRevision: 8,
+      inMemoryMessages: [
+        { id: 'a-final', role: 'assistant', content: 'finished', timestamp: '2026-01-01T00:00:05.000Z' },
+        { id: 'u-admitted', role: 'user', content: 'waiting for first chunk', timestamp: '2026-01-01T00:00:06.000Z' },
+      ],
+      liveStreamingMessage: null,
+      liveSessionState: 'running',
+      pendingInteractiveRequests: [],
+    });
     expect(engine.getLiveSessionOverlay('builtin-session')).toMatchObject({
       inMemoryMessages: [
         expect.objectContaining({ id: 'a-final', content: 'finished' }),
@@ -538,11 +545,17 @@ describe('session-engine selector and adapters', () => {
   it('exposes external read, config, and restore surfaces behind the external adapter', () => {
     mocks.state.useExternal = true;
     mocks.getCurrentBoundSessionId.mockReturnValueOnce('bound-session');
-    mocks.getExternalLiveAssistantMessage.mockReturnValueOnce({
-      id: 'live',
-      role: 'assistant',
-      content: 'typing',
-      timestamp: '2026-01-01T00:00:00.000Z',
+    mocks.getExternalLiveSessionSnapshot.mockReturnValueOnce({
+      snapshotRevision: 3,
+      inMemoryMessages: [],
+      liveStreamingMessage: {
+        id: 'live',
+        role: 'assistant',
+        content: 'typing',
+        timestamp: '2026-01-01T00:00:00.000Z',
+      },
+      liveSessionState: 'idle',
+      pendingInteractiveRequests: [],
     });
 
     const engine = getSessionEngine();
@@ -586,8 +599,13 @@ describe('session-engine selector and adapters', () => {
 
   it('matches external live overlay by current bound session during prewarm/start', () => {
     mocks.state.useExternal = true;
-    mocks.getExternalSessionId.mockReturnValueOnce('');
-    mocks.getCurrentBoundSessionId.mockReturnValueOnce('starting-session');
+    mocks.getExternalLiveSessionSnapshot.mockReturnValueOnce({
+      snapshotRevision: 1,
+      inMemoryMessages: [],
+      liveStreamingMessage: null,
+      liveSessionState: 'idle',
+      pendingInteractiveRequests: [],
+    });
 
     expect(getSessionEngine().getLiveSessionOverlay('starting-session')).toMatchObject({
       isActive: true,

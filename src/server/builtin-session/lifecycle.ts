@@ -15,6 +15,7 @@ let preWarmFailCount = 0;
 let preWarmDisabled = false;
 let systemInitInfo: SystemInitInfo | null = null;
 let sdkControlReady = false;
+let liveRevision = 0;
 
 export const lifecycleState = {
   get query(): Query | null {
@@ -214,6 +215,19 @@ export function waitForMessage(dequeue: () => MessageQueueItem | undefined): Pro
 export function resetControlPlaneState(): void {
   systemInitInfo = null;
   sdkControlReady = false;
+}
+
+export function nextBuiltinLiveRevision(): number {
+  liveRevision += 1;
+  return liveRevision;
+}
+
+export function getBuiltinLiveRevision(): number {
+  return liveRevision;
+}
+
+export function resetBuiltinLiveRevision(): void {
+  liveRevision = 0;
 }
 
 export function resetPreWarmState(): void {

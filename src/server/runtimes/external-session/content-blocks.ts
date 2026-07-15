@@ -373,6 +373,21 @@ export function applyExternalToolResultToContent(input: {
   return false;
 }
 
+export function appendExternalToolResultDeltaToContent(toolUseId: string, delta: string): boolean {
+  const parentToolUseId = childToolToParent.get(toolUseId);
+  if (parentToolUseId) {
+    const call = findExternalSubagentCall(parentToolUseId, toolUseId);
+    if (!call) return false;
+    call.result = `${call.result ?? ''}${delta}`;
+    call.isLoading = true;
+    return true;
+  }
+  const block = findExternalToolBlockById(toolUseId);
+  if (!block?.tool) return false;
+  block.tool.result = `${block.tool.result ?? ''}${delta}`;
+  return true;
+}
+
 export function getExternalSubagentAttachmentParent(toolUseId: string): string | undefined {
   return subagentAttachmentParents.get(toolUseId);
 }

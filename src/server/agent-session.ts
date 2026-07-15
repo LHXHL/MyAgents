@@ -113,7 +113,8 @@ import {
 import { isManagedCodexProviderReady } from './utils/managed-codex-readiness';
 import { canonicalizeManagedProviderEnv, findAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig } from './utils/admin-config';
 import type { AgentConfig } from '../shared/types/agent';
-import { broadcast } from './sse';
+import { broadcast as broadcastSse, broadcastLive, flushPendingLiveEvents } from './sse';
+import { participatesInLiveRestore } from '../shared/liveRevision';
 import {
   getEnabledPluginSdkConfigs,
   getDefaultEnabledPluginIdsForWorkspace,
@@ -195,9 +196,12 @@ import {
   clearPreWarmTimer,
   forceWakeGeneratorWithNull,
   incrementPreWarmFailCount,
+  getBuiltinLiveRevision,
   lifecycleState,
+  nextBuiltinLiveRevision,
   requestAbort,
   resetPreWarmFailCount,
+  resetBuiltinLiveRevision,
   setPreWarmInProgress,
   setPreWarmTimer,
   setPreWarmDisabled,
@@ -1278,8 +1282,23 @@ let sessionId = randomUUID();
 publishCurrentSessionEnv();
 
 function setCurrentSessionId(next: string): void {
+  if (sessionId !== next) {
+    flushPendingLiveEvents();
+    resetBuiltinLiveRevision();
+  }
   sessionId = next as typeof sessionId;
   publishCurrentSessionEnv();
+}
+
+function broadcast(event: string, data: unknown): void {
+  if (sessionId && participatesInLiveRestore(event, data)) {
+    broadcastLive(event, data, {
+      sessionId,
+      nextRevision: nextBuiltinLiveRevision,
+    });
+    return;
+  }
+  broadcastSse(event, data);
 }
 
 function publishCurrentSessionEnv(): void {
@@ -3858,14 +3877,9 @@ async function handleAskUserQuestion(
     // Our toolConfig sets previewFormat: 'html', so previews are HTML fragments
     previewFormat: 'html',
   };
-  broadcast('ask-user-question:request', requestPayload);
-  if (supportsAskUserQuestionNativeCard(currentScenario)) {
-    emitImEvent('ask-user-question-request', JSON.stringify(requestPayload));
-  }
-
   // Wait for user response or abort. No wall-clock timeout — see the
   // pendingAskUserQuestions Map declaration for why.
-  return new Promise((resolve, reject) => {
+  const response = new Promise<Record<string, string> | null>((resolve, reject) => {
     const cleanup = () => {
       pendingAskUserQuestions.delete(requestId);
       signal?.removeEventListener('abort', onAbort);
@@ -3899,6 +3913,11 @@ async function handleAskUserQuestion(
 
     pendingAskUserQuestions.set(requestId, { resolve, input: questionInput });
   });
+  broadcast('ask-user-question:request', requestPayload);
+  if (supportsAskUserQuestionNativeCard(currentScenario)) {
+    emitImEvent('ask-user-question-request', JSON.stringify(requestPayload));
+  }
+  return response;
 }
 
 /**
@@ -3976,10 +3995,8 @@ async function handleExitPlanMode(
     throw new DOMException('Aborted', 'AbortError');
   }
 
-  broadcast('exit-plan-mode:request', { ...interactiveEventScope(), requestId, plan, allowedPrompts });
-
   // No wall-clock timeout — see pendingExitPlanMode Map declaration.
-  return new Promise((resolve, reject) => {
+  const response = new Promise<ExitPlanModeResolution>((resolve, reject) => {
     const cleanup = () => {
       pendingExitPlanMode.delete(requestId);
       signal?.removeEventListener('abort', onAbort);
@@ -3999,6 +4016,8 @@ async function handleExitPlanMode(
     signal?.addEventListener('abort', onAbort);
     pendingExitPlanMode.set(requestId, { resolve, plan, allowedPrompts });
   });
+  broadcast('exit-plan-mode:request', { ...interactiveEventScope(), requestId, plan, allowedPrompts });
+  return response;
 }
 
 /**
@@ -4053,10 +4072,8 @@ async function handleEnterPlanMode(
     throw new DOMException('Aborted', 'AbortError');
   }
 
-  broadcast('enter-plan-mode:request', { ...interactiveEventScope(), requestId });
-
   // No wall-clock timeout — see pendingEnterPlanMode Map declaration.
-  return new Promise((resolve, reject) => {
+  const response = new Promise<boolean>((resolve, reject) => {
     const cleanup = () => {
       pendingEnterPlanMode.delete(requestId);
       signal?.removeEventListener('abort', onAbort);
@@ -4076,6 +4093,8 @@ async function handleEnterPlanMode(
     signal?.addEventListener('abort', onAbort);
     pendingEnterPlanMode.set(requestId, { resolve });
   });
+  broadcast('enter-plan-mode:request', { ...interactiveEventScope(), requestId });
+  return response;
 }
 
 /**
@@ -4174,20 +4193,9 @@ async function checkToolPermission(
 
   const inputPreview = typeof input === 'object' ? JSON.stringify(input).slice(0, 500) : String(input).slice(0, 500);
 
-  // Broadcast permission request to frontend
-  broadcast('permission:request', {
-    ...interactiveEventScope(),
-    requestId,
-    toolName,
-    input: inputPreview,
-  });
-
-  // Forward to IM event bus (subscribers route per-requestId for interactive approval cards)
-  emitImEvent('permission-request', JSON.stringify({ requestId, toolName, input: inputPreview }));
-
   // Wait for user response or abort. No wall-clock timeout — see the
   // pendingPermissions Map declaration for why.
-  return new Promise((resolve, reject) => {
+  const response = new Promise<'allow' | 'deny'>((resolve, reject) => {
     const cleanup = () => {
       pendingPermissions.delete(requestId);
       signal?.removeEventListener('abort', onAbort);
@@ -4195,8 +4203,11 @@ async function checkToolPermission(
 
     const onAbort = () => {
       console.debug(`[permission] ${toolName}: aborted by SDK signal`);
+      const wasPending = pendingPermissions.has(requestId);
       cleanup();
-      try { broadcast('permission:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' }); } catch { /* swallow — abort cleanup must not throw */ }
+      if (wasPending) {
+        try { broadcast('permission:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' }); } catch { /* swallow — abort cleanup must not throw */ }
+      }
       // Reject with AbortError so SDK's own abort handling creates the single tool_result.
       // Previously resolve('deny') caused a duplicate tool_result on abort.
       reject(new DOMException('Aborted', 'AbortError'));
@@ -4207,6 +4218,14 @@ async function checkToolPermission(
 
     pendingPermissions.set(requestId, { resolve, toolName, input });
   });
+  broadcast('permission:request', {
+    ...interactiveEventScope(),
+    requestId,
+    toolName,
+    input: inputPreview,
+  });
+  emitImEvent('permission-request', JSON.stringify({ requestId, toolName, input: inputPreview }));
+  return response;
 }
 
 /**
@@ -4286,14 +4305,14 @@ function drainPendingInteractiveRequests(reason: 'reset' | 'session-end'): void 
   // Permission: resolve with 'deny' so any awaiting tool call surfaces as
   // denied.
   for (const [requestId, p] of pendingPermissions) {
+    pendingPermissions.delete(requestId);
     try { broadcast('permission:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try { p.resolve('deny'); } catch { /* swallow — never propagate from cleanup */ }
   }
-  pendingPermissions.clear();
 
-  // Ask-user-question: broadcast :expired then resolve(null). Order matters
-  // only for tests — the tool turn is going away regardless.
+  // Ask-user-question: remove from the owner snapshot before broadcasting expiry.
   for (const [requestId, q] of pendingAskUserQuestions) {
+    pendingAskUserQuestions.delete(requestId);
     try { broadcast('ask-user-question:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try {
       if (supportsAskUserQuestionNativeCard(currentScenario)) {
@@ -4302,20 +4321,19 @@ function drainPendingInteractiveRequests(reason: 'reset' | 'session-end'): void 
     } catch { /* swallow */ }
     try { q.resolve(null); } catch { /* swallow */ }
   }
-  pendingAskUserQuestions.clear();
 
   // Plan-mode entries resolve with `{approved: false}` (request was not approved).
   for (const [requestId, p] of pendingExitPlanMode) {
+    pendingExitPlanMode.delete(requestId);
     try { broadcast('exit-plan-mode:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try { p.resolve({ approved: false }); } catch { /* swallow */ }
   }
-  pendingExitPlanMode.clear();
 
   for (const [requestId, p] of pendingEnterPlanMode) {
+    pendingEnterPlanMode.delete(requestId);
     try { broadcast('enter-plan-mode:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try { p.resolve(false); } catch { /* swallow */ }
   }
-  pendingEnterPlanMode.clear();
 }
 
 /**
@@ -6985,6 +7003,29 @@ export function getMessages(): MessageWire[] {
   return transcriptState.messages;
 }
 
+export function getBuiltinLiveSessionSnapshot(targetSessionId: string): {
+  snapshotRevision: number;
+  inMemoryMessages: SessionMessage[];
+  liveStreamingMessage: SessionMessage | null;
+  liveSessionState: SessionState;
+  pendingInteractiveRequests: ReturnType<typeof getPendingInteractiveRequests>;
+} | null {
+  if (targetSessionId !== sessionId) return null;
+  flushPendingLiveEvents();
+  const streamingAssistantId = getStreamingAssistantId();
+  const messages = transcriptState.messages.map(messageWireToSessionMessage);
+  const liveStreamingMessage = streamingAssistantId
+    ? messages.find(message => message.id === streamingAssistantId) ?? null
+    : null;
+  return structuredClone({
+    snapshotRevision: getBuiltinLiveRevision(),
+    inMemoryMessages: messages.filter(message => message.id !== streamingAssistantId),
+    liveStreamingMessage,
+    liveSessionState: sessionState,
+    pendingInteractiveRequests: getPendingInteractiveRequests(),
+  });
+}
+
 // Last agent error — captured from SDK error events for heartbeat error reporting.
 // Set by the SDK message handler, consumed (cleared) by the heartbeat endpoint.
 let lastAgentError: string | null = null;
@@ -8983,8 +9024,8 @@ export async function waitForSessionIdle(
 export async function interruptCurrentResponse(reason: CancelReason = 'user'): Promise<boolean> {
   if (transientProviderRetryTimer) {
     clearTransientProviderRetryTimer(`interrupt:${reason}`);
-    broadcast('chat:message-stopped', null);
     handleMessageStopped();
+    broadcast('chat:message-stopped', null);
     return true;
   }
 
@@ -9042,8 +9083,8 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
 
   if (!lifecycleState.query) {
     console.log('[agent] No lifecycleState.query but turn is still marked active, resetting state');
-    broadcast('chat:message-stopped', null);
     handleMessageStopped();
+    broadcast('chat:message-stopped', null);
     return true;
   }
 
@@ -9131,8 +9172,8 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
     if (forceDrainTurnStarting) {
       forceDrainTurnStarting = false;
     } else {
-      broadcast('chat:message-stopped', null);
       handleMessageStopped();
+      broadcast('chat:message-stopped', null);
     }
     return true;
   } finally {
@@ -11552,6 +11593,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           if (streamEvent.delta.type === 'text_delta') {
             if (sdkMessage.parent_tool_use_id) {
               const parentToolUseId = childToolToParent.get(sdkMessage.parent_tool_use_id) ?? null;
+              appendToolResultDelta(sdkMessage.parent_tool_use_id, streamEvent.delta.text);
               if (parentToolUseId) {
                 broadcast('chat:subagent-tool-result-delta', {
                   parentToolUseId,
@@ -11567,7 +11609,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                   });
                 }
               }
-              appendToolResultDelta(sdkMessage.parent_tool_use_id, streamEvent.delta.text);
             } else {
               // Skip empty chunks (null, undefined, '')
               if (!streamEvent.delta.text) {
@@ -11594,31 +11635,31 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               }
             }
           } else if (streamEvent.delta.type === 'thinking_delta') {
+            handleThinkingChunk(streamEvent.index, streamEvent.delta.thinking);
             broadcast('chat:thinking-chunk', {
               index: streamEvent.index,
               delta: streamEvent.delta.thinking
             });
-            handleThinkingChunk(streamEvent.index, streamEvent.delta.thinking);
           } else if (streamEvent.delta.type === 'input_json_delta') {
             const toolId = streamIndexToToolId.get(streamEvent.index) ?? '';
             if (sdkMessage.parent_tool_use_id) {
-              broadcast('chat:subagent-tool-input-delta', {
-                parentToolUseId: sdkMessage.parent_tool_use_id,
-                toolId,
-                delta: streamEvent.delta.partial_json
-              });
               handleSubagentToolInputDelta(
                 sdkMessage.parent_tool_use_id,
                 toolId,
                 streamEvent.delta.partial_json
               );
+              broadcast('chat:subagent-tool-input-delta', {
+                parentToolUseId: sdkMessage.parent_tool_use_id,
+                toolId,
+                delta: streamEvent.delta.partial_json
+              });
             } else {
+              handleToolInputDelta(streamEvent.index, toolId, streamEvent.delta.partial_json);
               broadcast('chat:tool-input-delta', {
                 index: streamEvent.index,
                 toolId,
                 delta: streamEvent.delta.partial_json
               });
-              handleToolInputDelta(streamEvent.index, toolId, streamEvent.delta.partial_json);
             }
           }
         } else if (streamEvent.type === 'content_block_start') {
@@ -11751,6 +11792,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 if (!childToolToParent.has(toolResultBlock.tool_use_id)) {
                   ensureSubagentToolPlaceholder(parentToolUseId, toolResultBlock.tool_use_id);
                 }
+                handleToolResultStart(
+                  toolResultBlock.tool_use_id,
+                  contentStr,
+                  toolResultBlock.is_error || false
+                );
                 broadcast('chat:subagent-tool-result-start', {
                   parentToolUseId,
                   toolUseId: toolResultBlock.tool_use_id,
@@ -11763,17 +11809,17 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 if (shouldStripResult) {
                   strippedToolResultIds.add(toolResultBlock.tool_use_id);
                 }
+                handleToolResultStart(
+                  toolResultBlock.tool_use_id,
+                  contentStr,
+                  toolResultBlock.is_error || false
+                );
                 broadcast('chat:tool-result-start', {
                   toolUseId: toolResultBlock.tool_use_id,
                   content: shouldStripResult ? PLAYWRIGHT_RESULT_SENTINEL : contentStr,
                   isError: toolResultBlock.is_error || false
                 });
               }
-              handleToolResultStart(
-                toolResultBlock.tool_use_id,
-                contentStr,
-                toolResultBlock.is_error || false
-              );
             }
           }
         } else if (streamEvent.type === 'content_block_stop') {
@@ -11784,10 +11830,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             // and the timer runs for the entire remaining duration of the parent tool call.
             const blockType = streamIndexToBlockType.get(streamEvent.index);
             if (blockType === 'thinking' || blockType === 'text') {
+              handleContentBlockStop(streamEvent.index, undefined);
               broadcast('chat:content-block-stop', {
                 index: streamEvent.index,
               });
-              handleContentBlockStop(streamEvent.index, undefined);
             }
             if (toolId) {
               finalizeSubagentToolInput(sdkMessage.parent_tool_use_id, toolId);
@@ -11808,6 +11854,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               }
             }
           } else {
+            handleContentBlockStop(streamEvent.index, toolId || undefined);
             broadcast('chat:content-block-stop', {
               index: streamEvent.index,
               toolId: toolId || undefined,
@@ -11817,7 +11864,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               // thinking). Without this the fade lingers on the last chars indefinitely.
               type: streamIndexToBlockType.get(streamEvent.index),
             });
-            handleContentBlockStop(streamEvent.index, toolId || undefined);
             // IM stream: signal text block end via event bus (Pattern B)
             if (imTextBlockIndices.has(streamEvent.index)) {
               emitImEvent('block-end', '');
@@ -11986,6 +12032,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 if (!childToolToParent.has(toolResultBlock.tool_use_id)) {
                   ensureSubagentToolPlaceholder(parentToolUseId, toolResultBlock.tool_use_id);
                 }
+                handleToolResultComplete(toolResultBlock.tool_use_id, contentStr);
                 broadcast('chat:subagent-tool-result-complete', {
                   parentToolUseId,
                   toolUseId: toolResultBlock.tool_use_id,
@@ -12004,6 +12051,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                   contentStr,
                   renderParts.attachments,
                 );
+                handleToolResultComplete(toolResultBlock.tool_use_id, contentStr);
                 broadcast('chat:tool-result-complete', {
                   toolUseId: toolResultBlock.tool_use_id,
                   content: stripped ? PLAYWRIGHT_RESULT_SENTINEL : contentStr,
@@ -12011,7 +12059,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 });
                 inFlightToolCount = Math.max(0, inFlightToolCount - 1);
               }
-              handleToolResultComplete(toolResultBlock.tool_use_id, contentStr);
             }
           }
           }
@@ -12093,12 +12140,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 name: toolBlock.name,
                 input: toolBlock.input || {}
               };
+              handleSubagentToolUseStart(sdkMessage.parent_tool_use_id, payload);
               broadcast('chat:subagent-tool-use', {
                 parentToolUseId: sdkMessage.parent_tool_use_id,
                 tool: payload,
                 usage: subagentUsage
               });
-              handleSubagentToolUseStart(sdkMessage.parent_tool_use_id, payload);
             }
           }
         }
@@ -12143,6 +12190,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 if (!childToolToParent.has(toolResultBlock.tool_use_id)) {
                   ensureSubagentToolPlaceholder(parentToolUseId, toolResultBlock.tool_use_id);
                 }
+                handleToolResultComplete(
+                  toolResultBlock.tool_use_id,
+                  contentStr,
+                  toolResultBlock.is_error || false
+                );
                 broadcast('chat:subagent-tool-result-complete', {
                   parentToolUseId,
                   toolUseId: toolResultBlock.tool_use_id,
@@ -12159,6 +12211,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 const attachments = toolResultBlock.is_error
                   ? undefined
                   : await attachBuiltinMediaIfAny(toolResultBlock.tool_use_id, contentStr, renderParts.attachments);
+                handleToolResultComplete(
+                  toolResultBlock.tool_use_id,
+                  contentStr,
+                  toolResultBlock.is_error || false
+                );
                 broadcast('chat:tool-result-complete', {
                   toolUseId: toolResultBlock.tool_use_id,
                   content: stripped ? PLAYWRIGHT_RESULT_SENTINEL : contentStr,
@@ -12167,11 +12224,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 });
                 inFlightToolCount = Math.max(0, inFlightToolCount - 1);
               }
-              handleToolResultComplete(
-                toolResultBlock.tool_use_id,
-                contentStr,
-                toolResultBlock.is_error || false
-              );
             }
           }
         }
@@ -12410,9 +12462,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     if (suppressRecoveredResumeAnchorError) {
       console.log(`[agent] Suppressing recoverable SDK resumeSessionAt error after clearing ${recoveredInvalidResumeAnchors.join(',')} anchor(s); recovery pre-warm will retry with bare resume`);
     } else if (!lifecycleState.preWarming && !lifecycleState.abortRequested) {
-      broadcast('chat:message-error', userFacingError);
       handleMessageError(errorMessage, sdkSubprocessDiagnostic?.imMessage);
       setSessionState('error');
+      broadcast('chat:message-error', userFacingError);
     } else if (lifecycleState.abortRequested) {
       console.log(`[agent] Suppressing SDK error surfaced during abort (expected): ${errorMessage}`);
     }

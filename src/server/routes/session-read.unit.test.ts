@@ -135,7 +135,9 @@ describe('handleSessionReadRoute', () => {
     mocks.engine.getLiveSessionOverlay.mockReturnValue({
       isActive: true,
       runtime: 'builtin',
+      snapshotRevision: 12,
       liveSessionState: 'running',
+      pendingInteractiveRequests: [{ type: 'permission:request', data: { requestId: 'p1' } }],
       liveStreamingMessage: { id: 'live', role: 'assistant', content: 'typing', timestamp: '2026-01-01T00:00:01.000Z' },
       inMemoryMessages: [
         { id: 'm1', role: 'user', content: 'hello from newer memory', timestamp: '2026-01-01T00:00:00.000Z' },
@@ -154,7 +156,9 @@ describe('handleSessionReadRoute', () => {
     expect(body.success).toBe(true);
     expect(body.session).toMatchObject({
       providerEnvJson: '[redacted]',
+      snapshotRevision: 12,
       liveSessionState: 'running',
+      pendingInteractiveRequests: [{ type: 'permission:request', data: { requestId: 'p1' } }],
       totalCount: 2,
       hasMoreBefore: false,
     });
@@ -184,6 +188,38 @@ describe('handleSessionReadRoute', () => {
     expect(await readJson(response as Response)).toEqual({
       success: false,
       error: 'Session not found.',
+    });
+  });
+
+  it('returns an active memory-only session without dropping its finalized tail', async () => {
+    mocks.engine.getLiveSessionOverlay.mockReturnValue({
+      isActive: true,
+      runtime: 'builtin',
+      snapshotRevision: 4,
+      liveSessionState: 'starting',
+      inMemoryMessages: [
+        { id: 'u1', role: 'user', content: 'accepted', timestamp: '2026-01-01T00:00:00.000Z' },
+      ],
+      liveStreamingMessage: null,
+      pendingInteractiveRequests: [],
+    });
+
+    const response = await handleSessionReadRoute(
+      '/sessions/sid',
+      new Request('http://local/sessions/sid?limit=80'),
+      new URL('http://local/sessions/sid?limit=80'),
+    );
+
+    expect(response?.status).toBe(200);
+    expect(await readJson(response as Response)).toMatchObject({
+      success: true,
+      session: {
+        id: 'sid',
+        snapshotRevision: 4,
+        liveSessionState: 'starting',
+        totalCount: 1,
+        messages: [{ id: 'u1', content: 'accepted' }],
+      },
     });
   });
 
