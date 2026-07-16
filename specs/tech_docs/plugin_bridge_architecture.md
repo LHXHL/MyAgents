@@ -171,20 +171,40 @@ Bun 之前静默容忍，Node 不。v0.2.0 通过 `module.registerHooks()`（Nod
   ↓
 插件调用 runtime.channel.reply.dispatchReplyFromConfig(params)
   ↓
-compat-runtime.ts 拦截：
+compat-runtime.ts：
+  - 创建 OpenClaw reply dispatcher
+  - 生成 requestId，并先注册 request-scoped pending dispatch
   - 提取 chatId、text、attachments、metadata
-  - 媒体文件 → base64 编码（最大 20MB）
   ↓
-POST /api/im-bridge/message → Rust
+POST /api/im-bridge/message
+  { requestId, deliveryProtocol: "openclaw-reply", ... } → Rust
   ↓
 Rust 路由到 AI Sidecar → Claude 处理 → 生成回复
   ↓
-回复通过 streaming 返回：
-  /stream-chunk  → 插件 onPartialReply 回调
-  /finalize-stream → 插件 sendFinalReply 回调
+ReplyRouter 按同一 requestId 有序回传：
+  /start-dispatch       → 建立 turn
+  /start-stream         → 建立 raw text block transport segment
+  /stream-chunk         → 插件 onPartialReply 回调
+  /finish-stream-block  → raw block barrier（不是 turn final）
+  /complete-dispatch    → 插件 sendFinalReply 回调
+  /abort-dispatch       → producer-owned error/cancel terminal
   ↓
 插件将回复发送到 IM 平台（CardKit / 原生消息）
 ```
+
+#### Reply protocol ownership
+
+OpenClaw Channel Plugin 是回复渲染 owner：由插件决定是否启用 streaming、CardKit 的创建/更新节奏、静态消息 fallback 与最终收尾。MyAgents 不复制任何平台 SDK 会话，也不根据凭据或插件 ID 推导流式能力；Bridge 只提供 OpenClaw dispatcher 所需的**请求级、有序、可等待传输**。
+
+`deliveryProtocol: "openclaw-reply"` 是本次入站已经成功创建真实 dispatcher 的事实，只能在 pending dispatch 按同一 `requestId` 注册后随该次请求发送。它不是 channel capability，也不能由 `streaming` 配置反推。Rust 将这个值保存在对应 `ReplySlot`，不影响同一 channel 的其他并发请求。
+
+Bridge 的 pending queue 只做一项背压优化：相邻、同 stream、同 lane 的 full-snapshot partial 可被更新值替换。run start、block barrier 与 terminal 都是顺序屏障；任何平台 I/O 延迟均由插件 dispatcher 自身消化，不得把 CardKit 请求放回 Rust `ReplyRouter` 的锁内。
+
+turn 的 canonical final 由 Sidecar terminal outcome 产生，以 `finalPayloads` 原样穿过 Rust/Bridge。raw `block-end` 只表示 SDK 内容块边界，不参与拼接最终文本。
+
+Bridge 的 `dispatcher_delivery_idle` 只表示 core dispatcher queue 已 drain；shim 在既有 `markDispatchIdle → onIdle` 边界记录 `plugin_delivery_settled`，它才覆盖插件私有的异步 renderer 收尾（飞书为 CardKit 终态更新）。该 observer 只测量现有 lifecycle promise，不读写平台状态，也不改变投递结果。
+
+一旦 Bridge 注册 pending dispatcher，Rust 就必须为该 request 产生且仅产生一个 terminal：进入模型的请求由 Sidecar outcome 完成；命令、白名单拒绝、群聊 activation 拒绝等 admission 分支用空 `complete` 或带提示的 `abort` 收口。协议请求不能落入磁盘 buffer，也不能只发送普通 `/send-text` 后悬空 dispatcher。
 
 #### Outbound 媒体文件名
 
@@ -268,9 +288,9 @@ sdk-shim/
 
 | 位置 | 变量 | 当前值 | 用途 |
 |------|------|--------|------|
-| `sdk-shim/package.json` | `version` + `"type": "module"` | `2026.6.28-shim` | Bridge 启动完整性检查 |
-| `compat-runtime.ts` | `SHIM_COMPAT_VERSION` | `2026.6.28` | 插件 `assertHostCompatibility()` |
-| `bridge.rs` | `SHIM_COMPAT_VERSION` | `2026.6.28` | Rust 层 peerDependencies 比对 |
+| `sdk-shim/package.json` | `version` + `"type": "module"` | `2026.6.29-shim` | Bridge 启动完整性检查 |
+| `compat-runtime.ts` | `SHIM_COMPAT_VERSION` | `2026.6.29` | 插件 `assertHostCompatibility()` |
+| `bridge.rs` | `SHIM_COMPAT_VERSION` | `2026.6.29` | Rust 层 peerDependencies 比对 |
 
 Shim 用 ESM 格式（`"type": "module"`），生成器输出 `export function`，与上游 OpenClaw `plugin-sdk/*` 子路径导出对齐。
 
@@ -308,10 +328,12 @@ git diff src/server/plugin-bridge/sdk-shim/  # 审查变更
 | `/delete-message` | POST | 删除消息 |
 | `/send-media` | POST | 发送图片/文件 |
 | `/validate-credentials` | POST | 凭证验证（dry-run） |
-| `/start-stream` | POST | 开始流式回复 |
-| `/stream-chunk` | POST | 流式内容块 |
-| `/finalize-stream` | POST | 完成流式回复 |
-| `/abort-stream` | POST | 中止流式回复 |
+| `/start-dispatch` | POST | 按 requestId 开始 OpenClaw reply turn |
+| `/start-stream` | POST | 建立该 request 下的 raw text block transport segment |
+| `/stream-chunk` | POST | 入队 full-snapshot partial |
+| `/finish-stream-block` | POST | 建立 raw block 顺序屏障，不结束 turn |
+| `/complete-dispatch` | POST | 接纳 producer-owned `finalPayloads` terminal；HTTP ACK 仅表示已合法入队 |
+| `/abort-dispatch` | POST | 接纳 error/cancel terminal；HTTP ACK 仅表示已合法入队 |
 | `/mcp/tools` | GET | 列出插件工具 |
 | `/mcp/call-tool` | POST | 执行插件工具 |
 | `/execute-command` | POST | 执行斜杠命令 |
@@ -347,6 +369,7 @@ git diff src/server/plugin-bridge/sdk-shim/  # 审查变更
 | `src/server/plugin-bridge/index.ts` | Bridge HTTP Server + 插件加载入口 |
 | `src/server/plugin-bridge/compat-api.ts` | OpenClaw API 适配（registerChannel/Tool） |
 | `src/server/plugin-bridge/compat-runtime.ts` | Channel Runtime Mock + 消息拦截路由 |
+| `src/server/plugin-bridge/pending-dispatch.ts` | requestId → OpenClaw dispatcher 的有序传输队列 |
 | `src/server/plugin-bridge/sdk-shim/` | SDK shim 包（293 个 exports） |
 | `src/server/plugin-bridge/sdk-shim/plugin-sdk/_handwritten.json` | 手写模块保护清单 |
 | `scripts/generate-sdk-shims.ts` | Stub 自动生成器 |

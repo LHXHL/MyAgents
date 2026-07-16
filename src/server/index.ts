@@ -695,6 +695,7 @@ import { getActiveSessionLogPath } from './AgentLogger';
 import { runLogRetentionSweep, startPeriodicSweep } from './log-retention';
 import { broadcast, createSseClient, getClients } from './sse';
 import { imEventBus } from './utils/im-event-bus';
+import { buildImCancelledPayload } from './utils/im-terminal-payload';
 import { imRequestRegistry } from './utils/im-request-registry';
 import { checkAnthropicSubscription, verifyProviderViaSdk, verifySubscription } from './provider-verify';
 import { cancelSubscriptionLogin, getSubscriptionLoginState, startSubscriptionLogin, submitSubscriptionLoginCode } from './subscription-auth';
@@ -8741,7 +8742,7 @@ async function main() {
           }
 
           // Step 3: bus event for UI feedback (so the reply slot closes promptly).
-          imEventBus.emit(body.requestId, 'cancelled', reason);
+          imEventBus.emit(body.requestId, 'cancelled', buildImCancelledPayload());
 
           // Cleanup registry entry — abort already set status to 'cancelled'.
           imRequestRegistry.unregister(body.requestId);

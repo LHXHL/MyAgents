@@ -197,6 +197,11 @@ import {
 import { originAnalyticsFields, originFromTurnAttribution } from '../../shared/session-origin';
 import type { SessionOrigin } from '../../shared/session-origin';
 import {
+  buildImCancelledPayload,
+  buildImCompletePayload,
+  buildImErrorPayload,
+} from '../utils/im-terminal-payload';
+import {
   beginExternalTurnPromotion,
   cancelExternalTurnPromotion,
   cancelExternalTurnPromotionByOwner,
@@ -1145,7 +1150,7 @@ function resetWatchdog(): void {
     console.error(`[external-session] Watchdog: no runtime activity for ${minutes} minutes of active time, killing process`);
     broadcast('chat:agent-error', { message: `External runtime timed out (no activity for ${minutes} minutes)` });
     broadcast('chat:message-error', 'External runtime timed out');
-    fireExternalImCallback('error', 'External runtime timed out');
+    fireExternalImCallback('error', buildImErrorPayload('External runtime timed out'));
     void stopExternalSession();
   }, WATCHDOG_INTERVAL_MS);
   watchdogTimer.unref?.();
@@ -3823,7 +3828,7 @@ export async function stopExternalSession(options?: {
   drainPendingInteractiveRequestsAsExpired('stop');
   setExternalSystemInitPayload(null);
   if (!isConfigRestart) {
-    fireExternalImCallback('error', 'Session stopped');
+    fireExternalImCallback('cancelled', buildImCancelledPayload());
     finalizeExternalActiveRequest('failed');
     deliverExternalWatchError({
       sessionId: getExternalLifecycleSessionId(),
@@ -4424,9 +4429,15 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
     // session_complete handler counts on us to drain the deferred idle.
     setExternalSessionState('idle');
     if (finalizedTurnSucceeded) {
-      fireExternalImCallback('complete', '');
+      fireExternalImCallback(
+        'complete',
+        buildImCompletePayload(capturedReplyText || getExternalAssistantText().trim()),
+      );
     } else {
-      fireExternalImCallback('error', persistFailureReason ?? 'external runtime turn did not complete successfully');
+      fireExternalImCallback(
+        'error',
+        buildImErrorPayload(persistFailureReason ?? 'external runtime turn did not complete successfully'),
+      );
     }
     // Pattern B/C: turn complete — clear active trace ID + unregister from registry.
     finalizeExternalActiveRequest(finalizedTurnSucceeded ? 'completed' : 'failed');
@@ -4615,7 +4626,7 @@ function autoDenyNonInteractiveRequest(event: Extract<UnifiedEvent, { kind: 'per
     ? `External runtime AskUserQuestion request was denied because Managed Codex structured user input is disabled.`
     : `External runtime AskUserQuestion request was denied because this ${scenario.type} host does not support native-card interaction.`;
   console.warn(`[external-session] ${reason} requestId=${event.requestId}`);
-  fireExternalImCallback('error', reason);
+  fireExternalImCallback('error', buildImErrorPayload(reason));
   const active = getExternalActivePair();
   if (active) {
     void active.runtime.respondPermission(active.process, event.requestId, 'deny', reason, undefined, undefined, true)
@@ -5118,7 +5129,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
             withSessionCompletionTerminal(message, completionTerminal),
           );
         }
-        fireExternalImCallback('error', message);
+        fireExternalImCallback('error', buildImErrorPayload(message));
         finalizeExternalActiveRequest('failed');
         deliverExternalWatchError({
           sessionId: getExternalLifecycleSessionId(),
@@ -5257,7 +5268,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
             'chat:message-error',
             withSessionCompletionTerminal(errorMessage, completionTerminal),
           );
-          fireExternalImCallback('error', errorMessage);
+          fireExternalImCallback('error', buildImErrorPayload(errorMessage));
           deliverExternalWatchError({
             sessionId: getExternalLifecycleSessionId(),
             text: currentExternalTurnTextSnapshot(),

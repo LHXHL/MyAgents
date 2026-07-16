@@ -949,6 +949,11 @@
       "missingBotToken": "Configure Bot Token first",
       "missingCredentials": "Configure app credentials first",
       "operationFailed": "Operation failed: {{message}}",
+      "configFields": {
+        "streaming": "Streaming replies"
+      },
+      "numberRequired": "Enter a valid number",
+      "integerRequired": "Enter a whole number",
       "deleted": "Channel deleted",
       "deleteFailed": "Delete failed: {{message}}",
       "defaultInheritAgent": "Default (inherit Agent)",

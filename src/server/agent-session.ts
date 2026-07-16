@@ -172,6 +172,7 @@ import {
 import type { ToolAttachment } from '../shared/types/tool-attachment';
 import { imEventBus, type ImEventType } from './utils/im-event-bus';
 import { imRequestRegistry } from './utils/im-request-registry';
+import { buildImCancelledPayload, buildImErrorPayload } from './utils/im-terminal-payload';
 import { mirrorIfChannelBound, type MirrorImage } from './utils/im-mirror';
 import { normalizeClaudeTranscriptCleanupPeriodDays, SUBSCRIPTION_PROVIDER_ID, type ProxySettings } from '../shared/config-types';
 import {
@@ -1061,10 +1062,10 @@ function dropInFlightQueueItem(
   if (requestId) {
     removePendingRequest(requestId);
     if (imTerminal === 'failed') {
-      imEventBus.emit(requestId, 'error', reason);
+      imEventBus.emit(requestId, 'error', buildImErrorPayload(reason));
       imRequestRegistry.setStatus(requestId, 'failed');
     } else {
-      imEventBus.emit(requestId, 'cancelled', reason);
+      imEventBus.emit(requestId, 'cancelled', buildImCancelledPayload());
       imRequestRegistry.setStatus(requestId, 'cancelled');
     }
     imRequestRegistry.unregister(requestId);
@@ -1290,6 +1291,16 @@ function completeCurrentImRequest(data?: unknown): void {
   if (completedReq) {
     imRequestRegistry.setStatus(completedReq, 'completed');
     imRequestRegistry.unregister(completedReq);
+    setCurrentTurnImTerminalEmitted(true);
+  }
+}
+
+function cancelCurrentImRequest(data?: unknown): void {
+  emitImEvent('cancelled', data);
+  const cancelledReq = popPendingRequest();
+  if (cancelledReq) {
+    imRequestRegistry.setStatus(cancelledReq, 'cancelled');
+    imRequestRegistry.unregister(cancelledReq);
     setCurrentTurnImTerminalEmitted(true);
   }
 }
@@ -2036,7 +2047,7 @@ function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {
   // terminal cleanup and no user-visible abort should be emitted.
   if (notifyPendingRequests) {
     for (const reqId of getPendingRequestIds()) {
-      imEventBus.emit(reqId, 'error', '会话已中断，请重新发送');
+      imEventBus.emit(reqId, 'error', buildImErrorPayload('会话已中断，请重新发送'));
       imRequestRegistry.setStatus(reqId, 'failed');
       imRequestRegistry.unregister(reqId);
     }
@@ -6822,6 +6833,7 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   abortTurnAbort,
   clearAmbientTurnId: (sid) => clearAmbientLogContextField(sid, 'turnId'),
   completeCurrentImRequest,
+  cancelCurrentImRequest,
   failCurrentImRequest,
   clearMirrorState,
   clearStreamTurnMaps: () => {

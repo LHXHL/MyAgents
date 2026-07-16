@@ -34,6 +34,65 @@ fn filter_legacy_provider_command_providers(
     providers
 }
 
+fn uses_openclaw_reply_protocol(msg: &ImMessage) -> bool {
+    !msg.request_id.is_empty()
+        && msg.delivery_protocol == Some(types::ImDeliveryProtocol::OpenClawReply)
+}
+
+/// Finish an inline Rust-owned response through the request's established
+/// renderer. Native/legacy messages keep their direct adapter path; an
+/// OpenClaw dispatcher request must not be left pending or silently switch
+/// renderers when Rust handles a command or admission decision without a turn.
+async fn send_immediate_reply<A: adapter::ImStreamAdapter>(
+    adapter: &A,
+    msg: &ImMessage,
+    text: &str,
+) -> adapter::AdapterResult<()> {
+    if uses_openclaw_reply_protocol(msg) {
+        return adapter
+            .complete_reply_dispatch(&msg.request_id, &json!([{ "text": text }]))
+            .await;
+    }
+    adapter.send_message(&msg.chat_id, text).await
+}
+
+async fn complete_immediate_without_reply<A: adapter::ImStreamAdapter>(
+    adapter: &A,
+    msg: &ImMessage,
+) {
+    if !uses_openclaw_reply_protocol(msg) {
+        return;
+    }
+    if let Err(error) = adapter
+        .complete_reply_dispatch(&msg.request_id, &serde_json::Value::Array(Vec::new()))
+        .await
+    {
+        ulog_error!(
+            "[im] Could not settle no-reply OpenClaw admission requestId={}: {}",
+            msg.request_id,
+            error
+        );
+    }
+}
+
+async fn abort_immediate_reply<A: adapter::ImStreamAdapter>(
+    adapter: &A,
+    msg: &ImMessage,
+    reason: &str,
+    text: &str,
+) -> adapter::AdapterResult<()> {
+    if uses_openclaw_reply_protocol(msg) {
+        return adapter
+            .abort_reply_dispatch(
+                &msg.request_id,
+                reason,
+                &json!({ "text": text, "isError": true }),
+            )
+            .await;
+    }
+    adapter.send_message(&msg.chat_id, text).await
+}
+
 fn question_answer_key(question: &AskUserQuestionItem, idx: usize) -> String {
     question.id.clone().unwrap_or_else(|| idx.to_string())
 }
@@ -1159,6 +1218,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         };
                         if already_bound {
                             ulog_debug!("[im] Ignoring stale BIND message from already-bound user {}", msg.sender_id);
+                            complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
                             continue;
                         }
 
@@ -1196,7 +1256,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             }
 
                             let reply = format!("✅ 绑定成功！你好 {}，现在可以直接和我聊天了。", display);
-                            if let Err(e) = adapter_for_reply.send_message(&chat_id, &reply).await {
+                            if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &reply).await {
                                 ulog_warn!("[im-cmd] send_message (bind success) failed: {}", e);
                             }
 
@@ -1214,8 +1274,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 serde_json::json!({ "botId": bot_id_for_loop }),
                             );
                         } else {
-                            if let Err(e) = adapter_for_reply.send_message(
-                                &chat_id,
+                            if let Err(e) = send_immediate_reply(
+                                adapter_for_reply.as_ref(),
+                                &msg,
                                 "❌ 绑定码无效或已过期，请在 MyAgents 设置中重新获取二维码。",
                             ).await {
                                 ulog_warn!("[im-cmd] send_message (bind invalid) failed: {}", e);
@@ -1226,8 +1287,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
 
                     // Handle plain /start (first-time interaction, not a bind)
                     if text == "/start" {
-                        if let Err(e) = adapter_for_reply.send_message(
-                            &chat_id,
+                        if let Err(e) = send_immediate_reply(
+                            adapter_for_reply.as_ref(),
+                            &msg,
                             "👋 你好！我是 MyAgents Bot。\n\n\
                              可用命令：\n\
                              /help — 查看所有命令\n\
@@ -1268,7 +1330,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             }
                         }
                         help.push_str("\n\n💬 直接发送文字即可与 AI 对话。\n🔒 工具审批：收到权限请求时，回复「允许」「始终允许」或「拒绝」。");
-                        if let Err(e) = adapter_for_reply.send_message(&chat_id, &help).await {
+                        if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &help).await {
                             ulog_warn!("[im-cmd] send_message (/help) failed: {}", e);
                         }
                         continue;
@@ -1279,6 +1341,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         if msg.source_type == ImSourceType::Group {
                             let is_allowed = allowed_users_for_loop.read().await.contains(&msg.sender_id);
                             if !is_allowed {
+                                complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
                                 continue; // Silently skip unauthorized /new
                             }
                         }
@@ -1316,12 +1379,16 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                         e
                                     ),
                                 };
-                                if let Err(e) = adapter_for_reply.send_message(&chat_id, &reply).await {
+                                if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &reply).await {
                                     ulog_warn!("[im-cmd] send_message (/new success) failed: {}", e);
                                 }
                             }
                             Err(e) => {
-                                if let Err(e2) = adapter_for_reply.send_message(&chat_id, &format!("❌ 创建失败: {}", e)).await {
+                                if let Err(e2) = send_immediate_reply(
+                                    adapter_for_reply.as_ref(),
+                                    &msg,
+                                    &format!("❌ 创建失败: {}", e),
+                                ).await {
                                     ulog_warn!("[im-cmd] send_message (/new error) failed: {}", e2);
                                 }
                             }
@@ -1338,6 +1405,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             || text.starts_with("/mode")
                             || text == "/status")
                     {
+                        complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
                         continue;
                     }
 
@@ -1357,7 +1425,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             ),
                         };
                         adapter_for_reply.ack_clear(&chat_id, &message_id).await;
-                        if let Err(e) = adapter_for_reply.send_message(&chat_id, &reply).await {
+                        if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &reply).await {
                             ulog_warn!("[im-cmd] send_message (/status) failed: {}", e);
                         }
                         continue;
@@ -1408,7 +1476,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                                         runtime_display_name(&current_runtime),
                                                         e,
                                                     );
-                                                    if let Err(e) = adapter_for_reply.send_message(&chat_id, &reply).await {
+                                                    if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &reply).await {
                                                         ulog_warn!("[im-cmd] send_message (/model runtime query failed) failed: {}", e);
                                                     }
                                                     continue;
@@ -1423,7 +1491,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                                 runtime_display_name(&current_runtime),
                                                 e,
                                             );
-                                            if let Err(e) = adapter_for_reply.send_message(&chat_id, &reply).await {
+                                            if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &reply).await {
                                                 ulog_warn!("[im-cmd] send_message (/model runtime ensure failed) failed: {}", e);
                                             }
                                             continue;
@@ -1454,7 +1522,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     }
                                 }
                                 menu.push_str("\n用法: /model <序号或模型ID>");
-                                if let Err(e) = adapter_for_reply.send_message(&chat_id, &menu).await {
+                                if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &menu).await {
                                     ulog_warn!("[im-cmd] send_message (/model runtime list) failed: {}", e);
                                 }
                             } else {
@@ -1507,16 +1575,18 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                         }
                                         let display = if id.is_empty() { "(默认)".to_string() } else { id.clone() };
                                         ulog_info!("[im] /model: set {} runtime model to {}", current_runtime, display);
-                                        if let Err(e) = adapter_for_reply.send_message(
-                                            &chat_id,
+                                        if let Err(e) = send_immediate_reply(
+                                            adapter_for_reply.as_ref(),
+                                            &msg,
                                             &format!("✅ {} 模型已切换为: {}", runtime_display_name(&current_runtime), display),
                                         ).await {
                                             ulog_warn!("[im-cmd] send_message (/model runtime switch) failed: {}", e);
                                         }
                                     }
                                     None => {
-                                        if let Err(e) = adapter_for_reply.send_message(
-                                            &chat_id,
+                                        if let Err(e) = send_immediate_reply(
+                                            adapter_for_reply.as_ref(),
+                                            &msg,
                                             "❌ 无效的序号，请使用 /model 查看可用列表",
                                         ).await {
                                             ulog_warn!("[im-cmd] send_message (/model runtime invalid) failed: {}", e);
@@ -1564,7 +1634,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                         "📊 当前模型: {}\n\n提示: 可直接输入模型 ID 切换\n用法: /model <模型ID>",
                                         display,
                                     );
-                                    if let Err(e) = adapter_for_reply.send_message(&chat_id, &help).await {
+                                    if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &help).await {
                                         ulog_warn!("[im-cmd] send_message (/model help) failed: {}", e);
                                     }
                                 } else {
@@ -1575,7 +1645,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                         menu.push_str(&format!("{}. {} ({})\n", i + 1, model_name, model_id));
                                     }
                                     menu.push_str("\n用法: /model <序号或模型ID>");
-                                    if let Err(e) = adapter_for_reply.send_message(&chat_id, &menu).await {
+                                    if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &menu).await {
                                         ulog_warn!("[im-cmd] send_message (/model list) failed: {}", e);
                                     }
                                 }
@@ -1607,8 +1677,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                             drop(router);
                                             ulog_info!("[im] /model: set to {} (session={})", id, s.session_key);
                                         }
-                                        if let Err(e) = adapter_for_reply.send_message(
-                                            &chat_id,
+                                        if let Err(e) = send_immediate_reply(
+                                            adapter_for_reply.as_ref(),
+                                            &msg,
                                             &format!("✅ 模型已切换为: {}", id),
                                         ).await {
                                             ulog_warn!("[im-cmd] send_message (/model switch) failed: {}", e);
@@ -1631,8 +1702,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                         }));
                                     }
                                     None => {
-                                        if let Err(e) = adapter_for_reply.send_message(
-                                            &chat_id,
+                                        if let Err(e) = send_immediate_reply(
+                                            adapter_for_reply.as_ref(),
+                                            &msg,
                                             "❌ 无效的序号，请使用 /model 查看可用列表",
                                         ).await {
                                             ulog_warn!("[im-cmd] send_message (/model invalid) failed: {}", e);
@@ -1665,7 +1737,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     runtime_name,
                                 )
                             };
-                            if let Err(e) = adapter_for_reply.send_message(&chat_id, &reply).await {
+                            if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &reply).await {
                                 ulog_warn!("[im-cmd] send_message (/provider runtime) failed: {}", e);
                             }
                             continue;
@@ -1705,7 +1777,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             }
                             menu.push_str("\n用法: /provider <序号或ID>");
 
-                            if let Err(e) = adapter_for_reply.send_message(&chat_id, &menu).await {
+                            if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &menu).await {
                                 ulog_warn!("[im-cmd] send_message (/provider list) failed: {}", e);
                             }
                         } else {
@@ -1749,8 +1821,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                         None
                                     };
 
-                                    if let Err(e) = adapter_for_reply.send_message(
-                                        &chat_id,
+                                    if let Err(e) = send_immediate_reply(
+                                        adapter_for_reply.as_ref(),
+                                        &msg,
                                         &format!("✅ 已切换供应商: {}\n模型: {}", name, primary_model),
                                     ).await {
                                         ulog_warn!("[im-cmd] send_message (/provider switch) failed: {}", e);
@@ -1774,8 +1847,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     }));
                                 }
                                 None => {
-                                    if let Err(e) = adapter_for_reply.send_message(
-                                        &chat_id,
+                                    if let Err(e) = send_immediate_reply(
+                                        adapter_for_reply.as_ref(),
+                                        &msg,
                                         "❌ 未找到该供应商，请使用 /provider 查看可用列表",
                                     ).await {
                                         ulog_warn!("[im-cmd] send_message (/provider not found) failed: {}", e);
@@ -1814,7 +1888,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     ));
                                 }
                                 menu.push_str("\n用法: /mode <模式>");
-                                if let Err(e) = adapter_for_reply.send_message(&chat_id, &menu).await {
+                                if let Err(e) = send_immediate_reply(adapter_for_reply.as_ref(), &msg, &menu).await {
                                     ulog_warn!("[im-cmd] send_message (/mode runtime display) failed: {}", e);
                                 }
                             } else {
@@ -1824,8 +1898,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     .cloned();
                                 let Some(target) = target else {
                                     let allowed = choices.iter().map(|c| c.value.as_str()).collect::<Vec<_>>().join(" / ");
-                                    if let Err(e) = adapter_for_reply.send_message(
-                                        &chat_id,
+                                    if let Err(e) = send_immediate_reply(
+                                        adapter_for_reply.as_ref(),
+                                        &msg,
                                         &format!("❌ 无效模式，可选: {}", allowed),
                                     ).await {
                                         ulog_warn!("[im-cmd] send_message (/mode runtime invalid) failed: {}", e);
@@ -1863,8 +1938,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 }
 
                                 ulog_info!("[im] /mode: set {} runtime permission to {}", current_runtime, target.value);
-                                if let Err(e) = adapter_for_reply.send_message(
-                                    &chat_id,
+                                if let Err(e) = send_immediate_reply(
+                                    adapter_for_reply.as_ref(),
+                                    &msg,
                                     &format!(
                                         "✅ {} 权限模式已切换为: {}\n\n{}",
                                         runtime_display_name(&current_runtime),
@@ -1885,8 +1961,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     "fullAgency" => "🚀 全自主模式 (fullAgency) — 所有操作自动执行",
                                     _ => "❓ 未知模式",
                                 };
-                                if let Err(e) = adapter_for_reply.send_message(
-                                    &chat_id,
+                                if let Err(e) = send_immediate_reply(
+                                    adapter_for_reply.as_ref(),
+                                    &msg,
                                     &format!(
                                         "🔐 当前权限模式\n\n{}\n\n\
                                          可选模式：\n\
@@ -1905,8 +1982,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     "auto" => "auto",
                                     "full" | "fullagency" => "fullAgency",
                                     _ => {
-                                        if let Err(e) = adapter_for_reply.send_message(
-                                            &chat_id,
+                                        if let Err(e) = send_immediate_reply(
+                                            adapter_for_reply.as_ref(),
+                                            &msg,
                                             "❌ 无效模式，可选: plan / auto / full",
                                         ).await {
                                             ulog_warn!("[im-cmd] send_message (/mode invalid) failed: {}", e);
@@ -1923,8 +2001,9 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     _ => unreachable!(),
                                 };
                                 ulog_info!("[im] /mode: switched to {} (session={})", new_mode, session_key);
-                                if let Err(e) = adapter_for_reply.send_message(
-                                    &chat_id,
+                                if let Err(e) = send_immediate_reply(
+                                    adapter_for_reply.as_ref(),
+                                    &msg,
                                     &format!("✅ 权限模式已切换\n\n{}", display),
                                 ).await {
                                     ulog_warn!("[im-cmd] send_message (/mode switch) failed: {}", e);
@@ -1972,6 +2051,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 decision: decision.to_string(),
                                 user_id: msg.sender_id.clone(),
                             }).await;
+                            complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
                             continue;
                         }
                         // No pending approval — fall through to regular message handling
@@ -2004,13 +2084,20 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                     if let Some((request_id, questions, pending_source_type)) = pending_question {
                         match parse_question_text_answers(&questions, &pending_source_type, &text) {
                             Ok(answers) => {
-                                if questions.iter().any(|q| q.is_secret) {
-                                    let _ = adapter_for_reply
-                                        .send_message(
-                                            &chat_id,
-                                            "本次提问包含敏感输入，IM 渠道暂不支持安全收集，已取消。请在桌面端继续。",
-                                        )
-                                        .await;
+                                let has_secret = questions.iter().any(|q| q.is_secret);
+                                if has_secret {
+                                    let _ = send_immediate_reply(
+                                        adapter_for_reply.as_ref(),
+                                        &msg,
+                                        "本次提问包含敏感输入，IM 渠道暂不支持安全收集，已取消。请在桌面端继续。",
+                                    )
+                                    .await;
+                                } else {
+                                    complete_immediate_without_reply(
+                                        adapter_for_reply.as_ref(),
+                                        &msg,
+                                    )
+                                    .await;
                                 }
                                 let _ = question_tx_for_loop
                                     .send(QuestionCallback {
@@ -2022,12 +2109,12 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 continue;
                             }
                             Err(e) => {
-                                let _ = adapter_for_reply
-                                    .send_message(
-                                        &chat_id,
-                                        &format!("答案格式不正确：{}\n请重新回复，或回复「取消」结束本次提问。", e),
-                                    )
-                                    .await;
+                                let _ = send_immediate_reply(
+                                    adapter_for_reply.as_ref(),
+                                    &msg,
+                                    &format!("答案格式不正确：{}\n请重新回复，或回复「取消」结束本次提问。", e),
+                                )
+                                .await;
                                 continue;
                             }
                         }
@@ -2048,6 +2135,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                         };
                         if !is_allowed {
                             ulog_info!("[im] Bridge private message from {} blocked (not in allowedUsers)", msg.sender_id);
+                            complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
                             continue;
                         }
                     }
@@ -2102,6 +2190,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     timestamp: chrono::Local::now(),
                                 },
                             );
+                            complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
                             continue;
                         }
 
@@ -2128,6 +2217,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     timestamp: chrono::Local::now(),
                                 },
                             );
+                            complete_immediate_without_reply(adapter_for_reply.as_ref(), &msg).await;
                             continue;
                         }
                     }
@@ -2149,14 +2239,23 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 let bridge_clone = adapter_for_reply.clone();
                                 let chat_id_clone = chat_id.clone();
                                 let sender_id = msg.sender_id.clone();
+                                let command_msg = msg.clone();
                                 tauri::async_runtime::spawn(async move {
                                     if let AnyAdapter::Bridge(ref b) = *bridge_clone {
                                         match b.execute_command(&cmd_name, &cmd_args, &sender_id, &chat_id_clone).await {
                                             Ok(result) => {
-                                                let _ = bridge_clone.send_message(&chat_id_clone, &result).await;
+                                                let _ = send_immediate_reply(
+                                                    bridge_clone.as_ref(),
+                                                    &command_msg,
+                                                    &result,
+                                                ).await;
                                             }
                                             Err(e) => {
-                                                let _ = bridge_clone.send_message(&chat_id_clone, &format!("❌ 命令执行失败: {}", e)).await;
+                                                let _ = send_immediate_reply(
+                                                    bridge_clone.as_ref(),
+                                                    &command_msg,
+                                                    &format!("❌ 命令执行失败: {}", e),
+                                                ).await;
                                             }
                                         }
                                     }
@@ -2167,9 +2266,13 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                     }
 
                     let Some(active_work_guard) = model_work_gate_for_loop.try_enter() else {
-                        let _ = adapter_for_reply
-                            .send_message(&chat_id, "网络设置正在应用，请稍后重新发送。")
-                            .await;
+                        let _ = abort_immediate_reply(
+                            adapter_for_reply.as_ref(),
+                            &msg,
+                            "admission_closed",
+                            "网络设置正在应用，请稍后重新发送。",
+                        )
+                        .await;
                         continue;
                     };
 
@@ -2238,6 +2341,13 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             Ok(p) => p,
                             Err(_) => {
                                 ulog_error!("[im] Semaphore closed");
+                                let _ = abort_immediate_reply(
+                                    task_adapter.as_ref(),
+                                    &msg,
+                                    "admission_failed",
+                                    "消息处理暂不可用，请稍后重试。",
+                                )
+                                .await;
                                 return;
                             }
                         };
@@ -2277,6 +2387,13 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                         session_key,
                                         error
                                     );
+                                    let _ = abort_immediate_reply(
+                                        task_adapter.as_ref(),
+                                        &msg,
+                                        "session_reconcile_failed",
+                                        "会话状态同步失败，请稍后重试。",
+                                    )
+                                    .await;
                                     return;
                                 }
                             };
@@ -2300,13 +2417,15 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     runtime_display_name(&task_runtime),
                                     &new_id[..8.min(new_id.len())]
                                 );
-                                if let Err(e) =
-                                    task_adapter.send_message(&chat_id, &reply).await
-                                {
-                                    ulog_warn!(
-                                        "[im-drift] send_message (runtime-drift notify) failed: {}",
-                                        e
-                                    );
+                                if !uses_openclaw_reply_protocol(&msg) {
+                                    if let Err(e) =
+                                        task_adapter.send_message(&chat_id, &reply).await
+                                    {
+                                        ulog_warn!(
+                                            "[im-drift] send_message (runtime-drift notify) failed: {}",
+                                            e
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -2327,9 +2446,13 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             Ok(result) => result,
                             Err(e) => {
                                 task_adapter.ack_clear(&chat_id, &message_id).await;
-                                let _ = task_adapter
-                                    .send_message(&chat_id, &format!("⚠️ {}", e))
-                                    .await;
+                                let _ = abort_immediate_reply(
+                                    task_adapter.as_ref(),
+                                    &msg,
+                                    "sidecar_start_failed",
+                                    &format!("⚠️ {}", e),
+                                )
+                                .await;
                                 return;
                             }
                         };
@@ -2511,7 +2634,17 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     "[im] Re-buffering message for session_key={} requestId={} — sidecar identity drift detected at consumer-ensure",
                                     session_key, request_id,
                                 );
-                                task_buffer.lock().await.push(&msg);
+                                if uses_openclaw_reply_protocol(&msg) {
+                                    let _ = abort_immediate_reply(
+                                        task_adapter.as_ref(),
+                                        &msg,
+                                        "consumer_identity_changed",
+                                        "会话连接已变化，请重新发送。",
+                                    )
+                                    .await;
+                                } else {
+                                    task_buffer.lock().await.push(&msg);
+                                }
                                 task_adapter.ack_clear(&chat_id, &message_id).await;
                                 return;
                             }
@@ -2545,6 +2678,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                     buf_msg.source_type.clone(),
                                     Some(buf_msg.sender_id.clone()),
                                     None,
+                                    buf_msg.delivery_protocol.clone(),
                                 );
 
                                 let buf_penv = task_provider_env.read().await.clone();
@@ -2676,6 +2810,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                             msg.source_type.clone(),
                             Some(msg.sender_id.clone()),
                             group_ctx.as_ref(),
+                            msg.delivery_protocol.clone(),
                         );
                         }
 
@@ -2748,7 +2883,7 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 // Clean up reply slot — no events will arrive for this request
                                 reply_router_arc.lock().await.unregister(&request_id);
                                 // Buffer for retry on transient errors
-                                if e.should_buffer() {
+                                if e.should_buffer() && !uses_openclaw_reply_protocol(&msg) {
                                     task_buffer.lock().await.push(&msg);
                                 }
                                 let e_str = format!("{}", e);
@@ -2758,7 +2893,13 @@ async fn create_bot_instance_with_pending_cron_events<R: Runtime>(
                                 } else {
                                     format!("⚠️ {}", e)
                                 };
-                                let _ = task_adapter.send_message(&chat_id, &user_msg).await;
+                                let _ = abort_immediate_reply(
+                                    task_adapter.as_ref(),
+                                    &msg,
+                                    "sidecar_enqueue_failed",
+                                    &user_msg,
+                                )
+                                .await;
                                 task_adapter.ack_clear(&chat_id, &message_id).await;
                                 drop(_permit);
                                 drop(_peer_guard);

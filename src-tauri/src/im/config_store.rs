@@ -709,6 +709,136 @@ mod agent_monitor_tests {
     }
 
     #[test]
+    fn openclaw_lark_streaming_value_migration_is_typed_and_idempotent() {
+        let mut value = serde_json::json!({
+            "agents": [{
+                "channels": [
+                    {
+                        "id": "lark-agent",
+                        "type": "openclaw:openclaw-lark",
+                        "openclawPluginId": "openclaw-lark",
+                        "openclawPluginConfig": { "streaming": "true" }
+                    },
+                    {
+                        "id": "type-only",
+                        "type": "openclaw:openclaw-lark",
+                        "openclawPluginConfig": { "streaming": "true" }
+                    },
+                    {
+                        "type": "openclaw:other",
+                        "openclawPluginConfig": { "streaming": "true" }
+                    },
+                    {
+                        "openclawPluginId": "openclaw-lark",
+                        "openclawPluginConfig": { "streaming": "unknown" }
+                    },
+                    {
+                        "openclawPluginId": "openclaw-lark",
+                        "openclawPluginConfig": { "streaming": "TRUE" }
+                    }
+                ]
+            }],
+            "imBotConfigs": [{
+                "id": "lark-legacy",
+                "openclawPluginId": "openclaw-lark",
+                "openclawPluginConfig": { "streaming": "false" }
+            }, {
+                "id": "npm-only",
+                "openclawNpmSpec": "@larksuite/openclaw-lark@2026.6.10",
+                "openclawPluginConfig": { "streaming": "false" }
+            }]
+        });
+
+        assert_eq!(
+            migrate_openclaw_lark_streaming_value(&mut value),
+            vec!["lark-agent".to_string(), "lark-legacy".to_string()]
+        );
+        assert_eq!(
+            value["agents"][0]["channels"][0]["openclawPluginConfig"]["streaming"],
+            serde_json::Value::Bool(true)
+        );
+        assert_eq!(
+            value["imBotConfigs"][0]["openclawPluginConfig"]["streaming"],
+            serde_json::Value::Bool(false)
+        );
+        assert_eq!(
+            value["agents"][0]["channels"][1]["openclawPluginConfig"]["streaming"],
+            "true"
+        );
+        assert_eq!(
+            value["agents"][0]["channels"][2]["openclawPluginConfig"]["streaming"],
+            "true"
+        );
+        assert_eq!(
+            value["agents"][0]["channels"][3]["openclawPluginConfig"]["streaming"],
+            "unknown"
+        );
+        assert_eq!(
+            value["agents"][0]["channels"][4]["openclawPluginConfig"]["streaming"],
+            "TRUE"
+        );
+        assert_eq!(
+            value["imBotConfigs"][1]["openclawPluginConfig"]["streaming"],
+            "false"
+        );
+        assert!(migrate_openclaw_lark_streaming_value(&mut value).is_empty());
+    }
+
+    #[test]
+    fn openclaw_lark_streaming_read_heal_persists_once_under_config_lock() {
+        let path = temp_config_path("lark-streaming-heal");
+        let dir = path.parent().unwrap().to_path_buf();
+        std::fs::write(
+            &path,
+            serde_json::json!({
+                "agents": [{
+                    "id": "agent-1",
+                    "name": "Agent",
+                    "enabled": true,
+                    "workspacePath": "/tmp/project",
+                    "channels": [{
+                        "id": "lark",
+                        "type": "openclaw:openclaw-lark",
+                        "enabled": true,
+                        "openclawPluginId": "openclaw-lark",
+                        "openclawPluginConfig": { "streaming": "true" }
+                    }]
+                }],
+                "imBotConfigs": [{
+                    "id": "legacy-lark",
+                    "openclawPluginId": "openclaw-lark",
+                    "openclawPluginConfig": { "streaming": "false" }
+                }]
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        persist_agent_config_read_heal(&path, "test");
+        let healed = std::fs::read_to_string(&path).unwrap();
+        let healed_value: serde_json::Value = serde_json::from_str(&healed).unwrap();
+        assert_eq!(
+            healed_value["agents"][0]["channels"][0]["openclawPluginConfig"]["streaming"],
+            true
+        );
+        assert_eq!(
+            healed_value["imBotConfigs"][0]["openclawPluginConfig"]["streaming"],
+            false
+        );
+        let backup_after_first = std::fs::read_to_string(path.with_file_name("config.json.bak"))
+            .expect("first heal should keep a backup of the pre-heal config");
+
+        persist_agent_config_read_heal(&path, "test");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), healed);
+        assert_eq!(
+            std::fs::read_to_string(path.with_file_name("config.json.bak")).unwrap(),
+            backup_after_first
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn agent_provider_env_read_heal_persists_once_for_usable_main_config() {
         let path = temp_config_path("provider-env-heal-ok");
         let dir = path.parent().unwrap().to_path_buf();
@@ -1805,8 +1935,74 @@ fn salvage_agents_from_value(
     }
 }
 
+fn migrate_openclaw_lark_streaming_value(value: &mut serde_json::Value) -> Vec<String> {
+    fn migrate_channel(channel: &mut serde_json::Value) -> Option<String> {
+        let Some(channel) = channel.as_object_mut() else {
+            return None;
+        };
+        if channel.get("openclawPluginId").and_then(|v| v.as_str()) != Some("openclaw-lark") {
+            return None;
+        }
+        let channel_id = channel
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("<missing>")
+            .to_string();
+        let Some(config) = channel
+            .get_mut("openclawPluginConfig")
+            .and_then(serde_json::Value::as_object_mut)
+        else {
+            return None;
+        };
+        let Some(raw) = config.get_mut("streaming") else {
+            return None;
+        };
+        let parsed = match raw.as_str() {
+            Some("true") => Some(true),
+            Some("false") => Some(false),
+            _ => None,
+        };
+        let Some(parsed) = parsed else {
+            return None;
+        };
+        *raw = serde_json::Value::Bool(parsed);
+        Some(channel_id)
+    }
+
+    let mut migrated_channel_ids = Vec::new();
+    if let Some(agents) = value
+        .get_mut("agents")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for agent in agents {
+            if let Some(channels) = agent
+                .get_mut("channels")
+                .and_then(serde_json::Value::as_array_mut)
+            {
+                for channel in channels {
+                    if let Some(channel_id) = migrate_channel(channel) {
+                        migrated_channel_ids.push(channel_id);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(bots) = value
+        .get_mut("imBotConfigs")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for bot in bots {
+            if let Some(channel_id) = migrate_channel(bot) {
+                migrated_channel_ids.push(channel_id);
+            }
+        }
+    }
+    migrated_channel_ids
+}
+
 fn persist_agent_config_read_heal(config_path: &Path, reason: &str) {
     let mut changed_under_lock = false;
+    let mut migrated_lark_channel_ids = Vec::new();
     let result = with_config_lock(config_path, true, |config| {
         let mut healed = config.clone();
         let normalized = normalize_stringified_json_value(&mut healed);
@@ -1816,7 +2012,8 @@ fn persist_agent_config_read_heal(config_path: &Path, reason: &str) {
             .unwrap_or_default();
         let migrated_provider_env = migrate_agent_provider_env_value(&mut healed, &api_keys, false);
         let promoted_mcp = promote_agent_mcp_json_to_global_value(&mut healed);
-        if !(normalized || migrated_provider_env || promoted_mcp) {
+        let lark_channel_ids = migrate_openclaw_lark_streaming_value(&mut healed);
+        if !(normalized || migrated_provider_env || promoted_mcp || !lark_channel_ids.is_empty()) {
             return Ok(());
         }
 
@@ -1829,6 +2026,7 @@ fn persist_agent_config_read_heal(config_path: &Path, reason: &str) {
         }
 
         *config = healed;
+        migrated_lark_channel_ids = lark_channel_ids;
         changed_under_lock = true;
         Ok(())
     });
@@ -1836,6 +2034,13 @@ fn persist_agent_config_read_heal(config_path: &Path, reason: &str) {
     match result {
         Ok(_) if changed_under_lock => {
             ulog_info!("[agent] Persisted config read-time heal: {}", reason);
+            if !migrated_lark_channel_ids.is_empty() {
+                ulog_info!(
+                    "[agent] Migrated OpenClaw Lark streaming type: count={} channelIds={}",
+                    migrated_lark_channel_ids.len(),
+                    migrated_lark_channel_ids.join(",")
+                );
+            }
         }
         Ok(_) => {}
         Err(e) => {
@@ -1890,10 +2095,16 @@ pub(crate) fn read_agent_configs_from_disk() -> Vec<AgentConfigRust> {
             .unwrap_or_default();
         let migrated_provider_env = migrate_agent_provider_env_value(&mut value, &api_keys, true);
         let promoted_mcp = promote_agent_mcp_json_to_global_value(&mut value);
+        let migrated_lark_streaming = migrate_openclaw_lark_streaming_value(&mut value);
 
         match salvage_agents_from_value(&value, &api_keys) {
             Some(agents) => {
-                if i == 0 && (normalized || migrated_provider_env || promoted_mcp) {
+                if i == 0
+                    && (normalized
+                        || migrated_provider_env
+                        || promoted_mcp
+                        || !migrated_lark_streaming.is_empty())
+                {
                     let mut reasons = Vec::new();
                     if normalized {
                         reasons.push("stringified JSON normalization");
@@ -1903,6 +2114,9 @@ pub(crate) fn read_agent_configs_from_disk() -> Vec<AgentConfigRust> {
                     }
                     if promoted_mcp {
                         reasons.push("Agent MCP global registry promotion");
+                    }
+                    if !migrated_lark_streaming.is_empty() {
+                        reasons.push("OpenClaw Lark typed streaming migration");
                     }
                     let reason = reasons.join(" + ");
                     persist_agent_config_read_heal(&main_path, &reason);

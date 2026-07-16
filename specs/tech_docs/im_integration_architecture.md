@@ -381,30 +381,30 @@ pub struct MessageBuffer {
 }
 ```
 
-Sidecar 不可用时入站消息进入缓冲队列；恢复后由 peer lock 保护入队顺序，回复生命周期仍由 `/api/im/events` 的 requestId 事件归属，而不是依赖同一 SSE 流内重放。
+Sidecar 不可用时入站消息进入缓冲队列；恢复后由 peer lock 保护入队顺序，回复生命周期仍由 `/api/im/events` 的 requestId 事件归属，而不是依赖同一 SSE 流内重放。OpenClaw reply 的 requestId/deliveryProtocol 只在当前进程的内存缓冲中保留，以维持仍在等待的 Bridge dispatcher；它们不写入 `buffer.json`，因为 app/Bridge 重启后原 pending owner 已不存在，磁盘重放必须走普通 outbound 路径。
 
 ### 2.10 Draft / Reply 渲染（`/api/im/events` → ReplyRouter）
 
-当前实现是 Sidecar 事件总线 + Rust consumer：
+当前实现是 Sidecar 事件总线 + Rust consumer。渲染路径由每个 `ReplySlot` 的 delivery protocol 决定：
 
 ```
 Rust ImEventConsumer 连接 Node /api/im/events?since=<seq>
  │
- ├── 收到 { requestId, type:"partial" }
- │ └── ReplyRouter 找到 requestId slot，创建/编辑 draft（节流 + 平台长度限制）
+ ├── Native adapter（deliveryProtocol 为空）
+ │ ├── "partial" → 创建/编辑 draft（节流 + 平台长度限制）
+ │ ├── "block-end" → 定稿当前 block
+ │ └── terminal → 平台收尾并移除 slot
  │
- ├── 收到 { requestId, type:"block-end" }
- │ ├── 文本在平台限制内 → editMessageText / finalize_message 定稿
- │ └── 文本超限 → delete draft → 分片发送
- │
- ├── 收到 { requestId, type:"complete" }
- │ └── terminal outcome 携带 sessionId，移除 slot，record_response
- │
- └── 收到 { requestId, type:"error"|"cancelled" }
-   └── delete draft / send error or cancelled feedback，移除 slot
+ └── OpenClaw reply（deliveryProtocol="openclaw-reply"）
+   ├── "partial" → 发送当前 raw text block 的 full snapshot
+   ├── "block-end" → 仅发送顺序屏障并清空 block accumulator
+   ├── "complete" → 透传 terminal outcome 的 canonical finalPayloads
+   └── "error"|"cancelled" → 透传 producer-owned terminal payload
 ```
 
-`ImEventConsumer` 拥有 SSE reconnect lifecycle，使用 `since=<lastSeq>` 恢复 ring-buffered events；`ReplyRouter` 拥有每个 requestId 的 draft/message slot。多 block 回复继续按 block 独立创建/编辑/定稿。
+`ImEventConsumer` 拥有 SSE reconnect lifecycle，使用 `since=<lastSeq>` 恢复 ring-buffered events；`ReplyRouter` 拥有每个 requestId 的 draft/message slot。Native adapter 继续按 block 独立创建/编辑/定稿；OpenClaw 路径中，插件拥有渲染、节奏和 fallback，Rust 只做 request-scoped protocol forwarding。两条路径不得用 channel 全局 capability 相互推导。
+
+OpenClaw pending dispatcher 在 Rust admission 之前已经存在，因此每个早退分支也属于协议生命周期：有用户可见结果时经 `complete`/`abort` 交回插件 renderer，无结果时发送空 `complete`。群聊是否进入模型仍由 Rust 的 `GroupActivation` 权威决定，Bridge 不得用插件侧 `isMention` 跳过 request protocol。协议请求只允许进进程内 buffer；无法 enqueue 时必须 terminal abort，不能写入 `buffer.json` 后让原 dispatcher永久等待。
 
 ### 2.11 Tauri 事件
 
@@ -501,7 +501,7 @@ Rust BridgeAdapter ←─ HTTP ──→ Plugin Bridge (Node.js 进程)
  │ │
  │ POST /send-text │ import(plugin)
  │ POST /send-media │ compat-api → register()
- │ POST /edit-message │ compat-runtime → dispatchReply 拦截
+ │ reply protocol │ compat-runtime → OpenClaw dispatcher
  │ GET /status │
  │ │ POST /api/im-bridge/message → Rust
  │ │
@@ -516,32 +516,37 @@ SessionRouter → Sidecar(AI) 社区 IM 平台 (QQ/Matrix/…)
 | `BridgeAdapter` | `src-tauri/src/im/bridge.rs` | 实现 ImAdapter + ImStreamAdapter，通过 HTTP 与 Bridge 进程通信 |
 | Plugin Bridge 入口 | `src/server/plugin-bridge/index.ts` | 启动 HTTP server，加载插件，转发消息 |
 | compat-api | `src/server/plugin-bridge/compat-api.ts` | OpenClaw API shim，捕获 `registerChannel()` |
-| compat-runtime | `src/server/plugin-bridge/compat-runtime.ts` | channelRuntime mock，拦截 `dispatchReply` 提取用户消息 |
-| plugin-sdk-shim | `src/server/plugin-bridge/plugin-sdk-shim/` | 为 `openclaw/plugin-sdk` imports 提供运行时 shim |
+| compat-runtime | `src/server/plugin-bridge/compat-runtime.ts` | channelRuntime mock，建立真实 OpenClaw reply dispatcher 并提取用户消息 |
+| pending-dispatch | `src/server/plugin-bridge/pending-dispatch.ts` | 按 requestId 串行投递 partial/barrier/terminal；只合并相邻同 lane snapshot |
+| sdk-shim | `src/server/plugin-bridge/sdk-shim/` | 为 `openclaw/plugin-sdk` imports 提供运行时 shim |
 | Bridge sender registry | `bridge.rs` 静态 `BRIDGE_SENDERS` | bot_id → (sender_channel, plugin_id) 路由映射 |
 
 #### 消息流
 
 **入站**（社区平台 → AI）：
 1. 社区插件收到消息 → 调 `withReplyDispatcher({ run })` 或 `dispatchReplyFromConfig()`
-2. compat-runtime 拦截 → 提取 ctx 字段 → POST `/api/im-bridge/message` → Rust
-3. Rust 查 `BRIDGE_SENDERS` registry → `mpsc::Sender<ImMessage>` → 标准消息处理循环
-4. SessionRouter → ensure sidecar/consumer → `/api/im/enqueue` → `/api/im/events` → ReplyRouter/BridgeAdapter 回复
+2. compat-runtime 创建 dispatcher，生成 requestId 并注册 pending dispatch
+3. 提取 ctx 字段 → 携带同一 `requestId + deliveryProtocol: "openclaw-reply"` POST `/api/im-bridge/message` → Rust
+4. Rust 查 `BRIDGE_SENDERS` registry → `mpsc::Sender<ImMessage>` → 标准消息处理循环
+5. SessionRouter → ensure sidecar/consumer → `/api/im/enqueue` → `/api/im/events` → ReplyRouter/BridgeAdapter 回复
 
 **出站**（AI → 社区平台）：
-1. Rust `BridgeAdapter::send_message()` → POST `/send-text` 到 Bridge 进程
-2. Bridge 调用插件的 deliver 回调 → 社区平台 API
+1. ReplyRouter 按 requestId 调 Bridge reply protocol endpoints；HTTP ACK 只表示合法入队
+2. pending queue 严格保持 run/block/terminal 顺序，并调用 dispatcher 的 partial/final callbacks
+3. 插件依据自身 typed config 选择 CardKit streaming 或静态消息 fallback
+
+`/send-text` 仍是普通 outbound surface，不参与标准 reply dispatcher，也不能作为 pending reply 的隐式 fallback。
 
 #### Dispatch 返回值约定
 
-OpenClaw 插件对 dispatch 函数的返回值做 `{ queuedFinal, counts }` 解构。**所有** dispatch 相关函数 MUST 返回此结构，否则插件崩溃：
+OpenClaw 插件对 dispatch 函数的返回值做 `{ queuedFinal, counts }` 解构。shim dispatcher 必须实现上游的同步 admission、顺序投递、typing 与 idle contract，并返回此结构：
 
 | 函数 | 返回 |
 |------|------|
-| `withReplyDispatcher({ run })` | `{ queuedFinal: 0, counts: {} }` |
-| `dispatchReplyFromConfig(params)` | 透传 `dispatchReplyWithBufferedBlockDispatcher` 的返回值 |
-| `dispatchReplyWithBufferedBlockDispatcher(params)` | `{ queuedFinal: 0, counts: {} }`（包括 empty text 提前返回路径） |
-| `createReplyDispatcherWithTyping()` 的 `dispatch` 回调 | `{ queuedFinal: 0, counts: {} }` |
+| `withReplyDispatcher({ run })` | 等待 run 与 dispatcher idle，返回真实计数 |
+| `dispatchReplyFromConfig(params)` | 注册 pending、投递 Rust 请求并等待 request terminal |
+| `dispatchReplyWithBufferedBlockDispatcher(params)` | 仅作为不支持标准 dispatcher 的 legacy inbound fallback |
+| `createReplyDispatcherWithTyping()` | 同步接纳 payload，按序调用 deliver，并暴露 `waitForIdle()` |
 
 #### ctx 字段提取映射
 
@@ -575,9 +580,9 @@ OpenClaw 飞书插件通过 `mentionedBot(ctx.mentions)` 检测 @mention，结�
 
 ```
 安装：cmd_install_openclaw_plugin(npm_spec)
- → bun init + bun add <spec>
+ → 使用内置 Node.js 执行 npm install <spec>
  → 读取 openclaw.plugin.json manifest
- → 复制 plugin-sdk-shim → node_modules/openclaw/
+ → 最后写入 sdk-shim → node_modules/openclaw/
  → 返回 manifest + capabilities
 
 启动：start_im_bot(platform="openclaw:<install-or-route-id>")
@@ -764,6 +769,10 @@ interface ImBotConfig {
 ```
 
 **OpenClaw 身份边界**：历史配置里的 `platform: "openclaw:<...>"` 可能保存安装 ID（如 `openclaw-lark`、`wecom-openclaw-plugin`），也可能保存协议 Channel ID（如 `qqbot`）。Rust/Renderer 用 `openclawPluginId` 作为安装目录身份保持兼容；Node Plugin Bridge 则必须从 OpenClaw manifest / `package.json.openclaw.channel.id` / `registerChannel()` 得到协议 Channel ID，并用它构造 `cfg.channels.<channelId>`。不要在 Bridge 内用安装 ID 作为 canonical OpenClaw config key。
+
+**配置类型边界**：`openclawPluginConfig` 保留 manifest scalar 的原生 JSON 类型（boolean/string/number）。Renderer 按 schema/default 渲染并持久化 typed value；Rust 在现有 config lock 内只把已知 Lark 身份的历史 `streaming: "true"|"false"` read-heal 为 boolean，未知值及其他插件不猜测、不迁移。插件据此自行决定 streaming/fallback。
+
+**配置写 owner**：Channel detail 不得把 React 中的旧 `channels[]` 全量写回。通用字段走 `patchAgentChannelConfig()`，OpenClaw scalar 走显式 field `set/delete` mutation；两者都在 `atomicModifyConfig` 内合并 disk-latest Agent/Channel。写盘后仍用权威 `channels` 触发 runtime sync；Rust 只把 `patch.channels` 当 refresh signal，运行态 `groupActivation/groupPermissions` 始终从锁内重读的 `updated_agent.channels` 投影，不信任可能乱序的 invoke payload。
 
 **存储位置**：`~/.myagents/config.json` → `imBotConfigs: ImBotConfig[]`
 
@@ -955,8 +964,8 @@ src/renderer/
 src/server/plugin-bridge/
 ├── index.ts # Bridge 入口：CLI args 解析、插件加载、HTTP server
 ├── compat-api.ts # OpenClaw API shim（registerChannel 捕获）
-├── compat-runtime.ts # channelRuntime mock（dispatchReply 拦截 → Rust，ctx 字段提取）
-├── streaming-adapter.ts # 流式卡片适配（start-stream/stream-chunk/finalize-stream）
+├── compat-runtime.ts # channelRuntime mock（dispatcher 注册 → Rust，ctx 字段提取）
+├── pending-dispatch.ts # requestId-scoped 有序 reply transport
 ├── mcp-handler.ts # Bridge 插件 MCP 工具暴露
 └── sdk-shim/
  └── plugin-sdk/

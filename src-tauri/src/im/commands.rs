@@ -2029,12 +2029,12 @@ pub async fn cmd_update_agent_config(
             }
         }
 
-        // Hot-reload per-channel group settings when channels array is patched.
-        // Frontend patchChannel() writes the full channels array to disk, then sends
-        // the patch here for runtime sync. Match by channel ID to update the running instance.
-        if let Some(ref channels) = patch.channels {
-            agent.config.channels = channels.clone();
-            for ch_config in channels {
+        // Hot-reload per-channel group settings when a channel patch is signaled.
+        // Disk is authoritative: renderer invokes can arrive out of order, so
+        // never project the invoke payload into live state.
+        if patch.channels.is_some() {
+            agent.config.channels = updated_agent.channels.clone();
+            for ch_config in &updated_agent.channels {
                 if let Some(ch_inst) = agent.channels.get(&ch_config.id) {
                     // groupActivation
                     if let Some(ref act) = ch_config.group_activation {

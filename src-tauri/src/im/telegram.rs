@@ -201,6 +201,7 @@ impl MessageCoalescer {
             reply_to_body: batch.reply_to_body,
             group_system_prompt: batch.group_system_prompt,
             request_id: String::new(),
+            delivery_protocol: None,
         })
     }
 }
@@ -1389,6 +1390,7 @@ impl TelegramAdapter {
             reply_to_body: None,
             group_system_prompt: None,
             request_id: String::new(),
+            delivery_protocol: None,
         })
     }
 
@@ -1812,6 +1814,7 @@ mod tests {
             reply_to_body: None,
             group_system_prompt: None,
             request_id: String::new(),
+            delivery_protocol: None,
         }
     }
 

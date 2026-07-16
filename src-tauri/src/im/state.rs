@@ -850,6 +850,110 @@ impl adapter::ImStreamAdapter for AnyAdapter {
             Self::Bridge(a) => a.bridge_context(),
         }
     }
+    async fn start_reply_dispatch(&self, request_id: &str) -> adapter::AdapterResult<()> {
+        match self {
+            Self::Telegram(a) => a.start_reply_dispatch(request_id).await,
+            Self::Feishu(a) => a.start_reply_dispatch(request_id).await,
+            Self::Dingtalk(a) => a.start_reply_dispatch(request_id).await,
+            Self::Bridge(a) => a.start_reply_dispatch(request_id).await,
+        }
+    }
+    async fn start_reply_stream(
+        &self,
+        request_id: &str,
+        chat_id: &str,
+        initial_text: &str,
+    ) -> adapter::AdapterResult<String> {
+        match self {
+            Self::Telegram(a) => {
+                a.start_reply_stream(request_id, chat_id, initial_text)
+                    .await
+            }
+            Self::Feishu(a) => {
+                a.start_reply_stream(request_id, chat_id, initial_text)
+                    .await
+            }
+            Self::Dingtalk(a) => {
+                a.start_reply_stream(request_id, chat_id, initial_text)
+                    .await
+            }
+            Self::Bridge(a) => {
+                a.start_reply_stream(request_id, chat_id, initial_text)
+                    .await
+            }
+        }
+    }
+    async fn update_reply_stream(
+        &self,
+        stream_id: &str,
+        text: &str,
+        sequence: u32,
+        is_thinking: bool,
+    ) -> adapter::AdapterResult<()> {
+        match self {
+            Self::Telegram(a) => {
+                a.update_reply_stream(stream_id, text, sequence, is_thinking)
+                    .await
+            }
+            Self::Feishu(a) => {
+                a.update_reply_stream(stream_id, text, sequence, is_thinking)
+                    .await
+            }
+            Self::Dingtalk(a) => {
+                a.update_reply_stream(stream_id, text, sequence, is_thinking)
+                    .await
+            }
+            Self::Bridge(a) => {
+                a.update_reply_stream(stream_id, text, sequence, is_thinking)
+                    .await
+            }
+        }
+    }
+    async fn finish_reply_stream_block(&self, stream_id: &str) -> adapter::AdapterResult<()> {
+        match self {
+            Self::Telegram(a) => a.finish_reply_stream_block(stream_id).await,
+            Self::Feishu(a) => a.finish_reply_stream_block(stream_id).await,
+            Self::Dingtalk(a) => a.finish_reply_stream_block(stream_id).await,
+            Self::Bridge(a) => a.finish_reply_stream_block(stream_id).await,
+        }
+    }
+    async fn complete_reply_dispatch(
+        &self,
+        request_id: &str,
+        final_payloads: &serde_json::Value,
+    ) -> adapter::AdapterResult<()> {
+        match self {
+            Self::Telegram(a) => a.complete_reply_dispatch(request_id, final_payloads).await,
+            Self::Feishu(a) => a.complete_reply_dispatch(request_id, final_payloads).await,
+            Self::Dingtalk(a) => a.complete_reply_dispatch(request_id, final_payloads).await,
+            Self::Bridge(a) => a.complete_reply_dispatch(request_id, final_payloads).await,
+        }
+    }
+    async fn abort_reply_dispatch(
+        &self,
+        request_id: &str,
+        reason: &str,
+        terminal_payload: &serde_json::Value,
+    ) -> adapter::AdapterResult<()> {
+        match self {
+            Self::Telegram(a) => {
+                a.abort_reply_dispatch(request_id, reason, terminal_payload)
+                    .await
+            }
+            Self::Feishu(a) => {
+                a.abort_reply_dispatch(request_id, reason, terminal_payload)
+                    .await
+            }
+            Self::Dingtalk(a) => {
+                a.abort_reply_dispatch(request_id, reason, terminal_payload)
+                    .await
+            }
+            Self::Bridge(a) => {
+                a.abort_reply_dispatch(request_id, reason, terminal_payload)
+                    .await
+            }
+        }
+    }
     fn supports_streaming(&self) -> bool {
         match self {
             Self::Telegram(a) => a.supports_streaming(),

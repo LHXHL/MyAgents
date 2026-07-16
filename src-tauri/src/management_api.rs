@@ -2028,6 +2028,10 @@ struct BridgeAttachment {
 struct BridgeMessagePayload {
     bot_id: String,
     plugin_id: String,
+    #[serde(default)]
+    request_id: Option<String>,
+    #[serde(default)]
+    delivery_protocol: Option<crate::im::types::ImDeliveryProtocol>,
     sender_id: String,
     sender_name: Option<String>,
     text: String,
@@ -2103,6 +2107,22 @@ async fn handle_bridge_message(
         .is_mention
         .unwrap_or(source_type == ImSourceType::Private);
 
+    let request_id = payload
+        .request_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if payload.delivery_protocol.is_some() && request_id.is_none() {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "ok": false,
+                "error": "deliveryProtocol requires requestId"
+            })),
+        );
+    }
+
     // Decode base64 media attachments from Bridge
     let mut im_attachments: Vec<ImAttachment> = Vec::new();
     for att in &payload.attachments {
@@ -2156,7 +2176,8 @@ async fn handle_bridge_message(
         hint_group_name: payload.group_name,
         reply_to_body: payload.reply_to_body,
         group_system_prompt: payload.group_system_prompt,
-        request_id: String::new(),
+        request_id: request_id.unwrap_or_default(),
+        delivery_protocol: payload.delivery_protocol,
     };
 
     match sender.send(msg).await {
@@ -3498,6 +3519,27 @@ mod tests {
         assert_eq!(
             response.get("error").and_then(Value::as_str),
             Some("stale_revision: expected 4, current 5")
+        );
+    }
+
+    #[test]
+    fn bridge_message_parses_request_scoped_openclaw_reply_protocol() {
+        let payload: BridgeMessagePayload = serde_json::from_value(serde_json::json!({
+            "botId": "bot-1",
+            "pluginId": "openclaw-lark",
+            "requestId": "request-1",
+            "deliveryProtocol": "openclaw-reply",
+            "senderId": "user-1",
+            "text": "hello",
+            "chatType": "direct",
+            "chatId": "chat-1"
+        }))
+        .unwrap();
+
+        assert_eq!(payload.request_id.as_deref(), Some("request-1"));
+        assert_eq!(
+            payload.delivery_protocol,
+            Some(crate::im::types::ImDeliveryProtocol::OpenClawReply)
         );
     }
 

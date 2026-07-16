@@ -949,6 +949,11 @@
       "missingBotToken": "请先配置 Bot Token",
       "missingCredentials": "请先配置应用凭证",
       "operationFailed": "操作失败: {{message}}",
+      "configFields": {
+        "streaming": "流式回复"
+      },
+      "numberRequired": "请输入有效数字",
+      "integerRequired": "请输入整数",
       "deleted": "Channel 已删除",
       "deleteFailed": "删除失败: {{message}}",
       "defaultInheritAgent": "默认 (继承 Agent)",

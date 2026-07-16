@@ -20,6 +20,10 @@ const CHILD_PROCESS_ALLOWLIST = new Set([
   // This regression verifies the existing MCP OAuth refresh lock across real
   // Node processes. Children share only a temp config dir and loopback server.
   'src/server/__tests__/mcp-oauth.integration.test.ts',
+  // This contract test runs the real Plugin Bridge process against a temp
+  // OpenClaw fixture and a loopback-only fake Rust ingress. It uses no secrets
+  // and cannot reach an external service.
+  'src/server/plugin-bridge/reply-transport.integration.test.ts',
 ]);
 const ANSI_ESCAPE_RE = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g');
 

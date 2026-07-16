@@ -59,6 +59,11 @@ import {
   stampTurnUsageOnPendingAssistant,
 } from './transcript-persistence';
 import { shouldRecordTerminalActivity } from '../session-core/session-activity-policy';
+import {
+  buildImCancelledPayload,
+  buildImCompletePayload,
+  buildImErrorPayload,
+} from '../utils/im-terminal-payload';
 
 export type BuiltinTurnTraceSnapshot = {
   turnId: string;
@@ -111,6 +116,7 @@ export type BuiltinTurnLifecycleDeps = {
   abortTurnAbort: (sessionId: string, reason: CancelReason) => void;
   clearAmbientTurnId: (sessionId: string) => void;
   completeCurrentImRequest: (data?: unknown) => void;
+  cancelCurrentImRequest: (data?: unknown) => void;
   failCurrentImRequest: (data?: unknown) => void;
   clearMirrorState: () => void;
   clearStreamTurnMaps: () => void;
@@ -297,7 +303,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     lastTurnEndPersist = lastTurnEndPersist.finally(() => {
       commonTerminalCleanup('complete');
       if (!hasCurrentTurnImTerminalEmitted()) {
-        deps.completeCurrentImRequest('');
+        deps.completeCurrentImRequest(buildImCompletePayload(terminalOutcome.text));
       }
       setCurrentTurnImTerminalEmitted(false);
       if (confirmedQueueTurnKeepStreaming) {
@@ -328,7 +334,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       }
     }
     commonTerminalCleanup('stopped');
-    deps.completeCurrentImRequest('');
+    deps.cancelCurrentImRequest(buildImCancelledPayload());
     setCurrentTurnImTerminalEmitted(false);
     forceCloseOrphanThinkingBlocks('handleMessageStopped');
     lastTurnEndPersist = deps.persistTranscript(undefined, activityAt);
@@ -379,7 +385,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
     notifyCurrentTurnTerminalOutcome(terminalOutcome, lastTurnEndPersist);
     commonTerminalCleanup('error');
     if (!hasCurrentTurnImTerminalEmitted()) {
-      deps.failCurrentImRequest(localizedError ?? deps.localizeImError(error));
+      deps.failCurrentImRequest(buildImErrorPayload(localizedError ?? deps.localizeImError(error)));
     }
     setCurrentTurnImTerminalEmitted(false);
     deps.clearTrace(errorTrace);
@@ -478,7 +484,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
       if (getPendingRequestIds().length > 0 && !isAbortResult) {
         const errorText = deps.localizeImError(rawError);
         console.warn('[agent] SDK result is_error, forwarding to IM bus:', errorText);
-        deps.failCurrentImRequest(errorText);
+        deps.failCurrentImRequest(buildImErrorPayload(errorText));
       } else if (getPendingRequestIds().length > 0 && isAbortResult) {
         console.log('[agent] Suppressing IM error forward for aborted turn (handleMessageComplete will finalize)');
       }
@@ -525,7 +531,7 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         }
       }
       if (shouldCompleteNoOutputImRequest && !hasCurrentTurnImTerminalEmitted()) {
-        deps.completeCurrentImRequest(noOutputResultText);
+        deps.completeCurrentImRequest(buildImCompletePayload(noOutputResultText));
       }
     }
 

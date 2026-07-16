@@ -84,6 +84,7 @@ function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
     abortTurnAbort: vi.fn(),
     clearAmbientTurnId: vi.fn(),
     completeCurrentImRequest: vi.fn(),
+    cancelCurrentImRequest: vi.fn(),
     failCurrentImRequest: vi.fn(),
     clearMirrorState: vi.fn(),
     clearStreamTurnMaps: vi.fn(),
@@ -219,7 +220,9 @@ describe('turn-lifecycle owner', () => {
 
     expect(broadcasts.map(item => item.event)).toContain('chat:message-error');
     expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
-    expect(deps.failCurrentImRequest).toHaveBeenCalledWith(expect.stringContaining('AI 未返回任何内容'));
+    expect(deps.failCurrentImRequest).toHaveBeenCalledWith({
+      finalPayloads: [{ text: expect.stringContaining('AI 未返回任何内容'), isError: true }],
+    });
     expect(transcriptState.messages.at(-1)).toMatchObject({
       role: 'assistant',
       content: expect.stringContaining('AI 未返回任何内容'),
@@ -243,7 +246,7 @@ describe('turn-lifecycle owner', () => {
     await lifecycle.getLastTurnEndPersist();
 
     expect(deps.failCurrentImRequest).not.toHaveBeenCalled();
-    expect(deps.completeCurrentImRequest).toHaveBeenCalledWith('');
+    expect(deps.completeCurrentImRequest).toHaveBeenCalledWith({ finalPayloads: [] });
   });
 
   it('recovers SDK missing resume anchor result errors without surfacing a user error', () => {
@@ -431,7 +434,10 @@ describe('turn-lifecycle owner', () => {
     }));
     expect(deps.schedulePostTerminalQueueDrain).toHaveBeenCalledWith('stopped');
     expect(deps.endTurnAbort).toHaveBeenCalledWith('session-1');
-    expect(deps.completeCurrentImRequest).toHaveBeenCalledWith('');
+    expect(deps.completeCurrentImRequest).not.toHaveBeenCalled();
+    expect(deps.cancelCurrentImRequest).toHaveBeenCalledWith({
+      finalPayloads: [{ text: '🛑 已取消' }],
+    });
     expect(deps.persistTranscript).toHaveBeenCalledTimes(1);
     expect(deps.persistTranscript).toHaveBeenCalledWith(undefined, expect.any(String));
   });
@@ -444,7 +450,9 @@ describe('turn-lifecycle owner', () => {
     await waitForCurrentTurnTerminalObserver();
     expect(deps.schedulePostTerminalQueueDrain).toHaveBeenCalledWith('error');
     expect(deps.abortTurnAbort).toHaveBeenCalledWith('session-1', 'error');
-    expect(deps.failCurrentImRequest).toHaveBeenCalledWith('localized:boom');
+    expect(deps.failCurrentImRequest).toHaveBeenCalledWith({
+      finalPayloads: [{ text: 'localized:boom', isError: true }],
+    });
     expect(deps.persistTranscript).toHaveBeenCalledTimes(1);
     expect(transcriptState.messages.at(-1)).toMatchObject({
       role: 'assistant',
