@@ -3,10 +3,10 @@ type: prd
 status: implemented
 created: 2026-07-15
 updated: 2026-07-16
-scope: "MyAgents 0.3.1 Team Space 前端体验收口：Issue 列表把详细状态选择器隐藏但保留实现，替换为默认『全部』的『全部 / 未完成』分段切换；统一所有 Goal 路径为灰色祖先 + 黑色常规字重末级；为 Issue 正文、评论内容和 Goal context 建立克制的叙事内容内缩。产品实现限于 Desktop Renderer；2026-07-16 回归修复额外对齐 Rust dev/test Space mock 的既有 Cloud 查询契约，不改生产 Rust 代理、Cloud API、查询协议或数据模型。"
-issue: "用户基于 Team Space 实际界面提出：Issue 一级状态入口过重且默认只看未完成；Goal 选择器对两层与深层压缩路径的层级样式不一致；Issue/评论/Goal 正文与标题完全齐边，缺少视觉从属关系。"
+scope: "MyAgents 0.3.1 Team Space 前端体验收口：Issue 列表把详细状态选择器隐藏但保留实现，替换为默认『未完成』的『全部 / 未完成』分段切换；统一所有 Goal 路径为灰色祖先 + 黑色常规字重末级；为 Issue 正文、评论内容和 Goal context 建立克制的叙事内容内缩。『全部』继续使用显式 state=all；产品实现限于 Desktop Renderer，不改生产 Rust 代理、Cloud API、查询协议或数据模型。"
+issue: "用户基于 Team Space 实际界面提出 Issue 一级状态入口过重、Goal 路径层级样式不一致、正文缺少从属缩进；首版上线体验后进一步裁决：保留『全部 / 未完成』切换，但默认落在更聚焦待处理事项的『未完成』。"
 research: "specs/ARCHITECTURE.md; specs/DESIGN.md; specs/tech_docs/space_cloud.md; specs/tech_docs/react_stability_rules.md; specs/prd/prd_0.2.50_team_space_pro_operations_and_ux.md; specs/prd/prd_0.3.1_space_cli_goal_discovery_and_issue_update.md; src/renderer/pages/space/Space.tsx; src/renderer/pages/space/spaceHelpers.ts; src/renderer/pages/space/spaceStore.ts; src/renderer/pages/space/spaceUi.ts; src/renderer/pages/space/GoalPathSelectLabel.tsx; src/renderer/pages/space/issues/; src/renderer/pages/space/goals/GoalsWorkspace.tsx; src/renderer/pages/space/agents/AgentsWorkspace.tsx; ../MyAgents_space/src/index.ts::buildGoalPathLabels"
-review: "2026-07-16 『全部』查询契约修复经 requirements / adversarial / architecture 三视角 repair cross-review 全部 PASS；未抓取登录态生产请求响应，Cloud 源码契约、route test、用户实机现象与本地契约测试形成证据闭环"
+review: "2026-07-16 默认『未完成』批次经 requirements / adversarial / architecture 三视角 repair cross-review 无剩余 blocker；adversarial 初审发现并推动修复 logout 远端 await 竞态，同 reviewer follow-up PASS。真实 WebView 视觉 smoke 因无可用 in-app Browser 保留为人工验收项。"
 ---
 
 # Team Space Issue 筛选与内容层级优化 PRD（0.3.1）
@@ -24,7 +24,7 @@ review: "2026-07-16 『全部』查询契约修复经 requirements / adversarial
 
 本期修正三个相互关联的视觉与交互错位：
 
-1. Issue 工具栏不再默认暴露详细状态下拉。原能力保留并继续参与编译，但入口由文件内静态开关关闭；默认渲染等宽的「全部 / 未完成」分段按钮，初始值为「全部」。
+1. Issue 工具栏不再默认暴露详细状态下拉。原能力保留并继续参与编译，但入口由文件内静态开关关闭；默认渲染等宽的「全部 / 未完成」分段按钮，初始值为「未完成」。
 2. 所有可选择 Goal 的位置复用同一个路径标签渲染器。无论 Cloud 返回 `父 / 子` 还是深层压缩格式 `../父/子`，都显示为“祖先前缀灰色、末级黑色、末级常规字重”。
 3. 只读叙事正文相对所属标题或身份头形成轻微内缩：常规宽度左右各 12px，窄宽度左右各 8px。首批覆盖 Issue 正文、评论正文与评论附件、Goal context；不把这个规则泛化到列表、表单或独立卡片。
 
@@ -39,7 +39,7 @@ review: "2026-07-16 『全部』查询契约修复经 requirements / adversarial
 - 用户首次进入时看不到已完成 Issue，却没有明显意识到列表已被过滤；
 - 一级入口把 open/todo/doing/done/closed 等实现态直接暴露给用户，高频使用真正需要的只是“完整集合”和“仍需处理”。
 
-用户明确要求隐藏详细选择器，但保留功能代码并说明暂不启用；在同一位置换成「全部 / 未完成」左右切换，默认「全部」。
+用户明确要求隐藏详细选择器，但保留功能代码并说明暂不启用；在同一位置换成「全部 / 未完成」左右切换。首版默认「全部」经实机体验后，用户进一步裁决默认改为「未完成」，让列表优先聚焦仍需处理的事项；「全部」仍需一键可达且必须真正包含已完成内容。
 
 ### 2.2 Goal 路径的层级语法不统一
 
@@ -104,7 +104,7 @@ Desktop 不应改变或复制 Cloud 的路径构造，只需让共享 label rend
 
 ### 4.1 目标
 
-1. 首次进入 Issues 时看到所有 Issue，且当前筛选状态一眼可知。
+1. 首次进入 Issues 时优先看到未完成 Issue，且当前筛选状态一眼可知。
 2. 一次点击即可在全部与未完成之间切换，按钮状态和实际查询完全一致。
 3. 详细状态能力保留在代码中，但默认 UI 不暴露。
 4. 任意深度 Goal 在所有 picker/trigger 中遵循同一种路径层级样式。
@@ -113,7 +113,7 @@ Desktop 不应改变或复制 Cloud 的路径构造，只需让共享 label rend
 
 ### 4.2 必赢场景
 
-用户首次进入 Space Issues，分段按钮默认选中「全部」，请求显式携带 `state=all`，完成与未完成 Issue 都可出现；点击「未完成」后实际查询切换为 `open,todo,doing`。切换到另一个 Space 或退出后重新进入时恢复默认「全部」，同一 Space 内切换页面则保留用户当前选择。详细状态下拉在 UI 中不可见，但其受控实现仍保留。
+用户首次进入 Space Issues，分段按钮默认选中「未完成」，请求携带 `state=open,todo,doing`；点击「全部」后实际查询切换为显式 `state=all`，完成与未完成 Issue 都可出现。切换到另一个 Space 或发起退出、完成本地 signed-out 切换时恢复默认「未完成」，同一 Space 内切换页面则保留用户当前选择。详细状态下拉在 UI 中不可见，但其受控实现仍保留。
 
 同一用户随后打开 Goal 筛选、Create Issue、Issue 详情任务卡和 Agent Goal picker：`MyAgents社区 / MyAgents BUGFIX` 与 `../MyAgents BUGFIX/Windows 系统兼容性优化` 都以灰色路径前缀 + 黑色常规字重末级呈现，根目标保持黑色常规字重。进入 Issue/Goal 详情和评论流时，正文相对标题/身份头形成 12px（窄宽 8px）内缩，附件与评论正文共用同一内容基线。
 
@@ -122,7 +122,7 @@ Desktop 不应改变或复制 Cloud 的路径构造，只需让共享 label rend
 ### 5.1 本期包含
 
 - Issue 工具栏新增「全部 / 未完成」分段按钮。
-- Issue 初始状态筛选从未完成改为全部。
+- Issue 初始状态筛选及 Space/logout 边界重置为未完成。
 - 详细状态 `CustomSelect` 由文件内静态开关关闭并保留实现说明。
 - 把 `GoalPathSelectLabel` 收敛为通用 `GoalPathLabel`。
 - 支持 `父 / 子` 与 `../父/子` 两种 label 解析。
@@ -152,7 +152,7 @@ Desktop 不应改变或复制 Cloud 的路径构造，只需让共享 label rend
 
 - 外层高 36px（Tailwind `h-9`），与 toolbar 其他控件一致。
 - 两个等宽按钮：「全部」「未完成」。
-- 默认「全部」。
+- 默认「未完成」。
 - 选中项使用中性 elevated paper 背景、`--ink` 文字和轻微 shadow；不使用主按钮色或暖色强调。
 - 未选项使用 `--ink-muted`，hover 回到 `--ink`。
 - 外层使用现有 `--line`、paper token 和圆角体系。
@@ -167,7 +167,7 @@ Desktop 不应改变或复制 Cloud 的路径构造，只需让共享 label rend
 | 全部 | `ALL_ISSUE_STATE_FILTER` | `state=all` |
 | 未完成 | `ACTIVE_ISSUE_STATE_FILTER` | `state=open,todo,doing` |
 
-若未来静态开关重新启用详细选择器，它显示 All + 既有 active + 单状态选项，确保默认 `all` 有合法选中项；分段按钮与详细选择器互斥渲染。
+若未来静态开关重新启用详细选择器，它显示 All + 既有 active + 单状态选项，确保两个产品级筛选都有合法选项；分段按钮与详细选择器互斥渲染。
 
 ### 6.2 Goal 路径标签
 
@@ -220,7 +220,7 @@ SPACE_NARRATIVE_INSET_CLASS = "px-3 max-sm:px-2"
 
 ### 7.1 Owner 与数据流
 
-- `Space.tsx` 继续拥有 Issue query state；初始 `selectedStatus` 使用 `ALL_ISSUE_STATE_FILTER`，并在 `enterSpace` / logout 的 session 边界恢复 `all`；普通 Space tab 切换不重置。
+- `Space.tsx` 继续拥有 Issue query state；初始 `selectedStatus` 使用 `ACTIVE_ISSUE_STATE_FILTER`，并在 `enterSpace` / logout 的本地 session 边界同步恢复未完成，不能等待远端 logout 完成后再重置；普通 Space tab 切换不重置。
 - `IssuesWorkspace` 只负责把分段交互翻译成受控 `onStatusChange`。
 - `spaceStore` / `spaceCloud.ts` 继续拥有 query normalization 与请求拼装，本期不复制这些逻辑。
 - Cloud 继续是 Goal label 的事实源；Renderer 的 `GoalPathLabel` 只负责展示分层。
@@ -286,17 +286,17 @@ JSX 中以该常量互斥渲染详细 `CustomSelect` 和新分段按钮。禁止
 
 ## 9. 验收标准
 
-### AC1：默认全部
+### AC1：默认未完成
 
-- 新进入/切换到 Space 时 `selectedStatus === ALL_ISSUE_STATE_FILTER`。
-- Issue 请求显式携带 `state=all`。
-- 「全部」按钮 `aria-pressed=true`，「未完成」为 false。
+- 新进入/切换到 Space 与发起 logout 的本地 signed-out 边界后，`selectedStatus === ACTIVE_ISSUE_STATE_FILTER`；远端 logout 延迟或失败不能保留旧值或迟到覆盖新登录后的选择。
+- Issue 请求携带 `state=open,todo,doing`。
+- 「未完成」按钮 `aria-pressed=true`，「全部」为 false。
 
-### AC2：未完成切换
+### AC2：全部切换
 
-- 点击「未完成」调用 `onStatusChange(ACTIVE_ISSUE_STATE_FILTER)`。
+- 点击「全部」调用 `onStatusChange(ALL_ISSUE_STATE_FILTER)`，请求显式携带 `state=all`。
 - 受控 props 更新后 active 视觉与 `aria-pressed` 同步。
-- 点击「全部」调用 `onStatusChange(ALL_ISSUE_STATE_FILTER)`。
+- 点击「未完成」调用 `onStatusChange(ACTIVE_ISSUE_STATE_FILTER)`。
 
 ### AC3：详细状态能力保留但不暴露
 
@@ -336,7 +336,7 @@ JSX 中以该常量互斥渲染详细 `CustomSelect` 和新分段按钮。禁止
    - prefix/leaf class、normal weight 与 title；
    - 不误拆普通斜杠文本。
 2. `IssuesWorkspace` DOM 测试：
-   - 全部默认 active；
+   - 未完成默认 active；
    - 两个按钮的 `aria-pressed`；
    - 点击映射准确；
    - 详细状态 select 默认不存在；
@@ -376,7 +376,7 @@ npm run build:web
 
 ### R1：界面显示“全部”但请求仍是未完成
 
-对策：唯一 state owner 的初始值使用显式 `ALL_ISSUE_STATE_FILTER = "all"`；组件测试验证点击映射，store/query 测试验证 `all` 在首屏与分页请求中不被归一化掉。Cloud 的缺省 active 语义保持不变，以兼容 CLI 和旧客户端。
+对策：唯一 state owner 默认使用 `ACTIVE_ISSUE_STATE_FILTER`；用户主动点击「全部」时使用显式 `ALL_ISSUE_STATE_FILTER = "all"`。组件测试验证默认选中态与双向点击映射，store/query 测试继续锁定 `all` 在刷新与分页请求中不被归一化掉。Cloud 的缺省 active 语义保持不变，以兼容 CLI 和旧客户端。
 
 ### R2：CustomSelect 选中态把末级继承成错误颜色
 
@@ -397,7 +397,7 @@ npm run build:web
 ## 12. Rollback
 
 - 分段按钮可通过恢复静态常量重新显示详细状态选择器；查询能力未删除。
-- 默认筛选可独立回退为 `ACTIVE_ISSUE_STATE_FILTER`，不会涉及数据迁移。
+- 默认筛选可独立在 `ACTIVE_ISSUE_STATE_FILTER` 与 `ALL_ISSUE_STATE_FILTER` 之间调整，不涉及数据迁移或协议变更。
 - `GoalPathLabel` 是纯展示组件，回退不改变 API 数据。
 - 叙事 inset 是共享 class 的展示层应用，可逐调用点回退，不改变内容结构或持久化数据。
 
@@ -450,3 +450,24 @@ npm run build:web
 - 交叉审查：requirements、adversarial、architecture 三视角最终均为 PASS。审查中发现并修复 mock 的 archived legacy fixture 缺少 `archivedAt`、PRD scope 表述矛盾、logout 重置缺少回归测试，以及 dormant 细粒度 selector 缺少显式 All 选项。
 - 运行时证据边界：本次未抓取登录态生产请求响应；结论由用户实机回归、Cloud 权威实现与 route test、独立双路径代码调查以及本地前后端契约测试共同支撑。
 - 提交：修复与本 PRD 将随本次 handoff commit 一并提交；最终 hash 以交付消息为准。
+
+### 2026-07-16 · 默认值改为「未完成」开发契约
+
+- 必赢场景：首次进入 Issues、切换到另一个 Space、发起 logout 并完成本地 signed-out 切换后，分段按钮默认选中「未完成」，首个查询携带 `state=open,todo,doing`；用户点击「全部」后仍显式发送 `state=all` 并能看到已完成 Issue；同一 Space 内切换页面继续保留用户已选筛选。远端 logout 延迟/失败不得让旧 `all` 穿越到新登录，也不得用迟到响应覆盖新选择。
+- 复用的既有抽象：`Space.tsx` 的唯一 `selectedStatus` owner、`ACTIVE_ISSUE_STATE_FILTER`、`ALL_ISSUE_STATE_FILTER`、`IssuesWorkspace` 受控分段按钮与既有 query/cache 链路。
+- 反向边界：不撤销显式 `state=all` 契约；不修改 Cloud、Rust proxy/mock、CLI、subscription、Issue 状态枚举、筛选按钮布局或视觉；不新增用户偏好持久化。
+- 新概念清单：0。只调整既有 owner 的默认值与 session 边界 reset 值。
+- 触及的红线：前端状态 owner 必须保持单一；不新增 effect/镜像 state；测试必须覆盖首次查询、跨 Space、logout 与双向切换；只提交本批次文件。
+- Batch 1：默认未完成（单批次闭环）。
+  - [x] 把 `Space.tsx` 初始值、`enterSpace` 与 logout 本地边界 reset 改为 `ACTIVE_ISSUE_STATE_FILTER`。
+  - [x] 更新 switching / workspace DOM 回归测试，继续锁定「全部」映射为显式 `all`。
+  - [x] 完成 targeted tests、typecheck、lint、build 与 `test:changed`。
+  - [x] 完成 requirements / adversarial / architecture 三视角 repair review。
+- 当前批次 Review 基线：`36393bc928adc88ab82c446dacf17f8bb74ec13f`。
+- 预期范围：本 PRD、`Space.tsx`、`Space.switching.test.tsx`、必要时 `IssuesWorkspace.test.tsx`；不修改 Rust 或 Cloud。
+- 待用户决策：无。
+- 进展日志：2026-07-16 已根据用户实机体验确认默认产品意图并完成契约；测试先行得到旧实现 3 个预期失败，改动唯一 query state owner 后 targeted DOM 首轮 2 files / 13 tests PASS。三视角初审中 adversarial reviewer 发现 logout 远端 await 竞态；已把 reset 前移到 store 同步 local signed-out 边界，并增加 deferred success / remote failure / late success 不覆盖新选择的覆盖。
+- 最终验证：targeted DOM 2 files / 14 tests PASS；`npm run test:changed` 5 files / 22 tests PASS；`npm run typecheck` PASS；`npm run lint` PASS（仅仓库既有 `chatSuggestions.ts` orphan warning 与 baseline-browser-mapping 提示）；`npm run build:web` PASS（仅仓库既有 dynamic-import / chunk-size warnings）。
+- 交叉审查：requirements 与 architecture 首轮 PASS；adversarial 首轮发现 1 个 logout async race blocker，修复后由同一 fresh Codex reviewer follow-up 确认 Critical/Warning 均为 0。三路 required lens 完成。
+- 视觉证据：当前 in-app Browser 列表为空，无法执行真实 WebView 截图 smoke；人工只需复验首次进入默认高亮「未完成」、点击「全部」仍能看到已完成 Issue。
+- 提交：本批次实现与 PRD 将一并提交，最终 hash 以交付消息为准。

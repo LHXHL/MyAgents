@@ -103,6 +103,7 @@ vi.mock("@/pages/space/issues/IssuesWorkspace", () => ({
       >
         set incomplete
       </button>
+      <button type="button" onClick={() => onStatusChange("all")}>set all</button>
     </main>
   ),
 }));
@@ -193,9 +194,12 @@ describe("Space switching", () => {
     expect(harness.actions.refreshIssues).toHaveBeenCalledTimes(1);
     expect(harness.actions.refreshGoals).toHaveBeenCalledTimes(1);
     expect(harness.actions.refreshIssues).toHaveBeenLastCalledWith(
-      expect.objectContaining({ state: "all" }),
+      expect.objectContaining({ state: "open,todo,doing" }),
       expect.any(Object),
     );
+    expect(
+      screen.getByRole("status", { name: "selected issue status" }),
+    ).toHaveTextContent("open,todo,doing");
 
     harness.data = snapshot("myagents");
     view.rerender(<Space isActive />);
@@ -223,38 +227,71 @@ describe("Space switching", () => {
     });
   });
 
-  it("resets the Issue status to all when entering another Space", () => {
+  it("resets the Issue status to incomplete when entering another Space", () => {
     render(<Space isActive />);
 
-    fireEvent.click(screen.getByRole("button", { name: "set incomplete" }));
+    fireEvent.click(screen.getByRole("button", { name: "set all" }));
     expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
-      "open,todo,doing",
+      "all",
     );
 
     fireEvent.click(screen.getByRole("button", { name: "show team issues" }));
 
     expect(harness.actions.switchSpace).toHaveBeenCalledWith("team", undefined);
     expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
-      "all",
+      "open,todo,doing",
     );
   });
 
-  it("resets the Issue status to all after logout succeeds", async () => {
+  it("resets the Issue status at the local logout boundary", async () => {
+    const remoteLogout = deferred<void>();
+    harness.actions.logout.mockReturnValueOnce(remoteLogout.promise);
     render(<Space isActive />);
 
-    fireEvent.click(screen.getByRole("button", { name: "set incomplete" }));
+    fireEvent.click(screen.getByRole("button", { name: "set all" }));
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "all",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "logout" }));
+
+    expect(harness.actions.logout).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
       "open,todo,doing",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "set all" }));
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "all",
+    );
+
+    await act(async () => {
+      remoteLogout.resolve();
+      await remoteLogout.promise;
+    });
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "all",
+    );
+    expect(harness.toast.success).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the incomplete default when remote logout fails after local sign-out", async () => {
+    harness.actions.logout.mockRejectedValueOnce(new Error("remote unavailable"));
+    render(<Space isActive />);
+
+    fireEvent.click(screen.getByRole("button", { name: "set all" }));
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "all",
     );
 
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "logout" }));
     });
 
-    expect(harness.actions.logout).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
-      "all",
+      "open,todo,doing",
     );
+    expect(harness.toast.error).toHaveBeenCalledTimes(1);
   });
 
   it("reloads the selected non-Issue workspace for the new Space", async () => {

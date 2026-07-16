@@ -3,7 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SpaceIssue } from "@/api/spaceCloud";
 import { i18n } from "@/i18n";
-import { ACTIVE_ISSUE_STATE_FILTER } from "@/pages/space/spaceHelpers";
+import {
+  ACTIVE_ISSUE_STATE_FILTER,
+  ALL_ISSUE_STATE_FILTER,
+} from "@/pages/space/spaceHelpers";
 import { formatFullTime } from "@/pages/space/spaceUi";
 import { IssuesWorkspace } from "./IssuesWorkspace";
 
@@ -36,7 +39,7 @@ describe("IssuesWorkspace", () => {
         hasMore={false}
         issueQ=""
         selectedGoalId=""
-        selectedStatus="all"
+        selectedStatus={ACTIVE_ISSUE_STATE_FILTER}
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
@@ -64,11 +67,11 @@ describe("IssuesWorkspace", () => {
     expect(statusFilter).toHaveClass("h-9", "w-44", "grid-cols-2");
     expect(screen.getByRole("button", { name: "All" })).toHaveAttribute(
       "aria-pressed",
-      "true",
+      "false",
     );
     expect(screen.getByRole("button", { name: "Incomplete" })).toHaveAttribute(
       "aria-pressed",
-      "false",
+      "true",
     );
     expect(
       screen.queryByRole("button", { name: "Active" }),
@@ -101,7 +104,7 @@ describe("IssuesWorkspace", () => {
         hasMore={false}
         issueQ=""
         selectedGoalId=""
-        selectedStatus="all"
+        selectedStatus={ACTIVE_ISSUE_STATE_FILTER}
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
@@ -140,7 +143,7 @@ describe("IssuesWorkspace", () => {
         hasMore={false}
         issueQ=""
         selectedGoalId=""
-        selectedStatus="all"
+        selectedStatus={ACTIVE_ISSUE_STATE_FILTER}
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
@@ -155,14 +158,14 @@ describe("IssuesWorkspace", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Incomplete" }));
     fireEvent.click(screen.getByRole("button", { name: "All" }));
+    fireEvent.click(screen.getByRole("button", { name: "Incomplete" }));
 
+    expect(onStatusChange).toHaveBeenNthCalledWith(1, ALL_ISSUE_STATE_FILTER);
     expect(onStatusChange).toHaveBeenNthCalledWith(
-      1,
+      2,
       ACTIVE_ISSUE_STATE_FILTER,
     );
-    expect(onStatusChange).toHaveBeenNthCalledWith(2, "all");
   });
 
   it("exposes related-to-me as an independent toggle and renders updatedAt", () => {

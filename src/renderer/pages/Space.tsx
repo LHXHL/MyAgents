@@ -36,7 +36,7 @@ import { useCloseLayer } from "@/hooks/useCloseLayer";
 import { useWorkspaceFileService } from "@/hooks/useWorkspaceFileService";
 import { getDeviceId, preloadDeviceId } from "@/identity/deviceIdentity";
 import {
-  ALL_ISSUE_STATE_FILTER,
+  ACTIVE_ISSUE_STATE_FILTER,
   findJoinedSpaceBySlug,
   isRegisteredAgentVisibleInList,
   isSpaceAdmin,
@@ -447,7 +447,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const [issueQ, setIssueQ] = useState("");
   const [selectedGoalId, setSelectedGoalId] = useState("");
   const [selectedStatus, setSelectedStatus] = useState(
-    ALL_ISSUE_STATE_FILTER,
+    ACTIVE_ISSUE_STATE_FILTER,
   );
   const [relatedToMeBySpace, setRelatedToMeBySpace] = useState<
     Record<string, boolean>
@@ -1055,7 +1055,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
       setIssueDetailId(null);
       setSelectedSkillId(null);
       setSelectedGoalId("");
-      setSelectedStatus(ALL_ISSUE_STATE_FILTER);
+      setSelectedStatus(ACTIVE_ISSUE_STATE_FILTER);
       setMode(nextMode);
       await switching;
     },
@@ -1191,10 +1191,10 @@ export default function Space({ isActive }: { isActive: boolean }) {
   }, []);
 
   const logout = useCallback(async () => {
+    setIssueDetailId(null);
+    setSelectedStatus(ACTIVE_ISSUE_STATE_FILTER);
     try {
       await actions.logout();
-      setIssueDetailId(null);
-      setSelectedStatus(ALL_ISSUE_STATE_FILTER);
       toast.success(t("space.toasts.logoutSuccess"));
     } catch (error) {
       toast.error(spaceErrorMessage(error));
