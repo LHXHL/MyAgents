@@ -8,6 +8,7 @@ import {
   buildCodexFileChangeResultContent,
   buildCodexCompletedFileChangeInput,
   buildCodexAppServerArgs,
+  buildCodexAppServerLaunchConfig,
   buildCodexInitializeParams,
   buildCodexSandboxPolicy,
   buildCodexTurnStartParams,
@@ -15,6 +16,7 @@ import {
   CodexRuntime,
   codexModelCacheKey,
   configureCodexSkillExtraRoots,
+  createCodexMcpStartupBarrier,
   initializeCodexRpc,
   KNOWN_CODEX_SERVER_REQUEST_METHODS,
   mapCodexTurnCompletedNotification,
@@ -183,6 +185,104 @@ describe('Codex app-server protocol helpers', () => {
     expect(env.MYAGENTS_MCP_REMOTE_HTTP_AUTHORIZATION).toBe('Bearer remote-secret');
     expect(env.REMOTE_TOKEN).toBeUndefined();
     expect(env.NO_PROXY).toContain('127.0.0.1');
+  });
+
+  it('normalizes legacy preset npx MCP commands before managed Codex startup', () => {
+    const env: Record<string, string | undefined> = {};
+    const launch = buildCodexAppServerLaunchConfig({
+      commandPath: '/managed/codex',
+      runtimeSource: 'managed-provider',
+      codexEnv: env,
+      mcpServers: [{
+        id: 'playwright',
+        name: 'Playwright',
+        type: 'stdio',
+        command: 'npx',
+        args: ['@playwright/mcp@latest', '--isolated'],
+        isBuiltin: true,
+      }],
+    });
+
+    const commandArg = launch.args.find((arg) => arg.startsWith('mcp_servers.playwright.command='));
+    const mcpArgs = launch.args.find((arg) => arg.startsWith('mcp_servers.playwright.args='));
+    expect(commandArg).toBeDefined();
+    expect(commandArg).not.toBe('mcp_servers.playwright.command="npx"');
+    expect(mcpArgs).toContain('@playwright/mcp@0.0.68');
+    expect(mcpArgs).not.toContain('@latest');
+    expect(mcpArgs).toContain('"-y"');
+    expect(launch.mcpServerNames).toEqual(['playwright']);
+  });
+
+  it('settles managed Codex MCP readiness only after every injected server is terminal', async () => {
+    const barrier = createCodexMcpStartupBarrier(['playwright', 'remote-http']);
+    let settled = false;
+    const ready = barrier.wait(1_000).then((result) => {
+      settled = true;
+      return result;
+    });
+
+    barrier.observe({
+      threadId: null,
+      name: 'playwright',
+      status: 'starting',
+      error: null,
+      failureReason: null,
+    });
+    barrier.observe({
+      threadId: null,
+      name: 'unrelated-user-config',
+      status: 'ready',
+      error: null,
+      failureReason: null,
+    });
+    barrier.observe({
+      threadId: null,
+      name: 'playwright',
+      status: 'ready',
+      error: null,
+      failureReason: null,
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    barrier.observe({
+      threadId: null,
+      name: 'remote-http',
+      status: 'failed',
+      error: 'connection refused',
+      failureReason: null,
+    });
+
+    await expect(ready).resolves.toEqual({
+      states: {
+        playwright: 'ready',
+        'remote-http': 'failed',
+      },
+    });
+  });
+
+  it('fails closed when injected MCP startup never reaches a terminal state', async () => {
+    const barrier = createCodexMcpStartupBarrier(['playwright']);
+    barrier.observe({
+      threadId: null,
+      name: 'playwright',
+      status: 'starting',
+      error: null,
+      failureReason: null,
+    });
+
+    await expect(barrier.wait(0)).rejects.toThrow(
+      'Managed Codex MCP startup did not settle before timeout; pending=playwright',
+    );
+  });
+
+  it('releases the startup wait as a failure when the Codex process exits', async () => {
+    const barrier = createCodexMcpStartupBarrier(['playwright']);
+    const startup = barrier.wait(1_000);
+
+    barrier.fail(new Error('Codex process exited during MCP startup with code 1'));
+
+    await expect(startup).rejects.toThrow('Codex process exited during MCP startup with code 1');
   });
 
   it('skips managed Codex MCP entries that cannot be represented safely', () => {

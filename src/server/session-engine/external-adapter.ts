@@ -32,6 +32,7 @@ import {
   getExternalSystemInitPayload,
   getExternalCurrentTurnIdentity,
   getLastExternalAssistantText,
+  handleExternalOfficialToolIdsChange,
   handleExternalProxyConfigChange,
   hasExternalQueuedTurnByOwner,
   hasExternalRuntimeProcess,
@@ -600,11 +601,8 @@ export function createExternalSessionEngine(): SessionEngine {
       return setExternalReasoningEffort(effort);
     },
 
-    async updateOfficialToolIds(_ids) {
-      if (hasExternalRuntimeProcess() && getExternalSessionState() !== 'running') {
-        await stopExternalSession();
-      }
-      return { success: true };
+    updateOfficialToolIds(ids) {
+      return handleExternalOfficialToolIdsChange(ids);
     },
 
     async updateProxyConfig(proxySettings) {

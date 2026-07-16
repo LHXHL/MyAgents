@@ -4907,9 +4907,10 @@ async function main() {
 
             // Preset MCP (isBuiltin: true) with npx → warmup to download and cache package
             if (server.isBuiltin && command === 'npx') {
-              const { getBundledNodeDir, getSystemNpxPaths, findExistingPath } = await import('./utils/runtime');
-              const { pinMcpPackageVersions } = await import('./agent-session');
-              const args = pinMcpPackageVersions(server.args || []);
+              const { resolveNpxMcpInvocation } = await import('./utils/mcp-command');
+              const invocation = resolveNpxMcpInvocation(server.args || [], {
+                pinPresetPackages: true,
+              });
 
               // Route through utils/subprocess.spawn — on Windows the bundled
               // and system npx are both `npx.cmd` shims. Calling .cmd via raw
@@ -4922,53 +4923,15 @@ async function main() {
               const { getShellEnv } = await import('./utils/shell');
               const baseEnv = getShellEnv();
 
-              // Priority: system npx → bundled Node.js npx → hard fail.
-              // v0.2.0+ removed the "bun x" emergency branch — bundled Node is always present
-              // in release builds, and dev builds fall back to system node via runtime.ts.
-              const systemNpx = findExistingPath(getSystemNpxPaths());
-              const nodeDir = getBundledNodeDir();
-              let warmupCmd: string;
-              let warmupArgs: string[];
-
-              if (systemNpx) {
-                // 1. System npx available — most reliable, user-maintained
-                warmupCmd = systemNpx;
-                warmupArgs = ['-y', ...args, '--help'];
-
-                // Ensure system npx's directory is in PATH (GUI-launched apps may have minimal PATH)
-                const { dirname } = await import('path');
-                const npxDir = dirname(systemNpx);
-                const pathKey = process.platform === 'win32' ? 'Path' : 'PATH';
-                const sep = process.platform === 'win32' ? ';' : ':';
-                if (!(baseEnv[pathKey] || '').includes(npxDir)) {
-                  baseEnv[pathKey] = npxDir + sep + (baseEnv[pathKey] || '');
-                }
-
-                console.log(`[api/mcp/enable] Warming up with system npx: ${warmupArgs.join(' ')}`);
-              } else if (nodeDir) {
-                // 2. Fallback to bundled Node.js npx
-                const npxPath = process.platform === 'win32'
-                  ? join(nodeDir, 'npx.cmd')
-                  : join(nodeDir, 'npx');
-                warmupCmd = npxPath;
-                warmupArgs = ['-y', ...args, '--help'];
-
-                // Ensure bundled Node.js bin dir is in PATH for npx to find node
-                const pathKey = process.platform === 'win32' ? 'Path' : 'PATH';
-                const sep = process.platform === 'win32' ? ';' : ':';
-                baseEnv[pathKey] = nodeDir + sep + (baseEnv[pathKey] || '');
-
-                console.log(`[api/mcp/enable] Warming up with bundled npx: ${warmupArgs.join(' ')}`);
-              } else {
-                // 3. Neither system nor bundled Node.js found — hard fail.
-                return jsonResponse({
-                  success: false,
-                  error: {
-                    type: 'runtime_error',
-                    message: '运行时不可用（系统/内置 Node.js 均未找到）',
-                  }
-                });
+              const warmupCmd = invocation.command;
+              const warmupArgs = [...invocation.args, '--help'];
+              const npxDir = dirname(warmupCmd);
+              const pathKey = process.platform === 'win32' ? 'Path' : 'PATH';
+              const sep = process.platform === 'win32' ? ';' : ':';
+              if (!(baseEnv[pathKey] || '').split(sep).includes(npxDir)) {
+                baseEnv[pathKey] = npxDir + sep + (baseEnv[pathKey] || '');
               }
+              console.log(`[api/mcp/enable] Warming up via ${invocation.source} npx: ${warmupArgs.join(' ')}`);
 
               const handle = wrappedSpawn([warmupCmd, ...warmupArgs], {
                 env: baseEnv,

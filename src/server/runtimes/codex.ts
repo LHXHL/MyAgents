@@ -28,6 +28,7 @@ import { stripAnsi } from './env-utils';
 import { resolveCodexCommandContext, type CodexCommandContext } from './codex-command-context';
 import { ensureDirSync } from '../utils/fs-utils';
 import { getBundledCusePath } from '../utils/runtime';
+import { resolveNpxMcpInvocation } from '../utils/mcp-command';
 import { killWithEscalation } from './utils/kill-with-escalation';
 import { withLogContext } from '../logger-context';
 import { trySyncProjectUserConfigFiles } from '../utils/project-user-config-sync';
@@ -115,6 +116,97 @@ const CODEX_MCP_PARENT_ENV_DENY = new Set([
   'OPENAI_ORG_ID',
   'OPENAI_ORGANIZATION',
 ]);
+const CODEX_MCP_STARTUP_SETTLE_TIMEOUT_MS = 60_000;
+
+export type CodexMcpStartupState = 'starting' | 'ready' | 'failed' | 'cancelled';
+
+export interface CodexMcpStartupStatusNotification {
+  threadId: string | null;
+  name: string;
+  status: CodexMcpStartupState;
+  error: string | null;
+  failureReason: string | null;
+}
+
+export interface CodexMcpStartupResult {
+  states: Record<string, CodexMcpStartupState>;
+}
+
+/**
+ * Runtime-native startup barrier for the MCP servers MyAgents injected into a
+ * managed Codex process. Unknown Codex-owned servers are intentionally ignored:
+ * this owner can only wait on configuration it owns.
+ */
+export function createCodexMcpStartupBarrier(expectedNames: readonly string[]): {
+  observe(notification: CodexMcpStartupStatusNotification): void;
+  fail(error: Error): void;
+  wait(timeoutMs: number): Promise<CodexMcpStartupResult>;
+} {
+  const expected = new Set(expectedNames);
+  const states = new Map<string, CodexMcpStartupState>();
+  let failure: Error | null = null;
+  let resolveComplete!: () => void;
+  const complete = new Promise<void>((resolve) => {
+    resolveComplete = resolve;
+  });
+  let completed = expected.size === 0;
+  if (completed) resolveComplete();
+
+  const snapshot = (): CodexMcpStartupResult => ({
+    states: Object.fromEntries(
+      [...states.entries()].filter(([name]) => expected.has(name)),
+    ),
+  });
+
+  const pendingNames = (): string[] => [...expected].filter((name) => {
+    const state = states.get(name);
+    return state === undefined || state === 'starting';
+  });
+
+  return {
+    observe(notification) {
+      if (!expected.has(notification.name) || completed) return;
+      states.set(notification.name, notification.status);
+      const allTerminal = [...expected].every((name) => {
+        const state = states.get(name);
+        return state === 'ready' || state === 'failed' || state === 'cancelled';
+      });
+      if (allTerminal) {
+        completed = true;
+        resolveComplete();
+      }
+    },
+    fail(error) {
+      if (completed) return;
+      failure = error;
+      completed = true;
+      resolveComplete();
+    },
+    async wait(timeoutMs) {
+      if (!completed) {
+        if (timeoutMs <= 0) {
+          throw new Error(
+            `Managed Codex MCP startup did not settle before timeout; pending=${pendingNames().join(',') || '(unknown)'}`,
+          );
+        }
+        const settled = await new Promise<boolean>((resolve) => {
+          const timer = setTimeout(() => resolve(false), timeoutMs);
+          void complete.then(() => {
+            clearTimeout(timer);
+            resolve(true);
+          });
+        });
+        if (!settled) {
+          throw new Error(
+            `Managed Codex MCP startup did not settle within ${timeoutMs}ms; pending=${pendingNames().join(',') || '(unknown)'}`,
+          );
+        }
+      }
+      if (failure) throw failure;
+      return snapshot();
+    },
+  };
+}
 
 function tomlString(value: string): string {
   return JSON.stringify(value);
@@ -273,8 +365,8 @@ export async function configureCodexSkillExtraRoots(
 function buildManagedCodexMcpConfigArgs(
   servers: readonly McpServerDefinition[] | undefined,
   codexEnv: Record<string, string | undefined>,
-): string[] {
-  if (!servers || servers.length === 0) return [];
+): { args: string[]; serverNames: string[] } {
+  if (!servers || servers.length === 0) return { args: [], serverNames: [] };
 
   const args: string[] = [];
   const usedNames = new Set<string>();
@@ -312,13 +404,21 @@ function buildManagedCodexMcpConfigArgs(
         console.warn(`[codex] managed MCP ${server.id} skipped: missing stdio command`);
         continue;
       }
+      let stdioArgs = Array.isArray(server.args) ? [...server.args] : [];
+      if (command === 'npx') {
+        const invocation = resolveNpxMcpInvocation(stdioArgs, {
+          pinPresetPackages: server.isBuiltin === true,
+        });
+        command = invocation.command;
+        stdioArgs = invocation.args;
+        console.log(`[codex] managed MCP ${server.id}: resolved npx via ${invocation.source} (${command})`);
+      }
       const commandReason = unsafeCodexMcpStdioValueReason(command);
       if (commandReason) {
         skipped += 1;
         console.warn(`[codex] managed MCP ${server.id} skipped: stdio command ${commandReason}`);
         continue;
       }
-      const stdioArgs = Array.isArray(server.args) ? server.args : [];
       const argsReason = unsafeCodexMcpStdioArgsReason(stdioArgs);
       if (argsReason) {
         skipped += 1;
@@ -404,7 +504,28 @@ function buildManagedCodexMcpConfigArgs(
   if (args.length > 0 || skipped > 0) {
     console.log(`[codex] managed MCP startup config: injected=${usedNames.size} skipped=${skipped}`);
   }
-  return args;
+  return { args, serverNames: [...usedNames] };
+}
+
+export function buildCodexAppServerLaunchConfig(args: {
+  commandPath: string;
+  runtimeSource: RuntimeSource;
+  codexEnv: Record<string, string | undefined>;
+  mcpServers?: readonly McpServerDefinition[];
+}): { args: string[]; mcpServerNames: string[] } {
+  const codexArgs = [
+    args.commandPath,
+    '-c', CODEX_PROJECT_DOC_FALLBACK_CONFIG,
+  ];
+  let mcpServerNames: string[] = [];
+  if (args.runtimeSource === 'managed-provider') {
+    codexArgs.push('-c', CODEX_FILE_AUTH_CONFIG);
+    const mcpConfig = buildManagedCodexMcpConfigArgs(args.mcpServers, args.codexEnv);
+    codexArgs.push(...mcpConfig.args);
+    mcpServerNames = mcpConfig.serverNames;
+  }
+  codexArgs.push('app-server');
+  return { args: codexArgs, mcpServerNames };
 }
 
 export function buildCodexAppServerArgs(args: {
@@ -413,16 +534,7 @@ export function buildCodexAppServerArgs(args: {
   codexEnv: Record<string, string | undefined>;
   mcpServers?: readonly McpServerDefinition[];
 }): string[] {
-  const codexArgs = [
-    args.commandPath,
-    '-c', CODEX_PROJECT_DOC_FALLBACK_CONFIG,
-  ];
-  if (args.runtimeSource === 'managed-provider') {
-    codexArgs.push('-c', CODEX_FILE_AUTH_CONFIG);
-    codexArgs.push(...buildManagedCodexMcpConfigArgs(args.mcpServers, args.codexEnv));
-  }
-  codexArgs.push('app-server');
-  return codexArgs;
+  return buildCodexAppServerLaunchConfig(args).args;
 }
 
 export const KNOWN_CODEX_SERVER_REQUEST_METHODS = Object.freeze([
@@ -2272,17 +2384,18 @@ export class CodexRuntime implements AgentRuntime {
     // workspace, not the sidecar's launch directory. Codex review SM finding.
     codexEnv.PWD = options.workspacePath;
     codexEnv.MYAGENTS_SESSION_ID = options.sessionId;
-    const codexArgs = buildCodexAppServerArgs({
+    const launchConfig = buildCodexAppServerLaunchConfig({
       commandPath: context.commandPath,
       runtimeSource,
       codexEnv,
       mcpServers: options.mcpServers,
     });
+    const mcpStartup = createCodexMcpStartupBarrier(launchConfig.mcpServerNames);
     console.log(
       `[codex] spawn source=${runtimeSource} version=${context.version ?? 'system-cli'} ` +
       `platform=${context.platform ?? process.platform} codexHome=${context.codexHome ? '<managed>' : '<default>'}`,
     );
-    const proc = spawn(codexArgs, {
+    const proc = spawn(launchConfig.args, {
       stdout: 'pipe',
       stderr: 'pipe',
       stdin: 'pipe',
@@ -2323,12 +2436,15 @@ export class CodexRuntime implements AgentRuntime {
 
     // Wire up notification handler to emit UnifiedEvents
     codexProc.rpc.setNotificationHandler((method, params) => {
+      const p = params as Record<string, unknown> | undefined;
+      if (method === 'mcpServer/startupStatus/updated') {
+        mcpStartup.observe(params as CodexMcpStartupStatusNotification);
+      }
       // Skip noisy notifications from logging: deltas, legacy duplicates, account events
       const isNoisy = method.startsWith('codex/event/') || method.startsWith('account/')
         || method === 'item/agentMessage/delta' || method === 'item/reasoning/summaryTextDelta'
         || method === 'item/commandExecution/outputDelta' || method === 'item/fileChange/outputDelta';
       if (!isNoisy) {
-        const p = params as Record<string, unknown> | undefined;
         let detail = '';
         if (method === 'item/started' || method === 'item/completed') {
           const item = p?.item as Record<string, unknown> | undefined;
@@ -2370,10 +2486,12 @@ export class CodexRuntime implements AgentRuntime {
         } else if (method === 'thread/started') {
           const thread = p?.thread as Record<string, unknown> | undefined;
           if (thread?.id) detail = ` threadId=${thread.id}`;
+        } else if (method === 'mcpServer/startupStatus/updated') {
+          detail = ` name=${String(p?.name ?? '(unknown)')} status=${String(p?.status ?? '(unknown)')}`;
         }
-            withLogContext({ runtime: 'codex', runtimeSource }, () => {
-              console.log(`[codex] ${method}${detail}`);
-            });
+        withLogContext({ runtime: 'codex', runtimeSource }, () => {
+          console.log(`[codex] ${method}${detail}`);
+        });
       }
       const result = this.parseNotification(codexProc, method, params, wrappedOnEvent);
       if (!result) return;
@@ -2417,6 +2535,7 @@ export class CodexRuntime implements AgentRuntime {
     // SIGTERM echo on top. See issue #105.
     proc.exited.then((code) => {
       codexProc.exited = true;
+      mcpStartup.fail(new Error(`Codex process exited during MCP startup with code ${code}`));
       if (codexProc.intentionalKillDuringStartup) return;
       wrappedOnEvent({
         kind: 'session_complete',
@@ -2523,6 +2642,24 @@ export class CodexRuntime implements AgentRuntime {
           model: result.model || '',
           tools: [],
         });
+      }
+
+      // Managed Codex starts injected MCPs asynchronously after thread/start.
+      // A process/thread that is live but still booting MCP is not pre-warmed:
+      // turn/start would merely move that cold-start wait onto the user's query.
+      if (launchConfig.mcpServerNames.length > 0) {
+        const startup = await mcpStartup.wait(CODEX_MCP_STARTUP_SETTLE_TIMEOUT_MS);
+        const unhealthy = Object.entries(startup.states)
+          .filter(([, state]) => state === 'failed' || state === 'cancelled')
+          .map(([name, state]) => `${name}:${state}`);
+        if (unhealthy.length > 0) {
+          console.warn(`[codex] managed MCP startup settled with terminal failures: ${unhealthy.join(',')}`);
+        } else {
+          console.log(`[codex] managed MCP startup ready: ${launchConfig.mcpServerNames.join(',')}`);
+        }
+      }
+      if (codexProc.exited) {
+        throw new Error('Codex process exited before startup completed');
       }
 
       // 4. Send initial message if provided

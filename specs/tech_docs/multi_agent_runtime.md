@@ -256,7 +256,7 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 | `personality` | enum? | ❌ 未对接 | |
 | `baseInstructions` | string? | ❌ 未对接 | |
 
-**注意**：Codex 不支持通过 `thread/start`/`thread/resume` 注入 MCP Server 配置。Codex 的 MCP 由其自身管理（`~/.codex/` 配置），MyAgents 无法控制。
+**MCP owner 边界**：Codex 的 `thread/start` / `thread/resume` schema 不接受 MCP 配置，但这不等于所有 Codex 会话都只能读取 `~/.codex/`。`runtimeSource:'managed-provider'` 由 MyAgents 持有 app-server 进程，因此在 spawn 时用 `-c mcp_servers.<name>.*=...` 注入当前 workspace 的有效 MCP；`runtimeSource:'system-cli'` 仍由用户自己的 Codex 配置持有 MCP，MyAgents 不覆盖。Managed 注入前必须复用 `utils/mcp-command.ts` 解析绝对 npx 路径、`-y` 与 MyAgents preset 的精确版本，不能和 builtin SDK 路径各自解释同一份 MCP definition。
 
 ### Skills 加载
 
@@ -599,6 +599,12 @@ Snapshot/source guard 由 `session-core/runtime-config-policy.ts` 统一决定�
 Gemini 的 model / permission boundary RPC 失败时 fail-closed：不继续用旧配置启动
 queued message,并向前端广播错误。
 
+Official tool id 会改变 external runtime 的 system prompt，因此其 live 配置 owner 也在
+`external-session.ts`。每个 active process 记录创建它时实际生效的 id set：相同 set 的
+renderer hydration / 重复同步必须是 no-op；真实变化若发生在 active turn 中，锁存到
+terminal boundary 后再使进程失效，若已 idle 则直接使进程失效。禁止把“收到一次配置
+POST”等同于“配置发生变化”，否则接管 IM 会话时的 hydration 会杀掉已经预热好的进程。
+
 ### 预热 Pre-warm
 
 Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 秒,用户在此期间打字无反馈。`prewarmExternalSession()` 把这段时间挪到 Tab 打开的瞬间:
@@ -606,6 +612,10 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 **适用范围**:仅 Gemini / Codex(持久 JSON-RPC 进程)。CC `-p` 模式每轮退出,预热无意义 → HTTP 端点在到达此路径之前就拒绝。
 
 **触发链路**:前端 `Chat.tsx` 在 Tab ready(`isActive && isConnected && sessionId`)的瞬间 POST `/api/runtime/prewarm` → `prewarmExternalSession()` → `startExternalSession({ ...options, initialMessage: undefined })`。**不**等待 `/api/runtime/models` — 该接口自身也 spawn 一个 `gemini --acp` 子进程查模型,会付同样的 ~14s 冷启动。两件事并行进行:prewarm 在用户打字时暖 session,models-fetch 在后台填充模型下拉。首次 prewarm 用 `effectiveModel`(可能 `undefined` → runtime 用自带默认),用户随后在 UI 里切模型时走 `setExternalModel()` → in-place `runtime.setModel()` 路径(见「配置变更」)。
+
+**Managed Codex readiness**：`initialize` + `thread/start|resume` 只证明 app-server 与 thread owner 已建立；MyAgents 注入的 MCP 仍可能异步启动。`CodexRuntime.startSession()` 必须继续等待这些 injected server 的 `mcpServer/startupStatus/updated` 全部到达 terminal state（`ready | failed | cancelled`），才允许 `prewarm_done` 或首个 `turn/start` 越过 runtime 边界。只等待 `mcpServerStatus/list` 的后台诊断不构成 readiness；它是 UI 健康快照，不是启动 barrier。等待只覆盖 MyAgents 注入的 server name，不能把用户自有的 Codex MCP 纳入错误 owner。若等待超时或 process 在 barrier 中退出，startup 必须 fail-closed 并清理进程，禁止把 pending/dead process 发布成 pre-warmed。
+
+**IM 冷启动边界**：persistent Agent/飞书 session 一旦已有 live runtime，后续 turn 复用同一 process 与 MCP，不应重复支付 startup。完全没有 Sidecar/runtime 的首个 IM peer 仍要真实创建这些资源；本期不为所有潜在 peer 常驻预热，因为那会把延迟换成无界资源占用。这个首个 cold turn 是显式产品边界，不得和“同 session 每轮重启”混为一谈。
 
 **关键差异**(pre-warm vs 正常 start):
 
@@ -661,7 +671,7 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 
 ### 诊断收集（Codex）
 
-`startSession` 完成 `thread/start` 之后 **fire-and-forget**（不 block 首轮 turn）调用四个 Codex app-server RPC：
+`startSession` 完成 `thread/start`（managed-provider 还需完成 injected MCP startup settlement）之后 **fire-and-forget**（不额外 block 首轮 turn）调用四个 Codex app-server RPC：
 
 | RPC | 用途 | 类型 |
 |-----|------|------|

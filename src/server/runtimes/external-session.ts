@@ -165,6 +165,7 @@ import {
   clearExternalRuntimeSessionId,
   getCurrentExternalBoundSessionId,
   getExternalActivePair,
+  getExternalActiveOfficialToolIds,
   getExternalActiveProcess,
   getExternalActiveRuntime,
   getExternalLifecycleAnalyticsOrigin,
@@ -196,6 +197,7 @@ import {
 } from './external-session/lifecycle';
 import { originAnalyticsFields, originFromTurnAttribution } from '../../shared/session-origin';
 import type { SessionOrigin } from '../../shared/session-origin';
+import type { OfficialToolId } from '../../shared/official-tools';
 import {
   buildImCancelledPayload,
   buildImCompletePayload,
@@ -408,6 +410,98 @@ const activeToolTraceStarts = new Map<string, number>();
 let activeExternalEnvPolicy: RuntimeEnvPolicy | undefined;
 let pendingExternalProxyRestart = false;
 let pendingExternalProxyRestartOriginalKey: string | null = null;
+let pendingExternalOfficialToolsRestart = false;
+let externalProcessConfigInvalidationInFlight: Promise<void> | null = null;
+
+function clearPendingExternalProcessConfigRestarts(): void {
+  pendingExternalProxyRestart = false;
+  pendingExternalProxyRestartOriginalKey = null;
+  pendingExternalOfficialToolsRestart = false;
+}
+
+function pendingExternalProcessConfigRestartReasons(): string[] {
+  return [
+    ...(pendingExternalProxyRestart ? ['proxy'] : []),
+    ...(pendingExternalOfficialToolsRestart ? ['official-tools'] : []),
+  ];
+}
+
+function applyPendingExternalProcessConfigInvalidation(): Promise<void> {
+  if (externalProcessConfigInvalidationInFlight) {
+    return externalProcessConfigInvalidationInFlight;
+  }
+
+  const reasons = pendingExternalProcessConfigRestartReasons();
+  if (reasons.length === 0) return Promise.resolve();
+  const proxyOriginalKey = pendingExternalProxyRestartOriginalKey;
+
+  const operation = (async () => {
+    // Clear before stopping so the process-exit notification cannot re-enter
+    // this boundary. The in-flight promise remains observable to every send;
+    // if termination cannot be confirmed, restore the latch before rejecting.
+    clearPendingExternalProcessConfigRestarts();
+    if (!hasExternalRuntimeProcess()) {
+      console.log(`[external-session] External runtime config invalidation already satisfied by process exit: ${reasons.join(',')}`);
+      return;
+    }
+
+    console.log(`[external-session] Applying external runtime config restart at idle boundary: ${reasons.join(',')}`);
+    try {
+      const stopped = await stopExternalSession({ reason: 'config-restart', preserveQueue: true });
+      if (!stopped && hasExternalRuntimeProcess()) {
+        throw new Error(`External runtime process did not stop for config change: ${reasons.join(',')}`);
+      }
+    } catch (error) {
+      if (!hasExternalRuntimeProcess()) return;
+      if (reasons.includes('proxy')) {
+        pendingExternalProxyRestart = true;
+        pendingExternalProxyRestartOriginalKey ??= proxyOriginalKey;
+      }
+      if (reasons.includes('official-tools')) {
+        pendingExternalOfficialToolsRestart = true;
+      }
+      throw error;
+    }
+  })();
+
+  externalProcessConfigInvalidationInFlight = operation;
+  void operation.then(
+    () => {
+      if (externalProcessConfigInvalidationInFlight === operation) {
+        externalProcessConfigInvalidationInFlight = null;
+      }
+    },
+    () => {
+      if (externalProcessConfigInvalidationInFlight === operation) {
+        externalProcessConfigInvalidationInFlight = null;
+      }
+    },
+  );
+  return operation;
+}
+
+function scheduleExternalQueueDrainAfterTurnBoundary(): void {
+  if (pendingExternalProcessConfigRestartReasons().length === 0) {
+    setTimeout(() => drainExternalQueueAfterTurn(), 0);
+    clearExternalTurnTrace();
+    return;
+  }
+
+  const finalization = applyPendingExternalProcessConfigInvalidation()
+    .then(() => {
+      setTimeout(() => drainExternalQueueAfterTurn(), 0);
+    })
+    .catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      console.error(`[external-session] Deferred runtime config restart failed: ${message}`);
+      broadcast('chat:agent-error', { message });
+      clearExternalQueueWithCancellation();
+    })
+    .finally(() => {
+      clearExternalTurnTrace();
+    });
+  trackExternalTurnFinalization(finalization);
+}
 
 // Set by sendExternalMessage when it pre-broadcasts the user message for instant display.
 // Consumed by _doStartExternalSession / Case 3 to reuse the message (skip duplicate broadcast).
@@ -622,8 +716,7 @@ function resetModuleState(): void {
   resetExternalContentState();
   pendingExternalToolInputTransports.clear();
   activeExternalEnvPolicy = undefined;
-  pendingExternalProxyRestart = false;
-  pendingExternalProxyRestartOriginalKey = null;
+  clearPendingExternalProcessConfigRestarts();
   currentTurnAnalyticsSource = null;
   currentTurnAnalyticsOrigin = null;
   clearExternalPermissionSuggestions();
@@ -1875,10 +1968,6 @@ export function getActiveRuntimeSource(): ReturnType<typeof getCurrentRuntimeSou
   return getCurrentRuntimeSource();
 }
 
-function isExternalTurnInFlight(): boolean {
-  return getExternalTurnStartTime() > 0 && !isExternalTurnCompleted();
-}
-
 function isExternalTurnBusy(): boolean {
   return getExternalLifecycleState() === 'running' || isExternalTurnPromotionInFlight();
 }
@@ -1888,7 +1977,7 @@ export async function handleExternalProxyConfigChange(input: {
   newManagedProviderKey: string;
   oldProcessEnvKey: string;
   newProcessEnvKey: string;
-}): Promise<{ success: boolean; skipped?: string }> {
+}): Promise<{ success: boolean; error?: string; skipped?: string }> {
   const runtimeSource = getCurrentRuntimeSource();
   const runtimeType = getCurrentRuntimeType();
   const usesManagedProviderProxy =
@@ -1909,7 +1998,7 @@ export async function handleExternalProxyConfigChange(input: {
   if (oldKey === newKey) {
     return { success: true, skipped: 'unchanged' };
   }
-  if (isExternalTurnInFlight()) {
+  if (isExternalTurnBusy()) {
     if (!pendingExternalProxyRestart) {
       pendingExternalProxyRestartOriginalKey = oldKey;
     }
@@ -1924,9 +2013,80 @@ export async function handleExternalProxyConfigChange(input: {
     return { success: true };
   }
   if (hasExternalRuntimeProcess()) {
-    await stopExternalSession({ reason: 'config-restart', preserveQueue: true });
+    if (!pendingExternalProxyRestart) {
+      pendingExternalProxyRestartOriginalKey = oldKey;
+    }
+    pendingExternalProxyRestart = true;
+    try {
+      await applyPendingExternalProcessConfigInvalidation();
+    } catch (error) {
+      return {
+        success: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
   return { success: true };
+}
+
+function officialToolIdSetsEqual(
+  left: readonly OfficialToolId[],
+  right: readonly OfficialToolId[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const rightSet = new Set(right);
+  return left.every((id) => rightSet.has(id));
+}
+
+/**
+ * Reconcile prompt-affecting official tools against the configuration that
+ * actually created the live external process. Replayed renderer hydration is
+ * a no-op; a real change restarts only at an idle turn boundary.
+ */
+export async function handleExternalOfficialToolIdsChange(
+  ids: readonly OfficialToolId[] | null,
+): Promise<{ success: boolean; error?: string; skipped?: string }> {
+  await awaitExternalLifecycleStarting();
+
+  const activeProcess = getExternalActiveProcess();
+  if (!activeProcess || activeProcess.exited) {
+    pendingExternalOfficialToolsRestart = false;
+    return { success: true, skipped: 'no-live-process' };
+  }
+
+  const sessionId = getExternalLifecycleSessionId();
+  const workspacePath = getExternalLifecycleWorkspacePath();
+  const requestedIds = getEffectiveOfficialToolIdsForSession(
+    workspacePath,
+    sessionId ? getSessionMetadata(sessionId) : null,
+    ids,
+  );
+  const appliedIds = getExternalActiveOfficialToolIds() ?? [];
+  if (officialToolIdSetsEqual(appliedIds, requestedIds)) {
+    pendingExternalOfficialToolsRestart = false;
+    return { success: true, skipped: 'unchanged' };
+  }
+
+  if (isExternalTurnBusy()) {
+    pendingExternalOfficialToolsRestart = true;
+    console.log('[external-session] Official tool prompt changed; deferring runtime restart until current turn completes');
+    return { success: true };
+  }
+
+  // The prompt belongs to the process that was born with it. Route idle
+  // invalidation through the same owner as terminal-boundary invalidation so
+  // an unconfirmed stop restores the latch and no later turn can reuse the
+  // stale process.
+  pendingExternalOfficialToolsRestart = true;
+  try {
+    await applyPendingExternalProcessConfigInvalidation();
+    return { success: true };
+  } catch (error) {
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function normalizeRuntimeSourceForRuntime(
@@ -2387,8 +2547,11 @@ async function _doStartExternalSession(options: {
       }
     }
 
+    if (process.exited) {
+      throw new Error(`${runtimeType} process exited before startup completed`);
+    }
     startedProcess = process;
-    setExternalActiveProcess(process);
+    setExternalActiveProcess(process, enabledOfficialToolIds);
     if (options.dispatchPromotion && !isExternalTurnPromotionCurrent(options.dispatchPromotion)) {
       throw new ExternalTurnPromotionCanceledError();
     }
@@ -2777,6 +2940,38 @@ export async function sendExternalMessage(
   }
   if (dispatchPromotion && !isExternalTurnPromotionCurrent(dispatchPromotion)) {
     return canceledBeforeDispatch();
+  }
+
+  // A previous config change may have reached a terminal boundary while the
+  // old process could not be stopped. Never let a later send silently reuse
+  // that invalid prompt/env owner: retry invalidation before selecting Case 3.
+  if (
+    externalProcessConfigInvalidationInFlight
+    || pendingExternalProcessConfigRestartReasons().length > 0
+  ) {
+    try {
+      await applyPendingExternalProcessConfigInvalidation();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (dispatchPromotion) finishExternalTurnPromotion(dispatchPromotion);
+      earlyBroadcastedUserMsg = null;
+      return {
+        queued: false,
+        error: `${message}; stale external runtime was not reused`,
+      };
+    }
+    if (dispatchPromotion && !isExternalTurnPromotionCurrent(dispatchPromotion)) {
+      return canceledBeforeDispatch();
+    }
+  }
+  // Transfer ownership atomically from config invalidation to this turn before
+  // the next await. A config update that starts first is awaited above; one
+  // that starts after this claim observes a busy promotion and is deferred to
+  // the turn boundary. Case 3 hands the claim to lifecycle state='running'
+  // synchronously before its first persistence await.
+  if (!ensureInitialDispatchPromotion()) {
+    earlyBroadcastedUserMsg = null;
+    return { queued: false, error: 'external_busy: another turn is being promoted' };
   }
   const activitySessionId = context?.sessionId ?? getExternalLifecycleSessionId();
   const activityFacts: SessionActivityTurnFacts = {
@@ -3678,7 +3873,10 @@ export async function stopExternalSession(options?: {
   const reason = options?.reason ?? 'user';
   const isConfigRestart = reason === 'config-restart';
   if (!active) {
-    if (!canceledPromotion) return false;
+    if (!canceledPromotion) {
+      clearPendingExternalProcessConfigRestarts();
+      return false;
+    }
     const settlement = await canceledPromotion.settled;
     if (settlement.status === 'termination-unconfirmed') return false;
     if (settlement.status === 'terminated') return true;
@@ -3715,6 +3913,7 @@ export async function stopExternalSession(options?: {
     if (preserveQueue && !isConfigRestart) {
       setTimeout(drainExternalQueueAfterTurn, 0);
     }
+    clearPendingExternalProcessConfigRestarts();
     return true;
   }
   const stopStarted = nowMs();
@@ -3820,6 +4019,7 @@ export async function stopExternalSession(options?: {
   finalizeExternalLiveAssistantInMemory();
   resetTurnAccumulators();
   clearExternalActiveRuntimeProcess();
+  clearPendingExternalProcessConfigRestarts();
   activeExternalEnvPolicy = undefined;
   // Any pre-warm that raced with a stop is no longer relevant. Keeping the
   // flag around would leak 'prewarm' into a subsequent session's session_init.
@@ -4441,12 +4641,7 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
     }
     // Pattern B/C: turn complete — clear active trace ID + unregister from registry.
     finalizeExternalActiveRequest(finalizedTurnSucceeded ? 'completed' : 'failed');
-    if (pendingExternalProxyRestart) {
-      pendingExternalProxyRestart = false;
-      pendingExternalProxyRestartOriginalKey = null;
-      console.log('[external-session] Applying deferred external runtime proxy restart after turn completion');
-      await stopExternalSession({ reason: 'config-restart', preserveQueue: true });
-    }
+    await applyPendingExternalProcessConfigInvalidation();
     // Mid-turn queue drain: a turn just ended (completed OR interrupted via force) → surface +
     // send the next queued desktop message. Deferred to the next macrotask so queue:started
     // never races chat:message-complete / chat:status idle on the SSE wire.
@@ -5153,8 +5348,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
             withSessionCompletionTerminal(null, completionTerminal),
           );
         }
-        setTimeout(() => drainExternalQueueAfterTurn(), 0);
-        clearExternalTurnTrace();
+        scheduleExternalQueueDrainAfterTurnBoundary();
         break;
       }
 
@@ -5289,8 +5483,12 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         setExternalSessionState('idle');
         // Drain queued desktop messages on a failed turn too, so pills don't stick (the next
         // item resumes a fresh process via sendExternalMessage Case 2 if needed).
-        setTimeout(() => drainExternalQueueAfterTurn(), 0);
-        clearExternalTurnTrace();
+        if (getExternalUserRequestedStop()) {
+          setTimeout(() => drainExternalQueueAfterTurn(), 0);
+          clearExternalTurnTrace();
+        } else {
+          scheduleExternalQueueDrainAfterTurnBoundary();
+        }
       }
       // Clean up module state — prevents stuck sessions on CC crash
       clearExternalActiveRuntimeProcess();

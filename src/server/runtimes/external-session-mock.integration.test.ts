@@ -26,6 +26,7 @@ type TurnScript =
     kind: 'failure';
     error: string;
     status?: 'failed' | 'interrupted';
+    completeDelayMs?: number;
     usage?: { inputTokens: number; outputTokens: number };
   }
   | { kind: 'permission'; requestId: string; textAfterAllow: string; failDelivery?: boolean };
@@ -64,6 +65,7 @@ class FakeRuntime implements AgentRuntime {
   private stopGate: Promise<void> | null = null;
   private releaseStopGate: (() => void) | null = null;
   private stopAwaitingRelease = false;
+  private readonly deferStopBeforeResult: boolean;
   private rejectDispatchAck: boolean;
   private rejectStop: boolean;
   private readonly rejectConfig: boolean;
@@ -81,19 +83,21 @@ class FakeRuntime implements AgentRuntime {
     emitSessionCompleteOnStop?: boolean;
     deferRejectedSend?: boolean;
     deferStopAfterSessionComplete?: boolean;
+    deferStopBeforeResult?: boolean;
   } = {}) {
     this.rejectDispatchAck = options.rejectDispatchAck === true;
     this.rejectStop = options.rejectStop === true;
     this.rejectConfig = options.rejectConfig === true;
     this.emitInterruptedOnStop = options.emitInterruptedOnStop === true;
     this.emitSessionCompleteOnStop = options.emitSessionCompleteOnStop === true;
+    this.deferStopBeforeResult = options.deferStopBeforeResult === true;
     if (options.deferRejectedSend) {
       this.rejectedSendGate = new Promise<void>((resolve) => {
         this.releaseRejectedSendGate = resolve;
       });
       this.rejectDispatchAck = true;
     }
-    if (options.deferStopAfterSessionComplete) {
+    if (options.deferStopAfterSessionComplete || options.deferStopBeforeResult) {
       this.stopGate = new Promise<void>((resolve) => {
         this.releaseStopGate = resolve;
       });
@@ -211,6 +215,11 @@ class FakeRuntime implements AgentRuntime {
   }
 
   async stopSession(process: RuntimeProcess): Promise<void> {
+    if (this.stopGate && this.deferStopBeforeResult) {
+      this.stopAwaitingRelease = true;
+      await this.stopGate;
+      this.stopAwaitingRelease = false;
+    }
     if (this.rejectStop) throw new Error('fake stop did not terminate process');
     if (this.emitInterruptedOnStop) {
       this.emit({ kind: 'turn_complete', status: 'interrupted', result: 'interrupted by stop' });
@@ -218,7 +227,7 @@ class FakeRuntime implements AgentRuntime {
     if (this.emitSessionCompleteOnStop) {
       this.emit({ kind: 'session_complete', subtype: 'error', result: 'interrupted by stop' });
     }
-    if (this.stopGate) {
+    if (this.stopGate && !this.deferStopBeforeResult) {
       this.stopAwaitingRelease = true;
       await this.stopGate;
       this.stopAwaitingRelease = false;
@@ -248,14 +257,16 @@ class FakeRuntime implements AgentRuntime {
         return;
       }
       if (script.kind === 'failure') {
-        if (script.usage) {
-          this.emit({ kind: 'usage', ...script.usage, semantics: 'delta' });
-        }
-        this.emit({
-          kind: 'turn_complete',
-          status: script.status ?? 'failed',
-          error: script.error,
-        });
+        this.defer(() => {
+          if (script.usage) {
+            this.emit({ kind: 'usage', ...script.usage, semantics: 'delta' });
+          }
+          this.emit({
+            kind: 'turn_complete',
+            status: script.status ?? 'failed',
+            error: script.error,
+          });
+        }, script.completeDelayMs);
         return;
       }
       this.scripts.unshift(script);
@@ -332,11 +343,13 @@ async function createHarness(
     rejectSteer?: boolean;
     deferStart?: boolean;
     unconfirmedDispatchStop?: boolean;
+    unconfirmedStop?: boolean;
     rejectConfig?: boolean;
     emitInterruptedOnStop?: boolean;
     emitSessionCompleteOnStop?: boolean;
     deferRejectedSend?: boolean;
     deferStopAfterSessionComplete?: boolean;
+    deferStopBeforeResult?: boolean;
     deferMessagePersist?: boolean;
     rejectMessagePersist?: boolean;
     config?: Record<string, unknown>;
@@ -384,14 +397,15 @@ async function createHarness(
     rejectSteer: options.rejectSteer,
     deferStart: options.deferStart,
     rejectDispatchAck: options.unconfirmedDispatchStop,
-    rejectStop: options.unconfirmedDispatchStop,
+    rejectStop: options.unconfirmedDispatchStop || options.unconfirmedStop,
     rejectConfig: options.rejectConfig,
     emitInterruptedOnStop: options.emitInterruptedOnStop,
     emitSessionCompleteOnStop: options.emitSessionCompleteOnStop,
     deferRejectedSend: options.deferRejectedSend,
     deferStopAfterSessionComplete: options.deferStopAfterSessionComplete,
+    deferStopBeforeResult: options.deferStopBeforeResult,
   });
-  if (options.unconfirmedDispatchStop) {
+  if (options.unconfirmedDispatchStop || options.unconfirmedStop) {
     vi.doMock('./utils/kill-with-escalation', () => ({
       killWithEscalation: vi.fn(async () => ({
         exited: false,
@@ -760,6 +774,374 @@ describe('external SessionEngine with fake runtime', () => {
     expect(harness.sessionStore.getSessionData(sessionId)?.messages ?? []).toEqual([]);
     expect(harness.externalSession.getExternalSessionState()).toBe('idle');
     expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
+  });
+
+  it('keeps an idle pre-warmed process alive when official tool sync is unchanged', async () => {
+    const harness = await createHarness([]);
+    const sessionId = 'session-prewarm-official-tools-noop';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+    });
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
+
+    await expect(harness.engine.updateOfficialToolIds([])).resolves.toEqual({
+      success: true,
+      skipped: 'unchanged',
+    });
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(1);
+  });
+
+  it('invalidates an idle process exactly when effective official tools change', async () => {
+    const harness = await createHarness([], {
+      config: {
+        enabledOfficialToolIds: ['image-understanding'],
+        officialToolSettings: {
+          imageUnderstanding: { providerId: 'anthropic-api', model: 'claude-fable-5' },
+        },
+        providerApiKeys: { 'anthropic-api': 'test-key' },
+      },
+    });
+    const sessionId = 'session-prewarm-official-tools-change';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+    });
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
+
+    await expect(harness.engine.updateOfficialToolIds(['image-understanding'])).resolves.toEqual({
+      success: true,
+    });
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(false);
+  });
+
+  it('never reuses an idle stale official-tool process when termination is unconfirmed', async () => {
+    const harness = await createHarness([], {
+      unconfirmedStop: true,
+      config: {
+        enabledOfficialToolIds: ['image-understanding'],
+        officialToolSettings: {
+          imageUnderstanding: { providerId: 'anthropic-api', model: 'claude-fable-5' },
+        },
+        providerApiKeys: { 'anthropic-api': 'test-key' },
+      },
+    });
+    const sessionId = 'session-idle-unconfirmed-official-tools-change';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+    });
+
+    await expect(harness.engine.updateOfficialToolIds(['image-understanding'])).resolves.toEqual({
+      success: false,
+      error: expect.stringContaining('official-tools'),
+    });
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
+
+    const desktop = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'desktop must not reach stale process'),
+    );
+    expect(desktop).toMatchObject({ success: true, queued: true });
+    await expect(desktop.dispatchAcceptance).resolves.toEqual({
+      accepted: false,
+      error: expect.stringContaining('stale external runtime was not reused'),
+    });
+
+    await expect(harness.engine.enqueueImMessage({
+      message: 'im must not reach stale process',
+      requestId: 'req-idle-stale-runtime',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+      permissionMode: 'fullAgency',
+      model: 'gpt-5-codex',
+      reasoningEffort: 'medium',
+    })).resolves.toEqual({
+      success: false,
+      status: 503,
+      error: expect.stringContaining('stale external runtime was not reused'),
+    });
+    expect(harness.runtime.sentMessages).toEqual([]);
+
+    harness.runtime.allowStop();
+    await expect(harness.externalSession.stopExternalSession()).resolves.toBe(true);
+  });
+
+  it('blocks concurrent desktop and IM sends behind idle official-tool invalidation', async () => {
+    const harness = await createHarness([], {
+      unconfirmedStop: true,
+      deferStopBeforeResult: true,
+      config: {
+        enabledOfficialToolIds: ['image-understanding'],
+        officialToolSettings: {
+          imageUnderstanding: { providerId: 'anthropic-api', model: 'claude-fable-5' },
+        },
+        providerApiKeys: { 'anthropic-api': 'test-key' },
+      },
+    });
+    const sessionId = 'session-concurrent-idle-official-tools-change';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+    });
+
+    const update = harness.engine.updateOfficialToolIds(['image-understanding']);
+    await waitFor(
+      () => harness.runtime.isStopAwaitingRelease(),
+      'idle official-tool invalidation stop',
+    );
+
+    const desktop = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'concurrent desktop must wait'),
+    );
+    let desktopSettled = false;
+    const desktopAcceptance = desktop.dispatchAcceptance!.then((result) => {
+      desktopSettled = true;
+      return result;
+    });
+    let imSettled = false;
+    const imAdmission = harness.engine.enqueueImMessage({
+      message: 'concurrent im must wait',
+      requestId: 'req-concurrent-idle-stale-runtime',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+      permissionMode: 'fullAgency',
+      model: 'gpt-5-codex',
+      reasoningEffort: 'medium',
+    }).then((result) => {
+      imSettled = true;
+      return result;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(desktopSettled).toBe(false);
+    expect(imSettled).toBe(false);
+    expect(harness.runtime.sentMessages).toEqual([]);
+
+    harness.runtime.releaseStop();
+    await expect(update).resolves.toEqual({
+      success: false,
+      error: expect.stringContaining('official-tools'),
+    });
+    await expect(desktopAcceptance).resolves.toEqual({
+      accepted: false,
+      error: expect.stringContaining('stale external runtime was not reused'),
+    });
+    await expect(imAdmission).resolves.toEqual({
+      success: false,
+      status: 503,
+      error: expect.stringContaining('stale external runtime was not reused'),
+    });
+    expect(harness.runtime.sentMessages).toEqual([]);
+
+    harness.runtime.allowStop();
+    await expect(harness.externalSession.stopExternalSession()).resolves.toBe(true);
+  });
+
+  it('blocks a concurrent send behind idle proxy invalidation', async () => {
+    const harness = await createHarness([], {
+      unconfirmedStop: true,
+      deferStopBeforeResult: true,
+    });
+    const sessionId = 'session-concurrent-idle-proxy-change';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+    });
+
+    const update = harness.externalSession.handleExternalProxyConfigChange({
+      oldManagedProviderKey: 'managed-proxy-old',
+      newManagedProviderKey: 'managed-proxy-new',
+      oldProcessEnvKey: 'process-proxy-old',
+      newProcessEnvKey: 'process-proxy-new',
+    });
+    await waitFor(
+      () => harness.runtime.isStopAwaitingRelease(),
+      'idle proxy invalidation stop',
+    );
+
+    const desktop = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'proxy-stale process must not receive this'),
+    );
+    let desktopSettled = false;
+    const desktopAcceptance = desktop.dispatchAcceptance!.then((result) => {
+      desktopSettled = true;
+      return result;
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(desktopSettled).toBe(false);
+    expect(harness.runtime.sentMessages).toEqual([]);
+
+    harness.runtime.releaseStop();
+    await expect(update).resolves.toEqual({
+      success: false,
+      error: expect.stringContaining('proxy'),
+    });
+    await expect(desktopAcceptance).resolves.toEqual({
+      accepted: false,
+      error: expect.stringContaining('stale external runtime was not reused'),
+    });
+    expect(harness.runtime.sentMessages).toEqual([]);
+
+    harness.runtime.allowStop();
+    await expect(harness.externalSession.stopExternalSession()).resolves.toBe(true);
+  });
+
+  it('defers a real official tool restart until the active turn completes', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'turn before config restart', completeDelayMs: 80 },
+    ], {
+      config: {
+        enabledOfficialToolIds: ['image-understanding'],
+        officialToolSettings: {
+          imageUnderstanding: { providerId: 'anthropic-api', model: 'claude-fable-5' },
+        },
+        providerApiKeys: { 'anthropic-api': 'test-key' },
+      },
+    });
+    const sessionId = 'session-active-official-tools-change';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+    });
+    await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'finish this turn first'),
+    );
+    await waitFor(
+      () => harness.externalSession.getExternalSessionState() === 'running',
+      'active external turn',
+    );
+
+    await expect(harness.engine.updateOfficialToolIds(['image-understanding'])).resolves.toEqual({
+      success: true,
+    });
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
+
+    await waitFor(
+      () => !harness.externalSession.hasExternalRuntimeProcess(),
+      'deferred official tool restart',
+    );
+    expect(harness.engine.getLatestAssistantResult().latestResult).toBe('turn before config restart');
+  });
+
+  it('invalidates official-tool prompt state after a failed turn before draining the queue', async () => {
+    const harness = await createHarness([
+      { kind: 'failure', error: 'turn failed before config restart', completeDelayMs: 80 },
+      { kind: 'success', text: 'queued turn on replacement process' },
+    ], {
+      config: {
+        enabledOfficialToolIds: ['image-understanding'],
+        officialToolSettings: {
+          imageUnderstanding: { providerId: 'anthropic-api', model: 'claude-fable-5' },
+        },
+        providerApiKeys: { 'anthropic-api': 'test-key' },
+      },
+    });
+    const sessionId = 'session-failed-official-tools-change';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+    });
+    await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'failing first turn'),
+    );
+    await waitFor(
+      () => harness.externalSession.getExternalSessionState() === 'running',
+      'active failing external turn',
+    );
+
+    await harness.engine.updateOfficialToolIds(['image-understanding']);
+    const queued = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'queued second turn'),
+    );
+    expect(queued.queued).toBe(true);
+
+    await expect(queued.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(2);
+    expect(harness.runtime.sentMessages).toContain('queued second turn');
+    expect(harness.engine.getLatestAssistantResult().latestResult).toBe(
+      'queued turn on replacement process',
+    );
+  });
+
+  it('never reuses an invalid official-tool prompt when process termination is unconfirmed', async () => {
+    const harness = await createHarness([
+      { kind: 'failure', error: 'turn failed before unconfirmed restart', completeDelayMs: 80 },
+    ], {
+      unconfirmedStop: true,
+      config: {
+        enabledOfficialToolIds: ['image-understanding'],
+        officialToolSettings: {
+          imageUnderstanding: { providerId: 'anthropic-api', model: 'claude-fable-5' },
+        },
+        providerApiKeys: { 'anthropic-api': 'test-key' },
+      },
+    });
+    const sessionId = 'session-unconfirmed-official-tools-change';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath,
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+    });
+    await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'failing turn on old prompt'),
+    );
+    await waitFor(
+      () => harness.externalSession.getExternalSessionState() === 'running',
+      'active turn before unconfirmed config restart',
+    );
+
+    await harness.engine.updateOfficialToolIds(['image-understanding']);
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.externalSession.hasExternalRuntimeProcess()).toBe(true);
+
+    const later = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'must not reach stale process'),
+    );
+    expect(later).toMatchObject({ success: true, queued: true });
+    await expect(later.dispatchAcceptance).resolves.toEqual({
+      accepted: false,
+      error: expect.stringContaining('stale external runtime was not reused'),
+    });
+    expect(harness.runtime.sentMessages).toEqual(['failing turn on old prompt']);
+
+    harness.runtime.allowStop();
+    await expect(harness.externalSession.stopExternalSession()).resolves.toBe(true);
   });
 
   it('rejects a stale Goal turn before a fresh external process has any side effects', async () => {

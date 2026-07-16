@@ -64,6 +64,14 @@
 
 **其它优化：** `getSessionMetadata` 从 3 次合并成 1 次 memo。
 
+## External Runtime pre-warm：process ready ≠ MCP ready
+
+Codex / Gemini 的 persistent runtime 预热和 Sidecar HTTP readiness 是两层不同契约。Sidecar `/health/ready` 只说明 Node owner 可接请求；external `startSession()` 返回才说明该 runtime 能接首轮 turn。
+
+Managed Codex 又多一层：`initialize` 与 `thread/start|resume` 完成后，process/thread 已存活，但 app-server 仍异步启动 MyAgents 通过进程参数注入的 MCP。`CodexRuntime.startSession()` 必须等待这些 server 的 `mcpServer/startupStatus/updated` 到达 terminal state 后才返回；否则日志里的 `prewarm_done` 是假完成，用户的第一条 query 会替预热承担整个 MCP cold start。这个 barrier 只等待当前 MyAgents launch config 实际注入的 server，不等待 Codex 用户目录自有配置；timeout/process exit 是 startup failure，不能 warning 后继续首 turn。
+
+MCP definition 在到达 runtime 前也必须保持可执行：`mcpServerArgs[id]` 是附加参数，不得替换 preset 的 package/base argv。否则进程虽然复用，Codex 仍会在每个 turn 的 MCP barrier 上反复等待一个永远起不来的命令，看起来就像“连续会话每轮都重新预热”。
+
 ## "AI 启动中" UI 状态判据：`sdkControlReady` ≠ `system_init`
 
 Claude Agent SDK 有**两个**完全不同含义的"准备好"信号，老代码混用了它们导致 UI 误标。
@@ -134,6 +142,8 @@ setSessionState((systemInitInfo || sdkControlReady) ? 'running' : 'starting');
 4. **是否 Tab session 误开启了 MCP self-resolve？** —— 检查 `initializeAgent` 的 `includeMcp` 参数。
 5. **是否新加了 `console.log` 在 hot path 而 logger 未 buffered？** —— `UnifiedLogger` 是 in-memory bounded queue，但极高频日志仍可能拖慢。
 6. **是否第一条用户消息整段都被标成「AI 启动中」？** —— 先确认 `sdkControlReady` 是否在 pre-warm spawn 后被 `initializationResult()` 设为 true（grep `[agent] SDK control plane ready in`）。再核对所有 session 重置点同时清 `systemInitInfo` 和 `sdkControlReady`。详见上方「`sdkControlReady` ≠ `system_init`」节。
+7. **External `prewarm_done` 是否早于 injected MCP terminal status？** —— Managed Codex 应先出现 `mcpServer/startupStatus/updated name=<id> status=ready|failed|cancelled`，再结束 `startSession`。
+8. **同一 Codex pid/thread 的每轮首响仍固定慢约 30 秒？** —— 先打印最终 launch config，确认 preset package/base argv 没被 `mcpServerArgs` 覆盖；不要先假设进程发生了重启。
 
 ## 与其他文档的关系
 

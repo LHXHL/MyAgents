@@ -102,8 +102,10 @@ skill 必须用命令级 env（例如 `npm_config_prefix="$MYAGENTS_NPM_GLOBAL_P
 
 ### 外部 stdio MCP（用户装 `@notionhq/notion-mcp-server` 等）
 
-`buildSdkMcpServers` → Pattern 3 外部 MCP 分支：
-- `command: 'npx'` → 解析为 **系统 npx** → bundled npx（fallback）
+`utils/mcp-command.ts::resolveNpxMcpInvocation()` 是 npx MCP 启动命令的唯一解释器，由 builtin Claude、managed Codex 和 MCP enable warmup 共用：
+- `command: 'npx'` → 解析为 **系统 npx** → bundled npx → runtime sibling npx（fallback），始终输出绝对路径并补 `-y`
+- MyAgents-owned preset 使用 `shared/mcpPackages.ts` 的精确 package spec；旧配置里的已知 `@latest` 在 runtime boundary 归一化，避免每次进程启动重新查询 registry
+- `mcpServerArgs[id]` 只存用户附加参数，必须追加到 preset/package 基础参数之后，不能替换整段 argv
 - 通过 `process_cmd::new()` spawn（Windows 自动 `CREATE_NO_WINDOW`）
 - 环境变量通过 `proxy_config::apply_to_subprocess` 注入 `NO_PROXY` 保护 localhost
 

@@ -3,11 +3,13 @@ import type { TurnAnalyticsSource } from '../../types/session';
 import type { RuntimeType } from '../../../shared/types/runtime';
 import type { SystemInitInfo } from '../../../shared/types/system';
 import type { SessionOrigin } from '../../../shared/session-origin';
+import type { OfficialToolId } from '../../../shared/official-tools';
 import type { AgentRuntime, RuntimeProcess } from '../types';
 import type { ExternalSessionState, ExternalSystemInitPayload } from './types';
 
 let activeProcess: RuntimeProcess | null = null;
 let activeRuntime: AgentRuntime | null = null;
+let activeOfficialToolIds: OfficialToolId[] | null = null;
 let isRunning = false;
 let startingPromise: Promise<void> | null = null;
 let startingSessionId: string | null = null;
@@ -28,6 +30,7 @@ let liveRevision = 0;
 export function resetExternalLifecycleState(): void {
   activeProcess = null;
   activeRuntime = null;
+  activeOfficialToolIds = null;
   isRunning = false;
   startingPromise = null;
   startingSessionId = null;
@@ -87,12 +90,20 @@ export function getExternalActiveRuntime(): AgentRuntime | null {
   return activeRuntime;
 }
 
-export function setExternalActiveProcess(process: RuntimeProcess | null): void {
+export function setExternalActiveProcess(
+  process: RuntimeProcess | null,
+  officialToolIds: readonly OfficialToolId[],
+): void {
   activeProcess = process;
+  activeOfficialToolIds = process ? [...officialToolIds] : null;
 }
 
 export function getExternalActiveProcess(): RuntimeProcess | null {
   return activeProcess;
+}
+
+export function getExternalActiveOfficialToolIds(): readonly OfficialToolId[] | null {
+  return activeOfficialToolIds;
 }
 
 export function getExternalActivePair(): { runtime: AgentRuntime; process: RuntimeProcess } | null {
@@ -103,6 +114,7 @@ export function getExternalActivePair(): { runtime: AgentRuntime; process: Runti
 export function clearExternalActiveRuntimeProcess(): void {
   activeProcess = null;
   activeRuntime = null;
+  activeOfficialToolIds = null;
   isRunning = false;
 }
 

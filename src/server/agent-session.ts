@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { join, resolve } from 'path';
 import { createRequire } from 'module';
 import { query, getSessionMessages as sdkGetSessionMessages, forkSession as sdkForkSession, deleteSession as sdkDeleteSession, type Query, type SDKUserMessage, type AgentDefinition, type HookInput, type HookJSONOutput, type PreToolUseHookInput, type PostToolUseHookInput, type PermissionRequestHookInput, type SlashCommand as SdkSlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import {
@@ -10,7 +10,8 @@ import {
   type BackgroundAgentPermissionMode,
 } from './utils/background-agent-permission';
 import { registerBridge as registerBridgeInRegistry, unregisterBridge as unregisterBridgeInRegistry, type UpstreamBridgeConfig } from './openai-bridge/bridge-registry';
-import { getScriptDir, getBundledNodeDir, getSystemNodeDirs, getBundledRuntimePath, getSystemNpxPaths, findExistingPath } from './utils/runtime';
+import { getScriptDir, getBundledNodeDir, getSystemNodeDirs } from './utils/runtime';
+import { resolveNpxMcpInvocation } from './utils/mcp-command';
 import { getCrossPlatformEnv } from './utils/platform';
 import { ensureDirSync } from './utils/fs-utils';
 import { getMyAgentsNpmGlobalBinDir, getMyAgentsNpmGlobalPrefix, scrubMyAgentsNpmPrefixEnv } from './utils/npm-prefix-env';
@@ -3416,33 +3417,6 @@ function buildSettingSources(): ('user' | 'project')[] {
   return ['project'];
 }
 
-// Known MCP package versions — pin these to avoid npm registry lookups on every startup
-// Update these when upgrading MCP server dependencies
-const PINNED_MCP_VERSIONS: Record<string, string> = {
-  '@playwright/mcp': '0.0.68',
-};
-
-/**
- * Replace @latest tags with pinned versions for known MCP packages.
- * This eliminates the npm registry network check that adds 2-5s latency per startup.
- * Unknown packages keep their original version specifiers.
- */
-export function pinMcpPackageVersions(args: string[]): string[] {
-  return args.map(arg => {
-    // Match patterns like @playwright/mcp@latest or @scope/pkg@latest
-    const latestMatch = arg.match(/^(@?[^@]+)@latest$/);
-    if (latestMatch) {
-      const pkgName = latestMatch[1];
-      const pinned = PINNED_MCP_VERSIONS[pkgName];
-      if (pinned) {
-        console.log(`[agent] MCP version pinned: ${arg} → ${pkgName}@${pinned}`);
-        return `${pkgName}@${pinned}`;
-      }
-    }
-    return arg;
-  });
-}
-
 /**
  * Convert McpServerDefinition to SDK mcpServers format.
  *
@@ -3566,44 +3540,12 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
       // System Node.js is maintained by the user's package manager, more reliable than our bundled npm.
       // Bundled Node.js serves as fallback for users who don't have Node.js installed.
       if (command === 'npx') {
-        // Pin @latest to known versions for builtin MCPs only (avoids npm registry check on startup)
-        if (server.isBuiltin) {
-          args = pinMcpPackageVersions(args);
-        }
-
-        // Resolve npx to full path for ALL MCPs (builtin + custom).
-        // Previously custom MCPs used bare 'npx' which relied on SDK's cross-spawn
-        // to find npx.cmd via filtered PATH — failed on Windows when PATH was incomplete
-        // or when the SDK's env whitelist (RK_) didn't propagate Node.js directories.
-        // Resolving to full path eliminates this class of issues (pit-of-success pattern).
-        // v0.2.0+ priority: system npx → bundled Node.js npx → npx derived from runtime path.
-        // Bun fallback removed — MyAgents no longer bundles Bun, and "bun x" was an
-        // emergency escape hatch for Linux boxes with neither Node nor bundled runtime,
-        // which is no longer a supported config.
-        const systemNpx = findExistingPath(getSystemNpxPaths());
-
-        if (systemNpx) {
-          // 1. System npx available — most reliable, user-maintained
-          command = systemNpx;
-          if (!args.includes('-y')) args = ['-y', ...args];
-          console.log(`[agent] MCP ${server.id}: Using system npx (${systemNpx})`);
-        } else {
-          // 2. Fallback to bundled Node.js npx (use absolute path for deterministic resolution)
-          const nodeDir = getBundledNodeDir();
-          if (nodeDir) {
-            command = process.platform === 'win32' ? join(nodeDir, 'npx.cmd') : join(nodeDir, 'npx');
-            if (!args.includes('-y')) args = ['-y', ...args];
-            console.log(`[agent] MCP ${server.id}: System npx not found, using bundled Node.js npx (${command})`);
-          } else {
-            // 3. Last resort: derive npx from the runtime path returned by
-            //    getBundledRuntimePath() (always a Node binary in v0.2.0+).
-            const runtime = getBundledRuntimePath();
-            const npxSibling = resolve(dirname(runtime), process.platform === 'win32' ? 'npx.cmd' : 'npx');
-            command = npxSibling;
-            if (!args.includes('-y')) args = ['-y', ...args];
-            console.log(`[agent] MCP ${server.id}: Derived npx from runtime path: ${npxSibling}`);
-          }
-        }
+        const invocation = resolveNpxMcpInvocation(args, {
+          pinPresetPackages: server.isBuiltin === true,
+        });
+        command = invocation.command;
+        args = invocation.args;
+        console.log(`[agent] MCP ${server.id}: resolved npx via ${invocation.source} (${command})`);
       }
 
       // Build MCP config with proxy env inherited from parent Sidecar.

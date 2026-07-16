@@ -245,6 +245,7 @@ const mocks = vi.hoisted(() => {
     setExternalReasoningEffort: vi.fn(async () => ({ success: true })),
     shouldUseExternalRuntime: vi.fn(() => state.useExternal),
     stopExternalSession: vi.fn(async () => true),
+    handleExternalOfficialToolIdsChange: vi.fn(async () => ({ success: true })),
     updateExternalRuntimeConfig: vi.fn(async () => ({ success: true })),
     waitForExternalSessionIdle: vi.fn(async () => true),
     waitExternalTurnFinalization: vi.fn(async () => true),
@@ -362,6 +363,7 @@ vi.mock('../runtimes/external-session', () => ({
   getExternalSessionWorkspacePath: mocks.getExternalSessionWorkspacePath,
   getExternalSystemInitPayload: mocks.getExternalSystemInitPayload,
   getLastExternalAssistantText: mocks.getLastExternalAssistantText,
+  handleExternalOfficialToolIdsChange: mocks.handleExternalOfficialToolIdsChange,
   hasExternalRuntimeProcess: mocks.hasExternalRuntimeProcess,
   hasPendingExternalAskUserQuestion: mocks.hasPendingExternalAskUserQuestion,
   isExternalSessionActive: mocks.isExternalSessionActive,
@@ -1723,25 +1725,12 @@ describe('session-engine selector and adapters', () => {
 
   it('updates official tool ids through the external engine owner', async () => {
     mocks.state.useExternal = true;
-    mocks.state.externalActive = true;
-    mocks.getExternalSessionState.mockReturnValueOnce('idle');
 
     const result = await getSessionEngine().updateOfficialToolIds([]);
 
     expect(result).toEqual({ success: true });
     expect(mocks.updateSessionMetadata).not.toHaveBeenCalled();
-    expect(mocks.stopExternalSession).toHaveBeenCalledTimes(1);
-  });
-
-  it('stops an idle live external runtime process before applying tool config boundaries', async () => {
-    mocks.state.useExternal = true;
-    mocks.state.externalProcessAlive = true;
-    mocks.getExternalSessionState.mockReturnValueOnce('idle');
-
-    const result = await getSessionEngine().updateOfficialToolIds([]);
-
-    expect(result).toEqual({ success: true });
-    expect(mocks.stopExternalSession).toHaveBeenCalledTimes(1);
+    expect(mocks.handleExternalOfficialToolIdsChange).toHaveBeenCalledWith([]);
   });
 
   it('stops an idle live external runtime process before committing desktop materialization', async () => {
