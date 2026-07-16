@@ -68,7 +68,7 @@
 
 Codex / Gemini 的 persistent runtime 预热和 Sidecar HTTP readiness 是两层不同契约。Sidecar `/health/ready` 只说明 Node owner 可接请求；external `startSession()` 返回才说明该 runtime 能接首轮 turn。
 
-Managed Codex 又多一层：`initialize` 与 `thread/start|resume` 完成后，process/thread 已存活，但 app-server 仍异步启动 MyAgents 通过进程参数注入的 MCP。`CodexRuntime.startSession()` 必须等待这些 server 的 `mcpServer/startupStatus/updated` 到达 terminal state 后才返回；否则日志里的 `prewarm_done` 是假完成，用户的第一条 query 会替预热承担整个 MCP cold start。这个 barrier 只等待当前 MyAgents launch config 实际注入的 server，不等待 Codex 用户目录自有配置；timeout/process exit 是 startup failure，不能 warning 后继续首 turn。
+Managed Codex 又多一层：`initialize` 与 `thread/start|resume` 完成后，process/thread 已存活，但 app-server 仍异步启动 MyAgents 通过进程参数注入的 MCP。`CodexRuntime.startSession()` 对这些 server 使用与 Builtin 相同的 10 秒 absolute soft pre-warm policy，并给每个 injected MCP 写入同预算派生的 Codex 原生 `startup_timeout_sec`，避免 MyAgents barrier 之后再叠 Codex 默认隐藏等待。`ready / failed / cancelled / timeout` 都会结束本 Runtime Session 唯一一次观察；非 ready 状态记录 degraded 后继续首 turn，当前 Runtime Session 不自动 reload / retry，新 Session 才重新尝试。这个 owner 不包含 Codex 用户目录自有配置；只有 process exit、thread/RPC failure 仍是 Runtime startup failure。
 
 MCP definition 在到达 runtime 前也必须保持可执行：`mcpServerArgs[id]` 是附加参数，不得替换 preset 的 package/base argv。否则进程虽然复用，Codex 仍会在每个 turn 的 MCP barrier 上反复等待一个永远起不来的命令，看起来就像“连续会话每轮都重新预热”。
 
@@ -81,7 +81,7 @@ Claude Agent SDK 有**两个**完全不同含义的"准备好"信号，老代码
 | `Query.initializationResult()` | SDK 内部 `subtype:"initialize"` control_request 的 response | **subprocess 控制面 ready**：control request 可用、commands/agents 等初始化信息已返回；**不保证每个 MCP 已 connected** | spawn 后 ~300ms-3s |
 | streamed `system_init` (`type:"system",subtype:"init"`) | `QueryEngine.submitMessage()` 在 `fetchSystemPromptParts → processUserInput → recordTranscript → loadAllPlugins` 之后 yield（claude-code:`src/QueryEngine.ts:540`）| **per-turn metadata**：当前 turn 用到的 model / tools / mcp_servers / session_id / permissionMode | 第一条 user message 触发 turn 的中后段 |
 
-SDK 0.3 的 MCP 连接是非阻塞的：`initializationResult()` 已 resolve 或 streamed `system_init` 已列出某个 server 时，该 server 仍可能是 `pending`、`failed`、`needs-auth` 或 `disabled`。因此二者都不能作为 MCP readiness 判据。Cron / Goal / Heartbeat / Memory Update 等无人值守 injected turn 在持久 Query 上调用 `mcpServerStatus()`，按 Query identity + generation + 单调 installed-map revision + 实际 MCP map fingerprint 有界等待；失败必须发生在 user row / SessionStore metadata 持久化和 SDK dispatch 之前。内部可以先建立可取消的 admission ticket / queue reservation，以便 reset、rewind 与并发停止都能寻址，但它不能产生用户可见或持久副作用。Desktop 普通发送仍保持非阻塞，不承担这段等待。
+SDK 0.3 的 MCP 连接是非阻塞的：`initializationResult()` 已 resolve 或 streamed `system_init` 已列出某个 server 时，该 server 仍可能是 `pending`、`failed`、`needs-auth` 或 `disabled`。因此二者都不能作为 MCP ready 判据。Query / MCP map 创建时建立一次 10 秒 absolute deadline；所有 Desktop、IM 与 injected queue item 在公共 `messageGenerator()` dispatch seam 只消费剩余预算。`pending` 才等待；失败、鉴权、disabled、missing、status error 或 timeout 都把该 generation 标为 degraded 并继续基础 AI turn。结果在 owner 上 one-shot settle，连续会话不会每轮重读 / 重计时。
 
 **UI 状态机对应**：
 - `sessionState === 'starting'` → "AI 启动中（首次启动可能较慢）" hint —— **subprocess 还没 ready 才该显示这个**
@@ -95,7 +95,7 @@ SDK 0.3 的 MCP 连接是非阻塞的：`initializationResult()` 已 resolve 或
 setSessionState((systemInitInfo || sdkControlReady) ? 'running' : 'starting');
 ```
 
-`sdkControlReady` 是模块级布尔，由 `startStreamingSession()` spawn 完 `query()` 后**fire-and-forget** `querySession.initializationResult()` 触发：promise resolve 时设为 true。它只服务 UI 的“控制面已启动”提示，不能放行依赖 MCP 的 injected turn。所有 session 重置点（`resetSession` / `switchToSession` / 第三方 → Anthropic 切换 / `initializeAgent`）必须**同时**清 `systemInitInfo` 和 `sdkControlReady`。
+`sdkControlReady` 是模块级布尔，由 `startStreamingSession()` spawn 完 `query()` 后**fire-and-forget** `querySession.initializationResult()` 触发：promise resolve 时设为 true。它只服务 UI 的“控制面已启动”提示，不拥有 MCP pre-warm outcome。所有 session 重置点（`resetSession` / `switchToSession` / 第三方 → Anthropic 切换 / `initializeAgent`）必须**同时**清 `systemInitInfo` 和 `sdkControlReady`。
 
 **为什么 fire-and-forget 而不是 `await initializationResult()`**：技术上 await 不会死锁（SDK 内部的 `readMessages()` 在 F9 构造时就开始独立 pump 消息进 `pendingControlResponses`，不依赖外层 for-await），但 await 会让 `startStreamingSession` 的整个执行序列化在 control 面初始化之后 —— 没必要。`sdkControlReady` 是纯 UI 副信号，不需要阻塞主流程。
 
@@ -142,8 +142,8 @@ setSessionState((systemInitInfo || sdkControlReady) ? 'running' : 'starting');
 4. **是否 Tab session 误开启了 MCP self-resolve？** —— 检查 `initializeAgent` 的 `includeMcp` 参数。
 5. **是否新加了 `console.log` 在 hot path 而 logger 未 buffered？** —— `UnifiedLogger` 是 in-memory bounded queue，但极高频日志仍可能拖慢。
 6. **是否第一条用户消息整段都被标成「AI 启动中」？** —— 先确认 `sdkControlReady` 是否在 pre-warm spawn 后被 `initializationResult()` 设为 true（grep `[agent] SDK control plane ready in`）。再核对所有 session 重置点同时清 `systemInitInfo` 和 `sdkControlReady`。详见上方「`sdkControlReady` ≠ `system_init`」节。
-7. **External `prewarm_done` 是否早于 injected MCP terminal status？** —— Managed Codex 应先出现 `mcpServer/startupStatus/updated name=<id> status=ready|failed|cancelled`，再结束 `startSession`。
-8. **同一 Codex pid/thread 的每轮首响仍固定慢约 30 秒？** —— 先打印最终 launch config，确认 preset package/base argv 没被 `mcpServerArgs` 覆盖；不要先假设进程发生了重启。
+7. **External `prewarm_done` 是否记录 MCP terminal summary？** —— Managed Codex 应在 10 秒内出现一次 `managed MCP pre-warm terminal outcome=ready|degraded`；degraded 后同一 Runtime Session 不应出现 reload / 第二次 barrier。
+8. **同一 Codex pid/thread 的每轮首响仍固定慢约 30 秒？** —— 检查 MyAgents injected server 的最终 launch config 是否带 `startup_timeout_sec=10`，并确认 preset package/base argv 没被 `mcpServerArgs` 覆盖；不要先假设进程发生了重启。
 
 ## 与其他文档的关系
 

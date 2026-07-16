@@ -414,6 +414,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
           const t0 = Date.now();
           console.log(`[compat-timing] dispatchReplyFromConfig ENTER`);
           const ctx = (params.ctx || params) as Record<string, unknown>;
+          const accountId = String(ctx.AccountId || ctx.accountId || params.accountId || '') || undefined;
 
           // Check if plugin provides standard OpenClaw protocol callbacks
           const dispatcher = params.dispatcher as Record<string, (...args: unknown[]) => unknown> | undefined;
@@ -424,7 +425,11 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
 
           if (!hasProtocolCallbacks) {
             // Fallback: no protocol callbacks, use old bypass path
-            const result = await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({ ctx, cfg: params.cfg as Record<string, unknown> });
+            const result = await runtime.channel.reply.dispatchReplyWithBufferedBlockDispatcher({
+              ctx,
+              cfg: params.cfg as Record<string, unknown>,
+              accountId,
+            });
             console.log(`[compat-timing] dispatchReplyFromConfig EXIT (fallback) (+${Date.now() - t0}ms)`);
             return result;
           }
@@ -518,6 +523,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
                 deliveryProtocol: 'openclaw-reply',
                 senderId,
                 senderName: senderName || undefined,
+                accountId,
                 text,
                 chatType: chatType === 'group' ? 'group' : 'direct',
                 chatId,
@@ -613,12 +619,14 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
           ctx: Record<string, unknown>;
           cfg?: Record<string, unknown>;
           dispatcherOptions?: Record<string, unknown>;
+          accountId?: string;
         }) {
           const { ctx } = params;
 
           const text = String(ctx.BodyForAgent || ctx.Body || ctx.body || ctx.RawBody || '');
           const senderId = String(ctx.SenderId || ctx.senderId || '');
           const senderName = String(ctx.SenderName || ctx.senderName || '');
+          const accountId = String(ctx.AccountId || ctx.accountId || params.accountId || '') || undefined;
           const chatType = String(ctx.ChatType || ctx.chatType || 'direct');
           // Chat ID extraction: ctx.To is the REPLY DESTINATION in OpenClaw protocol.
           // ctx.From is the SENDER identity — wrong for group routing.
@@ -670,6 +678,7 @@ export function createCompatRuntime(rustPort: number, botId: string, pluginId: s
                   pluginId: currentPluginId,
                   senderId,
                   senderName: senderName || undefined,
+                  accountId,
                   text,
                   chatType: chatType === 'group' ? 'group' : 'direct',
                   chatId,

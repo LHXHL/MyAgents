@@ -314,6 +314,8 @@ pub struct ImMessage {
     pub text: String,
     pub sender_id: String,
     pub sender_name: Option<String>,
+    /// Adapter account that received this message (community plugins only).
+    pub account_id: Option<String>,
     pub source_type: ImSourceType,
     pub platform: ImPlatform,
     pub timestamp: chrono::DateTime<chrono::Utc>,
@@ -607,6 +609,8 @@ pub struct BufferedMessage {
     pub text: String,
     pub sender_id: String,
     pub sender_name: Option<String>,
+    #[serde(default)]
+    pub account_id: Option<String>,
     pub source_type: ImSourceType,
     #[serde(default = "default_platform")]
     pub platform: ImPlatform,
@@ -648,6 +652,7 @@ impl BufferedMessage {
             text: msg.text.clone(),
             sender_id: msg.sender_id.clone(),
             sender_name: msg.sender_name.clone(),
+            account_id: msg.account_id.clone(),
             source_type: msg.source_type.clone(),
             platform: msg.platform.clone(),
             timestamp: msg.timestamp.to_rfc3339(),
@@ -677,6 +682,7 @@ impl BufferedMessage {
             text: self.text.clone(),
             sender_id: self.sender_id.clone(),
             sender_name: self.sender_name.clone(),
+            account_id: self.account_id.clone(),
             source_type: self.source_type.clone(),
             platform: self.platform.clone(),
             timestamp: chrono::DateTime::parse_from_rfc3339(&self.timestamp)
@@ -1495,6 +1501,7 @@ mod tests {
             text: "hello".to_string(),
             sender_id: "user-1".to_string(),
             sender_name: None,
+            account_id: Some("account-1".to_string()),
             source_type: ImSourceType::Private,
             platform: ImPlatform::OpenClaw("openclaw-lark".to_string()),
             timestamp: chrono::Utc::now(),
@@ -1511,6 +1518,10 @@ mod tests {
 
         let buffered = BufferedMessage::from_im_message(&message);
         assert_eq!(buffered.to_im_message().request_id, "request-1");
+        assert_eq!(
+            buffered.to_im_message().account_id.as_deref(),
+            Some("account-1")
+        );
         assert_eq!(
             buffered.to_im_message().delivery_protocol,
             Some(ImDeliveryProtocol::OpenClawReply)

@@ -41,6 +41,7 @@ import {
   type SaveContext,
 } from './tool-attachments';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
+import { MCP_PREWARM_GRACE_MS } from '../session-core/mcp-prewarm-policy';
 
 type CodexDecision = 'deny' | 'allow_once' | 'always_allow';
 type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
@@ -116,8 +117,6 @@ const CODEX_MCP_PARENT_ENV_DENY = new Set([
   'OPENAI_ORG_ID',
   'OPENAI_ORGANIZATION',
 ]);
-const CODEX_MCP_STARTUP_SETTLE_TIMEOUT_MS = 60_000;
-
 export type CodexMcpStartupState = 'starting' | 'ready' | 'failed' | 'cancelled';
 
 export interface CodexMcpStartupStatusNotification {
@@ -129,7 +128,11 @@ export interface CodexMcpStartupStatusNotification {
 }
 
 export interface CodexMcpStartupResult {
+  outcome: 'ready' | 'degraded';
+  reason?: 'terminal_status' | 'timeout';
   states: Record<string, CodexMcpStartupState>;
+  pendingNames: string[];
+  elapsedMs: number;
 }
 
 /**
@@ -139,9 +142,12 @@ export interface CodexMcpStartupResult {
  */
 export function createCodexMcpStartupBarrier(expectedNames: readonly string[]): {
   observe(notification: CodexMcpStartupStatusNotification): void;
+  arm(): void;
   fail(error: Error): void;
-  wait(timeoutMs: number): Promise<CodexMcpStartupResult>;
+  wait(): Promise<CodexMcpStartupResult>;
 } {
+  let startedAt: number | null = null;
+  let deadlineAt: number | null = null;
   const expected = new Set(expectedNames);
   const states = new Map<string, CodexMcpStartupState>();
   let failure: Error | null = null;
@@ -152,11 +158,22 @@ export function createCodexMcpStartupBarrier(expectedNames: readonly string[]): 
   let completed = expected.size === 0;
   if (completed) resolveComplete();
 
-  const snapshot = (): CodexMcpStartupResult => ({
-    states: Object.fromEntries(
+  const snapshot = (timedOut: boolean): CodexMcpStartupResult => {
+    const pending = pendingNames();
+    const stateSnapshot = Object.fromEntries(
       [...states.entries()].filter(([name]) => expected.has(name)),
-    ),
-  });
+    );
+    const unhealthy = Object.values(stateSnapshot)
+      .some(state => state === 'failed' || state === 'cancelled');
+    const degraded = timedOut || pending.length > 0 || unhealthy;
+    return {
+      outcome: degraded ? 'degraded' : 'ready',
+      ...(degraded ? { reason: timedOut || pending.length > 0 ? 'timeout' as const : 'terminal_status' as const } : {}),
+      states: stateSnapshot,
+      pendingNames: pending,
+      elapsedMs: startedAt === null ? 0 : Math.max(0, Date.now() - startedAt),
+    };
+  };
 
   const pendingNames = (): string[] => [...expected].filter((name) => {
     const state = states.get(name);
@@ -176,34 +193,39 @@ export function createCodexMcpStartupBarrier(expectedNames: readonly string[]): 
         resolveComplete();
       }
     },
+    arm() {
+      if (startedAt !== null) return;
+      startedAt = Date.now();
+      deadlineAt = startedAt + MCP_PREWARM_GRACE_MS;
+    },
     fail(error) {
       if (completed) return;
       failure = error;
       completed = true;
       resolveComplete();
     },
-    async wait(timeoutMs) {
+    async wait() {
+      if (expected.size > 0 && deadlineAt === null) {
+        throw new Error('Managed Codex MCP startup barrier was not armed at thread startup');
+      }
+      let timedOut = false;
       if (!completed) {
-        if (timeoutMs <= 0) {
-          throw new Error(
-            `Managed Codex MCP startup did not settle before timeout; pending=${pendingNames().join(',') || '(unknown)'}`,
-          );
-        }
-        const settled = await new Promise<boolean>((resolve) => {
-          const timer = setTimeout(() => resolve(false), timeoutMs);
-          void complete.then(() => {
-            clearTimeout(timer);
-            resolve(true);
+        const remainingMs = deadlineAt! - Date.now();
+        if (remainingMs <= 0) {
+          timedOut = true;
+        } else {
+          const settled = await new Promise<boolean>((resolve) => {
+            const timer = setTimeout(() => resolve(false), remainingMs);
+            void complete.then(() => {
+              clearTimeout(timer);
+              resolve(true);
+            });
           });
-        });
-        if (!settled) {
-          throw new Error(
-            `Managed Codex MCP startup did not settle within ${timeoutMs}ms; pending=${pendingNames().join(',') || '(unknown)'}`,
-          );
+          timedOut = !settled;
         }
       }
       if (failure) throw failure;
-      return snapshot();
+      return snapshot(timedOut);
     },
   };
 }
@@ -452,6 +474,11 @@ function buildManagedCodexMcpConfigArgs(
         envVars.add(key);
       }
       pushCodexConfigArg(args, `mcp_servers.${name}.env_vars`, tomlArray([...envVars].sort()));
+      pushCodexConfigArg(
+        args,
+        `mcp_servers.${name}.startup_timeout_sec`,
+        String(MCP_PREWARM_GRACE_MS / 1_000),
+      );
       continue;
     }
 
@@ -494,6 +521,11 @@ function buildManagedCodexMcpConfigArgs(
       if (Object.keys(envHeaderMap).length > 0) {
         pushCodexConfigArg(args, `mcp_servers.${name}.env_http_headers`, tomlInlineStringMap(envHeaderMap));
       }
+      pushCodexConfigArg(
+        args,
+        `mcp_servers.${name}.startup_timeout_sec`,
+        String(MCP_PREWARM_GRACE_MS / 1_000),
+      );
       continue;
     }
 
@@ -2597,7 +2629,11 @@ export class CodexRuntime implements AgentRuntime {
       codexProc.model = options.model || '';
       codexProc.reasoningEffort = options.reasoningEffort || '';
 
-      // 3. Start or resume thread
+      // 3. Start or resume thread. The MCP window begins at this native
+      // startup boundary, not at process spawn/initialize.
+      if (launchConfig.mcpServerNames.length > 0) {
+        mcpStartup.arm();
+      }
       if (options.resumeSessionId) {
         // Resume existing thread
         const resumeParams = {
@@ -2644,19 +2680,20 @@ export class CodexRuntime implements AgentRuntime {
         });
       }
 
-      // Managed Codex starts injected MCPs asynchronously after thread/start.
-      // A process/thread that is live but still booting MCP is not pre-warmed:
-      // turn/start would merely move that cold-start wait onto the user's query.
+      // Managed Codex owns one soft MCP startup window for this runtime
+      // session. Native startup_timeout_sec uses the same policy budget, so
+      // turn/start cannot inherit Codex's longer default hidden wait.
       if (launchConfig.mcpServerNames.length > 0) {
-        const startup = await mcpStartup.wait(CODEX_MCP_STARTUP_SETTLE_TIMEOUT_MS);
-        const unhealthy = Object.entries(startup.states)
-          .filter(([, state]) => state === 'failed' || state === 'cancelled')
-          .map(([name, state]) => `${name}:${state}`);
-        if (unhealthy.length > 0) {
-          console.warn(`[codex] managed MCP startup settled with terminal failures: ${unhealthy.join(',')}`);
-        } else {
-          console.log(`[codex] managed MCP startup ready: ${launchConfig.mcpServerNames.join(',')}`);
-        }
+        const startup = await mcpStartup.wait();
+        const serverStates = launchConfig.mcpServerNames.map(name => (
+          `${name}:${startup.states[name] ?? 'pending'}`
+        ));
+        console.log(
+          `[codex] managed MCP pre-warm terminal outcome=${startup.outcome}`
+          + `${startup.reason ? ` reason=${startup.reason}` : ''}`
+          + ` elapsedMs=${startup.elapsedMs} budgetMs=${MCP_PREWARM_GRACE_MS}`
+          + ` servers=[${serverStates.join(',')}]`,
+        );
       }
       if (codexProc.exited) {
         throw new Error('Codex process exited before startup completed');

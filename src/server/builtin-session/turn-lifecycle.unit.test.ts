@@ -3,7 +3,9 @@ import { appendMessage, resetTranscriptForTest, transcriptState } from './transc
 import {
   accumulateCurrentTurnUsage,
   markCurrentTurnHasOutput,
-  pushPendingRequest,
+  peekPendingOutputOwner,
+  popPendingOutputOwner,
+  pushPendingOutputOwner,
   resetTurnForTest,
   setCurrentTurnCompactResult,
   setCurrentTurnSourceItem,
@@ -71,10 +73,9 @@ function makeDeps(overrides: Partial<BuiltinTurnLifecycleDeps> = {}) {
     getCurrentModel: () => 'claude-test',
     getIsInterruptingResponse: () => false,
     setStreamingMessage: vi.fn(),
-    setForceDrainTurnStarting: vi.fn(),
     resetInFlightToolCount: vi.fn(),
     resetWatchdogFired: vi.fn(),
-    resolvePostInterruptTurnEnd: vi.fn(),
+    claimPostInterruptResultTerminal: vi.fn(),
     terminalEventAppliesToCurrentInFlight: () => true,
     dropInFlightQueueItem: vi.fn(() => null),
     preserveInFlightAfterTerminalBoundary: vi.fn(),
@@ -234,7 +235,7 @@ describe('turn-lifecycle owner', () => {
       getIsInterruptingResponse: () => true,
     });
     const lifecycle = createBuiltinTurnLifecycle(deps);
-    pushPendingRequest('req-1');
+    pushPendingOutputOwner('queue-1', 'req-1');
 
     lifecycle.handleSdkResult(makeResult({
       subtype: 'error_during_execution',
@@ -246,7 +247,71 @@ describe('turn-lifecycle owner', () => {
     await lifecycle.getLastTurnEndPersist();
 
     expect(deps.failCurrentImRequest).not.toHaveBeenCalled();
-    expect(deps.completeCurrentImRequest).toHaveBeenCalledWith({ finalPayloads: [] });
+    expect(deps.cancelCurrentImRequest).toHaveBeenCalledWith({
+      finalPayloads: [{ text: '🛑 已取消' }],
+    });
+    expect(deps.completeCurrentImRequest).not.toHaveBeenCalled();
+    expect(deps.claimPostInterruptResultTerminal).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { label: 'successful', result: makeResult({ result: 'fallback answer' }) },
+    {
+      label: 'error',
+      result: makeResult({
+        subtype: 'error_during_execution',
+        is_error: true,
+        result: 'provider error',
+      }),
+    },
+  ])('consumes one non-IM output owner for a $label no-output result', async ({ result }) => {
+    const completeCurrentImRequest = vi.fn(() => {
+      popPendingOutputOwner();
+    });
+    const { deps } = makeDeps({ completeCurrentImRequest });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    pushPendingOutputOwner('desktop-a', null);
+    pushPendingOutputOwner('queue-b', 'request-b');
+
+    lifecycle.handleSdkResult(result);
+    await lifecycle.getLastTurnEndPersist();
+
+    expect(completeCurrentImRequest).toHaveBeenCalledOnce();
+    expect(peekPendingOutputOwner()).toEqual({ queueId: 'queue-b', requestId: 'request-b' });
+  });
+
+  it('lets a graceful interrupt result claim exactly one IM terminal owner', async () => {
+    const persist = deferred();
+    const cancelCurrentImRequest = vi.fn(() => {
+      popPendingOutputOwner();
+    });
+    const { deps, broadcasts } = makeDeps({
+      getIsInterruptingResponse: () => true,
+      persistTranscript: vi.fn(() => persist.promise),
+      cancelCurrentImRequest,
+    });
+    const lifecycle = createBuiltinTurnLifecycle(deps);
+    pushPendingOutputOwner('queue-a', 'request-a');
+    pushPendingOutputOwner('queue-b', 'request-b');
+    markCurrentTurnHasOutput();
+
+    lifecycle.handleSdkResult(makeResult({
+      terminal_reason: 'aborted_streaming',
+      result: 'partial answer',
+    }));
+
+    expect(cancelCurrentImRequest).toHaveBeenCalledOnce();
+    expect(deps.completeCurrentImRequest).not.toHaveBeenCalled();
+    expect(deps.claimPostInterruptResultTerminal).toHaveBeenCalledOnce();
+    expect(peekPendingOutputOwner()).toEqual({ queueId: 'queue-b', requestId: 'request-b' });
+
+    persist.resolve();
+    await lifecycle.getLastTurnEndPersist();
+
+    expect(cancelCurrentImRequest).toHaveBeenCalledOnce();
+    expect(peekPendingOutputOwner()).toEqual({ queueId: 'queue-b', requestId: 'request-b' });
+    expect(broadcasts.map(item => item.event)).toContain('chat:message-stopped');
+    expect(broadcasts.map(item => item.event)).not.toContain('chat:message-complete');
   });
 
   it('recovers SDK missing resume anchor result errors without surfacing a user error', () => {
@@ -491,7 +556,7 @@ describe('turn-lifecycle owner', () => {
 
     lifecycle.handleSdkResult(makeResult({ result: 'done' }));
 
-    expect(deps.setForceDrainTurnStarting).toHaveBeenCalledWith(true);
+    expect(deps.claimPostInterruptResultTerminal).toHaveBeenCalledOnce();
     expect(deps.surfaceInFlightQueueItem).toHaveBeenCalledWith(
       'queued-1',
       { messageText: 'run now' },

@@ -43,7 +43,15 @@ let sessionBrowserToolUsed = false;
 let sessionStorageStateSaved = false;
 let currentTurnInboxMeta: import('../inbox/types').InboxTurnMeta | undefined = undefined;
 const currentTurnTextBlocks: string[] = [];
-const pendingRequestIds: string[] = [];
+export type PendingOutputOwner = {
+  queueId: string;
+  requestId: string | null;
+};
+
+// One owner per user message yielded to SDK stdin. A null requestId is
+// intentional: it preserves output ownership for Desktop/cron/other non-IM
+// turns so a later realtime IM yield cannot lend its identity backward.
+const pendingOutputOwners: PendingOutputOwner[] = [];
 let currentTurnImTerminalEmitted = false;
 let currentTurnSourceItem: MessageQueueItem | null = null;
 let lastSessionCompletionTerminal: SessionCompletionTerminal | null = null;
@@ -188,7 +196,7 @@ export const turnState = {
     currentTurnInboxMeta = meta;
   },
   currentTurnTextBlocks,
-  pendingRequestIds,
+  pendingOutputOwners,
   get currentTurnImTerminalEmitted(): boolean {
     return currentTurnImTerminalEmitted;
   },
@@ -419,36 +427,40 @@ export function clearCurrentTurnTextBlocks(): void {
   currentTurnTextBlocks.length = 0;
 }
 
-export function pushPendingRequest(requestId: string | null | undefined): void {
-  if (!requestId) return;
-  pendingRequestIds.push(requestId);
+export function pushPendingOutputOwner(queueId: string, requestId: string | null | undefined): void {
+  pendingOutputOwners.push({ queueId, requestId: requestId ?? null });
 }
 
-export function popPendingRequest(): string | null {
-  return pendingRequestIds.shift() ?? null;
+export function popPendingOutputOwner(): PendingOutputOwner | null {
+  return pendingOutputOwners.shift() ?? null;
 }
 
-export function peekPendingRequest(): string | null {
-  return pendingRequestIds[0] ?? null;
+export function peekPendingOutputOwner(): PendingOutputOwner | null {
+  return pendingOutputOwners[0] ?? null;
 }
 
-export function removePendingRequest(requestId: string | null | undefined): boolean {
-  if (!requestId) return false;
-  const idx = pendingRequestIds.indexOf(requestId);
+export function removePendingOutputOwnerByQueueId(queueId: string | null | undefined): boolean {
+  if (!queueId) return false;
+  const idx = pendingOutputOwners.findIndex(owner => owner.queueId === queueId);
   if (idx < 0) return false;
-  pendingRequestIds.splice(idx, 1);
+  pendingOutputOwners.splice(idx, 1);
   return true;
 }
 
-export function clearPendingRequests(): string[] {
-  const drained = pendingRequestIds.slice();
-  pendingRequestIds.length = 0;
+export function clearPendingOutputOwners(): string[] {
+  const drained = pendingOutputOwners
+    .map(owner => owner.requestId)
+    .filter((requestId): requestId is string => requestId !== null);
+  pendingOutputOwners.length = 0;
   currentTurnImTerminalEmitted = false;
   return drained;
 }
 
-export function getPendingRequestIds(): readonly string[] {
-  return pendingRequestIds;
+/** IM request ids still present in the output-owner FIFO (null slots omitted). */
+export function getPendingImRequestIds(): readonly string[] {
+  return pendingOutputOwners
+    .map(owner => owner.requestId)
+    .filter((requestId): requestId is string => requestId !== null);
 }
 
 export function hasCurrentTurnImTerminalEmitted(): boolean {
@@ -460,14 +472,14 @@ export function setCurrentTurnImTerminalEmitted(value: boolean): void {
 }
 
 export function completeCurrentImRequest(emit: ImEmitter, data?: unknown): void {
-  const requestId = popPendingRequest();
+  const requestId = popPendingOutputOwner()?.requestId;
   if (!requestId || currentTurnImTerminalEmitted) return;
   currentTurnImTerminalEmitted = true;
   emit('complete', { requestId, ...(typeof data === 'object' && data ? data : {}) });
 }
 
 export function failCurrentImRequest(emit: ImEmitter, data?: unknown): void {
-  const requestId = popPendingRequest();
+  const requestId = popPendingOutputOwner()?.requestId;
   if (!requestId || currentTurnImTerminalEmitted) return;
   currentTurnImTerminalEmitted = true;
   emit('error', { requestId, ...(typeof data === 'object' && data ? data : {}) });
@@ -594,7 +606,7 @@ export function snapshotTurn() {
     sessionStorageStateSaved,
     currentTurnInboxMeta,
     currentTurnTextBlocks: [...currentTurnTextBlocks],
-    pendingRequestIds: [...pendingRequestIds],
+    pendingOutputOwners: pendingOutputOwners.map(owner => ({ ...owner })),
     currentTurnImTerminalEmitted,
     currentTurnSourceItem,
   };
@@ -620,7 +632,7 @@ export function resetTurnForTest(): void {
   sessionStorageStateSaved = false;
   currentTurnInboxMeta = undefined;
   currentTurnTextBlocks.length = 0;
-  pendingRequestIds.length = 0;
+  pendingOutputOwners.length = 0;
   currentTurnImTerminalEmitted = false;
   currentTurnSourceItem = null;
   lastSessionCompletionTerminal = null;

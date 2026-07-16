@@ -1,5 +1,9 @@
 import type { Query } from '@anthropic-ai/claude-agent-sdk';
 import type { SystemInitInfo } from '../../shared/types/system';
+import {
+  MCP_PREWARM_GRACE_MS,
+  type McpPrewarmOutcome,
+} from '../session-core/mcp-prewarm-policy';
 import type { BuiltinLifecycleSnapshot, MessageQueueItem } from './types';
 
 const PRE_WARM_MAX_RETRIES = 3;
@@ -7,16 +11,19 @@ const PRE_WARM_MAX_RETRIES = 3;
 let querySession: Query | null = null;
 let queryGeneration = 0;
 let queryMcpRevision = 0;
-let queryMcpReadinessOwner: {
+let queryMcpPrewarmOwner: {
   query: Query;
   generation: number;
   revision: number;
   fingerprint: string;
   requiredServerIds: readonly string[];
+  startedAt: number;
+  deadlineAt: number;
+  outcome?: McpPrewarmOutcome;
   statusRead?: ReturnType<Query['mcpServerStatus']>;
 } | null = null;
 export type QueryMcpMutationResult =
-  | { ok: true }
+  | { ok: true; deferred?: boolean }
   | {
     ok: false;
     reason: 'failed' | 'timeout' | 'deferred' | 'query_replaced';
@@ -61,7 +68,7 @@ function replaceQuerySession(session: Query | null): void {
   }
   querySession = session;
   queryGeneration += 1;
-  queryMcpReadinessOwner = null;
+  queryMcpPrewarmOwner = null;
   if (previousQuery) {
     for (const waiter of queryExitWaiters) {
       if (waiter.query !== previousQuery) continue;
@@ -214,40 +221,67 @@ export function takeQueryBackgroundTasks(
   return [...tasks.entries()];
 }
 
-export function setQueryMcpReadinessOwner(params: {
+export function setQueryMcpPrewarmOwner(params: {
   query: Query;
   fingerprint: string;
   requiredServerIds: readonly string[];
+  startedAt?: number;
+  deadlineAt?: number;
 }): boolean {
   if (querySession !== params.query) return false;
   queryMcpRevision += 1;
-  queryMcpReadinessOwner = {
+  const startedAt = params.startedAt ?? Date.now();
+  queryMcpPrewarmOwner = {
     query: params.query,
     generation: queryGeneration,
     revision: queryMcpRevision,
     fingerprint: params.fingerprint,
     requiredServerIds: [...params.requiredServerIds].sort(),
+    startedAt,
+    deadlineAt: params.deadlineAt ?? startedAt + MCP_PREWARM_GRACE_MS,
   };
   return true;
 }
 
-export function clearQueryMcpReadinessOwner(query?: Query): void {
-  if (query && queryMcpReadinessOwner?.query !== query) return;
-  queryMcpReadinessOwner = null;
+export function clearQueryMcpPrewarmOwner(query?: Query): void {
+  if (query && queryMcpPrewarmOwner?.query !== query) return;
+  queryMcpPrewarmOwner = null;
 }
 
-export function getQueryMcpReadinessOwner(): {
+export function getQueryMcpPrewarmOwner(): {
   query: Query;
   generation: number;
   revision: number;
   fingerprint: string;
   requiredServerIds: readonly string[];
+  startedAt: number;
+  deadlineAt: number;
+  outcome?: McpPrewarmOutcome;
 } | null {
-  if (!queryMcpReadinessOwner || queryMcpReadinessOwner.query !== querySession) return null;
+  if (!queryMcpPrewarmOwner || queryMcpPrewarmOwner.query !== querySession) return null;
   return {
-    ...queryMcpReadinessOwner,
-    requiredServerIds: [...queryMcpReadinessOwner.requiredServerIds],
+    ...queryMcpPrewarmOwner,
+    requiredServerIds: [...queryMcpPrewarmOwner.requiredServerIds],
   };
+}
+
+/** Settle one Query/map generation exactly once. */
+export function settleQueryMcpPrewarmOwner(params: {
+  query: Query;
+  generation: number;
+  revision: number;
+  outcome: Exclude<McpPrewarmOutcome, { state: 'owner_replaced' }>;
+}): boolean {
+  const owner = queryMcpPrewarmOwner;
+  if (!owner
+    || owner.query !== params.query
+    || owner.generation !== params.generation
+    || owner.revision !== params.revision
+    || owner.outcome) {
+    return false;
+  }
+  owner.outcome = params.outcome;
+  return true;
 }
 
 /**
@@ -256,14 +290,14 @@ export function getQueryMcpReadinessOwner(): {
  * accumulating pendingControlResponses until Query teardown.
  */
 export function readQueryMcpStatuses(query: Query): ReturnType<Query['mcpServerStatus']> {
-  const owner = queryMcpReadinessOwner;
+  const owner = queryMcpPrewarmOwner;
   if (!owner || owner.query !== query || querySession !== query) {
-    return Promise.reject(new Error('MCP readiness owner is no longer current'));
+    return Promise.reject(new Error('MCP pre-warm owner is no longer current'));
   }
   if (owner.statusRead) return owner.statusRead;
   const read = query.mcpServerStatus();
   owner.statusRead = read.finally(() => {
-    if (queryMcpReadinessOwner === owner) owner.statusRead = undefined;
+    if (queryMcpPrewarmOwner === owner) owner.statusRead = undefined;
   });
   return owner.statusRead;
 }
@@ -554,8 +588,8 @@ export function snapshotLifecycle(): BuiltinLifecycleSnapshot {
     querySession,
     queryGeneration,
     queryMcpRevision,
-    queryMcpFingerprint: queryMcpReadinessOwner?.fingerprint ?? null,
-    queryMcpServerIds: [...(queryMcpReadinessOwner?.requiredServerIds ?? [])],
+    queryMcpFingerprint: queryMcpPrewarmOwner?.fingerprint ?? null,
+    queryMcpServerIds: [...(queryMcpPrewarmOwner?.requiredServerIds ?? [])],
     queryMcpMutationInFlight: queryMcpMutationOwner !== null,
     isProcessing,
     abortRequested,
@@ -582,7 +616,7 @@ export function resetLifecycleForTest(): void {
   querySession = null;
   queryGeneration = 0;
   queryMcpRevision = 0;
-  queryMcpReadinessOwner = null;
+  queryMcpPrewarmOwner = null;
   queryMcpMutationOwner = null;
   queryBackgroundTasks.clear();
   isProcessing = false;

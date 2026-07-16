@@ -45,6 +45,7 @@ describe('plugin bridge compat runtime dispatch ownership', () => {
       ctx: {
         To: 'chat:peer-1',
         SenderId: 'sender-1',
+        AccountId: 'account-1',
         Body: 'hello',
       },
       dispatcher: {
@@ -66,6 +67,7 @@ describe('plugin bridge compat runtime dispatch ownership', () => {
     const body = JSON.parse(String(request?.body ?? '{}')) as Record<string, unknown>;
     expect(body).toMatchObject({
       chatId: 'peer-1',
+      accountId: 'account-1',
       deliveryProtocol: 'openclaw-reply',
     });
     expect(typeof body.requestId).toBe('string');
@@ -132,6 +134,7 @@ describe('plugin bridge compat runtime dispatch ownership', () => {
       ctx: {
         To: 'chat:peer-1',
         SenderId: 'sender-1',
+        AccountId: 'account-legacy',
         Body: 'hello',
       },
       dispatcherOptions: {
@@ -147,6 +150,25 @@ describe('plugin bridge compat runtime dispatch ownership', () => {
     const body = JSON.parse(String(request?.body ?? '{}')) as Record<string, unknown>;
     expect(body.deliveryProtocol).toBeUndefined();
     expect(body.requestId).toBeUndefined();
+    expect(body.accountId).toBe('account-legacy');
+  });
+
+  it('preserves top-level account identity when standard callbacks fall back to legacy dispatch', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const runtime = createCompatRuntime(31_426, 'bot-1', 'openclaw-plugin-yuanbao');
+    await expect(runtime.channel.reply.dispatchReplyFromConfig({
+      ctx: {
+        To: 'chat:peer-1',
+        SenderId: 'sender-1',
+        Body: 'hello',
+      },
+      accountId: 'account-top-level',
+    })).resolves.toMatchObject({ queuedFinal: 0 });
+
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body ?? '{}')) as Record<string, unknown>;
+    expect(body.accountId).toBe('account-top-level');
   });
 
   it('fails before registration when the plugin omits the reply destination', async () => {

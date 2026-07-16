@@ -277,7 +277,7 @@ desktop/IM/Agent Channel 保留 Session 原 interaction scenario 和输出路由
 |---|---|---|
 | `lifecycle.ts` | SDK `Query`、processing/abort、termination + pre-dispatch rollback barrier、generator resolver、pre-warm control readiness、Query-scoped MCP readiness/mutation owner、exact Query background-task registry | abort/restart/termination/pre-warm/generator wakeup、domain rollback join、MCP owner publication/mutation serialization、background task quiescence |
 | `queue.ts` | `messageQueue`、`pendingMidTurnQueue`、`turnBoundaryQueue`、in-flight metadata、admission ticket | enqueue/cancel/force/rescue/drain |
-| `turn.ts` | current turn usage/output/error、pending request FIFO、injected turn outcomes、inbox binding | turn state mutation API |
+| `turn.ts` | current turn usage/output/error、SDK output-owner FIFO、injected turn outcomes、inbox binding | turn state mutation API |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 语义、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序 | terminal complete/stopped/error、SDK result finalization |
 | `config.ts` | MCP/agents/plugins/model/permission/reasoning/provider、deferred restart、MCP fingerprint | config setters、provider boundary reset、MCP sync |
 | `transcript.ts` | live `messages`、message sequence、persist cursor/cache、current/live SDK UUID sets、reload anchor | transcript state mutation API |
@@ -292,34 +292,21 @@ desktop/IM/Agent Channel 保留 Session 原 interaction scenario 和输出路由
 - `agent-session.ts` 需要修改 owner state 时走 `builtin-session/*` 的命名 API；`runtime-boundary.unit.test.ts` 有 direct-write guard，防止重新裸写 lifecycle/queue/turn/config/transcript 状态。
 - `agent-session.ts` 不再解释 SDK terminal result，也不再实现 transcript persistence mapping/chain；这两类行为分别归 `turn-lifecycle.ts` 与 `transcript-persistence.ts`，facade 只组装必要依赖并委托。
 
-#### Builtin injected turn：MCP readiness 与 dispatch transaction
+#### Builtin 公共 MCP soft pre-warm 与 dispatch transaction
 
-`Query.initializationResult()` 只表示 SDK control request 可用，streamed `system_init` 只表示某一 turn 的 metadata；SDK 的 MCP transport 仍可能处于 `pending`、`failed`、`needs-auth` 或 `disabled`。因此 Cron / Goal / Heartbeat / Memory Update 等无人值守 injected turn 以当前 Query **实际安装**的 MCP map 为 dispatch contract，普通 desktop turn 不增加这段等待，external runtime 也不套用 Claude SDK 私有状态协议。
+`Query.initializationResult()` 只表示 SDK control request 可用，streamed `system_init` 只表示某一 turn 的 metadata；SDK 的 MCP transport 仍可能处于 `pending`、`failed`、`needs-auth` 或 `disabled`。这不是 AI turn 的可用性前置条件：Desktop、Launcher、IM 与 injected turn 全部在公共 `messageGenerator()` dispatch seam 观察同一个 Query/map generation owner，MCP 永不在 adapter 入口拒绝或延迟持久化用户任务。
 
-`builtin-session/lifecycle.ts` 是该 contract 的 mutable owner：
+`builtin-session/lifecycle.ts` 持有 Query/map generation 的一次性 soft pre-warm owner：
 
-- Query object identity 改变时递增 generation，并清除旧 readiness owner。
-- 每次成功发布 installed map 都递增 revision；即使 server id/fingerprint 相同，same-id replacement 与 A→B→A 也会使旧 lease 失效。
-- readiness lease = identity + generation + revision + fingerprint；只检查该 Query 真正安装的 server id，忽略 SDK 返回的其它 project/user MCP。
-- 每个 owner 的 `mcpServerStatus()` control request 单飞，防止一个无 AbortSignal 的悬挂调用累积 SDK `pendingControlResponses`。
+- Query object identity 改变时递增 generation；成功安装新 map 时递增 revision，并创建 owner-owned absolute deadline。
+- 当前预算由 `MCP_PREWARM_GRACE_MS` 派生，现为 10 秒；用户发送只消费从 owner 创建时起的**剩余**时间，不创建 per-turn 新窗口。
+- `connected` 全部到齐即 ready；`failed`、`needs-auth`、`disabled`、missing、status read error 或 deadline 都 terminal degraded，随后照常 dispatch。
+- settled outcome 保存在 owner 上；同 generation 后续 turn 是零 control-RPC fast path。owner replacement 时 promoted item 原样 requeue，只交给 replacement Query。
+- `mcpServerStatus()` 仍按 owner single-flight，避免无 AbortSignal 的 SDK control request 被重复堆积；它的异常只降级 MCP，不重建 Query。
 
-一次 injected request 在 adapter 入口创建唯一绝对 deadline，两个 fence 共享剩余预算且总计不超过 30 秒：
+Cron / Goal / Heartbeat / Memory Update 的领域 `beforeDispatch` guard 仍在公共 soft observation 之后执行，继续负责 claim、cancel、rollback 与 dispatch acceptance；MCP 不参与领域拒绝，也不再拥有 injected-only pre-persistence/final 双 fence。
 
-```text
-MCP pre-persistence fence
-  → guarded user/session metadata reservation
-  → queue promotion
-  → MCP final fence
-  → domain claim（例如 Goal currentTurn）
-  → synchronous MCP lease validation
-  → synchronous active-turn owner transfer + dispatch acceptance
-  → plan cleanup / deferred user row / title / first-turn metadata
-  → SDK dispatch
-```
-
-`pending` 在 200–500ms 区间有界轮询；`failed`、`needs-auth`、`disabled`、missing、timeout 与 Query replacement 均 fail closed。Domain claim 如果已取得而 lease 随即失效，必须等待 guard rollback acknowledged 后才发布拒绝。commit 前取消或 deadline 到达会同时结算 pre-persistence guard、promotion guard 与 queue item，不能持久化伪 user bubble/first-turn metadata，也不能留下 durable Goal claim；reset/switch/rewind/restart 经 canonical abort 取消 promoted item 时，该 settlement 注册到 lifecycle termination barrier，且不受 Query 10 秒 force-cleanup timeout 代替。owner transfer 后再发生取消则属于已接纳 active turn，必须精确 stop/terminalize，不能回报“未入队”。基础设施 injected turn 不消费并递归注入 `continueAfterAbort` watchdog reminder，避免该隐藏消息绕开同一 readiness transaction。
-
-Live MCP replacement 另有一个 Query-generation mutation owner，并在异步 map build 前同步发布；mutation claim 与 promotion 按同一 event-loop turn 线性化：promotion 先存在时不 claim mutation，mutation 先 claim 时下一 promotion 等待同一 promise。以下三类 dispatch ownership 任一存在时都不允许 mutation：promoted item、active turn、SDK command in-flight。并发 ensure 等待当前 mutation 后重新计算 desired config，不能让较晚 IM context 丢失。失败/超时会清 readiness owner、锁存 deferred restart；等待中的 item 原样 requeue，旧 generator 等 exact Query exit 后结束，只在 replacement Query 上重新 promotion。status control request 超时同样重建 Query，因为 SDK 无法取消该 pending request。
+Live MCP replacement 是独立的 Query-generation **正确性 fence**，不属于 10 秒 soft budget：mutation owner 在异步 map build 前同步发布，使用既有 30 秒 `setMcpServers()` timeout。promotion 与 mutation 按同一 event-loop turn 线性化；promoted item、active turn、SDK command in-flight 任一存在时都不原地替换 transport。真实 Bridge surface drift 会把新消息留在既有 turn-boundary queue，并锁存 deferred restart；旧 turn 继续使用旧 installed surface，replacement Query 安装新 map 后再 dispatch。mutation 失败/超时的等待 item 同样原样 requeue，不能穿越到不确定的 transport owner。
 
 #### Background task 与 deferred restart
 

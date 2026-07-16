@@ -7,10 +7,10 @@ import {
 } from '../agent-session';
 import {
   getQueryMcpMutation,
-  getQueryMcpReadinessOwner,
+  getQueryMcpPrewarmOwner,
   isAbortRequested,
   resetLifecycleForTest,
-  setQueryMcpReadinessOwner,
+  setQueryMcpPrewarmOwner,
   setQuerySession,
 } from '../builtin-session/lifecycle';
 import {
@@ -67,7 +67,7 @@ describe('live Query MCP mutation ownership', () => {
     expect(setMcpServers).toHaveBeenCalledTimes(1);
 
     releaseMutation();
-    await Promise.all([first, second]);
+    await expect(Promise.all([first, second])).resolves.toEqual([true, true]);
 
     // The second ensure shared the first mutation, then rebuilt the desired
     // fingerprint and observed that the installed map was already current.
@@ -91,7 +91,7 @@ describe('live Query MCP mutation ownership', () => {
     expect(setMcpServers).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(30_000);
-    await synchronization;
+    await expect(synchronization).resolves.toBe(false);
 
     expect(isAbortRequested()).toBe(true);
     expect(getQueryMcpMutation()).toBeNull();
@@ -106,7 +106,7 @@ describe('live Query MCP mutation ownership', () => {
     } as never;
     setQuerySession(query);
     setFrozenSdkMcpFingerprint('stale-owner');
-    setQueryMcpReadinessOwner({
+    setQueryMcpPrewarmOwner({
       query,
       fingerprint: 'stale-owner',
       requiredServerIds: ['stale-owner'],
@@ -119,11 +119,11 @@ describe('live Query MCP mutation ownership', () => {
       resolve: () => undefined,
     });
 
-    await ensureSdkMcpInSync();
+    await expect(ensureSdkMcpInSync()).resolves.toBe(false);
 
     expect(setMcpServers).not.toHaveBeenCalled();
     expect(getQueryMcpMutation()).toBeNull();
-    expect(getQueryMcpReadinessOwner()).not.toBeNull();
+    expect(getQueryMcpPrewarmOwner()).not.toBeNull();
     expect(snapshotConfig().deferredRestartReasons).toContain('mcp');
     expect(isAbortRequested()).toBe(false);
   });

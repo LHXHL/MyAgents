@@ -2034,6 +2034,8 @@ struct BridgeMessagePayload {
     delivery_protocol: Option<crate::im::types::ImDeliveryProtocol>,
     sender_id: String,
     sender_name: Option<String>,
+    #[serde(default)]
+    account_id: Option<String>,
     text: String,
     chat_type: String, // "direct" | "group"
     chat_id: String,
@@ -2166,6 +2168,7 @@ async fn handle_bridge_message(
         text: payload.text,
         sender_id: payload.sender_id,
         sender_name: payload.sender_name,
+        account_id: payload.account_id,
         source_type,
         platform: ImPlatform::OpenClaw(plugin_id),
         timestamp: chrono::Utc::now(),
@@ -3530,6 +3533,7 @@ mod tests {
             "requestId": "request-1",
             "deliveryProtocol": "openclaw-reply",
             "senderId": "user-1",
+            "accountId": "account-1",
             "text": "hello",
             "chatType": "direct",
             "chatId": "chat-1"
@@ -3537,6 +3541,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(payload.request_id.as_deref(), Some("request-1"));
+        assert_eq!(payload.account_id.as_deref(), Some("account-1"));
         assert_eq!(
             payload.delivery_protocol,
             Some(crate::im::types::ImDeliveryProtocol::OpenClawReply)

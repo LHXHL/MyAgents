@@ -4,7 +4,6 @@ import {
   cancelQueuedTurnsByOwner,
   cancelImRequest as cancelBuiltinImRequest,
   applyMcpOverrideAndAwaitReady,
-  awaitRequiredMcpReadyForInjectedTurn,
   enqueueUserMessage,
   forkSession,
   forceExecuteQueueItem,
@@ -28,8 +27,6 @@ import {
   getSessionProviderEnv,
   getSessionProviderId,
   getSessionReasoningEffort,
-  isRequiredMcpReadinessLeaseCurrent,
-  recoverQueryAfterMcpStatusTimeout,
   getStreamingAssistantId,
   getSystemInitInfo,
   handleAskUserQuestionResponse,
@@ -71,10 +68,6 @@ import type {
   SessionEngine,
 } from './types';
 import { decideBuiltinInjectedTurnResult } from '../session-core/turn-result-policy';
-import {
-  formatMcpReadinessFailure,
-  type McpReadinessFailure,
-} from '../session-core/mcp-readiness';
 import type { DispatchGuard, TurnTerminalOutcome } from '../session-core/turn-queue';
 import { getSessionData } from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
@@ -97,121 +90,9 @@ function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T |
   });
 }
 
-function createMcpReadinessDispatchGuard(params: {
-  deadlineAt: number;
-  onMcpFailure(failure: McpReadinessFailure): void;
-}): DispatchGuard {
-  const controller = new AbortController();
-  const guard: DispatchGuard = Object.assign(
-    async () => {
-      if (controller.signal.aborted) {
-        return { accepted: false, code: 'dispatch_canceled', error: 'Queue item was cancelled' };
-      }
-
-      let readiness;
-      try {
-        readiness = await awaitRequiredMcpReadyForInjectedTurn(params.deadlineAt, {
-          signal: controller.signal,
-        });
-      } catch (error) {
-        if (controller.signal.aborted) {
-          return { accepted: false, code: 'dispatch_canceled', error: 'Queue item was cancelled' };
-        }
-        throw error;
-      }
-      if (!readiness.ready) {
-        params.onMcpFailure(readiness.failure);
-        if (readiness.failure.code === 'mcp_timeout') {
-          recoverQueryAfterMcpStatusTimeout();
-        }
-        return {
-          accepted: false,
-          code: readiness.failure.code,
-          error: formatMcpReadinessFailure(readiness.failure),
-        };
-      }
-
-      return {
-        accepted: true,
-        validateAtCommit: () => {
-          if (controller.signal.aborted) {
-            return { accepted: false, code: 'dispatch_canceled', error: 'Queue item was cancelled' };
-          }
-          if (isRequiredMcpReadinessLeaseCurrent(readiness.lease)) {
-            return { accepted: true };
-          }
-          const failure: McpReadinessFailure = {
-            code: 'query_replaced',
-            servers: readiness.lease.requiredServerIds.map(id => ({ id })),
-          };
-          params.onMcpFailure(failure);
-          return {
-            accepted: false,
-            code: failure.code,
-            error: formatMcpReadinessFailure(failure),
-          };
-        },
-      };
-    },
-    {
-      cancel: () => {
-        controller.abort();
-      },
-    },
-  );
-  return guard;
-}
-
-function createInjectedTurnDispatchGuard(params: {
-  deadlineAt: number;
-  beforeDispatch?: DispatchGuard;
-  onMcpFailure(failure: McpReadinessFailure): void;
-}): DispatchGuard {
-  const mcpReadiness = createMcpReadinessDispatchGuard(params);
-  let cancellation: Promise<void> | null = null;
-  const guard: DispatchGuard = Object.assign(
-    async () => {
-      const mcpAcceptance = await mcpReadiness();
-      if (!mcpAcceptance.accepted) return mcpAcceptance;
-
-      let domainAcceptance: Awaited<ReturnType<DispatchGuard>> | undefined;
-      if (params.beforeDispatch) {
-        domainAcceptance = await params.beforeDispatch();
-        if (!domainAcceptance.accepted) return domainAcceptance;
-      }
-
-      return {
-        accepted: true,
-        validateAtCommit: () => {
-          const mcpCommit = mcpAcceptance.validateAtCommit?.() ?? mcpAcceptance;
-          if (!mcpCommit.accepted) {
-            // A domain owner (notably Goal) may have durably claimed while its
-            // async guard ran. Cancel it when the MCP lease changed before the
-            // synchronous commit seam so no orphaned claim survives rejection.
-            const rollback = params.beforeDispatch?.cancel?.();
-            return {
-              ...mcpCommit,
-              ...(rollback
-                ? { rollbackBeforeReject: Promise.resolve(rollback) }
-                : {}),
-            };
-          }
-          return domainAcceptance?.validateAtCommit?.() ?? domainAcceptance ?? { accepted: true };
-        },
-      };
-    },
-    {
-      cancel: () => {
-        cancellation ??= Promise.all([
-          Promise.resolve(mcpReadiness.cancel?.()),
-          Promise.resolve(params.beforeDispatch?.cancel?.()),
-        ]).then(() => undefined);
-        return cancellation;
-      },
-    },
-  );
-  return guard;
-}
+// runInjectedTurn requires an explicit promotion acknowledgement even when no
+// domain guard is present. MCP readiness is intentionally not part of it.
+const acceptInjectedTurnDispatch: DispatchGuard = async () => ({ accepted: true });
 
 function providerEnvForRouteRequest(request: {
   providerRoute?: ProviderRoute;
@@ -562,7 +443,6 @@ export function createBuiltinSessionEngine(): SessionEngine {
 
     async runInjectedTurn(request: InjectedTurnRequest): Promise<InjectedTurnResult> {
       const deadline = Date.now() + request.timeoutMs;
-      const mcpReadinessDeadline = Math.min(deadline, Date.now() + 30_000);
       await setInteractionScenario(request.scenario);
       getAndClearLastAgentError();
       const queueId = request.queueId ?? randomUUID();
@@ -575,20 +455,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
       if (routed.error) {
         return { success: false, enqueued: false, error: routed.error, status: routed.status };
       }
-      let mcpReadinessFailure: McpReadinessFailure | undefined;
-      const beforeUserPersistence = createMcpReadinessDispatchGuard({
-        deadlineAt: mcpReadinessDeadline,
-        onMcpFailure: (failure) => {
-          mcpReadinessFailure = failure;
-        },
-      });
-      const beforeDispatch = createInjectedTurnDispatchGuard({
-        deadlineAt: mcpReadinessDeadline,
-        beforeDispatch: request.beforeDispatch,
-        onMcpFailure: (failure) => {
-          mcpReadinessFailure = failure;
-        },
-      });
+      const beforeDispatch = request.beforeDispatch ?? acceptInjectedTurnDispatch;
       const enqueueAttempt = enqueueUserMessage(
         request.prompt,
         [],
@@ -614,7 +481,6 @@ export function createBuiltinSessionEngine(): SessionEngine {
             }
           },
           queueResponseModeOverride: 'turn',
-          beforeUserPersistence,
           beforeDispatch,
         },
       );
@@ -623,8 +489,6 @@ export function createBuiltinSessionEngine(): SessionEngine {
         Math.max(0, deadline - Date.now()),
       );
       if (!enqueueResult) {
-        beforeUserPersistence.cancel?.();
-        beforeDispatch.cancel?.();
         await cancelQueueItem(queueId);
         return {
           success: false,
@@ -634,31 +498,16 @@ export function createBuiltinSessionEngine(): SessionEngine {
         };
       }
       if (enqueueResult.error) {
-        beforeUserPersistence.cancel?.();
         beforeDispatch.cancel?.();
-        if (mcpReadinessFailure) {
-          return {
-            success: false,
-            enqueued: false,
-            error: formatMcpReadinessFailure(mcpReadinessFailure),
-            status: mcpReadinessFailure.code === 'mcp_timeout' ? 408 : 503,
-            detail: mcpReadinessFailure,
-          };
-        }
         return { success: false, enqueued: false, error: enqueueResult.error, status: 503 };
       }
       const dispatchAcceptance = enqueueResult.dispatchAcceptance
         ? await waitForDeadline(enqueueResult.dispatchAcceptance, Math.max(0, deadline - Date.now()))
         : null;
       if (!dispatchAcceptance) {
-        // Cancellation can race an in-flight durable domain claim. Start the
-        // rollback synchronously, but do not publish rejection until the
-        // domain owner acknowledges it. cancelQueueItem centralizes the same
-        // guarantee for user-initiated cancellation; keeping this exact
-        // promise also covers mocked/alternate queue implementations.
-        const rollback = beforeDispatch.cancel?.();
+        // Queue cancellation owns the exact guard rollback and does not return
+        // until the domain owner acknowledges it.
         const cancelResult = await cancelQueueItem(queueId);
-        await rollback;
         const dispatchAccepted = getBuiltinDispatchedTurnIdentity()?.queueId === queueId;
         const terminationUnconfirmed = dispatchAccepted
           && cancelResult.status !== 'cancelled'
@@ -674,15 +523,6 @@ export function createBuiltinSessionEngine(): SessionEngine {
         };
       }
       if (!dispatchAcceptance.accepted) {
-        if (mcpReadinessFailure) {
-          return {
-            success: false,
-            enqueued: false,
-            error: formatMcpReadinessFailure(mcpReadinessFailure),
-            status: mcpReadinessFailure.code === 'mcp_timeout' ? 408 : 503,
-            detail: mcpReadinessFailure,
-          };
-        }
         return {
           success: false,
           enqueued: false,

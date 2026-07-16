@@ -1141,6 +1141,7 @@ impl DingtalkAdapter {
             text: text_content,
             sender_id: sender_staff_id.to_string(),
             sender_name: sender_nick.map(String::from),
+            account_id: None,
             source_type,
             platform: ImPlatform::Dingtalk,
             timestamp: chrono::Utc::now(),

@@ -1541,6 +1541,7 @@ impl FeishuAdapter {
             text: combined_text,
             sender_id,
             sender_name: sender_name_str,
+            account_id: None,
             source_type,
             platform: ImPlatform::Feishu,
             timestamp: chrono::Utc::now(),

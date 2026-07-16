@@ -12,11 +12,12 @@ import {
   incrementPreWarmFailCount,
   isAbortRequested,
   getQueryMcpMutation,
-  getQueryMcpReadinessOwner,
+  getQueryMcpPrewarmOwner,
   requestAbort,
   resetLifecycleForTest,
   setQuerySession,
-  setQueryMcpReadinessOwner,
+  setQueryMcpPrewarmOwner,
+  settleQueryMcpPrewarmOwner,
   readQueryMcpStatuses,
   recordQueryBackgroundTask,
   registerSessionAbortCleanup,
@@ -47,16 +48,16 @@ import {
 } from './queue';
 import {
   beginTurn,
-  clearPendingRequests,
+  clearPendingOutputOwners,
   getCurrentTurnIdentity,
   getCurrentTurnQueueId,
   getCurrentTurnText,
-  getPendingRequestIds,
+  getPendingImRequestIds,
   notifyCurrentTurnTerminal,
   notifyQueuedTurnStopped,
-  pushPendingRequest,
+  pushPendingOutputOwner,
   replaceCurrentTurnUsage,
-  removePendingRequest,
+  removePendingOutputOwnerByQueueId,
   resetTurnForTest,
   setCurrentTurnSourceItem,
   snapshotTurn,
@@ -251,12 +252,12 @@ describe('builtin-session owners', () => {
     const first = { close: vi.fn() } as never;
     const second = { close: vi.fn() } as never;
     setQuerySession(first);
-    expect(setQueryMcpReadinessOwner({
+    expect(setQueryMcpPrewarmOwner({
       query: first,
       fingerprint: 'fs,search',
       requiredServerIds: ['search', 'fs'],
     })).toBe(true);
-    expect(getQueryMcpReadinessOwner()).toMatchObject({
+    expect(getQueryMcpPrewarmOwner()).toMatchObject({
       query: first,
       generation: 1,
       revision: 1,
@@ -265,8 +266,8 @@ describe('builtin-session owners', () => {
     });
 
     setQuerySession(second);
-    expect(getQueryMcpReadinessOwner()).toBeNull();
-    expect(setQueryMcpReadinessOwner({
+    expect(getQueryMcpPrewarmOwner()).toBeNull();
+    expect(setQueryMcpPrewarmOwner({
       query: first,
       fingerprint: 'fs',
       requiredServerIds: ['fs'],
@@ -277,14 +278,53 @@ describe('builtin-session owners', () => {
   it('advances the installed MCP revision for same-id replacement on one Query', () => {
     const query = { close: vi.fn() } as never;
     setQuerySession(query);
-    setQueryMcpReadinessOwner({ query, fingerprint: 'fs', requiredServerIds: ['fs'] });
-    const first = getQueryMcpReadinessOwner();
-    setQueryMcpReadinessOwner({ query, fingerprint: 'fs', requiredServerIds: ['fs'] });
-    const second = getQueryMcpReadinessOwner();
+    setQueryMcpPrewarmOwner({ query, fingerprint: 'fs', requiredServerIds: ['fs'] });
+    const first = getQueryMcpPrewarmOwner();
+    setQueryMcpPrewarmOwner({ query, fingerprint: 'fs', requiredServerIds: ['fs'] });
+    const second = getQueryMcpPrewarmOwner();
 
     expect(second?.revision).toBe((first?.revision ?? 0) + 1);
     expect(second?.generation).toBe(first?.generation);
     expect(second?.fingerprint).toBe(first?.fingerprint);
+  });
+
+  it('owns one absolute pre-warm window and one terminal outcome per map revision', () => {
+    const query = { close: vi.fn() } as never;
+    setQuerySession(query);
+    setQueryMcpPrewarmOwner({
+      query,
+      fingerprint: 'fs',
+      requiredServerIds: ['fs'],
+      startedAt: 1_000,
+      deadlineAt: 11_000,
+    });
+    const owner = getQueryMcpPrewarmOwner();
+    expect(owner).toMatchObject({ startedAt: 1_000, deadlineAt: 11_000 });
+    expect(owner?.outcome).toBeUndefined();
+
+    const settlement = {
+      query,
+      generation: owner?.generation ?? 0,
+      revision: owner?.revision ?? 0,
+      outcome: { state: 'ready' as const, elapsedMs: 2_000 },
+    };
+    expect(settleQueryMcpPrewarmOwner(settlement)).toBe(true);
+    expect(settleQueryMcpPrewarmOwner(settlement)).toBe(false);
+    expect(getQueryMcpPrewarmOwner()?.outcome).toEqual(settlement.outcome);
+
+    setQueryMcpPrewarmOwner({
+      query,
+      fingerprint: 'fs',
+      requiredServerIds: ['fs'],
+      startedAt: 12_000,
+      deadlineAt: 22_000,
+    });
+    expect(getQueryMcpPrewarmOwner()).toMatchObject({
+      revision: (owner?.revision ?? 0) + 1,
+      startedAt: 12_000,
+      deadlineAt: 22_000,
+    });
+    expect(getQueryMcpPrewarmOwner()?.outcome).toBeUndefined();
   });
 
   it('single-flights MCP status control reads for one Query owner', async () => {
@@ -294,7 +334,7 @@ describe('builtin-session owners', () => {
     ));
     const query = { close: vi.fn(), mcpServerStatus } as never;
     setQuerySession(query);
-    setQueryMcpReadinessOwner({
+    setQueryMcpPrewarmOwner({
       query,
       fingerprint: 'fs',
       requiredServerIds: ['fs'],
@@ -391,12 +431,12 @@ describe('builtin-session owners', () => {
     expect(snapshotQueue().messageQueue.map(item => item.id)).toEqual(['q2', 'q1']);
   });
 
-  it('turn owner keeps pending request FIFO and notifies the current queue item once', async () => {
-    pushPendingRequest('r1');
-    pushPendingRequest('r2');
-    expect(getPendingRequestIds()).toEqual(['r1', 'r2']);
-    expect(removePendingRequest('r2')).toBe(true);
-    expect(clearPendingRequests()).toEqual(['r1']);
+  it('turn owner keeps the output-owner FIFO and notifies the current queue item once', async () => {
+    pushPendingOutputOwner('q1', 'r1');
+    pushPendingOutputOwner('q2', 'r2');
+    expect(getPendingImRequestIds()).toEqual(['r1', 'r2']);
+    expect(removePendingOutputOwnerByQueueId('q2')).toBe(true);
+    expect(clearPendingOutputOwners()).toEqual(['r1']);
 
     const onTerminal = vi.fn();
     const item = queueItem('turn-a');

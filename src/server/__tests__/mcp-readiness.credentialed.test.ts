@@ -1,5 +1,5 @@
 /**
- * Real SDK 0.3.x MCP readiness gate.
+ * Real SDK 0.3.x MCP soft pre-warm observation.
  *
  * Run explicitly with: npm run test:credentialed -- mcp-readiness
  */
@@ -12,14 +12,14 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import { describe, expect, it } from 'vitest';
 
-import { awaitRequiredMcpReadiness } from '../session-core/mcp-readiness';
+import { MCP_PREWARM_GRACE_MS, awaitMcpPrewarm } from '../session-core/mcp-prewarm-policy';
 import { PROVIDERS } from './fixtures/test-env';
 import { buildTestEnv, resolveClaudeCodeCli } from './setup';
 
 const provider = PROVIDERS.anthropic;
 const fixturePath = resolve('src/server/__tests__/fixtures/delayed-mcp-server.mjs');
 
-describe('SDK MCP readiness gate', () => {
+describe('SDK MCP soft pre-warm', () => {
   it.skipIf(!provider.available).each([500, 4_900, 8_000])(
     'holds the first tool turn until a %dms delayed stdio MCP is connected',
     async (startupDelayMs) => {
@@ -75,14 +75,14 @@ describe('SDK MCP readiness gate', () => {
 
       try {
         const statusesSeen: string[] = [];
-        const readiness = await awaitRequiredMcpReadiness({
-          deadlineAt: Date.now() + 30_000,
-          getOwner: () => ({
+        const owner = {
             identity: sdkQuery,
             generation: 1,
             revision: 1,
             fingerprint: 'delayed_fixture',
             requiredServerIds: ['delayed_fixture'],
+            startedAt: queryStartedAt,
+            deadlineAt: queryStartedAt + MCP_PREWARM_GRACE_MS,
             readStatuses: async () => {
               const statuses = await sdkQuery.mcpServerStatus();
               statusesSeen.push(...statuses
@@ -90,15 +90,17 @@ describe('SDK MCP readiness gate', () => {
                 .map(status => status.status));
               return statuses;
             },
-          }),
-          ensureOwner: () => undefined,
+          };
+        const readiness = await awaitMcpPrewarm({
+          owner,
+          getOwner: () => owner,
         });
 
-        expect(readiness.ready).toBe(true);
+        expect(readiness.state).toBe('ready');
         expect(statusesSeen.at(-1)).toBe('connected');
         // A short fixture may finish while the SDK itself is still starting,
         // so the first legal status observation can already be `connected`.
-        // The stable contract is temporal: the gate must not release before
+        // The stable contract is temporal: pre-warm must not report ready before
         // the delayed server could have completed startup.
         expect(Date.now() - queryStartedAt).toBeGreaterThanOrEqual(
           Math.max(0, startupDelayMs - 100),

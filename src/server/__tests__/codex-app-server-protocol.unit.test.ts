@@ -30,6 +30,7 @@ describe('Codex app-server protocol helpers', () => {
   const tempRoots: string[] = [];
 
   afterEach(() => {
+    vi.useRealTimers();
     while (tempRoots.length > 0) {
       const dir = tempRoots.pop();
       if (dir) rmSync(dir, { recursive: true, force: true });
@@ -177,8 +178,10 @@ describe('Codex app-server protocol helpers', () => {
     expect(args).toContain('mcp_servers.fs_tool.command="node"');
     expect(args).toContain('mcp_servers.fs_tool.args=["server.js"]');
     expect(args).toContain('mcp_servers.fs_tool.env_vars=["FS_TOKEN","HTTPS_PROXY","NO_PROXY","no_proxy"]');
+    expect(args).toContain('mcp_servers.fs_tool.startup_timeout_sec=10');
     expect(args).toContain('mcp_servers.remote-http.url="https://example.com/mcp"');
     expect(args).toContain('mcp_servers.remote-http.env_http_headers={Authorization="MYAGENTS_MCP_REMOTE_HTTP_AUTHORIZATION"}');
+    expect(args).toContain('mcp_servers.remote-http.startup_timeout_sec=10');
     expect(args.join('\n')).not.toContain('secret-token');
     expect(args.join('\n')).not.toContain('remote-secret');
     expect(env.FS_TOKEN).toBe('secret-token');
@@ -215,8 +218,9 @@ describe('Codex app-server protocol helpers', () => {
 
   it('settles managed Codex MCP readiness only after every injected server is terminal', async () => {
     const barrier = createCodexMcpStartupBarrier(['playwright', 'remote-http']);
+    barrier.arm();
     let settled = false;
-    const ready = barrier.wait(1_000).then((result) => {
+    const ready = barrier.wait().then((result) => {
       settled = true;
       return result;
     });
@@ -254,15 +258,21 @@ describe('Codex app-server protocol helpers', () => {
     });
 
     await expect(ready).resolves.toEqual({
+      outcome: 'degraded',
+      reason: 'terminal_status',
       states: {
         playwright: 'ready',
         'remote-http': 'failed',
       },
+      pendingNames: [],
+      elapsedMs: expect.any(Number),
     });
   });
 
-  it('fails closed when injected MCP startup never reaches a terminal state', async () => {
+  it('soft-degrades when injected MCP startup never reaches a terminal state', async () => {
+    vi.useFakeTimers();
     const barrier = createCodexMcpStartupBarrier(['playwright']);
+    barrier.arm();
     barrier.observe({
       threadId: null,
       name: 'playwright',
@@ -271,18 +281,59 @@ describe('Codex app-server protocol helpers', () => {
       failureReason: null,
     });
 
-    await expect(barrier.wait(0)).rejects.toThrow(
-      'Managed Codex MCP startup did not settle before timeout; pending=playwright',
-    );
+    const startup = barrier.wait();
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(startup).resolves.toEqual({
+      outcome: 'degraded',
+      reason: 'timeout',
+      states: { playwright: 'starting' },
+      pendingNames: ['playwright'],
+      elapsedMs: 10_000,
+    });
   });
 
   it('releases the startup wait as a failure when the Codex process exits', async () => {
     const barrier = createCodexMcpStartupBarrier(['playwright']);
-    const startup = barrier.wait(1_000);
+    barrier.arm();
+    const startup = barrier.wait();
 
     barrier.fail(new Error('Codex process exited during MCP startup with code 1'));
 
     await expect(startup).rejects.toThrow('Codex process exited during MCP startup with code 1');
+  });
+
+  it('does not charge process initialization time to the native MCP startup window', async () => {
+    vi.useFakeTimers();
+    const barrier = createCodexMcpStartupBarrier(['playwright']);
+
+    await vi.advanceTimersByTimeAsync(8_000);
+    barrier.arm();
+    const startup = barrier.wait();
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(startup).resolves.toMatchObject({
+      outcome: 'degraded',
+      reason: 'timeout',
+      elapsedMs: 10_000,
+    });
+  });
+
+  it('returns ready when every injected MCP reaches ready inside the armed window', async () => {
+    const barrier = createCodexMcpStartupBarrier(['playwright']);
+    barrier.arm();
+    barrier.observe({
+      threadId: null,
+      name: 'playwright',
+      status: 'ready',
+      error: null,
+      failureReason: null,
+    });
+
+    await expect(barrier.wait()).resolves.toMatchObject({
+      outcome: 'ready',
+      pendingNames: [],
+      states: { playwright: 'ready' },
+    });
   });
 
   it('skips managed Codex MCP entries that cannot be represented safely', () => {

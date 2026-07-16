@@ -261,7 +261,7 @@ type AdminApiModule = typeof import('./admin-api');
 let _adminApi: Promise<AdminApiModule> | null = null;
 const getAdminApi = (): Promise<AdminApiModule> => (_adminApi ??= import('./admin-api'));
 import { setImMediaContext } from './tools/im-media-tool';
-import { setImBridgeToolsContext } from './tools/im-bridge-tools';
+import { ensureImBridgeToolSurface } from './tools/im-bridge-tools';
 import { normalizeHostInteractionCapability } from './host-interaction';
 import { getBuiltinMcpInstance } from './tools/builtin-mcp-registry';
 // NOTE: builtin MCP META is auto-registered when agent-session.ts side-effect-imports
@@ -647,6 +647,8 @@ import {
   initSocksBridgeFromEnv,
   getHistoricalSessionMessages,
   ensureSdkMcpInSync,
+  getCurrentImBridgeTurnContext,
+  isCurrentImBridgeToolSurfaceInstalled,
   setBackgroundAgentPermissionMode,
   type ProviderEnv,
 } from './agent-session';
@@ -697,6 +699,7 @@ import { broadcast, createSseClient, getClients } from './sse';
 import { imEventBus } from './utils/im-event-bus';
 import { buildImCancelledPayload } from './utils/im-terminal-payload';
 import { imRequestRegistry } from './utils/im-request-registry';
+import { raceWithAbortSignal } from './utils/cancellation';
 import { checkAnthropicSubscription, verifyProviderViaSdk, verifySubscription } from './provider-verify';
 import { cancelSubscriptionLogin, getSubscriptionLoginState, startSubscriptionLogin, submitSubscriptionLoginCode } from './subscription-auth';
 // openai-bridge is lazy-loaded via ensureBridgeHandler() below — only users on
@@ -8197,6 +8200,7 @@ async function main() {
             bridgeEnabledToolGroups?: string[];
             senderId?: string;
             senderIsOwner?: boolean;
+            accountId?: string;
             hostInteraction?: unknown;
           };
 
@@ -8211,11 +8215,11 @@ async function main() {
           // Register in registry up front so /api/im/cancel works even before
           // enqueueUserMessage returns. AbortController is paired here for
           // Pattern D wiring (cancellableFetch hooks below).
-          // W7 fix: status='running' set BEFORE the enqueueUserMessage call so a
-          // synchronous-completing turn (rare: queued message dequeues immediately)
-          // doesn't race ahead and unregister the entry before we set 'running'.
-          imRequestRegistry.register(payload.requestId, getSessionId() || null, payload.source);
-          imRequestRegistry.setStatus(payload.requestId, 'running');
+          const requestEntry = imRequestRegistry.register(
+            payload.requestId,
+            getSessionId() || null,
+            payload.source,
+          );
           const engine = getSessionEngine();
           const sidForConfigAuthority = getSessionId();
           const snapshotMetaForConfig = sidForConfigAuthority ? getSessionMetadata(sidForConfigAuthority) : null;
@@ -8250,6 +8254,7 @@ async function main() {
           try {
 
           // Set IM cron context for the im-cron tool (parity with /api/im/chat)
+          let bridgeSurfaceRequiresTurnBoundary = false;
           if (payload.botId && process.env.MYAGENTS_MANAGEMENT_PORT) {
             const imCronModel = snapshotResolvedConfig
               ? snapshotResolvedConfig.model
@@ -8299,18 +8304,36 @@ async function main() {
               platform: payload.source.split('_')[0],
               workspacePath: agentDir,
             });
+            let bridgeSurfaceChanged = false;
             if (payload.bridgePort && payload.bridgePluginId) {
               const bridgeSourceType = payload.source?.split('_')[1] as string | undefined;
-              await setImBridgeToolsContext({
-                bridgePort: payload.bridgePort,
-                pluginId: payload.bridgePluginId,
-                enabledToolGroups: payload.bridgeEnabledToolGroups || [],
+              const imBridgeTurnContext = {
                 senderId: payload.senderId,
                 chatId: payload.sourceId,
                 isOwner: payload.senderIsOwner ?? false,
+                accountId: payload.accountId,
                 sourceType: bridgeSourceType,
                 hostInteraction: normalizeHostInteractionCapability(payload.hostInteraction),
-              });
+              };
+              imRequestRegistry.setImBridgeTurnContext(payload.requestId, imBridgeTurnContext);
+              let surface;
+              try {
+                surface = await raceWithAbortSignal(
+                  ensureImBridgeToolSurface({
+                    bridgePort: payload.bridgePort,
+                    pluginId: payload.bridgePluginId,
+                    enabledToolGroups: payload.bridgeEnabledToolGroups || [],
+                  }, getCurrentImBridgeTurnContext),
+                  requestEntry.abortController.signal,
+                );
+              } catch (error) {
+                if (requestEntry.abortController.signal.aborted) {
+                  imRequestRegistry.unregister(payload.requestId);
+                  return jsonResponse({ success: false, error: 'IM request cancelled before dispatch' }, 409);
+                }
+                throw error;
+              }
+              bridgeSurfaceChanged = surface.changed;
             }
 
             // After IM context (which gates the `im-bridge-tools` MCP) is set,
@@ -8331,8 +8354,11 @@ async function main() {
             // is about to need; scenario alignment is a separate concern.
             //
             // Builtin runtime only — external runtimes (CC/Codex) manage their own MCP set.
-            if (engine.kind === 'builtin') {
-              await ensureSdkMcpInSync();
+            if (
+              engine.kind === 'builtin'
+              && (bridgeSurfaceChanged || !isCurrentImBridgeToolSurfaceInstalled())
+            ) {
+              bridgeSurfaceRequiresTurnBoundary = !(await ensureSdkMcpInSync());
             }
           }
 
@@ -8418,6 +8444,11 @@ async function main() {
             sourceId: payload.sourceId,
             senderName: payload.senderName,
           };
+
+          if (requestEntry.abortController.signal.aborted) {
+            imRequestRegistry.unregister(payload.requestId);
+            return jsonResponse({ success: false, error: 'IM request cancelled before dispatch' }, 409);
+          }
 
           // Dispatch to runtime through SessionEngine. The route keeps IM
           // payload shaping; the engine owns builtin/external admission.
@@ -8548,12 +8579,23 @@ async function main() {
               metadataBirthPending: payload.metadataBirthPending === true,
               metadata,
               analyticsOrigin: imTurnOrigin,
+              turnBoundaryOnly: bridgeSurfaceRequiresTurnBoundary,
             });
             if (!result.success) {
               imRequestRegistry.unregister(payload.requestId);
               return jsonResponse({ success: false, error: result.error }, result.status ?? 503);
             }
           }
+
+          // Cancellation may land while runtime admission is awaiting its own
+          // config/domain work. If the queue owner now exists, cancel it
+          // precisely; if it never existed this remains a harmless no-op.
+          if (requestEntry.abortController.signal.aborted) {
+            await engine.cancelImRequest(payload.requestId, 'user');
+            imRequestRegistry.unregister(payload.requestId);
+            return jsonResponse({ success: false, error: 'IM request cancelled during dispatch' }, 409);
+          }
+          imRequestRegistry.transferCancellationToRuntime(payload.requestId);
 
           const currentSessionId = getSessionId();
           if (currentSessionId) {
@@ -8571,9 +8613,12 @@ async function main() {
           });
 
           } catch (innerError) {
-            // W1 fix: any throw between register() and the dispatch result handlers
-            // would leave a registry entry to leak for 6h until prune. Catch + clean.
-            try { imRequestRegistry.unregister(payload.requestId); } catch { /* ignore */ }
+            // Before runtime admission the route still owns cleanup. After the
+            // transfer, the output-owner terminal path owns this registry entry
+            // and must retain Bridge caller identity until the SDK result.
+            if (requestEntry.cancellationOwner === 'admission-route') {
+              try { imRequestRegistry.unregister(payload.requestId); } catch { /* ignore */ }
+            }
             throw innerError;
           }
         } catch (error) {
@@ -8659,8 +8704,8 @@ async function main() {
 
       // POST /api/im/cancel — Pattern D: abort an in-flight IM request.
       // Body: { requestId, reason? }. Drives THREE cancellation paths:
-      //   1. Registry AbortController.abort(reason) — for callers that hold the
-      //      signal directly (currently no in-tree consumers, kept for API parity)
+      //   1. Registry AbortController.abort(reason) — stops route-owned Bridge
+      //      discovery/admission waits before a runtime queue owner exists.
       //   2. cancelImRequest / cancelExternalImRequest — actual SDK-level cancel
       //      via interruptCurrentResponse (builtin) or stopExternalSession (external).
       //      This is what stops the SDK turn from burning tokens.
@@ -8673,26 +8718,37 @@ async function main() {
             return jsonResponse({ success: false, error: 'Missing requestId' }, 400);
           }
           const reason = body.reason ?? 'user';
-          const entry = imRequestRegistry.get(body.requestId);
-          if (!entry) {
+          const cancellationClaim = imRequestRegistry.claimCancellation(body.requestId, reason);
+          if (!cancellationClaim) {
             return jsonResponse({ success: false, error: 'Unknown or already-aborted requestId' }, 404);
           }
 
-          // Step 1: registry abort signal (covers any pluggable subscribers).
-          imRequestRegistry.abort(body.requestId, reason);
+          // The registry AbortController is the atomic cancellation claim.
+          // Concurrent retries observe the first caller's claim and must not
+          // re-enter the runtime or steal its eventual terminal event.
+          if (cancellationClaim.outcome === 'already-claimed') {
+            return jsonResponse({
+              success: true,
+              requestId: body.requestId,
+              mode: cancellationClaim.owner === 'admission-route' ? 'admission' : 'running',
+              alreadyCancelling: true,
+            });
+          }
+
+          // Step 1: the successful claim already aborted the registry signal,
+          // covering route-owned discovery/admission waits.
+          const admissionRouteOwned = cancellationClaim.owner === 'admission-route';
 
           // Step 2: actual SDK / queue cancel.
           const cancelResult = await getSessionEngine().cancelImRequest(body.requestId, reason);
 
           // (v0.2.11 cross-bugfix #142 review-fix-3 medium #2)
-          // mode === 'unknown' means the requestId wasn't in any cancellable
-          // state — it could be a promote-then-cancel race (item already
-          // handed off to generator, no longer in queue/pending). DO NOT
-          // emit `cancelled` to the UI in that case: the SDK can still
-          // process the message, and the client would see "cancelled"
-          // while the AI keeps answering. Return 409 Conflict so the IM
-          // client surfaces "cancel failed" instead.
-          if (cancelResult.mode === 'unknown') {
+          // Runtime `unknown` is safe only while this route still owns
+          // admission: its abort signal guarantees the request cannot return
+          // accepted or dispatch late. After ownership transfers to runtime,
+          // unknown can be a promote-then-cancel race, so reporting success
+          // would be dishonest while the SDK may continue processing.
+          if (cancelResult.mode === 'unknown' && !admissionRouteOwned) {
             return jsonResponse(
               {
                 success: false,
@@ -8704,16 +8760,20 @@ async function main() {
             );
           }
 
-          // Step 3: bus event for UI feedback (so the reply slot closes promptly).
-          imEventBus.emit(body.requestId, 'cancelled', buildImCancelledPayload());
-
-          // Cleanup registry entry — abort already set status to 'cancelled'.
-          imRequestRegistry.unregister(body.requestId);
+          // Step 3: the route owns terminal delivery only before runtime
+          // admission or for an item removed from a runtime queue. A running
+          // turn keeps terminal ownership even if its result/finalizer has not
+          // unregistered the registry entry by the time Step 2 returns.
+          const routeOwnsTerminal = admissionRouteOwned || cancelResult.mode === 'queued';
+          if (routeOwnsTerminal && imRequestRegistry.get(body.requestId)) {
+            imEventBus.emit(body.requestId, 'cancelled', buildImCancelledPayload());
+            imRequestRegistry.unregister(body.requestId);
+          }
 
           return jsonResponse({
             success: true,
             requestId: body.requestId,
-            mode: cancelResult.mode,
+            mode: cancelResult.mode === 'unknown' ? 'admission' : cancelResult.mode,
           });
         } catch (error) {
           console.error('[im/cancel] Error:', error);
@@ -9162,7 +9222,6 @@ description: >
             return jsonResponse({
               status: 'timeout',
               reason: turnResult.error ?? 'AI memory update timed out',
-              ...(turnResult.detail ? { detail: turnResult.detail } : {}),
               ...(turnResult.terminationUnconfirmed ? { terminationUnconfirmed: true } : {}),
             });
           }

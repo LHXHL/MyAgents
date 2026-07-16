@@ -33,9 +33,9 @@ import {
 } from '../agent-session';
 import {
   getQueryMcpMutation,
-  getQueryMcpReadinessOwner,
+  getQueryMcpPrewarmOwner,
   resetLifecycleForTest,
-  setQueryMcpReadinessOwner,
+  setQueryMcpPrewarmOwner,
   setQuerySession,
 } from '../builtin-session/lifecycle';
 import {
@@ -69,7 +69,7 @@ describe('live Query MCP mutation/promotion ordering', () => {
     } as never;
     setQuerySession(query);
     setFrozenSdkMcpFingerprint('old');
-    setQueryMcpReadinessOwner({
+    setQueryMcpPrewarmOwner({
       query,
       fingerprint: 'old',
       requiredServerIds: ['old'],
@@ -103,10 +103,10 @@ describe('live Query MCP mutation/promotion ordering', () => {
       ok: false,
       reason: 'deferred',
     });
-    await synchronization;
+    await expect(synchronization).resolves.toBe(false);
 
     expect(setMcpServers).not.toHaveBeenCalled();
-    expect(getQueryMcpReadinessOwner()).toBeNull();
+    expect(getQueryMcpPrewarmOwner()).toBeNull();
     expect(snapshotConfig().deferredRestartReasons).toContain('mcp');
   });
 
@@ -123,7 +123,7 @@ describe('live Query MCP mutation/promotion ordering', () => {
     } as never;
     setQuerySession(query);
     setFrozenSdkMcpFingerprint('old');
-    setQueryMcpReadinessOwner({
+    setQueryMcpPrewarmOwner({
       query,
       fingerprint: 'old',
       requiredServerIds: ['old'],
@@ -148,7 +148,7 @@ describe('live Query MCP mutation/promotion ordering', () => {
     const synchronization = ensureSdkMcpInSync();
     await vi.waitFor(() => expect(oauth.resolveAuthHeaders).toHaveBeenCalledOnce());
     oauth.release({ Authorization: 'Bearer latest-persisted-token' });
-    await synchronization;
+    await expect(synchronization).resolves.toBe(true);
 
     expect(setMcpServers).toHaveBeenCalledWith({
       'later-enabled': expect.objectContaining({

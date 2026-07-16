@@ -50,7 +50,7 @@ Multi-Agent Runtime 允许用户选择不同的 AI Runtime 驱动 Agent 会话�
 
 - `sendDesktopMessage()`：保持 `/chat/send` 的 admission 语义；external runtime 继续立即返回并后台串行 dispatch，避免 Rust proxy 120s 上限。
 - `enqueueImMessage()`：保持 IM requestId-aware admission；不等待 assistant turn 完成。
-- `runInjectedTurn()`：用于 cron sync、heartbeat、memory update、Goal 等同步注入 turn；等待 turn finalization，并用各 runtime 的真成功信号判定结果。builtin adapter 还负责 current Query 的 MCP readiness 双 fence；external runtime 不复用 Claude SDK MCP 状态协议。
+- `runInjectedTurn()`：用于 cron sync、heartbeat、memory update、Goal 等同步注入 turn；等待 turn finalization，并用各 runtime 的真成功信号判定结果。Builtin adapter 只保留 domain dispatch guard 与 turn timeout；MCP soft pre-warm 在所有 builtin entrypoint 共用的 generator dispatch seam 执行。
 - `stopOwnedTurnByQueueId()`：按 domain owner + `queueId` 精确停止 Task/Goal turn。普通 queued item 被明确移除即可成功；若已进入 promotion，则必须等其结算，`not-dispatched | terminated` 才算成功，`dispatched` 且仍是 current turn 时继续精确 stop，`termination-unconfirmed` 返回失败并保留 exact binding。停止 current external turn 使用 `preserveQueue`，不得清掉后续无关 operation。
 - read/config methods：`getRuntimeIdentity()`、`getLiveSessionState()`、`getLatestAssistantResult()`、`getStreamReplaySnapshot()`、`getSessionConfigSnapshot()`、`getLiveSessionOverlay()`、`getSessionCompletionTerminal()` 统一承接 `/api/session-state`、`/api/session-latest-result`、`/chat/stream`、`GET /sessions/:id`、`/api/session/config` 等读取面。
 - operation methods：`rewindToUserMessage()`、`retryLastExternalUserMessage()`、`forkAtAssistantMessage()`、`switchToExistingSession()`、`resetForNewDesktopSession()`、`resetForNewImSession()` 把会话操作留在 adapter 内部处理；unsupported runtime 由 adapter 返回能力错误，而不是 route 层手写分支。
@@ -62,15 +62,15 @@ Phase5 后的约束：`src/server/index.ts` 与 Phase5 迁出的 route modules�
 
 跨 Runtime 的 live/read 契约是行为一致，不是共享 mutable state：`getLiveSessionOverlay()` 返回当前绑定 Session 的 immutable finalized-memory/streaming/state/interactive snapshot 与 `snapshotRevision`；`getSessionCompletionTerminal()` 返回 runtime turn owner 已结算的 immutable identity/owner/origin/status。REST restore、BackgroundCompletion 与通知层只消费这两个 facade 事实，不猜 runtime 类型，也不 import owner internal。
 
-`src/server/session-core/` 承载会话内核的 pure policy：`turn-result-policy.ts` 判定 injected turn 真成功，`session-activity-policy.ts` 判定 admission/terminal 是否推进 meaningful activity，`heartbeat-ack.ts` 只解析 Heartbeat terminal 的 substantive remainder，`runtime-config-policy.ts` 统一 snapshot/source guard，`turn-queue.ts` 统一 desktop queue admission，`mcp-sync-policy.ts` 统一 MCP authority 与 fingerprint/restart 决策，`mcp-readiness.ts` 统一 required MCP status 分类、有界 polling 与 readiness lease 验证。它不持有 SDK/CLI 进程、SSE、SessionStore 或文件系统副作用。
+`src/server/session-core/` 承载会话内核的 pure policy：`turn-result-policy.ts` 判定 injected turn 真成功，`session-activity-policy.ts` 判定 admission/terminal 是否推进 meaningful activity，`heartbeat-ack.ts` 只解析 Heartbeat terminal 的 substantive remainder，`runtime-config-policy.ts` 统一 snapshot/source guard，`turn-queue.ts` 统一 desktop queue admission，`mcp-sync-policy.ts` 统一 MCP authority 与 fingerprint/restart 决策，`mcp-prewarm-policy.ts` 统一 10 秒 absolute grace、status 分类与 soft outcome。它不持有 SDK/CLI 进程、SSE、SessionStore 或文件系统副作用。
 
 `agent-session.ts` 是 builtin SDK 的 public facade，`session-engine/builtin-adapter.ts` 只委托该 facade。Phase6 后，builtin 内部 mutable state 的真实 owner 是 `src/server/builtin-session/`；Phase7 后，turn terminal 与 transcript persistence 的行为 owner 也在同一目录：
 
 | Owner module | 职责 |
 |---|---|
-| `lifecycle.ts` | SDK `Query` 进程、abort/termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP readiness/mutation owner、exact Query background-task registry |
+| `lifecycle.ts` | SDK `Query` 进程、abort/termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP pre-warm/mutation owner、exact Query background-task registry |
 | `queue.ts` | realtime / mid-turn / turn-boundary queues、in-flight slot、admission ticket |
-| `turn.ts` | current turn usage/output/error、activity facts、completion terminal、pending IM request FIFO、injected turn outcome |
+| `turn.ts` | current turn usage/output/error、activity facts、completion terminal、SDK output-owner FIFO、injected turn outcome |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 解释、usage stamping、message-complete/empty-result、IM/inbox/watch/analytics/title hook 顺序 |
 | `config.ts` | MCP/agents/plugins/model/permission/provider state、deferred restart latch |
 | `transcript.ts` | live messages、sequence、persist cursor/cache、SDK UUID freshness sets |
@@ -78,16 +78,13 @@ Phase5 后的约束：`src/server/index.ts` 与 Phase5 迁出的 route modules�
 
 Route modules、`SessionEngine` adapters 不直接 import `builtin-session/*` 或 `runtimes/external-session/*` owner internals；新增 route-facing 能力仍先接 `SessionEngine`，再由 adapter 调 builtin/external public facade。`runtime-boundary.unit.test.ts` 对 route/session-engine/builtin-session/external-session 目录做边界扫描，并拦截 facade 重新 direct-write owner state 或重新承载已迁出的重行为。Phase8 后，external runtime 也采用 facade + owner modules，但没有抽 builtin/external 通用 lifecycle framework；两边共享的是 `session-core/*` pure policy，而不是进程模型抽象。
 
-#### Builtin injected turn 的 MCP readiness 契约
+#### Builtin 公共 MCP soft pre-warm 契约
 
-`initializationResult()` 只证明 Claude subprocess 控制面可用，streamed `system_init` 也只是当前 turn metadata；两者都不能放行依赖 MCP 的无人值守 turn。Builtin `runInjectedTurn()` 为 Cron / Goal / Heartbeat / Memory Update 建立一个最多 30 秒的绝对 deadline，并在两处复用：
+`initializationResult()` 只证明 Claude subprocess 控制面可用，streamed `system_init` 也只是当前 turn metadata。初始 Query / MCP map 或成功 live mutation 建立 owner-created absolute deadline（默认 10 秒）；owner identity 包含 Query object、generation、单调 installed-map revision 与 runtime fingerprint。`messageGenerator()` 在 promotion 后先等待真实 live mutation fence，再对 Desktop、IM、Cron、Goal、Heartbeat、Memory Update 等所有 queue item 消费同一 generation 的剩余 grace。
 
-1. 在 user row、标题、first-turn metadata 等 SessionStore 副作用前，等待当前 Query 实际安装的 required MCP 全部 `connected`。
-2. 在 queue item promotion boundary 再等一次；随后才执行 Goal 等 domain claim，并在 commit 前同步确认同一 readiness lease 仍有效。
+只有 `pending` 会继续 polling；`failed`、`needs-auth`、`disabled`、missing、status read error 或 deadline 到期均 settle 为 degraded，基础 AI turn 继续。ready / degraded 在 owner 上只结算一次，后续 turn 不再读 status。用户取消仍取消 exact promotion；owner replacement 不属于 MCP degraded，旧 generator 必须 requeue 并退出。`runInjectedTurn()` 不再创建 MCP pre-persistence guard、promotion 二次 fence或 MCP 408/503；Goal/Task domain guard 的 claim / rollback / active-turn handoff 顺序保持原契约。
 
-Lease 身份包含 Query object identity、generation、单调 installed-map revision 与 fingerprint。Query 替换、same-id 重装或 ABA replacement 都会使旧 lease 失效。`pending` 有界轮询；`failed`、`needs-auth`、`disabled`、missing、超时与 Query replacement 都 fail closed。最终 lease 验证后立即在同一个同步 transaction 把 promotion/admission owner 转成 active-turn owner，并先 settle dispatch acceptance，再做 plan cleanup、SessionStore 与 user surface；因此这些异步副作用期间的 timeout/stop 必须按“已接纳 turn”处理。lease 失败时如 domain claim 已持久化，必须等待其 idempotent rollback acknowledged 后才 settle rejection。canonical Session abort 同样把 promoted guard rollback 纳入 lifecycle termination barrier；subprocess timeout 只能 force-clean Query，不能跳过 Goal/Task authority 的 durable rollback。
-
-Live `setMcpServers()` 由 Query-generation mutation owner 单飞；promoted item、active turn 和 SDK command in-flight 都是 quiescence blocker。mutation claim 与 promotion 同步互斥：先 promotion 就只锁存 restart，先 claim 就由 promotion 等待 mutation promise。mutation 失败或超时会清 readiness owner并锁存 restart；旧 generator requeue 后隔离到 exact Query abort/replacement 并直接退出，只能由 replacement generator 重取。`mcpServerStatus()` 也按 Query 单飞；SDK 不支持取消的 status read 若超时，直接重建该 Query，避免后续请求复用永久 pending 的 control promise。该契约只属于 builtin Claude SDK adapter；external adapters 保持各自 runtime-native 的 MCP ownership。
+Live `setMcpServers()` 仍由 Query-generation mutation owner 单飞；promoted item、active turn 和 SDK command in-flight 都是 quiescence blocker。mutation claim 与 promotion 同步互斥：先 promotion 就锁存 restart，先 claim 就由 promotion 等待 mutation promise。真实 mutation 失败或 30 秒 timeout 仍意味着 transport map 不确定，旧 generator requeue 后隔离到 exact Query abort/replacement并退出；这条硬 fence 不与 startup soft grace 合并。`mcpServerStatus()` 只在当前 generation 首次 observation 内单飞，status timeout settle degraded，不再触发按 injected request 重建。External adapters 继续保持 runtime-native MCP ownership；仅 Managed Codex 的 MyAgents-injected config采用下述同一 policy。
 
 ### AgentRuntime 接口 (`src/server/runtimes/types.ts`)
 
@@ -613,7 +610,7 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 
 **触发链路**:前端 `Chat.tsx` 在 Tab ready(`isActive && isConnected && sessionId`)的瞬间 POST `/api/runtime/prewarm` → `prewarmExternalSession()` → `startExternalSession({ ...options, initialMessage: undefined })`。**不**等待 `/api/runtime/models` — 该接口自身也 spawn 一个 `gemini --acp` 子进程查模型,会付同样的 ~14s 冷启动。两件事并行进行:prewarm 在用户打字时暖 session,models-fetch 在后台填充模型下拉。首次 prewarm 用 `effectiveModel`(可能 `undefined` → runtime 用自带默认),用户随后在 UI 里切模型时走 `setExternalModel()` → in-place `runtime.setModel()` 路径(见「配置变更」)。
 
-**Managed Codex readiness**：`initialize` + `thread/start|resume` 只证明 app-server 与 thread owner 已建立；MyAgents 注入的 MCP 仍可能异步启动。`CodexRuntime.startSession()` 必须继续等待这些 injected server 的 `mcpServer/startupStatus/updated` 全部到达 terminal state（`ready | failed | cancelled`），才允许 `prewarm_done` 或首个 `turn/start` 越过 runtime 边界。只等待 `mcpServerStatus/list` 的后台诊断不构成 readiness；它是 UI 健康快照，不是启动 barrier。等待只覆盖 MyAgents 注入的 server name，不能把用户自有的 Codex MCP 纳入错误 owner。若等待超时或 process 在 barrier 中退出，startup 必须 fail-closed 并清理进程，禁止把 pending/dead process 发布成 pre-warmed。
+**Managed Codex readiness**：`initialize` + `thread/start|resume` 只证明 app-server 与 thread owner 已建立；MyAgents 注入的 MCP 仍可能异步启动。Managed-provider launch config 为每个 stdio / HTTP server 注入由 `MCP_PREWARM_GRACE_MS` 派生的原生 `startup_timeout_sec`，`CodexRuntime.startSession()` 同时观察 `mcpServer/startupStatus/updated`，最多消费该 Runtime Session owner 的同一 10 秒 absolute grace。全部 ready 则 ready；`failed | cancelled | pending timeout` 则当前 Runtime Session settle degraded 并继续首个 `turn/start`，不自动调用 `config/mcpServer/reload`、不在下一轮重试；新 Session / process 才重新尝试。`mcpServerStatus/list` 仍只是 UI 诊断，不是 barrier。等待只覆盖 MyAgents 注入的 server name，用户自有 Codex MCP 不归此 owner。Process exit、thread/RPC failure仍是真 Runtime failure，不能被 degraded 吞掉；`system-cli` launch config 与行为不变。
 
 **IM 冷启动边界**：persistent Agent/飞书 session 一旦已有 live runtime，后续 turn 复用同一 process 与 MCP，不应重复支付 startup。完全没有 Sidecar/runtime 的首个 IM peer 仍要真实创建这些资源；本期不为所有潜在 peer 常驻预热，因为那会把延迟换成无界资源占用。这个首个 cold turn 是显式产品边界，不得和“同 session 每轮重启”混为一谈。
 
@@ -671,7 +668,7 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 
 ### 诊断收集（Codex）
 
-`startSession` 完成 `thread/start`（managed-provider 还需完成 injected MCP startup settlement）之后 **fire-and-forget**（不额外 block 首轮 turn）调用四个 Codex app-server RPC：
+`startSession` 完成 `thread/start`（managed-provider 还需完成一次 ready / degraded MCP soft settlement）之后 **fire-and-forget**（不额外 block 首轮 turn）调用四个 Codex app-server RPC：
 
 | RPC | 用途 | 类型 |
 |-----|------|------|

@@ -334,13 +334,41 @@ git diff src/server/plugin-bridge/sdk-shim/  # 审查变更
 | `/finish-stream-block` | POST | 建立 raw block 顺序屏障，不结束 turn |
 | `/complete-dispatch` | POST | 接纳 producer-owned `finalPayloads` terminal；HTTP ACK 仅表示已合法入队 |
 | `/abort-dispatch` | POST | 接纳 error/cancel terminal；HTTP ACK 仅表示已合法入队 |
-| `/mcp/tools` | GET | 列出插件工具 |
+| `/mcp/tools` | GET | 列出插件工具；每个 Sidecar Session 的 stable surface generation 至多发现一次 |
 | `/mcp/call-tool` | POST | 执行插件工具 |
 | `/execute-command` | POST | 执行斜杠命令 |
 | `/qr-login-start` | POST | 发起 QR 登录 |
 | `/qr-login-wait` | POST | 轮询 QR 扫码结果 |
 | `/restart-gateway` | POST | QR 登录后重启 gateway |
 | `/stop` | POST | 优雅关闭 |
+
+### MCP surface 预热与工具调用预算
+
+`/mcp/tools` 是 Session 级工具面 discovery，不是每条消息的业务调用。Sidecar 以
+`{bridgePort, pluginId, enabledToolGroups}` 作为 stable surface identity；同一 identity
+成功或失败后都不按消息重试。新 identity / 新 Session 才建立新 generation，并从
+`src/server/session-core/mcp-prewarm-policy.ts::MCP_PREWARM_GRACE_MS` 派生一次当前为
+10 秒的 absolute discovery + SDK readiness observation 预算。live SDK map mutation
+仍使用独立的 30 秒正确性 fence，不属于这 10 秒。soft 预算到期只让该 surface generation
+degraded，AI turn 继续。
+
+工具 schema server 是 Session-stable；sender/chat/account/owner 由 exact
+IM request registry entry 和 SDK output FIFO owner 在工具执行时解析，不能 capture 首条消息 context。这样连续 Session
+既不重复 `/mcp/tools`，也不会因复用 server 而串身份。
+
+真正的工具调用使用另一条独立预算：
+
+Sidecar 通过 `/mcp/call-tool` 调用插件工具时，使用
+`src/server/session-core/tool-call-policy.ts::MYAGENTS_TOOL_CALL_TIMEOUT_MS`
+作为 MyAgents 管理的整个工具调用外层预算，当前为 300 秒。主动停止
+Turn 仍通过 `getCurrentTurnSignal()` 立即取消 Sidecar 的请求等待。插件内部单次
+网络请求、分片或重试的超时继续由插件自己负责，不与这个外层预算混用。
+
+所有经该代理暴露的 OpenClaw 插件工具都使用同一预算；同一 IM 会话中的 SDK
+原生工具和其它 MCP 工具不经过该代理，因此本期不受影响。该参数当前只由 IM
+Bridge 消费；Builtin SDK、Managed Codex 与用户原生外部 Runtime 仍保留各自的
+工具调用 timeout authority。未来只有在产品明确决定接管对应路径时才复用该参数，
+不能因为参数已存在就隐式改变其它 Runtime 行为。
 
 ## QR 登录流程
 

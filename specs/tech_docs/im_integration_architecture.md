@@ -521,6 +521,19 @@ SessionRouter → Sidecar(AI) 社区 IM 平台 (QQ/Matrix/…)
 | sdk-shim | `src/server/plugin-bridge/sdk-shim/` | 为 `openclaw/plugin-sdk` imports 提供运行时 shim |
 | Bridge sender registry | `bridge.rs` 静态 `BRIDGE_SENDERS` | bot_id → (sender_channel, plugin_id) 路由映射 |
 
+#### Bridge MCP tool surface 与 Turn context
+
+Plugin tool schema 是 Session 级控制面，sender/chat/account/owner 是 Turn 级调用身份，两者必须由不同 owner 持有：
+
+- `src/server/tools/im-bridge-tools.ts` 以规范化的 `{bridgePort, pluginId, sorted enabledToolGroups}` 作为 stable surface identity；`interaction` group 在规范化时统一加入。新 identity 只请求一次 Bridge `/mcp/tools` 并创建一次 `createSdkMcpServer()`。
+- 同一 surface generation 的连续消息直接复用 server；不再请求 `/mcp/tools`、不重建 SDK server，也不触发 `setMcpServers()`。discovery 失败/超时后该 generation terminal degraded，后续消息不重试；真实 surface identity 变化或新 Session 清空 owner 后才重试。
+- Bridge discovery 与随后对 SDK readiness 的观察共享 `MCP_PREWARM_GRACE_MS` 的 absolute soft window。live `setMcpServers()` map mutation 是独立的 30 秒正确性 fence，不计入也不反向改写 10 秒 soft budget。只有 surface 尚未安装到当前 Query 时 `/api/im/enqueue` 才同步 map；真实 identity drift 若撞上 active turn，则消息留在既有 turn-boundary queue，replacement Query 安装新 surface 后再 dispatch。
+- `ImBridgeTurnContext` 只由 exact `requestId` 的 `ImRequestRegistry` entry 持有，不随 SessionEngine request 或 queue item 复制。SDK stdin 的每次 user-message yield 都在 output-owner FIFO 占一个槽位（非 IM turn 占 `null` 槽）；tool callback 只在 FIFO head 是 IM request 时解析 sender/chat/account/owner。realtime 消息 B 即使已 yield，也不会覆盖仍在产出/调用工具的消息 A；terminal unregister 后上下文立即不可读。
+- request entry 创建后，取消与异常清理先由 `/api/im/enqueue` admission route 持有；runtime admission 成功后同步移交给 builtin/external runtime。移交前的 catch 由 route unregister，移交后的 terminal cleanup 只能由 runtime owner unregister，禁止两个 owner 同时清理或在 turn 执行中提前删除 Bridge 身份。
+- graceful interrupt 已收到 SDK `result` 时，该 result handler 同步 claim 并消费当前 output owner，interrupt caller 不再追加 `stopped` terminal；没有 result / Session 直接结束时才由 interrupt caller terminalize。`/api/im/cancel` 以 registry AbortController 的首次 abort 作为原子 cancellation claim，重复请求只确认“取消进行中”，不得二次进入 runtime。route 只为 admission-owned / queued 请求补发 terminal；running turn 始终由 runtime terminal owner 收尾，确保每个 request 恰好一个 terminal emitter、每个 SDK result 恰好消费一个 FIFO 槽。
+
+这条分离保证同一飞书 Session 连续对话只支付一次工具发现，同时群聊不同 sender 或并发相邻消息不会串用 OAuth / chat identity。300 秒工具执行预算从 callback 真正调用 `/mcp/call-tool` 时开始，与 10 秒 surface pre-warm预算无关。
+
 #### 消息流
 
 **入站**（社区平台 → AI）：

@@ -53,7 +53,13 @@ import { ensureGitignorePattern } from './utils/gitignore';
 // ./tools/builtin-mcp-meta.ts for META registrations.
 import { clearCronTaskContext } from './tools/cron-tools';
 import { getImCronContext, setSessionCronContext, clearSessionCronContext } from './tools/im-cron-tool';
-import { getImBridgeToolsContext, getImBridgeToolServer } from './tools/im-bridge-tools';
+import {
+  clearImBridgeToolsContext,
+  getImBridgeToolPrewarmWindow,
+  getImBridgeToolServer,
+  getImBridgeToolSurface,
+  imBridgeToolSurfaceIdentity,
+} from './tools/im-bridge-tools';
 import { getBuiltinMcpInstance } from './tools/builtin-mcp-registry';
 // Side-effect import — registers META (ids + lazy factories) at cold start.
 // Cheap: just function-ref storage, no SDK/zod eval, no tool module loaded.
@@ -198,10 +204,10 @@ export type {
 } from './builtin-session/types';
 export { stripPlaywrightResults } from './builtin-session/transcript-persistence';
 import {
-  clearQueryMcpReadinessOwner,
+  clearQueryMcpPrewarmOwner,
   completeQueryBackgroundTask,
   getQueryBackgroundTask,
-  getQueryMcpReadinessOwner,
+  getQueryMcpPrewarmOwner,
   hasQueryBackgroundTask,
   hasQueryBackgroundTasks,
   readQueryMcpStatuses,
@@ -225,7 +231,8 @@ import {
   setPreWarmTimer,
   setPreWarmDisabled,
   setQuerySession,
-  setQueryMcpReadinessOwner,
+  setQueryMcpPrewarmOwner,
+  settleQueryMcpPrewarmOwner,
   setSdkControlReady,
   setSessionProcessing,
   setSessionTerminationPromise,
@@ -237,12 +244,12 @@ import {
   type QueryMcpMutationResult,
 } from './builtin-session/lifecycle';
 import {
-  awaitRequiredMcpReadiness,
-  isMcpReadinessLeaseCurrent,
-  type McpReadinessOwner,
-  type McpReadinessResult,
-  type McpReadinessLease,
-} from './session-core/mcp-readiness';
+  MCP_PREWARM_GRACE_MS,
+  awaitMcpPrewarm,
+  formatMcpPrewarmServers,
+  type McpPrewarmOutcome,
+  type McpPrewarmOwner,
+} from './session-core/mcp-prewarm-policy';
 import {
   beginPromotedItem,
   cancelDetachedAdmissionTicket,
@@ -295,21 +302,22 @@ import {
   accumulateCurrentTurnUsage,
   appendCurrentTurnTextBlock,
   clearCurrentTurnTextBlocks,
-  clearPendingRequests as turnClearPendingRequests,
+  clearPendingOutputOwners as turnClearPendingOutputOwners,
   getCurrentTurnIdentity as getBuiltinCurrentTurnIdentity,
   getCurrentTurnQueueId as getBuiltinCurrentTurnQueueId,
   getLastSessionCompletionTerminal,
   getCurrentTurnSourceItem,
   getCurrentTurnInboxMeta,
-  getPendingRequestIds,
+  getPendingImRequestIds,
+  peekPendingOutputOwner,
   incrementCurrentTurnToolCount,
   isAssistantMessagePresent,
   markAssistantMessageError,
   markCurrentTurnHasOutput,
   notifyQueuedTurnStopped,
-  popPendingRequest as turnPopPendingRequest,
-  pushPendingRequest as turnPushPendingRequest,
-  removePendingRequest as turnRemovePendingRequest,
+  popPendingOutputOwner as turnPopPendingOutputOwner,
+  pushPendingOutputOwner as turnPushPendingOutputOwner,
+  removePendingOutputOwnerByQueueId as turnRemovePendingOutputOwnerByQueueId,
   resetTurnUsage as resetBuiltinTurnUsage,
   setAssistantMessagePresent,
   setBrowserToolUsed,
@@ -408,7 +416,7 @@ import type {
  * Mutable builtin SDK session state is owned by `src/server/builtin-session/*`:
  * - lifecycle.ts: SDK Query process, abort flag, termination promise, generator wakeup, pre-warm readiness.
  * - queue.ts: realtime queue, mid-turn buffer, turn-boundary queue, in-flight slot, admission ticket.
- * - turn.ts: current turn usage/output/error state, pending IM request FIFO, injected turn outcomes.
+ * - turn.ts: current turn usage/output/error state, SDK output-owner FIFO, injected turn outcomes.
  * - config.ts: MCP/agents/plugins/model/permission/provider state plus deferred restart latch.
  * - transcript.ts: live messages, sequence, persist cursor/cache, SDK UUID freshness sets.
  *
@@ -776,15 +784,23 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'conversation_reset',
 ]);
 const warnedUnknownMessageTypes = new Set<string>();
-// Post-interrupt turn-completion signal: resolves when for-await loop receives a `result` message.
-// Used by interruptCurrentResponse() to verify the SDK subprocess actually stopped after interrupt().
-let postInterruptTurnEndResolve: (() => void) | null = null;
-// Issue #289 — set by handleMessageComplete when a force-send surfaced the in-flight item and
-// the SDK is about to drain it into a NEW turn. interruptCurrentResponse() reads it to SKIP the
-// redundant trailing handleMessageStopped() (handleMessageComplete is the full turn-end handler;
-// the trailing call would undo the streaming re-arm + double-pop the IM request → the racy
-// "idle gap" Codex flagged). One-shot: consumed by interruptCurrentResponse().
-let forceDrainTurnStarting = false;
+type PostInterruptTurnEndOutcome = 'result-claimed' | 'session-ended';
+// Durable one-shot handoff between the SDK result owner and the interrupt
+// caller. The outcome is stored even when result arrives before interrupt()
+// installs its waiter, closing the former resolve-before-listen race.
+let postInterruptTurnEndOutcome: PostInterruptTurnEndOutcome | null = null;
+let postInterruptTurnEndResolve: ((outcome: PostInterruptTurnEndOutcome) => void) | null = null;
+
+function settlePostInterruptTurnEnd(outcome: PostInterruptTurnEndOutcome): void {
+  if (!isInterruptingResponse) return;
+  const settled = postInterruptTurnEndOutcome ?? outcome;
+  postInterruptTurnEndOutcome = settled;
+  if (postInterruptTurnEndResolve) {
+    const resolve = postInterruptTurnEndResolve;
+    postInterruptTurnEndResolve = null;
+    resolve(settled);
+  }
+}
 // Count of MCP tool_use blocks emitted by the model in the current turn that
 // haven't seen their matching tool_result yet. Read by the post-interrupt
 // force-close path to disambiguate diagnostics: >0 strongly suggests a hung
@@ -1060,8 +1076,8 @@ function dropInFlightQueueItem(
   const queueId = getInFlightQueueId();
   if (!queueId) return null;
   const requestId = getInFlightMetadata()?.requestId;
+  removePendingOutputOwnerByQueueId(queueId);
   if (requestId) {
-    removePendingRequest(requestId);
     if (imTerminal === 'failed') {
       imEventBus.emit(requestId, 'error', buildImErrorPayload(reason));
       imRequestRegistry.setStatus(requestId, 'failed');
@@ -1243,9 +1259,10 @@ const toolResultIndexToId: Map<number, string> = new Map();
 
 // IM Pipeline v2 — Pattern B + G: per-request attribution via FIFO queue.
 //
-// `turnState.pendingRequestIds` holds the requestIds of user transcriptState.messages YIELDED to SDK
-// stdin but not yet finalized (no `result` boundary observed). The HEAD is
-// the request currently owning SDK output; SDK events tagged with head get
+// `turnState.pendingOutputOwners` holds one output-owner slot for every user
+// message YIELDED to SDK stdin but not yet finalized (no `result` boundary
+// observed). IM slots carry requestId; non-IM slots are null. The HEAD is the
+// turn currently owning SDK output; SDK events tagged with an IM head get
 // published to ImEventBus where /api/im/events subscribers filter by id.
 //
 // Why a queue, not a single `activeRequestId` (Codex C4 / Pattern G fix):
@@ -1259,31 +1276,28 @@ const toolResultIndexToId: Map<number, string> = new Map();
 // flag (Pattern B already removed those). Cross-event leakage is structurally
 // impossible — old events carry the old requestId, new subscribers filter.
 /** Emit a per-request IM event tagged with the queue head. No-op when the
- *  queue is empty (desktop / cron path, no IM trace). System-level events
+ *  queue head is non-IM or empty. System-level events
  *  (e.g. session-init in Pattern C) call `imEventBus.emit(null, ...)` directly. */
 function emitImEvent(type: ImEventType, data?: unknown): void {
-  const head = getPendingRequestIds()[0];
-  if (head !== undefined) {
-    imEventBus.emit(head, type, data);
+  const requestId = peekPendingOutputOwner()?.requestId;
+  if (requestId) {
+    imEventBus.emit(requestId, type, data);
   }
 }
 
-/** Push a yielded user message's requestId onto the FIFO queue. Called from
- *  messageGenerator when yielding to SDK stdin. No-op for desktop / cron
- *  (no IM trace ID). */
-function pushPendingRequest(requestId: string | null | undefined): void {
-  turnPushPendingRequest(requestId);
+/** Push one output-owner slot for every message yielded to SDK stdin. */
+function pushPendingOutputOwner(queueId: string, requestId: string | null | undefined): void {
+  turnPushPendingOutputOwner(queueId, requestId);
 }
 
 /** Pop the queue head — called from handleMessageComplete / Stopped / Error
  *  on SDK `result` boundary (one yield → one result). Returns popped id. */
 function popPendingRequest(): string | null {
-  return turnPopPendingRequest();
+  return turnPopPendingOutputOwner()?.requestId ?? null;
 }
 
-/** Remove a request that was yielded to SDK but later cancelled before SDK result. */
-function removePendingRequest(requestId: string | null | undefined): boolean {
-  return turnRemovePendingRequest(requestId);
+function removePendingOutputOwnerByQueueId(queueId: string | null | undefined): boolean {
+  return turnRemovePendingOutputOwnerByQueueId(queueId);
 }
 
 function completeCurrentImRequest(data?: unknown): void {
@@ -1319,7 +1333,7 @@ function failCurrentImRequest(data?: unknown): void {
 /** Clear the entire queue — called from abortPersistentSession /
  *  clearMessageState (whole-session abort or reset). Returns drained ids. */
 function clearPendingRequests(): string[] {
-  return turnClearPendingRequests();
+  return turnClearPendingOutputOwners();
 }
 // Group chat tool deny list (v0.1.28): set per IM message, cleared on next non-group request
 let currentGroupToolsDeny: string[] = [];
@@ -2047,7 +2061,7 @@ function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {
   // restarts may suppress this notification when the turn lifecycle will own
   // terminal cleanup and no user-visible abort should be emitted.
   if (notifyPendingRequests) {
-    for (const reqId of getPendingRequestIds()) {
+    for (const reqId of getPendingImRequestIds()) {
       imEventBus.emit(reqId, 'error', buildImErrorPayload('会话已中断，请重新发送'));
       imRequestRegistry.setStatus(reqId, 'failed');
       imRequestRegistry.unregister(reqId);
@@ -3320,8 +3334,19 @@ const CONTEXT_INJECTED_BUILTIN_PREDICATES: Record<
   typeof MYAGENTS_CONTEXT_INJECTED_MCP_IDS[number],
   () => boolean
 > = {
-  'im-bridge-tools': () => Boolean(getImBridgeToolsContext()) && Boolean(getImBridgeToolServer()),
+  // Permission follows the map installed on the live Query, not a newer
+  // desired Bridge surface waiting for the turn-boundary restart.
+  'im-bridge-tools': () => configState.frozenSdkMcpFingerprint
+    .split('|', 1)[0]
+    .split(',')
+    .includes('im-bridge-tools'),
 };
+
+/** Resolve Bridge caller identity from the request currently owning SDK output. */
+export function getCurrentImBridgeTurnContext(): import('./session-core/im-bridge-types').ImBridgeTurnContext | null {
+  const requestId = peekPendingOutputOwner()?.requestId;
+  return requestId ? imRequestRegistry.get(requestId)?.imBridgeTurnContext ?? null : null;
+}
 
 function getActiveContextInjectedBuiltinIds(): Set<string> {
   const ids = new Set<string>();
@@ -3476,11 +3501,11 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
   // passthrough. This is the only remaining Pattern 1 MCP after the v0.2.11 cron
   // / im-cron / im-media → CLI migration: bridge plugins expose runtime-dynamic
   // tool surfaces that can't be expressed as a static prompt + CLI.
-  const bridgeToolsCtx = getImBridgeToolsContext();
+  const bridgeToolSurface = getImBridgeToolSurface();
   const bridgeServer = getImBridgeToolServer();
-  if (bridgeToolsCtx && bridgeServer) {
+  if (bridgeToolSurface && bridgeServer) {
     result['im-bridge-tools'] = bridgeServer;
-    console.log(`[agent] Added im-bridge-tools MCP server for plugin ${bridgeToolsCtx.pluginId}`);
+    console.log(`[agent] Added im-bridge-tools MCP server for plugin ${bridgeToolSurface.pluginId}`);
   }
 
   // --- Pattern 2: Builtin registry MCPs (in-process, user-toggled) ---
@@ -3623,14 +3648,33 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
 }
 
 /**
- * Sorted-key fingerprint of an MCP server map (id list).
- * Identity comparison only — env/args/url changes for user-configured MCPs
- * already trigger restart via mcpConfigFingerprint() + setMcpServers().
- * This is for context-injected MCPs (im-media, im-bridge-tools) whose
- * presence flips on/off as IM context becomes available.
+ * Runtime identity of the installed SDK MCP map. User-configured transport
+ * changes already trigger the dedicated config mutation path; the dynamic IM
+ * Bridge server additionally needs its stable surface identity because its
+ * SDK key remains `im-bridge-tools` across a real port/plugin/group change.
  */
-function mcpKeyFingerprint(servers: Record<string, unknown>): string {
-  return Object.keys(servers).sort().join(',');
+function sdkMcpMapFingerprint(servers: Record<string, unknown>): string {
+  const keys = Object.keys(servers).sort().join(',');
+  const surface = getImBridgeToolSurface();
+  return surface ? `${keys}|bridge=${imBridgeToolSurfaceIdentity(surface)}` : keys;
+}
+
+/** True only when the live Query already owns the current stable Bridge surface. */
+export function isCurrentImBridgeToolSurfaceInstalled(): boolean {
+  if (!lifecycleState.query || lifecycleState.abortRequested) return false;
+  const surface = getImBridgeToolSurface();
+  if (!surface) return false;
+  return configState.frozenSdkMcpFingerprint.includes(
+    `|bridge=${imBridgeToolSurfaceIdentity(surface)}`,
+  );
+}
+
+/** Bridge discovery and SDK installation consume one surface-owned deadline. */
+function getMcpPrewarmWindowForMap(
+  servers: Record<string, unknown>,
+): { startedAt: number; deadlineAt: number } | null {
+  if (!Object.hasOwn(servers, 'im-bridge-tools')) return null;
+  return getImBridgeToolPrewarmWindow();
 }
 
 /**
@@ -3638,7 +3682,7 @@ function mcpKeyFingerprint(servers: Record<string, unknown>): string {
  *
  * Why this exists:
  *   Context-injected MCPs (im-media, im-bridge-tools) become available only when
- *   `/api/im/enqueue` arrives and calls `setImMediaContext()` / `setImBridgeToolsContext()`.
+ *   `/api/im/enqueue` installs the stable IM Bridge tool surface.
  *   But for IM Bot Sidecars the SDK is pre-warmed by heartbeat long before the first
  *   message — at that point those contexts are null, so `buildSdkMcpServers()` doesn't
  *   include them, and the SDK subprocess freezes its mcpServers config without them.
@@ -3661,7 +3705,7 @@ const SDK_MCP_MUTATION_TIMEOUT_MS = 30_000;
 function latchMcpMutationRecovery(targetQuery: Query): void {
   if (lifecycleState.query !== targetQuery) return;
   setFrozenSdkMcpFingerprint('');
-  clearQueryMcpReadinessOwner(targetQuery);
+  clearQueryMcpPrewarmOwner(targetQuery);
   scheduleDeferredRestart('mcp');
   // A generator that promoted while the mutation was in flight owns recovery:
   // it requeues that exact item before draining the restart latch. With no
@@ -3700,7 +3744,7 @@ async function mutateSdkMcpForQuery(targetQuery: Query): Promise<QueryMcpMutatio
       error: 'Query was replaced before MCP transport mutation',
     };
   }
-  const newFingerprint = mcpKeyFingerprint(newServers);
+  const newFingerprint = sdkMcpMapFingerprint(newServers);
   if (newFingerprint === configState.frozenSdkMcpFingerprint) return { ok: true };
 
   console.log(`[agent] SDK MCP set drift detected, syncing live session: was=[${configState.frozenSdkMcpFingerprint || '(empty)'}] now=[${newFingerprint || '(empty)'}]`);
@@ -3732,13 +3776,13 @@ async function mutateSdkMcpForQuery(targetQuery: Query): Promise<QueryMcpMutatio
       };
     }
     scheduleDeferredRestart('mcp');
-    return { ok: true };
+    return { ok: true, deferred: true };
   }
 
   // Never publish the previous connected snapshot while the SDK transport map
   // is changing. Injected turns will observe owner=null; ordinary turns fence
   // on the Query-generation mutation promise at generator promotion.
-  clearQueryMcpReadinessOwner(targetQuery);
+  clearQueryMcpPrewarmOwner(targetQuery);
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
     const outcome = await Promise.race([
@@ -3768,10 +3812,12 @@ async function mutateSdkMcpForQuery(targetQuery: Query): Promise<QueryMcpMutatio
       return { ok: false, reason: 'failed', error };
     }
     setFrozenSdkMcpFingerprint(newFingerprint);
-    setQueryMcpReadinessOwner({
+    const prewarmWindow = getMcpPrewarmWindowForMap(newServers);
+    setQueryMcpPrewarmOwner({
       query: targetQuery,
       fingerprint: newFingerprint,
       requiredServerIds: Object.keys(newServers),
+      ...(prewarmWindow ?? {}),
     });
     console.log(`[agent] SDK setMcpServers ok: added=[${outcome.result.added.join(',')}] removed=[${outcome.result.removed.join(',')}]`);
     return { ok: true };
@@ -3792,14 +3838,14 @@ async function mutateSdkMcpForQuery(targetQuery: Query): Promise<QueryMcpMutatio
   }
 }
 
-export async function ensureSdkMcpInSync(): Promise<void> {
+export async function ensureSdkMcpInSync(): Promise<boolean> {
   // Callers that overlap an existing sync must recompute after it settles:
   // the later IM request may have changed bridge context while the first
   // build/mutation was in flight. Returning the shared promise directly would
   // silently lose that later desired set.
   while (true) {
     const targetQuery = lifecycleState.query;
-    if (!targetQuery || lifecycleState.abortRequested) return;
+    if (!targetQuery || lifecycleState.abortRequested) return false;
     // Promotion and live transport mutation are mutually exclusive owners.
     // This check and the mutation claim below are synchronous in one event-loop
     // turn: if promotion won first, rebuild after that turn; if this claim wins
@@ -3811,28 +3857,21 @@ export async function ensureSdkMcpInSync(): Promise<void> {
       sdkCommandInFlight: getInFlightQueueId() !== null,
     })) {
       scheduleDeferredRestart('mcp');
-      return;
+      return false;
     }
     const mutation = claimQueryMcpMutation(
       targetQuery,
       () => mutateSdkMcpForQuery(targetQuery),
     );
     const result = await mutation.promise;
-    if (mutation.claimed || !result.ok) return;
+    if (mutation.claimed || !result.ok) return result.ok && !result.deferred;
   }
 }
 
-/**
- * Dispatch gate for unattended builtin turns (Cron / Goal / Heartbeat /
- * Memory Update). It observes the MCP map installed on the final persistent
- * Query; it never builds a probe Query and never re-selects MCP config.
- */
-function getInjectedTurnMcpReadinessOwner(): McpReadinessOwner | null {
-  // abortPersistentSession marks the old Query before its async cleanup
-  // clears the handle. Treat it as replaced immediately so a late control
-  // response/rejection from the closing process cannot decide dispatch.
+/** Return the MCP pre-warm owner installed on the exact persistent Query. */
+function getCurrentQueryMcpPrewarmOwner(): McpPrewarmOwner | null {
   if (lifecycleState.abortRequested) return null;
-  const owner = getQueryMcpReadinessOwner();
+  const owner = getQueryMcpPrewarmOwner();
   if (!owner) return null;
   return {
     identity: owner.query,
@@ -3840,56 +3879,54 @@ function getInjectedTurnMcpReadinessOwner(): McpReadinessOwner | null {
     revision: owner.revision,
     fingerprint: owner.fingerprint,
     requiredServerIds: owner.requiredServerIds,
+    startedAt: owner.startedAt,
+    deadlineAt: owner.deadlineAt,
     readStatuses: () => readQueryMcpStatuses(owner.query),
   };
 }
 
-export function isRequiredMcpReadinessLeaseCurrent(
-  lease: McpReadinessLease,
-): boolean {
-  return isMcpReadinessLeaseCurrent(lease, getInjectedTurnMcpReadinessOwner());
-}
-
-/** A timed-out SDK control read is pinned until its Query dies. Rebuild that
- * owner instead of letting every later injected turn share the same wedged
- * `mcpServerStatus()` promise. Active work still owns the terminal boundary. */
-export function recoverQueryAfterMcpStatusTimeout(): void {
-  const targetQuery = lifecycleState.query;
-  if (!targetQuery || lifecycleState.abortRequested) return;
-  setFrozenSdkMcpFingerprint('');
-  clearQueryMcpReadinessOwner(targetQuery);
-  scheduleDeferredRestart('mcp');
-  applyDeferredRestartIfNeeded();
-}
-
-export async function awaitRequiredMcpReadyForInjectedTurn(
-  deadlineAt: number,
+/**
+ * Consume a Query/map generation's owner-created grace at the common SDK
+ * dispatch seam. The settled outcome is stored on that owner, so every later
+ * Desktop, IM, or injected turn is a zero-control-RPC fast path.
+ */
+async function observeCurrentQueryMcpPrewarm(
   options: { signal?: AbortSignal } = {},
-): Promise<McpReadinessResult> {
-  let startup: Promise<void> | null = null;
-  const startedAt = Date.now();
-  const result = await awaitRequiredMcpReadiness({
-    deadlineAt,
-    getOwner: getInjectedTurnMcpReadinessOwner,
-    ensureOwner: () => {
-      if (lifecycleState.query || startup) return;
-      startup = startStreamingSession(true)
-        .catch((error) => {
-          console.warn('[agent] injected-turn MCP readiness pre-warm failed:', error instanceof Error ? error.message : error);
-        })
-        .finally(() => {
-          startup = null;
-        });
-    },
+): Promise<McpPrewarmOutcome | null> {
+  const lifecycleOwner = getQueryMcpPrewarmOwner();
+  if (!lifecycleOwner) return null;
+  if (lifecycleOwner.outcome) return lifecycleOwner.outcome;
+
+  const owner = getCurrentQueryMcpPrewarmOwner();
+  if (!owner) return {
+    state: 'owner_replaced',
+    servers: lifecycleOwner.requiredServerIds.map(id => ({ id })),
+    elapsedMs: Math.max(0, Date.now() - lifecycleOwner.startedAt),
+  };
+  const outcome = await awaitMcpPrewarm({
+    owner,
+    getOwner: getCurrentQueryMcpPrewarmOwner,
     signal: options.signal,
   });
-  const serverIds = result.ready
-    ? getQueryMcpReadinessOwner()?.requiredServerIds ?? []
-    : result.failure.servers.map(server => server.id);
-  console.log(
-    `[agent] injected-turn MCP readiness ${result.ready ? 'ready' : `blocked(${result.failure.code})`} in ${Date.now() - startedAt}ms servers=[${serverIds.join(',') || '(none)'}]`,
-  );
-  return result;
+  if (outcome.state === 'owner_replaced') return outcome;
+
+  const firstSettlement = settleQueryMcpPrewarmOwner({
+    query: lifecycleOwner.query,
+    generation: lifecycleOwner.generation,
+    revision: lifecycleOwner.revision,
+    outcome,
+  });
+  if (firstSettlement) {
+    const servers = outcome.state === 'degraded'
+      ? formatMcpPrewarmServers(outcome.servers)
+      : lifecycleOwner.requiredServerIds.join(',') || '(none)';
+    console.log(
+      `[agent] MCP pre-warm terminal outcome=${outcome.state}${outcome.state === 'degraded' ? ` reason=${outcome.reason}` : ''}`
+      + ` generation=${lifecycleOwner.generation} revision=${lifecycleOwner.revision}`
+      + ` elapsedMs=${outcome.elapsedMs} budgetMs=${MCP_PREWARM_GRACE_MS} servers=[${servers}]`,
+    );
+  }
+  return outcome;
 }
 
 /**
@@ -6757,15 +6794,9 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   getCurrentModel: () => configState.currentModel,
   getIsInterruptingResponse: () => isInterruptingResponse,
   setStreamingMessage: (value) => { isStreamingMessage = value; },
-  setForceDrainTurnStarting: (value) => { forceDrainTurnStarting = value; },
   resetInFlightToolCount: () => { inFlightToolCount = 0; },
   resetWatchdogFired: () => { watchdogFired = false; },
-  resolvePostInterruptTurnEnd: () => {
-    if (postInterruptTurnEndResolve) {
-      postInterruptTurnEndResolve();
-      postInterruptTurnEndResolve = null;
-    }
-  },
+  claimPostInterruptResultTerminal: () => settlePostInterruptTurnEnd('result-claimed'),
   terminalEventAppliesToCurrentInFlight,
   dropInFlightQueueItem,
   preserveInFlightAfterTerminalBoundary,
@@ -7373,7 +7404,7 @@ function clearMessageState(): void {
   // Reset browser tool tracking for new session
   setBrowserToolUsed(false);
   setStorageStateSaved(false);
-  // Pattern B/G: drain the pending requestId queue — any in-flight bus
+  // Pattern B/G: drain the output-owner queue — any in-flight IM bus
   // subscribers for the old session belong to closed SSE streams; new SDK
   // output for a new session should not be tagged with old trace IDs.
   clearPendingRequests();
@@ -7530,6 +7561,7 @@ export async function resetSession(): Promise<void> {
 
   // 2. Clear all message state (shared with initializeAgent)
   clearMessageState();
+  clearImBridgeToolsContext();
 
   // 3. Generate new session ID (don't persist yet - wait for first message)
   setCurrentSessionId(randomUUID());
@@ -7915,6 +7947,7 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
 
   // Reset message/queue/streaming state (shared with initializeAgent, resetSession)
   clearMessageState();
+  clearImBridgeToolsContext();
 
   // Reset session-level runtime state
   resetAbortFlag();
@@ -9448,6 +9481,8 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
 
   setInterruptingInFlightQueueId(getInFlightQueueId());
   isInterruptingResponse = true;
+  postInterruptTurnEndOutcome = null;
+  postInterruptTurnEndResolve = null;
   try {
     // Step 1: Try graceful interrupt (5 seconds).
     // interrupt() is cooperative — the SDK subprocess must be responsive to process it.
@@ -9497,15 +9532,15 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
     //     down. NOT a hung tool — calling it one in the log misleads anyone
     //     grepping for tool issues. This was the misdiagnosis observed on
     //     2026-05-07 when stop was pressed during a thinking block.
-    if (interrupted && lifecycleState.query) {
-      const turnEnded = new Promise<void>(resolve => {
+    if (interrupted && lifecycleState.query && !postInterruptTurnEndOutcome) {
+      const turnEnded = new Promise<PostInterruptTurnEndOutcome>(resolve => {
         postInterruptTurnEndResolve = resolve;
       });
-      const postInterruptTimeout = new Promise<void>((_, reject) =>
+      const postInterruptTimeout = new Promise<PostInterruptTurnEndOutcome>((_, reject) =>
         setTimeout(() => reject(new Error('Post-interrupt turn completion timeout')), 3000)
       );
       try {
-        await Promise.race([turnEnded, postInterruptTimeout]);
+        postInterruptTurnEndOutcome = await Promise.race([turnEnded, postInterruptTimeout]);
       } catch {
         postInterruptTurnEndResolve = null;
         if (lifecycleState.query) {
@@ -9522,14 +9557,10 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
       }
     }
 
-    // Issue #289 — if the graceful-interrupt `result` already ran handleMessageComplete and
-    // it FORCE-surfaced the in-flight item, the turn-end is fully handled and the SDK is
-    // draining that item into a new turn. Calling handleMessageStopped() here would undo the
-    // streaming re-arm and double-pop the IM request (a racy idle window). Skip it; a plain
-    // stop (flag unset) still tears down normally.
-    if (forceDrainTurnStarting) {
-      forceDrainTurnStarting = false;
-    } else {
+    // A graceful SDK result synchronously claims and consumes the current
+    // output owner. Only the no-result/session-ended path may claim stopped
+    // here; calling both terminalizers would pop the following IM request.
+    if (postInterruptTurnEndOutcome !== 'result-claimed') {
       const completionTerminal = handleMessageStopped();
       broadcast('chat:message-stopped', withSessionCompletionTerminal(null, completionTerminal));
     }
@@ -9537,7 +9568,8 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
   } finally {
     isInterruptingResponse = false;
     setInterruptingInFlightQueueId(null);
-    forceDrainTurnStarting = false; // defensive: never leak into a later interrupt
+    postInterruptTurnEndResolve = null;
+    postInterruptTurnEndOutcome = null;
   }
 }
 
@@ -9585,7 +9617,7 @@ export async function cancelImRequest(
     return { aborted: true, mode: 'queued' };
   }
   // Active turn? (queue head matches)
-  if (getPendingRequestIds()[0] === requestId && isTurnInFlight()) {
+  if (peekPendingOutputOwner()?.requestId === requestId && isTurnInFlight()) {
     console.log(`[agent] cancelImRequest requestId=${requestId} mode=running`);
     await interruptCurrentResponse(reason);
     return { aborted: true, mode: 'running' };
@@ -9599,7 +9631,7 @@ export async function cancelImRequest(
     if (settlement.cancelled) {
       const sourceItem = getCurrentTurnSourceItem();
       if (sourceItem?.id === queueId) await notifyQueuedTurnStopped(sourceItem);
-      if (settlement.removePendingRequest) removePendingRequest(requestId);
+      if (settlement.removePendingRequest) removePendingOutputOwnerByQueueId(queueId);
       if (settlement.clearSlot) {
         clearInFlightSlot();
         applyDeferredRestartIfNeeded();
@@ -9712,7 +9744,7 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
         const cancelledText = meta?.messageText ?? '';
         const sourceItem = getCurrentTurnSourceItem();
         if (sourceItem?.id === queueId) await notifyQueuedTurnStopped(sourceItem);
-        if (settlement.removePendingRequest) removePendingRequest(meta?.requestId);
+        if (settlement.removePendingRequest) removePendingOutputOwnerByQueueId(queueId);
         if (settlement.clearSlot) {
           clearInFlightSlot();
           applyDeferredRestartIfNeeded();
@@ -11317,12 +11349,14 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     }
 
     if (activeQuery) {
-      const initialMcpFingerprint = mcpKeyFingerprint(sdkMcpServersInitial);
+      const initialMcpFingerprint = sdkMcpMapFingerprint(sdkMcpServersInitial);
       setFrozenSdkMcpFingerprint(initialMcpFingerprint);
-      setQueryMcpReadinessOwner({
+      const prewarmWindow = getMcpPrewarmWindowForMap(sdkMcpServersInitial);
+      setQueryMcpPrewarmOwner({
         query: activeQuery,
         fingerprint: initialMcpFingerprint,
         requiredServerIds: Object.keys(sdkMcpServersInitial),
+        ...(prewarmWindow ?? {}),
       });
     }
 
@@ -12908,11 +12942,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     setSessionProcessing(false);
     clearTransientProviderRetryTimer('session-finally');
 
-    // Resolve any pending post-interrupt wait (session ended, turn is implicitly done)
-    if (postInterruptTurnEndResolve) {
-      postInterruptTurnEndResolve();
-      postInterruptTurnEndResolve = null;
-    }
+    // Resolve any pending post-interrupt wait (session ended without a result,
+    // so the interrupt caller remains the terminal claimant).
+    settlePostInterruptTurnEnd('session-ended');
 
     // 确保 generator 退出（防止 streamInput 永远阻塞）
     if (lifecycleState.messageResolver) {
@@ -13209,6 +13241,51 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       });
       continue;
     }
+
+    // Every builtin entrypoint converges here. Consume only the remaining
+    // absolute grace owned by this Query/map generation; ready and degraded
+    // outcomes are both dispatchable and become a one-shot fast path.
+    const prewarmController = new AbortController();
+    const promotionCancellation = getPromotedItemCancellation(item.id);
+    let prewarmObservation:
+      | { kind: 'outcome'; outcome: McpPrewarmOutcome | null }
+      | { kind: 'cancelled' };
+    try {
+      const observation = observeCurrentQueryMcpPrewarm({ signal: prewarmController.signal })
+        .then(outcome => ({ kind: 'outcome' as const, outcome }));
+      prewarmObservation = promotionCancellation
+        ? await Promise.race([
+          observation,
+          promotionCancellation.then(() => {
+            prewarmController.abort();
+            return { kind: 'cancelled' as const };
+          }),
+        ])
+        : await observation;
+    } catch (error) {
+      if (isPromotedItemCanceled(item.id)) {
+        prewarmObservation = { kind: 'cancelled' };
+      } else {
+        // A control-plane observer must never become an AI-turn failure.
+        console.warn('[agent] MCP pre-warm observation degraded:', error instanceof Error ? error.message : error);
+        prewarmObservation = { kind: 'outcome', outcome: null };
+      }
+    }
+    if (prewarmObservation.kind === 'cancelled') {
+      await rejectPromotedMessageBeforeDispatch(item, {
+        accepted: false,
+        code: 'dispatch_canceled',
+        error: 'Queue item was cancelled',
+        rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+      });
+      continue;
+    }
+    if (prewarmObservation.outcome?.state === 'owner_replaced') {
+      requeuePromotedItemBeforeSdkDispatch(item);
+      console.log(`[agent] Requeued ${item.id}: MCP pre-warm owner was replaced before SDK dispatch`);
+      return;
+    }
+
     let guardResult: DispatchGuardResult | undefined;
     if (item.beforeDispatch) {
       try {
@@ -13436,8 +13513,8 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       return;
     }
 
-    // Pattern B+G: push this user message's requestId onto the FIFO queue.
-    pushPendingRequest(item.requestId);
+    // Pattern B+G: every SDK yield gets an output-owner FIFO slot.
+    pushPendingOutputOwner(item.id, item.requestId);
 
     // PRD 0.2.18 Session Inbox — per-turn binding (read at result handler /
     // abort path). Bound here at generator yield (NOT at enqueue), so the

@@ -13,10 +13,10 @@ import {
   initializeAgent,
 } from '../agent-session';
 import {
-  getQueryMcpReadinessOwner,
+  getQueryMcpPrewarmOwner,
   isAbortRequested,
   resetLifecycleForTest,
-  setQueryMcpReadinessOwner,
+  setQueryMcpPrewarmOwner,
   setQuerySession,
 } from '../builtin-session/lifecycle';
 import {
@@ -40,7 +40,7 @@ describe('live Query MCP mutation recovery', () => {
     const setMcpServers = vi.fn();
     const query = { setMcpServers } as never;
     setQuerySession(query);
-    setQueryMcpReadinessOwner({
+    setQueryMcpPrewarmOwner({
       query,
       fingerprint: 'old',
       requiredServerIds: ['old'],
@@ -58,7 +58,7 @@ describe('live Query MCP mutation recovery', () => {
     await ensureSdkMcpInSync();
 
     expect(isAbortRequested()).toBe(true);
-    expect(getQueryMcpReadinessOwner()).toBeNull();
+    expect(getQueryMcpPrewarmOwner()).toBeNull();
     expect(setMcpServers).not.toHaveBeenCalled();
   });
 });
