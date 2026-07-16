@@ -335,14 +335,14 @@
     .diff-row.remove { background: var(--diff-remove-wash); }
     .diff-row.add::before { background: var(--success); }
     .diff-row.remove::before { background: var(--error); }
-    .diff-row.hunk { background: var(--diff-hunk-wash); color: var(--accent); }
+    .diff-row.hunk { background: var(--paper-elevated); color: var(--ink-muted); }
     .diff-row.omit { background: color-mix(in srgb, var(--paper-inset) 20%, transparent); }
     .line-no { display: flex; align-items: center; justify-content: flex-end; padding: 0 10px 0 5px; border-right: 1px solid var(--line-subtle); color: var(--ink-subtle); font-size: var(--text-xs); user-select: none; }
     .marker { display: flex; align-items: center; justify-content: center; color: var(--ink-subtle); font-weight: 700; user-select: none; }
     .diff-row.add .marker { color: var(--success); }
     .diff-row.remove .marker { color: var(--error); }
     .code-line { display: block; overflow: visible; padding: 0 16px 0 8px; color: var(--ink-secondary); white-space: pre; }
-    .diff-row.hunk .code-line { color: var(--accent); font-size: var(--text-xs); letter-spacing: .01em; }
+    .diff-row.hunk .code-line { color: var(--ink-muted); font-family: var(--font-body); font-size: var(--text-xs); letter-spacing: .01em; }
     .diff-row.omit .code-line { color: var(--ink-subtle); font-size: var(--text-xs); font-style: italic; }
     .tok-keyword { color: var(--syntax-keyword); }
     .tok-string { color: var(--syntax-string); }
@@ -444,7 +444,7 @@
     .terminal-foot { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; min-height: 36px; padding: 7px 13px; border-top: 1px solid rgb(255 255 255 / .08); background: rgb(255 255 255 / .022); color: #747d77; font-size: var(--text-xs); }
     .terminal-foot .exit-ok { color: #75d09a; }
     .terminal-foot .exit-error { color: #ef8b83; }
-    .file-group + .file-group { border-top: 1px solid var(--line); }
+    .patch-stack { display: grid; gap: 12px; }
     .file-group .context-bar { border-bottom: 0; }
 
     .stage-footer { display: flex; align-items: center; gap: 10px; margin-top: 13px; padding: 0 4px; color: var(--ink-subtle); font-size: var(--text-xs); }
@@ -925,13 +925,27 @@
     function diffRowsMarkup(file, key) {
       return visibleRows(file, key).map((row) => {
         const type = row.type.split(' ')[0];
+        const text = type === 'hunk' ? readableHunk(row.text) : row.text;
+        if (type === 'hunk' && !text) return '';
         return `<div class="diff-row ${type}">
           <span class="line-no">${row.old}</span>
           <span class="line-no">${row.next}</span>
           <span class="marker">${row.marker}</span>
-          <code class="code-line">${type === 'hunk' || type === 'omit' ? escapeHtml(row.text) : highlight(row.text)}</code>
+          <code class="code-line">${type === 'hunk' || type === 'omit' ? escapeHtml(text) : highlight(text)}</code>
         </div>`;
       }).join('');
+    }
+
+    function readableHunk(value) {
+      const match = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(value);
+      if (!match) return '';
+      const oldStart = Number(match[1]);
+      const oldCount = match[2] === undefined ? 1 : Number(match[2]);
+      const newStart = Number(match[3]);
+      const newCount = match[4] === undefined ? 1 : Number(match[4]);
+      return oldStart === newStart
+        ? `第 ${oldStart} 行附近 · 原 ${oldCount} 行 → 新 ${newCount} 行`
+        : `原第 ${oldStart} 行 → 新第 ${newStart} 行 · 原 ${oldCount} 行 → 新 ${newCount} 行`;
     }
 
     function contextBarMarkup(file, key) {
@@ -950,8 +964,8 @@
     }
 
     function renderUnified(terminal = false) {
-      return `<div class="patch-shell ${terminal ? 'terminal-shell' : ''}">
-        ${activeKeys().map((key) => unifiedFileGroup(key, terminal)).join('')}
+      return `<div class="patch-stack">
+        ${activeKeys().map((key) => `<div class="patch-shell ${terminal ? 'terminal-shell' : ''}">${unifiedFileGroup(key, terminal)}</div>`).join('')}
       </div>`;
     }
 
@@ -973,14 +987,14 @@
     }
 
     function renderSplit() {
-      return `<div class="patch-shell split-shell">
+      return `<div class="patch-stack">
         ${activeKeys().map((key) => {
           const file = files[key];
           const split = splitRows(file, key);
-          return `<section class="file-group">${toolbarMarkup(file, key)}<div class="split-review">
+          return `<div class="patch-shell split-shell"><section class="file-group">${toolbarMarkup(file, key)}<div class="split-review">
             <section class="split-pane"><div class="split-label"><span>修改前</span><span>${split.before.length} 行</span></div>${splitPaneMarkup(split.before, 'old', file.operation === '写入' || file.operation === '新建' ? '新文件，没有旧版本' : '没有旧内容')}</section>
             <section class="split-pane"><div class="split-label"><span>修改后</span><span>${split.after.length} 行</span></div>${splitPaneMarkup(split.after, 'new', '没有新内容')}</section>
-          </div>${contextBarMarkup(file, key)}</section>`;
+          </div>${contextBarMarkup(file, key)}</section></div>`;
         }).join('')}
       </div>`;
     }

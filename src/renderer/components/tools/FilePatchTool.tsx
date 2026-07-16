@@ -84,10 +84,7 @@ export default function FilePatchTool({ tool }: FilePatchToolProps) {
   return (
     <div className="space-y-2.5">
       <FilePatchNotices model={model} t={t} />
-      <div className={isMultiFile
-        ? 'overflow-hidden rounded-[var(--radius-lg)] border border-[var(--line)] bg-[var(--paper-elevated)] shadow-[var(--shadow-xs)] divide-y divide-[var(--line)]'
-        : ''}
-      >
+      <div className={isMultiFile ? 'space-y-3' : ''}>
         {model.changes.map((change, index) => (
           <FilePatchSection
             key={`${change.kind}:${change.path ?? ''}:${change.movePath ?? ''}:${index}`}
@@ -96,7 +93,6 @@ export default function FilePatchTool({ tool }: FilePatchToolProps) {
             path={pathPresentations[index]}
             actionPath={change.movePath && moveTargetApplied ? change.movePath : change.path}
             initialRowBudget={initialRowBudgets[index]}
-            grouped={isMultiFile}
             t={t}
           />
         ))}
@@ -192,7 +188,6 @@ function FilePatchSection({
   path,
   actionPath,
   initialRowBudget,
-  grouped,
   t,
 }: {
   change: FilePatchRenderChange;
@@ -200,7 +195,6 @@ function FilePatchSection({
   path: FilePathPresentation;
   actionPath?: string;
   initialRowBudget: number;
-  grouped: boolean;
   t: ChatTranslator;
 }) {
   const instanceId = useId();
@@ -215,9 +209,7 @@ function FilePatchSection({
     <section
       aria-labelledby={headingId}
       data-file-patch-path={change.path ?? ''}
-      className={grouped
-        ? 'overflow-hidden bg-[var(--paper-elevated)]'
-        : 'overflow-hidden rounded-[var(--radius-lg)] border border-[var(--line)] bg-[var(--paper-elevated)] shadow-[var(--shadow-xs)]'}
+      className="overflow-hidden rounded-[var(--radius-lg)] border border-[var(--line)] bg-[var(--paper-elevated)] shadow-[var(--shadow-xs)]"
     >
       <header className="flex min-h-12 flex-wrap items-center gap-2.5 border-b border-[var(--line-subtle)] px-3 py-2 sm:flex-nowrap">
         <span className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-[var(--accent-warm-subtle)] text-[var(--accent)]">
@@ -428,13 +420,28 @@ function FilePatchViewport({
 
 function DiffRowView({ row, code, t }: { row: DiffRow; code: ReactNode; t: ChatTranslator }) {
   if (row.kind === 'hunk') {
+    if (!row.hunk) return null;
+    const oldSpan = t('shell.toolChrome.filePatch.hunkLineCount', { count: row.hunk.oldLines });
+    const newSpan = t('shell.toolChrome.filePatch.hunkLineCount', { count: row.hunk.newLines });
+    const label = row.hunk.oldStart === row.hunk.newStart
+      ? t('shell.toolChrome.filePatch.hunkSameStart', {
+          line: row.hunk.oldStart,
+          oldSpan,
+          newSpan,
+        })
+      : t('shell.toolChrome.filePatch.hunkMovedStart', {
+          oldStart: row.hunk.oldStart,
+          newStart: row.hunk.newStart,
+          oldSpan,
+          newSpan,
+        });
     return (
       <div
         data-diff-row="true"
         data-diff-kind="hunk"
-        className="min-w-full select-none border-y border-[var(--line-subtle)] bg-[var(--accent-warm-subtle)] px-3 py-1 font-mono text-xs text-[var(--accent)] first:border-t-0"
+        className="min-w-full select-none border-y border-[var(--line-subtle)] bg-[var(--paper-elevated)] px-3 py-1 font-sans text-xs text-[var(--ink-muted)] first:border-t-0"
       >
-        {row.text}
+        {label}
       </div>
     );
   }

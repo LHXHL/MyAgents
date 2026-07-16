@@ -252,7 +252,7 @@ ToolUse（按标准 tool name 分派专用 renderer）
 
 - 增删使用低饱和行底色、左侧细轨和 marker；
 - 代码仍以正常 ink/syntax token 显示，不把整行代码染成红字/绿字；
-- hunk header 使用弱 accent wash，未变上下文保持中性；
+- hunk 定位信息由结构化范围转译成自然语言，使用低权重中性色；不直接暴露 `@@ -a,b +c,d @@` 协议文本；
 - 单列天然适配 768px Chat 主列；
 - 与现有暖纸、圆角、边框、阴影层级连续。
 
@@ -372,7 +372,7 @@ Bash 外层同样继续由 ProcessRow 负责工具名、shell 摘要、running/c
 - 按 `changes[]` 协议顺序从上到下渲染，每个 change 是一个紧凑文件组；
 - 每组只有一条文件栏，显示 basename、最短可辨识父路径、operation、该文件统计和“更多”；紧接该文件 diff viewport，不再在 body 内重复一次完整路径与 `update` 文本；
 - basename 重名时追加最短可区分父路径；
-- 文件组之间用明确的 `divide-y` / section gap 分隔，不为每个文件再套高阴影大卡片；
+- 每个文件组使用完整独立的紧凑卡片（同一套边框、圆角与 `shadow-xs`），文件卡之间保留 12px section gap；不得用共享 outer surface + `divide-y` 把相邻文件粘成一块；
 - 每组有独立的行预算和“展示全部”状态；
 - 文件数较多时仍保持一个 ProcessRow 展开体和一个滚动阅读方向，不制造 tab 选择状态；
 - 只在结构化 `changes[]` 存在且每项具备独立 path/diff 时启用。无法可靠区分时回退 raw result，本期不从 completed result 文本猜边界；
@@ -397,7 +397,7 @@ Bash 外层同样继续由 ProcessRow 负责工具名、shell 摘要、running/c
 - 横向滚动发生在一个 code viewport 内；
 - 行号 gutter 保持对齐，必要时 sticky；
 - 代码选择只作用于真实 code text；行号、marker 等视觉辅助列使用 `user-select: none`，避免选择结果混入伪 patch；
-- hunk header、折叠上下文不是代码行，不占用伪造行号；
+- hunk header、折叠上下文不是代码行，不占用伪造行号；可信 hunk 范围显示为“第 N 行附近 · 原 A 行 → 新 B 行”，起始行变化时分别说明旧/新起点，无法解析时隐藏该元数据行；
 - 语法高亮是渐进增强：无法识别语言或超过预算时回退普通 code token；
 - 增删不能只靠红绿：同时使用 marker、左轨/底色和屏幕阅读标签。
 
@@ -599,7 +599,7 @@ interface BashTranscriptModel {
 
 - add：`--success` 作为 marker/细轨，wash 由 success 与 paper 混合；
 - remove：`--error` 作为 marker/细轨，wash 由 error 与 paper 混合；
-- hunk：`--accent` 的极弱 wash；
+- hunk：`--paper-elevated` + `--ink-muted`，作为低权重定位元数据，不使用 accent wash 抢占代码注意力；
 - code token：沿用 syntax token，不整行变红/绿；
 - context：正常 paper/ink；
 - dark theme 使用现有 dark token，不硬编码第二套组件颜色。
@@ -849,6 +849,7 @@ npm run lint
 - 外层只显示一次 Edit、文件摘要和总统计；
 - 展开体显示 basename、相对目录、文件统计和动作；
 - 旧/新行号、marker、code 四列对齐；
+- hunk 定位使用自然语言，不出现裸 `@@ -a,b +c,d @@`；
 - 长行不折行，可横向滚动；
 - add/remove 同时有 marker 和非纯色彩提示。
 
@@ -865,6 +866,7 @@ npm run lint
 - 外层显示“4 个文件”和总统计 `+76 / −21`；
 - 展开体按 `changes[]` 顺序从上到下显示 `index.html`、`account.ts`、`analytics.ts`、`main.ts` 四个文件组；
 - 每个组只显示一次 basename/相对路径、operation、统计、正文和“更多”；
+- 四个文件分别处于独立卡片中，卡片之间有清晰留白，不共享连续边框或 `divide-y` 外壳；
 - 不出现顶部裸路径列表、file tab 或组内重复完整路径；
 - 每组“更多”只操作本组文件；
 - 不产生 `Multi-file` / `MultiEdit` 新 tool name。
@@ -1039,7 +1041,7 @@ npm run lint
 
 - **phase base**：`7e019464`。
 - **范围 / 契约**：按 `changes[]` 保序纵向分组、每文件一次 header/body/action、独立 400-row 初始预算与单次“展示全部”、full-width 只作用 file patch、窄屏 / dark 收口。
-- **实现进度**：多文件使用一个 outer surface + `divide-y`，各 change 仍是独立 semantic section，但不再各自叠卡片阴影；协议顺序不变，重复 basename 计算最短可辨识父路径。单文件上限 400 rows、单工具初始总量同样限制为 400 并在多文件间公平分配；视口约 384px，按文件一次“展示全部”，其它组状态不变；单文件 hard cap 5,000 rows，超限诚实提示，syntax highlight 在 1,000 rows / 100KB 后回退 plain。ProcessRow 仅对 Edit/Write 去掉既有 `ml-7`，其它 tool 保持缩进；文件 header 在窄宽换行，diff 只在自身横向滚动，全部颜色继续使用明暗主题 token。
+- **实现进度**：多文件按用户 2026-07-16 裁决改为独立紧凑卡片纵向排列，文件卡之间使用 12px section gap，不再共享 outer surface / `divide-y`；协议顺序不变，重复 basename 计算最短可辨识父路径。hunk 的结构化 old/new 起始行与范围长度进入 render model，UI 转译为自然语言定位信息，不展示裸 `@@` 协议文本；无法可靠解释时隐藏。单文件上限 400 rows、单工具初始总量同样限制为 400 并在多文件间公平分配；视口约 384px，按文件一次“展示全部”，其它组状态不变；单文件 hard cap 5,000 rows，超限诚实提示，syntax highlight 在 1,000 rows / 100KB 后回退 plain。ProcessRow 仅对 Edit/Write 去掉既有 `ml-7`，其它 tool 保持缩进；文件 header 在窄宽换行，diff 只在自身横向滚动，全部颜色继续使用明暗主题 token。
 - **验证进度**：定向 DOM 31 项（FilePatch / FileAction / ProcessRow）与 i18n parity 5 项通过，`typecheck`、scoped ESLint 通过；完整 DOM pool 通过。覆盖多文件顺序、400 总初始 DOM、独立 show-all、重复 basename、syntax fallback、5,000-row hard cap、responsive class、file-only full width 与 `aria-expanded`。三镜 review 发现零预算文件组的展开入口、重名文件 viewport / show-all 可访问名称，以及 hard-cap 状态与 viewport 的朗读关联不完整；均已用 reachable min-height、最短可辨识 accessible name、file/count aria-label 与 `role=status + aria-describedby` 修复。应用内 Browser 仍无可用实例，因此 320px / 768px 的 macOS WKWebView 与 Windows WebView2 实机视觉矩阵仍是发布门禁，不伪报完成。
 - **状态**：已完成并提交：`18a97492`（`feat(chat): refine multi-file patch layout`）。
 

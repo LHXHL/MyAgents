@@ -100,7 +100,8 @@ describe('EditTool Codex fileChange rendering', () => {
     expect(screen.queryByText('/tmp/a.md')).not.toBeInTheDocument();
     expect(screen.getByText('修改')).toBeInTheDocument();
     expect(screen.getByText('新建')).toBeInTheDocument();
-    expect(screen.getByText((content) => content.includes('@@ -1,2 +1,3 @@'))).toBeInTheDocument();
+    expect(screen.getByText('第 1 行附近 · 原 2 行 → 新 3 行')).toBeInTheDocument();
+    expect(screen.queryByText((content) => content.includes('@@ -1,2 +1,3 @@'))).not.toBeInTheDocument();
     expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument();
   });
 
@@ -120,7 +121,8 @@ describe('EditTool Codex fileChange rendering', () => {
     expect(container.querySelector('[data-diff-kind="hunk"]')).toHaveClass('select-none');
     expect(container.querySelector('[data-diff-kind="omission"]')).toHaveClass('select-none');
     expect(container.querySelector('[aria-label="a.md 的变更"]')).toHaveAttribute('tabindex', '0');
-    expect(screen.getByText((content) => content.includes('@@ -1,2 +1,3 @@'))).toBeInTheDocument();
+    expect(screen.getByText('第 1 行附近 · 原 2 行 → 新 3 行')).toBeInTheDocument();
+    expect(screen.queryByText((content) => content.includes('@@ -1,2 +1,3 @@'))).not.toBeInTheDocument();
     expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument();
   });
 
@@ -170,8 +172,10 @@ describe('EditTool Codex fileChange rendering', () => {
     const sections = Array.from(container.querySelectorAll<HTMLElement>('[data-file-patch-path]'));
     expect(sections.map((section) => section.querySelector('h3')?.textContent)).toEqual(['first.ts', 'second.ts']);
     expect(sections).toHaveLength(2);
-    expect(sections[0].parentElement).toHaveClass('divide-y');
-    expect(sections[0]).not.toHaveClass('shadow-[var(--shadow-xs)]');
+    expect(sections[0].parentElement).toHaveClass('space-y-3');
+    expect(sections[0].parentElement).not.toHaveClass('divide-y');
+    expect(sections[0]).toHaveClass('rounded-[var(--radius-lg)]', 'border', 'shadow-[var(--shadow-xs)]');
+    expect(sections[1]).toHaveClass('rounded-[var(--radius-lg)]', 'border', 'shadow-[var(--shadow-xs)]');
     expect(sections[0].querySelectorAll('[data-diff-row]')).toHaveLength(200);
     expect(sections[1].querySelectorAll('[data-diff-row]')).toHaveLength(200);
     expect(sections[0].querySelector('[data-file-patch-actions]')).toHaveClass('w-[calc(100%-2.25rem)]', 'sm:w-auto');

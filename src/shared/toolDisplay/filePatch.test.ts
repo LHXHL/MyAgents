@@ -325,11 +325,23 @@ describe('filePatch render model', () => {
       changes: [{ path: '/tmp/example.ts', lineNumbers: 'exact', added: 3, removed: 2 }],
     });
     expect(model?.changes[0]?.rows).toEqual([
-      { key: 'h0:0', kind: 'hunk', marker: '', text: '@@ -3,2 +3,2 @@' },
+      {
+        key: 'h0:0',
+        kind: 'hunk',
+        marker: '',
+        text: '@@ -3,2 +3,2 @@',
+        hunk: { oldStart: 3, oldLines: 2, newStart: 3, newLines: 2 },
+      },
       { key: 'h0:1', kind: 'context', oldLine: 3, newLine: 3, marker: '', text: 'keep' },
       { key: 'h0:2', kind: 'remove', oldLine: 4, marker: '-', text: 'old' },
       { key: 'h0:3', kind: 'add', newLine: 4, marker: '+', text: 'new' },
-      { key: 'h1:4', kind: 'hunk', marker: '', text: '@@ -20,1 +20,2 @@' },
+      {
+        key: 'h1:4',
+        kind: 'hunk',
+        marker: '',
+        text: '@@ -20,1 +20,2 @@',
+        hunk: { oldStart: 20, oldLines: 1, newStart: 20, newLines: 2 },
+      },
       { key: 'h1:5', kind: 'remove', oldLine: 20, marker: '-', text: 'tail' },
       { key: 'h1:6', kind: 'add', newLine: 20, marker: '+', text: 'tail()' },
       { key: 'h1:7', kind: 'add', newLine: 21, marker: '+', text: 'extra()' },

@@ -91,11 +91,19 @@ export interface FilePatchDisplay {
 
 export type DiffRowKind = 'context' | 'add' | 'remove' | 'hunk' | 'omission';
 
+export interface DiffHunkRange {
+  oldStart: number;
+  oldLines: number;
+  newStart: number;
+  newLines: number;
+}
+
 export interface DiffRow {
   key: string;
   kind: DiffRowKind;
   oldLine?: number;
   newLine?: number;
+  hunk?: DiffHunkRange;
   marker: '' | '+' | '-';
   text: string;
 }
@@ -534,6 +542,12 @@ function rowsFromStructuredPatch(
       kind: 'hunk',
       marker: '',
       text: hunkHeader(hunk),
+      hunk: {
+        oldStart: hunk.oldStart,
+        oldLines: hunk.oldLines,
+        newStart: hunk.newStart,
+        newLines: hunk.newLines,
+      },
     }, `h${hunkIndex}`);
     let oldLine = hunk.oldStart;
     let newLine = hunk.newStart;
@@ -695,7 +709,7 @@ export function parseUnifiedDiffRows(
       expectedNewLines = header.newLines;
       consumedOldLines = 0;
       consumedNewLines = 0;
-      pushRow({ kind: 'hunk', marker: '', text: line });
+      pushRow({ kind: 'hunk', marker: '', text: line, hunk: header });
       return;
     }
     if (!inHunk) {
