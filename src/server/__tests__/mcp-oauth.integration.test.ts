@@ -628,6 +628,11 @@ describe('mcp oauth', () => {
 
   test('scheduler stop then restart cannot leave an untracked timer from the old cycle', async () => {
     vi.useFakeTimers({ now: new Date('2026-07-16T00:00:00.000Z') });
+    // This assertion owns the scheduler timer only. The refresh request's
+    // AbortSignal deadline is orthogonal and may otherwise be counted by
+    // Vitest fake timers under full-suite load.
+    const abortTimeoutSpy = vi.spyOn(AbortSignal, 'timeout')
+      .mockImplementation(() => new AbortController().signal);
     await saveStateStore({
       notion: {
         token: {
@@ -651,20 +656,24 @@ describe('mcp oauth', () => {
       finishRequest = resolve;
     })) as typeof fetch;
 
-    startTokenRefreshScheduler();
-    await vi.advanceTimersByTimeAsync(0);
-    stopTokenRefreshScheduler();
-    startTokenRefreshScheduler();
-    await vi.advanceTimersByTimeAsync(0);
+    try {
+      startTokenRefreshScheduler();
+      await vi.advanceTimersByTimeAsync(0);
+      stopTokenRefreshScheduler();
+      startTokenRefreshScheduler();
+      await vi.advanceTimersByTimeAsync(0);
 
-    finishRequest(new Response(JSON.stringify({
-      access_token: 'fresh-access',
-      refresh_token: 'fresh-refresh',
-      expires_in: 3600,
-    }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-    await vi.advanceTimersByTimeAsync(0);
+      finishRequest(new Response(JSON.stringify({
+        access_token: 'fresh-access',
+        refresh_token: 'fresh-refresh',
+        expires_in: 3600,
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+      await vi.advanceTimersByTimeAsync(0);
 
-    expect(vi.getTimerCount()).toBe(1);
+      expect(vi.getTimerCount()).toBe(1);
+    } finally {
+      abortTimeoutSpy.mockRestore();
+    }
   });
 
   test('authorization callback reports failure when durable credential commit fails', async () => {
