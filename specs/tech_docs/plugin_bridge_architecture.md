@@ -70,7 +70,7 @@ install_sdk_shim()（最后写入，覆盖 npm 可能安装的真 openclaw 包�
 ```
 Rust spawn_plugin_bridge()
   ↓
-1. 定位内置 node 可执行文件 + plugin-bridge-dist.js
+1. 定位内置 node 可执行文件 + `plugin-bridge-dist.mjs`
 2. SDK shim 完整性检查（package.json version 含 "-shim"?）
    └─ 不通过 → 自动重新安装 shim
 3. spawn(node, script, --plugin-dir, --port, --rust-port, --bot-id)
@@ -345,14 +345,17 @@ git diff src/server/plugin-bridge/sdk-shim/  # 审查变更
 ### MCP surface 预热与工具调用预算
 
 `/mcp/tools` 是 Session 级工具面 discovery，不是每条消息的业务调用。Sidecar 以
-`{bridgePort, pluginId, enabledToolGroups}` 作为 stable surface identity；同一 identity
-成功或失败后都不按消息重试。新 identity / 新 Session 才建立新 generation，并从
+规范化的 `{bridgePort, pluginId, sorted enabledToolGroups}` 作为 stable surface identity
+（规范化时统一加入 `interaction`）；同一 identity 成功或失败后都不按消息重试。非空
+工具 schema 才创建 SDK server；零工具 terminal ready，失败/超时 terminal degraded，
+两者都会发布 surface identity，避免后续消息再次 discovery。新 identity / 新 Session 才建立新 generation，并从
 `src/server/session-core/mcp-prewarm-policy.ts::MCP_PREWARM_GRACE_MS` 派生一次当前为
 10 秒的 absolute discovery + SDK readiness observation 预算。live SDK map mutation
-仍使用独立的 30 秒正确性 fence，不属于这 10 秒。soft 预算到期只让该 surface generation
-degraded，AI turn 继续。
+仍使用独立的 30 秒正确性 fence：mutation 不被 10 秒 deadline 截断，但墙钟耗时会减少
+后续 readiness observation 的剩余 absolute window，且不会重置或延长它。soft 预算到期
+只让该 surface generation degraded，AI turn 继续。
 
-工具 schema server 是 Session-stable；sender/chat/account/owner 由 exact
+存在工具 schema 时，SDK server 是 Session-stable；sender/chat/account/owner 由 exact
 IM request registry entry 和 SDK output FIFO owner 在工具执行时解析，不能 capture 首条消息 context。这样连续 Session
 既不重复 `/mcp/tools`，也不会因复用 server 而串身份。
 
@@ -385,7 +388,7 @@ Bridge 消费；Builtin SDK、Managed Codex 与用户原生外部 Runtime 仍保
 
 | 资源 | 开发模式 | 生产模式 |
 |------|---------|---------|
-| Bridge 脚本 | `src/server/plugin-bridge/index.ts`（tsx/esm 加载） | `Contents/Resources/plugin-bridge-dist.js`（esbuild bundle） |
+| Bridge 脚本 | `src/server/plugin-bridge/index.ts`（tsx/esm 加载） | `Contents/Resources/plugin-bridge-dist.mjs`（esbuild bundle） |
 | SDK shim | `src/server/plugin-bridge/sdk-shim/`（源码目录） | `Contents/Resources/plugin-bridge-sdk-shim/` |
 | Node.js 运行时 | `src-tauri/resources/nodejs/`（含 node / npm / npx） | `Contents/Resources/nodejs/` |
 
@@ -401,4 +404,4 @@ Bridge 消费；Builtin SDK、Managed Codex 与用户原生外部 Runtime 仍保
 | `src/server/plugin-bridge/sdk-shim/` | SDK shim 包（293 个 exports） |
 | `src/server/plugin-bridge/sdk-shim/plugin-sdk/_handwritten.json` | 手写模块保护清单 |
 | `scripts/generate-sdk-shims.ts` | Stub 自动生成器 |
-| `tauri.conf.json` (resources) | shim 打包配置 |
+| `src-tauri/tauri.conf.json` (resources) | shim 打包配置 |

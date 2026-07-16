@@ -14,7 +14,7 @@
 
 实测数据（不含 Node 本身冷启动 ~1.5s）：
 - META 注册总耗时: ~0ms（只存函数引用）
-- 首次 cron-tools factory: ~124ms（SDK+zod+schema 一次性）
+- 首次 builtin factory: ~124ms（历史基准；SDK+zod+schema 一次性）
 - 再次同 MCP: 0ms（命中缓存）
 - 其他 MCP（SDK 已缓存）: ~10ms（纯 zod schema 构造）
 
@@ -68,9 +68,9 @@
 
 Codex / Gemini 的 persistent runtime 预热和 Sidecar HTTP readiness 是两层不同契约。Sidecar `/health/ready` 只说明 Node owner 可接请求；external `startSession()` 返回才说明该 runtime 能接首轮 turn。
 
-Managed Codex 又多一层：`initialize` 与 `thread/start|resume` 完成后，process/thread 已存活，但 app-server 仍异步启动 MyAgents 通过进程参数注入的 MCP。`CodexRuntime.startSession()` 对这些 server 使用与 Builtin 相同的 10 秒 absolute soft pre-warm policy，并给每个 injected MCP 写入同预算派生的 Codex 原生 `startup_timeout_sec`，避免 MyAgents barrier 之后再叠 Codex 默认隐藏等待。`ready / failed / cancelled / timeout` 都会结束本 Runtime Session 唯一一次观察；非 ready 状态记录 degraded 后继续首 turn，当前 Runtime Session 不自动 reload / retry，新 Session 才重新尝试。这个 owner 不包含 Codex 用户目录自有配置；只有 process exit、thread/RPC failure 仍是 Runtime startup failure。
+Managed Codex 又多一层：`initialize` 完成后 app-server 已存活，但 MyAgents 通过进程参数注入的 MCP 仍异步启动。`CodexRuntime.startSession()` 在发起 `thread/start|resume` 的 native startup boundary 建立 10 秒 absolute soft pre-warm window，并给每个 injected MCP 写入同预算派生的 Codex 原生 `startup_timeout_sec`，避免 MyAgents barrier 之后再叠 Codex 默认隐藏等待。`ready / failed / cancelled / timeout` 都会结束本 Runtime Session 唯一一次观察；非 ready 状态记录 degraded 后继续首 turn，当前 Runtime Session 不自动 reload / retry，新 Session 才重新尝试。这个 owner 不包含 Codex 用户目录自有配置；只有 process exit、thread/RPC failure 仍是 Runtime startup failure。
 
-MCP definition 在到达 runtime 前也必须保持可执行：`mcpServerArgs[id]` 是附加参数，不得替换 preset 的 package/base argv。否则进程虽然复用，Codex 仍会在每个 turn 的 MCP barrier 上反复等待一个永远起不来的命令，看起来就像“连续会话每轮都重新预热”。
+MCP definition 在到达 runtime 前也必须保持可执行：`mcpServerArgs[id]` 是附加参数，不得替换 preset 的 package/base argv。否则该 server 会在当前 Runtime Session 的一次预热窗口后 terminal degraded，基础 turn 虽可继续，但对应工具在该 Session 内不可用。
 
 ## "AI 启动中" UI 状态判据：`sdkControlReady` ≠ `system_init`
 
@@ -119,7 +119,7 @@ setSessionState((systemInitInfo || sdkControlReady) ? 'running' : 'starting');
 
 ### Builtin MCP 懒加载架构
 
-5 个 in-process MCP（cron-tools / im-cron / im-media / gemini-image / edge-tts）通过 `src/server/tools/builtin-mcp-meta.ts` 集中登记 META，运行时按需 `getBuiltinMcpInstance(id)` 加载。
+当前两个 user-toggleable in-process MCP（`gemini-image` / `edge-tts`）通过 `src/server/tools/builtin-mcp-meta.ts` 集中登记 META，运行时按需 `getBuiltinMcpInstance(id)` 加载。历史 `cron-tools` / `im-cron` / `im-media` 已迁移到 `myagents` CLI；runtime-dynamic `im-bridge-tools` 走独立的 context-injected surface owner，不进入该 registry。
 
 - 首次加载付 100-400ms（SDK + zod）
 - 后续 0ms 缓存
@@ -130,7 +130,7 @@ setSessionState((systemInitInfo || sdkControlReady) ? 'running' : 'starting');
 
 ### Settings UI 的 MCP 列表
 
-从**静态** `PRESET_MCP_SERVERS`（`src/renderer/config/types.ts`）读取——与运行时 META 解耦，禁用某个 builtin 后连 META 本身都不加载。
+从**静态** `PRESET_MCP_SERVERS`（权威定义在 `src/shared/config-types.ts`，renderer 通过 `src/renderer/config/types.ts` barrel 读取）获取——与运行时 META 解耦。META 在 Sidecar 启动时只登记轻量 factory；本次 Sidecar 生命周期内从未启用或测试的 builtin 不会加载 tool module，也不会创建重型 INSTANCE。
 
 ## 排查冷启动退化的 checklist
 
@@ -142,7 +142,7 @@ setSessionState((systemInitInfo || sdkControlReady) ? 'running' : 'starting');
 4. **是否 Tab session 误开启了 MCP self-resolve？** —— 检查 `initializeAgent` 的 `includeMcp` 参数。
 5. **是否新加了 `console.log` 在 hot path 而 logger 未 buffered？** —— `UnifiedLogger` 是 in-memory bounded queue，但极高频日志仍可能拖慢。
 6. **是否第一条用户消息整段都被标成「AI 启动中」？** —— 先确认 `sdkControlReady` 是否在 pre-warm spawn 后被 `initializationResult()` 设为 true（grep `[agent] SDK control plane ready in`）。再核对所有 session 重置点同时清 `systemInitInfo` 和 `sdkControlReady`。详见上方「`sdkControlReady` ≠ `system_init`」节。
-7. **External `prewarm_done` 是否记录 MCP terminal summary？** —— Managed Codex 应在 10 秒内出现一次 `managed MCP pre-warm terminal outcome=ready|degraded`；degraded 后同一 Runtime Session 不应出现 reload / 第二次 barrier。
+7. **External `prewarm_done` 是否记录 MCP terminal summary？** —— Managed Codex 的 `managed MCP pre-warm terminal outcome=ready|degraded` 在 `thread/start|resume` RPC 成功返回后结算；outcome 使用 thread boundary 建立的原 10 秒 absolute deadline，因此 thread RPC 卡顿时日志可能晚于 10 秒出现。RPC 失败属于 Runtime failure，不会伪造 summary；degraded 后同一 Runtime Session 不应出现 reload / 第二次 barrier。
 8. **同一 Codex pid/thread 的每轮首响仍固定慢约 30 秒？** —— 检查 MyAgents injected server 的最终 launch config 是否带 `startup_timeout_sec=10`，并确认 preset package/base argv 没被 `mcpServerArgs` 覆盖；不要先假设进程发生了重启。
 
 ## 与其他文档的关系

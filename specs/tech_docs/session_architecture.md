@@ -275,7 +275,7 @@ desktop/IM/Agent Channel 保留 Session 原 interaction scenario 和输出路由
 
 | Owner | 拥有内容 | 典型写入 / 行为入口 |
 |---|---|---|
-| `lifecycle.ts` | SDK `Query`、processing/abort、termination + pre-dispatch rollback barrier、generator resolver、pre-warm control readiness、Query-scoped MCP readiness/mutation owner、exact Query background-task registry | abort/restart/termination/pre-warm/generator wakeup、domain rollback join、MCP owner publication/mutation serialization、background task quiescence |
+| `lifecycle.ts` | SDK `Query`、processing/abort、termination + pre-dispatch rollback barrier、generator resolver、pre-warm control readiness、Query-scoped MCP pre-warm/mutation owner、exact Query background-task registry | abort/restart/termination/pre-warm/generator wakeup、domain rollback join、MCP owner publication/mutation serialization、background task quiescence |
 | `queue.ts` | `messageQueue`、`pendingMidTurnQueue`、`turnBoundaryQueue`、in-flight metadata、admission ticket | enqueue/cancel/force/rescue/drain |
 | `turn.ts` | current turn usage/output/error、SDK output-owner FIFO、injected turn outcomes、inbox binding | turn state mutation API |
 | `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 语义、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序 | terminal complete/stopped/error、SDK result finalization |
@@ -294,7 +294,7 @@ desktop/IM/Agent Channel 保留 Session 原 interaction scenario 和输出路由
 
 #### Builtin 公共 MCP soft pre-warm 与 dispatch transaction
 
-`Query.initializationResult()` 只表示 SDK control request 可用，streamed `system_init` 只表示某一 turn 的 metadata；SDK 的 MCP transport 仍可能处于 `pending`、`failed`、`needs-auth` 或 `disabled`。这不是 AI turn 的可用性前置条件：Desktop、Launcher、IM 与 injected turn 全部在公共 `messageGenerator()` dispatch seam 观察同一个 Query/map generation owner，MCP 永不在 adapter 入口拒绝或延迟持久化用户任务。
+`Query.initializationResult()` 只表示 SDK control request 可用，streamed `system_init` 只表示某一 turn 的 metadata；SDK 的 MCP transport 仍可能处于 `pending`、`failed`、`needs-auth` 或 `disabled`。这不是 AI turn 的可用性前置条件：Desktop、Launcher、IM 与 injected turn 全部在公共 `messageGenerator()` dispatch seam 观察同一个 Query/map generation owner，adapter 入口不再因 MCP hard-reject 任务。soft observation 仍串行发生在 domain guard 之前；因此带 `beforeDispatch` 的 injected turn 保持 `soft observation → domain guard → admission/persistence → SDK dispatch` 顺序，`pending` 最多按该 owner 的剩余绝对预算延迟后续步骤，但任何 MCP outcome 都不能拒绝任务。
 
 `builtin-session/lifecycle.ts` 持有 Query/map generation 的一次性 soft pre-warm owner：
 

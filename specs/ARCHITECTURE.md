@@ -71,9 +71,9 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 │  │  │             │               │ -RPC2.0) │  JSON-RPC)   │     │        │
 │  │  └─────────────┴───────────────┴──────────┴──────────────┘     │        │
 │  │                                                                 │        │
-│  │  Builtin MCP (META/INSTANCE 懒加载):                            │        │
-│  │   cron-tools / im-cron / im-media /                             │        │
-│  │   gemini-image / edge-tts                                       │        │
+│  │  In-process MCP:                                                │        │
+│  │   META/INSTANCE registry: gemini-image / edge-tts               │        │
+│  │   context-injected surface: im-bridge-tools                     │        │
 │  │                                                                 │        │
 │  │  External MCP via npx + 预置原生二进制 (cuse)                   │        │
 │  │                                                                 │        │
@@ -367,8 +367,9 @@ type InteractionScenario =
 
 `Running` 表示 scheduler enabled，`currentlyExecuting` 来自瞬时 execution map。timer handle 与执行 Turn 分离；Stop 撤销精确 queue authority，SessionEngine stop 确认后才释放 Task owner；执行授权、TaskStore outcome、history、UI event、delivery 与 terminal side effect 共用同一 Task-control 临界区，旧 queue 不能越过新一轮 birth。`run-now` 可执行 Stopped Task但不启用 scheduler；`lastScheduledAt` 独立于 `lastExecutedAt`，手动执行不会移动 recurring timer。
 
-**Node.js 层**（`src/server/tools/im-cron-tool.ts`）：
-- `im-cron` MCP server —— **所有 Session 可用**（不仅 IM Bot）
+**Node.js 层**：
+- AI 统一通过 `myagents cron ...` CLI 使用定时任务能力；历史 `im-cron` MCP 已退役
+- `src/server/tools/im-cron-tool.ts` 只保留 IM / Session cron context registry，不再创建 MCP server
 - 用户可见命令名保持 Cron 兼容，但 CRUD/start/stop/run-now 全部落 TaskStore
 - `/cron/execute-sync` 只是历史 wire name，domain owner 是 Task，并统一经过 SessionEngine selector
 

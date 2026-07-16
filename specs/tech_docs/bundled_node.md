@@ -111,7 +111,7 @@ skill 必须用命令级 env（例如 `npm_config_prefix="$MYAGENTS_NPM_GLOBAL_P
 
 ### 内置 in-process MCP（懒加载）
 
-5 个内置 MCP（cron-tools / im-cron / im-media / gemini-image / edge-tts）通过 `src/server/tools/builtin-mcp-meta.ts` 的 META 登记 + `createXxxServer()` 工厂懒加载，**不在** Sidecar 冷启动时创建。见 `ARCHITECTURE.md §Builtin MCP 懒加载架构`。
+当前 user-toggleable `gemini-image` / `edge-tts` 通过 `src/server/tools/builtin-mcp-meta.ts` 的 META 登记 + `createXxxServer()` 工厂懒加载，**不在** Sidecar 冷启动时创建；历史 `cron-tools` / `im-cron` / `im-media` 已迁移到 `myagents` CLI。runtime-dynamic `im-bridge-tools` 由独立的 context-injected surface owner 懒初始化，不进入 META registry。见 `pit_of_success.md §Builtin MCP 懒加载架构`。
 
 ## 生产构建流程
 

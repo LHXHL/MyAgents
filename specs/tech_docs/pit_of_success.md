@@ -445,13 +445,13 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 <a id="builtin-mcp"></a>
 ## Builtin MCP 懒加载架构
 
-**Problem.** 5 个 in-process 内置 MCP（cron-tools / im-cron / im-media / gemini-image / edge-tts）顶层 import `@anthropic-ai/claude-agent-sdk`（~900KB）+ `zod/v4`（~470KB）+ per-tool schema 构造 → Sidecar 冷启动每次付 ~500-1000ms zod schema 构造税，即使用户压根没启用这个 MCP。
+**Problem.** in-process MCP 若在 tool module 顶层 import `@anthropic-ai/claude-agent-sdk`（~900KB）+ `zod/v4`（~470KB）并构造 per-tool schema，Sidecar 冷启动会无条件支付约 500-1000ms 税，即使当前 Session 根本不用该 MCP。当前 META registry 只有 user-toggleable `gemini-image` / `edge-tts`；历史 `cron-tools` / `im-cron` / `im-media` 已迁移到 `myagents` CLI，runtime-dynamic `im-bridge-tools` 由独立 context-injected surface owner 懒初始化。
 
 **Architecture: 两层 META / INSTANCE**
 
 - **META 层** (`src/server/tools/builtin-mcp-meta.ts`)：每个 MCP 登记一个 `{ id, load: async () => ... }` 工厂。**模块加载时只存函数引用**，不 eval 任何 tool 代码。
 - **INSTANCE 层** (`src/server/tools/builtin-mcp-registry.ts::getBuiltinMcpInstance(id)`)：按需触发 factory，SDK + zod + per-tool schema 构造全部在此发生。**首次 call 付 100-400ms，后续缓存命中 0ms。** Promise 失败自动 evict，防止 poisoned cache。
-- **Settings UI 的 MCP 列表**从静态 `PRESET_MCP_SERVERS`（`src/renderer/config/types.ts`）读取，**不依赖** INSTANCE 层。关闭某个 builtin = 不传给 SDK ≠ 不创建。
+- **Settings UI 的 MCP 列表**从静态 `PRESET_MCP_SERVERS` 读取；权威定义在 `src/shared/config-types.ts`，renderer 的 `src/renderer/config/types.ts` 只是兼容 barrel，**不依赖** INSTANCE 层。本次 Sidecar 生命周期内从未启用或测试的 builtin 只登记轻量 META factory，不加载 tool module，也不创建 INSTANCE；已创建的 INSTANCE 则按进程生命周期缓存。
 
 **新增 builtin MCP 流程：**
 1. 新建 `src/server/tools/xxx-tool.ts`，导出 `async function createXxxServer()`。**SDK/zod 的 value import 必须在 factory 内部 `await import(...)`**，顶层只能 light 依赖 + `import type`。
