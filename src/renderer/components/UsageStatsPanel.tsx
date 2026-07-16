@@ -18,25 +18,27 @@ type ProviderDisplayInfo = {
     name: string;
 };
 
+type LoadedStats = {
+    range: TimeRange;
+    data: GlobalStats;
+};
+
+type LoadError = 'no-data' | 'request';
+
 export default function UsageStatsPanel() {
     const { t } = useTranslation('app');
-    const [stats, setStats] = useState<GlobalStats | null>(null);
+    const [loadedStats, setLoadedStats] = useState<LoadedStats | null>(null);
     const [isLoading, setIsLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
+    const [loadError, setLoadError] = useState<LoadError | null>(null);
     const [range, setRange] = useState<TimeRange>('30d');
     const [providerInfoMap, setProviderInfoMap] = useState<Record<string, ProviderDisplayInfo>>({});
 
     useEffect(() => {
         let cancelled = false;
-        setIsLoading(true);
-        setError(null);
 
-        const load = async () => {
+        const loadProviders = async () => {
             try {
-                const [data, providers] = await Promise.all([
-                    getGlobalStats(range),
-                    getAllProviders(),
-                ]);
+                const providers = await getAllProviders();
                 if (cancelled) return;
 
                 const mapping: Record<string, ProviderDisplayInfo> = {};
@@ -47,15 +49,33 @@ export default function UsageStatsPanel() {
                     };
                 }
                 setProviderInfoMap(mapping);
+            } catch {
+                // Provider metadata only enriches labels. Usage data remains
+                // useful with its persisted providerId when config loading fails.
+            }
+        };
+        loadProviders();
+        return () => { cancelled = true; };
+    }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+        setIsLoading(true);
+        setLoadError(null);
+
+        const loadStats = async () => {
+            try {
+                const data = await getGlobalStats(range);
+                if (cancelled) return;
 
                 if (data) {
-                    setStats(data);
+                    setLoadedStats({ range, data });
                 } else {
-                    setError(t('usageStats.loadDataFailed'));
+                    setLoadError('no-data');
                 }
             } catch {
                 if (!cancelled) {
-                    setError(t('usageStats.loadFailed'));
+                    setLoadError('request');
                 }
             } finally {
                 if (!cancelled) {
@@ -63,11 +83,17 @@ export default function UsageStatsPanel() {
                 }
             }
         };
-        load();
+        loadStats();
         return () => { cancelled = true; };
-    }, [range, t]);
+    }, [range]);
 
+    const stats = loadedStats?.data ?? null;
     const totalTokens = (stats?.summary.totalInputTokens ?? 0) + (stats?.summary.totalOutputTokens ?? 0);
+    const errorMessage = loadError === 'no-data'
+        ? t('usageStats.loadDataFailed')
+        : loadError === 'request'
+            ? t('usageStats.loadFailed')
+            : null;
 
     return (
         <div className="space-y-6">
@@ -77,31 +103,39 @@ export default function UsageStatsPanel() {
                     <h2 className="text-lg font-semibold text-[var(--ink)]">{t('usageStats.title')}</h2>
                     <p className="mt-1 text-sm text-[var(--ink-muted)]">{t('usageStats.description')}</p>
                 </div>
-                <div className="flex gap-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-1">
-                    {TIME_RANGES.map((r) => (
-                        <button
-                            key={r}
-                            onClick={() => setRange(r)}
-                            className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
-                                range === r
-                                    ? 'bg-[var(--accent)] text-white'
-                                    : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
-                            }`}
-                        >
-                            {t(`usageStats.ranges.${r}`)}
-                        </button>
-                    ))}
+                <div className="flex items-center gap-2">
+                    {isLoading && stats && (
+                        <span className="flex items-center gap-1.5 text-xs text-[var(--ink-muted)]" role="status">
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            {t('usageStats.loading')}
+                        </span>
+                    )}
+                    <div className="flex gap-1 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] p-1">
+                        {TIME_RANGES.map((r) => (
+                            <button
+                                key={r}
+                                onClick={() => setRange(r)}
+                                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors ${
+                                    range === r
+                                        ? 'bg-[var(--accent)] text-white'
+                                        : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                                }`}
+                            >
+                                {t(`usageStats.ranges.${r}`)}
+                            </button>
+                        ))}
+                    </div>
                 </div>
             </div>
 
-            {isLoading ? (
-                <div className="flex h-48 items-center justify-center gap-2 text-[var(--ink-muted)]">
+            {isLoading && !stats ? (
+                <div className="flex h-48 items-center justify-center gap-2 text-[var(--ink-muted)]" role="status">
                     <Loader2 className="h-5 w-5 animate-spin" />
                     <span className="text-sm">{t('usageStats.loading')}</span>
                 </div>
-            ) : error ? (
+            ) : errorMessage ? (
                 <div className="flex h-48 items-center justify-center text-[var(--error)]">
-                    {error}
+                    {errorMessage}
                 </div>
             ) : stats ? (
                 <>
@@ -112,7 +146,12 @@ export default function UsageStatsPanel() {
                     <DailyTrendChart daily={stats.daily} totalTokens={totalTokens} />
 
                     {/* Model Distribution Table */}
-                    <ModelTable byModel={stats.byModel} totalTokens={totalTokens} providerInfoMap={providerInfoMap} />
+                    <ModelTable
+                        key={loadedStats?.range}
+                        byModel={stats.byModel}
+                        totalTokens={totalTokens}
+                        providerInfoMap={providerInfoMap}
+                    />
                 </>
             ) : null}
         </div>

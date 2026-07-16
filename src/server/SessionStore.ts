@@ -709,6 +709,17 @@ export function getSessionData(sessionId: string): SessionData | null {
         return null;
     }
 
+    return getSessionDataFromMetadata(metadata);
+}
+
+/**
+ * Get full session data when the caller already owns the authoritative
+ * metadata row. Bulk readers must use this path instead of looking the same
+ * row up in sessions.json again for every session.
+ */
+export function getSessionDataFromMetadata(metadata: SessionMetadata): SessionData {
+    const sessionId = metadata.id;
+
     const jsonlPath = getSessionFilePath(sessionId);
     const legacyPath = getLegacySessionFilePath(sessionId);
 

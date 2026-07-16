@@ -659,6 +659,7 @@ import {
   deleteSession,
   getAllSessionMetadata,
   getSessionData,
+  getSessionDataFromMetadata,
   getSessionMetadata,
   getSessionsByAgentDir,
   isHistoryVisibleSession,
@@ -3535,8 +3536,7 @@ async function main() {
           const cutoff = now - rangeDays * 86400_000;
           const sessions = allSessions.flatMap((session) => {
             if (!isHistoryVisibleSession(session)) return [];
-            const data = getSessionData(session.id);
-            return data ? [data] : [];
+            return [getSessionDataFromMetadata(session)];
           });
           const stats = aggregateGlobalUsageStats(sessions, cutoff);
 
