@@ -14,6 +14,7 @@ import type { SpaceIssue } from "@/api/spaceCloud";
 import CustomSelect, { type SelectOption } from "@/components/CustomSelect";
 import { SpaceIdentityLine } from "@/pages/space/SpaceAvatar";
 import {
+  ALL_ISSUE_STATE_FILTER,
   ACTIVE_ISSUE_STATE_FILTER,
   claimHandlerLabel,
   ISSUE_STATUSES,
@@ -86,6 +87,10 @@ export function IssuesWorkspace({
   const searchActive = searchOpen || issueQ.trim().length > 0;
   const statusFilterOptions = useMemo<SelectOption[]>(
     () => [
+      {
+        value: ALL_ISSUE_STATE_FILTER,
+        label: t("space.filters.allIssues"),
+      },
       {
         value: ACTIVE_ISSUE_STATE_FILTER,
         label: t("space.filters.activeStatuses"),
@@ -200,10 +205,10 @@ export function IssuesWorkspace({
             >
               <button
                 type="button"
-                aria-pressed={selectedStatus === ""}
-                onClick={() => onStatusChange("")}
+                aria-pressed={selectedStatus === ALL_ISSUE_STATE_FILTER}
+                onClick={() => onStatusChange(ALL_ISSUE_STATE_FILTER)}
                 className={`rounded-lg px-2 text-sm font-medium transition-colors active:scale-[0.98] ${
-                  selectedStatus === ""
+                  selectedStatus === ALL_ISSUE_STATE_FILTER
                     ? "bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm"
                     : "text-[var(--ink-muted)] hover:bg-[var(--paper-elevated)]/55 hover:text-[var(--ink)]"
                 }`}

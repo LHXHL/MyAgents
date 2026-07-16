@@ -36,7 +36,7 @@ describe("IssuesWorkspace", () => {
         hasMore={false}
         issueQ=""
         selectedGoalId=""
-        selectedStatus=""
+        selectedStatus="all"
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
@@ -101,7 +101,7 @@ describe("IssuesWorkspace", () => {
         hasMore={false}
         issueQ=""
         selectedGoalId=""
-        selectedStatus=""
+        selectedStatus="all"
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
@@ -140,7 +140,7 @@ describe("IssuesWorkspace", () => {
         hasMore={false}
         issueQ=""
         selectedGoalId=""
-        selectedStatus=""
+        selectedStatus="all"
         relatedToMe={false}
         goalOptions={[{ value: "", label: "All goals" }]}
         activeIssueId={null}
@@ -162,7 +162,7 @@ describe("IssuesWorkspace", () => {
       1,
       ACTIVE_ISSUE_STATE_FILTER,
     );
-    expect(onStatusChange).toHaveBeenNthCalledWith(2, "");
+    expect(onStatusChange).toHaveBeenNthCalledWith(2, "all");
   });
 
   it("exposes related-to-me as an independent toggle and renders updatedAt", () => {

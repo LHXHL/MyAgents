@@ -1541,6 +1541,7 @@ fn initial_state() -> MockState {
         let issue_tags = tags_for(&tags, &tag_names);
         let issue_comments = seeded_comments(id, idx);
         let issue_attachments = seeded_attachments(id, idx);
+        let archived_at = (status == "archived").then(|| updated.clone());
         issues.push(json!({
             "id": id,
             "number": idx + 1,
@@ -1567,6 +1568,7 @@ fn initial_state() -> MockState {
             "tags": issue_tags,
             "commentCount": issue_comments.len(),
             "attachmentCount": issue_attachments.len(),
+            "archivedAt": archived_at,
             "createdAt": created,
             "updatedAt": updated
         }));
@@ -1652,6 +1654,7 @@ fn initial_state() -> MockState {
         } else {
             Vec::new()
         };
+        let archived_at = (status == "archived").then(|| updated.clone());
         issues.push(json!({
             "id": id,
             "number": idx + 1,
@@ -1678,6 +1681,7 @@ fn initial_state() -> MockState {
             "tags": issue_tags,
             "commentCount": issue_comments.len(),
             "attachmentCount": issue_attachments.len(),
+            "archivedAt": archived_at,
             "createdAt": created,
             "updatedAt": updated
         }));
@@ -2067,12 +2071,11 @@ fn list_issues(state: &MockState, query: &HashMap<String, String>) -> Value {
                     })
                 })
                 .unwrap_or(true);
-            let matches_status = status
-                .as_ref()
-                .map(|status| {
-                    status == "all" || status.split(',').any(|item| item.trim() == issue_status)
-                })
-                .unwrap_or(true);
+            let matches_status = match status.as_deref() {
+                Some("all") => true,
+                Some(status) => status.split(',').any(|item| item.trim() == issue_status),
+                None => matches!(issue_status.as_str(), "open" | "todo" | "doing"),
+            };
             let matches_goal = goal_id
                 .as_ref()
                 .map(|goal_id| {
@@ -5012,6 +5015,79 @@ mod tests {
             .and_then(Value::as_u64)
             .unwrap_or(0)
             > 0));
+    }
+
+    #[test]
+    fn issue_list_missing_state_defaults_to_active_while_all_includes_terminal() {
+        let state = initial_state();
+        let terminal_title = "补齐 Cloud Space 架构文档中的 mock mode 说明";
+        let closed_title = "把 Issue 管理按钮改成只读概览";
+        let archived_title = "历史会话恢复时 Issue 口令要能被 Agent 读取";
+        let active_title = "评论发送失败时不要丢失输入内容";
+
+        let default_terminal = list_issues(
+            &state,
+            &HashMap::from([("q".to_string(), terminal_title.to_string())]),
+        );
+        assert_eq!(
+            default_terminal
+                .pointer("/items")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+
+        let all_terminal = list_issues(
+            &state,
+            &HashMap::from([
+                ("q".to_string(), terminal_title.to_string()),
+                ("state".to_string(), "all".to_string()),
+            ]),
+        );
+        assert_eq!(
+            all_terminal
+                .pointer("/items/0/state")
+                .and_then(Value::as_str),
+            Some("done")
+        );
+
+        let all_closed = list_issues(
+            &state,
+            &HashMap::from([
+                ("q".to_string(), closed_title.to_string()),
+                ("state".to_string(), "all".to_string()),
+            ]),
+        );
+        assert_eq!(
+            all_closed.pointer("/items/0/state").and_then(Value::as_str),
+            Some("closed")
+        );
+
+        let all_archived = list_issues(
+            &state,
+            &HashMap::from([
+                ("q".to_string(), archived_title.to_string()),
+                ("state".to_string(), "all".to_string()),
+            ]),
+        );
+        assert_eq!(
+            all_archived
+                .pointer("/items")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(0)
+        );
+
+        let default_active = list_issues(
+            &state,
+            &HashMap::from([("q".to_string(), active_title.to_string())]),
+        );
+        assert_eq!(
+            default_active
+                .pointer("/items/0/state")
+                .and_then(Value::as_str),
+            Some("open")
+        );
     }
 
     #[test]

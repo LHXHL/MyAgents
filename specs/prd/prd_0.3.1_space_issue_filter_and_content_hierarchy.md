@@ -2,11 +2,11 @@
 type: prd
 status: implemented
 created: 2026-07-15
-updated: 2026-07-15
-scope: "MyAgents 0.3.1 Team Space 前端体验收口：Issue 列表把详细状态选择器隐藏但保留实现，替换为默认『全部』的『全部 / 未完成』分段切换；统一所有 Goal 路径为灰色祖先 + 黑色常规字重末级；为 Issue 正文、评论内容和 Goal context 建立克制的叙事内容内缩。仅修改 Desktop Renderer，不改 Cloud API、Rust 代理、查询协议或数据模型。"
+updated: 2026-07-16
+scope: "MyAgents 0.3.1 Team Space 前端体验收口：Issue 列表把详细状态选择器隐藏但保留实现，替换为默认『全部』的『全部 / 未完成』分段切换；统一所有 Goal 路径为灰色祖先 + 黑色常规字重末级；为 Issue 正文、评论内容和 Goal context 建立克制的叙事内容内缩。产品实现限于 Desktop Renderer；2026-07-16 回归修复额外对齐 Rust dev/test Space mock 的既有 Cloud 查询契约，不改生产 Rust 代理、Cloud API、查询协议或数据模型。"
 issue: "用户基于 Team Space 实际界面提出：Issue 一级状态入口过重且默认只看未完成；Goal 选择器对两层与深层压缩路径的层级样式不一致；Issue/评论/Goal 正文与标题完全齐边，缺少视觉从属关系。"
 research: "specs/ARCHITECTURE.md; specs/DESIGN.md; specs/tech_docs/space_cloud.md; specs/tech_docs/react_stability_rules.md; specs/prd/prd_0.2.50_team_space_pro_operations_and_ux.md; specs/prd/prd_0.3.1_space_cli_goal_discovery_and_issue_update.md; src/renderer/pages/space/Space.tsx; src/renderer/pages/space/spaceHelpers.ts; src/renderer/pages/space/spaceStore.ts; src/renderer/pages/space/spaceUi.ts; src/renderer/pages/space/GoalPathSelectLabel.tsx; src/renderer/pages/space/issues/; src/renderer/pages/space/goals/GoalsWorkspace.tsx; src/renderer/pages/space/agents/AgentsWorkspace.tsx; ../MyAgents_space/src/index.ts::buildGoalPathLabels"
-review: "cross-review PASS（requirements / architecture / adversarial）；真实 in-app browser smoke 因当前环境无可用 Browser 实例而未执行，保留为人工视觉复验项"
+review: "2026-07-16 『全部』查询契约修复经 requirements / adversarial / architecture 三视角 repair cross-review 全部 PASS；未抓取登录态生产请求响应，Cloud 源码契约、route test、用户实机现象与本地契约测试形成证据闭环"
 ---
 
 # Team Space Issue 筛选与内容层级优化 PRD（0.3.1）
@@ -14,7 +14,7 @@ review: "cross-review PASS（requirements / architecture / adversarial）；真�
 > **执行须知（给零上下文 session）**：需求已经收敛，本文是完整实现合同，不需要回看原始会话或截图。
 >
 > 1. 动代码前完整阅读仓库根指令、`specs/ARCHITECTURE.md`、`specs/DESIGN.md`、`specs/tech_docs/space_cloud.md` 与 `specs/tech_docs/react_stability_rules.md`。
-> 2. 本期只改 Desktop Renderer。Space 请求继续经 `spaceCloud.ts → Tauri/Rust → Cloud`，不得新增 WebView 直连或后端筛选概念。
+> 2. 产品实现只改 Desktop Renderer；允许 `src-tauri/src/space_cloud_mock.rs` 作为 dev/test 契约替身与既有 Cloud 行为对齐。生产请求继续经 `spaceCloud.ts → Tauri/Rust → Cloud`，不得修改生产 Rust 代理、Cloud 查询语义或新增 WebView 直连/后端筛选概念。
 > 3. 本文引用符号名而非行号；行号漂移时用 `rg` 搜索现状。优先复用既有 `selectedStatus`、`ACTIVE_ISSUE_STATE_FILTER`、`CustomSelect`、CSS token 与 Space UI 常量。
 > 4. 工作区可能同时有其他未提交修改。只提交本 PRD 所列文件，不得覆盖、格式化或夹带无关 diff。
 
@@ -59,13 +59,13 @@ Issue 标题与正文、评论身份头与评论正文、Goal 标题与 context 
 
 ## 3. 已验证的当前技术事实
 
-### 3.1 Issue 查询已经支持本期全部语义
+### 3.1 Issue 查询已经支持显式全部语义
 
 - `Space.tsx` 以 `selectedStatus` 驱动 Issue query，并把它传给 `IssuesWorkspace`。
 - `ACTIVE_ISSUE_STATE_FILTER` 已定义为 `open,todo,doing`。
-- `spaceStore.ts::normalizeIssueQueryParams` 会把空 `state` 规范化为 `undefined`。
-- `spaceCloud.ts::spaceListIssues` 只在 `state` 为 truthy 时向 Cloud 发送状态参数。
-- 因此「全部」的正确映射就是空字符串 `""`，不需要新增 `all` 枚举或 Cloud API 分支；「未完成」直接映射 `ACTIVE_ISSUE_STATE_FILTER`。
+- Cloud 的既有兼容契约把缺少/空 `state` 解释为 `open,todo,doing`，把显式 `state=all` 解释为全部五个非归档状态。
+- `spaceStore.ts::normalizeIssueQueryParams` 会保留非空的 `all`，`spaceCloud.ts::spaceListIssues` 会把它写入 query string。
+- 因此「全部」必须映射显式 `ALL_ISSUE_STATE_FILTER = "all"`；不能用空字符串或省略参数表达，否则会退回 Cloud 的默认未完成语义。「未完成」继续映射 `ACTIVE_ISSUE_STATE_FILTER`。
 
 ### 3.2 详细状态选择器可以保留为 dormant UI
 
@@ -113,7 +113,7 @@ Desktop 不应改变或复制 Cloud 的路径构造，只需让共享 label rend
 
 ### 4.2 必赢场景
 
-用户首次进入 Space Issues，分段按钮默认选中「全部」，请求不携带 `state`，完成与未完成 Issue 都可出现；点击「未完成」后实际查询切换为 `open,todo,doing`。切换到另一个 Space 或退出后重新进入时恢复默认「全部」，同一 Space 内切换页面则保留用户当前选择。详细状态下拉在 UI 中不可见，但其受控实现仍保留。
+用户首次进入 Space Issues，分段按钮默认选中「全部」，请求显式携带 `state=all`，完成与未完成 Issue 都可出现；点击「未完成」后实际查询切换为 `open,todo,doing`。切换到另一个 Space 或退出后重新进入时恢复默认「全部」，同一 Space 内切换页面则保留用户当前选择。详细状态下拉在 UI 中不可见，但其受控实现仍保留。
 
 同一用户随后打开 Goal 筛选、Create Issue、Issue 详情任务卡和 Agent Goal picker：`MyAgents社区 / MyAgents BUGFIX` 与 `../MyAgents BUGFIX/Windows 系统兼容性优化` 都以灰色路径前缀 + 黑色常规字重末级呈现，根目标保持黑色常规字重。进入 Issue/Goal 详情和评论流时，正文相对标题/身份头形成 12px（窄宽 8px）内缩，附件与评论正文共用同一内容基线。
 
@@ -140,7 +140,7 @@ Desktop 不应改变或复制 Cloud 的路径构造，只需让共享 label rend
 - 不把 Goal path 拆成新的 API 结构化字段。
 - 不全面重排 Space toolbar、Issue drawer、Goal 页面或 Skill 页面。
 - 不给所有正文、表单、列表、附件 section 机械添加 padding。
-- 不改 Rust、Sidecar、Space Cloud 或 sibling 仓库。
+- 除对齐 `src-tauri/src/space_cloud_mock.rs` 的 dev/test 查询语义外，不改生产 Rust 代理、Sidecar、Space Cloud 或 sibling 仓库。
 
 ## 6. 交互与视觉规格
 
@@ -164,10 +164,10 @@ Desktop 不应改变或复制 Cloud 的路径构造，只需让共享 label rend
 
 | UI | `selectedStatus` | 请求语义 |
 |---|---|---|
-| 全部 | `""` | 不发送 `state` |
+| 全部 | `ALL_ISSUE_STATE_FILTER` | `state=all` |
 | 未完成 | `ACTIVE_ISSUE_STATE_FILTER` | `state=open,todo,doing` |
 
-若未来静态开关重新启用详细选择器，它继续显示既有 active + 单状态选项；分段按钮与详细选择器互斥渲染。
+若未来静态开关重新启用详细选择器，它显示 All + 既有 active + 单状态选项，确保默认 `all` 有合法选中项；分段按钮与详细选择器互斥渲染。
 
 ### 6.2 Goal 路径标签
 
@@ -220,7 +220,7 @@ SPACE_NARRATIVE_INSET_CLASS = "px-3 max-sm:px-2"
 
 ### 7.1 Owner 与数据流
 
-- `Space.tsx` 继续拥有 Issue query state；初始 `selectedStatus` 改为 `""`，并在 `enterSpace` / logout 的 session 边界恢复 `""`；普通 Space tab 切换不重置。
+- `Space.tsx` 继续拥有 Issue query state；初始 `selectedStatus` 使用 `ALL_ISSUE_STATE_FILTER`，并在 `enterSpace` / logout 的 session 边界恢复 `all`；普通 Space tab 切换不重置。
 - `IssuesWorkspace` 只负责把分段交互翻译成受控 `onStatusChange`。
 - `spaceStore` / `spaceCloud.ts` 继续拥有 query normalization 与请求拼装，本期不复制这些逻辑。
 - Cloud 继续是 Goal label 的事实源；Renderer 的 `GoalPathLabel` 只负责展示分层。
@@ -288,15 +288,15 @@ JSX 中以该常量互斥渲染详细 `CustomSelect` 和新分段按钮。禁止
 
 ### AC1：默认全部
 
-- 新进入/切换到 Space 时 `selectedStatus === ""`。
-- Issue 请求不携带 `state`。
+- 新进入/切换到 Space 时 `selectedStatus === ALL_ISSUE_STATE_FILTER`。
+- Issue 请求显式携带 `state=all`。
 - 「全部」按钮 `aria-pressed=true`，「未完成」为 false。
 
 ### AC2：未完成切换
 
 - 点击「未完成」调用 `onStatusChange(ACTIVE_ISSUE_STATE_FILTER)`。
 - 受控 props 更新后 active 视觉与 `aria-pressed` 同步。
-- 点击「全部」调用 `onStatusChange("")`。
+- 点击「全部」调用 `onStatusChange(ALL_ISSUE_STATE_FILTER)`。
 
 ### AC3：详细状态能力保留但不暴露
 
@@ -376,7 +376,7 @@ npm run build:web
 
 ### R1：界面显示“全部”但请求仍是未完成
 
-对策：唯一 state owner 的初始值改为空字符串；组件测试验证点击映射，必要时 store/query 测试验证空 state 被省略。
+对策：唯一 state owner 的初始值使用显式 `ALL_ISSUE_STATE_FILTER = "all"`；组件测试验证点击映射，store/query 测试验证 `all` 在首屏与分页请求中不被归一化掉。Cloud 的缺省 active 语义保持不变，以兼容 CLI 和旧客户端。
 
 ### R2：CustomSelect 选中态把末级继承成错误颜色
 
@@ -408,7 +408,7 @@ npm run build:web
 - 基线：`c314e55c17d0df7c29450c8e3a05a915a693baf9`（`feat(chat): normalize file patch render model`）。
 - 模式：PRD 驱动开发；实现、验证、三视角交叉审查和提交均由本次执行完成。
 - 范围：仅 Desktop Renderer 的 Space Issue 筛选、Goal path label、叙事正文 inset、中英文资源与对应测试；不修改 Rust、Sidecar 或 Space Cloud。
-- 既有抽象：`Space.tsx` query owner、`ACTIVE_ISSUE_STATE_FILTER`、空 state 归一化、`CustomSelect`、既有 Goal label 数据、`spaceUi.ts` 视觉常量、DESIGN token。
+- 既有抽象：`Space.tsx` query owner、Cloud 已支持的显式 `state=all`、`ACTIVE_ISSUE_STATE_FILTER`、`CustomSelect`、既有 Goal label 数据、`spaceUi.ts` 视觉常量、DESIGN token。
 - 新概念预算：0。分段按钮是现有查询的另一种受控入口；Goal label 是现有共享组件的泛化命名；叙事 inset 是现有 Space UI 视觉常量的语义补充。
 - 红线：不夹带工作区既有无关修改；不新增 Cloud/API 状态；不硬编码颜色或任意字号；不以隐藏挂载两套控件代替互斥渲染；不复制查询归一化或 Goal path 构造。
 - 验收：以本文 AC1—AC6、targeted DOM tests、typecheck、lint、build、可用时的宽/窄视觉 smoke 和 `cross-review-code` 三视角结论为准。
@@ -437,3 +437,16 @@ npm run build:web
 - 视觉验证：已完成 800px 静态空间预算与 DOM responsive contract 验证；当前执行环境的 in-app Browser 列表为空，未能进行真实截图 smoke。交付后仍建议在桌面端人工复验常规宽屏、800×600、深层 Goal option 与正文 inset。
 - 交叉审查：requirements、architecture、adversarial 三视角最终均为 PASS；此前发现的窄窗溢出、按钮错误字阶、跨 Space 状态泄漏与 Goal slash 歧义均已关闭。唯一残余是上述真实 Browser 视觉证据限制，不构成代码 blocker。
 - 提交：实现与本 PRD 将随本次 handoff commit 一并提交；最终 hash 以交付消息为准。
+
+### 2026-07-16 · 「全部」查询契约回归修复
+
+- 用户实机证据：选中「全部」时已完成 Issue 仍不出现，结果与「未完成」一致。
+- 双路径根因：Desktop 把产品态「全部」编码为空字符串，Store/API 随后省略 `state`；Cloud 的长期兼容契约会把缺省 `state` 解释为 `open,todo,doing`，只有显式 `state=all` 才返回全部五个非归档状态。
+- 同根验证盲点：Rust Space mock 把缺省 `state` 当作不限状态，与生产 Cloud 不一致，因此先前 mock/DOM smoke 无法揭示该回归。
+- Repair radius：Desktop 首次进入、点击全部、跨 Space/logout 重置、手动/远端/创建/详情变更刷新和分页统一携带显式 `all`；Rust mock 的缺省与 `all` 语义对齐 Cloud。Cloud 本身、CLI 缺省 active 行为、Registered Agent subscription 均不修改。
+- Characterization：Renderer 旧实现出现 4 个预期失败；Rust mock 旧实现会错误返回 terminal fixture，新增契约测试出现 1 个预期失败。
+- 实现结果：新增显式 `ALL_ISSUE_STATE_FILTER = "all"`，并让初始进入、点击「全部」、跨 Space、成功 logout、刷新与分页都保留该值；Rust mock 同步 Cloud 的缺省 active / 显式 all / 排除 archived 契约，补齐 legacy archived fixture 的 `archivedAt`。生产 Cloud、Rust 代理、CLI 与 subscription 路径均未改动。
+- 自动化验证：targeted DOM 13/13 PASS；helper/store unit 62/62 PASS；`npm run test:changed` 13 files / 114 tests PASS；Rust `space_cloud_mock::tests` 13/13 PASS；`npm run typecheck`、`npm run lint`、`npm run build:web`、Rust fmt check 与 Clippy 全部 PASS。仅有仓库既有 orphan、dynamic-import、chunk-size 与 Clippy warning。
+- 交叉审查：requirements、adversarial、architecture 三视角最终均为 PASS。审查中发现并修复 mock 的 archived legacy fixture 缺少 `archivedAt`、PRD scope 表述矛盾、logout 重置缺少回归测试，以及 dormant 细粒度 selector 缺少显式 All 选项。
+- 运行时证据边界：本次未抓取登录态生产请求响应；结论由用户实机回归、Cloud 权威实现与 route test、独立双路径代码调查以及本地前后端契约测试共同支撑。
+- 提交：修复与本 PRD 将随本次 handoff commit 一并提交；最终 hash 以交付消息为准。

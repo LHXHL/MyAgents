@@ -8,6 +8,7 @@ const harness = vi.hoisted(() => ({
   data: null as unknown as Record<string, unknown>,
   actions: {
     switchSpace: vi.fn().mockResolvedValue(undefined),
+    logout: vi.fn().mockResolvedValue(undefined),
     refreshIssues: vi.fn().mockResolvedValue(undefined),
     refreshGoals: vi.fn().mockResolvedValue(undefined),
     refreshSkills: vi.fn().mockResolvedValue(undefined),
@@ -60,9 +61,11 @@ vi.mock("@/pages/space/SpaceChrome", () => ({
   SpaceSidebar: ({
     onSpaceTabChange,
     onSpaceSwitch,
+    onLogout,
   }: {
     onSpaceTabChange: (mode: string) => void;
     onSpaceSwitch: (spaceId: string, mode: string) => void;
+    onLogout: () => void;
   }) => (
     <aside>
       <button type="button" onClick={() => onSpaceTabChange("skills")}>
@@ -73,6 +76,9 @@ vi.mock("@/pages/space/SpaceChrome", () => ({
       </button>
       <button type="button" onClick={() => onSpaceSwitch("team", "issues")}>
         show team issues
+      </button>
+      <button type="button" onClick={onLogout}>
+        logout
       </button>
     </aside>
   ),
@@ -89,7 +95,7 @@ vi.mock("@/pages/space/issues/IssuesWorkspace", () => ({
     <main>
       issues
       <output aria-label="selected issue status">
-        {selectedStatus || "all"}
+        {selectedStatus || "empty"}
       </output>
       <button
         type="button"
@@ -165,6 +171,7 @@ describe("Space switching", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     harness.actions.switchSpace.mockReset().mockResolvedValue(undefined);
+    harness.actions.logout.mockReset().mockResolvedValue(undefined);
     harness.actions.refreshIssues.mockClear();
     harness.actions.refreshGoals.mockClear();
     harness.actions.refreshSkills.mockClear();
@@ -186,7 +193,7 @@ describe("Space switching", () => {
     expect(harness.actions.refreshIssues).toHaveBeenCalledTimes(1);
     expect(harness.actions.refreshGoals).toHaveBeenCalledTimes(1);
     expect(harness.actions.refreshIssues).toHaveBeenLastCalledWith(
-      expect.objectContaining({ state: "" }),
+      expect.objectContaining({ state: "all" }),
       expect.any(Object),
     );
 
@@ -227,6 +234,24 @@ describe("Space switching", () => {
     fireEvent.click(screen.getByRole("button", { name: "show team issues" }));
 
     expect(harness.actions.switchSpace).toHaveBeenCalledWith("team", undefined);
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "all",
+    );
+  });
+
+  it("resets the Issue status to all after logout succeeds", async () => {
+    render(<Space isActive />);
+
+    fireEvent.click(screen.getByRole("button", { name: "set incomplete" }));
+    expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
+      "open,todo,doing",
+    );
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "logout" }));
+    });
+
+    expect(harness.actions.logout).toHaveBeenCalledTimes(1);
     expect(screen.getByRole("status", { name: "selected issue status" })).toHaveTextContent(
       "all",
     );
