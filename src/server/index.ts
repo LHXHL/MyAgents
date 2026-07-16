@@ -66,7 +66,14 @@ import { basename, dirname, isAbsolute, join, relative, resolve, extname, sep } 
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
-import { addMessageUsageToByModel, type UsageByModel } from './utils/usage-stats';
+import { fetchWithGeneralProxy } from './utils/cancellation';
+import { startOAuthMaintenanceForSidecarRole } from './mcp-oauth';
+import { parseSidecarRole, type SidecarRole } from './sidecar-role';
+import {
+  aggregateGlobalUsageStats,
+  buildSessionDetailedUsageStats,
+} from './utils/usage-stats';
+import { toClientSessionMetadata } from './utils/session-metadata-wire';
 // adm-zip lazy-loaded at its one call site below (/api/skill/upload with zip
 // content) — saves ~30ms of module-init cost when users never upload skills.
 import {
@@ -254,7 +261,7 @@ type AdminApiModule = typeof import('./admin-api');
 let _adminApi: Promise<AdminApiModule> | null = null;
 const getAdminApi = (): Promise<AdminApiModule> => (_adminApi ??= import('./admin-api'));
 import { setImMediaContext } from './tools/im-media-tool';
-import { setImBridgeToolsContext } from './tools/im-bridge-tools';
+import { ensureImBridgeToolSurface } from './tools/im-bridge-tools';
 import { normalizeHostInteractionCapability } from './host-interaction';
 import { getBuiltinMcpInstance } from './tools/builtin-mcp-registry';
 // NOTE: builtin MCP META is auto-registered when agent-session.ts side-effect-imports
@@ -640,6 +647,8 @@ import {
   initSocksBridgeFromEnv,
   getHistoricalSessionMessages,
   ensureSdkMcpInSync,
+  getCurrentImBridgeTurnContext,
+  isCurrentImBridgeToolSurfaceInstalled,
   setBackgroundAgentPermissionMode,
   type ProviderEnv,
 } from './agent-session';
@@ -650,6 +659,7 @@ import {
   deleteSession,
   getAllSessionMetadata,
   getSessionData,
+  getSessionDataFromMetadata,
   getSessionMetadata,
   getSessionsByAgentDir,
   isHistoryVisibleSession,
@@ -665,7 +675,10 @@ import {
 } from './utils/managed-codex-readiness';
 import { buildSessionSnapshotPatchUpdates } from './utils/session-snapshot-patch';
 import { resolveSessionConfig } from './utils/resolve-session-config';
-import { resolveLastRealUserMessagePreview, shrinkSessionMessagesForClient } from './utils/session-message-preview';
+import {
+  resolveLastVisibleTurnPreview,
+  shrinkSessionMessagesForClient,
+} from './utils/session-message-preview';
 import type { AgentConfig } from '../shared/types/agent';
 import type { SessionMetadata } from './types/session';
 import { createConcreteProviderRoute, isConcreteProviderRoute, type ProviderRoute } from '../shared/providerRoute';
@@ -685,7 +698,9 @@ import { getActiveSessionLogPath } from './AgentLogger';
 import { runLogRetentionSweep, startPeriodicSweep } from './log-retention';
 import { broadcast, createSseClient, getClients } from './sse';
 import { imEventBus } from './utils/im-event-bus';
+import { buildImCancelledPayload } from './utils/im-terminal-payload';
 import { imRequestRegistry } from './utils/im-request-registry';
+import { raceWithAbortSignal } from './utils/cancellation';
 import { checkAnthropicSubscription, verifyProviderViaSdk, verifySubscription } from './provider-verify';
 import { cancelSubscriptionLogin, getSubscriptionLoginState, startSubscriptionLogin, submitSubscriptionLoginCode } from './subscription-auth';
 // openai-bridge is lazy-loaded via ensureBridgeHandler() below — only users on
@@ -746,6 +761,7 @@ import {
 } from '../shared/managedScheduledJob';
 import type { InteractionScenario } from './system-prompt';
 import { buildCronEventRelayMessage, neutralizeSystemReminderStructuralTags } from './utils/cron-event-relay';
+import { stripHeartbeatToken } from './utils/heartbeat-response';
 
 type PermissionMode = 'auto' | 'plan' | 'fullAgency' | 'custom';
 
@@ -1169,7 +1185,14 @@ function systemMaintenanceKindFromCronPayload(payload: CronExecutePayload): Syst
   return normalizeSystemMaintenanceKind(payload.managedKind);
 }
 
-function parseArgs(argv: string[]): { agentDir: string; initialPrompt?: string; port: number; sessionId?: string; noPreWarm?: boolean } {
+function parseArgs(argv: string[]): {
+  agentDir: string;
+  initialPrompt?: string;
+  port: number;
+  sessionId?: string;
+  noPreWarm?: boolean;
+  sidecarRole: SidecarRole;
+} {
   const args = argv.slice(2);
   const getArgValue = (flag: string) => {
     const index = args.indexOf(flag);
@@ -1184,12 +1207,20 @@ function parseArgs(argv: string[]): { agentDir: string; initialPrompt?: string; 
   const port = Number(getArgValue('--port') ?? 3000);
   const sessionId = getArgValue('--session-id') ?? undefined;
   const noPreWarm = args.includes('--no-pre-warm');
+  const sidecarRole = parseSidecarRole(getArgValue('--sidecar-role'));
 
   if (!agentDir) {
     throw new Error('Missing required argument: --agent-dir <path>');
   }
 
-  return { agentDir, initialPrompt, port: Number.isNaN(port) ? 3000 : port, sessionId, noPreWarm };
+  return {
+    agentDir,
+    initialPrompt,
+    port: Number.isNaN(port) ? 3000 : port,
+    sessionId,
+    noPreWarm,
+    sidecarRole,
+  };
 }
 
 /**
@@ -1342,6 +1373,9 @@ const SYSTEM_SKILLS: readonly string[] = [
   // plugin / widget / im / config) to every AI session in the product.
   // Force-synced because SKILL.md must track CLI changes in lockstep.
   'myagents-cli',
+  // v35: stable product-use knowledge and expected-behaviour contract for
+  // every MyAgents session. Live operations remain in myagents-cli.
+  'myagents-docs',
   // v18: tool-creator — meta-skill for the CLI tool registry (PRD 0.2.36).
   // Teaches AI to author standards-compliant Agent-CLI tools and register
   // them via `myagents tool add`. Force-synced because its contract (eight
@@ -1764,17 +1798,6 @@ async function handleGoalExecuteSync(request: Request): Promise<Response> {
   });
 }
 
-/**
- * Strip credential-bearing fields from a SessionMetadata before returning to clients.
- * Replaces providerEnvJson with '[redacted]' when present (so the client can still tell
- * a provider override exists without seeing the raw API key). Used by GET /sessions,
- * GET /sessions/:id, and PATCH /sessions/:id response shapes — zero-trust parity.
- */
-function redactSessionMetadata<T extends { providerEnvJson?: string }>(meta: T): T {
-  if (meta.providerEnvJson === undefined) return meta;
-  return { ...meta, providerEnvJson: '[redacted]' };
-}
-
 function isGenericSessionTitle(title: string | undefined): boolean {
   const trimmed = (title ?? '').trim();
   return trimmed === '' || trimmed === 'New Chat' || trimmed === 'New Tab';
@@ -1786,7 +1809,7 @@ function normalizeSessionListPreview(meta: SessionMetadata): SessionMetadata {
 
   const data = getSessionData(meta.id);
   const resolved = data
-    ? resolveLastRealUserMessagePreview(data.messages)
+    ? resolveLastVisibleTurnPreview(data.messages)
     : { found: false as const };
   if (resolved.found) {
     return { ...meta, lastMessagePreview: resolved.preview };
@@ -1961,7 +1984,9 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'space/list') return await api.handleSpaceList();
   if (route === 'space/whoami') return await api.handleSpaceWhoami(payload as Parameters<typeof api.handleSpaceWhoami>[0]);
   if (route === 'space/assignee-list') return await api.handleSpaceAssigneeList(payload as Parameters<typeof api.handleSpaceAssigneeList>[0]);
+  if (route === 'space/goal-list') return await api.handleSpaceGoalList(payload as Parameters<typeof api.handleSpaceGoalList>[0]);
   if (route === 'space/issue-create') return await api.handleSpaceIssueCreate(payload as Parameters<typeof api.handleSpaceIssueCreate>[0]);
+  if (route === 'space/issue-update') return await api.handleSpaceIssueUpdate(payload as Parameters<typeof api.handleSpaceIssueUpdate>[0]);
   if (route === 'space/issue-list') return await api.handleSpaceIssueList(payload as Parameters<typeof api.handleSpaceIssueList>[0]);
   if (route === 'space/issue-get') return await api.handleSpaceIssueGet(payload as Parameters<typeof api.handleSpaceIssueGet>[0]);
   if (route === 'space/issue-comment') return await api.handleSpaceIssueComment(payload as Parameters<typeof api.handleSpaceIssueComment>[0]);
@@ -2025,36 +2050,6 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'help') return api.handleHelp(payload as Parameters<typeof api.handleHelp>[0]);
 
   return { success: false, error: `Unknown admin route: ${pathname}` };
-}
-
-/**
- * Strip HEARTBEAT_OK token from AI response and determine if it's silent or has content.
- * Supports markdown/HTML wrapping around the token.
- */
-function stripHeartbeatToken(text: string, ackMaxChars: number): { status: string; text?: string; reason?: string } {
-  if (!text || !text.trim()) {
-    return { status: 'silent', reason: 'empty' };
-  }
-
-  // Check if HEARTBEAT_OK appears in the text (case-insensitive)
-  if (!/HEARTBEAT_OK/i.test(text)) {
-    // No token at all — this is real content
-    return { status: 'content', text };
-  }
-
-  // Strip the token (supports markdown bold, code wrapping)
-  const stripped = text
-    .replace(/\*{0,2}HEARTBEAT_OK\*{0,2}/gi, '')
-    .replace(/`HEARTBEAT_OK`/gi, '')
-    .trim();
-
-  // If remaining text is short enough, treat as silent acknowledgment
-  if (stripped.length <= ackMaxChars) {
-    return { status: 'silent', reason: 'heartbeat_ok' };
-  }
-
-  // Remaining text has substance — treat as content (but strip the token)
-  return { status: 'content', text: stripped };
 }
 
 /**
@@ -2179,9 +2174,17 @@ function startupBeacon(step: string): void {
 async function main() {
   startupBeacon(`main() entered, pid=${process.pid}, platform=${process.platform}, argv=${process.argv.length} args`);
 
-  const { agentDir, initialPrompt, port, sessionId: initialSessionId, noPreWarm } = parseArgs(process.argv);
+  const {
+    agentDir,
+    initialPrompt,
+    port,
+    sessionId: initialSessionId,
+    noPreWarm,
+    sidecarRole,
+  } = parseArgs(process.argv);
+  process.env.MYAGENTS_SIDECAR_ROLE = sidecarRole;
   const dirDisplay = agentDir.length > 50 ? agentDir.slice(0, 3) + '...' + agentDir.slice(-44) : agentDir;
-  startupBeacon(`args parsed, port=${port}, agentDir=${dirDisplay}`);
+  startupBeacon(`args parsed, port=${port}, role=${sidecarRole}, agentDir=${dirDisplay}`);
 
   let currentAgentDir = await ensureAgentDir(agentDir);
   startupBeacon('ensureAgentDir done');
@@ -3528,102 +3531,18 @@ async function main() {
 
           const allSessions = getAllSessionMetadata();
 
-          // Filter sessions by time range using lastActiveAt as a coarse pre-filter
           const now = Date.now();
           const rangeDays = range === '7d' ? 7 : range === '30d' ? 30 : 60;
           const cutoff = now - rangeDays * 86400_000;
-
-          const sessions = allSessions.filter(s => new Date(s.lastActiveAt).getTime() >= cutoff);
-
-          // Helper: convert ISO timestamp to local date string "YYYY-MM-DD"
-          const toLocalDate = (isoStr: string): string => {
-            const d = new Date(isoStr);
-            const y = d.getFullYear();
-            const mo = String(d.getMonth() + 1).padStart(2, '0');
-            const day = String(d.getDate()).padStart(2, '0');
-            return `${y}-${mo}-${day}`;
-          };
-
-          // Cutoff as YYYY-MM-DD for cheap string comparison against each message's local
-          // date. Pre-2026-04 the summary numbers came from session-lifetime `s.stats` and
-          // ignored cutoff entirely — that produced "summary says 31.5M tokens, daily chart
-          // says 5M" mismatches because the summary leaked all historical totals from any
-          // recently-active session. Now ALL summary/daily/byModel aggregations are derived
-          // from the same in-range message walk so they stay consistent.
-          const cutoffDateStr = toLocalDate(new Date(cutoff).toISOString());
-
-          const totalSessions = sessions.length;
-          let messageCount = 0;
-          let totalInputTokens = 0;
-          let totalOutputTokens = 0;
-          let totalCacheReadTokens = 0;
-          let totalCacheCreationTokens = 0;
-
-          // Single pass through messages: aggregate summary + daily + byModel together so
-          // they're guaranteed to agree about what falls inside the range.
-          const dailyMap: Record<string, { inputTokens: number; outputTokens: number; messageCount: number }> = {};
-          const byModel: UsageByModel = {};
-
-          for (const s of sessions) {
-            const sessionData = getSessionData(s.id);
-            if (!sessionData) continue;
-
-            let lastUserDate = toLocalDate(s.createdAt); // fallback date for first assistant msg
-
-            for (const msg of sessionData.messages) {
-              // Determine each message's local date so summary and chart agree on cutoff.
-              let msgDate: string;
-              if (msg.role === 'user') {
-                msgDate = msg.timestamp ? toLocalDate(msg.timestamp) : lastUserDate;
-                lastUserDate = msgDate;
-              } else if (msg.role === 'assistant') {
-                msgDate = msg.timestamp ? toLocalDate(msg.timestamp) : lastUserDate;
-              } else {
-                continue;
-              }
-              if (msgDate < cutoffDateStr) continue;
-
-              messageCount++;
-
-              if (msg.role !== 'assistant' || !msg.usage) continue;
-
-              const date = msgDate;
-              totalInputTokens += msg.usage.inputTokens ?? 0;
-              totalOutputTokens += msg.usage.outputTokens ?? 0;
-              totalCacheReadTokens += msg.usage.cacheReadTokens ?? 0;
-              totalCacheCreationTokens += msg.usage.cacheCreationTokens ?? 0;
-
-              // Daily aggregation
-              if (!dailyMap[date]) {
-                dailyMap[date] = { inputTokens: 0, outputTokens: 0, messageCount: 0 };
-              }
-              dailyMap[date].inputTokens += msg.usage.inputTokens ?? 0;
-              dailyMap[date].outputTokens += msg.usage.outputTokens ?? 0;
-              dailyMap[date].messageCount++;
-
-              addMessageUsageToByModel(byModel, msg, s.providerId);
-            }
-          }
-
-          // Sort daily entries chronologically
-          const daily = Object.entries(dailyMap)
-            .map(([date, d]) => ({ date, ...d }))
-            .sort((a, b) => a.date.localeCompare(b.date));
+          const sessions = allSessions.flatMap((session) => {
+            if (!isHistoryVisibleSession(session)) return [];
+            return [getSessionDataFromMetadata(session)];
+          });
+          const stats = aggregateGlobalUsageStats(sessions, cutoff);
 
           return jsonResponse({
             success: true,
-            stats: {
-              summary: {
-                totalSessions,
-                messageCount,
-                totalInputTokens,
-                totalOutputTokens,
-                totalCacheReadTokens,
-                totalCacheCreationTokens,
-              },
-              daily,
-              byModel,
-            },
+            stats,
           });
         } catch (error) {
           console.error('[global-stats] Error:', error);
@@ -3643,12 +3562,11 @@ async function main() {
           const sessions = agentDirParam
             ? getSessionsByAgentDir(agentDirParam)
             : getAllSessionMetadata();
-          // Zero-trust: strip providerEnvJson before handing to clients.
-          // Matches PATCH response behavior (see PATCH /sessions/:id).
+          // Apply the shared client projection (credential redaction + wire stats names).
           const safeSessions = sessions
             .filter(isHistoryVisibleSession)
             .map(normalizeSessionListPreview)
-            .map(redactSessionMetadata);
+            .map(toClientSessionMetadata);
           return jsonResponse({ success: true, sessions: safeSessions });
         } catch (error) {
           console.error('[sessions] Error in GET /sessions:', error);
@@ -3819,7 +3737,7 @@ async function main() {
             : undefined;
         }
         const session = await createSession(agentDirValue, baseSnapshot);
-        return jsonResponse({ success: true, session });
+        return jsonResponse({ success: true, session: toClientSessionMetadata(session) });
       }
 
       // GET /sessions/:id/since/:lastMessageId - Incremental tail fetch
@@ -3875,56 +3793,9 @@ async function main() {
           return jsonResponse({ success: false, error: 'Session not found.' }, 404);
         }
 
-        // Group stats by model
-        const byModel: UsageByModel = {};
-
-        // Build message details
-        const messageDetails: Array<{
-          userQuery: string;
-          model?: string;
-          inputTokens: number;
-          outputTokens: number;
-          cacheReadTokens?: number;
-          cacheCreationTokens?: number;
-          toolCount?: number;
-          durationMs?: number;
-        }> = [];
-
-        let currentUserQuery = '';
-        for (const msg of session.messages) {
-          if (msg.role === 'user') {
-            currentUserQuery = typeof msg.content === 'string'
-              ? msg.content.slice(0, 100)
-              : JSON.stringify(msg.content).slice(0, 100);
-          } else if (msg.role === 'assistant' && msg.usage) {
-            addMessageUsageToByModel(byModel, msg, session.providerId);
-
-            // Message details always use aggregate values
-            messageDetails.push({
-              userQuery: currentUserQuery,
-              model: msg.usage.model,
-              inputTokens: msg.usage.inputTokens ?? 0,
-              outputTokens: msg.usage.outputTokens ?? 0,
-              cacheReadTokens: msg.usage.cacheReadTokens,
-              cacheCreationTokens: msg.usage.cacheCreationTokens,
-              toolCount: msg.toolCount,
-              durationMs: msg.durationMs,
-            });
-          }
-        }
-
-        const metadata = getSessionMetadata(sessionId);
         return jsonResponse({
           success: true,
-          stats: {
-            summary: metadata?.stats ?? {
-              messageCount: 0,
-              totalInputTokens: 0,
-              totalOutputTokens: 0,
-            },
-            byModel,
-            messageDetails,
-          },
+          stats: buildSessionDetailedUsageStats(session),
         });
       }
 
@@ -4105,7 +3976,7 @@ async function main() {
 
         // Zero-trust: redact credential-bearing fields from the echo payload.
         // The client already owns what it sent; no need to round-trip secrets.
-        return jsonResponse({ success: true, session: redactSessionMetadata(updated) });
+        return jsonResponse({ success: true, session: toClientSessionMetadata(updated) });
       }
 
       // POST /api/generate-session-title - AI-generate a short session title
@@ -4832,7 +4703,7 @@ async function main() {
 
               if (server.type === 'http') {
                 // Streamable HTTP: send MCP initialize JSON-RPC request
-                response = await fetch(server.url, {
+                response = await fetchWithGeneralProxy(server.url, {
                   method: 'POST',
                   headers: { ...headers, 'Content-Type': 'application/json' },
                   body: JSON.stringify({
@@ -4849,7 +4720,7 @@ async function main() {
                 });
               } else {
                 // SSE: send GET request to check if endpoint is reachable
-                response = await fetch(server.url, {
+                response = await fetchWithGeneralProxy(server.url, {
                   method: 'GET',
                   headers,
                   signal: controller.signal,
@@ -5039,9 +4910,10 @@ async function main() {
 
             // Preset MCP (isBuiltin: true) with npx → warmup to download and cache package
             if (server.isBuiltin && command === 'npx') {
-              const { getBundledNodeDir, getSystemNpxPaths, findExistingPath } = await import('./utils/runtime');
-              const { pinMcpPackageVersions } = await import('./agent-session');
-              const args = pinMcpPackageVersions(server.args || []);
+              const { resolveNpxMcpInvocation } = await import('./utils/mcp-command');
+              const invocation = resolveNpxMcpInvocation(server.args || [], {
+                pinPresetPackages: true,
+              });
 
               // Route through utils/subprocess.spawn — on Windows the bundled
               // and system npx are both `npx.cmd` shims. Calling .cmd via raw
@@ -5054,53 +4926,15 @@ async function main() {
               const { getShellEnv } = await import('./utils/shell');
               const baseEnv = getShellEnv();
 
-              // Priority: system npx → bundled Node.js npx → hard fail.
-              // v0.2.0+ removed the "bun x" emergency branch — bundled Node is always present
-              // in release builds, and dev builds fall back to system node via runtime.ts.
-              const systemNpx = findExistingPath(getSystemNpxPaths());
-              const nodeDir = getBundledNodeDir();
-              let warmupCmd: string;
-              let warmupArgs: string[];
-
-              if (systemNpx) {
-                // 1. System npx available — most reliable, user-maintained
-                warmupCmd = systemNpx;
-                warmupArgs = ['-y', ...args, '--help'];
-
-                // Ensure system npx's directory is in PATH (GUI-launched apps may have minimal PATH)
-                const { dirname } = await import('path');
-                const npxDir = dirname(systemNpx);
-                const pathKey = process.platform === 'win32' ? 'Path' : 'PATH';
-                const sep = process.platform === 'win32' ? ';' : ':';
-                if (!(baseEnv[pathKey] || '').includes(npxDir)) {
-                  baseEnv[pathKey] = npxDir + sep + (baseEnv[pathKey] || '');
-                }
-
-                console.log(`[api/mcp/enable] Warming up with system npx: ${warmupArgs.join(' ')}`);
-              } else if (nodeDir) {
-                // 2. Fallback to bundled Node.js npx
-                const npxPath = process.platform === 'win32'
-                  ? join(nodeDir, 'npx.cmd')
-                  : join(nodeDir, 'npx');
-                warmupCmd = npxPath;
-                warmupArgs = ['-y', ...args, '--help'];
-
-                // Ensure bundled Node.js bin dir is in PATH for npx to find node
-                const pathKey = process.platform === 'win32' ? 'Path' : 'PATH';
-                const sep = process.platform === 'win32' ? ';' : ':';
-                baseEnv[pathKey] = nodeDir + sep + (baseEnv[pathKey] || '');
-
-                console.log(`[api/mcp/enable] Warming up with bundled npx: ${warmupArgs.join(' ')}`);
-              } else {
-                // 3. Neither system nor bundled Node.js found — hard fail.
-                return jsonResponse({
-                  success: false,
-                  error: {
-                    type: 'runtime_error',
-                    message: '运行时不可用（系统/内置 Node.js 均未找到）',
-                  }
-                });
+              const warmupCmd = invocation.command;
+              const warmupArgs = [...invocation.args, '--help'];
+              const npxDir = dirname(warmupCmd);
+              const pathKey = process.platform === 'win32' ? 'Path' : 'PATH';
+              const sep = process.platform === 'win32' ? ';' : ':';
+              if (!(baseEnv[pathKey] || '').split(sep).includes(npxDir)) {
+                baseEnv[pathKey] = npxDir + sep + (baseEnv[pathKey] || '');
               }
+              console.log(`[api/mcp/enable] Warming up via ${invocation.source} npx: ${warmupArgs.join(' ')}`);
 
               const handle = wrappedSpawn([warmupCmd, ...warmupArgs], {
                 env: baseEnv,
@@ -8126,7 +7960,7 @@ async function main() {
             success: true,
             sessionId: result.sessionId,
             metadata: result.metadata
-              ? redactSessionMetadata(result.metadata as { providerEnvJson?: string })
+              ? toClientSessionMetadata(result.metadata as SessionMetadata)
               : undefined,
           });
         } catch (error) {
@@ -8366,6 +8200,7 @@ async function main() {
             bridgeEnabledToolGroups?: string[];
             senderId?: string;
             senderIsOwner?: boolean;
+            accountId?: string;
             hostInteraction?: unknown;
           };
 
@@ -8380,11 +8215,11 @@ async function main() {
           // Register in registry up front so /api/im/cancel works even before
           // enqueueUserMessage returns. AbortController is paired here for
           // Pattern D wiring (cancellableFetch hooks below).
-          // W7 fix: status='running' set BEFORE the enqueueUserMessage call so a
-          // synchronous-completing turn (rare: queued message dequeues immediately)
-          // doesn't race ahead and unregister the entry before we set 'running'.
-          imRequestRegistry.register(payload.requestId, getSessionId() || null, payload.source);
-          imRequestRegistry.setStatus(payload.requestId, 'running');
+          const requestEntry = imRequestRegistry.register(
+            payload.requestId,
+            getSessionId() || null,
+            payload.source,
+          );
           const engine = getSessionEngine();
           const sidForConfigAuthority = getSessionId();
           const snapshotMetaForConfig = sidForConfigAuthority ? getSessionMetadata(sidForConfigAuthority) : null;
@@ -8419,6 +8254,7 @@ async function main() {
           try {
 
           // Set IM cron context for the im-cron tool (parity with /api/im/chat)
+          let bridgeSurfaceRequiresTurnBoundary = false;
           if (payload.botId && process.env.MYAGENTS_MANAGEMENT_PORT) {
             const imCronModel = snapshotResolvedConfig
               ? snapshotResolvedConfig.model
@@ -8468,18 +8304,36 @@ async function main() {
               platform: payload.source.split('_')[0],
               workspacePath: agentDir,
             });
+            let bridgeSurfaceChanged = false;
             if (payload.bridgePort && payload.bridgePluginId) {
               const bridgeSourceType = payload.source?.split('_')[1] as string | undefined;
-              await setImBridgeToolsContext({
-                bridgePort: payload.bridgePort,
-                pluginId: payload.bridgePluginId,
-                enabledToolGroups: payload.bridgeEnabledToolGroups || [],
+              const imBridgeTurnContext = {
                 senderId: payload.senderId,
                 chatId: payload.sourceId,
                 isOwner: payload.senderIsOwner ?? false,
+                accountId: payload.accountId,
                 sourceType: bridgeSourceType,
                 hostInteraction: normalizeHostInteractionCapability(payload.hostInteraction),
-              });
+              };
+              imRequestRegistry.setImBridgeTurnContext(payload.requestId, imBridgeTurnContext);
+              let surface;
+              try {
+                surface = await raceWithAbortSignal(
+                  ensureImBridgeToolSurface({
+                    bridgePort: payload.bridgePort,
+                    pluginId: payload.bridgePluginId,
+                    enabledToolGroups: payload.bridgeEnabledToolGroups || [],
+                  }, getCurrentImBridgeTurnContext),
+                  requestEntry.abortController.signal,
+                );
+              } catch (error) {
+                if (requestEntry.abortController.signal.aborted) {
+                  imRequestRegistry.unregister(payload.requestId);
+                  return jsonResponse({ success: false, error: 'IM request cancelled before dispatch' }, 409);
+                }
+                throw error;
+              }
+              bridgeSurfaceChanged = surface.changed;
             }
 
             // After IM context (which gates the `im-bridge-tools` MCP) is set,
@@ -8500,8 +8354,11 @@ async function main() {
             // is about to need; scenario alignment is a separate concern.
             //
             // Builtin runtime only — external runtimes (CC/Codex) manage their own MCP set.
-            if (engine.kind === 'builtin') {
-              await ensureSdkMcpInSync();
+            if (
+              engine.kind === 'builtin'
+              && (bridgeSurfaceChanged || !isCurrentImBridgeToolSurfaceInstalled())
+            ) {
+              bridgeSurfaceRequiresTurnBoundary = !(await ensureSdkMcpInSync());
             }
           }
 
@@ -8587,6 +8444,11 @@ async function main() {
             sourceId: payload.sourceId,
             senderName: payload.senderName,
           };
+
+          if (requestEntry.abortController.signal.aborted) {
+            imRequestRegistry.unregister(payload.requestId);
+            return jsonResponse({ success: false, error: 'IM request cancelled before dispatch' }, 409);
+          }
 
           // Dispatch to runtime through SessionEngine. The route keeps IM
           // payload shaping; the engine owns builtin/external admission.
@@ -8717,12 +8579,23 @@ async function main() {
               metadataBirthPending: payload.metadataBirthPending === true,
               metadata,
               analyticsOrigin: imTurnOrigin,
+              turnBoundaryOnly: bridgeSurfaceRequiresTurnBoundary,
             });
             if (!result.success) {
               imRequestRegistry.unregister(payload.requestId);
               return jsonResponse({ success: false, error: result.error }, result.status ?? 503);
             }
           }
+
+          // Cancellation may land while runtime admission is awaiting its own
+          // config/domain work. If the queue owner now exists, cancel it
+          // precisely; if it never existed this remains a harmless no-op.
+          if (requestEntry.abortController.signal.aborted) {
+            await engine.cancelImRequest(payload.requestId, 'user');
+            imRequestRegistry.unregister(payload.requestId);
+            return jsonResponse({ success: false, error: 'IM request cancelled during dispatch' }, 409);
+          }
+          imRequestRegistry.transferCancellationToRuntime(payload.requestId);
 
           const currentSessionId = getSessionId();
           if (currentSessionId) {
@@ -8740,9 +8613,12 @@ async function main() {
           });
 
           } catch (innerError) {
-            // W1 fix: any throw between register() and the dispatch result handlers
-            // would leave a registry entry to leak for 6h until prune. Catch + clean.
-            try { imRequestRegistry.unregister(payload.requestId); } catch { /* ignore */ }
+            // Before runtime admission the route still owns cleanup. After the
+            // transfer, the output-owner terminal path owns this registry entry
+            // and must retain Bridge caller identity until the SDK result.
+            if (requestEntry.cancellationOwner === 'admission-route') {
+              try { imRequestRegistry.unregister(payload.requestId); } catch { /* ignore */ }
+            }
             throw innerError;
           }
         } catch (error) {
@@ -8828,8 +8704,8 @@ async function main() {
 
       // POST /api/im/cancel — Pattern D: abort an in-flight IM request.
       // Body: { requestId, reason? }. Drives THREE cancellation paths:
-      //   1. Registry AbortController.abort(reason) — for callers that hold the
-      //      signal directly (currently no in-tree consumers, kept for API parity)
+      //   1. Registry AbortController.abort(reason) — stops route-owned Bridge
+      //      discovery/admission waits before a runtime queue owner exists.
       //   2. cancelImRequest / cancelExternalImRequest — actual SDK-level cancel
       //      via interruptCurrentResponse (builtin) or stopExternalSession (external).
       //      This is what stops the SDK turn from burning tokens.
@@ -8842,26 +8718,37 @@ async function main() {
             return jsonResponse({ success: false, error: 'Missing requestId' }, 400);
           }
           const reason = body.reason ?? 'user';
-          const entry = imRequestRegistry.get(body.requestId);
-          if (!entry) {
+          const cancellationClaim = imRequestRegistry.claimCancellation(body.requestId, reason);
+          if (!cancellationClaim) {
             return jsonResponse({ success: false, error: 'Unknown or already-aborted requestId' }, 404);
           }
 
-          // Step 1: registry abort signal (covers any pluggable subscribers).
-          imRequestRegistry.abort(body.requestId, reason);
+          // The registry AbortController is the atomic cancellation claim.
+          // Concurrent retries observe the first caller's claim and must not
+          // re-enter the runtime or steal its eventual terminal event.
+          if (cancellationClaim.outcome === 'already-claimed') {
+            return jsonResponse({
+              success: true,
+              requestId: body.requestId,
+              mode: cancellationClaim.owner === 'admission-route' ? 'admission' : 'running',
+              alreadyCancelling: true,
+            });
+          }
+
+          // Step 1: the successful claim already aborted the registry signal,
+          // covering route-owned discovery/admission waits.
+          const admissionRouteOwned = cancellationClaim.owner === 'admission-route';
 
           // Step 2: actual SDK / queue cancel.
           const cancelResult = await getSessionEngine().cancelImRequest(body.requestId, reason);
 
           // (v0.2.11 cross-bugfix #142 review-fix-3 medium #2)
-          // mode === 'unknown' means the requestId wasn't in any cancellable
-          // state — it could be a promote-then-cancel race (item already
-          // handed off to generator, no longer in queue/pending). DO NOT
-          // emit `cancelled` to the UI in that case: the SDK can still
-          // process the message, and the client would see "cancelled"
-          // while the AI keeps answering. Return 409 Conflict so the IM
-          // client surfaces "cancel failed" instead.
-          if (cancelResult.mode === 'unknown') {
+          // Runtime `unknown` is safe only while this route still owns
+          // admission: its abort signal guarantees the request cannot return
+          // accepted or dispatch late. After ownership transfers to runtime,
+          // unknown can be a promote-then-cancel race, so reporting success
+          // would be dishonest while the SDK may continue processing.
+          if (cancelResult.mode === 'unknown' && !admissionRouteOwned) {
             return jsonResponse(
               {
                 success: false,
@@ -8873,16 +8760,20 @@ async function main() {
             );
           }
 
-          // Step 3: bus event for UI feedback (so the reply slot closes promptly).
-          imEventBus.emit(body.requestId, 'cancelled', reason);
-
-          // Cleanup registry entry — abort already set status to 'cancelled'.
-          imRequestRegistry.unregister(body.requestId);
+          // Step 3: the route owns terminal delivery only before runtime
+          // admission or for an item removed from a runtime queue. A running
+          // turn keeps terminal ownership even if its result/finalizer has not
+          // unregistered the registry entry by the time Step 2 returns.
+          const routeOwnsTerminal = admissionRouteOwned || cancelResult.mode === 'queued';
+          if (routeOwnsTerminal && imRequestRegistry.get(body.requestId)) {
+            imEventBus.emit(body.requestId, 'cancelled', buildImCancelledPayload());
+            imRequestRegistry.unregister(body.requestId);
+          }
 
           return jsonResponse({
             success: true,
             requestId: body.requestId,
-            mode: cancelResult.mode,
+            mode: cancelResult.mode === 'unknown' ? 'admission' : cancelResult.mode,
           });
         } catch (error) {
           console.error('[im/cancel] Error:', error);
@@ -9164,9 +9055,8 @@ description: >
           if (!turnResult.success) {
             return respondAfterDrain({
               status: 'error',
-              text: turnResult.status === 408
-                ? 'Heartbeat timeout'
-                : (turnResult.error ?? 'Heartbeat failed'),
+              text: turnResult.error
+                ?? (turnResult.status === 408 ? 'Heartbeat timeout' : 'Heartbeat failed'),
             });
           }
           if (engine.kind === 'builtin' && turnResult.assistantMessagePresent === false) {
@@ -9331,6 +9221,7 @@ description: >
             console.warn('[memory-update] AI memory update timed out (60 min)');
             return jsonResponse({
               status: 'timeout',
+              reason: turnResult.error ?? 'AI memory update timed out',
               ...(turnResult.terminationUnconfirmed ? { terminationUnconfirmed: true } : {}),
             });
           }
@@ -9673,6 +9564,8 @@ description: >
       initPhaseStarted = nowMs();
       await initSocksBridgeFromEnv();
       emitDeferredPhaseDone('socks-bridge');
+
+      startOAuthMaintenanceForSidecarRole(sidecarRole);
 
       currentInitPhase = 'sdk-init';
       setDeferredInitPhase(currentInitPhase);

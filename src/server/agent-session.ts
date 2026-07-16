@@ -1,6 +1,6 @@
 import { randomUUID } from 'crypto';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { dirname, join, resolve } from 'path';
+import { join, resolve } from 'path';
 import { createRequire } from 'module';
 import { query, getSessionMessages as sdkGetSessionMessages, forkSession as sdkForkSession, deleteSession as sdkDeleteSession, type Query, type SDKUserMessage, type AgentDefinition, type HookInput, type HookJSONOutput, type PreToolUseHookInput, type PostToolUseHookInput, type PermissionRequestHookInput, type SlashCommand as SdkSlashCommand } from '@anthropic-ai/claude-agent-sdk';
 import {
@@ -10,7 +10,8 @@ import {
   type BackgroundAgentPermissionMode,
 } from './utils/background-agent-permission';
 import { registerBridge as registerBridgeInRegistry, unregisterBridge as unregisterBridgeInRegistry, type UpstreamBridgeConfig } from './openai-bridge/bridge-registry';
-import { getScriptDir, getBundledNodeDir, getSystemNodeDirs, getBundledRuntimePath, getSystemNpxPaths, findExistingPath } from './utils/runtime';
+import { getScriptDir, getBundledNodeDir, getSystemNodeDirs } from './utils/runtime';
+import { resolveNpxMcpInvocation } from './utils/mcp-command';
 import { getCrossPlatformEnv } from './utils/platform';
 import { ensureDirSync } from './utils/fs-utils';
 import { getMyAgentsNpmGlobalBinDir, getMyAgentsNpmGlobalPrefix, scrubMyAgentsNpmPrefixEnv } from './utils/npm-prefix-env';
@@ -52,7 +53,13 @@ import { ensureGitignorePattern } from './utils/gitignore';
 // ./tools/builtin-mcp-meta.ts for META registrations.
 import { clearCronTaskContext } from './tools/cron-tools';
 import { getImCronContext, setSessionCronContext, clearSessionCronContext } from './tools/im-cron-tool';
-import { getImBridgeToolsContext, getImBridgeToolServer } from './tools/im-bridge-tools';
+import {
+  clearImBridgeToolsContext,
+  getImBridgeToolPrewarmWindow,
+  getImBridgeToolServer,
+  getImBridgeToolSurface,
+  imBridgeToolSurfaceIdentity,
+} from './tools/im-bridge-tools';
 import { getBuiltinMcpInstance } from './tools/builtin-mcp-registry';
 // Side-effect import — registers META (ids + lazy factories) at cold start.
 // Cheap: just function-ref storage, no SDK/zod eval, no tool module loaded.
@@ -60,7 +67,7 @@ import './tools/builtin-mcp-meta';
 import {
   applyProviderProxyPolicyToEnv,
   getProviderProxyScopeKey,
-  initSocksBridgeFromCurrentEnv,
+  initializeProxyStateFromCurrentSettings,
   setProcessProxyConfig,
 } from './proxy-state';
 import { buildMcpSubprocessEnv } from './session-core/mcp-env-policy';
@@ -69,7 +76,7 @@ import { resolveManagedOAuthCredential, type ManagedOAuthPurpose } from './utils
 // SSE `workspace:files-changed`) is removed. The renderer subscribes to
 // the Rust workspace_files watcher (Tauri event
 // `workspace:files-changed:<eventKey>`) instead.
-import { resolveAuthHeaders, onTokenChange, startTokenRefreshScheduler } from './mcp-oauth';
+import { onOAuthCredentialChange, resolveAuthHeaders } from './mcp-oauth';
 // Side-effect imports: each registers itself in the builtin MCP registry
 // gemini-image / edge-tts registered in builtin-mcp-meta.ts.
 
@@ -97,9 +104,14 @@ import type { OfficialToolId } from '../shared/official-tools';
 import { commitPreparedSessionForFirstUserTurn, deleteSession, saveSessionMetadata, updateSessionTitleFromMessage, updateSessionMetadata, getSessionMetadata, getSessionData } from './SessionStore';
 import { firePostTurnTitleHook } from './turn-hooks';
 import { createSessionMetadata, type SessionMetadata, type SessionMessage, type MessageAttachment, type SessionSource, type TurnAnalyticsSource } from './types/session';
-import { originFromMaterializationScenario } from '../shared/session-origin';
+import { originFromMaterializationScenario, originFromTurnAttribution } from '../shared/session-origin';
 import type { SessionOrigin } from '../shared/session-origin';
+import {
+  shouldRecordAdmissionActivity,
+  type SessionActivityTurnFacts,
+} from './session-core/session-activity-policy';
 import { extractAssistantTextFromStoredContent } from './inbox/latest-result';
+import { resolveVisibleUserTurnText } from './utils/session-message-preview';
 import {
   createMaterializedSessionMetadata,
   isLiveFollowScenario,
@@ -108,7 +120,8 @@ import {
 import { isManagedCodexProviderReady } from './utils/managed-codex-readiness';
 import { canonicalizeManagedProviderEnv, findAgentByWorkspacePath, getDefaultEnabledOfficialToolIdsForWorkspace, getEffectiveOfficialToolIdsForSession, isCliToolRegistryEnabled, loadConfig as loadAdminConfig } from './utils/admin-config';
 import type { AgentConfig } from '../shared/types/agent';
-import { broadcast } from './sse';
+import { broadcast as broadcastSse, broadcastLive, flushPendingLiveEvents } from './sse';
+import { participatesInLiveRestore } from '../shared/liveRevision';
 import {
   getEnabledPluginSdkConfigs,
   getDefaultEnabledPluginIdsForWorkspace,
@@ -132,16 +145,22 @@ import {
 } from './builtin-session/materialization';
 import {
   decideQueueAdmission,
+  decideRealtimeHandoff,
   findQueueLocation,
   resolveChatQueueResponseMode,
   shouldClearAdmissionTicketOnAbort,
   shouldStartTurnBoundaryItem,
+  type DispatchGuardResult,
   type QueueAdmissionAction,
   type TurnIdentity,
   type TurnOwner,
   type TurnTerminalObserver,
 } from './session-core/turn-queue';
-import { getMcpAuthorityForScenario, mcpConfigFingerprint } from './session-core/mcp-sync-policy';
+import {
+  getMcpAuthorityForScenario,
+  mcpConfigFingerprint,
+  shouldDeferLiveMcpMutation,
+} from './session-core/mcp-sync-policy';
 import { elapsedMs, emitPerfTrace, nowMs } from './utils/perf-trace';
 import type { ImagePayload, ResolvedImagePayload } from './runtimes/types';
 import { messageAttachmentsFromImagePayloads, resolveImagePayloads } from './runtimes/image-payload';
@@ -160,9 +179,15 @@ import {
 import type { ToolAttachment } from '../shared/types/tool-attachment';
 import { imEventBus, type ImEventType } from './utils/im-event-bus';
 import { imRequestRegistry } from './utils/im-request-registry';
+import { buildImCancelledPayload, buildImErrorPayload } from './utils/im-terminal-payload';
 import { mirrorIfChannelBound, type MirrorImage } from './utils/im-mirror';
 import { normalizeClaudeTranscriptCleanupPeriodDays, SUBSCRIPTION_PROVIDER_ID, type ProxySettings } from '../shared/config-types';
-import { stripLeadingSystemReminder } from '../shared/systemReminder';
+import {
+  LOCAL_COMMAND_OUTPUT_TAG,
+  SYSTEM_REMINDER_CLOSE,
+  SYSTEM_REMINDER_OPEN,
+  stripLeadingSystemReminder,
+} from '../shared/systemReminder';
 import { createConcreteProviderRoute, isConcreteProviderRoute } from '../shared/providerRoute';
 import type {
   ContentBlock,
@@ -179,30 +204,57 @@ export type {
 } from './builtin-session/types';
 export { stripPlaywrightResults } from './builtin-session/transcript-persistence';
 import {
+  clearQueryMcpPrewarmOwner,
+  completeQueryBackgroundTask,
+  getQueryBackgroundTask,
+  getQueryMcpPrewarmOwner,
+  hasQueryBackgroundTask,
+  hasQueryBackgroundTasks,
+  readQueryMcpStatuses,
   awaitSessionTermination as awaitBuiltinSessionTermination,
   clearAbortFlag,
   clearGeneratorResolver,
   clearPreWarmTimer,
+  claimQueryMcpMutation,
   forceWakeGeneratorWithNull,
+  getQueryMcpMutation,
   incrementPreWarmFailCount,
+  getBuiltinLiveRevision,
   lifecycleState,
+  nextBuiltinLiveRevision,
   requestAbort,
+  registerSessionAbortCleanup,
+  recordQueryBackgroundTask,
   resetPreWarmFailCount,
+  resetBuiltinLiveRevision,
   setPreWarmInProgress,
   setPreWarmTimer,
   setPreWarmDisabled,
   setQuerySession,
+  setQueryMcpPrewarmOwner,
+  settleQueryMcpPrewarmOwner,
   setSdkControlReady,
   setSessionProcessing,
   setSessionTerminationPromise,
   setSystemInitInfo,
+  takeQueryBackgroundTasks,
   wakeGenerator as lifecycleWakeGenerator,
+  waitForQueryExit,
   waitForMessage as lifecycleWaitForMessage,
+  type QueryMcpMutationResult,
 } from './builtin-session/lifecycle';
 import {
+  MCP_PREWARM_GRACE_MS,
+  awaitMcpPrewarm,
+  formatMcpPrewarmServers,
+  type McpPrewarmOutcome,
+  type McpPrewarmOwner,
+} from './session-core/mcp-prewarm-policy';
+import {
   beginPromotedItem,
+  cancelDetachedAdmissionTicket,
   cancelTurnAdmissionTicket,
-  cancelPromotedItem,
+  cancelPromotedItemWithSettlement,
   clearPromotedItem,
   clearInFlightSlot as queueClearInFlightSlot,
   clearPendingMidTurn,
@@ -215,6 +267,7 @@ import {
   isPromotedItemCanceled,
   getMessageQueue,
   getPendingMidTurnQueue,
+  getPromotedItemCancellation,
   getPromotedTurnIdentity,
   getQueueStatus as queueGetQueueStatus,
   getTurnAdmissionTicket,
@@ -228,6 +281,8 @@ import {
   pushTurnBoundary,
   queueState,
   queuedWorkCount as queueQueuedWorkCount,
+  releaseDetachedAdmissionTicket,
+  requeuePromotedItemBeforeSdkDispatch,
   releaseTurnAdmissionTicket as queueReleaseTurnAdmissionTicket,
   removeQueuedItemByQueueId,
   removeQueuedItemByRequestId,
@@ -247,18 +302,22 @@ import {
   accumulateCurrentTurnUsage,
   appendCurrentTurnTextBlock,
   clearCurrentTurnTextBlocks,
-  clearPendingRequests as turnClearPendingRequests,
+  clearPendingOutputOwners as turnClearPendingOutputOwners,
   getCurrentTurnIdentity as getBuiltinCurrentTurnIdentity,
+  getCurrentTurnQueueId as getBuiltinCurrentTurnQueueId,
+  getLastSessionCompletionTerminal,
   getCurrentTurnSourceItem,
   getCurrentTurnInboxMeta,
-  getPendingRequestIds,
+  getPendingImRequestIds,
+  peekPendingOutputOwner,
   incrementCurrentTurnToolCount,
+  isAssistantMessagePresent,
   markAssistantMessageError,
   markCurrentTurnHasOutput,
   notifyQueuedTurnStopped,
-  popPendingRequest as turnPopPendingRequest,
-  pushPendingRequest as turnPushPendingRequest,
-  removePendingRequest as turnRemovePendingRequest,
+  popPendingOutputOwner as turnPopPendingOutputOwner,
+  pushPendingOutputOwner as turnPushPendingOutputOwner,
+  removePendingOutputOwnerByQueueId as turnRemovePendingOutputOwnerByQueueId,
   resetTurnUsage as resetBuiltinTurnUsage,
   setAssistantMessagePresent,
   setBrowserToolUsed,
@@ -279,6 +338,10 @@ import {
   turnState,
   waitForCurrentTurnTerminalObserver,
 } from './builtin-session/turn';
+import {
+  withSessionCompletionTerminal,
+  type SessionCompletionTerminal,
+} from '../shared/sessionCompletion';
 import {
   applyAgentDefinitionsUpdate as configApplyAgentDefinitionsUpdate,
   applyMcpServersUpdate as configApplyMcpServersUpdate,
@@ -353,7 +416,7 @@ import type {
  * Mutable builtin SDK session state is owned by `src/server/builtin-session/*`:
  * - lifecycle.ts: SDK Query process, abort flag, termination promise, generator wakeup, pre-warm readiness.
  * - queue.ts: realtime queue, mid-turn buffer, turn-boundary queue, in-flight slot, admission ticket.
- * - turn.ts: current turn usage/output/error state, pending IM request FIFO, injected turn outcomes.
+ * - turn.ts: current turn usage/output/error state, SDK output-owner FIFO, injected turn outcomes.
  * - config.ts: MCP/agents/plugins/model/permission/provider state plus deferred restart latch.
  * - transcript.ts: live messages, sequence, persist cursor/cache, SDK UUID freshness sets.
  *
@@ -420,28 +483,26 @@ export const MYAGENTS_CONTEXT_INJECTED_MCP_IDS = [
   'im-bridge-tools',
 ] as const;
 
-// ===== OAuth Token Change Listener =====
-// Register once at module load. Token changes trigger session restart
-// so buildSdkMcpServers() picks up the new/refreshed Authorization headers.
-onTokenChange((serverId, event) => {
+// ===== OAuth credential revision listener =====
+// The Session process observes persisted, non-secret revisions. The Global
+// Sidecar owns proactive refresh; this handler only rebuilds MCP connections
+// that are enabled in this Session.
+onOAuthCredentialChange(({ serverId, status, tokenRevision }) => {
   if (!configState.currentMcpServers?.some(s => s.id === serverId)) return;
 
-  if (event === 'acquired' || event === 'refreshed') {
-    console.log(`[agent] OAuth token ${event} for MCP ${serverId}, deferring restart to pre-warm debounce`);
-    if (lifecycleState.query) scheduleDeferredRestart('oauth');
-    resetPreWarmFailCount();
-    if (!lifecycleState.processing || lifecycleState.preWarming) {
-      schedulePreWarm();
-    }
+  console.log(
+    `[agent] OAuth credential revision=${tokenRevision} status=${status} for MCP ${serverId}, rebuilding connection`,
+  );
+  if (lifecycleState.query) scheduleDeferredRestart('oauth');
+  resetPreWarmFailCount();
+  if (!lifecycleState.processing || lifecycleState.preWarming) {
+    schedulePreWarm();
   }
 
-  if (event === 'expired' || event === 'revoked') {
+  if (status === 'expired' || status === 'missing') {
     broadcast('mcp:oauth-expired', { serverId });
   }
 });
-
-// Start background token refresh scheduler (checks every 60s, proactive refresh)
-startTokenRefreshScheduler();
 
 // Max length for individual string values in SDK message logs.
 // Base64 images can be several MB; truncate to keep logs readable.
@@ -723,15 +784,23 @@ const KNOWN_MESSAGE_TYPES = new Set([
   'conversation_reset',
 ]);
 const warnedUnknownMessageTypes = new Set<string>();
-// Post-interrupt turn-completion signal: resolves when for-await loop receives a `result` message.
-// Used by interruptCurrentResponse() to verify the SDK subprocess actually stopped after interrupt().
-let postInterruptTurnEndResolve: (() => void) | null = null;
-// Issue #289 — set by handleMessageComplete when a force-send surfaced the in-flight item and
-// the SDK is about to drain it into a NEW turn. interruptCurrentResponse() reads it to SKIP the
-// redundant trailing handleMessageStopped() (handleMessageComplete is the full turn-end handler;
-// the trailing call would undo the streaming re-arm + double-pop the IM request → the racy
-// "idle gap" Codex flagged). One-shot: consumed by interruptCurrentResponse().
-let forceDrainTurnStarting = false;
+type PostInterruptTurnEndOutcome = 'result-claimed' | 'session-ended';
+// Durable one-shot handoff between the SDK result owner and the interrupt
+// caller. The outcome is stored even when result arrives before interrupt()
+// installs its waiter, closing the former resolve-before-listen race.
+let postInterruptTurnEndOutcome: PostInterruptTurnEndOutcome | null = null;
+let postInterruptTurnEndResolve: ((outcome: PostInterruptTurnEndOutcome) => void) | null = null;
+
+function settlePostInterruptTurnEnd(outcome: PostInterruptTurnEndOutcome): void {
+  if (!isInterruptingResponse) return;
+  const settled = postInterruptTurnEndOutcome ?? outcome;
+  postInterruptTurnEndOutcome = settled;
+  if (postInterruptTurnEndResolve) {
+    const resolve = postInterruptTurnEndResolve;
+    postInterruptTurnEndResolve = null;
+    resolve(settled);
+  }
+}
 // Count of MCP tool_use blocks emitted by the model in the current turn that
 // haven't seen their matching tool_result yet. Read by the post-interrupt
 // force-close path to disambiguate diagnostics: >0 strongly suggests a hung
@@ -890,7 +959,11 @@ function fireDesktopUserMirror(content: string, images: MirrorImage[] | undefine
   });
 }
 
-async function surfaceBuiltinUserMessage(surface: DeferredUserSurface): Promise<void> {
+async function surfaceBuiltinUserMessage(
+  surface: DeferredUserSurface,
+  phase: 'pre-admission' | 'admission',
+  lastActiveAt?: string,
+): Promise<boolean> {
   appendMessage(surface.message);
   if (surface.event === 'message-replay') {
     broadcast('chat:message-replay', createLiveUserMessageReplay(sessionId, surface.message));
@@ -910,15 +983,19 @@ async function surfaceBuiltinUserMessage(surface: DeferredUserSurface): Promise<
   }
 
   const messageText = typeof surface.message.content === 'string' ? surface.message.content : '';
-  await persistMessagesToStorageAndCommitPreparedFirstUserTurn(
+  const activityMerged = await persistMessagesToStorageAndCommitPreparedFirstUserTurn(
     messageText,
     surface.sessionBirthOrigin,
+    transcriptState.messages.length,
+    phase,
+    lastActiveAt,
   );
   if (surface.message.metadata?.source === 'desktop') {
     fireDesktopUserMirror(messageText, surface.mirrorImages);
   } else {
     clearMirrorState();
   }
+  return activityMerged;
 }
 
 type SurfaceInFlightOptions = {
@@ -980,6 +1057,7 @@ async function surfaceInFlightQueueItem(
   });
 
   clearInFlightSlot();
+  applyDeferredRestartIfNeeded();
   promoteNextFromPending();
 }
 
@@ -998,13 +1076,13 @@ function dropInFlightQueueItem(
   const queueId = getInFlightQueueId();
   if (!queueId) return null;
   const requestId = getInFlightMetadata()?.requestId;
+  removePendingOutputOwnerByQueueId(queueId);
   if (requestId) {
-    removePendingRequest(requestId);
     if (imTerminal === 'failed') {
-      imEventBus.emit(requestId, 'error', reason);
+      imEventBus.emit(requestId, 'error', buildImErrorPayload(reason));
       imRequestRegistry.setStatus(requestId, 'failed');
     } else {
-      imEventBus.emit(requestId, 'cancelled', reason);
+      imEventBus.emit(requestId, 'cancelled', buildImCancelledPayload());
       imRequestRegistry.setStatus(requestId, 'cancelled');
     }
     imRequestRegistry.unregister(requestId);
@@ -1181,9 +1259,10 @@ const toolResultIndexToId: Map<number, string> = new Map();
 
 // IM Pipeline v2 — Pattern B + G: per-request attribution via FIFO queue.
 //
-// `turnState.pendingRequestIds` holds the requestIds of user transcriptState.messages YIELDED to SDK
-// stdin but not yet finalized (no `result` boundary observed). The HEAD is
-// the request currently owning SDK output; SDK events tagged with head get
+// `turnState.pendingOutputOwners` holds one output-owner slot for every user
+// message YIELDED to SDK stdin but not yet finalized (no `result` boundary
+// observed). IM slots carry requestId; non-IM slots are null. The HEAD is the
+// turn currently owning SDK output; SDK events tagged with an IM head get
 // published to ImEventBus where /api/im/events subscribers filter by id.
 //
 // Why a queue, not a single `activeRequestId` (Codex C4 / Pattern G fix):
@@ -1197,31 +1276,28 @@ const toolResultIndexToId: Map<number, string> = new Map();
 // flag (Pattern B already removed those). Cross-event leakage is structurally
 // impossible — old events carry the old requestId, new subscribers filter.
 /** Emit a per-request IM event tagged with the queue head. No-op when the
- *  queue is empty (desktop / cron path, no IM trace). System-level events
+ *  queue head is non-IM or empty. System-level events
  *  (e.g. session-init in Pattern C) call `imEventBus.emit(null, ...)` directly. */
 function emitImEvent(type: ImEventType, data?: unknown): void {
-  const head = getPendingRequestIds()[0];
-  if (head !== undefined) {
-    imEventBus.emit(head, type, data);
+  const requestId = peekPendingOutputOwner()?.requestId;
+  if (requestId) {
+    imEventBus.emit(requestId, type, data);
   }
 }
 
-/** Push a yielded user message's requestId onto the FIFO queue. Called from
- *  messageGenerator when yielding to SDK stdin. No-op for desktop / cron
- *  (no IM trace ID). */
-function pushPendingRequest(requestId: string | null | undefined): void {
-  turnPushPendingRequest(requestId);
+/** Push one output-owner slot for every message yielded to SDK stdin. */
+function pushPendingOutputOwner(queueId: string, requestId: string | null | undefined): void {
+  turnPushPendingOutputOwner(queueId, requestId);
 }
 
 /** Pop the queue head — called from handleMessageComplete / Stopped / Error
  *  on SDK `result` boundary (one yield → one result). Returns popped id. */
 function popPendingRequest(): string | null {
-  return turnPopPendingRequest();
+  return turnPopPendingOutputOwner()?.requestId ?? null;
 }
 
-/** Remove a request that was yielded to SDK but later cancelled before SDK result. */
-function removePendingRequest(requestId: string | null | undefined): boolean {
-  return turnRemovePendingRequest(requestId);
+function removePendingOutputOwnerByQueueId(queueId: string | null | undefined): boolean {
+  return turnRemovePendingOutputOwnerByQueueId(queueId);
 }
 
 function completeCurrentImRequest(data?: unknown): void {
@@ -1230,6 +1306,16 @@ function completeCurrentImRequest(data?: unknown): void {
   if (completedReq) {
     imRequestRegistry.setStatus(completedReq, 'completed');
     imRequestRegistry.unregister(completedReq);
+    setCurrentTurnImTerminalEmitted(true);
+  }
+}
+
+function cancelCurrentImRequest(data?: unknown): void {
+  emitImEvent('cancelled', data);
+  const cancelledReq = popPendingRequest();
+  if (cancelledReq) {
+    imRequestRegistry.setStatus(cancelledReq, 'cancelled');
+    imRequestRegistry.unregister(cancelledReq);
     setCurrentTurnImTerminalEmitted(true);
   }
 }
@@ -1247,7 +1333,7 @@ function failCurrentImRequest(data?: unknown): void {
 /** Clear the entire queue — called from abortPersistentSession /
  *  clearMessageState (whole-session abort or reset). Returns drained ids. */
 function clearPendingRequests(): string[] {
-  return turnClearPendingRequests();
+  return turnClearPendingOutputOwners();
 }
 // Group chat tool deny list (v0.1.28): set per IM message, cleared on next non-group request
 let currentGroupToolsDeny: string[] = [];
@@ -1259,8 +1345,23 @@ let sessionId = randomUUID();
 publishCurrentSessionEnv();
 
 function setCurrentSessionId(next: string): void {
+  if (sessionId !== next) {
+    flushPendingLiveEvents();
+    resetBuiltinLiveRevision();
+  }
   sessionId = next as typeof sessionId;
   publishCurrentSessionEnv();
+}
+
+function broadcast(event: string, data: unknown): void {
+  if (sessionId && participatesInLiveRestore(event, data)) {
+    broadcastLive(event, data, {
+      sessionId,
+      nextRevision: nextBuiltinLiveRevision,
+    });
+    return;
+  }
+  broadcastSse(event, data);
 }
 
 function publishCurrentSessionEnv(): void {
@@ -1282,7 +1383,7 @@ function beginReset(): () => void {
 const PRE_WARM_MAX_RETRIES = 3;
 // Global Sidecar sets this to true via --no-pre-warm CLI flag to skip futile pre-warm attempts
 // (SDK CLI needs first stdin message before system_init, which never comes for Global Sidecar)
-// `lifecycleState.sdkControlReady` is the "subprocess fully ready" signal — separate from
+// `lifecycleState.sdkControlReady` is the "subprocess control plane ready" signal — separate from
 // `system_init`. The SDK CLI's `system/init` is yielded LATE in QueryEngine.submitMessage
 // (after fetchSystemPromptParts → processUserInput → recordTranscript → loadAllPlugins),
 // so it's per-turn metadata, NOT a "boot complete" handshake. By contrast,
@@ -1619,7 +1720,7 @@ export function isTurnInFlight(): boolean {
 
 /** 当前正在流式传输的 assistant 消息 ID（未在流式传输时返回 null） */
 export function getStreamingAssistantId(): string | null {
-  if (!isStreamingMessage) return null;
+  if (!isStreamingMessage || !isAssistantMessagePresent()) return null;
   return getLastAssistantMessageId();
 }
 
@@ -1781,6 +1882,8 @@ function startNextTurnQueuedItem(
   }
   if (!shouldStartTurnBoundaryItem({
     hasTurnInFlight: isTurnInFlight(),
+    hasCompetingAdmissionTicket: getTurnAdmissionTicket() !== null
+      && getTurnAdmissionTicket()?.queueId !== queuedItem.queueId,
     hasInFlightToCli: getInFlightQueueId() !== null,
     hasPendingMidTurn: getPendingMidTurnQueue().length > 0,
     allowRealtimePending: options?.allowRealtimePending,
@@ -1797,6 +1900,7 @@ function startNextTurnQueuedItem(
 
   const [item] = spliceTurnBoundary(queueIndex, 1);
   if (!item.sourceItem) return false;
+  const sourceItem = item.sourceItem;
   if (item.queueId === getForceTurnBoundaryQueueId()) {
     setForceTurnBoundaryQueueId(null);
   }
@@ -1814,29 +1918,31 @@ function startNextTurnQueuedItem(
     message: userMessage,
     mirrorImages: item.mirrorImages,
   };
-  if (item.sourceItem.beforeDispatch) {
-    item.sourceItem.deferredUserSurface = surface;
+  if (sourceItem.beforeDispatch) {
+    sourceItem.deferredUserSurface = surface;
   } else {
-    void surfaceBuiltinUserMessage(surface)
+    void surfaceBuiltinUserMessage(surface, 'pre-admission')
       .catch(err => console.error('[agent] failed to surface turn-boundary user message:', err));
   }
 
   console.log(`[agent] Starting turn-boundary queued message: queueId=${item.queueId} reason=${reason} remaining=${getTurnBoundaryQueue().length}`);
-  setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
+  if (!sourceItem.deferVisibleAdmission) {
+    setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
+  }
 
   if (!lifecycleState.query) {
     resetPreWarmFailCount();
     if (reason === 'recovery') {
       resetAbortFlag();
     }
-    pushMessage(item.sourceItem);
+    pushMessage(sourceItem);
     setTimeout(() => {
-      startStreamingSession().catch((error) => {
+      startStreamingSession(sourceItem.deferVisibleAdmission).catch((error) => {
         console.error('[agent] failed to start session for turn-boundary queue', error);
       });
     }, 0);
   } else {
-    wakeGenerator(item.sourceItem);
+    wakeGenerator(sourceItem);
   }
   return true;
 }
@@ -1932,11 +2038,19 @@ function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {
   })) {
     releaseTurnAdmissionTicket();
   }
-  const promotedItem = cancelPromotedItem();
-  if (promotedItem) {
-    void notifyQueuedTurnStopped(promotedItem, 'Session aborted before queue dispatch');
+  const promotedCancellation = cancelPromotedItemWithSettlement();
+  if (promotedCancellation) {
+    registerSessionAbortCleanup(
+      promotedCancellation.settlement.then(async () => {
+        await notifyQueuedTurnStopped(
+          promotedCancellation.item,
+          'Session aborted before queue dispatch',
+        );
+      }).finally(() => {
+        clearPromotedItem(promotedCancellation.item.id);
+      }),
+    );
   }
-  clearPromotedItem();
   // Subprocess is about to die — rescue pending items so the recovery session
   // re-delivers them instead of losing them with the dead stdin buffer.
   rescuePendingToQueue();
@@ -1947,8 +2061,8 @@ function abortPersistentSession(options: { notifyPendingRequests?: boolean } = {
   // restarts may suppress this notification when the turn lifecycle will own
   // terminal cleanup and no user-visible abort should be emitted.
   if (notifyPendingRequests) {
-    for (const reqId of getPendingRequestIds()) {
-      imEventBus.emit(reqId, 'error', '会话已中断，请重新发送');
+    for (const reqId of getPendingImRequestIds()) {
+      imEventBus.emit(reqId, 'error', buildImErrorPayload('会话已中断，请重新发送'));
       imRequestRegistry.setStatus(reqId, 'failed');
       imRequestRegistry.unregister(reqId);
     }
@@ -2455,12 +2569,9 @@ function triggerProxyRestart(): void {
   }
 }
 
-/**
- * Initialize SOCKS5 bridge from inherited environment variables at Sidecar startup.
- * Rust may have set HTTP_PROXY=socks5://... — detect and bridge it before first pre-warm.
- */
+/** Initialize general + provider proxy baselines before the first pre-warm. */
 export async function initSocksBridgeFromEnv(): Promise<void> {
-  await initSocksBridgeFromCurrentEnv();
+  await initializeProxyStateFromCurrentSettings();
 }
 
 /**
@@ -3153,6 +3264,17 @@ function schedulePreWarm(): void {
     // Batched exit point for rapid-fire config changes (setMcpServers, setAgents,
     // OAuth) and active-turn fallbacks from provider/proxy immediate-abort paths.
     if (hasDeferredRestart() && lifecycleState.query) {
+      if (shouldDeferLiveMcpMutation({
+        promotedItemInFlight: queueState.promotedItemInFlight,
+        turnInFlight: isTurnInFlight(),
+        sdkCommandInFlight: getInFlightQueueId() !== null,
+        backgroundTasksActive: hasQueryBackgroundTasks(lifecycleState.query),
+      })) {
+        // The terminal path owns this drain. Never let a previously armed
+        // pre-warm timer abort an item between promotion and SDK yield.
+        console.log('[agent] pre-warm: deferred config restart remains latched until turn admission/execution is quiescent');
+        return;
+      }
       const reasons = drainDeferredRestart();
       console.log(`[agent] pre-warm: applying batched config restart (reasons=${reasons})`);
       abortPersistentSession();
@@ -3212,8 +3334,19 @@ const CONTEXT_INJECTED_BUILTIN_PREDICATES: Record<
   typeof MYAGENTS_CONTEXT_INJECTED_MCP_IDS[number],
   () => boolean
 > = {
-  'im-bridge-tools': () => Boolean(getImBridgeToolsContext()) && Boolean(getImBridgeToolServer()),
+  // Permission follows the map installed on the live Query, not a newer
+  // desired Bridge surface waiting for the turn-boundary restart.
+  'im-bridge-tools': () => configState.frozenSdkMcpFingerprint
+    .split('|', 1)[0]
+    .split(',')
+    .includes('im-bridge-tools'),
 };
+
+/** Resolve Bridge caller identity from the request currently owning SDK output. */
+export function getCurrentImBridgeTurnContext(): import('./session-core/im-bridge-types').ImBridgeTurnContext | null {
+  const requestId = peekPendingOutputOwner()?.requestId;
+  return requestId ? imRequestRegistry.get(requestId)?.imBridgeTurnContext ?? null : null;
+}
 
 function getActiveContextInjectedBuiltinIds(): Set<string> {
   const ids = new Set<string>();
@@ -3309,33 +3442,6 @@ function buildSettingSources(): ('user' | 'project')[] {
   return ['project'];
 }
 
-// Known MCP package versions — pin these to avoid npm registry lookups on every startup
-// Update these when upgrading MCP server dependencies
-const PINNED_MCP_VERSIONS: Record<string, string> = {
-  '@playwright/mcp': '0.0.68',
-};
-
-/**
- * Replace @latest tags with pinned versions for known MCP packages.
- * This eliminates the npm registry network check that adds 2-5s latency per startup.
- * Unknown packages keep their original version specifiers.
- */
-export function pinMcpPackageVersions(args: string[]): string[] {
-  return args.map(arg => {
-    // Match patterns like @playwright/mcp@latest or @scope/pkg@latest
-    const latestMatch = arg.match(/^(@?[^@]+)@latest$/);
-    if (latestMatch) {
-      const pkgName = latestMatch[1];
-      const pinned = PINNED_MCP_VERSIONS[pkgName];
-      if (pinned) {
-        console.log(`[agent] MCP version pinned: ${arg} → ${pkgName}@${pinned}`);
-        return `${pkgName}@${pinned}`;
-      }
-    }
-    return arg;
-  });
-}
-
 /**
  * Convert McpServerDefinition to SDK mcpServers format.
  *
@@ -3395,11 +3501,11 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
   // passthrough. This is the only remaining Pattern 1 MCP after the v0.2.11 cron
   // / im-cron / im-media → CLI migration: bridge plugins expose runtime-dynamic
   // tool surfaces that can't be expressed as a static prompt + CLI.
-  const bridgeToolsCtx = getImBridgeToolsContext();
+  const bridgeToolSurface = getImBridgeToolSurface();
   const bridgeServer = getImBridgeToolServer();
-  if (bridgeToolsCtx && bridgeServer) {
+  if (bridgeToolSurface && bridgeServer) {
     result['im-bridge-tools'] = bridgeServer;
-    console.log(`[agent] Added im-bridge-tools MCP server for plugin ${bridgeToolsCtx.pluginId}`);
+    console.log(`[agent] Added im-bridge-tools MCP server for plugin ${bridgeToolSurface.pluginId}`);
   }
 
   // --- Pattern 2: Builtin registry MCPs (in-process, user-toggled) ---
@@ -3459,44 +3565,12 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
       // System Node.js is maintained by the user's package manager, more reliable than our bundled npm.
       // Bundled Node.js serves as fallback for users who don't have Node.js installed.
       if (command === 'npx') {
-        // Pin @latest to known versions for builtin MCPs only (avoids npm registry check on startup)
-        if (server.isBuiltin) {
-          args = pinMcpPackageVersions(args);
-        }
-
-        // Resolve npx to full path for ALL MCPs (builtin + custom).
-        // Previously custom MCPs used bare 'npx' which relied on SDK's cross-spawn
-        // to find npx.cmd via filtered PATH — failed on Windows when PATH was incomplete
-        // or when the SDK's env whitelist (RK_) didn't propagate Node.js directories.
-        // Resolving to full path eliminates this class of issues (pit-of-success pattern).
-        // v0.2.0+ priority: system npx → bundled Node.js npx → npx derived from runtime path.
-        // Bun fallback removed — MyAgents no longer bundles Bun, and "bun x" was an
-        // emergency escape hatch for Linux boxes with neither Node nor bundled runtime,
-        // which is no longer a supported config.
-        const systemNpx = findExistingPath(getSystemNpxPaths());
-
-        if (systemNpx) {
-          // 1. System npx available — most reliable, user-maintained
-          command = systemNpx;
-          if (!args.includes('-y')) args = ['-y', ...args];
-          console.log(`[agent] MCP ${server.id}: Using system npx (${systemNpx})`);
-        } else {
-          // 2. Fallback to bundled Node.js npx (use absolute path for deterministic resolution)
-          const nodeDir = getBundledNodeDir();
-          if (nodeDir) {
-            command = process.platform === 'win32' ? join(nodeDir, 'npx.cmd') : join(nodeDir, 'npx');
-            if (!args.includes('-y')) args = ['-y', ...args];
-            console.log(`[agent] MCP ${server.id}: System npx not found, using bundled Node.js npx (${command})`);
-          } else {
-            // 3. Last resort: derive npx from the runtime path returned by
-            //    getBundledRuntimePath() (always a Node binary in v0.2.0+).
-            const runtime = getBundledRuntimePath();
-            const npxSibling = resolve(dirname(runtime), process.platform === 'win32' ? 'npx.cmd' : 'npx');
-            command = npxSibling;
-            if (!args.includes('-y')) args = ['-y', ...args];
-            console.log(`[agent] MCP ${server.id}: Derived npx from runtime path: ${npxSibling}`);
-          }
-        }
+        const invocation = resolveNpxMcpInvocation(args, {
+          pinPresetPackages: server.isBuiltin === true,
+        });
+        command = invocation.command;
+        args = invocation.args;
+        console.log(`[agent] MCP ${server.id}: resolved npx via ${invocation.source} (${command})`);
       }
 
       // Build MCP config with proxy env inherited from parent Sidecar.
@@ -3574,14 +3648,33 @@ async function buildSdkMcpServers(): Promise<Record<string, McpServerEntry>> {
 }
 
 /**
- * Sorted-key fingerprint of an MCP server map (id list).
- * Identity comparison only — env/args/url changes for user-configured MCPs
- * already trigger restart via mcpConfigFingerprint() + setMcpServers().
- * This is for context-injected MCPs (im-media, im-bridge-tools) whose
- * presence flips on/off as IM context becomes available.
+ * Runtime identity of the installed SDK MCP map. User-configured transport
+ * changes already trigger the dedicated config mutation path; the dynamic IM
+ * Bridge server additionally needs its stable surface identity because its
+ * SDK key remains `im-bridge-tools` across a real port/plugin/group change.
  */
-function mcpKeyFingerprint(servers: Record<string, unknown>): string {
-  return Object.keys(servers).sort().join(',');
+function sdkMcpMapFingerprint(servers: Record<string, unknown>): string {
+  const keys = Object.keys(servers).sort().join(',');
+  const surface = getImBridgeToolSurface();
+  return surface ? `${keys}|bridge=${imBridgeToolSurfaceIdentity(surface)}` : keys;
+}
+
+/** True only when the live Query already owns the current stable Bridge surface. */
+export function isCurrentImBridgeToolSurfaceInstalled(): boolean {
+  if (!lifecycleState.query || lifecycleState.abortRequested) return false;
+  const surface = getImBridgeToolSurface();
+  if (!surface) return false;
+  return configState.frozenSdkMcpFingerprint.includes(
+    `|bridge=${imBridgeToolSurfaceIdentity(surface)}`,
+  );
+}
+
+/** Bridge discovery and SDK installation consume one surface-owned deadline. */
+function getMcpPrewarmWindowForMap(
+  servers: Record<string, unknown>,
+): { startedAt: number; deadlineAt: number } | null {
+  if (!Object.hasOwn(servers, 'im-bridge-tools')) return null;
+  return getImBridgeToolPrewarmWindow();
 }
 
 /**
@@ -3589,7 +3682,7 @@ function mcpKeyFingerprint(servers: Record<string, unknown>): string {
  *
  * Why this exists:
  *   Context-injected MCPs (im-media, im-bridge-tools) become available only when
- *   `/api/im/enqueue` arrives and calls `setImMediaContext()` / `setImBridgeToolsContext()`.
+ *   `/api/im/enqueue` installs the stable IM Bridge tool surface.
  *   But for IM Bot Sidecars the SDK is pre-warmed by heartbeat long before the first
  *   message — at that point those contexts are null, so `buildSdkMcpServers()` doesn't
  *   include them, and the SDK subprocess freezes its mcpServers config without them.
@@ -3607,39 +3700,233 @@ function mcpKeyFingerprint(servers: Record<string, unknown>): string {
  * `buildSdkMcpServers()` and BEFORE the next `enqueueUserMessage()` so the SDK
  * picks up the new tool list before processing the message.
  */
-export async function ensureSdkMcpInSync(): Promise<void> {
-  if (!lifecycleState.query) return;
+const SDK_MCP_MUTATION_TIMEOUT_MS = 30_000;
 
-  const newServers = await buildSdkMcpServers();
-  const newFingerprint = mcpKeyFingerprint(newServers);
-  if (newFingerprint === configState.frozenSdkMcpFingerprint) return;
+function latchMcpMutationRecovery(targetQuery: Query): void {
+  if (lifecycleState.query !== targetQuery) return;
+  setFrozenSdkMcpFingerprint('');
+  clearQueryMcpPrewarmOwner(targetQuery);
+  scheduleDeferredRestart('mcp');
+  // A generator that promoted while the mutation was in flight owns recovery:
+  // it requeues that exact item before draining the restart latch. With no
+  // promotion/turn, abort now so an ensure caller cannot enqueue onto the
+  // transport whose control request failed or timed out.
+  if (!shouldDeferLiveMcpMutation({
+    promotedItemInFlight: queueState.promotedItemInFlight,
+    turnInFlight: isTurnInFlight(),
+    sdkCommandInFlight: getInFlightQueueId() !== null,
+  })) {
+    applyDeferredRestartIfNeeded();
+  }
+}
+
+async function mutateSdkMcpForQuery(targetQuery: Query): Promise<QueryMcpMutationResult> {
+  let newServers: Record<string, McpServerEntry>;
+  try {
+    newServers = await buildSdkMcpServers();
+  } catch (error) {
+    if (lifecycleState.query !== targetQuery) {
+      return {
+        ok: false,
+        reason: 'query_replaced',
+        error: 'Query was replaced while building the MCP transport map',
+      };
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[agent] Building SDK MCP servers failed (${message}); rebuilding the Query`);
+    latchMcpMutationRecovery(targetQuery);
+    return { ok: false, reason: 'failed', error: message };
+  }
+  if (lifecycleState.query !== targetQuery || lifecycleState.abortRequested) {
+    return {
+      ok: false,
+      reason: 'query_replaced',
+      error: 'Query was replaced before MCP transport mutation',
+    };
+  }
+  const newFingerprint = sdkMcpMapFingerprint(newServers);
+  if (newFingerprint === configState.frozenSdkMcpFingerprint) return { ok: true };
 
   console.log(`[agent] SDK MCP set drift detected, syncing live session: was=[${configState.frozenSdkMcpFingerprint || '(empty)'}] now=[${newFingerprint || '(empty)'}]`);
 
+  // The mutation owner was claimed before buildSdkMcpServers() started. A
+  // generator promoted during that build waits for this operation. If work
+  // already owned the Query, preserve it and rebuild from current context at
+  // the terminal boundary rather than mutating transports underneath it.
+  const dispatchOwnership = {
+    promotedItemInFlight: queueState.promotedItemInFlight,
+    turnInFlight: isTurnInFlight(),
+    sdkCommandInFlight: getInFlightQueueId() !== null,
+  };
+  if (shouldDeferLiveMcpMutation(dispatchOwnership)) {
+    console.log('[agent] SDK MCP drift detected during turn admission/execution; deferring Query rebuild until quiescent');
+    if (dispatchOwnership.promotedItemInFlight) {
+      // A generator can promote after the mutation owner is synchronously
+      // claimed but before the desired map finishes building. Returning ok
+      // here would let that exact item continue on the old installed map.
+      // Revoke readiness and make the waiting generator requeue the item;
+      // once promotion releases, it drains the restart latch and retries on
+      // the replacement Query. An already active/SDK-owned turn may finish,
+      // but no not-yet-dispatched item crosses this config boundary.
+      latchMcpMutationRecovery(targetQuery);
+      return {
+        ok: false,
+        reason: 'deferred',
+        error: 'MCP transport replacement deferred until the promoted item is requeued',
+      };
+    }
+    scheduleDeferredRestart('mcp');
+    return { ok: true, deferred: true };
+  }
+
+  // Never publish the previous connected snapshot while the SDK transport map
+  // is changing. Injected turns will observe owner=null; ordinary turns fence
+  // on the Query-generation mutation promise at generator promotion.
+  clearQueryMcpPrewarmOwner(targetQuery);
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    const result = await lifecycleState.query.setMcpServers(newServers);
-    const errKeys = Object.keys(result.errors ?? {});
+    const outcome = await Promise.race([
+      targetQuery.setMcpServers(newServers).then(result => ({ kind: 'result' as const, result })),
+      new Promise<{ kind: 'timeout' }>((resolve) => {
+        timeout = setTimeout(() => resolve({ kind: 'timeout' }), SDK_MCP_MUTATION_TIMEOUT_MS);
+      }),
+    ]);
+    if (outcome.kind === 'timeout') {
+      const error = `SDK setMcpServers timed out after ${SDK_MCP_MUTATION_TIMEOUT_MS}ms`;
+      console.error(`[agent] ${error}; rebuilding the Query before any waiting turn dispatches`);
+      latchMcpMutationRecovery(targetQuery);
+      return { ok: false, reason: 'timeout', error };
+    }
+    if (lifecycleState.query !== targetQuery || lifecycleState.abortRequested) {
+      return {
+        ok: false,
+        reason: 'query_replaced',
+        error: 'Query was replaced during MCP transport mutation',
+      };
+    }
+    const errKeys = Object.keys(outcome.result.errors ?? {});
     if (errKeys.length > 0) {
-      // SDK reported per-server connect errors. Don't trust the new fingerprint
-      // — the AI would think those MCPs are connected when they aren't.
-      // Fall through to the restart fallback so the next pre-warm rebuilds cleanly.
-      console.warn(`[agent] SDK setMcpServers reported errors for [${errKeys.join(',')}]: ${JSON.stringify(result.errors)} — deferring restart`);
-      setFrozenSdkMcpFingerprint('');
-      scheduleDeferredRestart('mcp');
-      schedulePreWarm();
-      return;
+      const error = `SDK setMcpServers reported errors for [${errKeys.join(',')}]: ${JSON.stringify(outcome.result.errors)}`;
+      console.warn(`[agent] ${error}; rebuilding the Query`);
+      latchMcpMutationRecovery(targetQuery);
+      return { ok: false, reason: 'failed', error };
     }
     setFrozenSdkMcpFingerprint(newFingerprint);
-    console.log(`[agent] SDK setMcpServers ok: added=[${result.added.join(',')}] removed=[${result.removed.join(',')}]`);
+    const prewarmWindow = getMcpPrewarmWindowForMap(newServers);
+    setQueryMcpPrewarmOwner({
+      query: targetQuery,
+      fingerprint: newFingerprint,
+      requiredServerIds: Object.keys(newServers),
+      ...(prewarmWindow ?? {}),
+    });
+    console.log(`[agent] SDK setMcpServers ok: added=[${outcome.result.added.join(',')}] removed=[${outcome.result.removed.join(',')}]`);
+    return { ok: true };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[agent] SDK setMcpServers threw (${msg}); deferring restart so next pre-warm picks up new MCPs`);
-    // Fallback path: an SDK restart will rebuild mcpServers from scratch.
-    // Reset fingerprint so a future ensureSdkMcpInSync() retries the diff.
-    setFrozenSdkMcpFingerprint('');
-    scheduleDeferredRestart('mcp');
-    schedulePreWarm();
+    if (lifecycleState.query !== targetQuery) {
+      return {
+        ok: false,
+        reason: 'query_replaced',
+        error: 'Query was replaced during MCP transport mutation',
+      };
+    }
+    const error = err instanceof Error ? err.message : String(err);
+    console.error(`[agent] SDK setMcpServers threw (${error}); rebuilding the Query`);
+    latchMcpMutationRecovery(targetQuery);
+    return { ok: false, reason: 'failed', error };
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
+}
+
+export async function ensureSdkMcpInSync(): Promise<boolean> {
+  // Callers that overlap an existing sync must recompute after it settles:
+  // the later IM request may have changed bridge context while the first
+  // build/mutation was in flight. Returning the shared promise directly would
+  // silently lose that later desired set.
+  while (true) {
+    const targetQuery = lifecycleState.query;
+    if (!targetQuery || lifecycleState.abortRequested) return false;
+    // Promotion and live transport mutation are mutually exclusive owners.
+    // This check and the mutation claim below are synchronous in one event-loop
+    // turn: if promotion won first, rebuild after that turn; if this claim wins
+    // first, the generator observes the published mutation promise and fences.
+    // Never start an async MCP-map build and discover promotion only afterward.
+    if (shouldDeferLiveMcpMutation({
+      promotedItemInFlight: queueState.promotedItemInFlight,
+      turnInFlight: isTurnInFlight(),
+      sdkCommandInFlight: getInFlightQueueId() !== null,
+    })) {
+      scheduleDeferredRestart('mcp');
+      return false;
+    }
+    const mutation = claimQueryMcpMutation(
+      targetQuery,
+      () => mutateSdkMcpForQuery(targetQuery),
+    );
+    const result = await mutation.promise;
+    if (mutation.claimed || !result.ok) return result.ok && !result.deferred;
+  }
+}
+
+/** Return the MCP pre-warm owner installed on the exact persistent Query. */
+function getCurrentQueryMcpPrewarmOwner(): McpPrewarmOwner | null {
+  if (lifecycleState.abortRequested) return null;
+  const owner = getQueryMcpPrewarmOwner();
+  if (!owner) return null;
+  return {
+    identity: owner.query,
+    generation: owner.generation,
+    revision: owner.revision,
+    fingerprint: owner.fingerprint,
+    requiredServerIds: owner.requiredServerIds,
+    startedAt: owner.startedAt,
+    deadlineAt: owner.deadlineAt,
+    readStatuses: () => readQueryMcpStatuses(owner.query),
+  };
+}
+
+/**
+ * Consume a Query/map generation's owner-created grace at the common SDK
+ * dispatch seam. The settled outcome is stored on that owner, so every later
+ * Desktop, IM, or injected turn is a zero-control-RPC fast path.
+ */
+async function observeCurrentQueryMcpPrewarm(
+  options: { signal?: AbortSignal } = {},
+): Promise<McpPrewarmOutcome | null> {
+  const lifecycleOwner = getQueryMcpPrewarmOwner();
+  if (!lifecycleOwner) return null;
+  if (lifecycleOwner.outcome) return lifecycleOwner.outcome;
+
+  const owner = getCurrentQueryMcpPrewarmOwner();
+  if (!owner) return {
+    state: 'owner_replaced',
+    servers: lifecycleOwner.requiredServerIds.map(id => ({ id })),
+    elapsedMs: Math.max(0, Date.now() - lifecycleOwner.startedAt),
+  };
+  const outcome = await awaitMcpPrewarm({
+    owner,
+    getOwner: getCurrentQueryMcpPrewarmOwner,
+    signal: options.signal,
+  });
+  if (outcome.state === 'owner_replaced') return outcome;
+
+  const firstSettlement = settleQueryMcpPrewarmOwner({
+    query: lifecycleOwner.query,
+    generation: lifecycleOwner.generation,
+    revision: lifecycleOwner.revision,
+    outcome,
+  });
+  if (firstSettlement) {
+    const servers = outcome.state === 'degraded'
+      ? formatMcpPrewarmServers(outcome.servers)
+      : lifecycleOwner.requiredServerIds.join(',') || '(none)';
+    console.log(
+      `[agent] MCP pre-warm terminal outcome=${outcome.state}${outcome.state === 'degraded' ? ` reason=${outcome.reason}` : ''}`
+      + ` generation=${lifecycleOwner.generation} revision=${lifecycleOwner.revision}`
+      + ` elapsedMs=${outcome.elapsedMs} budgetMs=${MCP_PREWARM_GRACE_MS} servers=[${servers}]`,
+    );
+  }
+  return outcome;
 }
 
 /**
@@ -3839,14 +4126,9 @@ async function handleAskUserQuestion(
     // Our toolConfig sets previewFormat: 'html', so previews are HTML fragments
     previewFormat: 'html',
   };
-  broadcast('ask-user-question:request', requestPayload);
-  if (supportsAskUserQuestionNativeCard(currentScenario)) {
-    emitImEvent('ask-user-question-request', JSON.stringify(requestPayload));
-  }
-
   // Wait for user response or abort. No wall-clock timeout — see the
   // pendingAskUserQuestions Map declaration for why.
-  return new Promise((resolve, reject) => {
+  const response = new Promise<Record<string, string> | null>((resolve, reject) => {
     const cleanup = () => {
       pendingAskUserQuestions.delete(requestId);
       signal?.removeEventListener('abort', onAbort);
@@ -3880,6 +4162,11 @@ async function handleAskUserQuestion(
 
     pendingAskUserQuestions.set(requestId, { resolve, input: questionInput });
   });
+  broadcast('ask-user-question:request', requestPayload);
+  if (supportsAskUserQuestionNativeCard(currentScenario)) {
+    emitImEvent('ask-user-question-request', JSON.stringify(requestPayload));
+  }
+  return response;
 }
 
 /**
@@ -3957,10 +4244,8 @@ async function handleExitPlanMode(
     throw new DOMException('Aborted', 'AbortError');
   }
 
-  broadcast('exit-plan-mode:request', { ...interactiveEventScope(), requestId, plan, allowedPrompts });
-
   // No wall-clock timeout — see pendingExitPlanMode Map declaration.
-  return new Promise((resolve, reject) => {
+  const response = new Promise<ExitPlanModeResolution>((resolve, reject) => {
     const cleanup = () => {
       pendingExitPlanMode.delete(requestId);
       signal?.removeEventListener('abort', onAbort);
@@ -3980,6 +4265,8 @@ async function handleExitPlanMode(
     signal?.addEventListener('abort', onAbort);
     pendingExitPlanMode.set(requestId, { resolve, plan, allowedPrompts });
   });
+  broadcast('exit-plan-mode:request', { ...interactiveEventScope(), requestId, plan, allowedPrompts });
+  return response;
 }
 
 /**
@@ -4034,10 +4321,8 @@ async function handleEnterPlanMode(
     throw new DOMException('Aborted', 'AbortError');
   }
 
-  broadcast('enter-plan-mode:request', { ...interactiveEventScope(), requestId });
-
   // No wall-clock timeout — see pendingEnterPlanMode Map declaration.
-  return new Promise((resolve, reject) => {
+  const response = new Promise<boolean>((resolve, reject) => {
     const cleanup = () => {
       pendingEnterPlanMode.delete(requestId);
       signal?.removeEventListener('abort', onAbort);
@@ -4057,6 +4342,8 @@ async function handleEnterPlanMode(
     signal?.addEventListener('abort', onAbort);
     pendingEnterPlanMode.set(requestId, { resolve });
   });
+  broadcast('enter-plan-mode:request', { ...interactiveEventScope(), requestId });
+  return response;
 }
 
 /**
@@ -4155,20 +4442,9 @@ async function checkToolPermission(
 
   const inputPreview = typeof input === 'object' ? JSON.stringify(input).slice(0, 500) : String(input).slice(0, 500);
 
-  // Broadcast permission request to frontend
-  broadcast('permission:request', {
-    ...interactiveEventScope(),
-    requestId,
-    toolName,
-    input: inputPreview,
-  });
-
-  // Forward to IM event bus (subscribers route per-requestId for interactive approval cards)
-  emitImEvent('permission-request', JSON.stringify({ requestId, toolName, input: inputPreview }));
-
   // Wait for user response or abort. No wall-clock timeout — see the
   // pendingPermissions Map declaration for why.
-  return new Promise((resolve, reject) => {
+  const response = new Promise<'allow' | 'deny'>((resolve, reject) => {
     const cleanup = () => {
       pendingPermissions.delete(requestId);
       signal?.removeEventListener('abort', onAbort);
@@ -4176,8 +4452,11 @@ async function checkToolPermission(
 
     const onAbort = () => {
       console.debug(`[permission] ${toolName}: aborted by SDK signal`);
+      const wasPending = pendingPermissions.has(requestId);
       cleanup();
-      try { broadcast('permission:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' }); } catch { /* swallow — abort cleanup must not throw */ }
+      if (wasPending) {
+        try { broadcast('permission:expired', { ...interactiveEventScope(), requestId, reason: 'aborted' }); } catch { /* swallow — abort cleanup must not throw */ }
+      }
       // Reject with AbortError so SDK's own abort handling creates the single tool_result.
       // Previously resolve('deny') caused a duplicate tool_result on abort.
       reject(new DOMException('Aborted', 'AbortError'));
@@ -4188,6 +4467,14 @@ async function checkToolPermission(
 
     pendingPermissions.set(requestId, { resolve, toolName, input });
   });
+  broadcast('permission:request', {
+    ...interactiveEventScope(),
+    requestId,
+    toolName,
+    input: inputPreview,
+  });
+  emitImEvent('permission-request', JSON.stringify({ requestId, toolName, input: inputPreview }));
+  return response;
 }
 
 /**
@@ -4267,14 +4554,14 @@ function drainPendingInteractiveRequests(reason: 'reset' | 'session-end'): void 
   // Permission: resolve with 'deny' so any awaiting tool call surfaces as
   // denied.
   for (const [requestId, p] of pendingPermissions) {
+    pendingPermissions.delete(requestId);
     try { broadcast('permission:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try { p.resolve('deny'); } catch { /* swallow — never propagate from cleanup */ }
   }
-  pendingPermissions.clear();
 
-  // Ask-user-question: broadcast :expired then resolve(null). Order matters
-  // only for tests — the tool turn is going away regardless.
+  // Ask-user-question: remove from the owner snapshot before broadcasting expiry.
   for (const [requestId, q] of pendingAskUserQuestions) {
+    pendingAskUserQuestions.delete(requestId);
     try { broadcast('ask-user-question:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try {
       if (supportsAskUserQuestionNativeCard(currentScenario)) {
@@ -4283,20 +4570,19 @@ function drainPendingInteractiveRequests(reason: 'reset' | 'session-end'): void 
     } catch { /* swallow */ }
     try { q.resolve(null); } catch { /* swallow */ }
   }
-  pendingAskUserQuestions.clear();
 
   // Plan-mode entries resolve with `{approved: false}` (request was not approved).
   for (const [requestId, p] of pendingExitPlanMode) {
+    pendingExitPlanMode.delete(requestId);
     try { broadcast('exit-plan-mode:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try { p.resolve({ approved: false }); } catch { /* swallow */ }
   }
-  pendingExitPlanMode.clear();
 
   for (const [requestId, p] of pendingEnterPlanMode) {
+    pendingEnterPlanMode.delete(requestId);
     try { broadcast('enter-plan-mode:expired', { ...interactiveEventScope(), requestId, reason }); } catch { /* swallow */ }
     try { p.resolve(false); } catch { /* swallow */ }
   }
-  pendingEnterPlanMode.clear();
 }
 
 /**
@@ -4355,17 +4641,25 @@ export function getPendingInteractiveRequests(): Array<{
   return result;
 }
 
-async function persistMessagesToStorage(targetMessageCount = transcriptState.messages.length): Promise<void> {
+async function persistMessagesToStorage(
+  targetMessageCount = transcriptState.messages.length,
+  lastActiveAt?: string,
+  metadataDisposition: 'update' | 'skip' = 'update',
+): Promise<void> {
   return scheduleTranscriptPersist({
     sessionId,
     getCurrentSessionId: () => sessionId,
     targetMessageCount,
+    lastActiveAt,
+    metadataDisposition,
   });
 }
 
 async function commitPreparedSessionAfterUserMessagePersist(
   messageText: string,
   origin?: SessionOrigin,
+  lastActiveAt?: string,
+  lastMessagePreview?: string,
 ): Promise<void> {
   const meta = getSessionMetadata(sessionId);
   if (meta?.materializationState !== 'prepared') return;
@@ -4374,6 +4668,8 @@ async function commitPreparedSessionAfterUserMessagePersist(
     messageText,
     title,
     origin,
+    lastActiveAt,
+    lastMessagePreview,
   });
   if (!updated) {
     console.warn(`[agent] prepared metadata commit skipped for ${sessionId}: metadata disappeared after user message persist`);
@@ -4384,13 +4680,30 @@ async function persistMessagesToStorageAndCommitPreparedFirstUserTurn(
   messageText: string,
   origin?: SessionOrigin,
   targetMessageCount = transcriptState.messages.length,
-): Promise<void> {
-  await persistMessagesToStorage(targetMessageCount);
+  phase: 'pre-admission' | 'admission' = 'pre-admission',
+  lastActiveAt?: string,
+): Promise<boolean> {
+  const isPrepared = getSessionMetadata(sessionId)?.materializationState === 'prepared';
+  await persistMessagesToStorage(
+    targetMessageCount,
+    isPrepared ? undefined : lastActiveAt,
+    isPrepared ? 'skip' : 'update',
+  );
+  if (!isPrepared || phase === 'pre-admission') {
+    return !isPrepared && lastActiveAt !== undefined;
+  }
   try {
-    await commitPreparedSessionAfterUserMessagePersist(messageText, origin);
+    const visibleText = resolveVisibleUserTurnText(messageText)?.trim();
+    await commitPreparedSessionAfterUserMessagePersist(
+      messageText,
+      origin,
+      lastActiveAt,
+      visibleText ? visibleText.slice(0, 60) : undefined,
+    );
   } catch (error) {
     console.warn('[agent] prepared metadata commit after user message persist failed:', error);
   }
+  return lastActiveAt !== undefined;
 }
 
 export function getSessionId(): string {
@@ -4419,6 +4732,65 @@ function createMetadataForSessionId(
     meta,
     snapshotKind: agent ? (isLiveFollowScenario(scenario) ? 'live-follow' : 'owned') : `runtime:${meta.runtime ?? 'none'}`,
   };
+}
+
+async function persistSessionMetadataForAdmittedMessage(
+  messageText: string,
+  params: {
+    scenario: SessionMaterializationScenario;
+    origin?: SessionOrigin;
+    allowLazyMaterialization: boolean;
+  },
+): Promise<void> {
+  if (!hasInitialPrompt) {
+    hasInitialPrompt = true;
+    const existingMeta = getSessionMetadata(sessionId);
+    if (existingMeta) {
+      const title = deriveSessionTitle(messageText, 40) || (messageText ? 'New Chat' : '图片消息');
+      if (existingMeta.materializationState !== 'prepared') {
+        try {
+          await commitPreparedSessionForFirstUserTurn(sessionId, {
+            messageText,
+            title,
+            origin: params.origin,
+          });
+        } catch (error) {
+          hasInitialPrompt = false;
+          throw error;
+        }
+      }
+      console.log(`[agent] session ${sessionId} already exists in SessionStore, preserving stats`);
+      return;
+    }
+    if (!params.allowLazyMaterialization) {
+      hasInitialPrompt = false;
+      throw new Error(`[agent] refusing first message for unindexed existing session ${sessionId}; session metadata disappeared before first user turn`);
+    }
+
+    const title = deriveSessionTitle(messageText, 40) || (messageText ? 'New Chat' : '图片消息');
+    const { meta: sessionMeta, snapshotKind } = createMetadataForSessionId(
+      sessionId,
+      title,
+      params.scenario,
+      params.origin,
+    );
+    if (!isLiveFollowScenario(params.scenario)) {
+      Object.assign(sessionMeta, buildOwnedFreezeSnapshotPatch());
+    }
+    try {
+      await saveSessionMetadata(sessionMeta);
+    } catch (error) {
+      hasInitialPrompt = false;
+      throw error;
+    }
+    setLazySessionMaterializationAllowed(false);
+    console.log(`[agent] session ${sessionId} persisted to SessionStore (lazy, scenario=${params.scenario}, snapshot=${snapshotKind})`);
+    return;
+  }
+
+  if (messageText && transcriptState.messages.length === 0) {
+    await updateSessionTitleFromMessage(sessionId, messageText);
+  }
 }
 
 function isUuidSessionId(value: string | null | undefined): value is string {
@@ -6416,20 +6788,15 @@ function handleToolResultComplete(toolUseId: string, content: string, isError?: 
 
 const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   getSessionId: () => sessionId,
+  getWorkspacePath: () => agentDir,
   getCurrentScenario: () => currentScenario,
   getProviderEnv: () => configState.currentProviderEnv,
   getCurrentModel: () => configState.currentModel,
   getIsInterruptingResponse: () => isInterruptingResponse,
   setStreamingMessage: (value) => { isStreamingMessage = value; },
-  setForceDrainTurnStarting: (value) => { forceDrainTurnStarting = value; },
   resetInFlightToolCount: () => { inFlightToolCount = 0; },
   resetWatchdogFired: () => { watchdogFired = false; },
-  resolvePostInterruptTurnEnd: () => {
-    if (postInterruptTurnEndResolve) {
-      postInterruptTurnEndResolve();
-      postInterruptTurnEndResolve = null;
-    }
-  },
+  claimPostInterruptResultTerminal: () => settlePostInterruptTurnEnd('result-claimed'),
   terminalEventAppliesToCurrentInFlight,
   dropInFlightQueueItem,
   preserveInFlightAfterTerminalBoundary,
@@ -6439,6 +6806,7 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   abortTurnAbort,
   clearAmbientTurnId: (sid) => clearAmbientLogContextField(sid, 'turnId'),
   completeCurrentImRequest,
+  cancelCurrentImRequest,
   failCurrentImRequest,
   clearMirrorState,
   clearStreamTurnMaps: () => {
@@ -6477,12 +6845,12 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   applyDeferredRestartIfNeeded,
 });
 
-function handleMessageStopped(): void {
-  builtinTurnLifecycle.stopTurn();
+function handleMessageStopped(): SessionCompletionTerminal | null {
+  return builtinTurnLifecycle.stopTurn();
 }
 
-function handleMessageError(error: string, localizedError?: string): void {
-  builtinTurnLifecycle.failTurn(error, localizedError);
+function handleMessageError(error: string, localizedError?: string): SessionCompletionTerminal | null {
+  return builtinTurnLifecycle.failTurn(error, localizedError);
 }
 
 function probeForkPersistenceIfReady(resultMessage: BuiltinSdkResultMessage): void {
@@ -6578,6 +6946,14 @@ function handleTerminalRecovery(reason: 'image' | 'stale' | undefined): void {
 
 function applyDeferredRestartIfNeeded(): void {
   if (!hasDeferredRestart()) return;
+  if (shouldDeferLiveMcpMutation({
+    promotedItemInFlight: queueState.promotedItemInFlight,
+    turnInFlight: isTurnInFlight(),
+    sdkCommandInFlight: getInFlightQueueId() !== null,
+    backgroundTasksActive: hasQueryBackgroundTasks(lifecycleState.query),
+  })) {
+    return;
+  }
   const reasons = drainDeferredRestart();
   console.log(`[agent] Turn complete, applying deferred config restart (reasons=${reasons})`);
   abortPersistentSession();
@@ -6923,6 +7299,16 @@ export function getCurrentTurnIdentity(): TurnIdentity | null {
     ?? getTurnAdmissionIdentity();
 }
 
+/** Runtime-accepted turn only; excludes admission tickets and promoted guards. */
+export function getDispatchedTurnIdentity(): { queueId: string } | null {
+  const queueId = getBuiltinCurrentTurnQueueId();
+  return queueId ? { queueId } : null;
+}
+
+export function getBuiltinSessionCompletionTerminal(): SessionCompletionTerminal | null {
+  return getLastSessionCompletionTerminal();
+}
+
 export function hasQueuedTurnByOwner(owner: TurnOwner): boolean {
   return queueHasQueuedTurnByOwner(owner);
 }
@@ -6937,6 +7323,29 @@ export function getLogLines(): string[] {
 
 export function getMessages(): MessageWire[] {
   return transcriptState.messages;
+}
+
+export function getBuiltinLiveSessionSnapshot(targetSessionId: string): {
+  snapshotRevision: number;
+  inMemoryMessages: SessionMessage[];
+  liveStreamingMessage: SessionMessage | null;
+  liveSessionState: SessionState;
+  pendingInteractiveRequests: ReturnType<typeof getPendingInteractiveRequests>;
+} | null {
+  if (targetSessionId !== sessionId) return null;
+  flushPendingLiveEvents();
+  const streamingAssistantId = getStreamingAssistantId();
+  const messages = transcriptState.messages.map(messageWireToSessionMessage);
+  const liveStreamingMessage = streamingAssistantId
+    ? messages.find(message => message.id === streamingAssistantId) ?? null
+    : null;
+  return structuredClone({
+    snapshotRevision: getBuiltinLiveRevision(),
+    inMemoryMessages: messages.filter(message => message.id !== streamingAssistantId),
+    liveStreamingMessage,
+    liveSessionState: sessionState,
+    pendingInteractiveRequests: getPendingInteractiveRequests(),
+  });
 }
 
 // Last agent error — captured from SDK error events for heartbeat error reporting.
@@ -6995,7 +7404,7 @@ function clearMessageState(): void {
   // Reset browser tool tracking for new session
   setBrowserToolUsed(false);
   setStorageStateSaved(false);
-  // Pattern B/G: drain the pending requestId queue — any in-flight bus
+  // Pattern B/G: drain the output-owner queue — any in-flight IM bus
   // subscribers for the old session belong to closed SSE streams; new SDK
   // output for a new session should not be tagged with old trace IDs.
   clearPendingRequests();
@@ -7042,9 +7451,21 @@ function drainQueueWithCancellation(): void {
     item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
     void notifyQueuedTurnStopped(item, 'Session reset before queue dispatch');
     item.resolve();
-    broadcast('queue:cancelled', { queueId: item.id });
+    if (!item.deferVisibleAdmission) {
+      broadcast('queue:cancelled', { queueId: item.id });
+    }
   }
   for (const item of drained.turnBoundary) {
+    const invisibleAdmission = item.admissionTicket?.beforeUserPersistence !== undefined
+      || item.sourceItem?.deferVisibleAdmission === true;
+    if (item.admissionTicket) {
+      cancelDetachedAdmissionTicket(item.admissionTicket);
+      item.admissionTicket.settleDispatchAcceptance?.({
+        accepted: false,
+        error: 'Queue item was cancelled',
+      });
+      void notifyQueuedTurnStopped(item.admissionTicket, 'Session reset before queue dispatch');
+    }
     if (item.sourceItem) {
       pushInboxAbortReplyForQueuedItem(item.sourceItem, 'message_dropped_on_reset');
       item.sourceItem.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
@@ -7055,7 +7476,9 @@ function drainQueueWithCancellation(): void {
       setForceTurnBoundaryQueueId(null);
     }
     releaseTurnAdmissionTicket(item.queueId);
-    broadcast('queue:cancelled', { queueId: item.queueId });
+    if (!invisibleAdmission) {
+      broadcast('queue:cancelled', { queueId: item.queueId });
+    }
   }
   releaseTurnAdmissionTicket();
 }
@@ -7138,6 +7561,7 @@ export async function resetSession(): Promise<void> {
 
   // 2. Clear all message state (shared with initializeAgent)
   clearMessageState();
+  clearImBridgeToolsContext();
 
   // 3. Generate new session ID (don't persist yet - wait for first message)
   setCurrentSessionId(randomUUID());
@@ -7523,6 +7947,7 @@ export async function switchToSession(targetSessionId: string): Promise<boolean>
 
   // Reset message/queue/streaming state (shared with initializeAgent, resetSession)
   clearMessageState();
+  clearImBridgeToolsContext();
 
   // Reset session-level runtime state
   resetAbortFlag();
@@ -7989,23 +8414,11 @@ export async function enqueueUserMessage(
     allowLazySessionMaterialization?: boolean;
     sessionBirthOrigin?: SessionOrigin;
     queueResponseModeOverride?: 'realtime' | 'turn';
+    /** Infrastructure-only gate after Query-changing config, before user/session persistence. */
+    beforeUserPersistence?: import('./session-core/turn-queue').DispatchGuard;
     beforeDispatch?: import('./session-core/turn-queue').DispatchGuard;
   },
 ): Promise<EnqueueResult> {
-  // 等待进行中的 resetSession/switchToSession 完成，防止消息投递到已死的 generator
-  // 这些函数是异步的（await lifecycleState.termination 需要数秒），
-  // 在此期间投递的消息会被随后的 clearMessageState() 清除导致消息丢失
-  if (resetPromise) {
-    console.log('[agent] enqueueUserMessage: waiting for session reset to complete...');
-    await resetPromise;
-    console.log('[agent] enqueueUserMessage: session reset completed, proceeding');
-  }
-
-  // 等待进行中的时间回溯完成，防止并发写入 transcriptState.messages/session 状态
-  if (rewindPromise) {
-    await rewindPromise;
-  }
-
   const trimmed = text.trim();
   const hasImages = images && images.length > 0;
 
@@ -8016,11 +8429,8 @@ export async function enqueueUserMessage(
   const canLazyMaterializeForThisMessage = () =>
     isLazySessionMaterializationAllowed() || options?.allowLazySessionMaterialization === true;
 
-  if (!hasInitialPrompt && !canLazyMaterializeForThisMessage() && !getSessionMetadata(sessionId)) {
-    throw new Error(`[agent] refusing first message for unindexed existing session ${sessionId}; session metadata disappeared before first user turn`);
-  }
-
   const queueId = options?.queueId ?? randomUUID();
+  const deferVisibleAdmission = options?.beforeUserPersistence !== undefined;
   let settleDispatchAcceptance: ((result: { accepted: boolean; error?: string }) => void) | undefined;
   const dispatchAcceptance = options?.beforeDispatch
     ? new Promise<{ accepted: boolean; error?: string }>((resolve) => {
@@ -8033,14 +8443,29 @@ export async function enqueueUserMessage(
     options?.fromDesktopChatSend,
   );
   const providerRetryPending = transientProviderRetryTimer !== null;
+  const MAX_QUEUE_SIZE = 10;
   const initialAdmissionBusy = isTurnInFlight()
     || lifecycleState.abortRequested
     || isInterruptingResponse
     || providerRetryPending
     || hasQueuedOrInFlightWork()
     || queueState.promotedItemInFlight;
+  let keepTurnAdmissionTicketUntilGenerator = false;
+  let reservedTurnBoundaryItem: TurnBoundaryQueueItem | null = null;
+  let reservedAdmissionAction: QueueAdmissionAction | null = null;
   let admissionTicket: import('./builtin-session/types').TurnAdmissionTicket | null = null;
-  if (queueResponseMode === 'turn' && !initialAdmissionBusy) {
+  const infrastructureTransitionReservation = options?.beforeUserPersistence
+    && (resetPromise !== null || rewindPromise !== null)
+    && getTurnAdmissionTicket() === null;
+  if (
+    queueResponseMode === 'turn'
+    && (!initialAdmissionBusy || infrastructureTransitionReservation || deferVisibleAdmission)
+  ) {
+    if (deferVisibleAdmission && initialAdmissionBusy && !infrastructureTransitionReservation) {
+      if (queuedWorkCount() >= MAX_QUEUE_SIZE) {
+        return { queued: false, error: `Queue full (max ${MAX_QUEUE_SIZE})` };
+      }
+    }
     admissionTicket = {
       queueId,
       requestId,
@@ -8048,18 +8473,47 @@ export async function enqueueUserMessage(
       messageText: trimmed,
       turnOwner: options?.turnOwner,
       onTerminal: options?.onTerminal,
+      beforeUserPersistence: options?.beforeUserPersistence,
       beforeDispatch: options?.beforeDispatch,
       settleDispatchAcceptance,
       canceled: false,
     };
-    setTurnAdmissionTicket(admissionTicket);
-    setCommittingTurnAdmissionQueueId(queueId);
+    if (deferVisibleAdmission && initialAdmissionBusy && !infrastructureTransitionReservation) {
+      reservedAdmissionAction = 'turn-boundary';
+      reservedTurnBoundaryItem = {
+        queueId,
+        ready: false,
+        admissionTicket,
+        messageText: trimmed,
+        requestId,
+      };
+      pushTurnBoundary(reservedTurnBoundaryItem);
+    } else {
+      setTurnAdmissionTicket(admissionTicket);
+      setCommittingTurnAdmissionQueueId(queueId);
+    }
   }
-  let keepTurnAdmissionTicketUntilGenerator = false;
-  let reservedTurnBoundaryItem: TurnBoundaryQueueItem | null = null;
-  let reservedAdmissionAction: QueueAdmissionAction | null = null;
 
   try {
+  // Register the turn admission ticket above before waiting on reset/rewind.
+  // Goal/Task cancellation can therefore abort both MCP fences while the
+  // session transition is still in progress, before any metadata can change.
+  if (resetPromise) {
+    console.log('[agent] enqueueUserMessage: waiting for session reset to complete...');
+    await resetPromise;
+    console.log('[agent] enqueueUserMessage: session reset completed, proceeding');
+  }
+
+  if (rewindPromise) {
+    await rewindPromise;
+  }
+  if (admissionTicket?.canceled) {
+    return { queued: false, error: 'Queue item was cancelled before dispatch' };
+  }
+  if (!hasInitialPrompt && !canLazyMaterializeForThisMessage() && !getSessionMetadata(sessionId)) {
+    throw new Error(`[agent] refusing first message for unindexed existing session ${sessionId}; session metadata disappeared before first user turn`);
+  }
+
   // ─── DELAYED CONTINUE (consume flag) ──────────────────────────────────
   // If the previous turn on this session was aborted by the inactivity
   // watchdog *and* produced real model output, the SessionMetadata
@@ -8095,14 +8549,21 @@ export async function enqueueUserMessage(
   //     check catches that case; we can't un-enqueue the reminder but
   //     we MUST preserve the original session's flag for retry.
   const sessionIdSnapshot = sessionId;
-  await consumePendingContinueAfterAbort(
-    sessionIdSnapshot,
-    permissionMode,
-    model,
-    providerEnv,
-    reasoningEffort,
-    'next-enqueue',
-  );
+  // Infrastructure-owned injected turns have their own prompt and admission
+  // transaction. They must never consume the prior foreground turn's delayed
+  // continue flag: doing so recursively persisted/broadcast an unfenced
+  // reminder before the injected turn's MCP preflight. Leave the flag for the
+  // next ordinary user enqueue, which is the owner the watchdog intended.
+  if (!options?.beforeUserPersistence) {
+    await consumePendingContinueAfterAbort(
+      sessionIdSnapshot,
+      permissionMode,
+      model,
+      providerEnv,
+      reasoningEffort,
+      'next-enqueue',
+    );
+  }
   if (admissionTicket?.canceled) {
     return { queued: false, error: 'Queue item was cancelled before dispatch' };
   }
@@ -8316,65 +8777,40 @@ export async function enqueueUserMessage(
     return { queued: false, error: 'Queue item was cancelled before dispatch' };
   }
 
-  // Persist session to SessionStore on first message
-  if (!hasInitialPrompt) {
-    hasInitialPrompt = true;
-    // Check if session metadata already exists (e.g., IM Bot session reloaded after Sidecar restart)
-    const existingMeta = getSessionMetadata(sessionId);
-    if (existingMeta) {
-      // Session already in index — only update title if it's still default.
-      // deriveSessionTitle strips the <system-reminder>/<CRON_TASK>/<HEARTBEAT>
-      // wrapper BEFORE the 40-char cap so cron/heartbeat turns don't store a
-      // wrapper-only scrap like "执行任务：请你帮 E..." (cron-title fix).
-      // Fallback split (adversarial-review #4): a wrapper-only TEXT turn strips
-      // to '' but is not an image message — only reserve '图片消息' for genuinely
-      // text-less (image-only) input; otherwise 'New Chat'.
-      const title = deriveSessionTitle(trimmed, 40) || (trimmed ? 'New Chat' : '图片消息');
-      if (existingMeta.materializationState !== 'prepared') {
-        await commitPreparedSessionForFirstUserTurn(sessionId, {
-          messageText: trimmed,
-          title,
-          origin: options?.sessionBirthOrigin,
-        });
-      }
-      console.log(`[agent] session ${sessionId} already exists in SessionStore, preserving stats`);
-    } else {
-      if (!canLazyMaterializeForThisMessage()) {
-        hasInitialPrompt = false;
-        throw new Error(`[agent] refusing first message for unindexed existing session ${sessionId}; session metadata disappeared before first user turn`);
-      }
-      // Brand new session — create metadata. v0.1.69: lazy creation covers two cases:
-      //   (a) Desktop first-send with a pending session ID (App.tsx generates a
-      //       `pending-<tabId>` placeholder and never calls POST /sessions; the real
-      //       session is materialized here). → owned snapshot (self-contained).
-      //   (b) IM Bot / agent-channel / registeredAgent first message. → live-follow snapshot.
-      // Dispatch on `currentScenario.type` set by the caller before enqueue:
-      //   - 'desktop' / 'cron' → owned (config frozen into session)
-      //   - 'im' / 'agent-channel' / 'registeredAgent' → live-follow (only runtime recorded)
-      // If the agent lookup misses (workspace not registered), snapshot is `{}` and
-      // `resolveSessionConfig`'s lazy fallback (meta ?? agent) covers it.
-      // Strip the system wrapper before the 40-char cap (cron-title fix) —
-      // otherwise a cron/heartbeat first message stores a wrapper-only scrap.
-      // Fallback split (adversarial-review #4): '图片消息' only for text-less input.
-      const title = deriveSessionTitle(trimmed, 40) || (trimmed ? 'New Chat' : '图片消息');
-      const { meta: sessionMeta, snapshotKind } = createMetadataForSessionId(
-        sessionId,
-        title,
-        currentScenario.type,
-        options?.sessionBirthOrigin,
-      );
-      if (!isLiveFollowScenario(currentScenario.type)) {
-        Object.assign(sessionMeta, buildOwnedFreezeSnapshotPatch());
-      }
-      await saveSessionMetadata(sessionMeta);
-      setLazySessionMaterializationAllowed(false);
-      console.log(`[agent] session ${sessionId} persisted to SessionStore (lazy, scenario=${currentScenario.type}, snapshot=${snapshotKind})`);
+  if (options?.beforeUserPersistence) {
+    let persistenceGate: DispatchGuardResult;
+    try {
+      persistenceGate = await options.beforeUserPersistence();
+    } catch (error) {
+      persistenceGate = {
+        accepted: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
-  } else {
-    // Update session title from first real message if needed
-    if (trimmed && transcriptState.messages.length === 0) {
-      await updateSessionTitleFromMessage(sessionId, trimmed);
+    if (admissionTicket?.canceled) {
+      return { queued: false, error: 'Queue item was cancelled before dispatch' };
     }
+    if (!persistenceGate.accepted) {
+      return {
+        queued: false,
+        error: persistenceGate.error ?? 'User message was rejected before persistence',
+      };
+    }
+  }
+
+  const deferredSessionMetadata = options?.beforeDispatch
+    ? {
+        scenario: currentScenario.type,
+        origin: options.sessionBirthOrigin,
+        allowLazyMaterialization: canLazyMaterializeForThisMessage(),
+      }
+    : undefined;
+  if (!deferredSessionMetadata) {
+    await persistSessionMetadataForAdmittedMessage(trimmed, {
+      scenario: currentScenario.type,
+      origin: options?.sessionBirthOrigin,
+      allowLazyMaterialization: canLazyMaterializeForThisMessage(),
+    });
   }
 
   if (admissionTicket?.canceled) {
@@ -8389,7 +8825,7 @@ export async function enqueueUserMessage(
   // the startStreamingSession finally block, causing wasPreWarming to be false and both
   // recovery branches to miss. The message will be queued (isSessionBusy path below) and
   // processed by the next session after the finally block's schedulePreWarm fires.
-  if (lifecycleState.preWarming && !lifecycleState.abortRequested) {
+  if (lifecycleState.preWarming && !lifecycleState.abortRequested && !options?.beforeDispatch) {
     setPreWarmInProgress(false);
     // Pre-warm 已收到 system_init → SDK 已注册此 session，后续必须用 resume
     if (lifecycleState.systemInitInfo) {
@@ -8406,7 +8842,7 @@ export async function enqueueUserMessage(
   // BUT: when lifecycleState.abortRequested is true, the timer is the ONLY recovery mechanism
   // for restarting the session — don't cancel it. Messages will queue via isSessionBusy
   // path and be processed when the timer fires a new session.
-  if (lifecycleState.preWarmTimer && !lifecycleState.abortRequested) {
+  if (lifecycleState.preWarmTimer && !lifecycleState.abortRequested && !options?.beforeDispatch) {
     clearTimeout(lifecycleState.preWarmTimer);
     setPreWarmTimer(null);
   }
@@ -8430,9 +8866,10 @@ export async function enqueueUserMessage(
   // `lifecycleState.systemInitInfo` as a fallback: if a session somehow received system_init
   // without lifecycleState.sdkControlReady having flipped (e.g., recovery paths that bypass
   // pre-warm), the per-turn metadata still proves the subprocess is alive.
-  setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
+  if (!deferVisibleAdmission) {
+    setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
+  }
 
-  const MAX_QUEUE_SIZE = 10;
   const takeAdmissionCallbacks = () => {
     const callbacks = {
       onTerminal: admissionTicket?.onTerminal ?? options?.onTerminal,
@@ -8446,17 +8883,17 @@ export async function enqueueUserMessage(
     return callbacks;
   };
   if (isSessionBusy && !holdForWatchdogRecovery) {
-    if (queuedWorkCount() >= MAX_QUEUE_SIZE) {
+    if (!reservedTurnBoundaryItem && queuedWorkCount() >= MAX_QUEUE_SIZE) {
       return { queued: false, error: `Queue full (max ${MAX_QUEUE_SIZE})` };
     }
-    const reservationAdmissionAction = decideQueueAdmission({
+    const reservationAdmissionAction = reservedAdmissionAction ?? decideQueueAdmission({
       mode: queueResponseMode,
       busy: true,
       hasInFlight: queueState.inFlightToCliId !== null,
       hasScopedTurnBoundaryQueued: options?.fromDesktopChatSend === true
         && (getTurnBoundaryQueue().length > 0 || getTurnAdmissionTicket() !== null),
     });
-    if (reservationAdmissionAction === 'turn-boundary') {
+    if (reservationAdmissionAction === 'turn-boundary' && !reservedTurnBoundaryItem) {
       reservedAdmissionAction = reservationAdmissionAction;
       reservedTurnBoundaryItem = {
         queueId,
@@ -8466,7 +8903,9 @@ export async function enqueueUserMessage(
       };
       pushTurnBoundary(reservedTurnBoundaryItem);
       console.log(`[agent] Reserved turn-boundary queue slot: queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
-      broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'turn' });
+      if (!deferVisibleAdmission) {
+        broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'turn' });
+      }
     }
   }
 
@@ -8667,6 +9106,8 @@ export async function enqueueUserMessage(
       turnOwner: options?.turnOwner,
       onTerminal: admissionCallbacks.onTerminal,
       beforeDispatch: options?.beforeDispatch,
+      deferredSessionMetadata,
+      deferVisibleAdmission,
       settleDispatchAcceptance: admissionCallbacks.settleDispatchAcceptance,
     };
 
@@ -8677,7 +9118,9 @@ export async function enqueueUserMessage(
     if (holdForWatchdogRecovery) {
       pushMessage(queueItem);
       console.log(`[agent] Message queued behind watchdog recovery reminder: queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
-      broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: queueDeliveryMode });
+      if (!deferVisibleAdmission) {
+        broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: queueDeliveryMode });
+      }
     } else if (admissionAction === 'turn-boundary') {
       const turnItem = reservedTurnBoundaryItem;
       if (turnItem && !getTurnBoundaryQueue().includes(turnItem)) {
@@ -8698,9 +9141,15 @@ export async function enqueueUserMessage(
       readyTurnItem.analyticsSource = analyticsSource ?? currentScenario.type;
       readyTurnItem.analyticsOrigin = analyticsOrigin;
       readyTurnItem.mirrorImages = toMirrorImages(resolvedImages);
+      if (readyTurnItem.admissionTicket) {
+        releaseDetachedAdmissionTicket(readyTurnItem.admissionTicket);
+        readyTurnItem.admissionTicket = undefined;
+      }
       if (!turnItem) {
         pushTurnBoundary(readyTurnItem);
-        broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'turn' });
+        if (!deferVisibleAdmission) {
+          broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'turn' });
+        }
       }
       console.log(`[agent] Message queued for next turn boundary: queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
       startNextTurnQueuedItem('recovery');
@@ -8708,21 +9157,37 @@ export async function enqueueUserMessage(
       // No in-flight queue item — this becomes the in-flight one. Yield
       // immediately so CLI receives it and the next mid-turn drain
       // (query.ts:1570 at any tool break) attaches it to the model's
-      // context. Mark queueState.inFlightToCliId BEFORE wakeGenerator so any
-      // concurrent enqueue arriving in the same micro-task takes the
-      // buffer path.
-      setInFlightQueueItem(queueId, {
-        messageText: trimmed,
-        attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
-        requestId,
-        source: metadata?.source,
-        analyticsSource: analyticsSource ?? currentScenario.type,
-        analyticsOrigin,
-        mirrorImages: toMirrorImages(resolvedImages),
-      });
-      wakeGenerator(queueItem);
-      console.log(`[agent] Message queued mid-turn (in-flight to CLI): queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
-      broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: true, deliveryMode: 'realtime' });
+      // context. Claim queueState.inFlightToCliId only when the generator has
+      // a live resolver; otherwise ownership remains in messageQueue until a
+      // later real handoff. When claimed, mark BEFORE wakeGenerator so any
+      // concurrent enqueue arriving in the same micro-task takes the buffer path.
+      if (decideRealtimeHandoff(lifecycleState.messageResolver !== null) === 'sdk-inflight') {
+        setInFlightQueueItem(queueId, {
+          messageText: trimmed,
+          attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
+          requestId,
+          source: metadata?.source,
+          analyticsSource: analyticsSource ?? currentScenario.type,
+          analyticsOrigin,
+          mirrorImages: toMirrorImages(resolvedImages),
+        });
+        wakeGenerator(queueItem);
+        console.log(`[agent] Message queued mid-turn (in-flight to CLI): queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
+        if (!deferVisibleAdmission) {
+          broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: true, deliveryMode: 'realtime' });
+        }
+      } else {
+        // The generator is still owned by a promoted/active turn. Labeling
+        // this item SDK-inflight would be false: wakeGenerator can only put it
+        // in the local message queue, and teardown would then cancel the slot
+        // while leaving the same item queued for replay. Keep one honest local
+        // owner; dequeue promotes it when a handoff is real.
+        pushMessage(queueItem);
+        console.log(`[agent] Message queued mid-turn (local until generator handoff): queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
+        if (!deferVisibleAdmission) {
+          broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'realtime' });
+        }
+      }
     } else {
       // Another item is in-flight to CLI. Buffer this one. It stays
       // fully cancellable (splice from queueState.pendingMidTurnQueue) until promoted
@@ -8747,7 +9212,9 @@ export async function enqueueUserMessage(
         sourceItem: queueItem,
       });
       console.log(`[agent] Message queued mid-turn (pending — in-flight slot busy): queueId=${queueId} requestId=${requestId ?? '-'} (pending=${getPendingMidTurnQueue().length})`);
-      broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'realtime' });
+      if (!deferVisibleAdmission) {
+        broadcast('queue:added', { queueId, messageText: trimmed.slice(0, 100), isInFlight: false, deliveryMode: 'realtime' });
+      }
     }
 
     // Safety net: if message was queued because lifecycleState.abortRequested is true but no session
@@ -8790,7 +9257,7 @@ export async function enqueueUserMessage(
     mirrorImages: toMirrorImages(resolvedImages),
   };
   if (!options?.beforeDispatch) {
-    await surfaceBuiltinUserMessage(directUserSurface);
+    await surfaceBuiltinUserMessage(directUserSurface, 'pre-admission');
   }
 
   if (admissionTicket?.canceled) {
@@ -8808,12 +9275,15 @@ export async function enqueueUserMessage(
     requestId,
     analyticsSource: analyticsSource ?? currentScenario.type,
     analyticsOrigin,
+    sessionBirthOrigin: options?.sessionBirthOrigin,
     providerAnalytics: turnProviderAnalytics,
     inboxMeta,
     turnOwner: options?.turnOwner,
     onTerminal: admissionCallbacks.onTerminal,
     beforeDispatch: options?.beforeDispatch,
+    deferredSessionMetadata,
     deferredUserSurface: options?.beforeDispatch ? directUserSurface : undefined,
+    deferVisibleAdmission,
     settleDispatchAcceptance: admissionCallbacks.settleDispatchAcceptance,
   };
 
@@ -8828,7 +9298,7 @@ export async function enqueueUserMessage(
     // the /api/im/chat handler can't return its SSE Response, causing Rust's
     // read_timeout to fire. setTimeout(0) lets the handler return first.
     setTimeout(() => {
-      startStreamingSession().catch((error) => {
+      startStreamingSession(deferVisibleAdmission).catch((error) => {
         console.error('[agent] failed to start session', error);
       });
     }, 0);
@@ -8844,10 +9314,19 @@ export async function enqueueUserMessage(
       const reservationIdx = getTurnBoundaryQueue().indexOf(reservedTurnBoundaryItem);
       if (reservationIdx >= 0) {
         spliceTurnBoundary(reservationIdx, 1);
+        if (reservedTurnBoundaryItem.admissionTicket) {
+          cancelDetachedAdmissionTicket(reservedTurnBoundaryItem.admissionTicket);
+          reservedTurnBoundaryItem.admissionTicket.settleDispatchAcceptance?.({
+            accepted: false,
+            error: 'Queue item was rejected before dispatch',
+          });
+        }
         if (reservedTurnBoundaryItem.queueId === getForceTurnBoundaryQueueId()) {
           setForceTurnBoundaryQueueId(null);
         }
-        broadcast('queue:cancelled', { queueId: reservedTurnBoundaryItem.queueId });
+        if (!deferVisibleAdmission) {
+          broadcast('queue:cancelled', { queueId: reservedTurnBoundaryItem.queueId });
+        }
         startNextTurnQueuedItem('recovery');
       }
     }
@@ -8936,8 +9415,8 @@ export async function waitForSessionIdle(
 export async function interruptCurrentResponse(reason: CancelReason = 'user'): Promise<boolean> {
   if (transientProviderRetryTimer) {
     clearTransientProviderRetryTimer(`interrupt:${reason}`);
-    broadcast('chat:message-stopped', null);
-    handleMessageStopped();
+    const completionTerminal = handleMessageStopped();
+    broadcast('chat:message-stopped', withSessionCompletionTerminal(null, completionTerminal));
     return true;
   }
 
@@ -8995,13 +9474,15 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
 
   if (!lifecycleState.query) {
     console.log('[agent] No lifecycleState.query but turn is still marked active, resetting state');
-    broadcast('chat:message-stopped', null);
-    handleMessageStopped();
+    const completionTerminal = handleMessageStopped();
+    broadcast('chat:message-stopped', withSessionCompletionTerminal(null, completionTerminal));
     return true;
   }
 
   setInterruptingInFlightQueueId(getInFlightQueueId());
   isInterruptingResponse = true;
+  postInterruptTurnEndOutcome = null;
+  postInterruptTurnEndResolve = null;
   try {
     // Step 1: Try graceful interrupt (5 seconds).
     // interrupt() is cooperative — the SDK subprocess must be responsive to process it.
@@ -9051,15 +9532,15 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
     //     down. NOT a hung tool — calling it one in the log misleads anyone
     //     grepping for tool issues. This was the misdiagnosis observed on
     //     2026-05-07 when stop was pressed during a thinking block.
-    if (interrupted && lifecycleState.query) {
-      const turnEnded = new Promise<void>(resolve => {
+    if (interrupted && lifecycleState.query && !postInterruptTurnEndOutcome) {
+      const turnEnded = new Promise<PostInterruptTurnEndOutcome>(resolve => {
         postInterruptTurnEndResolve = resolve;
       });
-      const postInterruptTimeout = new Promise<void>((_, reject) =>
+      const postInterruptTimeout = new Promise<PostInterruptTurnEndOutcome>((_, reject) =>
         setTimeout(() => reject(new Error('Post-interrupt turn completion timeout')), 3000)
       );
       try {
-        await Promise.race([turnEnded, postInterruptTimeout]);
+        postInterruptTurnEndOutcome = await Promise.race([turnEnded, postInterruptTimeout]);
       } catch {
         postInterruptTurnEndResolve = null;
         if (lifecycleState.query) {
@@ -9076,22 +9557,19 @@ export async function interruptCurrentResponse(reason: CancelReason = 'user'): P
       }
     }
 
-    // Issue #289 — if the graceful-interrupt `result` already ran handleMessageComplete and
-    // it FORCE-surfaced the in-flight item, the turn-end is fully handled and the SDK is
-    // draining that item into a new turn. Calling handleMessageStopped() here would undo the
-    // streaming re-arm and double-pop the IM request (a racy idle window). Skip it; a plain
-    // stop (flag unset) still tears down normally.
-    if (forceDrainTurnStarting) {
-      forceDrainTurnStarting = false;
-    } else {
-      broadcast('chat:message-stopped', null);
-      handleMessageStopped();
+    // A graceful SDK result synchronously claims and consumes the current
+    // output owner. Only the no-result/session-ended path may claim stopped
+    // here; calling both terminalizers would pop the following IM request.
+    if (postInterruptTurnEndOutcome !== 'result-claimed') {
+      const completionTerminal = handleMessageStopped();
+      broadcast('chat:message-stopped', withSessionCompletionTerminal(null, completionTerminal));
     }
     return true;
   } finally {
     isInterruptingResponse = false;
     setInterruptingInFlightQueueId(null);
-    forceDrainTurnStarting = false; // defensive: never leak into a later interrupt
+    postInterruptTurnEndResolve = null;
+    postInterruptTurnEndOutcome = null;
   }
 }
 
@@ -9139,7 +9617,7 @@ export async function cancelImRequest(
     return { aborted: true, mode: 'queued' };
   }
   // Active turn? (queue head matches)
-  if (getPendingRequestIds()[0] === requestId && isTurnInFlight()) {
+  if (peekPendingOutputOwner()?.requestId === requestId && isTurnInFlight()) {
     console.log(`[agent] cancelImRequest requestId=${requestId} mode=running`);
     await interruptCurrentResponse(reason);
     return { aborted: true, mode: 'running' };
@@ -9153,8 +9631,11 @@ export async function cancelImRequest(
     if (settlement.cancelled) {
       const sourceItem = getCurrentTurnSourceItem();
       if (sourceItem?.id === queueId) await notifyQueuedTurnStopped(sourceItem);
-      if (settlement.removePendingRequest) removePendingRequest(requestId);
-      if (settlement.clearSlot) clearInFlightSlot();
+      if (settlement.removePendingRequest) removePendingOutputOwnerByQueueId(queueId);
+      if (settlement.clearSlot) {
+        clearInFlightSlot();
+        applyDeferredRestartIfNeeded();
+      }
       if (settlement.broadcastCancelled) broadcast('queue:cancelled', { queueId });
       console.log(`[agent] cancelImRequest requestId=${requestId} mode=in-flight-sdk-queue`);
       if (settlement.promoteNext) schedulePostTerminalQueueDrain('stopped');
@@ -9191,21 +9672,24 @@ export type QueueCancelResult =
  *     cancel_async_message; it succeeds only before SDK dequeues execution.
  */
 export async function cancelQueueItem(queueId: string): Promise<QueueCancelResult> {
-  const admission = cancelTurnAdmissionTicket(queueId);
+  const admissionCancellation = cancelTurnAdmissionTicket(queueId);
+  const admission = admissionCancellation?.ticket ?? null;
   const removed = removeQueuedItemByQueueId(queueId);
 
   switch (removed.location) {
     case 'message': {
       const item = removed.item!;
+      await admissionCancellation?.settlement;
       item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
       await notifyQueuedTurnStopped(item);
       item.resolve();
-      broadcast('queue:cancelled', { queueId });
+      if (!item.deferVisibleAdmission) broadcast('queue:cancelled', { queueId });
       console.log(`[agent] Queue item ${queueId} cancelled from queueState.messageQueue (wasQueued=${item.wasQueued})`);
       return { status: 'cancelled', cancelledText: item.messageText };
     }
     case 'pending-mid-turn': {
       const pending = removed.pending!;
+      await admissionCancellation?.settlement;
       pending.sourceItem.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
       await notifyQueuedTurnStopped(pending.sourceItem);
       pending.sourceItem.resolve();
@@ -9221,13 +9705,31 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
     }
     case 'turn-boundary': {
       const turnBoundary = removed.turnBoundary!;
+      const invisibleAdmission = turnBoundary.admissionTicket?.beforeUserPersistence !== undefined
+        || turnBoundary.sourceItem?.deferVisibleAdmission === true;
+      const detachedAdmissionSettlement = turnBoundary.admissionTicket
+        ? cancelDetachedAdmissionTicket(turnBoundary.admissionTicket)
+        : Promise.resolve();
+      const sourceGuardSettlement = Promise.resolve(
+        turnBoundary.sourceItem?.beforeDispatch?.cancel?.(),
+      );
+      await Promise.all([
+        admissionCancellation?.settlement,
+        detachedAdmissionSettlement,
+        sourceGuardSettlement,
+      ]);
+      turnBoundary.admissionTicket?.settleDispatchAcceptance?.({
+        accepted: false,
+        error: 'Queue item was cancelled',
+      });
       turnBoundary.sourceItem?.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
-      if (turnBoundary.sourceItem) await notifyQueuedTurnStopped(turnBoundary.sourceItem);
+      const stoppedOwner = turnBoundary.sourceItem ?? turnBoundary.admissionTicket;
+      if (stoppedOwner) await notifyQueuedTurnStopped(stoppedOwner);
       turnBoundary.sourceItem?.resolve();
       if (turnBoundary.queueId === getForceTurnBoundaryQueueId()) {
         setForceTurnBoundaryQueueId(null);
       }
-      broadcast('queue:cancelled', { queueId });
+      if (!invisibleAdmission) broadcast('queue:cancelled', { queueId });
       console.log(`[agent] Queue item ${queueId} cancelled from queueState.turnBoundaryQueue`);
       if (!hasQueuedOrInFlightWork() && !isTurnInFlight()) {
         setSessionState('idle');
@@ -9242,8 +9744,11 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
         const cancelledText = meta?.messageText ?? '';
         const sourceItem = getCurrentTurnSourceItem();
         if (sourceItem?.id === queueId) await notifyQueuedTurnStopped(sourceItem);
-        if (settlement.removePendingRequest) removePendingRequest(meta?.requestId);
-        if (settlement.clearSlot) clearInFlightSlot();
+        if (settlement.removePendingRequest) removePendingOutputOwnerByQueueId(queueId);
+        if (settlement.clearSlot) {
+          clearInFlightSlot();
+          applyDeferredRestartIfNeeded();
+        }
         if (settlement.broadcastCancelled) broadcast('queue:cancelled', { queueId });
         console.log(`[agent] Queue item ${queueId} cancelled from SDK commandQueue via cancel_async_message`);
         if (settlement.promoteNext) schedulePostTerminalQueueDrain('stopped');
@@ -9259,21 +9764,38 @@ export async function cancelQueueItem(queueId: string): Promise<QueueCancelResul
   }
 
   if (admission) {
+    // Direct turn admission and generator promotion overlap until the commit
+    // seam. Cancel both owners: otherwise the admission branch returns while
+    // a generator waiting on the MCP-mutation fence never observes cancel.
+    const promotedCancellation = cancelPromotedItemWithSettlement(queueId);
+    await Promise.all([
+      admissionCancellation?.settlement,
+      promotedCancellation?.settlement,
+    ]);
     admission.settleDispatchAcceptance?.({
       accepted: false,
       error: 'Queue item was cancelled',
     });
-    await notifyQueuedTurnStopped(admission);
-    broadcast('queue:cancelled', { queueId });
+    promotedCancellation?.item.settleDispatchAcceptance?.({
+      accepted: false,
+      error: 'Queue item was cancelled',
+    });
+    await notifyQueuedTurnStopped(promotedCancellation?.item ?? admission);
+    if (!admission.beforeUserPersistence) broadcast('queue:cancelled', { queueId });
     console.log(`[agent] Queue item ${queueId} cancelled during builtin turn admission`);
     return { status: 'cancelled', cancelledText: admission.messageText };
   }
 
-  const promotedItem = cancelPromotedItem(queueId);
-  if (promotedItem !== null) {
-    await notifyQueuedTurnStopped(promotedItem);
+  const promotedCancellation = cancelPromotedItemWithSettlement(queueId);
+  if (promotedCancellation !== null) {
+    await promotedCancellation.settlement;
+    promotedCancellation.item.settleDispatchAcceptance?.({
+      accepted: false,
+      error: 'Queue item was cancelled',
+    });
+    await notifyQueuedTurnStopped(promotedCancellation.item);
     console.log(`[agent] Queue item ${queueId} cancellation requested during runtime promotion`);
-    return { status: 'cancelled', cancelledText: promotedItem.messageText };
+    return { status: 'cancelled', cancelledText: promotedCancellation.item.messageText };
   }
 
   console.log(`[agent] Queue item ${queueId} not found — already consumed or never existed`);
@@ -9291,7 +9813,9 @@ export async function cancelQueuedTurnsByOwner(owner: TurnOwner): Promise<number
     if (matches(item.sourceItem.turnOwner)) queueIds.add(item.queueId);
   }
   for (const item of getTurnBoundaryQueue()) {
-    if (matches(item.sourceItem?.turnOwner)) queueIds.add(item.queueId);
+    if (matches(item.sourceItem?.turnOwner) || matches(item.admissionTicket?.turnOwner)) {
+      queueIds.add(item.queueId);
+    }
   }
   const promoted = getPromotedTurnIdentity();
   if (promoted && matches(promoted.owner)) queueIds.add(promoted.queueId);
@@ -9902,10 +10426,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   // newer session has since re-armed the module-level transcriptState.pendingReloadAnchor.
   let sentReloadAnchor: string | undefined;
 
-  // Background sub-agents started in this session but not yet terminal, keyed by
-  // task_id. Entries are removed when a terminal task_notification/task_updated is
-  // broadcast; whatever remains when the subprocess tears down (the finally below)
-  // is flushed as a synthetic `stopped`.
+  // The exact SDK Query owns background-task liveness in lifecycle.ts so
+  // deferred restart policy can see it. Whatever remains when this Query tears
+  // down is transferred back to this finalizer and flushed as `stopped`.
   //
   // WHY: terminal events (task_notification / task_updated) are best-effort. When
   // the owning subprocess dies first — abort, deferred config restart, watchdog
@@ -9916,8 +10439,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   // background sub-agents (16/218 local_agent) stuck this way. The stored
   // toolUseId also backfills the task_updated terminal channel (its patch carries
   // none) so the renderer's persisted history fallback survives a reload.
-  // Declared outside try so the finally can flush it.
-  const startedBackgroundTasks = new Map<string, { toolUseId?: string; description?: string }>();
+  // Declared outside try so hooks, iterator events and finally share the exact
+  // Query identity without falling back to mutable lifecycleState.query.
+  let activeQuery: Query | null = null;
 
   try {
     const sdkPermissionMode = mapToEffectiveSdkPermissionMode(
@@ -10140,7 +10664,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // diff the live SDK set against newly-arriving context-injected MCPs (im-media,
     // im-bridge-tools) without rebuilding fingerprint twice.
     const sdkMcpServersInitial = await buildSdkMcpServers();
-    setFrozenSdkMcpFingerprint(mcpKeyFingerprint(sdkMcpServersInitial));
 
     // Build common query options (shared between normal start and "already in use" fallback)
     // #324 — user-selected reasoning effort. Anthropic protocol only: the SDK
@@ -10716,7 +11239,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               const toolName = permInput.tool_name;
               // Confirmed background sub-agent iff the SDK gave us an agent_id that
               // matches a currently-running background task (task_id === agent_id).
-              // startedBackgroundTasks is populated from the task_started message on
+              // lifecycle's exact-Query registry is populated from task_started on
               // the iterator channel, while this hook fires on the control channel —
               // two independent paths off the same subprocess. In practice task_started
               // is emitted (and drained) before a sub-agent's first gated tool call, so
@@ -10724,7 +11247,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               // degrades to passthrough → the SDK's own auto-deny — i.e. it can only
               // fail toward *deny* (safe side), never toward a spurious allow, and at
               // most affects a background agent's very first tool call at startup.
-              const isBackgroundAgent = isBackgroundAgentToolRequest(agentId, startedBackgroundTasks);
+              const isBackgroundAgent = isBackgroundAgentToolRequest(agentId, {
+                has: taskId => hasQueryBackgroundTask(activeQuery, taskId),
+              });
               // MCP-enablement recheck for background agents (cross-review #264): the
               // foreground canUseTool path denies tools whose MCP server the user has
               // since disabled (checkMcpToolPermission). The background allow path must
@@ -10795,7 +11320,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       throw new Error('STARTUP_ABORTED_BY_STOP');
     }
 
-    let activeQuery: Query | null = null;
     try {
       activeQuery = query({
         prompt: promptGen,
@@ -10824,6 +11348,18 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       }
     }
 
+    if (activeQuery) {
+      const initialMcpFingerprint = sdkMcpMapFingerprint(sdkMcpServersInitial);
+      setFrozenSdkMcpFingerprint(initialMcpFingerprint);
+      const prewarmWindow = getMcpPrewarmWindowForMap(sdkMcpServersInitial);
+      setQueryMcpPrewarmOwner({
+        query: activeQuery,
+        fingerprint: initialMcpFingerprint,
+        requiredServerIds: Object.keys(sdkMcpServersInitial),
+        ...(prewarmWindow ?? {}),
+      });
+    }
+
     console.log('[agent] session started');
     console.log('[agent] starting for-await loop on lifecycleState.query');
 
@@ -10840,9 +11376,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // execution as "AI 启动中（首次启动可能较慢）".
     //
     // `Query.initializationResult()` resolves on a different lifecycle event:
-    // the SDK's `subtype: "initialize"` control_request response, which fires
-    // as soon as the subprocess has loaded tools + done MCP handshakes. The F9
-    // (Query) constructor at sdk.mjs already kicks this off in `this.initialization
+    // the SDK's `subtype: "initialize"` control_request response. This proves
+    // the subprocess control plane is available, but SDK 0.3 connects MCPs
+    // non-blockingly — individual servers may still be pending/failed/auth-
+    // blocked. The F9 (Query) constructor at sdk.mjs already kicks this off
+    // in `this.initialization
     // = this.initialize()` — calling `initializationResult()` here just awaits
     // the existing promise. Verified empirically with DEBUG_CLAUDE_AGENT_SDK=1:
     // resolved at +337ms in a clean repro; in MyAgents production with project
@@ -11321,18 +11859,23 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           patch?: { status?: string; error?: string; description?: string } };
         if (taskMsg.subtype === 'task_started' && taskMsg.task_id) {
           console.log(`[agent] Background task started: ${taskMsg.task_id} — ${taskMsg.description}`);
-          // Record so the teardown flush + task_updated channel can resolve the
-          // tool_use_id later (see startedBackgroundTasks declaration).
-          startedBackgroundTasks.set(taskMsg.task_id, {
+          // Record against this exact Query so deferred maintenance cannot
+          // confuse foreground result with whole-Query quiescence.
+          const recorded = recordQueryBackgroundTask(activeQuery, taskMsg.task_id, {
             toolUseId: taskMsg.tool_use_id,
             description: taskMsg.description,
           });
-          broadcast('chat:task-started', {
-            taskId: taskMsg.task_id,
-            toolUseId: taskMsg.tool_use_id,
-            description: taskMsg.description,
-            taskType: taskMsg.task_type,
-          });
+          if (recorded) {
+            broadcast('chat:task-started', {
+              sessionId,
+              taskId: taskMsg.task_id,
+              toolUseId: taskMsg.tool_use_id,
+              description: taskMsg.description,
+              taskType: taskMsg.task_type,
+            });
+          } else {
+            console.warn(`[agent] Ignoring task_started from superseded Query: ${taskMsg.task_id}`);
+          }
         } else if (taskMsg.subtype === 'task_notification' && taskMsg.task_id) {
           // Rich iff it carries a real summary or an output_file (the
           // notification channel is the one that delivers these).
@@ -11350,14 +11893,20 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             terminalBroadcastedTaskIds.set(taskMsg.task_id, isRich);
             console.log(`[agent] Background task ${taskMsg.status}${enriching ? ' (enriching prior broadcast)' : ''}: ${taskMsg.task_id} — ${taskMsg.summary}`);
             broadcast('chat:task-notification', {
+              sessionId,
               taskId: taskMsg.task_id,
               toolUseId: taskMsg.tool_use_id,
               status: taskMsg.status,
               summary: taskMsg.summary,
               outputFile: taskMsg.output_file,
             });
-            // Reached terminal — drop from the pending set so the teardown flush skips it.
-            startedBackgroundTasks.delete(taskMsg.task_id);
+            // Reached terminal — release the exact Query task owner. If the
+            // foreground result already latched a config restart, the last
+            // background task is the missing drain trigger.
+            const completion = completeQueryBackgroundTask(activeQuery, taskMsg.task_id);
+            if (completion.becameQuiescent && lifecycleState.query === activeQuery) {
+              applyDeferredRestartIfNeeded();
+            }
           }
         } else if (taskMsg.subtype === 'task_updated' && taskMsg.task_id) {
           const patchStatus = taskMsg.patch?.status;
@@ -11366,6 +11915,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           // UI in its current state.
           if (patchStatus === 'completed' || patchStatus === 'failed' || patchStatus === 'killed') {
             const errorSummary = taskMsg.patch?.error ?? '';
+            const backgroundTaskInfo = getQueryBackgroundTask(activeQuery, taskMsg.task_id);
             // task_updated only carries an error string as its summary (empty on
             // success) and never an output_file, so it is "rich" only when that
             // error is non-empty.
@@ -11384,6 +11934,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               const normalized = patchStatus === 'killed' ? 'stopped' : patchStatus;
               console.log(`[agent] Background task ${normalized} (via task_updated)${enriching ? ' (enriching prior broadcast)' : ''}: ${taskMsg.task_id} — patch.status=${patchStatus}${errorSummary ? ` error=${errorSummary}` : ''}`);
               broadcast('chat:task-notification', {
+                sessionId,
                 taskId: taskMsg.task_id,
                 // task_updated.patch doesn't carry tool_use_id, so resolve it
                 // from the task_started record. The renderer can also bridge
@@ -11393,13 +11944,16 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 // panel's history fallback after a reload (it keys on toolUseId).
                 // Falls back to undefined (orphan-pool reconciliation) if the
                 // start was never observed in this session.
-                toolUseId: startedBackgroundTasks.get(taskMsg.task_id)?.toolUseId,
+                toolUseId: backgroundTaskInfo?.toolUseId,
                 status: normalized,
                 summary: errorSummary,
                 outputFile: '',
               });
-              // Reached terminal — drop from the pending set so the teardown flush skips it.
-              startedBackgroundTasks.delete(taskMsg.task_id);
+              // Reached terminal — release the exact Query task owner.
+              const completion = completeQueryBackgroundTask(activeQuery, taskMsg.task_id);
+              if (completion.becameQuiescent && lifecycleState.query === activeQuery) {
+                applyDeferredRestartIfNeeded();
+              }
             }
           }
         }
@@ -11502,6 +12056,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
           if (streamEvent.delta.type === 'text_delta') {
             if (sdkMessage.parent_tool_use_id) {
               const parentToolUseId = childToolToParent.get(sdkMessage.parent_tool_use_id) ?? null;
+              appendToolResultDelta(sdkMessage.parent_tool_use_id, streamEvent.delta.text);
               if (parentToolUseId) {
                 broadcast('chat:subagent-tool-result-delta', {
                   parentToolUseId,
@@ -11517,7 +12072,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                   });
                 }
               }
-              appendToolResultDelta(sdkMessage.parent_tool_use_id, streamEvent.delta.text);
             } else {
               // Skip empty chunks (null, undefined, '')
               if (!streamEvent.delta.text) {
@@ -11544,31 +12098,31 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               }
             }
           } else if (streamEvent.delta.type === 'thinking_delta') {
+            handleThinkingChunk(streamEvent.index, streamEvent.delta.thinking);
             broadcast('chat:thinking-chunk', {
               index: streamEvent.index,
               delta: streamEvent.delta.thinking
             });
-            handleThinkingChunk(streamEvent.index, streamEvent.delta.thinking);
           } else if (streamEvent.delta.type === 'input_json_delta') {
             const toolId = streamIndexToToolId.get(streamEvent.index) ?? '';
             if (sdkMessage.parent_tool_use_id) {
-              broadcast('chat:subagent-tool-input-delta', {
-                parentToolUseId: sdkMessage.parent_tool_use_id,
-                toolId,
-                delta: streamEvent.delta.partial_json
-              });
               handleSubagentToolInputDelta(
                 sdkMessage.parent_tool_use_id,
                 toolId,
                 streamEvent.delta.partial_json
               );
+              broadcast('chat:subagent-tool-input-delta', {
+                parentToolUseId: sdkMessage.parent_tool_use_id,
+                toolId,
+                delta: streamEvent.delta.partial_json
+              });
             } else {
+              handleToolInputDelta(streamEvent.index, toolId, streamEvent.delta.partial_json);
               broadcast('chat:tool-input-delta', {
                 index: streamEvent.index,
                 toolId,
                 delta: streamEvent.delta.partial_json
               });
-              handleToolInputDelta(streamEvent.index, toolId, streamEvent.delta.partial_json);
             }
           }
         } else if (streamEvent.type === 'content_block_start') {
@@ -11701,6 +12255,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 if (!childToolToParent.has(toolResultBlock.tool_use_id)) {
                   ensureSubagentToolPlaceholder(parentToolUseId, toolResultBlock.tool_use_id);
                 }
+                handleToolResultStart(
+                  toolResultBlock.tool_use_id,
+                  contentStr,
+                  toolResultBlock.is_error || false
+                );
                 broadcast('chat:subagent-tool-result-start', {
                   parentToolUseId,
                   toolUseId: toolResultBlock.tool_use_id,
@@ -11713,17 +12272,17 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 if (shouldStripResult) {
                   strippedToolResultIds.add(toolResultBlock.tool_use_id);
                 }
+                handleToolResultStart(
+                  toolResultBlock.tool_use_id,
+                  contentStr,
+                  toolResultBlock.is_error || false
+                );
                 broadcast('chat:tool-result-start', {
                   toolUseId: toolResultBlock.tool_use_id,
                   content: shouldStripResult ? PLAYWRIGHT_RESULT_SENTINEL : contentStr,
                   isError: toolResultBlock.is_error || false
                 });
               }
-              handleToolResultStart(
-                toolResultBlock.tool_use_id,
-                contentStr,
-                toolResultBlock.is_error || false
-              );
             }
           }
         } else if (streamEvent.type === 'content_block_stop') {
@@ -11734,10 +12293,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             // and the timer runs for the entire remaining duration of the parent tool call.
             const blockType = streamIndexToBlockType.get(streamEvent.index);
             if (blockType === 'thinking' || blockType === 'text') {
+              handleContentBlockStop(streamEvent.index, undefined);
               broadcast('chat:content-block-stop', {
                 index: streamEvent.index,
               });
-              handleContentBlockStop(streamEvent.index, undefined);
             }
             if (toolId) {
               finalizeSubagentToolInput(sdkMessage.parent_tool_use_id, toolId);
@@ -11758,6 +12317,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               }
             }
           } else {
+            handleContentBlockStop(streamEvent.index, toolId || undefined);
             broadcast('chat:content-block-stop', {
               index: streamEvent.index,
               toolId: toolId || undefined,
@@ -11767,7 +12327,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               // thinking). Without this the fade lingers on the last chars indefinitely.
               type: streamIndexToBlockType.get(streamEvent.index),
             });
-            handleContentBlockStop(streamEvent.index, toolId || undefined);
             // IM stream: signal text block end via event bus (Pattern B)
             if (imTextBlockIndices.has(streamEvent.index)) {
               emitImEvent('block-end', '');
@@ -11881,7 +12440,14 @@ async function startStreamingSession(preWarm = false): Promise<void> {
             const localCommandMessage: MessageWire = {
               id: allocateMessageId(),
               role: 'user',
-              content: messageContent,
+              content: [
+                SYSTEM_REMINDER_OPEN,
+                `<${LOCAL_COMMAND_OUTPUT_TAG}>`,
+                'Runtime-generated local command output; the visible output follows this reminder.',
+                `</${LOCAL_COMMAND_OUTPUT_TAG}>`,
+                SYSTEM_REMINDER_CLOSE,
+                messageContent,
+              ].join('\n'),
               timestamp: new Date().toISOString(),
             };
             appendMessage(localCommandMessage);
@@ -11929,6 +12495,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 if (!childToolToParent.has(toolResultBlock.tool_use_id)) {
                   ensureSubagentToolPlaceholder(parentToolUseId, toolResultBlock.tool_use_id);
                 }
+                handleToolResultComplete(toolResultBlock.tool_use_id, contentStr);
                 broadcast('chat:subagent-tool-result-complete', {
                   parentToolUseId,
                   toolUseId: toolResultBlock.tool_use_id,
@@ -11947,6 +12514,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                   contentStr,
                   renderParts.attachments,
                 );
+                handleToolResultComplete(toolResultBlock.tool_use_id, contentStr);
                 broadcast('chat:tool-result-complete', {
                   toolUseId: toolResultBlock.tool_use_id,
                   content: stripped ? PLAYWRIGHT_RESULT_SENTINEL : contentStr,
@@ -11954,7 +12522,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 });
                 inFlightToolCount = Math.max(0, inFlightToolCount - 1);
               }
-              handleToolResultComplete(toolResultBlock.tool_use_id, contentStr);
             }
           }
           }
@@ -12036,12 +12603,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 name: toolBlock.name,
                 input: toolBlock.input || {}
               };
+              handleSubagentToolUseStart(sdkMessage.parent_tool_use_id, payload);
               broadcast('chat:subagent-tool-use', {
                 parentToolUseId: sdkMessage.parent_tool_use_id,
                 tool: payload,
                 usage: subagentUsage
               });
-              handleSubagentToolUseStart(sdkMessage.parent_tool_use_id, payload);
             }
           }
         }
@@ -12086,6 +12653,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 if (!childToolToParent.has(toolResultBlock.tool_use_id)) {
                   ensureSubagentToolPlaceholder(parentToolUseId, toolResultBlock.tool_use_id);
                 }
+                handleToolResultComplete(
+                  toolResultBlock.tool_use_id,
+                  contentStr,
+                  toolResultBlock.is_error || false
+                );
                 broadcast('chat:subagent-tool-result-complete', {
                   parentToolUseId,
                   toolUseId: toolResultBlock.tool_use_id,
@@ -12102,6 +12674,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 const attachments = toolResultBlock.is_error
                   ? undefined
                   : await attachBuiltinMediaIfAny(toolResultBlock.tool_use_id, contentStr, renderParts.attachments);
+                handleToolResultComplete(
+                  toolResultBlock.tool_use_id,
+                  contentStr,
+                  toolResultBlock.is_error || false
+                );
                 broadcast('chat:tool-result-complete', {
                   toolUseId: toolResultBlock.tool_use_id,
                   content: stripped ? PLAYWRIGHT_RESULT_SENTINEL : contentStr,
@@ -12110,11 +12687,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                 });
                 inFlightToolCount = Math.max(0, inFlightToolCount - 1);
               }
-              handleToolResultComplete(
-                toolResultBlock.tool_use_id,
-                contentStr,
-                toolResultBlock.is_error || false
-              );
             }
           }
         }
@@ -12353,9 +12925,12 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     if (suppressRecoveredResumeAnchorError) {
       console.log(`[agent] Suppressing recoverable SDK resumeSessionAt error after clearing ${recoveredInvalidResumeAnchors.join(',')} anchor(s); recovery pre-warm will retry with bare resume`);
     } else if (!lifecycleState.preWarming && !lifecycleState.abortRequested) {
-      broadcast('chat:message-error', userFacingError);
-      handleMessageError(errorMessage, sdkSubprocessDiagnostic?.imMessage);
+      const completionTerminal = handleMessageError(errorMessage, sdkSubprocessDiagnostic?.imMessage);
       setSessionState('error');
+      broadcast(
+        'chat:message-error',
+        withSessionCompletionTerminal(userFacingError, completionTerminal),
+      );
     } else if (lifecycleState.abortRequested) {
       console.log(`[agent] Suppressing SDK error surfaced during abort (expected): ${errorMessage}`);
     }
@@ -12367,11 +12942,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     setSessionProcessing(false);
     clearTransientProviderRetryTimer('session-finally');
 
-    // Resolve any pending post-interrupt wait (session ended, turn is implicitly done)
-    if (postInterruptTurnEndResolve) {
-      postInterruptTurnEndResolve();
-      postInterruptTurnEndResolve = null;
-    }
+    // Resolve any pending post-interrupt wait (session ended without a result,
+    // so the interrupt caller remains the terminal claimant).
+    settlePostInterruptTurnEnd('session-ended');
 
     // 确保 generator 退出（防止 streamInput 永远阻塞）
     if (lifecycleState.messageResolver) {
@@ -12457,9 +13030,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
     // (all its clear-defenses require a terminal event). A late real terminal
     // after this flush is deduped renderer-side by taskId. Empty for pre-warm
     // sessions (no tasks started).
-    for (const [taskId, info] of startedBackgroundTasks) {
+    for (const [taskId, info] of takeQueryBackgroundTasks(activeQuery)) {
       console.log(`[agent] Background task orphaned by session teardown → flushing stopped: ${taskId} — ${info.description ?? ''}`);
       broadcast('chat:task-notification', {
+        sessionId,
         taskId,
         toolUseId: info.toolUseId,
         status: 'stopped',
@@ -12467,8 +13041,6 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         outputFile: '',
       });
     }
-    startedBackgroundTasks.clear();
-
     // sessionRegistered 已在 system_init handler 中设置，无需重复
 
     // Don't broadcast state changes from pre-warm sessions
@@ -12548,6 +13120,36 @@ async function startStreamingSession(preWarm = false): Promise<void> {
   }
 }
 
+async function rejectPromotedMessageBeforeDispatch(
+  item: MessageQueueItem,
+  result: DispatchGuardResult,
+): Promise<void> {
+  if (result.rollbackBeforeReject) {
+    try {
+      await result.rollbackBeforeReject;
+    } catch (error) {
+      console.error('[agent] pre-dispatch durable rollback failed:', error);
+    }
+  }
+  releaseTurnAdmissionTicket(item.id);
+  if (getInFlightQueueId() === item.id) clearInFlightSlot();
+  clearPromotedItem(item.id);
+  item.settleDispatchAcceptance?.({ accepted: false, error: result.error });
+  await notifyQueuedTurnStopped(item, result.error ?? 'Queue item was rejected before dispatch');
+  item.resolve();
+  if (!item.deferVisibleAdmission) {
+    broadcast('queue:cancelled', { queueId: item.id });
+  }
+  console.warn(`[goal] pre-dispatch gate rejected builtin queue item ${item.id}: ${result.error ?? result.code ?? 'stale admission'}`);
+  if (!hasQueuedOrInFlightWork() && !isTurnInFlight()) {
+    setSessionState('idle');
+  }
+  // A mutation may have latched a restart while this item owned promotion.
+  // Rejection made the Query quiescent; successful items drain at terminal.
+  applyDeferredRestartIfNeeded();
+  schedulePostTerminalQueueDrain('recovery');
+}
+
 async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
   // (v0.2.12) Mid-turn injection restored.
   //
@@ -12582,8 +13184,110 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       return; // generator return → SDK endInput() → stdin EOF → subprocess 退出
     }
     beginPromotedItem(item);
+    const promotedQuery = lifecycleState.query;
+    const activeMcpMutation = getQueryMcpMutation();
+    if (activeMcpMutation) {
+      const cancellation = getPromotedItemCancellation(item.id);
+      const mutationOutcome = await Promise.race([
+        activeMcpMutation.promise.then(result => ({ kind: 'mutation' as const, result })),
+        ...(cancellation
+          ? [cancellation.then(() => ({ kind: 'cancelled' as const }))]
+          : []),
+      ]);
+      if (mutationOutcome.kind === 'cancelled') {
+        await rejectPromotedMessageBeforeDispatch(item, {
+          accepted: false,
+          code: 'dispatch_canceled',
+          error: 'Queue item was cancelled',
+          rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+        });
+        continue;
+      }
+      if (!mutationOutcome.result.ok) {
+        // The SDK transport map is indeterminate. Keep the exact user item
+        // locally owned, rebuild the Query, and let the replacement generator
+        // retry it. Never dispatch onto the timed-out/failed transport owner.
+        // Realtime enqueue may have provisionally reserved the single SDK
+        // in-flight slot before generator yield. The mutation fence rejected
+        // before that process boundary, so release the provisional slot now;
+        // otherwise restart quiescence waits forever for a replay that the SDK
+        // can never emit.
+        requeuePromotedItemBeforeSdkDispatch(item);
+        console.warn(`[agent] Requeued ${item.id} after MCP mutation ${mutationOutcome.result.reason}: ${mutationOutcome.result.error}`);
+        if (mutationOutcome.result.reason !== 'query_replaced') {
+          scheduleDeferredRestart('mcp');
+          applyDeferredRestartIfNeeded();
+          // The restart can remain deferred while an older queued command is
+          // still owned by the SDK. Do not loop back into waitForMessage here:
+          // the mutation owner has already settled, so this generator would
+          // otherwise dequeue the requeued item (or any ordinary message) and
+          // dispatch it on the stale transport map. Only Query abort/replacement
+          // releases this generation; the replacement generator retries it.
+          if (promotedQuery) await waitForQueryExit(promotedQuery);
+        } else {
+          schedulePreWarm();
+        }
+        // This generator belongs to the indeterminate/replaced Query. It must
+        // never dequeue again; the replacement generator owns the retry.
+        return;
+      }
+    }
+    if (isPromotedItemCanceled(item.id)) {
+      await rejectPromotedMessageBeforeDispatch(item, {
+        accepted: false,
+        code: 'dispatch_canceled',
+        error: 'Queue item was cancelled',
+        rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+      });
+      continue;
+    }
+
+    // Every builtin entrypoint converges here. Consume only the remaining
+    // absolute grace owned by this Query/map generation; ready and degraded
+    // outcomes are both dispatchable and become a one-shot fast path.
+    const prewarmController = new AbortController();
+    const promotionCancellation = getPromotedItemCancellation(item.id);
+    let prewarmObservation:
+      | { kind: 'outcome'; outcome: McpPrewarmOutcome | null }
+      | { kind: 'cancelled' };
+    try {
+      const observation = observeCurrentQueryMcpPrewarm({ signal: prewarmController.signal })
+        .then(outcome => ({ kind: 'outcome' as const, outcome }));
+      prewarmObservation = promotionCancellation
+        ? await Promise.race([
+          observation,
+          promotionCancellation.then(() => {
+            prewarmController.abort();
+            return { kind: 'cancelled' as const };
+          }),
+        ])
+        : await observation;
+    } catch (error) {
+      if (isPromotedItemCanceled(item.id)) {
+        prewarmObservation = { kind: 'cancelled' };
+      } else {
+        // A control-plane observer must never become an AI-turn failure.
+        console.warn('[agent] MCP pre-warm observation degraded:', error instanceof Error ? error.message : error);
+        prewarmObservation = { kind: 'outcome', outcome: null };
+      }
+    }
+    if (prewarmObservation.kind === 'cancelled') {
+      await rejectPromotedMessageBeforeDispatch(item, {
+        accepted: false,
+        code: 'dispatch_canceled',
+        error: 'Queue item was cancelled',
+        rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+      });
+      continue;
+    }
+    if (prewarmObservation.outcome?.state === 'owner_replaced') {
+      requeuePromotedItemBeforeSdkDispatch(item);
+      console.log(`[agent] Requeued ${item.id}: MCP pre-warm owner was replaced before SDK dispatch`);
+      return;
+    }
+
+    let guardResult: DispatchGuardResult | undefined;
     if (item.beforeDispatch) {
-      let guardResult: Awaited<ReturnType<NonNullable<typeof item.beforeDispatch>>>;
       try {
         guardResult = await item.beforeDispatch();
       } catch (error) {
@@ -12593,70 +13297,41 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         };
       }
       if (!guardResult.accepted) {
-        releaseTurnAdmissionTicket(item.id);
-        if (getInFlightQueueId() === item.id) clearInFlightSlot();
-        clearPromotedItem(item.id);
-        item.settleDispatchAcceptance?.({ accepted: false, error: guardResult.error });
-        await notifyQueuedTurnStopped(item, guardResult.error ?? 'Queue item was rejected before dispatch');
-        item.resolve();
-        broadcast('queue:cancelled', { queueId: item.id });
-        console.warn(`[goal] pre-dispatch gate rejected builtin queue item ${item.id}: ${guardResult.error ?? guardResult.code ?? 'stale admission'}`);
-        if (!hasQueuedOrInFlightWork() && !isTurnInFlight()) {
-          setSessionState('idle');
-        }
-        schedulePostTerminalQueueDrain('recovery');
+        await rejectPromotedMessageBeforeDispatch(item, guardResult);
         continue;
       }
       if (isPromotedItemCanceled(item.id)) {
-        releaseTurnAdmissionTicket(item.id);
-        if (getInFlightQueueId() === item.id) clearInFlightSlot();
-        clearPromotedItem(item.id);
-        item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
-        await notifyQueuedTurnStopped(item);
-        item.resolve();
-        broadcast('queue:cancelled', { queueId: item.id });
-        schedulePostTerminalQueueDrain('recovery');
+        await rejectPromotedMessageBeforeDispatch(item, {
+          accepted: false,
+          code: 'dispatch_canceled',
+          error: 'Queue item was cancelled',
+          rollbackBeforeReject: Promise.resolve(item.beforeDispatch?.cancel?.()),
+        });
         continue;
       }
-      if (item.deferredUserSurface) {
-        await surfaceBuiltinUserMessage(item.deferredUserSurface);
-        item.deferredUserSurface = undefined;
+    }
+    if (guardResult?.validateAtCommit) {
+      let commitResult: DispatchGuardResult;
+      try {
+        commitResult = guardResult.validateAtCommit();
+      } catch (error) {
+        commitResult = {
+          accepted: false,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+      if (!commitResult.accepted) {
+        await rejectPromotedMessageBeforeDispatch(item, commitResult);
+        continue;
       }
     }
-    if (!item.wasQueued) {
-      await prepareSessionPlansForUserTurn({ clearStale: true });
-    }
-    if (isPromotedItemCanceled(item.id)) {
-      releaseTurnAdmissionTicket(item.id);
-      if (getInFlightQueueId() === item.id) clearInFlightSlot();
-      clearPromotedItem(item.id);
-      item.settleDispatchAcceptance?.({ accepted: false, error: 'Queue item was cancelled' });
-      await notifyQueuedTurnStopped(item);
-      item.resolve();
-      broadcast('queue:cancelled', { queueId: item.id });
-      schedulePostTerminalQueueDrain('recovery');
-      continue;
-    }
-    releaseTurnAdmissionTicket(item.id);
 
-    // Transition from pre-warm to active when processing a queued message.
-    // Same race-handling as before: if enqueueUserMessage was called during
-    // session abort (lifecycleState.abortRequested=true), the pre-warm→active transition
-    // was skipped there. Setting it false HERE ensures that when system_init
-    // arrives from the SDK (after this yield), it goes through the direct-
-    // broadcast path instead of being buffered.
-    if (lifecycleState.preWarming) {
-      setPreWarmInProgress(false);
-      if (lifecycleState.systemInitInfo) {
-        sessionRegistered = true;
-        broadcast('chat:system-init', { info: lifecycleState.systemInitInfo, sessionId, runtime: 'builtin' });
-      }
-      if (lifecycleState.preWarmTimer) {
-        clearTimeout(lifecycleState.preWarmTimer);
-        setPreWarmTimer(null);
-      }
-      console.log(`[agent] pre-warm → active (from queued message), sessionRegistered=${sessionRegistered}`);
-    }
+    const turnOrigin = item.analyticsOrigin ?? originFromTurnAttribution({
+      source: item.analyticsSource,
+      scenarioType: currentScenario.type,
+      desktopSurface: currentScenario.type === 'desktop' ? currentScenario.surface : undefined,
+      inboxMeta: item.inboxMeta,
+    });
 
     // Direct-send items (wasQueued=false): enqueueUserMessage already surfaced
     // the ordinary user message; guarded items were surfaced once immediately
@@ -12717,14 +13392,129 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
     }
     beginBuiltinTurnTrace(traceSource, traceTurnId, item.requestId);
     setCurrentTurnAnalyticsSource(item.analyticsSource ?? currentScenario.type);
-    setCurrentTurnAnalyticsOrigin(item.analyticsOrigin ?? null);
+    setCurrentTurnAnalyticsOrigin(turnOrigin);
     setCurrentTurnProviderAnalytics(item.providerAnalytics ?? buildTurnProviderAnalytics(configState.currentProviderEnv));
     setAssistantMessagePresent(false);
     setCurrentTurnSourceItem(item);
 
+    // Irreversible admission commit. The final lease/domain validation above
+    // and this owner transfer are one synchronous event-loop transaction: no
+    // MCP mutation or cancellation can interleave. From here the item is an
+    // accepted active turn (even while its metadata is being persisted), so a
+    // caller deadline/cancel must report and stop that exact active owner
+    // rather than claiming the turn was never enqueued.
+    const deferredSystemInit = lifecycleState.preWarming
+      ? lifecycleState.systemInitInfo
+      : null;
+    clearPromotedItem(item.id);
     isStreamingMessage = true;
-    // Pattern B+G: push this user message's requestId onto the FIFO queue.
-    pushPendingRequest(item.requestId);
+    if (lifecycleState.preWarming) {
+      setPreWarmInProgress(false);
+      if (lifecycleState.preWarmTimer) {
+        clearTimeout(lifecycleState.preWarmTimer);
+        setPreWarmTimer(null);
+      }
+    }
+    releaseTurnAdmissionTicket(item.id);
+    if (item.deferVisibleAdmission) {
+      setSessionState((lifecycleState.systemInitInfo || lifecycleState.sdkControlReady) ? 'running' : 'starting');
+      item.deferVisibleAdmission = false;
+    }
+    item.settleDispatchAcceptance?.({ accepted: true });
+
+    try {
+      if (!item.wasQueued) {
+        await prepareSessionPlansForUserTurn({ clearStale: true });
+      }
+      if (deferredSystemInit) {
+        await ensureSessionMetadataForSdkSystemInit(deferredSystemInit);
+        sessionRegistered = true;
+      }
+      if (item.deferredSessionMetadata) {
+        await persistSessionMetadataForAdmittedMessage(
+          item.messageText,
+          item.deferredSessionMetadata,
+        );
+        item.deferredSessionMetadata = undefined;
+      }
+    } catch (error) {
+      const admissionError = error instanceof Error ? error.message : String(error);
+      console.error('[agent] admitted turn setup failed before SDK dispatch:', error);
+      builtinTurnLifecycle.failAdmittedTurnSetup(admissionError);
+      item.resolve();
+      continue;
+    }
+    if (deferredSystemInit) {
+      broadcast('chat:system-init', { info: deferredSystemInit, sessionId, runtime: 'builtin' });
+      console.log(`[agent] pre-warm → active (at admission), sessionRegistered=${sessionRegistered}`);
+    }
+    if (
+      lifecycleState.abortRequested
+      || isInterruptingResponse
+      || !isStreamingMessage
+      || getCurrentTurnSourceItem() !== item
+    ) {
+      item.resolve();
+      return;
+    }
+
+    const activityFacts: SessionActivityTurnFacts = {
+      origin: turnOrigin,
+      inputText: item.messageText,
+      systemMaintenanceKind: getSessionMetadata(sessionId)?.systemMaintenanceKind,
+    };
+    item.activityFacts = activityFacts;
+    const admissionActivityAt = shouldRecordAdmissionActivity(activityFacts)
+      ? new Date().toISOString()
+      : undefined;
+    let admissionActivityMerged = false;
+    if (item.deferredUserSurface) {
+      try {
+        admissionActivityMerged = await surfaceBuiltinUserMessage(
+          item.deferredUserSurface,
+          'admission',
+          admissionActivityAt,
+        );
+      } catch (error) {
+        // The row is appended/broadcast before persistence. Keep the admitted
+        // turn moving so it cannot become an orphan bubble; terminal
+        // persistence will retry from the unchanged cursor.
+        console.error('[agent] admitted user message persistence failed; continuing runtime dispatch:', error);
+      }
+      item.deferredUserSurface = undefined;
+    } else if (getSessionMetadata(sessionId)?.materializationState === 'prepared') {
+      const visibleText = resolveVisibleUserTurnText(item.messageText)?.trim();
+      try {
+        await commitPreparedSessionAfterUserMessagePersist(
+          item.messageText,
+          item.sessionBirthOrigin,
+          admissionActivityAt,
+          visibleText ? visibleText.slice(0, 60) : undefined,
+        );
+      } catch (error) {
+        console.warn('[agent] prepared metadata commit at admission failed:', error);
+      }
+      admissionActivityMerged = admissionActivityAt !== undefined;
+    }
+    if (admissionActivityAt && !admissionActivityMerged) {
+      try {
+        await persistMessagesToStorage(transcriptState.messages.length, admissionActivityAt);
+      } catch (error) {
+        console.error('[agent] admission activity metadata update failed:', error);
+      }
+    }
+    if (
+      lifecycleState.abortRequested
+      || isInterruptingResponse
+      || !isStreamingMessage
+      || getCurrentTurnSourceItem() !== item
+    ) {
+      item.resolve();
+      return;
+    }
+
+    // Pattern B+G: every SDK yield gets an output-owner FIFO slot.
+    pushPendingOutputOwner(item.id, item.requestId);
 
     // PRD 0.2.18 Session Inbox — per-turn binding (read at result handler /
     // abort path). Bound here at generator yield (NOT at enqueue), so the
@@ -12739,9 +13529,6 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         `[inbox] Bound turn inboxMeta from=${currentTurnInboxMeta.fromSessionId} replyBack=${currentTurnInboxMeta.replyBack} msgId=${currentTurnInboxMeta.originalMessageId}`,
       );
     }
-
-    item.settleDispatchAcceptance?.({ accepted: true });
-    clearPromotedItem(item.id);
 
     // Modality re-check at dequeue (see prior comment in pre-fix file).
     const yieldedMessage = stripUnsupportedModalityBlocks(item.message, configState.currentModel);
