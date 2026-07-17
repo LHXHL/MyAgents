@@ -133,11 +133,22 @@ delivery 成功后，目标 sidecar 才 ack 并清理 pending watch；Management
 Space Registered Agent 的 `space.issue_delivery` 复用 inbox 的 `sessionEvent`
 metadata 来选择 registered-agent scenario 和 lazy session materialization，但最终
 prompt 不走通用 `<myagents-session-event>` 外包。Rust Space owner 会直接渲染
-`<system-reminder><myagents-space-issue><myagents-space-event ...>` user message，
+`<system-reminder><myagents-space-issue>…</myagents-space-issue></system-reminder>` user message，
 让前端隐藏内部处理指令并显示 `Space issue` badge。这个特例只适用于 Space Issue
 delivery，不改变 `myagents session send/watch` 的通用事件协议。`system-reminder`
 的通用隐藏 payload / badge / visible tail 规则见
 `system_reminder_protocol.md`。
+
+0.3.2 起，Registered Agent Session 的持久 origin 必须是
+`{ kind:'registered-agent', surface:'space_issue_delivery', context:{ spaceId, registeredAgentId } }`。
+Rust delivery event 同时携带两个 exact ID，Inbox 将其组成 `InteractionScenario`，
+SessionEngine 的 builtin/external adapter 必须透传同一 context 到 Session metadata。
+缺任一 ID 时不能构造 Agent context；普通桌面 Session 即使 workspace 与某个或多个
+Registered Agent 相同，也保持 User actor。升级时只允许把明确持久化为
+`registered-agent + space_issue_delivery`、且历史结构中完全没有 `context` property 的
+origin 补齐为 exact binding；`origin` 缺失、`null`、畸形或属于 desktop/其它 surface
+都必须 fail closed，不能因一次定向 Delivery 把普通旧 Session 提升为 Agent。fork 明确重置为
+`{ kind:'desktop', surface:'session_fork' }`，不得继承源 Session 的 Agent 身份。
 
 ### Desktop 连续 Query 队列模式（0.2.37）
 

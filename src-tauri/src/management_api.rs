@@ -195,10 +195,6 @@ pub async fn start_management_api() -> Result<u16, String> {
         )
         .route("/api/space/issue-status", post(space_issue_status_handler))
         .route("/api/space/issue-claim", post(space_issue_claim_handler))
-        .route(
-            "/api/space/issue-delivery-ignore",
-            post(space_issue_delivery_ignore_handler),
-        )
         .route("/api/space/issue-close", post(space_issue_close_handler))
         .route(
             "/api/space/issue-complete",
@@ -2850,12 +2846,6 @@ async fn space_issue_claim_handler(
     space_result(crate::space_cloud::space_cli_issue_claim(input).await)
 }
 
-async fn space_issue_delivery_ignore_handler(
-    Json(input): Json<crate::space_cloud::SpaceCliIssueDeliveryIgnoreInput>,
-) -> Json<serde_json::Value> {
-    space_result(crate::space_cloud::space_cli_issue_delivery_ignore(input).await)
-}
-
 async fn space_issue_close_handler(
     Json(input): Json<crate::space_cloud::SpaceCliIssueActionInput>,
 ) -> Json<serde_json::Value> {
@@ -3707,6 +3697,7 @@ mod tests {
                 space_slug: "official".to_string(),
                 file_paths: Vec::new(),
                 session_id: None,
+                session_origin: None,
                 workspace_id: None,
                 agent_id: None,
                 workspace_path: Some(workspace_path.clone()),
@@ -3734,6 +3725,7 @@ mod tests {
                 comment_id,
                 space_slug: "official".to_string(),
                 session_id: None,
+                session_origin: None,
                 workspace_id: None,
                 agent_id: None,
                 workspace_path: Some(workspace_path.clone()),
@@ -3752,6 +3744,7 @@ mod tests {
                 issue_id: "iss_mock_004".to_string(),
                 space_slug: "official".to_string(),
                 session_id: None,
+                session_origin: None,
                 workspace_id: None,
                 agent_id: None,
                 workspace_path: Some(workspace_path),

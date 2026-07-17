@@ -342,7 +342,6 @@ Examples:
   myagents space issue comment get <issueId> <commentId> --space <slug> --json
   myagents space issue complete <issueId> --space <slug> --taskId <taskId> --body-file result.md \\
       --message "completed Space issue"
-  myagents space issue delivery ignore <deliveryId> --space <slug>
   myagents space issue attachment add <issueId> --space <slug> --file report.pdf
   myagents space issue close <issueId> --space <slug>
   myagents space attachment download <attachmentId> --space <slug> --output myagents_files/space/file.bin
@@ -2232,13 +2231,12 @@ export function rejectUnsupportedSpaceDryRun(
   const nested = positional[3] ?? '';
   const issueMutation = area === 'issue' && (
     ['create', 'update', 'comment', 'status', 'claim', 'close', 'complete', 'cancel-claim'].includes(action)
-    || (action === 'delivery' && nested === 'ignore')
     || (action === 'attachment' && nested === 'add')
   ) && !(action === 'comment' && nested === 'get');
   const otherWrite = (area === 'claim' && action === 'local-task')
     || (area === 'attachment' && ['add', 'download'].includes(action));
   if (!issueMutation && !otherWrite) return;
-  const commandLength = area === 'issue' && ['delivery', 'attachment'].includes(action) ? 4 : 3;
+  const commandLength = area === 'issue' && action === 'attachment' ? 4 : 3;
   const command = positional.slice(0, commandLength).join(' ');
 
   if (area === 'issue' && action === 'update') {
@@ -2318,7 +2316,6 @@ export function buildRoute(group: string, action: string, rest: string[]): strin
     if (issueAction === 'comment') return 'space/issue-comment';
     if (issueAction === 'status') return 'space/issue-status';
     if (issueAction === 'claim') return 'space/issue-claim';
-    if (issueAction === 'delivery' && rest[1] === 'ignore') return 'space/issue-delivery-ignore';
     if (issueAction === 'attachment' && rest[1] === 'add') return 'space/attachment-add';
     if (issueAction === 'close') return 'space/issue-close';
     if (issueAction === 'complete') return 'space/issue-complete';
@@ -3546,21 +3543,6 @@ export function buildRequestBody(
           ...context,
           issueId: requiredIssueId,
           deliveryId: flags.deliveryId,
-        };
-      }
-      if (issueAction === 'delivery' && rest[1] === 'ignore') {
-        const deliveryId = rest[2] || flags.deliveryId;
-        const requiredDeliveryId = requireSpacePositional(
-          flags,
-          deliveryId as string | undefined,
-          'deliveryId',
-          'space issue delivery ignore',
-          'deliveryId',
-        );
-        return {
-          ...context,
-          issueId: flags.issueId,
-          deliveryId: requiredDeliveryId,
         };
       }
       if (issueAction === 'attachment' && rest[1] === 'add') {

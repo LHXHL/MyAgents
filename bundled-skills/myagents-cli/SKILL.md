@@ -347,7 +347,6 @@ myagents space issue comment <issueId> --space <slug> \
   [--body-file <path>] [--attachment <path> ...]
 myagents space issue claim <issueId> --space <slug> --deliveryId <deliveryId> --create-attached \
   --workspaceId <id> --workspacePath <path> --name "..." --taskMdContent-file task.md
-myagents space issue delivery ignore <deliveryId> --space <slug>
 myagents space issue complete <issueId> --space <slug> --workspacePath <path> \
   --taskId <taskId> --body-file result.md [--attachment <path> ...] --message "completed Space issue"
 myagents space issue attachment add <issueId> --space <slug> --file <path> [--file <path> ...]
@@ -356,13 +355,13 @@ myagents space attachment download <attachmentId> --space <slug> [--output myage
 
 **何时用：**
 - 普通会话先 `myagents space list --json` 选择明确的 slug；所有 Space 业务命令都必须带 `--space <slug>`，不猜“默认社区”或上次使用的 Space。
-- 当前 workspace 在该 Space 有 active registration 时，CLI 自动以 Registered Agent 身份执行；否则自动以当前 User 身份执行，权限与这个 User 在 UI 中一致。delivery-bound Session 的身份/工作区不匹配会直接拒绝，不会静默降级成 User。身份不确定时先 `space whoami`。
+- CLI 只有在当前 Session 持久化了精确的 `spaceId + registeredAgentId` origin 时，才以该 Registered Agent 身份执行；显式 legacy Agent ID 仅作旧调用兼容。workspace 只校验执行边界，绝不用于猜测 actor。没有 Registered Agent origin 的普通 Session 始终使用当前 User 身份；origin、Space 或 workspace 不匹配会直接拒绝，不会静默降级。身份不确定时先 `space whoami`。
 - 需要创建、筛选或移动 Issue 时，先 `space goal list --json`，只复制 active `data.items[].id`；不要把 Goal title 或 `goalPathLabel` 当 ID。`myagents goal ...` 是本地 Session Goal Mode，`myagents space goal ...` 是 Cloud Space Goal，两者不是同一资源。
 - `issue create` 不传 `--goal` 会进入 Inbox；已发布 Issue 用 `issue update --goal <goalId>` 移动，使用 `--clear-goal` 清回 Inbox。不要用 `--goal null`、`--goal inbox` 或空字符串表达清除。更新后用 `issue view --json` 核对权威 `goalId/goalPathLabel`。
 - 具体命令参数优先运行精确 leaf help，例如 `myagents space issue comment --help`；这些 help 是给 Agent 的完整调用说明。
 - 收到 Space delivery → 先 `myagents space issue view <issueId> --space <slug> --comments --json` 读取当前服务端状态；delivery trigger 只用于定位，不替代当前状态。
 - trigger 的 comment 标记为截断 → 用 `myagents space issue comment get <issueId> <commentId> --space <slug> --json` 精确读取，不要扫描分页猜触发评论。
-- subscription 通知不适合当前 Agent → `space issue delivery ignore` 只忽略这次投送；适合承担时用 `claim --create-attached` 建立/复用责任和本地 Task。
+- subscription 通知只表示该 Issue 在路由时匹配订阅，不等于已经指派责任。读取当前 Issue 后，可以不做进一步动作、评论或更新而不 claim；只有确认该 Agent 应负责完成时，才用 `claim`（需要持久本地执行跟踪时再加 `--create-attached`）。Delivery 会由本地 connector 自动确认，不存在 Agent-facing ignore/handled/acknowledge 命令。
 - assignment 表示责任已经明确交给当前 Agent；仍用 `claim --create-attached` 确认并建立本地 Task/Session 关联，不要 ignore 或自行取消指派。
 - Issue/评论里有附件 → 用 `myagents space attachment download <attachmentId> --space <slug>` 下载到当前工作区，再读取本地文件。
 - 需要回写结论 → `space issue comment` 可原子提交正文和附件；只有附件也合法。评论附件只属于该评论，不会跑到 Issue 顶部。

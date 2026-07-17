@@ -1994,7 +1994,6 @@ async function routeAdminApi(pathname: string, payload: Record<string, unknown>)
   if (route === 'space/issue-comment-get') return await api.handleSpaceIssueCommentGet(payload as Parameters<typeof api.handleSpaceIssueCommentGet>[0]);
   if (route === 'space/issue-status') return await api.handleSpaceIssueStatus(payload as Parameters<typeof api.handleSpaceIssueStatus>[0]);
   if (route === 'space/issue-claim') return await api.handleSpaceIssueClaim(payload as Parameters<typeof api.handleSpaceIssueClaim>[0]);
-  if (route === 'space/issue-delivery-ignore') return await api.handleSpaceIssueDeliveryIgnore(payload as Parameters<typeof api.handleSpaceIssueDeliveryIgnore>[0]);
   if (route === 'space/issue-close') return await api.handleSpaceIssueClose(payload as Parameters<typeof api.handleSpaceIssueClose>[0]);
   if (route === 'space/issue-complete') return await api.handleSpaceIssueComplete(payload as Parameters<typeof api.handleSpaceIssueComplete>[0]);
   if (route === 'space/issue-cancel-claim') return await api.handleSpaceIssueCancelClaim(payload as Parameters<typeof api.handleSpaceIssueCancelClaim>[0]);
@@ -9351,8 +9350,21 @@ description: >
             const sessionId = getRuntimeSessionIdForRequest();
             const sessionMeta = getSessionMetadata(sessionId);
             const inboxOrigin: SessionOrigin = options?.scenario?.type === 'registeredAgent'
-              ? { kind: 'registered-agent', surface: 'space_issue_delivery' }
+              ? {
+                  kind: 'registered-agent',
+                  surface: 'space_issue_delivery',
+                  context: {
+                    spaceId: options.scenario.spaceId,
+                    registeredAgentId: options.scenario.registeredAgentId,
+                  },
+                }
               : { kind: 'session-inbox', surface: 'session_send' };
+            if (inboxOrigin.kind === 'registered-agent') {
+              const originBinding = await engine.ensureRegisteredAgentSessionOrigin(sessionId, inboxOrigin);
+              if (!originBinding.success) {
+                return { queued: false, error: originBinding.error };
+              }
+            }
             return engine.enqueueInboxMessage({
               text,
               sessionId,
@@ -9361,6 +9373,7 @@ description: >
               inboxMeta,
               allowLazySessionMaterialization: options?.allowLazySessionMaterialization,
               analyticsOrigin: inboxOrigin,
+              birthOrigin: inboxOrigin,
             });
           };
           const result = await handleInboxDrain(

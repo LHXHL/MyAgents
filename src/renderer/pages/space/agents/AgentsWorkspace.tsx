@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   Activity,
@@ -61,6 +61,69 @@ const DEFAULT_ISSUE_SUBSCRIPTION_RUN_MODE: SpaceIssueSubscriptionRunMode =
   "single_session";
 const DEFAULT_AGENT_STATE_FILTER = ["todo"];
 const AGENT_SUBSCRIPTION_STATE_OPTIONS = ["todo", "open"] as const;
+const MAX_AGENT_INSTRUCTION_CHARS = 20_000;
+
+type AgentSubscriptionDraft = {
+  key: string;
+  goalId: string;
+  stateFilter: string[];
+  error?: string;
+};
+
+function instructionLength(value: string): number {
+  return Array.from(value).length;
+}
+
+function AgentInstructionField({
+  value,
+  onChange,
+  error,
+  legacy = false,
+  inputRef,
+  disabled = false,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  error?: string | null;
+  legacy?: boolean;
+  inputRef?: React.RefObject<HTMLTextAreaElement | null>;
+  disabled?: boolean;
+}) {
+  const { t } = useTranslation("app");
+  return (
+    <label className="block">
+      <span className="mb-1 block text-sm font-medium text-[var(--ink)]">
+        {t("space.agents.instructionLabel")}
+      </span>
+      <textarea
+        ref={inputRef}
+        aria-label={t("space.agents.instructionLabel")}
+        value={value}
+        disabled={disabled}
+        rows={5}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={t("space.agents.instructionPlaceholder")}
+        aria-invalid={Boolean(error)}
+        className={`min-h-28 w-full resize-y rounded-lg border bg-[var(--paper)] px-3 py-2.5 text-sm leading-6 text-[var(--ink)] outline-none transition-colors disabled:opacity-60 ${
+          error
+            ? "border-[var(--error)] focus:border-[var(--error)]"
+            : "border-[var(--line)] focus:border-[var(--accent-warm)]"
+        }`}
+      />
+      {error ? (
+        <p className="mt-1 text-xs font-medium text-[var(--error)]">{error}</p>
+      ) : legacy ? (
+        <p className="mt-1 text-xs text-[var(--warning)]">
+          {t("space.agents.instructionLegacyWarning")}
+        </p>
+      ) : (
+        <p className="mt-1 text-xs text-[var(--ink-muted)]">
+          {t("space.agents.instructionHelp")}
+        </p>
+      )}
+    </label>
+  );
+}
 
 function normalizeIssueSubscriptionRunMode(
   value?: SpaceIssueSubscriptionRunMode | null,
@@ -122,6 +185,23 @@ function agentTargetLabel(
 ): string {
   const target = agent.goalPathLabel?.trim() || agent.goalId?.trim();
   return target || t("space.agents.targetNotSet");
+}
+
+function agentSubscriptionLabels(
+  agent: LocalRegisteredAgent,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  if (agent.subscriptions.length === 0) return t("space.agents.noSubscriptions");
+  return agent.subscriptions
+    .map((subscription) => subscription.goalPathLabel || subscription.goalId)
+    .join(" · ");
+}
+
+function agentInstructionSummary(
+  agent: LocalRegisteredAgent,
+  t: ReturnType<typeof useTranslation>["t"],
+): string {
+  return agent.instruction?.trim() || t("space.agents.instructionLegacyWarning");
 }
 
 function agentCardTimeLabel(
@@ -434,6 +514,9 @@ function EditAgentDialog({
   const { t } = useTranslation("app");
   const toast = useToast();
   const [displayName, setDisplayName] = useState(agent.displayName);
+  const [instruction, setInstruction] = useState(agent.instruction ?? "");
+  const [instructionError, setInstructionError] = useState<string | null>(null);
+  const instructionRef = useRef<HTMLTextAreaElement>(null);
   const canEditWorkspace = agent.isLocal === true;
   const currentProject = useMemo(
     () => findAgentProject(agent, projects),
@@ -446,8 +529,13 @@ function EditAgentDialog({
   );
   const [goalId, setGoalId] = useState(agent.goalId ?? goals[0]?.id ?? "");
   const [stateFilter, setStateFilter] = useState<string[]>(() =>
-    normalizeAgentStateFilter(agent.stateFilter),
+    normalizeAgentStateFilter(
+      agent.subscriptions[0]?.stateFilter ?? agent.stateFilter,
+    ),
   );
+  const [subscriptions, setSubscriptions] = useState(agent.subscriptions);
+  const [subscriptionBusy, setSubscriptionBusy] = useState<string | null>(null);
+  const [confirmReevaluate, setConfirmReevaluate] = useState(false);
   const [issueSubscriptionRunMode, setIssueSubscriptionRunMode] =
     useState<SpaceIssueSubscriptionRunMode>(
       normalizeIssueSubscriptionRunMode(agent.issueSubscriptionRunMode),
@@ -493,6 +581,7 @@ function EditAgentDialog({
   }, [agent, goals, t]);
 
   useCloseLayer(() => {
+    if (confirmReevaluate) return false;
     onClose();
     return true;
   }, 220);
@@ -518,7 +607,19 @@ function EditAgentDialog({
             workspaceLabel: agent.workspaceLabel ?? undefined,
           }
       : {};
-    if (!displayName.trim() || !goalId || stateFilter.length === 0) return;
+    const normalizedInstruction = instruction.trim();
+    if (agent.instruction !== null && !normalizedInstruction) {
+      setInstructionError(t("space.agents.instructionRequired"));
+      instructionRef.current?.focus();
+      return;
+    }
+    if (instructionLength(normalizedInstruction) > MAX_AGENT_INSTRUCTION_CHARS) {
+      setInstructionError(t("space.agents.instructionTooLong"));
+      instructionRef.current?.focus();
+      return;
+    }
+    setInstructionError(null);
+    if (!displayName.trim()) return;
     if (
       canEditWorkspace &&
       (!nextWorkspace.workspaceId || !nextWorkspace.workspacePath)
@@ -529,21 +630,77 @@ function EditAgentDialog({
       await actions.updateRegisteredAgent({
         id: agent.id,
         displayName: displayName.trim(),
+        ...(normalizedInstruction &&
+        normalizedInstruction !== (agent.instruction ?? "").trim()
+          ? {
+              instruction: normalizedInstruction,
+              expectedInstructionRevision: agent.instructionRevision,
+            }
+          : {}),
         ...nextWorkspace,
-        goalId,
-        stateFilter,
         issueSubscriptionRunMode,
       });
       toast.success(t("space.toasts.agentUpdated"));
       onSaved();
     } catch (error) {
-      toast.error(spaceErrorMessage(error));
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("REGISTERED_AGENT_INSTRUCTION_CONFLICT")) {
+        setInstructionError(t("space.agents.instructionConflict"));
+        instructionRef.current?.focus();
+      } else {
+        toast.error(spaceErrorMessage(error));
+      }
     } finally {
       setBusy(false);
     }
   };
 
+  const addSubscription = async () => {
+    if (!goalId || stateFilter.length === 0) return;
+    setSubscriptionBusy("new");
+    try {
+      const subscription = await actions.createRegisteredAgentSubscription({
+        registeredAgentId: agent.id,
+        goalId,
+        stateFilter,
+      });
+      setSubscriptions((items) => [...items, subscription]);
+    } catch (error) {
+      toast.error(spaceErrorMessage(error));
+    } finally {
+      setSubscriptionBusy(null);
+    }
+  };
+
+  const removeSubscription = async (subscriptionId: string) => {
+    setSubscriptionBusy(subscriptionId);
+    try {
+      await actions.deleteRegisteredAgentSubscription(subscriptionId);
+      setSubscriptions((items) =>
+        items.filter((item) => item.id !== subscriptionId),
+      );
+    } catch (error) {
+      toast.error(spaceErrorMessage(error));
+    } finally {
+      setSubscriptionBusy(null);
+    }
+  };
+
+  const reevaluateScope = async () => {
+    setConfirmReevaluate(false);
+    setSubscriptionBusy("reevaluate");
+    try {
+      const count = await actions.reevaluateRegisteredAgent(agent.id);
+      toast.success(t("space.agents.reevaluatedScope", { count }));
+    } catch (error) {
+      toast.error(spaceErrorMessage(error));
+    } finally {
+      setSubscriptionBusy(null);
+    }
+  };
+
   return (
+    <>
     <OverlayBackdrop
       onClose={onClose}
       className="z-[220] items-center justify-center bg-black/20 backdrop-blur-sm"
@@ -571,10 +728,22 @@ function EditAgentDialog({
             </span>
             <input
               value={displayName}
+              disabled={busy}
               onChange={(event) => setDisplayName(event.target.value)}
               className="h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none transition-colors focus:border-[var(--accent-warm)]"
             />
           </label>
+          <AgentInstructionField
+            value={instruction}
+            onChange={(value) => {
+              setInstruction(value);
+              if (instructionError) setInstructionError(null);
+            }}
+            error={instructionError}
+            legacy={agent.instruction === null}
+            inputRef={instructionRef}
+            disabled={busy}
+          />
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-[var(--ink)]">
               {t("space.agents.localAgentWorkspace")}
@@ -607,28 +776,93 @@ function EditAgentDialog({
               </>
             )}
           </label>
-          <label className="block">
-            <span className="mb-1 block text-sm font-medium text-[var(--ink)]">
-              {t("space.agents.subscriptionTarget")}
-            </span>
-            {goalOptions.length > 0 ? (
-              <CustomSelect
-                value={goalId}
-                options={goalOptions}
-                onChange={setGoalId}
-                size="md"
-              />
+          <section className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--paper-inset)]/35 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <h3 className="text-sm font-medium text-[var(--ink)]">
+                {t("space.agents.subscriptions")}
+              </h3>
+              <button
+                type="button"
+                disabled={busy || subscriptionBusy !== null}
+                onClick={() => setConfirmReevaluate(true)}
+                className="text-xs font-medium text-[var(--accent-warm)] disabled:opacity-50"
+              >
+                {t("space.agents.reevaluateScope")}
+              </button>
+            </div>
+            {subscriptions.length === 0 ? (
+              <p className="rounded-lg bg-[var(--paper)] px-3 py-2 text-xs text-[var(--ink-muted)]">
+                {t("space.agents.noSubscriptions")}
+              </p>
             ) : (
-              <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-inset)] px-3 py-2.5 text-sm font-semibold text-[var(--ink-subtle)]">
-                {t("space.agents.targetNotSet")}
+              <div className="space-y-2">
+                {subscriptions.map((subscription) => (
+                  <div
+                    key={subscription.id}
+                    className="flex items-center gap-3 rounded-lg bg-[var(--paper)] px-3 py-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium text-[var(--ink-secondary)]">
+                        {subscription.goalPathLabel || subscription.goalId}
+                      </p>
+                      <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
+                        {issueStateFilterLabel(t, subscription.stateFilter)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={busy || subscriptionBusy !== null}
+                      onClick={() => void removeSubscription(subscription.id)}
+                      className="grid h-8 w-8 place-items-center rounded-lg text-[var(--error)] transition-colors hover:bg-[var(--error-bg)] disabled:opacity-50"
+                      title={t("space.agents.removeSubscription")}
+                    >
+                      {subscriptionBusy === subscription.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Trash2 className="h-4 w-4" />
+                      )}
+                    </button>
+                  </div>
+                ))}
               </div>
             )}
-          </label>
-          <IssueSubscriptionScopeControl
-            value={stateFilter}
-            onChange={setStateFilter}
-            disabled={busy}
-          />
+            <div className="space-y-3 border-t border-[var(--line-subtle)] pt-3">
+              <label className="block">
+                <span className="mb-1 block text-sm font-medium text-[var(--ink)]">
+                  {t("space.agents.subscriptionTarget")}
+                </span>
+                <CustomSelect
+                  value={goalId}
+                  options={goalOptions}
+                  onChange={setGoalId}
+                  size="md"
+                />
+              </label>
+              <IssueSubscriptionScopeControl
+                value={stateFilter}
+                onChange={setStateFilter}
+                disabled={busy || subscriptionBusy !== null}
+              />
+              <button
+                type="button"
+                disabled={
+                  busy ||
+                  subscriptionBusy !== null ||
+                  !goalId ||
+                  stateFilter.length === 0
+                }
+                onClick={() => void addSubscription()}
+                className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-medium text-[var(--button-secondary-text)] disabled:opacity-50"
+              >
+                {subscriptionBusy === "new" ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Plus className="h-4 w-4" />
+                )}
+                {t("space.agents.addSubscription")}
+              </button>
+            </div>
+          </section>
           <IssueSubscriptionRunModeControl
             value={issueSubscriptionRunMode}
             onChange={setIssueSubscriptionRunMode}
@@ -649,8 +883,9 @@ function EditAgentDialog({
             disabled={
               busy ||
               !displayName.trim() ||
-              !goalId ||
-              stateFilter.length === 0 ||
+              instructionLength(instruction.trim()) >
+                MAX_AGENT_INSTRUCTION_CHARS ||
+              (agent.instruction !== null && !instruction.trim()) ||
               (canEditWorkspace && !workspaceId)
             }
             onClick={() => void submit()}
@@ -662,6 +897,18 @@ function EditAgentDialog({
         </div>
       </div>
     </OverlayBackdrop>
+    {confirmReevaluate ? (
+      <ConfirmDialog
+        title={t("space.agents.reevaluateConfirmTitle")}
+        message={t("space.agents.reevaluateConfirmMessage")}
+        confirmText={t("space.agents.reevaluateConfirmAction")}
+        cancelText={t("space.common.cancel")}
+        loading={subscriptionBusy === "reevaluate"}
+        onConfirm={() => void reevaluateScope()}
+        onCancel={() => setConfirmReevaluate(false)}
+      />
+    ) : null}
+    </>
   );
 }
 
@@ -756,9 +1003,15 @@ function AgentCard({
         />
         <AgentCardField
           icon={Target}
-          label={t("space.agents.goal")}
-          value={agentTargetLabel(agent, t)}
-          muted={!agent.goalPathLabel && !agent.goalId}
+          label={t("space.agents.instructionLabel")}
+          value={agentInstructionSummary(agent, t)}
+          muted={!agent.instruction}
+        />
+        <AgentCardField
+          icon={Activity}
+          label={t("space.agents.subscriptions")}
+          value={agentSubscriptionLabels(agent, t)}
+          muted={agent.subscriptions.length === 0}
         />
       </div>
     </article>
@@ -1079,9 +1332,9 @@ function AgentDetailOverlay({
             />
             <AgentSummaryBlock
               icon={Target}
-              label={t("space.agents.subscriptionTarget")}
-              value={agentTargetLabel(agent, t)}
-              muted={!agent.goalPathLabel && !agent.goalId}
+              label={t("space.agents.subscriptions")}
+              value={agentSubscriptionLabels(agent, t)}
+              muted={agent.subscriptions.length === 0}
             />
             <AgentSummaryBlock
               icon={FolderOpen}
@@ -1096,6 +1349,18 @@ function AgentDetailOverlay({
               label={t("space.agents.lastOnline")}
               value={agentCardTimeLabel(agent, t)}
             />
+          </section>
+
+          <section className="mt-4 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper)]/45 px-4 py-4">
+            <h3 className="flex items-center gap-2 text-base font-semibold text-[var(--ink)]">
+              <Target className="h-4 w-4 text-[var(--ink-muted)]" />
+              {t("space.agents.instructionLabel")}
+            </h3>
+            <p
+              className={`mt-3 whitespace-pre-wrap text-sm leading-6 ${agent.instruction ? "text-[var(--ink-secondary)]" : "text-[var(--warning)]"}`}
+            >
+              {agentInstructionSummary(agent, t)}
+            </p>
           </section>
 
           <section className="mt-6 rounded-xl border border-[var(--line-subtle)] bg-[var(--paper)]/45 px-4 py-4">
@@ -1189,14 +1454,25 @@ function AgentDetailOverlay({
               {t("space.agents.dispatchSettings")}
             </h3>
             <div className="mt-3 divide-y divide-[var(--line-subtle)]">
-              <AgentDetailRow
-                label={t("space.agents.subscriptionTarget")}
-                value={agentTargetLabel(agent, t)}
-              />
-              <AgentDetailRow
-                label={t("space.agents.subscriptionScope")}
-                value={issueStateFilterLabel(t, agent.stateFilter)}
-              />
+              {agent.subscriptions.length === 0 ? (
+                <AgentDetailRow
+                  label={t("space.agents.subscriptions")}
+                  value={t("space.agents.noSubscriptions")}
+                />
+              ) : (
+                agent.subscriptions.map((subscription) => (
+                  <AgentDetailRow
+                    key={subscription.id}
+                    label={
+                      subscription.goalPathLabel || subscription.goalId
+                    }
+                    value={issueStateFilterLabel(
+                      t,
+                      subscription.stateFilter,
+                    )}
+                  />
+                ))
+              )}
               <AgentDetailRow
                 label={t("space.agents.issueSubscriptionStrategy")}
                 value={issueSubscriptionRunModeLabel(
@@ -1436,11 +1712,19 @@ export function RegisterAgentDialog({
   const { t } = useTranslation("app");
   const toast = useToast();
   const [displayName, setDisplayName] = useState("");
+  const [instruction, setInstruction] = useState("");
+  const [instructionError, setInstructionError] = useState<string | null>(null);
+  const instructionRef = useRef<HTMLTextAreaElement>(null);
   const [workspaceId, setWorkspaceId] = useState(projects[0]?.id ?? "");
   const [goalId, setGoalId] = useState(goals[0]?.id ?? "");
   const [stateFilter, setStateFilter] = useState<string[]>(() => [
     ...DEFAULT_AGENT_STATE_FILTER,
   ]);
+  const [additionalSubscriptions, setAdditionalSubscriptions] = useState<
+    AgentSubscriptionDraft[]
+  >([]);
+  const [registeredAgent, setRegisteredAgent] =
+    useState<LocalRegisteredAgent | null>(null);
   const [issueSubscriptionRunMode, setIssueSubscriptionRunMode] =
     useState<SpaceIssueSubscriptionRunMode>(
       DEFAULT_ISSUE_SUBSCRIPTION_RUN_MODE,
@@ -1474,20 +1758,67 @@ export function RegisterAgentDialog({
 
   const submit = async () => {
     const project = projects.find((item) => item.id === workspaceId);
-    if (!project || !displayName.trim() || !goalId || stateFilter.length === 0)
+    const normalizedInstruction = instruction.trim();
+    if (!registeredAgent && !normalizedInstruction) {
+      setInstructionError(t("space.agents.instructionRequired"));
+      instructionRef.current?.focus();
+      return;
+    }
+    if (
+      !registeredAgent &&
+      instructionLength(normalizedInstruction) > MAX_AGENT_INSTRUCTION_CHARS
+    ) {
+      setInstructionError(t("space.agents.instructionTooLong"));
+      instructionRef.current?.focus();
+      return;
+    }
+    setInstructionError(null);
+    if (
+      !registeredAgent &&
+      (!project || !displayName.trim() || !goalId || stateFilter.length === 0)
+    )
       return;
     setBusy(true);
     try {
-      const agent = await actions.registerAgent({
-        displayName: displayName.trim(),
-        workspaceId: project.id,
-        workspacePath: project.path,
-        workspaceLabel: projectLabel(project),
-        goalId,
-        stateFilter,
-        issueSubscriptionRunMode,
-      });
-      toast.success(t("space.toasts.agentCreated"));
+      const agent =
+        registeredAgent ??
+        (await actions.registerAgent({
+          displayName: displayName.trim(),
+          instruction: normalizedInstruction,
+          workspaceId: project!.id,
+          workspacePath: project!.path,
+          workspaceLabel: projectLabel(project!),
+          goalId,
+          stateFilter,
+          issueSubscriptionRunMode,
+        }));
+      if (!registeredAgent) setRegisteredAgent(agent);
+      const pendingSubscriptions = additionalSubscriptions;
+      const failures: AgentSubscriptionDraft[] = [];
+      for (const subscription of pendingSubscriptions) {
+        try {
+          await actions.createRegisteredAgentSubscription({
+            registeredAgentId: agent.id,
+            goalId: subscription.goalId,
+            stateFilter: subscription.stateFilter,
+          });
+        } catch (error) {
+          failures.push({
+            ...subscription,
+            error: spaceErrorMessage(error),
+          });
+        }
+      }
+      if (!registeredAgent) toast.success(t("space.toasts.agentCreated"));
+      if (failures.length > 0) {
+        setAdditionalSubscriptions(failures);
+        toast.error(
+          t("space.agents.additionalSubscriptionFailed", {
+            count: failures.length,
+          }),
+        );
+        return;
+      }
       onRegistered(agent);
     } catch (error) {
       toast.error(spaceErrorMessage(error));
@@ -1529,8 +1860,19 @@ export function RegisterAgentDialog({
               onChange={(event) => setDisplayName(event.target.value)}
               className="h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none transition-colors focus:border-[var(--accent-warm)]"
               placeholder={t("space.agents.displayNamePlaceholder")}
+              disabled={busy || Boolean(registeredAgent)}
             />
           </label>
+          <AgentInstructionField
+            value={instruction}
+            onChange={(value) => {
+              setInstruction(value);
+              if (instructionError) setInstructionError(null);
+            }}
+            error={instructionError}
+            inputRef={instructionRef}
+            disabled={busy || Boolean(registeredAgent)}
+          />
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-[var(--ink)]">
               {t("space.agents.localAgentWorkspace")}
@@ -1539,6 +1881,7 @@ export function RegisterAgentDialog({
               value={workspaceId}
               options={projectOptions}
               onChange={setWorkspaceId}
+              disabled={busy || Boolean(registeredAgent)}
               size="md"
             />
           </label>
@@ -1550,18 +1893,95 @@ export function RegisterAgentDialog({
               value={goalId}
               options={goalOptions}
               onChange={setGoalId}
+              disabled={busy || Boolean(registeredAgent)}
               size="md"
             />
           </label>
           <IssueSubscriptionScopeControl
             value={stateFilter}
             onChange={setStateFilter}
-            disabled={busy}
+            disabled={busy || Boolean(registeredAgent)}
           />
+          {additionalSubscriptions.map((subscription, index) => (
+            <section
+              key={subscription.key}
+              className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--paper-inset)]/35 p-3"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <span className="text-xs font-medium text-[var(--ink-muted)]">
+                  {t("space.agents.subscriptions")} {index + 2}
+                </span>
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() =>
+                    setAdditionalSubscriptions((items) =>
+                      items.filter((item) => item.key !== subscription.key),
+                    )
+                  }
+                  className="text-xs font-medium text-[var(--error)] disabled:opacity-50"
+                >
+                  {t("space.agents.removeSubscription")}
+                </button>
+              </div>
+              <CustomSelect
+                value={subscription.goalId}
+                options={goalOptions}
+                onChange={(nextGoalId) =>
+                  setAdditionalSubscriptions((items) =>
+                    items.map((item) =>
+                      item.key === subscription.key
+                        ? { ...item, goalId: nextGoalId, error: undefined }
+                        : item,
+                    ),
+                  )
+                }
+                size="md"
+              />
+              <IssueSubscriptionScopeControl
+                value={subscription.stateFilter}
+                onChange={(nextStateFilter) =>
+                  setAdditionalSubscriptions((items) =>
+                    items.map((item) =>
+                      item.key === subscription.key
+                        ? { ...item, stateFilter: nextStateFilter, error: undefined }
+                        : item,
+                    ),
+                  )
+                }
+                disabled={busy}
+              />
+              {subscription.error ? (
+                <p className="text-xs font-medium text-[var(--error)]">
+                  {subscription.error}
+                </p>
+              ) : null}
+            </section>
+          ))}
+          <button
+            type="button"
+            disabled={
+              busy || Boolean(registeredAgent) || goalOptions.length === 0
+            }
+            onClick={() =>
+              setAdditionalSubscriptions((items) => [
+                ...items,
+                {
+                  key: crypto.randomUUID(),
+                  goalId: goals[0]?.id ?? "",
+                  stateFilter: [...DEFAULT_AGENT_STATE_FILTER],
+                },
+              ])
+            }
+            className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-medium text-[var(--button-secondary-text)] disabled:opacity-50"
+          >
+            <Plus className="h-4 w-4" />
+            {t("space.agents.addSubscription")}
+          </button>
           <IssueSubscriptionRunModeControl
             value={issueSubscriptionRunMode}
             onChange={setIssueSubscriptionRunMode}
-            disabled={busy}
+            disabled={busy || Boolean(registeredAgent)}
           />
         </div>
         <div className="flex justify-end gap-2 border-t border-[var(--line)] px-5 py-4">
@@ -1576,10 +1996,15 @@ export function RegisterAgentDialog({
             type="button"
             disabled={
               busy ||
-              !workspaceId ||
-              !displayName.trim() ||
-              !goalId ||
-              stateFilter.length === 0
+              (!registeredAgent &&
+                (!workspaceId ||
+                  !displayName.trim() ||
+                  !goalId ||
+                  stateFilter.length === 0)) ||
+              additionalSubscriptions.some(
+                (subscription) =>
+                  !subscription.goalId || subscription.stateFilter.length === 0,
+              )
             }
             onClick={() => void submit()}
             className="flex h-10 items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-4 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
@@ -1589,7 +2014,11 @@ export function RegisterAgentDialog({
             ) : (
               <Bot className="h-4 w-4" />
             )}
-            {t("space.agents.register")}
+            {registeredAgent
+              ? additionalSubscriptions.length > 0
+                ? t("space.agents.retryFailedSubscriptions")
+                : t("space.agents.finishRegistration")
+              : t("space.agents.register")}
           </button>
         </div>
       </div>

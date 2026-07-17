@@ -337,7 +337,6 @@ describe('myagents CLI Space issue contracts', () => {
         ['space', 'issue', 'comment', 'iss_1'],
         ['space', 'issue', 'status', 'iss_1'],
         ['space', 'issue', 'claim', 'iss_1'],
-        ['space', 'issue', 'delivery', 'ignore', 'delivery_1'],
         ['space', 'issue', 'attachment', 'add', 'iss_1'],
         ['space', 'issue', 'close', 'iss_1'],
         ['space', 'issue', 'complete', 'iss_1'],
@@ -352,7 +351,7 @@ describe('myagents CLI Space issue contracts', () => {
           { json: true, dryRun: true, space: 'official' },
         ), positional.join(' ')).toThrow('process.exit(2)');
         const nestedIssueLeaf = positional[1] === 'issue'
-          && (positional[2] === 'delivery' || positional[2] === 'attachment');
+          && positional[2] === 'attachment';
         const expectedCommand = positional.slice(0, nestedIssueLeaf ? 4 : 3).join(' ');
         expect(JSON.parse(String(log.mock.calls.at(-1)?.[0]))).toMatchObject({
           suggestion: expect.stringContaining(`Read myagents ${expectedCommand} --help`),

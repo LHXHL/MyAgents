@@ -2312,27 +2312,6 @@ EXAMPLES
 RECOVERY
   Read the current Issue first; if attached Task creation fails, follow the returned rollback/recovery command.`,
 
-  'space/issue/delivery/ignore': `myagents space issue delivery ignore — Ignore one subscription delivery
-
-WHEN TO CALL
-  When an unassigned subscription delivery is not relevant to this Registered Agent.
-EFFECT
-  Marks only that delivery ignored; it does not hide the Issue from other Agents.
-REQUIRED CONTEXT
-  <deliveryId> and --space <slug> are required.
-OPTIONS
-  --issueId may add an ownership cross-check when known.
-ACTOR AND PERMISSIONS
-  Must run as the Registered Agent targeted by the delivery.
-FILE SAFETY
-  Does not access local files.
-OUTPUT
-  Updated delivery status.
-EXAMPLES
-  myagents space issue delivery ignore del_123 --space myagents --issueId iss_123 --json
-RECOVERY
-  Do not ignore assignment deliveries; read the Issue and claim assigned work instead.`,
-
   'space/issue/close': `myagents space issue close — Close an Issue without a completion payload
 
 WHEN TO CALL
@@ -3789,18 +3768,30 @@ WHEN TO CALL
   Do not file FYI remarks, brainstorming, or unsolicited ideas.`;
 
 async function spaceManagementResponse(path: string, payload: Record<string, unknown>, hint?: string): Promise<AdminResponse> {
-  const resp = await managementApi(path, 'POST', enrichSpaceWorkspaceContext(payload));
+  const resp = await managementApi(path, 'POST', await enrichSpaceWorkspaceContext(payload));
   if (!resp.ok) return mgmtError(resp, 'Space command failed');
   return { success: true, data: resp.data, ...(hint ? { hint } : {}) };
 }
 
-function enrichSpaceWorkspaceContext(payload: Record<string, unknown>): Record<string, unknown> {
+async function enrichSpaceWorkspaceContext(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
   const requestedPath = typeof payload.workspacePath === 'string' && payload.workspacePath.trim()
     ? payload.workspacePath.trim()
     : undefined;
   const currentPath = getCurrentWorkspacePath();
   const workspacePath = requestedPath ?? currentPath;
-  if (!workspacePath) return payload;
+  const sessionId = typeof payload.sessionId === 'string' && payload.sessionId.trim()
+    ? payload.sessionId.trim()
+    : undefined;
+  const origin = sessionId ? getSessionEngine().getSessionOrigin(sessionId) : undefined;
+  const sessionOrigin = origin?.kind === 'registered-agent'
+    ? {
+        spaceId: origin.context.spaceId,
+        registeredAgentId: origin.context.registeredAgentId,
+      }
+    : undefined;
+  if (!workspacePath) {
+    return { ...payload, ...(sessionOrigin ? { sessionOrigin } : {}) };
+  }
   const project = loadProjects().find(item => workspacePathsEqual(item.path, workspacePath));
   return {
     ...payload,
@@ -3809,6 +3800,7 @@ function enrichSpaceWorkspaceContext(payload: Record<string, unknown>): Record<s
     // so Rust can fail closed when it disagrees with a delivery-bound Agent;
     // only enrich legacy/path-only requests that omitted the stable id.
     workspaceId: payload.workspaceId ?? project?.id,
+    ...(sessionOrigin ? { sessionOrigin } : {}),
   };
 }
 
@@ -3870,10 +3862,6 @@ export async function handleSpaceIssueStatus(payload: Record<string, unknown>): 
 
 export async function handleSpaceIssueClaim(payload: Record<string, unknown>): Promise<AdminResponse> {
   return spaceManagementResponse('/api/space/issue-claim', payload, 'Issue claimed.');
-}
-
-export async function handleSpaceIssueDeliveryIgnore(payload: Record<string, unknown>): Promise<AdminResponse> {
-  return spaceManagementResponse('/api/space/issue-delivery-ignore', payload, 'Issue delivery ignored.');
 }
 
 export async function handleSpaceIssueClose(payload: Record<string, unknown>): Promise<AdminResponse> {

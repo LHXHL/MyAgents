@@ -40,7 +40,7 @@ describe('buildCliToolsAppend', () => {
       { includeUserTools: false },
     );
     const registeredAgentText = buildCliToolsAppend(
-      { type: 'registeredAgent', platform: 'space', registeredAgentId: 'ra-1' },
+      { type: 'registeredAgent', platform: 'space', spaceId: 'space-1', registeredAgentId: 'ra-1' },
       { includeUserTools: false },
     );
     const imGroupText = buildCliToolsAppend(

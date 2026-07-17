@@ -440,6 +440,64 @@ describe('session-engine selector and adapters', () => {
     );
   });
 
+  it('preserves exact Registered Agent birth origin through builtin and external inbox adapters', async () => {
+    const birthOrigin = {
+      kind: 'registered-agent',
+      surface: 'space_issue_delivery',
+      context: { spaceId: 'space_1', registeredAgentId: 'rag_1' },
+    } as const;
+    const request = {
+      text: '<system-reminder>delivery</system-reminder>',
+      sessionId: 'delivery-session',
+      workspacePath: '/workspace',
+      scenario: {
+        type: 'registeredAgent',
+        platform: 'space',
+        spaceId: 'space_1',
+        registeredAgentId: 'rag_1',
+        sourceType: 'issue-delivery',
+      } as const,
+      allowLazySessionMaterialization: true,
+      analyticsOrigin: birthOrigin,
+      birthOrigin,
+    };
+
+    await getSessionEngine().enqueueInboxMessage(request);
+    expect(mocks.enqueueUserMessage).toHaveBeenLastCalledWith(
+      request.text,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { source: 'desktop' },
+      undefined,
+      undefined,
+      undefined,
+      birthOrigin,
+      {
+        allowLazySessionMaterialization: true,
+        sessionBirthOrigin: birthOrigin,
+      },
+    );
+
+    mocks.state.useExternal = true;
+    await getSessionEngine().enqueueInboxMessage(request);
+    expect(mocks.sendExternalMessage).toHaveBeenLastCalledWith(
+      request.text,
+      undefined,
+      undefined,
+      undefined,
+      expect.objectContaining({
+        sessionId: 'delivery-session',
+        workspacePath: '/workspace',
+        analyticsOrigin: birthOrigin,
+        birthOrigin,
+        metadataBirthPending: true,
+      }),
+    );
+  });
+
   it('materializes Grok subscription routes as managed builtin ProviderEnv', async () => {
     const managedEnv = {
       providerId: 'xai-sub',

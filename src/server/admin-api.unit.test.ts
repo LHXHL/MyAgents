@@ -21,11 +21,13 @@ const sessionEngineMocks = vi.hoisted(() => {
   const state = {
     context: { sessionId: null as string | null, workspacePath: null as string | null },
     turnIdentity: null as { queueId: string; owner: { kind: 'goal' | 'task'; id: string } } | null,
+    origins: new Map<string, unknown>(),
   };
   return {
     state,
     getCurrentSessionContext: vi.fn(() => state.context),
     getCurrentTurnIdentity: vi.fn(() => state.turnIdentity),
+    getSessionOrigin: vi.fn((sessionId: string) => state.origins.get(sessionId)),
   };
 });
 
@@ -53,6 +55,7 @@ vi.mock('./session-engine', () => ({
   getSessionEngine: () => ({
     getCurrentSessionContext: sessionEngineMocks.getCurrentSessionContext,
     getCurrentTurnIdentity: sessionEngineMocks.getCurrentTurnIdentity,
+    getSessionOrigin: sessionEngineMocks.getSessionOrigin,
   }),
 }));
 
@@ -86,8 +89,10 @@ beforeEach(() => {
   managementApiMocks.managementApi.mockResolvedValue({ ok: true, taskUpdated: 0, cronUpdated: 0 });
   sessionEngineMocks.state.context = { sessionId: null, workspacePath: null };
   sessionEngineMocks.state.turnIdentity = null;
+  sessionEngineMocks.state.origins.clear();
   sessionEngineMocks.getCurrentSessionContext.mockClear();
   sessionEngineMocks.getCurrentTurnIdentity.mockClear();
+  sessionEngineMocks.getSessionOrigin.mockClear();
 });
 
 afterEach(() => {
@@ -187,7 +192,6 @@ describe('admin-api help registry', () => {
       ['space', 'issue', 'comments'],
       ['space', 'issue', 'status'],
       ['space', 'issue', 'claim'],
-      ['space', 'issue', 'delivery', 'ignore'],
       ['space', 'issue', 'close'],
       ['space', 'issue', 'cancel-claim'],
     ];
@@ -320,6 +324,38 @@ describe('admin-api Space workspace identity', () => {
       spaceSlug: 'official',
       workspacePath: workspace,
       workspaceId: 'explicit-mismatching-id',
+    });
+  });
+
+  it('forwards only the exact persisted Registered Agent Session origin as actor authority', async () => {
+    const workspace = join(scratch, 'workspace-origin');
+    mkdirSync(workspace);
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-origin',
+      name: 'Origin Workspace',
+      path: workspace,
+    }]);
+    sessionEngineMocks.state.origins.set('session-agent-a', {
+      kind: 'registered-agent',
+      surface: 'space_issue_delivery',
+      context: { spaceId: 'space-a', registeredAgentId: 'agent-a' },
+    });
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, data: { actor: {} } });
+    const { handleSpaceWhoami } = await import('./admin-api');
+
+    await handleSpaceWhoami({
+      spaceSlug: 'official',
+      workspacePath: workspace,
+      workspaceId: 'project-origin',
+      sessionId: 'session-agent-a',
+    });
+
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith('/api/space/whoami', 'POST', {
+      spaceSlug: 'official',
+      workspacePath: workspace,
+      workspaceId: 'project-origin',
+      sessionId: 'session-agent-a',
+      sessionOrigin: { spaceId: 'space-a', registeredAgentId: 'agent-a' },
     });
   });
 });
