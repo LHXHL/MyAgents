@@ -237,7 +237,7 @@ function requirePositional(
 // Help text
 // ---------------------------------------------------------------------------
 
-const TOP_HELP = `myagents — MyAgents Self-Configuration CLI
+export const TOP_HELP = `myagents — MyAgents Self-Configuration CLI
 
 Usage: myagents <command> [options]
 
@@ -254,7 +254,6 @@ Commands:
   task      Manage Task Center tasks (list/get/update-status/run/rerun ...)
   thought   Manage Task Center thoughts (list/create)
   space     Discover Cloud Goals and manage Space Issues/attachments
-  issue     Legacy read-only alias for Space issue view
   im        IM runtime actions for current chat (send-media)
   session   Session-to-session messaging (send prompts, watch completion/result events)
   widget    Generative UI widget design guidelines (readme)

@@ -152,6 +152,18 @@ describe('admin-api help registry', () => {
     expect(text).toContain('vision');
   });
 
+  it('does not expose the legacy issue alias as a help command group', async () => {
+    const { handleHelp } = await import('./admin-api');
+
+    const result = handleHelp({ path: ['issue'] });
+    const text = (result.data as { text?: string } | undefined)?.text ?? '';
+
+    expect(result.success).toBe(true);
+    expect(text).toContain('Unknown command group "issue"');
+    expect(text).toContain('space');
+    expect(text).not.toContain('Legacy read-only alias');
+  });
+
   it('uses the longest Space command path so leaf help is an executable Agent contract', async () => {
     const { handleHelp } = await import('./admin-api');
 

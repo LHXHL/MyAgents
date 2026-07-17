@@ -1517,7 +1517,7 @@ fn initial_state() -> MockState {
         ("iss_mock_011", "附件下载到 workspace 时目录名需要稳定", "triaged", vec!["bug"], "下载路径应包含 issue id 和 attachment id，便于 Agent 引用。"),
         ("iss_mock_012", "Registered Agent 离线时指派菜单要禁用", "open", vec!["needs-agent", "ux"], "下拉菜单可以显示 offline agent，但不能点击派发。"),
         ("iss_mock_013", "长标题在 Issue 列表里不能挤掉状态 badge 和 tag", "open", vec!["ux"], "这是一个特意很长很长的标题，用来验证列表行在窄屏和中等宽度下的截断、换行和 badge 布局是否稳定。"),
-        ("iss_mock_014", "中文正文和英文 CLI 命令混排的阅读节奏", "in_progress", vec!["docs", "ux"], "详情页正文里会同时出现中文说明、`myagents issue iss_mock_014` 命令和较长段落，需要稳定行高。"),
+        ("iss_mock_014", "中文正文和英文 CLI 命令混排的阅读节奏", "in_progress", vec!["docs", "ux"], "详情页正文里会同时出现中文说明、`myagents space issue view iss_mock_014 --space myagents` 命令和较长段落，需要稳定行高。"),
         ("iss_mock_015", "权限不足时状态切换应为静态 badge", "resolved", vec!["bug"], "member 只能关闭自己创建的 issue，不能看到会失败的状态菜单。"),
         ("iss_mock_016", "Agent 执行完成后应回写处理记录", "open", vec!["needs-agent"], "派发后 Agent 需要通过 CLI comment/status 回写进展。"),
         ("iss_mock_017", "官方 Skill 列表空态不应该是大虚线卡片", "triaged", vec!["ux"], "列表空态也应该在底纸上，而不是浮起容器。"),
@@ -1616,7 +1616,7 @@ fn initial_state() -> MockState {
             offset + 1
         );
         let body = format!(
-            "这是 mock mode 生成的真实感 Issue，用于验证 500 条列表、筛选、搜索、状态和 tag 的稳定性。\n\n场景编号：{}。\n命令示例：myagents issue {}",
+            "这是 mock mode 生成的真实感 Issue，用于验证 500 条列表、筛选、搜索、状态和 tag 的稳定性。\n\n场景编号：{}。\n命令示例：myagents space issue view {} --space myagents",
             offset + 1,
             id
         );

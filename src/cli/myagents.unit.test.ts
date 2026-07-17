@@ -9,6 +9,7 @@ import {
   buildRoute,
   buildClaimCancelBody,
   buildSpaceCompleteOperationKey,
+  TOP_HELP,
   normalizeScheduleFlag,
   parseArgs,
   parseDispatchAtValue,
@@ -18,6 +19,12 @@ import {
 } from './myagents';
 
 describe('myagents CLI Space issue contracts', () => {
+  it('advertises the modern Space Issue entry without the stale legacy issue alias', () => {
+    expect(TOP_HELP).toContain('space     Discover Cloud Goals and manage Space Issues/attachments');
+    expect(TOP_HELP).toContain('myagents space issue view <issueId> --space <slug> --comments --json');
+    expect(TOP_HELP).not.toContain('issue     Legacy read-only alias for Space issue view');
+  });
+
   it('routes Goal discovery and builds scoped Goal/update request bodies', () => {
     expect(buildRoute('space', 'goal', ['list'])).toBe('space/goal-list');
     expect(buildRequestBody('space', 'goal', ['list'], {
