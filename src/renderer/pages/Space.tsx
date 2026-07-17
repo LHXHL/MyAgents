@@ -37,6 +37,7 @@ import { useWorkspaceFileService } from "@/hooks/useWorkspaceFileService";
 import { getDeviceId, preloadDeviceId } from "@/identity/deviceIdentity";
 import {
   ACTIVE_ISSUE_STATE_FILTER,
+  ALL_ISSUE_STATE_FILTER,
   findJoinedSpaceBySlug,
   isRegisteredAgentVisibleInList,
   isSpaceAdmin,
@@ -81,6 +82,18 @@ const AUTH_POLL_DELAY_MS = 3000;
 const AUTH_POLL_TIMEOUT_MS = 10 * 60 * 1000;
 const SPACE_EVENTS_SYNC_INTERVAL_MS = 15_000;
 const AGENT_CONNECTING_WINDOW_MS = 75_000;
+
+type IssueStatusSelection = {
+  mode: "all" | "status";
+  rememberedStatus: string;
+};
+
+function defaultIssueStatusSelection(): IssueStatusSelection {
+  return {
+    mode: "status",
+    rememberedStatus: ACTIVE_ISSUE_STATE_FILTER,
+  };
+}
 
 type SpaceQuickActionSubmitInput =
   | { mode: "join"; slug: string }
@@ -446,8 +459,29 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const [mode, setMode] = useState<ViewMode>("issues");
   const [issueQ, setIssueQ] = useState("");
   const [selectedGoalId, setSelectedGoalId] = useState("");
-  const [selectedStatus, setSelectedStatus] = useState(
-    ACTIVE_ISSUE_STATE_FILTER,
+  const [issueStatusSelection, setIssueStatusSelection] =
+    useState<IssueStatusSelection>(defaultIssueStatusSelection);
+  const selectedStatus =
+    issueStatusSelection.mode === "all"
+      ? ALL_ISSUE_STATE_FILTER
+      : issueStatusSelection.rememberedStatus;
+  const selectedStatusPreset = issueStatusSelection.rememberedStatus;
+  const setSelectedStatus = useCallback((value: string) => {
+    setIssueStatusSelection((current) =>
+      value === ALL_ISSUE_STATE_FILTER
+        ? { ...current, mode: "all" }
+        : { mode: "status", rememberedStatus: value },
+    );
+  }, []);
+  const resetIssueStatusSelection = useCallback(
+    () =>
+      setIssueStatusSelection((current) =>
+        current.mode === "status" &&
+        current.rememberedStatus === ACTIVE_ISSUE_STATE_FILTER
+          ? current
+          : defaultIssueStatusSelection(),
+      ),
+    [],
   );
   const [relatedToMeBySpace, setRelatedToMeBySpace] = useState<
     Record<string, boolean>
@@ -551,6 +585,10 @@ export default function Space({ isActive }: { isActive: boolean }) {
   const currentUserId = session?.user?.id ?? null;
   const admin = isSpaceAdmin(session);
   const activeMode: ViewMode = !admin && mode === "settings" ? "issues" : mode;
+  const issuePageLifecycleRef = useRef({
+    scopeKey: activeDataScopeKey,
+    pageActive: isActive && activeMode === "issues",
+  });
   const currentIdentitySpaceId = session?.space?.id || activeCacheSpaceId;
   const spaceCacheKey = useCallback(
     (id: string) => `${activeCacheSpaceId}\n${id}`,
@@ -684,6 +722,21 @@ export default function Space({ isActive }: { isActive: boolean }) {
   useEffect(() => {
     issueQueryRef.current = issueQuery;
   }, [issueQuery]);
+
+  useEffect(() => {
+    const nextPageActive = isActive && activeMode === "issues";
+    const previous = issuePageLifecycleRef.current;
+    issuePageLifecycleRef.current = {
+      scopeKey: activeDataScopeKey,
+      pageActive: nextPageActive,
+    };
+    if (
+      nextPageActive &&
+      (previous.scopeKey !== activeDataScopeKey || !previous.pageActive)
+    ) {
+      resetIssueStatusSelection();
+    }
+  }, [activeDataScopeKey, activeMode, isActive, resetIssueStatusSelection]);
 
   useEffect(() => {
     setSkillRemoteUpdateAvailable(false);
@@ -1055,7 +1108,6 @@ export default function Space({ isActive }: { isActive: boolean }) {
       setIssueDetailId(null);
       setSelectedSkillId(null);
       setSelectedGoalId("");
-      setSelectedStatus(ACTIVE_ISSUE_STATE_FILTER);
       setMode(nextMode);
       await switching;
     },
@@ -1192,14 +1244,14 @@ export default function Space({ isActive }: { isActive: boolean }) {
 
   const logout = useCallback(async () => {
     setIssueDetailId(null);
-    setSelectedStatus(ACTIVE_ISSUE_STATE_FILTER);
+    resetIssueStatusSelection();
     try {
       await actions.logout();
       toast.success(t("space.toasts.logoutSuccess"));
     } catch (error) {
       toast.error(spaceErrorMessage(error));
     }
-  }, [actions, t, toast]);
+  }, [actions, resetIssueStatusSelection, t, toast]);
 
   if (spaceData.boot === "idle" || spaceData.boot === "loading") {
     return (
@@ -1285,6 +1337,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
               issueQ={issueQ}
               selectedGoalId={selectedGoalId}
               selectedStatus={selectedStatus}
+              selectedStatusPreset={selectedStatusPreset}
               relatedToMe={relatedToMe}
               goalOptions={goalOptions}
               activeIssueId={issueDetailId}
@@ -1332,7 +1385,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
               onRefresh={() => actions.refreshGoals({ force: true })}
               onOpenIssuesForGoal={(goalId) => {
                 setSelectedGoalId(goalId);
-                setMode("issues");
+                selectSpaceTab("issues");
               }}
             />
           )}
@@ -1348,7 +1401,7 @@ export default function Space({ isActive }: { isActive: boolean }) {
               onRegister={() => setRegisterOpen(true)}
               isActive={isActive}
               onAgentConnecting={markAgentConnecting}
-              onExit={() => setMode("issues")}
+              onExit={() => selectSpaceTab("issues")}
             />
           )}
         </section>

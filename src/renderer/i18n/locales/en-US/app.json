@@ -422,6 +422,7 @@
     },
     "filters": {
       "issueStatus": "Issue status",
+      "chooseIssueStatus": "Choose issue status",
       "allIssues": "All",
       "incompleteIssues": "Incomplete",
       "allGoals": "All goals",

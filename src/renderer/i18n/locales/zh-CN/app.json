@@ -422,6 +422,7 @@
     },
     "filters": {
       "issueStatus": "Issue 状态",
+      "chooseIssueStatus": "选择 Issue 状态",
       "allIssues": "全部",
       "incompleteIssues": "未完成",
       "allGoals": "全部目标",
