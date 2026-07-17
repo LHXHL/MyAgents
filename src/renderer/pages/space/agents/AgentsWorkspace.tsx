@@ -200,6 +200,11 @@ function localityLabel(
   return t("space.agents.remoteDevice");
 }
 
+type AgentPrimaryOverlay =
+  | { kind: "details"; agentId: string }
+  | { kind: "editor"; agent: LocalRegisteredAgent }
+  | null;
+
 export function AgentsWorkspace({
   admin,
   agents,
@@ -228,16 +233,18 @@ export function AgentsWorkspace({
   const { t } = useTranslation("app");
   const toast = useToast();
   const [busyAgentId, setBusyAgentId] = useState<string | null>(null);
-  const [editingAgent, setEditingAgent] = useState<LocalRegisteredAgent | null>(
-    null,
-  );
+  const [primaryOverlay, setPrimaryOverlay] =
+    useState<AgentPrimaryOverlay>(null);
   const [revokeTarget, setRevokeTarget] = useState<LocalRegisteredAgent | null>(
     null,
   );
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [presenceStale, setPresenceStale] = useState(false);
   const selectedAgent =
-    agents.find((agent) => agent.id === selectedAgentId) ?? null;
+    primaryOverlay?.kind === "details"
+      ? (agents.find((agent) => agent.id === primaryOverlay.agentId) ?? null)
+      : null;
+  const editingAgent =
+    primaryOverlay?.kind === "editor" ? primaryOverlay.agent : null;
 
   const toggleAgentStatus = async (agent: LocalRegisteredAgent) => {
     const nextStatus = agent.status === "disabled" ? "active" : "disabled";
@@ -352,8 +359,12 @@ export function AgentsWorkspace({
                 admin={admin}
                 busy={busyAgentId === agent.id}
                 t={t}
-                onOpen={() => setSelectedAgentId(agent.id)}
-                onEdit={() => setEditingAgent(agent)}
+                onOpen={() =>
+                  setPrimaryOverlay({ kind: "details", agentId: agent.id })
+                }
+                onEdit={() =>
+                  setPrimaryOverlay({ kind: "editor", agent })
+                }
                 onToggle={() => void toggleAgentStatus(agent)}
                 onRevoke={() => setRevokeTarget(agent)}
               />
@@ -369,8 +380,10 @@ export function AgentsWorkspace({
           t={t}
           actions={actions}
           avatarPresets={avatarPresets}
-          onClose={() => setSelectedAgentId(null)}
-          onEdit={() => setEditingAgent(selectedAgent)}
+          onClose={() => setPrimaryOverlay(null)}
+          onEdit={() =>
+            setPrimaryOverlay({ kind: "editor", agent: selectedAgent })
+          }
           onToggle={() => void toggleAgentStatus(selectedAgent)}
           onRevoke={() => setRevokeTarget(selectedAgent)}
         />
@@ -381,8 +394,8 @@ export function AgentsWorkspace({
           goals={goals}
           projects={projects}
           actions={actions}
-          onClose={() => setEditingAgent(null)}
-          onSaved={() => setEditingAgent(null)}
+          onClose={() => setPrimaryOverlay(null)}
+          onSaved={() => setPrimaryOverlay(null)}
         />
       )}
       {revokeTarget && (

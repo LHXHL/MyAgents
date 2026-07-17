@@ -10,12 +10,13 @@ import { AgentsWorkspace } from "./AgentsWorkspace";
 function renderWorkspace(
   refreshRegisteredAgents = vi.fn().mockResolvedValue(undefined),
   agents: LocalRegisteredAgent[] = [],
+  admin = false,
 ) {
   const actions = { refreshRegisteredAgents } as unknown as SpaceActions;
   render(
     <ToastProvider>
       <AgentsWorkspace
-        admin={false}
+        admin={admin}
         agents={agents}
         goals={[]}
         projects={[]}
@@ -36,7 +37,21 @@ function renderWorkspace(
   return refreshRegisteredAgents;
 }
 
-describe("AgentsWorkspace presence UX", () => {
+const testAgent: LocalRegisteredAgent = {
+  id: "rag-1",
+  baseUrl: "https://space.myagents.test",
+  spaceId: "space-1",
+  displayName: "Build Agent",
+  workspacePath: "/tmp/build",
+  stateFilter: ["todo"],
+  issueSubscriptionRunMode: "single_session",
+  status: "active",
+  presence: "offline",
+  createdAt: "2026-07-11T00:00:00.000Z",
+  updatedAt: "2026-07-11T00:00:00.000Z",
+};
+
+describe("AgentsWorkspace", () => {
   beforeEach(async () => {
     await i18n.changeLanguage("en-US");
     Object.defineProperty(document, "visibilityState", {
@@ -62,21 +77,7 @@ describe("AgentsWorkspace presence UX", () => {
   });
 
   it("offers an actionable hint and a native details button for never-online Agents", () => {
-    const agent: LocalRegisteredAgent = {
-      id: "rag-1",
-      baseUrl: "https://space.myagents.test",
-      spaceId: "space-1",
-      displayName: "Build Agent",
-      workspacePath: "/tmp/build",
-      stateFilter: ["todo"],
-      issueSubscriptionRunMode: "single_session",
-      status: "active",
-      presence: "offline",
-      createdAt: "2026-07-11T00:00:00.000Z",
-      updatedAt: "2026-07-11T00:00:00.000Z",
-    };
-
-    renderWorkspace(undefined, [agent]);
+    renderWorkspace(undefined, [testAgent]);
 
     expect(
       screen.getByText(
@@ -88,5 +89,31 @@ describe("AgentsWorkspace presence UX", () => {
         name: "View registration settings · Build Agent",
       }),
     ).toBeInTheDocument();
+  });
+
+  it("replaces Agent details with the editor when settings is opened", () => {
+    renderWorkspace(undefined, [testAgent], true);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "View registration settings · Build Agent",
+      }),
+    );
+    expect(screen.getByText("Registration info")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Edit Agent Build Agent" }),
+    );
+
+    expect(
+      screen.getByRole("heading", { name: "Edit Agent" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Registration info")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(
+      screen.queryByRole("heading", { name: "Edit Agent" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("Registration info")).not.toBeInTheDocument();
   });
 });
