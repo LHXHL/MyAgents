@@ -57,8 +57,10 @@ import {
 import { shortenPathForDisplay } from "@/utils/pathDetection";
 import { workspacePathsEqual } from "../../../../shared/workspacePath";
 
-const DEFAULT_ISSUE_SUBSCRIPTION_RUN_MODE: SpaceIssueSubscriptionRunMode =
+const LEGACY_ISSUE_SUBSCRIPTION_RUN_MODE: SpaceIssueSubscriptionRunMode =
   "single_session";
+const NEW_AGENT_ISSUE_SUBSCRIPTION_RUN_MODE: SpaceIssueSubscriptionRunMode =
+  "new_session";
 const DEFAULT_AGENT_STATE_FILTER = ["todo"];
 const AGENT_SUBSCRIPTION_STATE_OPTIONS = ["todo", "open"] as const;
 const MAX_AGENT_INSTRUCTION_CHARS = 20_000;
@@ -126,7 +128,7 @@ function normalizeIssueSubscriptionRunMode(
 ): SpaceIssueSubscriptionRunMode {
   return value === "new_session"
     ? "new_session"
-    : DEFAULT_ISSUE_SUBSCRIPTION_RUN_MODE;
+    : LEGACY_ISSUE_SUBSCRIPTION_RUN_MODE;
 }
 
 function issueSubscriptionRunModeLabel(
@@ -1601,14 +1603,14 @@ function IssueSubscriptionRunModeControl({
     description: string;
   }> = [
     {
-      value: "single_session",
-      label: t("space.agents.issueSubscriptionSingleSession"),
-      description: t("space.agents.issueSubscriptionSingleSessionDescription"),
-    },
-    {
       value: "new_session",
       label: t("space.agents.issueSubscriptionNewSession"),
       description: t("space.agents.issueSubscriptionNewSessionDescription"),
+    },
+    {
+      value: "single_session",
+      label: t("space.agents.issueSubscriptionSingleSession"),
+      description: t("space.agents.issueSubscriptionSingleSessionDescription"),
     },
   ];
   const active =
@@ -1728,7 +1730,7 @@ export function RegisterAgentDialog({
     useState<LocalRegisteredAgent | null>(null);
   const [issueSubscriptionRunMode, setIssueSubscriptionRunMode] =
     useState<SpaceIssueSubscriptionRunMode>(
-      DEFAULT_ISSUE_SUBSCRIPTION_RUN_MODE,
+      NEW_AGENT_ISSUE_SUBSCRIPTION_RUN_MODE,
     );
   const [busy, setBusy] = useState(false);
   useCloseLayer(() => {

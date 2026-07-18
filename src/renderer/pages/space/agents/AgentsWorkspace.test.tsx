@@ -319,6 +319,16 @@ describe("AgentsWorkspace", () => {
     expectViewportSafeAgentDialog(
       screen.getByRole("dialog", { name: "Add local Agent workspace" }),
     );
+    const newConversation = screen.getByRole("button", {
+      name: "New conversation",
+    });
+    const continuousConversation = screen.getByRole("button", {
+      name: "Continuous conversation",
+    });
+    expect(newConversation).toHaveAttribute("aria-pressed", "true");
+    expect(newConversation.compareDocumentPosition(continuousConversation)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
     expect(name.compareDocumentPosition(instruction)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
@@ -358,7 +368,7 @@ describe("AgentsWorkspace", () => {
       workspaceLabel: "MyAgents",
       goalId: "goal-1",
       stateFilter: ["todo"],
-      issueSubscriptionRunMode: "single_session",
+      issueSubscriptionRunMode: "new_session",
     }));
     expect(onRegistered).toHaveBeenCalledWith(testAgent);
   });
