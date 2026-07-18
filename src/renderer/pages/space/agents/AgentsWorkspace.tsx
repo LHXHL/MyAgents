@@ -116,11 +116,7 @@ function AgentInstructionField({
         <p className="mt-1 text-xs text-[var(--warning)]">
           {t("space.agents.instructionLegacyWarning")}
         </p>
-      ) : (
-        <p className="mt-1 text-xs text-[var(--ink-muted)]">
-          {t("space.agents.instructionHelp")}
-        </p>
-      )}
+      ) : null}
     </label>
   );
 }
@@ -703,9 +699,14 @@ function EditAgentDialog({
     <>
     <OverlayBackdrop
       onClose={onClose}
-      className="z-[220] items-center justify-center bg-black/20 backdrop-blur-sm"
+      className="z-[220] items-center justify-center bg-black/20 p-6 backdrop-blur-sm max-sm:p-3"
     >
-      <div className="w-[min(720px,calc(100vw-48px))] rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("space.agents.editTitle")}
+        className="grid max-h-[calc(100dvh-48px)] w-full max-w-[720px] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl max-sm:max-h-[calc(100dvh-24px)]"
+      >
         <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
           <div>
             <h2 className="text-lg font-semibold text-[var(--ink)]">
@@ -721,7 +722,7 @@ function EditAgentDialog({
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="space-y-4 p-5">
+        <div className="min-h-0 space-y-4 overflow-y-auto overscroll-contain p-5">
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-[var(--ink)]">
               {t("space.agents.name")}
@@ -1830,9 +1831,14 @@ export function RegisterAgentDialog({
   return (
     <OverlayBackdrop
       onClose={onClose}
-      className="z-[220] items-center justify-center bg-black/20 backdrop-blur-sm"
+      className="z-[220] items-center justify-center bg-black/20 p-6 backdrop-blur-sm max-sm:p-3"
     >
-      <div className="w-[min(720px,calc(100vw-48px))] rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={t("space.agents.registerTitle")}
+        className="grid max-h-[calc(100dvh-48px)] w-full max-w-[720px] grid-rows-[auto_minmax(0,1fr)_auto] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl max-sm:max-h-[calc(100dvh-24px)]"
+      >
         <div className="flex items-center justify-between border-b border-[var(--line)] px-5 py-4">
           <div>
             <h2 className="text-lg font-semibold text-[var(--ink)]">
@@ -1850,7 +1856,7 @@ export function RegisterAgentDialog({
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="space-y-4 p-5">
+        <div className="min-h-0 space-y-4 overflow-y-auto overscroll-contain p-5">
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-[var(--ink)]">
               {t("space.agents.name")}

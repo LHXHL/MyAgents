@@ -240,4 +240,6 @@ Space Issue 的用户可见编号由云端拥有，不从 opaque `issue.id` 推�
 - 用户文案统一为“添加本机 Agent 工作区”；registered agent 只保留在技术说明和字段名称中。
 - 点击卡片打开 overlay 详情，不跳页。详情按“设备信息 / 工作区信息 / 派发设置 / 登记信息”分组。
 - 编辑弹窗中的“本地 Agent 工作区”必须与登记弹窗使用同一工作区选择交互；但只有 current local Agent (`ownerUserId + deviceId` 命中当前端点) 可修改。远端设备登记的 Agent 工作区字段置灰，只能修改名称、订阅目标、订阅范围、订阅执行策略。
+- 登记与编辑弹窗使用同一套 viewport-safe 三段布局：外框不超过可视区并保留安全边距，header/footer 始终可见，只有中间表单区滚动；不得让整个 overlay 随字段数量越过屏幕边界。
+- “目标与指令”正常态只展示字段名与 placeholder，不重复显示说明文字；校验错误和旧 Agent 缺少 Instruction 的兼容提醒仍显示在输入框下方。
 - `clientId` 是 OAuth public client/build 配置，不是设备标识，不应出现在卡片关键位。

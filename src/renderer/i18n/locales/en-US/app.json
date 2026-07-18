@@ -763,7 +763,6 @@
       "displayNamePlaceholder": "Agent display name",
       "instructionLabel": "Goal and instructions",
       "instructionPlaceholder": "Describe how this Agent instance should respond to and handle incoming Issues, including its standing focus and decision direction.",
-      "instructionHelp": "This is the standing intent for this Agent instance. It will still decide the specific action from the current Issue.",
       "instructionRequired": "Enter a goal and instructions.",
       "instructionTooLong": "Goal and instructions can contain at most 20,000 characters.",
       "instructionLegacyWarning": "This legacy Agent does not have a goal and instructions yet. You can change other settings without adding one; once saved, it becomes the Agent's standing intent.",

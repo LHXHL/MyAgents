@@ -763,7 +763,6 @@
       "displayNamePlaceholder": "Agent 展示名",
       "instructionLabel": "目标与指令",
       "instructionPlaceholder": "填写你希望该 Agent 实例收到 Issue 后如何响应与处理，并为它设定长期关注目标和判断方向。",
-      "instructionHelp": "这是该 Agent 实例长期使用的目标意图；具体动作仍由它根据当前 Issue 判断。",
       "instructionRequired": "请填写目标与指令。",
       "instructionTooLong": "目标与指令最多 20,000 个字符。",
       "instructionLegacyWarning": "这个旧 Agent 尚未设置目标与指令。你可以只修改其它设置；填写后将作为它长期使用的目标意图。",

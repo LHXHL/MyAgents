@@ -41,6 +41,20 @@ function renderWorkspace(
   return refreshRegisteredAgents;
 }
 
+function expectViewportSafeAgentDialog(dialog: HTMLElement) {
+  expect(dialog).toHaveClass(
+    "grid",
+    "max-h-[calc(100dvh-48px)]",
+    "grid-rows-[auto_minmax(0,1fr)_auto]",
+    "overflow-hidden",
+  );
+  expect(dialog.children.item(1)).toHaveClass(
+    "min-h-0",
+    "overflow-y-auto",
+    "overscroll-contain",
+  );
+}
+
 const testAgent: LocalRegisteredAgent = {
   id: "rag-1",
   baseUrl: "https://space.myagents.test",
@@ -115,6 +129,9 @@ describe("AgentsWorkspace", () => {
     expect(
       screen.getByRole("heading", { name: "Edit Agent" }),
     ).toBeInTheDocument();
+    expectViewportSafeAgentDialog(
+      screen.getByRole("dialog", { name: "Edit Agent" }),
+    );
     expect(screen.queryByText("Registration info")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
@@ -293,6 +310,14 @@ describe("AgentsWorkspace", () => {
     expect(instruction).toHaveAttribute(
       "placeholder",
       "Describe how this Agent instance should respond to and handle incoming Issues, including its standing focus and decision direction.",
+    );
+    expect(
+      screen.queryByText(
+        "This is the standing intent for this Agent instance. It will still decide the specific action from the current Issue.",
+      ),
+    ).not.toBeInTheDocument();
+    expectViewportSafeAgentDialog(
+      screen.getByRole("dialog", { name: "Add local Agent workspace" }),
     );
     expect(name.compareDocumentPosition(instruction)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
