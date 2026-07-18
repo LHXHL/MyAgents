@@ -62,7 +62,21 @@ const testAgent: LocalRegisteredAgent = {
   displayName: "Build Agent",
   instruction: "Build assigned issues.",
   instructionRevision: 1,
-  subscriptions: [],
+  subscriptions: [
+    {
+      id: "subscription-1",
+      spaceId: "space-1",
+      actorType: "registered_agent",
+      actorId: "rag-1",
+      goalId: "goal-1",
+      includeSubtree: true,
+      stateFilter: ["todo"],
+      goalPathLabel: "Engineering / Bug fixes",
+      createdAt: "2026-07-11T00:00:00.000Z",
+    },
+  ],
+  goalId: "goal-1",
+  goalPathLabel: "Engineering / Bug fixes",
   workspacePath: "/tmp/build",
   stateFilter: ["todo"],
   issueSubscriptionRunMode: "single_session",
@@ -197,7 +211,9 @@ describe("AgentsWorkspace", () => {
       screen.getByRole("button", { name: "Edit Agent Build Agent" }),
     );
     expect(
-      screen.getAllByText(/legacy Agent does not have a goal and instructions yet/i),
+      screen.getAllByText(
+        /legacy Agent does not have a goal and instructions yet/i,
+      ),
     ).toHaveLength(2);
 
     const instruction = screen.getByLabelText("Goal and instructions");
@@ -214,50 +230,32 @@ describe("AgentsWorkspace", () => {
     expect(instruction).toHaveValue("Preserve this concurrent draft.");
   });
 
-  it("requires confirmation before re-evaluating the current subscription scope", async () => {
-    const reevaluateRegisteredAgent = vi.fn().mockResolvedValue(3);
-    renderWorkspace(undefined, [testAgent], true, {
-      reevaluateRegisteredAgent,
-    });
-
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "View registration settings · Build Agent",
-      }),
-    );
-    fireEvent.click(
-      screen.getByRole("button", { name: "Edit Agent Build Agent" }),
-    );
-    fireEvent.click(
-      screen.getByRole("button", { name: "Re-evaluate current scope" }),
-    );
-
-    expect(reevaluateRegisteredAgent).not.toHaveBeenCalled();
-    expect(
-      screen.getByText("Re-evaluate the current subscription scope?"),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText(/wake the Agent to evaluate matching Issues/i),
-    ).toBeInTheDocument();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Start re-evaluation" }),
-    );
-    await waitFor(() =>
-      expect(reevaluateRegisteredAgent).toHaveBeenCalledWith("rag-1"),
-    );
-    expect(
-      await screen.findByText("Started re-evaluating 3 subscription rules."),
-    ).toBeInTheDocument();
-  });
-
-  it("shows re-evaluation failures without closing the editor", async () => {
-    const reevaluateRegisteredAgent = vi
+  it("edits exactly one visible subscription without exposing multi-subscription controls", async () => {
+    const hiddenSubscription = {
+      ...testAgent.subscriptions[0],
+      id: "subscription-hidden",
+      goalId: "goal-hidden",
+      goalPathLabel: "Engineering / Feature work",
+    };
+    const agentWithHiddenSubscription = {
+      ...testAgent,
+      subscriptions: [...testAgent.subscriptions, hiddenSubscription],
+    };
+    const updateRegisteredAgent = vi.fn().mockResolvedValue(testAgent);
+    const deleteRegisteredAgentSubscription = vi
       .fn()
-      .mockRejectedValue(new Error("Re-evaluation unavailable"));
-    renderWorkspace(undefined, [testAgent], true, {
-      reevaluateRegisteredAgent,
+      .mockResolvedValue(undefined);
+    const createRegisteredAgentSubscription = vi.fn().mockResolvedValue({
+      ...testAgent.subscriptions[0],
+      id: "subscription-2",
+      stateFilter: ["todo", "open"],
     });
+    renderWorkspace(undefined, [agentWithHiddenSubscription], true, {
+      updateRegisteredAgent,
+      deleteRegisteredAgentSubscription,
+      createRegisteredAgentSubscription,
+    });
+
     fireEvent.click(
       screen.getByRole("button", {
         name: "View registration settings · Build Agent",
@@ -266,17 +264,27 @@ describe("AgentsWorkspace", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Edit Agent Build Agent" }),
     );
-    fireEvent.click(
-      screen.getByRole("button", { name: "Re-evaluate current scope" }),
-    );
-    fireEvent.click(
-      screen.getByRole("button", { name: "Start re-evaluation" }),
-    );
 
     expect(
-      await screen.findByText(/Re-evaluation unavailable/),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Edit Agent" })).toBeInTheDocument();
+      screen.queryByRole("button", { name: "Add subscription" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Re-evaluate current scope" }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(deleteRegisteredAgentSubscription).toHaveBeenCalledWith(
+        "subscription-1",
+      );
+      expect(deleteRegisteredAgentSubscription).toHaveBeenCalledTimes(1);
+      expect(createRegisteredAgentSubscription).toHaveBeenCalledWith({
+        registeredAgentId: "rag-1",
+        goalId: "goal-1",
+        stateFilter: ["todo", "open"],
+      });
+    });
   });
 
   it("places the standing goal directly after the name and sends it on registration", async () => {
@@ -285,16 +293,24 @@ describe("AgentsWorkspace", () => {
     render(
       <ToastProvider>
         <RegisterAgentDialog
-          projects={[{
-            id: "workspace-1",
-            name: "MyAgents",
-            path: "/tmp/myagents",
-          }] as never}
-          goals={[{
-            id: "goal-1",
-            title: "Bug fixes",
-            goalPathLabel: "Engineering / Bug fixes",
-          }] as never}
+          projects={
+            [
+              {
+                id: "workspace-1",
+                name: "MyAgents",
+                path: "/tmp/myagents",
+              },
+            ] as never
+          }
+          goals={
+            [
+              {
+                id: "goal-1",
+                title: "Bug fixes",
+                goalPathLabel: "Engineering / Bug fixes",
+              },
+            ] as never
+          }
           actions={{ registerAgent } as unknown as SpaceActions}
           onClose={vi.fn()}
           onRegistered={onRegistered}
@@ -319,6 +335,9 @@ describe("AgentsWorkspace", () => {
     expectViewportSafeAgentDialog(
       screen.getByRole("dialog", { name: "Add local Agent workspace" }),
     );
+    expect(
+      screen.queryByRole("button", { name: "Add subscription" }),
+    ).not.toBeInTheDocument();
     const newConversation = screen.getByRole("button", {
       name: "New conversation",
     });
@@ -326,9 +345,9 @@ describe("AgentsWorkspace", () => {
       name: "Continuous conversation",
     });
     expect(newConversation).toHaveAttribute("aria-pressed", "true");
-    expect(newConversation.compareDocumentPosition(continuousConversation)).toBe(
-      Node.DOCUMENT_POSITION_FOLLOWING,
-    );
+    expect(
+      newConversation.compareDocumentPosition(continuousConversation),
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(name.compareDocumentPosition(instruction)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
@@ -337,7 +356,9 @@ describe("AgentsWorkspace", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Add local Agent workspace" }),
     );
-    expect(screen.getByText("Enter a goal and instructions.")).toBeInTheDocument();
+    expect(
+      screen.getByText("Enter a goal and instructions."),
+    ).toBeInTheDocument();
     expect(instruction).toHaveFocus();
 
     fireEvent.change(instruction, {
@@ -347,29 +368,35 @@ describe("AgentsWorkspace", () => {
       screen.getByRole("button", { name: "Add local Agent workspace" }),
     );
     expect(
-      screen.getByText("Goal and instructions can contain at most 20,000 characters."),
+      screen.getByText(
+        "Goal and instructions can contain at most 20,000 characters.",
+      ),
     ).toBeInTheDocument();
     expect(registerAgent).not.toHaveBeenCalled();
 
     fireEvent.change(instruction, {
       target: {
-        value: "Assess reproducibility and identify missing acceptance criteria.",
+        value:
+          "Assess reproducibility and identify missing acceptance criteria.",
       },
     });
     fireEvent.click(
       screen.getByRole("button", { name: "Add local Agent workspace" }),
     );
 
-    await waitFor(() => expect(registerAgent).toHaveBeenCalledWith({
-      displayName: "Bug triage",
-      instruction: "Assess reproducibility and identify missing acceptance criteria.",
-      workspaceId: "workspace-1",
-      workspacePath: "/tmp/myagents",
-      workspaceLabel: "MyAgents",
-      goalId: "goal-1",
-      stateFilter: ["todo"],
-      issueSubscriptionRunMode: "new_session",
-    }));
+    await waitFor(() =>
+      expect(registerAgent).toHaveBeenCalledWith({
+        displayName: "Bug triage",
+        instruction:
+          "Assess reproducibility and identify missing acceptance criteria.",
+        workspaceId: "workspace-1",
+        workspacePath: "/tmp/myagents",
+        workspaceLabel: "MyAgents",
+        goalId: "goal-1",
+        stateFilter: ["todo"],
+        issueSubscriptionRunMode: "new_session",
+      }),
+    );
     expect(onRegistered).toHaveBeenCalledWith(testAgent);
   });
 
@@ -378,16 +405,24 @@ describe("AgentsWorkspace", () => {
     render(
       <ToastProvider>
         <RegisterAgentDialog
-          projects={[{
-            id: "workspace-1",
-            name: "MyAgents",
-            path: "/tmp/myagents",
-          }] as never}
-          goals={[{
-            id: "goal-1",
-            title: "Bug fixes",
-            goalPathLabel: "Engineering / Bug fixes",
-          }] as never}
+          projects={
+            [
+              {
+                id: "workspace-1",
+                name: "MyAgents",
+                path: "/tmp/myagents",
+              },
+            ] as never
+          }
+          goals={
+            [
+              {
+                id: "goal-1",
+                title: "Bug fixes",
+                goalPathLabel: "Engineering / Bug fixes",
+              },
+            ] as never
+          }
           actions={{} as SpaceActions}
           onClose={vi.fn()}
           onRegistered={vi.fn()}
@@ -401,70 +436,5 @@ describe("AgentsWorkspace", () => {
         "填写你希望该 Agent 实例收到 Issue 后如何响应与处理，并为它设定长期关注目标和判断方向。",
       ),
     ).toBeInTheDocument();
-  });
-
-  it("keeps failed additional subscriptions retryable without registering a second Agent", async () => {
-    const registerAgent = vi.fn().mockResolvedValue(testAgent);
-    const createRegisteredAgentSubscription = vi
-      .fn()
-      .mockRejectedValueOnce(new Error("Subscription temporarily unavailable"))
-      .mockResolvedValueOnce({ id: "subscription-2" });
-    const onRegistered = vi.fn();
-    render(
-      <ToastProvider>
-        <RegisterAgentDialog
-          projects={[{
-            id: "workspace-1",
-            name: "MyAgents",
-            path: "/tmp/myagents",
-          }] as never}
-          goals={[{
-            id: "goal-1",
-            title: "Bug fixes",
-            goalPathLabel: "Engineering / Bug fixes",
-          }] as never}
-          actions={{
-            registerAgent,
-            createRegisteredAgentSubscription,
-          } as unknown as SpaceActions}
-          onClose={vi.fn()}
-          onRegistered={onRegistered}
-        />
-      </ToastProvider>,
-    );
-
-    fireEvent.change(screen.getByPlaceholderText("Agent display name"), {
-      target: { value: "Bug triage" },
-    });
-    fireEvent.change(
-      screen.getByPlaceholderText(
-        "Describe how this Agent instance should respond to and handle incoming Issues, including its standing focus and decision direction.",
-      ),
-      { target: { value: "Assess incoming bug reports." } },
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Add subscription" }));
-    fireEvent.click(
-      screen.getByRole("button", { name: "Add local Agent workspace" }),
-    );
-
-    await waitFor(() =>
-      expect(
-        screen.getByRole("button", { name: "Retry failed subscriptions" }),
-      ).toBeInTheDocument(),
-    );
-    expect(registerAgent).toHaveBeenCalledTimes(1);
-    expect(createRegisteredAgentSubscription).toHaveBeenCalledTimes(1);
-    expect(onRegistered).not.toHaveBeenCalled();
-    expect(
-      screen.getByText(/Subscription temporarily unavailable/),
-    ).toBeInTheDocument();
-
-    fireEvent.click(
-      screen.getByRole("button", { name: "Retry failed subscriptions" }),
-    );
-
-    await waitFor(() => expect(onRegistered).toHaveBeenCalledWith(testAgent));
-    expect(registerAgent).toHaveBeenCalledTimes(1);
-    expect(createRegisteredAgentSubscription).toHaveBeenCalledTimes(2);
   });
 });

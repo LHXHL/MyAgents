@@ -22,6 +22,7 @@ import {
 import type {
   LocalRegisteredAgent,
   SpaceGoal,
+  SpaceGoalSubscription,
   SpaceIssueSubscriptionRunMode,
 } from "@/api/spaceCloud";
 import CustomSelect, { type SelectOption } from "@/components/CustomSelect";
@@ -65,15 +66,68 @@ const DEFAULT_AGENT_STATE_FILTER = ["todo"];
 const AGENT_SUBSCRIPTION_STATE_OPTIONS = ["todo", "open"] as const;
 const MAX_AGENT_INSTRUCTION_CHARS = 20_000;
 
-type AgentSubscriptionDraft = {
-  key: string;
-  goalId: string;
-  stateFilter: string[];
-  error?: string;
-};
-
 function instructionLength(value: string): number {
   return Array.from(value).length;
+}
+
+function stateFiltersEqual(left: string[], right: string[]): boolean {
+  return (
+    normalizeAgentStateFilter(left).join("\u0000") ===
+    normalizeAgentStateFilter(right).join("\u0000")
+  );
+}
+
+async function replaceVisibleAgentSubscription(
+  actions: SpaceActions,
+  registeredAgentId: string,
+  current: SpaceGoalSubscription | null,
+  goalId: string,
+  stateFilter: string[],
+): Promise<SpaceGoalSubscription> {
+  const normalizedStateFilter = normalizeAgentStateFilter(stateFilter);
+  if (
+    current &&
+    current.goalId === goalId &&
+    stateFiltersEqual(current.stateFilter, normalizedStateFilter)
+  ) {
+    return current;
+  }
+
+  const create = () =>
+    actions.createRegisteredAgentSubscription({
+      registeredAgentId,
+      goalId,
+      stateFilter: normalizedStateFilter,
+    });
+
+  if (!current) return create();
+
+  if (current.goalId !== goalId) {
+    const replacement = await create();
+    try {
+      await actions.deleteRegisteredAgentSubscription(current.id);
+      return replacement;
+    } catch (error) {
+      await actions
+        .deleteRegisteredAgentSubscription(replacement.id)
+        .catch(() => undefined);
+      throw error;
+    }
+  }
+
+  await actions.deleteRegisteredAgentSubscription(current.id);
+  try {
+    return await create();
+  } catch (error) {
+    await actions
+      .createRegisteredAgentSubscription({
+        registeredAgentId,
+        goalId: current.goalId,
+        stateFilter: current.stateFilter,
+      })
+      .catch(() => undefined);
+    throw error;
+  }
 }
 
 function AgentInstructionField({
@@ -189,7 +243,8 @@ function agentSubscriptionLabels(
   agent: LocalRegisteredAgent,
   t: ReturnType<typeof useTranslation>["t"],
 ): string {
-  if (agent.subscriptions.length === 0) return t("space.agents.noSubscriptions");
+  if (agent.subscriptions.length === 0)
+    return t("space.agents.noSubscriptions");
   return agent.subscriptions
     .map((subscription) => subscription.goalPathLabel || subscription.goalId)
     .join(" · ");
@@ -199,7 +254,9 @@ function agentInstructionSummary(
   agent: LocalRegisteredAgent,
   t: ReturnType<typeof useTranslation>["t"],
 ): string {
-  return agent.instruction?.trim() || t("space.agents.instructionLegacyWarning");
+  return (
+    agent.instruction?.trim() || t("space.agents.instructionLegacyWarning")
+  );
 }
 
 function agentCardTimeLabel(
@@ -440,9 +497,7 @@ export function AgentsWorkspace({
                 onOpen={() =>
                   setPrimaryOverlay({ kind: "details", agentId: agent.id })
                 }
-                onEdit={() =>
-                  setPrimaryOverlay({ kind: "editor", agent })
-                }
+                onEdit={() => setPrimaryOverlay({ kind: "editor", agent })}
                 onToggle={() => void toggleAgentStatus(agent)}
                 onRevoke={() => setRevokeTarget(agent)}
               />
@@ -525,15 +580,15 @@ function EditAgentDialog({
   const [workspaceId, setWorkspaceId] = useState(
     currentProject?.id ?? currentWorkspaceId,
   );
-  const [goalId, setGoalId] = useState(agent.goalId ?? goals[0]?.id ?? "");
+  const [visibleSubscription, setVisibleSubscription] =
+    useState<SpaceGoalSubscription | null>(agent.subscriptions[0] ?? null);
+  const visibleGoalId = visibleSubscription?.goalId ?? agent.goalId ?? "";
+  const [goalId, setGoalId] = useState(visibleGoalId || goals[0]?.id || "");
   const [stateFilter, setStateFilter] = useState<string[]>(() =>
     normalizeAgentStateFilter(
-      agent.subscriptions[0]?.stateFilter ?? agent.stateFilter,
+      visibleSubscription?.stateFilter ?? agent.stateFilter,
     ),
   );
-  const [subscriptions, setSubscriptions] = useState(agent.subscriptions);
-  const [subscriptionBusy, setSubscriptionBusy] = useState<string | null>(null);
-  const [confirmReevaluate, setConfirmReevaluate] = useState(false);
   const [issueSubscriptionRunMode, setIssueSubscriptionRunMode] =
     useState<SpaceIssueSubscriptionRunMode>(
       normalizeIssueSubscriptionRunMode(agent.issueSubscriptionRunMode),
@@ -565,21 +620,22 @@ function EditAgentDialog({
       };
     });
     if (
-      agent.goalId &&
-      !options.some((option) => option.value === agent.goalId)
+      visibleGoalId &&
+      !options.some((option) => option.value === visibleGoalId)
     ) {
-      const label = agentTargetLabel(agent, t);
+      const label =
+        visibleSubscription?.goalPathLabel?.trim() ||
+        agentTargetLabel(agent, t);
       options.unshift({
-        value: agent.goalId,
+        value: visibleGoalId,
         label,
         content: <GoalPathLabel label={label} leafLabel={label} />,
       });
     }
     return options;
-  }, [agent, goals, t]);
+  }, [agent, goals, t, visibleGoalId, visibleSubscription?.goalPathLabel]);
 
   useCloseLayer(() => {
-    if (confirmReevaluate) return false;
     onClose();
     return true;
   }, 220);
@@ -611,7 +667,9 @@ function EditAgentDialog({
       instructionRef.current?.focus();
       return;
     }
-    if (instructionLength(normalizedInstruction) > MAX_AGENT_INSTRUCTION_CHARS) {
+    if (
+      instructionLength(normalizedInstruction) > MAX_AGENT_INSTRUCTION_CHARS
+    ) {
       setInstructionError(t("space.agents.instructionTooLong"));
       instructionRef.current?.focus();
       return;
@@ -623,8 +681,19 @@ function EditAgentDialog({
       (!nextWorkspace.workspaceId || !nextWorkspace.workspacePath)
     )
       return;
+    if ((visibleSubscription || goalOptions.length > 0) && !goalId) return;
     setBusy(true);
     try {
+      if (goalId) {
+        const nextSubscription = await replaceVisibleAgentSubscription(
+          actions,
+          agent.id,
+          visibleSubscription,
+          goalId,
+          stateFilter,
+        );
+        setVisibleSubscription(nextSubscription);
+      }
       await actions.updateRegisteredAgent({
         id: agent.id,
         displayName: displayName.trim(),
@@ -653,52 +722,7 @@ function EditAgentDialog({
     }
   };
 
-  const addSubscription = async () => {
-    if (!goalId || stateFilter.length === 0) return;
-    setSubscriptionBusy("new");
-    try {
-      const subscription = await actions.createRegisteredAgentSubscription({
-        registeredAgentId: agent.id,
-        goalId,
-        stateFilter,
-      });
-      setSubscriptions((items) => [...items, subscription]);
-    } catch (error) {
-      toast.error(spaceErrorMessage(error));
-    } finally {
-      setSubscriptionBusy(null);
-    }
-  };
-
-  const removeSubscription = async (subscriptionId: string) => {
-    setSubscriptionBusy(subscriptionId);
-    try {
-      await actions.deleteRegisteredAgentSubscription(subscriptionId);
-      setSubscriptions((items) =>
-        items.filter((item) => item.id !== subscriptionId),
-      );
-    } catch (error) {
-      toast.error(spaceErrorMessage(error));
-    } finally {
-      setSubscriptionBusy(null);
-    }
-  };
-
-  const reevaluateScope = async () => {
-    setConfirmReevaluate(false);
-    setSubscriptionBusy("reevaluate");
-    try {
-      const count = await actions.reevaluateRegisteredAgent(agent.id);
-      toast.success(t("space.agents.reevaluatedScope", { count }));
-    } catch (error) {
-      toast.error(spaceErrorMessage(error));
-    } finally {
-      setSubscriptionBusy(null);
-    }
-  };
-
   return (
-    <>
     <OverlayBackdrop
       onClose={onClose}
       className="z-[220] items-center justify-center bg-black/20 p-6 backdrop-blur-sm max-sm:p-3"
@@ -779,93 +803,28 @@ function EditAgentDialog({
               </>
             )}
           </label>
-          <section className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--paper-inset)]/35 p-3">
-            <div className="flex items-center justify-between gap-3">
-              <h3 className="text-sm font-medium text-[var(--ink)]">
-                {t("space.agents.subscriptions")}
-              </h3>
-              <button
-                type="button"
-                disabled={busy || subscriptionBusy !== null}
-                onClick={() => setConfirmReevaluate(true)}
-                className="text-xs font-medium text-[var(--accent-warm)] disabled:opacity-50"
-              >
-                {t("space.agents.reevaluateScope")}
-              </button>
-            </div>
-            {subscriptions.length === 0 ? (
-              <p className="rounded-lg bg-[var(--paper)] px-3 py-2 text-xs text-[var(--ink-muted)]">
-                {t("space.agents.noSubscriptions")}
-              </p>
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium text-[var(--ink)]">
+              {t("space.agents.subscriptionTarget")}
+            </span>
+            {goalOptions.length > 0 ? (
+              <CustomSelect
+                value={goalId}
+                options={goalOptions}
+                onChange={setGoalId}
+                size="md"
+              />
             ) : (
-              <div className="space-y-2">
-                {subscriptions.map((subscription) => (
-                  <div
-                    key={subscription.id}
-                    className="flex items-center gap-3 rounded-lg bg-[var(--paper)] px-3 py-2"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-medium text-[var(--ink-secondary)]">
-                        {subscription.goalPathLabel || subscription.goalId}
-                      </p>
-                      <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
-                        {issueStateFilterLabel(t, subscription.stateFilter)}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={busy || subscriptionBusy !== null}
-                      onClick={() => void removeSubscription(subscription.id)}
-                      className="grid h-8 w-8 place-items-center rounded-lg text-[var(--error)] transition-colors hover:bg-[var(--error-bg)] disabled:opacity-50"
-                      title={t("space.agents.removeSubscription")}
-                    >
-                      {subscriptionBusy === subscription.id ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <Trash2 className="h-4 w-4" />
-                      )}
-                    </button>
-                  </div>
-                ))}
+              <div className="rounded-lg border border-[var(--line)] bg-[var(--paper-inset)] px-3 py-2.5 text-sm font-semibold text-[var(--ink-subtle)]">
+                {t("space.agents.targetNotSet")}
               </div>
             )}
-            <div className="space-y-3 border-t border-[var(--line-subtle)] pt-3">
-              <label className="block">
-                <span className="mb-1 block text-sm font-medium text-[var(--ink)]">
-                  {t("space.agents.subscriptionTarget")}
-                </span>
-                <CustomSelect
-                  value={goalId}
-                  options={goalOptions}
-                  onChange={setGoalId}
-                  size="md"
-                />
-              </label>
-              <IssueSubscriptionScopeControl
-                value={stateFilter}
-                onChange={setStateFilter}
-                disabled={busy || subscriptionBusy !== null}
-              />
-              <button
-                type="button"
-                disabled={
-                  busy ||
-                  subscriptionBusy !== null ||
-                  !goalId ||
-                  stateFilter.length === 0
-                }
-                onClick={() => void addSubscription()}
-                className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-medium text-[var(--button-secondary-text)] disabled:opacity-50"
-              >
-                {subscriptionBusy === "new" ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Plus className="h-4 w-4" />
-                )}
-                {t("space.agents.addSubscription")}
-              </button>
-            </div>
-          </section>
+          </label>
+          <IssueSubscriptionScopeControl
+            value={stateFilter}
+            onChange={setStateFilter}
+            disabled={busy || !goalId}
+          />
           <IssueSubscriptionRunModeControl
             value={issueSubscriptionRunMode}
             onChange={setIssueSubscriptionRunMode}
@@ -889,6 +848,8 @@ function EditAgentDialog({
               instructionLength(instruction.trim()) >
                 MAX_AGENT_INSTRUCTION_CHARS ||
               (agent.instruction !== null && !instruction.trim()) ||
+              ((visibleSubscription !== null || goalOptions.length > 0) &&
+                (!goalId || stateFilter.length === 0)) ||
               (canEditWorkspace && !workspaceId)
             }
             onClick={() => void submit()}
@@ -900,18 +861,6 @@ function EditAgentDialog({
         </div>
       </div>
     </OverlayBackdrop>
-    {confirmReevaluate ? (
-      <ConfirmDialog
-        title={t("space.agents.reevaluateConfirmTitle")}
-        message={t("space.agents.reevaluateConfirmMessage")}
-        confirmText={t("space.agents.reevaluateConfirmAction")}
-        cancelText={t("space.common.cancel")}
-        loading={subscriptionBusy === "reevaluate"}
-        onConfirm={() => void reevaluateScope()}
-        onCancel={() => setConfirmReevaluate(false)}
-      />
-    ) : null}
-    </>
   );
 }
 
@@ -1466,13 +1415,8 @@ function AgentDetailOverlay({
                 agent.subscriptions.map((subscription) => (
                   <AgentDetailRow
                     key={subscription.id}
-                    label={
-                      subscription.goalPathLabel || subscription.goalId
-                    }
-                    value={issueStateFilterLabel(
-                      t,
-                      subscription.stateFilter,
-                    )}
+                    label={subscription.goalPathLabel || subscription.goalId}
+                    value={issueStateFilterLabel(t, subscription.stateFilter)}
                   />
                 ))
               )}
@@ -1723,11 +1667,6 @@ export function RegisterAgentDialog({
   const [stateFilter, setStateFilter] = useState<string[]>(() => [
     ...DEFAULT_AGENT_STATE_FILTER,
   ]);
-  const [additionalSubscriptions, setAdditionalSubscriptions] = useState<
-    AgentSubscriptionDraft[]
-  >([]);
-  const [registeredAgent, setRegisteredAgent] =
-    useState<LocalRegisteredAgent | null>(null);
   const [issueSubscriptionRunMode, setIssueSubscriptionRunMode] =
     useState<SpaceIssueSubscriptionRunMode>(
       NEW_AGENT_ISSUE_SUBSCRIPTION_RUN_MODE,
@@ -1762,13 +1701,12 @@ export function RegisterAgentDialog({
   const submit = async () => {
     const project = projects.find((item) => item.id === workspaceId);
     const normalizedInstruction = instruction.trim();
-    if (!registeredAgent && !normalizedInstruction) {
+    if (!normalizedInstruction) {
       setInstructionError(t("space.agents.instructionRequired"));
       instructionRef.current?.focus();
       return;
     }
     if (
-      !registeredAgent &&
       instructionLength(normalizedInstruction) > MAX_AGENT_INSTRUCTION_CHARS
     ) {
       setInstructionError(t("space.agents.instructionTooLong"));
@@ -1776,52 +1714,21 @@ export function RegisterAgentDialog({
       return;
     }
     setInstructionError(null);
-    if (
-      !registeredAgent &&
-      (!project || !displayName.trim() || !goalId || stateFilter.length === 0)
-    )
+    if (!project || !displayName.trim() || !goalId || stateFilter.length === 0)
       return;
     setBusy(true);
     try {
-      const agent =
-        registeredAgent ??
-        (await actions.registerAgent({
-          displayName: displayName.trim(),
-          instruction: normalizedInstruction,
-          workspaceId: project!.id,
-          workspacePath: project!.path,
-          workspaceLabel: projectLabel(project!),
-          goalId,
-          stateFilter,
-          issueSubscriptionRunMode,
-        }));
-      if (!registeredAgent) setRegisteredAgent(agent);
-      const pendingSubscriptions = additionalSubscriptions;
-      const failures: AgentSubscriptionDraft[] = [];
-      for (const subscription of pendingSubscriptions) {
-        try {
-          await actions.createRegisteredAgentSubscription({
-            registeredAgentId: agent.id,
-            goalId: subscription.goalId,
-            stateFilter: subscription.stateFilter,
-          });
-        } catch (error) {
-          failures.push({
-            ...subscription,
-            error: spaceErrorMessage(error),
-          });
-        }
-      }
-      if (!registeredAgent) toast.success(t("space.toasts.agentCreated"));
-      if (failures.length > 0) {
-        setAdditionalSubscriptions(failures);
-        toast.error(
-          t("space.agents.additionalSubscriptionFailed", {
-            count: failures.length,
-          }),
-        );
-        return;
-      }
+      const agent = await actions.registerAgent({
+        displayName: displayName.trim(),
+        instruction: normalizedInstruction,
+        workspaceId: project.id,
+        workspacePath: project.path,
+        workspaceLabel: projectLabel(project),
+        goalId,
+        stateFilter,
+        issueSubscriptionRunMode,
+      });
+      toast.success(t("space.toasts.agentCreated"));
       onRegistered(agent);
     } catch (error) {
       toast.error(spaceErrorMessage(error));
@@ -1868,7 +1775,7 @@ export function RegisterAgentDialog({
               onChange={(event) => setDisplayName(event.target.value)}
               className="h-10 w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 text-sm text-[var(--ink)] outline-none transition-colors focus:border-[var(--accent-warm)]"
               placeholder={t("space.agents.displayNamePlaceholder")}
-              disabled={busy || Boolean(registeredAgent)}
+              disabled={busy}
             />
           </label>
           <AgentInstructionField
@@ -1879,7 +1786,7 @@ export function RegisterAgentDialog({
             }}
             error={instructionError}
             inputRef={instructionRef}
-            disabled={busy || Boolean(registeredAgent)}
+            disabled={busy}
           />
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-[var(--ink)]">
@@ -1889,7 +1796,7 @@ export function RegisterAgentDialog({
               value={workspaceId}
               options={projectOptions}
               onChange={setWorkspaceId}
-              disabled={busy || Boolean(registeredAgent)}
+              disabled={busy}
               size="md"
             />
           </label>
@@ -1901,95 +1808,19 @@ export function RegisterAgentDialog({
               value={goalId}
               options={goalOptions}
               onChange={setGoalId}
-              disabled={busy || Boolean(registeredAgent)}
+              disabled={busy}
               size="md"
             />
           </label>
           <IssueSubscriptionScopeControl
             value={stateFilter}
             onChange={setStateFilter}
-            disabled={busy || Boolean(registeredAgent)}
+            disabled={busy}
           />
-          {additionalSubscriptions.map((subscription, index) => (
-            <section
-              key={subscription.key}
-              className="space-y-3 rounded-xl border border-[var(--line)] bg-[var(--paper-inset)]/35 p-3"
-            >
-              <div className="flex items-center justify-between gap-3">
-                <span className="text-xs font-medium text-[var(--ink-muted)]">
-                  {t("space.agents.subscriptions")} {index + 2}
-                </span>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() =>
-                    setAdditionalSubscriptions((items) =>
-                      items.filter((item) => item.key !== subscription.key),
-                    )
-                  }
-                  className="text-xs font-medium text-[var(--error)] disabled:opacity-50"
-                >
-                  {t("space.agents.removeSubscription")}
-                </button>
-              </div>
-              <CustomSelect
-                value={subscription.goalId}
-                options={goalOptions}
-                onChange={(nextGoalId) =>
-                  setAdditionalSubscriptions((items) =>
-                    items.map((item) =>
-                      item.key === subscription.key
-                        ? { ...item, goalId: nextGoalId, error: undefined }
-                        : item,
-                    ),
-                  )
-                }
-                size="md"
-              />
-              <IssueSubscriptionScopeControl
-                value={subscription.stateFilter}
-                onChange={(nextStateFilter) =>
-                  setAdditionalSubscriptions((items) =>
-                    items.map((item) =>
-                      item.key === subscription.key
-                        ? { ...item, stateFilter: nextStateFilter, error: undefined }
-                        : item,
-                    ),
-                  )
-                }
-                disabled={busy}
-              />
-              {subscription.error ? (
-                <p className="text-xs font-medium text-[var(--error)]">
-                  {subscription.error}
-                </p>
-              ) : null}
-            </section>
-          ))}
-          <button
-            type="button"
-            disabled={
-              busy || Boolean(registeredAgent) || goalOptions.length === 0
-            }
-            onClick={() =>
-              setAdditionalSubscriptions((items) => [
-                ...items,
-                {
-                  key: crypto.randomUUID(),
-                  goalId: goals[0]?.id ?? "",
-                  stateFilter: [...DEFAULT_AGENT_STATE_FILTER],
-                },
-              ])
-            }
-            className="inline-flex h-9 items-center gap-2 rounded-lg bg-[var(--button-secondary-bg)] px-3 text-sm font-medium text-[var(--button-secondary-text)] disabled:opacity-50"
-          >
-            <Plus className="h-4 w-4" />
-            {t("space.agents.addSubscription")}
-          </button>
           <IssueSubscriptionRunModeControl
             value={issueSubscriptionRunMode}
             onChange={setIssueSubscriptionRunMode}
-            disabled={busy || Boolean(registeredAgent)}
+            disabled={busy}
           />
         </div>
         <div className="flex justify-end gap-2 border-t border-[var(--line)] px-5 py-4">
@@ -2004,15 +1835,10 @@ export function RegisterAgentDialog({
             type="button"
             disabled={
               busy ||
-              (!registeredAgent &&
-                (!workspaceId ||
-                  !displayName.trim() ||
-                  !goalId ||
-                  stateFilter.length === 0)) ||
-              additionalSubscriptions.some(
-                (subscription) =>
-                  !subscription.goalId || subscription.stateFilter.length === 0,
-              )
+              !workspaceId ||
+              !displayName.trim() ||
+              !goalId ||
+              stateFilter.length === 0
             }
             onClick={() => void submit()}
             className="flex h-10 items-center gap-2 rounded-lg bg-[var(--button-primary-bg)] px-4 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)] disabled:cursor-wait disabled:opacity-70"
@@ -2022,11 +1848,7 @@ export function RegisterAgentDialog({
             ) : (
               <Bot className="h-4 w-4" />
             )}
-            {registeredAgent
-              ? additionalSubscriptions.length > 0
-                ? t("space.agents.retryFailedSubscriptions")
-                : t("space.agents.finishRegistration")
-              : t("space.agents.register")}
+            {t("space.agents.register")}
           </button>
         </div>
       </div>

@@ -242,5 +242,6 @@ Space Issue 的用户可见编号由云端拥有，不从 opaque `issue.id` 推�
 - 编辑弹窗中的“本地 Agent 工作区”必须与登记弹窗使用同一工作区选择交互；但只有 current local Agent (`ownerUserId + deviceId` 命中当前端点) 可修改。远端设备登记的 Agent 工作区字段置灰，只能修改名称、订阅目标、订阅范围、订阅执行策略。
 - 登记与编辑弹窗使用同一套 viewport-safe 三段布局：外框不超过可视区并保留安全边距，header/footer 始终可见，只有中间表单区滚动；不得让整个 overlay 随字段数量越过屏幕边界。
 - “目标与指令”正常态只展示字段名与 placeholder，不重复显示说明文字；校验错误和旧 Agent 缺少 Instruction 的兼容提醒仍显示在输入框下方。
+- Cloud 数据模型与 create/delete API 继续允许一个 Registered Agent 拥有多条 Subscription；Desktop 登记/编辑弹窗暂时只提供一条可编辑订阅，不提供添加多条、逐条删除或重新评估入口。编辑时只替换 UI 当前呈现的一条规则，不得静默删除由其它客户端/API 创建的额外规则。
 - “订阅执行策略”选项固定按“新开对话 → 连续对话”排列，新登记 Agent 默认 `new_session`；编辑已有 Agent 必须保留其权威值，旧数据缺字段仍按历史 `single_session` 回退。
 - `clientId` 是 OAuth public client/build 配置，不是设备标识，不应出现在卡片关键位。

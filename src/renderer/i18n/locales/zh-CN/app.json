@@ -768,17 +768,7 @@
       "instructionLegacyWarning": "这个旧 Agent 尚未设置目标与指令。你可以只修改其它设置；填写后将作为它长期使用的目标意图。",
       "instructionConflict": "目标与指令已在别处更新。你的内容仍保留，请查看最新版本后再次保存。",
       "subscriptions": "订阅规则",
-      "noSubscriptions": "当前无订阅；Agent 仍可接收明确指派的 Issue。",
-      "addSubscription": "添加订阅",
-      "removeSubscription": "移除订阅",
-      "reevaluateScope": "重新评估当前范围",
-      "reevaluatedScope": "已开始重新评估 {{count}} 条订阅规则。",
-      "reevaluateConfirmTitle": "重新评估当前订阅范围？",
-      "reevaluateConfirmMessage": "系统会重新扫描当前订阅范围，并唤醒 Agent 评估匹配的 Issue；同一 Issue 不会堆叠多条待处理投递。",
-      "reevaluateConfirmAction": "开始重新评估",
-      "additionalSubscriptionFailed": "Agent 已创建，但有 {{count}} 条附加订阅创建失败。请检查下方错误并重试。",
-      "retryFailedSubscriptions": "重试失败的订阅",
-      "finishRegistration": "完成"
+      "noSubscriptions": "当前无订阅；Agent 仍可接收明确指派的 Issue。"
     },
     "settings": {
       "overLimit": "超额",
