@@ -1,7 +1,7 @@
 # MyAgents Design Guide
 
-> **Version**: 2.5.9
-> **Last Updated**: 2026-07-08
+> **Version**: 2.6.0
+> **Last Updated**: 2026-07-20
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
 
@@ -26,9 +26,28 @@ MyAgents 是一款 AI Agent 桌面客户端，采用**温暖纸张质感**的设
 - **信息密度平衡** - 既要展示完整信息，又不能让用户感到压迫
 - **跨平台一致性** - macOS 和 Windows 保持相同的视觉体验
 
+### Theme 与 Appearance 的设计边界
+
+MyAgents 的视觉由完整 `Theme` 管理；light / dark / system 是 `AppearanceMode`，不是三套 Theme。一套 Theme 必须同时交付并验收 light 与 dark，system 只跟随 OS 解析其中一套。
+
+当前 production 仅有 canonical `myagents-default`。它的物理 owner 是：
+
+- `src/renderer/theme/themes/myagents-default.css`：精确 Theme root / light / dark root 下的字体角色、颜色、材质、圆角、阴影、动画和 Floating Ball Token；同一文件既静态保护 canonical 首帧，也由 manifest 提供实际 source 给注册校验与 runtime 激活；
+- `src/renderer/theme/themes/myagents-default.ts`：Launcher Hero 与 xterm / Monaco / Mermaid / Prism / Widget adapters；
+- `src/renderer/index.css`：与品牌视觉无关的布局、交互、七档 Type Scale，以及 Space 的独立 scoped override。
+
+组件只消费语义 Token 或 `useResolvedTheme()` adapter，不持有 light/dark palette，不观察 `.dark` 反推状态。Widget adapter 必须提供 iframe 可直接使用的 literal，不能引用宿主 `var(...)`。完整 Theme 不允许让用户混搭颜色、字体、背景等零件；某 Theme 缺项时整套回退 canonical default。
+
+可主题化：宿主色彩/字体/材质、Launcher Hero 两行内容和可选 bundled 背景、语法/图表/终端/编辑器/Widget iframe、Floating Ball。非主题化：布局与信息架构、业务状态机、原生窗口按钮、Browser 子 Webview 网页、用户内容、三方品牌 Logo/二维码、宠物 spritesheet。Space 的 `space-mono` 是独立 surface，本期不纳入应用 Theme。
+
+注册、bootstrap 和 adapter 细则见 `tech_docs/theme_system.md`。
+
 ---
 
 ## 1. 颜色系统 (Colors)
+
+下列值描述 canonical `myagents-default` 的 light scheme；真实定义以
+`src/renderer/theme/themes/myagents-default.css` 为准。dark scheme 也在同一文件中完整定义。
 
 ### 1.1 核心色板
 
@@ -137,7 +156,7 @@ MyAgents 是一款 AI Agent 桌面客户端，采用**温暖纸张质感**的设
 > 因此 Latin-only 子链 **不能**以 `sans-serif` 结尾，组合链的通用字族兜底必须放在整条链的**最末端**（CJK 字体之后）。
 
 ```css
-/* @theme — Tailwind v4 单一真相源，同时驱动 font-sans / font-mono 工具类 */
+/* myagents-default.css @theme — 同时驱动 font-sans / font-mono 工具类 */
 @theme {
   /* Latin-only 子链：结尾无 generic */
   --font-latin: 'SF Pro Text', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI';
@@ -1166,17 +1185,22 @@ Launcher 是应用的启动页，采用左右分栏布局。左侧负责品牌�
 
 ### 15.2 品牌区域
 
+品牌区 JSX 只消费 `ResolvedTheme.hero`。产品名、zh-CN/en-US slogan、文字视觉参数和每个 scheme 的可选 bundled 背景槽都由 Theme 拥有；`BrandSection` 不硬编码 `MyAgents` 或 slogan source。canonical Theme 当前没有独立背景图，因此与迁移前视觉一致。
+
 ```
 标题 "MyAgents":
-  - 字号: 4.5rem (桌面) / 3.5rem (移动)
-  - 字重: 200 (font-light，保持品牌独特感)
-  - 渐变: linear-gradient(145deg, var(--ink), var(--ink-muted))
+  - 字号: 3.5rem (桌面) / 2.5rem (窄窗口)
+  - 字重: 250（保持品牌独特感）
+  - 字间距: 0.02em
+  - 渐变: linear-gradient(155deg, var(--ink) 30%, var(--accent-warm) 100%)
 
-英文标语 "Your Universal AI Assistant":
+标语（zh-CN / en-US 由 Theme 提供）:
+  - 当前中文: "每个人都应享受智能的推背感，欢迎来到言出法随的世界"
+  - 当前英文: "Your intent, amplified"
   - 字号: 17px (桌面) / 15px (移动)
   - 字重: 300 (font-light)
   - 字间距: 0.06em
-  - 颜色: var(--ink-secondary)
+  - 颜色: var(--ink-muted)
 
 中文标语 "让每个人都有一个智能助手":
   - 字号: 15px (桌面 17px 见品牌立档例外；本行历史值已并入 slogan 单行)
@@ -1318,6 +1342,7 @@ Hover 操作:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.6.0 | 2026-07-20 | **Theme System 架构收口（PRD 0.3.2）**：区分 Theme / AppearanceMode / ResolvedColorScheme；现有 light/dark 视觉完整迁入 canonical `myagents-default`；Launcher Hero、CSS Token、xterm、Monaco、Mermaid、Prism、Widget 与 Floating Ball 统一消费 `ResolvedTheme`；Space `space-mono` 明确保持独立；本次无有意视觉优化 |
 | 2.5.9 | 2026-07-08 | **移动端断点收窄**：`--breakpoint-mobile` 从 768px 调整为 640px；桌面中等宽度和 split preview 默认 50% 场景更倾向保留工作区 inline，真正窄屏才切 overlay / stacked 布局 |
 | 2.5.8 | 2026-06-20 | **Launcher 历史筛选与收藏规范**：历史标题行筛选器明确为「全部 / 我的收藏 / 工作区」三类历史筛选，不再仅是工作区筛选；历史行更多菜单纳入「收藏对话 / 取消收藏」，收藏状态持久化到 session metadata |
 | 2.5.7 | 2026-06-20 | **Launcher right rail final menu polish**：工作区卡片 hover 操作改为无 tooltip 的「更多」icon，点击打开与右键一致的菜单；工作区菜单新增「打开所在文件夹」；历史行右键在 mouseDown 阶段即时打开同一份更多菜单并禁用文本选中；历史时间列去掉时钟 icon 并扩到 w-16；right rail 底部增加同色渐隐遮罩 |

@@ -1,0 +1,681 @@
+import {
+  DEFAULT_THEME_ID,
+  normalizeAppearanceMode,
+  normalizeThemeId,
+  resolveColorScheme,
+  type AppearanceMode,
+} from '../../shared/theme';
+import {
+  REQUIRED_MERMAID_THEME_VARIABLES,
+  REQUIRED_THEME_CSS_TOKENS,
+  REQUIRED_WIDGET_CSS_VARIABLES,
+  REQUIRED_XTERM_PALETTE_KEYS,
+} from './registry-contract';
+import type { ResolvedTheme, ThemeDefinition } from './types';
+import { myAgentsDefaultTheme } from './themes/myagents-default';
+
+export { REQUIRED_THEME_CSS_TOKENS, REQUIRED_WIDGET_CSS_VARIABLES } from './registry-contract';
+
+const ALLOWED_PRISM_HOST_VARIABLES = new Set<string>([
+  ...REQUIRED_THEME_CSS_TOKENS,
+  '--text-xs', '--text-sm', '--text-base', '--text-lg', '--text-xl', '--text-2xl', '--text-3xl',
+]);
+
+function assertRecord(value: unknown, path: string): asserts value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`[theme] ${path} must be an object`);
+  }
+}
+
+function assertNonEmptyString(value: unknown, path: string): asserts value is string {
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new Error(`[theme] ${path} must be a non-empty string`);
+  }
+}
+
+function assertPositiveNumber(value: unknown, path: string): asserts value is number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error(`[theme] ${path} must be a positive number`);
+  }
+}
+
+function stripCssComments(cssText: string): string {
+  let result = '';
+  let quote: '"' | "'" | null = null;
+  let escaped = false;
+  for (let index = 0; index < cssText.length; index += 1) {
+    const character = cssText[index];
+    if (escaped) {
+      result += character;
+      escaped = false;
+      continue;
+    }
+    if (character === '\\') {
+      result += character;
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      result += character;
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      result += character;
+      continue;
+    }
+    if (character === '/' && cssText[index + 1] === '*') {
+      const close = cssText.indexOf('*/', index + 2);
+      if (close < 0) throw new Error('[theme] stylesheet contains an unclosed CSS comment');
+      index = close + 1;
+      continue;
+    }
+    result += character;
+  }
+  return result;
+}
+
+interface CssBlock {
+  prelude: string;
+  body: string;
+}
+
+/** Parse top-level blocks while respecting quoted strings and nested at-rules. */
+function collectTopLevelCssBlocks(cssText: string): CssBlock[] {
+  const blocks: CssBlock[] = [];
+  let cursor = 0;
+  while (cursor < cssText.length) {
+    let open = -1;
+    let quote: '"' | "'" | null = null;
+    let escaped = false;
+    for (let index = cursor; index < cssText.length; index += 1) {
+      const character = cssText[index];
+      if (escaped) { escaped = false; continue; }
+      if (character === '\\') { escaped = true; continue; }
+      if (quote) {
+        if (character === quote) quote = null;
+        continue;
+      }
+      if (character === '"' || character === "'") { quote = character; continue; }
+      if (character === '{') { open = index; break; }
+    }
+    if (open < 0) break;
+
+    let depth = 1;
+    quote = null;
+    escaped = false;
+    let close = -1;
+    for (let index = open + 1; index < cssText.length; index += 1) {
+      const character = cssText[index];
+      if (escaped) { escaped = false; continue; }
+      if (character === '\\') { escaped = true; continue; }
+      if (quote) {
+        if (character === quote) quote = null;
+        continue;
+      }
+      if (character === '"' || character === "'") { quote = character; continue; }
+      if (character === '{') depth += 1;
+      if (character === '}') depth -= 1;
+      if (depth === 0) { close = index; break; }
+    }
+    if (close < 0) throw new Error('[theme] stylesheet contains an unclosed CSS block');
+    blocks.push({
+      prelude: cssText.slice(cursor, open).trim(),
+      body: cssText.slice(open + 1, close),
+    });
+    cursor = close + 1;
+  }
+  return blocks;
+}
+
+function normalizeSelector(selector: string): string | null {
+  // Contract selectors deliberately use a tiny grammar. CSS escapes are not
+  // decoded across token boundaries: `html\[` is an escaped identifier, not
+  // `html` plus an attribute selector. Escapes inside quoted attribute values
+  // are decoded separately because CSS treats those as string contents.
+  let invalidAttributeValue = false;
+  const normalizedAttributes = selector.trim().replace(
+    /\[\s*(data-theme-id|data-color-scheme)\s*=\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([a-z0-9-]+))\s*\]/g,
+    (_match, attribute: string, doubleQuoted: string, singleQuoted: string, bare: string) => {
+      const value = decodeCssEscapes(doubleQuoted ?? singleQuoted ?? bare);
+      if (!/^[a-z0-9-]+$/.test(value)) invalidAttributeValue = true;
+      return `[${attribute}='${value}']`;
+    },
+  );
+  if (invalidAttributeValue || normalizedAttributes.includes('\\')) return null;
+  const normalized = normalizedAttributes.replace(/\s+/g, ' ');
+  if (
+    /^html\[data-theme-id='[a-z0-9-]+'\](?:\[data-color-scheme='(?:light|dark)'\])?(?: \.theme-launcher-hero-(?:title|slogan))?$/.test(normalized)
+    || /^html\[data-color-scheme='(?:light|dark)'\]$/.test(normalized)
+    || /^\.theme-launcher-hero-(?:title|slogan)$/.test(normalized)
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function selectorListExactlyMatches(prelude: string, expectedSelectors: readonly string[]): boolean {
+  const actual = prelude.split(',').map(normalizeSelector);
+  const expected = expectedSelectors.map(normalizeSelector);
+  return !actual.includes(null)
+    && !expected.includes(null)
+    && actual.length === expected.length
+    && actual.every((selector, index) => selector === expected[index]);
+}
+
+function selectorListContainsExact(prelude: string, expectedSelector: string): boolean {
+  const expected = normalizeSelector(expectedSelector);
+  return expected !== null && prelude.split(',').some(selector => {
+    const strict = normalizeSelector(selector);
+    if (strict === expected) return true;
+    // A non-contract spelling may still target the same browser selector via
+    // CSS escapes. Treat it as a matching block so collectContractBlocks()
+    // rejects it as unexpected instead of silently ignoring a cascade rule.
+    return strict === null && normalizeSelector(decodeCssEscapes(selector)) === expected;
+  });
+}
+
+function collectContractBlocks(
+  blocks: readonly CssBlock[],
+  targetSelector: string,
+  acceptedSelectorLists: readonly (readonly string[])[],
+  path: string,
+): CssBlock[] {
+  const matchingBlocks = blocks.filter(block => selectorListContainsExact(block.prelude, targetSelector));
+  const unexpectedBlock = matchingBlocks.find(block => (
+    !acceptedSelectorLists.some(selectors => selectorListExactlyMatches(block.prelude, selectors))
+  ));
+  if (unexpectedBlock) {
+    throw new Error(`[theme] ${path}: selector must not be combined with unexpected selectors`);
+  }
+  return matchingBlocks;
+}
+
+function collectDeclaredTokens(blocks: readonly CssBlock[]): Map<string, string> {
+  const tokens = new Map<string, string>();
+  for (const block of blocks) {
+    if (block.body.includes('{') || block.body.includes('}')) continue;
+    for (const match of block.body.matchAll(/(?:^|;)\s*(--[a-zA-Z0-9-]+)\s*:\s*([^;]+)(?=;|$)/g)) {
+      tokens.set(match[1], match[2].trim());
+    }
+  }
+  return tokens;
+}
+
+const CSS_WIDE_PREFIX = /^(?:initial|inherit|unset|revert|revert-layer)(?:\s|!|$)/i;
+const IMPORTANT_PRIORITY = /!\s*important\s*$/i;
+
+function decodeCssEscapes(value: string): string {
+  return value
+    .replace(/\\(?:\r\n|[\n\r\f])/g, '')
+    .replace(/\\([0-9a-f]{1,6})(?:\r\n|[\t\n\f\r ])?/gi, (_match, hex: string) => (
+      String.fromCodePoint(Number.parseInt(hex, 16))
+    ))
+    .replace(/\\([^\r\n\f0-9a-f])/gi, '$1');
+}
+
+function containsRemoteReference(value: string): boolean {
+  const decoded = decodeCssEscapes(value);
+  return /(?:https?|ftp|file|javascript)\s*:/i.test(decoded) || /(^|[\s('"=,:])\/\//.test(decoded);
+}
+
+function containsControlCharacters(value: string): boolean {
+  return [...value].some(character => {
+    const codePoint = character.codePointAt(0)!;
+    return codePoint <= 0x1f || codePoint === 0x7f;
+  });
+}
+
+function hasUsableToken(
+  tokens: ReadonlyMap<string, string>,
+  token: string,
+  resolving: ReadonlySet<string> = new Set(),
+): boolean {
+  if (resolving.has(token)) return false;
+  const rawValue = tokens.get(token)?.trim();
+  const value = rawValue ? decodeCssEscapes(rawValue) : rawValue;
+  if (!value || CSS_WIDE_PREFIX.test(value) || IMPORTANT_PRIORITY.test(value)) return false;
+
+  const referencedTokens = [...value.matchAll(/var\(\s*(--[a-zA-Z0-9-]+)\s*\)/g)].map(match => match[1]);
+  const valueWithoutSimpleReferences = value.replace(/var\(\s*--[a-zA-Z0-9-]+\s*\)/g, '');
+  if (/var\s*\(/i.test(valueWithoutSimpleReferences)) return false;
+
+  const nextResolving = new Set(resolving).add(token);
+  return referencedTokens.every(reference => hasUsableToken(tokens, reference, nextResolving));
+}
+
+function hasImportantDeclaration(tokens: ReadonlyMap<string, string>): boolean {
+  return [...tokens.values()].some(value => IMPORTANT_PRIORITY.test(decodeCssEscapes(value).trim()));
+}
+
+function assertSafeCssLiteral(value: string, path: string): void {
+  const decoded = decodeCssEscapes(value);
+  if (
+    value !== value.trim()
+    || containsControlCharacters(decoded)
+    || /[;{}]/.test(decoded)
+    || /\/\*|\*\//.test(decoded)
+    || CSS_WIDE_PREFIX.test(decoded.trim())
+    || IMPORTANT_PRIORITY.test(decoded)
+    || /\b(?:var|env|url|image-set|cross-fade|element)\s*\(/i.test(decoded)
+    || containsRemoteReference(decoded)
+  ) {
+    throw new Error(`[theme] ${path} must be an iframe-ready CSS literal`);
+  }
+}
+
+function isLiteralCssColor(value: string): boolean {
+  if (/^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i.test(value)) return true;
+  const number = '[-+]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)';
+  const percentage = `${number}%`;
+  const alpha = `(?:${number}|${percentage})`;
+  const hue = `${number}(?:deg|grad|rad|turn)?`;
+  const rgbChannel = `(?:${number}|${percentage})`;
+  const rgbComma = new RegExp(`^rgba?\\(\\s*${rgbChannel}\\s*,\\s*${rgbChannel}\\s*,\\s*${rgbChannel}(?:\\s*,\\s*${alpha})?\\s*\\)$`, 'i');
+  const rgbSpace = new RegExp(`^rgba?\\(\\s*${rgbChannel}\\s+${rgbChannel}\\s+${rgbChannel}(?:\\s*\\/\\s*${alpha})?\\s*\\)$`, 'i');
+  const hslComma = new RegExp(`^hsla?\\(\\s*${hue}\\s*,\\s*${percentage}\\s*,\\s*${percentage}(?:\\s*,\\s*${alpha})?\\s*\\)$`, 'i');
+  const hslSpace = new RegExp(`^hsla?\\(\\s*${hue}\\s+${percentage}\\s+${percentage}(?:\\s*\\/\\s*${alpha})?\\s*\\)$`, 'i');
+  const oklch = new RegExp(`^oklch\\(\\s*(?:${number}|${percentage})\\s+${number}\\s+${hue}(?:\\s*\\/\\s*${alpha})?\\s*\\)$`, 'i');
+  return rgbComma.test(value) || rgbSpace.test(value) || hslComma.test(value) || hslSpace.test(value) || oklch.test(value);
+}
+
+function supportsCssProperty(property: string, value: string): boolean {
+  // Theme registry is renderer-only. Use the browser's declaration parser as
+  // the single CSS grammar authority in production and DOM tests alike.
+  // JSDOM currently accepts negative transition durations, so keep that one
+  // standards invariant explicit before asking the shared declaration API.
+  if (property === 'transition-duration' && /^\s*-/.test(value)) return false;
+  const style = document.createElement('div').style;
+  style.setProperty(property, value);
+  return style.getPropertyValue(property) !== '';
+}
+
+function resolveTokenValue(
+  tokens: ReadonlyMap<string, string>,
+  token: string,
+  resolving: ReadonlySet<string> = new Set(),
+): string | null {
+  if (resolving.has(token)) return null;
+  const rawValue = tokens.get(token);
+  if (!rawValue) return null;
+  const nextResolving = new Set(resolving).add(token);
+  let unresolved = false;
+  const resolved = decodeCssEscapes(rawValue).replace(
+    /var\(\s*(--[a-zA-Z0-9-]+)\s*\)/g,
+    (_match, reference: string) => {
+      const replacement = resolveTokenValue(tokens, reference, nextResolving);
+      if (replacement === null) {
+        unresolved = true;
+        return '';
+      }
+      return replacement;
+    },
+  ).trim();
+  return unresolved ? null : resolved;
+}
+
+function themeTokenProperty(token: string): string {
+  if (token.startsWith('--font-')) return 'font-family';
+  if (token.startsWith('--radius-')) return 'border-radius';
+  if (token.startsWith('--duration-')) return 'transition-duration';
+  if (token === '--theme-body-background') return 'background';
+  if (token === '--theme-body-texture') return 'background-image';
+  if (token === '--theme-body-texture-opacity') return 'opacity';
+  if (token === '--theme-body-texture-blend') return 'mix-blend-mode';
+  if (
+    token.startsWith('--shadow-')
+    || token.startsWith('--action-shadow')
+    || token.startsWith('--tool-shadow')
+    || token === '--fb-window-shadow'
+  ) return 'box-shadow';
+  return 'color';
+}
+
+function widgetVariableProperty(variable: string): string {
+  if (variable === '--widget-font-body') return 'font-family';
+  if (variable.startsWith('--widget-radius-')) return 'border-radius';
+  if (variable === '--widget-control-shadow') return 'box-shadow';
+  return 'color';
+}
+
+function assertCssPropertyValue(value: string, property: string, path: string): void {
+  if (!supportsCssProperty(property, value)) {
+    throw new Error(`[theme] ${path} must be valid ${property} syntax`);
+  }
+}
+
+function assertLiteralColorValue(value: string, path: string): void {
+  if (!isLiteralCssColor(value)) {
+    throw new Error(`[theme] ${path} must be a literal color`);
+  }
+}
+
+function isXtermColor(value: string): boolean {
+  const hex = value.match(/^#([0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i);
+  if (hex) return true;
+
+  const functional = value.match(
+    /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})(?:\s*,\s*(0|1|\d?\.\d+)\s*)?\)$/i,
+  );
+  if (!functional) return false;
+  const channels = functional.slice(1, 4).map(Number);
+  const alpha = functional[4] === undefined ? 1 : Number(functional[4]);
+  return channels.every(channel => channel >= 0 && channel <= 255)
+    && alpha >= 0
+    && alpha <= 1;
+}
+
+function assertXtermColorValue(value: string, path: string): void {
+  // xterm's parser always supports only hex and comma-separated rgb(a).
+  // Other CSS colors depend on a Canvas fallback which rejects transparency
+  // and is unavailable in non-browser consumers, so a Theme cannot rely on it.
+  if (!isXtermColor(value)) {
+    throw new Error(`[theme] ${path} must be an xterm-compatible color`);
+  }
+}
+
+function cssPropertyName(reactProperty: string): string {
+  return reactProperty.replace(/[A-Z]/g, character => `-${character.toLowerCase()}`);
+}
+
+function assertPrismStyleValue(value: string, reactProperty: string, path: string): void {
+  const hostVariable = value.match(/^var\(\s*(--[a-zA-Z0-9-]+)\s*\)$/)?.[1];
+  if (hostVariable) {
+    if (!ALLOWED_PRISM_HOST_VARIABLES.has(hostVariable)) {
+      throw new Error(`[theme] ${path} references an unknown host CSS variable`);
+    }
+    return;
+  }
+  assertCssPropertyValue(value, cssPropertyName(reactProperty), path);
+}
+
+function validateStylesheet(definition: ThemeDefinition): void {
+  assertNonEmptyString(definition.stylesheetText, `${definition.id}.stylesheetText`);
+  const cssText = stripCssComments(definition.stylesheetText);
+  const blocks = collectTopLevelCssBlocks(cssText);
+  const themeRootSelector = `html[data-theme-id='${definition.id}']`;
+  const globalTokens = collectDeclaredTokens(collectContractBlocks(
+    blocks,
+    themeRootSelector,
+    [[themeRootSelector]],
+    `${definition.id} root`,
+  ));
+  if (hasImportantDeclaration(globalTokens)) {
+    throw new Error(`[theme] ${definition.id}: Theme Token declarations must not use !important`);
+  }
+
+  if (/@import\b/i.test(decodeCssEscapes(cssText)) || containsRemoteReference(cssText)) {
+    throw new Error(`[theme] ${definition.id}: stylesheet must not reference remote assets`);
+  }
+
+  for (const scheme of ['light', 'dark'] as const) {
+    const schemeRootSelector = `${themeRootSelector}[data-color-scheme='${scheme}']`;
+    const acceptedSchemeSelectorLists = definition.id === DEFAULT_THEME_ID
+      ? [[`html[data-color-scheme='${scheme}']`, schemeRootSelector], [schemeRootSelector]]
+      : [[schemeRootSelector]];
+    const schemeTokens = collectDeclaredTokens(collectContractBlocks(
+      blocks,
+      schemeRootSelector,
+      acceptedSchemeSelectorLists,
+      `${definition.id}.${scheme} root`,
+    ));
+    if (hasImportantDeclaration(schemeTokens)) {
+      throw new Error(`[theme] ${definition.id}.${scheme}: Theme Token declarations must not use !important`);
+    }
+    const effectiveTokens = new Map(globalTokens);
+    for (const [token, value] of schemeTokens) effectiveTokens.set(token, value);
+    const missingTokens = REQUIRED_THEME_CSS_TOKENS.filter(
+      token => {
+        if (!hasUsableToken(effectiveTokens, token)) return true;
+        const resolvedValue = resolveTokenValue(effectiveTokens, token);
+        return resolvedValue === null || !supportsCssProperty(themeTokenProperty(token), resolvedValue);
+      },
+    );
+    if (missingTokens.length > 0) {
+      throw new Error(`[theme] ${definition.id}.${scheme}: stylesheet missing CSS tokens: ${missingTokens.join(', ')}`);
+    }
+  }
+
+  for (const className of ['.theme-launcher-hero-title', '.theme-launcher-hero-slogan']) {
+    const heroSelector = `${themeRootSelector} ${className}`;
+    const acceptedHeroSelectorLists = definition.id === DEFAULT_THEME_ID
+      ? [[className, heroSelector], [heroSelector]]
+      : [[heroSelector]];
+    const heroBlocks = collectContractBlocks(
+      blocks,
+      heroSelector,
+      acceptedHeroSelectorLists,
+      `${definition.id} Hero ${className}`,
+    );
+    if (heroBlocks.length === 0) {
+      throw new Error(`[theme] ${definition.id}: stylesheet missing Hero selector ${className}`);
+    }
+  }
+}
+
+export function validateThemeDefinition(definition: ThemeDefinition): ThemeDefinition {
+  if (!definition.id || !definition.id.trim()) throw new Error('[theme] Theme ID is required');
+  if (!/^[a-z0-9][a-z0-9-]*$/.test(definition.id)) {
+    throw new Error(`[theme] Invalid Theme ID: ${definition.id}`);
+  }
+  if (!definition.description.trim()) throw new Error(`[theme] ${definition.id}: description is required`);
+  validateStylesheet(definition);
+
+  assertRecord(definition.hero, `${definition.id}.hero`);
+  if (!definition.hero.productName.trim()) throw new Error(`[theme] ${definition.id}: Hero productName is required`);
+  if (!definition.hero.slogans?.['zh-CN'] || !definition.hero.slogans?.['en-US']) {
+    throw new Error(`[theme] ${definition.id}: Hero slogans must include zh-CN and en-US`);
+  }
+
+  for (const scheme of ['light', 'dark'] as const) {
+    const schemeDefinition = definition.schemes?.[scheme];
+    assertRecord(schemeDefinition, `${definition.id}.schemes.${scheme}`);
+    assertRecord(schemeDefinition.xterm, `${definition.id}.schemes.${scheme}.xterm`);
+    assertRecord(schemeDefinition.xterm.palette, `${definition.id}.schemes.${scheme}.xterm.palette`);
+    for (const key of REQUIRED_XTERM_PALETTE_KEYS) {
+      assertNonEmptyString(schemeDefinition.xterm.palette[key], `${definition.id}.schemes.${scheme}.xterm.palette.${key}`);
+    }
+    for (const [key, value] of Object.entries(schemeDefinition.xterm.palette)) {
+      if (value === undefined) continue;
+      assertNonEmptyString(value, `${definition.id}.schemes.${scheme}.xterm.palette.${key}`);
+      assertXtermColorValue(value, `${definition.id}.schemes.${scheme}.xterm.palette.${key}`);
+    }
+    assertNonEmptyString(schemeDefinition.xterm.fontFamily, `${definition.id}.schemes.${scheme}.xterm.fontFamily`);
+    assertCssPropertyValue(
+      schemeDefinition.xterm.fontFamily,
+      'font-family',
+      `${definition.id}.schemes.${scheme}.xterm.fontFamily`,
+    );
+    assertPositiveNumber(schemeDefinition.xterm.fontSize, `${definition.id}.schemes.${scheme}.xterm.fontSize`);
+    assertPositiveNumber(schemeDefinition.xterm.lineHeight, `${definition.id}.schemes.${scheme}.xterm.lineHeight`);
+    assertRecord(schemeDefinition.monaco, `${definition.id}.schemes.${scheme}.monaco`);
+    assertNonEmptyString(schemeDefinition.monaco.name, `${definition.id}.schemes.${scheme}.monaco.name`);
+    assertNonEmptyString(schemeDefinition.monaco.fontFamily, `${definition.id}.schemes.${scheme}.monaco.fontFamily`);
+    assertCssPropertyValue(
+      schemeDefinition.monaco.fontFamily,
+      'font-family',
+      `${definition.id}.schemes.${scheme}.monaco.fontFamily`,
+    );
+    assertPositiveNumber(schemeDefinition.monaco.fontSize, `${definition.id}.schemes.${scheme}.monaco.fontSize`);
+    assertPositiveNumber(schemeDefinition.monaco.lineHeight, `${definition.id}.schemes.${scheme}.monaco.lineHeight`);
+    assertRecord(schemeDefinition.monaco.data, `${definition.id}.schemes.${scheme}.monaco.data`);
+    if (!['vs', 'vs-dark', 'hc-black', 'hc-light'].includes(schemeDefinition.monaco.data.base)) {
+      throw new Error(`[theme] ${definition.id}.schemes.${scheme}.monaco.data.base is invalid`);
+    }
+    if (typeof schemeDefinition.monaco.data.inherit !== 'boolean') {
+      throw new Error(`[theme] ${definition.id}.schemes.${scheme}.monaco.data.inherit must be boolean`);
+    }
+    if (!Array.isArray(schemeDefinition.monaco.data.rules)) {
+      throw new Error(`[theme] ${definition.id}.schemes.${scheme}.monaco.data.rules must be an array`);
+    }
+    for (const [index, rule] of schemeDefinition.monaco.data.rules.entries()) {
+      for (const field of ['foreground', 'background'] as const) {
+        const value = rule[field];
+        if (value !== undefined && !/^[0-9a-f]{6,8}$/i.test(value)) {
+          throw new Error(`[theme] ${definition.id}.schemes.${scheme}.monaco.data.rules.${index}.${field} must be a Monaco hex color`);
+        }
+      }
+    }
+    assertRecord(schemeDefinition.monaco.data.colors, `${definition.id}.schemes.${scheme}.monaco.data.colors`);
+    assertNonEmptyString(
+      schemeDefinition.monaco.data.colors['editor.background'],
+      `${definition.id}.schemes.${scheme}.monaco.data.colors.editor.background`,
+    );
+    assertNonEmptyString(
+      schemeDefinition.monaco.data.colors['editor.foreground'],
+      `${definition.id}.schemes.${scheme}.monaco.data.colors.editor.foreground`,
+    );
+    for (const [key, value] of Object.entries(schemeDefinition.monaco.data.colors)) {
+      assertNonEmptyString(value, `${definition.id}.schemes.${scheme}.monaco.data.colors.${key}`);
+      if (!/^#[0-9a-f]{6,8}$/i.test(value)) {
+        throw new Error(`[theme] ${definition.id}.schemes.${scheme}.monaco.data.colors.${key} must be a Monaco hex color`);
+      }
+    }
+    assertRecord(schemeDefinition.mermaid, `${definition.id}.schemes.${scheme}.mermaid`);
+    assertNonEmptyString(schemeDefinition.mermaid.fontFamily, `${definition.id}.schemes.${scheme}.mermaid.fontFamily`);
+    assertCssPropertyValue(
+      schemeDefinition.mermaid.fontFamily,
+      'font-family',
+      `${definition.id}.schemes.${scheme}.mermaid.fontFamily`,
+    );
+    assertRecord(schemeDefinition.mermaid.themeVariables, `${definition.id}.schemes.${scheme}.mermaid.themeVariables`);
+    const mermaidKeys = Object.keys(schemeDefinition.mermaid.themeVariables);
+    const unexpectedMermaidKeys = mermaidKeys.filter(key => !REQUIRED_MERMAID_THEME_VARIABLES.includes(
+      key as (typeof REQUIRED_MERMAID_THEME_VARIABLES)[number],
+    ));
+    if (unexpectedMermaidKeys.length > 0) {
+      throw new Error(`[theme] ${definition.id}.${scheme}: unsupported Mermaid variables: ${unexpectedMermaidKeys.join(', ')}`);
+    }
+    for (const key of REQUIRED_MERMAID_THEME_VARIABLES) {
+      const value = schemeDefinition.mermaid.themeVariables[key];
+      assertNonEmptyString(value, `${definition.id}.schemes.${scheme}.mermaid.themeVariables.${key}`);
+      assertLiteralColorValue(value, `${definition.id}.schemes.${scheme}.mermaid.themeVariables.${key}`);
+    }
+    assertRecord(schemeDefinition.prism, `${definition.id}.schemes.${scheme}.prism`);
+    if (Object.keys(schemeDefinition.prism).length === 0) {
+      throw new Error(`[theme] ${definition.id}.schemes.${scheme}.prism must not be empty`);
+    }
+    for (const [selector, style] of Object.entries(schemeDefinition.prism)) {
+      assertRecord(style, `${definition.id}.schemes.${scheme}.prism.${selector}`);
+      for (const [property, value] of Object.entries(style)) {
+        if (value === undefined) continue;
+        assertNonEmptyString(value, `${definition.id}.schemes.${scheme}.prism.${selector}.${property}`);
+        assertPrismStyleValue(value, property, `${definition.id}.schemes.${scheme}.prism.${selector}.${property}`);
+      }
+    }
+    assertRecord(schemeDefinition.widget, `${definition.id}.schemes.${scheme}.widget`);
+    assertRecord(schemeDefinition.widget.variables, `${definition.id}.schemes.${scheme}.widget.variables`);
+    const missingWidgetVariables = REQUIRED_WIDGET_CSS_VARIABLES.filter(
+      variable => !(variable in schemeDefinition.widget.variables),
+    );
+    if (missingWidgetVariables.length > 0) {
+      throw new Error(`[theme] ${definition.id}.${scheme}: missing Widget variables: ${missingWidgetVariables.join(', ')}`);
+    }
+    for (const [variable, value] of Object.entries(schemeDefinition.widget.variables)) {
+      if (!/^--widget-[a-z0-9-]+$/.test(variable)) {
+        throw new Error(`[theme] ${definition.id}.${scheme}: invalid Widget variable name ${variable}`);
+      }
+      assertNonEmptyString(value, `${definition.id}.schemes.${scheme}.widget.variables.${variable}`);
+      assertSafeCssLiteral(value, `${definition.id}.${scheme}.widget.variables.${variable}`);
+      assertCssPropertyValue(
+        value,
+        widgetVariableProperty(variable),
+        `${definition.id}.${scheme}.widget.variables.${variable}`,
+      );
+    }
+    const heroBackground = definition.hero.backgrounds?.[scheme];
+    assertRecord(heroBackground, `${definition.id}.hero.backgrounds.${scheme}`);
+    if (heroBackground.assetUrl !== null) {
+      assertNonEmptyString(heroBackground.assetUrl, `${definition.id}.hero.backgrounds.${scheme}.assetUrl`);
+      const isBase64Raster = /^data:image\/(?:png|jpeg|webp|gif);base64,[a-z0-9+/]+=*$/i.test(heroBackground.assetUrl);
+      const isSafeSelfPath = heroBackground.assetUrl === heroBackground.assetUrl.trim()
+        && !containsControlCharacters(heroBackground.assetUrl)
+        && !/^[a-z][a-z0-9+.-]*:/i.test(heroBackground.assetUrl)
+        && !heroBackground.assetUrl.startsWith('//')
+        && !/["'()\\\r\n]/.test(heroBackground.assetUrl);
+      if (!isBase64Raster && !isSafeSelfPath) {
+        throw new Error(`[theme] ${definition.id}.hero.backgrounds.${scheme}.assetUrl must be a bundled/self asset`);
+      }
+    }
+    assertNonEmptyString(heroBackground.position, `${definition.id}.hero.backgrounds.${scheme}.position`);
+    assertSafeCssLiteral(heroBackground.position, `${definition.id}.hero.backgrounds.${scheme}.position`);
+    assertCssPropertyValue(heroBackground.position, 'background-position', `${definition.id}.hero.backgrounds.${scheme}.position`);
+    assertNonEmptyString(heroBackground.size, `${definition.id}.hero.backgrounds.${scheme}.size`);
+    assertSafeCssLiteral(heroBackground.size, `${definition.id}.hero.backgrounds.${scheme}.size`);
+    assertCssPropertyValue(heroBackground.size, 'background-size', `${definition.id}.hero.backgrounds.${scheme}.size`);
+    assertNonEmptyString(heroBackground.repeat, `${definition.id}.hero.backgrounds.${scheme}.repeat`);
+    assertSafeCssLiteral(heroBackground.repeat, `${definition.id}.hero.backgrounds.${scheme}.repeat`);
+    assertCssPropertyValue(heroBackground.repeat, 'background-repeat', `${definition.id}.hero.backgrounds.${scheme}.repeat`);
+    if (heroBackground.mask !== null) {
+      assertNonEmptyString(heroBackground.mask, `${definition.id}.hero.backgrounds.${scheme}.mask`);
+      if (!isLiteralCssColor(heroBackground.mask)) {
+        throw new Error(`[theme] ${definition.id}.hero.backgrounds.${scheme}.mask must be a literal CSS color`);
+      }
+    }
+  }
+
+  return definition;
+}
+
+export class ThemeRegistry {
+  private readonly definitions = new Map<string, ThemeDefinition>();
+  private readonly warnedUnknownIds = new Set<string>();
+
+  constructor(definitions: readonly ThemeDefinition[]) {
+    const seenIds = new Set<string>();
+    for (const definition of definitions) {
+      if (seenIds.has(definition.id)) throw new Error(`[theme] Duplicate Theme ID: ${definition.id}`);
+      seenIds.add(definition.id);
+      if (definition.id === DEFAULT_THEME_ID) {
+        this.register(definition);
+        continue;
+      }
+      try {
+        this.register(definition);
+      } catch (error) {
+        // Reject an invalid optional package without making the application
+        // unbootable. Resolving its ID below then takes the whole-Theme default
+        // fallback path; the canonical Theme itself always remains fail-fast.
+        console.warn(`[theme] Rejected invalid Theme package "${definition.id}":`, error);
+      }
+    }
+    if (!this.definitions.has(DEFAULT_THEME_ID)) {
+      throw new Error(`[theme] Registry must include canonical Theme ${DEFAULT_THEME_ID}`);
+    }
+  }
+
+  register(definition: ThemeDefinition): void {
+    validateThemeDefinition(definition);
+    if (this.definitions.has(definition.id)) throw new Error(`[theme] Duplicate Theme ID: ${definition.id}`);
+    this.definitions.set(definition.id, definition);
+  }
+
+  getProductionIds(): readonly string[] {
+    return [...this.definitions.keys()];
+  }
+
+  resolve(requestedThemeId: unknown, appearanceMode: unknown, systemPrefersDark: boolean): ResolvedTheme {
+    const normalizedRequestedId = normalizeThemeId(requestedThemeId);
+    const normalizedAppearanceMode: AppearanceMode = normalizeAppearanceMode(appearanceMode);
+    const definition = this.definitions.get(normalizedRequestedId) ?? this.definitions.get(DEFAULT_THEME_ID)!;
+    if (definition.id !== normalizedRequestedId && !this.warnedUnknownIds.has(normalizedRequestedId)) {
+      this.warnedUnknownIds.add(normalizedRequestedId);
+      console.warn(`[theme] Unknown Theme ID "${normalizedRequestedId}"; using ${DEFAULT_THEME_ID}`);
+    }
+    const resolvedColorScheme = resolveColorScheme(normalizedAppearanceMode, systemPrefersDark);
+    return {
+      requestedThemeId: normalizedRequestedId,
+      themeId: definition.id,
+      appearanceMode: normalizedAppearanceMode,
+      resolvedColorScheme,
+      definition,
+      adapters: definition.schemes[resolvedColorScheme],
+      hero: { ...definition.hero, background: definition.hero.backgrounds[resolvedColorScheme] },
+      key: `${definition.id}:${resolvedColorScheme}`,
+    };
+  }
+}
+
+/** Production registry: this PRD intentionally ships exactly one Theme. */
+export const themeRegistry = new ThemeRegistry([myAgentsDefaultTheme]);

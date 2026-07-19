@@ -159,6 +159,23 @@ module.exports = {
         'src/shared is consumed by BOTH renderer and sidecar — it must stay free of process-specific imports. A renderer-only or sidecar-only dep would either crash on the other side at bundle time or sneak the wrong runtime code into the wrong bundle (e.g. React in the sidecar, fs in the renderer). If you need to share something process-specific, put it in src/renderer/shared or src/server/shared instead.',
       from: { path: '^src/shared/' },
       to: { path: '^src/(renderer|server|cli)/' }
+    },
+    {
+      // A concrete Theme is a replaceable renderer package. Consumers bind to
+      // the stable index/context contract; importing its manifest or CSS would
+      // make adding a Theme require consumer edits and recreate palette owners.
+      name: 'theme-consumers-public-api-only',
+      severity: 'error',
+      comment:
+        'Renderer Theme consumers MUST NOT import Theme internals — binding to myagents-default, registry implementation, or private adapter files makes a future complete Theme require consumer edits and can create mixed palettes. Import only the public `@/theme` entry; files inside src/renderer/theme may compose their own package internals.',
+      from: {
+        path: '^src/renderer/(?!theme/)',
+        pathNot: ['\\.(?:test|spec)\\.[cm]?[jt]sx?$']
+      },
+      to: {
+        path: '^src/renderer/theme/',
+        pathNot: ['^src/renderer/theme/index\\.ts$']
+      }
     }
   ],
   options: {

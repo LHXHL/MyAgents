@@ -42,9 +42,9 @@
     "defaultWorkspaceBrowse": "Choose folder...",
     "defaultWorkspacePickTitle": "Choose default workspace",
     "defaultWorkspaceSaved": "Default workspace saved",
-    "themeTitle": "Theme",
-    "themeDescription": "Set the app appearance mode",
-    "theme": {
+    "appearanceModeTitle": "Appearance mode",
+    "appearanceModeDescription": "Set the app light and dark appearance mode",
+    "appearanceMode": {
       "system": "System",
       "light": "Light",
       "dark": "Dark"

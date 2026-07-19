@@ -7,6 +7,12 @@ import type { OfficialToolId, OfficialToolSettings } from './official-tools';
 import type { SubscriptionVerifyFailureKind } from './subscription';
 import { PLAYWRIGHT_MCP_PACKAGE_SPEC } from './mcpPackages';
 import managedCodexRuntimeLock from './managed-codex-runtime.json';
+import {
+  DEFAULT_APPEARANCE_MODE,
+  DEFAULT_THEME_ID,
+  type AppearanceMode,
+  type ThemeId,
+} from './theme';
 
 /**
  * Permission mode for agent behavior
@@ -754,7 +760,10 @@ export interface AppConfig {
   // non-interaction tool allowed). Omitted/undefined ⇒ treated as 'inherit'.
   backgroundAgentPermissionMode?: BackgroundAgentPermissionMode;
   // UI preferences
-  theme: 'light' | 'dark' | 'system';
+  /** Complete visual language selected for the whole application. */
+  themeId: ThemeId;
+  /** User preference for resolving the selected Theme's light/dark scheme. */
+  appearanceMode: AppearanceMode;
   /** Product UI language. Existing pre-i18n configs missing this field migrate
    *  to `zh-CN`; new installs default to `system`. */
   uiLanguage?: UiLanguage;
@@ -1901,7 +1910,8 @@ export const DEFAULT_CONFIG: AppConfig = {
   defaultProviderId: undefined, // No default — resolved at runtime from first available provider
   defaultPermissionMode: 'auto',
   backgroundAgentPermissionMode: 'inherit', // background agents inherit granted perms; nothing wider (#264)
-  theme: 'system',
+  themeId: DEFAULT_THEME_ID,
+  appearanceMode: DEFAULT_APPEARANCE_MODE,
   uiLanguage: 'system',
   minimizeToTray: true,   // 默认开启最小化到托盘
   forceWakeLock: false,   // 默认关闭常开阻睡（智能模式仍在跑，覆盖 AI 工作期间）

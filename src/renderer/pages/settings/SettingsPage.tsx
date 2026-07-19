@@ -127,6 +127,7 @@ import {
     getManagedCodexUpdateRefreshAction,
     type ManagedCodexRuntimeBusyAction,
 } from './managedCodexRuntimePresentation';
+import { AppearanceModeControl } from './components/AppearanceModeControl';
 import type {
     NetworkProbeResult,
     ProviderVerifyError,
@@ -4258,27 +4259,10 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                     />
                                 </div>
 
-                                <div className="mt-4 flex items-center justify-between gap-4">
-                                    <div className="flex-1 pr-4">
-                                        <p className="text-sm font-medium text-[var(--ink)]">{tSettings('general.themeTitle')}</p>
-                                        <p className="mt-0.5 text-xs text-[var(--ink-muted)]">{tSettings('general.themeDescription')}</p>
-                                    </div>
-                                    <div className="flex shrink-0 gap-0.5 rounded-full bg-[var(--paper-inset)] p-0.5">
-                                        {(['system', 'light', 'dark'] as const).map((mode) => (
-                                            <button
-                                                key={mode}
-                                                onClick={() => updateConfig({ theme: mode })}
-                                                className={`rounded-full px-3 py-1 text-xs font-medium transition-all ${
-                                                    config.theme === mode
-                                                        ? 'bg-[var(--paper-elevated)] text-[var(--ink)] shadow-sm'
-                                                        : 'text-[var(--ink-muted)] hover:text-[var(--ink-secondary)]'
-                                                }`}
-                                            >
-                                                {tSettings(`general.theme.${mode}`)}
-                                            </button>
-                                        ))}
-                                    </div>
-                                </div>
+                                <AppearanceModeControl
+                                    value={config.appearanceMode}
+                                    onChange={(mode) => { void updateConfig({ appearanceMode: mode }); }}
+                                />
                             </div>
 
                             {/* Startup Settings */}

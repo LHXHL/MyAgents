@@ -5,6 +5,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { Project } from '@/config/types';
 import { i18n } from '@/i18n';
+import { ThemeRegistry, ThemeRuntimeProvider } from '@/theme';
+import { syntheticTheme } from '@/theme/__tests__/syntheticTheme';
+import { myAgentsDefaultTheme } from '@/theme/themes/myagents-default';
 
 import BrandSection from './BrandSection';
 
@@ -81,9 +84,12 @@ const project: Project = {
   permissionMode: null,
 };
 
-function renderBrandSection(overrides: Partial<ComponentProps<typeof BrandSection>> = {}) {
+function renderBrandSection(
+  overrides: Partial<ComponentProps<typeof BrandSection>> = {},
+  themeId?: string,
+) {
   const onGoToSettings = vi.fn();
-  const view = render(
+  const content = (
     <BrandSection
       projects={[project]}
       selectedProject={project}
@@ -95,7 +101,15 @@ function renderBrandSection(overrides: Partial<ComponentProps<typeof BrandSectio
       providerVerifyStatus={{}}
       onGoToSettings={onGoToSettings}
       {...overrides}
-    />,
+    />
+  );
+  const view = render(
+    <ThemeRuntimeProvider
+      registry={new ThemeRegistry([myAgentsDefaultTheme, syntheticTheme])}
+      selection={{ themeId: themeId ?? 'myagents-default', appearanceMode: 'light' }}
+    >
+      {content}
+    </ThemeRuntimeProvider>
   );
   return { ...view, onGoToSettings };
 }
@@ -135,5 +149,13 @@ describe('BrandSection', () => {
 
     expect(screen.getByText(/One step to start your AI journey/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Configure a model provider/ })).toBeInTheDocument();
+  });
+
+  it('renders product name and localized slogan from the resolved Theme Hero', () => {
+    const { container } = renderBrandSection({}, syntheticTheme.id);
+
+    expect(screen.getByRole('heading', { name: 'Synthetic Agents' })).toBeInTheDocument();
+    expect(screen.getByText('合成主题标记')).toBeInTheDocument();
+    expect(container.querySelector('[data-theme-hero="synthetic-test-theme"]')).not.toBeNull();
   });
 });

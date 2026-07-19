@@ -1,76 +1,12 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
 import '@xterm/xterm/css/xterm.css';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { useResolvedTheme } from '@/theme';
 
-// ── Terminal themes — aligned with specs/DESIGN.md color system ──
-// Two themes: dark (nighttime) and light (daytime), auto-switching with app theme.
-
-/** Dark terminal theme — warm black background, for dark mode */
-export const TERMINAL_DARK_THEME = {
-  background: '#1a1614',      // --paper (dark)
-  foreground: '#d4c8bc',
-  cursor: '#c26d3a',          // --accent-warm
-  cursorAccent: '#1a1614',
-  selectionBackground: 'rgba(194, 109, 58, 0.25)',
-  selectionForeground: undefined,
-  selectionInactiveBackground: 'rgba(194, 109, 58, 0.15)',
-
-  // ANSI 16 colors — dark mode (bright colors for dark background)
-  black: '#2a2420',
-  red: '#c75050',              // --heartbeat
-  green: '#2d8a5e',            // --success
-  yellow: '#d97706',           // --warning
-  blue: '#4a7ab5',             // --info
-  magenta: '#b07aab',
-  cyan: '#3d8a75',             // --accent-cool
-  white: '#d4c8bc',
-
-  brightBlack: '#6f6156',      // --ink-muted
-  brightRed: '#e06060',
-  brightGreen: '#3da872',
-  brightYellow: '#f0a030',
-  brightBlue: '#6a9ad0',
-  brightMagenta: '#c894c2',
-  brightCyan: '#4da88a',
-  brightWhite: '#efe8e0',
-};
-
-/** Light terminal theme — warm paper background, for light mode */
-export const TERMINAL_LIGHT_THEME = {
-  background: '#f0ebe3',      // slightly deeper than --paper (#faf6ee), distinguishes from surrounding UI
-  foreground: '#1c1612',      // --ink
-  cursor: '#c26d3a',          // --accent-warm (shared across both themes)
-  cursorAccent: '#f0ebe3',
-  selectionBackground: 'rgba(194, 109, 58, 0.18)',  // --accent-warm-muted
-  selectionForeground: undefined,
-  selectionInactiveBackground: 'rgba(194, 109, 58, 0.10)',
-
-  // ANSI 16 colors — light mode (darker/more saturated for light background readability)
-  black: '#1c1612',            // --ink
-  red: '#b83030',              // darkened heartbeat
-  green: '#1d7a4e',            // darkened success
-  yellow: '#a85a00',           // darkened warning (yellow hardest on light bg)
-  blue: '#3568a0',             // darkened info
-  magenta: '#8f5a8a',          // darkened magenta
-  cyan: '#2a7560',             // darkened accent-cool
-  white: '#6f6156',            // --ink-muted (acts as "dim white" on light bg)
-
-  brightBlack: '#a69a90',      // --ink-subtle
-  brightRed: '#c74040',
-  brightGreen: '#2d8a5e',      // --success (normal brightness OK for bright variant)
-  brightYellow: '#b87010',
-  brightBlue: '#4a7ab5',       // --info
-  brightMagenta: '#a070a0',
-  brightCyan: '#3d8a75',       // --accent-cool
-  brightWhite: '#2e2825',      // --ink-secondary
-};
-
-/** Backward compat alias — dark theme is the default */
-export const TERMINAL_THEME = TERMINAL_DARK_THEME;
 
 interface TerminalPanelProps {
   workspacePath: string;
@@ -91,23 +27,14 @@ export function TerminalPanel({
   isVisible = true,
   sessionId: sessionIdProp,
 }: TerminalPanelProps) {
+  const { adapters } = useResolvedTheme();
+  const xtermTheme = adapters.xterm;
   const containerRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const terminalIdRef = useRef<string | null>(terminalId);
   useEffect(() => { terminalIdRef.current = terminalId; }, [terminalId]);
 
-  // Detect dark mode from <html> class (same pattern as MonacoEditor)
-  const [isDark, setIsDark] = useState(() => document.documentElement.classList.contains('dark'));
-  useEffect(() => {
-    const htmlEl = document.documentElement;
-    const observer = new MutationObserver(() => {
-      setIsDark(htmlEl.classList.contains('dark'));
-    });
-    observer.observe(htmlEl, { attributes: true, attributeFilter: ['class'] });
-    return () => observer.disconnect();
-  }, []);
-  const activeTheme = isDark ? TERMINAL_DARK_THEME : TERMINAL_LIGHT_THEME;
 
   // Stable callbacks via refs to avoid effect re-runs
   const onTerminalCreatedRef = useRef(onTerminalCreated);
@@ -135,10 +62,10 @@ export function TerminalPanel({
     if (!containerRef.current) return;
 
     const term = new Terminal({
-      theme: isDark ? TERMINAL_DARK_THEME : TERMINAL_LIGHT_THEME,
-      fontFamily: "'SF Mono', 'Cascadia Code', 'Consolas', 'Monaco', 'PingFang SC', 'Microsoft YaHei', monospace",
-      fontSize: 14,
-      lineHeight: 1.3,
+      theme: xtermTheme.palette,
+      fontFamily: xtermTheme.fontFamily,
+      fontSize: xtermTheme.fontSize,
+      lineHeight: xtermTheme.lineHeight,
       cursorBlink: true,
       cursorStyle: 'bar',
       scrollback: 5000,
@@ -172,15 +99,19 @@ export function TerminalPanel({
       xtermRef.current = null;
       fitAddonRef.current = null;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- isDark is initial value only; theme updates handled by effect 1b
+  // Theme changes update options in effect 1b without recreating the PTY.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // 1b. Dynamically update xterm theme when app theme changes (without recreating terminal)
   useEffect(() => {
     if (xtermRef.current) {
-      xtermRef.current.options.theme = activeTheme;
+      xtermRef.current.options.theme = xtermTheme.palette;
+      xtermRef.current.options.fontFamily = xtermTheme.fontFamily;
+      xtermRef.current.options.fontSize = xtermTheme.fontSize;
+      xtermRef.current.options.lineHeight = xtermTheme.lineHeight;
     }
-  }, [activeTheme]);
+  }, [xtermTheme]);
 
   // 2. Create PTY — "listeners first" pattern to prevent exit event loss.
   //    Frontend generates the terminal ID, registers listeners, THEN creates the PTY.
@@ -360,7 +291,7 @@ export function TerminalPanel({
     <div
       ref={containerRef}
       className="h-full w-full px-2 pb-1"
-      style={{ background: activeTheme.background }}
+      style={{ background: xtermTheme.palette.background }}
     />
   );
 }

@@ -28,6 +28,7 @@ import { normalizeStringifiedJsonFields, promoteAgentMcpJsonToGlobal } from './c
 import { workspacePathsEqual } from '../../../shared/workspacePath';
 import { type ImBotConfig, DEFAULT_IM_BOT_CONFIG } from '../../../shared/types/im';
 import { normalizeUiLanguage } from '../../../shared/i18n';
+import { normalizeThemeConfigRecord } from '../../../shared/theme';
 // Agent migration is triggered from ConfigProvider after both config + projects are loaded
 import { isDebugMode } from '@/utils/debug';
 
@@ -129,7 +130,9 @@ export function migrateUiLanguageField(config: AppConfig): AppConfig {
 function normalizeLoadedConfig(config: AppConfig): AppConfig {
     normalizeStringifiedJsonFields(config);
     promoteAgentMcpJsonToGlobal(config);
-    return normalizeDeveloperSettings(config);
+    return normalizeDeveloperSettings(
+        normalizeThemeConfigRecord(config as unknown as Record<string, unknown>) as unknown as AppConfig,
+    );
 }
 
 export async function ensureManagedCodexProviderDevGateDefault(): Promise<void> {
@@ -144,8 +147,9 @@ export async function ensureManagedCodexProviderDevGateDefault(): Promise<void> 
         if (Object.prototype.hasOwnProperty.call(latest, 'managedCodexProviderDevGate')) {
             return;
         }
+        const normalized = normalizeThemeConfigRecord(latest);
         localStorage.setItem('myagents:config', JSON.stringify({
-            ...latest,
+            ...normalized,
             managedCodexProviderDevGate: true,
         }));
         return;
@@ -159,8 +163,9 @@ export async function ensureManagedCodexProviderDevGateDefault(): Promise<void> 
         if (Object.prototype.hasOwnProperty.call(latest, 'managedCodexProviderDevGate')) {
             return;
         }
+        const normalized = normalizeThemeConfigRecord(latest);
         await safeWriteJson(configPath, {
-            ...latest,
+            ...normalized,
             managedCodexProviderDevGate: true,
         });
     });
@@ -180,7 +185,10 @@ export async function loadAppConfig(): Promise<AppConfig> {
         if (Object.keys(loaded).length > 0) {
             migrateUiLanguageField(loaded);
         }
-        return normalizeLoadedConfig({ ...dynamicDefault, ...loaded });
+        const migrated = normalizeThemeConfigRecord(
+            loaded as unknown as Record<string, unknown>,
+        ) as unknown as AppConfig;
+        return normalizeLoadedConfig({ ...dynamicDefault, ...migrated });
     }
 
     try {
@@ -195,7 +203,11 @@ export async function loadAppConfig(): Promise<AppConfig> {
             // merge — once the default supplies `osNotifications: true`, the
             // legacy field is masked and we can no longer distinguish "user
             // had cron on" from "user had cron off".
-            const migrated = migrateOsNotificationsField(loaded);
+            const migrated = migrateOsNotificationsField(
+                normalizeThemeConfigRecord(
+                    loaded as unknown as Record<string, unknown>,
+                ) as unknown as AppConfig,
+            );
             // Heal agent config load-boundary drift before any consumer sees it:
             // - issue #301: `providerEnvJson`/`mcpServersJson` persisted as raw
             //   objects instead of stringified JSON;
@@ -315,14 +327,15 @@ export async function atomicModifyConfig(
  * MUST only be called from within a withConfigLock block.
  */
 async function _writeAppConfigLocked(config: AppConfig): Promise<void> {
+    const normalized = normalizeLoadedConfig(config);
     if (isBrowserDevMode()) {
-        mockSaveConfig(config);
+        mockSaveConfig(normalized);
         return;
     }
     await ensureConfigDir();
     const dir = await getConfigDir();
     const configPath = await join(dir, CONFIG_FILE);
-    await safeWriteJson(configPath, config);
+    await safeWriteJson(configPath, normalized);
 }
 
 // ============= Available Providers Cache =============

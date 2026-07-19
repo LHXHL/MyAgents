@@ -17,6 +17,37 @@ use std::path::{Path, PathBuf};
 use crate::utils::bom::strip_bom;
 use crate::utils::file_lock::{with_file_lock_blocking, FileLockError, FileLockOptions};
 
+fn normalize_theme_fields(config: &mut serde_json::Value) {
+    let Some(object) = config.as_object_mut() else {
+        return;
+    };
+
+    let current_mode = object
+        .get("appearanceMode")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| matches!(*value, "system" | "light" | "dark"));
+    let legacy_mode = object
+        .get("theme")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| matches!(*value, "system" | "light" | "dark"));
+    let appearance_mode = current_mode.or(legacy_mode).unwrap_or("system").to_owned();
+
+    let theme_id = object
+        .get("themeId")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("myagents-default")
+        .to_owned();
+
+    object.insert(
+        "appearanceMode".to_owned(),
+        serde_json::Value::String(appearance_mode),
+    );
+    object.insert("themeId".to_owned(), serde_json::Value::String(theme_id));
+    object.remove("theme");
+}
+
 fn read_config_json(config_path: &Path) -> Result<serde_json::Value, String> {
     if !config_path.exists() {
         return Ok(serde_json::json!({}));
@@ -126,8 +157,10 @@ where
         FileLockOptions::default(),
         move || -> Result<serde_json::Value, FileLockError> {
             let mut config = read_config_json(&config_path_owned).map_err(to_io_err)?;
+            normalize_theme_fields(&mut config);
             let before = config.clone();
             mutator(&mut config).map_err(to_io_err)?;
+            normalize_theme_fields(&mut config);
 
             if config == before {
                 return Ok(config);
@@ -242,4 +275,42 @@ pub async fn cmd_fsync_path(path: String, directory: bool) -> Result<(), String>
     })
     .await
     .map_err(|e| format!("[config-io] fsync task failed: {}", e))?
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::normalize_theme_fields;
+    use serde_json::json;
+
+    #[test]
+    fn migrates_legacy_theme_without_overwriting_other_fields() {
+        let mut config = json!({ "theme": "dark", "other": 42 });
+        normalize_theme_fields(&mut config);
+        assert_eq!(
+            config,
+            json!({
+                "themeId": "myagents-default",
+                "appearanceMode": "dark",
+                "other": 42
+            })
+        );
+    }
+
+    #[test]
+    fn current_fields_win_and_invalid_values_normalize() {
+        let mut current = json!({
+            "theme": "dark",
+            "themeId": " partner-theme ",
+            "appearanceMode": "light"
+        });
+        normalize_theme_fields(&mut current);
+        assert_eq!(current["appearanceMode"], "light");
+        assert_eq!(current["themeId"], "partner-theme");
+        assert!(current.get("theme").is_none());
+
+        let mut invalid = json!({ "theme": "sepia", "themeId": "" });
+        normalize_theme_fields(&mut invalid);
+        assert_eq!(invalid["appearanceMode"], "system");
+        assert_eq!(invalid["themeId"], "myagents-default");
+    }
 }

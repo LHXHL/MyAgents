@@ -81,6 +81,22 @@ describe('atomicModifyConfig — CONFIG_CHANGED_EVENT dispatch (issue #303)', ()
     expect(received.length).toBe(3);
     expect(received.every(d => d?.reason === 'atomicModifyConfig')).toBe(true);
   });
+
+  it.each(['light', 'dark', 'system'] as const)('heals legacy theme=%s on the next real locked-style write', async (legacyMode) => {
+    localStorage.setItem('myagents:config', JSON.stringify({ theme: legacyMode }));
+
+    const result = await atomicModifyConfig(config => ({
+      ...config,
+      defaultPermissionMode: 'plan',
+    }));
+
+    expect(result.appearanceMode).toBe(legacyMode);
+    expect(result.themeId).toBe('myagents-default');
+    const stored = JSON.parse(localStorage.getItem('myagents:config') ?? '{}') as Record<string, unknown>;
+    expect(stored.theme).toBeUndefined();
+    expect(stored.appearanceMode).toBe(legacyMode);
+    expect(stored.themeId).toBe('myagents-default');
+  });
 });
 
 describe('ensureManagedCodexProviderDevGateDefault', () => {
@@ -99,7 +115,9 @@ describe('ensureManagedCodexProviderDevGateDefault', () => {
     await ensureManagedCodexProviderDevGateDefault();
 
     const stored = JSON.parse(localStorage.getItem('myagents:config') ?? '{}') as Record<string, unknown>;
-    expect(stored.theme).toBe('dark');
+    expect(stored.theme).toBeUndefined();
+    expect(stored.themeId).toBe('myagents-default');
+    expect(stored.appearanceMode).toBe('dark');
     expect(stored.managedCodexProviderDevGate).toBe(true);
     expect(stored.defaultPermissionMode).toBeUndefined();
   });
@@ -114,5 +132,10 @@ describe('ensureManagedCodexProviderDevGateDefault', () => {
 
     const stored = JSON.parse(localStorage.getItem('myagents:config') ?? '{}') as Record<string, unknown>;
     expect(stored.managedCodexProviderDevGate).toBe(false);
+    // No write occurs when the explicit flag already exists, so disk healing
+    // correctly waits for the next real config mutation.
+    expect(stored.theme).toBe('dark');
+    expect(stored.themeId).toBeUndefined();
+    expect(stored.appearanceMode).toBeUndefined();
   });
 });

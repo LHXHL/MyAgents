@@ -53,6 +53,7 @@ import {
   type ProviderRoute,
 } from '../../shared/providerRoute';
 import { resolveSessionConfig } from './resolve-session-config';
+import { normalizeThemeConfigRecord } from '../../shared/theme';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -103,6 +104,8 @@ export class ProjectsBusyError extends Error {
 
 /** Lightweight AppConfig subset used by admin operations */
 export interface AdminAppConfig {
+  themeId?: string;
+  appearanceMode?: 'system' | 'light' | 'dark';
   // MCP
   mcpServers?: McpServerDefinition[];
   mcpEnabledServers?: string[];
@@ -184,11 +187,13 @@ export interface ProjectSlim {
 export function loadConfig(): AdminAppConfig {
   const configPath = getConfigPath();
   if (!existsSync(configPath)) {
-    return {};
+    return normalizeThemeConfigRecord({}) as AdminAppConfig;
   }
   try {
     const raw = readFileSync(configPath, 'utf-8');
-    const config = JSON.parse(stripBom(raw)) as AdminAppConfig;
+    const config = normalizeThemeConfigRecord(
+      JSON.parse(stripBom(raw)) as AdminAppConfig,
+    ) as AdminAppConfig;
     // Keep Admin API/CLI reads aligned with renderer and Rust IM config
     // readers: legacy Agent-only HTTP/SSE definitions are part of the MCP
     // catalogue until the user explicitly removes or disables them.
@@ -200,13 +205,15 @@ export function loadConfig(): AdminAppConfig {
     if (existsSync(bakPath)) {
       try {
         console.warn('[admin-config] config.json parse failed, falling back to .bak');
-        const config = JSON.parse(stripBom(readFileSync(bakPath, 'utf-8'))) as AdminAppConfig;
+        const config = normalizeThemeConfigRecord(
+          JSON.parse(stripBom(readFileSync(bakPath, 'utf-8'))) as AdminAppConfig,
+        ) as AdminAppConfig;
         promoteAgentMcpJsonToGlobal(config);
         return config;
       } catch { /* bak also corrupt */ }
     }
     console.error('[admin-config] config.json and .bak both unreadable, returning empty config');
-    return {};
+    return normalizeThemeConfigRecord({}) as AdminAppConfig;
   }
 }
 
@@ -242,7 +249,9 @@ export async function withConfigLock(
       async () => {
         const config = loadConfig();
         const before = JSON.stringify(config);
-        const modified = await modifier(config);
+        const modified = normalizeThemeConfigRecord(
+          await modifier(config),
+        ) as AdminAppConfig;
 
         if (JSON.stringify(modified) === before) {
           return modified;

@@ -562,7 +562,7 @@ PTY master read → emit('terminal:data:{id}') → xterm.write → 屏幕渲染
 - 终端绑定 Tab 生命周期，面板关闭不杀进程
 - 环境注入：内置 Node.js + `~/.myagents/bin` + `MYAGENTS_PORT` + `TERM=xterm-256color`
 - Shell 以 login shell（`-l`）启动
-- 主题：日间 / 夜间双主题自动切换（MutationObserver 监听 `<html>.dark`）
+- 视觉：从全局 `ResolvedTheme.adapters.xterm` 读取 palette / 字体 / 字号；scheme 变化只原位更新 xterm options，不重建 PTY 或 buffer
 
 PTY 进程由 `portable-pty` 管理，**不走** `process_cmd`。
 
@@ -784,6 +784,37 @@ Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能�
 
 ---
 
+### 21. Theme System (`src/shared/theme.ts` + `src/renderer/theme/`)
+
+Theme 是 renderer 视觉语言的应用级唯一 owner；`AppearanceMode` 只是用户的明暗偏好，两者正交：
+
+- `themeId`：完整 Theme 身份，当前 production registry 仅 `myagents-default`；
+- `appearanceMode`：`system | light | dark`；
+- `resolvedColorScheme`：每个 Webview 此刻解析出的 `light | dark`。
+
+`ThemeRegistry` 校验一个 Theme 同时具备 light/dark、精确 Theme root / scheme root 下的 required CSS Token、Launcher Hero 和 xterm / Monaco / Mermaid / Prism / Widget adapters；Token 解析 Theme 内 `var(...)` 后按实际消费属性校验，Widget 值必须是 iframe 可直接消费且属性语法有效的 literal，stylesheet 与 Hero 资源禁止远程 URL。无效可选包在注册边界被拒绝且不阻断 canonical Theme，未知 ID 整套回退 default，不做逐字段拼接。组件只能 import `@/theme` 公共入口，`.dependency-cruiser.cjs::theme-consumers-public-api-only` 禁止生产 consumer 直引 concrete Theme。
+
+配置读取边界由 `normalizeThemeConfigRecord()` 把旧 `theme` 无损迁移为 `appearanceMode`，缺失 `themeId` 补 `myagents-default`；读取只做内存归一，下一次真实的 config-lock 写入清掉 legacy 字段。Settings 仍经 `ConfigProvider.updateConfig()` 写 `appearanceMode`。
+
+启动与窗口数据流：
+
+```text
+versioned localStorage snapshot（仅 themeId + appearanceMode）
+  → index.html 在 React 前应用 html[data-theme-id][data-color-scheme] + .dark
+  → durable AppConfig 加载后 ConfiguredThemeRuntime 校正并刷新 snapshot
+  → ThemeRuntime 激活已校验的实际 stylesheet + ResolvedTheme Context + root CSS Token selector
+  → CSS surface / Launcher / xterm / Monaco / Mermaid / Prism / Widget
+  → Tauri theme:selection-changed → FloatingThemeRuntime 即时重解析
+```
+
+浮球 Webview 保持轻量 tree，不挂完整 `ConfigProvider`：先用 snapshot 保证首帧，随后先完成精简事件 listener 注册、再异步读 durable config；hydration 期间收到的 live event 具有更高 freshness，旧磁盘结果不能反向覆盖。`system` 由每个 Webview 的 `useSyncExternalStore(matchMedia)` 订阅；`.dark` 只是 Tailwind 兼容投影，不再是 React consumer 的反向状态源。
+
+Space 的 `[data-ui-theme="space-mono"]` 是明确排除的 scoped visual language，继续覆盖共享 root Token；本 Theme System 不把它注册为 Theme，也不改变 portal scope 传播。
+
+详见 `tech_docs/theme_system.md`。
+
+---
+
 ## Pit-of-Success 索引
 
 每个模块在 helper 层把"正确路径"做成默认。完整 Problem / Surface / Invariants / Don't 见 `tech_docs/pit_of_success.md`。
@@ -797,6 +828,7 @@ Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能�
 | `tauri::async_runtime::spawn` + clippy ban | Rust | 防 macOS startup-abort（`tokio::spawn` 跨 FFI 不能 unwind） |
 | Session watcher | Rust | 文件系统观察索引（写入路径解耦） |
 | `withConfigLock` / `with_config_lock` | Node + Rust + renderer | `config.json` 跨进程串行写入 |
+| `ThemeRegistry` + `ThemeRuntimeProvider` | renderer | 完整 Theme 校验、整套解析、root/context/跨窗口一致投影 |
 | `withFileLock` / `with_file_lock` | Node + Rust | 单写者文件原子性 |
 | `killWithEscalation` | Node | 子进程 stop SIGTERM → SIGKILL → orphan 升级链 |
 | `withAbortSignal` / `cancellableFetch` | Node | 统一 cancel 协议（fetch / stream / process） |
@@ -1015,6 +1047,7 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 ### 前端
 - [设计系统](./DESIGN.md) — Token / 组件 / 页面规范
+- [Theme System](./tech_docs/theme_system.md) — Theme/Appearance 状态、注册契约、Token/adapter owner、bootstrap 与跨窗口同步
 - [React 稳定性规范](./tech_docs/react_stability_rules.md) — Context / useEffect / memo 5 条规则
 - [UI 国际化架构](./tech_docs/i18n_architecture.md) — `uiLanguage`、i18next resources、native tray language mirror、增加新语言流程
 

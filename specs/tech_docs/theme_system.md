@@ -1,0 +1,189 @@
+# Theme System
+
+> PRD 0.3.2 的落地架构。修改 Theme、外观模式、Launcher Hero、宿主 CSS Token、xterm、Monaco、Mermaid、Prism、Widget iframe 或 Floating Ball 视觉前必须阅读。
+
+## 1. 领域模型与 owner
+
+三个概念必须保持正交：
+
+| 概念 | 类型 | Owner | 含义 |
+|---|---|---|---|
+| Theme | `ThemeId` / `ThemeDefinition` | renderer production registry | 一套完整视觉语言 |
+| 外观偏好 | `AppearanceMode` | durable `AppConfig.appearanceMode` | `system / light / dark` |
+| 已解析明暗 | `ResolvedColorScheme` | 每个 Webview 的 Theme runtime | 当前实际使用的 `light / dark` |
+
+当前 production registry 只注册 `myagents-default`。不得把 light/dark 拆成两个 Theme，也不得重新用 `theme` 字段表达 appearance。
+
+目录：
+
+```text
+src/shared/theme.ts                         纯类型、默认值、配置迁移、scheme resolve
+src/renderer/theme/index.ts                 consumer 唯一公共入口
+src/renderer/theme/types.ts                 Definition / ResolvedTheme / adapter 契约
+src/renderer/theme/registry-contract.ts     required Token / xterm / Mermaid / Widget 契约清单
+src/renderer/theme/registry.ts              校验、注册、整套 resolve/fallback
+src/renderer/theme/bootstrap.ts             非敏感、带版本的首帧快照
+src/renderer/theme/ThemeRuntime.tsx          root/context/system/跨窗口 owner
+src/renderer/theme/themes/myagents-default.* canonical manifest + CSS
+```
+
+`.dependency-cruiser.cjs::theme-consumers-public-api-only` 强制 Theme 目录外的 production consumer 只能 import `@/theme`，不能直引 default manifest、CSS 或 registry 私有实现。
+
+## 2. 配置与迁移
+
+归一形态：
+
+```ts
+interface AppConfig {
+  themeId: string;
+  appearanceMode: 'system' | 'light' | 'dark';
+}
+```
+
+`src/shared/theme.ts::normalizeThemeConfigRecord()` 是 TypeScript 读取边界的共同语义：
+
+1. 有效 `appearanceMode` 优先；否则读取 legacy `theme`；无效值归一为 `system`。
+2. 缺失/空 `themeId` 补 `myagents-default`；未知但非空 ID 保留给 renderer registry 做整套回退。
+3. 内存结果删除 legacy `theme`。
+4. load 不主动写盘；下一次真实写入由 renderer/Node/Rust 各自的 config lock 路径发布归一结果。
+
+Renderer `loadAppConfig()`、Node `admin-config.ts` 和 Rust `config_io.rs` 必须保持上述规则一致。Settings 只调用 `ConfigProvider.updateConfig({ appearanceMode })`；禁止直接写 localStorage 或用 React stale config 覆盖磁盘。
+
+## 3. ThemeDefinition 完整契约
+
+每个 Theme 是一个共置 package：一个 TypeScript manifest、一个 CSS 文件，以及可选的 Vite/Tauri build-bundled assets。manifest 必须同时提供：
+
+- 稳定 ID 与内部描述；
+- 共置且由 manifest 实际导入的 stylesheet source；其中声明 `REQUIRED_THEME_CSS_TOKENS` 全集；
+- light/dark 两套完整 scheme；
+- Launcher Hero：产品名、zh-CN/en-US slogan、每 scheme 背景 asset/position/size/repeat/mask；
+- xterm：ANSI palette、cursor/selection、font family/size/line height；颜色值只使用 xterm
+  `css.toColor()` 在所有环境都稳定支持的 `#rgb[a]` / `#rrggbb[aa]` / 逗号式 `rgb(a)` 子集，
+  透明色不得依赖 Canvas fallback；
+- Monaco：冲突安全 name、完整 theme data、font family/size/line height；
+- Mermaid：base theme、fontFamily，以及 `primaryColor` / `primaryTextColor` /
+  `primaryBorderColor` / `lineColor` / `secondaryColor` / `tertiaryColor` 六个核心颜色变量；
+- Prism：完整 syntax style；Theme 内部属性值统一为 string，让 registry 直接按 CSS declaration
+  语义校验，不在 Theme System 中复制 React 的数值单位规则；第三方 palette 的旧 vendor/错误键
+  只在 concrete Theme 导入边界清洗；
+- Widget：`REQUIRED_WIDGET_CSS_VARIABLES` 全集。
+
+canonical Theme 为 React 前首帧兜底可静态导入 CSS；可选 Theme 只能用 `?inline` 把同一份 CSS 源码交给 registry 校验并由 runtime 激活，禁止在注册校验前产生 stylesheet side effect。
+
+`ThemeRegistry` 直接校验同一份实际打包的 stylesheet source：required Token 只能来自精确的 `html[data-theme-id='<id>']` Theme root 或两个精确 scheme root，descendant、不可达 at-rule 与空/CSS-wide 值不能冒充 root 声明；Token 在解析同 Theme `var(...)` 依赖后还必须满足实际消费属性的 CSS 语法。注册时还拒绝重复/非法 ID、缺 Hero selector、缺 scheme/Hero/adapter、空或属性值无效的 Prism、残缺/非 iframe literal/属性语法无效的 Widget variable、无效字体/数值，以及 stylesheet/Hero 中的远程资源；不得用另一份 token 名称元数据代替 CSS 事实。无效的可选包被拒绝但不阻断 canonical registry；未知配置 ID 只记录一次不含秘密的 warning，并把 Definition、CSS root ID、Hero 和全部 adapters **整套**切到 `myagents-default`。pre-React 阶段由默认 Theme 的通用 scheme selector 提供完整视觉兜底，禁止出现无 Token root 或逐字段继承形成混合 Theme。
+
+背景 asset 只能是构建打包的 `self` 资源。不得加载远程字体/背景、用户 CSS/JS 或扩大 CSP/asset protocol scope。
+
+## 4. CSS Token owner
+
+`myagents-default.css` 拥有当前视觉数值，公共字体/utility 值在精确 Theme root，明暗值在两个精确 scheme root：
+
+```css
+html[data-theme-id='myagents-default'] { ... }
+html[data-theme-id='myagents-default'][data-color-scheme='light'] { ... }
+html[data-theme-id='myagents-default'][data-color-scheme='dark'] { ... }
+```
+
+Token 组：
+
+- 字体：body/display/code 与 Tailwind aliases；
+- Ink/Paper 及同色 0-alpha 渐变端点；
+- Accent、Heartbeat、Success/Error/Warning/Info；
+- Button、Border、Focus、Toggle；
+- Radius、Shadow、工具/动作局部 shadow；
+- Code、Animation；
+- body background/texture/blend；
+- Floating Ball 全部 `--fb-*`；
+- Launcher Hero title/slogan selector。
+
+`index.css` 只保留 Type Scale、布局/交互结构、使用语义 Token 的通用 selector，以及明确排除的 Space scope。新增会随完整 Theme 改变的颜色、字体、材质、阴影或圆角，必须先进入 Theme contract/default package，不能落回组件常量。
+
+## 5. Runtime 与首帧
+
+### 5.1 主窗口
+
+`ConfigProvider → ConfiguredThemeRuntime → App`。Config 尚未加载时，runtime 保留 bootstrap snapshot；durable config 就绪后才校正选择，避免先闪 default light。
+
+runtime 一次 resolve 后同步投影：
+
+- 通过 `useInsertionEffect` 激活 Definition 中已校验的实际 stylesheet source；canonical CSS 仍静态导入以保护 React 前首帧；
+- `<html data-theme-id data-color-scheme>`；
+- `.dark`（只为 Tailwind `dark:` 兼容）；
+- `style.colorScheme`；
+- stable `ResolvedTheme` React context；
+- versioned localStorage snapshot；
+- Tauri `theme:selection-changed` 精简事件。
+
+`system` 用 `useSyncExternalStore` 订阅 `prefers-color-scheme`。Terminal、Monaco、Mermaid、Widget 等禁止观察 DOM class 反推状态。
+
+### 5.2 pre-React bootstrap
+
+`index.html` 只读取 `myagents:theme-bootstrap`：
+
+```json
+{ "version": 1, "themeId": "myagents-default", "appearanceMode": "system" }
+```
+
+快照不得包含 AppConfig、API key 或 MCP env。新快照不存在时可一次读取 legacy localStorage `theme`；durable runtime 第一次发布后删除 legacy key。快照损坏/版本不支持时首帧回退 default + system，应用不能因此阻断。
+
+runtime 写入的是 registry 已解析的 Theme ID；因此未知 durable ID 的下一次冷启动也直接得到 canonical fallback，而不是无 Token 的空白 root。
+
+### 5.3 Floating Ball Webviews
+
+`fb-ball / fb-companion / fb-shield` 各自挂轻量 `FloatingThemeRuntime`，不挂完整 ConfigProvider：
+
+1. 同步读取 bootstrap snapshot；
+2. 先注册 `theme:selection-changed` listener，再异步 `loadAppConfig()` 自校正；
+3. hydration 期间收到的 live event 具有更高 freshness，旧 hydration 结果不得反向覆盖；
+4. 各自订阅 OS scheme。
+
+事件 payload 只能含 `themeId + appearanceMode`。主窗口与浮窗不得通过 Sidecar/HTTP/SSE 同步 Theme。
+
+## 6. 消费者不变量
+
+| Surface | 正确消费方式 | 切换约束 |
+|---|---|---|
+| Launcher | `ResolvedTheme.hero` + Theme CSS selector | 不硬编码产品名/slogan；背景不改变布局 |
+| CSS host / Floating Ball | root semantic Token | `.dark` 不是状态源 |
+| xterm | `adapters.xterm` | 原位改 options；不重建 Terminal/PTY/buffer |
+| Monaco | `adapters.monaco` | define 冲突安全名称并 `setTheme`；不换 model/editor |
+| Mermaid | `adapters.mermaid` | Theme key 变化重渲染；保留 strict/timeout/last-valid |
+| Prism | `adapters.prism` | CodeBlock、Mermaid code、Bash/FilePatch 派生同一 palette |
+| Widget | `adapters.widget` 的 scheme literal → `widget:theme` | 禁止 render 时读宿主 computed style；只 postMessage CSS，不替换 iframe/srcdoc/内容 |
+
+## 7. Space 与非 Theme 内容
+
+Space 的 `[data-ui-theme="space-mono"]` / `.dark [data-ui-theme="space-mono"]` 和 Popover portal scope 保持独立，不进入 registry、required Token 验收或 synthetic Theme 贯通。搬动 root Token 时必须做 light/dark sanity，不能改变 Space computed style。
+
+全量视觉字面量审计中的合法非 Theme 类别：
+
+- QR 黑白模块、第三方平台品牌色与 Logo；
+- Markdown clipboard 导出 HTML 的自包含颜色（目标是外部文档，不是宿主 UI）；
+- AppErrorBoundary 在 Theme CSS 整体失败时的应急 fallback；
+- selection/fade/mask 的纯 alpha 几何；
+- 用户内容、宠物图像、Browser 子 Webview 网页；
+- 布局尺寸、z-index、业务交互与组件状态。
+
+## 8. 新增完整 Theme checklist
+
+1. 在 `src/renderer/theme/themes/<id>/` 共置 manifest、CSS、bundled assets；manifest 导入同一 CSS source，runtime 会直接激活它，不能只靠 entry 的全局 import。
+2. 明确复制并重新设计全部 required Token；不要通过 spread default Theme 补缺项。
+3. 同时设计 light/dark；校验 Windows CJK generic 只在完整字体链末尾。
+4. 提供 Hero 两种语言、两个 scheme 的 self/bundled 背景槽与全部五类 adapter；Widget variable 全部给 iframe-ready literal，禁止宿主 `var(...)`。
+5. 只在 production registry 注册 definition；consumer 不做任何 Theme ID 分支。
+6. 补 registry DOM contract、runtime DOM 与所有 adapter component tests。
+7. 跑 light/dark 全场景视觉矩阵、system 冷启动、主/浮窗 live update、Space sanity。
+8. 在 macOS WebKit 与 Windows WebView2 实测字体、透明窗、Monaco/xterm。
+9. 确认 production bundle 没有 test fixture/asset，CSP/asset scope 未扩大。
+
+## 9. 自动化护栏
+
+- shared unit：appearance resolve、legacy migration、幂等；
+- registry DOM contract：用与 production 相同的 CSS declaration parser 验证完整 synthetic Theme、属性语法、重复/缺项拒绝和未知 ID 整套回退；
+- runtime DOM：root attributes、`.dark`、system media、context/snapshot；
+- component DOM：Hero、xterm、Monaco、Mermaid、Prism、Widget 原位更新；
+- floating DOM：snapshot → durable config → Tauri live event；
+- architecture unit + dependency-cruiser：禁止 consumer 直引 internals、禁止本地 palette/MutationObserver 回流；
+- build smoke：production registry 只有 `myagents-default`，bundle 不含 `synthetic-test-theme`。
+
+发布前仍必须完成 PRD 0.3.2 要求的视觉截图矩阵、browser dev、macOS/Windows 实机门槛；自动化不能替代真实渲染验证。
