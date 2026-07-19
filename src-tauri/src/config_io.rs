@@ -17,6 +17,19 @@ use std::path::{Path, PathBuf};
 use crate::utils::bom::strip_bom;
 use crate::utils::file_lock::{with_file_lock_blocking, FileLockError, FileLockOptions};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ThemeBootstrapSelection {
+    pub appearance_mode: String,
+}
+
+impl Default for ThemeBootstrapSelection {
+    fn default() -> Self {
+        Self {
+            appearance_mode: "system".to_owned(),
+        }
+    }
+}
+
 fn normalize_theme_fields(config: &mut serde_json::Value) {
     let Some(object) = config.as_object_mut() else {
         return;
@@ -60,6 +73,21 @@ fn read_config_json(config_path: &Path) -> Result<serde_json::Value, String> {
     // at line 1 column 1" and the caller would fall back to .bak (issue #170 #6).
     serde_json::from_str(strip_bom(&content))
         .map_err(|e| format!("[config-io] Cannot parse config.json: {}", e))
+}
+
+/// Read only the non-sensitive Theme selection needed before the main WebView
+/// exists. This follows the same in-memory normalization as every config write,
+/// but deliberately does not heal disk on the read boundary.
+pub fn read_theme_bootstrap_selection(config_path: &Path) -> ThemeBootstrapSelection {
+    let mut config = read_config_json(config_path).unwrap_or_else(|_| serde_json::json!({}));
+    normalize_theme_fields(&mut config);
+    ThemeBootstrapSelection {
+        appearance_mode: config
+            .get("appearanceMode")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("system")
+            .to_owned(),
+    }
 }
 
 fn write_all_synced(path: &Path, content: &str) -> Result<(), String> {
@@ -279,8 +307,9 @@ pub async fn cmd_fsync_path(path: String, directory: bool) -> Result<(), String>
 
 #[cfg(test)]
 mod theme_tests {
-    use super::normalize_theme_fields;
+    use super::{normalize_theme_fields, read_theme_bootstrap_selection};
     use serde_json::json;
+    use std::fs;
 
     #[test]
     fn migrates_legacy_theme_without_overwriting_other_fields() {
@@ -312,5 +341,18 @@ mod theme_tests {
         normalize_theme_fields(&mut invalid);
         assert_eq!(invalid["appearanceMode"], "system");
         assert_eq!(invalid["themeId"], "myagents-default");
+    }
+
+    #[test]
+    fn bootstrap_read_normalizes_without_mutating_disk() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.json");
+        let original = r#"{"theme":"dark","themeId":" partner-theme "}"#;
+        fs::write(&path, original).expect("write config");
+
+        let selection = read_theme_bootstrap_selection(&path);
+
+        assert_eq!(selection.appearance_mode, "dark");
+        assert_eq!(fs::read_to_string(path).expect("read config"), original);
     }
 }

@@ -128,6 +128,26 @@ runtime 一次 resolve 后同步投影：
 
 runtime 写入的是 registry 已解析的 Theme ID；因此未知 durable ID 的下一次冷启动也直接得到 canonical fallback，而不是无 Token 的空白 root。
 
+Tauri 主窗口还存在一个早于 `index.html` 的原生空白 surface。Rust 在创建主窗口前只读取
+`config.json` 中归一后的非敏感 `appearanceMode`，不在读取边界写盘；随后：
+
+1. 先隐藏构建窗口，把 canonical Theme 的 `--paper` 投影为原生 Webview background；
+2. `system` 模式从 native window theme 解析首帧明暗，显式 light/dark 直接使用 durable 选择；
+3. 用 initialization script 在 HTML 解析前对齐同一个 versioned localStorage snapshot；Theme ID
+   保留 renderer registry 上次发布的 resolved ID，无有效快照时使用 canonical default，Rust 不用
+   未经 registry 验证的 durable Theme ID 覆盖它；
+4. 原生 background、bootstrap snapshot 就绪后再同步显示窗口，之后由 renderer runtime 接管完整 Theme。
+
+Tauri initialization script 会在 reload 时再次执行，因此每次 native process 生成唯一 run ID；同一
+Webview reload 发现该 ID 已完成对齐后必须保留 ThemeRuntime 发布的更新快照，新 native process 才
+重新用 disk appearance 对齐。损坏 snapshot 的解析单独 fail-soft，不能跳过 canonical fallback 与
+durable appearance 写入。
+
+该 native bridge 不是第二个 Theme owner：Rust 不复制 palette、材质或 adapter，只投影一个避免
+Webview ready 前反色闪帧的平面 `--paper` 值；Rust unit test 从 canonical Theme CSS 解析两个
+scheme 的实际 `--paper` 并与 native `Color` 比对，防止跨语言投影静默漂移。启动读取失败时回退
+default + system，不能阻断窗口创建。
+
 ### 5.3 Floating Ball Webviews
 
 `fb-ball / fb-companion / fb-shield` 各自挂轻量 `FloatingThemeRuntime`，不挂完整 ConfigProvider：

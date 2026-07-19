@@ -799,7 +799,10 @@ Theme 是 renderer 视觉语言的应用级唯一 owner；`AppearanceMode` 只�
 启动与窗口数据流：
 
 ```text
-versioned localStorage snapshot（仅 themeId + appearanceMode）
+Rust 读取归一后的非敏感 disk appearance
+  → 隐藏构建主窗口 + native canonical --paper 首帧投影
+  → one-shot initialization script 对齐 versioned localStorage snapshot
+    （Theme ID 只保留 renderer registry 已解析值；同进程 reload 不覆盖新快照）
   → index.html 在 React 前应用 html[data-theme-id][data-color-scheme] + .dark
   → durable AppConfig 加载后 ConfiguredThemeRuntime 校正并刷新 snapshot
   → ThemeRuntime 激活已校验的实际 stylesheet + ResolvedTheme Context + root CSS Token selector
