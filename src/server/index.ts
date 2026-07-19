@@ -88,8 +88,9 @@ import {
 } from '../shared/slashCommands';
 import { sanitizeFolderName, isWindowsReservedName } from '../shared/utils';
 import {
-  isRequiredMemorySystemSkill,
-  type RequiredMemorySystemSkill,
+  isRequiredSystemSkill,
+  type RequiredSystemSkill,
+  withoutRequiredSystemSkills,
 } from '../shared/systemSkills';
 import { resolveSkillUrl, type ResolvedSkillSource } from './skills/url-resolver';
 import { fetchSkillZip, TarballFetchError } from './skills/tarball-fetcher';
@@ -1115,7 +1116,7 @@ function createTaskDispatchGuard(
   return guard;
 }
 
-function requiredMemorySystemSkill(managedKind: string | undefined): RequiredMemorySystemSkill | undefined {
+function requiredMemorySystemSkill(managedKind: string | undefined): RequiredSystemSkill | undefined {
   switch (managedKind) {
     case 'memory_auto_update_batch': return 'myagents-memory-update';
     case 'memory_gardener': return 'myagents-memory-gardener';
@@ -1130,7 +1131,7 @@ function requiredMemorySystemSkill(managedKind: string | undefined): RequiredMem
  * but before any model sees the managed prompt.
  */
 function createRequiredSystemSkillDispatchGuard(
-  skillName: RequiredMemorySystemSkill,
+  skillName: RequiredSystemSkill,
   workspacePath: string,
   preceding?: import('./session-core/turn-queue').DispatchGuard,
 ): import('./session-core/turn-queue').DispatchGuard {
@@ -1268,13 +1269,11 @@ function readSkillsConfig(): SkillsConfig {
       const raw = JSON.parse(readFileSync(configPath, 'utf-8'));
       return {
         seeded: Array.isArray(raw?.seeded) ? raw.seeded : defaults.seeded,
-        // Managed memory workflows depend on these official contracts. Heal
-        // historical disabled entries at read time so they remain exposed;
-        // the toggle route also rejects future disable attempts.
+        // Required product contracts remain exposed even if an older config
+        // contains stale disabled entries. The toggle route rejects new
+        // attempts and writes canonicalize the persisted list.
         disabled: Array.isArray(raw?.disabled)
-          ? raw.disabled.filter((name: unknown): name is string => (
-              typeof name === 'string' && !isRequiredMemorySystemSkill(name)
-            ))
+          ? withoutRequiredSystemSkills(raw.disabled)
           : defaults.disabled,
         generation: typeof raw?.generation === 'number' ? raw.generation : 0,
       };
@@ -1290,6 +1289,7 @@ function writeSkillsConfig(config: SkillsConfig): void {
   try {
     const dir = dirname(configPath);
     ensureDirSync(dir);
+    config.disabled = withoutRequiredSystemSkills(config.disabled);
     // Auto-increment generation on every write — signals Tab Sidecars to re-sync symlinks
     config.generation = (config.generation || 0) + 1;
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8');
@@ -5630,7 +5630,9 @@ async function main() {
             path: string;
             folderName: string;
             author?: string;
-            enabled?: boolean;
+            systemOwned: boolean;
+            required: boolean;
+            enabled: boolean;
           }> = [];
 
           const scanSkills = (dir: string, scopeType: 'user' | 'project') => {
@@ -5646,6 +5648,8 @@ async function main() {
 
                 const content = readFileSync(skillMdPath, 'utf-8');
                 const { name, description, author } = parseSkillFrontmatter(content);
+                const systemOwned = scopeType === 'user' && SYSTEM_SKILLS.includes(folder.name);
+                const required = scopeType === 'user' && isRequiredSystemSkill(folder.name);
                 skills.push({
                   name: name || folder.name,
                   description: description || '',
@@ -5653,10 +5657,11 @@ async function main() {
                   path: skillMdPath,
                   folderName: folder.name,
                   author,
+                  systemOwned,
+                  required,
                   enabled: scopeType === 'project'
-                    ? true
-                    : isRequiredMemorySystemSkill(folder.name)
-                      || !skillsConfigForList.disabled.includes(folder.name),
+                    || required
+                    || !skillsConfigForList.disabled.includes(folder.name),
                 });
               }
             } catch (scanError) {
@@ -5690,10 +5695,13 @@ async function main() {
           if (!folderName || typeof folderName !== 'string') {
             return jsonResponse({ success: false, error: 'Invalid folderName' }, 400);
           }
-          if (!enabled && isRequiredMemorySystemSkill(folderName)) {
+          if (typeof enabled !== 'boolean') {
+            return jsonResponse({ success: false, error: 'Invalid enabled state' }, 400);
+          }
+          if (!enabled && isRequiredSystemSkill(folderName)) {
             return jsonResponse({
               success: false,
-              error: `${folderName} is required by MyAgents managed memory workflows and cannot be disabled`,
+              error: `${folderName} is a required MyAgents system skill and cannot be disabled`,
             }, 409);
           }
           const config = readSkillsConfig();

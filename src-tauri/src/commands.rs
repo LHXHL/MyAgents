@@ -1206,7 +1206,7 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "35";
+const SYSTEM_SKILLS_VERSION: &str = "36";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1589,8 +1589,8 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v35_adds_myagents_docs_and_preserves_v34_contracts() {
-        assert_eq!(SYSTEM_SKILLS_VERSION, "35");
+    fn v36_updates_memory_prompt_and_preserves_v35_contracts() {
+        assert_eq!(SYSTEM_SKILLS_VERSION, "36");
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
         assert!(bundled.contains("myagents space list --json"));
         assert!(bundled.contains("myagents space whoami --space <slug> --json"));
@@ -1604,7 +1604,13 @@ mod system_skills_tests {
         assert!(memory_update
             .contains("仅当系统或用户明确指定完整名称 `myagents-memory-update` 时使用"));
         assert!(memory_update.contains("不要根据任务语义或相似表述自行触发"));
-        assert!(memory_update.contains("commit 并成功 push"));
+        assert!(memory_update.contains("错误的长期记忆通常比暂时缺失更有害"));
+        assert!(memory_update.contains("无法说明未来判断或行动差异的信息，不写"));
+        assert!(memory_update.contains("不置可否、忽略、换话题、未纠正或简单接受"));
+        assert!(memory_update.contains("明确限定为“本次/这次/单次”"));
+        assert!(memory_update.contains("不从已有 topic 名称或工作区结构猜测事件归属"));
+        assert!(memory_update.contains("不要落盘“未升级偏好”"));
+        assert!(memory_update.contains("commit 后 push 当前分支"));
         assert!(SYSTEM_SKILLS.contains(&"myagents-memory-update"));
 
         let product_docs = include_str!("../../bundled-skills/myagents-docs/SKILL.md");
