@@ -56,7 +56,7 @@ describe('ThemeRegistry', () => {
         "html[data-theme-id='synthetic-test-theme'] .descendant {",
       ),
     } as ThemeDefinition;
-    expect(() => validateThemeDefinition(descendantTokens)).toThrow('missing CSS tokens');
+    expect(() => validateThemeDefinition(descendantTokens)).toThrow('unsupported or unscoped selector');
 
     const whitespaceDescendantTokens = {
       ...syntheticTheme,
@@ -65,7 +65,7 @@ describe('ThemeRegistry', () => {
         "html [data-theme-id='synthetic-test-theme'] {",
       ),
     } as ThemeDefinition;
-    expect(() => validateThemeDefinition(whitespaceDescendantTokens)).toThrow('missing CSS tokens');
+    expect(() => validateThemeDefinition(whitespaceDescendantTokens)).toThrow('unsupported or unscoped selector');
 
     const escapedTypeSelector = {
       ...syntheticTheme,
@@ -74,7 +74,7 @@ describe('ThemeRegistry', () => {
         "html\\[data-theme-id='synthetic-test-theme'] {",
       ),
     } as ThemeDefinition;
-    expect(() => validateThemeDefinition(escapedTypeSelector)).toThrow('unexpected selectors');
+    expect(() => validateThemeDefinition(escapedTypeSelector)).toThrow('unsupported or unscoped selector');
 
     const spacedAttributeSyntax = {
       ...syntheticTheme,
@@ -92,19 +92,145 @@ describe('ThemeRegistry', () => {
         "html[data-theme-id='synthetic-test-theme'], :unknown-pseudo {",
       ),
     } as ThemeDefinition;
-    expect(() => validateThemeDefinition(invalidCompanionSelector)).toThrow('unexpected selectors');
+    expect(() => validateThemeDefinition(invalidCompanionSelector)).toThrow('unsupported or unscoped selector');
+
+    const optionalGlobalFallback = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\n:root { --paper: red !important; }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(optionalGlobalFallback)).toThrow('reserved for the canonical paired fallback');
+
+    const nestedOptionalSchemeFallback = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\n@media (min-width: 1px) { html[data-color-scheme='dark'] { --paper: red; } }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(nestedOptionalSchemeFallback)).toThrow('reserved for the canonical paired fallback');
+
+    const nestedOptionalSchemeDescendant = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\n@supports (display: grid) { html[data-color-scheme='dark'] body { color: red; } }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(nestedOptionalSchemeDescendant)).toThrow('unsupported or unscoped selector');
+
+    const conditionallyScopedRoot = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\n@media (min-width: 999999px) { html[data-theme-id='synthetic-test-theme'] { --ink: red; } }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(conditionallyScopedRoot)).toThrow('conditional rules may only target scoped Hero selectors');
+
+    const conditionallyHiddenPackage = {
+      ...syntheticTheme,
+      stylesheetText: `@media (min-width: 999999px) { ${syntheticTheme.stylesheetText} }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(conditionallyHiddenPackage)).toThrow('conditional rules may only target scoped Hero selectors');
+
+    const globalPropertyRegistration = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\n@property --ink { syntax: "<color>"; inherits: false; initial-value: red; }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(globalPropertyRegistration)).toThrow('unsupported at-rule');
+
+    const rawTailwindTheme = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\n@theme { --shadow-sm: 0 0 1px red; }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(rawTailwindTheme)).toThrow('unsupported at-rule');
+
+    const escapedTailwindTheme = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\n@th\\65me { --shadow-sm: 0 0 1px red; }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(escapedTailwindTheme)).toThrow('unsupported at-rule');
+
+    const semicolonSelectorBypass = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\n@media screen; :root { --paper: red; }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(semicolonSelectorBypass)).toThrow('unsupported top-level statement');
+
+    const semicolonPropertyBypass = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\n@media screen; @property --ink { syntax: "<color>"; inherits: false; initial-value: red; }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(semicolonPropertyBypass)).toThrow('unsupported top-level statement');
+
+    const trailingAtRuleStatement = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\n@layer theme-order;`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(trailingAtRuleStatement)).toThrow('unsupported top-level statement');
+
+    const trailingGarbage = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\nnot-a-css-rule`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(trailingGarbage)).toThrow('unsupported trailing content');
+
+    const nestedSemicolonAtRule = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\n@media screen { html[data-theme-id='synthetic-test-theme'] .theme-launcher-hero-title { font-size: 2rem; } @layer nested-order; }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(nestedSemicolonAtRule)).toThrow('unsupported at-rule');
+
+    const nestedDescendantRule = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\nhtml[data-theme-id='synthetic-test-theme'] { .adversarial-hidden { display: none; } }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(nestedDescendantRule)).toThrow('must contain declarations only');
+
+    const nestedHeroRule = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\nhtml[data-theme-id='synthetic-test-theme'] .theme-launcher-hero-title { & .adversarial-hidden { display: none; } }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(nestedHeroRule)).toThrow('must contain declarations only');
+
+    const badStringRecoveryNesting = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\nhtml[data-theme-id='synthetic-test-theme'] {\n  --junk: "\n;\n  .adversarial-hidden { display: none; }\n  ";\n}`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(badStringRecoveryNesting)).toThrow('must contain declarations only');
+
+    const optionalArbitraryGlobalRule = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\nbody { color: red; }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(optionalArbitraryGlobalRule)).toThrow('unsupported or unscoped selector');
+
+    const optionalHeroFallback = {
+      ...syntheticTheme,
+      stylesheetText: `${syntheticTheme.stylesheetText}\n.theme-launcher-hero-title { color: red; }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(optionalHeroFallback)).toThrow('reserved for the canonical paired fallback');
+
+    const standaloneCanonicalFallback = {
+      ...myAgentsDefaultTheme,
+      stylesheetText: `${myAgentsDefaultTheme.stylesheetText}\n:root { --paper: red; }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(standaloneCanonicalFallback)).toThrow('reserved for the canonical paired fallback');
 
     const lateCanonicalOverride = {
       ...myAgentsDefaultTheme,
       stylesheetText: `${myAgentsDefaultTheme.stylesheetText}\nhtml[data-theme-id='myagents-default'][data-color-scheme='light'] { --ink: initial; }`,
     } as ThemeDefinition;
-    expect(() => validateThemeDefinition(lateCanonicalOverride)).toThrow('missing CSS tokens');
+    expect(() => validateThemeDefinition(lateCanonicalOverride)).toThrow('unsupported or unscoped selector');
 
     const escapedCanonicalOverride = {
       ...myAgentsDefaultTheme,
       stylesheetText: `${myAgentsDefaultTheme.stylesheetText}\nhtml[data-theme-id='myagents-def\\61ult'][data-color-scheme='light'] { --ink: initial; }`,
     } as ThemeDefinition;
-    expect(() => validateThemeDefinition(escapedCanonicalOverride)).toThrow('missing CSS tokens');
+    expect(() => validateThemeDefinition(escapedCanonicalOverride)).toThrow('unsupported or unscoped selector');
+
+    const splitCanonicalGlobalFallback = {
+      ...myAgentsDefaultTheme,
+      stylesheetText: `${myAgentsDefaultTheme.stylesheetText.replace(/\s*--font-body\s*:[^;]+;/, '')}\nhtml[data-theme-id='myagents-default'] { --font-body: system-ui, sans-serif; }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(splitCanonicalGlobalFallback)).toThrow('unsupported or unscoped selector');
+
+    const splitCanonicalSchemeFallback = {
+      ...myAgentsDefaultTheme,
+      stylesheetText: `${myAgentsDefaultTheme.stylesheetText.replace(/\s*--ink\s*:[^;]+;/, '')}\nhtml[data-theme-id='myagents-default'][data-color-scheme='light'] { --ink: #1c1612; }`,
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(splitCanonicalSchemeFallback)).toThrow('unsupported or unscoped selector');
 
     const invalidHeroCombinator = {
       ...syntheticTheme,
@@ -113,13 +239,13 @@ describe('ThemeRegistry', () => {
         "html[data-theme-id='synthetic-test-theme'].theme-launcher-hero-title",
       ),
     } as ThemeDefinition;
-    expect(() => validateThemeDefinition(invalidHeroCombinator)).toThrow('missing Hero selector');
+    expect(() => validateThemeDefinition(invalidHeroCombinator)).toThrow('unsupported or unscoped selector');
 
     const escapedHeroOverride = {
       ...syntheticTheme,
       stylesheetText: `${syntheticTheme.stylesheetText}\nhtml[data-theme-id='synthetic-test-theme'] .theme-launcher-hero-\\74itle { color: initial; }`,
     } as ThemeDefinition;
-    expect(() => validateThemeDefinition(escapedHeroOverride)).toThrow('unexpected selectors');
+    expect(() => validateThemeDefinition(escapedHeroOverride)).toThrow('unsupported or unscoped selector');
 
     const invalidSchemeOverride = {
       ...syntheticTheme,

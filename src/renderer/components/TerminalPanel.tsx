@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
@@ -33,7 +33,19 @@ export function TerminalPanel({
   const xtermRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const terminalIdRef = useRef<string | null>(terminalId);
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastColsRef = useRef<number>(0);
+  const lastRowsRef = useRef<number>(0);
+  const transitionGuardRef = useRef(isVisible);
+  const [geometryReady, setGeometryReady] = useState(false);
   useEffect(() => { terminalIdRef.current = terminalId; }, [terminalId]);
+
+  // Arm the transition guard before passive Theme/PTY effects run. This is a
+  // layout effect because a false -> true visibility render must not expose a
+  // single frame where metric fitting can observe the expanding panel width.
+  useLayoutEffect(() => {
+    transitionGuardRef.current = isVisible;
+  }, [isVisible]);
 
 
   // Stable callbacks via refs to avoid effect re-runs
@@ -86,11 +98,6 @@ export function TerminalPanel({
 
     term.open(containerRef.current);
 
-    // Initial fit (next frame to ensure container has dimensions)
-    requestAnimationFrame(() => {
-      fitAddon.fit();
-    });
-
     xtermRef.current = term;
     fitAddonRef.current = fitAddon;
 
@@ -103,16 +110,6 @@ export function TerminalPanel({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 1b. Dynamically update xterm theme when app theme changes (without recreating terminal)
-  useEffect(() => {
-    if (xtermRef.current) {
-      xtermRef.current.options.theme = xtermTheme.palette;
-      xtermRef.current.options.fontFamily = xtermTheme.fontFamily;
-      xtermRef.current.options.fontSize = xtermTheme.fontSize;
-      xtermRef.current.options.lineHeight = xtermTheme.lineHeight;
-    }
-  }, [xtermTheme]);
-
   // 2. Create PTY — "listeners first" pattern to prevent exit event loss.
   //    Frontend generates the terminal ID, registers listeners, THEN creates the PTY.
   //    This closes the race where a fast-exiting shell beats listener registration.
@@ -121,6 +118,7 @@ export function TerminalPanel({
   useEffect(() => {
     if (terminalId !== null) return; // Already created
     if (!fitAddonRef.current) return; // xterm not ready yet
+    if (!geometryReady) return; // Wait until the width transition has settled
     if (creatingRef.current) return; // Creation already in flight
     creatingRef.current = true;
 
@@ -203,7 +201,7 @@ export function TerminalPanel({
       // by the next effect cycle when terminalId becomes non-null
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- sessionIdProp: one-time env injection at creation
-  }, [terminalId, workspacePath]);
+  }, [terminalId, workspacePath, geometryReady]);
 
   // 3. User input → PTY write
   useEffect(() => {
@@ -219,22 +217,20 @@ export function TerminalPanel({
     return () => disposable.dispose();
   }, [terminalId]);
 
-  // 5. Unified resize with transition-aware suppression.
+  // 5. Unified resize with geometry-settle suppression.
   //
-  // ROOT CAUSE of prompt truncation: the left panel has `transition-[width] duration-300`
-  // (300ms CSS transition). During this transition, the terminal container width changes
-  // continuously from 0 to its final width. Without suppression, ResizeObserver fires
-  // repeatedly during transition, each time calling fit() at a different intermediate width,
-  // sending multiple SIGWINCH to the shell → prompt redrawn at wrong widths → garbled text.
+  // ROOT CAUSE of prompt truncation: while the split width transitions, the terminal
+  // container changes continuously. Fitting each intermediate width sends repeated
+  // SIGWINCH events and redraws the prompt at stale columns.
   //
-  // Fix: suppress ALL resizes during a 400ms window after becoming visible (covers the
-  // full 300ms CSS transition + margin). Only send a single resize at the final stable width.
-  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastColsRef = useRef<number>(0);
-  const lastRowsRef = useRef<number>(0);
-  const transitionGuardRef = useRef(false); // true = suppress resize (CSS transition in progress)
-
+  // Theme owns transition durations, so this component must not duplicate one as a
+  // timeout. ResizeObserver is the geometry owner: after 100ms without another size
+  // observation, fit once at the actual stable width.
   const doFitAndResize = useCallback(() => {
+    // Every fit path, including Theme-driven font metric updates, must respect
+    // the panel-width transition. The final visibility timer applies the
+    // latest options once the geometry is stable.
+    if (transitionGuardRef.current) return;
     if (!fitAddonRef.current || !containerRef.current) return;
     // Skip if container is too narrow — still in CSS transition or hidden
     if (containerRef.current.clientWidth < 100) return;
@@ -252,15 +248,41 @@ export function TerminalPanel({
     }).catch(() => {});
   }, []);
 
+  const scheduleGeometrySettle = useCallback(() => {
+    if (!isVisible) return;
+    // Every new observation re-arms the guard. A Theme/font update that lands
+    // inside this quiet window must not fit against intermediate geometry.
+    transitionGuardRef.current = true;
+    if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+    resizeTimerRef.current = setTimeout(() => {
+      resizeTimerRef.current = null;
+      transitionGuardRef.current = false;
+      doFitAndResize();
+      setGeometryReady(true);
+      xtermRef.current?.focus();
+    }, 100);
+  }, [doFitAndResize, isVisible]);
+
+  // 1b. Update the existing xterm in place. Font metric changes invalidate
+  // the grid geometry, so route them through the same fit + PTY resize owner
+  // used by container resizes instead of leaving rows/cols stale until the
+  // next incidental ResizeObserver event.
+  useEffect(() => {
+    if (!xtermRef.current) return;
+    xtermRef.current.options.theme = xtermTheme.palette;
+    xtermRef.current.options.fontFamily = xtermTheme.fontFamily;
+    xtermRef.current.options.fontSize = xtermTheme.fontSize;
+    xtermRef.current.options.lineHeight = xtermTheme.lineHeight;
+    doFitAndResize();
+  }, [xtermTheme, doFitAndResize]);
+
   // ResizeObserver — fires on container size changes (drag resize, window resize)
   // Suppressed during the visibility transition window to prevent intermediate resizes.
   useEffect(() => {
     if (!containerRef.current) return;
 
     const observer = new ResizeObserver(() => {
-      if (transitionGuardRef.current) return; // Suppress during CSS transition
-      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
-      resizeTimerRef.current = setTimeout(doFitAndResize, 100);
+      scheduleGeometrySettle();
     });
     observer.observe(containerRef.current);
 
@@ -268,24 +290,24 @@ export function TerminalPanel({
       observer.disconnect();
       if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
     };
-  }, [doFitAndResize]);
+  }, [scheduleGeometrySettle]);
 
-  // Visibility change — waits for CSS transition to complete (400ms > 300ms transition)
-  // before sending a single fit+resize. Suppresses ResizeObserver during this window.
+  // Visibility change arms geometry settling. Subsequent ResizeObserver callbacks
+  // keep moving the quiet-window timer until the Theme-owned transition really ends.
   useEffect(() => {
-    if (!isVisible) return;
+    if (!isVisible) {
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+      setGeometryReady(false);
+      return;
+    }
     transitionGuardRef.current = true;
-    const timer = setTimeout(() => {
-      transitionGuardRef.current = false;
-      doFitAndResize();
-      // Auto-focus when terminal becomes visible (switching from file view, or reopening panel)
-      xtermRef.current?.focus();
-    }, 400);
+    setGeometryReady(false);
+    scheduleGeometrySettle();
     return () => {
-      clearTimeout(timer);
+      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
       transitionGuardRef.current = false;
     };
-  }, [isVisible, doFitAndResize]);
+  }, [isVisible, scheduleGeometrySettle]);
 
   return (
     <div

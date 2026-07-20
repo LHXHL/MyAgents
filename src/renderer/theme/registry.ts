@@ -39,6 +39,13 @@ function assertPositiveNumber(value: unknown, path: string): asserts value is nu
   }
 }
 
+/** CSS Syntax input preprocessing normalizes CRLF, lone CR and form-feed to LF.
+ * Keep the validator's lightweight scanners on the same character stream as
+ * the browser, especially around bad-string recovery and escaped newlines. */
+function normalizeCssInput(cssText: string): string {
+  return cssText.replace(/\r\n?|\f/g, '\n');
+}
+
 function stripCssComments(cssText: string): string {
   let result = '';
   let quote: '"' | "'" | null = null;
@@ -57,6 +64,7 @@ function stripCssComments(cssText: string): string {
     }
     if (quote) {
       result += character;
+      if (character === '\n') quote = null;
       if (character === quote) quote = null;
       continue;
     }
@@ -82,7 +90,7 @@ interface CssBlock {
 }
 
 /** Parse top-level blocks while respecting quoted strings and nested at-rules. */
-function collectTopLevelCssBlocks(cssText: string): CssBlock[] {
+function collectTopLevelCssBlocks(cssText: string, requireComplete = false): CssBlock[] {
   const blocks: CssBlock[] = [];
   let cursor = 0;
   while (cursor < cssText.length) {
@@ -94,13 +102,19 @@ function collectTopLevelCssBlocks(cssText: string): CssBlock[] {
       if (escaped) { escaped = false; continue; }
       if (character === '\\') { escaped = true; continue; }
       if (quote) {
+        if (character === '\n') quote = null;
         if (character === quote) quote = null;
         continue;
       }
       if (character === '"' || character === "'") { quote = character; continue; }
       if (character === '{') { open = index; break; }
     }
-    if (open < 0) break;
+    if (open < 0) {
+      if (requireComplete && cssText.slice(cursor).trim()) {
+        throw new Error('[theme] stylesheet contains unsupported trailing content');
+      }
+      break;
+    }
 
     let depth = 1;
     quote = null;
@@ -111,6 +125,7 @@ function collectTopLevelCssBlocks(cssText: string): CssBlock[] {
       if (escaped) { escaped = false; continue; }
       if (character === '\\') { escaped = true; continue; }
       if (quote) {
+        if (character === '\n') quote = null;
         if (character === quote) quote = null;
         continue;
       }
@@ -127,6 +142,92 @@ function collectTopLevelCssBlocks(cssText: string): CssBlock[] {
     cursor = close + 1;
   }
   return blocks;
+}
+
+function containsTopLevelSemicolon(cssText: string): boolean {
+  let depth = 0;
+  let quote: string | null = null;
+  let escaped = false;
+  for (const character of cssText) {
+    if (escaped) { escaped = false; continue; }
+    if (character === '\\') { escaped = true; continue; }
+    if (quote) {
+      if (character === '\n') quote = null;
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") { quote = character; continue; }
+    if (character === '{') { depth += 1; continue; }
+    if (character === '}') { depth -= 1; continue; }
+    if (character === ';' && depth === 0) return true;
+  }
+  return false;
+}
+
+function containsStructuralBrace(cssText: string): boolean {
+  let quote: string | null = null;
+  let escaped = false;
+  for (const character of cssText) {
+    if (escaped) { escaped = false; continue; }
+    if (character === '\\') { escaped = true; continue; }
+    if (quote) {
+      if (character === '\n') quote = null;
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === '"' || character === "'") { quote = character; continue; }
+    if (character === '{' || character === '}') return true;
+  }
+  return false;
+}
+
+/** Include rules nested in conditional at-rules so selector scope checks
+ * cannot be bypassed with `@media` / `@supports` wrappers. Declaration-rule
+ * bodies are intentionally not reparsed as stylesheets. */
+function collectStylesheetCssBlocks(cssText: string): CssBlock[] {
+  return collectTopLevelCssBlocks(cssText).flatMap(block => (
+    block.prelude.trim().startsWith('@')
+      ? [block, ...collectStylesheetCssBlocks(block.body)]
+      : [block]
+  ));
+}
+
+function assertStylesheetAtRuleScope(
+  topLevelBlocks: readonly CssBlock[],
+  definition: ThemeDefinition,
+): void {
+  const themeRootSelector = `html[data-theme-id='${definition.id}']`;
+  const allowedHeroSelectorLists: string[][] = definition.id === DEFAULT_THEME_ID
+    ? [
+      ['.theme-launcher-hero-title', `${themeRootSelector} .theme-launcher-hero-title`],
+      ['.theme-launcher-hero-slogan', `${themeRootSelector} .theme-launcher-hero-slogan`],
+    ]
+    : [
+      [`${themeRootSelector} .theme-launcher-hero-title`],
+      [`${themeRootSelector} .theme-launcher-hero-slogan`],
+    ];
+
+  for (const block of topLevelBlocks.filter(candidate => candidate.prelude.trim().startsWith('@'))) {
+    // Theme packages own runtime tokens plus Launcher Hero presentation. Keep
+    // global side-effect rules such as @property/@font-face out of the package,
+    // while retaining the canonical responsive Hero typography.
+    const decodedPrelude = decodeCssEscapes(block.prelude.trim());
+    const mediaQuery = decodedPrelude.replace(/^@media\b/i, '').trim();
+    if (!/^@media(?:\s|\()/i.test(decodedPrelude) || !mediaQuery || /[;{}@]/.test(mediaQuery)) {
+      throw new Error(`[theme] ${definition.id}: stylesheet contains an unsupported at-rule`);
+    }
+    if (containsTopLevelSemicolon(block.body)) {
+      throw new Error(`[theme] ${definition.id}: stylesheet contains an unsupported at-rule`);
+    }
+    const nestedBlocks = collectTopLevelCssBlocks(block.body, true);
+    const invalidNestedBlock = nestedBlocks.find(nested => (
+      nested.prelude.trim().startsWith('@')
+      || !allowedHeroSelectorLists.some(selectors => selectorListExactlyMatches(nested.prelude, selectors))
+    ));
+    if (nestedBlocks.length === 0 || invalidNestedBlock) {
+      throw new Error(`[theme] ${definition.id}: conditional rules may only target scoped Hero selectors`);
+    }
+  }
 }
 
 function normalizeSelector(selector: string): string | null {
@@ -148,6 +249,7 @@ function normalizeSelector(selector: string): string | null {
   if (
     /^html\[data-theme-id='[a-z0-9-]+'\](?:\[data-color-scheme='(?:light|dark)'\])?(?: \.theme-launcher-hero-(?:title|slogan))?$/.test(normalized)
     || /^html\[data-color-scheme='(?:light|dark)'\]$/.test(normalized)
+    || normalized === ':root'
     || /^\.theme-launcher-hero-(?:title|slogan)$/.test(normalized)
   ) {
     return normalized;
@@ -190,6 +292,65 @@ function collectContractBlocks(
     throw new Error(`[theme] ${path}: selector must not be combined with unexpected selectors`);
   }
   return matchingBlocks;
+}
+
+function assertCanonicalFallbackScope(
+  blocks: readonly CssBlock[],
+  definition: ThemeDefinition,
+  fallbackSelector: string,
+  canonicalSelector: string,
+  path: string,
+): void {
+  const fallbackBlocks = blocks.filter(block => selectorListContainsExact(block.prelude, fallbackSelector));
+  const invalidBlock = fallbackBlocks.find(block => (
+    definition.id !== DEFAULT_THEME_ID
+    || !selectorListExactlyMatches(block.prelude, [fallbackSelector, canonicalSelector])
+  ));
+  if (invalidBlock) {
+    throw new Error(`[theme] ${path}: fallback selector is reserved for the canonical paired fallback`);
+  }
+}
+
+function assertStylesheetSelectorScope(blocks: readonly CssBlock[], definition: ThemeDefinition): void {
+  const themeRootSelector = `html[data-theme-id='${definition.id}']`;
+  const allowedSelectorLists: string[][] = [];
+  if (definition.id === DEFAULT_THEME_ID) {
+    allowedSelectorLists.push([':root', themeRootSelector]);
+    for (const scheme of ['light', 'dark'] as const) {
+      allowedSelectorLists.push([
+        `html[data-color-scheme='${scheme}']`,
+        `${themeRootSelector}[data-color-scheme='${scheme}']`,
+      ]);
+    }
+    for (const className of ['.theme-launcher-hero-title', '.theme-launcher-hero-slogan']) {
+      allowedSelectorLists.push([className, `${themeRootSelector} ${className}`]);
+    }
+  } else {
+    allowedSelectorLists.push([themeRootSelector]);
+    for (const scheme of ['light', 'dark'] as const) {
+      allowedSelectorLists.push([`${themeRootSelector}[data-color-scheme='${scheme}']`]);
+    }
+    for (const className of ['.theme-launcher-hero-title', '.theme-launcher-hero-slogan']) {
+      allowedSelectorLists.push([`${themeRootSelector} ${className}`]);
+    }
+  }
+
+  const invalidBlock = blocks.find(block => (
+    !block.prelude.trim().startsWith('@')
+    && !allowedSelectorLists.some(selectors => selectorListExactlyMatches(block.prelude, selectors))
+  ));
+  if (invalidBlock) {
+    throw new Error(`[theme] ${definition.id}: stylesheet contains an unsupported or unscoped selector`);
+  }
+}
+
+function assertFlatDeclarationBlocks(blocks: readonly CssBlock[], definition: ThemeDefinition): void {
+  const nestedSelectorBlock = blocks.find(block => (
+    !block.prelude.trim().startsWith('@') && containsStructuralBrace(block.body)
+  ));
+  if (nestedSelectorBlock) {
+    throw new Error(`[theme] ${definition.id}: Theme root and Hero rules must contain declarations only`);
+  }
 }
 
 function collectDeclaredTokens(blocks: readonly CssBlock[]): Map<string, string> {
@@ -317,7 +478,7 @@ function resolveTokenValue(
 
 function themeTokenProperty(token: string): string {
   if (token.startsWith('--font-')) return 'font-family';
-  if (token.startsWith('--radius-')) return 'border-radius';
+  if (token.startsWith('--radius-') || token.startsWith('--theme-radius-')) return 'border-radius';
   if (token.startsWith('--duration-')) return 'transition-duration';
   if (token === '--theme-body-background') return 'background';
   if (token === '--theme-body-texture') return 'background-image';
@@ -325,6 +486,7 @@ function themeTokenProperty(token: string): string {
   if (token === '--theme-body-texture-blend') return 'mix-blend-mode';
   if (
     token.startsWith('--shadow-')
+    || token.startsWith('--theme-shadow-')
     || token.startsWith('--action-shadow')
     || token.startsWith('--tool-shadow')
     || token === '--fb-window-shadow'
@@ -392,30 +554,58 @@ function assertPrismStyleValue(value: string, reactProperty: string, path: strin
 
 function validateStylesheet(definition: ThemeDefinition): void {
   assertNonEmptyString(definition.stylesheetText, `${definition.id}.stylesheetText`);
-  const cssText = stripCssComments(definition.stylesheetText);
-  const blocks = collectTopLevelCssBlocks(cssText);
+  const cssText = stripCssComments(normalizeCssInput(definition.stylesheetText));
+  if (containsTopLevelSemicolon(cssText)) {
+    throw new Error(`[theme] ${definition.id}: stylesheet contains an unsupported top-level statement`);
+  }
+  const topLevelBlocks = collectTopLevelCssBlocks(cssText, true);
+  const blocks = collectStylesheetCssBlocks(cssText);
+  if (/@import\b/i.test(decodeCssEscapes(cssText)) || containsRemoteReference(cssText)) {
+    throw new Error(`[theme] ${definition.id}: stylesheet must not reference remote assets`);
+  }
   const themeRootSelector = `html[data-theme-id='${definition.id}']`;
+  assertCanonicalFallbackScope(blocks, definition, ':root', themeRootSelector, `${definition.id} root`);
+  for (const scheme of ['light', 'dark'] as const) {
+    assertCanonicalFallbackScope(
+      blocks,
+      definition,
+      `html[data-color-scheme='${scheme}']`,
+      `${themeRootSelector}[data-color-scheme='${scheme}']`,
+      `${definition.id}.${scheme} root`,
+    );
+  }
+  for (const className of ['.theme-launcher-hero-title', '.theme-launcher-hero-slogan']) {
+    assertCanonicalFallbackScope(
+      blocks,
+      definition,
+      className,
+      `${themeRootSelector} ${className}`,
+      `${definition.id} Hero ${className}`,
+    );
+  }
+  assertStylesheetSelectorScope(blocks, definition);
+  assertFlatDeclarationBlocks(blocks, definition);
+  assertStylesheetAtRuleScope(topLevelBlocks, definition);
+  const acceptedGlobalSelectorLists = definition.id === DEFAULT_THEME_ID
+    ? [[':root', themeRootSelector]]
+    : [[themeRootSelector]];
   const globalTokens = collectDeclaredTokens(collectContractBlocks(
-    blocks,
+    topLevelBlocks,
     themeRootSelector,
-    [[themeRootSelector]],
+    acceptedGlobalSelectorLists,
     `${definition.id} root`,
   ));
   if (hasImportantDeclaration(globalTokens)) {
     throw new Error(`[theme] ${definition.id}: Theme Token declarations must not use !important`);
   }
 
-  if (/@import\b/i.test(decodeCssEscapes(cssText)) || containsRemoteReference(cssText)) {
-    throw new Error(`[theme] ${definition.id}: stylesheet must not reference remote assets`);
-  }
-
   for (const scheme of ['light', 'dark'] as const) {
     const schemeRootSelector = `${themeRootSelector}[data-color-scheme='${scheme}']`;
     const acceptedSchemeSelectorLists = definition.id === DEFAULT_THEME_ID
-      ? [[`html[data-color-scheme='${scheme}']`, schemeRootSelector], [schemeRootSelector]]
+      ? [[`html[data-color-scheme='${scheme}']`, schemeRootSelector]]
       : [[schemeRootSelector]];
     const schemeTokens = collectDeclaredTokens(collectContractBlocks(
-      blocks,
+      topLevelBlocks,
       schemeRootSelector,
       acceptedSchemeSelectorLists,
       `${definition.id}.${scheme} root`,
@@ -440,10 +630,10 @@ function validateStylesheet(definition: ThemeDefinition): void {
   for (const className of ['.theme-launcher-hero-title', '.theme-launcher-hero-slogan']) {
     const heroSelector = `${themeRootSelector} ${className}`;
     const acceptedHeroSelectorLists = definition.id === DEFAULT_THEME_ID
-      ? [[className, heroSelector], [heroSelector]]
+      ? [[className, heroSelector]]
       : [[heroSelector]];
     const heroBlocks = collectContractBlocks(
-      blocks,
+      topLevelBlocks,
       heroSelector,
       acceptedHeroSelectorLists,
       `${definition.id} Hero ${className}`,

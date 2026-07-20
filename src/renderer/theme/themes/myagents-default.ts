@@ -73,9 +73,9 @@ const lightWidgetVariables = {
   '--widget-bg-inset': '#e8dccf',
   '--widget-border': 'rgb(28 22 18 / 0.10)',
   '--widget-border-strong': 'rgb(28 22 18 / 0.18)',
-  '--widget-accent': '#c26d3a',
-  '--widget-accent-hover': '#e18a58',
-  '--widget-accent-subtle': 'rgba(194, 109, 58, 0.08)',
+  '--widget-accent': '#1c1612',
+  '--widget-accent-hover': '#2e2825',
+  '--widget-accent-subtle': 'rgb(28 22 18 / 0.08)',
   '--widget-success': '#2d8a5e',
   '--widget-success-bg': '#e2f0e8',
   '--widget-error': '#dc2626',
@@ -97,9 +97,9 @@ const darkWidgetVariables = {
   '--widget-bg-inset': '#12100e',
   '--widget-border': 'rgb(228 220 212 / 0.10)',
   '--widget-border-strong': 'rgb(228 220 212 / 0.18)',
-  '--widget-accent': '#d4803f',
-  '--widget-accent-hover': '#e89860',
-  '--widget-accent-subtle': 'rgba(212, 128, 63, 0.12)',
+  '--widget-accent': '#e4dcd4',
+  '--widget-accent-hover': '#ffffff',
+  '--widget-accent-subtle': 'rgb(228 220 212 / 0.12)',
   '--widget-success': '#4aad7a',
   '--widget-success-bg': 'rgba(74, 173, 122, 0.15)',
   '--widget-error': '#ef4444',
@@ -108,16 +108,16 @@ const darkWidgetVariables = {
   '--widget-warning-bg': 'rgba(245, 158, 11, 0.15)',
   '--widget-info': '#6b9fd4',
   '--widget-info-bg': 'rgba(107, 159, 212, 0.15)',
-  '--widget-primary-text': '#ffffff',
+  '--widget-primary-text': '#1a1614',
   ...widgetStructure,
 } as const;
 
 const light: ThemeSchemeDefinition = {
   xterm: {
     palette: {
-      background: '#f0ebe3', foreground: '#1c1612', cursor: '#c26d3a', cursorAccent: '#f0ebe3',
-      selectionBackground: 'rgba(194, 109, 58, 0.18)', selectionForeground: undefined,
-      selectionInactiveBackground: 'rgba(194, 109, 58, 0.10)', black: '#1c1612', red: '#b83030',
+      background: '#f0ebe3', foreground: '#1c1612', cursor: '#1c1612', cursorAccent: '#f0ebe3',
+      selectionBackground: 'rgba(28, 22, 18, 0.18)', selectionForeground: undefined,
+      selectionInactiveBackground: 'rgba(28, 22, 18, 0.10)', black: '#1c1612', red: '#b83030',
       green: '#1d7a4e', yellow: '#a85a00', blue: '#3568a0', magenta: '#8f5a8a', cyan: '#2a7560',
       white: '#6f6156', brightBlack: '#a69a90', brightRed: '#c74040', brightGreen: '#2d8a5e',
       brightYellow: '#b87010', brightBlue: '#4a7ab5', brightMagenta: '#a070a0',
@@ -174,9 +174,9 @@ const light: ThemeSchemeDefinition = {
 const dark: ThemeSchemeDefinition = {
   xterm: {
     palette: {
-      background: '#1a1614', foreground: '#d4c8bc', cursor: '#c26d3a', cursorAccent: '#1a1614',
-      selectionBackground: 'rgba(194, 109, 58, 0.25)', selectionForeground: undefined,
-      selectionInactiveBackground: 'rgba(194, 109, 58, 0.15)', black: '#2a2420', red: '#c75050',
+      background: '#1a1614', foreground: '#d4c8bc', cursor: '#e4dcd4', cursorAccent: '#1a1614',
+      selectionBackground: 'rgba(228, 220, 212, 0.25)', selectionForeground: undefined,
+      selectionInactiveBackground: 'rgba(228, 220, 212, 0.15)', black: '#2a2420', red: '#c75050',
       green: '#2d8a5e', yellow: '#d97706', blue: '#4a7ab5', magenta: '#b07aab', cyan: '#3d8a75',
       white: '#d4c8bc', brightBlack: '#6f6156', brightRed: '#e06060', brightGreen: '#3da872',
       brightYellow: '#f0a030', brightBlue: '#6a9ad0', brightMagenta: '#c894c2',

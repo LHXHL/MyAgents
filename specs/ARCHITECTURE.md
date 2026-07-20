@@ -562,7 +562,7 @@ PTY master read → emit('terminal:data:{id}') → xterm.write → 屏幕渲染
 - 终端绑定 Tab 生命周期，面板关闭不杀进程
 - 环境注入：内置 Node.js + `~/.myagents/bin` + `MYAGENTS_PORT` + `TERM=xterm-256color`
 - Shell 以 login shell（`-l`）启动
-- 视觉：从全局 `ResolvedTheme.adapters.xterm` 读取 palette / 字体 / 字号；scheme 变化只原位更新 xterm options，不重建 PTY 或 buffer
+- 视觉：从全局 `ResolvedTheme.adapters.xterm` 读取 palette / 字体 / 字号；scheme 变化只原位更新 xterm options，字体度量变化后复用现有 fit-and-resize owner 重算 cols/rows 并同步同一 PTY，不重建 PTY 或 buffer
 
 PTY 进程由 `portable-pty` 管理，**不走** `process_cmd`。
 
@@ -792,7 +792,13 @@ Theme 是 renderer 视觉语言的应用级唯一 owner；`AppearanceMode` 只�
 - `appearanceMode`：`system | light | dark`；
 - `resolvedColorScheme`：每个 Webview 此刻解析出的 `light | dark`。
 
-`ThemeRegistry` 校验一个 Theme 同时具备 light/dark、精确 Theme root / scheme root 下的 required CSS Token、Launcher Hero 和 xterm / Monaco / Mermaid / Prism / Widget adapters；Token 解析 Theme 内 `var(...)` 后按实际消费属性校验，Widget 值必须是 iframe 可直接消费且属性语法有效的 literal，stylesheet 与 Hero 资源禁止远程 URL。无效可选包在注册边界被拒绝且不阻断 canonical Theme，未知 ID 整套回退 default，不做逐字段拼接。组件只能 import `@/theme` 公共入口，`.dependency-cruiser.cjs::theme-consumers-public-api-only` 禁止生产 consumer 直引 concrete Theme。
+`ThemeRegistry` 校验一个 Theme 同时具备 light/dark、精确 Theme root / scheme root 下的 required CSS Token、Launcher Hero 和 xterm / Monaco / Mermaid / Prism / Widget adapters；canonical default 另允许受控的 `:root, <exact-theme-root>` 合并 globals 作为 unknown-ID/pre-React fallback，可选 Theme 不得泄漏全局 selector。Token 解析 Theme 内 `var(...)` 后按实际消费属性校验，Widget 值必须是 iframe 可直接消费且属性语法有效的 literal，stylesheet 与 Hero 资源禁止远程 URL。无效可选包在注册边界被拒绝且不阻断 canonical Theme，未知 ID 整套回退 default，不做逐字段拼接。组件只能 import `@/theme` 公共入口，`.dependency-cruiser.cjs::theme-consumers-public-api-only` 禁止生产 consumer 直引 concrete Theme。
+
+Theme CSS 只拥有运行时视觉值；Tailwind 入口 `src/renderer/index.css` 用无值
+`@theme inline` 把 font/radius/shadow/duration utility 编译为对 `--theme-*` 与语义
+Token 的运行时引用。禁止在动态 Theme package 中放 raw `@theme`；该 CSS 不会二次经过
+Tailwind，否则 utility 会静默回退 framework default。`build:web` 后的 generated-CSS 契约校验
+是这条编译边界的必备护栏。
 
 配置读取边界由 `normalizeThemeConfigRecord()` 把旧 `theme` 无损迁移为 `appearanceMode`，缺失 `themeId` 补 `myagents-default`；读取只做内存归一，下一次真实的 config-lock 写入清掉 legacy 字段。Settings 仍经 `ConfigProvider.updateConfig()` 写 `appearanceMode`。
 

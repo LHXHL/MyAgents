@@ -29,7 +29,7 @@
   "scripts": {
     "dev": "./start_dev.sh",
     "dev:web": "vite",
-    "build:web": "vite build",
+    "build:web": "vite build && npm run verify:theme-css",
     "build:server": "node scripts/esbuild-bundle.mjs server",
     "build:bridge": "node scripts/esbuild-bundle.mjs bridge",
     "build:cli": "node scripts/esbuild-bundle.mjs cli",
@@ -50,6 +50,7 @@
     "test:credentialed": "vitest run --project credentialed",
     "test:changed": "vitest run --changed --project unit --project dom --project integration",
     "test:watch": "vitest --project unit --project dom --project integration",
+    "verify:theme-css": "node scripts/verify-theme-css.mjs",
     "coverage": "vitest run --coverage --project unit --project dom --project integration",
     "format": "prettier --experimental-cli --write .",
     "format:check": "prettier --experimental-cli --check --log-level warn .",

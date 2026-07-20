@@ -3026,7 +3026,7 @@ const DirectoryPanel = memo(
                   }}
                   className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
                       isSearchMode
-                          ? "bg-[var(--accent)] text-white hover:bg-[var(--accent-warm-hover)]"
+                          ? "bg-[var(--accent)] text-[var(--on-accent)] hover:bg-[var(--accent-warm-hover)]"
                           : "text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                   }`}
               >

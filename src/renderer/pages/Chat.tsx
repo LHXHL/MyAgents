@@ -5745,7 +5745,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
                 type="button"
                 onClick={() => void handleGoalEditSubmit()}
                 disabled={goalEditSubmitting || !goalEditDraft.trim()}
-                className="rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:bg-[var(--accent-warm-hover)] disabled:cursor-not-allowed disabled:opacity-50"
+                className="rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-[var(--on-accent)] transition hover:bg-[var(--accent-warm-hover)] disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {goalEditSubmitting ? t('goalEdit.updating') : t('goalEdit.update')}
               </button>

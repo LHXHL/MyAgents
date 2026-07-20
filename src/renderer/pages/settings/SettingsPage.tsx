@@ -4603,7 +4603,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                     onClick={() => patchProxySettings({ scope: { mode: 'all' } })}
                                                     className={`px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                                                         proxyScope.mode === 'all'
-                                                            ? 'bg-[var(--accent)] text-[var(--button-primary-text)]'
+                                                            ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                             : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                                                     }`}
                                                 >
@@ -4615,7 +4615,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                     onClick={() => setShowProxyScopeDialog(true)}
                                                     className={`border-l border-[var(--line)] px-3 py-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${
                                                         proxyScope.mode === 'custom'
-                                                            ? 'bg-[var(--accent)] text-[var(--button-primary-text)]'
+                                                            ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                             : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                                                     }`}
                                                 >
@@ -4862,7 +4862,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 type="button"
                                                 onClick={updateInstalling ? undefined : onRestartAndUpdate}
                                                 disabled={updateInstalling}
-                                                className="rounded-lg bg-[var(--success)] px-3 py-1.5 text-xs font-medium text-white transition-colors hover:opacity-90 disabled:opacity-80 disabled:cursor-wait"
+                                                className="rounded-lg bg-[var(--success)] px-3 py-1.5 text-xs font-medium text-[var(--on-success)] transition-colors hover:opacity-90 disabled:opacity-80 disabled:cursor-wait"
                                             >
                                                 {updateInstalling ? tSettings('about.installing') : tSettings('about.restartInstall')}
                                             </button>
@@ -5461,7 +5461,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 }
                                             }}
                                             disabled={!builtinMcpSettings.newArg.trim()}
-                                            className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                                            className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)] disabled:opacity-40"
                                         >
                                             <Plus className="h-3.5 w-3.5" />
                                         </button>
@@ -5560,7 +5560,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 }
                                             }}
                                             disabled={!builtinMcpSettings.newEnvKey.trim() || builtinMcpSettings.newEnvKey.trim() in builtinMcpSettings.env}
-                                            className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                                            className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)] disabled:opacity-40"
                                         >
                                             <Plus className="h-3.5 w-3.5" />
                                         </button>
@@ -5579,7 +5579,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             </button>
                             <button
                                 onClick={handleSaveBuiltinMcp}
-                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent)]/90"
+                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] hover:bg-[var(--accent)]/90"
                             >
                                 {tSettings('toolbox.common.save')}
                             </button>
@@ -5680,7 +5680,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                             onClick={() => setGeminiImageSettings(prev => prev ? { ...prev, aspectRatio: r } : null)}
                                             className={`rounded-md px-2.5 py-1 text-xs transition-colors ${r !== 'auto' ? 'font-mono' : ''} ${
                                                 geminiImageSettings.aspectRatio === r
-                                                    ? 'bg-[var(--accent)] text-white'
+                                                    ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                     : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                             }`}
                                         >
@@ -5705,7 +5705,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                             onClick={() => setGeminiImageSettings(prev => prev ? { ...prev, imageSize: s } : null)}
                                             className={`rounded-md px-3 py-1.5 text-xs transition-colors ${
                                                 geminiImageSettings.imageSize === s
-                                                    ? 'bg-[var(--accent)] text-white'
+                                                    ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                     : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                             }`}
                                         >
@@ -5804,7 +5804,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             <button
                                 onClick={handleSaveGeminiImage}
                                 disabled={!geminiImageSettings.apiKey.trim()}
-                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent)]/90 disabled:opacity-40"
+                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] hover:bg-[var(--accent)]/90 disabled:opacity-40"
                             >
                                 {tSettings('toolbox.common.save')}
                             </button>
@@ -5878,7 +5878,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 onClick={() => setPlaywrightSettings(prev => prev ? { ...prev, browser: b.id } : null)}
                                                 className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
                                                     playwrightSettings.browser === b.id
-                                                        ? 'bg-[var(--accent)] text-white'
+                                                        ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                         : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                                 }`}
                                             >
@@ -5905,7 +5905,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                             onClick={() => setPlaywrightSettings(prev => prev ? { ...prev, device: d.id } : null)}
                                             className={`rounded-md px-2.5 py-1 text-xs transition-colors ${
                                                 playwrightSettings.device === d.id
-                                                    ? 'bg-[var(--accent)] text-white'
+                                                    ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                     : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                             }`}
                                         >
@@ -6117,7 +6117,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 <button
                                                     onClick={handleSaveCookie}
                                                     disabled={!cookieForm.domain.trim() || !cookieForm.name.trim() || !cookieForm.value.trim()}
-                                                    className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                                                    className="rounded-md bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)] disabled:opacity-40"
                                                 >
                                                     {cookieForm.editIndex !== null
                                                         ? tSettings('toolbox.dialogs.playwright.update')
@@ -6189,7 +6189,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                 }
                                             }}
                                             disabled={!playwrightSettings.newArg.trim()}
-                                            className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-white disabled:opacity-40"
+                                            className="shrink-0 rounded-lg bg-[var(--accent)] px-3 py-1.5 text-xs font-medium text-[var(--on-accent)] disabled:opacity-40"
                                         >
                                             <Plus className="h-3.5 w-3.5" />
                                         </button>
@@ -6208,7 +6208,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             </button>
                             <button
                                 onClick={handleSavePlaywright}
-                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent)]/90"
+                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] hover:bg-[var(--accent)]/90"
                             >
                                 {tSettings('toolbox.common.save')}
                             </button>
@@ -6272,7 +6272,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                             onClick={() => setEdgeTtsSettings(prev => prev ? { ...prev, defaultVoice: v.id } : null)}
                                             className={`rounded-md px-2 py-1 text-xs transition-colors ${
                                                 edgeTtsSettings.defaultVoice === v.id
-                                                    ? 'bg-[var(--accent)] text-white'
+                                                    ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                     : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                             }`}
                                         >
@@ -6298,7 +6298,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                             onClick={() => setEdgeTtsSettings(prev => prev ? { ...prev, defaultOutputFormat: f.id } : null)}
                                             className={`rounded-md px-3 py-1.5 text-xs transition-colors ${
                                                 edgeTtsSettings.defaultOutputFormat === f.id
-                                                    ? 'bg-[var(--accent)] text-white'
+                                                    ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                     : 'bg-[var(--paper-inset)] text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                             }`}
                                         >
@@ -6434,7 +6434,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                     <button
                                         onClick={handlePreviewTts}
                                         disabled={ttsPreviewLoading || !ttsPreviewText.trim()}
-                                        className="shrink-0 h-10 w-10 rounded-full bg-[var(--accent)] text-white flex items-center justify-center hover:bg-[var(--accent)]/90 disabled:opacity-40 transition-colors self-center"
+                                        className="shrink-0 h-10 w-10 rounded-full bg-[var(--accent)] text-[var(--on-accent)] flex items-center justify-center hover:bg-[var(--accent)]/90 disabled:opacity-40 transition-colors self-center"
                                         title={ttsPreviewPlaying
                                             ? tSettings('toolbox.dialogs.edgeTts.stop')
                                             : tSettings('toolbox.dialogs.edgeTts.play')}
@@ -6463,7 +6463,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             </button>
                             <button
                                 onClick={handleSaveEdgeTts}
-                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white hover:bg-[var(--accent)]/90"
+                                className="rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] hover:bg-[var(--accent)]/90"
                             >
                                 {tSettings('toolbox.common.save')}
                             </button>
@@ -6935,7 +6935,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                                                         handleMcpOAuthConnect(mcpForm.id, mcpForm.url);
                                                                     }}
                                                                     disabled={mcpOAuthConnecting === mcpForm.id || !mcpForm.url}
-                                                                    className="flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-white transition-colors hover:opacity-90 disabled:opacity-50"
+                                                                    className="flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-4 py-2 text-sm font-medium text-[var(--on-accent)] transition-colors hover:opacity-90 disabled:opacity-50"
                                                                 >
                                                                     {mcpOAuthConnecting === mcpForm.id ? (
                                                                         <><Loader2 className="h-4 w-4 animate-spin" /> {tSettings('toolbox.dialogs.customMcp.waitingAuthorization')}</>
@@ -7733,7 +7733,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             </button>
                             <button
                                 onClick={confirmDeleteCustomProvider}
-                                className="flex-1 rounded-lg bg-[var(--error)] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--error-hover)]"
+                                className="flex-1 rounded-lg bg-[var(--error)] px-4 py-2.5 text-sm font-medium text-[var(--on-error)] transition-colors hover:bg-[var(--error-hover)]"
                             >
                                 {tSettings('providers.custom.delete')}
                             </button>
@@ -7777,7 +7777,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                             {showAiInstallButton && (
                                 <button
                                     onClick={handleAiInstallRuntime}
-                                    className="flex-1 rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-medium text-white transition-colors hover:bg-[var(--accent-warm-hover)]"
+                                    className="flex-1 rounded-lg bg-[var(--accent)] px-4 py-2.5 text-sm font-medium text-[var(--on-accent)] transition-colors hover:bg-[var(--accent-warm-hover)]"
                                 >
                                     {tSettings('toolbox.dialogs.runtimeMissing.askHelperInstall')}
                                 </button>

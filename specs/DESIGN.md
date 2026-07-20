@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.6.0
+> **Version**: 2.6.1
 > **Last Updated**: 2026-07-20
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -32,9 +32,9 @@ MyAgents 的视觉由完整 `Theme` 管理；light / dark / system 是 `Appearan
 
 当前 production 仅有 canonical `myagents-default`。它的物理 owner 是：
 
-- `src/renderer/theme/themes/myagents-default.css`：精确 Theme root / light / dark root 下的字体角色、颜色、材质、圆角、阴影、动画和 Floating Ball Token；同一文件既静态保护 canonical 首帧，也由 manifest 提供实际 source 给注册校验与 runtime 激活；
+- `src/renderer/theme/themes/myagents-default.css`：通用首帧 fallback + 精确 Theme root / light / dark root 下的字体角色、颜色、材质、圆角、阴影、动画和 Floating Ball 运行时 Token；同一文件既静态保护 canonical 首帧，也由 manifest 提供实际 source 给注册校验与 runtime 激活；
 - `src/renderer/theme/themes/myagents-default.ts`：Launcher Hero 与 xterm / Monaco / Mermaid / Prism / Widget adapters；
-- `src/renderer/index.css`：与品牌视觉无关的布局、交互、七档 Type Scale，以及 Space 的独立 scoped override。
+- `src/renderer/index.css`：与品牌视觉无关的布局、交互、七档 Type Scale、不携带视觉值的 Tailwind runtime Token 编译桥，以及 Space 的独立 scoped override。
 
 组件只消费语义 Token 或 `useResolvedTheme()` adapter，不持有 light/dark palette，不观察 `.dark` 反推状态。Widget adapter 必须提供 iframe 可直接使用的 literal，不能引用宿主 `var(...)`。完整 Theme 不允许让用户混搭颜色、字体、背景等零件；某 Theme 缺项时整套回退 canonical default。
 
@@ -66,16 +66,17 @@ MyAgents 的视觉由完整 `Theme` 管理；light / dark / system 是 `Appearan
 | `--paper-elevated` | `#fffcf7` | 卡片、弹层背景 |
 | `--message-user-bg` | `#fffefa` | 用户 Query 气泡背景（比对话页更白，去阴影后保持层次） |
 | `--paper-inset` | `#e8dccf` | 输入框内部、小按钮 hover |
-| `--hover-bg` | `rgba(194, 109, 58, 0.07)` | 通用列表项 hover（7% 暖棕 accent） |
+| `--hover-bg` | `rgb(28 22 18 / 0.07)` | 通用列表项 hover（7% 墨色） |
 
 #### Accent (强调色)
 | Token | 值 | 用途 |
 |-------|------|------|
-| `--accent` | `#c26d3a` | 一等公民强调色（= accent-warm） |
-| `--accent-warm` | `#c26d3a` | 暖强调色（主按钮、链接、高亮） |
-| `--accent-warm-hover` | `#e18a58` | 暖强调 hover |
-| `--accent-warm-subtle` | `rgba(194,109,58,0.08)` | 微弱强调背景 |
-| `--accent-warm-muted` | `rgba(194,109,58,0.15)` | 选中态强调背景 |
+| `--accent` | `#1c1612` | 一等公民动作色（= accent-warm） |
+| `--accent-warm` | `#1c1612` | 动作强调色（主按钮、链接、高亮） |
+| `--accent-warm-hover` | `#2e2825` | 动作强调 hover |
+| `--accent-warm-subtle` | `rgb(28 22 18 / 0.08)` | 微弱强调背景 |
+| `--accent-warm-muted` | `rgb(28 22 18 / 0.16)` | 选中态强调背景 |
+| `--on-accent` | `#ffffff` | 强调底上的前景色；dark 中反转为 `#1a1614` |
 | `--accent-cool` | `#2e6f5e` | 冷强调色（文件夹、标签） |
 | `--accent-cool-hover` | `#3d8a75` | 冷强调 hover |
 
@@ -90,28 +91,30 @@ MyAgents 的视觉由完整 `Theme` 管理；light / dark / system 是 `Appearan
 
 用于状态反馈，需谨慎使用，避免页面过于花哨。
 
-| Token | 值 | 背景色 | 用途 |
-|-------|------|-------|------|
-| `--success` | `#2d8a5e` | `#e2f0e8` | 成功、已启用、已完成（暖化绿） |
-| `--error` | `#dc2626` | `#fee2e2` | 错误、失败、危险操作 |
-| `--error-hover` | `#b91c1c` | — | 危险按钮 hover（消除硬编码） |
-| `--warning` | `#d97706` | `#fef3c7` | 警告、需注意 |
-| `--info` | `#4a7ab5` | `#e4ecf4` | 信息提示、加载中（暖化蓝） |
+| Token | 值 | 背景色 | 实色表面前景 | 用途 |
+|-------|------|-------|-------------|------|
+| `--success` | `#2d8a5e` | `#e2f0e8` | `--on-success` | 成功、已启用、已完成（暖化绿） |
+| `--error` | `#dc2626` | `#fee2e2` | `--on-error` | 错误、失败、危险操作 |
+| `--error-hover` | `#b91c1c` | — | `--on-error` | 危险按钮 hover（消除硬编码） |
+| `--warning` | `#d97706` | `#fef3c7` | `--on-warning` | 警告、需注意 |
+| `--info` | `#4a7ab5` | `#e4ecf4` | `--on-info` | 信息提示、加载中（暖化蓝） |
 
 **使用原则**：
 - 语义色仅用于状态指示，不作为装饰
 - 优先使用图标+文字，颜色作为辅助
 - 背景色用于 toast、badge，主色用于图标、文字
+- 主色作为实色 surface 时必须使用对应的 `--on-success/error/warning/info`，禁止借用 `--on-accent` 或硬编码白色
 
 ### 1.3 按钮专用色
 
 | Token | 值 | 用途 |
 |-------|------|------|
-| `--button-primary-bg` | `#c26d3a` | 主按钮背景（暖棕 Accent） |
-| `--button-primary-bg-hover` | `#b05e2d` | 主按钮 hover |
-| `--button-primary-text` | `#ffffff` | 主按钮文字 |
-| `--button-dark-bg` | `#1c1612` | 深棕按钮（特殊场景） |
-| `--button-dark-bg-hover` | `#3a3532` | 深棕按钮 hover |
+| `--button-primary-bg` | `#1c1612` | 主按钮背景 |
+| `--button-primary-bg-hover` | `#2e2825` | 主按钮 hover |
+| `--button-primary-text` | `var(--on-accent)` | 主按钮文字，light/dark 自动保持对比度 |
+| `--button-dark-bg` | `#1c1612` | 固定深色按钮/tooltip 背景（特殊场景） |
+| `--button-dark-bg-hover` | `#3a3532` | 固定深色按钮 hover |
+| `--button-dark-text` | `#ffffff` | 固定深色 surface 的配对前景；dark 中为 `#e4dcd4` |
 | `--button-secondary-bg` | `#e8dccf` | 次按钮背景 |
 | `--button-secondary-bg-hover` | `#ddd0c2` | 次按钮 hover |
 | `--button-secondary-text` | `#1c1612` | 次按钮文字 |
@@ -156,8 +159,9 @@ MyAgents 的视觉由完整 `Theme` 管理；light / dark / system 是 `Appearan
 > 因此 Latin-only 子链 **不能**以 `sans-serif` 结尾，组合链的通用字族兜底必须放在整条链的**最末端**（CJK 字体之后）。
 
 ```css
-/* myagents-default.css @theme — 同时驱动 font-sans / font-mono 工具类 */
-@theme {
+/* myagents-default.css — Theme 只拥有运行时视觉值 */
+:root,
+html[data-theme-id='myagents-default'] {
   /* Latin-only 子链：结尾无 generic */
   --font-latin: 'SF Pro Text', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI';
   /* CJK 子链：macOS 苹方 → Windows 微软雅黑（加 Microsoft YaHei UI 容错） */
@@ -169,12 +173,18 @@ MyAgents 的视觉由完整 `Theme` 管理；light / dark / system 是 `Appearan
   --font-body: var(--font-latin), var(--font-chinese), sans-serif;
   --font-display: var(--font-latin), var(--font-chinese), sans-serif;
   --font-code: var(--font-mono-latin), var(--font-chinese), monospace;
+}
 
-  /* Tailwind 工具类别名 — `font-sans` / `font-mono` 自动带中文 fallback */
+/* index.css — Tailwind 编译期桥，不复制 Theme 值 */
+@theme inline {
   --font-sans: var(--font-body);
   --font-mono: var(--font-code);
 }
 ```
+
+Theme package 中禁止声明 raw `@theme`：它在 runtime 动态注入时不会再经过 Tailwind 编译，
+会让 `font-sans` / `font-mono` 静默退回 Tailwind 默认字体。编译指令只存在实际 Tailwind
+入口 `index.css`，运行时值只存在已注册 Theme package。
 
 **平台字体映射**：
 | 用途 | macOS | Windows |
@@ -280,20 +290,28 @@ meta（v2.5——11px 中文在 Windows 低分屏雅黑下偏虚，且 11/12/13 
 
 ## 4. 圆角系统 (Border Radius)
 
-| Token | 值 | 用途 |
+Theme package 拥有 `--theme-radius-*` 运行时值，`index.css` 只把它们桥接为
+Tailwind `rounded*` utility 的 `--radius-*` 别名。因此组件继续使用 `rounded-lg`
+或 `var(--radius-lg)` 时，实际值仍由当前 Theme 决定。
+
+| Theme Token / Utility Alias | 值 | 用途 |
 |-------|------|------|
-| `--radius-sm` | 6px | 小按钮、输入框、标签 |
-| `--radius-md` | 10px | 按钮、下拉菜单 |
-| `--radius-lg` | 14px | 卡片、弹层 |
-| `--radius-xl` | 20px | 大卡片、面板 |
-| `--radius-2xl` | 24px | 模态框、全屏面板 |
-| `--radius-full` | 9999px | 胶囊按钮、头像 |
+| `--theme-radius-base` / `rounded` | 4px | 基础圆角 |
+| `--theme-radius-sm` / `rounded-sm` | 6px | 小按钮、输入框、标签 |
+| `--theme-radius-md` / `rounded-md` | 10px | 按钮、下拉菜单 |
+| `--theme-radius-lg` / `rounded-lg` | 14px | 卡片、弹层 |
+| `--theme-radius-xl` / `rounded-xl` | 20px | 大卡片、面板 |
+| `--theme-radius-2xl` / `rounded-2xl` | 24px | 模态框、全屏面板 |
+| `--theme-radius-full` / `rounded-full` | 9999px | 胶囊按钮、头像 |
 
 ---
 
 ## 5. 阴影系统 (Shadows)
 
-通过 Tailwind v4 `@theme` 覆盖，`shadow-xs/sm/md/lg/xl` 直接映射到暖色阴影：
+当前 Theme 在 light/dark scheme 中分别定义 `--theme-shadow-*`；`index.css`
+通过无视觉值的 `@theme inline` 桥接，使 `shadow` / `shadow-xs/sm/md/lg/xl/2xl`
+和 `hover:shadow-*` 在运行时读取当前 Theme，不得回退到 Tailwind 默认蓝灰阴影。
+下表是 canonical light scheme：
 
 | Tailwind Class | 值 | 用途 |
 |----------------|------|------|
@@ -302,8 +320,10 @@ meta（v2.5——11px 中文在 Windows 低分屏雅黑下偏虚，且 11/12/13 
 | `shadow-md` | `0 8px 24px rgb(28 22 18 / 0.12)` | 下拉菜单、弹层 |
 | `shadow-lg` | `0 16px 40px rgb(28 22 18 / 0.16)` | 模态框、浮层 |
 | `shadow-xl` | `0 24px 48px rgb(28 22 18 / 0.20)` | 全屏面板 |
+| `shadow-2xl` | `0 32px 64px -12px rgb(28 22 18 / 0.25)` | 最高层浮层 |
 
-CSS var references (`--shadow-*`) 保留在 `:root` 中供非 Tailwind 样式使用。
+CSS var aliases (`--shadow-*`) 由 Tailwind 编译桥产生；Theme contract 校验的 owner
+是 `--theme-shadow-*`。
 
 ---
 
@@ -364,7 +384,7 @@ Hover 文字: var(--ink)
 #### 危险按钮 (Danger)
 ```
 背景: var(--error)
-文字: white
+文字: var(--on-error)
 Hover: var(--error-hover)
 用于: 删除、不可恢复操作
 ```
@@ -372,7 +392,7 @@ Hover: var(--error-hover)
 #### 强调按钮 (Accent)
 ```
 背景: var(--accent)
-文字: white
+文字: var(--on-accent)
 Hover: var(--accent-warm-hover)
 用于: 下载、跳转等次要强调操作
 ```
@@ -457,7 +477,7 @@ Item 选中: 文字 var(--accent-warm)
 圆角: var(--radius-full)
 关闭背景: var(--line-strong)
 开启背景: var(--accent)
-滑块: 20px (h-5 w-5) 白色圆形, bg-white shadow
+滑块: 20px (h-5 w-5) 圆形, bg-[var(--toggle-thumb)] shadow；dark action 反转时同步使用深色 thumb
 滑块位置: 关闭 translate-x-0, 开启 translate-x-5
 光标: cursor-pointer, 加载中 cursor-wait, 禁用 cursor-not-allowed
 ```
@@ -563,7 +583,8 @@ Item 选中: 文字 var(--accent-warm)
 | **列表行 / 大面积 hover** | `var(--hover-bg)` | 任务行、历史记录、侧边栏导航、目录树 item、命令菜单、Tab 切换、工具执行行 |
 | **小型按钮 / 紧凑 hover** | `var(--paper-inset)` | 图标按钮、工具栏 ghost 按钮、表单内操作按钮、tooltip 内按钮 |
 
-**`--hover-bg` 定义**：`rgba(194, 109, 58, 0.07)` — 7% 暖棕色 accent，与整体棕色设计系统一致，避免灰色系 hover 产生视觉违和。
+**`--hover-bg` 定义**：light 为 `rgb(28 22 18 / 0.07)`，dark 为
+`rgb(228 220 212 / 0.10)`；用当前 scheme 的动作前景低透明铺底，与黑白 action palette 保持一致。
 
 **Tailwind 类名**：
 ```jsx
@@ -969,7 +990,7 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
   --paper: #faf6ee;
   --paper-elevated: #fffcf7;
   --paper-inset: #e8dccf;
-  --hover-bg: rgba(194, 109, 58, 0.07);
+  --hover-bg: rgb(28 22 18 / 0.07);
 
   /* ========== Colors: Heartbeat ========== */
   --heartbeat: #c75050;
@@ -977,31 +998,37 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
   --heartbeat-border: rgba(199, 80, 80, 0.20);
 
   /* ========== Colors: Accent ========== */
-  --accent: #c26d3a;
-  --accent-warm: #c26d3a;
-  --accent-warm-hover: #e18a58;
-  --accent-warm-subtle: rgba(194, 109, 58, 0.08);
-  --accent-warm-muted: rgba(194, 109, 58, 0.15);
+  --accent: #1c1612;
+  --accent-warm: #1c1612;
+  --accent-warm-hover: #2e2825;
+  --accent-warm-subtle: rgb(28 22 18 / 0.08);
+  --accent-warm-muted: rgb(28 22 18 / 0.16);
+  --on-accent: #ffffff;
   --accent-cool: #2e6f5e;
   --accent-cool-hover: #3d8a75;
 
   /* ========== Colors: Semantic ========== */
   --success: #2d8a5e;
   --success-bg: #e2f0e8;
+  --on-success: #000000;
   --error: #dc2626;
   --error-bg: #fee2e2;
   --error-hover: #b91c1c;
+  --on-error: #ffffff;
   --warning: #d97706;
   --warning-bg: #fef3c7;
+  --on-warning: #1c1612;
   --info: #4a7ab5;
   --info-bg: #e4ecf4;
+  --on-info: #000000;
 
   /* ========== Colors: Button ========== */
-  --button-primary-bg: #c26d3a;
-  --button-primary-bg-hover: #b05e2d;
-  --button-primary-text: #ffffff;
+  --button-primary-bg: #1c1612;
+  --button-primary-bg-hover: #2e2825;
+  --button-primary-text: var(--on-accent);
   --button-dark-bg: #1c1612;
   --button-dark-bg-hover: #3a3532;
+  --button-dark-text: #ffffff;
   --button-secondary-bg: #e8dccf;
   --button-secondary-bg-hover: #ddd0c2;
   --button-secondary-text: #1c1612;
@@ -1012,7 +1039,7 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
   --line-subtle: rgb(28 22 18 / 0.06);
 
   /* ========== Typography ==========
-     注：生产代码中 font 已迁移至 @theme 块（单一真相源，详见 §2.1）。
+     注：font 运行时值在 Theme root；index.css 的 @theme inline 只是编译桥。
      Latin-only 子链末尾不带 generic；组合链的 sans-serif / monospace 只出现在
      最末端 —— 避开 Chinese Windows 的 SimSun/NSimSun 回退坑。 */
   --font-latin: 'SF Pro Text', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI';
@@ -1023,12 +1050,13 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
   --font-code: var(--font-mono-latin), var(--font-chinese), monospace;
 
   /* ========== Border Radius ========== */
-  --radius-sm: 6px;
-  --radius-md: 10px;
-  --radius-lg: 14px;
-  --radius-xl: 20px;
-  --radius-2xl: 24px;
-  --radius-full: 9999px;
+  --theme-radius-base: 4px;
+  --theme-radius-sm: 6px;
+  --theme-radius-md: 10px;
+  --theme-radius-lg: 14px;
+  --theme-radius-xl: 20px;
+  --theme-radius-2xl: 24px;
+  --theme-radius-full: 9999px;
 
   /* ========== Animation ========== */
   --duration-fast: 150ms;
@@ -1037,7 +1065,10 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
 }
 ```
 
-Shadows are managed via Tailwind v4 `@theme` — see Section 5.
+Shadow 运行时值是 Theme scheme 下的 `--theme-shadow-*`，Tailwind 只通过
+`index.css` 的 `@theme inline` 编译桥生成 utility，详见第 5 节。dark scheme 的
+action palette 反转为 ivory 底 + 深色 `--on-accent`；`--toggle-thumb` 同步反转为深色，
+避免开启态 thumb 与 track 同色不可见。
 
 ---
 
@@ -1342,6 +1373,7 @@ Hover 操作:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.6.1 | 2026-07-20 | **Theme runtime 编译桥与 action palette 修正**：Tailwind 入口用无值 `@theme inline` 桥接 Theme-owned font/radius/shadow/duration，production build 增加生成 CSS 契约校验；canonical default Accent/Hover/Primary/Focus 改用 Space 现行黑白 action palette，强调底前景改用 `--on-accent`；xterm 字体指标变化后原位 fit 并同步 PTY，split 几何判稳由 ResizeObserver 负责而不复制 Theme transition 时长 |
 | 2.6.0 | 2026-07-20 | **Theme System 架构收口（PRD 0.3.2）**：区分 Theme / AppearanceMode / ResolvedColorScheme；现有 light/dark 视觉完整迁入 canonical `myagents-default`；Launcher Hero、CSS Token、xterm、Monaco、Mermaid、Prism、Widget 与 Floating Ball 统一消费 `ResolvedTheme`；Space `space-mono` 明确保持独立；本次无有意视觉优化 |
 | 2.5.9 | 2026-07-08 | **移动端断点收窄**：`--breakpoint-mobile` 从 768px 调整为 640px；桌面中等宽度和 split preview 默认 50% 场景更倾向保留工作区 inline，真正窄屏才切 overlay / stacked 布局 |
 | 2.5.8 | 2026-06-20 | **Launcher 历史筛选与收藏规范**：历史标题行筛选器明确为「全部 / 我的收藏 / 工作区」三类历史筛选，不再仅是工作区筛选；历史行更多菜单纳入「收藏对话 / 取消收藏」，收藏状态持久化到 session metadata |
