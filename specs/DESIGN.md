@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.6.1
+> **Version**: 2.6.2
 > **Last Updated**: 2026-07-20
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -66,17 +66,17 @@ MyAgents 的视觉由完整 `Theme` 管理；light / dark / system 是 `Appearan
 | `--paper-elevated` | `#fffcf7` | 卡片、弹层背景 |
 | `--message-user-bg` | `#fffefa` | 用户 Query 气泡背景（比对话页更白，去阴影后保持层次） |
 | `--paper-inset` | `#e8dccf` | 输入框内部、小按钮 hover |
-| `--hover-bg` | `rgb(28 22 18 / 0.07)` | 通用列表项 hover（7% 墨色） |
+| `--hover-bg` | `rgba(194, 109, 58, 0.07)` | 通用列表项 hover（7% 暖橙） |
 
 #### Accent (强调色)
 | Token | 值 | 用途 |
 |-------|------|------|
-| `--accent` | `#1c1612` | 一等公民动作色（= accent-warm） |
-| `--accent-warm` | `#1c1612` | 动作强调色（主按钮、链接、高亮） |
-| `--accent-warm-hover` | `#2e2825` | 动作强调 hover |
-| `--accent-warm-subtle` | `rgb(28 22 18 / 0.08)` | 微弱强调背景 |
-| `--accent-warm-muted` | `rgb(28 22 18 / 0.16)` | 选中态强调背景 |
-| `--on-accent` | `#ffffff` | 强调底上的前景色；dark 中反转为 `#1a1614` |
+| `--accent` | `#c26d3a` | 一等公民动作色（= accent-warm） |
+| `--accent-warm` | `#c26d3a` | 动作强调色（主按钮、链接、高亮） |
+| `--accent-warm-hover` | `#e18a58` | 动作强调 hover |
+| `--accent-warm-subtle` | `rgba(194, 109, 58, 0.08)` | 微弱强调背景 |
+| `--accent-warm-muted` | `rgba(194, 109, 58, 0.15)` | 选中态强调背景 |
+| `--on-accent` | `#ffffff` | 强调底上的配对前景色，light / dark 均为白色 |
 | `--accent-cool` | `#2e6f5e` | 冷强调色（文件夹、标签） |
 | `--accent-cool-hover` | `#3d8a75` | 冷强调 hover |
 
@@ -109,8 +109,8 @@ MyAgents 的视觉由完整 `Theme` 管理；light / dark / system 是 `Appearan
 
 | Token | 值 | 用途 |
 |-------|------|------|
-| `--button-primary-bg` | `#1c1612` | 主按钮背景 |
-| `--button-primary-bg-hover` | `#2e2825` | 主按钮 hover |
+| `--button-primary-bg` | `#c26d3a` | 主按钮背景 |
+| `--button-primary-bg-hover` | `#b05e2d` | 主按钮 hover |
 | `--button-primary-text` | `var(--on-accent)` | 主按钮文字，light/dark 自动保持对比度 |
 | `--button-dark-bg` | `#1c1612` | 固定深色按钮/tooltip 背景（特殊场景） |
 | `--button-dark-bg-hover` | `#3a3532` | 固定深色按钮 hover |
@@ -477,7 +477,7 @@ Item 选中: 文字 var(--accent-warm)
 圆角: var(--radius-full)
 关闭背景: var(--line-strong)
 开启背景: var(--accent)
-滑块: 20px (h-5 w-5) 圆形, bg-[var(--toggle-thumb)] shadow；dark action 反转时同步使用深色 thumb
+滑块: 20px (h-5 w-5) 圆形, bg-[var(--toggle-thumb)] shadow；light 为白色，dark 为暖米白
 滑块位置: 关闭 translate-x-0, 开启 translate-x-5
 光标: cursor-pointer, 加载中 cursor-wait, 禁用 cursor-not-allowed
 ```
@@ -583,8 +583,8 @@ Item 选中: 文字 var(--accent-warm)
 | **列表行 / 大面积 hover** | `var(--hover-bg)` | 任务行、历史记录、侧边栏导航、目录树 item、命令菜单、Tab 切换、工具执行行 |
 | **小型按钮 / 紧凑 hover** | `var(--paper-inset)` | 图标按钮、工具栏 ghost 按钮、表单内操作按钮、tooltip 内按钮 |
 
-**`--hover-bg` 定义**：light 为 `rgb(28 22 18 / 0.07)`，dark 为
-`rgb(228 220 212 / 0.10)`；用当前 scheme 的动作前景低透明铺底，与黑白 action palette 保持一致。
+**`--hover-bg` 定义**：light 为 `rgba(194, 109, 58, 0.07)`，dark 为
+`rgba(194, 109, 58, 0.12)`；统一使用暖橙低透明铺底，在两种 scheme 中保持品牌动作反馈。
 
 **Tailwind 类名**：
 ```jsx
@@ -990,7 +990,7 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
   --paper: #faf6ee;
   --paper-elevated: #fffcf7;
   --paper-inset: #e8dccf;
-  --hover-bg: rgb(28 22 18 / 0.07);
+  --hover-bg: rgba(194, 109, 58, 0.07);
 
   /* ========== Colors: Heartbeat ========== */
   --heartbeat: #c75050;
@@ -998,11 +998,11 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
   --heartbeat-border: rgba(199, 80, 80, 0.20);
 
   /* ========== Colors: Accent ========== */
-  --accent: #1c1612;
-  --accent-warm: #1c1612;
-  --accent-warm-hover: #2e2825;
-  --accent-warm-subtle: rgb(28 22 18 / 0.08);
-  --accent-warm-muted: rgb(28 22 18 / 0.16);
+  --accent: #c26d3a;
+  --accent-warm: #c26d3a;
+  --accent-warm-hover: #e18a58;
+  --accent-warm-subtle: rgba(194, 109, 58, 0.08);
+  --accent-warm-muted: rgba(194, 109, 58, 0.15);
   --on-accent: #ffffff;
   --accent-cool: #2e6f5e;
   --accent-cool-hover: #3d8a75;
@@ -1023,8 +1023,8 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
   --on-info: #000000;
 
   /* ========== Colors: Button ========== */
-  --button-primary-bg: #1c1612;
-  --button-primary-bg-hover: #2e2825;
+  --button-primary-bg: #c26d3a;
+  --button-primary-bg-hover: #b05e2d;
   --button-primary-text: var(--on-accent);
   --button-dark-bg: #1c1612;
   --button-dark-bg-hover: #3a3532;
@@ -1066,9 +1066,9 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
 ```
 
 Shadow 运行时值是 Theme scheme 下的 `--theme-shadow-*`，Tailwind 只通过
-`index.css` 的 `@theme inline` 编译桥生成 utility，详见第 5 节。dark scheme 的
-action palette 反转为 ivory 底 + 深色 `--on-accent`；`--toggle-thumb` 同步反转为深色，
-避免开启态 thumb 与 track 同色不可见。
+`index.css` 的 `@theme inline` 编译桥生成 utility，详见第 5 节。dark scheme 使用更亮的
+暖橙动作色（`#d4803f`），强调 surface 的配对前景仍为白色；`--toggle-thumb` 使用暖米白，
+确保开启态 thumb 与 track 有稳定对比。
 
 ---
 
@@ -1373,6 +1373,7 @@ Hover 操作:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.6.2 | 2026-07-20 | **恢复 canonical Theme 暖橙 action palette**：根据实机体验撤回 2.6.1 的黑白配色试验，Accent/Hover/Primary/Focus、Widget 与 xterm adapter 恢复原有暖橙参数；保留 Theme runtime 编译桥、语义 foreground、阴影与终端自适应等全部架构修复，Space `space-mono` 继续独立使用黑白 action palette |
 | 2.6.1 | 2026-07-20 | **Theme runtime 编译桥与 action palette 修正**：Tailwind 入口用无值 `@theme inline` 桥接 Theme-owned font/radius/shadow/duration，production build 增加生成 CSS 契约校验；canonical default Accent/Hover/Primary/Focus 改用 Space 现行黑白 action palette，强调底前景改用 `--on-accent`；xterm 字体指标变化后原位 fit 并同步 PTY，split 几何判稳由 ResizeObserver 负责而不复制 Theme transition 时长 |
 | 2.6.0 | 2026-07-20 | **Theme System 架构收口（PRD 0.3.2）**：区分 Theme / AppearanceMode / ResolvedColorScheme；现有 light/dark 视觉完整迁入 canonical `myagents-default`；Launcher Hero、CSS Token、xterm、Monaco、Mermaid、Prism、Widget 与 Floating Ball 统一消费 `ResolvedTheme`；Space `space-mono` 明确保持独立；本次无有意视觉优化 |
 | 2.5.9 | 2026-07-08 | **移动端断点收窄**：`--breakpoint-mobile` 从 768px 调整为 640px；桌面中等宽度和 split preview 默认 50% 场景更倾向保留工作区 inline，真正窄屏才切 overlay / stacked 布局 |

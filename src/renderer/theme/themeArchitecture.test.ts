@@ -27,6 +27,14 @@ function ruleBodyAfter(css: string, selector: string): string {
   return css.slice(open + 1, close);
 }
 
+function sourceSection(contents: string, startMarker: string, endMarker: string): string {
+  const start = contents.indexOf(startMarker);
+  const end = contents.indexOf(endMarker, start + startMarker.length);
+  expect(start).toBeGreaterThanOrEqual(0);
+  expect(end).toBeGreaterThan(start);
+  return contents.slice(start, end);
+}
+
 describe('Theme architecture guardrails', () => {
   it.each([
     'src/renderer/components/TerminalPanel.tsx',
@@ -79,39 +87,88 @@ describe('Theme architecture guardrails', () => {
     expect(theme).not.toContain('@theme');
   });
 
-  it('keeps the approved default action palette aligned with Space mono', () => {
+  it('keeps the restored warm default action palette independent from Space mono', () => {
     const theme = source('src/renderer/theme/themes/myagents-default.css');
     const space = source('src/renderer/index.css');
     const themeLight = ruleBodyAfter(theme, "html[data-color-scheme='light'],");
     const themeDark = ruleBodyAfter(theme, "html[data-color-scheme='dark'],");
     const spaceLight = ruleBodyAfter(space, '[data-ui-theme="space-mono"]');
     const spaceDark = ruleBodyAfter(space, '.dark [data-ui-theme="space-mono"]');
-    const expectedByScheme = {
+    const expectedThemeByScheme = {
       light: [
-        '--accent: #1c1612', '--accent-warm-hover: #2e2825', '--on-accent: #ffffff',
-        '--hover-bg: rgb(28 22 18 / 0.07)', '--button-primary-bg: #1c1612', '--focus-border: #1c1612',
+        '--hover-bg: rgba(194, 109, 58, 0.07)',
+        '--accent: #c26d3a', '--accent-warm: #c26d3a', '--accent-warm-hover: #e18a58',
+        '--accent-warm-subtle: rgba(194, 109, 58, 0.08)',
+        '--accent-warm-muted: rgba(194, 109, 58, 0.15)',
+        '--accent-warm-subtle-a0: rgba(194, 109, 58, 0)', '--on-accent: #ffffff',
+        '--button-primary-bg: #c26d3a', '--button-primary-bg-hover: #b05e2d',
+        '--button-primary-text: var(--on-accent)', '--focus-border: #1c1612', '--toggle-thumb: #ffffff',
       ],
       dark: [
-        '--accent: #e4dcd4', '--accent-warm-hover: #ffffff', '--on-accent: #1a1614',
-        '--hover-bg: rgb(228 220 212 / 0.10)', '--button-primary-bg: #e4dcd4', '--focus-border: #e4dcd4',
+        '--hover-bg: rgba(194, 109, 58, 0.12)',
+        '--accent: #d4803f', '--accent-warm: #d4803f', '--accent-warm-hover: #e89860',
+        '--accent-warm-subtle: rgba(212, 128, 63, 0.12)',
+        '--accent-warm-muted: rgba(212, 128, 63, 0.20)',
+        '--accent-warm-subtle-a0: rgba(212, 128, 63, 0)', '--on-accent: #ffffff',
+        '--button-primary-bg: #d4803f', '--button-primary-bg-hover: #c27030',
+        '--button-primary-text: var(--on-accent)', '--focus-border: var(--accent)', '--toggle-thumb: #e4dcd4',
       ],
     } as const;
-    for (const declaration of expectedByScheme.light) {
+    const expectedSpaceByScheme = {
+      light: [
+        '--accent: #1c1612', '--accent-warm: #1c1612', '--accent-warm-hover: #2e2825',
+        '--accent-warm-subtle: rgb(28 22 18 / 0.08)', '--accent-warm-muted: rgb(28 22 18 / 0.16)',
+        '--accent-warm-subtle-a0: rgb(28 22 18 / 0)', '--on-accent: #ffffff',
+        '--hover-bg: rgb(28 22 18 / 0.07)', '--button-primary-bg: #1c1612',
+        '--button-primary-bg-hover: #2e2825', '--button-primary-text: var(--on-accent)',
+        '--focus-border: #1c1612',
+      ],
+      dark: [
+        '--accent: #e4dcd4', '--accent-warm: #e4dcd4', '--accent-warm-hover: #ffffff',
+        '--accent-warm-subtle: rgb(228 220 212 / 0.12)',
+        '--accent-warm-muted: rgb(228 220 212 / 0.20)',
+        '--accent-warm-subtle-a0: rgb(228 220 212 / 0)', '--on-accent: #1a1614',
+        '--hover-bg: rgb(228 220 212 / 0.10)', '--button-primary-bg: #e4dcd4',
+        '--button-primary-bg-hover: #ffffff', '--button-primary-text: var(--on-accent)',
+        '--focus-border: #e4dcd4',
+      ],
+    } as const;
+    for (const declaration of expectedThemeByScheme.light) {
       expect(themeLight).toContain(declaration);
-      expect(spaceLight).toContain(declaration);
-      expect(themeDark).not.toContain(declaration);
     }
-    for (const declaration of expectedByScheme.dark) {
+    for (const declaration of expectedThemeByScheme.dark) {
       expect(themeDark).toContain(declaration);
+    }
+    expect(themeDark).not.toContain('--accent: #c26d3a');
+    expect(themeLight).not.toContain('--accent: #d4803f');
+    for (const declaration of expectedSpaceByScheme.light) {
+      expect(spaceLight).toContain(declaration);
+    }
+    for (const declaration of expectedSpaceByScheme.dark) {
       expect(spaceDark).toContain(declaration);
-      expect(themeLight).not.toContain(declaration);
     }
 
     const adapters = source('src/renderer/theme/themes/myagents-default.ts');
-    expect(adapters).toContain("'--widget-accent': '#1c1612'");
-    expect(adapters).toContain("'--widget-accent': '#e4dcd4'");
-    expect(adapters).toContain("cursor: '#1c1612'");
-    expect(adapters).toContain("cursor: '#e4dcd4'");
+    const lightWidget = sourceSection(adapters, 'const lightWidgetVariables', 'const darkWidgetVariables');
+    const darkWidget = sourceSection(adapters, 'const darkWidgetVariables', 'const light: ThemeSchemeDefinition');
+    const lightAdapter = sourceSection(adapters, 'const light: ThemeSchemeDefinition', 'const dark: ThemeSchemeDefinition');
+    const darkAdapter = sourceSection(adapters, 'const dark: ThemeSchemeDefinition', 'const noHeroBackground');
+    for (const declaration of [
+      "'--widget-accent': '#c26d3a'", "'--widget-accent-hover': '#e18a58'",
+      "'--widget-accent-subtle': 'rgba(194, 109, 58, 0.08)'", "'--widget-primary-text': '#ffffff'",
+    ]) expect(lightWidget).toContain(declaration);
+    for (const declaration of [
+      "'--widget-accent': '#d4803f'", "'--widget-accent-hover': '#e89860'",
+      "'--widget-accent-subtle': 'rgba(212, 128, 63, 0.12)'", "'--widget-primary-text': '#ffffff'",
+    ]) expect(darkWidget).toContain(declaration);
+    for (const declaration of [
+      "cursor: '#c26d3a'", "selectionBackground: 'rgba(194, 109, 58, 0.18)'",
+      "selectionInactiveBackground: 'rgba(194, 109, 58, 0.10)'",
+    ]) expect(lightAdapter).toContain(declaration);
+    for (const declaration of [
+      "cursor: '#c26d3a'", "selectionBackground: 'rgba(194, 109, 58, 0.25)'",
+      "selectionInactiveBackground: 'rgba(194, 109, 58, 0.15)'",
+    ]) expect(darkAdapter).toContain(declaration);
   });
 
   it('keeps action surfaces paired with their Theme-owned foreground tokens', () => {

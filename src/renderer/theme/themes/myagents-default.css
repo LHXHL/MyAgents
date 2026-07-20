@@ -46,14 +46,14 @@ html[data-theme-id='myagents-default'][data-color-scheme='light'] {
   --paper-elevated-a0: rgb(255 252 247 / 0);
   --message-user-bg-a0: rgb(255 254 250 / 0);
   --paper-inset-a0: rgb(232 220 207 / 0);
-  --hover-bg: rgb(28 22 18 / 0.07);
+  --hover-bg: rgba(194, 109, 58, 0.07);
 
-  --accent: #1c1612;
-  --accent-warm: #1c1612;
-  --accent-warm-hover: #2e2825;
-  --accent-warm-subtle: rgb(28 22 18 / 0.08);
-  --accent-warm-muted: rgb(28 22 18 / 0.16);
-  --accent-warm-subtle-a0: rgb(28 22 18 / 0);
+  --accent: #c26d3a;
+  --accent-warm: #c26d3a;
+  --accent-warm-hover: #e18a58;
+  --accent-warm-subtle: rgba(194, 109, 58, 0.08);
+  --accent-warm-muted: rgba(194, 109, 58, 0.15);
+  --accent-warm-subtle-a0: rgba(194, 109, 58, 0);
   --accent-cool: #2e6f5e;
   --accent-cool-hover: #3d8a75;
   --on-accent: #ffffff;
@@ -76,8 +76,8 @@ html[data-theme-id='myagents-default'][data-color-scheme='light'] {
   --info-bg: #e4ecf4;
   --on-info: #000000;
 
-  --button-primary-bg: #1c1612;
-  --button-primary-bg-hover: #2e2825;
+  --button-primary-bg: #c26d3a;
+  --button-primary-bg-hover: #b05e2d;
   --button-primary-text: var(--on-accent);
   --button-dark-bg: #1c1612;
   --button-dark-bg-hover: #3a3532;
@@ -163,17 +163,17 @@ html[data-theme-id='myagents-default'][data-color-scheme='dark'] {
   --paper-elevated-a0: rgb(36 32 24 / 0);
   --message-user-bg-a0: rgb(42 37 29 / 0);
   --paper-inset-a0: rgb(18 16 14 / 0);
-  --hover-bg: rgb(228 220 212 / 0.10);
+  --hover-bg: rgba(194, 109, 58, 0.12);
 
-  --accent: #e4dcd4;
-  --accent-warm: #e4dcd4;
-  --accent-warm-hover: #ffffff;
-  --accent-warm-subtle: rgb(228 220 212 / 0.12);
-  --accent-warm-muted: rgb(228 220 212 / 0.20);
-  --accent-warm-subtle-a0: rgb(228 220 212 / 0);
+  --accent: #d4803f;
+  --accent-warm: #d4803f;
+  --accent-warm-hover: #e89860;
+  --accent-warm-subtle: rgba(212, 128, 63, 0.12);
+  --accent-warm-muted: rgba(212, 128, 63, 0.20);
+  --accent-warm-subtle-a0: rgba(212, 128, 63, 0);
   --accent-cool: #4aad8a;
   --accent-cool-hover: #5ec49e;
-  --on-accent: #1a1614;
+  --on-accent: #ffffff;
 
   --heartbeat: #d46060;
   --heartbeat-bg: rgba(212, 96, 96, 0.12);
@@ -193,8 +193,8 @@ html[data-theme-id='myagents-default'][data-color-scheme='dark'] {
   --info-bg: rgba(107, 159, 212, 0.15);
   --on-info: #1a1614;
 
-  --button-primary-bg: #e4dcd4;
-  --button-primary-bg-hover: #ffffff;
+  --button-primary-bg: #d4803f;
+  --button-primary-bg-hover: #c27030;
   --button-primary-text: var(--on-accent);
   --button-dark-bg: #443e36;
   --button-dark-bg-hover: #564e44;
@@ -247,8 +247,8 @@ html[data-theme-id='myagents-default'][data-color-scheme='dark'] {
   --tool-shadow-hover: 0 14px 30px -24px rgb(0 0 0 / 0.65);
   --expanded-block-line: rgb(228 220 212 / 0.18);
   --warning-border: rgb(217 119 6 / 0.3);
-  --focus-border: #e4dcd4;
-  --toggle-thumb: #1a1614;
+  --focus-border: var(--accent);
+  --toggle-thumb: #e4dcd4;
   --toggle-off-bg: rgb(228 220 212 / 0.18);
   --code-bg: #141210;
   --code-bg-a0: rgb(20 18 16 / 0);
