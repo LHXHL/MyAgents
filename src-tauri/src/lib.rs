@@ -325,6 +325,26 @@ pub fn run() {
         ))
         .plugin(global_shortcut::build_plugin());
 
+    // Tauri 2.11 wires WKWebView's web-content-process termination callback.
+    // Recover only after WebKit confirms that the renderer process is gone;
+    // ordinary macOS wake/resume must preserve the healthy page and its local
+    // draft state without an unconditional reload.
+    #[cfg(target_os = "macos")]
+    let builder = builder.on_web_content_process_terminate(|webview| {
+        let label = webview.label();
+        ulog_warn!(
+            "[WebView] content process terminated for '{}'; reloading from authoritative session state",
+            label
+        );
+        if let Err(error) = webview.reload() {
+            ulog_error!(
+                "[WebView] failed to reload '{}' after content process termination: {}",
+                label,
+                error
+            );
+        }
+    });
+
     // Floating ball panels need the NSPanel plugin (macOS only).
     #[cfg(target_os = "macos")]
     let builder = builder.plugin(tauri_nspanel::init());

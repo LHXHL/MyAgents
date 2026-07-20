@@ -71,6 +71,14 @@ describe('atomicModifyConfig — CONFIG_CHANGED_EVENT dispatch (issue #303)', ()
     expect(received.length).toBe(0);
   });
 
+  it('allows a composite transaction to defer notification until its final disk state', async () => {
+    await atomicModifyConfig(c => ({ ...c, defaultPermissionMode: 'plan' }), {
+      notification: 'deferred',
+    });
+
+    expect(received).toEqual([]);
+  });
+
   it('fires once per actual mutation across back-to-back writes', async () => {
     // Use a sequence guaranteed to differ from DEFAULT_CONFIG and from each
     // preceding value, so every write is a real diff and fires the event.

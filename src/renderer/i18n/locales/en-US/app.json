@@ -219,7 +219,8 @@
       "cronTask": "Scheduled task",
       "floatingContext": "Floating context",
       "spaceIssue": "Space issue",
-      "goalMode": "Goal Mode"
+      "goalMode": "Goal Mode",
+      "sessionRequest": "Session request"
     },
     "systemInfo": "System info",
     "expand": "Expand"

@@ -23,8 +23,10 @@ import {
   FLOATING_BALL_CONTEXT_TAG,
   GOAL_CONTEXT_TAG,
   GOAL_CONTINUATION_TAG,
+  SESSION_EVENT_TAG,
   SPACE_ISSUE_CONTEXT_TAG,
   parseLeadingSystemReminder,
+  parseSessionSendRequestDisplay,
 } from '../../shared/systemReminder';
 
 interface MessageProps {
@@ -342,22 +344,29 @@ const Message = memo(function Message({ message, isLoading = false, onRewind, on
     const rawUserContent = typeof message.content === 'string' ? message.content : '';
 
     const reminder = parseLeadingSystemReminder(rawUserContent);
+    const sessionSendRequest = parseSessionSendRequestDisplay(reminder);
 
     // Detect system injection type from <system-reminder><TAG> wrapper (whitelist)
     let systemTag: string | null = null;
     if (reminder.kind) systemTag = systemTagLabel(reminder.kind, t);
+    if (reminder.kind === SESSION_EVENT_TAG && sessionSendRequest) {
+      const sourceSuffix = sessionSendRequest.sourceLabel ? ` · ${sessionSendRequest.sourceLabel}` : '';
+      systemTag = `${t('message.systemTags.sessionRequest')}${sourceSuffix}`;
+    }
 
     const hasAttachments = Boolean(message.attachments?.length);
 
     // Pure hidden reminders are transport/control messages, not user chat.
     // If a visible tail exists, render only that tail plus a small badge.
-    if (reminder.hasReminder && !reminder.visibleText.trim() && !hasAttachments) {
+    if (reminder.hasReminder && !reminder.visibleText.trim() && !sessionSendRequest && !hasAttachments) {
       return null;
     }
 
     // Strip system injection tags that wrap delivered content. These HTML-like tags trigger
     // Markdown's HTML block mode, breaking \n rendering and Markdown syntax.
-    const displaySource = reminder.hasReminder ? reminder.visibleText : rawUserContent;
+    const displaySource = reminder.hasReminder
+      ? (reminder.visibleText || sessionSendRequest?.payload || '')
+      : rawUserContent;
     const userContent = displaySource
       .replace(/<\/?system-reminder>/g, '')
       .replace(/<\/?HEARTBEAT>/g, '')

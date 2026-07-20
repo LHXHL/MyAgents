@@ -176,7 +176,7 @@ myagents agent runtime-status                           # 看所有 Agent 的实
 - "飞书 Bot 在线吗" → `agent runtime-status`（这个看运行时；`agent list` 看的是配置）
 - 配 Channel 详见下方 §配置 Agent Channel 流程
 
-`agent set` 和 `agent show` 互补：show 读 effective 值（含 runtime 分层解析），set 写**单个**字段。复杂 Channel 改动走 `agent channel`，别用 `agent set channels`——会被拒。
+`agent set` 和 `agent show` 互补：show 读 effective 值（含 runtime 分层解析），set 写**单个**字段。provider/model/permissionMode 会先按当前 Provider 的 credential/readiness 与 model 目录校验，再同步 Agent 权威记录、Project 兼容镜像和运行中的 Channel；Managed Codex 的 permissionMode 可传 `suggest/auto-edit/no-restrictions` 或产品值 `plan/auto/fullAgency`，落盘统一规范化为产品值。`full-auto` 无法无损映射（它保留 workspace-write sandbox，而 `fullAgency` 会投影成 `no-restrictions`），因此 setter 会拒绝。复杂 Channel 改动走 `agent channel`，别用 `agent set channels`——会被拒。
 
 ### Agent Runtime 发现（runtime）
 

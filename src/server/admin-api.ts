@@ -14,7 +14,17 @@ import { execFile } from 'node:child_process';
 import { lstatSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { cp as fsCp } from 'node:fs/promises';
 import { promisify } from 'node:util';
-import { splitProviderModelInput, type McpServerDefinition, type ProxySettings } from '../shared/config-types';
+import {
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
+  splitProviderModelInput,
+  type McpServerDefinition,
+  type PermissionMode,
+  type ProxySettings,
+} from '../shared/config-types';
+import {
+  managedCodexProviderPermissionToRuntimePermission,
+  managedCodexRuntimePermissionToProviderPermission,
+} from '../shared/providerExecution';
 import { deriveCliToolKind, type CliToolRegistryEntry } from '../shared/types/cliTools';
 import { workspacePathsEqual } from '../shared/workspacePath';
 import { IMAGE_UNDERSTANDING_TOOL_ID } from '../shared/official-tools';
@@ -37,6 +47,7 @@ import {
 import {
   loadConfig,
   atomicModifyConfig,
+  withAgentConfigIntentLock,
   getAllMcpServers,
   getEnabledMcpServerIds,
   loadProjects,
@@ -44,7 +55,9 @@ import {
   redactSecret,
   findProvider,
   getAllEffectiveProviders,
+  getProviderSelectionError,
   isProviderDisabled,
+  resolveProviderEnv,
   getProvidersDir,
   isCliToolRegistryEnabled,
   type AdminAppConfig,
@@ -1393,20 +1406,175 @@ export async function handleAgentSet(payload: { id: string; key: string; value: 
         error: `Unknown runtime: '${value}'. Valid: ${VALID_RUNTIMES.join(', ')}.`,
       };
     }
-    return modifyAgent(
+    return modifyAgentConfigIntent(
       id,
       agent => {
         const patch = buildRuntimeChangePatch(
           agent.runtimeConfig as RuntimeConfig | undefined,
           value as RuntimeType,
         );
-        return { ...agent, runtime: patch.runtime, runtimeConfig: patch.runtimeConfig };
+        return {
+          ok: true,
+          agent: { ...agent, runtime: patch.runtime, runtimeConfig: patch.runtimeConfig },
+          livePatch: { runtime: patch.runtime, runtimeConfig: patch.runtimeConfig ?? null },
+        };
       },
       'set',
     );
   }
 
-  return modifyAgent(id, agent => ({ ...agent, [key]: value }), 'set');
+  if (key === 'permissionMode') {
+    if (typeof value !== 'string') {
+      return { success: false, error: 'permissionMode must be a string' };
+    }
+  }
+
+  if ((key === 'providerId' || key === 'model')
+    && (typeof value !== 'string' || !value.trim())) {
+    return { success: false, error: `${key} must be a non-empty string` };
+  }
+
+  return modifyAgentConfigIntent(
+    id,
+    (agent, currentConfig) => {
+      let normalizedValue = value;
+      if (key === 'permissionMode') {
+        const requestedMode = (value as string).trim();
+        if (agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID) {
+          // `full-auto` keeps Codex's workspace-write sandbox, while the product
+          // vocabulary has no lossless storage value for it. Mapping it to
+          // fullAgency would later project as danger-full-access
+          // (`no-restrictions`), silently escalating permissions.
+          if (requestedMode === 'full-auto') {
+            return {
+              ok: false,
+              response: {
+                success: false,
+                error: "Managed Codex permissionMode 'full-auto' cannot be stored losslessly. Valid: suggest, auto-edit, no-restrictions, auto, plan, fullAgency.",
+              },
+            };
+          }
+          const normalized = managedCodexRuntimePermissionToProviderPermission(requestedMode);
+          if (!normalized) {
+            return {
+              ok: false,
+              response: {
+                success: false,
+                error: 'Invalid managed Codex permissionMode. Valid: suggest, auto-edit, no-restrictions, auto, plan, fullAgency.',
+              },
+            };
+          }
+          normalizedValue = normalized;
+        } else {
+          const validModes: PermissionMode[] = ['auto', 'plan', 'fullAgency'];
+          if (!validModes.includes(requestedMode as PermissionMode)) {
+            return {
+              ok: false,
+              response: {
+                success: false,
+                error: `Invalid permissionMode. Valid: ${validModes.join(', ')}.`,
+              },
+            };
+          }
+          normalizedValue = requestedMode;
+        }
+      }
+
+      if (key === 'providerId' || key === 'model') {
+        normalizedValue = (value as string).trim();
+      }
+
+      if (key === 'providerId') {
+        const provider = getAllEffectiveProviders(currentConfig)
+          .find(candidate => candidate.id === normalizedValue);
+        if (!provider) {
+          return {
+            ok: false,
+            response: {
+              success: false,
+              error: `Unknown providerId: '${normalizedValue}'. Run 'myagents model list' to inspect available providers.`,
+            },
+          };
+        }
+        const selectionError = getProviderSelectionError(provider, currentConfig);
+        if (selectionError) {
+          return { ok: false, response: { success: false, error: selectionError } };
+        }
+      }
+
+      if (key === 'model') {
+        const providerId = typeof agent.providerId === 'string'
+          ? agent.providerId
+          : currentConfig.defaultProviderId;
+        const provider = providerId
+          ? getAllEffectiveProviders(currentConfig).find(candidate => candidate.id === providerId)
+          : undefined;
+        if (!provider) {
+          return {
+            ok: false,
+            response: {
+              success: false,
+              error: 'Cannot validate model without an Agent providerId. Set providerId first.',
+            },
+          };
+        }
+        const selectionError = getProviderSelectionError(provider, currentConfig);
+        if (selectionError) {
+          return { ok: false, response: { success: false, error: selectionError } };
+        }
+        const registeredModels = Array.isArray(provider.models)
+          ? provider.models.flatMap(entry => {
+              if (!entry || typeof entry !== 'object') return [];
+              const model = (entry as Record<string, unknown>).model;
+              return typeof model === 'string' && model.trim() ? [model.trim()] : [];
+            })
+          : [];
+        // Runtime-backed providers discover models dynamically. An empty static
+        // catalogue means validation belongs to that runtime, not that no model
+        // is legal. Providers with a concrete catalogue fail closed on typos.
+        if (registeredModels.length > 0 && !registeredModels.includes(String(normalizedValue))) {
+          return {
+            ok: false,
+            response: {
+              success: false,
+              error: `Model '${normalizedValue}' is not registered for provider '${provider.id}'.`,
+            },
+          };
+        }
+      }
+
+      const projectMirrorFields = new Set([
+        'providerId',
+        'model',
+        'permissionMode',
+        'mcpEnabledServers',
+        'enabledPluginIds',
+      ]);
+      const liveReloadFields = new Set(['providerId', 'model', 'permissionMode']);
+      const providerEnvJson = key === 'providerId'
+        ? (() => {
+            const resolved = resolveProviderEnv(String(normalizedValue), currentConfig);
+            return resolved ? JSON.stringify(resolved) : undefined;
+          })()
+        : undefined;
+      return {
+        ok: true,
+        agent: {
+          ...agent,
+          [key]: normalizedValue,
+          ...(key === 'providerId' ? { providerEnvJson } : {}),
+        },
+        projectPatch: projectMirrorFields.has(key) ? { [key]: normalizedValue } : undefined,
+        livePatch: liveReloadFields.has(key)
+          ? {
+              [key]: normalizedValue,
+              ...(key === 'providerId' ? { providerEnvJson: providerEnvJson ?? null } : {}),
+            }
+          : undefined,
+      };
+    },
+    'set',
+  );
 }
 
 export function handleAgentChannelList(payload: { agentId: string }): AdminResponse {
@@ -2585,7 +2753,8 @@ Commands:
   disable <id>                    Disable an agent
   archive <id>                    Archive an Agent workspace and pause proactive channels
   unarchive <id>                  Restore an archived Agent workspace
-  set <id> <key> <value>          Set agent config field
+  set <id> <key> <value>          Set one Agent field; provider/model/permission
+                                  also sync the Project mirror and live channels
   runtime-status                  Runtime drift status across agents
   channel list <agent-id>         List channels
   channel add <agent-id>          Add a channel
@@ -2596,6 +2765,13 @@ Options for 'channel add':
   --token       Bot token (for telegram)
   --app-id      App ID (for feishu/dingtalk)
   --app-secret  App Secret (for feishu/dingtalk)
+
+Managed Codex permissionMode accepts either product values
+(auto | plan | fullAgency) or Codex values
+(auto-edit | suggest | no-restrictions); storage is normalized to
+the product vocabulary and 'show' reports the effective Codex value.
+Codex 'full-auto' is rejected because product storage cannot distinguish its
+workspace-write sandbox from unrestricted danger-full-access.
 
 Typical flow (AI preparing a task override):
   1. myagents agent show <id>          — learn current defaults
@@ -4616,7 +4792,10 @@ export function handleAgentShow(payload: { id?: string }): AdminResponse {
   // AgentConfigSlim is intentionally permissive (`[key: string]: unknown`) —
   // runtime / permissionMode / runtimeConfig exist on the full AgentConfig
   // but not on the slim shape. Extract defensively.
-  const runtime = (agent.runtime as RuntimeType | undefined) ?? 'builtin';
+  const storedRuntime = (agent.runtime as RuntimeType | undefined) ?? 'builtin';
+  const usesManagedCodex = agent.providerId === CODEX_SUBSCRIPTION_PROVIDER_ID
+    && storedRuntime === 'builtin';
+  const runtime: RuntimeType = usesManagedCodex ? 'codex' : storedRuntime;
   const agentPermissionMode = (agent.permissionMode as string | undefined) ?? '';
   const runtimeConfig = (agent.runtimeConfig as Record<string, unknown> | undefined) ?? undefined;
 
@@ -4636,8 +4815,12 @@ export function handleAgentShow(payload: { id?: string }): AdminResponse {
   const rcPermissionMode = isExternal
     ? (runtimeConfig?.permissionMode as string | undefined)
     : undefined;
-  const effectiveModel = rcModel ?? (agent.model as string | undefined);
-  const effectivePermissionMode = rcPermissionMode ?? agentPermissionMode;
+  const effectiveModel = usesManagedCodex
+    ? (agent.model as string | undefined)
+    : (rcModel ?? (agent.model as string | undefined));
+  const effectivePermissionMode = usesManagedCodex
+    ? managedCodexProviderPermissionToRuntimePermission(agentPermissionMode)
+    : (rcPermissionMode ?? agentPermissionMode);
 
   return {
     success: true,
@@ -4648,6 +4831,7 @@ export function handleAgentShow(payload: { id?: string }): AdminResponse {
       workspacePath: agent.workspacePath,
       effectiveDefaults: {
         runtime,
+        ...(usesManagedCodex ? { runtimeSource: 'managed-provider' } : {}),
         model: effectiveModel || null,
         permissionMode: effectivePermissionMode || null,
         providerId: agent.providerId ?? null,
@@ -5070,6 +5254,123 @@ async function modifyAgent(
 
   broadcast('config:changed', { section: 'agent', action, id });
   return { success: true, data: { id } };
+}
+
+/**
+ * Commit a typed Agent configuration intent across the authoritative Agent
+ * record, the Launcher compatibility Project record, and any running Agent/IM
+ * instance. The Project mirror remains optional because archived/legacy Agents
+ * may not have one; the Agent record is always authoritative.
+ */
+type AgentConfigIntentResolution =
+  | {
+      ok: true;
+      agent: AgentConfigSlim;
+      projectPatch?: Record<string, unknown>;
+      livePatch?: Record<string, unknown>;
+    }
+  | { ok: false; response: AdminResponse };
+
+async function modifyAgentConfigIntent(
+  id: string,
+  resolveIntent: (agent: AgentConfigSlim, config: AdminAppConfig) => AgentConfigIntentResolution,
+  action: string,
+): Promise<AdminResponse> {
+  let committedLivePatch: Record<string, unknown> | undefined;
+  const commitResult = await withAgentConfigIntentLock(async (): Promise<AdminResponse | null> => {
+    let previousAgent: AgentConfigSlim | undefined;
+    let updatedAgent: AgentConfigSlim | undefined;
+    let projectPatch: Record<string, unknown> | undefined;
+    let rejected: AdminResponse | undefined;
+    await atomicModifyConfig(current => {
+      const agents = [...(current.agents ?? [])];
+      const index = agents.findIndex(agent => agent.id === id);
+      if (index < 0) return current;
+      const resolution = resolveIntent(agents[index], current);
+      if (!resolution.ok) {
+        rejected = resolution.response;
+        return current;
+      }
+      previousAgent = agents[index];
+      updatedAgent = resolution.agent;
+      projectPatch = resolution.projectPatch;
+      committedLivePatch = resolution.livePatch;
+      agents[index] = updatedAgent;
+      return { ...current, agents };
+    });
+
+    if (rejected) return rejected;
+    if (!previousAgent || !updatedAgent) {
+      return { success: false, error: `Agent '${id}' not found` };
+    }
+
+    if (projectPatch) {
+      try {
+        await atomicModifyProjects(projects => {
+          const entry = findProjectForAgent(projects, updatedAgent!);
+          if (!entry) return projects;
+          const next = [...projects];
+          next[entry.index] = { ...entry.project, ...projectPatch };
+          return next;
+        });
+      } catch (error) {
+        // The Agent record is authoritative, but this command promises a
+        // composite Agent+Project intent. Roll back only if the current record
+        // still equals our commit so an unrelated concurrent writer is never
+        // clobbered. The outer cross-process lock prevents other CLI Sidecars
+        // from reaching this branch concurrently.
+        let rolledBack = false;
+        try {
+          await atomicModifyConfig(current => {
+            const agents = [...(current.agents ?? [])];
+            const index = agents.findIndex(agent => agent.id === id);
+            if (index < 0 || JSON.stringify(agents[index]) !== JSON.stringify(updatedAgent)) {
+              return current;
+            }
+            agents[index] = previousAgent!;
+            rolledBack = true;
+            return { ...current, agents };
+          });
+        } catch (rollbackError) {
+          const rollbackReason = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
+          const reason = error instanceof Error ? error.message : String(error);
+          return {
+            success: false,
+            error: `Project mirror save failed (${reason}) and Agent rollback also failed (${rollbackReason}). Retry the same command to reconcile from Agent authority.`,
+          };
+        }
+        const reason = error instanceof Error ? error.message : String(error);
+        return {
+          success: false,
+          error: rolledBack
+            ? `Agent configuration was not changed because its Project mirror could not be saved: ${reason}`
+            : `Project mirror save failed after Agent configuration changed: ${reason}`,
+        };
+      }
+    }
+
+    return null;
+  });
+
+  if (commitResult) return commitResult;
+
+  let hint: string | undefined;
+  if (committedLivePatch) {
+    try {
+      const response = await managementApi('/api/agent/reload-config', 'POST', {
+        agentId: id,
+        patch: committedLivePatch,
+      });
+      if (response.ok === false) {
+        hint = 'Configuration was saved; running Agent channels will adopt it on their next restart.';
+      }
+    } catch {
+      hint = 'Configuration was saved; running Agent channels will adopt it on their next restart.';
+    }
+  }
+
+  broadcast('config:changed', { section: 'agent', action, id });
+  return { success: true, data: { id }, ...(hint ? { hint } : {}) };
 }
 
 /** Keys and patterns that contain secrets and must be redacted in config get */

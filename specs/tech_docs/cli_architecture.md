@@ -159,6 +159,17 @@ myagents agent list --active|--archived           # 按工作区归档状态筛�
 
 这三条命令的存在让 `task create-direct --runtime X --model Y --permissionMode Z` 的值空间对 AI 完全自解释 —— `--help` 里只列 flag，值通过 `runtime describe` 查，避免 `--help` 文案与实际可用值漂移。
 
+`agent set` 不是裸 JSON 属性写入：provider/model/permissionMode 属于配置 intent，
+必须在 Admin API 边界校验并同步 Agent 权威记录、Project 兼容镜像和运行中的
+Agent/IM Channel。Managed Codex 的 runtime permission 词汇会在写入时规范化为
+产品 permission（`suggest→plan`、`auto-edit→auto`、`no-restrictions→fullAgency`），
+`agent show` 再投影为 effective Codex runtime/permission。`full-auto` 保留
+workspace-write sandbox，无法无损存入现有产品 enum，因此必须拒绝而不是升级成
+`no-restrictions`。任何单字段更新不得重置未涉及的 provider/model/permission 字段。
+Provider 目录、credential/readiness 与 model 校验必须在 `agent-config-intent.lock`
+保护的磁盘最新快照上完成；Admin API 与 Renderer 的 Agent/Project 双写路径共享同一把
+跨进程 intent lock，两个文件各自的原子锁只负责单文件 read-modify-write。
+
 ### Goal Mode 命令（0.3.0）
 
 `myagents goal --help` 是 Goal Mode 的内置 skill 文档。系统提示词只告诉模型在明确 User 要求“Goal Mode / Goal Loop / 目标模式 / 设立目标 / 持续执行直到完成”时先运行 help，再按 help 使用子命令；不要把 help 全量塞进主 system prompt。

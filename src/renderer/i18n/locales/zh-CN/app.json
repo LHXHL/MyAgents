@@ -219,7 +219,8 @@
       "cronTask": "定时任务",
       "floatingContext": "悬浮上下文",
       "spaceIssue": "Space issue",
-      "goalMode": "目标模式"
+      "goalMode": "目标模式",
+      "sessionRequest": "跨会话请求"
     },
     "systemInfo": "系统信息",
     "expand": "展开"

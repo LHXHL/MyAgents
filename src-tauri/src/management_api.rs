@@ -137,6 +137,10 @@ pub async fn start_management_api() -> Result<u16, String> {
             get(agent_runtime_status_handler),
         )
         .route(
+            "/api/agent/reload-config",
+            post(agent_reload_config_handler),
+        )
+        .route(
             "/api/agent/stop-channels",
             post(agent_stop_channels_handler),
         )
@@ -1964,6 +1968,54 @@ async fn agent_runtime_status_handler() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true, "agents": result }))
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentReloadConfigRequest {
+    agent_id: String,
+    patch: im::types::AgentConfigPatch,
+}
+
+async fn agent_reload_config_handler(
+    Json(req): Json<AgentReloadConfigRequest>,
+) -> Json<serde_json::Value> {
+    let Some(agents) = get_agents() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "Agent state unavailable"
+        }));
+    };
+    let Some(sidecar_manager) = get_sidecar_state() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "Sidecar manager unavailable"
+        }));
+    };
+    let Some(app_handle) = crate::logger::get_app_handle() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "App not initialized"
+        }));
+    };
+
+    let agent_id = req.agent_id;
+    match im::reload_agent_config_from_disk(
+        app_handle,
+        agents,
+        sidecar_manager,
+        agent_id.clone(),
+        req.patch,
+    )
+    .await
+    {
+        Ok(()) => Json(serde_json::json!({ "ok": true, "agentId": agent_id })),
+        Err(error) => Json(serde_json::json!({
+            "ok": false,
+            "agentId": agent_id,
+            "error": error
+        })),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AgentStopChannelsRequest {
@@ -3544,6 +3596,29 @@ mod tests {
                 .to_rfc3339(),
             "2026-07-22T01:00:00+00:00"
         );
+    }
+
+    #[test]
+    fn agent_reload_request_deserializes_presence_patch() {
+        let request: AgentReloadConfigRequest = serde_json::from_value(serde_json::json!({
+            "agentId": "agent-1",
+            "patch": {
+                "providerId": "codex-sub",
+                "model": "gpt-5.6-sol",
+                "permissionMode": "fullAgency",
+                "providerEnvJson": null
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(request.agent_id, "agent-1");
+        assert_eq!(
+            request.patch.provider_id,
+            Some(Some("codex-sub".to_string()))
+        );
+        assert_eq!(request.patch.model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(request.patch.permission_mode.as_deref(), Some("fullAgency"));
+        assert_eq!(request.patch.provider_env_json, Some(None));
     }
 
     #[test]

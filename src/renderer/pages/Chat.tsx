@@ -76,7 +76,7 @@ import {
   isProviderAvailable,
   resolveProvider,
 } from '@/config/configService';
-import { patchAgentConfig, getAgentById } from '@/config/services/agentConfigService';
+import { patchAgentConfig, patchAgentProjectConfig, getAgentById } from '@/config/services/agentConfigService';
 import { BrowserPanelContext } from '@/context/BrowserPanelContext';
 import { BROWSER_BLANK_URL } from '@/components/browserConstants';
 import { CUSTOM_EVENTS, isPendingSessionId } from '../../shared/constants';
@@ -2586,6 +2586,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       },
       patchProject,
       patchAgentConfig,
+      patchAgentProjectConfig,
       // v0.2.39: desktop Tab user intent always snapshots first; the helper is
       // still wired with a policy hook so future non-Tab surfaces cannot drift.
       patchSnapshot: skipSnapshotWrite ? undefined : patchSnapshot,
@@ -2892,13 +2893,21 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     const fallback = currentProvider.primaryModel;
     if (fallback) {
       setSelectedModel(fallback);
-      void patchProject(currentProject.id, { model: fallback });
-      if (currentProject?.agentId) {
-        void patchAgentConfig(currentProject.agentId, { model: fallback });
-      }
+      void persistInputOptionChange({
+        workspaceId: currentProject.id,
+        agentId: currentProject.agentId ?? null,
+        isExternalRuntime: false,
+        currentRuntimeConfig: currentAgent?.runtimeConfig,
+        currentProviderId: currentAgent?.providerId ?? currentProject.providerId,
+        fields: { builtinModel: fallback },
+        snapshotWriteMode: 'disabled',
+        patchProject,
+        patchAgentConfig,
+        patchAgentProjectConfig,
+      });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- only react to specific sub-properties, not full object refs
-  }, [currentProject?.id, currentProvider?.id, currentProvider?.models, currentProvider?.primaryModel, selectedModel, patchProject, pinnedProviderUnavailable, configPending, sessionSnapshotOwnsConfig, waitingForExistingSessionMeta]);
+  }, [currentProject?.id, currentProvider?.id, currentProvider?.models, currentProvider?.primaryModel, selectedModel, patchProject, pinnedProviderUnavailable, configPending, sessionSnapshotOwnsConfig, waitingForExistingSessionMeta, currentAgent?.runtimeConfig, currentAgent?.providerId, currentProject?.providerId]);
 
   // Unified model-push effect — single source of truth for `/api/model/set`.
   //
@@ -4064,6 +4073,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
           snapshotWriteMode: 'disabled',
           patchProject,
           patchAgentConfig,
+          patchAgentProjectConfig,
         });
         if (!defaultWriteResult.ok) {
           console.error('[chat] Provider switch default write failed:', defaultWriteResult.errors);

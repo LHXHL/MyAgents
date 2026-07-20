@@ -23,8 +23,21 @@ import { getHomeDirOrNull } from './platform';
 import { stripBom } from '../../shared/utils';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { promoteAgentMcpJsonToGlobal } from '../../shared/mcpConfig';
-import type { ManagedProviderCredential, McpServerDefinition, PermissionMode, ProviderVerifyStatus, SubscriptionAuthPolicy } from '../../shared/config-types';
-import { applyProviderEnablementAndOrder, CODEX_SUBSCRIPTION_PROVIDER_ID, completeModelAliases, isProviderEnabled, PRESET_MCP_SERVERS, PRESET_PROVIDERS, XAI_SUBSCRIPTION_API_BASE_URL, XAI_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
+import type { AppConfig, ManagedProviderCredential, McpServerDefinition, PermissionMode, Provider, ProviderVerifyStatus, SubscriptionAuthPolicy } from '../../shared/config-types';
+import {
+  applyManagedCodexProviderReadiness,
+  applyProviderEnablementAndOrder,
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
+  completeModelAliases,
+  getManagedCodexProviderReadiness,
+  isProviderEnabled,
+  mergePresetCustomModels,
+  PRESET_MCP_SERVERS,
+  PRESET_PROVIDERS,
+  withManagedCodexProviderCatalog,
+  XAI_SUBSCRIPTION_API_BASE_URL,
+  XAI_SUBSCRIPTION_PROVIDER_ID,
+} from '../../shared/config-types';
 import { isRuntimeBackedProvider, managedCodexProviderPermissionToRuntimePermission } from '../../shared/providerExecution';
 import type { AgentConfig, ChannelConfig } from '../../shared/types/agent';
 import {
@@ -174,7 +187,9 @@ export interface ProjectSlim {
   archivedAgentEnabledBeforeArchive?: boolean;
   pinnedAt?: string;
   mcpEnabledServers?: string[];
+  enabledPluginIds?: string[];
   enabledOfficialToolIds?: OfficialToolId[];
+  providerId?: string;
   model?: string;
   permissionMode?: string;
   [key: string]: unknown;
@@ -282,6 +297,31 @@ export async function atomicModifyConfig(
   modifier: (config: AdminAppConfig) => AdminAppConfig | Promise<AdminAppConfig>
 ): Promise<AdminAppConfig> {
   return withConfigLock(modifier);
+}
+
+/**
+ * Serialize a composite Agent configuration intent across config.json and its
+ * projects.json compatibility mirror. This lock is intentionally distinct
+ * from either file lock: callers still take the normal per-file locks in a
+ * fixed order while the outer intent lock prevents two Sidecars from
+ * interleaving the two commits.
+ */
+export async function withAgentConfigIntentLock<T>(fn: () => Promise<T>): Promise<T> {
+  const configDir = getConfigDir();
+  if (!existsSync(configDir)) ensureDirSync(configDir);
+  try {
+    return await withFileLock(
+      {
+        lockPath: resolve(configDir, 'agent-config-intent.lock'),
+        timeoutMs: CONFIG_LOCK_TIMEOUT_MS,
+        staleMs: CONFIG_LOCK_STALE_MS,
+      },
+      fn,
+    );
+  } catch (error) {
+    if (error instanceof FileBusyError) throw new ConfigBusyError();
+    throw error;
+  }
 }
 
 function writeFileSynced(path: string, content: string): void {
@@ -694,7 +734,49 @@ export function getAllEffectiveProviders(config?: AdminAppConfig): ProviderRecor
   const presetProviders = ((PRESET_PROVIDERS ?? []) as unknown as Array<Record<string, unknown>>)
     .filter(hasProviderId);
   const customProviders = loadCustomProviderFiles().filter(hasProviderId);
-  return applyProviderEnablementAndOrder([...presetProviders, ...customProviders], c);
+  // Managed Codex is intentionally not a PRESET_PROVIDERS entry: the product
+  // catalog injects it only when its developer gate is enabled. Admin/CLI must
+  // consume that same catalog instead of maintaining a second provider list,
+  // otherwise a valid `agent set ... providerId codex-sub` is rejected while
+  // the in-app picker accepts it.
+  const providerConfig = c as unknown as AppConfig;
+  const providersWithManagedCodex = withManagedCodexProviderCatalog(
+    [...presetProviders, ...customProviders] as unknown as Provider[],
+    providerConfig,
+  );
+  const providersWithUserModels = mergePresetCustomModels(
+    providersWithManagedCodex,
+    providerConfig.presetCustomModels,
+    providerConfig.presetRemovedModels,
+  );
+  return applyManagedCodexProviderReadiness(
+    applyProviderEnablementAndOrder(providersWithUserModels, providerConfig),
+    providerConfig,
+  ) as unknown as ProviderRecord[];
+}
+
+export function getProviderSelectionError(
+  provider: ProviderRecord,
+  config?: AdminAppConfig,
+): string | null {
+  const c = config ?? loadConfig();
+  if (!isProviderEnabled(provider)) {
+    return `Provider '${provider.id}' is disabled.`;
+  }
+  if (isRuntimeBackedProvider(provider)) {
+    const readiness = getManagedCodexProviderReadiness(c);
+    return readiness.selectable
+      ? null
+      : `Managed Codex provider is not ready (${readiness.reason}). Complete runtime installation and sign-in before selecting it.`;
+  }
+  if (provider.type === 'subscription') {
+    return c.providerVerifyStatus?.[provider.id]?.status === 'valid'
+      ? null
+      : `Subscription provider '${provider.id}' is not verified. Verify its account before selecting it.`;
+  }
+  return resolveProviderEnv(provider.id, c)
+    ? null
+    : `Provider '${provider.id}' has no usable credential. Configure its API key before selecting it.`;
 }
 
 export function findEffectiveProvider(id: string, config?: AdminAppConfig): ProviderRecord | null {

@@ -1229,6 +1229,39 @@ export function withManagedCodexProviderCatalog(
   ];
 }
 
+/**
+ * Apply user additions/removals to bundled provider model catalogs.
+ * Kept in shared because provider selection and Admin/CLI validation must
+ * consume the same effective model set.
+ */
+export function mergePresetCustomModels(
+  providers: Provider[],
+  presetCustomModels: Record<string, ModelEntity[]> | undefined,
+  presetRemovedModels?: Record<string, string[]>,
+): Provider[] {
+  const hasCustom = presetCustomModels && Object.keys(presetCustomModels).length > 0;
+  const hasRemoved = presetRemovedModels && Object.keys(presetRemovedModels).length > 0;
+  if (!hasCustom && !hasRemoved) return providers;
+
+  return providers.map(provider => {
+    if (!provider.isBuiltin) return provider;
+    const customModels = presetCustomModels?.[provider.id];
+    const removedIds = presetRemovedModels?.[provider.id];
+    if (!customModels?.length && !removedIds?.length) return provider;
+
+    const removedSet = new Set(removedIds ?? []);
+    const presetIds = new Set(provider.models.map(model => model.model));
+    const enrichedPresets = provider.models
+      .filter(model => !removedSet.has(model.model))
+      .map(preset => mergePresetModelWithCustomEntry(
+        preset,
+        customModels?.find(candidate => candidate.model === preset.model),
+      ));
+    const newModels = customModels?.filter(model => !presetIds.has(model.model)) ?? [];
+    return { ...provider, models: [...enrichedPresets, ...newModels] };
+  });
+}
+
 export function applyManagedCodexProviderReadiness(
   providers: readonly Provider[],
   config: ManagedCodexConfigLike,

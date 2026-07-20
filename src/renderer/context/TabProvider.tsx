@@ -4806,10 +4806,17 @@ export default function TabProvider({
     // Cancel a queued message — returns the original text (for restoring to input)
     const cancelQueuedMessage = useCallback(async (queueId: string): Promise<string | null> => {
         try {
-            const response = await postJson<{ success: boolean; cancelledText?: string }>('/chat/queue/cancel', { queueId });
+            const response = await postJson<{ success: boolean; stale?: boolean; cancelledText?: string }>('/chat/queue/cancel', { queueId });
             if (response.success) {
                 setQueuedMessages(prev => prev.filter(q => q.queueId !== queueId));
                 return response.cancelledText ?? null;
+            }
+            if (response.stale) {
+                // The queue owner no longer has this ID (usually because a
+                // terminal SSE event was lost or rejected during a session
+                // transition). Reconcile the local replica; restoring text
+                // here could duplicate an already-executed request.
+                setQueuedMessages(prev => prev.filter(q => q.queueId !== queueId));
             }
             return null;
         } catch (error) {
@@ -4823,7 +4830,13 @@ export default function TabProvider({
     // Does NOT optimistically remove from queue — queue:started SSE is the single source of truth
     const forceExecuteQueuedMessage = useCallback(async (queueId: string): Promise<boolean> => {
         try {
-            const response = await postJson<{ success: boolean }>('/chat/queue/force', { queueId });
+            const response = await postJson<{ success: boolean; stale?: boolean }>('/chat/queue/force', { queueId });
+            if (response.stale) {
+                // A not-found authority response is terminal for this local
+                // queue replica. Never retry as a new send: that risks running
+                // a request twice if it was already consumed.
+                setQueuedMessages(prev => prev.filter(q => q.queueId !== queueId));
+            }
             return response.success;
         } catch (error) {
             console.error(`[TabProvider ${tabId}] Force execute queue item failed:`, error);

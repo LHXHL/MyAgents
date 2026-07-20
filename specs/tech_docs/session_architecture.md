@@ -124,6 +124,12 @@ message.uuid`），MyAgents 必须清掉该 stale anchor 并降级为裸 `resume
 | `watch.completed` | watch 注册时目标正在运行，该 turn 正常 terminal 后回推结果 | 目标 Sidecar pending watch registry → Management API → watcher Sidecar |
 | `watch.error` | 被 watch 的目标 turn 中止、错误或无法确认正常完成 | 同 `watch.completed` |
 
+所有事件的结构化 prompt 都位于隐藏的 `system-reminder` envelope 内。renderer
+仅对 `send.request` 建立展示投影：读取 `<payload>` 与 `source_label` 形成目标
+session 的用户气泡；`event-summary`、session id 等协议元数据不得进入气泡。
+`send.result` 与 watch 事件是自动控制流，继续保持隐藏。该投影同时作用于 live echo
+与 REST 历史恢复，因此不能通过只在 SSE 分支插一条临时消息实现。
+
 `watch` 的 owner 分两层：Rust Management API 先用 live sidecar 表确认目标 session
 是否仍在运行，并在目标 sidecar 上注册 pending watch；目标 sidecar 只在 turn terminal
 时调用 `deliverSessionWatchEvents()` 生成最终事件。只有 watcher sidecar 确认 inbox
