@@ -8,7 +8,11 @@ import { ToastProvider } from './components/Toast';
 import { ImagePreviewProvider } from './context/ImagePreviewContext';
 import { FloatingI18nBootstrap } from './i18n/FloatingI18nBootstrap';
 import { I18nLanguageSync } from './i18n/I18nLanguageSync';
-import { ConfiguredThemeRuntime, FloatingThemeRuntime } from './theme';
+import {
+  ConfiguredThemeRuntime,
+  FloatingThemeRuntime,
+  primeThemeRuntimeFromBootstrap,
+} from './theme';
 import { initFrontendLogger, setLogServerUrl, setRendererLogLabel } from './utils/frontendLogger';
 import { installMacFunctionKeyGuard } from './utils/macFunctionKeyGuard';
 import { installOverlayScrollbarActivity, isWindowsRendererPlatform } from './utils/overlayScrollbarActivity';
@@ -16,6 +20,11 @@ import { installTextCorrectionPolicy } from './utils/textCorrectionPolicy';
 
 import './i18n';
 import './index.css';
+
+// Optional Theme packages are inline-only and validated before activation.
+// Prime the validated bootstrap snapshot here so React's first paint already
+// uses the selected package instead of briefly showing canonical CSS.
+primeThemeRuntimeFromBootstrap();
 
 // Initialize frontend logger to capture React console logs
 initFrontendLogger();

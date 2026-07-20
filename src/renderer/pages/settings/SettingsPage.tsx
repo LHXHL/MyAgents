@@ -128,6 +128,8 @@ import {
     type ManagedCodexRuntimeBusyAction,
 } from './managedCodexRuntimePresentation';
 import { AppearanceModeControl } from './components/AppearanceModeControl';
+import { ThemePresetSelect } from './components/ThemePresetSelect';
+import { useResolvedTheme } from '@/theme';
 import type {
     NetworkProbeResult,
     ProviderVerifyError,
@@ -264,6 +266,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     } = useConfig();
     const spaceBuildCapability = useSpaceBuildCapability(config.spaceEnvironment);
     const toast = useToast();
+    const resolvedTheme = useResolvedTheme();
     const { t: tSettings } = useTranslation('settings');
     const { t: tCommon } = useTranslation('common');
     // Stabilize toast reference to avoid unnecessary effect re-runs
@@ -5052,6 +5055,26 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                 <div>
                                     <h2 className="mb-4 text-base font-medium text-[var(--ink-muted)]">{tSettings('about.developerSection')}</h2>
                                     <div className="space-y-4">
+                                        {/* Theme Preset Selector */}
+                                        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+                                            <div className="flex items-center justify-between gap-6">
+                                                <div className="min-w-0">
+                                                    <h3 className="text-sm font-medium text-[var(--ink)]">{tSettings('about.developer.themeTitle')}</h3>
+                                                    <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                                                        {tSettings('about.developer.themeDescription')}
+                                                    </p>
+                                                </div>
+                                                <ThemePresetSelect
+                                                    value={resolvedTheme.themeId}
+                                                    onPersistTheme={(themeId) => updateConfig({ themeId })}
+                                                    onPersistError={(error) => {
+                                                        const message = error instanceof Error ? error.message : String(error);
+                                                        toast.error(tSettings('about.developer.themeSaveFailed', { message }));
+                                                    }}
+                                                />
+                                            </div>
+                                        </div>
+
                                         {/* Developer Mode Toggle */}
                                         <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                                             <div className="flex items-center justify-between">

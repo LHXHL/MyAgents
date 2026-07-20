@@ -788,7 +788,8 @@ Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能�
 
 Theme 是 renderer 视觉语言的应用级唯一 owner；`AppearanceMode` 只是用户的明暗偏好，两者正交：
 
-- `themeId`：完整 Theme 身份，当前 production registry 仅 `myagents-default`；
+- `themeId`：完整 Theme 身份；production registry 依次注册 `myagents-default`、Ink、Fjord、
+  Ochre、Sage、Mauve、Wisteria、Absolutely、Linear、Proof、Codex、Raycast；
 - `appearanceMode`：`system | light | dark`；
 - `resolvedColorScheme`：每个 Webview 此刻解析出的 `light | dark`。
 
@@ -800,7 +801,7 @@ Token 的运行时引用。禁止在动态 Theme package 中放 raw `@theme`；�
 Tailwind，否则 utility 会静默回退 framework default。`build:web` 后的 generated-CSS 契约校验
 是这条编译边界的必备护栏。
 
-配置读取边界由 `normalizeThemeConfigRecord()` 把旧 `theme` 无损迁移为 `appearanceMode`，缺失 `themeId` 补 `myagents-default`；读取只做内存归一，下一次真实的 config-lock 写入清掉 legacy 字段。Settings 仍经 `ConfigProvider.updateConfig()` 写 `appearanceMode`。
+配置读取边界由 `normalizeThemeConfigRecord()` 把旧 `theme` 无损迁移为 `appearanceMode`，缺失 `themeId` 补 `myagents-default`；读取只做内存归一，下一次真实的 config-lock 写入清掉 legacy 字段。Settings 仍经 `ConfigProvider.updateConfig()` 分别写 `themeId` 或 `appearanceMode`，两者不得互相覆盖。
 
 启动与窗口数据流：
 
@@ -818,7 +819,7 @@ Rust 读取归一后的非敏感 disk appearance
 
 浮球 Webview 保持轻量 tree，不挂完整 `ConfigProvider`：先用 snapshot 保证首帧，随后先完成精简事件 listener 注册、再异步读 durable config；hydration 期间收到的 live event 具有更高 freshness，旧磁盘结果不能反向覆盖。`system` 由每个 Webview 的 `useSyncExternalStore(matchMedia)` 订阅；`.dark` 只是 Tailwind 兼容投影，不再是 React consumer 的反向状态源。
 
-Space 的 `[data-ui-theme="space-mono"]` 是明确排除的 scoped visual language，继续覆盖共享 root Token；本 Theme System 不把它注册为 Theme，也不改变 portal scope 传播。
+Space 的 `[data-ui-theme="space-mono"]` 是明确排除的 scoped visual language：它在自身 scope 冻结当前 canonical visual foundations 并覆盖黑白 action palette，避免切换全局 Theme ID 时继承另一套 paper、文字、字体、圆角或阴影；本 Theme System 不把它注册为 Theme，也不改变 portal scope 传播。
 
 详见 `tech_docs/theme_system.md`。
 

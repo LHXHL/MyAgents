@@ -1,0 +1,263 @@
+/* Wisteria: complete optional Theme package. */
+html[data-theme-id='wisteria'] {
+  --font-body: 'SF Pro Text', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Microsoft YaHei UI', 'Hiragino Sans GB', sans-serif;
+  --font-display: 'SF Pro Text', 'SF Pro Display', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', 'Microsoft YaHei UI', 'Hiragino Sans GB', sans-serif;
+  --font-code: ui-monospace, 'SF Mono', 'Cascadia Code', 'Consolas', 'Monaco', 'Fira Code', 'PingFang SC', 'Microsoft YaHei', 'Microsoft YaHei UI', 'Hiragino Sans GB', monospace;
+  --theme-radius-base: 4px;
+  --theme-radius-sm: 6px;
+  --theme-radius-md: 13px;
+  --theme-radius-lg: 17px;
+  --theme-radius-xl: 21px;
+  --theme-radius-2xl: 25px;
+  --theme-radius-full: 9999px;
+  --duration-fast: 150ms;
+  --duration-normal: 200ms;
+  --duration-slow: 300ms;
+}
+
+html[data-theme-id='wisteria'][data-color-scheme='light'] {
+  --ink: #1e1a24;
+  --ink-secondary: #352f40;
+  --ink-muted: #70687c;
+  --ink-subtle: #a49ab2;
+  --ink-faint: #c0b7ca;
+  --paper: #f7f4fb;
+  --paper-elevated: #fffaff;
+  --message-user-bg: #fffaff;
+  --paper-inset: #e7dff2;
+  --paper-a0: rgb(247 244 251 / 0);
+  --paper-elevated-a0: rgb(255 250 255 / 0);
+  --message-user-bg-a0: rgb(255 250 255 / 0);
+  --paper-inset-a0: rgb(231 223 242 / 0);
+  --hover-bg: rgb(138 111 200 / 0.07);
+  --accent: #8a6fc8;
+  --accent-warm: #8a6fc8;
+  --accent-warm-hover: #977ed0;
+  --accent-warm-subtle: rgb(138 111 200 / 0.08);
+  --accent-warm-muted: rgb(138 111 200 / 0.15);
+  --accent-warm-subtle-a0: rgb(138 111 200 / 0);
+  --accent-cool: #5f83b7;
+  --accent-cool-hover: #5f83b7;
+  --on-accent: #15121c;
+  --heartbeat: #c85568;
+  --heartbeat-bg: #f5e0e5;
+  --heartbeat-border: rgb(200 85 104 / 0.24);
+  --success: #27784f;
+  --success-bg: #e0ede8;
+  --on-success: #ffffff;
+  --error: #b83f3f;
+  --error-bg: #f5e0e5;
+  --error-hover: #b83f3f;
+  --error-subtle: rgb(184 63 63 / 0.08);
+  --on-error: #ffffff;
+  --warning: #8a550c;
+  --warning-bg: #f8e8c8;
+  --on-warning: #ffffff;
+  --info: #456f8c;
+  --info-bg: #e1ebf3;
+  --on-info: #ffffff;
+  --button-primary-bg: #8a6fc8;
+  --button-primary-bg-hover: #977ed0;
+  --button-primary-text: #15121c;
+  --button-dark-bg: #1e1a24;
+  --button-dark-bg-hover: #352f40;
+  --button-dark-text: #f7f4fb;
+  --button-secondary-bg: #e7dff2;
+  --button-secondary-bg-hover: #fffaff;
+  --button-secondary-text: #1e1a24;
+  --fb-surface-peek: rgb(255 250 255 / 0.15);
+  --fb-surface-glass: rgb(255 250 255 / 0.55);
+  --fb-surface-pin: rgb(255 250 255 / 0.96);
+  --fb-surface-pin-a0: rgb(255 250 255 / 0);
+  --fb-surface-pin-72: rgb(255 250 255 / 0.72);
+  --fb-surface-pin-95: rgb(255 250 255 / 0.95);
+  --fb-glass-border: rgb(255 255 255 / 0.62);
+  --fb-glass-border-soft: rgb(255 255 255 / 0.50);
+  --fb-highlight: rgb(255 255 255 / 0.92);
+  --fb-highlight-mid: rgb(255 255 255 / 0.30);
+  --fb-highlight-faint: rgb(255 255 255 / 0.14);
+  --fb-highlight-strong: rgb(255 255 255 / 0.95);
+  --fb-highlight-a0: rgb(255 255 255 / 0);
+  --fb-highlight-line: rgb(255 255 255 / 0.85);
+  --fb-mask-opaque: #000000;
+  --fb-shadow-strong: rgb(30 26 36 / 0.28);
+  --fb-shadow-soft: rgb(30 26 36 / 0.12);
+  --fb-shadow-panel: rgb(30 26 36 / 0.18);
+  --fb-shadow-preview: rgb(30 26 36 / 0.45);
+  --fb-core-shadow: rgb(30 26 36 / 0.25);
+  --fb-inset-shadow: rgb(30 26 36 / 0.08);
+  --fb-window-shadow: 0 18px 48px rgb(30 26 36 / 0.22);
+  --fb-control-hover: rgb(30 26 36 / 0.06);
+  --fb-line-input: rgb(30 26 36 / 0.07);
+  --fb-line-thumb: rgb(30 26 36 / 0.12);
+  --fb-drag-handle: rgb(30 26 36 / 0.18);
+  --fb-scroll-thumb: rgb(112 104 124 / 0.50);
+  --line: rgb(30 26 36 / 0.10);
+  --line-strong: rgb(30 26 36 / 0.18);
+  --line-subtle: rgb(30 26 36 / 0.06);
+  --theme-shadow-base: 0 1px 3px 0 rgb(30 26 36 / 0.10), 0 1px 2px -1px rgb(30 26 36 / 0.10);
+  --theme-shadow-xs: 0 1px 2px rgb(30 26 36 / 0.05);
+  --theme-shadow-sm: 0 2px 8px rgb(30 26 36 / 0.08);
+  --theme-shadow-md: 0 8px 24px rgb(30 26 36 / 0.12);
+  --theme-shadow-lg: 0 16px 40px rgb(30 26 36 / 0.16);
+  --theme-shadow-xl: 0 24px 48px rgb(30 26 36 / 0.20);
+  --theme-shadow-2xl: 0 32px 64px -12px rgb(30 26 36 / 0.25);
+  --action-shadow: 0 6px 16px -12px rgb(30 26 36 / 0.40);
+  --action-shadow-active: inset 0 2px 6px rgb(30 26 36 / 0.18);
+  --tool-shadow: 0 8px 24px -20px rgb(30 26 36 / 0.35);
+  --tool-shadow-hover: 0 14px 30px -24px rgb(30 26 36 / 0.45);
+  --expanded-block-line: rgb(112 104 124 / 0.25);
+  --warning-border: rgb(138 85 12 / 0.30);
+  --focus-border: #8a6fc8;
+  --toggle-thumb: #15121c;
+  --toggle-off-bg: rgb(30 26 36 / 0.18);
+  --code-bg: #15121c;
+  --code-bg-a0: rgb(21 18 28 / 0);
+  --code-header-bg: #201a2a;
+  --code-text: #e4dcf0;
+  --code-line-number: #9b91ad;
+  --theme-body-background:
+    radial-gradient(1200px 700px at 82% -10%, #e3d9f5 0%, rgb(227 217 245 / 0) 55%),
+    radial-gradient(900px 600px at -10% 110%, #d8e0f2 0%, rgb(216 224 242 / 0) 55%),
+    #f7f4fb;
+  --theme-body-texture: radial-gradient(rgb(30 26 36 / 0.08) 0.7px, transparent 0.7px);
+  --theme-body-texture-opacity: 0.1;
+  --theme-body-texture-blend: multiply;
+}
+
+html[data-theme-id='wisteria'][data-color-scheme='dark'] {
+  --ink: #e4dcf0;
+  --ink-secondary: #cec3df;
+  --ink-muted: #9b91ad;
+  --ink-subtle: #695f7a;
+  --ink-faint: #4b4358;
+  --paper: #15121c;
+  --paper-elevated: #201a2a;
+  --message-user-bg: #282134;
+  --paper-inset: #0f0c14;
+  --paper-a0: rgb(21 18 28 / 0);
+  --paper-elevated-a0: rgb(32 26 42 / 0);
+  --message-user-bg-a0: rgb(40 33 52 / 0);
+  --paper-inset-a0: rgb(15 12 20 / 0);
+  --hover-bg: rgb(168 145 226 / 0.12);
+  --accent: #a891e2;
+  --accent-warm: #a891e2;
+  --accent-warm-hover: #9780d0;
+  --accent-warm-subtle: rgb(168 145 226 / 0.12);
+  --accent-warm-muted: rgb(168 145 226 / 0.20);
+  --accent-warm-subtle-a0: rgb(168 145 226 / 0);
+  --accent-cool: #86a7dc;
+  --accent-cool-hover: #86a7dc;
+  --on-accent: #111019;
+  --heartbeat: #ef7b8c;
+  --heartbeat-bg: rgb(239 123 140 / 0.16);
+  --heartbeat-border: rgb(239 123 140 / 0.24);
+  --success: #7db69a;
+  --success-bg: rgb(125 182 154 / 0.16);
+  --on-success: #15121c;
+  --error: #ef7b8c;
+  --error-bg: rgb(239 123 140 / 0.16);
+  --error-hover: #f27d7d;
+  --error-subtle: rgb(239 123 140 / 0.12);
+  --on-error: #15121c;
+  --warning: #d9a347;
+  --warning-bg: rgb(217 163 71 / 0.16);
+  --on-warning: #15121c;
+  --info: #8eb1e2;
+  --info-bg: rgb(142 177 226 / 0.16);
+  --on-info: #15121c;
+  --button-primary-bg: #a891e2;
+  --button-primary-bg-hover: #9780d0;
+  --button-primary-text: #111019;
+  --button-dark-bg: #e4dcf0;
+  --button-dark-bg-hover: #cec3df;
+  --button-dark-text: #15121c;
+  --button-secondary-bg: #0f0c14;
+  --button-secondary-bg-hover: #201a2a;
+  --button-secondary-text: #e4dcf0;
+  --fb-surface-peek: rgb(32 26 42 / 0.22);
+  --fb-surface-glass: rgb(32 26 42 / 0.58);
+  --fb-surface-pin: rgb(32 26 42 / 0.96);
+  --fb-surface-pin-a0: rgb(32 26 42 / 0);
+  --fb-surface-pin-72: rgb(32 26 42 / 0.72);
+  --fb-surface-pin-95: rgb(32 26 42 / 0.95);
+  --fb-glass-border: rgb(255 255 255 / 0.16);
+  --fb-glass-border-soft: rgb(255 255 255 / 0.12);
+  --fb-highlight: rgb(255 255 255 / 0.24);
+  --fb-highlight-mid: rgb(255 255 255 / 0.10);
+  --fb-highlight-faint: rgb(255 255 255 / 0.06);
+  --fb-highlight-strong: rgb(255 255 255 / 0.22);
+  --fb-highlight-a0: rgb(255 255 255 / 0);
+  --fb-highlight-line: rgb(255 255 255 / 0.20);
+  --fb-mask-opaque: #000000;
+  --fb-shadow-strong: rgb(0 0 0 / 0.38);
+  --fb-shadow-soft: rgb(0 0 0 / 0.22);
+  --fb-shadow-panel: rgb(0 0 0 / 0.42);
+  --fb-shadow-preview: rgb(0 0 0 / 0.55);
+  --fb-core-shadow: rgb(0 0 0 / 0.32);
+  --fb-inset-shadow: rgb(0 0 0 / 0.16);
+  --fb-window-shadow: 0 18px 48px rgb(0 0 0 / 0.42);
+  --fb-control-hover: rgb(228 220 240 / 0.08);
+  --fb-line-input: rgb(228 220 240 / 0.07);
+  --fb-line-thumb: rgb(228 220 240 / 0.16);
+  --fb-drag-handle: rgb(228 220 240 / 0.20);
+  --fb-scroll-thumb: rgb(155 145 173 / 0.55);
+  --line: rgb(228 220 240 / 0.10);
+  --line-strong: rgb(228 220 240 / 0.18);
+  --line-subtle: rgb(228 220 240 / 0.06);
+  --theme-shadow-base: 0 1px 3px 0 rgb(0 0 0 / 0.10), 0 1px 2px -1px rgb(0 0 0 / 0.10);
+  --theme-shadow-xs: 0 1px 2px rgb(0 0 0 / 0.12);
+  --theme-shadow-sm: 0 2px 8px rgb(0 0 0 / 0.18);
+  --theme-shadow-md: 0 8px 24px rgb(0 0 0 / 0.28);
+  --theme-shadow-lg: 0 16px 40px rgb(0 0 0 / 0.35);
+  --theme-shadow-xl: 0 24px 48px rgb(0 0 0 / 0.42);
+  --theme-shadow-2xl: 0 32px 64px -12px rgb(0 0 0 / 0.52);
+  --action-shadow: 0 6px 16px -12px rgb(0 0 0 / 0.60);
+  --action-shadow-active: inset 0 2px 6px rgb(0 0 0 / 0.35);
+  --tool-shadow: 0 8px 24px -20px rgb(0 0 0 / 0.50);
+  --tool-shadow-hover: 0 14px 30px -24px rgb(0 0 0 / 0.65);
+  --expanded-block-line: rgb(155 145 173 / 0.25);
+  --warning-border: rgb(217 163 71 / 0.30);
+  --focus-border: #a891e2;
+  --toggle-thumb: #111019;
+  --toggle-off-bg: rgb(228 220 240 / 0.18);
+  --code-bg: #0f0c14;
+  --code-bg-a0: rgb(15 12 20 / 0);
+  --code-header-bg: #201a2a;
+  --code-text: #e4dcf0;
+  --code-line-number: #9b91ad;
+  --theme-body-background:
+    radial-gradient(1200px 700px at 82% -10%, #2c2340 0%, rgb(44 35 64 / 0) 55%),
+    radial-gradient(900px 600px at -10% 110%, #202c42 0%, rgb(32 44 66 / 0) 55%),
+    #15121c;
+  --theme-body-texture: radial-gradient(rgb(228 220 240 / 0.08) 0.7px, transparent 0.7px);
+  --theme-body-texture-opacity: 0.05;
+  --theme-body-texture-blend: screen;
+}
+
+html[data-theme-id='wisteria'] .theme-launcher-hero-title {
+  margin-bottom: 0.5rem;
+  font-family: var(--font-display);
+  font-size: 2.5rem;
+  font-weight: 300;
+  letter-spacing: 0.015em;
+  color: var(--ink);
+  background: linear-gradient(150deg, var(--ink) 32%, var(--accent-warm) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+html[data-theme-id='wisteria'] .theme-launcher-hero-slogan {
+  font-family: var(--font-body);
+  font-size: 15px;
+  font-weight: 350;
+  letter-spacing: 0.055em;
+  color: var(--ink-muted);
+  text-align: center;
+}
+
+@media (min-width: 768px) {
+  html[data-theme-id='wisteria'] .theme-launcher-hero-title { font-size: 3.5rem; }
+  html[data-theme-id='wisteria'] .theme-launcher-hero-slogan { font-size: 17px; }
+}

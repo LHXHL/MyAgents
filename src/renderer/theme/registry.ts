@@ -12,7 +12,19 @@ import {
   REQUIRED_XTERM_PALETTE_KEYS,
 } from './registry-contract';
 import type { ResolvedTheme, ThemeDefinition } from './types';
+import { absolutelyThemeManifest } from './themes/absolutely';
+import { codexThemeManifest } from './themes/codex';
+import { fjordThemeManifest } from './themes/fjord';
+import { inkThemeManifest } from './themes/ink';
+import { linearThemeManifest } from './themes/linear';
+import { mauveThemeManifest } from './themes/mauve';
 import { myAgentsDefaultTheme } from './themes/myagents-default';
+import { ochreThemeManifest } from './themes/ochre';
+import { createPresetTheme, type PresetThemeManifest } from './themes/preset-theme';
+import { proofThemeManifest } from './themes/proof';
+import { raycastThemeManifest } from './themes/raycast';
+import { sageThemeManifest } from './themes/sage';
+import { wisteriaThemeManifest } from './themes/wisteria';
 
 export { REQUIRED_THEME_CSS_TOKENS, REQUIRED_WIDGET_CSS_VARIABLES } from './registry-contract';
 
@@ -649,6 +661,7 @@ export function validateThemeDefinition(definition: ThemeDefinition): ThemeDefin
   if (!/^[a-z0-9][a-z0-9-]*$/.test(definition.id)) {
     throw new Error(`[theme] Invalid Theme ID: ${definition.id}`);
   }
+  if (!definition.displayName.trim()) throw new Error(`[theme] ${definition.id}: displayName is required`);
   if (!definition.description.trim()) throw new Error(`[theme] ${definition.id}: description is required`);
   validateStylesheet(definition);
 
@@ -812,7 +825,10 @@ export class ThemeRegistry {
   private readonly definitions = new Map<string, ThemeDefinition>();
   private readonly warnedUnknownIds = new Set<string>();
 
-  constructor(definitions: readonly ThemeDefinition[]) {
+  constructor(
+    definitions: readonly ThemeDefinition[],
+    optionalFactories: readonly OptionalThemeFactory[] = [],
+  ) {
     const seenIds = new Set<string>();
     for (const definition of definitions) {
       if (seenIds.has(definition.id)) throw new Error(`[theme] Duplicate Theme ID: ${definition.id}`);
@@ -830,6 +846,22 @@ export class ThemeRegistry {
         console.warn(`[theme] Rejected invalid Theme package "${definition.id}":`, error);
       }
     }
+    for (const factory of optionalFactories) {
+      if (seenIds.has(factory.id)) throw new Error(`[theme] Duplicate Theme ID: ${factory.id}`);
+      seenIds.add(factory.id);
+      try {
+        const definition = factory.create();
+        if (definition.id !== factory.id) {
+          throw new Error(`[theme] Optional Theme factory "${factory.id}" produced "${definition.id}"`);
+        }
+        this.register(definition);
+      } catch (error) {
+        // Construction and validation share one Registry-owned rejection
+        // boundary, so a malformed optional manifest cannot abort entry-module
+        // evaluation before the canonical Theme can render.
+        console.warn(`[theme] Rejected invalid Theme package "${factory.id}":`, error);
+      }
+    }
     if (!this.definitions.has(DEFAULT_THEME_ID)) {
       throw new Error(`[theme] Registry must include canonical Theme ${DEFAULT_THEME_ID}`);
     }
@@ -843,6 +875,11 @@ export class ThemeRegistry {
 
   getProductionIds(): readonly string[] {
     return [...this.definitions.keys()];
+  }
+
+  /** Accepted, validated packages in product order. */
+  getAcceptedDefinitions(): readonly ThemeDefinition[] {
+    return [...this.definitions.values()];
   }
 
   resolve(requestedThemeId: unknown, appearanceMode: unknown, systemPrefersDark: boolean): ResolvedTheme {
@@ -867,5 +904,32 @@ export class ThemeRegistry {
   }
 }
 
-/** Production registry: this PRD intentionally ships exactly one Theme. */
-export const themeRegistry = new ThemeRegistry([myAgentsDefaultTheme]);
+export interface OptionalThemeFactory {
+  readonly id: string;
+  readonly create: () => ThemeDefinition;
+}
+
+function presetFactory(manifest: PresetThemeManifest): OptionalThemeFactory {
+  return {
+    id: manifest.id,
+    create: () => createPresetTheme(manifest),
+  };
+}
+
+/** Production catalog order is also the product order shown by Settings. */
+export const themeRegistry = new ThemeRegistry(
+  [myAgentsDefaultTheme],
+  [
+    inkThemeManifest,
+    fjordThemeManifest,
+    ochreThemeManifest,
+    sageThemeManifest,
+    mauveThemeManifest,
+    wisteriaThemeManifest,
+    absolutelyThemeManifest,
+    linearThemeManifest,
+    proofThemeManifest,
+    codexThemeManifest,
+    raycastThemeManifest,
+  ].map(presetFactory),
+);

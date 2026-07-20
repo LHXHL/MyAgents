@@ -31,6 +31,7 @@ export {
 export {
   ConfiguredThemeRuntime,
   FloatingThemeRuntime,
+  primeThemeRuntimeFromBootstrap,
   THEME_SELECTION_CHANGED_EVENT,
   ThemeRuntimeProvider,
   useResolvedTheme,

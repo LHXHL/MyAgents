@@ -1,7 +1,7 @@
 # MyAgents Design Guide
 
-> **Version**: 2.6.2
-> **Last Updated**: 2026-07-20
+> **Version**: 2.7.0
+> **Last Updated**: 2026-07-21
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
 
@@ -30,15 +30,33 @@ MyAgents 是一款 AI Agent 桌面客户端，采用**温暖纸张质感**的设
 
 MyAgents 的视觉由完整 `Theme` 管理；light / dark / system 是 `AppearanceMode`，不是三套 Theme。一套 Theme 必须同时交付并验收 light 与 dark，system 只跟随 OS 解析其中一套。
 
-当前 production 仅有 canonical `myagents-default`。它的物理 owner 是：
+Production catalog 当前包含十二套完整 Theme：MyAgents Default、Ink、Fjord、Ochre、Sage、
+Mauve、Wisteria、Absolutely、Linear、Proof、Codex、Raycast。`myagents-default` 仍是 canonical
+fallback；它的物理 owner 是：
 
 - `src/renderer/theme/themes/myagents-default.css`：通用首帧 fallback + 精确 Theme root / light / dark root 下的字体角色、颜色、材质、圆角、阴影、动画和 Floating Ball 运行时 Token；同一文件既静态保护 canonical 首帧，也由 manifest 提供实际 source 给注册校验与 runtime 激活；
 - `src/renderer/theme/themes/myagents-default.ts`：Launcher Hero 与 xterm / Monaco / Mermaid / Prism / Widget adapters；
+- `src/renderer/theme/themes/<preset>.css + <preset>.ts`：十一套可选 Theme 的共置 package；CSS
+  显式拥有完整 visual Token，manifest 只用 `?inline` 读取同一份源码，adapter 从这份 CSS 的语义
+  色板派生，不复制 canonical 值；
 - `src/renderer/index.css`：与品牌视觉无关的布局、交互、七档 Type Scale、不携带视觉值的 Tailwind runtime Token 编译桥，以及 Space 的独立 scoped override。
 
 组件只消费语义 Token 或 `useResolvedTheme()` adapter，不持有 light/dark palette，不观察 `.dark` 反推状态。Widget adapter 必须提供 iframe 可直接使用的 literal，不能引用宿主 `var(...)`。完整 Theme 不允许让用户混搭颜色、字体、背景等零件；某 Theme 缺项时整套回退 canonical default。
 
-可主题化：宿主色彩/字体/材质、Launcher Hero 两行内容和可选 bundled 背景、语法/图表/终端/编辑器/Widget iframe、Floating Ball。非主题化：布局与信息架构、业务状态机、原生窗口按钮、Browser 子 Webview 网页、用户内容、三方品牌 Logo/二维码、宠物 spritesheet。Space 的 `space-mono` 是独立 surface，本期不纳入应用 Theme。
+可主题化：宿主色彩/字体/材质、Launcher Hero 两行内容和可选 bundled 背景、语法/图表/终端/编辑器/Widget iframe、Floating Ball。非主题化：布局与信息架构、业务状态机、原生窗口按钮、Browser 子 Webview 网页、用户内容、三方品牌 Logo/二维码、宠物 spritesheet。Space 的 `space-mono` 是独立 surface，本期不纳入应用 Theme；它在自身 scope 冻结当前 paper、文字、状态、字体、圆角与阴影基础并保留黑白 action palette，避免被全局 Theme ID 被动换肤。
+
+十二套 Theme 的目录和动作语义：
+
+| 分组 | Theme | 主要视觉角色 |
+|---|---|---|
+| Baseline | MyAgents Default | 暖纸张、陶土橙；本章色值表只描述这一 canonical Theme |
+| Original | Ink / Fjord / Ochre | 编辑暖黑 / 海湾青 / 赭金羊皮纸 |
+| Community · PR #441 | Sage / Mauve / Wisteria | 鼠尾草绿 / 低饱和灰紫 / 藤紫 |
+| References | Absolutely / Linear / Proof / Codex / Raycast | 陶土橙 / 靛蓝 / 森林绿 / 标准蓝 / 珊瑚红 |
+
+Accent 必须控制主按钮、Toggle 启用态、关键选中指示、Focus、链接和进行中状态；success/error/
+warning/info 继续使用各 Theme 自己的业务状态组，第三方品牌色不随 Accent 改写。紧凑卡片 hover
+仍只增加 Theme 的 `shadow-sm`，不使用描边或位移模拟层级。
 
 注册、bootstrap 和 adapter 细则见 `tech_docs/theme_system.md`。
 
@@ -1373,6 +1391,7 @@ Hover 操作:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.7.0 | 2026-07-21 | **Theme preset catalog（PRD 0.3.2）**：production registry 扩展为 12 套完整 Theme；开发者设置用 Registry 驱动的单一下拉菜单切换；每套同时提供 light/dark、Hero、宿主/Floating Token 与 xterm/Monaco/Mermaid/Prism/Widget adapter；Theme/Appearance 正交，canonical default 与 Space 独立视觉不变 |
 | 2.6.2 | 2026-07-20 | **恢复 canonical Theme 暖橙 action palette**：根据实机体验撤回 2.6.1 的黑白配色试验，Accent/Hover/Primary/Focus、Widget 与 xterm adapter 恢复原有暖橙参数；保留 Theme runtime 编译桥、语义 foreground、阴影与终端自适应等全部架构修复，Space `space-mono` 继续独立使用黑白 action palette |
 | 2.6.1 | 2026-07-20 | **Theme runtime 编译桥与 action palette 修正**：Tailwind 入口用无值 `@theme inline` 桥接 Theme-owned font/radius/shadow/duration，production build 增加生成 CSS 契约校验；canonical default Accent/Hover/Primary/Focus 改用 Space 现行黑白 action palette，强调底前景改用 `--on-accent`；xterm 字体指标变化后原位 fit 并同步 PTY，split 几何判稳由 ResizeObserver 负责而不复制 Theme transition 时长 |
 | 2.6.0 | 2026-07-20 | **Theme System 架构收口（PRD 0.3.2）**：区分 Theme / AppearanceMode / ResolvedColorScheme；现有 light/dark 视觉完整迁入 canonical `myagents-default`；Launcher Hero、CSS Token、xterm、Monaco、Mermaid、Prism、Widget 与 Floating Ball 统一消费 `ResolvedTheme`；Space `space-mono` 明确保持独立；本次无有意视觉优化 |

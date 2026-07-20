@@ -60,6 +60,28 @@ describe('Theme architecture guardrails', () => {
     expect(source('src/renderer/theme/index.ts')).not.toContain('syntheticTheme');
   });
 
+  it('keeps every optional package scoped, side-effect free, and independent from Space', () => {
+    const optionalThemeIds = [
+      'ink', 'fjord', 'ochre', 'sage', 'mauve', 'wisteria',
+      'absolutely', 'linear', 'proof', 'codex', 'raycast',
+    ];
+    for (const themeId of optionalThemeIds) {
+      const manifest = source(`src/renderer/theme/themes/${themeId}.ts`);
+      const css = source(`src/renderer/theme/themes/${themeId}.css`);
+      expect(manifest).toContain(`from './${themeId}.css?inline'`);
+      expect(manifest).not.toContain(`import './${themeId}.css'`);
+      expect(css).toContain(`html[data-theme-id='${themeId}'] {`);
+      expect(css).toContain(`html[data-theme-id='${themeId}'][data-color-scheme='light'] {`);
+      expect(css).toContain(`html[data-theme-id='${themeId}'][data-color-scheme='dark'] {`);
+      expect(css).not.toContain(':root');
+      expect(css).not.toContain('data-ui-theme');
+      expect(css).not.toContain('@theme');
+      expect(css).not.toContain('@font-face');
+      expect(css).not.toMatch(/https?:\/\//);
+    }
+    expect(source('src/renderer/theme/themes/preset-theme.ts')).not.toContain('myagents-default');
+  });
+
   it('keeps the Space scoped Theme exclusion intact', () => {
     const css = source('src/renderer/index.css');
     expect(css).toContain('[data-ui-theme="space-mono"]');
@@ -185,6 +207,11 @@ describe('Theme architecture guardrails', () => {
       .filter(file => forbiddenPairs.some(pattern => pattern.test(readFileSync(file, 'utf8'))));
     expect(violations).toEqual([]);
 
+    const unvalidatedAccentHoverViolations = rendererSourceFiles()
+      .filter(file => !file.includes('/pages/space/') && !file.endsWith('/pages/Space.tsx'))
+      .filter(file => /bg-\[var\(--accent\)\][^'"`]*hover:brightness-/.test(readFileSync(file, 'utf8')));
+    expect(unvalidatedAccentHoverViolations).toEqual([]);
+
     const statusNames = ['success', 'error', 'warning', 'info'] as const;
     const statusViolations = rendererSourceFiles()
       .filter(file => !file.includes('/pages/space/') && !file.endsWith('/pages/Space.tsx'))
@@ -212,9 +239,11 @@ describe('Theme architecture guardrails', () => {
     expect(source('src/renderer/components/SettingsHelperInbox.tsx')).toContain('bg-[var(--ink)]/70 text-[var(--paper)]');
   });
 
-  it('keeps Settings on the disk-first appearanceMode write path', () => {
+  it('keeps Settings on the disk-first Theme and appearance write paths', () => {
     const settings = source('src/renderer/pages/settings/SettingsPage.tsx');
     expect(settings).toContain('updateConfig({ appearanceMode: mode })');
+    expect(settings).toContain('updateConfig({ themeId })');
     expect(settings).not.toContain('updateConfig({ theme:');
+    expect(settings).not.toContain('colorTheme');
   });
 });

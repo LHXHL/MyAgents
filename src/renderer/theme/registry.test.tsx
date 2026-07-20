@@ -5,10 +5,113 @@ import { ThemeRegistry, themeRegistry, validateThemeDefinition } from './registr
 import type { ThemeDefinition } from './types';
 import { SYNTHETIC_THEME_ID, syntheticTheme } from './__tests__/syntheticTheme';
 
+function renamedSyntheticTheme(id: string): ThemeDefinition {
+  const definition = structuredClone(syntheticTheme) as ThemeDefinition;
+  definition.id = id;
+  definition.displayName = `Synthetic ${id}`;
+  definition.stylesheetText = definition.stylesheetText.replaceAll(SYNTHETIC_THEME_ID, id);
+  return definition;
+}
+
+function presetTokens(
+  definition: ThemeDefinition,
+  scheme: 'light' | 'dark',
+): ReadonlyMap<string, string> {
+  const collect = (selector: string) => {
+    const start = definition.stylesheetText.indexOf(`${selector} {`);
+    const bodyStart = definition.stylesheetText.indexOf('{', start) + 1;
+    const bodyEnd = definition.stylesheetText.indexOf('}', bodyStart);
+    return [...definition.stylesheetText.slice(bodyStart, bodyEnd)
+      .matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)]
+      .map(match => [match[1], match[2].trim()] as const);
+  };
+  return new Map([
+    ...collect(`html[data-theme-id='${definition.id}']`),
+    ...collect(`html[data-theme-id='${definition.id}'][data-color-scheme='${scheme}']`),
+  ]);
+}
+
 describe('ThemeRegistry', () => {
-  it('ships exactly one production Theme', () => {
-    expect(themeRegistry.getProductionIds()).toEqual(['myagents-default']);
+  const productionThemeIds = [
+    'myagents-default',
+    'ink',
+    'fjord',
+    'ochre',
+    'sage',
+    'mauve',
+    'wisteria',
+    'absolutely',
+    'linear',
+    'proof',
+    'codex',
+    'raycast',
+  ];
+
+  it('ships twelve complete production Themes in product order', () => {
+    expect(themeRegistry.getProductionIds()).toEqual(productionThemeIds);
+    expect(themeRegistry.getAcceptedDefinitions().map(definition => definition.displayName)).toEqual([
+      'MyAgents Default',
+      'Ink',
+      'Fjord',
+      'Ochre',
+      'Sage',
+      'Mauve',
+      'Wisteria',
+      'Absolutely',
+      'Linear',
+      'Proof',
+      'Codex',
+      'Raycast',
+    ]);
     expect(themeRegistry.getProductionIds()).not.toContain(SYNTHETIC_THEME_ID);
+  });
+
+  it('keeps Theme and Appearance orthogonal for every production package', () => {
+    for (const themeId of productionThemeIds) {
+      const light = themeRegistry.resolve(themeId, 'light', true);
+      const dark = themeRegistry.resolve(themeId, 'dark', false);
+      const systemLight = themeRegistry.resolve(themeId, 'system', false);
+      const systemDark = themeRegistry.resolve(themeId, 'system', true);
+
+      expect(light.themeId).toBe(themeId);
+      expect(light.appearanceMode).toBe('light');
+      expect(light.resolvedColorScheme).toBe('light');
+      expect(dark.themeId).toBe(themeId);
+      expect(dark.appearanceMode).toBe('dark');
+      expect(dark.resolvedColorScheme).toBe('dark');
+      expect(systemLight.resolvedColorScheme).toBe('light');
+      expect(systemDark.resolvedColorScheme).toBe('dark');
+    }
+  });
+
+  it('derives embedded adapters and Hero from each accepted package', () => {
+    for (const definition of themeRegistry.getAcceptedDefinitions()) {
+      for (const scheme of ['light', 'dark'] as const) {
+        const resolved = themeRegistry.resolve(definition.id, scheme, false);
+        expect(resolved.hero.productName).toBe('MyAgents');
+        expect(resolved.hero.slogans['zh-CN']).toBe('每个人都应享受智能的推背感，欢迎来到言出法随的世界');
+        expect(resolved.hero.slogans['en-US']).toBe('Your intent, amplified');
+        expect(resolved.adapters.xterm.palette.cursor).toBeTruthy();
+        expect(resolved.adapters.monaco.data.colors['editorCursor.foreground']).toBeTruthy();
+        expect(resolved.adapters.mermaid.themeVariables.primaryColor).toBeTruthy();
+        expect(resolved.adapters.prism['code[class*="language-"]']).toBeTruthy();
+        expect(resolved.adapters.widget.variables['--widget-accent']).toBeTruthy();
+      }
+    }
+  });
+
+  it('derives optional Widget geometry and material from the same host Theme tokens', () => {
+    for (const definition of themeRegistry.getAcceptedDefinitions().slice(1)) {
+      for (const scheme of ['light', 'dark'] as const) {
+        const tokens = presetTokens(definition, scheme);
+        const variables = definition.schemes[scheme].widget.variables;
+        expect(variables['--widget-radius-track']).toBe(tokens.get('--theme-radius-base'));
+        expect(variables['--widget-radius-control']).toBe(tokens.get('--theme-radius-sm'));
+        expect(variables['--widget-radius-card']).toBe(tokens.get('--theme-radius-lg'));
+        expect(variables['--widget-radius-full']).toBe(tokens.get('--theme-radius-full'));
+        expect(variables['--widget-control-shadow']).toBe(tokens.get('--theme-shadow-base'));
+      }
+    }
   });
 
   it('projects every adapter and Hero slot from a complete synthetic Theme', () => {
@@ -36,6 +139,9 @@ describe('ThemeRegistry', () => {
       stylesheetText: syntheticTheme.stylesheetText.replace(/\s*--ink\s*:[^;]+;/, ''),
     } as ThemeDefinition;
     expect(() => validateThemeDefinition(missingToken)).toThrow('missing CSS tokens');
+
+    const missingDisplayName = { ...syntheticTheme, displayName: '' } as ThemeDefinition;
+    expect(() => validateThemeDefinition(missingDisplayName)).toThrow('displayName is required');
 
     const missingWidgetVariable = structuredClone(syntheticTheme) as ThemeDefinition;
     delete (missingWidgetVariable.schemes.light.widget.variables as Partial<typeof missingWidgetVariable.schemes.light.widget.variables>)['--widget-text'];
@@ -451,6 +557,66 @@ describe('ThemeRegistry', () => {
 
     expect(registry.getProductionIds()).toEqual(['myagents-default']);
     expect(registry.resolve(invalidTheme.id, 'dark', false).themeId).toBe('myagents-default');
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('contains optional construction failures inside the Registry boundary', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const validAfterFailure = renamedSyntheticTheme('synthetic-after-construction-failure');
+    const registry = new ThemeRegistry(
+      [myAgentsDefaultTheme],
+      [
+        {
+          id: 'broken-construction',
+          create: () => { throw new Error('adapter construction failed'); },
+        },
+        { id: validAfterFailure.id, create: () => validAfterFailure },
+      ],
+    );
+
+    expect(registry.getProductionIds()).toEqual([
+      'myagents-default',
+      validAfterFailure.id,
+    ]);
+    expect(registry.resolve('broken-construction', 'light', false).themeId).toBe('myagents-default');
+    expect(warn).toHaveBeenCalledWith(
+      '[theme] Rejected invalid Theme package "broken-construction":',
+      expect.any(Error),
+    );
+  });
+
+  it.each([
+    ['missing Token', (definition: ThemeDefinition) => {
+      definition.stylesheetText = definition.stylesheetText.replace(/\s*--ink\s*:[^;]+;/, '');
+    }],
+    ['missing scheme', (definition: ThemeDefinition) => {
+      delete (definition.schemes as Partial<ThemeDefinition['schemes']>).dark;
+    }],
+    ['missing Hero', (definition: ThemeDefinition) => {
+      delete (definition as Partial<ThemeDefinition>).hero;
+    }],
+    ['missing adapter', (definition: ThemeDefinition) => {
+      delete (definition.schemes.light as Partial<ThemeDefinition['schemes']['light']>).widget;
+    }],
+    ['illegal selector', (definition: ThemeDefinition) => {
+      definition.stylesheetText += '\nbody { color: red; }';
+    }],
+  ])('rejects an optional package with %s while accepting the following package', (_label, corrupt) => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const invalid = renamedSyntheticTheme('synthetic-invalid-optional');
+    const validAfterFailure = renamedSyntheticTheme('synthetic-valid-after-optional');
+    corrupt(invalid);
+
+    const registry = new ThemeRegistry(
+      [myAgentsDefaultTheme],
+      [
+        { id: invalid.id, create: () => invalid },
+        { id: validAfterFailure.id, create: () => validAfterFailure },
+      ],
+    );
+
+    expect(registry.getProductionIds()).toEqual(['myagents-default', validAfterFailure.id]);
+    expect(registry.resolve(invalid.id, 'dark', false).themeId).toBe('myagents-default');
     expect(warn).toHaveBeenCalled();
   });
 });

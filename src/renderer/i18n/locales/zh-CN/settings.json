@@ -1874,6 +1874,15 @@
     "communityQrAlt": "用户交流群二维码",
     "developerSection": "开发者",
     "developer": {
+      "themeTitle": "主题",
+      "themeDescription": "切换 Space 以外的全局界面视觉，用于开发者试色。",
+      "themeSaveFailed": "切换主题失败：{{message}}",
+      "themeGroups": {
+        "baseline": "基准",
+        "original": "原创",
+        "community": "社区 · PR #441",
+        "references": "参考"
+      },
       "devModeTitle": "开发者模式",
       "devModeDescription": "显示页面上的日志入口按钮（如 Logs、System Info 等）。",
       "codexProviderTitle": "Codex 订阅 Provider",

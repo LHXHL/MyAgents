@@ -110,6 +110,7 @@ const noBackground = {
 
 export const syntheticTheme: ThemeDefinition = {
   id: SYNTHETIC_THEME_ID,
+  displayName: 'Synthetic Theme',
   description: 'Test-only complete Theme with sentinel values',
   stylesheetText,
   hero: {

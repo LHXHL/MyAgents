@@ -69,6 +69,7 @@ export interface ThemeHeroDefinition {
 
 export interface ThemeDefinition {
   id: ThemeId;
+  displayName: string;
   description: string;
   /**
    * The Theme's actual co-located stylesheet source. The concrete Theme module

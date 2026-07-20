@@ -73,6 +73,27 @@ function activateThemeStylesheet(resolvedTheme: ResolvedTheme): void {
   }
 }
 
+/**
+ * Activates the last validated snapshot before React creates its first tree.
+ * Optional packages stay side-effect free at module evaluation; this explicit
+ * bootstrap closes the canonical-to-preset gap before the first React paint.
+ */
+export function primeThemeRuntimeFromBootstrap(
+  storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> | null =
+    typeof localStorage === 'undefined' ? null : localStorage,
+  registry: ThemeRegistry = themeRegistry,
+): ResolvedTheme {
+  const selection = readThemeBootstrapSelection(storage);
+  const resolvedTheme = registry.resolve(
+    selection.themeId,
+    selection.appearanceMode,
+    getSystemPrefersDark(),
+  );
+  activateThemeStylesheet(resolvedTheme);
+  applyRootTheme(resolvedTheme);
+  return resolvedTheme;
+}
+
 export interface ThemeRuntimeProviderProps {
   children: React.ReactNode;
   /** null keeps the pre-React snapshot authoritative until durable config loads. */

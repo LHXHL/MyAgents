@@ -1,12 +1,27 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { useEffect } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ThemeRegistry } from './registry';
+import { ThemeRegistry, themeRegistry } from './registry';
 import { myAgentsDefaultTheme } from './themes/myagents-default';
-import { ThemeRuntimeProvider, useResolvedTheme } from './ThemeRuntime';
+import {
+  primeThemeRuntimeFromBootstrap,
+  THEME_SELECTION_CHANGED_EVENT,
+  ThemeRuntimeProvider,
+  useResolvedTheme,
+} from './ThemeRuntime';
 import { THEME_BOOTSTRAP_KEY } from './bootstrap';
 import { SYNTHETIC_THEME_ID, syntheticTheme } from './__tests__/syntheticTheme';
+
+const runtimeMocks = vi.hoisted(() => ({
+  emit: vi.fn(() => Promise.resolve()),
+  isTauri: false,
+}));
+
+vi.mock('@tauri-apps/api/event', () => ({ emit: runtimeMocks.emit }));
+vi.mock('@/utils/browserMock', () => ({
+  isTauriEnvironment: () => runtimeMocks.isTauri,
+}));
 
 let mediaMatches = false;
 const mediaListeners = new Set<(event: MediaQueryListEvent) => void>();
@@ -47,6 +62,8 @@ describe('ThemeRuntimeProvider', () => {
 
   beforeEach(() => {
     localStorage.clear();
+    runtimeMocks.emit.mockClear();
+    runtimeMocks.isTauri = false;
     mediaMatches = false;
     mediaListeners.clear();
     installMatchMedia();
@@ -63,6 +80,24 @@ describe('ThemeRuntimeProvider', () => {
 
   it('fails fast when a Theme consumer is mounted outside the runtime owner', () => {
     expect(() => render(<Probe />)).toThrow('useResolvedTheme must be used within ThemeRuntimeProvider');
+  });
+
+  it('primes a validated optional package before the first React paint', () => {
+    localStorage.setItem(THEME_BOOTSTRAP_KEY, JSON.stringify({
+      version: 1,
+      themeId: 'linear',
+      appearanceMode: 'dark',
+    }));
+
+    const resolved = primeThemeRuntimeFromBootstrap(localStorage, themeRegistry);
+
+    expect(resolved.key).toBe('linear:dark');
+    expect(document.documentElement.dataset.themeId).toBe('linear');
+    expect(document.documentElement.dataset.colorScheme).toBe('dark');
+    expect(document.getElementById('myagents-active-theme-stylesheet')).toHaveAttribute(
+      'data-theme-id',
+      'linear',
+    );
   });
 
   it('updates root identity, scheme, dark compatibility and every synthetic adapter as one projection', () => {
@@ -116,6 +151,70 @@ describe('ThemeRuntimeProvider', () => {
     expect(document.documentElement.dataset.colorScheme).toBe('dark');
     expect(screen.getByTestId('theme-probe')).toHaveTextContent('synthetic-test-theme:dark');
     expect(onTheme).toHaveBeenLastCalledWith('synthetic-test-theme:dark');
+  });
+
+  it('atomically activates every production Theme package in both schemes', () => {
+    const view = render(
+      <ThemeRuntimeProvider
+        registry={themeRegistry}
+        selection={{ themeId: 'myagents-default', appearanceMode: 'light' }}
+      >
+        <Probe />
+      </ThemeRuntimeProvider>,
+    );
+
+    for (const themeId of themeRegistry.getProductionIds()) {
+      for (const appearanceMode of ['light', 'dark'] as const) {
+        view.rerender(
+          <ThemeRuntimeProvider
+            registry={themeRegistry}
+            selection={{ themeId, appearanceMode }}
+          >
+            <Probe />
+          </ThemeRuntimeProvider>,
+        );
+        expect(document.documentElement.dataset.themeId).toBe(themeId);
+        expect(document.documentElement.dataset.colorScheme).toBe(appearanceMode);
+        expect(screen.getByTestId('theme-probe')).toHaveTextContent(`${themeId}:${appearanceMode}`);
+        expect(document.getElementById('myagents-active-theme-stylesheet')).toHaveAttribute(
+          'data-theme-id',
+          themeId,
+        );
+      }
+    }
+  });
+
+  it('broadcasts each durable Theme selection to sibling Webviews', async () => {
+    runtimeMocks.isTauri = true;
+    const view = render(
+      <ThemeRuntimeProvider
+        registry={themeRegistry}
+        selection={{ themeId: 'ink', appearanceMode: 'light' }}
+        broadcastSelection
+      >
+        <Probe />
+      </ThemeRuntimeProvider>,
+    );
+
+    await waitFor(() => expect(runtimeMocks.emit).toHaveBeenLastCalledWith(
+      THEME_SELECTION_CHANGED_EVENT,
+      { themeId: 'ink', appearanceMode: 'light' },
+    ));
+
+    view.rerender(
+      <ThemeRuntimeProvider
+        registry={themeRegistry}
+        selection={{ themeId: 'linear', appearanceMode: 'dark' }}
+        broadcastSelection
+      >
+        <Probe />
+      </ThemeRuntimeProvider>,
+    );
+
+    await waitFor(() => expect(runtimeMocks.emit).toHaveBeenLastCalledWith(
+      THEME_SELECTION_CHANGED_EVENT,
+      { themeId: 'linear', appearanceMode: 'dark' },
+    ));
   });
 
   it('removes synthetic root state on fallback and snapshots the resolved default ID', () => {

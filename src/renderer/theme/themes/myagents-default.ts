@@ -240,6 +240,7 @@ const noHeroBackground = {
 
 export const myAgentsDefaultTheme: ThemeDefinition = {
   id: 'myagents-default',
+  displayName: 'MyAgents Default',
   description: 'MyAgents warm paper / warm night visual language',
   stylesheetText,
   hero: {
