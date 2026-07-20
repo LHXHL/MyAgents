@@ -224,7 +224,7 @@ user query 对 paused Goal 的成功 claim 会原子恢复为 active。automatic
 
 #### Continuation 与 Sidecar
 
-Goal scheduler 只有 `goalId -> one-shot JoinHandle`。active Goal 在上一轮 finalize 后按成功/失败 backoff 安排一次；paused/terminal/currentTurn/outbox pending 时不轮询。
+Goal scheduler 的 automatic continuation 是 `goalId -> one-shot JoinHandle`：active Goal 在上一轮 finalize 后按成功/失败 backoff 安排一次；paused/terminal/currentTurn/outbox pending 时不轮询。绝对 deadline 由同一 `SessionGoalManager` 的另一条 one-shot handle 按 wall clock 反复复核，因此 paused 和 in-flight Turn 同样受限；到点后在 session lifecycle 锁内持续复用 disk-first terminal + exact/owner-scoped stop，直到 authority 清除与 owner 释放确认，期间新 Goal 不能越过旧 Goal cleanup。max executions 同时在 continuation 调度与原子 Turn claim 处裁决；claim 输给结束条件时仍持久化该 queue authority，等 Node 既有 abort settlement 清除后才允许替换。
 
 automatic continuation 在调用 Node `/goal/execute-sync` 前先附着 `SidecarOwner::Goal(goalId)`；用户 query 最晚在 Turn claim 时附着。它只是 owner token，不创建独立进程。Pause/Cancel/terminal 先提交 durable control 状态，再按 owner + queueId 精确 stop；只有 promotion/transport/进程终止得到确认后才清 `currentTurn` 并释放 owner。Rust 尚无 currentTurn 的 preclaim transport failure 也必须把已知 queueId 发给 Node stop，不能当作 already stopped。关闭 Tab 只释放 Tab owner，Goal owner/continuation 仍可让同一 Session 在后台继续。
 

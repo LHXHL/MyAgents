@@ -168,17 +168,20 @@ myagents agent list --active|--archived           # 按工作区归档状态筛�
 | 命令 | 何时调用 | 效果 |
 |------|----------|------|
 | `myagents goal get` / `list` | 查看当前 session 是否已有 Goal，或状态更新前确认 | 返回当前 session Goal，或 `goal: null` |
-| `myagents goal create --objective-file <path>` | 仅当 User 明确要求进入 Goal/目标模式 | 从 workspace 文本文件读取 objective，创建 current-session Goal，启动自动续跑，广播 `goal:changed` |
+| `myagents goal create --objective-file <path> [--deadline <ISO-with-offset>] [--max-executions <n>] [--ai-can-exit <bool>]` | 仅当 User 明确要求进入 Goal/目标模式 | 从本地普通文本文件读取 objective，创建 current-session Goal，启动自动续跑，广播 `goal:changed`；可设置现有 Goal 结束条件 |
 | `myagents goal update --status complete` | 当前证据证明 objective 全部完成且无剩余工作 | 停止自动续跑，标记 complete，终态通知 |
 | `myagents goal update --status blocked` | 同一 blocker 连续至少 3 个 Goal turn 仍无法推进 | 停止自动续跑，标记 blocked，终态通知 |
 
 边界：
 
 - Goal create/update 按当前 Sidecar session 解析 `sessionId + workspacePath`；不能跨 session 创建 Goal，也不能覆盖同 session 未完成 Goal。
+- `--objective-file` / `--reason-file` 可读取 workspace 外的本地普通文件（例如系统 temp）；相对路径仍以 CLI 当前目录解析。位置不做 containment，但保留 1 MB、NUL、regular-file、leaf symlink 与 open-time identity 检查。这个放宽仅属于 Goal；Space 等 workspace-scoped 输入不变。
+- `--deadline` 是“最晚停止时间”，不是“最早开始时间”，必须带显式时区偏移或 `Z`；`--max-executions` 是正整数；未传参数时仍使用 `deadline=None / maxExecutions=None / aiCanExit=true`。
 - `update` 只接受 `complete` / `blocked`。pause/resume/cancel 由用户或系统路径控制。
 - `aiCanExit=false` 时 Management API 从服务端拒绝模型 complete/blocked；不能只依赖 prompt 隐藏命令。
 - CLI 创建保留空 permission → runtime 最大权限的无人值守语义；model/provider/runtime/reasoning/MCP 不写入 Goal state，由当前 session 在每轮继续拥有。
 - 普通 Cron surface 不创建或管理 Goal。`myagents cron add --schedule '{"kind":"loop"}'` 会被拒绝；Goal 创建统一走 `myagents goal create --objective-file ...`。objective/reason 是 file-only 输入，不接受 inline 或 positional 文本。
+- `goal get` 的人类可读投影明确区分 `settled turns`（Rust 已 finalize 的 `turnCount`）与可选 `current turn`（`executionNumber`）；JSON 继续返回既有 `turnCount / isExecuting / executionNumber / endConditions` 字段。
 - current-session Goal 不附带 `CronDelivery`；IM / Agent Channel session 依赖当前 session 输出路由。
 
 ### Cron 兼容命令（0.3.0）

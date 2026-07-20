@@ -126,6 +126,11 @@ describe('admin-api help registry', () => {
     expect(text).toContain('myagents goal');
     expect(text).toContain('Goal Mode');
     expect(text).toContain('create --objective');
+    expect(text).toContain('--deadline <ISO-8601-with-offset>');
+    expect(text).toContain('--max-executions <positive-integer>');
+    expect(text).toContain('--ai-can-exit <true|false>');
+    expect(text).toContain('outside the current');
+    expect(text).toContain('not a delayed start');
     expect(text).toContain('update --status complete');
     expect(text).toContain('Do not infer Goal Mode');
     expect(text).not.toContain('Unknown command group');
@@ -388,6 +393,33 @@ describe('admin-api goal', () => {
       objective: 'Ship it',
     });
     clearImCronContext();
+  });
+
+  it('forwards existing Goal end conditions to the Rust authority', async () => {
+    const { handleGoalCreate } = await import('./admin-api');
+    sessionEngineMocks.state.context = {
+      sessionId: 'session-goal-with-limits',
+      workspacePath: '/tmp/myagents-goal-workspace',
+    };
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      goal: { id: 'goal_limited', objective: 'Ship it', status: 'active' },
+    });
+
+    const endConditions = {
+      deadline: '2026-07-22T01:00:00.000Z',
+      maxExecutions: 5,
+      aiCanExit: false,
+    };
+    const result = await handleGoalCreate({ objective: 'Ship it', endConditions });
+
+    expect(result.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith('/api/goal/create', 'POST', {
+      sessionId: 'session-goal-with-limits',
+      workspacePath: '/tmp/myagents-goal-workspace',
+      objective: 'Ship it',
+      endConditions,
+    });
   });
 
   it('forwards the active queue turn when the model terminalizes a Goal', async () => {

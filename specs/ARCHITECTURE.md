@@ -161,7 +161,7 @@ Goal concurrency 只保留三类真实 identity/fence：Runtime queue item 的 `
 
 Renderer 发出的 Goal mutation 还必须通过 owner/projection fence 才能落回当前 UI：返回值的 `goalId + sessionId + normalize(workspacePath)` 必须仍匹配请求 owner，且当前 projection 仍是同一 Goal。切换 Session、同 Session 新建 Goal incarnation，或 cancel 后的迟到 pause/resume/cancel 响应都不得覆盖新投影。
 
-自动 continuation 是 `goalId -> one-shot JoinHandle`，只在 active、无 current Turn、无待投递 outbox 时存在；paused/terminal Goal 不轮询。实际发送统一走 `/goal/execute-sync` 和 SessionEngine facade。自动 continuation 在进入 Node dispatch 前先附着 `SidecarOwner::Goal(goalId)`，用户 query 最晚在 Turn claim 时附着；它只是现有 Sidecar 的 owner token，不创建独立进程。
+自动 continuation 是 `goalId -> one-shot JoinHandle`，只在 active、无 current Turn、无待投递 outbox 时存在；paused/terminal Goal 不轮询。deadline 由同一个 `SessionGoalManager` 持有独立 one-shot stop handle，按 wall clock 复核后，在 session lifecycle 锁内持续复用既有 disk-first terminal + exact/owner-scoped stop 链，直到 authority 清除与 owner 释放确认，覆盖用户 Turn、自动 continuation 与 paused 状态。max executions 同时在 continuation 调度和原子 Turn claim 处裁决；输给结束条件的 claim 会保留该 queue authority，等既有 abort settlement 清除后才允许替换，不能在竞态中多抢一轮或泄漏旧 owner。实际发送统一走 `/goal/execute-sync` 和 SessionEngine facade。自动 continuation 在进入 Node dispatch 前先附着 `SidecarOwner::Goal(goalId)`，用户 query 最晚在 Turn claim 时附着；它只是现有 Sidecar 的 owner token，不创建独立进程。
 
 桌面 Goal 先以 Paused 持久化并等待首条用户 turn；首条 claim 通过普通用户发送路径原子激活。`GOAL_CONTINUATION` hidden envelope 后保留原 objective visible tail，因此用户气泡、Goal badge 与实时 streaming 都存在；切换 Session 或发送失败不会产生 Active 空 Goal。后续自动 continuation 纯隐藏；Goal 运行中用户 query 使用 `GOAL_CONTEXT` + visible query，并由现有 Runtime queue 排序。所有 continuation 强制 turn boundary，不能 steer/merge 到正在运行的 Turn。
 

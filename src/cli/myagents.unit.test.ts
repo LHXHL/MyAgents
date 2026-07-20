@@ -1,4 +1,5 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -13,6 +14,7 @@ import {
   normalizeScheduleFlag,
   parseArgs,
   parseDispatchAtValue,
+  printGoalResult,
   printResult,
   readWorkspaceTextFile,
   rejectUnsupportedSpaceDryRun,
@@ -610,7 +612,7 @@ describe('myagents CLI Space issue contracts', () => {
 });
 
 describe('myagents CLI Goal file inputs', () => {
-  it('reads shell-sensitive objective and reason text from workspace files', () => {
+  it('reads shell-sensitive objective and reason text from local files', () => {
     const dir = mkdtempSync(join(process.cwd(), '.goal-cli-test-'));
     try {
       const objectivePath = join(dir, 'objective.txt');
@@ -632,7 +634,125 @@ describe('myagents CLI Goal file inputs', () => {
     }
   });
 
-  it('rejects paths outside the workspace, symlinks, oversized files, and NUL bytes', () => {
+  it('accepts Goal objective and reason files outside the current workspace', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'myagents-goal-cli-external-'));
+    try {
+      const objectivePath = join(dir, 'objective.txt');
+      const reasonPath = join(dir, 'reason.txt');
+      writeFileSync(objectivePath, 'objective from system temp', 'utf8');
+      writeFileSync(reasonPath, 'reason from system temp', 'utf8');
+
+      expect(buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+      })).toEqual({ objective: 'objective from system temp' });
+      expect(buildRequestBody('goal', 'update', [], {
+        status: 'blocked',
+        reasonFile: reasonPath,
+      })).toEqual({ status: 'blocked', reason: 'reason from system temp' });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('builds existing Goal end conditions without changing the default payload', () => {
+    const dir = mkdtempSync(join(process.cwd(), '.goal-cli-end-conditions-test-'));
+    try {
+      const objectivePath = join(dir, 'objective.txt');
+      writeFileSync(objectivePath, 'finish the release', 'utf8');
+
+      expect(buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+      })).toEqual({ objective: 'finish the release' });
+      expect(buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+        deadline: '2026-07-22T09:00:00+08:00',
+        maxExecutions: '5',
+        aiCanExit: 'false',
+      })).toEqual({
+        objective: 'finish the release',
+        endConditions: {
+          deadline: '2026-07-22T01:00:00.000Z',
+          maxExecutions: 5,
+          aiCanExit: false,
+        },
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects ambiguous or invalid Goal end conditions at the CLI boundary', () => {
+    const dir = mkdtempSync(join(process.cwd(), '.goal-cli-invalid-end-conditions-test-'));
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const objectivePath = join(dir, 'objective.txt');
+      writeFileSync(objectivePath, 'finish the release', 'utf8');
+
+      expect(() => buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+        deadline: '2026-07-22T09:00:00',
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+        deadline: '2026-02-30T09:00:00+08:00',
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+        maxExecutions: '0',
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+        maxExecutions: '1.5',
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+        aiCanExit: 'sometimes',
+      })).toThrow('process.exit(2)');
+      expect(() => buildRequestBody('goal', 'create', [], {
+        objectiveFile: objectivePath,
+        aiCanExit: true,
+      })).toThrow('process.exit(2)');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+      exit.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('shows settled and current Goal turns separately with effective end conditions', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      printGoalResult('get', {
+        goal: {
+          id: 'goal-1',
+          status: 'active',
+          turnCount: 3,
+          isExecuting: true,
+          executionNumber: 4,
+          endConditions: {
+            deadline: '2026-07-22T01:00:00.000Z',
+            maxExecutions: 5,
+            aiCanExit: false,
+          },
+        },
+      });
+
+      const output = log.mock.calls.map(call => String(call[0])).join('\n');
+      expect(output).toContain('settled turns: 3');
+      expect(output).toContain('current turn:  4 (executing)');
+      expect(output).toContain('max executions: 5');
+      expect(output).toContain('AI can exit:    no');
+      expect(output).toContain('[UTC 2026-07-22T01:00:00.000Z]');
+      expect(output).not.toContain('  turns:');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('keeps workspace-scoped readers bounded and rejects unsafe file shapes', () => {
     const root = mkdtempSync(join(process.cwd(), '.goal-cli-safety-test-'));
     const workspace = join(root, 'workspace');
     mkdirSync(workspace);
@@ -688,9 +808,20 @@ describe('myagents CLI parseArgs', () => {
       'create',
       '--objective-file',
       'myagents_files/objective.txt',
+      '--deadline',
+      '2026-07-22T09:00:00+08:00',
+      '--max-executions',
+      '5',
+      '--ai-can-exit',
+      'false',
     ])).toMatchObject({
       positional: ['goal', 'create'],
-      flags: { objectiveFile: 'myagents_files/objective.txt' },
+      flags: {
+        objectiveFile: 'myagents_files/objective.txt',
+        deadline: '2026-07-22T09:00:00+08:00',
+        maxExecutions: '5',
+        aiCanExit: 'false',
+      },
     });
   });
 

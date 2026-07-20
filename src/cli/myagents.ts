@@ -192,6 +192,70 @@ function assertStringFlag(value: unknown, flagName: string): asserts value is st
   }
 }
 
+function parseGoalDeadlineFlag(raw: unknown): string | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw !== 'string' || !raw.trim()) {
+    console.error('Error: --deadline requires an ISO-8601 timestamp with an explicit timezone offset or Z.');
+    process.exit(2);
+  }
+  const value = raw.trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,9}))?)?([zZ]|[+-](\d{2}):(\d{2}))$/.exec(value);
+  if (!match) {
+    console.error(`Error: --deadline "${raw}" must include an explicit timezone offset or Z (e.g. 2026-07-22T09:00:00+08:00).`);
+    process.exit(2);
+  }
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText, , offset, offsetHourText, offsetMinuteText] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText ?? '0');
+  const offsetHour = Number(offsetHourText ?? '0');
+  const offsetMinute = Number(offsetMinuteText ?? '0');
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const calendarIsValid = month >= 1
+    && month <= 12
+    && day >= 1
+    && day <= daysInMonth[month - 1]!
+    && hour <= 23
+    && minute <= 59
+    && second <= 59
+    && (offset.toLowerCase() === 'z' || (offsetHour <= 23 && offsetMinute <= 59));
+  const timestamp = Date.parse(value);
+  if (!calendarIsValid || Number.isNaN(timestamp)) {
+    console.error(`Error: --deadline "${raw}" is not a valid ISO-8601 timestamp.`);
+    process.exit(2);
+  }
+  return new Date(timestamp).toISOString();
+}
+
+function parseGoalMaxExecutionsFlag(raw: unknown): number | undefined {
+  if (raw === undefined) return undefined;
+  const value = typeof raw === 'number'
+    ? raw
+    : typeof raw === 'string' && /^\d+$/.test(raw.trim())
+      ? Number(raw.trim())
+      : Number.NaN;
+  if (!Number.isSafeInteger(value) || value < 1 || value > 0xFFFF_FFFF) {
+    console.error('Error: --max-executions must be a positive integer between 1 and 4294967295.');
+    process.exit(2);
+  }
+  return value;
+}
+
+function parseGoalAiCanExitFlag(raw: unknown): boolean | undefined {
+  if (raw === undefined) return undefined;
+  if (typeof raw === 'string') {
+    const value = raw.trim().toLowerCase();
+    if (value === 'true') return true;
+    if (value === 'false') return false;
+  }
+  console.error('Error: --ai-can-exit must be true or false.');
+  process.exit(2);
+}
+
 function parseInlineBooleanFlag(key: string, inlineValue: string | undefined): boolean {
   if (inlineValue === undefined) return true;
   const normalized = inlineValue.trim().toLowerCase();
@@ -291,7 +355,7 @@ Examples:
   myagents skill sync
   myagents cron list
   myagents goal get
-  myagents goal create --objective-file myagents_files/goal-objective.txt
+  myagents goal create --objective-file goal-objective.txt --max-executions 12
   myagents goal update --status complete
   myagents runtime list                       # see installed runtimes + install hints
   myagents runtime describe codex             # models + permission modes
@@ -1665,7 +1729,7 @@ function printCronStatus(data: Record<string, unknown>): void {
   }
 }
 
-function printGoalResult(action: string, data?: Record<string, unknown>): void {
+export function printGoalResult(action: string, data?: Record<string, unknown>): void {
   const goal = (data?.goal as Record<string, unknown> | null | undefined) ?? null;
   if (!goal) {
     console.log('No active Goal in the current session.');
@@ -1677,11 +1741,31 @@ function printGoalResult(action: string, data?: Record<string, unknown>): void {
       ? '✓ Goal updated'
       : 'Goal';
   console.log(prefix);
-  console.log(`  id:      ${goal.id ?? '(unknown)'}`);
-  console.log(`  status:  ${goal.status ?? '(unknown)'}`);
-  console.log(`  turns:   ${goal.turnCount ?? 0}`);
+  console.log(`  id:            ${goal.id ?? '(unknown)'}`);
+  console.log(`  status:        ${goal.status ?? '(unknown)'}`);
+  console.log(`  settled turns: ${goal.turnCount ?? 0}`);
+  if (typeof goal.executionNumber === 'number') {
+    console.log(`  current turn:  ${goal.executionNumber}${goal.isExecuting === true ? ' (executing)' : ''}`);
+  }
   if (goal.updatedAt) console.log(`  updated: ${goal.updatedAt}`);
   if (goal.terminalReason) console.log(`  reason:  ${goal.terminalReason}`);
+  const endConditions = goal.endConditions as Record<string, unknown> | undefined;
+  if (endConditions && (
+    endConditions.deadline !== undefined
+    || endConditions.maxExecutions !== undefined
+    || typeof endConditions.aiCanExit === 'boolean'
+  )) {
+    console.log('  end conditions:');
+    if (endConditions.deadline !== undefined) {
+      console.log(`    deadline:       ${formatCronInstantWithUtc(endConditions.deadline, resolveLocalTimezone())}`);
+    }
+    if (endConditions.maxExecutions !== undefined) {
+      console.log(`    max executions: ${endConditions.maxExecutions}`);
+    }
+    if (typeof endConditions.aiCanExit === 'boolean') {
+      console.log(`    AI can exit:    ${endConditions.aiCanExit ? 'yes' : 'no'}`);
+    }
+  }
   if (goal.objective) {
     const objective = String(goal.objective).replace(/\s+/g, ' ').trim();
     console.log(`  objective: ${objective.length > 180 ? `${objective.slice(0, 179)}…` : objective}`);
@@ -2495,18 +2579,28 @@ function optionalNumberFlag(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-export function readWorkspaceTextFile(path: string, workspacePath = process.cwd()): string {
+type GuardedTextFileScope =
+  | { kind: 'workspace'; root: string }
+  | { kind: 'local'; basePath: string };
+
+function readGuardedTextFile(path: string, scope: GuardedTextFileScope): string {
   const fs = require('fs') as typeof import('fs');
   const pathMod = require('path') as typeof import('path');
   const MAX_BYTES = 1024 * 1024;
-  const workspaceReal = fs.realpathSync(pathMod.resolve(workspacePath));
-  const requested = pathMod.resolve(workspaceReal, path);
+  const basePath = scope.kind === 'workspace' ? scope.root : scope.basePath;
+  const baseReal = fs.realpathSync(pathMod.resolve(basePath));
+  const requested = pathMod.resolve(baseReal, path);
   const parentReal = fs.realpathSync(pathMod.dirname(requested));
   const target = pathMod.join(parentReal, pathMod.basename(requested));
-  const rel = pathMod.relative(workspaceReal, target);
-  if (rel === '' || rel.startsWith('..') || pathMod.isAbsolute(rel)) {
-    throw new Error(`path must stay inside workspace "${workspacePath}"`);
-  }
+  const assertInsideWorkspace = (candidate: string) => {
+    if (scope.kind !== 'workspace') return;
+    const workspaceReal = fs.realpathSync(pathMod.resolve(scope.root));
+    const rel = pathMod.relative(workspaceReal, candidate);
+    if (rel === '' || rel.startsWith('..') || pathMod.isAbsolute(rel)) {
+      throw new Error(`path must stay inside workspace "${scope.root}"`);
+    }
+  };
+  assertInsideWorkspace(target);
   const leaf = fs.lstatSync(target);
   if (leaf.isSymbolicLink()) {
     throw new Error('path must not be a symlink');
@@ -2518,10 +2612,9 @@ export function readWorkspaceTextFile(path: string, workspacePath = process.cwd(
   try {
     const stat = fs.fstatSync(fd);
     if (!stat.isFile()) throw new Error('path must be a regular file');
-    const openedReal = fs.realpathSync(target);
-    const openedRel = pathMod.relative(workspaceReal, openedReal);
-    if (openedRel === '' || openedRel.startsWith('..') || pathMod.isAbsolute(openedRel)) {
-      throw new Error(`path must stay inside workspace "${workspacePath}"`);
+    if (scope.kind === 'workspace') {
+      const openedReal = fs.realpathSync(target);
+      assertInsideWorkspace(openedReal);
     }
     const current = fs.statSync(target);
     if (current.dev !== stat.dev || current.ino !== stat.ino) {
@@ -2546,9 +2639,17 @@ export function readWorkspaceTextFile(path: string, workspacePath = process.cwd(
   }
 }
 
-function readTextFileFlag(path: string, flagName: string, workspacePath?: string): string {
+export function readWorkspaceTextFile(path: string, workspacePath = process.cwd()): string {
+  return readGuardedTextFile(path, { kind: 'workspace', root: workspacePath });
+}
+
+function readLocalTextFile(path: string, basePath = process.cwd()): string {
+  return readGuardedTextFile(path, { kind: 'local', basePath });
+}
+
+function readTextFileFlag(path: string, flagName: string): string {
   try {
-    return readWorkspaceTextFile(path, workspacePath ?? process.cwd());
+    return readLocalTextFile(path);
   } catch (err) {
     console.error(`Error: failed to read --${flagName} "${path}": ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
@@ -3173,18 +3274,28 @@ export function buildRequestBody(
     if (action === 'create') {
       assertStringFlag(flags.objectiveFile, 'objective-file');
       if (flags.objective !== undefined || rest.length > 0) {
-        console.error('Error: inline Goal objectives are not accepted; write the objective to a workspace file.');
+        console.error('Error: inline Goal objectives are not accepted; write the objective to a local text file.');
         process.exit(2);
       }
       const objective = typeof flags.objectiveFile === 'string'
-        ? readTextFileFlag(flags.objectiveFile, 'objective-file', process.cwd()).trim()
+        ? readTextFileFlag(flags.objectiveFile, 'objective-file').trim()
         : '';
       if (!objective) {
-        console.error('Error: goal create requires --objective-file <workspace-relative-path>.');
-        console.error('  Usage: myagents goal create --objective-file myagents_files/goal-objective.txt');
+        console.error('Error: goal create requires --objective-file <local-path>.');
+        console.error('  Usage: myagents goal create --objective-file goal-objective.txt');
         process.exit(2);
       }
-      return { objective };
+      const deadline = parseGoalDeadlineFlag(flags.deadline);
+      const maxExecutions = parseGoalMaxExecutionsFlag(flags.maxExecutions);
+      const aiCanExit = parseGoalAiCanExitFlag(flags.aiCanExit);
+      const endConditions = {
+        ...(deadline !== undefined ? { deadline } : {}),
+        ...(maxExecutions !== undefined ? { maxExecutions } : {}),
+        ...(aiCanExit !== undefined ? { aiCanExit } : {}),
+      };
+      return Object.keys(endConditions).length > 0
+        ? { objective, endConditions }
+        : { objective };
     }
     if (action === 'update') {
       assertStringFlag(flags.status, 'status');
@@ -3201,7 +3312,7 @@ export function buildRequestBody(
       }
       const reason = (
         typeof flags.reasonFile === 'string'
-          ? readTextFileFlag(flags.reasonFile, 'reason-file', process.cwd())
+          ? readTextFileFlag(flags.reasonFile, 'reason-file')
           : ''
       ).trim();
       return { status, reason: reason || undefined };

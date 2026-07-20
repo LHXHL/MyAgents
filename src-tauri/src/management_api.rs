@@ -942,6 +942,8 @@ struct GoalCreateRequest {
     session_id: String,
     workspace_path: String,
     objective: String,
+    #[serde(default)]
+    end_conditions: GoalEndConditions,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1327,11 +1329,7 @@ async fn goal_create_handler(Json(req): Json<GoalCreateRequest>) -> Json<serde_j
         workspace_path: workspace_path.to_string(),
         session_id: session_id.to_string(),
         objective: objective.to_string(),
-        end_conditions: GoalEndConditions {
-            deadline: None,
-            max_executions: None,
-            ai_can_exit: true,
-        },
+        end_conditions: req.end_conditions,
         notify_enabled: true,
         permission_mode: String::new(),
     };
@@ -3512,6 +3510,39 @@ mod tests {
         assert_eq!(
             response.get("error").and_then(Value::as_str),
             Some("stale_revision: expected 4, current 5")
+        );
+    }
+
+    #[test]
+    fn goal_create_request_defaults_and_deserializes_end_conditions() {
+        let default_request: GoalCreateRequest = serde_json::from_value(serde_json::json!({
+            "sessionId": "session-1",
+            "workspacePath": "/tmp/workspace",
+            "objective": "Ship it"
+        }))
+        .unwrap();
+        assert_eq!(default_request.end_conditions, GoalEndConditions::default());
+
+        let limited_request: GoalCreateRequest = serde_json::from_value(serde_json::json!({
+            "sessionId": "session-1",
+            "workspacePath": "/tmp/workspace",
+            "objective": "Ship it",
+            "endConditions": {
+                "deadline": "2026-07-22T01:00:00.000Z",
+                "maxExecutions": 5,
+                "aiCanExit": false
+            }
+        }))
+        .unwrap();
+        assert_eq!(limited_request.end_conditions.max_executions, Some(5));
+        assert!(!limited_request.end_conditions.ai_can_exit);
+        assert_eq!(
+            limited_request
+                .end_conditions
+                .deadline
+                .expect("deadline")
+                .to_rfc3339(),
+            "2026-07-22T01:00:00+00:00"
         );
     }
 

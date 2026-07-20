@@ -1044,7 +1044,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 
 // ============= CLI Sync =============
 
-const CLI_VERSION: &str = "39";
+const CLI_VERSION: &str = "40";
 
 /// Sync the CLI script from bundled resources to ~/.myagents/bin/.
 /// Version-gated: only runs when CLI_VERSION changes.
@@ -1206,7 +1206,7 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "36";
+const SYSTEM_SKILLS_VERSION: &str = "37";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1567,7 +1567,7 @@ mod system_skills_tests {
     use super::{
         all_installed_system_skills_complete, ensure_system_skills_installation_current_at,
         is_skill_blocked_on_platform, skill_dir_is_complete, sync_one_system_skill,
-        SystemSkillSync, ADMIN_AGENT_VERSION, SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
+        SystemSkillSync, ADMIN_AGENT_VERSION, CLI_VERSION, SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
     };
     use std::fs;
 
@@ -1589,8 +1589,9 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v36_updates_memory_prompt_and_preserves_v35_contracts() {
-        assert_eq!(SYSTEM_SKILLS_VERSION, "36");
+    fn v37_updates_goal_cli_skill_and_preserves_v36_contracts() {
+        assert_eq!(CLI_VERSION, "40");
+        assert_eq!(SYSTEM_SKILLS_VERSION, "37");
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
         assert!(bundled.contains("myagents space list --json"));
         assert!(bundled.contains("myagents space whoami --space <slug> --json"));
@@ -1599,6 +1600,9 @@ mod system_skills_tests {
         assert!(bundled.contains("--clear-goal"));
         assert!(bundled.contains("只有精确 leaf help 明确声明支持的命令才使用 `--dry-run`"));
         assert!(bundled.contains("所有 Space 业务命令都必须带 `--space <slug>`"));
+        assert!(bundled.contains("myagents goal create --objective-file goal-objective.txt"));
+        assert!(bundled.contains("workspace 或系统 temp 均可"));
+        assert!(bundled.contains("--max-executions <正整数>"));
 
         let memory_update = include_str!("../../bundled-skills/myagents-memory-update/SKILL.md");
         assert!(memory_update

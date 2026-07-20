@@ -15,6 +15,8 @@ describe('buildCliToolsAppend', () => {
     expect(text).toContain('<myagents-cli-goal>');
     expect(text).toContain('<myagents-cli-thought>');
     expect(text).toContain('myagents goal --help');
+    expect(text).toContain('goal-objective.txt');
+    expect(text).toContain('system\ntemp files are both accepted');
     expect(text).not.toContain('<myagents-user-tools>');
   });
 

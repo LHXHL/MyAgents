@@ -1791,13 +1791,25 @@ Do not infer Goal Mode from an ordinary complex request.
 
 Commands:
   get | list                               Show the current session Goal
-  create --objective-file <path>            Create a Goal from workspace text
+  create --objective-file <path>            Create a Goal from a local text file
+         [--deadline <ISO-8601-with-offset>]
+         [--max-executions <positive-integer>]
+         [--ai-can-exit <true|false>]
   update --status complete                  Mark the active Goal complete
   update --status blocked                   Mark the active Goal blocked
 
 Use --reason-file <path> when a terminal reason is needed. Goal objective and
 reason text are file-only inputs so arbitrary user text never enters a shell
-command line.
+command line. Paths may point to local regular text files outside the current
+workspace, including the system temp directory; files remain size/NUL/symlink
+guarded.
+
+Create options:
+  --deadline       Latest time the Goal may keep running. Requires ISO-8601
+                   with an explicit offset or Z; it is not a delayed start.
+  --max-executions Maximum number of settled Goal turns (>= 1).
+  --ai-can-exit    Whether the AI may mark complete/blocked before the other
+                   end conditions are reached (default: true).
 
 When to call:
   get
@@ -1829,10 +1841,12 @@ Rules:
     controlled by the user/system.
   - Do not mark complete for partial progress, a stopped turn, or a plausible
     final answer without evidence.
+  - With --ai-can-exit false, complete/blocked updates from the AI are rejected;
+    the Goal runs until another end condition or user/system control stops it.
 
 Examples:
   myagents goal get
-  myagents goal create --objective-file myagents_files/goal-objective.txt
+  myagents goal create --objective-file goal-objective.txt --deadline 2026-07-22T09:00:00+08:00 --max-executions 12
   myagents goal update --status complete
   myagents goal update --status blocked`,
 
@@ -2981,7 +2995,14 @@ export async function handleGoalGet(): Promise<AdminResponse> {
   return mgmtError(resp, 'Failed to get Goal');
 }
 
-export async function handleGoalCreate(payload: { objective?: string }): Promise<AdminResponse> {
+export async function handleGoalCreate(payload: {
+  objective?: string;
+  endConditions?: {
+    deadline?: string;
+    maxExecutions?: number;
+    aiCanExit?: boolean;
+  };
+}): Promise<AdminResponse> {
   const objective = payload.objective?.trim();
   if (!objective) return { success: false, error: 'Missing required field: objective' };
   const ctx = currentGoalContext();
@@ -2990,6 +3011,7 @@ export async function handleGoalCreate(payload: { objective?: string }): Promise
     sessionId: ctx.sessionId,
     workspacePath: ctx.workspacePath,
     objective,
+    ...(payload.endConditions ? { endConditions: payload.endConditions } : {}),
   });
   if (resp.ok) {
     return { success: true, data: { goal: (resp as Record<string, unknown>).goal } };
