@@ -41,6 +41,7 @@ function presetTokens(
 describe('ThemeRegistry', () => {
   const productionThemeIds = [
     'myagents-default',
+    'default-black',
     'ink',
     'fjord',
     'ochre',
@@ -54,10 +55,11 @@ describe('ThemeRegistry', () => {
     'raycast',
   ];
 
-  it('ships twelve complete production Themes in product order', () => {
+  it('ships thirteen complete production Themes in product order', () => {
     expect(themeRegistry.getProductionIds()).toEqual(productionThemeIds);
     expect(themeRegistry.getAcceptedDefinitions().map(definition => definition.displayName)).toEqual([
       'MyAgents Default',
+      'Default Black',
       'Ink',
       'Fjord',
       'Ochre',
@@ -108,7 +110,9 @@ describe('ThemeRegistry', () => {
   });
 
   it('derives optional Widget geometry and material from the same host Theme tokens', () => {
-    for (const definition of themeRegistry.getAcceptedDefinitions().slice(1)) {
+    for (const definition of themeRegistry.getAcceptedDefinitions().filter(
+      candidate => candidate.id !== 'myagents-default' && candidate.id !== 'default-black',
+    )) {
       for (const scheme of ['light', 'dark'] as const) {
         const tokens = presetTokens(definition, scheme);
         const variables = definition.schemes[scheme].widget.variables;

@@ -5,7 +5,7 @@ import CustomSelect, { type SelectOption } from '@/components/CustomSelect';
 import { themeRegistry } from '@/theme';
 
 export const THEME_PRESET_GROUPS = [
-  { key: 'baseline', ids: ['myagents-default'] },
+  { key: 'baseline', ids: ['myagents-default', 'default-black'] },
   { key: 'original', ids: ['ink', 'fjord', 'ochre'] },
   { key: 'community', ids: ['sage', 'mauve', 'wisteria'] },
   { key: 'references', ids: ['absolutely', 'linear', 'proof', 'codex', 'raycast'] },

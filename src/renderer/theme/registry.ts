@@ -26,6 +26,7 @@ import {
 import type { ResolvedTheme, ThemeDefinition } from './types';
 import { absolutelyThemeManifest } from './themes/absolutely';
 import { codexThemeManifest } from './themes/codex';
+import { defaultBlackThemeManifest } from './themes/default-black';
 import { fjordThemeManifest } from './themes/fjord';
 import { inkThemeManifest } from './themes/ink';
 import { linearThemeManifest } from './themes/linear';
@@ -686,20 +687,32 @@ function presetFactory(manifest: PresetThemeManifest): OptionalThemeFactory {
   };
 }
 
+const defaultBlackFactory: OptionalThemeFactory = {
+  id: defaultBlackThemeManifest.id,
+  create: () => ({
+    ...defaultBlackThemeManifest,
+    hero: myAgentsDefaultTheme.hero,
+    schemes: myAgentsDefaultTheme.schemes,
+  }),
+};
+
 /** Production catalog order is also the product order shown by Settings. */
 export const themeRegistry = new ThemeRegistry(
   [myAgentsDefaultTheme],
   [
-    inkThemeManifest,
-    fjordThemeManifest,
-    ochreThemeManifest,
-    sageThemeManifest,
-    mauveThemeManifest,
-    wisteriaThemeManifest,
-    absolutelyThemeManifest,
-    linearThemeManifest,
-    proofThemeManifest,
-    codexThemeManifest,
-    raycastThemeManifest,
-  ].map(presetFactory),
+    defaultBlackFactory,
+    ...[
+      inkThemeManifest,
+      fjordThemeManifest,
+      ochreThemeManifest,
+      sageThemeManifest,
+      mauveThemeManifest,
+      wisteriaThemeManifest,
+      absolutelyThemeManifest,
+      linearThemeManifest,
+      proofThemeManifest,
+      codexThemeManifest,
+      raycastThemeManifest,
+    ].map(presetFactory),
+  ],
 );

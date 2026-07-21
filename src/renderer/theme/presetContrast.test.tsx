@@ -86,7 +86,7 @@ describe('production Theme contrast', () => {
     }
   });
 
-  it('keeps every new Theme core text and solid action state at 4.5:1 or better', () => {
+  it('keeps every palette Theme core text and solid action state at 4.5:1 or better', () => {
     const solidActionPairs = [
       ['accent action', '--on-accent', '--accent'],
       ['accent action hover', '--on-accent', '--accent-warm-hover'],
@@ -103,7 +103,9 @@ describe('production Theme contrast', () => {
       ['info action', '--on-info', '--info'],
     ] as const;
 
-    for (const definition of themeRegistry.getAcceptedDefinitions().slice(1)) {
+    for (const definition of themeRegistry.getAcceptedDefinitions().filter(
+      candidate => candidate.id !== 'myagents-default' && candidate.id !== 'default-black',
+    )) {
       for (const scheme of ['light', 'dark'] as const) {
         const tokens = tokensFor(definition.stylesheetText, definition.id, scheme);
         const ink = tokens.get('--ink')!;
@@ -131,5 +133,16 @@ describe('production Theme contrast', () => {
         }
       }
     }
+  });
+
+  it('keeps the Default Black light primary action readable', () => {
+    const definition = themeRegistry.getAcceptedDefinitions().find(
+      candidate => candidate.id === 'default-black',
+    )!;
+    const tokens = tokensFor(definition.stylesheetText, definition.id, 'light');
+    const foreground = tokens.get('--button-primary-text')!;
+
+    expect(contrast(foreground, tokens.get('--button-primary-bg')!)).toBeGreaterThanOrEqual(4.5);
+    expect(contrast(foreground, tokens.get('--button-primary-bg-hover')!)).toBeGreaterThanOrEqual(4.5);
   });
 });

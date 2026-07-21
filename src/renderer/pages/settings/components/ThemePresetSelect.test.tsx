@@ -22,10 +22,11 @@ describe('ThemePresetSelect', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /MyAgents Default/ }));
     expect(screen.getByText('基准')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Default Black' })).toBeInTheDocument();
     expect(screen.getByText('原创')).toBeInTheDocument();
     expect(screen.getByText('社区 · PR #441')).toBeInTheDocument();
     expect(screen.getByText('参考')).toBeInTheDocument();
-    expect(screen.getAllByRole('button')).toHaveLength(13);
+    expect(screen.getAllByRole('button')).toHaveLength(14);
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Raycast' }));

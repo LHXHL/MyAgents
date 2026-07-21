@@ -2,6 +2,12 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
+import {
+  collectContractBlocks,
+  collectDeclaredTokens,
+  parseThemeStylesheet,
+} from './stylesheet-contract';
+
 const root = resolve(import.meta.dirname, '../../..');
 
 function source(relativePath: string): string {
@@ -62,7 +68,7 @@ describe('Theme architecture guardrails', () => {
 
   it('keeps every optional package scoped, side-effect free, and independent from Space', () => {
     const optionalThemeIds = [
-      'ink', 'fjord', 'ochre', 'sage', 'mauve', 'wisteria',
+      'default-black', 'ink', 'fjord', 'ochre', 'sage', 'mauve', 'wisteria',
       'absolutely', 'linear', 'proof', 'codex', 'raycast',
     ];
     for (const themeId of optionalThemeIds) {
@@ -80,6 +86,51 @@ describe('Theme architecture guardrails', () => {
       expect(css).not.toMatch(/https?:\/\//);
     }
     expect(source('src/renderer/theme/themes/preset-theme.ts')).not.toContain('myagents-default');
+  });
+
+  it('keeps Default Black equal to canonical host tokens except its light primary button pair', () => {
+    const canonicalStylesheet = parseThemeStylesheet(
+      source('src/renderer/theme/themes/myagents-default.css'),
+    );
+    const variantStylesheet = parseThemeStylesheet(
+      source('src/renderer/theme/themes/default-black.css'),
+    );
+    const canonicalRoot = "html[data-theme-id='myagents-default']";
+    const variantRoot = "html[data-theme-id='default-black']";
+    const collect = (
+      stylesheet: ReturnType<typeof parseThemeStylesheet>,
+      selector: string,
+      allowedSelectorLists: string[][],
+    ) => collectDeclaredTokens(collectContractBlocks(
+      stylesheet.topLevelBlocks,
+      selector,
+      allowedSelectorLists,
+      `Default Black equality selector ${selector}`,
+    ));
+
+    expect(collect(variantStylesheet, variantRoot, [[variantRoot]])).toEqual(
+      collect(canonicalStylesheet, canonicalRoot, [[':root', canonicalRoot]]),
+    );
+
+    for (const scheme of ['light', 'dark'] as const) {
+      const canonicalScheme = `${canonicalRoot}[data-color-scheme='${scheme}']`;
+      const variantScheme = `${variantRoot}[data-color-scheme='${scheme}']`;
+      const canonicalTokens = collect(
+        canonicalStylesheet,
+        canonicalScheme,
+        [[`html[data-color-scheme='${scheme}']`, canonicalScheme]],
+      );
+      const variantTokens = collect(variantStylesheet, variantScheme, [[variantScheme]]);
+
+      // Both values compute to white; the literal keeps optional-package
+      // contrast checks independent from cross-block var() resolution.
+      canonicalTokens.set('--button-primary-text', '#ffffff');
+      if (scheme === 'light') {
+        canonicalTokens.set('--button-primary-bg', '#111111');
+        canonicalTokens.set('--button-primary-bg-hover', '#2b2b2b');
+      }
+      expect(variantTokens).toEqual(canonicalTokens);
+    }
   });
 
   it('reuses the Theme-owned brand title presentation on Launcher and About', () => {

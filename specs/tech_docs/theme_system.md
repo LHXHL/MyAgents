@@ -12,8 +12,8 @@
 | 外观偏好 | `AppearanceMode` | durable `AppConfig.appearanceMode` | `system / light / dark` |
 | 已解析明暗 | `ResolvedColorScheme` | 每个 Webview 的 Theme runtime | 当前实际使用的 `light / dark` |
 
-Production registry 按产品顺序注册十二套完整 Theme：`myagents-default`、`ink`、`fjord`、
-`ochre`、`sage`、`mauve`、`wisteria`、`absolutely`、`linear`、`proof`、`codex`、`raycast`。
+Production registry 按产品顺序注册十三套完整 Theme：`myagents-default`、`default-black`、`ink`、
+`fjord`、`ochre`、`sage`、`mauve`、`wisteria`、`absolutely`、`linear`、`proof`、`codex`、`raycast`。
 不得把 light/dark 拆成两个 Theme，也不得重新用 `theme` 字段表达 appearance。
 
 目录：
@@ -82,6 +82,13 @@ canonical Theme 为 React 前首帧兜底可静态导入 CSS；可选 Theme 只�
 surface 共享同一套视觉事实，构造或校验失败都只拒绝当前可选包，不会在 Registry 接管前中止启动。
 构造与校验必须共同消费 `stylesheet-contract.ts` 的语义解析结果，不能依赖 `?inline` CSS 在开发态
 保留的引号、空格、换行或末尾分号；Vite production minifier 可以合法改写这些序列化细节。
+
+`default-black` 是唯一受控 Baseline 比较变体：它仍交付完整、独立、精确 scope 的 light/dark CSS，
+但产品意图只允许 light `--button-primary-bg/hover` 相对 canonical 改为中性黑；dark 与其它 host Token
+必须逐项相等。因为这组差异不涉及 embedded surface，其 Factory 直接复用 canonical 的 immutable
+Hero/adapters，避免代码块、终端、编辑器或图表在“只比较按钮”时产生伪差异。架构测试锁定完整
+Token 差异白名单，Registry 仍在同一个 optional failure boundary 内验证并原子注册整套 Definition；
+这不是运行时 CSS 继承或逐字段 fallback。
 
 `ThemeRegistry` 直接校验同一份实际打包的 stylesheet source：可选 Theme 的 required Token 只能来自顶层、精确的 `html[data-theme-id='<id>']` root 与两个顶层精确 scheme root；canonical default 则必须全部来自 `:root, <exact-theme-root>`、`<generic-scheme>, <exact-scheme-root>` 成对 fallback block，禁止再追加 standalone exact block，从结构上保证未知 ID 首帧与注册后的 canonical package 完整同源。这些 root 与 Hero block 只能包含平坦 declaration，CSS Nesting、descendant、不可达 at-rule 与空/CSS-wide 值不能冒充或扩张 root 声明；轻量扫描器遵循 CSS input preprocessing 与 bad-string 换行恢复，不能用跨行坏字符串藏住结构括号。只有 canonical default 可在与精确 Theme selector 成对的 selector list 中使用 `:root`、通用 scheme 和无 scope Hero fallback；可选 Theme 即使把这些 selector 包在条件规则中也会被拒绝，避免未激活包泄漏全局值或污染 Space。Theme stylesheet 禁止 `@theme`、`@property`、`@font-face` 等全局副作用 at-rule；唯一允许的 at-rule 是只包含合法 scoped Hero selector 的顶层 `@media`，用于响应式 Launcher 排版，并且不能替代顶层 Hero 完整性声明。Token 在解析同 Theme `var(...)` 依赖后还必须满足实际消费属性的 CSS 语法。注册时还拒绝重复/非法 ID、缺 Hero selector、缺 scheme/Hero/adapter、空或属性值无效的 Prism、残缺/非 iframe literal/属性语法无效的 Widget variable、无效字体/数值，以及 stylesheet/Hero 中的远程资源；不得用另一份 token 名称元数据代替 CSS 事实。无效的可选包被拒绝但不阻断 canonical registry；未知配置 ID 只记录一次不含秘密的 warning，并把 Definition、CSS root ID、Hero 和全部 adapters **整套**切到 `myagents-default`。pre-React 阶段由 canonical `:root` package globals + 通用 scheme selector 提供完整视觉兜底，禁止出现无 Token root 或逐字段继承形成混合 Theme。
 
@@ -236,9 +243,10 @@ Space 的 `[data-ui-theme="space-mono"]` / `.dark [data-ui-theme="space-mono"]` 
 - component DOM：Hero、xterm、Monaco、Mermaid、Prism、Widget 原位更新；
 - floating DOM：snapshot → durable config → Tauri live event；
 - architecture unit + dependency-cruiser：禁止 consumer 直引 internals、禁止本地 palette/MutationObserver 回流；
-- preset contract：accepted IDs/名称/顺序精确等于十二套，分组 ID 与 Registry 等值；十一套新增
-  Theme 的正文和实色主动作对比度不低于 4.5:1；`verify:theme-presets` 先按 Vite production 使用的
-  esbuild CSS minifier 序列化十一套实际 stylesheet，再经 optional factory 完成精确十二套 Registry
+- preset contract：accepted IDs/名称/顺序精确等于十三套，分组 ID 与 Registry 等值；十一套 palette
+  Theme 的正文和实色主动作对比度不低于 4.5:1，`default-black` 单独验证新增黑色主按钮对比度并
+  逐 Token 锁定其余值等于 canonical；`verify:theme-presets` 先按 Vite production 使用的
+  esbuild CSS minifier 序列化十二套实际 stylesheet，再经 optional factory 完成精确十三套 Registry
   注册并逐套 resolve light/dark；
 - build smoke：`build:web` 串行执行 `verify:theme-css` 与 `verify:theme-presets`；前者读取实际
   `dist/assets/*.css`，验证 font/radius/shadow/duration utility 仍引用 runtime Theme Token，且 bundle

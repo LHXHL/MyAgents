@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ThemeRegistry } from '../registry';
 import { absolutelyThemeManifest } from './absolutely';
 import { codexThemeManifest } from './codex';
+import { defaultBlackThemeManifest } from './default-black';
 import { fjordThemeManifest } from './fjord';
 import { inkThemeManifest } from './ink';
 import { linearThemeManifest } from './linear';
@@ -51,12 +52,33 @@ describe('production-minified preset Theme Registry', () => {
           create: () => createPresetTheme({ ...manifest, stylesheetText }),
         };
       }));
-      const registry = new ThemeRegistry([myAgentsDefaultTheme], factories);
+      const { code: defaultBlackStylesheetText } = await transformWithEsbuild(
+        defaultBlackThemeManifest.stylesheetText,
+        'default-black.css',
+        { loader: 'css', minify: true },
+      );
+      const registry = new ThemeRegistry(
+        [myAgentsDefaultTheme],
+        [
+          {
+            id: defaultBlackThemeManifest.id,
+            create: () => ({
+              ...defaultBlackThemeManifest,
+              stylesheetText: defaultBlackStylesheetText,
+              hero: myAgentsDefaultTheme.hero,
+              schemes: myAgentsDefaultTheme.schemes,
+            }),
+          },
+          ...factories,
+        ],
+      );
 
       expect(registry.getProductionIds()).toEqual([
         'myagents-default',
+        'default-black',
         ...manifests.map(manifest => manifest.id),
       ]);
+      expect(registry.resolve('default-black', 'light', false).themeId).toBe('default-black');
       for (const manifest of manifests) {
         expect(registry.resolve(manifest.id, 'light', false).themeId).toBe(manifest.id);
         expect(registry.resolve(manifest.id, 'dark', false).themeId).toBe(manifest.id);
