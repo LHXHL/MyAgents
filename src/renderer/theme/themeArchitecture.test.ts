@@ -82,6 +82,14 @@ describe('Theme architecture guardrails', () => {
     expect(source('src/renderer/theme/themes/preset-theme.ts')).not.toContain('myagents-default');
   });
 
+  it('reuses the Theme-owned brand title presentation on Launcher and About', () => {
+    const launcher = source('src/renderer/components/launcher/BrandSection.tsx');
+    const settings = source('src/renderer/pages/settings/SettingsPage.tsx');
+    expect(launcher).toContain('<h1 className="theme-launcher-hero-title">');
+    expect(settings).toContain('className="theme-launcher-hero-title cursor-default select-none"');
+    expect(settings).not.toContain('className="brand-title');
+  });
+
   it('keeps the Space scoped Theme exclusion intact', () => {
     const css = source('src/renderer/index.css');
     expect(css).toContain('[data-ui-theme="space-mono"]');

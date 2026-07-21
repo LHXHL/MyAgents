@@ -1,7 +1,7 @@
 # MyAgents Design Guide
 
-> **Version**: 2.7.1
-> **Last Updated**: 2026-07-21
+> **Version**: 2.7.2
+> **Last Updated**: 2026-07-22
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
 
@@ -235,7 +235,7 @@ Token 定义在 `src/renderer/index.css` 的 `@theme` 块（单一真相源，�
 | prose | `--text-base` / `text-base` | 16px | 1.7 | **正文主体**——AI 回答、用户气泡、widget body、输入框* |
 | display | `--text-lg/xl/2xl` | 18/20/22px | 1.5/1.4/1.3 | 弹窗标题/Markdown H3、H2、H1 |
 | stat | `--text-3xl` / `text-3xl` | 28px | 1.2 | 数据大数字（占用率百分比等）、页面大标题 |
-| brand | `--text-brand` | 56px | 1.1 | 品牌名（仅 Launcher 品牌区） |
+| brand | `--text-brand` | 56px | 1.1 | 品牌名（Launcher 品牌区与 Settings About） |
 
 **已废除**（详见 changelog）：10px 档（v2.3）；11px micro 与 12px caption 合档为 12px
 meta（v2.5——11px 中文在 Windows 低分屏雅黑下偏虚，且 11/12/13 三连密排是"大小不一"
@@ -247,7 +247,7 @@ meta（v2.5——11px 中文在 Windows 低分屏雅黑下偏虚，且 11/12/13 
 **\*立档例外与禁令边界**：
 - 聊天输入框 textarea（SimpleChatInput）行高为 26px 整数常量（≈1.625）——自适应高度
   计算依赖整数像素，不随 prose 档 1.7 配对行高，属字号同档、行高立档例外。
-- eslint 只封禁 **px 字面量**；rem/em 相对值（brand-title `2.5/3.5rem`、行内代码 `0.9em`）
+- eslint 只封禁 **px 字面量**；rem/em 相对值（Theme brand title `2.5/3.5rem`、行内代码 `0.9em`）
   与 `style={{fontSize}}` API 配置项（Monaco/xterm/语法高亮等）不在射程内——新增此类
   用法需对照本表自证档位。
 - 悬浮球伴侣窗（`src/renderer/floating-ball/fb.css`）已于 v2.5 对齐本字阶（全部
@@ -368,6 +368,11 @@ CSS var aliases (`--shadow-*`) 由 Tailwind 编译桥产生；Theme contract 校
 字号: 14px (text-sm) font-medium
 图标: h-3.5 w-3.5
 ```
+
+浅色模式的实底 Accent / Primary 控件统一使用白色/近白前景；当来源 Accent 偏亮时，
+Theme 必须为 `--accent` / `--button-primary-bg` 使用同色相的更深 action shade，
+而不是把 `--on-accent` / `--button-primary-text` 反转成深色。更亮的来源色可以保留在
+低透明度背景或装饰渐变中，但不能直接作为小字号实底控件。
 
 #### 次按钮 (Secondary)
 ```
@@ -662,9 +667,9 @@ Item 选中: 文字 var(--accent-warm)
 
 ### 6.13 选中指示层级
 
-- 顶部 Tab 是高频上下文切换：active 底线使用 1px、`var(--accent)` 70% 透明度，并收窄到内容槽内侧，避免与正文争抢视觉重量。
+- 顶部 Tab 是高频上下文切换：active 底线使用 2px、`var(--accent)` 70% 透明度，并收窄到内容槽内侧；厚度保证识别性，透明度和长度负责控制视觉重量。
 - Settings 侧栏是页面内主导航：active 保留 `var(--hover-bg)` 底色，指示条使用 2px、`var(--accent)` 80% 透明度；移动端横条保持同一强度。
-- 两者共享 Accent，但侧栏比 Tab 高一级；禁止分别硬编码具体主题色。
+- 两者共享 Accent；侧栏通过底色和更高不透明度表达更高层级，禁止分别硬编码具体主题色。
 
 ---
 
@@ -1244,6 +1249,9 @@ Launcher 是应用的启动页，采用左右分栏布局。左侧负责品牌�
 
 品牌区 JSX 只消费 `ResolvedTheme.hero`。产品名、zh-CN/en-US slogan、文字视觉参数和每个 scheme 的可选 bundled 背景槽都由 Theme 拥有；`BrandSection` 不硬编码 `MyAgents` 或 slogan source。canonical Theme 当前没有独立背景图，因此与迁移前视觉一致。
 
+Settings About 的品牌名复用同一个 `.theme-launcher-hero-title` selector，使字体、字重、
+字距、响应式字号与渐变都随完整 Theme 同步；About 不复制或覆盖品牌配色。
+
 ```
 标题 "MyAgents":
   - 字号: 3.5rem (桌面) / 2.5rem (窄窗口)
@@ -1399,6 +1407,7 @@ Hover 操作:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.7.2 | 2026-07-22 | **Theme 实色控件、代码前景与品牌呈现校正**：顶部 Tab active 底线恢复 2px；浅色预设的 Accent / Primary 实底控件统一改用白色前景与同色相深色 action surface；可选 Theme 的 Prism 普通文本消费 `--code-text`，其余语法色在 adapter 边界校准到深色 `--code-bg`；Settings About 品牌名复用 Launcher 的 Theme-owned Hero title 样式 |
 | 2.7.1 | 2026-07-21 | **Theme 运行时与选中态校正**：main native Window background 在 Theme 生效后跟随 resolved `--paper`；预设 Theme 的 light Toggle thumb 统一回归浅色控制面；顶部 Tab / Settings 侧栏选中指示按 1px/2px 与 70%/80% 建立层级 |
 | 2.7.0 | 2026-07-21 | **Theme preset catalog（PRD 0.3.2）**：production registry 扩展为 12 套完整 Theme；开发者设置用 Registry 驱动的单一下拉菜单切换；每套同时提供 light/dark、Hero、宿主/Floating Token 与 xterm/Monaco/Mermaid/Prism/Widget adapter；Theme/Appearance 正交，canonical default 与 Space 独立视觉不变 |
 | 2.6.2 | 2026-07-20 | **恢复 canonical Theme 暖橙 action palette**：根据实机体验撤回 2.6.1 的黑白配色试验，Accent/Hover/Primary/Focus、Widget 与 xterm adapter 恢复原有暖橙参数；保留 Theme runtime 编译桥、语义 foreground、阴影与终端自适应等全部架构修复，Space `space-mono` 继续独立使用黑白 action palette |

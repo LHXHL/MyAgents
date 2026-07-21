@@ -62,6 +62,30 @@ describe('production Theme contrast', () => {
     }
   });
 
+  it('keeps every optional light Theme primary action foreground on the light control surface', () => {
+    const lightSurfaceFloor = luminance('#f0f0f0');
+
+    for (const definition of themeRegistry.getAcceptedDefinitions().slice(1)) {
+      const tokens = tokensFor(definition.stylesheetText, definition.id, 'light');
+      expect(
+        luminance(tokens.get('--button-primary-text')!),
+        `${definition.id}.light primary action foreground`,
+      ).toBeGreaterThanOrEqual(lightSurfaceFloor);
+    }
+  });
+
+  it('keeps every optional light Theme solid Accent foreground on the light control surface', () => {
+    const lightSurfaceFloor = luminance('#f0f0f0');
+
+    for (const definition of themeRegistry.getAcceptedDefinitions().slice(1)) {
+      const tokens = tokensFor(definition.stylesheetText, definition.id, 'light');
+      expect(
+        luminance(tokens.get('--on-accent')!),
+        `${definition.id}.light solid Accent foreground`,
+      ).toBeGreaterThanOrEqual(lightSurfaceFloor);
+    }
+  });
+
   it('keeps every new Theme core text and solid action state at 4.5:1 or better', () => {
     const solidActionPairs = [
       ['accent action', '--on-accent', '--accent'],

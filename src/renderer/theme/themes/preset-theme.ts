@@ -64,7 +64,48 @@ function rgba(value: string, alpha: number): string {
   return `rgba(${(number >> 16) & 255}, ${(number >> 8) & 255}, ${number & 255}, ${alpha})`;
 }
 
+function hexChannels(value: string): [number, number, number] {
+  const number = Number.parseInt(value.slice(1), 16);
+  return [(number >> 16) & 255, (number >> 8) & 255, number & 255];
+}
+
+function relativeLuminance(value: string): number {
+  const channels = hexChannels(value).map(channel => {
+    const normalized = channel / 255;
+    return normalized <= 0.04045
+      ? normalized / 12.92
+      : ((normalized + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+function contrastRatio(first: string, second: string): number {
+  const firstLuminance = relativeLuminance(first);
+  const secondLuminance = relativeLuminance(second);
+  return (Math.max(firstLuminance, secondLuminance) + 0.05)
+    / (Math.min(firstLuminance, secondLuminance) + 0.05);
+}
+
+function mixHex(source: string, target: string, targetWeight: number): string {
+  const sourceChannels = hexChannels(source);
+  const targetChannels = hexChannels(target);
+  return `#${sourceChannels.map((channel, index) => Math.round(
+    channel + (targetChannels[index] - channel) * targetWeight,
+  ).toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** Preserve each Theme's syntax hue while moving it toward its paired code foreground. */
+function readableCodeColor(color: string, background: string, codeText: string): string {
+  if (contrastRatio(color, background) >= 4.5) return color;
+  for (let step = 1; step <= 20; step += 1) {
+    const candidate = mixHex(color, codeText, step / 20);
+    if (contrastRatio(candidate, background) >= 4.5) return candidate;
+  }
+  return codeText;
+}
+
 function createPrismStyle(colors: {
+  background: string;
   text: string;
   textSecondary: string;
   muted: string;
@@ -75,6 +116,7 @@ function createPrismStyle(colors: {
   info: string;
   cool: string;
 }): SyntaxStyle {
+  const readable = (color: string) => readableCodeColor(color, colors.background, colors.text);
   return {
     'pre[class*="language-"]': {
       color: colors.text,
@@ -93,19 +135,19 @@ function createPrismStyle(colors: {
       lineHeight: '1.6',
       fontFamily: 'var(--font-code)',
     },
-    comment: { color: colors.muted, fontStyle: 'italic' },
-    punctuation: { color: colors.textSecondary },
-    property: { color: colors.error },
-    boolean: { color: colors.warning },
-    number: { color: colors.warning },
-    selector: { color: colors.success },
-    string: { color: colors.success },
-    operator: { color: colors.cool },
-    keyword: { color: colors.accent },
-    function: { color: colors.info },
-    variable: { color: colors.warning },
-    deleted: { color: colors.error },
-    inserted: { color: colors.success },
+    comment: { color: readable(colors.muted), fontStyle: 'italic' },
+    punctuation: { color: readable(colors.textSecondary) },
+    property: { color: readable(colors.error) },
+    boolean: { color: readable(colors.warning) },
+    number: { color: readable(colors.warning) },
+    selector: { color: readable(colors.success) },
+    string: { color: readable(colors.success) },
+    operator: { color: readable(colors.cool) },
+    keyword: { color: readable(colors.accent) },
+    function: { color: readable(colors.info) },
+    variable: { color: readable(colors.warning) },
+    deleted: { color: readable(colors.error) },
+    inserted: { color: readable(colors.success) },
   };
 }
 
@@ -146,6 +188,9 @@ function createScheme(
   const radiusCard = requiredToken(tokens, '--theme-radius-lg', context);
   const radiusFull = requiredToken(tokens, '--theme-radius-full', context);
   const controlShadow = requiredToken(tokens, '--theme-shadow-base', context);
+  const codeBackground = requiredHex(tokens, '--code-bg', context);
+  const codeText = requiredHex(tokens, '--code-text', context);
+  const codeLineNumber = requiredHex(tokens, '--code-line-number', context);
 
   const widgetVariables = {
     '--widget-text': text,
@@ -264,9 +309,10 @@ function createScheme(
       },
     },
     prism: createPrismStyle({
-      text,
-      textSecondary,
-      muted,
+      background: codeBackground,
+      text: codeText,
+      textSecondary: codeText,
+      muted: codeLineNumber,
       accent,
       success,
       error,

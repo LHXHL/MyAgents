@@ -157,7 +157,7 @@ export default memo(function SortableTabItem({
 
             {/* Active indicator */}
             {isActive && (
-                <div className="absolute bottom-0.5 left-4 right-4 h-px rounded-full bg-[var(--accent)]/70" />
+                <div className="absolute bottom-0.5 left-4 right-4 h-0.5 rounded-full bg-[var(--accent)]/70" />
             )}
 
         </div>
