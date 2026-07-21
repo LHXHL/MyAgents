@@ -104,7 +104,7 @@ export default memo(function SortableTabItem({
             >
                 {showWorkspaceContext ? (
                     <>
-                        <span className="max-w-[35%] flex-shrink-0 truncate text-[var(--ink-subtle)]">
+                        <span className="max-w-[35%] flex-shrink-0 truncate">
                             {workspaceTitle}
                         </span>
                         <span

@@ -119,13 +119,34 @@ describe('TabBar', () => {
         const workspace = within(tab).getByText('demo');
         const sessionTitle = within(tab).getByText('Session 1');
         const divider = tab.querySelector('[data-tab-title-divider]');
+        const titleHandle = workspace.parentElement as HTMLElement;
 
-        expect(workspace).toHaveClass('max-w-[35%]', 'truncate', 'text-[var(--ink-subtle)]');
-        expect(sessionTitle).toHaveClass('min-w-0', 'truncate');
+        expect(tab).toHaveClass('text-[var(--ink)]');
+        expect(titleHandle.getAttribute('class')).toBe('flex min-w-0 flex-1 items-center text-xs font-medium select-none');
+        expect(titleHandle).not.toHaveAttribute('style');
+        expect(sessionTitle.parentElement).toBe(titleHandle);
+        expect(workspace.getAttribute('class')).toBe('max-w-[35%] flex-shrink-0 truncate');
+        expect(workspace).not.toHaveAttribute('style');
+        expect(sessionTitle.getAttribute('class')).toBe('min-w-0 truncate');
+        expect(sessionTitle).not.toHaveAttribute('style');
         expect(divider).toHaveAttribute('aria-hidden', 'true');
+        expect(divider?.getAttribute('class')).toBe('mx-1.5 h-3 w-px flex-shrink-0 bg-[var(--line-strong)]/70');
+        expect(divider?.getAttribute('style')).toBeNull();
         expect(divider?.textContent).toBe('');
         expect(tab).toHaveAttribute('title', 'demo — Session 1');
         expect(tab).toHaveAccessibleName('demo, Session 1');
+    });
+
+    it('lets both title segments inherit the inactive and hover colors from the tab', () => {
+        renderTabBar({ activeTabId: 'tab-2' });
+
+        const tab = document.querySelector('[data-tab-id="tab-1"]') as HTMLElement;
+        const workspace = within(tab).getByText('demo');
+        const sessionTitle = within(tab).getByText('Session 1');
+
+        expect(tab).toHaveClass('text-[var(--ink-muted)]', 'hover:text-[var(--ink)]');
+        expect(workspace.className).not.toContain('text-[var(--ink');
+        expect(sessionTitle.className).not.toContain('text-[var(--ink');
     });
 
     it('keeps workspace and session as separate identities when their labels match', () => {
