@@ -793,7 +793,7 @@ Theme 是 renderer 视觉语言的应用级唯一 owner；`AppearanceMode` 只�
 - `appearanceMode`：`system | light | dark`；
 - `resolvedColorScheme`：每个 Webview 此刻解析出的 `light | dark`。
 
-`ThemeRegistry` 校验一个 Theme 同时具备 light/dark、精确 Theme root / scheme root 下的 required CSS Token、Launcher Hero 和 xterm / Monaco / Mermaid / Prism / Widget adapters；canonical default 另允许受控的 `:root, <exact-theme-root>` 合并 globals 作为 unknown-ID/pre-React fallback，可选 Theme 不得泄漏全局 selector。Token 解析 Theme 内 `var(...)` 后按实际消费属性校验，Widget 值必须是 iframe 可直接消费且属性语法有效的 literal，stylesheet 与 Hero 资源禁止远程 URL。无效可选包在注册边界被拒绝且不阻断 canonical Theme，未知 ID 整套回退 default，不做逐字段拼接。组件只能 import `@/theme` 公共入口，`.dependency-cruiser.cjs::theme-consumers-public-api-only` 禁止生产 consumer 直引 concrete Theme。
+`ThemeRegistry` 校验一个 Theme 同时具备 light/dark、精确 Theme root / scheme root 下的 required CSS Token、Launcher Hero 和 xterm / Monaco / Mermaid / Prism / Widget adapters；canonical default 另允许受控的 `:root, <exact-theme-root>` 合并 globals 作为 unknown-ID/pre-React fallback，可选 Theme 不得泄漏全局 selector。Preset adapter 构造与 Registry 校验复用同一个 stylesheet contract parser，按 CSS selector/declaration 语义读取实际 `?inline` 产物，不依赖开发源码的引号或空白序列化。Token 解析 Theme 内 `var(...)` 后按实际消费属性校验，Widget 值必须是 iframe 可直接消费且属性语法有效的 literal，stylesheet 与 Hero 资源禁止远程 URL。无效可选包在注册边界被拒绝且不阻断 canonical Theme，未知 ID 整套回退 default，不做逐字段拼接。组件只能 import `@/theme` 公共入口，`.dependency-cruiser.cjs::theme-consumers-public-api-only` 禁止生产 consumer 直引 concrete Theme。
 
 Theme CSS 只拥有运行时视觉值；Tailwind 入口 `src/renderer/index.css` 用无值
 `@theme inline` 把 font/radius/shadow/duration utility 编译为对 `--theme-*` 与语义

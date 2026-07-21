@@ -4,6 +4,12 @@ import type {
   ThemeSchemeDefinition,
   WidgetThemeAdapter,
 } from '../types';
+import {
+  collectContractBlocks,
+  collectDeclaredTokens,
+  parseThemeStylesheet,
+  type ParsedThemeStylesheet,
+} from '../stylesheet-contract';
 
 const XTERM_FONT = "'SF Mono', 'Cascadia Code', 'Consolas', 'Monaco', 'PingFang SC', 'Microsoft YaHei', monospace";
 
@@ -18,19 +24,17 @@ type Scheme = 'light' | 'dark';
 
 type TokenMap = ReadonlyMap<string, string>;
 
-function collectTokens(stylesheetText: string, selector: string): TokenMap {
-  const blockStart = stylesheetText.indexOf(`${selector} {`);
-  if (blockStart < 0) throw new Error(`[theme] Missing preset selector: ${selector}`);
-  const declarationsStart = stylesheetText.indexOf('{', blockStart) + 1;
-  const declarationsEnd = stylesheetText.indexOf('}', declarationsStart);
-  if (declarationsEnd < 0) throw new Error(`[theme] Unterminated preset selector: ${selector}`);
-
-  const tokens = new Map<string, string>();
-  const declarationSource = stylesheetText.slice(declarationsStart, declarationsEnd);
-  for (const match of declarationSource.matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)) {
-    tokens.set(match[1], match[2].trim());
+function collectTokens(stylesheet: ParsedThemeStylesheet, selector: string): TokenMap {
+  const blocks = collectContractBlocks(
+    stylesheet.topLevelBlocks,
+    selector,
+    [[selector]],
+    `preset selector ${selector}`,
+  );
+  if (blocks.length === 0) {
+    throw new Error(`[theme] Missing preset selector: ${selector}`);
   }
-  return tokens;
+  return collectDeclaredTokens(blocks);
 }
 
 function requiredToken(tokens: TokenMap, token: string, context: string): string {
@@ -284,8 +288,9 @@ const noHeroBackground = {
 
 /** Builds complete adapters from the same co-located CSS that owns host tokens. */
 export function createPresetTheme(manifest: PresetThemeManifest): ThemeDefinition {
+  const stylesheet = parseThemeStylesheet(manifest.stylesheetText);
   const globalTokens = collectTokens(
-    manifest.stylesheetText,
+    stylesheet,
     `html[data-theme-id='${manifest.id}']`,
   );
   const schemes = Object.fromEntries((['light', 'dark'] as const).map(scheme => [
@@ -295,7 +300,7 @@ export function createPresetTheme(manifest: PresetThemeManifest): ThemeDefinitio
       scheme,
       globalTokens,
       collectTokens(
-        manifest.stylesheetText,
+        stylesheet,
         `html[data-theme-id='${manifest.id}'][data-color-scheme='${scheme}']`,
       ),
     ),

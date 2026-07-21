@@ -2,6 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { myAgentsDefaultTheme } from './themes/myagents-default';
 import { ThemeRegistry, themeRegistry, validateThemeDefinition } from './registry';
+import {
+  collectContractBlocks,
+  collectDeclaredTokens,
+  parseThemeStylesheet,
+} from './stylesheet-contract';
 import type { ThemeDefinition } from './types';
 import { SYNTHETIC_THEME_ID, syntheticTheme } from './__tests__/syntheticTheme';
 
@@ -17,17 +22,19 @@ function presetTokens(
   definition: ThemeDefinition,
   scheme: 'light' | 'dark',
 ): ReadonlyMap<string, string> {
+  const stylesheet = parseThemeStylesheet(definition.stylesheetText);
   const collect = (selector: string) => {
-    const start = definition.stylesheetText.indexOf(`${selector} {`);
-    const bodyStart = definition.stylesheetText.indexOf('{', start) + 1;
-    const bodyEnd = definition.stylesheetText.indexOf('}', bodyStart);
-    return [...definition.stylesheetText.slice(bodyStart, bodyEnd)
-      .matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)]
-      .map(match => [match[1], match[2].trim()] as const);
+    const blocks = collectContractBlocks(
+      stylesheet.topLevelBlocks,
+      selector,
+      [[selector]],
+      `test selector ${selector}`,
+    );
+    return collectDeclaredTokens(blocks);
   };
   return new Map([
-    ...collect(`html[data-theme-id='${definition.id}']`),
-    ...collect(`html[data-theme-id='${definition.id}'][data-color-scheme='${scheme}']`),
+    ...collect(`html[data-theme-id='${definition.id}']`).entries(),
+    ...collect(`html[data-theme-id='${definition.id}'][data-color-scheme='${scheme}']`).entries(),
   ]);
 }
 
@@ -373,6 +380,25 @@ describe('ThemeRegistry', () => {
       stylesheetText: syntheticTheme.stylesheetText.replace('--ink: #21002f;', '--ink: 12px;'),
     } as ThemeDefinition;
     expect(() => validateThemeDefinition(wrongTokenSyntax)).toThrow('missing CSS tokens');
+
+    const tokenHiddenInsideString = {
+      ...syntheticTheme,
+      stylesheetText: syntheticTheme.stylesheetText.replace(
+        '--ink: #21002f;',
+        '--unrelated: "; --ink: #21002f;";',
+      ),
+    } as ThemeDefinition;
+    expect(() => validateThemeDefinition(tokenHiddenInsideString)).toThrow('missing CSS tokens');
+
+    const quotedNumericThemeId = renamedSyntheticTheme('1theme');
+    expect(() => validateThemeDefinition(quotedNumericThemeId)).not.toThrow();
+
+    const invalidBareNumericThemeId = structuredClone(quotedNumericThemeId) as ThemeDefinition;
+    invalidBareNumericThemeId.stylesheetText = invalidBareNumericThemeId.stylesheetText.replaceAll(
+      "data-theme-id='1theme'",
+      'data-theme-id=1theme',
+    );
+    expect(() => validateThemeDefinition(invalidBareNumericThemeId)).toThrow('unsupported or unscoped selector');
 
     const escapedCssWideToken = {
       ...syntheticTheme,

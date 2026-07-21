@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { themeRegistry } from './registry';
+import {
+  collectContractBlocks,
+  collectDeclaredTokens,
+  parseThemeStylesheet,
+} from './stylesheet-contract';
 
 function channel(value: number): number {
   const normalized = value / 255;
@@ -35,11 +40,13 @@ function applyBrightness(hex: string, multiplier: number): string {
 
 function tokensFor(stylesheetText: string, themeId: string, scheme: 'light' | 'dark'): Map<string, string> {
   const selector = `html[data-theme-id='${themeId}'][data-color-scheme='${scheme}']`;
-  const start = stylesheetText.indexOf(`${selector} {`);
-  const bodyStart = stylesheetText.indexOf('{', start) + 1;
-  const bodyEnd = stylesheetText.indexOf('}', bodyStart);
-  return new Map([...stylesheetText.slice(bodyStart, bodyEnd).matchAll(/(--[a-z0-9-]+)\s*:\s*([^;]+);/gi)]
-    .map(match => [match[1], match[2].trim()]));
+  const stylesheet = parseThemeStylesheet(stylesheetText);
+  return collectDeclaredTokens(collectContractBlocks(
+    stylesheet.topLevelBlocks,
+    selector,
+    [[selector]],
+    `contrast selector ${selector}`,
+  ));
 }
 
 describe('production Theme contrast', () => {

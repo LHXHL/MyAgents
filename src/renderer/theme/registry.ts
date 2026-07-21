@@ -11,6 +11,18 @@ import {
   REQUIRED_WIDGET_CSS_VARIABLES,
   REQUIRED_XTERM_PALETTE_KEYS,
 } from './registry-contract';
+import {
+  collectContractBlocks,
+  collectDeclaredTokens,
+  collectTopLevelCssBlocks,
+  containsStructuralBrace,
+  containsTopLevelSemicolon,
+  decodeCssEscapes,
+  parseThemeStylesheet,
+  selectorListContainsExact,
+  selectorListExactlyMatches,
+  type ThemeCssBlock,
+} from './stylesheet-contract';
 import type { ResolvedTheme, ThemeDefinition } from './types';
 import { absolutelyThemeManifest } from './themes/absolutely';
 import { codexThemeManifest } from './themes/codex';
@@ -51,161 +63,8 @@ function assertPositiveNumber(value: unknown, path: string): asserts value is nu
   }
 }
 
-/** CSS Syntax input preprocessing normalizes CRLF, lone CR and form-feed to LF.
- * Keep the validator's lightweight scanners on the same character stream as
- * the browser, especially around bad-string recovery and escaped newlines. */
-function normalizeCssInput(cssText: string): string {
-  return cssText.replace(/\r\n?|\f/g, '\n');
-}
-
-function stripCssComments(cssText: string): string {
-  let result = '';
-  let quote: '"' | "'" | null = null;
-  let escaped = false;
-  for (let index = 0; index < cssText.length; index += 1) {
-    const character = cssText[index];
-    if (escaped) {
-      result += character;
-      escaped = false;
-      continue;
-    }
-    if (character === '\\') {
-      result += character;
-      escaped = true;
-      continue;
-    }
-    if (quote) {
-      result += character;
-      if (character === '\n') quote = null;
-      if (character === quote) quote = null;
-      continue;
-    }
-    if (character === '"' || character === "'") {
-      quote = character;
-      result += character;
-      continue;
-    }
-    if (character === '/' && cssText[index + 1] === '*') {
-      const close = cssText.indexOf('*/', index + 2);
-      if (close < 0) throw new Error('[theme] stylesheet contains an unclosed CSS comment');
-      index = close + 1;
-      continue;
-    }
-    result += character;
-  }
-  return result;
-}
-
-interface CssBlock {
-  prelude: string;
-  body: string;
-}
-
-/** Parse top-level blocks while respecting quoted strings and nested at-rules. */
-function collectTopLevelCssBlocks(cssText: string, requireComplete = false): CssBlock[] {
-  const blocks: CssBlock[] = [];
-  let cursor = 0;
-  while (cursor < cssText.length) {
-    let open = -1;
-    let quote: '"' | "'" | null = null;
-    let escaped = false;
-    for (let index = cursor; index < cssText.length; index += 1) {
-      const character = cssText[index];
-      if (escaped) { escaped = false; continue; }
-      if (character === '\\') { escaped = true; continue; }
-      if (quote) {
-        if (character === '\n') quote = null;
-        if (character === quote) quote = null;
-        continue;
-      }
-      if (character === '"' || character === "'") { quote = character; continue; }
-      if (character === '{') { open = index; break; }
-    }
-    if (open < 0) {
-      if (requireComplete && cssText.slice(cursor).trim()) {
-        throw new Error('[theme] stylesheet contains unsupported trailing content');
-      }
-      break;
-    }
-
-    let depth = 1;
-    quote = null;
-    escaped = false;
-    let close = -1;
-    for (let index = open + 1; index < cssText.length; index += 1) {
-      const character = cssText[index];
-      if (escaped) { escaped = false; continue; }
-      if (character === '\\') { escaped = true; continue; }
-      if (quote) {
-        if (character === '\n') quote = null;
-        if (character === quote) quote = null;
-        continue;
-      }
-      if (character === '"' || character === "'") { quote = character; continue; }
-      if (character === '{') depth += 1;
-      if (character === '}') depth -= 1;
-      if (depth === 0) { close = index; break; }
-    }
-    if (close < 0) throw new Error('[theme] stylesheet contains an unclosed CSS block');
-    blocks.push({
-      prelude: cssText.slice(cursor, open).trim(),
-      body: cssText.slice(open + 1, close),
-    });
-    cursor = close + 1;
-  }
-  return blocks;
-}
-
-function containsTopLevelSemicolon(cssText: string): boolean {
-  let depth = 0;
-  let quote: string | null = null;
-  let escaped = false;
-  for (const character of cssText) {
-    if (escaped) { escaped = false; continue; }
-    if (character === '\\') { escaped = true; continue; }
-    if (quote) {
-      if (character === '\n') quote = null;
-      if (character === quote) quote = null;
-      continue;
-    }
-    if (character === '"' || character === "'") { quote = character; continue; }
-    if (character === '{') { depth += 1; continue; }
-    if (character === '}') { depth -= 1; continue; }
-    if (character === ';' && depth === 0) return true;
-  }
-  return false;
-}
-
-function containsStructuralBrace(cssText: string): boolean {
-  let quote: string | null = null;
-  let escaped = false;
-  for (const character of cssText) {
-    if (escaped) { escaped = false; continue; }
-    if (character === '\\') { escaped = true; continue; }
-    if (quote) {
-      if (character === '\n') quote = null;
-      if (character === quote) quote = null;
-      continue;
-    }
-    if (character === '"' || character === "'") { quote = character; continue; }
-    if (character === '{' || character === '}') return true;
-  }
-  return false;
-}
-
-/** Include rules nested in conditional at-rules so selector scope checks
- * cannot be bypassed with `@media` / `@supports` wrappers. Declaration-rule
- * bodies are intentionally not reparsed as stylesheets. */
-function collectStylesheetCssBlocks(cssText: string): CssBlock[] {
-  return collectTopLevelCssBlocks(cssText).flatMap(block => (
-    block.prelude.trim().startsWith('@')
-      ? [block, ...collectStylesheetCssBlocks(block.body)]
-      : [block]
-  ));
-}
-
 function assertStylesheetAtRuleScope(
-  topLevelBlocks: readonly CssBlock[],
+  topLevelBlocks: readonly ThemeCssBlock[],
   definition: ThemeDefinition,
 ): void {
   const themeRootSelector = `html[data-theme-id='${definition.id}']`;
@@ -242,72 +101,8 @@ function assertStylesheetAtRuleScope(
   }
 }
 
-function normalizeSelector(selector: string): string | null {
-  // Contract selectors deliberately use a tiny grammar. CSS escapes are not
-  // decoded across token boundaries: `html\[` is an escaped identifier, not
-  // `html` plus an attribute selector. Escapes inside quoted attribute values
-  // are decoded separately because CSS treats those as string contents.
-  let invalidAttributeValue = false;
-  const normalizedAttributes = selector.trim().replace(
-    /\[\s*(data-theme-id|data-color-scheme)\s*=\s*(?:"((?:\\.|[^"\\])*)"|'((?:\\.|[^'\\])*)'|([a-z0-9-]+))\s*\]/g,
-    (_match, attribute: string, doubleQuoted: string, singleQuoted: string, bare: string) => {
-      const value = decodeCssEscapes(doubleQuoted ?? singleQuoted ?? bare);
-      if (!/^[a-z0-9-]+$/.test(value)) invalidAttributeValue = true;
-      return `[${attribute}='${value}']`;
-    },
-  );
-  if (invalidAttributeValue || normalizedAttributes.includes('\\')) return null;
-  const normalized = normalizedAttributes.replace(/\s+/g, ' ');
-  if (
-    /^html\[data-theme-id='[a-z0-9-]+'\](?:\[data-color-scheme='(?:light|dark)'\])?(?: \.theme-launcher-hero-(?:title|slogan))?$/.test(normalized)
-    || /^html\[data-color-scheme='(?:light|dark)'\]$/.test(normalized)
-    || normalized === ':root'
-    || /^\.theme-launcher-hero-(?:title|slogan)$/.test(normalized)
-  ) {
-    return normalized;
-  }
-  return null;
-}
-
-function selectorListExactlyMatches(prelude: string, expectedSelectors: readonly string[]): boolean {
-  const actual = prelude.split(',').map(normalizeSelector);
-  const expected = expectedSelectors.map(normalizeSelector);
-  return !actual.includes(null)
-    && !expected.includes(null)
-    && actual.length === expected.length
-    && actual.every((selector, index) => selector === expected[index]);
-}
-
-function selectorListContainsExact(prelude: string, expectedSelector: string): boolean {
-  const expected = normalizeSelector(expectedSelector);
-  return expected !== null && prelude.split(',').some(selector => {
-    const strict = normalizeSelector(selector);
-    if (strict === expected) return true;
-    // A non-contract spelling may still target the same browser selector via
-    // CSS escapes. Treat it as a matching block so collectContractBlocks()
-    // rejects it as unexpected instead of silently ignoring a cascade rule.
-    return strict === null && normalizeSelector(decodeCssEscapes(selector)) === expected;
-  });
-}
-
-function collectContractBlocks(
-  blocks: readonly CssBlock[],
-  targetSelector: string,
-  acceptedSelectorLists: readonly (readonly string[])[],
-  path: string,
-): CssBlock[] {
-  const matchingBlocks = blocks.filter(block => selectorListContainsExact(block.prelude, targetSelector));
-  const unexpectedBlock = matchingBlocks.find(block => (
-    !acceptedSelectorLists.some(selectors => selectorListExactlyMatches(block.prelude, selectors))
-  ));
-  if (unexpectedBlock) {
-    throw new Error(`[theme] ${path}: selector must not be combined with unexpected selectors`);
-  }
-  return matchingBlocks;
-}
-
 function assertCanonicalFallbackScope(
-  blocks: readonly CssBlock[],
+  blocks: readonly ThemeCssBlock[],
   definition: ThemeDefinition,
   fallbackSelector: string,
   canonicalSelector: string,
@@ -323,7 +118,7 @@ function assertCanonicalFallbackScope(
   }
 }
 
-function assertStylesheetSelectorScope(blocks: readonly CssBlock[], definition: ThemeDefinition): void {
+function assertStylesheetSelectorScope(blocks: readonly ThemeCssBlock[], definition: ThemeDefinition): void {
   const themeRootSelector = `html[data-theme-id='${definition.id}']`;
   const allowedSelectorLists: string[][] = [];
   if (definition.id === DEFAULT_THEME_ID) {
@@ -356,7 +151,7 @@ function assertStylesheetSelectorScope(blocks: readonly CssBlock[], definition: 
   }
 }
 
-function assertFlatDeclarationBlocks(blocks: readonly CssBlock[], definition: ThemeDefinition): void {
+function assertFlatDeclarationBlocks(blocks: readonly ThemeCssBlock[], definition: ThemeDefinition): void {
   const nestedSelectorBlock = blocks.find(block => (
     !block.prelude.trim().startsWith('@') && containsStructuralBrace(block.body)
   ));
@@ -365,28 +160,8 @@ function assertFlatDeclarationBlocks(blocks: readonly CssBlock[], definition: Th
   }
 }
 
-function collectDeclaredTokens(blocks: readonly CssBlock[]): Map<string, string> {
-  const tokens = new Map<string, string>();
-  for (const block of blocks) {
-    if (block.body.includes('{') || block.body.includes('}')) continue;
-    for (const match of block.body.matchAll(/(?:^|;)\s*(--[a-zA-Z0-9-]+)\s*:\s*([^;]+)(?=;|$)/g)) {
-      tokens.set(match[1], match[2].trim());
-    }
-  }
-  return tokens;
-}
-
 const CSS_WIDE_PREFIX = /^(?:initial|inherit|unset|revert|revert-layer)(?:\s|!|$)/i;
 const IMPORTANT_PRIORITY = /!\s*important\s*$/i;
-
-function decodeCssEscapes(value: string): string {
-  return value
-    .replace(/\\(?:\r\n|[\n\r\f])/g, '')
-    .replace(/\\([0-9a-f]{1,6})(?:\r\n|[\t\n\f\r ])?/gi, (_match, hex: string) => (
-      String.fromCodePoint(Number.parseInt(hex, 16))
-    ))
-    .replace(/\\([^\r\n\f0-9a-f])/gi, '$1');
-}
 
 function containsRemoteReference(value: string): boolean {
   const decoded = decodeCssEscapes(value);
@@ -566,12 +341,7 @@ function assertPrismStyleValue(value: string, reactProperty: string, path: strin
 
 function validateStylesheet(definition: ThemeDefinition): void {
   assertNonEmptyString(definition.stylesheetText, `${definition.id}.stylesheetText`);
-  const cssText = stripCssComments(normalizeCssInput(definition.stylesheetText));
-  if (containsTopLevelSemicolon(cssText)) {
-    throw new Error(`[theme] ${definition.id}: stylesheet contains an unsupported top-level statement`);
-  }
-  const topLevelBlocks = collectTopLevelCssBlocks(cssText, true);
-  const blocks = collectStylesheetCssBlocks(cssText);
+  const { cssText, topLevelBlocks, blocks } = parseThemeStylesheet(definition.stylesheetText);
   if (/@import\b/i.test(decodeCssEscapes(cssText)) || containsRemoteReference(cssText)) {
     throw new Error(`[theme] ${definition.id}: stylesheet must not reference remote assets`);
   }

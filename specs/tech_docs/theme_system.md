@@ -23,6 +23,7 @@ src/shared/theme.ts                         纯类型、默认值、配置迁移
 src/renderer/theme/index.ts                 consumer 唯一公共入口
 src/renderer/theme/types.ts                 Definition / ResolvedTheme / adapter 契约
 src/renderer/theme/registry-contract.ts     required Token / xterm / Mermaid / Widget 契约清单
+src/renderer/theme/stylesheet-contract.ts   CSS block / selector / declaration 语义解析
 src/renderer/theme/registry.ts              校验、注册、整套 resolve/fallback
 src/renderer/theme/bootstrap.ts             非敏感、带版本的首帧快照
 src/renderer/theme/ThemeRuntime.tsx          root/context/system/跨窗口 owner
@@ -79,6 +80,8 @@ canonical Theme 为 React 前首帧兜底可静态导入 CSS；可选 Theme 只�
 与 Widget adapter。Widget 的圆角与阴影同样来自该 Theme 的 `--theme-radius-*` / `--theme-shadow-*`，
 不保留 canonical 常量。这个 helper 只抽取结构，不导入或 spread canonical Theme；因此宿主和嵌入式
 surface 共享同一套视觉事实，构造或校验失败都只拒绝当前可选包，不会在 Registry 接管前中止启动。
+构造与校验必须共同消费 `stylesheet-contract.ts` 的语义解析结果，不能依赖 `?inline` CSS 在开发态
+保留的引号、空格、换行或末尾分号；Vite production minifier 可以合法改写这些序列化细节。
 
 `ThemeRegistry` 直接校验同一份实际打包的 stylesheet source：可选 Theme 的 required Token 只能来自顶层、精确的 `html[data-theme-id='<id>']` root 与两个顶层精确 scheme root；canonical default 则必须全部来自 `:root, <exact-theme-root>`、`<generic-scheme>, <exact-scheme-root>` 成对 fallback block，禁止再追加 standalone exact block，从结构上保证未知 ID 首帧与注册后的 canonical package 完整同源。这些 root 与 Hero block 只能包含平坦 declaration，CSS Nesting、descendant、不可达 at-rule 与空/CSS-wide 值不能冒充或扩张 root 声明；轻量扫描器遵循 CSS input preprocessing 与 bad-string 换行恢复，不能用跨行坏字符串藏住结构括号。只有 canonical default 可在与精确 Theme selector 成对的 selector list 中使用 `:root`、通用 scheme 和无 scope Hero fallback；可选 Theme 即使把这些 selector 包在条件规则中也会被拒绝，避免未激活包泄漏全局值或污染 Space。Theme stylesheet 禁止 `@theme`、`@property`、`@font-face` 等全局副作用 at-rule；唯一允许的 at-rule 是只包含合法 scoped Hero selector 的顶层 `@media`，用于响应式 Launcher 排版，并且不能替代顶层 Hero 完整性声明。Token 在解析同 Theme `var(...)` 依赖后还必须满足实际消费属性的 CSS 语法。注册时还拒绝重复/非法 ID、缺 Hero selector、缺 scheme/Hero/adapter、空或属性值无效的 Prism、残缺/非 iframe literal/属性语法无效的 Widget variable、无效字体/数值，以及 stylesheet/Hero 中的远程资源；不得用另一份 token 名称元数据代替 CSS 事实。无效的可选包被拒绝但不阻断 canonical registry；未知配置 ID 只记录一次不含秘密的 warning，并把 Definition、CSS root ID、Hero 和全部 adapters **整套**切到 `myagents-default`。pre-React 阶段由 canonical `:root` package globals + 通用 scheme selector 提供完整视觉兜底，禁止出现无 Token root 或逐字段继承形成混合 Theme。
 
@@ -232,9 +235,11 @@ Space 的 `[data-ui-theme="space-mono"]` / `.dark [data-ui-theme="space-mono"]` 
 - floating DOM：snapshot → durable config → Tauri live event；
 - architecture unit + dependency-cruiser：禁止 consumer 直引 internals、禁止本地 palette/MutationObserver 回流；
 - preset contract：accepted IDs/名称/顺序精确等于十二套，分组 ID 与 Registry 等值；十一套新增
-  Theme 的正文和实色主动作对比度不低于 4.5:1；
-- build smoke：production registry 包含精确十二套且 bundle 不含 `synthetic-test-theme`；
-  `build:web` 后 `verify:theme-css` 读取实际 `dist/assets/*.css`，验证 font/radius/shadow/duration
-  utility 仍引用 runtime Theme Token，且 bundle 不存在未编译 raw `@theme`。
+  Theme 的正文和实色主动作对比度不低于 4.5:1；`verify:theme-presets` 先按 Vite production 使用的
+  esbuild CSS minifier 序列化十一套实际 stylesheet，再经 optional factory 完成精确十二套 Registry
+  注册并逐套 resolve light/dark；
+- build smoke：`build:web` 串行执行 `verify:theme-css` 与 `verify:theme-presets`；前者读取实际
+  `dist/assets/*.css`，验证 font/radius/shadow/duration utility 仍引用 runtime Theme Token，且 bundle
+  不存在未编译 raw `@theme`，后者防止 production `?inline` 序列化导致 preset catalog 启动时被拒绝。
 
 发布前仍必须完成 PRD 0.3.2 要求的视觉截图矩阵、browser dev、macOS/Windows 实机门槛；自动化不能替代真实渲染验证。

@@ -38,7 +38,8 @@ fallback；它的物理 owner 是：
 - `src/renderer/theme/themes/myagents-default.ts`：Launcher Hero 与 xterm / Monaco / Mermaid / Prism / Widget adapters；
 - `src/renderer/theme/themes/<preset>.css + <preset>.ts`：十一套可选 Theme 的共置 package；CSS
   显式拥有完整 visual Token，manifest 只用 `?inline` 读取同一份源码，adapter 从这份 CSS 的语义
-  色板派生，不复制 canonical 值；
+  色板派生，不复制 canonical 值；构造与 Registry 校验共享语义解析器，不依赖 production minifier
+  是否保留属性引号、空白或末尾分号；
 - `src/renderer/index.css`：与品牌视觉无关的布局、交互、七档 Type Scale、不携带视觉值的 Tailwind runtime Token 编译桥，以及 Space 的独立 scoped override。
 
 组件只消费语义 Token 或 `useResolvedTheme()` adapter，不持有 light/dark palette，不观察 `.dark` 反推状态。Widget adapter 必须提供 iframe 可直接使用的 literal，不能引用宿主 `var(...)`。完整 Theme 不允许让用户混搭颜色、字体、背景等零件；某 Theme 缺项时整套回退 canonical default。
