@@ -16,9 +16,15 @@ import { SYNTHETIC_THEME_ID, syntheticTheme } from './__tests__/syntheticTheme';
 const runtimeMocks = vi.hoisted(() => ({
   emit: vi.fn(() => Promise.resolve()),
   isTauri: false,
+  setBackgroundColor: vi.fn(() => Promise.resolve()),
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({ emit: runtimeMocks.emit }));
+vi.mock('@tauri-apps/api/window', () => ({
+  getCurrentWindow: () => ({
+    setBackgroundColor: runtimeMocks.setBackgroundColor,
+  }),
+}));
 vi.mock('@/utils/browserMock', () => ({
   isTauriEnvironment: () => runtimeMocks.isTauri,
 }));
@@ -63,6 +69,7 @@ describe('ThemeRuntimeProvider', () => {
   beforeEach(() => {
     localStorage.clear();
     runtimeMocks.emit.mockClear();
+    runtimeMocks.setBackgroundColor.mockClear();
     runtimeMocks.isTauri = false;
     mediaMatches = false;
     mediaListeners.clear();
@@ -215,6 +222,48 @@ describe('ThemeRuntimeProvider', () => {
       THEME_SELECTION_CHANGED_EVENT,
       { themeId: 'linear', appearanceMode: 'dark' },
     ));
+  });
+
+  it('keeps the main native window surface aligned with the resolved Theme paper', async () => {
+    runtimeMocks.isTauri = true;
+    const view = render(
+      <ThemeRuntimeProvider
+        registry={registry}
+        selection={{ themeId: SYNTHETIC_THEME_ID, appearanceMode: 'light' }}
+        syncNativeWindowBackground
+      >
+        <Probe />
+      </ThemeRuntimeProvider>,
+    );
+
+    await waitFor(() => expect(runtimeMocks.setBackgroundColor).toHaveBeenLastCalledWith('#fff0ff'));
+
+    view.rerender(
+      <ThemeRuntimeProvider
+        registry={registry}
+        selection={{ themeId: SYNTHETIC_THEME_ID, appearanceMode: 'dark' }}
+        syncNativeWindowBackground
+      >
+        <Probe />
+      </ThemeRuntimeProvider>,
+    );
+
+    await waitFor(() => expect(runtimeMocks.setBackgroundColor).toHaveBeenLastCalledWith('#120012'));
+  });
+
+  it('does not touch native window chrome when the provider does not own the main-window bridge', () => {
+    runtimeMocks.isTauri = true;
+
+    render(
+      <ThemeRuntimeProvider
+        registry={registry}
+        selection={{ themeId: SYNTHETIC_THEME_ID, appearanceMode: 'light' }}
+      >
+        <Probe />
+      </ThemeRuntimeProvider>,
+    );
+
+    expect(runtimeMocks.setBackgroundColor).not.toHaveBeenCalled();
   });
 
   it('removes synthetic root state on fallback and snapshots the resolved default ID', () => {

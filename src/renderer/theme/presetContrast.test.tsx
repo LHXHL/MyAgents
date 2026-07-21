@@ -50,6 +50,18 @@ function tokensFor(stylesheetText: string, themeId: string, scheme: 'light' | 'd
 }
 
 describe('production Theme contrast', () => {
+  it('keeps every optional light Theme toggle thumb on the light control surface', () => {
+    const lightSurfaceFloor = luminance('#f0f0f0');
+
+    for (const definition of themeRegistry.getAcceptedDefinitions().slice(1)) {
+      const tokens = tokensFor(definition.stylesheetText, definition.id, 'light');
+      expect(
+        luminance(tokens.get('--toggle-thumb')!),
+        `${definition.id}.light toggle thumb`,
+      ).toBeGreaterThanOrEqual(lightSurfaceFloor);
+    }
+  });
+
   it('keeps every new Theme core text and solid action state at 4.5:1 or better', () => {
     const solidActionPairs = [
       ['accent action', '--on-accent', '--accent'],

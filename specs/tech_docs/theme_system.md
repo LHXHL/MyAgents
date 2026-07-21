@@ -140,6 +140,7 @@ runtime 一次 resolve 后同步投影：
 - `<html data-theme-id data-color-scheme>`；
 - `.dark`（只为 Tailwind `dark:` 兼容）；
 - `style.colorScheme`；
+- main native Window background（读取已激活 Theme 的 resolved `--paper`；浮窗不参与）；
 - stable `ResolvedTheme` React context；
 - versioned localStorage snapshot；
 - Tauri `theme:selection-changed` 精简事件。
@@ -166,7 +167,8 @@ Tauri 主窗口还存在一个早于 `index.html` 的原生空白 surface。Rust
 3. 用 initialization script 在 HTML 解析前对齐同一个 versioned localStorage snapshot；Theme ID
    保留 renderer registry 上次发布的 resolved ID，无有效快照时使用 canonical default，Rust 不用
    未经 registry 验证的 durable Theme ID 覆盖它；
-4. 原生 background、bootstrap snapshot 就绪后再同步显示窗口，之后由 renderer runtime 接管完整 Theme。
+4. 原生 background、bootstrap snapshot 就绪后再同步显示窗口，之后由 renderer runtime 接管完整 Theme，
+   并在每次 Theme / scheme 切换后把 resolved `--paper` 同步到 main native Window background。
 
 Tauri initialization script 会在 reload 时再次执行，因此每次 native process 生成唯一 run ID；同一
 Webview reload 发现该 ID 已完成对齐后必须保留 ThemeRuntime 发布的更新快照，新 native process 才

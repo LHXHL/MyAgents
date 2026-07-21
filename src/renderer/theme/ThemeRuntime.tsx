@@ -9,6 +9,7 @@ import React, {
   useSyncExternalStore,
 } from 'react';
 import { emit } from '@tauri-apps/api/event';
+import { getCurrentWindow } from '@tauri-apps/api/window';
 
 import { useConfig } from '@/hooks/useConfig';
 import { isTauriEnvironment } from '@/utils/browserMock';
@@ -52,6 +53,15 @@ function applyRootTheme(resolvedTheme: ResolvedTheme): void {
   root.dataset.colorScheme = resolvedTheme.resolvedColorScheme;
   root.classList.toggle('dark', resolvedTheme.resolvedColorScheme === 'dark');
   root.style.colorScheme = resolvedTheme.resolvedColorScheme;
+}
+
+function syncMainWindowBackground(): void {
+  if (!isTauriEnvironment()) return;
+
+  const currentWindow = getCurrentWindow();
+  const paper = getComputedStyle(document.documentElement).getPropertyValue('--paper').trim();
+  void currentWindow.setBackgroundColor(paper)
+    .catch(error => console.warn('[theme] Failed to sync native window background:', error));
 }
 
 const ACTIVE_THEME_STYLESHEET_ID = 'myagents-active-theme-stylesheet';
@@ -100,6 +110,7 @@ export interface ThemeRuntimeProviderProps {
   selection: ThemeSelection | null;
   registry?: ThemeRegistry;
   broadcastSelection?: boolean;
+  syncNativeWindowBackground?: boolean;
 }
 
 export function ThemeRuntimeProvider({
@@ -107,6 +118,7 @@ export function ThemeRuntimeProvider({
   selection,
   registry = themeRegistry,
   broadcastSelection = false,
+  syncNativeWindowBackground = false,
 }: ThemeRuntimeProviderProps) {
   const [bootstrapSelection] = useState<ThemeSelection>(() => readThemeBootstrapSelection(
     typeof localStorage === 'undefined' ? null : localStorage,
@@ -136,7 +148,8 @@ export function ThemeRuntimeProvider({
 
   useLayoutEffect(() => {
     applyRootTheme(resolvedTheme);
-  }, [resolvedTheme]);
+    if (syncNativeWindowBackground) syncMainWindowBackground();
+  }, [resolvedTheme, syncNativeWindowBackground]);
 
   useEffect(() => {
     // Only durable config (or a floating window's asynchronously corrected
@@ -171,7 +184,11 @@ export function ConfiguredThemeRuntime({ children }: { children: React.ReactNode
     appearanceMode: config.appearanceMode,
   }), [config.appearanceMode, config.themeId, isLoading]);
   return (
-    <ThemeRuntimeProvider selection={selection} broadcastSelection>
+    <ThemeRuntimeProvider
+      selection={selection}
+      broadcastSelection
+      syncNativeWindowBackground
+    >
       {children}
     </ThemeRuntimeProvider>
   );

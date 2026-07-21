@@ -109,7 +109,7 @@ html[data-theme-id='wisteria'][data-color-scheme='light'] {
   --expanded-block-line: rgb(112 104 124 / 0.25);
   --warning-border: rgb(138 85 12 / 0.30);
   --focus-border: #8a6fc8;
-  --toggle-thumb: #15121c;
+  --toggle-thumb: #ffffff;
   --toggle-off-bg: rgb(30 26 36 / 0.18);
   --code-bg: #15121c;
   --code-bg-a0: rgb(21 18 28 / 0);

@@ -109,7 +109,7 @@ html[data-theme-id='raycast'][data-color-scheme='light'] {
   --expanded-block-line: rgb(108 108 108 / 0.25);
   --warning-border: rgb(138 85 12 / 0.30);
   --focus-border: #ff6363;
-  --toggle-thumb: #2a0a0a;
+  --toggle-thumb: #ffffff;
   --toggle-off-bg: rgb(3 3 3 / 0.18);
   --code-bg: #101010;
   --code-bg-a0: rgb(16 16 16 / 0);

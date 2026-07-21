@@ -813,6 +813,7 @@ Rust 读取归一后的非敏感 disk appearance
   → index.html 在 React 前应用 html[data-theme-id][data-color-scheme] + .dark
   → durable AppConfig 加载后 ConfiguredThemeRuntime 校正并刷新 snapshot
   → ThemeRuntime 激活已校验的实际 stylesheet + ResolvedTheme Context + root CSS Token selector
+    + 把当前 resolved --paper 投影到 main native Window background
   → CSS surface / Launcher / xterm / Monaco / Mermaid / Prism / Widget
   → Tauri theme:selection-changed → FloatingThemeRuntime 即时重解析
 ```

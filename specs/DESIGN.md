@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.7.0
+> **Version**: 2.7.1
 > **Last Updated**: 2026-07-21
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -496,7 +496,7 @@ Item 选中: 文字 var(--accent-warm)
 圆角: var(--radius-full)
 关闭背景: var(--line-strong)
 开启背景: var(--accent)
-滑块: 20px (h-5 w-5) 圆形, bg-[var(--toggle-thumb)] shadow；light 为白色，dark 为暖米白
+滑块: 20px (h-5 w-5) 圆形, bg-[var(--toggle-thumb)] shadow；light 使用白色/近白控制面，dark 由 Theme 按 Accent 明度选择稳定反差（canonical 为暖米白）
 滑块位置: 关闭 translate-x-0, 开启 translate-x-5
 光标: cursor-pointer, 加载中 cursor-wait, 禁用 cursor-not-allowed
 ```
@@ -659,6 +659,12 @@ Item 选中: 文字 var(--accent-warm)
 | Native chrome（托盘等） | 文案归 Rust native i18n 表；普通 React UI 文案归 renderer JSON |
 
 语言设置 UI 使用 `CustomSelect`，不能使用原生 `<select>`。新增语言的完整技术流程见 `tech_docs/i18n_architecture.md`。
+
+### 6.13 选中指示层级
+
+- 顶部 Tab 是高频上下文切换：active 底线使用 1px、`var(--accent)` 70% 透明度，并收窄到内容槽内侧，避免与正文争抢视觉重量。
+- Settings 侧栏是页面内主导航：active 保留 `var(--hover-bg)` 底色，指示条使用 2px、`var(--accent)` 80% 透明度；移动端横条保持同一强度。
+- 两者共享 Accent，但侧栏比 Tab 高一级；禁止分别硬编码具体主题色。
 
 ---
 
@@ -1086,8 +1092,9 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
 
 Shadow 运行时值是 Theme scheme 下的 `--theme-shadow-*`，Tailwind 只通过
 `index.css` 的 `@theme inline` 编译桥生成 utility，详见第 5 节。dark scheme 使用更亮的
-暖橙动作色（`#d4803f`），强调 surface 的配对前景仍为白色；`--toggle-thumb` 使用暖米白，
-确保开启态 thumb 与 track 有稳定对比。
+暖橙动作色（`#d4803f`），强调 surface 的配对前景仍为白色；canonical dark 的
+`--toggle-thumb` 使用暖米白。可选 Theme 的 dark Accent 若本身是浅色，可使用深色 thumb 保持反差；
+light scheme 的 thumb 始终使用白色/近白控制面。
 
 ---
 
@@ -1392,6 +1399,7 @@ Hover 操作:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.7.1 | 2026-07-21 | **Theme 运行时与选中态校正**：main native Window background 在 Theme 生效后跟随 resolved `--paper`；预设 Theme 的 light Toggle thumb 统一回归浅色控制面；顶部 Tab / Settings 侧栏选中指示按 1px/2px 与 70%/80% 建立层级 |
 | 2.7.0 | 2026-07-21 | **Theme preset catalog（PRD 0.3.2）**：production registry 扩展为 12 套完整 Theme；开发者设置用 Registry 驱动的单一下拉菜单切换；每套同时提供 light/dark、Hero、宿主/Floating Token 与 xterm/Monaco/Mermaid/Prism/Widget adapter；Theme/Appearance 正交，canonical default 与 Space 独立视觉不变 |
 | 2.6.2 | 2026-07-20 | **恢复 canonical Theme 暖橙 action palette**：根据实机体验撤回 2.6.1 的黑白配色试验，Accent/Hover/Primary/Focus、Widget 与 xterm adapter 恢复原有暖橙参数；保留 Theme runtime 编译桥、语义 foreground、阴影与终端自适应等全部架构修复，Space `space-mono` 继续独立使用黑白 action palette |
 | 2.6.1 | 2026-07-20 | **Theme runtime 编译桥与 action palette 修正**：Tailwind 入口用无值 `@theme inline` 桥接 Theme-owned font/radius/shadow/duration，production build 增加生成 CSS 契约校验；canonical default Accent/Hover/Primary/Focus 改用 Space 现行黑白 action palette，强调底前景改用 `--on-accent`；xterm 字体指标变化后原位 fit 并同步 PTY，split 几何判稳由 ResizeObserver 负责而不复制 Theme transition 时长 |
