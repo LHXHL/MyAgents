@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.2] - 2026-07-23
+
+> MyAgents 0.3.2 引入完整 Theme System，带来八套可切换主题并统一桌面、Space、终端、编辑器与浮窗视觉；Goal Mode 新增可验证的结束条件，Team Space Registered Agent 也升级为独立执行实例。版本同时收紧核心 System Skill、会话恢复、配置一致性与 IM 渠道边界。
+
+### Added
+
+- **完整 Theme System 与八套主题**：新增 MyAgents Default、Default Black、Sage、Claude、Linear、Proof、Codex、Raycast，可分别选择主题与跟随系统 / 浅色 / 深色外观；主题会一致覆盖 Launcher、Chat、Settings、Team Space、终端、Monaco、Mermaid、代码高亮、Widget 与浮窗。Default Black 成为新用户产品默认，明确选择过主题的用户仍保留自己的选择。
+- **Goal Mode 支持结束条件与进度**：创建目标时可设置最晚截止时间、最大执行次数和 AI 是否可以主动结束；状态栏与 CLI 会区分已结算轮次和当前执行轮次，并在触发条件时精确停止对应 Goal。
+- **Team Space Registered Agent 独立执行实例**：同一工作区可以登记多个 Agent，每个实例拥有自己的目标与指令、订阅和投递 Session；Cloud v2 投递会保持精确 Agent 身份，并支持新旧客户端兼容滚动发布。
+
+### Changed
+
+- **Space Agent 管理更直接**：Agent 详情改为统一编辑器，目标与指令前置，订阅默认使用新会话并简化单条订阅配置；弹窗适配较小视口，同一 workspace 的多个 Agent 不再互相混淆。
+- **Space Issue 筛选更完整**：状态筛选支持更清晰的全部 / 未完成 / 具体状态切换，并在 Space、页面和退出边界正确保留或重置选择。
+- **核心 System Skill 始终可用**：`myagents-cli`、`myagents-docs` 与三项受管 Memory Skill 被标记为 Required，旧配置中的误禁用状态会自动清理，产品运行契约不再因用户级开关缺失。
+- **Tab 上下文更易辨认**：会话标题会保留工作区身份，活跃与非活跃标题、工作区和 Session 名称形成更稳定的视觉层级。
+
+### Fixed
+
+- **Theme 首帧与复杂内容保持一致**：修复原生窗口启动闪色、运行时 Token 与 Tailwind utility 脱节、主按钮对比度、代码前景、终端 / 编辑器 / 图表配色及 Space 局部样式不跟随主题等问题。
+- **Goal 停止与 Space 投递竞态修复**：Goal 截止、取消和最大轮次不会在 lifecycle 锁内自锁；Agent 禁用、运行模式切换、Instruction 更新与批量投递按实例串行收口，避免旧设置覆盖或消息进入错误 Session。
+- **Agent 配置与会话恢复更可靠**：Agent 默认配置与 Project 兼容镜像在同一事务中更新并可回滚；macOS 只在 WebKit 确认 renderer 进程终止后恢复页面，普通唤醒不再误 reload 丢失草稿。
+- **IM Bridge 不再发出无法回答的结构化提问**：Telegram、钉钉和 OpenClaw Bridge 会禁用不受支持的阻塞式 `AskUserQuestion`，原生飞书卡片通道继续保留交互能力。
+- **Debug 构建版本保持一致**：macOS / Windows 开发构建会校验 package、Tauri 与 Cargo 版本，真实构建失败不再被包装脚本吞掉。
+
+---
+
 ## [0.3.1] - 2026-07-17
 
 > MyAgents 0.3.1 聚焦连续对话与工具体验：飞书 Bot 的长回复重新流畅更新，MCP 异常不再阻塞 AI 回答，桌面与外部 Runtime 的活跃会话恢复更可靠；同时升级文件编辑和命令执行预览，补充通用网络代理范围，并加快使用统计加载。
