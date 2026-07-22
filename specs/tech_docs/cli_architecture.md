@@ -249,7 +249,7 @@ app 启动 → ConfigProvider → invoke('cmd_sync_cli')
 |------|---------|------|---------|
 | `CLI_VERSION` | CLI 脚本 (`myagents.ts`, `myagents.cmd`) | `~/.myagents/.cli-version` | `src-tauri/src/commands.rs` |
 | `ADMIN_AGENT_VERSION` | 小助理 CLAUDE.md + Skills | `~/.myagents/.admin-agent-version` | `src-tauri/src/commands.rs` |
-| `SYSTEM_SKILLS_VERSION` | 系统级 skills（task-alignment / task-implement） | `~/.myagents/.system-skills-version` | `src-tauri/src/commands.rs` |
+| `SYSTEM_SKILLS_VERSION` | `src-tauri/src/commands.rs::SYSTEM_SKILLS` 列出的版本化系统级 Skills；其中 Required 子集由 `src/shared/systemSkills.ts` 统一定义 | `~/.myagents/.system-skills-version` | `src-tauri/src/commands.rs` |
 
 三个版本门控**独立运作**，修改各自内容只需 bump 对应版本即可。
 

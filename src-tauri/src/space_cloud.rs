@@ -63,6 +63,20 @@ const MAX_SPACE_PROMPT_PATH_CHARS: usize = 4_000;
 static SPACE_CONNECTOR_STARTED: AtomicBool = AtomicBool::new(false);
 static SPACE_CONNECTOR_RUNTIME: LazyLock<SpaceConnectorRuntime> =
     LazyLock::new(SpaceConnectorRuntime::default);
+static SPACE_AGENT_LIFECYCLES: LazyLock<crate::keyed_lifecycle::KeyedLifecycleRegistry> =
+    LazyLock::new(crate::keyed_lifecycle::KeyedLifecycleRegistry::new);
+
+async fn acquire_space_agent_lifecycle(
+    base_url: &str,
+    registered_agent_id: &str,
+) -> crate::keyed_lifecycle::KeyedLifecycleGuard {
+    let identity = format!(
+        "{}\0{}",
+        base_url.trim().trim_end_matches('/'),
+        registered_agent_id.trim()
+    );
+    SPACE_AGENT_LIFECYCLES.acquire(&[&identity]).await
+}
 #[derive(Debug)]
 struct SpaceClientDeviceContext {
     client_version: String,
@@ -1957,6 +1971,10 @@ pub async fn cmd_space_update_registered_agent(
     let session = require_session()?;
     let identity = current_device_identity()?;
     try_upsert_space_user_device(&session, &identity).await;
+    // Settings and delivery admission share one per-Agent lifecycle boundary.
+    // Once a disable or run-mode mutation completes, no later admission can
+    // still act on the pre-mutation local snapshot.
+    let _agent_lifecycle = acquire_space_agent_lifecycle(&session.base_url, &input.id).await;
     let mut agent = read_current_local_agents()?
         .into_iter()
         .find(|agent| agent.id == input.id);
@@ -2148,9 +2166,9 @@ pub async fn cmd_space_update_registered_agent(
         let Some(agent) = agent else {
             return Err("No Registered Agent changes provided".to_string());
         };
-        upsert_local_agent(agent.clone())?;
-        wake_space_connector_for_agent(&agent.id);
-        return Ok(agent.into());
+        let merged = merge_managed_agent_snapshot_at_path(agent, registered_agents_path()?)?;
+        wake_space_connector_for_agent(&merged.id);
+        return Ok(merged.into());
     }
 
     let data = authorized_json_data_request(
@@ -2214,9 +2232,10 @@ pub async fn cmd_space_update_registered_agent(
     let subscription = first_subscription_from_data(&data);
     if let Some(agent) = agent.as_mut() {
         apply_subscriptions_to_local_agent(agent, &data);
-        upsert_local_agent(agent.clone())?;
-        wake_space_connector_for_agent(&agent.id);
-        return Ok(agent.clone().into());
+        let merged =
+            merge_managed_agent_snapshot_at_path(agent.clone(), registered_agents_path()?)?;
+        wake_space_connector_for_agent(&merged.id);
+        return Ok(merged.into());
     }
     let registered = data
         .get("registeredAgent")
@@ -2233,6 +2252,7 @@ pub async fn cmd_space_update_registered_agent_avatar(
     }
     ensure_space_available()?;
     let session = require_session()?;
+    let _agent_lifecycle = acquire_space_agent_lifecycle(&session.base_url, &input.id).await;
     let mut agent = read_current_local_agents()?
         .into_iter()
         .find(|agent| agent.id == input.id);
@@ -2251,9 +2271,10 @@ pub async fn cmd_space_update_registered_agent_avatar(
         apply_cloud_avatar_to_local_agent(agent, registered);
         agent.updated_at = required_value_string(registered, "updatedAt")
             .unwrap_or_else(|_| chrono::Utc::now().to_rfc3339());
-        upsert_local_agent(agent.clone())?;
-        wake_space_connector_for_agent(&agent.id);
-        return Ok(agent.clone().into());
+        let merged =
+            merge_managed_agent_snapshot_at_path(agent.clone(), registered_agents_path()?)?;
+        wake_space_connector_for_agent(&merged.id);
+        return Ok(merged.into());
     }
     local_registered_agent_public_from_cloud(
         &session,
@@ -2272,6 +2293,7 @@ pub async fn cmd_space_revoke_registered_agent(
     }
     ensure_space_available()?;
     let session = require_session()?;
+    let _agent_lifecycle = acquire_space_agent_lifecycle(&session.base_url, &input.id).await;
     let mut agent = read_current_local_agents()?
         .into_iter()
         .find(|agent| agent.id == input.id);
@@ -2291,8 +2313,9 @@ pub async fn cmd_space_revoke_registered_agent(
             agent.status = "revoked".to_string();
             agent.updated_at = chrono::Utc::now().to_rfc3339();
         }
-        upsert_local_agent(agent.clone())?;
-        return Ok(agent.clone().into());
+        let merged =
+            merge_managed_agent_snapshot_at_path(agent.clone(), registered_agents_path()?)?;
+        return Ok(merged.into());
     }
     let registered = data
         .get("registeredAgent")
@@ -4237,19 +4260,30 @@ async fn process_due_deliveries(
             }
         };
         record_space_agent_poll_success(&job.key, &poll.schedule_outcome());
+        agent = {
+            let _agent_lifecycle = acquire_space_agent_lifecycle(&scope.base_url, &agent.id).await;
+            match merge_polled_agent_contract_at_path(&agent, &poll.context, agents_path.clone()) {
+                Ok(Some(latest)) => latest,
+                Ok(None) => continue,
+                Err(error) => {
+                    ulog_warn!(
+                        "[space] failed to merge Agent contract snapshot {}: {}",
+                        agent.id,
+                        error
+                    );
+                    errors.push(format!("{}: {}", agent.display_name, error));
+                    continue;
+                }
+            }
+        };
+        // A settings mutation may have disabled this Agent while its HTTP
+        // poll was in flight. The locked merge above preserves that newer
+        // authority; fail closed instead of dispatching the stale job.
+        if agent.status != "active" {
+            continue;
+        }
         if let Some(presence_key) = space_device_presence_key(&scope, &agent) {
             successfully_polled_presence_keys.insert(presence_key);
-        }
-        agent.instruction = poll.context.instruction.clone();
-        agent.instruction_revision = poll.context.instruction_revision;
-        agent.display_name = poll.context.registered_agent_name.clone();
-        agent.updated_at = chrono::Utc::now().to_rfc3339();
-        if let Err(error) = upsert_local_agent_at_path(agent.clone(), agents_path.clone()) {
-            ulog_warn!(
-                "[space] failed to persist Agent contract snapshot {}: {}",
-                agent.id,
-                error
-            );
         }
         match process_agent_deliveries(
             app_handle,
@@ -4774,6 +4808,108 @@ fn resolve_issue_delivery_session(
     }
 }
 
+fn read_local_agent_at_path(
+    agents_path: &Path,
+    base_url: &str,
+    registered_agent_id: &str,
+) -> Result<Option<LocalRegisteredAgent>, String> {
+    Ok(read_local_agents_from_path(agents_path)?
+        .items
+        .into_iter()
+        .find(|candidate| {
+            candidate.id == registered_agent_id
+                && space_base_urls_equal(&candidate.base_url, base_url)
+        }))
+}
+
+struct SpaceDeliveryAdmission {
+    agent: LocalRegisteredAgent,
+    session_id: String,
+    message_id: String,
+    delivery_count: usize,
+}
+
+async fn admit_single_space_delivery(
+    app_handle: &AppHandle,
+    manager: &ManagedSidecarManager,
+    base_url: &str,
+    agent_identity: &LocalRegisteredAgent,
+    agents_path: &Path,
+    context: &SpaceDeliveryPackageContext,
+    delivery: &PendingSpaceDelivery,
+) -> Result<Option<SpaceDeliveryAdmission>, String> {
+    let _agent_lifecycle = acquire_space_agent_lifecycle(base_url, &agent_identity.id).await;
+    let Some(mut latest) = read_local_agent_at_path(agents_path, base_url, &agent_identity.id)?
+    else {
+        return Ok(None);
+    };
+    if latest.status != "active" {
+        return Ok(None);
+    }
+    let session_id = if let Some(target_session_id) = delivery.target_session() {
+        target_session_id.to_string()
+    } else {
+        resolve_issue_delivery_session(&mut latest, &delivery.issue_id, agents_path)?
+    };
+    let message_id = deliver_space_deliveries(
+        app_handle,
+        manager,
+        &latest,
+        context,
+        &session_id,
+        std::slice::from_ref(delivery),
+    )
+    .await?;
+    Ok(Some(SpaceDeliveryAdmission {
+        agent: latest,
+        session_id,
+        message_id,
+        delivery_count: 1,
+    }))
+}
+
+async fn admit_subscription_deliveries(
+    app_handle: &AppHandle,
+    manager: &ManagedSidecarManager,
+    base_url: &str,
+    agent_identity: &LocalRegisteredAgent,
+    agents_path: &Path,
+    context: &SpaceDeliveryPackageContext,
+    pending: &[PendingSpaceDelivery],
+) -> Result<Option<SpaceDeliveryAdmission>, String> {
+    let _agent_lifecycle = acquire_space_agent_lifecycle(base_url, &agent_identity.id).await;
+    let Some(mut latest) = read_local_agent_at_path(agents_path, base_url, &agent_identity.id)?
+    else {
+        return Ok(None);
+    };
+    if latest.status != "active" {
+        return Ok(None);
+    }
+    let first = pending
+        .first()
+        .ok_or_else(|| "Space subscription delivery batch is empty".to_string())?;
+    let delivery_count = match latest.issue_subscription_run_mode {
+        SpaceIssueSubscriptionRunMode::SingleSession => pending.len(),
+        SpaceIssueSubscriptionRunMode::NewSession => 1,
+    };
+    let session_id = resolve_issue_delivery_session(&mut latest, &first.issue_id, agents_path)?;
+    let message_id = deliver_space_deliveries(
+        app_handle,
+        manager,
+        &latest,
+        context,
+        &session_id,
+        &pending[..delivery_count],
+    )
+    .await?;
+    Ok(Some(SpaceDeliveryAdmission {
+        agent: latest,
+        session_id,
+        message_id,
+        delivery_count,
+    }))
+}
+
 async fn process_agent_deliveries(
     app_handle: &AppHandle,
     manager: &ManagedSidecarManager,
@@ -4887,27 +5023,30 @@ async fn process_agent_deliveries(
     }
 
     for delivery_item in targeted_pending {
-        let session_id = if let Some(target_session_id) = delivery_item.target_session() {
-            target_session_id.to_string()
-        } else {
-            resolve_issue_delivery_session(agent, &delivery_item.issue_id, agents_path)?
-        };
-        let message_id = deliver_space_deliveries(
+        let Some(admission) = admit_single_space_delivery(
             app_handle,
             manager,
+            base_url,
             agent,
+            agents_path,
             context,
-            &session_id,
-            std::slice::from_ref(&delivery_item),
+            &delivery_item,
         )
-        .await?;
+        .await?
+        else {
+            return Ok(SpaceAgentProcessingOutcome {
+                processed,
+                delivered,
+            });
+        };
+        *agent = admission.agent;
         record_delivered_space_delivery(
             delivery_log_path,
             base_url,
             agent,
             &delivery_item,
-            &session_id,
-            &message_id,
+            &admission.session_id,
+            &admission.message_id,
         )
         .await?;
         processed += 1;
@@ -4915,27 +5054,30 @@ async fn process_agent_deliveries(
     }
 
     for delivery_item in assignment_pending {
-        let session_id = if let Some(target_session_id) = delivery_item.target_session() {
-            target_session_id.to_string()
-        } else {
-            resolve_issue_delivery_session(agent, &delivery_item.issue_id, agents_path)?
-        };
-        let message_id = deliver_space_deliveries(
+        let Some(admission) = admit_single_space_delivery(
             app_handle,
             manager,
+            base_url,
             agent,
+            agents_path,
             context,
-            &session_id,
-            std::slice::from_ref(&delivery_item),
+            &delivery_item,
         )
-        .await?;
+        .await?
+        else {
+            return Ok(SpaceAgentProcessingOutcome {
+                processed,
+                delivered,
+            });
+        };
+        *agent = admission.agent;
         record_delivered_space_delivery(
             delivery_log_path,
             base_url,
             agent,
             &delivery_item,
-            &session_id,
-            &message_id,
+            &admission.session_id,
+            &admission.message_id,
         )
         .await?;
         processed += 1;
@@ -4949,74 +5091,46 @@ async fn process_agent_deliveries(
         });
     }
 
-    match agent.issue_subscription_run_mode {
-        SpaceIssueSubscriptionRunMode::SingleSession => {
-            let session_id = agent
-                .delivery_session_id
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .ok_or_else(|| {
-                    format!("Registered Agent {} is missing deliverySessionId", agent.id)
-                })?
-                .to_string();
-            let message_id = deliver_space_deliveries(
-                app_handle,
-                manager,
-                agent,
-                context,
-                &session_id,
-                &subscription_pending,
-            )
-            .await?;
-            record_injected_space_deliveries(
+    while !subscription_pending.is_empty() {
+        let Some(admission) = admit_subscription_deliveries(
+            app_handle,
+            manager,
+            base_url,
+            agent,
+            agents_path,
+            context,
+            &subscription_pending,
+        )
+        .await?
+        else {
+            return Ok(SpaceAgentProcessingOutcome {
+                processed,
+                delivered,
+            });
+        };
+        let admitted = subscription_pending
+            .drain(..admission.delivery_count)
+            .collect::<Vec<_>>();
+        *agent = admission.agent;
+        record_injected_space_deliveries(
+            delivery_log_path,
+            base_url,
+            agent,
+            &admitted,
+            &admission.session_id,
+            &admission.message_id,
+        )?;
+        for delivery_item in &admitted {
+            mark_recorded_space_delivery_delivered(
                 delivery_log_path,
                 base_url,
                 agent,
-                &subscription_pending,
-                &session_id,
-                &message_id,
-            )?;
-            for delivery_item in &subscription_pending {
-                mark_recorded_space_delivery_delivered(
-                    delivery_log_path,
-                    base_url,
-                    agent,
-                    delivery_item,
-                    &session_id,
-                )
-                .await?;
-                processed += 1;
-                delivered += 1;
-            }
-        }
-        SpaceIssueSubscriptionRunMode::NewSession => {
-            for delivery_item in subscription_pending {
-                let session_id = ensure_agent_issue_session_at_path(
-                    agent,
-                    &delivery_item.issue_id,
-                    agents_path,
-                )?;
-                let message_id = deliver_space_deliveries(
-                    app_handle,
-                    manager,
-                    agent,
-                    context,
-                    &session_id,
-                    std::slice::from_ref(&delivery_item),
-                )
-                .await?;
-                record_delivered_space_delivery(
-                    delivery_log_path,
-                    base_url,
-                    agent,
-                    &delivery_item,
-                    &session_id,
-                    &message_id,
-                )
-                .await?;
-                processed += 1;
-                delivered += 1;
-            }
+                delivery_item,
+                &admission.session_id,
+            )
+            .await?;
+            processed += 1;
+            delivered += 1;
         }
     }
     Ok(SpaceAgentProcessingOutcome {
@@ -5174,7 +5288,7 @@ async fn mark_recorded_space_delivery_delivered(
 }
 
 fn ensure_agent_delivery_session_at_path(
-    mut agent: LocalRegisteredAgent,
+    agent: LocalRegisteredAgent,
     agents_path: PathBuf,
 ) -> Result<LocalRegisteredAgent, String> {
     if agent
@@ -5186,10 +5300,32 @@ fn ensure_agent_delivery_session_at_path(
     {
         return Ok(agent);
     }
-    agent.delivery_session_id = Some(uuid::Uuid::new_v4().to_string());
-    agent.updated_at = chrono::Utc::now().to_rfc3339();
-    upsert_local_agent_at_path(agent.clone(), agents_path)?;
-    Ok(agent)
+    let agent_id = agent.id.clone();
+    let base_url = agent.base_url.clone();
+    let lock_path = agents_path.clone();
+    with_json_file_lock(&lock_path, move || {
+        let mut file = read_local_agents_unlocked(&agents_path)?;
+        let latest = file.items.iter_mut().find(|candidate| {
+            candidate.id == agent_id && space_base_urls_equal(&candidate.base_url, &base_url)
+        });
+        let Some(latest) = latest else {
+            return Err(format!(
+                "Registered Agent disappeared before Session allocation: {agent_id}"
+            ));
+        };
+        if latest
+            .delivery_session_id
+            .as_deref()
+            .is_none_or(str::is_empty)
+        {
+            latest.delivery_session_id = Some(uuid::Uuid::new_v4().to_string());
+            latest.updated_at = chrono::Utc::now().to_rfc3339();
+            let updated = latest.clone();
+            write_private_json_unlocked(&agents_path, &file)?;
+            return Ok(updated);
+        }
+        Ok(latest.clone())
+    })
 }
 
 fn ensure_agent_issue_session_at_path(
@@ -5197,21 +5333,44 @@ fn ensure_agent_issue_session_at_path(
     issue_id: &str,
     agents_path: &Path,
 ) -> Result<String, String> {
-    if let Some(session_id) = agent
-        .issue_session_ids
-        .get(issue_id)
-        .map(String::as_str)
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        return Ok(session_id.to_string());
-    }
-    let session_id = uuid::Uuid::new_v4().to_string();
-    agent
-        .issue_session_ids
-        .insert(issue_id.to_string(), session_id.clone());
-    agent.updated_at = chrono::Utc::now().to_rfc3339();
-    upsert_local_agent_at_path(agent.clone(), agents_path.to_path_buf())?;
+    let agent_id = agent.id.clone();
+    let base_url = agent.base_url.clone();
+    let issue_id = issue_id.to_string();
+    let path = agents_path.to_path_buf();
+    let lock_path = path.clone();
+    let (latest, session_id) = with_json_file_lock(&lock_path, move || {
+        let mut file = read_local_agents_unlocked(&path)?;
+        let latest = file.items.iter_mut().find(|candidate| {
+            candidate.id == agent_id && space_base_urls_equal(&candidate.base_url, &base_url)
+        });
+        let Some(latest) = latest else {
+            return Err(format!(
+                "Registered Agent disappeared before Issue Session allocation: {agent_id}"
+            ));
+        };
+        if latest.status != "active" {
+            return Err(format!("Registered Agent is no longer active: {agent_id}"));
+        }
+        if let Some(session_id) = latest
+            .issue_session_ids
+            .get(&issue_id)
+            .map(String::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string)
+        {
+            return Ok((latest.clone(), session_id));
+        }
+        let session_id = uuid::Uuid::new_v4().to_string();
+        latest
+            .issue_session_ids
+            .insert(issue_id, session_id.clone());
+        latest.updated_at = chrono::Utc::now().to_rfc3339();
+        let updated = latest.clone();
+        write_private_json_unlocked(&path, &file)?;
+        Ok((updated, session_id))
+    })?;
+    *agent = latest;
     Ok(session_id)
 }
 
@@ -6711,6 +6870,69 @@ fn upsert_local_agent_at_path(agent: LocalRegisteredAgent, path: PathBuf) -> Res
         });
         file.items.push(agent);
         write_private_json_unlocked(&path, &file)
+    })
+}
+
+fn merge_managed_agent_snapshot_at_path(
+    mut managed: LocalRegisteredAgent,
+    path: PathBuf,
+) -> Result<LocalRegisteredAgent, String> {
+    let lock_path = path.clone();
+    with_json_file_lock(&lock_path, move || {
+        let mut file = read_local_agents_unlocked(&path)?;
+        if let Some(latest) = file.items.iter().find(|candidate| {
+            candidate.id == managed.id
+                && space_base_urls_equal(&candidate.base_url, &managed.base_url)
+        }) {
+            // Session allocation is connector-owned and may finish while a
+            // Cloud settings request is in flight. A management response must
+            // not erase those runtime identities. Likewise, retain a newer
+            // instruction snapshot observed by the poller.
+            managed.delivery_session_id = latest.delivery_session_id.clone();
+            managed.issue_session_ids = latest.issue_session_ids.clone();
+            if latest.instruction_revision > managed.instruction_revision {
+                managed.instruction = latest.instruction.clone();
+                managed.instruction_revision = latest.instruction_revision;
+            }
+        }
+        file.items.retain(|existing| {
+            existing.id != managed.id
+                || !space_base_urls_equal(&existing.base_url, &managed.base_url)
+        });
+        file.items.push(managed.clone());
+        write_private_json_unlocked(&path, &file)?;
+        Ok(managed)
+    })
+}
+
+fn merge_polled_agent_contract_at_path(
+    polled_agent: &LocalRegisteredAgent,
+    context: &SpaceDeliveryPackageContext,
+    path: PathBuf,
+) -> Result<Option<LocalRegisteredAgent>, String> {
+    let agent_id = polled_agent.id.clone();
+    let base_url = polled_agent.base_url.clone();
+    let instruction = context.instruction.clone();
+    let instruction_revision = context.instruction_revision;
+    let lock_path = path.clone();
+    with_json_file_lock(&lock_path, move || {
+        let mut file = read_local_agents_unlocked(&path)?;
+        let Some(latest) = file.items.iter_mut().find(|candidate| {
+            candidate.id == agent_id && space_base_urls_equal(&candidate.base_url, &base_url)
+        }) else {
+            return Ok(None);
+        };
+
+        // Poll context may have been read before a concurrent instruction
+        // CAS completed. Only advance this Cloud-owned snapshot; all local
+        // settings remain owned by the disk-latest record.
+        if instruction_revision >= latest.instruction_revision {
+            latest.instruction = instruction;
+            latest.instruction_revision = instruction_revision;
+        }
+        let merged = latest.clone();
+        write_private_json_unlocked(&path, &file)?;
+        Ok(Some(merged))
     })
 }
 
@@ -9174,6 +9396,172 @@ mod tests {
                 && agent.delivery_session_id == second.delivery_session_id
                 && agent.token == second.token
         }));
+    }
+
+    #[test]
+    fn poll_contract_merge_preserves_newer_local_agent_authority() {
+        let dir = tempfile::tempdir().expect("agent store tempdir");
+        let path = dir.path().join("registered_agents.json");
+        let mut stale = test_registered_agent(Some("usr_current"), Some("device_current"));
+        stale.instruction = Some("old instruction".to_string());
+        stale.instruction_revision = 1;
+
+        let mut latest = stale.clone();
+        latest.status = "disabled".to_string();
+        latest.workspace_path = "/tmp/new-workspace".to_string();
+        latest.issue_subscription_run_mode = SpaceIssueSubscriptionRunMode::NewSession;
+        latest.instruction = Some("newer instruction".to_string());
+        latest.instruction_revision = 3;
+        upsert_local_agent_at_path(latest.clone(), path.clone()).unwrap();
+
+        let stale_context = SpaceDeliveryPackageContext {
+            space_id: stale.space_id.clone(),
+            space_name: "Space".to_string(),
+            space_slug: "space".to_string(),
+            registered_agent_id: stale.id.clone(),
+            registered_agent_name: "stale name".to_string(),
+            instruction: Some("stale instruction".to_string()),
+            instruction_revision: 2,
+        };
+        let merged = merge_polled_agent_contract_at_path(&stale, &stale_context, path.clone())
+            .unwrap()
+            .unwrap();
+        assert_eq!(merged.status, "disabled");
+        assert_eq!(merged.workspace_path, "/tmp/new-workspace");
+        assert_eq!(
+            merged.issue_subscription_run_mode,
+            SpaceIssueSubscriptionRunMode::NewSession
+        );
+        assert_eq!(merged.instruction.as_deref(), Some("newer instruction"));
+        assert_eq!(merged.instruction_revision, 3);
+
+        let fresh_context = SpaceDeliveryPackageContext {
+            instruction: Some("fresh instruction".to_string()),
+            instruction_revision: 4,
+            ..stale_context
+        };
+        let merged = merge_polled_agent_contract_at_path(&stale, &fresh_context, path)
+            .unwrap()
+            .unwrap();
+        assert_eq!(merged.status, "disabled");
+        assert_eq!(merged.instruction.as_deref(), Some("fresh instruction"));
+        assert_eq!(merged.instruction_revision, 4);
+    }
+
+    #[test]
+    fn managed_agent_merge_preserves_connector_owned_runtime_state() {
+        let dir = tempfile::tempdir().expect("agent store tempdir");
+        let path = dir.path().join("registered_agents.json");
+        let mut managed = test_registered_agent(Some("usr_current"), Some("device_current"));
+        managed.delivery_session_id = Some("stale-shared-session".to_string());
+        managed.instruction = Some("stale instruction".to_string());
+        managed.instruction_revision = 1;
+
+        let mut latest = managed.clone();
+        latest.delivery_session_id = Some("current-shared-session".to_string());
+        latest
+            .issue_session_ids
+            .insert("issue-1".to_string(), "issue-session-1".to_string());
+        latest.instruction = Some("current instruction".to_string());
+        latest.instruction_revision = 3;
+        upsert_local_agent_at_path(latest, path.clone()).unwrap();
+
+        managed.status = "disabled".to_string();
+        let merged = merge_managed_agent_snapshot_at_path(managed, path.clone()).unwrap();
+        assert_eq!(merged.status, "disabled");
+        assert_eq!(
+            merged.delivery_session_id.as_deref(),
+            Some("current-shared-session")
+        );
+        assert_eq!(
+            merged.issue_session_ids.get("issue-1").map(String::as_str),
+            Some("issue-session-1")
+        );
+        assert_eq!(merged.instruction.as_deref(), Some("current instruction"));
+        assert_eq!(merged.instruction_revision, 3);
+    }
+
+    #[tokio::test]
+    async fn delivery_admission_reloads_state_after_settings_lifecycle_commit() {
+        let dir = tempfile::tempdir().expect("agent store tempdir");
+        let path = dir.path().join("registered_agents.json");
+        let mut agent = test_registered_agent(Some("usr_current"), Some("device_current"));
+        agent.id = format!("rag_{}", uuid::Uuid::new_v4());
+        agent.base_url = "https://space.lifecycle.test/".to_string();
+        upsert_local_agent_at_path(agent.clone(), path.clone()).unwrap();
+
+        let settings_guard = acquire_space_agent_lifecycle(&agent.base_url, &agent.id).await;
+        let admission_path = path.clone();
+        let admission_id = agent.id.clone();
+        let admission_acquired = std::sync::Arc::new(AtomicBool::new(false));
+        let admission_acquired_in_task = admission_acquired.clone();
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let admission = tauri::async_runtime::spawn(async move {
+            let _ = started_tx.send(());
+            let _admission_guard =
+                acquire_space_agent_lifecycle("https://space.lifecycle.test", &admission_id).await;
+            admission_acquired_in_task.store(true, Ordering::SeqCst);
+            read_local_agent_at_path(
+                &admission_path,
+                "https://space.lifecycle.test",
+                &admission_id,
+            )
+            .unwrap()
+            .unwrap()
+        });
+        started_rx.await.expect("admission task should start");
+        tokio::task::yield_now().await;
+        assert!(
+            !admission_acquired.load(Ordering::SeqCst),
+            "delivery admission must wait for the settings lifecycle commit"
+        );
+
+        agent.status = "disabled".to_string();
+        agent.issue_subscription_run_mode = SpaceIssueSubscriptionRunMode::NewSession;
+        upsert_local_agent_at_path(agent, path).unwrap();
+        drop(settings_guard);
+
+        let observed = admission.await.expect("admission task should complete");
+        assert_eq!(observed.status, "disabled");
+        assert_eq!(
+            observed.issue_subscription_run_mode,
+            SpaceIssueSubscriptionRunMode::NewSession
+        );
+    }
+
+    #[test]
+    fn issue_session_allocation_merges_into_disk_latest_agent() {
+        let dir = tempfile::tempdir().expect("agent store tempdir");
+        let path = dir.path().join("registered_agents.json");
+        let mut stale = test_registered_agent(Some("usr_current"), Some("device_current"));
+        let mut latest = stale.clone();
+        latest.workspace_path = "/tmp/new-workspace".to_string();
+        latest.issue_subscription_run_mode = SpaceIssueSubscriptionRunMode::NewSession;
+        upsert_local_agent_at_path(latest, path.clone()).unwrap();
+
+        let session_id = ensure_agent_issue_session_at_path(&mut stale, "issue-1", &path)
+            .expect("Issue Session should be allocated");
+        assert_eq!(stale.workspace_path, "/tmp/new-workspace");
+        assert_eq!(
+            stale.issue_subscription_run_mode,
+            SpaceIssueSubscriptionRunMode::NewSession
+        );
+        assert_eq!(
+            stale.issue_session_ids.get("issue-1").map(String::as_str),
+            Some(session_id.as_str())
+        );
+
+        let stored = read_local_agents_from_path(&path).unwrap();
+        let stored = stored
+            .items
+            .into_iter()
+            .find(|agent| agent.id == stale.id)
+            .unwrap();
+        assert_eq!(stored.workspace_path, "/tmp/new-workspace");
+        assert_eq!(
+            stored.issue_session_ids.get("issue-1").map(String::as_str),
+            Some(session_id.as_str())
+        );
     }
 
     #[test]

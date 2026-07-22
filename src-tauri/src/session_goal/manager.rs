@@ -17,7 +17,15 @@ use crate::sidecar::{release_session_sidecar, ManagedSidecarManager, SidecarOwne
 use crate::{ulog_info, ulog_warn};
 
 #[cfg(test)]
-type StopGoalTurnHook = Arc<dyn Fn(&SessionGoal, Option<&str>) -> Result<(), String> + Send + Sync>;
+type StopGoalTurnHook = Arc<
+    dyn Fn(
+            &SessionGoal,
+            Option<&str>,
+        )
+            -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+        + Send
+        + Sync,
+>;
 
 #[cfg(test)]
 type ReleaseGoalOwnerHook = Arc<dyn Fn(&SessionGoal) -> Result<bool, String> + Send + Sync>;
@@ -948,10 +956,16 @@ impl SessionGoalManager {
             .get(goal_id)
             .await?
             .ok_or_else(|| GoalMutationError::goal_changed("Goal identity changed"))?;
-        let _lifecycle = crate::sidecar::acquire_session_lifecycle(&[&current.session_id]).await;
-        let outcome = self
-            .transition_terminal(goal_id, GoalStatus::Canceled, reason, actor)
-            .await?;
+        let outcome = {
+            // Serialize the durable terminal transition, then release the
+            // lifecycle lock before asking the Sidecar to stop. `/goal/stop`
+            // can synchronously settle the dispatch guard through
+            // `/api/goal/turn/abort`, which must acquire this same lock.
+            let _lifecycle =
+                crate::sidecar::acquire_session_lifecycle(&[&current.session_id]).await;
+            self.transition_terminal(goal_id, GoalStatus::Canceled, reason, actor)
+                .await?
+        };
         let (mut goal, should_stop) = match outcome {
             GoalTerminalOutcome::Applied(goal) => (goal, true),
             GoalTerminalOutcome::AlreadyTerminal(goal) => {
@@ -967,22 +981,25 @@ impl SessionGoalManager {
                 goal.current_turn.as_ref().map(|turn| turn.queue_id.clone())
             {
                 match self.stop_goal_turn(&goal, Some(&queue_id)).await {
-                    Ok(()) => self.abort_turn_with_lifecycle(goal_id, &queue_id).await,
+                    Ok(()) => self.abort_turn(goal_id, &queue_id).await,
                     Err(error) => Err(GoalMutationError::goal(format!(
                         "Goal canceled, but exact runtime stop was not confirmed: {error}"
                     ))),
                 }
             } else {
                 match self.stop_goal_turn(&goal, None).await {
-                    Ok(()) => self
-                        .release_goal_owner(&goal)
-                        .await
-                        .map(|_| goal.clone())
-                        .map_err(|error| {
-                            GoalMutationError::goal(format!(
-                                "Goal canceled, but its Sidecar owner was not released: {error}"
-                            ))
-                        }),
+                    Ok(()) => {
+                        let _lifecycle =
+                            crate::sidecar::acquire_session_lifecycle(&[&goal.session_id]).await;
+                        self.release_goal_owner(&goal)
+                            .await
+                            .map(|_| goal.clone())
+                            .map_err(|error| {
+                                GoalMutationError::goal(format!(
+                                    "Goal canceled, but its Sidecar owner was not released: {error}"
+                                ))
+                            })
+                    }
                     Err(error) => Err(GoalMutationError::goal(format!(
                         "Goal canceled, but pending runtime work was not stopped: {error}"
                     ))),
@@ -1130,7 +1147,7 @@ impl SessionGoalManager {
     ) -> Result<(), String> {
         #[cfg(test)]
         if let Some(hook) = self.stop_goal_turn_hook.read().await.clone() {
-            return hook(goal, queue_id);
+            return hook(goal, queue_id).await;
         }
         let app_handle = self
             .app_handle
@@ -1950,7 +1967,8 @@ mod tests {
             })
             .await
             .unwrap();
-        *manager.stop_goal_turn_hook.write().await = Some(Arc::new(|_, _| Ok(())));
+        *manager.stop_goal_turn_hook.write().await =
+            Some(Arc::new(|_, _| Box::pin(async { Ok(()) })));
 
         let first_release_entered = Arc::new(Barrier::new(2));
         let allow_first_release = Arc::new(Barrier::new(2));
@@ -2032,6 +2050,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn end_condition_stop_allows_sidecar_abort_settlement_to_reenter_lifecycle() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = SessionGoalManager::with_storage_path(dir.path().join("goals.json"));
+        let goal = manager
+            .create_goal(config("session-1", "work"))
+            .await
+            .unwrap();
+        let (sidecars, generation) = live_test_sidecar("session-1", &goal.id);
+        let sidecars_for_release = sidecars.clone();
+        *manager.release_goal_owner_hook.write().await = Some(Arc::new(move |goal| {
+            release_session_sidecar(
+                &sidecars_for_release,
+                &goal.session_id,
+                &SidecarOwner::Goal(goal.id.clone()),
+            )
+        }));
+
+        manager
+            .claim_turn_from_sidecar(
+                &goal.id,
+                "queue-end-condition",
+                GoalTurnKind::UserQuery,
+                goal.control_revision,
+                "session-1",
+                generation,
+                &sidecars,
+            )
+            .await
+            .unwrap();
+
+        let manager_for_stop = manager.clone();
+        let goal_id_for_stop = goal.id.clone();
+        *manager.stop_goal_turn_hook.write().await = Some(Arc::new(move |_goal, queue_id| {
+            let manager = manager_for_stop.clone();
+            let goal_id = goal_id_for_stop.clone();
+            let queue_id = queue_id
+                .expect("claimed turn must stop exactly")
+                .to_string();
+            Box::pin(async move {
+                manager
+                    .abort_turn(&goal_id, &queue_id)
+                    .await
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            })
+        }));
+
+        let stopped = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            manager.stop_goal_for_end_condition(
+                &goal.id,
+                "Goal maximum executions reached".to_string(),
+                GoalEndConditionStopSource::BoundaryCheck,
+            ),
+        )
+        .await
+        .expect("Sidecar abort settlement must not deadlock the Session lifecycle")
+        .unwrap();
+
+        assert_eq!(stopped.status, GoalStatus::Canceled);
+        assert!(stopped.current_turn.is_none());
+        assert!(!sidecars
+            .lock()
+            .unwrap()
+            .session_has_persistent_owners("session-1"));
+    }
+
+    #[tokio::test]
     async fn deadline_watchdog_terminalizes_an_in_flight_turn() {
         let dir = tempfile::tempdir().unwrap();
         let manager = SessionGoalManager::with_storage_path(dir.path().join("goals.json"));
@@ -2043,11 +2129,12 @@ mod tests {
         let stopped_queues = Arc::new(Mutex::new(Vec::<Option<String>>::new()));
         let stopped_queues_for_hook = Arc::clone(&stopped_queues);
         *manager.stop_goal_turn_hook.write().await = Some(Arc::new(move |_goal, queue_id| {
-            stopped_queues_for_hook
-                .lock()
-                .unwrap()
-                .push(queue_id.map(str::to_string));
-            Ok(())
+            let queue_id = queue_id.map(str::to_string);
+            let stopped_queues = Arc::clone(&stopped_queues_for_hook);
+            Box::pin(async move {
+                stopped_queues.lock().unwrap().push(queue_id);
+                Ok(())
+            })
         }));
         let sidecars_for_release = sidecars.clone();
         *manager.release_goal_owner_hook.write().await = Some(Arc::new(move |goal| {

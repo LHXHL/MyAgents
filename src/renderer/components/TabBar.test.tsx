@@ -122,12 +122,12 @@ describe('TabBar', () => {
         const titleHandle = workspace.parentElement as HTMLElement;
 
         expect(tab).toHaveClass('text-[var(--ink)]');
-        expect(titleHandle.getAttribute('class')).toBe('flex min-w-0 flex-1 items-center text-xs font-medium select-none');
+        expect(titleHandle.getAttribute('class')).toBe('flex min-w-0 flex-1 items-center text-xs select-none');
         expect(titleHandle).not.toHaveAttribute('style');
         expect(sessionTitle.parentElement).toBe(titleHandle);
-        expect(workspace.getAttribute('class')).toBe('max-w-[35%] flex-shrink-0 truncate');
+        expect(workspace.getAttribute('class')).toBe('max-w-[35%] flex-shrink-0 truncate font-normal opacity-70');
         expect(workspace).not.toHaveAttribute('style');
-        expect(sessionTitle.getAttribute('class')).toBe('min-w-0 truncate');
+        expect(sessionTitle.getAttribute('class')).toBe('min-w-0 truncate font-medium');
         expect(sessionTitle).not.toHaveAttribute('style');
         expect(divider).toHaveAttribute('aria-hidden', 'true');
         expect(divider?.getAttribute('class')).toBe('mx-1.5 h-3 w-px flex-shrink-0 bg-[var(--line-strong)]/70');

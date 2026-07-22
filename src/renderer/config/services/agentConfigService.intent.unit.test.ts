@@ -106,17 +106,19 @@ describe('Agent/Project configuration intent ownership', () => {
     invokeMock.mockClear();
   });
 
-  it('makes direct mirrored-field writers participate and projects live state after release', async () => {
+  it('makes direct mirrored-field writers commit both authorities before live projection', async () => {
     await patchAgentConfig('agent-1', { model: 'claude-opus-4-6' });
 
     expect(state.events).toEqual([
       'intent:start',
       'agent-disk',
-      'config-notify',
+      'project-disk',
       'intent:end',
+      'config-notify',
       'live',
     ]);
     expect(state.config.agents?.[0].model).toBe('claude-opus-4-6');
+    expect(state.project.model).toBe('claude-opus-4-6');
   });
 
   it('commits both disk stores before releasing the intent lock and hot-reloading', async () => {
@@ -137,6 +139,27 @@ describe('Agent/Project configuration intent ownership', () => {
     ]);
     expect(state.config.agents?.[0].model).toBe('claude-opus-4-6');
     expect(state.project.model).toBe('claude-opus-4-6');
+  });
+
+  it('rolls back an automatically mirrored direct write when the Project save fails', async () => {
+    state.failProject = true;
+
+    await expect(patchAgentConfig(
+      'agent-1',
+      { model: 'claude-opus-4-6' },
+    )).rejects.toThrow('Project mirror could not be saved');
+
+    expect(state.config.agents?.[0].model).toBe('claude-sonnet-4-6');
+    expect(state.project.model).toBe('claude-sonnet-4-6');
+    expect(state.events).toEqual([
+      'intent:start',
+      'agent-disk',
+      'project-disk',
+      'agent-disk',
+      'intent:end',
+      'config-notify',
+    ]);
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it('rolls the Agent record back and skips live projection when the Project write fails', async () => {

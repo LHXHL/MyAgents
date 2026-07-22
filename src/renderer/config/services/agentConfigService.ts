@@ -454,6 +454,20 @@ function touchesProjectMirroredAgentField(patch: Partial<Omit<AgentConfig, 'id'>
   return Object.keys(patch).some(key => PROJECT_MIRRORED_AGENT_FIELDS.has(key as keyof Omit<AgentConfig, 'id'>));
 }
 
+function projectMirrorPatchFromAgentPatch(
+  patch: Partial<Omit<AgentConfig, 'id'>>,
+): Partial<Omit<Project, 'id'>> {
+  const projectPatch: Partial<Omit<Project, 'id'>> = {};
+  const source = patch as Partial<Record<keyof Omit<AgentConfig, 'id'>, unknown>>;
+  const target = projectPatch as Partial<Record<keyof Omit<Project, 'id'>, unknown>>;
+  for (const key of PROJECT_MIRRORED_AGENT_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(patch, key)) {
+      target[key as keyof Omit<Project, 'id'>] = source[key];
+    }
+  }
+  return projectPatch;
+}
+
 interface AgentConfigDiskPatchResult {
   previous?: AgentConfig;
   updated?: AgentConfig;
@@ -613,46 +627,33 @@ async function projectLiveAgentConfigPatch(
   }
 }
 
-/**
- * Patch a single Agent record. Fields mirrored by Project compatibility state
- * automatically participate in the shared intent lock, so direct renderer
- * callers cannot interleave with a CLI Agent+Project commit. Live runtime
- * projection always runs after the disk lock is released.
- */
-export async function patchAgentConfig(
-  agentId: string,
-  patch: Partial<Omit<AgentConfig, 'id'>>,
-  options: { memoryAutoUpdateReconcileFailure?: 'defer' | 'throw' } = {},
-): Promise<AgentConfig | undefined> {
-  const commitDisk = () => persistAgentConfigPatch(agentId, patch);
-  const result = touchesProjectMirroredAgentField(patch)
-    ? await withAgentConfigIntentLock(commitDisk)
-    : await commitDisk();
-  await projectLiveAgentConfigPatch(agentId, patch, result, options);
-  return result.updated;
+interface AgentProjectMirrorTarget {
+  projectId: string;
+  projectPatch: Partial<Omit<Project, 'id'>>;
 }
 
-/**
- * Commit one renderer-owned Agent default together with its Project mirror.
- * Both disk writes finish under the shared intent lock; hot reload happens
- * only after release. A failed Project write conditionally restores the exact
- * Agent record this intent replaced.
- */
-export async function patchAgentProjectConfig(
+async function persistAgentProjectIntent(
   agentId: string,
   agentPatch: Partial<Omit<AgentConfig, 'id'>>,
-  projectId: string,
-  projectPatch: Partial<Omit<Project, 'id'>>,
-  options: { memoryAutoUpdateReconcileFailure?: 'defer' | 'throw' } = {},
+  resolveTarget: () => Promise<AgentProjectMirrorTarget | undefined>,
+  options: { memoryAutoUpdateReconcileFailure?: 'defer' | 'throw' },
+  notificationSource: 'patchAgentConfig' | 'patchAgentProjectConfig',
 ): Promise<AgentConfig | undefined> {
   let result: AgentConfigDiskPatchResult | undefined;
+  let projectCommitted = false;
   try {
     await withAgentConfigIntentLock(async () => {
-      result = await persistAgentConfigPatch(agentId, agentPatch, 'deferred');
-      if (!result.updated) return;
+      const target = await resolveTarget();
+      result = await persistAgentConfigPatch(
+        agentId,
+        agentPatch,
+        target ? 'deferred' : 'immediate',
+      );
+      if (!result.updated || !target) return;
       try {
-        const updatedProject = await patchProject(projectId, projectPatch);
-        if (!updatedProject) throw new Error(`Project '${projectId}' not found`);
+        const updatedProject = await patchProject(target.projectId, target.projectPatch);
+        if (!updatedProject) throw new Error(`Project '${target.projectId}' not found`);
+        projectCommitted = true;
       } catch (error) {
         let rolledBack = false;
         if (result.previous) {
@@ -687,17 +688,81 @@ export async function patchAgentProjectConfig(
       }
     });
   } catch (error) {
-    if (result?.configChanged) notifyConfigChanged('patchAgentProjectConfig');
+    if (result?.configChanged) notifyConfigChanged(notificationSource);
     throw error;
   }
 
   if (!result?.updated) return undefined;
-  // A composite call is also the reconciliation path for legacy partial
-  // states. Even when the Agent half was already current, the Project half
-  // may have changed and has no independent renderer notification.
-  notifyConfigChanged('patchAgentProjectConfig');
+  if (projectCommitted) {
+    // Project has no renderer notification of its own. Publish only after
+    // both disk authorities have reached their final state.
+    notifyConfigChanged(notificationSource);
+  }
   await projectLiveAgentConfigPatch(agentId, agentPatch, result, options);
   return result.updated;
+}
+
+/**
+ * Patch a single Agent record. Fields mirrored by Project compatibility state
+ * automatically participate in the shared intent lock, so direct renderer
+ * callers cannot interleave with a CLI Agent+Project commit. Live runtime
+ * projection always runs after the disk lock is released.
+ */
+export async function patchAgentConfig(
+  agentId: string,
+  patch: Partial<Omit<AgentConfig, 'id'>>,
+  options: { memoryAutoUpdateReconcileFailure?: 'defer' | 'throw' } = {},
+): Promise<AgentConfig | undefined> {
+  if (!touchesProjectMirroredAgentField(patch)) {
+    const result = await persistAgentConfigPatch(agentId, patch);
+    await projectLiveAgentConfigPatch(agentId, patch, result, options);
+    return result.updated;
+  }
+
+  return persistAgentProjectIntent(
+    agentId,
+    patch,
+    async () => {
+      // Resolve the association only after joining the cross-process intent
+      // lock. Caller-held React state is a replica and may already be stale.
+      const [config, projects] = await Promise.all([loadAppConfig(), loadProjects()]);
+      const agent = getAgentById(config, agentId);
+      if (!agent) return undefined;
+      const project = projects.find(candidate => candidate.agentId === agentId)
+        ?? projects.find(candidate => (
+          !candidate.agentId && workspacePathsEqual(candidate.path, agent.workspacePath)
+        ));
+      if (!project) return undefined;
+      return {
+        projectId: project.id,
+        projectPatch: projectMirrorPatchFromAgentPatch(patch),
+      };
+    },
+    options,
+    'patchAgentConfig',
+  );
+}
+
+/**
+ * Commit one renderer-owned Agent default together with its Project mirror.
+ * Both disk writes finish under the shared intent lock; hot reload happens
+ * only after release. A failed Project write conditionally restores the exact
+ * Agent record this intent replaced.
+ */
+export async function patchAgentProjectConfig(
+  agentId: string,
+  agentPatch: Partial<Omit<AgentConfig, 'id'>>,
+  projectId: string,
+  projectPatch: Partial<Omit<Project, 'id'>>,
+  options: { memoryAutoUpdateReconcileFailure?: 'defer' | 'throw' } = {},
+): Promise<AgentConfig | undefined> {
+  return persistAgentProjectIntent(
+    agentId,
+    agentPatch,
+    async () => ({ projectId, projectPatch }),
+    options,
+    'patchAgentProjectConfig',
+  );
 }
 
 async function modifyAgentChannelConfig(
