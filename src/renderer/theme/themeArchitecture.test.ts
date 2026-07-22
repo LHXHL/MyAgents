@@ -137,10 +137,17 @@ describe('Theme architecture guardrails', () => {
     expect(settings).not.toContain('className="brand-title');
   });
 
-  it('keeps the Space scoped Theme exclusion intact', () => {
-    const css = source('src/renderer/index.css');
-    expect(css).toContain('[data-ui-theme="space-mono"]');
-    expect(css).toContain('.dark [data-ui-theme="space-mono"]');
+  it('keeps Space inside the app-level Theme scope', () => {
+    for (const file of [
+      'src/renderer/index.css',
+      'src/renderer/pages/Space.tsx',
+      'src/renderer/pages/space/SpaceChrome.tsx',
+      'src/renderer/components/ui/Popover.tsx',
+    ]) {
+      const contents = source(file);
+      expect(contents).not.toContain('data-ui-theme');
+      expect(contents).not.toContain('space-mono');
+    }
   });
 
   it('keeps a complete default visual fallback for unknown pre-React Theme IDs', () => {
@@ -164,13 +171,10 @@ describe('Theme architecture guardrails', () => {
     expect(theme).not.toContain('@theme');
   });
 
-  it('keeps the restored warm default action palette independent from Space mono', () => {
+  it('keeps the restored warm default action palette aligned with embedded adapters', () => {
     const theme = source('src/renderer/theme/themes/myagents-default.css');
-    const space = source('src/renderer/index.css');
     const themeLight = ruleBodyAfter(theme, "html[data-color-scheme='light'],");
     const themeDark = ruleBodyAfter(theme, "html[data-color-scheme='dark'],");
-    const spaceLight = ruleBodyAfter(space, '[data-ui-theme="space-mono"]');
-    const spaceDark = ruleBodyAfter(space, '.dark [data-ui-theme="space-mono"]');
     const expectedThemeByScheme = {
       light: [
         '--hover-bg: rgba(194, 109, 58, 0.07)',
@@ -191,25 +195,6 @@ describe('Theme architecture guardrails', () => {
         '--button-primary-text: var(--on-accent)', '--focus-border: var(--accent)', '--toggle-thumb: #ffffff',
       ],
     } as const;
-    const expectedSpaceByScheme = {
-      light: [
-        '--accent: #1c1612', '--accent-warm: #1c1612', '--accent-warm-hover: #2e2825',
-        '--accent-warm-subtle: rgb(28 22 18 / 0.08)', '--accent-warm-muted: rgb(28 22 18 / 0.16)',
-        '--accent-warm-subtle-a0: rgb(28 22 18 / 0)', '--on-accent: #ffffff',
-        '--hover-bg: rgb(28 22 18 / 0.07)', '--button-primary-bg: #1c1612',
-        '--button-primary-bg-hover: #2e2825', '--button-primary-text: var(--on-accent)',
-        '--focus-border: #1c1612',
-      ],
-      dark: [
-        '--accent: #e4dcd4', '--accent-warm: #e4dcd4', '--accent-warm-hover: #ffffff',
-        '--accent-warm-subtle: rgb(228 220 212 / 0.12)',
-        '--accent-warm-muted: rgb(228 220 212 / 0.20)',
-        '--accent-warm-subtle-a0: rgb(228 220 212 / 0)', '--on-accent: #1a1614',
-        '--hover-bg: rgb(228 220 212 / 0.10)', '--button-primary-bg: #e4dcd4',
-        '--button-primary-bg-hover: #ffffff', '--button-primary-text: var(--on-accent)',
-        '--focus-border: #e4dcd4',
-      ],
-    } as const;
     for (const declaration of expectedThemeByScheme.light) {
       expect(themeLight).toContain(declaration);
     }
@@ -218,13 +203,6 @@ describe('Theme architecture guardrails', () => {
     }
     expect(themeDark).not.toContain('--accent: #c26d3a');
     expect(themeLight).not.toContain('--accent: #d4803f');
-    for (const declaration of expectedSpaceByScheme.light) {
-      expect(spaceLight).toContain(declaration);
-    }
-    for (const declaration of expectedSpaceByScheme.dark) {
-      expect(spaceDark).toContain(declaration);
-    }
-
     const adapters = source('src/renderer/theme/themes/myagents-default.ts');
     const lightWidget = sourceSection(adapters, 'const lightWidgetVariables', 'const darkWidgetVariables');
     const darkWidget = sourceSection(adapters, 'const darkWidgetVariables', 'const light: ThemeSchemeDefinition');
@@ -258,12 +236,10 @@ describe('Theme architecture guardrails', () => {
       /background(?:-color)?\s*:\s*var\(--button-dark-bg\)[^}]*color\s*:\s*var\(--button-primary-text\)/is,
     ];
     const violations = rendererSourceFiles()
-      .filter(file => !file.includes('/pages/space/') && !file.endsWith('/pages/Space.tsx'))
       .filter(file => forbiddenPairs.some(pattern => pattern.test(readFileSync(file, 'utf8'))));
     expect(violations).toEqual([]);
 
     const unvalidatedAccentHoverViolations = rendererSourceFiles()
-      .filter(file => !file.includes('/pages/space/') && !file.endsWith('/pages/Space.tsx'))
       .filter(file => /bg-\[var\(--accent\)\][^'"`]*hover:brightness-/.test(readFileSync(file, 'utf8')));
     expect(unvalidatedAccentHoverViolations).toEqual([]);
 
@@ -280,7 +256,6 @@ describe('Theme architecture guardrails', () => {
 
     const statusNames = ['success', 'error', 'warning', 'info'] as const;
     const statusViolations = rendererSourceFiles()
-      .filter(file => !file.includes('/pages/space/') && !file.endsWith('/pages/Space.tsx'))
       .filter(file => {
         const contents = readFileSync(file, 'utf8');
         return statusNames.some(status => {
@@ -309,6 +284,8 @@ describe('Theme architecture guardrails', () => {
     const settings = source('src/renderer/pages/settings/SettingsPage.tsx');
     expect(settings).toContain('updateConfig({ appearanceMode: mode })');
     expect(settings).toContain('updateConfig({ themeId })');
+    expect(settings).toContain("tSettings('general.themeTitle')");
+    expect(settings).not.toContain("tSettings('about.developer.themeTitle')");
     expect(settings).not.toContain('updateConfig({ theme:');
     expect(settings).not.toContain('colorTheme');
   });

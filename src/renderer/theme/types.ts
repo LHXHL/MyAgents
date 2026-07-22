@@ -81,6 +81,11 @@ export interface ThemeDefinition {
   schemes: Record<ResolvedColorScheme, ThemeSchemeDefinition>;
 }
 
+export interface ThemePreviewSwatches {
+  light: string;
+  dark: string;
+}
+
 export interface ResolvedTheme extends ThemeSelection {
   requestedThemeId: ThemeId;
   resolvedColorScheme: ResolvedColorScheme;

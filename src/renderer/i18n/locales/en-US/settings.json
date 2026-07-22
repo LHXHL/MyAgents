@@ -44,6 +44,9 @@
     "defaultWorkspaceSaved": "Default workspace saved",
     "appearanceModeTitle": "Appearance mode",
     "appearanceModeDescription": "Set the app light and dark appearance mode",
+    "themeTitle": "Theme",
+    "themeDescription": "Switch the app-wide visual theme",
+    "themeSaveFailed": "Failed to switch Theme: {{message}}",
     "appearanceMode": {
       "system": "System",
       "light": "Light",
@@ -1874,9 +1877,6 @@
     "communityQrAlt": "User community QR code",
     "developerSection": "Developer",
     "developer": {
-      "themeTitle": "Theme",
-      "themeDescription": "Switch the app-wide visual theme outside Space for developer evaluation.",
-      "themeSaveFailed": "Failed to switch Theme: {{message}}",
       "devModeTitle": "Developer Mode",
       "devModeDescription": "Show log entry buttons on pages, such as Logs and System Info.",
       "codexProviderTitle": "Codex Subscription Provider",

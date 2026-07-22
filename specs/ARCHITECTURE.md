@@ -820,7 +820,7 @@ Rust 读取归一后的非敏感 disk appearance
 
 浮球 Webview 保持轻量 tree，不挂完整 `ConfigProvider`：先用 snapshot 保证首帧，随后先完成精简事件 listener 注册、再异步读 durable config；hydration 期间收到的 live event 具有更高 freshness，旧磁盘结果不能反向覆盖。`system` 由每个 Webview 的 `useSyncExternalStore(matchMedia)` 订阅；`.dark` 只是 Tailwind 兼容投影，不再是 React consumer 的反向状态源。
 
-Space 的 `[data-ui-theme="space-mono"]` 是明确排除的 scoped visual language：它在自身 scope 冻结当前 canonical visual foundations 并覆盖黑白 action palette，避免切换全局 Theme ID 时继承另一套 paper、文字、字体、圆角或阴影；本 Theme System 不把它注册为 Theme，也不改变 portal scope 传播。
+Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme 的语义 Token；不维护局部 Theme ID、独立 palette 或 portal scope 传播。Space 的布局、业务状态机、三方 Logo、用户内容和纯 alpha 遮罩仍不属于 Theme 身份，但 paper、文字、字体、圆角、阴影、动作色和业务状态色必须随全局 Theme / scheme 原子切换。
 
 详见 `tech_docs/theme_system.md`。
 

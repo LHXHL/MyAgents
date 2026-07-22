@@ -4266,6 +4266,23 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                     value={config.appearanceMode}
                                     onChange={(mode) => { void updateConfig({ appearanceMode: mode }); }}
                                 />
+
+                                <div className="mt-4 flex items-center justify-between gap-4 border-t border-[var(--line)] pt-4">
+                                    <div className="min-w-0 flex-1 pr-4">
+                                        <p className="text-sm font-medium text-[var(--ink)]">{tSettings('general.themeTitle')}</p>
+                                        <p className="mt-0.5 text-xs text-[var(--ink-muted)]">
+                                            {tSettings('general.themeDescription')}
+                                        </p>
+                                    </div>
+                                    <ThemePresetSelect
+                                        value={resolvedTheme.themeId}
+                                        onPersistTheme={(themeId) => updateConfig({ themeId })}
+                                        onPersistError={(error) => {
+                                            const message = error instanceof Error ? error.message : String(error);
+                                            toast.error(tSettings('general.themeSaveFailed', { message }));
+                                        }}
+                                    />
+                                </div>
                             </div>
 
                             {/* Startup Settings */}
@@ -5055,26 +5072,6 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                 <div>
                                     <h2 className="mb-4 text-base font-medium text-[var(--ink-muted)]">{tSettings('about.developerSection')}</h2>
                                     <div className="space-y-4">
-                                        {/* Theme Preset Selector */}
-                                        <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
-                                            <div className="flex items-center justify-between gap-6">
-                                                <div className="min-w-0">
-                                                    <h3 className="text-sm font-medium text-[var(--ink)]">{tSettings('about.developer.themeTitle')}</h3>
-                                                    <p className="mt-1 text-xs text-[var(--ink-muted)]">
-                                                        {tSettings('about.developer.themeDescription')}
-                                                    </p>
-                                                </div>
-                                                <ThemePresetSelect
-                                                    value={resolvedTheme.themeId}
-                                                    onPersistTheme={(themeId) => updateConfig({ themeId })}
-                                                    onPersistError={(error) => {
-                                                        const message = error instanceof Error ? error.message : String(error);
-                                                        toast.error(tSettings('about.developer.themeSaveFailed', { message }));
-                                                    }}
-                                                />
-                                            </div>
-                                        </div>
-
                                         {/* Developer Mode Toggle */}
                                         <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
                                             <div className="flex items-center justify-between">

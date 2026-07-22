@@ -65,6 +65,16 @@ describe('ThemeRegistry', () => {
     expect(themeRegistry.getProductionIds()).not.toContain(SYNTHETIC_THEME_ID);
   });
 
+  it('derives selector swatches from each Theme package primary action tokens', () => {
+    for (const themeId of productionThemeIds) {
+      const swatches = themeRegistry.getPreviewSwatches(themeId);
+      expect(swatches.light, `${themeId}.light`).toMatch(/^#/);
+      expect(swatches.dark, `${themeId}.dark`).toMatch(/^#/);
+    }
+    expect(themeRegistry.getPreviewSwatches('myagents-default').light).toBe('#c26d3a');
+    expect(themeRegistry.getPreviewSwatches('default-black').light).toBe('#111111');
+  });
+
   it('keeps Theme and Appearance orthogonal for every production package', () => {
     for (const themeId of productionThemeIds) {
       const light = themeRegistry.resolve(themeId, 'light', true);

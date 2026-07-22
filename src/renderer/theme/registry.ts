@@ -23,7 +23,7 @@ import {
   selectorListExactlyMatches,
   type ThemeCssBlock,
 } from './stylesheet-contract';
-import type { ResolvedTheme, ThemeDefinition } from './types';
+import type { ResolvedTheme, ThemeDefinition, ThemePreviewSwatches } from './types';
 import { absolutelyThemeManifest } from './themes/absolutely';
 import { codexThemeManifest } from './themes/codex';
 import { defaultBlackThemeManifest } from './themes/default-black';
@@ -335,7 +335,7 @@ function assertPrismStyleValue(value: string, reactProperty: string, path: strin
   assertCssPropertyValue(value, cssPropertyName(reactProperty), path);
 }
 
-function validateStylesheet(definition: ThemeDefinition): void {
+function validateStylesheet(definition: ThemeDefinition): ThemePreviewSwatches {
   assertNonEmptyString(definition.stylesheetText, `${definition.id}.stylesheetText`);
   const { cssText, topLevelBlocks, blocks } = parseThemeStylesheet(definition.stylesheetText);
   if (/@import\b/i.test(decodeCssEscapes(cssText)) || containsRemoteReference(cssText)) {
@@ -376,6 +376,7 @@ function validateStylesheet(definition: ThemeDefinition): void {
   if (hasImportantDeclaration(globalTokens)) {
     throw new Error(`[theme] ${definition.id}: Theme Token declarations must not use !important`);
   }
+  const previewSwatches = {} as ThemePreviewSwatches;
 
   for (const scheme of ['light', 'dark'] as const) {
     const schemeRootSelector = `${themeRootSelector}[data-color-scheme='${scheme}']`;
@@ -403,6 +404,11 @@ function validateStylesheet(definition: ThemeDefinition): void {
     if (missingTokens.length > 0) {
       throw new Error(`[theme] ${definition.id}.${scheme}: stylesheet missing CSS tokens: ${missingTokens.join(', ')}`);
     }
+    const primary = resolveTokenValue(effectiveTokens, '--button-primary-bg');
+    if (primary === null || !isLiteralCssColor(primary)) {
+      throw new Error(`[theme] ${definition.id}.${scheme}: preview primary color is invalid`);
+    }
+    previewSwatches[scheme] = primary;
   }
 
   for (const className of ['.theme-launcher-hero-title', '.theme-launcher-hero-slogan']) {
@@ -420,16 +426,17 @@ function validateStylesheet(definition: ThemeDefinition): void {
       throw new Error(`[theme] ${definition.id}: stylesheet missing Hero selector ${className}`);
     }
   }
+  return previewSwatches;
 }
 
-export function validateThemeDefinition(definition: ThemeDefinition): ThemeDefinition {
+function validateThemePackage(definition: ThemeDefinition): ThemePreviewSwatches {
   if (!definition.id || !definition.id.trim()) throw new Error('[theme] Theme ID is required');
   if (!/^[a-z0-9][a-z0-9-]*$/.test(definition.id)) {
     throw new Error(`[theme] Invalid Theme ID: ${definition.id}`);
   }
   if (!definition.displayName.trim()) throw new Error(`[theme] ${definition.id}: displayName is required`);
   if (!definition.description.trim()) throw new Error(`[theme] ${definition.id}: description is required`);
-  validateStylesheet(definition);
+  const previewSwatches = validateStylesheet(definition);
 
   assertRecord(definition.hero, `${definition.id}.hero`);
   if (!definition.hero.productName.trim()) throw new Error(`[theme] ${definition.id}: Hero productName is required`);
@@ -584,11 +591,17 @@ export function validateThemeDefinition(definition: ThemeDefinition): ThemeDefin
     }
   }
 
+  return previewSwatches;
+}
+
+export function validateThemeDefinition(definition: ThemeDefinition): ThemeDefinition {
+  validateThemePackage(definition);
   return definition;
 }
 
 export class ThemeRegistry {
   private readonly definitions = new Map<string, ThemeDefinition>();
+  private readonly previewSwatches = new Map<string, ThemePreviewSwatches>();
   private readonly warnedUnknownIds = new Set<string>();
 
   constructor(
@@ -634,9 +647,10 @@ export class ThemeRegistry {
   }
 
   register(definition: ThemeDefinition): void {
-    validateThemeDefinition(definition);
+    const previewSwatches = validateThemePackage(definition);
     if (this.definitions.has(definition.id)) throw new Error(`[theme] Duplicate Theme ID: ${definition.id}`);
     this.definitions.set(definition.id, definition);
+    this.previewSwatches.set(definition.id, previewSwatches);
   }
 
   getProductionIds(): readonly string[] {
@@ -646,6 +660,10 @@ export class ThemeRegistry {
   /** Accepted, validated packages in product order. */
   getAcceptedDefinitions(): readonly ThemeDefinition[] {
     return [...this.definitions.values()];
+  }
+
+  getPreviewSwatches(themeId: string): ThemePreviewSwatches {
+    return this.previewSwatches.get(themeId) ?? this.previewSwatches.get(DEFAULT_THEME_ID)!;
   }
 
   resolve(requestedThemeId: unknown, appearanceMode: unknown, systemPrefersDark: boolean): ResolvedTheme {

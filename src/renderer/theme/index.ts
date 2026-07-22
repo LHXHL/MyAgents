@@ -45,6 +45,7 @@ export type {
   ThemeDefinition,
   ThemeHeroBackground,
   ThemeHeroDefinition,
+  ThemePreviewSwatches,
   ThemeRuntimeSelection,
   ThemeSchemeDefinition,
   WidgetThemeAdapter,

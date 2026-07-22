@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.7.6
+> **Version**: 2.7.7
 > **Last Updated**: 2026-07-22
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -43,11 +43,11 @@ fallback；它的物理 owner 是：
 - `default-black` 是受控的 Baseline A/B：完整复制 canonical host Token，只将 light
   `button-primary-bg/hover` 改为中性黑；dark、Hero 与五类 embedded adapter 与 Default 保持同源，
   并由测试锁定除此配对外不得漂移；
-- `src/renderer/index.css`：与品牌视觉无关的布局、交互、七档 Type Scale、不携带视觉值的 Tailwind runtime Token 编译桥，以及 Space 的独立 scoped override。
+- `src/renderer/index.css`：与品牌视觉无关的布局、交互、七档 Type Scale，以及不携带视觉值的 Tailwind runtime Token 编译桥。
 
 组件只消费语义 Token 或 `useResolvedTheme()` adapter，不持有 light/dark palette，不观察 `.dark` 反推状态。Widget adapter 必须提供 iframe 可直接使用的 literal，不能引用宿主 `var(...)`。完整 Theme 不允许让用户混搭颜色、字体、背景等零件；某 Theme 缺项时整套回退 canonical default。
 
-可主题化：宿主色彩/字体/材质、Launcher Hero 两行内容和可选 bundled 背景、语法/图表/终端/编辑器/Widget iframe、Floating Ball。非主题化：布局与信息架构、业务状态机、原生窗口按钮、Browser 子 Webview 网页、用户内容、三方品牌 Logo/二维码、宠物 spritesheet。Space 的 `space-mono` 是独立 surface，本期不纳入应用 Theme；它在自身 scope 冻结当前 paper、文字、状态、字体、圆角与阴影基础并保留黑白 action palette，避免被全局 Theme ID 被动换肤。
+可主题化：宿主与 Space 的色彩/字体/材质、Launcher Hero 两行内容和可选 bundled 背景、语法/图表/终端/编辑器/Widget iframe、Floating Ball。非主题化：布局与信息架构、业务状态机、原生窗口按钮、Browser 子 Webview 网页、用户内容、三方品牌 Logo/二维码、宠物 spritesheet。Space 不维护第二套 palette；其 paper、文字、圆角、阴影、动作色与业务状态色直接继承当前全局 Theme。
 
 八套 Theme 的产品顺序和动作语义：
 
@@ -1409,6 +1409,8 @@ Hover 操作:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.7.8 | 2026-07-22 | **Theme 入口公开与配色速览**：Theme 选择器从隐藏开发者区迁到“通用设置 → 界面外观”末尾；下拉触发器与选项以两枚 16px 色块展示 package 的 light/dark Primary，颜色由 Registry 从 Theme CSS 派生，不在组件维护第二份 palette |
+| 2.7.7 | 2026-07-22 | **Space 接入全局 Theme**：删除 `space-mono` 局部 palette 与 Popover portal scope 传播；Space 的 paper、文字、字体、圆角、阴影、动作色和状态色直接继承当前 Theme，同时保留布局、业务状态机、Logo、用户内容和纯 alpha 遮罩边界 |
 | 2.7.6 | 2026-07-22 | **Theme 候选收敛与菜单扁平化**：移除 Ink、Fjord、Ochre、Mauve、Wisteria，production catalog 收敛为 8 套；开发者 Theme 下拉取消分组标题并直接按 Registry 产品顺序展示；所有保留 Theme 的夜间 Switch 使用白色 thumb |
 | 2.7.5 | 2026-07-22 | **夜间实底控件反差校准**：所有深色 Primary 在 dark scheme 使用同色相校深 surface 与白色前景，正常/hover 均不低于 4.5:1；Ink 浅色 Primary 保留深色前景；canonical、Sage、Absolutely、Linear、Proof、Codex、Raycast 深色 Switch 使用白色 thumb，其余预设保留深色 thumb |
 | 2.7.4 | 2026-07-22 | **Primary CTA 语义收口**：Launcher 对话发送、想法记录与 Task Editor 提交统一消费 `--button-primary-*`；Accent 保留给 Toggle、选中、Focus、链接与进行状态，使 Default Black 只改写主动作而不污染其他强调表面 |

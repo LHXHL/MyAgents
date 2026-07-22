@@ -120,14 +120,16 @@ Token 组：
 - Floating Ball 全部 `--fb-*`；
 - Launcher Hero title/slogan selector。
 
-`index.css` 只保留 Type Scale、布局/交互结构、使用语义 Token 的通用 selector、明确排除的 Space scope，以及一个不携带视觉值的 Tailwind v4 `@theme inline` 编译桥。该桥把 `font-sans/mono`、`rounded*`、`shadow*`和 `duration-*` utility 映射到当前 Theme 的 runtime Token；Theme package **禁止**声明 raw `@theme`，因为 runtime 注入的 CSS 不再经 Tailwind 编译，会让 utility 静默退回 framework default。新增会随完整 Theme 改变的颜色、字体、材质、阴影或圆角，必须先进入 Theme contract/default package，再按需要扩展无值桥接，不能落回组件常量。
+`index.css` 只保留 Type Scale、布局/交互结构、使用语义 Token 的通用 selector，以及一个不携带视觉值的 Tailwind v4 `@theme inline` 编译桥。该桥把 `font-sans/mono`、`rounded*`、`shadow*`和 `duration-*` utility 映射到当前 Theme 的 runtime Token；Theme package **禁止**声明 raw `@theme`，因为 runtime 注入的 CSS 不再经 Tailwind 编译，会让 utility 静默退回 framework default。新增会随完整 Theme 改变的颜色、字体、材质、阴影或圆角，必须先进入 Theme contract/default package，再按需要扩展无值桥接，不能落回组件常量。
 
 ## 5. Runtime 与首帧
 
-### 5.0 开发者选择入口
+### 5.0 设置选择入口
 
-隐藏开发者 Section 的 Theme `CustomSelect` 从 `themeRegistry.getAcceptedDefinitions()` 读取实际已
-校验列表，分组元数据只负责 Baseline / Original / Community / References 的 separator。选择时只
+公开的“设置 → 通用设置 → 界面外观”卡片末尾提供 Theme `CustomSelect`。它从
+`themeRegistry.getAcceptedDefinitions()` 读取实际已校验列表，并直接按 Registry 产品顺序显示为
+单层列表。每个选项右侧的两枚色块分别展示 light/dark `--button-primary-bg`；颜色由 Registry 从
+Theme package stylesheet 解析，不在 Settings 维护第二份 palette。选择时只
 调用 `ConfigProvider.updateConfig({ themeId })`；控件显示 `ResolvedTheme.themeId`，所以未知配置和
 无效 optional package 会显示 canonical fallback。写盘失败不做 optimistic selection，并使用 Settings
 toast 报错。`appearanceMode` 由公开外观控件独立写入。
@@ -203,7 +205,7 @@ default + system，不能阻断窗口创建。
 | Surface | 正确消费方式 | 切换约束 |
 |---|---|---|
 | Launcher | `ResolvedTheme.hero` + Theme CSS selector | 不硬编码产品名/slogan；背景不改变布局 |
-| CSS host / Floating Ball | root semantic Token | `.dark` 不是状态源 |
+| CSS host / Space / Floating Ball | root semantic Token | `.dark` 不是状态源；Space 不建立局部 Theme scope |
 | xterm | `adapters.xterm` | 原位改 options；字体 family/size/lineHeight 变化后复用唯一 fit-and-resize owner 重算 cols/rows 并同步现有 PTY；split 首次展示/变宽以 ResizeObserver 的 geometry quiet window 判稳后再创建或 resize PTY，不复制 Theme-owned transition duration；不重建 Terminal/PTY/buffer |
 | Monaco | `adapters.monaco` | define 冲突安全名称并 `setTheme`；不换 model/editor |
 | Mermaid | `adapters.mermaid` | Theme key 变化重渲染；保留 strict/timeout/last-valid |
@@ -212,7 +214,7 @@ default + system，不能阻断窗口创建。
 
 ## 7. Space 与非 Theme 内容
 
-Space 的 `[data-ui-theme="space-mono"]` / `.dark [data-ui-theme="space-mono"]` 和 Popover portal scope 保持独立，不进入 registry、required Token 验收或 synthetic Theme 贯通。该 scope 冻结当前 canonical paper、文字、状态、字体、圆角与阴影基础，再覆盖 Space 自己的黑白 action palette；因此同一 resolved scheme 下切换全局 Theme 不会改变 Space computed visual。这里的冻结值是 Space 当前独立 visual language 的 snapshot，不是 default Theme 的运行时继承，也不代表 Space 已接入 Theme Registry。搬动 root Token 时必须做 light/dark sanity。
+Space 是全局 Theme 的标准 CSS host surface：组件直接消费 root semantic Token，Popover portal 也自然从 `<html>` 继承同一套值。不得为 Space 添加局部 Theme ID、独立 palette、Theme 映射表或逐字段 fallback。切换 Theme / scheme 时，Space 的 paper、文字、字体、圆角、阴影、动作色与 success/error/warning/info 状态组必须原子变化；布局、信息架构和业务状态机保持不变。
 
 全量视觉字面量审计中的合法非 Theme 类别：
 
@@ -231,7 +233,7 @@ Space 的 `[data-ui-theme="space-mono"]` / `.dark [data-ui-theme="space-mono"]` 
 4. 提供 Hero 两种语言、两个 scheme 的 self/bundled 背景槽与全部五类 adapter；Widget variable 全部给 iframe-ready literal，禁止宿主 `var(...)`。
 5. 只在 production registry 注册 definition；consumer 不做任何 Theme ID 分支。
 6. 补 registry DOM contract、runtime DOM 与所有 adapter component tests；新增 utility 桥接时同步扩展 production generated-CSS 契约校验。
-7. 跑 light/dark 全场景视觉矩阵、system 冷启动、主/浮窗 live update、Space sanity。
+7. 跑 light/dark 全场景视觉矩阵、system 冷启动、主/浮窗 live update，以及 Space 登录、导航、列表、详情和弹层场景。
 8. 在 macOS WebKit 与 Windows WebView2 实测字体、透明窗、Monaco/xterm。
 9. 确认 production bundle 没有 test fixture/asset，CSP/asset scope 未扩大。
 
