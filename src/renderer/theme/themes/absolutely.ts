@@ -3,7 +3,7 @@ import type { PresetThemeManifest } from './preset-theme';
 
 export const absolutelyThemeManifest = {
   id: 'absolutely',
-  displayName: 'Absolutely',
-  description: 'Codex-inspired terracotta with soft neutral surfaces',
+  displayName: 'Claude',
+  description: 'Claude-inspired terracotta with soft neutral surfaces',
   stylesheetText,
 } satisfies PresetThemeManifest;

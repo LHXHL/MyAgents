@@ -28,7 +28,7 @@ describe('pre-React Theme bootstrap', () => {
     localStorage.setItem('myagents:theme-bootstrap', '{');
     runBootstrap();
 
-    expect(document.documentElement.dataset.themeId).toBe('myagents-default');
+    expect(document.documentElement.dataset.themeId).toBe('default-black');
     expect(document.documentElement.dataset.colorScheme).toBe('dark');
     expect(document.documentElement).toHaveClass('dark');
     expect(document.documentElement.style.colorScheme).toBe('dark');
@@ -40,7 +40,7 @@ describe('pre-React Theme bootstrap', () => {
     });
     runBootstrap();
 
-    expect(document.documentElement.dataset.themeId).toBe('myagents-default');
+    expect(document.documentElement.dataset.themeId).toBe('default-black');
     expect(document.documentElement.dataset.colorScheme).toBe('dark');
   });
 
@@ -55,5 +55,18 @@ describe('pre-React Theme bootstrap', () => {
     expect(document.documentElement.dataset.themeId).toBe('future-partner-theme');
     expect(document.documentElement.dataset.colorScheme).toBe('light');
     expect(document.documentElement).not.toHaveClass('dark');
+  });
+
+  it('uses the current product default when the snapshot is not an explicit choice', () => {
+    localStorage.setItem('myagents:theme-bootstrap', JSON.stringify({
+      version: 2,
+      themeId: 'myagents-default',
+      appearanceMode: 'light',
+      themeSelectionExplicit: false,
+    }));
+    runBootstrap();
+
+    expect(document.documentElement.dataset.themeId).toBe('default-black');
+    expect(document.documentElement.dataset.colorScheme).toBe('light');
   });
 });

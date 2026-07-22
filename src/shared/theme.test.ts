@@ -22,6 +22,7 @@ describe('Theme selection semantics', () => {
   it.each(['light', 'dark', 'system'] as const)('migrates legacy theme=%s without loss', (legacyMode) => {
     expect(normalizeThemeConfigRecord({ theme: legacyMode, untouched: 42 })).toEqual({
       themeId: DEFAULT_THEME_ID,
+      themeSelectionExplicit: false,
       appearanceMode: legacyMode,
       untouched: 42,
     });
@@ -31,9 +32,11 @@ describe('Theme selection semantics', () => {
     expect(normalizeThemeConfigRecord({
       theme: 'dark',
       themeId: 'partner-theme',
+      themeSelectionExplicit: true,
       appearanceMode: 'light',
     })).toEqual({
       themeId: 'partner-theme',
+      themeSelectionExplicit: true,
       appearanceMode: 'light',
     });
   });
@@ -41,7 +44,25 @@ describe('Theme selection semantics', () => {
   it('normalizes malformed selection fields without discarding an unknown non-empty Theme ID', () => {
     expect(normalizeThemeConfigRecord({ theme: 'sepia', appearanceMode: 1, themeId: ' future-theme ' })).toEqual({
       themeId: 'future-theme',
+      themeSelectionExplicit: true,
       appearanceMode: DEFAULT_APPEARANCE_MODE,
+    });
+  });
+
+  it('migrates the historical materialized canonical ID back to product-default tracking', () => {
+    expect(normalizeThemeConfigRecord({ themeId: 'myagents-default' })).toMatchObject({
+      themeId: DEFAULT_THEME_ID,
+      themeSelectionExplicit: false,
+    });
+  });
+
+  it('preserves an explicitly selected canonical Theme', () => {
+    expect(normalizeThemeConfigRecord({
+      themeId: 'myagents-default',
+      themeSelectionExplicit: true,
+    })).toMatchObject({
+      themeId: 'myagents-default',
+      themeSelectionExplicit: true,
     });
   });
 

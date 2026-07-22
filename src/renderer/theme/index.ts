@@ -1,4 +1,5 @@
 export {
+  CANONICAL_THEME_ID,
   DEFAULT_APPEARANCE_MODE,
   DEFAULT_THEME_ID,
   normalizeAppearanceMode,
@@ -9,6 +10,7 @@ export {
 export type {
   AppearanceMode,
   ResolvedColorScheme,
+  ThemeConfigSelection,
   ThemeId,
   ThemeSelection,
 } from '../../shared/theme';

@@ -283,10 +283,20 @@ describe('Theme architecture guardrails', () => {
   it('keeps Settings on the disk-first Theme and appearance write paths', () => {
     const settings = source('src/renderer/pages/settings/SettingsPage.tsx');
     expect(settings).toContain('updateConfig({ appearanceMode: mode })');
-    expect(settings).toContain('updateConfig({ themeId })');
+    expect(settings).toContain('themeSelectionExplicit: true');
     expect(settings).toContain("tSettings('general.themeTitle')");
     expect(settings).not.toContain("tSettings('about.developer.themeTitle')");
     expect(settings).not.toContain('updateConfig({ theme:');
     expect(settings).not.toContain('colorTheme');
+  });
+
+  it('keeps product default selection separate from canonical fallback', () => {
+    const sharedTheme = source('src/shared/theme.ts');
+    const registry = source('src/renderer/theme/registry.ts');
+    expect(sharedTheme).toContain("CANONICAL_THEME_ID = 'myagents-default'");
+    expect(sharedTheme).toContain("DEFAULT_THEME_ID = 'default-black'");
+    expect(sharedTheme).toContain('themeSelectionExplicit');
+    expect(registry).toContain('this.definitions.get(CANONICAL_THEME_ID)');
+    expect(source('src/renderer/theme/bootstrap.ts')).toContain('THEME_BOOTSTRAP_VERSION = 2');
   });
 });

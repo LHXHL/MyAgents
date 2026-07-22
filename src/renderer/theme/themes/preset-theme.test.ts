@@ -72,7 +72,7 @@ describe('preset Theme construction', () => {
       if (!style.color?.startsWith('#')) continue;
       expect(
         contrast(style.color, '#2d2d2b'),
-        `Absolutely light Prism ${selector}`,
+        `Claude light Prism ${selector}`,
       ).toBeGreaterThanOrEqual(4.5);
     }
   });

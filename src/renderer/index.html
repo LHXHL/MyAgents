@@ -9,7 +9,7 @@
     <script>
       (function () {
         var root = document.documentElement;
-        var themeId = 'myagents-default';
+        var themeId = 'default-black';
         var appearanceMode = 'system';
         function applySelection(id, mode) {
           var systemDark = false;
@@ -30,8 +30,12 @@
           var raw = localStorage.getItem('myagents:theme-bootstrap');
           if (raw) {
             var snapshot = JSON.parse(raw);
-            if (snapshot && snapshot.version === 1) {
-              if (typeof snapshot.themeId === 'string' && snapshot.themeId.trim()) themeId = snapshot.themeId.trim();
+            if (snapshot && (snapshot.version === 1 || snapshot.version === 2)) {
+              var storedThemeId = typeof snapshot.themeId === 'string' ? snapshot.themeId.trim() : '';
+              var explicitTheme = snapshot.version === 2
+                ? snapshot.themeSelectionExplicit === true
+                : storedThemeId !== '' && storedThemeId !== 'myagents-default';
+              if (explicitTheme && storedThemeId) themeId = storedThemeId;
               if (snapshot.appearanceMode === 'light' || snapshot.appearanceMode === 'dark' || snapshot.appearanceMode === 'system') {
                 appearanceMode = snapshot.appearanceMode;
               }

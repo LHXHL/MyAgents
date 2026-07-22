@@ -5,7 +5,8 @@
     const runId = __MYAGENTS_BOOTSTRAP_RUN_ID__;
     if (localStorage.getItem(runKey) === runId) return;
 
-    let themeId = 'myagents-default';
+    let themeId = 'default-black';
+    let themeSelectionExplicit = false;
     const raw = localStorage.getItem(key);
 
     if (raw) {
@@ -13,11 +14,15 @@
         const snapshot = JSON.parse(raw);
         if (
           snapshot
-          && snapshot.version === 1
-          && typeof snapshot.themeId === 'string'
-          && snapshot.themeId.trim()
+          && (snapshot.version === 1 || snapshot.version === 2)
         ) {
-          themeId = snapshot.themeId.trim();
+          const storedThemeId = typeof snapshot.themeId === 'string'
+            ? snapshot.themeId.trim()
+            : '';
+          themeSelectionExplicit = snapshot.version === 2
+            ? snapshot.themeSelectionExplicit === true && storedThemeId !== ''
+            : storedThemeId !== '' && storedThemeId !== 'myagents-default';
+          if (themeSelectionExplicit) themeId = storedThemeId;
         }
       } catch {
         // A damaged snapshot must not prevent durable appearance alignment.
@@ -25,9 +30,10 @@
     }
 
     localStorage.setItem(key, JSON.stringify({
-      version: 1,
+      version: 2,
       themeId,
       appearanceMode: __MYAGENTS_APPEARANCE_MODE__,
+      themeSelectionExplicit,
     }));
     // initialization_script runs again on reload. Mark this native process
     // only after the snapshot write succeeds, so a reload cannot overwrite a

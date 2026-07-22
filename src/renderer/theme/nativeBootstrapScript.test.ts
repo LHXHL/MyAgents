@@ -39,15 +39,16 @@ function readSnapshot(storage: MemoryStorage): Record<string, unknown> {
 }
 
 describe('native Theme bootstrap script', () => {
-  it('uses canonical Theme and durable appearance when no snapshot exists', () => {
+  it('uses the current product default and durable appearance when no snapshot exists', () => {
     const storage = new MemoryStorage();
 
     executeScript(storage, 'dark');
 
     expect(readSnapshot(storage)).toEqual({
-      version: 1,
-      themeId: 'myagents-default',
+      version: 2,
+      themeId: 'default-black',
       appearanceMode: 'dark',
+      themeSelectionExplicit: false,
     });
   });
 
@@ -62,9 +63,10 @@ describe('native Theme bootstrap script', () => {
     executeScript(storage, 'system');
 
     expect(readSnapshot(storage)).toEqual({
-      version: 1,
+      version: 2,
       themeId: 'registered-partner-theme',
       appearanceMode: 'system',
+      themeSelectionExplicit: true,
     });
   });
 
@@ -76,11 +78,31 @@ describe('native Theme bootstrap script', () => {
     executeScript(storage, 'dark');
 
     expect(readSnapshot(storage)).toEqual({
-      version: 1,
-      themeId: 'myagents-default',
+      version: 2,
+      themeId: 'default-black',
       appearanceMode: 'dark',
+      themeSelectionExplicit: false,
     });
     expect(storage.getItem('theme')).toBeNull();
+  });
+
+  it('does not let an implicit snapshot pin a previous product default', () => {
+    const storage = new MemoryStorage();
+    storage.setItem(BOOTSTRAP_KEY, JSON.stringify({
+      version: 2,
+      themeId: 'myagents-default',
+      appearanceMode: 'light',
+      themeSelectionExplicit: false,
+    }));
+
+    executeScript(storage, 'system');
+
+    expect(readSnapshot(storage)).toEqual({
+      version: 2,
+      themeId: 'default-black',
+      appearanceMode: 'system',
+      themeSelectionExplicit: false,
+    });
   });
 
   it('does not let a reload restore stale process-start appearance', () => {
@@ -89,24 +111,27 @@ describe('native Theme bootstrap script', () => {
 
     // ThemeRuntime publishes a newer selection before AppErrorBoundary reloads.
     storage.setItem(BOOTSTRAP_KEY, JSON.stringify({
-      version: 1,
+      version: 2,
       themeId: 'registered-partner-theme',
       appearanceMode: 'dark',
+      themeSelectionExplicit: true,
     }));
     executeScript(storage, 'light', 'native-run-1');
 
     expect(readSnapshot(storage)).toEqual({
-      version: 1,
+      version: 2,
       themeId: 'registered-partner-theme',
       appearanceMode: 'dark',
+      themeSelectionExplicit: true,
     });
 
     // A new native process gets a new run ID and must align from disk again.
     executeScript(storage, 'system', 'native-run-2');
     expect(readSnapshot(storage)).toEqual({
-      version: 1,
+      version: 2,
       themeId: 'registered-partner-theme',
       appearanceMode: 'system',
+      themeSelectionExplicit: true,
     });
   });
 });

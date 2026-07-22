@@ -99,11 +99,13 @@ describe('atomicModifyConfig — CONFIG_CHANGED_EVENT dispatch (issue #303)', ()
     }));
 
     expect(result.appearanceMode).toBe(legacyMode);
-    expect(result.themeId).toBe('myagents-default');
+    expect(result.themeId).toBe('default-black');
+    expect(result.themeSelectionExplicit).toBe(false);
     const stored = JSON.parse(localStorage.getItem('myagents:config') ?? '{}') as Record<string, unknown>;
     expect(stored.theme).toBeUndefined();
     expect(stored.appearanceMode).toBe(legacyMode);
-    expect(stored.themeId).toBe('myagents-default');
+    expect(stored.themeId).toBe('default-black');
+    expect(stored.themeSelectionExplicit).toBe(false);
   });
 });
 
@@ -124,7 +126,8 @@ describe('ensureManagedCodexProviderDevGateDefault', () => {
 
     const stored = JSON.parse(localStorage.getItem('myagents:config') ?? '{}') as Record<string, unknown>;
     expect(stored.theme).toBeUndefined();
-    expect(stored.themeId).toBe('myagents-default');
+    expect(stored.themeId).toBe('default-black');
+    expect(stored.themeSelectionExplicit).toBe(false);
     expect(stored.appearanceMode).toBe('dark');
     expect(stored.managedCodexProviderDevGate).toBe(true);
     expect(stored.defaultPermissionMode).toBeUndefined();

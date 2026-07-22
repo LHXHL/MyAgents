@@ -56,13 +56,17 @@ describe('ThemeRegistry', () => {
       'MyAgents Default',
       'Default Black',
       'Sage',
-      'Absolutely',
+      'Claude',
       'Linear',
       'Proof',
       'Codex',
       'Raycast',
     ]);
     expect(themeRegistry.getProductionIds()).not.toContain(SYNTHETIC_THEME_ID);
+  });
+
+  it('resolves an omitted preference to the current product default', () => {
+    expect(themeRegistry.resolve(undefined, 'light', false).themeId).toBe('default-black');
   });
 
   it('derives selector swatches from each Theme package primary action tokens', () => {

@@ -118,8 +118,8 @@ fn theme_bootstrap_script(
     // Theme ID validity is renderer-registry knowledge. Preserve the resolved
     // ID previously published by ThemeRuntime instead of letting an unknown
     // durable ID bypass whole-package fallback on the next pre-React frame.
-    // With no trustworthy snapshot, the canonical production Theme is the
-    // only safe first-frame package.
+    // With no explicit trustworthy snapshot, the compiled product default is
+    // used; canonical CSS still supplies the structural pre-React fallback.
     let appearance_mode = serde_json::to_string(&selection.appearance_mode)
         .unwrap_or_else(|_| "\"system\"".to_owned());
     let run_id = serde_json::to_string(bootstrap_run_id).unwrap_or_else(|_| "\"\"".to_owned());
@@ -1496,8 +1496,8 @@ mod nav_guard_tests {
             },
             "run\");globalThis.pwned=true;//",
         );
-        assert!(script.contains("themeId = snapshot.themeId.trim()"));
-        assert!(script.contains("let themeId = 'myagents-default'"));
+        assert!(script.contains("if (themeSelectionExplicit) themeId = storedThemeId"));
+        assert!(script.contains("let themeId = 'default-black'"));
         assert!(script.contains("appearanceMode: \"dark\""));
         assert!(!script.contains(THEME_BOOTSTRAP_APPEARANCE_MARKER));
         assert!(!script.contains(THEME_BOOTSTRAP_RUN_ID_MARKER));

@@ -108,25 +108,33 @@ export interface ThemeRuntimeProviderProps {
   children: React.ReactNode;
   /** null keeps the pre-React snapshot authoritative until durable config loads. */
   selection: ThemeSelection | null;
+  /** Whether the durable selection was explicitly chosen by the user. */
+  selectionExplicit?: boolean;
   registry?: ThemeRegistry;
   broadcastSelection?: boolean;
+  persistBootstrapSnapshot?: boolean;
   syncNativeWindowBackground?: boolean;
 }
 
 export function ThemeRuntimeProvider({
   children,
   selection,
+  selectionExplicit = true,
   registry = themeRegistry,
   broadcastSelection = false,
+  persistBootstrapSnapshot = true,
   syncNativeWindowBackground = false,
 }: ThemeRuntimeProviderProps) {
-  const [bootstrapSelection] = useState<ThemeSelection>(() => readThemeBootstrapSelection(
+  const [bootstrapSelection] = useState(() => readThemeBootstrapSelection(
     typeof localStorage === 'undefined' ? null : localStorage,
   ));
   const effectiveSelection = useMemo(
     () => normalizeSelection(selection ?? bootstrapSelection),
     [bootstrapSelection, selection],
   );
+  const effectiveSelectionExplicit = selection === null
+    ? bootstrapSelection.themeSelectionExplicit
+    : selectionExplicit;
   const systemPrefersDark = useSyncExternalStore(
     subscribeSystemColorScheme,
     getSystemPrefersDark,
@@ -152,17 +160,24 @@ export function ThemeRuntimeProvider({
   }, [resolvedTheme, syncNativeWindowBackground]);
 
   useEffect(() => {
-    // Only durable config (or a floating window's asynchronously corrected
-    // selection) replaces the bootstrap snapshot. During ConfigProvider load,
-    // selection=null preserves the last-known correct first frame.
-    if (selection === null) return;
+    // Only the durable main-window selection replaces the bootstrap snapshot.
+    // During ConfigProvider load, selection=null preserves the last-known
+    // correct first frame; floating windows must not become config owners.
+    if (selection === null || !persistBootstrapSnapshot) return;
     // Persist the resolved ID, not a missing/unknown requested ID. This makes
     // whole-Theme fallback authoritative on the next pre-React frame too.
     writeThemeBootstrapSnapshot(localStorage, {
       themeId: resolvedTheme.themeId,
       appearanceMode: effectiveSelection.appearanceMode,
+      themeSelectionExplicit: effectiveSelectionExplicit,
     });
-  }, [effectiveSelection.appearanceMode, resolvedTheme.themeId, selection]);
+  }, [
+    effectiveSelection.appearanceMode,
+    effectiveSelectionExplicit,
+    persistBootstrapSnapshot,
+    resolvedTheme.themeId,
+    selection,
+  ]);
 
   useEffect(() => {
     if (!broadcastSelection || selection === null || !isTauriEnvironment()) return;
@@ -186,6 +201,7 @@ export function ConfiguredThemeRuntime({ children }: { children: React.ReactNode
   return (
     <ThemeRuntimeProvider
       selection={selection}
+      selectionExplicit={config.themeSelectionExplicit === true}
       broadcastSelection
       syncNativeWindowBackground
     >
@@ -233,7 +249,11 @@ export function FloatingThemeRuntime({ children }: { children: React.ReactNode }
     };
   }, []);
 
-  return <ThemeRuntimeProvider selection={selection}>{children}</ThemeRuntimeProvider>;
+  return (
+    <ThemeRuntimeProvider selection={selection} persistBootstrapSnapshot={false}>
+      {children}
+    </ThemeRuntimeProvider>
+  );
 }
 
 export function useResolvedTheme(): ResolvedTheme {

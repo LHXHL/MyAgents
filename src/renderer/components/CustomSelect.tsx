@@ -44,6 +44,8 @@ interface CustomSelectProps {
     size?: 'sm' | 'toolbar' | 'md';
     compact?: boolean;
     disabled?: boolean;
+    /** Mirror the selected option's right-aligned suffix in the closed trigger. */
+    showSelectedSuffix?: boolean;
     footerAction?: {
         label: string;
         icon?: ReactNode;
@@ -61,6 +63,7 @@ export default function CustomSelect({
     size = 'sm',
     compact,
     disabled = false,
+    showSelectedSuffix = false,
     footerAction,
 }: CustomSelectProps) {
     const { t } = useTranslation('app');
@@ -107,6 +110,9 @@ export default function CustomSelect({
                         <span className="block truncate">{selectedOption?.label ?? resolvedPlaceholder}</span>
                     )}
                 </span>
+                {showSelectedSuffix && selectedOption?.suffix && (
+                    <span className="shrink-0">{selectedOption.suffix}</span>
+                )}
                 <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)] transition-transform ${isOpen ? 'rotate-180' : ''}`} />
             </button>
             <Popover
@@ -154,14 +160,15 @@ export default function CustomSelect({
                                 {option.icon && (
                                     <span className="shrink-0">{option.icon}</span>
                                 )}
-                                <span className="min-w-0 flex-1">
+                                <span className="min-w-0">
                                     {option.content ?? <span className="block truncate">{option.label}</span>}
                                 </span>
+                                {option.value === value && (
+                                    <Check data-selected-indicator className="h-3 w-3 shrink-0" />
+                                )}
+                                <span className="min-w-0 flex-1" />
                                 {option.suffix && (
                                     <span className="shrink-0">{option.suffix}</span>
-                                )}
-                                {option.value === value && (
-                                    <Check className="h-3 w-3 shrink-0" />
                                 )}
                             </button>
                         )

@@ -30,7 +30,7 @@ MyAgents 是一款 AI Agent 桌面客户端，采用**温暖纸张质感**的设
 
 MyAgents 的视觉由完整 `Theme` 管理；light / dark / system 是 `AppearanceMode`，不是三套 Theme。一套 Theme 必须同时交付并验收 light 与 dark，system 只跟随 OS 解析其中一套。
 
-Production catalog 当前包含八套完整 Theme：MyAgents Default、Default Black、Sage、Absolutely、
+Production catalog 当前包含八套完整 Theme：MyAgents Default、Default Black、Sage、Claude、
 Linear、Proof、Codex、Raycast。`myagents-default` 仍是 canonical
 fallback；它的物理 owner 是：
 
@@ -40,7 +40,7 @@ fallback；它的物理 owner 是：
   显式拥有完整 visual Token，manifest 只用 `?inline` 读取同一份源码，adapter 从这份 CSS 的语义
   色板派生，不复制 canonical 值；构造与 Registry 校验共享语义解析器，不依赖 production minifier
   是否保留属性引号、空白或末尾分号；
-- `default-black` 是受控的 Baseline A/B：完整复制 canonical host Token，只将 light
+- `default-black` 是当前产品默认，也是受控的 Baseline A/B：完整复制 canonical host Token，只将 light
   `button-primary-bg/hover` 改为中性黑；dark、Hero 与五类 embedded adapter 与 Default 保持同源，
   并由测试锁定除此配对外不得漂移；
 - `src/renderer/index.css`：与品牌视觉无关的布局、交互、七档 Type Scale，以及不携带视觉值的 Tailwind runtime Token 编译桥。
@@ -53,9 +53,9 @@ fallback；它的物理 owner 是：
 
 | Theme | 主要视觉角色 |
 |---|---|
-| MyAgents Default / Default Black | 暖纸张、陶土橙；Default Black 只用于对比 light 主按钮的中性黑方案，本章色值表仍只描述 canonical Theme |
+| MyAgents Default / Default Black | 暖纸张、陶土橙；Default Black 是当前产品默认，仅将 light 主按钮改为中性黑，本章色值表仍只描述 canonical Theme |
 | Sage | PR #441 的鼠尾草绿与自然纸面 |
-| Absolutely / Linear / Proof / Codex / Raycast | 陶土橙 / 靛蓝 / 森林绿 / 标准蓝 / 珊瑚红 |
+| Claude / Linear / Proof / Codex / Raycast | 陶土橙 / 靛蓝 / 森林绿 / 标准蓝 / 珊瑚红 |
 
 Primary CTA 必须消费 `--button-primary-*`；Accent 控制 Toggle 启用态、关键选中指示、
 Focus、链接和进行中状态。success/error/warning/info 继续使用各 Theme 自己的业务
@@ -1409,10 +1409,11 @@ Hover 操作:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.7.9 | 2026-07-23 | **产品默认 Theme 与显式选择解耦**：Default Black 成为未选择用户当前跟随的产品默认，`myagents-default` 继续仅承担 canonical fallback；新增显式选择状态，未来调整产品默认不覆盖用户选择；Absolutely 用户可见名改为 Claude；Theme 菜单选中标记移到名称之后、light/dark 色块之前 |
 | 2.7.8 | 2026-07-22 | **Theme 入口公开与配色速览**：Theme 选择器从隐藏开发者区迁到“通用设置 → 界面外观”末尾；下拉触发器与选项以两枚 16px 色块展示 package 的 light/dark Primary，颜色由 Registry 从 Theme CSS 派生，不在组件维护第二份 palette |
 | 2.7.7 | 2026-07-22 | **Space 接入全局 Theme**：删除 `space-mono` 局部 palette 与 Popover portal scope 传播；Space 的 paper、文字、字体、圆角、阴影、动作色和状态色直接继承当前 Theme，同时保留布局、业务状态机、Logo、用户内容和纯 alpha 遮罩边界 |
 | 2.7.6 | 2026-07-22 | **Theme 候选收敛与菜单扁平化**：移除 Ink、Fjord、Ochre、Mauve、Wisteria，production catalog 收敛为 8 套；开发者 Theme 下拉取消分组标题并直接按 Registry 产品顺序展示；所有保留 Theme 的夜间 Switch 使用白色 thumb |
-| 2.7.5 | 2026-07-22 | **夜间实底控件反差校准**：所有深色 Primary 在 dark scheme 使用同色相校深 surface 与白色前景，正常/hover 均不低于 4.5:1；Ink 浅色 Primary 保留深色前景；canonical、Sage、Absolutely、Linear、Proof、Codex、Raycast 深色 Switch 使用白色 thumb，其余预设保留深色 thumb |
+| 2.7.5 | 2026-07-22 | **夜间实底控件反差校准**：所有深色 Primary 在 dark scheme 使用同色相校深 surface 与白色前景，正常/hover 均不低于 4.5:1；Ink 浅色 Primary 保留深色前景；canonical、Sage、Claude、Linear、Proof、Codex、Raycast 深色 Switch 使用白色 thumb，其余预设保留深色 thumb |
 | 2.7.4 | 2026-07-22 | **Primary CTA 语义收口**：Launcher 对话发送、想法记录与 Task Editor 提交统一消费 `--button-primary-*`；Accent 保留给 Toggle、选中、Focus、链接与进行状态，使 Default Black 只改写主动作而不污染其他强调表面 |
 | 2.7.3 | 2026-07-22 | **Default Black Baseline A/B**：新增基于 canonical Default 的受控对比 Theme；仅将 light 主按钮从陶土棕改为中性黑，dark、其余 host Token、Launcher Hero 与 embedded adapters 保持 Default 同源；分组与完整 Token 差异由测试锁定 |
 | 2.7.2 | 2026-07-22 | **Theme 实色控件、代码前景与品牌呈现校正**：顶部 Tab active 底线恢复 2px；浅色预设的 Accent / Primary 实底控件统一改用白色前景与同色相深色 action surface；可选 Theme 的 Prism 普通文本消费 `--code-text`，其余语法色在 adapter 边界校准到深色 `--code-bg`；Settings About 品牌名复用 Launcher 的 Theme-owned Hero title 样式 |

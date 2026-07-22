@@ -743,7 +743,7 @@
           <option value="myagents-default">MyAgents Default</option>
           <option value="default-black">Default Black</option>
           <option value="sage">Sage</option>
-          <option value="absolutely">Absolutely</option>
+          <option value="absolutely">Claude</option>
           <option value="linear">Linear</option>
           <option value="proof">Proof</option>
           <option value="codex">Codex</option>
@@ -967,7 +967,7 @@
         dark: { bg:'#121912', surface:'#1a241a', inset:'#0d120d', user:'#202c20', text:'#dce8d7', text2:'#c6d3c2', muted:'#94a28f', subtle:'#64715f', faint:'#475142', accent:'#7fb184', accentHover:'#6da073', action:'#47754f', actionHover:'#3f6c47', actionText:'#ffffff', onAccent:'#0f150f', cool:'#6cb3a5', glowA:'#213321', glowB:'#17302d', shadow:'0 0 0', texture:.05, success:'#7fb184', successBg:'rgb(127 177 132 / .16)', danger:'#ef6b66', dangerBg:'rgb(239 107 102 / .16)', info:'#77aeb8' }
       },
       absolutely: {
-        label: 'Absolutely',
+        label: 'Claude',
         description: 'Codex 参考 · 陶土暖橙与柔和中性表面',
         radius: 19,
         font: "Inter, 'SF Pro Text', -apple-system, 'PingFang SC', sans-serif",
@@ -1012,7 +1012,7 @@
     const systemScheme = window.matchMedia('(prefers-color-scheme: dark)');
     const storageKey = 'myagents-theme-playground-v1';
 
-    let state = { theme: 'myagents-default', schemeMode: 'light', page: 'launcher' };
+    let state = { theme: 'default-black', schemeMode: 'light', page: 'launcher' };
     try {
       state = { ...state, ...JSON.parse(localStorage.getItem(storageKey) || '{}') };
     } catch { /* Ignore malformed playground-only state. */ }
@@ -1020,7 +1020,7 @@
     if (urlState.has('theme')) state.theme = urlState.get('theme');
     if (urlState.has('scheme')) state.schemeMode = urlState.get('scheme');
     if (urlState.has('page')) state.page = urlState.get('page');
-    if (!themes[state.theme]) state.theme = 'myagents-default';
+    if (!themes[state.theme]) state.theme = 'default-black';
     if (!['system', 'light', 'dark'].includes(state.schemeMode)) state.schemeMode = 'light';
     if (!['launcher', 'chat', 'settings'].includes(state.page)) state.page = 'launcher';
 

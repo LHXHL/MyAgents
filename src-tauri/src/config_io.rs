@@ -45,19 +45,33 @@ fn normalize_theme_fields(config: &mut serde_json::Value) {
         .filter(|value| matches!(*value, "system" | "light" | "dark"));
     let appearance_mode = current_mode.or(legacy_mode).unwrap_or("system").to_owned();
 
-    let theme_id = object
+    let stored_theme_id = object
         .get("themeId")
         .and_then(serde_json::Value::as_str)
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("myagents-default")
-        .to_owned();
+        .map(str::to_owned);
+    let theme_selection_explicit = stored_theme_id.as_ref().is_some_and(|theme_id| {
+        object
+            .get("themeSelectionExplicit")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(theme_id != "myagents-default")
+    });
+    let theme_id = if theme_selection_explicit {
+        stored_theme_id.unwrap_or_else(|| "default-black".to_owned())
+    } else {
+        "default-black".to_owned()
+    };
 
     object.insert(
         "appearanceMode".to_owned(),
         serde_json::Value::String(appearance_mode),
     );
     object.insert("themeId".to_owned(), serde_json::Value::String(theme_id));
+    object.insert(
+        "themeSelectionExplicit".to_owned(),
+        serde_json::Value::Bool(theme_selection_explicit),
+    );
     object.remove("theme");
 }
 
@@ -318,7 +332,8 @@ mod theme_tests {
         assert_eq!(
             config,
             json!({
-                "themeId": "myagents-default",
+                "themeId": "default-black",
+                "themeSelectionExplicit": false,
                 "appearanceMode": "dark",
                 "other": 42
             })
@@ -335,12 +350,22 @@ mod theme_tests {
         normalize_theme_fields(&mut current);
         assert_eq!(current["appearanceMode"], "light");
         assert_eq!(current["themeId"], "partner-theme");
+        assert_eq!(current["themeSelectionExplicit"], true);
         assert!(current.get("theme").is_none());
 
         let mut invalid = json!({ "theme": "sepia", "themeId": "" });
         normalize_theme_fields(&mut invalid);
         assert_eq!(invalid["appearanceMode"], "system");
-        assert_eq!(invalid["themeId"], "myagents-default");
+        assert_eq!(invalid["themeId"], "default-black");
+        assert_eq!(invalid["themeSelectionExplicit"], false);
+
+        let mut explicit_canonical = json!({
+            "themeId": "myagents-default",
+            "themeSelectionExplicit": true
+        });
+        normalize_theme_fields(&mut explicit_canonical);
+        assert_eq!(explicit_canonical["themeId"], "myagents-default");
+        assert_eq!(explicit_canonical["themeSelectionExplicit"], true);
     }
 
     #[test]

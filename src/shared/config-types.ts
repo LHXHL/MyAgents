@@ -762,6 +762,8 @@ export interface AppConfig {
   // UI preferences
   /** Complete visual language selected for the whole application. */
   themeId: ThemeId;
+  /** False means themeId tracks the product DEFAULT_THEME_ID. */
+  themeSelectionExplicit?: boolean;
   /** User preference for resolving the selected Theme's light/dark scheme. */
   appearanceMode: AppearanceMode;
   /** Product UI language. Existing pre-i18n configs missing this field migrate
@@ -1944,6 +1946,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   defaultPermissionMode: 'auto',
   backgroundAgentPermissionMode: 'inherit', // background agents inherit granted perms; nothing wider (#264)
   themeId: DEFAULT_THEME_ID,
+  themeSelectionExplicit: false,
   appearanceMode: DEFAULT_APPEARANCE_MODE,
   uiLanguage: 'system',
   minimizeToTray: true,   // 默认开启最小化到托盘

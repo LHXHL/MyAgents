@@ -1,5 +1,5 @@
 import {
-  DEFAULT_THEME_ID,
+  CANONICAL_THEME_ID,
   normalizeAppearanceMode,
   normalizeThemeId,
   resolveColorScheme,
@@ -64,7 +64,7 @@ function assertStylesheetAtRuleScope(
   definition: ThemeDefinition,
 ): void {
   const themeRootSelector = `html[data-theme-id='${definition.id}']`;
-  const allowedHeroSelectorLists: string[][] = definition.id === DEFAULT_THEME_ID
+  const allowedHeroSelectorLists: string[][] = definition.id === CANONICAL_THEME_ID
     ? [
       ['.theme-launcher-hero-title', `${themeRootSelector} .theme-launcher-hero-title`],
       ['.theme-launcher-hero-slogan', `${themeRootSelector} .theme-launcher-hero-slogan`],
@@ -106,7 +106,7 @@ function assertCanonicalFallbackScope(
 ): void {
   const fallbackBlocks = blocks.filter(block => selectorListContainsExact(block.prelude, fallbackSelector));
   const invalidBlock = fallbackBlocks.find(block => (
-    definition.id !== DEFAULT_THEME_ID
+    definition.id !== CANONICAL_THEME_ID
     || !selectorListExactlyMatches(block.prelude, [fallbackSelector, canonicalSelector])
   ));
   if (invalidBlock) {
@@ -117,7 +117,7 @@ function assertCanonicalFallbackScope(
 function assertStylesheetSelectorScope(blocks: readonly ThemeCssBlock[], definition: ThemeDefinition): void {
   const themeRootSelector = `html[data-theme-id='${definition.id}']`;
   const allowedSelectorLists: string[][] = [];
-  if (definition.id === DEFAULT_THEME_ID) {
+  if (definition.id === CANONICAL_THEME_ID) {
     allowedSelectorLists.push([':root', themeRootSelector]);
     for (const scheme of ['light', 'dark'] as const) {
       allowedSelectorLists.push([
@@ -364,7 +364,7 @@ function validateStylesheet(definition: ThemeDefinition): ThemePreviewSwatches {
   assertStylesheetSelectorScope(blocks, definition);
   assertFlatDeclarationBlocks(blocks, definition);
   assertStylesheetAtRuleScope(topLevelBlocks, definition);
-  const acceptedGlobalSelectorLists = definition.id === DEFAULT_THEME_ID
+  const acceptedGlobalSelectorLists = definition.id === CANONICAL_THEME_ID
     ? [[':root', themeRootSelector]]
     : [[themeRootSelector]];
   const globalTokens = collectDeclaredTokens(collectContractBlocks(
@@ -380,7 +380,7 @@ function validateStylesheet(definition: ThemeDefinition): ThemePreviewSwatches {
 
   for (const scheme of ['light', 'dark'] as const) {
     const schemeRootSelector = `${themeRootSelector}[data-color-scheme='${scheme}']`;
-    const acceptedSchemeSelectorLists = definition.id === DEFAULT_THEME_ID
+    const acceptedSchemeSelectorLists = definition.id === CANONICAL_THEME_ID
       ? [[`html[data-color-scheme='${scheme}']`, schemeRootSelector]]
       : [[schemeRootSelector]];
     const schemeTokens = collectDeclaredTokens(collectContractBlocks(
@@ -413,7 +413,7 @@ function validateStylesheet(definition: ThemeDefinition): ThemePreviewSwatches {
 
   for (const className of ['.theme-launcher-hero-title', '.theme-launcher-hero-slogan']) {
     const heroSelector = `${themeRootSelector} ${className}`;
-    const acceptedHeroSelectorLists = definition.id === DEFAULT_THEME_ID
+    const acceptedHeroSelectorLists = definition.id === CANONICAL_THEME_ID
       ? [[className, heroSelector]]
       : [[heroSelector]];
     const heroBlocks = collectContractBlocks(
@@ -612,7 +612,7 @@ export class ThemeRegistry {
     for (const definition of definitions) {
       if (seenIds.has(definition.id)) throw new Error(`[theme] Duplicate Theme ID: ${definition.id}`);
       seenIds.add(definition.id);
-      if (definition.id === DEFAULT_THEME_ID) {
+      if (definition.id === CANONICAL_THEME_ID) {
         this.register(definition);
         continue;
       }
@@ -641,8 +641,8 @@ export class ThemeRegistry {
         console.warn(`[theme] Rejected invalid Theme package "${factory.id}":`, error);
       }
     }
-    if (!this.definitions.has(DEFAULT_THEME_ID)) {
-      throw new Error(`[theme] Registry must include canonical Theme ${DEFAULT_THEME_ID}`);
+    if (!this.definitions.has(CANONICAL_THEME_ID)) {
+      throw new Error(`[theme] Registry must include canonical Theme ${CANONICAL_THEME_ID}`);
     }
   }
 
@@ -663,16 +663,16 @@ export class ThemeRegistry {
   }
 
   getPreviewSwatches(themeId: string): ThemePreviewSwatches {
-    return this.previewSwatches.get(themeId) ?? this.previewSwatches.get(DEFAULT_THEME_ID)!;
+    return this.previewSwatches.get(themeId) ?? this.previewSwatches.get(CANONICAL_THEME_ID)!;
   }
 
   resolve(requestedThemeId: unknown, appearanceMode: unknown, systemPrefersDark: boolean): ResolvedTheme {
     const normalizedRequestedId = normalizeThemeId(requestedThemeId);
     const normalizedAppearanceMode: AppearanceMode = normalizeAppearanceMode(appearanceMode);
-    const definition = this.definitions.get(normalizedRequestedId) ?? this.definitions.get(DEFAULT_THEME_ID)!;
+    const definition = this.definitions.get(normalizedRequestedId) ?? this.definitions.get(CANONICAL_THEME_ID)!;
     if (definition.id !== normalizedRequestedId && !this.warnedUnknownIds.has(normalizedRequestedId)) {
       this.warnedUnknownIds.add(normalizedRequestedId);
-      console.warn(`[theme] Unknown Theme ID "${normalizedRequestedId}"; using ${DEFAULT_THEME_ID}`);
+      console.warn(`[theme] Unknown Theme ID "${normalizedRequestedId}"; using ${CANONICAL_THEME_ID}`);
     }
     const resolvedColorScheme = resolveColorScheme(normalizedAppearanceMode, systemPrefersDark);
     return {

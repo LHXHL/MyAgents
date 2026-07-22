@@ -10,25 +10,33 @@ describe('ThemePresetSelect', () => {
     const onPersistTheme = vi.fn().mockResolvedValue(undefined);
     render(
       <ThemePresetSelect
-        value="myagents-default"
+        value="default-black"
         onPersistTheme={onPersistTheme}
         onPersistError={vi.fn()}
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /MyAgents Default/ }));
-    expect(screen.getByRole('button', { name: 'Default Black' })).toBeInTheDocument();
+    const trigger = screen.getByRole('button', { name: /Default Black/ });
+    fireEvent.click(trigger);
+    const defaultBlackOption = screen.getAllByRole('button', { name: 'Default Black' })
+      .find(candidate => candidate !== trigger);
+    expect(defaultBlackOption).toBeDefined();
     expect(screen.getByRole('button', { name: 'Sage' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Claude' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Absolutely' })).not.toBeInTheDocument();
     expect(screen.queryByText('基准')).not.toBeInTheDocument();
     expect(screen.queryByText('社区 · PR #441')).not.toBeInTheDocument();
     expect(screen.getAllByRole('button')).toHaveLength(themeRegistry.getProductionIds().length + 1);
 
-    const defaultBlackOption = screen.getByRole('button', { name: 'Default Black' });
-    const swatchGroup = defaultBlackOption.querySelector('[aria-hidden="true"]');
+    const swatchGroup = defaultBlackOption?.querySelector('span[aria-hidden="true"]');
     expect(swatchGroup).not.toBeNull();
     expect(swatchGroup?.children).toHaveLength(2);
     expect(swatchGroup?.children[0]).toHaveStyle({ backgroundColor: '#111111' });
-    expect(within(defaultBlackOption).getByText('Default Black')).toBeInTheDocument();
+    const label = within(defaultBlackOption!).getByText('Default Black');
+    const indicator = defaultBlackOption?.querySelector('[data-selected-indicator]');
+    expect(indicator).not.toBeNull();
+    expect(label.compareDocumentPosition(indicator!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(indicator!.compareDocumentPosition(swatchGroup!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Raycast' }));

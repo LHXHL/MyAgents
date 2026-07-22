@@ -20,19 +20,17 @@ export function ThemePresetSelect({
     return {
       value: definition.id,
       label: definition.displayName,
-      content: (
-        <span className="flex min-w-0 items-center justify-between gap-3">
-          <span className="truncate">{definition.displayName}</span>
-          <span aria-hidden="true" className="flex shrink-0 gap-1">
-            <span
-              className="h-4 w-4 rounded-sm border border-[var(--line)] shadow-sm"
-              style={{ backgroundColor: swatches.light }}
-            />
-            <span
-              className="h-4 w-4 rounded-sm border border-[var(--line)] shadow-sm"
-              style={{ backgroundColor: swatches.dark }}
-            />
-          </span>
+      content: <span className="block truncate">{definition.displayName}</span>,
+      suffix: (
+        <span aria-hidden="true" className="flex shrink-0 gap-1">
+          <span
+            className="h-4 w-4 rounded-sm border border-[var(--line)] shadow-sm"
+            style={{ backgroundColor: swatches.light }}
+          />
+          <span
+            className="h-4 w-4 rounded-sm border border-[var(--line)] shadow-sm"
+            style={{ backgroundColor: swatches.dark }}
+          />
         </span>
       ),
     };
@@ -52,6 +50,7 @@ export function ThemePresetSelect({
       options={options}
       onChange={persistTheme}
       disabled={isSaving}
+      showSelectedSuffix
       size="md"
       className="w-56 shrink-0"
     />

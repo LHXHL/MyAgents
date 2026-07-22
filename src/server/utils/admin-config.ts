@@ -118,6 +118,7 @@ export class ProjectsBusyError extends Error {
 /** Lightweight AppConfig subset used by admin operations */
 export interface AdminAppConfig {
   themeId?: string;
+  themeSelectionExplicit?: boolean;
   appearanceMode?: 'system' | 'light' | 'dark';
   // MCP
   mcpServers?: McpServerDefinition[];
@@ -202,7 +203,7 @@ export interface ProjectSlim {
 export function loadConfig(): AdminAppConfig {
   const configPath = getConfigPath();
   if (!existsSync(configPath)) {
-    return normalizeThemeConfigRecord({}) as AdminAppConfig;
+    return normalizeThemeConfigRecord({}) as unknown as AdminAppConfig;
   }
   try {
     const raw = readFileSync(configPath, 'utf-8');
@@ -228,7 +229,7 @@ export function loadConfig(): AdminAppConfig {
       } catch { /* bak also corrupt */ }
     }
     console.error('[admin-config] config.json and .bak both unreadable, returning empty config');
-    return normalizeThemeConfigRecord({}) as AdminAppConfig;
+    return normalizeThemeConfigRecord({}) as unknown as AdminAppConfig;
   }
 }
 

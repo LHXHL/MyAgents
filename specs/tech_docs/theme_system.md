@@ -13,7 +13,7 @@
 | 已解析明暗 | `ResolvedColorScheme` | 每个 Webview 的 Theme runtime | 当前实际使用的 `light / dark` |
 
 Production registry 按产品顺序注册八套完整 Theme：`myagents-default`、`default-black`、`sage`、
-`absolutely`、`linear`、`proof`、`codex`、`raycast`。
+`absolutely`（用户可见名 `Claude`）、`linear`、`proof`、`codex`、`raycast`。
 不得把 light/dark 拆成两个 Theme，也不得重新用 `theme` 字段表达 appearance。
 
 目录：
@@ -41,6 +41,7 @@ src/renderer/theme/themes/preset-theme.ts     derives complete adapters from eac
 ```ts
 interface AppConfig {
   themeId: string;
+  themeSelectionExplicit?: boolean;
   appearanceMode: 'system' | 'light' | 'dark';
 }
 ```
@@ -48,11 +49,12 @@ interface AppConfig {
 `src/shared/theme.ts::normalizeThemeConfigRecord()` 是 TypeScript 读取边界的共同语义：
 
 1. 有效 `appearanceMode` 优先；否则读取 legacy `theme`；无效值归一为 `system`。
-2. 缺失/空 `themeId` 补 `myagents-default`；未知但非空 ID 保留给 renderer registry 做整套回退。
-3. 内存结果删除 legacy `theme`。
-4. load 不主动写盘；下一次真实写入由 renderer/Node/Rust 各自的 config lock 路径发布归一结果。
+2. `themeSelectionExplicit:false` 表示用户从未明确选择，`themeId` 每次读取都投影为产品默认 `DEFAULT_THEME_ID`（当前 `default-black`）；以后只改该常量即可迁移所有仍跟随默认的用户。
+3. `themeSelectionExplicit:true` 永久尊重有效的非空 `themeId`。兼容旧配置时，非 canonical ID 推断为显式选择；历史自动物化的 `myagents-default` 推断为未选择。用户在新选择器中明确选择 `myagents-default` 后会连同显式标记一起保存，不再被迁移。
+4. 未知但非空的显式 ID 保留给 renderer registry 做整套 canonical fallback；内存结果删除 legacy `theme`。
+5. load 不主动写盘；下一次真实写入由 renderer/Node/Rust 各自的 config lock 路径发布归一结果。
 
-Renderer `loadAppConfig()`、Node `admin-config.ts` 和 Rust `config_io.rs` 必须保持上述规则一致。Settings 分别通过 `ConfigProvider.updateConfig({ appearanceMode })` 与 `ConfigProvider.updateConfig({ themeId })` 写入两个正交偏好；禁止直接写 localStorage 或用 React stale config 覆盖磁盘。
+Renderer `loadAppConfig()`、Node `admin-config.ts` 和 Rust `config_io.rs` 必须保持上述规则一致。Settings 分别通过 `ConfigProvider.updateConfig({ appearanceMode })` 与 `ConfigProvider.updateConfig({ themeId, themeSelectionExplicit:true })` 写入两个正交偏好；禁止直接写 localStorage 或用 React stale config 覆盖磁盘。
 
 ## 3. ThemeDefinition 完整契约
 
@@ -83,7 +85,7 @@ surface 共享同一套视觉事实，构造或校验失败都只拒绝当前可
 构造与校验必须共同消费 `stylesheet-contract.ts` 的语义解析结果，不能依赖 `?inline` CSS 在开发态
 保留的引号、空格、换行或末尾分号；Vite production minifier 可以合法改写这些序列化细节。
 
-`default-black` 是唯一受控 Baseline 比较变体：它仍交付完整、独立、精确 scope 的 light/dark CSS，
+`default-black` 是当前产品默认，也是唯一受控 Baseline 比较变体：它仍交付完整、独立、精确 scope 的 light/dark CSS，
 但产品意图只允许 light `--button-primary-bg/hover` 相对 canonical 改为中性黑；dark 与其它 host Token
 必须逐项相等。因为这组差异不涉及 embedded surface，其 Factory 直接复用 canonical 的 immutable
 Hero/adapters，避免代码块、终端、编辑器或图表在“只比较按钮”时产生伪差异。架构测试锁定完整
@@ -130,9 +132,9 @@ Token 组：
 `themeRegistry.getAcceptedDefinitions()` 读取实际已校验列表，并直接按 Registry 产品顺序显示为
 单层列表。每个选项右侧的两枚色块分别展示 light/dark `--button-primary-bg`；颜色由 Registry 从
 Theme package stylesheet 解析，不在 Settings 维护第二份 palette。选择时只
-调用 `ConfigProvider.updateConfig({ themeId })`；控件显示 `ResolvedTheme.themeId`，所以未知配置和
+调用 `ConfigProvider.updateConfig({ themeId, themeSelectionExplicit:true })`；控件显示 `ResolvedTheme.themeId`，所以未知配置和
 无效 optional package 会显示 canonical fallback。写盘失败不做 optimistic selection，并使用 Settings
-toast 报错。`appearanceMode` 由公开外观控件独立写入。
+toast 报错。选中标记紧跟主题名称，light/dark 色块保持在行尾。`appearanceMode` 由公开外观控件独立写入。
 
 ### 5.1 主窗口
 
@@ -161,12 +163,12 @@ runtime 一次 resolve 后同步投影：
 `index.html` 只读取 `myagents:theme-bootstrap`：
 
 ```json
-{ "version": 1, "themeId": "myagents-default", "appearanceMode": "system" }
+{ "version": 2, "themeId": "default-black", "appearanceMode": "system", "themeSelectionExplicit": false }
 ```
 
 快照不得包含 AppConfig、API key 或 MCP env。新快照不存在时可一次读取 legacy localStorage `theme`；durable runtime 第一次发布后删除 legacy key。快照损坏/版本不支持时首帧回退 default + system，应用不能因此阻断。
 
-runtime 写入的是 registry 已解析的 Theme ID；因此未知 durable ID 的下一次冷启动也直接得到 canonical fallback，而不是无 Token 的空白 root。
+runtime 写入的是 registry 已解析的 Theme ID，并同时写入显式选择状态；因此未知 durable ID 的下一次冷启动也直接得到 canonical fallback，而未选择用户会按当前编译版本的产品默认重算，不会被旧快照钉死。
 
 Tauri 主窗口还存在一个早于 `index.html` 的原生空白 surface。Rust 在创建主窗口前只读取
 `config.json` 中归一后的非敏感 `appearanceMode`，不在读取边界写盘；随后：
@@ -174,7 +176,7 @@ Tauri 主窗口还存在一个早于 `index.html` 的原生空白 surface。Rust
 1. 先隐藏构建窗口，把 canonical Theme 的 `--paper` 投影为原生 Webview background；
 2. `system` 模式从 native window theme 解析首帧明暗，显式 light/dark 直接使用 durable 选择；
 3. 用 initialization script 在 HTML 解析前对齐同一个 versioned localStorage snapshot；Theme ID
-   保留 renderer registry 上次发布的 resolved ID，无有效快照时使用 canonical default，Rust 不用
+   保留 renderer registry 上次发布的 resolved ID；无有效快照或快照标记为未显式选择时使用当前产品默认，Rust 不用
    未经 registry 验证的 durable Theme ID 覆盖它；
 4. 原生 background、bootstrap snapshot 就绪后再同步显示窗口，之后由 renderer runtime 接管完整 Theme，
    并在每次 Theme / scheme 切换后把 resolved `--paper` 同步到 main native Window background。
@@ -198,7 +200,7 @@ default + system，不能阻断窗口创建。
 3. hydration 期间收到的 live event 具有更高 freshness，旧 hydration 结果不得反向覆盖；
 4. 各自订阅 OS scheme。
 
-事件 payload 只能含 `themeId + appearanceMode`。主窗口与浮窗不得通过 Sidecar/HTTP/SSE 同步 Theme。
+事件 payload 只能含当前生效的 `themeId + appearanceMode`。`themeSelectionExplicit` 只属于 durable config 与首帧快照，浮窗无需拥有默认选择策略。主窗口与浮窗不得通过 Sidecar/HTTP/SSE 同步 Theme。
 
 ## 6. 消费者不变量
 

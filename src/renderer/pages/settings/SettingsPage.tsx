@@ -4276,7 +4276,10 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                                     </div>
                                     <ThemePresetSelect
                                         value={resolvedTheme.themeId}
-                                        onPersistTheme={(themeId) => updateConfig({ themeId })}
+                                        onPersistTheme={(themeId) => updateConfig({
+                                            themeId,
+                                            themeSelectionExplicit: true,
+                                        })}
                                         onPersistError={(error) => {
                                             const message = error instanceof Error ? error.message : String(error);
                                             toast.error(tSettings('general.themeSaveFailed', { message }));

@@ -29,9 +29,10 @@ describe('FloatingThemeRuntime', () => {
   beforeEach(() => {
     localStorage.clear();
     localStorage.setItem(THEME_BOOTSTRAP_KEY, JSON.stringify({
-      version: 1,
+      version: 2,
       themeId: 'myagents-default',
       appearanceMode: 'light',
+      themeSelectionExplicit: true,
     }));
     floatingMocks.listener = null;
     floatingMocks.loadAppConfig.mockClear();
