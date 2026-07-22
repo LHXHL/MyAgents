@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.7.3
+> **Version**: 2.7.4
 > **Last Updated**: 2026-07-22
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -58,8 +58,9 @@ fallback；它的物理 owner 是：
 | Community · PR #441 | Sage / Mauve / Wisteria | 鼠尾草绿 / 低饱和灰紫 / 藤紫 |
 | References | Absolutely / Linear / Proof / Codex / Raycast | 陶土橙 / 靛蓝 / 森林绿 / 标准蓝 / 珊瑚红 |
 
-Accent 必须控制主按钮、Toggle 启用态、关键选中指示、Focus、链接和进行中状态；success/error/
-warning/info 继续使用各 Theme 自己的业务状态组，第三方品牌色不随 Accent 改写。紧凑卡片 hover
+Primary CTA 必须消费 `--button-primary-*`；Accent 控制 Toggle 启用态、关键选中指示、
+Focus、链接和进行中状态。success/error/warning/info 继续使用各 Theme 自己的业务
+状态组，第三方品牌色不随 Accent 改写。紧凑卡片 hover
 仍只增加 Theme 的 `shadow-sm`，不使用描边或位移模拟层级。
 
 注册、bootstrap 和 adapter 细则见 `tech_docs/theme_system.md`。
@@ -1410,6 +1411,7 @@ Hover 操作:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.7.4 | 2026-07-22 | **Primary CTA 语义收口**：Launcher 对话发送、想法记录与 Task Editor 提交统一消费 `--button-primary-*`；Accent 保留给 Toggle、选中、Focus、链接与进行状态，使 Default Black 只改写主动作而不污染其他强调表面 |
 | 2.7.3 | 2026-07-22 | **Default Black Baseline A/B**：新增基于 canonical Default 的受控对比 Theme；仅将 light 主按钮从陶土棕改为中性黑，dark、其余 host Token、Launcher Hero 与 embedded adapters 保持 Default 同源；分组与完整 Token 差异由测试锁定 |
 | 2.7.2 | 2026-07-22 | **Theme 实色控件、代码前景与品牌呈现校正**：顶部 Tab active 底线恢复 2px；浅色预设的 Accent / Primary 实底控件统一改用白色前景与同色相深色 action surface；可选 Theme 的 Prism 普通文本消费 `--code-text`，其余语法色在 adapter 边界校准到深色 `--code-bg`；Settings About 品牌名复用 Launcher 的 Theme-owned Hero title 样式 |
 | 2.7.1 | 2026-07-21 | **Theme 运行时与选中态校正**：main native Window background 在 Theme 生效后跟随 resolved `--paper`；预设 Theme 的 light Toggle thumb 统一回归浅色控制面；顶部 Tab / Settings 侧栏选中指示按 1px/2px 与 70%/80% 建立层级 |

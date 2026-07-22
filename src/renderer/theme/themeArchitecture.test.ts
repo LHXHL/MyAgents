@@ -271,6 +271,17 @@ describe('Theme architecture guardrails', () => {
       .filter(file => /bg-\[var\(--accent\)\][^'"`]*hover:brightness-/.test(readFileSync(file, 'utf8')));
     expect(unvalidatedAccentHoverViolations).toEqual([]);
 
+    for (const primaryAction of [
+      'src/renderer/components/chat-input/SimpleChatInput.tsx',
+      'src/renderer/components/task-center/ThoughtInput.tsx',
+      'src/renderer/components/task-center/editors/PanelChrome.tsx',
+    ]) {
+      const contents = source(primaryAction);
+      expect(contents).toContain('bg-[var(--button-primary-bg)]');
+      expect(contents).toContain('text-[var(--button-primary-text)]');
+      expect(contents).toContain('hover:bg-[var(--button-primary-bg-hover)]');
+    }
+
     const statusNames = ['success', 'error', 'warning', 'info'] as const;
     const statusViolations = rendererSourceFiles()
       .filter(file => !file.includes('/pages/space/') && !file.endsWith('/pages/Space.tsx'))
