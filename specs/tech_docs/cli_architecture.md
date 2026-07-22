@@ -179,7 +179,7 @@ Provider 目录、credential/readiness 与 model 校验必须在 `agent-config-i
 | 命令 | 何时调用 | 效果 |
 |------|----------|------|
 | `myagents goal get` / `list` | 查看当前 session 是否已有 Goal，或状态更新前确认 | 返回当前 session Goal，或 `goal: null` |
-| `myagents goal create --objective-file <path> [--deadline <ISO-with-offset>] [--max-executions <n>] [--ai-can-exit <bool>]` | 仅当 User 明确要求进入 Goal/目标模式 | 从本地普通文本文件读取 objective，创建 current-session Goal，启动自动续跑，广播 `goal:changed`；可设置现有 Goal 结束条件 |
+| `myagents goal create --objective-file <path> [--deadline <ISO-with-offset>] [--max-executions <n>] [--ai-can-exit <bool>]` | 仅当 User 明确要求进入 Goal/目标模式 | 从本地普通文本文件读取 objective，创建 current-session Goal，启动自动续跑，广播 `goal:changed`；可为新 Goal 设置结束条件 |
 | `myagents goal update --status complete` | 当前证据证明 objective 全部完成且无剩余工作 | 停止自动续跑，标记 complete，终态通知 |
 | `myagents goal update --status blocked` | 同一 blocker 连续至少 3 个 Goal turn 仍无法推进 | 停止自动续跑，标记 blocked，终态通知 |
 
@@ -252,6 +252,8 @@ app 启动 → ConfigProvider → invoke('cmd_sync_cli')
 | `SYSTEM_SKILLS_VERSION` | `src-tauri/src/commands.rs::SYSTEM_SKILLS` 列出的版本化系统级 Skills；其中 Required 子集由 `src/shared/systemSkills.ts` 统一定义 | `~/.myagents/.system-skills-version` | `src-tauri/src/commands.rs` |
 
 三个版本门控**独立运作**，修改各自内容只需 bump 对应版本即可。
+
+`SYSTEM_SKILLS` 是版本化安装集合，`REQUIRED_SYSTEM_SKILLS` 是其中始终可用的产品契约子集，二者不能混为一谈。canonical 名单在 `src/shared/systemSkills.ts`，Rust workspace/slash 路径在 `src-tauri/src/workspace_files/skills_config.rs` 维护必要镜像，并由 cross-language test 锁定；改名单必须同步这两处，禁止 UI、CLI 或其它模块再复制第三份。当前 Required 包括 `myagents-memory-update`、`myagents-memory-gardener`、`myagents-memory-molt`、`myagents-cli`、`myagents-docs`。读取旧 `skills-config.json` 和每次写回都会移除这些名称的 stale disabled 项；Skills API 以 `required:true, enabled:true` 投影，disable 请求返回 409。其它版本化或用户 Skill 仍可正常 enable/disable。
 
 ## Rust CLI 入口（场景 2）
 

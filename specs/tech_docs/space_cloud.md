@@ -16,13 +16,13 @@ Cloud Space 横跨两个独立版本、独立发布的仓库，不能把其中�
 | Cloud API、身份/权限、领域模型、D1/R2/KV ownership、Account plan/quota、运营与发布 | `hAcKlyc/MyAgents_space`：`specs/ARCHITECTURE.md` + `specs/RELEASE.md` |
 | Space IssueDelivery Prompt、Registered Agent context/instruction、拼接与版本规则 | `hAcKlyc/MyAgents`：`specs/tech_docs/space_issue_delivery_protocol.md` |
 
-本地平级 checkout 中，云端架构文档地址是 `../MyAgents_space/specs/ARCHITECTURE.md`。截至 2026-07-18，0.3.2 联合实现基线为：
+本地平级 checkout 中，云端架构文档地址是 `../MyAgents_space/specs/ARCHITECTURE.md`。截至 2026-07-22，0.3.2 联合发布基线为：
 
 - Desktop：`dev/0.3.2` 源码实现 Registered Agent execution instance、Instruction、多 Subscription、v2 Prompt 与 exact Session origin；尚未发布。
-- Cloud：平级 `MyAgents_space` 的 `dev` 工作树实现 additive migration `0018`、Instruction/CAS、transport-only Delivery 与 v0/v1/v2 response projection；尚未部署。
+- Cloud：`MyAgents_space` v0.1.6（`main-0fc6112f77904b197e5ffa1e61aedf5bd2d82116`）已部署 Production，包含 additive migration `0018`、Instruction/CAS、transport-only Delivery 与 v0/v1/v2 response projection；Production release workflow、公开 `/health` 与 100% traffic 验证均已通过。
 - Production/Dev 的实时部署真相仍只以各环境 `/health` 返回的 Git tag、完整 SHA 与 Worker Version ID 为准，不能从本地源码状态推断已经上线。
 
-发布兼容按 `X-MyAgents-Client-Version` 三档投影：缺失/非法/`<0.2.50` 只返回 legacy subscription；`>=0.2.50 && <0.3.2` 返回 v1 `deliveryKind/cloudInstruction/trigger/...`，由旧 Desktop 本地组装旧 Prompt；`>=0.3.2` 返回 v2 package，由新 Desktop 严格解析并本地组装 v2 Prompt。Cloud 不下发完整 Prompt，新 Desktop 不保留 v1 builder。Cloud migration/Worker 与三档 smoke 先通过，再发布 Desktop 0.3.2；这只是同一协调上线的依赖顺序。
+发布兼容按 `X-MyAgents-Client-Version` 三档投影：缺失/非法/`<0.2.50` 只返回 legacy subscription；`>=0.2.50 && <0.3.2` 返回 v1 `deliveryKind/cloudInstruction/trigger/...`，由旧 Desktop 本地组装旧 Prompt；`>=0.3.2` 返回 v2 package，由新 Desktop 严格解析并本地组装 v2 Prompt。Cloud 不下发完整 Prompt，新 Desktop 不保留 v1 builder。Cloud migration/Worker 与三档 smoke 已先通过，当前下一步是发布 Desktop 0.3.2；这只是同一协调上线的依赖顺序。
 
 这个组合是兼容记录，不是版本绑定。当前 API 没有 URL version prefix；双方通过 additive response、缺省字段 fallback 和 rollout 兼容旧调用方。修改 API 字段、错误码、状态机、permission、poll/presence 或兼容策略时，必须同步更新 Space serializer/tests/架构文档与本仓 types/wrapper/tests/本文。只改 Desktop UI 或本地执行且云端契约不变时，不要把客户端细节复制进云端文档；只改 Worker 内部实现且无契约变化时也不要求改本文。
 
@@ -172,7 +172,7 @@ Cloud Worker 用 `users.name_source` / `avatar_source` 区分登录资料、MyAg
 
 ## IssueDelivery / Claim 处理
 
-> **协议状态**：Protocol v2 是 0.3.2 源码 active contract，完整逐字 Prompt、字段来源与拼接规则以 `specs/tech_docs/space_issue_delivery_protocol.md` 为准；协调发布完成前不代表 Production 已上线。v1 仅作为已发布旧 Desktop 的 Cloud 兼容 projection。
+> **协议状态**：Protocol v2 的 Cloud migration/Worker 已在 Production 上线，Desktop 0.3.2 待发布；完整逐字 Prompt、字段来源与拼接规则以 `specs/tech_docs/space_issue_delivery_protocol.md` 为准。v1 仅作为已发布旧 Desktop 的 Cloud 兼容 projection。
 
 Registered Agent 从 Space 拉取 IssueDelivery，并将其作为轻量通知注入本地 AI session。`Issue.assignee` 是持久责任真相源，可以是真人、Registered Agent 或空，且独立于 Issue `state`；`issue_claims` 只记录 Agent/用户执行层的 operational claim 与本地 Task/Session 连接。完成/关闭保留 assignee，显式取消指派才会清空 assignee、取消 active claim、回到 `todo` 并重新按订阅规则发现。
 
@@ -180,7 +180,7 @@ Registered Agent 从 Space 拉取 IssueDelivery，并将其作为轻量通知注
 2. Rust 启动时调用 `start_space_connector()` 创建进程内 connector。connector 按本地 runnable registered agents 维护每个 agent 的 `next_due_at`、`empty_streak`、`last_interval_secs`；`cmd_space_wake_connector` 只是唤醒 connector，`cmd_space_process_deliveries_once` 仅保留为手动强制处理入口。
 3. Cloud v2 poll 返回同一读取中的 Space、Registered Agent Instruction/revision 与 `items[]`。Delivery 行只拥有 target、kind/reason、source update id 与 notification version range；当前 Issue、评论与 Instruction 不复制成新逻辑 Delivery 权威。
 4. Rust 严格解析 v2 package，按 exact `spaceId + registeredAgentId` 选择/创建 Session，并通过 SessionEngine inbox 注入 `space.issue_delivery`。Prompt 固定为 `registered-agent-context → registered-agent-instruction → operating-guidance → deliveries`；动态文本必须做有界 XML escape，未知 protocol/kind/reason/status fail closed。
-5. subscription single-session 可批量；assignment 单 Issue 投向该实例会话；claim-followup 必须回到 claim 的 exact target Session。Session origin 在 builtin/external Runtime 间持久化同一 Registered Agent context，普通同 workspace Session 不自动冒充 Agent。
+5. subscription single-session 可批量；assignment 单 Issue 投向该实例会话；claim-followup 有 `targetSessionId` 时回到 claim 的 exact Session，Cloud 无法提供该 hint 时则按该 Registered Agent 的当前 run mode 解析其 single/Issue Session。两条路径都必须持久化同一个 exact Registered Agent origin，不能退回其它 Agent 或普通同 workspace Session。
 6. Session 接受消息后 Rust 先写本地 receipt，再自动 ACK Cloud。ACK 只改变自己的 transport row；迟到 ACK 可把自己的 cancelled/expired row 校正为 delivered，但不能吞掉 successor，也不表示 Agent 已 claim、处理或完成。
 7. AI 用 `myagents space issue --help` 发现完整动作面，读取当前 Issue 后自主选择 no-op、comment/update、claim/attached Task、继续执行或 complete。新 CLI 不提供 Delivery ignore；业务动作只修改 Issue/Claim/Task/Comment。
 
@@ -213,7 +213,7 @@ delivery 只是投送事实，不是 claim/assignee；多个 Agent 可以感知�
 
 Space Issue 的用户可见编号由云端拥有，不从 opaque `issue.id` 推导。`issues.number` 是同一 `space_id` 内唯一、正整数、自增的稳定编号；迁移会回填历史数据，并用 `(space_id, number)` 唯一索引和 insert/update trigger 防止缺失或非正数写入。
 
-所有 issue list/detail、IssueDelivery 和 mock 数据都必须携带该编号。Renderer 展示 `#<number>` 时只消费 API 返回的 `number` / 兼容字段 `issueNumber`；Rust delivery 注入和 attached task 命名也使用该编号，缺失时只能降级为内部 `issueId`，不能自行解析 id 后缀。
+所有 issue list/detail、IssueDelivery 和 mock 数据都必须携带该编号。Renderer 展示 `#<number>` 时只消费 API 返回的 `number` / 兼容字段 `issueNumber`；v2 Rust parser 要求 `issueMeta.number` 是正整数，缺失或非法时整条 Delivery fail closed 并留在 pending，不能降级为内部 `issueId` 或自行解析 id 后缀。
 
 ## Issue 关系筛选与最近更新
 

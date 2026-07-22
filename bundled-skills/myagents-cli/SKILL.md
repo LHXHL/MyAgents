@@ -204,7 +204,7 @@ myagents skill info <name>                              # 某 skill 的详情
 myagents skill add <url-or-spec> [--scope user|project] [--plugin X] [--skill Y] [--force] [--dry-run]
 myagents skill remove <name>                            # 删除
 myagents skill enable <name>                            # 启用
-myagents skill disable <name>                           # 禁用
+myagents skill disable <name>                           # 禁用非 Required Skill；Required System Skill 会拒绝
 myagents skill sync                                     # 把 ~/.claude/skills 里用户自己装的同步过来
 ```
 

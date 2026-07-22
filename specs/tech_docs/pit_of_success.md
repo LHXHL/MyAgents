@@ -37,6 +37,7 @@ CLAUDE.md 的 Pit-of-Success 红线总表是这些模块的**速查索引**；�
 - [workspace_files 路径解析双轨](#workspace-files) — 写侧 lexical / 读侧 canonical
 - [`workspacePath` 工作区路径标识比较](#workspace-path-identity) — 跨存储路径相等判定（防 Win 斜杠/盘符误判）
 - [Client-action 斜杠命令](#client-action-slash) — 渲染层 UI 动作命令，名字保留、勿进文本插入 builtin 清单
+- [Theme package 与 Tailwind bridge](#theme-tailwind-bridge) — runtime Theme 值与编译期 utility 映射分离
 - [System-skill 同步完整性门控](#system-skill-sync) — 验源完整再清目标 + 全落地才写版本戳
 - [同步 Tauri 命令与主线程冻结](#sync-tauri-command) — 阻塞命令改 async + spawn_blocking，否则 WKWebView 整体冻结
 - [Test classification + non-credentialed no-egress](#test-classification-no-egress) — server 测试显式分层，非 credentialed Node 测试禁止真实出站
@@ -199,7 +200,7 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 - 三端共享同一个 `config.json.lock` lockdir（atomic mkdir 协议）
 - 协议：lock → re-read → mutate → tmp write → fsync → rename → fsync parent dir → release
 - Stale recovery 跨运行时——renderer 信任自己的 mtime（1× threshold），node/rust owner 用 4× threshold（renderer 无法 probe pid liveness）
-- Owner sentinel `<runtime>:<pid>:<startMs>`，release 前校验 owner 防止"暂停过 staleMs 后误删继任者"
+- Node/Rust owner sentinel 是 `<runtime>:<pid>:<startMs>`；renderer 无可探测的独立 PID owner，使用 `renderer:<createdMs>:<uuid>`。三端 release 都必须逐字校验自己取得的完整 token，防止"暂停过 staleMs 后误删继任者"
 
 **Don't.**
 - 任何 `config.json` 写入用裸 `tmp + rename`（绕过锁）
@@ -582,6 +583,22 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 
 ---
 
+<a id="theme-tailwind-bridge"></a>
+## Theme package 与 Tailwind utility bridge
+
+**Problem.** Theme stylesheet 由 runtime 动态激活，不会再次经过 Tailwind 编译。把 raw `@theme` 放进 Theme package，或只在 runtime CSS 新增 Tailwind utility 对应值，会让 `font-sans`、`shadow-sm`、`rounded-*` 等 utility 静默退回 framework default；切换 Theme 时表面 Token 已变，实际组件却仍使用旧/默认视觉值。
+
+**Surface.**
+- concrete Theme runtime values：`src/renderer/theme/themes/*.css`
+- 唯一编译期 bridge：`src/renderer/index.css` 的无值 `@theme inline`
+- contract/build guard：`ThemeRegistry` stylesheet 校验 + `npm run verify:theme-css`
+
+**Invariants enforced.** Theme package 只交付完整、精确 scope 的 runtime Token 与 adapters，不声明 Tailwind 编译元数据；`index.css` 只把 utility 名映射到语义 runtime Token，不拥有视觉值。新增或改名 utility Token 时必须同步 bridge，并让 `verify:theme-css` 在生成 CSS 中证明映射真实生效。
+
+**Don't.** 不要在 `src/renderer/theme/themes/**` 写 raw `@theme` / `@property` / `@font-face` 等全局副作用，也不要仅凭 Theme stylesheet 中存在某个变量就假设 Tailwind utility 会自动消费它。完整 Theme contract、selector 与 adapter 规则见 `theme_system.md`。
+
+---
+
 <a id="system-skill-sync"></a>
 ## System-skill 同步完整性门控 (`cmd_sync_system_skills` + `seedBundledSkills`)
 
@@ -591,8 +608,9 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 - "完整 skill" = 含顶层 `SKILL.md`。源不完整 → **保留现有副本** + `ulog_warn`，**不**清目标。
 - 版本戳 `complete = missing.is_empty() && incomplete.is_empty()` 时才写；任一缺/不完整 → 不写戳 → 下次启动重试。平台跳过的 skill 是有意的、不算缺陷、不阻塞。
 - Rust `cmd_sync_system_skills` 与 Node `seedBundledSkills` 两条 seed 路径**同款逻辑**。
+- `SYSTEM_SKILLS` 是版本化安装集合；`src/shared/systemSkills.ts::REQUIRED_SYSTEM_SKILLS` 是其中始终启用的 canonical 产品契约子集，Rust workspace/slash 路径在 `src-tauri/src/workspace_files/skills_config.rs` 维护必要镜像，并由 cross-language test 锁定。读取/写回 `skills-config.json` 都会移除 Required 的 stale disabled 项，list 投影固定为 `required:true, enabled:true`，disable API fail closed；普通系统/用户 Skill 仍保留可禁用语义。
 
-**Don't.** seed/sync 里覆盖前不验源完整就 `remove_dir_all(dst)`；或对不完整结果照写版本戳。两者都会把瞬时打包缺陷固化成持久态。
+**Don't.** seed/sync 里覆盖前不验源完整就 `remove_dir_all(dst)`；或对不完整结果照写版本戳。两者都会把瞬时打包缺陷固化成持久态。改 Required 名单时必须同步 TS canonical 与 Rust mirror，禁止在 UI、CLI 或其它模块新增第三份名单，也不要把 Required 名称重新写进 disabled 配置。
 
 ---
 

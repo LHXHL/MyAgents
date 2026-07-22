@@ -1,10 +1,10 @@
 # MyAgents Space Issue Delivery Protocol
 
-> 状态（2026-07-18）
+> 状态（2026-07-22）
 >
 > - **Protocol v1：已发布客户端兼容行为。** `<0.3.2` Desktop 仍由旧客户端使用 Cloud instruction / trigger snapshot 组装既有 Prompt；legacy ignore endpoint 仅为兼容面，新 transport Delivery 不再产生 ignored 语义。
-> - **Protocol v2：0.3.2 源码 active contract。** Desktop 与 Cloud 的实现、migration、三档兼容响应、Prompt golden 和回归测试已落地；在协调发布完成前，它仍不是 Production 线上行为。
-> - **发布模型：一次协调上线。** Desktop 与 Cloud 开发可分阶段，但必须全部完成并联合验收；Production 依赖顺序是 Cloud migration/Worker 及旧协议验证先通过，再发布 Desktop 0.3.2。
+> - **Protocol v2：Cloud 已上线、Desktop 待发布。** Cloud v0.1.6 已在 Production 应用 migration `0018` 并部署三档兼容响应；Desktop 0.3.2 源码中的严格 parser、Prompt builder、exact Session origin 与回归测试已落地，最终用户路径要到 Desktop 0.3.2 发布后才生效。
+> - **发布模型：一次协调上线。** Cloud migration/Worker、旧协议验证与 Production health/traffic 已通过；当前按既定依赖顺序发布 Desktop 0.3.2，随后完成两端 smoke 才视为协调交付完成。
 > - 本文是 Space IssueDelivery Prompt 与拼接规则的长期协议文档。PRD 是本次改造的决策快照；代码与测试是某一版本是否真正生效的可执行证据。
 
 ## 1. 文档目的
@@ -411,7 +411,7 @@ Do not invent a standing mission from its name, workspace, Goal, or Subscription
 These are lightweight facts from the poll response. Read the current Issue before acting.
 
 - Issue ID: {{ISSUE_ID}}
-- Issue #: {{ISSUE_NUMBER_OR_UNAVAILABLE}}
+- Issue #: #{{ISSUE_NUMBER}}
 - Title: {{ESCAPED_ISSUE_TITLE}}
 - State: {{ISSUE_STATE}}
 - Assignee: {{ASSIGNEE_SUMMARY_OR_UNASSIGNED}}
@@ -606,7 +606,7 @@ Desktop builder 必须按以下确定顺序执行：
 
 1. 校验 poll protocolVersion、Registered Agent identity 与所有 enum；
 2. 解析当前 Space 的 id/name/slug 和本地 workspace；
-3. 选择 exact target Session，并确认/写入 Session origin；
+3. 选择该 Registered Agent 的 target Session：`targetSessionId` 非空时精确复用，否则按该实例当前 run mode 解析 single/Issue Session；随后确认/写入 exact Registered Agent origin；
 4. 根据 instruction 是否为空选择 configured 或 missing block；
 5. 保持 Cloud 返回顺序，为每条 item 选择 kind block 和 reason block；
 6. 渲染 Delivery block；
@@ -634,7 +634,7 @@ Desktop builder 必须按以下确定顺序执行：
 - WORKSPACE_ID 缺失：使用字面值 unavailable，并让 operating-guidance 明确 Attached Task 不可用；
 - WORKSPACE_LABEL 缺失：空字符串；
 - SUBSCRIPTION_ID 缺失：none；
-- ISSUE_NUMBER 缺失：unavailable，不从 Issue ID 解析；
+- ISSUE_NUMBER 必须是正整数；缺失或非法时整条 v2 Delivery fail closed 并留在 pending，不从 Issue ID 解析；
 - assignee 缺失：unassigned；
 - Goal 缺失：Inbox；
 - optional comment/attachment 行不存在时整行省略，不输出 undefined/null 占位。
@@ -791,12 +791,13 @@ Cloud Production 是 migration-first。PRD 0.3.2 定义的 backward-compatible e
 - 单条 / 批量；
 - Space id/name/slug；
 - workspace ID available/unavailable；
+- targetSessionId present/absent，且最终 Session origin 始终绑定 exact Registered Agent identity；
 - optional comment/attachment lines；
 - 中英文 visible tail；
 - XML attribute/text escape 与恶意闭合标签；
 - unknown kind/reason/version fail closed；
 - 输出不含 Delivery ignore；
-- exact target Session 与 Registered Agent identity 一致。
+- 正整数 Issue number；缺失/非法 number fail closed。
 
 此外必须有 v1 compatibility golden：configured/missing Instruction、三种 kind、Instruction revision 更新、Unicode 20,000 截断 marker，并用旧 Desktop parser 的真实字段约束验证；不能只 snapshot Cloud JSON。
 

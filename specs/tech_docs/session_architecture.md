@@ -182,18 +182,31 @@ Goal 是 current Session 的独立持久状态，物理存储为 `~/.myagents/se
 ```typescript
 type GoalStatus = 'active' | 'paused' | 'complete' | 'blocked' | 'canceled';
 
+interface GoalEndConditions {
+  deadline?: string;
+  maxExecutions?: number;
+  aiCanExit: boolean;
+}
+
 interface SessionGoalView {
   id: string;              // current Goal incarnation fence
   sessionId: string;       // product lookup key
   workspacePath: string;
   objective: string;
   status: GoalStatus;
+  endConditions: GoalEndConditions;
+  notifyEnabled: boolean;
+  permissionMode: string;
   turnCount: number;
+  createdAt: string;
+  updatedAt: string;
   revision: number;
   controlRevision: number;
   isExecuting: boolean;
+  executionNumber?: number; // 正在执行的 current turn；未执行时省略
   totalDurationMs: number; // 已结算 Goal Turn 的实际执行耗时之和
   totalTokens: number;     // 已结算 Goal Turn 的 input + output tokens 之和
+  lastExecutedAt?: string;
   terminalReason?: string;
 }
 ```

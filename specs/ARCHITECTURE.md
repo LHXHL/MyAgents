@@ -320,6 +320,8 @@ Phase4 后，几个历史大型 UI 入口保留原路径作为兼容 facade，�
 | `src/renderer/components/SimpleChatInput.tsx` | re-export `components/chat-input/SimpleChatInput.tsx`；附件处理、mention/thought row、常量/types 拆到 `components/chat-input/*` |
 | `src/renderer/components/DirectoryPanel.tsx` | re-export `components/directory-panel/DirectoryPanel.tsx`；搜索 hook、path display、types 拆到 `components/directory-panel/*`，树 viewport 仍在 `components/workspace-tree/*` |
 
+macOS 的 renderer 崩溃恢复由 Tauri `on_web_content_process_terminate` 回调拥有：只有 WebKit 明确报告 content process 已终止时才 reload 对应 WebView，并从持久 Session/REST/SSE 权威恢复页面。普通系统 wake/resume、窗口重新显示或应用激活不得 reload 健康 WebView，以免丢失未提交草稿和 renderer-local UI 状态；Sidecar/Session 生命周期独立于 WebView，content process 终止时继续存活并保持后端权威。
+
 ### 3. 系统提示词组装 (`src/server/system-prompt.ts`)
 
 三层 Prompt 架构：
@@ -841,7 +843,7 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 | `tauri::async_runtime::spawn` + clippy ban | Rust | 防 macOS startup-abort（`tokio::spawn` 跨 FFI 不能 unwind） |
 | Session watcher | Rust | 文件系统观察索引（写入路径解耦） |
 | `withConfigLock` / `with_config_lock` | Node + Rust + renderer | `config.json` 跨进程串行写入 |
-| `ThemeRegistry` + `ThemeRuntimeProvider` | renderer | 完整 Theme 校验、整套解析、root/context/跨窗口一致投影 |
+| `ThemeRegistry` + `ThemeRuntimeProvider` + Tailwind bridge | renderer | 完整 Theme 校验、整套解析、root/context/跨窗口一致投影；runtime 值与编译期 utility 映射分离 |
 | `withFileLock` / `with_file_lock` | Node + Rust | 单写者文件原子性 |
 | `killWithEscalation` | Node | 子进程 stop SIGTERM → SIGKILL → orphan 升级链 |
 | `withAbortSignal` / `cancellableFetch` | Node | 统一 cancel 协议（fetch / stream / process） |

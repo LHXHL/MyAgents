@@ -93,12 +93,12 @@ Focus、链接和进行中状态。success/error/warning/info 继续使用各 Th
 #### Accent (强调色)
 | Token | 值 | 用途 |
 |-------|------|------|
-| `--accent` | `#c26d3a` | 一等公民动作色（= accent-warm） |
-| `--accent-warm` | `#c26d3a` | 动作强调色（主按钮、链接、高亮） |
-| `--accent-warm-hover` | `#e18a58` | 动作强调 hover |
+| `--accent` | `#c26d3a` | 交互强调色（= accent-warm；不承担 Primary CTA） |
+| `--accent-warm` | `#c26d3a` | 链接、Focus、关键选中与进行中状态 |
+| `--accent-warm-hover` | `#e18a58` | 强调态 hover |
 | `--accent-warm-subtle` | `rgba(194, 109, 58, 0.08)` | 微弱强调背景 |
 | `--accent-warm-muted` | `rgba(194, 109, 58, 0.15)` | 选中态强调背景 |
-| `--on-accent` | `#ffffff` | 强调底上的配对前景色，light / dark 均为白色 |
+| `--on-accent` | `#ffffff` | Accent 实底状态上的配对前景色，light / dark 均为白色；Primary CTA 使用独立的 `--button-primary-fg` |
 | `--accent-cool` | `#2e6f5e` | 冷强调色（文件夹、标签） |
 | `--accent-cool-hover` | `#3d8a75` | 冷强调 hover |
 
