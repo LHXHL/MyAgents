@@ -12,8 +12,8 @@
 | 外观偏好 | `AppearanceMode` | durable `AppConfig.appearanceMode` | `system / light / dark` |
 | 已解析明暗 | `ResolvedColorScheme` | 每个 Webview 的 Theme runtime | 当前实际使用的 `light / dark` |
 
-Production registry 按产品顺序注册十三套完整 Theme：`myagents-default`、`default-black`、`ink`、
-`fjord`、`ochre`、`sage`、`mauve`、`wisteria`、`absolutely`、`linear`、`proof`、`codex`、`raycast`。
+Production registry 按产品顺序注册八套完整 Theme：`myagents-default`、`default-black`、`sage`、
+`absolutely`、`linear`、`proof`、`codex`、`raycast`。
 不得把 light/dark 拆成两个 Theme，也不得重新用 `theme` 字段表达 appearance。
 
 目录：
@@ -243,11 +243,13 @@ Space 的 `[data-ui-theme="space-mono"]` / `.dark [data-ui-theme="space-mono"]` 
 - component DOM：Hero、xterm、Monaco、Mermaid、Prism、Widget 原位更新；
 - floating DOM：snapshot → durable config → Tauri live event；
 - architecture unit + dependency-cruiser：禁止 consumer 直引 internals、禁止本地 palette/MutationObserver 回流；
-- preset contract：accepted IDs/名称/顺序精确等于十三套，分组 ID 与 Registry 等值；十一套 palette
+- preset contract：accepted IDs/名称/顺序精确等于八套，设置下拉直接映射 Registry 顺序；六套 palette
   Theme 的正文和实色主动作对比度不低于 4.5:1，`default-black` 单独验证新增黑色主按钮对比度并
   逐 Token 锁定其余值等于 canonical；`verify:theme-presets` 先按 Vite production 使用的
-  esbuild CSS minifier 序列化十二套实际 stylesheet，再经 optional factory 完成精确十三套 Registry
+  esbuild CSS minifier 序列化七套实际 stylesheet，再经 optional factory 完成精确八套 Registry
   注册并逐套 resolve light/dark；
+- dark control contrast：八套 Theme 的 Primary 正常/hover 均验证 4.5:1，深色 action
+  surface 锁定白色/近白前景；全部 production Theme 的 dark Switch thumb 锁定为白色/近白控制面；
 - build smoke：`build:web` 串行执行 `verify:theme-css` 与 `verify:theme-presets`；前者读取实际
   `dist/assets/*.css`，验证 font/radius/shadow/duration utility 仍引用 runtime Theme Token，且 bundle
   不存在未编译 raw `@theme`，后者防止 production `?inline` 序列化导致 preset catalog 启动时被拒绝。

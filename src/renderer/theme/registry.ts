@@ -27,17 +27,12 @@ import type { ResolvedTheme, ThemeDefinition } from './types';
 import { absolutelyThemeManifest } from './themes/absolutely';
 import { codexThemeManifest } from './themes/codex';
 import { defaultBlackThemeManifest } from './themes/default-black';
-import { fjordThemeManifest } from './themes/fjord';
-import { inkThemeManifest } from './themes/ink';
 import { linearThemeManifest } from './themes/linear';
-import { mauveThemeManifest } from './themes/mauve';
 import { myAgentsDefaultTheme } from './themes/myagents-default';
-import { ochreThemeManifest } from './themes/ochre';
 import { createPresetTheme, type PresetThemeManifest } from './themes/preset-theme';
 import { proofThemeManifest } from './themes/proof';
 import { raycastThemeManifest } from './themes/raycast';
 import { sageThemeManifest } from './themes/sage';
-import { wisteriaThemeManifest } from './themes/wisteria';
 
 export { REQUIRED_THEME_CSS_TOKENS, REQUIRED_WIDGET_CSS_VARIABLES } from './registry-contract';
 
@@ -702,12 +697,7 @@ export const themeRegistry = new ThemeRegistry(
   [
     defaultBlackFactory,
     ...[
-      inkThemeManifest,
-      fjordThemeManifest,
-      ochreThemeManifest,
       sageThemeManifest,
-      mauveThemeManifest,
-      wisteriaThemeManifest,
       absolutelyThemeManifest,
       linearThemeManifest,
       proofThemeManifest,

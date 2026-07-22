@@ -193,8 +193,8 @@ html[data-theme-id='myagents-default'][data-color-scheme='dark'] {
   --info-bg: rgba(107, 159, 212, 0.15);
   --on-info: #1a1614;
 
-  --button-primary-bg: #d4803f;
-  --button-primary-bg-hover: #c27030;
+  --button-primary-bg: #b05e2d;
+  --button-primary-bg-hover: #9c5027;
   --button-primary-text: var(--on-accent);
   --button-dark-bg: #443e36;
   --button-dark-bg-hover: #564e44;
@@ -248,7 +248,7 @@ html[data-theme-id='myagents-default'][data-color-scheme='dark'] {
   --expanded-block-line: rgb(228 220 212 / 0.18);
   --warning-border: rgb(217 119 6 / 0.3);
   --focus-border: var(--accent);
-  --toggle-thumb: #e4dcd4;
+  --toggle-thumb: #ffffff;
   --toggle-off-bg: rgb(228 220 212 / 0.18);
   --code-bg: #141210;
   --code-bg-a0: rgb(20 18 16 / 0);

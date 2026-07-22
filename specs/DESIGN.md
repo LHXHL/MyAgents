@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.7.4
+> **Version**: 2.7.6
 > **Last Updated**: 2026-07-22
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -30,13 +30,13 @@ MyAgents 是一款 AI Agent 桌面客户端，采用**温暖纸张质感**的设
 
 MyAgents 的视觉由完整 `Theme` 管理；light / dark / system 是 `AppearanceMode`，不是三套 Theme。一套 Theme 必须同时交付并验收 light 与 dark，system 只跟随 OS 解析其中一套。
 
-Production catalog 当前包含十三套完整 Theme：MyAgents Default、Default Black、Ink、Fjord、
-Ochre、Sage、Mauve、Wisteria、Absolutely、Linear、Proof、Codex、Raycast。`myagents-default` 仍是 canonical
+Production catalog 当前包含八套完整 Theme：MyAgents Default、Default Black、Sage、Absolutely、
+Linear、Proof、Codex、Raycast。`myagents-default` 仍是 canonical
 fallback；它的物理 owner 是：
 
 - `src/renderer/theme/themes/myagents-default.css`：通用首帧 fallback + 精确 Theme root / light / dark root 下的字体角色、颜色、材质、圆角、阴影、动画和 Floating Ball 运行时 Token；同一文件既静态保护 canonical 首帧，也由 manifest 提供实际 source 给注册校验与 runtime 激活；
 - `src/renderer/theme/themes/myagents-default.ts`：Launcher Hero 与 xterm / Monaco / Mermaid / Prism / Widget adapters；
-- `src/renderer/theme/themes/<preset>.css + <preset>.ts`：十一套 palette Theme 的共置 package；CSS
+- `src/renderer/theme/themes/<preset>.css + <preset>.ts`：六套 palette Theme 的共置 package；CSS
   显式拥有完整 visual Token，manifest 只用 `?inline` 读取同一份源码，adapter 从这份 CSS 的语义
   色板派生，不复制 canonical 值；构造与 Registry 校验共享语义解析器，不依赖 production minifier
   是否保留属性引号、空白或末尾分号；
@@ -49,14 +49,13 @@ fallback；它的物理 owner 是：
 
 可主题化：宿主色彩/字体/材质、Launcher Hero 两行内容和可选 bundled 背景、语法/图表/终端/编辑器/Widget iframe、Floating Ball。非主题化：布局与信息架构、业务状态机、原生窗口按钮、Browser 子 Webview 网页、用户内容、三方品牌 Logo/二维码、宠物 spritesheet。Space 的 `space-mono` 是独立 surface，本期不纳入应用 Theme；它在自身 scope 冻结当前 paper、文字、状态、字体、圆角与阴影基础并保留黑白 action palette，避免被全局 Theme ID 被动换肤。
 
-十三套 Theme 的目录和动作语义：
+八套 Theme 的产品顺序和动作语义：
 
-| 分组 | Theme | 主要视觉角色 |
-|---|---|---|
-| Baseline | MyAgents Default / Default Black | 暖纸张、陶土橙；Default Black 只用于对比 light 主按钮的中性黑方案，本章色值表仍只描述 canonical Theme |
-| Original | Ink / Fjord / Ochre | 编辑暖黑 / 海湾青 / 赭金羊皮纸 |
-| Community · PR #441 | Sage / Mauve / Wisteria | 鼠尾草绿 / 低饱和灰紫 / 藤紫 |
-| References | Absolutely / Linear / Proof / Codex / Raycast | 陶土橙 / 靛蓝 / 森林绿 / 标准蓝 / 珊瑚红 |
+| Theme | 主要视觉角色 |
+|---|---|
+| MyAgents Default / Default Black | 暖纸张、陶土橙；Default Black 只用于对比 light 主按钮的中性黑方案，本章色值表仍只描述 canonical Theme |
+| Sage | PR #441 的鼠尾草绿与自然纸面 |
+| Absolutely / Linear / Proof / Codex / Raycast | 陶土橙 / 靛蓝 / 森林绿 / 标准蓝 / 珊瑚红 |
 
 Primary CTA 必须消费 `--button-primary-*`；Accent 控制 Toggle 启用态、关键选中指示、
 Focus、链接和进行中状态。success/error/warning/info 继续使用各 Theme 自己的业务
@@ -373,10 +372,10 @@ CSS var aliases (`--shadow-*`) 由 Tailwind 编译桥产生；Theme contract 校
 图标: h-3.5 w-3.5
 ```
 
-浅色模式的实底 Accent / Primary 控件统一使用白色/近白前景；当来源 Accent 偏亮时，
-Theme 必须为 `--accent` / `--button-primary-bg` 使用同色相的更深 action shade，
-而不是把 `--on-accent` / `--button-primary-text` 反转成深色。更亮的来源色可以保留在
-低透明度背景或装饰渐变中，但不能直接作为小字号实底控件。
+实底 Primary 控件在 light / dark 都优先使用白色/近白前景；当来源 Accent 偏亮时，
+Theme 必须为 `--button-primary-bg` 使用同色相的更深 action shade，并保证正常与
+hover 都不低于 4.5:1。Accent 实底选中控件仍由 `--on-accent` 按实际明度配对，
+不随 Primary 一刀切反转。
 
 #### 次按钮 (Secondary)
 ```
@@ -505,7 +504,7 @@ Item 选中: 文字 var(--accent-warm)
 圆角: var(--radius-full)
 关闭背景: var(--line-strong)
 开启背景: var(--accent)
-滑块: 20px (h-5 w-5) 圆形, bg-[var(--toggle-thumb)] shadow；light 使用白色/近白控制面，dark 由 Theme 按 Accent 明度选择稳定反差（canonical 为暖米白）
+滑块: 20px (h-5 w-5) 圆形, bg-[var(--toggle-thumb)] shadow；所有 production Theme 的 light / dark 均使用白色/近白控制面
 滑块位置: 关闭 translate-x-0, 开启 translate-x-5
 光标: cursor-pointer, 加载中 cursor-wait, 禁用 cursor-not-allowed
 ```
@@ -1101,9 +1100,8 @@ PRD 0.2.34 P0-1 定为 14px；v2.5 起 ui 档即 14，dense 专用档已合并�
 
 Shadow 运行时值是 Theme scheme 下的 `--theme-shadow-*`，Tailwind 只通过
 `index.css` 的 `@theme inline` 编译桥生成 utility，详见第 5 节。dark scheme 使用更亮的
-暖橙动作色（`#d4803f`），强调 surface 的配对前景仍为白色；canonical dark 的
-`--toggle-thumb` 使用暖米白。可选 Theme 的 dark Accent 若本身是浅色，可使用深色 thumb 保持反差；
-light scheme 的 thumb 始终使用白色/近白控制面。
+暖橙 Accent（`#d4803f`），Primary 则使用校深的 `#b05e2d` / `#9c5027` 与白色前景。
+所有 production Theme 的 dark `--toggle-thumb` 均使用白色/近白控制面，与 light scheme 保持一致。
 
 ---
 
@@ -1411,6 +1409,8 @@ Hover 操作:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.7.6 | 2026-07-22 | **Theme 候选收敛与菜单扁平化**：移除 Ink、Fjord、Ochre、Mauve、Wisteria，production catalog 收敛为 8 套；开发者 Theme 下拉取消分组标题并直接按 Registry 产品顺序展示；所有保留 Theme 的夜间 Switch 使用白色 thumb |
+| 2.7.5 | 2026-07-22 | **夜间实底控件反差校准**：所有深色 Primary 在 dark scheme 使用同色相校深 surface 与白色前景，正常/hover 均不低于 4.5:1；Ink 浅色 Primary 保留深色前景；canonical、Sage、Absolutely、Linear、Proof、Codex、Raycast 深色 Switch 使用白色 thumb，其余预设保留深色 thumb |
 | 2.7.4 | 2026-07-22 | **Primary CTA 语义收口**：Launcher 对话发送、想法记录与 Task Editor 提交统一消费 `--button-primary-*`；Accent 保留给 Toggle、选中、Focus、链接与进行状态，使 Default Black 只改写主动作而不污染其他强调表面 |
 | 2.7.3 | 2026-07-22 | **Default Black Baseline A/B**：新增基于 canonical Default 的受控对比 Theme；仅将 light 主按钮从陶土棕改为中性黑，dark、其余 host Token、Launcher Hero 与 embedded adapters 保持 Default 同源；分组与完整 Token 差异由测试锁定 |
 | 2.7.2 | 2026-07-22 | **Theme 实色控件、代码前景与品牌呈现校正**：顶部 Tab active 底线恢复 2px；浅色预设的 Accent / Primary 实底控件统一改用白色前景与同色相深色 action surface；可选 Theme 的 Prism 普通文本消费 `--code-text`，其余语法色在 adapter 边界校准到深色 `--code-bg`；Settings About 品牌名复用 Launcher 的 Theme-owned Hero title 样式 |

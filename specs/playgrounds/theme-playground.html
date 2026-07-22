@@ -740,26 +740,14 @@
       <div class="lab-group">
         <span class="lab-label">Theme</span>
         <select id="theme-select" class="lab-select" aria-label="选择 Theme">
-          <optgroup label="Baseline">
-            <option value="myagents-default">MyAgents Default</option>
-          </optgroup>
-          <optgroup label="Original">
-            <option value="ink">Ink</option>
-            <option value="fjord">Fjord</option>
-            <option value="ochre">Ochre</option>
-          </optgroup>
-          <optgroup label="Community · PR #441">
-            <option value="sage">Sage</option>
-            <option value="mauve">Mauve</option>
-            <option value="wisteria">Wisteria</option>
-          </optgroup>
-          <optgroup label="Codex References">
-            <option value="absolutely">Absolutely</option>
-            <option value="linear">Linear</option>
-            <option value="proof">Proof</option>
-            <option value="codex">Codex</option>
-            <option value="raycast">Raycast</option>
-          </optgroup>
+          <option value="myagents-default">MyAgents Default</option>
+          <option value="default-black">Default Black</option>
+          <option value="sage">Sage</option>
+          <option value="absolutely">Absolutely</option>
+          <option value="linear">Linear</option>
+          <option value="proof">Proof</option>
+          <option value="codex">Codex</option>
+          <option value="raycast">Raycast</option>
         </select>
       </div>
 
@@ -962,57 +950,29 @@
         description: '当前产品基准 · 暖纸张、陶土橙与鼠尾草绿',
         radius: 21,
         light: { bg:'#faf6ee', surface:'#fffcf7', inset:'#e8dccf', user:'#fffefa', text:'#1c1612', text2:'#2e2825', muted:'#6f6156', subtle:'#a69a90', faint:'#c4b8ad', accent:'#c26d3a', accentHover:'#e18a58', actionHover:'#b05e2d', onAccent:'#ffffff', cool:'#2e6f5e', glowA:'#efd0bd', glowB:'#cdddd5', shadow:'28 22 18', texture:.13 },
-        dark: { bg:'#1a1614', surface:'#242018', inset:'#12100e', user:'#2a251d', text:'#e4dcd4', text2:'#cfc5ba', muted:'#968a7e', subtle:'#685c52', faint:'#4a4038', accent:'#d4803f', accentHover:'#e89860', actionHover:'#c27030', onAccent:'#ffffff', cool:'#4aad8a', glowA:'#2a2018', glowB:'#1a2420', shadow:'0 0 0', texture:.06 }
+        dark: { bg:'#1a1614', surface:'#242018', inset:'#12100e', user:'#2a251d', text:'#e4dcd4', text2:'#cfc5ba', muted:'#968a7e', subtle:'#685c52', faint:'#4a4038', accent:'#d4803f', accentHover:'#e89860', action:'#b05e2d', actionHover:'#9c5027', actionText:'#ffffff', onAccent:'#ffffff', cool:'#4aad8a', glowA:'#2a2018', glowB:'#1a2420', shadow:'0 0 0', texture:.06 }
       },
-      ink: {
-        label: 'Ink',
-        description: '原创 · 从 Space 提炼的暖黑、骨白与克制动作色',
-        radius: 15,
-        light: { bg:'#f4f1eb', surface:'#fbf9f5', inset:'#dfd9d0', user:'#fdfbf7', text:'#1b1a18', text2:'#34312d', muted:'#6e6962', subtle:'#a29b92', faint:'#beb7ad', accent:'#24221f', accentHover:'#3c3934', actionHover:'#3c3934', onAccent:'#f8f5ef', cool:'#52655d', glowA:'#e7e0d6', glowB:'#dce3df', shadow:'29 27 24', texture:.16, success:'#27784f', danger:'#b83f3f', info:'#456f8c' },
-        dark: { bg:'#11110f', surface:'#1b1a17', inset:'#0b0b09', user:'#211f1b', text:'#e9e4dc', text2:'#cec8bf', muted:'#979087', subtle:'#625d55', faint:'#45413c', accent:'#e4dcd4', accentHover:'#fffaf2', actionHover:'#fffaf2', onAccent:'#171512', cool:'#a6b8b0', glowA:'#27231e', glowB:'#17211d', shadow:'0 0 0', texture:.07 }
-      },
-      fjord: {
-        label: 'Fjord',
-        description: '原创 · 海湾青、冷雾灰与低饱和深水层次',
-        radius: 18,
-        light: { bg:'#f2f7f7', surface:'#fbfdfd', inset:'#dce8e8', user:'#f8fcfc', text:'#172728', text2:'#2c3d3e', muted:'#607577', subtle:'#9aabad', faint:'#bac6c7', accent:'#26777b', accentHover:'#1e6468', actionHover:'#1e6468', onAccent:'#ffffff', cool:'#3f6d92', glowA:'#c5e3e1', glowB:'#d5e1eb', shadow:'22 55 57', texture:.12, success:'#27784f', danger:'#b83f3f', info:'#456f8c' },
-        dark: { bg:'#0f191a', surface:'#172426', inset:'#0a1213', user:'#1b292b', text:'#e1ebeb', text2:'#c5d5d6', muted:'#829799', subtle:'#536668', faint:'#394a4c', accent:'#53a6aa', accentHover:'#6abcc0', actionHover:'#6abcc0', onAccent:'#0d1a1b', cool:'#78a3c6', glowA:'#183437', glowB:'#172635', shadow:'0 0 0', texture:.06 }
-      },
-      ochre: {
-        label: 'Ochre',
-        description: '原创 · 赭金、羊皮纸与深褐工作台',
-        radius: 18,
-        light: { bg:'#f7f3e7', surface:'#fffaf0', inset:'#e8dec5', user:'#fdf9ef', text:'#272116', text2:'#3c3323', muted:'#746953', subtle:'#a89e88', faint:'#c2b7a0', accent:'#a6761e', accentHover:'#bb892e', actionHover:'#bb892e', onAccent:'#171105', cool:'#68795e', glowA:'#ecd9aa', glowB:'#dce5cf', shadow:'58 43 19', texture:.14, success:'#27784f', danger:'#b83f3f', info:'#456f8c' },
-        dark: { bg:'#19160f', surface:'#252116', inset:'#100e09', user:'#2b2619', text:'#eee7d5', text2:'#d5cab2', muted:'#9e9173', subtle:'#695e48', faint:'#4c432f', accent:'#d1a343', accentHover:'#e3b95c', actionHover:'#e3b95c', onAccent:'#241c0b', cool:'#91a681', glowA:'#302513', glowB:'#1f291b', shadow:'0 0 0', texture:.07 }
+      'default-black': {
+        label: 'Default Black',
+        description: 'MyAgents Default 对照组 · 仅把浅色主动作改为中性黑',
+        radius: 21,
+        light: { bg:'#faf6ee', surface:'#fffcf7', inset:'#e8dccf', user:'#fffefa', text:'#1c1612', text2:'#2e2825', muted:'#6f6156', subtle:'#a69a90', faint:'#c4b8ad', accent:'#c26d3a', accentHover:'#e18a58', action:'#111111', actionHover:'#2b2b2b', actionText:'#ffffff', onAccent:'#ffffff', cool:'#2e6f5e', glowA:'#efd0bd', glowB:'#cdddd5', shadow:'28 22 18', texture:.13 },
+        dark: { bg:'#1a1614', surface:'#242018', inset:'#12100e', user:'#2a251d', text:'#e4dcd4', text2:'#cfc5ba', muted:'#968a7e', subtle:'#685c52', faint:'#4a4038', accent:'#d4803f', accentHover:'#e89860', action:'#b05e2d', actionHover:'#9c5027', actionText:'#ffffff', onAccent:'#ffffff', cool:'#4aad8a', glowA:'#2a2018', glowB:'#1a2420', shadow:'0 0 0', texture:.06 }
       },
       sage: {
         label: 'Sage',
         description: '社区 · xxia-king / PR #441 · 鼠尾草绿与自然纸面',
         radius: 21,
-        light: { bg:'#f3f7ef', surface:'#fbfff8', inset:'#dce8d6', user:'#fdfff9', text:'#17221b', text2:'#27352b', muted:'#657367', subtle:'#95a091', faint:'#b6beb0', accent:'#5f8f68', accentHover:'#6da476', actionHover:'#6da476', onAccent:'#121912', cool:'#4f8278', glowA:'#d5e8d0', glowB:'#cfe4de', shadow:'23 34 27', texture:.10, success:'#27784f', successBg:'#dcecdf', danger:'#b83f3f', dangerBg:'#f5dede', info:'#456f8c' },
-        dark: { bg:'#121912', surface:'#1a241a', inset:'#0d120d', user:'#202c20', text:'#dce8d7', text2:'#c6d3c2', muted:'#94a28f', subtle:'#64715f', faint:'#475142', accent:'#7fb184', accentHover:'#6da073', actionHover:'#6da073', onAccent:'#0f150f', cool:'#6cb3a5', glowA:'#213321', glowB:'#17302d', shadow:'0 0 0', texture:.05, success:'#7fb184', successBg:'rgb(127 177 132 / .16)', danger:'#ef6b66', dangerBg:'rgb(239 107 102 / .16)', info:'#77aeb8' }
-      },
-      mauve: {
-        label: 'Mauve',
-        description: '社区 · xxia-king / PR #441 · 低饱和灰紫与成熟文档感',
-        radius: 21,
-        light: { bg:'#f8f4f7', surface:'#fffafd', inset:'#eadfe8', user:'#fffafd', text:'#201820', text2:'#3a3039', muted:'#756875', subtle:'#aaa0a9', faint:'#c6bdc5', accent:'#9a5f8f', accentHover:'#884f7e', actionHover:'#884f7e', onAccent:'#ffffff', cool:'#6f6aa8', glowA:'#ead8e8', glowB:'#d9d6ec', shadow:'32 24 32', texture:.10, success:'#27784f', successBg:'#e0ede5', danger:'#b83f3f', dangerBg:'#f5dfe3', info:'#456f8c' },
-        dark: { bg:'#191219', surface:'#241a23', inset:'#120d12', user:'#2c202b', text:'#eadce8', text2:'#d5c5d2', muted:'#a0939e', subtle:'#706370', faint:'#504750', accent:'#c18ab7', accentHover:'#b079a6', actionHover:'#b079a6', onAccent:'#140f14', cool:'#9b96d4', glowA:'#342034', glowB:'#2a2540', shadow:'0 0 0', texture:.05, success:'#78b58d', successBg:'rgb(120 181 141 / .16)', danger:'#ef737c', dangerBg:'rgb(239 115 124 / .16)', info:'#8aa2d1' }
-      },
-      wisteria: {
-        label: 'Wisteria',
-        description: '社区 · xxia-king / PR #441 · 轻盈藤紫与冷调阅读表面',
-        radius: 21,
-        light: { bg:'#f7f4fb', surface:'#fffaff', inset:'#e7dff2', user:'#fffaff', text:'#1e1a24', text2:'#352f40', muted:'#70687c', subtle:'#a49ab2', faint:'#c0b7ca', accent:'#8a6fc8', accentHover:'#977ed0', actionHover:'#977ed0', onAccent:'#15121c', cool:'#5f83b7', glowA:'#e3d9f5', glowB:'#d8e0f2', shadow:'30 26 36', texture:.10, success:'#27784f', successBg:'#e0ede8', danger:'#b83f3f', dangerBg:'#f5e0e5', info:'#456f8c' },
-        dark: { bg:'#15121c', surface:'#201a2a', inset:'#0f0c14', user:'#282134', text:'#e4dcf0', text2:'#cec3df', muted:'#9b91ad', subtle:'#695f7a', faint:'#4b4358', accent:'#a891e2', accentHover:'#9780d0', actionHover:'#9780d0', onAccent:'#111019', cool:'#86a7dc', glowA:'#2c2340', glowB:'#202c42', shadow:'0 0 0', texture:.05, success:'#7db69a', successBg:'rgb(125 182 154 / .16)', danger:'#ef7b8c', dangerBg:'rgb(239 123 140 / .16)', info:'#8eb1e2' }
+        light: { bg:'#f3f7ef', surface:'#fbfff8', inset:'#dce8d6', user:'#fdfff9', text:'#17221b', text2:'#27352b', muted:'#657367', subtle:'#95a091', faint:'#b6beb0', accent:'#47754f', accentHover:'#3f6c47', action:'#47754f', actionHover:'#3f6c47', actionText:'#ffffff', onAccent:'#ffffff', cool:'#4f8278', glowA:'#d5e8d0', glowB:'#cfe4de', shadow:'23 34 27', texture:.10, success:'#27784f', successBg:'#dcecdf', danger:'#b83f3f', dangerBg:'#f5dede', info:'#456f8c' },
+        dark: { bg:'#121912', surface:'#1a241a', inset:'#0d120d', user:'#202c20', text:'#dce8d7', text2:'#c6d3c2', muted:'#94a28f', subtle:'#64715f', faint:'#475142', accent:'#7fb184', accentHover:'#6da073', action:'#47754f', actionHover:'#3f6c47', actionText:'#ffffff', onAccent:'#0f150f', cool:'#6cb3a5', glowA:'#213321', glowB:'#17302d', shadow:'0 0 0', texture:.05, success:'#7fb184', successBg:'rgb(127 177 132 / .16)', danger:'#ef6b66', dangerBg:'rgb(239 107 102 / .16)', info:'#77aeb8' }
       },
       absolutely: {
         label: 'Absolutely',
         description: 'Codex 参考 · 陶土暖橙与柔和中性表面',
         radius: 19,
         font: "Inter, 'SF Pro Text', -apple-system, 'PingFang SC', sans-serif",
-        light: { bg:'#f9f9f7', surface:'#fffefa', inset:'#ece8e2', user:'#fffefb', text:'#2d2d2b', text2:'#46453f', muted:'#716e67', subtle:'#aaa69e', faint:'#c4c0b9', accent:'#cc7d5e', accentHover:'#db8f70', actionHover:'#db8f70', onAccent:'#2d211d', cool:'#4b7869', glowA:'#efd9cf', glowB:'#dce5e0', shadow:'45 41 37', texture:.10, success:'#27784f', danger:'#b83f3f', info:'#456f8c' },
-        dark: { bg:'#2d2d2b', surface:'#373633', inset:'#242321', user:'#3a3834', text:'#f9f9f7', text2:'#dedcd7', muted:'#aaa69e', subtle:'#747069', faint:'#57534d', accent:'#cc7d5e', accentHover:'#df9375', actionHover:'#df9375', onAccent:'#251a16', cool:'#75a390', glowA:'#3d2b25', glowB:'#283831', shadow:'0 0 0', texture:.05 }
+        light: { bg:'#f9f9f7', surface:'#fffefa', inset:'#ece8e2', user:'#fffefb', text:'#2d2d2b', text2:'#46453f', muted:'#716e67', subtle:'#aaa69e', faint:'#c4c0b9', accent:'#aa563b', accentHover:'#9d4e35', action:'#aa563b', actionHover:'#9d4e35', actionText:'#ffffff', onAccent:'#ffffff', cool:'#4b7869', glowA:'#efd9cf', glowB:'#dce5e0', shadow:'45 41 37', texture:.10, success:'#27784f', danger:'#b83f3f', info:'#456f8c' },
+        dark: { bg:'#2d2d2b', surface:'#373633', inset:'#242321', user:'#3a3834', text:'#f9f9f7', text2:'#dedcd7', muted:'#aaa69e', subtle:'#747069', faint:'#57534d', accent:'#cc7d5e', accentHover:'#df9375', action:'#aa563b', actionHover:'#9d4e35', actionText:'#ffffff', onAccent:'#251a16', cool:'#75a390', glowA:'#3d2b25', glowB:'#283831', shadow:'0 0 0', texture:.05 }
       },
       linear: {
         label: 'Linear',
@@ -1027,7 +987,7 @@
         description: 'Codex 参考 · 森林绿、编辑纸与沉静阅读感',
         radius: 17,
         light: { bg:'#f5f3ed', surface:'#fbfaf6', inset:'#e3e0d7', user:'#fdfcf8', text:'#2f312d', text2:'#454941', muted:'#687065', subtle:'#a5aaa0', faint:'#c0c3bb', accent:'#3d755d', accentHover:'#2f624c', actionHover:'#2f624c', onAccent:'#ffffff', cool:'#55749a', glowA:'#d8e4d8', glowB:'#e7dfce', shadow:'43 50 43', texture:.12, success:'#27784f', danger:'#b83f3f', info:'#456f8c' },
-        dark: { bg:'#18201c', surface:'#222b26', inset:'#101613', user:'#273129', text:'#e8ebe5', text2:'#cfd6cc', muted:'#929e93', subtle:'#5d6b60', faint:'#414d44', accent:'#67a384', accentHover:'#7bb698', actionHover:'#7bb698', onAccent:'#102018', cool:'#7f9fc3', glowA:'#203a2d', glowB:'#282d20', shadow:'0 0 0', texture:.06 }
+        dark: { bg:'#18201c', surface:'#222b26', inset:'#101613', user:'#273129', text:'#e8ebe5', text2:'#cfd6cc', muted:'#929e93', subtle:'#5d6b60', faint:'#414d44', accent:'#67a384', accentHover:'#7bb698', action:'#3d755d', actionHover:'#2f624c', actionText:'#ffffff', onAccent:'#102018', cool:'#7f9fc3', glowA:'#203a2d', glowB:'#282d20', shadow:'0 0 0', texture:.06 }
       },
       codex: {
         label: 'Codex',
@@ -1041,8 +1001,8 @@
         description: 'Codex 参考 · 珊瑚红、高明度中性画布与强动作感',
         radius: 16,
         font: "Inter, 'SF Pro Text', -apple-system, 'PingFang SC', sans-serif",
-        light: { bg:'#ffffff', surface:'#ffffff', inset:'#ededed', user:'#fffafa', text:'#030303', text2:'#242424', muted:'#6c6c6c', subtle:'#a2a2a2', faint:'#c5c5c5', accent:'#ff6363', accentHover:'#e95454', actionHover:'#e95454', onAccent:'#2a0a0a', cool:'#397f75', glowA:'#ffe0e0', glowB:'#dfecea', shadow:'45 26 26', texture:.07, success:'#27784f', danger:'#b83f3f', info:'#456f8c' },
-        dark: { bg:'#101010', surface:'#1a1a1a', inset:'#090909', user:'#211b1b', text:'#fefefe', text2:'#dedede', muted:'#999999', subtle:'#616161', faint:'#3e3e3e', accent:'#ff6363', accentHover:'#ff7a7a', actionHover:'#ff7a7a', onAccent:'#2b0909', cool:'#62aa9e', glowA:'#3a1c1c', glowB:'#152924', shadow:'0 0 0', texture:.04 }
+        light: { bg:'#ffffff', surface:'#ffffff', inset:'#ededed', user:'#fffafa', text:'#030303', text2:'#242424', muted:'#6c6c6c', subtle:'#a2a2a2', faint:'#c5c5c5', accent:'#c83f45', accentHover:'#bb363c', action:'#c83f45', actionHover:'#bb363c', actionText:'#ffffff', onAccent:'#ffffff', cool:'#397f75', glowA:'#ffe0e0', glowB:'#dfecea', shadow:'45 26 26', texture:.07, success:'#27784f', danger:'#b83f3f', info:'#456f8c' },
+        dark: { bg:'#101010', surface:'#1a1a1a', inset:'#090909', user:'#211b1b', text:'#fefefe', text2:'#dedede', muted:'#999999', subtle:'#616161', faint:'#3e3e3e', accent:'#ff6363', accentHover:'#ff7a7a', action:'#c83f45', actionHover:'#bb363c', actionText:'#ffffff', onAccent:'#2b0909', cool:'#62aa9e', glowA:'#3a1c1c', glowB:'#152924', shadow:'0 0 0', texture:.04 }
       }
     };
 
@@ -1104,9 +1064,9 @@
         '--accent': palette.accent,
         '--accent-hover': palette.accentHover,
         '--on-accent': palette.onAccent,
-        '--action-bg': palette.accent,
+        '--action-bg': palette.action || palette.accent,
         '--action-bg-hover': palette.actionHover || palette.accentHover,
-        '--action-text': palette.onAccent,
+        '--action-text': palette.actionText || palette.onAccent,
         '--accent-cool': palette.cool,
         '--accent-soft': `rgb(${rgb(palette.accent)} / ${scheme === 'dark' ? '.14' : '.08'})`,
         '--accent-muted': `rgb(${rgb(palette.accent)} / ${scheme === 'dark' ? '.22' : '.15'})`,

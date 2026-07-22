@@ -42,12 +42,7 @@ describe('ThemeRegistry', () => {
   const productionThemeIds = [
     'myagents-default',
     'default-black',
-    'ink',
-    'fjord',
-    'ochre',
     'sage',
-    'mauve',
-    'wisteria',
     'absolutely',
     'linear',
     'proof',
@@ -55,17 +50,12 @@ describe('ThemeRegistry', () => {
     'raycast',
   ];
 
-  it('ships thirteen complete production Themes in product order', () => {
+  it('ships eight complete production Themes in product order', () => {
     expect(themeRegistry.getProductionIds()).toEqual(productionThemeIds);
     expect(themeRegistry.getAcceptedDefinitions().map(definition => definition.displayName)).toEqual([
       'MyAgents Default',
       'Default Black',
-      'Ink',
-      'Fjord',
-      'Ochre',
       'Sage',
-      'Mauve',
-      'Wisteria',
       'Absolutely',
       'Linear',
       'Proof',

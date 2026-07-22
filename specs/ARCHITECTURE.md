@@ -788,8 +788,8 @@ Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能�
 
 Theme 是 renderer 视觉语言的应用级唯一 owner；`AppearanceMode` 只是用户的明暗偏好，两者正交：
 
-- `themeId`：完整 Theme 身份；production registry 依次注册 `myagents-default`、Ink、Fjord、
-  Ochre、Sage、Mauve、Wisteria、Absolutely、Linear、Proof、Codex、Raycast；
+- `themeId`：完整 Theme 身份；production registry 依次注册 `myagents-default`、`default-black`、
+  Sage、Absolutely、Linear、Proof、Codex、Raycast；
 - `appearanceMode`：`system | light | dark`；
 - `resolvedColorScheme`：每个 Webview 此刻解析出的 `light | dark`。
 

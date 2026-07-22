@@ -68,8 +68,7 @@ describe('Theme architecture guardrails', () => {
 
   it('keeps every optional package scoped, side-effect free, and independent from Space', () => {
     const optionalThemeIds = [
-      'default-black', 'ink', 'fjord', 'ochre', 'sage', 'mauve', 'wisteria',
-      'absolutely', 'linear', 'proof', 'codex', 'raycast',
+      'default-black', 'sage', 'absolutely', 'linear', 'proof', 'codex', 'raycast',
     ];
     for (const themeId of optionalThemeIds) {
       const manifest = source(`src/renderer/theme/themes/${themeId}.ts`);
@@ -122,9 +121,6 @@ describe('Theme architecture guardrails', () => {
       );
       const variantTokens = collect(variantStylesheet, variantScheme, [[variantScheme]]);
 
-      // Both values compute to white; the literal keeps optional-package
-      // contrast checks independent from cross-block var() resolution.
-      canonicalTokens.set('--button-primary-text', '#ffffff');
       if (scheme === 'light') {
         canonicalTokens.set('--button-primary-bg', '#111111');
         canonicalTokens.set('--button-primary-bg-hover', '#2b2b2b');
@@ -191,8 +187,8 @@ describe('Theme architecture guardrails', () => {
         '--accent-warm-subtle: rgba(212, 128, 63, 0.12)',
         '--accent-warm-muted: rgba(212, 128, 63, 0.20)',
         '--accent-warm-subtle-a0: rgba(212, 128, 63, 0)', '--on-accent: #ffffff',
-        '--button-primary-bg: #d4803f', '--button-primary-bg-hover: #c27030',
-        '--button-primary-text: var(--on-accent)', '--focus-border: var(--accent)', '--toggle-thumb: #e4dcd4',
+        '--button-primary-bg: #b05e2d', '--button-primary-bg-hover: #9c5027',
+        '--button-primary-text: var(--on-accent)', '--focus-border: var(--accent)', '--toggle-thumb: #ffffff',
       ],
     } as const;
     const expectedSpaceByScheme = {

@@ -166,9 +166,9 @@ html[data-theme-id='sage'][data-color-scheme='dark'] {
   --info: #77aeb8;
   --info-bg: rgb(119 174 184 / 0.16);
   --on-info: #121912;
-  --button-primary-bg: #7fb184;
-  --button-primary-bg-hover: #6da073;
-  --button-primary-text: #0f150f;
+  --button-primary-bg: #47754f;
+  --button-primary-bg-hover: #3f6c47;
+  --button-primary-text: #ffffff;
   --button-dark-bg: #dce8d7;
   --button-dark-bg-hover: #c6d3c2;
   --button-dark-text: #121912;
@@ -219,7 +219,7 @@ html[data-theme-id='sage'][data-color-scheme='dark'] {
   --expanded-block-line: rgb(148 162 143 / 0.25);
   --warning-border: rgb(217 163 71 / 0.30);
   --focus-border: #7fb184;
-  --toggle-thumb: #0f150f;
+  --toggle-thumb: #ffffff;
   --toggle-off-bg: rgb(220 232 215 / 0.18);
   --code-bg: #0d120d;
   --code-bg-a0: rgb(13 18 13 / 0);

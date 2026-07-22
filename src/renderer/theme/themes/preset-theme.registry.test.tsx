@@ -5,25 +5,15 @@ import { ThemeRegistry } from '../registry';
 import { absolutelyThemeManifest } from './absolutely';
 import { codexThemeManifest } from './codex';
 import { defaultBlackThemeManifest } from './default-black';
-import { fjordThemeManifest } from './fjord';
-import { inkThemeManifest } from './ink';
 import { linearThemeManifest } from './linear';
-import { mauveThemeManifest } from './mauve';
 import { myAgentsDefaultTheme } from './myagents-default';
-import { ochreThemeManifest } from './ochre';
 import { createPresetTheme } from './preset-theme';
 import { proofThemeManifest } from './proof';
 import { raycastThemeManifest } from './raycast';
 import { sageThemeManifest } from './sage';
-import { wisteriaThemeManifest } from './wisteria';
 
 const manifests = [
-  inkThemeManifest,
-  fjordThemeManifest,
-  ochreThemeManifest,
   sageThemeManifest,
-  mauveThemeManifest,
-  wisteriaThemeManifest,
   absolutelyThemeManifest,
   linearThemeManifest,
   proofThemeManifest,

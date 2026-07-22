@@ -1877,12 +1877,6 @@
       "themeTitle": "Theme",
       "themeDescription": "Switch the app-wide visual theme outside Space for developer evaluation.",
       "themeSaveFailed": "Failed to switch Theme: {{message}}",
-      "themeGroups": {
-        "baseline": "Baseline",
-        "original": "Original",
-        "community": "Community · PR #441",
-        "references": "References"
-      },
       "devModeTitle": "Developer Mode",
       "devModeDescription": "Show log entry buttons on pages, such as Logs and System Info.",
       "codexProviderTitle": "Codex Subscription Provider",

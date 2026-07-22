@@ -3,24 +3,14 @@ import { describe, expect, it } from 'vitest';
 
 import { absolutelyThemeManifest } from './absolutely';
 import { codexThemeManifest } from './codex';
-import { fjordThemeManifest } from './fjord';
-import { inkThemeManifest } from './ink';
 import { linearThemeManifest } from './linear';
-import { mauveThemeManifest } from './mauve';
-import { ochreThemeManifest } from './ochre';
 import { createPresetTheme } from './preset-theme';
 import { proofThemeManifest } from './proof';
 import { raycastThemeManifest } from './raycast';
 import { sageThemeManifest } from './sage';
-import { wisteriaThemeManifest } from './wisteria';
 
 const manifests = [
-  inkThemeManifest,
-  fjordThemeManifest,
-  ochreThemeManifest,
   sageThemeManifest,
-  mauveThemeManifest,
-  wisteriaThemeManifest,
   absolutelyThemeManifest,
   linearThemeManifest,
   proofThemeManifest,

@@ -166,9 +166,9 @@ html[data-theme-id='proof'][data-color-scheme='dark'] {
   --info: #7f9fc3;
   --info-bg: rgb(127 159 195 / 0.16);
   --on-info: #18201c;
-  --button-primary-bg: #67a384;
-  --button-primary-bg-hover: #7bb698;
-  --button-primary-text: #102018;
+  --button-primary-bg: #3d755d;
+  --button-primary-bg-hover: #2f624c;
+  --button-primary-text: #ffffff;
   --button-dark-bg: #e8ebe5;
   --button-dark-bg-hover: #cfd6cc;
   --button-dark-text: #18201c;
@@ -219,7 +219,7 @@ html[data-theme-id='proof'][data-color-scheme='dark'] {
   --expanded-block-line: rgb(146 158 147 / 0.25);
   --warning-border: rgb(217 163 71 / 0.30);
   --focus-border: #67a384;
-  --toggle-thumb: #102018;
+  --toggle-thumb: #ffffff;
   --toggle-off-bg: rgb(232 235 229 / 0.18);
   --code-bg: #101613;
   --code-bg-a0: rgb(16 22 19 / 0);

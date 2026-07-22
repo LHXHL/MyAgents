@@ -166,9 +166,9 @@ html[data-theme-id='raycast'][data-color-scheme='dark'] {
   --info: #62aa9e;
   --info-bg: rgb(98 170 158 / 0.16);
   --on-info: #101010;
-  --button-primary-bg: #ff6363;
-  --button-primary-bg-hover: #ff7a7a;
-  --button-primary-text: #2b0909;
+  --button-primary-bg: #c83f45;
+  --button-primary-bg-hover: #bb363c;
+  --button-primary-text: #ffffff;
   --button-dark-bg: #fefefe;
   --button-dark-bg-hover: #dedede;
   --button-dark-text: #101010;
@@ -219,7 +219,7 @@ html[data-theme-id='raycast'][data-color-scheme='dark'] {
   --expanded-block-line: rgb(153 153 153 / 0.25);
   --warning-border: rgb(217 163 71 / 0.30);
   --focus-border: #ff6363;
-  --toggle-thumb: #2b0909;
+  --toggle-thumb: #ffffff;
   --toggle-off-bg: rgb(254 254 254 / 0.18);
   --code-bg: #090909;
   --code-bg-a0: rgb(9 9 9 / 0);

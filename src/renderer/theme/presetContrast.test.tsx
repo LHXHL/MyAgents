@@ -40,13 +40,22 @@ function applyBrightness(hex: string, multiplier: number): string {
 
 function tokensFor(stylesheetText: string, themeId: string, scheme: 'light' | 'dark'): Map<string, string> {
   const selector = `html[data-theme-id='${themeId}'][data-color-scheme='${scheme}']`;
+  const allowedSelectorLists = themeId === 'myagents-default'
+    ? [[`html[data-color-scheme='${scheme}']`, selector]]
+    : [[selector]];
   const stylesheet = parseThemeStylesheet(stylesheetText);
   return collectDeclaredTokens(collectContractBlocks(
     stylesheet.topLevelBlocks,
     selector,
-    [[selector]],
+    allowedSelectorLists,
     `contrast selector ${selector}`,
   ));
+}
+
+function resolvedColorToken(tokens: Map<string, string>, tokenName: string): string {
+  const value = tokens.get(tokenName)!;
+  const reference = value.match(/^var\((--[a-z0-9-]+)\)$/)?.[1];
+  return reference ? tokens.get(reference)! : value;
 }
 
 describe('production Theme contrast', () => {
@@ -68,7 +77,7 @@ describe('production Theme contrast', () => {
     for (const definition of themeRegistry.getAcceptedDefinitions().slice(1)) {
       const tokens = tokensFor(definition.stylesheetText, definition.id, 'light');
       expect(
-        luminance(tokens.get('--button-primary-text')!),
+        luminance(resolvedColorToken(tokens, '--button-primary-text')),
         `${definition.id}.light primary action foreground`,
       ).toBeGreaterThanOrEqual(lightSurfaceFloor);
     }
@@ -83,6 +92,39 @@ describe('production Theme contrast', () => {
         luminance(tokens.get('--on-accent')!),
         `${definition.id}.light solid Accent foreground`,
       ).toBeGreaterThanOrEqual(lightSurfaceFloor);
+    }
+  });
+
+  it('keeps every dark Theme primary action readable with the intended foreground polarity', () => {
+    const lightSurfaceFloor = luminance('#f0f0f0');
+
+    for (const definition of themeRegistry.getAcceptedDefinitions()) {
+      const tokens = tokensFor(definition.stylesheetText, definition.id, 'dark');
+      const foreground = resolvedColorToken(tokens, '--button-primary-text');
+
+      expect(
+        contrast(foreground, tokens.get('--button-primary-bg')!),
+        `${definition.id}.dark primary action`,
+      ).toBeGreaterThanOrEqual(4.5);
+      expect(
+        contrast(foreground, tokens.get('--button-primary-bg-hover')!),
+        `${definition.id}.dark primary action hover`,
+      ).toBeGreaterThanOrEqual(4.5);
+      expect(
+        luminance(foreground),
+        `${definition.id}.dark primary action foreground polarity`,
+      ).toBeGreaterThanOrEqual(lightSurfaceFloor);
+    }
+  });
+
+  it('keeps reviewed dark Theme toggle thumb polarity stable', () => {
+    for (const definition of themeRegistry.getAcceptedDefinitions()) {
+      const tokens = tokensFor(definition.stylesheetText, definition.id, 'dark');
+      const thumb = tokens.get('--toggle-thumb')!;
+      expect(
+        luminance(thumb),
+        `${definition.id}.dark toggle thumb polarity`,
+      ).toBeGreaterThanOrEqual(0.5);
     }
   });
 
@@ -140,7 +182,7 @@ describe('production Theme contrast', () => {
       candidate => candidate.id === 'default-black',
     )!;
     const tokens = tokensFor(definition.stylesheetText, definition.id, 'light');
-    const foreground = tokens.get('--button-primary-text')!;
+    const foreground = resolvedColorToken(tokens, '--button-primary-text');
 
     expect(contrast(foreground, tokens.get('--button-primary-bg')!)).toBeGreaterThanOrEqual(4.5);
     expect(contrast(foreground, tokens.get('--button-primary-bg-hover')!)).toBeGreaterThanOrEqual(4.5);

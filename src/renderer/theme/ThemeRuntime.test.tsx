@@ -196,7 +196,7 @@ describe('ThemeRuntimeProvider', () => {
     const view = render(
       <ThemeRuntimeProvider
         registry={themeRegistry}
-        selection={{ themeId: 'ink', appearanceMode: 'light' }}
+        selection={{ themeId: 'sage', appearanceMode: 'light' }}
         broadcastSelection
       >
         <Probe />
@@ -205,7 +205,7 @@ describe('ThemeRuntimeProvider', () => {
 
     await waitFor(() => expect(runtimeMocks.emit).toHaveBeenLastCalledWith(
       THEME_SELECTION_CHANGED_EVENT,
-      { themeId: 'ink', appearanceMode: 'light' },
+      { themeId: 'sage', appearanceMode: 'light' },
     ));
 
     view.rerender(
