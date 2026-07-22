@@ -1119,7 +1119,7 @@ export default function ChannelDetailView({
                                     </span>
                                 )}
                                 {pendingCount > 0 && (
-                                    <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--warning)] px-1.5 text-xs font-bold text-white">
+                                    <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-[var(--warning)] px-1.5 text-xs font-bold text-[var(--on-warning)]">
                                         {pendingCount}
                                     </span>
                                 )}
@@ -1161,7 +1161,7 @@ export default function ChannelDetailView({
                                                                 disabled
                                                                     ? 'cursor-not-allowed text-[var(--ink-muted)] opacity-40'
                                                                     : selected
-                                                                        ? 'bg-[var(--accent)] text-white'
+                                                                        ? 'bg-[var(--accent)] text-[var(--on-accent)]'
                                                                         : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
                                                             }`}
                                                         >

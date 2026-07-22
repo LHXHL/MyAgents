@@ -5,12 +5,11 @@ import {
     type AppConfig,
     DEFAULT_CONFIG,
     type Project,
-    type Provider,
     DEFAULT_SYSTEM_PRESET_WORKSPACE_ID,
     getSystemPresetProjectMetadataPatch,
-    mergePresetModelWithCustomEntry,
     normalizeClaudeTranscriptCleanupPeriodDays,
 } from '../types';
+export { mergePresetCustomModels } from '../../../shared/config-types';
 import {
     isBrowserDevMode,
     withConfigLock,
@@ -28,6 +27,7 @@ import { normalizeStringifiedJsonFields, promoteAgentMcpJsonToGlobal } from './c
 import { workspacePathsEqual } from '../../../shared/workspacePath';
 import { type ImBotConfig, DEFAULT_IM_BOT_CONFIG } from '../../../shared/types/im';
 import { normalizeUiLanguage } from '../../../shared/i18n';
+import { normalizeThemeConfigRecord } from '../../../shared/theme';
 // Agent migration is triggered from ConfigProvider after both config + projects are loaded
 import { isDebugMode } from '@/utils/debug';
 
@@ -129,7 +129,9 @@ export function migrateUiLanguageField(config: AppConfig): AppConfig {
 function normalizeLoadedConfig(config: AppConfig): AppConfig {
     normalizeStringifiedJsonFields(config);
     promoteAgentMcpJsonToGlobal(config);
-    return normalizeDeveloperSettings(config);
+    return normalizeDeveloperSettings(
+        normalizeThemeConfigRecord(config as unknown as Record<string, unknown>) as unknown as AppConfig,
+    );
 }
 
 export async function ensureManagedCodexProviderDevGateDefault(): Promise<void> {
@@ -144,8 +146,9 @@ export async function ensureManagedCodexProviderDevGateDefault(): Promise<void> 
         if (Object.prototype.hasOwnProperty.call(latest, 'managedCodexProviderDevGate')) {
             return;
         }
+        const normalized = normalizeThemeConfigRecord(latest);
         localStorage.setItem('myagents:config', JSON.stringify({
-            ...latest,
+            ...normalized,
             managedCodexProviderDevGate: true,
         }));
         return;
@@ -159,8 +162,9 @@ export async function ensureManagedCodexProviderDevGateDefault(): Promise<void> 
         if (Object.prototype.hasOwnProperty.call(latest, 'managedCodexProviderDevGate')) {
             return;
         }
+        const normalized = normalizeThemeConfigRecord(latest);
         await safeWriteJson(configPath, {
-            ...latest,
+            ...normalized,
             managedCodexProviderDevGate: true,
         });
     });
@@ -180,7 +184,10 @@ export async function loadAppConfig(): Promise<AppConfig> {
         if (Object.keys(loaded).length > 0) {
             migrateUiLanguageField(loaded);
         }
-        return normalizeLoadedConfig({ ...dynamicDefault, ...loaded });
+        const migrated = normalizeThemeConfigRecord(
+            loaded as unknown as Record<string, unknown>,
+        ) as unknown as AppConfig;
+        return normalizeLoadedConfig({ ...dynamicDefault, ...migrated });
     }
 
     try {
@@ -195,7 +202,11 @@ export async function loadAppConfig(): Promise<AppConfig> {
             // merge — once the default supplies `osNotifications: true`, the
             // legacy field is masked and we can no longer distinguish "user
             // had cron on" from "user had cron off".
-            const migrated = migrateOsNotificationsField(loaded);
+            const migrated = migrateOsNotificationsField(
+                normalizeThemeConfigRecord(
+                    loaded as unknown as Record<string, unknown>,
+                ) as unknown as AppConfig,
+            );
             // Heal agent config load-boundary drift before any consumer sees it:
             // - issue #301: `providerEnvJson`/`mcpServersJson` persisted as raw
             //   objects instead of stringified JSON;
@@ -272,24 +283,29 @@ export function notifyConfigChanged(reason: string): void {
     }
 }
 
+export type ConfigChangeNotification = 'immediate' | 'deferred';
+
 /**
  * Atomically read-modify-write the app config.
  *
- * On a real write (modifier produced a diff), fires CONFIG_CHANGED_EVENT so
- * ConfigProvider re-syncs its React state and effects keyed on config fields
- * (e.g. Chat's MCP push) re-run with the new values. Idempotent writes
+ * On a real write (modifier produced a diff), normally fires
+ * CONFIG_CHANGED_EVENT so ConfigProvider re-syncs its React state and effects
+ * keyed on config fields (e.g. Chat's MCP push) re-run with the new values.
+ * Composite multi-file transactions pass `notification: 'deferred'` and
+ * publish once after every disk half reaches its final state. Idempotent writes
  * (before === after) do NOT fire the event — keeps the refresh cost
  * proportional to actual change.
  */
 export async function atomicModifyConfig(
     modifier: (config: AppConfig) => AppConfig,
+    options: { notification: ConfigChangeNotification } = { notification: 'immediate' },
 ): Promise<AppConfig> {
     if (isBrowserDevMode()) {
         const latest = await loadAppConfig();
         const before = JSON.stringify(latest);
         const modified = modifier(latest);
         mockSaveConfig(modified);
-        if (JSON.stringify(modified) !== before) {
+        if (JSON.stringify(modified) !== before && options.notification === 'immediate') {
             notifyConfigChanged('atomicModifyConfig');
         }
         return modified;
@@ -304,7 +320,7 @@ export async function atomicModifyConfig(
         await _writeAppConfigLocked(modified);
         return { config: modified, changed: true };
     });
-    if (result.changed) {
+    if (result.changed && options.notification === 'immediate') {
         notifyConfigChanged('atomicModifyConfig');
     }
     return result.config;
@@ -315,60 +331,18 @@ export async function atomicModifyConfig(
  * MUST only be called from within a withConfigLock block.
  */
 async function _writeAppConfigLocked(config: AppConfig): Promise<void> {
+    const normalized = normalizeLoadedConfig(config);
     if (isBrowserDevMode()) {
-        mockSaveConfig(config);
+        mockSaveConfig(normalized);
         return;
     }
     await ensureConfigDir();
     const dir = await getConfigDir();
     const configPath = await join(dir, CONFIG_FILE);
-    await safeWriteJson(configPath, config);
+    await safeWriteJson(configPath, normalized);
 }
 
 // ============= Available Providers Cache =============
-
-// Forward declarations for circular-dependency-free import
-// These are passed in from providerService via rebuildAndPersistAvailableProviders below
-import type { ModelEntity } from '../types';
-
-/**
- * Merge preset custom models into providers.
- * Shared utility used by both providerService and this module.
- */
-export function mergePresetCustomModels(
-    providers: Provider[],
-    presetCustomModels: Record<string, ModelEntity[]> | undefined,
-    presetRemovedModels?: Record<string, string[]>,
-): Provider[] {
-    const hasCustom = presetCustomModels && Object.keys(presetCustomModels).length > 0;
-    const hasRemoved = presetRemovedModels && Object.keys(presetRemovedModels).length > 0;
-    if (!hasCustom && !hasRemoved) return providers;
-
-    return providers.map(provider => {
-        if (!provider.isBuiltin) return provider;
-        const customModels = presetCustomModels?.[provider.id];
-        const removedIds = presetRemovedModels?.[provider.id];
-        if (!customModels?.length && !removedIds?.length) return provider;
-
-        const removedSet = new Set(removedIds ?? []);
-
-        // 1. 预设模型：排除用户删除的，从 discovered 补充元数据
-        const presetIds = new Set(provider.models.map(m => m.model));
-        const enrichedPresets = provider.models
-            .filter(m => !removedSet.has(m.model))
-            .map(preset => {
-                const extra = customModels?.find(c => c.model === preset.model);
-                return mergePresetModelWithCustomEntry(preset, extra);
-            });
-        // 2. 用户添加的新模型（不在预设中的）
-        const newModels = customModels?.filter(c => !presetIds.has(c.model)) ?? [];
-
-        return {
-            ...provider,
-            models: [...enrichedPresets, ...newModels],
-        };
-    });
-}
 
 // ============= Bundled Workspace =============
 

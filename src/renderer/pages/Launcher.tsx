@@ -37,7 +37,7 @@ import {
     resolveProvider,
     pairBuiltinSelection,
 } from '@/config/configService';
-import { patchAgentConfig, getAgentById, disableAgentAndStopChannels, enableAgentAndStartChannels } from '@/config/services/agentConfigService';
+import { patchAgentConfig, patchAgentProjectConfig, getAgentById, disableAgentAndStopChannels, enableAgentAndStartChannels } from '@/config/services/agentConfigService';
 import { archiveProject, unarchiveProject } from '@/config/services/projectService';
 import { persistInputOptionChange } from '@/api/persistInputOption';
 import { createCronTask, startCronTask } from '@/api/cronTaskClient';
@@ -373,6 +373,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                     fields: { enabledOfficialToolIds: newEnabled },
                     patchProject,
                     patchAgentConfig,
+                    patchAgentProjectConfig,
                 });
             }
             return newEnabled;
@@ -395,6 +396,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                     fields: { mcpEnabledServers: newEnabled },
                     patchProject,
                     patchAgentConfig,
+                    patchAgentProjectConfig,
                     // Launcher has no Sidecar — sidecar push happens after handoff.
                 });
             }
@@ -486,6 +488,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                 fields: { permissionMode: mode },
                 patchProject,
                 patchAgentConfig,
+                patchAgentProjectConfig,
             });
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; runtimeConfigRef is a ref
@@ -510,6 +513,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                         : { builtinModel: model ?? null },
                 patchProject,
                 patchAgentConfig,
+                patchAgentProjectConfig,
             });
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; runtimeConfigRef is a ref
@@ -530,6 +534,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                 fields: { reasoningEffort: effort },
                 patchProject,
                 patchAgentConfig,
+                patchAgentProjectConfig,
             });
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- narrowed deps; runtimeConfigRef is a ref
@@ -585,6 +590,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                 },
                 patchProject,
                 patchAgentConfig,
+                patchAgentProjectConfig,
             });
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only re-create when workspace ID changes

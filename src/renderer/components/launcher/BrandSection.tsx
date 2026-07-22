@@ -33,6 +33,7 @@ import { type Project, type Provider, type PermissionMode, type ProviderVerifySt
 import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode } from '../../../shared/types/runtime';
 import type { Thought } from '../../../shared/types/thought';
 import type { OfficialToolDefinition, OfficialToolId } from '../../../shared/official-tools';
+import { useResolvedTheme } from '@/theme';
 
 interface BrandSectionProps {
     // Workspace
@@ -144,7 +145,19 @@ export default memo(function BrandSection({
     onRuntimeChange,
     activeRuntime,
 }: BrandSectionProps) {
-    const { t } = useTranslation('launcher');
+    const { t, i18n } = useTranslation('launcher');
+    const resolvedTheme = useResolvedTheme();
+    const sloganLocale = i18n.resolvedLanguage?.toLowerCase().startsWith('zh') ? 'zh-CN' : 'en-US';
+    const heroBackground = resolvedTheme.hero.background;
+    const heroAssetCssUrl = heroBackground.assetUrl ? JSON.stringify(heroBackground.assetUrl) : null;
+    const heroStyle = heroBackground.assetUrl ? {
+        backgroundImage: heroBackground.mask
+            ? `linear-gradient(${heroBackground.mask}, ${heroBackground.mask}), url(${heroAssetCssUrl})`
+            : `url(${heroAssetCssUrl})`,
+        backgroundPosition: heroBackground.position,
+        backgroundSize: heroBackground.size,
+        backgroundRepeat: heroBackground.repeat,
+    } : undefined;
     const toast = useToast();
     // Project convention: keep `toast` behind a ref so it stays out of
     // useCallback dep arrays and doesn't re-trigger memoization (see
@@ -482,7 +495,12 @@ export default memo(function BrandSection({
     ) : null;
 
     return (
-        <section ref={sectionRef} className="flex flex-1 flex-col items-center px-12">
+        <section
+            ref={sectionRef}
+            className="theme-launcher-hero flex flex-1 flex-col items-center px-12"
+            style={heroStyle}
+            data-theme-hero={resolvedTheme.themeId}
+        >
             {/* Upper area: Brand Name + Slogans as ONE visual group.
                 `mb-2` tightens the title↔slogan gap so they read as a
                 paired brand block rather than two free-floating lines;
@@ -490,14 +508,13 @@ export default memo(function BrandSection({
                 ModeSegment wrapper) separates "who we are" from "what
                 you're about to do". */}
             <div className="flex flex-1 flex-col items-center justify-center">
-                <h1 className="brand-title mb-2 text-[2.5rem] text-[var(--ink)] md:text-[3.5rem]">
-                    MyAgents
+                <h1 className="theme-launcher-hero-title">
+                    {resolvedTheme.hero.productName}
                 </h1>
-                {/* eslint-disable-next-line no-restricted-syntax -- 品牌 slogan
-                    15px/17px 是 DESIGN.md §15.2 立档的展示型字号（display 用途），
+                {/* 品牌 slogan 的 15px/17px 是 DESIGN.md §15.2 立档的展示型字号（display 用途），
                     不属于正文 Type Scale；这是全仓唯一豁免点（PRD 0.2.34）。 */}
-                <p className="brand-slogan text-center text-[15px] text-[var(--ink-muted)] md:text-[17px]">
-                    {t('brand.slogan')}
+                <p className="theme-launcher-hero-slogan">
+                    {resolvedTheme.hero.slogans[sloganLocale]}
                 </p>
             </div>
 

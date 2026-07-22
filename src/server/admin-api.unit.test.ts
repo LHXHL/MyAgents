@@ -17,15 +17,45 @@ const managementApiMocks = vi.hoisted(() => ({
   managementApi: vi.fn(async (): Promise<Record<string, unknown>> => ({ ok: true, taskUpdated: 0, cronUpdated: 0 })),
 }));
 
+const adminConfigBehavior = vi.hoisted(() => ({
+  failProjectWrite: false,
+  delayNextIntent: false,
+  intentGate: undefined as Promise<void> | undefined,
+  onIntentBlocked: undefined as (() => void) | undefined,
+}));
+
+vi.mock('./utils/admin-config', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./utils/admin-config')>();
+  return {
+    ...actual,
+    withAgentConfigIntentLock: async <T>(fn: () => Promise<T>) => {
+      if (adminConfigBehavior.delayNextIntent) {
+        adminConfigBehavior.delayNextIntent = false;
+        adminConfigBehavior.onIntentBlocked?.();
+        await adminConfigBehavior.intentGate;
+      }
+      return actual.withAgentConfigIntentLock(fn);
+    },
+    atomicModifyProjects: async (...args: Parameters<typeof actual.atomicModifyProjects>) => {
+      if (adminConfigBehavior.failProjectWrite) {
+        throw new Error('injected projects.json write failure');
+      }
+      return actual.atomicModifyProjects(...args);
+    },
+  };
+});
+
 const sessionEngineMocks = vi.hoisted(() => {
   const state = {
     context: { sessionId: null as string | null, workspacePath: null as string | null },
     turnIdentity: null as { queueId: string; owner: { kind: 'goal' | 'task'; id: string } } | null,
+    origins: new Map<string, unknown>(),
   };
   return {
     state,
     getCurrentSessionContext: vi.fn(() => state.context),
     getCurrentTurnIdentity: vi.fn(() => state.turnIdentity),
+    getSessionOrigin: vi.fn((sessionId: string) => state.origins.get(sessionId)),
   };
 });
 
@@ -53,6 +83,7 @@ vi.mock('./session-engine', () => ({
   getSessionEngine: () => ({
     getCurrentSessionContext: sessionEngineMocks.getCurrentSessionContext,
     getCurrentTurnIdentity: sessionEngineMocks.getCurrentTurnIdentity,
+    getSessionOrigin: sessionEngineMocks.getSessionOrigin,
   }),
 }));
 
@@ -84,10 +115,16 @@ beforeEach(() => {
   agentSessionMocks.setMcpServers.mockClear();
   managementApiMocks.managementApi.mockClear();
   managementApiMocks.managementApi.mockResolvedValue({ ok: true, taskUpdated: 0, cronUpdated: 0 });
+  adminConfigBehavior.failProjectWrite = false;
+  adminConfigBehavior.delayNextIntent = false;
+  adminConfigBehavior.intentGate = undefined;
+  adminConfigBehavior.onIntentBlocked = undefined;
   sessionEngineMocks.state.context = { sessionId: null, workspacePath: null };
   sessionEngineMocks.state.turnIdentity = null;
+  sessionEngineMocks.state.origins.clear();
   sessionEngineMocks.getCurrentSessionContext.mockClear();
   sessionEngineMocks.getCurrentTurnIdentity.mockClear();
+  sessionEngineMocks.getSessionOrigin.mockClear();
 });
 
 afterEach(() => {
@@ -121,6 +158,11 @@ describe('admin-api help registry', () => {
     expect(text).toContain('myagents goal');
     expect(text).toContain('Goal Mode');
     expect(text).toContain('create --objective');
+    expect(text).toContain('--deadline <ISO-8601-with-offset>');
+    expect(text).toContain('--max-executions <positive-integer>');
+    expect(text).toContain('--ai-can-exit <true|false>');
+    expect(text).toContain('outside the current');
+    expect(text).toContain('not a delayed start');
     expect(text).toContain('update --status complete');
     expect(text).toContain('Do not infer Goal Mode');
     expect(text).not.toContain('Unknown command group');
@@ -152,6 +194,18 @@ describe('admin-api help registry', () => {
     expect(text).toContain('vision');
   });
 
+  it('does not expose the legacy issue alias as a help command group', async () => {
+    const { handleHelp } = await import('./admin-api');
+
+    const result = handleHelp({ path: ['issue'] });
+    const text = (result.data as { text?: string } | undefined)?.text ?? '';
+
+    expect(result.success).toBe(true);
+    expect(text).toContain('Unknown command group "issue"');
+    expect(text).toContain('space');
+    expect(text).not.toContain('Legacy read-only alias');
+  });
+
   it('uses the longest Space command path so leaf help is an executable Agent contract', async () => {
     const { handleHelp } = await import('./admin-api');
 
@@ -175,7 +229,6 @@ describe('admin-api help registry', () => {
       ['space', 'issue', 'comments'],
       ['space', 'issue', 'status'],
       ['space', 'issue', 'claim'],
-      ['space', 'issue', 'delivery', 'ignore'],
       ['space', 'issue', 'close'],
       ['space', 'issue', 'cancel-claim'],
     ];
@@ -310,6 +363,38 @@ describe('admin-api Space workspace identity', () => {
       workspaceId: 'explicit-mismatching-id',
     });
   });
+
+  it('forwards only the exact persisted Registered Agent Session origin as actor authority', async () => {
+    const workspace = join(scratch, 'workspace-origin');
+    mkdirSync(workspace);
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-origin',
+      name: 'Origin Workspace',
+      path: workspace,
+    }]);
+    sessionEngineMocks.state.origins.set('session-agent-a', {
+      kind: 'registered-agent',
+      surface: 'space_issue_delivery',
+      context: { spaceId: 'space-a', registeredAgentId: 'agent-a' },
+    });
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: true, data: { actor: {} } });
+    const { handleSpaceWhoami } = await import('./admin-api');
+
+    await handleSpaceWhoami({
+      spaceSlug: 'official',
+      workspacePath: workspace,
+      workspaceId: 'project-origin',
+      sessionId: 'session-agent-a',
+    });
+
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith('/api/space/whoami', 'POST', {
+      spaceSlug: 'official',
+      workspacePath: workspace,
+      workspaceId: 'project-origin',
+      sessionId: 'session-agent-a',
+      sessionOrigin: { spaceId: 'space-a', registeredAgentId: 'agent-a' },
+    });
+  });
 });
 
 describe('admin-api goal', () => {
@@ -340,6 +425,33 @@ describe('admin-api goal', () => {
       objective: 'Ship it',
     });
     clearImCronContext();
+  });
+
+  it('forwards existing Goal end conditions to the Rust authority', async () => {
+    const { handleGoalCreate } = await import('./admin-api');
+    sessionEngineMocks.state.context = {
+      sessionId: 'session-goal-with-limits',
+      workspacePath: '/tmp/myagents-goal-workspace',
+    };
+    managementApiMocks.managementApi.mockResolvedValueOnce({
+      ok: true,
+      goal: { id: 'goal_limited', objective: 'Ship it', status: 'active' },
+    });
+
+    const endConditions = {
+      deadline: '2026-07-22T01:00:00.000Z',
+      maxExecutions: 5,
+      aiCanExit: false,
+    };
+    const result = await handleGoalCreate({ objective: 'Ship it', endConditions });
+
+    expect(result.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith('/api/goal/create', 'POST', {
+      sessionId: 'session-goal-with-limits',
+      workspacePath: '/tmp/myagents-goal-workspace',
+      objective: 'Ship it',
+      endConditions,
+    });
   });
 
   it('forwards the active queue turn when the model terminalizes a Goal', async () => {
@@ -434,6 +546,515 @@ describe('admin-api cron create', () => {
     expect(result.success).toBe(false);
     expect(result.error).toContain('Use myagents goal create');
     expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+});
+
+describe('admin-api agent set configuration intent', () => {
+  it('normalizes managed Codex permission vocabulary without changing provider or model', async () => {
+    const workspacePath = '/tmp/myagents-agent-set-managed-codex';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-managed-codex',
+        name: 'Managed Codex',
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        runtime: 'builtin',
+        permissionMode: 'auto',
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-managed-codex',
+      name: 'Managed Codex',
+      path: workspacePath,
+      agentId: 'agent-managed-codex',
+      providerId: 'codex-sub',
+      model: 'gpt-5.6-sol',
+      permissionMode: 'auto',
+    }]);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const result = await handleAgentSet({
+      id: 'agent-managed-codex',
+      key: 'permissionMode',
+      value: 'no-restrictions',
+    });
+
+    expect(result.success).toBe(true);
+    const agent = (readConfig().agents as Record<string, unknown>[])[0];
+    expect(agent).toMatchObject({
+      providerId: 'codex-sub',
+      model: 'gpt-5.6-sol',
+      runtime: 'builtin',
+      permissionMode: 'fullAgency',
+    });
+    expect(readJson(join(scratch, '.myagents', 'projects.json'))[0]).toMatchObject({
+      providerId: 'codex-sub',
+      model: 'gpt-5.6-sol',
+      permissionMode: 'fullAgency',
+    });
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/agent/reload-config',
+      'POST',
+      { agentId: 'agent-managed-codex', patch: { permissionMode: 'fullAgency' } },
+    );
+  });
+
+  it('rejects an invalid permission mode without mutating either config store', async () => {
+    const workspacePath = '/tmp/myagents-agent-set-invalid';
+    const config = {
+      agents: [{
+        id: 'agent-invalid',
+        name: 'Invalid Guard',
+        workspacePath,
+        providerId: 'anthropic-sub',
+        model: 'claude-opus-4-6',
+        permissionMode: 'auto',
+      }],
+    };
+    const projects = [{
+      id: 'project-invalid',
+      name: 'Invalid Guard',
+      path: workspacePath,
+      agentId: 'agent-invalid',
+      providerId: 'anthropic-sub',
+      model: 'claude-opus-4-6',
+      permissionMode: 'auto',
+    }];
+    writeJson(join(scratch, '.myagents', 'config.json'), config);
+    writeJson(join(scratch, '.myagents', 'projects.json'), projects);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const result = await handleAgentSet({
+      id: 'agent-invalid',
+      key: 'permissionMode',
+      value: 'unlimited-magic',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Valid');
+    expect(readConfig()).toEqual(config);
+    expect(readJson(join(scratch, '.myagents', 'projects.json'))).toEqual(projects);
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('rejects managed Codex full-auto instead of escalating it to no-restrictions', async () => {
+    const workspacePath = '/tmp/myagents-agent-set-full-auto';
+    const config = {
+      agents: [{
+        id: 'agent-full-auto',
+        name: 'Full Auto Guard',
+        workspacePath,
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        permissionMode: 'auto',
+      }],
+    };
+    writeJson(join(scratch, '.myagents', 'config.json'), config);
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-full-auto',
+      name: 'Full Auto Guard',
+      path: workspacePath,
+      agentId: 'agent-full-auto',
+      providerId: 'codex-sub',
+      model: 'gpt-5.6-sol',
+      permissionMode: 'auto',
+    }]);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const result = await handleAgentSet({
+      id: 'agent-full-auto',
+      key: 'permissionMode',
+      value: 'full-auto',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('cannot be stored losslessly');
+    expect(readConfig()).toEqual(config);
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['providerId', 'provider-that-does-not-exist', 'Unknown providerId'],
+    ['model', 'claude-typo-does-not-exist', 'is not registered'],
+  ])('rejects invalid %s before either store or live state changes', async (key, value, errorText) => {
+    const workspacePath = '/tmp/myagents-agent-set-invalid-provider-model';
+    const config = {
+      providerVerifyStatus: {
+        'anthropic-sub': { status: 'valid', verifiedAt: '2026-07-21T00:00:00.000Z' },
+      },
+      agents: [{
+        id: 'agent-invalid-route',
+        name: 'Invalid Route Guard',
+        workspacePath,
+        providerId: 'anthropic-sub',
+        model: 'claude-sonnet-4-6',
+        permissionMode: 'auto',
+      }],
+    };
+    const projects = [{
+      id: 'project-invalid-route',
+      name: 'Invalid Route Guard',
+      path: workspacePath,
+      agentId: 'agent-invalid-route',
+      providerId: 'anthropic-sub',
+      model: 'claude-sonnet-4-6',
+      permissionMode: 'auto',
+    }];
+    writeJson(join(scratch, '.myagents', 'config.json'), config);
+    writeJson(join(scratch, '.myagents', 'projects.json'), projects);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const result = await handleAgentSet({ id: 'agent-invalid-route', key, value });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain(errorText);
+    expect(readConfig()).toEqual(config);
+    expect(readJson(join(scratch, '.myagents', 'projects.json'))).toEqual(projects);
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['custom-added-model', ['claude-opus-4-6'], true],
+    ['claude-opus-4-6', ['claude-opus-4-6'], false],
+  ])('validates model %s against preset additions/removals shared with the product catalog', async (
+    value,
+    removedModels,
+    addCustomModel,
+  ) => {
+    const workspacePath = `/tmp/myagents-agent-effective-model-${value}`;
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      providerVerifyStatus: {
+        'anthropic-sub': { status: 'valid', verifiedAt: '2026-07-21T00:00:00.000Z' },
+      },
+      presetCustomModels: addCustomModel
+        ? {
+            'anthropic-sub': [{
+              model: 'custom-added-model',
+              modelName: 'Custom Added Model',
+              modelSeries: 'claude',
+              source: 'manual',
+            }],
+          }
+        : undefined,
+      presetRemovedModels: { 'anthropic-sub': removedModels },
+      agents: [{
+        id: 'agent-effective-model',
+        name: 'Effective Model',
+        workspacePath,
+        providerId: 'anthropic-sub',
+        model: 'claude-sonnet-4-6',
+        permissionMode: 'auto',
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-effective-model',
+      name: 'Effective Model',
+      path: workspacePath,
+      agentId: 'agent-effective-model',
+      providerId: 'anthropic-sub',
+      model: 'claude-sonnet-4-6',
+      permissionMode: 'auto',
+    }]);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const result = await handleAgentSet({ id: 'agent-effective-model', key: 'model', value });
+
+    expect(result.success).toBe(addCustomModel);
+    if (addCustomModel) {
+      expect((readConfig().agents as Record<string, unknown>[])[0]).toMatchObject({ model: value });
+      expect(readJson(join(scratch, '.myagents', 'projects.json'))[0]).toMatchObject({ model: value });
+    } else {
+      expect(result.error).toContain('not registered');
+    }
+  });
+
+  it('rolls back the Agent write when the Project mirror cannot be saved', async () => {
+    const workspacePath = '/tmp/myagents-agent-set-project-failure';
+    const config = {
+      agents: [{
+        id: 'agent-project-failure',
+        name: 'Project Failure',
+        workspacePath,
+        providerId: 'anthropic-sub',
+        model: 'claude-sonnet-4-6',
+        permissionMode: 'auto',
+      }],
+    };
+    const projects = [{
+      id: 'project-failure',
+      name: 'Project Failure',
+      path: workspacePath,
+      agentId: 'agent-project-failure',
+      providerId: 'anthropic-sub',
+      model: 'claude-sonnet-4-6',
+      permissionMode: 'auto',
+    }];
+    writeJson(join(scratch, '.myagents', 'config.json'), config);
+    writeJson(join(scratch, '.myagents', 'projects.json'), projects);
+    const { handleAgentSet } = await import('./admin-api');
+    adminConfigBehavior.failProjectWrite = true;
+
+    const result = await handleAgentSet({
+      id: 'agent-project-failure',
+      key: 'permissionMode',
+      value: 'plan',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('Project mirror could not be saved');
+    expect((readConfig().agents as Record<string, unknown>[])[0]).toEqual(config.agents[0]);
+    expect(readJson(join(scratch, '.myagents', 'projects.json'))).toEqual(projects);
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('serializes concurrent Agent intents so Agent and Project end on the same value', async () => {
+    const workspacePath = '/tmp/myagents-agent-set-concurrent';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      providerVerifyStatus: {
+        'anthropic-sub': { status: 'valid', verifiedAt: '2026-07-21T00:00:00.000Z' },
+      },
+      agents: [{
+        id: 'agent-concurrent',
+        name: 'Concurrent',
+        workspacePath,
+        providerId: 'anthropic-sub',
+        model: 'claude-sonnet-4-6',
+        permissionMode: 'auto',
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-concurrent',
+      name: 'Concurrent',
+      path: workspacePath,
+      agentId: 'agent-concurrent',
+      providerId: 'anthropic-sub',
+      model: 'claude-sonnet-4-6',
+      permissionMode: 'auto',
+    }]);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const results = await Promise.all([
+      handleAgentSet({ id: 'agent-concurrent', key: 'model', value: 'claude-opus-4-6' }),
+      handleAgentSet({ id: 'agent-concurrent', key: 'model', value: 'claude-haiku-4-5' }),
+    ]);
+
+    expect(results.every(result => result.success)).toBe(true);
+    const agentModel = ((readConfig().agents as Record<string, unknown>[])[0]).model;
+    const projectModel = readJson(join(scratch, '.myagents', 'projects.json'))[0].model;
+    expect(projectModel).toBe(agentModel);
+    expect(['claude-opus-4-6', 'claude-haiku-4-5']).toContain(agentModel);
+  });
+
+  it('validates a delayed model intent against the provider committed before its lock turn', async () => {
+    const workspacePath = '/tmp/myagents-agent-set-validation-lock';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      providerVerifyStatus: {
+        'anthropic-sub': { status: 'valid', verifiedAt: '2026-07-21T00:00:00.000Z' },
+        'xai-sub': { status: 'valid', verifiedAt: '2026-07-21T00:00:00.000Z' },
+      },
+      agents: [{
+        id: 'agent-validation-lock',
+        name: 'Validation Lock',
+        workspacePath,
+        providerId: 'anthropic-sub',
+        model: 'claude-sonnet-4-6',
+        permissionMode: 'auto',
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-validation-lock',
+      name: 'Validation Lock',
+      path: workspacePath,
+      agentId: 'agent-validation-lock',
+      providerId: 'anthropic-sub',
+      model: 'claude-sonnet-4-6',
+      permissionMode: 'auto',
+    }]);
+    const { handleAgentSet } = await import('./admin-api');
+    let releaseIntent!: () => void;
+    let markIntentBlocked!: () => void;
+    adminConfigBehavior.intentGate = new Promise<void>(resolve => { releaseIntent = resolve; });
+    const intentBlocked = new Promise<void>(resolve => { markIntentBlocked = resolve; });
+    adminConfigBehavior.onIntentBlocked = markIntentBlocked;
+    adminConfigBehavior.delayNextIntent = true;
+
+    const delayedModel = handleAgentSet({
+      id: 'agent-validation-lock',
+      key: 'model',
+      value: 'claude-haiku-4-5',
+    });
+    await intentBlocked;
+    const providerResult = await handleAgentSet({
+      id: 'agent-validation-lock',
+      key: 'providerId',
+      value: 'xai-sub',
+    });
+    releaseIntent();
+    const modelResult = await delayedModel;
+
+    expect(providerResult.success).toBe(true);
+    expect(modelResult.success).toBe(false);
+    expect(modelResult.error).toContain("not registered for provider 'xai-sub'");
+    expect((readConfig().agents as Record<string, unknown>[])[0]).toMatchObject({
+      providerId: 'xai-sub',
+      model: 'claude-sonnet-4-6',
+    });
+    expect(readJson(join(scratch, '.myagents', 'projects.json'))[0]).toMatchObject({
+      providerId: 'xai-sub',
+      model: 'claude-sonnet-4-6',
+    });
+  });
+
+  it.each([
+    ['providerId', 'anthropic-sub'],
+    ['model', 'claude-opus-4-6'],
+  ])('mirrors %s to the Project compatibility store and reloads the live Agent', async (key, value) => {
+    const workspacePath = '/tmp/myagents-agent-set-mirror';
+    const initialProviderId = key === 'model' ? 'anthropic-sub' : 'codex-sub';
+    const initialModel = key === 'model' ? 'claude-sonnet-4-6' : 'gpt-5.6-sol';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      providerVerifyStatus: {
+        'anthropic-sub': { status: 'valid', verifiedAt: '2026-07-21T00:00:00.000Z' },
+      },
+      agents: [{
+        id: 'agent-mirror',
+        name: 'Mirror',
+        workspacePath,
+        providerId: initialProviderId,
+        model: initialModel,
+        permissionMode: 'fullAgency',
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-mirror',
+      name: 'Mirror',
+      path: workspacePath,
+      agentId: 'agent-mirror',
+      providerId: initialProviderId,
+      model: initialModel,
+      permissionMode: 'fullAgency',
+    }]);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const result = await handleAgentSet({ id: 'agent-mirror', key, value });
+
+    expect(result.success).toBe(true);
+    expect(readJson(join(scratch, '.myagents', 'projects.json'))[0]).toMatchObject({ [key]: value });
+    expect(managementApiMocks.managementApi).toHaveBeenCalledWith(
+      '/api/agent/reload-config',
+      'POST',
+      {
+        agentId: 'agent-mirror',
+        patch: {
+          [key]: value,
+          ...(key === 'providerId' ? { providerEnvJson: null } : {}),
+        },
+      },
+    );
+  });
+
+  it.each([
+    ['providerId', 'codex-sub'],
+    ['model', 'gpt-5.6-sol'],
+  ])('accepts managed Codex %s changes through the product provider catalog', async (key, value) => {
+    const workspacePath = `/tmp/myagents-agent-managed-${key}`;
+    const settingProvider = key === 'providerId';
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      managedCodexProviderDevGate: true,
+      managedCodexRuntimeInstall: { status: 'installed', usable: true },
+      managedCodexAuth: { status: 'valid', authMethod: 'chatgpt' },
+      agents: [{
+        id: 'agent-managed-set',
+        name: 'Managed Set',
+        workspacePath,
+        providerId: settingProvider ? 'anthropic-sub' : 'codex-sub',
+        model: settingProvider ? 'claude-sonnet-4-6' : 'gpt-5.4-codex',
+        permissionMode: 'auto',
+      }],
+    });
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-managed-set',
+      name: 'Managed Set',
+      path: workspacePath,
+      agentId: 'agent-managed-set',
+      providerId: settingProvider ? 'anthropic-sub' : 'codex-sub',
+      model: settingProvider ? 'claude-sonnet-4-6' : 'gpt-5.4-codex',
+      permissionMode: 'auto',
+    }]);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const result = await handleAgentSet({ id: 'agent-managed-set', key, value });
+
+    expect(result.success).toBe(true);
+    expect((readConfig().agents as Record<string, unknown>[])[0]).toMatchObject({ [key]: value });
+    expect(readJson(join(scratch, '.myagents', 'projects.json'))[0]).toMatchObject({ [key]: value });
+  });
+
+  it('rejects an unverified subscription provider before mutating either store', async () => {
+    const workspacePath = '/tmp/myagents-agent-unverified-subscription';
+    const config = {
+      agents: [{
+        id: 'agent-unverified-subscription',
+        name: 'Unverified Subscription',
+        workspacePath,
+        providerId: 'anthropic-sub',
+        model: 'claude-sonnet-4-6',
+        permissionMode: 'auto',
+      }],
+    };
+    const projects = [{
+      id: 'project-unverified-subscription',
+      name: 'Unverified Subscription',
+      path: workspacePath,
+      agentId: 'agent-unverified-subscription',
+      providerId: 'anthropic-sub',
+      model: 'claude-sonnet-4-6',
+      permissionMode: 'auto',
+    }];
+    writeJson(join(scratch, '.myagents', 'config.json'), config);
+    writeJson(join(scratch, '.myagents', 'projects.json'), projects);
+    const { handleAgentSet } = await import('./admin-api');
+
+    const result = await handleAgentSet({
+      id: 'agent-unverified-subscription',
+      key: 'providerId',
+      value: 'xai-sub',
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('not verified');
+    expect(readConfig()).toEqual(config);
+    expect(readJson(join(scratch, '.myagents', 'projects.json'))).toEqual(projects);
+    expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
+  });
+
+  it('shows managed Codex as its effective runtime instead of the stored builtin carrier', async () => {
+    writeJson(join(scratch, '.myagents', 'config.json'), {
+      agents: [{
+        id: 'agent-managed-show',
+        name: 'Managed Show',
+        workspacePath: '/tmp/myagents-agent-managed-show',
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        runtime: 'builtin',
+        permissionMode: 'fullAgency',
+      }],
+    });
+    const { handleAgentShow } = await import('./admin-api');
+
+    const result = handleAgentShow({ id: 'agent-managed-show' });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({
+      effectiveDefaults: {
+        runtime: 'codex',
+        runtimeSource: 'managed-provider',
+        providerId: 'codex-sub',
+        model: 'gpt-5.6-sol',
+        permissionMode: 'no-restrictions',
+      },
+    });
   });
 });
 
@@ -671,7 +1292,7 @@ describe('admin-api MCP remove/disable legacy HTTP servers', () => {
     expect(result.recoveryHint).toEqual({ recoveryCommand: 'myagents status', message: 'retry later' });
     expect((config.mcpServers as Array<Record<string, unknown>>).map(s => s.id)).toEqual(['yuandian-law']);
     expect(config.mcpEnabledServers).toEqual(['yuandian-law']);
-    expect(project.mcpEnabledServers).toEqual([]);
+    expect(project.mcpEnabledServers).toEqual(['yuandian-law']);
   });
 
   it('keeps AppConfig definition when session snapshot cleanup cannot be written', async () => {
@@ -680,7 +1301,12 @@ describe('admin-api MCP remove/disable legacy HTTP servers', () => {
       mcpServers: [remoteHttp],
       mcpEnabledServers: ['yuandian-law'],
     });
-    writeJson(join(scratch, '.myagents', 'projects.json'), []);
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-1',
+      name: 'Project',
+      path: '/tmp/workspace',
+      mcpEnabledServers: ['yuandian-law'],
+    }]);
     writeJson(join(scratch, '.myagents', 'sessions.json'), [{
       id: 'session-1',
       agentDir: '/tmp/workspace',
@@ -692,10 +1318,12 @@ describe('admin-api MCP remove/disable legacy HTTP servers', () => {
 
     const result = await handleMcpRemove({ id: 'yuandian-law' });
     const config = readConfig();
+    const project = readJson(join(scratch, '.myagents', 'projects.json'))[0];
 
     expect(result.success).toBe(false);
     expect((config.mcpServers as Array<Record<string, unknown>>).map(s => s.id)).toEqual(['yuandian-law']);
     expect(config.mcpEnabledServers).toEqual(['yuandian-law']);
+    expect(project.mcpEnabledServers).toEqual(['yuandian-law']);
     expect(managementApiMocks.managementApi).not.toHaveBeenCalled();
   });
 
@@ -705,7 +1333,12 @@ describe('admin-api MCP remove/disable legacy HTTP servers', () => {
       mcpServers: [],
       mcpEnabledServers: ['yuandian-law'],
     });
-    writeJson(join(scratch, '.myagents', 'projects.json'), []);
+    writeJson(join(scratch, '.myagents', 'projects.json'), [{
+      id: 'project-1',
+      name: 'Project',
+      path: '/tmp/workspace',
+      mcpEnabledServers: ['yuandian-law'],
+    }]);
     writeJson(join(scratch, '.myagents', 'sessions.json'), []);
     managementApiMocks.managementApi.mockImplementationOnce(async () => {
       writeJson(join(scratch, '.myagents', 'config.json'), {
@@ -717,11 +1350,13 @@ describe('admin-api MCP remove/disable legacy HTTP servers', () => {
 
     const result = await handleMcpRemove({ id: 'yuandian-law' });
     const config = readConfig();
+    const project = readJson(join(scratch, '.myagents', 'projects.json'))[0];
 
     expect(result.success).toBe(false);
     expect(result.error).toContain('re-added during cleanup-only remove');
     expect((config.mcpServers as Array<Record<string, unknown>>).map(s => s.id)).toEqual(['yuandian-law']);
     expect(config.mcpEnabledServers).toEqual(['yuandian-law']);
+    expect(project.mcpEnabledServers).toEqual(['yuandian-law']);
   });
 
   it('disables Agent-only legacy HTTP MCP servers without letting promotion re-enable them', async () => {

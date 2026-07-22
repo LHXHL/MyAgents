@@ -124,6 +124,12 @@ message.uuid`），MyAgents 必须清掉该 stale anchor 并降级为裸 `resume
 | `watch.completed` | watch 注册时目标正在运行，该 turn 正常 terminal 后回推结果 | 目标 Sidecar pending watch registry → Management API → watcher Sidecar |
 | `watch.error` | 被 watch 的目标 turn 中止、错误或无法确认正常完成 | 同 `watch.completed` |
 
+所有事件的结构化 prompt 都位于隐藏的 `system-reminder` envelope 内。renderer
+仅对 `send.request` 建立展示投影：读取 `<payload>` 与 `source_label` 形成目标
+session 的用户气泡；`event-summary`、session id 等协议元数据不得进入气泡。
+`send.result` 与 watch 事件是自动控制流，继续保持隐藏。该投影同时作用于 live echo
+与 REST 历史恢复，因此不能通过只在 SSE 分支插一条临时消息实现。
+
 `watch` 的 owner 分两层：Rust Management API 先用 live sidecar 表确认目标 session
 是否仍在运行，并在目标 sidecar 上注册 pending watch；目标 sidecar 只在 turn terminal
 时调用 `deliverSessionWatchEvents()` 生成最终事件。只有 watcher sidecar 确认 inbox
@@ -133,11 +139,22 @@ delivery 成功后，目标 sidecar 才 ack 并清理 pending watch；Management
 Space Registered Agent 的 `space.issue_delivery` 复用 inbox 的 `sessionEvent`
 metadata 来选择 registered-agent scenario 和 lazy session materialization，但最终
 prompt 不走通用 `<myagents-session-event>` 外包。Rust Space owner 会直接渲染
-`<system-reminder><myagents-space-issue><myagents-space-event ...>` user message，
+`<system-reminder><myagents-space-issue>…</myagents-space-issue></system-reminder>` user message，
 让前端隐藏内部处理指令并显示 `Space issue` badge。这个特例只适用于 Space Issue
 delivery，不改变 `myagents session send/watch` 的通用事件协议。`system-reminder`
 的通用隐藏 payload / badge / visible tail 规则见
 `system_reminder_protocol.md`。
+
+0.3.2 起，Registered Agent Session 的持久 origin 必须是
+`{ kind:'registered-agent', surface:'space_issue_delivery', context:{ spaceId, registeredAgentId } }`。
+Rust delivery event 同时携带两个 exact ID，Inbox 将其组成 `InteractionScenario`，
+SessionEngine 的 builtin/external adapter 必须透传同一 context 到 Session metadata。
+缺任一 ID 时不能构造 Agent context；普通桌面 Session 即使 workspace 与某个或多个
+Registered Agent 相同，也保持 User actor。升级时只允许把明确持久化为
+`registered-agent + space_issue_delivery`、且历史结构中完全没有 `context` property 的
+origin 补齐为 exact binding；`origin` 缺失、`null`、畸形或属于 desktop/其它 surface
+都必须 fail closed，不能因一次定向 Delivery 把普通旧 Session 提升为 Agent。fork 明确重置为
+`{ kind:'desktop', surface:'session_fork' }`，不得继承源 Session 的 Agent 身份。
 
 ### Desktop 连续 Query 队列模式（0.2.37）
 
@@ -165,18 +182,31 @@ Goal 是 current Session 的独立持久状态，物理存储为 `~/.myagents/se
 ```typescript
 type GoalStatus = 'active' | 'paused' | 'complete' | 'blocked' | 'canceled';
 
+interface GoalEndConditions {
+  deadline?: string;
+  maxExecutions?: number;
+  aiCanExit: boolean;
+}
+
 interface SessionGoalView {
   id: string;              // current Goal incarnation fence
   sessionId: string;       // product lookup key
   workspacePath: string;
   objective: string;
   status: GoalStatus;
+  endConditions: GoalEndConditions;
+  notifyEnabled: boolean;
+  permissionMode: string;
   turnCount: number;
+  createdAt: string;
+  updatedAt: string;
   revision: number;
   controlRevision: number;
   isExecuting: boolean;
+  executionNumber?: number; // 正在执行的 current turn；未执行时省略
   totalDurationMs: number; // 已结算 Goal Turn 的实际执行耗时之和
   totalTokens: number;     // 已结算 Goal Turn 的 input + output tokens 之和
+  lastExecutedAt?: string;
   terminalReason?: string;
 }
 ```
@@ -213,7 +243,7 @@ user query 对 paused Goal 的成功 claim 会原子恢复为 active。automatic
 
 #### Continuation 与 Sidecar
 
-Goal scheduler 只有 `goalId -> one-shot JoinHandle`。active Goal 在上一轮 finalize 后按成功/失败 backoff 安排一次；paused/terminal/currentTurn/outbox pending 时不轮询。
+Goal scheduler 的 automatic continuation 是 `goalId -> one-shot JoinHandle`：active Goal 在上一轮 finalize 后按成功/失败 backoff 安排一次；paused/terminal/currentTurn/outbox pending 时不轮询。绝对 deadline 由同一 `SessionGoalManager` 的另一条 one-shot handle 按 wall clock 反复复核，因此 paused 和 in-flight Turn 同样受限；到点后在 session lifecycle 锁内持续复用 disk-first terminal + exact/owner-scoped stop，直到 authority 清除与 owner 释放确认，期间新 Goal 不能越过旧 Goal cleanup。max executions 同时在 continuation 调度与原子 Turn claim 处裁决；claim 输给结束条件时仍持久化该 queue authority，等 Node 既有 abort settlement 清除后才允许替换。
 
 automatic continuation 在调用 Node `/goal/execute-sync` 前先附着 `SidecarOwner::Goal(goalId)`；用户 query 最晚在 Turn claim 时附着。它只是 owner token，不创建独立进程。Pause/Cancel/terminal 先提交 durable control 状态，再按 owner + queueId 精确 stop；只有 promotion/transport/进程终止得到确认后才清 `currentTurn` 并释放 owner。Rust 尚无 currentTurn 的 preclaim transport failure 也必须把已知 queueId 发给 Node stop，不能当作 already stopped。关闭 Tab 只释放 Tab owner，Goal owner/continuation 仍可让同一 Session 在后台继续。
 

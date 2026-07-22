@@ -8,6 +8,11 @@ import { ToastProvider } from './components/Toast';
 import { ImagePreviewProvider } from './context/ImagePreviewContext';
 import { FloatingI18nBootstrap } from './i18n/FloatingI18nBootstrap';
 import { I18nLanguageSync } from './i18n/I18nLanguageSync';
+import {
+  ConfiguredThemeRuntime,
+  FloatingThemeRuntime,
+  primeThemeRuntimeFromBootstrap,
+} from './theme';
 import { initFrontendLogger, setLogServerUrl, setRendererLogLabel } from './utils/frontendLogger';
 import { installMacFunctionKeyGuard } from './utils/macFunctionKeyGuard';
 import { installOverlayScrollbarActivity, isWindowsRendererPlatform } from './utils/overlayScrollbarActivity';
@@ -15,6 +20,11 @@ import { installTextCorrectionPolicy } from './utils/textCorrectionPolicy';
 
 import './i18n';
 import './index.css';
+
+// Optional Theme packages are inline-only and validated before activation.
+// Prime the validated bootstrap snapshot here so React's first paint already
+// uses the selected package instead of briefly showing canonical CSS.
+primeThemeRuntimeFromBootstrap();
 
 // Initialize frontend logger to capture React console logs
 initFrontendLogger();
@@ -101,11 +111,13 @@ if (tauriWindowLabel === 'fb-ball') {
   document.documentElement.classList.add('fb-transparent');
   root.render(
     <AppErrorBoundary>
-      <FloatingI18nBootstrap>
-        <React.Suspense fallback={null}>
-          <BallWindow />
-        </React.Suspense>
-      </FloatingI18nBootstrap>
+      <FloatingThemeRuntime>
+        <FloatingI18nBootstrap>
+          <React.Suspense fallback={null}>
+            <BallWindow />
+          </React.Suspense>
+        </FloatingI18nBootstrap>
+      </FloatingThemeRuntime>
     </AppErrorBoundary>
   );
 } else if (tauriWindowLabel === 'fb-companion') {
@@ -115,15 +127,17 @@ if (tauriWindowLabel === 'fb-ball') {
   document.documentElement.classList.add('fb-transparent');
   root.render(
     <AppErrorBoundary>
-      <FloatingI18nBootstrap>
-        <ToastProvider>
-          <ImagePreviewProvider>
-            <React.Suspense fallback={null}>
-              <CompanionWindow />
-            </React.Suspense>
-          </ImagePreviewProvider>
-        </ToastProvider>
-      </FloatingI18nBootstrap>
+      <FloatingThemeRuntime>
+        <FloatingI18nBootstrap>
+          <ToastProvider>
+            <ImagePreviewProvider>
+              <React.Suspense fallback={null}>
+                <CompanionWindow />
+              </React.Suspense>
+            </ImagePreviewProvider>
+          </ToastProvider>
+        </FloatingI18nBootstrap>
+      </FloatingThemeRuntime>
     </AppErrorBoundary>
   );
 } else if (tauriWindowLabel === 'fb-shield') {
@@ -132,9 +146,11 @@ if (tauriWindowLabel === 'fb-ball') {
   document.documentElement.classList.add('fb-transparent');
   root.render(
     <AppErrorBoundary>
-      <React.Suspense fallback={null}>
-        <ShieldWindow />
-      </React.Suspense>
+      <FloatingThemeRuntime>
+        <React.Suspense fallback={null}>
+          <ShieldWindow />
+        </React.Suspense>
+      </FloatingThemeRuntime>
     </AppErrorBoundary>
   );
 } else {
@@ -144,14 +160,16 @@ if (tauriWindowLabel === 'fb-ball') {
   root.render(
     <AppErrorBoundary>
       <ConfigProvider>
-        <I18nLanguageSync />
-        <ToastProvider>
-          <ImagePreviewProvider>
-            <React.Suspense fallback={null}>
-              <App />
-            </React.Suspense>
-          </ImagePreviewProvider>
-        </ToastProvider>
+        <ConfiguredThemeRuntime>
+          <I18nLanguageSync />
+          <ToastProvider>
+            <ImagePreviewProvider>
+              <React.Suspense fallback={null}>
+                <App />
+              </React.Suspense>
+            </ImagePreviewProvider>
+          </ToastProvider>
+        </ConfiguredThemeRuntime>
       </ConfigProvider>
     </AppErrorBoundary>
   );

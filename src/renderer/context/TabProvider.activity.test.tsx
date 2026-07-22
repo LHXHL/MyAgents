@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { SseEventMetadata } from '@/api/SseConnection';
@@ -88,17 +88,31 @@ vi.mock('@/api/tauriClient', () => ({
 }));
 
 function Probe() {
-  const { sessionId, isLoading, sessionState, historyMessages, systemInitInfo } = useTabState();
+  const {
+    sessionId,
+    isLoading,
+    sessionState,
+    historyMessages,
+    systemInitInfo,
+    queuedMessages,
+    cancelQueuedMessage,
+    forceExecuteQueuedMessage,
+  } = useTabState();
   return (
-    <output data-testid="activity">
-      {JSON.stringify({
-        sessionId,
-        isLoading,
-        sessionState,
-        historyCount: historyMessages.length,
-        initModel: systemInitInfo?.model ?? null,
-      })}
-    </output>
+    <>
+      <output data-testid="activity">
+        {JSON.stringify({
+          sessionId,
+          isLoading,
+          sessionState,
+          historyCount: historyMessages.length,
+          initModel: systemInitInfo?.model ?? null,
+        })}
+      </output>
+      <output data-testid="queue-ids">{JSON.stringify(queuedMessages.map(item => item.queueId))}</output>
+      <button type="button" onClick={() => void cancelQueuedMessage('queue-stale-cancel')}>cancel stale</button>
+      <button type="button" onClick={() => void forceExecuteQueuedMessage('queue-stale-force')}>force stale</button>
+    </>
   );
 }
 
@@ -124,6 +138,10 @@ function emit(eventName: string, data: unknown): void {
   act(() => {
     handler(eventName, data, { connectionGeneration: 1 });
   });
+}
+
+function readQueueIds(): string[] {
+  return JSON.parse(screen.getByTestId('queue-ids').textContent ?? '[]') as string[];
 }
 
 describe('TabProvider session activity ownership', () => {
@@ -291,4 +309,41 @@ describe('TabProvider session activity ownership', () => {
 
     expect(tauriHarness.proxyFetch).toHaveBeenCalledTimes(2);
   });
+
+  it.each([
+    ['queue-stale-cancel', 'cancel stale', '/chat/queue/cancel'],
+    ['queue-stale-force', 'force stale', '/chat/queue/force'],
+  ] as const)(
+    'removes stale queue replica %s after the authority reports not-found',
+    async (queueId, actionLabel, route) => {
+      tauriHarness.proxyFetch.mockImplementation(async (url: string) => {
+        if (url.endsWith(route)) {
+          return new Response(JSON.stringify({
+            success: false,
+            stale: true,
+            error: 'Queue item not found',
+          }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        throw new Error(`Unexpected proxyFetch call: ${url}`);
+      });
+
+      render(
+        <TabProvider
+          tabId={`tab-${queueId}`}
+          agentDir="/tmp/workspace"
+          sessionId={`pending-${queueId}`}
+        >
+          <Probe />
+        </TabProvider>,
+      );
+
+      await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+      emit('queue:added', { queueId, messageText: 'stale queued request' });
+      expect(readQueueIds()).toContain(queueId);
+
+      fireEvent.click(screen.getByRole('button', { name: actionLabel }));
+
+      await waitFor(() => expect(readQueueIds()).not.toContain(queueId));
+    },
+  );
 });

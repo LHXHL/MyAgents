@@ -30,7 +30,6 @@ import { useTrayEvents } from '@/hooks/useTrayEvents';
 import { useHelperAgentModelDefaults } from '@/hooks/useHelperAgentModelDefaults';
 import { useConfig } from '@/hooks/useConfig';
 import { useSpaceBuildCapability } from '@/hooks/useSpaceBuildCapability';
-import { useThemeEffect } from '@/hooks/useTheme';
 import { useTabSwipeGesture } from '@/hooks/useTabSwipeGesture';
 import Launcher from '@/pages/Launcher'; // eager: default first view → no cold-start fallback
 // Route-split (P1): heavy / non-initial pages load on demand. lazy-Chat moves the
@@ -430,9 +429,6 @@ export default function App() {
   // helper Tab autoSend resolves provider/model via currentAgent (= helper
   // Agent) — same path as opening ~/.myagents from the Launcher.
   const helperAgentDefaults = useHelperAgentModelDefaults();
-
-  // Apply theme (light/dark/system) to <html> element
-  useThemeEffect();
 
   // Settings initial section state (for deep linking to specific section)
   const [settingsInitialSection, setSettingsInitialSection] = useState<string | undefined>(undefined);

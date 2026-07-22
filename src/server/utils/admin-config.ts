@@ -23,8 +23,21 @@ import { getHomeDirOrNull } from './platform';
 import { stripBom } from '../../shared/utils';
 import { workspacePathsEqual } from '../../shared/workspacePath';
 import { promoteAgentMcpJsonToGlobal } from '../../shared/mcpConfig';
-import type { ManagedProviderCredential, McpServerDefinition, PermissionMode, ProviderVerifyStatus, SubscriptionAuthPolicy } from '../../shared/config-types';
-import { applyProviderEnablementAndOrder, CODEX_SUBSCRIPTION_PROVIDER_ID, completeModelAliases, isProviderEnabled, PRESET_MCP_SERVERS, PRESET_PROVIDERS, XAI_SUBSCRIPTION_API_BASE_URL, XAI_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
+import type { AppConfig, ManagedProviderCredential, McpServerDefinition, PermissionMode, Provider, ProviderVerifyStatus, SubscriptionAuthPolicy } from '../../shared/config-types';
+import {
+  applyManagedCodexProviderReadiness,
+  applyProviderEnablementAndOrder,
+  CODEX_SUBSCRIPTION_PROVIDER_ID,
+  completeModelAliases,
+  getManagedCodexProviderReadiness,
+  isProviderEnabled,
+  mergePresetCustomModels,
+  PRESET_MCP_SERVERS,
+  PRESET_PROVIDERS,
+  withManagedCodexProviderCatalog,
+  XAI_SUBSCRIPTION_API_BASE_URL,
+  XAI_SUBSCRIPTION_PROVIDER_ID,
+} from '../../shared/config-types';
 import { isRuntimeBackedProvider, managedCodexProviderPermissionToRuntimePermission } from '../../shared/providerExecution';
 import type { AgentConfig, ChannelConfig } from '../../shared/types/agent';
 import {
@@ -53,6 +66,7 @@ import {
   type ProviderRoute,
 } from '../../shared/providerRoute';
 import { resolveSessionConfig } from './resolve-session-config';
+import { normalizeThemeConfigRecord } from '../../shared/theme';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -103,6 +117,9 @@ export class ProjectsBusyError extends Error {
 
 /** Lightweight AppConfig subset used by admin operations */
 export interface AdminAppConfig {
+  themeId?: string;
+  themeSelectionExplicit?: boolean;
+  appearanceMode?: 'system' | 'light' | 'dark';
   // MCP
   mcpServers?: McpServerDefinition[];
   mcpEnabledServers?: string[];
@@ -171,7 +188,9 @@ export interface ProjectSlim {
   archivedAgentEnabledBeforeArchive?: boolean;
   pinnedAt?: string;
   mcpEnabledServers?: string[];
+  enabledPluginIds?: string[];
   enabledOfficialToolIds?: OfficialToolId[];
+  providerId?: string;
   model?: string;
   permissionMode?: string;
   [key: string]: unknown;
@@ -184,11 +203,13 @@ export interface ProjectSlim {
 export function loadConfig(): AdminAppConfig {
   const configPath = getConfigPath();
   if (!existsSync(configPath)) {
-    return {};
+    return normalizeThemeConfigRecord({}) as unknown as AdminAppConfig;
   }
   try {
     const raw = readFileSync(configPath, 'utf-8');
-    const config = JSON.parse(stripBom(raw)) as AdminAppConfig;
+    const config = normalizeThemeConfigRecord(
+      JSON.parse(stripBom(raw)) as AdminAppConfig,
+    ) as AdminAppConfig;
     // Keep Admin API/CLI reads aligned with renderer and Rust IM config
     // readers: legacy Agent-only HTTP/SSE definitions are part of the MCP
     // catalogue until the user explicitly removes or disables them.
@@ -200,13 +221,15 @@ export function loadConfig(): AdminAppConfig {
     if (existsSync(bakPath)) {
       try {
         console.warn('[admin-config] config.json parse failed, falling back to .bak');
-        const config = JSON.parse(stripBom(readFileSync(bakPath, 'utf-8'))) as AdminAppConfig;
+        const config = normalizeThemeConfigRecord(
+          JSON.parse(stripBom(readFileSync(bakPath, 'utf-8'))) as AdminAppConfig,
+        ) as AdminAppConfig;
         promoteAgentMcpJsonToGlobal(config);
         return config;
       } catch { /* bak also corrupt */ }
     }
     console.error('[admin-config] config.json and .bak both unreadable, returning empty config');
-    return {};
+    return normalizeThemeConfigRecord({}) as unknown as AdminAppConfig;
   }
 }
 
@@ -242,7 +265,9 @@ export async function withConfigLock(
       async () => {
         const config = loadConfig();
         const before = JSON.stringify(config);
-        const modified = await modifier(config);
+        const modified = normalizeThemeConfigRecord(
+          await modifier(config),
+        ) as AdminAppConfig;
 
         if (JSON.stringify(modified) === before) {
           return modified;
@@ -273,6 +298,31 @@ export async function atomicModifyConfig(
   modifier: (config: AdminAppConfig) => AdminAppConfig | Promise<AdminAppConfig>
 ): Promise<AdminAppConfig> {
   return withConfigLock(modifier);
+}
+
+/**
+ * Serialize a composite Agent configuration intent across config.json and its
+ * projects.json compatibility mirror. This lock is intentionally distinct
+ * from either file lock: callers still take the normal per-file locks in a
+ * fixed order while the outer intent lock prevents two Sidecars from
+ * interleaving the two commits.
+ */
+export async function withAgentConfigIntentLock<T>(fn: () => Promise<T>): Promise<T> {
+  const configDir = getConfigDir();
+  if (!existsSync(configDir)) ensureDirSync(configDir);
+  try {
+    return await withFileLock(
+      {
+        lockPath: resolve(configDir, 'agent-config-intent.lock'),
+        timeoutMs: CONFIG_LOCK_TIMEOUT_MS,
+        staleMs: CONFIG_LOCK_STALE_MS,
+      },
+      fn,
+    );
+  } catch (error) {
+    if (error instanceof FileBusyError) throw new ConfigBusyError();
+    throw error;
+  }
 }
 
 function writeFileSynced(path: string, content: string): void {
@@ -685,7 +735,49 @@ export function getAllEffectiveProviders(config?: AdminAppConfig): ProviderRecor
   const presetProviders = ((PRESET_PROVIDERS ?? []) as unknown as Array<Record<string, unknown>>)
     .filter(hasProviderId);
   const customProviders = loadCustomProviderFiles().filter(hasProviderId);
-  return applyProviderEnablementAndOrder([...presetProviders, ...customProviders], c);
+  // Managed Codex is intentionally not a PRESET_PROVIDERS entry: the product
+  // catalog injects it only when its developer gate is enabled. Admin/CLI must
+  // consume that same catalog instead of maintaining a second provider list,
+  // otherwise a valid `agent set ... providerId codex-sub` is rejected while
+  // the in-app picker accepts it.
+  const providerConfig = c as unknown as AppConfig;
+  const providersWithManagedCodex = withManagedCodexProviderCatalog(
+    [...presetProviders, ...customProviders] as unknown as Provider[],
+    providerConfig,
+  );
+  const providersWithUserModels = mergePresetCustomModels(
+    providersWithManagedCodex,
+    providerConfig.presetCustomModels,
+    providerConfig.presetRemovedModels,
+  );
+  return applyManagedCodexProviderReadiness(
+    applyProviderEnablementAndOrder(providersWithUserModels, providerConfig),
+    providerConfig,
+  ) as unknown as ProviderRecord[];
+}
+
+export function getProviderSelectionError(
+  provider: ProviderRecord,
+  config?: AdminAppConfig,
+): string | null {
+  const c = config ?? loadConfig();
+  if (!isProviderEnabled(provider)) {
+    return `Provider '${provider.id}' is disabled.`;
+  }
+  if (isRuntimeBackedProvider(provider)) {
+    const readiness = getManagedCodexProviderReadiness(c);
+    return readiness.selectable
+      ? null
+      : `Managed Codex provider is not ready (${readiness.reason}). Complete runtime installation and sign-in before selecting it.`;
+  }
+  if (provider.type === 'subscription') {
+    return c.providerVerifyStatus?.[provider.id]?.status === 'valid'
+      ? null
+      : `Subscription provider '${provider.id}' is not verified. Verify its account before selecting it.`;
+  }
+  return resolveProviderEnv(provider.id, c)
+    ? null
+    : `Provider '${provider.id}' has no usable credential. Configure its API key before selecting it.`;
 }
 
 export function findEffectiveProvider(id: string, config?: AdminAppConfig): ProviderRecord | null {

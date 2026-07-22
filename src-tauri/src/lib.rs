@@ -62,7 +62,9 @@ use sidecar::{
 };
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
-use tauri::{Emitter, Listener, Manager, Url, WebviewUrl, WebviewWindowBuilder};
+use tauri::{
+    utils::config::Color, Emitter, Listener, Manager, Theme, Url, WebviewUrl, WebviewWindowBuilder,
+};
 use tauri_plugin_autostart::MacosLauncher;
 
 // Note: lib.rs is the crate root, so `#[macro_export]` macros (ulog_info!,
@@ -88,6 +90,42 @@ enum NavDecision {
     OpenExternally,
     /// Cancel it silently (disallowed scheme — potential attack vector).
     BlockSilently,
+}
+
+// Native startup surface only. The canonical values remain the Theme's
+// `--paper` tokens in myagents-default.css; the unit guard below fails if this
+// platform projection drifts. Keeping the surface to one flat token avoids
+// duplicating the actual Theme palette or material system in Rust.
+const THEME_BOOTSTRAP_LIGHT_PAPER: Color = Color(250, 246, 238, 255);
+const THEME_BOOTSTRAP_DARK_PAPER: Color = Color(26, 22, 20, 255);
+const THEME_BOOTSTRAP_APPEARANCE_MARKER: &str = "__MYAGENTS_APPEARANCE_MODE__";
+const THEME_BOOTSTRAP_RUN_ID_MARKER: &str = "__MYAGENTS_BOOTSTRAP_RUN_ID__";
+const THEME_BOOTSTRAP_SCRIPT_TEMPLATE: &str =
+    include_str!("../../src/renderer/theme/native-bootstrap-script.js");
+
+fn theme_bootstrap_paper(theme: Theme) -> Color {
+    match theme {
+        Theme::Dark => THEME_BOOTSTRAP_DARK_PAPER,
+        Theme::Light => THEME_BOOTSTRAP_LIGHT_PAPER,
+        _ => THEME_BOOTSTRAP_LIGHT_PAPER,
+    }
+}
+
+fn theme_bootstrap_script(
+    selection: &config_io::ThemeBootstrapSelection,
+    bootstrap_run_id: &str,
+) -> String {
+    // Theme ID validity is renderer-registry knowledge. Preserve the resolved
+    // ID previously published by ThemeRuntime instead of letting an unknown
+    // durable ID bypass whole-package fallback on the next pre-React frame.
+    // With no explicit trustworthy snapshot, the compiled product default is
+    // used; canonical CSS still supplies the structural pre-React fallback.
+    let appearance_mode = serde_json::to_string(&selection.appearance_mode)
+        .unwrap_or_else(|_| "\"system\"".to_owned());
+    let run_id = serde_json::to_string(bootstrap_run_id).unwrap_or_else(|_| "\"\"".to_owned());
+    THEME_BOOTSTRAP_SCRIPT_TEMPLATE
+        .replacen(THEME_BOOTSTRAP_APPEARANCE_MARKER, &appearance_mode, 1)
+        .replacen(THEME_BOOTSTRAP_RUN_ID_MARKER, &run_id, 1)
 }
 
 /// Pure decision for `on_navigation` (Functional Core — unit-tested below;
@@ -286,6 +324,26 @@ pub fn run() {
             Some(vec!["--minimized"]),
         ))
         .plugin(global_shortcut::build_plugin());
+
+    // Tauri 2.11 wires WKWebView's web-content-process termination callback.
+    // Recover only after WebKit confirms that the renderer process is gone;
+    // ordinary macOS wake/resume must preserve the healthy page and its local
+    // draft state without an unconditional reload.
+    #[cfg(target_os = "macos")]
+    let builder = builder.on_web_content_process_terminate(|webview| {
+        let label = webview.label();
+        ulog_warn!(
+            "[WebView] content process terminated for '{}'; reloading from authoritative session state",
+            label
+        );
+        if let Err(error) = webview.reload() {
+            ulog_error!(
+                "[WebView] failed to reload '{}' after content process termination: {}",
+                label,
+                error
+            );
+        }
+    });
 
     // Floating ball panels need the NSPanel plugin (macOS only).
     #[cfg(target_os = "macos")]
@@ -689,6 +747,22 @@ pub fn run() {
             // Order: must be BEFORE macos_arrow_filter::install_arrow_key_filter
             // because the filter looks up the WryWebView ObjC class which is
             // only registered after the first webview is constructed.
+            let theme_bootstrap_selection = app_dirs::myagents_data_dir()
+                .map(|dir| config_io::read_theme_bootstrap_selection(&dir.join("config.json")))
+                .unwrap_or_default();
+            let preferred_native_theme = match theme_bootstrap_selection.appearance_mode.as_str() {
+                "light" => Some(Theme::Light),
+                "dark" => Some(Theme::Dark),
+                _ => None,
+            };
+            // The system scheme is only knowable from the native window after
+            // creation. Keep it hidden for those few synchronous instructions,
+            // then project the resolved `window.theme()` into the flat startup
+            // surface before the first visible frame.
+            let initial_paper = preferred_native_theme
+                .map(theme_bootstrap_paper)
+                .unwrap_or(THEME_BOOTSTRAP_LIGHT_PAPER);
+            let theme_bootstrap_run_id = uuid::Uuid::new_v4().to_string();
             let main_window_builder = WebviewWindowBuilder::new(
                 app,
                 "main",
@@ -701,6 +775,12 @@ pub fn run() {
             .fullscreen(false)
             .center()
             .decorations(true)
+            .visible(false)
+            .background_color(initial_paper)
+            .initialization_script(theme_bootstrap_script(
+                &theme_bootstrap_selection,
+                &theme_bootstrap_run_id,
+            ))
             // `transparent(false)` is the default in Tauri and the setter is
             // gated behind `macos-private-api` on macOS, so we omit it (the
             // original config field was effectively a no-op).
@@ -771,7 +851,6 @@ pub fn run() {
             // inset block below. On other platforms the `.build()?` call
             // remains for its side effect (constructing + showing the window);
             // the binding itself is intentionally unused, hence the cfg_attr.
-            #[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
             let main_window = main_window_builder
                 .build()
                 .map_err(|e| {
@@ -795,6 +874,22 @@ pub fn run() {
                     ulog_warn!("[main-window] traffic light inset failed: {}", e);
                 }
                 macos_traffic_light::install_inset_persistence(&main_window, 14.0, 20.0);
+            }
+
+            let resolved_native_theme = preferred_native_theme
+                .or_else(|| main_window.theme().ok())
+                .unwrap_or(Theme::Light);
+            if let Err(error) = main_window
+                .set_background_color(Some(theme_bootstrap_paper(resolved_native_theme)))
+            {
+                ulog_warn!("[main-window] Failed to set Theme startup surface: {}", error);
+            }
+            main_window.show().map_err(|error| {
+                ulog_error!("[main-window] Failed to reveal startup window: {}", error);
+                error
+            })?;
+            if let Err(error) = main_window.set_focus() {
+                ulog_warn!("[main-window] Failed to focus startup window: {}", error);
             }
 
             // macOS WKWebView function-key tofu workaround. Must run AFTER
@@ -1303,8 +1398,12 @@ pub fn run() {
 
 #[cfg(test)]
 mod nav_guard_tests {
-    use super::{classify_navigation, NavDecision};
-    use tauri::Url;
+    use super::{
+        classify_navigation, theme_bootstrap_paper, theme_bootstrap_script, NavDecision,
+        THEME_BOOTSTRAP_APPEARANCE_MARKER, THEME_BOOTSTRAP_RUN_ID_MARKER,
+    };
+    use crate::config_io::ThemeBootstrapSelection;
+    use tauri::{utils::config::Color, Theme, Url};
 
     fn decide(s: &str) -> NavDecision {
         classify_navigation(&Url::parse(s).expect("parse url"))
@@ -1354,5 +1453,54 @@ mod nav_guard_tests {
         );
         assert_eq!(decide("mailto:a@b.com"), NavDecision::OpenExternally);
         assert_eq!(decide("tel:+123"), NavDecision::OpenExternally);
+    }
+
+    #[test]
+    fn native_bootstrap_surface_tracks_canonical_theme_paper_tokens() {
+        let css = include_str!("../../src/renderer/theme/themes/myagents-default.css");
+
+        fn paper_color(css: &str, scheme: &str) -> Color {
+            let selector = format!("html[data-color-scheme='{scheme}'],");
+            let block = css
+                .split_once(&selector)
+                .and_then(|(_, tail)| tail.split_once('}'))
+                .map(|(block, _)| block)
+                .expect("canonical scheme block");
+            let value = block
+                .split_once("--paper:")
+                .and_then(|(_, tail)| tail.split_once(';'))
+                .map(|(value, _)| value.trim())
+                .expect("canonical --paper value");
+            let hex = value.strip_prefix('#').expect("hex --paper value");
+            assert_eq!(hex.len(), 6, "canonical --paper must be #rrggbb");
+            Color(
+                u8::from_str_radix(&hex[0..2], 16).expect("red channel"),
+                u8::from_str_radix(&hex[2..4], 16).expect("green channel"),
+                u8::from_str_radix(&hex[4..6], 16).expect("blue channel"),
+                255,
+            )
+        }
+
+        assert_eq!(
+            theme_bootstrap_paper(Theme::Light),
+            paper_color(css, "light")
+        );
+        assert_eq!(theme_bootstrap_paper(Theme::Dark), paper_color(css, "dark"));
+    }
+
+    #[test]
+    fn native_bootstrap_script_injects_only_the_normalized_appearance() {
+        let script = theme_bootstrap_script(
+            &ThemeBootstrapSelection {
+                appearance_mode: "dark".to_owned(),
+            },
+            "run\");globalThis.pwned=true;//",
+        );
+        assert!(script.contains("if (themeSelectionExplicit) themeId = storedThemeId"));
+        assert!(script.contains("let themeId = 'default-black'"));
+        assert!(script.contains("appearanceMode: \"dark\""));
+        assert!(!script.contains(THEME_BOOTSTRAP_APPEARANCE_MARKER));
+        assert!(!script.contains(THEME_BOOTSTRAP_RUN_ID_MARKER));
+        assert!(!script.contains("\"run\");globalThis.pwned=true;//\""));
     }
 }

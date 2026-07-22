@@ -42,9 +42,12 @@
     "defaultWorkspaceBrowse": "Choose folder...",
     "defaultWorkspacePickTitle": "Choose default workspace",
     "defaultWorkspaceSaved": "Default workspace saved",
+    "appearanceModeTitle": "Appearance mode",
+    "appearanceModeDescription": "Set the app light and dark appearance mode",
     "themeTitle": "Theme",
-    "themeDescription": "Set the app appearance mode",
-    "theme": {
+    "themeDescription": "Switch the app-wide visual theme",
+    "themeSaveFailed": "Failed to switch Theme: {{message}}",
+    "appearanceMode": {
       "system": "System",
       "light": "Light",
       "dark": "Dark"

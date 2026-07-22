@@ -75,7 +75,7 @@ function ToggleSwitch({ enabled, onChange }: { enabled: boolean; onChange: (v: b
 function Checkbox({ checked, onChange, label }: { checked: boolean; onChange: (v: boolean) => void; label: string }) {
     return (
         <button type="button" onClick={() => onChange(!checked)} className="flex items-center gap-2.5 text-sm text-[var(--ink)]">
-            <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${checked ? 'border-[var(--accent)] bg-[var(--accent)] text-white' : 'border-[var(--line-strong)] bg-transparent'}`}>
+            <span className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors ${checked ? 'border-[var(--accent)] bg-[var(--accent)] text-[var(--on-accent)]' : 'border-[var(--line-strong)] bg-transparent'}`}>
                 {checked && <Check className="h-2.5 w-2.5" />}
             </span>
             {label}
@@ -464,7 +464,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                                 <div className="flex items-center gap-2.5">
                                     <button onClick={() => setIsEditing(false)} className="rounded-lg px-4 py-2 text-sm font-medium text-[var(--ink-muted)] hover:bg-[var(--paper-inset)] transition-colors">{t('cron.detail.cancel')}</button>
                                     <button onClick={handleSave} disabled={editErrors.length > 0 || isSaving}
-                                        className="rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white transition hover:bg-[var(--accent-warm-hover)] disabled:opacity-50 disabled:cursor-not-allowed">
+                                        className="rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-[var(--on-accent)] transition hover:bg-[var(--accent-warm-hover)] disabled:opacity-50 disabled:cursor-not-allowed">
                                         {isSaving ? t('cron.detail.saving') : t('cron.detail.save')}
                                     </button>
                                 </div>
@@ -499,7 +499,7 @@ export default function CronTaskDetailPanel({ task, botInfo, onClose, onDelete, 
                                     )}
                                     {!isManagedTask && task.status === 'stopped' && (!resumeBlockReason ? (
                                         <button onClick={handleResume} disabled={isResuming}
-                                            className="flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-white hover:bg-[var(--accent-warm-hover)] disabled:opacity-50 transition-colors">
+                                            className="flex items-center gap-1.5 rounded-lg bg-[var(--accent)] px-5 py-2 text-sm font-medium text-[var(--on-accent)] hover:bg-[var(--accent-warm-hover)] disabled:opacity-50 transition-colors">
                                             <Play className="h-3.5 w-3.5" />{isResuming ? t('cron.detail.resuming') : t('cron.detail.resume')}
                                         </button>
                                     ) : <span className="text-xs text-[var(--ink-muted)]/50">{resumeBlockReason}</span>)}

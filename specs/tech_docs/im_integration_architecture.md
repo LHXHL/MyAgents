@@ -472,7 +472,7 @@ type PendingApprovals = Arc<Mutex<HashMap<String, PendingApproval>>>;
 
 IM / Agent Channel 的结构化人类交互不是普通工具偏好，而是 host 能力。Rust `/api/im/enqueue` 与 heartbeat payload 都带 `hostInteraction: { askUserQuestion: 'none' | 'native-card' }`，Node 侧 `InteractionScenario` 同步携带该字段。
 
-- 默认值必须是 `'none'`。Telegram、Dingtalk、OpenClaw Bridge 默认不承接 `AskUserQuestion`，Node 会把它作为 channel compatibility overlay 禁用，避免 AI 发出桌面-only 选项后 IM 用户收不到。
+- 默认值必须是 `'none'`。Telegram、Dingtalk、OpenClaw Bridge（包括官方 Feishu/Lark 插件）不承接 builtin `AskUserQuestion`，Node 会把它作为 channel compatibility overlay 禁用，避免阻塞式 SDK 提问与插件同 chat 串行队列互相等待。插件自带的异步原生卡片工具属于另一套“答案作为新 turn 注入”的协议，不能据此把 Bridge 声明为 `'native-card'`。
 - 原生飞书 adapter 当前声明 `'native-card'`，因此 runtime 可放开 `AskUserQuestion`，并通过 IM event bus 的 `ask-user-question-request` / `ask-user-question-expired` 交给 Rust `ReplyRouter`。
 - `ReplyRouter` 解析 request 后调用 `adapter.send_question_card()`，并在 `PendingQuestion` 中保存 inner `requestId`、chat、card message id、requester、questions 和 sidecar port。用户按钮或文本 fallback 进入 `QuestionCallback`，Rust POST 现有 `/api/ask-user-question/respond`，只有 HTTP 2xx 且 JSON `{success:true}` 后才删除 pending / 更新卡片状态；失败时保留 pending 让用户重试。
 - 敏感问题（`isSecret`）在 IM 渠道 fail-closed：不要求用户在聊天历史里输入 secret，直接通知用户并向 sidecar 回传取消。安全输入能力需要单独设计，不能用普通 IM 文本兜底。

@@ -64,7 +64,12 @@ import type {
 import { decideExternalInjectedTurnResult } from '../session-core/turn-result-policy';
 import type { TurnTerminalOutcome } from '../session-core/turn-queue';
 import { getEffectiveOfficialToolIdsForSession } from '../utils/admin-config';
-import { getSessionData, updateSessionMetadata } from '../SessionStore';
+import {
+  ensureRegisteredAgentSessionOrigin,
+  getPersistedSessionOrigin,
+  getSessionData,
+  updateSessionMetadata,
+} from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../shared/config-types';
 import {
@@ -227,6 +232,14 @@ export function createExternalSessionEngine(): SessionEngine {
         workspacePath: getRuntimeWorkspacePath() || null,
         sessionMeta: sessionId ? getSessionData(sessionId) : null,
       };
+    },
+
+    getSessionOrigin(sessionId) {
+      return getPersistedSessionOrigin(sessionId);
+    },
+
+    ensureRegisteredAgentSessionOrigin(sessionId, expected) {
+      return ensureRegisteredAgentSessionOrigin(sessionId, expected);
     },
 
     getHeldImConfigSnapshot() {
@@ -406,6 +419,7 @@ export function createExternalSessionEngine(): SessionEngine {
           inboxMeta: request.inboxMeta,
           metadataBirthPending: request.allowLazySessionMaterialization === true,
           analyticsOrigin: request.analyticsOrigin,
+          birthOrigin: request.birthOrigin,
         },
       );
     },
