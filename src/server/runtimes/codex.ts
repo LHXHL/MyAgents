@@ -80,6 +80,7 @@ export function buildCodexInitializeParams(): Record<string, unknown> {
 
 const CODEX_PROJECT_DOC_FALLBACK_CONFIG = 'project_doc_fallback_filenames=["CLAUDE.md"]';
 const CODEX_FILE_AUTH_CONFIG = 'cli_auth_credentials_store="file"';
+const MANAGED_CODEX_HTTP_PROVIDER_ID = 'myagents_managed_http';
 const CODEX_MCP_NO_PROXY_VAL = 'localhost,localhost.localdomain,127.0.0.1,127.0.0.0/8,::1,[::1]';
 const CODEX_MCP_PROXY_ENV_KEYS = [
   'HTTP_PROXY',
@@ -544,20 +545,41 @@ export function buildCodexAppServerLaunchConfig(args: {
   runtimeSource: RuntimeSource;
   codexEnv: Record<string, string | undefined>;
   mcpServers?: readonly McpServerDefinition[];
-}): { args: string[]; mcpServerNames: string[] } {
+}): { args: string[]; mcpServerNames: string[]; modelProvider?: string } {
   const codexArgs = [
     args.commandPath,
     '-c', CODEX_PROJECT_DOC_FALLBACK_CONFIG,
   ];
   let mcpServerNames: string[] = [];
+  let modelProvider: string | undefined;
   if (args.runtimeSource === 'managed-provider') {
     codexArgs.push('-c', CODEX_FILE_AUTH_CONFIG);
+    modelProvider = MANAGED_CODEX_HTTP_PROVIDER_ID;
+    pushCodexConfigArg(codexArgs, 'model_provider', tomlString(modelProvider));
+    pushCodexConfigArg(codexArgs, `model_providers.${modelProvider}.name`, tomlString('OpenAI'));
+    pushCodexConfigArg(codexArgs, `model_providers.${modelProvider}.wire_api`, tomlString('responses'));
+    pushCodexConfigArg(codexArgs, `model_providers.${modelProvider}.requires_openai_auth`, 'true');
+    pushCodexConfigArg(codexArgs, `model_providers.${modelProvider}.supports_websockets`, 'false');
     const mcpConfig = buildManagedCodexMcpConfigArgs(args.mcpServers, args.codexEnv);
     codexArgs.push(...mcpConfig.args);
     mcpServerNames = mcpConfig.serverNames;
   }
   codexArgs.push('app-server');
-  return { args: codexArgs, mcpServerNames };
+  return { args: codexArgs, mcpServerNames, modelProvider };
+}
+
+export function resolveCodexThreadModelProvider(
+  launchModelProvider: string | undefined,
+  resumeSessionId: string | undefined,
+  model: string | undefined,
+): string | undefined {
+  if (!launchModelProvider) return undefined;
+  if (!resumeSessionId || model?.trim()) return launchModelProvider;
+
+  // A legacy thread can carry a different persisted model/provider pair. When
+  // MyAgents has no authoritative model snapshot, let Codex restore that pair
+  // together instead of overriding only its provider and resetting the model.
+  return undefined;
 }
 
 export function buildCodexAppServerArgs(args: {
@@ -2622,6 +2644,11 @@ export class CodexRuntime implements AgentRuntime {
       const defaultPermissionMode = isHeadlessAutomation ? 'no-restrictions' : 'full-auto';
       const permMode = options.permissionMode || defaultPermissionMode;
       const { approval, sandbox } = mapPermissionMode(permMode);
+      const threadModelProvider = resolveCodexThreadModelProvider(
+        launchConfig.modelProvider,
+        options.resumeSessionId,
+        options.model,
+      );
       codexProc.defaultPermissionMode = defaultPermissionMode;
       codexProc.permissionMode = permMode;
       codexProc.approvalPolicy = approval;
@@ -2640,6 +2667,7 @@ export class CodexRuntime implements AgentRuntime {
           threadId: options.resumeSessionId,
           cwd: options.workspacePath,
           model: options.model || null,
+          ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
           approvalPolicy: approval,
           sandbox,
           developerInstructions: options.systemPromptAppend || null,
@@ -2662,6 +2690,7 @@ export class CodexRuntime implements AgentRuntime {
         const startParams = {
           cwd: options.workspacePath,
           model: options.model || null,
+          ...(threadModelProvider ? { modelProvider: threadModelProvider } : {}),
           approvalPolicy: approval,
           sandbox,
           developerInstructions: options.systemPromptAppend || null,

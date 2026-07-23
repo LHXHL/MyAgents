@@ -21,6 +21,7 @@ import {
   KNOWN_CODEX_SERVER_REQUEST_METHODS,
   mapCodexTurnCompletedNotification,
   mapCodexTurnPlanUpdatedNotification,
+  resolveCodexThreadModelProvider,
   resolveCodexSkillExtraRoots,
   serializeCodexPermissionResponse,
   type PendingCodexRequest,
@@ -131,6 +132,16 @@ describe('Codex app-server protocol helpers', () => {
       'project_doc_fallback_filenames=["CLAUDE.md"]',
       '-c',
       'cli_auth_credentials_store="file"',
+      '-c',
+      'model_provider="myagents_managed_http"',
+      '-c',
+      'model_providers.myagents_managed_http.name="OpenAI"',
+      '-c',
+      'model_providers.myagents_managed_http.wire_api="responses"',
+      '-c',
+      'model_providers.myagents_managed_http.requires_openai_auth=true',
+      '-c',
+      'model_providers.myagents_managed_http.supports_websockets=false',
       'app-server',
     ]);
 
@@ -144,6 +155,32 @@ describe('Codex app-server protocol helpers', () => {
       'project_doc_fallback_filenames=["CLAUDE.md"]',
       'app-server',
     ]);
+  });
+
+  it('owns an explicit HTTP-only OpenAI provider for the managed Codex runtime', () => {
+    const launch = buildCodexAppServerLaunchConfig({
+      commandPath: '/managed/codex',
+      runtimeSource: 'managed-provider',
+      codexEnv: {},
+    });
+
+    expect(launch.modelProvider).toBe('myagents_managed_http');
+    expect(launch.args).toContain('model_provider="myagents_managed_http"');
+    expect(launch.args).toContain('model_providers.myagents_managed_http.name="OpenAI"');
+    expect(launch.args).toContain('model_providers.myagents_managed_http.wire_api="responses"');
+    expect(launch.args).toContain('model_providers.myagents_managed_http.requires_openai_auth=true');
+    expect(launch.args).toContain('model_providers.myagents_managed_http.supports_websockets=false');
+  });
+
+  it('keeps persisted provider identity for model-unknown legacy resumes', () => {
+    expect(resolveCodexThreadModelProvider('myagents_managed_http', undefined, undefined))
+      .toBe('myagents_managed_http');
+    expect(resolveCodexThreadModelProvider('myagents_managed_http', 'thread-1', 'gpt-5.6-sol'))
+      .toBe('myagents_managed_http');
+    expect(resolveCodexThreadModelProvider('myagents_managed_http', 'thread-1', undefined))
+      .toBeUndefined();
+    expect(resolveCodexThreadModelProvider(undefined, undefined, 'gpt-5.6-sol'))
+      .toBeUndefined();
   });
 
   it('injects managed Codex MCP servers through app-server config args without argv secrets', () => {
@@ -399,6 +436,16 @@ describe('Codex app-server protocol helpers', () => {
       'project_doc_fallback_filenames=["CLAUDE.md"]',
       '-c',
       'cli_auth_credentials_store="file"',
+      '-c',
+      'model_provider="myagents_managed_http"',
+      '-c',
+      'model_providers.myagents_managed_http.name="OpenAI"',
+      '-c',
+      'model_providers.myagents_managed_http.wire_api="responses"',
+      '-c',
+      'model_providers.myagents_managed_http.requires_openai_auth=true',
+      '-c',
+      'model_providers.myagents_managed_http.supports_websockets=false',
       'app-server',
     ]);
     expect(env.TOKEN).toBeUndefined();
