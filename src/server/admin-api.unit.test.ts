@@ -145,6 +145,17 @@ afterEach(() => {
 });
 
 describe('admin-api help registry', () => {
+  it('keeps im send-media leaf help aligned with the executable file flag contract', async () => {
+    const { handleHelp } = await import('./admin-api');
+
+    const result = handleHelp({ path: ['im', 'send-media'] });
+    const text = (result.data as { text?: string } | undefined)?.text ?? '';
+
+    expect(result.success).toBe(true);
+    expect(text).toContain('send-media --file <path> [--caption <text>]');
+    expect(text).not.toContain('send-media <path>');
+  });
+
   it('documents the official vision command group for myagents vision --help', async () => {
     const { handleHelp } = await import('./admin-api');
 

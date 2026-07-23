@@ -2586,6 +2586,41 @@ function spaceAttachmentPaths(flags: Record<string, unknown>): string[] {
   return paths;
 }
 
+function resolveImMediaFilePath(
+  flags: Record<string, unknown>,
+  positionalPath: string | undefined,
+): string {
+  const rawFile = flags.file;
+  const filePaths = rawFile === undefined
+    ? []
+    : Array.isArray(rawFile)
+      ? rawFile
+      : [rawFile];
+
+  if (filePaths.length > 1) {
+    return exitAgentCliError(flags, {
+      code: 'FILE_COUNT_INVALID',
+      error: 'im send-media accepts exactly one --file <path>.',
+      suggestion: 'Run `myagents im send-media --help`, then retry with one absolute file path.',
+    });
+  }
+
+  const filePath = filePaths[0] ?? positionalPath;
+  if (
+    flags.fileValueMissing
+    || typeof filePath !== 'string'
+    || !filePath.trim()
+  ) {
+    return exitAgentCliError(flags, {
+      code: 'FILE_REQUIRED',
+      error: 'im send-media requires --file <path>.',
+      suggestion: 'Run `myagents im send-media --help`, then retry with one absolute file path.',
+    });
+  }
+
+  return filePath;
+}
+
 function optionalNumberFlag(value: unknown): number | undefined {
   if (typeof value === 'number') return value;
   if (typeof value !== 'string' || !value.trim()) return undefined;
@@ -4032,7 +4067,7 @@ export function buildRequestBody(
   if (group === 'im') {
     if (action === 'send-media') {
       return {
-        filePath: (flags.file as string) || rest[0],
+        filePath: resolveImMediaFilePath(flags, rest[0]),
         caption: flags.caption,
       };
     }
