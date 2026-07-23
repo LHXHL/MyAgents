@@ -98,13 +98,13 @@ export default memo(function SortableTabItem({
         >
             {/* Tab title — drag handle is bound here, not on the entire tab */}
             <span
-                className="flex min-w-0 flex-1 items-center text-xs select-none"
+                className="flex min-w-0 flex-1 items-center text-xs font-medium select-none"
                 aria-label={accessibleTitle}
                 {...listeners}
             >
                 {showWorkspaceContext ? (
                     <>
-                        <span className="max-w-[35%] flex-shrink-0 truncate font-normal opacity-70">
+                        <span className="max-w-[35%] flex-shrink-0 truncate">
                             {workspaceTitle}
                         </span>
                         <span
@@ -112,10 +112,10 @@ export default memo(function SortableTabItem({
                             className="mx-1.5 h-3 w-px flex-shrink-0 bg-[var(--line-strong)]/70"
                             aria-hidden="true"
                         />
-                        <span className="min-w-0 truncate font-medium">{displayTitle}</span>
+                        <span className="min-w-0 truncate">{displayTitle}</span>
                     </>
                 ) : (
-                    <span className="min-w-0 truncate font-medium">{displayTitle}</span>
+                    <span className="min-w-0 truncate">{displayTitle}</span>
                 )}
             </span>
 
