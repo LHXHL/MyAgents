@@ -116,6 +116,7 @@ Runtime 内部协议差异通过 `UnifiedEvent` 联合类型统一，`external-s
 | 权限 | `permission_request` | 委托 MyAgents UI 审批 |
 | 生命周期 | `session_init`, `turn_complete`, `session_complete` | 会话状态 |
 | 元数据 | `usage`, `log` | Token 用量、日志 |
+| 工具目录 | `runtime_tool_catalog` | 外部 Runtime 实际发现且可用的 MCP 工具快照；独立于一次性的 `session_init` |
 | 诊断 | `runtime_diagnostics` | Runtime 自检快照（Codex 启动后 fire-and-forget 收集，详见「Runtime 诊断 + envPolicy」） |
 | 状态面板 | `agent_plan_update` | Runtime 原生计划 / todo 快照（Codex `turn/plan/updated`），由 `external-session.ts` 转为 `chat:agent-plan-update`，前端仅作为 transient AgentStatusPanel 状态，不写入 transcript |
 
@@ -615,7 +616,7 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 
 **触发链路**:前端 `Chat.tsx` 在 Tab ready(`isActive && isConnected && sessionId`)的瞬间 POST `/api/runtime/prewarm` → `prewarmExternalSession()` → `startExternalSession({ ...options, initialMessage: undefined })`。**不**等待 `/api/runtime/models` — 该接口自身也 spawn 一个 `gemini --acp` 子进程查模型,会付同样的 ~14s 冷启动。两件事并行进行:prewarm 在用户打字时暖 session,models-fetch 在后台填充模型下拉。首次 prewarm 用 `effectiveModel`(可能 `undefined` → runtime 用自带默认),用户随后在 UI 里切模型时走 `setExternalModel()` → in-place `runtime.setModel()` 路径(见「配置变更」)。
 
-**Managed Codex readiness**：`initialize` 只证明 app-server 已建立；MyAgents 注入的 MCP 仍可能异步启动。Managed-provider launch config 为每个 stdio / HTTP server 注入由 `MCP_PREWARM_GRACE_MS` 派生的原生 `startup_timeout_sec`；`CodexRuntime.startSession()` 在发起 `thread/start|resume` 的 native startup boundary 启动同一 10 秒 absolute grace，并观察 `mcpServer/startupStatus/updated`。全部 ready 则 ready；`failed | cancelled | pending timeout` 则当前 Runtime Session settle degraded 并继续首个 `turn/start`，不自动调用 `config/mcpServer/reload`、不在下一轮重试；新 Session / process 才重新尝试。`mcpServerStatus/list` 仍只是 UI 诊断，不是 barrier。等待只覆盖 MyAgents 注入的 server name，用户自有 Codex MCP 不归此 owner。Process exit、thread/RPC failure 仍是真 Runtime failure，不能被 degraded 吞掉；`system-cli` launch config 与行为不变。
+**Managed Codex readiness**：`initialize` 只证明 app-server 已建立；MyAgents 注入的 MCP 仍可能异步启动。Managed-provider launch config 为每个 stdio / HTTP server 注入由 `MCP_PREWARM_GRACE_MS` 派生的原生 `startup_timeout_sec`；`CodexRuntime.startSession()` 在发起 `thread/start|resume` 的 native startup boundary 启动同一 10 秒 absolute grace，并观察 `mcpServer/startupStatus/updated`。全部 ready 则 ready；`failed | cancelled | pending timeout` 则当前 Runtime Session settle degraded 并继续首个 `turn/start`，不自动调用 `config/mcpServer/reload`、不在下一轮重试；新 Session / process 才重新尝试。`mcpServerStatus/list` 只用于只读 UI 投影（诊断与工具目录），不是 barrier。等待只覆盖 MyAgents 注入的 server name，用户自有 Codex MCP 不归此 owner。Process exit、thread/RPC failure 仍是真 Runtime failure，不能被 degraded 吞掉；`system-cli` launch config 与行为不变。
 
 **IM 冷启动边界**：persistent Agent/飞书 session 一旦已有 live runtime，后续 turn 复用同一 process 与 MCP，不应重复支付 startup。完全没有 Sidecar/runtime 的首个 IM peer 仍要真实创建这些资源；本期不为所有潜在 peer 常驻预热，因为那会把延迟换成无界资源占用。这个首个 cold turn 是显式产品边界，不得和“同 session 每轮重启”混为一谈。
 
@@ -684,13 +685,15 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 
 每个 RPC 独立 `tryCall` + 5s 超时，单点失败不级联。统一 `RuntimeDiagnostics`（含 `status: RuntimeDiagnosticsCallStatus` 四元组 + `effectiveEnv: RuntimeEffectiveEnv`）通过 `wrappedOnEvent({ kind: 'runtime_diagnostics' })` → SSE `chat:runtime-diagnostics` → `TabProvider.setRuntimeDiagnostics()` 到 React。
 
+Codex MCP 工具目录走独立的可变快照：adapter 记录当前 thread 的 `mcpServer/startupStatus/updated`，短合并窗口后按 threadId 分页调用 `mcpServerStatus/list`，仅把 ready 且无需登录的 server 中由 Codex 实际返回的 tool 映射为 `mcp__<server>__<tool>`。目录变化发 `runtime_tool_catalog`；`external-session` 更新其 system-init replay snapshot 并广播 `chat:runtime-tool-catalog`，所以活跃 Tab 实时更新，重连则从同一 owner 快照恢复。该链路只读，不修改 Codex 配置；查询失败保留仍处于 ready 的上一份目录，明确的 failed / cancelled 通知立即撤回对应 server，不依赖后续查询成功。
+
 **Session-life gate**：广播前检查 `codexProc.exited || codexProc.intentionalKillDuringStartup`——5–10s 的诊断窗口期内若用户已切 tab / kill session，stale event 不允许闪到切走的 tab（详见 `codex.ts::startSession` 末尾的 fire-and-forget 块）。
 
 ### `chat:runtime-diagnostics` SSE 事件
 
 注册位置：`src/renderer/api/SseConnection.ts::JSON_EVENTS`。前端消费：`RuntimeDiagnosticsBanner.tsx`——只在 `status` 任一字段非 `'ok'` 或 `apps` 有 `isAccessible:false` 时才显示。
 
-**MCP `state` 派生**：`RuntimeMcpServerInfo.state` 不是直接由 Codex 返回的，而是 `codex.ts` 内部从 `authStatus` 派生——含 `'failed' / 'error' / 'oauth' / 'unauthenticated' / 'needs' / 'required'` marker 任意一个 → `state: 'failed'`，banner 现有 `state === 'failed'` 过滤器即可命中所有 unhealthy MCP。**新增 MCP 健康检测逻辑 MUST 走这条派生链而不是在 banner 端散写 filter**。
+**MCP `state` 派生**：`RuntimeMcpServerInfo.state` 不是直接由 Codex 返回的，而是 `codex.ts` 内部从 `authStatus` 派生。当前 Codex schema 的 `notLoggedIn` 是不可用态；`oAuth` / `bearerToken` 是已认证态，不能按字符串含 `oauth` 误判失败。兼容旧 payload 时仅把明确的 `failed / error / unauthenticated / needs / required` marker 视为 unhealthy。**新增 MCP 健康检测逻辑 MUST 走这条派生链而不是在 banner 端散写 filter**。
 
 ### `RuntimeEnvPolicy.proxy` 两档语义（`env-utils.augmentedProcessEnv`）
 

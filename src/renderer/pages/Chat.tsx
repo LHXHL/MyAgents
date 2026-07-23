@@ -467,7 +467,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     sessionMeta,
     setSessionMeta,
     unifiedLogs,
-    systemInitInfo: _systemInitInfo,
+    systemInitInfo,
     sdkSlashCommands,
     runtimeDiagnostics,
     agentError,
@@ -2151,6 +2151,12 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const [globalMcpEnabled, setGlobalMcpEnabled] = useState<string[]>([]);
   const [workspaceMcpEnabled, setWorkspaceMcpEnabled] = useState<string[]>(
     currentAgent?.mcpEnabledServers ?? currentProject?.mcpEnabledServers ?? []
+  );
+  const runtimeMcpTools = useMemo(
+    () => isExternalRuntime
+      ? (systemInitInfo?.tools ?? []).filter(tool => tool.startsWith('mcp__'))
+      : [],
+    [isExternalRuntime, systemInitInfo?.tools],
   );
 
   // PRD 0.2.17 — Claude plugin per-workspace enable state. Init from Agent
@@ -5209,6 +5215,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             workspaceMcpEnabled={workspaceMcpEnabled}
             globalMcpEnabled={globalMcpEnabled}
             mcpServers={mcpServers}
+            runtimeMcpTools={runtimeMcpTools}
             onWorkspaceMcpToggle={handleWorkspaceMcpToggle}
             officialTools={OFFICIAL_TOOLS}
             workspaceOfficialToolEnabled={workspaceOfficialToolEnabled}

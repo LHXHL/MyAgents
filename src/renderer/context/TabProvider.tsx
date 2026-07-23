@@ -741,9 +741,8 @@ export default function TabProvider({
         setContextUsage(null);
         if (!shouldPreservePendingBirthSnapshots) {
             setAgentPlanTodos(null);
-        }
-        if (!shouldPreservePendingBirthSnapshots) {
             setSdkSlashCommands([]);
+            setSystemInitInfo(null);
         }
     }, [sessionId]);
 
@@ -929,6 +928,7 @@ export default function TabProvider({
         setLogs([]);
         setSessionMeta(null);
         setSessionRuntimeSource(null);
+        setSystemInitInfo(null);
         // Issue #194 (Codex review #6) — clear runtime diagnostics on reset so
         // a stale Codex banner from the previous session doesn't leak into a
         // new one (or a Tab that just switched to builtin runtime).
@@ -2767,6 +2767,28 @@ export default function TabProvider({
                     break;
                 }
                 setSdkSlashCommands(Array.isArray(payload?.commands) ? payload.commands : []);
+                break;
+            }
+
+            case 'chat:runtime-tool-catalog': {
+                const payload = data as { sessionId?: string; tools?: string[] } | null;
+                const payloadSessionId = payload?.sessionId;
+                const currentId = currentSessionIdRef.current;
+                const connectedId = connectedSseSessionIdRef.current;
+                if (!shouldAcceptSessionScopedSseSnapshot({
+                    connectedSessionId: connectedId,
+                    currentSessionId: currentId,
+                    payloadSessionId,
+                    isConnectedSessionPending: connectedId ? isPendingSessionId(connectedId) : false,
+                    isCurrentSessionPending: currentId ? isPendingSessionId(currentId) : false,
+                })) {
+                    console.log(`[TabProvider ${tabId}] Ignoring runtime tool catalog for stale session ${payloadSessionId}`);
+                    break;
+                }
+                const tools = Array.isArray(payload?.tools)
+                    ? payload.tools.filter((tool): tool is string => typeof tool === 'string')
+                    : [];
+                setSystemInitInfo(previous => previous ? { ...previous, tools } : previous);
                 break;
             }
 

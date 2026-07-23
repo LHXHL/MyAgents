@@ -5186,6 +5186,22 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       break;
     }
 
+    case 'runtime_tool_catalog': {
+      const tools = [...event.tools];
+      const systemInitPayload = getExternalSystemInitPayloadSnapshot();
+      if (systemInitPayload) {
+        setExternalSystemInitPayload({
+          ...systemInitPayload,
+          info: { ...systemInitPayload.info, tools },
+        });
+      }
+      broadcast('chat:runtime-tool-catalog', {
+        sessionId: getExternalLifecycleSessionId(),
+        tools,
+      });
+      break;
+    }
+
     case 'model_update':
       if (event.model) {
         setExternalRuntimeLiveReportedModel(event.model);

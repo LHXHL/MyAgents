@@ -765,6 +765,7 @@ Tab 级 SSE 连接只能保证“事件来自这个 Tab 当前连着的 sidecar 
 凡是会更新 Tab 会话快照或展示阻塞式交互 UI 的 SSE 事件，payload MUST 带 `sessionId`，前端 MUST 先通过 `src/renderer/context/sessionScopedEventGuards.ts::shouldAcceptSessionScopedSseSnapshot()` 或 `decideSystemInitSessionId()` 过滤，再写 React state。当前范围包括：
 
 - `chat:system-init`：既是 runtime/config 快照，也是新 session birth 信号；只有 pending/null/reset → concrete id 的 birth 窗口允许同步 Tab sessionId，普通历史切换中的 mismatch 一律视为 stale。
+- `chat:runtime-tool-catalog`：external runtime 工具目录的可变快照；必须按 sessionId 过滤，重连时由既有 `chat:system-init` replay snapshot 恢复，不能另建第二份 replay 状态。
 - `chat:message-replay` 的 `live-user-echo`：既是用户气泡，也是 server-initiated turn 结束 new-session stale window 的有序边界；必须带创建时的 `sessionId`。
 - `queue:started`：排队消息正式 promotion 后的用户气泡与 turn 边界；必须带 promotion 所属的 `sessionId`，guarded Goal 只能在 admission accepted 后发送。
 - `permission:request` / `permission:expired`
