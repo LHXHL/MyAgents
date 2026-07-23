@@ -135,19 +135,16 @@ pub async fn ensure_goal_sidecar_owner<R: Runtime>(
     let workspace_path = workspace_path.to_string();
     let session_id = session_id.to_string();
     let owner = SidecarOwner::Goal(goal_id.to_string());
-    tauri::async_runtime::spawn_blocking(move || {
-        ensure_session_sidecar_with_runtime_identity_override(
-            &app_handle,
-            &manager,
-            &session_id,
-            &PathBuf::from(workspace_path),
-            owner,
-            None,
-            None,
-        )
-    })
+    ensure_session_sidecar_with_runtime_identity_override_lifecycle(
+        app_handle,
+        manager,
+        session_id,
+        PathBuf::from(workspace_path),
+        owner,
+        None,
+        None,
+    )
     .await
-    .map_err(|error| format!("Goal Sidecar attach task failed: {error}"))?
     .map(|result| result.port)
 }
 
@@ -249,30 +246,26 @@ async fn execute_background_turn<R: Runtime, P: serde::Serialize>(
     let (port, sidecar_is_new) = if let Some(port) = attached_port {
         (port, false)
     } else {
-        // ensure_session_sidecar uses a blocking HTTP client, so keep it off
-        // the async runtime. Goal callers attach and revalidate before this
-        // function; Task attaches here on demand.
+        // Goal callers attach and revalidate before this function; Task
+        // attaches here on demand through the lifecycle-fenced async wrapper.
         let app_handle_clone = app_handle.clone();
         let manager_clone = manager.clone();
         let session_id_clone = session_id.clone();
         let workspace_clone = workspace_path.to_string();
         let runtime_source_override = runtime_source_from_runtime_config(runtime_config.as_ref());
 
-        let result = tauri::async_runtime::spawn_blocking(move || {
-            let workspace = PathBuf::from(&workspace_clone);
-            ensure_session_sidecar_with_runtime_identity_override(
-                &app_handle_clone,
-                &manager_clone,
-                &session_id_clone,
-                &workspace,
-                owner,
-                runtime_override,
-                runtime_source_override,
-            )
-        })
+        let result = ensure_session_sidecar_with_runtime_identity_override_lifecycle(
+            app_handle_clone,
+            manager_clone,
+            session_id_clone,
+            PathBuf::from(&workspace_clone),
+            owner,
+            runtime_override,
+            runtime_source_override,
+        )
         .await
         .map_err(|e| {
-            let err = format!("spawn_blocking failed: {}", e);
+            let err = format!("ensure_sidecar failed: {}", e);
             emit_perf_trace(
                 PerfTrace::new(PerfTraceName::BackgroundJob, trace_operation)
                     .duration_ms(elapsed_ms(cron_started))
@@ -283,7 +276,7 @@ async fn execute_background_turn<R: Runtime, P: serde::Serialize>(
                     .detail("error", &err),
             );
             err
-        })?
+        })
         .map_err(|e| {
             ulog_error!(
                 "[sidecar] ensure_session_sidecar failed for task {}: {}",

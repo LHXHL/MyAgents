@@ -70,6 +70,13 @@ interface SessionStats {
 | `pending-` | `pending-{tabId}` | 新 Tab 占位符 | Tab 创建时，等待首条消息产生真实 UUID |
 | `cron-standalone-` | `cron-standalone-{uuid}` | 独立定时任务 | 创建不绑定 Tab 的定时任务 |
 
+### Session identity 迁移与删除线性化
+
+- `pending-* → SDK UUID` 不是“先创建 target、再尽力删除 source”的两次独立写入。`SessionStore.migratePendingSessionIdentity()` 同时持有 source/target JSONL 锁与 sessions index 锁；若 pending transcript 已落盘，先为 target 建立同 inode hard link，再用一次 `sessions.json` 写入替换 identity，最后移除 source 名称。进程在 metadata commit 前退出时，source metadata/data 仍是权威；重试只接纳与 source 同 inode 的 staged target，不明 target data 一律 fail-closed。source 清理失败时先补回已移除的 source link、恢复原始 metadata，再清 target，因此不会把部分迁移发布成两个可分叉副本。
+- 用户删除的唯一 lifecycle authority 是 Rust `cmd_delete_session_if_unowned`。它只接受 `[A-Za-z0-9-]{1,99}` 的 canonical 单路径段 ID，持有 per-Session lifecycle guard，并同时检查 durable Task/Goal 与全部 Sidecar owner；通过后使用仅注入 Global Sidecar 进程的随机 capability 调用 Node `user-delete` 存储 mutation。全部 owner-acquiring Sidecar ensure 统一走持有同一 guard 的 async wrapper；health recovery 失败时把携带 owners 的原始 dead sidecar 放回 manager，不能把 owner 只藏在 monitor 私有重试队列。Renderer/browser 不能直接建立删除 authority，browser dev 因而拒绝删除，而不是退化成裸 HTTP DELETE。
+- `SessionStore.deleteSession()` 只接受 typed intent。`prepared-materialization-rollback` 必须在 JSONL/legacy data 尚不存在且 metadata 仍由同一 materialization source 拥有时才可执行；用户删除还在 index 锁内复核 system-maintenance 保护。
+- prepared rollback 与 turn admission 不靠队列/内存布尔快照互猜。Admission 以 `PendingDesktopMaterialization.targetSessionId + priorSessionId` 调用存储层 typed CAS `claimPreparedSessionForTurnAdmission()`；它与 rollback 在同一 sessions index 锁内检查同一 `materializationState:'prepared'` / source marker。该 CAS 是 admission 最后一个 awaited transition：此前仍可取消，赢锁后则同步把 promoted item 转成 active turn。admission 先赢则 marker 已清、rollback 拒绝；rollback 先赢则 metadata 已删、admission 在发布 accepted 前失败。
+
 ### SDK `sessionId` 与 `resume` 互斥
 
 SDK 约束：`sessionId` 和 `resume` 参数不能同时传递。
