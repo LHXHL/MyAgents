@@ -601,7 +601,7 @@ Cmd+W 层级关闭：Overlay → 分屏面板 → Tab，高 z-index 优先。
 **关键设计：**
 - Session 索引：单一全局索引 `~/.myagents/search_index/sessions/`
 - Session watcher：`notify-debouncer-full` 5s 滑动去抖观察 `~/.myagents/sessions/`，**任何**写入者的变更都自动流入索引
-- 读写并发：`Arc<SessionIndex>`（无外层 mutex），读路径 lock-free
+- 读写并发：`Arc<SessionIndex>`（无外层 mutex）；正常读写共享 state 读锁，仅损坏恢复独占替换
 - 中文分词：`tantivy-jieba`（~37 万词词典），字段 MUST 显式 `"chinese"` tokenizer
 - Schema 版本门控：`SCHEMA_VERSION` + `.schema_version` 磁盘 marker，不一致时自动删除重建
 - 工作区文件搜索结果导航：Rust 只返回 `FileSearchHit`；预览、命中行定位、右键菜单、回到文件树是 renderer-side 协议，复用 `DirectoryPanel` / `WorkspaceTreeViewport` / `useWorkspaceFileService`，不新增 Sidecar HTTP 或 Rust IPC
