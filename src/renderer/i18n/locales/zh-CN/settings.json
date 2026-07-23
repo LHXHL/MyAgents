@@ -277,9 +277,13 @@
       "remoteTitle": "远程或无浏览器环境",
       "codexRemoteDescription": "如果当前机器没有可用浏览器，请在对应环境的终端中使用设备码登录：",
       "claudeRemoteDescription": "如果当前机器没有可用浏览器，请在对应环境的终端中登录：",
+      "codexReadyTitle": "ChatGPT Codex 已就绪",
+      "codexReadyDescription": "您已经可以在模型选择器中选择 ChatGPT Codex 支持的模型了。",
+      "codexModelSelectorAlt": "ChatGPT Codex 模型在模型选择器中的位置",
       "completed": "登录已完成，可以关闭此窗口。",
       "notCompleted": "登录没有完成，可以重新发起登录。",
       "close": "关闭",
+      "done": "完成",
       "retryLogin": "重新登录"
     },
     "custom": {
