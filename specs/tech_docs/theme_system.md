@@ -186,6 +186,8 @@ Webview reload 发现该 ID 已完成对齐后必须保留 ThemeRuntime 发布�
 重新用 disk appearance 对齐。损坏 snapshot 的解析单独 fail-soft，不能跳过 canonical fallback 与
 durable appearance 写入。
 
+initialization script 同时在模块执行前安装只观测的 `error` / `unhandledrejection` 监听，并通过受限 `cmd_record_renderer_boot_event` 让 Rust unified logger 写入带 window label 的有界 `[boot] stage=...` 证据；renderer entry、Theme prime、React root 与真实 commit 也走同一早期 ingress，因此不依赖 App/Sidecar logger 已挂载。观测失败必须静默，不能成为 Theme 或窗口启动依赖；这些标签不拥有 fallback 决策，也禁止触发 reload/retry。
+
 该 native bridge 不是第二个 Theme owner：Rust 不复制 palette、材质或 adapter，只投影一个避免
 Webview ready 前反色闪帧的平面 `--paper` 值；Rust unit test 从 canonical Theme CSS 解析两个
 scheme 的实际 `--paper` 并与 native `Color` 比对，防止跨语言投影静默漂移。启动读取失败时回退

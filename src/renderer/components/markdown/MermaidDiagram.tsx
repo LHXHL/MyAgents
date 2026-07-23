@@ -16,6 +16,7 @@ import { useTranslation } from 'react-i18next';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 
 import { useResolvedTheme } from '@/theme';
+import { copyPlainText } from '@/utils/clipboard';
 
 // Mermaid owns a process-global config, so cache the resolved Theme key.
 let mermaidInitialized = false;
@@ -104,7 +105,7 @@ export default function MermaidDiagram({ children }: MermaidDiagramProps) {
 
     const handleCopy = useCallback(async () => {
         try {
-            await navigator.clipboard.writeText(children.trim());
+            await copyPlainText(children.trim());
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
         } catch (err) {

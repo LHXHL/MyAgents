@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.3] - 2026-07-24
+
+> MyAgents 0.3.3 聚焦 Managed Codex 与桌面可靠性：订阅型 Codex 会直接使用 HTTPS 启动并正确保持恢复回合状态，实际可用的 MCP 工具也会实时出现在工具目录中。版本同时修复会话删除、全文搜索、定时任务编辑、CLI 媒体发送、跨窗口配置刷新和复制反馈等问题。
+
+### Added
+
+- **Codex 登录后上手指引**：订阅登录成功后会展示模型选择入口和界面示意，帮助首次使用者直接开始对话。
+
+### Changed
+
+- **Tab 标题层级更加统一**：工作区与会话名称使用一致的字重和透明度，由分隔符承担层级区分，切换多个工作区时更稳定易读。
+- **启动诊断更完整**：统一日志会记录原生页面加载、Theme 初始化、Renderer 入口和 React 首次提交等稳定阶段；原生日志不再重复输出，白屏或早期启动失败更容易定位。
+
+### Fixed
+
+- **Managed Codex 启动不再等待无效 WebSocket 重连**：订阅型 Codex 从首个请求起直接使用官方 HTTPS Responses 通道，保留 ChatGPT 登录态、官方模型权限、代理设置与正常 HTTP 重试；恢复会话在 MCP 启动期间也不会被错误标记为空闲或中断。
+- **Codex MCP 工具目录恢复可见**：已就绪且可用的 MCP 工具会实时同步到当前会话，并在服务失败时及时撤回；切换或重连会话不会再把实际可用的工具隐藏起来。
+- **会话删除与新会话落盘不再竞态**：删除、首轮发送和 pending Session 身份迁移会按同一生命周期权威串行处理，避免活跃会话被删成孤立 transcript、历史 metadata 消失或旧身份残留。
+- **损坏的全文搜索索引可以自动恢复**：Session 派生索引缺失 Tantivy segment 时会从权威会话数据重建并重试，不再让后续搜索和索引更新持续失败。
+- **定时任务切换周期类型时保持正确计划**：从固定间隔改为 Cron 表达式或反向切换时，不会携带旧的 `intervalMinutes` 覆盖新计划；保存后任务详情也会立即使用最新数据。
+- **CLI 模型与 IM 文件发送恢复一致**：`myagents model` 的密钥、默认项、验证、增删等配置变更会让已打开的主界面和 IM Provider 投影读取同一份最新配置，`model list` 展示完整模型信息；`myagents im send-media --file` 会在发送边界正确处理单文件参数，不再因数组形态被拒绝。
+- **复制操作只在真实成功后反馈**：普通文本复制在 WKWebView / WebView2 的 Async Clipboard 被焦点或权限拒绝时会安全回退；两条路径都失败时不再误显示“已复制”。
+
+---
+
 ## [0.3.2] - 2026-07-23
 
 > MyAgents 0.3.2 引入完整 Theme System，带来八套可切换主题并统一桌面、Space、终端、编辑器与浮窗视觉；Goal Mode 新增可验证的结束条件，Team Space Registered Agent 也升级为独立执行实例。版本同时收紧核心 System Skill、会话恢复、配置一致性与 IM 渠道边界。

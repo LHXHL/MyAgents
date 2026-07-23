@@ -3801,21 +3801,24 @@ async function main() {
       // DELETE /sessions/:id - Delete a session
       if (pathname.startsWith('/sessions/') && request.method === 'DELETE') {
         const sessionId = pathname.replace('/sessions/', '');
-        if (!sessionId) {
-          return jsonResponse({ success: false, error: 'Session ID required.' }, 400);
+        if (!/^[A-Za-z0-9-]{1,99}$/.test(sessionId)) {
+          return jsonResponse({ success: false, reason: 'invalid-session-id', error: 'Invalid session ID.' }, 400);
+        }
+        const expectedAuthority = process.env.MYAGENTS_SESSION_DELETE_AUTHORITY;
+        const providedAuthority = request.headers.get('X-MyAgents-Session-Delete-Authority');
+        if (!expectedAuthority || providedAuthority !== expectedAuthority) {
+          return jsonResponse({ success: false, reason: 'missing-authority', error: 'Session deletion requires the Rust lifecycle authority.' }, 403);
         }
 
-        const existingMeta = getSessionMetadata(sessionId);
-        if (!existingMeta) {
-          return jsonResponse({ success: false, error: 'Session not found.' }, 404);
-        }
-        if (isSystemMaintenanceSession(existingMeta)) {
-          return jsonResponse({ success: false, error: 'System maintenance session is not user-editable.' }, 403);
-        }
-
-        const deleted = await deleteSession(sessionId, current => !isSystemMaintenanceSession(current));
-        if (!deleted) {
-          return jsonResponse({ success: false, error: 'Session not found.' }, 404);
+        const deletion = await deleteSession(sessionId, { kind: 'user-delete' });
+        if (!deletion.deleted) {
+          if (deletion.reason === 'protected-session') {
+            return jsonResponse({ success: false, reason: deletion.reason, error: 'System maintenance session is not user-editable.' }, 403);
+          }
+          if (deletion.reason === 'io-error') {
+            return jsonResponse({ success: false, reason: deletion.reason, error: 'Failed to delete session.' }, 500);
+          }
+          return jsonResponse({ success: false, reason: deletion.reason, error: 'Session not found.' }, 404);
         }
 
         return jsonResponse({ success: true });

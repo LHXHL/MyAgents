@@ -14,6 +14,7 @@ import {
   normalizeScheduleFlag,
   parseArgs,
   parseDispatchAtValue,
+  printModelList,
   printGoalResult,
   printResult,
   readWorkspaceTextFile,
@@ -876,6 +877,30 @@ describe('myagents CLI parseArgs', () => {
     });
   });
 
+  it('prints each provider primary model and model catalogue in human output', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printModelList([{
+        id: 'provider-a',
+        name: 'Provider A',
+        status: 'valid',
+        enabled: true,
+        primaryModel: 'model-b',
+        models: [
+          { model: 'model-a', modelName: 'Model A' },
+          { model: 'model-b', modelName: 'Model B' },
+        ],
+      }]);
+
+      const output = log.mock.calls.map(args => args.join(' ')).join('\n');
+      expect(output).toContain('provider-a');
+      expect(output).toContain('Primary: model-b');
+      expect(output).toContain('model-a (Model A), model-b (Model B)');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('still accepts dash-prefixed values as the first repeatable value', () => {
     expect(parseArgs([
       'mcp',
@@ -891,6 +916,66 @@ describe('myagents CLI parseArgs', () => {
         env: ['TOKEN=secret'],
       },
     });
+  });
+});
+
+describe('myagents CLI IM contracts', () => {
+  it('serializes the advertised send-media file flag as one scalar path', () => {
+    for (const args of [
+      ['im', 'send-media', '--file', '/tmp/chart.png', '--caption', 'Daily chart'],
+      ['im', 'send-media', '--file=/tmp/chart.png', '--caption=Daily chart'],
+    ]) {
+      const { positional, flags } = parseArgs(args);
+      expect(buildRequestBody(
+        positional[0],
+        positional[1],
+        positional.slice(2),
+        flags,
+      )).toEqual({
+        filePath: '/tmp/chart.png',
+        caption: 'Daily chart',
+      });
+    }
+  });
+
+  it('keeps the positional compatibility form and rejects missing or ambiguous file input', () => {
+    const positional = parseArgs(['im', 'send-media', '/tmp/chart.png']);
+    expect(buildRequestBody(
+      positional.positional[0],
+      positional.positional[1],
+      positional.positional.slice(2),
+      positional.flags,
+    )).toEqual({ filePath: '/tmp/chart.png', caption: undefined });
+
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const exit = vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code})`);
+    }) as typeof process.exit);
+    try {
+      const repeated = parseArgs([
+        'im', 'send-media', '--file', '/tmp/a.png', '--file', '/tmp/b.png',
+      ]);
+      expect(() => buildRequestBody(
+        repeated.positional[0],
+        repeated.positional[1],
+        repeated.positional.slice(2),
+        repeated.flags,
+      )).toThrow('process.exit(2)');
+      expect(error).toHaveBeenCalledWith('Error: im send-media accepts exactly one --file <path>.');
+
+      error.mockClear();
+      const missing = parseArgs(['im', 'send-media', '--file', '--caption', 'Daily chart']);
+      expect(() => buildRequestBody(
+        missing.positional[0],
+        missing.positional[1],
+        missing.positional.slice(2),
+        missing.flags,
+      )).toThrow('process.exit(2)');
+      expect(error).toHaveBeenCalledWith('Error: im send-media requires --file <path>.');
+    } finally {
+      error.mockRestore();
+      exit.mockRestore();
+    }
   });
 });
 

@@ -4162,6 +4162,13 @@ export function resolvePrewarmPermissionMode(
   return metaPermissionMode ?? callerPermissionMode;
 }
 
+export function resolvePrewarmModel(
+  metaModel: string | undefined,
+  callerModel: string | undefined,
+): string | undefined {
+  return metaModel ?? callerModel;
+}
+
 export async function prewarmExternalSession(options: {
   sessionId: string;
   workspacePath: string;
@@ -4275,6 +4282,7 @@ export async function prewarmExternalSession(options: {
   // resumes Codex with the wrong approvalPolicy and the first send reuses the
   // pre-warmed process (Case 3) without re-resuming, so it sticks.
   const effectivePermissionMode = resolvePrewarmPermissionMode(meta?.permissionMode, options.permissionMode);
+  const effectiveModel = resolvePrewarmModel(meta?.model, options.model);
 
   console.log(`[external-session] Pre-warming ${runtimeType} for session ${options.sessionId}${resumeSessionId ? ` (resume=${resumeSessionId})` : ' (fresh)'} permissionMode=${effectivePermissionMode ?? '(default)'}${meta?.permissionMode && meta.permissionMode !== options.permissionMode ? ` (snapshot override; caller sent ${options.permissionMode ?? '(none)'})` : ''}`);
 
@@ -4283,7 +4291,7 @@ export async function prewarmExternalSession(options: {
       sessionId: options.sessionId,
       workspacePath: options.workspacePath,
       // initialMessage intentionally omitted — this is the pre-warm signal
-      model: options.model,
+      model: effectiveModel,
       permissionMode: effectivePermissionMode,
       scenario: options.scenario,
       resumeSessionId,
@@ -5175,6 +5183,22 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       });
       setExternalSystemInitPayload(systemInitPayload);
       broadcast('chat:system-init', systemInitPayload);
+      break;
+    }
+
+    case 'runtime_tool_catalog': {
+      const tools = [...event.tools];
+      const systemInitPayload = getExternalSystemInitPayloadSnapshot();
+      if (systemInitPayload) {
+        setExternalSystemInitPayload({
+          ...systemInitPayload,
+          info: { ...systemInitPayload.info, tools },
+        });
+      }
+      broadcast('chat:runtime-tool-catalog', {
+        sessionId: getExternalLifecycleSessionId(),
+        tools,
+      });
       break;
     }
 

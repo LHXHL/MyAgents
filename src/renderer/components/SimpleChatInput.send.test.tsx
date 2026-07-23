@@ -73,6 +73,30 @@ describe('SimpleChatInput send paths', () => {
     expect(onSend).toHaveBeenCalledWith('chat hello', undefined);
   });
 
+  it('shows external runtime MCP servers as a read-only discovered catalog', async () => {
+    await i18n.changeLanguage('en-US');
+    const user = userEvent.setup();
+    renderInput({
+      runtimeMcpTools: [
+        'mcp__playwright__browser_click',
+        'mcp__playwright__browser_navigate',
+        'mcp__tavily-search__search',
+      ],
+      mcpServers: [
+        { id: 'playwright', name: 'Playwright', description: 'Browser automation' },
+      ],
+    });
+
+    const toolsButton = screen.getByTitle('Use tools');
+    await user.click(toolsButton);
+
+    expect(screen.getByText('Playwright')).toBeInTheDocument();
+    expect(screen.getByText('Browser automation')).toBeInTheDocument();
+    expect(screen.getByText('tavily-search')).toBeInTheDocument();
+    expect(toolsButton).toHaveTextContent('2');
+    expect(screen.queryByText('browser_click')).not.toBeInTheDocument();
+  });
+
   it('shows Goal and scheduled Task state independently', async () => {
     await i18n.changeLanguage('en-US');
     renderInput({

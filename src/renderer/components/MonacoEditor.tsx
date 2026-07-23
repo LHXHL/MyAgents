@@ -29,6 +29,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useResolvedTheme } from '@/theme';
+import { copyPlainText } from '@/utils/clipboard';
 import type { FilePreviewFocusTarget } from '@/types/filePreview';
 
 // Configure Monaco Environment for bundled workers (required for Tauri CSP)
@@ -483,8 +484,8 @@ export default function MonacoEditor({
     // below) — it ships English labels and Monaco's own theme, and on macOS its
     // clipboard actions historically leaned on the native menu. We render the app's
     // shared <ContextMenu> instead (Chinese labels, design tokens) and drive the editor
-    // through reliable APIs: model edits for cut/paste and the async Clipboard API
-    // (the menu click is a user gesture, so read/write are permitted). This restores the
+    // through reliable APIs: model edits for cut/paste and the shared clipboard writer
+    // (the menu click is a user gesture). This restores the
     // right-click fallback that was missing alongside the ⌘A fix.
     const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number } | null>(null);
 
@@ -493,7 +494,7 @@ export default function MonacoEditor({
         const model = editor?.getModel();
         const sel = editor?.getSelection();
         if (!editor || !model || !sel || sel.isEmpty()) return;
-        void navigator.clipboard.writeText(model.getValueInRange(sel)).catch(() => {});
+        void copyPlainText(model.getValueInRange(sel)).catch(() => {});
         editor.focus();
     }, []);
 
@@ -506,7 +507,7 @@ export default function MonacoEditor({
         // Delete ONLY after the clipboard write succeeds — otherwise a denied
         // write would remove the text without copying it (silent data loss).
         // The captured `sel` range stays valid: nothing mutates the model in between.
-        void navigator.clipboard.writeText(text).then(() => {
+        void copyPlainText(text).then(() => {
             editorRef.current?.executeEdits('ctx-cut', [{ range: sel, text: '' }]);
             editorRef.current?.focus();
         }).catch(() => {});

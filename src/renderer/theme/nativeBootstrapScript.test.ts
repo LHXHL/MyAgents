@@ -1,9 +1,10 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import scriptTemplate from './native-bootstrap-script.js?raw';
 
 const BOOTSTRAP_KEY = 'myagents:theme-bootstrap';
 const APPEARANCE_MARKER = '__MYAGENTS_APPEARANCE_MODE__';
 const RUN_ID_MARKER = '__MYAGENTS_BOOTSTRAP_RUN_ID__';
+const WINDOW_LABEL_MARKER = '__MYAGENTS_WINDOW_LABEL__';
 
 class MemoryStorage implements Pick<Storage, 'getItem' | 'setItem' | 'removeItem'> {
   private readonly values = new Map<string, string>();
@@ -28,9 +29,11 @@ function executeScript(
 ): void {
   const script = scriptTemplate
     .replace(APPEARANCE_MARKER, JSON.stringify(appearanceMode))
-    .replace(RUN_ID_MARKER, JSON.stringify(runId));
+    .replace(RUN_ID_MARKER, JSON.stringify(runId))
+    .replace(WINDOW_LABEL_MARKER, JSON.stringify('main'));
   expect(script).not.toContain(APPEARANCE_MARKER);
   expect(script).not.toContain(RUN_ID_MARKER);
+  expect(script).not.toContain(WINDOW_LABEL_MARKER);
   Function('localStorage', script)(storage);
 }
 
@@ -133,5 +136,58 @@ describe('native Theme bootstrap script', () => {
       appearanceMode: 'system',
       themeSelectionExplicit: true,
     });
+  });
+
+  it('reports pre-module stages and captures early errors without owning startup', async () => {
+    const runtime = globalThis as unknown as {
+      __TAURI_INTERNALS__?: { invoke: ReturnType<typeof vi.fn> };
+      __MYAGENTS_BOOT_OBSERVABILITY_INSTALLED__?: boolean;
+      addEventListener?: (event: string, handler: (payload: Record<string, unknown>) => void) => void;
+    };
+    const previousInternals = runtime.__TAURI_INTERNALS__;
+    const previousAddEventListener = runtime.addEventListener;
+    const listeners = new Map<string, (payload: Record<string, unknown>) => void>();
+    const invoke = vi.fn<(command: string, payload: Record<string, unknown>) => Promise<void>>(
+      async () => undefined,
+    );
+    try {
+      runtime.__TAURI_INTERNALS__ = { invoke };
+      runtime.addEventListener = (
+        event: string,
+        handler: (payload: Record<string, unknown>) => void,
+      ) => { listeners.set(event, handler); };
+      delete runtime.__MYAGENTS_BOOT_OBSERVABILITY_INSTALLED__;
+
+      executeScript(new MemoryStorage(), 'dark');
+      listeners.get('error')?.({
+        filename: 'app.js',
+        lineno: 7,
+        colno: 9,
+        error: new Error('boom'),
+      });
+      await Promise.resolve();
+
+      expect(invoke.mock.calls).toEqual(expect.arrayContaining([
+        ['cmd_record_renderer_boot_event', {
+          stage: 'native-init-script',
+          windowLabel: 'main',
+          detail: undefined,
+        }],
+        ['cmd_record_renderer_boot_event', {
+          stage: 'theme-native-bootstrap-complete',
+          windowLabel: 'main',
+          detail: undefined,
+        }],
+      ]));
+      expect(invoke.mock.calls.some(([, payload]) => (
+        payload.stage === 'renderer-uncaught-error'
+        && payload.windowLabel === 'main'
+        && String(payload.detail).includes('boom')
+      ))).toBe(true);
+    } finally {
+      runtime.__TAURI_INTERNALS__ = previousInternals;
+      runtime.addEventListener = previousAddEventListener;
+      delete runtime.__MYAGENTS_BOOT_OBSERVABILITY_INSTALLED__;
+    }
   });
 });

@@ -1450,7 +1450,7 @@ function printMcpTest(data: Record<string, unknown>, hint?: unknown): void {
   if (hint) console.log(`\n${String(hint)}`);
 }
 
-function printModelList(providers: Array<Record<string, unknown>>): void {
+export function printModelList(providers: Array<Record<string, unknown>>): void {
   if (!providers || providers.length === 0) {
     console.log('No model providers configured.');
     return;
@@ -1462,6 +1462,20 @@ function printModelList(providers: Array<Record<string, unknown>>): void {
     // overrides — they can't be used until re-enabled in Settings.
     const status = p.enabled === false ? 'disabled' : String(p.status);
     console.log(pad(String(p.id), 24) + pad(status, 12) + String(p.name));
+    const models = Array.isArray(p.models)
+      ? p.models.flatMap(model => {
+        if (!model || typeof model !== 'object') return [];
+        const record = model as Record<string, unknown>;
+        const id = typeof record.model === 'string' ? record.model : '';
+        if (!id) return [];
+        const name = typeof record.modelName === 'string' && record.modelName !== id
+          ? ` (${record.modelName})`
+          : '';
+        return [`${id}${name}`];
+      })
+      : [];
+    console.log(`  Primary: ${String(p.primaryModel ?? 'not set')}`);
+    console.log(`  Models:  ${models.length > 0 ? models.join(', ') : 'none'}`);
   }
 }
 
@@ -2570,6 +2584,41 @@ function spaceAttachmentPaths(flags: Record<string, unknown>): string[] {
     );
   }
   return paths;
+}
+
+function resolveImMediaFilePath(
+  flags: Record<string, unknown>,
+  positionalPath: string | undefined,
+): string {
+  const rawFile = flags.file;
+  const filePaths = rawFile === undefined
+    ? []
+    : Array.isArray(rawFile)
+      ? rawFile
+      : [rawFile];
+
+  if (filePaths.length > 1) {
+    return exitAgentCliError(flags, {
+      code: 'FILE_COUNT_INVALID',
+      error: 'im send-media accepts exactly one --file <path>.',
+      suggestion: 'Run `myagents im send-media --help`, then retry with one absolute file path.',
+    });
+  }
+
+  const filePath = filePaths[0] ?? positionalPath;
+  if (
+    flags.fileValueMissing
+    || typeof filePath !== 'string'
+    || !filePath.trim()
+  ) {
+    return exitAgentCliError(flags, {
+      code: 'FILE_REQUIRED',
+      error: 'im send-media requires --file <path>.',
+      suggestion: 'Run `myagents im send-media --help`, then retry with one absolute file path.',
+    });
+  }
+
+  return filePath;
 }
 
 function optionalNumberFlag(value: unknown): number | undefined {
@@ -4018,7 +4067,7 @@ export function buildRequestBody(
   if (group === 'im') {
     if (action === 'send-media') {
       return {
-        filePath: (flags.file as string) || rest[0],
+        filePath: resolveImMediaFilePath(flags, rest[0]),
         caption: flags.caption,
       };
     }

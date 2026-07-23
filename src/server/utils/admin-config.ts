@@ -17,6 +17,7 @@ import {
   fsyncSync,
   closeSync,
   unlinkSync,
+  lstatSync,
 } from 'fs';
 import { resolve } from 'path';
 import { getHomeDirOrNull } from './platform';
@@ -38,7 +39,10 @@ import {
   XAI_SUBSCRIPTION_API_BASE_URL,
   XAI_SUBSCRIPTION_PROVIDER_ID,
 } from '../../shared/config-types';
-import { isRuntimeBackedProvider, managedCodexProviderPermissionToRuntimePermission } from '../../shared/providerExecution';
+import {
+  isRuntimeBackedProvider,
+  managedCodexProviderPermissionToRuntimePermission,
+} from '../../shared/providerExecution';
 import type { AgentConfig, ChannelConfig } from '../../shared/types/agent';
 import {
   IMAGE_UNDERSTANDING_TOOL_ID,
@@ -67,6 +71,7 @@ import {
 } from '../../shared/providerRoute';
 import { resolveSessionConfig } from './resolve-session-config';
 import { normalizeThemeConfigRecord } from '../../shared/theme';
+import { buildAvailableProvidersJson } from '../../shared/availableProvidersProjection';
 
 // ---------------------------------------------------------------------------
 // Paths
@@ -108,6 +113,15 @@ export class ProjectsBusyError extends Error {
   constructor(message = 'Projects busy: could not acquire projects.json.lock within 5000ms; retry') {
     super(message);
     this.name = 'ProjectsBusyError';
+  }
+}
+
+export class ProviderBusyError extends Error {
+  readonly code = 'PROVIDER_BUSY';
+
+  constructor(providerId: string) {
+    super(`Provider '${providerId}' is busy; retry the operation.`);
+    this.name = 'ProviderBusyError';
   }
 }
 
@@ -688,6 +702,93 @@ export function getProvidersDir(): string {
   return resolve(home, '.myagents', 'providers');
 }
 
+function lstatIfPresent(path: string): ReturnType<typeof lstatSync> | undefined {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+function writeProviderFileUnlocked(
+  filePath: string,
+  dir: string,
+  contents: string,
+): void {
+  const tmpPath = filePath + '.tmp';
+  const bakPath = filePath + '.bak';
+  try {
+    writeFileSynced(tmpPath, contents);
+    const metadata = lstatIfPresent(filePath);
+    if (metadata) {
+      if (metadata.isDirectory()) {
+        throw new Error(`Provider path is a directory: ${filePath}`);
+      }
+      if (metadata.isSymbolicLink()) {
+        unlinkSync(filePath);
+      } else {
+        try { copyFileSync(filePath, bakPath); } catch { /* best-effort backup */ }
+      }
+    }
+    renameSync(tmpPath, filePath);
+    fsyncDir(dir);
+  } catch (error) {
+    try { unlinkSync(tmpPath); } catch { /* tmp may not exist */ }
+    throw error;
+  }
+}
+
+function deleteProviderFileUnlocked(filePath: string, dir: string): boolean {
+  const metadata = lstatIfPresent(filePath);
+  if (!metadata) return false;
+  if (metadata.isDirectory()) {
+    throw new Error(`Provider path is a directory: ${filePath}`);
+  }
+  unlinkSync(filePath);
+  fsyncDir(dir);
+  return true;
+}
+
+async function withProviderFileLock<T>(
+  providerId: string,
+  operation: (filePath: string, dir: string) => Promise<T>,
+): Promise<T> {
+  const dir = getProvidersDir();
+  ensureDirSync(dir);
+  const filePath = resolve(dir, `${providerId}.json`);
+  try {
+    return await withFileLock(
+      {
+        lockPath: filePath + '.lock',
+        timeoutMs: CONFIG_LOCK_TIMEOUT_MS,
+        staleMs: CONFIG_LOCK_STALE_MS,
+      },
+      () => operation(filePath, dir),
+    );
+  } catch (error) {
+    if (error instanceof FileBusyError) throw new ProviderBusyError(providerId);
+    throw error;
+  }
+}
+
+/**
+ * Atomically replace one custom provider file under the same cross-process
+ * lock protocol used by renderer config writes.
+ */
+export async function saveCustomProviderFile(provider: Record<string, unknown> & { id: string }): Promise<void> {
+  await withProviderFileLock(provider.id, async (filePath, dir) => {
+    writeProviderFileUnlocked(filePath, dir, JSON.stringify(provider, null, 2));
+  });
+}
+
+/** Delete one custom provider file while holding its cross-process lock. */
+export async function deleteCustomProviderFile(providerId: string): Promise<boolean> {
+  return withProviderFileLock(providerId, async (filePath, dir) => (
+    deleteProviderFileUnlocked(filePath, dir)
+  ));
+}
+
 /** Find a provider by ID: checks PRESET_PROVIDERS first, then custom files in ~/.myagents/providers/ */
 export function findProvider(id: string): Record<string, unknown> | null {
   // Check presets first (statically imported — see top of file).
@@ -778,6 +879,26 @@ export function getProviderSelectionError(
   return resolveProviderEnv(provider.id, c)
     ? null
     : `Provider '${provider.id}' has no usable credential. Configure its API key before selecting it.`;
+}
+
+/**
+ * Rebuild the Rust IM provider projection from the same effective provider
+ * catalogue and readiness rules used by the Admin API. The projection remains
+ * a derived cache; config/provider files are the authorities.
+ */
+export function withAvailableProvidersProjection(config: AdminAppConfig): AdminAppConfig {
+  const apiKeys = config.providerApiKeys ?? {};
+  const availableProvidersJson = buildAvailableProvidersJson({
+    providers: getAllEffectiveProviders(config) as unknown as Provider[],
+    apiKeys,
+    verifyStatus: config.providerVerifyStatus ?? {},
+    primaryModels: config.providerPrimaryModels as Record<string, string> | undefined,
+  });
+
+  return {
+    ...config,
+    availableProvidersJson,
+  };
 }
 
 export function findEffectiveProvider(id: string, config?: AdminAppConfig): ProviderRecord | null {

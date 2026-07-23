@@ -197,7 +197,7 @@ export async function ensureConfigDir(): Promise<void> {
     }
 }
 
-async function withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
+export async function withFileLock<T>(filePath: string, fn: () => Promise<T>): Promise<T> {
     const lockDir = filePath + '.lock';
     const ownerToken = await acquireFileLock(lockDir);
     try {

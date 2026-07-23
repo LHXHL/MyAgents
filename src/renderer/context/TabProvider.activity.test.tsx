@@ -109,6 +109,7 @@ function Probe() {
           initModel: systemInitInfo?.model ?? null,
         })}
       </output>
+      <output data-testid="init-tools">{JSON.stringify(systemInitInfo?.tools ?? [])}</output>
       <output data-testid="queue-ids">{JSON.stringify(queuedMessages.map(item => item.queueId))}</output>
       <button type="button" onClick={() => void cancelQueuedMessage('queue-stale-cancel')}>cancel stale</button>
       <button type="button" onClick={() => void forceExecuteQueuedMessage('queue-stale-force')}>force stale</button>
@@ -142,6 +143,10 @@ function emit(eventName: string, data: unknown): void {
 
 function readQueueIds(): string[] {
   return JSON.parse(screen.getByTestId('queue-ids').textContent ?? '[]') as string[];
+}
+
+function readInitTools(): string[] {
+  return JSON.parse(screen.getByTestId('init-tools').textContent ?? '[]') as string[];
 }
 
 describe('TabProvider session activity ownership', () => {
@@ -259,6 +264,34 @@ describe('TabProvider session activity ownership', () => {
     });
     expect(sseHarness.connection.disconnect).not.toHaveBeenCalled();
     expect(tauriHarness.proxyFetch).not.toHaveBeenCalled();
+  });
+
+  it('clears runtime tool metadata when switching to another session', async () => {
+    const view = render(
+      <TabProvider tabId="tab-tools" agentDir="/tmp/workspace" sessionId="pending-tools-a">
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(sseHarness.state.eventHandler).not.toBeNull());
+    emit('chat:system-init', {
+      info: {
+        timestamp: '2026-07-15T00:00:00.000Z',
+        model: 'codex-model',
+        tools: ['mcp__playwright__browser_click'],
+      },
+      prewarm: false,
+      runtime: 'codex',
+    });
+    expect(readInitTools()).toEqual(['mcp__playwright__browser_click']);
+
+    view.rerender(
+      <TabProvider tabId="tab-tools" agentDir="/tmp/workspace" sessionId="pending-tools-b">
+        <Probe />
+      </TabProvider>,
+    );
+
+    await waitFor(() => expect(readInitTools()).toEqual([]));
   });
 
   it('restores a running session as active before any assistant chunk exists', async () => {

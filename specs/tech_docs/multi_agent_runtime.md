@@ -116,6 +116,7 @@ Runtime 内部协议差异通过 `UnifiedEvent` 联合类型统一，`external-s
 | 权限 | `permission_request` | 委托 MyAgents UI 审批 |
 | 生命周期 | `session_init`, `turn_complete`, `session_complete` | 会话状态 |
 | 元数据 | `usage`, `log` | Token 用量、日志 |
+| 工具目录 | `runtime_tool_catalog` | 外部 Runtime 实际发现且可用的 MCP 工具快照；独立于一次性的 `session_init` |
 | 诊断 | `runtime_diagnostics` | Runtime 自检快照（Codex 启动后 fire-and-forget 收集，详见「Runtime 诊断 + envPolicy」） |
 | 状态面板 | `agent_plan_update` | Runtime 原生计划 / todo 快照（Codex `turn/plan/updated`），由 `external-session.ts` 转为 `chat:agent-plan-update`，前端仅作为 transient AgentStatusPanel 状态，不写入 transcript |
 
@@ -232,7 +233,7 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 | `sandbox` | enum? | ✅ mapped from permissionMode | `read-only`/`workspace-write`/`danger-full-access` |
 | `developerInstructions` | string? | ✅ `systemPromptAppend` | MyAgents 三层系统提示词 |
 | `ephemeral` | boolean? | ✅ `false` | 是否临时线程 |
-| `modelProvider` | string? | ❌ 未对接 | 模型供应商覆盖 |
+| `modelProvider` | string? | ✅ Managed Codex | 新 thread 固定为 MyAgents 持有的 HTTP-only 官方 OpenAI provider；system-cli 不覆盖 |
 | `serviceTier` | enum? | ❌ 未对接 | `fast`/`flex` |
 | `personality` | enum? | ❌ 未对接 | `none`/`friendly`/`pragmatic` |
 | `baseInstructions` | string? | ❌ 未对接 | 基础系统指令（区别于 developerInstructions） |
@@ -248,13 +249,17 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 | `approvalPolicy` | enum? | ✅ | 权限策略覆盖 |
 | `sandbox` | enum? | ✅ | 沙箱覆盖 |
 | `developerInstructions` | string? | ✅ | 系统提示词覆盖 |
-| `cwd` | string? | ❌ 未对接 | 工作目录覆盖 |
-| `modelProvider` | string? | ❌ 未对接 | 模型供应商覆盖 |
+| `cwd` | string? | ✅ `workspacePath` | 工作目录覆盖 |
+| `modelProvider` | string? | ✅ Managed Codex（有权威 model snapshot 时） | 与 model 成对覆盖；model 未知的 legacy resume 留给 Codex 恢复持久化 pair |
 | `serviceTier` | enum? | ❌ 未对接 | |
 | `personality` | enum? | ❌ 未对接 | |
 | `baseInstructions` | string? | ❌ 未对接 | |
 
 **MCP owner 边界**：Codex 的 `thread/start` / `thread/resume` schema 不接受 MCP 配置，但这不等于所有 Codex 会话都只能读取 `~/.codex/`。`runtimeSource:'managed-provider'` 由 MyAgents 持有 app-server 进程，因此在 spawn 时用 `-c mcp_servers.<name>.*=...` 注入当前 workspace 的有效 MCP；`runtimeSource:'system-cli'` 仍由用户自己的 Codex 配置持有 MCP，MyAgents 不覆盖。Managed 注入前必须复用 `utils/mcp-command.ts` 解析绝对 npx 路径、`-y` 与 MyAgents preset 的精确版本，不能和 builtin SDK 路径各自解释同一份 MCP definition。
+
+**Managed transport owner 边界**：Managed Codex 的 app-server launch config 注册 MyAgents 私有 provider id；该 provider 保持 `name:'OpenAI'`、`wire_api:'responses'` 与 `requires_openai_auth:true`，不设置 `base_url` / `env_key`，因此 Codex 仍按现有 ChatGPT 登录态解析官方 Codex endpoint、订阅模型与 entitlement。唯一 transport 差异是 `supports_websockets:false`，让 Responses 从首包开始直接走 HTTPS，不再先做五轮 WebSocket reconnect。新 thread 显式传同一 `modelProvider`；resume 只有在 Session metadata 提供权威 model 时才把 model/provider 成对覆盖，model 未知的 legacy thread 则两者都交给 Codex 持久化 metadata 恢复。Pre-warm 同理优先使用 Session metadata 的 model，而不是 renderer 可能尚未同步完成的 payload。`runtimeSource:'system-cli'` 完全不注入或覆盖 provider。
+
+**Pinned Codex 0.144.1 models refresh 已知问题**：`codex_models_manager ... timeout waiting for child process to exit` 不是 MyAgents 子进程退出超时。Codex 的 models endpoint 把 transport build + `/models` 请求包在固定 5 秒 timeout 中，而通用 `CodexErr::Timeout` 沿用了 command 场景的错误文案。每个 app-server 的周期 refresh worker 启动即请求、完成后等待 180 秒，因此这一路连续失败时约每 185 秒出现一次；response 携带的新 ETag 还会即时触发 refresh，所以 turn / transport retry 附近也可能出现多条 5 秒 timeout 成簇爆发，不能用 185 秒间隔反推是否为同一问题。MyAgents 不用静态 `model_catalog_json`、cache touch、日志过滤或绕开 provider proxy 来掩盖它：这些方案会分别冻结 entitlement、伪造 freshness、隐藏真实失败或破坏用户代理策略。HTTP-only provider 会移除 WebSocket 失败，并避免重复 WebSocket attempt 带来的 ETag refresh 放大；慢代理下的周期 refresh 与正常 response ETag refresh 仍需等待 Codex 上游提供独立 timeout / 修正文案。
 
 ### Skills 加载
 
@@ -277,6 +282,7 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 | `turn/started` | `[status_change(running), agent_plan_update([])]` |
 | `turn/plan/updated` | `agent_plan_update` |
 | `turn/completed` | `[turn_complete, agent_plan_update([])]` |
+| `thread/status/changed` | `active` / `idle` 不映射（thread liveness 不是 turn activity）；仅 `systemError` → `status_change(error)` |
 | `thread/tokenUsage/updated` | `usage` |
 
 ### Codex Server Request / 权限协议
@@ -611,7 +617,7 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 
 **触发链路**:前端 `Chat.tsx` 在 Tab ready(`isActive && isConnected && sessionId`)的瞬间 POST `/api/runtime/prewarm` → `prewarmExternalSession()` → `startExternalSession({ ...options, initialMessage: undefined })`。**不**等待 `/api/runtime/models` — 该接口自身也 spawn 一个 `gemini --acp` 子进程查模型,会付同样的 ~14s 冷启动。两件事并行进行:prewarm 在用户打字时暖 session,models-fetch 在后台填充模型下拉。首次 prewarm 用 `effectiveModel`(可能 `undefined` → runtime 用自带默认),用户随后在 UI 里切模型时走 `setExternalModel()` → in-place `runtime.setModel()` 路径(见「配置变更」)。
 
-**Managed Codex readiness**：`initialize` 只证明 app-server 已建立；MyAgents 注入的 MCP 仍可能异步启动。Managed-provider launch config 为每个 stdio / HTTP server 注入由 `MCP_PREWARM_GRACE_MS` 派生的原生 `startup_timeout_sec`；`CodexRuntime.startSession()` 在发起 `thread/start|resume` 的 native startup boundary 启动同一 10 秒 absolute grace，并观察 `mcpServer/startupStatus/updated`。全部 ready 则 ready；`failed | cancelled | pending timeout` 则当前 Runtime Session settle degraded 并继续首个 `turn/start`，不自动调用 `config/mcpServer/reload`、不在下一轮重试；新 Session / process 才重新尝试。`mcpServerStatus/list` 仍只是 UI 诊断，不是 barrier。等待只覆盖 MyAgents 注入的 server name，用户自有 Codex MCP 不归此 owner。Process exit、thread/RPC failure 仍是真 Runtime failure，不能被 degraded 吞掉；`system-cli` launch config 与行为不变。
+**Managed Codex readiness**：`initialize` 只证明 app-server 已建立；MyAgents 注入的 MCP 仍可能异步启动。Managed-provider launch config 为每个 stdio / HTTP server 注入由 `MCP_PREWARM_GRACE_MS` 派生的原生 `startup_timeout_sec`；`CodexRuntime.startSession()` 在发起 `thread/start|resume` 的 native startup boundary 启动同一 10 秒 absolute grace，并观察 `mcpServer/startupStatus/updated`。全部 ready 则 ready；`failed | cancelled | pending timeout` 则当前 Runtime Session settle degraded 并继续首个 `turn/start`，不自动调用 `config/mcpServer/reload`、不在下一轮重试；新 Session / process 才重新尝试。`mcpServerStatus/list` 只用于只读 UI 投影（诊断与工具目录），不是 barrier。等待只覆盖 MyAgents 注入的 server name，用户自有 Codex MCP 不归此 owner。Process exit、thread/RPC failure 仍是真 Runtime failure，不能被 degraded 吞掉；`system-cli` launch config 与行为不变。
 
 **IM 冷启动边界**：persistent Agent/飞书 session 一旦已有 live runtime，后续 turn 复用同一 process 与 MCP，不应重复支付 startup。完全没有 Sidecar/runtime 的首个 IM peer 仍要真实创建这些资源；本期不为所有潜在 peer 常驻预热，因为那会把延迟换成无界资源占用。这个首个 cold turn 是显式产品边界，不得和“同 session 每轮重启”混为一谈。
 
@@ -680,13 +686,15 @@ Gemini / Codex 冷启动(spawn CLI + `initialize` + `session/new`)约 10–15 �
 
 每个 RPC 独立 `tryCall` + 5s 超时，单点失败不级联。统一 `RuntimeDiagnostics`（含 `status: RuntimeDiagnosticsCallStatus` 四元组 + `effectiveEnv: RuntimeEffectiveEnv`）通过 `wrappedOnEvent({ kind: 'runtime_diagnostics' })` → SSE `chat:runtime-diagnostics` → `TabProvider.setRuntimeDiagnostics()` 到 React。
 
+Codex MCP 工具目录走独立的可变快照：adapter 记录当前 thread 的 `mcpServer/startupStatus/updated`，短合并窗口后按 threadId 分页调用 `mcpServerStatus/list`，仅把 ready 且无需登录的 server 中由 Codex 实际返回的 tool 映射为 `mcp__<server>__<tool>`。目录变化发 `runtime_tool_catalog`；`external-session` 更新其 system-init replay snapshot 并广播 `chat:runtime-tool-catalog`，所以活跃 Tab 实时更新，重连则从同一 owner 快照恢复。该链路只读，不修改 Codex 配置；查询失败保留仍处于 ready 的上一份目录，明确的 failed / cancelled 通知立即撤回对应 server，不依赖后续查询成功。
+
 **Session-life gate**：广播前检查 `codexProc.exited || codexProc.intentionalKillDuringStartup`——5–10s 的诊断窗口期内若用户已切 tab / kill session，stale event 不允许闪到切走的 tab（详见 `codex.ts::startSession` 末尾的 fire-and-forget 块）。
 
 ### `chat:runtime-diagnostics` SSE 事件
 
 注册位置：`src/renderer/api/SseConnection.ts::JSON_EVENTS`。前端消费：`RuntimeDiagnosticsBanner.tsx`——只在 `status` 任一字段非 `'ok'` 或 `apps` 有 `isAccessible:false` 时才显示。
 
-**MCP `state` 派生**：`RuntimeMcpServerInfo.state` 不是直接由 Codex 返回的，而是 `codex.ts` 内部从 `authStatus` 派生——含 `'failed' / 'error' / 'oauth' / 'unauthenticated' / 'needs' / 'required'` marker 任意一个 → `state: 'failed'`，banner 现有 `state === 'failed'` 过滤器即可命中所有 unhealthy MCP。**新增 MCP 健康检测逻辑 MUST 走这条派生链而不是在 banner 端散写 filter**。
+**MCP `state` 派生**：`RuntimeMcpServerInfo.state` 不是直接由 Codex 返回的，而是 `codex.ts` 内部从 `authStatus` 派生。当前 Codex schema 的 `notLoggedIn` 是不可用态；`oAuth` / `bearerToken` 是已认证态，不能按字符串含 `oauth` 误判失败。兼容旧 payload 时仅把明确的 `failed / error / unauthenticated / needs / required` marker 视为 unhealthy。**新增 MCP 健康检测逻辑 MUST 走这条派生链而不是在 banner 端散写 filter**。
 
 ### `RuntimeEnvPolicy.proxy` 两档语义（`env-utils.augmentedProcessEnv`）
 

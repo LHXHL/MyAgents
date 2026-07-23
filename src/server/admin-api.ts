@@ -58,7 +58,9 @@ import {
   getProviderSelectionError,
   isProviderDisabled,
   resolveProviderEnv,
-  getProvidersDir,
+  saveCustomProviderFile,
+  deleteCustomProviderFile,
+  withAvailableProvidersProjection,
   isCliToolRegistryEnabled,
   type AdminAppConfig,
   type AgentConfigSlim,
@@ -77,8 +79,6 @@ import { getSessionEngine } from './session-engine';
 // sidecar's internal `FETCH_TIMEOUT_MS` (300s for tarball download) plus a
 // 30s buffer so the inner timeout always wins. Used by skill install routes.
 const SKILL_INSTALL_LOOPBACK_TIMEOUT_MS = 330_000;
-import { existsSync, writeFileSync, unlinkSync } from 'fs';
-import { ensureDirSync } from './utils/fs-utils';
 import { resolve } from 'path';
 import { setMcpServers, setAgents, getMcpServers, getAgentState, getSidecarPort, forceReloadActiveSession } from './agent-session';
 import { loadEnabledAgents } from './agents/agent-loader';
@@ -870,6 +870,22 @@ export function handleModelList(): AdminResponse {
   const data = allProviders.map(p => {
     const id = String(p.id);
     const cfg = p.config as Record<string, unknown> | undefined;
+    const models = (Array.isArray(p.models) ? p.models : []).flatMap(model => {
+      if (!model || typeof model !== 'object') return [];
+      const record = model as Record<string, unknown>;
+      const modelId = typeof record.model === 'string' ? record.model.trim() : '';
+      if (!modelId) return [];
+      return [{
+        model: modelId,
+        modelName: typeof record.modelName === 'string' && record.modelName.trim()
+          ? record.modelName
+          : modelId,
+      }];
+    });
+    const configuredPrimary = (config.providerPrimaryModels as Record<string, string> | undefined)?.[id];
+    const primaryModel = configuredPrimary && models.some(model => model.model === configuredPrimary)
+      ? configuredPrimary
+      : (typeof p.primaryModel === 'string' ? p.primaryModel : models[0]?.model);
     return {
       id,
       name: String(p.name),
@@ -880,10 +896,30 @@ export function handleModelList(): AdminResponse {
       enabled: p.enabled !== false,
       hasApiKey: !!apiKeys[id],
       status: (verifyStatus[id] as unknown as Record<string, unknown>)?.status ?? 'not-set',
+      primaryModel,
+      models,
     };
   });
 
   return { success: true, data };
+}
+
+async function notifyModelConfigChanged(action: string, id: string): Promise<void> {
+  // Preserve the current Sidecar-local event for tabs connected to this
+  // process, then fan out an app-scoped invalidation through Rust so every
+  // renderer reloads the disk authorities regardless of Sidecar ownership.
+  broadcast('config:changed', { section: 'model', action, id });
+  const result = await managementApi(
+    '/api/app/config-changed',
+    'POST',
+    {},
+    { timeoutMs: 2_000 },
+  );
+  if (result.ok !== true) {
+    throw new Error(
+      `Model configuration was saved, but app-wide refresh failed after ${action} '${id}': ${String(result.error ?? 'unknown Management API error')}. Restart MyAgents or retry the command to refresh every open window.`,
+    );
+  }
 }
 
 export async function handleModelSetKey(payload: { id: string; apiKey: string }): Promise<AdminResponse> {
@@ -891,12 +927,12 @@ export async function handleModelSetKey(payload: { id: string; apiKey: string })
   if (!id) return { success: false, error: 'Missing required field: id' };
   if (!apiKey) return { success: false, error: 'Missing required field: apiKey' };
 
-  await atomicModifyConfig(c => ({
+  await atomicModifyConfig(c => withAvailableProvidersProjection({
     ...c,
     providerApiKeys: { ...(c.providerApiKeys || {}), [id]: apiKey },
   }));
 
-  broadcast('config:changed', { section: 'model', action: 'set-key', id });
+  await notifyModelConfigChanged('set-key', id);
   return { success: true, data: { id }, hint: `API key saved for ${id}.` };
 }
 
@@ -912,7 +948,7 @@ export async function handleModelSetDefault(payload: { id: string }): Promise<Ad
     defaultProviderId: id,
   }));
 
-  broadcast('config:changed', { section: 'model', action: 'set-default', id });
+  await notifyModelConfigChanged('set-default', id);
   return { success: true, data: { id }, hint: `Default provider set to ${id}.` };
 }
 
@@ -952,14 +988,14 @@ export async function handleModelVerify(payload: { id: string; model?: string })
 
     if (result.success) {
       // Persist verify status
-      await atomicModifyConfig(c => ({
+      await atomicModifyConfig(c => withAvailableProvidersProjection({
         ...c,
         providerVerifyStatus: {
           ...(c.providerVerifyStatus ?? {}),
           [id]: { status: 'valid', verifiedAt: new Date().toISOString() },
         },
       }));
-      broadcast('config:changed', { section: 'model', action: 'verify', id });
+      await notifyModelConfigChanged('verify', id);
       return { success: true, data: { id, model: verifyModel }, hint: 'Verification successful.' };
     }
 
@@ -969,10 +1005,10 @@ export async function handleModelVerify(payload: { id: string; model?: string })
   }
 }
 
-export function handleModelAdd(payload: {
+export async function handleModelAdd(payload: {
   provider: Record<string, unknown>;
   dryRun?: boolean;
-}): AdminResponse {
+}): Promise<AdminResponse> {
   const { dryRun } = payload;
   const p = payload.provider;
 
@@ -1022,13 +1058,14 @@ export function handleModelAdd(payload: {
     modelAliases = { fable: modelIds[0], sonnet: modelIds[0], opus: modelIds[0], haiku: modelIds[0] };
   }
 
+  const requestedPrimaryModel = p.primaryModel ? String(p.primaryModel).trim() : '';
   const providerObj = {
     id: String(p.id),
     name: String(p.name),
     vendor: String(p.vendor ?? p.name),
     cloudProvider: String(p.cloudProvider ?? ''),
     type: 'api' as const,
-    primaryModel: p.primaryModel ? String(p.primaryModel).trim() || modelIds[0] : modelIds[0],
+    primaryModel: modelIds.includes(requestedPrimaryModel) ? requestedPrimaryModel : modelIds[0],
     isBuiltin: false,
     config: {
       baseUrl: String(p.baseUrl),
@@ -1051,9 +1088,11 @@ export function handleModelAdd(payload: {
     return { success: true, dryRun: true, preview: providerObj };
   }
 
-  // Write to ~/.myagents/providers/{id}.json
-  saveCustomProviderFile(providerObj);
-  broadcast('config:changed', { section: 'model', action: 'add', id: providerObj.id });
+  // The provider file is the definition authority. Projection is derived and
+  // this operation is idempotent, so retrying repairs a failed config commit.
+  await saveCustomProviderFile(providerObj);
+  await atomicModifyConfig(c => withAvailableProvidersProjection(c));
+  await notifyModelConfigChanged('add', providerObj.id);
   return {
     success: true,
     data: { id: providerObj.id, name: providerObj.name, models: modelIds },
@@ -1072,12 +1111,8 @@ export async function handleModelRemove(payload: { id: string }): Promise<AdminR
     return { success: false, error: `Cannot remove built-in provider '${id}'. Only custom providers can be removed.` };
   }
 
-  // Delete provider file
-  if (!deleteCustomProviderFile(id)) {
-    return { success: false, error: `Custom provider '${id}' not found.` };
-  }
-
-  // Clean up API key, verify status, and enablement/order stale IDs
+  // Commit config cleanup first. If it fails, the provider definition remains
+  // untouched and the user can retry without compensating rollback machinery.
   await atomicModifyConfig(c => {
     const apiKeys = { ...(c.providerApiKeys ?? {}) };
     delete apiKeys[id];
@@ -1093,7 +1128,7 @@ export async function handleModelRemove(payload: { id: string }): Promise<AdminR
       ? c.proxySettings as ProxySettings
       : undefined;
     const proxySettings = removeProviderFromProxySettingsScope(currentProxySettings, id);
-    return {
+    return withAvailableProvidersProjection({
       ...c,
       providerApiKeys: apiKeys,
       providerVerifyStatus: verifyStatus,
@@ -1101,10 +1136,13 @@ export async function handleModelRemove(payload: { id: string }): Promise<AdminR
       providerOrder: providerOrder && providerOrder.length > 0 ? providerOrder : undefined,
       disabledProviderIds: disabledProviderIds && disabledProviderIds.length > 0 ? disabledProviderIds : undefined,
       ...(proxySettings ? { proxySettings } : {}),
-    };
+    });
   });
+  if (!await deleteCustomProviderFile(id)) {
+    return { success: false, error: `Custom provider '${id}' not found.` };
+  }
 
-  broadcast('config:changed', { section: 'model', action: 'remove', id });
+  await notifyModelConfigChanged('remove', id);
   return { success: true, data: { id }, hint: 'Provider removed.' };
 }
 
@@ -5106,28 +5144,6 @@ function isValidId(id: string): boolean {
 /** Reject dangerous property names to prevent prototype pollution */
 function hasDangerousKeySegment(key: string): boolean {
   return key.split('.').some(p => p === '__proto__' || p === 'constructor' || p === 'prototype');
-}
-
-// ---------------------------------------------------------------------------
-// Provider file I/O (~/.myagents/providers/{id}.json)
-// ---------------------------------------------------------------------------
-
-// findProvider, getProvidersDir, loadCustomProviderFiles → imported from admin-config.ts
-
-/** Save a custom provider JSON file */
-function saveCustomProviderFile(provider: Record<string, unknown>): void {
-  const dir = getProvidersDir();
-  ensureDirSync(dir);
-  const filePath = resolve(dir, `${provider.id}.json`);
-  writeFileSync(filePath, JSON.stringify(provider, null, 2), 'utf-8');
-}
-
-/** Delete a custom provider file. Returns true if file existed. */
-function deleteCustomProviderFile(id: string): boolean {
-  const filePath = resolve(getProvidersDir(), `${id}.json`);
-  if (!existsSync(filePath)) return false;
-  unlinkSync(filePath);
-  return true;
 }
 
 // ---------------------------------------------------------------------------

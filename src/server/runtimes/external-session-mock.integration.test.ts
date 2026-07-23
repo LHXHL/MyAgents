@@ -512,6 +512,40 @@ function desktopRequest(sessionId: string, workspacePath: string, text: string):
 }
 
 describe('external SessionEngine with fake runtime', () => {
+  it('projects runtime tool catalog updates into live SSE and the reconnect snapshot', async () => {
+    const harness = await createHarness([]);
+    const sessionId = 'session-runtime-tool-catalog';
+    await harness.externalSession.prewarmExternalSession({
+      sessionId,
+      workspacePath: join(harness.home, 'workspace'),
+      scenario: { type: 'desktop' },
+      permissionMode: 'fullAgency',
+    });
+    await waitFor(
+      () => Boolean(harness.engine.getStreamReplaySnapshot().systemInitPayload),
+      'external system-init snapshot',
+    );
+    broadcastEvents.length = 0;
+
+    harness.runtime.emitForTest({
+      kind: 'runtime_tool_catalog',
+      tools: ['mcp__playwright__browser_click', 'mcp__search__query'],
+    });
+
+    expect(broadcastEvents).toContainEqual({
+      event: 'chat:runtime-tool-catalog',
+      data: {
+        sessionId,
+        tools: ['mcp__playwright__browser_click', 'mcp__search__query'],
+      },
+    });
+    expect(harness.engine.getStreamReplaySnapshot().systemInitPayload).toMatchObject({
+      info: {
+        tools: ['mcp__playwright__browser_click', 'mcp__search__query'],
+      },
+    });
+  });
+
   it('spills oversized completed tool input before top-level and nested result events', async () => {
     const harness = await createHarness([]);
     const sessionId = 'session-tool-input-spill';
