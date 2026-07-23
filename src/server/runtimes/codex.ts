@@ -3153,8 +3153,9 @@ export class CodexRuntime implements AgentRuntime {
       case 'thread/status/changed': {
         const status = p.status as { type: string } | undefined;
         if (!status) return null;
-        if (status.type === 'active') return { kind: 'status_change', state: 'running' };
-        if (status.type === 'idle') return { kind: 'status_change', state: 'idle' };
+        // Thread status describes the persistent Codex thread, not the user
+        // turn. Resume can report `idle` after the turn owner accepted a query;
+        // only the external turn lifecycle may drive running/idle.
         if (status.type === 'systemError') return { kind: 'status_change', state: 'error' };
         return null;
       }

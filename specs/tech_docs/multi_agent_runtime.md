@@ -282,6 +282,7 @@ Codex 原生扫描 `.agents/skills`，而 MyAgents/Claude Agent SDK 的工作区
 | `turn/started` | `[status_change(running), agent_plan_update([])]` |
 | `turn/plan/updated` | `agent_plan_update` |
 | `turn/completed` | `[turn_complete, agent_plan_update([])]` |
+| `thread/status/changed` | `active` / `idle` 不映射（thread liveness 不是 turn activity）；仅 `systemError` → `status_change(error)` |
 | `thread/tokenUsage/updated` | `usage` |
 
 ### Codex Server Request / 权限协议

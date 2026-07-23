@@ -601,6 +601,48 @@ describe('Codex app-server protocol helpers', () => {
     });
   });
 
+  it('keeps thread status snapshots separate from turn activity', () => {
+    const runtime = new CodexRuntime();
+    const codexProc = {
+      threadId: 'thread-1',
+      currentTurnId: null,
+    };
+    const parseNotification = (method: string, params: unknown) => (
+      runtime as unknown as {
+        parseNotification(
+          proc: typeof codexProc,
+          notificationMethod: string,
+          notificationParams: unknown,
+          asyncEmit: () => void,
+        ): unknown;
+      }
+    ).parseNotification(codexProc, method, params, () => {});
+
+    // During thread resume Codex can report its pre-turn idle snapshot after
+    // MyAgents has already accepted the query. It must not end that active turn.
+    expect(parseNotification('thread/status/changed', {
+      threadId: 'thread-1',
+      status: { type: 'idle' },
+    })).toBeNull();
+    expect(parseNotification('thread/status/changed', {
+      threadId: 'thread-1',
+      status: { type: 'active' },
+    })).toBeNull();
+
+    expect(parseNotification('thread/status/changed', {
+      threadId: 'thread-1',
+      status: { type: 'systemError' },
+    })).toEqual({ kind: 'status_change', state: 'error' });
+    expect(parseNotification('turn/started', {
+      threadId: 'thread-1',
+      turn: { id: 'turn-2' },
+    })).toEqual([
+      { kind: 'turn_started' },
+      { kind: 'status_change', state: 'running' },
+      { kind: 'agent_plan_update', todos: [] },
+    ]);
+  });
+
   it('maps Codex turn/plan/updated into an AgentStatusPanel todo snapshot', () => {
     expect(mapCodexTurnPlanUpdatedNotification({
       plan: [
