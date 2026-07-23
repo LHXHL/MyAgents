@@ -845,7 +845,8 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 | Session watcher | Rust | 文件系统观察索引（写入路径解耦） |
 | `withConfigLock` / `with_config_lock` | Node + Rust + renderer | `config.json` 跨进程串行写入 |
 | `ThemeRegistry` + `ThemeRuntimeProvider` + Tailwind bridge | renderer | 完整 Theme 校验、整套解析、root/context/跨窗口一致投影；runtime 值与编译期 utility 映射分离 |
-| `withFileLock` / `with_file_lock` | Node + Rust | 单写者文件原子性 |
+| `withFileLock` / `with_file_lock` | Node + Rust + renderer | 单写者文件原子性 |
+| `copyPlainText` | renderer | WebView 普通文本复制 fallback + 真实成功语义 |
 | `killWithEscalation` | Node | 子进程 stop SIGTERM → SIGKILL → orphan 升级链 |
 | `withAbortSignal` / `cancellableFetch` | Node | 统一 cancel 协议（fetch / stream / process） |
 | `maybeSpill` + `/refs/:id` + SSE 优先级 | Node + Rust | 大 payload 流到 ref，SSE 三档队列 |
