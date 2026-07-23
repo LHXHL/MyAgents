@@ -10,6 +10,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use std::sync::OnceLock;
+use tauri::Emitter;
 use tokio::net::TcpListener;
 
 use crate::cron_task::{
@@ -103,6 +104,7 @@ pub async fn start_management_api() -> Result<u16, String> {
         .map_err(|_| "Management API already started".to_string())?;
 
     let app = Router::new()
+        .route("/api/app/config-changed", post(app_config_changed_handler))
         .route("/api/cron/create", post(create_cron_handler))
         .route("/api/cron/list", get(list_cron_handler))
         .route("/api/cron/update", post(update_cron_handler))
@@ -243,6 +245,28 @@ pub async fn start_management_api() -> Result<u16, String> {
 
     ulog_info!("[management-api] Started on http://127.0.0.1:{}", port);
     Ok(port)
+}
+
+/// Fan a disk-backed AppConfig invalidation out to every renderer window.
+/// The payload intentionally contains no config fields because config.json may
+/// contain credentials; renderers re-read the authorities after this signal.
+async fn app_config_changed_handler() -> Json<serde_json::Value> {
+    let Some(app_handle) = crate::logger::get_app_handle() else {
+        return Json(serde_json::json!({
+            "ok": false,
+            "error": "App handle is not initialized",
+        }));
+    };
+    match app_handle.emit("app:config-changed", ()) {
+        Ok(()) => Json(serde_json::json!({ "ok": true })),
+        Err(error) => {
+            ulog_warn!("[management] Failed to emit app:config-changed: {}", error);
+            Json(serde_json::json!({
+                "ok": false,
+                "error": error.to_string(),
+            }))
+        }
+    }
 }
 
 fn no_store_json(value: serde_json::Value) -> (HeaderMap, Json<serde_json::Value>) {

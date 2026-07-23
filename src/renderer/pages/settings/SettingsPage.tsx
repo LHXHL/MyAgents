@@ -73,6 +73,7 @@ import { actions as spaceActions } from '@/pages/space/spaceStore';
 import { useHelperAgentModelDefaults } from '@/hooks/useHelperAgentModelDefaults';
 import { useAutostart } from '@/hooks/useAutostart';
 import { getBuildVersions } from '@/utils/debug';
+import { copyPlainText } from '@/utils/clipboard';
 import {
     isDeveloperSectionUnlocked,
     unlockDeveloperSection,
@@ -2887,7 +2888,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         const url = managedCodexLoginState.loginUrl;
         if (!url) return;
         try {
-            await navigator.clipboard.writeText(url);
+            await copyPlainText(url);
             toast.success(tSettings('providers.codexToast.urlCopied'));
         } catch (error) {
             console.warn('[Settings] Failed to copy Managed Codex login URL:', error);
@@ -3000,7 +3001,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             ?? subscriptionLoginState.manualUrl;
         if (!url) return;
         try {
-            await navigator.clipboard.writeText(url);
+            await copyPlainText(url);
             toast.success(tSettings('providers.codexToast.urlCopied'));
         } catch (error) {
             console.warn('[Settings] Failed to copy subscription login URL:', error);

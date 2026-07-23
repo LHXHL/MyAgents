@@ -14,6 +14,7 @@ import {
   normalizeScheduleFlag,
   parseArgs,
   parseDispatchAtValue,
+  printModelList,
   printGoalResult,
   printResult,
   readWorkspaceTextFile,
@@ -874,6 +875,30 @@ describe('myagents CLI parseArgs', () => {
         modelNames: ['Model A', 'Model B'],
       },
     });
+  });
+
+  it('prints each provider primary model and model catalogue in human output', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      printModelList([{
+        id: 'provider-a',
+        name: 'Provider A',
+        status: 'valid',
+        enabled: true,
+        primaryModel: 'model-b',
+        models: [
+          { model: 'model-a', modelName: 'Model A' },
+          { model: 'model-b', modelName: 'Model B' },
+        ],
+      }]);
+
+      const output = log.mock.calls.map(args => args.join(' ')).join('\n');
+      expect(output).toContain('provider-a');
+      expect(output).toContain('Primary: model-b');
+      expect(output).toContain('model-a (Model A), model-b (Model B)');
+    } finally {
+      log.mockRestore();
+    }
   });
 
   it('still accepts dash-prefixed values as the first repeatable value', () => {

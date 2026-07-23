@@ -134,7 +134,7 @@ myagents vision analyze --image @myagents_files/screenshot.png --prompt "Extract
 ### 模型 Provider（model）
 
 ```bash
-myagents model list                                     # 看所有 Provider + 验证状态
+myagents model list                                     # 看所有 Provider、验证状态、主模型与模型清单
 myagents model add --id <id> --name <显示名> --base-url <url> --models <m1,m2,...> [其它]
 myagents model remove <id>                              # 删除自定义 Provider（内置的删不掉）
 myagents model set-key <id> <apiKey>                    # 设 API Key

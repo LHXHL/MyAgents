@@ -1450,7 +1450,7 @@ function printMcpTest(data: Record<string, unknown>, hint?: unknown): void {
   if (hint) console.log(`\n${String(hint)}`);
 }
 
-function printModelList(providers: Array<Record<string, unknown>>): void {
+export function printModelList(providers: Array<Record<string, unknown>>): void {
   if (!providers || providers.length === 0) {
     console.log('No model providers configured.');
     return;
@@ -1462,6 +1462,20 @@ function printModelList(providers: Array<Record<string, unknown>>): void {
     // overrides — they can't be used until re-enabled in Settings.
     const status = p.enabled === false ? 'disabled' : String(p.status);
     console.log(pad(String(p.id), 24) + pad(status, 12) + String(p.name));
+    const models = Array.isArray(p.models)
+      ? p.models.flatMap(model => {
+        if (!model || typeof model !== 'object') return [];
+        const record = model as Record<string, unknown>;
+        const id = typeof record.model === 'string' ? record.model : '';
+        if (!id) return [];
+        const name = typeof record.modelName === 'string' && record.modelName !== id
+          ? ` (${record.modelName})`
+          : '';
+        return [`${id}${name}`];
+      })
+      : [];
+    console.log(`  Primary: ${String(p.primaryModel ?? 'not set')}`);
+    console.log(`  Models:  ${models.length > 0 ? models.join(', ') : 'none'}`);
   }
 }
 

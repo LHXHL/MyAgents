@@ -63,7 +63,8 @@ use sidecar::{
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use tauri::{
-    utils::config::Color, Emitter, Listener, Manager, Theme, Url, WebviewUrl, WebviewWindowBuilder,
+    utils::config::Color, webview::PageLoadEvent, Emitter, Listener, Manager, Theme, Url,
+    WebviewUrl, WebviewWindowBuilder,
 };
 use tauri_plugin_autostart::MacosLauncher;
 
@@ -100,6 +101,7 @@ const THEME_BOOTSTRAP_LIGHT_PAPER: Color = Color(250, 246, 238, 255);
 const THEME_BOOTSTRAP_DARK_PAPER: Color = Color(26, 22, 20, 255);
 const THEME_BOOTSTRAP_APPEARANCE_MARKER: &str = "__MYAGENTS_APPEARANCE_MODE__";
 const THEME_BOOTSTRAP_RUN_ID_MARKER: &str = "__MYAGENTS_BOOTSTRAP_RUN_ID__";
+const THEME_BOOTSTRAP_WINDOW_LABEL_MARKER: &str = "__MYAGENTS_WINDOW_LABEL__";
 const THEME_BOOTSTRAP_SCRIPT_TEMPLATE: &str =
     include_str!("../../src/renderer/theme/native-bootstrap-script.js");
 
@@ -114,6 +116,7 @@ fn theme_bootstrap_paper(theme: Theme) -> Color {
 fn theme_bootstrap_script(
     selection: &config_io::ThemeBootstrapSelection,
     bootstrap_run_id: &str,
+    window_label: &str,
 ) -> String {
     // Theme ID validity is renderer-registry knowledge. Preserve the resolved
     // ID previously published by ThemeRuntime instead of letting an unknown
@@ -123,9 +126,12 @@ fn theme_bootstrap_script(
     let appearance_mode = serde_json::to_string(&selection.appearance_mode)
         .unwrap_or_else(|_| "\"system\"".to_owned());
     let run_id = serde_json::to_string(bootstrap_run_id).unwrap_or_else(|_| "\"\"".to_owned());
+    let window_label =
+        serde_json::to_string(window_label).unwrap_or_else(|_| "\"unknown\"".to_owned());
     THEME_BOOTSTRAP_SCRIPT_TEMPLATE
         .replacen(THEME_BOOTSTRAP_APPEARANCE_MARKER, &appearance_mode, 1)
         .replacen(THEME_BOOTSTRAP_RUN_ID_MARKER, &run_id, 1)
+        .replacen(THEME_BOOTSTRAP_WINDOW_LABEL_MARKER, &window_label, 1)
 }
 
 /// Pure decision for `on_navigation` (Functional Core — unit-tested below;
@@ -399,6 +405,7 @@ pub fn run() {
             commands::cmd_get_platform,
             commands::cmd_get_device_id,
             commands::cmd_get_device_identity,
+            logger::cmd_record_renderer_boot_event,
             i18n::cmd_get_ui_language_state,
             i18n::cmd_sync_ui_language_from_config,
             i18n::cmd_set_ui_language,
@@ -711,6 +718,10 @@ pub fn run() {
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log_level)
+                    // Builder defaults already contain Stdout + LogDir. Clear
+                    // them before declaring our targets or every native record
+                    // is dispatched twice (#473).
+                    .clear_targets()
                     .target(Target::new(TargetKind::Stdout))
                     .target(Target::new(TargetKind::LogDir { file_name: None }))
                     .build(),
@@ -780,7 +791,20 @@ pub fn run() {
             .initialization_script(theme_bootstrap_script(
                 &theme_bootstrap_selection,
                 &theme_bootstrap_run_id,
+                "main",
             ))
+            .on_page_load(|window, payload| {
+                let stage = match payload.event() {
+                    PageLoadEvent::Started => "native-page-load-started",
+                    PageLoadEvent::Finished => "native-page-load-finished",
+                };
+                ulog_info!(
+                    "[boot] stage={} window={} url={}",
+                    stage,
+                    window.label(),
+                    payload.url()
+                );
+            })
             // `transparent(false)` is the default in Tauri and the setter is
             // gated behind `macos-private-api` on macOS, so we omit it (the
             // original config field was effectively a no-op).
@@ -1401,6 +1425,7 @@ mod nav_guard_tests {
     use super::{
         classify_navigation, theme_bootstrap_paper, theme_bootstrap_script, NavDecision,
         THEME_BOOTSTRAP_APPEARANCE_MARKER, THEME_BOOTSTRAP_RUN_ID_MARKER,
+        THEME_BOOTSTRAP_WINDOW_LABEL_MARKER,
     };
     use crate::config_io::ThemeBootstrapSelection;
     use tauri::{utils::config::Color, Theme, Url};
@@ -1495,12 +1520,18 @@ mod nav_guard_tests {
                 appearance_mode: "dark".to_owned(),
             },
             "run\");globalThis.pwned=true;//",
+            "main",
         );
         assert!(script.contains("if (themeSelectionExplicit) themeId = storedThemeId"));
         assert!(script.contains("let themeId = 'default-black'"));
         assert!(script.contains("appearanceMode: \"dark\""));
         assert!(!script.contains(THEME_BOOTSTRAP_APPEARANCE_MARKER));
         assert!(!script.contains(THEME_BOOTSTRAP_RUN_ID_MARKER));
+        assert!(!script.contains(THEME_BOOTSTRAP_WINDOW_LABEL_MARKER));
         assert!(!script.contains("\"run\");globalThis.pwned=true;//\""));
+        assert!(script.contains("cmd_record_renderer_boot_event"));
+        assert!(script.contains("report('native-init-script')"));
+        assert!(script.contains("report('renderer-uncaught-error'"));
+        assert!(script.contains("report('renderer-unhandled-rejection'"));
     }
 }

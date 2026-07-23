@@ -239,6 +239,7 @@ Tab2 apiPost() ──► getSessionPort(session_456) ──► Rust proxy ──
 | `/api/cron/*` | Scheduled Task 兼容 CRUD + 调度控制 | CLI、`im-cron-tool.ts` |
 | `/api/task/*`（13 条） | Task Center 任务 CRUD + run/rerun + doc 读写 | CLI、`admin-api.ts` |
 | `/api/mcp/remove-references` | Task 中删除 custom MCP identity 的持久引用 | `admin-api.ts` MCP remove cascade |
+| `/api/app/config-changed` | 将 disk-first AppConfig 失效信号广播到所有 WebView（空 payload，不携带 secret） | `admin-api.ts` model mutation |
 | `/api/thought/*`（2 条） | 想法 create / list | CLI、`admin-api.ts` |
 | `/api/im/*` + `/api/im-bridge/*` | IM Bot 唤醒 + 媒体下发 + Plugin Bridge 回调 | Node.js / 社区插件 Bridge |
 | `/api/plugin/*`（3 条） | OpenClaw 插件 CRUD | CLI |
@@ -278,7 +279,7 @@ Tauri State `ManagedSidecars` 管理 `HashMap<sessionId, SessionSidecar>`。Owne
 | `cmd_ensure_session_sidecar` | 确保 Session 有运行中的 Sidecar |
 | `cmd_release_session_sidecar` | 释放 Owner 对 Sidecar 的使用 |
 | `cmd_release_tab_session` | 在 scheduler/Sidecar owner 同一锁序下释放桌面 Tab owner 并归置 activation |
-| `cmd_delete_session_if_unowned` | 在同一 owner 锁边界内拒绝删除仍被 Sidecar 或持久 scheduler 拥有的 Session；检查 ownership/entry，不用 process liveness 代替 |
+| `cmd_delete_session_if_unowned` | 用户删除的唯一 lifecycle authority：在同一 owner 锁边界内拒绝仍被 Sidecar 或持久 scheduler 拥有的 Session，并用每次 Global Sidecar 启动生成的 capability 调用从属 Node 存储端点；无 Rust authority 的 browser/dev HTTP 调用 fail-closed。检查 ownership/entry，不用 process liveness 代替 |
 | `cmd_get_session_port` | 获取 Session 的 Sidecar 端口 |
 | `cmd_activate_session` / `cmd_deactivate_session` | Session 激活管理 |
 | `cmd_upgrade_session_id` | Session ID 升级（场景 4 handover）；old/new 任一 identity 被持久 owner 占用时拒绝 rename |
@@ -983,6 +984,8 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 ```
 
 排查第一步：`grep '\[boot\]' ~/.myagents/logs/unified-*.log` 获取完整环境。
+
+主窗口还输出稳定的阶段标签：`native-page-load-started/finished → native-init-script → renderer-entry-evaluated → theme-renderer-bootstrap-complete → react-root-created → react-commit`。`renderer-uncaught-error` / `renderer-unhandled-rejection` 由 initialization script 在模块加载前捕获，因此即使 React 尚未执行也能定位停点。pre-App JS 统一通过白名单 Tauri command `cmd_record_renderer_boot_event` 进入 Rust unified logger；每条阶段含 `window=<label>`，禁止直写 raw plugin-log 形成第二日志 sink。阶段观测只记录状态与有界错误，不触发 reload/retry，也不改变 Theme fallback。
 
 ### 统一日志格式
 

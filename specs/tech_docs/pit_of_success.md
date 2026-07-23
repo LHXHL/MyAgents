@@ -18,6 +18,7 @@ CLAUDE.md 的 Pit-of-Success 红线总表是这些模块的**速查索引**；�
 **v0.2.0 结构性重构**
 - [`withConfigLock` / `with_config_lock`](#withconfiglock) — config.json 跨进程串行写入
 - [`withFileLock` / `with_file_lock`](#withfilelock) — 单写者文件原子性
+- [`copyPlainText`](#renderer-clipboard) — WebView 普通文本复制 fallback + 真实成功语义
 - [`killWithEscalation`](#killwithescalation) — 子进程 stop 升级链
 - [`withAbortSignal` / `cancellableFetch`](#cancellation) — 统一 cancel 协议
 - [`maybeSpill` + `/refs/:id` + SSE 优先级](#maybespill) — 大 payload 分流
@@ -216,6 +217,7 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 
 **Surface.**
 - Node `withFileLock(targetPath, fn, { staleMs })` (`src/server/utils/file-lock.ts`)：async；抛 `FileBusyError`
+- Renderer `withFileLock(targetPath, fn)` (`src/renderer/config/services/configStore.ts`)：与 Node/Rust 共用 `${targetPath}.lock` 协议；provider JSON 写删必须走它
 - Rust `with_file_lock(path, fn)` (`src-tauri/src/utils/file_lock.rs`)：async via `spawn_blocking`
 - Rust `with_file_lock_blocking(path, fn)`：同步孪生（给 `config_io` 的现有同步 API 用）
 
@@ -230,6 +232,19 @@ v0.2.0 Windows 版的 IM Bot 全部启动失败就是这个 trap：`find_tsx_run
 - 任何单写者文件用裸 append
 - 用 `Atomics.wait` / CPU spin / `while (Date.now() < end)` 做阻塞等待
 - 自己手写 lockdir 协议
+
+ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个磁盘快照：所有 refresh 必须委托给同一个 snapshot request/commit owner；本地写盘成功后也必须推进同一 revision，再镜像 React state。禁止为 provider/key 单独写一个无 fence 的异步 setter，否则旧的外部读取可以覆盖更新鲜的本地写入。
+
+---
+
+<a id="renderer-clipboard"></a>
+## `copyPlainText`（Renderer clipboard）
+
+**Problem.** WKWebView/WebView2 可能暴露 `navigator.clipboard.writeText`，却因焦点或权限状态拒绝调用；直接调用会让复制按钮静默失效，若 UI 同步翻转 `copied` 还会误报成功。
+
+**Surface.** `copyPlainText(text)`（`src/renderer/utils/clipboard.ts`）。先尝试 Async Clipboard，拒绝后使用隐藏 textarea selection + `document.execCommand('copy')`；只有任一路径实际返回成功才 resolve，两路都失败则 reject。富文本复制仍由 `markdownClipboard.tsx` 拥有，并复用此 plain-text leaf，避免普通组件加载 Markdown 依赖。
+
+**Don't.** 生产 renderer 代码不得直接调用 `navigator.clipboard.writeText()`；带 copied/toast 状态的调用方只能在 helper resolve 后显示成功，reject 时保持未复制并按 surface 反馈失败。ESLint 对直接调用设结构守卫。
 
 ---
 

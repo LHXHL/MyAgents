@@ -8,6 +8,7 @@ import { useCallback, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { useResolvedTheme } from '@/theme';
+import { copyPlainText } from '@/utils/clipboard';
 
 interface CodeBlockProps {
     children: string;
@@ -26,7 +27,7 @@ export default function CodeBlock({ children, language, className }: CodeBlockPr
 
     const handleCopy = useCallback(async () => {
         try {
-            await navigator.clipboard.writeText(children);
+            await copyPlainText(children);
             setCopied(true);
             setTimeout(() => setCopied(false), 2000);
         } catch (err) {

@@ -67,6 +67,7 @@ import {
   getRichDocKind,
 } from "../../../shared/fileTypes";
 import { getFileIcon } from "@/utils/fileIcons";
+import { copyPlainText } from "@/utils/clipboard";
 
 import { useImagePreview } from "@/context/ImagePreviewContext";
 import { useToast } from "@/components/Toast";
@@ -1729,8 +1730,7 @@ const DirectoryPanel = memo(
     );
 
     const handleCopyPath = (relPath: string, labelKey: string) => {
-      navigator.clipboard
-        .writeText(toAbsolutePath(relPath))
+      copyPlainText(toAbsolutePath(relPath))
         .then(() => toast.success(tRef.current(labelKey)))
         .catch(() => toast.error(tRef.current("workspaceFiles.common.copyFailed")));
     };
@@ -2057,8 +2057,7 @@ const DirectoryPanel = memo(
         if (opts?.skipAsyncOsWrite) {
           lastOsClipboardTextRef.current = osText;
         } else {
-          void navigator.clipboard
-            .writeText(osText)
+          void copyPlainText(osText)
             .then(() => {
               lastOsClipboardTextRef.current = osText;
             })

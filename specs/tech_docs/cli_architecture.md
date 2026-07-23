@@ -374,10 +374,13 @@ session event 类型时必须同时更新该渲染层、目标 Sidecar 处理路
 ```
 CLI → Admin API → atomicModifyConfig() → 写 config.json（磁盘优先）
                 → 更新 Sidecar 内存状态（setMcpServers 等）
-                → broadcast() SSE 事件 → 前端 React 状态同步
+                → broadcast() SSE 事件（当前 Sidecar 兼容面）
+                → Management API app:config-changed → 所有 WebView 重读完整磁盘快照
 ```
 
-这确保了 CLI 修改和 GUI 修改产生完全相同的效果。
+这确保了 CLI 修改和 GUI 修改产生完全相同的效果。`model add/remove` 的 provider 文件必须持有 `${providerPath}.lock` 并原子替换；Provider 文件是定义权威，`availableProvidersJson` 只是 Rust IM 的派生投影。新增先提交可幂等重试的定义文件再重建投影；删除先提交 config 清理再删除定义文件，使 config 失败时定义天然保持不变，不引入跨文件伪事务。投影的 availability、primary 与 wire shape 只由 `src/shared/availableProvidersProjection.ts` 生成，renderer/Node 仅分别负责目录读取和持久化，禁止复制投影策略。GUI 不读取该投影作为 Provider authority，而是以一次 `config.json` 读取派生 credential/verify，并结合同代 projects/provider 文件形成完整 snapshot；所有磁盘 refresh 经 ConfigProvider 的同一个 snapshot commit owner，本地磁盘提交也推进同一 revision，拒绝旧读覆盖新写。应用级事件 payload 永远为空，不能把 API key/MCP env 放进 Tauri event；Management API 返回失败时 Admin mutation 必须向 CLI 报告“已写盘但 app-wide refresh 失败”，不得返回局部 success。
+
+`myagents model list` 的 JSON 与 human 输出都必须展示每个 Provider 的 `primaryModel` 和 `models`；human renderer 不能把 Admin 已返回的详情静默丢弃。
 
 ### 管理 API 转发（`/api/task/*` / `/api/cron/*` 等）
 

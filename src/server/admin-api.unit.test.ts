@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -19,6 +19,7 @@ const managementApiMocks = vi.hoisted(() => ({
 
 const adminConfigBehavior = vi.hoisted(() => ({
   failProjectWrite: false,
+  failNextConfigWrite: false,
   delayNextIntent: false,
   intentGate: undefined as Promise<void> | undefined,
   onIntentBlocked: undefined as (() => void) | undefined,
@@ -28,6 +29,13 @@ vi.mock('./utils/admin-config', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./utils/admin-config')>();
   return {
     ...actual,
+    atomicModifyConfig: async (...args: Parameters<typeof actual.atomicModifyConfig>) => {
+      if (adminConfigBehavior.failNextConfigWrite) {
+        adminConfigBehavior.failNextConfigWrite = false;
+        throw new Error('injected config.json write failure');
+      }
+      return actual.atomicModifyConfig(...args);
+    },
     withAgentConfigIntentLock: async <T>(fn: () => Promise<T>) => {
       if (adminConfigBehavior.delayNextIntent) {
         adminConfigBehavior.delayNextIntent = false;
@@ -116,6 +124,7 @@ beforeEach(() => {
   managementApiMocks.managementApi.mockClear();
   managementApiMocks.managementApi.mockResolvedValue({ ok: true, taskUpdated: 0, cronUpdated: 0 });
   adminConfigBehavior.failProjectWrite = false;
+  adminConfigBehavior.failNextConfigWrite = false;
   adminConfigBehavior.delayNextIntent = false;
   adminConfigBehavior.intentGate = undefined;
   adminConfigBehavior.onIntentBlocked = undefined;
@@ -1062,7 +1071,7 @@ describe('admin-api model add', () => {
   it('expands custom provider models from repeated and comma-separated CLI inputs', async () => {
     const { handleModelAdd } = await import('./admin-api');
 
-    const result = handleModelAdd({
+    const result = await handleModelAdd({
       dryRun: true,
       provider: {
         id: 'sensenova',
@@ -1084,6 +1093,100 @@ describe('admin-api model add', () => {
       { model: 'deepseek-v4-flash', modelName: 'DeepSeek Flash', modelSeries: 'sensenova' },
       { model: 'glm-5.2', modelName: 'GLM 5.2', modelSeries: 'sensenova' },
     ]);
+  });
+
+  it('keeps GUI invalidation, CLI model detail, and IM provider projection aligned', async () => {
+    const {
+      handleModelAdd,
+      handleModelList,
+      handleModelSetKey,
+      handleModelRemove,
+    } = await import('./admin-api');
+
+    const added = await handleModelAdd({
+      provider: {
+        id: 'snapshot-provider',
+        name: 'Snapshot Provider',
+        baseUrl: 'https://provider.example/v1',
+        apiProtocol: 'openai',
+        authType: 'api_key',
+        models: ['model-primary', 'model-secondary'],
+        modelNames: ['Primary', 'Secondary'],
+        primaryModel: 'model-secondary',
+      },
+    });
+    expect(added.success).toBe(true);
+    expect(managementApiMocks.managementApi).toHaveBeenLastCalledWith(
+      '/api/app/config-changed',
+      'POST',
+      {},
+      { timeoutMs: 2_000 },
+    );
+
+    const keyed = await handleModelSetKey({ id: 'snapshot-provider', apiKey: 'secret-key' });
+    expect(keyed.success).toBe(true);
+    const projection = JSON.parse(String(readConfig().availableProvidersJson)) as Array<Record<string, unknown>>;
+    expect(projection).toContainEqual(expect.objectContaining({
+      id: 'snapshot-provider',
+      primaryModel: 'model-secondary',
+      apiKey: 'secret-key',
+      models: [
+        { model: 'model-primary', modelName: 'Primary' },
+        { model: 'model-secondary', modelName: 'Secondary' },
+      ],
+    }));
+
+    const listed = handleModelList();
+    expect(listed.data).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'snapshot-provider',
+        primaryModel: 'model-secondary',
+        models: [
+          { model: 'model-primary', modelName: 'Primary' },
+          { model: 'model-secondary', modelName: 'Secondary' },
+        ],
+      }),
+    ]));
+
+    const removed = await handleModelRemove({ id: 'snapshot-provider' });
+    expect(removed.success).toBe(true);
+    const projectionAfterRemove = readConfig().availableProvidersJson;
+    const remaining = typeof projectionAfterRemove === 'string'
+      ? JSON.parse(projectionAfterRemove) as Array<Record<string, unknown>>
+      : [];
+    expect(remaining.some(provider => provider.id === 'snapshot-provider')).toBe(false);
+    expect(managementApiMocks.managementApi).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not report mutation success when app-wide invalidation fails', async () => {
+    const { handleModelSetDefault } = await import('./admin-api');
+    managementApiMocks.managementApi.mockResolvedValueOnce({ ok: false, error: 'management offline' });
+
+    await expect(handleModelSetDefault({ id: 'provider-a' })).rejects.toThrow(
+      "Model configuration was saved, but app-wide refresh failed",
+    );
+    expect(readConfig().defaultProviderId).toBe('provider-a');
+  });
+
+  it('keeps the provider definition when remove config cleanup fails', async () => {
+    const { handleModelAdd, handleModelRemove } = await import('./admin-api');
+    const providerPath = join(scratch, '.myagents', 'providers', 'transaction-provider.json');
+    const providerPayload = {
+      id: 'transaction-provider',
+      name: 'Transaction Provider',
+      baseUrl: 'https://provider.example/v1',
+      models: ['model-a'],
+    };
+
+    expect((await handleModelAdd({ provider: providerPayload })).success).toBe(true);
+    expect(existsSync(providerPath)).toBe(true);
+
+    adminConfigBehavior.failNextConfigWrite = true;
+    await expect(handleModelRemove({ id: 'transaction-provider' })).rejects.toThrow(
+      'injected config.json write failure',
+    );
+    expect(existsSync(providerPath)).toBe(true);
+    expect(JSON.parse(readFileSync(providerPath, 'utf-8'))).toMatchObject({ id: 'transaction-provider' });
   });
 });
 
