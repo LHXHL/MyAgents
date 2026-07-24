@@ -180,13 +180,17 @@ import type { ToolAttachment } from '../shared/types/tool-attachment';
 import { imEventBus, type ImEventType } from './utils/im-event-bus';
 import { imRequestRegistry } from './utils/im-request-registry';
 import { buildImCancelledPayload, buildImErrorPayload } from './utils/im-terminal-payload';
-import { mirrorIfChannelBound, type MirrorImage } from './utils/im-mirror';
+import {
+  mirrorIfChannelBound,
+  resolvedImagesToMirrorImages,
+  visibleDesktopMirrorText,
+  type MirrorImage,
+} from './utils/im-mirror';
 import { normalizeClaudeTranscriptCleanupPeriodDays, SUBSCRIPTION_PROVIDER_ID, type ProxySettings } from '../shared/config-types';
 import {
   LOCAL_COMMAND_OUTPUT_TAG,
   SYSTEM_REMINDER_CLOSE,
   SYSTEM_REMINDER_OPEN,
-  stripLeadingSystemReminder,
 } from '../shared/systemReminder';
 import { createConcreteProviderRoute, isConcreteProviderRoute } from '../shared/providerRoute';
 import type {
@@ -939,15 +943,7 @@ function fireDesktopUserMirror(content: string, images: MirrorImage[] | undefine
   // Only fire if there's a chance an IM channel is bound. Rust silently
   // no-ops if not, but skipping the round-trip when content is trivially
   // empty avoids needless network chatter.
-  let visibleContent = content;
-  // Hidden reminders may be stacked (for example Goal context wrapping a
-  // floating-ball reminder). Never leak those control payloads into a bound
-  // IM channel; peel every leading envelope and mirror only the visible tail.
-  for (let i = 0; i < 8; i += 1) {
-    const stripped = stripLeadingSystemReminder(visibleContent);
-    if (stripped === visibleContent) break;
-    visibleContent = stripped;
-  }
+  const visibleContent = visibleDesktopMirrorText(content);
   if (!visibleContent && (!images || images.length === 0)) return;
   currentTurnMirrorEnabled = true;
   currentTurnMirrorSessionId = sessionId;
@@ -1114,35 +1110,6 @@ function fireDesktopAssistantBlockMirror(text: string): void {
   });
 }
 
-/** Convert resolved user images to MirrorImage[] keeping only PNG/JPG (Q5 lockdown). */
-// Pre-validation cap MUST stay in sync with Rust's
-// `MIRROR_IMAGE_MAX_BYTES = 5MB` in management_api.rs (and its
-// `MIRROR_IMAGE_MAX_BASE64_LEN` derivation). Base64 with padding inflates
-// to `4 * ceil(bytes / 3)` chars — using a strict `Math.ceil(bytes/3)*4`
-// formula matches Rust's exact bound, plus the same 64-char slack for any
-// trailing whitespace/newlines. Without this alignment, the Node check is
-// off by 1 char at the boundary and would reject a 5 MiB image that Rust
-// would still accept (review-by-codex F4). Cap on the *encoded* length so
-// the guard is O(1) without decoding.
-const MIRROR_IMAGE_MAX_BYTES = 5 * 1024 * 1024;
-const MIRROR_IMAGE_MAX_BASE64_CHARS = Math.ceil(MIRROR_IMAGE_MAX_BYTES / 3) * 4 + 64;
-
-function toMirrorImages(images: ResolvedImagePayload[] | undefined): MirrorImage[] | undefined {
-  if (!images || images.length === 0) return undefined;
-  const out: MirrorImage[] = [];
-  for (const img of images) {
-    const mime = img.mimeType.toLowerCase();
-    if (mime !== 'image/png' && mime !== 'image/jpeg' && mime !== 'image/jpg') continue;
-    if (img.data.length > MIRROR_IMAGE_MAX_BASE64_CHARS) {
-      console.warn(
-        `[mirror] dropping oversize image: mime=${mime} base64Len=${img.data.length} cap=${MIRROR_IMAGE_MAX_BASE64_CHARS}`,
-      );
-      continue;
-    }
-    out.push({ mimeType: img.mimeType, dataBase64: img.data });
-  }
-  return out.length > 0 ? out : undefined;
-}
 let isApiRetrying = false;  // Track api_retry state to clear when streaming resumes
 let transientProviderRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -9196,7 +9163,7 @@ export async function enqueueUserMessage(
       readyTurnItem.source = effectiveQueueSource === 'desktop' ? 'desktop' : metadata?.source;
       readyTurnItem.analyticsSource = analyticsSource ?? currentScenario.type;
       readyTurnItem.analyticsOrigin = analyticsOrigin;
-      readyTurnItem.mirrorImages = toMirrorImages(resolvedImages);
+      readyTurnItem.mirrorImages = resolvedImagesToMirrorImages(resolvedImages);
       if (readyTurnItem.admissionTicket) {
         releaseDetachedAdmissionTicket(readyTurnItem.admissionTicket);
         readyTurnItem.admissionTicket = undefined;
@@ -9225,7 +9192,7 @@ export async function enqueueUserMessage(
           source: metadata?.source,
           analyticsSource: analyticsSource ?? currentScenario.type,
           analyticsOrigin,
-          mirrorImages: toMirrorImages(resolvedImages),
+          mirrorImages: resolvedImagesToMirrorImages(resolvedImages),
         });
         wakeGenerator(queueItem);
         console.log(`[agent] Message queued mid-turn (in-flight to CLI): queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
@@ -9310,7 +9277,7 @@ export async function enqueueUserMessage(
     event: 'message-replay',
     message: userMessage,
     sessionBirthOrigin: options?.sessionBirthOrigin,
-    mirrorImages: toMirrorImages(resolvedImages),
+    mirrorImages: resolvedImagesToMirrorImages(resolvedImages),
   };
   if (!options?.beforeDispatch) {
     await surfaceBuiltinUserMessage(directUserSurface, 'pre-admission');

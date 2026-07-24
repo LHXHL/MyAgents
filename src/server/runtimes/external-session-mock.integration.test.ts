@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { RuntimeType } from '../../shared/types/runtime';
 import type { DesktopMessageRequest } from '../session-engine/types';
+import type { MirrorPayload } from '../utils/im-mirror';
 import type {
   AgentRuntime,
   RuntimeProcess,
@@ -26,6 +27,7 @@ type TurnScript =
     kind: 'failure';
     error: string;
     status?: 'failed' | 'interrupted';
+    partialText?: string;
     completeDelayMs?: number;
     usage?: { inputTokens: number; outputTokens: number };
   }
@@ -258,6 +260,9 @@ class FakeRuntime implements AgentRuntime {
       }
       if (script.kind === 'failure') {
         this.defer(() => {
+          if (script.partialText) {
+            this.emit({ kind: 'text_delta', text: script.partialText });
+          }
           if (script.usage) {
             this.emit({ kind: 'usage', ...script.usage, semantics: 'delta' });
           }
@@ -327,7 +332,9 @@ interface Harness {
   engine: Awaited<ReturnType<typeof import('../session-engine').getSessionEngine>>;
   externalSession: typeof import('./external-session');
   sessionStore: typeof import('../SessionStore');
+  mirrorCalls: MirrorPayload[];
   messagePersistStarted: () => boolean;
+  messagePersistCount: () => number;
   releaseMessagePersist: () => void;
 }
 
@@ -351,6 +358,7 @@ async function createHarness(
     deferStopAfterSessionComplete?: boolean;
     deferStopBeforeResult?: boolean;
     deferMessagePersist?: boolean;
+    deferMessagePersistOnCall?: number;
     rejectMessagePersist?: boolean;
     config?: Record<string, unknown>;
   } = {},
@@ -369,8 +377,9 @@ async function createHarness(
   process.env.MYAGENTS_RUNTIME = 'codex';
 
   let messagePersistStarted = false;
+  let messagePersistCount = 0;
   let releaseMessagePersist: () => void = () => undefined;
-  if (options.deferMessagePersist || options.rejectMessagePersist) {
+  if (options.deferMessagePersist || options.deferMessagePersistOnCall || options.rejectMessagePersist) {
     let release!: () => void;
     const gate = new Promise<void>((resolve) => {
       release = resolve;
@@ -384,7 +393,11 @@ async function createHarness(
           ...args: Parameters<typeof actual.persistExternalUserMessageAppend>
         ) => {
           messagePersistStarted = true;
-          if (options.deferMessagePersist) await gate;
+          messagePersistCount += 1;
+          if (
+            options.deferMessagePersist
+            || options.deferMessagePersistOnCall === messagePersistCount
+          ) await gate;
           if (options.rejectMessagePersist) throw new Error('fake user persist failed');
           return actual.persistExternalUserMessageAppend(...args);
         },
@@ -439,6 +452,16 @@ async function createHarness(
       },
     };
   });
+  const mirrorCalls: MirrorPayload[] = [];
+  vi.doMock('../utils/im-mirror', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../utils/im-mirror')>();
+    return {
+      ...actual,
+      mirrorIfChannelBound: vi.fn(async (payload: MirrorPayload) => {
+        mirrorCalls.push(payload);
+      }),
+    };
+  });
 
   const [{ getSessionEngine }, externalSession, sessionStore] = await Promise.all([
     import('../session-engine'),
@@ -452,7 +475,9 @@ async function createHarness(
     engine: getSessionEngine(),
     externalSession,
     sessionStore,
+    mirrorCalls,
     messagePersistStarted: () => messagePersistStarted,
+    messagePersistCount: () => messagePersistCount,
     releaseMessagePersist,
   };
   return activeHarness;
@@ -493,6 +518,7 @@ afterEach(async () => {
   restoreEnv();
   vi.doUnmock('./factory');
   vi.doUnmock('../sse');
+  vi.doUnmock('../utils/im-mirror');
   vi.doUnmock('./utils/kill-with-escalation');
   vi.doUnmock('./external-session/transcript-persistence');
 });
@@ -512,6 +538,115 @@ function desktopRequest(sessionId: string, workspacePath: string, text: string):
 }
 
 describe('external SessionEngine with fake runtime', () => {
+  it('mirrors accepted external desktop turns', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'external desktop reply' },
+    ]);
+    const sessionId = 'session-external-desktop-mirror';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const desktop = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'external desktop question'),
+    );
+    await expect(desktop.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    await waitFor(() => harness.mirrorCalls.length === 2, 'external desktop mirrors');
+
+    expect(harness.mirrorCalls).toEqual([
+      {
+        sessionId,
+        role: 'user',
+        text: 'external desktop question',
+        images: undefined,
+      },
+      {
+        sessionId,
+        role: 'assistant',
+        text: 'external desktop reply',
+      },
+    ]);
+  });
+
+  it('does not mirror external IM-origin turns back through the desktop fan-out', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'external IM reply' },
+    ]);
+    const sessionId = 'session-external-im-no-mirror';
+    const workspacePath = join(harness.home, 'workspace');
+    await expect(harness.engine.enqueueImMessage({
+      message: 'external IM question',
+      requestId: 'request-external-im-no-mirror',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+      permissionMode: 'fullAgency',
+      model: 'gpt-5-codex',
+      reasoningEffort: 'medium',
+      metadataBirthPending: true,
+    })).resolves.toMatchObject({ success: true, queued: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.mirrorCalls).toEqual([]);
+  });
+
+  it('does not mirror incomplete external assistant output from a failed desktop turn', async () => {
+    const harness = await createHarness([{
+      kind: 'failure',
+      error: 'fake external failure',
+      partialText: 'unfinished assistant output',
+    }]);
+    const sessionId = 'session-external-failed-mirror';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const desktop = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'question before failure'),
+    );
+    await expect(desktop.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    await waitFor(() => harness.mirrorCalls.length === 1, 'failed turn user mirror');
+
+    expect(harness.mirrorCalls).toEqual([{
+      sessionId,
+      role: 'user',
+      text: 'question before failure',
+      images: undefined,
+    }]);
+  });
+
+  it('mirrors external desktop messages after turn-boundary queue admission', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'first reply', completeDelayMs: 80 },
+      { kind: 'success', text: 'queued reply' },
+    ], {
+      config: { chatQueueResponseMode: 'turn' },
+    });
+    const sessionId = 'session-external-queued-mirror';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const first = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'first question'),
+    );
+    await expect(first.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(
+      () => harness.externalSession.getExternalSessionState() === 'running',
+      'first external turn running',
+    );
+
+    const queued = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'queued question'),
+    );
+    expect(queued).toMatchObject({ queued: true, deliveryMode: 'turn' });
+    await expect(queued.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    await waitFor(() => harness.mirrorCalls.length === 4, 'queued external mirrors');
+
+    expect(harness.mirrorCalls.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: 'user', text: 'first question' },
+      { role: 'assistant', text: 'first reply' },
+      { role: 'user', text: 'queued question' },
+      { role: 'assistant', text: 'queued reply' },
+    ]);
+  });
+
   it('projects runtime tool catalog updates into live SSE and the reconnect snapshot', async () => {
     const harness = await createHarness([]);
     const sessionId = 'session-runtime-tool-catalog';
@@ -741,6 +876,7 @@ describe('external SessionEngine with fake runtime', () => {
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
 
     expect(harness.sessionStore.getSessionMetadata(sessionId)?.lastActiveAt).toBe(originalLastActiveAt);
+    expect(harness.mirrorCalls).toEqual([]);
   });
 
   it('treats an idle pre-warmed persistent process as turn-idle', async () => {
@@ -2040,6 +2176,7 @@ describe('external SessionEngine with fake runtime', () => {
     ), 'realtime steering activity persist');
 
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    await waitFor(() => harness.mirrorCalls.length === 3, 'realtime steer mirrors');
     const persisted = harness.sessionStore.getSessionData(sessionId);
     expect(persisted?.messages.filter((message) => message.role === 'user').map((message) => message.content)).toEqual([
       'first',
@@ -2047,6 +2184,127 @@ describe('external SessionEngine with fake runtime', () => {
     ]);
     expect(persisted?.messages.filter((message) => message.role === 'assistant')).toHaveLength(1);
     expect(harness.engine.getLatestAssistantResult().latestResult).toBe('single steered answer');
+    expect(harness.mirrorCalls.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: 'user', text: 'first' },
+      { role: 'assistant', text: 'single steered answer' },
+      { role: 'user', text: 'second' },
+    ]);
+  });
+
+  it('mirrors post-steer assistant blocks when Desktop joins an automation-origin turn', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'automation block', completeDelayMs: 300 },
+    ], { realtimeSteering: true });
+    const sessionId = 'session-realtime-steer-automation';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const automationRun = harness.engine.runInjectedTurn({
+      prompt: 'automation prompt',
+      sessionId,
+      workspacePath,
+      scenario: {
+        type: 'cron',
+        taskId: 'task-realtime-steer-automation',
+        intervalMinutes: 15,
+        aiCanExit: false,
+      },
+      timeoutMs: 2_000,
+      pollMs: 10,
+    });
+    await waitFor(() => harness.runtime.sentMessages.includes('automation prompt'), 'automation dispatch');
+
+    const desktop = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'desktop joins automation'),
+    );
+    expect(desktop).toMatchObject({ queued: true, deliveryMode: 'realtime' });
+    await waitFor(() => harness.runtime.steeredMessages.length === 1, 'automation realtime steer');
+    harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+    await waitFor(() => harness.mirrorCalls.length === 1, 'automation steer user mirror');
+
+    harness.runtime.emitForTest({ kind: 'text_delta', text: 'post-steer automation answer' });
+    harness.runtime.emitForTest({ kind: 'text_stop' });
+    await waitFor(() => harness.mirrorCalls.length === 2, 'automation steer assistant mirror');
+
+    expect(harness.mirrorCalls.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: 'user', text: 'desktop joins automation' },
+      { role: 'assistant', text: 'post-steer automation answer' },
+    ]);
+    await expect(automationRun).resolves.toMatchObject({ success: true });
+  });
+
+  it('orders a post-steer assistant mirror behind slow accepted-user persistence', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'answer before steer', completeDelayMs: 500 },
+    ], {
+      realtimeSteering: true,
+      deferMessagePersistOnCall: 2,
+    });
+    const sessionId = 'session-realtime-steer-mirror-order';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await harness.engine.sendDesktopMessage(desktopRequest(sessionId, workspacePath, 'first'));
+    await waitFor(() => harness.runtime.sentMessages.includes('first'), 'first ordered-mirror dispatch');
+    await waitFor(() => harness.mirrorCalls.length === 2, 'first ordered mirrors');
+    const second = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'second with slow persist'),
+    );
+    await waitFor(() => harness.runtime.steeredMessages.length === 1, 'slow-persist realtime steer');
+    harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+    await waitFor(() => harness.messagePersistCount() === 2, 'slow steer persistence');
+
+    harness.runtime.emitForTest({ kind: 'text_delta', text: 'answer after slow steer' });
+    harness.runtime.emitForTest({ kind: 'text_stop' });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(harness.mirrorCalls.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: 'user', text: 'first' },
+      { role: 'assistant', text: 'answer before steer' },
+    ]);
+
+    harness.releaseMessagePersist();
+    await expect(second.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await waitFor(() => harness.mirrorCalls.length === 4, 'ordered post-steer mirrors');
+    expect(harness.mirrorCalls.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: 'user', text: 'first' },
+      { role: 'assistant', text: 'answer before steer' },
+      { role: 'user', text: 'second with slow persist' },
+      { role: 'assistant', text: 'answer after slow steer' },
+    ]);
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+  });
+
+  it('keeps assistant delivery on ReplyRouter when Desktop steers an IM-origin turn', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'IM answer before steer', completeDelayMs: 300 },
+    ], { realtimeSteering: true });
+    const sessionId = 'session-realtime-steer-im-origin';
+    const workspacePath = join(harness.home, 'workspace');
+
+    await expect(harness.engine.enqueueImMessage({
+      message: 'IM starts the turn',
+      requestId: 'request-realtime-steer-im-origin',
+      sessionId,
+      workspacePath,
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+      permissionMode: 'fullAgency',
+      model: 'gpt-5-codex',
+      reasoningEffort: 'medium',
+      metadataBirthPending: true,
+    })).resolves.toMatchObject({ success: true, queued: true });
+    await waitFor(() => harness.runtime.sentMessages.includes('IM starts the turn'), 'IM-origin dispatch');
+
+    await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'desktop joins IM turn'),
+    );
+    await waitFor(() => harness.runtime.steeredMessages.length === 1, 'IM-origin realtime steer');
+    harness.runtime.emitUserMessageAccepted(harness.runtime.steeredMessages[0].clientUserMessageId);
+    await waitFor(() => harness.mirrorCalls.length === 1, 'IM-origin steer user mirror');
+    harness.runtime.emitForTest({ kind: 'text_delta', text: 'post-steer IM answer' });
+    harness.runtime.emitForTest({ kind: 'text_stop' });
+
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.mirrorCalls.map(({ role, text }) => ({ role, text }))).toEqual([
+      { role: 'user', text: 'desktop joins IM turn' },
+    ]);
   });
 
   it('does not split the active stream when realtime Codex steering is rejected', async () => {
@@ -2094,6 +2352,7 @@ describe('external SessionEngine with fake runtime', () => {
       'first',
     ]);
     expect(harness.engine.getLatestAssistantResult().latestResult).toBe('answer after rejected steer');
+    expect(harness.mirrorCalls.some(({ role, text }) => role === 'user' && text === 'second')).toBe(false);
   });
 
   it('keeps Codex steering-capable runtimes on turn boundaries when configured for turn response', async () => {

@@ -63,6 +63,8 @@ Phase5 后的约束：`src/server/index.ts` 与 Phase5 迁出的 route modules�
 
 跨 Runtime 的 live/read 契约是行为一致，不是共享 mutable state：`getLiveSessionOverlay()` 返回当前绑定 Session 的 immutable finalized-memory/streaming/state/interactive snapshot 与 `snapshotRevision`；`getSessionCompletionTerminal()` 返回 runtime turn owner 已结算的 immutable identity/owner/origin/status。REST restore、BackgroundCompletion 与通知层只消费这两个 facade 事实，不猜 runtime 类型，也不 import owner internal。
 
+同一原则适用于 Desktop → IM 镜像：这是 runtime-neutral 的行为契约，但 admission 与完整 text-block 边界仍由各 Runtime 自己的 turn owner 判定。Builtin `agent-session.ts` 与 external runtime 复用 `utils/im-mirror.ts` 的纯投影及 transport；external 的 admission、assistant disposition 与 user-before-assistant delivery tail 由 `external-session/turn-lifecycle.ts` 持有，`external-session.ts` 只在持久化、block terminal 与 runtime delivery 的编排点调用 owner API。不得在 route / adapter 层根据 Runtime 补发，也不得让 IM-origin requestId 回复再次进入 mirror 造成双发。
+
 `src/server/session-core/` 承载会话内核的 pure policy：`turn-result-policy.ts` 判定 injected turn 真成功，`session-activity-policy.ts` 判定 admission/terminal 是否推进 meaningful activity，`heartbeat-ack.ts` 只解析 Heartbeat terminal 的 substantive remainder，`runtime-config-policy.ts` 统一 snapshot/source guard，`turn-queue.ts` 统一 desktop queue admission，`mcp-sync-policy.ts` 统一 MCP authority 与 fingerprint/restart 决策，`mcp-prewarm-policy.ts` 统一 10 秒 absolute grace、status 分类与 soft outcome。它不持有 SDK/CLI 进程、SSE、SessionStore 或文件系统副作用。
 
 `agent-session.ts` 是 builtin SDK 的 public facade，`session-engine/builtin-adapter.ts` 只委托该 facade。Phase6 后，builtin 内部 mutable state 的真实 owner 是 `src/server/builtin-session/`；Phase7 后，turn terminal 与 transcript persistence 的行为 owner 也在同一目录：
@@ -499,18 +501,18 @@ stdout reader 先进入 `await read()`,防止 initialize 响应在 handler 注�
 | `lifecycle.ts` | active process/runtime、`startingPromise` guard、session binding、runtimeSessionId、prewarm/system-init、user-stop flag |
 | `runtime-config.ts` | desired/live model、permission mode、reasoning effort；config coercion 与 snapshot/source guard integration |
 | `operation-queue.ts` | desktop queued message/config FIFO、adjacent config coalescing、drain reservation、generation-based stale dispatch rejection、desktop send tail reset、force/cancel/status bookkeeping |
-| `turn-lifecycle.ts` | turn completed/success flags、activity facts、completion terminal、`TurnFinalizationGate`、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类 |
+| `turn-lifecycle.ts` | turn completed/success flags、activity facts、completion terminal、`TurnFinalizationGate`、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类；Desktop → IM admission、assistant disposition 与 user-before-assistant delivery tail |
 | `content-blocks.ts` | streaming text/thinking/tool/subagent content state；tool result/attachment mutation；live snapshot 与 turn snapshot backing state |
 | `transcript-persistence.ts` | in-memory `SessionMessage[]`、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update |
 | `interactive.ts` | permission / AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response delivery 成功后才 consume/delete，并广播 `permission:expired` / `ask-user-question:expired` 清理所有 UI surface |
 
-Facade 仍执行跨 owner 编排：调用 runtime process、广播 SSE、做 analytics/title hook，并按 owner 返回的 plan 串起 persistence / interactive cleanup / queue drain。Queue owner 不调用 runtime；lifecycle owner 不吞 stop cleanup；content raw refs/maps 不回流到 facade，facade 只走命名 API 做 tool/subagent/attachment patch；turn lifecycle owner owns terminal success/failure/prewarm/idle/user-stop classification；transcript owner owns user/assistant append、retry truncate、last assistant read 与 SessionStore write path；interactive owner owns IM event bus / registry cleanup 与 inbox/watch error delivery；persisted JSON shape 不变。`external-session.ts` 仍可保留 watchdog、trace、pending birth、early broadcast 等 orchestration-local state，但这些不是跨模块 owner state。
+Facade 仍执行跨 owner 编排：调用 runtime process、广播 SSE、做 analytics/title hook，并按 owner 返回的 plan 串起 persistence / interactive cleanup / queue drain。Queue owner 不调用 runtime；lifecycle owner 不吞 stop cleanup；content raw refs/maps 不回流到 facade，facade 只走命名 API 做 tool/subagent/attachment patch；turn lifecycle owner owns terminal success/failure/prewarm/idle/user-stop classification，以及本 turn 的 IM mirror admission/order；transcript owner owns user/assistant append、retry truncate、last assistant read 与 SessionStore write path；interactive owner owns IM event bus / registry cleanup 与 inbox/watch error delivery；persisted JSON shape 不变。`external-session.ts` 仍可保留 watchdog、trace、pending birth、early broadcast 等 orchestration-local state，但这些不是跨模块 owner state。
 
 ### 测试护栏
 
 External runtime 的维护入口是 `SessionEngine`，测试也必须沿这条边界验证。`src/server/runtimes/external-session-mock.integration.test.ts` 通过 Vitest mock `runtimes/factory.ts` 注入 test-only fake runtime，fake runtime 的 `type` 使用真实 `RuntimeType`（当前为 `codex`），不在生产 `RuntimeType`、config 或 UI 中新增 `mock` 分支。
 
-这组测试属于 `integration` project：允许触碰 external-session module globals、SessionStore、临时 HOME、operation queue，但由 `src/test/setup-no-egress.ts` 禁止非 loopback 网络。覆盖面固定为：正常 external turn 的 latest/live/persisted read、failed turn 不被当作成功、desktop queue 顺序、permission response 成功后清 pending、permission delivery 失败时保留 pending。
+这组测试属于 `integration` project：允许触碰 external-session module globals、SessionStore、临时 HOME、operation queue，但由 `src/test/setup-no-egress.ts` 禁止非 loopback 网络。覆盖面固定为：正常 external turn 的 latest/live/persisted read、failed turn 不被当作成功、desktop queue 顺序、permission response 成功后清 pending、permission delivery 失败时保留 pending；Desktop → IM 镜像还覆盖 fresh/queued/realtime admission、隐藏 reminder 投影、失败 turn 不发送残缺 assistant block、automation-origin 中途 Desktop steer、慢持久化下 user-before-assistant 顺序，以及 IM-origin turn 继续由 ReplyRouter 单路回复。
 
 ### 三路消息发送
 

@@ -51,7 +51,7 @@ Space IssueDelivery 在这层通用 envelope 内还有独立的 Registered Agent
 4. `system-reminder` 内部 payload 会进入模型上下文；在有 `visibleText` 的标准
    mixed message 中，用户气泡、Session 搜索/预览、Query Navigator 与统计详情的
    turn trigger 都只使用 `visibleText`。
-5. 同一条消息只应有一个 leading `system-reminder` envelope；解析器只消费第一段。
+5. 同一条消息只应有一个 leading `system-reminder` envelope；通用解析器只消费第一段，生产者不得据此堆叠 envelope。Desktop → IM 镜像属于防泄漏边界，会防御性地连续剥离异常堆叠的 leading envelope 后才生成用户可见文本；这只是兼容历史/异常输入，不改变单 envelope 的生产约束。
 6. 如果没有 `visibleText` 且没有用户附件，前端应把整条 user bubble 视为纯隐藏
    reminder，不渲染气泡正文。Goal 自动续跑、objective update 等“只给模型看”的
    注入依赖这个语义。

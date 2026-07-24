@@ -107,6 +107,12 @@ export {
   shouldDeferExternalConfigOperation,
 } from '../session-core/runtime-config-policy';
 import { elapsedMs, emitPerfTrace, nowMs } from '../utils/perf-trace';
+import {
+  mirrorIfChannelBound,
+  resolvedImagesToMirrorImages,
+  visibleDesktopMirrorText,
+  type MirrorImage,
+} from '../utils/im-mirror';
 import { queryRuntimeModelsSingleFlight } from './runtime-model-singleflight';
 import {
   applyDesiredExternalRuntimeConfigPatch,
@@ -205,6 +211,8 @@ import {
 } from '../utils/im-terminal-payload';
 import {
   beginExternalTurnPromotion,
+  admitExternalRealtimeDesktopMirror,
+  admitExternalTurnMirror,
   cancelExternalTurnPromotion,
   cancelExternalTurnPromotionByOwner,
   cancelExternalTurnPromotionByQueueId,
@@ -212,6 +220,7 @@ import {
   clearExternalTurnStartTime,
   clearExternalTurnActivityFacts,
   didExternalLastTurnSucceed,
+  enqueueExternalAssistantMirror,
   finishExternalTurnPromotion,
   bindExternalTurn,
   getExternalTurnTerminalGeneration,
@@ -245,6 +254,7 @@ import {
   waitForExternalTurnTerminalObserver,
   waitExternalTurnFinalization,
   type ExternalTurnPromotionToken,
+  type ExternalTurnMirrorAdmission,
 } from './external-session/turn-lifecycle';
 export {
   clearExternalTurnBinding,
@@ -279,6 +289,7 @@ import {
   getExternalChildToolParent,
   getExternalContentBlockCount,
   getExternalContentBlockText,
+  getExternalPendingTextBuffer,
   getExternalSubagentAttachmentParent,
   getExternalTurnContentSnapshotPersistedContent,
   getExternalTurnContentSnapshotText,
@@ -512,6 +523,7 @@ interface PendingRealtimeSteeredUserMessage {
   userMsg: SessionMessage;
   text: string;
   activityFacts: SessionActivityTurnFacts;
+  desktopMirror: ExternalDesktopMirrorAdmissionDisposition;
 }
 
 const pendingRealtimeSteeredUserMessages: PendingRealtimeSteeredUserMessage[] = [];
@@ -583,14 +595,25 @@ function surfaceRealtimeSteeredUserMessage(entry: PendingRealtimeSteeredUserMess
     ? new Date().toISOString()
     : undefined;
   pushExternalSessionMessage(entry.userMsg);
-  void persistExternalUserMessageAppend(
+  const persistence = persistExternalUserMessageAppend(
     entry.sessionId,
     entry.userMsg.id,
     '[external-session] Failed to persist accepted realtime steered user message',
     admissionActivityAt,
-  ).catch((err) => {
+  ).then(() => true).catch((err) => {
     console.error('[external-session] failed to persist accepted realtime steered user message:', err);
+    return false;
   });
+  const desktopMirror = entry.desktopMirror;
+  if (desktopMirror.kind === 'deliver-desktop-user') {
+    admitExternalRealtimeDesktopMirror({
+      kind: 'deliver-desktop-user',
+      waitForPersistence: persistence,
+      deliverUser: () => deliverExternalDesktopUserMirror(entry.sessionId, desktopMirror),
+    });
+  } else {
+    void persistence;
+  }
   broadcast('queue:started', {
     queueId: entry.queueId,
     sessionId: entry.sessionId,
@@ -929,9 +952,63 @@ function completeSubagentTrace(
   return true;
 }
 
-/** Flush accumulated text into a text content block */
-function flushPendingText(): void {
-  flushExternalPendingTextBlock();
+type ExternalDesktopMirrorAdmissionDisposition =
+  | {
+    kind: 'skip';
+    assistantDisposition: 'reply-router-only' | 'disabled';
+  }
+  | {
+    kind: 'deliver-desktop-user';
+    text: string;
+    images?: MirrorImage[];
+  };
+
+function projectExternalDesktopMirrorAdmission(
+  turnOrigin: SessionOrigin | undefined,
+  content: string,
+  resolvedImages: ResolvedImagePayload[] | undefined,
+): ExternalDesktopMirrorAdmissionDisposition {
+  if (turnOrigin?.kind !== 'desktop') {
+    return {
+      kind: 'skip',
+      assistantDisposition: turnOrigin?.kind === 'agent-channel'
+        ? 'reply-router-only'
+        : 'disabled',
+    };
+  }
+  const text = visibleDesktopMirrorText(content);
+  const images = resolvedImagesToMirrorImages(resolvedImages);
+  return text || images
+    ? { kind: 'deliver-desktop-user', text, images }
+    : { kind: 'skip', assistantDisposition: 'disabled' };
+}
+
+function deliverExternalDesktopUserMirror(
+  sessionId: string,
+  projection: Extract<ExternalDesktopMirrorAdmissionDisposition, { kind: 'deliver-desktop-user' }>,
+): Promise<void> {
+  return mirrorIfChannelBound({
+    sessionId,
+    role: 'user',
+    text: projection.text,
+    images: projection.images,
+  });
+}
+
+type ExternalTextMirrorDisposition = 'mirror-completed-block' | 'skip-incomplete-block';
+
+/** Flush accumulated text into a text content block. Only completed blocks
+ * enter the turn owner's ordered mirror delivery tail. */
+function flushPendingText(disposition: ExternalTextMirrorDisposition): void {
+  const completedText = getExternalPendingTextBuffer();
+  if (!flushExternalPendingTextBlock()) return;
+  if (disposition === 'skip-incomplete-block') return;
+  const sessionId = getExternalLifecycleSessionId();
+  enqueueExternalAssistantMirror(() => mirrorIfChannelBound({
+    sessionId,
+    role: 'assistant',
+    text: completedText,
+  }));
 }
 
 export function shouldCreateMissingExternalMetadataForRealUserTurn(
@@ -978,6 +1055,7 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
   userMsg: SessionMessage;
   failureContext: string;
   lastActiveAt?: string;
+  desktopMirror: ExternalDesktopMirrorAdmissionDisposition;
 }): Promise<void> {
   const metadataResult = await ensureExternalSessionMetadataForRealUserTurn({
     sessionId: params.sessionId,
@@ -1013,6 +1091,15 @@ async function persistUserMessageBeforeRuntimeDispatch(params: {
       console.warn('[external-session] prepared metadata commit after user message persist failed:', err);
     }
   }
+  const desktopMirror = params.desktopMirror;
+  const mirrorAdmission: ExternalTurnMirrorAdmission = desktopMirror.kind === 'skip'
+    ? desktopMirror
+    : {
+      kind: 'deliver-desktop-user',
+      waitForPersistence: Promise.resolve(true),
+      deliverUser: () => deliverExternalDesktopUserMirror(params.sessionId, desktopMirror),
+    };
+  admitExternalTurnMirror(mirrorAdmission);
 }
 
 /** Register a new session in SessionStore on the first real user message.
@@ -1113,8 +1200,8 @@ function flushPendingThinking(forceComplete: boolean): void {
 }
 
 /** Flush any incomplete blocks (thinking/tool) at turn boundary — handles interrupts */
-function flushAllPending(): void {
-  flushPendingText();
+function flushAllPending(textMirrorDisposition: ExternalTextMirrorDisposition): void {
+  flushPendingText(textMirrorDisposition);
   flushPendingThinking(true);
   for (const interrupted of flushExternalPendingToolInputsForTurn()) {
     applySubagentToolResult(interrupted.parentToolUseId, {
@@ -2394,8 +2481,19 @@ async function _doStartExternalSession(options: {
   const admitInitialMessage = async (): Promise<void> => {
     if (!options.initialMessage || turnAdmissionActivated) return;
     assertExternalTurnPromotionCurrent(options.dispatchPromotion ?? null);
+    const turnAnalyticsSource = options.analyticsSource ?? options.scenario.type;
+    const turnAnalyticsOrigin = options.analyticsOrigin ?? originFromTurnAttribution({
+      source: turnAnalyticsSource,
+      scenarioType: options.scenario.type,
+      desktopSurface: options.scenario.type === 'desktop' ? options.scenario.surface : undefined,
+    });
+    const desktopMirror = projectExternalDesktopMirrorAdmission(
+      turnAnalyticsOrigin,
+      options.initialMessage,
+      options.initialImages,
+    );
     const activityFacts = options.activityFacts ?? {
-      origin: options.analyticsOrigin,
+      origin: turnAnalyticsOrigin,
       inputText: options.initialMessage,
       systemMaintenanceKind: getSessionMetadata(options.sessionId)?.systemMaintenanceKind,
     };
@@ -2428,8 +2526,8 @@ async function _doStartExternalSession(options: {
     earlyBroadcastedUserMsg = null;
     options.onDispatchAccepted?.();
     turnAdmissionActivated = true;
-    currentTurnAnalyticsSource = options.analyticsSource ?? options.scenario.type;
-    currentTurnAnalyticsOrigin = options.analyticsOrigin ?? null;
+    currentTurnAnalyticsSource = turnAnalyticsSource;
+    currentTurnAnalyticsOrigin = turnAnalyticsOrigin;
     setExternalSessionState('running');
 
     // Register session in history index BEFORE the first message persist
@@ -2449,6 +2547,7 @@ async function _doStartExternalSession(options: {
       userMsg,
       failureContext: '[external-session] Failed to persist initial user message',
       lastActiveAt: admissionActivityAt,
+      desktopMirror,
     });
     assertExternalTurnPromotionCurrent(options.dispatchPromotion ?? null);
   };
@@ -3196,6 +3295,7 @@ export async function sendExternalMessage(
     setExternalTurnCompleted(false);
     setExternalLastTurnSucceeded(false);  // Reset for this turn (prevents stale text on failure)
     resetTurnAccumulators();
+    const desktopMirror = projectExternalDesktopMirrorAdmission(turnAnalyticsOrigin, text, resolvedImages);
     currentTurnAnalyticsSource = turnAnalyticsSource;
     currentTurnAnalyticsOrigin = turnAnalyticsOrigin;
     setExternalLifecycleAnalyticsSource(turnAnalyticsSource);
@@ -3242,6 +3342,7 @@ export async function sendExternalMessage(
       userMsg,
       failureContext: '[external-session] Failed to persist active-process user message',
       lastActiveAt: admissionActivityAt,
+      desktopMirror,
     });
     if (activeProcess.exited || getExternalActiveProcess() !== activeProcess) {
       return { queued: true };
@@ -3354,23 +3455,25 @@ async function steerExternalMessageForDesktop(input: {
     return { queued: false, error: guarded.error };
   }
 
+  const steerOrigin = input.context.analyticsOrigin ?? originFromTurnAttribution({
+    source: input.context.analyticsSource ?? input.context.scenario.type,
+    scenarioType: input.context.scenario.type,
+    desktopSurface: input.context.scenario.type === 'desktop'
+      ? input.context.scenario.surface
+      : undefined,
+    inboxMeta: input.context.inboxMeta,
+  });
   registerPendingRealtimeSteeredUserMessage({
     queueId: input.queueId,
     sessionId: input.context.sessionId,
     userMsg: input.userMsg,
     text: input.text,
     activityFacts: {
-      origin: input.context.analyticsOrigin ?? originFromTurnAttribution({
-        source: input.context.analyticsSource ?? input.context.scenario.type,
-        scenarioType: input.context.scenario.type,
-        desktopSurface: input.context.scenario.type === 'desktop'
-          ? input.context.scenario.surface
-          : undefined,
-        inboxMeta: input.context.inboxMeta,
-      }),
+      origin: steerOrigin,
       inputText: input.text,
       systemMaintenanceKind: getSessionMetadata(input.context.sessionId)?.systemMaintenanceKind,
     },
+    desktopMirror: projectExternalDesktopMirrorAdmission(steerOrigin, input.text, resolvedImages),
   });
   try {
     await active.runtime.steerMessage(
@@ -4425,7 +4528,7 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
     const turnStartTime = getExternalTurnStartTime();
     const turnDurationMs = turnStartTime ? Date.now() - turnStartTime : undefined;
     settledTurnDurationMs = turnDurationMs;
-    flushAllPending();
+    flushAllPending(turnSucceededAtTerminal ? 'mirror-completed-block' : 'skip-incomplete-block');
 
     // Cross-review 0.2.33 (Codex W1) — snapshot THIS turn's content blocks and
     // assistant text at the same synchronous discipline as the entry snapshots
@@ -4882,7 +4985,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       }
       // Text block ended — flush accumulated text into a content block
       console.log(`[external-session] text_stop: accumulated ${getExternalAssistantText().length} chars`);
-      flushPendingText();
+      flushPendingText('mirror-completed-block');
       // Mirror builtin: tell the renderer the trailing text block closed so it clears
       // `streamingTextActive` and the tail-fade stops (same bug class, sibling runtime
       // path). type:'text' is the discriminator; index is unused for the text case.
@@ -4894,7 +4997,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       if (startSubagentTrace(event, 'Thinking')) {
         break;
       }
-      flushPendingText();  // Close any open text block before thinking
+      flushPendingText('mirror-completed-block');  // Close any open text block before thinking
       if (isExternalPendingThinkingActive()) {
         // Defensive close: a new reasoning block implies the previous one ended,
         // even if the runtime never sent an explicit stop.
@@ -4936,7 +5039,7 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
         handleSubagentToolUseStart(event.subAgent.parentToolUseId, event);
         break;
       }
-      flushPendingText();  // Close any open text block before tool use
+      flushPendingText('mirror-completed-block');  // Close any open text block before tool use
       startExternalToolUseInput({
         toolUseId: event.toolUseId,
         toolName: event.toolName,

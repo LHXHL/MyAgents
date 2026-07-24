@@ -1020,11 +1020,13 @@ src/shared/types/im.ts # ImBotConfig, ImBotStatus, ImPlatform, InstalledPlugin, 
 
 ---
 
-## 九、待实现 / 未来规划
+## 九、现状与后续规划
 
-### 9.1 多端 Session 共享
+### 9.1 多端 Session 共享（已实现）
 
-当前每个 Bot 的 Session 独立于 Desktop Tab。已可通过 Desktop 打开 IM Session（跳转到已有 Sidecar），但完整双端同步尚未实现。
+IM peer 与 Desktop Tab 可以打开并共享同一个持久 Session。IM 入站消息及其 AI 回复通过 requestId-aware ReplyRouter 写入该 Session，Desktop 打开后可实时看到；Desktop 在同一 Session 发出的用户消息与完整 AI 文本 block，则通过 `im-mirror.ts → /api/im/mirror → session_delivery` 镜像到当前绑定的 Channel。
+
+Desktop → IM 镜像是跨 Runtime 的产品契约：builtin 与 external（Claude Code / Codex / Managed Codex / Gemini）都必须在各自的 turn owner 内接入同一 transport。用户消息只在 admission 与 transcript persist 成功后镜像，并剥离隐藏 System Reminder；助手只镜像完成的文本 block，不镜像 delta、thinking、tool 或失败终端残留。IM-origin turn 继续只走 ReplyRouter，不再反向镜像，避免同一回答双发。PNG/JPG 用户图片沿用既有 5 MiB 上限，其余附件不镜像。
 
 ### 9.2 Bot Token 加密存储
 
