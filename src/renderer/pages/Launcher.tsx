@@ -72,7 +72,7 @@ interface LauncherProps {
     ) => void;
     isStarting?: boolean;
     startError?: string | null;
-    isActive?: boolean;
+    isActive: boolean;
     attachmentSessionId?: string | null;
     sessionNotificationBadgeCounts?: ReadonlyMap<string, number>;
 }
@@ -1179,6 +1179,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                         runtimeDetections={runtimeDetections}
                         onRuntimeChange={handleLauncherRuntimeChange}
                         activeRuntime={launcherRuntime}
+                        isActive={isActive}
                     />
                 </section>
 

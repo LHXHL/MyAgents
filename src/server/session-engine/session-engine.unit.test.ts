@@ -153,6 +153,18 @@ const mocks = vi.hoisted(() => {
       queueId: 'xq1',
       dispatch: Promise.resolve({ queued: true }),
     })),
+    enqueueExternalSendForIm: vi.fn<(...args: unknown[]) => {
+      queued: boolean;
+      queueId?: string;
+      dispatch: Promise<{
+        queued: boolean;
+        error?: string;
+        terminationUnconfirmed?: boolean;
+      }>;
+    }>(() => ({
+      queued: true,
+      dispatch: Promise.resolve({ queued: true }),
+    })),
     forceExecuteExternalQueueItem: vi.fn(async () => true),
     getActiveRuntimeSource: vi.fn<() => 'system-cli' | 'managed-provider'>(() => 'system-cli'),
     getActiveRuntimeType: vi.fn(() => 'codex'),
@@ -308,6 +320,7 @@ vi.mock('../runtimes/external-session', () => ({
   clearExternalTurnBinding: mocks.clearExternalTurnBinding,
   didLastTurnSucceed: mocks.didLastTurnSucceed,
   enqueueExternalSendForDesktop: mocks.enqueueExternalSendForDesktop,
+  enqueueExternalSendForIm: mocks.enqueueExternalSendForIm,
   forceExecuteExternalQueueItem: mocks.forceExecuteExternalQueueItem,
   getActiveRuntimeSource: mocks.getActiveRuntimeSource,
   getActiveRuntimeType: mocks.getActiveRuntimeType,
@@ -1578,7 +1591,7 @@ describe('session-engine selector and adapters', () => {
     expect(mocks.setExternalModel).toHaveBeenCalledWith('channel-model', { imConfigSync: true });
   });
 
-  it('passes metadataBirthPending into external IM sends', async () => {
+  it('passes metadataBirthPending into external IM admission', async () => {
     mocks.state.useExternal = true;
 
     await getSessionEngine().enqueueImMessage({
@@ -1590,10 +1603,8 @@ describe('session-engine selector and adapters', () => {
       metadataBirthPending: true,
     });
 
-    expect(mocks.sendExternalMessage).toHaveBeenCalledWith(
+    expect(mocks.enqueueExternalSendForIm).toHaveBeenCalledWith(
       'hello from im',
-      undefined,
-      undefined,
       undefined,
       expect.objectContaining({
         sessionId: 'sid',
@@ -1602,6 +1613,38 @@ describe('session-engine selector and adapters', () => {
         metadataBirthPending: true,
       }),
     );
+  });
+
+  it('accepts a busy external IM turn without waiting for its queued dispatch', async () => {
+    mocks.state.useExternal = true;
+    let resolveDispatch!: (result: { queued: boolean; error?: string }) => void;
+    const dispatch = new Promise<{ queued: boolean; error?: string }>((resolve) => {
+      resolveDispatch = resolve;
+    });
+    mocks.enqueueExternalSendForIm.mockReturnValueOnce({
+      queued: true,
+      queueId: 'xq-im-follow-up',
+      dispatch,
+    });
+
+    const result = await getSessionEngine().enqueueImMessage({
+      message: 'follow-up while running',
+      requestId: 'req-follow-up',
+      sessionId: 'sid',
+      workspacePath: '/workspace',
+      scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
+    });
+
+    expect(result).toMatchObject({ success: true, queued: true });
+    expect(result.dispatchAcceptance).toBeInstanceOf(Promise);
+
+    let acceptanceSettled = false;
+    void result.dispatchAcceptance?.then(() => { acceptanceSettled = true; });
+    await Promise.resolve();
+    expect(acceptanceSettled).toBe(false);
+
+    resolveDispatch({ queued: true });
+    await expect(result.dispatchAcceptance).resolves.toEqual({ accepted: true });
   });
 
   it.each([
@@ -1837,10 +1880,13 @@ describe('session-engine selector and adapters', () => {
 
   it('conservatively accepts an external Goal IM turn whose dispatch may already be running', async () => {
     mocks.state.useExternal = true;
-    mocks.sendExternalMessage.mockResolvedValueOnce({
-      queued: false,
-      error: 'dispatch acknowledgement lost; process termination unconfirmed',
-      terminationUnconfirmed: true,
+    mocks.enqueueExternalSendForIm.mockReturnValueOnce({
+      queued: true,
+      dispatch: Promise.resolve({
+        queued: false,
+        error: 'dispatch acknowledgement lost; process termination unconfirmed',
+        terminationUnconfirmed: true,
+      }),
     });
 
     const result = await getSessionEngine().enqueueImMessage({

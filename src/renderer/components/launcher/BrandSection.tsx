@@ -9,9 +9,10 @@
  * Chat launch flow. Switching back to 「对话」 restores the default behavior.
  */
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
+import DropZoneOverlay from '@/components/DropZoneOverlay';
 import SimpleChatInput, { type ImageAttachment, type SimpleChatInputHandle } from '@/components/SimpleChatInput';
 import CronTaskSettingsModal, {
     GOAL_SLASH_PRESET,
@@ -27,6 +28,8 @@ import { useToast } from '@/components/Toast';
 import { track } from '@/analytics';
 import { thoughtList, taskCenterAvailable } from '@/api/taskCenter';
 import { useThoughtTagCandidates } from '@/hooks/useThoughtTagCandidates';
+import { useFileDropZone } from '@/hooks/useFileDropZone';
+import { useTauriFileDrop } from '@/hooks/useTauriFileDrop';
 import { hasOverlayLayer } from '@/utils/closeLayer';
 import { CUSTOM_EVENTS } from '@/../shared/constants';
 import { type Project, type Provider, type PermissionMode, type ProviderVerifyStatus } from '@/config/types';
@@ -100,7 +103,11 @@ interface BrandSectionProps {
     /** All runtimes (builtin + external) so the row's chip shows the full picture.
      *  Distinct from `runtime` which is the *external* runtime when in external mode. */
     activeRuntime?: RuntimeType;
+    /** Only the visible Launcher tab may respond to window-wide Tauri drag events. */
+    isActive: boolean;
 }
+
+const LAUNCHER_INPUT_DROP_ZONE_ID = 'launcher-input';
 
 export default memo(function BrandSection({
     projects,
@@ -144,6 +151,7 @@ export default memo(function BrandSection({
     runtimeDetections,
     onRuntimeChange,
     activeRuntime,
+    isActive,
 }: BrandSectionProps) {
     const { t, i18n } = useTranslation('launcher');
     const resolvedTheme = useResolvedTheme();
@@ -244,6 +252,46 @@ export default memo(function BrandSection({
     // hand-off when a keyboard chord (Tab / Cmd+Shift+T) switches modes.
     const inputRef = useRef<SimpleChatInputHandle>(null);
     const thoughtInputRef = useRef<ThoughtInputHandle>(null);
+    const inputDropZoneRef = useRef<HTMLDivElement>(null);
+    const canAcceptFileDrop = isActive && mode === 'task';
+
+    const handleDroppedFiles = useCallback((files: File[]) => {
+        void inputRef.current?.processDroppedFiles(files);
+    }, []);
+    const handleDroppedFilePaths = useCallback((paths: string[]) => {
+        void inputRef.current?.processDroppedFilePaths?.(paths);
+    }, []);
+    const {
+        isDragActive: isHtmlFileDragActive,
+        dragHandlers: htmlFileDragHandlers,
+        resetDragState: resetHtmlFileDragState,
+    } = useFileDropZone({ onFilesDropped: handleDroppedFiles });
+    const {
+        isDragging: isNativeFileDragging,
+        activeZoneId: nativeDropZoneId,
+        registerZone,
+        unregisterZone,
+    } = useTauriFileDrop({ enabled: canAcceptFileDrop });
+
+    useLayoutEffect(() => {
+        registerZone(
+            LAUNCHER_INPUT_DROP_ZONE_ID,
+            inputDropZoneRef.current,
+            handleDroppedFilePaths,
+        );
+        return () => unregisterZone(LAUNCHER_INPUT_DROP_ZONE_ID);
+    }, [handleDroppedFilePaths, registerZone, unregisterZone]);
+
+    useEffect(() => {
+        if (canAcceptFileDrop) return;
+        resetHtmlFileDragState();
+    }, [canAcceptFileDrop, resetHtmlFileDragState]);
+
+    const showInputDropOverlay = canAcceptFileDrop
+        && (
+            isHtmlFileDragActive
+            || (isNativeFileDragging && nativeDropZoneId === LAUNCHER_INPUT_DROP_ZONE_ID)
+        );
     // Single helper for BOTH the segment click path (explicit mode) and
     // the keyboard paths (Tab / Cmd+Shift+T toggle). Without this the
     // two call sites diverged on `setMode(next)` vs `setMode((m) => …)`
@@ -557,13 +605,16 @@ export default memo(function BrandSection({
                      */}
                     <div className="grid *:col-start-1 *:row-start-1">
                         <div
-                            className={mode === 'thought' ? 'hidden' : ''}
+                            ref={inputDropZoneRef}
+                            className={mode === 'thought' ? 'hidden' : 'relative'}
                             aria-hidden={mode === 'thought'}
                             inert={mode === 'thought'}
+                            {...(canAcceptFileDrop ? htmlFileDragHandlers : {})}
                         >
                             <SimpleChatInput
                                 ref={inputRef}
                                 mode="launcher"
+                                active={canAcceptFileDrop}
                                 onSend={handleSend}
                                 isLoading={!!isStarting}
                                 provider={provider}
@@ -607,6 +658,7 @@ export default memo(function BrandSection({
                                 /* PRD 0.2.7 Phase F: workspace + runtime selectors moved out of
                                  * the toolbar to the row below — toolbarPrefix dropped here. */
                             />
+                            <DropZoneOverlay isVisible={showInputDropOverlay} />
                         </div>
                         {modeSegmentEnabled && (
                             <div

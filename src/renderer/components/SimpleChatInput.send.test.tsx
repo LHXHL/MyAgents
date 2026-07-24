@@ -467,4 +467,45 @@ describe('SimpleChatInput send paths', () => {
       expect((textarea as HTMLTextAreaElement).value).toContain('@myagents_files/report.pdf');
     });
   });
+
+  it('does not write a completed file import into a different workspace draft', async () => {
+    const user = userEvent.setup();
+    const ref = createRef<SimpleChatInputHandle>();
+    let resolveCopy!: (value: { success: boolean; copiedFiles: Array<{ targetPath: string }> }) => void;
+    workspaceMocks.service.copyPaths.mockReturnValueOnce(
+      new Promise((resolve) => {
+        resolveCopy = resolve;
+      }),
+    );
+    const renderComposer = (workspacePath: string) => (
+      <ToastProvider>
+        <ImagePreviewProvider>
+          <SimpleChatInput
+            ref={ref}
+            runtime="codex"
+            mode="launcher"
+            isLoading={false}
+            onSend={vi.fn()}
+            workspacePath={workspacePath}
+          />
+        </ImagePreviewProvider>
+      </ToastProvider>
+    );
+    const view = render(renderComposer('/workspace-a'));
+    const textarea = screen.getByPlaceholderText('今天，想干点啥？');
+
+    const handle = ref.current;
+    if (!handle?.processDroppedFilePaths) throw new Error('SimpleChatInput ref was not mounted');
+    const copyPromise = handle.processDroppedFilePaths(['/tmp/report.pdf']);
+    await waitFor(() => expect(workspaceMocks.service.copyPaths).toHaveBeenCalled());
+
+    view.rerender(renderComposer('/workspace-b'));
+    await user.type(textarea, 'workspace B draft');
+    await act(async () => {
+      resolveCopy({ success: true, copiedFiles: [{ targetPath: 'myagents_files/report.pdf' }] });
+      await copyPromise;
+    });
+
+    expect(textarea).toHaveValue('workspace B draft');
+  });
 });

@@ -97,8 +97,9 @@ pub use runtime_identity::{
 pub(crate) use session_lifecycle::{
     acquire_session_lifecycle, ensure_session_sidecar_with_lifecycle,
     ensure_session_sidecar_with_runtime_identity_override,
-    ensure_session_sidecar_with_runtime_identity_override_lifecycle, has_persisted_session_owner,
-    SessionLifecycleGuard,
+    ensure_session_sidecar_with_runtime_identity_override_lifecycle,
+    ensure_session_sidecar_with_runtime_identity_override_lifecycle_held,
+    has_persisted_session_owner, SessionLifecycleGuard,
 };
 #[allow(unused_imports)]
 pub use session_lifecycle::{

@@ -100,8 +100,8 @@ export const SESSION_ENGINE_ROUTE_CONTRACTS: SessionEngineRouteContract[] = [
     engineMethod: 'runInjectedTurn',
     requiredFields: ['taskId', 'prompt'],
     responseKeys: ['success', 'aiRequestedExit', 'exitReason', 'outputText', 'sessionId', 'error'],
-    failureStatuses: [400, 408, 500, 503],
-    behavior: 'Runs a synchronous cron turn and gates completion on the active engine success signal; managed memory jobs also require their exact official system skill at the Runtime dispatch boundary.',
+    failureStatuses: [400, 408, 409, 500, 503],
+    behavior: 'Authorizes and settles Session metadata birth before runtime dispatch, then gates completion on the active engine success signal; managed memory jobs also require their exact official system skill at the Runtime dispatch boundary.',
   },
   {
     path: '/task/stop',
@@ -110,7 +110,7 @@ export const SESSION_ENGINE_ROUTE_CONTRACTS: SessionEngineRouteContract[] = [
     requiredFields: ['taskId', 'queueId'],
     responseKeys: ['success', 'alreadyStopped', 'error'],
     failureStatuses: [400, 500],
-    behavior: 'Stops only the exact current or queued Task turn without affecting a later run or other Session work.',
+    behavior: 'Stops only the exact current or queued Task turn without affecting a later run or other Session work; a not-found success waits for any pre-metadata creator request to settle.',
   },
   {
     path: '/goal/execute-sync',
