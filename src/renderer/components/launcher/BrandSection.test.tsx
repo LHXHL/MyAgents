@@ -1,8 +1,9 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { ComponentProps } from 'react';
-import { forwardRef } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { forwardRef, useImperativeHandle } from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { SimpleChatInputHandle } from '@/components/SimpleChatInput';
 import type { Project } from '@/config/types';
 import { i18n } from '@/i18n';
 import { ThemeRegistry, ThemeRuntimeProvider } from '@/theme';
@@ -11,18 +12,66 @@ import { myAgentsDefaultTheme } from '@/theme/themes/myagents-default';
 
 import BrandSection from './BrandSection';
 
+const simpleInputHandle = vi.hoisted(() => ({
+  processDroppedFiles: vi.fn(async () => undefined),
+  processDroppedFilePaths: vi.fn(async () => undefined),
+  insertReferences: vi.fn(),
+  appendReferenceToken: vi.fn(),
+  insertSlashCommand: vi.fn(),
+  setValue: vi.fn(),
+  setImages: vi.fn(),
+  focus: vi.fn(),
+  clearWorkspaceBoundDraft: vi.fn(() => ({ strippedReferences: 0, clearedImages: 0 })),
+  getCurrentValue: vi.fn(() => ''),
+}));
+
+const nativeFileDrop = vi.hoisted(() => ({
+  options: undefined as { enabled?: boolean } | undefined,
+  zoneId: undefined as string | undefined,
+  zoneElement: null as HTMLElement | null,
+  zoneDrop: undefined as ((paths: string[]) => void) | undefined,
+  registerZone: vi.fn((
+    id: string,
+    element: HTMLElement | null,
+    onDrop: (paths: string[]) => void,
+  ) => {
+    nativeFileDrop.zoneId = id;
+    nativeFileDrop.zoneElement = element;
+    nativeFileDrop.zoneDrop = onDrop;
+  }),
+  unregisterZone: vi.fn(),
+}));
+
+const taskCenterMock = vi.hoisted(() => ({ available: false }));
+
 vi.mock('@/components/SimpleChatInput', () => ({
-  default: forwardRef<HTMLTextAreaElement, { onSlashAction?: (name: string) => void }>(function SimpleChatInputMock(
-    { onSlashAction },
+  default: forwardRef<SimpleChatInputHandle, {
+    active?: boolean;
+    onSlashAction?: (name: string) => void;
+  }>(function SimpleChatInputMock(
+    { active, onSlashAction },
     _ref,
   ) {
+    useImperativeHandle(_ref, () => simpleInputHandle, []);
     return (
-      <div data-testid="launcher-input">
+      <div data-testid="launcher-input" data-active={String(active)}>
         input
         <button type="button" onClick={() => onSlashAction?.('goal')}>open goal</button>
       </div>
     );
   }),
+}));
+
+vi.mock('@/hooks/useTauriFileDrop', () => ({
+  useTauriFileDrop: (options: { enabled?: boolean }) => {
+    nativeFileDrop.options = options;
+    return {
+      isDragging: false,
+      activeZoneId: null,
+      registerZone: nativeFileDrop.registerZone,
+      unregisterZone: nativeFileDrop.unregisterZone,
+    };
+  },
 }));
 
 vi.mock('@/components/cron/CronTaskSettingsModal', () => ({
@@ -46,7 +95,9 @@ vi.mock('./LauncherInputContextRow', () => ({
 }));
 
 vi.mock('@/components/task-center/ModeSegment', () => ({
-  default: () => null,
+  default: ({ onChange }: { onChange: (mode: 'task' | 'thought') => void }) => (
+    <button type="button" onClick={() => onChange('thought')}>thought mode</button>
+  ),
 }));
 
 vi.mock('@/components/task-center/RecentThoughtsRow', () => ({
@@ -69,7 +120,7 @@ vi.mock('@/components/Toast', () => ({
 
 vi.mock('@/api/taskCenter', () => ({
   thoughtList: vi.fn(async () => []),
-  taskCenterAvailable: () => false,
+  taskCenterAvailable: () => taskCenterMock.available,
 }));
 
 vi.mock('@/hooks/useThoughtTagCandidates', () => ({
@@ -96,6 +147,7 @@ function renderBrandSection(
       onSelectWorkspace={vi.fn()}
       onAddFolder={vi.fn()}
       onSend={vi.fn()}
+      isActive={true}
       providers={[]}
       apiKeys={{}}
       providerVerifyStatus={{}}
@@ -115,6 +167,69 @@ function renderBrandSection(
 }
 
 describe('BrandSection', () => {
+  beforeEach(() => {
+    simpleInputHandle.processDroppedFiles.mockClear();
+    simpleInputHandle.processDroppedFilePaths.mockClear();
+    nativeFileDrop.options = undefined;
+    nativeFileDrop.zoneId = undefined;
+    nativeFileDrop.zoneElement = null;
+    nativeFileDrop.zoneDrop = undefined;
+    nativeFileDrop.registerZone.mockClear();
+    nativeFileDrop.unregisterZone.mockClear();
+    taskCenterMock.available = false;
+  });
+
+  it('routes native file paths dropped on the task input to the existing input import pipeline', () => {
+    renderBrandSection({ isActive: true });
+
+    const input = screen.getByTestId('launcher-input');
+    expect(nativeFileDrop.options?.enabled).toBe(true);
+    expect(nativeFileDrop.zoneId).toBe('launcher-input');
+    expect(nativeFileDrop.zoneElement).toBe(input.parentElement);
+
+    nativeFileDrop.zoneDrop?.(['/tmp/report.pdf']);
+
+    expect(simpleInputHandle.processDroppedFilePaths).toHaveBeenCalledWith(['/tmp/report.pdf']);
+  });
+
+  it('routes browser file drops to the existing File import pipeline', () => {
+    renderBrandSection({ isActive: true });
+    const file = new File(['report'], 'report.pdf', { type: 'application/pdf' });
+
+    fireEvent.drop(screen.getByTestId('launcher-input'), {
+      dataTransfer: { files: [file] },
+    });
+
+    expect(simpleInputHandle.processDroppedFiles).toHaveBeenCalledWith([file]);
+  });
+
+  it('gates both native and browser file drops when the Launcher tab is inactive', () => {
+    renderBrandSection({ isActive: false });
+    const input = screen.getByTestId('launcher-input');
+    const file = new File(['report'], 'report.pdf', { type: 'application/pdf' });
+
+    expect(nativeFileDrop.options?.enabled).toBe(false);
+    expect(input).toHaveAttribute('data-active', 'false');
+    fireEvent.drop(input, { dataTransfer: { files: [file] } });
+
+    expect(simpleInputHandle.processDroppedFiles).not.toHaveBeenCalled();
+  });
+
+  it('stops accepting drops while the thought input is visible', () => {
+    taskCenterMock.available = true;
+    renderBrandSection({ isActive: true });
+    const input = screen.getByTestId('launcher-input');
+    const file = new File(['report'], 'report.pdf', { type: 'application/pdf' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'thought mode' }));
+
+    expect(nativeFileDrop.options?.enabled).toBe(false);
+    expect(input).toHaveAttribute('data-active', 'false');
+    fireEvent.drop(input, { dataTransfer: { files: [file] } });
+
+    expect(simpleInputHandle.processDroppedFiles).not.toHaveBeenCalled();
+  });
+
   it('keeps the no-provider settings CTA in the same below-input stack as the launcher context row', () => {
     const { container } = renderBrandSection();
 
