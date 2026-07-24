@@ -722,9 +722,11 @@ import {
   getActiveRuntimeType,
 } from './runtimes/external-session';
 import {
+  beginTaskSessionBirth,
   getAskUserQuestionResponseEngine,
   getPermissionResponseEngine,
   getSessionEngine,
+  runTaskSessionBirthAdmission,
   stopActiveTurn,
   stopOwnedTurn,
   stopOwnedTurnByQueueId,
@@ -3051,6 +3053,21 @@ async function main() {
           return jsonResponse({ success: false, error: 'Task id, queue id, session id, and prompt are required.' }, 400);
         }
 
+        const taskDispatchGuard = createTaskDispatchGuard(taskId, queueId, sessionId);
+        const sessionBirthLease = payload.initializeSession
+          ? beginTaskSessionBirth(
+              taskId,
+              queueId,
+              () => { void taskDispatchGuard.cancel?.(); },
+            )
+          : null;
+        if (payload.initializeSession && !sessionBirthLease) {
+          return jsonResponse({
+            success: false,
+            error: `Task Session creation is already registered for queue ${queueId}`,
+          }, 409);
+        }
+
         // Serialize scheduled turns so two background dispatches
         // concurrent ticks within a single sidecar can't interleave on
         // shared global state — `currentMcpServers`, the active session,
@@ -3058,7 +3075,8 @@ async function main() {
         // A's session switch / scenario could be silently overwritten by
         // request B before A reaches `enqueueUserMessage`. PRD 0.2.4 §3.6
         // (cross-review B7).
-        return await withScheduledTurnDispatchLock(async () => {
+        try {
+          return await withScheduledTurnDispatchLock(async () => {
         // Handle session setup based on runMode
         const effectiveRunMode = runMode ?? 'single_session';
         const { agentDir } = getAgentState();
@@ -3156,7 +3174,19 @@ async function main() {
           if (sessionId) {
             taskSnapshot.id = sessionId;
           }
-          const newSession = await createSession(agentDir, taskSnapshot);
+          const birthAdmission = await runTaskSessionBirthAdmission(
+            sessionBirthLease!,
+            taskDispatchGuard,
+            () => createSession(agentDir, taskSnapshot),
+          );
+          if (!birthAdmission.accepted) {
+            return jsonResponse({
+              success: false,
+              error: birthAdmission.error,
+              ...(birthAdmission.code ? { code: birthAdmission.code } : {}),
+            }, 409);
+          }
+          const newSession = birthAdmission.value;
           const switched = await switchToSession(newSession.id);
           if (!switched) {
             console.error(`[cron] execute-sync taskId=${taskId} failed to switch to new session ${newSession.id}`);
@@ -3437,7 +3467,6 @@ async function main() {
             timeoutMs: 3_600_000,
             pollMs: 1000,
           } satisfies import('./session-engine').InjectedTurnRequest;
-          const taskDispatchGuard = createTaskDispatchGuard(taskId, queueId, sessionId);
           const requiredSkill = requiredMemorySystemSkill(payload.managedKind);
           const turnResult = await engine.runInjectedTurn({
             ...injectedTurn,
@@ -3515,7 +3544,10 @@ async function main() {
           console.log(`[cron] execute-sync taskId=${taskId} returning error response:`, JSON.stringify(errorResponse));
           return jsonResponse(errorResponse, 500);
         }
-        }); // end scheduled-turn dispatch lock
+          }); // end scheduled-turn dispatch lock
+        } finally {
+          sessionBirthLease?.settle();
+        }
       }
 
       // ============= GLOBAL STATS API =============

@@ -100,7 +100,43 @@ pub(crate) async fn ensure_session_sidecar_with_runtime_identity_override_lifecy
     runtime_override: Option<String>,
     runtime_source_override: Option<String>,
 ) -> Result<EnsureSidecarResult, String> {
-    let _lifecycle = acquire_session_lifecycle(&[&session_id]).await;
+    let lifecycle = Arc::new(acquire_session_lifecycle(&[&session_id]).await);
+    ensure_session_sidecar_with_runtime_identity_override_lifecycle_held(
+        lifecycle,
+        app_handle,
+        manager,
+        session_id,
+        workspace_path,
+        owner,
+        runtime_override,
+        runtime_source_override,
+    )
+    .await
+}
+
+/// Blocking-thread ensure for a caller that already owns this Session's
+/// lifecycle authority. The shared lease keeps that exact acquisition alive
+/// through readiness without attempting to re-enter the non-reentrant lock.
+///
+/// Task reservation is the non-generic caller: the exact execution retains a
+/// shared handle until SessionStore metadata is born, while the worker moves
+/// its handle through Sidecar ensure. Other callers use the wrapper above.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn ensure_session_sidecar_with_runtime_identity_override_lifecycle_held<
+    R: Runtime,
+>(
+    lifecycle: Arc<SessionLifecycleGuard>,
+    app_handle: AppHandle<R>,
+    manager: ManagedSidecarManager,
+    session_id: String,
+    workspace_path: PathBuf,
+    owner: SidecarOwner,
+    runtime_override: Option<String>,
+    runtime_source_override: Option<String>,
+) -> Result<EnsureSidecarResult, String> {
+    // Keep the caller's authority alive until the blocking ensure and its
+    // readiness wait finish. This is intentionally not a fresh acquisition.
+    let _lifecycle = lifecycle;
     tauri::async_runtime::spawn_blocking(move || {
         ensure_session_sidecar_with_runtime_identity_override(
             &app_handle,
