@@ -1050,7 +1050,7 @@ describe('external SessionEngine with fake runtime', () => {
     await expect(harness.externalSession.stopExternalSession()).resolves.toBe(true);
   });
 
-  it('blocks concurrent desktop and IM sends behind idle official-tool invalidation', async () => {
+  it('queues concurrent IM behind idle official-tool invalidation and fails it by requestId', async () => {
     const harness = await createHarness([], {
       unconfirmedStop: true,
       deferStopBeforeResult: true,
@@ -1086,6 +1086,17 @@ describe('external SessionEngine with fake runtime', () => {
       desktopSettled = true;
       return result;
     });
+    const { imEventBus } = await import('../utils/im-event-bus');
+    const { imRequestRegistry } = await import('../utils/im-request-registry');
+    imRequestRegistry.register(
+      'req-concurrent-idle-stale-runtime',
+      sessionId,
+      'feishu_private',
+    );
+    const imEvents: Array<{ requestId: string | null; type: string }> = [];
+    const unsubscribe = imEventBus.subscribe(imEventBus.currentSeq(), (event) => {
+      imEvents.push({ requestId: event.requestId, type: event.type });
+    });
     let imSettled = false;
     const imAdmission = harness.engine.enqueueImMessage({
       message: 'concurrent im must wait',
@@ -1103,8 +1114,13 @@ describe('external SessionEngine with fake runtime', () => {
 
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(desktopSettled).toBe(false);
-    expect(imSettled).toBe(false);
+    expect(imSettled).toBe(true);
     expect(harness.runtime.sentMessages).toEqual([]);
+    const imResult = await imAdmission;
+    expect(imResult).toMatchObject({ success: true, queued: true });
+    expect(harness.engine.getQueueStatus().map((item) => item.messagePreview)).toEqual([
+      'concurrent im must wait',
+    ]);
 
     harness.runtime.releaseStop();
     await expect(update).resolves.toEqual({
@@ -1115,12 +1131,13 @@ describe('external SessionEngine with fake runtime', () => {
       accepted: false,
       error: expect.stringContaining('stale external runtime was not reused'),
     });
-    await expect(imAdmission).resolves.toEqual({
-      success: false,
-      status: 503,
-      error: expect.stringContaining('stale external runtime was not reused'),
-    });
+    await expect(imResult.dispatchAcceptance).resolves.toEqual({ accepted: false });
     expect(harness.runtime.sentMessages).toEqual([]);
+    expect(imEvents.filter((event) => (
+      event.requestId === 'req-concurrent-idle-stale-runtime' && event.type === 'error'
+    ))).toHaveLength(1);
+    expect(imRequestRegistry.get('req-concurrent-idle-stale-runtime')).toBeUndefined();
+    unsubscribe();
 
     harness.runtime.allowStop();
     await expect(harness.externalSession.stopExternalSession()).resolves.toBe(true);
@@ -2062,6 +2079,204 @@ describe('external SessionEngine with fake runtime', () => {
     await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
     expect(harness.runtime.sentMessages).toEqual(['first', 'second']);
     expect(harness.engine.getLatestAssistantResult().latestResult).toBe('second queued answer');
+  });
+
+  it('admits consecutive IM follow-ups immediately and drains them FIFO at turn boundaries', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'first IM answer', completeDelayMs: 300 },
+      { kind: 'success', text: 'second IM answer' },
+      { kind: 'success', text: 'third IM answer' },
+    ]);
+    const sessionId = 'session-im-turn-boundary-queue';
+    const workspacePath = join(harness.home, 'workspace');
+    const imRequest = (message: string, requestId: string) => ({
+      message,
+      requestId,
+      sessionId,
+      workspacePath,
+      scenario: { type: 'agent-channel' as const, platform: 'feishu', sourceType: 'private' as const },
+      permissionMode: 'fullAgency',
+      model: 'gpt-5-codex',
+      reasoningEffort: 'medium',
+      metadataBirthPending: true,
+    });
+
+    await expect(harness.engine.enqueueImMessage(imRequest('first IM', 'req-im-1')))
+      .resolves.toMatchObject({ success: true, queued: true });
+    await waitFor(() => harness.runtime.sentMessages.includes('first IM'), 'first IM dispatch');
+
+    const [second, third] = await Promise.all([
+      harness.engine.enqueueImMessage(imRequest('second IM', 'req-im-2')),
+      harness.engine.enqueueImMessage(imRequest('third IM', 'req-im-3')),
+    ]);
+
+    expect(second).toMatchObject({ success: true, queued: true });
+    expect(third).toMatchObject({ success: true, queued: true });
+    expect(second.dispatchAcceptance).toBeInstanceOf(Promise);
+    expect(third.dispatchAcceptance).toBeInstanceOf(Promise);
+    expect(harness.runtime.sentMessages).toEqual(['first IM']);
+    expect(harness.engine.getQueueStatus().map((item) => item.messagePreview)).toEqual([
+      'second IM',
+      'third IM',
+    ]);
+
+    await expect(second.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(third.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.sentMessages).toEqual(['first IM', 'second IM', 'third IM']);
+  });
+
+  it('atomically queues a simultaneous idle IM follow-up before the first runtime starts', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'first simultaneous answer', completeDelayMs: 80 },
+      { kind: 'success', text: 'second simultaneous answer' },
+    ], { deferStart: true });
+    const sessionId = 'session-im-simultaneous-idle';
+    const workspacePath = join(harness.home, 'workspace');
+    const imRequest = (message: string, requestId: string) => ({
+      message,
+      requestId,
+      sessionId,
+      workspacePath,
+      scenario: { type: 'agent-channel' as const, platform: 'feishu', sourceType: 'private' as const },
+      permissionMode: 'fullAgency',
+      model: 'gpt-5-codex',
+      reasoningEffort: 'medium',
+      metadataBirthPending: true,
+    });
+
+    let firstSettled = false;
+    const firstAdmission = harness.engine
+      .enqueueImMessage(imRequest('first simultaneous IM', 'req-simultaneous-1'))
+      .then((result) => {
+        firstSettled = true;
+        return result;
+      });
+    const second = await harness.engine.enqueueImMessage(
+      imRequest('second simultaneous IM', 'req-simultaneous-2'),
+    );
+
+    expect(firstSettled).toBe(false);
+    expect(second).toMatchObject({ success: true, queued: true });
+    expect(second.dispatchAcceptance).toBeInstanceOf(Promise);
+    expect(harness.engine.getQueueStatus().map((item) => item.messagePreview)).toEqual([
+      'second simultaneous IM',
+    ]);
+    expect(harness.runtime.sentMessages).toEqual([]);
+
+    harness.runtime.releaseStart();
+    await expect(firstAdmission).resolves.toMatchObject({ success: true, queued: true });
+    await expect(second.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.sentMessages).toEqual([
+      'first simultaneous IM',
+      'second simultaneous IM',
+    ]);
+  });
+
+  it('cancels one queued external IM request by requestId without touching its neighbors', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'first IM answer', completeDelayMs: 300 },
+      { kind: 'success', text: 'third IM answer' },
+    ]);
+    const sessionId = 'session-im-exact-cancel';
+    const workspacePath = join(harness.home, 'workspace');
+    const imRequest = (message: string, requestId: string) => ({
+      message,
+      requestId,
+      sessionId,
+      workspacePath,
+      scenario: { type: 'agent-channel' as const, platform: 'feishu', sourceType: 'private' as const },
+      permissionMode: 'fullAgency',
+      model: 'gpt-5-codex',
+      reasoningEffort: 'medium',
+      metadataBirthPending: true,
+    });
+
+    await harness.engine.enqueueImMessage(imRequest('first IM', 'req-cancel-1'));
+    await waitFor(() => harness.runtime.sentMessages.includes('first IM'), 'first cancel-test IM dispatch');
+    const second = await harness.engine.enqueueImMessage(imRequest('cancel me', 'req-cancel-2'));
+    const third = await harness.engine.enqueueImMessage(imRequest('keep me', 'req-cancel-3'));
+    const { imEventBus } = await import('../utils/im-event-bus');
+    const { imRequestRegistry } = await import('../utils/im-request-registry');
+    imRequestRegistry.register('req-cancel-2', sessionId, 'feishu_private');
+    imRequestRegistry.register('req-cancel-3', sessionId, 'feishu_private');
+    const events: Array<{ requestId: string | null; type: string }> = [];
+    const unsubscribe = imEventBus.subscribe(imEventBus.currentSeq(), (event) => {
+      events.push({ requestId: event.requestId, type: event.type });
+    });
+
+    await expect(harness.engine.cancelImRequest('req-cancel-2', 'user')).resolves.toEqual({
+      aborted: true,
+      mode: 'queued',
+    });
+    await expect(second.dispatchAcceptance).resolves.toEqual({ accepted: false });
+    expect(events.filter((event) => (
+      event.requestId === 'req-cancel-2' && event.type === 'cancelled'
+    ))).toHaveLength(1);
+    expect(imRequestRegistry.get('req-cancel-2')).toBeUndefined();
+    expect(imRequestRegistry.get('req-cancel-3')).toBeDefined();
+    expect(harness.engine.getQueueStatus().map((item) => item.messagePreview)).toEqual(['keep me']);
+
+    await expect(third.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.sentMessages).toEqual(['first IM', 'keep me']);
+    expect(imRequestRegistry.get('req-cancel-3')).toBeUndefined();
+    unsubscribe();
+  });
+
+  it('cancels the running external IM request while preserving queued neighbors', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'cancelled running answer', completeDelayMs: 1_000 },
+      { kind: 'success', text: 'preserved second answer' },
+      { kind: 'success', text: 'preserved third answer' },
+    ], { emitInterruptedOnStop: true });
+    const sessionId = 'session-im-running-exact-cancel';
+    const workspacePath = join(harness.home, 'workspace');
+    const imRequest = (message: string, requestId: string) => ({
+      message,
+      requestId,
+      sessionId,
+      workspacePath,
+      scenario: { type: 'agent-channel' as const, platform: 'feishu', sourceType: 'private' as const },
+      permissionMode: 'fullAgency',
+      model: 'gpt-5-codex',
+      reasoningEffort: 'medium',
+      metadataBirthPending: true,
+    });
+
+    const { imEventBus } = await import('../utils/im-event-bus');
+    const events: Array<{ requestId: string | null; type: string }> = [];
+    const unsubscribe = imEventBus.subscribe(imEventBus.currentSeq(), (event) => {
+      events.push({ requestId: event.requestId, type: event.type });
+    });
+
+    await harness.engine.enqueueImMessage(imRequest('cancel running IM', 'req-running-cancel-1'));
+    await waitFor(() => harness.runtime.sentMessages.includes('cancel running IM'), 'running cancel IM dispatch');
+    const second = await harness.engine.enqueueImMessage(imRequest('preserve second IM', 'req-running-cancel-2'));
+    const third = await harness.engine.enqueueImMessage(imRequest('preserve third IM', 'req-running-cancel-3'));
+
+    await expect(harness.engine.cancelImRequest('req-running-cancel-1', 'user')).resolves.toEqual({
+      aborted: true,
+      mode: 'running',
+    });
+    await expect(second.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(third.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.sentMessages).toEqual([
+      'cancel running IM',
+      'preserve second IM',
+      'preserve third IM',
+    ]);
+    expect(events.filter((event) => (
+      event.requestId === 'req-running-cancel-1' && event.type === 'cancelled'
+    ))).toHaveLength(1);
+    expect(events.some((event) => (
+      (event.requestId === 'req-running-cancel-2' || event.requestId === 'req-running-cancel-3')
+      && event.type === 'cancelled'
+    ))).toBe(false);
+    unsubscribe();
   });
 
   it('rejects a stale Goal admission at queued promotion without runtime dispatch', async () => {

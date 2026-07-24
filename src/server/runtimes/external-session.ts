@@ -135,16 +135,19 @@ import {
 } from './external-session/runtime-config';
 import {
   canDrainExternalOperations,
-  cancelExternalQueuedMessage,
-  chainExternalDesktopSend,
-  clearExternalQueueWithCancellation as clearExternalQueueOwnerWithCancellation,
-  cancelExternalQueuedMessagesByOwner,
+  cancelExternalQueuedMessageByRequestId,
+  cancelExternalQueuedMessageOperation,
+  chainExternalSend,
+  clearExternalQueueOperationsWithCancellation,
+  cancelExternalQueuedMessageOperationsByOwner,
   consumeLeadingExternalConfigOps,
   enqueueExternalConfigOperation,
   enqueueExternalMessageOperation,
   getExternalOperationGeneration,
   getExternalOperationQueueLength,
   getExternalQueueStatusSnapshot,
+  getExternalReservedMessageByRequestId,
+  hasExternalSendInFlight,
   hasExternalQueuedMessageByOwner,
   hasExternalQueuedOperations,
   hasQueuedExternalConfigOperation,
@@ -158,7 +161,7 @@ import {
   reserveExternalOperationForDrain,
   settleExternalMessageOperation,
   setExternalOperationDrainInFlight,
-  shouldQueueExternalDesktopSend,
+  shouldQueueExternalOperation,
   unshiftExternalOperation,
 } from './external-session/operation-queue';
 import {
@@ -328,6 +331,7 @@ import {
   deleteExternalInteractiveRequest,
   deliverExternalWatchError,
   finalizeExternalActiveRequest,
+  finalizeExternalQueuedImRequest,
   fireExternalImCallback,
   getExternalActiveRequestId,
   getExternalAskUserQuestion,
@@ -353,6 +357,7 @@ import type {
   ExternalConfigUpdateResult,
   ExternalMetadataTurnPath,
   ExternalPendingInteractiveRequest,
+  ExternalQueuedMessageOperation,
   ExternalSendContext,
   ExternalSendResult,
   ExternalSessionState,
@@ -506,12 +511,21 @@ function scheduleExternalQueueDrainAfterTurnBoundary(): void {
       const message = error instanceof Error ? error.message : String(error);
       console.error(`[external-session] Deferred runtime config restart failed: ${message}`);
       broadcast('chat:agent-error', { message });
-      clearExternalQueueWithCancellation();
+      clearExternalQueueWithCancellation('failed', message);
     })
     .finally(() => {
       clearExternalTurnTrace();
     });
   trackExternalTurnFinalization(finalization);
+}
+
+function scheduleExternalQueueDrainAfterDirectAdmission(): void {
+  if (
+    hasExternalQueuedOperations()
+    && getExternalLifecycleState() === 'idle'
+  ) {
+    scheduleExternalQueueDrainAfterTurnBoundary();
+  }
 }
 
 // Set by sendExternalMessage when it pre-broadcasts the user message for instant display.
@@ -554,9 +568,45 @@ function sessionMessageAttachmentsFromImages(
  * session at its next turn end, injecting old text + old context (cross-session contamination).
  * Mirrors the builtin drainQueueWithCancellation (agent-session.ts).
  */
-function clearExternalQueueWithCancellation(): void {
-  for (const queueId of clearExternalQueueOwnerWithCancellation()) {
-    broadcast('queue:cancelled', { queueId });
+function finalizeRejectedExternalOperation(
+  item: ExternalQueuedMessageOperation,
+  terminal: 'cancelled' | 'failed',
+  reason: string,
+): void {
+  if (item.context.requestId) {
+    finalizeExternalQueuedImRequest(
+      item.context.requestId,
+      terminal,
+      terminal === 'cancelled' ? buildImCancelledPayload() : buildImErrorPayload(reason),
+    );
+  }
+  if (item.context.onTerminal) {
+    const outcome = terminal === 'cancelled'
+      ? {
+          status: 'stopped' as const,
+          text: '',
+          assistantMessagePresent: false,
+          error: reason,
+        }
+      : {
+          status: 'error' as const,
+          text: '',
+          assistantMessagePresent: false,
+          error: reason,
+        };
+    void Promise.resolve(item.context.onTerminal(outcome)).catch((error) => {
+      console.error('[external-session] queued turn terminal observer failed:', error);
+    });
+  }
+}
+
+function clearExternalQueueWithCancellation(
+  terminal: 'cancelled' | 'failed' = 'cancelled',
+  reason = 'External queued turn was cancelled',
+): void {
+  for (const item of clearExternalQueueOperationsWithCancellation()) {
+    broadcast('queue:cancelled', { queueId: item.queueId });
+    finalizeRejectedExternalOperation(item, terminal, reason);
   }
   clearPendingRealtimeSteeredUserMessagesWithCancellation();
 }
@@ -3517,6 +3567,67 @@ async function steerExternalMessageForDesktop(input: {
  *      surface failures via chat:agent-error since the HTTP response is
  *      already on its way back to the renderer.
  */
+function enqueueExternalTurnBoundaryOperation(
+  text: string,
+  images: ImagePayload[] | undefined,
+  permissionMode: string | undefined,
+  model: string | undefined,
+  context: ExternalSendContext,
+): {
+  queued: boolean;
+  queueId?: string;
+  dispatch: Promise<ExternalSendResult>;
+} {
+  const runtimeConfig = captureExternalRuntimeConfigSnapshot(model, permissionMode, context);
+  let cancelled = false;
+  const precedingGuard = context.beforeDispatch;
+  const queueDispatchGuard = Object.assign(
+    async () => {
+      if (cancelled) {
+        return { accepted: false, error: 'external_queue_cancelled_before_dispatch' };
+      }
+      const result = precedingGuard
+        ? await precedingGuard()
+        : { accepted: true as const };
+      return cancelled
+        ? { accepted: false, error: 'external_queue_cancelled_before_dispatch' }
+        : result;
+    },
+    {
+      cancel: () => {
+        cancelled = true;
+        return precedingGuard?.cancel?.();
+      },
+    },
+  );
+  const queued = enqueueExternalMessageOperation({
+    text,
+    images,
+    context: applySnapshotToExternalSendContext({
+      ...context,
+      beforeDispatch: queueDispatchGuard,
+    }, runtimeConfig),
+    runtimeConfig,
+    queueId: context.queueId,
+  });
+  if (!queued.queued) {
+    return { queued: false, dispatch: Promise.resolve({ queued: false, error: queued.error }) };
+  }
+  broadcast('queue:added', {
+    queueId: queued.queueId,
+    messageText: text.slice(0, 100),
+    isInFlight: false,
+    deliveryMode: 'turn',
+    canCancel: true,
+    canForceExecute: true,
+  });
+  return {
+    queued: true,
+    queueId: queued.queueId,
+    dispatch: queued.dispatchAcceptance,
+  };
+}
+
 export function enqueueExternalSendForDesktop(
   text: string,
   images: ImagePayload[] | undefined,
@@ -3543,37 +3654,25 @@ export function enqueueExternalSendForDesktop(
   // Return the queueId SYNCHRONOUSLY so /chat/send can hand it back to the renderer, which
   // reconciles its optimistic `opt-` pill with this real queueId (exactly like the builtin
   // path) — without it the optimistic pill would orphan + a stray bubble would appear.
-  if (shouldQueueExternalDesktopSend(getExternalLifecycleState(), {
+  if (shouldQueueExternalOperation(getExternalLifecycleState(), {
     responseMode: queueResponseMode,
     canSteerActiveTurn,
   })) {
-    const runtimeConfig = captureExternalRuntimeConfigSnapshot(model, permissionMode, context);
-    const queued = enqueueExternalMessageOperation({
+    const queued = enqueueExternalTurnBoundaryOperation(
       text,
       images,
-      context: applySnapshotToExternalSendContext(context, runtimeConfig),
-      runtimeConfig,
-      queueId: context.queueId,
-    });
-    if (!queued.queued) {
-      return { queued: false, dispatch: Promise.resolve({ queued: false, error: queued.error }) };
-    }
-    const queueId = queued.queueId;
-    broadcast('queue:added', {
-      queueId,
-      messageText: text.slice(0, 100),
-      isInFlight: false,
-      deliveryMode: 'turn',
-      canCancel: true,
-      canForceExecute: true,
-    });
+      permissionMode,
+      model,
+      context,
+    );
+    if (!queued.queued || !queued.queueId) return queued;
     return {
       queued: true,
-      queueId,
+      queueId: queued.queueId,
       deliveryMode: 'turn',
       canCancel: true,
       canForceExecute: true,
-      dispatch: queued.dispatchAcceptance,
+      dispatch: queued.dispatch,
     };
   }
 
@@ -3595,7 +3694,7 @@ export function enqueueExternalSendForDesktop(
       canForceExecute: false,
     });
     const generation = getExternalOperationGeneration();
-    const dispatch = chainExternalDesktopSend(
+    const dispatch = chainExternalSend(
       () => steerExternalMessageForDesktop({
         queueId,
         text,
@@ -3641,7 +3740,7 @@ export function enqueueExternalSendForDesktop(
     runtimeConfig,
   );
   const generation = getExternalOperationGeneration();
-  const dispatch = chainExternalDesktopSend(
+  const dispatch = chainExternalSend(
     () => sendExternalMessage(
       text,
       images,
@@ -3656,7 +3755,64 @@ export function enqueueExternalSendForDesktop(
       return { queued: false };
     }
     throw err;
-  });
+  }).finally(scheduleExternalQueueDrainAfterDirectAdmission);
+  return { queued: true, dispatch };
+}
+
+/**
+ * External IM admission follows the same turn-boundary queue as Desktop, but
+ * never steers into the active turn. A busy request returns as soon as this
+ * owner has accepted the operation; its request-scoped terminal remains bound
+ * to the queued context until the drain starts or rejects it.
+ */
+export function enqueueExternalSendForIm(
+  text: string,
+  images: ImagePayload[] | undefined,
+  context: ExternalSendContext,
+): {
+  queued: boolean;
+  queueId?: string;
+  dispatch: Promise<ExternalSendResult>;
+} {
+  if (
+    hasExternalSendInFlight()
+    || shouldQueueExternalOperation(getExternalLifecycleState(), {
+    responseMode: 'turn',
+    canSteerActiveTurn: false,
+    })
+  ) {
+    return enqueueExternalTurnBoundaryOperation(
+      text,
+      images,
+      context.permissionMode,
+      context.model,
+      context,
+    );
+  }
+
+  const runtimeConfig = captureExternalRuntimeConfigSnapshot(
+    context.model,
+    context.permissionMode,
+    context,
+  );
+  const sendContext = applySnapshotToExternalSendContext(
+    { ...context, queueId: context.queueId ?? nextExternalQueueId() },
+    runtimeConfig,
+  );
+  const generation = getExternalOperationGeneration();
+  const dispatch = chainExternalSend(
+    () => sendExternalMessage(
+      text,
+      images,
+      runtimeConfig.permissionMode,
+      runtimeConfig.model,
+      sendContext,
+    ),
+    generation,
+  ).catch((error) => {
+    if (isExternalQueueGenerationStaleError(error)) return { queued: false };
+    throw error;
+  }).finally(scheduleExternalQueueDrainAfterDirectAdmission);
   return { queued: true, dispatch };
 }
 
@@ -3687,7 +3843,7 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
         const message = `External runtime config apply failed: ${applyResult.error}`;
         console.error(`[external-session] ${message}`);
         broadcast('chat:agent-error', { message });
-        clearExternalQueueWithCancellation();
+        clearExternalQueueWithCancellation('failed', message);
         setExternalSessionState('idle');
         return;
       }
@@ -3715,7 +3871,7 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
       attachments: sessionMessageAttachmentsFromImages(item.context.sessionId, item.images),
     };
     try {
-      const result = await chainExternalDesktopSend(
+      const result = await chainExternalSend(
         () => sendExternalMessage(
           item.text,
           item.images,
@@ -3742,10 +3898,21 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
         drainGeneration,
       );
       if (!isCurrentExternalOperationGeneration(drainGeneration)) return;
-      settleExternalMessageOperation(item, result ?? { queued: false });
+      const cancelledBeforeDispatch = result?.error === 'external_queue_cancelled_before_dispatch';
+      settleExternalMessageOperation(
+        item,
+        cancelledBeforeDispatch ? { queued: false } : (result ?? { queued: false }),
+      );
       if (result && !result.queued && !result.terminationUnconfirmed) {
         rollbackReservedExternalTurnAfterDrainFailure();
         broadcast('queue:cancelled', { queueId: item.queueId });
+        finalizeRejectedExternalOperation(
+          item,
+          cancelledBeforeDispatch || !result.error ? 'cancelled' : 'failed',
+          cancelledBeforeDispatch || !result.error
+            ? 'External queued turn was cancelled before dispatch'
+            : result.error,
+        );
       }
     } catch (err) {
       if (isExternalQueueGenerationStaleError(err)) {
@@ -3755,6 +3922,7 @@ async function drainExternalOperationsAfterTurn(): Promise<void> {
         settleExternalMessageOperation(item, { queued: false, error: message });
         rollbackReservedExternalTurnAfterDrainFailure();
         broadcast('queue:cancelled', { queueId: item.queueId });
+        finalizeRejectedExternalOperation(item, 'failed', message);
       }
     }
     releaseExternalDrainReservation(item);
@@ -3802,25 +3970,29 @@ export type ExternalQueueCancellation = {
 /** Cancel a queued external item (the pill ✕). Returns its settlement when startup is in flight. */
 export function cancelExternalQueueItem(queueId: string): ExternalQueueCancellation | null {
   if (isExternalTurnCurrent(queueId)) return null;
-  const text = cancelExternalQueuedMessage(queueId);
-  if (text === null) {
+  const item = cancelExternalQueuedMessageOperation(queueId);
+  if (!item) {
     const promotion = cancelExternalTurnPromotionByQueueId(queueId, { preserveQueue: true });
     if (!promotion) return null;
     broadcast('queue:cancelled', { queueId });
     return { cancelledText: '', promotion };
   }
   broadcast('queue:cancelled', { queueId });
-  return { cancelledText: text };
+  finalizeRejectedExternalOperation(item, 'cancelled', 'External queued turn was cancelled');
+  return { cancelledText: item.text };
 }
 
 export function cancelExternalQueuedTurnsByOwner(
   owner: import('../session-core/turn-queue').TurnOwner,
 ): { count: number; promotion?: ExternalTurnPromotionToken } {
-  const queueIds = cancelExternalQueuedMessagesByOwner(owner);
+  const items = cancelExternalQueuedMessageOperationsByOwner(owner);
   const promotion = cancelExternalTurnPromotionByOwner(owner, { preserveQueue: true });
-  for (const queueId of queueIds) broadcast('queue:cancelled', { queueId });
+  for (const item of items) {
+    broadcast('queue:cancelled', { queueId: item.queueId });
+    finalizeRejectedExternalOperation(item, 'cancelled', 'External queued turn owner was cancelled');
+  }
   return {
-    count: queueIds.length + (promotion ? 1 : 0),
+    count: items.length + (promotion ? 1 : 0),
     ...(promotion ? { promotion } : {}),
   };
 }
@@ -3954,8 +4126,26 @@ export async function cancelExternalImRequest(
 ): Promise<{ aborted: boolean; mode: 'running' | 'queued' | 'unknown' }> {
   if (getExternalActiveRequestId() === requestId && isExternalSessionActive()) {
     console.log(`[external-session] cancelExternalImRequest requestId=${requestId} mode=running`);
-    const stopped = await stopExternalSession();
+    const stopped = await stopExternalSession({ preserveQueue: true });
     return { aborted: stopped, mode: stopped ? 'running' : 'unknown' };
+  }
+  const queued = cancelExternalQueuedMessageByRequestId(requestId);
+  if (queued) {
+    console.log(`[external-session] cancelExternalImRequest requestId=${requestId} mode=queued`);
+    broadcast('queue:cancelled', { queueId: queued.queueId });
+    finalizeRejectedExternalOperation(queued, 'cancelled', 'External queued IM turn was cancelled');
+    return { aborted: true, mode: 'queued' };
+  }
+  const reserved = getExternalReservedMessageByRequestId(requestId);
+  if (reserved) {
+    console.log(`[external-session] cancelExternalImRequest requestId=${requestId} mode=queued-reserved`);
+    reserved.context.beforeDispatch?.cancel?.();
+    cancelExternalTurnPromotionByQueueId(reserved.queueId, { preserveQueue: true });
+    // The drain remains the sole terminal owner for a reserved operation. Its
+    // acceptance settles only after the promotion/guard has stopped dispatch,
+    // so /api/im/cancel cannot emit a competing terminal first.
+    await reserved.dispatchAcceptance;
+    return { aborted: true, mode: 'queued' };
   }
   return { aborted: false, mode: 'unknown' };
 }

@@ -500,7 +500,7 @@ stdout reader 先进入 `await read()`,防止 initialize 响应在 handler 注�
 | `types.ts` | facade/owner 共享类型：`PersistContentBlock`、`ExternalSendContext`、config result、queue operation、turn snapshot 等 |
 | `lifecycle.ts` | active process/runtime、`startingPromise` guard、session binding、runtimeSessionId、prewarm/system-init、user-stop flag |
 | `runtime-config.ts` | desired/live model、permission mode、reasoning effort；config coercion 与 snapshot/source guard integration |
-| `operation-queue.ts` | desktop queued message/config FIFO、adjacent config coalescing、drain reservation、generation-based stale dispatch rejection、desktop send tail reset、force/cancel/status bookkeeping |
+| `operation-queue.ts` | turn-boundary message/config FIFO（Desktop + busy IM）、adjacent config coalescing、drain reservation、generation-based stale dispatch rejection、direct-send tail admission/reset、force/cancel/status bookkeeping |
 | `turn-lifecycle.ts` | turn completed/success flags、activity facts、completion terminal、`TurnFinalizationGate`、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类；Desktop → IM admission、assistant disposition 与 user-before-assistant delivery tail |
 | `content-blocks.ts` | streaming text/thinking/tool/subagent content state；tool result/attachment mutation；live snapshot 与 turn snapshot backing state |
 | `transcript-persistence.ts` | in-memory `SessionMessage[]`、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update |
@@ -512,7 +512,7 @@ Facade 仍执行跨 owner 编排：调用 runtime process、广播 SSE、做 ana
 
 External runtime 的维护入口是 `SessionEngine`，测试也必须沿这条边界验证。`src/server/runtimes/external-session-mock.integration.test.ts` 通过 Vitest mock `runtimes/factory.ts` 注入 test-only fake runtime，fake runtime 的 `type` 使用真实 `RuntimeType`（当前为 `codex`），不在生产 `RuntimeType`、config 或 UI 中新增 `mock` 分支。
 
-这组测试属于 `integration` project：允许触碰 external-session module globals、SessionStore、临时 HOME、operation queue，但由 `src/test/setup-no-egress.ts` 禁止非 loopback 网络。覆盖面固定为：正常 external turn 的 latest/live/persisted read、failed turn 不被当作成功、desktop queue 顺序、permission response 成功后清 pending、permission delivery 失败时保留 pending；Desktop → IM 镜像还覆盖 fresh/queued/realtime admission、隐藏 reminder 投影、失败 turn 不发送残缺 assistant block、automation-origin 中途 Desktop steer、慢持久化下 user-before-assistant 顺序，以及 IM-origin turn 继续由 ReplyRouter 单路回复。
+这组测试属于 `integration` project：允许触碰 external-session module globals、SessionStore、临时 HOME、operation queue，但由 `src/test/setup-no-egress.ts` 禁止非 loopback 网络。覆盖面固定为：正常 external turn 的 latest/live/persisted read、failed turn 不被当作成功、desktop queue 顺序、同时 idle 的 IM 原子 admission、busy IM 连续 admission + FIFO drain + running/queued requestId 精确取消、permission response 成功后清 pending、permission delivery 失败时保留 pending；Desktop → IM 镜像还覆盖 fresh/queued/realtime admission、隐藏 reminder 投影、失败 turn 不发送残缺 assistant block、automation-origin 中途 Desktop steer、慢持久化下 user-before-assistant 顺序，以及 IM-origin turn 继续由 ReplyRouter 单路回复。
 
 ### 三路消息发送
 
@@ -563,7 +563,12 @@ MyAgents session 身份下，造成历史会话和新会话串写。
 - `AgentRuntime.steerMessage?()` 是可选能力；只有 Codex adapter 实现。`external-session` 只看 capability，不硬编码 runtime 名。
 - `turn/steer` 必须带 `expectedTurnId`（来自 Codex 当前 active turn）和 MyAgents user message id 作为 `clientUserMessageId`。
 - same-turn steering 不应用新的 model / permission / reasoning effort snapshot；这些仍是下一 turn 边界生效，和 builtin busy 时“配置锁定当前 turn”的语义一致。
-- 只作用于桌面 `sendDesktopMessage`；IM / Task / Inbox / injected turn 保持 turn 级同步语义。
+- response mode 与 same-turn steering 只作用于桌面 `sendDesktopMessage`。IM 始终保持 turn
+  级语义：idle 时等待既有 adapter admission 结果，busy 或已有普通 direct send 占位时由同一个
+  external turn-boundary queue 立即接管并返回 admission，不进入 Codex `turn/steer`，也不主动
+  走 `sendExternalMessage()` 的上一轮轮询。该轮询仍是非 IM / 内部异常竞态的防御 gate；
+  首条 process config invalidation 仍保留 adapter fail-loud，后续 direct-tail 并发请求由正式 queue
+  接管并以 request-scoped terminal 报错；Task / Inbox / injected turn 的既有语义不变。
 
 ### 内容块持久化
 
@@ -586,9 +591,11 @@ External runtime 的 model / permission / reasoning effort 统一走
 `updateExternalRuntimeConfig()`。desired/live state 在 `external-session/runtime-config.ts`；如果当前 turn
 正在运行、已有 queued message/config operation、或 turn finalization 仍在落盘,则把
 config patch 放入 `external-session/operation-queue.ts` 维护的 FIFO。turn boundary
-drain 时先应用前导 config ops,再启动下一条 desktop queued message,因此不会打断当前轮,
-也不会让后来的配置倒灌到更早入队的 message。IM / Task 不走桌面 queue pill,仍在每轮
-`ExternalSendContext` 中 self-resolve live config。
+drain 时先应用前导 config ops,再启动下一条 queued message,因此不会打断当前轮,
+也不会让后来的配置倒灌到更早入队的 message。busy external IM 与 Desktop 共用这条
+turn-boundary FIFO，并在入队时把 requestId / terminal observer / runtime config snapshot
+绑定到 operation；因此桌面可见 `queue:added/started`，取消和失败也能精确回到原 IM
+requestId。Task 仍在每轮 `ExternalSendContext` 中 self-resolve live config。
 
 Snapshot/source guard 由 `session-core/runtime-config-policy.ts` 统一决定。`/api/runtime/config` 接受 `source`，Rust IM router 的热同步必须传 `source:"im-sync"`；`runtime-config.ts` 在写入 desired model / permission / reasoning effort 之前先过滤 snapshotted desktop-owned session 的 IM 字段，避免 channel config 污染 desired state。桌面 runtime config push 继续使用 `source:"runtime-config"` / `source:"desktop"` 并保持权威。
 

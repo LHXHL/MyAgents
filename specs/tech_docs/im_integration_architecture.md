@@ -219,7 +219,9 @@ Per-Message Task:
  ├── ensure_im_consumer()：每个 peer_session 保持一个 /api/im/events long-poll SSE consumer
  ├── ReplyRouter 预注册 requestId → draft/reply slot
  ├── POST /api/im/enqueue → 同步 ACK（含 requestId、runtime/config、群聊上下文）
- │ └── Node Sidecar 通过 SessionEngine enqueue 到 builtin/external runtime，立即返回 accepted
+ │ └── Node Sidecar 通过 SessionEngine enqueue 到 builtin/external runtime
+ │     ├── idle external：等待既有 adapter admission 结果，不把启动/配置错误伪装成排队成功
+ │     └── busy external：现有 turn-boundary FIFO 接管后立即返回 accepted
  │
  ├── /api/im/events 推送带 requestId 的事件
  │ ├── "partial" 事件 → ReplyRouter 节流编辑消息（≥1s 间隔，截断平台限制）
@@ -530,6 +532,7 @@ Plugin tool schema 是 Session 级控制面，sender/chat/account/owner 是 Turn
 - Bridge discovery 与随后对 SDK readiness 的观察共享 `MCP_PREWARM_GRACE_MS` 的 absolute soft window。live `setMcpServers()` map mutation 是独立的 30 秒正确性 fence：mutation 本身不被 10 秒 deadline 截断，但 absolute wall clock 继续前进，所以 mutation 结束后只观察原窗口的剩余时间，甚至可能已为 0；mutation 不会重置或延长 soft budget。只有当前 Query 的 installed-map fingerprint 尚未确认该 surface identity 时，`/api/im/enqueue` 才同步 map；零工具或 degraded generation 也会发布 identity 以阻止逐消息重试，但不会伪造一个 SDK tool server。真实 identity drift 若撞上 active turn，则消息留在既有 turn-boundary queue，replacement Query 确认新 surface 后再 dispatch。
 - `ImBridgeTurnContext` 只由 exact `requestId` 的 `ImRequestRegistry` entry 持有，不随 SessionEngine request 或 queue item 复制。SDK stdin 的每次 user-message yield 都在 output-owner FIFO 占一个槽位（非 IM turn 占 `null` 槽）；tool callback 只在 FIFO head 是 IM request 时解析 sender/chat/account/owner。realtime 消息 B 即使已 yield，也不会覆盖仍在产出/调用工具的消息 A；terminal unregister 后上下文立即不可读。
 - request entry 创建后，取消与异常清理先由 `/api/im/enqueue` admission route 持有；runtime admission 成功后同步移交给 builtin/external runtime。移交前的 catch 由 route unregister；移交后的正常 terminal cleanup 归 runtime，cancel route 仅在成功移除 queued item 时接管 terminal/unregister，running turn 始终由 runtime 收尾。禁止两个 owner 同时清理或在 turn 执行中提前删除 Bridge 身份。
+- external runtime busy 时，IM request 复用 `external-session/operation-queue.ts` 的 turn-boundary FIFO，不创建第三套 IM queue，也不主动进入 `sendExternalMessage()` 的 busy polling gate。既有 direct-send tail 本身就是原子 admission 占位：同一事件循环内同时观察到 idle 的后续 IM 也必须进入正式 FIFO，包括首条 direct send 正在等待 process config invalidation 的窗口；首条仍保留 adapter fail-loud，后续请求由 queue 的精确 terminal 报错。operation 持有 requestId 与 terminal observer；queue clear、config apply failure、按 requestId cancel 都必须先移除对应 operation，再向该 request 发唯一 `error/cancelled` terminal 并清 registry。Desktop 与 IM 的 `queue:added/started/cancelled` 可见性由同一 owner 产生。
 - graceful interrupt 已收到 SDK `result` 时，该 result handler 同步 claim 并消费当前 output owner，interrupt caller 不再追加 `stopped` terminal；没有 result / Session 直接结束时才由 interrupt caller terminalize。`/api/im/cancel` 以 registry AbortController 的首次 abort 作为原子 cancellation claim，重复请求只确认“取消进行中”，不得二次进入 runtime。route 只为 admission-owned / queued 请求补发 terminal；running turn 始终由 runtime terminal owner 收尾，确保每个 request 恰好一个 terminal emitter、每个 SDK result 恰好消费一个 FIFO 槽。
 
 这条分离保证同一飞书 Session 连续对话只支付一次工具发现，同时群聊不同 sender 或并发相邻消息不会串用 OAuth / chat identity。300 秒工具执行预算从 callback 真正调用 `/mcp/call-tool` 时开始，与 10 秒 surface pre-warm预算无关。
