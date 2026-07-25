@@ -665,68 +665,51 @@ export default memo(function GlobalSidebar({
     <>
       <aside
         aria-label={t('globalSidebar.navigation')}
+        data-global-sidebar-mode={effectiveMode}
+        data-global-sidebar-toggle-visible={forceRail ? 'false' : 'true'}
+        data-global-sidebar-tabbar-toggle={!isWindows && !forceRail && !expanded ? 'true' : 'false'}
         className={`global-sidebar relative z-40 flex h-screen shrink-0 flex-col border-r border-[var(--line)] bg-[var(--paper)] text-[var(--ink)] ${
           expanded ? 'w-[var(--global-sidebar-expanded-width)]' : 'w-[var(--global-sidebar-rail-width)]'
         }`}
       >
-        <div className={`custom-titlebar flex h-11 shrink-0 items-center ${expanded ? 'px-3' : 'justify-center'}`} data-tauri-drag-region>
-          {expanded ? (
-            <>
-              <div className={`min-w-0 flex-1 text-sm font-semibold tracking-wide ${isWindows ? '' : 'pl-[var(--macos-traffic-light-safe-width)]'}`} data-tauri-drag-region>
-                MyAgents
-              </div>
-              <button
-                type="button"
-                onClick={handleToggleMode}
-                className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                aria-label={t('globalSidebar.collapse')}
-                title={t('globalSidebar.collapse')}
-                data-no-drag
-              >
-                <PanelLeftClose className="h-4 w-4" />
-              </button>
-            </>
-          ) : isWindows ? (
-            forceRail ? (
-              <img src={myAgentsLogo} alt="MyAgents" className="h-8 w-8 rounded-lg" data-no-drag />
-            ) : (
-              <button
-                type="button"
-                onClick={handleToggleMode}
-                className="group/logo flex h-10 w-10 items-center justify-center rounded-lg transition-colors hover:bg-[var(--paper-inset)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-                aria-label={t('globalSidebar.expand')}
-                title={t('globalSidebar.expand')}
-                data-no-drag
-              >
-                <img src={myAgentsLogo} alt="" className="h-8 w-8 rounded-lg group-hover/logo:hidden group-focus/logo:hidden" />
-                <PanelLeftOpen className="hidden h-4 w-4 text-[var(--ink)] group-hover/logo:block group-focus/logo:block" />
-              </button>
-            )
-          ) : (
-            <div className="h-full w-full" data-tauri-drag-region aria-hidden="true" />
+        <div className="custom-titlebar relative h-11 shrink-0" data-tauri-drag-region>
+          {!forceRail && (
+            <button
+              type="button"
+              onClick={handleToggleMode}
+              className={`absolute top-1.5 flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                isWindows ? 'left-3' : 'left-[var(--global-sidebar-toggle-left)]'
+              }`}
+              aria-label={expanded ? t('globalSidebar.collapse') : t('globalSidebar.expand')}
+              title={expanded ? t('globalSidebar.collapse') : t('globalSidebar.expand')}
+              data-global-sidebar-toggle
+              data-no-drag
+            >
+              {expanded
+                ? <PanelLeftClose className="h-4 w-4" />
+                : <PanelLeftOpen className="h-4 w-4" />}
+            </button>
           )}
         </div>
 
-        {!expanded && !isWindows && (
-          <div className="flex h-12 shrink-0 items-center justify-center">
-            {forceRail ? (
-              <img src={myAgentsLogo} alt="MyAgents" className="h-8 w-8 rounded-lg" />
-            ) : (
-              <button
-                type="button"
-                onClick={handleToggleMode}
-                className="group/logo flex h-10 w-10 items-center justify-center rounded-lg transition-colors hover:bg-[var(--paper-inset)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
-                aria-label={t('globalSidebar.expand')}
-                title={t('globalSidebar.expand')}
-              >
-                <img src={myAgentsLogo} alt="" className="h-8 w-8 rounded-lg group-hover/logo:hidden group-focus/logo:hidden" />
-                <PanelLeftOpen className="hidden h-4 w-4 text-[var(--ink)] group-hover/logo:block group-focus/logo:block" />
-              </button>
-            )}
-          </div>
-        )}
+        <div
+          className="global-sidebar-brand-row relative flex h-10 shrink-0 items-center"
+          data-global-sidebar-brand-row
+        >
+          <img
+            src={myAgentsLogo}
+            alt={expanded ? '' : 'MyAgents'}
+            aria-hidden={expanded || undefined}
+            className="global-sidebar-brand-icon shrink-0"
+            data-global-sidebar-brand-icon
+          />
+          {expanded && <span className="min-w-0 truncate text-sm font-semibold tracking-wide">MyAgents</span>}
+        </div>
 
-        <nav className={`shrink-0 space-y-1 ${expanded ? 'px-3 pb-3 pt-2' : 'flex flex-col items-center px-2 pb-3 pt-1'}`}>
+        <nav
+          className={`shrink-0 ${expanded ? 'px-3 pb-2 pt-1' : 'flex flex-col items-center px-2 pb-2 pt-1'}`}
+          data-global-sidebar-primary-nav
+        >
           <SidebarNavButton
             expanded={expanded}
             icon={<MessageSquarePlus className="h-4 w-4" />}
@@ -741,9 +724,6 @@ export default memo(function GlobalSidebar({
               onClick={handleSearchOpen}
             />
           )}
-        </nav>
-
-        <nav className={`shrink-0 space-y-1 border-t border-[var(--line-subtle)] py-3 ${expanded ? 'px-3' : 'flex flex-col items-center px-2'}`}>
           <SidebarNavButton
             expanded={expanded}
             active={activeView === 'taskcenter'}
@@ -792,7 +772,7 @@ export default memo(function GlobalSidebar({
                 aria-expanded={flyoutOpen}
                 className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
                   activeWorkspacePath
-                    ? 'bg-[var(--hover-bg)] text-[var(--ink)] shadow-sm'
+                    ? 'bg-[var(--hover-bg)] text-[var(--ink)]'
                     : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                 }`}
               >
@@ -1325,9 +1305,10 @@ function WorkspaceRow({
       role="treeitem"
       aria-expanded={expanded}
       aria-current={active ? 'page' : undefined}
-      className={`group/workspace flex h-10 items-center rounded-lg transition-colors ${
-        active ? 'bg-[var(--paper-elevated)] shadow-sm' : 'hover:bg-[var(--hover-bg)]'
+      className={`group/workspace flex h-10 items-center rounded-lg transition-colors hover:bg-[var(--hover-bg)] ${
+        active ? 'bg-[var(--hover-bg)]' : ''
       }`}
+      data-global-sidebar-workspace-row
       onContextMenu={(event) => {
         event.preventDefault();
         menuRef.current?.focus();
@@ -1430,9 +1411,10 @@ function SessionRow({
     <div
       role="treeitem"
       aria-current={active ? 'page' : undefined}
-      className={`group/session relative flex h-9 items-center gap-2 rounded-lg px-2 transition-colors ${
+      className={`group/session relative flex h-9 items-center rounded-lg pl-2 pr-1 transition-colors focus-within:bg-[var(--hover-bg)] ${
         active ? 'bg-[var(--hover-bg)] text-[var(--ink)]' : 'text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)]'
       }`}
+      data-global-sidebar-session-row
       onContextMenu={(event) => {
         event.preventDefault();
         menuRef.current?.focus();
@@ -1442,7 +1424,7 @@ function SessionRow({
       <button
         type="button"
         onClick={onOpen}
-        className="flex h-full min-w-0 flex-1 items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]"
+        className="flex h-full w-full min-w-0 items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]"
       >
         <SessionStateIcon tab={tab} active={active} />
         <span className="min-w-0 flex-1 truncate text-sm">{getSessionDisplayText(session)}</span>
@@ -1452,22 +1434,34 @@ function SessionRow({
           count={unreadNotificationCount}
           label={tLauncher('rightRail.unreadNotifications', { count: unreadNotificationCount })}
         />
-        <span className="shrink-0 text-xs tabular-nums text-[var(--ink-muted)]/55">
+        <span
+          className={`ml-auto shrink-0 text-xs tabular-nums text-[var(--ink-muted)]/55 transition-opacity ${
+            menuOpen ? 'opacity-0' : 'group-hover/session:opacity-0 group-focus-within/session:opacity-0'
+          }`}
+          data-global-sidebar-session-date
+        >
           {formatTime(session.lastActiveAt, new Date(), locale)}
         </span>
       </button>
-      <button
-        ref={menuRef}
-        type="button"
-        onClick={() => setMenu(!menuOpen)}
-        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${
-          menuOpen ? 'opacity-100' : 'opacity-0 group-hover/session:opacity-100 group-focus-within/session:opacity-100'
+      <div
+        className={`absolute inset-y-0 right-1 flex w-9 items-center justify-end transition-opacity ${
+          menuOpen
+            ? 'pointer-events-auto opacity-100'
+            : 'pointer-events-none opacity-0 group-hover/session:pointer-events-auto group-hover/session:opacity-100 group-focus-within/session:pointer-events-auto group-focus-within/session:opacity-100'
         }`}
-        title={tLauncher('rightRail.more')}
-        aria-label={tLauncher('rightRail.more')}
+        data-global-sidebar-session-action-overlay
       >
-        <MoreHorizontal className="h-3.5 w-3.5" />
-      </button>
+        <button
+          ref={menuRef}
+          type="button"
+          onClick={() => setMenu(!menuOpen)}
+          className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+          title={tLauncher('rightRail.more')}
+          aria-label={tLauncher('rightRail.more')}
+        >
+          <MoreHorizontal className="h-3.5 w-3.5" />
+        </button>
+      </div>
       <Popover
         open={menuOpen}
         onClose={() => {

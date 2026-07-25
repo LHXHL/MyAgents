@@ -213,7 +213,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.getByRole('tooltip', { name: '任务' })).toBeInTheDocument();
   });
 
-  it('allows a manual rail to morph its logo into Expand, but keeps forced rail stable', () => {
+  it('keeps one fixed toggle across manual rail/expanded and leaves forced rail branded but stable', () => {
     mocks.forcedRail = false;
     window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
       version: 1,
@@ -224,15 +224,35 @@ describe('GlobalSidebar rail flyout', () => {
       sessionView: 'all',
     }));
     const first = renderSidebar();
+    const navigation = screen.getByRole('complementary', { name: String(i18n.t('app:globalSidebar.navigation')) });
+    expect(navigation).toHaveAttribute('data-global-sidebar-mode', 'rail');
+    expect(navigation).toHaveAttribute('data-global-sidebar-tabbar-toggle', 'true');
+    const brandIcon = navigation.querySelector('[data-global-sidebar-brand-icon]');
+    const brandRow = navigation.querySelector('[data-global-sidebar-brand-row]');
+    const primaryNav = navigation.querySelector('[data-global-sidebar-primary-nav]');
+    expect(brandIcon).not.toBeNull();
+    expect(brandRow).toHaveClass('global-sidebar-brand-row');
+    expect(primaryNav).not.toHaveClass('border-t', 'space-y-1');
     const expand = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.expand')) });
+    expect(expand).toHaveAttribute('data-global-sidebar-toggle');
+    expect(expand.className).toContain('left-[var(--global-sidebar-toggle-left)]');
     fireEvent.click(expand);
-    expect(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.collapse')) })).toBeInTheDocument();
+    const collapse = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.collapse')) });
+    expect(collapse).toBe(expand);
+    expect(collapse.className).toContain('left-[var(--global-sidebar-toggle-left)]');
+    expect(navigation).toHaveAttribute('data-global-sidebar-mode', 'expanded');
+    expect(navigation).toHaveAttribute('data-global-sidebar-tabbar-toggle', 'false');
+    expect(navigation.querySelector('[data-global-sidebar-brand-icon]')).toBe(brandIcon);
+    expect(navigation.querySelector('[data-global-sidebar-brand-row]')).toBe(brandRow);
+    expect(screen.getByText('MyAgents')).toBeInTheDocument();
     first.unmount();
 
     mocks.forcedRail = true;
     renderSidebar();
     expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.expand')) })).not.toBeInTheDocument();
     expect(screen.getByAltText('MyAgents')).toBeInTheDocument();
+    expect(screen.getByRole('complementary', { name: String(i18n.t('app:globalSidebar.navigation')) }))
+      .toHaveAttribute('data-global-sidebar-toggle-visible', 'false');
   });
 
   it('opens the global search overlay directly in search mode', async () => {
@@ -325,14 +345,28 @@ describe('GlobalSidebar rail flyout', () => {
       { type: 'cron' },
     ]);
 
-    renderSidebar();
+    renderSidebar({ activeWorkspacePath: '/work/project-one' });
     fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
 
+    const workspaceRow = screen.getByText('Project one').closest('[data-global-sidebar-workspace-row]');
+    expect(workspaceRow).toHaveClass('bg-[var(--hover-bg)]');
+    expect(workspaceRow).not.toHaveClass('bg-[var(--paper-elevated)]', 'shadow-sm');
     const firstSession = screen.getByRole('button', { name: /Session 1/ });
     expect(firstSession.className).toContain('focus-visible:ring-2');
     expect(firstSession.firstElementChild?.textContent).toBe('Session 1');
     expect(firstSession).toHaveTextContent('Telegram');
     expect(firstSession).toHaveTextContent(String(i18n.t('app:sessionTags.cron')));
+    const firstSessionRow = firstSession.closest('[data-global-sidebar-session-row]');
+    expect(firstSession).toHaveClass('w-full');
+    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-date]')).toHaveClass('ml-auto');
+    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('absolute');
+    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('pointer-events-none');
+    const sessionDate = firstSessionRow?.querySelector('[data-global-sidebar-session-date]');
+    const sessionMore = firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay] button');
+    expect(sessionDate).not.toHaveClass('opacity-0');
+    fireEvent.click(sessionMore!);
+    expect(sessionDate).toHaveClass('opacity-0');
+    fireEvent.click(sessionMore!);
     expect(screen.queryByText('Session 6')).not.toBeInTheDocument();
     expect(screen.queryByText('Session 11')).not.toBeInTheDocument();
 

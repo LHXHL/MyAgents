@@ -39,7 +39,7 @@
 //! When Tauri's `WebviewWindowBuilder::traffic_light_position` is fixed to
 //! also call through to the TAO window builder (matching the config path),
 //! delete this module + the `apply_inset` call in `lib.rs::setup` and put
-//! `.traffic_light_position(LogicalPosition::new(14.0, 20.0))` back on the
+//! `.traffic_light_position(LogicalPosition::new(10.0, 20.0))` back on the
 //! builder chain. Track at: tauri-apps/tauri WebviewWindowBuilder traffic
 //! light position parity issue.
 
@@ -56,7 +56,9 @@ use tauri::{Runtime, WebviewWindow};
 /// `x` is the close button's distance from the window's left edge (logical
 /// pixels). `y` is added to the close button's height to form the title-bar
 /// container height — increasing `y` pushes buttons further down inside the
-/// container. Historical values from v0.2.15 `tauri.conf.json`: `x=14, y=20`.
+/// container. The current main-window values are `x=10, y=20`: the horizontal
+/// inset centers the native cluster in the 72px global rail, while the vertical
+/// inset preserves the established titlebar alignment.
 ///
 /// Returns `Err` if `ns_window()` fails or returns null. Returns `Ok` if
 /// the call ran — the inner [`inset_traffic_lights`] silently no-ops when

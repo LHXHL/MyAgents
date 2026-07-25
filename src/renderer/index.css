@@ -170,10 +170,13 @@
 :root {
   /* Layout and spacing are product structure, not Theme identity. */
   --breakpoint-mobile: 640px;
-  --global-sidebar-expanded-width: 288px;
+  --global-sidebar-expanded-width: 256px;
   --global-sidebar-flyout-width: 320px;
-  --global-sidebar-rail-width: 80px;
-  --macos-traffic-light-safe-width: 78px;
+  --global-sidebar-rail-width: 72px;
+  --global-sidebar-toggle-left: 84px;
+  --global-sidebar-tabbar-toggle-inset: 52px;
+  --global-sidebar-brand-icon-size: 20px;
+  --global-sidebar-brand-icon-left: 24px;
   --sidebar-min-width: 320px;
   --header-height: 48px;
   --space-0: 0;
@@ -190,9 +193,37 @@
   --space-12: 48px;
 }
 
+/* The App Icon is the visual anchor of the rail. Keep its window coordinate,
+   size, and DOM node identical while the sidebar label appears/disappears. */
+.global-sidebar-brand-row {
+  padding-left: calc(
+    var(--global-sidebar-brand-icon-left)
+    + var(--global-sidebar-brand-icon-size)
+    + var(--space-2)
+  );
+}
+
+.global-sidebar-brand-icon {
+  position: absolute;
+  left: var(--global-sidebar-brand-icon-left);
+  top: 50%;
+  width: var(--global-sidebar-brand-icon-size);
+  height: var(--global-sidebar-brand-icon-size);
+  border-radius: 22%;
+  transform: translateY(-50%);
+}
+
 [data-global-sidebar-flyout] {
   animation: global-sidebar-flyout-in 140ms ease-out;
   transform-origin: left center;
+}
+
+/* In manual macOS rail mode the single sidebar toggle keeps its window-fixed
+   x coordinate and visually moves onto the Tab titlebar surface. Reserve that
+   exact leading slot so the first Tab never renders underneath the control. */
+[data-global-sidebar-tabbar-toggle='true'] ~ [data-tab-workspace]
+  > .custom-titlebar {
+  padding-left: var(--global-sidebar-tabbar-toggle-inset);
 }
 
 @keyframes global-sidebar-flyout-in {

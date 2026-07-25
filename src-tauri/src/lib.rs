@@ -68,6 +68,11 @@ use tauri::{
 };
 use tauri_plugin_autostart::MacosLauncher;
 
+#[cfg(target_os = "macos")]
+const MAIN_TRAFFIC_LIGHT_X: f64 = 10.0;
+#[cfg(target_os = "macos")]
+const MAIN_TRAFFIC_LIGHT_Y: f64 = 20.0;
+
 // Note: lib.rs is the crate root, so `#[macro_export]` macros (ulog_info!,
 // ulog_error!, etc.) are already in scope here without `use`. Importing them
 // would cause E0255 "name defined multiple times".
@@ -860,7 +865,9 @@ pub fn run() {
             // path that worked in v0.2.15 (where config set both).
             //
             // History: v0.2.15 main used `tauri.conf.json
-            // trafficLightPosition: {x:14, y:20}` — visually correct.
+            // trafficLightPosition: {x:14, y:20}` — visually correct for the
+            // former 80px rail. The current 72px rail uses x=10 so the native
+            // cluster remains optically centered within the narrower strip.
             // c3ef3c7f migrated to programmatic builder w/ same values —
             // visually broken. 0c74c61c misdiagnosed as a 4px miscenter and
             // changed Y to 14 — still broken (different symptom, same root
@@ -883,8 +890,9 @@ pub fn run() {
                 })?;
 
             // Restore v0.2.15 traffic light placement via direct AppKit (see
-            // long-form rationale above). x=14, y=20 are the historical
-            // values from `tauri.conf.json`. Failure here is non-fatal —
+            // long-form rationale above). x=10 balances the native cluster
+            // inside the 72px global rail; y=20 preserves the established
+            // vertical alignment. Failure here is non-fatal —
             // window starts with default macOS button positions instead.
             //
             // The post-build `apply_inset` only fires once. `install_inset_persistence`
@@ -894,10 +902,18 @@ pub fn run() {
             // back to macOS defaults on any layout event.
             #[cfg(target_os = "macos")]
             {
-                if let Err(e) = macos_traffic_light::apply_inset(&main_window, 14.0, 20.0) {
+                if let Err(e) = macos_traffic_light::apply_inset(
+                    &main_window,
+                    MAIN_TRAFFIC_LIGHT_X,
+                    MAIN_TRAFFIC_LIGHT_Y,
+                ) {
                     ulog_warn!("[main-window] traffic light inset failed: {}", e);
                 }
-                macos_traffic_light::install_inset_persistence(&main_window, 14.0, 20.0);
+                macos_traffic_light::install_inset_persistence(
+                    &main_window,
+                    MAIN_TRAFFIC_LIGHT_X,
+                    MAIN_TRAFFIC_LIGHT_Y,
+                );
             }
 
             let resolved_native_theme = preferred_native_theme

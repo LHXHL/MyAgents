@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.0
+> **Version**: 2.8.2
 > **Last Updated**: 2026-07-25
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -696,8 +696,8 @@ Item 选中: 文字 var(--accent-warm)
 
 | 属性 | 值 |
 |------|------|
-| 全局侧边栏展开态 | 288px |
-| 全局侧边栏 rail | 80px（包含 macOS 红绿灯安全宽度） |
+| 全局侧边栏展开态 | 256px |
+| 全局侧边栏 rail | 72px（包含收紧后的 macOS 红绿灯安全宽度） |
 | rail 工作区 flyout | 320px |
 | 设置页内部侧边栏 | 208px (w-52) |
 
@@ -1244,28 +1244,31 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
 
 - 全局栏从窗口最顶部延伸到底部；右侧才是标题栏与 Tab Workspace。
 - macOS 红绿灯安全区属于侧栏顶部 chrome；Windows 窗口按钮仍固定在右侧标题栏最右端。
-- 常驻展开态 288px，rail 80px；切换模式不通过 width 动画持续重排主内容。
+- 常驻展开态 256px，rail 72px；切换模式不通过 width 动画持续重排主内容。
+- 顶部 chrome 分两行：第一行 44px 只承载原生窗口区、拖拽区与固定侧栏 toggle，第二行 40px 承载 App Icon + `MyAgents` 品牌。App Icon 使用 macOS App 风格的 22% 圆角矩形轮廓，在展开态与 rail 中始终保持 20px、固定于窗口 `x=24px` 且复用同一 DOM；它不参与 rail 居中计算，切换时只让品牌文字出现或消失。macOS toggle 固定在窗口 `x=84px` 起的 32px 槽位；展开时位于侧栏表面，手动 rail 时自然落入右侧 Tab 标题栏表面，屏幕坐标与 DOM 均不切换。
 - 顶部 Tab 保留 active、关闭、拖拽、溢出、生成中、未读与触摸板切换语义，侧栏不得建立第二套页面选中状态。
 
 ### 15.2 全局侧边栏
 
-展开态从上到下依次为：产品身份与收起控制、新对话/搜索、任务/团队/技能与连接器、Agent 工作区树、底部小助理/设置。主要层级依靠分组、留白、弱分割线和选中面，不将每组包成卡片。
+展开态从上到下依次为：原生窗口 chrome 与固定收起控制、独立产品身份行、新对话/搜索/任务/团队/技能与连接器的连续主导航、Agent 工作区树、底部小助理/设置。主导航项保持 40px 命中高度但不添加行间距，搜索与任务之间不使用分割线；主要层级依靠紧凑留白、工作区分组边界和选中面，不将每组包成卡片。
 
 ```
-展开态 288px:
-  导航行: h-10, px-3, text-sm, icon 16px
+展开态 256px:
+  顶部第一行: h-11；macOS 原生红绿灯 + 固定 toggle
+  品牌第二行: h-10；固定 x 的 20px 圆角矩形 App Icon + MyAgents text-sm
+  连续主导航行: h-10, px-3, text-sm, icon 16px, 行间距 0
   工作区标题行: h-12, text-xs, 弱化文字
   工作区行: h-10；整行只负责展开/折叠
   Session 行: h-9；标题单行 truncate，右侧时间 text-xs
   底部入口: 固定，不随工作区历史滚动
 
-rail 80px:
+rail 72px:
   图标按钮: 40 × 40px
   只有工作区入口打开 320px 可交互 flyout
   其它入口只显示延迟名称 tooltip
 ```
 
-手动 rail 中，MyAgents 图标 hover/focus 后替换为展开控制；自动 rail 中保持静态品牌图标，不暴露无法兑现的展开按钮。工作区 flyout 覆盖主内容而不推挤布局，使用轻量 opacity/translate 入场；离开交互区域短延迟关闭，`Esc` 关闭并回焦入口。嵌套菜单、确认弹层和 flyout 共用同一交互生命周期。
+手动 rail 中，App Icon 保持静态品牌身份；它不放大、不重新居中，展开/收起时只显隐右侧文字，因此点击瞬间图标留在原地。展开控制仍使用第一行同一个固定 toggle，不随侧栏宽度移动或复制造成双入口。自动 rail 中隐藏无法兑现的展开 toggle，仅保留静态品牌图标。工作区 flyout 覆盖主内容而不推挤布局，使用轻量 opacity/translate 入场；离开交互区域短延迟关闭，`Esc` 关闭并回焦入口。嵌套菜单、确认弹层和 flyout 共用同一交互生命周期。
 
 ### 15.3 工作区与 Session 树
 
@@ -1274,8 +1277,8 @@ rail 80px:
 - 每个展开工作区首批显示 5 个 Session，“展开更多”每次追加 5 个；折叠再展开保留当前进程内分页数量。
 - Session 读取状态按工作区隔离：某个工作区加载或失败时只在该树枝显示骨架/原位重试，不遮蔽其它已成功工作区。
 - 工作区整行只切换树；“在此工作区新建对话”和更多菜单是独立 hover/focus 动作，避免把资源浏览与启动混为一谈。
-- Session 行可显示收藏、来源标签、时间和具体 Session 状态；工作区行与 rail 不显示聚合 badge。
-- active 使用 `var(--hover-bg)` / `var(--paper-elevated)` 与必要 `shadow-sm`；列表行 hover 使用 `var(--hover-bg)`，小图标按钮 hover 使用 `var(--paper-inset)`。
+- Session 行可显示收藏、来源标签、时间和具体 Session 状态；工作区行与 rail 不显示聚合 badge。Session 行占满树枝到右侧边界，日期以 `ml-auto` 贴近右缘；更多菜单绝对悬浮在日期位置，hover/focus 时替换日期，不参与正常布局宽度。
+- 工作区关联态与普通 hover 统一使用 `var(--hover-bg)`，不增加 `paper-elevated` 或阴影；Session active 也使用 `var(--hover-bg)`。小图标按钮 hover 使用 `var(--paper-inset)`。
 - 空态、加载骨架和局部失败重试都留在工作区滚动区域，不能拖垮全局导航或推走底部入口。
 
 ### 15.4 Launcher 品牌区域
@@ -1331,6 +1334,8 @@ Launcher 选中的工作区仅投影为全局树的关联高亮，不因此展�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.2 | 2026-07-25 | **全局侧边栏品牌锚点与信息密度校正**：App Icon 统一为 20px macOS 风格圆角矩形并绝对锁在窗口 x=24px，展开/rail 共用同一尺寸、坐标和 DOM，仅显隐文字；主导航改为无分割线、无行间距连续组；工作区关联态降为 hover 同级；Session 日期贴右，更多菜单悬浮替换日期而不占位 |
+| 2.8.1 | 2026-07-25 | **全局侧边栏真机 chrome 校正**：展开态 288→256px、rail 80→72px；macOS 红绿灯 inset 随 rail 收紧并保持原生命中区；产品身份移到独立第二行；展开/收起共用窗口坐标固定的单一 toggle，手动 rail 时视觉归属自然转入 Tab 标题栏 |
 | 2.8.0 | 2026-07-25 | **全局 App Shell 与 Active Tabs（PRD 0.3.5）**：将产品能力、Agent 工作区和 Session 树从 Launcher 右栏提升为 App 级全局侧边栏；定义 288px 展开态、80px rail、320px 工作区 flyout、窄窗自动 rail 与独立手动偏好；Launcher 收敛为单列新工作入口；技能、插件、工具迁入单实例功能 Tab，页面所有权继续由顶部 Tab 统一承载 |
 | 2.7.9 | 2026-07-23 | **产品默认 Theme 与显式选择解耦**：Default Black 成为未选择用户当前跟随的产品默认，`myagents-default` 继续仅承担 canonical fallback；新增显式选择状态，未来调整产品默认不覆盖用户选择；Absolutely 用户可见名改为 Claude；Theme 菜单选中标记移到名称之后、light/dark 色块之前 |
 | 2.7.8 | 2026-07-22 | **Theme 入口公开与配色速览**：Theme 选择器从隐藏开发者区迁到“通用设置 → 界面外观”末尾；下拉触发器与选项以两枚 16px 色块展示 package 的 light/dark Primary，颜色由 Registry 从 Theme CSS 派生，不在组件维护第二份 palette |
