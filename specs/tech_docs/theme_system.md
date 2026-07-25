@@ -113,7 +113,7 @@ html[data-theme-id='myagents-default'][data-color-scheme='dark'] { ... }
 Token 组：
 
 - 字体：body/display/code 运行时角色；
-- Ink/Paper 及同色 0-alpha 渐变端点；
+- Ink/Paper、全局 App Shell 侧栏结构面 `--global-sidebar-bg`，以及同色 0-alpha 渐变端点；侧栏值由每套 Theme 的 light/dark 独立设计在 `paper → paper-inset` 之间，页面与卡片不得借此翻转通用 Paper 层级；
 - Accent、Heartbeat、Success/Error/Warning/Info；所有实色 action/status surface 都有独立配对 foreground（`--on-*`），不能跨语义借用；
 - Button（primary / 固定深色 surface 各自有配对 foreground）、Border、Focus、Toggle；
 - `--theme-radius-*`、`--theme-shadow-*`、工具/动作局部 shadow；
@@ -254,6 +254,7 @@ Space 是全局 Theme 的标准 CSS host surface：组件直接消费 root seman
   逐 Token 锁定其余值等于 canonical；`verify:theme-presets` 先按 Vite production 使用的
   esbuild CSS minifier 序列化七套实际 stylesheet，再经 optional factory 完成精确八套 Registry
   注册并逐套 resolve light/dark；
+- structural surface contract：八套生产 Theme 的 light/dark 都必须让 `--global-sidebar-bg` 的亮度严格位于 `--paper` 与 `--paper-inset` 之间，并与 `--paper-elevated` 保持不同值；`GlobalSidebar` 是唯一宿主消费点，右侧页面、卡片和顶部 Tab 栏不随该 Token 改写；
 - dark control contrast：八套 Theme 的 Primary 正常/hover 均验证 4.5:1，深色 action
   surface 锁定白色/近白前景；全部 production Theme 的 dark Switch thumb 锁定为白色/近白控制面；
 - build smoke：`build:web` 串行执行 `verify:theme-css` 与 `verify:theme-presets`；前者读取实际

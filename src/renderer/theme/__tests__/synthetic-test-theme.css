@@ -9,6 +9,7 @@ html[data-theme-id='synthetic-test-theme'] {
   --ink-subtle: #96759f;
   --ink-faint: #baa5c0;
   --paper: #fff0ff;
+  --global-sidebar-bg: #f8dff9;
   --paper-elevated: #fff8ff;
   --message-user-bg: #f8ddff;
   --paper-inset: #efd0f5;
@@ -129,6 +130,7 @@ html[data-theme-id='synthetic-test-theme'][data-color-scheme='dark'] {
   --ink-muted: #c89dcc;
   --ink-subtle: #916d96;
   --paper: #120012;
+  --global-sidebar-bg: #0f000f;
   --paper-elevated: #240024;
   --paper-inset: #090009;
   --accent: #dd00dd;

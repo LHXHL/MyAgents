@@ -227,6 +227,8 @@ describe('GlobalSidebar rail flyout', () => {
     const navigation = screen.getByRole('complementary', { name: String(i18n.t('app:globalSidebar.navigation')) });
     expect(navigation).toHaveAttribute('data-global-sidebar-mode', 'rail');
     expect(navigation).toHaveAttribute('data-global-sidebar-tabbar-toggle', 'true');
+    expect(navigation).toHaveClass('bg-[var(--global-sidebar-bg)]');
+    expect(navigation).not.toHaveClass('bg-[var(--paper)]', 'bg-[var(--paper-elevated)]');
     const brandIcon = navigation.querySelector('[data-global-sidebar-brand-icon]');
     const brandRow = navigation.querySelector('[data-global-sidebar-brand-row]');
     const primaryNav = navigation.querySelector('[data-global-sidebar-primary-nav]');

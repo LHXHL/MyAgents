@@ -1,7 +1,7 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.3
-> **Last Updated**: 2026-07-25
+> **Version**: 2.8.4
+> **Last Updated**: 2026-07-26
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
 
@@ -85,6 +85,7 @@ Focus、链接和进行中状态。success/error/warning/info 继续使用各 Th
 | Token | 值 | 用途 |
 |-------|------|------|
 | `--paper` | `#faf6ee` | 主背景 |
+| `--global-sidebar-bg` | `#f5efe5` | 全局 App Shell 侧栏背景；比主背景略深、比 inset 克制 |
 | `--paper-elevated` | `#fffcf7` | 卡片、弹层背景 |
 | `--message-user-bg` | `#fffefa` | 用户 Query 气泡背景（比对话页更白，去阴影后保持层次） |
 | `--paper-inset` | `#e8dccf` | 输入框内部、小按钮 hover |
@@ -1252,6 +1253,8 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
 
 展开态从上到下依次为：原生窗口 chrome 与固定收起控制、独立产品身份行、新对话/搜索/任务/团队/技能与连接器的连续主导航、Agent 工作区树、底部小助理/设置。主导航项保持 40px 命中高度但不添加行间距，搜索与任务之间不使用分割线；主要层级依靠紧凑留白、工作区分组边界和选中面，不将每组包成卡片。
 
+全局侧栏根面只消费 Theme-owned `--global-sidebar-bg`。八套 Theme 的 light/dark 均在自身 `--paper` 与 `--paper-inset` 之间提供一个略深于页面的值，使侧栏同时能与右侧 `--paper` 页面和 `--paper-elevated` 对话面形成克制分区。该结构 Token 不替代通用 Paper 层级：右侧页面、卡片、弹层和顶部 Tab 栏继续使用原有 Token，工作区/Session hover 与 active 也不随侧栏底色重算。
+
 ```
 展开态 256px:
   顶部第一行: h-11；macOS 原生红绿灯 + 固定 toggle
@@ -1335,6 +1338,7 @@ Launcher 选中的工作区仅投影为全局树的关联高亮，不因此展�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.4 | 2026-07-26 | **全局侧栏材质分层校准**：新增 Theme-owned `--global-sidebar-bg`，八套 Theme 的 light/dark 均在自身 `paper → paper-inset` 色阶间微量下探；仅全局侧栏根面消费，右侧页面、`paper-elevated` 卡片/弹层、顶部 Tab 栏与交互态不变 |
 | 2.8.3 | 2026-07-25 | **全局侧边栏功能图标锚点校正**：主导航、工作区与底部入口的 40px rail 命中区统一固定于 x=12px，使 16px 图标左缘在展开/rail 中始终位于 x=24px；禁止 rail 按剩余宽度重新居中造成折叠时 4px 横跳 |
 | 2.8.2 | 2026-07-25 | **全局侧边栏品牌锚点与信息密度校正**：App Icon 统一为 20px macOS 风格圆角矩形并绝对锁在窗口 x=24px，展开/rail 共用同一尺寸、坐标和 DOM，仅显隐文字；主导航改为无分割线、无行间距连续组；工作区关联态降为 hover 同级；Session 日期贴右，更多菜单悬浮替换日期而不占位 |
 | 2.8.1 | 2026-07-25 | **全局侧边栏真机 chrome 校正**：展开态 288→256px、rail 80→72px；macOS 红绿灯 inset 随 rail 收紧并保持原生命中区；产品身份移到独立第二行；展开/收起共用窗口坐标固定的单一 toggle，手动 rail 时视觉归属自然转入 Tab 标题栏 |

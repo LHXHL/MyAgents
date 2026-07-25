@@ -87,6 +87,16 @@ describe('Theme architecture guardrails', () => {
     expect(source('src/renderer/theme/themes/preset-theme.ts')).not.toContain('myagents-default');
   });
 
+  it('keeps the global sidebar structural surface scoped to the App Shell consumer', () => {
+    const consumers = rendererSourceFiles()
+      .filter(file => source(file.slice(root.length + 1)).includes('var(--global-sidebar-bg)'))
+      .map(file => file.slice(root.length + 1));
+
+    expect(consumers).toEqual([
+      'src/renderer/components/global-sidebar/GlobalSidebar.tsx',
+    ]);
+  });
+
   it('keeps Default Black equal to canonical host tokens except its light primary button pair', () => {
     const canonicalStylesheet = parseThemeStylesheet(
       source('src/renderer/theme/themes/myagents-default.css'),

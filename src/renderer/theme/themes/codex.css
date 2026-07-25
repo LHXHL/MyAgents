@@ -22,6 +22,7 @@ html[data-theme-id='codex'][data-color-scheme='light'] {
   --ink-subtle: #a0a2a7;
   --ink-faint: #c2c4c8;
   --paper: #ffffff;
+  --global-sidebar-bg: #f8f8f9;
   --paper-elevated: #ffffff;
   --message-user-bg: #fbfcfd;
   --paper-inset: #eaecef;
@@ -132,6 +133,7 @@ html[data-theme-id='codex'][data-color-scheme='dark'] {
   --ink-subtle: #626262;
   --ink-faint: #404040;
   --paper: #111111;
+  --global-sidebar-bg: #0f0f0f;
   --paper-elevated: #1a1a1a;
   --message-user-bg: #202020;
   --paper-inset: #090909;

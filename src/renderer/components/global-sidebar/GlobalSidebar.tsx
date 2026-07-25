@@ -668,7 +668,7 @@ export default memo(function GlobalSidebar({
         data-global-sidebar-mode={effectiveMode}
         data-global-sidebar-toggle-visible={forceRail ? 'false' : 'true'}
         data-global-sidebar-tabbar-toggle={!isWindows && !forceRail && !expanded ? 'true' : 'false'}
-        className={`global-sidebar relative z-40 flex h-screen shrink-0 flex-col border-r border-[var(--line)] bg-[var(--paper)] text-[var(--ink)] ${
+        className={`global-sidebar relative z-40 flex h-screen shrink-0 flex-col border-r border-[var(--line)] bg-[var(--global-sidebar-bg)] text-[var(--ink)] ${
           expanded ? 'w-[var(--global-sidebar-expanded-width)]' : 'w-[var(--global-sidebar-rail-width)]'
         }`}
       >
