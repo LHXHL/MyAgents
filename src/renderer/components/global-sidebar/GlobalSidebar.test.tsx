@@ -230,9 +230,16 @@ describe('GlobalSidebar rail flyout', () => {
     const brandIcon = navigation.querySelector('[data-global-sidebar-brand-icon]');
     const brandRow = navigation.querySelector('[data-global-sidebar-brand-row]');
     const primaryNav = navigation.querySelector('[data-global-sidebar-primary-nav]');
+    const workspaceRail = navigation.querySelector('[data-global-sidebar-workspace-rail]');
+    const footerActions = navigation.querySelector('[data-global-sidebar-footer-actions]');
     expect(brandIcon).not.toBeNull();
     expect(brandRow).toHaveClass('global-sidebar-brand-row');
-    expect(primaryNav).not.toHaveClass('border-t', 'space-y-1');
+    expect(primaryNav).toHaveClass('global-sidebar-rail-stack');
+    expect(primaryNav).not.toHaveClass('items-center', 'px-2', 'border-t', 'space-y-1');
+    expect(workspaceRail).toHaveClass('global-sidebar-rail-stack');
+    expect(workspaceRail).not.toHaveClass('items-center', 'px-2');
+    expect(footerActions).toHaveClass('global-sidebar-rail-stack');
+    expect(footerActions).not.toHaveClass('items-center', 'px-2');
     const expand = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.expand')) });
     expect(expand).toHaveAttribute('data-global-sidebar-toggle');
     expect(expand.className).toContain('left-[var(--global-sidebar-toggle-left)]');
@@ -244,6 +251,9 @@ describe('GlobalSidebar rail flyout', () => {
     expect(navigation).toHaveAttribute('data-global-sidebar-tabbar-toggle', 'false');
     expect(navigation.querySelector('[data-global-sidebar-brand-icon]')).toBe(brandIcon);
     expect(navigation.querySelector('[data-global-sidebar-brand-row]')).toBe(brandRow);
+    expect(navigation.querySelector('[data-global-sidebar-primary-nav]')).not.toHaveClass('global-sidebar-rail-stack');
+    expect(navigation.querySelector('[data-global-sidebar-workspace-rail]')).not.toBeInTheDocument();
+    expect(navigation.querySelector('[data-global-sidebar-footer-actions]')).not.toHaveClass('global-sidebar-rail-stack');
     expect(screen.getByText('MyAgents')).toBeInTheDocument();
     first.unmount();
 

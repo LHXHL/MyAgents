@@ -707,7 +707,7 @@ export default memo(function GlobalSidebar({
         </div>
 
         <nav
-          className={`shrink-0 ${expanded ? 'px-3 pb-2 pt-1' : 'flex flex-col items-center px-2 pb-2 pt-1'}`}
+          className={`shrink-0 ${expanded ? 'px-3 pb-2 pt-1' : 'global-sidebar-rail-stack pb-2 pt-1'}`}
           data-global-sidebar-primary-nav
         >
           <SidebarNavButton
@@ -751,7 +751,8 @@ export default memo(function GlobalSidebar({
           <div className="min-h-0 flex-1 border-t border-[var(--line-subtle)]">{tree}</div>
         ) : (
           <div
-            className="flex min-h-0 flex-1 flex-col items-center border-t border-[var(--line-subtle)] px-2 pt-3"
+            className="global-sidebar-rail-stack min-h-0 flex-1 border-t border-[var(--line-subtle)] pt-3"
+            data-global-sidebar-workspace-rail
             onKeyDown={(event) => {
               if (event.key !== 'Escape' || !flyoutOpen) return;
               event.preventDefault();
@@ -795,7 +796,10 @@ export default memo(function GlobalSidebar({
           </div>
         )}
 
-        <div className={`shrink-0 space-y-1 border-t border-[var(--line-subtle)] py-3 ${expanded ? 'px-3' : 'flex flex-col items-center px-2'}`}>
+        <div
+          className={`shrink-0 space-y-1 border-t border-[var(--line-subtle)] py-3 ${expanded ? 'px-3' : 'global-sidebar-rail-stack'}`}
+          data-global-sidebar-footer-actions
+        >
           <div ref={feedbackTriggerRef} className={expanded ? '' : 'flex justify-center'}>
             <SidebarNavButton
               expanded={expanded}
