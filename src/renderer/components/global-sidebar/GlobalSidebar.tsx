@@ -797,7 +797,7 @@ export default memo(function GlobalSidebar({
         )}
 
         <div
-          className={`shrink-0 space-y-1 border-t border-[var(--line-subtle)] py-3 ${expanded ? 'px-3' : 'global-sidebar-rail-stack'}`}
+          className={`shrink-0 border-t border-[var(--line-subtle)] py-3 ${expanded ? 'px-3' : 'global-sidebar-rail-stack'}`}
           data-global-sidebar-footer-actions
         >
           <div ref={feedbackTriggerRef} className={expanded ? '' : 'flex justify-center'}>
@@ -1134,7 +1134,7 @@ function WorkspaceTree({
             </button>
           </div>
         ) : (
-          <div className="space-y-1">
+          <div data-global-sidebar-workspace-list>
             {projects.map((project) => {
               const key = normalizeWorkspacePathIdentity(project.path);
               const sessions = sessionsByWorkspace.get(key) ?? [];
@@ -1431,7 +1431,12 @@ function SessionRow({
         className="flex h-full w-full min-w-0 items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]"
       >
         <SessionStateIcon tab={tab} active={active} />
-        <span className="min-w-0 flex-1 truncate text-sm">{getSessionDisplayText(session)}</span>
+        <span
+          className="min-w-0 flex-1 truncate text-xs"
+          data-global-sidebar-session-title
+        >
+          {getSessionDisplayText(session)}
+        </span>
         {session.favorite && <Star className="h-3 w-3 shrink-0 text-[var(--accent)]" fill="currentColor" />}
         {tags.map((tag, index) => <SessionTagBadge key={`${tag.type}-${index}`} tag={tag} />)}
         <UnreadNotificationIndicator

@@ -241,7 +241,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(workspaceRail).toHaveClass('global-sidebar-rail-stack');
     expect(workspaceRail).not.toHaveClass('items-center', 'px-2');
     expect(footerActions).toHaveClass('global-sidebar-rail-stack');
-    expect(footerActions).not.toHaveClass('items-center', 'px-2');
+    expect(footerActions).not.toHaveClass('items-center', 'px-2', 'space-y-1');
     const expand = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.expand')) });
     expect(expand).toHaveAttribute('data-global-sidebar-toggle');
     expect(expand.className).toContain('left-[var(--global-sidebar-toggle-left)]');
@@ -360,6 +360,7 @@ describe('GlobalSidebar rail flyout', () => {
     renderSidebar({ activeWorkspacePath: '/work/project-one' });
     fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
 
+    expect(document.querySelector('[data-global-sidebar-workspace-list]')).not.toHaveClass('space-y-1');
     const workspaceRow = screen.getByText('Project one').closest('[data-global-sidebar-workspace-row]');
     expect(workspaceRow).toHaveClass('bg-[var(--hover-bg)]');
     expect(workspaceRow).not.toHaveClass('bg-[var(--paper-elevated)]', 'shadow-sm');
@@ -369,6 +370,9 @@ describe('GlobalSidebar rail flyout', () => {
     expect(firstSession).toHaveTextContent('Telegram');
     expect(firstSession).toHaveTextContent(String(i18n.t('app:sessionTags.cron')));
     const firstSessionRow = firstSession.closest('[data-global-sidebar-session-row]');
+    expect(firstSessionRow).toHaveClass('h-9');
+    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-title]')).toHaveClass('text-xs');
+    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-title]')).not.toHaveClass('text-sm');
     expect(firstSession).toHaveClass('w-full');
     expect(firstSessionRow?.querySelector('[data-global-sidebar-session-date]')).toHaveClass('ml-auto');
     expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('absolute');

@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.4
+> **Version**: 2.8.5
 > **Last Updated**: 2026-07-26
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -1261,9 +1261,9 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
   品牌第二行: h-10；固定 x 的 20px 圆角矩形 App Icon + MyAgents text-sm
   连续主导航行: h-10, px-3, text-sm, icon 16px, 行间距 0
   工作区标题行: h-12, text-xs, 弱化文字
-  工作区行: h-10；整行只负责展开/折叠
-  Session 行: h-9；标题单行 truncate，右侧时间 text-xs
-  底部入口: 固定，不随工作区历史滚动
+  工作区行: h-10；整行只负责展开/折叠；顶层条目额外行间距 0
+  Session 行: h-9；标题 text-xs 单行 truncate，右侧时间 text-xs
+  底部入口: h-10，额外行间距 0；固定且不随工作区历史滚动
 
 rail 72px:
   图标按钮: 40 × 40px
@@ -1282,6 +1282,7 @@ rail 72px:
 - Session 读取状态按工作区隔离：某个工作区加载或失败时只在该树枝显示骨架/原位重试，不遮蔽其它已成功工作区。
 - 工作区整行只切换树；“在此工作区新建对话”和更多菜单是独立 hover/focus 动作，避免把资源浏览与启动混为一谈。
 - Session 行可显示收藏、来源标签、时间和具体 Session 状态；工作区行与 rail 不显示聚合 badge。Session 行占满树枝到右侧边界，日期以 `ml-auto` 贴近右缘；更多菜单绝对悬浮在日期位置，hover/focus 时替换日期，不参与正常布局宽度。
+- 顶层工作区按连续资源树排布，工作区 wrapper 之间不添加额外 gap；展开分支自身的 Session 行和缩进连线负责表达归属。Session 标题使用 `text-xs`，与工作区 `text-sm` 形成层级，同时保留 `h-9` 点击高度。
 - 工作区关联态与普通 hover 统一使用 `var(--hover-bg)`，不增加 `paper-elevated` 或阴影；Session active 也使用 `var(--hover-bg)`。小图标按钮 hover 使用 `var(--paper-inset)`。
 - 空态、加载骨架和局部失败重试都留在工作区滚动区域，不能拖垮全局导航或推走底部入口。
 
@@ -1338,6 +1339,7 @@ Launcher 选中的工作区仅投影为全局树的关联高亮，不因此展�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.5 | 2026-07-26 | **全局侧栏资源密度校准**：Session 标题从 `text-sm` 降为 `text-xs` 并保留 `h-9` 命中高度；顶层工作区与底部“小助理/设置”均移除额外 4px 行间距，使资源树和上下导航采用一致的连续节奏 |
 | 2.8.4 | 2026-07-26 | **全局侧栏材质分层校准**：新增 Theme-owned `--global-sidebar-bg`，八套 Theme 的 light/dark 均在自身 `paper → paper-inset` 色阶间微量下探；仅全局侧栏根面消费，右侧页面、`paper-elevated` 卡片/弹层、顶部 Tab 栏与交互态不变 |
 | 2.8.3 | 2026-07-25 | **全局侧边栏功能图标锚点校正**：主导航、工作区与底部入口的 40px rail 命中区统一固定于 x=12px，使 16px 图标左缘在展开/rail 中始终位于 x=24px；禁止 rail 按剩余宽度重新居中造成折叠时 4px 横跳 |
 | 2.8.2 | 2026-07-25 | **全局侧边栏品牌锚点与信息密度校正**：App Icon 统一为 20px macOS 风格圆角矩形并绝对锁在窗口 x=24px，展开/rail 共用同一尺寸、坐标和 DOM，仅显隐文字；主导航改为无分割线、无行间距连续组；工作区关联态降为 hover 同级；Session 日期贴右，更多菜单悬浮替换日期而不占位 |
