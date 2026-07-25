@@ -50,6 +50,9 @@ const mocks = vi.hoisted(() => {
     getGlobalServerUrl: vi.fn(async () => 'http://127.0.0.1:31415'),
     ensureSessionSidecar: vi.fn(async () => ({ port: 31417, isNew: true })),
     activateSession: vi.fn(async () => undefined),
+    getSessionActivation: vi.fn(async () => null as { tab_id: string | null; task_id: string | null } | null),
+    updateSessionTab: vi.fn(async () => undefined),
+    cancelBackgroundCompletion: vi.fn(async () => undefined),
     releaseTabSession: vi.fn(async () => false),
     getSessionPort: vi.fn(async () => null),
     hasSessionSidecar: vi.fn(async () => true),
@@ -90,8 +93,8 @@ vi.mock('@/api/tauriClient', () => ({
   initGlobalSidecarReadyPromise: mocks.initGlobalSidecarReadyPromise,
   markGlobalSidecarReady: mocks.markGlobalSidecarReady,
   getGlobalServerUrl: mocks.getGlobalServerUrl,
-  getSessionActivation: vi.fn(async () => null),
-  updateSessionTab: vi.fn(async () => undefined),
+  getSessionActivation: mocks.getSessionActivation,
+  updateSessionTab: mocks.updateSessionTab,
   ensureSessionSidecar: mocks.ensureSessionSidecar,
   releaseTabSession: mocks.releaseTabSession,
   activateSession: mocks.activateSession,
@@ -101,7 +104,7 @@ vi.mock('@/api/tauriClient', () => ({
   getSessionGeneration: vi.fn(async () => 1),
   stopSseProxy: vi.fn(async () => undefined),
   startBackgroundCompletion: mocks.startBackgroundCompletion,
-  cancelBackgroundCompletion: vi.fn(async () => undefined),
+  cancelBackgroundCompletion: mocks.cancelBackgroundCompletion,
   updateGlobalServerUrl: vi.fn(),
   canRestoreSession: vi.fn(async () => true),
   getUserSchedulerLifecycleSnapshot: vi.fn(async () => ({ runningTaskCount: 0, protectedSessionIds: [] })),
@@ -153,7 +156,7 @@ vi.mock('@/components/LinkContextMenuProvider', () => ({
 }));
 
 vi.mock('@/components/TabBar', () => ({
-  default: (props: { tabs: Array<{ id: string; title: string; sessionId?: string | null }>; activeTabId: string | null; onCloseTab: (tabId: string) => Promise<void> }) => {
+  default: (props: { tabs: Array<{ id: string; title: string; sessionId?: string | null; view?: string; sidecarConfigDisposition?: string }>; activeTabId: string | null; onCloseTab: (tabId: string) => Promise<void> }) => {
     mocks.tabbarProps.push(props);
     return <div data-testid="tabbar-active">{props.tabs.find(t => t.id === props.activeTabId)?.title ?? 'missing'}</div>;
   },
@@ -331,6 +334,11 @@ describe('App helper launch', () => {
     mocks.agent.runtimeConfig = undefined;
     mocks.multiAgentRuntime = false;
     mocks.hasSessionSidecar.mockResolvedValue(true);
+    mocks.ensureSessionSidecar.mockResolvedValue({ port: 31417, isNew: true });
+    mocks.activateSession.mockResolvedValue(undefined);
+    mocks.getSessionActivation.mockResolvedValue(null);
+    mocks.updateSessionTab.mockResolvedValue(undefined);
+    mocks.cancelBackgroundCompletion.mockResolvedValue(undefined);
     mocks.resolveBuiltinSelection.mockReturnValue({ provider: mocks.provider, model: 'mimo-v2.5-pro' });
   });
 
@@ -535,6 +543,160 @@ describe('App helper launch', () => {
         entry_source: 'global_sidebar',
       }));
     });
+  });
+
+  it('activates a new sidebar Session tab before its Sidecar is ready', async () => {
+    let resolveEnsure!: (result: { port: number; isNew: boolean }) => void;
+    mocks.ensureSessionSidecar.mockReturnValueOnce(new Promise((resolve) => {
+      resolveEnsure = resolve;
+    }));
+    const session = {
+      id: 'slow-sidebar-session',
+      agentDir: mocks.project.path,
+      title: 'Slow sidebar history',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    };
+    render(<App />);
+
+    let openPromise!: Promise<boolean>;
+    act(() => {
+      openPromise = latestSidebarProps().onOpenSession(session, mocks.project);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('tabbar-active')).toHaveTextContent('Slow sidebar history');
+      expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(2);
+    });
+    const pendingTab = (mocks.tabbarProps.at(-1)?.tabs as Array<{
+      sessionId?: string;
+      sidecarConfigDisposition?: string;
+    }>).find((tab) => tab.sessionId === session.id);
+    expect(pendingTab?.sidecarConfigDisposition).toBe('pending');
+    expect(screen.getByTestId('tab-provider')).toBeInTheDocument();
+    expect(screen.getByTestId('chat-page')).toBeInTheDocument();
+    expect(mocks.activateSession).not.toHaveBeenCalled();
+
+    await act(async () => {
+      resolveEnsure({ port: 31417, isNew: true });
+      await openPromise;
+    });
+    expect(mocks.activateSession).toHaveBeenCalledWith(
+      session.id,
+      expect.stringMatching(/^tab-/),
+      null,
+      31417,
+      mocks.project.path,
+      false,
+    );
+    expect(screen.getByTestId('tab-provider')).toBeInTheDocument();
+  });
+
+  it('does not yank focus back when a slow sidebar Session finishes after the user switches tabs', async () => {
+    let resolveEnsure!: (result: { port: number; isNew: boolean }) => void;
+    mocks.ensureSessionSidecar.mockReturnValueOnce(new Promise((resolve) => {
+      resolveEnsure = resolve;
+    }));
+    const session = {
+      id: 'background-ready-session',
+      agentDir: mocks.project.path,
+      title: 'Background ready history',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    };
+    render(<App />);
+
+    let openPromise!: Promise<boolean>;
+    act(() => {
+      openPromise = latestSidebarProps().onOpenSession(session, mocks.project);
+    });
+    await waitFor(() => expect(screen.getByTestId('tabbar-active')).toHaveTextContent('Background ready history'));
+
+    act(() => latestSidebarProps().onOpenSettings());
+    await waitFor(() => {
+      const latest = mocks.tabbarProps.at(-1);
+      const active = (latest?.tabs as Array<{ id: string; view?: string }>).find(
+        (tab) => tab.id === latest?.activeTabId,
+      );
+      expect(active?.view).toBe('settings');
+    });
+
+    await act(async () => {
+      resolveEnsure({ port: 31417, isNew: false });
+      await openPromise;
+    });
+
+    const latest = mocks.tabbarProps.at(-1);
+    const active = (latest?.tabs as Array<{ id: string; view?: string }>).find(
+      (tab) => tab.id === latest?.activeTabId,
+    );
+    expect(active?.view).toBe('settings');
+  });
+
+  it('preserves Task ownership after optimistic activation of a cron-owned Session', async () => {
+    mocks.getSessionActivation.mockResolvedValue({ tab_id: null, task_id: 'cron-task-1' });
+    const session = {
+      id: 'cron-owned-session',
+      agentDir: mocks.project.path,
+      title: 'Cron-owned history',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    };
+    render(<App />);
+
+    let opened = false;
+    await act(async () => {
+      opened = await latestSidebarProps().onOpenSession(session, mocks.project);
+    });
+
+    const sessionTab = (mocks.tabbarProps.at(-1)?.tabs as Array<{ id: string; sessionId?: string }>).find(
+      (tab) => tab.sessionId === session.id,
+    );
+    expect(opened).toBe(true);
+    expect(mocks.getSessionActivation).toHaveBeenCalledWith(session.id);
+    expect(mocks.ensureSessionSidecar).toHaveBeenCalledWith(
+      session.id,
+      mocks.project.path,
+      'tab',
+      sessionTab?.id,
+    );
+    expect(sessionTab).toBeTruthy();
+    expect(mocks.updateSessionTab).toHaveBeenCalledWith(session.id, sessionTab?.id);
+    expect(mocks.activateSession).not.toHaveBeenCalled();
+    expect(mocks.cancelBackgroundCompletion).not.toHaveBeenCalled();
+  });
+
+  it('restores the previous active tab when an optimistic sidebar Session open fails', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    let rejectEnsure!: (error: Error) => void;
+    mocks.ensureSessionSidecar.mockReturnValueOnce(new Promise((_, reject) => {
+      rejectEnsure = reject;
+    }));
+    const session = {
+      id: 'failed-sidebar-session',
+      agentDir: mocks.project.path,
+      title: 'Failed sidebar history',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    };
+    render(<App />);
+
+    let openPromise!: Promise<boolean>;
+    act(() => {
+      openPromise = latestSidebarProps().onOpenSession(session, mocks.project);
+    });
+    await waitFor(() => expect(screen.getByTestId('tabbar-active')).toHaveTextContent('Failed sidebar history'));
+
+    let opened = true;
+    await act(async () => {
+      rejectEnsure(new Error('ensure failed'));
+      opened = await openPromise;
+    });
+
+    expect(opened).toBe(false);
+    expect(screen.getByTestId('tabbar-active')).toHaveTextContent('New Tab');
+    expect(mocks.tabbarProps.at(-1)?.tabs).toHaveLength(1);
+    errorSpy.mockRestore();
   });
 
   it('opens a sidebar workspace as a fresh Chat tab without replacing the functional tab', async () => {

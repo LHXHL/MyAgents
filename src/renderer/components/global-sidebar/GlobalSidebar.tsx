@@ -16,8 +16,7 @@ import {
   Loader2,
   MessageSquarePlus,
   MoreHorizontal,
-  PanelLeftClose,
-  PanelLeftOpen,
+  PanelLeft,
   PanelTop,
   Pin,
   PinOff,
@@ -40,6 +39,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -53,6 +53,7 @@ import FeedbackPopover from '@/components/FeedbackPopover';
 import PathInputDialog from '@/components/PathInputDialog';
 import SessionStatsModal from '@/components/SessionStatsModal';
 import SessionTagBadge from '@/components/SessionTagBadge';
+import Tip from '@/components/Tip';
 import UnreadNotificationIndicator from '@/components/UnreadNotificationIndicator';
 import { useToast } from '@/components/Toast';
 import { AddWorkspaceMenu, TemplateLibraryDialog } from '@/components/launcher';
@@ -105,6 +106,19 @@ const SESSION_PAGE_SIZE = 5;
 const AUTO_RAIL_QUERY = '(max-width: 1080px)';
 const EMPTY_TAGS: SessionTag[] = [];
 
+export function isPointerWithinBounds(
+  bounds: Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom'>,
+  clientX: number,
+  clientY: number,
+): boolean {
+  return bounds.right > bounds.left
+    && bounds.bottom > bounds.top
+    && clientX >= bounds.left
+    && clientX < bounds.right
+    && clientY >= bounds.top
+    && clientY < bounds.bottom;
+}
+
 export type CapabilitySection = 'skills' | 'plugins' | 'mcp';
 
 interface GlobalSidebarProps {
@@ -144,20 +158,6 @@ function useForcedRail(): boolean {
   return forced;
 }
 
-function SidebarTooltip({ label, children }: { label: string; children: ReactNode }) {
-  return (
-    <div className="group/sidebar-tip relative flex justify-center">
-      {children}
-      <div
-        role="tooltip"
-        className="pointer-events-none invisible absolute left-full top-1/2 z-[270] ml-3 -translate-y-1/2 whitespace-nowrap rounded-md bg-[var(--button-dark-bg)] px-2.5 py-1.5 text-xs text-[var(--button-dark-text)] opacity-0 shadow-md transition-opacity delay-500 group-hover/sidebar-tip:visible group-hover/sidebar-tip:opacity-100 group-focus-within/sidebar-tip:visible group-focus-within/sidebar-tip:opacity-100"
-      >
-        {label}
-      </div>
-    </div>
-  );
-}
-
 function useNestedInteractionCleanup(onOpenChange: (open: boolean) => void): void {
   const onOpenChangeRef = useRef(onOpenChange);
   useEffect(() => {
@@ -172,10 +172,19 @@ interface SidebarNavButtonProps {
   expanded: boolean;
   active?: boolean;
   disabled?: boolean;
+  tooltipDisabled?: boolean;
   onClick: () => void;
 }
 
-function SidebarNavButton({ icon, label, expanded, active, disabled, onClick }: SidebarNavButtonProps) {
+function SidebarNavButton({
+  icon,
+  label,
+  expanded,
+  active,
+  disabled,
+  tooltipDisabled,
+  onClick,
+}: SidebarNavButtonProps) {
   const button = (
     <button
       type="button"
@@ -195,7 +204,11 @@ function SidebarNavButton({ icon, label, expanded, active, disabled, onClick }: 
       {expanded && <span className="min-w-0 truncate">{label}</span>}
     </button>
   );
-  return expanded ? button : <SidebarTooltip label={label}>{button}</SidebarTooltip>;
+  return expanded ? button : (
+    <Tip label={label} position="right" disabled={tooltipDisabled}>
+      {button}
+    </Tip>
+  );
 }
 
 export default memo(function GlobalSidebar({
@@ -240,6 +253,10 @@ export default memo(function GlobalSidebar({
   const [archivedExpanded, setArchivedExpanded] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [flyoutOpen, setFlyoutOpen] = useState(false);
+  const previousActiveTabIdRef = useRef(activeTab?.id ?? null);
+  const activeTabIdRef = useRef(activeTab?.id ?? null);
+  activeTabIdRef.current = activeTab?.id ?? null;
+  const resourceSurfaceInteractionGenerationRef = useRef(0);
   const openNestedLayerKeysRef = useRef(new Set<string>());
   const flyoutTriggerRef = useRef<HTMLButtonElement | null>(null);
   const flyoutRef = useRef<HTMLDivElement | null>(null);
@@ -326,13 +343,17 @@ export default memo(function GlobalSidebar({
 
   const openFlyoutNow = useCallback(() => {
     clearFlyoutTimers();
+    resourceSurfaceInteractionGenerationRef.current += 1;
     setFlyoutOpen(true);
   }, [clearFlyoutTimers]);
 
   const scheduleFlyoutOpen = useCallback(() => {
     if (expanded || flyoutOpen) return;
     if (closeTimerRef.current) clearTimeout(closeTimerRef.current);
-    openTimerRef.current = setTimeout(() => setFlyoutOpen(true), 125);
+    openTimerRef.current = setTimeout(() => {
+      resourceSurfaceInteractionGenerationRef.current += 1;
+      setFlyoutOpen(true);
+    }, 125);
   }, [expanded, flyoutOpen]);
 
   const scheduleFlyoutClose = useCallback(() => {
@@ -340,11 +361,22 @@ export default memo(function GlobalSidebar({
     if (openTimerRef.current) clearTimeout(openTimerRef.current);
     closeTimerRef.current = setTimeout(() => {
       if (openNestedLayerKeysRef.current.size > 0 || childLayerOpenRef.current) return;
+      const flyout = flyoutRef.current;
+      if (!flyout || typeof document === 'undefined') return;
       const active = document.activeElement;
-      if (active && (flyoutRef.current?.contains(active) || flyoutTriggerRef.current?.contains(active))) return;
+      if (active && (flyout.contains(active) || flyoutTriggerRef.current?.contains(active))) return;
       setFlyoutOpen(false);
     }, 220);
   }, [expanded]);
+
+  const handleFlyoutPointerLeave = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const bounds = flyoutRef.current?.getBoundingClientRect();
+    if (bounds && isPointerWithinBounds(bounds, event.clientX, event.clientY)) {
+      clearFlyoutTimers();
+      return;
+    }
+    scheduleFlyoutClose();
+  }, [clearFlyoutTimers, scheduleFlyoutClose]);
 
   const handleNestedInteractionChange = useCallback((key: string, open: boolean) => {
     if (open) openNestedLayerKeysRef.current.add(key);
@@ -366,9 +398,19 @@ export default memo(function GlobalSidebar({
   const closeFlyout = useCallback((restoreFocus = false) => {
     clearFlyoutTimers();
     openNestedLayerKeysRef.current.clear();
+    resourceSurfaceInteractionGenerationRef.current += 1;
     setFlyoutOpen(false);
     if (restoreFocus) flyoutTriggerRef.current?.focus();
   }, [clearFlyoutTimers]);
+
+  useEffect(() => {
+    const activeTabId = activeTab?.id ?? null;
+    const activeTabChanged = previousActiveTabIdRef.current !== activeTabId;
+    previousActiveTabIdRef.current = activeTabId;
+    if (!activeTabChanged) return;
+    setSearchOpen(false);
+    closeFlyout();
+  }, [activeTab?.id, closeFlyout]);
 
   useCloseLayer(() => {
     if (!flyoutOpen) return false;
@@ -559,19 +601,42 @@ export default memo(function GlobalSidebar({
     initialMessage?: InitialMessage,
     entryIntent: 'open_workspace' | 'workspace_init' = 'open_workspace',
   ) => {
+    const sourceActiveTabId = activeTabIdRef.current;
+    const interactionGeneration = resourceSurfaceInteractionGenerationRef.current;
     const opened = await onOpenWorkspace(project, initialMessage, entryIntent);
     if (opened) {
       void touchProject(project.id).catch(() => {});
-      closeFlyout();
+      if (
+        activeTabIdRef.current === sourceActiveTabId
+        && resourceSurfaceInteractionGenerationRef.current === interactionGeneration
+      ) {
+        closeFlyout();
+      }
     }
   }, [closeFlyout, onOpenWorkspace, touchProject]);
 
   const handleOpenSession = useCallback(async (session: SessionMetadata, project: Project) => {
-    const opened = await onOpenSession(session, project);
-    if (opened) {
+    const sourceActiveTabId = activeTabIdRef.current;
+    const interactionGeneration = resourceSurfaceInteractionGenerationRef.current;
+    try {
+      const opened = await onOpenSession(session, project);
+      if (!opened) return;
+      // A newly activated target already closes through the active-Tab
+      // projection above. This success fallback covers same-Tab navigation,
+      // where the authoritative active identity does not change. Correlate it
+      // to the original interaction generation so an old ensure completion
+      // cannot dismiss a flyout the user has since reopened.
+      if (
+        activeTabIdRef.current === sourceActiveTabId
+        && resourceSurfaceInteractionGenerationRef.current === interactionGeneration
+      ) {
+        setSearchOpen(false);
+        closeFlyout();
+      }
       void touchProject(project.id).catch(() => {});
-      setSearchOpen(false);
-      closeFlyout();
+    } catch (error) {
+      // Navigation rejection keeps the resource surface available for retry.
+      console.error('[GlobalSidebar] Failed to open Session:', error);
     }
   }, [closeFlyout, onOpenSession, touchProject]);
 
@@ -598,7 +663,13 @@ export default memo(function GlobalSidebar({
 
   const handleSearchOpen = useCallback(() => {
     if (!isTauriEnvironment()) return;
+    resourceSurfaceInteractionGenerationRef.current += 1;
     setSearchOpen(true);
+  }, []);
+
+  const handleSearchClose = useCallback(() => {
+    resourceSurfaceInteractionGenerationRef.current += 1;
+    setSearchOpen(false);
   }, []);
 
   const activeView = activeTab?.view;
@@ -674,21 +745,24 @@ export default memo(function GlobalSidebar({
       >
         <div className="custom-titlebar relative h-11 shrink-0" data-tauri-drag-region>
           {!forceRail && (
-            <button
-              type="button"
-              onClick={handleToggleMode}
-              className={`absolute top-1.5 flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+            <div
+              className={`absolute top-1.5 ${
                 isWindows ? 'left-3' : 'left-[var(--global-sidebar-toggle-left)]'
               }`}
-              aria-label={expanded ? t('globalSidebar.collapse') : t('globalSidebar.expand')}
-              title={expanded ? t('globalSidebar.collapse') : t('globalSidebar.expand')}
-              data-global-sidebar-toggle
-              data-no-drag
             >
-              {expanded
-                ? <PanelLeftClose className="h-4 w-4" />
-                : <PanelLeftOpen className="h-4 w-4" />}
-            </button>
+              <Tip label={expanded ? t('globalSidebar.collapse') : t('globalSidebar.expand')} position="bottom">
+                <button
+                  type="button"
+                  onClick={handleToggleMode}
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]"
+                  aria-label={expanded ? t('globalSidebar.collapse') : t('globalSidebar.expand')}
+                  data-global-sidebar-toggle
+                  data-no-drag
+                >
+                  <PanelLeft className="h-4 w-4" data-global-sidebar-toggle-icon />
+                </button>
+              </Tip>
+            </div>
           )}
         </div>
 
@@ -786,7 +860,7 @@ export default memo(function GlobalSidebar({
                 className="absolute bottom-3 left-full top-12 z-[240] ml-2 w-[var(--global-sidebar-flyout-width)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-md"
                 data-global-sidebar-flyout
                 onPointerEnter={clearFlyoutTimers}
-                onPointerLeave={scheduleFlyoutClose}
+                onPointerLeave={handleFlyoutPointerLeave}
                 onFocusCapture={clearFlyoutTimers}
                 onBlurCapture={scheduleFlyoutClose}
               >
@@ -805,6 +879,7 @@ export default memo(function GlobalSidebar({
               expanded={expanded}
               icon={<Bot className="h-4 w-4" />}
               label={t('globalSidebar.helper')}
+              tooltipDisabled={showFeedback}
               onClick={() => setShowFeedback((value) => !value)}
             />
             <FeedbackPopover
@@ -913,7 +988,7 @@ export default memo(function GlobalSidebar({
             projects={activeProjects}
             taskCenterData={taskCenterData}
             initialMode="search"
-            onClose={() => setSearchOpen(false)}
+            onClose={handleSearchClose}
             onOpenTask={(session, project) => { void handleOpenSession(session, project); }}
           />
         </Suspense>
@@ -1059,16 +1134,17 @@ function WorkspaceTree({
           onCreateFromTemplate={onCreateFromTemplate}
           onOpenChange={(open) => onNestedInteractionChange('add-workspace', open)}
         />
-        <button
-          ref={viewMenuRef}
-          type="button"
-          onClick={() => setViewMenu(!viewMenuOpen)}
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-          aria-label={t('globalSidebar.workspaceViewOptions')}
-          title={t('globalSidebar.workspaceViewOptions')}
-        >
-          <MoreHorizontal className="h-4 w-4" />
-        </button>
+        <Tip label={tLauncher('workspaceCard.more')} position="bottom" align="end" disabled={viewMenuOpen}>
+          <button
+            ref={viewMenuRef}
+            type="button"
+            onClick={() => setViewMenu(!viewMenuOpen)}
+            className="flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            aria-label={t('globalSidebar.workspaceViewOptions')}
+          >
+            <MoreHorizontal className="h-4 w-4" />
+          </button>
+        </Tip>
         <Popover
           open={viewMenuOpen}
           onClose={() => setViewMenu(false)}
@@ -1329,25 +1405,27 @@ function WorkspaceRow({
         <span className="min-w-0 flex-1 truncate font-medium">{displayName}</span>
       </button>
       <div className={`flex shrink-0 items-center pr-1 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}>
-        <button
-          type="button"
-          onClick={onOpenWorkspace}
-          className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-          title={t('globalSidebar.newChatHere')}
-          aria-label={t('globalSidebar.newChatHere')}
-        >
-          <MessageSquarePlus className="h-3.5 w-3.5" />
-        </button>
-        <button
-          ref={menuRef}
-          type="button"
-          onClick={() => setMenu(!menuOpen)}
-          className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-          title={tLauncher('workspaceCard.more')}
-          aria-label={tLauncher('workspaceCard.more')}
-        >
-          <MoreHorizontal className="h-3.5 w-3.5" />
-        </button>
+        <Tip label={t('globalSidebar.newChatHere')} align="end">
+          <button
+            type="button"
+            onClick={onOpenWorkspace}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            aria-label={t('globalSidebar.newChatHere')}
+          >
+            <MessageSquarePlus className="h-3.5 w-3.5" />
+          </button>
+        </Tip>
+        <Tip label={tLauncher('workspaceCard.more')} align="end" disabled={menuOpen}>
+          <button
+            ref={menuRef}
+            type="button"
+            onClick={() => setMenu(!menuOpen)}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            aria-label={tLauncher('workspaceCard.more')}
+          >
+            <MoreHorizontal className="h-3.5 w-3.5" />
+          </button>
+        </Tip>
       </div>
       <Popover
         open={menuOpen}
@@ -1460,16 +1538,17 @@ function SessionRow({
         }`}
         data-global-sidebar-session-action-overlay
       >
-        <button
-          ref={menuRef}
-          type="button"
-          onClick={() => setMenu(!menuOpen)}
-          className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-          title={tLauncher('rightRail.more')}
-          aria-label={tLauncher('rightRail.more')}
-        >
-          <MoreHorizontal className="h-3.5 w-3.5" />
-        </button>
+        <Tip label={tLauncher('rightRail.more')} align="end" disabled={menuOpen}>
+          <button
+            ref={menuRef}
+            type="button"
+            onClick={() => setMenu(!menuOpen)}
+            className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            aria-label={tLauncher('rightRail.more')}
+          >
+            <MoreHorizontal className="h-3.5 w-3.5" />
+          </button>
+        </Tip>
       </div>
       <Popover
         open={menuOpen}
@@ -1534,15 +1613,17 @@ function ArchivedWorkspaceRow({ project, onUnarchive, onAgentSettings, onOpenFol
     <div className="group/archive flex h-10 items-center gap-2 rounded-lg px-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]">
       <WorkspaceIcon icon={project.icon} size={16} />
       <span className="min-w-0 flex-1 truncate">{project.displayName || project.name}</span>
-      <button
-        ref={menuRef}
-        type="button"
-        onClick={() => setMenu(!menuOpen)}
-        className={`flex h-7 w-7 items-center justify-center rounded-md hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? '' : 'opacity-0 group-hover/archive:opacity-100 group-focus-within/archive:opacity-100'}`}
-        aria-label={tLauncher('workspaceCard.more')}
-      >
-        <MoreHorizontal className="h-3.5 w-3.5" />
-      </button>
+      <Tip label={tLauncher('workspaceCard.more')} align="end" disabled={menuOpen}>
+        <button
+          ref={menuRef}
+          type="button"
+          onClick={() => setMenu(!menuOpen)}
+          className={`flex h-7 w-7 items-center justify-center rounded-md hover:bg-[var(--paper-inset)] hover:text-[var(--ink)] ${menuOpen ? '' : 'opacity-0 group-hover/archive:opacity-100 group-focus-within/archive:opacity-100'}`}
+          aria-label={tLauncher('workspaceCard.more')}
+        >
+          <MoreHorizontal className="h-3.5 w-3.5" />
+        </button>
+      </Tip>
       <Popover
         open={menuOpen}
         onClose={() => {

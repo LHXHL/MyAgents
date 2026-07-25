@@ -7,6 +7,7 @@ import { memo, useCallback, useRef, useState } from 'react';
 import { Plus, FolderPlus, LayoutTemplate } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
+import Tip from '@/components/Tip';
 import { Popover } from '@/components/ui/Popover';
 
 interface AddWorkspaceMenuProps {
@@ -33,20 +34,27 @@ export default memo(function AddWorkspaceMenu({
 
     const toggle = useCallback(() => setMenuOpen(!open), [open, setMenuOpen]);
 
-    return (
-        <>
-            <button
+    const button = (
+        <button
                 ref={buttonRef}
                 onClick={toggle}
                 className={variant === 'icon'
                     ? 'flex h-8 w-8 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]'
                     : 'flex items-center gap-1.5 rounded-lg bg-[var(--button-primary-bg)] px-2.5 py-1 text-sm font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]'}
                 aria-label={t('addWorkspaceMenu.add')}
-                title={variant === 'icon' ? t('addWorkspaceMenu.add') : undefined}
             >
                 <Plus className="h-3.5 w-3.5" />
                 {variant === 'label' && t('addWorkspaceMenu.add')}
             </button>
+    );
+
+    return (
+        <>
+            {variant === 'icon' ? (
+                <Tip label={t('addWorkspaceMenu.add')} position="bottom" align="end" disabled={open}>
+                    {button}
+                </Tip>
+            ) : button}
             <Popover
                 open={open}
                 onClose={() => setMenuOpen(false)}

@@ -425,7 +425,7 @@
       }
     },
     "history": {
-      "title": "历史记录",
+      "title": "工作区历史记录",
       "loading": "加载中...",
       "empty": "暂无历史记录",
       "current": "当前",

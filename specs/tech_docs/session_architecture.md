@@ -796,6 +796,8 @@ Tab 翻成 chat 时，Chat 要决定**如何与该 session 的 sidecar 对齐配
 
 即时进入还包含 `ChatBootOverlay` 的"AI 启动中"毛玻璃蒙层（翻页瞬时出现、就绪时淡出衔接），它同时是 App 的 lazy-Chat Suspense fallback。`getSessionPort` 之所以只能是提示：见上方「唯一裁决者」。
 
+从全局侧栏等资源入口“在新 Tab 打开已有 Session”时，`spawnTabForExistingSession` 必须用 `flushSync` 先把带真实 `sessionId`、`view:'chat'`、`sidecarConfigDisposition:'pending'` 的 Tab 加入并激活，再 await `ensureSessionSidecar` / activation。这里仍用 functional `setTabs` 与既有 render-mirror `tabsRef`，禁止提前手写 `tabsRef.current` 形成第二 authority；同步 commit 同时保证 warm Sidecar 极快返回时，后续 liveness check 已能看见新 Tab。Chat owner 子树立即挂载，由其自身 `ChatBootOverlay` 覆盖进程启动窗口；不能用 `isLoading` 条件替换整个 `TabProvider/Chat`，否则会破坏 SSE/Session 生命周期。ensure 完成只结算 `pending → push|adopt`，不得再次强制 active（用户可能已主动切走）。ensure/activation 失败则移除临时 Tab；只有它仍是 active 时才恢复仍存在的前一 Tab。该顺序不改变 `planSessionOpen` 前置裁决，也不允许在 planner 之前预塞 session Tab，否则会重新触发上文 `jump-to-tab` / 后台 owner 归属陷阱。侧栏 flyout / 搜索 overlay 的关闭只消费 active Tab projection 与发起时的 resource-surface interaction generation；Sidecar 的晚到完成不是 UI authority，不能关闭用户随后重新打开的资源面。
+
 ### Session 配置写入方向矩阵：setter 边界的 snapshot guard（#327，0.2.32+）
 
 `sidecarConfigDisposition`（上节）管的是**桌面 Chat 这个 writer**"要不要推"；本节管的是 **Rust IM router 这个 writer** 推过来时 sidecar **"要不要接"**。两个 choke point 互补，不可互替。

@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import type { ComponentProps } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -59,8 +59,30 @@ vi.mock('@/utils/browserMock', () => ({
 }));
 
 vi.mock('@/components/TaskCenterOverlay', () => ({
-  default: ({ initialMode }: { initialMode?: string }) => (
-    <div data-testid="task-center-overlay" data-initial-mode={initialMode} />
+  default: ({
+    initialMode,
+    onClose,
+    onOpenTask,
+    projects,
+    taskCenterData,
+  }: {
+    initialMode?: string;
+    onClose: () => void;
+    onOpenTask: (session: Record<string, unknown>, project: Record<string, unknown>) => void;
+    projects: Array<Record<string, unknown>>;
+    taskCenterData: { sessions: Array<Record<string, unknown>> };
+  }) => (
+    <div data-testid="task-center-overlay" data-initial-mode={initialMode}>
+      <button type="button" onClick={onClose}>Close search test overlay</button>
+      {taskCenterData.sessions[0] && projects[0] && (
+        <button
+          type="button"
+          onClick={() => onOpenTask(taskCenterData.sessions[0], projects[0])}
+        >
+          Open search session test
+        </button>
+      )}
+    </div>
   ),
 }));
 
@@ -78,7 +100,7 @@ vi.mock('@/components/Toast', () => ({
 import { i18n } from '@/i18n';
 import type { Tab } from '@/types/tab';
 import { GLOBAL_SIDEBAR_PREFERENCE_KEY } from '@/utils/globalSidebarPreference';
-import GlobalSidebar from './GlobalSidebar';
+import GlobalSidebar, { isPointerWithinBounds } from './GlobalSidebar';
 
 const launcherTab: Tab = {
   id: 'launcher-tab',
@@ -91,8 +113,8 @@ const launcherTab: Tab = {
 
 type SidebarProps = ComponentProps<typeof GlobalSidebar>;
 
-function renderSidebar(overrides: Partial<SidebarProps> = {}) {
-  return render(
+function sidebar(overrides: Partial<SidebarProps> = {}) {
+  return (
     <GlobalSidebar
       tabs={[launcherTab]}
       activeTab={launcherTab}
@@ -106,8 +128,12 @@ function renderSidebar(overrides: Partial<SidebarProps> = {}) {
       onOpenWorkspace={vi.fn(async () => true)}
       onOpenSession={vi.fn(async () => true)}
       {...overrides}
-    />,
+    />
   );
+}
+
+function renderSidebar(overrides: Partial<SidebarProps> = {}) {
+  return render(sidebar(overrides));
 }
 
 describe('GlobalSidebar rail flyout', () => {
@@ -142,6 +168,7 @@ describe('GlobalSidebar rail flyout', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('opens idempotently on click even after the hover delay has elapsed', () => {
@@ -206,11 +233,226 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.queryByRole('region', { name: 'Agent 工作区' })).not.toBeInTheDocument();
   });
 
+  it('keeps the flyout open when collapsing a workspace only changes layout beneath the pointer', () => {
+    const bounds = { left: 72, right: 392, top: 48, bottom: 700 };
+
+    expect(isPointerWithinBounds(bounds, 200, 160)).toBe(true);
+    expect(isPointerWithinBounds(bounds, 420, 160)).toBe(false);
+    expect(isPointerWithinBounds(bounds, bounds.right, 160)).toBe(false);
+    expect(isPointerWithinBounds(bounds, 200, bounds.bottom)).toBe(false);
+    expect(isPointerWithinBounds({ left: 0, right: 0, top: 0, bottom: 0 }, 0, 0)).toBe(false);
+
+  });
+
+  it('uses instant custom tooltips for workspace header and row actions', () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    const addButton = screen.getByRole('button', { name: String(i18n.t('launcher:addWorkspaceMenu.add')) });
+    const viewOptionsButton = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.workspaceViewOptions')) });
+    const workspaceRow = screen.getByText('Project one').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
+    const newChatButton = within(workspaceRow).getByRole('button', { name: String(i18n.t('app:globalSidebar.newChatHere')) });
+    const moreButton = within(workspaceRow).getByRole('button', { name: String(i18n.t('launcher:workspaceCard.more')) });
+
+    for (const button of [addButton, viewOptionsButton, newChatButton, moreButton]) {
+      expect(button).not.toHaveAttribute('title');
+      const tip = button.parentElement?.querySelector('[role="tooltip"]');
+      expect(tip).toHaveClass('bg-[var(--button-dark-bg)]/90');
+      expect(tip).not.toHaveClass('delay-500', 'transition-opacity');
+    }
+    expect(viewOptionsButton.parentElement?.querySelector('[role="tooltip"]')).toHaveTextContent('更多');
+    expect(moreButton.parentElement?.querySelector('[role="tooltip"]')).toHaveTextContent('更多');
+  });
+
   it('reserves tooltips for non-workspace rail actions', () => {
     renderSidebar();
 
     expect(screen.queryByRole('tooltip', { name: 'Agent 工作区' })).not.toBeInTheDocument();
-    expect(screen.getByRole('tooltip', { name: '任务' })).toBeInTheDocument();
+    const taskTip = screen.getByRole('tooltip', { name: '任务' });
+    expect(taskTip).toHaveClass('left-full', 'bg-[var(--button-dark-bg)]/90');
+    expect(taskTip).not.toHaveClass('delay-500', 'transition-opacity');
+
+    fireEvent.click(screen.getByRole('button', { name: '小助理' }));
+    expect(screen.queryByRole('tooltip', { name: '小助理' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the workspace surface open when Session navigation is rejected', async () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    mocks.taskData.sessions.push({
+      id: 'rejected-session',
+      agentDir: '/work/project-one',
+      title: 'Rejected session',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    });
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1,
+      preferredMode: 'rail',
+      expandedWorkspaceKeys: ['/work/project-one'],
+      hasSeededDefaultExpansion: true,
+      showAutomationSessions: true,
+      sessionView: 'all',
+    }));
+    const onOpenSession = vi.fn(async () => false);
+    renderSidebar({ onOpenSession });
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Rejected session/ }));
+    });
+
+    expect(onOpenSession).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('region', { name: 'Agent 工作区' })).toBeInTheDocument();
+  });
+
+  it('keeps the workspace surface open when Session navigation throws', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    mocks.taskData.sessions.push({
+      id: 'failed-session',
+      agentDir: '/work/project-one',
+      title: 'Failed session',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    });
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1,
+      preferredMode: 'rail',
+      expandedWorkspaceKeys: ['/work/project-one'],
+      hasSeededDefaultExpansion: true,
+      showAutomationSessions: true,
+      sessionView: 'all',
+    }));
+    const onOpenSession = vi.fn(async () => {
+      throw new Error('navigation failed');
+    });
+    renderSidebar({ onOpenSession });
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /Failed session/ }));
+    });
+
+    expect(onOpenSession).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('region', { name: 'Agent 工作区' })).toBeInTheDocument();
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[GlobalSidebar] Failed to open Session:',
+      expect.any(Error),
+    );
+    errorSpy.mockRestore();
+  });
+
+  it('closes the workspace surface when the authoritative active Tab changes', () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    const view = renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+    expect(screen.getByRole('region', { name: 'Agent 工作区' })).toBeInTheDocument();
+
+    const activeSessionTab: Tab = {
+      id: 'active-session-tab',
+      agentDir: '/work/project-one',
+      sessionId: 'active-session',
+      view: 'chat',
+      title: 'Active Session',
+      sidecarConfigDisposition: 'adopt',
+    };
+    view.rerender(sidebar({
+      tabs: [launcherTab, activeSessionTab],
+      activeTab: activeSessionTab,
+      activeWorkspacePath: '/work/project-one',
+    }));
+
+    expect(screen.queryByRole('region', { name: 'Agent 工作区' })).not.toBeInTheDocument();
+  });
+
+  it('does not let an old Session completion close a newly reopened flyout', async () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    mocks.taskData.sessions.push({
+      id: 'slow-session',
+      agentDir: '/work/project-one',
+      title: 'Slow session',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    });
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1,
+      preferredMode: 'rail',
+      expandedWorkspaceKeys: ['/work/project-one'],
+      hasSeededDefaultExpansion: true,
+      showAutomationSessions: true,
+      sessionView: 'all',
+    }));
+    let resolveOpen!: (opened: boolean) => void;
+    const onOpenSession = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveOpen = resolve;
+    }));
+    const view = renderSidebar({ onOpenSession });
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+    fireEvent.click(screen.getByRole('button', { name: /Slow session/ }));
+
+    const activeSessionTab: Tab = {
+      id: 'slow-session-tab',
+      agentDir: '/work/project-one',
+      sessionId: 'slow-session',
+      view: 'chat',
+      title: 'Slow session',
+      sidecarConfigDisposition: 'pending',
+    };
+    view.rerender(sidebar({
+      tabs: [launcherTab, activeSessionTab],
+      activeTab: activeSessionTab,
+      activeWorkspacePath: '/work/project-one',
+      onOpenSession,
+    }));
+    expect(screen.queryByRole('region', { name: 'Agent 工作区' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+    expect(screen.getByRole('region', { name: 'Agent 工作区' })).toBeInTheDocument();
+
+    await act(async () => {
+      resolveOpen(true);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole('region', { name: 'Agent 工作区' })).toBeInTheDocument();
+  });
+
+  it('does not let an old workspace completion close a newly reopened flyout', async () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    let resolveOpen!: (opened: boolean) => void;
+    const onOpenWorkspace = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveOpen = resolve;
+    }));
+    const view = renderSidebar({ onOpenWorkspace });
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.newChatHere')) }));
+
+    const pendingWorkspaceTab: Tab = {
+      id: 'pending-workspace-tab',
+      agentDir: '/work/project-one',
+      sessionId: null,
+      view: 'chat',
+      title: 'Project one',
+      sidecarConfigDisposition: 'pending',
+    };
+    view.rerender(sidebar({
+      tabs: [launcherTab, pendingWorkspaceTab],
+      activeTab: pendingWorkspaceTab,
+      activeWorkspacePath: '/work/project-one',
+      onOpenWorkspace,
+    }));
+    expect(screen.queryByRole('region', { name: 'Agent 工作区' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+    expect(screen.getByRole('region', { name: 'Agent 工作区' })).toBeInTheDocument();
+
+    await act(async () => {
+      resolveOpen(true);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByRole('region', { name: 'Agent 工作区' })).toBeInTheDocument();
   });
 
   it('keeps one fixed toggle across manual rail/expanded and leaves forced rail branded but stable', () => {
@@ -245,11 +487,19 @@ describe('GlobalSidebar rail flyout', () => {
     expect(footerActions).not.toHaveClass('items-center', 'px-2', 'space-y-1', 'border-t', 'border-[var(--line-subtle)]');
     const expand = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.expand')) });
     expect(expand).toHaveAttribute('data-global-sidebar-toggle');
-    expect(expand.className).toContain('left-[var(--global-sidebar-toggle-left)]');
+    expect(expand).not.toHaveAttribute('title');
+    const toggleSlot = expand.closest('.absolute');
+    expect(toggleSlot).toHaveClass('left-[var(--global-sidebar-toggle-left)]');
+    expect(expand.querySelector('[data-global-sidebar-toggle-icon]')).toHaveClass('lucide-panel-left');
+    expect(screen.getByRole('tooltip', { name: String(i18n.t('app:globalSidebar.expand')) }))
+      .toHaveClass('bg-[var(--button-dark-bg)]/90');
     fireEvent.click(expand);
     const collapse = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.collapse')) });
     expect(collapse).toBe(expand);
-    expect(collapse.className).toContain('left-[var(--global-sidebar-toggle-left)]');
+    expect(collapse.closest('.absolute')).toBe(toggleSlot);
+    expect(collapse.querySelector('[data-global-sidebar-toggle-icon]')).toHaveClass('lucide-panel-left');
+    expect(screen.getByRole('tooltip', { name: String(i18n.t('app:globalSidebar.collapse')) }))
+      .not.toHaveClass('delay-500', 'transition-opacity');
     expect(navigation).toHaveAttribute('data-global-sidebar-mode', 'expanded');
     expect(navigation).toHaveAttribute('data-global-sidebar-tabbar-toggle', 'false');
     expect(navigation.querySelector('[data-global-sidebar-brand-icon]')).toBe(brandIcon);
@@ -282,6 +532,44 @@ describe('GlobalSidebar rail flyout', () => {
     expect(overlay).toHaveAttribute('data-initial-mode', 'search');
   });
 
+  it('does not let an old Session completion close a newly reopened search overlay', async () => {
+    mocks.isTauri = true;
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    mocks.taskData.sessions.push({
+      id: 'slow-search-session',
+      agentDir: '/work/project-one',
+      title: 'Slow search session',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    });
+    let resolveOpen!: (opened: boolean) => void;
+    const onOpenSession = vi.fn(() => new Promise<boolean>((resolve) => {
+      resolveOpen = resolve;
+    }));
+    renderSidebar({ onOpenSession });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) }));
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Open search session test' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close search test overlay' }));
+    expect(screen.queryByTestId('task-center-overlay')).not.toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) }));
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('task-center-overlay')).toBeInTheDocument();
+
+    await act(async () => {
+      resolveOpen(true);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByTestId('task-center-overlay')).toBeInTheDocument();
+  });
+
   it('keeps archived workspaces reachable when there are no active workspaces', () => {
     mocks.projects.push({
       id: 'archived-1',
@@ -304,7 +592,8 @@ describe('GlobalSidebar rail flyout', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
     const region = screen.getByRole('region', { name: 'Agent 工作区' });
-    const moreButton = screen.getByTitle(String(i18n.t('launcher:workspaceCard.more')));
+    const workspaceRow = screen.getByText('Project one').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
+    const moreButton = within(workspaceRow).getByRole('button', { name: String(i18n.t('launcher:workspaceCard.more')) });
     fireEvent.click(moreButton);
     fireEvent.click(screen.getByText(String(i18n.t('launcher:workspaceCard.remove'))));
 
@@ -322,7 +611,8 @@ describe('GlobalSidebar rail flyout', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
     const region = screen.getByRole('region', { name: 'Agent 工作区' });
-    const moreButton = screen.getByTitle(String(i18n.t('launcher:workspaceCard.more')));
+    const workspaceRow = screen.getByText('Project one').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
+    const moreButton = within(workspaceRow).getByRole('button', { name: String(i18n.t('launcher:workspaceCard.more')) });
     fireEvent.click(moreButton);
     const pinItem = screen.getByText(String(i18n.t('launcher:workspaceCard.pin')));
     pinItem.focus();

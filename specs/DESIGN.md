@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.7
+> **Version**: 2.8.8
 > **Last Updated**: 2026-07-26
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -1246,7 +1246,7 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
 - 全局栏从窗口最顶部延伸到底部；右侧才是标题栏与 Tab Workspace。
 - macOS 红绿灯安全区属于侧栏顶部 chrome；Windows 窗口按钮仍固定在右侧标题栏最右端。
 - 常驻展开态 256px，rail 72px；切换模式不通过 width 动画持续重排主内容。
-- 顶部 chrome 分两行：第一行 44px 只承载原生窗口区、拖拽区与固定侧栏 toggle，第二行 40px 承载 App Icon + `MyAgents` 品牌。App Icon 使用 macOS App 风格的 22% 圆角矩形轮廓，在展开态与 rail 中始终保持 20px、固定于窗口 `x=24px` 且复用同一 DOM；它不参与 rail 居中计算，切换时只让品牌文字出现或消失。macOS toggle 固定在窗口 `x=84px` 起的 32px 槽位；展开时位于侧栏表面，手动 rail 时自然落入右侧 Tab 标题栏表面，屏幕坐标与 DOM 均不切换。
+- 顶部 chrome 分两行：第一行 44px 只承载原生窗口区、拖拽区与固定侧栏 toggle，第二行 40px 承载 App Icon + `MyAgents` 品牌。App Icon 使用 macOS App 风格的 22% 圆角矩形轮廓，在展开态与 rail 中始终保持 20px、固定于窗口 `x=24px` 且复用同一 DOM；它不参与 rail 居中计算，切换时只让品牌文字出现或消失。macOS toggle 固定在窗口 `x=84px` 起的 32px 槽位；展开时位于侧栏表面，手动 rail 时自然落入右侧 Tab 标题栏表面，屏幕坐标与 DOM 均不切换。toggle 两态共用简洁的单一 `PanelLeft` 轮廓，不叠加方向箭头；动作含义由即时 Tooltip 和 `aria-label` 表达。
 - 顶部 Tab 保留 active、关闭、拖拽、溢出、生成中、未读与触摸板切换语义，侧栏不得建立第二套页面选中状态。
 - 右侧标题栏使用纯 `var(--paper)` 根面和既有底部分割线，不使用 `paper → paper-inset` 混合渐变。常规模式在侧栏边界后保留 8px leading inset；手动 rail 的 52px 预留同时包含固定 toggle 槽位及其后的 8px 留白。32px Tab 使用 Theme-owned `rounded-md`；active 与 hover 均使用 `var(--hover-bg)`，active 不增加常驻阴影，只额外保留 2px `var(--accent)` 底线。新增 Tab 与溢出按钮使用同一 hover wash，使顶部 Chrome 与左侧工作区共享克制的注意力反馈，而不新增 Tab 专属 palette。
 
@@ -1270,10 +1270,10 @@ rail 72px:
   图标按钮: 40 × 40px
   按钮左缘: x=12px；16px 功能图标左缘固定 x=24px，与展开态一致
   只有工作区入口打开 320px 可交互 flyout
-  其它入口只显示延迟名称 tooltip
+  其它入口只显示即时黑底名称 Tooltip
 ```
 
-手动 rail 中，App Icon 保持静态品牌身份；它不放大、不重新居中，展开/收起时只显隐右侧文字，因此点击瞬间图标留在原地。主导航、工作区入口和底部入口也不按 rail 剩余宽度重新居中：40px 命中区统一固定于窗口 `x=12px`，其 16px 功能图标左缘在展开态与 rail 都保持 `x=24px`，因此整列图标切换时不发生横向抖动。展开控制仍使用第一行同一个固定 toggle，不随侧栏宽度移动或复制造成双入口。自动 rail 中隐藏无法兑现的展开 toggle，仅保留静态品牌图标。工作区 flyout 覆盖主内容而不推挤布局，使用轻量 opacity/translate 入场；离开交互区域短延迟关闭，`Esc` 关闭并回焦入口。嵌套菜单、确认弹层和 flyout 共用同一交互生命周期。
+手动 rail 中，App Icon 保持静态品牌身份；它不放大、不重新居中，展开/收起时只显隐右侧文字，因此点击瞬间图标留在原地。主导航、工作区入口和底部入口也不按 rail 剩余宽度重新居中：40px 命中区统一固定于窗口 `x=12px`，其 16px 功能图标左缘在展开态与 rail 都保持 `x=24px`，因此整列图标切换时不发生横向抖动。展开控制仍使用第一行同一个固定 toggle，不随侧栏宽度移动或复制造成双入口。自动 rail 中隐藏无法兑现的展开 toggle，仅保留静态品牌图标。所有侧栏图标按钮复用 Theme-owned `Tip`：hover/focus 无等待即时出现，使用 `--button-dark-bg / --button-dark-text`，不得回退浏览器原生 `title`；菜单打开期间隐藏对应 Tooltip。工作区 flyout 覆盖主内容而不推挤布局，使用轻量 opacity/translate 入场；真实离开交互区域才短延迟关闭，树枝展开/收起造成的布局边界事件若指针仍在 flyout 几何范围内不得误关；`Esc` 关闭并回焦入口。嵌套菜单、确认弹层和 flyout 共用同一交互生命周期。
 
 ### 15.3 工作区与 Session 树
 
@@ -1286,6 +1286,9 @@ rail 72px:
 - 顶层工作区按连续资源树排布，工作区 wrapper 之间不添加额外 gap；展开分支自身的 Session 行和缩进连线负责表达归属。Session 标题使用 `text-xs`，与工作区 `text-sm` 形成层级，同时保留 `h-9` 点击高度。
 - 工作区关联态与普通 hover 统一使用 `var(--hover-bg)`，不增加 `paper-elevated` 或阴影；Session active 也使用 `var(--hover-bg)`。小图标按钮 hover 使用 `var(--paper-inset)`。
 - 空态、加载骨架和局部失败重试都留在工作区滚动区域，不能拖垮全局导航或推走底部入口。
+- Chat 顶栏不再提供“返回启动页”：全局侧栏负责跨资源导航，用户通过关闭当前 Tab 或“新对话”建立下一条动线。工作区内历史浮层标题明确为“工作区历史记录”，避免被误解成跨工作区全局历史。
+- Chat 右侧工作区展开/收起共用无箭头的 `PanelRight` 轮廓，控制始终位于当前可用横向空间的最右侧；展开态顺序为 `Agent 设置 → 收起工作区`，隐藏后展开按钮占据同一最右槽位。两项动作都使用共享即时黑底 `Tip`，不得同时保留浏览器 `title` 造成二次提示。
+- 从全局侧栏点击 Session 时，顶部立即新增并激活目标 Tab，Chat 子树同时挂载并由自身 `ChatBootOverlay` 覆盖启动过程；Sidecar ensure/activation 在其后完成。失败时撤销临时 Tab 并恢复仍存在的前一 Tab，不能让点击后数秒无反馈，也不能在 ready 后把主动切走的用户强拉回来。rail flyout 以 active Tab identity 的真实切换作为导航已发生的反馈，同 Tab 成功由当前资源表面交互周期的动作结果兜底；工作区 flyout 与搜索 overlay 每次重新开关都推进该周期。激活前拒绝或异常保留列表供重试，已完成乐观切换后的启动失败只回滚 Tab、不强行复活旧资源面。任何工作区或 Session 旧请求完成都不能关闭用户后来重新打开的 flyout / 搜索 overlay。
 
 ### 15.4 Launcher 品牌区域
 
@@ -1340,6 +1343,7 @@ Launcher 选中的工作区仅投影为全局树的关联高亮，不因此展�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.8 | 2026-07-26 | **App Shell 动线、Tooltip 与即时 Session 反馈**：侧栏图标动作统一使用即时黑底共享 `Tip`，移除原生 `title` 与 500ms 延迟；左右栏 toggle 分别统一为简洁 `PanelLeft / PanelRight`，右侧工作区控制固定最右；flyout 过滤树枝收缩诱发的伪离开事件；Chat 移除返回启动页并明确工作区历史标题；侧栏 Session 新 Tab 先激活 loading UI、后等待 Sidecar ready |
 | 2.8.7 | 2026-07-26 | **侧栏与 Tab Chrome 边界校准**：标题栏在侧栏后增加 8px 基础 leading inset，手动 rail 的 52px 槽位继续包含 toggle 后留白；侧栏移除右侧竖分割线及 Agent 工作区上下横分割线，左右区域依靠材质色差、侧栏纵向模块依靠 8–12px 留白分区 |
 | 2.8.6 | 2026-07-26 | **顶部 Tab Chrome 材质收敛**：标题栏由 Paper 混合渐变改为纯 `paper`；Tab active/hover 与新增/溢出按钮统一复用 `hover-bg`，active 移除阴影并保留 accent 底线；32px Tab 改用 `rounded-md`，使相对曲率接近 40px 工作区行 |
 | 2.8.5 | 2026-07-26 | **全局侧栏资源密度校准**：Session 标题从 `text-sm` 降为 `text-xs` 并保留 `h-9` 命中高度；顶层工作区与底部“小助理/设置”均移除额外 4px 行间距，使资源树和上下导航采用一致的连续节奏 |

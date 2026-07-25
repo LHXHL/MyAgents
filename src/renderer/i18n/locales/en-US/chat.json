@@ -425,7 +425,7 @@
       }
     },
     "history": {
-      "title": "History",
+      "title": "Workspace history",
       "loading": "Loading...",
       "empty": "No history yet",
       "current": "Current",

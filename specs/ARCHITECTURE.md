@@ -324,11 +324,11 @@ Tab 内 MUST 用 `useTabState()` 的 `apiGet` / `apiPost`，禁止全局 `apiPos
 - 侧栏只从既有 `ConfigProvider`、任务中心 store、Session 索引与当前 Tab 派生工作区/Session 展示；active 高亮是 projection，不持久化第二份“当前页面”。工作区配置和 Session mutation 分别调用现有 Config / Task Center authority，不在侧栏另存领域状态。
 - 侧栏是独立的 App Shell material consumer：根面只读取完整 Theme 必需的 `--global-sidebar-bg`，该 Token 由每套 Theme 的 light/dark package 拥有，并依靠与右侧 `--paper` 的色差分区，不再叠加右侧竖分割线；侧栏内部主导航、Agent 工作区和底部入口同样只用既有组间 padding 分层，不绘制模块横分割线。页面根面与卡片/弹层继续使用既有 `--paper / --paper-elevated / --paper-inset` 语义；顶部 Tab 栏属于右侧 Workspace，根面使用纯 `--paper`，常规 leading inset 为 8px，手动 rail 的 52px 预留同时容纳固定 toggle 与其后 8px 留白。Tab active/hover 复用全局 `--hover-bg`，active 额外以 `--accent` 底线表达注意力。不能为制造左右差异而翻转通用 Paper 层级、在组件内混色或为 Tab Chrome 复制一套局部 palette。
 - App Shell 使用 Task Center store 的 passive projection：只按需读取已展开工作区的 Session，每个规范化工作区 key 独立持有 loading/error/retry；只有用户打开全局搜索时才触发一次完整索引加载。passive 与完整 Task Center 读取共享 generation/latest-wins 交接，完整读取开始时使旧 passive 写入失效，完整 owner 卸载时显式把当前展开需求交还 passive。任务列表、轮询与 Tauri 监听仍由真正挂载的 Task Center 生命周期拥有，不能因侧栏常驻而前移到 App mount。
-- 点击已有 Session 必须回到 `App` 的统一 open-target-session planner：优先聚焦已打开 Tab，否则按既有恢复/创建路径 materialize；并发点击复用同一 in-flight guard。
+- 点击已有 Session 必须回到 `App` 的统一 open-target-session planner：优先聚焦已打开 Tab，否则按既有恢复/创建路径 materialize；并发点击复用同一 in-flight guard。新建既有 Session Tab 时用 `flushSync` 把 `sidecarConfigDisposition:'pending'` 的 Tab 加入并激活，立即挂载 Chat owner 子树并由其既有 `ChatBootOverlay` 承担加载反馈，再异步 ensure/activate；`setTabs` 必须保持 functional composition，不能把 `tabsRef` 提升为第二个可写 authority。ensure 的锁内 `isNew` 仍是 `push/adopt` 唯一裁决。失败时只撤销该临时 Tab 并恢复仍存在的前一 active Tab，成功后不得把加载期间主动切走的用户强制拉回。
 - 点击工作区始终新建 Launcher Tab，再通过 Launcher 既有选择路径写入该 Tab 的待创建工作区；不得在侧栏提前创建 Session 或 Sidecar。
-- Launcher 仅拥有“创建新工作”的输入和选项，不再拥有工作区卡片、历史列表或正式资源管理。全局侧栏是这些资源的唯一 UI owner。
+- Launcher 仅拥有“创建新工作”的输入和选项，不再拥有工作区卡片、历史列表或正式资源管理。全局侧栏是这些资源的唯一 UI owner，因此 Chat 不再提供把当前 Tab 原地改回 Launcher 的“返回”路径；用户通过关闭 Tab 或新建 Tab 结束/开启工作。
 - “技能与连接器”使用单实例 `capabilities` Tab，并与 Settings 分别在自己的 Tab slot 内持有页面状态；切到其它 Tab 不卸载草稿，两个功能 Tab 的导航和弹层也不互相串扰。两者复用 Settings 既有能力模块，但 app-global 配置传播（例如 proxy hot reload）归 `ConfigProvider` 唯一拥有，不能由任一页面 mount 次数决定。旧 Settings deep-link 只做意图重定向，不复制领域实现。
-- 窄窗自动 rail 与用户手动展开偏好是两个正交状态。工作区 flyout 只是同一资源树的浮层呈现，不新增数据源、路由或选中 authority。
+- 窄窗自动 rail 与用户手动展开偏好是两个正交状态。工作区 flyout 只是同一资源树的浮层呈现，不新增数据源、路由或选中 authority；关闭判定属于 flyout interaction owner，真实 pointer 离开、Escape 或导航成功可以关闭，但工作区树展开/折叠导致的 DOM 几何变化若指针仍在 flyout 边界内不得误判为离开。Session 导航后的关闭直接观察权威 active Tab identity 变化，同 Tab 成功则由当前 resource-surface interaction generation 关联的回调兜底；该 UI lifecycle generation 同时覆盖工作区 flyout 与搜索 overlay，不得另存单槽 pending Session 影子状态。激活前拒绝/异常保持资源面供重试；已经乐观激活后发生启动失败，由 App 回滚临时 Tab，但不自动复活已因导航关闭的旧资源面，也不得让工作区或 Session 的旧完成回调关闭用户后来重开的 flyout / 搜索 overlay。
 
 Phase4 后，几个历史大型 UI 入口保留原路径作为兼容 facade，真实实现按 owner 目录维护：
 

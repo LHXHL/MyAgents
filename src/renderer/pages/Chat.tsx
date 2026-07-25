@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowLeft, Bot, Globe, History, Loader2, Plus, PanelRightOpen, RotateCcw, TerminalSquare, X } from 'lucide-react';
+import { AlertTriangle, Bot, Globe, History, Loader2, Plus, PanelRight, RotateCcw, TerminalSquare, X } from 'lucide-react';
 import { forwardRef, lazy, Suspense, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -413,7 +413,6 @@ const SessionTitleEditor = forwardRef<
 });
 
 interface ChatProps {
-  onBack?: () => void;
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
   onNewSession?: () => Promise<boolean>;
   /** Called when user selects a different session from history - uses Session singleton logic */
@@ -447,7 +446,7 @@ function isCurrentSessionGoal(goal: SessionGoal | null | undefined): goal is Ses
   return Boolean(goal);
 }
 
-export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
+export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
   // Get state from TabContext (required - Chat must be inside TabProvider)
   const {
     tabId,
@@ -4831,16 +4830,6 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
         {/* Compact header - single row */}
         <div className="relative z-10 flex h-12 flex-shrink-0 items-center justify-between bg-[var(--paper-elevated)] px-4 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-3 after:bg-gradient-to-b after:from-[var(--paper-elevated)] after:to-[var(--paper-elevated-a0)]">
           <div className="flex min-w-0 items-center gap-2">
-            {onBack && (
-              <button
-                type="button"
-                onClick={onBack}
-                className="flex-shrink-0 rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                title={t('shell.header.backToProjects')}
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </button>
-            )}
             {/* Project name */}
             {agentDir && (
               <span className="flex flex-shrink-0 items-center gap-1.5 text-sm font-medium text-[var(--ink)]">
@@ -4943,14 +4932,16 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             )}
             {/* Workspace toggle button - always visible when workspace is hidden */}
             {!showWorkspace && (
-              <button
-                type="button"
-                onClick={() => setShowWorkspace(true)}
-                className="flex items-center gap-1 rounded-lg px-2 py-1 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                title={t('shell.header.expandWorkspace')}
-              >
-                <PanelRightOpen className="h-4 w-4" />
-              </button>
+              <Tip label={t('shell.header.expandWorkspace')} position="bottom" align="end">
+                <button
+                  type="button"
+                  onClick={() => setShowWorkspace(true)}
+                  aria-label={t('shell.header.expandWorkspace')}
+                  className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                >
+                  <PanelRight className="h-4 w-4" />
+                </button>
+              </Tip>
             )}
           </div>
         </div>

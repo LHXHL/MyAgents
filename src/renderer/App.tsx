@@ -247,7 +247,6 @@ interface TabContentProps {
   // Launcher callbacks
   onLaunchProject: (project: Project, sessionId?: string, initialMessage?: InitialMessage, analyticsContext?: LaunchProjectAnalyticsContext, sessionBirthHint?: LaunchSessionBirthHint) => void;
   // Chat callbacks
-  onBack: () => Promise<void>;
   onSwitchSession: (tabId: string, sessionId: string, historyEntrySource?: HistoryEntrySource) => Promise<void>;
   onOpenSessionInNewTab: (tabId: string, sessionId: string, title: string, historyEntrySource?: HistoryEntrySource) => Promise<void>;
   onNewSession: (tabId: string) => Promise<boolean>;
@@ -279,7 +278,7 @@ interface TabContentProps {
 // tab renders a placeholder and never mounts TabProvider.
 export const MemoizedTabContent = memo(function TabContent({
   tab, isActive, isLoading, error, isDeferredMount,
-  onLaunchProject, onBack, onSwitchSession, onOpenSessionInNewTab, onNewSession,
+  onLaunchProject, onSwitchSession, onOpenSessionInNewTab, onNewSession,
   onUpdateGenerating, onUpdateTitle, onUpdateUnread, onRenameSession, onForkSession, onUpdateSessionId, onClearInitialMessage,
   onSidecarConfigAdopted, onFilePreviewIntentConsumed,
   onLauncherWorkspaceSelectionChange,
@@ -376,7 +375,6 @@ export const MemoizedTabContent = memo(function TabContent({
         >
           <Suspense fallback={<ChatBootOverlay />}>
             <Chat
-              onBack={onBack}
               onSwitchSession={(sessionId, historyEntrySource) => onSwitchSession(tab.id, sessionId, historyEntrySource)}
               onOpenSessionInNewTab={(sessionId, title) => onOpenSessionInNewTab(tab.id, sessionId, title, 'chat_dropdown_new_tab')}
               onNewSession={() => onNewSession(tab.id)}
@@ -678,8 +676,8 @@ export default function App() {
   // rationale.
   //
   // NOT for Chat / session opens (handleLaunchProject / fork / switch): those
-  // await a Sidecar and wire up SSE before the Chat is usable, so their mount
-  // cannot be hidden behind a placeholder — they intentionally do not use this.
+  // commit the Chat owner subtree with its real Session identity immediately;
+  // Chat's own loading/boot surface covers Sidecar ownership establishment.
   const openNewTabDeferred = useCallback((newTab: Tab) => {
     perfMark(RENDERER_PERF_PHASE.newTabReveal, { tabId: newTab.id }); // P0: new-tab timeline anchor
     const nextTabs = [...tabsRef.current, newTab];
@@ -2277,8 +2275,21 @@ export default function App() {
       // step below resolves push|adopt from result.isNew (no stomp on a join).
       sidecarConfigDisposition: 'pending',
     };
-    setTabs(prev => [...prev, newTab]);
-    setLoadingTabs(prev => ({ ...prev, [newTab.id]: true }));
+    const previousActiveTabId = activeTabIdRef.current;
+    // Existing-session opens are visually optimistic: mount and activate the
+    // pending Tab immediately, then let Chat's existing boot surface cover
+    // Sidecar startup. flushSync is load-bearing here: besides guaranteeing
+    // instant visual feedback, it commits tabsRef before a warm Sidecar can
+    // resolve ensure and reach the post-ensure liveness check. Keep setTabs
+    // functional so queued lifecycle mutations still compose; tabsRef remains
+    // a render mirror, never a second writable authority.
+    flushSync(() => {
+      setTabs(prev => [...prev, newTab]);
+      setLoadingTabs(prev => ({ ...prev, [newTab.id]: true }));
+    });
+    flushSync(() => {
+      setActiveTabId(newTab.id);
+    });
     let ownerAcquired = false;
     try {
       const result = await ensureSessionSidecar(sessionId, sessionAgentDir, 'tab', newTab.id);
@@ -2306,11 +2317,17 @@ export default function App() {
       setTabs(prev => prev.map(t =>
         t.id === newTab.id ? { ...t, sidecarConfigDisposition: result.isNew ? 'push' : 'adopt' } : t,
       ));
-      setActiveTabId(newTab.id);
       return true;
     } catch (error) {
       console.error('[App] Failed to open session in new tab:', error);
+      const remainingTabs = tabsRef.current.filter(t => t.id !== newTab.id);
       setTabs(prev => prev.filter(t => t.id !== newTab.id));
+      if (activeTabIdRef.current === newTab.id) {
+        const fallbackTabId = remainingTabs.some(t => t.id === previousActiveTabId)
+          ? previousActiveTabId
+          : (remainingTabs.at(-1)?.id ?? null);
+        setActiveTabId(fallbackTabId, remainingTabs);
+      }
       // Release the Tab owner we acquired so a failed activation can't leak a
       // phantom owner that keeps the (possibly otherwise-ownerless) sidecar
       // alive forever.
@@ -2791,46 +2808,6 @@ export default function App() {
     // keeps exhaustive-deps happy without changing handleSwitchSession's own
     // stability (callers rely on this being reference-stable).
   }, [setActiveTabId, spawnTabForExistingSession, trackHistorySessionOpenAsync]);
-
-  const handleBackToLauncher = useCallback(async () => {
-    const activeTabId = activeTabIdRef.current;
-    if (!activeTabId) return;
-
-    // Get current tab to access sessionId
-    const currentTab = tabsRef.current.find(t => t.id === activeTabId);
-
-    // Step 1: Try to start background completion if AI is running
-    if (currentTab?.sessionId) {
-      const bgResult = await startBackgroundCompletion(currentTab.sessionId);
-      if (bgResult.started) {
-        console.log(`[App] Back to launcher: AI still running, background completion started for session ${currentTab.sessionId}`);
-      }
-    }
-
-    // Step 2: Stop SSE proxy FIRST to avoid EOF errors when Sidecar stops
-    await stopSseProxy(activeTabId);
-
-    // Step 3: Release Tab's ownership of the Session Sidecar
-    // If BackgroundCompletion or Task also owns it, Sidecar continues running
-    if (currentTab?.sessionId) {
-      try {
-        const stopped = await releaseTabSession(currentTab.sessionId, activeTabId);
-        console.log(`[App] Tab ${activeTabId} released session ${currentTab.sessionId}, sidecar stopped: ${stopped}`);
-      } catch (error) {
-        console.error(`[App] Error releasing session sidecar for tab ${activeTabId}:`, error);
-        // Fallback to legacy stopTabSidecar
-        void stopTabSidecar(activeTabId);
-      }
-    }
-
-    setTabs((prev) =>
-      prev.map((t) =>
-        t.id === activeTabId
-          ? { ...t, agentDir: null, sessionId: null, view: 'launcher', title: 'New Tab', sidecarConfigDisposition: 'push' }
-          : t
-      )
-    );
-  }, []);
 
   /**
    * Handle "New Session" from Chat component.
@@ -4008,7 +3985,6 @@ export default function App() {
             onCheckForUpdate={checkForUpdate}
             onRestartAndUpdate={handleRestartAndUpdate}
             onLaunchProject={handleLaunchProject}
-            onBack={handleBackToLauncher}
             onSwitchSession={handleSwitchSession}
             onOpenSessionInNewTab={handleOpenSessionInNewTab}
             onNewSession={handleNewSession}

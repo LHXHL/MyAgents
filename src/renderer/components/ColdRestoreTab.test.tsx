@@ -64,7 +64,6 @@ const noopProps = {
   capabilityInitialSelect: undefined,
   onLauncherWorkspaceSelectionChange: vi.fn(),
   onLaunchProject: vi.fn(),
-  onBack: vi.fn(async () => {}),
   onSwitchSession: vi.fn(async () => {}),
   onOpenSessionInNewTab: vi.fn(async () => {}),
   onNewSession: vi.fn(async () => true),
