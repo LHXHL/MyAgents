@@ -144,9 +144,35 @@ describe('TabBar', () => {
         const workspace = within(tab).getByText('demo');
         const sessionTitle = within(tab).getByText('Session 1');
 
-        expect(tab).toHaveClass('text-[var(--ink-muted)]', 'hover:text-[var(--ink)]');
+        expect(tab).toHaveClass('text-[var(--ink-muted)]', 'hover:bg-[var(--hover-bg)]', 'hover:text-[var(--ink)]');
         expect(workspace.className).not.toContain('text-[var(--ink');
         expect(sessionTitle.className).not.toContain('text-[var(--ink');
+    });
+
+    it('uses the shared hover wash and proportional radius for the active tab', () => {
+        renderTabBar();
+
+        const activeTab = document.querySelector('[data-tab-id="tab-1"]') as HTMLElement;
+        expect(activeTab).toHaveClass('h-8', 'rounded-md', 'bg-[var(--hover-bg)]', 'text-[var(--ink)]');
+        expect(activeTab).not.toHaveClass('rounded-lg', 'bg-[var(--paper-inset)]', 'shadow-sm');
+        expect(activeTab.querySelector('[data-tab-active-indicator]')).toHaveClass('bg-[var(--accent)]/70');
+    });
+
+    it('uses the shared hover wash for titlebar auxiliary actions', () => {
+        renderTabBar();
+        const newTabButton = screen.getByTitle(/新建标签页/);
+        expect(newTabButton).toHaveClass('hover:bg-[var(--hover-bg)]');
+        expect(newTabButton).not.toHaveClass('hover:bg-[var(--paper-inset)]/60');
+
+        const track = screen.getByLabelText('打开的标签页');
+        setTabTrackMetrics(track, 600, 240);
+        fireEvent.scroll(track);
+        const overflowButton = screen.getByLabelText('所有标签页');
+        expect(overflowButton).toHaveClass('hover:bg-[var(--hover-bg)]');
+
+        fireEvent.click(overflowButton);
+        expect(overflowButton).toHaveClass('bg-[var(--hover-bg)]');
+        expect(overflowButton).not.toHaveClass('bg-[var(--paper-inset)]');
     });
 
     it('keeps workspace and session as separate identities when their labels match', () => {

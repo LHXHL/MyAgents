@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.5
+> **Version**: 2.8.6
 > **Last Updated**: 2026-07-26
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -1248,6 +1248,7 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
 - 常驻展开态 256px，rail 72px；切换模式不通过 width 动画持续重排主内容。
 - 顶部 chrome 分两行：第一行 44px 只承载原生窗口区、拖拽区与固定侧栏 toggle，第二行 40px 承载 App Icon + `MyAgents` 品牌。App Icon 使用 macOS App 风格的 22% 圆角矩形轮廓，在展开态与 rail 中始终保持 20px、固定于窗口 `x=24px` 且复用同一 DOM；它不参与 rail 居中计算，切换时只让品牌文字出现或消失。macOS toggle 固定在窗口 `x=84px` 起的 32px 槽位；展开时位于侧栏表面，手动 rail 时自然落入右侧 Tab 标题栏表面，屏幕坐标与 DOM 均不切换。
 - 顶部 Tab 保留 active、关闭、拖拽、溢出、生成中、未读与触摸板切换语义，侧栏不得建立第二套页面选中状态。
+- 右侧标题栏使用纯 `var(--paper)` 根面和既有底部分割线，不使用 `paper → paper-inset` 混合渐变。32px Tab 使用 Theme-owned `rounded-md`；active 与 hover 均使用 `var(--hover-bg)`，active 不增加常驻阴影，只额外保留 2px `var(--accent)` 底线。新增 Tab 与溢出按钮使用同一 hover wash，使顶部 Chrome 与左侧工作区共享克制的注意力反馈，而不新增 Tab 专属 palette。
 
 ### 15.2 全局侧边栏
 
@@ -1339,6 +1340,7 @@ Launcher 选中的工作区仅投影为全局树的关联高亮，不因此展�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.6 | 2026-07-26 | **顶部 Tab Chrome 材质收敛**：标题栏由 Paper 混合渐变改为纯 `paper`；Tab active/hover 与新增/溢出按钮统一复用 `hover-bg`，active 移除阴影并保留 accent 底线；32px Tab 改用 `rounded-md`，使相对曲率接近 40px 工作区行 |
 | 2.8.5 | 2026-07-26 | **全局侧栏资源密度校准**：Session 标题从 `text-sm` 降为 `text-xs` 并保留 `h-9` 命中高度；顶层工作区与底部“小助理/设置”均移除额外 4px 行间距，使资源树和上下导航采用一致的连续节奏 |
 | 2.8.4 | 2026-07-26 | **全局侧栏材质分层校准**：新增 Theme-owned `--global-sidebar-bg`，八套 Theme 的 light/dark 均在自身 `paper → paper-inset` 色阶间微量下探；仅全局侧栏根面消费，右侧页面、`paper-elevated` 卡片/弹层、顶部 Tab 栏与交互态不变 |
 | 2.8.3 | 2026-07-25 | **全局侧边栏功能图标锚点校正**：主导航、工作区与底部入口的 40px rail 命中区统一固定于 x=12px，使 16px 图标左缘在展开/rail 中始终位于 x=24px；禁止 rail 按剩余宽度重新居中造成折叠时 4px 横跳 |

@@ -251,8 +251,8 @@ export default memo(function TabBar({
                         <button
                             ref={overflowButtonRef}
                             type="button"
-                            className={`flex flex-shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)]/60 hover:text-[var(--ink)] ${
-                                menuOpen ? 'bg-[var(--paper-inset)] text-[var(--ink)]' : ''
+                            className={`flex flex-shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] ${
+                                menuOpen ? 'bg-[var(--hover-bg)] text-[var(--ink)]' : ''
                             }`}
                             style={{ width: TAB_BAR_BUTTON_WIDTH_PX, height: TAB_BAR_BUTTON_WIDTH_PX }}
                             onClick={() => setMenuOpen((open) => !open)}
@@ -332,7 +332,7 @@ export default memo(function TabBar({
                     list so extreme widths keep the recovery affordance visible first. */}
                 {canAddTab && (
                     <button
-                        className="flex flex-shrink-0 items-center justify-center rounded-md transition-all duration-150 text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]/60 hover:text-[var(--ink)]"
+                        className="flex flex-shrink-0 items-center justify-center rounded-md text-[var(--ink-muted)] transition-all duration-150 hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                         style={{ width: TAB_BAR_BUTTON_WIDTH_PX, height: TAB_BAR_BUTTON_WIDTH_PX }}
                         onClick={onNewTab}
                         title={`${t('tabs.newTab')} (${navigator.platform.toLowerCase().includes('mac') ? '⌘T' : 'Ctrl+T'})`}

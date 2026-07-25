@@ -80,11 +80,11 @@ export default memo(function SortableTabItem({
             title={tooltipTitle}
             className={`
                 group/tab relative flex h-8 cursor-default items-center
-                rounded-lg px-2.5 transition-colors duration-150
+                rounded-md px-2.5 transition-colors duration-150
                 ${isDragging ? 'shadow-lg ring-2 ring-[var(--accent)]/30' : ''}
                 ${isActive
-                    ? 'bg-[var(--paper-inset)] text-[var(--ink)] shadow-sm'
-                    : 'text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]/60 hover:text-[var(--ink)]'
+                    ? 'bg-[var(--hover-bg)] text-[var(--ink)]'
+                    : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                 }
             `}
             onMouseDown={(e) => {
@@ -157,7 +157,10 @@ export default memo(function SortableTabItem({
 
             {/* Active indicator */}
             {isActive && (
-                <div className="absolute bottom-0.5 left-4 right-4 h-0.5 rounded-full bg-[var(--accent)]/70" />
+                <div
+                    className="absolute bottom-0.5 left-4 right-4 h-0.5 rounded-full bg-[var(--accent)]/70"
+                    data-tab-active-indicator
+                />
             )}
 
         </div>
