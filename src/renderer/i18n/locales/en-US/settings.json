@@ -1,4 +1,12 @@
 {
+  "capabilities": {
+    "title": "Skills & Connectors",
+    "description": "Manage the skills, plugins, and tool connections available to Agents.",
+    "navigation": "Capability categories",
+    "skills": "Skills",
+    "plugins": "Plugins",
+    "tools": "Tools"
+  },
   "sidebar": {
     "title": "Settings",
     "logsTitle": "View Rust logs",

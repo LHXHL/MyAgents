@@ -283,6 +283,8 @@ export default memo(function TabBar({
                                     ? getFolderName(tab.agentDir)
                                     : tab.view === 'settings'
                                       ? t('tabs.settings')
+                                      : tab.view === 'capabilities'
+                                        ? t('tabs.capabilities')
                                       : tab.view === 'taskcenter'
                                         ? t('tabs.taskCenter')
                                         : tab.view === 'space'

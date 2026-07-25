@@ -7,12 +7,14 @@ import {
 
 interface UseSettingsNavigationParams {
   initialSection?: string;
+  navigationNonce?: number;
   floatingBallDevGate?: boolean;
   onSectionChange?: () => void;
 }
 
 export function useSettingsNavigation({
   initialSection,
+  navigationNonce,
   floatingBallDevGate,
   onSectionChange,
 }: UseSettingsNavigationParams) {
@@ -57,7 +59,7 @@ export function useSettingsNavigation({
         window.clearTimeout(timer);
       };
     }
-  }, [floatingBallDisabled, initialSection, notifySectionChange]);
+  }, [floatingBallDisabled, initialSection, navigationNonce, notifySectionChange]);
 
   useEffect(() => {
     if (activeSection === 'desktop-pet' && floatingBallDisabled) {

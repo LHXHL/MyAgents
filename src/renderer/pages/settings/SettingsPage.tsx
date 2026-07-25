@@ -102,7 +102,7 @@ import {
 } from '../../../shared/official-tools';
 import { isRuntimeBackedProvider } from '../../../shared/providerExecution';
 import { workspacePathsEqual } from '../../../shared/workspacePath';
-import { effectiveGeneralProxyScopeKey, normalizeProxyScope } from '../../../shared/proxyScope';
+import { normalizeProxyScope } from '../../../shared/proxyScope';
 import { describeProxyScopeSummary } from './proxyScopePresentation';
 import { formatSubscriptionVerifyError } from '../../../shared/subscription';
 import type { UiLanguage } from '../../../shared/i18n';
@@ -240,7 +240,7 @@ function isSubscriptionLoginActiveStatus(status: SubscriptionLoginStatus): boole
     return status === 'starting' || status === 'waiting';
 }
 
-export default function Settings({ initialSection, initialMcpId, initialOfficialToolId, initialSelect, onSectionChange, isActive, updateReady: propUpdateReady, updateVersion: propUpdateVersion, updateChecking, updateDownloading, updateInstalling, updatePreparing, onCheckForUpdate, onRestartAndUpdate }: SettingsProps) {
+export default function Settings({ mode = 'settings', initialSection, navigationNonce, initialMcpId, initialOfficialToolId, initialSelect, onSectionChange, isActive, updateReady: propUpdateReady, updateVersion: propUpdateVersion, updateChecking, updateDownloading, updateInstalling, updatePreparing, onCheckForUpdate, onRestartAndUpdate }: SettingsProps) {
     const {
         apiKeys,
         saveApiKey,
@@ -278,7 +278,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     tSettingsRef.current = tSettings;
 
     // Autostart hook for managing launch on startup
-    const { isEnabled: autostartEnabled, isLoading: autostartLoading, setAutostart } = useAutostart();
+    const { isEnabled: autostartEnabled, isLoading: autostartLoading, setAutostart } = useAutostart(mode === 'settings');
     const claudeTranscriptCleanupPeriodDays = useMemo(
         () => normalizeClaudeTranscriptCleanupPeriodDays(config.claudeTranscriptCleanupPeriodDays),
         [config.claudeTranscriptCleanupPeriodDays],
@@ -363,10 +363,16 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         navigateToProxySettings,
         notifySectionChange,
     } = useSettingsNavigation({
-        initialSection,
+        initialSection: mode === 'capabilities' ? (initialSection ?? 'skills') : initialSection,
+        navigationNonce,
         floatingBallDevGate: config.floatingBallDevGate,
         onSectionChange,
     });
+    useEffect(() => {
+        if (mode !== 'capabilities') return;
+        if (activeSection === 'skills' || activeSection === 'sub-agents' || activeSection === 'plugins' || activeSection === 'mcp') return;
+        setActiveSection('skills');
+    }, [activeSection, mode, setActiveSection]);
     // Agent overlay state for viewing agent config from Settings card list
     const [overlayAgent, setOverlayAgent] = useState<{ agentId?: string; workspacePath: string } | null>(null);
 
@@ -381,6 +387,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     const [summonAccelerator, setSummonAccelerator] = useState(DEFAULT_SUMMON_ACCELERATOR);
     const isMac = useMemo(() => navigator.platform.toLowerCase().includes('mac'), []);
     useEffect(() => {
+        if (mode !== 'settings') return;
         if (!isTauriEnvironment()) return;
         invoke<{ enabled: boolean; accelerator: string }>('cmd_get_global_summon_shortcut')
             .then((cfg) => {
@@ -390,7 +397,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             .catch((e) => {
                 console.warn('[Settings] load global summon shortcut failed:', e);
             });
-    }, []);
+    }, [mode]);
     const applySummonShortcut = useCallback(async (next: { enabled: boolean; accelerator: string }) => {
         if (!isTauriEnvironment()) return;
         const prevEnabled = summonEnabled;
@@ -416,13 +423,14 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     // through the MemoizedTabContent tree (only Settings needs this value)
     const [downloadProgress, setDownloadProgress] = useState<number | null>(null);
     useEffect(() => {
+        if (mode !== 'settings') return;
         if (!isTauriEnvironment()) return;
         const ac = new AbortController();
         void listenWithCleanup<{ percent: number | null }>('updater:download-progress', (event) => {
             setDownloadProgress(event.payload.percent);
         }, ac.signal);
         return () => ac.abort();
-    }, []);
+    }, [mode]);
     // Reset progress when download completes (updateReady becomes true)
     useEffect(() => {
         if (propUpdateReady) setDownloadProgress(null);
@@ -433,26 +441,9 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         setOverlayAgent({ workspacePath: project.path });
     }, []);
 
-    // Propagate proxy config changes to all running Sidecars
-    const prevProxyRef = useRef<{ serialized: string; generalKey: string } | undefined>(undefined);
-    useEffect(() => {
-        const serialized = JSON.stringify(config.proxySettings ?? null);
-        const generalKey = effectiveGeneralProxyScopeKey(config.proxySettings);
-        if (prevProxyRef.current === undefined) {
-            prevProxyRef.current = { serialized, generalKey }; // First mount — don't trigger
-            return;
-        }
-        if (prevProxyRef.current.serialized === serialized) return;
-        const restartGeneralOwners = prevProxyRef.current.generalKey !== generalKey;
-        prevProxyRef.current = { serialized, generalKey };
-
-        invoke('cmd_propagate_proxy', { restartGeneralOwners }).catch(err =>
-            console.error('[Settings] Proxy propagation failed:', err)
-        );
-    }, [config.proxySettings]);
-
     // #230: The proxy host/port fields previously called updateConfig() on every
-    // keystroke. Each call writes config.json AND — via the effect above — fires
+    // keystroke. Each call writes config.json AND — via ConfigProvider's
+    // process-wide propagation effect — fires
     // cmd_propagate_proxy(), which POSTs /api/proxy/set to every active sidecar.
     // Typing "6666" therefore triggered 4 disk writes + 4 N-sidecar hot-reload
     // storms. Fix: edit into local draft state and commit to config only on blur
@@ -514,6 +505,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     }, [proxyPortDraft, config.proxySettings?.port, patchProxySettings]);
 
     useEffect(() => {
+        if (mode !== 'settings') return;
         if (!config.proxySettings?.enabled) {
             proxyProbeGenerationRef.current += 1;
             setProxyProbeState({ status: 'idle' });
@@ -563,6 +555,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         config.proxySettings?.protocol,
         config.proxySettings?.host,
         config.proxySettings?.port,
+        mode,
         tSettings,
     ]);
 
@@ -609,12 +602,13 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     // App version from Tauri
     const [appVersion, setAppVersion] = useState<string>('');
     useEffect(() => {
+        if (mode !== 'settings') return;
         if (!isTauriEnvironment()) {
             setAppVersion('dev');
             return;
         }
         getVersion().then(setAppVersion).catch(() => setAppVersion('unknown'));
-    }, []);
+    }, [mode]);
 
     // QR code URL for user community section
     // Tauri: Downloads on first launch and caches locally, CDN in browser
@@ -667,6 +661,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     // Limit to 3000 logs to prevent memory issues (matches UnifiedLogsPanel MAX_DISPLAY_LOGS)
     const MAX_LOGS = 3000;
     useEffect(() => {
+        if (mode !== 'settings') return;
         const handleReactLog = (event: Event) => {
             const customEvent = event as CustomEvent<LogEntry>;
             setSseLogs(prev => {
@@ -678,10 +673,11 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         return () => {
             window.removeEventListener(REACT_LOG_EVENT, handleReactLog);
         };
-    }, []);
+    }, [mode]);
 
     // Listen for Rust logs (Tauri only)
     useEffect(() => {
+        if (mode !== 'settings') return;
         if (!isTauriEnvironment()) return;
         const ac = new AbortController();
         void listenWithCleanup<LogEntry>('log:rust', (event) => {
@@ -691,7 +687,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             });
         }, ac.signal);
         return () => ac.abort();
-    }, []);
+    }, [mode]);
 
     const clearLogs = useCallback(() => {
         setSseLogs([]);
@@ -1063,6 +1059,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
 
     // Load MCP config on mount
     useEffect(() => {
+        if (mode !== 'capabilities') return;
         const loadMcp = async () => {
             try {
                 const servers = await getAllMcpServers();
@@ -1075,13 +1072,14 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             }
         };
         loadMcp();
-    }, []);
+    }, [mode]);
 
     // Refresh MCP local state when tab becomes active (inactive → active transition).
     // Config/projects/providers/apiKeys are shared via ConfigProvider and auto-sync.
     // MCP servers are local state, so we reload them from disk on tab activation.
     const prevIsActiveRef = useRef(isActive);
     useEffect(() => {
+        if (mode !== 'capabilities') return;
         const wasInactive = !prevIsActiveRef.current;
         prevIsActiveRef.current = isActive;
         if (!wasInactive || !isActive) return;
@@ -1097,7 +1095,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
                 console.warn('[Settings] Failed to reload MCP servers on activation:', err);
             }
         })();
-    }, [isActive]);
+    }, [isActive, mode]);
 
     // Toggle MCP server enabled status
     // For preset MCP (npx): warmup bun cache
@@ -1999,6 +1997,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     // Check subscription status on mount (with retry for sidecar startup)
     // Uses cached verification result if valid and not expired (30 days)
     useEffect(() => {
+        if (mode !== 'settings') return;
         let isMounted = true;
         let retryCount = 0;
         const maxRetries = 3;
@@ -2106,7 +2105,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
             isMounted = false;
             clearTimeout(timer);
         };
-    }, []); // Only run on mount - refs handle the latest values
+    }, [mode]); // Only the Settings Tab owns provider verification; refs handle latest values
 
     // Force re-verify subscription (called from UI button)
     const handleReVerifySubscription = useCallback(async () => {
@@ -3048,6 +3047,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
 
     // Check for expired API Key verifications on mount (30-day expiry)
     useEffect(() => {
+        if (mode !== 'settings') return;
         // Delay to let component stabilize
         const timer = setTimeout(() => {
             allProvidersRef.current.forEach((provider: Provider) => {
@@ -3069,7 +3069,7 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
         }, 1000); // 1s delay to avoid race conditions
 
         return () => clearTimeout(timer);
-    }, []); // Only run on mount - refs handle the latest values
+    }, [mode]); // Only the Settings Tab owns provider verification; refs handle latest values
 
     // Error detail popover ref (state is declared near verifyError)
     const errorDetailPopoverRef = useRef<HTMLDivElement>(null);
@@ -3917,23 +3917,66 @@ export default function Settings({ initialSection, initialMcpId, initialOfficial
     return (
         <div className="settings-root flex h-full bg-[var(--paper)]">
             {/* Logs Panel */}
-            <UnifiedLogsPanel
-                sseLogs={sseLogs}
-                isVisible={showLogs}
-                onClose={() => setShowLogs(false)}
-                onClearAll={clearLogs}
-            />
+            {mode === 'settings' && (
+                <UnifiedLogsPanel
+                    sseLogs={sseLogs}
+                    isVisible={showLogs}
+                    onClose={() => setShowLogs(false)}
+                    onClearAll={clearLogs}
+                />
+            )}
 
-            <SettingsSidebar
-                activeSection={activeSection}
-                setActiveSection={setActiveSection}
-                showDevTools={config.showDevTools}
-                floatingBallDevGate={config.floatingBallDevGate}
-                onShowLogs={() => setShowLogs(true)}
-            />
+            {mode === 'settings' && (
+                <SettingsSidebar
+                    activeSection={activeSection}
+                    setActiveSection={setActiveSection}
+                    showDevTools={config.showDevTools}
+                    floatingBallDevGate={config.floatingBallDevGate}
+                    onShowLogs={() => setShowLogs(true)}
+                />
+            )}
 
             {/* Right content area — h-full ensures height is explicit for WebKit scroll */}
             <div className="h-full flex-1 overflow-y-auto overscroll-contain">
+                {mode === 'capabilities' && (
+                    <header className="sticky top-0 z-20 border-b border-[var(--line)] bg-[var(--paper)]/95 px-8 pt-7 backdrop-blur-sm">
+                        <div className="mx-auto max-w-4xl">
+                            <h1 className="text-xl font-semibold text-[var(--ink)]">{tSettings('capabilities.title')}</h1>
+                            <p className="mt-1 text-sm text-[var(--ink-muted)]">{tSettings('capabilities.description')}</p>
+                            <nav
+                                className="mt-5 flex gap-1"
+                                role="tablist"
+                                aria-label={tSettings('capabilities.navigation')}
+                            >
+                                {([
+                                    ['skills', 'capabilities.skills'],
+                                    ['plugins', 'capabilities.plugins'],
+                                    ['mcp', 'capabilities.tools'],
+                                ] as const).map(([section, labelKey]) => {
+                                    const selected = section === 'skills'
+                                        ? activeSection === 'skills' || activeSection === 'sub-agents'
+                                        : activeSection === section;
+                                    return (
+                                        <button
+                                            key={section}
+                                            type="button"
+                                            role="tab"
+                                            aria-selected={selected}
+                                            onClick={() => setActiveSection(section)}
+                                            className={`relative px-4 pb-3 pt-2 text-sm font-medium transition-colors ${
+                                                selected
+                                                    ? 'text-[var(--ink)] after:absolute after:inset-x-3 after:bottom-0 after:h-0.5 after:rounded-full after:bg-[var(--accent)]'
+                                                    : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                                            }`}
+                                        >
+                                            {tSettings(labelKey)}
+                                        </button>
+                                    );
+                                })}
+                            </nav>
+                        </div>
+                    </header>
+                )}
                 {/* Skills + Sub-Agents section uses wider layout.
                  *  initialSelect is passed unfiltered — each panel's viewStateForSelect
                  *  is the single source of truth for which kinds it accepts. */}

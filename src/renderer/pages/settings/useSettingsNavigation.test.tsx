@@ -5,6 +5,7 @@ import { useSettingsNavigation } from './hooks/useSettingsNavigation';
 
 function Probe(props: {
   initialSection?: string;
+  navigationNonce?: number;
   floatingBallDevGate?: boolean;
   onSectionChange?: () => void;
 }) {
@@ -35,5 +36,18 @@ describe('useSettingsNavigation', () => {
 
     await waitFor(() => expect(screen.getByTestId('section')).toHaveTextContent('about'));
     expect(onSectionChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-applies the same deep link when a new navigation intent arrives', async () => {
+    const onSectionChange = vi.fn();
+    const { rerender } = render(
+      <Probe initialSection="skills" navigationNonce={1} onSectionChange={onSectionChange} />,
+    );
+
+    await waitFor(() => expect(onSectionChange).toHaveBeenCalledTimes(1));
+    rerender(<Probe initialSection="skills" navigationNonce={2} onSectionChange={onSectionChange} />);
+
+    await waitFor(() => expect(onSectionChange).toHaveBeenCalledTimes(2));
+    expect(screen.getByTestId('section')).toHaveTextContent('skills');
   });
 });

@@ -1,7 +1,7 @@
 # MyAgents Design Guide
 
-> **Version**: 2.7.7
-> **Last Updated**: 2026-07-22
+> **Version**: 2.8.0
+> **Last Updated**: 2026-07-25
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
 
@@ -696,8 +696,10 @@ Item 选中: 文字 var(--accent-warm)
 
 | 属性 | 值 |
 |------|------|
-| 最小宽度 | 320px |
-| 设置页侧边栏 | 208px (w-52) |
+| 全局侧边栏展开态 | 288px |
+| 全局侧边栏 rail | 80px（包含 macOS 红绿灯安全宽度） |
+| rail 工作区 flyout | 320px |
+| 设置页内部侧边栏 | 208px (w-52) |
 
 ### 7.4 Header 高度
 
@@ -1223,31 +1225,60 @@ v2.0 移除了所有旧别名。以下是唯一保留的等价关系：
 
 ---
 
-## 15. Launcher 页面规范
+## 15. 全局 App Shell 与 Launcher 规范
 
-Launcher 是应用的启动页，采用左右分栏布局。左侧负责品牌、对话 / 想法输入和当前工作区上下文；右侧是一个连续滚动的 right rail，上方保留 Agent 工作区，下方以历史对话为核心。Launcher 不承载任务中心摘要和新建任务入口；任务统一从顶部导航栏「任务」进入。
+MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能力和资源在哪里”，顶部 Tab 回答“哪些窗口正在占用注意力”。侧边栏属于 `App` Shell，不属于 Launcher；所有占据主内容区的页面仍由 Tab 拥有。
 
 ### 15.1 布局结构
 
 ```
-┌────────────────────────────────────────────────────────┐
-│                    Tauri Title Bar                      │
-├──────────────────────────┬─────────────────────────────┤
-│                          │  Agent 工作区       [+ 添加] │
-│        MyAgents          │  [卡片] [卡片]               │
-│  对话 / 想法 + 输入框     │  [卡片] [卡片]               │
-│                          │  展开更多 N 个 / 收起         │
-│                          │  ────────────────────────── │
-│        (60%)             │  历史对话  [全部⌄]      [🔍] │
-│                          │  [历史行...]       (40%)     │
-└──────────────────────────┴─────────────────────────────┘
+┌──────────────┬─────────────────────────────────────────┐
+│ 全局侧边栏    │ 顶部 Active Tabs                         │
+│              ├─────────────────────────────────────────┤
+│ 全局入口      │                                         │
+│ 工作区/历史   │ 当前 Tab 内容                            │
+│              │                                         │
+│ 小助理/设置   │                                         │
+└──────────────┴─────────────────────────────────────────┘
 ```
 
-**分栏比例**：左侧 60%（品牌区） / 右侧 40%（right rail，最小宽度 320px）。
+- 全局栏从窗口最顶部延伸到底部；右侧才是标题栏与 Tab Workspace。
+- macOS 红绿灯安全区属于侧栏顶部 chrome；Windows 窗口按钮仍固定在右侧标题栏最右端。
+- 常驻展开态 288px，rail 80px；切换模式不通过 width 动画持续重排主内容。
+- 顶部 Tab 保留 active、关闭、拖拽、溢出、生成中、未读与触摸板切换语义，侧栏不得建立第二套页面选中状态。
 
-**滚动模型**：右栏只有一个 scroll root。Agent 工作区展开后占用右栏上方空间，历史对话自然下移；历史列表本身不做内嵌滚动。向下滚动时「历史对话」标题行吸顶。
+### 15.2 全局侧边栏
 
-### 15.2 品牌区域
+展开态从上到下依次为：产品身份与收起控制、新对话/搜索、任务/团队/技能与连接器、Agent 工作区树、底部小助理/设置。主要层级依靠分组、留白、弱分割线和选中面，不将每组包成卡片。
+
+```
+展开态 288px:
+  导航行: h-10, px-3, text-sm, icon 16px
+  工作区标题行: h-12, text-xs, 弱化文字
+  工作区行: h-10；整行只负责展开/折叠
+  Session 行: h-9；标题单行 truncate，右侧时间 text-xs
+  底部入口: 固定，不随工作区历史滚动
+
+rail 80px:
+  图标按钮: 40 × 40px
+  只有工作区入口打开 320px 可交互 flyout
+  其它入口只显示延迟名称 tooltip
+```
+
+手动 rail 中，MyAgents 图标 hover/focus 后替换为展开控制；自动 rail 中保持静态品牌图标，不暴露无法兑现的展开按钮。工作区 flyout 覆盖主内容而不推挤布局，使用轻量 opacity/translate 入场；离开交互区域短延迟关闭，`Esc` 关闭并回焦入口。嵌套菜单、确认弹层和 flyout 共用同一交互生命周期。
+
+### 15.3 工作区与 Session 树
+
+- 工作区按置顶时间、最近打开时间、名称稳定排序；归档工作区位于默认收起的独立分组。
+- 初次有效解析默认 Mino 时只种子展开一次；之后用户的展开/折叠选择跨重启保持，当前工作区高亮不自动改写展开状态。
+- 每个展开工作区首批显示 5 个 Session，“展开更多”每次追加 5 个；折叠再展开保留当前进程内分页数量。
+- Session 读取状态按工作区隔离：某个工作区加载或失败时只在该树枝显示骨架/原位重试，不遮蔽其它已成功工作区。
+- 工作区整行只切换树；“在此工作区新建对话”和更多菜单是独立 hover/focus 动作，避免把资源浏览与启动混为一谈。
+- Session 行可显示收藏、来源标签、时间和具体 Session 状态；工作区行与 rail 不显示聚合 badge。
+- active 使用 `var(--hover-bg)` / `var(--paper-elevated)` 与必要 `shadow-sm`；列表行 hover 使用 `var(--hover-bg)`，小图标按钮 hover 使用 `var(--paper-inset)`。
+- 空态、加载骨架和局部失败重试都留在工作区滚动区域，不能拖垮全局导航或推走底部入口。
+
+### 15.4 Launcher 品牌区域
 
 品牌区 JSX 只消费 `ResolvedTheme.hero`。产品名、zh-CN/en-US slogan、文字视觉参数和每个 scheme 的可选 bundled 背景槽都由 Theme 拥有；`BrandSection` 不硬编码 `MyAgents` 或 slogan source。canonical Theme 当前没有独立背景图，因此与迁移前视觉一致。
 
@@ -1277,131 +1308,22 @@ Settings About 的品牌名复用同一个 `.theme-launcher-hero-title` selector
   - 与英文标语间距: 10px (mt-2.5)
 ```
 
-### 15.3 Right Rail 区域
+### 15.5 轻量 Launcher
 
-**区域内边距**：水平 24px。右栏 scroll root 本身不设置垂直 padding；顶部工作区内容用 `pt-6` 保持首屏呼吸感，保证历史标题行 `sticky top-0` 时可以贴到右栏最上沿。
+Launcher 只负责创建新工作：品牌 Hero、对话/想法输入、工作区选择、模型/Runtime/权限/推理强度，以及发送前的工具、插件、定时等配置。页面使用单列居中布局，输入区继续消费既有 Theme Hero 与输入原语。
 
-**Section 间距**：
-| Section | 规则 |
-|---------|------|
-| Agent 工作区 | 顶部 section，默认展示 6 个可见工作区（3 行 x 2 列） |
-| 分割线 | `border-t border-[var(--line-subtle)]`，位于工作区和历史之间，保持在右栏内容内距内，不贴左右边缘；上下间距收敛为紧凑弱分割，不形成格子切割感 |
-| 历史对话 | 标题行 `sticky top-0`，吸顶时保持 `var(--paper)` 近似背景；标题行自身不加横穿整栏的底边，sticky 背景不得横向铺到 right rail scrollbar 区域 |
+Launcher 不再展示工作区卡片、历史列表、搜索按钮、管理菜单或 dev-only Logs。所有工作区/Session 浏览和正式管理能力只存在于全局侧边栏，避免用户进入其它 Tab 后失去资源导航，也避免两个 surface 漂移。
 
-**入口边界**：
-- Launcher 右栏不展示「我的任务」摘要。
-- Launcher 右栏不展示「新建任务」按钮。
-- 历史标题行不展示「全部 →」跳转，只保留搜索 icon 和历史筛选器（全部 / 我的收藏 / 工作区）。
+Launcher 选中的工作区仅投影为全局树的关联高亮，不因此展开树、不提前创建 Session/Sidecar、不改变 pending Tab 的 birth 语义。
 
-### 15.4 Agent 工作区
+### 15.6 技能与连接器 Tab
 
-```
-Header:
-  - 标题: text-base, font-semibold, tracking-[0.04em], var(--ink-muted)
-  - 右侧: Logs（仅 dev tools）+ AddWorkspaceMenu（仅非空工作区列表）；顶部按钮使用 py-1，避免高于 section 标题过多
+“技能与连接器”是单实例功能 Tab，顶部使用 3 个克制的下划线子 Tab：技能、插件、工具。它与普通 Settings 分别在自己的 Tab slot 内保留导航、草稿和弹层状态，同时复用既有技能/插件/工具模块；普通 Settings 内部侧栏不再重复显示这三项。配置传播等 app-global effect 由配置层唯一拥有，不跟随页面 mount。
 
-默认态:
-  - Grid: 2 columns, gap-3
-  - 展示数量: 6 个（3 行 x 2 列）
-  - 超过 6 个才显示「展开更多 N 个」按钮
-  - 排序: pinnedAt desc 的置顶组在前，其次 lastOpened desc，最后名称稳定排序
-
-展开态:
-  - 展示所有可见工作区
-  - 历史对话 section 被自然压到下方
-  - 底部显示「收起」按钮
-  - 「展开更多 N 个 / 收起」按钮使用 text-xs，弱于 section 标题和卡片主信息
-  - 点击「收起」后立即切回折叠态，只渲染默认 6 个工作区，并把 right rail scroll root 回到 top=0
-  - 展开 / 收起使用 max-height transition，尊重 motion-reduce；不得出现按钮文案先变、卡片延迟卸载的中间态
-```
-
-### 15.5 工作区卡片
-
-```
-背景: var(--paper-elevated)
-圆角: var(--radius-xl) / 12px
-内边距: px-4 py-3
-
-Hover 状态:
-  - shadow-sm
-  - hover 卡片提升到相邻内容之上，保证右侧操作入口不被后续卡片 / 展开按钮 / 分割线压住
-  - 右侧以 absolute overlay 显示「更多」icon button，不占用卡片正文布局宽度
-  - 「更多」只显示 icon，不显示 hover tooltip；点击后打开与右键一致的工作区菜单
-  - overlay 使用从透明到 `var(--paper-elevated)` 的弱渐显遮罩，避免按钮浮在文字上
-  - 卡片自身负责 rounded 裁剪（`overflow-hidden`），absolute overlay 不得把右上/右下圆角画成方角
-
-文件夹图标:
-  - 容器: 28px
-  - 图标: WorkspaceIcon
-
-项目名称: 14px (text-sm), font-medium, var(--ink)
-项目路径: 12px (text-xs), var(--ink-muted)
-
-频道标签:
-  - 与项目名称同一行
-  - text-xs
-  - 不换行；工作区名称优先展示，频道标签吃剩余空间
-  - 空间不足时频道标签在右侧用 mask 渐隐裁切，不新增第三行
-
-右键菜单:
-  - 置顶 / 取消置顶
-  - Agent 设置
-  - 打开所在文件夹
-  - 移除
-```
-
-### 15.6 历史对话列表
-
-```
-Header:
-  - 标题: 历史对话，text-base, font-semibold, tracking-[0.04em], var(--ink-muted)
-  - 标题右侧: 弱化历史筛选器，默认文案「全部」；菜单包含「全部」「我的收藏」和各工作区，筛选按钮 h-6 / py-0，与标题上下居中
-  - 右侧: 搜索 icon button，打开现有 TaskCenterOverlay search mode
-  - 吸顶: sticky top-0，随 right rail scroll root 生效
-
-列表结构:
-  - 纯列表，不显示「今天 / 昨天 / 近 7 天 / 更早」等分组行
-  - 保持 lastActiveAt 倒序，不额外插入日期分割 DOM
-
-列表项:
-  - 内边距: py-2 px-3
-  - 圆角: var(--radius-lg)
-  - Hover 背景: var(--hover-bg)
-  - 单行展示，标题与工作区信息均 truncate
-  - `select-none`，避免右键时浏览器先选中行内文字
-  - 若该 session 有未读系统通知，在标签与标题之间显示弱未读标记：1 条为 6px 暖色点，多条为小号暖色数字胶囊；不改变排序
-
-时间:
-  - 字号: 12px (text-xs)
-  - 颜色: var(--ink-muted) / 50%
-  - 固定宽度: 64px (w-16)
-  - 不显示时钟 icon，为时间 / 日期文本留出空间
-
-任务标题:
-  - 字号: 14px (text-sm)
-  - 颜色: var(--ink-secondary)
-  - Hover: var(--ink)
-
-工作区名称:
-  - 字号: 12px (text-xs)
-  - 颜色: var(--ink-muted) / 55%
-  - 固定宽度: 64px (w-16, truncate)
-  - 列表行内不显示工作区图标；历史筛选菜单的工作区项保留图标辅助识别
-
-Hover 操作:
-  - 仅显示「更多」三个点 icon
-  - 「更多」使用右侧 absolute overlay，不占用标题布局宽度
-  - overlay 使用从透明到 row hover surface 的弱渐显遮罩；标题尾部使用 mask 渐隐，避免 hover 操作覆盖文字时生硬截断
-  - 历史行更多菜单由列表级状态控制，同一时间最多只能打开一个菜单
-  - 右键行任意位置打开同一份更多菜单，菜单锚点跟随右键点击位置；右键在 mouseDown 阶段拦截，避免文字选中后延迟弹出
-  - 二级菜单包含「收藏对话 / 取消收藏」「查看统计」「删除」
-  - 运行中 Cron 绑定的 session 删除禁用，提示先停止定时任务
-
-性能:
-  - 初始渲染一页历史
-  - 滚动到 sentinel 附近自动追加下一页
-  - 不在 scroll handler 中做重计算，使用 IntersectionObserver
-```
+- 页面标题 `text-xl`，描述 `text-sm`；内容最大宽度 `max-w-4xl`。
+- 子 Tab 使用 `role=tablist/tab` 与 `aria-selected`；选中指示为 2px accent 下划线，不做分段胶囊。
+- 顶部区域 sticky，背景消费 `var(--paper)` 并使用弱 blur；内容保持各原有模块的滚动与状态语义。
+- 来自旧 Settings deep-link 的 skills/sub-agents/plugins/mcp 意图统一重定向到该 Tab；重复打开只聚焦已有 Tab。
 
 ---
 
@@ -1409,6 +1331,7 @@ Hover 操作:
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.0 | 2026-07-25 | **全局 App Shell 与 Active Tabs（PRD 0.3.5）**：将产品能力、Agent 工作区和 Session 树从 Launcher 右栏提升为 App 级全局侧边栏；定义 288px 展开态、80px rail、320px 工作区 flyout、窄窗自动 rail 与独立手动偏好；Launcher 收敛为单列新工作入口；技能、插件、工具迁入单实例功能 Tab，页面所有权继续由顶部 Tab 统一承载 |
 | 2.7.9 | 2026-07-23 | **产品默认 Theme 与显式选择解耦**：Default Black 成为未选择用户当前跟随的产品默认，`myagents-default` 继续仅承担 canonical fallback；新增显式选择状态，未来调整产品默认不覆盖用户选择；Absolutely 用户可见名改为 Claude；Theme 菜单选中标记移到名称之后、light/dark 色块之前 |
 | 2.7.8 | 2026-07-22 | **Theme 入口公开与配色速览**：Theme 选择器从隐藏开发者区迁到“通用设置 → 界面外观”末尾；下拉触发器与选项以两枚 16px 色块展示 package 的 light/dark Primary，颜色由 Registry 从 Theme CSS 派生，不在组件维护第二份 palette |
 | 2.7.7 | 2026-07-22 | **Space 接入全局 Theme**：删除 `space-mono` 局部 palette 与 Popover portal scope 传播；Space 的 paper、文字、字体、圆角、阴影、动作色和状态色直接继承当前 Theme，同时保留布局、业务状态机、Logo、用户内容和纯 alpha 遮罩边界 |

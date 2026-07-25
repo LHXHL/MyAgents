@@ -1,4 +1,12 @@
 {
+  "capabilities": {
+    "title": "技能与连接器",
+    "description": "管理 Agent 可调用的技能、插件和工具连接。",
+    "navigation": "能力分类",
+    "skills": "技能",
+    "plugins": "插件",
+    "tools": "工具"
+  },
   "sidebar": {
     "title": "设置",
     "logsTitle": "查看 Rust 日志",

@@ -80,25 +80,22 @@ describe('CustomTitleBar — 恢复对话 pill (Issue #309)', () => {
         const tauriDragRegions = Array.from(container.querySelectorAll('[data-tauri-drag-region]'));
         const tabbarHost = screen.getByTestId('tabbar').parentElement;
 
-        expect(tauriDragRegions.length).toBeGreaterThanOrEqual(4);
+        expect(tauriDragRegions.length).toBeGreaterThanOrEqual(2);
         expect(tauriDragRegions.some((node) => (node as HTMLElement).style.width === '30px')).toBe(true);
         expect(tauriDragRegions.some((node) => (node as HTMLElement).className.includes('w-1'))).toBe(true);
         expect(container.querySelector('[data-myagents-titlebar-drag-region]')).toBeNull();
         expect(tabbarHost?.className).toContain('flex-1');
     });
 
-    it('renders titlebar action labels in English', async () => {
+    it('does not duplicate global product navigation in the titlebar', async () => {
         mocks.isTauri.mockReturnValue(true);
         await i18n.changeLanguage('en-US');
 
-        renderBar({ teamSpaceEnabled: true, onSettingsClick: vi.fn() });
+        renderBar();
 
-        expect(screen.getByRole('button', { name: 'AI Helper' })).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: 'Team' })).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: 'Tasks' })).toBeInTheDocument();
-        expect(screen.getByRole('button', { name: 'Settings' })).toBeInTheDocument();
-        expect(screen.queryByText('小助理')).not.toBeInTheDocument();
-        expect(screen.queryByText('任务')).not.toBeInTheDocument();
-        expect(screen.queryByText('设置')).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'AI Helper' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Team' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Tasks' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Settings' })).not.toBeInTheDocument();
     });
 });

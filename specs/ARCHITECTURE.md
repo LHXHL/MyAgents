@@ -36,14 +36,16 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 │                            Tauri Desktop App                                 │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                              React Frontend                                  │
-│  ┌──────┐ ┌──────┐ ┌──────┐ ┌────────┐ ┌──────────┐ ┌──────────────┐       │
-│  │ Tab1 │ │ Tab2 │ │ Tab3 │ │Settings│ │ Launcher │ │  TaskCenter  │       │
-│  └───┬──┘ └───┬──┘ └───┬──┘ └────┬───┘ └────┬─────┘ └──────┬───────┘       │
-│      │        │        │         │           │              │               │
-│  ┌───┴────────┴────────┴─┐   ┌───┴─────────────────────────┴──┐              │
-│  │ Embedded Browser/Term │   │      Tab-scoped useTabState     │              │
-│  │  (Tauri子Webview/PTY) │   │   apiGet/apiPost/SSE listeners  │              │
-│  └───────────────────────┘   └─────────────────────────────────┘              │
+│  ┌────────────────┐ ┌────────────────────────────────────────────────────┐  │
+│  │ GlobalSidebar  │ │ Active Tab Workspace                               │  │
+│  │ App Shell      │ │ Tab1 / Tab2 / Settings / Launcher / Capabilities   │  │
+│  │ nav + resource │ │ TaskCenter / Space                                 │  │
+│  │ projection     │ └───────────────────────┬────────────────────────────┘  │
+│  └───────┬────────┘                         │                               │
+│          │                 ┌────────────────┴───────────────────────────┐   │
+│  App/config/task stores    │ Tab-scoped useTabState + Browser/Term     │   │
+│  plan/focus existing Tabs  │ apiGet/apiPost/SSE + Tauri 子 Webview/PTY │   │
+│                            └────────────────────────────────────────────┘   │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                              Rust Layer                                      │
 │  ┌────────────────┐ ┌──────────────────┐ ┌─────────────────────────────┐    │
@@ -117,7 +119,9 @@ pub enum SidecarOwner {
 |----------|-------------|--------------|----------|
 | Chat | ✅ 包裹 | Session Sidecar | `useTabState()` |
 | Settings | ❌ 不包裹 | Global Sidecar | `apiFetch.ts`（全局） |
+| Capabilities（技能/插件/工具） | ❌ 不包裹 | Global Sidecar | 独立 Tab 页面状态；复用 Settings 能力模块与全局 API |
 | Launcher | ❌ 不包裹 | Global Sidecar | `apiFetch.ts`（全局） |
+| GlobalSidebar（App Shell） | ❌ 不包裹 | 不直接拥有 Sidecar | App/config/task stores 的投影；变更调用既有 authority，页面打开交回 `App` 规划或聚焦 Tab |
 | IM Bot / Agent Channel | — (Rust 驱动) | Session Sidecar | Rust `ensure_session_sidecar()` |
 
 不在 TabProvider 内的组件调用 `useTabStateOptional()` 返回 `null`，自动 fallback 到 Global API。
@@ -312,6 +316,18 @@ Rust 启动 Node Sidecar 时必须显式传 `--sidecar-role global|session`；`-
 | `TabProvider.tsx` | 状态容器，管理 messages / logs / SSE / Session |
 
 Tab 内 MUST 用 `useTabState()` 的 `apiGet` / `apiPost`，禁止全局 `apiPostJson` / `apiGetJson`（会发到 Global Sidecar）。
+
+#### App Shell 与 Tab authority
+
+`GlobalSidebar` 挂在 `App` 的 Tab Workspace 之外，是应用级导航和资源投影，不是新的页面容器或 Session owner。顶部 Tab 仍是所有主内容页面的唯一 authority：active、关闭、恢复、拖拽、Sidecar owner token 与 pending-session birth 都继续由现有 Tab 状态机管理。
+
+- 侧栏只从既有 `ConfigProvider`、任务中心 store、Session 索引与当前 Tab 派生工作区/Session 展示；active 高亮是 projection，不持久化第二份“当前页面”。工作区配置和 Session mutation 分别调用现有 Config / Task Center authority，不在侧栏另存领域状态。
+- App Shell 使用 Task Center store 的 passive projection：只按需读取已展开工作区的 Session，每个规范化工作区 key 独立持有 loading/error/retry；只有用户打开全局搜索时才触发一次完整索引加载。passive 与完整 Task Center 读取共享 generation/latest-wins 交接，完整读取开始时使旧 passive 写入失效，完整 owner 卸载时显式把当前展开需求交还 passive。任务列表、轮询与 Tauri 监听仍由真正挂载的 Task Center 生命周期拥有，不能因侧栏常驻而前移到 App mount。
+- 点击已有 Session 必须回到 `App` 的统一 open-target-session planner：优先聚焦已打开 Tab，否则按既有恢复/创建路径 materialize；并发点击复用同一 in-flight guard。
+- 点击工作区始终新建 Launcher Tab，再通过 Launcher 既有选择路径写入该 Tab 的待创建工作区；不得在侧栏提前创建 Session 或 Sidecar。
+- Launcher 仅拥有“创建新工作”的输入和选项，不再拥有工作区卡片、历史列表或正式资源管理。全局侧栏是这些资源的唯一 UI owner。
+- “技能与连接器”使用单实例 `capabilities` Tab，并与 Settings 分别在自己的 Tab slot 内持有页面状态；切到其它 Tab 不卸载草稿，两个功能 Tab 的导航和弹层也不互相串扰。两者复用 Settings 既有能力模块，但 app-global 配置传播（例如 proxy hot reload）归 `ConfigProvider` 唯一拥有，不能由任一页面 mount 次数决定。旧 Settings deep-link 只做意图重定向，不复制领域实现。
+- 窄窗自动 rail 与用户手动展开偏好是两个正交状态。工作区 flyout 只是同一资源树的浮层呈现，不新增数据源、路由或选中 authority。
 
 Phase4 后，几个历史大型 UI 入口保留原路径作为兼容 facade，真实实现按 owner 目录维护：
 

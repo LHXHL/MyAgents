@@ -30,6 +30,9 @@ describe('SettingsSidebar i18n', () => {
     expect(screen.getByRole('button', { name: 'General' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Model Providers' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Desktop Pet' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Skills' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Plugins' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Tools' })).not.toBeInTheDocument();
     expect(screen.getByTitle('View Rust logs')).toBeInTheDocument();
   });
 });

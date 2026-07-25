@@ -170,6 +170,10 @@
 :root {
   /* Layout and spacing are product structure, not Theme identity. */
   --breakpoint-mobile: 640px;
+  --global-sidebar-expanded-width: 288px;
+  --global-sidebar-flyout-width: 320px;
+  --global-sidebar-rail-width: 80px;
+  --macos-traffic-light-safe-width: 78px;
   --sidebar-min-width: 320px;
   --header-height: 48px;
   --space-0: 0;
@@ -184,6 +188,20 @@
   --space-8: 32px;
   --space-10: 40px;
   --space-12: 48px;
+}
+
+[data-global-sidebar-flyout] {
+  animation: global-sidebar-flyout-in 140ms ease-out;
+  transform-origin: left center;
+}
+
+@keyframes global-sidebar-flyout-in {
+  from { opacity: 0; transform: translateX(-4px) scale(0.99); }
+  to { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-global-sidebar-flyout] { animation: none; }
 }
 
 /* Viewport-locked app: prevent document-level scrolling entirely.
@@ -531,85 +549,8 @@ pre code {
    ============================================ */
 
 
-/* Launcher two-column layout */
-.launcher-layout {
-  display: grid;
-  /* Left 60%, Right 40% (with min-width constraint) */
-  grid-template-columns: 60fr minmax(var(--sidebar-min-width), 40fr);
-  grid-template-areas: 'brand workspaces';
-}
-
 .launcher-brand {
-  grid-area: brand;
   min-width: 0; /* Allow shrinking */
-}
-
-.launcher-workspaces {
-  grid-area: workspaces;
-  position: relative;
-}
-
-.workspace-card-channel-tags-fade {
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
-  mask-image: linear-gradient(to right, #000 calc(100% - 18px), transparent);
-}
-
-.workspace-card-action-overlay {
-  background: linear-gradient(
-    to right,
-    transparent 0%,
-    color-mix(in srgb, var(--paper-elevated) 78%, transparent) 40%,
-    var(--paper-elevated) 78%
-  );
-}
-
-.launcher-history-row-title-fade {
-  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
-  mask-image: linear-gradient(to right, #000 calc(100% - 22px), transparent);
-}
-
-.launcher-history-row-action-overlay {
-  --launcher-history-row-overlay-bg: color-mix(in srgb, var(--paper) 92%, var(--accent-warm));
-
-  background: linear-gradient(
-    to right,
-    transparent 0%,
-    color-mix(in srgb, var(--launcher-history-row-overlay-bg) 76%, transparent) 38%,
-    var(--launcher-history-row-overlay-bg) 78%
-  );
-}
-
-/* Floating divider between brand and workspaces */
-.launcher-workspaces::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 24px;
-  bottom: 24px;
-  z-index: 30;
-  width: 1px;
-  background: var(--line);
-  pointer-events: none;
-}
-
-/* Responsive: stack vertically below 640px (use --breakpoint-mobile) */
-@media (max-width: 639px) {
-  .launcher-layout {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
-    grid-template-areas:
-      'brand'
-      'workspaces';
-  }
-
-  .launcher-brand {
-    min-height: 200px;
-    border-bottom: 1px solid var(--line);
-  }
-
-  .launcher-workspaces::before {
-    display: none;
-  }
 }
 
 /* Settings sidebar floating divider */
