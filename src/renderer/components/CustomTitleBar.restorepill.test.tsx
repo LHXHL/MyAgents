@@ -55,7 +55,7 @@ describe('CustomTitleBar — 恢复对话 pill (Issue #309)', () => {
         const { container } = renderBar();
         const titlebar = container.querySelector('.custom-titlebar');
 
-        expect(titlebar).toHaveClass('bg-[var(--paper)]', 'border-[var(--line)]');
+        expect(titlebar).toHaveClass('bg-[var(--paper)]', 'border-[var(--line)]', 'pl-2');
         expect(titlebar).not.toHaveClass('bg-gradient-to-b', 'from-[var(--paper)]', 'to-[var(--paper-inset)]/30');
     });
 

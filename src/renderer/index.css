@@ -234,7 +234,8 @@
 
 /* In manual macOS rail mode the single sidebar toggle keeps its window-fixed
    x coordinate and visually moves onto the Tab titlebar surface. Reserve that
-   exact leading slot so the first Tab never renders underneath the control. */
+   exact leading slot plus the titlebar's normal 8px content inset so the first
+   Tab never renders underneath or directly against the control. */
 [data-global-sidebar-tabbar-toggle='true'] ~ [data-tab-workspace]
   > .custom-titlebar {
   padding-left: var(--global-sidebar-tabbar-toggle-inset);

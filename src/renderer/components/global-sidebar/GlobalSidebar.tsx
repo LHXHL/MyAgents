@@ -668,7 +668,7 @@ export default memo(function GlobalSidebar({
         data-global-sidebar-mode={effectiveMode}
         data-global-sidebar-toggle-visible={forceRail ? 'false' : 'true'}
         data-global-sidebar-tabbar-toggle={!isWindows && !forceRail && !expanded ? 'true' : 'false'}
-        className={`global-sidebar relative z-40 flex h-screen shrink-0 flex-col border-r border-[var(--line)] bg-[var(--global-sidebar-bg)] text-[var(--ink)] ${
+        className={`global-sidebar relative z-40 flex h-screen shrink-0 flex-col bg-[var(--global-sidebar-bg)] text-[var(--ink)] ${
           expanded ? 'w-[var(--global-sidebar-expanded-width)]' : 'w-[var(--global-sidebar-rail-width)]'
         }`}
       >
@@ -748,10 +748,10 @@ export default memo(function GlobalSidebar({
         </nav>
 
         {expanded ? (
-          <div className="min-h-0 flex-1 border-t border-[var(--line-subtle)]">{tree}</div>
+          <div className="min-h-0 flex-1" data-global-sidebar-workspace-region>{tree}</div>
         ) : (
           <div
-            className="global-sidebar-rail-stack min-h-0 flex-1 border-t border-[var(--line-subtle)] pt-3"
+            className="global-sidebar-rail-stack min-h-0 flex-1 pt-3"
             data-global-sidebar-workspace-rail
             onKeyDown={(event) => {
               if (event.key !== 'Escape' || !flyoutOpen) return;
@@ -797,7 +797,7 @@ export default memo(function GlobalSidebar({
         )}
 
         <div
-          className={`shrink-0 border-t border-[var(--line-subtle)] py-3 ${expanded ? 'px-3' : 'global-sidebar-rail-stack'}`}
+          className={`shrink-0 py-3 ${expanded ? 'px-3' : 'global-sidebar-rail-stack'}`}
           data-global-sidebar-footer-actions
         >
           <div ref={feedbackTriggerRef} className={expanded ? '' : 'flex justify-center'}>

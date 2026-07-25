@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.6
+> **Version**: 2.8.7
 > **Last Updated**: 2026-07-26
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -1248,13 +1248,13 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
 - 常驻展开态 256px，rail 72px；切换模式不通过 width 动画持续重排主内容。
 - 顶部 chrome 分两行：第一行 44px 只承载原生窗口区、拖拽区与固定侧栏 toggle，第二行 40px 承载 App Icon + `MyAgents` 品牌。App Icon 使用 macOS App 风格的 22% 圆角矩形轮廓，在展开态与 rail 中始终保持 20px、固定于窗口 `x=24px` 且复用同一 DOM；它不参与 rail 居中计算，切换时只让品牌文字出现或消失。macOS toggle 固定在窗口 `x=84px` 起的 32px 槽位；展开时位于侧栏表面，手动 rail 时自然落入右侧 Tab 标题栏表面，屏幕坐标与 DOM 均不切换。
 - 顶部 Tab 保留 active、关闭、拖拽、溢出、生成中、未读与触摸板切换语义，侧栏不得建立第二套页面选中状态。
-- 右侧标题栏使用纯 `var(--paper)` 根面和既有底部分割线，不使用 `paper → paper-inset` 混合渐变。32px Tab 使用 Theme-owned `rounded-md`；active 与 hover 均使用 `var(--hover-bg)`，active 不增加常驻阴影，只额外保留 2px `var(--accent)` 底线。新增 Tab 与溢出按钮使用同一 hover wash，使顶部 Chrome 与左侧工作区共享克制的注意力反馈，而不新增 Tab 专属 palette。
+- 右侧标题栏使用纯 `var(--paper)` 根面和既有底部分割线，不使用 `paper → paper-inset` 混合渐变。常规模式在侧栏边界后保留 8px leading inset；手动 rail 的 52px 预留同时包含固定 toggle 槽位及其后的 8px 留白。32px Tab 使用 Theme-owned `rounded-md`；active 与 hover 均使用 `var(--hover-bg)`，active 不增加常驻阴影，只额外保留 2px `var(--accent)` 底线。新增 Tab 与溢出按钮使用同一 hover wash，使顶部 Chrome 与左侧工作区共享克制的注意力反馈，而不新增 Tab 专属 palette。
 
 ### 15.2 全局侧边栏
 
-展开态从上到下依次为：原生窗口 chrome 与固定收起控制、独立产品身份行、新对话/搜索/任务/团队/技能与连接器的连续主导航、Agent 工作区树、底部小助理/设置。主导航项保持 40px 命中高度但不添加行间距，搜索与任务之间不使用分割线；主要层级依靠紧凑留白、工作区分组边界和选中面，不将每组包成卡片。
+展开态从上到下依次为：原生窗口 chrome 与固定收起控制、独立产品身份行、新对话/搜索/任务/团队/技能与连接器的连续主导航、Agent 工作区树、底部小助理/设置。主导航项保持 40px 命中高度但不添加行间距；从主导航到 Agent 工作区、再到底部入口均不使用横分割线，主要层级只依靠 8–12px 组间留白、工作区标题和选中面，不将每组包成卡片。
 
-全局侧栏根面只消费 Theme-owned `--global-sidebar-bg`。八套 Theme 的 light/dark 均在自身 `--paper` 与 `--paper-inset` 之间提供一个略深于页面的值，使侧栏同时能与右侧 `--paper` 页面和 `--paper-elevated` 对话面形成克制分区。该结构 Token 不替代通用 Paper 层级：右侧页面、卡片、弹层和顶部 Tab 栏继续使用原有 Token，工作区/Session hover 与 active 也不随侧栏底色重算。
+全局侧栏根面只消费 Theme-owned `--global-sidebar-bg`。八套 Theme 的 light/dark 均在自身 `--paper` 与 `--paper-inset` 之间提供一个略深于页面的值，使侧栏同时能与右侧 `--paper` 页面和 `--paper-elevated` 对话面形成克制分区；该色差独立承担左右分区，不再叠加右侧竖分割线。该结构 Token 不替代通用 Paper 层级：右侧页面、卡片、弹层和顶部 Tab 栏继续使用原有 Token，工作区/Session hover 与 active 也不随侧栏底色重算。
 
 ```
 展开态 256px:
@@ -1340,6 +1340,7 @@ Launcher 选中的工作区仅投影为全局树的关联高亮，不因此展�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.7 | 2026-07-26 | **侧栏与 Tab Chrome 边界校准**：标题栏在侧栏后增加 8px 基础 leading inset，手动 rail 的 52px 槽位继续包含 toggle 后留白；侧栏移除右侧竖分割线及 Agent 工作区上下横分割线，左右区域依靠材质色差、侧栏纵向模块依靠 8–12px 留白分区 |
 | 2.8.6 | 2026-07-26 | **顶部 Tab Chrome 材质收敛**：标题栏由 Paper 混合渐变改为纯 `paper`；Tab active/hover 与新增/溢出按钮统一复用 `hover-bg`，active 移除阴影并保留 accent 底线；32px Tab 改用 `rounded-md`，使相对曲率接近 40px 工作区行 |
 | 2.8.5 | 2026-07-26 | **全局侧栏资源密度校准**：Session 标题从 `text-sm` 降为 `text-xs` 并保留 `h-9` 命中高度；顶层工作区与底部“小助理/设置”均移除额外 4px 行间距，使资源树和上下导航采用一致的连续节奏 |
 | 2.8.4 | 2026-07-26 | **全局侧栏材质分层校准**：新增 Theme-owned `--global-sidebar-bg`，八套 Theme 的 light/dark 均在自身 `paper → paper-inset` 色阶间微量下探；仅全局侧栏根面消费，右侧页面、`paper-elevated` 卡片/弹层、顶部 Tab 栏与交互态不变 |

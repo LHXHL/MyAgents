@@ -228,7 +228,8 @@ describe('GlobalSidebar rail flyout', () => {
     expect(navigation).toHaveAttribute('data-global-sidebar-mode', 'rail');
     expect(navigation).toHaveAttribute('data-global-sidebar-tabbar-toggle', 'true');
     expect(navigation).toHaveClass('bg-[var(--global-sidebar-bg)]');
-    expect(navigation).not.toHaveClass('bg-[var(--paper)]', 'bg-[var(--paper-elevated)]');
+    expect(navigation).not.toHaveClass('bg-[var(--paper)]', 'bg-[var(--paper-elevated)]', 'border-r');
+    expect(navigation).not.toHaveClass('border-[var(--line)]');
     const brandIcon = navigation.querySelector('[data-global-sidebar-brand-icon]');
     const brandRow = navigation.querySelector('[data-global-sidebar-brand-row]');
     const primaryNav = navigation.querySelector('[data-global-sidebar-primary-nav]');
@@ -239,9 +240,9 @@ describe('GlobalSidebar rail flyout', () => {
     expect(primaryNav).toHaveClass('global-sidebar-rail-stack');
     expect(primaryNav).not.toHaveClass('items-center', 'px-2', 'border-t', 'space-y-1');
     expect(workspaceRail).toHaveClass('global-sidebar-rail-stack');
-    expect(workspaceRail).not.toHaveClass('items-center', 'px-2');
+    expect(workspaceRail).not.toHaveClass('items-center', 'px-2', 'border-t', 'border-[var(--line-subtle)]');
     expect(footerActions).toHaveClass('global-sidebar-rail-stack');
-    expect(footerActions).not.toHaveClass('items-center', 'px-2', 'space-y-1');
+    expect(footerActions).not.toHaveClass('items-center', 'px-2', 'space-y-1', 'border-t', 'border-[var(--line-subtle)]');
     const expand = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.expand')) });
     expect(expand).toHaveAttribute('data-global-sidebar-toggle');
     expect(expand.className).toContain('left-[var(--global-sidebar-toggle-left)]');
@@ -255,6 +256,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(navigation.querySelector('[data-global-sidebar-brand-row]')).toBe(brandRow);
     expect(navigation.querySelector('[data-global-sidebar-primary-nav]')).not.toHaveClass('global-sidebar-rail-stack');
     expect(navigation.querySelector('[data-global-sidebar-workspace-rail]')).not.toBeInTheDocument();
+    expect(navigation.querySelector('[data-global-sidebar-workspace-region]')).not.toHaveClass('border-t', 'border-[var(--line-subtle)]');
     expect(navigation.querySelector('[data-global-sidebar-footer-actions]')).not.toHaveClass('global-sidebar-rail-stack');
     expect(screen.getByText('MyAgents')).toBeInTheDocument();
     first.unmount();
