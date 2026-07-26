@@ -1,5 +1,5 @@
 import { AlertCircle, ChevronRight, ChevronUp, Gauge, Loader, Paperclip, Plus, Send, Square, X, FileText, AtSign, Wrench, Timer, Settings2 } from 'lucide-react';
-import { memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, forwardRef } from 'react';
+import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, forwardRef, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import Tip from '@/components/Tip';
@@ -75,6 +75,30 @@ function runtimeMcpServerId(toolName: string): string | null {
   const remainder = toolName.slice('mcp__'.length);
   const separator = remainder.indexOf('__');
   return separator > 0 ? remainder.slice(0, separator) : null;
+}
+
+function ModelSelectionScrollSync({
+  listRef,
+  selectedRowRef,
+  selectionKey,
+  modelSource,
+}: {
+  listRef: RefObject<HTMLDivElement | null>;
+  selectedRowRef: RefObject<HTMLButtonElement | null>;
+  selectionKey: string;
+  modelSource: readonly unknown[] | undefined;
+}) {
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    const selectedRow = selectedRowRef.current;
+    if (!list || !selectedRow) return;
+
+    const centeredTop = selectedRow.offsetTop - ((list.clientHeight - selectedRow.offsetHeight) / 2);
+    const maxScrollTop = Math.max(0, list.scrollHeight - list.clientHeight);
+    list.scrollTop = Math.min(maxScrollTop, Math.max(0, centeredTop));
+  }, [listRef, modelSource, selectedRowRef, selectionKey]);
+
+  return null;
 }
 
 // File search result type
@@ -328,6 +352,8 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [showModelMenu, setShowModelMenu] = useState(false);
   const [showToolMenu, setShowToolMenu] = useState(false);
+  const modelListRef = useRef<HTMLDivElement | null>(null);
+  const selectedModelRowRef = useRef<HTMLButtonElement | null>(null);
   useEffect(() => {
     if (!configControlsLocked || (!showModeMenu && !showModelMenu && !showToolMenu)) return;
     const timer = window.setTimeout(() => {
@@ -2172,7 +2198,11 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 unstyled
                 className="w-64 rounded-lg border border-[var(--line)] bg-[var(--paper-elevated)] shadow-xl"
               >
-                <div className="max-h-[260px] overflow-y-auto py-1">
+                <div
+                  ref={modelListRef}
+                  data-model-list
+                  className="relative max-h-[260px] overflow-y-auto py-1"
+                >
                 {isExternalRuntime && runtimeModels ? (
                   <>
                     <div className="px-3 pb-0.5 pt-1.5 text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
@@ -2184,6 +2214,8 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                       const isSelected = selectedModel === model.value || (!selectedModel && model.isDefault);
                       return (
                         <button
+                          ref={isSelected ? selectedModelRowRef : undefined}
+                          data-selected-model-row={isSelected ? '' : undefined}
                           key={model.value}
                           type="button"
                           onClick={(e) => {
@@ -2238,6 +2270,8 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                         const isSelected = provider?.id === p.id && currentModelId === model.model;
                         return (
                           <button
+                            ref={isSelected ? selectedModelRowRef : undefined}
+                            data-selected-model-row={isSelected ? '' : undefined}
                             key={model.model}
                             type="button"
                             onClick={(e) => {
@@ -2266,6 +2300,14 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   ));
                 })()}
                 </div>
+                <ModelSelectionScrollSync
+                  listRef={modelListRef}
+                  selectedRowRef={selectedModelRowRef}
+                  selectionKey={isExternalRuntime
+                    ? `${runtime ?? 'external'}:${selectedModel ?? 'default'}`
+                    : `${provider?.id ?? 'none'}:${currentModelId ?? 'none'}`}
+                  modelSource={isExternalRuntime ? runtimeModels : providers}
+                />
 
                 {/* #324 — fixed bottom row: 推理强度. Hidden when the surface has
                     no effort knob (Gemini / unknown runtime). Hover or click
@@ -2343,6 +2385,26 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                         </div>
                       </>
                     )}
+                  </div>
+                )}
+
+                {!isExternalRuntime && (
+                  <div className="border-t border-[var(--line)] p-1">
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowModelMenu(false);
+                        window.dispatchEvent(new CustomEvent(CUSTOM_EVENTS.OPEN_SETTINGS, {
+                          detail: { section: 'providers' },
+                        }));
+                      }}
+                      className="flex w-full items-center gap-1.5 rounded-md px-3 py-1.5 text-left text-sm text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
+                    >
+                      <Settings2 className="h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)]" />
+                      <span className="flex-1">{t('input.customModelService')}</span>
+                      <ChevronRight className="h-3 w-3 shrink-0 text-[var(--ink-muted)]" />
+                    </button>
                   </div>
                 )}
               </Popover>

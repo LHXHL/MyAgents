@@ -1,4 +1,4 @@
-import { AlertTriangle, Bot, Globe, History, Loader2, Plus, PanelRight, RotateCcw, TerminalSquare, X } from 'lucide-react';
+import { AlertTriangle, Bot, Globe, History, Loader2, MessageSquarePlus, PanelRight, RotateCcw, TerminalSquare, X } from 'lucide-react';
 import { forwardRef, lazy, Suspense, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -4887,7 +4887,7 @@ export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNew
               className="flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
               title={t('shell.header.newChat')}
             >
-              <Plus className="h-3.5 w-3.5 flex-shrink-0" />
+              <MessageSquarePlus className="h-3.5 w-3.5 flex-shrink-0" />
               {!splitFile && <span>{t('shell.header.newChatShort')}</span>}
             </button>
             {/* History button */}

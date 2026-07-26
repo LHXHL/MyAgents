@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ImagePreviewProvider } from '@/context/ImagePreviewContext';
 import type { Provider } from '@/config/types';
 import { i18n } from '@/i18n';
+import { CUSTOM_EVENTS } from '../../shared/constants';
 import SimpleChatInput, { type SimpleChatInputHandle } from './SimpleChatInput';
 import { ToastProvider } from './Toast';
 
@@ -302,6 +303,107 @@ describe('SimpleChatInput send paths', () => {
       model: 'deepseek-v4-pro',
     });
     expect(onModelChange).not.toHaveBeenCalled();
+  });
+
+  it('centers the selected model inside the menu scroll container when opened', async () => {
+    const user = userEvent.setup();
+    const provider = {
+      id: 'provider-a',
+      name: 'Provider A',
+      vendor: 'A',
+      cloudProvider: '模型官方',
+      type: 'api',
+      primaryModel: 'model-0',
+      isBuiltin: false,
+      config: { baseUrl: 'https://a.example.com' },
+      models: Array.from({ length: 12 }, (_, index) => ({
+        model: `model-${index}`,
+        modelName: `Model ${index}`,
+      })),
+    } as Provider;
+    const clientHeight = vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-model-list') ? 100 : 0;
+    });
+    const scrollHeight = vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-model-list') ? 500 : 0;
+    });
+    const offsetHeight = vi.spyOn(HTMLElement.prototype, 'offsetHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-selected-model-row') ? 20 : 0;
+    });
+    const offsetTop = vi.spyOn(HTMLElement.prototype, 'offsetTop', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-selected-model-row') ? 300 : 0;
+    });
+
+    try {
+      renderInput({
+        runtime: 'builtin',
+        provider,
+        providers: [provider],
+        selectedModel: 'model-9',
+        apiKeys: { 'provider-a': 'key-a' },
+      });
+
+      await user.click(screen.getByTitle('切换模型'));
+
+      await screen.findByText('Provider A');
+      const list = document.querySelector('[data-model-list]');
+      expect(list).not.toBeNull();
+      expect(list).toHaveProperty('scrollTop', 260);
+    } finally {
+      clientHeight.mockRestore();
+      scrollHeight.mockRestore();
+      offsetHeight.mockRestore();
+      offsetTop.mockRestore();
+    }
+  });
+
+  it('opens Model Providers from the builtin AgentSDK model menu', async () => {
+    const user = userEvent.setup();
+    const provider = {
+      id: 'codex-sub',
+      name: 'Codex (订阅)',
+      vendor: 'OpenAI',
+      cloudProvider: '模型官方',
+      type: 'subscription',
+      primaryModel: 'gpt-5.6-sol',
+      isBuiltin: true,
+      config: {},
+      models: [{ model: 'gpt-5.6-sol', modelName: 'GPT-5.6-Sol' }],
+    } as Provider;
+    const openSettings = vi.fn();
+    window.addEventListener(CUSTOM_EVENTS.OPEN_SETTINGS, openSettings);
+
+    try {
+      renderInput({
+        runtime: 'builtin',
+        provider,
+        providers: [provider],
+        providerAvailable: true,
+        availableProviderIds: ['codex-sub'],
+        selectedModel: 'gpt-5.6-sol',
+      });
+
+      await user.click(screen.getByTitle('切换模型'));
+      await user.click(screen.getByRole('button', { name: '管理自定义模型服务' }));
+
+      expect(openSettings).toHaveBeenCalledTimes(1);
+      expect((openSettings.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({ section: 'providers' });
+      expect(screen.queryByRole('button', { name: '管理自定义模型服务' })).not.toBeInTheDocument();
+    } finally {
+      window.removeEventListener(CUSTOM_EVENTS.OPEN_SETTINGS, openSettings);
+    }
+  });
+
+  it('does not show the custom model service row for user-managed CLI runtimes', async () => {
+    const user = userEvent.setup();
+    renderInput({
+      runtime: 'codex',
+      runtimeModels: [{ value: 'gpt-5.6-sol', displayName: 'GPT-5.6-Sol', isDefault: true }],
+    });
+
+    await user.click(screen.getByTitle('切换模型'));
+
+    expect(screen.queryByRole('button', { name: '管理自定义模型服务' })).not.toBeInTheDocument();
   });
 
   it('sends text from the Launcher input surface', async () => {

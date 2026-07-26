@@ -3190,7 +3190,7 @@ const DirectoryPanel = memo(
                   <WorkspaceIcon icon={projectIcon} size={28} />
                 </span>
                 <div className="min-w-0 flex-1">
-                  {/* First row: name, git branch, stats */}
+                  {/* First row: name and git branch */}
                   <div className="flex items-center gap-2">
                     <span className="truncate text-sm font-medium text-[var(--ink)]">
                       {projectDisplayName || folderName}
@@ -3199,14 +3199,6 @@ const DirectoryPanel = memo(
                       <span className="flex items-center gap-0.5 rounded-md bg-[var(--accent-warm-subtle)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
                         <GitBranch className="h-3 w-3" />
                         {gitBranch}
-                      </span>
-                    )}
-                    {directoryInfo && (
-                      <span className="ml-auto flex-shrink-0 text-xs text-[var(--ink-muted)]">
-                        {t("workspaceFiles.directory.stats", {
-                          files: directoryInfo.summary.totalFiles,
-                          folders: directoryInfo.summary.totalDirs,
-                        })}
                       </span>
                     )}
                   </div>
