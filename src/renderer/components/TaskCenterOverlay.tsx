@@ -15,11 +15,12 @@
 import { memo, useCallback, useEffect, useMemo, useState, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Search, Loader2, BarChart2, Clock, Star, Trash2, X } from 'lucide-react';
+import { Virtuoso } from 'react-virtuoso';
 
 import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { searchSessions, type SessionSearchHit } from '@/api/searchClient';
 
-import { TASK_CENTER_FRESHNESS_TTL_MS, type TaskCenterData } from '@/hooks/useTaskCenterData';
+import type { SessionTag, TaskCenterData } from '@/hooks/useTaskCenterData';
 import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import SessionTagBadge from '@/components/SessionTagBadge';
 import Tip from '@/components/Tip';
@@ -29,7 +30,7 @@ import CustomSelect from '@/components/CustomSelect';
 import { useToast } from '@/components/Toast';
 import { getFolderName, formatTime, isImSource, getSessionDisplayText, formatTurnCount } from '@/utils/taskCenterUtils';
 import type { SessionMetadata } from '@/api/sessionClient';
-import { workspacePathsEqual } from '@/../shared/workspacePath';
+import { normalizeWorkspacePathIdentity } from '@/../shared/workspacePath';
 import type { Project } from '@/config/types';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import SessionSearchItem from '@/components/search/SessionSearchItem';
@@ -53,6 +54,113 @@ const FILTER_OPTIONS: { key: StatusFilter; labelKey: string }[] = [
     { key: 'bot', labelKey: 'historyOverlay.filters.bot' },
 ];
 
+interface HistorySessionRowProps {
+    session: SessionMetadata;
+    project: Project;
+    tags: SessionTag[];
+    isCronProtected: boolean;
+    onOpen: () => void;
+    onToggleFavorite: (event: React.MouseEvent) => void;
+    onShowStats: (event: React.MouseEvent) => void;
+    onDelete: (event: React.MouseEvent) => void;
+}
+
+const HistorySessionRow = memo(function HistorySessionRow({
+    session,
+    project,
+    tags,
+    isCronProtected,
+    onOpen,
+    onToggleFavorite,
+    onShowStats,
+    onDelete,
+}: HistorySessionRowProps) {
+    const { t } = useTranslation('app');
+    const displayText = getSessionDisplayText(session);
+    const turnCount = formatTurnCount(session);
+
+    return (
+        <div className="pb-0.5">
+            <div
+                role="button"
+                onClick={onOpen}
+                className="group relative flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-[var(--hover-bg)]"
+            >
+                <div className="flex w-16 shrink-0 items-center gap-1 text-xs text-[var(--ink-muted)]/50">
+                    <Clock className="h-2.5 w-2.5" />
+                    <span>{formatTime(session.lastActiveAt)}</span>
+                </div>
+                {tags.map((tag, index) => (
+                    <SessionTagBadge key={`${tag.type}-${index}`} tag={tag} />
+                ))}
+                <span className="min-w-0 flex-1 truncate text-sm text-[var(--ink-secondary)] transition-colors group-hover:text-[var(--ink)]">
+                    {displayText}
+                    {turnCount && (
+                        <span className="ml-1.5 text-xs text-[var(--ink-muted)]/40">
+                            {turnCount}
+                        </span>
+                    )}
+                </span>
+                <div className="flex shrink-0 items-center gap-1.5 text-xs text-[var(--ink-muted)]/45">
+                    <WorkspaceIcon icon={project.icon} size={14} />
+                    <span className="max-w-[80px] truncate">
+                        {getFolderName(project.path)}
+                    </span>
+                </div>
+
+                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+                    <div className="h-full w-10 bg-gradient-to-r from-[var(--paper-inset-a0)] to-[var(--paper-inset)]" />
+                    <div className="flex h-full items-center gap-1 bg-[var(--paper-inset)] pr-3">
+                        <Tip label={session.favorite ? t('historyOverlay.unfavorite') : t('historyOverlay.favorite')} position="bottom">
+                            <button
+                                onClick={onToggleFavorite}
+                                aria-label={session.favorite ? t('historyOverlay.unfavorite') : t('historyOverlay.favorite')}
+                                className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-[var(--paper)] ${
+                                    session.favorite
+                                        ? 'text-[var(--accent)]'
+                                        : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
+                                }`}
+                            >
+                                <Star className="h-3.5 w-3.5" fill={session.favorite ? 'currentColor' : 'none'} />
+                            </button>
+                        </Tip>
+                        <Tip label={t('historyOverlay.viewStats')} position="bottom">
+                            <button
+                                onClick={onShowStats}
+                                aria-label={t('historyOverlay.viewStats')}
+                                className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper)] hover:text-[var(--ink)]"
+                            >
+                                <BarChart2 className="h-3.5 w-3.5" />
+                            </button>
+                        </Tip>
+                        {isCronProtected ? (
+                            <Tip label={t('historyOverlay.deleteBlocked')} position="bottom">
+                                <button
+                                    disabled
+                                    aria-label={t('historyOverlay.deleteBlockedAria')}
+                                    className="flex h-7 w-7 cursor-not-allowed items-center justify-center rounded-md text-[var(--ink-muted)] opacity-40"
+                                >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                            </Tip>
+                        ) : (
+                            <Tip label={t('historyOverlay.delete')} position="bottom">
+                                <button
+                                    onClick={onDelete}
+                                    aria-label={t('historyOverlay.delete')}
+                                    className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
+                                >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                            </Tip>
+                        )}
+                    </div>
+                </div>
+            </div>
+        </div>
+    );
+});
+
 export default memo(function TaskCenterOverlay({
     projects,
     onOpenTask,
@@ -62,7 +170,7 @@ export default memo(function TaskCenterOverlay({
 }: TaskCenterOverlayProps) {
     const { t } = useTranslation('app');
     useCloseLayer(() => { onClose(); return true; }, 40);
-    const { sessions, protectedSchedulerSessionIds, sessionTagsMap, refresh, actions } = taskCenterData;
+    const { sessions, protectedSchedulerSessionIds, sessionTagsMap, isSessionsLoading, actions } = taskCenterData;
     const toast = useToast();
 
     // Search state
@@ -77,14 +185,6 @@ export default memo(function TaskCenterOverlay({
     const [pendingDeleteSession, setPendingDeleteSession] = useState<{ id: string; title: string } | null>(null);
     const [statsSession, setStatsSession] = useState<{ id: string; title: string } | null>(null);
 
-    useEffect(() => {
-        refresh('all', {
-            minIntervalMs: TASK_CENTER_FRESHNESS_TTL_MS,
-            reason: 'task-center-overlay-open',
-            silent: true,
-        });
-    }, [refresh]);
-
     // Auto-focus search input on mount when overlay opens in search mode
     useEffect(() => {
         if (initialMode === 'search') {
@@ -93,11 +193,30 @@ export default memo(function TaskCenterOverlay({
         }
     }, [initialMode]);
 
+    const projectsByWorkspace = useMemo(() => {
+        const byWorkspace = new Map<string, Project>();
+        for (const project of projects) {
+            byWorkspace.set(normalizeWorkspacePathIdentity(project.path), project);
+        }
+        return byWorkspace;
+    }, [projects]);
+
+    const sessionsById = useMemo(
+        () => new Map(sessions.map(session => [session.id, session])),
+        [sessions],
+    );
+
+    const getProjectForSession = useCallback(
+        (session: SessionMetadata): Project | undefined =>
+            projectsByWorkspace.get(normalizeWorkspacePathIdentity(session.agentDir)),
+        [projectsByWorkspace],
+    );
+
     // Unique workspace entries for dropdown (name + icon)
     const workspaceOptions = useMemo(() => {
         const seen = new Map<string, string | undefined>(); // name → icon
         for (const s of sessions) {
-            const proj = projects.find(p => workspacePathsEqual(p.path, s.agentDir));
+            const proj = getProjectForSession(s);
             if (proj) {
                 const name = getFolderName(proj.path);
                 if (!seen.has(name)) seen.set(name, proj.icon);
@@ -106,7 +225,7 @@ export default memo(function TaskCenterOverlay({
         return Array.from(seen.entries())
             .sort(([a], [b]) => a.localeCompare(b))
             .map(([name, icon]) => ({ name, icon }));
-    }, [sessions, projects]);
+    }, [sessions, getProjectForSession]);
 
     // Memoize CustomSelect options to avoid re-creating JSX icons each render
     const workspaceSelectOptions = useMemo(() => [
@@ -138,13 +257,18 @@ export default memo(function TaskCenterOverlay({
 
             // Workspace filter
             if (workspaceFilter !== 'all') {
-                const proj = projects.find(p => workspacePathsEqual(p.path, session.agentDir));
+                const proj = getProjectForSession(session);
                 if (!proj || getFolderName(proj.path) !== workspaceFilter) return false;
             }
 
             return true;
         });
-    }, [sessions, sessionTagsMap, statusFilter, workspaceFilter, projects]);
+    }, [sessions, sessionTagsMap, statusFilter, workspaceFilter, getProjectForSession]);
+
+    const browseRows = useMemo(() => filteredSessions.flatMap((session) => {
+        const project = getProjectForSession(session);
+        return project ? [{ session, project }] : [];
+    }), [filteredSessions, getProjectForSession]);
 
     // Search effect
     useEffect(() => {
@@ -179,12 +303,6 @@ export default memo(function TaskCenterOverlay({
             clearTimeout(timeout);
         };
     }, [searchQuery, isSearchMode]);
-
-    const getProjectForSession = useCallback(
-        (session: SessionMetadata): Project | undefined =>
-            projects.find(p => workspacePathsEqual(p.path, session.agentDir)),
-        [projects]
-    );
 
     // Paste-to-jump (Issue #260): if the query is a pasted session id (bare or
     // the `SessionID: <uuid>` copy-button format), resolve it directly against
@@ -249,10 +367,10 @@ export default memo(function TaskCenterOverlay({
     }, [actions, t, toast]);
 
     return (
-        <OverlayBackdrop onClose={onClose} className="z-40" style={{ animation: 'overlayFadeIn 200ms ease-out' }}>
+        <OverlayBackdrop onClose={onClose} className="z-40" style={{ animation: 'overlayFadeIn 140ms ease-out' }}>
             <div
                 className="glass-panel flex h-[85vh] w-full max-w-5xl flex-col"
-                style={{ padding: '2vh 2vw', animation: 'overlayPanelIn 250ms ease-out' }}
+                style={{ padding: '2vh 2vw', animation: 'overlayPanelIn 160ms ease-out' }}
             >
                 {/* Header — v0.1.69 renamed from "任务中心" to "历史对话" to
                     match the new domain of this overlay (Chat sessions only;
@@ -358,13 +476,11 @@ export default memo(function TaskCenterOverlay({
                             )}
                         </div>
 
-                        {/* Session list */}
-                        <div className="flex-1 overflow-y-auto overscroll-contain" style={{ scrollbarGutter: 'stable' }}>
-                            {isSearchMode && directSessionMatch ? (
-                                /* Paste-to-jump (#260): query is a session id — show the
-                                   resolved session as one clickable row (Enter also opens it),
-                                   bypassing full-text search and the filteredSessions guard. */
-                                directSessionMatch.kind === 'found' ? (
+                        {/* Session list — empty-query history is virtualized so opening
+                            the overlay never mounts the entire archive in one commit. */}
+                        {isSearchMode && directSessionMatch ? (
+                            <div className="flex-1 overflow-y-auto overscroll-contain" style={{ scrollbarGutter: 'stable' }}>
+                                {directSessionMatch.kind === 'found' ? (
                                     <div className="space-y-2">
                                         <div className="px-1 text-xs text-[var(--ink-muted)]/60">
                                             {t('historyOverlay.directMatch')}
@@ -372,7 +488,7 @@ export default memo(function TaskCenterOverlay({
                                         <div
                                             role="button"
                                             onClick={openDirectMatch}
-                                            className="group flex w-full cursor-pointer items-center gap-2.5 rounded-lg border border-[var(--accent)]/30 px-3 py-2.5 text-left transition-all hover:bg-[var(--hover-bg)]"
+                                            className="group flex w-full cursor-pointer items-center gap-2.5 rounded-lg border border-[var(--accent)]/30 px-3 py-2.5 text-left transition-colors hover:bg-[var(--hover-bg)]"
                                         >
                                             <div className="flex w-16 shrink-0 items-center gap-1 text-xs text-[var(--ink-muted)]/50">
                                                 <Clock className="h-2.5 w-2.5" />
@@ -393,132 +509,67 @@ export default memo(function TaskCenterOverlay({
                                     <div className="py-8 text-center text-sm text-[var(--ink-muted)]/60">
                                         {t('historyOverlay.sessionNotFound')}
                                     </div>
-                                )
-                            ) : filteredSessions.length === 0 ? (
-                                <div className="py-8 text-center text-sm text-[var(--ink-muted)]/60">
-                                    {t('historyOverlay.empty')}
-                                </div>
-                            ) : (
-                                <div className="space-y-0.5">
-                                    {isSearchMode && searchQuery.trim() !== '' ? (
-                                        searchResults.length === 0 && !isSearching ? (
-                                            <div className="py-8 text-center text-sm text-[var(--ink-muted)]/60">
-                                                {t('historyOverlay.noResults')}
-                                            </div>
-                                        ) : (
-                                            searchResults.map(hit => {
-                                                const session = sessions.find(s => s.id === hit.sessionId);
-                                                const project = projects.find(p => workspacePathsEqual(p.path, hit.agentDir));
-                                                if (!session || !project) return null;
-                                                const isCronProtected = cronProtectedSessionIds.has(session.id);
-                                                return (
-                                                    <SessionSearchItem
-                                                        key={`${hit.sessionId}-${hit.matchType}`}
-                                                        hit={hit}
-                                                        session={session}
-                                                        project={project}
-                                                        isCronProtected={isCronProtected}
-                                                        onClick={() => onOpenTask(session, project)}
-                                                        onShowStats={(e) => handleShowStats(e, session)}
-                                                        onDelete={(e) => handleDeleteClick(e, session)}
-                                                    />
-                                                );
-                                            })
-                                        )
-                                    ) : (
-                                        filteredSessions.map(session => {
-                                            const project = getProjectForSession(session);
-                                            if (!project) return null;
-                                            const tags = sessionTagsMap.get(session.id) ?? [];
-                                            const displayText = getSessionDisplayText(session);
-                                            const turnCount = formatTurnCount(session);
-
+                                )}
+                            </div>
+                        ) : isSearchMode && searchQuery.trim() !== '' ? (
+                            <div className="flex-1 overflow-y-auto overscroll-contain" style={{ scrollbarGutter: 'stable' }}>
+                                {searchResults.length === 0 && !isSearching ? (
+                                    <div className="py-8 text-center text-sm text-[var(--ink-muted)]/60">
+                                        {t('historyOverlay.noResults')}
+                                    </div>
+                                ) : (
+                                    <div className="space-y-0.5">
+                                        {searchResults.map(hit => {
+                                            const session = sessionsById.get(hit.sessionId);
+                                            const project = projectsByWorkspace.get(normalizeWorkspacePathIdentity(hit.agentDir));
+                                            if (!session || !project) return null;
                                             const isCronProtected = cronProtectedSessionIds.has(session.id);
                                             return (
-                                                <div
-                                                    key={session.id}
-                                                    role="button"
+                                                <SessionSearchItem
+                                                    key={`${hit.sessionId}-${hit.matchType}`}
+                                                    hit={hit}
+                                                    session={session}
+                                                    project={project}
+                                                    isCronProtected={isCronProtected}
                                                     onClick={() => onOpenTask(session, project)}
-                                                    className="group relative flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-all hover:bg-[var(--hover-bg)]"
-                                                >
-                                                    <div className="flex w-16 shrink-0 items-center gap-1 text-xs text-[var(--ink-muted)]/50">
-                                                        <Clock className="h-2.5 w-2.5" />
-                                                        <span>{formatTime(session.lastActiveAt)}</span>
-                                                    </div>
-                                                    {tags.map((tag, i) => (
-                                                        <SessionTagBadge key={i} tag={tag} />
-                                                    ))}
-                                                    <span className="min-w-0 flex-1 truncate text-sm text-[var(--ink-secondary)] transition-colors group-hover:text-[var(--ink)]">
-                                                        {displayText}
-                                                        {turnCount && (
-                                                            <span className="ml-1.5 text-xs text-[var(--ink-muted)]/40">
-                                                                {turnCount}
-                                                            </span>
-                                                        )}
-                                                    </span>
-                                                    <div className="flex shrink-0 items-center gap-1.5 text-xs text-[var(--ink-muted)]/45">
-                                                        <WorkspaceIcon icon={project.icon} size={14} />
-                                                        <span className="max-w-[80px] truncate">
-                                                            {getFolderName(project.path)}
-                                                        </span>
-                                                    </div>
-
-                                                    {/* Hover actions overlay */}
-                                                    <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
-                                                        <div className="h-full w-10 bg-gradient-to-r from-[var(--paper-inset-a0)] to-[var(--paper-inset)]" />
-                                                        <div className="flex h-full items-center gap-1 bg-[var(--paper-inset)] pr-3">
-                                                            <Tip label={session.favorite ? t('historyOverlay.unfavorite') : t('historyOverlay.favorite')} position="bottom">
-                                                                <button
-                                                                    onClick={e => handleToggleFavorite(e, session)}
-                                                                    aria-label={session.favorite ? t('historyOverlay.unfavorite') : t('historyOverlay.favorite')}
-                                                                    className={`flex h-7 w-7 items-center justify-center rounded-md transition-colors hover:bg-[var(--paper)] ${
-                                                                        session.favorite
-                                                                            ? 'text-[var(--accent)]'
-                                                                            : 'text-[var(--ink-muted)] hover:text-[var(--ink)]'
-                                                                    }`}
-                                                                >
-                                                                    <Star className="h-3.5 w-3.5" fill={session.favorite ? 'currentColor' : 'none'} />
-                                                                </button>
-                                                            </Tip>
-                                                            <Tip label={t('historyOverlay.viewStats')} position="bottom">
-                                                                <button
-                                                                    onClick={e => handleShowStats(e, session)}
-                                                                    aria-label={t('historyOverlay.viewStats')}
-                                                                    className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper)] hover:text-[var(--ink)]"
-                                                                >
-                                                                    <BarChart2 className="h-3.5 w-3.5" />
-                                                                </button>
-                                                            </Tip>
-                                                            {isCronProtected ? (
-                                                                <Tip label={t('historyOverlay.deleteBlocked')} position="bottom">
-                                                                    <button
-                                                                        disabled
-                                                                        aria-label={t('historyOverlay.deleteBlockedAria')}
-                                                                        className="flex h-7 w-7 cursor-not-allowed items-center justify-center rounded-md text-[var(--ink-muted)] opacity-40"
-                                                                    >
-                                                                        <Trash2 className="h-3.5 w-3.5" />
-                                                                    </button>
-                                                                </Tip>
-                                                            ) : (
-                                                                <Tip label={t('historyOverlay.delete')} position="bottom">
-                                                                    <button
-                                                                        onClick={e => handleDeleteClick(e, session)}
-                                                                        aria-label={t('historyOverlay.delete')}
-                                                                        className="flex h-7 w-7 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--error-bg)] hover:text-[var(--error)]"
-                                                                    >
-                                                                        <Trash2 className="h-3.5 w-3.5" />
-                                                                    </button>
-                                                                </Tip>
-                                                            )}
-                                                        </div>
-                                                    </div>
-                                                </div>
+                                                    onShowStats={(event) => handleShowStats(event, session)}
+                                                    onDelete={(event) => handleDeleteClick(event, session)}
+                                                />
                                             );
-                                        })
-                                    )}
-                                </div>
-                            )}
-                        </div>
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        ) : isSessionsLoading && browseRows.length === 0 ? (
+                            <div className="flex flex-1 items-center justify-center" aria-busy="true">
+                                <Loader2 className="h-4 w-4 animate-spin text-[var(--ink-muted)]/50" />
+                            </div>
+                        ) : browseRows.length === 0 ? (
+                            <div className="flex-1 py-8 text-center text-sm text-[var(--ink-muted)]/60">
+                                {t('historyOverlay.empty')}
+                            </div>
+                        ) : (
+                            <Virtuoso
+                                data={browseRows}
+                                computeItemKey={(_index, row) => row.session.id}
+                                defaultItemHeight={38}
+                                increaseViewportBy={240}
+                                className="flex-1 overscroll-contain"
+                                style={{ scrollbarGutter: 'stable' }}
+                                itemContent={(_index, row) => (
+                                    <HistorySessionRow
+                                        session={row.session}
+                                        project={row.project}
+                                        tags={sessionTagsMap.get(row.session.id) ?? []}
+                                        isCronProtected={cronProtectedSessionIds.has(row.session.id)}
+                                        onOpen={() => onOpenTask(row.session, row.project)}
+                                        onToggleFavorite={(event) => handleToggleFavorite(event, row.session)}
+                                        onShowStats={(event) => handleShowStats(event, row.session)}
+                                        onDelete={(event) => handleDeleteClick(event, row.session)}
+                                    />
+                                )}
+                            />
+                        )}
                     </div>
                 </div>
             </div>
