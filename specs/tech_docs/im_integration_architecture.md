@@ -1027,9 +1027,19 @@ src/shared/types/im.ts # ImBotConfig, ImBotStatus, ImPlatform, InstalledPlugin, 
 
 ### 9.1 多端 Session 共享（已实现）
 
-IM peer 与 Desktop Tab 可以打开并共享同一个持久 Session。IM 入站消息及其 AI 回复由 SessionEngine 选中的 runtime owner 写入该 Session，Desktop 打开后可实时看到；requestId-aware ReplyRouter 只负责当前 Channel 的回复槽与终态渲染。Desktop 在同一 Session 发出的用户消息与完整 AI 文本 block，则通过 `im-mirror.ts → /api/im/mirror → session_delivery` 镜像到当前绑定的 Channel。
+IM peer 与 Desktop Tab 可以打开并共享同一个持久 Session。IM 入站消息及其 AI 回复由 SessionEngine 选中的 runtime owner 写入该 Session，Desktop 打开后可实时看到；requestId-aware ReplyRouter 只负责当前 Channel request 的回复槽与终态渲染。一个 request 结束后，后续 Session Inbox、Desktop、后台触发产生的新 turn 不得尝试复用已释放的 ReplyRouter slot，而应按该 turn 的显式渠道投递计划交付。
 
-Desktop → IM 镜像是跨 Runtime 的产品契约：builtin 与 external（Claude Code / Codex / Managed Codex / Gemini）都必须在各自的 turn owner 内接入同一 transport。用户消息在 runtime admission / surface 后镜像，并剥离隐藏 System Reminder；external 会等待 transcript persist 成功，builtin 的 assistant-start 已接纳 fallback 只保证异步安排持久化。助手只镜像完成的文本 block，不镜像 delta、thinking、tool 或失败终端残留。IM-origin turn 继续只走 ReplyRouter，不再反向镜像，避免同一回答双发。PNG/JPG 用户图片沿用既有 5 MiB 上限，其余附件不镜像。
+Session 绑定投递是跨 Runtime 产品契约：builtin 与 external（Claude Code / Codex / Managed Codex / Gemini）都在各自的 turn owner 内消费 `TurnChannelDelivery`，并复用 `im-mirror.ts → /api/im/mirror → session_delivery` transport。`SessionOrigin` / `InteractionScenario` 只负责归因与 prompt，不能用来猜投递 owner。
+
+| Turn 入口 | user 投递 | assistant 投递 |
+|---|---|---|
+| Desktop 用户消息 | `session-binding`（显示“来自桌面端用户消息”） | `session-binding` |
+| IM 用户消息 | `none` | `reply-router` |
+| Session Inbox / 普通后台消息 | `none` | `session-binding` |
+| Heartbeat / Cron relay / Agent Channel Goal | `none` | `caller-owned`（保留原有 ACK、outbox、retry/dedup） |
+| Memory maintenance / 明确静默内部 turn | `none` | `none` |
+
+user 与 assistant 两个方向相互独立：隐藏 System Reminder、空的 user 可见投影或 user mirror 失败，都不能关闭本应由 Session binding 投递的 assistant 回复。完整的顶层文本 block 先暂存在 runtime turn owner；terminal capture 必须先从输出归属 FIFO 摘下本轮并预留 Session 级 transport 顺序，再由真实成功且持久化完成的终态统一放行。失败、停止、持久化失败或被自动重试撤回的 attempt 直接丢弃，不投递 delta、thinking、tool、subagent、空文本或 `NO_REPLY` / `<NO_REPLY>`。IM-origin turn 只走 ReplyRouter，caller-owned turn 只走自己的 Heartbeat/Goal/Task transport，保证同一回答恰好投递一次。Desktop 用户图片仍沿用 PNG/JPG、5 MiB 上限，其余附件不镜像。
 
 ### 9.2 Bot Token 加密存储
 

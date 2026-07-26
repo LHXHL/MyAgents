@@ -3464,6 +3464,7 @@ async function main() {
             providerEnv: engine.kind === 'builtin' ? effectiveProviderEnv : undefined,
             runtimeConfig: effectiveRuntimeConfig ?? null,
             analyticsOrigin: turnOrigin,
+            assistantChannelDelivery: 'caller-owned',
             timeoutMs: 3_600_000,
             pollMs: 1000,
           } satisfies import('./session-engine').InjectedTurnRequest;
@@ -9090,6 +9091,7 @@ description: >
               sourceId: payload.sourceId,
             },
             analyticsOrigin: { kind: 'agent-channel', surface: 'channel_heartbeat' },
+            assistantChannelDelivery: 'caller-owned',
             timeoutMs: 300000,
             pollMs: 500,
           });
@@ -9247,6 +9249,7 @@ description: >
             model: engine.kind === 'builtin' ? getSessionModel() ?? undefined : undefined,
             providerEnv: engine.kind === 'builtin' ? getSessionProviderEnv() : undefined,
             analyticsOrigin: { kind: 'automation', surface: 'memory_update' },
+            assistantChannelDelivery: 'none',
             timeoutMs: MEMORY_UPDATE_TIMEOUT_MS,
             pollMs: 1000,
             beforeDispatch: createRequiredSystemSkillDispatchGuard(
