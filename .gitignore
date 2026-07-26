@@ -102,3 +102,4 @@ specs/assets/avatar-candidates/**/manifest.json
 # Dev
 .claude/plans/myagents/
 myagents_files/
+/HEARTBEAT.md
