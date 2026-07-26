@@ -25,6 +25,7 @@ import {
   spaceErrorMessage,
   spaceExportSkillFromUrl,
   spaceInspectSkillSource,
+  isSpaceSkillInstallConflict,
   spaceListLocalSkills,
   type SpaceLocalSkill,
   type SpaceSkill,
@@ -1279,6 +1280,10 @@ function SkillDetailWorkspace({
   const [installingTarget, setInstallingTarget] = useState<
     "global" | "project" | null
   >(null);
+  const [installConflict, setInstallConflict] = useState<{
+    target: "global" | "project";
+    workspacePath?: string;
+  } | null>(null);
   const [revisionUploading, setRevisionUploading] = useState(false);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [rollbackTarget, setRollbackTarget] = useState<number | null>(null);
@@ -1326,6 +1331,7 @@ function SkillDetailWorkspace({
     setExpandedFileTreePaths(new Set());
     setWorkspaceMenuOpen(false);
     setAdminMenuOpen(false);
+    setInstallConflict(null);
     void actions
       .refreshSkillDetail(skill.id, { maxAgeMs: SPACE_VISIBLE_REFRESH_TTL_MS })
       .catch((error) => toast.error(spaceErrorMessage(error)));
@@ -1397,6 +1403,7 @@ function SkillDetailWorkspace({
   const install = async (
     target: "global" | "project",
     workspacePath?: string,
+    overwrite = false,
   ) => {
     if (target === "project" && !workspacePath) {
       toast.error(t("space.toasts.selectWorkspace"));
@@ -1409,12 +1416,18 @@ function SkillDetailWorkspace({
         skillName: skill.name,
         target,
         workspacePath,
+        overwrite,
       });
+      setInstallConflict(null);
       toast.success(
         t("space.toasts.skillInstalled", { target: result.target }),
       );
     } catch (error) {
-      toast.error(spaceErrorMessage(error));
+      if (!overwrite && isSpaceSkillInstallConflict(error)) {
+        setInstallConflict({ target, workspacePath });
+      } else {
+        toast.error(spaceErrorMessage(error));
+      }
     } finally {
       setInstallingTarget(null);
     }
@@ -1988,6 +2001,30 @@ function SkillDetailWorkspace({
           loading={deleting}
           onConfirm={() => void deleteSkill()}
           onCancel={() => setDeleteConfirmOpen(false)}
+        />
+      )}
+      {installConflict && (
+        <ConfirmDialog
+          title={t("space.skills.overwriteInstallTitle")}
+          message={t("space.skills.overwriteInstallMessage", {
+            name: skill.name,
+            target:
+              installConflict.target === "global"
+                ? t("space.skills.globalInstallTarget")
+                : installConflict.workspacePath,
+          })}
+          confirmText={t("space.skills.overwriteInstallConfirm")}
+          cancelText={t("space.common.cancel")}
+          loading={installingTarget !== null}
+          disableEnterShortcut
+          onConfirm={() =>
+            void install(
+              installConflict.target,
+              installConflict.workspacePath,
+              true,
+            )
+          }
+          onCancel={() => setInstallConflict(null)}
         />
       )}
       {rollbackTarget !== null && (
