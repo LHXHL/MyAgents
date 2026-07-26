@@ -1,6 +1,6 @@
 # MyAgents — Desktop AI Agent
 
-基于 Claude Agent SDK 的桌面端通用 Agent 产品。自 0.4.0 起开源（AGPL-3.0-only）并提供单独商业授权，Conventional Commits，不提交敏感信息。
+基于 Claude Agent SDK 的桌面端通用 Agent 产品。开源（AGPL-3.0-only）并提供单独商业授权，Conventional Commits，不提交敏感信息。
 
 ## 技术栈
 

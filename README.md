@@ -274,6 +274,19 @@ test: cover ...
 chore: bump ...
 ```
 
+## 许可证
+
+MyAgents 采用 [GNU Affero General Public License v3.0](LICENSE)
+（`AGPL-3.0-only`）。个人和企业都可以免费使用，也可以商业使用；分发修改版、通过网络向
+用户提供修改版等场景需要完整履行 AGPL，包括在适用时提供对应源码。
+
+如果你希望在不履行 AGPL 开源义务的情况下闭源修改、嵌入、OEM、分发或托管 MyAgents，
+需要取得单独的商业许可证。请联系
+[myagents.io@gmail.com](mailto:myagents.io@gmail.com)。
+
+完整说明见 [LICENSING.md](LICENSING.md)。第三方组件继续适用各自许可证，详见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
 <a id="english"></a>
 
 ## English
@@ -534,23 +547,9 @@ test: cover ...
 chore: bump ...
 ```
 
-## 许可证
+## License
 
-MyAgents 自 `0.4.0` 起采用 [GNU Affero General Public License v3.0](LICENSE)
-（`AGPL-3.0-only`）。个人和企业都可以免费使用，也可以商业使用；分发修改版、通过网络向
-用户提供修改版等场景需要完整履行 AGPL，包括在适用时提供对应源码。
-
-如果你希望在不履行 AGPL 开源义务的情况下闭源修改、嵌入、OEM、分发或托管 MyAgents，
-需要取得单独的商业许可证。请联系
-[myagents.io@gmail.com](mailto:myagents.io@gmail.com)。
-
-完整说明见 [LICENSING.md](LICENSING.md)。第三方组件继续适用各自许可证，详见
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。`0.3.4` 及以前已经发布的版本仍适用
-当时的 Apache License 2.0，授权不作追溯变更。
-
----
-
-From `0.4.0`, MyAgents is available under the
+MyAgents is available under the
 [GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`).
 Individuals and companies may use it for free, including commercially, when
 they comply with the AGPL. A separate commercial license is required for
@@ -560,5 +559,4 @@ distribution, or hosted offerings that do not comply with the AGPL. Contact
 
 See [LICENSING.md](LICENSING.md) for details and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for independently licensed
-components. Releases through `0.3.4` remain under the Apache License 2.0 that
-applied when they were published.
+components.
