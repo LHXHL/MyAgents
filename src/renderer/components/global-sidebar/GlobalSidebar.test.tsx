@@ -26,6 +26,12 @@ const mocks = vi.hoisted(() => ({
   configError: null as string | null,
   forcedRail: true,
   isTauri: false,
+  toast: {
+    error: vi.fn(),
+    success: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  },
 }));
 
 vi.mock('@/hooks/useConfig', () => ({
@@ -89,12 +95,7 @@ vi.mock('@/components/TaskCenterOverlay', () => ({
 vi.mock('@/components/FeedbackPopover', () => ({ default: () => null }));
 
 vi.mock('@/components/Toast', () => ({
-  useToast: () => ({
-    error: vi.fn(),
-    success: vi.fn(),
-    warning: vi.fn(),
-    info: vi.fn(),
-  }),
+  useToast: () => mocks.toast,
 }));
 
 import { i18n } from '@/i18n';
@@ -119,6 +120,7 @@ function sidebar(overrides: Partial<SidebarProps> = {}) {
       tabs={[launcherTab]}
       activeTab={launcherTab}
       activeWorkspacePath={null}
+      teamSpaceAvailable
       onNewTab={vi.fn()}
       onOpenTaskCenter={vi.fn()}
       onOpenSpace={vi.fn()}
@@ -150,6 +152,10 @@ describe('GlobalSidebar rail flyout', () => {
     mocks.forcedRail = true;
     mocks.isTauri = false;
     mocks.touchProject.mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    });
     Object.defineProperty(window, 'matchMedia', {
       configurable: true,
       value: vi.fn(() => ({
@@ -244,6 +250,68 @@ describe('GlobalSidebar rail flyout', () => {
 
   });
 
+  it('keeps the flyout open when collapsing a workspace removes the focused Session under a stationary pointer', () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    mocks.taskData.sessions.push({
+      id: 'session-1',
+      agentDir: '/work/project-one',
+      title: 'Focused session',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    });
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1,
+      preferredMode: 'rail',
+      expandedWorkspaceKeys: ['/work/project-one'],
+      hasSeededDefaultExpansion: true,
+      showAutomationSessions: true,
+      sessionView: 'all',
+    }));
+    renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+    const region = screen.getByRole('region', { name: 'Agent 工作区' });
+    const flyout = region.closest('[data-global-sidebar-flyout]')!;
+    const session = screen.getByRole('button', { name: /Focused session/ });
+    const workspaceToggle = screen.getByText('Project one').closest('[data-global-sidebar-workspace-row]')!
+      .querySelector('button')!;
+
+    fireEvent.pointerEnter(flyout);
+    session.focus();
+    fireEvent.blur(session);
+    fireEvent.click(workspaceToggle);
+    act(() => vi.advanceTimersByTime(220));
+
+    expect(screen.getByRole('region', { name: 'Agent 工作区' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Focused session/ })).not.toBeInTheDocument();
+  });
+
+  it('uses the sidebar surface and invisible fixed-height placeholders in the rail flyout', () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    mocks.taskData.workspaceSessionStates.set('/work/project-one', { isLoading: true, error: null });
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1,
+      preferredMode: 'rail',
+      expandedWorkspaceKeys: ['/work/project-one'],
+      hasSeededDefaultExpansion: true,
+      showAutomationSessions: true,
+      sessionView: 'all',
+    }));
+    renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    const region = screen.getByRole('region', { name: 'Agent 工作区' });
+    const flyout = region.closest('[data-global-sidebar-flyout]');
+    expect(flyout).toHaveClass('bg-[var(--global-sidebar-bg)]');
+    expect(flyout).not.toHaveClass('bg-[var(--paper-elevated)]');
+    const placeholder = region.querySelector('[data-global-sidebar-session-placeholder]')!;
+    expect(placeholder.children).toHaveLength(3);
+    for (const row of Array.from(placeholder.children)) {
+      expect(row).toHaveClass('h-9');
+      expect(row).not.toHaveClass('animate-pulse', 'bg-[var(--paper-inset)]/60');
+      expect(row).toHaveAttribute('aria-hidden', 'true');
+    }
+  });
+
   it('uses instant custom tooltips for workspace header and row actions', () => {
     mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
     renderSidebar();
@@ -263,6 +331,60 @@ describe('GlobalSidebar rail flyout', () => {
     }
     expect(viewOptionsButton.parentElement?.querySelector('[role="tooltip"]')).toHaveTextContent('更多');
     expect(moreButton.parentElement?.querySelector('[role="tooltip"]')).toHaveTextContent('更多');
+  });
+
+  it('opens a workspace context menu without allowing right-click text selection', () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    const workspaceRow = screen.getByText('Project one').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
+    expect(workspaceRow).toHaveClass('select-none');
+
+    const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 2 });
+    fireEvent(workspaceRow, mouseDown);
+    expect(mouseDown.defaultPrevented).toBe(true);
+
+    const contextMenu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 });
+    fireEvent(workspaceRow, contextMenu);
+    expect(contextMenu.defaultPrevented).toBe(true);
+    expect(screen.getByRole('button', { name: String(i18n.t('launcher:workspaceCard.pin')) })).toBeInTheDocument();
+  });
+
+  it('copies the Session ID from the first row of the history menu', async () => {
+    const sessionId = '642ea003-5219-4af7-a812-a9812d6e79de';
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    mocks.taskData.sessions.push({
+      id: sessionId,
+      agentDir: '/work/project-one',
+      title: 'Copyable session',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    });
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1,
+      preferredMode: 'rail',
+      expandedWorkspaceKeys: ['/work/project-one'],
+      hasSeededDefaultExpansion: true,
+      showAutomationSessions: true,
+      sessionView: 'all',
+    }));
+    renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    const sessionRow = screen.getByText('Copyable session').closest<HTMLElement>('[data-global-sidebar-session-row]')!;
+    fireEvent.click(within(sessionRow).getByRole('button', { name: String(i18n.t('launcher:rightRail.more')) }));
+    const copyButton = screen.getByRole('button', { name: String(i18n.t('launcher:rightRail.copySessionId')) });
+    const menu = copyButton.closest<HTMLElement>('.global-sidebar-nested-layer')!;
+    expect(within(menu).getAllByRole('button')[0]).toBe(copyButton);
+
+    await act(async () => {
+      fireEvent.click(copyButton);
+      await Promise.resolve();
+    });
+
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(`SessionID: ${sessionId}`);
+    expect(mocks.toast.success).toHaveBeenCalledWith(String(i18n.t('launcher:rightRail.copySessionIdSuccess')));
   });
 
   it('reserves tooltips for non-workspace rail actions', () => {
@@ -519,17 +641,71 @@ describe('GlobalSidebar rail flyout', () => {
       .toHaveAttribute('data-global-sidebar-toggle-visible', 'false');
   });
 
+  it('uses compact navigation and workspace rows with state-driven workspace weight', () => {
+    mocks.forcedRail = false;
+    mocks.projects.push(
+      { id: 'project-1', name: 'Project one', path: '/work/project-one' },
+      { id: 'project-2', name: 'Project two', path: '/work/project-two' },
+    );
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1,
+      preferredMode: 'expanded',
+      expandedWorkspaceKeys: [],
+      hasSeededDefaultExpansion: true,
+      showAutomationSessions: true,
+      sessionView: 'all',
+    }));
+    renderSidebar({ activeWorkspacePath: '/work/project-one' });
+
+    for (const label of [
+      i18n.t('app:globalSidebar.newChat'),
+      i18n.t('app:globalSidebar.tasks'),
+      i18n.t('app:globalSidebar.team'),
+      i18n.t('app:globalSidebar.capabilities'),
+      i18n.t('app:globalSidebar.helper'),
+      i18n.t('app:globalSidebar.settings'),
+    ]) {
+      const action = screen.getByRole('button', { name: String(label) });
+      expect(action).toHaveClass('h-9');
+      expect(action).not.toHaveClass('h-10');
+    }
+
+    const activeRow = screen.getByText('Project one').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
+    const inactiveRow = screen.getByText('Project two').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
+    const activeTitle = activeRow.querySelector('[data-global-sidebar-workspace-title]');
+    const inactiveTitle = inactiveRow.querySelector('[data-global-sidebar-workspace-title]');
+    expect(activeRow).toHaveClass('h-9');
+    expect(inactiveRow).toHaveClass('h-9');
+    expect(activeTitle).toHaveClass('font-medium');
+    expect(inactiveTitle).toHaveClass('font-normal');
+    expect(inactiveTitle?.className).toContain('group-hover/workspace:font-medium');
+    expect(inactiveTitle?.className).toContain('group-focus-within/workspace:font-medium');
+
+    fireEvent.click(within(inactiveRow).getByRole('button', { name: String(i18n.t('launcher:workspaceCard.more')) }));
+    expect(inactiveTitle).toHaveClass('font-medium');
+    expect(inactiveTitle).not.toHaveClass('font-normal');
+  });
+
   it('opens the global search overlay directly in search mode', async () => {
     mocks.isTauri = true;
     renderSidebar();
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) }));
-      await Promise.resolve();
+      await vi.dynamicImportSettled();
     });
 
     const overlay = screen.getByTestId('task-center-overlay');
     expect(overlay).toHaveAttribute('data-initial-mode', 'search');
+  });
+
+  it('hides the Team Space navigation entry when the feature is unavailable', () => {
+    const onOpenSpace = vi.fn();
+    renderSidebar({ teamSpaceAvailable: false, onOpenSpace });
+
+    expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.team')) }))
+      .not.toBeInTheDocument();
+    expect(onOpenSpace).not.toHaveBeenCalled();
   });
 
   it('does not let an old Session completion close a newly reopened search overlay', async () => {
@@ -550,7 +726,7 @@ describe('GlobalSidebar rail flyout', () => {
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) }));
-      await Promise.resolve();
+      await vi.dynamicImportSettled();
     });
     fireEvent.click(screen.getByRole('button', { name: 'Open search session test' }));
     fireEvent.click(screen.getByRole('button', { name: 'Close search test overlay' }));
@@ -558,7 +734,7 @@ describe('GlobalSidebar rail flyout', () => {
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) }));
-      await Promise.resolve();
+      await vi.dynamicImportSettled();
     });
     expect(screen.getByTestId('task-center-overlay')).toBeInTheDocument();
 
@@ -685,6 +861,87 @@ describe('GlobalSidebar rail flyout', () => {
     fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.loadMore')) }));
     expect(screen.getByText('Session 11')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.loadMore')) })).not.toBeInTheDocument();
+  });
+
+  it('projects only the shared generating and unread Tab signals into Session rows', () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1,
+      preferredMode: 'rail',
+      expandedWorkspaceKeys: ['/work/project-one'],
+      hasSeededDefaultExpansion: true,
+      showAutomationSessions: true,
+      sessionView: 'all',
+    }));
+    const sessionSpecs = [
+      { id: 'active-session', title: 'Active session' },
+      { id: 'open-session', title: 'Open session' },
+      { id: 'unread-session', title: 'Unread session' },
+      { id: 'generating-session', title: 'Generating session' },
+    ];
+    sessionSpecs.forEach((session, index) => {
+      mocks.taskData.sessions.push({
+        ...session,
+        agentDir: '/work/project-one',
+        createdAt: `2026-07-2${index}T00:00:00.000Z`,
+        lastActiveAt: `2026-07-2${index}T00:00:00.000Z`,
+      });
+    });
+    mocks.taskData.workspaceSessionStates.set('/work/project-one', { isLoading: false, error: null });
+
+    const activeSessionTab: Tab = {
+      id: 'active-tab',
+      agentDir: '/work/project-one',
+      sessionId: 'active-session',
+      view: 'chat',
+      title: 'Active session',
+      sidecarConfigDisposition: 'adopt',
+    };
+    const openSessionTab: Tab = {
+      ...activeSessionTab,
+      id: 'open-tab',
+      sessionId: 'open-session',
+      title: 'Open session',
+    };
+    const unreadSessionTab: Tab = {
+      ...activeSessionTab,
+      id: 'unread-tab',
+      sessionId: 'unread-session',
+      title: 'Unread session',
+      hasUnread: true,
+    };
+    const generatingSessionTab: Tab = {
+      ...activeSessionTab,
+      id: 'generating-tab',
+      sessionId: 'generating-session',
+      title: 'Generating session',
+      isGenerating: true,
+      hasUnread: true,
+    };
+
+    renderSidebar({
+      tabs: [launcherTab, activeSessionTab, openSessionTab, unreadSessionTab, generatingSessionTab],
+      activeTab: activeSessionTab,
+      activeWorkspacePath: '/work/project-one',
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    const rowFor = (title: string) => screen.getByText(title).closest<HTMLElement>('[data-global-sidebar-session-row]')!;
+    const activeRow = rowFor('Active session');
+    expect(activeRow).toHaveClass('bg-[var(--hover-bg)]');
+    expect(activeRow.querySelector('[data-tab-activity-indicator]')).toBeNull();
+    expect(rowFor('Open session').querySelector('[data-tab-activity-indicator]')).toBeNull();
+
+    const unreadIndicator = rowFor('Unread session').querySelector('[data-tab-activity-indicator]');
+    expect(unreadIndicator).toHaveAttribute('data-tab-activity-indicator', 'unread');
+    expect(unreadIndicator).toHaveClass('bg-[var(--accent-warm)]');
+
+    const generatingIndicator = rowFor('Generating session').querySelector('[data-tab-activity-indicator]');
+    expect(generatingIndicator).toHaveAttribute('data-tab-activity-indicator', 'generating');
+    expect(generatingIndicator?.children).toHaveLength(2);
+    Array.from(generatingIndicator?.children ?? []).forEach((dot) => {
+      expect(dot).toHaveClass('bg-[var(--success)]');
+    });
   });
 
   it('keeps one workspace failure local while another workspace remains usable', () => {

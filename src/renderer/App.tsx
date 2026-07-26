@@ -3927,6 +3927,7 @@ export default function App() {
         activeTab={activeTab}
         activeWorkspacePath={activeWorkspacePath}
         sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
+        teamSpaceAvailable={teamSpaceAvailable}
         onNewTab={handleNewTab}
         onOpenTaskCenter={handleOpenTaskCenter}
         onOpenSpace={handleOpenSpace}

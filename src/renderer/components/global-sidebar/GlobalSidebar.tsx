@@ -8,6 +8,7 @@ import {
   ChevronDown,
   ChevronRight,
   Cloud,
+  Copy,
   Eye,
   EyeOff,
   FolderOpen,
@@ -17,7 +18,6 @@ import {
   MessageSquarePlus,
   MoreHorizontal,
   PanelLeft,
-  PanelTop,
   Pin,
   PinOff,
   Plus,
@@ -29,6 +29,7 @@ import {
   Sparkles,
   Star,
   Trash2,
+  X,
 } from 'lucide-react';
 import {
   lazy,
@@ -50,9 +51,11 @@ import myAgentsLogo from '@/assets/runtime-icons/myagents.png';
 import type { SessionMetadata } from '@/api/sessionClient';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import FeedbackPopover from '@/components/FeedbackPopover';
+import OverlayBackdrop from '@/components/OverlayBackdrop';
 import PathInputDialog from '@/components/PathInputDialog';
 import SessionStatsModal from '@/components/SessionStatsModal';
 import SessionTagBadge from '@/components/SessionTagBadge';
+import TabActivityIndicator from '@/components/TabActivityIndicator';
 import Tip from '@/components/Tip';
 import UnreadNotificationIndicator from '@/components/UnreadNotificationIndicator';
 import { useToast } from '@/components/Toast';
@@ -98,8 +101,10 @@ import {
 } from '@/utils/globalSidebarPreference';
 import { isBrowserDevMode, isTauriEnvironment, pickFolderForDialog } from '@/utils/browserMock';
 import { formatTime, getSessionDisplayText } from '@/utils/taskCenterUtils';
+import { copyPlainText } from '@/utils/clipboard';
 
-const TaskCenterOverlay = lazy(() => import('@/components/TaskCenterOverlay'));
+const loadTaskCenterOverlay = () => import('@/components/TaskCenterOverlay');
+const TaskCenterOverlay = lazy(loadTaskCenterOverlay);
 const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPanel'));
 
 const SESSION_PAGE_SIZE = 5;
@@ -126,6 +131,7 @@ interface GlobalSidebarProps {
   activeTab: Tab | undefined;
   activeWorkspacePath: string | null;
   sessionNotificationBadgeCounts?: ReadonlyMap<string, number>;
+  teamSpaceAvailable: boolean;
   onNewTab: () => void;
   onOpenTaskCenter: () => void;
   onOpenSpace: () => void;
@@ -173,6 +179,7 @@ interface SidebarNavButtonProps {
   active?: boolean;
   disabled?: boolean;
   tooltipDisabled?: boolean;
+  onIntent?: () => void;
   onClick: () => void;
 }
 
@@ -183,16 +190,19 @@ function SidebarNavButton({
   active,
   disabled,
   tooltipDisabled,
+  onIntent,
   onClick,
 }: SidebarNavButtonProps) {
   const button = (
     <button
       type="button"
       onClick={onClick}
+      onPointerEnter={onIntent}
+      onFocus={onIntent}
       disabled={disabled}
       aria-current={active ? 'page' : undefined}
       aria-label={label}
-      className={`flex h-10 items-center rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+      className={`flex h-9 items-center rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
         expanded ? 'w-full gap-3 px-3' : 'w-10 justify-center'
       } ${
         active
@@ -216,6 +226,7 @@ export default memo(function GlobalSidebar({
   activeTab,
   activeWorkspacePath,
   sessionNotificationBadgeCounts,
+  teamSpaceAvailable,
   onNewTab,
   onOpenTaskCenter,
   onOpenSpace,
@@ -260,6 +271,8 @@ export default memo(function GlobalSidebar({
   const openNestedLayerKeysRef = useRef(new Set<string>());
   const flyoutTriggerRef = useRef<HTMLButtonElement | null>(null);
   const flyoutRef = useRef<HTMLDivElement | null>(null);
+  const flyoutPointerInsideRef = useRef(false);
+  const flyoutTriggerPointerInsideRef = useRef(false);
   const childLayerReturnFocusRef = useRef<HTMLElement | null>(null);
   const openTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -363,6 +376,7 @@ export default memo(function GlobalSidebar({
       if (openNestedLayerKeysRef.current.size > 0 || childLayerOpenRef.current) return;
       const flyout = flyoutRef.current;
       if (!flyout || typeof document === 'undefined') return;
+      if (flyoutPointerInsideRef.current || flyoutTriggerPointerInsideRef.current) return;
       const active = document.activeElement;
       if (active && (flyout.contains(active) || flyoutTriggerRef.current?.contains(active))) return;
       setFlyoutOpen(false);
@@ -372,11 +386,28 @@ export default memo(function GlobalSidebar({
   const handleFlyoutPointerLeave = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const bounds = flyoutRef.current?.getBoundingClientRect();
     if (bounds && isPointerWithinBounds(bounds, event.clientX, event.clientY)) {
+      flyoutPointerInsideRef.current = true;
       clearFlyoutTimers();
       return;
     }
+    flyoutPointerInsideRef.current = false;
     scheduleFlyoutClose();
   }, [clearFlyoutTimers, scheduleFlyoutClose]);
+
+  const handleFlyoutPointerEnter = useCallback(() => {
+    flyoutPointerInsideRef.current = true;
+    clearFlyoutTimers();
+  }, [clearFlyoutTimers]);
+
+  const handleFlyoutTriggerPointerEnter = useCallback(() => {
+    flyoutTriggerPointerInsideRef.current = true;
+    scheduleFlyoutOpen();
+  }, [scheduleFlyoutOpen]);
+
+  const handleFlyoutTriggerPointerLeave = useCallback(() => {
+    flyoutTriggerPointerInsideRef.current = false;
+    scheduleFlyoutClose();
+  }, [scheduleFlyoutClose]);
 
   const handleNestedInteractionChange = useCallback((key: string, open: boolean) => {
     if (open) openNestedLayerKeysRef.current.add(key);
@@ -398,6 +429,8 @@ export default memo(function GlobalSidebar({
   const closeFlyout = useCallback((restoreFocus = false) => {
     clearFlyoutTimers();
     openNestedLayerKeysRef.current.clear();
+    flyoutPointerInsideRef.current = false;
+    flyoutTriggerPointerInsideRef.current = false;
     resourceSurfaceInteractionGenerationRef.current += 1;
     setFlyoutOpen(false);
     if (restoreFocus) flyoutTriggerRef.current?.focus();
@@ -661,6 +694,16 @@ export default memo(function GlobalSidebar({
     if (!success) toastRef.current.error(tLauncher('rightRail.favoriteFailedRetry'));
   }, [tLauncher, taskCenterData.actions]);
 
+  const handleCopySessionId = useCallback(async (session: SessionMetadata) => {
+    try {
+      await copyPlainText(`SessionID: ${session.id}`);
+      toastRef.current.success(tLauncher('rightRail.copySessionIdSuccess'));
+    } catch (error) {
+      console.error('[GlobalSidebar] copy session id failed:', error);
+      toastRef.current.error(tLauncher('rightRail.copyFailed'));
+    }
+  }, [tLauncher]);
+
   const handleSearchOpen = useCallback(() => {
     if (!isTauriEnvironment()) return;
     resourceSurfaceInteractionGenerationRef.current += 1;
@@ -720,6 +763,7 @@ export default memo(function GlobalSidebar({
         setProjectToRemove(project);
       }}
       onToggleFavorite={handleToggleFavorite}
+      onCopySessionId={(session) => { void handleCopySessionId(session); }}
       onShowStats={(session, origin) => {
         rememberChildLayerOrigin(origin);
         setStatsSession(session);
@@ -795,6 +839,7 @@ export default memo(function GlobalSidebar({
               expanded={expanded}
               icon={<Search className="h-4 w-4" />}
               label={t('globalSidebar.search')}
+              onIntent={() => { void loadTaskCenterOverlay(); }}
               onClick={handleSearchOpen}
             />
           )}
@@ -805,13 +850,15 @@ export default memo(function GlobalSidebar({
             label={t('globalSidebar.tasks')}
             onClick={handleOpenTaskCenter}
           />
-          <SidebarNavButton
-            expanded={expanded}
-            active={activeView === 'space'}
-            icon={<Cloud className="h-4 w-4" />}
-            label={t('globalSidebar.team')}
-            onClick={onOpenSpace}
-          />
+          {teamSpaceAvailable && (
+            <SidebarNavButton
+              expanded={expanded}
+              active={activeView === 'space'}
+              icon={<Cloud className="h-4 w-4" />}
+              label={t('globalSidebar.team')}
+              onClick={onOpenSpace}
+            />
+          )}
           <SidebarNavButton
             expanded={expanded}
             active={activeView === 'capabilities'}
@@ -834,8 +881,8 @@ export default memo(function GlobalSidebar({
             }}
           >
             <div
-              onPointerEnter={scheduleFlyoutOpen}
-              onPointerLeave={scheduleFlyoutClose}
+              onPointerEnter={handleFlyoutTriggerPointerEnter}
+              onPointerLeave={handleFlyoutTriggerPointerLeave}
               onFocusCapture={openFlyoutNow}
               onBlurCapture={scheduleFlyoutClose}
             >
@@ -845,7 +892,7 @@ export default memo(function GlobalSidebar({
                 onClick={openFlyoutNow}
                 aria-label={t('globalSidebar.workspaces')}
                 aria-expanded={flyoutOpen}
-                className={`flex h-10 w-10 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                className={`flex h-9 w-10 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
                   activeWorkspacePath
                     ? 'bg-[var(--hover-bg)] text-[var(--ink)]'
                     : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
@@ -857,9 +904,9 @@ export default memo(function GlobalSidebar({
             {flyoutOpen && (
               <div
                 ref={flyoutRef}
-                className="absolute bottom-3 left-full top-12 z-[240] ml-2 w-[var(--global-sidebar-flyout-width)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] shadow-md"
+                className="absolute bottom-3 left-full top-12 z-[240] ml-2 w-[var(--global-sidebar-flyout-width)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--global-sidebar-bg)] shadow-md"
                 data-global-sidebar-flyout
-                onPointerEnter={clearFlyoutTimers}
+                onPointerEnter={handleFlyoutPointerEnter}
                 onPointerLeave={handleFlyoutPointerLeave}
                 onFocusCapture={clearFlyoutTimers}
                 onBlurCapture={scheduleFlyoutClose}
@@ -983,7 +1030,34 @@ export default memo(function GlobalSidebar({
       )}
 
       {searchOpen && (
-        <Suspense fallback={null}>
+        <Suspense fallback={(
+          <OverlayBackdrop onClose={handleSearchClose} className="z-40">
+            <div
+              aria-busy="true"
+              className="glass-panel flex h-[85vh] w-full max-w-5xl flex-col"
+              style={{ padding: '2vh 2vw' }}
+            >
+              <div className="mb-4 flex items-center justify-between">
+                <h2 className="text-lg font-semibold text-[var(--ink)]">{t('historyOverlay.title')}</h2>
+                <button
+                  type="button"
+                  onClick={handleSearchClose}
+                  aria-label={t('historyOverlay.exitSearch')}
+                  className="rounded-md p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
+              <div className="flex h-8 items-center rounded-md border border-[var(--line)] px-2.5 text-[var(--ink-muted)]/50">
+                <Search className="mr-2 h-3.5 w-3.5" />
+                <span className="text-sm">{t('historyOverlay.searchPlaceholder')}</span>
+              </div>
+              <div className="flex min-h-0 flex-1 items-center justify-center">
+                <Loader2 className="h-4 w-4 animate-spin text-[var(--ink-muted)]/50" />
+              </div>
+            </div>
+          </OverlayBackdrop>
+        )}>
           <TaskCenterOverlay
             projects={activeProjects}
             taskCenterData={taskCenterData}
@@ -1029,6 +1103,7 @@ interface WorkspaceTreeProps {
   onOpenFolder: (project: Project) => void;
   onRemove: (project: Project, origin?: HTMLElement | null) => void;
   onToggleFavorite: (session: SessionMetadata) => void;
+  onCopySessionId: (session: SessionMetadata) => void;
   onShowStats: (session: SessionMetadata, origin?: HTMLElement | null) => void;
   onDeleteSession: (session: SessionMetadata, origin?: HTMLElement | null) => void;
   onNestedInteractionChange: (key: string, open: boolean) => void;
@@ -1066,6 +1141,7 @@ function WorkspaceTree({
   onOpenFolder,
   onRemove,
   onToggleFavorite,
+  onCopySessionId,
   onShowStats,
   onDeleteSession,
   onNestedInteractionChange,
@@ -1178,7 +1254,7 @@ function WorkspaceTree({
         {projectsLoading ? (
           <div className="space-y-2 px-1 py-2" aria-label={t('common.loading')}>
             {[0, 1, 2].map((item) => (
-              <div key={item} className="h-10 animate-pulse rounded-lg bg-[var(--paper-inset)]/70 motion-reduce:animate-none" />
+              <div key={item} className="h-9 animate-pulse rounded-lg bg-[var(--paper-inset)]/70 motion-reduce:animate-none" />
             ))}
           </div>
         ) : projectsError ? (
@@ -1240,9 +1316,9 @@ function WorkspaceTree({
                   {expandedSet.has(key) && (
                     <div role="group" className="ml-5 border-l border-[var(--line-subtle)] pl-2">
                       {workspaceSessionState?.isLoading && sessions.length === 0 ? (
-                        <div className="space-y-1 py-1">
+                        <div className="space-y-1 py-1" data-global-sidebar-session-placeholder>
                           {[0, 1, 2].map((item) => (
-                            <div key={item} className="h-9 animate-pulse rounded-lg bg-[var(--paper-inset)]/60 motion-reduce:animate-none" />
+                            <div key={item} className="h-9" aria-hidden="true" />
                           ))}
                         </div>
                       ) : (
@@ -1281,6 +1357,7 @@ function WorkspaceTree({
                               deleteProtected={taskCenterData.protectedSchedulerSessionIds.has(session.id)}
                               onOpen={() => onOpenSession(session, project)}
                               onToggleFavorite={() => onToggleFavorite(session)}
+                              onCopySessionId={() => onCopySessionId(session)}
                               onShowStats={(origin) => onShowStats(session, origin)}
                               onDelete={(origin) => onDeleteSession(session, origin)}
                               onMenuOpenChange={(open) => onNestedInteractionChange(`session:${session.id}`, open)}
@@ -1310,7 +1387,7 @@ function WorkspaceTree({
                   type="button"
                   onClick={onToggleArchived}
                   aria-expanded={archivedExpanded}
-                  className="flex h-10 w-full items-center gap-2 rounded-lg px-3 text-sm text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                  className="flex h-9 w-full items-center gap-2 rounded-lg px-3 text-sm text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
                 >
                   <ChevronRight className={`h-4 w-4 transition-transform ${archivedExpanded ? 'rotate-90' : ''}`} />
                   <Archive className="h-4 w-4" />
@@ -1385,10 +1462,15 @@ function WorkspaceRow({
       role="treeitem"
       aria-expanded={expanded}
       aria-current={active ? 'page' : undefined}
-      className={`group/workspace flex h-10 items-center rounded-lg transition-colors hover:bg-[var(--hover-bg)] ${
+      className={`group/workspace flex h-9 select-none items-center rounded-lg transition-colors hover:bg-[var(--hover-bg)] ${
         active ? 'bg-[var(--hover-bg)]' : ''
       }`}
       data-global-sidebar-workspace-row
+      onMouseDown={(event) => {
+        if (event.button === 2) {
+          event.preventDefault();
+        }
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         menuRef.current?.focus();
@@ -1402,7 +1484,16 @@ function WorkspaceRow({
       >
         <ChevronRight className={`h-4 w-4 shrink-0 text-[var(--ink-muted)] transition-transform ${expanded ? 'rotate-90' : ''}`} />
         <WorkspaceIcon icon={project.icon} size={16} />
-        <span className="min-w-0 flex-1 truncate font-medium">{displayName}</span>
+        <span
+          className={`min-w-0 flex-1 truncate ${
+            active || menuOpen
+              ? 'font-medium'
+              : 'font-normal group-hover/workspace:font-medium group-focus-within/workspace:font-medium'
+          }`}
+          data-global-sidebar-workspace-title
+        >
+          {displayName}
+        </span>
       </button>
       <div className={`flex shrink-0 items-center pr-1 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}>
         <Tip label={t('globalSidebar.newChatHere')} align="end">
@@ -1461,6 +1552,7 @@ interface SessionRowProps {
   deleteProtected: boolean;
   onOpen: () => void;
   onToggleFavorite: () => void;
+  onCopySessionId: () => void;
   onShowStats: (origin?: HTMLElement | null) => void;
   onDelete: (origin?: HTMLElement | null) => void;
   onMenuOpenChange: (open: boolean) => void;
@@ -1475,6 +1567,7 @@ function SessionRow({
   deleteProtected,
   onOpen,
   onToggleFavorite,
+  onCopySessionId,
   onShowStats,
   onDelete,
   onMenuOpenChange,
@@ -1508,7 +1601,10 @@ function SessionRow({
         onClick={onOpen}
         className="flex h-full w-full min-w-0 items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]"
       >
-        <SessionStateIcon tab={tab} active={active} />
+        <TabActivityIndicator
+          isGenerating={tab?.isGenerating}
+          hasUnread={tab?.hasUnread}
+        />
         <span
           className="min-w-0 flex-1 truncate text-xs"
           data-global-sidebar-session-title
@@ -1561,6 +1657,11 @@ function SessionRow({
         className="global-sidebar-nested-layer w-44 py-1"
       >
         <MenuItem
+          icon={<Copy className="h-3.5 w-3.5" />}
+          label={tLauncher('rightRail.copySessionId')}
+          onClick={() => { setMenu(false); onCopySessionId(); }}
+        />
+        <MenuItem
           icon={<Star className="h-3.5 w-3.5" fill={session.favorite ? 'currentColor' : 'none'} />}
           label={session.favorite ? tLauncher('rightRail.unfavorite') : tLauncher('rightRail.favorite')}
           onClick={() => { setMenu(false); onToggleFavorite(); }}
@@ -1583,14 +1684,6 @@ function SessionRow({
   );
 }
 
-function SessionStateIcon({ tab, active }: { tab: Tab | undefined; active: boolean }) {
-  if (tab?.isGenerating) return <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--accent)] motion-reduce:animate-none" />;
-  if (tab?.hasUnread) return <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--accent)]" aria-hidden="true" />;
-  if (active) return <span className="h-2 w-2 shrink-0 rounded-full bg-[var(--accent)]" aria-hidden="true" />;
-  if (tab) return <PanelTop className="h-3.5 w-3.5 shrink-0 text-[var(--ink-subtle)]" />;
-  return null;
-}
-
 interface ArchivedWorkspaceRowProps {
   project: Project;
   onUnarchive: () => void;
@@ -1610,7 +1703,7 @@ function ArchivedWorkspaceRow({ project, onUnarchive, onAgentSettings, onOpenFol
   }, [onMenuOpenChange]);
   useNestedInteractionCleanup(onMenuOpenChange);
   return (
-    <div className="group/archive flex h-10 items-center gap-2 rounded-lg px-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]">
+    <div className="group/archive flex h-9 items-center gap-2 rounded-lg px-2 text-sm text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]">
       <WorkspaceIcon icon={project.icon} size={16} />
       <span className="min-w-0 flex-1 truncate">{project.displayName || project.name}</span>
       <Tip label={tLauncher('workspaceCard.more')} align="end" disabled={menuOpen}>
