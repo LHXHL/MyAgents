@@ -61,6 +61,12 @@ describe('Codex app-server protocol helpers', () => {
         requestAttestation: false,
       },
     });
+    expect(buildCodexInitializeParams(true)).toMatchObject({
+      capabilities: {
+        experimentalApi: true,
+        requestAttestation: false,
+      },
+    });
   });
 
   it('keeps the known Codex server request allowlist in sync with app-server schema', () => {
@@ -606,6 +612,21 @@ describe('Codex app-server protocol helpers', () => {
     const codexProc = {
       threadId: 'thread-1',
       currentTurnId: null,
+      deferredSubAgentEvents: new Map(),
+      subThreadToCard: new Map(),
+      subThreadToParent: new Map(),
+      subThreadMeta: new Map(),
+      collabControlToolParents: new Map(),
+      activeSubAgentTurns: new Map(),
+      completedSubAgentTurnsBeforeActivity: new Set(),
+      subAgentThreadsAwaitingActivity: new Set(),
+      codexV2SubAgentActivityObserved: false,
+      codexV2InteractionDeliveryByCallId: new Map(),
+      subAgentActivitySeenBeforeTurnStart: new Set(),
+      subAgentInterruptsInFlight: new Map(),
+      pendingMainTurnCompletion: null,
+      interruptPendingSubAgentTurns: false,
+      releaseHeldMainTurnOnExit: false,
     };
     const parseNotification = (method: string, params: unknown) => (
       runtime as unknown as {

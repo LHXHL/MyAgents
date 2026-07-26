@@ -5349,12 +5349,23 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       // persisted parent block and the pending map) + a subagent-scoped broadcast.
       const subAttParent = getExternalSubagentAttachmentParent(event.toolUseId);
       if (subAttParent) {
-        applyExternalSubagentAttachmentUpdate({
+        const outcome = applyExternalSubagentAttachmentUpdate({
           parentToolUseId: subAttParent,
           toolUseId: event.toolUseId,
           pendingId: event.pendingId,
           attachment: event.attachment,
         });
+        if (outcome === 'deferred') {
+          // tool_result normalization has not established its placeholder yet.
+          // The content owner applies this update atomically when that result lands.
+          break;
+        }
+        if (outcome === 'missing') {
+          console.warn(
+            `[external-session] Ignoring unmatched sub-agent attachment update toolUseId=${event.toolUseId}`,
+          );
+          break;
+        }
         broadcast('chat:subagent-tool-attachment-update', {
           parentToolUseId: subAttParent,
           toolUseId: event.toolUseId,
@@ -5366,11 +5377,26 @@ function handleUnifiedEvent(event: UnifiedEvent): void {
       }
       // Find the persisted tool block and replace the matching placeholder in-place,
       // then broadcast the same shape so the frontend can patch the rendered gallery.
-      applyExternalToolAttachmentUpdate({
+      const outcome = applyExternalToolAttachmentUpdate({
         toolUseId: event.toolUseId,
         pendingId: event.pendingId,
         attachment: event.attachment,
       });
+      if (outcome === 'deferred') {
+        // A top-level tool result may still be queued behind input spilling.
+        // Its placeholder/result event will carry the atomically patched array.
+        break;
+      }
+      if (outcome === 'missing') {
+        // A late async update without a live top-level placeholder has no
+        // transcript owner. This includes an uncorrelated foreign child whose
+        // causal buffer was discarded at the turn boundary: fail closed rather
+        // than manufacturing a top-level attachment event in the renderer.
+        console.warn(
+          `[external-session] Ignoring unowned tool attachment update toolUseId=${event.toolUseId}`,
+        );
+        break;
+      }
       broadcast('chat:tool-attachment-update', {
         toolUseId: event.toolUseId,
         pendingId: event.pendingId,

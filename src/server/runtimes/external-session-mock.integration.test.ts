@@ -550,6 +550,74 @@ function runInjectedTurn(harness: Harness, request: TestInjectedTurnRequest) {
 }
 
 describe('external SessionEngine with fake runtime', () => {
+  it('broadcasts attachment updates only when a top-level placeholder owns them', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'ready for attachment routing' },
+    ]);
+    const sessionId = 'session-external-attachment-owner';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const desktop = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'start attachment owner test'),
+    );
+    await expect(desktop.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    harness.runtime.emitForTest({
+      kind: 'tool_use_start',
+      toolUseId: 'owned-image',
+      toolName: 'ImageTool',
+    });
+    harness.runtime.emitForTest({ kind: 'tool_use_stop', toolUseId: 'owned-image' });
+    broadcastEvents.length = 0;
+    harness.runtime.emitForTest({
+      kind: 'tool_attachment_update',
+      toolUseId: 'owned-image',
+      pendingId: 'owned-pending',
+      attachment: {
+        kind: 'image',
+        mimeType: 'image/png',
+        refPath: '/api/attachment/tool/session/turn/owned.png',
+      },
+    });
+    expect(broadcastEvents.map(({ event }) => event)).not.toContain('chat:tool-attachment-update');
+
+    harness.runtime.emitForTest({
+      kind: 'tool_result',
+      toolUseId: 'owned-image',
+      content: 'saving image',
+      attachments: [{
+        kind: 'image',
+        mimeType: 'image/png',
+        refPath: '',
+        pendingId: 'owned-pending',
+      }],
+    });
+    await waitFor(
+      () => broadcastEvents.some(({ event }) => event === 'chat:tool-result-complete'),
+      'owned tool result',
+    );
+    const toolResultStart = broadcastEvents.find(({ event }) => event === 'chat:tool-result-start');
+    expect(toolResultStart?.data).toMatchObject({
+      attachments: [{
+        refPath: '/api/attachment/tool/session/turn/owned.png',
+      }],
+    });
+
+    broadcastEvents.length = 0;
+    harness.runtime.emitForTest({
+      kind: 'tool_attachment_update',
+      toolUseId: 'uncorrelated-foreign-child-image',
+      pendingId: 'foreign-pending',
+      attachment: {
+        kind: 'image',
+        mimeType: 'image/png',
+        refPath: '/api/attachment/tool/session/turn/foreign.png',
+      },
+    });
+    expect(broadcastEvents.map(({ event }) => event)).not.toContain('chat:tool-attachment-update');
+  });
+
   it('mirrors accepted external desktop turns', async () => {
     const harness = await createHarness([
       { kind: 'success', text: 'external desktop reply' },
@@ -577,6 +645,44 @@ describe('external SessionEngine with fake runtime', () => {
         text: 'external desktop reply',
       },
     ]);
+  });
+
+  it('starts a clean runtime after a held turn terminal is followed by process completion', async () => {
+    const harness = await createHarness([
+      { kind: 'success', text: 'answer before runtime exit' },
+      { kind: 'success', text: 'answer after runtime restart' },
+    ]);
+    const sessionId = 'session-held-terminal-runtime-exit';
+    const workspacePath = join(harness.home, 'workspace');
+
+    const first = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'first turn'),
+    );
+    await expect(first.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(1);
+
+    // Codex's isolation fallback emits the held turn_complete first, then the
+    // process lifecycle terminal. The latter must release the runtime owner so
+    // the next message goes through the normal resume/start path.
+    harness.runtime.emitForTest({
+      kind: 'session_complete',
+      subtype: 'error',
+      result: 'Codex process exited with code 143',
+    });
+    await waitFor(
+      () => !harness.externalSession.hasExternalRuntimeProcess(),
+      'runtime owner cleared after process completion',
+    );
+
+    const second = await harness.engine.sendDesktopMessage(
+      desktopRequest(sessionId, workspacePath, 'second turn'),
+    );
+    await expect(second.dispatchAcceptance).resolves.toEqual({ accepted: true });
+    await expect(harness.engine.waitIdle(2_000, 10)).resolves.toBe(true);
+
+    expect(harness.runtime.startSessionInitialMessages).toHaveLength(2);
+    expect(harness.engine.getLatestAssistantResult().latestResult).toBe('answer after runtime restart');
   });
 
   it('does not mirror external IM-origin turns back through the desktop fan-out', async () => {
