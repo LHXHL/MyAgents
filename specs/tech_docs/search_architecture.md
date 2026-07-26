@@ -253,6 +253,12 @@ snippet 构建常见 "取匹配位置前后各 N 字符" 的近似切片。裸 `
 | **文件树定位** | `components/directory-panel/DirectoryPanel.tsx` + `workspace-tree/WorkspaceTreeViewport.tsx` | 搜索结果 path-based reveal，逐层展开祖先目录，通过 Virtuoso `scrollToIndex` 滚动并消费 `revealRequest` |
 | **高亮渲染** | `search/SearchHighlight.tsx` | 消费 `[start, end][]` UTF-16 offsets |
 
+### Session 搜索 Overlay 的首帧与长列表
+
+全局侧栏搜索只把 `searchOpen` 交给 `useGlobalSidebarTaskCenterData`，由该 app-global store projection 发起一次静默 full revalidate；`TaskCenterOverlay` mount 时不得再发第二次全量刷新。Overlay 先消费当前 snapshot，冷模块加载期间由 App Shell 立即绘制同尺寸搜索壳，搜索按钮 hover/focus 时提前请求 lazy chunk，避免点击后出现空白间隔。
+
+空 query 是“浏览全部历史”而不是全文搜索：Session metadata 仍由既有全局 authority 一次加载，以保留工作区/收藏/来源筛选和 SessionID 直达语义；前端用 `react-virtuoso` 只 mount 可视区及小幅 overscan，禁止对 `filteredSessions` 全量 `.map()` 成 DOM。这里不新增后端 offset/page authority，否则会让客户端筛选、全局排序和直接 ID 匹配跨页漂移。非空 query 继续走 Tantivy，并由 `searchSessions()` 的 50 条上限保持结果集有界。
+
 ## 工作区文件搜索结果导航
 
 搜索结果导航是 **renderer-side 交互协议**，不是 Rust 搜索引擎的一部分。Rust `SearchEngine` 只负责返回 `FileSearchHit` / `FileMatchLine`；预览、行定位、右键菜单、回到文件树均复用现有前端文件系统抽象和目录树，不新增 Sidecar HTTP 端点，也不新增 Rust IPC 命令。

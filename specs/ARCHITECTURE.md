@@ -327,7 +327,9 @@ Tab 内 MUST 用 `useTabState()` 的 `apiGet` / `apiPost`，禁止全局 `apiPos
 - 点击已有 Session 必须回到 `App` 的统一 open-target-session planner：优先聚焦已打开 Tab，否则按既有恢复/创建路径 materialize；并发点击复用同一 in-flight guard。新建既有 Session Tab 时用 `flushSync` 把 `sidecarConfigDisposition:'pending'` 的 Tab 加入并激活，立即挂载 Chat owner 子树并由其既有 `ChatBootOverlay` 承担加载反馈，再异步 ensure/activate；`setTabs` 必须保持 functional composition，不能把 `tabsRef` 提升为第二个可写 authority。ensure 的锁内 `isNew` 仍是 `push/adopt` 唯一裁决。失败时只撤销该临时 Tab 并恢复仍存在的前一 active Tab，成功后不得把加载期间主动切走的用户强制拉回。
 - 点击工作区始终新建 Launcher Tab，再通过 Launcher 既有选择路径写入该 Tab 的待创建工作区；不得在侧栏提前创建 Session 或 Sidecar。
 - Launcher 仅拥有“创建新工作”的输入和选项，不再拥有工作区卡片、历史列表或正式资源管理。全局侧栏是这些资源的唯一 UI owner，因此 Chat 不再提供把当前 Tab 原地改回 Launcher 的“返回”路径；用户通过关闭 Tab 或新建 Tab 结束/开启工作。
-- “技能与连接器”使用单实例 `capabilities` Tab，并与 Settings 分别在自己的 Tab slot 内持有页面状态；切到其它 Tab 不卸载草稿，两个功能 Tab 的导航和弹层也不互相串扰。两者复用 Settings 既有能力模块，但 app-global 配置传播（例如 proxy hot reload）归 `ConfigProvider` 唯一拥有，不能由任一页面 mount 次数决定。旧 Settings deep-link 只做意图重定向，不复制领域实现。
+- “技能与工具”使用单实例 `capabilities` Tab，并与 Settings 分别在自己的 Tab slot 内持有页面状态；切到其它 Tab 不卸载草稿，两个功能 Tab 的导航和弹层也不互相串扰。两者复用 Settings 既有能力模块，但 app-global 配置传播（例如 proxy hot reload）归 `ConfigProvider` 唯一拥有，不能由任一页面 mount 次数决定。旧 Settings deep-link 只做意图重定向，不复制领域实现。
+- Settings 的 `proxy` section 只是现有 `proxySettings` 配置面的独立路由 owner：供应商错误提示等入口统一 deep-link 到该 section，持久化仍走 disk-first `ConfigProvider`，运行中 Sidecar/Channel 的代理协调仍由既有配置传播链拥有。不得因从 General 拆页而复制代理状态、探测逻辑或建立 mount 驱动的 hot reload。
+- 模型选择菜单是输入 chrome 的导航投影：当前项定位只修改菜单自有 scroll container；“自定义模型服务”复用 `OPEN_SETTINGS({section:'providers'})` 单实例设置动线。显示边界以 `projectInputChromeRuntime()` 的结果为准，因此 Managed Codex 投影为 builtin/AgentSDK 并显示入口，用户自管外部 CLI Runtime 不显示。
 - 窄窗自动 rail 与用户手动展开偏好是两个正交状态。工作区 flyout 只是同一资源树的浮层呈现，不新增数据源、路由或选中 authority；关闭判定属于 flyout interaction owner，真实 pointer 离开、Escape 或导航成功可以关闭，但工作区树展开/折叠导致的 DOM 几何变化若指针仍在 flyout 边界内不得误判为离开。Session 导航后的关闭直接观察权威 active Tab identity 变化，同 Tab 成功则由当前 resource-surface interaction generation 关联的回调兜底；该 UI lifecycle generation 同时覆盖工作区 flyout 与搜索 overlay，不得另存单槽 pending Session 影子状态。激活前拒绝/异常保持资源面供重试；已经乐观激活后发生启动失败，由 App 回滚临时 Tab，但不自动复活已因导航关闭的旧资源面，也不得让工作区或 Session 的旧完成回调关闭用户后来重开的 flyout / 搜索 overlay。
 
 Phase4 后，几个历史大型 UI 入口保留原路径作为兼容 facade，真实实现按 owner 目录维护：
@@ -766,7 +768,7 @@ trusted root `~/.myagents/generated/tool-attachments/<sid>/<tid>/<file>`（base6
 
 ### 19. MyAgents Cloud Space（实验室，`src-tauri/src/space_cloud.rs` + `src/renderer/pages/Space.tsx`）
 
-Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能力正式随客户端发布，用户需在「设置 → 关于&反馈 → 实验室」显式开启；它不是默认稳定入口，但应作为实验室功能写入 CHANGELOG 与 GitHub Release notes。
+Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能力正式随客户端发布，用户需在「设置 → 关于 → 实验室」显式开启；它不是默认稳定入口，但应作为实验室功能写入 CHANGELOG 与 GitHub Release notes。
 
 **架构真相分工与版本：** 本仓库只维护 Desktop 客户端 owner（Rust connector、本地身份/状态、UI、CLI 与 Task/Session 执行），详细状态见 `specs/tech_docs/space_cloud.md`；Cloud Worker 的 API、鉴权、领域模型、D1/R2、一致性、quota 与运营能力由同级 `hAcKlyc/MyAgents_space` 仓库的 `specs/ARCHITECTURE.md` 维护。本地平级 checkout 路径为 `../MyAgents_space/specs/ARCHITECTURE.md`。两仓独立版本，但 0.3.2 Registered Agent execution instance 属于一次协调交付：Cloud additive migration/Worker 与 v0/v1/v2 smoke 先通过，再发布 Desktop。0.3.2 源码实现不代表 Production 已上线；实时真相仍只以两端已发布版本和 Cloud `/health` 为准。若契约变化必须同步更新两边实现、测试、文档和兼容基线。
 
