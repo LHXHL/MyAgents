@@ -301,9 +301,9 @@ Rust 工具链由仓库根目录 `rust-toolchain.toml` 固定，开发机和 CI 
 - **发布前验"已提交态"而非工作树**：并发 writer 可能提交了组件改动、却把配套测试 fix 留在工作区 → **已提交分支是红的，但你本地 `npm test` 因工作区 fix 而绿**（0.2.29 实战：`SimpleChatInput` 的 `useConfigData` 改动已提交、其测试 mock 未提交 → 已提交态 `useConfigData must be used within <ConfigProvider>`）。合 main / 打 tag 前 MUST 先 `git stash` 掉无关工作区文件（或确认 `git status` 干净）再跑易红测试；load-bearing 的未提交 fix 就显式提交进发布准备，别 ship 红分支
 - **分支策略**：`dev/x.x.x` 开发 → 合并到 `main`。MUST NOT 在 main 直接提交
 - **合并到 main**：需 typecheck + lint 通过 + 用户明确确认
-- **Commit 格式**：Conventional Commits（`feat:` / `fix:` / `refactor:`）。**只有 prefix 不算合格**：`fix: harden X` / `fix: update Y` 这种只复述 diff 的 subject 仍然是不合格 message。
-- **Commit message 写什么**：diff 已经说清「改了什么」，message 别重复它，专心写「为什么」——为什么要改、为什么这么改而不用那个更显然的办法、有哪些后人不能踩的坑。它是写给半年后来翻这段历史的人（或 AI）看的，不是写给此刻的自己。内容必须和真正提交的代码一致，别写没做、或后来又改掉的事。长短随改动而定：错别字一行就够，微妙的 bug、架构取舍值得写一段。别写 `fix`、`update`、`wip` 这种等于没写的，也别一次提交里混进好几件不相干的事。
-- **Commit 命令前硬闸**：在输入 `git commit` 前，先用“看不到 diff 的半年后维护者”视角检查 message：① 是否说明了触发 bug / 需求的真实故障模式或产品动机；② 是否说明了关键取舍（为什么不是更显然的 move/delete/cache/guard 等方案）；③ 是否标出副作用、残留风险或后人不能踩的坑。任一回答为“没有”，就不要提交，先重写 message。除错别字 / 纯机械小改外，非平凡 bugfix / refactor / 架构相关改动 MUST 用多段 message（`git commit -m "<subject>" -m "<body>"` 或 `git commit -F <file>`），禁止只写一行 subject。
+- **Commit 格式（Conventional Commits 标题 + body 不可拆）**：每个 commit MUST 同时包含 Conventional Commits subject（`feat:` / `fix:` / `refactor:`）和非空 body，禁止只提交标题；使用 `git commit -m "<subject>" -m "<body>"` 或 `git commit -F <file>`。**只有 prefix 不算合格**：`fix: harden X` / `fix: update Y` 这种只复述 diff 的 subject 仍然是不合格 message。
+- **Commit message 写什么**：diff 已经说清「改了什么」，message 别重复它，专心写「为什么」——为什么要改、为什么这么改而不用那个更显然的办法、有哪些后人不能踩的坑。它是写给半年后来翻这段历史的人（或 AI）看的，不是写给此刻的自己。内容必须和真正提交的代码一致，别写没做、或后来又改掉的事。body 长短随改动而定：错别字 / 纯机械小改也至少用一句话说明理由，微妙的 bug、架构取舍则值得写完整段落。别写 `fix`、`update`、`wip` 这种等于没写的，也别一次提交里混进好几件不相干的事。
+- **Commit 命令前硬闸**：在输入 `git commit` 前，先用“看不到 diff 的半年后维护者”视角检查 subject + body：① 是否说明了触发 bug / 需求的真实故障模式或产品动机；② 是否说明了关键取舍（为什么不是更显然的 move/delete/cache/guard 等方案）；③ 是否标出副作用、残留风险或后人不能踩的坑。任一回答为“没有”，就不要提交，先重写 message；任何改动规模都不得省略 body。
 - **发布流程**：先更新 CHANGELOG.md → `npm version` → 若本客户端锁定了新的 Managed Codex runtime set，先用独立脚本确认对应平台资源已上传 → `./build_macos.sh` → `./publish_release.sh` → push tag
 
 ## 日志与排查
