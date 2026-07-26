@@ -13,10 +13,11 @@ interface SettingsSidebarProps {
 
 const NAV_ITEMS: Array<{ section: SettingsSection; labelKey: string }> = [
   { section: 'providers', labelKey: 'sidebar.nav.providers' },
+  { section: 'general', labelKey: 'sidebar.nav.general' },
   { section: 'agent', labelKey: 'sidebar.nav.bots' },
   { section: 'desktop-pet', labelKey: 'sidebar.nav.floatingBall' },
   { section: 'usage-stats', labelKey: 'sidebar.nav.usageStats' },
-  { section: 'general', labelKey: 'sidebar.nav.general' },
+  { section: 'proxy', labelKey: 'sidebar.nav.proxy' },
   { section: 'shortcuts', labelKey: 'sidebar.nav.shortcuts' },
   { section: 'about', labelKey: 'sidebar.nav.about' },
 ];

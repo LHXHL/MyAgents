@@ -358,8 +358,6 @@ export default function Settings({ mode = 'settings', initialSection, navigation
     const {
         activeSection,
         setActiveSection,
-        proxySectionRef,
-        highlightProxySection,
         navigateToProxySettings,
         notifySectionChange,
     } = useSettingsNavigation({
@@ -543,7 +541,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                     if (proxyProbeGenerationRef.current !== generation) return;
                     setProxyProbeState({
                         status: 'error',
-                        message: tSettings('general.proxyProbeFailed'),
+                        message: tSettings('proxy.probeFailed'),
                         detail: error instanceof Error ? error.message : String(error),
                     });
                 });
@@ -3939,12 +3937,14 @@ export default function Settings({ mode = 'settings', initialSection, navigation
             {/* Right content area — h-full ensures height is explicit for WebKit scroll */}
             <div className="h-full flex-1 overflow-y-auto overscroll-contain">
                 {mode === 'capabilities' && (
-                    <header className="sticky top-0 z-20 border-b border-[var(--line)] bg-[var(--paper)]/95 px-8 pt-7 backdrop-blur-sm">
-                        <div className="mx-auto max-w-4xl">
+                    <>
+                        <header className="mx-auto max-w-4xl px-8 pt-7" data-capabilities-page-header>
                             <h1 className="text-xl font-semibold text-[var(--ink)]">{tSettings('capabilities.title')}</h1>
                             <p className="mt-1 text-sm text-[var(--ink-muted)]">{tSettings('capabilities.description')}</p>
+                        </header>
+                        <div className="sticky top-0 z-20 mt-5 border-b border-[var(--line)] bg-[var(--paper)]/95 px-8 backdrop-blur-sm" data-capabilities-sticky-tabs>
                             <nav
-                                className="mt-5 flex gap-1"
+                                className="mx-auto flex max-w-4xl gap-1"
                                 role="tablist"
                                 aria-label={tSettings('capabilities.navigation')}
                             >
@@ -3975,7 +3975,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                 })}
                             </nav>
                         </div>
-                    </header>
+                    </>
                 )}
                 {/* Skills + Sub-Agents section uses wider layout.
                  *  initialSelect is passed unfiltered — each panel's viewStateForSelect
@@ -4631,26 +4631,28 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                 )}
                             </div>
 
+                        </div>
+                    )}
+
+                    {activeSection === 'proxy' && (
+                        <div className="space-y-6">
+                            <div>
+                                <h2 className="text-lg font-semibold text-[var(--ink)]">{tSettings('proxy.title')}</h2>
+                                <p className="mt-1 text-xs text-[var(--ink-muted)]">
+                                    {tSettings('proxy.description')}
+                                </p>
+                            </div>
+
                             {/* Network Proxy Settings */}
                             <div
-                                ref={proxySectionRef}
-                                className={`rounded-xl border bg-[var(--paper-elevated)] p-5 transition-all ${
-                                    highlightProxySection
-                                        ? 'border-[var(--accent)] shadow-[0_0_0_3px_var(--accent-warm-subtle)]'
-                                        : 'border-[var(--line)]'
-                                }`}
+                                className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5"
                             >
-                                <h3 className="text-base font-medium text-[var(--ink)]">{tSettings('general.proxyTitle')}</h3>
-                                <p className="mt-1 text-xs text-[var(--ink-muted)]">
-                                    {tSettings('general.proxyDescription')}
-                                </p>
-
                                 {/* Enable toggle */}
-                                <div className="mt-4 flex items-center justify-between">
+                                <div className="flex items-center justify-between">
                                     <div className="flex-1 pr-4">
-                                        <p className="text-sm font-medium text-[var(--ink)]">{tSettings('general.proxyEnableTitle')}</p>
+                                        <p className="text-sm font-medium text-[var(--ink)]">{tSettings('proxy.enableTitle')}</p>
                                         <p className="text-xs text-[var(--ink-muted)]">
-                                            {tSettings('general.proxyEnableDescription')}
+                                            {tSettings('proxy.enableDescription')}
                                         </p>
                                     </div>
                                     <button
@@ -4677,7 +4679,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                 <div className="mt-4 border-t border-[var(--line)] pt-4">
                                     <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
                                         <div className="min-w-0 flex-1">
-                                            <p className="text-sm font-medium text-[var(--ink)]">{tSettings('general.proxyScopeTitle')}</p>
+                                            <p className="text-sm font-medium text-[var(--ink)]">{tSettings('proxy.scopeTitle')}</p>
                                             <p
                                                 className="mt-1 truncate text-xs text-[var(--ink-muted)]"
                                                 title={proxyScopeSummary}
@@ -4697,7 +4699,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                                             : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                                                     }`}
                                                 >
-                                                    {tSettings('general.proxyScopeAll')}
+                                                    {tSettings('proxy.scopeAll')}
                                                 </button>
                                                 <button
                                                     type="button"
@@ -4709,7 +4711,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                                             : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                                                     }`}
                                                 >
-                                                    {tSettings('general.proxyScopeCustom')}
+                                                    {tSettings('proxy.scopeCustom')}
                                                 </button>
                                             </div>
                                             <button
@@ -4717,7 +4719,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                                 disabled={!config.proxySettings?.enabled}
                                                 onClick={() => setShowProxyScopeDialog(true)}
                                                 className="rounded-lg border border-[var(--line)] p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-50"
-                                                aria-label={tSettings('general.proxyScopeDialogTitle')}
+                                                aria-label={tSettings('proxy.scopeDialogTitle')}
                                             >
                                                 <SlidersHorizontal size={16} />
                                             </button>
@@ -4730,7 +4732,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                     <div className="mt-4 space-y-3 border-t border-[var(--line)] pt-4">
                                         {/* Protocol */}
                                         <div className="flex items-center gap-3">
-                                            <label className="w-16 text-xs text-[var(--ink-muted)]">{tSettings('general.proxyProtocol')}</label>
+                                            <label className="w-16 text-xs text-[var(--ink-muted)]">{tSettings('proxy.protocol')}</label>
                                             <CustomSelect
                                                 value={config.proxySettings?.protocol || PROXY_DEFAULTS.protocol}
                                                 options={[
@@ -4747,7 +4749,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
 
                                         {/* Host */}
                                         <div className="flex items-center gap-3">
-                                            <label className="w-16 text-xs text-[var(--ink-muted)]">{tSettings('general.proxyServer')}</label>
+                                            <label className="w-16 text-xs text-[var(--ink-muted)]">{tSettings('proxy.server')}</label>
                                             <input
                                                 type="text"
                                                 value={proxyHostDraft}
@@ -4761,7 +4763,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
 
                                         {/* Port */}
                                         <div className="flex items-center gap-3">
-                                            <label className="w-16 text-xs text-[var(--ink-muted)]">{tSettings('general.proxyPort')}</label>
+                                            <label className="w-16 text-xs text-[var(--ink-muted)]">{tSettings('proxy.port')}</label>
                                             <input
                                                 type="text"
                                                 inputMode="numeric"
@@ -4780,7 +4782,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
 
                                         {/* Preview */}
                                         <div className="mt-2 rounded-lg bg-[var(--paper-inset)] px-3 py-2">
-                                            <span className="text-xs text-[var(--ink-muted)]">{tSettings('general.proxyAddress')}</span>
+                                            <span className="text-xs text-[var(--ink-muted)]">{tSettings('proxy.address')}</span>
                                             <code className="text-xs font-mono text-[var(--ink)]">
                                                 {config.proxySettings?.protocol || PROXY_DEFAULTS.protocol}://{proxyHostDraft || PROXY_DEFAULTS.host}:{proxyPortDraft || PROXY_DEFAULTS.port}
                                             </code>
@@ -4806,18 +4808,24 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                                 )}
                                                 <span className="min-w-0 break-words">
                                                     {proxyProbeState.status === 'checking'
-                                                        ? tSettings('general.proxyChecking')
+                                                        ? tSettings('proxy.checking')
                                                         : proxyProbeState.message}
                                                 </span>
                                             </div>
                                         )}
 
                                         <p className="text-xs text-[var(--ink-faint)]">
-                                            {tSettings('general.proxyAppliedHint')}
+                                            {tSettings('proxy.appliedHint')}
                                         </p>
                                     </div>
                                 )}
                             </div>
+
+                        </div>
+                    )}
+
+                    {activeSection === 'general' && (
+                        <div className="mt-6 space-y-6">
 
                             {/* Log Export */}
                             <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">

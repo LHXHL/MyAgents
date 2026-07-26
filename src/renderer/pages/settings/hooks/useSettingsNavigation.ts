@@ -36,8 +36,6 @@ export function useSettingsNavigation({
   };
 
   const [activeSection, setActiveSection] = useState<SettingsSection>(getInitialSection);
-  const proxySectionRef = useRef<HTMLDivElement>(null);
-  const [highlightProxySection, setHighlightProxySection] = useState(false);
 
   const notifySectionChange = useCallback(() => {
     onSectionChangeRef.current?.();
@@ -74,31 +72,12 @@ export function useSettingsNavigation({
   }, [activeSection, floatingBallDisabled]);
 
   const navigateToProxySettings = useCallback(() => {
-    setActiveSection('general');
-    setHighlightProxySection(true);
+    setActiveSection('proxy');
   }, []);
-
-  useEffect(() => {
-    if (activeSection !== 'general' || !highlightProxySection) return;
-
-    const scrollTimer = window.setTimeout(() => {
-      proxySectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }, 50);
-    const clearTimer = window.setTimeout(() => {
-      setHighlightProxySection(false);
-    }, 1800);
-
-    return () => {
-      window.clearTimeout(scrollTimer);
-      window.clearTimeout(clearTimer);
-    };
-  }, [activeSection, highlightProxySection]);
 
   return {
     activeSection,
     setActiveSection,
-    proxySectionRef,
-    highlightProxySection,
     navigateToProxySettings,
     notifySectionChange,
   };

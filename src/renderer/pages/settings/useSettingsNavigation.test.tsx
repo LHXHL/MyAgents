@@ -9,8 +9,13 @@ function Probe(props: {
   floatingBallDevGate?: boolean;
   onSectionChange?: () => void;
 }) {
-  const { activeSection } = useSettingsNavigation(props);
-  return <div data-testid="section">{activeSection}</div>;
+  const { activeSection, navigateToProxySettings } = useSettingsNavigation(props);
+  return (
+    <>
+      <div data-testid="section">{activeSection}</div>
+      <button type="button" onClick={navigateToProxySettings}>proxy</button>
+    </>
+  );
 }
 
 describe('useSettingsNavigation', () => {
@@ -49,5 +54,18 @@ describe('useSettingsNavigation', () => {
 
     await waitFor(() => expect(onSectionChange).toHaveBeenCalledTimes(2));
     expect(screen.getByTestId('section')).toHaveTextContent('skills');
+  });
+
+  it('accepts a direct proxy deep link', async () => {
+    render(<Probe initialSection="proxy" />);
+
+    await waitFor(() => expect(screen.getByTestId('section')).toHaveTextContent('proxy'));
+  });
+
+  it('routes legacy proxy entry actions to the standalone proxy section', async () => {
+    render(<Probe initialSection="general" />);
+
+    screen.getByRole('button', { name: 'proxy' }).click();
+    await waitFor(() => expect(screen.getByTestId('section')).toHaveTextContent('proxy'));
   });
 });
