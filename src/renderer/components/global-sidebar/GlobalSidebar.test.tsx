@@ -630,7 +630,9 @@ describe('GlobalSidebar rail flyout', () => {
     expect(navigation.querySelector('[data-global-sidebar-workspace-rail]')).not.toBeInTheDocument();
     expect(navigation.querySelector('[data-global-sidebar-workspace-region]')).not.toHaveClass('border-t', 'border-[var(--line-subtle)]');
     expect(navigation.querySelector('[data-global-sidebar-footer-actions]')).not.toHaveClass('global-sidebar-rail-stack');
-    expect(screen.getByText('MyAgents')).toBeInTheDocument();
+    const brandName = screen.getByText('MyAgents');
+    expect(brandName).toHaveClass('theme-product-wordmark', 'text-sm', 'font-medium');
+    expect(brandName).not.toHaveClass('font-semibold', 'tracking-wide', 'theme-launcher-hero-title');
     first.unmount();
 
     mocks.forcedRail = true;

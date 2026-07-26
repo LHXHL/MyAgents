@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.14
+> **Version**: 2.8.16
 > **Last Updated**: 2026-07-26
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -1245,8 +1245,8 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
 
 - 全局栏从窗口最顶部延伸到底部；右侧才是标题栏与 Tab Workspace。
 - macOS 红绿灯安全区属于侧栏顶部 chrome；Windows 窗口按钮仍固定在右侧标题栏最右端。
-- 常驻展开态 256px，rail 72px；切换模式不通过 width 动画持续重排主内容。
-- 顶部 chrome 分两行：第一行 44px 只承载原生窗口区、拖拽区与固定侧栏 toggle，第二行 40px 承载 App Icon + `MyAgents` 品牌。App Icon 使用 macOS App 风格的 22% 圆角矩形轮廓，在展开态与 rail 中始终保持 20px、固定于窗口 `x=24px` 且复用同一 DOM；它不参与 rail 居中计算，切换时只让品牌文字出现或消失。macOS toggle 固定在窗口 `x=84px` 起的 32px 槽位；展开时位于侧栏表面，手动 rail 时自然落入右侧 Tab 标题栏表面，屏幕坐标与 DOM 均不切换。toggle 两态共用简洁的单一 `PanelLeft` 轮廓，不叠加方向箭头；动作含义由即时 Tooltip 和 `aria-label` 表达。
+- 常驻展开态 256px，rail 72px。切换时布局槽一次提交到最终宽度，禁止用 `width` transition 持续重排主内容；视觉动效由固定 256px 的侧栏材质层以 `clip-path` 在 200ms 内横向揭示/收回，展开内容同步淡移，rail 内容交错接续。收起边界从右向左、展开边界从左向右，App Icon 与功能图标仍保持窗口坐标不动；`prefers-reduced-motion` 下立即切换。
+- 顶部 chrome 分两行：第一行 44px 只承载原生窗口区、拖拽区与固定侧栏 toggle，第二行 40px 承载 App Icon + `MyAgents` 品牌。App Icon 使用 macOS App 风格的 22% 圆角矩形轮廓，在展开态与 rail 中始终保持 20px、固定于窗口 `x=24px` 且复用同一 DOM；它不参与 rail 居中计算，切换时只让品牌文字出现或消失。品牌文字复用 Theme-owned 产品字标的字体、字距与渐变，紧凑角色保持 `text-sm / font-medium`，不复制 Launcher 的展示字号与轻字重。macOS toggle 固定在窗口 `x=84px` 起的 32px 槽位；展开时位于侧栏表面，手动 rail 时自然落入右侧 Tab 标题栏表面，屏幕坐标与 DOM 均不切换。toggle 两态共用简洁的单一 `PanelLeft` 轮廓，不叠加方向箭头；动作含义由即时 Tooltip 和 `aria-label` 表达。
 - 顶部 Tab 保留 active、关闭、拖拽、溢出、生成中、未读与触摸板切换语义，侧栏不得建立第二套页面选中状态。
 - 右侧标题栏使用纯 `var(--paper)` 根面和既有底部分割线，不使用 `paper → paper-inset` 混合渐变。常规模式在侧栏边界后保留 8px leading inset；手动 rail 的 52px 预留同时包含固定 toggle 槽位及其后的 8px 留白。32px Tab 使用 Theme-owned `rounded-md`；active 与 hover 均使用 `var(--hover-bg)`，active 不增加常驻阴影，只额外保留 2px `var(--accent)` 底线。新增 Tab 与溢出按钮使用同一 hover wash，使顶部 Chrome 与左侧工作区共享克制的注意力反馈，而不新增 Tab 专属 palette。
 
@@ -1259,7 +1259,7 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
 ```
 展开态 256px:
   顶部第一行: h-11；macOS 原生红绿灯 + 固定 toggle
-  品牌第二行: h-10；固定 x 的 20px 圆角矩形 App Icon + MyAgents text-sm
+  品牌第二行: h-10；固定 x 的 20px 圆角矩形 App Icon + Theme 产品字标 text-sm/font-medium
   连续主导航行: h-9, px-3, text-sm, icon 16px, 行间距 0
   工作区标题行: h-12, text-xs, 弱化文字
   工作区行: h-9；整行只负责展开/折叠；顶层条目额外行间距 0
@@ -1297,8 +1297,10 @@ rail 72px:
 
 品牌区 JSX 只消费 `ResolvedTheme.hero`。产品名、zh-CN/en-US slogan、文字视觉参数和每个 scheme 的可选 bundled 背景槽都由 Theme 拥有；`BrandSection` 不硬编码 `MyAgents` 或 slogan source。canonical Theme 当前没有独立背景图，因此与迁移前视觉一致。
 
-Settings About 的品牌名复用同一个 `.theme-launcher-hero-title` selector，使字体、字重、
-字距、响应式字号与渐变都随完整 Theme 同步；About 不复制或覆盖品牌配色。
+`.theme-product-wordmark` 是 Launcher、Settings About 与全局侧栏共同消费的 Theme-owned
+产品字标基类，统一字体、字距与渐变。Launcher 与 About 再叠加
+`.theme-launcher-hero-title`，拥有展示字号、轻字重、间距和响应式规则；侧栏只叠加
+`text-sm / font-medium` 的紧凑角色。小尺寸不会机械继承 250/300 的展示字重，三处也不会复制品牌配色。
 
 ```
 标题 "MyAgents":
@@ -1356,6 +1358,8 @@ AI 输入框的模型菜单拥有独立滚动区。打开时在首帧把当前�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.16 | 2026-07-26 | **全局侧栏收展动效**：布局槽仍一次提交以避免 Chat/Browser/Terminal 连续 resize；独立材质层用 200ms `clip-path` 实现收起右→左、展开左→右的背景边界，品牌/导航/工作区内容同步淡移并支持 reduced motion |
+| 2.8.15 | 2026-07-26 | **产品字标跨层级统一**：将八套 Theme 的字体、字距与渐变抽为 `.theme-product-wordmark`，Launcher 与 About 继续叠加展示角色；全局侧栏品牌名复用同一字标并以 14px/500 保持小尺寸可读性 |
 | 2.8.14 | 2026-07-26 | **侧栏 Session 状态与顶部 Tab 收口**：移除侧栏自定义的 active 圆点、Accent Loader 与后台已打开方块，仅保留共享的绿色脉冲运行态和暖棕未读态；行选中与 hover 继续由侧栏表面独立表达 |
 | 2.8.13 | 2026-07-26 | **Session 菜单补齐对话 ID**：全局侧栏历史 Session 的更多/右键菜单首行增加“复制对话 ID”，复用可靠剪贴板 helper 与 Chat 既有 `SessionID: <id>` 引用格式，并提供成功/失败反馈 |
 | 2.8.12 | 2026-07-26 | **工作区右键与新对话图标一致性**：工作区行在右键按下阶段阻止文本选区，只打开既有上下文菜单；Chat 顶栏“新对话”与全局侧栏统一使用 `MessageSquarePlus` 语义图标 |

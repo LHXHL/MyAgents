@@ -139,11 +139,13 @@ describe('Theme architecture guardrails', () => {
     }
   });
 
-  it('reuses the Theme-owned brand title presentation on Launcher and About', () => {
+  it('reuses one Theme-owned product wordmark across Launcher, About, and the global sidebar', () => {
     const launcher = source('src/renderer/components/launcher/BrandSection.tsx');
     const settings = source('src/renderer/pages/settings/SettingsPage.tsx');
-    expect(launcher).toContain('<h1 className="theme-launcher-hero-title">');
-    expect(settings).toContain('className="theme-launcher-hero-title cursor-default select-none"');
+    const sidebar = source('src/renderer/components/global-sidebar/GlobalSidebar.tsx');
+    expect(launcher).toContain('<h1 className="theme-product-wordmark theme-launcher-hero-title">');
+    expect(settings).toContain('className="theme-product-wordmark theme-launcher-hero-title cursor-default select-none"');
+    expect(sidebar).toContain('className="theme-product-wordmark min-w-0 truncate text-sm font-medium"');
     expect(settings).not.toContain('className="brand-title');
   });
 

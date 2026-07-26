@@ -4880,7 +4880,7 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                             <div className="rounded-2xl border border-[var(--line)] bg-gradient-to-br from-[var(--paper-inset)] to-[var(--paper)] p-8">
                                 <div className="flex flex-col items-center text-center">
                                     <h1
-                                        className="theme-launcher-hero-title cursor-default select-none"
+                                        className="theme-product-wordmark theme-launcher-hero-title cursor-default select-none"
                                         onClick={handleLogoTap}
                                     >
                                         MyAgents

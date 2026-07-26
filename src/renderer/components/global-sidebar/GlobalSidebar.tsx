@@ -821,7 +821,11 @@ export default memo(function GlobalSidebar({
             className="global-sidebar-brand-icon shrink-0"
             data-global-sidebar-brand-icon
           />
-          {expanded && <span className="min-w-0 truncate text-sm font-semibold tracking-wide">MyAgents</span>}
+          {expanded && (
+            <span className="theme-product-wordmark min-w-0 truncate text-sm font-medium">
+              MyAgents
+            </span>
+          )}
         </div>
 
         <nav

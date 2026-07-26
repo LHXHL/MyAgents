@@ -120,7 +120,7 @@ Token 组：
 - Code、Animation；
 - body background/texture/blend；
 - Floating Ball 全部 `--fb-*`；
-- Launcher Hero title/slogan selector。
+- 产品字标基类与 Launcher Hero title/slogan selector；字标基类拥有跨 Launcher、About、全局侧栏共享的字体、字距和渐变，Hero selector 只拥有展示字号、字重与响应式布局。
 
 `index.css` 只保留 Type Scale、布局/交互结构、使用语义 Token 的通用 selector，以及一个不携带视觉值的 Tailwind v4 `@theme inline` 编译桥。该桥把 `font-sans/mono`、`rounded*`、`shadow*`和 `duration-*` utility 映射到当前 Theme 的 runtime Token；Theme package **禁止**声明 raw `@theme`，因为 runtime 注入的 CSS 不再经 Tailwind 编译，会让 utility 静默退回 framework default。新增会随完整 Theme 改变的颜色、字体、材质、阴影或圆角，必须先进入 Theme contract/default package，再按需要扩展无值桥接，不能落回组件常量。
 
@@ -208,7 +208,7 @@ default + system，不能阻断窗口创建。
 
 | Surface | 正确消费方式 | 切换约束 |
 |---|---|---|
-| Launcher | `ResolvedTheme.hero` + Theme CSS selector | 不硬编码产品名/slogan；背景不改变布局 |
+| Launcher / About / GlobalSidebar 品牌 | `ResolvedTheme.hero` + Theme 产品字标/Hero CSS selector | 产品字标字体、字距和渐变同源；Hero 与紧凑侧栏只分离尺寸/字重角色，不复制品牌配色；背景不改变布局 |
 | CSS host / Space / Floating Ball | root semantic Token | `.dark` 不是状态源；Space 不建立局部 Theme scope |
 | xterm | `adapters.xterm` | 原位改 options；字体 family/size/lineHeight 变化后复用唯一 fit-and-resize owner 重算 cols/rows 并同步现有 PTY；split 首次展示/变宽以 ResizeObserver 的 geometry quiet window 判稳后再创建或 resize PTY，不复制 Theme-owned transition duration；不重建 Terminal/PTY/buffer |
 | Monaco | `adapters.monaco` | define 冲突安全名称并 `setTheme`；不换 model/editor |
