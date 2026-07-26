@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendMessage, resetTranscriptForTest, transcriptState } from './transcript';
 import {
   accumulateCurrentTurnUsage,
+  appendCurrentTurnTextBlock,
   markCurrentTurnHasOutput,
   peekPendingOutputOwner,
   popPendingOutputOwner,
@@ -151,6 +152,7 @@ describe('turn-lifecycle owner', () => {
   });
 
   it('broadcasts successful result, persists, then fires title hook after persist settles', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
     const persist = deferred();
     const { deps, broadcasts } = makeDeps({
       persistTranscript: vi.fn(() => persist.promise),
@@ -163,6 +165,7 @@ describe('turn-lifecycle owner', () => {
       timestamp: '2026-06-21T00:00:00.000Z',
     });
     markCurrentTurnHasOutput();
+    appendCurrentTurnTextBlock('hello streamed answer');
     setCurrentTurnStartTime(90);
     const onTerminal = vi.fn();
     setCurrentTurnSourceItem({
@@ -238,6 +241,10 @@ describe('turn-lifecycle owner', () => {
       'claude-test',
       undefined,
     );
+    expect(logSpy).toHaveBeenCalledWith(
+      '[assistant-output] runtime=builtin status=complete text="hello streamed answer" chars=21',
+    );
+    logSpy.mockRestore();
   });
 
   it('routes empty successful result to message-error instead of message-complete', () => {

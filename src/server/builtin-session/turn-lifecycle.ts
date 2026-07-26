@@ -65,6 +65,7 @@ import {
   buildImCompletePayload,
   buildImErrorPayload,
 } from '../utils/im-terminal-payload';
+import { formatTextPreviewForLog } from '../utils/log-summary';
 
 export type BuiltinTurnTraceSnapshot = {
   turnId: string;
@@ -698,6 +699,10 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
         });
       }
 
+      // Snapshot before completeTurn schedules persistence. The caller clears
+      // the turn accumulator immediately afterwards, while the terminal
+      // callback runs only after that async persistence completes.
+      const composedAssistantText = getCurrentTurnText();
       completeTurn(
         durationMs,
         terminalError,
@@ -710,7 +715,14 @@ export function createBuiltinTurnLifecycle(deps: BuiltinTurnLifecycleDeps): Buil
             );
           } else {
             console.log('[agent][sdk] Broadcasting chat:message-complete');
-            const completionTerminal = recordCompletionTerminal(terminalError ? 'error' : 'complete');
+            const completionStatus = terminalError ? 'error' : 'complete';
+            const completionTerminal = recordCompletionTerminal(completionStatus);
+            if (composedAssistantText.trim()) {
+              console.log(
+                `[assistant-output] runtime=builtin status=${completionTerminal?.status ?? completionStatus} `
+                  + formatTextPreviewForLog(composedAssistantText),
+              );
+            }
             deps.broadcast(
               'chat:message-complete',
               withSessionCompletionTerminal(completionEvent, completionTerminal),

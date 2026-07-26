@@ -179,6 +179,8 @@ claude -p \
 
 **stdout (接收事件)**：NDJSON 行流，包含 `stream_event`（文本/工具 delta）、`system`（session_init）、`result`（turn 结果）、`control_request`（权限请求）。
 
+**日志 owner**：raw NDJSON 是 transport，且 `--include-partial-messages` 会让其中包含 text/thinking/tool delta，因此不得记录首 N 行、每 N 行采样或正文 preview。`readEvents()` 必须先 `parseLine()`，只对归一化后的非 delta `UnifiedEvent` 输出无正文 semantic summary；delta 继续原样交给 external-session 组合，成功持久化后由 terminal owner 输出一次有界 `[assistant-output]`。
+
 ### 多轮续接
 
 CC `-p` 模式每轮退出。续接通过 `--resume <sessionId>` 恢复上下文：
@@ -257,6 +259,8 @@ Server → Client (Notification): {"jsonrpc":"2.0","method":"item/agentMessage/d
 | `serviceTier` | enum? | ❌ 未对接 | |
 | `personality` | enum? | ❌ 未对接 | |
 | `baseInstructions` | string? | ❌ 未对接 | |
+
+**Codex RPC 日志边界**：`developerInstructions` 是完整系统提示词，`thread/start` / `thread/resume` 调试日志不得输出正文或前缀，只记录 `{present, chars, hash}`；短 SHA-256 仅用于判断两次启动是否使用同一版本。脱敏只作用于日志副本，发给 Codex app-server 的 RPC params 必须保留原始值。
 
 **MCP owner 边界**：Codex 的 `thread/start` / `thread/resume` schema 不接受 MCP 配置，但这不等于所有 Codex 会话都只能读取 `~/.codex/`。`runtimeSource:'managed-provider'` 由 MyAgents 持有 app-server 进程，因此在 spawn 时用 `-c mcp_servers.<name>.*=...` 注入当前 workspace 的有效 MCP；`runtimeSource:'system-cli'` 仍由用户自己的 Codex 配置持有 MCP，MyAgents 不覆盖。Managed 注入前必须复用 `utils/mcp-command.ts` 解析绝对 npx 路径、`-y` 与 MyAgents preset 的精确版本，不能和 builtin SDK 路径各自解释同一份 MCP definition。
 

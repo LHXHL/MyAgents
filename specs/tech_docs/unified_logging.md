@@ -45,6 +45,10 @@ Node/Rust 日志都不是 per-call 同步写入：
 - Node `UnifiedLogger.ts`：in-memory queue、100ms flusher、bounded queue、drop counter、50MB per-file rotation、exit drain。
 - Rust `logger.rs`：bounded mpsc、single writer task、`BufWriter<File>`、200ms flush、drop counter、pre-init sync fallback。
 
+同一条 Node 日志必须只有一个文件持久化 owner。Sidecar logger 初始化后，`console.*` / `sendLog()` 由 Node `UnifiedLogger.ts` 落盘；Rust 只保留真实的原始 stderr（native/runtime crash 与 logger 初始化前输出），不得让已被 Node 落盘的 `console.warn/error` 再经 stderr 进入 `[bun-err]`。stdout 仅承担初始化握手，Rust 看到 `[Logger] Unified logging initialized` 后停止捕获。Plugin Bridge 不初始化 Node UnifiedLogger，因此它的 stdout/stderr 仍由 Rust Bridge owner 落盘。
+
+Rust unit-test binary 不写用户真实的 `~/.myagents/logs/unified-*.log`；测试日志只进入测试 runner 的标准日志捕获。这样 synthetic failure 不会污染随后用于产品排障的本机日志。
+
 统一日志已有 correlation fields，可直接用于性能 trace 和排障过滤：`sessionId / tabId / ownerId / requestId / turnId / runtime`。
 
 ## 日志类型
@@ -271,15 +275,18 @@ for (const entry of entries) {
 
 ## 日志降噪策略
 
-五层过滤将信噪比从 36% 提升到 ~85%：
+日志过滤遵循“transport 不记、semantic boundary 只记有界摘要”的 owner 原则：
 
 | 层 | 位置 | 过滤内容 |
 |----|------|---------|
-| L1 | `sse.ts` SILENT_EVENTS | `chat:message-chunk`、`chat:thinking-delta`、`chat:tool-input-delta`、`chat:content-block-stop`、`chat:message-sdk-uuid`、`chat:log` |
-| L2 | `index.ts` SILENT_PATHS | `/health`、`/api/unified-log`、`/agent/dir`、`/sessions`、`/api/commands`、`/api/agents/enabled`、`/api/git/branch` |
+| L1 | `sse.ts` `SILENT_EVENTS` + `claude-code.ts` NDJSON reader | 所有 SSE text/thinking/tool/subagent chunk 或 delta，以及 Claude Code raw stream-json（启用 partial messages）；不得按每 N 条采样或聚合后重新落盘，解析后的无正文 semantic summary 可记录 |
+| L2 | `http-log-policy.ts` | `/health{,/live,/ready,/functional}`、`/api/unified-log`、`/api/session-state`、`/agent/dir`、`/sessions`、`/api/commands`、`/api/agents/enabled`、`/api/git/branch` 的成功轮询请求行 |
 | L3 | `sidecar/stdio.rs` + `sidecar/session_lifecycle.rs` / `sidecar/instances.rs` node-out 去重 | Node.js logger 初始化后停止 stdout 捕获（检测 `[Logger] Unified logging initialized`） |
-| L4 | `bridge.rs` heartbeat 过滤 | `Heartbeat sent`、`Heartbeat ACK`、`Received op=11` |
-| L5 | `agent-session.ts` SDK message | 摘要替代完整 JSON（`type=assistant model=opus`） |
+| L4 | `logger.ts` WARN/ERROR owner | patched `console.warn/error` 只由 Node logger 落盘，不再镜像到 stderr 形成 Rust 第二份副本 |
+| L5 | `bridge.rs` + Plugin Bridge compat logger | 过滤 heartbeat，以及插件逐次 `onPartialReply` debug snapshot |
+| L6 | `agent-session.ts` SDK message | 摘要替代完整 JSON（`type=assistant model=opus`） |
+
+Builtin / external runtime 在成功持久化边界输出 `[assistant-output]`：组合文本先归一化为单行，仅保留前 100 个 Unicode code point，并记录原始 `chars`。流式 delta 与 raw partial transport 永不进入统一日志；既有低频 SDK result 诊断仍可保留自身的有界字段摘要。Plugin Bridge 的 pending dispatch terminal 只记录 `canonical_final` 的 count/chars/hash，不再复制同一 IM 正文。Codex `thread/start|resume` 的 `developerInstructions` 属于敏感系统提示词，日志只允许 `{present, chars, hash}`，不得记录任何文本前缀；实际 RPC 参数保持原值。
 
 **时间戳格式**：本地时间 `YYYY-MM-DD HH:MM:SS.mmm`（非 UTC ISO 8601）。
 

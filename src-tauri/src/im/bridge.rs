@@ -63,6 +63,61 @@ struct BridgeSenderEntry {
 
 static BRIDGE_SENDERS: OnceLock<Mutex<HashMap<String, BridgeSenderEntry>>> = OnceLock::new();
 
+const MAX_BRIDGE_LIVENESS_FAILURES: u32 = 3;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeLivenessObservation {
+    Healthy,
+    Recovered { prior_failures: u32 },
+    Failed { failures: u32, should_stop: bool },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BridgeFunctionalObservation {
+    Stable,
+    Degraded,
+    Recovered,
+}
+
+#[derive(Default)]
+struct BridgeHealthWatchdog {
+    consecutive_liveness_failures: u32,
+    functional_degraded: bool,
+}
+
+impl BridgeHealthWatchdog {
+    fn observe_liveness(&mut self, healthy: bool) -> BridgeLivenessObservation {
+        if healthy {
+            let prior_failures = std::mem::take(&mut self.consecutive_liveness_failures);
+            return if prior_failures > 0 {
+                BridgeLivenessObservation::Recovered { prior_failures }
+            } else {
+                BridgeLivenessObservation::Healthy
+            };
+        }
+
+        self.consecutive_liveness_failures += 1;
+        BridgeLivenessObservation::Failed {
+            failures: self.consecutive_liveness_failures,
+            should_stop: self.consecutive_liveness_failures >= MAX_BRIDGE_LIVENESS_FAILURES,
+        }
+    }
+
+    fn observe_functional(&mut self, healthy: bool) -> BridgeFunctionalObservation {
+        match (self.functional_degraded, healthy) {
+            (false, false) => {
+                self.functional_degraded = true;
+                BridgeFunctionalObservation::Degraded
+            }
+            (true, true) => {
+                self.functional_degraded = false;
+                BridgeFunctionalObservation::Recovered
+            }
+            _ => BridgeFunctionalObservation::Stable,
+        }
+    }
+}
+
 fn get_registry() -> &'static Mutex<HashMap<String, BridgeSenderEntry>> {
     BRIDGE_SENDERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
@@ -435,14 +490,16 @@ impl ImAdapter for BridgeAdapter {
     }
 
     async fn listen_loop(&self, mut shutdown_rx: tokio::sync::watch::Receiver<bool>) {
-        // Bridge pushes messages to Rust via management API.
-        // We periodically health-check the bridge process to detect crashes.
+        // Bridge pushes messages to Rust via management API. Process liveness
+        // and upstream gateway functionality are orthogonal: only a failed
+        // live probe may terminate this owner. Functional degradation is
+        // transition-logged while the healthy Bridge process keeps its own
+        // plugin/backoff state.
         ulog_info!(
             "[bridge:{}] Listen loop with health watchdog started",
             self.plugin_id
         );
-        let mut consecutive_failures: u32 = 0;
-        const MAX_FAILURES: u32 = 3;
+        let mut watchdog = BridgeHealthWatchdog::default();
 
         loop {
             tokio::select! {
@@ -452,64 +509,87 @@ impl ImAdapter for BridgeAdapter {
                     }
                 }
                 _ = tokio::time::sleep(Duration::from_secs(30)) => {
-                    // Pattern 4: poll /health/functional (gateway is actually
-                    // serving), not just /health (TCP only) or /health/ready
-                    // (loaded + registered). A bridge whose gateway receive loop
-                    // is stuck can keep readiness green while functional health
-                    // exposes the stale gateway status.
-                    //
-                    // Backward-compat: if /health/functional 404s, fall back to
-                    // /health/ready; if that is also missing, fall back to
-                    // /health for one rollout cycle.
-                    let functional_url = self.url("/health/functional");
-                    let mut probed_status: Option<reqwest::StatusCode> = None;
-                    let mut probe_err: Option<String> = None;
-                    let mut probed_endpoint = "/health/functional";
-                    match self.client.get(&functional_url).send().await {
-                        Ok(resp) => {
-                            let status = resp.status();
-                            probed_status = Some(status);
-                            if status == reqwest::StatusCode::NOT_FOUND {
-                                probed_endpoint = "/health/ready";
-                                match self.client.get(self.url("/health/ready")).send().await {
-                                    Ok(ready) => {
-                                        let ready_status = ready.status();
-                                        probed_status = Some(ready_status);
-                                        if ready_status == reqwest::StatusCode::NOT_FOUND {
-                                            probed_endpoint = "/health";
-                                            match self.client.get(self.url("/health")).send().await {
-                                                Ok(fb) => probed_status = Some(fb.status()),
-                                                Err(e) => probe_err = Some(e.to_string()),
-                                            }
-                                        }
-                                    }
-                                    Err(e) => probe_err = Some(e.to_string()),
-                                }
+                    // `/health/live` is the process watchdog. Older bridge
+                    // bundles may only expose the legacy `/health` alias.
+                    let (live_endpoint, live_result) = match self.client.get(self.url("/health/live")).send().await {
+                        Ok(response) if response.status() == reqwest::StatusCode::NOT_FOUND => {
+                            ("/health", self.client.get(self.url("/health")).send().await)
+                        }
+                        result => ("/health/live", result),
+                    };
+                    let live_success = live_result
+                        .as_ref()
+                        .map(|response| response.status().is_success())
+                        .unwrap_or(false);
+                    match watchdog.observe_liveness(live_success) {
+                        BridgeLivenessObservation::Healthy => {}
+                        BridgeLivenessObservation::Recovered { prior_failures } => {
+                            ulog_info!("[bridge:{}] Liveness recovered after {} failures", self.plugin_id, prior_failures);
+                        }
+                        BridgeLivenessObservation::Failed { failures, should_stop } => {
+                            match live_result {
+                                Ok(response) => ulog_error!(
+                                    "[bridge:{}] {} returned {}, liveness failure {}/{}",
+                                    self.plugin_id,
+                                    live_endpoint,
+                                    response.status(),
+                                    failures,
+                                    MAX_BRIDGE_LIVENESS_FAILURES,
+                                ),
+                                Err(error) => ulog_error!(
+                                    "[bridge:{}] Liveness check failed: {}, failure {}/{}",
+                                    self.plugin_id,
+                                    error,
+                                    failures,
+                                    MAX_BRIDGE_LIVENESS_FAILURES,
+                                ),
+                            }
+                            if should_stop {
+                                ulog_error!(
+                                    "[bridge:{}] Bridge process appears dead ({} consecutive liveness failures), exiting listen loop",
+                                    self.plugin_id,
+                                    MAX_BRIDGE_LIVENESS_FAILURES,
+                                );
+                                break;
+                            }
+                            continue;
+                        }
+                    }
+
+                    // Functional health is diagnostic only. An upstream outage
+                    // must not reset a live plugin process and its backoff state.
+                    match self.client.get(self.url("/health/functional")).send().await {
+                        Ok(response) if response.status() == reqwest::StatusCode::NOT_FOUND => {
+                            if watchdog.observe_functional(true) == BridgeFunctionalObservation::Recovered {
+                                ulog_info!("[bridge:{}] Functional health probe recovered", self.plugin_id);
                             }
                         }
-                        Err(e) => probe_err = Some(e.to_string()),
-                    }
-                    let success = probed_status.map(|s| s.is_success()).unwrap_or(false);
-                    if success {
-                        if consecutive_failures > 0 {
-                            ulog_info!("[bridge:{}] Health check recovered after {} failures", self.plugin_id, consecutive_failures);
-                            consecutive_failures = 0;
+                        Ok(response) if response.status().is_success() => {
+                            if watchdog.observe_functional(true) == BridgeFunctionalObservation::Recovered {
+                                ulog_info!("[bridge:{}] Functional health recovered", self.plugin_id);
+                            }
                         }
-                    } else if let Some(status) = probed_status {
-                        consecutive_failures += 1;
-                        // Pull /status for a more useful error reason before deciding.
-                        let detail = match self.client.get(self.url("/status")).send().await {
-                            Ok(r) => r.text().await.unwrap_or_default(),
-                            Err(_) => String::new(),
-                        };
-                        ulog_error!("[bridge:{}] {} returned {}, failure {}/{}, status={}", self.plugin_id, probed_endpoint, status, consecutive_failures, MAX_FAILURES, detail);
-                    } else if let Some(err) = probe_err {
-                        consecutive_failures += 1;
-                        ulog_error!("[bridge:{}] Health check failed: {}, failure {}/{}", self.plugin_id, err, consecutive_failures, MAX_FAILURES);
-                    }
-                    if consecutive_failures >= MAX_FAILURES {
-                        ulog_error!("[bridge:{}] Bridge process appears dead ({} consecutive health check failures), exiting listen loop", self.plugin_id, MAX_FAILURES);
-                        break;
+                        Ok(response) => {
+                            let status = response.status();
+                            let detail = response.text().await.unwrap_or_default();
+                            if watchdog.observe_functional(false) == BridgeFunctionalObservation::Degraded {
+                                ulog_warn!(
+                                    "[bridge:{}] Functional health degraded: status={} detail={}",
+                                    self.plugin_id,
+                                    status,
+                                    detail,
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            if watchdog.observe_functional(false) == BridgeFunctionalObservation::Degraded {
+                                ulog_warn!(
+                                    "[bridge:{}] Functional health degraded: {}",
+                                    self.plugin_id,
+                                    error,
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -1149,6 +1229,62 @@ mod tests {
         assert_eq!(env.config_path, env.state_dir.join("openclaw.json"));
         assert_eq!(env.oauth_dir, env.state_dir.join("credentials"));
         assert!(!path_env_value(&env.state_dir).contains(".openclaw"));
+    }
+
+    #[test]
+    fn functional_degradation_never_advances_the_process_watchdog() {
+        let mut watchdog = BridgeHealthWatchdog::default();
+
+        assert_eq!(
+            watchdog.observe_functional(false),
+            BridgeFunctionalObservation::Degraded,
+        );
+        assert_eq!(
+            watchdog.observe_functional(false),
+            BridgeFunctionalObservation::Stable,
+        );
+        assert_eq!(watchdog.consecutive_liveness_failures, 0);
+        assert_eq!(
+            watchdog.observe_liveness(true),
+            BridgeLivenessObservation::Healthy,
+        );
+        assert_eq!(
+            watchdog.observe_functional(true),
+            BridgeFunctionalObservation::Recovered,
+        );
+    }
+
+    #[test]
+    fn only_three_consecutive_liveness_failures_stop_the_bridge() {
+        let mut watchdog = BridgeHealthWatchdog::default();
+
+        assert_eq!(
+            watchdog.observe_liveness(false),
+            BridgeLivenessObservation::Failed {
+                failures: 1,
+                should_stop: false,
+            },
+        );
+        assert_eq!(
+            watchdog.observe_liveness(false),
+            BridgeLivenessObservation::Failed {
+                failures: 2,
+                should_stop: false,
+            },
+        );
+        assert_eq!(
+            watchdog.observe_liveness(true),
+            BridgeLivenessObservation::Recovered { prior_failures: 2 },
+        );
+        for expected in 1..=MAX_BRIDGE_LIVENESS_FAILURES {
+            assert_eq!(
+                watchdog.observe_liveness(false),
+                BridgeLivenessObservation::Failed {
+                    failures: expected,
+                    should_stop: expected == MAX_BRIDGE_LIVENESS_FAILURES,
+                },
+            );
+        }
     }
 }
 

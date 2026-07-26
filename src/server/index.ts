@@ -104,6 +104,7 @@ import {
   PluginStoreError,
 } from './plugins/store';
 import { handleQrCodeAssetRoute } from './routes/qr-code-asset';
+import { shouldLogHttpRequest } from './http-log-policy';
 
 type SpaceSkillExportPackage = {
   tempId: string;
@@ -2408,13 +2409,9 @@ async function main() {
       const url = new URL(request.url);
       const pathname = url.pathname;
 
-      // Skip logging high-frequency polling/config-sync paths to reduce unified log noise.
-      // These fire every 15s (health) or on every Tab focus (commands/agents/mcp) with zero diagnostic value.
-      const SILENT_PATHS = new Set([
-        '/health', '/api/unified-log', '/agent/dir', '/sessions',
-        '/api/commands', '/api/agents/enabled', '/api/git/branch',
-      ]);
-      if (!SILENT_PATHS.has(pathname)) {
+      // Polling/config reads only surface state changes or failures at their
+      // semantic owner; a successful request line has no diagnostic value.
+      if (shouldLogHttpRequest(pathname)) {
         console.debug(`[http] ${request.method} ${pathname}`);
       }
 

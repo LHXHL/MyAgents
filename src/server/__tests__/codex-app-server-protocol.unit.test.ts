@@ -24,6 +24,7 @@ import {
   resolveCodexThreadModelProvider,
   resolveCodexSkillExtraRoots,
   serializeCodexPermissionResponse,
+  summarizeCodexThreadParamsForLog,
   type PendingCodexRequest,
 } from '../runtimes/codex';
 
@@ -44,6 +45,26 @@ describe('Codex app-server protocol helpers', () => {
     tempRoots.push(dir);
     return dir;
   }
+
+  it('logs developer instructions as irreversible metadata, never a prefix', () => {
+    const developerInstructions = 'private identity and workspace instructions';
+    const summary = summarizeCodexThreadParamsForLog({
+      cwd: '/workspace',
+      model: 'gpt-5',
+      developerInstructions,
+    });
+
+    expect(summary).toMatchObject({
+      cwd: '/workspace',
+      model: 'gpt-5',
+      developerInstructions: {
+        present: true,
+        chars: developerInstructions.length,
+        hash: expect.stringMatching(/^[a-f0-9]{12}$/),
+      },
+    });
+    expect(JSON.stringify(summary)).not.toContain('private identity');
+  });
 
   it('uses v2 initialize capabilities and sends initialized notification', async () => {
     const rpc = {

@@ -31,6 +31,7 @@ import { StaleRuntimeSessionError } from './types';
 import { awaitInFlightSaves, rebuildAttachmentRegistryFromBlocks, trackInFlightSave } from './tool-attachments';
 import { messageAttachmentsFromImagePayloads, resolveImagePayloads } from './image-payload';
 import { maybeSpill } from '../utils/large-value-store';
+import { formatTextPreviewForLog } from '../utils/log-summary';
 import type { AskUserQuestionInput, AskUserQuestion } from '../../shared/types/askUserQuestion';
 import { withQuestionTextAnswerKeys } from '../../shared/types/askUserQuestion';
 import {
@@ -4812,9 +4813,8 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
       },
     });
 
-    const completionTerminal = recordExternalCompletionTerminal(
-      turnSucceededAtTerminal && !persistFailed ? 'complete' : 'error',
-    );
+    const completionStatus = turnSucceededAtTerminal && !persistFailed ? 'complete' : 'error';
+    const completionTerminal = recordExternalCompletionTerminal(completionStatus);
     if (persistFailed) {
       if (isExternalTurnGenerationCurrent(terminalGeneration)) {
         setExternalLastTurnSucceeded(false);
@@ -4828,6 +4828,12 @@ async function persistTurnResult(terminalGeneration: number): Promise<void> {
         withSessionCompletionTerminal(message, completionTerminal),
       );
     } else {
+      if (capturedReplyText.trim()) {
+        console.log(
+          `[assistant-output] runtime=${runtimeType} status=${completionTerminal?.status ?? completionStatus} `
+            + formatTextPreviewForLog(capturedReplyText),
+        );
+      }
       broadcast('chat:message-complete', withSessionCompletionTerminal({
         ...(usageData ? {
           model: usageData.model,

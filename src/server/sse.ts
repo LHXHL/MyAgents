@@ -237,21 +237,10 @@ const lastValueCache: Map<string, unknown> =
 const TEXT_SUMMARY_LIMIT = 30;
 const ERROR_TEXT_SUMMARY_LIMIT = 120;
 const GENERAL_STRING_SUMMARY_LIMIT = 160;
-const STREAMING_LOG_FLUSH_EVERY = 50;
 const LONG_TEXT_FIELD_KEYS = new Set([
   'content', 'delta', 'text', 'result', 'command', 'inputJson',
   'output', 'stdout', 'stderr', 'error',
 ]);
-
-type StreamingLogAggregate = {
-  chars: number;
-  count: number;
-  event: string;
-  key: string;
-  sample: string;
-};
-
-const streamingLogAggregates = new Map<string, StreamingLogAggregate>();
 
 function normalizeTextForLog(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
@@ -311,118 +300,6 @@ function summarizePayload(event: string, data: unknown): string {
   }
 }
 
-function getStreamingLogDelta(data: unknown): string {
-  if (typeof data === 'string') {
-    return data;
-  }
-  if (data && typeof data === 'object') {
-    const record = data as { delta?: unknown; text?: unknown; content?: unknown };
-    if (typeof record.delta === 'string') return record.delta;
-    if (typeof record.text === 'string') return record.text;
-    if (typeof record.content === 'string') return record.content;
-  }
-  return '';
-}
-
-function getStreamingLogKey(event: string, data: unknown): string {
-  if (!data || typeof data !== 'object') {
-    return event;
-  }
-  const record = data as { index?: unknown; parentToolUseId?: unknown; subagentId?: unknown; toolId?: unknown; toolUseId?: unknown };
-  const parts = [event];
-  if (typeof record.index === 'number' || typeof record.index === 'string') {
-    parts.push(`index:${record.index}`);
-  }
-  if (typeof record.parentToolUseId === 'string' && record.parentToolUseId) {
-    parts.push(`parent:${record.parentToolUseId}`);
-  }
-  if (typeof record.toolId === 'string' && record.toolId) {
-    parts.push(`tool:${record.toolId}`);
-  }
-  if (typeof record.toolUseId === 'string' && record.toolUseId) {
-    parts.push(`tool:${record.toolUseId}`);
-  }
-  if (typeof record.subagentId === 'string' && record.subagentId) {
-    parts.push(`subagent:${record.subagentId}`);
-  }
-  return parts.join('|');
-}
-
-function flushStreamingLogAggregate(key: string, reason: string): void {
-  const aggregate = streamingLogAggregates.get(key);
-  if (!aggregate) {
-    return;
-  }
-  streamingLogAggregates.delete(key);
-  console.log(
-    `[sse] ${aggregate.event} -> deltas=${aggregate.count} chars=${aggregate.chars} sample="${summarizeTextField(aggregate.sample)}" reason=${reason}`
-  );
-}
-
-function flushStreamingLogAggregatesBy(matcher: (key: string, aggregate: StreamingLogAggregate) => boolean, reason: string): void {
-  for (const [key, aggregate] of Array.from(streamingLogAggregates.entries())) {
-    if (matcher(key, aggregate)) {
-      flushStreamingLogAggregate(key, reason);
-    }
-  }
-}
-
-function recordStreamingLog(event: string, data: unknown): void {
-  const key = getStreamingLogKey(event, data);
-  const delta = getStreamingLogDelta(data);
-  const existing = streamingLogAggregates.get(key);
-  const aggregate = existing ?? { chars: 0, count: 0, event, key, sample: '' };
-  aggregate.count += 1;
-  aggregate.chars += delta.length;
-  if (!aggregate.sample && delta) {
-    aggregate.sample = delta;
-  } else if (aggregate.sample.length < TEXT_SUMMARY_LIMIT && delta) {
-    aggregate.sample += delta;
-  }
-  streamingLogAggregates.set(key, aggregate);
-
-  if (aggregate.count % STREAMING_LOG_FLUSH_EVERY === 0) {
-    flushStreamingLogAggregate(key, `every-${STREAMING_LOG_FLUSH_EVERY}`);
-  }
-}
-
-function flushStreamingLogsForBoundary(event: string, data: unknown): void {
-  if (event === 'chat:content-block-stop' && data && typeof data === 'object') {
-    const { type, index, toolId } = data as { type?: unknown; index?: unknown; toolId?: unknown };
-    const hasIndex = typeof index === 'number' || typeof index === 'string';
-    const hasToolId = typeof toolId === 'string' && toolId;
-    if (hasToolId) {
-      flushStreamingLogAggregatesBy(
-        (key, aggregate) =>
-          (aggregate.event === 'chat:tool-input-delta' || aggregate.event === 'chat:subagent-tool-input-delta') &&
-          (key.includes(`tool:${toolId}`) || (hasIndex && key.includes(`index:${index}`))),
-        event
-      );
-    }
-    if ((type === 'thinking' || (!hasToolId && hasIndex)) && hasIndex) {
-      flushStreamingLogAggregate(`chat:thinking-chunk|index:${index}`, event);
-    }
-    return;
-  }
-
-  if ((event === 'chat:tool-result-complete' || event === 'chat:subagent-tool-result-complete') && data && typeof data === 'object') {
-    const { toolUseId } = data as { toolUseId?: unknown };
-    if (typeof toolUseId === 'string' && toolUseId) {
-      flushStreamingLogAggregatesBy(
-        (key, aggregate) =>
-          (aggregate.event === 'chat:tool-result-delta' || aggregate.event === 'chat:subagent-tool-result-delta') &&
-          key.includes(`tool:${toolUseId}`),
-        event
-      );
-    }
-    return;
-  }
-
-  if (event === 'chat:message-complete' || event === 'chat:message-error' || event === 'chat:message-stopped') {
-    flushStreamingLogAggregatesBy(() => true, event);
-  }
-}
-
 function formatSse(event: string, data: unknown): Uint8Array {
   const lines: string[] = [];
   if (event) {
@@ -458,15 +335,13 @@ function heartbeatChunk(): Uint8Array {
   return encoder.encode(': ping\n\n');
 }
 
-// High-frequency streaming events — aggregate console.log to reduce unified log noise.
-// These events fire per-token/per-delta and produce thousands of lines with little diagnostic value.
-const AGGREGATED_EVENTS = new Set([
+// Streaming payloads are transport details, never unified-log events. The
+// existing turn/content owners log one bounded preview after composing the
+// terminal assistant text; logging here would scale with token/delta count.
+const SILENT_EVENTS = new Set([
   'chat:message-chunk', 'chat:thinking-chunk',
   'chat:tool-input-delta', 'chat:tool-result-delta',
   'chat:subagent-tool-input-delta', 'chat:subagent-tool-result-delta',
-]);
-
-const SILENT_EVENTS = new Set([
   'chat:content-block-stop', 'chat:message-sdk-uuid', 'chat:log',
 ]);
 
@@ -545,12 +420,7 @@ function flushAllCoalesced(): void {
 
 function broadcastImmediate(event: string, data: unknown): void {
   const eventPayload = isLiveRevisionEnvelope(data) ? data.payload : data;
-  if (AGGREGATED_EVENTS.has(event)) {
-    recordStreamingLog(event, eventPayload);
-  } else {
-    flushStreamingLogsForBoundary(event, eventPayload);
-  }
-  if (!SILENT_EVENTS.has(event) && !AGGREGATED_EVENTS.has(event)) {
+  if (!SILENT_EVENTS.has(event)) {
     console.log(`[sse] ${event} -> ${summarizePayload(event, eventPayload)}`);
   }
   // Update last-value cache for stateful events

@@ -1015,6 +1015,8 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 - **[NODE]** Node.js Sidecar 日志（logger interceptor 直写）
 - **[RUST]** Rust 层日志
 
+日志 owner 与业务 owner 对齐：SSE text/thinking/tool/subagent delta 与 Claude Code raw partial NDJSON 是纯 transport，不落 unified log；Builtin / external turn terminal 记录有界 assistant 摘要（单行前 100 个 Unicode code point + 原始字符数），既有低频 SDK result 仅保留有界诊断；Plugin Bridge pending-dispatch terminal 只留 count/chars/hash，不重复同一 IM 正文。Codex `developerInstructions` 只记 presence/长度/短哈希。Sidecar logger 初始化后 Node 是 `console.*` 的唯一文件持久化 owner，Rust 只接真实 raw stderr；Rust unit tests 禁止写用户真实 unified log。高频成功轮询（含 `/api/session-state`）由 HTTP log policy 静音，异常仍由其语义 owner 记录。
+
 详见 `tech_docs/unified_logging.md`。
 
 ---

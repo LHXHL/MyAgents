@@ -42,6 +42,7 @@ import {
 } from './tool-attachments';
 import type { ToolAttachment } from '../../shared/types/tool-attachment';
 import { MCP_PREWARM_GRACE_MS } from '../session-core/mcp-prewarm-policy';
+import { summarizeSensitiveValueForLog } from '../utils/log-summary';
 
 type CodexDecision = 'deny' | 'allow_once' | 'always_allow';
 type CodexSandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access';
@@ -77,6 +78,18 @@ export function buildCodexInitializeParams(experimentalApi = false): Record<stri
     capabilities: experimentalApi
       ? { ...CODEX_INITIALIZE_CAPABILITIES, experimentalApi: true }
       : CODEX_INITIALIZE_CAPABILITIES,
+  };
+}
+
+export function summarizeCodexThreadParamsForLog(
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  const { developerInstructions, ...safeParams } = params;
+  return {
+    ...safeParams,
+    developerInstructions: summarizeSensitiveValueForLog(
+      typeof developerInstructions === 'string' ? developerInstructions : null,
+    ),
   };
 }
 
@@ -3186,7 +3199,7 @@ export class CodexRuntime implements AgentRuntime {
           sandbox,
           developerInstructions: options.systemPromptAppend || null,
         };
-        console.log(`[codex] RPC thread/resume: ${JSON.stringify(resumeParams)}`);
+        console.log(`[codex] RPC thread/resume: ${JSON.stringify(summarizeCodexThreadParamsForLog(resumeParams))}`);
         const result = await codexProc.rpc.call('thread/resume', resumeParams, 30_000) as { thread: { id: string } };
         codexProc.threadId = result.thread.id;
 
@@ -3212,7 +3225,7 @@ export class CodexRuntime implements AgentRuntime {
           ephemeral: false,
           ...(enableManagedRawEvents ? { experimentalRawEvents: true } : {}),
         };
-        console.log(`[codex] RPC thread/start: ${JSON.stringify(startParams)}`);
+        console.log(`[codex] RPC thread/start: ${JSON.stringify(summarizeCodexThreadParamsForLog(startParams))}`);
         const result = await codexProc.rpc.call('thread/start', startParams, 30_000) as { thread: { id: string }; model: string };
         codexProc.threadId = result.thread.id;
 
