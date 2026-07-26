@@ -77,7 +77,7 @@ export function useGlobalSidebarTaskCenterData(
         if (!searchOpen) return;
         // The overlay shell renders from the current snapshot immediately;
         // revalidation must not flip global loading chrome or compete with that
-        // first paint. TaskCenterOverlay itself deliberately has no second
+        // first paint. HistorySearchOverlayContent deliberately has no second
         // mount-time refresh owner.
         refresh('all', { force: true, reason: 'global-sidebar-search', silent: true });
     }, [searchOpen]);

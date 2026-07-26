@@ -1,5 +1,5 @@
 /**
- * TaskCenterOverlay — full-screen overlay focused on chat session history.
+ * HistorySearchOverlayContent — history/search content inside the App Shell overlay.
  *
  * v0.1.69 rework: was a two-column view (sessions + cron tasks). The right
  * column has been removed because the Launcher's 「我的任务」 tab now routes
@@ -7,6 +7,10 @@
  * making the cron column redundant here. The overlay now serves a single
  * purpose — browse/filter/search historical Chat sessions — and is renamed
  * accordingly ("历史会话").
+ *
+ * The App Shell owns the stable backdrop/panel and its entrance animation.
+ * This lazy component renders only the interior so Suspense resolution cannot
+ * replace the visible shell and replay an opacity-from-zero animation.
  *
  * The legacy `onOpenCronDetail` prop is dropped; downstream callers have
  * been updated in the same commit.
@@ -17,7 +21,6 @@ import { useTranslation } from 'react-i18next';
 import { Search, Loader2, BarChart2, Clock, Star, Trash2, X } from 'lucide-react';
 import { Virtuoso } from 'react-virtuoso';
 
-import { useCloseLayer } from '@/hooks/useCloseLayer';
 import { searchSessions, type SessionSearchHit } from '@/api/searchClient';
 
 import type { SessionTag, TaskCenterData } from '@/hooks/useTaskCenterData';
@@ -32,13 +35,12 @@ import { getFolderName, formatTime, isImSource, getSessionDisplayText, formatTur
 import type { SessionMetadata } from '@/api/sessionClient';
 import { normalizeWorkspacePathIdentity } from '@/../shared/workspacePath';
 import type { Project } from '@/config/types';
-import OverlayBackdrop from '@/components/OverlayBackdrop';
 import SessionSearchItem from '@/components/search/SessionSearchItem';
 import { parseSessionIdQuery } from '@/utils/parseSessionIdQuery';
 
-interface TaskCenterOverlayProps {
+interface HistorySearchOverlayContentProps {
     projects: Project[];
-    onOpenTask: (session: SessionMetadata, project: Project) => void;
+    onOpenSession: (session: SessionMetadata, project: Project) => void;
     onClose: () => void;
     taskCenterData: TaskCenterData;
     initialMode?: 'default' | 'search';
@@ -161,15 +163,14 @@ const HistorySessionRow = memo(function HistorySessionRow({
     );
 });
 
-export default memo(function TaskCenterOverlay({
+export default memo(function HistorySearchOverlayContent({
     projects,
-    onOpenTask,
+    onOpenSession,
     onClose,
     taskCenterData,
     initialMode = 'default',
-}: TaskCenterOverlayProps) {
+}: HistorySearchOverlayContentProps) {
     const { t } = useTranslation('app');
-    useCloseLayer(() => { onClose(); return true; }, 40);
     const { sessions, protectedSchedulerSessionIds, sessionTagsMap, isSessionsLoading, actions } = taskCenterData;
     const toast = useToast();
 
@@ -291,7 +292,7 @@ export default memo(function TaskCenterOverlay({
                     setSearchResults(result.hits);
                 }
             } catch (err) {
-                console.error('[TaskCenterOverlay] Session search failed:', err);
+                console.error('[HistorySearchOverlayContent] Session search failed:', err);
                 if (!isStale) setSearchResults([]);
             } finally {
                 if (!isStale) setIsSearching(false);
@@ -322,9 +323,9 @@ export default memo(function TaskCenterOverlay({
     // Open the direct-match session (used by Enter in the search box).
     const openDirectMatch = useCallback(() => {
         if (directSessionMatch?.kind === 'found') {
-            onOpenTask(directSessionMatch.session, directSessionMatch.project);
+            onOpenSession(directSessionMatch.session, directSessionMatch.project);
         }
-    }, [directSessionMatch, onOpenTask]);
+    }, [directSessionMatch, onOpenSession]);
 
     const cronProtectedSessionIds = protectedSchedulerSessionIds;
 
@@ -345,7 +346,7 @@ export default memo(function TaskCenterOverlay({
                 toast.error(t('historyOverlay.deleteFailedRetry'));
             }
         } catch (err) {
-            console.error('[TaskCenterOverlay] Delete session failed:', err);
+            console.error('[HistorySearchOverlayContent] Delete session failed:', err);
             toast.error(t('historyOverlay.deleteFailed'));
         }
     }, [actions, pendingDeleteSession, t, toast]);
@@ -361,17 +362,13 @@ export default memo(function TaskCenterOverlay({
             const success = await actions.setSessionFavorite(session.id, !session.favorite);
             if (!success) toast.error(t('historyOverlay.favoriteFailed'));
         } catch (err) {
-            console.error('[TaskCenterOverlay] Toggle favorite failed:', err);
+            console.error('[HistorySearchOverlayContent] Toggle favorite failed:', err);
             toast.error(t('historyOverlay.favoriteFailed'));
         }
     }, [actions, t, toast]);
 
     return (
-        <OverlayBackdrop onClose={onClose} className="z-40" style={{ animation: 'overlayFadeIn 140ms ease-out' }}>
-            <div
-                className="glass-panel flex h-[85vh] w-full max-w-5xl flex-col"
-                style={{ padding: '2vh 2vw', animation: 'overlayPanelIn 160ms ease-out' }}
-            >
+        <>
                 {/* Header — v0.1.69 renamed from "任务中心" to "历史对话" to
                     match the new domain of this overlay (Chat sessions only;
                     Tasks live in the Task Center singleton tab). */}
@@ -379,6 +376,7 @@ export default memo(function TaskCenterOverlay({
                     <h2 className="text-lg font-semibold text-[var(--ink)]">{t('historyOverlay.title')}</h2>
                     <button
                         onClick={onClose}
+                        aria-label={t('common.close')}
                         className="rounded-md p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
                     >
                         <X className="h-4 w-4" />
@@ -531,7 +529,7 @@ export default memo(function TaskCenterOverlay({
                                                     session={session}
                                                     project={project}
                                                     isCronProtected={isCronProtected}
-                                                    onClick={() => onOpenTask(session, project)}
+                                                    onClick={() => onOpenSession(session, project)}
                                                     onShowStats={(event) => handleShowStats(event, session)}
                                                     onDelete={(event) => handleDeleteClick(event, session)}
                                                 />
@@ -562,7 +560,7 @@ export default memo(function TaskCenterOverlay({
                                         project={row.project}
                                         tags={sessionTagsMap.get(row.session.id) ?? []}
                                         isCronProtected={cronProtectedSessionIds.has(row.session.id)}
-                                        onOpen={() => onOpenTask(row.session, row.project)}
+                                        onOpen={() => onOpenSession(row.session, row.project)}
                                         onToggleFavorite={(event) => handleToggleFavorite(event, row.session)}
                                         onShowStats={(event) => handleShowStats(event, row.session)}
                                         onDelete={(event) => handleDeleteClick(event, row.session)}
@@ -572,7 +570,6 @@ export default memo(function TaskCenterOverlay({
                         )}
                     </div>
                 </div>
-            </div>
 
             {pendingDeleteSession && (
                 <ConfirmDialog
@@ -591,6 +588,6 @@ export default memo(function TaskCenterOverlay({
                     onClose={() => setStatsSession(null)}
                 />
             )}
-        </OverlayBackdrop>
+        </>
     );
 });

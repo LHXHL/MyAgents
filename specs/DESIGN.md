@@ -1,9 +1,11 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.20
+> **Version**: 2.8.22
 > **Last Updated**: 2026-07-26
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
+
+> **阅读方式**：先读与任务匹配的规范章节，并用源码中的 Theme Token / 共享组件确认当前值；不要默认加载全文。末尾版本历史只解释演进，不是实现权威，普通前端任务无需读取。
 
 ---
 
@@ -519,28 +521,33 @@ Item 选中: 文字 var(--accent-warm)
 模糊: backdrop-blur-sm
 ```
 
-**Tailwind 类名**：
+**统一组件**：
 ```jsx
-<div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/30 backdrop-blur-sm">
+<OverlayBackdrop onClose={handleClose} className="z-[200]">
   <div className="rounded-2xl bg-[var(--paper-elevated)] p-6 shadow-2xl">
     弹层内容
   </div>
-</div>
+</OverlayBackdrop>
 ```
+
+所有新 Overlay 必须复用 `src/renderer/components/OverlayBackdrop.tsx`，不要手写裸 backdrop。组件封装了正确的 pointer dismissal 语义；`className` 只补 z-index、padding、overflow 等布局差异，图片预览用 `variant="dark"`。可关闭 Overlay 还必须用 `useCloseLayer(handler, zIndex)` 注册关闭层，且 z-index 与视觉层级一致，避免 Cmd+W 跳过 Overlay 直接关闭 Tab。
 
 **适用范围**：
 - 模态框（ConfirmDialog、SessionStatsModal 等）
 - 全屏面板（WorkspaceConfigPanel、Settings 弹层等）
 - 选择器弹层（SkillDialogs、PathInputDialog 等）
 - 日志面板（UnifiedLogsPanel）
-- 任务中心 Overlay（TaskCenterOverlay）
+- 历史搜索 Overlay（`HistorySearchOverlayFrame` + `HistorySearchOverlayContent`）
 
 **例外**：
 - 图片预览（ImagePreview）使用 `bg-black/80 backdrop-blur-sm`，深色背景便于查看图片内容
 
 **点击遮罩关闭**：
 - 支持点击遮罩层区域触发关闭（等同于取消操作）
-- 实现方式：`onMouseDown` + `e.target === e.currentTarget` 防止冒泡误触
+- `OverlayBackdrop` 内部使用 `onMouseDown` + `e.target === e.currentTarget`，避免从面板内拖选文字并在遮罩上松手时误关；业务组件只传 `onClose`，不要重复实现判断
+
+**焦点保持**：
+- 点击另一个控件仍需保留当前输入焦点时，在 `onMouseDown` 使用 `retainFocusOnMouseDown`（`src/renderer/utils/focusRetention.ts`）；不要在 `onClick` 后用 `requestAnimationFrame(...focus())` 抢回焦点，macOS WebKit 触摸板 tap 可能被吞掉
 
 ### 6.8 Section 标题 (Section Headers)
 
@@ -631,7 +638,7 @@ Item 选中: 文字 var(--accent-warm)
 - Settings 页: 侧边栏 active 导航
 - 工作区选择器: 下拉项
 - 命令菜单: SlashCommandMenu item
-- 任务中心: TaskCenterOverlay 任务行
+- 历史搜索 Overlay: `HistorySearchOverlayContent` 会话行
 - 工具执行列表: ProcessRow
 
 ### 6.11 设置页浮层面板字号规范 (Settings Overlay Font Sizes)
@@ -1244,7 +1251,7 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
 ```
 
 - 全局栏从窗口最顶部延伸到底部；右侧才是标题栏与 Tab Workspace。
-- macOS 红绿灯安全区属于侧栏顶部 chrome；Windows 窗口按钮仍固定在右侧标题栏最右端。
+- macOS 红绿灯安全区属于侧栏顶部 chrome；Windows 窗口按钮仍固定在右侧标题栏最右端。macOS 原生窗口 zoom、拖拽 resize、全屏切换期间，红绿灯相对窗口左上角的 inset 与三按钮间距 MUST 逐帧稳定，不能先漂到系统默认位置再在动画结束后纠正。
 - 常驻展开态 256px，rail 72px。切换时布局槽一次提交到最终宽度，禁止用 `width` transition 持续重排主内容；视觉动效由固定 256px 的侧栏材质层以 `clip-path` 在 200ms 内横向揭示/收回，展开内容同步淡移，rail 内容交错接续。右侧 Tab 标题栏与当前 Tab 内容在最终布局上从旧视觉位置横向归位，让背景边界、Tab 与页面形成同一段空间运动。收起边界从右向左、展开边界从左向右，App Icon 与功能图标仍保持窗口坐标不动；`prefers-reduced-motion` 下立即切换。
 - 顶部 chrome 分两行：第一行 44px 只承载原生窗口区、拖拽区与固定侧栏 toggle，第二行 40px 承载 App Icon + `MyAgents` 品牌。App Icon 使用 macOS App 风格的 22% 圆角矩形轮廓，在展开态与 rail 中始终保持 20px、固定于窗口 `x=24px` 且复用同一 DOM；它不参与 rail 居中计算，切换时只让品牌文字出现或消失。品牌文字复用 Theme-owned 产品字标的字体、字距与渐变，紧凑角色保持 `text-sm / font-medium`，不复制 Launcher 的展示字号与轻字重。macOS toggle 固定在窗口 `x=84px` 起的 32px 槽位；展开时位于侧栏表面，手动 rail 时自然落入右侧 Tab 标题栏表面，屏幕坐标与 DOM 均不切换。toggle 两态共用简洁的单一 `PanelLeft` 轮廓，不叠加方向箭头；动作含义由即时 Tooltip 和 `aria-label` 表达。
 - 顶部 Tab 保留 active、关闭、拖拽、溢出、生成中、未读与触摸板切换语义，侧栏不得建立第二套页面选中状态。
@@ -1270,10 +1277,11 @@ rail 72px:
   图标按钮: 40 × 36px
   按钮左缘: x=12px；16px 功能图标左缘固定 x=24px，与展开态一致
   只有工作区入口打开 320px 可交互 flyout
+  工作区 flyout: viewport top=128px / bottom=112px；起点高于入口，底部为固定动作区留位
   其它入口只显示即时黑底名称 Tooltip
 ```
 
-手动 rail 中，App Icon 保持静态品牌身份；它不放大、不重新居中，展开/收起时只显隐右侧文字，因此点击瞬间图标留在原地。主导航、工作区入口和底部入口也不按 rail 剩余宽度重新居中：40px 宽、36px 高的命中区统一固定于窗口 `x=12px`，其 16px 功能图标左缘在展开态与 rail 都保持 `x=24px`，因此整列图标切换时不发生横向抖动。展开控制仍使用第一行同一个固定 toggle，不随侧栏宽度移动或复制造成双入口。自动 rail 中隐藏无法兑现的展开 toggle，仅保留静态品牌图标。所有侧栏图标按钮复用 Theme-owned `Tip`：hover/focus 无等待即时出现，使用 `--button-dark-bg / --button-dark-text`，不得回退浏览器原生 `title`；菜单打开期间隐藏对应 Tooltip。工作区 flyout 覆盖主内容而不推挤布局，使用轻量 opacity/translate 入场；真实离开交互区域才短延迟关闭，树枝展开/收起造成的布局边界事件若指针仍在 flyout 几何范围内不得误关；`Esc` 关闭并回焦入口。嵌套菜单、确认弹层和 flyout 共用同一交互生命周期。
+手动 rail 中，App Icon 保持静态品牌身份；它不放大、不重新居中，展开/收起时只显隐右侧文字，因此点击瞬间图标留在原地。主导航、工作区入口和底部入口也不按 rail 剩余宽度重新居中：40px 宽、36px 高的命中区统一固定于窗口 `x=12px`，其 16px 功能图标左缘在展开态与 rail 都保持 `x=24px`，因此整列图标切换时不发生横向抖动。展开控制仍使用第一行同一个固定 toggle，不随侧栏宽度移动或复制造成双入口。自动 rail 中隐藏无法兑现的展开 toggle，仅保留静态品牌图标。所有侧栏图标按钮复用 Theme-owned `Tip`：hover/focus 无等待即时出现，使用 `--button-dark-bg / --button-dark-text`，不得回退浏览器原生 `title`；菜单打开期间隐藏对应 Tooltip。工作区 flyout 覆盖主内容而不推挤布局，按 viewport 固定在 `top=128px / bottom=112px`，让起点明显高于工作区入口并为底部小助理/设置留出安全区；资源树在这段稳定高度内自行滚动。flyout 使用轻量 opacity/translate 入场；真实离开交互区域才短延迟关闭，树枝展开/收起造成的布局边界事件若指针仍在 flyout 几何范围内不得误关；`Esc` 关闭并回焦入口。嵌套菜单、确认弹层和 flyout 共用同一交互生命周期。
 
 产品身份行的 App Icon 与 `MyAgents` 字标共同组成紧凑官网链接，点击后通过系统默认浏览器打开 `https://myagents.io`；rail 中链接自然收缩为 App Icon。其 hover 只使用 pointer 光标，不铺整行或局部背景色，键盘焦点仍保留 Accent focus ring，避免把品牌入口误表现成主导航选中面。
 
@@ -1293,7 +1301,7 @@ rail 72px:
 - Chat 右侧工作区展开/收起共用无箭头的 `PanelRight` 轮廓，控制始终位于当前可用横向空间的最右侧；展开态顺序为 `Agent 设置 → 收起工作区`，隐藏后展开按钮占据同一最右槽位。工作区面板以 200ms 横向滑入/滑出，对话区在一次提交最终宽度后从旧视觉中心同步归位；窄屏 overlay 只移动面板、不扰动对话区。两项动作都使用共享即时黑底 `Tip`，不得同时保留浏览器 `title` 造成二次提示；`prefers-reduced-motion` 下立即切换。
 - Chat 右侧工作区头部只展示工作区图标、名称、分支与路径，不展示文件/文件夹聚合计数，避免易过期的扫描结果与资源导航争夺注意力。底部 `Agent 能力` 初始收起，仅保留标题与总数；用户显式展开后再分配内容高度并渲染能力列表。
 - 从全局侧栏点击 Session 时，顶部立即新增并激活目标 Tab，Chat 子树同时挂载并由自身 `ChatBootOverlay` 覆盖启动过程；Sidecar ensure/activation 在其后完成。失败时撤销临时 Tab 并恢复仍存在的前一 Tab，不能让点击后数秒无反馈，也不能在 ready 后把主动切走的用户强拉回来。rail flyout 以 active Tab identity 的真实切换作为导航已发生的反馈，同 Tab 成功由当前资源表面交互周期的动作结果兜底；工作区 flyout 与搜索 overlay 每次重新开关都推进该周期。激活前拒绝或异常保留列表供重试，已完成乐观切换后的启动失败只回滚 Tab、不强行复活旧资源面。任何工作区或 Session 旧请求完成都不能关闭用户后来重新打开的 flyout / 搜索 overlay。
-- 历史搜索 Overlay 在冷模块加载时立即显示同尺寸搜索壳；搜索入口 hover/focus 预取内容模块，实际面板入场压缩到 160ms。空搜索默认历史使用虚拟列表，只渲染可视区与小幅 overscan，连续滚动中不得一次 mount 全部 Session；非空全文检索结果保持现有 50 条上限，不另做前端分页。
+- 历史搜索 Overlay 在冷模块加载时立即显示同尺寸搜索壳；App Shell 从点击开始唯一持有 Backdrop、面板 DOM、关闭层和一次入场动画，Suspense 只能替换面板内部内容，禁止真实内容就绪时重新挂载或重播 opacity-from-zero。搜索入口 hover/focus 预取内容模块，实际面板入场压缩到 160ms。空搜索默认历史使用虚拟列表，只渲染可视区与小幅 overscan，连续滚动中不得一次 mount 全部 Session；非空全文检索结果保持现有 50 条上限，不另做前端分页。
 
 ### 15.4 Launcher 品牌区域
 
@@ -1365,6 +1373,8 @@ AI 输入框的模型菜单拥有独立滚动区。打开时在首帧把当前�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.22 | 2026-07-26 | **macOS 原生窗口缩放 chrome 稳定性**：红绿灯 inset 的连续帧所有权回归 Wry 原生 draw lifecycle，post-build 只负责首帧定位；移除滞后的 Tauri resize 事后纠偏，避免双击标题栏 zoom 时短暂向左上漂移 |
+| 2.8.21 | 2026-07-26 | **rail 工作区浮窗与搜索冷启动连续性**：工作区 flyout 改为 viewport 固定的 128px 顶部、112px 底部安全区，起点高于入口并扩大资源浏览高度；历史搜索由 App Shell 唯一持有稳定外壳和一次入场动画，lazy 内容就绪只替换内部，消除首次打开的二次闪现 |
 | 2.8.20 | 2026-07-26 | **工作区树单一焦点面**：顶部单一 active Tab 在侧栏只投影一个持久选中面；进入具体 Session 后只高亮 Session 行，父工作区取消叠加底色与 `aria-current`，仅保留层级字重 |
 | 2.8.19 | 2026-07-26 | **About 许可信息与商业授权入口**：0.4.0 起在 About 中显式展示 AGPL-3.0-only、对应源码、第三方声明与商业授权邮件；社区信息使用 inset 动作，商业授权使用 Theme Primary CTA |
 | 2.8.18 | 2026-07-26 | **左右区域联动动效**：全局侧栏收展时 Tab 标题栏与页面从旧视觉位置同步归位；Chat 右侧工作区以镜像横移动效进出，对话区同步重心变化，仍保持布局一次提交与 reduced-motion 即时路径 |

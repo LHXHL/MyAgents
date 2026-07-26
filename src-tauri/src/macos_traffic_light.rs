@@ -3,55 +3,59 @@
 //!
 //! ## Why this exists
 //!
-//! Tauri 2.10.x has a quirk in `WebviewWindowBuilder::traffic_light_position`:
+//! Tauri 2.11.x has a quirk in `WebviewWindowBuilder::traffic_light_position`:
 //! it only writes the value into `webview_builder.webview_attributes`, which
 //! is consumed at runtime via `wry::WryWebViewParent::drawRect` override
-//! (`wry-0.54.4/src/wkwebview/class/wry_web_view_parent.rs:41-46`). The
+//! (`wry-0.55.1/src/wkwebview/class/wry_web_view_parent.rs:41-46`). The
 //! parallel call on the underlying TAO `WindowBuilder` — which
 //! `tauri.conf.json`'s `trafficLightPosition` does as a second step in
-//! `tauri-runtime-wry-2.10.1/src/lib.rs:848-852` — is missing.
+//! `tauri-runtime-wry-2.11.4/src/lib.rs:873-877` — is missing.
 //!
-//! For our `Overlay + hidden_title + fullSizeContentView` window, the wry
-//! `drawRect` path empirically doesn't fire reliably (the parent view has
-//! no opaque content to draw, AppKit skips the callback), and the buttons
-//! end up at the OS default position — visibly misaligned with our custom
-//! titlebar.
+//! Builder-only positioning therefore cannot reliably establish the initial
+//! NSWindow chrome position in our programmatically-created Overlay window.
+//! Conversely, a Tauri `WindowEvent::Resized` listener runs after AppKit's
+//! native layout/draw frame and can only correct a live zoom after the visible
+//! drift has already happened.
 //!
 //! ## What this does
 //!
-//! Replicates wry's and tao's internal `inset_traffic_lights` algorithm
-//! (verbatim — see source refs below), but called on the already-built
-//! NSWindow after `WebviewWindowBuilder::build()`. This hits the same
-//! NSWindow chrome positioning the v0.2.15 config-based path used.
+//! Traffic-light positioning therefore has two lifecycle owners with distinct
+//! jobs:
+//! - `WebviewWindowBuilder::traffic_light_position` stores the inset on Wry's
+//!   parent view, whose native `drawRect:` keeps it attached during every live
+//!   resize / zoom frame.
+//! - [`apply_inset`] runs once after `WebviewWindowBuilder::build()` to bridge
+//!   the missing initial TAO/window-level application.
+//!
+//! This module mirrors wry's and tao's internal `inset_traffic_lights`
+//! algorithm for that one post-build bridge.
 //!
 //! ## References
 //!
-//! - `wry-0.54.4/src/wkwebview/class/wry_web_view_parent.rs::inset_traffic_lights`
-//! - `tao-0.34.8/src/platform_impl/macos/view.rs::inset_traffic_lights`
+//! - `wry-0.55.1/src/wkwebview/class/wry_web_view_parent.rs::inset_traffic_lights`
+//! - `tao-0.35.3/src/platform_impl/macos/view.rs::inset_traffic_lights`
 //!   (identical algorithm; both reposition NSStandardWindowButtons + resize
 //!   the title bar container view)
-//! - Tauri upstream issue (Tauri 2.10.x): the builder method should mirror
+//! - Tauri upstream issue (Tauri 2.11.x): the builder method should mirror
 //!   the config path by also setting on the underlying TAO `WindowBuilder`.
 //!
 //! ## TODO: remove when upstream fixes
 //!
-//! This module exists purely to work around the Tauri 2.10.x builder bug.
+//! This module exists purely to work around the Tauri 2.11.x builder bug.
 //! When Tauri's `WebviewWindowBuilder::traffic_light_position` is fixed to
 //! also call through to the TAO window builder (matching the config path),
-//! delete this module + the `apply_inset` call in `lib.rs::setup` and put
-//! `.traffic_light_position(LogicalPosition::new(10.0, 20.0))` back on the
-//! builder chain. Track at: tauri-apps/tauri WebviewWindowBuilder traffic
-//! light position parity issue.
+//! delete this module + the post-build `apply_inset` call; keep the builder
+//! call as the single initial + draw-lifecycle owner. Track at: tauri-apps/
+//! tauri WebviewWindowBuilder traffic light position parity issue.
 
 #![cfg(target_os = "macos")]
 
 use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
 use tauri::{Runtime, WebviewWindow};
 
-/// Apply the traffic-light inset to the given window's NSWindow chrome
-/// **once**. For persistence across resize / fullscreen / scale-factor
-/// changes — which can relayout the AppKit titlebar subviews and reset
-/// button frames — use [`install_inset_persistence`] instead.
+/// Apply the traffic-light inset to the given window's NSWindow chrome once.
+/// Continuous resize / zoom persistence belongs to Wry's native `drawRect:`
+/// path, configured by the builder in `lib.rs`.
 ///
 /// `x` is the close button's distance from the window's left edge (logical
 /// pixels). `y` is added to the close button's height to form the title-bar
@@ -71,9 +75,8 @@ pub fn apply_inset<R: Runtime>(window: &WebviewWindow<R>, x: f64, y: f64) -> Res
         return Err("ns_window() returned null".to_string());
     }
 
-    // SAFETY: `apply_inset` is only called from Tauri `setup` and from the
-    // `on_window_event` callback below, both of which run on the main
-    // thread (Tauri dispatches events to the main thread). The NSWindow
+    // SAFETY: `apply_inset` is only called from Tauri `setup`, which runs on
+    // the main thread. The NSWindow
     // pointer returned by Tauri's `ns_window()` is valid for the lifetime
     // of the `WebviewWindow` (which the caller holds), and the `&NSWindow`
     // borrow we construct here is only used synchronously inside this
@@ -82,31 +85,6 @@ pub fn apply_inset<R: Runtime>(window: &WebviewWindow<R>, x: f64, y: f64) -> Res
 
     unsafe { inset_traffic_lights(ns_window, x, y) };
     Ok(())
-}
-
-/// Install a `WindowEvent::Resized` / `WindowEvent::ScaleFactorChanged`
-/// listener that re-applies the inset on each event. The wry/tao internal
-/// path re-fires via the `drawRect:` callback chain on every redraw, which
-/// is what makes config-based traffic_light_position persist through
-/// resize/fullscreen/Retina-toggle. Our post-build call fires only once,
-/// so without this listener the buttons can jump back to macOS defaults
-/// on any layout transition.
-///
-/// Call once during `setup`, after `apply_inset`. The listener is owned by
-/// Tauri and runs until the window is destroyed.
-pub fn install_inset_persistence<R: Runtime>(window: &WebviewWindow<R>, x: f64, y: f64) {
-    let weak = window.clone();
-    window.on_window_event(move |event| {
-        use tauri::WindowEvent;
-        match event {
-            WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                // Best-effort re-apply. We swallow errors here because the
-                // window may already be tearing down; logging would spam.
-                let _ = apply_inset(&weak, x, y);
-            }
-            _ => {}
-        }
-    });
 }
 
 /// Mirror of `wry::WryWebViewParent::inset_traffic_lights` and

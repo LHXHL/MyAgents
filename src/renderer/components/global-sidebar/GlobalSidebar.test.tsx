@@ -69,17 +69,17 @@ vi.mock('@/utils/openExternal', () => ({
   openExternal: mocks.openExternal,
 }));
 
-vi.mock('@/components/TaskCenterOverlay', () => ({
+vi.mock('@/components/HistorySearchOverlayContent', () => ({
   default: ({
     initialMode,
     onClose,
-    onOpenTask,
+    onOpenSession,
     projects,
     taskCenterData,
   }: {
     initialMode?: string;
     onClose: () => void;
-    onOpenTask: (session: Record<string, unknown>, project: Record<string, unknown>) => void;
+    onOpenSession: (session: Record<string, unknown>, project: Record<string, unknown>) => void;
     projects: Array<Record<string, unknown>>;
     taskCenterData: { sessions: Array<Record<string, unknown>> };
   }) => (
@@ -88,7 +88,7 @@ vi.mock('@/components/TaskCenterOverlay', () => ({
       {taskCenterData.sessions[0] && projects[0] && (
         <button
           type="button"
-          onClick={() => onOpenTask(taskCenterData.sessions[0], projects[0])}
+          onClick={() => onOpenSession(taskCenterData.sessions[0], projects[0])}
         >
           Open search session test
         </button>
@@ -223,6 +223,34 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.getByRole('region', { name: 'Agent 工作区' })).toBeInTheDocument();
   });
 
+  it('hands Tab focus from the rail trigger into the viewport-owned flyout', () => {
+    renderSidebar();
+    const trigger = screen.getByRole('button', { name: 'Agent 工作区' });
+    fireEvent.focus(trigger);
+    const region = screen.getByRole('region', { name: 'Agent 工作区' });
+
+    fireEvent.keyDown(trigger, { key: 'Tab' });
+
+    expect(within(region).getByRole('button', { name: '添加' })).toHaveFocus();
+    act(() => vi.advanceTimersByTime(220));
+    expect(region).toBeInTheDocument();
+  });
+
+  it('hands Shift+Tab focus from the first flyout action back to its rail trigger', () => {
+    renderSidebar();
+    const trigger = screen.getByRole('button', { name: 'Agent 工作区' });
+    fireEvent.focus(trigger);
+    const region = screen.getByRole('region', { name: 'Agent 工作区' });
+    fireEvent.keyDown(trigger, { key: 'Tab' });
+    const firstAction = within(region).getByRole('button', { name: '添加' });
+
+    fireEvent.keyDown(firstAction, { key: 'Tab', shiftKey: true });
+
+    expect(trigger).toHaveFocus();
+    act(() => vi.advanceTimersByTime(220));
+    expect(region).toBeInTheDocument();
+  });
+
   it('closes after a workspace navigation succeeds', async () => {
     const onOpenWorkspace = vi.fn(async () => true);
     mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
@@ -245,6 +273,22 @@ describe('GlobalSidebar rail flyout', () => {
 
     trigger.focus();
     fireEvent.keyDown(trigger, { key: 'Escape' });
+
+    expect(screen.queryByRole('region', { name: 'Agent 工作区' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it('closes on Escape from inside the viewport-owned flyout and restores trigger focus', () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    renderSidebar();
+    const trigger = screen.getByRole('button', { name: 'Agent 工作区' });
+    fireEvent.click(trigger);
+    const workspaceToggle = screen.getByText('Project one')
+      .closest('[data-global-sidebar-workspace-row]')!
+      .querySelector('button')!;
+
+    workspaceToggle.focus();
+    fireEvent.keyDown(workspaceToggle, { key: 'Escape' });
 
     expect(screen.queryByRole('region', { name: 'Agent 工作区' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
@@ -327,6 +371,8 @@ describe('GlobalSidebar rail flyout', () => {
     const region = screen.getByRole('region', { name: 'Agent 工作区' });
     const flyout = region.closest('[data-global-sidebar-flyout]');
     expect(flyout).toHaveClass('bg-[var(--global-sidebar-bg)]');
+    expect(flyout).toHaveClass('fixed', 'top-32', 'bottom-28');
+    expect(flyout).not.toHaveClass('absolute', 'top-12', 'bottom-3');
     expect(flyout).not.toHaveClass('bg-[var(--paper-elevated)]');
     const placeholder = region.querySelector('[data-global-sidebar-session-placeholder]')!;
     expect(placeholder.children).toHaveLength(3);
@@ -741,13 +787,17 @@ describe('GlobalSidebar rail flyout', () => {
     mocks.isTauri = true;
     renderSidebar();
 
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) }));
+    const coldPanel = document.querySelector('[data-history-search-overlay-panel]');
+    expect(coldPanel).toBeInTheDocument();
+
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.search')) }));
       await vi.dynamicImportSettled();
     });
 
     const overlay = screen.getByTestId('task-center-overlay');
     expect(overlay).toHaveAttribute('data-initial-mode', 'search');
+    expect(document.querySelector('[data-history-search-overlay-panel]')).toBe(coldPanel);
   });
 
   it('hides the Team Space navigation entry when the feature is unavailable', () => {

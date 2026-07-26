@@ -136,18 +136,32 @@ describe('App Shell chrome contract', () => {
 
   it('opens history search with immediate chrome and virtualizes the empty-query archive', () => {
     const sidebar = source('src/renderer/components/global-sidebar/GlobalSidebar.tsx');
-    const overlay = source('src/renderer/components/TaskCenterOverlay.tsx');
+    const overlay = source('src/renderer/components/HistorySearchOverlayContent.tsx');
     const storeProjection = source('src/renderer/hooks/useTaskCenterData.ts');
 
-    expect(sidebar).toContain('const loadTaskCenterOverlay = () => import');
-    expect(sidebar).toContain('onIntent={() => { void loadTaskCenterOverlay(); }}');
-    expect(sidebar).toContain('<OverlayBackdrop onClose={handleSearchClose} className="z-40">');
-    expect(sidebar).not.toContain('<Suspense fallback={null}>\n          <TaskCenterOverlay');
+    expect(sidebar).toContain('const loadHistorySearchOverlayContent = () => import');
+    expect(sidebar).toContain('onIntent={() => { void loadHistorySearchOverlayContent(); }}');
+    expect(sidebar).toContain('<HistorySearchOverlayFrame onClose={handleSearchClose}>');
+    expect(sidebar).toContain('<Suspense fallback={<HistorySearchOverlayFallback onClose={handleSearchClose} />}>');
+    expect(sidebar).not.toContain('<Suspense fallback={null}>\n          <HistorySearchOverlayContent');
 
     expect(overlay).toContain("import { Virtuoso } from 'react-virtuoso'");
+    expect(overlay).not.toContain('<OverlayBackdrop');
+    expect(overlay).not.toContain('overlayFadeIn');
+    expect(overlay).not.toContain('overlayPanelIn');
     expect(overlay).toContain('data={browseRows}');
     expect(overlay).not.toContain('filteredSessions.map');
     expect(overlay).not.toContain('task-center-overlay-open');
     expect(storeProjection).toContain("reason: 'global-sidebar-search', silent: true");
+  });
+
+  it('keeps macOS traffic lights attached to the native draw lifecycle during window zoom', () => {
+    const app = source('src-tauri/src/lib.rs');
+    const trafficLights = source('src-tauri/src/macos_traffic_light.rs');
+
+    expect(app).toContain('.traffic_light_position(tauri::LogicalPosition::new(');
+    expect(app).toContain('macos_traffic_light::apply_inset(');
+    expect(app).not.toContain('macos_traffic_light::install_inset_persistence(');
+    expect(trafficLights).not.toContain('pub fn install_inset_persistence');
   });
 });

@@ -40,6 +40,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type FocusEvent as ReactFocusEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
@@ -104,8 +105,8 @@ import { formatTime, getSessionDisplayText } from '@/utils/taskCenterUtils';
 import { copyPlainText } from '@/utils/clipboard';
 import { openExternal } from '@/utils/openExternal';
 
-const loadTaskCenterOverlay = () => import('@/components/TaskCenterOverlay');
-const TaskCenterOverlay = lazy(loadTaskCenterOverlay);
+const loadHistorySearchOverlayContent = () => import('@/components/HistorySearchOverlayContent');
+const HistorySearchOverlayContent = lazy(loadHistorySearchOverlayContent);
 const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPanel'));
 
 const SESSION_PAGE_SIZE = 5;
@@ -113,6 +114,14 @@ const AUTO_RAIL_QUERY = '(max-width: 1080px)';
 const EMPTY_TAGS: SessionTag[] = [];
 const SIDEBAR_TRANSITION_MS = 200;
 const MYAGENTS_WEBSITE_URL = 'https://myagents.io';
+const FLYOUT_FOCUS_ENTRY_SELECTOR = [
+  'button:not([disabled])',
+  'a[href]',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',');
 
 export function isPointerWithinBounds(
   bounds: Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom'>,
@@ -229,6 +238,67 @@ function SidebarNavButton({
     >
       {button}
     </Tip>
+  );
+}
+
+/**
+ * Own one visual shell from the opening click through lazy-content readiness.
+ * Suspense only swaps the interior, so the cold path cannot replay the
+ * backdrop and panel entrance animations when the search content resolves.
+ */
+function HistorySearchOverlayFrame({
+  children,
+  onClose,
+}: {
+  children: ReactNode;
+  onClose: () => void;
+}) {
+  useCloseLayer(() => {
+    onClose();
+    return true;
+  }, 40);
+
+  return (
+    <OverlayBackdrop
+      onClose={onClose}
+      className="z-40"
+      style={{ animation: 'overlayFadeIn 140ms ease-out' }}
+    >
+      <div
+        data-history-search-overlay-panel
+        className="glass-panel flex h-[85vh] w-full max-w-5xl flex-col"
+        style={{ padding: '2vh 2vw', animation: 'overlayPanelIn 160ms ease-out' }}
+      >
+        {children}
+      </div>
+    </OverlayBackdrop>
+  );
+}
+
+function HistorySearchOverlayFallback({ onClose }: { onClose: () => void }) {
+  const { t } = useTranslation('app');
+
+  return (
+    <>
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-lg font-semibold text-[var(--ink)]">{t('historyOverlay.title')}</h2>
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label={t('historyOverlay.exitSearch')}
+          className="rounded-md p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+        >
+          <X className="h-4 w-4" />
+        </button>
+      </div>
+      <div className="flex h-8 items-center rounded-md border border-[var(--line)] px-2.5 text-[var(--ink-muted)]/50">
+        <Search className="mr-2 h-3.5 w-3.5" />
+        <span className="text-sm">{t('historyOverlay.searchPlaceholder')}</span>
+      </div>
+      <div aria-busy="true" className="flex min-h-0 flex-1 items-center justify-center">
+        <Loader2 className="h-4 w-4 animate-spin text-[var(--ink-muted)]/50" />
+      </div>
+    </>
   );
 }
 
@@ -436,6 +506,14 @@ export default memo(function GlobalSidebar({
     flyoutTriggerPointerInsideRef.current = false;
     scheduleFlyoutClose();
   }, [scheduleFlyoutClose]);
+
+  const handleFlyoutTriggerFocus = useCallback((event: ReactFocusEvent<HTMLDivElement>) => {
+    if (event.relatedTarget && flyoutRef.current?.contains(event.relatedTarget as Node)) {
+      clearFlyoutTimers();
+      return;
+    }
+    openFlyoutNow();
+  }, [clearFlyoutTimers, openFlyoutNow]);
 
   const handleNestedInteractionChange = useCallback((key: string, open: boolean) => {
     if (open) openNestedLayerKeysRef.current.add(key);
@@ -886,7 +964,7 @@ export default memo(function GlobalSidebar({
               expanded={expanded}
               icon={<Search className="h-4 w-4" />}
               label={t('globalSidebar.search')}
-              onIntent={() => { void loadTaskCenterOverlay(); }}
+              onIntent={() => { void loadHistorySearchOverlayContent(); }}
               onClick={handleSearchOpen}
             />
           )}
@@ -931,15 +1009,24 @@ export default memo(function GlobalSidebar({
               className="global-sidebar-rail-stack absolute inset-0 min-h-0 pt-3"
               data-global-sidebar-workspace-rail
               onKeyDown={(event) => {
-                if (event.key !== 'Escape' || !flyoutOpen) return;
-                event.preventDefault();
-                closeFlyout(true);
+                if (!flyoutOpen) return;
+                if (event.key === 'Tab' && !event.shiftKey) {
+                  const entry = flyoutRef.current?.querySelector<HTMLElement>(FLYOUT_FOCUS_ENTRY_SELECTOR);
+                  if (!entry) return;
+                  event.preventDefault();
+                  entry.focus();
+                  return;
+                }
+                if (event.key === 'Escape') {
+                  event.preventDefault();
+                  closeFlyout(true);
+                }
               }}
             >
               <div
                 onPointerEnter={handleFlyoutTriggerPointerEnter}
                 onPointerLeave={handleFlyoutTriggerPointerLeave}
-                onFocusCapture={openFlyoutNow}
+                onFocusCapture={handleFlyoutTriggerFocus}
                 onBlurCapture={scheduleFlyoutClose}
               >
                 <button
@@ -957,19 +1044,6 @@ export default memo(function GlobalSidebar({
                   <FolderTree className="h-4 w-4" />
                 </button>
               </div>
-              {flyoutOpen && (
-                <div
-                  ref={flyoutRef}
-                  className="absolute bottom-3 left-full top-12 z-[240] ml-2 w-[var(--global-sidebar-flyout-width)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--global-sidebar-bg)] shadow-md"
-                  data-global-sidebar-flyout
-                  onPointerEnter={handleFlyoutPointerEnter}
-                  onPointerLeave={handleFlyoutPointerLeave}
-                  onFocusCapture={clearFlyoutTimers}
-                  onBlurCapture={scheduleFlyoutClose}
-                >
-                  {tree}
-                </div>
-              )}
             </div>
           )}
         </div>
@@ -1002,6 +1076,33 @@ export default memo(function GlobalSidebar({
           />
         </div>
       </aside>
+
+      {!expanded && flyoutOpen && (
+        <div
+          ref={flyoutRef}
+          className="fixed bottom-28 left-[calc(var(--global-sidebar-rail-width)+var(--space-2))] top-32 z-[240] w-[var(--global-sidebar-flyout-width)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--global-sidebar-bg)] shadow-md"
+          data-global-sidebar-flyout
+          onPointerEnter={handleFlyoutPointerEnter}
+          onPointerLeave={handleFlyoutPointerLeave}
+          onFocusCapture={clearFlyoutTimers}
+          onBlurCapture={scheduleFlyoutClose}
+          onKeyDown={(event) => {
+            if (event.key === 'Tab' && event.shiftKey) {
+              const entry = flyoutRef.current?.querySelector<HTMLElement>(FLYOUT_FOCUS_ENTRY_SELECTOR);
+              if (event.target !== entry || !flyoutTriggerRef.current) return;
+              event.preventDefault();
+              flyoutTriggerRef.current.focus();
+              return;
+            }
+            if (event.key === 'Escape') {
+              event.preventDefault();
+              closeFlyout(true);
+            }
+          }}
+        >
+          {tree}
+        </div>
+      )}
 
       <PathInputDialog
         isOpen={pathDialogOpen}
@@ -1087,42 +1188,17 @@ export default memo(function GlobalSidebar({
       )}
 
       {searchOpen && (
-        <Suspense fallback={(
-          <OverlayBackdrop onClose={handleSearchClose} className="z-40">
-            <div
-              aria-busy="true"
-              className="glass-panel flex h-[85vh] w-full max-w-5xl flex-col"
-              style={{ padding: '2vh 2vw' }}
-            >
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="text-lg font-semibold text-[var(--ink)]">{t('historyOverlay.title')}</h2>
-                <button
-                  type="button"
-                  onClick={handleSearchClose}
-                  aria-label={t('historyOverlay.exitSearch')}
-                  className="rounded-md p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-              <div className="flex h-8 items-center rounded-md border border-[var(--line)] px-2.5 text-[var(--ink-muted)]/50">
-                <Search className="mr-2 h-3.5 w-3.5" />
-                <span className="text-sm">{t('historyOverlay.searchPlaceholder')}</span>
-              </div>
-              <div className="flex min-h-0 flex-1 items-center justify-center">
-                <Loader2 className="h-4 w-4 animate-spin text-[var(--ink-muted)]/50" />
-              </div>
-            </div>
-          </OverlayBackdrop>
-        )}>
-          <TaskCenterOverlay
-            projects={activeProjects}
-            taskCenterData={taskCenterData}
-            initialMode="search"
-            onClose={handleSearchClose}
-            onOpenTask={(session, project) => { void handleOpenSession(session, project); }}
-          />
-        </Suspense>
+        <HistorySearchOverlayFrame onClose={handleSearchClose}>
+          <Suspense fallback={<HistorySearchOverlayFallback onClose={handleSearchClose} />}>
+            <HistorySearchOverlayContent
+              projects={activeProjects}
+              taskCenterData={taskCenterData}
+              initialMode="search"
+              onClose={handleSearchClose}
+              onOpenSession={(session, project) => { void handleOpenSession(session, project); }}
+            />
+          </Suspense>
+        </HistorySearchOverlayFrame>
       )}
     </>
   );

@@ -844,25 +844,12 @@ pub fn run() {
             // Platform-specific window chrome — macOS uses the Overlay title
             // bar style (custom titlebar + native traffic lights).
             //
-            // We INTENTIONALLY do NOT call `.traffic_light_position(...)` on
-            // this builder. In Tauri 2.10.x `WebviewWindowBuilder::traffic_light_position`
-            // only mutates `webview_builder.webview_attributes` (consumed by
-            // `wry::WryWebViewParent::drawRect` override) — the parallel call
-            // on the underlying TAO `WindowBuilder` is missing. The original
-            // `tauri.conf.json` `trafficLightPosition` path went through BOTH
-            // (config → `tao::window.with_traffic_light_inset` + wry), and
-            // the TAO/window-level call is the one that reliably positions
-            // the NSWindow chrome buttons. Going through only wry's
-            // `drawRect` override is unreliable in our
-            // `Overlay + hidden_title + fullSizeContentView` setup —
-            // empirically the buttons stay at OS defaults and we get visible
-            // misalignment with the custom titlebar.
-            //
-            // Instead, after `.build()` below we apply the inset directly via
-            // AppKit (`macos_traffic_light::apply_inset`) — same algorithm
-            // as wry/tao internal `inset_traffic_lights`, called on the
-            // already-constructed NSWindow so we hit the chrome-positioning
-            // path that worked in v0.2.15 (where config set both).
+            // Tauri's programmatic builder and its config path do not have
+            // identical traffic-light semantics: the method below stores the
+            // inset on Wry's parent view but does not set it on TAO's window
+            // builder. We intentionally use it for Wry's native `drawRect:`
+            // persistence during every live resize / zoom frame, then bridge
+            // the missing initial window-level application once after build.
             //
             // History: v0.2.15 main used `tauri.conf.json
             // trafficLightPosition: {x:14, y:20}` — visually correct for the
@@ -871,12 +858,16 @@ pub fn run() {
             // c3ef3c7f migrated to programmatic builder w/ same values —
             // visually broken. 0c74c61c misdiagnosed as a 4px miscenter and
             // changed Y to 14 — still broken (different symptom, same root
-            // cause). This block removes the broken builder call; the
-            // post-build call below restores the v0.2.15 behaviour.
+            // cause). The two-stage path below restores v0.2.15's initial
+            // placement while keeping animation-time ownership in native draw.
             #[cfg(target_os = "macos")]
             let main_window_builder = main_window_builder
                 .hidden_title(true)
-                .title_bar_style(tauri::TitleBarStyle::Overlay);
+                .title_bar_style(tauri::TitleBarStyle::Overlay)
+                .traffic_light_position(tauri::LogicalPosition::new(
+                    MAIN_TRAFFIC_LIGHT_X,
+                    MAIN_TRAFFIC_LIGHT_Y,
+                ));
 
             // `main_window` is only consumed by the macOS-gated traffic-light
             // inset block below. On other platforms the `.build()?` call
@@ -895,11 +886,11 @@ pub fn run() {
             // vertical alignment. Failure here is non-fatal —
             // window starts with default macOS button positions instead.
             //
-            // The post-build `apply_inset` only fires once. `install_inset_persistence`
-            // adds a `WindowEvent::Resized` / `ScaleFactorChanged` listener
-            // that re-applies on layout transitions (fullscreen toggle,
-            // maximize, Retina display change). Without it the buttons jump
-            // back to macOS defaults on any layout event.
+            // The post-build bridge fires only once. Live resize / zoom
+            // persistence belongs to Wry's native draw lifecycle configured
+            // on the builder above; a queued Tauri `Resized` listener is too
+            // late for the current AppKit animation frame and causes visible
+            // position chasing.
             #[cfg(target_os = "macos")]
             {
                 if let Err(e) = macos_traffic_light::apply_inset(
@@ -909,11 +900,6 @@ pub fn run() {
                 ) {
                     ulog_warn!("[main-window] traffic light inset failed: {}", e);
                 }
-                macos_traffic_light::install_inset_persistence(
-                    &main_window,
-                    MAIN_TRAFFIC_LIGHT_X,
-                    MAIN_TRAFFIC_LIGHT_Y,
-                );
             }
 
             let resolved_native_theme = preferred_native_theme
