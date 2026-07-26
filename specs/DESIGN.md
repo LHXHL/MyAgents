@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.16
+> **Version**: 2.8.17
 > **Last Updated**: 2026-07-26
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -1275,6 +1275,8 @@ rail 72px:
 
 手动 rail 中，App Icon 保持静态品牌身份；它不放大、不重新居中，展开/收起时只显隐右侧文字，因此点击瞬间图标留在原地。主导航、工作区入口和底部入口也不按 rail 剩余宽度重新居中：40px 宽、36px 高的命中区统一固定于窗口 `x=12px`，其 16px 功能图标左缘在展开态与 rail 都保持 `x=24px`，因此整列图标切换时不发生横向抖动。展开控制仍使用第一行同一个固定 toggle，不随侧栏宽度移动或复制造成双入口。自动 rail 中隐藏无法兑现的展开 toggle，仅保留静态品牌图标。所有侧栏图标按钮复用 Theme-owned `Tip`：hover/focus 无等待即时出现，使用 `--button-dark-bg / --button-dark-text`，不得回退浏览器原生 `title`；菜单打开期间隐藏对应 Tooltip。工作区 flyout 覆盖主内容而不推挤布局，使用轻量 opacity/translate 入场；真实离开交互区域才短延迟关闭，树枝展开/收起造成的布局边界事件若指针仍在 flyout 几何范围内不得误关；`Esc` 关闭并回焦入口。嵌套菜单、确认弹层和 flyout 共用同一交互生命周期。
 
+产品身份行的 App Icon 与 `MyAgents` 字标共同组成紧凑官网链接，点击后通过系统默认浏览器打开 `https://myagents.io`；rail 中链接自然收缩为 App Icon。其 hover 只使用 pointer 光标，不铺整行或局部背景色，键盘焦点仍保留 Accent focus ring，避免把品牌入口误表现成主导航选中面。
+
 ### 15.3 工作区与 Session 树
 
 - 工作区按置顶时间、最近打开时间、名称稳定排序；归档工作区位于默认收起的独立分组。
@@ -1358,6 +1360,7 @@ AI 输入框的模型菜单拥有独立滚动区。打开时在首帧把当前�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.17 | 2026-07-26 | **侧栏产品身份直达官网**：App Icon 与紧凑产品字标组成无铺底的官网链接，hover 仅显示 pointer；rail 中收缩为同一位置的 App Icon，点击统一通过系统浏览器打开 myagents.io |
 | 2.8.16 | 2026-07-26 | **全局侧栏收展动效**：布局槽仍一次提交以避免 Chat/Browser/Terminal 连续 resize；独立材质层用 200ms `clip-path` 实现收起右→左、展开左→右的背景边界，品牌/导航/工作区内容同步淡移并支持 reduced motion |
 | 2.8.15 | 2026-07-26 | **产品字标跨层级统一**：将八套 Theme 的字体、字距与渐变抽为 `.theme-product-wordmark`，Launcher 与 About 继续叠加展示角色；全局侧栏品牌名复用同一字标并以 14px/500 保持小尺寸可读性 |
 | 2.8.14 | 2026-07-26 | **侧栏 Session 状态与顶部 Tab 收口**：移除侧栏自定义的 active 圆点、Accent Loader 与后台已打开方块，仅保留共享的绿色脉冲运行态和暖棕未读态；行选中与 hover 继续由侧栏表面独立表达 |

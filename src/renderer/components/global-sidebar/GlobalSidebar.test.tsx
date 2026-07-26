@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => ({
   configError: null as string | null,
   forcedRail: true,
   isTauri: false,
+  openExternal: vi.fn(async () => undefined),
   toast: {
     error: vi.fn(),
     success: vi.fn(),
@@ -62,6 +63,10 @@ vi.mock('@/utils/browserMock', () => ({
   isBrowserDevMode: () => false,
   isTauriEnvironment: () => mocks.isTauri,
   pickFolderForDialog: vi.fn(),
+}));
+
+vi.mock('@/utils/openExternal', () => ({
+  openExternal: mocks.openExternal,
 }));
 
 vi.mock('@/components/TaskCenterOverlay', () => ({
@@ -187,6 +192,26 @@ describe('GlobalSidebar rail flyout', () => {
 
     fireEvent.click(trigger);
     expect(screen.getByRole('region', { name: 'Agent 工作区' })).toBeInTheDocument();
+  });
+
+  it('opens the product website from the compact brand link without a row hover surface', async () => {
+    mocks.forcedRail = false;
+    renderSidebar();
+
+    const brandLink = screen.getByRole('button', {
+      name: String(i18n.t('app:globalSidebar.openWebsite')),
+    });
+    const brandRow = brandLink.closest('[data-global-sidebar-brand-row]');
+
+    expect(brandLink).toHaveClass('cursor-pointer');
+    expect(brandLink).not.toHaveClass('w-full', 'hover:bg-[var(--hover-bg)]', 'hover:bg-[var(--paper-inset)]');
+    expect(brandRow).not.toHaveClass('cursor-pointer', 'hover:bg-[var(--hover-bg)]');
+
+    fireEvent.click(brandLink);
+
+    await vi.waitFor(() => {
+      expect(mocks.openExternal).toHaveBeenCalledWith('https://myagents.io');
+    });
   });
 
   it('opens immediately from keyboard focus', () => {
@@ -638,7 +663,8 @@ describe('GlobalSidebar rail flyout', () => {
     mocks.forcedRail = true;
     renderSidebar();
     expect(screen.queryByRole('button', { name: String(i18n.t('app:globalSidebar.expand')) })).not.toBeInTheDocument();
-    expect(screen.getByAltText('MyAgents')).toBeInTheDocument();
+    const websiteButton = screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.openWebsite')) });
+    expect(websiteButton.querySelector('[data-global-sidebar-brand-icon]')).toBeInTheDocument();
     expect(screen.getByRole('complementary', { name: String(i18n.t('app:globalSidebar.navigation')) }))
       .toHaveAttribute('data-global-sidebar-toggle-visible', 'false');
   });

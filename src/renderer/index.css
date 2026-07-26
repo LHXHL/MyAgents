@@ -194,24 +194,20 @@
   --space-12: 48px;
 }
 
-/* The App Icon is the visual anchor of the rail. Keep its window coordinate,
-   size, and DOM node identical while the sidebar label appears/disappears. */
-.global-sidebar-brand-row {
-  padding-left: calc(
-    var(--global-sidebar-brand-icon-left)
-    + var(--global-sidebar-brand-icon-size)
-    + var(--space-2)
-  );
+/* The compact website link owns the App Icon and wordmark in one normal-flow
+   box. Its 4px leading inset keeps the icon at x=24px while the 32px rail hit
+   target starts at x=20px; press transforms therefore move both as one unit. */
+.global-sidebar-brand-link {
+  position: absolute;
+  top: var(--space-1);
+  left: calc(var(--global-sidebar-brand-icon-left) - var(--space-1));
+  padding-left: var(--space-1);
 }
 
 .global-sidebar-brand-icon {
-  position: absolute;
-  left: var(--global-sidebar-brand-icon-left);
-  top: 50%;
   width: var(--global-sidebar-brand-icon-size);
   height: var(--global-sidebar-brand-icon-size);
   border-radius: 22%;
-  transform: translateY(-50%);
 }
 
 /* Expanded navigation places each 16px glyph at x=24px (12px section inset

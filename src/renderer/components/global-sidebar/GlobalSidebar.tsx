@@ -102,6 +102,7 @@ import {
 import { isBrowserDevMode, isTauriEnvironment, pickFolderForDialog } from '@/utils/browserMock';
 import { formatTime, getSessionDisplayText } from '@/utils/taskCenterUtils';
 import { copyPlainText } from '@/utils/clipboard';
+import { openExternal } from '@/utils/openExternal';
 
 const loadTaskCenterOverlay = () => import('@/components/TaskCenterOverlay');
 const TaskCenterOverlay = lazy(loadTaskCenterOverlay);
@@ -110,6 +111,7 @@ const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPane
 const SESSION_PAGE_SIZE = 5;
 const AUTO_RAIL_QUERY = '(max-width: 1080px)';
 const EMPTY_TAGS: SessionTag[] = [];
+const MYAGENTS_WEBSITE_URL = 'https://myagents.io';
 
 export function isPointerWithinBounds(
   bounds: Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom'>,
@@ -814,18 +816,31 @@ export default memo(function GlobalSidebar({
           className="global-sidebar-brand-row relative flex h-10 shrink-0 items-center"
           data-global-sidebar-brand-row
         >
-          <img
-            src={myAgentsLogo}
-            alt={expanded ? '' : 'MyAgents'}
-            aria-hidden={expanded || undefined}
-            className="global-sidebar-brand-icon shrink-0"
-            data-global-sidebar-brand-icon
-          />
-          {expanded && (
-            <span className="theme-product-wordmark min-w-0 truncate text-sm font-medium">
-              MyAgents
-            </span>
-          )}
+          <button
+            type="button"
+            onClick={() => { void openExternal(MYAGENTS_WEBSITE_URL); }}
+            aria-label={t('globalSidebar.openWebsite')}
+            className={`global-sidebar-brand-link flex h-8 items-center gap-2 pr-1 text-left cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+              expanded ? 'min-w-0 max-w-[calc(var(--global-sidebar-expanded-width)-var(--global-sidebar-brand-icon-left)-var(--space-2))]' : 'w-8 overflow-hidden'
+            }`}
+            data-global-sidebar-brand-link
+          >
+            <img
+              src={myAgentsLogo}
+              alt=""
+              aria-hidden="true"
+              className="global-sidebar-brand-icon shrink-0"
+              data-global-sidebar-brand-icon
+            />
+            {expanded && (
+              <span
+                className="theme-product-wordmark min-w-0 truncate text-sm font-medium"
+                data-global-sidebar-brand-name
+              >
+                MyAgents
+              </span>
+            )}
+          </button>
         </div>
 
         <nav

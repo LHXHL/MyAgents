@@ -16,6 +16,7 @@
   },
   "globalSidebar": {
     "navigation": "Global navigation",
+    "openWebsite": "Open the MyAgents website",
     "collapse": "Collapse sidebar",
     "expand": "Expand sidebar",
     "newChat": "New chat",
