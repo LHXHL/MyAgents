@@ -12,7 +12,7 @@ const canonicalLicenseSha256 = '0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86
 const legalFiles = [
   'LICENSE',
   'LICENSING.md',
-  'COMMERCIAL-LICENSE.md',
+  'COMMERCIAL-LICENSING.md',
   'TRADEMARKS.md',
   'THIRD_PARTY_NOTICES.md',
 ];
@@ -92,9 +92,14 @@ for (const path of legalFiles) {
   );
 }
 
-for (const path of ['LICENSING.md', 'COMMERCIAL-LICENSE.md', 'TRADEMARKS.md']) {
+for (const path of ['LICENSING.md', 'COMMERCIAL-LICENSING.md', 'TRADEMARKS.md']) {
   requireContains(`${path} commercial contact`, read(path), expectedEmail);
+  requireContains(`${path} English section`, read(path), '## English');
+  requireContains(`${path} Chinese section`, read(path), '## 中文');
 }
+
+requireContains('THIRD_PARTY_NOTICES.md English section', read('THIRD_PARTY_NOTICES.md'), '## English');
+requireContains('THIRD_PARTY_NOTICES.md Chinese section', read('THIRD_PARTY_NOTICES.md'), '## 中文');
 
 if (failures.length > 0) {
   console.error('License contract verification failed:\n');

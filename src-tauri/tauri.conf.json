@@ -57,7 +57,7 @@
       "../mino": "mino",
       "../LICENSE": "legal/LICENSE",
       "../LICENSING.md": "legal/LICENSING.md",
-      "../COMMERCIAL-LICENSE.md": "legal/COMMERCIAL-LICENSE.md",
+      "../COMMERCIAL-LICENSING.md": "legal/COMMERCIAL-LICENSING.md",
       "../TRADEMARKS.md": "legal/TRADEMARKS.md",
       "../THIRD_PARTY_NOTICES.md": "legal/THIRD_PARTY_NOTICES.md",
       "infoplist/en.lproj/InfoPlist.strings": "en.lproj/InfoPlist.strings",

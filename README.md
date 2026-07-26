@@ -284,7 +284,8 @@ MyAgents 采用 [GNU Affero General Public License v3.0](LICENSE)
 需要取得单独的商业许可证。请联系
 [myagents.io@gmail.com](mailto:myagents.io@gmail.com)。
 
-完整说明见 [LICENSING.md](LICENSING.md)。第三方组件继续适用各自许可证，详见
+完整说明见 [LICENSING.md](LICENSING.md)，商业许可概要见
+[COMMERCIAL-LICENSING.md](COMMERCIAL-LICENSING.md)。第三方组件继续适用各自许可证，详见
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
 
 <a id="english"></a>
@@ -557,6 +558,8 @@ closed-source modification, embedding, OEM distribution, proprietary
 distribution, or hosted offerings that do not comply with the AGPL. Contact
 [myagents.io@gmail.com](mailto:myagents.io@gmail.com).
 
-See [LICENSING.md](LICENSING.md) for details and
+See [LICENSING.md](LICENSING.md) for details,
+[COMMERCIAL-LICENSING.md](COMMERCIAL-LICENSING.md) for a commercial licensing
+overview, and
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for independently licensed
 components.
