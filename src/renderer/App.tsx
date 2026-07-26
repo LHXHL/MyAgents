@@ -3960,7 +3960,7 @@ export default function App() {
       </CustomTitleBar>
 
       {/* Tab content - only Chat views need TabProvider for sidecar communication */}
-      <div ref={contentRef} className="relative flex-1 overflow-hidden">
+      <div ref={contentRef} className="relative flex-1 overflow-hidden" data-tab-content-workspace>
         {tabs.map((tab) => (
           <MemoizedTabContent
             key={tab.id}

@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.17
+> **Version**: 2.8.18
 > **Last Updated**: 2026-07-26
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -1245,7 +1245,7 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
 
 - 全局栏从窗口最顶部延伸到底部；右侧才是标题栏与 Tab Workspace。
 - macOS 红绿灯安全区属于侧栏顶部 chrome；Windows 窗口按钮仍固定在右侧标题栏最右端。
-- 常驻展开态 256px，rail 72px。切换时布局槽一次提交到最终宽度，禁止用 `width` transition 持续重排主内容；视觉动效由固定 256px 的侧栏材质层以 `clip-path` 在 200ms 内横向揭示/收回，展开内容同步淡移，rail 内容交错接续。收起边界从右向左、展开边界从左向右，App Icon 与功能图标仍保持窗口坐标不动；`prefers-reduced-motion` 下立即切换。
+- 常驻展开态 256px，rail 72px。切换时布局槽一次提交到最终宽度，禁止用 `width` transition 持续重排主内容；视觉动效由固定 256px 的侧栏材质层以 `clip-path` 在 200ms 内横向揭示/收回，展开内容同步淡移，rail 内容交错接续。右侧 Tab 标题栏与当前 Tab 内容在最终布局上从旧视觉位置横向归位，让背景边界、Tab 与页面形成同一段空间运动。收起边界从右向左、展开边界从左向右，App Icon 与功能图标仍保持窗口坐标不动；`prefers-reduced-motion` 下立即切换。
 - 顶部 chrome 分两行：第一行 44px 只承载原生窗口区、拖拽区与固定侧栏 toggle，第二行 40px 承载 App Icon + `MyAgents` 品牌。App Icon 使用 macOS App 风格的 22% 圆角矩形轮廓，在展开态与 rail 中始终保持 20px、固定于窗口 `x=24px` 且复用同一 DOM；它不参与 rail 居中计算，切换时只让品牌文字出现或消失。品牌文字复用 Theme-owned 产品字标的字体、字距与渐变，紧凑角色保持 `text-sm / font-medium`，不复制 Launcher 的展示字号与轻字重。macOS toggle 固定在窗口 `x=84px` 起的 32px 槽位；展开时位于侧栏表面，手动 rail 时自然落入右侧 Tab 标题栏表面，屏幕坐标与 DOM 均不切换。toggle 两态共用简洁的单一 `PanelLeft` 轮廓，不叠加方向箭头；动作含义由即时 Tooltip 和 `aria-label` 表达。
 - 顶部 Tab 保留 active、关闭、拖拽、溢出、生成中、未读与触摸板切换语义，侧栏不得建立第二套页面选中状态。
 - 右侧标题栏使用纯 `var(--paper)` 根面和既有底部分割线，不使用 `paper → paper-inset` 混合渐变。常规模式在侧栏边界后保留 8px leading inset；手动 rail 的 52px 预留同时包含固定 toggle 槽位及其后的 8px 留白。32px Tab 使用 Theme-owned `rounded-md`；active 与 hover 均使用 `var(--hover-bg)`，active 不增加常驻阴影，只额外保留 2px `var(--accent)` 底线。新增 Tab 与溢出按钮使用同一 hover wash，使顶部 Chrome 与左侧工作区共享克制的注意力反馈，而不新增 Tab 专属 palette。
@@ -1290,7 +1290,7 @@ rail 72px:
 - 工作区关联态与普通 hover 统一使用 `var(--hover-bg)`，不增加 `paper-elevated` 或阴影；Session active 也使用 `var(--hover-bg)`。小图标按钮 hover 使用 `var(--paper-inset)`。
 - 空态、静默加载占位和局部失败重试都留在工作区滚动区域，不能拖垮全局导航或推走底部入口。rail 工作区 flyout 与侧栏消费同一个 `--global-sidebar-bg`，避免白色浮层从侧栏材质中突兀跳出。
 - Chat 顶栏不再提供“返回启动页”：全局侧栏负责跨资源导航，用户通过关闭当前 Tab 或“新对话”建立下一条动线。Chat 顶栏与全局侧栏的“新对话”动作共用 `MessageSquarePlus` 语义图标，避免同一动作在两个入口分别显示通用加号与对话图标。工作区内历史浮层标题明确为“工作区历史记录”，避免被误解成跨工作区全局历史。
-- Chat 右侧工作区展开/收起共用无箭头的 `PanelRight` 轮廓，控制始终位于当前可用横向空间的最右侧；展开态顺序为 `Agent 设置 → 收起工作区`，隐藏后展开按钮占据同一最右槽位。两项动作都使用共享即时黑底 `Tip`，不得同时保留浏览器 `title` 造成二次提示。
+- Chat 右侧工作区展开/收起共用无箭头的 `PanelRight` 轮廓，控制始终位于当前可用横向空间的最右侧；展开态顺序为 `Agent 设置 → 收起工作区`，隐藏后展开按钮占据同一最右槽位。工作区面板以 200ms 横向滑入/滑出，对话区在一次提交最终宽度后从旧视觉中心同步归位；窄屏 overlay 只移动面板、不扰动对话区。两项动作都使用共享即时黑底 `Tip`，不得同时保留浏览器 `title` 造成二次提示；`prefers-reduced-motion` 下立即切换。
 - Chat 右侧工作区头部只展示工作区图标、名称、分支与路径，不展示文件/文件夹聚合计数，避免易过期的扫描结果与资源导航争夺注意力。底部 `Agent 能力` 初始收起，仅保留标题与总数；用户显式展开后再分配内容高度并渲染能力列表。
 - 从全局侧栏点击 Session 时，顶部立即新增并激活目标 Tab，Chat 子树同时挂载并由自身 `ChatBootOverlay` 覆盖启动过程；Sidecar ensure/activation 在其后完成。失败时撤销临时 Tab 并恢复仍存在的前一 Tab，不能让点击后数秒无反馈，也不能在 ready 后把主动切走的用户强拉回来。rail flyout 以 active Tab identity 的真实切换作为导航已发生的反馈，同 Tab 成功由当前资源表面交互周期的动作结果兜底；工作区 flyout 与搜索 overlay 每次重新开关都推进该周期。激活前拒绝或异常保留列表供重试，已完成乐观切换后的启动失败只回滚 Tab、不强行复活旧资源面。任何工作区或 Session 旧请求完成都不能关闭用户后来重新打开的 flyout / 搜索 overlay。
 - 历史搜索 Overlay 在冷模块加载时立即显示同尺寸搜索壳；搜索入口 hover/focus 预取内容模块，实际面板入场压缩到 160ms。空搜索默认历史使用虚拟列表，只渲染可视区与小幅 overscan，连续滚动中不得一次 mount 全部 Session；非空全文检索结果保持现有 50 条上限，不另做前端分页。
@@ -1360,6 +1360,7 @@ AI 输入框的模型菜单拥有独立滚动区。打开时在首帧把当前�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.18 | 2026-07-26 | **左右区域联动动效**：全局侧栏收展时 Tab 标题栏与页面从旧视觉位置同步归位；Chat 右侧工作区以镜像横移动效进出，对话区同步重心变化，仍保持布局一次提交与 reduced-motion 即时路径 |
 | 2.8.17 | 2026-07-26 | **侧栏产品身份直达官网**：App Icon 与紧凑产品字标组成无铺底的官网链接，hover 仅显示 pointer；rail 中收缩为同一位置的 App Icon，点击统一通过系统浏览器打开 myagents.io |
 | 2.8.16 | 2026-07-26 | **全局侧栏收展动效**：布局槽仍一次提交以避免 Chat/Browser/Terminal 连续 resize；独立材质层用 200ms `clip-path` 实现收起右→左、展开左→右的背景边界，品牌/导航/工作区内容同步淡移并支持 reduced motion |
 | 2.8.15 | 2026-07-26 | **产品字标跨层级统一**：将八套 Theme 的字体、字距与渐变抽为 `.theme-product-wordmark`，Launcher 与 About 继续叠加展示角色；全局侧栏品牌名复用同一字标并以 14px/500 保持小尺寸可读性 |

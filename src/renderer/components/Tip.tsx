@@ -13,6 +13,7 @@ export default function Tip({
   position = 'top',
   align = 'center',
   disabled = false,
+  className = '',
 }: {
   label: string;
   shortcut?: string;
@@ -20,6 +21,7 @@ export default function Tip({
   position?: 'top' | 'bottom' | 'right';
   align?: 'center' | 'end';
   disabled?: boolean;
+  className?: string;
 }) {
   const posClass = position === 'right'
     ? 'left-full top-1/2 ml-3 -translate-y-1/2'
@@ -32,7 +34,7 @@ export default function Tip({
       ? 'right-0'
       : 'left-1/2 -translate-x-1/2';
   return (
-    <span className="group/tip relative inline-flex">
+    <span className={`group/tip relative inline-flex ${className}`}>
       {children}
       {!disabled && (
         <span

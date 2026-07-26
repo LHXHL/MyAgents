@@ -175,10 +175,17 @@
   --global-sidebar-rail-width: 72px;
   --global-sidebar-toggle-left: 84px;
   --global-sidebar-tabbar-toggle-inset: 52px;
+  --global-sidebar-tab-content-shift: 140px;
+  --global-sidebar-tab-content-shift-negative: -140px;
+  --global-sidebar-content-center-shift: 92px;
+  --global-sidebar-content-center-shift-negative: -92px;
   --global-sidebar-brand-icon-size: 20px;
   --global-sidebar-brand-icon-left: 24px;
   --global-sidebar-rail-button-left: 12px;
   --sidebar-min-width: 320px;
+  --chat-workspace-panel-width: max(25%, var(--sidebar-min-width));
+  --chat-workspace-min-center-shift: 160px;
+  --chat-workspace-min-center-shift-negative: -160px;
   --header-height: 48px;
   --space-0: 0;
   --space-0-5: 2px;
@@ -210,6 +217,77 @@
   border-radius: 22%;
 }
 
+/* Sidebar layout reaches its final 256px/72px slot in one commit so Chat,
+   Browser, Terminal, and other resize-sensitive surfaces do not reflow on
+   every animation frame. A fixed paint-only material layer then reveals or
+   retracts the Theme surface at the same boundary the user perceives. */
+.global-sidebar {
+  isolation: isolate;
+}
+
+.global-sidebar::before {
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--global-sidebar-expanded-width);
+  background: var(--global-sidebar-surface);
+  clip-path: inset(0 0 0 0);
+  content: '';
+  pointer-events: none;
+  transition: clip-path var(--duration-normal) var(--ease-in-out);
+}
+
+.global-sidebar[data-global-sidebar-mode='rail']::before {
+  clip-path: inset(
+    0
+    calc(var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-width))
+    0
+    0
+  );
+}
+
+.global-sidebar-copy {
+  opacity: 1;
+  clip-path: inset(0 0 0 0);
+  transform: translateX(0);
+  transition:
+    opacity var(--duration-fast) var(--ease-default),
+    clip-path var(--duration-normal) var(--ease-in-out),
+    transform var(--duration-normal) var(--ease-in-out);
+}
+
+.global-sidebar-nav-label {
+  position: absolute;
+  left: 40px;
+  width: calc(var(--global-sidebar-expanded-width) - 64px);
+  pointer-events: none;
+}
+
+.global-sidebar-nav-tip {
+  display: flex;
+}
+
+.global-sidebar[data-global-sidebar-mode='rail'] .global-sidebar-copy {
+  opacity: 0;
+  clip-path: inset(0 100% 0 0);
+  transform: translateX(-6px);
+}
+
+[data-global-sidebar-workspace-region] {
+  animation: global-sidebar-expanded-content-in var(--duration-normal) var(--ease-in-out) both;
+}
+
+.global-sidebar[data-global-sidebar-mode='rail'] [data-global-sidebar-workspace-region] {
+  pointer-events: none;
+  animation-name: global-sidebar-expanded-content-out;
+}
+
+[data-global-sidebar-workspace-rail] {
+  animation: global-sidebar-rail-content-in var(--duration-normal) var(--ease-out) both;
+}
+
 /* Expanded navigation places each 16px glyph at x=24px (12px section inset
    + 12px button inset). Rail buttons keep the same glyph coordinate by
    anchoring their 40px hit targets at x=12px instead of re-centering them in
@@ -237,13 +315,158 @@
   padding-left: var(--global-sidebar-tabbar-toggle-inset);
 }
 
+/* The layout slot still resolves in one commit. These FLIP-style compositor
+   offsets preserve the previous visual center while the sidebar material
+   boundary catches up, so the titlebar and active Tab feel attached to it. */
+[data-global-sidebar-motion='collapse'] ~ [data-tab-workspace]
+  > .custom-titlebar {
+  --app-shell-follow-offset: var(--global-sidebar-tab-content-shift);
+  animation: app-shell-sidebar-follow var(--duration-normal) var(--ease-in-out) backwards;
+}
+
+[data-global-sidebar-motion='expand'] ~ [data-tab-workspace]
+  > .custom-titlebar {
+  --app-shell-follow-offset: var(--global-sidebar-tab-content-shift-negative);
+  animation: app-shell-sidebar-follow var(--duration-normal) var(--ease-in-out) backwards;
+}
+
+/* Windows keeps the toggle inside the rail, so its Tab row travels the full
+   256px → 72px delta. macOS reserves a 52px titlebar slot and therefore uses
+   the smaller 140px offset above. */
+[data-global-sidebar-titlebar-follow='full'][data-global-sidebar-motion='collapse']
+  ~ [data-tab-workspace] > .custom-titlebar {
+  --app-shell-follow-offset: calc(
+    var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-width)
+  );
+}
+
+[data-global-sidebar-titlebar-follow='full'][data-global-sidebar-motion='expand']
+  ~ [data-tab-workspace] > .custom-titlebar {
+  --app-shell-follow-offset: calc(
+    var(--global-sidebar-rail-width) - var(--global-sidebar-expanded-width)
+  );
+}
+
+[data-global-sidebar-motion='collapse'] ~ [data-tab-workspace]
+  > [data-tab-content-workspace] {
+  --app-shell-follow-offset: var(--global-sidebar-content-center-shift);
+  animation: app-shell-sidebar-follow var(--duration-normal) var(--ease-in-out) backwards;
+}
+
+[data-global-sidebar-motion='expand'] ~ [data-tab-workspace]
+  > [data-tab-content-workspace] {
+  --app-shell-follow-offset: var(--global-sidebar-content-center-shift-negative);
+  animation: app-shell-sidebar-follow var(--duration-normal) var(--ease-in-out) backwards;
+}
+
 @keyframes global-sidebar-flyout-in {
   from { opacity: 0; transform: translateX(-4px) scale(0.99); }
   to { opacity: 1; transform: translateX(0) scale(1); }
 }
 
+@keyframes global-sidebar-expanded-content-in {
+  from {
+    opacity: 0;
+    clip-path: inset(
+      0
+      calc(var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-width))
+      0
+      0
+    );
+    transform: translateX(-6px);
+  }
+  to {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+    transform: translateX(0);
+  }
+}
+
+@keyframes global-sidebar-expanded-content-out {
+  from {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    clip-path: inset(
+      0
+      calc(var(--global-sidebar-expanded-width) - var(--global-sidebar-rail-width))
+      0
+      0
+    );
+    transform: translateX(-6px);
+  }
+}
+
+@keyframes global-sidebar-rail-content-in {
+  from { opacity: 0; transform: translateX(-4px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes app-shell-sidebar-follow {
+  from { transform: translateX(var(--app-shell-follow-offset)); }
+  to { transform: translateX(0); }
+}
+
+/* Chat mirrors the App Shell choreography on the right: the workspace material
+   moves at the edge while the conversation keeps its prior visual center and
+   settles into the final one-shot flex layout. Overlay mode only moves the
+   panel because it does not resize the conversation. */
+[data-chat-workspace-panel-motion='expand'] {
+  animation: chat-workspace-panel-expand var(--duration-normal) var(--ease-in-out) backwards;
+}
+
+[data-chat-workspace-panel-motion='collapse'] {
+  animation: chat-workspace-panel-collapse var(--duration-normal) var(--ease-in-out) forwards;
+}
+
+[data-chat-workspace-motion='expand'] > [data-chat-conversation] {
+  --chat-workspace-follow-offset: max(16.6667%, var(--chat-workspace-min-center-shift));
+  animation: chat-workspace-conversation-follow var(--duration-normal) var(--ease-in-out) backwards;
+}
+
+[data-chat-workspace-motion='collapse'] > [data-chat-conversation] {
+  --chat-workspace-follow-offset: min(-12.5%, var(--chat-workspace-min-center-shift-negative));
+  animation: chat-workspace-conversation-follow var(--duration-normal) var(--ease-in-out) backwards;
+}
+
+@keyframes chat-workspace-panel-expand {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+@keyframes chat-workspace-panel-collapse {
+  from { transform: translateX(0); }
+  to { transform: translateX(100%); }
+}
+
+@keyframes chat-workspace-conversation-follow {
+  from { transform: translateX(var(--chat-workspace-follow-offset)); }
+  to { transform: translateX(0); }
+}
+
 @media (prefers-reduced-motion: reduce) {
-  [data-global-sidebar-flyout] { animation: none; }
+  .global-sidebar::before,
+  .global-sidebar-copy {
+    transition: none;
+  }
+
+  [data-global-sidebar-workspace-region],
+  [data-global-sidebar-workspace-rail],
+  [data-global-sidebar-flyout],
+  [data-global-sidebar-motion] ~ [data-tab-workspace] > .custom-titlebar,
+  [data-global-sidebar-motion] ~ [data-tab-workspace] > [data-tab-content-workspace],
+  [data-chat-workspace-panel-motion],
+  [data-chat-workspace-motion] > [data-chat-conversation] {
+    animation: none;
+  }
+
+  .global-sidebar[data-global-sidebar-mode='rail'] [data-global-sidebar-workspace-region],
+  [data-chat-workspace-panel-motion='collapse'] {
+    visibility: hidden;
+  }
 }
 
 /* Viewport-locked app: prevent document-level scrolling entirely.

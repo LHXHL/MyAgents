@@ -145,7 +145,7 @@ describe('Theme architecture guardrails', () => {
     const sidebar = source('src/renderer/components/global-sidebar/GlobalSidebar.tsx');
     expect(launcher).toContain('<h1 className="theme-product-wordmark theme-launcher-hero-title">');
     expect(settings).toContain('className="theme-product-wordmark theme-launcher-hero-title cursor-default select-none"');
-    expect(sidebar).toContain('className="theme-product-wordmark min-w-0 truncate text-sm font-medium"');
+    expect(sidebar).toContain('className="theme-product-wordmark global-sidebar-copy min-w-0 truncate text-sm font-medium"');
     expect(settings).not.toContain('className="brand-title');
   });
 

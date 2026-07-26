@@ -615,16 +615,20 @@ describe('GlobalSidebar rail flyout', () => {
     const first = renderSidebar();
     const navigation = screen.getByRole('complementary', { name: String(i18n.t('app:globalSidebar.navigation')) });
     expect(navigation).toHaveAttribute('data-global-sidebar-mode', 'rail');
+    expect(navigation).not.toHaveAttribute('data-global-sidebar-motion');
     expect(navigation).toHaveAttribute('data-global-sidebar-tabbar-toggle', 'true');
-    expect(navigation).toHaveClass('bg-[var(--global-sidebar-bg)]');
+    expect(navigation).toHaveClass('[--global-sidebar-surface:var(--global-sidebar-bg)]');
+    expect(navigation).not.toHaveClass('bg-[var(--global-sidebar-bg)]');
     expect(navigation).not.toHaveClass('bg-[var(--paper)]', 'bg-[var(--paper-elevated)]', 'border-r');
     expect(navigation).not.toHaveClass('border-[var(--line)]');
     const brandIcon = navigation.querySelector('[data-global-sidebar-brand-icon]');
+    const brandName = navigation.querySelector('[data-global-sidebar-brand-name]');
     const brandRow = navigation.querySelector('[data-global-sidebar-brand-row]');
     const primaryNav = navigation.querySelector('[data-global-sidebar-primary-nav]');
     const workspaceRail = navigation.querySelector('[data-global-sidebar-workspace-rail]');
     const footerActions = navigation.querySelector('[data-global-sidebar-footer-actions]');
     expect(brandIcon).not.toBeNull();
+    expect(brandName).toHaveAttribute('aria-hidden', 'true');
     expect(brandRow).toHaveClass('global-sidebar-brand-row');
     expect(primaryNav).toHaveClass('global-sidebar-rail-stack');
     expect(primaryNav).not.toHaveClass('items-center', 'px-2', 'border-t', 'space-y-1');
@@ -648,6 +652,7 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.getByRole('tooltip', { name: String(i18n.t('app:globalSidebar.collapse')) }))
       .not.toHaveClass('delay-500', 'transition-opacity');
     expect(navigation).toHaveAttribute('data-global-sidebar-mode', 'expanded');
+    expect(navigation).toHaveAttribute('data-global-sidebar-motion', 'expand');
     expect(navigation).toHaveAttribute('data-global-sidebar-tabbar-toggle', 'false');
     expect(navigation.querySelector('[data-global-sidebar-brand-icon]')).toBe(brandIcon);
     expect(navigation.querySelector('[data-global-sidebar-brand-row]')).toBe(brandRow);
@@ -655,9 +660,27 @@ describe('GlobalSidebar rail flyout', () => {
     expect(navigation.querySelector('[data-global-sidebar-workspace-rail]')).not.toBeInTheDocument();
     expect(navigation.querySelector('[data-global-sidebar-workspace-region]')).not.toHaveClass('border-t', 'border-[var(--line-subtle)]');
     expect(navigation.querySelector('[data-global-sidebar-footer-actions]')).not.toHaveClass('global-sidebar-rail-stack');
-    const brandName = screen.getByText('MyAgents');
+    expect(brandName).toBe(screen.getByText('MyAgents'));
     expect(brandName).toHaveClass('theme-product-wordmark', 'text-sm', 'font-medium');
     expect(brandName).not.toHaveClass('font-semibold', 'tracking-wide', 'theme-launcher-hero-title');
+    expect(brandName).toHaveAttribute('aria-hidden', 'false');
+
+    fireEvent.click(collapse);
+    expect(navigation).toHaveAttribute('data-global-sidebar-mode', 'rail');
+    expect(navigation).toHaveAttribute('data-global-sidebar-motion', 'collapse');
+    expect(navigation.querySelector('[data-global-sidebar-workspace-region]'))
+      .toHaveAttribute('aria-hidden', 'true');
+    expect(navigation.querySelector('[data-global-sidebar-workspace-rail]')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.expand')) }));
+    expect(navigation).toHaveAttribute('data-global-sidebar-mode', 'expanded');
+    expect(navigation).toHaveAttribute('data-global-sidebar-motion', 'expand');
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(navigation.querySelector('[data-global-sidebar-workspace-region]')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: String(i18n.t('app:globalSidebar.collapse')) }));
+    act(() => { vi.advanceTimersByTime(200); });
+    expect(navigation.querySelector('[data-global-sidebar-workspace-region]')).not.toBeInTheDocument();
     first.unmount();
 
     mocks.forcedRail = true;

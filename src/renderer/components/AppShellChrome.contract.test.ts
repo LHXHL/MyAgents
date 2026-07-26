@@ -81,6 +81,47 @@ describe('App Shell chrome contract', () => {
     expect(sidebar).not.toContain('pendingSessionNavigationRef');
   });
 
+  it('animates the sidebar material without continuously resizing the Tab workspace', () => {
+    const sidebar = source('src/renderer/components/global-sidebar/GlobalSidebar.tsx');
+    const app = source('src/renderer/App.tsx');
+    const styles = source('src/renderer/index.css');
+
+    expect(sidebar).toContain('[--global-sidebar-surface:var(--global-sidebar-bg)]');
+    expect(sidebar).toContain('data-global-sidebar-motion={sidebarMotion ?? undefined}');
+    expect(sidebar).toContain("data-global-sidebar-titlebar-follow={isWindows ? 'full' : 'toggle-slot'}");
+    expect(sidebar).not.toContain('transition-[width]');
+    expect(app).toContain('data-tab-content-workspace');
+    expect(styles).toContain('.global-sidebar::before');
+    expect(styles).toContain('transition: clip-path var(--duration-normal) var(--ease-in-out)');
+    expect(styles).toContain(".global-sidebar[data-global-sidebar-mode='rail']::before");
+    expect(styles).toContain("[data-global-sidebar-motion='collapse'] ~ [data-tab-workspace]");
+    expect(styles).toContain("[data-global-sidebar-motion='expand'] ~ [data-tab-workspace]");
+    expect(styles).toContain("[data-global-sidebar-titlebar-follow='full'][data-global-sidebar-motion='collapse']");
+    expect(styles).toContain('@keyframes app-shell-sidebar-follow');
+    expect(styles).toContain('@media (prefers-reduced-motion: reduce)');
+  });
+
+  it('mirrors the compositor choreography across Chat and its right workspace panel', () => {
+    const chat = source('src/renderer/pages/Chat.tsx');
+    const styles = source('src/renderer/index.css');
+    const workspaceStylesStart = styles.indexOf('/* Chat mirrors the App Shell choreography');
+    const workspaceStylesEnd = styles.indexOf('@media (prefers-reduced-motion: reduce)', workspaceStylesStart);
+    const workspaceStyles = styles.slice(workspaceStylesStart, workspaceStylesEnd);
+
+    expect(chat).toContain('const [workspacePanelMounted, setWorkspacePanelMounted]');
+    expect(chat).toContain('clearWorkspacePanelUnmountTimer();');
+    expect(chat).toContain('{workspacePanelMounted && (');
+    expect(chat).toContain('data-chat-workspace-motion=');
+    expect(chat).toContain('data-chat-conversation');
+    expect(chat).toContain('data-chat-workspace-panel-motion={workspacePanelMotion ?? undefined}');
+    expect(chat).toContain('<OverlayBackdrop');
+    expect(styles).toContain('@keyframes chat-workspace-panel-expand');
+    expect(styles).toContain('@keyframes chat-workspace-panel-collapse');
+    expect(styles).toContain('@keyframes chat-workspace-conversation-follow');
+    expect(styles).toContain("[data-chat-workspace-panel-motion='collapse'] {");
+    expect(workspaceStyles).not.toContain('transition: width');
+  });
+
   it('lets the capabilities heading scroll away while only its subtabs stick', () => {
     const settings = source('src/renderer/pages/settings/SettingsPage.tsx');
     const pageHeaderIndex = settings.indexOf('data-capabilities-page-header');

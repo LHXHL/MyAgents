@@ -111,6 +111,7 @@ const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPane
 const SESSION_PAGE_SIZE = 5;
 const AUTO_RAIL_QUERY = '(max-width: 1080px)';
 const EMPTY_TAGS: SessionTag[] = [];
+const SIDEBAR_TRANSITION_MS = 200;
 const MYAGENTS_WEBSITE_URL = 'https://myagents.io';
 
 export function isPointerWithinBounds(
@@ -204,20 +205,28 @@ function SidebarNavButton({
       disabled={disabled}
       aria-current={active ? 'page' : undefined}
       aria-label={label}
-      className={`flex h-9 items-center rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-        expanded ? 'w-full gap-3 px-3' : 'w-10 justify-center'
+      className={`relative flex h-9 items-center rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+        expanded ? 'w-full' : 'w-10'
       } ${
         active
           ? 'bg-[var(--hover-bg)] text-[var(--ink)] shadow-sm'
           : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
       } ${disabled ? 'cursor-not-allowed opacity-45' : ''}`}
+      data-global-sidebar-nav-button
     >
-      <span className="flex h-4 w-4 shrink-0 items-center justify-center">{icon}</span>
-      {expanded && <span className="min-w-0 truncate">{label}</span>}
+      <span className="absolute left-3 flex h-4 w-4 shrink-0 items-center justify-center">{icon}</span>
+      <span className="global-sidebar-copy global-sidebar-nav-label min-w-0 truncate text-left" aria-hidden={!expanded}>
+        {label}
+      </span>
     </button>
   );
-  return expanded ? button : (
-    <Tip label={label} position="right" disabled={tooltipDisabled}>
+  return (
+    <Tip
+      label={label}
+      position="right"
+      disabled={expanded || tooltipDisabled}
+      className={`global-sidebar-nav-tip ${expanded ? 'w-full' : 'w-10'}`}
+    >
       {button}
     </Tip>
   );
@@ -346,6 +355,23 @@ export default memo(function GlobalSidebar({
 
   const effectiveMode = resolveGlobalSidebarMode(preference.preferredMode, forceRail);
   const expanded = effectiveMode === 'expanded';
+  const [sidebarMotion, setSidebarMotion] = useState<'expand' | 'collapse' | null>(null);
+  const [expandedWorkspaceMounted, setExpandedWorkspaceMounted] = useState(expanded);
+
+  useEffect(() => {
+    if (expanded) {
+      setExpandedWorkspaceMounted(true);
+      return;
+    }
+    if (openNestedLayerKeysRef.current.size > 0 || childLayerOpenRef.current) {
+      setExpandedWorkspaceMounted(false);
+      return;
+    }
+    const timeout = window.setTimeout(() => {
+      setExpandedWorkspaceMounted(false);
+    }, SIDEBAR_TRANSITION_MS);
+    return () => window.clearTimeout(timeout);
+  }, [expanded]);
 
   const clearFlyoutTimers = useCallback(() => {
     if (openTimerRef.current) clearTimeout(openTimerRef.current);
@@ -459,11 +485,12 @@ export default memo(function GlobalSidebar({
 
   const handleToggleMode = useCallback(() => {
     if (forceRail) return;
+    setSidebarMotion(expanded ? 'collapse' : 'expand');
     updatePreference((current) => ({
       ...current,
       preferredMode: current.preferredMode === 'expanded' ? 'rail' : 'expanded',
     }));
-  }, [forceRail, updatePreference]);
+  }, [expanded, forceRail, updatePreference]);
 
   const handleToggleWorkspace = useCallback((project: Project) => {
     const key = normalizeWorkspacePathIdentity(project.path);
@@ -783,9 +810,11 @@ export default memo(function GlobalSidebar({
       <aside
         aria-label={t('globalSidebar.navigation')}
         data-global-sidebar-mode={effectiveMode}
+        data-global-sidebar-motion={sidebarMotion ?? undefined}
+        data-global-sidebar-titlebar-follow={isWindows ? 'full' : 'toggle-slot'}
         data-global-sidebar-toggle-visible={forceRail ? 'false' : 'true'}
         data-global-sidebar-tabbar-toggle={!isWindows && !forceRail && !expanded ? 'true' : 'false'}
-        className={`global-sidebar relative z-40 flex h-screen shrink-0 flex-col bg-[var(--global-sidebar-bg)] text-[var(--ink)] ${
+        className={`global-sidebar relative z-40 flex h-screen shrink-0 flex-col [--global-sidebar-surface:var(--global-sidebar-bg)] text-[var(--ink)] ${
           expanded ? 'w-[var(--global-sidebar-expanded-width)]' : 'w-[var(--global-sidebar-rail-width)]'
         }`}
       >
@@ -832,14 +861,13 @@ export default memo(function GlobalSidebar({
               className="global-sidebar-brand-icon shrink-0"
               data-global-sidebar-brand-icon
             />
-            {expanded && (
-              <span
-                className="theme-product-wordmark min-w-0 truncate text-sm font-medium"
-                data-global-sidebar-brand-name
-              >
-                MyAgents
-              </span>
-            )}
+            <span
+              className="theme-product-wordmark global-sidebar-copy min-w-0 truncate text-sm font-medium"
+              aria-hidden={!expanded}
+              data-global-sidebar-brand-name
+            >
+              MyAgents
+            </span>
           </button>
         </div>
 
@@ -887,54 +915,64 @@ export default memo(function GlobalSidebar({
           />
         </nav>
 
-        {expanded ? (
-          <div className="min-h-0 flex-1" data-global-sidebar-workspace-region>{tree}</div>
-        ) : (
-          <div
-            className="global-sidebar-rail-stack min-h-0 flex-1 pt-3"
-            data-global-sidebar-workspace-rail
-            onKeyDown={(event) => {
-              if (event.key !== 'Escape' || !flyoutOpen) return;
-              event.preventDefault();
-              closeFlyout(true);
-            }}
-          >
+        <div className="relative min-h-0 flex-1" data-global-sidebar-workspace-shell>
+          {expandedWorkspaceMounted && (
             <div
-              onPointerEnter={handleFlyoutTriggerPointerEnter}
-              onPointerLeave={handleFlyoutTriggerPointerLeave}
-              onFocusCapture={openFlyoutNow}
-              onBlurCapture={scheduleFlyoutClose}
+              className="absolute inset-y-0 left-0 w-[var(--global-sidebar-expanded-width)]"
+              aria-hidden={!expanded}
+              inert={!expanded}
+              data-global-sidebar-workspace-region
             >
-              <button
-                ref={flyoutTriggerRef}
-                type="button"
-                onClick={openFlyoutNow}
-                aria-label={t('globalSidebar.workspaces')}
-                aria-expanded={flyoutOpen}
-                className={`flex h-9 w-10 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-                  activeWorkspacePath
-                    ? 'bg-[var(--hover-bg)] text-[var(--ink)]'
-                    : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
-                }`}
-              >
-                <FolderTree className="h-4 w-4" />
-              </button>
+              {tree}
             </div>
-            {flyoutOpen && (
+          )}
+          {!expanded && (
+            <div
+              className="global-sidebar-rail-stack absolute inset-0 min-h-0 pt-3"
+              data-global-sidebar-workspace-rail
+              onKeyDown={(event) => {
+                if (event.key !== 'Escape' || !flyoutOpen) return;
+                event.preventDefault();
+                closeFlyout(true);
+              }}
+            >
               <div
-                ref={flyoutRef}
-                className="absolute bottom-3 left-full top-12 z-[240] ml-2 w-[var(--global-sidebar-flyout-width)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--global-sidebar-bg)] shadow-md"
-                data-global-sidebar-flyout
-                onPointerEnter={handleFlyoutPointerEnter}
-                onPointerLeave={handleFlyoutPointerLeave}
-                onFocusCapture={clearFlyoutTimers}
+                onPointerEnter={handleFlyoutTriggerPointerEnter}
+                onPointerLeave={handleFlyoutTriggerPointerLeave}
+                onFocusCapture={openFlyoutNow}
                 onBlurCapture={scheduleFlyoutClose}
               >
-                {tree}
+                <button
+                  ref={flyoutTriggerRef}
+                  type="button"
+                  onClick={openFlyoutNow}
+                  aria-label={t('globalSidebar.workspaces')}
+                  aria-expanded={flyoutOpen}
+                  className={`flex h-9 w-10 items-center justify-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+                    activeWorkspacePath
+                      ? 'bg-[var(--hover-bg)] text-[var(--ink)]'
+                      : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
+                  }`}
+                >
+                  <FolderTree className="h-4 w-4" />
+                </button>
               </div>
-            )}
-          </div>
-        )}
+              {flyoutOpen && (
+                <div
+                  ref={flyoutRef}
+                  className="absolute bottom-3 left-full top-12 z-[240] ml-2 w-[var(--global-sidebar-flyout-width)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--global-sidebar-bg)] shadow-md"
+                  data-global-sidebar-flyout
+                  onPointerEnter={handleFlyoutPointerEnter}
+                  onPointerLeave={handleFlyoutPointerLeave}
+                  onFocusCapture={clearFlyoutTimers}
+                  onBlurCapture={scheduleFlyoutClose}
+                >
+                  {tree}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
 
         <div
           className={`shrink-0 py-3 ${expanded ? 'px-3' : 'global-sidebar-rail-stack'}`}
