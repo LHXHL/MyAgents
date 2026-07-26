@@ -1981,7 +1981,8 @@ Options for 'add':
 
 Options for 'update' <id>:
   Same flags as add (plus --model, --permissionMode). --message is also
-  accepted as an alias for --prompt here.
+  accepted as an alias for --prompt here. --prompt-file is supported and
+  cannot be combined with --prompt or --message.
 
 See 'myagents cron readme' for long-form usage + exit-from-task flow.`,
 
@@ -3871,8 +3872,9 @@ CREATE OPTIONS (myagents cron add ...)
                                   current session workspace.
 
 UPDATE OPTIONS (myagents cron update <taskId> ...)
-  --name / --prompt / --message / --schedule / --every / --model / --permissionMode
-  (Same semantics as create. --message is an alias for --prompt.)
+  --name / --prompt / --message / --prompt-file / --schedule / --every / --model / --permissionMode
+  (Same semantics as create. --message is an alias for --prompt; file and inline
+   prompt sources are mutually exclusive.)
 
 EXAMPLES
   # Short prompt, 30 min interval

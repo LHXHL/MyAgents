@@ -200,6 +200,7 @@ describe('admin-api help registry', () => {
     expect(readme.success).toBe(true);
     expect(shortText).not.toContain('{"kind":"loop"}');
     expect(readmeText).not.toContain('{"kind":"loop"}');
+    expect(shortText).toContain('--prompt-file is supported');
     expect(handleHelp({ path: ['goal'] }).success).toBe(true);
   });
 
