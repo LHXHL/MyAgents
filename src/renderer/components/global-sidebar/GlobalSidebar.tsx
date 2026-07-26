@@ -1240,6 +1240,7 @@ function WorkspaceTree({
   const activeWorkspaceKey = activeWorkspacePath
     ? normalizeWorkspacePathIdentity(activeWorkspacePath)
     : null;
+  const activeSessionId = activeTab?.view === 'chat' ? activeTab.sessionId : null;
 
   useEffect(() => {
     if (!activeWorkspaceKey) return;
@@ -1349,6 +1350,7 @@ function WorkspaceTree({
               const sessions = sessionsByWorkspace.get(key) ?? [];
               const limit = sessionLimits[key] ?? SESSION_PAGE_SIZE;
               const workspaceSessionState = taskCenterData.workspaceSessionStates.get(key);
+              const isActiveWorkspaceContext = activeWorkspaceKey === key;
               return (
                 <div
                   key={project.id}
@@ -1360,7 +1362,8 @@ function WorkspaceTree({
                   <WorkspaceRow
                     project={project}
                     expanded={expandedSet.has(key)}
-                    active={activeWorkspaceKey === key}
+                    active={isActiveWorkspaceContext && !activeSessionId}
+                    containsActiveSession={isActiveWorkspaceContext && Boolean(activeSessionId)}
                     onToggle={() => onToggleWorkspace(project)}
                     onOpenWorkspace={() => onOpenWorkspace(project)}
                     onTogglePin={() => onTogglePin(project)}
@@ -1479,6 +1482,7 @@ interface WorkspaceRowProps {
   project: Project;
   expanded: boolean;
   active: boolean;
+  containsActiveSession: boolean;
   onToggle: () => void;
   onOpenWorkspace: () => void;
   onTogglePin: () => void;
@@ -1493,6 +1497,7 @@ function WorkspaceRow({
   project,
   expanded,
   active,
+  containsActiveSession,
   onToggle,
   onOpenWorkspace,
   onTogglePin,
@@ -1543,7 +1548,7 @@ function WorkspaceRow({
         <WorkspaceIcon icon={project.icon} size={16} />
         <span
           className={`min-w-0 flex-1 truncate ${
-            active || menuOpen
+            active || containsActiveSession || menuOpen
               ? 'font-medium'
               : 'font-normal group-hover/workspace:font-medium group-focus-within/workspace:font-medium'
           }`}

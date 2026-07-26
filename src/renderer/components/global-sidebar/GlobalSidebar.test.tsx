@@ -979,7 +979,12 @@ describe('GlobalSidebar rail flyout', () => {
 
     const rowFor = (title: string) => screen.getByText(title).closest<HTMLElement>('[data-global-sidebar-session-row]')!;
     const activeRow = rowFor('Active session');
+    const workspaceRow = screen.getByText('Project one').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
+    expect(workspaceRow).not.toHaveAttribute('aria-current');
+    expect(workspaceRow).not.toHaveClass('bg-[var(--hover-bg)]');
+    expect(workspaceRow.querySelector('[data-global-sidebar-workspace-title]')).toHaveClass('font-medium');
     expect(activeRow).toHaveClass('bg-[var(--hover-bg)]');
+    expect(activeRow).toHaveAttribute('aria-current', 'page');
     expect(activeRow.querySelector('[data-tab-activity-indicator]')).toBeNull();
     expect(rowFor('Open session').querySelector('[data-tab-activity-indicator]')).toBeNull();
 
