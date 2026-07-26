@@ -599,6 +599,12 @@ export default function Settings({ mode = 'settings', initialSection, navigation
 
     // App version from Tauri
     const [appVersion, setAppVersion] = useState<string>('');
+    const sourceRevision = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(appVersion)
+        ? `v${appVersion}`
+        : 'main';
+    const sourceTreeUrl = `${MYAGENTS_GITHUB_URL}/tree/${sourceRevision}`;
+    const sourceLicenseUrl = `${MYAGENTS_GITHUB_URL}/blob/${sourceRevision}/LICENSE`;
+    const sourceNoticesUrl = `${MYAGENTS_GITHUB_URL}/blob/${sourceRevision}/THIRD_PARTY_NOTICES.md`;
     useEffect(() => {
         if (mode !== 'settings') return;
         if (!isTauriEnvironment()) {
@@ -5140,9 +5146,45 @@ export default function Settings({ mode = 'settings', initialSection, navigation
                                 </div>
                             </div>
 
+                            {/* Open-source and commercial licensing */}
+                            <div className="rounded-xl border border-[var(--line)] bg-[var(--paper-elevated)] p-5">
+                                <h3 className="text-base font-medium text-[var(--ink)]">
+                                    {tSettings('about.licensingTitle')}
+                                </h3>
+                                <p className="mt-1 text-xs leading-relaxed text-[var(--ink-muted)]">
+                                    {tSettings('about.licensingDescription')}
+                                </p>
+                                <div className="mt-4 flex flex-wrap gap-2 text-sm">
+                                    <ExternalLink
+                                        href={sourceLicenseUrl}
+                                        className="rounded-lg bg-[var(--paper-inset)] px-3 py-1.5 text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
+                                    >
+                                        {tSettings('about.communityLicense')}
+                                    </ExternalLink>
+                                    <ExternalLink
+                                        href={sourceTreeUrl}
+                                        className="rounded-lg bg-[var(--paper-inset)] px-3 py-1.5 text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
+                                    >
+                                        {tSettings('about.sourceCode')}
+                                    </ExternalLink>
+                                    <ExternalLink
+                                        href={sourceNoticesUrl}
+                                        className="rounded-lg bg-[var(--paper-inset)] px-3 py-1.5 text-[var(--ink)] transition-colors hover:bg-[var(--hover-bg)]"
+                                    >
+                                        {tSettings('about.thirdPartyNotices')}
+                                    </ExternalLink>
+                                    <ExternalLink
+                                        href="mailto:myagents.io@gmail.com"
+                                        className="rounded-lg bg-[var(--button-primary-bg)] px-3 py-1.5 font-medium text-[var(--button-primary-text)] transition-colors hover:bg-[var(--button-primary-bg-hover)]"
+                                    >
+                                        {tSettings('about.commercialLicensing')}
+                                    </ExternalLink>
+                                </div>
+                            </div>
+
                             {/* Copyright */}
                             <p className="text-center text-xs text-[var(--ink-muted)]">
-                                © 2026 Ethan L. All rights reserved.
+                                {tSettings('about.licensingCopyright')}
                             </p>
 
                             {/* Developer Section - Hidden by default, unlocked by tapping logo 5 times */}

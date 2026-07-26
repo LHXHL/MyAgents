@@ -1,9 +1,9 @@
 [package]
 name = "myagents"
-version = "0.3.4"
+version = "0.4.0"
 description = "MyAgents - Desktop Claude Code for everyone"
 authors = ["MyAgents Team <myagents.io@gmail.com>"]
-license = "Apache-2.0"
+license = "AGPL-3.0-only"
 repository = "https://github.com/hAcKlyc/MyAgents"
 homepage = "https://myagents.io"
 edition = "2021"

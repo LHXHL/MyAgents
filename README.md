@@ -6,7 +6,7 @@
 
 [中文](#chinese) · [English](#english) · [官网](https://myagents.io) · [下载](https://myagents.io) · [架构文档](specs/ARCHITECTURE.md) · [贡献指南](CONTRIBUTING.md)
 
-[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 [![macOS](https://img.shields.io/badge/macOS-13.0+-black.svg)](https://www.apple.com/macos/)
 [![Windows](https://img.shields.io/badge/Windows-10+-blue.svg)](https://www.microsoft.com/windows/)
 [![Tauri](https://img.shields.io/badge/Tauri-v2-orange.svg)](https://tauri.app/)
@@ -536,4 +536,29 @@ chore: bump ...
 
 ## 许可证
 
-MyAgents 使用 [Apache License 2.0](LICENSE) 开源。
+MyAgents 自 `0.4.0` 起采用 [GNU Affero General Public License v3.0](LICENSE)
+（`AGPL-3.0-only`）。个人和企业都可以免费使用，也可以商业使用；分发修改版、通过网络向
+用户提供修改版等场景需要完整履行 AGPL，包括在适用时提供对应源码。
+
+如果你希望在不履行 AGPL 开源义务的情况下闭源修改、嵌入、OEM、分发或托管 MyAgents，
+需要取得单独的商业许可证。请联系
+[myagents.io@gmail.com](mailto:myagents.io@gmail.com)。
+
+完整说明见 [LICENSING.md](LICENSING.md)。第三方组件继续适用各自许可证，详见
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。`0.3.4` 及以前已经发布的版本仍适用
+当时的 Apache License 2.0，授权不作追溯变更。
+
+---
+
+From `0.4.0`, MyAgents is available under the
+[GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`).
+Individuals and companies may use it for free, including commercially, when
+they comply with the AGPL. A separate commercial license is required for
+closed-source modification, embedding, OEM distribution, proprietary
+distribution, or hosted offerings that do not comply with the AGPL. Contact
+[myagents.io@gmail.com](mailto:myagents.io@gmail.com).
+
+See [LICENSING.md](LICENSING.md) for details and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for independently licensed
+components. Releases through `0.3.4` remain under the Apache License 2.0 that
+applied when they were published.

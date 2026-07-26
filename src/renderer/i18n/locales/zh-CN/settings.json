@@ -1890,6 +1890,13 @@
     "communityTitle": "加入用户交流群",
     "communityDescription": "扫码加入，与其他用户交流使用心得",
     "communityQrAlt": "用户交流群二维码",
+    "licensingTitle": "开源与商业授权",
+    "licensingDescription": "MyAgents 0.4.0 起采用 AGPL-3.0-only。个人和企业可以免费使用及商业使用；如果你不希望或无法履行适用的 AGPL 义务，可为闭源修改、嵌入、OEM、闭源分发或托管取得单独商业授权。",
+    "communityLicense": "查看 AGPL 许可证",
+    "sourceCode": "获取源代码",
+    "thirdPartyNotices": "第三方声明",
+    "commercialLicensing": "咨询商业授权",
+    "licensingCopyright": "© 2026 Ethan L. MyAgents 可按 AGPL-3.0-only 或单独商业许可证使用。",
     "developerSection": "开发者",
     "developer": {
       "devModeTitle": "开发者模式",

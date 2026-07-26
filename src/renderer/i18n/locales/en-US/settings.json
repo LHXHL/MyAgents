@@ -1890,6 +1890,13 @@
     "communityTitle": "Join the User Community",
     "communityDescription": "Scan the QR code to join and talk with other users",
     "communityQrAlt": "User community QR code",
+    "licensingTitle": "Open Source & Commercial Licensing",
+    "licensingDescription": "MyAgents is licensed under AGPL-3.0-only from version 0.4.0. Individuals and companies may use it for free, including commercially. If you do not want to or cannot comply with applicable AGPL obligations, a separate commercial license is available for closed-source modification, embedding, OEM distribution, proprietary distribution, or hosting.",
+    "communityLicense": "View AGPL License",
+    "sourceCode": "Get Source Code",
+    "thirdPartyNotices": "Third-Party Notices",
+    "commercialLicensing": "Commercial Licensing",
+    "licensingCopyright": "© 2026 Ethan L. MyAgents is available under AGPL-3.0-only or a separate commercial license.",
     "developerSection": "Developer",
     "developer": {
       "devModeTitle": "Developer Mode",

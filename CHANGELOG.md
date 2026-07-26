@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Changed
+
+- **0.4.0 起采用 AGPL 双许可**：MyAgents 自有覆盖作品改为
+  `AGPL-3.0-only`，完整遵守 AGPL 时仍可免费使用和商业使用；闭源修改、嵌入、OEM、
+  闭源分发或托管可联系 `myagents.io@gmail.com` 获取商业许可证。0.3.4 及此前版本的
+  Apache-2.0 授权不作追溯变更。
+- **许可证信息进入产品与发布物**：About 页提供许可证、对应源码、第三方声明与商业授权
+  入口；各平台安装包显式携带根许可证和法律说明文件，发布脚本在上传前校验版本与许可证
+  元数据一致。
+
+---
+
 ## [0.3.4] - 2026-07-25
 
 > MyAgents 0.3.4 补齐跨入口连续交互：Launcher 可以直接拖入文件，桌面消息与 AI 回复也会在 Claude Code、Codex 和 Gemini 会话中正确同步到绑定的 IM。版本同时收口连续 IM 追问与定时任务会话创建竞态，忙碌会话不再拒绝后续消息，任务启动或停止也不会卡在会话出生阶段。
