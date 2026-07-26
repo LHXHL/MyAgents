@@ -50,6 +50,28 @@ describe('App Shell chrome contract', () => {
     expect(rightActions).not.toContain('title=');
   });
 
+  it('keeps the Chat workspace header focused on identity instead of inventory counts', () => {
+    const directory = source('src/renderer/components/directory-panel/DirectoryPanel.tsx');
+    const locales = [
+      source('src/renderer/i18n/locales/zh-CN/chat.json'),
+      source('src/renderer/i18n/locales/en-US/chat.json'),
+    ];
+
+    expect(directory).not.toContain('workspaceFiles.directory.stats');
+    expect(locales.every(locale => !locale.includes('"stats": "{{files}}'))).toBe(true);
+  });
+
+  it('uses the global new-chat glyph for the matching Chat header action', () => {
+    const chat = source('src/renderer/pages/Chat.tsx');
+    const newSessionAction = chat.slice(
+      chat.indexOf('{/* New Session button - before History */}'),
+      chat.indexOf('{/* History button */}'),
+    );
+
+    expect(newSessionAction).toContain('<MessageSquarePlus className="h-3.5 w-3.5 flex-shrink-0" />');
+    expect(newSessionAction).not.toContain('<Plus ');
+  });
+
   it('wires layout-aware pointer leave handling to the forced-rail workspace flyout', () => {
     const sidebar = source('src/renderer/components/global-sidebar/GlobalSidebar.tsx');
 
@@ -57,5 +79,34 @@ describe('App Shell chrome contract', () => {
     expect(sidebar).toContain('isPointerWithinBounds(bounds, event.clientX, event.clientY)');
     expect(sidebar).toContain('previousActiveTabIdRef');
     expect(sidebar).not.toContain('pendingSessionNavigationRef');
+  });
+
+  it('lets the capabilities heading scroll away while only its subtabs stick', () => {
+    const settings = source('src/renderer/pages/settings/SettingsPage.tsx');
+    const pageHeaderIndex = settings.indexOf('data-capabilities-page-header');
+    const stickyTabsIndex = settings.indexOf('data-capabilities-sticky-tabs');
+
+    expect(pageHeaderIndex).toBeGreaterThan(-1);
+    expect(stickyTabsIndex).toBeGreaterThan(pageHeaderIndex);
+    expect(settings.slice(pageHeaderIndex - 160, pageHeaderIndex)).not.toContain('sticky');
+    expect(settings.slice(stickyTabsIndex - 180, stickyTabsIndex)).toContain('sticky top-0');
+    expect(settings).toContain('className="h-full flex-1 overflow-y-auto overscroll-contain"');
+  });
+
+  it('opens history search with immediate chrome and virtualizes the empty-query archive', () => {
+    const sidebar = source('src/renderer/components/global-sidebar/GlobalSidebar.tsx');
+    const overlay = source('src/renderer/components/TaskCenterOverlay.tsx');
+    const storeProjection = source('src/renderer/hooks/useTaskCenterData.ts');
+
+    expect(sidebar).toContain('const loadTaskCenterOverlay = () => import');
+    expect(sidebar).toContain('onIntent={() => { void loadTaskCenterOverlay(); }}');
+    expect(sidebar).toContain('<OverlayBackdrop onClose={handleSearchClose} className="z-40">');
+    expect(sidebar).not.toContain('<Suspense fallback={null}>\n          <TaskCenterOverlay');
+
+    expect(overlay).toContain("import { Virtuoso } from 'react-virtuoso'");
+    expect(overlay).toContain('data={browseRows}');
+    expect(overlay).not.toContain('filteredSessions.map');
+    expect(overlay).not.toContain('task-center-overlay-open');
+    expect(storeProjection).toContain("reason: 'global-sidebar-search', silent: true");
   });
 });
