@@ -1,6 +1,6 @@
 # MyAgents 架构总览
 
-> 全景认知地图。每个模块只给"是什么 / 关键约束 / 跳转"。代码细节、踩坑案例、API surface 见 `tech_docs/`。
+> 分层认知地图。先读“项目定位 / 全景架构图 / 核心抽象”，再按任务定位“模块地图”中的相关章节；不要默认把全文塞进上下文。Owner、进程边界与主数据流在这里，helper API、事故案例和操作步骤见 `tech_docs/`。
 
 ## 项目定位
 
@@ -179,7 +179,7 @@ Goal 与 Task 相互独立，可以关联同一 Session：Task 负责定时投�
 
 ### Rust 代理层
 
-所有前端 HTTP / SSE 流量 MUST 通过 Rust 代理层（`invoke` → Rust → reqwest → Node.js Sidecar）。**禁止**从 WebView 直接发起 HTTP 请求。
+Renderer 与 Sidecar 的**控制面** HTTP / SSE 流量 MUST 通过 Rust 代理层（`invoke` → Rust → reqwest → Node.js Sidecar）。WebView 不得直连普通 API。仅大载荷**数据面**端点（当前为 `/refs/:id`、`/attachment/*`）允许原生 fetch，以避免二进制 / spill payload 再穿 IPC JSON；这些端点必须同时满足 CORS、CSP、大小限制与路径安全约束。该例外不得扩展成第二套控制面。
 
 所有连接本地 Sidecar（`127.0.0.1`）的 reqwest 客户端 MUST 通过 `crate::local_http::*` 创建，内置 `.no_proxy()` 防止系统代理拦截 → 502。
 
@@ -249,7 +249,7 @@ Tab2 apiPost() ──► getSessionPort(session_456) ──► Rust proxy ──
 | `/api/plugin/*`（3 条） | OpenClaw 插件 CRUD | CLI |
 | `/api/agent/runtime-status` | Agent 运行时状态查询 | Node.js / 前端 |
 
-这是项目内**唯一**的"Node → Rust"反向 HTTP 通道，规避了"所有前端 HTTP 走 Rust proxy → Node"主流向对后端间通信的不适配。所有客户端 MUST 走 `crate::local_http::builder()`（loopback，仍复用 no_proxy 保护）。
+这是项目内**唯一**的"Node → Rust"反向 HTTP 通道，规避了"Renderer / Sidecar 控制面走 Rust proxy → Node"主流向对后端间通信的不适配。所有客户端 MUST 走 `crate::local_http::builder()`（loopback，仍复用 no_proxy 保护）。
 
 ---
 
@@ -851,38 +851,9 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 
 ---
 
-## Pit-of-Success 索引
+## Pit-of-Success
 
-每个模块在 helper 层把"正确路径"做成默认。完整 Problem / Surface / Invariants / Don't 见 `tech_docs/pit_of_success.md`。
-
-| 模块 | 层 | 用途 |
-|------|----|------|
-| `local_http` | Rust | 防系统代理拦截 localhost → 502 |
-| `process_cmd` | Rust | 防 Windows 控制台窗口弹出 |
-| `proxy_config` | Rust | 子进程 NO_PROXY 注入 |
-| `system_binary` | Rust | 系统工具查找（Finder PATH 缺失） |
-| `tauri::async_runtime::spawn` + clippy ban | Rust | 防 macOS startup-abort（`tokio::spawn` 跨 FFI 不能 unwind） |
-| Session watcher | Rust | 文件系统观察索引（写入路径解耦） |
-| `withConfigLock` / `with_config_lock` | Node + Rust + renderer | `config.json` 跨进程串行写入 |
-| `ThemeRegistry` + `ThemeRuntimeProvider` + Tailwind bridge | renderer | 完整 Theme 校验、整套解析、root/context/跨窗口一致投影；runtime 值与编译期 utility 映射分离 |
-| `withFileLock` / `with_file_lock` | Node + Rust + renderer | 单写者文件原子性 |
-| `copyPlainText` | renderer | WebView 普通文本复制 fallback + 真实成功语义 |
-| `killWithEscalation` | Node | 子进程 stop SIGTERM → SIGKILL → orphan 升级链 |
-| `withAbortSignal` / `cancellableFetch` | Node | 统一 cancel 协议（fetch / stream / process） |
-| `maybeSpill` + `/refs/:id` + SSE 优先级 | Node + Rust | 大 payload 流到 ref，SSE 三档队列 |
-| `withLogContext` + ALS pipeline | Node + Rust | 自动注入 sessionId/tabId/turnId/runtime/requestId |
-| `DeferredInitState` + readiness endpoints | Node | 三分健康探针（live/ready/functional） |
-| `fs-utils` | Node | 跨平台 mkdir / 目录判定（Windows junction） |
-| `subprocess` | Node | Bun→Node spawn 形态适配 |
-| `file-response` | Node | 流式 HTTP 文件响应 |
-| Builtin MCP META/INSTANCE 懒加载 | Node | 防冷启动每次付 ~1s SDK+zod 税 |
-| Snapshot helpers | Node | owned vs live-follow 命名分裂 |
-| Legacy Cron → Task startup migration | Rust | 后端启动期幂等迁移，旧 store 保持只读 |
-| `saveToolAttachment` + `path-safety.ts` | Node | 任意工具图片产物统一落盘 + symlink-safe 路径校验 + SSRF 防护 |
-| `awaitInFlightSaves` + `rebuildAttachmentRegistry` | Node | 异步 attachment 落盘的 turn-boundary 守卫 + session resume 重 register |
-| `workspacePath` / `workspacePathsEqual` | shared (renderer) | 工作区路径跨存储标识比较（Rust `normalize_path` 的 TS 端口，防 Win 斜杠/盘符误判） |
-| Client-action 斜杠命令 (`slashActions`) | renderer | UI 动作命令名字保留 + 勿进文本插入 builtin 清单（防死条目 / shadow） |
-| System-skill 同步完整性门控 | Rust + Node | 验源含 SKILL.md 再清目标 + 全落地才写版本戳（防空目录冻结） |
+跨模块 helper 的完整 Problem / Surface / Invariants / Don't 由 `tech_docs/pit_of_success.md` 维护；可静态判断的边界由 ESLint、dependency-cruiser 与 Clippy 执行。本架构文档不镜像 helper 清单：只有 helper 改变了 owner、进程边界或主数据流时，才需要在对应架构章节更新。
 
 ---
 
@@ -1021,29 +992,9 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 
 ---
 
-## 开发脚本
+## 开发、构建与发布入口
 
-### macOS
-
-| 脚本 | 用途 |
-|------|------|
-| `setup.sh` | 首次环境初始化 |
-| `start_dev.sh` | 浏览器开发模式 |
-| `build_dev.sh` | Debug 构建（含 DevTools） |
-| `build_macos.sh` | 生产 DMG 构建 |
-| `publish_release.sh` | 发布到 R2 |
-| `publish_managed_codex_runtime.sh` | 单独发布 Managed Codex runtime set 的 macOS 平台资源 |
-
-### Windows
-
-| 脚本 | 用途 |
-|------|------|
-| `setup_windows.ps1` | 首次环境初始化 |
-| `build_windows.ps1` | 生产构建（NSIS + 便携版） |
-| `publish_windows.ps1` | 发布到 R2 |
-| `publish_managed_codex_runtime.ps1` | 单独发布 Managed Codex runtime set 的 Windows 平台资源 |
-
-详见 `guides/windows_build_guide.md`。
+可执行命令以根目录 `package.json` 和平台脚本为准；环境、签名、产物与发布顺序见 `guides/` 下对应平台文档。这里不复制易随脚本变化的命令清单。
 
 ---
 

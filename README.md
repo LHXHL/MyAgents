@@ -232,10 +232,10 @@ specs/                        架构、设计、技术文档
 
 - **Session : Sidecar = 1 : 1**：每个会话最多一个 Sidecar，Tab、CronTask、BackgroundCompletion、Agent 通过 Owner 模型共享生命周期。
 - **Tab-Scoped 隔离**：Chat Tab 内使用 tab-scoped API；Settings 和 Launcher 使用 Global Sidecar。
-- **前端 HTTP/SSE 走 Rust 代理**：WebView 不直接访问 Sidecar 端口。
+- **控制面 HTTP/SSE 走 Rust 代理**：普通 API 不由 WebView 直连 Sidecar；仅 `/refs/:id`、`/attachment/*` 大载荷数据面在 CORS/CSP/路径安全约束下原生 fetch。
 - **工作区文件 IO 走 Tauri/Rust**：文件树、读写、搜索、打开、watcher 不走 Sidecar HTTP。
 - **配置写盘 disk-first**：多进程共享配置必须读磁盘最新值再合并写入。
-- **Runtime 分流明确**：外部 Runtime 走 `external-session.ts`，不能让 builtin SDK resume 外部会话。
+- **Runtime 分流明确**：Session 操作统一走 `src/server/session-engine/` facade，由 selector 选择 builtin 或 external adapter；不能让 builtin SDK resume 外部会话。
 
 完整架构请读 [specs/ARCHITECTURE.md](specs/ARCHITECTURE.md)。具体模块请按需阅读：
 
@@ -506,10 +506,10 @@ specs/                        Architecture, design, and technical docs
 
 - **Session : Sidecar = 1 : 1**: each session has at most one Sidecar. Tabs, CronTasks, BackgroundCompletion, and Agents share lifecycle through the Owner model.
 - **Tab-scoped isolation**: Chat Tabs use tab-scoped APIs. Settings and Launcher use the Global Sidecar.
-- **Frontend HTTP/SSE goes through the Rust proxy**: WebView does not access Sidecar ports directly.
+- **Control-plane HTTP/SSE goes through the Rust proxy**: ordinary APIs never connect from the WebView to a Sidecar; only the `/refs/:id` and `/attachment/*` large-payload data plane uses native fetch under CORS, CSP, and path-safety constraints.
 - **Workspace file IO goes through Tauri/Rust**: file tree, reads/writes, search, open, and watcher do not use Sidecar HTTP.
 - **Config writes are disk-first**: shared multi-process config must load the latest disk state before merging and writing.
-- **Runtime routing must be explicit**: external runtimes go through `external-session.ts`; the builtin SDK must not resume external-runtime sessions.
+- **Runtime routing must be explicit**: session operations go through the `src/server/session-engine/` facade, whose selector chooses the builtin or external adapter; the builtin SDK must not resume external-runtime sessions.
 
 Read [specs/ARCHITECTURE.md](specs/ARCHITECTURE.md) for the full architecture. Module-specific docs:
 
