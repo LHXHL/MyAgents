@@ -1301,7 +1301,7 @@ function WorkspaceSessionBranch({
         }`}
       >
         {rendered && (
-          <div className="ml-1.5 border-l border-[var(--line-subtle)] pl-2">
+          <div className="ml-2.5 border-l border-[var(--line-subtle)] pl-1">
             {children}
           </div>
         )}
@@ -1684,12 +1684,12 @@ function WorkspaceRow({
       <button
         type="button"
         onClick={onToggle}
-        className="flex h-full min-w-0 flex-1 items-center gap-2 pl-0 pr-2 text-left text-sm text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]"
+        className="flex h-full min-w-0 flex-1 items-center gap-1 pl-1 pr-2 text-left text-sm text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]"
       >
         <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)] transition-transform duration-200 ease-out motion-reduce:transition-none ${expanded ? 'rotate-90' : ''}`} />
         <WorkspaceIcon icon={project.icon} size={16} />
         <span
-          className={`min-w-0 flex-1 truncate ${
+          className={`ml-1 min-w-0 flex-1 truncate ${
             active || containsActiveSession || menuOpen
               ? 'font-medium'
               : 'font-normal group-hover/workspace:font-medium group-focus-within/workspace:font-medium'

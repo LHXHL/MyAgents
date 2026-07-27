@@ -849,15 +849,16 @@ describe('GlobalSidebar rail flyout', () => {
     const workspaceChevron = workspaceToggle.querySelector('svg');
     expect(branch).toHaveAttribute('data-global-sidebar-workspace-branch');
     expect(branch).toHaveAttribute('data-state', 'closed');
-    expect(workspaceToggle).toHaveClass('pl-0', 'pr-2', 'text-sm');
+    expect(workspaceToggle).toHaveClass('gap-1', 'pl-1', 'pr-2', 'text-sm');
     expect(workspaceChevron).toHaveClass('h-3.5', 'w-3.5');
+    expect(workspaceRow.querySelector('[data-global-sidebar-workspace-title]')).toHaveClass('ml-1');
     expect(screen.queryByText('Animated session')).not.toBeInTheDocument();
 
     fireEvent.click(workspaceToggle);
     act(() => vi.advanceTimersByTime(16));
     expect(branch).toHaveAttribute('data-state', 'open');
     expect(branch).toHaveClass('grid-rows-[1fr]', 'duration-200', 'motion-reduce:transition-none');
-    expect(branch.querySelector('.ml-1\\.5')).toBeInTheDocument();
+    expect(branch.querySelector('.ml-2\\.5')).toHaveClass('pl-1');
     expect(screen.getByText('Animated session')).toHaveClass('text-sm');
 
     fireEvent.click(workspaceToggle);
