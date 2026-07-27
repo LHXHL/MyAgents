@@ -20,6 +20,7 @@ import type {
   TurnOwner,
   TurnTerminalObserver,
 } from '../session-core/turn-queue';
+import type { AssistantChannelDelivery } from '../session-core/channel-delivery';
 
 export type SessionEngineKind = 'builtin' | 'external';
 
@@ -145,6 +146,8 @@ export type InjectedTurnRequest = {
   runtimeConfig?: RuntimeConfig | null;
   metadata?: { source: SessionSource; sourceId?: string; senderName?: string };
   analyticsOrigin?: SessionOrigin;
+  /** Explicit owner of any public assistant response produced by this injected turn. */
+  assistantChannelDelivery: AssistantChannelDelivery;
   timeoutMs: number;
   pollMs?: number;
   queueId?: string;

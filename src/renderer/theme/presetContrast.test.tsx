@@ -59,6 +59,22 @@ function resolvedColorToken(tokens: Map<string, string>, tokenName: string): str
 }
 
 describe('production Theme contrast', () => {
+  it('keeps the global sidebar subtly deeper than page paper in every scheme', () => {
+    for (const definition of themeRegistry.getAcceptedDefinitions()) {
+      for (const scheme of ['light', 'dark'] as const) {
+        const tokens = tokensFor(definition.stylesheetText, definition.id, scheme);
+        const paper = luminance(tokens.get('--paper')!);
+        const sidebar = luminance(tokens.get('--global-sidebar-bg')!);
+        const inset = luminance(tokens.get('--paper-inset')!);
+
+        expect(sidebar, `${definition.id}.${scheme} sidebar vs paper`).toBeLessThan(paper);
+        expect(sidebar, `${definition.id}.${scheme} sidebar vs inset`).toBeGreaterThan(inset);
+        expect(tokens.get('--global-sidebar-bg'), `${definition.id}.${scheme} sidebar identity`)
+          .not.toBe(tokens.get('--paper-elevated'));
+      }
+    }
+  });
+
   it('keeps every optional light Theme toggle thumb on the light control surface', () => {
     const lightSurfaceFloor = luminance('#f0f0f0');
 

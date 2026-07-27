@@ -17,6 +17,7 @@
     "reasoningEffort": "Reasoning effort",
     "reasoningDefault": "Default",
     "reasoningRequirement": "Requires provider support; actual behavior depends on the provider.",
+    "customModelService": "Manage custom model services",
     "systemBusy": "A system task is running. Please wait.",
     "stopping": "Stopping...",
     "providerUnavailableDefault": "Set up a model provider in Settings first.",
@@ -305,7 +306,6 @@
       "agentSettings": "Agent settings",
       "searchPlaceholder": "Search files and contents...",
       "exitSearch": "Exit search",
-      "stats": "{{files}} files · {{folders}} folders",
       "loading": "Loading...",
       "copyCount": "Copy ({{count}})",
       "cutCount": "Cut ({{count}})",
@@ -425,7 +425,7 @@
       }
     },
     "history": {
-      "title": "History",
+      "title": "Workspace history",
       "loading": "Loading...",
       "empty": "No history yet",
       "current": "Current",

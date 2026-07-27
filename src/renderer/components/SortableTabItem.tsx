@@ -14,6 +14,7 @@ import { X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
 import { TAB_ITEM_MAX_WIDTH_PX, TAB_ITEM_MIN_WIDTH_PX } from '@/components/tabBarLayout';
+import TabActivityIndicator from '@/components/TabActivityIndicator';
 import { type Tab, getFolderName } from '@/types/tab';
 import { getFixedTabChromeTitle } from '@/utils/tabChromeTitle';
 
@@ -80,11 +81,11 @@ export default memo(function SortableTabItem({
             title={tooltipTitle}
             className={`
                 group/tab relative flex h-8 cursor-default items-center
-                rounded-lg px-2.5 transition-colors duration-150
+                rounded-md px-2.5 transition-colors duration-150
                 ${isDragging ? 'shadow-lg ring-2 ring-[var(--accent)]/30' : ''}
                 ${isActive
-                    ? 'bg-[var(--paper-inset)] text-[var(--ink)] shadow-sm'
-                    : 'text-[var(--ink-muted)] hover:bg-[var(--paper-inset)]/60 hover:text-[var(--ink)]'
+                    ? 'bg-[var(--hover-bg)] text-[var(--ink)]'
+                    : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
                 }
             `}
             onMouseDown={(e) => {
@@ -119,22 +120,11 @@ export default memo(function SortableTabItem({
                 )}
             </span>
 
-            {/* Status dot indicator — streaming (pulsing green, always visible) or unread (static warm, non-active only) */}
-            {tab.isGenerating && (
-                <>
-                    <span className="relative ml-1 flex h-1.5 w-1.5 flex-shrink-0" aria-hidden="true">
-                        <span className="absolute inset-0 rounded-full bg-[var(--success)]" />
-                        <span className="absolute inset-0 rounded-full bg-[var(--success)] animate-[tab-dot-pulse_1.6s_cubic-bezier(.22,.61,.36,1)_infinite]" />
-                    </span>
-                    <span className="sr-only">{t('tabs.generating')}</span>
-                </>
-            )}
-            {!isActive && !tab.isGenerating && tab.hasUnread && (
-                <>
-                    <span className="ml-1 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-[var(--accent-warm)]" aria-hidden="true" />
-                    <span className="sr-only">{t('tabs.unread')}</span>
-                </>
-            )}
+            <TabActivityIndicator
+                isGenerating={tab.isGenerating}
+                hasUnread={!isActive && tab.hasUnread}
+                className="ml-1"
+            />
 
             {/* Close button — enlarged hit area (24×24) with visual icon (12×12) */}
             <button
@@ -157,7 +147,10 @@ export default memo(function SortableTabItem({
 
             {/* Active indicator */}
             {isActive && (
-                <div className="absolute bottom-0.5 left-4 right-4 h-0.5 rounded-full bg-[var(--accent)]/70" />
+                <div
+                    className="absolute bottom-0.5 left-4 right-4 h-0.5 rounded-full bg-[var(--accent)]/70"
+                    data-tab-active-indicator
+                />
             )}
 
         </div>

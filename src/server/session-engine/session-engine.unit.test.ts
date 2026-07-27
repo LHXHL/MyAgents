@@ -389,8 +389,19 @@ import {
   stopOwnedTurn,
   stopOwnedTurnByQueueId,
 } from './selector';
+import type { InjectedTurnRequest } from './types';
 
 const desktopScenario = { type: 'desktop' } as const;
+
+type TestInjectedTurnRequest = Omit<InjectedTurnRequest, 'assistantChannelDelivery'>
+  & Partial<Pick<InjectedTurnRequest, 'assistantChannelDelivery'>>;
+
+function runInjectedTurn(request: TestInjectedTurnRequest) {
+  return getSessionEngine().runInjectedTurn({
+    assistantChannelDelivery: 'none',
+    ...request,
+  });
+}
 
 describe('session-engine selector and adapters', () => {
   beforeEach(() => {
@@ -447,8 +458,14 @@ describe('session-engine selector and adapters', () => {
       {
         fromDesktopChatSend: true,
         sessionBirthOrigin: { kind: 'desktop', surface: 'launcher_input' },
+        queueId: undefined,
+        turnOwner: undefined,
         beforeDispatch: undefined,
         onTerminal: undefined,
+        channelDelivery: {
+          user: 'session-binding',
+          assistant: 'session-binding',
+        },
       },
     );
   });
@@ -483,7 +500,7 @@ describe('session-engine selector and adapters', () => {
       undefined,
       undefined,
       undefined,
-      { source: 'desktop' },
+      undefined,
       undefined,
       undefined,
       undefined,
@@ -491,6 +508,10 @@ describe('session-engine selector and adapters', () => {
       {
         allowLazySessionMaterialization: true,
         sessionBirthOrigin: birthOrigin,
+        channelDelivery: {
+          user: 'none',
+          assistant: 'session-binding',
+        },
       },
     );
 
@@ -507,6 +528,10 @@ describe('session-engine selector and adapters', () => {
         analyticsOrigin: birthOrigin,
         birthOrigin,
         metadataBirthPending: true,
+        channelDelivery: {
+          user: 'none',
+          assistant: 'session-binding',
+        },
       }),
     );
   });
@@ -775,10 +800,15 @@ describe('session-engine selector and adapters', () => {
         permissionMode: 'auto',
         model: 'gpt-5',
         reasoningEffort: undefined,
+        turnBoundaryOnly: undefined,
         queueId: undefined,
         turnOwner: undefined,
         onTerminal: undefined,
         beforeDispatch: undefined,
+        channelDelivery: {
+          user: 'session-binding',
+          assistant: 'session-binding',
+        },
       },
     );
     expect(mocks.broadcast).not.toHaveBeenCalled();
@@ -1056,7 +1086,7 @@ describe('session-engine selector and adapters', () => {
       status: 'cancelled',
       cancelledText: 'run cron',
     });
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'run cron',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1126,7 +1156,7 @@ describe('session-engine selector and adapters', () => {
     });
 
     let resultSettled = false;
-    const pendingResult = getSessionEngine().runInjectedTurn({
+    const pendingResult = runInjectedTurn({
       prompt: 'continue goal',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1173,7 +1203,7 @@ describe('session-engine selector and adapters', () => {
     };
     mocks.interruptCurrentResponse.mockResolvedValueOnce(true);
 
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'continue goal',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1205,7 +1235,7 @@ describe('session-engine selector and adapters', () => {
     mocks.state.builtinDispatchedQueueId = 'q-ownerless-active';
     mocks.interruptCurrentResponse.mockResolvedValueOnce(true);
 
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'heartbeat maintenance',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1238,7 +1268,7 @@ describe('session-engine selector and adapters', () => {
     };
     mocks.interruptCurrentResponse.mockResolvedValueOnce(false);
 
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'scheduled turn',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1268,7 +1298,7 @@ describe('session-engine selector and adapters', () => {
     });
     mocks.cancelQueueItem.mockResolvedValueOnce({ status: 'not_found' });
 
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'scheduled turn',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1287,7 +1317,7 @@ describe('session-engine selector and adapters', () => {
   it('clears stale builtin agent errors before starting an injected turn', async () => {
     mocks.getAndClearLastAgentError.mockReturnValueOnce('stale previous error');
 
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'heartbeat',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1304,7 +1334,7 @@ describe('session-engine selector and adapters', () => {
   });
 
   it('does not install an injected-turn-specific MCP admission gate', async () => {
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'heartbeat',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1325,7 +1355,7 @@ describe('session-engine selector and adapters', () => {
       cancel: vi.fn(),
     });
 
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'run cron',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1347,7 +1377,7 @@ describe('session-engine selector and adapters', () => {
   it('leaves external injected turns outside the builtin MCP readiness gate', async () => {
     mocks.state.useExternal = true;
 
-    await getSessionEngine().runInjectedTurn({
+    await runInjectedTurn({
       prompt: 'heartbeat',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1366,7 +1396,7 @@ describe('session-engine selector and adapters', () => {
   ])(
     'maps builtin injected-turn birth authority to lazy materialization: $expected',
     async ({ metadataBirthPending, expected }) => {
-      await getSessionEngine().runInjectedTurn({
+      await runInjectedTurn({
         prompt: 'heartbeat',
         sessionId: 'sid',
         workspacePath: '/workspace',
@@ -1409,7 +1439,7 @@ describe('session-engine selector and adapters', () => {
       });
       return { queued: true, queueId: options.queueId, dispatchAcceptance };
     });
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'memory update',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1432,7 +1462,7 @@ describe('session-engine selector and adapters', () => {
   });
 
   it('forces every synchronous injected turn onto a turn boundary', async () => {
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'continue goal',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1505,7 +1535,7 @@ describe('session-engine selector and adapters', () => {
       });
       return { queued: true, queueId: options.queueId, dispatchAcceptance };
     });
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'memory update',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1538,7 +1568,7 @@ describe('session-engine selector and adapters', () => {
       return { queued: true };
     });
 
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'update memory',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1563,7 +1593,7 @@ describe('session-engine selector and adapters', () => {
     mocks.didLastTurnSucceed.mockReturnValueOnce(false);
     mocks.getLastExternalAssistantText.mockReturnValueOnce('later user turn answer');
 
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'update memory',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1611,6 +1641,10 @@ describe('session-engine selector and adapters', () => {
         workspacePath: '/workspace',
         requestId: 'req-1',
         metadataBirthPending: true,
+        channelDelivery: {
+          user: 'none',
+          assistant: 'reply-router',
+        },
       }),
     );
   });
@@ -1655,8 +1689,9 @@ describe('session-engine selector and adapters', () => {
     async ({ metadataBirthPending, expected }) => {
       mocks.state.useExternal = true;
 
-      await getSessionEngine().runInjectedTurn({
+      await runInjectedTurn({
         prompt: 'heartbeat',
+        assistantChannelDelivery: 'caller-owned',
         sessionId: 'sid',
         workspacePath: '/workspace',
         scenario: { type: 'agent-channel', platform: 'feishu', sourceType: 'private' },
@@ -1674,6 +1709,10 @@ describe('session-engine selector and adapters', () => {
           sessionId: 'sid',
           workspacePath: '/workspace',
           metadataBirthPending: expected,
+          channelDelivery: {
+            user: 'none',
+            assistant: 'caller-owned',
+          },
         }),
       );
     },
@@ -1724,7 +1763,7 @@ describe('session-engine selector and adapters', () => {
       return { queued: true };
     });
 
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'heartbeat',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1752,7 +1791,7 @@ describe('session-engine selector and adapters', () => {
     );
     const beforeDispatch = Object.assign(vi.fn(), { cancel: vi.fn() });
 
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'goal continuation',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1802,7 +1841,7 @@ describe('session-engine selector and adapters', () => {
         : Promise.resolve({ queued: true });
     });
 
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'memory update',
       sessionId: 'sid',
       workspacePath: '/workspace',
@@ -1851,7 +1890,7 @@ describe('session-engine selector and adapters', () => {
       };
     });
 
-    const result = await getSessionEngine().runInjectedTurn({
+    const result = await runInjectedTurn({
       prompt: 'task turn',
       sessionId: 'sid',
       workspacePath: '/workspace',

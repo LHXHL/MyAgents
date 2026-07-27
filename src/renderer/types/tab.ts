@@ -131,8 +131,11 @@ export interface Tab {
     id: string;
     agentDir: string | null;  // null = showing Launcher
     sessionId: string | null; // null = not started
-    view: 'launcher' | 'chat' | 'settings' | 'taskcenter' | 'space';
+    view: 'launcher' | 'chat' | 'settings' | 'capabilities' | 'taskcenter' | 'space';
     title: string;            // Display title for the tab
+    /** Runtime-only Launcher selection. The Tab owns this projection so the
+     * global shell can read the active workspace without a second App mirror. */
+    launcherWorkspacePath?: string | null;
     isGenerating?: boolean;   // true = AI is outputting, used for close confirmation
     hasUnread?: boolean;      // true = task completed but user hasn't viewed this tab yet
     initialMessage?: InitialMessage;  // Launcher → Chat auto-send message

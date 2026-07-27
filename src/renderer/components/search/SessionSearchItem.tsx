@@ -19,6 +19,7 @@ interface SessionSearchItemProps {
     project?: Project;
     isCronProtected: boolean;
     onClick: () => void;
+    onContextMenu: (e: React.MouseEvent<HTMLDivElement>) => void;
     onShowStats: (e: React.MouseEvent) => void;
     onDelete: (e: React.MouseEvent) => void;
 }
@@ -29,6 +30,7 @@ export default memo(function SessionSearchItem({
     project,
     isCronProtected,
     onClick,
+    onContextMenu,
     onShowStats,
     onDelete,
 }: SessionSearchItemProps) {
@@ -44,7 +46,12 @@ export default memo(function SessionSearchItem({
         <div
             role="button"
             onClick={onClick}
-            className="group relative flex w-full cursor-pointer items-start gap-2.5 rounded-lg px-3 py-2 text-left transition-all hover:bg-[var(--hover-bg)]"
+            onMouseDown={(event) => {
+                if (event.button === 2) event.preventDefault();
+            }}
+            onContextMenu={onContextMenu}
+            className="group relative flex w-full cursor-pointer select-none items-start gap-2.5 rounded-lg px-3 py-2 text-left transition-all hover:bg-[var(--hover-bg)]"
+            data-history-search-session-row
         >
             {/* Left column: Time — fixed width so content column is consistently left-aligned */}
             <div className="mt-1 flex w-16 shrink-0 items-center gap-1 whitespace-nowrap text-xs text-[var(--ink-muted)]/50">

@@ -80,6 +80,12 @@ import {
 } from '../proxy-state';
 import type { RuntimeBackedProviderIdentity } from '../../shared/providerExecution';
 import type { RuntimeSource, RuntimeType } from '../../shared/types/runtime';
+import {
+  DESKTOP_CHANNEL_DELIVERY,
+  IM_CHANNEL_DELIVERY,
+  SESSION_BOUND_CHANNEL_DELIVERY,
+  injectedTurnChannelDelivery,
+} from '../session-core/channel-delivery';
 
 function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   if (timeoutMs <= 0) return Promise.resolve(null);
@@ -325,6 +331,7 @@ export function createExternalSessionEngine(): SessionEngine {
           turnOwner: request.turnOwner,
           onTerminal: request.onTerminal,
           beforeDispatch: request.beforeDispatch,
+          channelDelivery: DESKTOP_CHANNEL_DELIVERY,
         },
       );
       const dispatchAcceptance = observeExternalDispatch(sent.dispatch, request.queueId);
@@ -358,6 +365,7 @@ export function createExternalSessionEngine(): SessionEngine {
           turnOwner: request.turnOwner,
           onTerminal: request.onTerminal,
           beforeDispatch: request.beforeDispatch,
+          channelDelivery: IM_CHANNEL_DELIVERY,
         },
       );
       const dispatchAcceptance = observeExternalDispatch(
@@ -413,6 +421,7 @@ export function createExternalSessionEngine(): SessionEngine {
           turnOwner: request.turnOwner,
           onTerminal: request.onTerminal,
           ...(request.beforeDispatch ? { beforeDispatch: request.beforeDispatch } : {}),
+          channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
       );
       if (!result.queued) {
@@ -443,6 +452,7 @@ export function createExternalSessionEngine(): SessionEngine {
           metadataBirthPending: request.allowLazySessionMaterialization === true,
           analyticsOrigin: request.analyticsOrigin,
           birthOrigin: request.birthOrigin,
+          channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
       );
     },
@@ -484,6 +494,7 @@ export function createExternalSessionEngine(): SessionEngine {
             }
           },
           beforeDispatch: request.beforeDispatch,
+          channelDelivery: injectedTurnChannelDelivery(request.assistantChannelDelivery),
         },
       );
       const result = await waitForDeadline(sendPromise, deadline - Date.now());

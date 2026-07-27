@@ -1,10 +1,10 @@
 /**
  * Launcher - Main entry page for MyAgents
- * Two-column layout: Brand section (left 60%) + Workspaces (right 40%)
- * Responsive: stacks vertically below 640px
+ * Lightweight new-work page. Global navigation and workspace/session history
+ * live in the App Shell sidebar; this page owns only launch composition.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { perfMark } from '@/utils/perfMark';
@@ -17,19 +17,12 @@ import { type ImageAttachment } from '@/components/SimpleChatInput';
 import { projectTaskExecutionOverrides } from '@/utils/taskProviderProjection';
 import { coerceRuntimeBirthPermissionMode } from '../../shared/runtimeBirthFields';
 import { useToast } from '@/components/Toast';
-import { UnifiedLogsPanel } from '@/components/UnifiedLogsPanel';
 import PathInputDialog from '@/components/PathInputDialog';
-import ConfirmDialog from '@/components/ConfirmDialog';
-// P1: click-opened overlays — lazy so their subtrees (which transitively pull
-// Markdown → mermaid/katex/syntax-highlighter) leave the eager entry chunk.
-const TaskCenterOverlay = lazy(() => import('@/components/TaskCenterOverlay'));
-import { BrandSection, LauncherRightRail, TemplateLibraryDialog, WorkspaceEditDialog } from '@/components/launcher';
-const WorkspaceConfigPanel = lazy(() => import('@/components/WorkspaceConfigPanel'));
+import { BrandSection } from '@/components/launcher';
 import { useConfig } from '@/hooks/useConfig';
-import { useTaskCenterData } from '@/hooks/useTaskCenterData';
-import { CODEX_SUBSCRIPTION_PROVIDER_ID, type Project, type PermissionMode, type McpServerDefinition, type WorkspaceTemplate, isProviderEnabled, isProjectActiveForUser, isProjectArchived, isProjectVisibleToUser, isSystemPresetProject } from '@/config/types';
+import { CODEX_SUBSCRIPTION_PROVIDER_ID, type Project, type PermissionMode, type McpServerDefinition, isProjectActiveForUser, isProjectVisibleToUser } from '@/config/types';
 import { CUSTOM_EVENTS } from '../../shared/constants';
-import { normalizeWorkspacePathIdentity, workspacePathsEqual } from '../../shared/workspacePath';
+import { workspacePathsEqual } from '../../shared/workspacePath';
 import {
     getAllMcpServers,
     getEnabledMcpServerIds,
@@ -37,8 +30,7 @@ import {
     resolveProvider,
     pairBuiltinSelection,
 } from '@/config/configService';
-import { patchAgentConfig, patchAgentProjectConfig, getAgentById, disableAgentAndStopChannels, enableAgentAndStartChannels } from '@/config/services/agentConfigService';
-import { archiveProject, unarchiveProject } from '@/config/services/projectService';
+import { patchAgentConfig, patchAgentProjectConfig, getAgentById } from '@/config/services/agentConfigService';
 import { persistInputOptionChange } from '@/api/persistInputOption';
 import { createCronTask, startCronTask } from '@/api/cronTaskClient';
 import type { RuntimeType, RuntimeModelInfo, RuntimePermissionMode, RuntimeDetections, RuntimeConfig } from '../../shared/types/runtime';
@@ -57,9 +49,6 @@ import {
 import { apiGetJson } from '@/api/apiFetch';
 import { isBrowserDevMode, pickFolderForDialog } from '@/utils/browserMock';
 import { resolveLauncherProvider } from '@/utils/optionResolve';
-import { useAgentStatuses } from '@/hooks/useAgentStatuses';
-import { useWorkspaceFileService } from '@/hooks/useWorkspaceFileService';
-import type { SessionMetadata } from '@/api/sessionClient';
 import type { InitialMessage, LaunchSessionBirthHint } from '@/types/tab';
 
 interface LauncherProps {
@@ -74,14 +63,14 @@ interface LauncherProps {
     startError?: string | null;
     isActive: boolean;
     attachmentSessionId?: string | null;
-    sessionNotificationBadgeCounts?: ReadonlyMap<string, number>;
+    selectedWorkspacePath?: string | null;
+    onWorkspaceSelectionChange?: (workspacePath: string | null) => void;
 }
 
-export default function Launcher({ onLaunchProject, isStarting, startError: _startError, isActive, attachmentSessionId, sessionNotificationBadgeCounts }: LauncherProps) {
+export default function Launcher({ onLaunchProject, isStarting, startError: _startError, isActive, attachmentSessionId, selectedWorkspacePath, onWorkspaceSelectionChange }: LauncherProps) {
     const { t } = useTranslation('launcher');
     const toast = useToast();
     const toastRef = useRef(toast);
-    const pinToggleInFlightRef = useRef(new Set<string>());
     const {
         config,
         projects,
@@ -89,55 +78,25 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         isLoading,
         error: _error,
         addProject,
-        removeProject,
         patchProject,
         touchProject,
         apiKeys,
         providerVerifyStatus,
         refreshProviderData,
         updateConfig,
-        refreshConfig,
     } = useConfig();
 
     useEffect(() => {
         toastRef.current = toast;
     }, [toast]);
 
-    // Filter out internal projects (e.g. ~/.myagents diagnostic workspace).
-    // Archived projects stay user-visible for the right rail restore affordance,
-    // but they are excluded from launch selectors and default workspace choice.
-    const userVisibleProjects = useMemo(() => projects.filter(isProjectVisibleToUser), [projects]);
-    const visibleProjects = useMemo(() => userVisibleProjects.filter(isProjectActiveForUser), [userVisibleProjects]);
-
-    // Poll agent statuses only when any project has proactive mode
-    const hasAnyAgent = useMemo(() => visibleProjects.some(p => p.isAgent), [visibleProjects]);
-    const { statuses: agentStatuses } = useAgentStatuses(hasAnyAgent);
-    const taskCenterData = useTaskCenterData({ isActive });
-    const { openPathExternal } = useWorkspaceFileService(null);
-
-    // Build agent lookup: project path → { agent config, runtime status }
-    const agentLookup = useMemo(() => {
-        const map = new Map<string, { agent: NonNullable<typeof config.agents>[number]; status?: (typeof agentStatuses)[string] }>();
-        if (!config.agents) return map;
-        for (const agent of config.agents) {
-            // Canonical identity key (#320): agent.workspacePath and project.path
-            // can diverge in separator/case form across stores on Windows.
-            const key = normalizeWorkspacePathIdentity(agent.workspacePath);
-            map.set(key, { agent, status: agentStatuses[agent.id] });
-        }
-        return map;
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- config.agents is the actual dependency; full config would cause unnecessary recomputes
-    }, [config.agents, agentStatuses]);
+    const visibleProjects = useMemo(
+        () => projects.filter(isProjectVisibleToUser).filter(isProjectActiveForUser),
+        [projects],
+    );
 
     const [_addError, setAddError] = useState<string | null>(null);
     const [launchingProjectId, setLaunchingProjectId] = useState<string | null>(null);
-    const [showLogs, setShowLogs] = useState(false);
-    const [projectToRemove, setProjectToRemove] = useState<Project | null>(null);
-    const [showOverlay, setShowOverlay] = useState(false);
-    const [showTemplateDialog, setShowTemplateDialog] = useState(false);
-    const [editingProject, setEditingProject] = useState<Project | null>(null);
-    // Agent overlay — opens WorkspaceConfigPanel for agent settings or upgrade
-    const [agentOverlay, setAgentOverlay] = useState<{ workspacePath: string; initialTab: 'agent' } | null>(null);
 
     // ===== Launcher-specific state for BrandSection =====
 
@@ -153,9 +112,21 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         return projs[0] ?? null;
     }, [config.defaultWorkspacePath]);
 
-    const [selectedWorkspace, setSelectedWorkspace] = useState<Project | null>(() =>
-        resolveDefaultWorkspace(visibleProjects)
-    );
+    const selectedWorkspace = useMemo(() => {
+        if (selectedWorkspacePath) {
+            const selected = visibleProjects.find((project) => workspacePathsEqual(project.path, selectedWorkspacePath));
+            if (selected) return selected;
+        }
+        return resolveDefaultWorkspace(visibleProjects);
+    }, [resolveDefaultWorkspace, selectedWorkspacePath, visibleProjects]);
+
+    useEffect(() => {
+        const resolvedPath = selectedWorkspace?.path ?? null;
+        const selectionMatches = resolvedPath === null
+            ? selectedWorkspacePath == null
+            : workspacePathsEqual(resolvedPath, selectedWorkspacePath);
+        if (!selectionMatches) onWorkspaceSelectionChange?.(resolvedPath);
+    }, [onWorkspaceSelectionChange, selectedWorkspace?.path, selectedWorkspacePath]);
 
     // P0/P4: mark when the Launcher shell first commits, for the new-tab timeline
     // (new_tab_reveal → tab_shell_painted → tab_data_ready).
@@ -186,18 +157,6 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
             .catch(() => { /* non-fatal: the real lazy() retries on open */ });
         return () => { cancelled = true; };
     }, [isActive]);
-
-    // Sync selectedWorkspace when visible projects change (e.g., after first project is added,
-    // or after patchProject updates a project's settings from Chat tab)
-    useEffect(() => {
-        setSelectedWorkspace(prev => {
-            if (!prev) return resolveDefaultWorkspace(visibleProjects);
-            // Always use the latest project data (not stale prev reference)
-            // so that settings changed in Chat via patchProject are reflected
-            const updated = visibleProjects.find(p => p.id === prev.id);
-            return updated ?? resolveDefaultWorkspace(visibleProjects);
-        });
-    }, [visibleProjects, resolveDefaultWorkspace]);
 
     const [launcherPermissionMode, setLauncherPermissionMode] = useState<PermissionMode>(config.defaultPermissionMode);
     const [launcherProviderId, setLauncherProviderId] = useState<string | undefined>();
@@ -791,89 +750,6 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
     const [pendingFolderName, setPendingFolderName] = useState('');
     const [pendingDefaultPath, setPendingDefaultPath] = useState('');
 
-    const handleLaunch = useCallback((project: Project, sessionId?: string, historyEntrySource?: HistoryEntrySource) => {
-        // Mark the TRUE click moment (before any state set / handler latency) so
-        // the unified log shows card_click → launch_start → launch_flip →
-        // useCronTask(chat mount) → launch_ensured — i.e. the real click→chat-painted
-        // timeline, independent of the chunk cache.
-        perfMark('card_click');
-        console.log(`[Launcher] CARD CLICK project=${project.id} sessionId=${sessionId ?? 'NEW'}`);
-        setLaunchingProjectId(project.id);
-        // Update lastOpened timestamp (async, don't block launch)
-        touchProject(project.id).catch((err) => {
-            console.warn('[Launcher] Failed to update lastOpened:', err);
-        });
-        let sessionBirthHint: LaunchSessionBirthHint | undefined;
-        if (
-            !sessionId
-            && selectedWorkspace
-            && workspacePathsEqual(selectedWorkspace.path, project.path)
-            && !isExternalRuntime
-            && launcherProvider
-        ) {
-            const model = launcherSelectedModel ?? launcherProvider.primaryModel;
-            const intent = model ? toProviderExecutionIntent(launcherProvider, model) : undefined;
-            if (intent?.kind === 'runtime-backed-provider') {
-                const visiblePluginIds = new Set(
-                    (config.plugins ?? [])
-                        .filter(p => config.enabledPlugins?.[p.id] === true)
-                        .map(p => p.id),
-                );
-                sessionBirthHint = {
-                    providerExecutionIdentity: intent,
-                    permissionMode: launcherPermissionMode,
-                    reasoningEffort: launcherReasoningEffort,
-                    mcpEnabledServers: launcherWorkspaceMcpEnabled.filter(id => launcherGlobalMcpEnabled.includes(id)),
-                    enabledPluginIds: launcherEnabledPlugins.filter(id => visiblePluginIds.has(id)),
-                    enabledOfficialToolIds: launcherOfficialToolEnabled.filter(id =>
-                        launcherGlobalOfficialToolEnabled.includes(id)
-                        && (id !== IMAGE_UNDERSTANDING_TOOL_ID || imageUnderstandingConfiguredForInput),
-                    ),
-                };
-            }
-        }
-        onLaunchProject(
-            project,
-            sessionId,
-            undefined,
-            sessionId
-                ? { historyEntrySource: historyEntrySource ?? 'launcher_recent' }
-                : { surface: 'agent_card', entryIntent: 'open_workspace' },
-            sessionBirthHint,
-        );
-    }, [
-        touchProject,
-        onLaunchProject,
-        selectedWorkspace,
-        isExternalRuntime,
-        launcherProvider,
-        launcherSelectedModel,
-        launcherPermissionMode,
-        launcherReasoningEffort,
-        launcherWorkspaceMcpEnabled,
-        launcherGlobalMcpEnabled,
-        launcherEnabledPlugins,
-        launcherOfficialToolEnabled,
-        launcherGlobalOfficialToolEnabled,
-        imageUnderstandingConfiguredForInput,
-        config.plugins,
-        config.enabledPlugins,
-    ]);
-
-    const handleOpenTask = useCallback((session: SessionMetadata, project: Project, historyEntrySource: HistoryEntrySource = 'launcher_recent') => {
-        handleLaunch(project, session.id, historyEntrySource);
-    }, [handleLaunch]);
-
-    const [overlayMode, setOverlayMode] = useState<'default' | 'search'>('default');
-    const handleOpenOverlay = useCallback((mode: 'default' | 'search' = 'default') => { track('task_center_open', {}); setOverlayMode(mode); setShowOverlay(true); }, []);
-    const handleCloseOverlay = useCallback(() => { setShowOverlay(false); setOverlayMode('default'); }, []);
-
-    // Stable callback for overlay session open (avoids inline function in render)
-    const handleOverlayOpenTask = useCallback((session: SessionMetadata, project: Project) => {
-        handleOpenTask(session, project, 'launcher_overlay');
-        handleCloseOverlay();
-    }, [handleOpenTask, handleCloseOverlay]);
-
     const handleAddProject = async () => {
         setAddError(null);
         console.log('[Launcher] handleAddProject called');
@@ -938,161 +814,6 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
         console.log('[Launcher] Path dialog cancelled');
     };
 
-    const handleRemoveProject = useCallback((project: Project) => {
-        setProjectToRemove(project);
-    }, []);
-
-    const handleToggleProjectPin = useCallback(async (project: Project) => {
-        if (isProjectArchived(project)) return;
-        if (pinToggleInFlightRef.current.has(project.id)) return;
-        pinToggleInFlightRef.current.add(project.id);
-        try {
-            const currentProject = projects.find(candidate => candidate.id === project.id) ?? project;
-            await patchProject(project.id, {
-                pinnedAt: currentProject.pinnedAt ? undefined : new Date().toISOString(),
-            });
-        } catch (err) {
-            console.error('[Launcher] failed to toggle workspace pin:', err);
-            toastRef.current.warning(t('toasts.pinFailed'));
-        } finally {
-            pinToggleInFlightRef.current.delete(project.id);
-        }
-    }, [patchProject, projects, t]);
-
-    const archiveToggleInFlightRef = useRef(new Set<string>());
-
-    const handleArchiveProject = useCallback(async (project: Project) => {
-        if (archiveToggleInFlightRef.current.has(project.id)) return;
-        archiveToggleInFlightRef.current.add(project.id);
-        try {
-            const currentProject = projects.find(candidate => candidate.id === project.id) ?? project;
-            const agent = currentProject.agentId ? getAgentById(config, currentProject.agentId) : undefined;
-            const wasProactive = agent?.enabled === true;
-            const archivedProject = await archiveProject(currentProject.id, { agentEnabledBeforeArchive: wasProactive });
-            if (!archivedProject) throw new Error(`Project ${currentProject.id} not found`);
-            if (agent && wasProactive) await disableAgentAndStopChannels(agent);
-            await refreshConfig();
-            toastRef.current.success(t('toasts.workspaceArchived'));
-        } catch (err) {
-            console.error('[Launcher] failed to archive workspace:', err);
-            toastRef.current.warning(t('toasts.archiveFailed'));
-        } finally {
-            archiveToggleInFlightRef.current.delete(project.id);
-        }
-    }, [config, projects, refreshConfig, t]);
-
-    const handleUnarchiveProject = useCallback(async (project: Project) => {
-        if (archiveToggleInFlightRef.current.has(project.id)) return;
-        archiveToggleInFlightRef.current.add(project.id);
-        try {
-            const currentProject = projects.find(candidate => candidate.id === project.id) ?? project;
-            const shouldRestoreAgent = currentProject.archivedAgentEnabledBeforeArchive === true;
-            const unarchivedProject = await unarchiveProject(currentProject.id);
-            if (!unarchivedProject) throw new Error(`Project ${currentProject.id} not found`);
-            if (shouldRestoreAgent && currentProject.agentId) {
-                try {
-                    await enableAgentAndStartChannels(currentProject.agentId);
-                } catch (err) {
-                    await archiveProject(currentProject.id, {
-                        archivedAtIso: currentProject.archivedAt,
-                        agentEnabledBeforeArchive: true,
-                    });
-                    throw err;
-                }
-            }
-            await refreshConfig();
-            toastRef.current.success(t('toasts.workspaceUnarchived'));
-        } catch (err) {
-            console.error('[Launcher] failed to unarchive workspace:', err);
-            toastRef.current.warning(t('toasts.unarchiveFailed'));
-        } finally {
-            archiveToggleInFlightRef.current.delete(project.id);
-        }
-    }, [projects, refreshConfig, t]);
-
-    const confirmRemoveProject = async () => {
-        if (projectToRemove) {
-            await removeProject(projectToRemove.id);
-            setProjectToRemove(null);
-        }
-    };
-
-    const handleCreateFromTemplate = useCallback(async (path: string, template: WorkspaceTemplate, displayName?: string) => {
-        await addProject(path, {
-            icon: template.icon,
-            displayName,
-            templateId: template.id,
-            templateSource: template.isBuiltin ? 'builtin' : 'user',
-            agentDefaults: template.isBuiltin ? template.agentDefaults : undefined,
-        });
-        track('workspace_create', { source: 'template' });
-    }, [addProject]);
-
-    const handleEditProject = useCallback(async (projectId: string, updates: { displayName?: string; icon?: string }) => {
-        await patchProject(projectId, updates);
-    }, [patchProject]);
-
-    const handleOpenTemplateDialog = useCallback(() => setShowTemplateDialog(true), []);
-    const handleCloseTemplateDialog = useCallback(() => setShowTemplateDialog(false), []);
-    const handleCloseEditDialog = useCallback(() => setEditingProject(null), []);
-    const handleShowLogs = useCallback(() => setShowLogs(true), []);
-
-    // Agent overlay handlers
-    const handleAgentSettings = useCallback((project: Project) => {
-        setAgentOverlay({ workspacePath: project.path, initialTab: 'agent' });
-    }, []);
-    const handleOpenProjectFolder = useCallback(async (project: Project) => {
-        try {
-            await openPathExternal({ fullPath: project.path, workspace: null });
-        } catch (err) {
-            console.error('[Launcher] Failed to open project folder:', err);
-            toastRef.current.error(t('toasts.openFolderFailed'));
-        }
-    }, [openPathExternal, t]);
-    const handleCloseAgentOverlay = useCallback(() => setAgentOverlay(null), []);
-
-    // SystemPromptsPanel "智能生成" → close the overlay and launch the workspace into
-    // a Chat tab with `/init` as the initial message. Reuses the same Launcher-wide
-    // provider/model/permission selection that the brand-section send uses.
-    const handleRequestInitFromAgentOverlay = useCallback(() => {
-        if (!agentOverlay) return;
-        const project = projects.find(p => workspacePathsEqual(p.path, agentOverlay.workspacePath));
-        if (!project) return;
-        // Fallback path must respect global enablement — providers[0] can be the
-        // first ordered provider which the user disabled in Settings → 启用和排序.
-        const effectiveProvider = launcherProvider ?? providers.find(isProviderEnabled);
-        if (!effectiveProvider) {
-            toastRef.current.error(t('toasts.noProvider'));
-            return;
-        }
-        setAgentOverlay(null);
-        // PRD 0.2.3 + cross-review: same builtin/external split as handleBrandSend.
-        const initModelForProvider = launcherSelectedModel ?? effectiveProvider.primaryModel;
-        const providerExecutionIntent = !isExternalRuntime && initModelForProvider
-            ? toProviderExecutionIntent(effectiveProvider, initModelForProvider)
-            : undefined;
-        const runtimeBackedProviderIdentity = providerExecutionIntent?.kind === 'runtime-backed-provider'
-            ? providerExecutionIntent
-            : undefined;
-        const builtinSelection = !isExternalRuntime && !isRuntimeBackedProvider(effectiveProvider)
-            ? pairBuiltinSelection(effectiveProvider, launcherSelectedModel)
-            : undefined;
-        const runtimeModel = isExternalRuntime ? launcherSelectedModel : runtimeBackedProviderIdentity?.model;
-        const initialMessage: InitialMessage = {
-            text: '/init',
-            permissionMode: launcherPermissionMode,
-            ...(builtinSelection ? { builtinSelection } : {}),
-            ...(runtimeModel ? { runtimeModel } : {}),
-            ...(runtimeBackedProviderIdentity ? { providerExecutionIdentity: runtimeBackedProviderIdentity } : {}),
-        };
-        onLaunchProject(
-            project,
-            undefined,
-            initialMessage,
-            { surface: 'agent_setup', entryIntent: 'workspace_init' },
-        );
-    }, [agentOverlay, projects, launcherProvider, providers, launcherPermissionMode, launcherSelectedModel, isExternalRuntime, onLaunchProject, t]);
-
     return (
         <div className="flex h-full flex-col overflow-hidden bg-[var(--paper)] text-[var(--ink)]">
             {/* Path Input Dialog (browser dev mode) */}
@@ -1104,36 +825,13 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                 onCancel={handlePathCancel}
             />
 
-            {/* Logs Panel */}
-            <UnifiedLogsPanel
-                sseLogs={[]}
-                isVisible={showLogs}
-                onClose={() => setShowLogs(false)}
-            />
-
-            {/* Remove Workspace Confirm Dialog */}
-            {projectToRemove && (
-                <ConfirmDialog
-                    title={isSystemPresetProject(projectToRemove) ? t('dialogs.hideDefaultWorkspace') : t('dialogs.removeWorkspace')}
-                    message={isSystemPresetProject(projectToRemove)
-                        ? t('dialogs.hideWorkspaceMessage', { name: projectToRemove.displayName || projectToRemove.name })
-                        : t('dialogs.removeWorkspaceMessage', { name: projectToRemove.name })}
-                    confirmText={isSystemPresetProject(projectToRemove) ? t('dialogs.hide') : t('dialogs.remove')}
-                    confirmVariant="danger"
-                    onConfirm={confirmRemoveProject}
-                    onCancel={() => setProjectToRemove(null)}
-                />
-            )}
-
-            {/* Main Content: Two-column layout */}
-            <main className="launcher-layout flex-1 overflow-hidden">
-                {/* Left: Brand Section */}
-                <section className="launcher-brand relative flex items-center justify-center overflow-hidden">
+            <main className="relative flex flex-1 items-center justify-center overflow-hidden">
+                <section className="launcher-brand relative flex h-full w-full items-center justify-center overflow-hidden">
                     <BrandSection
                         projects={visibleProjects}
                         selectedProject={selectedWorkspace}
                         defaultWorkspacePath={config.defaultWorkspacePath}
-                        onSelectWorkspace={setSelectedWorkspace}
+                        onSelectWorkspace={(project) => onWorkspaceSelectionChange?.(project.path)}
                         onAddFolder={handleAddProject}
                         onSetDefaultWorkspace={handleSetDefault}
                         onSend={handleBrandSend}
@@ -1183,72 +881,7 @@ export default function Launcher({ onLaunchProject, isStarting, startError: _sta
                     />
                 </section>
 
-                <LauncherRightRail
-                    projects={userVisibleProjects}
-                    agentLookup={agentLookup}
-                    isProjectsLoading={isLoading}
-                    isStarting={isStarting}
-                    launchingProjectId={launchingProjectId}
-                    showDevTools={config.showDevTools}
-                    taskCenterData={taskCenterData}
-                    sessionNotificationBadgeCounts={sessionNotificationBadgeCounts}
-                    onLaunch={handleLaunch}
-                    onOpenTask={handleOpenTask}
-                    onOpenOverlay={handleOpenOverlay}
-                    onRemoveProject={handleRemoveProject}
-                    onArchiveProject={handleArchiveProject}
-                    onUnarchiveProject={handleUnarchiveProject}
-                    onAgentSettings={handleAgentSettings}
-                    onOpenProjectFolder={handleOpenProjectFolder}
-                    onToggleProjectPin={handleToggleProjectPin}
-                    onAddFolder={handleAddProject}
-                    onCreateFromTemplate={handleOpenTemplateDialog}
-                    onShowLogs={handleShowLogs}
-                />
             </main>
-
-            {/* Task Center Overlay */}
-            {showOverlay && (
-                <Suspense fallback={null}>
-                    <TaskCenterOverlay
-                        projects={visibleProjects}
-                        onOpenTask={handleOverlayOpenTask}
-                        onClose={handleCloseOverlay}
-                        taskCenterData={taskCenterData}
-                        initialMode={overlayMode}
-                    />
-                </Suspense>
-            )}
-
-            {/* Template Library Dialog */}
-            {showTemplateDialog && (
-                <TemplateLibraryDialog
-                    onCreateWorkspace={handleCreateFromTemplate}
-                    onClose={handleCloseTemplateDialog}
-                />
-            )}
-
-            {/* Workspace Edit Dialog */}
-            {editingProject && (
-                <WorkspaceEditDialog
-                    key={editingProject.id}
-                    project={editingProject}
-                    onSave={handleEditProject}
-                    onClose={handleCloseEditDialog}
-                />
-            )}
-
-            {/* Agent Config Overlay */}
-            {agentOverlay && (
-                <Suspense fallback={null}>
-                    <WorkspaceConfigPanel
-                        agentDir={agentOverlay.workspacePath}
-                        onClose={handleCloseAgentOverlay}
-                        initialTab={agentOverlay.initialTab}
-                        onRequestInit={handleRequestInitFromAgentOverlay}
-                    />
-                </Suspense>
-            )}
         </div>
     );
 }

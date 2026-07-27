@@ -22,6 +22,7 @@ html[data-theme-id='proof'][data-color-scheme='light'] {
   --ink-subtle: #a5aaa0;
   --ink-faint: #c0c3bb;
   --paper: #f5f3ed;
+  --global-sidebar-bg: #f0eee7;
   --paper-elevated: #fbfaf6;
   --message-user-bg: #fdfcf8;
   --paper-inset: #e3e0d7;
@@ -132,6 +133,7 @@ html[data-theme-id='proof'][data-color-scheme='dark'] {
   --ink-subtle: #5d6b60;
   --ink-faint: #414d44;
   --paper: #18201c;
+  --global-sidebar-bg: #161d19;
   --paper-elevated: #222b26;
   --message-user-bg: #273129;
   --paper-inset: #101613;
@@ -235,17 +237,20 @@ html[data-theme-id='proof'][data-color-scheme='dark'] {
   --theme-body-texture-blend: screen;
 }
 
-html[data-theme-id='proof'] .theme-launcher-hero-title {
-  margin-bottom: 0.5rem;
+html[data-theme-id='proof'] .theme-product-wordmark {
   font-family: var(--font-display);
-  font-size: 2.5rem;
-  font-weight: 300;
   letter-spacing: 0.015em;
   color: var(--ink);
   background: linear-gradient(150deg, var(--ink) 32%, var(--accent-warm) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+html[data-theme-id='proof'] .theme-launcher-hero-title {
+  margin-bottom: 0.5rem;
+  font-size: 2.5rem;
+  font-weight: 300;
 }
 
 html[data-theme-id='proof'] .theme-launcher-hero-slogan {

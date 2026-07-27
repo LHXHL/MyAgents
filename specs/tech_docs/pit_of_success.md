@@ -2,7 +2,7 @@
 
 > "正确路径默认化"——把容易踩的坑做成"不可能写错"。本文档汇总所有 helper 层的 Problem / Surface / Invariants / Don't 四要素规范。
 
-CLAUDE.md 的 Pit-of-Success 红线总表是这些模块的**速查索引**；本文档是**完整 spec**，包含 API surface、不变量、踩坑根因、迁移指南。
+本文档是 Pit-of-Success helper 的**唯一完整规范**，包含 API surface、不变量、踩坑根因与迁移指南。根 `CLAUDE.md` 只保留跨任务心智模型和按需路由；可静态判定的约束以 lint / 测试为可执行契约。
 
 ## 目录
 
@@ -631,8 +631,9 @@ ConfigProvider 的 `config/projects/providers/apiKeys/verifyStatus` 属于一个
 
 ## 与文档的协作关系
 
-- **CLAUDE.md** —— 红线总表里每条对应本文档某个 anchor。AI 读 CLAUDE.md 知道"不要这么做"，需要细节时跳本文档。
-- **ARCHITECTURE.md** —— Pit-of-Success 索引节列出本文档所有模块名 + 一句话职责。
-- **本文档** —— 完整 spec、API surface、不变量、踩坑根因。
+- **CLAUDE.md** —— 只保留跨任务长期有效的心智模型，并把命中的任务路由到本文档；不镜像 helper / 红线清单。
+- **ARCHITECTURE.md** —— 只描述 owner、进程边界与主数据流；helper 改变这些内容时才更新对应章节。
+- **本文档** —— helper 的完整 spec、API surface、不变量与踩坑根因。
+- **代码、lint 与测试** —— 当前 API 和可执行约束的权威来源；诊断文字必须同时说明故障模式与正确路径。
 
-新增 helper 时同步更新三处：本文档（spec）+ CLAUDE.md（红线表一行）+ ARCHITECTURE.md（索引一行）。
+新增 helper 时更新实现、测试 / lint（可机械判定时）和本文档。只有跨任务心智模型变化才更新 `CLAUDE.md`；只有 owner、进程边界或主数据流变化才更新 `ARCHITECTURE.md`。避免为了“保持三份同步”制造三个会漂移的权威来源。

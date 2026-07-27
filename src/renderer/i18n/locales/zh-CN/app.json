@@ -4,6 +4,7 @@
     "openTabs": "打开的标签页",
     "genericTab": "标签页",
     "settings": "设置",
+    "capabilities": "技能与工具",
     "taskCenter": "任务中心",
     "team": "团队",
     "launcher": "启动页",
@@ -12,6 +13,30 @@
     "generating": "AI 正在输出",
     "unread": "有未读消息",
     "switchTo": "切换到 {{title}}"
+  },
+  "globalSidebar": {
+    "navigation": "全局导航",
+    "openWebsite": "打开 MyAgents 官网",
+    "collapse": "收起侧边栏",
+    "expand": "展开侧边栏",
+    "newChat": "新对话",
+    "search": "搜索",
+    "tasks": "任务",
+    "team": "团队",
+    "capabilities": "技能与工具",
+    "helper": "小助理",
+    "settings": "设置",
+    "workspaces": "Agent 工作区",
+    "workspaceSection": "Agent 工作区",
+    "workspaceViewOptions": "工作区与会话显示选项",
+    "allSessions": "全部会话",
+    "favoriteSessions": "只看收藏",
+    "showAutomationHistory": "显示自动化历史",
+    "hideAutomationHistory": "隐藏自动化历史",
+    "archived": "已归档",
+    "newChatHere": "在此工作区新建对话",
+    "emptyWorkspaceSessions": "还没有会话",
+    "loadMore": "展开更多"
   },
   "titlebar": {
     "helper": "小助理",
@@ -673,6 +698,10 @@
       "installProjectTitle": "安装到选中的项目",
       "noInstallProjectsTitle": "暂无可安装的项目工作区",
       "installProject": "安装到项目",
+      "overwriteInstallTitle": "覆盖本地 Skill？",
+      "overwriteInstallMessage": "{{target}} 中已经存在名为「{{name}}」的本地 Skill 目录。是否用 Space 中的版本覆盖安装？\n\n现有目录将被完整替换，不会合并文件。",
+      "overwriteInstallConfirm": "覆盖安装",
+      "globalInstallTarget": "全局 Skills",
       "moreActions": "更多操作",
       "loadingSkill": "加载 Skill",
       "notFound": "Skill 未找到",
@@ -887,10 +916,7 @@
   "historyOverlay": {
     "filters": {
       "all": "全部",
-      "favorite": "收藏",
-      "active": "活跃中",
-      "desktop": "桌面",
-      "bot": "聊天机器人"
+      "favorite": "收藏"
     },
     "allWorkspaces": "全部工作区",
     "deleted": "已删除",

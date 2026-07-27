@@ -39,6 +39,7 @@ html[data-theme-id='myagents-default'][data-color-scheme='light'] {
   --ink-faint: #c4b8ad;
 
   --paper: #faf6ee;
+  --global-sidebar-bg: #f5efe5;
   --paper-elevated: #fffcf7;
   --message-user-bg: #fffefa;
   --paper-inset: #e8dccf;
@@ -156,6 +157,7 @@ html[data-theme-id='myagents-default'][data-color-scheme='dark'] {
   --ink-faint: #4a4038;
 
   --paper: #1a1614;
+  --global-sidebar-bg: #181412;
   --paper-elevated: #242018;
   --message-user-bg: #2a251d;
   --paper-inset: #12100e;
@@ -264,18 +266,22 @@ html[data-theme-id='myagents-default'][data-color-scheme='dark'] {
   --theme-body-texture-blend: screen;
 }
 
-.theme-launcher-hero-title,
-html[data-theme-id='myagents-default'] .theme-launcher-hero-title {
-  margin-bottom: 0.5rem;
+.theme-product-wordmark,
+html[data-theme-id='myagents-default'] .theme-product-wordmark {
   font-family: var(--font-display);
-  font-size: 2.5rem;
-  font-weight: 250;
   letter-spacing: 0.02em;
   color: var(--ink);
   background: linear-gradient(155deg, var(--ink) 30%, var(--accent-warm) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+.theme-launcher-hero-title,
+html[data-theme-id='myagents-default'] .theme-launcher-hero-title {
+  margin-bottom: 0.5rem;
+  font-size: 2.5rem;
+  font-weight: 250;
 }
 
 .theme-launcher-hero-slogan,

@@ -14,6 +14,7 @@ export type TabContentKind =
     | 'deferred' // one-frame placeholder for a freshly created heavy tab
     | 'launcher'
     | 'settings'
+    | 'capabilities'
     | 'taskcenter'
     | 'space'
     | 'cold' // restored chat tab not yet activated → placeholder, NO TabProvider
@@ -32,6 +33,7 @@ export function tabContentKind(tab: Tab, isDeferredMount: boolean): TabContentKi
     if (isDeferredMount) return 'deferred';
     if (tab.view === 'launcher') return 'launcher';
     if (tab.view === 'settings') return 'settings';
+    if (tab.view === 'capabilities') return 'capabilities';
     if (tab.view === 'taskcenter') return 'taskcenter';
     if (tab.view === 'space') return 'space';
     if (tab.restoreState === 'cold') return 'cold';

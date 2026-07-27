@@ -1044,7 +1044,7 @@ fn sync_admin_agent_blocking<R: Runtime>(app_handle: AppHandle<R>) -> Result<boo
 
 // ============= CLI Sync =============
 
-const CLI_VERSION: &str = "42";
+const CLI_VERSION: &str = "43";
 
 /// Sync the CLI script from bundled resources to ~/.myagents/bin/.
 /// Version-gated: only runs when CLI_VERSION changes.
@@ -1206,7 +1206,7 @@ pub fn cmd_sync_cli<R: Runtime>(app_handle: AppHandle<R>) -> Result<bool, String
 // matching exclusion list in src/server/index.ts::seedBundledSkills
 // MUST be kept in sync (comment there points back here).
 
-const SYSTEM_SKILLS_VERSION: &str = "38";
+const SYSTEM_SKILLS_VERSION: &str = "40";
 
 /// One process-wide transaction owner for the versioned system-skill
 /// snapshot. Startup automation and ConfigProvider may request convergence at
@@ -1569,6 +1569,7 @@ mod system_skills_tests {
         is_skill_blocked_on_platform, skill_dir_is_complete, sync_one_system_skill,
         SystemSkillSync, ADMIN_AGENT_VERSION, CLI_VERSION, SYSTEM_SKILLS, SYSTEM_SKILLS_VERSION,
     };
+    use crate::workspace_files::skills_config::REQUIRED_SYSTEM_SKILLS;
     use std::fs;
 
     // Issue #321: a Windows install shipped some system-skill source dirs
@@ -1589,9 +1590,9 @@ mod system_skills_tests {
     }
 
     #[test]
-    fn v37_updates_goal_cli_skill_and_preserves_v36_contracts() {
-        assert_eq!(CLI_VERSION, "42");
-        assert_eq!(SYSTEM_SKILLS_VERSION, "38");
+    fn v40_updates_system_skill_metadata_and_preserves_existing_contracts() {
+        assert_eq!(CLI_VERSION, "43");
+        assert_eq!(SYSTEM_SKILLS_VERSION, "40");
         let bundled = include_str!("../../bundled-skills/myagents-cli/SKILL.md");
         assert!(bundled.contains("myagents space list --json"));
         assert!(bundled.contains("myagents space whoami --space <slug> --json"));
@@ -1603,8 +1604,12 @@ mod system_skills_tests {
         assert!(bundled.contains("myagents goal create --objective-file goal-objective.txt"));
         assert!(bundled.contains("workspace 或系统 temp 均可"));
         assert!(bundled.contains("--max-executions <正整数>"));
+        assert!(bundled.contains(
+            "myagents cron update <taskId> [--name X] [--prompt X | --prompt-file path]"
+        ));
 
         let memory_update = include_str!("../../bundled-skills/myagents-memory-update/SKILL.md");
+        assert!(memory_update.contains("author: MyAgents"));
         assert!(memory_update
             .contains("仅当系统或用户明确指定完整名称 `myagents-memory-update` 时使用"));
         assert!(memory_update.contains("不要根据任务语义或相似表述自行触发"));
@@ -1619,10 +1624,28 @@ mod system_skills_tests {
 
         let product_docs = include_str!("../../bundled-skills/myagents-docs/SKILL.md");
         assert!(product_docs.contains("name: myagents-docs"));
+        assert!(product_docs.contains("author: MyAgents"));
         assert!(product_docs.contains("它面向软件使用而非源码开发"));
         assert!(product_docs.contains("随后加载 `/myagents-cli`"));
         assert!(product_docs.contains("在内置小助理里加载 `/support`"));
         assert!(SYSTEM_SKILLS.contains(&"myagents-docs"));
+
+        for content in [
+            include_str!("../../bundled-skills/myagents-memory-gardener/SKILL.md"),
+            include_str!("../../bundled-skills/myagents-memory-molt/SKILL.md"),
+        ] {
+            assert!(content.contains("author: MyAgents"));
+        }
+    }
+
+    #[test]
+    fn required_system_skills_are_versioned_bundle_skills() {
+        for name in REQUIRED_SYSTEM_SKILLS {
+            assert!(
+                SYSTEM_SKILLS.contains(name),
+                "required system skill {name} must use the versioned bundle sync path"
+            );
+        }
     }
 
     #[test]

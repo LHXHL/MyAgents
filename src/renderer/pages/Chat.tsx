@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowLeft, Bot, Globe, History, Loader2, Plus, PanelRightOpen, RotateCcw, TerminalSquare, X } from 'lucide-react';
+import { AlertTriangle, Bot, Globe, History, Loader2, MessageSquarePlus, PanelRight, RotateCcw, TerminalSquare, X } from 'lucide-react';
 import { forwardRef, lazy, Suspense, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
@@ -146,6 +146,7 @@ import { coerceRuntimeBirthPermissionMode } from '../../shared/runtimeBirthField
 import { getRichDocKind, isPreviewable, type RichDocKind } from '../../shared/fileTypes';
 
 const DESKTOP_SESSION_FORK_ORIGIN: SessionOrigin = { kind: 'desktop', surface: 'session_fork' };
+const WORKSPACE_PANEL_TRANSITION_MS = 200;
 
 type SplitPreviewFile = {
   name: string;
@@ -413,7 +414,6 @@ const SessionTitleEditor = forwardRef<
 });
 
 interface ChatProps {
-  onBack?: () => void;
   /** Called when user starts a new session. Returns true if handled externally (background completion started). */
   onNewSession?: () => Promise<boolean>;
   /** Called when user selects a different session from history - uses Session singleton logic */
@@ -447,7 +447,7 @@ function isCurrentSessionGoal(goal: SessionGoal | null | undefined): goal is Ses
   return Boolean(goal);
 }
 
-export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
+export default function Chat({ onNewSession, onSwitchSession, onOpenSessionInNewTab, initialMessage, onInitialMessageConsumed, sidecarConfigDisposition, onSidecarConfigAdopted, sessionTitle, onRenameSession, onForkSession, pendingFilePreview, onFilePreviewIntentConsumed, sessionNotificationBadgeCounts }: ChatProps) {
   // Get state from TabContext (required - Chat must be inside TabProvider)
   const {
     tabId,
@@ -638,6 +638,30 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // If workspace would render as an overlay at startup, keep it hidden so it
   // does not block the chat before the user explicitly opens it.
   const [showWorkspace, setShowWorkspace] = useState(shouldShowWorkspaceByDefault);
+  const [workspacePanelMounted, setWorkspacePanelMounted] = useState(shouldShowWorkspaceByDefault);
+  const [workspacePanelMotion, setWorkspacePanelMotion] = useState<'expand' | 'collapse' | null>(null);
+  const workspacePanelUnmountTimerRef = useRef<number | null>(null);
+  const clearWorkspacePanelUnmountTimer = useCallback(() => {
+    if (workspacePanelUnmountTimerRef.current === null) return;
+    window.clearTimeout(workspacePanelUnmountTimerRef.current);
+    workspacePanelUnmountTimerRef.current = null;
+  }, []);
+  const handleExpandWorkspace = useCallback(() => {
+    clearWorkspacePanelUnmountTimer();
+    setWorkspacePanelMounted(true);
+    setWorkspacePanelMotion('expand');
+    setShowWorkspace(true);
+  }, [clearWorkspacePanelUnmountTimer]);
+  const handleCollapseWorkspace = useCallback(() => {
+    clearWorkspacePanelUnmountTimer();
+    setWorkspacePanelMotion('collapse');
+    setShowWorkspace(false);
+    workspacePanelUnmountTimerRef.current = window.setTimeout(() => {
+      setWorkspacePanelMounted(false);
+      workspacePanelUnmountTimerRef.current = null;
+    }, WORKSPACE_PANEL_TRANSITION_MS);
+  }, [clearWorkspacePanelUnmountTimer]);
+  useEffect(() => clearWorkspacePanelUnmountTimer, [clearWorkspacePanelUnmountTimer]);
   const [showWorkspaceConfig, setShowWorkspaceConfig] = useState(false); // Workspace config panel
   // State to trigger workspace refresh
   const [workspaceRefreshTrigger, setWorkspaceRefreshTrigger] = useState(0);
@@ -1150,9 +1174,9 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   const [treeExternalReveal, setTreeExternalReveal] = useState<{ id: number; path: string } | null>(null);
   const treeExternalRevealIdRef = useRef(0);
   const handleRevealInTree = useCallback((path: string) => {
-    setShowWorkspace(true);
+    handleExpandWorkspace();
     setTreeExternalReveal({ id: ++treeExternalRevealIdRef.current, path });
-  }, []);
+  }, [handleExpandWorkspace]);
   // Consume-once: clear after the panel picks it up, so reopening the workspace
   // panel later doesn't replay a stale reveal (the panel remounts + resets its
   // local dedup). Codex review catch.
@@ -1163,7 +1187,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
   // Per-tab persistence for the file-tree view state (expand set + loaded tree).
   // Chat is a per-tab instance kept mounted for the tab's lifetime, so holding
   // this here lets the file tree keep its expansion across the workspace panel's
-  // dismiss/reopen (DirectoryPanel unmounts when showWorkspace flips to false).
+  // dismiss/reopen (DirectoryPanel unmounts after the exit animation completes).
   const workspaceTreeStateRef = useRef<WorkspaceTreePersistedState>({
     openPaths: new Set(),
     directoryInfo: null,
@@ -4129,7 +4153,6 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
     }
   }, [pendingCrossRuntimeMessage, agentDir, onForkSession, currentRuntime, deleteUnopenedForkSession, t]);
 
-  const handleCollapseWorkspace = useCallback(() => setShowWorkspace(false), []);
   // Issue #231: snapshot the current input value at the moment the user opens
   // the cron-settings modal, instead of keeping `cronPrompt` continuously in
   // sync with every keystroke (the prior `onInputChange={setCronPrompt}` wiring
@@ -4826,21 +4849,12 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       <div
         className={`relative flex min-w-0 flex-row overflow-hidden ${!isDraggingSplit ? 'transition-[width] duration-300 ease-in-out' : ''}`}
         style={{ width: splitPanelVisible ? `${splitRatio * 100}%` : '100%' }}
+        data-chat-workspace-motion={shouldUseWorkspaceOverlay ? undefined : (workspacePanelMotion ?? undefined)}
       >
-      <div className={`flex min-w-0 flex-1 flex-col overflow-hidden ${showWorkspace && !shouldUseWorkspaceOverlay ? 'border-r border-[var(--line-subtle)]' : ''}`}>
+      <div className="flex min-w-0 flex-1 flex-col overflow-hidden" data-chat-conversation>
         {/* Compact header - single row */}
         <div className="relative z-10 flex h-12 flex-shrink-0 items-center justify-between bg-[var(--paper-elevated)] px-4 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-3 after:bg-gradient-to-b after:from-[var(--paper-elevated)] after:to-[var(--paper-elevated-a0)]">
           <div className="flex min-w-0 items-center gap-2">
-            {onBack && (
-              <button
-                type="button"
-                onClick={onBack}
-                className="flex-shrink-0 rounded-lg p-1.5 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                title={t('shell.header.backToProjects')}
-              >
-                <ArrowLeft className="h-4 w-4" />
-              </button>
-            )}
             {/* Project name */}
             {agentDir && (
               <span className="flex flex-shrink-0 items-center gap-1.5 text-sm font-medium text-[var(--ink)]">
@@ -4898,7 +4912,7 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
               className="flex items-center gap-1.5 whitespace-nowrap rounded-lg px-2 py-1.5 text-sm font-medium text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
               title={t('shell.header.newChat')}
             >
-              <Plus className="h-3.5 w-3.5 flex-shrink-0" />
+              <MessageSquarePlus className="h-3.5 w-3.5 flex-shrink-0" />
               {!splitFile && <span>{t('shell.header.newChatShort')}</span>}
             </button>
             {/* History button */}
@@ -4943,14 +4957,16 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
             )}
             {/* Workspace toggle button - always visible when workspace is hidden */}
             {!showWorkspace && (
-              <button
-                type="button"
-                onClick={() => setShowWorkspace(true)}
-                className="flex items-center gap-1 rounded-lg px-2 py-1 text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
-                title={t('shell.header.expandWorkspace')}
-              >
-                <PanelRightOpen className="h-4 w-4" />
-              </button>
+              <Tip label={t('shell.header.expandWorkspace')} position="bottom" align="end">
+                <button
+                  type="button"
+                  onClick={handleExpandWorkspace}
+                  aria-label={t('shell.header.expandWorkspace')}
+                  className="flex h-7 w-7 items-center justify-center rounded-lg text-[var(--ink-muted)] transition-colors hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]"
+                >
+                  <PanelRight className="h-4 w-4" />
+                </button>
+              </Tip>
             )}
           </div>
         </div>
@@ -5270,22 +5286,29 @@ export default function Chat({ onBack, onNewSession, onSwitchSession, onOpenSess
       </div>
 
       {/* Workspace panel — single instance, container style switches between side panel and overlay */}
-      {showWorkspace && (
+      {workspacePanelMounted && (
         <>
           {/* Click-away layer for overlay mode */}
-          {shouldUseWorkspaceOverlay && (
-            <div
-              className="absolute inset-0 z-40"
-              onClick={handleCollapseWorkspace}
-            />
+          {showWorkspace && shouldUseWorkspaceOverlay && (
+            <OverlayBackdrop
+              onClose={handleCollapseWorkspace}
+              className="!absolute z-40 !block !bg-transparent !backdrop-blur-none"
+            >
+              {null}
+            </OverlayBackdrop>
           )}
           <div
             ref={directoryPanelContainerRef}
             className={shouldUseWorkspaceOverlay
               ? 'absolute bottom-0 right-0 top-0 z-50 flex w-[340px] max-w-[85%] flex-col border-l border-[var(--line)] bg-[var(--paper-elevated)] shadow-lg'
-              : 'flex w-1/4 flex-col'
+              : showWorkspace
+                ? 'relative z-10 flex w-[var(--chat-workspace-panel-width)] shrink-0 flex-col border-l border-[var(--line-subtle)]'
+                : 'pointer-events-none absolute bottom-0 right-0 top-0 z-20 flex w-[var(--chat-workspace-panel-width)] flex-col border-l border-[var(--line-subtle)]'
             }
-            style={shouldUseWorkspaceOverlay ? undefined : { minWidth: 'var(--sidebar-min-width)' }}
+            aria-hidden={!showWorkspace}
+            inert={!showWorkspace}
+            data-chat-workspace-panel
+            data-chat-workspace-panel-motion={workspacePanelMotion ?? undefined}
           >
             <DirectoryPanel
               ref={directoryPanelRef}

@@ -186,6 +186,10 @@ import {
   visibleDesktopMirrorText,
   type MirrorImage,
 } from './utils/im-mirror';
+import {
+  SESSION_BOUND_CHANNEL_DELIVERY,
+  type TurnChannelDelivery,
+} from './session-core/channel-delivery';
 import { normalizeClaudeTranscriptCleanupPeriodDays, SUBSCRIPTION_PROVIDER_ID, type ProxySettings } from '../shared/config-types';
 import {
   LOCAL_COMMAND_OUTPUT_TAG,
@@ -320,7 +324,7 @@ import {
   markCurrentTurnHasOutput,
   notifyQueuedTurnStopped,
   popPendingOutputOwner as turnPopPendingOutputOwner,
-  pushPendingOutputOwner as turnPushPendingOutputOwner,
+  admitPendingOutputOwnerForYield as turnAdmitPendingOutputOwnerForYield,
   removePendingOutputOwnerByQueueId as turnRemovePendingOutputOwnerByQueueId,
   resetTurnUsage as resetBuiltinTurnUsage,
   setAssistantMessagePresent,
@@ -332,6 +336,9 @@ import {
   setCurrentTurnInboxMeta,
   setCurrentTurnImTerminalEmitted,
   setCurrentTurnProviderAnalytics,
+  stageCurrentOutputOwnerAssistantChannelBlock,
+  clearCurrentOutputOwnerAssistantChannelBlocks,
+  type PendingOutputOwner,
   setCurrentTurnSourceItem,
   setCurrentTurnStartTime,
   setLatestMainAssistantUsage,
@@ -911,48 +918,46 @@ async function cancelSdkAsyncMessage(queueId: string): Promise<InFlightAsyncCanc
   }
 }
 
-// ===== Desktop → IM mirror state (PRD 0.2.14 Phase C) =====
-//
-// `currentTurnMirrorEnabled` is set when a desktop user message is finalized
-// (any of three push sites in this file) and cleared when the AI turn ends or
-// is aborted. While it's true, `content_block_stop` for text blocks fires a
-// mirror call with the accumulated block text.
-//
-// `pendingTextBlockTexts` accumulates `text_delta` per stream index so we
-// can ship a complete block text at content_block_stop. Cleared with the
-// flag at turn boundaries.
-let currentTurnMirrorEnabled = false;
-let currentTurnMirrorSessionId: string | null = null;
+// ===== Session-bound channel delivery =====
+// User ingress projection and assistant egress ownership are deliberately
+// independent. Assistant ownership and completed blocks live on the existing
+// per-yield output-owner FIFO; this local state only serializes transport calls.
+let channelDeliveryTail: Promise<void> = Promise.resolve();
 const pendingTextBlockTexts: Map<number, string> = new Map();
 
-function clearMirrorState(): void {
-  currentTurnMirrorEnabled = false;
-  currentTurnMirrorSessionId = null;
+function clearChannelDeliveryState(): void {
+  // Completed blocks are held by the output-owner FIFO and are discarded when
+  // that owner is popped on error/stop. Only an open stream block lives here.
   pendingTextBlockTexts.clear();
 }
 
-function maybeAccumulateMirrorChunk(index: number, chunk: string): void {
-  if (!currentTurnMirrorEnabled) return;
+function appendChannelDelivery(label: string, deliver: () => Promise<void>): void {
+  channelDeliveryTail = channelDeliveryTail
+    .then(deliver)
+    .catch((error) => {
+      console.warn(`[agent] ${label} channel delivery failed:`, error);
+    });
+}
+
+function maybeAccumulateChannelDeliveryChunk(index: number, chunk: string): void {
+  if (peekPendingOutputOwner()?.assistantChannelDelivery !== 'session-binding') return;
   const prev = pendingTextBlockTexts.get(index) ?? '';
   pendingTextBlockTexts.set(index, prev + chunk);
 }
 
-/** Fire-and-forget user-side mirror. Caller decides whether to invoke based on
- *  metadata.source — this helper is the single source of formatting + transport. */
-function fireDesktopUserMirror(content: string, images: MirrorImage[] | undefined): void {
+function deliverSessionBoundDesktopUser(content: string, images: MirrorImage[] | undefined): void {
   // Only fire if there's a chance an IM channel is bound. Rust silently
   // no-ops if not, but skipping the round-trip when content is trivially
   // empty avoids needless network chatter.
   const visibleContent = visibleDesktopMirrorText(content);
   if (!visibleContent && (!images || images.length === 0)) return;
-  currentTurnMirrorEnabled = true;
-  currentTurnMirrorSessionId = sessionId;
-  void mirrorIfChannelBound({
-    sessionId,
+  const deliverySessionId = sessionId;
+  appendChannelDelivery('user', () => mirrorIfChannelBound({
+    sessionId: deliverySessionId,
     role: 'user',
     text: visibleContent,
     images,
-  });
+  }));
 }
 
 async function surfaceBuiltinUserMessage(
@@ -986,10 +991,8 @@ async function surfaceBuiltinUserMessage(
     phase,
     lastActiveAt,
   );
-  if (surface.message.metadata?.source === 'desktop') {
-    fireDesktopUserMirror(messageText, surface.mirrorImages);
-  } else {
-    clearMirrorState();
+  if (surface.channelDelivery.user === 'session-binding') {
+    deliverSessionBoundDesktopUser(messageText, surface.mirrorImages);
   }
   return activityMerged;
 }
@@ -1033,9 +1036,8 @@ async function surfaceInFlightQueueItem(
       .catch(err => console.error('[agent] persistMessagesToStorage failed:', err));
   }
 
-  // PRD 0.2.14 — desktop → IM mirror (queued replay / confirmed boundary path).
-  if (meta?.source === 'desktop') {
-    fireDesktopUserMirror(userMessage.content as string, meta.mirrorImages);
+  if (meta?.channelDelivery.user === 'session-binding') {
+    deliverSessionBoundDesktopUser(userMessage.content as string, meta?.mirrorImages);
   }
 
   console.log(`[agent] In-flight queue item ${queueId} surfaced via queue:started (${options.reason})`);
@@ -1096,18 +1098,9 @@ function preserveInFlightAfterTerminalBoundary(reason: string): void {
   console.log(`[agent] In-flight queue item ${queueId} preserved after terminal boundary — awaiting SDK replay or assistant-start confirmation (${reason})`);
 }
 
-/** Fire-and-forget assistant text-block mirror. Called from content_block_stop.
- *  The session id captured at user-message time guards against turn boundary
- *  drift (resetSession during a streaming turn). */
-function fireDesktopAssistantBlockMirror(text: string): void {
-  if (!text) return;
-  if (!currentTurnMirrorEnabled) return;
-  const sid = currentTurnMirrorSessionId ?? sessionId;
-  void mirrorIfChannelBound({
-    sessionId: sid,
-    role: 'assistant',
-    text,
-  });
+/** Stage one completed top-level assistant text block on the current yield. */
+function stageSessionBoundAssistantBlock(text: string): void {
+  stageCurrentOutputOwnerAssistantChannelBlock(text);
 }
 
 let isApiRetrying = false;  // Track api_retry state to clear when streaming resumes
@@ -1145,6 +1138,11 @@ function assistantTextForTransientRetryRetraction(message: MessageWire): string 
 }
 
 function retractTransientProviderTextOutput(resultText: string): void {
+  // The retry resumes the same logical SDK yield. Any text staged for the
+  // retracted provider error belongs to that attempt and must not survive,
+  // whether its content block already closed or is still open.
+  clearCurrentOutputOwnerAssistantChannelBlocks();
+  pendingTextBlockTexts.clear();
   const expected = normalizeAssistantRetryText(resultText);
   if (!expected) return;
   const tail = transcriptState.messages[transcriptState.messages.length - 1];
@@ -1253,48 +1251,84 @@ function emitImEvent(type: ImEventType, data?: unknown): void {
 }
 
 /** Push one output-owner slot for every message yielded to SDK stdin. */
-function pushPendingOutputOwner(queueId: string, requestId: string | null | undefined): void {
-  turnPushPendingOutputOwner(queueId, requestId);
-}
-
-/** Pop the queue head — called from handleMessageComplete / Stopped / Error
- *  on SDK `result` boundary (one yield → one result). Returns popped id. */
-function popPendingRequest(): string | null {
-  return turnPopPendingOutputOwner()?.requestId ?? null;
+function pushPendingOutputOwner(item: MessageQueueItem): void {
+  turnAdmitPendingOutputOwnerForYield({
+    queueId: item.id,
+    requestId: item.requestId,
+    assistantChannelDelivery: item.channelDelivery.assistant,
+    channelSessionId: sessionId,
+  }, item.transientProviderRetry !== undefined);
 }
 
 function removePendingOutputOwnerByQueueId(queueId: string | null | undefined): boolean {
   return turnRemovePendingOutputOwnerByQueueId(queueId);
 }
 
-function completeCurrentImRequest(data?: unknown): void {
-  emitImEvent('complete', data);
-  const completedReq = popPendingRequest();
-  if (completedReq) {
-    imRequestRegistry.setStatus(completedReq, 'completed');
-    imRequestRegistry.unregister(completedReq);
-    setCurrentTurnImTerminalEmitted(true);
+function takeCurrentOutputOwner(): PendingOutputOwner | null {
+  return turnPopPendingOutputOwner();
+}
+
+function finalizeOutputOwnerRequest(
+  owner: PendingOutputOwner | null,
+  type: 'complete' | 'cancelled' | 'error',
+  status: 'completed' | 'cancelled' | 'failed',
+  data?: unknown,
+  markCurrentTurn = false,
+): void {
+  if (!owner?.requestId) return;
+  imEventBus.emit(owner.requestId, type, data);
+  imRequestRegistry.setStatus(owner.requestId, status);
+  imRequestRegistry.unregister(owner.requestId);
+  if (markCurrentTurn) setCurrentTurnImTerminalEmitted(true);
+}
+
+function completeOutputOwnerAfterPersistence(
+  owner: PendingOutputOwner | null,
+  data: unknown,
+  persistence: Promise<unknown>,
+  deliverSessionBoundAssistant: boolean,
+): void {
+  if (!owner) return;
+  const durableSuccess = persistence.then(
+    () => deliverSessionBoundAssistant,
+    () => false,
+  );
+  if (owner.assistantChannelDelivery === 'session-binding') {
+    // Reserve each block on the session-wide transport tail at the SDK result
+    // boundary. The work waits for durability without leaving this owner at
+    // the FIFO head where a later realtime yield could inherit it.
+    for (const text of owner.assistantChannelTextBlocks) {
+      appendChannelDelivery('assistant', async () => {
+        if (!await durableSuccess) return;
+        await mirrorIfChannelBound({
+          sessionId: owner.channelSessionId,
+          role: 'assistant',
+          text,
+        });
+      });
+    }
   }
+  void persistence.then(
+    () => finalizeOutputOwnerRequest(owner, 'complete', 'completed', data),
+    (error) => finalizeOutputOwnerRequest(
+      owner,
+      'error',
+      'failed',
+      buildImErrorPayload(error instanceof Error ? error.message : String(error)),
+    ),
+  );
+}
+
+function failOutputOwner(owner: PendingOutputOwner | null, data?: unknown): void {
+  finalizeOutputOwnerRequest(owner, 'error', 'failed', data);
 }
 
 function cancelCurrentImRequest(data?: unknown): void {
-  emitImEvent('cancelled', data);
-  const cancelledReq = popPendingRequest();
-  if (cancelledReq) {
-    imRequestRegistry.setStatus(cancelledReq, 'cancelled');
-    imRequestRegistry.unregister(cancelledReq);
-    setCurrentTurnImTerminalEmitted(true);
-  }
+  finalizeOutputOwnerRequest(takeCurrentOutputOwner(), 'cancelled', 'cancelled', data, true);
 }
 
 function failCurrentImRequest(data?: unknown): void {
-  emitImEvent('error', data);
-  const failedReq = popPendingRequest();
-  if (failedReq) {
-    imRequestRegistry.setStatus(failedReq, 'failed');
-    imRequestRegistry.unregister(failedReq);
-    setCurrentTurnImTerminalEmitted(true);
-  }
+  finalizeOutputOwnerRequest(takeCurrentOutputOwner(), 'error', 'failed', data, true);
 }
 
 /** Clear the entire queue — called from abortPersistentSession /
@@ -1811,6 +1845,7 @@ function promoteNextFromPending(): void {
     requestId: pending.sourceItem.requestId,
     analyticsSource: pending.sourceItem.analyticsSource,
     analyticsOrigin: pending.sourceItem.analyticsOrigin,
+    channelDelivery: pending.sourceItem.channelDelivery,
   });
   console.log(`[agent] Promoting next pending mid-turn message: queueId=${pending.queueId} (pending remaining=${getPendingMidTurnQueue().length})`);
   // Re-emit queue:added with isInFlight=true. Frontend's queue:added handler
@@ -1884,6 +1919,7 @@ function startNextTurnQueuedItem(
     queueId: item.queueId,
     message: userMessage,
     mirrorImages: item.mirrorImages,
+    channelDelivery: sourceItem.channelDelivery,
   };
   if (sourceItem.beforeDispatch) {
     sourceItem.deferredUserSurface = surface;
@@ -6821,10 +6857,12 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   endTurnAbort,
   abortTurnAbort,
   clearAmbientTurnId: (sid) => clearAmbientLogContextField(sid, 'turnId'),
-  completeCurrentImRequest,
+  takeCurrentOutputOwner,
+  completeOutputOwnerAfterPersistence,
+  failOutputOwner,
   cancelCurrentImRequest,
   failCurrentImRequest,
-  clearMirrorState,
+  clearMirrorState: clearChannelDeliveryState,
   clearStreamTurnMaps: () => {
     streamIndexToToolId.clear();
     streamIndexToBlockType.clear();
@@ -6852,6 +6890,7 @@ const builtinTurnLifecycle = createBuiltinTurnLifecycle({
   trackServer,
   firePostTurnTitleHook,
   appendTextChunk,
+  stageAssistantChannelBlock: stageSessionBoundAssistantBlock,
   localizeImError,
   setLastAgentError: (error) => { lastAgentError = error; },
   buildTurnProviderAnalytics,
@@ -7906,7 +7945,20 @@ export async function initializeAgent(
       throw new Error(`[agent] refusing initial prompt for unindexed existing session ${sessionId}; session metadata must exist before starting a sidecar with --session-id`);
     }
     await materializeInitialPromptSessionMetadata(trimmedInitialPrompt);
-    void enqueueUserMessage(trimmedInitialPrompt);
+    void enqueueUserMessage(
+      trimmedInitialPrompt,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY },
+    );
   } else {
     // Pre-warm subprocess + MCP so first message is fast.
     // Only start immediately if MCP is already resolved (IM Bot sessions that
@@ -8244,7 +8296,7 @@ async function enqueueWatchdogResumeReminderAtQueueFront(
     return { queued: false, error: 'session switched during watchdog reminder persist' };
   }
 
-  clearMirrorState();
+  clearChannelDeliveryState();
 
   const queueItem: MessageQueueItem = {
     id: randomUUID(),
@@ -8253,6 +8305,7 @@ async function enqueueWatchdogResumeReminderAtQueueFront(
     wasQueued: false,
     resolve: () => {},
     providerAnalytics: buildTurnProviderAnalytics(configState.currentProviderEnv),
+    channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
   };
 
   console.log('[agent] Watchdog auto-resume inserted reminder at recovery queue front');
@@ -8331,6 +8384,9 @@ async function consumePendingContinueAfterAbort(
           undefined,        // metadata - synthetic, no source attribution
           undefined,        // requestId - synthetic, no IM trace
           undefined,        // inboxMeta - synthetic, no inbox pushback
+          undefined,        // analyticsSource - keep current attribution
+          undefined,        // analyticsOrigin - keep current attribution
+          { channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY },
         );
 
     if (sessionId !== sessionIdSnapshot) {
@@ -8441,6 +8497,7 @@ export async function enqueueUserMessage(
     /** Infrastructure-only gate after Query-changing config, before user/session persistence. */
     beforeUserPersistence?: import('./session-core/turn-queue').DispatchGuard;
     beforeDispatch?: import('./session-core/turn-queue').DispatchGuard;
+    channelDelivery: TurnChannelDelivery;
   },
 ): Promise<EnqueueResult> {
   const trimmed = text.trim();
@@ -8452,6 +8509,10 @@ export async function enqueueUserMessage(
 
   const canLazyMaterializeForThisMessage = () =>
     isLazySessionMaterializationAllowed() || options?.allowLazySessionMaterialization === true;
+  if (!options?.channelDelivery) {
+    return { queued: false, error: 'Missing explicit channel delivery ownership' };
+  }
+  const channelDelivery = options.channelDelivery;
 
   const queueId = options?.queueId ?? randomUUID();
   const deferVisibleAdmission = options?.beforeUserPersistence !== undefined;
@@ -9129,6 +9190,7 @@ export async function enqueueUserMessage(
       turnOwner: options?.turnOwner,
       onTerminal: admissionCallbacks.onTerminal,
       beforeDispatch: options?.beforeDispatch,
+      channelDelivery,
       deferredSessionMetadata,
       deferVisibleAdmission,
       settleDispatchAcceptance: admissionCallbacks.settleDispatchAcceptance,
@@ -9193,6 +9255,7 @@ export async function enqueueUserMessage(
           analyticsSource: analyticsSource ?? currentScenario.type,
           analyticsOrigin,
           mirrorImages: resolvedImagesToMirrorImages(resolvedImages),
+          channelDelivery,
         });
         wakeGenerator(queueItem);
         console.log(`[agent] Message queued mid-turn (in-flight to CLI): queueId=${queueId} requestId=${requestId ?? '-'} text="${trimmed.slice(0, 50)}"`);
@@ -9278,6 +9341,7 @@ export async function enqueueUserMessage(
     message: userMessage,
     sessionBirthOrigin: options?.sessionBirthOrigin,
     mirrorImages: resolvedImagesToMirrorImages(resolvedImages),
+    channelDelivery,
   };
   if (!options?.beforeDispatch) {
     await surfaceBuiltinUserMessage(directUserSurface, 'pre-admission');
@@ -9304,6 +9368,7 @@ export async function enqueueUserMessage(
     turnOwner: options?.turnOwner,
     onTerminal: admissionCallbacks.onTerminal,
     beforeDispatch: options?.beforeDispatch,
+    channelDelivery,
     deferredSessionMetadata,
     deferredUserSurface: options?.beforeDispatch ? directUserSurface : undefined,
     deferVisibleAdmission,
@@ -12125,9 +12190,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
                     markCurrentTurnHasOutput();
                     // IM stream: forward non-subagent text delta to event bus (Pattern B)
                     emitImEvent('delta', streamEvent.delta.text);
-                    // PRD 0.2.14 — accumulate per-block text for desktop→IM mirror
-                    // (no-op when current turn isn't desktop-driven).
-                    maybeAccumulateMirrorChunk(streamEvent.index, streamEvent.delta.text);
+                    // Accumulate complete assistant blocks only when the Session
+                    // binding owns this turn's assistant delivery.
+                    maybeAccumulateChannelDeliveryChunk(streamEvent.index, streamEvent.delta.text);
                   }
                 } else {
                   console.log(`[agent] Filtered decorative text from stream (${decorativeCheck.reason})`);
@@ -12369,13 +12434,11 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               emitImEvent('block-end', '');
               imTextBlockIndices.delete(streamEvent.index);
             }
-            // PRD 0.2.14 — desktop turn AI text block done → mirror to bound channel.
-            // Q1·C: one mirror call per text block, with accumulated body. No-op
-            // when the turn isn't desktop-driven (currentTurnMirrorEnabled=false).
+            // One bound-channel delivery per completed top-level text block.
             const mirroredBlockText = pendingTextBlockTexts.get(streamEvent.index);
             if (mirroredBlockText !== undefined) {
               pendingTextBlockTexts.delete(streamEvent.index);
-              fireDesktopAssistantBlockMirror(mirroredBlockText);
+              stageSessionBoundAssistantBlock(mirroredBlockText);
             }
           }
         }
@@ -12759,6 +12822,7 @@ async function startStreamingSession(preWarm = false): Promise<void> {
               broadcast('chat:message-chunk', nonStreamedText);
               markCurrentTurnHasOutput();
               emitImEvent('delta', nonStreamedText);
+              stageSessionBoundAssistantBlock(nonStreamedText);
             }
           }
         }
@@ -13471,6 +13535,7 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
         requestId: item.requestId,
         analyticsSource: item.analyticsSource,
         analyticsOrigin: item.analyticsOrigin,
+        channelDelivery: item.channelDelivery,
       });
       // Re-emit queue:added with isInFlight=true so the frontend pill's
       // UI marks it as handed to SDK; cancellation now goes through
@@ -13582,8 +13647,10 @@ async function* messageGenerator(): AsyncGenerator<SDKUserMessage> {
       return;
     }
 
-    // Pattern B+G: every SDK yield gets an output-owner FIFO slot.
-    pushPendingOutputOwner(item.id, item.requestId);
+    // Pattern B+G: every logical SDK yield gets one output-owner FIFO slot.
+    // A transient provider-text retry re-yields the same logical turn and
+    // therefore reuses the owner retained when the retry was selected.
+    pushPendingOutputOwner(item);
 
     // PRD 0.2.18 Session Inbox — per-turn binding (read at result handler /
     // abort path). Bound here at generator yield (NOT at enqueue), so the

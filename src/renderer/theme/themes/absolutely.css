@@ -22,6 +22,7 @@ html[data-theme-id='absolutely'][data-color-scheme='light'] {
   --ink-subtle: #aaa69e;
   --ink-faint: #c4c0b9;
   --paper: #f9f9f7;
+  --global-sidebar-bg: #f5f4f1;
   --paper-elevated: #fffefa;
   --message-user-bg: #fffefb;
   --paper-inset: #ece8e2;
@@ -132,6 +133,7 @@ html[data-theme-id='absolutely'][data-color-scheme='dark'] {
   --ink-subtle: #747069;
   --ink-faint: #57534d;
   --paper: #2d2d2b;
+  --global-sidebar-bg: #2a2a28;
   --paper-elevated: #373633;
   --message-user-bg: #3a3834;
   --paper-inset: #242321;
@@ -235,17 +237,20 @@ html[data-theme-id='absolutely'][data-color-scheme='dark'] {
   --theme-body-texture-blend: screen;
 }
 
-html[data-theme-id='absolutely'] .theme-launcher-hero-title {
-  margin-bottom: 0.5rem;
+html[data-theme-id='absolutely'] .theme-product-wordmark {
   font-family: var(--font-display);
-  font-size: 2.5rem;
-  font-weight: 300;
   letter-spacing: 0.015em;
   color: var(--ink);
   background: linear-gradient(150deg, var(--ink) 32%, var(--accent-warm) 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+}
+
+html[data-theme-id='absolutely'] .theme-launcher-hero-title {
+  margin-bottom: 0.5rem;
+  font-size: 2.5rem;
+  font-weight: 300;
 }
 
 html[data-theme-id='absolutely'] .theme-launcher-hero-slogan {

@@ -101,6 +101,7 @@ describe('SessionHistoryDropdown row actions', () => {
 
         renderDropdown(vi.fn());
 
+        expect(screen.getByRole('heading', { name: '工作区历史记录' })).toBeInTheDocument();
         const loadingState = screen.getByText('加载中...');
         expect(loadingState).toHaveClass('h-full');
         expect(loadingState.parentElement).toHaveClass('h-80');

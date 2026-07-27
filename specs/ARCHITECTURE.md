@@ -1,6 +1,6 @@
 # MyAgents 架构总览
 
-> 全景认知地图。每个模块只给"是什么 / 关键约束 / 跳转"。代码细节、踩坑案例、API surface 见 `tech_docs/`。
+> 分层认知地图。先读“项目定位 / 全景架构图 / 核心抽象”，再按任务定位“模块地图”中的相关章节；不要默认把全文塞进上下文。Owner、进程边界与主数据流在这里，helper API、事故案例和操作步骤见 `tech_docs/`。
 
 ## 项目定位
 
@@ -36,14 +36,16 @@ MyAgents 是基于 Tauri v2 的桌面 AI Agent 客户端，提供 Claude Agent S
 │                            Tauri Desktop App                                 │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                              React Frontend                                  │
-│  ┌──────┐ ┌──────┐ ┌──────┐ ┌────────┐ ┌──────────┐ ┌──────────────┐       │
-│  │ Tab1 │ │ Tab2 │ │ Tab3 │ │Settings│ │ Launcher │ │  TaskCenter  │       │
-│  └───┬──┘ └───┬──┘ └───┬──┘ └────┬───┘ └────┬─────┘ └──────┬───────┘       │
-│      │        │        │         │           │              │               │
-│  ┌───┴────────┴────────┴─┐   ┌───┴─────────────────────────┴──┐              │
-│  │ Embedded Browser/Term │   │      Tab-scoped useTabState     │              │
-│  │  (Tauri子Webview/PTY) │   │   apiGet/apiPost/SSE listeners  │              │
-│  └───────────────────────┘   └─────────────────────────────────┘              │
+│  ┌────────────────┐ ┌────────────────────────────────────────────────────┐  │
+│  │ GlobalSidebar  │ │ Active Tab Workspace                               │  │
+│  │ App Shell      │ │ Tab1 / Tab2 / Settings / Launcher / Capabilities   │  │
+│  │ nav + resource │ │ TaskCenter / Space                                 │  │
+│  │ projection     │ └───────────────────────┬────────────────────────────┘  │
+│  └───────┬────────┘                         │                               │
+│          │                 ┌────────────────┴───────────────────────────┐   │
+│  App/config/task stores    │ Tab-scoped useTabState + Browser/Term     │   │
+│  plan/focus existing Tabs  │ apiGet/apiPost/SSE + Tauri 子 Webview/PTY │   │
+│                            └────────────────────────────────────────────┘   │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                              Rust Layer                                      │
 │  ┌────────────────┐ ┌──────────────────┐ ┌─────────────────────────────┐    │
@@ -117,7 +119,9 @@ pub enum SidecarOwner {
 |----------|-------------|--------------|----------|
 | Chat | ✅ 包裹 | Session Sidecar | `useTabState()` |
 | Settings | ❌ 不包裹 | Global Sidecar | `apiFetch.ts`（全局） |
+| Capabilities（技能/插件/工具） | ❌ 不包裹 | Global Sidecar | 独立 Tab 页面状态；复用 Settings 能力模块与全局 API |
 | Launcher | ❌ 不包裹 | Global Sidecar | `apiFetch.ts`（全局） |
+| GlobalSidebar（App Shell） | ❌ 不包裹 | 不直接拥有 Sidecar | App/config/task stores 的投影；变更调用既有 authority，页面打开交回 `App` 规划或聚焦 Tab |
 | IM Bot / Agent Channel | — (Rust 驱动) | Session Sidecar | Rust `ensure_session_sidecar()` |
 
 不在 TabProvider 内的组件调用 `useTabStateOptional()` 返回 `null`，自动 fallback 到 Global API。
@@ -175,7 +179,7 @@ Goal 与 Task 相互独立，可以关联同一 Session：Task 负责定时投�
 
 ### Rust 代理层
 
-所有前端 HTTP / SSE 流量 MUST 通过 Rust 代理层（`invoke` → Rust → reqwest → Node.js Sidecar）。**禁止**从 WebView 直接发起 HTTP 请求。
+Renderer 与 Sidecar 的**控制面** HTTP / SSE 流量 MUST 通过 Rust 代理层（`invoke` → Rust → reqwest → Node.js Sidecar）。WebView 不得直连普通 API。仅大载荷**数据面**端点（当前为 `/refs/:id`、`/attachment/*`）允许原生 fetch，以避免二进制 / spill payload 再穿 IPC JSON；这些端点必须同时满足 CORS、CSP、大小限制与路径安全约束。该例外不得扩展成第二套控制面。
 
 所有连接本地 Sidecar（`127.0.0.1`）的 reqwest 客户端 MUST 通过 `crate::local_http::*` 创建，内置 `.no_proxy()` 防止系统代理拦截 → 502。
 
@@ -245,7 +249,7 @@ Tab2 apiPost() ──► getSessionPort(session_456) ──► Rust proxy ──
 | `/api/plugin/*`（3 条） | OpenClaw 插件 CRUD | CLI |
 | `/api/agent/runtime-status` | Agent 运行时状态查询 | Node.js / 前端 |
 
-这是项目内**唯一**的"Node → Rust"反向 HTTP 通道，规避了"所有前端 HTTP 走 Rust proxy → Node"主流向对后端间通信的不适配。所有客户端 MUST 走 `crate::local_http::builder()`（loopback，仍复用 no_proxy 保护）。
+这是项目内**唯一**的"Node → Rust"反向 HTTP 通道，规避了"Renderer / Sidecar 控制面走 Rust proxy → Node"主流向对后端间通信的不适配。所有客户端 MUST 走 `crate::local_http::builder()`（loopback，仍复用 no_proxy 保护）。
 
 ---
 
@@ -312,6 +316,22 @@ Rust 启动 Node Sidecar 时必须显式传 `--sidecar-role global|session`；`-
 | `TabProvider.tsx` | 状态容器，管理 messages / logs / SSE / Session |
 
 Tab 内 MUST 用 `useTabState()` 的 `apiGet` / `apiPost`，禁止全局 `apiPostJson` / `apiGetJson`（会发到 Global Sidecar）。
+
+#### App Shell 与 Tab authority
+
+`GlobalSidebar` 挂在 `App` 的 Tab Workspace 之外，是应用级导航和资源投影，不是新的页面容器或 Session owner。顶部 Tab 仍是所有主内容页面的唯一 authority：active、关闭、恢复、拖拽、Sidecar owner token 与 pending-session birth 都继续由现有 Tab 状态机管理。
+
+- 侧栏只从既有 `ConfigProvider`、任务中心 store、Session 索引与当前 Tab 派生工作区/Session 展示；active 高亮是 projection，不持久化第二份“当前页面”。该投影保持单一持久选中面：Launcher 选择工作区时高亮工作区行，Chat 已进入具体 Session 时只高亮 Session 行，父工作区仅保留层级上下文而不同时涂底或声明 `aria-current`。工作区配置和 Session mutation 分别调用现有 Config / Task Center authority，不在侧栏另存领域状态。
+- 侧栏是独立的 App Shell material consumer：根面只读取完整 Theme 必需的 `--global-sidebar-bg`，该 Token 由每套 Theme 的 light/dark package 拥有，并依靠与右侧 `--paper` 的色差分区，不再叠加右侧竖分割线；侧栏内部主导航、Agent 工作区和底部入口同样只用既有组间 padding 分层，不绘制模块横分割线。页面根面与卡片/弹层继续使用既有 `--paper / --paper-elevated / --paper-inset` 语义；顶部 Tab 栏属于右侧 Workspace，根面使用纯 `--paper`，常规 leading inset 为 8px，手动 rail 的 52px 预留同时容纳固定 toggle 与其后 8px 留白。Tab active/hover 复用全局 `--hover-bg`，active 额外以 `--accent` 底线表达注意力。不能为制造左右差异而翻转通用 Paper 层级、在组件内混色或为 Tab Chrome 复制一套局部 palette。
+- 侧栏展开/rail 切换的布局槽一次提交最终宽度，不能给 `width` / `flex-basis` 加逐帧 transition 让 Chat、Browser、Terminal 等 resize-sensitive surface 连续重排。可见边界由固定展开宽度的独立 paint-only 材质层通过 `clip-path` 横向揭示/收回；右侧 Tab 标题栏与内容用一次布局后的 compositor transform 保持旧视觉中心，再与边界同节奏归位。Chat 右侧工作区复用镜像模式：面板材质横移，对话区在最终 flex 布局上从旧中心归位；内容只做 opacity/translate/clip 编排，且必须提供 `prefers-reduced-motion` 立即切换路径。
+- App Shell 使用 Task Center store 的 passive projection：只按需读取已展开工作区的 Session，每个规范化工作区 key 独立持有 loading/error/retry；只有用户打开全局搜索时才触发一次完整索引加载。passive 与完整 Task Center 读取共享 generation/latest-wins 交接，完整读取开始时使旧 passive 写入失效，完整 owner 卸载时显式把当前展开需求交还 passive。任务列表、轮询与 Tauri 监听仍由真正挂载的 Task Center 生命周期拥有，不能因侧栏常驻而前移到 App mount。
+- 点击已有 Session 必须回到 `App` 的统一 open-target-session planner：优先聚焦已打开 Tab，否则按既有恢复/创建路径 materialize；并发点击复用同一 in-flight guard。新建既有 Session Tab 时用 `flushSync` 把 `sidecarConfigDisposition:'pending'` 的 Tab 加入并激活，立即挂载 Chat owner 子树并由其既有 `ChatBootOverlay` 承担加载反馈，再异步 ensure/activate；`setTabs` 必须保持 functional composition，不能把 `tabsRef` 提升为第二个可写 authority。ensure 的锁内 `isNew` 仍是 `push/adopt` 唯一裁决。失败时只撤销该临时 Tab 并恢复仍存在的前一 active Tab，成功后不得把加载期间主动切走的用户强制拉回。
+- 点击工作区始终新建 Launcher Tab，再通过 Launcher 既有选择路径写入该 Tab 的待创建工作区；不得在侧栏提前创建 Session 或 Sidecar。
+- Launcher 仅拥有“创建新工作”的输入和选项，不再拥有工作区卡片、历史列表或正式资源管理。全局侧栏是这些资源的唯一 UI owner，因此 Chat 不再提供把当前 Tab 原地改回 Launcher 的“返回”路径；用户通过关闭 Tab 或新建 Tab 结束/开启工作。
+- “技能与工具”使用单实例 `capabilities` Tab，并与 Settings 分别在自己的 Tab slot 内持有页面状态；切到其它 Tab 不卸载草稿，两个功能 Tab 的导航和弹层也不互相串扰。两者复用 Settings 既有能力模块，但 app-global 配置传播（例如 proxy hot reload）归 `ConfigProvider` 唯一拥有，不能由任一页面 mount 次数决定。旧 Settings deep-link 只做意图重定向，不复制领域实现。
+- Settings 的 `proxy` section 只是现有 `proxySettings` 配置面的独立路由 owner：供应商错误提示等入口统一 deep-link 到该 section，持久化仍走 disk-first `ConfigProvider`，运行中 Sidecar/Channel 的代理协调仍由既有配置传播链拥有。不得因从 General 拆页而复制代理状态、探测逻辑或建立 mount 驱动的 hot reload。
+- 模型选择菜单是输入 chrome 的导航投影：当前项定位只修改菜单自有 scroll container；“自定义模型服务”复用 `OPEN_SETTINGS({section:'providers'})` 单实例设置动线。显示边界以 `projectInputChromeRuntime()` 的结果为准，因此 Managed Codex 投影为 builtin/AgentSDK 并显示入口，用户自管外部 CLI Runtime 不显示。
+- 窄窗自动 rail 与用户手动展开偏好是两个正交状态。工作区 flyout 只是同一资源树的浮层呈现，不新增数据源、路由或选中 authority；关闭判定属于 flyout interaction owner，真实 pointer 离开、Escape 或导航成功可以关闭，但工作区树展开/折叠导致的 DOM 几何变化若指针仍在 flyout 边界内不得误判为离开。Session 导航后的关闭直接观察权威 active Tab identity 变化，同 Tab 成功则由当前 resource-surface interaction generation 关联的回调兜底；该 UI lifecycle generation 同时覆盖工作区 flyout 与搜索 overlay，不得另存单槽 pending Session 影子状态。激活前拒绝/异常保持资源面供重试；已经乐观激活后发生启动失败，由 App 回滚临时 Tab，但不自动复活已因导航关闭的旧资源面，也不得让工作区或 Session 的旧完成回调关闭用户后来重开的 flyout / 搜索 overlay。
 
 Phase4 后，几个历史大型 UI 入口保留原路径作为兼容 facade，真实实现按 owner 目录维护：
 
@@ -465,7 +485,7 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 | `types.ts` | `SessionEngine` 接口：desktop send、IM enqueue、injected turn、queue、runtime config、session read/config/operation 等 route-facing 能力 |
 | `route-contracts.ts` | high-risk route → engine method 的可测试契约清单；route modules 只做 payload/response shaping |
 
-`src/server/session-core/` 是 builtin / external 会话内核共享的 pure policy 层。它不拥有 SDK/CLI 进程、副作用或 SSE，只承载可单测的决策：turn result 判定、meaningful session activity/Heartbeat ack、runtime config snapshot/source guard、desktop/turn-boundary queue admission、MCP authority/fingerprint/restart 决策，以及 MyAgents-owned MCP 的统一 soft pre-warm budget / status 分类。
+`src/server/session-core/` 是 builtin / external 会话内核共享的 pure policy 层。它不拥有 SDK/CLI 进程、副作用或 SSE，只承载可单测的决策：turn result 判定、meaningful session activity/Heartbeat ack、显式 user/assistant channel-delivery owner、runtime config snapshot/source guard、desktop/turn-boundary queue admission、MCP authority/fingerprint/restart 决策，以及 MyAgents-owned MCP 的统一 soft pre-warm budget / status 分类。
 
 `src/server/agent-session.ts` 仍是 builtin SDK 的 public facade，供 `session-engine/builtin-adapter.ts` 委托。Phase6 后，主要 mutable state 不再由 facade 顶层变量直接拥有；Phase7 后，最重的 turn terminal 与 transcript persistence 行为也有独立 owner。真实维护入口在 `src/server/builtin-session/`：
 
@@ -473,8 +493,8 @@ SDK subprocess → ANTHROPIC_BASE_URL=127.0.0.1:${sidecarPort}
 |------|------|
 | `lifecycle.ts` | SDK `Query` 进程、abort flag、termination + pre-dispatch rollback barrier、generator wakeup、pre-warm control readiness、Query-scoped MCP pre-warm/mutation owner、exact Query background-task registry |
 | `queue.ts` | realtime queue、mid-turn buffer、turn-boundary queue、in-flight slot、admission ticket |
-| `turn.ts` | current turn usage/output/error state、SDK output-owner FIFO（每次 user-message yield 一槽，非 IM 为 `null` requestId）、injected turn outcome |
-| `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 解释、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序 |
+| `turn.ts` | current turn usage/output/error state、SDK output-owner FIFO（每次 user-message yield 一槽，同时保存 requestId、assistant channel owner 与成功前暂存的完整文本 block）、injected turn outcome |
+| `turn-lifecycle.ts` | SDK `result` / stopped / error terminal 解释、成功终态 channel-delivery commit、usage stamping、queue/IM/inbox/watch/analytics/title hook 顺序 |
 | `config.ts` | MCP/agents/plugins/model/permission/provider state、deferred restart latch |
 | `transcript.ts` | live messages、message sequence、persist cursor/cache、SDK UUID freshness sets |
 | `transcript-persistence.ts` | SessionStore mapping、incremental persist chain、load seeding、cursor/cache reset、rewind/fork/retraction persistence consistency |
@@ -507,7 +527,7 @@ SDK `task_started` 创建的后台 Agent/Bash 仍属于产生它的同一个 Que
 | `lifecycle.ts` | active runtime/process、starting guard、session binding、prewarm/system-init、user-stop flag |
 | `runtime-config.ts` | desired/live model、permission、reasoning effort state；snapshot/source guard integration |
 | `operation-queue.ts` | turn-boundary message/config FIFO（Desktop + busy IM）、drain reservation、generation-based stale dispatch rejection、direct-send tail admission/reset、force/cancel/status bookkeeping |
-| `turn-lifecycle.ts` | turn completed/success、finalization gate、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类；Desktop → IM admission、assistant disposition 与 user-before-assistant delivery tail |
+| `turn-lifecycle.ts` | turn completed/success、finalization gate、turn start time、usage/context usage state；`turn_complete` / `session_complete` terminal plan 分类；显式 channel-delivery admission、成功终态 commit 与 user-before-assistant delivery tail |
 | `content-blocks.ts` | streaming text/thinking/tool/subagent content state、tool result/attachment mutation、live/turn snapshot backing state |
 | `transcript-persistence.ts` | in-memory session messages、persisted runtime usage totals、user/assistant append、retry truncate、last assistant read、SessionStore save + metadata preview/context update |
 | `interactive.ts` | permission/AskUserQuestion pending state、active IM request id、IM registry cleanup、inbox/watch reply metadata与错误推送；permission response 成功 delivery 后才 consume pending state |
@@ -749,7 +769,7 @@ trusted root `~/.myagents/generated/tool-attachments/<sid>/<tid>/<file>`（base6
 
 ### 19. MyAgents Cloud Space（实验室，`src-tauri/src/space_cloud.rs` + `src/renderer/pages/Space.tsx`）
 
-Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能力正式随客户端发布，用户需在「设置 → 关于&反馈 → 实验室」显式开启；它不是默认稳定入口，但应作为实验室功能写入 CHANGELOG 与 GitHub Release notes。
+Cloud Space 把官方/团队空间接入桌面端。0.3.0 起作为实验室能力正式随客户端发布，用户需在「设置 → 关于 → 实验室」显式开启；它不是默认稳定入口，但应作为实验室功能写入 CHANGELOG 与 GitHub Release notes。
 
 **架构真相分工与版本：** 本仓库只维护 Desktop 客户端 owner（Rust connector、本地身份/状态、UI、CLI 与 Task/Session 执行），详细状态见 `specs/tech_docs/space_cloud.md`；Cloud Worker 的 API、鉴权、领域模型、D1/R2、一致性、quota 与运营能力由同级 `hAcKlyc/MyAgents_space` 仓库的 `specs/ARCHITECTURE.md` 维护。本地平级 checkout 路径为 `../MyAgents_space/specs/ARCHITECTURE.md`。两仓独立版本，但 0.3.2 Registered Agent execution instance 属于一次协调交付：Cloud additive migration/Worker 与 v0/v1/v2 smoke 先通过，再发布 Desktop。0.3.2 源码实现不代表 Production 已上线；实时真相仍只以两端已发布版本和 Cloud `/health` 为准。若契约变化必须同步更新两边实现、测试、文档和兼容基线。
 
@@ -831,38 +851,9 @@ Space 与其它 renderer CSS surface 一样直接继承 `<html>` 上当前 Theme
 
 ---
 
-## Pit-of-Success 索引
+## Pit-of-Success
 
-每个模块在 helper 层把"正确路径"做成默认。完整 Problem / Surface / Invariants / Don't 见 `tech_docs/pit_of_success.md`。
-
-| 模块 | 层 | 用途 |
-|------|----|------|
-| `local_http` | Rust | 防系统代理拦截 localhost → 502 |
-| `process_cmd` | Rust | 防 Windows 控制台窗口弹出 |
-| `proxy_config` | Rust | 子进程 NO_PROXY 注入 |
-| `system_binary` | Rust | 系统工具查找（Finder PATH 缺失） |
-| `tauri::async_runtime::spawn` + clippy ban | Rust | 防 macOS startup-abort（`tokio::spawn` 跨 FFI 不能 unwind） |
-| Session watcher | Rust | 文件系统观察索引（写入路径解耦） |
-| `withConfigLock` / `with_config_lock` | Node + Rust + renderer | `config.json` 跨进程串行写入 |
-| `ThemeRegistry` + `ThemeRuntimeProvider` + Tailwind bridge | renderer | 完整 Theme 校验、整套解析、root/context/跨窗口一致投影；runtime 值与编译期 utility 映射分离 |
-| `withFileLock` / `with_file_lock` | Node + Rust + renderer | 单写者文件原子性 |
-| `copyPlainText` | renderer | WebView 普通文本复制 fallback + 真实成功语义 |
-| `killWithEscalation` | Node | 子进程 stop SIGTERM → SIGKILL → orphan 升级链 |
-| `withAbortSignal` / `cancellableFetch` | Node | 统一 cancel 协议（fetch / stream / process） |
-| `maybeSpill` + `/refs/:id` + SSE 优先级 | Node + Rust | 大 payload 流到 ref，SSE 三档队列 |
-| `withLogContext` + ALS pipeline | Node + Rust | 自动注入 sessionId/tabId/turnId/runtime/requestId |
-| `DeferredInitState` + readiness endpoints | Node | 三分健康探针（live/ready/functional） |
-| `fs-utils` | Node | 跨平台 mkdir / 目录判定（Windows junction） |
-| `subprocess` | Node | Bun→Node spawn 形态适配 |
-| `file-response` | Node | 流式 HTTP 文件响应 |
-| Builtin MCP META/INSTANCE 懒加载 | Node | 防冷启动每次付 ~1s SDK+zod 税 |
-| Snapshot helpers | Node | owned vs live-follow 命名分裂 |
-| Legacy Cron → Task startup migration | Rust | 后端启动期幂等迁移，旧 store 保持只读 |
-| `saveToolAttachment` + `path-safety.ts` | Node | 任意工具图片产物统一落盘 + symlink-safe 路径校验 + SSRF 防护 |
-| `awaitInFlightSaves` + `rebuildAttachmentRegistry` | Node | 异步 attachment 落盘的 turn-boundary 守卫 + session resume 重 register |
-| `workspacePath` / `workspacePathsEqual` | shared (renderer) | 工作区路径跨存储标识比较（Rust `normalize_path` 的 TS 端口，防 Win 斜杠/盘符误判） |
-| Client-action 斜杠命令 (`slashActions`) | renderer | UI 动作命令名字保留 + 勿进文本插入 builtin 清单（防死条目 / shadow） |
-| System-skill 同步完整性门控 | Rust + Node | 验源含 SKILL.md 再清目标 + 全落地才写版本戳（防空目录冻结） |
+跨模块 helper 的完整 Problem / Surface / Invariants / Don't 由 `tech_docs/pit_of_success.md` 维护；可静态判断的边界由 ESLint、dependency-cruiser 与 Clippy 执行。本架构文档不镜像 helper 清单：只有 helper 改变了 owner、进程边界或主数据流时，才需要在对应架构章节更新。
 
 ---
 
@@ -995,33 +986,15 @@ Windows 无自带 git/bash，NSIS 静默安装 Git for Windows（`src-tauri/nsis
 - **[NODE]** Node.js Sidecar 日志（logger interceptor 直写）
 - **[RUST]** Rust 层日志
 
+日志 owner 与业务 owner 对齐：SSE text/thinking/tool/subagent delta 与 Claude Code raw partial NDJSON 是纯 transport，不落 unified log；Builtin / external turn terminal 记录有界 assistant 摘要（单行前 100 个 Unicode code point + 原始字符数），既有低频 SDK result 仅保留有界诊断；Plugin Bridge pending-dispatch terminal 只留 count/chars/hash，不重复同一 IM 正文。Codex `developerInstructions` 只记 presence/长度/短哈希。Sidecar logger 初始化后 Node 是 `console.*` 的唯一文件持久化 owner，Rust 只接真实 raw stderr；Rust unit tests 禁止写用户真实 unified log。高频成功轮询（含 `/api/session-state`）由 HTTP log policy 静音，异常仍由其语义 owner 记录。
+
 详见 `tech_docs/unified_logging.md`。
 
 ---
 
-## 开发脚本
+## 开发、构建与发布入口
 
-### macOS
-
-| 脚本 | 用途 |
-|------|------|
-| `setup.sh` | 首次环境初始化 |
-| `start_dev.sh` | 浏览器开发模式 |
-| `build_dev.sh` | Debug 构建（含 DevTools） |
-| `build_macos.sh` | 生产 DMG 构建 |
-| `publish_release.sh` | 发布到 R2 |
-| `publish_managed_codex_runtime.sh` | 单独发布 Managed Codex runtime set 的 macOS 平台资源 |
-
-### Windows
-
-| 脚本 | 用途 |
-|------|------|
-| `setup_windows.ps1` | 首次环境初始化 |
-| `build_windows.ps1` | 生产构建（NSIS + 便携版） |
-| `publish_windows.ps1` | 发布到 R2 |
-| `publish_managed_codex_runtime.ps1` | 单独发布 Managed Codex runtime set 的 Windows 平台资源 |
-
-详见 `guides/windows_build_guide.md`。
+可执行命令以根目录 `package.json` 和平台脚本为准；环境、签名、产物与发布顺序见 `guides/` 下对应平台文档。这里不复制易随脚本变化的命令清单。
 
 ---
 

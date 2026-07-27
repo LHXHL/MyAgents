@@ -76,6 +76,12 @@ import {
 } from '../SessionStore';
 import { getLatestAssistantResultFromMessages, NO_TEXT_RESPONSE } from '../inbox/latest-result';
 import { shrinkReplayContentForClient } from '../utils/session-message-preview';
+import {
+  DESKTOP_CHANNEL_DELIVERY,
+  IM_CHANNEL_DELIVERY,
+  SESSION_BOUND_CHANNEL_DELIVERY,
+  injectedTurnChannelDelivery,
+} from '../session-core/channel-delivery';
 
 function waitForDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T | null> {
   if (timeoutMs <= 0) return Promise.resolve(null);
@@ -334,6 +340,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           onTerminal: request.onTerminal,
           ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
           beforeDispatch: request.beforeDispatch,
+          channelDelivery: DESKTOP_CHANNEL_DELIVERY,
         },
       );
       if (result.error) {
@@ -374,6 +381,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           onTerminal: request.onTerminal,
           ...(request.turnBoundaryOnly ? { queueResponseModeOverride: 'turn' as const } : {}),
           beforeDispatch: request.beforeDispatch,
+          channelDelivery: IM_CHANNEL_DELIVERY,
         },
       );
       if (result.error) {
@@ -410,6 +418,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           turnOwner: request.turnOwner,
           onTerminal: request.onTerminal,
           beforeDispatch: request.beforeDispatch,
+          channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
       );
       if (result.error) {
@@ -428,7 +437,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         undefined,
         undefined,
         undefined,
-        { source: 'desktop' },
+        undefined,
         undefined,
         request.inboxMeta,
         undefined,
@@ -436,6 +445,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
         {
           allowLazySessionMaterialization: request.allowLazySessionMaterialization === true,
           sessionBirthOrigin: request.birthOrigin,
+          channelDelivery: SESSION_BOUND_CHANNEL_DELIVERY,
         },
       );
     },
@@ -497,6 +507,7 @@ export function createBuiltinSessionEngine(): SessionEngine {
           },
           queueResponseModeOverride: 'turn',
           beforeDispatch,
+          channelDelivery: injectedTurnChannelDelivery(request.assistantChannelDelivery),
         },
       );
       const enqueueResult = await waitForDeadline(

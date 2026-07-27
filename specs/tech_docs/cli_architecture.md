@@ -253,7 +253,14 @@ app 启动 → ConfigProvider → invoke('cmd_sync_cli')
 
 三个版本门控**独立运作**，修改各自内容只需 bump 对应版本即可。
 
-`SYSTEM_SKILLS` 是版本化安装集合，`REQUIRED_SYSTEM_SKILLS` 是其中始终可用的产品契约子集，二者不能混为一谈。canonical 名单在 `src/shared/systemSkills.ts`，Rust workspace/slash 路径在 `src-tauri/src/workspace_files/skills_config.rs` 维护必要镜像，并由 cross-language test 锁定；改名单必须同步这两处，禁止 UI、CLI 或其它模块再复制第三份。当前 Required 包括 `myagents-memory-update`、`myagents-memory-gardener`、`myagents-memory-molt`、`myagents-cli`、`myagents-docs`。读取旧 `skills-config.json` 和每次写回都会移除这些名称的 stale disabled 项；Skills API 以 `required:true, enabled:true` 投影，disable 请求返回 409。其它版本化或用户 Skill 仍可正常 enable/disable。
+对应变更必须在这个局部边界内完成：
+
+- 修改 `bundled-agents/myagents_helper/` 的 CLAUDE.md 或 Skills：bump `ADMIN_AGENT_VERSION`。
+- 修改 `src/cli/myagents.ts` 或 `src/cli/myagents.cmd`：bump `CLI_VERSION`；若 CLI surface 改变，还要同步 `bundled-skills/myagents-cli/SKILL.md` 并 bump `SYSTEM_SKILLS_VERSION`。
+- 修改 `SYSTEM_SKILLS` 清单内的 `bundled-skills/<name>/`：bump `SYSTEM_SKILLS_VERSION`。
+- 新增 system skill：加入 Rust `SYSTEM_SKILLS` 与 Node `src/server/index.ts::SYSTEM_SKILLS` 两个清单并 bump 版本。未进清单的 utility skill 首次 seed 后归用户，不使用强制更新语义。
+
+`SYSTEM_SKILLS` 是版本化安装集合，`REQUIRED_SYSTEM_SKILLS` 是其中始终可用的产品契约子集，二者不能混为一谈。canonical 名单在 `src/shared/systemSkills.ts`，Rust workspace/slash 路径在 `src-tauri/src/workspace_files/skills_config.rs` 维护必要镜像，并由 cross-language test 锁定；改名单必须同步这两处，禁止 UI、CLI、文档或其它模块再复制第三份。读取旧 `skills-config.json` 和每次写回都会移除这些名称的 stale disabled 项；Skills API 以 `required:true, enabled:true` 投影，disable 请求返回 409。其它版本化或用户 Skill 仍可正常 enable/disable。
 
 ## Rust CLI 入口（场景 2）
 

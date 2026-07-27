@@ -104,6 +104,7 @@ import {
   PluginStoreError,
 } from './plugins/store';
 import { handleQrCodeAssetRoute } from './routes/qr-code-asset';
+import { shouldLogHttpRequest } from './http-log-policy';
 
 type SpaceSkillExportPackage = {
   tempId: string;
@@ -2408,13 +2409,9 @@ async function main() {
       const url = new URL(request.url);
       const pathname = url.pathname;
 
-      // Skip logging high-frequency polling/config-sync paths to reduce unified log noise.
-      // These fire every 15s (health) or on every Tab focus (commands/agents/mcp) with zero diagnostic value.
-      const SILENT_PATHS = new Set([
-        '/health', '/api/unified-log', '/agent/dir', '/sessions',
-        '/api/commands', '/api/agents/enabled', '/api/git/branch',
-      ]);
-      if (!SILENT_PATHS.has(pathname)) {
+      // Polling/config reads only surface state changes or failures at their
+      // semantic owner; a successful request line has no diagnostic value.
+      if (shouldLogHttpRequest(request.method, pathname)) {
         console.debug(`[http] ${request.method} ${pathname}`);
       }
 
@@ -3464,6 +3461,7 @@ async function main() {
             providerEnv: engine.kind === 'builtin' ? effectiveProviderEnv : undefined,
             runtimeConfig: effectiveRuntimeConfig ?? null,
             analyticsOrigin: turnOrigin,
+            assistantChannelDelivery: 'caller-owned',
             timeoutMs: 3_600_000,
             pollMs: 1000,
           } satisfies import('./session-engine').InjectedTurnRequest;
@@ -9090,6 +9088,7 @@ description: >
               sourceId: payload.sourceId,
             },
             analyticsOrigin: { kind: 'agent-channel', surface: 'channel_heartbeat' },
+            assistantChannelDelivery: 'caller-owned',
             timeoutMs: 300000,
             pollMs: 500,
           });
@@ -9247,6 +9246,7 @@ description: >
             model: engine.kind === 'builtin' ? getSessionModel() ?? undefined : undefined,
             providerEnv: engine.kind === 'builtin' ? getSessionProviderEnv() : undefined,
             analyticsOrigin: { kind: 'automation', surface: 'memory_update' },
+            assistantChannelDelivery: 'none',
             timeoutMs: MEMORY_UPDATE_TIMEOUT_MS,
             pollMs: 1000,
             beforeDispatch: createRequiredSystemSkillDispatchGuard(
