@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.24
+> **Version**: 2.8.25
 > **Last Updated**: 2026-07-27
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -1269,8 +1269,8 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
   品牌第二行: h-10；固定 x 的 20px 圆角矩形 App Icon + Theme 产品字标 text-sm/font-medium
   连续主导航行: h-9, px-3, text-sm, icon 16px, 行间距 0
   工作区标题行: h-12, text-xs, 弱化文字
-  工作区行: h-9；整行只负责展开/折叠；顶层条目额外行间距 0
-  Session 行: h-9；标题 text-xs 单行 truncate，右侧时间 text-xs
+  工作区行: h-9；14px 展开箭头 + text-sm 名称；整行只负责展开/折叠；顶层条目额外行间距 0
+  Session 行: h-9；标题 text-sm 单行 truncate，来源 tag / 右侧时间 text-xs
   底部入口: h-9，额外行间距 0；固定且不随工作区历史滚动
 
 rail 72px:
@@ -1295,7 +1295,7 @@ rail 72px:
 - 工作区整行只切换树；“在此工作区新建对话”和更多菜单是独立 hover/focus 动作，避免把资源浏览与启动混为一谈。工作区与 Session 资源行整体不可文本选中，右键按下只进入各自行的同一份上下文菜单，不得同时触发标题蓝色选区。
 - Session 行可显示收藏、来源标签、时间和具体 Session 状态；工作区行与 rail 不显示聚合 badge。Session 行占满树枝到右侧边界，日期以 `ml-auto` 贴近右缘；更多菜单绝对悬浮在日期位置，hover/focus 时替换日期，不参与正常布局宽度。Session 更多/右键菜单第一行固定为“复制对话 ID”，复制与 Chat 内对话菜单一致的 `SessionID: <id>` 引用并给出成功或失败 Toast；随后才排列收藏、统计和删除。历史搜索浮层中的浏览行、全文命中行和 Session ID 直接命中行必须复用这同一个菜单组件，禁止复制菜单项后各自演化。
 - Session 状态只投影顶部 Tab 的两类注意力信号：运行中显示 `--success` 绿色脉冲点，未读显示 `--accent-warm` 静态点，且运行中优先。当前选中、已在后台 Tab 打开和普通历史均不显示额外图标；它们分别由行 active/hover 表面和顶部 Tab 自身表达，禁止再为侧栏发明 active 圆点或“已打开”方块状态。
-- 顶层工作区按连续资源树排布，工作区 wrapper 之间不添加额外 gap；工作区行与 Session 行都使用 `h-9`，展开分支自身的缩进连线负责表达归属。Session 标题使用 `text-xs`，与工作区 `text-sm` 形成层级；工作区名称默认 `font-normal`，仅在 hover、focus、菜单打开、Launcher 关联或包含当前 Session 时升至 `font-medium`，避免静态资源列表持续争夺注意力。
+- 顶层工作区按连续资源树排布，工作区 wrapper 之间不添加额外 gap；工作区行与 Session 行都使用 `h-9`。普通工作区的展开箭头固定 14px，按钮左 inset 比右侧少 2px；展开分支边线使用 16px 左缩进，让箭头、工作区内容和 Session 分支共同左收，为资源名释放横向空间。工作区名称与 Session 标题都是主要可点击资源名，统一使用 `text-sm` 14px；层级由缩进、图标、颜色和字重表达。来源 tag 与日期保留 `text-xs` 12px meta 档，不能与主标题等权。工作区名称默认 `font-normal`，仅在 hover、focus、菜单打开、Launcher 关联或包含当前 Session 时升至 `font-medium`，避免静态资源列表持续争夺注意力。
 - 资源树始终只有一个持久选中面：Launcher 选择工作区时，工作区行与普通 hover 统一使用 `var(--hover-bg)`；Chat 已进入具体 Session 时，只由 Session active 行使用 `var(--hover-bg)`，父工作区不同时涂底或声明 `aria-current`，仅以中等字重保留路径上下文。两者均不增加 `paper-elevated` 或阴影；小图标按钮 hover 使用 `var(--paper-inset)`。
 - 空态、静默加载占位和局部失败重试都留在工作区滚动区域，不能拖垮全局导航或推走底部入口。rail 工作区 flyout 与侧栏消费同一个 `--global-sidebar-bg`，避免白色浮层从侧栏材质中突兀跳出。
 - Chat 顶栏不再提供“返回启动页”：全局侧栏负责跨资源导航，用户通过关闭当前 Tab 或“新对话”建立下一条动线。Chat 顶栏与全局侧栏的“新对话”动作共用 `MessageSquarePlus` 语义图标，避免同一动作在两个入口分别显示通用加号与对话图标。工作区内历史浮层标题明确为“工作区历史记录”，避免被误解成跨工作区全局历史。
@@ -1374,6 +1374,7 @@ AI 输入框的模型菜单拥有独立滚动区。打开时在首帧把当前�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.25 | 2026-07-27 | **侧栏资源字阶与缩进再平衡**：普通工作区箭头 16→14px，按钮左 inset 收 2px、Session 分支收 4px；纠正 Session 主标题与 tag/日期同为 12px 导致视觉权重倒挂的问题，Session 标题恢复 `text-sm` 14px，tag 与日期保持 `text-xs` 12px |
 | 2.8.24 | 2026-07-27 | **工作区树展开动效**：展开侧栏与 rail 工作区 flyout 共用 200ms CSS Grid 高度过渡和轻量淡入位移；收起动画结束后卸载 Session 子树，快速反向操作会取消待卸载动作，并完整尊重 reduced-motion |
 | 2.8.23 | 2026-07-27 | **Session 右键菜单统一**：全局侧栏 Session 行复用工作区行的不可选中与右键按下阻止默认行为；历史搜索浮层的浏览、全文命中和 Session ID 直接命中三种行复用侧栏同一个 Session 菜单组件，不再出现原生菜单或标题蓝色选区，也从结构上防止两处菜单漂移 |
 | 2.8.22 | 2026-07-26 | **macOS 原生窗口缩放 chrome 稳定性**：红绿灯 inset 的连续帧所有权回归 Wry 原生 draw lifecycle，post-build 只负责首帧定位；移除滞后的 Tauri resize 事后纠偏，避免双击标题栏 zoom 时短暂向左上漂移 |

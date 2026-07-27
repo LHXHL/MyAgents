@@ -1301,7 +1301,7 @@ function WorkspaceSessionBranch({
         }`}
       >
         {rendered && (
-          <div className="ml-5 border-l border-[var(--line-subtle)] pl-2">
+          <div className="ml-4 border-l border-[var(--line-subtle)] pl-2">
             {children}
           </div>
         )}
@@ -1684,9 +1684,9 @@ function WorkspaceRow({
       <button
         type="button"
         onClick={onToggle}
-        className="flex h-full min-w-0 flex-1 items-center gap-2 px-2 text-left text-sm text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]"
+        className="flex h-full min-w-0 flex-1 items-center gap-2 pl-1.5 pr-2 text-left text-sm text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]"
       >
-        <ChevronRight className={`h-4 w-4 shrink-0 text-[var(--ink-muted)] transition-transform duration-200 ease-out motion-reduce:transition-none ${expanded ? 'rotate-90' : ''}`} />
+        <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-[var(--ink-muted)] transition-transform duration-200 ease-out motion-reduce:transition-none ${expanded ? 'rotate-90' : ''}`} />
         <WorkspaceIcon icon={project.icon} size={16} />
         <span
           className={`min-w-0 flex-1 truncate ${
@@ -1815,7 +1815,7 @@ function SessionRow({
           hasUnread={tab?.hasUnread}
         />
         <span
-          className="min-w-0 flex-1 truncate text-xs"
+          className="min-w-0 flex-1 truncate text-sm"
           data-global-sidebar-session-title
         >
           {getSessionDisplayText(session)}

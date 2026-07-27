@@ -846,15 +846,19 @@ describe('GlobalSidebar rail flyout', () => {
     const workspaceRow = screen.getByText('Project one').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
     const workspaceToggle = within(workspaceRow).getAllByRole('button')[0];
     const branch = workspaceRow.nextElementSibling as HTMLElement;
+    const workspaceChevron = workspaceToggle.querySelector('svg');
     expect(branch).toHaveAttribute('data-global-sidebar-workspace-branch');
     expect(branch).toHaveAttribute('data-state', 'closed');
+    expect(workspaceToggle).toHaveClass('pl-1.5', 'pr-2', 'text-sm');
+    expect(workspaceChevron).toHaveClass('h-3.5', 'w-3.5');
     expect(screen.queryByText('Animated session')).not.toBeInTheDocument();
 
     fireEvent.click(workspaceToggle);
     act(() => vi.advanceTimersByTime(16));
     expect(branch).toHaveAttribute('data-state', 'open');
     expect(branch).toHaveClass('grid-rows-[1fr]', 'duration-200', 'motion-reduce:transition-none');
-    expect(screen.getByText('Animated session')).toBeInTheDocument();
+    expect(branch.querySelector('.ml-4')).toBeInTheDocument();
+    expect(screen.getByText('Animated session')).toHaveClass('text-sm');
 
     fireEvent.click(workspaceToggle);
     expect(branch).toHaveAttribute('data-state', 'closed');
@@ -1024,13 +1028,15 @@ describe('GlobalSidebar rail flyout', () => {
     expect(firstSession).toHaveTextContent(String(i18n.t('app:sessionTags.cron')));
     const firstSessionRow = firstSession.closest('[data-global-sidebar-session-row]');
     expect(firstSessionRow).toHaveClass('h-9');
-    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-title]')).toHaveClass('text-xs');
-    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-title]')).not.toHaveClass('text-sm');
+    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-title]')).toHaveClass('text-sm');
+    expect(firstSessionRow?.querySelector('[data-global-sidebar-session-title]')).not.toHaveClass('text-xs');
+    expect(screen.getByText('Telegram')).toHaveClass('text-xs', 'font-medium');
     expect(firstSession).toHaveClass('w-full');
     expect(firstSessionRow?.querySelector('[data-global-sidebar-session-date]')).toHaveClass('ml-auto');
     expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('absolute');
     expect(firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay]')).toHaveClass('pointer-events-none');
     const sessionDate = firstSessionRow?.querySelector('[data-global-sidebar-session-date]');
+    expect(sessionDate).toHaveClass('text-xs');
     const sessionMore = firstSessionRow?.querySelector('[data-global-sidebar-session-action-overlay] button');
     expect(sessionDate).not.toHaveClass('opacity-0');
     fireEvent.click(sessionMore!);
