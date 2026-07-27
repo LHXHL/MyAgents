@@ -117,29 +117,27 @@
   }
 }
 
-/* The chat composer's + menu is portaled and positioned with Floating UI's
-   transform. Animate the independent translate/scale properties so entry
-   motion never overrides that positioning transform. */
-@keyframes plusMenuIn {
+/* Composer toolbar menus are portaled and positioned with Floating UI's
+   transform. Animate the independent translate property so entry motion
+   never overrides that positioning transform. A vertical-only reveal avoids
+   the sideways growth produced by scaling from a left-aligned origin. */
+@keyframes composerToolbarMenuIn {
   from {
     opacity: 0;
-    translate: 0 4px;
-    scale: 0.98;
+    translate: 0 6px;
   }
   to {
     opacity: 1;
     translate: 0 0;
-    scale: 1;
   }
 }
 
-.plus-menu-enter {
-  transform-origin: bottom left;
-  animation: plusMenuIn var(--duration-normal) cubic-bezier(0.16, 1, 0.3, 1);
+.composer-toolbar-menu-enter {
+  animation: composerToolbarMenuIn var(--duration-normal) cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .plus-menu-enter {
+  .composer-toolbar-menu-enter {
     animation: none;
   }
 }

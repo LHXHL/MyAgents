@@ -1744,7 +1744,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 onClose={() => setShowPlusMenu(false)}
                 anchorRef={plusBtnRef}
                 placement="top-start"
-                className="plus-menu-enter w-48 py-1"
+                className="composer-toolbar-menu-enter w-48 py-1"
               >
                 {/* PRD 0.2.7: previously gated by `!isLauncherMode`; both
                  *  launcher and chat-tab now route file ops through the
@@ -1894,7 +1894,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 onClose={() => setShowModeMenu(false)}
                 anchorRef={modeBtnRef}
                 placement="top-start"
-                className="w-72 py-1"
+                className="composer-toolbar-menu-enter w-72 py-1"
               >
                 <div className="flex items-center justify-between px-3 py-2 border-b border-[var(--line)]">
                   <span className="text-xs font-medium text-[var(--ink-muted)]">{t('input.permissionModeHeader')}</span>
@@ -1980,7 +1980,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 // past the viewport top. 50vh shows ~6 full rows AND
                 // half-clips the next one — the partial row is the
                 // affordance that tells the user "scroll for more".
-                className="w-64 max-h-[50vh] overflow-y-auto py-1"
+                className="composer-toolbar-menu-enter w-64 max-h-[50vh] overflow-y-auto py-1"
               >
                     <div className="px-3 py-2 text-xs font-medium text-[var(--ink-muted)] border-b border-[var(--line)]">
                       {t('input.toolsHeader')}

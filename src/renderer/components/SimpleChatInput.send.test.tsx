@@ -131,12 +131,27 @@ describe('SimpleChatInput send paths', () => {
 
     const cronButton = screen.getByRole('button', { name: '定时任务' });
     expect(cronButton.querySelector('.lucide-timer')).toBeInTheDocument();
-    expect(cronButton.closest('.plus-menu-enter')).toBeInTheDocument();
+    expect(cronButton.closest('.composer-toolbar-menu-enter')).toBeInTheDocument();
 
     await user.click(cronButton);
 
     expect(onCronButtonClick).toHaveBeenCalledOnce();
     expect(screen.queryByRole('button', { name: '定时任务' })).not.toBeInTheDocument();
+  });
+
+  it('uses the same upward entry motion for all three left-side toolbar menus', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    renderInput({
+      runtime: 'builtin',
+      permissionMode: 'auto',
+      onPermissionModeChange: vi.fn(),
+    });
+
+    for (const title of ['添加上下文', '切换执行模式', '使用工具']) {
+      await user.click(screen.getByTitle(title));
+      expect(document.querySelectorAll('.composer-toolbar-menu-enter')).toHaveLength(1);
+    }
   });
 
   it('sends text from the Chat input surface', async () => {
