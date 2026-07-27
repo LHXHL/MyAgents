@@ -154,6 +154,18 @@ describe('SimpleChatInput send paths', () => {
     }
   });
 
+  it('matches the mention picker elevation to the composer', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    renderInput();
+
+    await user.type(screen.getByPlaceholderText('输入消息，使用 @ 引用文件，/ 使用技能...'), '@');
+
+    const emptySearchHint = await screen.findByText('输入文件名搜索...');
+    const mentionPicker = emptySearchHint.parentElement?.parentElement;
+    expect(mentionPicker).toHaveStyle({ boxShadow: 'var(--shadow-md)' });
+  });
+
   it('sends text from the Chat input surface', async () => {
     const user = userEvent.setup();
     const onSend = renderInput();

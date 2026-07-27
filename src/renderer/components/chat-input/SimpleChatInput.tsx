@@ -1546,6 +1546,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
               placement="top-start"
               offset={8}
               closeOnEscape={false}
+              style={{ boxShadow: 'var(--shadow-md)' }}
               className="w-[34rem] max-w-[calc(100vw-2rem)] max-h-80 flex flex-col"
             >
               {/* Tabs header */}
