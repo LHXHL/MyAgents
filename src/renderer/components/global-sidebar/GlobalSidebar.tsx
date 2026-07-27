@@ -1732,14 +1732,14 @@ function WorkspaceRow({
         placement="bottom-end"
         className="global-sidebar-nested-layer w-44 py-1"
       >
+        <MenuItem icon={<Settings2 className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.agentSettings')} onClick={() => { setMenu(false); onAgentSettings(menuRef.current); }} />
+        <MenuItem icon={<FolderOpen className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.openFolder')} onClick={() => { setMenu(false); onOpenFolder(); }} />
         <MenuItem
           icon={project.pinnedAt ? <PinOff className="h-3.5 w-3.5" /> : <Pin className="h-3.5 w-3.5" />}
           label={project.pinnedAt ? tLauncher('workspaceCard.unpin') : tLauncher('workspaceCard.pin')}
           onClick={() => { setMenu(false); onTogglePin(); }}
         />
-        <MenuItem icon={<Settings2 className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.agentSettings')} onClick={() => { setMenu(false); onAgentSettings(menuRef.current); }} />
         <MenuItem icon={<Archive className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.archive')} onClick={() => { setMenu(false); onArchive(); }} />
-        <MenuItem icon={<FolderOpen className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.openFolder')} onClick={() => { setMenu(false); onOpenFolder(); }} />
         <MenuItem icon={<Trash2 className="h-3.5 w-3.5" />} label={tLauncher('workspaceCard.remove')} tone="danger" onClick={() => { setMenu(false); onRemove(menuRef.current); }} />
       </Popover>
     </div>

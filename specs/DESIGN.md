@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.30
+> **Version**: 2.8.31
 > **Last Updated**: 2026-07-27
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -1286,6 +1286,8 @@ rail 64px:
 
 产品身份行的 App Icon 与 `MyAgents` 字标共同组成紧凑官网链接，点击后通过系统默认浏览器打开 `https://myagents.io`；rail 中链接自然收缩为 App Icon。其 hover 只使用 pointer 光标，不铺整行或局部背景色，键盘焦点仍保留 Accent focus ring，避免把品牌入口误表现成主导航选中面。
 
+活跃工作区的资源菜单固定按“Agent 设置 → 打开所在文件夹 → 置顶/取消置顶 → 归档 → 移除”排列：先放配置与定位等高频动作，再放排序和生命周期动作，危险的移除始终收尾。展开侧栏与 rail flyout 复用同一 `WorkspaceRow`，不得分别维护菜单顺序。
+
 ### 15.3 工作区与 Session 树
 
 - 工作区按置顶时间、最近打开时间、名称稳定排序；归档工作区位于默认收起的独立分组。
@@ -1375,6 +1377,7 @@ AI 输入框的模型菜单拥有独立滚动区。打开时在首帧把当前�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.31 | 2026-07-27 | **工作区资源菜单排序**：活跃工作区菜单统一调整为“Agent 设置 → 打开所在文件夹 → 置顶/取消置顶 → 归档 → 移除”，配置与定位动作前置，危险操作保持收尾；展开侧栏与 rail flyout 继续复用同一菜单实现 |
 | 2.8.30 | 2026-07-27 | **折叠侧栏视觉中线收口**：rail 从 72px 收至 64px，保持 16px 功能图标 `x=24px` 不动，使其中心与 rail 中线统一为 `x=32px`；20px App Icon 左移至 `x=22px` 并共享同中线，macOS 红绿灯 inset 同步左移 5px，Tab 留白与 compositor 位移按新边界重算 |
 | 2.8.29 | 2026-07-27 | **macOS 原生窗口 zoom 持久定位修正**：红绿灯 inset 改由当前 `NSWindow` 的 AppKit 同步几何通知 owner 维护，覆盖 resize、zoom、全屏与 backing scale；移除不可靠的 Wry draw-only 持久化假设，也不再依赖滞后的 Tauri `WindowEvent` 追帧 |
 | 2.8.28 | 2026-07-27 | **历史 Overlay 浏览筛选减负**：非搜索状态移除“活跃中 / 桌面 / 聊天机器人”三个分类及其本地过滤逻辑，只保留“全部 / 收藏”和工作区筛选；Session 来源仍由行内 tag 表达，搜索状态与请求行为不变 |

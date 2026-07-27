@@ -426,7 +426,15 @@ describe('GlobalSidebar rail flyout', () => {
     const contextMenu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 });
     fireEvent(workspaceRow, contextMenu);
     expect(contextMenu.defaultPrevented).toBe(true);
-    expect(screen.getByRole('button', { name: String(i18n.t('launcher:workspaceCard.pin')) })).toBeInTheDocument();
+    const pinItem = screen.getByRole('button', { name: String(i18n.t('launcher:workspaceCard.pin')) });
+    const menu = pinItem.closest<HTMLElement>('.global-sidebar-nested-layer')!;
+    expect(within(menu).getAllByRole('button').map((item) => item.textContent)).toEqual([
+      String(i18n.t('launcher:workspaceCard.agentSettings')),
+      String(i18n.t('launcher:workspaceCard.openFolder')),
+      String(i18n.t('launcher:workspaceCard.pin')),
+      String(i18n.t('launcher:workspaceCard.archive')),
+      String(i18n.t('launcher:workspaceCard.remove')),
+    ]);
   });
 
   it('opens a Session context menu without allowing right-click text selection', () => {
