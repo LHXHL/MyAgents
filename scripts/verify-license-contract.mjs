@@ -54,7 +54,11 @@ requireEqual('package-lock root package version', packageLock.packages?.['']?.ve
 requireEqual('package-lock root package license', packageLock.packages?.['']?.license, expectedLicense);
 requireEqual('tauri version', tauri.version, expectedVersion);
 requireEqual('tauri bundle license', tauri.bundle?.license, expectedLicense);
-requireEqual('tauri bundle licenseFile', tauri.bundle?.licenseFile, '../LICENSE');
+requireEqual(
+  'tauri bundle licenseFile (installer click-through disabled)',
+  tauri.bundle?.licenseFile,
+  undefined,
+);
 requireContains('Cargo package version', cargo, `version = "${expectedVersion}"`);
 requireContains('Cargo package license', cargo, `license = "${expectedLicense}"`);
 requireContains('Cargo.lock root package version', cargoLock, `name = "myagents"\nversion = "${expectedVersion}"`);
