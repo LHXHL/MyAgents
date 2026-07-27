@@ -343,12 +343,19 @@ describe('GlobalSidebar rail flyout', () => {
     const session = screen.getByRole('button', { name: /Focused session/ });
     const workspaceToggle = screen.getByText('Project one').closest('[data-global-sidebar-workspace-row]')!
       .querySelector('button')!;
+    const branch = screen.getByText('Focused session').closest('[data-global-sidebar-workspace-branch]')!;
 
     fireEvent.pointerEnter(flyout);
     session.focus();
     fireEvent.blur(session);
     fireEvent.click(workspaceToggle);
-    act(() => vi.advanceTimersByTime(220));
+
+    expect(branch).toHaveAttribute('data-state', 'closed');
+    expect(branch).toHaveAttribute('aria-hidden', 'true');
+    expect(screen.getByRole('button', { name: /Focused session/, hidden: true })).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(199));
+    expect(screen.getByRole('button', { name: /Focused session/, hidden: true })).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1));
 
     expect(screen.getByRole('region', { name: 'Agent 工作区' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Focused session/ })).not.toBeInTheDocument();
@@ -814,6 +821,50 @@ describe('GlobalSidebar rail flyout', () => {
     fireEvent.click(within(inactiveRow).getByRole('button', { name: String(i18n.t('launcher:workspaceCard.more')) }));
     expect(inactiveTitle).toHaveClass('font-medium');
     expect(inactiveTitle).not.toHaveClass('font-normal');
+  });
+
+  it('animates workspace branches in the expanded sidebar and cancels a pending collapse when reopened', () => {
+    mocks.forcedRail = false;
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    mocks.taskData.sessions.push({
+      id: 'session-1',
+      agentDir: '/work/project-one',
+      title: 'Animated session',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    });
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1,
+      preferredMode: 'expanded',
+      expandedWorkspaceKeys: [],
+      hasSeededDefaultExpansion: true,
+      showAutomationSessions: true,
+      sessionView: 'all',
+    }));
+    renderSidebar();
+
+    const workspaceRow = screen.getByText('Project one').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
+    const workspaceToggle = within(workspaceRow).getAllByRole('button')[0];
+    const branch = workspaceRow.nextElementSibling as HTMLElement;
+    expect(branch).toHaveAttribute('data-global-sidebar-workspace-branch');
+    expect(branch).toHaveAttribute('data-state', 'closed');
+    expect(screen.queryByText('Animated session')).not.toBeInTheDocument();
+
+    fireEvent.click(workspaceToggle);
+    act(() => vi.advanceTimersByTime(16));
+    expect(branch).toHaveAttribute('data-state', 'open');
+    expect(branch).toHaveClass('grid-rows-[1fr]', 'duration-200', 'motion-reduce:transition-none');
+    expect(screen.getByText('Animated session')).toBeInTheDocument();
+
+    fireEvent.click(workspaceToggle);
+    expect(branch).toHaveAttribute('data-state', 'closed');
+    expect(screen.getByText('Animated session')).toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(100));
+    fireEvent.click(workspaceToggle);
+    act(() => vi.advanceTimersByTime(200));
+
+    expect(branch).toHaveAttribute('data-state', 'open');
+    expect(screen.getByText('Animated session')).toBeInTheDocument();
   });
 
   it('opens the global search overlay directly in search mode', async () => {

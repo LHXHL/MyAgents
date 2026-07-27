@@ -112,6 +112,7 @@ const SESSION_PAGE_SIZE = 5;
 const AUTO_RAIL_QUERY = '(max-width: 1080px)';
 const EMPTY_TAGS: SessionTag[] = [];
 const SIDEBAR_TRANSITION_MS = 200;
+const WORKSPACE_BRANCH_TRANSITION_MS = 200;
 const MYAGENTS_WEBSITE_URL = 'https://myagents.io';
 const FLYOUT_FOCUS_ENTRY_SELECTOR = [
   'button:not([disabled])',
@@ -1241,6 +1242,74 @@ interface WorkspaceTreeProps {
   onNestedInteractionChange: (key: string, open: boolean) => void;
 }
 
+function WorkspaceSessionBranch({
+  expanded,
+  children,
+}: {
+  expanded: boolean;
+  children: ReactNode;
+}) {
+  const [rendered, setRendered] = useState(expanded);
+  const [revealReady, setRevealReady] = useState(expanded);
+  const branchRef = useRef<HTMLDivElement | null>(null);
+  const visuallyExpanded = expanded && revealReady;
+
+  // Keep the Session subtree mounted only for the closing transition. Opening
+  // mounts content first, then reveals it on the next animation frame so CSS
+  // receives a real 0fr → 1fr pair to interpolate. All state changes happen
+  // in scheduled callbacks, keeping the effect itself free of cascading state.
+  useEffect(() => {
+    let revealFrame: number | undefined;
+    if (expanded) {
+      const mountTimer = window.setTimeout(() => {
+        setRendered(true);
+        revealFrame = window.requestAnimationFrame(() => {
+          // Establish the mounted 0fr layout before switching to 1fr. This
+          // one-shot read prevents React/browser batching from coalescing both
+          // states into one paint and silently dropping the transition.
+          branchRef.current?.getBoundingClientRect();
+          setRevealReady(true);
+        });
+      }, 0);
+      return () => {
+        window.clearTimeout(mountTimer);
+        if (revealFrame !== undefined) window.cancelAnimationFrame(revealFrame);
+      };
+    }
+    const timeout = window.setTimeout(() => {
+      setRendered(false);
+      setRevealReady(false);
+    }, WORKSPACE_BRANCH_TRANSITION_MS);
+    return () => window.clearTimeout(timeout);
+  }, [expanded]);
+
+  return (
+    <div
+      ref={branchRef}
+      role="group"
+      aria-hidden={!expanded}
+      inert={!expanded}
+      data-global-sidebar-workspace-branch
+      data-state={visuallyExpanded ? 'open' : 'closed'}
+      className={`grid transition-[grid-template-rows] duration-200 ease-out motion-reduce:transition-none ${
+        visuallyExpanded ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
+      }`}
+    >
+      <div
+        className={`min-h-0 overflow-hidden transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none ${
+          visuallyExpanded ? 'translate-y-0 opacity-100' : '-translate-y-1 opacity-0'
+        }`}
+      >
+        {rendered && (
+          <div className="ml-5 border-l border-[var(--line-subtle)] pl-2">
+            {children}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function WorkspaceTree({
   projects,
   archivedProjects,
@@ -1448,8 +1517,7 @@ function WorkspaceTree({
                     onRemove={(origin) => onRemove(project, origin)}
                     onMenuOpenChange={(open) => onNestedInteractionChange(`workspace:${project.id}`, open)}
                   />
-                  {expandedSet.has(key) && (
-                    <div role="group" className="ml-5 border-l border-[var(--line-subtle)] pl-2">
+                  <WorkspaceSessionBranch expanded={expandedSet.has(key)}>
                       {workspaceSessionState?.isLoading && sessions.length === 0 ? (
                         <div className="space-y-1 py-1" data-global-sidebar-session-placeholder>
                           {[0, 1, 2].map((item) => (
@@ -1510,8 +1578,7 @@ function WorkspaceTree({
                           )}
                         </>
                       )}
-                    </div>
-                  )}
+                  </WorkspaceSessionBranch>
                 </div>
               );
             })}
@@ -1619,7 +1686,7 @@ function WorkspaceRow({
         onClick={onToggle}
         className="flex h-full min-w-0 flex-1 items-center gap-2 px-2 text-left text-sm text-[var(--ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[var(--accent)]"
       >
-        <ChevronRight className={`h-4 w-4 shrink-0 text-[var(--ink-muted)] transition-transform ${expanded ? 'rotate-90' : ''}`} />
+        <ChevronRight className={`h-4 w-4 shrink-0 text-[var(--ink-muted)] transition-transform duration-200 ease-out motion-reduce:transition-none ${expanded ? 'rotate-90' : ''}`} />
         <WorkspaceIcon icon={project.icon} size={16} />
         <span
           className={`min-w-0 flex-1 truncate ${
