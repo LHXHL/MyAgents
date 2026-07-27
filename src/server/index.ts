@@ -2411,7 +2411,7 @@ async function main() {
 
       // Polling/config reads only surface state changes or failures at their
       // semantic owner; a successful request line has no diagnostic value.
-      if (shouldLogHttpRequest(pathname)) {
+      if (shouldLogHttpRequest(request.method, pathname)) {
         console.debug(`[http] ${request.method} ${pathname}`);
       }
 

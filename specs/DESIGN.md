@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.36
+> **Version**: 2.8.37
 > **Last Updated**: 2026-07-27
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -1371,7 +1371,7 @@ AI 输入框的模型菜单拥有独立滚动区。打开时在首帧把当前�
 
 AI 输入框的会话模式保持各 Runtime 既有文案、顺序与菜单样式，图标统一使用 1.75 stroke 的 Lucide“权限边界”词汇：只读规划统一为 `Eye`；需逐项确认的 Default / Suggest 为 `ShieldQuestion`；自动编辑文件的 Accept Edits / Auto Edit / Auto-Edit 为 `FilePenLine`；受约束自主执行的 builtin 行动 / Codex Full Auto 为 `ShieldCheck`；跳过审批或限制的 Full Agency / Bypass / YOLO / No Restrictions 为 `LockOpen`。未知的 Runtime 自定义模式继续展示自身声明的图标。
 
-AI 输入框的“定时任务”属于低频创建动作，和引用文件、使用技能、上传文件一起收纳在 `+` 菜单内，不单独占用工具栏位置；Launcher 与 Chat 共用同一结构和 handler。`+` 菜单打开时使用 200ms 的 opacity + translate + scale 入场，并在 `prefers-reduced-motion` 下取消动画；动效不得覆盖 Floating UI 的定位 transform。
+AI 输入框的“定时任务”属于低频创建动作，和引用文件、使用技能、上传文件一起收纳在 `+` 菜单内，不单独占用工具栏位置；Launcher 与 Chat 共用同一结构和 handler。`+`、会话模式与工具菜单统一使用 200ms 的 opacity + 纵向 translate（6px → 0）入场，不使用 scale，并在 `prefers-reduced-motion` 下取消动画；动效不得覆盖 Floating UI 的定位 transform。`@` 文件引用与 `/` 技能选择弹窗使用 `shadow-md`，与 AI 输入框本体保持同一悬浮层级。
 
 ### 15.8 任务创建面板
 
@@ -1383,8 +1383,9 @@ AI 输入框的“定时任务”属于低频创建动作，和引用文件、�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.37 | 2026-07-27 | **输入框菜单动效与层级收口**：`+`、会话模式、工具菜单统一为 200ms 淡入与自下向上归位，移除横向感和缩放；`@` 文件引用与 `/` 技能选择弹窗统一使用和输入框一致的 `shadow-md` |
 | 2.8.36 | 2026-07-27 | **定时任务文案明确化**：中文输入框 `+` 菜单入口由“定时”改为“定时任务”，不改变 i18n key、英文翻译或功能行为 |
-| 2.8.35 | 2026-07-27 | **输入框低频动作归位**：Launcher 与 Chat 的定时入口从常驻工具栏移入共享 `+` 菜单；菜单增加 200ms 淡入、上移归位与轻微缩放动效，并兼容 reduced motion 与 Floating UI 定位 |
+| 2.8.35 | 2026-07-27 | **输入框低频动作归位**：Launcher 与 Chat 的定时入口从常驻工具栏移入共享 `+` 菜单；菜单增加 200ms 淡入、上移归位与轻微缩放动效，并兼容 reduced motion 与 Floating UI 定位（缩放后由 2.8.37 移除） |
 | 2.8.34 | 2026-07-27 | **对话权限模式图标统一**：builtin、Claude Code、Gemini 与 Codex 的已知模式从跨平台不稳定的 emoji 归一为 `Eye / ShieldQuestion / FilePenLine / ShieldCheck / LockOpen` 权限边界图标；文案、顺序、菜单样式与权限行为保持不变，未知模式保留 Runtime fallback |
 | 2.8.33 | 2026-07-27 | **工作区 Tooltip 边界修正**：工作区新建动作统一精简为“新对话”；首条工作区的操作提示改为向下展开，避免被工作区滚动容器的上边界裁切 |
 | 2.8.32 | 2026-07-27 | **工作区快捷动作边缘化**：工作区标题与活跃工作区行的双按钮统一为“更多在左、创建在右”，让高频的新增工作区 / 新对话固定占据最右边缘；同步锁定 DOM 与键盘焦点顺序 |

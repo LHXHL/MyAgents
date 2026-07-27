@@ -64,6 +64,8 @@ struct BridgeSenderEntry {
 static BRIDGE_SENDERS: OnceLock<Mutex<HashMap<String, BridgeSenderEntry>>> = OnceLock::new();
 
 const MAX_BRIDGE_LIVENESS_FAILURES: u32 = 3;
+const BRIDGE_HEALTH_REQUEST_TIMEOUT: Duration = Duration::from_secs(3);
+const BRIDGE_STOP_REQUEST_TIMEOUT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BridgeLivenessObservation {
@@ -511,9 +513,21 @@ impl ImAdapter for BridgeAdapter {
                 _ = tokio::time::sleep(Duration::from_secs(30)) => {
                     // `/health/live` is the process watchdog. Older bridge
                     // bundles may only expose the legacy `/health` alias.
-                    let (live_endpoint, live_result) = match self.client.get(self.url("/health/live")).send().await {
+                    let (live_endpoint, live_result) = match self.client
+                        .get(self.url("/health/live"))
+                        .timeout(BRIDGE_HEALTH_REQUEST_TIMEOUT)
+                        .send()
+                        .await
+                    {
                         Ok(response) if response.status() == reqwest::StatusCode::NOT_FOUND => {
-                            ("/health", self.client.get(self.url("/health")).send().await)
+                            (
+                                "/health",
+                                self.client
+                                    .get(self.url("/health"))
+                                    .timeout(BRIDGE_HEALTH_REQUEST_TIMEOUT)
+                                    .send()
+                                    .await,
+                            )
                         }
                         result => ("/health/live", result),
                     };
@@ -558,7 +572,12 @@ impl ImAdapter for BridgeAdapter {
 
                     // Functional health is diagnostic only. An upstream outage
                     // must not reset a live plugin process and its backoff state.
-                    match self.client.get(self.url("/health/functional")).send().await {
+                    match self.client
+                        .get(self.url("/health/functional"))
+                        .timeout(BRIDGE_HEALTH_REQUEST_TIMEOUT)
+                        .send()
+                        .await
+                    {
                         Ok(response) if response.status() == reqwest::StatusCode::NOT_FOUND => {
                             if watchdog.observe_functional(true) == BridgeFunctionalObservation::Recovered {
                                 ulog_info!("[bridge:{}] Functional health probe recovered", self.plugin_id);
@@ -571,13 +590,11 @@ impl ImAdapter for BridgeAdapter {
                         }
                         Ok(response) => {
                             let status = response.status();
-                            let detail = response.text().await.unwrap_or_default();
                             if watchdog.observe_functional(false) == BridgeFunctionalObservation::Degraded {
                                 ulog_warn!(
-                                    "[bridge:{}] Functional health degraded: status={} detail={}",
+                                    "[bridge:{}] Functional health degraded: status={}",
                                     self.plugin_id,
                                     status,
-                                    detail,
                                 );
                             }
                         }
@@ -596,7 +613,12 @@ impl ImAdapter for BridgeAdapter {
         }
         // Signal bridge to stop (best effort — may already be dead)
         ulog_info!("[bridge:{}] Sending stop to bridge", self.plugin_id);
-        let _ = self.client.post(self.url("/stop")).send().await;
+        let _ = self
+            .client
+            .post(self.url("/stop"))
+            .timeout(BRIDGE_STOP_REQUEST_TIMEOUT)
+            .send()
+            .await;
     }
 
     async fn send_message(&self, chat_id: &str, text: &str) -> AdapterResult<()> {

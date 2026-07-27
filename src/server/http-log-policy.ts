@@ -1,4 +1,4 @@
-const SILENT_HTTP_LOG_PATHS = new Set([
+const SILENT_HTTP_GET_LOG_PATHS = new Set([
   '/health',
   '/health/live',
   '/health/ready',
@@ -13,6 +13,6 @@ const SILENT_HTTP_LOG_PATHS = new Set([
 ]);
 
 /** Successful poll/config reads have no per-request diagnostic value. */
-export function shouldLogHttpRequest(pathname: string): boolean {
-  return !SILENT_HTTP_LOG_PATHS.has(pathname);
+export function shouldLogHttpRequest(method: string, pathname: string): boolean {
+  return method !== 'GET' || !SILENT_HTTP_GET_LOG_PATHS.has(pathname);
 }
