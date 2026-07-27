@@ -125,18 +125,18 @@ describe('SimpleChatInput send paths', () => {
     const onCronButtonClick = vi.fn();
     renderInput({ mode, onCronButtonClick });
 
-    expect(screen.queryByRole('button', { name: '定时' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '定时任务' })).not.toBeInTheDocument();
 
     await user.click(screen.getByTitle('添加上下文'));
 
-    const cronButton = screen.getByRole('button', { name: '定时' });
+    const cronButton = screen.getByRole('button', { name: '定时任务' });
     expect(cronButton.querySelector('.lucide-timer')).toBeInTheDocument();
     expect(cronButton.closest('.plus-menu-enter')).toBeInTheDocument();
 
     await user.click(cronButton);
 
     expect(onCronButtonClick).toHaveBeenCalledOnce();
-    expect(screen.queryByRole('button', { name: '定时' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '定时任务' })).not.toBeInTheDocument();
   });
 
   it('sends text from the Chat input surface', async () => {
