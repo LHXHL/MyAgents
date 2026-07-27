@@ -1699,6 +1699,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
               placement="top-start"
               offset={8}
               closeOnEscape={false}
+              style={{ boxShadow: 'var(--shadow-md)' }}
             >
               <SlashCommandMenu
                 commands={filteredSlashCommands}

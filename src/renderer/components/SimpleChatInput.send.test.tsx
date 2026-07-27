@@ -154,16 +154,37 @@ describe('SimpleChatInput send paths', () => {
     }
   });
 
-  it('matches the mention picker elevation to the composer', async () => {
+  it('matches the mention and slash picker elevations to the composer', async () => {
     await i18n.changeLanguage('zh-CN');
     const user = userEvent.setup();
     renderInput();
 
-    await user.type(screen.getByPlaceholderText('输入消息，使用 @ 引用文件，/ 使用技能...'), '@');
+    const textarea = screen.getByPlaceholderText('输入消息，使用 @ 引用文件，/ 使用技能...');
+    await user.type(textarea, '@');
 
     const emptySearchHint = await screen.findByText('输入文件名搜索...');
-    const mentionPicker = emptySearchHint.parentElement?.parentElement;
+    const mentionPicker = emptySearchHint.closest('[style*="box-shadow"]');
     expect(mentionPicker).toHaveStyle({ boxShadow: 'var(--shadow-md)' });
+
+    const scrollIntoViewDescriptor = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollIntoView');
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: vi.fn(),
+    });
+    try {
+      await user.clear(textarea);
+      await user.type(textarea, '/');
+
+      const slashCommand = await screen.findByText('/compact');
+      const slashPicker = slashCommand.closest('[style*="box-shadow"]');
+      expect(slashPicker).toHaveStyle({ boxShadow: 'var(--shadow-md)' });
+    } finally {
+      if (scrollIntoViewDescriptor) {
+        Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', scrollIntoViewDescriptor);
+      } else {
+        Reflect.deleteProperty(HTMLElement.prototype, 'scrollIntoView');
+      }
+    }
   });
 
   it('sends text from the Chat input surface', async () => {
