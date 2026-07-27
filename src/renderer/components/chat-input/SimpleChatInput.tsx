@@ -1744,7 +1744,7 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 onClose={() => setShowPlusMenu(false)}
                 anchorRef={plusBtnRef}
                 placement="top-start"
-                className="w-48 py-1"
+                className="plus-menu-enter w-48 py-1"
               >
                 {/* PRD 0.2.7: previously gated by `!isLauncherMode`; both
                  *  launcher and chat-tab now route file ops through the
@@ -1815,6 +1815,29 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   <Paperclip className="h-4 w-4" />
                   {t('input.uploadFile')}
                 </button>
+                {onCronButtonClick && (
+                  <button
+                    type="button"
+                    aria-disabled={configControlsLocked}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (showConfigLockedReason()) return;
+                      setShowPlusMenu(false);
+                      onCronButtonClick();
+                    }}
+                    className={`flex w-full items-center gap-2 px-3 py-2 text-sm transition-colors ${
+                      cronModeEnabled && !configControlsLocked
+                        ? 'bg-[var(--heartbeat-bg)] text-[var(--heartbeat)] hover:bg-[var(--heartbeat)]/20'
+                        : configControlsLocked
+                          ? 'cursor-not-allowed text-[var(--ink-muted)] opacity-50 hover:bg-transparent'
+                          : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
+                    }`}
+                    title={configControlLockTitle ?? (cronModeEnabled ? t('input.cronEnabled') : t('input.cron'))}
+                  >
+                    <Timer className="h-4 w-4" />
+                    {t('input.cron')}
+                  </button>
+                )}
               </Popover>
 
               {/* Hidden file input */}
@@ -2191,31 +2214,6 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
               </Popover>
               </>
 
-              {/* Goal/Schedule Button — PRD 0.2.7 D1: launcher exposes this
-               *  too. The handler stages cron config on launcher; actual
-               *  cmd_create_cron_task runs after handoff to chat. */}
-              {onCronButtonClick && (
-                <button
-                  type="button"
-                  aria-disabled={configControlsLocked}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    if (showConfigLockedReason()) return;
-                    onCronButtonClick();
-                  }}
-                  className={`flex items-center gap-1 rounded-lg px-2 py-1.5 text-sm font-medium transition-colors ${
-                    cronModeEnabled && !configControlsLocked
-                      ? 'bg-[var(--heartbeat-bg)] text-[var(--heartbeat)] hover:bg-[var(--heartbeat)]/20'
-                      : configControlsLocked
-                        ? 'cursor-not-allowed text-[var(--ink-muted)] opacity-50 hover:bg-transparent hover:text-[var(--ink-muted)]'
-                      : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)] hover:text-[var(--ink)]'
-                  }`}
-                  title={configControlLockTitle ?? (cronModeEnabled ? t('input.cronEnabled') : t('input.cron'))}
-                >
-                  <Timer className="h-3.5 w-3.5" />
-                  <span className="toolbar-label">{t('input.cron')}</span>
-                </button>
-              )}
             </div>
 
             {/* Right side - model selector + send/stop button */}

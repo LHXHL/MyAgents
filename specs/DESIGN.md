@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.34
+> **Version**: 2.8.35
 > **Last Updated**: 2026-07-27
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -1371,6 +1371,8 @@ AI 输入框的模型菜单拥有独立滚动区。打开时在首帧把当前�
 
 AI 输入框的会话模式保持各 Runtime 既有文案、顺序与菜单样式，图标统一使用 1.75 stroke 的 Lucide“权限边界”词汇：只读规划统一为 `Eye`；需逐项确认的 Default / Suggest 为 `ShieldQuestion`；自动编辑文件的 Accept Edits / Auto Edit / Auto-Edit 为 `FilePenLine`；受约束自主执行的 builtin 行动 / Codex Full Auto 为 `ShieldCheck`；跳过审批或限制的 Full Agency / Bypass / YOLO / No Restrictions 为 `LockOpen`。未知的 Runtime 自定义模式继续展示自身声明的图标。
 
+AI 输入框的“定时”属于低频创建动作，和引用文件、使用技能、上传文件一起收纳在 `+` 菜单内，不单独占用工具栏位置；Launcher 与 Chat 共用同一结构和 handler。`+` 菜单打开时使用 200ms 的 opacity + translate + scale 入场，并在 `prefers-reduced-motion` 下取消动画；动效不得覆盖 Floating UI 的定位 transform。
+
 ### 15.8 任务创建面板
 
 任务中心“新建任务”与“从想法派发”共用同一创建面板。面板不展示手工标签输入，优先保留任务需求、验收清单、工作区、执行模式与通知等直接影响执行的配置；空白新建提交空标签，从想法派发仅在数据层继承来源想法已有标签。标签仍可在既有 Task 编辑与管理表面维护，不删除持久化字段或历史筛选兼容。
@@ -1381,6 +1383,7 @@ AI 输入框的会话模式保持各 Runtime 既有文案、顺序与菜单样�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.35 | 2026-07-27 | **输入框低频动作归位**：Launcher 与 Chat 的定时入口从常驻工具栏移入共享 `+` 菜单；菜单增加 200ms 淡入、上移归位与轻微缩放动效，并兼容 reduced motion 与 Floating UI 定位 |
 | 2.8.34 | 2026-07-27 | **对话权限模式图标统一**：builtin、Claude Code、Gemini 与 Codex 的已知模式从跨平台不稳定的 emoji 归一为 `Eye / ShieldQuestion / FilePenLine / ShieldCheck / LockOpen` 权限边界图标；文案、顺序、菜单样式与权限行为保持不变，未知模式保留 Runtime fallback |
 | 2.8.33 | 2026-07-27 | **工作区 Tooltip 边界修正**：工作区新建动作统一精简为“新对话”；首条工作区的操作提示改为向下展开，避免被工作区滚动容器的上边界裁切 |
 | 2.8.32 | 2026-07-27 | **工作区快捷动作边缘化**：工作区标题与活跃工作区行的双按钮统一为“更多在左、创建在右”，让高频的新增工作区 / 新对话固定占据最右边缘；同步锁定 DOM 与键盘焦点顺序 |

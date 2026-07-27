@@ -119,6 +119,26 @@ describe('SimpleChatInput send paths', () => {
     }
   });
 
+  it.each(['chat', 'launcher'] as const)('keeps the scheduled-task action inside the animated plus menu in %s mode', async (mode) => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    const onCronButtonClick = vi.fn();
+    renderInput({ mode, onCronButtonClick });
+
+    expect(screen.queryByRole('button', { name: '定时' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByTitle('添加上下文'));
+
+    const cronButton = screen.getByRole('button', { name: '定时' });
+    expect(cronButton.querySelector('.lucide-timer')).toBeInTheDocument();
+    expect(cronButton.closest('.plus-menu-enter')).toBeInTheDocument();
+
+    await user.click(cronButton);
+
+    expect(onCronButtonClick).toHaveBeenCalledOnce();
+    expect(screen.queryByRole('button', { name: '定时' })).not.toBeInTheDocument();
+  });
+
   it('sends text from the Chat input surface', async () => {
     const user = userEvent.setup();
     const onSend = renderInput();
