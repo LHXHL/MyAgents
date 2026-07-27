@@ -416,6 +416,9 @@ describe('GlobalSidebar rail flyout', () => {
     }
     expect(viewOptionsButton.parentElement?.querySelector('[role="tooltip"]')).toHaveTextContent('更多');
     expect(moreButton.parentElement?.querySelector('[role="tooltip"]')).toHaveTextContent('更多');
+    expect(newChatButton.parentElement?.querySelector('[role="tooltip"]')).toHaveTextContent('新对话');
+    expect(moreButton.parentElement?.querySelector('[role="tooltip"]')).toHaveClass('top-full');
+    expect(newChatButton.parentElement?.querySelector('[role="tooltip"]')).toHaveClass('top-full');
   });
 
   it('opens a workspace context menu without allowing right-click text selection', () => {

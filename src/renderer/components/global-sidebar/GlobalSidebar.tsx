@@ -1489,7 +1489,7 @@ function WorkspaceTree({
           </div>
         ) : (
           <div data-global-sidebar-workspace-list>
-            {projects.map((project) => {
+            {projects.map((project, index) => {
               const key = normalizeWorkspacePathIdentity(project.path);
               const sessions = sessionsByWorkspace.get(key) ?? [];
               const limit = sessionLimits[key] ?? SESSION_PAGE_SIZE;
@@ -1508,6 +1508,7 @@ function WorkspaceTree({
                     expanded={expandedSet.has(key)}
                     active={isActiveWorkspaceContext && !activeSessionId}
                     containsActiveSession={isActiveWorkspaceContext && Boolean(activeSessionId)}
+                    actionTipPosition={index === 0 ? 'bottom' : 'top'}
                     onToggle={() => onToggleWorkspace(project)}
                     onOpenWorkspace={() => onOpenWorkspace(project)}
                     onTogglePin={() => onTogglePin(project)}
@@ -1625,6 +1626,7 @@ interface WorkspaceRowProps {
   expanded: boolean;
   active: boolean;
   containsActiveSession: boolean;
+  actionTipPosition: 'top' | 'bottom';
   onToggle: () => void;
   onOpenWorkspace: () => void;
   onTogglePin: () => void;
@@ -1640,6 +1642,7 @@ function WorkspaceRow({
   expanded,
   active,
   containsActiveSession,
+  actionTipPosition,
   onToggle,
   onOpenWorkspace,
   onTogglePin,
@@ -1700,7 +1703,7 @@ function WorkspaceRow({
         </span>
       </button>
       <div className={`flex shrink-0 items-center pr-1 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}>
-        <Tip label={tLauncher('workspaceCard.more')} align="end" disabled={menuOpen}>
+        <Tip label={tLauncher('workspaceCard.more')} position={actionTipPosition} align="end" disabled={menuOpen}>
           <button
             ref={menuRef}
             type="button"
@@ -1711,7 +1714,7 @@ function WorkspaceRow({
             <MoreHorizontal className="h-3.5 w-3.5" />
           </button>
         </Tip>
-        <Tip label={t('globalSidebar.newChatHere')} align="end">
+        <Tip label={t('globalSidebar.newChat')} position={actionTipPosition} align="end">
           <button
             type="button"
             onClick={onOpenWorkspace}
