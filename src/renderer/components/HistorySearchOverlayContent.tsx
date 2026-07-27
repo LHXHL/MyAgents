@@ -33,7 +33,7 @@ import SessionContextMenu from '@/components/SessionContextMenu';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import CustomSelect from '@/components/CustomSelect';
 import { useToast } from '@/components/Toast';
-import { getFolderName, formatTime, isImSource, getSessionDisplayText, formatTurnCount } from '@/utils/taskCenterUtils';
+import { getFolderName, formatTime, getSessionDisplayText, formatTurnCount } from '@/utils/taskCenterUtils';
 import type { SessionMetadata } from '@/api/sessionClient';
 import { normalizeWorkspacePathIdentity } from '@/../shared/workspacePath';
 import type { Project } from '@/config/types';
@@ -49,14 +49,11 @@ interface HistorySearchOverlayContentProps {
     initialMode?: 'default' | 'search';
 }
 
-type StatusFilter = 'all' | 'favorite' | 'active' | 'desktop' | 'bot';
+type BrowseFilter = 'all' | 'favorite';
 
-const FILTER_OPTIONS: { key: StatusFilter; labelKey: string }[] = [
+const BROWSE_FILTER_OPTIONS: { key: BrowseFilter; labelKey: string }[] = [
     { key: 'all', labelKey: 'historyOverlay.filters.all' },
     { key: 'favorite', labelKey: 'historyOverlay.filters.favorite' },
-    { key: 'active', labelKey: 'historyOverlay.filters.active' },
-    { key: 'desktop', labelKey: 'historyOverlay.filters.desktop' },
-    { key: 'bot', labelKey: 'historyOverlay.filters.bot' },
 ];
 
 interface HistorySessionRowProps {
@@ -192,7 +189,7 @@ export default memo(function HistorySearchOverlayContent({
     const [searchResults, setSearchResults] = useState<SessionSearchHit[]>([]);
     const searchInputRef = useRef<HTMLInputElement>(null);
 
-    const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+    const [browseFilter, setBrowseFilter] = useState<BrowseFilter>('all');
     const [workspaceFilter, setWorkspaceFilter] = useState<string>('all');
     const [pendingDeleteSession, setPendingDeleteSession] = useState<{ id: string; title: string } | null>(null);
     const [statsSession, setStatsSession] = useState<{ id: string; title: string } | null>(null);
@@ -253,21 +250,8 @@ export default memo(function HistorySearchOverlayContent({
 
     // Filter sessions
     const filteredSessions = useMemo(() => {
-        // 48h cutoff for "active" filter — computed per-filter to avoid stale mount-time values.
-        // sessions is the dependency, so this recomputes whenever session data refreshes.
-        const activeCutoff48h = new Date(+new Date() - 48 * 3600000).toISOString();
         return sessions.filter(session => {
-            // Status filter (source-based for bot/desktop)
-            if (statusFilter === 'favorite' && !session.favorite) return false;
-            if (statusFilter === 'active') {
-                const tags = sessionTagsMap.get(session.id) ?? [];
-                if (tags.length === 0) return false;
-                // Require recent activity (48h) — prevents stale IM sessions
-                // from permanently appearing as "active" just because they have a source tag
-                if (session.lastActiveAt && session.lastActiveAt < activeCutoff48h) return false;
-            }
-            if (statusFilter === 'desktop' && isImSource(session.source)) return false;
-            if (statusFilter === 'bot' && !isImSource(session.source)) return false;
+            if (browseFilter === 'favorite' && !session.favorite) return false;
 
             // Workspace filter
             if (workspaceFilter !== 'all') {
@@ -277,7 +261,7 @@ export default memo(function HistorySearchOverlayContent({
 
             return true;
         });
-    }, [sessions, sessionTagsMap, statusFilter, workspaceFilter, getProjectForSession]);
+    }, [sessions, browseFilter, workspaceFilter, getProjectForSession]);
 
     const browseRows = useMemo(() => filteredSessions.flatMap((session) => {
         const project = getProjectForSession(session);
@@ -474,14 +458,14 @@ export default memo(function HistorySearchOverlayContent({
                                 </div>
                             ) : (
                                 <>
-                                    {/* Status pills */}
-                                    <div className="flex gap-1">
-                                        {FILTER_OPTIONS.map(opt => (
+                                    {/* Browse filters */}
+                                    <div className="flex gap-1" data-history-browse-filters>
+                                        {BROWSE_FILTER_OPTIONS.map(opt => (
                                             <button
                                                 key={opt.key}
-                                                onClick={() => setStatusFilter(opt.key)}
+                                                onClick={() => setBrowseFilter(opt.key)}
                                                 className={`rounded-full px-2.5 py-1 text-xs font-medium transition-colors ${
-                                                    statusFilter === opt.key
+                                                    browseFilter === opt.key
                                                         ? 'bg-[var(--button-primary-bg)] text-[var(--button-primary-text)]'
                                                         : 'text-[var(--ink-muted)] hover:bg-[var(--hover-bg)]'
                                                 }`}

@@ -88,7 +88,7 @@ function expectSharedSessionMenu() {
     ]);
 }
 
-describe('HistorySearchOverlayContent Session context menu', () => {
+describe('HistorySearchOverlayContent', () => {
     beforeEach(async () => {
         vi.clearAllMocks();
         await i18n.changeLanguage('zh-CN');
@@ -96,6 +96,20 @@ describe('HistorySearchOverlayContent Session context menu', () => {
             configurable: true,
             value: { writeText: vi.fn().mockResolvedValue(undefined) },
         });
+    });
+
+    it('keeps only all and favorites in the non-search browse filters', () => {
+        renderOverlay();
+
+        const browseFilters = document.querySelector<HTMLElement>('[data-history-browse-filters]')!;
+        expect(within(browseFilters).getByRole('button', { name: '全部' })).toBeInTheDocument();
+        const favoritesFilter = within(browseFilters).getByRole('button', { name: '收藏' });
+        for (const removedFilter of ['活跃中', '桌面', '聊天机器人']) {
+            expect(within(browseFilters).queryByRole('button', { name: removedFilter })).not.toBeInTheDocument();
+        }
+
+        fireEvent.click(favoritesFilter);
+        expect(screen.queryByText(session.title)).not.toBeInTheDocument();
     });
 
     it('uses the shared sidebar menu and suppresses text selection in the browse list', async () => {

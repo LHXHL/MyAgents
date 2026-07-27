@@ -916,10 +916,7 @@
   "historyOverlay": {
     "filters": {
       "all": "All",
-      "favorite": "Favorites",
-      "active": "Active",
-      "desktop": "Desktop",
-      "bot": "Chat bots"
+      "favorite": "Favorites"
     },
     "allWorkspaces": "All workspaces",
     "deleted": "Deleted",

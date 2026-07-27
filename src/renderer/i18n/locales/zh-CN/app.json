@@ -916,10 +916,7 @@
   "historyOverlay": {
     "filters": {
       "all": "全部",
-      "favorite": "收藏",
-      "active": "活跃中",
-      "desktop": "桌面",
-      "bot": "聊天机器人"
+      "favorite": "收藏"
     },
     "allWorkspaces": "全部工作区",
     "deleted": "已删除",
