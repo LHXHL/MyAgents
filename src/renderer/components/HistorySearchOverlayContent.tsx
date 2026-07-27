@@ -17,6 +17,7 @@
  */
 
 import { memo, useCallback, useEffect, useMemo, useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Search, Loader2, BarChart2, Clock, Star, Trash2, X } from 'lucide-react';
 import { Virtuoso } from 'react-virtuoso';
@@ -28,6 +29,7 @@ import WorkspaceIcon from '@/components/launcher/WorkspaceIcon';
 import SessionTagBadge from '@/components/SessionTagBadge';
 import Tip from '@/components/Tip';
 import SessionStatsModal from '@/components/SessionStatsModal';
+import SessionContextMenu from '@/components/SessionContextMenu';
 import ConfirmDialog from '@/components/ConfirmDialog';
 import CustomSelect from '@/components/CustomSelect';
 import { useToast } from '@/components/Toast';
@@ -37,6 +39,7 @@ import { normalizeWorkspacePathIdentity } from '@/../shared/workspacePath';
 import type { Project } from '@/config/types';
 import SessionSearchItem from '@/components/search/SessionSearchItem';
 import { parseSessionIdQuery } from '@/utils/parseSessionIdQuery';
+import { copyPlainText } from '@/utils/clipboard';
 
 interface HistorySearchOverlayContentProps {
     projects: Project[];
@@ -62,6 +65,7 @@ interface HistorySessionRowProps {
     tags: SessionTag[];
     isCronProtected: boolean;
     onOpen: () => void;
+    onContextMenu: (event: React.MouseEvent<HTMLDivElement>) => void;
     onToggleFavorite: (event: React.MouseEvent) => void;
     onShowStats: (event: React.MouseEvent) => void;
     onDelete: (event: React.MouseEvent) => void;
@@ -73,6 +77,7 @@ const HistorySessionRow = memo(function HistorySessionRow({
     tags,
     isCronProtected,
     onOpen,
+    onContextMenu,
     onToggleFavorite,
     onShowStats,
     onDelete,
@@ -86,7 +91,12 @@ const HistorySessionRow = memo(function HistorySessionRow({
             <div
                 role="button"
                 onClick={onOpen}
-                className="group relative flex w-full cursor-pointer items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-[var(--hover-bg)]"
+                onMouseDown={(event) => {
+                    if (event.button === 2) event.preventDefault();
+                }}
+                onContextMenu={onContextMenu}
+                className="group relative flex w-full cursor-pointer select-none items-center gap-2.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-[var(--hover-bg)]"
+                data-history-session-row
             >
                 <div className="flex w-16 shrink-0 items-center gap-1 text-xs text-[var(--ink-muted)]/50">
                     <Clock className="h-2.5 w-2.5" />
@@ -171,6 +181,7 @@ export default memo(function HistorySearchOverlayContent({
     initialMode = 'default',
 }: HistorySearchOverlayContentProps) {
     const { t } = useTranslation('app');
+    const { t: tLauncher } = useTranslation('launcher');
     const { sessions, protectedSchedulerSessionIds, sessionTagsMap, isSessionsLoading, actions } = taskCenterData;
     const toast = useToast();
 
@@ -185,6 +196,8 @@ export default memo(function HistorySearchOverlayContent({
     const [workspaceFilter, setWorkspaceFilter] = useState<string>('all');
     const [pendingDeleteSession, setPendingDeleteSession] = useState<{ id: string; title: string } | null>(null);
     const [statsSession, setStatsSession] = useState<{ id: string; title: string } | null>(null);
+    const [contextMenu, setContextMenu] = useState<{ session: SessionMetadata; x: number; y: number } | null>(null);
+    const contextMenuAnchorRef = useRef<HTMLSpanElement>(null);
 
     // Auto-focus search input on mount when overlay opens in search mode
     useEffect(() => {
@@ -329,10 +342,14 @@ export default memo(function HistorySearchOverlayContent({
 
     const cronProtectedSessionIds = protectedSchedulerSessionIds;
 
-    const handleDeleteClick = useCallback((e: React.MouseEvent, session: SessionMetadata) => {
-        e.stopPropagation();
+    const requestDelete = useCallback((session: SessionMetadata) => {
         setPendingDeleteSession({ id: session.id, title: getSessionDisplayText(session) });
     }, []);
+
+    const handleDeleteClick = useCallback((e: React.MouseEvent, session: SessionMetadata) => {
+        e.stopPropagation();
+        requestDelete(session);
+    }, [requestDelete]);
 
     const handleConfirmDelete = useCallback(async () => {
         if (!pendingDeleteSession) return;
@@ -351,13 +368,16 @@ export default memo(function HistorySearchOverlayContent({
         }
     }, [actions, pendingDeleteSession, t, toast]);
 
-    const handleShowStats = useCallback((e: React.MouseEvent, session: SessionMetadata) => {
-        e.stopPropagation();
+    const showStats = useCallback((session: SessionMetadata) => {
         setStatsSession({ id: session.id, title: getSessionDisplayText(session) });
     }, []);
 
-    const handleToggleFavorite = useCallback(async (e: React.MouseEvent, session: SessionMetadata) => {
+    const handleShowStats = useCallback((e: React.MouseEvent, session: SessionMetadata) => {
         e.stopPropagation();
+        showStats(session);
+    }, [showStats]);
+
+    const toggleFavorite = useCallback(async (session: SessionMetadata) => {
         try {
             const success = await actions.setSessionFavorite(session.id, !session.favorite);
             if (!success) toast.error(t('historyOverlay.favoriteFailed'));
@@ -366,6 +386,27 @@ export default memo(function HistorySearchOverlayContent({
             toast.error(t('historyOverlay.favoriteFailed'));
         }
     }, [actions, t, toast]);
+
+    const handleToggleFavorite = useCallback((e: React.MouseEvent, session: SessionMetadata) => {
+        e.stopPropagation();
+        void toggleFavorite(session);
+    }, [toggleFavorite]);
+
+    const handleCopySessionId = useCallback(async (session: SessionMetadata) => {
+        try {
+            await copyPlainText(`SessionID: ${session.id}`);
+            toast.success(tLauncher('rightRail.copySessionIdSuccess'));
+        } catch (error) {
+            console.error('[HistorySearchOverlayContent] Copy session id failed:', error);
+            toast.error(tLauncher('rightRail.copyFailed'));
+        }
+    }, [tLauncher, toast]);
+
+    const openContextMenu = useCallback((event: React.MouseEvent<HTMLDivElement>, session: SessionMetadata) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setContextMenu({ session, x: event.clientX, y: event.clientY });
+    }, []);
 
     return (
         <>
@@ -486,7 +527,12 @@ export default memo(function HistorySearchOverlayContent({
                                         <div
                                             role="button"
                                             onClick={openDirectMatch}
-                                            className="group flex w-full cursor-pointer items-center gap-2.5 rounded-lg border border-[var(--accent)]/30 px-3 py-2.5 text-left transition-colors hover:bg-[var(--hover-bg)]"
+                                            onMouseDown={(event) => {
+                                                if (event.button === 2) event.preventDefault();
+                                            }}
+                                            onContextMenu={(event) => openContextMenu(event, directSessionMatch.session)}
+                                            className="group flex w-full cursor-pointer select-none items-center gap-2.5 rounded-lg border border-[var(--accent)]/30 px-3 py-2.5 text-left transition-colors hover:bg-[var(--hover-bg)]"
+                                            data-history-direct-session-row
                                         >
                                             <div className="flex w-16 shrink-0 items-center gap-1 text-xs text-[var(--ink-muted)]/50">
                                                 <Clock className="h-2.5 w-2.5" />
@@ -530,6 +576,7 @@ export default memo(function HistorySearchOverlayContent({
                                                     project={project}
                                                     isCronProtected={isCronProtected}
                                                     onClick={() => onOpenSession(session, project)}
+                                                    onContextMenu={(event) => openContextMenu(event, session)}
                                                     onShowStats={(event) => handleShowStats(event, session)}
                                                     onDelete={(event) => handleDeleteClick(event, session)}
                                                 />
@@ -561,6 +608,7 @@ export default memo(function HistorySearchOverlayContent({
                                         tags={sessionTagsMap.get(row.session.id) ?? []}
                                         isCronProtected={cronProtectedSessionIds.has(row.session.id)}
                                         onOpen={() => onOpenSession(row.session, row.project)}
+                                        onContextMenu={(event) => openContextMenu(event, row.session)}
                                         onToggleFavorite={(event) => handleToggleFavorite(event, row.session)}
                                         onShowStats={(event) => handleShowStats(event, row.session)}
                                         onDelete={(event) => handleDeleteClick(event, row.session)}
@@ -570,6 +618,30 @@ export default memo(function HistorySearchOverlayContent({
                         )}
                     </div>
                 </div>
+
+            {createPortal(
+                <span
+                    ref={contextMenuAnchorRef}
+                    aria-hidden="true"
+                    className="pointer-events-none fixed h-px w-px"
+                    style={{ left: contextMenu?.x ?? 0, top: contextMenu?.y ?? 0 }}
+                />,
+                document.body,
+            )}
+            {contextMenu && (
+                <SessionContextMenu
+                    open
+                    onClose={() => setContextMenu(null)}
+                    anchorRef={contextMenuAnchorRef}
+                    placement="bottom-start"
+                    session={contextMenu.session}
+                    deleteProtected={cronProtectedSessionIds.has(contextMenu.session.id)}
+                    onCopySessionId={() => handleCopySessionId(contextMenu.session)}
+                    onToggleFavorite={() => toggleFavorite(contextMenu.session)}
+                    onShowStats={() => showStats(contextMenu.session)}
+                    onDelete={() => requestDelete(contextMenu.session)}
+                />
+            )}
 
             {pendingDeleteSession && (
                 <ConfirmDialog

@@ -422,6 +422,39 @@ describe('GlobalSidebar rail flyout', () => {
     expect(screen.getByRole('button', { name: String(i18n.t('launcher:workspaceCard.pin')) })).toBeInTheDocument();
   });
 
+  it('opens a Session context menu without allowing right-click text selection', () => {
+    mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });
+    mocks.taskData.sessions.push({
+      id: 'session-1',
+      agentDir: '/work/project-one',
+      title: 'Selectable session',
+      createdAt: '2026-07-20T00:00:00.000Z',
+      lastActiveAt: '2026-07-20T00:00:00.000Z',
+    });
+    window.localStorage.setItem(GLOBAL_SIDEBAR_PREFERENCE_KEY, JSON.stringify({
+      version: 1,
+      preferredMode: 'rail',
+      expandedWorkspaceKeys: ['/work/project-one'],
+      hasSeededDefaultExpansion: true,
+      showAutomationSessions: true,
+      sessionView: 'all',
+    }));
+    renderSidebar();
+    fireEvent.click(screen.getByRole('button', { name: 'Agent 工作区' }));
+
+    const sessionRow = screen.getByText('Selectable session').closest<HTMLElement>('[data-global-sidebar-session-row]')!;
+    expect(sessionRow).toHaveClass('select-none');
+
+    const mouseDown = new MouseEvent('mousedown', { bubbles: true, cancelable: true, button: 2 });
+    fireEvent(sessionRow, mouseDown);
+    expect(mouseDown.defaultPrevented).toBe(true);
+
+    const contextMenu = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 });
+    fireEvent(sessionRow, contextMenu);
+    expect(contextMenu.defaultPrevented).toBe(true);
+    expect(screen.getByRole('button', { name: String(i18n.t('launcher:rightRail.copySessionId')) })).toBeInTheDocument();
+  });
+
   it('copies the Session ID from the first row of the history menu', async () => {
     const sessionId = '642ea003-5219-4af7-a812-a9812d6e79de';
     mocks.projects.push({ id: 'project-1', name: 'Project one', path: '/work/project-one' });

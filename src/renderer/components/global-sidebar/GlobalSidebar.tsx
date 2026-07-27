@@ -1,14 +1,12 @@
 import {
   AlertCircle,
   Archive,
-  BarChart2,
   Bot,
   Check,
   CheckSquare,
   ChevronDown,
   ChevronRight,
   Cloud,
-  Copy,
   Eye,
   EyeOff,
   FolderOpen,
@@ -55,6 +53,7 @@ import FeedbackPopover from '@/components/FeedbackPopover';
 import OverlayBackdrop from '@/components/OverlayBackdrop';
 import PathInputDialog from '@/components/PathInputDialog';
 import SessionStatsModal from '@/components/SessionStatsModal';
+import SessionContextMenu from '@/components/SessionContextMenu';
 import SessionTagBadge from '@/components/SessionTagBadge';
 import TabActivityIndicator from '@/components/TabActivityIndicator';
 import Tip from '@/components/Tip';
@@ -1724,10 +1723,15 @@ function SessionRow({
     <div
       role="treeitem"
       aria-current={active ? 'page' : undefined}
-      className={`group/session relative flex h-9 items-center rounded-lg pl-2 pr-1 transition-colors focus-within:bg-[var(--hover-bg)] ${
+      className={`group/session relative flex h-9 select-none items-center rounded-lg pl-2 pr-1 transition-colors focus-within:bg-[var(--hover-bg)] ${
         active ? 'bg-[var(--hover-bg)] text-[var(--ink)]' : 'text-[var(--ink-secondary)] hover:bg-[var(--hover-bg)]'
       }`}
       data-global-sidebar-session-row
+      onMouseDown={(event) => {
+        if (event.button === 2) {
+          event.preventDefault();
+        }
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         menuRef.current?.focus();
@@ -1784,40 +1788,20 @@ function SessionRow({
           </button>
         </Tip>
       </div>
-      <Popover
+      <SessionContextMenu
         open={menuOpen}
         onClose={() => {
           setMenu(false);
           menuRef.current?.focus();
         }}
         anchorRef={menuRef}
-        placement="bottom-end"
-        className="global-sidebar-nested-layer w-44 py-1"
-      >
-        <MenuItem
-          icon={<Copy className="h-3.5 w-3.5" />}
-          label={tLauncher('rightRail.copySessionId')}
-          onClick={() => { setMenu(false); onCopySessionId(); }}
-        />
-        <MenuItem
-          icon={<Star className="h-3.5 w-3.5" fill={session.favorite ? 'currentColor' : 'none'} />}
-          label={session.favorite ? tLauncher('rightRail.unfavorite') : tLauncher('rightRail.favorite')}
-          onClick={() => { setMenu(false); onToggleFavorite(); }}
-        />
-        <MenuItem icon={<BarChart2 className="h-3.5 w-3.5" />} label={tLauncher('rightRail.viewStats')} onClick={() => { setMenu(false); onShowStats(menuRef.current); }} />
-        <MenuItem
-          icon={<Trash2 className="h-3.5 w-3.5" />}
-          label={tLauncher('rightRail.delete')}
-          tone="danger"
-          disabled={deleteProtected}
-          title={deleteProtected ? tLauncher('rightRail.stopCronBeforeDelete') : undefined}
-          onClick={() => {
-            if (deleteProtected) return;
-            setMenu(false);
-            onDelete(menuRef.current);
-          }}
-        />
-      </Popover>
+        session={session}
+        deleteProtected={deleteProtected}
+        onCopySessionId={onCopySessionId}
+        onToggleFavorite={onToggleFavorite}
+        onShowStats={onShowStats}
+        onDelete={onDelete}
+      />
     </div>
   );
 }
