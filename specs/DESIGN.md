@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.29
+> **Version**: 2.8.30
 > **Last Updated**: 2026-07-27
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -705,7 +705,7 @@ Item 选中: 文字 var(--accent-warm)
 | 属性 | 值 |
 |------|------|
 | 全局侧边栏展开态 | 256px |
-| 全局侧边栏 rail | 72px（包含收紧后的 macOS 红绿灯安全宽度） |
+| 全局侧边栏 rail | 64px（16px 功能图标中心线固定于 x=32px） |
 | rail 工作区 flyout | 320px |
 | 设置页内部侧边栏 | 208px (w-52) |
 
@@ -1252,10 +1252,10 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
 
 - 全局栏从窗口最顶部延伸到底部；右侧才是标题栏与 Tab Workspace。
 - macOS 红绿灯安全区属于侧栏顶部 chrome；Windows 窗口按钮仍固定在右侧标题栏最右端。macOS 原生窗口 zoom、拖拽 resize、全屏切换期间，红绿灯相对窗口左上角的 inset 与三按钮间距 MUST 逐帧稳定，不能先漂到系统默认位置再在动画结束后纠正。
-- 常驻展开态 256px，rail 72px。切换时布局槽一次提交到最终宽度，禁止用 `width` transition 持续重排主内容；视觉动效由固定 256px 的侧栏材质层以 `clip-path` 在 200ms 内横向揭示/收回，展开内容同步淡移，rail 内容交错接续。右侧 Tab 标题栏与当前 Tab 内容在最终布局上从旧视觉位置横向归位，让背景边界、Tab 与页面形成同一段空间运动。收起边界从右向左、展开边界从左向右，App Icon 与功能图标仍保持窗口坐标不动；`prefers-reduced-motion` 下立即切换。
-- 顶部 chrome 分两行：第一行 44px 只承载原生窗口区、拖拽区与固定侧栏 toggle，第二行 40px 承载 App Icon + `MyAgents` 品牌。App Icon 使用 macOS App 风格的 22% 圆角矩形轮廓，在展开态与 rail 中始终保持 20px、固定于窗口 `x=24px` 且复用同一 DOM；它不参与 rail 居中计算，切换时只让品牌文字出现或消失。品牌文字复用 Theme-owned 产品字标的字体、字距与渐变，紧凑角色保持 `text-sm / font-medium`，不复制 Launcher 的展示字号与轻字重。macOS toggle 固定在窗口 `x=84px` 起的 32px 槽位；展开时位于侧栏表面，手动 rail 时自然落入右侧 Tab 标题栏表面，屏幕坐标与 DOM 均不切换。toggle 两态共用简洁的单一 `PanelLeft` 轮廓，不叠加方向箭头；动作含义由即时 Tooltip 和 `aria-label` 表达。
+- 常驻展开态 256px，rail 64px。切换时布局槽一次提交到最终宽度，禁止用 `width` transition 持续重排主内容；视觉动效由固定 256px 的侧栏材质层以 `clip-path` 在 200ms 内横向揭示/收回，展开内容同步淡移，rail 内容交错接续。右侧 Tab 标题栏与当前 Tab 内容在最终布局上从旧视觉位置横向归位，让背景边界、Tab 与页面形成同一段空间运动。收起边界从右向左、展开边界从左向右，App Icon 与功能图标仍保持窗口坐标不动；`prefers-reduced-motion` 下立即切换。
+- 顶部 chrome 分两行：第一行 44px 只承载原生窗口区、拖拽区与固定侧栏 toggle，第二行 40px 承载 App Icon + `MyAgents` 品牌。App Icon 使用 macOS App 风格的 22% 圆角矩形轮廓，在展开态与 rail 中始终保持 20px、固定于窗口 `x=22px` 且复用同一 DOM；其中心与 16px 功能图标共同落在 `x=32px` 中线上，切换时只让品牌文字出现或消失。品牌文字复用 Theme-owned 产品字标的字体、字距与渐变，紧凑角色保持 `text-sm / font-medium`，不复制 Launcher 的展示字号与轻字重。macOS toggle 固定在窗口 `x=84px` 起的 32px 槽位；展开时位于侧栏表面，手动 rail 时自然落入右侧 Tab 标题栏表面，屏幕坐标与 DOM 均不切换。toggle 两态共用简洁的单一 `PanelLeft` 轮廓，不叠加方向箭头；动作含义由即时 Tooltip 和 `aria-label` 表达。
 - 顶部 Tab 保留 active、关闭、拖拽、溢出、生成中、未读与触摸板切换语义，侧栏不得建立第二套页面选中状态。
-- 右侧标题栏使用纯 `var(--paper)` 根面和既有底部分割线，不使用 `paper → paper-inset` 混合渐变。常规模式在侧栏边界后保留 8px leading inset；手动 rail 的 52px 预留同时包含固定 toggle 槽位及其后的 8px 留白。32px Tab 使用 Theme-owned `rounded-md`；active 与 hover 均使用 `var(--hover-bg)`，active 不增加常驻阴影，只额外保留 2px `var(--accent)` 底线。新增 Tab 与溢出按钮使用同一 hover wash，使顶部 Chrome 与左侧工作区共享克制的注意力反馈，而不新增 Tab 专属 palette。
+- 右侧标题栏使用纯 `var(--paper)` 根面和既有底部分割线，不使用 `paper → paper-inset` 混合渐变。常规模式在侧栏边界后保留 8px leading inset；手动 rail 的 60px 预留同时包含固定 toggle 槽位及其后的 8px 留白，使 rail 收窄后首个 Tab 仍固定在窗口 `x=124px`。32px Tab 使用 Theme-owned `rounded-md`；active 与 hover 均使用 `var(--hover-bg)`，active 不增加常驻阴影，只额外保留 2px `var(--accent)` 底线。新增 Tab 与溢出按钮使用同一 hover wash，使顶部 Chrome 与左侧工作区共享克制的注意力反馈，而不新增 Tab 专属 palette。
 
 ### 15.2 全局侧边栏
 
@@ -1273,15 +1273,16 @@ MyAgents 使用“双层注意力导航”：全局侧边栏回答“产品能�
   Session 行: h-9；标题 text-sm 单行 truncate，来源 tag / 右侧时间 text-xs
   底部入口: h-9，额外行间距 0；固定且不随工作区历史滚动
 
-rail 72px:
+rail 64px:
   图标按钮: 40 × 36px
-  按钮左缘: x=12px；16px 功能图标左缘固定 x=24px，与展开态一致
+  按钮左缘: x=12px；16px 功能图标左缘固定 x=24px，中心线 x=32px，与展开态及 rail 中线一致
+  App Icon: 20px，左缘 x=22px；40px 官网链接命中区同样固定于 x=12px
   只有工作区入口打开 320px 可交互 flyout
   工作区 flyout: viewport top=128px / bottom=112px；起点高于入口，底部为固定动作区留位
   其它入口只显示即时黑底名称 Tooltip
 ```
 
-手动 rail 中，App Icon 保持静态品牌身份；它不放大、不重新居中，展开/收起时只显隐右侧文字，因此点击瞬间图标留在原地。主导航、工作区入口和底部入口也不按 rail 剩余宽度重新居中：40px 宽、36px 高的命中区统一固定于窗口 `x=12px`，其 16px 功能图标左缘在展开态与 rail 都保持 `x=24px`，因此整列图标切换时不发生横向抖动。展开控制仍使用第一行同一个固定 toggle，不随侧栏宽度移动或复制造成双入口。自动 rail 中隐藏无法兑现的展开 toggle，仅保留静态品牌图标。所有侧栏图标按钮复用 Theme-owned `Tip`：hover/focus 无等待即时出现，使用 `--button-dark-bg / --button-dark-text`，不得回退浏览器原生 `title`；菜单打开期间隐藏对应 Tooltip。工作区 flyout 覆盖主内容而不推挤布局，按 viewport 固定在 `top=128px / bottom=112px`，让起点明显高于工作区入口并为底部小助理/设置留出安全区；资源树在这段稳定高度内自行滚动。flyout 使用轻量 opacity/translate 入场；真实离开交互区域才短延迟关闭，树枝展开/收起造成的布局边界事件若指针仍在 flyout 几何范围内不得误关；`Esc` 关闭并回焦入口。嵌套菜单、确认弹层和 flyout 共用同一交互生命周期。
+手动 rail 中，App Icon 保持静态品牌身份；它只向功能图标中线校正一次，不在展开/收起时重新居中，切换时只显隐右侧文字，因此点击瞬间图标留在原地。主导航、工作区入口和底部入口也不按 rail 剩余宽度重新居中：40px 宽、36px 高的命中区统一固定于窗口 `x=12px`，其 16px 功能图标左缘在展开态与 rail 都保持 `x=24px`，因此整列图标切换时不发生横向抖动。展开控制仍使用第一行同一个固定 toggle，不随侧栏宽度移动或复制造成双入口。自动 rail 中隐藏无法兑现的展开 toggle，仅保留静态品牌图标。所有侧栏图标按钮复用 Theme-owned `Tip`：hover/focus 无等待即时出现，使用 `--button-dark-bg / --button-dark-text`，不得回退浏览器原生 `title`；菜单打开期间隐藏对应 Tooltip。工作区 flyout 覆盖主内容而不推挤布局，按 viewport 固定在 `top=128px / bottom=112px`，让起点明显高于工作区入口并为底部小助理/设置留出安全区；资源树在这段稳定高度内自行滚动。flyout 使用轻量 opacity/translate 入场；真实离开交互区域才短延迟关闭，树枝展开/收起造成的布局边界事件若指针仍在 flyout 几何范围内不得误关；`Esc` 关闭并回焦入口。嵌套菜单、确认弹层和 flyout 共用同一交互生命周期。
 
 产品身份行的 App Icon 与 `MyAgents` 字标共同组成紧凑官网链接，点击后通过系统默认浏览器打开 `https://myagents.io`；rail 中链接自然收缩为 App Icon。其 hover 只使用 pointer 光标，不铺整行或局部背景色，键盘焦点仍保留 Accent focus ring，避免把品牌入口误表现成主导航选中面。
 
@@ -1374,6 +1375,7 @@ AI 输入框的模型菜单拥有独立滚动区。打开时在首帧把当前�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.30 | 2026-07-27 | **折叠侧栏视觉中线收口**：rail 从 72px 收至 64px，保持 16px 功能图标 `x=24px` 不动，使其中心与 rail 中线统一为 `x=32px`；20px App Icon 左移至 `x=22px` 并共享同中线，macOS 红绿灯 inset 同步左移 5px，Tab 留白与 compositor 位移按新边界重算 |
 | 2.8.29 | 2026-07-27 | **macOS 原生窗口 zoom 持久定位修正**：红绿灯 inset 改由当前 `NSWindow` 的 AppKit 同步几何通知 owner 维护，覆盖 resize、zoom、全屏与 backing scale；移除不可靠的 Wry draw-only 持久化假设，也不再依赖滞后的 Tauri `WindowEvent` 追帧 |
 | 2.8.28 | 2026-07-27 | **历史 Overlay 浏览筛选减负**：非搜索状态移除“活跃中 / 桌面 / 聊天机器人”三个分类及其本地过滤逻辑，只保留“全部 / 收藏”和工作区筛选；Session 来源仍由行内 tag 表达，搜索状态与请求行为不变 |
 | 2.8.27 | 2026-07-27 | **工作区箭头安全边距**：箭头与分支轴整体右移 4px，避免箭头笔画贴住 hover 圆角面；同步把箭头到 icon 的间距收至 4px、分支 padding 收至 4px，并补偿名称 margin，使工作区 icon、名称和 Session 内容位置全部保持不变 |

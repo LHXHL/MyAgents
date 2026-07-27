@@ -99,6 +99,11 @@ describe('App Shell chrome contract', () => {
     expect(styles).toContain("[data-global-sidebar-titlebar-follow='full'][data-global-sidebar-motion='collapse']");
     expect(styles).toContain('@keyframes app-shell-sidebar-follow');
     expect(styles).toContain('@media (prefers-reduced-motion: reduce)');
+    expect(styles).toContain('--global-sidebar-rail-width: 64px;');
+    expect(styles).toContain('--global-sidebar-tabbar-toggle-inset: 60px;');
+    expect(styles).toContain('--global-sidebar-tab-content-shift: 140px;');
+    expect(styles).toContain('--global-sidebar-content-center-shift: 96px;');
+    expect(styles).toContain('--global-sidebar-brand-icon-left: 22px;');
   });
 
   it('mirrors the compositor choreography across Chat and its right workspace panel', () => {
@@ -170,5 +175,6 @@ describe('App Shell chrome contract', () => {
     expect(trafficLights).toContain('Some(ns_window),');
     expect(trafficLights).toContain('objc_setAssociatedObject(');
     expect(nativeOwnerSources).not.toContain('WindowEvent::Resized');
+    expect(app).toContain('const MAIN_TRAFFIC_LIGHT_X: f64 = 5.0;');
   });
 });

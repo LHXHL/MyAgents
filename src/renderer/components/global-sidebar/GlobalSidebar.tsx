@@ -927,8 +927,8 @@ export default memo(function GlobalSidebar({
             type="button"
             onClick={() => { void openExternal(MYAGENTS_WEBSITE_URL); }}
             aria-label={t('globalSidebar.openWebsite')}
-            className={`global-sidebar-brand-link flex h-8 items-center gap-2 pr-1 text-left cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
-              expanded ? 'min-w-0 max-w-[calc(var(--global-sidebar-expanded-width)-var(--global-sidebar-brand-icon-left)-var(--space-2))]' : 'w-8 overflow-hidden'
+            className={`global-sidebar-brand-link flex h-8 items-center pr-1 text-left cursor-pointer rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)] ${
+              expanded ? 'min-w-0 max-w-[calc(var(--global-sidebar-expanded-width)-var(--global-sidebar-rail-button-left)-var(--space-2))]' : 'w-10 overflow-hidden'
             }`}
             data-global-sidebar-brand-link
           >

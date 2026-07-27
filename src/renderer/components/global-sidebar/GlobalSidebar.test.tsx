@@ -708,12 +708,14 @@ describe('GlobalSidebar rail flyout', () => {
     expect(navigation).not.toHaveClass('bg-[var(--paper)]', 'bg-[var(--paper-elevated)]', 'border-r');
     expect(navigation).not.toHaveClass('border-[var(--line)]');
     const brandIcon = navigation.querySelector('[data-global-sidebar-brand-icon]');
+    const brandLink = navigation.querySelector('[data-global-sidebar-brand-link]');
     const brandName = navigation.querySelector('[data-global-sidebar-brand-name]');
     const brandRow = navigation.querySelector('[data-global-sidebar-brand-row]');
     const primaryNav = navigation.querySelector('[data-global-sidebar-primary-nav]');
     const workspaceRail = navigation.querySelector('[data-global-sidebar-workspace-rail]');
     const footerActions = navigation.querySelector('[data-global-sidebar-footer-actions]');
     expect(brandIcon).not.toBeNull();
+    expect(brandLink).toHaveClass('w-10', 'overflow-hidden');
     expect(brandName).toHaveAttribute('aria-hidden', 'true');
     expect(brandRow).toHaveClass('global-sidebar-brand-row');
     expect(primaryNav).toHaveClass('global-sidebar-rail-stack');
@@ -741,6 +743,8 @@ describe('GlobalSidebar rail flyout', () => {
     expect(navigation).toHaveAttribute('data-global-sidebar-motion', 'expand');
     expect(navigation).toHaveAttribute('data-global-sidebar-tabbar-toggle', 'false');
     expect(navigation.querySelector('[data-global-sidebar-brand-icon]')).toBe(brandIcon);
+    expect(navigation.querySelector('[data-global-sidebar-brand-link]')).toBe(brandLink);
+    expect(brandLink).not.toHaveClass('w-10', 'overflow-hidden');
     expect(navigation.querySelector('[data-global-sidebar-brand-row]')).toBe(brandRow);
     expect(navigation.querySelector('[data-global-sidebar-primary-nav]')).not.toHaveClass('global-sidebar-rail-stack');
     expect(navigation.querySelector('[data-global-sidebar-workspace-rail]')).not.toBeInTheDocument();

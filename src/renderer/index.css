@@ -172,15 +172,15 @@
   --breakpoint-mobile: 640px;
   --global-sidebar-expanded-width: 256px;
   --global-sidebar-flyout-width: 320px;
-  --global-sidebar-rail-width: 72px;
+  --global-sidebar-rail-width: 64px;
   --global-sidebar-toggle-left: 84px;
-  --global-sidebar-tabbar-toggle-inset: 52px;
+  --global-sidebar-tabbar-toggle-inset: 60px;
   --global-sidebar-tab-content-shift: 140px;
   --global-sidebar-tab-content-shift-negative: -140px;
-  --global-sidebar-content-center-shift: 92px;
-  --global-sidebar-content-center-shift-negative: -92px;
+  --global-sidebar-content-center-shift: 96px;
+  --global-sidebar-content-center-shift-negative: -96px;
   --global-sidebar-brand-icon-size: 20px;
-  --global-sidebar-brand-icon-left: 24px;
+  --global-sidebar-brand-icon-left: 22px;
   --global-sidebar-rail-button-left: 12px;
   --sidebar-min-width: 320px;
   --chat-workspace-panel-width: max(25%, var(--sidebar-min-width));
@@ -202,13 +202,17 @@
 }
 
 /* The compact website link owns the App Icon and wordmark in one normal-flow
-   box. Its 4px leading inset keeps the icon at x=24px while the 32px rail hit
-   target starts at x=20px; press transforms therefore move both as one unit. */
+   box. Its 40px hit target shares x=12px with rail controls; a 10px inner
+   inset centers the 20px App Icon on the functional glyph axis at x=32px.
+   The 10px wordmark gap preserves the expanded label's established x=52px. */
 .global-sidebar-brand-link {
   position: absolute;
   top: var(--space-1);
-  left: calc(var(--global-sidebar-brand-icon-left) - var(--space-1));
-  padding-left: var(--space-1);
+  left: var(--global-sidebar-rail-button-left);
+  column-gap: calc(var(--space-2) + var(--space-0-5));
+  padding-left: calc(
+    var(--global-sidebar-brand-icon-left) - var(--global-sidebar-rail-button-left)
+  );
 }
 
 .global-sidebar-brand-icon {
@@ -217,7 +221,7 @@
   border-radius: 22%;
 }
 
-/* Sidebar layout reaches its final 256px/72px slot in one commit so Chat,
+/* Sidebar layout reaches its final 256px/64px slot in one commit so Chat,
    Browser, Terminal, and other resize-sensitive surfaces do not reflow on
    every animation frame. A fixed paint-only material layer then reveals or
    retracts the Theme surface at the same boundary the user perceives. */
@@ -291,7 +295,8 @@
 /* Expanded navigation places each 16px glyph at x=24px (12px section inset
    + 12px button inset). Rail buttons keep the same glyph coordinate by
    anchoring their 40px hit targets at x=12px instead of re-centering them in
-   the 72px strip. Apply this to every rail stack so collapse never shifts a
+   the 64px strip. Their x=32px center is therefore also the rail center. Apply
+   this to every rail stack so collapse never shifts a
    subset of controls. */
 .global-sidebar-rail-stack {
   display: flex;
@@ -331,8 +336,9 @@
 }
 
 /* Windows keeps the toggle inside the rail, so its Tab row travels the full
-   256px → 72px delta. macOS reserves a 52px titlebar slot and therefore uses
-   the smaller 140px offset above. */
+   256px → 64px delta. macOS grows its rail titlebar reservation to 60px, which
+   keeps the first Tab at the established window x=124px and preserves the
+   smaller 140px compositor offset above. */
 [data-global-sidebar-titlebar-follow='full'][data-global-sidebar-motion='collapse']
   ~ [data-tab-workspace] > .custom-titlebar {
   --app-shell-follow-offset: calc(
