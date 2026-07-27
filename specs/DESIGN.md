@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.28
+> **Version**: 2.8.29
 > **Last Updated**: 2026-07-27
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -1122,7 +1122,7 @@ Shadow 运行时值是 Theme scheme 下的 `--theme-shadow-*`，Tailwind 只通�
 | 特性 | macOS | Windows | 处理方式 |
 |------|-------|---------|---------|
 | 字体渲染 | 更平滑 | 更锐利 | 使用系统字体，信任系统渲染 |
-| 窗口控制 | 左上角红绿灯 | 右上角三按钮 | Tauri 自动处理 |
+| 窗口控制 | 左上角红绿灯 | 右上角三按钮 | 使用系统原生控件；macOS Overlay inset 由 `NSWindow` 几何通知维护（见 §15），其余交给 Tauri |
 | 滚动条 | 自动隐藏 | WebView2 经典滚动条 | 全局活动态控制：稳定 6px 几何，thumb 仅滚动中显色 |
 | 圆角 | 系统级大圆角 | 小圆角/直角 | 使用自定义圆角，两端一致 |
 
@@ -1374,6 +1374,7 @@ AI 输入框的模型菜单拥有独立滚动区。打开时在首帧把当前�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.29 | 2026-07-27 | **macOS 原生窗口 zoom 持久定位修正**：红绿灯 inset 改由当前 `NSWindow` 的 AppKit 同步几何通知 owner 维护，覆盖 resize、zoom、全屏与 backing scale；移除不可靠的 Wry draw-only 持久化假设，也不再依赖滞后的 Tauri `WindowEvent` 追帧 |
 | 2.8.28 | 2026-07-27 | **历史 Overlay 浏览筛选减负**：非搜索状态移除“活跃中 / 桌面 / 聊天机器人”三个分类及其本地过滤逻辑，只保留“全部 / 收藏”和工作区筛选；Session 来源仍由行内 tag 表达，搜索状态与请求行为不变 |
 | 2.8.27 | 2026-07-27 | **工作区箭头安全边距**：箭头与分支轴整体右移 4px，避免箭头笔画贴住 hover 圆角面；同步把箭头到 icon 的间距收至 4px、分支 padding 收至 4px，并补偿名称 margin，使工作区 icon、名称和 Session 内容位置全部保持不变 |
 | 2.8.26 | 2026-07-27 | **工作区树单轴对齐**：移除普通工作区按钮额外的 6px 左 inset，使 14px Lucide 箭头的可见左缘与“AGENT 工作区”标题左边界对齐；分支线从 16px 收至 6px 左缩进，让竖线中心穿过箭头中心，展开侧边栏与 rail flyout 同步生效 |

@@ -755,10 +755,8 @@ pub fn run() {
             // Why programmatic instead of config: Tauri 2.x has no setter for
             // `on_navigation` on an already-created window. So
             // `tauri.conf.json` has `windows: []` and we build here. All other
-            // original config (size, decorations, traffic light position) is
-            // replicated below. `WebviewUrl::default()` resolves to the
-            // configured devUrl (dev) / `tauri://localhost` (prod)
-            // automatically — no manual dev/prod branching needed.
+            // original config is replicated below; macOS traffic-light layout
+            // is installed against the built NSWindow after this chain.
             //
             // Order: must be BEFORE macos_arrow_filter::install_arrow_key_filter
             // because the filter looks up the WryWebView ObjC class which is
@@ -841,38 +839,13 @@ pub fn run() {
                 }
             });
 
-            // Platform-specific window chrome — macOS uses the Overlay title
-            // bar style (custom titlebar + native traffic lights).
-            //
-            // Tauri's programmatic builder and its config path do not have
-            // identical traffic-light semantics: the method below stores the
-            // inset on Wry's parent view but does not set it on TAO's window
-            // builder. We intentionally use it for Wry's native `drawRect:`
-            // persistence during every live resize / zoom frame, then bridge
-            // the missing initial window-level application once after build.
-            //
-            // History: v0.2.15 main used `tauri.conf.json
-            // trafficLightPosition: {x:14, y:20}` — visually correct for the
-            // former 80px rail. The current 72px rail uses x=10 so the native
-            // cluster remains optically centered within the narrower strip.
-            // c3ef3c7f migrated to programmatic builder w/ same values —
-            // visually broken. 0c74c61c misdiagnosed as a 4px miscenter and
-            // changed Y to 14 — still broken (different symptom, same root
-            // cause). The two-stage path below restores v0.2.15's initial
-            // placement while keeping animation-time ownership in native draw.
+            // Overlay chrome gets one continuous positioning owner after the
+            // NSWindow exists. Do not seed Wry's separate draw-time inset here.
             #[cfg(target_os = "macos")]
             let main_window_builder = main_window_builder
                 .hidden_title(true)
-                .title_bar_style(tauri::TitleBarStyle::Overlay)
-                .traffic_light_position(tauri::LogicalPosition::new(
-                    MAIN_TRAFFIC_LIGHT_X,
-                    MAIN_TRAFFIC_LIGHT_Y,
-                ));
+                .title_bar_style(tauri::TitleBarStyle::Overlay);
 
-            // `main_window` is only consumed by the macOS-gated traffic-light
-            // inset block below. On other platforms the `.build()?` call
-            // remains for its side effect (constructing + showing the window);
-            // the binding itself is intentionally unused, hence the cfg_attr.
             let main_window = main_window_builder
                 .build()
                 .map_err(|e| {
@@ -880,26 +853,19 @@ pub fn run() {
                     e
                 })?;
 
-            // Restore v0.2.15 traffic light placement via direct AppKit (see
-            // long-form rationale above). x=10 balances the native cluster
-            // inside the 72px global rail; y=20 preserves the established
-            // vertical alignment. Failure here is non-fatal —
-            // window starts with default macOS button positions instead.
-            //
-            // The post-build bridge fires only once. Live resize / zoom
-            // persistence belongs to Wry's native draw lifecycle configured
-            // on the builder above; a queued Tauri `Resized` listener is too
-            // late for the current AppKit animation frame and causes visible
-            // position chasing.
+            // x=10 optically centers the native cluster in the 72px rail;
+            // y=20 preserves its established vertical alignment. Install the
+            // native owner before the first visible frame.
             #[cfg(target_os = "macos")]
-            {
-                if let Err(e) = macos_traffic_light::apply_inset(
-                    &main_window,
-                    MAIN_TRAFFIC_LIGHT_X,
-                    MAIN_TRAFFIC_LIGHT_Y,
-                ) {
-                    ulog_warn!("[main-window] traffic light inset failed: {}", e);
-                }
+            if let Err(e) = macos_traffic_light::install_native_layout_owner(
+                &main_window,
+                MAIN_TRAFFIC_LIGHT_X,
+                MAIN_TRAFFIC_LIGHT_Y,
+            ) {
+                ulog_warn!(
+                    "[main-window] Failed to install traffic-light layout owner: {}",
+                    e
+                );
             }
 
             let resolved_native_theme = preferred_native_theme

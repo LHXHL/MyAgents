@@ -155,13 +155,20 @@ describe('App Shell chrome contract', () => {
     expect(storeProjection).toContain("reason: 'global-sidebar-search', silent: true");
   });
 
-  it('keeps macOS traffic lights attached to the native draw lifecycle during window zoom', () => {
+  it('owns macOS traffic-light geometry at the native window layout boundary', () => {
     const app = source('src-tauri/src/lib.rs');
     const trafficLights = source('src-tauri/src/macos_traffic_light.rs');
+    const nativeOwnerSources = `${app}\n${trafficLights}`;
 
-    expect(app).toContain('.traffic_light_position(tauri::LogicalPosition::new(');
-    expect(app).toContain('macos_traffic_light::apply_inset(');
-    expect(app).not.toContain('macos_traffic_light::install_inset_persistence(');
-    expect(trafficLights).not.toContain('pub fn install_inset_persistence');
+    expect(app).toContain('macos_traffic_light::install_native_layout_owner(');
+    expect(nativeOwnerSources).not.toContain('.traffic_light_position(');
+    expect(trafficLights).toContain('NSWindowDidResizeNotification');
+    expect(trafficLights).toContain('NSWindowDidEnterFullScreenNotification');
+    expect(trafficLights).toContain('NSWindowDidExitFullScreenNotification');
+    expect(trafficLights).toContain('NSWindowDidChangeBackingPropertiesNotification');
+    expect(trafficLights).toContain('let ns_window_ptr = window.ns_window()');
+    expect(trafficLights).toContain('Some(ns_window),');
+    expect(trafficLights).toContain('objc_setAssociatedObject(');
+    expect(nativeOwnerSources).not.toContain('WindowEvent::Resized');
   });
 });
