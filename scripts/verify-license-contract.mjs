@@ -2,8 +2,10 @@ import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
 
+import { normalizeTextLineEndings } from './verify-license-contract-utils.mjs';
+
 const root = resolve(import.meta.dirname, '..');
-const read = (path) => readFileSync(resolve(root, path), 'utf8');
+const read = (path) => normalizeTextLineEndings(readFileSync(resolve(root, path), 'utf8'));
 const json = (path) => JSON.parse(read(path));
 
 const expectedLicense = 'AGPL-3.0-only';
@@ -66,7 +68,7 @@ requireContains('AGPL license text', license, 'GNU AFFERO GENERAL PUBLIC LICENSE
 requireContains('AGPL version text', license, 'Version 3, 19 November 2007');
 requireEqual(
   'standard AGPLv3 text SHA-256',
-  createHash('sha256').update(license.replace(/\r\n/g, '\n')).digest('hex'),
+  createHash('sha256').update(license).digest('hex'),
   canonicalLicenseSha256,
 );
 requireContains('README license identifier', readme, expectedLicense);
