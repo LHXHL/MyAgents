@@ -231,7 +231,9 @@ describe('GlobalSidebar rail flyout', () => {
 
     fireEvent.keyDown(trigger, { key: 'Tab' });
 
-    expect(within(region).getByRole('button', { name: '添加' })).toHaveFocus();
+    expect(within(region).getByRole('button', {
+      name: String(i18n.t('app:globalSidebar.workspaceViewOptions')),
+    })).toHaveFocus();
     act(() => vi.advanceTimersByTime(220));
     expect(region).toBeInTheDocument();
   });
@@ -242,7 +244,9 @@ describe('GlobalSidebar rail flyout', () => {
     fireEvent.focus(trigger);
     const region = screen.getByRole('region', { name: 'Agent 工作区' });
     fireEvent.keyDown(trigger, { key: 'Tab' });
-    const firstAction = within(region).getByRole('button', { name: '添加' });
+    const firstAction = within(region).getByRole('button', {
+      name: String(i18n.t('app:globalSidebar.workspaceViewOptions')),
+    });
 
     fireEvent.keyDown(firstAction, { key: 'Tab', shiftKey: true });
 
@@ -400,6 +404,9 @@ describe('GlobalSidebar rail flyout', () => {
     const workspaceRow = screen.getByText('Project one').closest<HTMLElement>('[data-global-sidebar-workspace-row]')!;
     const newChatButton = within(workspaceRow).getByRole('button', { name: String(i18n.t('app:globalSidebar.newChatHere')) });
     const moreButton = within(workspaceRow).getByRole('button', { name: String(i18n.t('launcher:workspaceCard.more')) });
+
+    expect(Boolean(viewOptionsButton.compareDocumentPosition(addButton) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
+    expect(Boolean(moreButton.compareDocumentPosition(newChatButton) & Node.DOCUMENT_POSITION_FOLLOWING)).toBe(true);
 
     for (const button of [addButton, viewOptionsButton, newChatButton, moreButton]) {
       expect(button).not.toHaveAttribute('title');

@@ -1406,12 +1406,6 @@ function WorkspaceTree({
         <h2 className="min-w-0 flex-1 truncate text-xs font-semibold uppercase tracking-wider text-[var(--ink-muted)]/60">
           {t('globalSidebar.workspaceSection')}
         </h2>
-        <AddWorkspaceMenu
-          variant="icon"
-          onAddFolder={onAddFolder}
-          onCreateFromTemplate={onCreateFromTemplate}
-          onOpenChange={(open) => onNestedInteractionChange('add-workspace', open)}
-        />
         <Tip label={tLauncher('workspaceCard.more')} position="bottom" align="end" disabled={viewMenuOpen}>
           <button
             ref={viewMenuRef}
@@ -1450,6 +1444,12 @@ function WorkspaceTree({
             onClick={() => { onToggleAutomation(); setViewMenu(false); }}
           />
         </Popover>
+        <AddWorkspaceMenu
+          variant="icon"
+          onAddFolder={onAddFolder}
+          onCreateFromTemplate={onCreateFromTemplate}
+          onOpenChange={(open) => onNestedInteractionChange('add-workspace', open)}
+        />
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-3" role="tree">
@@ -1700,16 +1700,6 @@ function WorkspaceRow({
         </span>
       </button>
       <div className={`flex shrink-0 items-center pr-1 transition-opacity ${menuOpen ? 'opacity-100' : 'opacity-0 group-hover/workspace:opacity-100 group-focus-within/workspace:opacity-100'}`}>
-        <Tip label={t('globalSidebar.newChatHere')} align="end">
-          <button
-            type="button"
-            onClick={onOpenWorkspace}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
-            aria-label={t('globalSidebar.newChatHere')}
-          >
-            <MessageSquarePlus className="h-3.5 w-3.5" />
-          </button>
-        </Tip>
         <Tip label={tLauncher('workspaceCard.more')} align="end" disabled={menuOpen}>
           <button
             ref={menuRef}
@@ -1719,6 +1709,16 @@ function WorkspaceRow({
             aria-label={tLauncher('workspaceCard.more')}
           >
             <MoreHorizontal className="h-3.5 w-3.5" />
+          </button>
+        </Tip>
+        <Tip label={t('globalSidebar.newChatHere')} align="end">
+          <button
+            type="button"
+            onClick={onOpenWorkspace}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--ink-muted)] transition-colors hover:bg-[var(--paper-inset)] hover:text-[var(--ink)]"
+            aria-label={t('globalSidebar.newChatHere')}
+          >
+            <MessageSquarePlus className="h-3.5 w-3.5" />
           </button>
         </Tip>
       </div>
