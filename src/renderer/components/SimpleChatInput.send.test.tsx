@@ -7,6 +7,11 @@ import { ImagePreviewProvider } from '@/context/ImagePreviewContext';
 import type { Provider } from '@/config/types';
 import { i18n } from '@/i18n';
 import { CUSTOM_EVENTS } from '../../shared/constants';
+import {
+  CC_PERMISSION_MODES,
+  CODEX_PERMISSION_MODES,
+  GEMINI_PERMISSION_MODES,
+} from '../../shared/types/runtime';
 import SimpleChatInput, { type SimpleChatInputHandle } from './SimpleChatInput';
 import { ToastProvider } from './Toast';
 
@@ -61,6 +66,57 @@ describe('SimpleChatInput send paths', () => {
     workspaceMocks.service.addGitignore.mockResolvedValue({ success: true });
     workspaceMocks.service.searchFiles.mockResolvedValue([]);
     workspaceMocks.service.listSlashCommands.mockResolvedValue([]);
+  });
+
+  it('uses stable line icons for the three builtin permission modes', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    renderInput({
+      runtime: 'builtin',
+      permissionMode: 'fullAgency',
+      onPermissionModeChange: vi.fn(),
+    });
+
+    const modeButton = screen.getByTitle('切换执行模式');
+    expect(modeButton.querySelector('.lucide-lock-open')).toBeInTheDocument();
+
+    await user.click(modeButton);
+
+    expect(document.querySelector('.lucide-shield-check')).toBeInTheDocument();
+    expect(document.querySelector('.lucide-eye')).toBeInTheDocument();
+    expect(document.querySelectorAll('.lucide-lock-open')).toHaveLength(2);
+    expect(screen.queryByText(/⚡|📋|🚀/u)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    {
+      name: 'Claude Code',
+      runtime: 'claude-code' as const,
+      modes: CC_PERMISSION_MODES,
+      expectedIcons: ['shield-question-mark', 'eye', 'file-pen-line', 'lock-open'],
+    },
+    {
+      name: 'Gemini',
+      runtime: 'gemini' as const,
+      modes: GEMINI_PERMISSION_MODES,
+      expectedIcons: ['shield-question-mark', 'file-pen-line', 'lock-open', 'eye'],
+    },
+    {
+      name: 'Codex',
+      runtime: 'codex' as const,
+      modes: CODEX_PERMISSION_MODES,
+      expectedIcons: ['shield-question-mark', 'file-pen-line', 'shield-check', 'lock-open'],
+    },
+  ])('maps $name permission boundaries to the shared line icon vocabulary', async ({ runtime, modes, expectedIcons }) => {
+    await i18n.changeLanguage('zh-CN');
+    const user = userEvent.setup();
+    renderInput({ runtime, runtimePermissionModes: modes });
+
+    await user.click(screen.getByTitle('切换执行模式'));
+
+    for (const iconName of expectedIcons) {
+      expect(document.querySelector(`.lucide-${iconName}`)).toBeInTheDocument();
+    }
   });
 
   it('sends text from the Chat input surface', async () => {

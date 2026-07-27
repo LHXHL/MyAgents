@@ -1,4 +1,26 @@
-import { AlertCircle, ChevronRight, ChevronUp, Gauge, Loader, Paperclip, Plus, Send, Square, X, FileText, AtSign, Wrench, Timer, Settings2 } from 'lucide-react';
+import {
+  AlertCircle,
+  AtSign,
+  ChevronRight,
+  ChevronUp,
+  Eye,
+  FilePenLine,
+  FileText,
+  Gauge,
+  Loader,
+  LockOpen,
+  Paperclip,
+  Plus,
+  Send,
+  Settings2,
+  ShieldCheck,
+  ShieldQuestion,
+  Square,
+  Timer,
+  Wrench,
+  X,
+  type LucideIcon,
+} from 'lucide-react';
 import { memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, forwardRef, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -68,6 +90,39 @@ function getCurrentModelLabel(
 ): string {
   if (!modelId) return fallbackLabel;
   return provider ? getModelDisplayName(provider, modelId) : modelId;
+}
+
+const PERMISSION_MODE_ICONS: Partial<Record<string, LucideIcon>> = {
+  auto: ShieldCheck,
+  plan: Eye,
+  fullAgency: LockOpen,
+  default: ShieldQuestion,
+  acceptEdits: FilePenLine,
+  bypassPermissions: LockOpen,
+  autoEdit: FilePenLine,
+  yolo: LockOpen,
+  suggest: ShieldQuestion,
+  'auto-edit': FilePenLine,
+  'full-auto': ShieldCheck,
+  'no-restrictions': LockOpen,
+};
+
+function PermissionModeIcon({
+  value,
+  fallback,
+  className,
+}: {
+  value: string | undefined;
+  fallback: string | undefined;
+  className: string;
+}) {
+  if (value) {
+    const Icon = PERMISSION_MODE_ICONS[value];
+    if (!Icon) return <span>{fallback}</span>;
+    return <Icon aria-hidden="true" className={className} strokeWidth={1.75} />;
+  }
+
+  return <span>{fallback}</span>;
 }
 
 function runtimeMcpServerId(toolName: string): string | null {
@@ -1803,7 +1858,11 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                 }`}
                 title={configControlLockTitle ?? t('input.permissionModeTitle')}
               >
-                <span>{currentModeDisplay?.icon}</span>
+                <PermissionModeIcon
+                  value={currentModeDisplay?.value}
+                  fallback={currentModeDisplay?.icon}
+                  className="h-3.5 w-3.5 shrink-0"
+                />
                 <span className="toolbar-label">{currentModeDisplay?.label}</span>
                 <ChevronUp className="h-3 w-3" />
               </button>
@@ -1849,7 +1908,11 @@ const SimpleChatInput = memo(forwardRef<SimpleChatInputHandle, SimpleChatInputPr
                   >
                     <span className={`text-sm font-medium flex items-center gap-1.5 ${permissionMode === mode.value ? 'text-[var(--accent)]' : 'text-[var(--ink)]'
                       }`}>
-                      <span>{mode.icon}</span>
+                      <PermissionModeIcon
+                        value={mode.value}
+                        fallback={mode.icon}
+                        className="h-4 w-4 shrink-0"
+                      />
                       {mode.label}
                     </span>
                     <span className="text-xs text-[var(--ink-muted)] mt-0.5">{mode.description}</span>

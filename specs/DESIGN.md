@@ -1,6 +1,6 @@
 # MyAgents Design Guide
 
-> **Version**: 2.8.33
+> **Version**: 2.8.34
 > **Last Updated**: 2026-07-27
 > **Status**: Active
 > **Platform**: macOS / Windows Desktop Client
@@ -1369,6 +1369,8 @@ Primary CTA；所有链接复用 `ExternalLink`，不得由 WebView 原生导航
 
 AI 输入框的模型菜单拥有独立滚动区。打开时在首帧把当前模型居中放入可视范围，模型供应商或外部 Runtime 模型异步刷新后再次校正，不得调用会牵动页面滚动的全局 `scrollIntoView`。底部“管理自定义模型服务”入口仅在 AgentSDK 输入 chrome 显示：builtin 与 Managed Codex 均显示，用户自管 Claude Code / Codex CLI / Gemini CLI 不显示；点击后关闭模型菜单并打开或聚焦 `设置 → 模型供应商`。
 
+AI 输入框的会话模式保持各 Runtime 既有文案、顺序与菜单样式，图标统一使用 1.75 stroke 的 Lucide“权限边界”词汇：只读规划统一为 `Eye`；需逐项确认的 Default / Suggest 为 `ShieldQuestion`；自动编辑文件的 Accept Edits / Auto Edit / Auto-Edit 为 `FilePenLine`；受约束自主执行的 builtin 行动 / Codex Full Auto 为 `ShieldCheck`；跳过审批或限制的 Full Agency / Bypass / YOLO / No Restrictions 为 `LockOpen`。未知的 Runtime 自定义模式继续展示自身声明的图标。
+
 ### 15.8 任务创建面板
 
 任务中心“新建任务”与“从想法派发”共用同一创建面板。面板不展示手工标签输入，优先保留任务需求、验收清单、工作区、执行模式与通知等直接影响执行的配置；空白新建提交空标签，从想法派发仅在数据层继承来源想法已有标签。标签仍可在既有 Task 编辑与管理表面维护，不删除持久化字段或历史筛选兼容。
@@ -1379,6 +1381,7 @@ AI 输入框的模型菜单拥有独立滚动区。打开时在首帧把当前�
 
 | 版本 | 日期 | 变更 |
 |------|------|------|
+| 2.8.34 | 2026-07-27 | **对话权限模式图标统一**：builtin、Claude Code、Gemini 与 Codex 的已知模式从跨平台不稳定的 emoji 归一为 `Eye / ShieldQuestion / FilePenLine / ShieldCheck / LockOpen` 权限边界图标；文案、顺序、菜单样式与权限行为保持不变，未知模式保留 Runtime fallback |
 | 2.8.33 | 2026-07-27 | **工作区 Tooltip 边界修正**：工作区新建动作统一精简为“新对话”；首条工作区的操作提示改为向下展开，避免被工作区滚动容器的上边界裁切 |
 | 2.8.32 | 2026-07-27 | **工作区快捷动作边缘化**：工作区标题与活跃工作区行的双按钮统一为“更多在左、创建在右”，让高频的新增工作区 / 新对话固定占据最右边缘；同步锁定 DOM 与键盘焦点顺序 |
 | 2.8.31 | 2026-07-27 | **工作区资源菜单排序**：活跃工作区菜单统一调整为“Agent 设置 → 打开所在文件夹 → 置顶/取消置顶 → 归档 → 移除”，配置与定位动作前置，危险操作保持收尾；展开侧栏与 rail flyout 继续复用同一菜单实现 |
