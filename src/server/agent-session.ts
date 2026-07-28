@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { join, resolve } from 'path';
 import { createRequire } from 'module';
 import { query, getSessionMessages as sdkGetSessionMessages, forkSession as sdkForkSession, deleteSession as sdkDeleteSession, type Query, type SDKUserMessage, type AgentDefinition, type HookInput, type HookJSONOutput, type PreToolUseHookInput, type PostToolUseHookInput, type PermissionRequestHookInput, type SlashCommand as SdkSlashCommand } from '@anthropic-ai/claude-agent-sdk';
+import { SDK_BUILTIN_TOOLS } from './sdk-builtin-tools';
 import {
   decideBackgroundAgentPermission,
   isBackgroundAgentToolRequest,
@@ -776,7 +777,8 @@ let isStreamingMessage = false;
 // process instead of letting it vanish silently. Update this set when bumping
 // the SDK (grep sdk.d.ts for `type: 'system'` blocks).
 const KNOWN_SYSTEM_SUBTYPES = new Set([
-  'api_retry', 'commands_changed', 'compact_boundary', 'elicitation_complete',
+  'api_retry', 'background_tasks_changed', 'commands_changed', 'compact_boundary',
+  'control_request_progress', 'elicitation_complete',
   'files_persisted', 'hook_progress', 'hook_response', 'hook_started',
   'informational', 'init', 'local_command_output', 'memory_recall',
   'mirror_error', 'model_refusal_fallback', 'model_refusal_no_fallback',
@@ -10793,6 +10795,10 @@ async function startStreamingSession(preWarm = false): Promise<void> {
       settingSources: buildSettingSources(),
       settings: {
         cleanupPeriodDays: claudeTranscriptCleanupPeriodDays,
+        // MyAgents does not expose Anthropic feedback submission. Keep the
+        // upstream draft feature off explicitly instead of inheriting a CLI
+        // default that may change in a patch release.
+        feedbackDrafts: 'off' as const,
         plansDirectory: getSessionPlansDirectorySetting(sessionId),
         // MyAgents owns provider routing and outbound-network policy. Without
         // this, Claude Code's WebFetch tool sends the target hostname to
@@ -10872,6 +10878,9 @@ async function startStreamingSession(preWarm = false): Promise<void> {
         askUserQuestion: { previewFormat: 'html' as const },
       },
       mcpServers: sdkMcpServersInitial,
+      // Product visibility boundary. Permission policy remains separately
+      // owned by allowedTools/disallowedTools/canUseTool/Hooks below.
+      tools: [...SDK_BUILTIN_TOOLS],
       // PRD 0.2.17 — Claude plugin injection. SDK accepts
       // `plugins: [{ type: 'local', path }]`; it then scans each path for
       // .claude-plugin/plugin.json and wires up the contained

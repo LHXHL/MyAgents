@@ -94,6 +94,36 @@ const MAP: Record<TerminalReason, TerminalReasonInfo> = {
     detail: '模型侧返回错误，请查看日志定位具体原因。',
     severity: 'error',
   },
+  api_error: {
+    label: 'API 请求失败',
+    detail: '模型供应商 API 请求失败。请检查网络、凭据、供应商状态或日志中的响应信息。',
+    severity: 'error',
+  },
+  malformed_tool_use_exhausted: {
+    label: '工具调用格式多次失败',
+    detail: '模型多次生成无效的工具调用格式，SDK 已停止本轮执行。可重新发送或调整模型。',
+    severity: 'error',
+  },
+  budget_exhausted: {
+    label: '已达到本轮执行预算',
+    detail: '本轮已达到 SDK 执行预算，尚未正常完成。可继续对话或调整任务范围。',
+    severity: 'notice',
+  },
+  structured_output_retry_exhausted: {
+    label: '结构化输出生成失败',
+    detail: '模型多次重试后仍未生成符合要求的结构化输出。',
+    severity: 'error',
+  },
+  tool_deferred_unavailable: {
+    label: '延迟工具已不可用',
+    detail: '先前延迟的工具在继续执行时已不可用，本轮未正常完成。',
+    severity: 'error',
+  },
+  turn_setup_failed: {
+    label: '本轮启动失败',
+    detail: 'SDK 无法完成本轮执行前的初始化。请检查配置、Provider 和运行日志。',
+    severity: 'error',
+  },
 };
 
 /**
