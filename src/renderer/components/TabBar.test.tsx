@@ -112,40 +112,32 @@ describe('TabBar', () => {
             .toBe(`${TAB_ITEM_MIN_WIDTH_PX}px`);
     });
 
-    it('shows workspace context before a real chat title with a decorative divider', () => {
+    it('shows only the session title once a chat has a real title', () => {
         renderTabBar({ tabs: [makeTab('tab-1', 'Session 1')] });
 
         const tab = document.querySelector('[data-tab-id="tab-1"]') as HTMLElement;
-        const workspace = within(tab).getByText('demo');
         const sessionTitle = within(tab).getByText('Session 1');
-        const divider = tab.querySelector('[data-tab-title-divider]');
-        const titleHandle = workspace.parentElement as HTMLElement;
+        const titleHandle = sessionTitle.parentElement as HTMLElement;
 
         expect(tab).toHaveClass('text-[var(--ink)]');
         expect(titleHandle.getAttribute('class')).toBe('flex min-w-0 flex-1 items-center text-xs font-medium select-none');
         expect(titleHandle).not.toHaveAttribute('style');
         expect(sessionTitle.parentElement).toBe(titleHandle);
-        expect(workspace.getAttribute('class')).toBe('max-w-[35%] flex-shrink-0 truncate');
-        expect(workspace).not.toHaveAttribute('style');
         expect(sessionTitle.getAttribute('class')).toBe('min-w-0 truncate');
         expect(sessionTitle).not.toHaveAttribute('style');
-        expect(divider).toHaveAttribute('aria-hidden', 'true');
-        expect(divider?.getAttribute('class')).toBe('mx-1.5 h-3 w-px flex-shrink-0 bg-[var(--line-strong)]/70');
-        expect(divider?.getAttribute('style')).toBeNull();
-        expect(divider?.textContent).toBe('');
+        expect(within(tab).queryByText('demo')).toBeNull();
+        expect(tab.querySelector('[data-tab-title-divider]')).toBeNull();
         expect(tab).toHaveAttribute('title', 'demo — Session 1');
         expect(tab).toHaveAccessibleName('demo, Session 1');
     });
 
-    it('lets both title segments inherit the inactive and hover colors from the tab', () => {
+    it('lets the session title inherit the inactive and hover colors from the tab', () => {
         renderTabBar({ activeTabId: 'tab-2' });
 
         const tab = document.querySelector('[data-tab-id="tab-1"]') as HTMLElement;
-        const workspace = within(tab).getByText('demo');
         const sessionTitle = within(tab).getByText('Session 1');
 
         expect(tab).toHaveClass('text-[var(--ink-muted)]', 'hover:bg-[var(--hover-bg)]', 'hover:text-[var(--ink)]');
-        expect(workspace.className).not.toContain('text-[var(--ink');
         expect(sessionTitle.className).not.toContain('text-[var(--ink');
     });
 
@@ -175,7 +167,7 @@ describe('TabBar', () => {
         expect(overflowButton).not.toHaveClass('bg-[var(--paper-inset)]');
     });
 
-    it('keeps workspace and session as separate identities when their labels match', () => {
+    it('does not repeat the workspace when it matches the session title', () => {
         const sameNameTab = {
             ...makeTab('tab-1', 'demo'),
             agentDir: '/workspace/demo',
@@ -183,8 +175,8 @@ describe('TabBar', () => {
         renderTabBar({ tabs: [sameNameTab] });
 
         const tab = document.querySelector('[data-tab-id="tab-1"]') as HTMLElement;
-        expect(within(tab).getAllByText('demo')).toHaveLength(2);
-        expect(tab.querySelector('[data-tab-title-divider]')).toHaveAttribute('aria-hidden', 'true');
+        expect(within(tab).getAllByText('demo')).toHaveLength(1);
+        expect(tab.querySelector('[data-tab-title-divider]')).toBeNull();
         expect(tab).toHaveAttribute('title', 'demo — demo');
         expect(tab).toHaveAccessibleName('demo, demo');
     });
@@ -209,7 +201,7 @@ describe('TabBar', () => {
         expect(tab.querySelector('[data-tab-title-divider]')).toBeNull();
     });
 
-    it('keeps long workspace and session labels independently truncatable', () => {
+    it('gives the full title width to a long session title', () => {
         const tabWithLongLabels = {
             ...makeTab('tab-1', 'A generated title that must keep the remaining tab width'),
             agentDir: '/workspace/a-very-long-agent-workspace-name',
@@ -217,10 +209,9 @@ describe('TabBar', () => {
         renderTabBar({ tabs: [tabWithLongLabels] });
 
         const tab = document.querySelector('[data-tab-id="tab-1"]') as HTMLElement;
-        expect(within(tab).getByText('a-very-long-agent-workspace-name'))
-            .toHaveClass('max-w-[35%]', 'flex-shrink-0', 'truncate');
         expect(within(tab).getByText('A generated title that must keep the remaining tab width'))
             .toHaveClass('min-w-0', 'truncate');
+        expect(within(tab).queryByText('a-very-long-agent-workspace-name')).toBeNull();
     });
 
     it('selects tabs on mouse down so drag click capture cannot swallow tab switching', () => {
