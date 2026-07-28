@@ -3616,17 +3616,22 @@ mod tests {
         let channel_id = "starting-channel";
         let start_lock = agent_channel_lifecycle_lock(agent_id, channel_id);
         let start_guard = start_lock.lock().await;
+        let (acquired_tx, mut acquired_rx) = tokio::sync::oneshot::channel();
 
-        let stop_waiter = tokio::spawn({
+        let stop_waiter = tauri::async_runtime::spawn({
             let channel_ids = vec![channel_id.to_string()];
             async move {
                 let _guards = lock_agent_channels_for_stop(agent_id, &channel_ids).await;
+                let _ = acquired_tx.send(());
             }
         });
 
         tokio::time::sleep(Duration::from_millis(20)).await;
         assert!(
-            !stop_waiter.is_finished(),
+            matches!(
+                acquired_rx.try_recv(),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ),
             "all-stop must wait until an in-flight start publishes its runtime"
         );
 
