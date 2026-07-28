@@ -303,7 +303,7 @@ pub struct SessionRouter {
 群聊： im:telegram:group:{group_id}
 ```
 
-**Sidecar 所有权**：IM Bot 使用 `SidecarOwner::ImBot(session_key)` 作为 Sidecar owner，与 `Tab`、`Task`、`Goal`、`BackgroundCompletion` 并列。当所有 owner 释放时 Sidecar 自动停止。`ensure_session_sidecar()` 和 `release_session_sidecar()` 统一管理生命周期。
+**Sidecar 所有权**：IM Bot / Agent Channel 使用 `SidecarOwner::Agent(session_key)` 作为 Sidecar owner，与 `Tab`、`Companion`、`Task`、`Goal`、`BackgroundCompletion` 并列。当所有 owner 释放时 Sidecar 自动停止。`ensure_session_sidecar()` 和 `release_session_sidecar()` 统一管理生命周期。
 
 ### 2.6.1 通用代理变化时的 Channel 重连
 
