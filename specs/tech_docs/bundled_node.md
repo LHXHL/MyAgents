@@ -134,6 +134,14 @@ skill 必须用命令级 env（例如 `npm_config_prefix="$MYAGENTS_NPM_GLOBAL_P
 5. **SDK native binary**：按 target triple 拷贝 + codesign
 6. **Tauri 构建**：`npm run tauri:build -- --target <triple>`
 
+`src-tauri/resources/` 是当前构建的 staging，不是跨构建缓存。构建脚本必须在
+Tauri 读取前完整替换自己负责的目录：macOS release 在每个 target loop 内分别
+生成 Node、Sharp、TSX 和 Claude 资源，其中 Sharp / Claude 的 Mach-O 会显式
+校验为目标架构；
+`build_dev.sh` 则清空 production-only 的 Sharp / TSX，仅留下 bundler 占位符，
+同时按 host 架构重新生成 Node 与 Claude。目录存在或 `.dev-placeholder` 都不能
+代表目录内容属于当前构建。
+
 v0.2.0 之前这些步骤用 `bun build` + `bun install` — 完全切到 Node.js 生态后，lockfile 从 `bun.lock` 迁到 `package-lock.json`。
 
 ## 运行时检测
